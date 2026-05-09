@@ -1,0 +1,39 @@
+{
+  "_comment": "Jest / ts-jest için özel tsconfig. Test dosyalarını include eder.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Test dosyalarında strict kapalı — geçiş döneminde test altyapısı etkilenmesin
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "allowJs": true,
+    "checkJs": false,
+    // ts-jest diagnostics için incremental kapalı olmalı
+    "incremental": false,
+    "tsBuildInfoFile": null
+  },
+  "include": [
+    "index.ts",
+    "app/**/*.ts",
+    "middleware/**/*.ts",
+    "routes/**/*.ts",
+    "lib/**/*.ts",
+    "db/**/*.ts",
+    "jobs/**/*.ts",
+    "socket/**/*.ts",
+    "scripts/**/*.ts",
+    "types/**/*.ts",
+    "plugins/**/*.ts",
+    "db/repositories/types/*.d.ts",
+    // Test dosyaları
+    "tests/**/*.ts",
+    "tests/**/*.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "_legacy_js_backup_session4_5",
+    "db/repositories/_legacy_js_backup_session8"
+  ]
+}

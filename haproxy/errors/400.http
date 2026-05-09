@@ -1,0 +1,5 @@
+HTTP/1.0 400 Bad Request
+Cache-Control: no-cache
+Content-Type: text/html
+
+<html><body><h1>400 Bad Request</h1><p>Your request could not be understood.</p></body></html>

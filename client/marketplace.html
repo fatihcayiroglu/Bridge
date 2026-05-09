@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bridge Marketplace</title>
+  <link rel="stylesheet" href="css/style.css">
+  <style>
+    body { background: var(--bg-1); color: var(--text-1); margin: 0; font-family: Inter, system-ui, sans-serif; }
+    .page { max-width: 1100px; margin: 0 auto; padding: 24px 18px 40px; }
+    .top { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 14px; }
+    .title { font-size: 28px; font-weight: 800; }
+    .subtitle { color: var(--text-3); font-size: 14px; margin-top: 4px; }
+    .filters { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0 20px; }
+    .search { min-width: 260px; flex: 1; max-width: 420px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px,1fr)); gap: 12px; }
+    .card { background: var(--bg-2); border: 1px solid var(--bg-4); border-radius: 12px; padding: 14px; }
+    .muted { color: var(--text-3); font-size: 13px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .pill { font-size: 12px; padding: 4px 8px; border-radius: 999px; background: var(--bg-3); color: var(--text-2); border: 1px solid var(--bg-4); }
+    .modal { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none; align-items: center; justify-content: center; z-index: 99999; }
+    .modal-card { width: min(560px, 95vw); max-height: 90vh; overflow: auto; background: var(--bg-1); border: 1px solid var(--bg-4); border-radius: 14px; padding: 16px; }
+    .field { width: 100%; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="top">
+      <div>
+        <div class="title">Marketplace</div>
+        <div class="subtitle">Botlar ve pluginler tek ekranda</div>
+      </div>
+      <button class="btn" onclick="window.location.href='/'">Uygulamaya Dön</button>
+    </div>
+    <div class="filters">
+      <input id="q" class="input-field search" type="text" placeholder="Bot / plugin ara">
+      <button class="btn btn-primary" onclick="loadMarketplace()">Yenile</button>
+    </div>
+    <h3>Pluginler</h3>
+    <div id="plugins" class="grid"></div>
+    <h3 style="margin-top:18px;">Botlar</h3>
+    <div id="bots" class="grid"></div>
+  </main>
+  <div id="marketplace-modal" class="modal" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div id="mkt-modal-content"></div>
+      <div class="row" style="justify-content:flex-end">
+        <button class="btn" onclick="closeMktModal()">Kapat</button>
+      </div>
+    </div>
+  </div>
+  <script src="js/plugin-marketplace-page.js"></script>
+</body>
+</html>

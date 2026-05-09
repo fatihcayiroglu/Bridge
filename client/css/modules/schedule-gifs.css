@@ -1,0 +1,148 @@
+/* ── Bridge · schedule-gifs.css ───────────────────────────────── */
+
+/* ── SCHEDULE MODAL ──────────────────────────────────── */
+#schedule-modal .modal-card { max-width: 480px; width: 95%; }
+.schedule-form { display: flex; flex-direction: column; gap: 12px; }
+.schedule-form textarea {
+  width: 100%; min-height: 80px; background: var(--bg-1); border: 1.5px solid var(--bg-5);
+  border-radius: var(--r-md); padding: 10px 12px; color: var(--text-1);
+  font-size: 14px; font-family: inherit; resize: vertical; outline: none;
+}
+.schedule-form textarea:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-glow); }
+.schedule-form input[type="datetime-local"] {
+  background: var(--bg-1); border: 1.5px solid var(--bg-5); border-radius: var(--r-md);
+  padding: 8px 12px; color: var(--text-1); font-family: inherit; font-size: 13px; outline: none;
+  color-scheme: dark;
+}
+.schedule-form input[type="datetime-local"]:focus { border-color: var(--brand); }
+.scheduled-list { margin-top: 16px; max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.scheduled-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  background: var(--bg-4); border-radius: var(--r-md); animation: msgIn 0.2s ease;
+}
+.scheduled-item-info { flex: 1; min-width: 0; }
+.scheduled-item-content { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scheduled-item-time { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.btn-cancel-scheduled {
+  background: none; border: none; cursor: pointer; color: var(--text-3);
+  font-size: 14px; padding: 2px 6px; border-radius: var(--r-sm);
+  transition: color 0.1s; flex-shrink: 0;
+}
+.btn-cancel-scheduled:hover { color: var(--red); }
+.empty-list { text-align: center; color: var(--text-3); font-size: 13px; padding: 20px; }
+
+/* ── SERVER GIF MODAL ────────────────────────────────── */
+#server-gif-modal .modal-card { max-width: 560px; width: 95%; max-height: 85vh; overflow-y: auto; }
+.server-gif-upload { display: flex; flex-direction: column; gap: 10px; padding: 14px; background: var(--bg-4); border-radius: var(--r-lg); margin-bottom: 16px; }
+.server-gif-upload input[type="text"] {
+  background: var(--bg-1); border: 1.5px solid var(--bg-5); border-radius: var(--r-md);
+  padding: 8px 12px; color: var(--text-1); font-size: 13px; font-family: inherit; outline: none;
+}
+.server-gif-upload input[type="text"]:focus { border-color: var(--brand); }
+.server-gif-upload input[type="file"] { font-size: 13px; color: var(--text-2); }
+.server-gif-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px;
+  max-height: 280px; overflow-y: auto;
+}
+.server-gif-item {
+  position: relative; cursor: pointer; border-radius: var(--r-md); overflow: hidden;
+  background: var(--bg-4); transition: transform 0.15s;
+}
+.server-gif-item:hover { transform: scale(1.03); }
+.server-gif-item img { width: 100%; height: 80px; object-fit: cover; display: block; }
+.server-gif-name {
+  font-size: 11px; padding: 3px 6px; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.server-gif-delete {
+  position: absolute; top: 3px; right: 3px; background: rgba(0,0,0,0.6);
+  border: none; border-radius: 50%; width: 20px; height: 20px; cursor: pointer;
+  font-size: 10px; display: none; align-items: center; justify-content: center; color: white;
+}
+.server-gif-item:hover .server-gif-delete { display: flex; }
+
+/* ── CROSS-SERVER GIF PANEL (emoji picker tab) ───────── */
+#panel-server-gif { max-height: 280px; overflow-y: auto; }
+.server-gif-section { margin-bottom: 10px; }
+.server-gif-section-title {
+  font-size: 11px; font-weight: 700; color: var(--text-3); text-transform: uppercase;
+  letter-spacing: 0.04em; padding: 4px 2px; margin-bottom: 4px;
+}
+.server-gif-section-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 3px;
+}
+
+/* ── BRIDGE INFO BAR ──────────────────────────────────── */
+.bridge-info-bar {
+  padding: 4px 14px; background: rgba(79,142,247,0.08); border-bottom: 1px solid rgba(79,142,247,0.2);
+  font-size: 12px; color: var(--text-2); display: flex; align-items: center; gap: 6px;
+}
+
+/* ── BRIDGE MODAL ────────────────────────────────────── */
+#bridge-modal .modal-card { max-width: 480px; width: 95%; }
+.bridge-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; max-height: 150px; overflow-y: auto; }
+.bridge-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 12px; background: var(--bg-4); border-radius: var(--r-md); font-size: 13px;
+}
+.bridge-form { display: flex; flex-direction: column; gap: 8px; }
+.bridge-form input {
+  background: var(--bg-1); border: 1.5px solid var(--bg-5); border-radius: var(--r-md);
+  padding: 8px 12px; color: var(--text-1); font-size: 13px; font-family: inherit; outline: none;
+}
+.bridge-form input:focus { border-color: var(--brand); }
+
+/* ── FILE ARCHIVE MODAL ──────────────────────────────── */
+#file-archive-modal .modal-card { max-width: 640px; width: 95%; max-height: 85vh; overflow-y: auto; }
+.archive-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px;
+  max-height: 420px; overflow-y: auto; margin-top: 12px;
+}
+.archive-card {
+  background: var(--bg-4); border-radius: var(--r-md); overflow: hidden;
+  transition: transform 0.15s; cursor: pointer;
+}
+.archive-card:hover { transform: scale(1.02); }
+.archive-thumb { width: 100%; height: 100px; object-fit: cover; display: block; }
+.archive-icon { width: 100%; height: 80px; display: flex; align-items: center; justify-content: center; font-size: 36px; background: var(--bg-3); }
+.archive-card-info { padding: 6px 8px; }
+.archive-card-name {
+  font-size: 12px; font-weight: 600; color: var(--text-1); display: block;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-decoration: none;
+}
+.archive-card-name:hover { color: var(--brand); }
+.archive-card-meta { font-size: 11px; color: var(--text-3); margin-top: 2px; display: block; }
+.archive-loading { text-align: center; color: var(--text-3); font-size: 13px; padding: 30px; grid-column: 1/-1; }
+
+/* ── MEMBER PROFILE POPUP ────────────────────────────── */
+.member-profile-popup {
+  background: var(--bg-1); border: 1px solid var(--bg-5); border-radius: var(--r-xl);
+  padding: 20px; min-width: 200px; box-shadow: var(--shadow); animation: authIn 0.15s ease;
+  text-align: center;
+}
+.profile-avatar {
+  width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; font-size: 24px; font-weight: 800; color: white;
+  margin: 0 auto 10px;
+}
+.profile-name { font-size: 16px; font-weight: 800; margin-bottom: 6px; }
+.profile-bio { font-size: 12px; color: var(--text-3); line-height: 1.4; }
+
+/* ── SCHEDULE BUTTON (header) ────────────────────────── */
+#btn-schedule { position: relative; }
+
+/* ── EMOJI PICKER TABS — 3 tabs ──────────────────────── */
+.emoji-picker-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.ep-tab { flex: 1; padding: 5px 4px; border-radius: var(--r-md); border: 1px solid var(--bg-5); background: var(--bg-3); color: var(--text-3); font-size: 11px; cursor: pointer; transition: background 0.1s; font-family: inherit; font-weight: 600; }
+.ep-tab.active { background: var(--brand); color: white; border-color: var(--brand); }
+.ep-tab:hover:not(.active) { background: var(--bg-4); }
+
+/* ═══════════════════════════════════════════════════════════════
+   BRIDGE v13+ — New Feature Styles
+   • Custom Server Emojis
+   • Server Banner / Icon
+   • Extended Profile
+   • Screen Share Quality Picker
+   ═══════════════════════════════════════════════════════════════ */
+

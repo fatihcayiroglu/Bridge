@@ -1,0 +1,5 @@
+HTTP/1.0 408 Request Timeout
+Cache-Control: no-cache
+Content-Type: text/html
+
+<html><body><h1>408 Request Timeout</h1><p>Bridge is temporarily unavailable. Please try again shortly.</p></body></html>

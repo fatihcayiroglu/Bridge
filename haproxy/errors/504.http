@@ -1,0 +1,5 @@
+HTTP/1.0 504 Gateway Timeout
+Cache-Control: no-cache
+Content-Type: text/html
+
+<html><body><h1>504 Gateway Timeout</h1><p>Bridge is temporarily unavailable. Please try again shortly.</p></body></html>

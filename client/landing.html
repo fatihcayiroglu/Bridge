@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bridge — Mesajlaşmaya Başla</title>
+<meta name="description" content="Discord'dan daha iyi. Ücretsiz, şifreli, reklamlı değil. 30 saniyede hesap aç.">
+<meta property="og:title" content="Bridge — Mesajlaşmaya Başla">
+<meta property="og:description" content="E2EE, federation, sıfır reklam. Şimdi dene.">
+<meta name="theme-color" content="#060610">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root {
+  --bg:#060610;--bg2:#0b0b1c;--surface:#10102a;--surface2:#16163a;
+  --border:rgba(120,120,255,0.12);--accent:#5b7fff;--accent-g:#00e0c6;
+  --text:#eeeeff;--muted:#7878a8;--dim:#232348;--err:#ff5370;--ok:#00e0a0;
+  --ff-serif:'Instrument Serif',Georgia,serif;--ff-sans:'DM Sans',system-ui,sans-serif;
+  --r:14px;--r-lg:20px;
+}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:var(--ff-sans);font-weight:300;line-height:1.65;overflow-x:hidden;min-height:100dvh}
+body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellipse 60% 50% at 20% 10%,rgba(91,127,255,0.13) 0%,transparent 70%),radial-gradient(ellipse 50% 40% at 80% 80%,rgba(0,224,198,0.08) 0%,transparent 70%);pointer-events:none;z-index:0}
+
+/* NAV */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:18px 40px;background:rgba(6,6,16,0.7);backdrop-filter:blur(20px);border-bottom:1px solid transparent;transition:border-color 0.3s}
+nav.scrolled{border-color:var(--border)}
+.nav-logo{font-family:var(--ff-serif);font-size:22px;color:var(--text);text-decoration:none;display:flex;align-items:center;gap:10px;letter-spacing:-0.3px}
+.nav-logo-icon{width:30px;height:30px;background:linear-gradient(135deg,var(--accent),var(--accent-g));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.nav-links{display:flex;align-items:center;gap:32px;list-style:none}
+.nav-links a{color:var(--muted);text-decoration:none;font-size:14px;font-weight:400;transition:color 0.2s}
+.nav-links a:hover{color:var(--text)}
+.nav-btn{background:var(--accent);color:#fff !important;padding:8px 20px;border-radius:100px;font-weight:500 !important;transition:opacity 0.2s,transform 0.2s !important}
+.nav-btn:hover{opacity:0.85;transform:translateY(-1px)}
+
+/* HERO */
+.hero{position:relative;z-index:1;min-height:100dvh;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center;max-width:1200px;margin:0 auto;padding:120px 40px 80px}
+.hero-eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:500;letter-spacing:1.5px;text-transform:uppercase;color:var(--accent-g);margin-bottom:24px}
+.hero-eyebrow::before{content:'';width:20px;height:2px;background:var(--accent-g);border-radius:2px}
+h1{font-family:var(--ff-serif);font-size:clamp(48px,5vw,72px);line-height:1.08;letter-spacing:-1.5px;color:var(--text);margin-bottom:24px}
+h1 em{font-style:italic;background:linear-gradient(90deg,var(--accent),var(--accent-g));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.hero-sub{font-size:18px;color:var(--muted);line-height:1.7;margin-bottom:36px;max-width:420px}
+.hero-proof{display:flex;gap:24px;flex-wrap:wrap}
+.hero-proof-item{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.hero-proof-dot{width:6px;height:6px;border-radius:50%;background:var(--accent-g);flex-shrink:0}
+
+/* SIGNUP CARD */
+.signup-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:40px;box-shadow:0 0 0 1px rgba(91,127,255,0.05),0 40px 80px rgba(0,0,0,0.5),inset 0 1px 0 rgba(255,255,255,0.04)}
+.signup-card::before{content:'';position:absolute;inset:-1px;border-radius:calc(var(--r-lg) + 1px);background:linear-gradient(135deg,rgba(91,127,255,0.3),transparent 60%,rgba(0,224,198,0.15));mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;-webkit-mask-composite:xor;padding:1px;pointer-events:none}
+.signup-card-title{font-family:var(--ff-serif);font-size:26px;letter-spacing:-0.5px;margin-bottom:6px}
+.signup-card-sub{font-size:14px;color:var(--muted);margin-bottom:28px}
+.auth-tabs{display:flex;background:var(--bg2);border-radius:100px;padding:4px;margin-bottom:28px}
+.auth-tab{flex:1;background:none;border:none;color:var(--muted);font-family:var(--ff-sans);font-size:13px;font-weight:500;padding:8px 16px;border-radius:100px;cursor:pointer;transition:all 0.2s;white-space:nowrap}
+.auth-tab.active{background:var(--surface2);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,0.3)}
+.form-group{margin-bottom:16px}
+.form-label{display:block;font-size:12px;font-weight:500;letter-spacing:0.5px;color:var(--muted);margin-bottom:8px;text-transform:uppercase}
+.form-input{width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;color:var(--text);font-family:var(--ff-sans);font-size:15px;font-weight:300;outline:none;transition:border-color 0.2s,box-shadow 0.2s}
+.form-input::placeholder{color:var(--dim)}
+.form-input:focus{border-color:rgba(91,127,255,0.5);box-shadow:0 0 0 3px rgba(91,127,255,0.1)}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.btn-submit{width:100%;background:linear-gradient(135deg,var(--accent),#4060e0);border:none;border-radius:var(--r);color:#fff;font-family:var(--ff-sans);font-size:16px;font-weight:500;padding:14px;cursor:pointer;margin-top:8px;transition:transform 0.2s,box-shadow 0.2s,opacity 0.2s;position:relative;overflow:hidden}
+.btn-submit::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,0.1),transparent)}
+.btn-submit:hover{transform:translateY(-1px);box-shadow:0 8px 24px rgba(91,127,255,0.4)}
+.btn-submit:active{transform:translateY(0)}
+.btn-submit:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+.btn-spinner{display:none;width:18px;height:18px;border:2px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin 0.7s linear infinite;margin:0 auto}
+.btn-submit.loading .btn-spinner{display:block}
+.btn-submit.loading .btn-text{display:none}
+.btn-submit.loading{pointer-events:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.auth-msg{font-size:13px;text-align:center;padding:10px;border-radius:var(--r);margin-top:12px;display:none}
+.auth-msg.error{background:rgba(255,83,112,0.1);color:var(--err);display:block}
+.auth-msg.success{background:rgba(0,224,160,0.1);color:var(--ok);display:block}
+.auth-divider{display:flex;align-items:center;gap:12px;margin:20px 0;color:var(--dim);font-size:12px}
+.auth-divider::before,.auth-divider::after{content:'';flex:1;height:1px;background:var(--border)}
+.auth-legal{font-size:11px;color:var(--dim);text-align:center;margin-top:16px;line-height:1.6}
+.auth-legal a{color:var(--muted);text-decoration:underline}
+
+/* PROOF STRIP */
+.proof-strip{position:relative;z-index:1;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:rgba(255,255,255,0.015);padding:20px 40px;display:flex;align-items:center;justify-content:center;gap:48px;overflow:hidden}
+.proof-stat{display:flex;flex-direction:column;align-items:center;gap:2px;text-align:center}
+.proof-stat strong{font-size:22px;font-family:var(--ff-serif);color:var(--text);letter-spacing:-0.5px}
+.proof-stat span{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.8px;font-weight:500}
+.proof-sep{width:1px;height:40px;background:var(--border)}
+
+/* FEATURES */
+.features{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:100px 40px}
+.section-label{font-size:12px;font-weight:500;letter-spacing:2px;text-transform:uppercase;color:var(--accent);margin-bottom:16px}
+.section-title{font-family:var(--ff-serif);font-size:clamp(36px,4vw,52px);letter-spacing:-1px;line-height:1.1;margin-bottom:16px}
+.section-sub{font-size:17px;color:var(--muted);max-width:480px;margin-bottom:60px;line-height:1.7}
+.feat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.feat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:32px;transition:border-color 0.3s,transform 0.3s;position:relative;overflow:hidden}
+.feat-card:hover{border-color:rgba(91,127,255,0.3);transform:translateY(-3px)}
+.feat-icon{width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;margin-bottom:20px;background:var(--icon-bg,var(--dim))}
+.feat-card h3{font-size:18px;font-weight:500;margin-bottom:10px;letter-spacing:-0.3px}
+.feat-card p{font-size:14px;color:var(--muted);line-height:1.7}
+.feat-badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:500;letter-spacing:0.5px;text-transform:uppercase;color:var(--accent-g);margin-top:14px;padding:4px 10px;background:rgba(0,224,198,0.08);border-radius:100px;border:1px solid rgba(0,224,198,0.15)}
+
+/* COMPARE */
+.compare{position:relative;z-index:1;background:var(--bg2);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:100px 40px}
+.compare-inner{max-width:900px;margin:0 auto}
+.compare-table{width:100%;border-collapse:collapse;margin-top:50px}
+.compare-table th{padding:16px 24px;text-align:left;font-size:13px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border)}
+.compare-table th:nth-child(2),.compare-table th:nth-child(3){text-align:center}
+.compare-table th:nth-child(3){color:var(--accent)}
+.compare-table td{padding:16px 24px;font-size:14px;border-bottom:1px solid rgba(255,255,255,0.04);color:var(--muted)}
+.compare-table td:first-child{color:var(--text);font-weight:400}
+.compare-table td:nth-child(2),.compare-table td:nth-child(3){text-align:center;font-size:18px}
+.compare-table tr:last-child td{border-bottom:none}
+.compare-table tr:hover td{background:rgba(255,255,255,0.02)}
+.check{color:var(--ok)}
+.cross{color:var(--err);opacity:0.5}
+.nitro{font-size:11px;color:var(--err);font-weight:500}
+
+/* BOTTOM CTA */
+.bottom-cta{position:relative;z-index:1;padding:120px 40px;text-align:center;overflow:hidden}
+.bottom-cta::before{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:600px;height:400px;border-radius:50%;background:radial-gradient(ellipse,rgba(91,127,255,0.15),transparent 70%);pointer-events:none}
+.bottom-cta h2{font-family:var(--ff-serif);font-size:clamp(40px,5vw,64px);letter-spacing:-1.5px;margin-bottom:20px;line-height:1.08}
+.bottom-cta p{font-size:18px;color:var(--muted);margin-bottom:40px;max-width:500px;margin-left:auto;margin-right:auto}
+.cta-actions{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+.btn-primary{display:inline-flex;align-items:center;gap:8px;background:linear-gradient(135deg,var(--accent),#4060e0);color:#fff;text-decoration:none;padding:16px 32px;border-radius:100px;font-size:16px;font-weight:500;transition:transform 0.2s,box-shadow 0.2s}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 12px 32px rgba(91,127,255,0.4)}
+.btn-ghost{display:inline-flex;align-items:center;gap:8px;background:transparent;color:var(--muted);text-decoration:none;padding:16px 32px;border-radius:100px;font-size:16px;border:1px solid var(--border);transition:all 0.2s}
+.btn-ghost:hover{color:var(--text);border-color:rgba(255,255,255,0.2);background:rgba(255,255,255,0.03)}
+
+/* FOOTER */
+footer{position:relative;z-index:1;border-top:1px solid var(--border);padding:32px 40px;display:flex;align-items:center;justify-content:space-between}
+.footer-logo{font-family:var(--ff-serif);font-size:18px;color:var(--muted);text-decoration:none}
+.footer-links{display:flex;gap:24px}
+.footer-links a{font-size:13px;color:var(--dim);text-decoration:none;transition:color 0.2s}
+.footer-links a:hover{color:var(--muted)}
+
+/* SUCCESS */
+.signup-success{display:none;text-align:center;padding:20px 0}
+.signup-success.show{display:block}
+.success-icon{width:56px;height:56px;background:rgba(0,224,160,0.1);border:1px solid rgba(0,224,160,0.3);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px;margin:0 auto 20px;animation:pop 0.4s cubic-bezier(0.175,0.885,0.32,1.275)}
+@keyframes pop{from{transform:scale(0.5);opacity:0}to{transform:scale(1);opacity:1}}
+.success-title{font-family:var(--ff-serif);font-size:24px;margin-bottom:8px;letter-spacing:-0.3px}
+.success-sub{font-size:14px;color:var(--muted);margin-bottom:24px}
+.btn-goto{display:inline-flex;align-items:center;gap:8px;background:linear-gradient(135deg,var(--accent),#4060e0);color:#fff;text-decoration:none;padding:13px 28px;border-radius:100px;font-size:15px;font-weight:500;border:none;cursor:pointer;font-family:var(--ff-sans);transition:transform 0.2s,box-shadow 0.2s}
+.btn-goto:hover{transform:translateY(-1px);box-shadow:0 8px 24px rgba(91,127,255,0.4)}
+
+/* ANIMATIONS */
+.reveal{opacity:0;transform:translateY(24px);transition:opacity 0.7s ease,transform 0.7s ease}
+.reveal.visible{opacity:1;transform:translateY(0)}
+
+/* RESPONSIVE */
+@media(max-width:960px){
+  .hero{grid-template-columns:1fr;gap:48px;min-height:auto;padding-top:100px;padding-bottom:60px}
+  .hero-sub{max-width:100%}
+  .feat-grid{grid-template-columns:1fr 1fr}
+  nav{padding:16px 24px}
+  .nav-links{display:none}
+}
+@media(max-width:600px){
+  .hero{padding:90px 20px 60px;gap:36px}
+  .proof-strip{gap:24px;padding:20px;flex-wrap:wrap}
+  .features,.compare,.bottom-cta{padding-left:20px;padding-right:20px}
+  .feat-grid{grid-template-columns:1fr}
+  .compare-table td,.compare-table th{padding:12px 14px;font-size:13px}
+  footer{flex-direction:column;gap:20px;padding:24px 20px}
+  .form-row{grid-template-columns:1fr}
+  .signup-card{padding:28px 24px}
+}
+</style>
+</head>
+<body>
+
+<nav id="nav">
+  <a href="/" class="nav-logo">
+    <div class="nav-logo-icon">🌉</div>
+    Bridge
+  </a>
+  <ul class="nav-links">
+    <li><a href="#features">Özellikler</a></li>
+    <li><a href="#compare">Karşılaştır</a></li>
+    <li><a href="https://github.com/bridge-chat/bridge" target="_blank">GitHub</a></li>
+    <li><a href="/index.html" class="nav-btn">Giriş Yap →</a></li>
+  </ul>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-left reveal">
+    <div class="hero-eyebrow">Ücretsiz · Açık Kaynak · MIT</div>
+    <h1>Discord'dan<br>daha <em>iyi.</em></h1>
+    <p class="hero-sub">
+      Uçtan uca şifreli, reklamsız, hiçbir özelliği Nitro'nun arkasına kilitli değil.
+      30 saniyede hesabını aç, hemen kullanmaya başla.
+    </p>
+    <div class="hero-proof">
+      <div class="hero-proof-item">
+        <div class="hero-proof-dot"></div>
+        E2E şifreleme varsayılan
+      </div>
+      <div class="hero-proof-item">
+        <div class="hero-proof-dot" style="background:var(--accent)"></div>
+        Sıfır reklam, sonsuza kadar
+      </div>
+      <div class="hero-proof-item">
+        <div class="hero-proof-dot" style="background:#ffa940"></div>
+        ActivityPub federation
+      </div>
+    </div>
+  </div>
+
+  <!-- SIGNUP CARD -->
+  <div class="signup-card reveal" style="transition-delay:0.1s">
+    <div id="auth-forms">
+      <div class="signup-card-title">Hemen başla</div>
+      <div class="signup-card-sub">Kredi kartı yok. Kurulum yok. Sadece yaz.</div>
+
+      <div class="auth-tabs">
+        <button class="auth-tab active" onclick="switchTab('register')">Hesap Oluştur</button>
+        <button class="auth-tab" onclick="switchTab('login')">Giriş Yap</button>
+      </div>
+
+      <!-- REGISTER -->
+      <div id="tab-register">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Kullanıcı adı</label>
+            <input type="text" id="r-username" class="form-input" placeholder="örn: ali_42"
+              autocomplete="username" maxlength="32"
+              oninput="clearMsg()" onkeydown="if(event.key==='Enter')doRegister()">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Görünen ad</label>
+            <input type="text" id="r-display" class="form-input" placeholder="Ali"
+              autocomplete="name" maxlength="32"
+              oninput="clearMsg()" onkeydown="if(event.key==='Enter')doRegister()">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Şifre</label>
+          <input type="password" id="r-password" class="form-input" placeholder="En az 8 karakter"
+            autocomplete="new-password"
+            oninput="clearMsg()" onkeydown="if(event.key==='Enter')doRegister()">
+        </div>
+        <button class="btn-submit" id="btn-register" onclick="doRegister()">
+          <div class="btn-spinner"></div>
+          <span class="btn-text">Ücretsiz Hesap Oluştur →</span>
+        </button>
+        <div class="auth-divider">veya</div>
+        <div class="auth-legal">
+          Hesap oluşturarak <a href="#">Kullanım Şartlarını</a> kabul etmiş olursun.
+          Verilerini asla satmıyoruz.
+        </div>
+      </div>
+
+      <!-- LOGIN -->
+      <div id="tab-login" style="display:none">
+        <div class="form-group">
+          <label class="form-label">Kullanıcı adı</label>
+          <input type="text" id="l-username" class="form-input" placeholder="kullaniciadi"
+            autocomplete="username"
+            oninput="clearMsg()" onkeydown="if(event.key==='Enter')doLogin()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Şifre</label>
+          <input type="password" id="l-password" class="form-input" placeholder="••••••••"
+            autocomplete="current-password"
+            oninput="clearMsg()" onkeydown="if(event.key==='Enter')doLogin()">
+        </div>
+        <button class="btn-submit" id="btn-login" onclick="doLogin()">
+          <div class="btn-spinner"></div>
+          <span class="btn-text">Giriş Yap →</span>
+        </button>
+        
+        <div class="auth-divider">veya</div>
+        
+        <button class="btn-passkey" id="btn-passkey" onclick="doPasskeyLogin()" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-family:var(--ff-sans);font-size:15px;font-weight:400;padding:12px;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;justify-content:center;gap:10px;">
+          <span style="font-size:20px;">🔑</span>
+          <span>Passkey ile Giriş Yap</span>
+        </button>
+        
+        <div style="font-size:11px;color:var(--dim);text-align:center;margin-top:12px;line-height:1.5;">
+          Face ID, Touch ID, Windows Hello veya güvenlik anahtarı ile şifresiz giriş
+        </div>
+      </div>
+
+      <div class="auth-msg" id="auth-msg"></div>
+    </div>
+
+    <!-- Success -->
+    <div class="signup-success" id="auth-success">
+      <div class="success-icon">✓</div>
+      <div class="success-title">Hoş geldin!</div>
+      <div class="success-sub" id="success-sub">Hesabın hazır. Uygulamaya yönlendiriliyorsun…</div>
+      <button class="btn-goto" onclick="gotoApp()">Uygulamayı Aç →</button>
+    </div>
+  </div>
+</section>
+
+<!-- PROOF STRIP -->
+<div class="proof-strip">
+  <div class="proof-stat"><strong>∞</strong><span>Ücretsiz Sunucu</span></div>
+  <div class="proof-sep"></div>
+  <div class="proof-stat"><strong>E2EE</strong><span>Varsayılan Şifreleme</span></div>
+  <div class="proof-sep"></div>
+  <div class="proof-stat"><strong>0₺</strong><span>Aylık Ücret</span></div>
+  <div class="proof-sep"></div>
+  <div class="proof-stat"><strong>MIT</strong><span>Açık Lisans</span></div>
+  <div class="proof-sep"></div>
+  <div class="proof-stat"><strong>ActivityPub</strong><span>Federation</span></div>
+</div>
+
+<!-- FEATURES -->
+<section class="features" id="features">
+  <div class="reveal">
+    <div class="section-label">Neden Bridge?</div>
+    <h2 class="section-title">Discord'un <em style="font-style:italic;color:var(--accent)">yapamadığı</em><br>her şey.</h2>
+    <p class="section-sub">Nitro olmadan mükemmel. Reklam olmadan sürdürülebilir. Açık kaynak olduğu için güvenilir.</p>
+  </div>
+  <div class="feat-grid">
+    <div class="feat-card reveal">
+      <div class="feat-icon" style="--icon-bg:rgba(0,224,198,0.1)">🔒</div>
+      <h3>Uçtan Uca Şifreleme</h3>
+      <p>DM ve kanallarda E2EE varsayılan. Mesajlarını ne biz ne de kimse okuyamaz.</p>
+      <span class="feat-badge">✦ Varsayılan Aktif</span>
+    </div>
+    <div class="feat-card reveal" style="transition-delay:0.05s">
+      <div class="feat-icon" style="--icon-bg:rgba(91,127,255,0.1)">🌐</div>
+      <h3>ActivityPub Federasyonu</h3>
+      <p>Farklı Bridge sunucuları birbirine bağlanır. Mastodon ve Fediverse uyumlu.</p>
+      <span class="feat-badge">✦ Production Hazır</span>
+    </div>
+    <div class="feat-card reveal" style="transition-delay:0.1s">
+      <div class="feat-icon" style="--icon-bg:rgba(255,169,64,0.1)">🤖</div>
+      <h3>Native AI Asistanı</h3>
+      <p>Özet, çeviri, moderasyon, semantik arama. Groq, Gemini veya local Ollama ile.</p>
+      <span class="feat-badge">✦ Ücretsiz</span>
+    </div>
+    <div class="feat-card reveal" style="transition-delay:0.15s">
+      <div class="feat-icon" style="--icon-bg:rgba(255,83,112,0.1)">🎙️</div>
+      <h3>Yüksek Kalite Ses</h3>
+      <p>WebRTC P2P + SFU group voice (Mediasoup). Nitro gerekmez. Soundboard dahil.</p>
+    </div>
+    <div class="feat-card reveal" style="transition-delay:0.2s">
+      <div class="feat-icon" style="--icon-bg:rgba(91,127,255,0.08)">🔧</div>
+      <h3>Bot SDK & Plugin</h3>
+      <p>Discord.js botların tek satır değişiklikle Bridge'e taşı. Plugin sandbox sistemi.</p>
+    </div>
+    <div class="feat-card reveal" style="transition-delay:0.25s">
+      <div class="feat-icon" style="--icon-bg:rgba(0,224,198,0.08)">📱</div>
+      <h3>Her Platformda</h3>
+      <p>PWA, Electron masaüstü, iOS ve Android (Capacitor). Native hissettiren web.</p>
+    </div>
+  </div>
+</section>
+
+<!-- COMPARE -->
+<section class="compare" id="compare">
+  <div class="compare-inner">
+    <div class="reveal">
+      <div class="section-label">Karşılaştırma</div>
+      <h2 class="section-title">Neyi<br><em style="font-style:italic">kaybetmiyorsun?</em></h2>
+    </div>
+    <table class="compare-table">
+      <thead>
+        <tr>
+          <th>Özellik</th>
+          <th>Discord</th>
+          <th>Bridge</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Animasyonlu avatar</td><td><span class="nitro">Nitro $10/ay</span></td><td class="check">✓ Ücretsiz</td></tr>
+        <tr><td>Profil banner</td><td><span class="nitro">Nitro</span></td><td class="check">✓ Ücretsiz</td></tr>
+        <tr><td>Yüksek kalite ses</td><td><span class="nitro">Nitro</span></td><td class="check">✓ Varsayılan</td></tr>
+        <tr><td>Büyük dosya yükleme</td><td><span class="nitro">Nitro</span></td><td class="check">✓ Yapılandırılabilir</td></tr>
+        <tr><td>Mesaj şifreleme (E2EE)</td><td class="cross">✗</td><td class="check">✓ Varsayılan</td></tr>
+        <tr><td>Açık kaynak</td><td class="cross">✗</td><td class="check">✓ MIT</td></tr>
+        <tr><td>Self-host</td><td class="cross">✗</td><td class="check">✓ Docker 1 komut</td></tr>
+        <tr><td>Federasyon</td><td class="cross">✗</td><td class="check">✓ ActivityPub</td></tr>
+        <tr><td>Native AI asistanı</td><td class="cross">✗</td><td class="check">✓ Dahili</td></tr>
+        <tr><td>Reklam</td><td class="cross">Var</td><td class="check">✓ Asla</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- BOTTOM CTA -->
+<section class="bottom-cta">
+  <h2 class="reveal">Denemeye değer<br><em style="font-style:italic">bir dakikan var.</em></h2>
+  <p class="reveal" style="transition-delay:0.05s">Hesap aç, sunucu kur, arkadaşlarını davet et.<br>Nitro yok, kurulum yok, söz.</p>
+  <div class="cta-actions reveal" style="transition-delay:0.1s">
+    <a href="#" onclick="scrollToSignup(event)" class="btn-primary">Ücretsiz Hesap Aç →</a>
+    <a href="https://github.com/bridge-chat/bridge" target="_blank" class="btn-ghost">⭐ GitHub</a>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <a href="/" class="footer-logo">🌉 Bridge</a>
+  <div class="footer-links">
+    <a href="https://github.com/bridge-chat/bridge">GitHub</a>
+    <a href="/index.html">Uygulama</a>
+    <a href="https://github.com/bridge-chat/bridge/blob/main/CONTRIBUTING.md">Katkı</a>
+    <a href="#">Gizlilik</a>
+  </div>
+</footer>
+
+<script>
+let currentTab = 'register';
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.auth-tab').forEach((btn, i) => {
+    btn.classList.toggle('active', (tab === 'register' && i === 0) || (tab === 'login' && i === 1));
+  });
+  document.getElementById('tab-register').style.display = tab === 'register' ? '' : 'none';
+  document.getElementById('tab-login').style.display    = tab === 'login'    ? '' : 'none';
+  clearMsg();
+}
+
+function clearMsg() {
+  const msg = document.getElementById('auth-msg');
+  msg.className = 'auth-msg';
+  msg.textContent = '';
+}
+
+function showMsg(text, type) {
+  const msg = document.getElementById('auth-msg');
+  msg.className = 'auth-msg ' + type;
+  msg.textContent = text;
+}
+
+function setLoading(btnId, loading) {
+  const btn = document.getElementById(btnId);
+  btn.classList.toggle('loading', loading);
+  btn.disabled = loading;
+}
+
+async function doRegister() {
+  const username    = document.getElementById('r-username').value.trim();
+  const displayName = document.getElementById('r-display').value.trim();
+  const password    = document.getElementById('r-password').value;
+
+  if (!username) return showMsg('Kullanıcı adı gerekli.', 'error');
+  if (username.length < 3) return showMsg('Kullanıcı adı en az 3 karakter olmalı.', 'error');
+  if (!/^[a-zA-Z0-9_]+$/.test(username)) return showMsg('Kullanıcı adı: harf, rakam ve _ kullanılabilir.', 'error');
+  if (!password || password.length < 8) return showMsg('Şifre en az 8 karakter olmalı.', 'error');
+
+  setLoading('btn-register', true);
+  clearMsg();
+
+  try {
+    const res = await fetch('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, displayName: displayName || username, password }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      showMsg(data.error || 'Kayıt başarısız.', 'error');
+      setLoading('btn-register', false);
+      return;
+    }
+
+    if (data.token) {
+      localStorage.setItem('token', data.token);
+      if (data.refreshToken) localStorage.setItem('refreshToken', data.refreshToken);
+    }
+    showSuccess(`Hoş geldin, ${data.user?.displayName || username}!`);
+  } catch {
+    showMsg('Bağlantı hatası. Lütfen tekrar dene.', 'error');
+    setLoading('btn-register', false);
+  }
+}
+
+async function doLogin() {
+  const username = document.getElementById('l-username').value.trim();
+  const password = document.getElementById('l-password').value;
+
+  if (!username || !password) return showMsg('Kullanıcı adı ve şifre gerekli.', 'error');
+
+  setLoading('btn-login', true);
+  clearMsg();
+
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      showMsg(data.error || 'Giriş başarısız.', 'error');
+      setLoading('btn-login', false);
+      return;
+    }
+
+    if (data.token) {
+      localStorage.setItem('token', data.token);
+      if (data.refreshToken) localStorage.setItem('refreshToken', data.refreshToken);
+    }
+    showSuccess('Tekrar hoş geldin!');
+  } catch {
+    showMsg('Bağlantı hatası. Lütfen tekrar dene.', 'error');
+    setLoading('btn-login', false);
+  }
+}
+
+function showSuccess(msg) {
+  document.getElementById('auth-forms').style.display = 'none';
+  document.getElementById('success-sub').textContent = msg + ' Uygulamaya yönlendiriliyorsun…';
+  document.getElementById('auth-success').classList.add('show');
+  setTimeout(() => gotoApp(), 2200);
+}
+
+async function doPasskeyLogin() {
+  const btn = document.getElementById('btn-passkey');
+  const originalText = btn.innerHTML;
+  btn.innerHTML = '<div class="btn-spinner" style="display:block;margin:0 auto;"></div>';
+  btn.disabled = true;
+  clearMsg();
+
+  try {
+    // WebAuthn API kontrolü
+    if (!window.PublicKeyCredential) {
+      throw new Error('Bu tarayıcı WebAuthn desteklemiyor.');
+    }
+
+    const username = document.getElementById('l-username').value.trim() || null;
+
+    // Challenge al
+    const beginRes = await fetch('/api/webauthn/login/begin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username }),
+    });
+    const beginData = await beginRes.json();
+    if (!beginRes.ok) throw new Error(beginData.error || 'Challenge alınamadı');
+
+    // Base64URL decode helper
+    function b64uDecode(str) {
+      const pad = str.length % 4;
+      const padded = pad ? str + '='.repeat(4 - pad) : str;
+      const bin = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
+      return Uint8Array.from(bin, c => c.charCodeAt(0));
+    }
+
+    // Base64URL encode helper
+    function ab2b64u(ab) {
+      return btoa(String.fromCharCode(...new Uint8Array(ab)))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    }
+
+    // PublicKeyCredentialRequestOptions hazırla
+    const requestOptions = {
+      challenge: b64uDecode(beginData.challenge),
+      rpId: beginData.rpId,
+      timeout: beginData.timeout || 60000,
+      userVerification: beginData.userVerification || 'preferred',
+      allowCredentials: (beginData.allowCredentials || []).map(c => ({
+        type: c.type,
+        id: b64uDecode(c.id),
+        transports: c.transports || [],
+      })),
+    };
+
+    // Doğrulama dialog'u
+    const assertion = await navigator.credentials.get({ publicKey: requestOptions });
+
+    // Server'a doğrula
+    const completePayload = {
+      credential: {
+        id: assertion.id,
+        type: assertion.type,
+        response: {
+          clientDataJSON: ab2b64u(assertion.response.clientDataJSON),
+          authenticatorData: ab2b64u(assertion.response.authenticatorData),
+          signature: ab2b64u(assertion.response.signature),
+          userHandle: assertion.response.userHandle ? ab2b64u(assertion.response.userHandle) : null,
+        },
+      },
+    };
+
+    const completeRes = await fetch('/api/webauthn/login/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(completePayload),
+    });
+    const completeData = await completeRes.json();
+    if (!completeRes.ok) throw new Error(completeData.error || 'Giriş doğrulanamadı');
+
+    // Token'ları kaydet
+    if (completeData.token) {
+      localStorage.setItem('token', completeData.token);
+      if (completeData.refreshToken) localStorage.setItem('refreshToken', completeData.refreshToken);
+    }
+    showSuccess('Passkey ile giriş başarılı!');
+  } catch (err) {
+    btn.innerHTML = originalText;
+    btn.disabled = false;
+    showMsg(err.message || 'Passkey girişi başarısız.', 'error');
+  }
+}
+
+function gotoApp() { window.location.href = '/index.html'; }
+
+function scrollToSignup(e) {
+  if (e) e.preventDefault();
+  document.querySelector('.signup-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  setTimeout(() => document.getElementById('r-username').focus(), 600);
+}
+
+window.addEventListener('scroll', () => {
+  document.getElementById('nav').classList.toggle('scrolled', window.scrollY > 20);
+}, { passive: true });
+
+const obs = new IntersectionObserver(entries => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); obs.unobserve(e.target); } });
+}, { threshold: 0.1 });
+document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
+
+// Already logged in?
+if (localStorage.getItem('token')) {
+  document.querySelector('.signup-card-title').textContent = 'Hesabın hazır';
+  document.querySelector('.signup-card-sub').textContent = 'Zaten giriş yapmış görünüyorsun.';
+  document.querySelector('.auth-tabs').style.display = 'none';
+  document.getElementById('tab-register').innerHTML =
+    '<button class="btn-submit" style="margin-top:0" onclick="gotoApp()"><span class="btn-text">Uygulamayı Aç →</span></button>' +
+    '<p style="text-align:center;font-size:13px;color:var(--muted);margin-top:16px"><a href="#" onclick="localStorage.clear();location.reload()" style="color:var(--muted)">Farklı hesapla giriş yap</a></p>';
+}
+</script>
+</body>
+</html>

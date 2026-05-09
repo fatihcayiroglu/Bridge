@@ -1,0 +1,90 @@
+/* ── Bridge · emoji-picker.css ───────────────────────────────── */
+
+/* ═══════════════════════════════════════════════════════════════
+   BRIDGE v13+ — New Feature Styles
+   • Custom Server Emojis
+   • Server Banner / Icon
+   • Extended Profile
+   • Screen Share Quality Picker
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Server Emoji inline images ─────────────────────────────── */
+.server-emoji {
+  width: 22px;
+  height: 22px;
+  vertical-align: middle;
+  display: inline-block;
+  border-radius: 3px;
+  object-fit: contain;
+  margin: 0 1px;
+}
+/* Large emoji-only messages */
+.msg-body:only-child .server-emoji {
+  width: 36px;
+  height: 36px;
+}
+
+/* Emoji picker button in toolbar */
+.emoji-manager-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 18px;
+  transition: color 0.15s, background 0.15s;
+}
+.emoji-manager-btn:hover {
+  color: var(--text-normal);
+  background: var(--bg-hover);
+}
+
+/* ── Emoji picker inline (in message input toolbar) ─────────── */
+#server-emoji-picker {
+  position: absolute;
+  bottom: 60px;
+  right: 60px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  z-index: 200;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  max-width: 300px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+#server-emoji-picker .sep-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 600;
+  letter-spacing: .5px;
+  padding: 4px 4px 6px;
+  display: block;
+}
+#server-emoji-picker .ep-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
+  gap: 4px;
+}
+#server-emoji-picker button {
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 4px;
+  transition: background .15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#server-emoji-picker button:hover {
+  background: var(--bg-hover);
+}
+#server-emoji-picker button img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+

@@ -1,0 +1,164 @@
+/* ── Bridge · animations.css ───────────────────────────────── */
+
+/* Recording animation */
+@keyframes recPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(1.3)} }
+.recording-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); animation: recPulse 1s infinite; }
+
+/* ── VOICE SPEAKING INDICATOR ────────────────────────────────── */
+@keyframes speakPulse { 0%,100%{box-shadow:0 0 0 2px rgba(59,165,92,.4)} 50%{box-shadow:0 0 0 6px rgba(59,165,92,.15)} }
+.voice-peer.speaking .peer-avatar { animation: speakPulse 0.8s ease-in-out infinite; box-shadow: 0 0 0 3px var(--green); }
+
+/* ── RICH STATUS PICKER ──────────────────────────────────────── */
+.status-picker-menu { position: fixed; z-index: 1200; min-width: 220px; }
+.status-opt { display: flex; align-items: center; gap: 10px; }
+.status-circle {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+}
+.online-c { background: var(--green); }
+.idle-c { background: var(--yellow); }
+.dnd-c { background: var(--red); }
+.off-c { background: var(--text-3); }
+
+/* ── NOTIFICATION PREF CONTEXT MENU ──────────────────────────── */
+#notif-ctx-menu { position: fixed; z-index: 900; }
+
+/* ── TIMEOUT MODAL ───────────────────────────────────────────── */
+#timeout-modal .modal-card { max-width: 380px; }
+
+/* ── AUDIT LOG ───────────────────────────────────────────────── */
+#audit-modal .modal-card { max-width: 600px; }
+
+/* ── CATEGORY CHANNEL LIST ───────────────────────────────────── */
+.ch-category { user-select: none; }
+.cat-arrow { color: var(--text-3); font-size: 9px; margin-right: 2px; }
+
+/* ── STATUS DOT CLICKABLE ────────────────────────────────────── */
+#my-status-dot { cursor: pointer; transition: transform .15s; }
+#my-status-dot:hover { transform: scale(1.3); }
+
+/* ── TYPING INDICATOR in input ───────────────────────────────── */
+.msg-input-btn#btn-voice-msg:active {
+  color: var(--red) !important; transform: scale(1.2);
+}
+
+/* ═══════════════════════════════════════════════
+   BRIDGE v17 — Threads, Slash Commands, Profile
+   ═══════════════════════════════════════════════ */
+
+/* ── THREAD PANEL ──────────────────────────────── */
+.thread-panel {
+  width: 340px;
+  min-width: 280px;
+  max-width: 400px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary, #2f3136);
+  border-left: 1px solid var(--bg-tertiary, #202225);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.thread-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--bg-tertiary, #202225);
+  background: var(--bg-secondary, #2f3136);
+}
+.thread-icon { font-size: 16px; }
+.thread-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary, #dcddde);
+}
+.thread-count {
+  font-size: 11px;
+  color: var(--text-muted, #72767d);
+  white-space: nowrap;
+}
+.thread-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted, #72767d);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color .15s, background .15s;
+}
+.thread-close-btn:hover { color: var(--text-primary, #dcddde); background: var(--bg-modifier-hover, rgba(79,84,92,.16)); }
+.thread-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.thread-loading, .thread-empty {
+  color: var(--text-muted, #72767d);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px 12px;
+}
+.thread-msg {
+  display: flex;
+  gap: 10px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background .1s;
+}
+.thread-msg:hover { background: var(--bg-modifier-hover, rgba(79,84,92,.1)); }
+.tmsg-avatar {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: #fff;
+  flex-shrink: 0;
+}
+.tmsg-body { flex: 1; min-width: 0; }
+.tmsg-header { display: flex; align-items: baseline; gap: 6px; margin-bottom: 2px; }
+.tmsg-author { font-weight: 600; font-size: 13px; }
+.tmsg-time { font-size: 11px; color: var(--text-muted, #72767d); }
+.tmsg-text { font-size: 14px; color: var(--text-primary, #dcddde); word-break: break-word; line-height: 1.5; }
+.thread-input-wrap {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--bg-tertiary, #202225);
+  background: var(--bg-secondary, #2f3136);
+}
+.thread-input {
+  flex: 1;
+  background: var(--bg-tertiary, #202225);
+  border: none;
+  border-radius: 8px;
+  color: var(--text-primary, #dcddde);
+  font-size: 14px;
+  padding: 8px 12px;
+  resize: none;
+  outline: none;
+  min-height: 36px;
+  max-height: 120px;
+  font-family: inherit;
+}
+.thread-send-btn {
+  background: var(--brand, #5865f2);
+  border: none;
+  border-radius: 50%;
+  width: 32px; height: 32px;
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  transition: background .15s, transform .1s;
+}
+.thread-send-btn:hover { background: #4752c4; transform: scale(1.05); }
+

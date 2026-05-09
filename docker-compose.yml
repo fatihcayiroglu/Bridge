@@ -1,0 +1,185 @@
+version: '3.9'
+
+# ══════════════════════════════════════════════════════════════
+# Bridge — Tam Stack
+# Kullanım: docker compose up -d
+# ══════════════════════════════════════════════════════════════
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: bridge-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       bridge
+      POSTGRES_USER:     bridge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bridge_dev_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Fix 4: 5432 expose edilmiyor — container-internal erişim yeterli
+    # Lokal geliştirme için: ports: ["5432:5432"] ekle (production'da asla)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bridge -d bridge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Redis ───────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: bridge-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    # Fix 4: 6379 expose edilmiyor — container-internal erişim yeterli
+    # Lokal geliştirme için: ports: ["6379:6379"] ekle (production'da asla)
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Bridge Server ───────────────────────────────────────────
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bridge-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV:       production
+      PORT:           3001
+
+      # Veritabanı
+      DATABASE_URL:   postgresql://bridge:${POSTGRES_PASSWORD:-bridge_dev_password}@postgres:5432/bridge
+      DATABASE_SSL:   "false"
+
+      # Redis
+      REDIS_URL:      redis://redis:6379
+
+      # JWT — production'da mutlaka değiştir!
+      JWT_SECRET:     ${JWT_SECRET:?JWT_SECRET zorunlu - .env dosyasına ekle}
+      REFRESH_SECRET: ${REFRESH_SECRET:?REFRESH_SECRET zorunlu - .env dosyasına ekle}
+
+      # CORS
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001}
+
+      # AI (opsiyonel)
+      GROQ_API_KEY:       ${GROQ_API_KEY:-}
+      GEMINI_API_KEY:     ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+
+      # Email (opsiyonel)
+      SMTP_HOST:  ${SMTP_HOST:-}
+      SMTP_PORT:  ${SMTP_PORT:-587}
+      SMTP_USER:  ${SMTP_USER:-}
+      SMTP_PASS:  ${SMTP_PASS:-}
+      FROM_EMAIL: ${FROM_EMAIL:-noreply@bridge.local}
+
+      # Push bildirimleri (opsiyonel)
+      VAPID_PUBLIC_KEY:  ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+
+      # ── Mediasoup SFU (group voice) ──────────────────────────
+      # MEDIASOUP_ANNOUNCED_IP: sunucunun dışarıdan erişilebilir public IP'si
+      # Boş bırakılırsa SFU başlamaz, P2P fallback devreye girer.
+      # Örnek: MEDIASOUP_ANNOUNCED_IP=1.2.3.4
+      MEDIASOUP_ANNOUNCED_IP:  ${MEDIASOUP_ANNOUNCED_IP:-}
+      MEDIASOUP_RTC_MIN_PORT:  ${MEDIASOUP_RTC_MIN_PORT:-40000}
+      MEDIASOUP_RTC_MAX_PORT:  ${MEDIASOUP_RTC_MAX_PORT:-49999}
+      MEDIASOUP_WORKERS:       ${MEDIASOUP_WORKERS:-1}
+      MEDIASOUP_OPUS_BITRATE:  ${MEDIASOUP_OPUS_BITRATE:-64}
+      MEDIASOUP_VIDEO_MAX_BITRATE: ${MEDIASOUP_VIDEO_MAX_BITRATE:-3000}
+
+    volumes:
+      - uploads_data:/app/uploads
+    ports:
+      - "3001:3001"
+      # ── Mediasoup SFU — group voice için zorunlu ──────────────
+      # MEDIASOUP_ANNOUNCED_IP set edilmişse UDP portları da aç.
+      # Yoksa SFU devre dışı kalır, P2P fallback çalışır.
+      - "${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}:${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}/udp"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Backup Servisi ──────────────────────────────────────────
+  # Her gece 02:30'da (TZ=Europe/Istanbul):
+  #   1. pg_dump → /backups/postgres/bridge_YYYYMMDD_HHMMSS.sql.gz
+  #   2. uploads rsync → /backups/uploads/   (bridge servisindeki volume)
+  #   3. BACKUP_KEEP_DAYS günden eski dump'ları sil
+  #   4. (Opsiyonel) S3 / MinIO'ya yükle
+  #
+  # Manuel tetiklemek için:
+  #   docker compose exec backup backup.sh
+  backup:
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
+    container_name: bridge-backup
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Postgres bağlantısı (pg_dump için)
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bridge_dev_password}
+
+      # Kaç günlük dump saklanacak (varsayılan: 7)
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+
+      # ── S3 / MinIO (opsiyonel) ──────────────────────────────
+      # Doldurursan dump + uploads S3'e de yüklenir.
+      # MinIO için: S3_ENDPOINT=http://minio:9000
+      # AWS için:   S3_ENDPOINT boş bırak.
+      AWS_ACCESS_KEY_ID:     ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION:    ${AWS_DEFAULT_REGION:-eu-central-1}
+      S3_BUCKET:             ${S3_BUCKET:-}
+      S3_ENDPOINT:           ${S3_ENDPOINT:-}
+      S3_STORAGE_CLASS:      ${S3_STORAGE_CLASS:-STANDARD_IA}
+
+    volumes:
+      # Backup çıktısı — host'ta /var/lib/bridge-backups olarak sakla
+      - backup_data:/backups
+      # Bridge'in uploads volume'u — salt okunur mount (rsync kaynağı)
+      - uploads_data:/app/uploads:ro
+
+  # ── Nginx (opsiyonel — production reverse proxy) ────────────
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: bridge-nginx
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - bridge
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+  #     - ./client:/usr/share/nginx/html:ro
+  #     - certs:/etc/letsencrypt:ro
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads_data:
+  # Backup volume'u — named volume yerine host bind-mount tercih edersen:
+  # backup_data: {}  → kaldır, bridge servisi altına ekle:
+  #   volumes:
+  #     - /var/lib/bridge-backups:/backups
+  backup_data:
+
+

@@ -1,0 +1,28 @@
+{
+  "_comment": "Session 15 — route'lar için strict typecheck. CI'da çalıştırılır.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "noEmit": true,
+    "incremental": false
+  },
+  "include": [
+    "routes/**/*.ts",
+    "middleware/**/*.ts",
+    "types/**/*.ts",
+    "lib/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.test.js",
+    "tests/**/*",
+    "_legacy_js_backup_session4_5",
+    "db/repositories/_legacy_js_backup_session8"
+  ]
+}

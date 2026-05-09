@@ -1,0 +1,3 @@
+-- Baseline migration placeholder.
+-- Existing installations already create most tables in db/index.js runtime code.
+-- New schema changes should be added as ordered SQL migration files here.

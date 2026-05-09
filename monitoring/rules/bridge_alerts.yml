@@ -1,0 +1,226 @@
+groups:
+  # ──────────────────────────────────────────────────────────────
+  # BELLEK & SİSTEM UYARILARI
+  # ──────────────────────────────────────────────────────────────
+  - name: bridge_memory
+    rules:
+      - alert: MemoryUsageHigh
+        expr: |
+          (
+            process_resident_memory_bytes{job="bridge"}
+            / on() group_left()
+            (node_memory_MemTotal_bytes or vector(1073741824))
+          ) > 0.80
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bridge bellek kullanımı %80'i aştı"
+          description: "Bellek kullanımı {{ $value | humanizePercentage }} — 2 dakikadır bu seviyenin üzerinde."
+
+      - alert: MemoryUsageCritical
+        expr: |
+          (
+            process_resident_memory_bytes{job="bridge"}
+            / on() group_left()
+            (node_memory_MemTotal_bytes or vector(1073741824))
+          ) > 0.90
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "🚨 Bridge bellek kullanımı %90'ı aştı"
+          description: "Bellek kullanımı {{ $value | humanizePercentage }}. Hizmet çökmesi riski var!"
+
+      - alert: HeapUsageCritical
+        expr: |
+          nodejs_heap_size_used_bytes{job="bridge"}
+          / nodejs_heap_size_total_bytes{job="bridge"} > 0.90
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "🚨 Node.js heap %90 dolu"
+          description: "Heap kullanımı {{ $value | humanizePercentage }}. OOM hatası yaklaşıyor olabilir."
+
+      - alert: ExternalMemoryHigh
+        expr: nodejs_external_memory_bytes{job="bridge"} > 256000000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node.js external bellek yüksek (>256MB)"
+          description: "{{ $value | humanize1024 }} external bellek kullanılıyor — Buffer/native sızıntısı olabilir."
+
+  # ──────────────────────────────────────────────────────────────
+  # HTTP & HATA ORANLARI
+  # ──────────────────────────────────────────────────────────────
+  - name: bridge_http
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(bridge_http_errors_total{job="bridge"}[5m]))
+          / sum(rate(bridge_http_requests_total{job="bridge"}[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP hata oranı %5'i aştı"
+          description: "Son 5 dakika hata oranı: {{ $value | humanizePercentage }}"
+
+      - alert: CriticalErrorRate
+        expr: |
+          sum(rate(bridge_http_errors_total{job="bridge",status_code=~"5.."}[5m]))
+          / sum(rate(bridge_http_requests_total{job="bridge"}[5m])) > 0.10
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "🚨 5xx hata oranı %10'u aştı"
+          description: "Sunucu hataları artıyor: {{ $value | humanizePercentage }}"
+
+      - alert: SlowRequests
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(bridge_http_request_duration_seconds_bucket{job="bridge"}[5m])) by (le)
+          ) > 2
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP p95 yanıt süresi 2sn aştı"
+          description: "p95={{ $value | humanizeDuration }} — yavaş endpoint veya DB sorunu olabilir."
+
+      - alert: HighRequestRate
+        expr: sum(rate(bridge_http_requests_total{job="bridge"}[1m])) > 500
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "İstek hızı anormal yüksek (>500/sn)"
+          description: "Son 1 dakika ortalama: {{ $value | humanize }} istek/sn — DDoS veya bot trafiği?"
+
+  # ──────────────────────────────────────────────────────────────
+  # RATE LIMIT ANOMALİ TESPİTİ
+  # ──────────────────────────────────────────────────────────────
+  - name: bridge_ratelimit_anomaly
+    rules:
+      - alert: RateLimitSpike
+        expr: |
+          sum(rate(bridge_rate_limit_hits_total{job="bridge"}[5m]))
+          > 3 * sum(rate(bridge_rate_limit_hits_total{job="bridge"}[1h] offset 1h))
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate limit ihlalleri anormal artış (3x normal)"
+          description: |
+            Mevcut hız: {{ with query "sum(rate(bridge_rate_limit_hits_total[5m]))" }}{{ . | first | value | humanize }}{{ end }}/sn
+            1 saat önceki ortalama: {{ with query "sum(rate(bridge_rate_limit_hits_total[1h] offset 1h))" }}{{ . | first | value | humanize }}{{ end }}/sn
+            Olası brute-force veya scraping saldırısı.
+
+      - alert: RateLimitBurstByEndpoint
+        expr: |
+          topk(1,
+            sum by (route) (rate(bridge_rate_limit_hits_total{job="bridge"}[2m]))
+          ) > 50
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tekil endpoint'e yoğun rate limit ihlali"
+          description: "En yüksek ihlal alan endpoint: {{ $labels.route }} — {{ $value | humanize }} istek/sn"
+
+      - alert: RateLimitBannedIPSpike
+        expr: increase(bridge_auto_ban_total{job="bridge"}[10m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "10 dakikada 5'ten fazla IP otomatik banlandı"
+          description: "{{ $value }} IP otomatik ban yedi — koordineli saldırı olabilir."
+
+      - alert: LoginBruteForce
+        expr: |
+          sum(rate(bridge_rate_limit_hits_total{job="bridge",route=~".*/auth/login.*"}[5m])) > 20
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "🚨 Login endpoint brute-force şüphesi"
+          description: "Login rate-limit ihlali: {{ $value | humanize }}/sn — acil müdahale gerekebilir."
+
+  # ──────────────────────────────────────────────────────────────
+  # WEBSocket & AKTİF KULLANICILAR
+  # ──────────────────────────────────────────────────────────────
+  - name: bridge_websocket
+    rules:
+      - alert: WebSocketConnectionDrop
+        expr: |
+          delta(bridge_websocket_connections{job="bridge"}[5m]) < -100
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "WebSocket bağlantılarında ani düşüş"
+          description: "5 dakikada {{ $value | humanize }} bağlantı koptu — sunucu yeniden başladı mı?"
+
+      - alert: NoActiveUsers
+        expr: bridge_active_users{job="bridge"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Aktif kullanıcı yok (5 dk)"
+          description: "Socket bağlantısı olmayan kullanıcı sayısı sıfır — sunucu erişilemez mi?"
+
+  # ──────────────────────────────────────────────────────────────
+  # VERİTABANI
+  # ──────────────────────────────────────────────────────────────
+  - name: bridge_database
+    rules:
+      - alert: SlowDbQueries
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(bridge_db_query_duration_seconds_bucket{job="bridge"}[5m])) by (le, collection)
+          ) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB sorgu süresi p95 > 500ms"
+          description: "Koleksiyon: {{ $labels.collection }} — p95={{ $value | humanizeDuration }}"
+
+      - alert: DbQueryErrorSpike
+        expr: |
+          rate(bridge_db_queries_total{job="bridge",operation=~".*_err"}[5m]) > 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "🚨 DB sorgu hataları artıyor"
+          description: "Hata oranı: {{ $value | humanize }}/sn"
+
+  # ──────────────────────────────────────────────────────────────
+  # SERVİS SAĞLIĞI
+  # ──────────────────────────────────────────────────────────────
+  - name: bridge_availability
+    rules:
+      - alert: BridgeDown
+        expr: up{job="bridge"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "🚨 Bridge sunucusu erişilemiyor"
+          description: "Prometheus 1 dakikadır Bridge'e ulaşamıyor."
+
+      - alert: BridgeRestartDetected
+        expr: |
+          changes(process_start_time_seconds{job="bridge"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bridge süreci yeniden başladı"
+          description: "Son 15 dakikada process_start_time değişti — crash veya deploy olabilir."

@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <!-- Capacitor için viewport — kullanıcı zoom'u devre dışı (native hissi) -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+
+  <!-- iOS Safari tam ekran + durum çubuğu -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Bridge">
+
+  <!-- Android Chrome tema rengi -->
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="mobile-web-app-capable" content="yes">
+
+  <!-- Güvenlik: mixed-content engelle, XSS azalt -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src * 'self' data: blob:;
+                 script-src * 'self' 'unsafe-inline' 'unsafe-eval' blob:;
+                 style-src  * 'self' 'unsafe-inline';
+                 img-src    * 'self' data: blob: content:;
+                 media-src  * 'self' blob:;
+                 connect-src * 'self' wss: ws: blob:;
+                 font-src   * 'self' data:;">
+
+  <title>Bridge</title>
+
+  <!-- ── Temel stiller: client/css kopyası (npx cap sync sonrası gelecek) ── -->
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/style.css">
+
+  <!-- ── Mobil-özel ek stiller ── -->
+  <style>
+    /* ── SAFE AREA (iPhone notch / Dynamic Island / Android gesture bar) ── */
+    :root {
+      --sat:  env(safe-area-inset-top,    0px);
+      --sar:  env(safe-area-inset-right,  0px);
+      --sab:  env(safe-area-inset-bottom, 0px);
+      --sal:  env(safe-area-inset-left,   0px);
+      --keyboard-height: 0px;
+    }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      /* iOS overscroll bounce'u kapat */
+      overscroll-behavior: none;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* ── Tüm uygulama sarmalayıcısı ── */
+    #bridge-root {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      /* safe area padding — yalnızca içerik için */
+      padding-top:    var(--sat);
+      padding-right:  var(--sar);
+      padding-bottom: var(--sab);
+      padding-left:   var(--sal);
+      box-sizing: border-box;
+      background: var(--bg-1, #1a1b1e);
+    }
+
+    /* ── Klavye açıkken bottom navigation kaymasını önle ── */
+    body.keyboard-open .mobile-nav {
+      transform: translateY(calc(var(--keyboard-height) * -1));
+      transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+    }
+    body.keyboard-open #bridge-root {
+      padding-bottom: 0;
+    }
+
+    /* ── Mesaj giriş kutusu klavye çakışması ── */
+    body.keyboard-open .msg-input-wrap {
+      margin-bottom: var(--keyboard-height);
+    }
+
+    /* ── SPLASH (Capacitor SplashScreen hide olana kadar görünür) ── */
+    #native-splash {
+      position: fixed;
+      inset: 0;
+      background: #1a1a2e;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 16px;
+      z-index: 99999;
+      transition: opacity 0.3s ease;
+    }
+    #native-splash.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #native-splash .splash-logo {
+      font-size: 72px;
+      animation: splash-pulse 1.2s ease-in-out infinite alternate;
+    }
+    #native-splash .splash-name {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 28px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: 0.04em;
+    }
+    #native-splash .splash-spinner {
+      width: 32px; height: 32px;
+      border: 3px solid rgba(255,255,255,0.15);
+      border-top-color: #5865f2;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes splash-pulse {
+      from { transform: scale(0.92); }
+      to   { transform: scale(1.04); }
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ── Offline banner (capacitor-bridge.js tarafından oluşturulur) ── */
+    #offline-banner {
+      padding-top: calc(8px + var(--sat)) !important;
+    }
+
+    /* ── Push bildirim izin banner'ı ── */
+    #push-permission-banner {
+      position: fixed;
+      bottom: calc(64px + var(--sab));   /* mobile-nav üstü */
+      left: 16px; right: 16px;
+      background: #5865f2;
+      color: #fff;
+      border-radius: 12px;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      z-index: 900;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      transform: translateY(0);
+      transition: transform 0.3s ease, opacity 0.3s ease;
+    }
+    #push-permission-banner.hiding {
+      transform: translateY(120%);
+      opacity: 0;
+    }
+    #push-permission-banner .ppb-icon { font-size: 22px; flex-shrink: 0; }
+    #push-permission-banner .ppb-text { flex: 1; line-height: 1.4; }
+    #push-permission-banner .ppb-text strong { display: block; margin-bottom: 2px; }
+    #push-permission-banner .ppb-actions { display: flex; gap: 8px; }
+    #push-permission-banner .ppb-btn {
+      padding: 6px 14px;
+      border-radius: 8px;
+      border: none;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #push-permission-banner .ppb-btn-allow {
+      background: #fff;
+      color: #5865f2;
+    }
+    #push-permission-banner .ppb-btn-deny {
+      background: rgba(255,255,255,0.2);
+      color: #fff;
+    }
+
+    /* ── Native ses kanalı bağlantı göstergesi (mobil) ── */
+    #native-voice-badge {
+      position: fixed;
+      top: calc(var(--sat) + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: #2d7a46;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 16px;
+      border-radius: 20px;
+      z-index: 800;
+      display: none;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      white-space: nowrap;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    #native-voice-badge.visible { display: flex; }
+    #native-voice-badge .nvb-dot {
+      width: 8px; height: 8px;
+      background: #57f287;
+      border-radius: 50%;
+      animation: nvb-blink 1.2s ease infinite;
+    }
+    @keyframes nvb-blink {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.4; }
+    }
+
+    /* ── Haptic ile gönder butonu dokunma geri bildirimi ── */
+    #sendButton:active,
+    .send-btn:active,
+    [data-haptic]:active {
+      transform: scale(0.92);
+      transition: transform 0.1s ease;
+    }
+
+    /* ── iOS'ta input zoom'unu önle (font-size 16px altında zoom yapar) ── */
+    input, textarea, select {
+      font-size: 16px !important;
+    }
+
+    /* ── Android geri tuşu görsel ipucu — sadece gösterge, işlevi JS'de ── */
+    .modal-overlay .modal-card,
+    .modal.active,
+    .overlay.active {
+      /* native geri tuşu aktif sınıf — animasyon hook'u */
+    }
+
+    /* ── Uzun basma / context menu ücretsiz scroll engeli (iOS) ── */
+    img, video, .message-content, .msg-img {
+      -webkit-touch-callout: none;
+    }
+    .msg-input, .msg-input textarea {
+      -webkit-user-select: text;
+      user-select: text;
+    }
+  </style>
+</head>
+
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     NATIVE SPLASH — Capacitor SplashScreen.hide() çağrılana kadar
+     görünür kalır; hideSplash() fonksiyonu ile gizlenir.
+     ══════════════════════════════════════════════════════════════════ -->
+<div id="native-splash" role="status" aria-label="Bridge yükleniyor">
+  <div class="splash-logo">🌉</div>
+  <div class="splash-name">Bridge</div>
+  <div class="splash-spinner"></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     PUSH BİLDİRİM İZİN BANNER'I
+     Capacitor PushNotifications.requestPermissions() sonucu
+     beklenmeden önce gösterilir.
+     ══════════════════════════════════════════════════════════════════ -->
+<div id="push-permission-banner" style="display:none" role="alertdialog"
+     aria-labelledby="ppb-title" aria-describedby="ppb-desc">
+  <div class="ppb-icon">🔔</div>
+  <div class="ppb-text">
+    <strong id="ppb-title">Bildirimleri Aç</strong>
+    <span id="ppb-desc">Yeni mesajları kaçırma</span>
+  </div>
+  <div class="ppb-actions">
+    <button class="ppb-btn ppb-btn-allow" onclick="nativeAllowPush()">İzin Ver</button>
+    <button class="ppb-btn ppb-btn-deny"  onclick="nativeDismissPushBanner()">Sonra</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     SES KANALI BAĞLANTI ROZETI (uygulama arka plandayken görünür)
+     ══════════════════════════════════════════════════════════════════ -->
+<div id="native-voice-badge" aria-live="polite">
+  <div class="nvb-dot"></div>
+  <span id="nvb-text">Ses kanalına bağlı</span>
+  <button onclick="leaveVoice && leaveVoice()"
+          style="background:rgba(255,255,255,0.2);border:none;color:#fff;
+                 border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;margin-left:4px;">
+    Ayrıl
+  </button>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     ANA UYGULAMA SARMALAYICISI
+     ══════════════════════════════════════════════════════════════════ -->
+<div id="bridge-root">
+
+  <!-- ── AUTH EKRANI ─────────────────────────────────────────── -->
+  <div id="auth-screen" class="auth-screen">
+    <div class="auth-bg">
+      <div class="auth-blob b1"></div>
+      <div class="auth-blob b2"></div>
+      <div class="auth-blob b3"></div>
+    </div>
+    <div class="auth-card">
+      <div class="auth-logo">🌉</div>
+      <div class="auth-brand">
+        <h1>Bridge</h1>
+        <p data-i18n="tagline">Connect with anyone, anywhere</p>
+      </div>
+      <div class="auth-tabs">
+        <button class="auth-tab active" onclick="switchAuthTab('login')"   data-i18n="sign_in">Sign In</button>
+        <button class="auth-tab"        onclick="switchAuthTab('register')" data-i18n="create_account">Create Account</button>
+      </div>
+      <div id="auth-msg" style="display:none" role="alert" aria-live="polite"></div>
+
+      <!-- Giriş formu -->
+      <div id="login-form">
+        <div class="form-group">
+          <label data-i18n="username">Username</label>
+          <input type="text" id="l-username" placeholder="your_username"
+                 autocomplete="username"
+                 aria-label="Kullanıcı adı" aria-describedby="auth-msg">
+        </div>
+        <div class="form-group">
+          <label data-i18n="password">Password</label>
+          <input type="password" id="l-password" placeholder="••••••••"
+                 autocomplete="current-password"
+                 onkeydown="if(event.key==='Enter') login()"
+                 aria-label="Şifre" aria-describedby="auth-msg">
+        </div>
+        <button class="btn btn-primary" onclick="login()"
+                aria-label="Giriş yap" data-i18n="sign_in">Sign In</button>
+      </div>
+
+      <!-- Kayıt formu -->
+      <div id="register-form" style="display:none">
+        <div class="form-group">
+          <label data-i18n="display_name">Display Name</label>
+          <input type="text" id="r-displayname" placeholder="John Doe">
+        </div>
+        <div class="form-group">
+          <label>Username <span class="form-hint">letters, numbers, underscore only</span></label>
+          <input type="text" id="r-username" placeholder="johndoe">
+        </div>
+        <div class="form-group">
+          <label>Password <span class="form-hint">min. 6 characters</span></label>
+          <input type="password" id="r-password" placeholder="Min. 6 characters"
+                 onkeydown="if(event.key==='Enter') register()">
+        </div>
+        <div id="captcha-widget-wrap" style="display:none;margin:10px 0;">
+          <div id="captcha-widget"></div>
+          <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">🤖 Bot olmadığını doğrula</p>
+        </div>
+        <button class="btn btn-primary" onclick="register()"
+                aria-label="Hesap oluştur" aria-describedby="auth-msg"
+                data-i18n="create_account">Create Account</button>
+      </div>
+    </div>
+  </div><!-- /auth-screen -->
+
+  <!-- ── ANA UYGULAMA ───────────────────────────────────────── -->
+  <div id="app" class="app" style="display:none">
+
+    <!-- SUNUCU LİSTESİ -->
+    <div class="server-list" id="server-list">
+      <div class="server-separator"></div>
+      <div class="server-add tooltip"
+           data-tip-i18n="tip_add_server" data-tip="Add / Join Server"
+           onclick="openAddServerModal()"
+           role="button" aria-label="Sunucu Ekle veya Katıl" tabindex="0">+</div>
+    </div>
+
+    <!-- KANAL KENAR ÇUBUĞU -->
+    <div class="channel-sidebar">
+      <div class="server-header" id="server-header-btn"
+           onclick="openServerMenu()"
+           role="button" aria-label="Sunucu menüsünü aç"
+           aria-haspopup="menu" tabindex="0">
+        <span id="sidebar-server-name">Bridge</span>
+        <span style="color:var(--text-3);font-size:18px">⌄</span>
+      </div>
+      <div class="channel-list" id="channel-list"></div>
+
+      <!-- KULLANICI PANELİ -->
+      <div class="user-panel">
+        <div class="user-avatar-wrap tooltip"
+             data-tip-i18n="tip_profile" data-tip="Profile"
+             onclick="openSettings()"
+             role="button" aria-label="Profil ve ayarlar" tabindex="0">
+          <div class="user-avatar" id="my-avatar" style="background:#4f8ef7">?</div>
+          <div class="status-dot online" id="my-status-dot"></div>
+        </div>
+        <div class="user-info" onclick="openSettings()">
+          <div class="u-name" id="my-username">...</div>
+          <div class="u-tag"  id="my-tag">Online</div>
+        </div>
+        <div class="user-actions">
+          <div class="u-action-btn tooltip" data-tip-i18n="tip_friends"  data-tip="Arkadaşlar"         onclick="openFriendsPanel()"  role="button" tabindex="0">👥</div>
+          <div class="u-action-btn tooltip" data-tip-i18n="tip_dm"       data-tip="Direct Messages"    onclick="openDmPanel()"       role="button" tabindex="0">💬</div>
+          <div class="u-action-btn tooltip" data-tip-i18n="tip_mute"     data-tip="Mute"   id="btn-mute"    onclick="toggleMute()"    role="button" aria-pressed="false" tabindex="0">🎙️</div>
+          <div class="u-action-btn tooltip" data-tip-i18n="tip_deafen"   data-tip="Deafen" id="btn-deafen"  onclick="toggleDeafen()"  role="button" aria-pressed="false" tabindex="0">🎧</div>
+          <div class="u-action-btn tooltip" data-tip="Aktivite Durumu"   onclick="openActivityModal()">🎯</div>
+          <div class="u-action-btn tooltip" data-tip="E2E Şifreleme"     onclick="window.BridgeE2E?.openE2ESettings()" id="btn-e2e" role="button" tabindex="0">🔓</div>
+          <div class="u-action-btn tooltip" data-tip="Federasyon"        onclick="openFederationUI()"  role="button" tabindex="0">🌐</div>
+          <div class="u-action-btn tooltip" data-tip-i18n="tip_theme"    data-tip="Toggle Theme" id="btn-theme" onclick="toggleTheme()" role="button" tabindex="0">☀️</div>
+          <div class="u-action-btn tooltip" data-tip-i18n="tip_settings" data-tip="Settings"  onclick="openSettings()">⚙️</div>
+          <div class="u-action-btn tooltip" data-i18n-toggle data-tip-i18n="lang_toggle_tip" data-tip="Switch to English"
+               onclick="i18n.toggleLang()" role="button" tabindex="0"
+               style="font-size:11px;font-weight:700;letter-spacing:.05em;">EN</div>
+        </div>
+      </div>
+    </div><!-- /channel-sidebar -->
+
+    <!-- ANA İÇERİK -->
+    <div class="main-content">
+      <div class="channel-header" id="channel-header">
+        <span class="ch-h-icon" id="ch-h-icon">#</span>
+        <span class="ch-h-name" id="ch-h-name">bridge</span>
+        <div class="ch-h-divider"></div>
+        <span class="ch-h-topic" id="ch-h-topic" data-i18n="select_channel">Select a channel to start</span>
+        <div style="display:flex;gap:4px;margin-left:8px">
+          <div class="h-btn tooltip" data-tip-i18n="tip_members" data-tip="Members"          onclick="toggleMemberList()"                                                                                       role="button" tabindex="0">👥</div>
+          <div class="h-btn tooltip" data-tip-i18n="tip_pins"    data-tip="Pinned Messages"  onclick="openPinsPanel()"                  id="btn-pins"                                                            role="button" tabindex="0">📌</div>
+          <div class="h-btn tooltip" data-tip-i18n="tip_poll"    data-tip="Anket Oluştur"    onclick="openPollCreator()"                                                                                          role="button" tabindex="0">📊</div>
+          <div class="h-btn tooltip" data-tip-i18n="tip_invite"  data-tip="Invite"           onclick="openInviteModal()"                                                                                          role="button" tabindex="0">🔗</div>
+          <div class="h-btn tooltip" data-tip-i18n="tip_files"   data-tip="File Archive"     onclick="openFileArchive()"                                                                                          role="button" tabindex="0">📁</div>
+          <div class="h-btn tooltip" data-tip="Schedule Message"                             onclick="openScheduleModal()"              id="btn-schedule"                                                        role="button" tabindex="0">🕐</div>
+          <div class="h-btn tooltip" data-tip-i18n="tip_bridge"  data-tip="Channel Bridge"   onclick="openBridgeModal()"                                                                                          role="button" tabindex="0">🌉</div>
+          <div class="h-btn tooltip" data-tip="Sunucu Keşfet"                                onclick="openDiscovery()"                                                                                            role="button" tabindex="0">🌐</div>
+          <div class="h-btn tooltip" data-tip="Bot Marketplace"                              onclick="openBotMarketplace()"                                                                                       role="button" tabindex="0">🤖🏪</div>
+          <div class="h-btn tooltip" data-tip="🤖 AI Kanal Özeti"                            onclick="openChannelSummary()"                                                                                       role="button" tabindex="0">🤖</div>
+          <div class="h-btn tooltip" data-tip="🎯 Aktivite Durumu"                           onclick="openActivityModal()">🎯</div>
+          <div class="h-btn tooltip" data-tip="💡 Yanıt Önerisi"                             onclick="showReplySuggestions()"                                                                                     role="button" tabindex="0">💡</div>
+          <div class="h-btn tooltip" data-tip-i18n="tip_search" data-tip="Search"
+               onclick="document.getElementById('search-wrap').style.display=
+                        document.getElementById('search-wrap').style.display==='none'?'flex':'none'">🔍</div>
+        </div>
+      </div><!-- /channel-header -->
+
+      <!-- Arama çubuğu -->
+      <div id="search-wrap" class="search-bar" style="display:none">
+        <span style="color:var(--text-muted);font-size:14px">🔍</span>
+        <input id="search-input" type="text" placeholder="Search messages..."
+               onkeydown="if(event.key==='Enter') searchMessages()">
+        <button onclick="searchMessages()">Ara</button>
+        <button onclick="loadMessages(currentChannel._id)">✕</button>
+      </div>
+
+      <!-- METİN KANALI GÖRÜNÜMü -->
+      <div id="text-view" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+        <div class="messages-area" id="messages-area">
+          <div class="channel-welcome" id="ch-welcome">
+            <div class="welcome-icon">🌉</div>
+            <h2 data-i18n="welcome_to_bridge">Welcome to Bridge</h2>
+            <p data-i18n="select_channel_left">Select a channel from the left to start chatting.</p>
+          </div>
+        </div>
+
+        <!-- Yazıyor... çubuğu -->
+        <div class="typing-bar" id="typing-bar" style="display:none">
+          <div class="typing-dots"><span></span><span></span><span></span></div>
+          <span id="typing-text"></span>
+        </div>
+
+        <!-- Mesaj giriş kutusu -->
+        <div class="msg-input-wrap" id="msg-input-wrap" style="display:none">
+          <div class="msg-input-box">
+            <div class="msg-input-btn tooltip" data-tip-i18n="tip_attach" data-tip="Attach File"
+                 onclick="openFilePicker()">📎</div>
+            <div class="msg-input-btn tooltip" data-tip-i18n="tip_voice_msg" data-tip="Voice Message"
+                 id="btn-voice-msg"
+                 onmousedown="startVoiceRecord()" onmouseup="stopVoiceRecord()"
+                 ontouchstart="startVoiceRecord()" ontouchend="stopVoiceRecord()">🎤</div>
+            <textarea class="msg-input" id="msg-input"
+                      placeholder="Message #general" rows="1"
+                      onkeydown="handleMsgKey(event)"
+                      oninput="handleTypingInput(this)"></textarea>
+            <div class="msg-input-btn tooltip" data-tip-i18n="tip_emoji" data-tip="Emoji, GIF"
+                 onclick="toggleEmojiPicker()">😊</div>
+            <div class="msg-input-btn send tooltip" data-tip-i18n="tip_send" data-tip="Send"
+                 id="sendButton" onclick="sendMessage()" data-haptic>➤</div>
+          </div>
+        </div>
+      </div><!-- /text-view -->
+
+      <!-- SES KANALI GÖRÜNÜMü -->
+      <div id="voice-view" class="voice-room" style="display:none">
+        <div class="voice-room-title" id="voice-room-title">🔊 General Voice</div>
+        <div class="voice-peers" id="voice-peers"></div>
+        <div class="voice-controls">
+          <div class="vc-btn tooltip" data-tip-i18n="tip_mute"   data-tip="Mute"         id="vc-mute"   onclick="toggleMute()"">🎙️</div>
+          <div class="vc-btn tooltip" data-tip-i18n="tip_deafen" data-tip="Deafen"        id="vc-deafen" onclick="toggleDeafen()">🎧</div>
+          <div class="vc-btn tooltip" data-tip-i18n="tip_video"  data-tip="Video"         id="vc-video"  onclick="toggleVideo()">📷</div>
+          <div class="vc-btn tooltip" data-tip="Share Screen"                             id="vc-screen" onclick="toggleScreenShare()">🖥️</div>
+          <div class="vc-btn tooltip" data-tip="Soundboard"                                              onclick="openSoundboard()">🎵</div>
+          <div class="vc-btn leave tooltip" data-tip-i18n="tip_leave" data-tip="Leave"                  onclick="leaveVoice()">📵</div>
+        </div>
+      </div>
+    </div><!-- /main-content -->
+
+    <!-- ÜYE LİSTESİ -->
+    <div class="member-list" id="member-list">
+      <div id="member-list-content"></div>
+    </div>
+
+  </div><!-- /app -->
+
+</div><!-- /bridge-root -->
+
+<!-- ── MOBİL ARKA PLAN KAPLAMASI ──────────────────────────────────────── -->
+<div class="mobile-backdrop" id="mobile-backdrop" onclick="closeMobilePanels()"></div>
+
+<!-- ── MOBİL ALT NAVİGASYON (safe-area farkındalıklı) ────────────────── -->
+<nav class="mobile-nav" id="mobile-nav" style="padding-bottom:var(--sab)">
+  <div class="mobile-nav-btn active" id="mnav-servers"  onclick="mobileNav('servers')"  ontouchstart="">
+    <span>🌐</span><span>Sunucular</span>
+  </div>
+  <div class="mobile-nav-btn"        id="mnav-channels" onclick="mobileNav('channels')" ontouchstart="">
+    <span>#</span><span>Kanallar</span>
+  </div>
+  <div class="mobile-nav-btn"        id="mnav-chat"     onclick="mobileNav('chat')"     ontouchstart="">
+    <span>💬</span><span>Sohbet</span>
+  </div>
+  <div class="mobile-nav-btn"        id="mnav-members"  onclick="mobileNav('members')"  ontouchstart="">
+    <span>👥</span><span>Üyeler</span>
+  </div>
+  <div class="mobile-nav-btn"        id="mnav-profile"  onclick="mobileNav('profile')"  ontouchstart="">
+    <span>👤</span><span>Profil</span>
+  </div>
+</nav>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     SCRIPT YÜKLEMESİ
+     Sıra: Capacitor core → Bridge web core → Capacitor Bridge entegrasyonu
+     ════════════════════════════════════════════════════════════════════ -->
+
+<!-- 1. Capacitor Runtime (npx cap sync sonrası gelir) -->
+<script src="capacitor.js"></script>
+
+<!-- 2. Socket.IO (sunucu bağlantısı) -->
+<script src="/socket.io/socket.io.js"></script>
+
+<!-- 3. Bridge Web Uygulaması — tüm core JS modülleri -->
+<!-- (client/js → www/js: npx cap sync veya scripts/setup.js tarafından kopyalanır) -->
+<script src="js/core/noise-suppression.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/dist/mediasoup-client.min.js"></script>
+<script src="js/webrtc-sfu.js"></script>
+
+<script src="js/core/api.js"></script>
+<script src="js/core/auth.js"></script>
+<script src="js/core/servers.js"></script>
+<script src="js/core/channels.js"></script>
+<script src="js/core/forum.js"></script>
+<script src="js/core/offlineCache.js"></script>
+<script src="js/core/messages.js"></script>
+<script src="js/core/upload.js"></script>
+<script src="js/core/members.js"></script>
+<script src="js/core/socket.js"></script>
+<script src="js/core/voice.js"></script>
+<script src="js/core/ui.js"></script>
+<script src="js/core/settings.js"></script>
+<script src="js/core/emoji.js"></script>
+<script src="js/core/i18n.js"></script>
+<script src="js/core/utils.js"></script>
+<script src="js/core/theme.js"></script>
+<script src="js/core/dm.js"></script>
+<script src="js/core/dm-call.js"></script>
+<script src="js/core/group-dm.js"></script>
+<script src="js/core/automod-ui.js"></script>
+<script src="js/core/user-connections.js"></script>
+<script src="js/core/emoji-picker.js"></script>
+<script src="js/core/voice-messages.js"></script>
+<script src="js/core/mention-autocomplete.js"></script>
+<script src="js/core/server-ui.js"></script>
+<script src="js/core/profile-ui.js"></script>
+<script src="js/core/unread.js"></script>
+<script src="js/core/image-viewer.js"></script>
+<script src="js/core/music-player.js"></script>
+<script src="js/core/settings-modal.js"></script>
+<script src="js/core/analytics.js"></script>
+<script src="js/core/socket-events.js"></script>
+<script src="js/core/misc.js"></script>
+
+<script src="js/threads.js"></script>
+<script src="js/slash.js"></script>
+<script src="js/profile.js"></script>
+<script src="js/polls.js"></script>
+<script src="js/soundboard.js"></script>
+<script src="js/marketplace.js"></script>
+<script src="js/channelPerms.js"></script>
+<script src="js/discover.js"></script>
+<script src="js/twoFactor.js"></script>
+<script src="js/admin.js"></script>
+<script src="js/core/ip-ban.js"></script>
+<script src="js/core/e2e.js"></script>
+<script src="js/core/ai.js"></script>
+<script src="js/core/activity.js"></script>
+<script src="js/core/search.js"></script>
+<script src="js/core/friends.js"></script>
+<script src="js/core/moderation.js"></script>
+
+<script src="js/mobile.js"></script>
+<script src="js/core/semantic.js"></script>
+<script src="js/federation-ui.js"></script>
+<script src="js/app.js"></script>
+
+<!-- v41–v44 split modüller -->
+<script src="js/core/v41/index.js"></script>
+<script src="js/core/v42/index.js"></script>
+<script src="js/core/v43/index.js"></script>
+<script src="js/core/v44/index.js"></script>
+
+<!-- 4. Capacitor Bridge entegrasyonu (EN SON yüklenir — tüm API'ler hazır olmalı) -->
+<script src="js/capacitor-bridge.js"></script>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     MOBİL NATIVE BOOTSTRAP
+     ════════════════════════════════════════════════════════════════════ -->
+<script>
+(function () {
+  'use strict';
+
+  // ── SPLASH GİZLE ───────────────────────────────────────────────────
+  // Capacitor SplashScreen.hide() tetikledikten sonra JS splash'ı da kapat.
+  window.hideSplash = function () {
+    const el = document.getElementById('native-splash');
+    if (!el) return;
+    el.classList.add('hidden');
+    setTimeout(() => el.remove(), 400);
+  };
+
+  // SplashScreen plugin yoksa (web önizleme) 800ms sonra gizle
+  window.addEventListener('DOMContentLoaded', () => {
+    if (typeof Capacitor === 'undefined') {
+      setTimeout(window.hideSplash, 800);
+    }
+    // Capacitor varsa capacitor-bridge.js içindeki DOMContentLoaded handler'ı
+    // SplashScreen.hide() çağırır, ardından hideSplash() tetiklenir.
+  });
+
+  // ── PUSH BİLDİRİM BANNER YÖNETİMİ ─────────────────────────────────
+  // Daha önce reddedildiyse banner'ı gösterme
+  const PUSH_ASKED_KEY = 'bridge_push_asked';
+
+  window.showPushPermissionBanner = function () {
+    if (localStorage.getItem(PUSH_ASKED_KEY)) return;
+    const banner = document.getElementById('push-permission-banner');
+    if (banner) banner.style.display = 'flex';
+  };
+
+  window.nativeAllowPush = function () {
+    localStorage.setItem(PUSH_ASKED_KEY, '1');
+    nativeDismissPushBanner();
+    // Gerçek izin isteği capacitor-bridge.js → setupPushNotifications() içinde
+    if (typeof Capacitor !== 'undefined' && Capacitor.Plugins?.PushNotifications) {
+      Capacitor.Plugins.PushNotifications.requestPermissions().then(result => {
+        if (result.receive === 'granted') {
+          Capacitor.Plugins.PushNotifications.register();
+        }
+      });
+    }
+  };
+
+  window.nativeDismissPushBanner = function () {
+    const banner = document.getElementById('push-permission-banner');
+    if (!banner) return;
+    banner.classList.add('hiding');
+    setTimeout(() => { banner.style.display = 'none'; banner.classList.remove('hiding'); }, 350);
+  };
+
+  // Kullanıcı giriş yaptıktan ~2s sonra banner'ı göster
+  window.addEventListener('bridge:loggedin', () => {
+    setTimeout(window.showPushPermissionBanner, 2000);
+  });
+
+  // ── SES KANALI ROZET YÖNETİMİ ──────────────────────────────────────
+  // Uygulama arka plana geçince ses kanalı rozetini göster
+  window.addEventListener('bridge:appstate', e => {
+    const badge = document.getElementById('native-voice-badge');
+    if (!badge) return;
+    // Ses kanalına bağlı mı kontrol et (window.inVoiceChannel global'ı)
+    const inVoice = window.inVoiceChannel || false;
+    badge.classList.toggle('visible', !e.detail.active && inVoice);
+  });
+
+  // Ses kanalına giriş/çıkış olduğunda rozeti güncelle
+  window.addEventListener('bridge:voicejoined', e => {
+    const badge   = document.getElementById('native-voice-badge');
+    const nameEl  = document.getElementById('nvb-text');
+    if (badge && nameEl) {
+      nameEl.textContent = e.detail?.channelName
+        ? `🔊 ${e.detail.channelName}`
+        : 'Ses kanalına bağlı';
+    }
+  });
+  window.addEventListener('bridge:voiceleft', () => {
+    document.getElementById('native-voice-badge')?.classList.remove('visible');
+  });
+
+  // ── CAPACITOR NAVİGASYON YÖNLENDİRMESİ ────────────────────────────
+  // Push bildirim tıklamasından gelen navigasyon olayı
+  window.addEventListener('bridge:navigate', e => {
+    const { channelId, serverId } = e.detail || {};
+    if (!channelId) return;
+    // Bridge'in global selectChannel fonksiyonunu çağır
+    if (typeof selectServer  === 'function' && serverId)  selectServer(serverId);
+    if (typeof selectChannel === 'function' && channelId) selectChannel(channelId);
+  });
+
+  // ── AĞ DURUMU TOAST ENTEGRASYONu ───────────────────────────────────
+  window.addEventListener('bridge:network', e => {
+    if (e.detail.connected && typeof toast === 'function') {
+      toast('Bağlantı yeniden sağlandı ✅', 'success');
+    }
+  });
+
+  // ── iOS SAFE AREA CSS DEĞİŞKENİ GÜNCELLE ───────────────────────────
+  // orientationchange sonrası env() değerlerini güncelle
+  window.addEventListener('orientationchange', () => {
+    setTimeout(() => {
+      // Tarayıcının env() değerlerini yeniden hesaplaması için boş reflow
+      document.documentElement.style.setProperty('--sat',
+        getComputedStyle(document.documentElement).getPropertyValue('--sat'));
+    }, 200);
+  });
+
+  // ── PWA SERVICE WORKER (web modunda — Capacitor'da atlanır) ────────
+  if ('serviceWorker' in navigator && typeof Capacitor === 'undefined') {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js')
+        .then(reg => {
+          reg.addEventListener('updatefound', () => {
+            const w = reg.installing;
+            w.addEventListener('statechange', () => {
+              if (w.state === 'installed' && navigator.serviceWorker.controller) {
+                if (typeof toast === 'function')
+                  toast('Güncelleme mevcut — yenile 🔄', 'info');
+              }
+            });
+          });
+        })
+        .catch(err => console.warn('[Bridge SW]', err));
+
+      navigator.serviceWorker.addEventListener('message', e => {
+        if (e.data?.type === 'NOTIFICATION_CLICK' && e.data.url)
+          window.location.href = e.data.url;
+      });
+    });
+  }
+
+  // ── PWA KURULUM PROMPT (sadece web) ────────────────────────────────
+  let _installPrompt = null;
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    _installPrompt = e;
+    const btn = document.getElementById('pwa-install-btn');
+    if (btn) btn.style.display = 'flex';
+  });
+  window.installPWA = async function () {
+    if (!_installPrompt) return;
+    _installPrompt.prompt();
+    const { outcome } = await _installPrompt.userChoice;
+    if (outcome === 'accepted') {
+      const btn = document.getElementById('pwa-install-btn');
+      if (btn) btn.style.display = 'none';
+    }
+    _installPrompt = null;
+  };
+
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,5 @@
+HTTP/1.0 403 Forbidden
+Cache-Control: no-cache
+Content-Type: text/html
+
+<html><body><h1>403 Forbidden</h1><p>Bridge is temporarily unavailable. Please try again shortly.</p></body></html>

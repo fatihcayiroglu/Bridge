@@ -1,0 +1,65 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "lib": ["ES2022"],
+    "outDir": "./dist",
+    "rootDir": "./",
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "allowJs": true,
+    "checkJs": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "incremental": true,
+    "tsBuildInfoFile": "./.tsbuildinfo",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"],
+      "@server/*": ["./*"],
+      "@middleware/*": ["./middleware/*"],
+      "@routes/*": ["./routes/*"],
+      "@lib/*": ["./lib/*"],
+      "@db/*": ["./db/*"],
+      "@jobs/*": ["./jobs/*"],
+      "@socket/*": ["./socket/*"],
+      "@app/*": ["./app/*"],
+      "@types/*": ["./types/*"]
+    },
+    "types": ["node", "jest"]
+  },
+  "include": [
+    "index.ts",
+    "app/**/*.ts",
+    "middleware/**/*.ts",
+    "routes/**/*.ts",
+    "lib/**/*.ts",
+    "db/**/*.ts",
+    "jobs/**/*.ts",
+    "socket/**/*.ts",
+    "scripts/**/*.ts",
+    "types/**/*.ts",
+    "plugins/**/*.ts",
+    "db/repositories/types/*.d.ts",
+    // Not: plugins/loader.js → loader.ts'e taşındı (Sprint 14).
+    // plugins/**/*.js artık yalnızca plugin index.js dosyaları için kalıyor.
+    "plugins/**/*.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "_legacy_js_backup_session4_5",
+    "db/repositories/_legacy_js_backup_session8",
+    "**/*.test.ts",
+    "**/*.test.js",
+    "tests/**/*"
+  ]
+}

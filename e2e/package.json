@@ -1,0 +1,34 @@
+{
+  "name": "bridge-e2e",
+  "version": "1.0.0",
+  "description": "Bridge E2E Testleri — Playwright",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:auth": "playwright test tests/auth.spec.ts",
+    "test:messaging": "playwright test tests/messaging.spec.ts",
+    "test:channels": "playwright test tests/channels.spec.ts",
+    "test:dm": "playwright test tests/dm.spec.ts",
+    "test:smoke": "SCENARIO=smoke playwright test",
+    "test:a11y": "playwright test --project=a11y tests/a11y.smoke.spec.ts",
+    "report": "playwright show-report",
+    "codegen": "playwright codegen http://localhost:3000",
+    "test:reactions": "playwright test tests/reactions.spec.ts",
+    "test:link-preview": "playwright test tests/link-preview.spec.ts",
+    "test:profile": "playwright test tests/profile.spec.ts",
+    "test:invites": "playwright test tests/invites.spec.ts",
+    "test:web-push": "playwright test tests/web-push.spec.ts",
+    "test:api": "playwright test tests/auth.spec.ts tests/messaging.spec.ts tests/dm.spec.ts tests/channels.spec.ts tests/reactions.spec.ts tests/link-preview.spec.ts tests/profile.spec.ts tests/invites.spec.ts tests/web-push.spec.ts",
+    "test:security": "playwright test tests/security.spec.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/test": "^1.44.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

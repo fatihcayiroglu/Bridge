@@ -1,0 +1,29 @@
+{
+  "name": "bridge-client-tests",
+  "version": "1.0.0",
+  "description": "Bridge client-side (browser) unit tests",
+  "private": true,
+  "scripts": {
+    "test": "jest --runInBand --forceExit",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage --runInBand --forceExit",
+    "test:verbose": "jest --verbose --runInBand --forceExit"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0"
+  },
+  "jest": {
+    "testEnvironment": "jsdom",
+    "testMatch": ["**/*.test.js"],
+    "setupFiles": ["./helpers/setup.js"],
+    "collectCoverageFrom": [
+      "../../client/js/**/*.js"
+    ],
+    "coverageReporters": ["text", "lcov"],
+    "testTimeout": 10000,
+    "globals": {
+      "IS_JEST": true
+    }
+  }
+}

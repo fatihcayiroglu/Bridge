@@ -1,0 +1,328 @@
+/* ═══════════════════════════════════════════════════════════
+   BRIDGE DESIGN TOKENS  —  v72 (Bağımsız Kimlik)
+   
+   Discord'dan tamamen ayrışmış, Bridge'e özgü tasarım sistemi.
+   Artık "daha iyi Discord" değil — bağımsız bir platform.
+   
+   Tema değiştirme:
+     document.body.setAttribute('data-theme', 'dark')    (varsayılan)
+     document.body.setAttribute('data-theme', 'light')
+     document.body.setAttribute('data-theme', 'amoled')
+     document.body.setAttribute('data-theme', 'aurora')  (YENİ)
+   
+   Özel brand rengi:
+     document.body.style.setProperty('--brand-h', '220')
+     document.body.style.setProperty('--brand-s', '91%')
+═══════════════════════════════════════════════════════════ */
+
+/* ── BRAND — Bridge'in kendi rengi: Köprü Mavisi + Amber vurgu ── */
+:root {
+  /* Ana marka: Discord'un mor-mavisi yerine daha derin, güvenilir bir indigo-teal */
+  --brand-h: 210;
+  --brand-s: 88%;
+
+  --brand:        hsl(var(--brand-h), var(--brand-s), 58%);
+  --brand-hover:  hsl(var(--brand-h), var(--brand-s), 52%);
+  --brand-active: hsl(var(--brand-h), var(--brand-s), 46%);
+  --brand-subtle: hsla(var(--brand-h), var(--brand-s), 58%, 0.15);
+  --brand-glow:   hsla(var(--brand-h), var(--brand-s), 58%, 0.28);
+  --brand-dark:   hsl(var(--brand-h), var(--brand-s), 46%);
+
+  /* Amber vurgu — Bridge'e özgü ikincil renk */
+  --accent-h: 38;
+  --accent:        hsl(var(--accent-h), 95%, 58%);
+  --accent-hover:  hsl(var(--accent-h), 95%, 52%);
+  --accent-subtle: hsla(var(--accent-h), 95%, 58%, 0.15);
+  --accent-glow:   hsla(var(--accent-h), 95%, 58%, 0.25);
+
+  /* Brand alpha arka planlar */
+  --brand-bg:      hsla(var(--brand-h), var(--brand-s), 58%, 0.10);
+  --brand-bg-low:  hsla(var(--brand-h), var(--brand-s), 58%, 0.07);
+  --brand-bg-xlow: hsla(var(--brand-h), var(--brand-s), 58%, 0.04);
+  --brand-border:  hsla(var(--brand-h), var(--brand-s), 58%, 0.28);
+
+  /* Semantik renkler */
+  --green:    #2ecc9a;
+  --green-bg: rgba(46, 204, 154, 0.12);
+  --red:      #e05260;
+  --red-bg:   rgba(224, 82, 96, 0.12);
+  --yellow:   #f5a623;
+  --yellow-bg: rgba(245, 166, 35, 0.12);
+  --purple:   #a67ee8;
+  --teal:     #1bc8a8;
+  --danger:   #e05260;
+  --online:   #2ecc9a;
+
+  /* Status */
+  --status-online:  #2ecc9a;
+  --status-idle:    #f5a623;
+  --status-dnd:     #e05260;
+  --status-offline: #6b7280;
+
+  /* Tipografi — Inter + JetBrains Mono */
+  --font-sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --font-display: 'Inter', system-ui, sans-serif;
+
+  /* Yazı boyutları */
+  --text-xs:   11px;
+  --text-sm:   12px;
+  --text-base: 14px;
+  --text-md:   15px;
+  --text-lg:   16px;
+  --text-xl:   20px;
+  --text-2xl:  24px;
+  --text-3xl:  32px;
+
+  /* Border radius — Discord'dan daha yuvarlak, modern */
+  --r-xs:   3px;
+  --r-sm:   6px;
+  --r-md:   10px;
+  --r-lg:   14px;
+  --r-xl:   20px;
+  --r-2xl:  28px;
+  --r-full: 9999px;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Geçiş */
+  --duration-fast:   90ms;
+  --duration-base:   180ms;
+  --duration-slow:   320ms;
+  --ease-out:        cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring:     cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-bounce:     cubic-bezier(0.68, -0.55, 0.265, 1.55);
+
+  /* Z-index */
+  --z-base:     1;
+  --z-dropdown: 100;
+  --z-sidebar:  200;
+  --z-modal:    300;
+  --z-toast:    400;
+  --z-tooltip:  500;
+  --z-onboard:  600;
+
+  /* Gölge sistemi */
+  --shadow-xs:  0 1px 2px rgba(0,0,0,0.20);
+  --shadow-sm:  0 2px 6px rgba(0,0,0,0.28);
+  --shadow-md:  0 4px 16px rgba(0,0,0,0.36);
+  --shadow-lg:  0 8px 32px rgba(0,0,0,0.44);
+  --shadow-xl:  0 16px 56px rgba(0,0,0,0.52);
+  --shadow-brand: 0 4px 20px hsla(var(--brand-h), var(--brand-s), 58%, 0.35);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   KARANLIK TEMA (varsayılan) — Bridge Dark
+   Discord'dan fark: Daha sıcak siyahlar, mavi-gri değil antrasit
+═══════════════════════════════════════════════════════════ */
+:root,
+[data-theme="dark"] {
+  /* Katmanlı arka planlar: Discord'un soğuk mavi-grisinden farklı */
+  --bg-0: #0f1117;   /* En derin: tam siyah değil, biraz warm */
+  --bg-1: #151720;   /* Sidebar arka planı */
+  --bg-2: #1c1f2e;   /* Ana içerik alanı */
+  --bg-rgb: 28,31,46;  /* backdrop-filter için RGB karşılığı */
+  --bg-3: #232636;   /* Kart, modal arka planı */
+  --bg-4: #2c3048;   /* Hover, selected arka planlar */
+  --bg-5: #363b54;   /* Aktif, vurgulu öğeler */
+
+  /* Yazı renkleri */
+  --text-primary:  #eef0f8;
+  --text-2:        #b8bdd4;
+  --text-muted:    #7b82a0;
+  --text-disabled: #4a5168;
+  --text-link:     hsl(var(--brand-h), 80%, 72%);
+
+  /* Sınır renkleri */
+  --border:        rgba(255,255,255,0.07);
+  --border-strong: rgba(255,255,255,0.14);
+  --border-focus:  var(--brand);
+
+  /* Kanal mesaj hover */
+  --msg-hover: rgba(255,255,255,0.03);
+
+  /* Scrollbar */
+  --scrollbar-track: var(--bg-1);
+  --scrollbar-thumb: var(--bg-5);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   AÇIK TEMA
+═══════════════════════════════════════════════════════════ */
+[data-theme="light"] {
+  --bg-0: #e8eaf2;
+  --bg-1: #f0f2f9;
+  --bg-2: #ffffff;
+  --bg-rgb: 255,255,255;
+  --bg-3: #f5f7ff;
+  --bg-4: #e4e8f5;
+  --bg-5: #d6daf0;
+
+  --text-primary:  #1a1d2e;
+  --text-2:        #3d4263;
+  --text-muted:    #7077a0;
+  --text-disabled: #aab0cc;
+  --text-link:     hsl(var(--brand-h), 80%, 40%);
+
+  --border:        rgba(0,0,0,0.08);
+  --border-strong: rgba(0,0,0,0.15);
+
+  --msg-hover: rgba(0,0,0,0.025);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.10);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.14);
+
+  --scrollbar-track: var(--bg-1);
+  --scrollbar-thumb: var(--bg-5);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   AMOLED TEMA
+═══════════════════════════════════════════════════════════ */
+[data-theme="amoled"] {
+  --bg-0: #000000;
+  --bg-1: #080a10;
+  --bg-2: #0d1018;
+  --bg-rgb: 13,16,24;
+  --bg-3: #121520;
+  --bg-4: #181c2a;
+  --bg-5: #1e2338;
+
+  --text-primary:  #f0f2ff;
+  --text-2:        #a8adc8;
+  --text-muted:    #606880;
+  --text-disabled: #383d52;
+  --text-link:     hsl(var(--brand-h), 80%, 75%);
+
+  --border:        rgba(255,255,255,0.05);
+  --border-strong: rgba(255,255,255,0.10);
+
+  --msg-hover: rgba(255,255,255,0.02);
+  --scrollbar-track: var(--bg-0);
+  --scrollbar-thumb: var(--bg-4);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   AURORA TEMA — Bridge'e özgü, Discord'da yok
+   Yeşil-teal aurora renkleri
+═══════════════════════════════════════════════════════════ */
+[data-theme="aurora"] {
+  --brand-h: 168;
+  --brand-s: 75%;
+
+  --bg-0: #07110f;
+  --bg-1: #0a1a16;
+  --bg-2: #0f2420;
+  --bg-rgb: 15,36,32;
+  --bg-3: #152e28;
+  --bg-4: #1c3a33;
+  --bg-5: #234740;
+
+  --text-primary:  #d8f5ef;
+  --text-2:        #8cc8bc;
+  --text-muted:    #4d8a7e;
+  --text-disabled: #2d5550;
+  --text-link:     #5dd8c0;
+
+  --accent-h: 38;
+
+  --border:        rgba(93, 216, 192, 0.08);
+  --border-strong: rgba(93, 216, 192, 0.16);
+
+  --msg-hover: rgba(93, 216, 192, 0.03);
+  --scrollbar-track: var(--bg-1);
+  --scrollbar-thumb: var(--bg-5);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   MIDNIGHT TEMA
+═══════════════════════════════════════════════════════════ */
+[data-theme="midnight"] {
+  --brand-h: 230;
+  --brand-s: 80%;
+
+  --bg-0: #060814;
+  --bg-1: #0c0f20;
+  --bg-2: #10142a;
+  --bg-rgb: 16,20,42;
+  --bg-3: #161a32;
+  --bg-4: #1d2240;
+  --bg-5: #252b50;
+
+  --text-primary:  #e0e4ff;
+  --text-2:        #8890c0;
+  --text-muted:    #4a5080;
+  --text-disabled: #2c3060;
+  --text-link:     hsl(230, 80%, 75%);
+
+  --border:        rgba(130, 140, 255, 0.08);
+  --border-strong: rgba(130, 140, 255, 0.15);
+
+  --msg-hover: rgba(130, 140, 255, 0.03);
+  --scrollbar-track: var(--bg-1);
+  --scrollbar-thumb: var(--bg-5);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GLOBAL RESET & TEMEL STILLER
+═══════════════════════════════════════════════════════════ */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+  tab-size: 4;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  background: var(--bg-0);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background var(--duration-slow), color var(--duration-base);
+}
+
+/* Scrollbar — Bridge özel stili */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--r-full);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--bg-5); }
+
+/* Seçim rengi */
+::selection {
+  background: var(--brand-subtle);
+  color: var(--text-primary);
+}
+
+/* Focus ring — erişilebilirlik */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ── Bridge logo font animasyonu ── */
+@keyframes bridge-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.7; }
+}
+
+.bridge-logo-animated {
+  animation: bridge-pulse 3s ease-in-out infinite;
+}

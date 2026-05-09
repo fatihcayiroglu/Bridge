@@ -1,0 +1,24 @@
+/* Bridge CSS — modular entry point */
+/* Generated — edit modules/* directly */
+
+@import "./tokens.css";
+@import "./modules/reset-base.css";
+@import "./modules/auth.css";
+@import "./modules/layout.css";
+@import "./modules/messages.css";
+@import "./modules/voice-video.css";
+@import "./modules/modals.css";
+@import "./modules/reactions-micro.css";
+@import "./modules/light-theme.css";
+@import "./modules/dm-music.css";
+@import "./modules/uploads-media.css";
+@import "./modules/schedule-gifs.css";
+@import "./modules/emoji-picker.css";
+@import "./modules/profile-settings.css";
+@import "./modules/animations.css";
+@import "./modules/threads-badges.css";
+@import "./modules/marketplace-bots.css";
+@import "./modules/stage-onboarding.css";
+@import "./modules/transitions-fx.css";
+@import "./modules/high-contrast.css";
+@import "./modules/semantic-search.css";

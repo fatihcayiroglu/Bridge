@@ -1,0 +1,198 @@
+# docker-compose.cluster.yml
+# WebSocket Clustering Testi: Multi-instance + Sticky Session
+#
+# Kullanım:
+#   docker compose -f docker-compose.cluster.yml up -d
+#   # 3 Bridge instance + 1 HAProxy (sticky session) + Redis + Postgres
+#
+# Test senaryosu:
+#   1. ws://localhost:8080 üzerinden bağlan (HAProxy yönlendirir)
+#   2. HAProxy cookie ile aynı instance'a stick yapar
+#   3. Redis adapter tüm instance'lar arası mesajları iletir
+#   4. k6: k6 run k6/websocket-cluster-test.js
+
+version: '3.9'
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: bridge-cluster-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       bridge
+      POSTGRES_USER:     bridge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bridge_dev_password}
+    volumes:
+      - cluster_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bridge -d bridge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Redis (Socket.io adapter + cache) ──────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: bridge-cluster-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - cluster_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Bridge Instance 1 ───────────────────────────────────────
+  bridge1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bridge-node-1
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    environment:
+      NODE_ENV:        production
+      PORT:            3001
+      INSTANCE_ID:     bridge-1            # Her node kendi ID'sini bilir
+      TURN_HOST:       ${TURN_HOST:-}
+      TURN_SECRET:     ${TURN_SECRET:-}
+      TURN_PORT:       ${TURN_PORT:-3478}
+      STUN_URLS:       ${STUN_URLS:-stun:stun.l.google.com:19302}
+      MEDIASOUP_ANNOUNCED_IP:  ${MEDIASOUP_ANNOUNCED_IP:-}
+      MEDIASOUP_RTC_MIN_PORT:  ${MEDIASOUP_RTC_MIN_PORT:-40000}
+      MEDIASOUP_RTC_MAX_PORT:  ${MEDIASOUP_RTC_MAX_PORT:-49999}
+      MEDIASOUP_WORKERS:       ${MEDIASOUP_WORKERS:-1}
+      DATABASE_URL:    postgresql://bridge:${POSTGRES_PASSWORD:-bridge_dev_password}@postgres:5432/bridge
+      DATABASE_SSL:    "false"
+      REDIS_URL:       redis://redis:6379
+      JWT_SECRET:      ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
+      REFRESH_SECRET:  ${REFRESH_SECRET:-dev_refresh_secret_change_in_prod}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080}
+    volumes:
+      - uploads_data:/app/uploads          # Paylaşılan upload volume
+    ports:
+      - "${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}:${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}/udp"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Bridge Instance 2 ───────────────────────────────────────
+  bridge2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bridge-node-2
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    environment:
+      NODE_ENV:        production
+      PORT:            3001
+      INSTANCE_ID:     bridge-2
+      TURN_HOST:       ${TURN_HOST:-}
+      TURN_SECRET:     ${TURN_SECRET:-}
+      TURN_PORT:       ${TURN_PORT:-3478}
+      STUN_URLS:       ${STUN_URLS:-stun:stun.l.google.com:19302}
+      MEDIASOUP_ANNOUNCED_IP:  ${MEDIASOUP_ANNOUNCED_IP:-}
+      MEDIASOUP_RTC_MIN_PORT:  ${MEDIASOUP_RTC_MIN_PORT:-40000}
+      MEDIASOUP_RTC_MAX_PORT:  ${MEDIASOUP_RTC_MAX_PORT:-49999}
+      MEDIASOUP_WORKERS:       ${MEDIASOUP_WORKERS:-1}
+      DATABASE_URL:    postgresql://bridge:${POSTGRES_PASSWORD:-bridge_dev_password}@postgres:5432/bridge
+      DATABASE_SSL:    "false"
+      REDIS_URL:       redis://redis:6379
+      JWT_SECRET:      ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
+      REFRESH_SECRET:  ${REFRESH_SECRET:-dev_refresh_secret_change_in_prod}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080}
+    volumes:
+      - uploads_data:/app/uploads
+    ports:
+      - "${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}:${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}/udp"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Bridge Instance 3 ───────────────────────────────────────
+  bridge3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bridge-node-3
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    environment:
+      NODE_ENV:        production
+      PORT:            3001
+      INSTANCE_ID:     bridge-3
+      TURN_HOST:       ${TURN_HOST:-}
+      TURN_SECRET:     ${TURN_SECRET:-}
+      TURN_PORT:       ${TURN_PORT:-3478}
+      STUN_URLS:       ${STUN_URLS:-stun:stun.l.google.com:19302}
+      MEDIASOUP_ANNOUNCED_IP:  ${MEDIASOUP_ANNOUNCED_IP:-}
+      MEDIASOUP_RTC_MIN_PORT:  ${MEDIASOUP_RTC_MIN_PORT:-40000}
+      MEDIASOUP_RTC_MAX_PORT:  ${MEDIASOUP_RTC_MAX_PORT:-49999}
+      MEDIASOUP_WORKERS:       ${MEDIASOUP_WORKERS:-1}
+      DATABASE_URL:    postgresql://bridge:${POSTGRES_PASSWORD:-bridge_dev_password}@postgres:5432/bridge
+      DATABASE_SSL:    "false"
+      REDIS_URL:       redis://redis:6379
+      JWT_SECRET:      ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
+      REFRESH_SECRET:  ${REFRESH_SECRET:-dev_refresh_secret_change_in_prod}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080}
+    volumes:
+      - uploads_data:/app/uploads
+    ports:
+      - "${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}:${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}/udp"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── HAProxy — Sticky Session Load Balancer ──────────────────
+  # WebSocket için sticky session ZORUNLU:
+  #   Socket.io polling → upgrade akışında aynı node gerekir.
+  #   Redis adapter publish/subscribe tüm node'lara mesajı iletir
+  #   ama HTTP handshake tek node'da tamamlanmalı.
+  #
+  # Cookie tabanlı sticky: SERVERID cookie ile node seçilir.
+  # İlk bağlantıda round-robin, sonraki isteklerde aynı node.
+  haproxy:
+    image: haproxy:2.9-alpine
+    container_name: bridge-haproxy
+    restart: unless-stopped
+    depends_on:
+      bridge1: { condition: service_healthy }
+      bridge2: { condition: service_healthy }
+      bridge3: { condition: service_healthy }
+    ports:
+      - "8080:8080"     # HTTP + WebSocket endpoint
+      - "8404:8404"     # HAProxy stats UI (http://localhost:8404/stats)
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./haproxy/errors:/etc/haproxy/errors:ro
+    healthcheck:
+      test: ["CMD-SHELL", "haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg && wget -qO- http://localhost:8404/stats || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  cluster_postgres_data:
+  cluster_redis_data:
+  uploads_data:

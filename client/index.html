@@ -1,0 +1,984 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#5865f2">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Bridge">
+<title>Bridge</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/modules/session8-features.css">
+
+<!--
+  ⚠️  KRİTİK: Bu script bloğu HEAD içinde INLINE kalmalı.
+  Amaç: defer/async ile yüklenen diğer scriptlerden ÖNCE hata yakalamayı
+  başlatmak. Chunk'lar defer ile yüklendiği için aralarındaki sürede
+  (genellikle 200–800ms) oluşan hatalar window.onerror olmadan sessizce
+  kaybolur. Bu minimal bootstrap o pencereyi kapatır.
+
+  Bu blok tam error-boundary.js'i YENİDEN UYGULAMAZ — sadece hataları
+  kuyruğa alır. chunk-boot.js yüklenince asıl error-boundary.js devreye
+  girer, kuyruktaki hataları işler ve bu geçici handler'ı devre dışı bırakır.
+-->
+<script>
+(function(g) {
+  'use strict';
+  // Chunk'lar yüklenmeden önce oluşan hataları tut
+  var _earlyErrors = g.__BRIDGE_EARLY_ERRORS__ = [];
+  var _MAX = 20;
+
+  // Önceki handler'ı zincirle (varsa)
+  var _prevOnError = g.onerror;
+  var _prevOnUnhandled = g.onunhandledrejection;
+
+  g.onerror = function(msg, src, line, col, err) {
+    if (_earlyErrors.length < _MAX) {
+      _earlyErrors.push({
+        type: 'uncaught',
+        message: String(msg || ''),
+        source:  String(src  || ''),
+        line:    line || 0,
+        col:     col  || 0,
+        stack:   err && err.stack ? String(err.stack) : '',
+        ts:      Date.now(),
+      });
+    }
+    if (typeof _prevOnError === 'function') return _prevOnError.apply(this, arguments);
+    return false; // hata propagasyonunu engelleme
+  };
+
+  g.addEventListener('unhandledrejection', function(e) {
+    if (_earlyErrors.length < _MAX) {
+      var reason = e.reason;
+      _earlyErrors.push({
+        type:    'unhandledrejection',
+        message: reason && reason.message ? String(reason.message) : String(reason || ''),
+        source:  'Promise',
+        line:    0,
+        col:     0,
+        stack:   reason && reason.stack ? String(reason.stack) : '',
+        ts:      Date.now(),
+      });
+    }
+  });
+
+  // Resource yükleme hatası (script/link/img) — capture phase
+  g.addEventListener('error', function(e) {
+    var t = e.target;
+    if (!t || t === g) return;
+    var tag = t.tagName && t.tagName.toLowerCase();
+    if (tag !== 'script' && tag !== 'link' && tag !== 'img') return;
+    if (_earlyErrors.length < _MAX) {
+      _earlyErrors.push({
+        type:    'resource',
+        message: 'Resource load failed: ' + (t.src || t.href || '(unknown)'),
+        source:  t.src || t.href || '',
+        line:    0, col: 0, stack: '',
+        ts:      Date.now(),
+      });
+    }
+  }, true);
+
+})(window);
+</script>
+</head>
+<body>
+
+<!-- AUTH SCREEN -->
+<div id="auth-screen" class="auth-screen">
+  <div class="auth-bg">
+    <div class="auth-blob b1"></div>
+    <div class="auth-blob b2"></div>
+    <div class="auth-blob b3"></div>
+  </div>
+  <div class="auth-card">
+    <div class="auth-logo">🌉</div>
+    <div class="auth-brand">
+      <h1>Bridge</h1>
+      <p data-i18n="tagline">Connect with anyone, anywhere</p>
+    </div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" onclick="switchAuthTab('login')" data-i18n="sign_in">Sign In</button>
+      <button class="auth-tab" onclick="switchAuthTab('register')" data-i18n="create_account">Create Account</button>
+    </div>
+    <div id="auth-msg" style="display:none" role="alert" aria-live="polite"></div>
+    <div id="login-form">
+      <div class="form-group"><label data-i18n="username">Username</label><input type="text" id="l-username" placeholder="your_username" autocomplete="username" aria-label="Kullanıcı adı" aria-describedby="auth-msg"></div>
+      <div class="form-group"><label data-i18n="password">Password</label><input type="password" id="l-password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter') login()" aria-label="Şifre" aria-describedby="auth-msg"></div>
+      <button class="btn btn-primary" onclick="login()" aria-label="Giriş yap" data-i18n="sign_in">Sign In</button>
+    </div>
+    <div id="register-form" style="display:none">
+      <div class="form-group"><label data-i18n="display_name">Display Name</label><input type="text" id="r-displayname" placeholder="John Doe"></div>
+      <div class="form-group"><label>Username <span class="form-hint">letters, numbers, underscore only</span></label><input type="text" id="r-username" placeholder="johndoe"></div>
+      <div class="form-group"><label>Password <span class="form-hint">min. 6 characters</span></label><input type="password" id="r-password" placeholder="Min. 6 characters" onkeydown="if(event.key==='Enter') register()"></div>
+      <!-- CAPTCHA widget — JS tarafından doldurulur, CAPTCHA_ENABLED=false ise gizli kalır -->
+      <div id="captcha-widget-wrap" style="display:none;margin:10px 0;">
+        <div id="captcha-widget"></div>
+        <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">🤖 Bot olmadığını doğrula</p>
+      </div>
+      <button class="btn btn-primary" onclick="register()" aria-label="Hesap oluştur" aria-describedby="auth-msg" data-i18n="create_account">Create Account</button>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app" class="app" style="display:none">
+
+  <!-- SERVER LIST -->
+  <div class="server-list" id="server-list">
+    <div class="server-separator"></div>
+    <button type="button" class="server-add tooltip" data-tip-i18n="tip_add_server" data-tip="Add / Join Server" onclick="openAddServerModal()" aria-label="Sunucu Ekle veya Katıl">+</button>
+  </div>
+
+  <!-- CHANNEL SIDEBAR -->
+  <div class="channel-sidebar">
+    <button type="button" class="server-header" id="server-header-btn" onclick="openServerMenu()" aria-label="Sunucu menüsünü aç" aria-haspopup="menu">
+      <span id="sidebar-server-name">Bridge</span>
+      <span style="color:var(--text-3);font-size:18px">⌄</span>
+    </button>
+    <div class="channel-list" id="channel-list"></div>
+    <div class="user-panel">
+      <button type="button" class="user-avatar-wrap tooltip" data-tip-i18n="tip_profile" data-tip="Profile" onclick="openSettings()" aria-label="Profil ve ayarlar">
+        <div class="user-avatar" id="my-avatar" style="background:#4f8ef7">?</div>
+        <div class="status-dot online" id="my-status-dot"></div>
+      </button>
+      <button type="button" class="user-info" onclick="openSettings()" aria-label="Profil ve ayarlar">
+        <div class="u-name" id="my-username">...</div>
+        <div class="u-tag" id="my-tag">Online</div>
+      </button>
+      <div class="user-actions">
+        <button type="button" class="u-action-btn tooltip" data-tip-i18n="tip_friends" data-tip="Arkadaşlar" onclick="openFriendsPanel()" aria-label="Arkadaşlar panelini aç">👥</button>
+        <button type="button" class="u-action-btn tooltip" data-tip-i18n="tip_dm" data-tip="Direct Messages" onclick="openDmPanel()" aria-label="Direkt mesajlar">💬</button>
+        <button type="button" class="u-action-btn tooltip" data-tip-i18n="tip_mute" data-tip="Mute" id="btn-mute" onclick="toggleMute()" aria-label="Mikrofonu sustur" aria-pressed="false">🎙️</button>
+        <button type="button" class="u-action-btn tooltip" data-tip-i18n="tip_deafen" data-tip="Deafen" id="btn-deafen" onclick="toggleDeafen()" aria-label="Sesi kapat" aria-pressed="false">🎧</button>
+        <button type="button" class="u-action-btn tooltip" data-tip="Aktivite Durumu" onclick="openActivityModal()" aria-label="Aktivite durumunu ayarla">🎯</button>
+        <button type="button" class="u-action-btn tooltip" data-tip="E2E Şifreleme" onclick="window.BridgeE2E?.openE2ESettings()" id="btn-e2e" aria-label="Uçtan uca şifreleme ayarları">🔓</button>
+        <button type="button" class="u-action-btn tooltip" data-tip="Federasyon — Uzak Sunucular" onclick="openFederationUI()" aria-label="Federasyon — Uzak Sunucular">🌐</button>
+
+        <button type="button" class="u-action-btn tooltip" data-tip-i18n="tip_theme" data-tip="Toggle Theme" id="btn-theme" onclick="toggleTheme()" aria-label="Temayı değiştir">☀️</button>
+        <button type="button" class="u-action-btn tooltip" data-tip-i18n="tip_settings" data-tip="Settings" onclick="openSettings()" aria-label="Profil ve ayarlar">⚙️</button>
+        <button type="button" class="u-action-btn tooltip" data-i18n-toggle data-tip-i18n="lang_toggle_tip" data-tip="Switch to English" onclick="i18n.toggleLang()" style="font-size:11px;font-weight:700;letter-spacing:.05em;" aria-label="Switch to English">EN</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN CONTENT -->
+  <div class="main-content">
+    <div class="channel-header" id="channel-header">
+      <span class="ch-h-icon" id="ch-h-icon">#</span>
+      <span class="ch-h-name" id="ch-h-name">bridge</span>
+      <div class="ch-h-divider"></div>
+      <span class="ch-h-topic" id="ch-h-topic" data-i18n="select_channel">Select a channel to start</span>
+      <div style="display:flex;gap:4px;margin-left:8px">
+        <button type="button" class="h-btn tooltip" data-tip-i18n="tip_members" data-tip="Members" onclick="toggleMemberList()" aria-label="Üye listesini göster/gizle">👥</button>
+        <button type="button" class="h-btn tooltip" data-tip-i18n="tip_pins" data-tip="Pinned Messages" onclick="openPinsPanel()" id="btn-pins" aria-label="Sabitlenmiş mesajlar">📌</button>
+        <button type="button" class="h-btn tooltip" data-tip-i18n="tip_poll" data-tip="Anket Oluştur" onclick="openPollCreator()" aria-label="Anket oluştur">📊</button>
+        <button type="button" class="h-btn tooltip" data-tip-i18n="tip_invite" data-tip="Invite" onclick="openInviteModal()" aria-label="Davet bağlantısı oluştur">🔗</button>
+        <button type="button" class="h-btn tooltip" data-tip-i18n="tip_files" data-tip="File Archive" onclick="openFileArchive()" aria-label="Dosya arşivi">📁</button>
+        <button type="button" class="h-btn tooltip" data-tip="Schedule Message" id="btn-schedule" onclick="openScheduleModal()" aria-label="Mesaj zamanla">🕐</button>
+        <button type="button" class="h-btn tooltip" data-tip-i18n="tip_bridge" data-tip="Channel Bridge" onclick="openBridgeModal()" aria-label="Kanal köprüsü">🌉</button>
+        <button type="button" class="h-btn tooltip" data-tip="Sunucu Keşfet" onclick="openDiscovery()" aria-label="Sunucu keşfet">🌐</button>
+        <button type="button" class="h-btn tooltip" data-tip-i18n="tip_bots" data-tip="Bot Marketplace" onclick="openMarketplacePage()" aria-label="Marketplace ekranını aç">🤖🏪</button>
+        <button type="button" class="h-btn tooltip" data-tip="🤖 AI Kanal Özeti" onclick="openChannelSummary()" aria-label="AI kanal özeti">🤖</button>
+        <button type="button" class="h-btn tooltip" data-tip="🎯 Aktivite Durumu" onclick="openActivityModal()" aria-label="Aktivite durumunu ayarla">🎯</button>
+        <button type="button" class="h-btn tooltip" data-tip="💡 Yanıt Önerisi" onclick="showReplySuggestions()" aria-label="Akıllı yanıt önerileri">💡</button>
+        <button type="button" class="h-btn tooltip" data-tip-i18n="tip_search" data-tip="Search (/)" onclick="if(window.innerWidth<=768&&window.BridgeSemanticSearch){window.BridgeSemanticSearch.open();}else{document.getElementById('search-wrap').style.display=document.getElementById('search-wrap').style.display==='none'?'flex':'none';}" aria-label="Search (/)">🔍</button>
+      </div>
+    </div>
+    <div id="search-wrap" class="search-bar" style="display:none">
+      <span style="color:var(--text-muted);font-size:14px">🔍</span>
+      <input id="search-input" type="text" placeholder="Search messages in this channel..." onkeydown="if(event.key==='Enter') searchMessages()">
+      <button onclick="searchMessages()">Search</button>
+      <button onclick="loadMessages(currentChannel._id)">✕</button>
+    </div>
+
+    <!-- TEXT CHANNEL VIEW -->
+    <div id="text-view" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+      <div class="messages-area" id="messages-area">
+        <div class="channel-welcome" id="ch-welcome">
+          <div class="welcome-icon">🌉</div>
+          <h2 data-i18n="welcome_to_bridge">Welcome to Bridge</h2>
+          <p data-i18n="select_channel_left">Select a channel from the left to start chatting.</p>
+        </div>
+      </div>
+      <div class="typing-bar" id="typing-bar" style="display:none">
+        <div class="typing-dots"><span></span><span></span><span></span></div>
+        <span id="typing-text"></span>
+      </div>
+      <div class="msg-input-wrap" id="msg-input-wrap" style="display:none">
+        <div class="msg-input-box">
+          <button type="button" class="msg-input-btn tooltip" data-tip-i18n="tip_attach" data-tip="Attach File (up to 2GB)" onclick="openFilePicker()" aria-label="Dosya ekle">📎</button>
+          <div class="msg-input-btn tooltip" data-tip-i18n="tip_voice_msg" data-tip="Voice Message" id="btn-voice-msg" onmousedown="startVoiceRecord()" onmouseup="stopVoiceRecord()" ontouchstart="startVoiceRecord()" ontouchend="stopVoiceRecord()">🎤</div>
+          <textarea class="msg-input" id="msg-input" placeholder="Message #general" rows="1" onkeydown="handleMsgKey(event)" oninput="handleTypingInput(this)" onpaste="handleMsgPaste(event)"></textarea>
+          <button type="button" class="msg-input-btn tooltip" data-tip-i18n="tip_emoji" data-tip="Emoji, GIF &amp; Server GIFs" onclick="toggleEmojiPicker()" aria-label="Emoji ve GIF seç">😊</button>
+          <button type="button" class="msg-input-btn tooltip" data-tip="Sunucu Emojileri" onclick="toggleServerEmojiPicker()" id="server-emoji-picker-btn" aria-label="Sunucu emojisi seç">✨</button>
+          <button type="button" class="msg-input-btn send tooltip" data-tip-i18n="tip_send" data-tip="Send" onclick="sendMessage()" aria-label="Mesaj gönder">➤</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- VOICE CHANNEL VIEW -->
+    <div id="voice-view" class="voice-room" style="display:none">
+      <div class="voice-room-title" id="voice-room-title">🔊 General Voice</div>
+
+      <!-- Group video grid (kamera / ekran paylaşımı aktifken görünür) -->
+      <div id="sfu-video-grid" class="sfu-video-grid" style="display:none"></div>
+
+      <div class="voice-peers" id="voice-peers"></div>
+      <div class="voice-controls">
+        <button type="button" class="vc-btn tooltip" data-tip-i18n="tip_mute"   data-tip="Mute"         id="vc-mute"   onclick="toggleMute()" aria-label="Sesi kapat / aç">🎙️</button>
+        <button type="button" class="vc-btn tooltip" data-tip-i18n="tip_deafen" data-tip="Deafen"       id="vc-deafen" onclick="toggleDeafen()" aria-label="Kulaklığı kapat / aç">🎧</button>
+        <button type="button" class="vc-btn tooltip" data-tip="Kamera Aç/Kapat" id="vc-video"  onclick="toggleVideo()" aria-label="Kamera aç / kapat">📷</button>
+        <button type="button" class="vc-btn tooltip" data-tip="Ekran Paylaş"    id="vc-screen" onclick="toggleScreenShare()" aria-label="Ekran paylaşımı başlat / durdur">🖥️</button>
+        <button type="button" class="vc-btn tooltip" data-tip="Soundboard"      onclick="openSoundboard()" aria-label="Soundboard'ı aç">🎵</button>
+        <button type="button" class="vc-btn leave tooltip" data-tip-i18n="tip_leave" data-tip="Leave"  onclick="leaveVoice()" aria-label="Ses kanalından ayrıl">📵</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MEMBER LIST -->
+  <div class="member-list" id="member-list">
+    <div id="member-list-content"></div>
+  </div>
+</div>
+
+
+<!-- MOBILE BACKDROP -->
+<div class="mobile-backdrop" id="mobile-backdrop" onclick="closeMobilePanels()"></div>
+
+<!-- MOBILE BOTTOM NAV -->
+<nav class="mobile-nav" id="mobile-nav" role="navigation" aria-label="Ana navigasyon">
+
+  <button class="mobile-nav-btn active" id="mnav-servers" onclick="mobileNav('servers')" ontouchstart="" aria-label="Sunucular" type="button">
+    <span class="mnav-icon" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+        <line x1="12" y1="22.08" x2="12" y2="12"/>
+      </svg>
+    </span>
+    <span class="mnav-label">Sunucular</span>
+    <span class="mnav-pip" aria-hidden="true"></span>
+  </button>
+
+  <button class="mobile-nav-btn" id="mnav-channels" onclick="mobileNav('channels')" ontouchstart="" aria-label="Kanallar" type="button">
+    <span class="mnav-icon" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="8" y1="6" x2="21" y2="6"/>
+        <line x1="8" y1="12" x2="21" y2="12"/>
+        <line x1="8" y1="18" x2="21" y2="18"/>
+        <line x1="3" y1="6" x2="3.01" y2="6"/>
+        <line x1="3" y1="12" x2="3.01" y2="12"/>
+        <line x1="3" y1="18" x2="3.01" y2="18"/>
+      </svg>
+    </span>
+    <span class="mnav-label">Kanallar</span>
+    <span class="mnav-pip" aria-hidden="true"></span>
+  </button>
+
+  <button class="mobile-nav-btn" id="mnav-chat" onclick="mobileNav('chat')" ontouchstart="" aria-label="Sohbet" type="button">
+    <span class="mnav-icon" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+    </span>
+    <span class="mnav-label">Sohbet</span>
+    <span class="mnav-pip" aria-hidden="true"></span>
+  </button>
+
+  <button class="mobile-nav-btn" id="mnav-members" onclick="mobileNav('members')" ontouchstart="" aria-label="Üyeler" type="button">
+    <span class="mnav-icon" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+        <circle cx="9" cy="7" r="4"/>
+        <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+        <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+      </svg>
+    </span>
+    <span class="mnav-label">Üyeler</span>
+    <span class="mnav-pip" aria-hidden="true"></span>
+  </button>
+
+  <button class="mobile-nav-btn" id="mnav-profile" onclick="mobileNav('profile')" ontouchstart="" aria-label="Profil" type="button">
+    <span class="mnav-icon" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+        <circle cx="12" cy="7" r="4"/>
+      </svg>
+    </span>
+    <span class="mnav-label">Profil</span>
+    <span class="mnav-pip" aria-hidden="true"></span>
+  </button>
+
+</nav>
+
+<!-- SCREEN SHARE VIEW — Bridge Go Live -->
+<div id="screen-share-view" class="screen-share-view" style="display:none">
+  <!-- Header bar -->
+  <div class="ss-header">
+    <div class="ss-header-left">
+      <span class="ss-live-badge">🔴 CANLI</span>
+      <span class="ss-channel-name" id="ss-channel-name">Ses Kanalı</span>
+      <span class="ss-sharer-name" id="ss-sharer-name"></span>
+    </div>
+    <div class="ss-header-right">
+      <button class="ss-icon-btn tooltip" data-tip="Tam Ekran" id="ss-fullscreen-btn" onclick="toggleSSFullscreen()">⛶</button>
+      <button class="ss-icon-btn tooltip" data-tip="Küçük Mod" onclick="toggleSSMiniMode()">⊡</button>
+      <button class="ss-icon-btn ss-close-btn" onclick="closeScreenShareView()">✕</button>
+    </div>
+  </div>
+
+  <!-- Main video area -->
+  <div class="ss-video-wrap" id="ss-video-wrap">
+    <video id="remote-screen-video" autoplay playsinline></video>
+    <!-- Local screen share preview badge -->
+    <div class="ss-local-badge" id="ss-local-badge" style="display:none">📤 Sen paylaşıyorsun</div>
+    <!-- Loading state -->
+    <div class="ss-loading" id="ss-loading" style="display:none">
+      <div class="ss-loading-spinner"></div>
+      <div>Ekran yükleniyor...</div>
+    </div>
+  </div>
+
+  <!-- Thumbnail strip — other streams -->
+  <div class="ss-thumbnails" id="ss-thumbnails"></div>
+
+  <!-- Bottom controls -->
+  <div class="ss-controls">
+    <div class="ss-controls-left">
+      <span class="ss-quality-label" id="ss-quality-label">HD</span>
+    </div>
+    <div class="ss-controls-center">
+      <button class="ss-ctrl-btn tooltip" data-tip="Mikrofon" id="ss-mute-btn" onclick="toggleMute()">🎙️</button>
+      <button class="ss-ctrl-btn tooltip" data-tip="Sesi Kapat" id="ss-deafen-btn" onclick="toggleDeafen()">🎧</button>
+      <button class="ss-ctrl-btn active tooltip" data-tip="Paylaşımı Durdur" id="ss-stop-btn" onclick="stopMyScreenShare()" style="display:none">🛑 Durdur</button>
+      <button class="ss-ctrl-btn tooltip" data-tip="Ekran Paylaş" id="ss-share-btn" onclick="openScreenShareQualityPicker()">🖥️ Ekranı Paylaş</button>
+    </div>
+    <div class="ss-controls-right">
+      <button class="ss-ctrl-btn ss-leave-btn" onclick="leaveVoice(); closeScreenShareView()">📵 Ayrıl</button>
+    </div>
+  </div>
+</div>
+
+<!-- Screen Share Quality Picker Modal -->
+<div id="ss-quality-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal-card" style="max-width:380px;width:95%;">
+    <h2 style="margin-bottom:4px;">🖥️ Ekran Paylaşım Kalitesi</h2>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">Üst kaliteler burada herkese bedava ✦</p>
+    <div id="ss-quality-options" style="display:flex;flex-direction:column;gap:8px;">
+      <button class="ss-quality-opt" data-q="4k60" onclick="startScreenShareWithQuality('4k60')">
+        <div class="ss-q-title">4K 60fps <span class="ss-q-badge free">BEDAVA</span></div>
+        <div class="ss-q-desc">3840×2160 • 20 Mbps</div>
+      </button>
+      <button class="ss-quality-opt" data-q="1440p60" onclick="startScreenShareWithQuality('1440p60')">
+        <div class="ss-q-title">1440p 60fps <span class="ss-q-badge free">BEDAVA</span></div>
+        <div class="ss-q-desc">2560×1440 • 12 Mbps</div>
+      </button>
+      <button class="ss-quality-opt" data-q="1440p" onclick="startScreenShareWithQuality('1440p')">
+        <div class="ss-q-title">1440p 30fps <span class="ss-q-badge free">BEDAVA</span></div>
+        <div class="ss-q-desc">2560×1440 • 10 Mbps</div>
+      </button>
+      <button class="ss-quality-opt" data-q="1080p60" onclick="startScreenShareWithQuality('1080p60')">
+        <div class="ss-q-title">1080p 60fps <span class="ss-q-badge free">BEDAVA</span></div>
+        <div class="ss-q-desc">En yüksek kalite • 8 Mbps • Nitro'da ücretli</div>
+      </button>
+      <button class="ss-quality-opt" data-q="1080p" onclick="startScreenShareWithQuality('1080p')">
+        <div class="ss-q-title">1080p 30fps <span class="ss-q-badge free">BEDAVA</span></div>
+        <div class="ss-q-desc">Yüksek kalite • 5 Mbps</div>
+      </button>
+      <button class="ss-quality-opt" data-q="720p" onclick="startScreenShareWithQuality('720p')">
+        <div class="ss-q-title">720p 30fps</div>
+        <div class="ss-q-desc">Dengeli kalite • 3 Mbps</div>
+      </button>
+      <button class="ss-quality-opt" data-q="hd" onclick="startScreenShareWithQuality('hd')">
+        <div class="ss-q-title">HD (Düşük bant)</div>
+        <div class="ss-q-desc">Yavaş bağlantılar için • 1.5 Mbps</div>
+      </button>
+    </div>
+    <div style="margin-top:16px;">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+        <input type="checkbox" id="ss-include-audio" checked style="width:16px;height:16px;accent-color:var(--brand);">
+        Sekme/uygulama sesini dahil et
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-top:8px;">
+        <input type="checkbox" id="ss-save-as-default" style="width:16px;height:16px;accent-color:var(--brand);">
+        Bu kaliteyi varsayılan olarak kaydet
+      </label>
+    </div>
+    <div class="modal-footer" style="margin-top:16px;">
+      <button class="btn" onclick="document.getElementById('ss-quality-modal').style.display='none'">İptal</button>
+    </div>
+  </div>
+</div>
+
+<!-- EMOJI + GIF + SERVER GIF PICKER -->
+<div id="emoji-picker" class="emoji-picker" style="display:none">
+  <div class="emoji-picker-tabs">
+    <button class="ep-tab active" onclick="switchPickerTab('emoji')" id="tab-emoji">😊 Emoji</button>
+    <button class="ep-tab" onclick="switchPickerTab('gif')" id="tab-gif">🎞️ GIF</button>
+    <button class="ep-tab" onclick="switchPickerTab('server-gif')" id="tab-server-gif">🌉 Server</button>
+  </div>
+  <!-- EMOJI PANEL -->
+  <div id="panel-emoji">
+    <input type="text" id="emoji-search" class="emoji-search" placeholder="Emoji ara..." oninput="filterEmojis(this.value)">
+    <div class="emoji-categories" id="emoji-categories"></div>
+    <div class="emoji-grid" id="emoji-grid"></div>
+  </div>
+  <!-- GIF PANEL -->
+  <div id="panel-gif" style="display:none">
+    <div class="gif-search-wrap">
+      <input type="text" id="gif-search" class="emoji-search" placeholder="GIF ara... (Tenor)" oninput="onGifSearch(this.value)">
+    </div>
+    <div class="gif-trending-label" id="gif-label">🔥 Trend GIFler</div>
+    <div class="gif-grid" id="gif-grid"><div class="gif-loading" data-i18n="loading">Yükleniyor...</div></div>
+  </div>
+  <!-- SERVER GIF PANEL -->
+  <div id="panel-server-gif" style="display:none">
+    <div class="gif-trending-label">🌉 Sunucu GIFleri (tüm sunuculardan)</div>
+    <div id="server-gif-panel-grid"></div>
+  </div>
+</div>
+
+<!-- SETTINGS MODAL (lazy-loaded via partials.js) -->
+<div id="settings-modal-container"></div>
+
+<!-- ADD/JOIN SERVER MODAL -->
+<div id="addserver-modal" class="modal-overlay" style="display:none" onclick="closeModalOutside(event,'addserver-modal')" role="dialog" aria-modal="true">
+  <div class="modal-card" style="max-width:520px;width:95%">
+    <h2>🌐 Sunucu Ekle</h2>
+    <div class="auth-tabs" style="margin-bottom:20px">
+      <button class="auth-tab active" onclick="switchServerTab('create')" data-i18n="create">Oluştur</button>
+      <button class="auth-tab" onclick="switchServerTab('template')">Şablondan</button>
+      <button class="auth-tab" onclick="switchServerTab('join')">ID ile Katıl</button>
+      <button class="auth-tab" onclick="switchServerTab('invite')" data-i18n="invite_code">Davet Kodu</button>
+      <button class="auth-tab" onclick="closeModal('addserver-modal');openDiscordImport()" style="color:var(--accent,#f5a623);font-weight:700">📥 Discord'dan</button>
+    </div>
+
+    <!-- Manuel oluştur -->
+    <div id="create-server-form">
+      <div class="form-group"><label data-i18n="server_name">Sunucu Adı</label><input type="text" id="new-server-name" class="input-field" placeholder="Harika Sunucum" maxlength="50"></div>
+      <div class="form-group"><label>İkon (emoji)</label><input type="text" id="new-server-icon" class="input-field" placeholder="🌐" maxlength="2"></div>
+      <div class="modal-footer"><button class="btn btn-primary" style="flex:1" onclick="createServer()" data-i18n="create_server">Sunucu Oluştur</button></div>
+    </div>
+
+    <!-- Şablondan oluştur -->
+    <div id="template-server-form" style="display:none">
+      <div id="template-list" style="display:grid;gap:10px;margin-bottom:16px">
+        <div style="color:var(--text-muted);font-size:13px;text-align:center;padding:20px">⏳ Şablonlar yükleniyor...</div>
+      </div>
+      <div id="template-name-row" style="display:none">
+        <div class="form-group">
+          <label>Sunucu Adı</label>
+          <input type="text" id="template-server-name" class="input-field" placeholder="Sunucu adı..." maxlength="50">
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-primary" style="flex:1" onclick="applyTemplate()">✨ Şablonu Uygula</button>
+          <button class="btn" onclick="clearTemplateSelection()">← Geri</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ID ile katıl -->
+    <div id="join-server-form" style="display:none">
+      <div class="form-group"><label data-i18n="server_id">Sunucu ID</label><input type="text" id="join-server-id" class="input-field" placeholder="Sunucu ID yapıştır"></div>
+      <div class="modal-footer"><button class="btn btn-primary" style="flex:1" onclick="joinServer()" data-i18n="join_server">Sunucuya Katıl</button></div>
+    </div>
+
+    <!-- Davet kodu -->
+    <div id="invite-join-form" style="display:none">
+      <div class="form-group"><label data-i18n="invite_code">Davet Kodu</label><input type="text" id="invite-code-input" class="input-field" placeholder="örn. a1b2c3d4"></div>
+      <div class="modal-footer"><button class="btn btn-primary" style="flex:1" onclick="joinByInvite()">Davet ile Katıl</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- INVITE MODAL -->
+<div id="invite-modal" class="modal-overlay" style="display:none" onclick="closeModalOutside(event,'invite-modal')" role="dialog" aria-modal="true">
+  <div class="modal-card" style="max-width:480px;width:100%">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <h2 style="margin:0">🔗 Arkadaşlarını Davet Et</h2>
+      <button class="btn" style="padding:4px 10px;font-size:18px;line-height:1" onclick="closeModal('invite-modal')">✕</button>
+    </div>
+
+    <!-- Sunucu bilgisi -->
+    <div id="invite-server-info" style="display:flex;align-items:center;gap:12px;background:var(--bg-3);border-radius:8px;padding:12px;margin-bottom:16px">
+      <div id="invite-server-icon" style="font-size:2rem;width:48px;height:48px;display:flex;align-items:center;justify-content:center;background:var(--bg-2);border-radius:12px;flex-shrink:0">🌐</div>
+      <div>
+        <div id="invite-server-name" style="font-weight:700;font-size:15px">Yükleniyor...</div>
+        <div id="invite-server-members" style="font-size:12px;color:var(--text-muted)"></div>
+      </div>
+    </div>
+
+    <!-- Link kutusu -->
+    <div style="margin-bottom:12px">
+      <label style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:6px">Davet Linki</label>
+      <div style="display:flex;gap:8px">
+        <input id="invite-link-input" readonly onclick="this.select()"
+          style="flex:1;background:var(--bg-3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;color:var(--text-1);font-family:monospace;cursor:pointer"
+          value="Oluşturuluyor...">
+        <button class="btn btn-primary" style="padding:8px 16px;font-size:13px;white-space:nowrap" onclick="copyInviteLink()">
+          <span id="copy-btn-text" data-i18n="copy">Kopyala</span>
+        </button>
+      </div>
+      <p id="invite-expiry" style="color:var(--text-muted);font-size:11px;margin-top:6px"></p>
+    </div>
+
+    <!-- Sosyal medya paylaşım butonları -->
+    <div style="margin-bottom:16px">
+      <label style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:8px">Paylaş</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" onclick="shareInvite('whatsapp')" style="flex:1;min-width:100px;gap:6px;font-size:13px;background:#25d366;color:#fff;border:none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+          WhatsApp
+        </button>
+        <button class="btn" onclick="shareInvite('telegram')" style="flex:1;min-width:100px;gap:6px;font-size:13px;background:#229ed9;color:#fff;border:none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+          Telegram
+        </button>
+        <button class="btn" onclick="shareInvite('twitter')" style="flex:1;min-width:100px;gap:6px;font-size:13px;background:#000;color:#fff;border:none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.744l7.737-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+          X (Twitter)
+        </button>
+        <button class="btn" onclick="shareInvite('native')" id="invite-native-share" style="flex:1;min-width:100px;gap:6px;font-size:13px;display:none">
+          📤 Paylaş
+        </button>
+      </div>
+    </div>
+
+    <!-- QR Kod -->
+    <details style="margin-bottom:4px">
+      <summary style="cursor:pointer;font-size:13px;color:var(--text-muted);font-weight:600;user-select:none;padding:4px 0">
+        📱 QR Kod ile Paylaş
+      </summary>
+      <div style="text-align:center;padding:16px 0">
+        <div id="invite-qr-container" style="display:inline-block;background:#fff;border-radius:12px;padding:12px">
+          <div id="invite-qr-img" style="width:160px;height:160px;display:flex;align-items:center;justify-content:center;color:#888;font-size:13px">Yükleniyor...</div>
+        </div>
+        <div style="margin-top:8px">
+          <button class="btn" style="font-size:12px;padding:6px 14px" onclick="downloadInviteQr()">⬇️ İndir</button>
+        </div>
+      </div>
+    </details>
+  </div>
+</div>
+
+<!-- SCHEDULE SEND MODAL -->
+<div id="schedule-modal" class="modal-overlay" style="display:none" onclick="closeModalOutside(event,'schedule-modal')" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <h2>🕐 Schedule Message</h2>
+    <p style="color:var(--text-3);font-size:13px;margin-bottom:16px">Şu anki kanal: <strong id="schedule-channel-name">#general</strong></p>
+    <div class="schedule-form">
+      <div class="form-group">
+        <label>Mesaj</label>
+        <textarea id="schedule-content" placeholder="Zamanlanmış mesajınızı yazın..." maxlength="2000"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Gönderme Tarihi &amp; Saati</label>
+        <input type="datetime-local" id="schedule-datetime">
+      </div>
+      <button class="btn btn-primary" onclick="scheduleMessage()">🕐 Zamanla</button>
+    </div>
+    <hr style="border-color:var(--bg-4);margin:16px 0">
+    <h3 style="font-size:13px;color:var(--text-3);margin-bottom:8px">Zamanlanmış Mesajlar</h3>
+    <div class="scheduled-list" id="scheduled-list"></div>
+    <div class="modal-footer" style="margin-top:12px">
+      <button class="btn" style="flex:1" onclick="closeModal('schedule-modal')">Kapat</button>
+    </div>
+  </div>
+</div>
+
+<!-- SERVER GIF MODAL -->
+<div id="server-gif-modal" class="modal-overlay" style="display:none" onclick="closeModalOutside(event,'server-gif-modal')">
+  <div class="modal-card">
+    <h2>🎞️ Server GIF Collection</h2>
+    <p style="color:var(--text-3);font-size:13px;margin-bottom:14px">Bu sunucuya özel GIF koleksiyonu. Herkes kullanabilir, admin ekleyip silebilir.</p>
+    <!-- Upload form -->
+    <div class="server-gif-upload">
+      <h3 style="font-size:13px;color:var(--text-2);margin-bottom:6px">➕ Yeni GIF Ekle</h3>
+      <input type="text" id="server-gif-name" placeholder="GIF adı (örn: 'dans', 'gg')" maxlength="64">
+      <input type="text" id="server-gif-tags" placeholder="Etiketler (virgülle ayır, örn: dans,mutlu)">
+      <input type="file" id="server-gif-file" accept="image/gif,image/webp,image/png,image/jpeg">
+      <button class="btn btn-primary" onclick="uploadServerGif()">Yükle</button>
+    </div>
+    <!-- GIF Grid -->
+    <div class="server-gif-grid" id="server-gif-grid">
+      <div class="gif-loading">Yükleniyor...</div>
+    </div>
+    <div class="modal-footer" style="margin-top:14px">
+      <button class="btn" style="flex:1" onclick="closeModal('server-gif-modal')">Kapat</button>
+    </div>
+  </div>
+</div>
+
+<!-- CHANNEL BRIDGE MODAL -->
+<div id="bridge-modal" class="modal-overlay" style="display:none" onclick="closeModalOutside(event,'bridge-modal')">
+  <div class="modal-card">
+    <h2>🌉 Channel Bridge</h2>
+    <p style="color:var(--text-3);font-size:13px;margin-bottom:14px">İki kanal arasında mesajları otomatik ilet. Her iki kanalda da MANAGE_CHANNELS yetkisi gerekli.</p>
+    <!-- Active bridges -->
+    <h3 style="font-size:13px;color:var(--text-2);margin-bottom:8px">Aktif Bridge'ler</h3>
+    <div class="bridge-list" id="bridge-list"></div>
+    <!-- Create bridge -->
+    <h3 style="font-size:13px;color:var(--text-2);margin:14px 0 8px">➕ Yeni Bridge Oluştur</h3>
+    <div class="bridge-form">
+      <input type="text" id="bridge-target-channel" placeholder="Hedef Kanal ID">
+      <input type="text" id="bridge-target-server" placeholder="Hedef Sunucu ID">
+      <input type="text" id="bridge-label" placeholder="Bridge adı (örn: Duyurular)">
+      <button class="btn btn-primary" onclick="createBridge()">🌉 Bridge Oluştur</button>
+    </div>
+    <div class="modal-footer" style="margin-top:12px">
+      <button class="btn" style="flex:1" onclick="closeModal('bridge-modal')">Kapat</button>
+    </div>
+  </div>
+</div>
+
+<!-- FILE ARCHIVE MODAL -->
+<div id="file-archive-modal" class="modal-overlay" style="display:none" onclick="closeModalOutside(event,'file-archive-modal')">
+  <div class="modal-card">
+    <h2>📁 Dosya Arşivi — <span id="archive-channel-name"></span></h2>
+    <p style="color:var(--text-3);font-size:13px">Bu kanalda paylaşılan tüm dosyalar</p>
+    <div class="archive-grid" id="file-archive-grid">
+      <div class="archive-loading">Yükleniyor...</div>
+    </div>
+    <div class="modal-footer" style="margin-top:14px">
+      <button class="btn" style="flex:1" onclick="closeModal('file-archive-modal')">Kapat</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- ── CTRL+K GLOBAL SEARCH MODAL ──────────────────────── -->
+<!-- ── GELİŞMİŞ ARAMA MODALI ── -->
+<div id="global-search-modal" class="gs-overlay" style="display:none" onclick="if(event.target===this)closeGlobalSearch()">
+  <div class="gs-box gs-box-v69">
+    <!-- Üst bar: input + ESC -->
+    <div class="gs-input-wrap">
+      <span class="gs-icon">🔍</span>
+      <input id="gs-input" type="text"
+        placeholder="Mesaj ara... (from:ali has:file before:2025-01-01)"
+        autocomplete="off"
+        oninput="onGlobalSearch(this.value)"
+        onkeydown="handleGsKey(event)">
+      <kbd class="gs-esc" onclick="closeGlobalSearch()">ESC</kbd>
+    </div>
+
+    <!-- Aktif filtre chip'leri -->
+    <div id="gs-chips" class="gs-chips" style="display:none"></div>
+
+    <!-- Filtre satırı -->
+    <div class="gs-filter-bar">
+      <!-- Tip tabları -->
+      <div class="gs-tabs">
+        <button class="gs-tab active" onclick="switchGsTab('all',this)"      id="gs-tab-all">Tümü</button>
+        <button class="gs-tab"        onclick="switchGsTab('messages',this)" id="gs-tab-messages">💬 Mesajlar</button>
+        <button class="gs-tab"        onclick="switchGsTab('channels',this)" id="gs-tab-channels"># Kanallar</button>
+        <button class="gs-tab"        onclick="switchGsTab('users',this)"    id="gs-tab-users">👤 Üyeler</button>
+      </div>
+
+      <!-- Hızlı filtre butonları (mesaj tabında aktif) -->
+      <div class="gs-quick-filters" id="gs-quick-filters">
+        <button class="gs-qf" onclick="gsToggleFilter('has','file')"  id="gsf-file">📎 Dosya</button>
+        <button class="gs-qf" onclick="gsToggleFilter('has','image')" id="gsf-image">🖼️ Resim</button>
+        <button class="gs-qf" onclick="gsToggleFilter('has','link')"  id="gsf-link">🔗 Link</button>
+        <button class="gs-qf" onclick="gsOpenFromPicker()"            id="gsf-from">👤 Kişi</button>
+        <button class="gs-qf" onclick="gsOpenDatePicker()"            id="gsf-date">📅 Tarih</button>
+        <button class="gs-qf gs-qf-clear" onclick="gsClearFilters()" id="gsf-clear" style="display:none">✕ Temizle</button>
+      </div>
+    </div>
+
+    <!-- Gizli: Kişi seçici mini dropdown -->
+    <div id="gs-from-picker" class="gs-picker" style="display:none">
+      <input id="gs-from-input" type="text" placeholder="Kullanıcı adı..." oninput="gsFromSearch(this.value)">
+      <div id="gs-from-results" class="gs-picker-results"></div>
+    </div>
+
+    <!-- Gizli: Tarih aralığı seçici -->
+    <div id="gs-date-picker" class="gs-picker gs-date-picker" style="display:none">
+      <label>Başlangıç<input id="gs-date-after"  type="date" onchange="gsApplyDate()"></label>
+      <span class="gs-date-sep">–</span>
+      <label>Bitiş<input id="gs-date-before" type="date" onchange="gsApplyDate()"></label>
+      <button onclick="gsCloseDatePicker()">✓ Uygula</button>
+    </div>
+
+    <!-- Sonuç listesi -->
+    <div id="gs-results" class="gs-results">
+      <div class="gs-empty">Aramak için yazmaya başlayın…<br>
+        <span class="gs-hint">İpucu: <code>from:ali</code> · <code>has:file</code> · <code>before:2025-06-01</code></span>
+      </div>
+    </div>
+
+    <!-- Sayfalama -->
+    <div id="gs-pagination" class="gs-pagination" style="display:none">
+      <button id="gs-prev" onclick="gsChangePage(-1)">◀ Önceki</button>
+      <span   id="gs-page-info"></span>
+      <button id="gs-next" onclick="gsChangePage(1)">Sonraki ▶</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── PINNED MESSAGES PANEL ───────────────────────────── -->
+<div id="pins-panel" class="side-panel" style="display:none">
+  <div class="side-panel-header">
+    <span>📌 Sabitlenmiş Mesajlar</span>
+    <button onclick="closePinsPanel()">✕</button>
+  </div>
+  <div id="pins-list" class="pins-list"></div>
+</div>
+
+<!-- ── FRIENDS PANEL ────────────────────────────────────── -->
+<div id="friends-panel" class="friends-overlay" style="display:none">
+  <div class="friends-sidebar">
+    <div class="friends-header">
+      <span>👥 Arkadaşlar</span>
+      <button onclick="closeFriendsPanel()">✕</button>
+    </div>
+    <div class="friends-nav">
+      <button class="fn-btn active" onclick="switchFriendsTab('online',this)">🟢 Çevrimiçi</button>
+      <button class="fn-btn" onclick="switchFriendsTab('all',this)">👥 Tümü</button>
+      <button class="fn-btn" onclick="switchFriendsTab('pending',this)">🕐 Bekleyen</button>
+      <button class="fn-btn fn-add" onclick="switchFriendsTab('add',this)">➕ Ekle</button>
+    </div>
+    <div id="friends-list" class="friends-list"></div>
+  </div>
+</div>
+
+<!-- ── NOTIFICATION PREF CONTEXT MENU (channel right-click) ── -->
+<div id="notif-ctx-menu" class="ctx-menu" style="display:none">
+  <button type="button" class="ctx-item" onclick="setNotifPref('all')" aria-label="Tüm bildirimler">🔔 Tüm Mesajlar</button>
+  <button type="button" class="ctx-item" onclick="setNotifPref('mentions')" aria-label="Sadece bahsetmeler">🔕 Sadece @Mention</button>
+  <button type="button" class="ctx-item" onclick="setNotifPref('mute')" aria-label="Bildirimleri kapat">🚫 Sessiz</button>
+</div>
+
+<!-- ── TIMEOUT MODAL ─────────────────────────────────────── -->
+<div id="timeout-modal" class="modal-overlay" style="display:none" onclick="closeModalOutside(event,'timeout-modal')">
+  <div class="modal-card" style="max-width:380px">
+    <h2>⏱️ Kullanıcıyı Sustur</h2>
+    <p style="color:var(--text-3);font-size:13px;margin-bottom:16px" id="timeout-target-name">Kullanıcı seçilmedi</p>
+    <div class="form-group"><label>Süre</label>
+      <select id="timeout-duration" style="width:100%;background:var(--bg-1);border:1.5px solid var(--bg-5);border-radius:var(--r-md);padding:10px 14px;color:var(--text-1);font-size:14px;outline:none;">
+        <option value="60">1 Dakika</option>
+        <option value="300">5 Dakika</option>
+        <option value="3600">1 Saat</option>
+        <option value="86400">1 Gün</option>
+        <option value="604800">1 Hafta</option>
+      </select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-danger" style="flex:1" onclick="applyTimeout()">Sustur</button>
+      <button class="btn" style="flex:1" onclick="closeModal('timeout-modal')">İptal</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── AUDIT LOG MODAL ───────────────────────────────────── -->
+<div id="audit-modal" class="modal-overlay" style="display:none" onclick="closeModalOutside(event,'audit-modal')">
+  <div class="modal-card" style="max-width:680px;width:95%;max-height:85vh;display:flex;flex-direction:column">
+    <h2>📋 Moderasyon Günlüğü</h2>
+
+    <!-- Filtre bar -->
+    <div class="audit-filter-bar">
+      <select id="audit-filter-action" onchange="loadAuditLog(0)">
+        <option value="">Tüm aksiyonlar</option>
+        <option value="kick">Kick</option>
+        <option value="ban">Ban</option>
+        <option value="unban">Unban</option>
+        <option value="timeout">Timeout</option>
+        <option value="role_assign">Rol Atama</option>
+        <option value="message_delete">Mesaj Silme</option>
+        <option value="channel_create">Kanal Oluşturma</option>
+        <option value="channel_delete">Kanal Silme</option>
+        <option value="server_update">Sunucu Güncelleme</option>
+      </select>
+      <input id="audit-filter-actor" type="text" placeholder="Moderatör adı…" oninput="loadAuditLogDebounced()">
+      <input id="audit-filter-after"  type="date" onchange="loadAuditLog(0)" title="Başlangıç tarihi">
+      <input id="audit-filter-before" type="date" onchange="loadAuditLog(0)" title="Bitiş tarihi">
+    </div>
+
+    <!-- Export butonları -->
+    <div class="audit-export-bar">
+      <span id="audit-total-label" style="font-size:12px;color:var(--text-3)"></span>
+      <div style="display:flex;gap:6px;margin-left:auto">
+        <button class="btn btn-sm" onclick="exportAuditLog('json')">⬇ JSON</button>
+        <button class="btn btn-sm" onclick="exportAuditLog('csv')">⬇ CSV</button>
+      </div>
+    </div>
+
+    <div id="audit-list" style="flex:1;overflow-y:auto;margin-top:8px;display:flex;flex-direction:column;gap:4px"></div>
+
+    <!-- Sayfalama -->
+    <div id="audit-pagination" class="audit-pagination" style="display:none">
+      <button id="audit-prev" onclick="auditChangePage(-1)">◀ Önceki</button>
+      <span   id="audit-page-info"></span>
+      <button id="audit-next" onclick="auditChangePage(1)">Sonraki ▶</button>
+    </div>
+
+    <div class="modal-footer" style="margin-top:10px">
+      <button class="btn" style="flex:1" onclick="closeModal('audit-modal')">Kapat</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── SERVER STATS MODAL ────────────────────────────────── -->
+<div id="stats-modal" class="modal-overlay" style="display:none" onclick="closeModalOutside(event,'stats-modal')">
+  <div class="modal-card" style="max-width:520px;width:95%">
+    <h2>📊 Sunucu İstatistikleri</h2>
+    <div id="stats-content" style="margin-top:16px"></div>
+    <div class="modal-footer" style="margin-top:16px">
+      <button class="btn" style="flex:1" onclick="closeModal('stats-modal')">Kapat</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── STATUS PICKER ─────────────────────────────────────── -->
+<div id="status-picker" class="ctx-menu status-picker-menu" style="display:none">
+  <div style="padding:8px 12px;font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;font-weight:700">Durum Ayarla</div>
+  <button type="button" class="ctx-item status-opt" onclick="setRichStatus('online')" aria-label="Durum: Çevrimiçi"><span class="status-circle online-c"></span> Çevrimiçi</button>
+  <button type="button" class="ctx-item status-opt" onclick="setRichStatus('idle')" aria-label="Durum: Boşta"><span class="status-circle idle-c"></span> Uzakta</button>
+  <button type="button" class="ctx-item status-opt" onclick="setRichStatus('dnd')" aria-label="Durum: Rahatsız Etme"><span class="status-circle dnd-c"></span> Rahatsız Etme</button>
+  <button type="button" class="ctx-item status-opt" onclick="setRichStatus('offline')" aria-label="Durum: Görünmez"><span class="status-circle off-c"></span> Görünmez</button>
+  <div style="border-top:1px solid var(--bg-5);margin:4px 0"></div>
+  <div style="padding:6px 8px">
+    <input id="status-text-input" type="text" placeholder="Durum mesajı..." maxlength="60"
+      style="width:100%;background:var(--bg-1);border:1px solid var(--bg-5);border-radius:6px;padding:6px 10px;color:var(--text-1);font-size:13px;outline:none;font-family:inherit"
+      onkeydown="if(event.key==='Enter')saveStatusText()">
+  </div>
+</div>
+
+<!-- DM PANEL -->
+<div id="dm-panel" class="dm-panel" style="display:none">
+  <div class="dm-sidebar">
+    <div class="dm-header">
+      <span>💬 Mesajlar</span>
+      <button onclick="closeDmPanel()">✕</button>
+    </div>
+    <!-- DM / Grup DM sekmeleri -->
+    <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:4px">
+      <button id="dm-tab-btn" onclick="switchDmTab('dm')" style="flex:1;padding:7px 0;background:none;border:none;border-bottom:2px solid var(--brand);color:var(--brand);font-size:13px;font-weight:600;cursor:pointer">DM</button>
+      <button id="gdm-tab-btn" onclick="switchDmTab('gdm')" style="flex:1;padding:7px 0;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);font-size:13px;cursor:pointer">Gruplar</button>
+    </div>
+    <div id="dm-list-wrap">
+      <div id="dm-list" class="dm-list"></div>
+    </div>
+    <div id="gdm-list-wrap" style="display:none">
+      <div style="padding:6px 8px">
+        <button class="btn btn-sm btn-primary" style="width:100%;font-size:12px" onclick="openCreateGroupDmModal()">+ Yeni Grup DM</button>
+      </div>
+      <div id="gdm-list" class="dm-list"></div>
+    </div>
+  </div>
+  <div class="dm-chat">
+    <div class="dm-chat-header-bar">
+      <span id="dm-chat-header">Select a conversation</span>
+      <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+        <button id="dm-call-voice-btn" class="icon-btn tooltip" data-tip="Ses Araması" onclick="window._dmCallVoice&&window._dmCallVoice()" style="font-size:18px;display:none" title="Ses Araması">📞</button>
+        <button id="dm-call-video-btn" class="icon-btn tooltip" data-tip="Görüntülü Arama" onclick="window._dmCallVideo&&window._dmCallVideo()" style="font-size:18px;display:none" title="Görüntülü Arama">📹</button>
+        <button onclick="closeDmPanel()" style="margin-left:4px">✕</button>
+      </div>
+    </div>
+    <div class="dm-messages" id="dm-messages"></div>
+    <div class="dm-input-area" id="dm-input-area" style="display:none">
+      <!-- E2EE banner — dm.ts tarafından id="dm-e2e-banner" ile kontrol edilir -->
+      <div id="dm-e2e-banner" style="display:none;background:var(--green,#3ba55d);color:#fff;font-size:12px;padding:6px 12px;border-radius:6px 6px 0 0;align-items:center;gap:6px;">
+        🔒 <span>Uçtan uca şifreli — Sunucu bu mesajları okuyamaz</span>
+      </div>
+      <div style="display:flex;gap:6px;align-items:flex-end;">
+        <textarea id="dm-input" class="dm-input" rows="1" placeholder="Mesaj yaz..." onkeydown="handleDmKey(event)" style="flex:1"></textarea>
+        <!-- E2EE toggle — dm.ts tarafından id="dm-e2e-toggle" ile kontrol edilir -->
+        <button id="dm-e2e-toggle" class="icon-btn tooltip" data-tip="Uçtan uca şifreleme" onclick="toggleDmE2E()" style="font-size:18px;padding:6px 8px;display:none" title="E2EE">🔓</button>
+        <button class="btn btn-primary" onclick="(currentGroupDm ? sendGroupDm : (window.sendDm||sendDm))()">➤</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/dist/mediasoup-client.min.js"></script>
+<!-- webrtc-sfu.js: P2P → SFU. mediasoup-client yüklenemezse P2P fallback devreye girer -->
+  <!-- Bridge UI Kit — önce yükle, diğer modüller kullanır -->
+  <!-- Modular core scripts (load order matters) -->
+  <!-- Çevrimdışı banner + network durum izleme -->
+  <!-- misc.js'ten ayrıştırılan modüller --><!-- Hata yakalama -->
+  <!-- misc.js → 5 modüle bölündü -->
+  <!-- misc.js artık boş koordinatör -->
+  <!-- Feature modules -->
+  <!-- marketplace, channel permissions -->
+  <!-- channelPerms.js → 3 modules: data → modal → stage -->
+  <!-- 2FA, Admin -->  <!-- Passkey/WebAuthn -->
+  <!-- AI, E2EE, Aktivite -->
+  <!-- Video kalitesi ayarları -->
+  <!-- Clyde AI Asistanı -->
+  <!-- misc.js modüllere bölündü -->
+  <!-- Mobile navigation & responsiveness -->
+  <!-- Mobil UX İyileştirmeleri (Capacitor + Web) -->
+  <!-- Semantic search, Federation UI -->
+  <!-- Entry point (documentation only) -->
+  <script>
+    // PWA — Service Worker kaydı
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then(reg => {
+            console.log('[Bridge SW] Registered:', reg.scope);
+            // Güncelleme varsa kullanıcıya bildir
+            reg.addEventListener('updatefound', () => {
+              const newWorker = reg.installing;
+              newWorker.addEventListener('statechange', () => {
+                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                  if (typeof toast === 'function') toast('Güncelleme mevcut — sayfayı yenileyin 🔄', 'info');
+                }
+              });
+            });
+          })
+          .catch(err => console.warn('[Bridge SW] Registration failed:', err));
+
+        // SW'den gelen notification tıklama
+        navigator.serviceWorker.addEventListener('message', e => {
+          if (e.data?.type === 'NOTIFICATION_CLICK' && e.data.url) {
+            window.location.href = e.data.url;
+          }
+        });
+      });
+    }
+
+    // PWA — Install prompt yakala
+    let _deferredInstallPrompt = null;
+    window.addEventListener('beforeinstallprompt', e => {
+      e.preventDefault();
+      _deferredInstallPrompt = e;
+      // Kurulum butonu varsa göster
+      const btn = document.getElementById('pwa-install-btn');
+      if (btn) btn.style.display = 'flex';
+    });
+
+    window.installPWA = async function() {
+      if (!_deferredInstallPrompt) return;
+      _deferredInstallPrompt.prompt();
+      const { outcome } = await _deferredInstallPrompt.userChoice;
+      if (outcome === 'accepted') {
+        const btn = document.getElementById('pwa-install-btn');
+        if (btn) btn.style.display = 'none';
+      }
+      _deferredInstallPrompt = null;
+    };
+  </script>
+  <!-- Split modules -->
+
+  <!-- Yeni tasarım sistemi, onboarding turu, semantic arama, bridge import -->
+  <!-- Bridge for Teams landing page: /teams.html -->
+  <!--
+    SCRIPT YÜKLEMESİ — Faz 3 (ESM)
+    ─────────────────────────────────────────────────────────
+    Üretim (prod):  npm run build → client/dist/js/app-[hash].js
+    Geliştirme:     js/app.js doğrudan type="module" ile yüklenir
+                    (otomatik defer + paralel chunk fetch)
+    ─────────────────────────────────────────────────────────
+  -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,218 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+      - run: npm ci
+      - run: cd server && npm ci
+      - name: ESLint
+        run: npm run lint
+
+  typecheck:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+      - run: npm ci
+      - run: cd server && npm ci
+
+      - name: Server typecheck (base)
+        run: npm run typecheck:server
+
+      - name: Bridge 4 typecheck (strict)
+        run: npx tsc -p server/tsconfig.bridge4.json --noEmit
+
+      - name: Bridge 5 typecheck (strict)
+        run: npx tsc -p client/tsconfig.bridge5.json --noEmit
+
+      - name: Bridge 15 typecheck (strictNullChecks — routes/middleware/lib)
+        run: npx tsc -p server/tsconfig.bridge15.json --noEmit
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    env:
+      NODE_ENV: test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: bridge
+          POSTGRES_DB: bridge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bridge"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+      - run: npm ci
+      - run: cd server && npm ci
+      - name: Start Redis
+        uses: supercharge/redis-github-action@1.7.0
+        with:
+          redis-version: 7
+      - name: Set env vars
+        run: |
+          echo "REDIS_URL=redis://localhost:6379" >> $GITHUB_ENV
+          echo "DATABASE_URL=postgresql://bridge:bridge@localhost:5432/bridge_test" >> $GITHUB_ENV
+      - name: Server unit tests
+        run: cd server && npm test -- --forceExit
+      - name: Client unit tests
+        run: |
+          cd client/tests && npm ci && npm test || true
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+      - run: npm ci
+      - name: Production build + bundle budget check
+        run: npm run build:ci
+
+  deploy-staging:
+    name: Deploy — Staging
+    runs-on: ubuntu-latest
+    needs: [build, test]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      # Fix 1: Registry login — GITHUB_TOKEN ile GHCR'a authenticate ol
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY_HOST }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build & push Docker image
+        run: |
+          IMAGE="${{ vars.REGISTRY }}/bridge:staging-${{ github.sha }}"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+      # Fix 2: docker-compose.yml'i sunucuya kopyala (config drift'i önler)
+      - name: Sync compose file to staging
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          source: "docker-compose.yml"
+          target: "/opt/bridge"
+      - name: Deploy to staging
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            IMAGE="${{ vars.REGISTRY }}/bridge:staging-${{ github.sha }}"
+            docker pull "$IMAGE"
+            cd /opt/bridge
+            docker compose -f docker-compose.yml up -d --no-deps bridge
+      # Fix 3: Smoke test sunucu tarafında — runner'ın staging'e erişimi gerekmez
+      - name: Smoke test (server-side)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            sleep 10
+            if ! curl -sf "http://localhost:3001/api/health"; then
+              echo "Smoke test başarısız"
+              exit 1
+            fi
+            echo "Staging deploy başarılı ✓"
+
+  deploy-production:
+    name: Deploy — Production
+    runs-on: ubuntu-latest
+    needs: [build, test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      # Fix 1: Registry login
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY_HOST }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build & push Docker image
+        run: |
+          IMAGE="${{ vars.REGISTRY }}/bridge:${{ github.sha }}"
+          docker build -t "$IMAGE" -t "${{ vars.REGISTRY }}/bridge:latest" .
+          docker push "$IMAGE"
+          docker push "${{ vars.REGISTRY }}/bridge:latest"
+      # Fix 2: docker-compose.yml'i production sunucusuna kopyala
+      - name: Sync compose file to production
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          source: "docker-compose.yml"
+          target: "/opt/bridge"
+      - name: Deploy to production
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            IMAGE="${{ vars.REGISTRY }}/bridge:${{ github.sha }}"
+            # Rollback tag'ini kaydet
+            CURRENT=$(docker inspect --format='{{.Image}}' bridge 2>/dev/null || echo "")
+            echo "$CURRENT" > /opt/bridge/.last_deploy_tag
+            docker pull "$IMAGE"
+            docker compose -f docker-compose.yml up -d --no-deps bridge
+      - name: Smoke test (with rollback)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            sleep 15
+            if ! curl -sf "${{ vars.PRODUCTION_URL }}/api/health"; then
+              echo "Smoke test başarısız — rollback başlatılıyor"
+              PREV=$(cat /opt/bridge/.last_deploy_tag 2>/dev/null || echo "")
+              if [ -n "$PREV" ]; then
+                docker run --rm -d --name bridge "$PREV"
+                echo "Rollback tamamlandı: $PREV"
+              fi
+              exit 1
+            fi
+            echo "Deploy başarılı ✓"

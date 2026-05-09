@@ -1,0 +1,14 @@
+{
+  "name": "bridge-discord-shim",
+  "version": "1.0.0",
+  "description": "Discord.js v14 uyumlu katman — mevcut Discord botlarını Bridge'de çalıştırır",
+  "main": "src/index.js",
+  "keywords": ["bridge", "discord", "shim", "compatibility", "bot"],
+  "license": "MIT",
+  "dependencies": {
+    "eventemitter3": "^5.0.1"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "bridge-mobile",
+  "version": "45.0.0",
+  "description": "Bridge Chat — iOS & Android (Capacitor)",
+  "main": "index.js",
+  "scripts": {
+    "build": "node scripts/setup.js",
+    "sync": "npx cap sync",
+    "ios": "npx cap open ios",
+    "android": "npx cap open android",
+    "run:ios": "npx cap run ios",
+    "run:android": "npx cap run android",
+    "setup": "node scripts/setup.js"
+  },
+  "dependencies": {
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/cli": "^6.0.0",
+    "@capacitor/ios": "^6.0.0",
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/push-notifications": "^6.0.0",
+    "@capacitor/local-notifications": "^6.0.0",
+    "@capacitor/status-bar": "^6.0.0",
+    "@capacitor/splash-screen": "^6.0.0",
+    "@capacitor/keyboard": "^6.0.0",
+    "@capacitor/haptics": "^6.0.0",
+    "@capacitor/network": "^6.0.0",
+    "@capacitor/app": "^6.0.0",
+    "@capacitor/browser": "^6.0.0",
+    "@aparajita/capacitor-biometric-auth": "^7.0.0",
+    "@capacitor/camera": "^6.0.0",
+    "@capacitor/share": "^6.0.0",
+    "@capawesome/capacitor-badge": "^6.0.0"
+  }
+}

@@ -1,0 +1,303 @@
+/* ── Bridge · marketplace-bots.css ───────────────────────────────── */
+
+
+/* Notification pip dot */
+.mnav-pip {
+  display: none;
+  position: absolute;
+  top: 6px;
+  right: calc(50% - 16px);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--red, #ed4245);
+  border: 1.5px solid var(--bg-1);
+}
+.mobile-nav-btn.has-pip .mnav-pip { display: block; }
+
+/* ── Active state ── */
+.mobile-nav-btn.active {
+  color: var(--brand);
+}
+.mobile-nav-btn.active .mnav-icon {
+  background: hsla(var(--brand-h), var(--brand-s), 60%, 0.12);
+  transform: translateY(-2px) scale(1.08);
+}
+.mobile-nav-btn.active .mnav-icon svg {
+  stroke-width: 2.2;
+}
+.mobile-nav-btn.active .mnav-label {
+  font-weight: 700;
+}
+
+/* ── Hover (pointer devices) ── */
+@media (hover: hover) {
+  .mobile-nav-btn:hover:not(.active) {
+    color: var(--text-primary);
+  }
+  .mobile-nav-btn:hover:not(.active) .mnav-icon {
+    background: var(--bg-hover);
+    transform: translateY(-1px);
+  }
+}
+
+/* ── Touch press feedback ── */
+.mobile-nav-btn:active .mnav-icon {
+  transform: translateY(0) scale(0.92);
+  background: var(--bg-3);
+  transition-duration: 0.08s;
+}
+
+/* ── TABLET (≤768px) ─────────────────────────────────────────── */
+@media (max-width: 768px) {
+
+  /* Hide member list by default */
+  .member-list {
+    position: fixed;
+    right: 0; top: 0; bottom: 0;
+    width: 260px;
+    z-index: 250;
+    transform: translateX(100%);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: -4px 0 24px rgba(0,0,0,0.4);
+  }
+  .member-list.open {
+    transform: translateX(0);
+  }
+
+  /* Compress server list */
+  .server-list {
+    width: 56px;
+    padding: 8px 0;
+  }
+  .server-icon {
+    width: 40px;
+    height: 40px;
+    font-size: 18px;
+  }
+  .server-add {
+    width: 40px;
+    height: 40px;
+    font-size: 22px;
+  }
+
+  /* Channel sidebar: off-canvas */
+  .channel-sidebar {
+    position: fixed;
+    left: 56px; top: 0; bottom: 0;
+    width: 220px;
+    z-index: 250;
+    transform: translateX(-100%);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 4px 0 24px rgba(0,0,0,0.4);
+  }
+  .channel-sidebar.open {
+    transform: translateX(0);
+  }
+
+  /* Main content takes full width */
+  .main-content {
+    width: 100%;
+  }
+
+  /* Thread panel: overlay instead of side-by-side */
+  .thread-panel {
+    position: fixed;
+    right: 0; top: 0; bottom: 0;
+    width: 320px;
+    max-width: 90vw;
+    z-index: 260;
+    box-shadow: -4px 0 24px rgba(0,0,0,0.5);
+  }
+
+  /* Modal cards full-width on tablet */
+  .modal-card {
+    width: 95vw;
+    max-width: 95vw;
+    padding: 24px 20px;
+  }
+
+  /* Profile card */
+  .profile-card {
+    width: 92vw;
+  }
+
+  /* Emoji picker repositioned */
+  .emoji-picker {
+    right: 8px;
+    left: 8px;
+    width: auto;
+    bottom: 70px;
+  }
+
+  /* Slash popup width */
+  .slash-popup {
+    left: 8px !important;
+    right: 8px !important;
+    min-width: unset !important;
+    width: auto !important;
+  }
+
+  /* Global search full width */
+  #global-search-modal .modal-card {
+    width: 96vw;
+    max-width: 96vw;
+    margin: 0 2vw;
+  }
+}
+
+/* ── SMALL PHONE (≤480px) ────────────────────────────────────── */
+@media (max-width: 480px) {
+
+  /* Show bottom nav */
+  .mobile-nav { display: flex; }
+
+  /* App padding for bottom nav */
+  .app { padding-bottom: 60px; }
+
+  /* Server list hidden — accessed via bottom nav */
+  .server-list {
+    position: fixed;
+    left: 0; top: 0; bottom: 56px;
+    width: 60px;
+    z-index: 260;
+    transform: translateX(-100%);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .server-list.open { transform: translateX(0); }
+
+  /* Channel sidebar: full slide */
+  .channel-sidebar {
+    left: 0;
+    width: 85vw;
+    max-width: 300px;
+    z-index: 255;
+  }
+  .channel-sidebar.open { transform: translateX(0); }
+
+  /* Header: compact */
+  .channel-header {
+    height: 44px;
+    padding: 0 10px;
+    gap: 6px;
+  }
+  .channel-header .ch-h-topic { display: none; }
+  .channel-header .ch-h-divider { display: none; }
+
+  /* Hide some header buttons on very small screens */
+  .h-btn[data-tip="Channel Bridge"],
+  .h-btn[data-tip="File Archive"],
+  .h-btn[data-tip="Schedule Message"] {
+    display: none;
+  }
+
+  /* Messages: tighter padding */
+  .msg-group { padding: 3px 10px; gap: 10px; }
+  .msg-continue { padding: 1px 10px; }
+  .msg-avatar { width: 34px; height: 34px; font-size: 13px; }
+  .msg-continue .msg-text { padding-left: 44px; }
+  .msg-author { font-size: 13px; }
+  .msg-text { font-size: 14px; }
+
+  /* Message actions: always visible on touch */
+  .msg-actions {
+    opacity: 1;
+    position: static;
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin-top: 4px;
+    flex-wrap: wrap;
+  }
+  .msg-action-btn { width: 32px; height: 32px; font-size: 15px; }
+
+  /* Input area: larger touch targets */
+  .msg-input-wrap { padding: 0 8px 12px; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .msg-input-box { padding: 0 4px 0 10px; gap: 2px; }
+  .msg-input-btn { width: 40px; height: 42px; font-size: 20px; }
+  textarea.msg-input { font-size: 16px; padding: 12px 0; } /* 16px prevents iOS zoom */
+
+  /* User panel: compact */
+  .user-panel { height: 48px; padding: 0 8px; gap: 6px; }
+  .user-actions .u-action-btn[data-tip="Channel Bridge"],
+  .user-actions .u-action-btn[data-tip="Toggle Theme"],
+  .user-actions .u-action-btn[data-tip="Settings"] {
+    display: none;
+  }
+
+  /* Voice view */
+  .voice-peer { width: 130px; }
+  .voice-peer-video-wrap { width: 130px; height: 100px; }
+  .voice-peer-big-avatar { width: 52px; height: 52px; font-size: 20px; }
+  .vc-btn { width: 44px; height: 44px; font-size: 18px; }
+
+  /* Thread panel: full screen on phone */
+  .thread-panel {
+    width: 100vw;
+    max-width: 100vw;
+    z-index: 270;
+  }
+
+  /* Profile card */
+  .profile-card { width: 98vw; border-radius: 16px 16px 0 0; }
+  .profile-banner { height: 64px; }
+
+  /* Auth card */
+  .auth-card { padding: 32px 20px; width: calc(100vw - 32px); }
+
+  /* Modal cards */
+  .modal-card {
+    width: 98vw;
+    padding: 20px 16px;
+    border-radius: 16px 16px 0 0;
+    position: fixed;
+    bottom: 0;
+    margin: 0;
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+  .modal-overlay {
+    align-items: flex-end;
+  }
+
+  /* Friends panel */
+  #friends-panel {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    max-width: 100vw;
+    z-index: 270;
+  }
+
+  /* Pins panel */
+  #pins-panel {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    max-width: 100vw;
+    z-index: 270;
+  }
+
+  /* Search modal */
+  #global-search-modal { align-items: flex-start; padding-top: 8px; }
+  #global-search-modal .modal-card {
+    border-radius: var(--r-xl);
+    position: static;
+    max-height: 85vh;
+  }
+
+  /* Toast: bottom above nav */
+  .toast-container { bottom: 68px; }
+
+  /* Emoji picker */
+  .emoji-picker {
+    position: fixed;
+    bottom: 64px;
+    left: 0;
+    right: 0;
+    width: 100%;
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+  }

@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "./dist",
+    "incremental": true
+  },
+  "exclude": [
+    "node_modules",
+    "dist",
+    "_legacy_js_backup_session4_5",
+    "db/repositories/_legacy_js_backup_session8",
+    "**/*.test.ts",
+    "**/*.test.js",
+    "tests/**/*",
+    // Script'ler production build'e dahil edilmiyor (ayrı çalıştırılıyor)
+    "scripts/**/*"
+  ]
+}
