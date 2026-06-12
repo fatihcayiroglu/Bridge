@@ -137,7 +137,7 @@ jobs:
             (echo "❌ Tehdit modeli STRIDE analizi içermiyor" && exit 1)
           echo "✅ Tehdit modeli mevcut"
 
-      - name: @html direktifi denetimi (Svelte XSS)
+      - name: "@html direktifi denetimi (Svelte XSS)"
         run: |
           # @html kullanımlarını tespit et — her biri DOMPurify geçmeli
           UNSAFE=$(grep -rn "@html" client/js --include="*.svelte" | \
