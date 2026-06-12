@@ -1,19 +1,22 @@
-// @ts-nocheck
-// server/routes/auth.js
-const express = require('express');
-const bcrypt  = require('bcryptjs');
-const { v4: uuidv4 } = require('uuid');
-const multer  = require('multer');
-const path    = require('path');
-const fs      = require('fs');
-const crypto  = require('crypto');
+// server/routes/auth.ts
+import express, { Response } from 'express';
+import { checkAndAwardAutoBadges } from './badges';
+import bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
+import multer from 'multer';
+import { checkMagicBytes } from './upload';
+import path from 'path';
+import fs from 'fs';
+import crypto from 'crypto';
+import logger from '../lib/logger';
+import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router  = express.Router();
 
 // ── httpOnly refresh-token cookie ─────────────────────────────
 // Tarayıcı JS'in erişemeyeceği güvenli cookie ayarı.
 // Sadece /api/refresh yolunda gönderilir (path kısıtı).
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 gün
-function _setRefreshCookie(res, token) {
+function _setRefreshCookie(res: Response, token: string): void {
   res.cookie('bridge_refresh', token, {
     httpOnly: true,
     secure:   process.env.NODE_ENV === 'production',
@@ -38,23 +41,18 @@ function generateApKeyPair() {
   }
 }
 
-const { Users, Servers, Members } = require('../db/repositories');
-const {
-  makeToken, makeRefreshToken, rotateRefreshToken,
-  revokeAllRefreshTokens, authMiddleware, _invalidateTokenCache,
-  castAuthed,
-} = require('../middleware/auth');
-const { limits }   = require('../middleware/rateLimit');
-const captcha      = require('../lib/captcha');
-const asyncHandler = require('../middleware/asyncHandler');
-const logger = require('../lib/logger');
-const { validateBody, schemas } = require('../middleware/validate');
+import { Users, Servers, Members } from '../db/repositories';
+import { makeToken, makeRefreshToken, rotateRefreshToken, revokeAllRefreshTokens, authMiddleware, _invalidateTokenCache, } from '../middleware/auth';
+import type { RotateResultOrError } from '../middleware/auth';
+import { limits } from '../middleware/rateLimit';
+import captcha from '../lib/captcha';
+import { validateBody, schemas } from '../middleware/validate';
 
-const { sanitizeUser } = require('../lib/userUtils');
+import { sanitizeUser } from '../lib/userUtils';
+import { generateCsrfToken } from '../lib/security';
+import { AVATAR_COLORS } from '../lib/brandDefaults';
 
 // sanitizeUser artık lib/userUtils.js'de tanımlı — tüm importlar oradan gelsin
-
-const AVATAR_COLORS = ['#5865f2','#e8432d','#23a55a','#faa61a','#eb459e','#00aff4','#9b59b6','#1abc9c'];
 
 // ── Avatar upload (multer) ─────────────────────────────────────────────────
 const UPLOAD_DIR = path.join(__dirname, '../uploads');
@@ -72,10 +70,44 @@ const avatarUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_, file, cb) => {
     const ok = ['image/jpeg','image/png','image/webp','image/gif'].includes(file.mimetype);
-    cb(ok ? null : new Error('Only images allowed for avatars'), ok);
+    if (!ok) return cb(new Error('Only images allowed for avatars'));
+    cb(null, true);
   },
 });
 
+/**
+ * @openapi
+ * /register:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Yeni kullanıcı kaydı
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [username, password]
+ *             properties:
+ *               username:    { type: string, minLength: 2, maxLength: 32, example: john_doe }
+ *               password:    { type: string, minLength: 8, format: password }
+ *               displayName: { type: string }
+ *     responses:
+ *       201:
+ *         description: Kayıt başarılı — JWT ve refresh token döner
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 token: { type: string }
+ *                 user: { $ref: '#/components/schemas/User' }
+ *       400: { description: Geçersiz istek }
+ *       409: { description: Kullanıcı adı zaten alınmış }
+ *       429:
+ *         description: Rate limit aşıldı
+ */
 // POST /api/register
 router.post('/register',
   captcha.botFilterMiddleware(60),           // bot parmak izi filtresi
@@ -83,8 +115,8 @@ router.post('/register',
   captcha.registrationThrottleMiddleware,    // saatte max 3 kayıt/IP
   captcha.captchaMiddleware,                 // hCaptcha / Turnstile doğrulama
   validateBody(schemas.register),
-  asyncHandler(async (req, res) => {
-  const { username, password, displayName } = req.body;
+  async (req: import("express").Request, res: import("express").Response) => {
+  const { username, password, displayName } = req.body as Record<string, string>;
   if (!username || !password)
     return res.status(400).json({ error: 'Username and password required' });
   if (username.length < 3 || username.length > 32)
@@ -97,7 +129,7 @@ router.post('/register',
     return res.status(400).json({ error: 'Password too long (max 128 characters)' });
 
   const exists = await Users.findByUsername(username);
-  if (exists) return res.status(400).json({ error: 'Username already taken' });
+  if (exists) return res.status(409).json({ error: 'Username already taken' });
 
   // ActivityPub RSA anahtar çifti — Mastodon/Fediverse ile iletişim için
   const apKeys = generateApKeyPair();
@@ -114,8 +146,13 @@ router.post('/register',
     tokenVersion: 0,
     createdAt:    Date.now(),
     apPublicKey:  apKeys.apPublicKey,
-    apPrivateKey: apKeys.apPrivateKey,
+    // SECURITY: apPrivateKey users tablosuna yazılmıyor — saveApKeys ayrı tabloya yazar
   });
+
+  // ActivityPub özel anahtarını ayrı tabloya kaydet
+  if (apKeys.apPublicKey && apKeys.apPrivateKey) {
+    await Users.saveApKeys(user._id, apKeys.apPublicKey, apKeys.apPrivateKey);
+  }
 
   // Kayıt sayacını artır
   await captcha.recordRegistration(captcha._getIp(req));
@@ -128,9 +165,42 @@ router.post('/register',
   const token        = makeToken(user);
   const refreshToken = await makeRefreshToken(user);
   _setRefreshCookie(res, refreshToken);
+  checkAndAwardAutoBadges(user._id).catch(() => {});
   res.json({ token, user: sanitizeUser(user) });
-}));
+});
 
+/**
+ * @openapi
+ * /login:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Kullanıcı girişi
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [username, password]
+ *             properties:
+ *               username: { type: string }
+ *               password: { type: string, format: password }
+ *     responses:
+ *       200:
+ *         description: Giriş başarılı — JWT token ve kullanıcı objesi
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 token: { type: string }
+ *                 user:  { $ref: '#/components/schemas/User' }
+ *       401: { description: Geçersiz kimlik bilgileri }
+ *       403: { description: Hesap kilitli (2FA veya captcha) }
+ *       429:
+ *         description: Rate limit aşıldı
+ */
 // POST /api/login
 router.post('/login',
   captcha.botFilterMiddleware(70),          // bot filtresi
@@ -138,8 +208,8 @@ router.post('/login',
   captcha.progressiveCaptchaMiddleware,     // 3+ başarısız denemeden sonra CAPTCHA sor
   limits.login(),
   validateBody(schemas.login),
-  asyncHandler(async (req, res) => {
-  const { username, password } = req.body;
+  async (req: import("express").Request, res: import("express").Response) => {
+  const { username, password } = req.body as Record<string, string>;
   if (!username || !password)
     return res.status(400).json({ error: 'Username and password required' });
 
@@ -150,7 +220,7 @@ router.post('/login',
   const DUMMY_HASH = '$2b$12$invalidhashfortimingprotectionpadding00000000000000000';
   const user = await Users.findByUsername(username);
   const passwordValid = user
-    ? await bcrypt.compare(password, user.password)
+    ? await bcrypt.compare(password, user.password ?? '')
     : await bcrypt.compare(password, DUMMY_HASH).then(() => false);
 
   if (!user || !passwordValid) {
@@ -161,6 +231,17 @@ router.post('/login',
 
   await captcha.recordSuccessfulLogin(ip);
 
+  // Sprint 121 FIX 16: E-posta doğrulama zorunluluğu
+  // REQUIRE_EMAIL_VERIFICATION=true ise doğrulanmamış hesaplar giriş yapamaz.
+  // SSO ile gelen hesaplar (emailVerified=1) bundan muaf — sso.ts'de zaten set ediliyor.
+  const requireVerification = process.env.REQUIRE_EMAIL_VERIFICATION === 'true';
+  if (requireVerification && !user.emailVerified) {
+    return res.status(403).json({
+      error: 'EMAIL_NOT_VERIFIED',
+      message: 'Lütfen giriş yapmadan önce e-posta adresinizi doğrulayın.',
+    });
+  }
+
   // Şüpheli giriş kontrolü (yeni IP/cihaz → e-posta uyarısı)
   captcha.checkSuspiciousLogin(req, user).catch(() => {});
 
@@ -169,32 +250,89 @@ router.post('/login',
   const token        = makeToken(user);
   const refreshToken = await makeRefreshToken(user);
   _setRefreshCookie(res, refreshToken);
+  // Auto-rozet kontrolü (fire-and-forget — login flow'unu bloklama)
+  checkAndAwardAutoBadges(user._id).catch(() => {});
   res.json({ token, user: sanitizeUser({ ...user, status: 'online' }) });
-}));
+});
 
 // POST /api/refresh  — refresh token rotation
-router.post('/refresh', limits.refresh(), asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /refresh:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Access token yenile (httpOnly cookie ile)
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Yeni token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 token: { type: string }
+ *       401: { description: Geçersiz veya süresi dolmuş refresh token }
+ */
+router.post('/refresh', limits.refresh(), async (req: import("express").Request, res: import("express").Response) => {
   const refreshToken = req.cookies?.bridge_refresh || req.body?.refreshToken;
   if (!refreshToken) return res.status(400).json({ error: 'refreshToken required' });
 
-  const result = await rotateRefreshToken(refreshToken);
-  if (!result) return res.status(401).json({ error: 'Invalid or expired refresh token' });
+  const result: RotateResultOrError | null = await rotateRefreshToken(refreshToken);
+  if (!result || 'error' in result) {
+    const reason = result && 'error' in result ? result.error : 'not_found';
+    const msg = reason === 'reuse'
+      ? 'Token reuse detected. All sessions revoked for security.'
+      : reason === 'expired'
+      ? 'Refresh token expired. Please log in again.'
+      : 'Invalid or expired refresh token';
+    return res.status(401).json({ error: msg, reason });
+  }
 
   const { user, newToken } = result;
   _setRefreshCookie(res, newToken);
   res.json({ token: makeToken(user) });
-}));
+});
 
 // POST /api/logout — httpOnly cookie'yi temizle
-router.post('/logout', asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /logout:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Oturumu kapat
+ *     responses:
+ *       200: { description: Çıkış başarılı }
+ */
+router.post('/logout', async (req: import("express").Request, res: import("express").Response) => {
   res.clearCookie('bridge_refresh', { httpOnly: true, sameSite: 'strict', path: '/api/refresh' });
   res.json({ ok: true });
-}));
+});
 
 // POST /api/change-password
-router.post('/change-password', authMiddleware, limits.changePassword(), validateBody(schemas.changePassword), asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /change-password:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Şifre değiştir
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [oldPassword, newPassword]
+ *             properties:
+ *               oldPassword: { type: string, format: password }
+ *               newPassword: { type: string, format: password }
+ *     responses:
+ *       200: { description: Şifre değiştirildi }
+ *       401: { description: Eski şifre yanlış }
+ */
+router.post('/change-password', authMiddleware, limits.changePassword(), validateBody(schemas.changePassword), async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const { currentPassword, newPassword } = req.body;
+  const { currentPassword, newPassword } = req.body as Record<string, string>;
   if (!currentPassword || !newPassword)
     return res.status(400).json({ error: 'currentPassword and newPassword required' });
   if (newPassword.length < 8)
@@ -204,7 +342,7 @@ router.post('/change-password', authMiddleware, limits.changePassword(), validat
 
   const user = await Users.findById(_u.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  if (!(await bcrypt.compare(currentPassword, user.password)))
+  if (!(await bcrypt.compare(currentPassword, user.password ?? '')))
     return res.status(400).json({ error: 'Current password is incorrect' });
 
   const newHash    = await bcrypt.hash(newPassword, 12);
@@ -214,15 +352,25 @@ router.post('/change-password', authMiddleware, limits.changePassword(), validat
   _invalidateTokenCache(_u.id);
 
   const updated = await Users.findById(_u.id);
+  if (!updated) return res.status(404).json({ error: 'User not found after update' });
   res.json({
     message:      'Password changed. All other sessions have been logged out.',
     token:        makeToken(updated),
     refreshToken: await makeRefreshToken(updated),
   });
-}));
+});
 
 // POST /api/logout-all
-router.post('/logout-all', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /logout-all:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Tüm oturumları kapat
+ *     responses:
+ *       200: { description: Tüm oturumlar kapatıldı }
+ */
+router.post('/logout-all', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
   const user = await Users.findById(_u.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -231,22 +379,60 @@ router.post('/logout-all', authMiddleware, asyncHandler(async (req, res) => {
   await revokeAllRefreshTokens(_u.id);
   _invalidateTokenCache(_u.id);
   res.json({ message: 'All sessions logged out.' });
-}));
+});
 
 // GET /api/me
-router.get('/me', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /me:
+ *   get:
+ *     tags: [Auth]
+ *     summary: Giriş yapan kullanıcı bilgileri
+ *     responses:
+ *       200:
+ *         description: Kullanıcı profili
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/User' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ */
+router.get('/me', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
   const user = await Users.findById(_u.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json(sanitizeUser(user));
-}));
+});
 
 // PATCH /api/me
-router.patch('/me', authMiddleware, limits.settings(), asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /me:
+ *   patch:
+ *     tags: [Auth]
+ *     summary: Profil güncelle
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               displayName: { type: string }
+ *               bio: { type: string }
+ *               status: { type: string, enum: [online, idle, dnd, offline] }
+ *               pronouns: { type: string }
+ *     responses:
+ *       200:
+ *         description: Profil güncellendi
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/User' }
+ */
+router.patch('/me', authMiddleware, limits.settings(), async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const { displayName, status, bio, website, location, pronouns, bannerColor, badge } = req.body;
+  const { displayName, status, bio, website, location, pronouns, bannerColor } = req.body as Record<string, string>;
   const allowed = ['online','idle','dnd','offline'];
-  const updates = {};
+  // Sprint 121 FIX 22: Partial<> tipiyle tip güvenliği sağlandı
+  const updates: Record<string, unknown> = {};
   if (displayName?.trim()) updates.displayName = displayName.trim().slice(0, 32);
   if (status && allowed.includes(status)) updates.status = status;
   if (typeof bio === 'string') updates.bio = bio.trim().slice(0, 180);
@@ -255,28 +441,52 @@ router.patch('/me', authMiddleware, limits.settings(), asyncHandler(async (req, 
   if (typeof pronouns === 'string') updates.pronouns = pronouns.trim().slice(0, 40);
   if (typeof bannerColor === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(bannerColor.trim())) updates.bannerColor = bannerColor.trim();
   if ('bannerUrl' in req.body) updates.bannerUrl = req.body.bannerUrl === null ? null : undefined; // null = kaldır
-  if (typeof badge === 'string') updates.badge = badge.trim().slice(0, 20);
+  // Sprint 121 FIX 9: badge alanı kullanıcı tarafından set edilemiyor — sadece sistem/admin atayabilir.
+  // Eskiden: if (typeof badge === 'string') updates.badge = badge.trim().slice(0, 20);
+  // Bu, kullanıcının herhangi bir rozeti kendine eklemesine izin veriyordu.
   if (Object.keys(updates).length === 0)
     return res.status(400).json({ error: 'Nothing to update' });
 
   await Users.update(_u.id, updates);
   const user = await Users.findById(_u.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
   res.json(sanitizeUser(user));
-}));
+});
 
 // POST /api/me/avatar — upload profile photo (GIF animasyonlu avatar dahil)
+/**
+ * @openapi
+ * /me/avatar:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Avatar yükle
+ *     requestBody:
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               file: { type: string, format: binary }
+ *     responses:
+ *       200: { description: Avatar güncellendi }
+ */
 router.post('/me/avatar', authMiddleware, limits.settings(), (req, res, next) => {
   avatarUpload.single('avatar')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message });
     next();
   });
-}, asyncHandler(async (req, res) => {
+}, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  // Sprint 121 FIX 7: Magic byte kontrolü — MIME type spoofing engelle
+  if (!checkMagicBytes(req.file.path, req.file.mimetype)) {
+    fs.unlink(req.file.path, () => {});
+    return res.status(400).json({ error: 'File content does not match declared type' });
+  }
   const avatarUrl = `/uploads/${req.file.filename}`;
   await Users.update(_u.id, { avatarUrl });
   res.json({ avatarUrl });
-}));
+});
 
 // POST /api/me/banner — upload profile banner image (Discord Nitro'da ücretli, burada bedava)
 const bannerStorage = multer.diskStorage({
@@ -291,34 +501,81 @@ const bannerUpload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB — animasyonlu GIF banner için geniş limit
   fileFilter: (req, file, cb) => {
     const ok = ['image/jpeg','image/png','image/webp','image/gif'].includes(file.mimetype);
-    cb(ok ? null : new Error('Only images allowed for banners'), ok);
+    if (!ok) return cb(new Error('Only images allowed for banners'));
+    cb(null, true);
   },
 });
+/**
+ * @openapi
+ * /me/banner:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Banner yükle
+ *     requestBody:
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               file: { type: string, format: binary }
+ *     responses:
+ *       200: { description: Banner güncellendi }
+ */
 router.post('/me/banner', authMiddleware, limits.settings(), (req, res, next) => {
   bannerUpload.single('banner')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message });
     next();
   });
-}, asyncHandler(async (req, res) => {
+}, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  // Sprint 121 FIX 7: Magic byte kontrolü — banner için de zorunlu
+  if (!checkMagicBytes(req.file.path, req.file.mimetype)) {
+    fs.unlink(req.file.path, () => {});
+    return res.status(400).json({ error: 'File content does not match declared type' });
+  }
   const bannerUrl = `/uploads/${req.file.filename}`;
   await Users.update(_u.id, { bannerUrl });
   res.json({ bannerUrl });
-}));
+});
 
 // POST /api/me/banner-color — set profile banner color
-router.patch('/me/banner-color', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /me/banner-color:
+ *   patch:
+ *     tags: [Auth]
+ *     summary: Banner rengi güncelle
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               color: { type: string, example: '#2d9cdb' }
+ *     responses:
+ *       200: { description: Renk güncellendi }
+ */
+router.patch('/me/banner-color', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const { bannerColor } = req.body;
+  const { bannerColor } = req.body as Record<string, string>;
   if (!bannerColor || !/^#[0-9a-fA-F]{3,8}$/.test(bannerColor))
     return res.status(400).json({ error: 'Invalid color' });
   await Users.update(_u.id, { bannerColor });
   res.json({ bannerColor });
-}));
+});
 
 // DELETE /api/me/avatar — remove profile photo
-router.delete('/me/avatar', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /me/avatar:
+ *   delete:
+ *     tags: [Auth]
+ *     summary: Avatarı sil
+ *     responses:
+ *       200: { description: Avatar silindi }
+ */
+router.delete('/me/avatar', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
   const user = await Users.findById(_u.id);
   if (user?.avatarUrl) {
@@ -327,9 +584,27 @@ router.delete('/me/avatar', authMiddleware, asyncHandler(async (req, res) => {
   }
   await Users.update(_u.id, { avatarUrl: null });
   res.json({ avatarUrl: null });
-}));
+});
 
 // GET /api/captcha-config — client'a sitekey gönder (public, auth gerekmez)
+/**
+ * @openapi
+ * /captcha-config:
+ *   get:
+ *     tags: [Auth]
+ *     summary: Captcha yapılandırması
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Captcha ayarları
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 enabled: { type: boolean }
+ *                 siteKey: { type: string }
+ */
 router.get('/captcha-config', (req, res) => {
   // Sitekey değişmez — 1 saat cache'le
   res.set('Cache-Control', 'public, max-age=3600');
@@ -339,12 +614,31 @@ router.get('/captcha-config', (req, res) => {
 // GET /api/auth/csrf-token — issue a CSRF token for the current user
 // Browser clients must call this after login and include the returned token
 // in the X-CSRF-Token header on all POST/PATCH/PUT/DELETE requests.
-router.get('/csrf-token', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /csrf-token:
+ *   get:
+ *     tags: [Auth]
+ *     summary: CSRF token al
+ *     responses:
+ *       200:
+ *         description: CSRF token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 csrfToken: { type: string }
+ */
+router.get('/csrf-token', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const { generateCsrfToken } = require('../lib/security');
-  const token = generateCsrfToken(_u.id);
+  const token = await generateCsrfToken(_u.id);
   res.json({ token });
-}));
+});
 
-module.exports = { router, sanitizeUser };
-export {};
+export { router, sanitizeUser };
+
+export default router;
+module.exports = router;
+module.exports.router = router;
+module.exports.default = router;

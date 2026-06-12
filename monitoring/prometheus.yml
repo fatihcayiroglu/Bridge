@@ -4,20 +4,36 @@ global:
   external_labels:
     monitor: 'bridge-v61'
 
-# ── Alert kurallarını yükle ────────────────────────────────────
+# ── KULLANIM SENARYOLARI ──────────────────────────────────────────────────────
+# Bu dosya:  Docker Compose / bare-metal geliştirme ve staging ortamı içindir.
+#            Host makinedeki Bridge process'ini statik hedef olarak scrape eder.
+#
+# Kubernetes: k8s/servicemonitor.yaml kullan (Prometheus Operator gerektirir).
+#             Bu dosya K8s ortamında KULLANILMAZ — ikisini aynı anda aktif etme.
+#
+# Hangisini seçeceğim?
+#   docker compose up  → bu dosya
+#   kubectl apply      → k8s/servicemonitor.yaml
+#
+# Bkz: docs/DEPLOYMENT_GUIDE.md §Monitoring
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Alert kurallarını yükle ────────────────────────────────────────────────────
 rule_files:
   - '/etc/prometheus/rules/*.yml'
 
-# ── Alertmanager bağlantısı ───────────────────────────────────
+# ── Alertmanager bağlantısı ───────────────────────────────────────────────────
 alerting:
   alertmanagers:
     - static_configs:
         - targets: ['alertmanager:9093']
       timeout: 10s
 
-# ── Scrape hedefleri ──────────────────────────────────────────
+# ── Scrape hedefleri ──────────────────────────────────────────────────────────
 scrape_configs:
   # Bridge sunucusu
+  # Deploy sırasında aşağıdaki değeri .env'deki METRICS_SECRET ile değiştir:
+  #   sed -i "s/__METRICS_SECRET__/${METRICS_SECRET}/" monitoring/prometheus.yml
   - job_name: bridge
     scrape_interval: 15s
     static_configs:
@@ -25,8 +41,7 @@ scrape_configs:
     metrics_path: /metrics
     authorization:
       type: Bearer
-      # .env dosyasındaki METRICS_SECRET değerinizle değiştirin
-      credentials: METRICS_SECRET_BURAYA
+      credentials: __METRICS_SECRET__
 
   # Prometheus'un kendisi
   - job_name: prometheus

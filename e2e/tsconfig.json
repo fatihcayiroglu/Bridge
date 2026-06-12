@@ -3,7 +3,11 @@
     "target": "ES2022",
     "module": "CommonJS",
     "moduleResolution": "node",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "strict": false,
     "noImplicitAny": false,
     "strictNullChecks": false,
@@ -14,7 +18,10 @@
     "allowJs": true,
     "checkJs": false,
     "outDir": "./dist",
-    "rootDir": "./"
+    "rootDir": "./",
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "**/*.ts",

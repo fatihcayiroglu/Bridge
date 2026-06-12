@@ -1,101 +1,101 @@
-// server/db/repositories/ServerAssetRepository.js
+// server/db/repositories/ServerAssetRepository.ts
 // Sunucu varlıkları (emoji, gif, soundboard, template, onboarding) sorgularını toplar.
 
-'use strict';
-const { v4: uuidv4 } = require('uuid');
-const db = require('../loader');
+import { v4 as uuidv4 } from 'uuid';
+import db from '../loader';
 
 class ServerAssetRepository {
   // ── Emojis ─────────────────────────────────────────────────
 
-  async findEmojis(serverId) {
+  async findEmojis(serverId: string) {
     return db.serverEmojis?.find({ serverId }) ?? [];
   }
 
-  async findEmojisSorted(serverId) {
+  async findEmojisSorted(serverId: string) {
     return db.serverEmojis?.find({ serverId }).sort({ createdAt: 1 }) ?? [];
   }
 
-  async findEmoji(id) {
+  async findEmoji(id: string) {
     return db.serverEmojis?.findOne({ _id: id });
   }
 
-  async findEmojiByIdAndServer(id, serverId) {
+  async findEmojiByIdAndServer(id: string, serverId: string) {
     return db.serverEmojis?.findOne({ _id: id, serverId });
   }
 
-  async insertEmoji(data) {
+  async insertEmoji(data: Record<string, unknown>) {
     return db.serverEmojis?.insert({ _id: uuidv4(), createdAt: Date.now(), ...data });
   }
 
-  async updateEmoji(id, serverId, fields) {
+  async updateEmoji(id: string, serverId: string, fields: Record<string, unknown>) {
     return db.serverEmojis?.update({ _id: id, serverId }, { $set: fields });
   }
 
-  async deleteEmoji(id, serverId) {
+  async deleteEmoji(id: string, serverId: string) {
     return db.serverEmojis?.remove({ _id: id, serverId });
   }
 
-  async deleteEmojisByServer(serverId) {
+  async deleteEmojisByServer(serverId: string) {
     return db.serverEmojis?.remove({ serverId });
   }
 
-  async findEmojiByServerAndName(serverId, name) {
+  async findEmojiByServerAndName(serverId: string, name: string) {
     return db.serverEmojis?.findOne({ serverId, name });
   }
 
   // ── GIFs ───────────────────────────────────────────────────
 
-  async findGifs(serverId) {
+  async findGifs(serverId: string) {
     return db.serverGifs?.find({ serverId }) ?? [];
   }
 
-  async findGifsByServerIds(serverIds) {
-    if (!serverIds?.length) return [];
-    return db.serverGifs?.find({ serverId: { $in: serverIds } }) ?? [];
+  async findGifsByServerIds(serverIds: string | string[]) {
+    const ids = Array.isArray(serverIds) ? serverIds : [serverIds];
+    if (!ids.length) return [];
+    return db.serverGifs?.find({ serverId: { $in: ids } }) ?? [];
   }
 
-  async findGifByIdAndServer(id, serverId) {
+  async findGifByIdAndServer(id: string, serverId: string) {
     return db.serverGifs?.findOne({ _id: id, serverId });
   }
 
-  async insertGif(data) {
+  async insertGif(data: Record<string, unknown>) {
     return db.serverGifs?.insert({ _id: uuidv4(), createdAt: Date.now(), ...data });
   }
 
-  async deleteGif(id, serverId) {
+  async deleteGif(id: string, serverId: string) {
     return db.serverGifs?.remove({ _id: id, serverId });
   }
 
-  async deleteGifsByServer(serverId) {
+  async deleteGifsByServer(serverId: string) {
     return db.serverGifs?.remove({ serverId });
   }
 
   // ── Soundboard ─────────────────────────────────────────────
 
-  async findSounds(serverId) {
+  async findSounds(serverId: string) {
     return db.soundboard?.find({ serverId }) ?? [];
   }
 
-  async findSoundsSorted(serverId) {
+  async findSoundsSorted(serverId: string) {
     return db.soundboard?.find({ serverId }).sort({ createdAt: 1 }) ?? [];
   }
 
-  async insertSound(data) {
+  async insertSound(data: Record<string, unknown>) {
     return db.soundboard?.insert({ _id: uuidv4(), createdAt: Date.now(), ...data });
   }
 
-  async findSoundByIdAndServer(id, serverId) {
+  async findSoundByIdAndServer(id: string, serverId: string) {
     return db.soundboard?.findOne({ _id: id, serverId });
   }
 
-  async deleteSound(id, serverId) {
+  async deleteSound(id: string, serverId: string) {
     return db.soundboard?.remove({ _id: id, serverId });
   }
 
   // ── Server Templates ───────────────────────────────────────
 
-  async findTemplate(id) {
+  async findTemplate(id: string) {
     return db.serverTemplates?.findOne({ _id: id });
   }
 
@@ -103,7 +103,7 @@ class ServerAssetRepository {
     return db.serverTemplates?.find(query) ?? [];
   }
 
-  async insertTemplate(data) {
+  async insertTemplate(data: Record<string, unknown>) {
     const row = {
       createdAt: Date.now(),
       ...data,
@@ -112,21 +112,21 @@ class ServerAssetRepository {
     return db.serverTemplates?.insert(row);
   }
 
-  async updateTemplate(id, fields) {
+  async updateTemplate(id: string, fields: Record<string, unknown>) {
     return db.serverTemplates?.update({ _id: id }, { $set: fields });
   }
 
-  async deleteTemplate(id) {
+  async deleteTemplate(id: string) {
     return db.serverTemplates?.remove({ _id: id });
   }
 
   // ── Onboarding ─────────────────────────────────────────────
 
-  async findOnboarding(serverId) {
+  async findOnboarding(serverId: string) {
     return db.serverOnboarding?.findOne({ serverId });
   }
 
-  async upsertOnboarding(serverId, fields) {
+  async upsertOnboarding(serverId: string, fields: Record<string, unknown>) {
     const existing = await this.findOnboarding(serverId);
     if (existing) {
       return db.serverOnboarding?.update({ serverId }, { $set: fields });
@@ -134,30 +134,29 @@ class ServerAssetRepository {
     return db.serverOnboarding?.insert({ _id: uuidv4(), serverId, createdAt: Date.now(), ...fields });
   }
 
-  async findOnboardingCompletions(serverId) {
+  async findOnboardingCompletions(serverId: string) {
     return db.onboardingCompletions?.find({ serverId }) ?? [];
   }
 
-  async markOnboardingComplete(userId, serverId) {
+  async markOnboardingComplete(userId: string, serverId: string) {
     return db.onboardingCompletions?.insert({ _id: `${userId}_${serverId}`, userId, serverId, completedAt: Date.now() });
   }
 
-  async findOnboardingCompletion(serverId, userId) {
+  async findOnboardingCompletion(serverId: string, userId: string) {
     return db.onboardingCompletions?.findOne({ serverId, userId });
   }
 
-  async insertOnboardingCompletion(doc) {
+  async insertOnboardingCompletion(doc: Record<string, unknown>) {
     return db.onboardingCompletions?.insert(doc);
   }
 
-  async findMemberRole(userId, roleId, serverId) {
+  async findMemberRole(userId: string, roleId: string, serverId: string) {
     return db.memberRoles?.findOne({ userId, roleId, serverId });
   }
 
-  async insertMemberRole(doc) {
+  async insertMemberRole(doc: Record<string, unknown>) {
     return db.memberRoles?.insert(doc);
   }
 }
 
-module.exports = new ServerAssetRepository();
-export {};
+export default new ServerAssetRepository();

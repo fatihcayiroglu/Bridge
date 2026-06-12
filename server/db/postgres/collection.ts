@@ -1,10 +1,11 @@
-// @ts-nocheck
-// server/db/postgres/collection.js
-// JSONB kolon listesi, buildWhere query builder ve PgCollection sınıfı
+// server/db/postgres/collection.ts
+// @deprecated Sprint 48: Bu dosya pgCollection.ts ile değiştirildi.
+// pgCollection.ts: SQL injection whitelist koruması + genişletilmiş JSONB desteği içeriyor.
+// Yeni kod doğrudan pgCollection.ts'i import etmeli.
+// Bu dosya yalnızca geriye-dönük uyumluluk için korunuyor.
+//
 
-'use strict';
-
-const { v4: uuidv4 } = require('uuid');
+import { v4 as uuidv4 } from 'uuid';
 
 // ── JSONB KOLONLARI ───────────────────────────────────────────
 // Bu kolonlar PostgreSQL'de zaten JSONB — otomatik parse edilir.
@@ -17,27 +18,27 @@ const JSONB_COLS = new Set([
 
 // ── QUERY BUILDER ────────────────────────────────────────────
 // SQLite'daki ? yerine PostgreSQL $1, $2, ... kullanır
-function buildWhere(query) {
+function buildWhere(query: Record<string, unknown> | null | undefined): { sql: string; params: unknown[] } {
   if (!query || Object.keys(query).length === 0) return { sql: 'TRUE', params: [] };
 
-  const parts  = [];
-  const params = [];
+  const parts: string[]  = [];
+  const params: unknown[] = [];
   let   idx    = 1;
 
   function ph() { return `$${idx++}`; }
-  function safeCol(name) {
+  function safeCol(name: string): string {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
       throw new Error(`Unsafe column identifier: ${name}`);
     }
     return `"${name}"`;
   }
 
-  function processKey(k, v) {
+  function processKey(k: string, v: unknown): void {
     // camelCase → PostgreSQL için çift tırnak
     const col = safeCol(k);
 
     if (k === '$or') {
-      const orParts = v.map(sub => {
+      const orParts = (v as Record<string,unknown>[]).map((sub: Record<string,unknown>) => {
         const r = buildWhere(sub);
         // offset param indices
         const shifted = r.sql.replace(/\$(\d+)/g, (_, n) => `$${parseInt(n) + params.length}`);
@@ -91,22 +92,27 @@ function buildWhere(query) {
 
 // ── COLLECTION SINIFI ────────────────────────────────────────
 class Collection {
-  constructor(table) {
+  // Sprint 26: strict:true için property declaration eklendi
+  pool: import('pg').Pool;
+  table: string;
+
+  constructor(table: string, pool: import('pg').Pool) {
     this.table = table;
+    this.pool  = pool;
   }
 
   // ── Tek kayıt bul ────────────────────────────────────────
-  async findOne(query = {}) {
+  async findOne(query: Record<string,unknown> = {}) {
     const { sql, params } = buildWhere(query);
     const q = `SELECT * FROM "${this.table}" WHERE ${sql} LIMIT 1`;
-    const { rows } = await pool.query(q, params);
+    const { rows } = await this.pool.query(q, params);
     return rows[0] ?? null;
   }
 
   // ── Çoklu kayıt — zincir API (SQLite uyumlu) ─────────────
-  find(query = {}) {
-    let _sort  = null;
-    let _limit = null;
+  find(query: Record<string,unknown> = {}) {
+    let _sort: Record<string,unknown> | null  = null;
+    let _limit: number | null = null;
     const self = this;
 
     const exec = async () => {
@@ -118,15 +124,15 @@ class Collection {
         );
         q += ` ORDER BY ${parts.join(', ')}`;
       }
-      if (_limit) q += ` LIMIT ${parseInt(_limit)}`;
-      const { rows } = await pool.query(q, params);
+      if (_limit) q += ` LIMIT ${_limit}`;
+      const { rows } = await this.pool.query(q, params);
       return rows;
     };
 
     const chain = {
-      sort(s)  { _sort  = s; return chain; },
-      limit(n) { _limit = n; return chain; },
-      then(res, rej) { return exec().then(res, rej); },
+      sort(s: Record<string,unknown>)  { _sort  = s; return chain; },
+      limit(n: number) { _limit = n; return chain; },
+      then(res: (v: unknown) => unknown, rej: (e: unknown) => unknown) { return exec().then(res, rej); },
       [Symbol.asyncIterator]() {
         let done = false;
         return {
@@ -142,7 +148,7 @@ class Collection {
   }
 
   // ── Ekle ────────────────────────────────────────────────
-  async insert(doc) {
+  async insert(doc: Record<string,unknown>) {
     if (!doc._id) doc._id = uuidv4();
     const keys   = Object.keys(doc);
     const cols   = keys.map(k => `"${k}"`).join(', ');
@@ -152,7 +158,7 @@ class Collection {
       // JSONB kolonlar: nesne/dizi → pg driver otomatik serialize eder
       return v;
     });
-    await pool.query(
+    await this.pool.query(
       `INSERT INTO "${this.table}" (${cols}) VALUES (${phs})`,
       values
     );
@@ -160,17 +166,18 @@ class Collection {
   }
 
   // ── Güncelle ─────────────────────────────────────────────
-  async update(query, update) {
+  async update(query: Record<string,unknown>, update: Record<string,unknown>) {
     const { sql: wSql, params: wParams } = buildWhere(query);
 
     if (update.$set) {
-      const keys   = Object.keys(update.$set);
+      const $set   = update.$set as Record<string,unknown>;
+      const keys   = Object.keys($set);
       const setCls = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
-      const vals   = keys.map(k => update.$set[k]);
+      const vals   = keys.map(k => $set[k]);
       // WHERE parametreleri $set'in ardından gelir
       const wOffset = vals.length;
       const wShifted = wSql.replace(/\$(\d+)/g, (_, n) => `$${parseInt(n) + wOffset}`);
-      await pool.query(
+      await this.pool.query(
         `UPDATE "${this.table}" SET ${setCls} WHERE ${wShifted}`,
         [...vals, ...wParams]
       );
@@ -179,7 +186,7 @@ class Collection {
     if (update.$inc) {
       for (const [k, v] of Object.entries(update.$inc)) {
         const wShifted = wSql.replace(/\$(\d+)/g, (_, n) => `$${parseInt(n) + 1}`);
-        await pool.query(
+        await this.pool.query(
           `UPDATE "${this.table}" SET "${k}" = "${k}" + $1 WHERE ${wShifted}`,
           [v, ...wParams]
         );
@@ -189,7 +196,7 @@ class Collection {
     if (update.$push) {
       for (const [k, v] of Object.entries(update.$push)) {
         const wShifted = wSql.replace(/\$(\d+)/g, (_, n) => `$${parseInt(n) + 1}`);
-        await pool.query(
+        await this.pool.query(
           `UPDATE "${this.table}" SET "${k}" = "${k}" || $1::jsonb WHERE ${wShifted}`,
           [JSON.stringify([v]), ...wParams]
         );
@@ -200,9 +207,9 @@ class Collection {
   }
 
   // ── Sil ─────────────────────────────────────────────────
-  async remove(query = {}) {
+  async remove(query: Record<string,unknown> = {}) {
     const { sql, params } = buildWhere(query);
-    const result = await pool.query(
+    const result = await this.pool.query(
       `DELETE FROM "${this.table}" WHERE ${sql}`,
       params
     );
@@ -210,9 +217,9 @@ class Collection {
   }
 
   // ── Say ──────────────────────────────────────────────────
-  async count(query = {}) {
+  async count(query: Record<string,unknown> = {}) {
     const { sql, params } = buildWhere(query);
-    const { rows } = await pool.query(
+    const { rows } = await this.pool.query(
       `SELECT COUNT(*) AS n FROM "${this.table}" WHERE ${sql}`,
       params
     );
@@ -222,5 +229,5 @@ class Collection {
   ensureIndex() {} // No-op: indeksler schema'da tanımlı
 }
 
-module.exports = { buildWhere, JSONB_COLS, PgCollection: Collection };
-export {};
+export { buildWhere, JSONB_COLS };
+export { Collection as PgCollection };

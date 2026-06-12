@@ -16,9 +16,13 @@ if (fs.existsSync(envTestPath)) {
 // Set test environment
 process.env.NODE_ENV = 'test';
 
+// Use hermetic in-memory services for unit tests unless a test explicitly overrides them.
+delete process.env.DATABASE_URL;
+process.env.CDN_PROVIDER = process.env.CDN_PROVIDER || 'local';
+
 // Ensure critical test secrets are set
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-jwt-secret-key-do-not-use-in-production';
-process.env.REFRESH_SECRET = process.env.REFRESH_SECRET || 'test-refresh-secret-key-do-not-use-in-production';
+process.env.REFRESH_SECRET = process.env.REFRESH_SECRET || 'test-refresh-secret-key-do-not-use-in-production-32chars';
 
 // Global test timeout
 jest.setTimeout(10000);
@@ -32,7 +36,4 @@ global.console = {
   warn: jest.fn(),
 };
 
-// Clean up after all tests
-afterAll(async () => {
-  await new Promise(resolve => setTimeout(resolve, 100));
-});
+// Not: setupFiles Jest globals içermez — afterAll için setupFilesAfterEnv kullanın.

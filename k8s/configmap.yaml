@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bridge-config
+  namespace: bridge
+data:
+  NODE_ENV: "production"
+  PORT: "3001"
+  INSTANCE_NAME: "Bridge"
+  MAX_FILE_SIZE_MB: "2048"
+  TRUSTED_PROXY_COUNT: "1"
+  # Override in Secret: JWT_SECRET, REFRESH_SECRET, DATABASE_URL, REDIS_URL

@@ -1,0 +1,54 @@
+// !$*UTF8*$!
+{
+  archiveVersion = 1;
+  classes = {};
+  objectVersion = 56;
+  objects = {
+    /* ── Build configuration ── */
+    13B07F941A680F5B00A75B9A /* Debug */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        ALWAYS_SEARCH_USER_PATHS = NO;
+        CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+        CLANG_ENABLE_MODULES = YES;
+        CLANG_ENABLE_OBJC_ARC = YES;
+        CODE_SIGN_IDENTITY = "iPhone Developer";
+        CURRENT_PROJECT_VERSION = 1;
+        ENABLE_BITCODE = NO;
+        INFOPLIST_FILE = "App/Info.plist";
+        LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+        MARKETING_VERSION = "1.98.0";
+        OTHER_LDFLAGS = "$(inherited)";
+        PRODUCT_BUNDLE_IDENTIFIER = "com.bridge.app";
+        PRODUCT_NAME = "$(TARGET_NAME)";
+        SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+        SWIFT_VERSION = 5.0;
+        TARGETED_DEVICE_FAMILY = "1,2";
+      };
+      name = Debug;
+    };
+    13B07F951A680F5B00A75B9A /* Release */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        ALWAYS_SEARCH_USER_PATHS = NO;
+        CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+        CLANG_ENABLE_MODULES = YES;
+        CLANG_ENABLE_OBJC_ARC = YES;
+        CODE_SIGN_IDENTITY = "iPhone Developer";
+        CURRENT_PROJECT_VERSION = 1;
+        ENABLE_BITCODE = NO;
+        INFOPLIST_FILE = "App/Info.plist";
+        LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+        MARKETING_VERSION = "1.98.0";
+        OTHER_LDFLAGS = "$(inherited)";
+        PRODUCT_BUNDLE_IDENTIFIER = "com.bridge.app";
+        PRODUCT_NAME = "$(TARGET_NAME)";
+        SWIFT_VERSION = 5.0;
+        TARGETED_DEVICE_FAMILY = "1,2";
+        VALIDATE_PRODUCT = YES;
+      };
+      name = Release;
+    };
+  };
+  rootObject = 83CBB9F71A601CBA00E9B192;
+}

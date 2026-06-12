@@ -1,90 +1,90 @@
-// @ts-nocheck
-// server/lib/sfuRegistry.js
+// server/lib/sfuRegistry.ts — Oturum 17: redis tipi, fonksiyon imzaları
 // SFU oda kaydı — cluster modda hangi node hangi ses odasını yönetiyor.
-//
-// Sorun: 3 Bridge node varsa, kullanıcılar farklı node'lara düşer.
-// Kullanıcı A → node-1, Kullanıcı B → node-2 olursa ikisi aynı
-// mediasoup router'a bağlı olmadığından ses akışı çalışmaz.
-//
-// Çözüm: Redis'te "hangi channelId hangi node'da" kaydını tut.
-// Yeni kullanıcı katıldığında o node'a yönlendir (socket.io room redirect).
-//
-// Tek node modda (REDIS_URL yoksa) no-op olarak çalışır.
 
-'use strict';
+import logger from './logger';
+import { tryRequire } from './_optional-require';
 
-let redis = null;
+// ── Tipler ────────────────────────────────────────────────────
+interface RedisClient {
+  setEx(key: string, ttl: number, value: string): Promise<unknown>;
+  get(key: string): Promise<string | null>;
+  del(key: string): Promise<unknown>;
+  expire(key: string, ttl: number): Promise<unknown>;
+  keys(pattern: string): Promise<string[]>;
+  ttl(key: string): Promise<number>;
+  on(event: string, cb: (err?: Error) => void): void;
+  connect(): Promise<void>;
+}
 
-const INSTANCE_ID  = process.env.INSTANCE_ID || `node-${process.pid}`;
-const KEY_PREFIX   = 'bridge:sfu:room:';
-const TTL_SECONDS  = 3600; // 1 saat — boş oda otomatik temizlenir
+export interface RoomEntry {
+  channelId: string;
+  nodeId:    string;
+}
 
-async function _getRedis() {
+export interface SfuStats {
+  mode:       'single-node' | 'cluster';
+  instanceId: string;
+  totalRooms: number;
+  localRooms: number;
+  rooms:      Array<RoomEntry & { ttlSeconds: number }>;
+}
+
+// ── Sabitler ──────────────────────────────────────────────────
+let redis: RedisClient | null = null;
+
+export const INSTANCE_ID = process.env.INSTANCE_ID || `node-${process.pid}`;
+const KEY_PREFIX          = 'bridge:sfu:room:';
+const TTL_SECONDS         = 3600;
+
+async function _getRedis(): Promise<RedisClient | null> {
   if (redis) return redis;
   if (!process.env.REDIS_URL) return null;
   try {
-    const { createClient } = require('redis');
+    const redisLib = tryRequire<{ createClient(opts: { url: string }): RedisClient }>('redis');
+    if (!redisLib) return null;
+    const { createClient } = redisLib;
     redis = createClient({ url: process.env.REDIS_URL });
-    redis.on('error', err => console.error('[SFU Registry] Redis error:', err.message));
+    redis.on('error', (err?: Error) => logger.error({ err: err?.message, event: 'sfu_registry.redis.error' }, '[SFU Registry] Redis error'));
     await redis.connect();
     return redis;
   } catch (e) {
-    console.warn('[SFU Registry] Redis bağlantısı kurulamadı, tek-node modda devam:', e.message);
+    logger.warn({ err: (e as Error).message, event: 'sfu_registry.redis.connect_failed' }, '[SFU Registry] Redis bağlantısı kurulamadı, tek-node modda devam');
     return null;
   }
 }
 
-/**
- * Bir ses odasını bu node'a kaydet.
- * @param {string} channelId
- */
-async function claimRoom(channelId) {
+/** Bir ses odasını bu node'a kaydet. */
+export async function claimRoom(channelId: string): Promise<void> {
   const r = await _getRedis();
-  if (!r) return; // tek node, kayıt gerekmez
+  if (!r) return;
   await r.setEx(`${KEY_PREFIX}${channelId}`, TTL_SECONDS, INSTANCE_ID);
 }
 
-/**
- * Bu odarın hangi node'da olduğunu döndür.
- * @param {string} channelId
- * @returns {string|null} instanceId veya null (oda yok)
- */
-async function getRoomOwner(channelId) {
+/** Bu odanın hangi node'da olduğunu döndür. */
+export async function getRoomOwner(channelId: string): Promise<string | null> {
   const r = await _getRedis();
-  if (!r) return INSTANCE_ID; // tek node, her zaman kendisi
+  if (!r) return INSTANCE_ID;
   return r.get(`${KEY_PREFIX}${channelId}`);
 }
 
-/**
- * Bu node bu odanın sahibi mi?
- * @param {string} channelId
- * @returns {boolean}
- */
-async function isLocalRoom(channelId) {
+/** Bu node bu odanın sahibi mi? */
+export async function isLocalRoom(channelId: string): Promise<boolean> {
   const owner = await getRoomOwner(channelId);
   return owner === null || owner === INSTANCE_ID;
 }
 
-/**
- * Oda kaydını sil (oda kapandığında).
- * @param {string} channelId
- */
-async function releaseRoom(channelId) {
+/** Oda kaydını sil (oda kapandığında). */
+export async function releaseRoom(channelId: string): Promise<void> {
   const r = await _getRedis();
   if (!r) return;
-  // Sadece bu node'un odalarını sil
   const owner = await r.get(`${KEY_PREFIX}${channelId}`);
   if (owner === INSTANCE_ID) {
     await r.del(`${KEY_PREFIX}${channelId}`);
   }
 }
 
-/**
- * TTL'yi yenile (oda hâlâ aktifse).
- * Her 10 dakikada bir çağrılmalı.
- * @param {string} channelId
- */
-async function refreshRoom(channelId) {
+/** TTL'yi yenile (oda hâlâ aktifse). Her 10 dakikada bir çağrılmalı. */
+export async function refreshRoom(channelId: string): Promise<void> {
   const r = await _getRedis();
   if (!r) return;
   const owner = await r.get(`${KEY_PREFIX}${channelId}`);
@@ -93,15 +93,12 @@ async function refreshRoom(channelId) {
   }
 }
 
-/**
- * Bu node'un sahip olduğu tüm odaları listele.
- * @returns {string[]} channelId listesi
- */
-async function listLocalRooms() {
+/** Bu node'un sahip olduğu tüm odaları listele. */
+export async function listLocalRooms(): Promise<string[]> {
   const r = await _getRedis();
   if (!r) return [];
   const keys = await r.keys(`${KEY_PREFIX}*`);
-  const rooms = [];
+  const rooms: string[] = [];
   for (const key of keys) {
     const owner = await r.get(key);
     if (owner === INSTANCE_ID) {
@@ -111,16 +108,12 @@ async function listLocalRooms() {
   return rooms;
 }
 
-/**
- * Tüm node'lardaki tüm aktif odaları döndür.
- * Her oda için { channelId, nodeId } bilgisi içerir.
- * @returns {{ channelId: string, nodeId: string }[]}
- */
-async function listAllRooms() {
+/** Tüm node'lardaki tüm aktif odaları döndür. */
+export async function listAllRooms(): Promise<RoomEntry[]> {
   const r = await _getRedis();
   if (!r) return [];
   const keys = await r.keys(`${KEY_PREFIX}*`);
-  const rooms = [];
+  const rooms: RoomEntry[] = [];
   for (const key of keys) {
     const nodeId = await r.get(key);
     if (nodeId) {
@@ -130,11 +123,8 @@ async function listAllRooms() {
   return rooms;
 }
 
-/**
- * Cluster genelinde SFU istatistiklerini döndür.
- * @returns {{ totalRooms: number, localRooms: number, rooms: object[] }}
- */
-async function getStats() {
+/** Cluster genelinde SFU istatistiklerini döndür. */
+export async function getStats(): Promise<SfuStats> {
   const r = await _getRedis();
   if (!r) {
     return {
@@ -146,10 +136,9 @@ async function getStats() {
     };
   }
 
-  const all    = await listAllRooms();
-  const local  = all.filter(rm => rm.nodeId === INSTANCE_ID);
+  const all   = await listAllRooms();
+  const local = all.filter(rm => rm.nodeId === INSTANCE_ID);
 
-  // Her oda için kalan TTL al
   const roomsWithTtl = await Promise.all(
     all.map(async (rm) => {
       const ttl = await r.ttl(`${KEY_PREFIX}${rm.channelId}`);
@@ -165,16 +154,3 @@ async function getStats() {
     rooms:      roomsWithTtl,
   };
 }
-
-module.exports = {
-  claimRoom,
-  getRoomOwner,
-  isLocalRoom,
-  releaseRoom,
-  refreshRoom,
-  listLocalRooms,
-  listAllRooms,
-  getStats,
-  INSTANCE_ID,
-};
-export {};

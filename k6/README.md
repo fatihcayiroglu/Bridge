@@ -53,6 +53,19 @@ BASE_URL=http://localhost:3000 k6 run k6/websocket-load.js
 BASE_URL=http://localhost:3000 k6 run k6/upload-load.js
 ```
 
+### 4. SFU / mediasoup Yük Testi _(Sprint 77 — yeni)_
+
+```bash
+# Smoke (5 VU, 1 dakika) — temel SFU join + transport + produce
+BASE_URL=http://localhost:3000 TEST_TOKEN=xxx k6 run k6/mediasoup-sfu-load.js
+
+# Yük testi (50 VU, 5 dakika)
+SCENARIO=load BASE_URL=http://localhost:3000 k6 run k6/mediasoup-sfu-load.js
+
+# Stres testi (200 VU) — MAX_ROOMS=500 sınırı yaklaşıldığında davranış
+SCENARIO=stress BASE_URL=http://localhost:3000 k6 run k6/mediasoup-sfu-load.js
+```
+
 ### Tüm testleri sırayla çalıştır
 
 ```bash

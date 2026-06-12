@@ -1,5 +1,6 @@
 {
   "_comment": "Jest / ts-jest için özel tsconfig. Test dosyalarını include eder.",
+  "_todo": "Sprint 57 ✅ tests/helpers/*.js → .ts migrate edildi (index, mocks, mockDb). helpers/*.js satırı kaldırıldı.",
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
@@ -9,9 +10,8 @@
     "strictNullChecks": false,
     "allowJs": true,
     "checkJs": false,
-    // ts-jest diagnostics için incremental kapalı olmalı
-    "incremental": false,
-    "tsBuildInfoFile": null
+    // incremental kapalı — ts-jest diagnostics için stale cache gizlemesi istenmiyor
+    "incremental": false
   },
   "include": [
     "index.ts",
@@ -25,10 +25,10 @@
     "scripts/**/*.ts",
     "types/**/*.ts",
     "plugins/**/*.ts",
+    "plugins/**/*.js",
     "db/repositories/types/*.d.ts",
-    // Test dosyaları
+    // Test dosyaları — Sprint 55: tümü .ts'e dönüştürüldü
     "tests/**/*.ts",
-    "tests/**/*.js"
   ],
   "exclude": [
     "node_modules",

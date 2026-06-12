@@ -1,0 +1,62 @@
+/* ── Bridge · layout-modes.css ─────────────────────────────────
+   Discord üç sütun iskeletinden görsel ayrışma.
+   body[data-layout] ile Ayarlar → Görünüm'den seçilir.
+   ─────────────────────────────────────────────────────────── */
+
+/* FOCUS — sohbet odaklı; hub rail gizli */
+body[data-layout="focus"] .server-list {
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+body[data-layout="focus"] .channel-sidebar {
+  width: 200px;
+  border-right: 1px solid var(--brand-border);
+}
+
+body[data-layout="focus"] .main-content {
+  background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-3) 120px);
+}
+
+body[data-layout="focus"] .channel-header {
+  border-bottom-color: var(--brand-border);
+}
+
+body[data-layout="focus"] .channel-header .ch-h-name::before {
+  content: "◆ ";
+  color: var(--accent);
+  font-weight: 400;
+}
+
+/* COMPACT — dar topic listesi */
+body[data-layout="compact"] .channel-sidebar {
+  width: 180px;
+}
+
+body[data-layout="compact"] .server-list {
+  width: 56px;
+}
+
+body[data-layout="compact"] .server-icon {
+  width: 40px;
+  height: 40px;
+  font-size: 17px;
+}
+
+/* Hub rail — köprü metaforu (görsel ipucu) */
+.server-list::before {
+  content: "HUB";
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+  margin-bottom: 4px;
+  opacity: 0.85;
+}
+
+body[data-layout="focus"] .server-list::before {
+  display: none;
+}

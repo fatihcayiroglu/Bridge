@@ -1,22 +1,83 @@
-// server/routes/serverProfile.js
+/**
+ * @openapi
+ * tags:
+ *   - name: ServerProfile
+ *     description: ServerProfile API endpoints
+
+ *
+ * /servers/{sid}/slug:
+ *   get:
+ *     tags: [Servers]
+ *     summary: Sunucu slug bilgisini getir
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: sid
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Slug
+ *   put:
+ *     tags: [Servers]
+ *     summary: Sunucu slug'ını güncelle
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: sid
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [slug]
+ *             properties:
+ *               slug: { type: string, pattern: '^[a-z0-9-]+$', maxLength: 64 }
+ *     responses:
+ *       200:
+ *         description: Güncellendi
+ *       409:
+ *         description: Slug zaten kullanımda
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *
+ * /servers/by-slug/{slug}:
+ *   get:
+ *     tags: [Servers]
+ *     summary: Slug ile sunucu bul (public profil)
+ *     security: []
+ *     parameters:
+ *       - in: path
+ *         name: slug
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Sunucu profili
+ *       404: { $ref: '#/components/responses/NotFound' }
+ */
+
+// server/routes/serverProfile.ts
 // GET /s/:slug  — Herkese açık sunucu profil sayfası (SEO + sosyal önizleme)
 // GET /api/servers/:sid/slug — Slug al
 // PUT /api/servers/:sid/slug — Slug ayarla (owner only)
 
-'use strict';
 
-const express    = require('express');
+import express from 'express';
+import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router     = express.Router();
-const { Servers, Members, Channels, Users } = require('../db/repositories');
-const { authMiddleware, castAuthed } = require('../middleware/auth');
-const asyncHandler = require('../middleware/asyncHandler');
-const { limits } = require('../middleware/rateLimit'); // rate limiting
+import { Servers, Members, Channels, Users } from '../db/repositories';
+import { authMiddleware} from '../middleware/auth';
+import { limits } from '../middleware/rateLimit';
+import { isUserOnline } from '../lib/presenceCache';
+import { escapeHtml as _escHtml } from '../lib/security';
 
-function escHtml(str) {
-  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
+// escapeHtml from lib/security — Sprint 101: deduplication
+const escHtml = (str: unknown): string => _escHtml(str as string);
 
-function slugify(name) {
+function slugify(name: string): string {
   return name.toLowerCase()
     .replace(/[çÇ]/g,'c').replace(/[şŞ]/g,'s').replace(/[ğĞ]/g,'g')
     .replace(/[üÜ]/g,'u').replace(/[öÖ]/g,'o').replace(/[ıİ]/g,'i')
@@ -24,16 +85,16 @@ function slugify(name) {
 }
 
 // ── GET /api/servers/:sid/slug ────────────────────────────────
-router.get('/:sid/slug', authMiddleware, asyncHandler(async (req, res) => {
-  const server = await Servers.findById(req.params.sid);
+router.get('/:sid/slug', authMiddleware, async (req, res) => {
+  const server = await Servers.findById(String(req.params.sid ?? ''));
   if (!server) return res.status(404).json({ error: 'Not found' });
   res.json({ slug: server.slug || null });
-}));
+});
 
 // ── PUT /api/servers/:sid/slug ────────────────────────────────
-router.put('/:sid/slug', authMiddleware, limits.write(), asyncHandler(async (req, res) => {
+router.put('/:sid/slug', authMiddleware, limits.write(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const server = await Servers.findById(req.params.sid);
+  const server = await Servers.findById(String(req.params.sid ?? ''));
   if (!server) return res.status(404).json({ error: 'Not found' });
   if (server.ownerId !== _u.id) return res.status(403).json({ error: 'Sadece sunucu sahibi değiştirebilir' });
 
@@ -54,11 +115,11 @@ router.put('/:sid/slug', authMiddleware, limits.write(), asyncHandler(async (req
 
   await Servers.update(server._id, { slug });
   res.json({ slug });
-}));
+});
 
 // ── GET /s/:slug — Herkese açık HTML profil sayfası ──────────
-router.get('/:slug', asyncHandler(async (req, res) => {
-  const slug = String(req.params.slug).replace(/[^a-z0-9-]/gi,'').toLowerCase().slice(0, 40);
+router.get('/:slug', async (req, res) => {
+  const slug = String(String(req.params.slug ?? '')).replace(/[^a-z0-9-]/gi,'').toLowerCase().slice(0, 40);
   if (!slug) return res.status(400).send('<h1>Geçersiz</h1>');
 
   const server = await Servers.findOne({ slug });
@@ -69,28 +130,28 @@ router.get('/:slug', asyncHandler(async (req, res) => {
 <style>body{background:#1a1b1e;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center}</style>
 </head><body><div><h1 style="font-size:3rem">😕</h1><h2>Sunucu bulunamadı</h2>
 <p style="color:#b5bac1;margin:.5rem 0 1.5rem">Bu slug'a sahip bir sunucu yok.</p>
-<a href="/" style="color:#5865f2">← Bridge'e git</a></div></body></html>`);
+<a href="/" style="color:#2d9cdb">← Bridge'e git</a></div></body></html>`);
   }
 
-  let memberList: any[] = [];
+  let memberList: Array<{ userId: string }> = [];
   let memberCount = 0;
   try {
-    memberList = await Members.findByServer(server._id);
+    memberList = await Members.findByServer(server._id) as Array<{ userId: string }>;
     memberCount = memberList.length;
   } catch {}
 
+  // Online sayısı: DB'deki stale status yerine presenceCache kullan
   let onlineCount = 0;
   try {
-    const userIds = memberList.map(m => m.userId);
-    const userRows = userIds.length ? await Users.findByIds(userIds) : [];
-    onlineCount = userRows.filter(u => u.status === 'online').length;
+    const checks = await Promise.all(memberList.map(m => isUserOnline(m.userId)));
+    onlineCount = checks.filter(Boolean).length;
   } catch {}
 
   // Kanallar (ilk 8 text kanal)
-  let channels: any[] = [];
+  let channels: Array<{ name: string; topic?: string }> = [];
   try {
     const allChannels = await Channels.findWhere({ serverId: server._id, type: 'text' });
-    channels = allChannels.slice(0, 8);
+    channels = allChannels.slice(0, 8).map(c => ({ name: String(c.name), topic: typeof c.topic === 'string' ? c.topic : undefined }));
   } catch {}
 
   const instanceUrl  = (process.env.INSTANCE_URL || `http://localhost:${process.env.PORT || 3001}`).replace(/\/$/, '');
@@ -98,7 +159,7 @@ router.get('/:slug', asyncHandler(async (req, res) => {
   const safeName     = escHtml(server.name);
   const safeDesc     = escHtml(server.description || `${server.name} topluluğuna Bridge'de katıl!`);
   const safeIcon     = escHtml(server.icon || '🌐');
-  const tags         = JSON.parse(server.tags || '[]');
+  const tags: string[] = typeof server.tags === 'string' ? JSON.parse(server.tags || '[]') : (Array.isArray(server.tags) ? server.tags : []);
   const ogImage      = `${instanceUrl}/api/servers/${server._id}/og-image`;
   const joinUrl      = `${instanceUrl}/?join=${encodeURIComponent(server._id)}`;
   const pageUrl      = `${instanceUrl}/s/${slug}`;
@@ -125,7 +186,7 @@ router.get('/:slug', asyncHandler(async (req, res) => {
   <meta name="twitter:description" content="${safeDesc} · ${memberCount} üye">
   <meta name="twitter:image"       content="${ogImage}">
 
-  <meta name="theme-color" content="#5865f2">
+  <meta name="theme-color" content="#2d9cdb">
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -136,7 +197,7 @@ router.get('/:slug', asyncHandler(async (req, res) => {
     }
     .banner {
       height: 200px;
-      background: ${server.bannerUrl ? `url('${escHtml(server.bannerUrl)}') center/cover` : 'linear-gradient(135deg,#5865f2 0%,#3b43a0 100%)'};
+      background: ${server.bannerUrl ? `url('${escHtml(server.bannerUrl)}') center/cover` : 'linear-gradient(135deg,#2d9cdb 0%,#3b43a0 100%)'};
       position: relative;
     }
     .container { max-width: 860px; margin: 0 auto; padding: 0 20px; }
@@ -146,7 +207,7 @@ router.get('/:slug', asyncHandler(async (req, res) => {
     }
     .server-avatar {
       width: 96px; height: 96px; border-radius: 50%;
-      background: #5865f2; border: 6px solid #111214;
+      background: #2d9cdb; border: 6px solid #111214;
       display: flex; align-items: center; justify-content: center;
       font-size: 2.8rem; flex-shrink: 0; overflow: hidden;
     }
@@ -156,12 +217,12 @@ router.get('/:slug', asyncHandler(async (req, res) => {
     .server-meta { font-size: 13px; color: #b5bac1; margin-top: 4px; display: flex; gap: 14px; flex-wrap: wrap; }
     .dot { color: #23a55a; }
     .join-btn {
-      display: inline-block; background: #5865f2; color: #fff;
+      display: inline-block; background: #2d9cdb; color: #fff;
       text-decoration: none; padding: 10px 28px;
       border-radius: 8px; font-size: 15px; font-weight: 700;
       transition: background .15s; white-space: nowrap;
     }
-    .join-btn:hover { background: #4752c4; }
+    .join-btn:hover { background: #1a6b8a; }
     .section { margin: 28px 0; }
     .section-title {
       font-size: 11px; font-weight: 700; text-transform: uppercase;
@@ -179,7 +240,7 @@ router.get('/:slug', asyncHandler(async (req, res) => {
       font-size: 13px; color: #b5bac1; border: 1px solid #1e1f22;
     }
     .footer { text-align: center; padding: 40px 20px; color: #555; font-size: 13px; }
-    .footer a { color: #5865f2; text-decoration: none; }
+    .footer a { color: #2d9cdb; text-decoration: none; }
     @media (max-width: 600px) {
       .profile-row { flex-direction: column; align-items: flex-start; }
       .join-btn { width: 100%; text-align: center; }
@@ -214,7 +275,7 @@ router.get('/:slug', asyncHandler(async (req, res) => {
     <div class="section">
       <div class="section-title">Etiketler</div>
       <div class="tags">
-        ${tags.map(t => `<span class="tag">${escHtml(t)}</span>`).join('')}
+        ${tags.map((t: string) => `<span class="tag">${escHtml(t)}</span>`).join('')}
       </div>
     </div>` : ''}
 
@@ -236,7 +297,10 @@ router.get('/:slug', asyncHandler(async (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
   res.send(html);
-}));
+});
 
+export default router;
+
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-export {};
+module.exports.default = router;

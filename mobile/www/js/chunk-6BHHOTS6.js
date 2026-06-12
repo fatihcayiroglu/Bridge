@@ -1,0 +1,1 @@
+var e=new Map,i={register(n,t){e.set(n,t)},call(n,...t){let r=e.get(n);return r?r(...t):void 0},get(n){return e.get(n)??null},wrap(n,t){let r=e.get(n)??null;e.set(n,(...s)=>t(r,...s))},has(n){return e.has(n)},unregister(n){e.delete(n)}};export{i as a};

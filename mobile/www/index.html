@@ -108,7 +108,7 @@
     #native-splash .splash-spinner {
       width: 32px; height: 32px;
       border: 3px solid rgba(255,255,255,0.15);
-      border-top-color: #5865f2;
+      border-top-color: #2d9cdb;
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
     }
@@ -130,7 +130,7 @@
       position: fixed;
       bottom: calc(64px + var(--sab));   /* mobile-nav üstü */
       left: 16px; right: 16px;
-      background: #5865f2;
+      background: #2d9cdb;
       color: #fff;
       border-radius: 12px;
       padding: 14px 16px;
@@ -162,7 +162,7 @@
     }
     #push-permission-banner .ppb-btn-allow {
       background: #fff;
-      color: #5865f2;
+      color: #2d9cdb;
     }
     #push-permission-banner .ppb-btn-deny {
       background: rgba(255,255,255,0.2);
@@ -371,12 +371,12 @@
       <div class="user-panel">
         <div class="user-avatar-wrap tooltip"
              data-tip-i18n="tip_profile" data-tip="Profile"
-             onclick="openSettings()"
+             data-bridge-action="openSettingsModal"
              role="button" aria-label="Profil ve ayarlar" tabindex="0">
           <div class="user-avatar" id="my-avatar" style="background:#4f8ef7">?</div>
           <div class="status-dot online" id="my-status-dot"></div>
         </div>
-        <div class="user-info" onclick="openSettings()">
+        <div class="user-info" data-bridge-action="openSettingsModal">
           <div class="u-name" id="my-username">...</div>
           <div class="u-tag"  id="my-tag">Online</div>
         </div>
@@ -389,7 +389,7 @@
           <div class="u-action-btn tooltip" data-tip="E2E Şifreleme"     onclick="window.BridgeE2E?.openE2ESettings()" id="btn-e2e" role="button" tabindex="0">🔓</div>
           <div class="u-action-btn tooltip" data-tip="Federasyon"        onclick="openFederationUI()"  role="button" tabindex="0">🌐</div>
           <div class="u-action-btn tooltip" data-tip-i18n="tip_theme"    data-tip="Toggle Theme" id="btn-theme" onclick="toggleTheme()" role="button" tabindex="0">☀️</div>
-          <div class="u-action-btn tooltip" data-tip-i18n="tip_settings" data-tip="Settings"  onclick="openSettings()">⚙️</div>
+          <div class="u-action-btn tooltip" data-tip-i18n="tip_settings" data-tip="Settings"  data-bridge-action="openSettingsModal">⚙️</div>
           <div class="u-action-btn tooltip" data-i18n-toggle data-tip-i18n="lang_toggle_tip" data-tip="Switch to English"
                onclick="i18n.toggleLang()" role="button" tabindex="0"
                style="font-size:11px;font-weight:700;letter-spacing:.05em;">EN</div>
@@ -752,6 +752,19 @@
     }
     _installPrompt = null;
   };
+
+  // ── data-bridge-action dispatch — Sprint 57 ───────────────────────────────
+  // index.html ile tutarlı: onclick yerine data-bridge-action attribute kullanılır
+  document.addEventListener('click', function (e) {
+    const el = e.target.closest('[data-bridge-action]');
+    if (!el) return;
+    const action = el.getAttribute('data-bridge-action');
+    if (!action) return;
+    e.stopPropagation();
+    if (typeof BridgeRegistry !== 'undefined' && BridgeRegistry.has(action)) {
+      BridgeRegistry.call(action, el);
+    }
+  });
 
 })();
 </script>

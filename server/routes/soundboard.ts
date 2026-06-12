@@ -1,14 +1,64 @@
-// server/routes/soundboard.js Soundboard (Discord Nitro'da ücretli, Bridge'de bedava)
-const express = require('express');
-const multer  = require('multer');
-const path    = require('path');
-const fs      = require('fs');
-const { v4: uuidv4 } = require('uuid');
+/**
+ * @openapi
+ * tags:
+ *   - name: Soundboard
+ *     description: Soundboard API endpoints
+
+ *
+ * /soundboard:
+ *   get:
+ *     tags: [Servers]
+ *     summary: Soundboard seslerini listele
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Ses listesi
+ *   post:
+ *     tags: [Servers]
+ *     summary: Soundboard'a yeni ses ekle
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required: [name, file]
+ *             properties:
+ *               name: { type: string, maxLength: 32 }
+ *               file: { type: string, format: binary }
+ *     responses:
+ *       201:
+ *         description: Ses eklendi
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *
+ * /soundboard/{soundId}:
+ *   delete:
+ *     tags: [Servers]
+ *     summary: Soundboard sesini sil
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: soundId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Silindi
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+
+// server/routes/soundboard.ts Soundboard (Discord Nitro'da ücretli, Bridge'de bedava)
+import express from 'express';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
+import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router  = express.Router({ mergeParams: true });
-const { Servers, Members, Roles, ServerAssets } = require('../db/repositories');
-const { authMiddleware, castAuthed } = require('../middleware/auth');
-const asyncHandler = require('../middleware/asyncHandler');
-const { limits } = require('../middleware/rateLimit'); // rate limiting
+import { Servers, Members, Roles, ServerAssets } from '../db/repositories';
+import { authMiddleware} from '../middleware/auth';
+import { limits } from '../middleware/rateLimit';
 
 const UPLOAD_DIR = path.join(__dirname, '../uploads/soundboard');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -26,11 +76,11 @@ const soundUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (req, file, cb) => {
     const allowed = ['audio/mpeg','audio/mp3','audio/ogg','audio/wav','audio/webm','audio/aac','audio/flac'];
-    cb(allowed.includes(file.mimetype) ? null : new Error('Only MP3, OGG, WAV, WEBM, AAC, FLAC allowed'), allowed.includes(file.mimetype));
+    if (allowed.includes(file.mimetype)) cb(null, true); else cb(new Error('Only MP3, OGG, WAV, WEBM, AAC, FLAC allowed'));
   },
 });
 
-async function isOwnerOrAdmin(userId, serverId) {
+async function isOwnerOrAdmin(userId: string, serverId: string): Promise<boolean> {
   const server = await Servers.findById(serverId);
   if (!server) return false;
   if (server.ownerId === userId) return true;
@@ -42,17 +92,17 @@ async function isOwnerOrAdmin(userId, serverId) {
   }
   if (!roleIds.length) return false;
   const roles = await Roles.findWhere({ _id: { $in: roleIds } });
-  return roles.some(r => (r.permissions & 64) || (r.permissions & 1));
+  return roles.some(r => ((r.permissions ?? 0) & 64) || ((r.permissions ?? 0) & 1));
 }
 
 // GET /api/servers/:sid/soundboard
-router.get('/', authMiddleware, asyncHandler(async (req, res) => {
+router.get('/', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const member = await Members.findOne(_u.id, req.params.sid);
+  const member = await Members.findOne(_u.id, String(req.params.sid ?? ''));
   if (!member) return res.status(403).json({ error: 'Not a member' });
-  const sounds = await ServerAssets.findSoundsSorted(req.params.sid);
+  const sounds = await ServerAssets.findSoundsSorted(String(req.params.sid ?? ''));
   res.json(sounds);
-}));
+});
 
 // POST /api/servers/:sid/soundboard — upload sound
 router.post('/', authMiddleware, limits.write(), (req, res, next) => {
@@ -60,14 +110,14 @@ router.post('/', authMiddleware, limits.write(), (req, res, next) => {
     if (err) return res.status(400).json({ error: err.message });
     next();
   });
-}, asyncHandler(async (req, res) => {
+}, async (req, res) => {
   const _u = castAuthed(req).user;
-  if (!await isOwnerOrAdmin(_u.id, req.params.sid))
+  if (!await isOwnerOrAdmin(_u.id, String(req.params.sid ?? '')))
     return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
   // Max 64 sounds per server
-  const existing = await ServerAssets.findSounds(req.params.sid);
+  const existing = await ServerAssets.findSounds(String(req.params.sid ?? ''));
   if (existing.length >= 64) {
     fs.unlinkSync(req.file.path);
     return res.status(400).json({ error: 'Maximum 64 sounds per server' });
@@ -78,7 +128,7 @@ router.post('/', authMiddleware, limits.write(), (req, res, next) => {
 
   const sound = await ServerAssets.insertSound({
     _id:        uuidv4(),
-    serverId:   req.params.sid,
+    serverId:   String(req.params.sid ?? ''),
     name,
     emoji,
     url:        `/uploads/soundboard/${req.file.filename}`,
@@ -87,23 +137,26 @@ router.post('/', authMiddleware, limits.write(), (req, res, next) => {
   });
 
   res.json(sound);
-}));
+});
 
 // DELETE /api/servers/:sid/soundboard/:soundId
-router.delete('/:soundId', authMiddleware, limits.write(), asyncHandler(async (req, res) => {
+router.delete('/:soundId', authMiddleware, limits.write(), async (req, res) => {
   const _u = castAuthed(req).user;
-  if (!await isOwnerOrAdmin(_u.id, req.params.sid))
+  if (!await isOwnerOrAdmin(_u.id, String(req.params.sid ?? '')))
     return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
 
-  const sound = await ServerAssets.findSoundByIdAndServer(req.params.soundId, req.params.sid);
+  const sound = await ServerAssets.findSoundByIdAndServer(String(req.params.soundId ?? ''), String(req.params.sid ?? ''));
   if (!sound) return res.status(404).json({ error: 'Sound not found' });
 
   const filePath = path.join(UPLOAD_DIR, path.basename(sound.url));
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
-  await ServerAssets.deleteSound(req.params.soundId, req.params.sid);
+  await ServerAssets.deleteSound(String(req.params.soundId ?? ''), String(req.params.sid ?? ''));
   res.json({ ok: true });
-}));
+});
 
+export default router;
+
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-export {};
+module.exports.default = router;

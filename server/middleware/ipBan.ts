@@ -1,26 +1,42 @@
-// server/middleware/ipBan.ts
+// server/middleware/ip-ban.ts
 // IP bazlı erişim engeli
 // Redis varsa Redis'te tutar (tüm instance'lar senkron),
 // yoksa in-memory Map'e düşer (tek node yeterli).
 
 import { Request, Response, NextFunction } from 'express';
+import type { IncomingHttpHeaders } from 'http';
+
+import logger from '../lib/logger';
+// ── Config ────────────────────────────────────────────────────────────────────
 
 const TRUSTED_PROXY_COUNT = parseInt(process.env.TRUSTED_PROXY_COUNT ?? '1', 10);
 
-// ── IP çözümleyici ───────────────────────────────────────────
-export function getClientIp(req: Request): string {
-  const reqIp = (req as Request & { ip?: string }).ip;
+// ── Admin & health routes bypass list ────────────────────────────────────────
+
+const BYPASS_PREFIXES = ['/api/admin', '/api/health', '/api/docs'] as const;
+
+// ── IP resolver ───────────────────────────────────────────────────────────────
+
+interface IpRequestLike { ip?: string; headers: IncomingHttpHeaders; socket?: { remoteAddress?: string } }
+
+export function getClientIp(req: IpRequestLike): string {
+  const reqIp = req.ip;
   if (reqIp && reqIp !== '::1' && reqIp !== '127.0.0.1') return reqIp;
+
   const xff = req.headers['x-forwarded-for'] as string | undefined;
   if (!xff || TRUSTED_PROXY_COUNT === 0) {
-    return ((req.socket?.remoteAddress) || 'unknown').replace(/^::ffff:/, '');
+    return (req.socket?.remoteAddress ?? 'unknown').replace(/^::ffff:/, '');
   }
+
   const hops = xff.split(',').map(s => s.trim()).filter(Boolean);
-  const idx = hops.length - TRUSTED_PROXY_COUNT;
+  // X-Forwarded-For order is: client, proxy1, proxy2. If N proxies are
+  // trusted, the real client is immediately before that trusted suffix.
+  const idx  = hops.length - TRUSTED_PROXY_COUNT - 1;
   return (idx >= 0 ? hops[idx] : hops[0]).replace(/^::ffff:/, '');
 }
 
-// ── Types ────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 export interface BanEntry {
   ip: string;
   reason: string;
@@ -35,13 +51,18 @@ export interface BanOptions {
   adminId?: string | null;
 }
 
-// ── In-memory fallback ──────────────────────────────────────
+// ── In-memory fallback ────────────────────────────────────────────────────────
+
 const _memBans = new Map<string, BanEntry>();
 
-// ── Redis bağlantısı (opsiyonel) ────────────────────────────
+// ── Redis interface (optional) ────────────────────────────────────────────────
+
 interface RedisLike {
   status: string;
+  /** SET key value — TTL'siz kalıcı set */
   set(key: string, value: string): Promise<unknown>;
+  /** SET key value EX seconds — atomik set+expire */
+  setEx(key: string, seconds: number, value: string): Promise<unknown>;
   expire(key: string, seconds: number): Promise<unknown>;
   get(key: string): Promise<string | null>;
   del(key: string): Promise<unknown>;
@@ -56,14 +77,12 @@ function _tryGetRedis(): RedisLike | null {
   if (_redis) return _redis;
   try {
     const g = global as unknown as { _bridgeRedis?: RedisLike };
-    if (g._bridgeRedis?.status === 'ready') {
-      _redis = g._bridgeRedis;
-    }
-  } catch { /* redis yok, sorun değil */ }
+    if (g._bridgeRedis?.status === 'ready') _redis = g._bridgeRedis;
+  } catch { /* redis unavailable, that's fine */ }
   return _redis;
 }
 
-// ── Temel CRUD ──────────────────────────────────────────────
+// ── CRUD ──────────────────────────────────────────────────────────────────────
 
 export async function banIp(
   ip: string,
@@ -71,19 +90,23 @@ export async function banIp(
 ): Promise<BanEntry> {
   if (!ip || ip === 'unknown') throw new Error('Geçersiz IP');
 
-  const bannedAt = Date.now();
+  const bannedAt  = Date.now();
   const expiresAt = durationMs ? bannedAt + durationMs : null;
   const entry: BanEntry = { ip, reason, bannedAt, expiresAt, adminId };
 
   const redis = _tryGetRedis();
   if (redis) {
     const ttlSeconds = durationMs ? Math.ceil(durationMs / 1000) : 0;
-    const cmd = redis.set(`${REDIS_KEY_PREFIX}${ip}`, JSON.stringify(entry));
-    if (ttlSeconds > 0) await redis.expire(`${REDIS_KEY_PREFIX}${ip}`, ttlSeconds);
-    await cmd;
+    if (ttlSeconds > 0) {
+      // Atomik SET + EX — race condition yok (eski: set() + expire() ayrıydı)
+      await redis.setEx(`${REDIS_KEY_PREFIX}${ip}`, ttlSeconds, JSON.stringify(entry));
+    } else {
+      await redis.set(`${REDIS_KEY_PREFIX}${ip}`, JSON.stringify(entry));
+    }
   } else {
     _memBans.set(ip, entry);
   }
+
   return entry;
 }
 
@@ -124,14 +147,14 @@ export async function listBans(): Promise<BanEntry[]> {
     const keys = await redis.keys(`${REDIS_KEY_PREFIX}*`);
     if (!keys.length) return [];
     const values = await redis.mget(...keys);
-    const now = Date.now();
+    const now    = Date.now();
     return values
-      .filter(Boolean)
-      .map(v => JSON.parse(v as string) as BanEntry)
+      .filter((v): v is string => v !== null)
+      .map(v => JSON.parse(v) as BanEntry)
       .filter(e => !e.expiresAt || e.expiresAt > now);
   }
 
-  const now = Date.now();
+  const now    = Date.now();
   const result: BanEntry[] = [];
   for (const [ip, entry] of _memBans) {
     if (entry.expiresAt && now > entry.expiresAt) {
@@ -143,20 +166,20 @@ export async function listBans(): Promise<BanEntry[]> {
   return result;
 }
 
-// ── Express middleware ──────────────────────────────────────
+// ── Express middleware ────────────────────────────────────────────────────────
+
 export async function ipBanMiddleware(
   req: Request,
   res: Response,
   next: NextFunction
 ): Promise<void> {
-  if (
-    req.path.startsWith('/api/admin') ||
-    req.path.startsWith('/api/health') ||
-    req.path.startsWith('/api/docs')
-  ) { next(); return; }
+  if (BYPASS_PREFIXES.some(prefix => req.path.startsWith(prefix))) {
+    next();
+    return;
+  }
 
   try {
-    const ip = getClientIp(req);
+    const ip  = getClientIp(req);
     const ban = await getBan(ip);
     if (!ban) { next(); return; }
 
@@ -172,7 +195,7 @@ export async function ipBanMiddleware(
       ...(remaining !== null ? { remainingSeconds: remaining } : {}),
     });
   } catch (err) {
-    console.error('[ipBan] middleware error:', (err as Error).message);
+    logger.error('[ipBan] middleware error:', (err as Error).message);
     next();
   }
 }

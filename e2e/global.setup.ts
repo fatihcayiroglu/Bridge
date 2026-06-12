@@ -122,7 +122,23 @@ async function setup() {
   console.log('✅ Auth state kaydedildi:', authStatePath);
 
   await browser.close();
+
+  // ── Sprint 41: Fixture doğrulama ────────────────────────────────────────────
+  // testChannelId veya testServerId eksikse testler sessizce skip olur.
+  // Seed başarısızsa burada açıkça hata fırlat — CI'da gizli skip yerine
+  // görünür kırmızı build tercih edilir.
+  const written = JSON.parse(fs.readFileSync(tokensPath, 'utf-8'));
+  if (!written.alice) {
+    throw new Error("E2E Setup HATA: alice token'u kaydedilemedi. Login/register başarısız olmuş olabilir.");
+  }
+  if (!written.bob) {
+    throw new Error("E2E Setup HATA: bob token'u kaydedilemedi. Login/register başarısız olmuş olabilir.");
+  }
+  if (!fs.existsSync(authStatePath)) {
+    throw new Error('E2E Setup HATA: auth-state.json oluşturulamadı.');
+  }
+
   console.log('🎉 E2E Setup tamamlandı\n');
 }
 
-
+export default setup;

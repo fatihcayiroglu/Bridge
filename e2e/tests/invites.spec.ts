@@ -30,7 +30,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   // ── 1. Davet kodu oluşturma ───────────────────────────────
 
   test('POST /api/servers/:id/invites — davet kodu oluşturulabilmeli', async ({ request }) => {
-    if (!serverId) return test.skip();
+    test.skip(!serverId, 'Test fixture hazır değil'); if (!serverId) return;
 
     const res = await request.post(`${BASE}/api/servers/${serverId}/invites`, {
       headers: {
@@ -50,7 +50,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   });
 
   test('POST /api/servers/:id/invites — maxUses ile oluşturulabilmeli', async ({ request }) => {
-    if (!serverId) return test.skip();
+    test.skip(!serverId, 'Test fixture hazır değil'); if (!serverId) return;
 
     const res = await request.post(`${BASE}/api/servers/${serverId}/invites`, {
       headers: {
@@ -64,7 +64,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   });
 
   test('POST /api/servers/:id/invites — auth olmadan 401', async ({ request }) => {
-    if (!serverId) return test.skip();
+    test.skip(!serverId, 'Test fixture hazır değil'); if (!serverId) return;
 
     const res = await request.post(`${BASE}/api/servers/${serverId}/invites`, {
       headers: { 'Content-Type': 'application/json' },
@@ -76,7 +76,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   // ── 2. Davet önizleme ─────────────────────────────────────
 
   test('GET /api/invite/:code/preview — davet detayları görüntülenebilmeli', async ({ request }) => {
-    if (!inviteCode) return test.skip();
+    test.skip(!inviteCode, 'Test fixture hazır değil'); if (!inviteCode) return;
 
     const res = await request.get(`${BASE}/api/invite/${inviteCode}/preview`, {
       headers: { Authorization: `Bearer ${tokens.bob}` },
@@ -95,7 +95,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   // ── 3. Davet kodu ile katılma ─────────────────────────────
 
   test('POST /api/invite/:code — Bob sunucuya katılabilmeli', async ({ request }) => {
-    if (!inviteCode) return test.skip();
+    test.skip(!inviteCode, 'Test fixture hazır değil'); if (!inviteCode) return;
 
     const res = await request.post(`${BASE}/api/invite/${inviteCode}`, {
       headers: {
@@ -110,7 +110,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   });
 
   test('POST /api/invite/:code — katılma sonrası Bob üye listesinde görünmeli', async ({ request }) => {
-    if (!inviteCode || !serverId) return test.skip();
+    test.skip(!inviteCode || !serverId, 'Test fixture hazır değil'); if (!inviteCode || !serverId) return;
 
     // Katıl
     await request.post(`${BASE}/api/invite/${inviteCode}`, {
@@ -151,7 +151,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   // ── 5. Davet listesi ─────────────────────────────────────
 
   test('GET /api/servers/:id/invites — davet listesi görüntülenebilmeli', async ({ request }) => {
-    if (!serverId) return test.skip();
+    test.skip(!serverId, 'Test fixture hazır değil'); if (!serverId) return;
 
     const res = await request.get(`${BASE}/api/servers/${serverId}/invites`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
@@ -168,7 +168,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   });
 
   test('GET /api/servers/:id/invites — üye olmayan kullanıcı göremez (403)', async ({ request }) => {
-    if (!serverId) return test.skip();
+    test.skip(!serverId, 'Test fixture hazır değil'); if (!serverId) return;
 
     // Yeni token (başka kullanıcı simülasyonu için timestamp-unique user)
     // Bob zaten join etti olabilir — yeni bir kullanıcı oluşturmak gerekebilir
@@ -179,7 +179,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   // ── 6. Zaten üye olan kullanıcı ──────────────────────────
 
   test('POST /api/invite/:code — zaten üye olan Alice idempotent davranmalı', async ({ request }) => {
-    if (!inviteCode) return test.skip();
+    test.skip(!inviteCode, 'Test fixture hazır değil'); if (!inviteCode) return;
 
     // Alice sunucu sahibi — kendi davetini kullanmaya çalışıyor
     const res = await request.post(`${BASE}/api/invite/${inviteCode}`, {

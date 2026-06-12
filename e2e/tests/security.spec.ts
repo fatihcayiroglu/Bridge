@@ -130,7 +130,7 @@ test.describe('SVG Upload Sanitizasyonu', () => {
 
     const cleanSvg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <circle cx="50" cy="50" r="40" fill="#5865f2"/>
+  <circle cx="50" cy="50" r="40" fill="#2d9cdb"/>
   <text x="50" y="55" text-anchor="middle" fill="white" font-size="20">B</text>
 </svg>`;
 
@@ -385,5 +385,137 @@ test.describe('Upload MIME ve Boyut Validasyonu', () => {
     });
 
     expect(res.status()).toBeGreaterThanOrEqual(400);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// 7. CSRF Koruması — Uçtan Uca Akış
+// ══════════════════════════════════════════════════════════════
+test.describe('CSRF Koruması', () => {
+  // Paylaşımlı token pool — 6 ayrı register yerine tek beforeAll; suite ~5x hızlanır.
+  let _authTokens: Record<string, string> = {};
+
+  test.beforeAll(async ({ request }) => {
+    const suffixes = ['csrf1', 'csrf2', 'csrf3', 'csrf4', 'csrf5'];
+    await Promise.all(suffixes.map(async (suffix) => {
+      const { token } = await registerAndGetToken(request, suffix);
+      _authTokens[suffix] = token;
+    }));
+  });
+
+  const tok = (suffix: string) => _authTokens[suffix];
+
+
+  test('CSRF token olmadan mutating istek 403 dönmeli', async ({ request }) => {
+    const authToken = tok('csrf1');
+
+    // X-CSRF-Token header'ı gönderilmiyor — 403 beklenir
+    const res = await request.post(`${BASE_URL}/api/servers`, {
+      headers: {
+        Authorization:  `Bearer ${authToken}`,
+        'Content-Type': 'application/json',
+      },
+      data: JSON.stringify({ name: 'CSRFTestServer' }),
+    });
+
+    expect(res.status()).toBe(403);
+  });
+
+  test('geçersiz CSRF token ile mutating istek 403 dönmeli', async ({ request }) => {
+    const authToken = tok('csrf2');
+
+    const res = await request.post(`${BASE_URL}/api/servers`, {
+      headers: {
+        Authorization:  `Bearer ${authToken}`,
+        'X-CSRF-Token': 'tamamen-yanlis-bir-token',
+        'Content-Type': 'application/json',
+      },
+      data: JSON.stringify({ name: 'CSRFTestServer' }),
+    });
+
+    expect(res.status()).toBe(403);
+  });
+
+  test('GET /api/auth/csrf-token geçerli token döndürmeli', async ({ request }) => {
+    const authToken = tok('csrf3');
+
+    const csrfRes = await request.get(`${BASE_URL}/api/auth/csrf-token`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+
+    expect(csrfRes.ok()).toBe(true);
+    const body = await csrfRes.json();
+    expect(body).toHaveProperty('token');
+    expect(typeof body.token).toBe('string');
+    expect(body.token.length).toBeGreaterThan(0);
+  });
+
+  test('geçerli CSRF token ile mutating istek başarılı olmalı', async ({ request }) => {
+    const authToken = tok('csrf4');
+
+    // Adım 1: CSRF token al
+    const csrfRes = await request.get(`${BASE_URL}/api/auth/csrf-token`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    expect(csrfRes.ok()).toBe(true);
+    const { token: csrfToken } = await csrfRes.json();
+
+    // Adım 2: Token ile mutating istek yap
+    const res = await request.post(`${BASE_URL}/api/servers`, {
+      headers: {
+        Authorization:  `Bearer ${authToken}`,
+        'X-CSRF-Token': csrfToken,
+        'Content-Type': 'application/json',
+      },
+      data: JSON.stringify({ name: 'CSRFValidServer' }),
+    });
+
+    // 403 olmamalı — CSRF geçti (400/409 başka validasyon hatası olabilir, kabul edilir)
+    expect(res.status()).not.toBe(403);
+    expect(res.status()).not.toBe(500);
+  });
+
+  test('aynı CSRF token ikinci istekte hâlâ geçerli olmalı (stateless mod)', async ({ request }) => {
+    // CSRF token tek kullanımlık değil — oturum boyunca geçerli
+    const authToken = tok('csrf5');
+
+    const csrfRes = await request.get(`${BASE_URL}/api/auth/csrf-token`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    const { token: csrfToken } = await csrfRes.json();
+
+    const makeReq = () => request.post(`${BASE_URL}/api/servers`, {
+      headers: {
+        Authorization:  `Bearer ${authToken}`,
+        'X-CSRF-Token': csrfToken,
+        'Content-Type': 'application/json',
+      },
+      data: JSON.stringify({ name: 'CSRFReuseServer' }),
+    });
+
+    const res1 = await makeReq();
+    const res2 = await makeReq();
+
+    expect(res1.status()).not.toBe(403);
+    expect(res2.status()).not.toBe(403);
+  });
+
+  test('Authorization: Bot scheme ile CSRF kontrolü atlanmalı (API client exempt)', async ({ request }) => {
+    // Bot SDK Authorization: Bot brg_bot_... scheme kullanır.
+    // enforceApiCsrf sadece Bearer scheme kontrol eder → Bot scheme next() geçer → CSRF'den muaf.
+    // Bu test, bots.ts generateBotToken formatına uygun token oluşturur.
+    const fakeBotToken = 'brg_bot_dGVzdDoxMjM0OjE3MDAwMDAwMDA.fakesig1234';
+    const res = await request.post(`${BASE_URL}/api/servers`, {
+      headers: {
+        'Authorization': `Bot ${fakeBotToken}`,
+        'Content-Type': 'application/json',
+      },
+      data: JSON.stringify({ name: 'BotServer' }),
+    });
+
+    // CSRF katmanı Bot scheme'i Bearer olarak parse etmez → next() → auth hatasına (401) kadar gider.
+    // 403 (CSRF) dönmemeli; 401 (bot token geçersiz) beklenir.
+    expect(res.status()).toBe(401);
+    expect(res.status()).not.toBe(403);
   });
 });

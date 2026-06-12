@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// server/scripts/test-push.js
+// server/scripts/test-push.ts
 // Manuel push notification smoke test
 //
 // Kullanım:
@@ -16,6 +16,7 @@
 
 'use strict';
 
+ 
 require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 
 const userId = process.argv[2];
@@ -25,7 +26,9 @@ if (!userId) {
 }
 
 async function main() {
+   
   const { Notifications } = require('../db/repositories');
+   
   const { sendPushToUser } = require('../lib/pushSender');
 
   console.log(`\n🔔 Push smoke test — userId: ${userId}\n`);
@@ -61,4 +64,3 @@ main().catch(err => {
   console.error('❌ Hata:', err.message);
   process.exit(1);
 });
-export {};

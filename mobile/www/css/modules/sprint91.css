@@ -1,0 +1,193 @@
+/* client/css/modules/sprint91.css
+   Sprint 91 — Tüm yeni özellikler için ek stiller
+   server-profile, notification-prefs, bot-marketplace,
+   discover-enhanced, soundboard, thread-archive, mobile-voice-bar
+*/
+
+/* ── Server Profile Modal ────────────────────────────────────────────────── */
+
+#server-profile-modal .modal-card {
+  animation: modal-slide-up 0.2s ease;
+}
+
+#sp-avatar-preview img {
+  transition: opacity 0.2s;
+}
+
+#sp-banner-area:hover .sp-banner-overlay {
+  opacity: 1;
+}
+
+/* ── Notification Prefs Panel ────────────────────────────────────────────── */
+
+#notif-pref-panel {
+  animation: ctx-pop 0.15s ease;
+}
+
+@keyframes ctx-pop {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.ch-mute-badge {
+  display: inline-flex;
+  align-items: center;
+  pointer-events: none;
+}
+
+/* Muted channel: dim the name */
+.ch-item[data-muted="true"] .ch-name {
+  opacity: 0.5;
+}
+
+/* ── Bot Marketplace ─────────────────────────────────────────────────────── */
+
+#bot-marketplace-modal .modal-card {
+  animation: modal-slide-up 0.2s ease;
+}
+
+.bm-cat-btn::-webkit-scrollbar { display: none; }
+
+/* ── Discover Enhanced ───────────────────────────────────────────────────── */
+
+#discover-root { min-height: 100%; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* ── Soundboard Panel ────────────────────────────────────────────────────── */
+
+#soundboard-panel {
+  animation: sb-slide-up 0.2s ease;
+}
+
+@keyframes sb-slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+#sb-grid::-webkit-scrollbar { width: 4px; }
+#sb-grid::-webkit-scrollbar-thumb { background: var(--bg-5); border-radius: 2px; }
+
+#sb-cats::-webkit-scrollbar { display: none; }
+
+/* Sound button active ring */
+#sb-grid button[style*="var(--accent)"] {
+  box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.4);
+}
+
+/* ── Thread Archive Panel ────────────────────────────────────────────────── */
+
+#thread-list-panel {
+  /* base style set inline; just transition overrides here */
+}
+
+#thread-list-content::-webkit-scrollbar { width: 4px; }
+#thread-list-content::-webkit-scrollbar-thumb { background: var(--bg-5); border-radius: 2px; }
+
+/* Thread count badge in channel header */
+.thread-count-badge {
+  font-size: 11px;
+  background: var(--bg-hover);
+  border-radius: 12px;
+  padding: 1px 7px;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.thread-count-badge:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ── Mobile Voice Bar ────────────────────────────────────────────────────── */
+
+#mobile-voice-bar {
+  /* base styles inline; animation override */
+  animation: voice-bar-drop 0.25s ease;
+}
+
+@keyframes voice-bar-drop {
+  from { transform: translateY(-100%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+@keyframes voice-pulse {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%       { opacity: 0.7; transform: scale(1.1); }
+}
+
+/* Shift app content when voice bar is present */
+:root { --voice-bar-height: 0px; }
+
+/* ── Shared Modal Footer ──────────────────────────────────────────────────── */
+
+.modal-footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Animation: modal slide up ────────────────────────────────────────────── */
+
+@keyframes modal-slide-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Form group spacing ───────────────────────────────────────────────────── */
+
+.form-group label {
+  display: block;
+}
+
+.form-group input:focus,
+.form-group textarea:focus,
+.form-group select:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px rgba(88, 101, 242, 0.2);
+}
+
+/* ── Responsive: mobile breakpoints ──────────────────────────────────────── */
+
+@media (max-width: 480px) {
+  #bot-marketplace-modal .modal-card {
+    border-radius: 14px 14px 0 0;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 85vh;
+    animation: bottom-sheet-up 0.25s ease;
+  }
+
+  @keyframes bottom-sheet-up {
+    from { transform: translateY(100%); }
+    to   { transform: translateY(0); }
+  }
+
+  #soundboard-panel {
+    bottom: 0;
+    right: 0;
+    left: 0;
+    width: 100%;
+    border-radius: 14px 14px 0 0;
+  }
+
+  #thread-list-panel {
+    width: 100% !important;
+  }
+}
+
+/* ── Dark/Light theme overrides ───────────────────────────────────────────── */
+
+[data-theme="light"] #soundboard-panel,
+[data-theme="light"] #notif-pref-panel {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
+}

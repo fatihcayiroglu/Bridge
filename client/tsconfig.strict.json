@@ -1,0 +1,15 @@
+{
+  "_comment": "Sprint 51: base tsconfig.json artık strict:true. Bu config CI typecheck:strict-client adımı için korunuyor.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false
+  },
+  "include": [
+    "js/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist-session5"
+  ]
+}

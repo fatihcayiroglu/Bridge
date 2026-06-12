@@ -1,8 +1,6 @@
-// server/db/postgres/schema.js
+// server/db/postgres/schema.ts
 // PostgreSQL CREATE TABLE ve CREATE INDEX ifadeleri
 // _initSchema() tarafından kullanılır
-
-'use strict';
 
 // ── SCHEMA ───────────────────────────────────────────────────
 // Tüm tablolar IF NOT EXISTS → güvenle tekrar çalıştırılabilir
@@ -12,7 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT UNIQUE NOT NULL,
   "displayName" TEXT NOT NULL,
   password TEXT NOT NULL,
-  "avatarColor" TEXT NOT NULL DEFAULT '#5865f2',
+  "avatarColor" TEXT NOT NULL DEFAULT '#2d9cdb',
   "avatarUrl" TEXT,
   status TEXT NOT NULL DEFAULT 'offline',
   bio TEXT NOT NULL DEFAULT '',
@@ -87,7 +85,7 @@ CREATE TABLE IF NOT EXISTS messages (
   "userId" TEXT NOT NULL,
   username TEXT NOT NULL,
   "displayName" TEXT NOT NULL,
-  "avatarColor" TEXT NOT NULL DEFAULT '#5865f2',
+  "avatarColor" TEXT NOT NULL DEFAULT '#2d9cdb',
   content TEXT NOT NULL DEFAULT '',
   type TEXT NOT NULL DEFAULT 'normal',
   "fileUrl" TEXT,
@@ -154,7 +152,7 @@ CREATE TABLE IF NOT EXISTS dm_messages (
   "dmId" TEXT NOT NULL,
   "userId" TEXT NOT NULL,
   "displayName" TEXT NOT NULL,
-  "avatarColor" TEXT NOT NULL DEFAULT '#5865f2',
+  "avatarColor" TEXT NOT NULL DEFAULT '#2d9cdb',
   content TEXT NOT NULL DEFAULT '',
   "fileUrl" TEXT,
   "fileName" TEXT,
@@ -187,7 +185,7 @@ CREATE TABLE IF NOT EXISTS scheduled_msgs (
   "userId" TEXT NOT NULL,
   "displayName" TEXT NOT NULL,
   username TEXT NOT NULL,
-  "avatarColor" TEXT NOT NULL DEFAULT '#5865f2',
+  "avatarColor" TEXT NOT NULL DEFAULT '#2d9cdb',
   content TEXT NOT NULL,
   "sendAt" BIGINT NOT NULL,
   "createdAt" BIGINT NOT NULL,
@@ -319,7 +317,7 @@ CREATE TABLE IF NOT EXISTS thread_messages (
   "userId" TEXT NOT NULL,
   username TEXT NOT NULL,
   "displayName" TEXT NOT NULL,
-  "avatarColor" TEXT NOT NULL DEFAULT '#5865f2',
+  "avatarColor" TEXT NOT NULL DEFAULT '#2d9cdb',
   content TEXT NOT NULL DEFAULT '',
   type TEXT NOT NULL DEFAULT 'normal',
   reactions JSONB NOT NULL DEFAULT '{}',
@@ -420,7 +418,16 @@ CREATE INDEX IF NOT EXISTS idx_messages_fts ON messages USING GIN(
   to_tsvector('simple', unaccent(coalesce(content,'') || ' ' || coalesce("displayName",'')))
 );
 CREATE INDEX IF NOT EXISTS idx_messages_trgm ON messages USING GIN(content gin_trgm_ops);
+CREATE TABLE IF NOT EXISTS uploads (
+  _id TEXT PRIMARY KEY,
+  "userId" TEXT NOT NULL,
+  key TEXT NOT NULL UNIQUE,
+  "originalName" TEXT NOT NULL DEFAULT '',
+  "mimeType" TEXT NOT NULL DEFAULT '',
+  "createdAt" BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_uploads_userId ON uploads("userId");
+CREATE INDEX IF NOT EXISTS idx_uploads_key    ON uploads(key);
 `;
 
-module.exports = { SCHEMA };
-export {};
+export { SCHEMA };

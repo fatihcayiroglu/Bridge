@@ -1,15 +1,15 @@
 // Podcast ayarları ve bölümler
 
-'use strict';
-const { v4: uuidv4 } = require('uuid');
-const db = require('../loader');
+import { v4 as uuidv4 } from 'uuid';
+import db from '../loader';
+import type { Podcast, PodcastEpisode } from './types/entities';
 
 class PodcastRepository {
-  async findSettingsByChannel(channelId) {
+  async findSettingsByChannel(channelId: string): Promise<Podcast | null> {
     return db.podcastSettings?.findOne({ channelId });
   }
 
-  async upsertSettings(channelId, updates) {
+  async upsertSettings(channelId: string, updates: Partial<Podcast>): Promise<Podcast | { updated: number | null } | undefined> {
     const existing = await this.findSettingsByChannel(channelId);
     if (existing) {
       return db.podcastSettings?.update({ channelId }, { $set: updates });
@@ -17,26 +17,25 @@ class PodcastRepository {
     return db.podcastSettings?.insert({ _id: uuidv4(), channelId, ...updates, createdAt: Date.now() });
   }
 
-  async findPublishedEpisodes(channelId) {
+  async findPublishedEpisodes(channelId: string): Promise<PodcastEpisode[]> {
     return db.podcastEpisodes?.find({ channelId, published: true }) ?? [];
   }
 
-  async findEpisodes(filter) {
+  async findEpisodes(filter: Partial<PodcastEpisode>): Promise<PodcastEpisode[]> {
     return db.podcastEpisodes?.find(filter) ?? [];
   }
 
-  async findEpisodeOne(query) {
+  async findEpisodeOne(query: Partial<PodcastEpisode>): Promise<PodcastEpisode | null | undefined> {
     return db.podcastEpisodes?.findOne(query);
   }
 
-  async insertEpisode(doc) {
+  async insertEpisode(doc: Partial<PodcastEpisode>): Promise<PodcastEpisode | undefined> {
     return db.podcastEpisodes?.insert(doc);
   }
 
-  async removeEpisode(filter) {
+  async removeEpisode(filter: Partial<PodcastEpisode>): Promise<{ deleted: number | null } | undefined> {
     return db.podcastEpisodes?.remove(filter);
   }
 }
 
-module.exports = new PodcastRepository();
-export {};
+export default new PodcastRepository();

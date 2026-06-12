@@ -1,0 +1,27 @@
+apiVersion: v2
+name: bridge
+description: Self-hosted, ActivityPub federated chat platform
+type: application
+version: 1.0.0
+appVersion: "1.117.0"
+keywords:
+  - chat
+  - messaging
+  - self-hosted
+  - activitypub
+  - federation
+home: https://github.com/bridge-app/bridge
+sources:
+  - https://github.com/bridge-app/bridge
+maintainers:
+  - name: bridge-team
+    email: hello@bridge.example.com
+dependencies:
+  - name: postgresql
+    version: "~13.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: "~18.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled

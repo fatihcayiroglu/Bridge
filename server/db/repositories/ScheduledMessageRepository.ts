@@ -1,39 +1,37 @@
-// server/db/repositories/ScheduledMessageRepository.js
+// server/db/repositories/ScheduledMessageRepository.ts
 // Zamanlanmış mesaj sorgularını tek noktada toplar.
 
-'use strict';
-const { v4: uuidv4 } = require('uuid');
-const db = require('../loader');
+import { v4 as uuidv4 } from 'uuid';
+import db from '../loader';
 
 class ScheduledMessageRepository {
-  async findPending(userId) {
+  async findPending(userId: string) {
     return db.scheduledMsgs.find({ userId, sent: false }).sort({ sendAt: 1 });
   }
 
-  async findById(id, userId) {
+  async findById(id: string, userId: string) {
     return db.scheduledMsgs.findOne({ _id: id, userId });
   }
 
-  async insert(data) {
+  async insert(data: Record<string, unknown>) {
     return db.scheduledMsgs.insert({ _id: uuidv4(), createdAt: Date.now(), sent: false, ...data });
   }
 
-  async delete(id) {
+  async delete(id: string) {
     return db.scheduledMsgs.remove({ _id: id });
   }
 
-  async deleteByServer(serverId) {
+  async deleteByServer(serverId: string) {
     return db.scheduledMsgs?.remove({ serverId });
   }
 
-  async markSent(id, sentAt = Date.now()) {
+  async markSent(id: string, sentAt = Date.now()) {
     return db.scheduledMsgs.update({ _id: id }, { $set: { sent: true, sentAt } });
   }
 
-  async findDueBefore(timestamp) {
+  async findDueBefore(timestamp: number) {
     return db.scheduledMsgs.find({ sent: false, sendAt: { $lte: timestamp } });
   }
 }
 
-module.exports = new ScheduledMessageRepository();
-export {};
+export default new ScheduledMessageRepository();

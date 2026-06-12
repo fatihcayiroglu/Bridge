@@ -62,7 +62,7 @@ test.describe('Virtual Scroll Modül Yükleme', () => {
     const hasVS = await page.evaluate(() => typeof window._bridgeVS !== 'undefined');
     if (!hasVS) {
       // Virtual scroll henüz aktif değil — diğer testleri skip et
-      test.skip();
+      test.skip(true, 'Virtual scroll container bulunamadı — UI render edilmedi');
     }
     expect(hasVS).toBe(true);
   });
@@ -73,7 +73,7 @@ test.describe('Virtual Scroll Modül Yükleme', () => {
     await page.waitForTimeout(2000);
 
     const hasVS = await page.evaluate(() => typeof window._bridgeVS !== 'undefined');
-    if (!hasVS) test.skip();
+    test.skip(!hasVS, 'Test fixture hazır değil'  );
 
     const stats = await page.evaluate(() => window._bridgeVS.stats());
     expect(stats).toHaveProperty('total');
@@ -89,7 +89,7 @@ test.describe('Virtual Scroll Modül Yükleme', () => {
 test.describe('DOM Penceresi Limiti', () => {
 
   test('100+ mesajlı kanalda DOM node sayısı WINDOW_SIZE altında kalmalı', async ({ page, request }) => {
-    if (!_channelId) test.skip();
+    test.skip(!_channelId, 'Kanal fixture gerekli'  );
 
     // 25 mesaj gönder (zaten varsa toplam yeterince yüksek olabilir)
     await bulkSendMessages(request, _channelId, _tokens.alice, 25, 'dom-limit');
@@ -99,12 +99,12 @@ test.describe('DOM Penceresi Limiti', () => {
     await page.waitForTimeout(2000);
 
     const hasVS = await page.evaluate(() => typeof window._bridgeVS !== 'undefined');
-    if (!hasVS) test.skip();
+    test.skip(!hasVS, 'Test fixture hazır değil'  );
 
     // Kanal ve sunucuyu seç (URL hash veya localStorage üzerinden)
     // Bu adım uygulamaya özel — test en azından modülün var olduğunu doğrular
     const stats = await page.evaluate(() => window._bridgeVS?.stats());
-    if (!stats) test.skip();
+    test.skip(!stats, 'Test fixture hazır değil'  );
 
     // DOM'daki mesaj sayısı toplam mesajdan az veya eşit olmalı
     expect(stats.inDOM).toBeLessThanOrEqual(stats.total + 1); // spacer toleransı
@@ -136,7 +136,7 @@ test.describe('Mesaj Alanı DOM', () => {
     await page.waitForTimeout(2000);
 
     const hasVS = await page.evaluate(() => typeof window._bridgeVS !== 'undefined');
-    if (!hasVS) test.skip();
+    test.skip(!hasVS, 'Test fixture hazır değil'  );
 
     // Spacer elementleri virtual scroll init sonrası eklenir
     const topSpacer = await page.evaluate(() =>
@@ -154,7 +154,7 @@ test.describe('Mesaj Alanı DOM', () => {
 test.describe('Infinite Scroll Backend', () => {
 
   test('mesaj listesi limit parametresi çalışmalı', async ({ request }) => {
-    if (!_channelId) test.skip();
+    test.skip(!_channelId, 'Kanal fixture gerekli'  );
 
     const res = await request.get(`${BASE_URL}/api/channels/${_channelId}/messages?limit=5`, {
       headers: { Authorization: `Bearer ${_tokens.alice}` },
@@ -166,7 +166,7 @@ test.describe('Infinite Scroll Backend', () => {
   });
 
   test('hasMore flag döndürülmeli (cursor pagination)', async ({ request }) => {
-    if (!_channelId) test.skip();
+    test.skip(!_channelId, 'Kanal fixture gerekli'  );
 
     // Önce birkaç mesaj gönder
     await bulkSendMessages(request, _channelId, _tokens.alice, 6, 'cursor-test');
@@ -187,7 +187,7 @@ test.describe('Infinite Scroll Backend', () => {
   });
 
   test('before timestamp ile eski mesajlar alınabilmeli', async ({ request }) => {
-    if (!_channelId) test.skip();
+    test.skip(!_channelId, 'Kanal fixture gerekli'  );
 
     const now = Date.now();
     const res = await request.get(

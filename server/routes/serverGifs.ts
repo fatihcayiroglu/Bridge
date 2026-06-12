@@ -1,34 +1,115 @@
-// server/routes/serverGifs.js — Server GIF Collections
-const express = require('express');
+/**
+ * @openapi
+ * tags:
+ *   - name: ServerGifs
+ *     description: ServerGifs API endpoints
+
+ *
+ * /servers/{sid}/gifs:
+ *   get:
+ *     tags: [Servers]
+ *     summary: Sunucu GIF favorilerini listele (sayfalı)
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: sid
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
+ *     responses:
+ *       200:
+ *         description: GIF listesi (sayfalı)
+ *
+ * /servers/{sid}/gifs/all:
+ *   get:
+ *     tags: [Servers]
+ *     summary: Sunucu tüm GIF favorilerini getir
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: sid
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Tüm GIF favorileri
+ *   post:
+ *     tags: [Servers]
+ *     summary: GIF favoriye ekle
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: sid
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [url]
+ *             properties:
+ *               url:   { type: string, format: uri }
+ *               title: { type: string }
+ *     responses:
+ *       201:
+ *         description: GIF eklendi
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *
+ * /servers/{sid}/gifs/{gifId}:
+ *   delete:
+ *     tags: [Servers]
+ *     summary: GIF favoriden çıkar
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: sid
+ *         required: true
+ *         schema: { type: string }
+ *       - in: path
+ *         name: gifId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Silindi
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+
+// server/routes/serverGifs.ts — Server GIF Collections
+import express from 'express';
+import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router  = express.Router({ mergeParams: true });
-const path    = require('path');
-const fs      = require('fs');
-const { Members, Servers, ServerAssets } = require('../db/repositories');
-const { authMiddleware, castAuthed } = require('../middleware/auth');
-const { getMemberPerms, hasPermission, PERMS } = require('./roles');
-const asyncHandler = require('../middleware/asyncHandler');
-const { limits } = require('../middleware/rateLimit'); // rate limiting
+import path from 'path';
+import fs from 'fs';
+import { Members, Servers, ServerAssets } from '../db/repositories';
+import { authMiddleware} from '../middleware/auth';
+import { getMemberPerms, hasPermission, PERMS } from './roles';
+import { limits } from '../middleware/rateLimit';
 
 // Helper: verify membership + return member perms
-async function requireMember(userId, serverId, res) {
+async function requireMember(userId: string, serverId: string, res: import('express').Response): Promise<import('../db/repositories/types/entities').Member | null> {
   const membership = await Members.findOne(userId, serverId);
   if (!membership) { res.status(403).json({ error: 'Not a member' }); return null; }
   return membership;
 }
 
 // GET /api/servers/:id/gifs — get this server's GIF collection
-router.get('/', authMiddleware, asyncHandler(async (req, res) => {
+router.get('/', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const { id: serverId } = req.params;
+  const serverId = String(req.params.id ?? '');
   if (!await requireMember(_u.id, serverId, res)) return;
-  const q = req.query.q?.trim().toLowerCase();
+  const q = (req.query.q as string | undefined)?.trim().toLowerCase();
   let gifs = await ServerAssets.findGifs(serverId);
-  if (q) gifs = gifs.filter(g => g.name.toLowerCase().includes(q) || (g.tags || []).some(t => t.includes(q)));
+  if (q) gifs = gifs.filter(g => (g.name ?? '').toLowerCase().includes(q) || (Array.isArray(g.tags) ? g.tags : typeof g.tags === 'string' ? JSON.parse(g.tags) as string[] : []).some((t: string) => t.includes(q)));
   res.json(gifs);
-}));
+});
 
 // GET /api/servers/@me/all-gifs — all GIFs from all servers the user is in
-router.get('/all', authMiddleware, asyncHandler(async (req, res) => {
+router.get('/all', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const memberships = await Members.findByUser(_u.id);
   const serverIds = memberships.map(m => m.serverId);
@@ -36,28 +117,28 @@ router.get('/all', authMiddleware, asyncHandler(async (req, res) => {
 
   // Fetch server names for grouping
   const servers = await Servers.find({ _id: { $in: serverIds } });
-  const serverMap = {};
+  const serverMap: Record<string, unknown> = {};
   for (const s of servers) serverMap[s._id] = { name: s.name, icon: s.icon };
 
   // Group by server
-  const grouped = {};
+  const grouped: Record<string, { server: unknown; gifs: unknown[] }> = {};
   for (const gif of gifs) {
     const sid = gif.serverId;
     if (!grouped[sid]) grouped[sid] = { server: serverMap[sid] || { name: 'Unknown' }, gifs: [] };
     grouped[sid].gifs.push(gif);
   }
   res.json(grouped);
-}));
+});
 
 // POST /api/servers/:id/gifs — admin uploads a GIF (file must be pre-uploaded via /api/upload/server-gif)
-router.post('/', authMiddleware, limits.write(), asyncHandler(async (req, res) => {
+router.post('/', authMiddleware, limits.write(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { id: serverId } = req.params;
+  const serverId = String(req.params.id ?? '');
   const perms = await getMemberPerms(_u.id, serverId);
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS) && !hasPermission(perms, PERMS.ADMINISTRATOR)) {
     return res.status(403).json({ error: 'Missing permission: MANAGE_CHANNELS' });
   }
-  const { name, tags, url, fileType } = req.body;
+  const { name, tags, url, fileType } = req.body as Record<string, string>;
   if (!name?.trim() || !url?.startsWith('/uploads/')) {
     return res.status(400).json({ error: 'name and valid url are required' });
   }
@@ -71,12 +152,13 @@ router.post('/', authMiddleware, limits.write(), asyncHandler(async (req, res) =
     createdAt: Date.now(),
   });
   res.json(gif);
-}));
+});
 
 // DELETE /api/servers/:id/gifs/:gifId — admin removes a GIF
-router.delete('/:gifId', authMiddleware, limits.write(), asyncHandler(async (req, res) => {
+router.delete('/:gifId', authMiddleware, limits.write(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { id: serverId, gifId } = req.params;
+  const serverId = String(req.params.id ?? '');
+  const gifId = String(req.params.gifId ?? '');
   const perms = await getMemberPerms(_u.id, serverId);
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS) && !hasPermission(perms, PERMS.ADMINISTRATOR)) {
     return res.status(403).json({ error: 'Missing permission' });
@@ -89,7 +171,10 @@ router.delete('/:gifId', authMiddleware, limits.write(), asyncHandler(async (req
   fs.unlink(filePath, () => {});
   await ServerAssets.deleteGif(gifId, serverId);
   res.json({ deleted: true });
-}));
+});
 
+export default router;
+
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-export {};
+module.exports.default = router;

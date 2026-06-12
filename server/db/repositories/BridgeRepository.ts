@@ -1,29 +1,27 @@
 // Channel bridges (cross-server forwarding)
 
-'use strict';
-const db = require('../loader');
+import db from '../loader';
 
 class BridgeRepository {
-  async findOne(query) {
+  async findOne(query: Record<string, unknown>) {
     return db.channelBridges?.findOne(query);
   }
 
-  async find(query) {
+  async find(query: Record<string, unknown>) {
     return db.channelBridges?.find(query) ?? [];
   }
 
-  async insert(doc) {
+  async insert(doc: Record<string, unknown>) {
     return db.channelBridges?.insert(doc);
   }
 
-  async update(filter, modifier) {
+  async update(filter: Record<string, unknown>, modifier: Record<string, unknown>) {
     return db.channelBridges?.update(filter, modifier);
   }
 
-  async findActiveFromSourceChannel(channelId) {
+  async findActiveFromSourceChannel(channelId: string) {
     return db.channelBridges?.find({ sourceChannelId: channelId, active: true }) ?? [];
   }
 }
 
-module.exports = new BridgeRepository();
-export {};
+export default new BridgeRepository();

@@ -1,15 +1,20 @@
-// client/js/webauthn.js
-// WebAuthn / Passkey client-side yÃ¶netimi
-// Face ID, Touch ID, YubiKey, Windows Hello ile giriÅŸ/kayÄ±t
+// client/js/webauthn.ts
+// WebAuthn / Passkey client-side yönetimi
+// Face ID, Touch ID, YubiKey, Windows Hello ile giriş/kayıt
 //
 // KULLANIM:
-//   openPasskeySettings()      â€” modal aÃ§ (gÃ¼venlik ayarlarÄ±)
-//   passkeyLogin(username)     â€” giriÅŸ akÄ±ÅŸÄ±nÄ± baÅŸlat
-//   window.BridgeWebAuthn      â€” public API
+//   openPasskeySettings()      — modal aç (güvenlik ayarları)
+//   passkeyLogin(username)     — giriş akışını başlat
+//   window.BridgeWebAuthn      — public API
 
 'use strict';
 
-// â”€â”€ Base64URL helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+import { BridgeRegistry } from './core/bridge-registry.ts';
+import { getAPI } from './core/globals.ts';
+
+const API = getAPI(); // Sprint 33: global API var yerine
+
+// ── Base64URL helpers ──────────────────────────────────────────────────────────
 
 function b64uDecode(str) {
   const pad    = str.length % 4;
@@ -23,16 +28,16 @@ function b64uEncode(buf) {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-// ArrayBuffer / Uint8Array â†’ Base64URL
+// ArrayBuffer / Uint8Array → Base64URL
 function ab2b64u(ab) {
   return b64uEncode(ab instanceof ArrayBuffer ? new Uint8Array(ab) : ab);
 }
 
-// â”€â”€ WebAuthn DesteÄŸi KontrolÃ¼ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── WebAuthn Desteği Kontrolü ──────────────────────────────────────────────────
 
 function isWebAuthnSupported() {
   return !!(
-    window.PublicKeyCredential &&
+    typeof PublicKeyCredential !== "undefined" &&
     navigator.credentials?.create &&
     navigator.credentials?.get
   );
@@ -47,11 +52,11 @@ async function isPlatformAuthenticatorAvailable() {
   }
 }
 
-// â”€â”€ Credential kayÄ±t (Register) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Credential kayıt (Register) ────────────────────────────────────────────────
 
 async function registerPasskey(credentialName) {
   if (!isWebAuthnSupported()) {
-    throw new Error('Bu tarayÄ±cÄ± WebAuthn desteklemiyor.');
+    throw new Error('Bu tarayıcı WebAuthn desteklemiyor.');
   }
 
   // 1. Server'dan challenge al
@@ -59,9 +64,9 @@ async function registerPasskey(credentialName) {
     method: 'POST',
   });
   const beginData = await beginRes.json();
-  if (!beginRes.ok) throw new Error(beginData.error || 'Challenge alÄ±namadÄ±');
+  if (!beginRes.ok) throw new Error(beginData.error || 'Challenge alınamadı');
 
-  // 2. PublicKeyCredentialCreationOptions'Ä± hazÄ±rla
+  // 2. PublicKeyCredentialCreationOptions'ı hazırla
   const creationOptions = {
     challenge:  b64uDecode(beginData.challenge),
     rp:         beginData.rp,
@@ -81,17 +86,17 @@ async function registerPasskey(credentialName) {
     })),
   };
 
-  // 3. TarayÄ±cÄ± credential dialog'unu aÃ§
+  // 3. Tarayıcı credential dialog'unu aç
   let credential;
   try {
     credential = await navigator.credentials.create({ publicKey: creationOptions });
   } catch (err) {
-    if (err.name === 'NotAllowedError') throw new Error('Ä°ÅŸlem iptal edildi veya zaman aÅŸÄ±mÄ±na uÄŸradÄ±.');
-    if (err.name === 'InvalidStateError') throw new Error('Bu cihaz zaten kayÄ±tlÄ±.');
-    throw new Error(`KayÄ±t hatasÄ±: ${err.message}`);
+    if (err.name === 'NotAllowedError') throw new Error('İşlem iptal edildi veya zaman aşımına uğradı.');
+    if (err.name === 'InvalidStateError') throw new Error('Bu cihaz zaten kayıtlı.');
+    throw new Error(`Kayıt hatası: ${err.message}`);
   }
 
-  // 4. Server'a doÄŸrula ve kaydet
+  // 4. Server'a doğrula ve kaydet
   const completePayload = {
     credential: {
       id:   credential.id,
@@ -112,16 +117,16 @@ async function registerPasskey(credentialName) {
     body: JSON.stringify(completePayload),
   });
   const completeData = await completeRes.json();
-  if (!completeRes.ok) throw new Error(completeData.error || 'KayÄ±t tamamlanamadÄ±');
+  if (!completeRes.ok) throw new Error(completeData.error || 'Kayıt tamamlanamadı');
 
   return completeData;
 }
 
-// â”€â”€ GiriÅŸ (Authenticate) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Giriş (Authenticate) ───────────────────────────────────────────────────────
 
 async function passkeyLogin(username) {
   if (!isWebAuthnSupported()) {
-    throw new Error('Bu tarayÄ±cÄ± WebAuthn desteklemiyor.');
+    throw new Error('Bu tarayıcı WebAuthn desteklemiyor.');
   }
 
   // 1. Challenge al
@@ -131,9 +136,9 @@ async function passkeyLogin(username) {
     body:    JSON.stringify({ username: username || null }),
   });
   const beginData = await beginRes.json();
-  if (!beginRes.ok) throw new Error(beginData.error || 'Challenge alÄ±namadÄ±');
+  if (!beginRes.ok) throw new Error(beginData.error || 'Challenge alınamadı');
 
-  // 2. PublicKeyCredentialRequestOptions hazÄ±rla
+  // 2. PublicKeyCredentialRequestOptions hazırla
   const requestOptions = {
     challenge:        b64uDecode(beginData.challenge),
     rpId:             beginData.rpId,
@@ -146,16 +151,16 @@ async function passkeyLogin(username) {
     })),
   };
 
-  // 3. DoÄŸrulama dialog'u
+  // 3. Doğrulama dialog'u
   let assertion;
   try {
     assertion = await navigator.credentials.get({ publicKey: requestOptions });
   } catch (err) {
-    if (err.name === 'NotAllowedError') throw new Error('Ä°ÅŸlem iptal edildi veya zaman aÅŸÄ±mÄ±na uÄŸradÄ±.');
-    throw new Error(`Kimlik doÄŸrulama hatasÄ±: ${err.message}`);
+    if (err.name === 'NotAllowedError') throw new Error('İşlem iptal edildi veya zaman aşımına uğradı.');
+    throw new Error(`Kimlik doğrulama hatası: ${err.message}`);
   }
 
-  // 4. Server'a doÄŸrula
+  // 4. Server'a doğrula
   const completePayload = {
     credential: {
       id:   assertion.id,
@@ -175,14 +180,14 @@ async function passkeyLogin(username) {
     body:    JSON.stringify(completePayload),
   });
   const completeData = await completeRes.json();
-  if (!completeRes.ok) throw new Error(completeData.error || 'GiriÅŸ doÄŸrulanamadÄ±');
+  if (!completeRes.ok) throw new Error(completeData.error || 'Giriş doğrulanamadı');
 
-  // 5. Token'larÄ± kaydet ve UI'yÄ± gÃ¼ncelle
+  // 5. Token'ları kaydet ve UI'yı güncelle
   if (completeData.token) {
     localStorage.setItem('token', completeData.token);
     if (completeData.refreshToken) localStorage.setItem('refreshToken', completeData.refreshToken);
 
-    // Normal giriÅŸ akÄ±ÅŸÄ±nÄ± tetikle
+    // Normal giriş akışını tetikle
     currentUser = completeData.user;
     document.dispatchEvent(new CustomEvent('bridge:login', { detail: completeData.user }));
   }
@@ -190,12 +195,12 @@ async function passkeyLogin(username) {
   return completeData;
 }
 
-// â”€â”€ Credential Listesi â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Credential Listesi ─────────────────────────────────────────────────────────
 
 async function listPasskeys() {
   const res  = await apiFetch(`${API}/api/webauthn/credentials`);
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Liste alÄ±namadÄ±');
+  if (!res.ok) throw new Error(data.error || 'Liste alınamadı');
   return data;
 }
 
@@ -217,7 +222,7 @@ async function deletePasskey(id) {
   return data;
 }
 
-// â”€â”€ Settings Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Settings Modal ─────────────────────────────────────────────────────────────
 
 async function openPasskeySettings() {
   const existing = document.getElementById('passkey-modal');
@@ -232,26 +237,26 @@ async function openPasskeySettings() {
   modal.id = 'passkey-modal';
   modal.className = 'modal-overlay';
 
-  const deviceIcon = platformAvail ? 'ğŸ”‘ Face ID / Touch ID' : 'ğŸ” GÃ¼venlik AnahtarÄ±';
+  const deviceIcon = platformAvail ? 'ğŸ”‘ Face ID / Touch ID' : 'ğŸ” Güvenlik Anahtarı';
 
   modal.innerHTML = `
     <div class="modal-card" style="max-width:500px;width:95%;">
-      <h2>ğŸ”‘ Passkey YÃ¶netimi</h2>
+      <h2>ğŸ”‘ Passkey Yönetimi</h2>
 
       ${!supported ? `
         <div style="background:#3a1a1a;border:1px solid #e8432d;border-radius:8px;padding:14px;color:#e8432d;">
-          âš ï¸ Bu tarayÄ±cÄ± WebAuthn / Passkey desteklemiyor.
+          âš ï¸ Bu tarayıcı WebAuthn / Passkey desteklemiyor.
         </div>
       ` : `
         <div style="background:#1e1f22;border-radius:8px;padding:12px;margin-bottom:16px;font-size:13px;color:var(--text-muted);">
-          Cihaz doÄŸrulama: <strong style="color:var(--text-normal);">${deviceIcon}</strong>
+          Cihaz doğrulama: <strong style="color:var(--text-normal);">${deviceIcon}</strong>
           ${platformAvail
-            ? '<br>Platform doÄŸrulayÄ±cÄ± mevcut â€” Face ID, Touch ID veya Windows Hello kullanÄ±labilir.'
-            : '<br>Harici gÃ¼venlik anahtarÄ± (YubiKey vb.) kullanÄ±n.'}
+            ? '<br>Platform doğrulayıcı mevcut — Face ID, Touch ID veya Windows Hello kullanılabilir.'
+            : '<br>Harici güvenlik anahtarı (YubiKey vb.) kullanın.'}
         </div>
 
         <div id="passkey-list" style="margin-bottom:16px;">
-          <div style="color:var(--text-muted);text-align:center;padding:20px;">YÃ¼kleniyor...</div>
+          <div style="color:var(--text-muted);text-align:center;padding:20px;">Yükleniyor...</div>
         </div>
 
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
@@ -262,14 +267,14 @@ async function openPasskeySettings() {
 
         <div id="passkey-add-form" style="display:none;background:#1e1f22;border-radius:8px;padding:14px;margin-bottom:16px;">
           <p style="color:var(--text-muted);font-size:13px;margin-bottom:8px;">
-            Cihaza anlamlÄ± bir isim ver (Ã¶r: "iPhone 15", "YubiKey"):
+            Cihaza anlamlı bir isim ver (ör: "iPhone 15", "YubiKey"):
           </p>
-          <input id="passkey-name-input" class="input" placeholder="Cihaz adÄ± (isteÄŸe baÄŸlÄ±)"
+          <input id="passkey-name-input" class="input" placeholder="Cihaz adı (isteğe bağlı)"
             style="width:100%;margin-bottom:10px;" maxlength="64" />
           <div style="display:flex;gap:8px;">
-            <button class="btn btn-secondary" onclick="document.getElementById('passkey-add-form').style.display='none'">Ä°ptal</button>
+            <button class="btn btn-secondary" onclick="document.getElementById('passkey-add-form').style.display='none'">İptal</button>
             <button class="btn" onclick="addNewPasskey()" style="flex:1;">
-              ğŸ”‘ KayÄ±t Yap
+              ğŸ”‘ Kayıt Yap
             </button>
           </div>
           <div id="passkey-add-error" style="color:#e8432d;font-size:12px;margin-top:8px;display:none;"></div>
@@ -299,8 +304,8 @@ async function refreshPasskeyList() {
     if (!creds.length) {
       listEl.innerHTML = `
         <div style="background:#1e1f22;border-radius:8px;padding:14px;text-align:center;color:var(--text-muted);font-size:13px;">
-          HenÃ¼z passkey eklenmemiÅŸ.<br>
-          <span style="font-size:12px;">Passkey ile ÅŸifresiz, gÃ¼venli giriÅŸ yapabilirsin.</span>
+          Henüz passkey eklenmemiş.<br>
+          <span style="font-size:12px;">Passkey ile şifresiz, güvenli giriş yapabilirsin.</span>
         </div>`;
       return;
     }
@@ -312,7 +317,7 @@ async function refreshPasskeyList() {
           <div style="font-weight:600;color:var(--text-normal);font-size:14px;">${escHtml(c.name)}</div>
           <div style="font-size:11px;color:var(--text-muted);">
             Eklendi: ${formatDate(c.createdAt)}
-            ${c.lastUsedAt ? ` Â· Son kullanÄ±m: ${formatDate(c.lastUsedAt)}` : ''}
+            ${c.lastUsedAt ? ` Â· Son kullanım: ${formatDate(c.lastUsedAt)}` : ''}
           </div>
         </div>
         <div style="display:flex;gap:6px;">
@@ -324,7 +329,7 @@ async function refreshPasskeyList() {
       </div>
     `).join('');
   } catch (err) {
-    listEl.innerHTML = `<div style="color:#e8432d;font-size:13px;">Hata: ${err.message}</div>`;
+    listEl.innerHTML = `<div style="color:#e8432d;font-size:13px;">Hata: ${escHtml(String(err?.message ?? err))}</div>`;
   }
 }
 
@@ -353,18 +358,19 @@ async function addNewPasskey() {
   if (errorEl) errorEl.style.display = 'none';
 
   const btn = document.querySelector('#passkey-add-form .btn:last-child');
-  if (btn) { btn.textContent = 'KayÄ±t yapÄ±lÄ±yor...'; btn.disabled = true; }
+  if (btn) { btn.textContent = 'Kayıt yapılıyor...'; btn.disabled = true; }
 
   try {
     const result = await registerPasskey(name);
-    if (btn) { btn.textContent = 'ğŸ”‘ KayÄ±t Yap'; btn.disabled = false; }
-    document.getElementById('passkey-add-form').style.display = 'none';
+    if (btn) { btn.textContent = 'ğŸ”‘ Kayıt Yap'; btn.disabled = false; }
+    const formEl = document.getElementById('passkey-add-form');
+    if (formEl) formEl.style.display = 'none';
     if (nameInput) nameInput.value = '';
 
-    showToast(`âœ… "${result.name}" passkey eklendi!`, 'success');
+    showToast(`✅ "${result.name}" passkey eklendi!`, 'success');
     await refreshPasskeyList();
   } catch (err) {
-    if (btn) { btn.textContent = 'ğŸ”‘ KayÄ±t Yap'; btn.disabled = false; }
+    if (btn) { btn.textContent = 'ğŸ”‘ Kayıt Yap'; btn.disabled = false; }
     if (errorEl) {
       errorEl.textContent = err.message;
       errorEl.style.display = '';
@@ -377,7 +383,7 @@ function promptRenamePasskey(id, currentName) {
   if (!newName?.trim() || newName === currentName) return;
 
   renamePasskey(id, newName.trim()).then(() => {
-    showToast('âœ… Ä°sim gÃ¼ncellendi', 'success');
+    showToast('✅ İsim güncellendi', 'success');
     refreshPasskeyList();
   }).catch(err => {
     showToast(`âŒ Hata: ${err.message}`, 'error');
@@ -385,17 +391,17 @@ function promptRenamePasskey(id, currentName) {
 }
 
 function confirmDeletePasskey(id, name) {
-  if (!confirm(`"${name}" passkey'ini silmek istediÄŸine emin misin?`)) return;
+  if (!confirm(`"${name}" passkey'ini silmek istediğine emin misin?`)) return;
 
   deletePasskey(id).then(() => {
-    showToast('âœ… Passkey silindi', 'success');
+    showToast('✅ Passkey silindi', 'success');
     refreshPasskeyList();
   }).catch(err => {
     showToast(`âŒ Hata: ${err.message}`, 'error');
   });
 }
 
-// â”€â”€ GiriÅŸ sayfasÄ±na Passkey butonu ekle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Giriş sayfasına Passkey butonu ekle ────────────────────────────────────────
 
 function injectPasskeyLoginButton() {
   if (!isWebAuthnSupported()) return;
@@ -414,7 +420,7 @@ function injectPasskeyLoginButton() {
   btn.id        = 'passkey-login-btn';
   btn.className = 'btn btn-secondary';
   btn.style.cssText = 'width:100%;display:flex;align-items:center;justify-content:center;gap:8px;';
-  btn.innerHTML = `<span style="font-size:18px;">ğŸ”‘</span> Passkey ile GiriÅŸ Yap`;
+  btn.innerHTML = `<span style="font-size:18px;">ğŸ”‘</span> Passkey ile Giriş Yap`;
   btn.onclick   = async () => {
     const usernameEl = document.getElementById('login-username') || document.querySelector('input[name="username"]');
     const username   = usernameEl?.value?.trim() || null;
@@ -424,9 +430,9 @@ function injectPasskeyLoginButton() {
 
     try {
       await passkeyLogin(username);
-      // bridge:login event'i tetiklenecek, normal akÄ±ÅŸ devam eder
+      // bridge:login event'i tetiklenecek, normal akış devam eder
     } catch (err) {
-      btn.innerHTML = `<span style="font-size:18px;">ğŸ”‘</span> Passkey ile GiriÅŸ Yap`;
+      btn.innerHTML = `<span style="font-size:18px;">ğŸ”‘</span> Passkey ile Giriş Yap`;
       btn.disabled  = false;
       showToast(`âŒ ${err.message}`, 'error');
     }
@@ -443,30 +449,31 @@ function injectPasskeyLoginButton() {
   }
 }
 
-// â”€â”€ YardÄ±mcÄ± fonksiyonlar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Yardımcı fonksiyonlar ──────────────────────────────────────────────────────
 
 function formatDate(ts) {
-  if (!ts) return 'â€”';
+  if (!ts) return '—';
   return new Date(ts).toLocaleDateString('tr-TR', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-// escHtml â€” utils.js'ten gelir, buradaki kopya kaldÄ±rÄ±ldÄ±
+// escHtml — utils.js'ten gelir, buradaki kopya kaldırıldı
 
-// showToast â€” core/ui.js'de tanÄ±mlÄ± deÄŸilse fallback
+// showToast — core/ui.js'de tanımlı değilse fallback
 function showPasskeyToast(msg, type = 'info') {
   if (typeof showToast === 'function') return showToast(msg, type);
   const t = document.createElement('div');
   t.style.cssText = `position:fixed;bottom:80px;right:20px;padding:10px 16px;border-radius:8px;
-    background:${type==='success'?'#23a55a':type==='error'?'#e8432d':'#5865f2'};
+    background:${type==='success'?'#23a55a':type==='error'?'#e8432d':'#2d9cdb'};
     color:#fff;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.4);`;
   t.textContent = msg;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 3000);
 }
 
-// â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Public API ─────────────────────────────────────────────────────────────────
 
-window.BridgeWebAuthn = {
+// Sprint 33: window.BridgeWebAuthn → BridgeRegistry
+BridgeRegistry.register('BridgeWebAuthn', {
   isSupported:      isWebAuthnSupported,
   isPlatformAvail:  isPlatformAuthenticatorAvailable,
   registerPasskey,
@@ -474,14 +481,19 @@ window.BridgeWebAuthn = {
   listPasskeys,
   renamePasskey,
   deletePasskey,
-};
+} as unknown as (...args: unknown[]) => unknown);
 
-// GiriÅŸ sayfasÄ±nda otomatik passkey butonu ekle
+// window.BridgeWebAuthn köprüsü — index.html onclick tüketicisi var (passkeyLogin, registerPasskey).
+// Sprint 81 hedefi: index.html'i BridgeRegistry.call() veya ESM import'a geçince kaldırılır.
+(window as unknown as Record<string, unknown>).BridgeWebAuthn =
+  BridgeRegistry.get('BridgeWebAuthn');
+
+// Giriş sayfasında otomatik passkey butonu ekle
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(injectPasskeyLoginButton, 500);
 });
 
-// Auth event'leri dinle â€” giriÅŸ sayfasÄ± gÃ¶rÃ¼ndÃ¼ÄŸÃ¼nde butonu ekle
+// Auth event'leri dinle — giriş sayfası göründüğünde butonu ekle
 document.addEventListener('bridge:show-login', () => {
   setTimeout(injectPasskeyLoginButton, 100);
 });

@@ -1,12 +1,15 @@
-// client/js/discover.js Server Discovery + Federation
-// Yerel sunucular + uzak Bridge instance'larÄ±ndan sunucular
-// ARIA eriÅŸilebilirlik, klavye navigasyonu, kategori filtresi iyileÅŸtirmesi
+// client/js/discover.ts Server Discovery + Federation
+// Yerel sunucular + uzak Bridge instance'larından sunucular
+// ARIA erişilebilirlik, klavye navigasyonu, kategori filtresi iyileştirmesi
 
+import { BridgeRegistry } from './core/bridge-registry.ts';
+import { t } from './core/i18n.ts'; // Sprint 35: window.i18n → import
+import { currentServer } from './core/globals.ts'; // Sprint 42: window.currentServer → ESM import
 let _discoverResults = [];
 let _discoverTab = 'local'; // 'local' | 'remote'
 let _discoverSearch = null;
 
-// â”€â”€ OPEN DISCOVERY PAGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── OPEN DISCOVERY PAGE ───────────────────────────────────────
 async function openDiscovery() {
   const existing = document.getElementById('discovery-overlay');
   if (existing) { existing.remove(); return; }
@@ -16,20 +19,20 @@ async function openDiscovery() {
   overlay.className = 'discovery-overlay';
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
-  overlay.setAttribute('aria-label', window.i18n?.t('tip_discover', 'Sunucu KeÅŸfet') ?? 'Sunucu KeÅŸfet');
+  overlay.setAttribute('aria-label', t('tip_discover', 'Sunucu Keşfet'));
   overlay.innerHTML = `
     <div class="discovery-page" role="main">
       <div class="discovery-header">
         <div>
-          <h1 id="discovery-title" style="margin:0;font-size:28px;">ğŸŒ Sunucu KeÅŸfet</h1>
-          <p style="color:var(--text-muted);margin:4px 0 0;">Bridge topluluÄŸunu keÅŸfet</p>
+          <h1 id="discovery-title" style="margin:0;font-size:28px;">🌐 Sunucu Keşfet</h1>
+          <p style="color:var(--text-muted);margin:4px 0 0;">Bridge topluluğunu keşfet</p>
         </div>
         <button class="icon-btn" onclick="document.getElementById('discovery-overlay').remove()"
-          aria-label="Kapat" title="Kapat" style="font-size:20px;">âœ•</button>
+          aria-label="Kapat" title="Kapat" style="font-size:20px;">✕</button>
       </div>
 
-      <!-- Sekme BaÅŸlÄ±klarÄ± -->
-      <div role="tablist" aria-label="KeÅŸif sekmeleri"
+      <!-- Sekme Başlıkları -->
+      <div role="tablist" aria-label="Keşif sekmeleri"
            style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--bg-3);padding-bottom:0;">
         <button id="tab-local" role="tab" aria-selected="true" aria-controls="discover-grid"
           onclick="switchDiscoverTab('local')"
@@ -39,7 +42,7 @@ async function openDiscovery() {
         <button id="tab-remote" role="tab" aria-selected="false" aria-controls="discover-grid"
           onclick="switchDiscoverTab('remote')"
           style="padding:8px 18px;border:none;background:none;color:var(--text-muted);border-bottom:2px solid transparent;cursor:pointer;font-size:14px;">
-          ğŸŒ DiÄŸer Bridge SunucularÄ±
+          ğŸŒ Diğer Bridge Sunucuları
         </button>
       </div>
 
@@ -53,11 +56,11 @@ async function openDiscovery() {
                  oninput="debouncedDiscover()" />
         </div>
         <select id="discover-sort" class="input" style="width:160px;"
-                aria-label="SÄ±ralama"
+                aria-label="Sıralama"
                 onchange="runDiscover()">
-          <option value="members">ğŸ‘¥ Ãœye SayÄ±sÄ±</option>
+          <option value="members">ğŸ‘¥ Üye Sayısı</option>
           <option value="newest">ğŸ†• En Yeni</option>
-          <option value="name">ğŸ”¤ Ä°sme GÃ¶re</option>
+          <option value="name">ğŸ”¤ İsme Göre</option>
         </select>
       </div>
 
@@ -68,7 +71,7 @@ async function openDiscovery() {
            aria-labelledby="tab-local"
            aria-live="polite"
            aria-busy="true">
-        <div class="discover-loading" role="status">YÃ¼kleniyor...</div>
+        <div class="discover-loading" role="status">Yükleniyor...</div>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -94,7 +97,7 @@ async function openDiscovery() {
     }
   });
 
-  // Ä°lk focus: arama kutusu
+  // İlk focus: arama kutusu
   setTimeout(() => overlay.querySelector('#discover-q')?.focus(), 50);
 
   _discoverTab = 'local';
@@ -110,14 +113,14 @@ function switchDiscoverTab(tab) {
     localBtn.style.borderBottom = tab === 'local'  ? '2px solid var(--brand)' : '2px solid transparent';
     remoteBtn.style.color        = tab === 'remote' ? 'var(--brand)' : 'var(--text-muted)';
     remoteBtn.style.borderBottom = tab === 'remote' ? '2px solid var(--brand)' : '2px solid transparent';
-    // ARIA: gÃ¼ncel sekmeyi iÅŸaretle
+    // ARIA: güncel sekmeyi işaretle
     localBtn.setAttribute('aria-selected',  tab === 'local'  ? 'true' : 'false');
     remoteBtn.setAttribute('aria-selected', tab === 'remote' ? 'true' : 'false');
-    // tabpanel labelledby gÃ¼ncelle
+    // tabpanel labelledby güncelle
     const grid = document.getElementById('discover-grid');
     if (grid) grid.setAttribute('aria-labelledby', tab === 'local' ? 'tab-local' : 'tab-remote');
   }
-  // SÄ±rala seÃ§eneÄŸini gizle uzaksa
+  // Sırala seçeneğini gizle uzaksa
   const sortEl = document.getElementById('discover-sort');
   if (sortEl) sortEl.style.display = tab === 'remote' ? 'none' : '';
   runDiscover();
@@ -138,7 +141,7 @@ async function runDiscover(tag = null) {
   if (!grid) return;
 
   grid.setAttribute('aria-busy', 'true');
-  grid.innerHTML = '<div class="discover-loading" role="status">AranÄ±yor...</div>';
+  grid.innerHTML = '<div class="discover-loading" role="status">Aranıyor...</div>';
 
   try {
     const params = new URLSearchParams({ sort });
@@ -160,7 +163,7 @@ async function runDiscover(tag = null) {
     }
 
     if (!_discoverResults.length) {
-      grid.innerHTML = '<div class="discover-empty" role="status">Sunucu bulunamadÄ± ğŸ”­</div>';
+      grid.innerHTML = '<div class="discover-empty" role="status">Sunucu bulunamadı ğŸ”­</div>';
       grid.setAttribute('aria-busy', 'false');
       return;
     }
@@ -168,19 +171,19 @@ async function runDiscover(tag = null) {
     grid.innerHTML = _discoverResults.map(s => renderDiscoverCard(s)).join('');
     grid.setAttribute('aria-busy', 'false');
   } catch(e) {
-    grid.innerHTML = '<div class="discover-empty" role="alert">YÃ¼klenemedi. Sunucu Ã§alÄ±ÅŸÄ±yor mu?</div>';
+    grid.innerHTML = '<div class="discover-empty" role="alert">Yüklenemedi. Sunucu çalışıyor mu?</div>';
     grid.setAttribute('aria-busy', 'false');
   }
 }
 
-// â”€â”€ FEDERATION TAB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── FEDERATION TAB ────────────────────────────────────────────
 async function runFederationDiscover(tag = null) {
   const q    = document.getElementById('discover-q')?.value.trim() || '';
   const grid = document.getElementById('discover-grid');
   const tagsEl = document.getElementById('discover-tags');
   if (!grid) return;
 
-  grid.innerHTML = '<div class="discover-loading">DiÄŸer Bridge sunucularÄ±na baÄŸlanÄ±lÄ±yor...</div>';
+  grid.innerHTML = '<div class="discover-loading">Diğer Bridge sunucularına bağlanılıyor...</div>';
   if (tagsEl) tagsEl.innerHTML = '';
 
   try {
@@ -197,9 +200,9 @@ async function runFederationDiscover(tag = null) {
       grid.innerHTML = `
         <div class="discover-empty">
           <div style="font-size:48px;margin-bottom:12px;">ğŸŒ</div>
-          <div style="font-weight:600;margin-bottom:8px;">HenÃ¼z baÄŸlÄ± sunucu yok</div>
+          <div style="font-weight:600;margin-bottom:8px;">Henüz bağlı sunucu yok</div>
           <div style="color:var(--text-muted);font-size:13px;max-width:300px;margin:0 auto;">
-            Admin, Ayarlar > Federation bÃ¶lÃ¼mÃ¼nden baÅŸka Bridge instance'larÄ±nÄ± ekleyebilir.
+            Admin, Ayarlar > Federation bölümünden başka Bridge instance'larını ekleyebilir.
           </div>
         </div>`;
       return;
@@ -216,11 +219,11 @@ async function runFederationDiscover(tag = null) {
 
     grid.innerHTML = `
       <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px;padding:0 4px;">
-        ${servers.length} sunucu bulundu (${[...new Set(servers.map(s=>s._instanceName))].length} farklÄ± instance)
+        ${servers.length} sunucu bulundu (${[...new Set(servers.map(s=>s._instanceName))].length} farklı instance)
       </div>
       ${servers.map(s => renderRemoteCard(s)).join('')}`;
   } catch(e) {
-    grid.innerHTML = '<div class="discover-empty">Federation sorgusu baÅŸarÄ±sÄ±z. Peer\'lar eriÅŸilebilir mi?</div>';
+    grid.innerHTML = '<div class="discover-empty">Federation sorgusu başarısız. Peer\'lar erişilebilir mi?</div>';
   }
 }
 
@@ -235,24 +238,24 @@ function renderRemoteCard(s) {
     <div style="padding:12px;">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
         <div style="width:48px;height:48px;border-radius:50%;background:var(--bg-3);display:flex;align-items:center;justify-content:center;font-size:24px;margin-top:-24px;border:3px solid var(--bg-2);">
-          ${s.icon ? escHtml(s.icon) : 'ğŸŒ'}
+          ${s.icon ? escHtml(s.icon) : '🌐'}
         </div>
         <div style="flex:1;min-width:0;">
           <div style="font-weight:700;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(s.name)}</div>
-          <div style="color:var(--text-muted);font-size:12px;">${s.memberCount || 0} Ã¼ye â€¢ ${s.channelCount || 0} kanal</div>
+          <div style="color:var(--text-muted);font-size:12px;">${s.memberCount || 0} üye • ${s.channelCount || 0} kanal</div>
         </div>
       </div>
       ${s.description ? `<p style="font-size:13px;color:var(--text-muted);margin:0 0 8px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">${escHtml(s.description)}</p>` : ''}
       ${tags ? `<div style="display:flex;flex-wrap:wrap;gap:4px;">${tags}</div>` : ''}
     </div>
-    <div class="discover-join-btn" style="background:var(--bg-3);color:var(--text-muted);">Siteye Git â†’</div>
+    <div class="discover-join-btn" style="background:var(--bg-3);color:var(--text-muted);">Siteye Git →</div>
   </div>`;
 }
 
 async function joinRemoteServer(inviteUrl, serverName) {
   if (!inviteUrl) return toast('Bu sunucunun davet linki yok', 'error');
-  // Uzak sunucuya yÃ¶nlendirme â€” yeni sekmede aÃ§
-  if (confirm(`"${serverName}" farklÄ± bir Bridge sunucusunda. Oraya yÃ¶nlendirileceksiniz. Devam edilsin mi?`)) {
+  // Uzak sunucuya yönlendirme — yeni sekmede aç
+  if (confirm(`"${serverName}" farklı bir Bridge sunucusunda. Oraya yönlendirileceksiniz. Devam edilsin mi?`)) {
     window.open(inviteUrl, '_blank', 'noopener');
   }
 }
@@ -260,16 +263,16 @@ async function joinRemoteServer(inviteUrl, serverName) {
 function renderDiscoverCard(s) {
   const iconHtml = s.iconUrl
     ? `<img src="${escHtml(API + s.iconUrl)}" alt="" style="width:48px;height:48px;border-radius:50%;object-fit:cover;">`
-    : `<div style="width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,var(--brand),#7289da);display:flex;align-items:center;justify-content:center;font-size:24px;">${escHtml(s.icon || 'ğŸŒ')}</div>`;
+    : `<div style="width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,var(--brand),#1bc8a8);display:flex;align-items:center;justify-content:center;font-size:24px;">${escHtml(s.icon || '🌐')}</div>`;
 
   const bannerStyle = s.bannerUrl
     ? `background:url(${escHtml(API + s.bannerUrl)}) center/cover;height:80px;border-radius:8px 8px 0 0;`
-    : `background:linear-gradient(135deg,var(--brand) 0%,#7289da 100%);height:80px;border-radius:8px 8px 0 0;`;
+    : `background:linear-gradient(135deg,var(--brand) 0%,#1bc8a8 100%);height:80px;border-radius:8px 8px 0 0;`;
 
   const tags = (s.tags || []).slice(0, 4).map(t => `<span class="discover-tag-pill" style="cursor:default;">#${escHtml(t)}</span>`).join('');
 
-//   Activity indicator (Ã¼ye sayÄ±sÄ±na gÃ¶re tahmini)
-  const activityLevel = s.memberCount > 500 ? 'Ã‡ok Aktif' : s.memberCount > 100 ? 'Aktif' : s.memberCount > 10 ? 'Normal' : 'Yeni';
+//   Activity indicator (üye sayısına göre tahmini)
+  const activityLevel = s.memberCount > 500 ? 'Çok Aktif' : s.memberCount > 100 ? 'Aktif' : s.memberCount > 10 ? 'Normal' : 'Yeni';
   const activityColor = s.memberCount > 500 ? '#3ba55c' : s.memberCount > 100 ? '#4f8ef7' : s.memberCount > 10 ? '#faa61a' : '#747f8d';
   const activityDot = `<span style="width:8px;height:8px;border-radius:50%;background:${activityColor};display:inline-block;margin-right:4px;flex-shrink:0;"></span>`;
 
@@ -286,8 +289,8 @@ function renderDiscoverCard(s) {
         <div style="margin-top:-24px;border:3px solid var(--bg-2);border-radius:50%;">${iconHtml}</div>
         <div style="flex:1;min-width:0;">
           <div style="font-weight:700;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(s.name)}</div>
-          <div style="color:var(--text-muted);font-size:12px;display:flex;align-items:center;" aria-label="${s.memberCount} Ã¼ye">
-            ${activityDot}<span>${s.memberCount} Ã¼ye</span>
+          <div style="color:var(--text-muted);font-size:12px;display:flex;align-items:center;" aria-label="${s.memberCount} üye">
+            ${activityDot}<span>${s.memberCount} üye</span>
             <span style="margin:0 5px;opacity:.4;">Â·</span>
             <span style="color:${activityColor};font-weight:600;">${activityLevel}</span>
           </div>
@@ -296,21 +299,21 @@ function renderDiscoverCard(s) {
       ${s.description ? `<p style="font-size:13px;color:var(--text-muted);margin:0 0 8px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">${escHtml(s.description)}</p>` : ''}
       ${tags ? `<div style="display:flex;flex-wrap:wrap;gap:4px;" aria-label="Etiketler">${tags}</div>` : ''}
     </div>
-    <div class="discover-join-btn" aria-hidden="true">Ã–nizle â†’</div>
+    <div class="discover-join-btn" aria-hidden="true">Önizle →</div>
   </div>`;
 }
 
-// Server preview modal â€” katÄ±lmadan Ã¶nce bilgi gÃ¶ster
-window.showServerPreview = function(s) {
+// Server preview modal — katılmadan önce bilgi göster
+BridgeRegistry.register('showServerPreview', function(s) {
   document.getElementById('server-preview-modal')?.remove();
 
   const iconHtml = s.iconUrl
     ? `<img src="${API + escHtml(s.iconUrl)}" alt="" style="width:72px;height:72px;border-radius:50%;object-fit:cover;border:4px solid var(--bg-3);">`
-    : `<div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,var(--brand),#7289da);display:flex;align-items:center;justify-content:center;font-size:36px;border:4px solid var(--bg-3);">${escHtml(s.icon || 'ğŸŒ')}</div>`;
+    : `<div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,var(--brand),#1bc8a8);display:flex;align-items:center;justify-content:center;font-size:36px;border:4px solid var(--bg-3);">${escHtml(s.icon || '🌐')}</div>`;
 
   const bannerStyle = s.bannerUrl
     ? `background:url(${API + escHtml(s.bannerUrl)}) center/cover;`
-    : `background:linear-gradient(135deg,var(--brand) 0%,#7289da 100%);`;
+    : `background:linear-gradient(135deg,var(--brand) 0%,#1bc8a8 100%);`;
 
   const tagHtml = (s.tags || []).map(t => `<span class="discover-tag-pill">#${escHtml(t)}</span>`).join('');
 
@@ -321,20 +324,20 @@ window.showServerPreview = function(s) {
     <div class="modal-card" style="max-width:440px;width:95%;padding:0;overflow:hidden;">
       <div style="height:120px;${bannerStyle}position:relative;">
         <button onclick="document.getElementById('server-preview-modal').remove()"
-          style="position:absolute;top:10px;right:10px;background:rgba(0,0,0,.5);border:none;width:28px;height:28px;border-radius:50%;color:#fff;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;">âœ•</button>
+          style="position:absolute;top:10px;right:10px;background:rgba(0,0,0,.5);border:none;width:28px;height:28px;border-radius:50%;color:#fff;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
       </div>
       <div style="padding:0 24px 24px;">
         <div style="margin-top:-36px;margin-bottom:12px;">${iconHtml}</div>
         <h2 style="font-size:22px;font-weight:800;margin:0 0 4px;">${escHtml(s.name)}</h2>
         <div style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">
-          ğŸ‘¥ ${s.memberCount} Ã¼ye &nbsp;Â·&nbsp; #ï¸âƒ£ ${s.channelCount} kanal
+          ğŸ‘¥ ${s.memberCount} üye &nbsp;Â·&nbsp; #ï¸âƒ£ ${s.channelCount} kanal
         </div>
         ${s.description ? `<p style="font-size:14px;color:var(--text-2);line-height:1.6;margin-bottom:12px;">${escHtml(s.description)}</p>` : ''}
         ${tagHtml ? `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:16px;">${tagHtml}</div>` : ''}
         <div style="display:flex;gap:8px;">
           <button onclick="joinFromDiscover('${escHtml(s._id)}');document.getElementById('server-preview-modal').remove();"
             style="flex:1;padding:11px;border:none;border-radius:var(--r-md);background:var(--brand);color:#fff;font-size:14px;font-weight:700;font-family:inherit;cursor:pointer;">
-            Sunucuya KatÄ±l â†’
+            Sunucuya Katıl →
           </button>
           <button onclick="document.getElementById('server-preview-modal').remove()"
             style="padding:11px 16px;border:1px solid var(--border);border-radius:var(--r-md);background:transparent;color:var(--text-2);font-size:14px;font-family:inherit;cursor:pointer;">
@@ -345,13 +348,13 @@ window.showServerPreview = function(s) {
     </div>`;
   document.body.appendChild(modal);
   modal.onclick = e => { if (e.target === modal) modal.remove(); };
-};
+});
 
 async function joinFromDiscover(serverId) {
-  const alreadyMember = window.joinedServers?.some(s => s._id === serverId);
+  const alreadyMember = (BridgeRegistry.get<Array<{ _id: string }>>('joinedServers'))?.some((s) => s._id === serverId);
   if (alreadyMember) {
     document.getElementById('discovery-overlay')?.remove();
-    if (window.selectServer) window.selectServer(serverId);
+    BridgeRegistry.call('selectServer', serverId);
     return;
   }
 
@@ -365,20 +368,20 @@ async function joinFromDiscover(serverId) {
       const inv = await r.json();
       const code = inv.code || inv._id;
       document.getElementById('discovery-overlay')?.remove();
-      if (window.showJoinModal) {
-        window.showJoinModal(code);
+      if (BridgeRegistry.has('showJoinModal')) {
+        BridgeRegistry.call('showJoinModal', code);
       }
     } else {
-      toast('Bu sunucuya katÄ±lamÄ±yorsun (davet gerekebilir)', 'error');
+      toast('Bu sunucuya katılamıyorsun (davet gerekebilir)', 'error');
     }
   } catch(e) {
-    toast('BaÄŸlantÄ± hatasÄ±', 'error');
+    toast('Bağlantı hatası', 'error');
   }
 }
 
-// â”€â”€ DISCOVERY SETTINGS (server owner) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── DISCOVERY SETTINGS (server owner) ────────────────────────
 function openDiscoverySettings() {
-  if (!currentServer) return toast('Sunucu seÃ§ilmedi', 'error');
+  if (!currentServer) return toast('Sunucu seçilmedi', 'error');
 
   const existing = document.getElementById('discovery-settings-modal');
   if (existing) existing.remove();
@@ -389,32 +392,32 @@ function openDiscoverySettings() {
   modal.className = 'modal-overlay';
   modal.innerHTML = `
     <div class="modal-card" style="max-width:460px;width:95%;">
-      <h2 style="margin-bottom:4px;">ğŸŒ Sunucu KeÅŸif AyarlarÄ±</h2>
+      <h2 style="margin-bottom:4px;">🌐 Sunucu Keşif Ayarları</h2>
       <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">
-        Sunucunu keÅŸif sayfasÄ±nda gÃ¶ster ve yeni Ã¼yeler Ã§ek.
+        Sunucunu keşif sayfasında göster ve yeni üyeler çek.
       </p>
 
       <label style="display:flex;align-items:center;gap:10px;margin-bottom:16px;cursor:pointer;">
         <input type="checkbox" id="disc-discoverable" style="width:18px;height:18px;accent-color:var(--brand);"
                ${srv.discoverable ? 'checked' : ''}>
         <div>
-          <div style="font-weight:600;">KeÅŸif Listesine Ekle</div>
-          <div style="color:var(--text-muted);font-size:13px;">DiÄŸer kullanÄ±cÄ±lar sunucunu bulabilir</div>
+          <div style="font-weight:600;">Keşif Listesine Ekle</div>
+          <div style="color:var(--text-muted);font-size:13px;">Diğer kullanıcılar sunucunu bulabilir</div>
         </div>
       </label>
 
-      <label class="settings-label">AÃ§Ä±klama</label>
+      <label class="settings-label">Açıklama</label>
       <textarea id="disc-description" class="input" maxlength="500" rows="3"
                 style="width:100%;resize:vertical;margin-bottom:12px;"
-                placeholder="Sunucunuz hakkÄ±nda kÄ±sa bir aÃ§Ä±klama...">${escHtml(srv.description || '')}</textarea>
+                placeholder="Sunucunuz hakkında kısa bir açıklama...">${escHtml(srv.description || '')}</textarea>
 
-      <label class="settings-label">Etiketler <span style="color:var(--text-muted);font-size:12px;">(virgÃ¼lle ayÄ±r, max 10)</span></label>
-      <input id="disc-tags" class="input" placeholder="oyun, mÃ¼zik, teknoloji"
+      <label class="settings-label">Etiketler <span style="color:var(--text-muted);font-size:12px;">(virgülle ayır, max 10)</span></label>
+      <input id="disc-tags" class="input" placeholder="oyun, müzik, teknoloji"
              style="width:100%;margin-bottom:16px;"
-             value="${escHtml((srv.tags || []).join(', '))}" />
+             value="${escHtml((Array.isArray(srv.tags) ? srv.tags : []).join(', '))}" />
 
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="document.getElementById('discovery-settings-modal').remove()">Ä°ptal</button>
+        <button class="btn btn-secondary" onclick="document.getElementById('discovery-settings-modal').remove()">İptal</button>
         <button class="btn" onclick="saveDiscoverySettings()">ğŸ’¾ Kaydet</button>
       </div>
     </div>`;
@@ -438,18 +441,18 @@ async function saveDiscoverySettings() {
     });
     if (!r.ok) { const e = await r.json(); return toast(e.error || 'Kaydedilemedi', 'error'); }
     document.getElementById('discovery-settings-modal')?.remove();
-    toast('KeÅŸif ayarlarÄ± gÃ¼ncellendi! ğŸŒ', 'success');
-    if (window.currentServer) {
-      currentServer.discoverable = discoverable;
-      currentServer.description  = description;
-      currentServer.tags         = tags;
+    toast('Keşif ayarları güncellendi! 🌐', 'success');
+    if (currentServer) {
+      (currentServer as Record<string, unknown>).discoverable = discoverable;
+      (currentServer as Record<string, unknown>).description  = description;
+      (currentServer as Record<string, unknown>).tags         = tags;
     }
   } catch(e) {
-    toast('BaÄŸlantÄ± hatasÄ±', 'error');
+    toast('Bağlantı hatası', 'error');
   }
 }
 
-// â”€â”€ FEDERATION ADMIN PANELÄ° â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── FEDERATION ADMIN PANELİ ───────────────────────────────────
 async function openFederationAdmin() {
   const existing = document.getElementById('federation-modal');
   if (existing) { existing.remove(); return; }
@@ -459,9 +462,9 @@ async function openFederationAdmin() {
   modal.className = 'modal-overlay';
   modal.innerHTML = `
     <div class="modal-card" style="max-width:560px;width:95%;">
-      <h2 style="margin-bottom:4px;">ğŸŒ Federation YÃ¶netimi</h2>
+      <h2 style="margin-bottom:4px;">ğŸŒ Federation Yönetimi</h2>
       <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">
-        DiÄŸer Bridge instance'larÄ±na baÄŸlan. BaÄŸlÄ± instance'lardan sunucular keÅŸif sayfasÄ±nda gÃ¶rÃ¼nÃ¼r.
+        Diğer Bridge instance'larına bağlan. Bağlı instance'lardan sunucular keşif sayfasında görünür.
       </p>
 
       <div style="display:flex;gap:8px;margin-bottom:16px;">
@@ -470,7 +473,7 @@ async function openFederationAdmin() {
       </div>
 
       <div id="fed-peer-list" style="min-height:60px;">
-        <div style="color:var(--text-muted);font-size:13px;">YÃ¼kleniyor...</div>
+        <div style="color:var(--text-muted);font-size:13px;">Yükleniyor...</div>
       </div>
 
       <div class="modal-footer">
@@ -490,7 +493,7 @@ async function loadFederationPeers() {
     if (!r.ok) throw new Error();
     const peers = await r.json();
     if (!peers.length) {
-      list.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">HenÃ¼z baÄŸlÄ± instance yok.</div>';
+      list.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">Henüz bağlı instance yok.</div>';
       return;
     }
     list.innerHTML = peers.map(p => `
@@ -499,11 +502,11 @@ async function loadFederationPeers() {
           <div style="font-weight:600;">${escHtml(p.name)}</div>
           <div style="color:var(--text-muted);font-size:12px;">${escHtml(p.url)}</div>
         </div>
-        <span style="font-size:11px;color:var(--green,#57f287);">âœ“ BaÄŸlÄ±</span>
-        <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="removeFederationPeer('${p.id}')">KaldÄ±r</button>
+        <span style="font-size:11px;color:var(--green,#57f287);">✓ Bağlı</span>
+        <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="removeFederationPeer('${p.id}')">Kaldır</button>
       </div>`).join('');
   } catch {
-    list.innerHTML = '<div style="color:var(--text-muted);">YÃ¼klenemedi.</div>';
+    list.innerHTML = '<div style="color:var(--text-muted);">Yüklenemedi.</div>';
   }
 }
 
@@ -524,20 +527,20 @@ async function addFederationPeer() {
     { const _t = document.getElementById('fed-url') as HTMLInputElement | null; if (_t) _t.value = ''; }
     loadFederationPeers();
   } catch {
-    toast('BaÄŸlantÄ± hatasÄ±', 'error');
+    toast('Bağlantı hatası', 'error');
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
 async function removeFederationPeer(id) {
-  if (!confirm('Bu instance kaldÄ±rÄ±lsÄ±n mÄ±?')) return;
+  if (!confirm('Bu instance kaldırılsın mı?')) return;
   try {
     await apiFetch(`${API}/api/federation/peers/${id}`, { method: 'DELETE' });
-    toast('KaldÄ±rÄ±ldÄ±', 'success');
+    toast('Kaldırıldı', 'success');
     loadFederationPeers();
   } catch {
-    toast('KaldÄ±rÄ±lamadÄ±', 'error');
+    toast('Kaldırılamadı', 'error');
   }
 }
 

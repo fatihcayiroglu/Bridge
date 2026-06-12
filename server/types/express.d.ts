@@ -33,12 +33,13 @@ import { Request } from 'express';
  * user alanının kesinlikle dolu olduğunu garanti eder.
  *
  * Kullanım:
- *   router.get('/me', authMiddleware, asyncHandler(async (req: AuthedRequest, res) => {
+ *   router.get('/me', authMiddleware, async (req: AuthedRequest, res) => {
  *     const userId = req.user.id; // null check gereksiz
- *   }));
+ *   });
  */
 export interface AuthedRequest extends Request {
   user: JwtPayload; // non-optional: authMiddleware garantisi
+  userId?: string;
 }
 
 /**

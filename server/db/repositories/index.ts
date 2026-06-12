@@ -1,43 +1,48 @@
-// @ts-nocheck
-// server/db/repositories/index.js
+// server/db/repositories/index.ts
 // Tüm repository'leri tek noktadan export eder.
 //
 // Kullanım:
-//   const { Users, Servers, Messages } = require('./db/repositories');
-//   const { Channels, Members, Invites } = require('./db/repositories');
+//   import { Users, Servers, Messages } from './db/repositories';
+//   import { Channels, Members, Invites } from './db/repositories';
 //
 // Repository'ler db/loader üzerinden çalışır — SQLite veya PostgreSQL
 // farketmeksizin aynı Collection API'si kullanılır.
 
-const Users             = require('./UserRepository');
-const Servers           = require('./ServerRepository');
-const Messages          = require('./MessageRepository');
-const Channels          = require('./ChannelRepository');
-const Members           = require('./MemberRepository');
-const Invites           = require('./InviteRepository');
-const Roles             = require('./RoleRepository');
-const Dms               = require('./DmRepository');
-const GroupDms          = require('./GroupDmRepository');
-const Bots              = require('./BotRepository');
-const Threads           = require('./ThreadRepository');
-const Automod           = require('./AutomodRepository');
-const ReactionRoles     = require('./ReactionRoleRepository');
-const ScheduledMessages = require('./ScheduledMessageRepository');
-const Notifications     = require('./NotificationRepository');
-const Social            = require('./SocialRepository');
-const ServerAssets      = require('./ServerAssetRepository');
-const Auth              = require('./AuthRepository');
-const OutgoingWebhooks  = require('./OutgoingWebhookRepository');
-const Polls             = require('./PollRepository');
-const Federation        = require('./FederationRepository');
-const Bridges           = require('./BridgeRepository');
-const ChannelWebhooks   = require('./WebhookRepository');
-const ChannelPermissions = require('./ChannelPermissionRepository');
-const Podcasts          = require('./PodcastRepository');
-const VoiceMessages     = require('./VoiceRepository');
+import Users             from './UserRepository';
+import Servers           from './ServerRepository';
+import Messages          from './MessageRepository';
+import Channels          from './ChannelRepository';
+import Members           from './MemberRepository';
+import Invites           from './InviteRepository';
+import Roles             from './RoleRepository';
+import Dms               from './DmRepository';
+import GroupDms          from './GroupDmRepository';
+import Bots              from './BotRepository';
+import Threads           from './ThreadRepository';
+import Automod           from './AutomodRepository';
+import ReactionRoles     from './ReactionRoleRepository';
+import ScheduledMessages from './ScheduledMessageRepository';
+import Notifications     from './NotificationRepository';
+import Social            from './SocialRepository';
+import ServerAssets      from './ServerAssetRepository';
+import Auth              from './AuthRepository';
+import OutgoingWebhooks  from './OutgoingWebhookRepository';
+import Polls             from './PollRepository';
+import Federation        from './FederationRepository';
+import Bridges           from './BridgeRepository';
+import ChannelWebhooks   from './WebhookRepository';
+import ChannelPermissions from './ChannelPermissionRepository';
+import Podcasts          from './PodcastRepository';
+import VoiceMessages     from './VoiceRepository';
+import { ServerEvents }  from './ServerEventRepository';
+import { Stats }         from './StatsRepository';
+import { Boosts }        from './BoostRepository';
+import { Announcements } from './AnnouncementRepository';
+import { BotMarketplace } from './BotMarketplaceRepository';
+import { OAuth }         from './OAuthRepository';
+const Reactions = ReactionRoles;
 
-module.exports = {
-  // Temel varlıklar
+export {
   Users,
   Servers,
   Messages,
@@ -45,31 +50,30 @@ module.exports = {
   Members,
   Invites,
   Roles,
-
-  // Mesajlaşma
   Dms,
   GroupDms,
   Threads,
   ScheduledMessages,
   Polls,
-
-  // Sunucu özellikleri
   Automod,
   ReactionRoles,
   ServerAssets,
   OutgoingWebhooks,
   Bots,
-
-  // Kullanıcı & sosyal
   Social,
   Notifications,
   Auth,
-
   Federation,
-
   Bridges,
   ChannelWebhooks,
   ChannelPermissions,
   Podcasts,
   VoiceMessages,
+  ServerEvents,
+  Stats,
+  Boosts,
+  Announcements,
+  BotMarketplace,
+  OAuth,
+  Reactions,
 };

@@ -1,80 +1,91 @@
-// server/db/repositories/SocialRepository.js
+// server/db/repositories/SocialRepository.ts
 // Arkadaşlık, blok ve kullanıcı bağlantısı sorgularını tek noktada toplar.
 
-'use strict';
-const { v4: uuidv4 } = require('uuid');
-const db = require('../loader');
+import { v4 as uuidv4 } from 'uuid';
+import db from '../loader';
+import type { FriendshipStatus } from './types/entities';
 
 class SocialRepository {
   // ── Friendships ────────────────────────────────────────────
 
-  async findFriendship(userId, otherId) {
+  async findFriendship(userId: string, otherId: string) {
     return db.friendships.findOne({ $or: [
       { userId, friendId: otherId },
       { userId: otherId, friendId: userId },
     ]});
   }
 
-  async findFriendships(userId) {
+  async findFriendships(userId: string) {
     return db.friendships.find({ $or: [{ userId }, { friendId: userId }] });
   }
 
-  async insertFriendship(userId, friendId, status = 'pending') {
+  async insertFriendship(userId: string, friendId: string, status: FriendshipStatus = 'pending') {
     return db.friendships.insert({ _id: uuidv4(), userId, friendId, status, createdAt: Date.now() });
   }
 
-  async updateFriendship(id, fields) {
+  async createFriendship(userId: string, friendId: string) {
+    return this.insertFriendship(userId, friendId, 'pending');
+  }
+
+  async acceptFriendship(id: string) {
+    return this.updateFriendship(id, { status: 'accepted', acceptedAt: Date.now() });
+  }
+
+  async declineFriendship(id: string) {
+    return this.updateFriendship(id, { status: 'declined', declinedAt: Date.now() });
+  }
+
+  async updateFriendship(id: string, fields: Record<string, unknown>) {
     return db.friendships.update({ _id: id }, { $set: fields });
   }
 
-  async removeFriendship(id) {
+  async removeFriendship(id: string) {
     return db.friendships.remove({ _id: id });
   }
 
   // ── Blocks ─────────────────────────────────────────────────
 
-  async findBlock(blockerId, blockedId) {
+  async findBlock(blockerId: string, blockedId: string) {
     return db.blocks?.findOne({ blockerId, blockedId });
   }
 
-  async findBlocksByUser(blockerId) {
+  async findBlocksByUser(blockerId: string) {
     return db.blocks?.find({ blockerId }) ?? [];
   }
 
-  async insertBlock(blockerId, blockedId) {
+  async insertBlock(blockerId: string, blockedId: string) {
     return db.blocks?.insert({ _id: uuidv4(), blockerId, blockedId, createdAt: Date.now() });
   }
 
-  async removeBlock(blockerId, blockedId) {
+  async removeBlock(blockerId: string, blockedId: string) {
     return db.blocks?.remove({ blockerId, blockedId });
   }
 
   // ── User Connections ───────────────────────────────────────
 
-  async findConnection(userId, platform) {
+  async findConnection(userId: string, platform: string) {
     return db.userConnections?.findOne({ userId, platform });
   }
 
-  async findConnectionsByUser(userId) {
+  async findConnectionsByUser(userId: string) {
     return db.userConnections?.find({ userId }) ?? [];
   }
 
-  async insertConnection(data) {
+  async insertConnection(data: Record<string, unknown>) {
     return db.userConnections?.insert({ _id: uuidv4(), createdAt: Date.now(), ...data });
   }
 
-  async removeConnection(userId, platform) {
+  async removeConnection(userId: string, platform: string) {
     return db.userConnections?.remove({ userId, platform });
   }
 
-  async updateConnection(filter, modifier) {
+  async updateConnection(filter: Record<string, unknown>, modifier: Record<string, unknown>) {
     return db.userConnections?.update(filter, modifier);
   }
 
-  async countConnections(query) {
+  async countConnections(query: Record<string, unknown>) {
     return db.userConnections?.count(query).catch(() => 0) ?? 0;
   }
 }
 
-module.exports = new SocialRepository();
-export {};
+export default new SocialRepository();

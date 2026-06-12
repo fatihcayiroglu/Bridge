@@ -1,16 +1,83 @@
-// server/routes/activity.js Aktivite Sistemi
+/**
+ * @openapi
+ * tags:
+ *   - name: Activity
+ *     description: Activity API endpoints
+
+ *
+ * /activity:
+ *   patch:
+ *     tags: [Activity]
+ *     summary: Aktiviteyi güncelle veya sil
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               type:   { type: string, enum: [playing, listening, watching, streaming, coding, reading, custom] }
+ *               name:   { type: string, maxLength: 64 }
+ *               detail: { type: string, maxLength: 128 }
+ *               url:    { type: string }
+ *               emoji:  { type: string }
+ *     responses:
+ *       200:
+ *         description: Güncellendi
+ *
+ * /activity/{userId}:
+ *   get:
+ *     tags: [Activity]
+ *     summary: Kullanıcı aktivitesini getir
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Aktivite bilgisi
+ *       404: { $ref: '#/components/responses/NotFound' }
+ *
+ * /activity/server/{serverId}:
+ *   get:
+ *     tags: [Activity]
+ *     summary: Sunucudaki aktif kullanıcılar
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: serverId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Aktif kullanıcı listesi
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *
+ * /activity/meta/types:
+ *   get:
+ *     tags: [Activity]
+ *     summary: Desteklenen aktivite tiplerini listele
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Aktivite tipleri
+ */
+
+// server/routes/activity.ts Aktivite Sistemi
 // Kullanıcıların ne dinlediği, ne oynadığı, ne izlediği
 // Discord'da Nitro ile sınırlı → Bridge'de tamamen ücretsiz
 
-const express      = require('express');
+import express from 'express';
+import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router       = express.Router();
-const { Users, Members } = require('../db/repositories');
-const { authMiddleware, castAuthed } = require('../middleware/auth');
-const asyncHandler = require('../middleware/asyncHandler');
-const { cache }    = require('../lib/redisAdapter');
-const { limits }   = require('../middleware/rateLimit');
-
-// ── AKTİVİTE TİPLERİ ─────────────────────────────────────────
+import { Users, Members } from '../db/repositories';
+import { authMiddleware} from '../middleware/auth';
+import { cache } from '../lib/redisAdapter';
+import { getIo } from '../socket';
+import { limits } from '../middleware/rateLimit';
 const ACTIVITY_TYPES = {
   PLAYING:   'playing',   // 🎮 Oyun oynuyor
   LISTENING: 'listening', // 🎵 Müzik dinliyor
@@ -21,7 +88,7 @@ const ACTIVITY_TYPES = {
   CUSTOM:    'custom',    // ✏️ Özel durum
 };
 
-const ACTIVITY_ICONS = {
+const ACTIVITY_ICONS: Record<string, string> = {
   playing:   '🎮',
   listening: '🎵',
   watching:  '📺',
@@ -35,9 +102,9 @@ const ACTIVITY_ICONS = {
 // PATCH /api/activity — aktivite güncelle/sil
 // Body: { type, name, detail, url } | null (temizlemek için)
 // ─────────────────────────────────────────────────────────────
-router.patch('/', authMiddleware, limits.settings(), asyncHandler(async (req, res) => {
+router.patch('/', authMiddleware, limits.settings(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { type, name, detail, url, emoji } = req.body || {};
+  const { type, name, detail, url, emoji } = req.body as Record<string, string> || {};
 
   // null body → aktiviteyi temizle
   if (!req.body || (!type && !name)) {
@@ -45,13 +112,14 @@ router.patch('/', authMiddleware, limits.settings(), asyncHandler(async (req, re
     await Users.update(_u.id, { activity: null, activityUpdatedAt: Date.now() });
 
     // Socket yayını: aktivite silindi
-    const app = require('../index').app;
-    const io  = app?.get?.('io');
-    if (io) {
-      const memberships = await Members.findByUser(_u.id);
-      const serverIds   = memberships.map(m => m.serverId);
-      io.to(serverIds).emit('user:activity', { userId: _u.id, activity: null });
-    }
+    try {
+      const io = getIo();
+      if (io) {
+        const memberships = await Members.findByUser(_u.id);
+        const serverIds   = memberships.map(m => m.serverId);
+        io.to(serverIds).emit('user:activity', { userId: _u.id, activity: null });
+      }
+    } catch { /* IO opsiyonel */ }
 
     return res.json({ activity: null });
   }
@@ -78,8 +146,7 @@ router.patch('/', authMiddleware, limits.settings(), asyncHandler(async (req, re
 
   // Socket yayını: üye olduğu tüm sunuculara gönder
   try {
-    const app = require('../index').app;
-    const io  = app?.get?.('io');
+    const io = getIo();
     if (io) {
       const memberships = await Members.findByUser(_u.id);
       const serverIds   = memberships.map(m => m.serverId);
@@ -88,13 +155,13 @@ router.patch('/', authMiddleware, limits.settings(), asyncHandler(async (req, re
   } catch { /* IO opsiyonel */ }
 
   res.json({ activity });
-}));
+});
 
 // ─────────────────────────────────────────────────────────────
 // GET /api/activity/:userId — bir kullanıcının aktivitesini al
 // ─────────────────────────────────────────────────────────────
-router.get('/:userId', authMiddleware, asyncHandler(async (req, res) => {
-  const { userId } = req.params;
+router.get('/:userId', authMiddleware, async (req, res) => {
+  const userId = String(req.params.userId ?? '');
 
   // Cache'den dene
   const cached = await cache.get(`activity:${userId}`);
@@ -114,14 +181,14 @@ router.get('/:userId', authMiddleware, asyncHandler(async (req, res) => {
   }
 
   res.json({ activity: user.activity || null });
-}));
+});
 
 // ─────────────────────────────────────────────────────────────
 // GET /api/activity/server/:serverId — sunucudaki aktif kullanıcılar
 // ─────────────────────────────────────────────────────────────
-router.get('/server/:serverId', authMiddleware, asyncHandler(async (req, res) => {
+router.get('/server/:serverId', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const { serverId } = req.params;
+  const serverId = String(req.params.serverId ?? '');
 
   // Üyelik kontrolü
   const membership = await Members.findOne(_u.id, serverId);
@@ -134,7 +201,7 @@ router.get('/server/:serverId', authMiddleware, asyncHandler(async (req, res) =>
 
   const cutoff = Date.now() - 4 * 60 * 60 * 1000; // 4 saat
   const active = users
-    .filter(u => u.activity && u.activityUpdatedAt > cutoff)
+    .filter(u => u.activity && typeof u.activityUpdatedAt === 'number' && u.activityUpdatedAt > cutoff)
     .map(u => ({
       userId:      u._id,
       displayName: u.displayName || u.username,
@@ -144,7 +211,7 @@ router.get('/server/:serverId', authMiddleware, asyncHandler(async (req, res) =>
     }));
 
   res.json({ active, count: active.length });
-}));
+});
 
 // ─────────────────────────────────────────────────────────────
 // GET /api/activity/types — desteklenen aktivite tipleri
@@ -168,5 +235,4 @@ router.get('/meta/types', (req, res) => {
   });
 });
 
-module.exports = { router, ACTIVITY_TYPES, ACTIVITY_ICONS };
-export {};
+export { router, ACTIVITY_TYPES, ACTIVITY_ICONS };

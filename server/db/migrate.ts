@@ -1,6 +1,7 @@
-const fs = require('fs');
-const path = require('path');
-const Database = require('better-sqlite3');
+// @ts-nocheck
+import fs from 'fs';
+import path from 'path';
+import Database from 'better-sqlite3';
 
 const dataDir = path.join(__dirname, '../data');
 const dbPath = path.join(dataDir, 'bridge.db');
@@ -42,8 +43,33 @@ for (const file of files) {
   if (applied.has(file)) continue;
   const fullPath = path.join(migrationsDir, file);
   const sql = fs.readFileSync(fullPath, 'utf8');
+
+  // Her SQL ifadesini ayrı ayrı çalıştır.
+  // ALTER TABLE gibi "duplicate column name" hatası verebilecek ifadeler
+  // tüm transaction'ı bloklamamalı — idempotency için yok sayılır.
+  // Boş ifadeler ve yorum satırları atlanır.
+  const statements = sql
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && !s.startsWith('--'));
+
   const tx = db.transaction(() => {
-    db.exec(sql);
+    for (const stmt of statements) {
+      try {
+        db.exec(stmt + ';');
+      } catch (err) {
+        const msg = (err && err.message) ? err.message : String(err);
+        if (
+          msg.includes('duplicate column name') ||
+          msg.includes('already exists')
+        ) {
+          // Idempotent — kolon/tablo zaten mevcut, devam et
+          process.stdout.write(`  [skip idempotent] ${msg}\n`);
+        } else {
+          throw err;
+        }
+      }
+    }
     db.prepare('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)').run(file, Date.now());
   });
   tx();
@@ -51,4 +77,3 @@ for (const file of files) {
 }
 
 process.stdout.write('Migration run completed.\n');
-export {};

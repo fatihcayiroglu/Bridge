@@ -1,5 +1,4 @@
-// @ts-nocheck
-// server/lib/svgSanitizer.js
+// server/lib/svgSanitizer.ts
 // SVG dosyalarındaki XSS vektörlerini temizler.
 //
 // Strateji: reject-or-strip
@@ -13,12 +12,9 @@
 //   Strip yaklaşımı daha kullanıcı dostu — sadece gerçekten tehlikeli
 //   kısımlar kesilir, görsel içerik korunur.
 
-'use strict';
 
-const fs   = require('fs');
-const path = require('path');
-
-// ── Tehlikeli element isim listesi ────────────────────────────
+import fs from 'fs';
+import path from 'path';
 const DANGEROUS_ELEMENTS = new Set([
   'script',
   'foreignObject',
@@ -62,7 +58,9 @@ const DANGEROUS_VALUE_PATTERNS = [
  * @param {string} svgContent - ham SVG içeriği
  * @returns {{ clean: string, stripped: string[] }} temizlenmiş içerik + kaldırılan şeyler
  */
-function sanitizeSvgString(svgContent) {
+interface SanitizeResult { clean: string; stripped: string[] }
+
+function sanitizeSvgString(svgContent: string): SanitizeResult {
   const stripped = [];
   let clean = svgContent;
 
@@ -132,7 +130,9 @@ function sanitizeSvgString(svgContent) {
  * @param {string} filePath - dosya yolu
  * @returns {{ safe: boolean, stripped: string[], rewritten: boolean }}
  */
-async function sanitizeSvgFile(filePath) {
+interface SvgFileResult { safe: boolean; stripped: string[]; rewritten: boolean }
+
+async function sanitizeSvgFile(filePath: string): Promise<SvgFileResult> {
   const ext = path.extname(filePath).toLowerCase();
   if (ext !== '.svg' && ext !== '.svgz') {
     return { safe: true, stripped: [], rewritten: false };
@@ -178,10 +178,9 @@ async function sanitizeSvgFile(filePath) {
  * SVG string'inin güvenli olup olmadığını hızlıca kontrol eder (dosyaya yazmaz).
  * Tarama sonucu false ise dosyayı reddet.
  */
-function isSvgSafe(svgContent) {
+function isSvgSafe(svgContent: string): boolean {
   const { stripped } = sanitizeSvgString(svgContent);
   return stripped.length === 0;
 }
 
-module.exports = { sanitizeSvgFile, sanitizeSvgString, isSvgSafe };
-export {};
+export { sanitizeSvgFile, sanitizeSvgString, isSvgSafe };

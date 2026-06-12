@@ -28,7 +28,7 @@ test.describe('Mesajlaşma Akışları', () => {
   // ── API Testleri ─────────────────────────────────────────
 
   test('API: mesaj gönderme', async ({ request }) => {
-    if (!testChannelId) test.skip();
+    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
 
     const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
       headers: {
@@ -44,7 +44,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('API: mesajları listeleme', async ({ request }) => {
-    if (!testChannelId) test.skip();
+    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
 
     // Önce bir mesaj gönder
     await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
@@ -65,7 +65,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('API: boş mesaj reddedilmeli', async ({ request }) => {
-    if (!testChannelId) test.skip();
+    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
 
     const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
@@ -76,7 +76,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('API: üye olmayan kullanıcı mesaj gönderememeli', async ({ request }) => {
-    if (!testChannelId) test.skip();
+    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
 
     const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
       headers: { Authorization: `Bearer ${tokens.bob}`, 'Content-Type': 'application/json' },
@@ -88,7 +88,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('API: mesaj silme', async ({ request }) => {
-    if (!testChannelId) test.skip();
+    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
 
     // Mesaj gönder
     const sendRes = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
@@ -97,7 +97,7 @@ test.describe('Mesajlaşma Akışları', () => {
     });
     const sent = await sendRes.json();
     const msgId = sent._id || sent.id || sent.message?._id;
-    if (!msgId) test.skip();
+    test.skip(!msgId, 'Mesaj fixture gerekli'  );
 
     // Sil
     const delRes = await request.delete(
@@ -108,7 +108,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('API: mesaj düzenleme', async ({ request }) => {
-    if (!testChannelId) test.skip();
+    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
 
     const sendRes = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
@@ -116,7 +116,7 @@ test.describe('Mesajlaşma Akışları', () => {
     });
     const sent = await sendRes.json();
     const msgId = sent._id || sent.id || sent.message?._id;
-    if (!msgId) test.skip();
+    test.skip(!msgId, 'Mesaj fixture gerekli'  );
 
     const editRes = await request.patch(
       `${BASE_URL}/api/channels/${testChannelId}/messages/${msgId}`,
@@ -129,7 +129,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('API: sayfalama cursor çalışmalı', async ({ request }) => {
-    if (!testChannelId) test.skip();
+    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
 
     const res = await request.get(
       `${BASE_URL}/api/channels/${testChannelId}/messages?limit=5`,
@@ -163,7 +163,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('UI: uzun mesaj 2000 karakteri geçememeli', async ({ request }) => {
-    if (!testChannelId) test.skip();
+    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
 
     const longMsg = 'A'.repeat(2001);
     const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
@@ -176,7 +176,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('API: XSS içerikli mesaj sanitize edilmeli', async ({ request }) => {
-    if (!testChannelId) test.skip();
+    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
 
     const xssPayload = '<script>alert("xss")</script>Merhaba';
     const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {

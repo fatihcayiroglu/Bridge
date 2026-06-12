@@ -27,8 +27,8 @@ const BRIDGE_TEST_PASS = process.env.BRIDGE_TEST_PASS || 'testpass123';
 const skipIfNoMastodon = !MASTODON_URL || !MASTODON_TOKEN;
 
 // ── Yardımcı: Mastodon API isteği ────────────────────────────
-async function mastodonAPI(ctx, method, path, body = null) {
-  const opts = {
+async function mastodonAPI(ctx, method, path, body: unknown = null) {
+  const opts: { headers: Record<string, string>; data?: unknown } = {
     headers: {
       'Authorization': `Bearer ${MASTODON_TOKEN}`,
       'Content-Type':  'application/json',
@@ -141,7 +141,7 @@ test.describe('ActivityPub Actor Endpoints', () => {
 
   test('Bridge notes/:id Note döner', async ({ request: ctx }) => {
     // Önce bir mesaj gönder, ID'sini al
-    if (!bridgeToken) return test.skip();
+    test.skip(!bridgeToken, 'Bridge auth token fixture gerekli'); if (!bridgeToken) return;
     // Test kanalı ID'si env'den alınır veya sabit test değeri
     const channelId = process.env.BRIDGE_TEST_CHANNEL || 'test-channel';
 
@@ -155,7 +155,8 @@ test.describe('ActivityPub Actor Endpoints', () => {
 });
 
 // ── Test Grubu 3: Mastodon → Bridge Follow ───────────────────
-test.describe('Mastodon ↔ Bridge Follow', { skip: skipIfNoMastodon }, () => {
+test.describe('Mastodon ↔ Bridge Follow', () => {
+  test.skip(skipIfNoMastodon, 'MASTODON_URL veya MASTODON_TOKEN tanımlı değil');
   const bridgeHost = BRIDGE_URL ? new URL(BRIDGE_URL).hostname : 'localhost';
   const bridgeActor = `${BRIDGE_TEST_USER}@${bridgeHost}`;
 

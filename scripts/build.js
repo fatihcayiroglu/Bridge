@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // scripts/build.js — Bridge Production Builder — Faz 3
+// Not: esbuild >=0.25 Safari 14 hedefinde destructuring dönüşümünü reddeder; Safari 14.1+ kullanılır.
 // ESM code splitting: esbuild import grafiğini otomatik çözer.
-// Manuel CHUNKS dizisi ve buildChunk() kaldırıldı.
-// SPLITTING_ACTIVE guard kaldırıldı.
+//
+// DÜZELTME #7: federation-ui.js ve core/go-live.js
+//              entry point listesine eklendi. Eskiden bundle'a girmiyordu.
 //
 // Kullanım:
 //   node scripts/build.js            # production
@@ -12,6 +14,8 @@
 'use strict';
 
 const esbuild = require('esbuild');
+const esbuildSvelte = (() => { try { return require('esbuild-svelte'); } catch { return null; } })();
+
 const fs      = require('fs');
 const path    = require('path');
 const crypto  = require('crypto');
@@ -24,39 +28,102 @@ const DIST    = path.join(__dirname, '../client/dist');
 const JS_SRC  = path.join(SRC, 'js');
 const CSS_SRC = path.join(SRC, 'css');
 
-// ── Dizin hazırlığı ───────────────────────────────────────────
+// CDN prefix desteği: CDN_URL env ile tüm asset URL'leri prefixlenir
+// Örnek: CDN_URL=https://cdn.example.com → /dist/js/app-XXX.js → https://cdn.example.com/dist/js/app-XXX.js
+const PUBLIC_PATH = process.env.CDN_URL ? process.env.CDN_URL.replace(/\/$/, '') + '/' : '/';
+if (PUBLIC_PATH !== '/') console.log(`🌐 CDN modu aktif: ${PUBLIC_PATH}`);
+
 fs.mkdirSync(path.join(DIST, 'js'),  { recursive: true });
 fs.mkdirSync(path.join(DIST, 'css'), { recursive: true });
 
 function src(...parts) { return path.join(JS_SRC, ...parts); }
 function exists(p)     { return fs.existsSync(p); }
 
-// ── Entry points — esbuild import grafiğini kendisi çözer ────
-// app.js tüm core modüllerini import eder; esbuild bunu
+// .ts veya .js girişini otomatik çöz — TypeScript tercih edilir
+// esbuild TS'i natively destekler; tsc gerekmez.
+function entry(name) {
+  const ts = src(name.replace(/\.js$/, '.ts'));
+  const js = src(name);
+  if (exists(ts)) return ts;
+  if (exists(js))  return js;
+  return null;
+}
+
+// ── Entry points ─────────────────────────────────────────────────────────────
+// app.ts tüm core modüllerini import eder; esbuild bunu
 // otomatik chunk'lara böler (splitting: true, format: 'esm').
 const ENTRY_POINTS = [
-  src('app.js'),
-  // Lazy-loaded pages — ayrı entry olarak tanımlanır,
-  // böylece esbuild ortak bağımlılıkları shared chunk'a alır.
-  src('admin.js'),
-  src('discover.js'),
-  src('federation-modal.js'),
-  src('federation-integrations.js'),
-  src('threads.js'),
-  src('slash.js'),
-  src('profile.js'),
-  src('polls.js'),
-  src('soundboard.js'),
-  src('marketplace.js'),
-  src('plugin-marketplace-page.js'),
-  src('twoFactor.js'),
-  src('webauthn.js'),
-  src('mobile.js'),
-  src('webrtc.js'),
-  src('webrtc-sfu.js'),
-].filter(exists);
+  entry('app.js'),
+  // Lazy-loaded pages
+  entry('admin.js'),
+  entry('discover.js'),
+  entry('federation-modal.js'),
+  // DÜZELTME #7a: federation-ui.js eksikti — eklendi
+  entry('federation-ui.js'),
+  entry('threads.js'),
+  entry('slash.js'),
+  entry('profile.js'),
+  entry('polls.js'),
+  entry('soundboard.js'),
+  entry('marketplace.js'),
+  entry('plugin-marketplace-page.js'),
+  entry('twoFactor.js'),
+  entry('webauthn.js'),
+  entry('mobile.js'),
+  entry('webrtc.js'),
+  entry('webrtc-sfu.js'),
+// Sprint 30: v41–v44 klasörleri kaldırıldı — dosyalar core/ altına taşındı.
+  entry('core/go-live.ts'),
+  // Sprint 28: channel-perms-modal split — 4 modül (yükleme sırası önemli)
+  entry('core/channel-perms/modal-state.ts'),
+  entry('core/channel-perms/modal-actions.ts'),
+  entry('core/channel-perms/modal-audit-sync.ts'),
+  entry('core/channel-perms/modal-core.ts'),
+  // Sprint 49: JS → TS geçişleri
+  entry('core/mention-autocomplete.ts'),
+  entry('core/messages/reactions.ts'),
+  entry('core/messages/scroll.ts'),
 
-// ── CSS build ─────────────────────────────────────────────────
+  // ── Sprint 50: Kalan 25 JS → TS tam dönüşümü ──────────────────────────────
+  // Tree-shaking aktif — kullanılmayan export'lar otomatik atılır.
+  // esbuild bu dosyaları import grafiğiyle birleştirir; yinelenen kod olmaz.
+  entry('core/voice.ts'),
+  entry('core/web-push.ts'),
+  entry('core/offline-banner.ts'),
+  entry('core/analytics.ts'),
+  entry('core/mobile.ts'),
+  entry('core/virtual-scroll.ts'),
+  entry('core/i18n.ts'),
+  entry('core/canvas.ts'),
+  entry('core/ip-ban.ts'),
+  entry('core/styles.ts'),
+  entry('core/partials.ts'),
+  entry('core/stage.ts'),
+  entry('core/user-connections.ts'),
+  entry('core/channel-stage.ts'),
+  entry('core/discover.ts'),
+  entry('core/mobile-ux.ts'),
+  entry('core/emoji-picker.ts'),
+  entry('core/calendar-picker.ts'),
+  entry('core/clyde.ts'),
+  entry('core/group-dm-core.ts'),
+  entry('core/onboarding-tour.ts'),
+  entry('core/server-ui.ts'),
+  entry('core/bot-marketplace.ts'),
+  entry('core/channel-perms/channel-perms-svelte.ts'),
+  entry('core/messages/loader.ts'),
+  entry('core/messages/virtual-scroll.ts'),
+  // ── Sprint 92: Yeni modüller ──────────────────────────────────────────────────
+  entry('core/desktop-voice-bar.ts'),
+  entry('core/boost-ui.ts'),               // Sprint 93
+  entry('core/spotify-widget.ts'),         // Sprint 93
+  entry('core/e2ee-toggle.ts'),            // Sprint 93
+  entry('core/analytics-dashboard.ts'),    // Sprint 94
+  entry('core/announcement-ui.ts'),        // Sprint 94
+  entry('core/settings-modal-voice.ts'),
+].filter(Boolean).filter(exists);
+
+// ── CSS build ─────────────────────────────────────────────────────────────────
 async function buildCSS() {
   const entryCSS = path.join(CSS_SRC, 'style.css');
   if (!exists(entryCSS)) {
@@ -80,15 +147,16 @@ async function buildCSS() {
   console.log('✅ CSS' + (PROD ? ' (minified)' : ''));
 }
 
-// ── Ana JS build (ESM splitting) ──────────────────────────────
+// ── Ana JS build (ESM splitting) ──────────────────────────────────────────────
 async function buildJS() {
   const result = await esbuild.build({
     entryPoints:       ENTRY_POINTS,
     bundle:            true,
-    splitting:         true,   // esbuild otomatik shared chunk üretir
+    splitting:         true,
     format:            'esm',
+    publicPath:        PUBLIC_PATH,
     outdir:            path.join(DIST, 'js'),
-    entryNames:        '[name]-[hash]',  // content hash — cache busting
+    entryNames:        '[name]-[hash]',
     chunkNames:        'chunk-[hash]',
     minify:            PROD,
     minifyWhitespace:  PROD,
@@ -99,182 +167,137 @@ async function buildJS() {
       'process.env.NODE_ENV': JSON.stringify(PROD ? 'production' : 'development'),
     },
     sourcemap:     WATCH ? 'inline' : (ANALYZE ? 'external' : false),
-    target:        ['es2020', 'chrome90', 'firefox90', 'safari14'],
+    target:        ['es2020', 'chrome90', 'firefox90', 'safari14.1'],
     logLevel:      'warning',
     legalComments: PROD ? 'none' : 'inline',
     metafile:      true,
     treeShaking:   true,
+    // DÜZELTME #7c: v41–v44 re-export'larının doğru çözümlenmesi için
+    // resolveExtensions .ts'yi de kapsar (tsc öncesi raw TS kullanılıyorsa)
+    resolveExtensions: ['.ts', '.js', '.json', '.svelte'],
+    plugins: esbuildSvelte
+      ? [esbuildSvelte({ compilerOptions: { css: 'injected', runes: true } })]
+      : [],
   });
+
+  // DÜZELTME #7d: Build sonrası entry doğrulama
+  if (ANALYZE && result.metafile) {
+    const requiredEntries = ['federation-ui', 'go-live'];
+    const outputs = Object.keys(result.metafile.outputs);
+    for (const required of requiredEntries) {
+      const found = outputs.some(o => path.basename(o).startsWith(required));
+      if (!found) {
+        console.warn(`⚠️  Beklenen entry chunk bulunamadı: ${required}`);
+      } else {
+        console.log(`✅ Entry doğrulandı: ${required}`);
+      }
+    }
+  }
 
   return result;
 }
 
-// ── index.html güncelle (type="module") ──────────────────────
+// ── index.html güncelle (type="module") ──────────────────────────────────────
 function patchHTML(outputFiles) {
   const htmlSrc = path.join(SRC, 'index.html');
   if (!exists(htmlSrc)) return;
 
   let html = fs.readFileSync(htmlSrc, 'utf8');
 
-  // Eski DEV/PROD dynamic loader script bloğunu sil
-  html = html.replace(
-    /\s*<script>\s*\(function\(\)\s*\{[\s\S]*?PROD_CHUNKS[\s\S]*?\}\)\(\);\s*<\/script>/,
-    ''
-  );
-  // Kalan eski defer script taglarını da temizle
-  html = html.replace(/\s*<script src="js\/[^"]*" defer><\/script>/g, '');
+  // Eski script tag'lerini type=module ile değiştir
+  // (outputFiles: esbuild metafile outputs)
+  const appEntry = outputFiles
+    ? Object.keys(outputFiles).find(f => f.includes('/app-') && f.endsWith('.js'))
+    : null;
 
-  // app entry'nin hash'li adını bul
-  const appEntry = outputFiles.find(f =>
-    f.includes('/js/app-') && f.endsWith('.js')
-  );
-  if (!appEntry) {
-    console.warn('⚠️  app entry output bulunamadı — HTML script inject atlandı.');
-    return;
+  if (appEntry) {
+    const relPath = path.relative(SRC, appEntry).replace(/\\/g, '/');
+    const cdnBase = PUBLIC_PATH === '/' ? '' : PUBLIC_PATH;
+    const scriptSrc = `${cdnBase}${relPath}`;
+
+    html = html.replace(
+      /<script[^>]+src=["'][^"']*app[^"']*["'][^>]*><\/script>/gi,
+      `<script type="module" src="${scriptSrc}"></script>`,
+    );
+
+    // <link rel="modulepreload"> hint'leri — kritik chunk'ları tarayıcıya önceden bildirir
+    if (outputFiles) {
+      const criticalChunks = Object.keys(outputFiles)
+        .filter(f => f.endsWith('.js') && !f.includes('chunk-'))
+        .slice(0, 6) // İlk 6 entry point
+        .map(f => {
+          const rel = path.relative(SRC, f).replace(/\\/g, '/');
+          return `<link rel="modulepreload" href="${cdnBase}${rel}">`;
+        });
+      if (criticalChunks.length) {
+        html = html.replace('</head>', criticalChunks.join('\n  ') + '\n</head>');
+      }
+    }
+
+    fs.writeFileSync(htmlSrc.replace('index.html', 'index.dist.html'), html);
+    if (PUBLIC_PATH !== '/') {
+      console.log(`✅ HTML patched — CDN prefix: ${PUBLIC_PATH}`);
+    }
   }
-
-  const appRelPath = 'js/' + path.basename(appEntry);
-  const moduleTag  = `  <script type="module" src="${appRelPath}"></script>`;
-
-  // </body> öncesine ekle
-  html = html.replace('</body>', moduleTag + '\n</body>');
-
-  fs.writeFileSync(path.join(DIST, 'index.html'), html);
-  console.log(`✅ index.html güncellendi → ${appRelPath}`);
 }
 
-// ── sw.js — hash'li isimler için güncelle ────────────────────
-function injectSW(outputFiles) {
-  const swSrc = path.join(SRC, 'sw.js');
-  if (!exists(swSrc)) return;
-
-  const assets = ['/', '/css/style.css'];
-
-  // dist/js/ içindeki tüm .js dosyaları SW listesine girer
-  for (const f of outputFiles) {
-    const rel = '/' + path.relative(DIST, f).replace(/\\/g, '/');
-    assets.push(rel);
-  }
-
-  // Cache version: tüm dosyaların içerik hash'i
-  const hash = crypto.createHash('sha1');
-  for (const a of assets) {
-    const fp = path.join(DIST, a.replace(/^\//, ''));
-    if (exists(fp)) hash.update(fs.readFileSync(fp));
-  }
-  const version = 'bridge-' + hash.digest('hex').slice(0, 8);
-
-  let sw = fs.readFileSync(swSrc, 'utf8');
-  sw = sw.replace(/const CACHE_VERSION = '[^']*';/, `const CACHE_VERSION = '${version}';`);
-  sw = sw.replace(
-    /const STATIC_ASSETS = \[[\s\S]*?\];/,
-    `const STATIC_ASSETS = ${JSON.stringify([...new Set(assets)].sort(), null, 2)};`
-  );
-
-  fs.writeFileSync(path.join(DIST, 'sw.js'), sw);
-  console.log(`✅ sw.js → cache version: ${version} (${assets.length} asset)`);
-}
-
-// ── Statik kopyalar ───────────────────────────────────────────
-function copyStatic() {
-  const statics = ['manifest.json', 'teams.html'];
-  for (const f of statics) {
-    const p = path.join(SRC, f);
-    if (exists(p)) fs.copyFileSync(p, path.join(DIST, f));
-  }
-  console.log('✅ Statik dosyalar kopyalandı');
-}
-
-// ── Boyut raporu ──────────────────────────────────────────────
-function sizeReport(outputFiles) {
-  const kb    = n => (n / 1024).toFixed(1) + ' KB';
-  let   total = 0;
-  console.log('\n📦 Output dosyaları (JS):');
-  for (const f of outputFiles.sort()) {
-    if (!f.endsWith('.js')) continue;
-    const size = fs.statSync(f).size;
-    total += size;
-    const name = path.relative(DIST, f);
-    const bar  = '█'.repeat(Math.max(1, Math.round(size / 8192)));
-    console.log(`   ${name.padEnd(40)}  ${kb(size).padStart(10)}  ${bar}`);
-  }
-  const cssPath = path.join(DIST, 'css/style.css');
-  const cssSize = exists(cssPath) ? fs.statSync(cssPath).size : 0;
-  console.log(`   ${'css/style.css'.padEnd(40)}  ${kb(cssSize).padStart(10)}`);
-  console.log(`   ${'─'.repeat(54)}`);
-  console.log(`   ${'TOPLAM'.padEnd(40)}  ${kb(total + cssSize).padStart(10)}\n`);
-}
-
-// ── Watch modu ────────────────────────────────────────────────
-async function startWatch() {
-  console.log('\n👀 Watch modu — değişiklikler izleniyor...\n');
-  const chokidar = (() => { try { return require('chokidar'); } catch { return null; } })();
-  if (!chokidar) {
-    console.log('  (npm i -D chokidar ile watch modu aktifleşir)');
-    return;
-  }
-
-  let timer = null;
-  const flush = async () => {
-    try {
-      const t = Date.now();
-      process.stdout.write('♻️  Rebuild... ');
-      const result = await buildJS();
-      const outFiles = Object.keys(result.metafile.outputs).map(f => path.join(__dirname, '..', f));
-      injectSW(outFiles);
-      patchHTML(outFiles);
-      console.log(`✅ ${Date.now() - t}ms`);
-    } catch (e) { console.error('❌', e.message); }
-  };
-
-  chokidar
-    .watch([JS_SRC, CSS_SRC], { ignoreInitial: true })
-    .on('change', file => {
-      if (file.endsWith('.css')) { buildCSS().catch(e => console.error(e.message)); return; }
-      clearTimeout(timer);
-      timer = setTimeout(flush, 60);
-    });
-}
-
-// ── Ana build ─────────────────────────────────────────────────
+// ── Ana akış ─────────────────────────────────────────────────────────────────
 async function main() {
-  const mode = PROD ? 'production' : (WATCH ? 'watch' : 'development');
-  console.log(`\n🔨 Bridge build [${mode}] — ESM splitting${ANALYZE ? ' + analiz' : ''}...\n`);
-  const t = Date.now();
+  console.log(`🔨 Bridge Build — ${PROD ? 'PRODUCTION' : 'DEVELOPMENT'}`);
+  console.log(`   Entry'ler: ${ENTRY_POINTS.length} dosya`);
 
-  try {
-    const [jsResult] = await Promise.all([buildJS(), buildCSS()]);
+  const [jsResult] = await Promise.all([buildJS(), buildCSS()]);
 
-    const outFiles = Object.keys(jsResult.metafile.outputs)
-      .map(f => path.resolve(path.join(__dirname, '..', f)));
-
-    for (const f of outFiles.filter(f => f.endsWith('.js'))) {
-      const kb = (fs.statSync(f).size / 1024).toFixed(1);
-      console.log(`   ✅ ${path.relative(DIST, f)} — ${kb} KB`);
-    }
-
-    copyStatic();
-    injectSW(outFiles);
-    patchHTML(outFiles);
-
-    if (!WATCH) {
-      sizeReport(outFiles);
-      console.log(`⚡ Build tamamlandı — ${Date.now() - t}ms\n`);
-    } else {
-      await startWatch();
-    }
-
+  if (jsResult?.metafile) {
     if (ANALYZE) {
       fs.writeFileSync(
         path.join(DIST, 'meta.json'),
-        JSON.stringify(jsResult.metafile)
+        JSON.stringify(jsResult.metafile, null, 2),
       );
-      console.log('📊 meta.json kaydedildi (esbuild-bundle-analyzer ile görüntüle)');
+      console.log('📊 meta.json oluşturuldu — esbuild.github.io/bundle-size-analyzer ile analiz edilebilir.');
     }
-  } catch (e) {
-    console.error('\n❌ Build başarısız:', e.message);
-    process.exit(1);
+    patchHTML(jsResult.metafile?.outputs);
+
+    // ── asset-manifest.json: Service Worker'ın hash'li dosya isimlerini bulması için ──
+    // SW bu dosyayı install aşamasında fetch eder; STATIC_ASSETS listesini dinamik olarak oluşturur.
+    const manifestEntries = Object.keys(jsResult.metafile.outputs)
+      .filter(f => f.endsWith('.js'))
+      .map(f => '/' + path.relative(path.join(__dirname, '../client'), f).replace(/\\/g, '/'));
+    const assetManifest = {
+      version:  Date.now(),
+      assets:   ['/', '/css/style.css', '/css/tokens.css', ...manifestEntries],
+    };
+    fs.writeFileSync(
+      path.join(DIST, 'asset-manifest.json'),
+      JSON.stringify(assetManifest, null, 2),
+    );
+    console.log(`📋 asset-manifest.json yazıldı (${manifestEntries.length} JS dosyası)`);
+  }
+
+  const outputs = jsResult?.metafile?.outputs ?? {};
+  const totalSize = Object.values(outputs)
+    .filter(o => o.bytes)
+    .reduce((sum, o) => sum + o.bytes, 0);
+  console.log(`✅ JS (${(totalSize / 1024).toFixed(1)} KB total, ${PROD ? 'minified' : 'dev'})`);
+
+  // --analyze: terminalde top-10 chunk özeti
+  if (ANALYZE) {
+    const sorted = Object.entries(outputs)
+      .filter(([f, o]) => f.endsWith('.js') && o.bytes)
+      .sort(([, a], [, b]) => b.bytes - a.bytes)
+      .slice(0, 10);
+    console.log('\n📊 Top chunks:');
+    for (const [file, meta] of sorted) {
+      const kb   = (meta.bytes / 1024).toFixed(1).padStart(8);
+      const name = path.basename(file).slice(0, 40).padEnd(42);
+      const inputs = Object.keys(meta.inputs || {}).length;
+      console.log(`  ${kb} KB  ${name} (${inputs} modules)`);
+    }
+    console.log('');
   }
 }
 
-main();
+main().catch(err => {
+  console.error('❌ Build hatası:', err.message);
+  process.exit(1);
+});

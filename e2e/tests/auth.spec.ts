@@ -2,7 +2,7 @@
 // e2e/tests/auth.spec.js — Giriş / Kayıt / Çıkış E2E Testleri
 // Kritik akış: kullanıcı sisteme girebilmeli
 
-import { test, expect, request: pwRequest } from '@playwright/test';
+import { test, expect, request as pwRequest } from '@playwright/test';
 import { BridgePage, getTokens } from '../helpers/bridge';
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';

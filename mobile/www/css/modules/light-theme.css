@@ -1,0 +1,10 @@
+/* ── Bridge · light-theme.css ───────────────────────────────── */
+
+/* ── LIGHT THEME ───────────────────────────────────────────── */
+/* Eski tema class'ı — geriye uyumluluk için data-theme'e yönlendir */
+body.theme-light { /* tokens.css'teki [data-theme="light"] kullanılıyor */ }
+
+/* ═══════════════════════════════════════
+
+═══════════════════════════════════════ */
+

@@ -1,9 +1,12 @@
-// client/js/profile.js
+// client/js/profile.ts
 // Full profile modal: avatar, bio, website, pronouns, banner, mutual servers, online status
+
+import { BridgeRegistry } from './core/bridge-registry.ts';
 
 (function () {
 
-  window.openProfileModal = async function (userId) {
+  const _openProfileModal = async function (userId: string) {
+BridgeRegistry.register('openProfileModal', _openProfileModal);
     document.getElementById('profile-modal')?.remove();
 
     const modal = document.createElement('div');
@@ -13,14 +16,14 @@
     modal.innerHTML = `
       <div class="profile-card" id="profile-card">
         <div class="profile-banner" id="profile-banner"></div>
-        <button class="profile-close" onclick="document.getElementById('profile-modal').remove()">âœ•</button>
+        <button class="profile-close" onclick="document.getElementById('profile-modal').remove()">✕</button>
         <div class="profile-body">
           <div class="profile-avatar-wrap">
             <div class="profile-avatar" id="profile-avatar"></div>
             <div class="profile-status-dot" id="profile-status-dot"></div>
           </div>
           <div class="profile-info">
-            <div class="profile-displayname" id="profile-displayname">â€¦</div>
+            <div class="profile-displayname" id="profile-displayname">…</div>
             <div class="profile-username"   id="profile-username"></div>
             <div class="profile-pronouns"   id="profile-pronouns"></div>
           </div>
@@ -31,7 +34,7 @@
             <div class="profile-section-value" id="profile-bio"></div>
           </div>
           <div class="profile-section" id="profile-website-section" style="display:none">
-            <div class="profile-section-label">WEBSÄ°TE</div>
+            <div class="profile-section-label">WEBSİTE</div>
             <div class="profile-section-value" id="profile-website"></div>
           </div>
           <div class="profile-section" id="profile-mutual-section" style="display:none">
@@ -40,7 +43,7 @@
           </div>
           <div class="profile-actions" id="profile-actions"></div>
         </div>
-        <div class="profile-loading" id="profile-loading">YÃ¼kleniyor...</div>
+        <div class="profile-loading" id="profile-loading">Yükleniyor...</div>
       </div>`;
 
     document.body.appendChild(modal);
@@ -54,7 +57,7 @@
     try {
       // Fetch user data
       const r = await apiFetch(`${API}/api/users/${userId}`);
-      if (!r.ok) throw new Error('KullanÄ±cÄ± bulunamadÄ±');
+      if (!r.ok) throw new Error('Kullanıcı bulunamadı');
       const user = await r.json();
 
       loading?.remove();
@@ -86,14 +89,18 @@
       // Status dot
       const dot = document.getElementById('profile-status-dot');
       dot.className = `profile-status-dot status-${user.status || 'offline'}`;
-      dot.title = { online: 'Ã‡evrimiÃ§i', idle: 'Uzakta', dnd: 'RahatsÄ±z Etme', offline: 'Ã‡evrimdÄ±ÅŸÄ±' }[user.status] || 'Bilinmiyor';
+      dot.title = { online: 'Çevrimiçi', idle: 'Uzakta', dnd: 'Rahatsız Etme', offline: 'Çevrimdışı' }[user.status] || 'Bilinmiyor';
 
       // Info
-      document.getElementById('profile-displayname').textContent = user.displayName;
-      document.getElementById('profile-username').textContent    = '@' + user.username;
+      const displayNameEl = document.getElementById('profile-displayname');
+      if (displayNameEl) displayNameEl.textContent = user.displayName;
+      
+      const usernameEl = document.getElementById('profile-username');
+      if (usernameEl) usernameEl.textContent = '@' + user.username;
 
       if (user.pronouns) {
-        document.getElementById('profile-pronouns').textContent = user.pronouns;
+        const pronounsEl = document.getElementById('profile-pronouns');
+        if (pronounsEl) pronounsEl.textContent = user.pronouns;
       }
 
       // Custom status text
@@ -107,28 +114,33 @@
 
       // Bio
       if (user.bio) {
-        document.getElementById('profile-bio-section').style.display = '';
-        document.getElementById('profile-bio').textContent = user.bio;
+        const bioSectionEl = document.getElementById('profile-bio-section');
+        if (bioSectionEl) bioSectionEl.style.display = '';
+        
+        const bioEl = document.getElementById('profile-bio');
+        if (bioEl) bioEl.textContent = user.bio;
       }
 
       // Website
       if (user.website) {
-        document.getElementById('profile-website-section').style.display = '';
+        const websiteSectionEl = document.getElementById('profile-website-section');
+        if (websiteSectionEl) websiteSectionEl.style.display = '';
         const link = document.createElement('a');
         link.href = user.website.startsWith('http') ? user.website : 'https://' + user.website;
         link.textContent = user.website.replace(/^https?:\/\//, '');
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
         link.className = 'profile-link';
-        document.getElementById('profile-website').appendChild(link);
+        const websiteEl = document.getElementById('profile-website');
+        if (websiteEl) websiteEl.appendChild(link);
       }
 
-      // Actions (DM, friend request â€” only for other users)
+      // Actions (DM, friend request — only for other users)
       const actions = document.getElementById('profile-actions');
-      if (userId !== window.me?.id) {
+      if (userId !== (BridgeRegistry.get('getCurrentUser') as (() => { id?: string } | null) | null)?.()?.id) {
         const dmBtn = document.createElement('button');
         dmBtn.className = 'btn btn-primary';
-        dmBtn.textContent = 'ğŸ’¬ Mesaj GÃ¶nder';
+        dmBtn.textContent = 'ğŸ’¬ Mesaj Gönder';
         dmBtn.onclick = () => {
           document.getElementById('profile-modal')?.remove();
           if (typeof openDm === 'function') openDm(userId, user.displayName, user.avatarColor);
@@ -137,7 +149,7 @@
 
         const addBtn = document.createElement('button');
         addBtn.className = 'btn';
-        addBtn.textContent = 'ğŸ‘¤+ ArkadaÅŸ Ekle';
+        addBtn.textContent = 'ğŸ‘¤+ Arkadaş Ekle';
         addBtn.onclick = async () => {
           const r2 = await apiFetch(`${API}/api/friends/request`, {
             method: 'POST',
@@ -145,19 +157,19 @@
             body: JSON.stringify({ username: user.username }),
           });
           const d = await r2.json();
-          toast(r2.ok ? 'âœ… ArkadaÅŸlÄ±k isteÄŸi gÃ¶nderildi' : (d.error || 'Hata'), r2.ok ? 'success' : 'error');
+          toast(r2.ok ? '✅ Arkadaşlık isteği gönderildi' : (d.error || 'Hata'), r2.ok ? 'success' : 'error');
           addBtn.disabled = true;
-          addBtn.textContent = 'âœ… Ä°stek GÃ¶nderildi';
+          addBtn.textContent = '✅ İstek Gönderildi';
         };
         actions.appendChild(addBtn);
       } else {
-        // Own profile â€” edit button
+        // Own profile — edit button
         const editBtn = document.createElement('button');
         editBtn.className = 'btn btn-primary';
-        editBtn.textContent = 'âœï¸ Profili DÃ¼zenle';
+        editBtn.textContent = 'âœï¸ Profili Düzenle';
         editBtn.onclick = () => {
           document.getElementById('profile-modal')?.remove();
-          if (typeof openSettingsModal === 'function') openSettingsModal();
+          BridgeRegistry.call('openSettingsModal');
         };
         actions.appendChild(editBtn);
       }
@@ -166,12 +178,12 @@
       await loadMutualServers(userId);
 
     } catch (e) {
-      if (loading) loading.textContent = e.message || 'Profil yÃ¼klenemedi';
+      if (loading) loading.textContent = e.message || 'Profil yüklenemedi';
     }
   }
 
   async function loadMutualServers(userId) {
-    if (!window.currentServer) return;
+    if (!BridgeRegistry.call('getCurrentServer')) return;
     try {
       const r = await apiFetch(`${API}/api/users/${userId}/mutual-servers`);
       if (!r.ok) return;
@@ -186,7 +198,7 @@
       servers.slice(0, 5).forEach(s => {
         const chip = document.createElement('div');
         chip.className = 'mutual-server-chip';
-        chip.innerHTML = `<span class="mutual-icon">${escHtml(s.icon || 'ğŸŒ')}</span><span>${escHtml(s.name)}</span>`;
+        chip.innerHTML = `<span class="mutual-icon">${escHtml(s.icon || '🌐')}</span><span>${escHtml(s.name)}</span>`;
         val.appendChild(chip);
       });
       if (servers.length > 5) {

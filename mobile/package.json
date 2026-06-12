@@ -1,6 +1,6 @@
 {
   "name": "bridge-mobile",
-  "version": "45.0.0",
+  "version": "1.122.0",
   "description": "Bridge Chat — iOS & Android (Capacitor)",
   "main": "index.js",
   "scripts": {
@@ -10,25 +10,28 @@
     "android": "npx cap open android",
     "run:ios": "npx cap run ios",
     "run:android": "npx cap run android",
-    "setup": "node scripts/setup.js"
+    "setup": "node scripts/setup.js",
+    "mobile:build": "node scripts/setup.js",
+    "test": "npx jest --config ../jest.mobile.config.js --passWithNoTests",
+    "test:coverage": "npx jest --config ../jest.mobile.config.js --coverage --passWithNoTests"
   },
   "dependencies": {
-    "@capacitor/core": "^6.0.0",
-    "@capacitor/cli": "^6.0.0",
-    "@capacitor/ios": "^6.0.0",
-    "@capacitor/android": "^6.0.0",
-    "@capacitor/push-notifications": "^6.0.0",
-    "@capacitor/local-notifications": "^6.0.0",
-    "@capacitor/status-bar": "^6.0.0",
-    "@capacitor/splash-screen": "^6.0.0",
-    "@capacitor/keyboard": "^6.0.0",
-    "@capacitor/haptics": "^6.0.0",
-    "@capacitor/network": "^6.0.0",
-    "@capacitor/app": "^6.0.0",
-    "@capacitor/browser": "^6.0.0",
-    "@aparajita/capacitor-biometric-auth": "^7.0.0",
-    "@capacitor/camera": "^6.0.0",
-    "@capacitor/share": "^6.0.0",
-    "@capawesome/capacitor-badge": "^6.0.0"
+    "@capacitor/core": "^8.4.0",
+    "@capacitor/cli": "^8.4.0",
+    "@capacitor/ios": "^8.4.0",
+    "@capacitor/android": "^8.4.0",
+    "@capacitor/push-notifications": "^8.1.1",
+    "@capacitor/local-notifications": "^8.2.0",
+    "@capacitor/status-bar": "^8.0.2",
+    "@capacitor/splash-screen": "^8.0.1",
+    "@capacitor/keyboard": "^8.0.3",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/network": "^8.0.1",
+    "@capacitor/app": "^8.1.0",
+    "@capacitor/browser": "^8.0.3",
+    "@aparajita/capacitor-biometric-auth": "^10.0.0",
+    "@capacitor/camera": "^8.2.0",
+    "@capacitor/share": "^8.0.1",
+    "@capawesome/capacitor-badge": "^8.0.2"
   }
 }

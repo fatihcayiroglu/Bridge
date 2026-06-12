@@ -1,19 +1,41 @@
-// @ts-nocheck
-// server/routes/federation/helpers.js
+// server/routes/federation/helpers.ts
 // ActivityPub etkinlik işleyicileri + HTTP Signature + deliverToFollowers
 // Bu modül aktif route içermez; diğer federation modülleri tarafından import edilir.
 
-'use strict';
+import { v4 as uuidv4 } from 'uuid';
+import { createSign, createHash } from 'crypto';
+import { Users } from '../../db/repositories';
+import { Federation } from '../../db/repositories';
+import { fetchT } from '../../lib/fetch';
 
-const { Federation } = require('../../db/repositories');
-const logger         = require('../../lib/logger');
+// ── ActivityPub Payload Tipleri ─────────────────────────────────
+interface ApActor { _id: string; username: string; apPublicKey?: string | null; apPrivateKey?: string | null; }
+interface ApObject extends Record<string, unknown> {
+  id?: string;
+  type?: string;
+  object?: string | ApObject;
+  content?: string;
+  name?: string;
+  summary?: string | null;
+  sensitive?: boolean;
+  inReplyTo?: string | null;
+  published?: string | number;
+  attachment?: Array<Record<string, string>>;
+  tag?: Array<Record<string, string>>;
+  to?: string | string[];
+  cc?: string | string[];
+}
+interface ApActivity { id: string; type: string; actor: string | { id: string }; object?: string | ApObject; }
+function isApObject(value: unknown): value is ApObject {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+import logger from '../../lib/logger';
 
 const AP_CONTEXT = 'https://www.w3.org/ns/activitystreams';
 
 // ── handleApFollow ─────────────────────────────────────────────
-async function handleApFollow(targetUser, activity) {
+async function handleApFollow(targetUser: ApActor, activity: ApActivity): Promise<void> {
   try {
-    const { v4: uuidv4 } = require('uuid');
     await Federation.insertApFollow({
       _id:          uuidv4(),
       actorUrl:     activity.actor,
@@ -30,20 +52,21 @@ async function handleApFollow(targetUser, activity) {
       actor:  `${instanceUrl}/api/federation/users/${targetUser.username}`,
       object: activity,
     };
-    await deliverApActivity(activity.actor, accept, targetUser);
+    const actorInbox = typeof activity.actor === 'string' ? activity.actor : activity.actor?.id;
+    if (actorInbox) await deliverApActivity(actorInbox, accept, targetUser);
   } catch (err) {
     logger.warn({ err, event: 'federation.follow.handle_failed' }, 'Failed to process Follow activity.');
   }
 }
 
 // ── handleApUnfollow ───────────────────────────────────────────
-async function handleApUnfollow(targetUser, activity) {
+async function handleApUnfollow(targetUser: ApActor, activity: ApActivity): Promise<void> {
   const actorUrl = typeof activity.actor === 'string' ? activity.actor : activity.actor?.id;
   await Federation.removeApFollow({ actorUrl, targetUserId: targetUser._id }, {});
 }
 
 // ── handleApAccept ─────────────────────────────────────────────
-async function handleApAccept(localUser, activity) {
+async function handleApAccept(localUser: ApActor, activity: ApActivity): Promise<void> {
   try {
     const remoteActorUrl = typeof activity.actor === 'string' ? activity.actor : activity.actor?.id;
     await Federation.updateApFollow(
@@ -57,7 +80,7 @@ async function handleApAccept(localUser, activity) {
 }
 
 // ── handleApReject ─────────────────────────────────────────────
-async function handleApReject(localUser, activity) {
+async function handleApReject(localUser: ApActor, activity: ApActivity): Promise<void> {
   try {
     const remoteActorUrl = typeof activity.actor === 'string' ? activity.actor : activity.actor?.id;
     await Federation.removeApFollow(
@@ -71,7 +94,7 @@ async function handleApReject(localUser, activity) {
 }
 
 // ── handleApDelete ─────────────────────────────────────────────
-async function handleApDelete(targetUser, activity) {
+async function handleApDelete(targetUser: ApActor, activity: ApActivity): Promise<void> {
   try {
     const objectId = typeof activity.object === 'string'
       ? activity.object
@@ -87,12 +110,11 @@ async function handleApDelete(targetUser, activity) {
 }
 
 // ── handleApCreate ─────────────────────────────────────────────
-async function handleApCreate(targetUser, activity) {
+async function handleApCreate(targetUser: ApActor, activity: ApActivity): Promise<void> {
   try {
     const obj = activity.object;
-    if (!obj || obj.type !== 'Note') return;
+    if (!isApObject(obj) || obj.type !== 'Note') return;
 
-    const { v4: uuidv4 } = require('uuid');
     const fedMsg = {
       _id:          uuidv4(),
       apId:         obj.id,
@@ -114,9 +136,8 @@ async function handleApCreate(targetUser, activity) {
 }
 
 // ── signRequest — Per-User HTTP Signature ─────────────────────
-async function signRequest(method, url, body, privateKeyPem, actorUsername) {
+async function signRequest(method: string, url: string, body: unknown, privateKeyPem: string, actorUsername: string): Promise<{ date: string; digest: string; signature: string } | null> {
   try {
-    const { createSign, createHash } = require('crypto');
     const parsed      = new URL(url);
     const date        = new Date().toUTCString();
     const bodyStr     = typeof body === 'string' ? body : JSON.stringify(body);
@@ -147,21 +168,22 @@ async function signRequest(method, url, body, privateKeyPem, actorUsername) {
 }
 
 // ── deliverApActivity ──────────────────────────────────────────
-async function deliverApActivity(inboxUrl, activity, fromUser) {
+async function deliverApActivity(inboxUrl: string, activity: Record<string, unknown>, fromUser: ApActor | null): Promise<void> {
   let targetInbox = inboxUrl;
   if (!inboxUrl.endsWith('/inbox')) {
     try {
-      const r = await fetch(inboxUrl, { headers: { 'Accept': 'application/activity+json' } });
+      const r = await fetchT(inboxUrl, { headers: { 'Accept': 'application/activity+json' }, timeoutMs: 8000 });
       const actor = await r.json();
       targetInbox = actor.inbox;
     } catch { return; }
   }
 
   const body   = JSON.stringify(activity);
-  const privateKey = fromUser?.apPrivateKey;
-  const sigHeaders = privateKey ? await signRequest('POST', targetInbox, body, privateKey, fromUser?.username) : null;
+  // SECURITY: özel anahtar user_ap_keys tablosundan ayrı sorguyla alınır
+  const privateKey = fromUser ? await Users.getApPrivateKey(fromUser._id) : null;
+  const sigHeaders = privateKey && fromUser ? await signRequest('POST', targetInbox, body, privateKey, fromUser.username) : null;
 
-  const headers = {
+  const headers: Record<string, string> = {
     'Content-Type': 'application/activity+json',
     'Accept':       'application/activity+json',
     'Date':         sigHeaders?.date || new Date().toUTCString(),
@@ -172,7 +194,7 @@ async function deliverApActivity(inboxUrl, activity, fromUser) {
   }
 
   try {
-    const resp = await fetch(targetInbox, { method: 'POST', headers, body });
+    const resp = await fetchT(targetInbox, { method: 'POST', headers, body, timeoutMs: 10_000 });
     if (!resp.ok) {
       logger.warn({ status: resp.status, targetInbox, event: 'federation.delivery.non_2xx' }, 'Federated delivery received non-2xx response.');
     }
@@ -182,9 +204,8 @@ async function deliverApActivity(inboxUrl, activity, fromUser) {
 }
 
 // ── deliverToFollowers — mesaj gönderiminde follower'lara ilet ─
-async function deliverToFollowers(fromUser, noteContent, noteId) {
+async function deliverToFollowers(fromUser: ApActor, noteContent: string, noteId?: string | null): Promise<void> {
   try {
-    const { v4: uuidv4 } = require('uuid');
     const instanceUrl = process.env.INSTANCE_URL || `http://localhost:${process.env.PORT || 3001}`;
     const actorUrl    = `${instanceUrl}/api/federation/users/${fromUser.username}`;
     const publishedAt = Date.now();
@@ -229,15 +250,14 @@ async function deliverToFollowers(fromUser, noteContent, noteId) {
     if (!followArr.length) return;
 
     await Promise.allSettled(
-      followArr.map(f => deliverApActivity(f.actorUrl, createActivity, fromUser))
+      followArr.map(f => typeof f.actorUrl === 'string' ? deliverApActivity(f.actorUrl, createActivity, fromUser) : Promise.resolve())
     );
   } catch (err) {
     logger.warn({ err, event: 'federation.outbox.deliver_failed' }, 'Failed to deliver outbox activity.');
   }
 }
 
-module.exports = {
-  handleApFollow,
+export { handleApFollow,
   handleApUnfollow,
   handleApAccept,
   handleApReject,
@@ -245,6 +265,4 @@ module.exports = {
   handleApDelete,
   signRequest,
   deliverApActivity,
-  deliverToFollowers,
-};
-export {};
+  deliverToFollowers, };

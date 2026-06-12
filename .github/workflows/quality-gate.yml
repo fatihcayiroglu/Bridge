@@ -1,0 +1,259 @@
+name: Bridge Quality Gate
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: quality-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    env:
+      NODE_VERSION: '22'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            electron/package-lock.json
+            e2e/package-lock.json
+      - name: Install root dependencies
+        run: npm ci
+      - name: Audit root/workspaces
+        run: npm audit --audit-level=high
+      - name: Install and audit server
+        run: cd server && npm ci && npm audit --audit-level=high
+      - name: Install and audit Electron
+        run: cd electron && npm ci && npm audit --audit-level=high
+      - name: Install and audit E2E harness
+        run: cd e2e && npm ci && npm audit --audit-level=high
+
+  typecheck-build:
+    name: Typecheck & build
+    runs-on: ubuntu-latest
+    needs: [audit]
+    env:
+      NODE_VERSION: '22'
+      JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
+      REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            electron/package-lock.json
+            e2e/package-lock.json
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd server && npm ci
+          cd ../electron && npm ci
+          cd ../e2e && npm ci
+      - name: TypeScript all packages
+        run: npm run typecheck
+      - name: Strict client gates
+        run: |
+          npm run typecheck:strict-client
+          npm run typecheck:client-bridge5
+      - name: Svelte check
+        run: npm run typecheck:svelte
+      - name: E2E TypeScript check
+        run: cd e2e && npm run typecheck
+      - name: Client production build + budget
+        run: npm run build:ci
+      - name: Server build
+        run: cd server && npm run build
+      - name: Electron compile
+        run: cd electron && npm run compile
+      - name: Mobile web asset build
+        run: npm run mobile:build:ci
+      - name: Production preflight
+        run: ./scripts/production-preflight.sh
+        env:
+          POSTGRES_PASSWORD: ci-postgres-password-32chars
+          JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
+          REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
+          FEDERATION_SECRET: ci_federation_secret_minimum_32_chars
+          AP_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          METRICS_SECRET: ci_metrics_secret_minimum_16_chars
+          MINIO_ACCESS_KEY: minioadmin
+          MINIO_SECRET_KEY: minioadmin123
+
+  tests:
+    name: Unit and integration tests
+    runs-on: ubuntu-latest
+    needs: [typecheck-build]
+    env:
+      NODE_VERSION: '22'
+      DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
+      REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
+      NODE_ENV: test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: bridge_test
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: test_password
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            electron/package-lock.json
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd server && npm ci
+          cd ../electron && npm ci
+      - name: Run server tests
+        run: cd server && npm test -- --runInBand --forceExit
+      - name: Run Electron tests
+        run: cd electron && npm test -- --runInBand --forceExit
+      - name: Run mobile bridge tests
+        run: npx jest --config jest.mobile.config.js --passWithNoTests --runInBand --forceExit
+      - name: Upload coverage/log artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-gate-artifacts
+          path: |
+            server/coverage/
+            electron/coverage/
+          retention-days: 14
+
+  docker:
+    name: Docker build smoke
+    runs-on: ubuntu-latest
+    needs: [tests]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose config
+        env:
+          POSTGRES_PASSWORD: ci-postgres-password-32chars
+          JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
+          REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
+          FEDERATION_SECRET: ci_federation_secret_minimum_32_chars
+          AP_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          METRICS_SECRET: ci_metrics_secret_minimum_16_chars
+          MINIO_ACCESS_KEY: minioadmin
+          MINIO_SECRET_KEY: minioadmin123
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml config
+      - name: Docker build
+        run: docker build --pull=false -t bridge:ci .
+
+  e2e-smoke:
+    name: Playwright smoke
+    runs-on: ubuntu-latest
+    needs: [tests]
+    env:
+      NODE_VERSION: '22'
+      BASE_URL: http://localhost:3001
+      DATABASE_URL: postgresql://bridge:e2e_password@localhost:5432/bridge_e2e
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: e2e_jwt_secret_minimum_32_chars_required_here
+      REFRESH_SECRET: e2e_refresh_secret_minimum_32_chars_here
+      NODE_ENV: test
+      PORT: 3001
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: bridge_e2e
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: e2e_password
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            e2e/package-lock.json
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd server && npm ci
+          cd ../e2e && npm ci
+          npx playwright install --with-deps chromium
+      - name: Build server and client
+        run: |
+          npm run build
+          cd server && npm run build
+      - name: Start Bridge
+        run: |
+          cd server
+          node dist/index.js > ../bridge-e2e.log 2>&1 &
+          for i in {1..30}; do
+            curl -fsS http://localhost:3001/api/health/ready && exit 0
+            sleep 2
+          done
+          cat ../bridge-e2e.log
+          exit 1
+      - name: Run smoke tests
+        run: cd e2e && npx playwright test tests/smoke-health.spec.ts --project=api-smoke --reporter=list
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-smoke-report
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+            bridge-e2e.log
+          retention-days: 7

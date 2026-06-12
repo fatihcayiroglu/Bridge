@@ -1,0 +1,43 @@
+# k8s/servicemonitor.yaml
+# Sprint 85 fix: Prometheus Operator ServiceMonitor
+#
+# Bu manifest Prometheus Operator (kube-prometheus-stack) kurulu olduğu varsayımıyla
+# çalışır. Operator yoksa monitoring/prometheus.yml içindeki kubernetes_sd_configs
+# yaklaşımını kullan (DEPLOYMENT_GUIDE.md §Monitoring).
+#
+# Ön koşul — Prometheus Operator varlığını kontrol et:
+#   kubectl get crd servicemonitors.monitoring.coreos.com
+#
+# Uygula:
+#   kubectl apply -f k8s/servicemonitor.yaml
+#
+# ─────────────────────────────────────────────────────────────
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: bridge
+  namespace: bridge
+  labels:
+    app: bridge
+    # Prometheus Operator'ün hangi ServiceMonitor'leri izleyeceğini
+    # belirleyen label — kube-prometheus-stack varsayılan değeri:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: bridge
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      # METRICS_SECRET ile korunan endpoint — bearer token
+      bearerTokenSecret:
+        name: bridge-secrets
+        key: METRICS_SECRET
+      # TLS doğrulaması (cluster-internal, gerekirse devre dışı bırak)
+      # tlsConfig:
+      #   insecureSkipVerify: true
+  namespaceSelector:
+    matchNames:
+      - bridge

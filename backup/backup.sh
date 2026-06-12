@@ -18,7 +18,7 @@ PGPASSWORD="$POSTGRES_PASSWORD" pg_dump \
 echo "[$(date)] DB dump: $DUMP_FILE"
 
 # Uploads rsync
-rsync -a --delete /app/uploads/ "$UPLOADS_BACKUP/"
+rsync -a --delete /app/server/uploads/ "$UPLOADS_BACKUP/"
 echo "[$(date)] Uploads rsync tamamlandı"
 
 # Eski dump'ları temizle

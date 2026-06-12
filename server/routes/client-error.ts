@@ -1,21 +1,76 @@
-// server/routes/client-error.js
+/**
+ * @openapi
+ * tags:
+ *   - name: ClientError
+ *     description: ClientError API endpoints
+
+ *
+ * /client-error:
+ *   post:
+ *     tags: [Health]
+ *     summary: Client-side hata raporla
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               message: { type: string }
+ *               stack:   { type: string }
+ *               url:     { type: string }
+ *     responses:
+ *       200:
+ *         description: Hata kaydedildi
+ *
+ * /client-error/recent:
+ *   get:
+ *     tags: [Health]
+ *     summary: Son client hatalarini listele (admin)
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Hata listesi
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+
+// server/routes/client-error.ts
 // Client-side hata raporlarını alır, loglar ve istatistik tutar.
 // Kimliği doğrulanmış veya anonim olabilir.
 
-'use strict';
 
-const express = require('express');
+import express from 'express';
 const router  = express.Router();
-const { rateLimit } = require('../middleware/rateLimit');
-const { authMiddleware, castAuthed } = require('../middleware/auth');
-const { cache } = require('../lib/redisAdapter');
-const logger = require('../lib/logger');
+import { rateLimit } from '../middleware/rateLimit';
+import { authMiddleware, castAuthed } from '../middleware/auth';
+import { cache } from '../lib/redisAdapter';
+import logger from '../lib/logger';
 
 // Hata raporları için hafıza içi istatistik (prod'da external log sistemine gönder)
-const _errorStats = {
+interface ClientErrorStats {
+  total: number;
+  byType: Record<string, number>;
+  recent: Record<string, unknown>[];
+}
+
+interface ClientErrorReportBody extends Record<string, unknown> {
+  message: string;
+  type?: string;
+  stack?: string;
+  url?: string;
+  source?: string;
+  line?: number | string;
+  col?: number | string;
+  userAgent?: string;
+  lang?: string;
+  timestamp?: number | string;
+}
+
+const _errorStats: ClientErrorStats = {
   total:   0,
   byType:  {},
-  recent:  [] as any[],
+  recent:  [],
 };
 const MAX_RECENT = 100;
 const REDIS_STATS_KEY = 'client_error_stats_v1';
@@ -25,7 +80,7 @@ async function persistStats() {
 }
 
 async function loadStats() {
-  const fromRedis = await cache.get(REDIS_STATS_KEY);
+  const fromRedis = await cache.get<ClientErrorStats>(REDIS_STATS_KEY);
   if (fromRedis && typeof fromRedis === 'object') {
     _errorStats.total = Number(fromRedis.total || 0);
     _errorStats.byType = fromRedis.byType || {};
@@ -36,12 +91,13 @@ async function loadStats() {
 loadStats().catch(() => {});
 
 // Basit doğrulama
-function isValidReport(body) {
+function isValidReport(body: unknown): body is ClientErrorReportBody {
   if (!body || typeof body !== 'object') return false;
-  if (typeof body.message !== 'string') return false;
-  if (body.message.length > 2000) return false;
+  const report = body as Record<string, unknown>;
+  if (typeof report.message !== 'string') return false;
+  if (report.message.length > 2000) return false;
   const validTypes = ['uncaught', 'unhandledrejection', 'resource', 'manual', 'crash'];
-  if (body.type && !validTypes.includes(body.type)) return false;
+  if (typeof report.type === 'string' && !validTypes.includes(report.type)) return false;
   return true;
 }
 
@@ -99,5 +155,8 @@ router.get('/stats', authMiddleware, (req, res) => {
   });
 });
 
+export default router;
+
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-export {};
+module.exports.default = router;

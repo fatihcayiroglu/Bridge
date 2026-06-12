@@ -1,0 +1,1 @@
+var e=null;document.addEventListener("bridge:admin-search",n=>{let i=n;e&&clearTimeout(e),e=setTimeout(()=>{let t=document.getElementById("admin-content"),o=globalThis;t&&typeof o.loadAdminUsers=="function"&&o.loadAdminUsers(t,i.detail.q,1)},280)});

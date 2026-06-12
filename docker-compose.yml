@@ -15,7 +15,10 @@ services:
     environment:
       POSTGRES_DB:       bridge
       POSTGRES_USER:     bridge
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bridge_dev_password}
+      # POSTGRES_PASSWORD zorunlu — .env dosyasına ekle.
+      # Örnek: openssl rand -hex 32
+      # ⚠️  Varsayılan değer YOKTUR — eksikse compose başlamaz.
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD zorunlu - .env dosyasina ekle: openssl rand -hex 32}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     # Fix 4: 5432 expose edilmiyor — container-internal erişim yeterli
@@ -60,48 +63,85 @@ services:
       PORT:           3001
 
       # Veritabanı
-      DATABASE_URL:   postgresql://bridge:${POSTGRES_PASSWORD:-bridge_dev_password}@postgres:5432/bridge
+      DATABASE_URL: "postgresql://bridge:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD zorunlu}@postgres:5432/bridge"
       DATABASE_SSL:   "false"
 
       # Redis
       REDIS_URL:      redis://redis:6379
 
       # JWT — production'da mutlaka değiştir!
-      JWT_SECRET:     ${JWT_SECRET:?JWT_SECRET zorunlu - .env dosyasına ekle}
-      REFRESH_SECRET: ${REFRESH_SECRET:?REFRESH_SECRET zorunlu - .env dosyasına ekle}
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET zorunlu - .env dosyasına ekle}"
+      REFRESH_SECRET: "${REFRESH_SECRET:?REFRESH_SECRET zorunlu - .env dosyasına ekle}"
 
       # CORS
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001}
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:3001}"
 
       # AI (opsiyonel)
-      GROQ_API_KEY:       ${GROQ_API_KEY:-}
-      GEMINI_API_KEY:     ${GEMINI_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
 
       # Email (opsiyonel)
-      SMTP_HOST:  ${SMTP_HOST:-}
-      SMTP_PORT:  ${SMTP_PORT:-587}
-      SMTP_USER:  ${SMTP_USER:-}
-      SMTP_PASS:  ${SMTP_PASS:-}
-      FROM_EMAIL: ${FROM_EMAIL:-noreply@bridge.local}
+      SMTP_HOST: "${SMTP_HOST:-}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_USER: "${SMTP_USER:-}"
+      SMTP_PASS: "${SMTP_PASS:-}"
+      FROM_EMAIL: "${FROM_EMAIL:-noreply@bridge.local}"
 
       # Push bildirimleri (opsiyonel)
-      VAPID_PUBLIC_KEY:  ${VAPID_PUBLIC_KEY:-}
-      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY:-}"
+      VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
 
       # ── Mediasoup SFU (group voice) ──────────────────────────
       # MEDIASOUP_ANNOUNCED_IP: sunucunun dışarıdan erişilebilir public IP'si
       # Boş bırakılırsa SFU başlamaz, P2P fallback devreye girer.
       # Örnek: MEDIASOUP_ANNOUNCED_IP=1.2.3.4
-      MEDIASOUP_ANNOUNCED_IP:  ${MEDIASOUP_ANNOUNCED_IP:-}
-      MEDIASOUP_RTC_MIN_PORT:  ${MEDIASOUP_RTC_MIN_PORT:-40000}
-      MEDIASOUP_RTC_MAX_PORT:  ${MEDIASOUP_RTC_MAX_PORT:-49999}
-      MEDIASOUP_WORKERS:       ${MEDIASOUP_WORKERS:-1}
-      MEDIASOUP_OPUS_BITRATE:  ${MEDIASOUP_OPUS_BITRATE:-64}
-      MEDIASOUP_VIDEO_MAX_BITRATE: ${MEDIASOUP_VIDEO_MAX_BITRATE:-3000}
+      MEDIASOUP_ANNOUNCED_IP: "${MEDIASOUP_ANNOUNCED_IP:-}"
+      MEDIASOUP_RTC_MIN_PORT: "${MEDIASOUP_RTC_MIN_PORT:-40000}"
+      MEDIASOUP_RTC_MAX_PORT: "${MEDIASOUP_RTC_MAX_PORT:-49999}"
+      MEDIASOUP_WORKERS: "${MEDIASOUP_WORKERS:-1}"
+      MEDIASOUP_OPUS_BITRATE: "${MEDIASOUP_OPUS_BITRATE:-64}"
+      MEDIASOUP_VIDEO_MAX_BITRATE: "${MEDIASOUP_VIDEO_MAX_BITRATE:-3000}"
+
+      # ── WebP Otomatik Dönüşüm (sharp) ────────────────────────
+      # JPEG/PNG/TIFF/BMP yüklemelerini otomatik WebP'ye çevirir.
+      # sharp paketinin kurulu olması gerekir: npm install sharp
+      # GIF ve SVG dönüştürülmez (animasyon/vektör korunur).
+      WEBP_CONVERT: "${WEBP_CONVERT:-false}"
+      WEBP_QUALITY: "${WEBP_QUALITY:-82}"
+
+      # ── CDN / Medya Depolama ──────────────────────────────────
+      # CDN_PROVIDER=local    → uploads/ klasörü (varsayılan)
+      # CDN_PROVIDER=minio    → self-hosted MinIO (geliştirme/küçük prod)
+      # CDN_PROVIDER=r2       → Cloudflare R2
+      # CDN_PROVIDER=b2       → Backblaze B2
+      CDN_PROVIDER: "${CDN_PROVIDER:-local}"
+
+      # -- MinIO (CDN_PROVIDER=minio) --
+      # docker-compose ile entegre MinIO için varsayılanlar çalışır.
+      # Dış erişim için MINIO_PUBLIC_URL'yi güncelleyin.
+      MINIO_ENDPOINT: "${MINIO_ENDPOINT:-http://minio:9000}"
+      MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-minioadmin}"
+      MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-minioadmin}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-bridge-uploads}"
+      MINIO_PUBLIC_URL: "${MINIO_PUBLIC_URL:-http://localhost:9000/bridge-uploads}"
+
+      # -- Cloudflare R2 (CDN_PROVIDER=r2) --
+      R2_ACCOUNT_ID: "${R2_ACCOUNT_ID:-}"
+      R2_ACCESS_KEY_ID: "${R2_ACCESS_KEY_ID:-}"
+      R2_SECRET_ACCESS_KEY: "${R2_SECRET_ACCESS_KEY:-}"
+      R2_BUCKET: "${R2_BUCKET:-}"
+      R2_PUBLIC_URL: "${R2_PUBLIC_URL:-}"
+
+      # -- Backblaze B2 (CDN_PROVIDER=b2) --
+      B2_KEY_ID: "${B2_KEY_ID:-}"
+      B2_APP_KEY: "${B2_APP_KEY:-}"
+      B2_BUCKET_NAME: "${B2_BUCKET_NAME:-}"
+      B2_REGION: "${B2_REGION:-us-west-004}"
+      B2_PUBLIC_URL: "${B2_PUBLIC_URL:-}"
 
     volumes:
-      - uploads_data:/app/uploads
+      - uploads_data:/app/server/uploads
     ports:
       - "3001:3001"
       # ── Mediasoup SFU — group voice için zorunlu ──────────────
@@ -109,7 +149,7 @@ services:
       # Yoksa SFU devre dışı kalır, P2P fallback çalışır.
       - "${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}:${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}/udp"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health/ready || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -135,51 +175,105 @@ services:
         condition: service_healthy
     environment:
       # Postgres bağlantısı (pg_dump için)
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bridge_dev_password}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD zorunlu}"
 
       # Kaç günlük dump saklanacak (varsayılan: 7)
-      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+      BACKUP_KEEP_DAYS: "${BACKUP_KEEP_DAYS:-7}"
 
       # ── S3 / MinIO (opsiyonel) ──────────────────────────────
       # Doldurursan dump + uploads S3'e de yüklenir.
       # MinIO için: S3_ENDPOINT=http://minio:9000
       # AWS için:   S3_ENDPOINT boş bırak.
-      AWS_ACCESS_KEY_ID:     ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_DEFAULT_REGION:    ${AWS_DEFAULT_REGION:-eu-central-1}
-      S3_BUCKET:             ${S3_BUCKET:-}
-      S3_ENDPOINT:           ${S3_ENDPOINT:-}
-      S3_STORAGE_CLASS:      ${S3_STORAGE_CLASS:-STANDARD_IA}
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+      AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION:-eu-central-1}"
+      S3_BUCKET: "${S3_BUCKET:-}"
+      S3_ENDPOINT: "${S3_ENDPOINT:-}"
+      S3_STORAGE_CLASS: "${S3_STORAGE_CLASS:-STANDARD_IA}"
 
     volumes:
       # Backup çıktısı — host'ta /var/lib/bridge-backups olarak sakla
       - backup_data:/backups
       # Bridge'in uploads volume'u — salt okunur mount (rsync kaynağı)
-      - uploads_data:/app/uploads:ro
+      - uploads_data:/app/server/uploads:ro
 
-  # ── Nginx (opsiyonel — production reverse proxy) ────────────
-  # nginx:
-  #   image: nginx:alpine
-  #   container_name: bridge-nginx
-  #   restart: unless-stopped
-  #   depends_on:
-  #     - bridge
-  #   ports:
-  #     - "80:80"
-  #     - "443:443"
-  #   volumes:
-  #     - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-  #     - ./client:/usr/share/nginx/html:ro
-  #     - certs:/etc/letsencrypt:ro
+  # ── Nginx (production reverse proxy) ─────────────────────────
+  # nginx.conf dosyası proje kökünde sağlanmaktadır.
+  # Aktifleştirmek için: docker compose --profile nginx up
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: bridge-nginx
+    restart: unless-stopped
+    depends_on:
+      bridge:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./client:/usr/share/nginx/html:ro
+      - certs:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
+    profiles:
+      - nginx   # varsayılan olarak başlamaz: docker compose --profile nginx up
+
+  # ── Certbot (Let's Encrypt — nginx profiliyle birlikte) ───────
+  # İlk sertifika almak için:
+  #   docker compose --profile nginx run --rm certbot certonly \
+  #     --webroot -w /var/www/certbot \
+  #     -d bridge.example.com --email admin@example.com --agree-tos
+  # Yenileme (cron / systemd timer ile çalıştırılabilir):
+  #   docker compose --profile nginx run --rm certbot renew
+  certbot:
+    image: certbot/certbot:latest
+    container_name: bridge-certbot
+    volumes:
+      - certs:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    # Entrypoint override: manuel çalıştırma için (yukarıdaki komutlar)
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done'"
+    profiles:
+      - nginx
+
+
+  # Self-hosted S3-uyumlu nesne depolama. Geliştirme veya küçük
+  # production kurulumları için idealdir.
+  # Kullanmak için: CDN_PROVIDER=minio env'ini bridge servisine ekle.
+  # MinIO Console: http://localhost:9001  (minioadmin / minioadmin)
+  minio:
+    image: minio/minio:latest
+    container_name: bridge-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY zorunlu - .env dosyasina ekle}"
+      MINIO_ROOT_PASSWORD: "${MINIO_SECRET_KEY:?MINIO_SECRET_KEY zorunlu - en az 8 karakter}"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # MinIO Console (web UI)
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - minio   # varsayılan olarak başlamaz: docker compose --profile minio up
 
 volumes:
   postgres_data:
   redis_data:
   uploads_data:
+  minio_data:
   # Backup volume'u — named volume yerine host bind-mount tercih edersen:
   # backup_data: {}  → kaldır, bridge servisi altına ekle:
   #   volumes:
   #     - /var/lib/bridge-backups:/backups
   backup_data:
+  # Nginx TLS sertifikaları (Let's Encrypt / certbot)
+  certs:
+  certbot_www:
 
 

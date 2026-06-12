@@ -1,8 +1,7 @@
-// server/db/repositories/FederationRepository.js
+// server/db/repositories/FederationRepository.ts
 // Federation peers, ActivityPub koleksiyonları ve ACL listeleri.
 
-'use strict';
-const db = require('../loader');
+import db from '../loader';
 
 class FederationRepository {
   // ── Peers ─────────────────────────────────────────────────
@@ -11,23 +10,27 @@ class FederationRepository {
     return db.federationPeers?.find({}) ?? [];
   }
 
-  async findPeerByUrl(url) {
+  async findPeerByUrl(url: string) {
     return db.federationPeers?.findOne({ url });
   }
 
-  async insertPeer(peer) {
+  async getPeerByUrl(url: string) {
+    return this.findPeerByUrl(url);
+  }
+
+  async insertPeer(peer: Record<string, unknown>) {
     return db.federationPeers?.insert(peer);
   }
 
-  async removePeerById(id) {
+  async removePeerById(id: string) {
     return db.federationPeers?.remove({ _id: id });
   }
 
-  async updatePeer(id, modifier) {
+  async updatePeer(id: string, modifier: Record<string, unknown>) {
     return db.federationPeers?.update({ _id: id }, modifier);
   }
 
-  async updatePeersWhere(filter, modifier) {
+  async updatePeersWhere(filter: Record<string, unknown>, modifier: Record<string, unknown>) {
     try {
       return await db.federationPeers?.update(filter, modifier);
     } catch {
@@ -41,15 +44,15 @@ class FederationRepository {
     return db.federationWhitelist?.find({}) ?? [];
   }
 
-  async findWhitelistOne(query) {
+  async findWhitelistOne(query: Record<string, unknown>) {
     return db.federationWhitelist?.findOne(query);
   }
 
-  async insertWhitelist(entry) {
+  async insertWhitelist(entry: Record<string, unknown>) {
     return db.federationWhitelist?.insert(entry);
   }
 
-  async removeWhitelistByDomain(domain) {
+  async removeWhitelistByDomain(domain: string) {
     return db.federationWhitelist?.remove({ domain });
   }
 
@@ -57,21 +60,21 @@ class FederationRepository {
     return db.federationBlacklist?.find({}) ?? [];
   }
 
-  async findBlacklistOne(query) {
+  async findBlacklistOne(query: Record<string, unknown>) {
     return db.federationBlacklist?.findOne(query);
   }
 
-  async insertBlacklist(entry) {
+  async insertBlacklist(entry: Record<string, unknown>) {
     return db.federationBlacklist?.insert(entry);
   }
 
-  async removeBlacklistByDomain(domain) {
+  async removeBlacklistByDomain(domain: string) {
     return db.federationBlacklist?.remove({ domain });
   }
 
   // ── ActivityPub: Activities ───────────────────────────────
 
-  async insertActivity(doc) {
+  async insertActivity(doc: Record<string, unknown>) {
     try {
       return await db.apActivities?.insert(doc);
     } catch {
@@ -80,25 +83,25 @@ class FederationRepository {
   }
 
   /** Sıralama/limit zinciri için ham find döndürür. */
-  apActivitiesFind(query) {
+  apActivitiesFind(query: Record<string, unknown>) {
     return db.apActivities?.find(query);
   }
 
-  async findActivities(query) {
+  async findActivities(query: Record<string, unknown>) {
     return db.apActivities?.find(query);
   }
 
-  async countActivities(query) {
+  async countActivities(query: Record<string, unknown>) {
     return db.apActivities?.count(query).catch(() => 0) ?? 0;
   }
 
   // ── AP Follows (remote → local user) ──────────────────────
 
-  async findApFollows(query) {
+  async findApFollows(query: Record<string, unknown>) {
     return db.apFollows?.find(query) ?? [];
   }
 
-  async findApFollowOne(query) {
+  async findApFollowOne(query: Record<string, unknown>) {
     try {
       return await db.apFollows?.findOne(query);
     } catch {
@@ -106,7 +109,7 @@ class FederationRepository {
     }
   }
 
-  async insertApFollow(doc) {
+  async insertApFollow(doc: Record<string, unknown>) {
     try {
       return await db.apFollows?.insert(doc);
     } catch {
@@ -114,7 +117,7 @@ class FederationRepository {
     }
   }
 
-  async updateApFollow(filter, modifier) {
+  async updateApFollow(filter: Record<string, unknown>, modifier: Record<string, unknown>) {
     try {
       return await db.apFollows?.update(filter, modifier);
     } catch {
@@ -122,17 +125,17 @@ class FederationRepository {
     }
   }
 
-  async removeApFollow(filter, opts) {
+  async removeApFollow(filter: Record<string, unknown>, opts: Record<string, unknown>) {
     return db.apFollows?.remove(filter, opts ?? {}).catch(() => {});
   }
 
   // ── AP Outgoing follows ───────────────────────────────────
 
-  async findApOutgoingFollows(query) {
+  async findApOutgoingFollows(query: Record<string, unknown>) {
     return db.apOutgoingFollows?.find(query) ?? [];
   }
 
-  async findApOutgoingFollowOne(query) {
+  async findApOutgoingFollowOne(query: Record<string, unknown>) {
     try {
       return await db.apOutgoingFollows?.findOne(query);
     } catch {
@@ -140,7 +143,7 @@ class FederationRepository {
     }
   }
 
-  async insertApOutgoingFollow(doc) {
+  async insertApOutgoingFollow(doc: Record<string, unknown>) {
     try {
       return await db.apOutgoingFollows?.insert(doc);
     } catch {
@@ -148,7 +151,7 @@ class FederationRepository {
     }
   }
 
-  async updateApOutgoingFollow(filter, modifier) {
+  async updateApOutgoingFollow(filter: Record<string, unknown>, modifier: Record<string, unknown>) {
     try {
       return await db.apOutgoingFollows?.update(filter, modifier);
     } catch {
@@ -156,17 +159,17 @@ class FederationRepository {
     }
   }
 
-  async removeApOutgoingFollow(filter, opts) {
+  async removeApOutgoingFollow(filter: Record<string, unknown>, opts: Record<string, unknown>) {
     return db.apOutgoingFollows?.remove(filter, opts ?? {}).catch(() => {});
   }
 
   // ── AP federated messages ─────────────────────────────────
 
-  async insertApMessage(doc) {
+  async insertApMessage(doc: Record<string, unknown>) {
     return db.apMessages?.insert(doc).catch(() => {});
   }
 
-  async updateApMessage(filter, modifier) {
+  async updateApMessage(filter: Record<string, unknown>, modifier: Record<string, unknown>) {
     try {
       return await db.apMessages?.update(filter, modifier);
     } catch {
@@ -174,25 +177,25 @@ class FederationRepository {
     }
   }
 
-  async removeApMessage(filter, opts) {
+  async removeApMessage(filter: Record<string, unknown>, opts: Record<string, unknown>) {
     return db.apMessages?.remove(filter, opts ?? {}).catch(() => {});
   }
 
-  async findApMessages(query) {
+  async findApMessages(query: Record<string, unknown>) {
     return db.apMessages?.find(query) ?? [];
   }
 
-  apMessagesFind(query) {
+  apMessagesFind(query: Record<string, unknown>) {
     return db.apMessages?.find(query);
   }
 
-  async countApMessages(query) {
+  async countApMessages(query: Record<string, unknown>) {
     return db.apMessages?.count(query).catch(() => 0) ?? 0;
   }
 
   // ── AP likes / announces ──────────────────────────────────
 
-  async insertApLike(doc) {
+  async insertApLike(doc: Record<string, unknown>) {
     try {
       return await db.apLikes?.insert(doc);
     } catch {
@@ -200,11 +203,11 @@ class FederationRepository {
     }
   }
 
-  async removeApLike(filter, opts) {
+  async removeApLike(filter: Record<string, unknown>, opts: Record<string, unknown>) {
     return db.apLikes?.remove(filter, opts ?? {}).catch(() => {});
   }
 
-  async findApLikeOne(query) {
+  async findApLikeOne(query: Record<string, unknown>) {
     try {
       return await db.apLikes?.findOne(query);
     } catch {
@@ -212,7 +215,7 @@ class FederationRepository {
     }
   }
 
-  async insertApAnnounce(doc) {
+  async insertApAnnounce(doc: Record<string, unknown>) {
     try {
       return await db.apAnnounces?.insert(doc);
     } catch {
@@ -220,7 +223,7 @@ class FederationRepository {
     }
   }
 
-  async removeApAnnounce(filter, opts) {
+  async removeApAnnounce(filter: Record<string, unknown>, opts: Record<string, unknown>) {
     return db.apAnnounces?.remove(filter, opts ?? {}).catch(() => {});
   }
 
@@ -228,7 +231,7 @@ class FederationRepository {
   // Koleksiyon: ap_delivery_queue
   // { _id, payload: {inboxUrl,activity,fromUser}, attempts, nextAt, createdAt }
 
-  async insertDeliveryEntry(doc) {
+  async insertDeliveryEntry(doc: Record<string, unknown>) {
     try {
       return await db.apDeliveryQueue?.insert(doc);
     } catch {
@@ -236,7 +239,7 @@ class FederationRepository {
     }
   }
 
-  async upsertDeliveryEntry(id, doc) {
+  async upsertDeliveryEntry(id: string, doc: Record<string, unknown>) {
     try {
       const existing = await db.apDeliveryQueue?.findOne({ _id: id });
       if (existing) {
@@ -248,7 +251,7 @@ class FederationRepository {
     }
   }
 
-  async findPendingDeliveries(beforeTs) {
+  async findPendingDeliveries(beforeTs: number) {
     try {
       return (await db.apDeliveryQueue?.find({ nextAt: { $lte: beforeTs } })) ?? [];
     } catch {
@@ -256,7 +259,7 @@ class FederationRepository {
     }
   }
 
-  async removeDeliveryEntry(id) {
+  async removeDeliveryEntry(id: string) {
     try {
       return await db.apDeliveryQueue?.remove({ _id: id });
     } catch {
@@ -274,5 +277,4 @@ class FederationRepository {
   }
 }
 
-module.exports = new FederationRepository();
-export {};
+export default new FederationRepository();

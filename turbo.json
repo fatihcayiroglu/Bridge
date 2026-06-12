@@ -1,0 +1,149 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "tui",
+
+  "remoteCache": {
+    "enabled": true,
+    "signature": true
+  },
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        ".env*",
+        "!**/*.test.ts",
+        "!**/*.spec.ts",
+        "!**/tests/**",
+        "!**/__tests__/**"
+      ],
+      "outputs": [
+        "dist/**",
+        "server/dist/**",
+        "client/dist/**",
+        "electron/dist/**",
+        "bot-sdk/dist/**",
+        "plugins/dist/**"
+      ]
+    },
+
+    "typecheck": {
+      "dependsOn": [],
+      "inputs": [
+        "**/*.ts",
+        "**/*.svelte",
+        "**/tsconfig*.json"
+      ],
+      "outputs": []
+    },
+
+    "typecheck:strict": {
+      "dependsOn": ["typecheck"],
+      "inputs": ["**/*.ts", "**/tsconfig.strict.json"],
+      "outputs": []
+    },
+
+    "test": {
+      "dependsOn": [],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "**/*.test.ts",
+        "**/*.spec.ts",
+        "**/tests/**",
+        "**/__tests__/**",
+        "jest.config.*",
+        "vitest.config.*"
+      ],
+      "outputs": [
+        "coverage/**",
+        "tests/coverage/**",
+        "client/tests/coverage/**"
+      ],
+      "cache": false
+    },
+
+    "test:coverage": {
+      "dependsOn": ["test"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "**/*.test.ts",
+        "**/*.spec.ts"
+      ],
+      "outputs": [
+        "coverage/lcov-report/**",
+        "tests/coverage/lcov-report/**",
+        "client/tests/coverage/lcov-report/**"
+      ],
+      "cache": false
+    },
+
+    "lint": {
+      "dependsOn": [],
+      "inputs": [
+        "**/*.ts",
+        "**/*.svelte",
+        ".eslintrc*",
+        ".eslintignore",
+        "eslint.config.*"
+      ],
+      "outputs": []
+    },
+
+    "dev": {
+      "dependsOn": [],
+      "persistent": true,
+      "cache": false
+    },
+
+    "build:watch": {
+      "dependsOn": [],
+      "persistent": true,
+      "cache": false
+    },
+
+    "typecheck:svelte": {
+      "dependsOn": [],
+      "inputs": ["**/*.svelte", "**/*.ts", "**/tsconfig.json"],
+      "outputs": []
+    },
+
+    "clean": {
+      "cache": false
+    },
+
+    "mobile:build": {
+      "dependsOn": ["build"],
+      "inputs": [
+        "client/js/**",
+        "client/css/**",
+        "client/index.html",
+        "client/sw.js",
+        "client/manifest.json",
+        "mobile/capacitor-bridge.js",
+        "mobile/scripts/setup.js",
+        "mobile/capacitor.config.ts",
+        "mobile/package.json"
+      ],
+      "outputs": [
+        "mobile/www/js/**",
+        "mobile/www/css/**",
+        "mobile/www/index.html",
+        "mobile/www/sw.js",
+        "mobile/www/manifest.json"
+      ]
+    }
+  },
+
+  "globalEnv": [
+    "NODE_ENV",
+    "CI"
+  ],
+
+  "globalPassThroughEnv": [
+    "JWT_SECRET",
+    "REFRESH_SECRET",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "PORT"
+  ]
+}

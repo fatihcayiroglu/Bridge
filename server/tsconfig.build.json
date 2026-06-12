@@ -13,6 +13,8 @@
     "**/*.test.ts",
     "**/*.test.js",
     "tests/**/*",
+    "routes/channels._deprecated.ts",
+    "routes/admin-ipban-routes.ts",
     // Script'ler production build'e dahil edilmiyor (ayrı çalıştırılıyor)
     "scripts/**/*"
   ]

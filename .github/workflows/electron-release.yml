@@ -1,0 +1,134 @@
+name: Electron Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: 'Create as draft release'
+        type: boolean
+        default: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  electron-build:
+    name: Electron Build — ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: dist-win
+            build_script: dist:win
+          - os: macos-14
+            artifact: dist-mac
+            build_script: dist:mac
+          - os: ubuntu-latest
+            artifact: dist-linux
+            build_script: dist:linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install root deps
+        run: npm ci
+
+      - name: Install server deps
+        run: cd server && npm ci
+
+      - name: Build server
+        run: cd server && npm run build
+
+      - name: Install Electron deps
+        run: cd electron && npm ci
+
+      # macOS code signing
+      - name: Import macOS certificate
+        if: matrix.os == 'macos-14'
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.MAC_CERTS_P12_BASE64 }}
+          p12-password: ${{ secrets.MAC_CERTS_P12_PASSWORD }}
+
+      # Windows code signing
+      - name: Setup Windows signing
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "${{ secrets.WIN_CERT_BASE64 }}" | base64 --decode > electron/win-cert.pfx
+
+      - name: Build Electron app
+        run: cd electron && npm run ${{ matrix.build_script }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS notarization
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows signing
+          WIN_CERT_PATH: win-cert.pfx
+          WIN_CERT_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
+          # Linux
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            electron/release/*.exe
+            electron/release/*.dmg
+            electron/release/*.AppImage
+            electron/release/*.deb
+            electron/release/*.snap
+            electron/release/*.zip
+            electron/release/latest*.yml
+          retention-days: 30
+
+  create-release:
+    name: Create GitHub Release
+    needs: electron-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Bridge ${{ steps.version.outputs.version }}
+          draft: ${{ github.event.inputs.draft == 'true' }}
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-artifacts/dist-win/*.exe
+            release-artifacts/dist-mac/*.dmg
+            release-artifacts/dist-mac/*.zip
+            release-artifacts/dist-linux/*.AppImage
+            release-artifacts/dist-linux/*.deb
+            release-artifacts/dist-linux/*.snap
+            release-artifacts/dist-win/latest.yml
+            release-artifacts/dist-mac/latest-mac.yml
+            release-artifacts/dist-linux/latest-linux.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

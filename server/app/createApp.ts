@@ -1,4 +1,3 @@
-// @ts-nocheck
 import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -7,15 +6,13 @@ import crypto from 'crypto';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 
-// CommonJS modülleri — require() ile yükleniyor (henüz TS'e taşınmadı)
-/* eslint-disable @typescript-eslint/no-var-requires */
-const { rateLimit }              = require('../middleware/rateLimit') as { rateLimit: (limit: number, window: number, key: string) => import('express').RequestHandler };
-const { enforceApiCsrf }         = require('../middleware/csrf') as { enforceApiCsrf: import('express').RequestHandler };
-const { metricsMiddleware }      = require('../middleware/metrics') as { metricsMiddleware: import('express').RequestHandler };
-const { ipBanMiddleware }        = require('../middleware/ipBan') as { ipBanMiddleware: import('express').RequestHandler };
-const { ipReputationMiddleware } = require('../middleware/ipReputation') as { ipReputationMiddleware: import('express').RequestHandler };
-const { securityHeaders }        = require('../lib/security') as { securityHeaders: import('express').RequestHandler };
-/* eslint-enable @typescript-eslint/no-var-requires */
+// Sprint 72: eslint-disable yorumları kaldırıldı — tüm importlar zaten ESM (import syntax).
+import { rateLimit } from '../middleware/rateLimit';
+import { enforceApiCsrf } from '../middleware/csrf';
+import { metricsMiddleware } from '../middleware/metrics';
+import { ipBanMiddleware } from '../middleware/ipBan';
+import { ipReputationMiddleware } from '../middleware/ipReputation';
+import { securityHeaders } from '../lib/security';
 
 export interface AppBundle {
   app: Application;
@@ -39,7 +36,7 @@ export function createApp(): AppBundle {
     const hashes = new Set<string>();
     const re = /\son[a-zA-Z]+\s*=\s*"([^"]*)"/g;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(clientIndex))) hashes.add(sha256Source(m[1]));
+    while ((m = re.exec(clientIndex))) hashes.add(sha256Source(m[1]!));
     return [...hashes];
   })();
 
@@ -62,8 +59,8 @@ export function createApp(): AppBundle {
           : cb(new Error('CORS: origin not allowed')),
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       credentials: true,
-    })
-  );
+    }));
+
 
   const extraConnect = (process.env.EXTRA_CONNECT_SRC || '').split(',').filter(Boolean);
   const extraImg     = (process.env.EXTRA_IMG_SRC     || '').split(',').filter(Boolean);
@@ -85,9 +82,9 @@ export function createApp(): AppBundle {
     helmet({
       contentSecurityPolicy: {
         useDefaults: false,
-        directives: (_req: Request, res: Response) => ({
+        directives: {
           defaultSrc:    ["'self'"],
-          scriptSrc:     ["'self'", ...cdnHosts, ...sentryCdnHosts, "'wasm-unsafe-eval'", "'unsafe-hashes'", ...onHashes, `'nonce-${res.locals.cspNonce || ''}'`],
+          scriptSrc:     ["'self'", ...cdnHosts, ...sentryCdnHosts, "'wasm-unsafe-eval'", "'unsafe-hashes'", ...onHashes, (_req, res) => `'nonce-${(res as Response).locals.cspNonce || ''}'`],
           styleSrc:      ["'self'", "'unsafe-inline'"],
           imgSrc:        ["'self'", 'data:', 'blob:', 'https://media.tenor.com', 'https://media1.tenor.com', ...extraImg],
           mediaSrc:      ["'self'", 'blob:'],
@@ -98,12 +95,11 @@ export function createApp(): AppBundle {
           baseUri:       ["'self'"],
           formAction:    ["'self'"],
           workerSrc:     ["'self'", 'blob:'],
-          scriptSrcElem: ["'self'", ...cdnHosts, ...sentryCdnHosts, "'wasm-unsafe-eval'", `'nonce-${res.locals.cspNonce || ''}'`],
-        }),
+          scriptSrcElem: ["'self'", ...cdnHosts, ...sentryCdnHosts, "'wasm-unsafe-eval'", (_req, res) => `'nonce-${(res as Response).locals.cspNonce || ''}'`],
+        },
       },
       crossOriginEmbedderPolicy: false,
-    })
-  );
+    }));
 
   app.use(ipBanMiddleware);
   app.use(ipReputationMiddleware);
@@ -111,6 +107,29 @@ export function createApp(): AppBundle {
   app.use('/api', rateLimit(200, 60_000, 'global'));
   app.use('/api', enforceApiCsrf);
   app.use(metricsMiddleware);
+  // ── rawBody capture — federation imza doğrulaması için zorunlu ──────────
+  // federationAuth.ts: req.rawBody üzerinden RSA imza doğrular.
+  // express.json() body'yi parse etmeden ÖNCE ham veriyi yakalamalıyız;
+  // aksi hâlde JSON.stringify(req.body) fallback'i imza uyuşmazlığına yol açar.
+  //
+  // ÖNEMLİ: multipart/form-data isteklerini ATLA — multer kendi stream
+  // okuyucusunu kullanır; rawBody bu isteklerde stream'i tüketip multer'ı kırar.
+  app.use((req, _res, next) => {
+    const ct = (req.headers['content-type'] ?? '') as string;
+    if (ct.startsWith('multipart/form-data')) return next();
+    let raw = '';
+    req.on('data', (chunk: Buffer | string) => { raw += chunk.toString(); });
+    req.on('end', () => {
+      (req as typeof req & { rawBody: string }).rawBody = raw;
+      next();
+    });
+    // Stream hatası durumunda next() asla çağrılmazsa request askıda kalır
+    req.on('error', () => {
+      (req as typeof req & { rawBody: string }).rawBody = raw;
+      next();
+    });
+  });
+
   app.use(express.json({ limit: '2mb' }));
 
   app.use(
@@ -119,18 +138,24 @@ export function createApp(): AppBundle {
       setHeaders: (res: Response, filePath: string) => {
         const ext = path.extname(filePath).toLowerCase();
         const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff'];
+        // Her upload için X-Content-Type-Options: nosniff — MIME sniffing önleme
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('X-Frame-Options', 'DENY');
+        // Görüntü ve SVG dışındaki tüm dosyalar attachment olarak indirilir
         if (!imageExts.includes(ext) && ext !== '.svg') {
           res.setHeader('Content-Disposition', 'attachment');
+          // Tarayıcı çalıştırma riski olan uzantılar için ek CSP
+          if (['.html', '.htm', '.js', '.mjs', '.ts', '.css'].includes(ext)) {
+            res.setHeader('Content-Security-Policy', "default-src 'none'");
+          }
         }
         if (ext === '.svg') {
           res.setHeader('Content-Type', 'image/svg+xml');
-          res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
-          res.setHeader('X-Content-Type-Options', 'nosniff');
+          // sandbox + hiçbir kaynak yok: SVG içindeki script/stil çalışamaz
+          res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'none'; sandbox");
         }
-        res.setHeader('X-Frame-Options', 'DENY');
       },
-    })
-  );
+    }));
 
   const clientDist = path.join(__dirname, '../../client/dist');
   const clientSrc  = path.join(__dirname, '../../client');
@@ -190,8 +215,7 @@ export function createApp(): AppBundle {
     express.static(staticRoot, {
       maxAge: staticRoot === clientDist ? '7d' : '0',
       etag: true,
-    })
-  );
+    }));
 
   return { app, allowedOrigins };
 }

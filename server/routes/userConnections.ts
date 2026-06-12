@@ -1,15 +1,14 @@
-// server/routes/userConnections.js
+// server/routes/userConnections.ts
 // Kullanıcı sosyal bağlantıları (GitHub, Twitter/X, Steam, Spotify, YouTube, Twitch, vb.)
 
-'use strict';
 
-const express    = require('express');
+import express from 'express';
+import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router     = express.Router();
-const { v4: uuidv4 } = require('uuid');
-const { Social } = require('../db/repositories');
-const { authMiddleware, castAuthed } = require('../middleware/auth');
-const asyncHandler = require('../middleware/asyncHandler');
-const { limits } = require('../middleware/rateLimit'); // rate limiting
+import { v4 as uuidv4 } from 'uuid';
+import { Social } from '../db/repositories';
+import { authMiddleware} from '../middleware/auth';
+import { limits } from '../middleware/rateLimit';
 
 const PLATFORMS = {
   github:   { label: 'GitHub',     icon: '🐙', urlPrefix: 'https://github.com/',            usernameRe: /^[a-zA-Z0-9_-]{1,39}$/ },
@@ -20,37 +19,90 @@ const PLATFORMS = {
   spotify:  { label: 'Spotify',    icon: '🎵', urlPrefix: 'https://open.spotify.com/user/', usernameRe: /^[a-zA-Z0-9_.-]{1,50}$/ },
   linkedin: { label: 'LinkedIn',   icon: '💼', urlPrefix: 'https://linkedin.com/in/',        usernameRe: /^[a-zA-Z0-9_-]{3,100}$/ },
   website:  { label: 'Website',    icon: '🌐', urlPrefix: '',                                usernameRe: /^https?:\/\/.{3,200}$/ },
-};
+} as const;
+type PlatformKey = keyof typeof PLATFORMS;
+function isPlatformKey(value: string): value is PlatformKey { return value in PLATFORMS; }
 
-router.get('/users/:userId/connections', authMiddleware, asyncHandler(async (req, res) => {
-  const connections = await Social.findConnectionsByUser(req.params.userId);
+/**
+ * @openapi
+ * /connections/users/{userId}:
+ *   get:
+ *     summary: Kullanıcının sosyal bağlantılarını listele
+ *     tags: [Connections]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { name: userId, in: path, required: true, schema: { type: string } }
+ *     responses:
+ *       200:
+ *         description: Platform/username/url listesi
+ */
+router.get('/users/:userId/connections'
+, authMiddleware, async (req, res) => {
+  const connections = await Social.findConnectionsByUser(String(req.params.userId ?? ''));
   res.json(connections.map(c => ({
     platform: c.platform,
     username: c.username,
     url:      c.url,
-    label:    PLATFORMS[c.platform]?.label || c.platform,
-    icon:     PLATFORMS[c.platform]?.icon  || '🔗',
+    label:    isPlatformKey(c.platform) ? PLATFORMS[c.platform].label : c.platform,
+    icon:     isPlatformKey(c.platform) ? PLATFORMS[c.platform].icon : '🔗',
   })));
-}));
+});
 
-router.get('/me/connections', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /connections/me:
+ *   get:
+ *     summary: Kendi sosyal bağlantılarımı getir
+ *     tags: [Connections]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Kendi bağlantı listesi
+ */
+router.get('/me/connections'
+, authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const connections = await Social.findConnectionsByUser(_u.id);
   res.json(connections.map(c => ({
     ...c,
-    label: PLATFORMS[c.platform]?.label || c.platform,
-    icon:  PLATFORMS[c.platform]?.icon  || '🔗',
+    label: isPlatformKey(c.platform) ? PLATFORMS[c.platform].label : c.platform,
+    icon:  isPlatformKey(c.platform) ? PLATFORMS[c.platform].icon : '🔗',
   })));
-}));
+});
 
-router.put('/me/connections/:platform', authMiddleware, limits.write(), asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /connections/me/{platform}:
+ *   put:
+ *     summary: Sosyal bağlantı ekle veya güncelle
+ *     tags: [Connections]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { name: platform, in: path, required: true, schema: { type: string } }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [username]
+ *             properties:
+ *               username: { type: string }
+ *     responses:
+ *       200:
+ *         description: Eklenen/güncellenen bağlantı
+ *       400:
+ *         description: Geçersiz platform veya kullanıcı adı
+ */
+router.put('/me/connections/:platform'
+, authMiddleware, limits.write(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { platform } = req.params;
-  if (!PLATFORMS[platform]) {
+  const platform = String(req.params.platform ?? '');
+  if (!isPlatformKey(platform)) {
     return res.status(400).json({ error: `Desteklenmeyen platform. Desteklenenler: ${Object.keys(PLATFORMS).join(', ')}` });
   }
 
-  const { username } = req.body;
+  const { username } = req.body as Record<string, string>;
   if (!username?.trim()) return res.status(400).json({ error: 'username gerekli' });
 
   const meta = PLATFORMS[platform];
@@ -84,20 +136,51 @@ router.put('/me/connections/:platform', authMiddleware, limits.write(), asyncHan
   }
 
   res.json({ ...connection, label: meta.label, icon: meta.icon });
-}));
+});
 
-router.delete('/me/connections/:platform', authMiddleware, limits.write(), asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /connections/me/{platform}:
+ *   delete:
+ *     summary: Sosyal bağlantıyı kaldır
+ *     tags: [Connections]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { name: platform, in: path, required: true, schema: { type: string } }
+ *     responses:
+ *       200:
+ *         description: Silme başarılı
+ *       404:
+ *         description: Bağlantı bulunamadı
+ */
+router.delete('/me/connections/:platform'
+, authMiddleware, limits.write(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { platform } = req.params;
+  const platform = String(req.params.platform ?? '');
   const existing = await Social.findConnection(_u.id, platform);
   if (!existing) return res.status(404).json({ error: 'Bağlantı bulunamadı' });
   await Social.removeConnection(_u.id, platform);
   res.json({ deleted: true });
-}));
+});
 
-router.get('/connections/platforms', authMiddleware, (req, res) => {
+/**
+ * @openapi
+ * /connections/platforms:
+ *   get:
+ *     summary: Desteklenen platformların listesi
+ *     tags: [Connections]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: id/label/icon listesi
+ */
+router.get('/connections/platforms'
+, authMiddleware, (req, res) => {
   res.json(Object.entries(PLATFORMS).map(([id, p]) => ({ id, label: p.label, icon: p.icon })));
 });
 
+export default router;
+
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-export {};
+module.exports.default = router;

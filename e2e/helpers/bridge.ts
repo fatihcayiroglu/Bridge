@@ -7,10 +7,26 @@ import fs from 'fs';
 
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 
+type E2EUser = {
+  username: string;
+  email: string;
+  password: string;
+  displayName?: string;
+};
+
+type E2ETokens = {
+  alice: string;
+  bob: string;
+  users: {
+    alice: E2EUser;
+    bob: E2EUser;
+  };
+};
+
 /**
  * Kaydedilmiş token'ları oku
  */
-function getTokens(): { alice: string; bob: string } {
+function getTokens(): E2ETokens {
   const p = path.join(FIXTURES_DIR, 'tokens.json');
   if (!fs.existsSync(p)) throw new Error('tokens.json bulunamadı — önce setup çalıştır');
   return JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -23,7 +39,7 @@ async function apiRequest(request: import('@playwright/test').APIRequestContext,
   const tokens = token ? null : getTokens();
   const t = token || tokens.alice;
 
-  const options = {
+  const options: { headers: Record<string, string>; data?: string } = {
     headers: {
       Authorization: `Bearer ${t}`,
       'Content-Type': 'application/json',
@@ -39,6 +55,9 @@ async function apiRequest(request: import('@playwright/test').APIRequestContext,
  * Bridge sayfa nesne modeli
  */
 class BridgePage {
+  readonly page: import('@playwright/test').Page;
+  readonly baseURL: string;
+
   constructor(page: import('@playwright/test').Page) {
     this.page = page;
     this.baseURL = process.env.BASE_URL || 'http://localhost:3000';
@@ -150,11 +169,11 @@ async function createTestServer(request: import('@playwright/test').APIRequestCo
 /**
  * API üzerinden kanal oluştur
  */
-async function createTestChannel(request: import('@playwright/test').APIRequestContext, token: string, serverId: string, name: string) {
+async function createTestChannel(request: import('@playwright/test').APIRequestContext, token: string, serverId: string, name: string, type = 'text') {
   const BASE = process.env.BASE_URL || 'http://localhost:3000';
   const res = await request.post(`${BASE}/api/servers/${serverId}/channels`, {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    data: JSON.stringify({ name, type: 'text' }),
+    data: JSON.stringify({ name, type }),
   });
   if (!res.ok()) return null;
   return await res.json();

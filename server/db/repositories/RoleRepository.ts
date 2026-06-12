@@ -1,49 +1,47 @@
-// server/db/repositories/RoleRepository.js
+// server/db/repositories/RoleRepository.ts
 // Rol sorgularını tek noktada toplar.
 
-'use strict';
-const { v4: uuidv4 } = require('uuid');
-const db = require('../loader');
+import { v4 as uuidv4 } from 'uuid';
+import db from '../loader';
 
 class RoleRepository {
-  async findById(id) {
+  async findById(id: string) {
     return db.roles.findOne({ _id: id });
   }
 
-  async findByIdAndServer(id, serverId) {
+  async findByIdAndServer(id: string, serverId: string) {
     return db.roles.findOne({ _id: id, serverId });
   }
 
-  async findByServer(serverId) {
+  async findByServer(serverId: string) {
     return db.roles.find({ serverId }).sort({ position: 1 });
   }
 
-  async insert(data) {
+  async insert(data: Record<string, unknown>) {
     return db.roles.insert({ _id: uuidv4(), createdAt: Date.now(), ...data });
   }
 
-  async update(id, serverId, fields) {
+  async update(id: string, serverId: string, fields: Record<string, unknown>) {
     return db.roles.update({ _id: id, serverId }, { $set: fields });
   }
 
-  async delete(id, serverId) {
+  async delete(id: string, serverId: string) {
     return db.roles.remove({ _id: id, serverId });
   }
 
-  async deleteByServer(serverId) {
+  async deleteByServer(serverId: string) {
     return db.roles.remove({ serverId });
   }
 
-  async findWhere(query) {
+  async findWhere(query: Record<string, unknown>) {
     return db.roles.find(query);
   }
 
   /** Üye rolleri için sunucu içi sıralı liste (yüksek position önce). */
-  findByIdsInServer(roleIds, serverId) {
+  findByIdsInServer(roleIds: string[], serverId: string) {
     if (!roleIds?.length) return Promise.resolve([]);
     return db.roles.find({ _id: { $in: roleIds }, serverId }).sort({ position: -1 });
   }
 }
 
-module.exports = new RoleRepository();
-export {};
+export default new RoleRepository();

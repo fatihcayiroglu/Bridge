@@ -1,13 +1,14 @@
-// client/js/soundboard.js Soundboard
+import { BridgeRegistry } from './core/bridge-registry.ts';
+// client/js/soundboard.ts Soundboard
 // Bridge'de tamamen bedava
 
 let _soundboardServerId = null;
 let _soundboardSounds   = [];
 let _soundboardAudio    = null; // current playing
 
-// â”€â”€ OPEN SOUNDBOARD PANEL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── OPEN SOUNDBOARD PANEL ────────────────────────────────────
 async function openSoundboard() {
-  if (!currentServer) return toast('Ã–nce bir sunucu seÃ§', 'error');
+  if (!currentServer) return toast('Önce bir sunucu seç', 'error');
   _soundboardServerId = currentServer._id;
 
   const existing = document.getElementById('soundboard-panel');
@@ -21,11 +22,11 @@ async function openSoundboard() {
       <span>ğŸµ Soundboard</span>
       <div style="display:flex;gap:8px;">
         <button class="btn btn-secondary" style="font-size:12px;padding:4px 10px;" onclick="openSoundUpload()">+ Ses Ekle</button>
-        <button class="icon-btn" onclick="document.getElementById('soundboard-panel').remove()" title="Kapat">âœ•</button>
+        <button class="icon-btn" onclick="document.getElementById('soundboard-panel').remove()" title="Kapat">✕</button>
       </div>
     </div>
     <div id="soundboard-grid" class="soundboard-grid">
-      <div style="color:var(--text-muted);font-size:13px;text-align:center;padding:20px;">YÃ¼kleniyor...</div>
+      <div style="color:var(--text-muted);font-size:13px;text-align:center;padding:20px;">Yükleniyor...</div>
     </div>`;
   document.querySelector('.chat-area') ?.appendChild(panel) || document.body.appendChild(panel);
 
@@ -42,7 +43,7 @@ async function refreshSoundboard() {
 
     if (!_soundboardSounds.length) {
       grid.innerHTML = `<div style="color:var(--text-muted);font-size:13px;text-align:center;padding:20px;grid-column:1/-1;">
-        HenÃ¼z ses yok.<br>Admin olarak ses ekleyebilirsin.</div>`;
+        Henüz ses yok.<br>Admin olarak ses ekleyebilirsin.</div>`;
       return;
     }
 
@@ -52,7 +53,7 @@ async function refreshSoundboard() {
         <span class="sound-name">${escHtml(s.name)}</span>
       </button>`).join('');
   } catch(e) {
-    grid.innerHTML = `<div style="color:var(--text-muted);font-size:13px;text-align:center;padding:20px;grid-column:1/-1;">YÃ¼klenemedi</div>`;
+    grid.innerHTML = `<div style="color:var(--text-muted);font-size:13px;text-align:center;padding:20px;grid-column:1/-1;">Yüklenemedi</div>`;
   }
 }
 
@@ -74,7 +75,7 @@ function playSound(soundId) {
   _soundboardAudio.play().then(() => {
     btn?.classList.add('playing');
     // Broadcast to voice channel peers
-    if (window.rtc?.isInVoice()) {
+    if ((BridgeRegistry.get('rtc') as { isInVoice(): boolean } | null)?.isInVoice()) {
       socket.emit('soundboard:play', {
         channelId: rtc.currentChannelId,
         soundUrl:  API + sound.url,
@@ -82,7 +83,7 @@ function playSound(soundId) {
         emoji:     sound.emoji,
       });
     }
-  }).catch(() => toast('Ses oynatÄ±lamadÄ±', 'error'));
+  }).catch(() => toast('Ses oynatılamadı', 'error'));
 
   _soundboardAudio.onended = () => {
     btn?.classList.remove('playing');
@@ -98,7 +99,7 @@ function stopSoundboard() {
   }
 }
 
-// â”€â”€ UPLOAD SOUND â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── UPLOAD SOUND ─────────────────────────────────────────────
 function openSoundUpload() {
   const existing = document.getElementById('sound-upload-modal');
   if (existing) existing.remove();
@@ -110,12 +111,12 @@ function openSoundUpload() {
     <div class="modal-card" style="max-width:400px;width:95%;">
       <h2 style="margin-bottom:16px;">ğŸµ Ses Ekle</h2>
 
-      <label class="settings-label">Ses DosyasÄ± <span style="color:var(--text-muted);font-size:12px;">(MP3, OGG, WAV â€” max 5MB)</span></label>
+      <label class="settings-label">Ses Dosyası <span style="color:var(--text-muted);font-size:12px;">(MP3, OGG, WAV — max 5MB)</span></label>
       <input type="file" id="sound-file-input" accept="audio/*" class="input"
              style="width:100%;margin-bottom:12px;padding:8px;" onchange="previewSoundFile(this)" />
 
-      <label class="settings-label">Ä°sim</label>
-      <input id="sound-name-input" class="input" placeholder="Sesin adÄ±" maxlength="32"
+      <label class="settings-label">İsim</label>
+      <input id="sound-name-input" class="input" placeholder="Sesin adı" maxlength="32"
              style="width:100%;margin-bottom:12px;" />
 
       <label class="settings-label">Emoji</label>
@@ -127,8 +128,8 @@ function openSoundUpload() {
       </div>
 
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="document.getElementById('sound-upload-modal').remove()">Ä°ptal</button>
-        <button class="btn" onclick="uploadSound()">ğŸµ YÃ¼kle</button>
+        <button class="btn btn-secondary" onclick="document.getElementById('sound-upload-modal').remove()">İptal</button>
+        <button class="btn" onclick="uploadSound()">ğŸµ Yükle</button>
       </div>
     </div>`;
   modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
@@ -154,12 +155,12 @@ function previewSoundFile(input) {
 async function uploadSound() {
   const fileInput = document.getElementById('sound-file-input');
   const file = fileInput?.files[0];
-  if (!file) return toast('Dosya seÃ§', 'error');
+  if (!file) return toast('Dosya seç', 'error');
 
   const name  = document.getElementById('sound-name-input')?.value.trim();
   const emoji = document.getElementById('sound-emoji-input')?.value.trim() || 'ğŸ”Š';
 
-  if (!name) return toast('Ä°sim gerekli', 'error');
+  if (!name) return toast('İsim gerekli', 'error');
 
   const formData = new FormData();
   formData.append('sound', file);
@@ -171,20 +172,20 @@ async function uploadSound() {
       method: 'POST',
       body:   formData,
     });
-    if (!r.ok) { const e = await r.json(); return toast(e.error || 'YÃ¼klenemedi', 'error'); }
+    if (!r.ok) { const e = await r.json(); return toast(e.error || 'Yüklenemedi', 'error'); }
     document.getElementById('sound-upload-modal')?.remove();
     toast('Ses eklendi! ğŸµ', 'success');
     await refreshSoundboard();
   } catch(e) {
-    toast('YÃ¼klenemedi', 'error');
+    toast('Yüklenemedi', 'error');
   }
 }
 
-// â”€â”€ SOCKET: remote soundboard play â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── SOCKET: remote soundboard play ───────────────────────────
 function initSoundboardSocket(socket) {
   socket.on('soundboard:play', ({ channelId, soundUrl, soundName, emoji }) => {
     // Only play if we're in the same voice channel
-    if (!window.rtc?.isInVoice() || rtc.currentChannelId !== channelId) return;
+    if (!(BridgeRegistry.get('rtc') as { isInVoice(): boolean } | null)?.isInVoice() || rtc.currentChannelId !== channelId) return;
     toast(`${emoji || 'ğŸ”Š'} ${soundName}`, 'info');
     // Play via remote audio (low volume so it mixes)
     const audio = new Audio(soundUrl);

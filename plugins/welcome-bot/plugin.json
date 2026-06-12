@@ -1,12 +1,13 @@
 {
-  "id":          "welcome-bot",
-  "name":        "Welcome Bot",
-  "version":     "1.0.0",
+  "id": "welcome-bot",
+  "name": "Welcome Bot",
+  "version": "1.0.0",
   "description": "Yeni üyeler sunucuya katılınca hoş geldiniz mesajı gönderir",
-  "author":      "Bridge",
-  "disabled":    false,
+  "author": "Bridge",
+  "disabled": false,
   "config": {
     "messageTemplate": "👋 Hoş geldin, {username}! Sunucumuza katıldığın için teşekkürler.",
-    "channelName":     "genel"
-  }
+    "channelName": "genel"
+  },
+  "main": "index.ts"
 }

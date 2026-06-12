@@ -1,0 +1,221 @@
+/* client/css/modules/rtl.css
+ * Sprint 85: Arapça (ve gelecekteki RTL diller) için layout düzeltmeleri.
+ *
+ * Strateji:
+ *   - Fiziksel özellikler (margin-left, padding-right, left, right, text-align)
+ *     yerine CSS Logical Properties kullanılır → LTR/RTL'de otomatik çalışır.
+ *   - Mevcut kodda logical property'ye geçiş yapılamayan bileşenler için
+ *     .rtl scope ile override yazılır.
+ *   - Icon mirror: yön belirten ikonlar (→ ok, chevron, vb.) yatay çevrilir.
+ *
+ * Etkinleştirme: i18n.ts — setLang('ar') çağrısında <html class="rtl" dir="rtl">
+ * set edilir; bu dosya otomatik olarak devreye girer.
+ */
+
+/* ── Temel yön ──────────────────────────────────────────────── */
+:root {
+  --inline-start: left;
+  --inline-end:   right;
+}
+.rtl {
+  --inline-start: right;
+  --inline-end:   left;
+}
+
+/* ── Sidebar / kanal listesi ────────────────────────────────── */
+.rtl #sidebar,
+.rtl .channel-sidebar {
+  left:  unset;
+  right: 0;
+  border-left:  1px solid rgba(255,255,255,.06);
+  border-right: none;
+}
+
+.rtl #main-content,
+.rtl .main-content {
+  margin-left:  0;
+  margin-right: var(--sidebar-width, 240px);
+}
+
+/* ── Mesaj listesi ──────────────────────────────────────────── */
+.rtl .message-item {
+  flex-direction: row-reverse;
+}
+.rtl .message-item .avatar {
+  margin-left:  12px;
+  margin-right: 0;
+}
+.rtl .message-content {
+  text-align: right;
+}
+.rtl .message-meta {
+  flex-direction: row-reverse;
+}
+.rtl .message-meta .timestamp {
+  margin-left:  0;
+  margin-right: 8px;
+}
+
+/* ── Input alanı ────────────────────────────────────────────── */
+.rtl .message-input-bar {
+  flex-direction: row-reverse;
+}
+.rtl .message-input-bar input,
+.rtl .message-input-bar textarea {
+  text-align: right;
+  direction:  rtl;
+}
+.rtl .input-actions {
+  margin-left:  0;
+  margin-right: 8px;
+}
+
+/* ── Member listesi (sağ panel) ─────────────────────────────── */
+.rtl #members-panel,
+.rtl .members-panel {
+  right: unset;
+  left:  0;
+  border-right: 1px solid rgba(255,255,255,.06);
+  border-left:  none;
+}
+
+/* ── Tooltip / data-tip ─────────────────────────────────────── */
+.rtl [data-tip]::after {
+  left:      unset;
+  right:     100%;
+  margin-right: 8px;
+  margin-left:  0;
+}
+
+/* ── Dropdown menüler ───────────────────────────────────────── */
+.rtl .dropdown-menu {
+  left:  unset;
+  right: 0;
+  text-align: right;
+}
+.rtl .dropdown-menu .menu-item {
+  flex-direction: row-reverse;
+}
+.rtl .dropdown-menu .menu-item svg,
+.rtl .dropdown-menu .menu-item .icon {
+  margin-right: 0;
+  margin-left:  8px;
+}
+
+/* ── Kanal başlığı ──────────────────────────────────────────── */
+.rtl .channel-header {
+  flex-direction: row-reverse;
+}
+.rtl .channel-header .channel-name {
+  text-align: right;
+}
+
+/* ── İkon mirror — yön bildiren SVG'ler ─────────────────────── */
+/* Yalnızca gerçekten yön içeren ikonlar; simetrik ikonlar (✓, ✕) hariç */
+.rtl .icon-directional,
+.rtl .icon-chevron-right,
+.rtl .icon-arrow-right,
+.rtl .icon-forward,
+.rtl .icon-send {
+  transform: scaleX(-1);
+}
+
+/* ── Bildirim rozeti ─────────────────────────────────────────── */
+.rtl .unread-badge {
+  left:  unset;
+  right: -6px;
+}
+
+/* ── Modal / dialog ─────────────────────────────────────────── */
+.rtl .modal-header {
+  flex-direction: row-reverse;
+}
+.rtl .modal-header .modal-close {
+  margin-left:  0;
+  margin-right: auto;
+}
+.rtl .modal-body,
+.rtl .modal-footer {
+  text-align: right;
+}
+.rtl .modal-footer {
+  flex-direction: row-reverse;
+}
+
+/* ── Arama kutusu ────────────────────────────────────────────── */
+.rtl .search-bar input {
+  padding-left:  12px;
+  padding-right: 36px;  /* arama ikonu için */
+  text-align:    right;
+  direction:     rtl;
+}
+.rtl .search-bar .search-icon {
+  left:  unset;
+  right: 10px;
+}
+
+/* ── Ayarlar modal sekmeleri ─────────────────────────────────── */
+.rtl .settings-sidebar {
+  border-right: none;
+  border-left:  1px solid rgba(255,255,255,.08);
+}
+.rtl .settings-tab-item {
+  text-align:    right;
+  flex-direction: row-reverse;
+}
+
+/* ── Kanal kategorileri & collapsible ────────────────────────── */
+.rtl .category-header {
+  flex-direction: row-reverse;
+}
+.rtl .category-header .collapse-icon {
+  transform: scaleX(-1);
+}
+
+/* ── Scrollbar (ince — WebKit) ───────────────────────────────── */
+.rtl ::-webkit-scrollbar {
+  /* RTL'de scrollbar sağda kalır (varsayılan zaten doğru);
+     ilave değişiklik gerekmez */
+}
+
+/* ── Geçici uyumluluk: logical properties desteklemeyen eski kurallar ── */
+/* Bu blok zamanla küçültülmeli; yukarıdaki overridelar yeterli hale
+   gelince silinebilir. */
+
+/* ── Canvas (çizim alanı) ────────────────────────────────────── */
+/* Canvas element'i tarayıcı tarafından LTR olarak render edilir;
+   RTL modunda araç çubuğu ve kontroller fiziksel override gerektirir. */
+.rtl .canvas-toolbar {
+  left:  unset;
+  right: 12px;
+}
+.rtl .canvas-toolbar-item {
+  flex-direction: row-reverse;
+}
+.rtl .canvas-color-picker-popover {
+  left:  unset;
+  right: 56px;
+  /* popover, toolbar'ın sağına hizalanır; top değeri LTR ile aynı kalır */
+}
+
+/* ── Video Grid (stage / group call) ─────────────────────────── */
+/* Grid kendisi flex/grid ile yönetildiğinden logical properties yeterlidir;
+   ancak overlay kontrolleri (mikrofon, kamera butonları) pozisyon override ister. */
+.rtl .video-grid-controls {
+  flex-direction: row-reverse;
+}
+.rtl .video-tile-name {
+  left:   unset;
+  right:  8px;
+  text-align: right;
+}
+.rtl .video-tile-muted-badge {
+  left:   unset;
+  right:  8px;
+}
+.rtl .stage-video-sidebar {
+  left:   unset;
+  right:  0;
+  border-left:  none;
+  border-right: 1px solid rgba(255,255,255,.08);
+}

@@ -1,0 +1,213 @@
+/* ── Bridge · high-contrast.css ───────────────────────────────── */
+
+/* ═══════════════════════════════════════
+   LIGHT THEME — Bileşen Overrides (v78)
+   tokens.css [data-theme="light"] temel değişkenleri ayarlıyor;
+   aşağıdaki kurallar belirli bileşenleri açık temaya uyarlar.
+═══════════════════════════════════════ */
+
+/* Stage görünümü - inline style'ı geçersiz kıl */
+[data-theme="light"] #stage-view {
+  background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%) !important;
+  color: var(--text-primary) !important;
+}
+[data-theme="light"] #stage-view h2,
+[data-theme="light"] .stage-speaker-name,
+[data-theme="light"] .stage-mic-label {
+  color: var(--text-primary) !important;
+}
+
+/* Bot marketplace modal */
+[data-theme="light"] .bot-market-modal,
+[data-theme="light"] .bot-market-sidebar,
+[data-theme="light"] .bot-market-main {
+  background: var(--bg-2);
+  color: var(--text-primary);
+}
+[data-theme="light"] .bot-catalog-card {
+  background: var(--bg-3);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+[data-theme="light"] .bot-catalog-card:hover {
+  background: var(--bg-4);
+}
+[data-theme="light"] .bot-detail-header {
+  background: var(--bg-1);
+}
+[data-theme="light"] .bot-tag {
+  background: var(--bg-4);
+  color: var(--text-2);
+}
+
+/* Embed container */
+[data-theme="light"] .message-embed {
+  background: var(--bg-3);
+}
+[data-theme="light"] .embed-footer {
+  border-top-color: var(--border);
+}
+
+/* Modal overlays */
+[data-theme="light"] .modal-bg,
+[data-theme="light"] .modal-overlay {
+  background: rgba(0, 0, 0, 0.4);
+}
+[data-theme="light"] .modal,
+[data-theme="light"] .modal-box {
+  background: var(--bg-2);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+[data-theme="light"] .modal-header {
+  border-bottom-color: var(--border);
+}
+[data-theme="light"] .modal-footer {
+  border-top-color: var(--border);
+}
+
+/* Context menu */
+[data-theme="light"] .context-menu {
+  background: var(--bg-2);
+  border-color: var(--border);
+  box-shadow: var(--shadow-md);
+}
+[data-theme="light"] .context-menu-item:hover {
+  background: var(--bg-4);
+}
+[data-theme="light"] .context-menu-sep {
+  border-color: var(--border);
+}
+
+/* Tooltip */
+[data-theme="light"] .tooltip,
+[data-theme="light"] [data-tip]::after {
+  background: var(--bg-0);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+
+/* Code blocks */
+[data-theme="light"] .msg-text pre {
+  background: var(--bg-1);
+  border-color: var(--border-strong);
+}
+[data-theme="light"] .msg-text code {
+  background: var(--bg-1);
+  color: var(--text-2);
+}
+
+/* Input fields */
+[data-theme="light"] input,
+[data-theme="light"] textarea,
+[data-theme="light"] select {
+  background: var(--bg-1);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+[data-theme="light"] input:focus,
+[data-theme="light"] textarea:focus {
+  border-color: var(--brand);
+  background: var(--bg-2);
+}
+
+/* Sidebar & channels */
+[data-theme="light"] .sidebar-left {
+  background: var(--bg-1);
+}
+[data-theme="light"] .channel-area {
+  background: var(--bg-2);
+}
+[data-theme="light"] .ch-item:hover {
+  background: var(--bg-4);
+}
+[data-theme="light"] .ch-item.active {
+  background: var(--bg-5);
+  color: var(--text-primary);
+}
+
+/* DM panel */
+[data-theme="light"] .dm-item:hover {
+  background: var(--bg-4);
+}
+[data-theme="light"] .dm-item.active {
+  background: var(--bg-5);
+}
+
+/* Message input area */
+[data-theme="light"] .msg-input-wrap {
+  background: var(--bg-3);
+  border-color: var(--border);
+}
+[data-theme="light"] #msg-input {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+/* Unread badge in light theme */
+[data-theme="light"] .ch-unread {
+  background: var(--red);
+  color: #fff;
+}
+
+/* Reaction pills */
+[data-theme="light"] .reaction-pill {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+[data-theme="light"] .reaction-pill.reacted {
+  background: var(--brand-bg);
+  border-color: var(--brand-border);
+}
+
+/* Search bar */
+[data-theme="light"] .search-bar,
+[data-theme="light"] #search-input {
+  background: var(--bg-1);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+/* Dropdowns */
+[data-theme="light"] .dropdown,
+[data-theme="light"] .role-dropdown,
+[data-theme="light"] .emoji-picker {
+  background: var(--bg-2);
+  border-color: var(--border);
+  box-shadow: var(--shadow-md);
+}
+
+/* Settings panels */
+[data-theme="light"] .settings-sidebar {
+  background: var(--bg-1);
+}
+[data-theme="light"] .settings-content {
+  background: var(--bg-2);
+}
+[data-theme="light"] .settings-section {
+  background: var(--bg-3);
+  border-color: var(--border);
+}
+
+/* Scrollbar light */
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: var(--bg-5);
+}
+
+/* ch-unread badge positioning/style */
+.ch-unread {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-full);
+  background: var(--red);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: auto;
+  flex-shrink: 0;
+}

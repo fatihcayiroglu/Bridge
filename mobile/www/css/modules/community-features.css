@@ -1,0 +1,639 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Bridge — community-features.css
+   Sprint 119 Refactor: sprint91 + sprint92 + sprint93 + sprint94 birleştirildi.
+
+   Neden: "sprint91.css" gibi isimler zaman bazlı borç — özelliğe göre
+   isimlendirme daha sürdürülebilir. Bu dosya aynı stilleri barındırır,
+   sadece organize edilmiş ve öncelik çakışmaları giderilmiştir.
+
+   Bölümler:
+     1.  Modal sistem (paylaşılan)
+     2.  Sunucu profili
+     3.  Bildirim tercihleri
+     4.  Bot marketplace
+     5.  Keşif paneli
+     6.  Soundboard
+     7.  Thread arşivi
+     8.  Ses çubuğu (mobil + masaüstü)
+     9.  Ses ayarları
+     10. Boost & vanity
+     11. Spotify widget
+     12. E2EE göstergeleri
+     13. Analytics dashboard
+     14. Duyuru kanalı
+     15. Mesaj aksiyonları (thread btn)
+     16. Responsive (mobil kırılma noktaları)
+     17. Tema override'ları (light/amoled)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. MODAL SİSTEM (PAYLAŞILAN) ────────────────────────────────────────── */
+
+@keyframes modal-slide-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ctx-pop {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.modal-footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.form-group label { display: block; }
+
+.form-group input:focus,
+.form-group textarea:focus,
+.form-group select:focus {
+  border-color: var(--brand) !important;
+  box-shadow: 0 0 0 3px var(--brand-subtle);
+}
+
+/* ── 2. SUNUCU PROFİLİ ───────────────────────────────────────────────────── */
+
+#server-profile-modal .modal-card {
+  animation: modal-slide-up 0.2s ease;
+}
+
+#sp-avatar-preview img {
+  transition: opacity 0.2s;
+}
+
+#sp-banner-area:hover .sp-banner-overlay {
+  opacity: 1;
+}
+
+/* ── 3. BİLDİRİM TERCİHLERİ ──────────────────────────────────────────────── */
+
+#notif-pref-panel {
+  animation: ctx-pop 0.15s ease;
+}
+
+.ch-mute-badge {
+  display: inline-flex;
+  align-items: center;
+  pointer-events: none;
+}
+
+.ch-item[data-muted="true"] .ch-name {
+  opacity: 0.5;
+}
+
+/* ── 4. BOT MARKETPLACE ──────────────────────────────────────────────────── */
+
+#bot-marketplace-modal .modal-card {
+  animation: modal-slide-up 0.2s ease;
+}
+
+.bm-cat-btn::-webkit-scrollbar { display: none; }
+
+/* ── 5. KEŞİF PANELİ ────────────────────────────────────────────────────── */
+
+#discover-root { min-height: 100%; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* ── 6. SOUNDBOARD ───────────────────────────────────────────────────────── */
+
+#soundboard-panel {
+  animation: sb-slide-up 0.2s ease;
+}
+
+@keyframes sb-slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+#sb-grid::-webkit-scrollbar { width: 4px; }
+#sb-grid::-webkit-scrollbar-thumb {
+  background: var(--bg-5);
+  border-radius: 2px;
+}
+
+#sb-cats::-webkit-scrollbar { display: none; }
+
+#sb-grid button[data-active="true"] {
+  box-shadow: 0 0 0 2px var(--brand-subtle);
+}
+
+/* ── 7. THREAD ARŞİVİ ───────────────────────────────────────────────────── */
+
+#thread-list-content::-webkit-scrollbar { width: 4px; }
+#thread-list-content::-webkit-scrollbar-thumb {
+  background: var(--bg-5);
+  border-radius: 2px;
+}
+
+.thread-count-badge {
+  font-size: 11px;
+  background: var(--bg-hover);
+  border-radius: 12px;
+  padding: 1px 7px;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.thread-count-badge:hover {
+  background: var(--brand);
+  color: #fff;
+}
+
+/* Thread mesaj aksiyon butonu */
+.msg-action-btn.thread-btn {
+  color: var(--brand);
+  position: relative;
+}
+
+.msg-action-btn.thread-btn:hover {
+  background: var(--brand-subtle);
+  color: var(--brand-hover);
+}
+
+/* ── 8. SES ÇUBUĞU ───────────────────────────────────────────────────────── */
+
+/* Mobil */
+#mobile-voice-bar {
+  animation: voice-bar-drop 0.25s ease;
+}
+
+@keyframes voice-bar-drop {
+  from { transform: translateY(-100%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+@keyframes voice-pulse {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%       { opacity: 0.7; transform: scale(1.1); }
+}
+
+:root { --voice-bar-height: 0px; }
+
+/* Masaüstü ses çubuğu */
+#desktop-voice-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-1);
+  border-top: 1px solid var(--border);
+}
+
+#desktop-voice-bar .voice-ch-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#desktop-voice-bar .voice-bar-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s, color 0.1s;
+  flex-shrink: 0;
+}
+
+#desktop-voice-bar .voice-bar-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+#desktop-voice-bar .voice-bar-btn.active-mute {
+  color: var(--red);
+}
+
+#desktop-voice-bar .voice-bar-btn.active-mute:hover {
+  background: rgba(var(--red-rgb, 237, 66, 69), 0.15);
+}
+
+/* ── 9. SES AYARLARI PANELİ ──────────────────────────────────────────────── */
+
+/* Toggle switch */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-5);
+  border-radius: 11px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 3px;
+  top: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--brand);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(18px);
+}
+
+/* Mikrofon ölçer */
+.mic-meter {
+  height: 6px;
+  background: var(--bg-5);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.mic-meter-fill {
+  height: 100%;
+  background: var(--green);
+  border-radius: 3px;
+  transition: width 0.08s linear;
+}
+
+.mic-meter-fill.clip { background: var(--red); }
+
+/* ── 10. BOOST & VANİTY URL ──────────────────────────────────────────────── */
+
+.boost-panel { display: flex; flex-direction: column; gap: 16px; }
+
+.boost-tier-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--r-md);
+  border: 2px solid var(--border);
+  background: var(--bg-3);
+}
+
+.boost-tier-icon { font-size: 24px; }
+.boost-tier-label { font-size: 16px; font-weight: 700; }
+.boost-count { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+.boost-progress-wrap { display: flex; flex-direction: column; gap: 6px; }
+
+.boost-progress-bar {
+  height: 8px;
+  background: var(--bg-5);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.boost-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--brand), var(--accent));
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.boost-perks-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.boost-perk {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.boost-perk-icon { font-size: 16px; flex-shrink: 0; }
+
+.vanity-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--bg-2);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+}
+
+.vanity-url-prefix {
+  font-size: 13px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.vanity-url-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 13px;
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+/* ── 11. SPOTİFY WİDGET ──────────────────────────────────────────────────── */
+
+.spotify-widget {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg-2);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+}
+
+.spotify-widget .sp-art {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.spotify-widget .sp-art-placeholder {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-sm);
+  background: var(--bg-5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.spotify-widget .sp-info {
+  flex: 1;
+  overflow: hidden;
+}
+
+.spotify-widget .sp-track {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spotify-widget .sp-artist {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spotify-widget .sp-logo {
+  color: #1db954;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+/* ── 12. E2EE GÖSTERGELERİ ───────────────────────────────────────────────── */
+
+.e2ee-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--green);
+  background: rgba(46, 204, 154, 0.12);
+  border-radius: 10px;
+  padding: 2px 8px;
+}
+
+.e2ee-badge svg { width: 11px; height: 11px; }
+
+.e2ee-channel-indicator {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  background: var(--green);
+  border: 2px solid var(--bg-2);
+  border-radius: 50%;
+}
+
+.e2ee-key-fingerprint {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+  word-break: break-all;
+}
+
+/* ── 13. ANALİTİK DASHBOARD ──────────────────────────────────────────────── */
+
+.analytics-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 4px 0;
+}
+
+.analytics-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.analytics-header h3 { margin: 0; font-size: 18px; }
+
+.analytics-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.analytics-card {
+  background: var(--bg-2);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.analytics-card .card-label {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.analytics-card .card-value {
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--text-1);
+  line-height: 1.1;
+}
+
+.analytics-card .card-delta {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.analytics-card .card-delta.positive { color: var(--green); }
+.analytics-card .card-delta.negative { color: var(--red); }
+
+.analytics-chart-wrap {
+  background: var(--bg-2);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  padding: 16px;
+}
+
+.analytics-chart-wrap canvas {
+  max-height: 200px;
+}
+
+/* ── 14. DUYURU KANALI ───────────────────────────────────────────────────── */
+
+.announcement-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, var(--brand-bg), var(--bg-2));
+  border: 1px solid var(--brand-border);
+  border-radius: var(--r-md);
+  margin-bottom: 8px;
+}
+
+.announcement-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.announcement-body { flex: 1; overflow: hidden; }
+
+.announcement-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-1);
+  margin-bottom: 2px;
+}
+
+.announcement-text {
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+.announcement-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--r-sm);
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.announcement-dismiss:hover { color: var(--text-1); }
+
+/* ── 15. Responsive ──────────────────────────────────────────────────────── */
+
+@media (max-width: 480px) {
+  #bot-marketplace-modal .modal-card {
+    border-radius: 14px 14px 0 0;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 85vh;
+    animation: bottom-sheet-up 0.25s ease;
+  }
+
+  @keyframes bottom-sheet-up {
+    from { transform: translateY(100%); }
+    to   { transform: translateY(0); }
+  }
+
+  #soundboard-panel {
+    bottom: 0;
+    right: 0;
+    left: 0;
+    width: 100%;
+    border-radius: 14px 14px 0 0;
+  }
+
+  #thread-list-panel {
+    width: 100% !important;
+  }
+
+  .analytics-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 360px) {
+  .analytics-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── 16. TEMA OVERRIDE'LARI ──────────────────────────────────────────────── */
+
+[data-theme="light"] #soundboard-panel,
+[data-theme="light"] #notif-pref-panel {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="light"] .boost-tier-header {
+  background: var(--bg-1);
+}
+
+[data-theme="light"] .spotify-widget {
+  background: var(--bg-1);
+}
+
+[data-theme="amoled"] .analytics-card,
+[data-theme="amoled"] .boost-tier-header {
+  background: #0a0a0a;
+  border-color: rgba(255, 255, 255, 0.06);
+}

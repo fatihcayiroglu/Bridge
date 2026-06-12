@@ -1,24 +1,84 @@
-// server/routes/semantic.js: AI Semantic Search
+/**
+ * @openapi
+ * tags:
+ *   - name: Semantic
+ *     description: Semantic API endpoints
+
+ *
+ * /semantic/search:
+ *   post:
+ *     tags: [Search]
+ *     summary: Semantik mesaj arama (AI embedding)
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [query, serverId]
+ *             properties:
+ *               query:    { type: string, description: 'Doğal dil sorgu' }
+ *               serverId: { type: string }
+ *               limit:    { type: integer, default: 10 }
+ *     responses:
+ *       200:
+ *         description: Eşleşen mesajlar
+ *
+ * /semantic/digest/{serverId}:
+ *   get:
+ *     tags: [AI]
+ *     summary: Sunucu haftalık digest oluştur
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: serverId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Haftalık özet
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *
+ * /semantic/engagement/{serverId}:
+ *   get:
+ *     tags: [AI]
+ *     summary: Sunucu bağlılık analizi
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: serverId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Bağlılık metrikleri
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+
+// server/routes/semantic.ts: AI Semantic Search
 // "Bu haftaki önemli kararlar" gibi doğal dil sorguları
 // Groq/Gemini/OpenRouter/Ollama ile çalışır — API key gerekmez (kural tabanlı fallback)
 
-const express      = require('express');
+import express from 'express';
+import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router       = express.Router();
-const { Members, Messages, Users, Channels } = require('../db/repositories');
-const { authMiddleware, castAuthed } = require('../middleware/auth');
-const asyncHandler = require('../middleware/asyncHandler');
-const { cache }    = require('../lib/redisAdapter');
-const { limits }   = require('../middleware/rateLimit');
+import { Members, Messages, Users, Channels } from '../db/repositories';
+import { authMiddleware} from '../middleware/auth';
+import { cache } from '../lib/redisAdapter';
+import { limits } from '../middleware/rateLimit';
 
-const { callAI, AI_ENABLED } = require('../lib/aiProvider');
+import { callAI, AI_ENABLED } from '../lib/aiProvider';
+import logger from '../lib/logger';
+import { generateEmbedding, vectorSearch, PGVECTOR_ENABLED, EMBEDDING_PROVIDER } from '../lib/pgvector';
 
 // ── KURAL TABANLI FALLBACK ──────────────────────────────────────
-function keywordSearch(query, messages) {
+function keywordSearch<T extends { content?: string }>(query: string, messages: T[]): Array<T & { _score: number }> {
   const q = query.toLowerCase();
   const keywords = q.split(/\s+/).filter(w => w.length > 2);
   return messages
     .map(m => {
-      const content = (m.content || '').toLowerCase();
+      const content = String(m.content || '').toLowerCase();
       const score = keywords.reduce((s, kw) => s + (content.includes(kw) ? 1 : 0), 0);
       return { ...m, _score: score };
     })
@@ -28,9 +88,10 @@ function keywordSearch(query, messages) {
 }
 
 // ── POST /api/semantic/search — Doğal dil mesaj araması ─────────
-router.post('/search', authMiddleware, limits.ai(), asyncHandler(async (req, res) => {
+router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { query, serverId, channelId, days = 7 } = req.body;
+  const { query, serverId, channelId, days: rawDays = 7 } = req.body as { query?: string; serverId?: string; channelId?: string; days?: unknown; limit?: unknown };
+  const days = Number(rawDays) || 7;
   if (!query?.trim()) return res.status(400).json({ error: 'query gerekli' });
   if (!serverId)      return res.status(400).json({ error: 'serverId gerekli' });
 
@@ -44,7 +105,7 @@ router.post('/search', authMiddleware, limits.ai(), asyncHandler(async (req, res
 
   // Mesajları getir
   const since = Date.now() - (days * 24 * 60 * 60 * 1000);
-  const filter: Record<string,any> = { serverId, createdAt: { $gt: since }, type: { $ne: 'system' } };
+  const filter: Record<string, unknown> = { serverId, createdAt: { $gt: since }, type: { $ne: 'system' } };
   if (channelId) filter.channelId = channelId;
 
   const messages = await Messages.messagesFind(filter).sort({ createdAt: -1 }).limit(200);
@@ -53,19 +114,64 @@ router.post('/search', authMiddleware, limits.ai(), asyncHandler(async (req, res
   // Kullanıcı adlarını getir
   const userIds = [...new Set(messages.map(m => m.userId))];
   const users   = await Users.findByIds(userIds);
-  const userMap = {};
+  const userMap: Record<string, string> = {};
   users.forEach(u => { userMap[u._id] = u.displayName || u.username; });
 
   // Kanal adlarını getir
   const channelIds = [...new Set(messages.map(m => m.channelId))];
   const channels   = await Channels.findWhere({ _id: { $in: channelIds } });
-  const channelMap = {};
+  const channelMap: Record<string, string> = {};
   channels.forEach(c => { channelMap[c._id] = c.name; });
 
   let results;
   let provider = 'rules';
 
-  if (AI_ENABLED) {
+  // ── pgvector semantik arama (AI_ENABLED gerektirmez) ─────────────────────
+  if (PGVECTOR_ENABLED) {
+    try {
+      const embedding = await generateEmbedding(query);
+      if (embedding) {
+        // PostgreSQL pool'u repositories'den al
+        const { pool } = await import('../db/postgres');
+        const vectorMatches = await vectorSearch({
+          db:        pool,
+          embedding,
+          serverId,
+          channelId: channelId || undefined,
+          since,
+          limit:     Number(req.body.limit) || 10,
+        });
+
+        if (vectorMatches.length > 0) {
+          // vectorSearch message_id dizisi döner, mesajları eşleştir
+          const matchedMessages = vectorMatches
+            .map(vm => messages.find(m => m._id === vm.message_id))
+            .filter((m): m is NonNullable<typeof m> => Boolean(m));
+
+          if (matchedMessages.length > 0) {
+            results = {
+              matches: matchedMessages.map(m => ({
+                _id:         m._id,
+                content:     m.content,
+                userId:      m.userId,
+                username:    userMap[m.userId] || '?',
+                channelId:   m.channelId,
+                channelName: channelMap[m.channelId] || '?',
+                createdAt:   m.createdAt,
+              })),
+              explanation: `pgvector cosine similarity araması (${EMBEDDING_PROVIDER}) — ${matchedMessages.length} sonuç.`,
+            };
+            provider = `pgvector:${EMBEDDING_PROVIDER}`;
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, event: 'semantic.pgvector.failed' }, 'pgvector araması başarısız, devam ediliyor.');
+    }
+  }
+
+  // ── AI araması (pgvector sonuç vermediyse veya devre dışıysa) ────────────
+  if (!results && AI_ENABLED) {
     try {
       // AI'ya mesajları ver ve ilgilileri bul
       const transcript = messages.slice(0, 100).map((m, i) =>
@@ -78,17 +184,18 @@ router.post('/search', authMiddleware, limits.ai(), asyncHandler(async (req, res
         200
       );
 
-      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim()) as { indices?: number[]; explanation?: string };
       const indices = (parsed.indices || []).slice(0, 15);
       results = {
-        matches: indices.map(i => messages[i]).filter(Boolean).map(m => ({
+        matches: indices.map((i: number) => messages[i]).filter((m): m is NonNullable<typeof m> => Boolean(m)).map(m => ({
           _id: m._id, content: m.content, userId: m.userId,
           username: userMap[m.userId] || '?', channelId: m.channelId,
           channelName: channelMap[m.channelId] || '?', createdAt: m.createdAt,
         })),
         explanation: parsed.explanation || '',
       };
-      provider = require('../lib/aiProvider').PROVIDER;
+       
+      provider = ((await import('../lib/aiProvider')) as { PROVIDER?: string }).PROVIDER ?? 'unknown';
     } catch {
       // Fallback
       const matched = keywordSearch(query, messages);
@@ -101,7 +208,8 @@ router.post('/search', authMiddleware, limits.ai(), asyncHandler(async (req, res
         explanation: 'Anahtar kelime eşleşmesi kullanıldı.',
       };
     }
-  } else {
+  } else if (!results) {
+    // pgvector da sonuç vermedi, AI da kapalı — keyword fallback
     const matched = keywordSearch(query, messages);
     results = {
       matches: matched.map(m => ({
@@ -113,15 +221,29 @@ router.post('/search', authMiddleware, limits.ai(), asyncHandler(async (req, res
     };
   }
 
+  // Son güvenlik ağı: pgvector + AI her ikisi de sonuç vermediyse keyword fallback
+  if (!results) {
+    const matched = keywordSearch(query, messages);
+    results = {
+      matches: matched.map(m => ({
+        _id: m._id, content: m.content, userId: m.userId,
+        username: userMap[m.userId] || '?', channelId: m.channelId,
+        channelName: channelMap[m.channelId] || '?', createdAt: m.createdAt,
+      })),
+      explanation: 'Anahtar kelime eşleşmesi (fallback).',
+    };
+    provider = 'rules';
+  }
+
   const out = { ...results, query, provider, total: results.matches.length, days, aiDisabled: !AI_ENABLED };
   await cache.set(cacheKey, out, 180); // 3dk cache
   res.json(out);
-}));
+});
 
 // ── GET /api/semantic/digest/:serverId — Haftalık özet ─────────
-router.get('/digest/:serverId', authMiddleware, asyncHandler(async (req, res) => {
+router.get('/digest/:serverId', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const { serverId } = req.params;
+  const serverId = String(req.params.serverId ?? '');
   const days = parseInt(String(req.query.days ?? '')) || 7;
 
   const member = await Members.findOne(_u.id, serverId);
@@ -143,10 +265,10 @@ router.get('/digest/:serverId', authMiddleware, asyncHandler(async (req, res) =>
       .filter(m => m.content && m.reactions)
       .map(m => {
         let reactionCount = 0;
-        try { const r = JSON.parse(m.reactions || '{}'); reactionCount = (Object.values(r) as any[]).reduce((s: number, v: any) => s + (v as any[]).length, 0) as number; } catch {}
+        try { const r = JSON.parse(m.reactions || '{}'); reactionCount = (Object.values(r) as unknown[][]).reduce((s: number, v: unknown) => s + (Array.isArray(v) ? v.length : 0), 0); } catch {}
         return { ...m, reactionCount };
       })
-      .sort((a: any, b: any) => b.reactionCount - a.reactionCount)
+      .sort((a: { reactionCount: number }, b: { reactionCount: number }) => b.reactionCount - a.reactionCount)
       .slice(0, 3);
 
     return { channelId: ch._id, channelName: ch.name, messageCount: msgs.length, topMessages: topMsgs };
@@ -154,18 +276,18 @@ router.get('/digest/:serverId', authMiddleware, asyncHandler(async (req, res) =>
 
   // Aktif üyeler
   const allMsgs = await Messages.findWhere({ serverId, createdAt: { $gt: since } });
-  const msgByUser = {};
+  const msgByUser: Record<string, number> = {};
   allMsgs.forEach(m => { msgByUser[m.userId] = (msgByUser[m.userId] || 0) + 1; });
   const topUsers = Object.entries(msgByUser)
-    .sort((a: any, b: any) => b[1] - a[1])
+    .sort((a: [string, number], b: [string, number]) => b[1] - a[1])
     .slice(0, 5)
     .map(([uid, count]) => ({ userId: uid, messageCount: count }));
 
   const userIds = topUsers.map(u => u.userId);
   const users = await Users.findByIds(userIds);
-  const userMap = {};
+  const userMap: Record<string, string> = {};
   users.forEach(u => { userMap[u._id] = u.displayName || u.username; });
-  topUsers.forEach((u: any) => { u.username = userMap[u.userId] || '?'; });
+  topUsers.forEach((u: { userId: string; username?: string }) => { u.username = userMap[u.userId] || '?'; });
 
   // AI özet
   let aiSummary = null;
@@ -195,12 +317,12 @@ router.get('/digest/:serverId', authMiddleware, asyncHandler(async (req, res) =>
   };
   await cache.set(cacheKey, out, 1800); // 30dk cache
   res.json(out);
-}));
+});
 
 // ── GET /api/semantic/engagement/:serverId — Bağlılık skoru ────
-router.get('/engagement/:serverId', authMiddleware, asyncHandler(async (req, res) => {
+router.get('/engagement/:serverId', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const { serverId } = req.params;
+  const serverId = String(req.params.serverId ?? '');
 
   const member = await Members.findOne(_u.id, serverId);
   if (!member) return res.status(403).json({ error: 'Üye değilsiniz' });
@@ -241,7 +363,10 @@ router.get('/engagement/:serverId', authMiddleware, asyncHandler(async (req, res
     peakHourFormatted: `${peakHour}:00 - ${(peakHour + 1) % 24}:00`,
     generatedAt: now,
   });
-}));
+});
 
+export default router;
+
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-export {};
+module.exports.default = router;

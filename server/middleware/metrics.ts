@@ -1,7 +1,9 @@
 // server/middleware/metrics.ts
 // Prometheus metrik toplama (prom-client)
 
+import logger from '../lib/logger';
 import { Request, Response, NextFunction } from 'express';
+import { tryRequire } from '../lib/_optional-require';
 
 const ENABLED = process.env.METRICS_ENABLED !== 'false';
 const PREFIX  = process.env.METRICS_PREFIX || 'bridge_';
@@ -29,15 +31,14 @@ let rateLimitAnomalyGauge!: Gauge;
 
 if (ENABLED) {
   try {
-     
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const prom = require('prom-client') as {
+    const prom = tryRequire<{
       Registry: new () => Registry & { register: unknown };
       collectDefaultMetrics(opts: { register: unknown; prefix: string }): void;
       Histogram: new (opts: Record<string, unknown>) => Histogram;
       Counter:   new (opts: Record<string, unknown>) => Counter;
       Gauge:     new (opts: Record<string, unknown>) => Gauge;
-    };
+    }>('prom-client');
+    if (!prom) throw new Error('prom-client not installed');
 
     const reg = new prom.Registry();
     registry = reg as unknown as Registry;
@@ -131,9 +132,9 @@ if (ENABLED) {
       registers: [reg],
     });
 
-    console.log('[Metrics] Prometheus metrik toplama aktif');
+    logger.info('[Metrics] Prometheus metrik toplama aktif');
   } catch {
-    console.warn('[Metrics] prom-client bulunamadı — metrikler devre dışı. npm install prom-client');
+    logger.warn('[Metrics] prom-client bulunamadı — metrikler devre dışı. npm install prom-client');
   }
 }
 
@@ -176,8 +177,17 @@ export async function metricsEndpoint(req: Request, res: Response): Promise<void
     return;
   }
 
+  // Sprint 122 FIX 1: METRICS_SECRET production'da zorunlu.
+  // Tanımlı değilse production'da endpoint tamamen kapatılır (503).
+  // Dev/test ortamında uyarı verilir ama endpoint açık kalır.
   const secret = process.env.METRICS_SECRET;
-  if (secret) {
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      res.status(503).json({ error: 'Metrikler yapılandırılmamış (METRICS_SECRET eksik)' });
+      return;
+    }
+    // Dev: uyarı ver ama devam et
+  } else {
     const auth = (req.headers.authorization as string) || '';
     if (auth !== `Bearer ${secret}`) {
       res.status(401).json({ error: 'Yetkisiz' });
@@ -186,12 +196,11 @@ export async function metricsEndpoint(req: Request, res: Response): Promise<void
   }
 
   try {
-     
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { socketUsers, voiceRooms } = require('../socket') as {
+    const socketMod = tryRequire<{
       socketUsers?: Map<string, { _id?: string; id?: string }>;
       voiceRooms?:  Record<string, unknown>;
-    };
+    }>('../socket');
+    const { socketUsers, voiceRooms } = socketMod ?? {};
     if (socketUsers) {
       const uniqueUsers = new Set([...socketUsers.values()].map(u => u._id || u.id));
       activeUsers?.set(uniqueUsers.size);
@@ -312,7 +321,7 @@ if (ENABLED) {
     rateLimitAnomalyGauge.set(Math.min(score, 100));
 
     if (score >= 3) {
-      console.warn(`[Metrics] ⚠️  Rate limit anomali tespiti: skor=${score.toFixed(2)} (anlık=${shortRate.toFixed(2)}/sn, baseline=${longRate.toFixed(2)}/sn)`);
+      logger.warn(`[Metrics] ⚠️  Rate limit anomali tespiti: skor=${score.toFixed(2)} (anlık=${shortRate.toFixed(2)}/sn, baseline=${longRate.toFixed(2)}/sn)`);
     }
     _recordRateLimitForAnomaly();
   }, ANOMALY_CHECK_INTERVAL_MS);

@@ -25,5 +25,5 @@ export interface MessageEntity {
 export interface RepoResult<T> {
   ok: boolean;
   data?: T;
-  error?: string;
+  error?: string | Error;
 }

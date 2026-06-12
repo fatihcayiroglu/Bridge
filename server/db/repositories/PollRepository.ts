@@ -1,31 +1,29 @@
-// server/db/repositories/PollRepository.js
+// server/db/repositories/PollRepository.ts
 // Anket sorgularını tek noktada toplar.
 
-'use strict';
-const { v4: uuidv4 } = require('uuid');
-const db = require('../loader');
+import { v4 as uuidv4 } from 'uuid';
+import db from '../loader';
 
 class PollRepository {
-  async findById(id) {
+  async findById(id: string) {
     return db.polls?.findOne({ _id: id });
   }
 
-  async findByChannel(channelId) {
+  async findByChannel(channelId: string) {
     return db.polls?.find({ channelId }) ?? [];
   }
 
-  async insert(data) {
+  async insert(data: Record<string, unknown>) {
     return db.polls?.insert({ _id: uuidv4(), createdAt: Date.now(), ...data });
   }
 
-  async update(id, fields) {
+  async update(id: string, fields: Record<string, unknown>) {
     return db.polls?.update({ _id: id }, { $set: fields });
   }
 
-  async delete(id) {
+  async delete(id: string) {
     return db.polls?.remove({ _id: id });
   }
 }
 
-module.exports = new PollRepository();
-export {};
+export default new PollRepository();

@@ -1,17 +1,27 @@
-// @ts-nocheck
-'use strict';
-// server/routes/federation/delivery.js
+// server/routes/federation/delivery.ts
 // ActivityPub HTTP delivery — imzalı POST + persistent retry queue
 // Retry queue artık ap_delivery_queue koleksiyonuna yazılır; server restart'ta pending delivery'ler kaybolmaz.
 
-const logger      = require('../../lib/logger');
-const { Federation } = require('../../db/repositories');
-const { v4: uuidv4 } = require('uuid');
-const crypto      = require('crypto');
+import logger from '../../lib/logger';
+import { fetchT } from '../../lib/fetch';
+import { Federation, Users } from '../../db/repositories';
+import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
+
+interface ApActor { _id: string; username: string; apPublicKey?: string | null; apPrivateKey?: string | null; }
+interface DeliveryPayload { inboxUrl: string; activity: Record<string, unknown>; fromUser: ApActor | null; }
+
+function isDeliveryPayload(value: unknown): value is DeliveryPayload {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && typeof (value as { inboxUrl?: unknown }).inboxUrl === 'string'
+    && !!(value as { activity?: unknown }).activity
+    && typeof (value as { activity?: unknown }).activity === 'object';
+}
+function toAttempts(value: unknown): number { return typeof value === 'number' ? value : Number(value ?? 0) || 0; }
 
 const AP_CONTEXT  = 'https://www.w3.org/ns/activitystreams';
 const instanceUrl = () => process.env.INSTANCE_URL || `http://localhost:${process.env.PORT || 3001}`;
-const actorUrl    = u  => `${instanceUrl()}/api/federation/users/${u}`;
+const actorUrl    = (u: string): string => `${instanceUrl()}/api/federation/users/${u}`;
 
 // ── Persistent retry queue ─────────────────────────────────────
 // ap_delivery_queue koleksiyonu: { _id, payload, attempts, nextAt, createdAt }
@@ -19,7 +29,7 @@ const actorUrl    = u  => `${instanceUrl()}/api/federation/users/${u}`;
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAYS = [30_000, 120_000, 600_000]; // 30s, 2m, 10m
 
-async function _persistRetry(id, payload, attempt) {
+async function _persistRetry(id: string, payload: DeliveryPayload, attempt: number): Promise<void> {
   if (attempt >= MAX_ATTEMPTS) {
     logger.warn({ id, event: 'federation.delivery.max_retries' }, 'Max retries reached; giving up.');
     await Federation.removeDeliveryEntry(id).catch(() => {});
@@ -40,8 +50,8 @@ const _retryWorker = setInterval(async () => {
   try {
     const pending = await Federation.findPendingDeliveries(Date.now());
     for (const entry of pending) {
-      await Federation.removeDeliveryEntry(entry._id).catch(() => {});
-      _doDeliver(entry.payload, entry.attempts + 1, entry._id).catch(() => {});
+      await Federation.removeDeliveryEntry(String(entry._id)).catch(() => {});
+      if (isDeliveryPayload(entry.payload)) _doDeliver(entry.payload, toAttempts(entry.attempts) + 1, String(entry._id)).catch(() => {});
     }
   } catch {
     // DB erişim hatası — sessizce geç
@@ -63,8 +73,8 @@ setImmediate(async () => {
         'Recovering pending AP deliveries from previous run.'
       );
       for (const entry of pending) {
-        await Federation.removeDeliveryEntry(entry._id).catch(() => {});
-        _doDeliver(entry.payload, entry.attempts, entry._id).catch(() => {});
+        await Federation.removeDeliveryEntry(String(entry._id)).catch(() => {});
+        if (isDeliveryPayload(entry.payload)) _doDeliver(entry.payload, toAttempts(entry.attempts), String(entry._id)).catch(() => {});
       }
     }
   } catch {
@@ -73,7 +83,7 @@ setImmediate(async () => {
 });
 
 // ── HTTP Signature ─────────────────────────────────────────────
-async function signRequest(method, url, body, privateKeyPem, actorUsername) {
+async function signRequest(method: string, url: string, body: unknown, privateKeyPem: string, actorUsername: string): Promise<{ date: string; digest: string; signature: string } | null> {
   try {
     const parsed  = new URL(url);
     const date    = new Date().toUTCString();
@@ -102,14 +112,14 @@ async function signRequest(method, url, body, privateKeyPem, actorUsername) {
 }
 
 // ── Resolve inbox URL from actor URL ─────────────────────────────
-async function resolveInbox(actorOrInboxUrl) {
+async function resolveInbox(actorOrInboxUrl: string): Promise<string | null> {
   if (actorOrInboxUrl.endsWith('/inbox') || actorOrInboxUrl.endsWith('/sharedInbox')) {
     return actorOrInboxUrl;
   }
   try {
-    const r = await fetch(actorOrInboxUrl, {
+    const r = await fetchT(actorOrInboxUrl, {
       headers: { Accept: 'application/activity+json' },
-      signal:  AbortSignal.timeout(8000),
+      timeoutMs: 8000,
     });
     const actor = await r.json();
     return actor.endpoints?.sharedInbox || actor.inbox;
@@ -117,7 +127,7 @@ async function resolveInbox(actorOrInboxUrl) {
 }
 
 // ── Core delivery function ─────────────────────────────────────
-async function _doDeliver(payload, attempt, retryId) {
+async function _doDeliver(payload: DeliveryPayload, attempt: number, retryId: string | null): Promise<void> {
   const { inboxUrl, activity, fromUser } = payload;
 
   const targetInbox = await resolveInbox(inboxUrl);
@@ -127,12 +137,13 @@ async function _doDeliver(payload, attempt, retryId) {
   }
 
   const body       = JSON.stringify(activity);
-  const privateKey = fromUser?.apPrivateKey;
-  const sigHeaders = privateKey
-    ? await signRequest('POST', targetInbox, body, privateKey, fromUser?.username)
+  // SECURITY: özel anahtar user_ap_keys tablosundan ayrı sorguyla alınır
+  const privateKey = fromUser ? await Users.getApPrivateKey(fromUser._id) : null;
+  const sigHeaders = privateKey && fromUser
+    ? await signRequest('POST', targetInbox, body, privateKey, fromUser.username)
     : null;
 
-  const headers = {
+  const headers: Record<string, string> = {
     'Content-Type': 'application/activity+json',
     Accept:         'application/activity+json',
     Date:           sigHeaders?.date || new Date().toUTCString(),
@@ -144,11 +155,11 @@ async function _doDeliver(payload, attempt, retryId) {
 
   let resp;
   try {
-    resp = await fetch(targetInbox, {
+    resp = await fetchT(targetInbox, {
       method: 'POST',
       headers,
       body,
-      signal: AbortSignal.timeout(10_000),
+      timeoutMs: 10_000,
     });
   } catch (err) {
     logger.warn({ err, targetInbox, attempt, event: 'federation.delivery.failed' }, 'Delivery failed; scheduling retry.');
@@ -164,13 +175,13 @@ async function _doDeliver(payload, attempt, retryId) {
 }
 
 // ── Public: deliver one activity to one inbox ──────────────────
-async function deliverApActivity(inboxUrl, activity, fromUser) {
+async function deliverApActivity(inboxUrl: string, activity: Record<string, unknown>, fromUser: ApActor | null): Promise<void> {
   const id = uuidv4();
   await _doDeliver({ inboxUrl, activity, fromUser }, 0, id);
 }
 
 // ── Public: fan-out Create activity to all followers ──────────
-async function deliverToFollowers(fromUser, noteContent, noteId) {
+async function deliverToFollowers(fromUser: ApActor, noteContent: string, noteId?: string | null): Promise<void> {
   try {
     const url        = actorUrl(fromUser.username);
     const publishedAt = Date.now();
@@ -230,7 +241,7 @@ async function deliverToFollowers(fromUser, noteContent, noteId) {
 }
 
 // ── Public: send outgoing Follow request ──────────────────────
-async function sendFollowRequest(fromUser, targetActorUrl) {
+async function sendFollowRequest(fromUser: ApActor, targetActorUrl: string) {
   const url = actorUrl(fromUser.username);
   const followId = `${url}/activities/${uuidv4()}`;
 
@@ -257,7 +268,7 @@ async function sendFollowRequest(fromUser, targetActorUrl) {
 }
 
 // ── Public: send Unfollow (Undo Follow) ───────────────────────
-async function sendUnfollow(fromUser, targetActorUrl) {
+async function sendUnfollow(fromUser: ApActor, targetActorUrl: string): Promise<void> {
   const url = actorUrl(fromUser.username);
 
   const record = await Federation.findApOutgoingFollowOne({
@@ -279,7 +290,7 @@ async function sendUnfollow(fromUser, targetActorUrl) {
 }
 
 // ── Public: send Like ─────────────────────────────────────────
-async function sendLike(fromUser, objectUrl) {
+async function sendLike(fromUser: ApActor, objectUrl: string) {
   const url = actorUrl(fromUser.username);
   const likeActivity = {
     '@context': AP_CONTEXT,
@@ -296,7 +307,7 @@ async function sendLike(fromUser, objectUrl) {
 }
 
 // ── Public: send Announce (Boost) ────────────────────────────
-async function sendAnnounce(fromUser, objectUrl) {
+async function sendAnnounce(fromUser: ApActor, objectUrl: string) {
   const url = actorUrl(fromUser.username);
   const announceActivity = {
     '@context': AP_CONTEXT,
@@ -315,13 +326,10 @@ async function sendAnnounce(fromUser, objectUrl) {
   return announceActivity;
 }
 
-module.exports = {
-  deliverApActivity,
+export { deliverApActivity,
   deliverToFollowers,
   sendFollowRequest,
   sendUnfollow,
   sendLike,
   sendAnnounce,
-  signRequest,
-};
-export {};
+  signRequest, };

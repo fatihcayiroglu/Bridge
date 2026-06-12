@@ -1,5 +1,40 @@
 HTTP/1.0 500 Internal Server Error
 Cache-Control: no-cache
-Content-Type: text/html
+Content-Type: text/html; charset=utf-8
 
-<html><body><h1>500 Internal Server Error</h1><p>Bridge is temporarily unavailable. Please try again shortly.</p></body></html>
+
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sunucu Hatası — Bridge</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#1e1f22;color:#dbdee1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+         display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+    .card{background:#2b2d31;border:1px solid #3f4147;border-radius:12px;padding:40px 48px;
+          text-align:center;max-width:480px;width:100%}
+    .logo{font-size:48px;margin-bottom:16px}
+    .code{font-size:72px;font-weight:700;color:#5865f2;line-height:1;margin-bottom:8px}
+    h1{font-size:20px;font-weight:600;margin-bottom:12px;color:#fff}
+    p{font-size:14px;color:#87898c;line-height:1.6;margin-bottom:24px}
+    .btn{display:inline-block;background:#5865f2;color:#fff;border-radius:4px;
+         padding:10px 24px;text-decoration:none;font-size:14px;font-weight:500;
+         transition:background 150ms}
+    .btn:hover{background:#4752c4}
+    .hint{margin-top:16px;font-size:12px;color:#5c5f66}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">🌉</div>
+    <div class="code">500</div>
+    <h1>Sunucu Hatası</h1>
+    <p>Bir şeyler ters gitti. Ekibimiz bilgilendirildi, en kısa sürede düzeltilecek.</p>
+    <a class="btn" href="/">Ana Sayfaya Dön</a>
+    
+    
+  </div>
+</body>
+</html>

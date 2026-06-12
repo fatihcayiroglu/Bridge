@@ -1,0 +1,272 @@
+/* ── Bridge · session8-features.css ───────────────────────────────
+   1. Scheduled Message — scheduled-badge, schedule-label, etc.
+   2. Canvas Panel
+   3. DM Read Receipts — tik sistemi
+   4. Translate Button — mesaj içi çeviri
+   5. Voice Activity UI — konuşan kişi bar + glow
+   ─────────────────────────────────────────────────────────────── */
+
+/* ══════════════════════════════════════════════════════════════════
+   1. SCHEDULED MESSAGE
+   ══════════════════════════════════════════════════════════════════ */
+
+.scheduled-badge {
+  font-size: 11px;
+  margin-left: 4px;
+  opacity: 0.6;
+  cursor: default;
+  vertical-align: middle;
+}
+
+.schedule-label {
+  font-size: 12px;
+  color: var(--text-3);
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.schedule-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.schedule-error {
+  font-size: 12px;
+  color: var(--red);
+}
+
+.schedule-pending-header {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 16px 0 6px;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   2. CANVAS PANEL
+   ══════════════════════════════════════════════════════════════════ */
+
+.canvas-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: #111118;
+  display: flex;
+  flex-direction: column;
+}
+
+.canvas-panel.hidden { display: none; }
+
+.canvas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--bg-5);
+  flex-wrap: wrap;
+}
+
+.canvas-tools {
+  display: flex;
+  gap: 4px;
+}
+
+.canvas-tool-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-md);
+  border: 1.5px solid transparent;
+  background: var(--bg-4);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.1s, border-color 0.1s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.canvas-tool-btn.active,
+.canvas-tool-btn:hover {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: white;
+}
+
+.canvas-colors {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.canvas-color-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: border-color 0.1s, transform 0.1s;
+}
+
+.canvas-color-btn:hover,
+.canvas-color-btn.active {
+  border-color: white;
+  transform: scale(1.2);
+}
+
+.canvas-size { display: flex; align-items: center; gap: 6px; }
+.canvas-size input[type="range"] { width: 80px; accent-color: var(--brand); }
+
+.canvas-actions { display: flex; gap: 6px; margin-left: auto; }
+
+.canvas-btn {
+  padding: 5px 10px;
+  border-radius: var(--r-md);
+  border: 1.5px solid var(--bg-5);
+  background: var(--bg-4);
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.1s;
+}
+.canvas-btn:hover { background: var(--bg-5); }
+.canvas-btn-danger:hover { background: var(--red); border-color: var(--red); color: white; }
+
+#canvas-board {
+  flex: 1;
+  cursor: crosshair;
+  display: block;
+  touch-action: none;
+}
+
+/* Kanal header'ında canvas butonu */
+#btn-canvas { /* uses existing btn styles */ }
+
+/* ══════════════════════════════════════════════════════════════════
+   3. DM READ RECEIPTS
+   ══════════════════════════════════════════════════════════════════ */
+
+.dm-tick {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-left: 5px;
+  vertical-align: bottom;
+  user-select: none;
+  transition: color 0.2s;
+}
+
+.dm-tick.read {
+  color: var(--brand);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   4. TRANSLATE BUTTON
+   ══════════════════════════════════════════════════════════════════ */
+
+.btn-translate {
+  /* msg-action-btn stillerine ek */
+  font-size: 12px;
+}
+
+.translated-text {
+  margin-top: 4px;
+  padding: 6px 10px;
+  background: rgba(79, 142, 247, 0.08);
+  border-left: 2px solid var(--brand);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.5;
+  animation: msgIn 0.15s ease;
+}
+
+.translated-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--brand);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.translated-error {
+  background: rgba(255, 71, 87, 0.08);
+  border-left-color: var(--red);
+  color: var(--red);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   5. VOICE ACTIVITY UI
+   ══════════════════════════════════════════════════════════════════ */
+
+/* Speaking bar — ses kanalı panelinin üstünde */
+.voice-speaking-bar {
+  padding: 5px 14px;
+  background: rgba(46, 213, 115, 0.12);
+  border-bottom: 1px solid rgba(46, 213, 115, 0.3);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  animation: msgIn 0.15s ease;
+  transition: opacity 0.3s;
+}
+
+.voice-speaking-bar.hidden {
+  display: none;
+}
+
+/* Konuşan kişinin avatarı etrafında parlayan halka */
+@keyframes speakGlow {
+  0%, 100% { box-shadow: 0 0 0 2px var(--green), 0 0 8px 2px rgba(46, 213, 115, 0.4); }
+  50%       { box-shadow: 0 0 0 3px var(--green), 0 0 16px 4px rgba(46, 213, 115, 0.6); }
+}
+
+.voice-peer-big-avatar.speaking-glow {
+  animation: speakGlow 0.8s ease-in-out infinite;
+}
+
+/* voice-video.css'teki .speaking border'ını güçlendir */
+.voice-peer-video-wrap.speaking {
+  border-color: var(--green) !important;
+  box-shadow: 0 0 0 2px rgba(46, 213, 115, 0.3);
+  transition: border-color 0.1s, box-shadow 0.1s;
+}
+
+/* Sidebar ses kanalı kullanıcı listesi */
+.voice-sidebar-user {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  color: var(--text-2);
+  transition: background 0.1s;
+}
+
+.voice-sidebar-user .vs-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: white;
+  border: 1.5px solid transparent;
+  transition: border-color 0.1s;
+  flex-shrink: 0;
+}
+
+.voice-sidebar-user.speaking .vs-avatar {
+  border-color: var(--green);
+  animation: speakGlow 0.8s ease-in-out infinite;
+}

@@ -1,23 +1,48 @@
-// server/routes/threads.js (v17 + forum extensions)
+// server/routes/threads.ts (v17 + forum extensions)
 // Thread system + Forum kanalı: oluşturma, liste, pin, lock, tags
-const express      = require('express');
+import express from 'express';
+import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router       = express.Router();
-const { Threads, Members, Channels, Users, Messages } = require('../db/repositories');
-const { authMiddleware, castAuthed } = require('../middleware/auth');
-const asyncHandler = require('../middleware/asyncHandler');
-const { getMemberPerms, hasPermission, PERMS } = require('./roles');
-const { limits } = require('../middleware/rateLimit');
-const { processNotifications } = require('../lib/notifications');
+import { Threads, Members, Channels, Users, Messages } from '../db/repositories';
+import { authMiddleware} from '../middleware/auth';
+import { getMemberPerms, hasPermission, PERMS } from './roles';
+import { limits } from '../middleware/rateLimit';
+import { processNotifications } from '../lib/notifications';
 
 // ── helpers ────────────────────────────────────────────────────
-async function memberCheck(userId, serverId) {
+async function memberCheck(userId: string, serverId: string) {
   return Members.findOne(userId, serverId);
 }
 
 // ── Forum: POST /api/threads — forum kanalında yeni ileti VEYA mesajdan thread
-router.post('/', authMiddleware, limits.messages(), asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /threads:
+ *   post:
+ *     tags: [Threads]
+ *     summary: Thread oluştur
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [title, channelId]
+ *             properties:
+ *               title: { type: string }
+ *               channelId: { type: string, format: uuid }
+ *               content: { type: string }
+ *     responses:
+ *       201:
+ *         description: Thread oluşturuldu
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Thread' }
+ */
+router.post('/', authMiddleware, limits.messages(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { parentMessageId, name, channelId, firstMessage, tags } = req.body;
+  const { parentMessageId, name, channelId, firstMessage } = req.body as Record<string, string>;
+  const rawTags = Array.isArray(req.body?.tags) ? req.body.tags : [];
 
   // ── Forum channel thread (channelId + name) ───────────────────
   if (channelId && !parentMessageId) {
@@ -36,6 +61,7 @@ router.post('/', authMiddleware, limits.messages(), asyncHandler(async (req, res
     if (!hasPermission(perms, PERMS.SEND_MESSAGES)) return res.status(403).json({ error: 'No permission' });
 
     const user = await Users.findById(_u.id);
+    if (!user) return res.status(401).json({ error: 'User not found' });
     const now  = Date.now();
 
     const thread = await Threads.insert({
@@ -44,7 +70,7 @@ router.post('/', authMiddleware, limits.messages(), asyncHandler(async (req, res
       parentMessageId:  null,
       name:             name.trim().slice(0, 100),
       firstMessage:     (firstMessage || '').slice(0, 500),
-      tags:             JSON.stringify((tags || []).slice(0, 5).map(t => t.slice(0, 20))),
+      tags:             JSON.stringify(rawTags.slice(0, 5).map((t: unknown) => String(t).slice(0, 20))),
       createdBy:        _u.id,
       createdAt:        now,
       lastMessageAt:    now,
@@ -63,7 +89,7 @@ router.post('/', authMiddleware, limits.messages(), asyncHandler(async (req, res
         userId:      _u.id,
         username:    user.username,
         displayName: user.displayName,
-        avatarColor: user.avatarColor || '#5865f2',
+        avatarColor: user.avatarColor || '#2d9cdb',
         content:     firstMessage.trim(),
         type:        'normal',
         reactions:   {},
@@ -106,22 +132,67 @@ router.post('/', authMiddleware, limits.messages(), asyncHandler(async (req, res
   await Messages.update(parentMessageId, { threadId: thread._id });
 
   res.json(thread);
-}));
+});
 
 // GET /api/threads/:threadId — thread info
-router.get('/:threadId', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /threads/{threadId}:
+ *   get:
+ *     tags: [Threads]
+ *     summary: Thread detayı
+ *     parameters:
+ *       - in: path
+ *         name: threadId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Thread
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Thread' }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ */
+router.get('/:threadId', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const thread = await Threads.findById(req.params.threadId);
+  const thread = await Threads.findById(String(req.params.threadId ?? ''));
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
   const member = await memberCheck(_u.id, thread.serverId);
   if (!member) return res.status(403).json({ error: 'Not a member' });
   res.json(thread);
-}));
+});
 
 // GET /api/threads/:threadId/messages — paginated thread messages
-router.get('/:threadId/messages', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /threads/{threadId}/messages:
+ *   get:
+ *     tags: [Threads]
+ *     summary: Thread mesajları
+ *     parameters:
+ *       - in: path
+ *         name: threadId
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: before
+ *         schema: { type: string }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 50, maximum: 100 }
+ *     responses:
+ *       200:
+ *         description: Mesaj listesi
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items: { $ref: '#/components/schemas/Message' }
+ */
+router.get('/:threadId/messages', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const thread = await Threads.findById(req.params.threadId);
+  const thread = await Threads.findById(String(req.params.threadId ?? ''));
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
   const member = await memberCheck(_u.id, thread.serverId);
   if (!member) return res.status(403).json({ error: 'Not a member' });
@@ -129,18 +200,45 @@ router.get('/:threadId/messages', authMiddleware, asyncHandler(async (req, res) 
   const limit  = Math.min(parseInt(String(req.query.limit ?? '')) || 50, 100);
   const before = parseInt(String(req.query.before ?? '')) || Date.now() + 1;
 
-  const msgs = await Threads.findMessages(req.params.threadId, { limit, before });
+  const msgs = await Threads.findMessages(String(req.params.threadId ?? ''), { limit, before });
   res.json(msgs.reverse());
-}));
+});
 
 // POST /api/threads/:threadId/messages — send a message to a thread
-router.post('/:threadId/messages', authMiddleware, limits.messages(), asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /threads/{threadId}/messages:
+ *   post:
+ *     tags: [Threads]
+ *     summary: Thread'e mesaj gönder
+ *     parameters:
+ *       - in: path
+ *         name: threadId
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [content]
+ *             properties:
+ *               content: { type: string }
+ *     responses:
+ *       201:
+ *         description: Mesaj gönderildi
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Message' }
+ */
+router.post('/:threadId/messages', authMiddleware, limits.messages(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { content } = req.body;
+  const { content } = req.body as Record<string, string>;
   if (!content?.trim()) return res.status(400).json({ error: 'content required' });
   if (content.length > 2000) return res.status(400).json({ error: 'Message too long' });
 
-  const thread = await Threads.findById(req.params.threadId);
+  const thread = await Threads.findById(String(req.params.threadId ?? ''));
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
 
   const member = await memberCheck(_u.id, thread.serverId);
@@ -155,6 +253,7 @@ router.post('/:threadId/messages', authMiddleware, limits.messages(), asyncHandl
   if (!hasPermission(perms, PERMS.SEND_MESSAGES)) return res.status(403).json({ error: 'No permission' });
 
   const user = await Users.findById(_u.id);
+  if (!user) return res.status(401).json({ error: 'User not found' });
 
   const msg = await Threads.insertMessage({
     threadId:    thread._id,
@@ -211,28 +310,50 @@ router.post('/:threadId/messages', authMiddleware, limits.messages(), asyncHandl
 
     // Standard mention notifications (handles @username in thread messages)
     await processNotifications(
-      { ...msg, userId: _u.id, displayName: user.displayName },
+      { ...msg, channelId: msg.channelId ?? thread.channelId, serverId: msg.serverId ?? thread.serverId, userId: _u.id, displayName: user.displayName },
       io,
       socketUsers
     ).catch(() => {});
   }
 
   res.json(msg);
-}));
+});
 
 // GET /api/threads/channel/:channelId — list threads in a channel (forum aware)
-router.get('/channel/:channelId', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /threads/channel/{channelId}:
+ *   get:
+ *     tags: [Threads]
+ *     summary: Kanaldaki thread'leri listele
+ *     parameters:
+ *       - in: path
+ *         name: channelId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Thread listesi
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items: { $ref: '#/components/schemas/Thread' }
+ */
+router.get('/channel/:channelId', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const channel = await Channels.findById(req.params.channelId);
+  const channel = await Channels.findById(String(req.params.channelId ?? ''));
   if (!channel) return res.status(404).json({ error: 'Channel not found' });
   const member = await memberCheck(_u.id, channel.serverId);
   if (!member) return res.status(403).json({ error: 'Not a member' });
 
-  const { sort = 'latest', tag, search } = req.query;
-  let threads = await Threads.findByChannel(req.params.channelId);
+  const sort = String(req.query.sort ?? 'latest');
+  const tag = typeof req.query.tag === 'string' ? req.query.tag : '';
+  const search = typeof req.query.search === 'string' ? req.query.search : '';
+  let threads = await Threads.findByChannel(String(req.params.channelId ?? ''));
 
   // filter
-  if (tag)    threads = threads.filter(t => { try { return JSON.parse(t.tags||'[]').includes(tag); } catch { return false; } });
+  if (tag)    threads = threads.filter(t => { try { return JSON.parse(String(t.tags || '[]')).includes(tag); } catch { return false; } });
   if (search) threads = threads.filter(t => t.name.toLowerCase().includes(search.toLowerCase()));
 
   // sort
@@ -246,75 +367,149 @@ router.get('/channel/:channelId', authMiddleware, asyncHandler(async (req, res) 
   // parse tags JSON
   threads = threads.slice(0, 100).map(t => ({
     ...t,
-    tags: (() => { try { return JSON.parse(t.tags || '[]'); } catch { return []; } })(),
+    tags: (() => { try { return JSON.parse(String(t.tags || '[]')); } catch { return []; } })(),
   }));
 
   res.json(threads);
-}));
+});
 
 // PATCH /api/threads/:threadId/pin — pin/unpin (mod only)
-router.patch('/:threadId/pin', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /threads/{threadId}/pin:
+ *   patch:
+ *     tags: [Threads]
+ *     summary: Thread'i sabitle / sabitlemeden kaldır
+ *     parameters:
+ *       - in: path
+ *         name: threadId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Sabitleme durumu güncellendi }
+ */
+router.patch('/:threadId/pin', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const thread = await Threads.findById(req.params.threadId);
+  const thread = await Threads.findById(String(req.params.threadId ?? ''));
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
   const perms = await getMemberPerms(_u.id, thread.serverId);
   if (!hasPermission(perms, PERMS.MANAGE_MESSAGES)) return res.status(403).json({ error: 'No permission' });
 
   const pinned = req.body.pinned ? 1 : 0;
-  await Threads.setPinned(req.params.threadId, !!req.body.pinned);
+  await Threads.setPinned(String(req.params.threadId ?? ''), !!req.body.pinned);
   const io = req.app.get('io');
   if (io) io.to(`server:${thread.serverId}`).emit('forum:thread:updated', { threadId: thread._id, pinned });
   res.json({ ok: true, pinned });
-}));
+});
 
 // PATCH /api/threads/:threadId/lock — lock/unlock (mod only)
-router.patch('/:threadId/lock', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /threads/{threadId}/lock:
+ *   patch:
+ *     tags: [Threads]
+ *     summary: Thread'i kilitle / kilidini kaldır
+ *     parameters:
+ *       - in: path
+ *         name: threadId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Kilit durumu güncellendi }
+ */
+router.patch('/:threadId/lock', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const thread = await Threads.findById(req.params.threadId);
+  const thread = await Threads.findById(String(req.params.threadId ?? ''));
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
   const perms = await getMemberPerms(_u.id, thread.serverId);
   if (!hasPermission(perms, PERMS.MANAGE_MESSAGES)) return res.status(403).json({ error: 'No permission' });
 
   const locked = req.body.locked ? 1 : 0;
-  await Threads.setLocked(req.params.threadId, !!req.body.locked);
+  await Threads.setLocked(String(req.params.threadId ?? ''), !!req.body.locked);
   const io = req.app.get('io');
   if (io) io.to(`server:${thread.serverId}`).emit('forum:thread:updated', { threadId: thread._id, locked });
   res.json({ ok: true, locked });
-}));
+});
 
 // PATCH /api/threads/:threadId — rename, update tags
-router.patch('/:threadId', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /threads/{threadId}:
+ *   patch:
+ *     tags: [Threads]
+ *     summary: Thread güncelle
+ *     parameters:
+ *       - in: path
+ *         name: threadId
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               title: { type: string }
+ *     responses:
+ *       200:
+ *         description: Güncellenmiş thread
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Thread' }
+ */
+router.patch('/:threadId', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const thread = await Threads.findById(req.params.threadId);
+  const thread = await Threads.findById(String(req.params.threadId ?? ''));
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
 
   const perms   = await getMemberPerms(_u.id, thread.serverId);
   const canEdit = thread.createdBy === _u.id || hasPermission(perms, PERMS.MANAGE_MESSAGES);
   if (!canEdit) return res.status(403).json({ error: 'No permission' });
 
-  const patch: Record<string,any> = {};
+  const patch: Record<string, unknown> = {};
   if (req.body.name != null) patch.name = req.body.name.trim().slice(0, 100);
-  if (req.body.tags != null) patch.tags = JSON.stringify((req.body.tags || []).slice(0, 5).map(t => String(t).slice(0, 20)));
+  if (req.body.tags != null) {
+    const bodyTags = Array.isArray(req.body.tags) ? req.body.tags : [];
+    patch.tags = JSON.stringify(bodyTags.slice(0, 5).map((t: unknown) => String(t).slice(0, 20)));
+  }
   if (!Object.keys(patch).length) return res.status(400).json({ error: 'Nothing to update' });
 
-  await Threads.update(req.params.threadId, patch);
+  await Threads.update(String(req.params.threadId ?? ''), patch);
   res.json({ ok: true });
-}));
+});
 
 // DELETE /api/threads/:threadId
-router.delete('/:threadId', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /threads/{threadId}:
+ *   delete:
+ *     tags: [Threads]
+ *     summary: Thread sil
+ *     parameters:
+ *       - in: path
+ *         name: threadId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Thread silindi }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ */
+router.delete('/:threadId', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const thread = await Threads.findById(req.params.threadId);
+  const thread = await Threads.findById(String(req.params.threadId ?? ''));
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
 
   const perms = await getMemberPerms(_u.id, thread.serverId);
   if (!hasPermission(perms, PERMS.MANAGE_MESSAGES)) return res.status(403).json({ error: 'No permission' });
 
-  await Threads.deleteThread(req.params.threadId);
+  await Threads.deleteThread(String(req.params.threadId ?? ''));
   await Messages.clearThreadFromParent(thread.parentMessageId);
 
   res.json({ ok: true });
-}));
+});
 
+export default router;
+
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-export {};
+module.exports.default = router;

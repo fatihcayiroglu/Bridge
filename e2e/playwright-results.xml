@@ -1,0 +1,1448 @@
+<testsuites id="" name="" tests="339" failures="0" skipped="339" errors="0" time="0.898877">
+<testsuite name="smoke-health.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="api-smoke" tests="3" failures="0" skipped="3" time="0" errors="0">
+<testcase name="production smoke health › liveness endpoint answers quickly" classname="smoke-health.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="production smoke health › readiness endpoint exposes safe readiness state" classname="smoke-health.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="production smoke health › public HTML has hardening headers" classname="smoke-health.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="2fa.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="7" failures="0" skipped="7" time="0" errors="0">
+<testcase name="2FA (TOTP) Akışları › 2FA setup başlatılabiliyor — secret döndürülüyor" classname="2fa.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="2FA (TOTP) Akışları › geçersiz OTP ile 2FA aktifleştirme reddediliyor" classname="2fa.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="2FA (TOTP) Akışları › 2FA endpoint&apos;leri kimlik doğrulaması gerektiriyor" classname="2fa.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="2FA (TOTP) Akışları › 2FA durum endpoint&apos;i kullanıcı 2FA durumunu döndürüyor" classname="2fa.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="2FA (TOTP) Akışları › 2FA disable — token olmadan reddediliyor" classname="2fa.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="2FA (TOTP) Akışları › 2FA aktif kullanıcı için login sadece token döndürmemeli" classname="2fa.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="2FA (TOTP) Akışları › 2FA OTP brute-force koruması — hızlı tekrar denemeler reddediliyor" classname="2fa.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="a11y.flows.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="10" failures="0" skipped="10" time="0" errors="0">
+<testcase name="a11y — gerçek kullanıcı akışları › DM listesi — ARIA listbox &amp; keyboard navigasyonu" classname="a11y.flows.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y — gerçek kullanıcı akışları › DM penceresi — landmark&apos;lar &amp; mesaj kutusu ARIA" classname="a11y.flows.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y — gerçek kullanıcı akışları › Kanal listesi — klavye ile geçiş, focus görünür kalmalı" classname="a11y.flows.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y — gerçek kullanıcı akışları › Kanal geçişi sonrası — mesaj alanı A11Y" classname="a11y.flows.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y — gerçek kullanıcı akışları › Kanal ayarları modalı — focus trap &amp; Esc kapatma" classname="a11y.flows.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y — gerçek kullanıcı akışları › Sunucu ayarları modalı — genel A11Y" classname="a11y.flows.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y — gerçek kullanıcı akışları › Üye listesi — ARIA rolleri ve keyboard" classname="a11y.flows.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y — gerçek kullanıcı akışları › Emoji picker — klavye navigasyonu &amp; ARIA grid" classname="a11y.flows.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y — gerçek kullanıcı akışları › Bildirim alanı — role=&quot;status&quot; veya aria-live" classname="a11y.flows.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y — gerçek kullanıcı akışları › Yüksek kontrast modu — kritik UI elementleri görünür" classname="a11y.flows.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="a11y.smoke.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="7" failures="0" skipped="7" time="0" errors="0">
+<testcase name="a11y smoke — WCAG 2.0 A/AA › landing page — wcag2a/aa ihlali yok" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y smoke — WCAG 2.0 A/AA › marketplace page — wcag2a/aa ihlali yok" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y smoke — WCAG 2.0 A/AA › login sayfası — form erişilebilirliği" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y smoke — WCAG 2.0 A/AA › kayıt sayfası — form erişilebilirliği" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y smoke — WCAG 2.0 A/AA › ana uygulama shell — oturum sonrası" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y smoke — WCAG 2.0 A/AA › ayarlar modalı — klavye &amp; ARIA" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y smoke — WCAG 2.0 A/AA › Tab ile odak görünür kalmalı" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="activitypub-ci.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="12" failures="0" skipped="12" time="0" errors="0">
+<testcase name="NodeInfo &amp; Discovery › Bridge /.well-known/nodeinfo yanıt verir" classname="activitypub-ci.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="NodeInfo &amp; Discovery › Bridge /nodeinfo/2.1 doğru protokol içerir" classname="activitypub-ci.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="NodeInfo &amp; Discovery › Bridge /api/health yanıt verir" classname="activitypub-ci.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="WebFinger › Bridge kayıtlı kullanıcı için WebFinger döner" classname="activitypub-ci.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="WebFinger › Bilinmeyen kullanıcı WebFinger 404 döner" classname="activitypub-ci.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Actor › Bridge kullanıcısı AP Actor olarak yayımlanır" classname="activitypub-ci.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Inbox › Inbox, imzasız POST için 401/400 döner" classname="activitypub-ci.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Inbox › Inbox endpoint&apos;i mevcuttur (200/401 döner, 404 değil)" classname="activitypub-ci.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mock Peer ActivityPub Entegrasyonu › Mock peer NodeInfo endpoint&apos;i yanıt verir" classname="activitypub-ci.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mock Peer ActivityPub Entegrasyonu › Mock peer Actor endpoint&apos;i yanıt verir" classname="activitypub-ci.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mock Peer ActivityPub Entegrasyonu › Mock peer Inbox POST kabul eder" classname="activitypub-ci.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Federation Peer Yönetimi › Bridge API&apos;den mock peer bilgilerini alabilir" classname="activitypub-ci.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="auth.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="9" failures="0" skipped="9" time="0" errors="0">
+<testcase name="Kimlik Doğrulama Akışları › kayıt formu gösterilmeli" classname="auth.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kimlik Doğrulama Akışları › geçersiz e-posta ile giriş reddedilmeli" classname="auth.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kimlik Doğrulama Akışları › boş şifre ile giriş reddedilmeli" classname="auth.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kimlik Doğrulama Akışları › geçerli token ile /api/me çalışmalı" classname="auth.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kimlik Doğrulama Akışları › geçersiz token reddedilmeli" classname="auth.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kimlik Doğrulama Akışları › token olmadan korumalı route reddedilmeli" classname="auth.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kimlik Doğrulama Akışları › UI: login sayfasına erişim" classname="auth.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kimlik Doğrulama Akışları › API login doğru token döndürmeli" classname="auth.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kimlik Doğrulama Akışları › rate limit: çok fazla login denemesi engellenmeli" classname="auth.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="channels.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="11" failures="0" skipped="11" time="0" errors="0">
+<testcase name="Kanal Yönetimi › API: sunucu oluşturma" classname="channels.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kanal Yönetimi › API: sunucu listesi" classname="channels.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kanal Yönetimi › API: boş isimle sunucu oluşturulamaz" classname="channels.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kanal Yönetimi › API: text kanalı oluşturma" classname="channels.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kanal Yönetimi › API: voice kanalı oluşturma" classname="channels.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kanal Yönetimi › API: kanal listesi" classname="channels.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kanal Yönetimi › API: kanal silme" classname="channels.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kanal Yönetimi › API: yetkisiz kullanıcı kanal oluşturamamalı" classname="channels.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kanal Yönetimi › API: özel karakterli kanal ismi" classname="channels.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kanal Yönetimi › UI: kanal listesi sidebar&apos;da görünmeli" classname="channels.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Kanal Yönetimi › UI: sunucu oluşturma modalı açılmalı" classname="channels.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="dm.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="12" failures="0" skipped="12" time="0" errors="0">
+<testcase name="Direct Message (DM) Akışları › API: DM kanalı açma/alma" classname="dm.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Direct Message (DM) Akışları › API: DM mesajı gönderme" classname="dm.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Direct Message (DM) Akışları › API: DM listesi alınmalı" classname="dm.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Direct Message (DM) Akışları › API: kendi kendinle DM açılamamalı" classname="dm.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Direct Message (DM) Akışları › API: var olmayan kullanıcıyla DM açılamamalı" classname="dm.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Direct Message (DM) Akışları › API: Bob Alice&apos;in DM mesajını görebilmeli" classname="dm.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Direct Message (DM) Akışları › UI: DM sayfası yüklenmeli" classname="dm.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Direct Message (DM) Akışları › UI: E2EE toggle butonu DM input alanında görünür" classname="dm.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Direct Message (DM) Akışları › UI: E2EE banner başlangıçta gizli olmalı" classname="dm.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Direct Message (DM) Akışları › API: DM mesajı okundu olarak işaretlenebilmeli" classname="dm.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Direct Message (DM) Akışları › API: Yetkisiz kullanıcı DM mesajlarını okumamalı" classname="dm.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Direct Message (DM) Akışları › API: DM mesaj geçmişinde sayfalama çalışmalı" classname="dm.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="features.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="27" failures="0" skipped="27" time="0" errors="0">
+<testcase name="Forum kanalı › forum kanalı oluşturulabilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Forum kanalı › forum kanalında thread açılabilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Forum kanalı › thread listesi alınabilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Anket (Polls) › anket oluşturulabilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Anket (Polls) › ankete oy verilebilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Anket (Polls) › anket sonuçları alınabilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Canvas (Ortak Çizim) › canvas durumu alınabilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Canvas (Ortak Çizim) › canvas temizlenebilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Soundboard › soundboard sesleri listelenebilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Soundboard › soundboard ses eklenebilir (URL ile)" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Clips › clip listesi alınabilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Clips › clip silme yetkisiz kullanıcı 403 alır" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Semantik Arama › POST /api/semantic/search çalışır" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Semantik Arama › boş sorgu 200 döner" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Semantik Arama › GET /api/semantic/digest/:serverId çalışır" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Semantik Arama › GET /api/semantic/engagement/:serverId çalışır" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Boost › boost bilgisi alınabilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Boost › boost isteği gönderilebilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Badges (Rozetler) › kullanıcı rozet listesi alınabilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Badges (Rozetler) › rozet tanımları listelenebilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Zamanlanmış Mesajlar › zamanlanmış mesaj oluşturulabilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Zamanlanmış Mesajlar › zamanlanmış mesaj listesi alınabilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Zamanlanmış Mesajlar › geçmişe ait sendAt reddedilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Go Live (Ekran Paylaşımı) › go-live oturumu başlatılabilir (API)" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Go Live (Ekran Paylaşımı) › go-live oturumu sonlandırılabilir" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Komut Paleti (UI) › ⌘K ile komut paleti açılır" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Komut Paleti (UI) › Escape ile komut paleti kapanır" classname="features.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="invites.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="10" failures="0" skipped="10" time="0" errors="0">
+<testcase name="Sunucu Davet Sistemi › POST /api/servers/:id/invites — davet kodu oluşturulabilmeli" classname="invites.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Sunucu Davet Sistemi › POST /api/servers/:id/invites — maxUses ile oluşturulabilmeli" classname="invites.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Sunucu Davet Sistemi › POST /api/servers/:id/invites — auth olmadan 401" classname="invites.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Sunucu Davet Sistemi › GET /api/invite/:code/preview — davet detayları görüntülenebilmeli" classname="invites.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Sunucu Davet Sistemi › POST /api/invite/:code — Bob sunucuya katılabilmeli" classname="invites.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Sunucu Davet Sistemi › POST /api/invite/:code — katılma sonrası Bob üye listesinde görünmeli" classname="invites.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Sunucu Davet Sistemi › POST /api/invite/YANLIS-KOD — geçersiz kod reddedilmeli" classname="invites.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Sunucu Davet Sistemi › GET /api/servers/:id/invites — davet listesi görüntülenebilmeli" classname="invites.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Sunucu Davet Sistemi › GET /api/servers/:id/invites — üye olmayan kullanıcı göremez (403)" classname="invites.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Sunucu Davet Sistemi › POST /api/invite/:code — zaten üye olan Alice idempotent davranmalı" classname="invites.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="link-preview.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="14" failures="0" skipped="14" time="0" errors="0">
+<testcase name="Link Önizleme › GET: geçerli URL için önizleme dönmeli" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › GET: önizleme yanıtı beklenen alanları içermeli" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › GET: localhost URL SSRF korumasıyla reddedilmeli" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › GET: 192.168.x.x private IP SSRF koruması" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › GET: 10.x.x.x private IP SSRF koruması" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › GET: file:// protokolü reddedilmeli" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › GET: javascript: protokolü reddedilmeli" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › GET: url param olmadan 400 dönmeli" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › GET: boş url ile 400 dönmeli" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › GET: token olmadan 401 dönmeli" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › POST: metin içindeki URL&apos;leri çıkarıp önizleme döndürmeli" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › POST: URL içermeyen metin — boş dizi döndürmeli" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › POST: maksimum 3 URL işlenmeli (limit)" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Link Önizleme › GET: aynı URL iki kez — ikinci istek daha hızlı ya da eşit hızda" classname="link-preview.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="mastodon-activitypub.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="16" failures="0" skipped="16" time="0" errors="0">
+<testcase name="ActivityPub Discovery › Bridge NodeInfo endpoint döner" classname="mastodon-activitypub.spec.ts">
+<properties>
+<property name="skip" value="Mastodon URL tanımlı değil">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Discovery › Bridge NodeInfo 2.1 içeriği doğru" classname="mastodon-activitypub.spec.ts">
+<properties>
+<property name="skip" value="Mastodon URL tanımlı değil">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Discovery › Bridge WebFinger kullanıcı lookup" classname="mastodon-activitypub.spec.ts">
+<properties>
+<property name="skip" value="Mastodon URL tanımlı değil">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Discovery › Mastodon Bridge&apos;i keşfedebilir (NodeInfo)" classname="mastodon-activitypub.spec.ts">
+<properties>
+<property name="skip" value="Mastodon URL tanımlı değil">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Actor Endpoints › Bridge /ap/users/:username Actor döner" classname="mastodon-activitypub.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Actor Endpoints › Bridge Actor followers endpoint" classname="mastodon-activitypub.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Actor Endpoints › Bridge Actor following endpoint" classname="mastodon-activitypub.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Actor Endpoints › Bridge notes/:id Note döner" classname="mastodon-activitypub.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mastodon ↔ Bridge Follow › Mastodon, Bridge kullanıcısını arayabilir" classname="mastodon-activitypub.spec.ts">
+<properties>
+<property name="skip" value="MASTODON_URL veya MASTODON_TOKEN tanımlı değil">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mastodon ↔ Bridge Follow › Mastodon, Bridge kullanıcısını takip edebilir" classname="mastodon-activitypub.spec.ts">
+<properties>
+<property name="skip" value="MASTODON_URL veya MASTODON_TOKEN tanımlı değil">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mastodon ↔ Bridge Follow › Follow sonrası unfollow yapılabilir" classname="mastodon-activitypub.spec.ts">
+<properties>
+<property name="skip" value="MASTODON_URL veya MASTODON_TOKEN tanımlı değil">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Inbox › Bridge inbox endpoint mevcut" classname="mastodon-activitypub.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Inbox › İmzasız inbox isteği reddedilir" classname="mastodon-activitypub.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="HTTP Signature › Bridge /api/ap/verify-signature endpoint" classname="mastodon-activitypub.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Federation ACL › Blacklist&apos;e eklenen domain reddedilir" classname="mastodon-activitypub.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Federation ACL › Whitelist boşsa tüm domain&apos;ler kabul edilir" classname="mastodon-activitypub.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="messaging.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="10" failures="0" skipped="10" time="0" errors="0">
+<testcase name="Mesajlaşma Akışları › API: mesaj gönderme" classname="messaging.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mesajlaşma Akışları › API: mesajları listeleme" classname="messaging.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mesajlaşma Akışları › API: boş mesaj reddedilmeli" classname="messaging.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mesajlaşma Akışları › API: üye olmayan kullanıcı mesaj gönderememeli" classname="messaging.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mesajlaşma Akışları › API: mesaj silme" classname="messaging.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mesajlaşma Akışları › API: mesaj düzenleme" classname="messaging.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mesajlaşma Akışları › API: sayfalama cursor çalışmalı" classname="messaging.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mesajlaşma Akışları › UI: mesaj input görünmeli" classname="messaging.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mesajlaşma Akışları › UI: uzun mesaj 2000 karakteri geçememeli" classname="messaging.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mesajlaşma Akışları › API: XSS içerikli mesaj sanitize edilmeli" classname="messaging.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="offline-queue.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="9" failures="0" skipped="9" time="0" errors="0">
+<testcase name="Mesaj Kalıcılığı (API) › mesaj gönderilince veritabanına kaydedilmeli" classname="offline-queue.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mesaj Kalıcılığı (API) › mesaj silindikten sonra listede gözükmemeli" classname="offline-queue.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Offline Queue UI › offline-queue.js global API yüklenmeli" classname="offline-queue.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Offline Queue UI › _enqueueOfflineMessage kuyruğu artırmalı" classname="offline-queue.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Service Worker Outbox › sw.js erişilebilir olmalı" classname="offline-queue.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Service Worker Outbox › sw.js outbox kelimesini içermeli" classname="offline-queue.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Service Worker Outbox › manifest.json erişilebilir olmalı (PWA desteği)" classname="offline-queue.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Reconnect Mesaj Sync › kanal yükleme endpoint limit parametresi kabul etmeli" classname="offline-queue.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Reconnect Mesaj Sync › before cursor parametresi çalışmalı (pagination)" classname="offline-queue.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="onboarding-wizard.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="10" failures="0" skipped="10" time="0" errors="0">
+<testcase name="Onboarding Wizard — App Entegrasyonu › ilk girişte wizard overlay gösterilmeli" classname="onboarding-wizard.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Onboarding Wizard — App Entegrasyonu › ilk adımda hoşgeldin başlığı görünmeli" classname="onboarding-wizard.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Onboarding Wizard — App Entegrasyonu › &quot;Devam&quot; butonuna tıklayınca sonraki adıma geçmeli" classname="onboarding-wizard.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Onboarding Wizard — App Entegrasyonu › &quot;Atla&quot; butonu overlay&apos;ı kapatmalı" classname="onboarding-wizard.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Onboarding Wizard — App Entegrasyonu › son adımda &quot;Başla&quot; butonu wizard&apos;ı kapatmalı ve localStorage&apos;a yazmalı" classname="onboarding-wizard.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Onboarding Wizard — App Entegrasyonu › localStorage flag set ise wizard tekrar gösterilmemeli" classname="onboarding-wizard.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Onboarding Wizard — App Entegrasyonu › Esc tuşu wizard&apos;ı kapatmalı" classname="onboarding-wizard.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Onboarding Wizard — App Entegrasyonu › overlay backdrop&apos;a tıklayınca wizard kapanmalı" classname="onboarding-wizard.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Onboarding Wizard — App Entegrasyonu › wizard kartı dialog rolü ve aria-modal taşımalı" classname="onboarding-wizard.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Onboarding Wizard — App Entegrasyonu › GET /api/servers/:sid/onboarding başarıyla yanıt vermeli" classname="onboarding-wizard.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="plugins.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="6" failures="0" skipped="6" time="0" errors="0">
+<testcase name="Plugin sistemi E2E › plugin yükle → 200 ve id döner" classname="plugins.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Plugin sistemi E2E › yüklü plugin listede görünür" classname="plugins.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Plugin sistemi E2E › plugin kendi hook listener&apos;ını tetikleyebilir" classname="plugins.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Plugin sistemi E2E › emitToAll başka plugin&apos;in wildcard listener&apos;ını tetikler" classname="plugins.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Plugin sistemi E2E › emitToAll rate-limit aşılınca çağrılar yine resolve eder" classname="plugins.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Plugin sistemi E2E › plugin kaldırıldıktan sonra listede görünmez" classname="plugins.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="profile.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="13" failures="0" skipped="13" time="0" errors="0">
+<testcase name="Profil Yönetimi › GET /api/me — mevcut kullanıcı döndürülmeli" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Profil Yönetimi › GET /api/me — token olmadan 401" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Profil Yönetimi › PATCH /api/me — displayName güncellenebilmeli" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Profil Yönetimi › PATCH /api/me — boş displayName reddedilmeli" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Profil Yönetimi › PATCH /api/me — çok uzun displayName reddedilmeli" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Profil Yönetimi › PATCH /api/me — bio güncellenebilmeli" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Profil Yönetimi › PATCH /api/me — status online/idle/dnd/invisible olabilmeli" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Profil Yönetimi › PATCH /api/me — geçersiz status reddedilmeli" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Profil Yönetimi › GET /api/users/:id — başka kullanıcının profili görüntülenebilmeli" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Profil Yönetimi › POST /api/me/avatar — küçük PNG yüklenebilmeli" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Profil Yönetimi › POST /api/me/avatar — auth olmadan 401" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Profil Yönetimi › POST /api/me/change-password — yanlış mevcut şifre reddedilmeli" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Profil Yönetimi › POST /api/me/change-password — zayıf yeni şifre reddedilmeli" classname="profile.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="reactions.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="8" failures="0" skipped="8" time="0" errors="0">
+<testcase name="Reaksiyon Akışları › API: reaksiyon ekleme başarılı" classname="reactions.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Reaksiyon Akışları › API: reaksiyon sonrası mesajda görünmeli" classname="reactions.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Reaksiyon Akışları › API: reaksiyon toggle — aynı emoji tekrar kaldırılır" classname="reactions.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Reaksiyon Akışları › API: Bob reaksiyon ekleyebilmeli (üye değilse skip)" classname="reactions.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Reaksiyon Akışları › API: boş emoji reddedilmeli" classname="reactions.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Reaksiyon Akışları › API: çok uzun emoji string reddedilmeli" classname="reactions.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Reaksiyon Akışları › API: token olmadan reaksiyon reddedilmeli (401)" classname="reactions.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Reaksiyon Akışları › API: var olmayan mesaja reaksiyon 404 dönmeli" classname="reactions.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="rtl.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="12" failures="0" skipped="12" time="0" errors="0">
+<testcase name="RTL — dil aktivasyonu › Arapça seçilince &lt;html&gt; dir=&quot;rtl&quot; ve class=&quot;rtl&quot; olur" classname="rtl.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="RTL — dil aktivasyonu › İbranice seçilince &lt;html&gt; dir=&quot;rtl&quot; ve class=&quot;rtl&quot; olur" classname="rtl.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="RTL — dil aktivasyonu › Farsça seçilince &lt;html&gt; dir=&quot;rtl&quot; ve class=&quot;rtl&quot; olur" classname="rtl.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="RTL — dil aktivasyonu › Türkçeye dönünce dir=&quot;ltr&quot; ve rtl class kalkar" classname="rtl.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="RTL — sidebar fiziksel pozisyon › RTL modunda sidebar right:0 (ya da left:unset) olur" classname="rtl.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="RTL — canvas toolbar CSS › RTL modunda .canvas-toolbar right:12px olur (left:unset)" classname="rtl.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="RTL — video grid flex yönü › .rtl .video-grid-controls flex-direction: row-reverse olur" classname="rtl.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="RTL — stage-video-sidebar › .rtl .stage-video-sidebar right:0 ve left:unset/auto olur" classname="rtl.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="RTL — settings tabs › .rtl .settings-tab-item flex-direction: row-reverse olur" classname="rtl.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="RTL — visual regression (screenshot) › Arapça RTL layout screenshot — login sayfası" classname="rtl.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="RTL — visual regression (screenshot) › İbranice RTL layout screenshot — login sayfası" classname="rtl.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="RTL — visual regression (screenshot) › Farsça RTL layout screenshot — login sayfası" classname="rtl.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="security.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="26" failures="0" skipped="26" time="0" errors="0">
+<testcase name="Content-Security-Policy › ana sayfa CSP header içermeli" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Content-Security-Policy › CSP default-src &apos;self&apos; içermeli" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Content-Security-Policy › CSP object-src &apos;none&apos; içermeli (Flash/plugin engeli)" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Content-Security-Policy › CSP frame-src &apos;none&apos; veya kısıtlı olmalı" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Content-Security-Policy › X-Content-Type-Options nosniff olmalı" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Content-Security-Policy › API endpoint de güvenlik header içermeli" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="SVG Upload Sanitizasyonu › XSS içerikli SVG yükleme reddedilmeli (422)" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="SVG Upload Sanitizasyonu › onerror handler içeren SVG reddedilmeli" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="SVG Upload Sanitizasyonu › temiz SVG yüklenebilmeli (200)" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="SVG Upload Sanitizasyonu › javascript: URI içeren SVG reddedilmeli" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="SVG Statik Servis Güvenliği › mevcut bir SVG dosyası için güvenlik header kontrolü" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="httpOnly Refresh Token Cookie › login yanıtında Set-Cookie: bridge_refresh httponly olmalı" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="httpOnly Refresh Token Cookie › login yanıtı body&apos;sinde refreshToken olmamalı" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="httpOnly Refresh Token Cookie › browser JS refresh cookie okuyamamalı (page eval)" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Token Family Invalidation › refresh token bir kez kullanılabilmeli (rotation)" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Token Family Invalidation › logout sonrası /api/refresh çalışmamalı" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Upload MIME ve Boyut Validasyonu › exe dosyası yükleme reddedilmeli" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Upload MIME ve Boyut Validasyonu › auth olmadan upload reddedilmeli (401)" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Upload MIME ve Boyut Validasyonu › geçerli PNG yüklenebilmeli" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Upload MIME ve Boyut Validasyonu › shell script yükleme reddedilmeli" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="CSRF Koruması › CSRF token olmadan mutating istek 403 dönmeli" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="CSRF Koruması › geçersiz CSRF token ile mutating istek 403 dönmeli" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="CSRF Koruması › GET /api/auth/csrf-token geçerli token döndürmeli" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="CSRF Koruması › geçerli CSRF token ile mutating istek başarılı olmalı" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="CSRF Koruması › aynı CSRF token ikinci istekte hâlâ geçerli olmalı (stateless mod)" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="CSRF Koruması › Authorization: Bot scheme ile CSRF kontrolü atlanmalı (API client exempt)" classname="security.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="settings.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="6" failures="0" skipped="6" time="0" errors="0">
+<testcase name="Settings Modal — Svelte › settings modal açılabiliyor" classname="settings.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Settings Modal — Svelte › settings modal sekmeler arası geçiş yapılabiliyor" classname="settings.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Settings Modal — Svelte › settings modal Escape ile kapatılabiliyor" classname="settings.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Settings Modal — Svelte › API: profil güncelleme" classname="settings.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Settings Modal — Svelte › API: display name boş bırakılamaz" classname="settings.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Settings Modal — Svelte › API: kimlik doğrulamasız profil güncellemesi reddediliyor" classname="settings.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="smoke-health.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="3" failures="0" skipped="3" time="0" errors="0">
+<testcase name="production smoke health › liveness endpoint answers quickly" classname="smoke-health.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="production smoke health › readiness endpoint exposes safe readiness state" classname="smoke-health.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="production smoke health › public HTML has hardening headers" classname="smoke-health.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="sprint83.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="27" failures="0" skipped="27" time="0" errors="0">
+<testcase name="Bot Marketplace — public API › GET /api/bots/marketplace — 200, bots dizisi döner" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — public API › GET /api/bots/marketplace — yalnızca approved botlar görünür" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — public API › GET /api/bots/marketplace?category=music — kategori filtresi çalışır" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — public API › GET /api/bots/marketplace?featured=true — sadece featured döner" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — public API › GET /api/bots/marketplace?limit=2 — pagination çalışır" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — public API › GET /api/bots/marketplace/:botId — seed botu (bridge-music) döner" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — public API › GET /api/bots/marketplace/:botId — bilinmeyen bot 404" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — public API › GET /api/bots/marketplace?q=music — full-text arama çalışır" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — public API › GET /api/bots/marketplace/categories — kategori listesi döner" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — authenticated API › POST /api/bots/marketplace — auth olmadan 401" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — authenticated API › POST /api/bots/marketplace — zorunlu alanlar eksik → 400" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — authenticated API › POST /api/bots/marketplace — geçersiz id formatı → 400" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — authenticated API › POST /api/bots/marketplace — geçerli submit 201 döner, approved=false" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — authenticated API › POST /api/bots/marketplace — aynı id tekrar → 409" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — admin API › PATCH /api/bots/marketplace/:botId — admin onaylayabilir" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — admin API › DELETE /api/bots/marketplace/:botId — admin silebilir" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Bot Marketplace — admin API › DELETE /api/bots/marketplace/:botId — bilinmeyen bot 404" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Stage Video Grid — API akışları › Sunucu ve stage kanalı oluşturuldu" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Stage Video Grid — API akışları › Stage kanalına katılım için auth gerekli" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Stage Video Grid — API akışları › Video grid WebSocket olayı: auth olmadan bağlantı reddedilir" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Draw Together — API ve güvenlik › Sunucu ve kanal oluşturuldu" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Draw Together — API ve güvenlik › Activities endpoint — auth gerektirir" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Draw Together — API ve güvenlik › Activities endpoint — auth ile çalışır (veya 404 if endpoint eksik)" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Draw Together — API ve güvenlik › Draw Together aktivitesi listesinde görünür" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Sprint 83 — Genel Sağlık › GET /api/bots/marketplace limiti 100 ile sınırlı" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Sprint 83 — Genel Sağlık › GET /api/bots/marketplace offset negatif değer sıfıra çekilir" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Sprint 83 — Genel Sağlık › GET /api/docs (Swagger) Sprint 83 route&apos;larını içeriyor" classname="sprint83.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="swagger.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="2" failures="0" skipped="2" time="0" errors="0">
+<testcase name="Swagger /docs smoke testi › GET /api/v1/docs → 200 döner ve HTML içerir" classname="swagger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Swagger /docs smoke testi › GET /api/v1/docs/swagger.json → 200 veya redirect" classname="swagger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="upload.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="10" failures="0" skipped="10" time="0" errors="0">
+<testcase name="Dosya Yükleme Akışları › API: küçük PNG yükleme başarılı" classname="upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme Akışları › API: metin dosyası yükleme" classname="upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme Akışları › API: yetkisiz yükleme reddedilir" classname="upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme Akışları › API: çok büyük dosya reddedilir (413)" classname="upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme Akışları › API: yüklenen dosya mesaj olarak gönderildiğinde kanalda görünür" classname="upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme Akışları › API: yüklenen URL HEAD isteğiyle erişilebilir ve Content-Type doğru" classname="upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme Akışları › Socket: dosya mesajı gönderilince kanaldaki üyeye message:new gelir" classname="upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme Akışları › UI: upload butonu mesaj input alanında görünür" classname="upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme Akışları › UI: dosya seçici file input içeriyor" classname="upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme Akışları › UI: görsel yükleme sonrası önizleme gösterilir" classname="upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="virtual-scroll.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="8" failures="0" skipped="8" time="0" errors="0">
+<testcase name="Virtual Scroll Modül Yükleme › _bridgeVS debug API yüklenmeli" classname="virtual-scroll.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Virtual Scroll Modül Yükleme › _bridgeVS.stats() çalışmalı" classname="virtual-scroll.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="DOM Penceresi Limiti › 100+ mesajlı kanalda DOM node sayısı WINDOW_SIZE altında kalmalı" classname="virtual-scroll.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mesaj Alanı DOM › #messages-area DOM&apos;da var olmalı" classname="virtual-scroll.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Mesaj Alanı DOM › virtual scroll spacer elementleri var mı" classname="virtual-scroll.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Infinite Scroll Backend › mesaj listesi limit parametresi çalışmalı" classname="virtual-scroll.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Infinite Scroll Backend › hasMore flag döndürülmeli (cursor pagination)" classname="virtual-scroll.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Infinite Scroll Backend › before timestamp ile eski mesajlar alınabilmeli" classname="virtual-scroll.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="voice.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="12" failures="0" skipped="12" time="0" errors="0">
+<testcase name="Ses Kanalı Akışları › API: ses kanalı oluşturulabilir" classname="voice.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Ses Kanalı Akışları › API: ses kanalı listede görünür" classname="voice.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Ses Kanalı Akışları › API: ses kanalına yetkisiz bağlanılamaz" classname="voice.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Ses Kanalı Akışları › API: ses durumu güncellenebilir (mute/deafen)" classname="voice.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Ses Kanalı Akışları › API: ses kanalı üye listesi alınabilir" classname="voice.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Ses Kanalı Akışları › API: ses kanalı silinemez (üye sayısı &gt; 0 kontrolü olmasa da 5xx vermez)" classname="voice.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Ses Kanalı Akışları › Socket: voice:join sonrası sunucu üyelerine voice:room-update gelir" classname="voice.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Ses Kanalı Akışları › Socket: voice:leave sonrası diğer üyeye voice:peer-left gelir" classname="voice.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Ses Kanalı Akışları › Socket: beklenmedik disconnect sonrası voice:room-update peers listesi azalır" classname="voice.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Ses Kanalı Akışları › UI: ses kanalı listede görünür" classname="voice.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Ses Kanalı Akışları › UI: ses kanalına tıklanınca voice UI açılır" classname="voice.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Ses Kanalı Akışları › UI: mute butonu tıklanabilir" classname="voice.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="web-push.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="11" failures="0" skipped="11" time="0" errors="0">
+<testcase name="Web Push / VAPID › GET /api/webpush/vapid-public-key — 200 veya 503 (yapılandırılmamış)" classname="web-push.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Web Push / VAPID › GET /api/webpush/vapid-public-key — 503 ise hata mesajı içermeli" classname="web-push.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Web Push / VAPID › POST /api/webpush/subscribe — geçerli payload ile 200" classname="web-push.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Web Push / VAPID › POST /api/webpush/subscribe — endpoint olmadan 400" classname="web-push.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Web Push / VAPID › POST /api/webpush/subscribe — keys olmadan 400" classname="web-push.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Web Push / VAPID › POST /api/webpush/subscribe — auth olmadan 401" classname="web-push.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Web Push / VAPID › DELETE /api/webpush/unsubscribe — var olan endpoint silinebilmeli" classname="web-push.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Web Push / VAPID › DELETE /api/webpush/unsubscribe — olmayan endpoint — 200 (idempotent)" classname="web-push.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Web Push / VAPID › DELETE /api/webpush/unsubscribe — auth olmadan 401" classname="web-push.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Web Push / VAPID › POST /api/webpush/test — VAPID yapılandırılmamışsa 503" classname="web-push.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Web Push / VAPID › POST /api/webpush/test — auth olmadan 401" classname="web-push.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="webfinger.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="12" failures="0" skipped="12" time="0" errors="0">
+<testcase name="WebFinger Endpoint (/.well-known/webfinger) › geçerli kullanıcı için JRD+JSON döndürür" classname="webfinger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="WebFinger Endpoint (/.well-known/webfinger) › var olmayan kullanıcı için 404 döndürür" classname="webfinger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="WebFinger Endpoint (/.well-known/webfinger) › resource parametresi olmadan 400 döndürür" classname="webfinger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="WebFinger Endpoint (/.well-known/webfinger) › acct: ön eki olmayan resource için 400 döndürür" classname="webfinger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="WebFinger Endpoint (/.well-known/webfinger) › links dizisinde href doğru instance URL içerir" classname="webfinger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Federation API WebFinger (/api/federation/webfinger) › geçerli kullanıcı için JRD döndürür" classname="webfinger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Federation API WebFinger (/api/federation/webfinger) › resource yoksa 400 döndürür" classname="webfinger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Actor Endpoint › activity+json Accept başlığıyla actor döndürür" classname="webfinger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Actor Endpoint › var olmayan kullanıcı için 404 döndürür" classname="webfinger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="ActivityPub Actor Endpoint › actor href WebFinger self linkiyle uyuşur" classname="webfinger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="NodeInfo Endpoint › nodeinfo 2.1 şema linkini döndürür" classname="webfinger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="NodeInfo Endpoint › /nodeinfo/2.1 endpoint geçerli yanıt döndürür" classname="webfinger.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="webp-upload.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="chromium" tests="9" failures="0" skipped="9" time="0" errors="0">
+<testcase name="Dosya Yükleme ve WebP Dönüşümü › PNG yükleniyor — URL döndürülüyor" classname="webp-upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme ve WebP Dönüşümü › WEBP_CONVERT=true ise dönen URL .webp uzantılı olmalı" classname="webp-upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme ve WebP Dönüşümü › GIF yüklenince WebP&apos;ye dönüştürülmemeli (animasyon korunur)" classname="webp-upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme ve WebP Dönüşümü › kimlik doğrulamasız yükleme reddediliyor" classname="webp-upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme ve WebP Dönüşümü › izin verilmeyen dosya tipi reddediliyor" classname="webp-upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme ve WebP Dönüşümü › SVG yüklenince sanitize ediliyor" classname="webp-upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme ve WebP Dönüşümü › CDN_PROVIDER=r2 ise URL CDN domain&apos;inden dönüyor" classname="webp-upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme ve WebP Dönüşümü › local provider&apos;da URL /uploads/ ile başlıyor" classname="webp-upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Dosya Yükleme ve WebP Dönüşümü › chunked upload — ilk chunk kabul ediliyor" classname="webp-upload.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="a11y.smoke.spec.ts" timestamp="2026-06-12T21:08:42.753Z" hostname="a11y" tests="7" failures="0" skipped="7" time="0" errors="0">
+<testcase name="a11y smoke — WCAG 2.0 A/AA › landing page — wcag2a/aa ihlali yok" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y smoke — WCAG 2.0 A/AA › marketplace page — wcag2a/aa ihlali yok" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y smoke — WCAG 2.0 A/AA › login sayfası — form erişilebilirliği" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y smoke — WCAG 2.0 A/AA › kayıt sayfası — form erişilebilirliği" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y smoke — WCAG 2.0 A/AA › ana uygulama shell — oturum sonrası" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y smoke — WCAG 2.0 A/AA › ayarlar modalı — klavye &amp; ARIA" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+<testcase name="a11y smoke — WCAG 2.0 A/AA › Tab ile odak görünür kalmalı" classname="a11y.smoke.spec.ts">
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+</testsuites>

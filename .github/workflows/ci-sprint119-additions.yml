@@ -1,0 +1,237 @@
+# .github/workflows/ci-sprint119-additions.yml
+# Sprint 119: Mevcut ci.yml'e ek job'lar.
+# Mevcut workflow'u değiştirmeden yeni kontroller ekler.
+# Sonraki sprintte ci.yml ile birleştirilmeli.
+
+name: Bridge CI — Sprint 119 Additions
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+
+  # ── 1. ActivityPub CI Testi (Mock Peer ile) ─────────────────────────────
+  activitypub-ci:
+    name: ActivityPub CI Tests (Mock Peer)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: bridge_ap_test
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: ap_test_password
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    env:
+      DATABASE_URL: postgresql://bridge:ap_test_password@localhost:5432/bridge_ap_test
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ap_test_jwt_secret_minimum_32_chars_here
+      REFRESH_SECRET: ap_test_refresh_secret_minimum_32_chars
+      NODE_ENV: test
+      PORT: 3001
+      BRIDGE_URL: http://localhost:3001
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server deps
+        run: cd server && npm ci
+
+      - name: Build server
+        run: cd server && npm run build
+
+      - name: Install E2E deps
+        run: |
+          cd e2e && npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Start Bridge server
+        run: |
+          cd server && node dist/index.js &
+          sleep 8
+          curl -f http://localhost:3001/api/health || (echo "❌ Server başlamadı" && exit 1)
+          echo "✅ Server hazır"
+
+      - name: Run ActivityPub CI Tests
+        run: |
+          cd e2e && npx playwright test tests/activitypub-ci.spec.ts \
+            --reporter=list \
+            --timeout=30000
+        env:
+          BRIDGE_URL: http://localhost:3001
+          BRIDGE_TEST_USER: apci_testuser
+          BRIDGE_TEST_PASS: ApCiTest123!
+
+      - name: Upload AP test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ap-ci-test-results
+          path: e2e/playwright-report/
+          retention-days: 7
+
+  # ── 2. Güvenlik Middleware Doğrulaması ──────────────────────────────────
+  security-middleware-check:
+    name: Security Middleware Guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: WS bağlantı limiti middleware mevcut
+        run: |
+          test -f server/socket/middleware/wsConnectionLimit.ts || \
+            (echo "❌ wsConnectionLimit.ts eksik — Sprint 119 güvenlik gereksinimi" && exit 1)
+          grep -q "MAX_WS_PER_IP" server/socket/middleware/wsConnectionLimit.ts || \
+            (echo "❌ wsConnectionLimit.ts MAX_WS_PER_IP içermiyor" && exit 1)
+          echo "✅ WS connection limit middleware mevcut"
+
+      - name: ActivityPub inbox rate limiter mevcut
+        run: |
+          test -f server/middleware/federationRateLimit.ts || \
+            (echo "❌ federationRateLimit.ts eksik — Sprint 119 D6 güvenlik gereksinimi" && exit 1)
+          grep -q "federationInboxRateLimit" server/middleware/federationRateLimit.ts || \
+            (echo "❌ federationInboxRateLimit export edilmiyor" && exit 1)
+          echo "✅ Federation inbox rate limiter mevcut"
+
+      - name: Server-side content sanitizer mevcut
+        run: |
+          test -f server/lib/contentSanitizer.ts || \
+            (echo "❌ contentSanitizer.ts eksik — Sprint 119 T5 güvenlik gereksinimi" && exit 1)
+          grep -q "sanitizeMessageContent" server/lib/contentSanitizer.ts || \
+            (echo "❌ sanitizeMessageContent export edilmiyor" && exit 1)
+          echo "✅ Content sanitizer mevcut"
+
+      - name: Tehdit modeli belgesi mevcut
+        run: |
+          test -f docs/THREAT_MODEL.md || \
+            (echo "❌ docs/THREAT_MODEL.md eksik — Sprint 119 güvenlik gereksinimi" && exit 1)
+          grep -q "STRIDE" docs/THREAT_MODEL.md || \
+            (echo "❌ Tehdit modeli STRIDE analizi içermiyor" && exit 1)
+          echo "✅ Tehdit modeli mevcut"
+
+      - name: @html direktifi denetimi (Svelte XSS)
+        run: |
+          # @html kullanımlarını tespit et — her biri DOMPurify geçmeli
+          UNSAFE=$(grep -rn "@html" client/js --include="*.svelte" | \
+            grep -v "DOMPurify\|sanitize\|test\|story" || true)
+          if [ -n "$UNSAFE" ]; then
+            echo "⚠️  DOMPurify'siz @html kullanımı:"
+            echo "$UNSAFE"
+            # Şimdilik warning — sonraki sprintte hata olacak
+            echo "::warning::Sanitize edilmemiş @html direktifleri mevcut"
+          else
+            echo "✅ Tüm @html direktifleri sanitize korumalı"
+          fi
+
+  # ── 3. CSS Birleştirme Doğrulaması ─────────────────────────────────────
+  css-consolidation-check:
+    name: CSS Consolidation Guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: community-features.css mevcut
+        run: |
+          test -f client/css/modules/community-features.css || \
+            (echo "❌ community-features.css eksik — Sprint 119 CSS birleştirme" && exit 1)
+          echo "✅ community-features.css mevcut"
+
+      - name: Sprint adlı CSS dosyaları sayısı kontrol
+        run: |
+          # Sprint numaralı CSS dosyaları sayısı 6'yı geçmemeli
+          COUNT=$(ls client/css/modules/ | grep -c "sprint[0-9]" || true)
+          echo "Sprint adlı CSS dosyası sayısı: $COUNT"
+          if [ "$COUNT" -gt 6 ]; then
+            echo "::warning::$COUNT sprint-adlı CSS dosyası mevcut — birleştirilmeli"
+          else
+            echo "✅ CSS birleştirme seviyesi kabul edilebilir: $COUNT dosya"
+          fi
+
+  # ── 4. VoicePanel Boyut Kontrolü ───────────────────────────────────────
+  component-size-check:
+    name: Component Size Guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: VoicePTTController bileşeni mevcut
+        run: |
+          test -f client/js/core/VoicePTTController.svelte || \
+            (echo "❌ VoicePTTController.svelte eksik — Sprint 119 refactor" && exit 1)
+          echo "✅ VoicePTTController.svelte mevcut"
+
+      - name: VoiceScreenShareController bileşeni mevcut
+        run: |
+          test -f client/js/core/VoiceScreenShareController.svelte || \
+            (echo "❌ VoiceScreenShareController.svelte eksik — Sprint 119 refactor" && exit 1)
+          echo "✅ VoiceScreenShareController.svelte mevcut"
+
+      - name: VoicePanel satır sayısı azaldı (Sprint 119 hedefi ≤ 850)
+        run: |
+          COUNT=$(wc -l < client/js/core/VoicePanel.svelte)
+          echo "VoicePanel.svelte satır sayısı: $COUNT"
+          if [ "$COUNT" -gt 850 ]; then
+            echo "::warning::VoicePanel.svelte hâlâ $COUNT satır — PTT/SS bileşenlerine geçiş doğrulanmamış"
+          else
+            echo "✅ VoicePanel refactor tamamlandı: $COUNT satır"
+          fi
+
+      - name: AdminPanel satır sayısı kontrolü (≤ 700 hedef)
+        run: |
+          COUNT=$(wc -l < client/js/admin/AdminPanel.svelte 2>/dev/null || echo 0)
+          echo "AdminPanel.svelte satır sayısı: $COUNT"
+          if [ "$COUNT" -gt 700 ]; then
+            echo "::warning::AdminPanel.svelte $COUNT satır — gelecek sprint'te bölünmeli"
+          fi
+
+  # ── 5. k6 Yük Testi Script Varlığı ────────────────────────────────────
+  load-test-scripts-check:
+    name: Load Test Scripts Guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: full-load.js mevcut
+        run: |
+          test -f k6/full-load.js || \
+            (echo "❌ k6/full-load.js eksik — Sprint 119 performans gereksinimi" && exit 1)
+          grep -q "handleSummary" k6/full-load.js || \
+            (echo "❌ k6/full-load.js handleSummary içermiyor" && exit 1)
+          echo "✅ k6/full-load.js hazır"
+
+      - name: k6 senaryo dokümantasyonu
+        run: |
+          # full-load.js 4 senaryo içermeli (load, spike, soak, stress)
+          for scenario in load spike soak stress; do
+            grep -q "$scenario" k6/full-load.js || \
+              (echo "❌ k6/full-load.js '$scenario' senaryosu içermiyor" && exit 1)
+          done
+          echo "✅ Tüm k6 senaryoları mevcut: load, spike, soak, stress"

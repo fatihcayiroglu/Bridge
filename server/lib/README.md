@@ -29,7 +29,7 @@
 | `contentScanner.ts` | CSAM hash, VirusTotal, SVG XSS, MIME anomali. Karantina + admin API. |
 | `captcha.ts` | hCaptcha / Turnstile. Progressive CAPTCHA, giriş kilidi, bot skoru, replay koruması. |
 | `e2e.ts` | E2EE public key API + X3DH prekey bundle. Signal Protocol tabanlı. |
-| `swagger.ts` | OpenAPI spec (Oturum C'de migrate edilecek). |
+| `swagger.ts` | OpenAPI spec + Swagger UI. Oturum C tamamlandı (Sprint 79): JSON tip güvenliği, `$ref` resolver, `operationId` otomasyonu, `validateSpec()`. |
 
 ## Kullanım
 

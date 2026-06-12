@@ -1,0 +1,195 @@
+# k8s/helm/bridge/values.yaml
+# Bridge Helm chart varsayılan değerleri
+# Üretim ortamı için values-production.yaml ile override et.
+
+# ── Replica & Image ───────────────────────────────────────────
+replicaCount: 2
+
+image:
+  repository: bridge-app
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# ── Service ───────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3001
+
+# ── Ingress ───────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "2048m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/upgrade: "websocket"
+    nginx.ingress.kubernetes.io/connection-upgrade: "Upgrade"
+  hosts:
+    - host: bridge.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: bridge-tls
+      hosts:
+        - bridge.example.com
+
+# ── Resources ─────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+
+# ── Autoscaling ───────────────────────────────────────────────
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# ── Pod Disruption Budget ─────────────────────────────────────
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# ── Affinity (anti-affinity) ──────────────────────────────────
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - bridge
+          topologyKey: kubernetes.io/hostname
+
+# ── Probes ────────────────────────────────────────────────────
+livenessProbe:
+  httpGet:
+    path: /api/health
+    port: 3001
+  initialDelaySeconds: 30
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /api/health/ready
+    port: 3001
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  failureThreshold: 3
+
+# ── Environment ───────────────────────────────────────────────
+env:
+  PORT: "3001"
+  NODE_ENV: production
+  INSTANCE_NAME: Bridge
+  MAX_FILE_SIZE_MB: "100"
+  BRIDGE_E2EE_ENABLED: "true"
+
+# ── Secrets (değerler Sealed Secrets veya external-secrets ile inject edilmeli) ──
+secrets:
+  # Zorunlu
+  JWT_SECRET: ""
+  REFRESH_SECRET: ""
+  DATABASE_URL: ""
+  REDIS_URL: ""
+  # Opsiyonel
+  SMTP_HOST: ""
+  SMTP_USER: ""
+  SMTP_PASS: ""
+  VAPID_PUBLIC_KEY: ""
+  VAPID_PRIVATE_KEY: ""
+  GROQ_API_KEY: ""
+  SENTRY_DSN: ""
+
+# ── PostgreSQL (bağımlılık — disable edip harici DB de kullanılabilir) ────────
+postgresql:
+  enabled: true
+  auth:
+    database: bridge
+    username: bridge
+    existingSecret: bridge-db-secret
+    secretKeys:
+      adminPasswordKey: postgres-password
+      userPasswordKey: password
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+# ── Redis (bağımlılık — disable edip harici Redis de kullanılabilir) ──────────
+redis:
+  enabled: true
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 5Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# ── ServiceMonitor (Prometheus Operator) ─────────────────────
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  path: /metrics
+
+# ── Pod annotations & labels ─────────────────────────────────
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "3001"
+  prometheus.io/path: "/metrics"
+
+podLabels: {}
+
+# ── Security context ─────────────────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+# ── Persistent storage (uploads) ─────────────────────────────
+persistence:
+  enabled: false  # Üretimde CDN (R2/MinIO) önerilir
+  storageClass: ""
+  size: 10Gi
+  accessMode: ReadWriteOnce
+
+# ── Node selector & tolerations ──────────────────────────────
+nodeSelector: {}
+tolerations: []

@@ -2,7 +2,33 @@
 
 Hoş geldiniz! Bridge projesi açık kaynak ve katkılara açıktır. Bu rehberde nasıl kurulum yapacağınızı, testlerin nasıl çalıştırılacağını ve kod standartlarını öğreneceksiniz.
 
-## Hızlı Başlangıç
+## Terminoloji Eşleme Tablosu
+
+Bridge iki terminoloji katmanı kullanır: **UI terminolojisi** (kullanıcıya görünen) ve **teknik terminoloji** (API, DB, kod). Her ikisini bilmek katkı sürecinde kafa karışıklığını önler.
+
+| UI (Kullanıcı görür) | Teknik (API / DB / Kod) | Açıklama |
+|----------------------|------------------------|----------|
+| **Hub** | `server` / `serverId` | Üyelerin toplandığı topluluk alanı |
+| **Space** | `channel` / `channelId` | Hub içindeki konuşma kanalı |
+| **Flow** | `thread` / `threadId` | Space içindeki konuşma iş parçacığı |
+| **Hub üyesi** | `member` | Hub'a katılmış kullanıcı |
+| **Hub sahibi** | `ownerId` | Hub'ı oluşturan kullanıcı |
+
+> **Not:** API endpoint'leri (`/api/servers`, `/api/channels`) ve DB şeması geçiş sürecinde eski adlarını korur. Detaylar için bkz. [ADR-0010](docs/ADR-0010-hub-space-flow-terminology.md).
+
+```typescript
+// UI katmanı — i18n anahtarları kullan
+t('hub')    // → "Hub"
+t('hubs')   // → "Hubs" / "Hublar"
+t('space')  // → "Space"
+
+// API katmanı — eski isimler korunuyor
+fetch('/api/servers')      // Hub listesi
+fetch('/api/channels')     // Space listesi
+const { serverId } = body  // Hub ID
+```
+
+
 
 ### Gereksinimler
 - **Node.js**: 22.x veya üstü
@@ -14,14 +40,14 @@ Hoş geldiniz! Bridge projesi açık kaynak ve katkılara açıktır. Bu rehberd
 
 ```bash
 # 1. Repository'yi klonla
-git clone https://github.com/your-org/bridge.git
+git clone https://github.com/bridge-app/bridge.git
 cd bridge
 
 # 2. Dependencies'leri yükle
 npm install
 
 # 3. Environment dosyasını oluştur
-cp .env.example .env
+cp server/.env.example server/.env
 # .env'i düzenle: JWT_SECRET, REFRESH_SECRET, DATABASE_URL, REDIS_URL
 
 # 4. Veritabanını hazırla
@@ -196,8 +222,8 @@ A: Main branch'e merge olunca otomatik production'a push olur. Develop'e merge o
 ## Yardım
 
 - Discord: [Topluluğa katıl](https://bridge.example.com/discord)
-- GitHub Issues: [Sorun bildir](https://github.com/your-org/bridge/issues)
-- GitHub Discussions: [Soru sor](https://github.com/your-org/bridge/discussions)
+- GitHub Issues: [Sorun bildir](https://github.com/bridge-app/bridge/issues)
+- GitHub Discussions: [Soru sor](https://github.com/bridge-app/bridge/discussions)
 
 ---
 

@@ -1,4 +1,30 @@
-// server/routes/invitePreview.js.1
+/**
+ * @openapi
+ * tags:
+ *   - name: InvitePreview
+ *     description: InvitePreview API endpoints
+
+ *
+ * /invite/{code}:
+ *   get:
+ *     tags: [Servers]
+ *     summary: Davet onizleme sayfasi (OG meta + HTML)
+ *     security: []
+ *     parameters:
+ *       - in: path
+ *         name: code
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Davet onizleme HTML sayfasi
+ *         content:
+ *           text/html:
+ *             schema: { type: string }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ */
+
+// server/routes/invitePreview.ts.1
 // GET /invite/:code
 //
 // Davet linkine gidildiğinde:
@@ -7,30 +33,19 @@
 //  - Twitter Card desteği
 //  - Kullanıcı gerçek istemcideyse SPA'ya yönlendirme butonu gösterilir
 
-'use strict';
 
-const express      = require('express');
+import logger from '../lib/logger';
+import express from 'express';
 const router       = express.Router();
-const { Invites, Servers, Members } = require('../db/repositories');
-const asyncHandler = require('../middleware/asyncHandler');
-
-// ── Yardımcı: emoji → HTML entity (güvenli render için) ──────
-function escapeHtml(str) {
-  if (typeof str !== 'string') return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+import { Invites, Servers, Members } from '../db/repositories';
+import { escapeHtml } from '../lib/security';
 
 // ── SSRF Koruması — iconUrl doğrulaması ──────────────────────
 // iconUrl doğrudan OG image olarak kullanılıyor.
 // Saldırgan internal URL (http://169.254.169.254) koyabilir.
 const PRIVATE_IP_PATTERN = /^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|::1|0\.0\.0\.0|169\.254\.)/i;
 
-function isSafeIconUrl(url) {
+function isSafeIconUrl(url: unknown): url is string {
   if (!url || typeof url !== 'string') return false;
   try {
     const u = new URL(url);
@@ -41,14 +56,15 @@ function isSafeIconUrl(url) {
 }
 
 // ── Sunucu ikonunu çöz (emoji veya URL olabilir) ──────────────
-function resolveIcon(server) {
+interface ServerRow { _id: string; name: string; description?: string; icon?: string | null; iconUrl?: string; }
+function resolveIcon(server: ServerRow): { type: string; value: string } {
   if (server.iconUrl && isSafeIconUrl(server.iconUrl)) return { type: 'img', value: escapeHtml(server.iconUrl) };
   const icon = server.icon || '🌐';
   return { type: 'emoji', value: escapeHtml(icon) };
 }
 
 // ── HTML üret ─────────────────────────────────────────────────
-function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl }) {
+function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl }: { server: ServerRow; memberCount: number; inviteCode: string; instanceName: string; instanceUrl: string }): string {
   const safeName  = escapeHtml(server.name);
   const safeDesc  = escapeHtml(server.description || `${safeName} topluluğuna katıl!`);
   const icon      = resolveIcon(server);
@@ -88,7 +104,7 @@ function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl 
   <meta name="twitter:image"       content="${ogImage}">
 
   <!-- Theme color (Discord-style embed rengi) -->
-  <meta name="theme-color" content="#5865f2">
+  <meta name="theme-color" content="#2d9cdb">
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -171,7 +187,7 @@ function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl 
 
     .btn-join {
       display: inline-block;
-      background: #5865f2;
+      background: #2d9cdb;
       color: #fff;
       text-decoration: none;
       padding: .75rem 2rem;
@@ -182,7 +198,7 @@ function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl 
       width: 100%;
     }
 
-    .btn-join:hover { background: #4752c4; }
+    .btn-join:hover { background: #1a6b8a; }
 
     .footer {
       margin-top: 1.2rem;
@@ -207,8 +223,8 @@ function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl 
 }
 
 // ── GET /invite/:code ─────────────────────────────────────────
-router.get('/:code', asyncHandler(async (req, res) => {
-  const code = String(req.params.code || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+router.get('/:code', async (req, res) => {
+  const code = String(String(req.params.code ?? '') || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
   if (!code) return res.status(400).send('<h1>Geçersiz davet kodu</h1>');
 
   const invite = await Invites.findByCode(code);
@@ -241,20 +257,26 @@ router.get('/:code', asyncHandler(async (req, res) => {
     try {
       const members = await Members.findByServer(server._id);
       memberCount = members.length;
-    } catch {}
+    } catch (err) {
+      logger.warn({ err, serverId: server._id, event: 'invitePreview.memberCount.error' },
+        'Failed to fetch member count for invite preview — defaulting to 0');
+    }
   }
 
   const instanceName = process.env.INSTANCE_NAME || 'Bridge';
   const instanceUrl  = (process.env.INSTANCE_URL || `http://localhost:${process.env.PORT || 3001}`)
     .replace(/\/$/, '');
 
-  const html = buildHtml({ server, memberCount, inviteCode: code, instanceName, instanceUrl });
+  const html = buildHtml({ server: server as unknown as ServerRow, memberCount, inviteCode: code, instanceName, instanceUrl });
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   // Önbellek: 5 dakika (üye sayısı sık değişebilir)
   res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
   res.send(html);
-}));
+});
 
+export default router;
+
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-export {};
+module.exports.default = router;

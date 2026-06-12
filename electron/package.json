@@ -1,57 +1,57 @@
 {
-  "name": "bridge-desktop",
-  "version": "45.0.0",
-  "description": "Bridge — Masaüstü Uygulaması",
-  "main": "main.js",
-  "author": "Bridge Team",
-  "license": "MIT",
+  "name": "bridge-electron",
+  "version": "1.122.0",
+  "description": "Bridge — Desktop Application",
+  "main": "dist/main.js",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron . --dev",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux"
-  },
-  "dependencies": {
-    "electron-updater": "^6.1.7"
-  },
-  "devDependencies": {
-    "electron": "^30.0.0",
-    "electron-builder": "^24.13.3"
+    "start": "npm run compile && electron .",
+    "dev": "ELECTRON_DEV=true npm run compile && electron .",
+    "build": "npm run compile && electron-builder",
+    "test": "jest --config ./jest.electron.config.ts",
+    "compile": "rm -rf dist && tsc -p tsconfig.build.json",
+    "dist": "npm run build",
+    "dist:win": "npm run compile && electron-builder --win",
+    "dist:mac": "npm run compile && electron-builder --mac",
+    "dist:linux": "npm run compile && electron-builder --linux"
   },
   "build": {
-    "appId": "app.bridge.chat",
+    "appId": "com.bridge.desktop",
     "productName": "Bridge",
-    "copyright": "© 2026 Bridge Team",
+    "copyright": "Copyright © 2026 Bridge Contributors",
     "directories": {
-      "output": "dist",
+      "output": "release",
       "buildResources": "assets"
     },
     "files": [
-      "main.js",
-      "assets/**",
-      "../server/**",
-      "../client/**",
-      "!../server/node_modules/.cache",
-      "!../server/data",
-      "!../server/uploads",
-      "!**/*.test.js"
+      "dist/**/*",
+      "package.json",
+      "!node_modules/.cache"
     ],
-    "extraMetadata": {
-      "main": "main.js"
-    },
+    "extraResources": [
+      {
+        "from": "../server/dist",
+        "to": "server"
+      },
+      {
+        "from": "../client",
+        "to": "client"
+      }
+    ],
     "win": {
       "target": [
         {
           "target": "nsis",
           "arch": [
-            "x64"
+            "x64",
+            "arm64"
           ]
         }
       ],
-      "icon": "assets/icon.ico"
+      "signtoolOptions": {
+        "certificateFile": "${WIN_CERT_PATH}",
+        "certificatePassword": "${WIN_CERT_PASSWORD}",
+        "publisherName": "Bridge Contributors"
+      }
     },
     "mac": {
       "target": [
@@ -61,32 +61,59 @@
             "x64",
             "arm64"
           ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
-      "icon": "assets/icon.icns",
       "category": "public.app-category.social-networking",
       "hardenedRuntime": true,
-      "entitlements": "assets/entitlements.mac.plist",
-      "entitlementsInherit": "assets/entitlements.mac.plist"
+      "gatekeeperAssess": false,
+      "notarize": true
     },
     "linux": {
       "target": [
         "AppImage",
         "deb",
-        "rpm"
+        "snap"
       ],
-      "icon": "assets/icon.png",
-      "category": "Network"
+      "category": "Network;InstantMessaging",
+      "synopsis": "Self-hosted federated communication platform"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     },
-    "publish": null
+    "publish": {
+      "provider": "github",
+      "owner": "bridge-app",
+      "repo": "bridge"
+    },
+    "protocols": [
+      {
+        "name": "Bridge Protocol",
+        "schemes": [
+          "bridge"
+        ]
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "electron": "^42.4.0",
+    "electron-builder": "^26.15.3",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.4.11",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
   }
 }

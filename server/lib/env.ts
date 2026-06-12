@@ -1,6 +1,4 @@
-// @ts-nocheck
-'use strict';
-// server/lib/env.js — Ortam değişkeni doğrulama
+// server/lib/env.ts — Ortam değişkeni doğrulama
 // Sunucu başlamadan önce zorunlu ve opsiyonel değişkenleri kontrol eder.
 // Eksik/hatalı değer varsa açık hata mesajı ile process.exit(1) yapar.
 //
@@ -12,7 +10,7 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 
 // ── Yardımcı fonksiyonlar ─────────────────────────────────────
 
-function str(name, { required = false, min = 0, pattern = null, redact = false } = {}) {
+function str(name: string, { required = false, min = 0, pattern = null, redact = false }: { required?: boolean; min?: number; pattern?: RegExp | null; redact?: boolean } = {}): EnvResult {
   const val = process.env[name];
   const display = redact ? '[GİZLİ]' : (val || '');
 
@@ -38,7 +36,17 @@ function str(name, { required = false, min = 0, pattern = null, redact = false }
   return { name, ok: true, value: val };
 }
 
-function int(name, { min = null, max = null, default: def = null } = {}) {
+interface EnvResult {
+  name: string;
+  ok: boolean;
+  value?: string | number | null;
+  message?: string;
+}
+
+function int(
+  name: string,
+  { min = null, max = null, default: def = null }: { min?: number | null; max?: number | null; default?: number | null } = {}
+): EnvResult {
   const raw = process.env[name];
   if (!raw) {
     if (def !== null) return { name, ok: true, value: def };
@@ -51,7 +59,10 @@ function int(name, { min = null, max = null, default: def = null } = {}) {
   return { name, ok: true, value: n };
 }
 
-function url(name, { required = false, protocols = ['http', 'https'] } = {}) {
+function url(
+  name: string,
+  { required = false, protocols = ['http', 'https'] }: { required?: boolean; protocols?: string[] } = {}
+): EnvResult {
   const val = process.env[name];
   if (!val) {
     if (required && !IS_TEST) return { name, ok: false, message: `${name} zorunlu ama tanımlı değil` };
@@ -86,7 +97,9 @@ const rules = [
   // Sunucu ayarları
   int('PORT',           { min: 1, max: 65535, default: 3001 }),
   int('PG_POOL_MAX',    { min: 1, max: 100 }),
-  int('MAX_FILE_SIZE_MB', { min: 1 }),
+  int('MAX_FILE_SIZE_MB', { min: 1, max: 10240 }),  // max 10 GB hardcap
+  int('MAX_CHANNELS_PER_SERVER', { min: 1, max: 2000, default: 500 }),
+  int('MAX_SERVERS_PER_USER',   { min: 1, max: 1000, default: 100 }),
   int('CHUNK_SIZE_MB',    { min: 1 }),
 
   // Rate limit ayarları
@@ -175,12 +188,76 @@ const rules = [
     }
     return { name: 'LOG_LEVEL', ok: true };
   })(),
+
+  // Production: Redis — rate limit / CSRF / socket cluster için zorunlu
+  (() => {
+    if (!IS_PROD) return { name: 'REDIS_URL', ok: true };
+    if (!process.env.REDIS_URL?.trim()) {
+      return {
+        name: 'REDIS_URL',
+        ok: false,
+        message: 'REDIS_URL production ortamında zorunludur (rate limit, CSRF, socket adapter)',
+      };
+    }
+    return { name: 'REDIS_URL', ok: true };
+  })(),
+
+  // Production: Federation/AP key encryption
+  (() => {
+    if (!IS_PROD) return { name: 'AP_ENCRYPTION_KEY', ok: true };
+    const key = process.env.AP_ENCRYPTION_KEY;
+    if (!key || !/^[0-9a-fA-F]{64}$/.test(key)) {
+      return {
+        name: 'AP_ENCRYPTION_KEY',
+        ok: false,
+        message: 'AP_ENCRYPTION_KEY production ortamında 64-char hex (32 byte) olmalıdır',
+      };
+    }
+    return { name: 'AP_ENCRYPTION_KEY', ok: true };
+  })(),
+
+  // Production: Federation secret
+  (() => {
+    if (!IS_PROD) return { name: 'FEDERATION_SECRET', ok: true };
+    if (!process.env.FEDERATION_SECRET?.trim() || process.env.FEDERATION_SECRET.length < 32) {
+      return {
+        name: 'FEDERATION_SECRET',
+        ok: false,
+        message: 'FEDERATION_SECRET production ortamında en az 32 karakter olmalıdır',
+      };
+    }
+    return { name: 'FEDERATION_SECRET', ok: true };
+  })(),
+
+  // ── Sprint 120: WebSocket bağlantı limiti (D5) ────────────────
+  int('MAX_WS_PER_IP',        { min: 1, max: 1000 }),
+  int('MAX_UNAUTH_WS_PER_IP', { min: 1, max: 100  }),
+  int('MAX_WS_PER_USER',      { min: 1, max: 100  }),
+
+  // ── Sprint 120: ActivityPub inbox flood koruması (D6) ────────
+  int('AP_INBOX_GLOBAL_MAX',  { min: 1, max: 100000 }),
+  int('AP_INBOX_PEER_MAX',    { min: 1, max: 10000  }),
+  int('AP_INBOX_BURST_MAX',   { min: 1, max: 1000   }),
+
+  // ── Sprint 122: Metrics endpoint güvenliği ───────────────────
+  // Production'da METRICS_SECRET tanımlanmadan /metrics açık kalır.
+  (() => {
+    if (!IS_PROD) return { name: 'METRICS_SECRET', ok: true };
+    if (!process.env.METRICS_SECRET?.trim() || process.env.METRICS_SECRET.length < 16) {
+      return {
+        name: 'METRICS_SECRET',
+        ok: false,
+        message: 'METRICS_SECRET production ortamında en az 16 karakter olmalıdır (/metrics endpoint\'i korur)',
+      };
+    }
+    return { name: 'METRICS_SECRET', ok: true };
+  })(),
 ];
 
 // ── Doğrulama çalıştır ────────────────────────────────────────
 
-const errors   = [];
-const warnings = [];
+const errors:   string[] = [];
+const warnings: string[] = [];
 
 for (const result of rules) {
   if (!result.ok) {
@@ -192,6 +269,8 @@ for (const result of rules) {
   }
 }
 
+// NOT: Bu dosya sunucunun en başında (logger initialize edilmeden önce) çalışır.
+// Bu nedenle console.* kasıtlı kullanılmaktadır — pino henüz hazır değildir.
 if (warnings.length) {
   console.warn('\n[ENV] Ortam değişkeni uyarıları:');
   warnings.forEach(w => console.warn(w));
@@ -208,5 +287,4 @@ if (errors.length) {
   process.exit(1);
 }
 
-module.exports = { validated: true };
-export {};
+export const validated = true;

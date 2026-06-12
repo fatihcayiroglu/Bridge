@@ -38,6 +38,14 @@ export default defineConfig({
   },
 
   projects: [
+    {
+      name: 'api-smoke',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: undefined,
+      },
+      testMatch: /smoke-health\.spec\.ts/,
+    },
     // Setup: Auth state hazırla (login token'ı kaydet)
     {
       name: 'setup',

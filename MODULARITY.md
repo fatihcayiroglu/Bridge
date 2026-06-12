@@ -82,10 +82,8 @@ client/
 │   │   ├── ip-ban.js           # IP ban UI
 │   │   ├── partials.js         # HTML parçacıkları
 │   │   │
-│   │   ├── v41/                # v4.1 özellik modülleri
-│   │   ├── v42/                # v4.2 özellik modülleri
-│   │   ├── v43/                # v4.3 özellik modülleri
-│   │   └── v44/                # v4.4 özellik modülleri
+│   │   │   # Sprint 30: v41–v44 klasörleri kaldırıldı.
+│   │   │   # Tüm modüller core/ altına taşındı (go-live.js, stage.js, vb.)
 │   │
 │   ├── admin.js            # Admin paneli
 │   ├── discover.js         # Sunucu keşfetme
@@ -140,7 +138,7 @@ npm run build:ci            # build + bütçe kontrolü
 | `chunk-features` | server-settings, channel-perms, e2e, ai, search | İsteğe bağlı özellikler |
 | `chunk-pages` | app, federation, threads, slash, polls, webauthn | Sayfa seviyesi kodlar |
 | `chunk-heavy` | discord-import, bot-marketplace, admin | Nadiren kullanılan, büyük modüller |
-| `chunk-compat` | v41–v44 index.js | Sürüm uyumluluk katmanı |
+| `chunk-compat` | ~~v41–v44~~ kaldırıldı (Sprint 30) | Modüller core/ altına taşındı |
 
 ---
 
@@ -231,4 +229,4 @@ const unsub = BridgeState.subscribe('currentChannel', (newVal, oldVal) => {
 - Tüm modüller `window.*` global kapsamını paylaşır (ES module değil).  
   Bu, mevcut tarayıcı uyumluluğunu korumak için bilinçli bir tercih.
 - `BridgeState` geçiş sürecindedir — yeni kod state.js kullanmalı, eski kod window.* ile uyumluluk sürdürür.
-- `v41`–`v44` klasörleri dinamik `<script>` enjeksiyonu yapar; esbuild bunları `bundle:false` ile birleştirir.
+- ~~`v41`–`v44` klasörleri~~ Sprint 30'da kaldırıldı. Tüm modüller `core/` altındadır.

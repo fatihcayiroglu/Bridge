@@ -15,35 +15,38 @@ process.env.NODE_ENV        = 'test';
 process.env.ALLOWED_ORIGINS = 'http://localhost:3000';
 
 import request from 'supertest';
+import type { Request, Response, NextFunction } from 'express';
 import express, { Application } from 'express';
 
 // ── Ortak mock'lar ─────────────────────────────────────────────
 
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 jest.mock('../db/loader', () => require('../db/index'));
 jest.mock('../db/index', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { createMockDb } = require('./helpers/mockDb');
   return createMockDb();
 });
 jest.mock('../db/seed', () => async () => undefined);
 
 jest.mock('../middleware/rateLimit', () => ({
-  rateLimit: () => (_req: any, _res: any, next: () => void) => next(),
+  rateLimit: () => (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
 jest.mock('../middleware/csrf', () => ({
-  enforceApiCsrf: (_req: any, _res: any, next: () => void) => next(),
+  enforceApiCsrf: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
 jest.mock('../middleware/metrics', () => ({
-  metricsMiddleware: (_req: any, _res: any, next: () => void) => next(),
-  metricsEndpoint:   (_req: any, res: any) => res.status(200).send(''),
+  metricsMiddleware: (_req: Request, _res: Response, next: NextFunction) => next(),
+  metricsEndpoint:   (_req: Request, res: Response) => res.status(200).send(''),
 }));
 jest.mock('../middleware/ipBan', () => ({
-  ipBanMiddleware: (_req: any, _res: any, next: () => void) => next(),
+  ipBanMiddleware: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
 jest.mock('../middleware/ipReputation', () => ({
-  ipReputationMiddleware: (_req: any, _res: any, next: () => void) => next(),
+  ipReputationMiddleware: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
 jest.mock('../lib/security', () => ({
-  securityHeaders: (_req: any, _res: any, next: () => void) => next(),
+  securityHeaders: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
 jest.mock('../lib/swagger', () => ({
   swaggerRouter: express.Router(),
@@ -73,7 +76,7 @@ jest.mock('../plugins/loader', () => ({
 // Route mock'ları — gerçek rotalar DB/auth'a bağlı, bu testlerde stub
 const stubRouter = () => {
   const r = express.Router();
-  r.all('*', (_req: any, res: any) => res.status(200).json({ ok: true }));
+  r.all('*', (_req: Request, res: Response) => res.status(200).json({ ok: true }));
   return r;
 };
 const stubRouterWithExport = () => ({ router: stubRouter(), getMemberPerms: async () => 0 });
@@ -139,7 +142,9 @@ describe('createApp() entegrasyon', () => {
 
   beforeAll(() => {
     // Lazy import — mock'lar jest.mock() ile zaten yerleştirildi
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { createApp }    = require('../app/createApp');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { setupRoutes }  = require('../app/setupRoutes');
     const result = createApp();
     app = result.app;
@@ -192,9 +197,10 @@ describe('createApp() entegrasyon', () => {
     it('tenorEnabled true döner (TENOR_API_KEY var)', async () => {
       process.env.TENOR_API_KEY = 'test-key';
       // Yeni app instance — env değişti
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { createApp: makeApp } = require('../app/createApp');
       const { app: freshApp } = makeApp();
-      freshApp.get('/api/config', (_: any, res: any) =>
+      freshApp.get('/api/config', (_: Request, res: Response) =>
         res.json({ tenorEnabled: !!process.env.TENOR_API_KEY })
       );
       const res = await request(freshApp).get('/api/config');
@@ -230,14 +236,13 @@ describe('createApp() entegrasyon', () => {
   describe('Error handler', () => {
     it('status hataları doğru JSON döner', async () => {
       app.get('/__test_err', () => {
-        const e: { status?: number; message: string } = new Error('test error') as any;
-        e.status = 422;
+        const e = Object.assign(new Error('test error'), { status: 422 });
         throw e;
       });
       // Express'in sync error catcher'ı için wrapper gerekli
       app.use(
         '/__test_err',
-        (err: any, _req: any, res: any, _next: any) =>
+        (err: Error, _req: Request, res: Response, _next: NextFunction) =>
           res.status(err.status || 500).json({ error: err.message })
       );
       const res = await request(app).get('/__test_err');
@@ -250,6 +255,7 @@ describe('createApp() entegrasyon', () => {
 describe('createApp() — allowedOrigins', () => {
   it('ALLOWED_ORIGINS env var parse edilir', () => {
     process.env.ALLOWED_ORIGINS = 'https://a.com, https://b.com';
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { createApp } = require('../app/createApp');
     const { allowedOrigins } = createApp();
     expect(allowedOrigins).toEqual(['https://a.com', 'https://b.com']);
@@ -258,6 +264,7 @@ describe('createApp() — allowedOrigins', () => {
 
   it('Varsayılan localhost:3001 kullanılır (env yok)', () => {
     delete process.env.ALLOWED_ORIGINS;
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { createApp } = require('../app/createApp');
     const { allowedOrigins } = createApp();
     expect(allowedOrigins).toContain('http://localhost:3001');

@@ -1,7 +1,7 @@
-// server/db/seed.js — Seed default "Bridge Global" server
-const { v4: uuidv4 } = require('uuid');
-const db = require('./loader');
-const logger = require('../lib/logger');
+// server/db/seed.ts — Seed default "Bridge Global" server
+import { v4 as uuidv4 } from 'uuid';
+import db from './loader';
+import logger from '../lib/logger';
 
 async function seed() {
   const exists = await db.servers.findOne({ name: 'Bridge Global' });
@@ -18,13 +18,13 @@ async function seed() {
 
   const structure = [
     { cat: 'INFORMATION', channels: [
-      { name: 'announcements', type: 'text', topic: 'Official announcements 📢' },
-      { name: 'rules',         type: 'text', topic: 'Community guidelines' },
+      { name: 'announcements', type: 'text' as const, topic: 'Official announcements 📢' },
+      { name: 'rules',         type: 'text' as const, topic: 'Community guidelines' },
     ]},
     { cat: 'GENERAL', channels: [
-      { name: 'general',       type: 'text',  topic: 'Open chat for everyone 🌍' },
-      { name: 'introductions', type: 'text',  topic: 'Introduce yourself!' },
-      { name: 'off-topic',     type: 'text',  topic: 'Anything goes' },
+      { name: 'general',       type: 'text' as const,  topic: 'Open chat for everyone 🌍' },
+      { name: 'introductions', type: 'text' as const,  topic: 'Introduce yourself!' },
+      { name: 'off-topic',     type: 'text' as const,  topic: 'Anything goes' },
     ]},
     { cat: 'VOICE & VIDEO', channels: [
       { name: 'General Voice', type: 'voice', topic: '' },
@@ -32,9 +32,9 @@ async function seed() {
       { name: 'Study Room',    type: 'voice', topic: '' },
     ]},
     { cat: 'TECH', channels: [
-      { name: 'frontend', type: 'text', topic: 'HTML, CSS, JS, React...' },
-      { name: 'backend',  type: 'text', topic: 'Node, Python, databases...' },
-      { name: 'ai-ml',    type: 'text', topic: 'Artificial intelligence & ML' },
+      { name: 'frontend', type: 'text' as const, topic: 'HTML, CSS, JS, React...' },
+      { name: 'backend',  type: 'text' as const, topic: 'Node, Python, databases...' },
+      { name: 'ai-ml',    type: 'text' as const, topic: 'Artificial intelligence & ML' },
     ]},
   ];
 
@@ -43,7 +43,7 @@ async function seed() {
     for (const ch of channels) {
       await db.channels.insert({
         _id: uuidv4(), serverId,
-        name: ch.name, type: ch.type, topic: ch.topic,
+        name: ch.name, type: ch.type as import('./repositories/types/entities').ChannelType, topic: ch.topic,
         category: cat, order: order++, createdAt: Date.now(),
       });
     }
@@ -62,5 +62,4 @@ async function seed() {
   logger.info({ event: 'db.seed.completed', serverName: 'Bridge Global' }, 'Default Bridge Global server seeded.');
 }
 
-module.exports = seed;
-export {};
+export default seed;

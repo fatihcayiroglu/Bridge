@@ -7,23 +7,280 @@
     "test": "jest --runInBand --forceExit",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage --runInBand --forceExit",
-    "test:verbose": "jest --verbose --runInBand --forceExit"
+    "test:verbose": "jest --verbose --runInBand --forceExit",
+    "storybook": "storybook dev --port 6006",
+    "build-storybook": "storybook build"
   },
   "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/preset-env": "^7.24.0",
+    "@babel/preset-typescript": "^7.24.0",
+    "babel-jest": "^29.7.0",
     "jest": "^29.7.0",
-    "jest-environment-jsdom": "^29.7.0"
+    "jest-environment-jsdom": "^29.7.0",
+    "@storybook/svelte-vite": "^8.1.0",
+    "@storybook/svelte": "^8.1.0",
+    "@storybook/addon-essentials": "^8.1.0",
+    "@storybook/addon-a11y": "^8.1.0",
+    "@storybook/addon-svelte-csf": "^5.0.0",
+    "storybook": "^8.1.0"
   },
   "jest": {
     "testEnvironment": "jsdom",
-    "testMatch": ["**/*.test.js"],
-    "setupFiles": ["./helpers/setup.js"],
-    "collectCoverageFrom": [
-      "../../client/js/**/*.js"
+    "testMatch": [
+      "**/*.test.ts"
     ],
-    "coverageReporters": ["text", "lcov"],
+    "setupFiles": [
+      "./helpers/setup.ts"
+    ],
+    "transform": {
+      "^.+\\.[jt]sx?$": [
+        "babel-jest",
+        {
+          "configFile": "./babel.config.js"
+        }
+      ]
+    },
+    "moduleFileExtensions": [
+      "js",
+      "ts",
+      "jsx",
+      "tsx",
+      "json",
+      "node"
+    ],
+    "moduleNameMapper": {
+      "^(\\.{1,2}/.+)\\.js$": "$1"
+    },
+    "collectCoverageFrom": [
+      "../../client/js/**/*.{js,ts}",
+      "../../client/js/core/bot-marketplace/**/*.{ts,js}",
+      "../../client/js/core/bot-marketplace.ts"
+    ],
+    "coverageReporters": [
+      "text",
+      "lcov"
+    ],
     "testTimeout": 10000,
     "globals": {
       "IS_JEST": true
+    },
+    "coverageThreshold": {
+      "global": {
+        "lines": 85,
+        "functions": 80,
+        "branches": 77
+      },
+      "../../client/js/core/state.ts": {
+        "lines": 82,
+        "functions": 78,
+        "branches": 72
+      },
+      "../../client/js/core/auth.js": {
+        "lines": 87,
+        "functions": 87,
+        "branches": 82
+      },
+      "../../client/js/core/offline-queue.js": {
+        "lines": 82,
+        "functions": 82,
+        "branches": 78
+      },
+      "../../client/js/core/e2e.ts": {
+        "lines": 87,
+        "functions": 82,
+        "branches": 78
+      },
+      "../../client/js/core/voice-recorder.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 70
+      },
+      "../../client/js/core/group-dm.ts": {
+        "lines": 82,
+        "functions": 77,
+        "branches": 70
+      },
+      "../../client/js/discover.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      },
+      "../../client/js/core/semantic-search.ts": {
+        "lines": 82,
+        "functions": 77,
+        "branches": 70
+      },
+      "../../client/js/core/server-settings.ts": {
+        "lines": 82,
+        "functions": 77,
+        "branches": 70
+      },
+      "../../client/js/core/i18n.js": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 70
+      },
+      "../../client/js/core/a11y-aria.ts": {
+        "lines": 83,
+        "functions": 78,
+        "branches": 73
+      },
+      "../../client/js/core/a11y-wcag-aa.ts": {
+        "lines": 88,
+        "functions": 85,
+        "branches": 80
+      },
+      "../../client/js/core/video-quality.ts": {
+        "lines": 82,
+        "functions": 77,
+        "branches": 70
+      },
+      "../../client/js/core/servers.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      },
+      "../../client/js/core/audit-log.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      },
+      "../../client/js/core/onboarding.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      },
+      "../../client/js/core/forum.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      },
+      "../../client/js/core/go-live.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      },
+      "../../client/js/core/messages/input.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      },
+      "../../client/js/core/music-player.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      },
+      "../../client/js/core/scheduled-ui.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 70
+      },
+      "../../client/js/core/outgoing-webhooks.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      },
+      "../../client/js/core/offline-queue.ts": {
+        "lines": 80,
+        "functions": 78,
+        "branches": 73
+      },
+      "../../client/js/core/voice-volume.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      },
+      "../../client/js/core/voice-messages.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      },
+      "../../client/js/core/onboarding-wizard.ts": {
+        "lines": 83,
+        "functions": 78,
+        "branches": 73
+      },
+      "../../client/js/core/api-error-toast.ts": {
+        "lines": 88,
+        "functions": 88,
+        "branches": 83
+      },
+      "../../client/js/core/badges.ts": {
+        "lines": 85,
+        "functions": 80,
+        "branches": 73
+      },
+      "../../client/js/core/drafts.ts": {
+        "lines": 85,
+        "functions": 80,
+        "branches": 73
+      },
+      "../../client/js/core/unread.ts": {
+        "lines": 83,
+        "functions": 83,
+        "branches": 78
+      },
+      "../../client/js/core/activity.ts": {
+        "lines": 82,
+        "functions": 77,
+        "branches": 72
+      },
+      "../../client/js/core/boost.ts": {
+        "lines": 82,
+        "functions": 77,
+        "branches": 70
+      },
+      "../../client/js/core/bot-marketplace.ts": {
+        "lines": 100,
+        "functions": 100,
+        "branches": 100
+      },
+      "../../client/js/core/bot-marketplace/index.ts": {
+        "lines": 95,
+        "functions": 95,
+        "branches": 90
+      },
+      "../../client/js/core/bot-marketplace/bot-catalog.ts": {
+        "lines": 100,
+        "functions": 100,
+        "branches": 95
+      },
+      "../../client/js/core/bot-marketplace/bot-search.ts": {
+        "lines": 100,
+        "functions": 100,
+        "branches": 100
+      },
+      "../../client/js/core/bot-marketplace/bot-api.ts": {
+        "lines": 100,
+        "functions": 100,
+        "branches": 95
+      },
+      "../../client/js/core/bot-marketplace/marketplace-state.ts": {
+        "lines": 100,
+        "functions": 100,
+        "branches": 95
+      },
+      "../../client/js/core/bot-marketplace/bot-styles.ts": {
+        "lines": 100,
+        "functions": 100,
+        "branches": 100
+      },
+      "../../client/js/core/bot-marketplace/catalog-data.ts": {
+        "lines": 100,
+        "functions": 100,
+        "branches": 100
+      },
+      "../../client/js/core/input.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      },
+      "../../client/js/core/discover.ts": {
+        "lines": 80,
+        "functions": 75,
+        "branches": 68
+      }
     }
   }
 }

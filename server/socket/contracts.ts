@@ -62,6 +62,7 @@ export interface CanvasClearPayload {
 /** DM okundu bildirimi */
 export interface DmReadReceiptPayload {
   dmId:   string;
+  readBy: string;   // userId
   /** Okunduğu timestamp (ms epoch) */
   readAt: number;
 }

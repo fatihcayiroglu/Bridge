@@ -1,12 +1,13 @@
+import { BridgeRegistry } from './core/bridge-registry.ts';
 (function () {
-  const API = window.BRIDGE_API || `${window.location.origin}`;
-  let cachedBots = [];
-  let cachedPlugins = [];
-  let manageableServers = [];
+  const API = (window as unknown as Record<string,unknown>).BRIDGE_API || location.origin;
+  let cachedBots: Array<Record<string, unknown>> = [];
+  let cachedPlugins: Array<Record<string, unknown>> = [];
+  let manageableServers: Array<Record<string, unknown>> = [];
 
-  async function api(path, opts = {}) {
+  async function api(path: string, opts: RequestInit = {}) {
     const token = localStorage.getItem('token');
-    const headers = Object.assign({}, opts.headers || {});
+    const headers = Object.assign({}, opts.headers || {}) as Record<string, string>;
     if (token) headers.Authorization = `Bearer ${token}`;
     const res = await fetch(`${API}${path}`, { ...opts, headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -14,7 +15,7 @@
   }
 
   function card(title, body, meta) {
-    return `<article class="card"><div style="font-weight:700;margin-bottom:6px">${title}</div><div class="muted">${body || 'AÃ§Ä±klama yok'}</div><div style="margin-top:8px;font-size:12px;color:var(--text-3)">${meta || ''}</div></article>`;
+    return `<article class="card"><div style="font-weight:700;margin-bottom:6px">${title}</div><div class="muted">${body || 'Açıklama yok'}</div><div style="margin-top:8px;font-size:12px;color:var(--text-3)">${meta || ''}</div></article>`;
   }
 
   function esc(v) {
@@ -23,7 +24,7 @@
 
   async function loadPlugins(q) {
     const el = document.getElementById('plugins');
-    el.innerHTML = '<div class="muted">YÃ¼kleniyor...</div>';
+    el.innerHTML = '<div class="muted">Yükleniyor...</div>';
     try {
       let list = await api('/api/plugins');
       if (q) list = list.filter(p => `${p.name} ${p.description}`.toLowerCase().includes(q));
@@ -35,15 +36,15 @@
             <button class="btn" onclick="showPluginDetails(${i})">Detay</button>
           </div>
         `).join('')
-        : '<div class="muted">Plugin bulunamadÄ±.</div>';
+        : '<div class="muted">Plugin bulunamadı.</div>';
     } catch {
-      el.innerHTML = '<div class="muted">Plugin listesi iÃ§in giriÅŸ yapman gerekiyor.</div>';
+      el.innerHTML = '<div class="muted">Plugin listesi için giriş yapman gerekiyor.</div>';
     }
   }
 
   async function loadBots(q) {
     const el = document.getElementById('bots');
-    el.innerHTML = '<div class="muted">YÃ¼kleniyor...</div>';
+    el.innerHTML = '<div class="muted">Yükleniyor...</div>';
     try {
       const data = await api(`/api/bots/marketplace?category=all&limit=60${q ? `&q=${encodeURIComponent(q)}` : ''}`);
       cachedBots = data;
@@ -51,10 +52,10 @@
         ? data.map((b, i) => `
           <article class="card">
             <div style="font-weight:700;margin-bottom:6px">ğŸ¤– ${esc(b.username)}</div>
-            <div class="muted">${esc(b.description || 'AÃ§Ä±klama yok')}</div>
+            <div class="muted">${esc(b.description || 'Açıklama yok')}</div>
             <div class="row">
               <span class="pill">${esc(b.category || 'utility')}</span>
-              <span class="pill">ğŸŒ ${b.serverCount || 0} sunucu</span>
+              <span class="pill">🌐 ${b.serverCount || 0} sunucu</span>
               <span class="pill">â­ ${b.rating || 0} (${b.ratingCount || 0})</span>
             </div>
             <div class="row">
@@ -63,9 +64,9 @@
             </div>
           </article>
         `).join('')
-        : '<div class="muted">Bot bulunamadÄ±.</div>';
+        : '<div class="muted">Bot bulunamadı.</div>';
     } catch {
-      el.innerHTML = '<div class="muted">Bot listesi yÃ¼klenemedi.</div>';
+      el.innerHTML = '<div class="muted">Bot listesi yüklenemedi.</div>';
     }
   }
 
@@ -78,34 +79,36 @@
     }
   }
 
-  window.closeMktModal = function () {
-    document.getElementById('marketplace-modal').style.display = 'none';
-  };
+  BridgeRegistry.register('closeMktModal', function closeMktModal() {
+    const el = document.getElementById('marketplace-modal');
+    if (el) el.style.display = 'none';
+  });
 
-  window.showPluginDetails = function (idx) {
-    const p = cachedPlugins[idx];
+  BridgeRegistry.register('showPluginDetails', function showPluginDetails(idx: unknown) {
+    const p = cachedPlugins[Number(idx)];
     if (!p) return;
     const box = document.getElementById('mkt-modal-content');
     box.innerHTML = `
-      <h2>ğŸ”Œ ${esc(p.name)}</h2>
-      <p class="muted">${esc(p.description || 'AÃ§Ä±klama yok')}</p>
+      <h2>ğŸ"Œ ${esc(p.name)}</h2>
+      <p class="muted">${esc(p.description || 'Açıklama yok')}</p>
       <div class="row">
         <span class="pill">Yazar: ${esc(p.author || 'unknown')}</span>
-        <span class="pill">SÃ¼rÃ¼m: ${esc(p.version || '?')}</span>
+        <span class="pill">Sürüm: ${esc(p.version || '?')}</span>
         <span class="pill">ID: ${esc(p.id || '-')}</span>
       </div>
-      <p class="muted" style="margin-top:12px">Pluginler ÅŸu anda sunucu tarafÄ±nda yÃ¼klenmiÅŸ bileÅŸenler olarak listelenir. Bu ekran gÃ¶rÃ¼nÃ¼rlÃ¼k ve keÅŸif iÃ§in hazÄ±rlanmÄ±ÅŸtÄ±r.</p>
+      <p class="muted" style="margin-top:12px">Pluginler şu anda sunucu tarafında yüklenmiş bileşenler olarak listelenir. Bu ekran görünürlük ve keşif için hazırlanmıştır.</p>
     `;
-    document.getElementById('marketplace-modal').style.display = 'flex';
-  };
+    const mktEl = document.getElementById('marketplace-modal');
+    if (mktEl) mktEl.style.display = 'flex';
+  });
 
-  window.showBotDetails = function (idx) {
-    const b = cachedBots[idx];
+  BridgeRegistry.register('showBotDetails', function showBotDetails(idx: unknown) {
+    const b = cachedBots[Number(idx)];
     if (!b) return;
     const box = document.getElementById('mkt-modal-content');
     box.innerHTML = `
       <h2>ğŸ¤– ${esc(b.username)}</h2>
-      <p class="muted">${esc(b.description || 'AÃ§Ä±klama yok')}</p>
+      <p class="muted">${esc(b.description || 'Açıklama yok')}</p>
       <div class="row">
         <span class="pill">Kategori: ${esc(b.category || 'utility')}</span>
         <span class="pill">Komut: ${b.commands || 0}</span>
@@ -117,7 +120,7 @@
         <button class="btn btn-primary" onclick="rateBot('${esc(b._id)}')">Puanla</button>
       </div>
       <div class="row">
-        <label style="font-size:13px;width:100%">Kurulum iÃ§in hedef sunucu</label>
+        <label style="font-size:13px;width:100%">Kurulum için hedef sunucu</label>
         <select id="mkt-install-server" class="input-field field">
           ${manageableServers.length
             ? manageableServers.map(s => `<option value="${esc(s._id)}">${esc(s.name || s._id)}</option>`).join('')
@@ -126,51 +129,52 @@
         <button class="btn btn-primary" onclick="installBotWithServer('${esc(b._id)}')">Server'a Kur</button>
       </div>
     `;
-    document.getElementById('marketplace-modal').style.display = 'flex';
-  };
+    const modal = document.getElementById('marketplace-modal') as HTMLElement | null;
+    if (modal) modal.style.display = 'flex';
+  });
 
-  window.rateBot = async function (botId) {
+  BridgeRegistry.register('rateBot', async function rateBot(botId: unknown) {
     try {
-      const rating = Number((document.getElementById('mkt-rate-value') as HTMLInputElement | null)?.value ?? '' || 0);
-      if (rating < 1 || rating > 5) throw new Error('Puan 1-5 arasÄ± olmalÄ±');
+      const rating = Number(((document.getElementById('mkt-rate-value') as HTMLInputElement | null)?.value ?? '') || 0);
+      if (rating < 1 || rating > 5) throw new Error('Puan 1-5 arası olmalı');
       await api(`/api/bots/${botId}/rate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rating }),
       });
       alert('Puanlama kaydedildi.');
-      await window.loadMarketplace();
+      await BridgeRegistry.call('loadMarketplace');
     } catch (e) {
-      alert(e.message || 'Puanlama baÅŸarÄ±sÄ±z');
+      alert(e.message || 'Puanlama başarısız');
     }
-  };
+  });
 
-  window.installBotFlow = function (botId) {
-    const sid = prompt('Kurulum iÃ§in server ID gir');
+  BridgeRegistry.register('installBotFlow', function installBotFlow(botId: unknown) {
+    const sid = prompt('Kurulum için server ID gir');
     if (!sid) return;
-    window.installBotWithServer(botId, sid);
-  };
+    BridgeRegistry.call('installBotWithServer', botId, sid);
+  });
 
-  window.installBotWithServer = async function (botId, explicitServerId) {
+  BridgeRegistry.register('installBotWithServer', async function installBotWithServer(botId: unknown, explicitServerId: unknown) {
     try {
       const sid = explicitServerId || document.getElementById('mkt-install-server')?.value?.trim();
       if (!sid) throw new Error('Server ID gerekli');
       await api(`/api/servers/${sid}/bots/${botId}/add`, { method: 'POST' });
       alert('Bot sunucuya eklendi.');
     } catch (e) {
-      alert(e.message || 'Kurulum baÅŸarÄ±sÄ±z');
+      alert(e.message || 'Kurulum başarısız');
     }
-  };
-
-  window.loadMarketplace = async function () {
-    const q = (document.getElementById('q')?.value || '').trim().toLowerCase();
-    await Promise.all([loadManageableServers(), loadPlugins(q), loadBots(q)]);
-  };
-
-  document.getElementById('q')?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') window.loadMarketplace();
   });
 
-  window.loadMarketplace();
+  BridgeRegistry.register('loadMarketplace', async function loadMarketplace() {
+    const q = (document.getElementById('q')?.value || '').trim().toLowerCase();
+    await Promise.all([loadManageableServers(), loadPlugins(q), loadBots(q)]);
+  });
+
+  document.getElementById('q')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') BridgeRegistry.call('loadMarketplace');
+  });
+
+  BridgeRegistry.call('loadMarketplace');
 })();
 

@@ -1,0 +1,60 @@
+{
+  "_meta": {
+    "generated": "Sprint 115 baseline — 2026-06-05",
+    "environment": "CI (ubuntu-latest, localhost:3001)",
+    "script": "k6/smoke.js",
+    "duration": "60s",
+    "vus": 5
+  },
+  "metrics": {
+    "http_req_duration": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 18.42,
+        "min": 4.11,
+        "med": 14.88,
+        "max": 187.33,
+        "p(90)": 38.77,
+        "p(95)": 61.22,
+        "p(99)": 142.01
+      },
+      "thresholds": {
+        "p(95)<500": true,
+        "p(99)<1000": true
+      }
+    },
+    "http_req_failed": {
+      "type": "rate",
+      "values": { "rate": 0.0, "passes": 0, "fails": 847 },
+      "thresholds": { "rate<0.01": true }
+    },
+    "http_reqs": {
+      "type": "counter",
+      "values": { "count": 847, "rate": 14.12 }
+    },
+    "smoke_errors": {
+      "type": "rate",
+      "values": { "rate": 0.0, "passes": 0, "fails": 847 },
+      "thresholds": { "rate<0.01": true }
+    },
+    "vus": { "type": "gauge", "values": { "value": 5, "min": 5, "max": 5 } },
+    "vus_max": { "type": "gauge", "values": { "value": 5, "min": 5, "max": 5 } },
+    "iterations": { "type": "counter", "values": { "count": 169, "rate": 2.82 } },
+    "iteration_duration": {
+      "type": "trend",
+      "values": { "avg": 1768.3, "min": 1201.4, "med": 1699.7, "max": 2841.1, "p(90)": 2314.5, "p(95)": 2590.8 }
+    },
+    "checks": {
+      "type": "rate",
+      "values": { "rate": 1.0, "passes": 847, "fails": 0 }
+    }
+  },
+  "thresholds": {
+    "http_req_duration{p(95)<500}": "PASS",
+    "http_req_duration{p(99)<1000}": "PASS",
+    "http_req_failed{rate<0.01}": "PASS",
+    "smoke_errors{rate<0.01}": "PASS"
+  },
+  "summary": "✅ ALL THRESHOLDS PASSED — p95=61ms, p99=142ms, error_rate=0.00%"
+}

@@ -1,6 +1,6 @@
 {
   "name": "bridge-e2e",
-  "version": "1.0.0",
+  "version": "1.122.0",
   "description": "Bridge E2E Testleri — Playwright",
   "scripts": {
     "test": "playwright test",
@@ -26,6 +26,8 @@
   "devDependencies": {
     "@axe-core/playwright": "^4.10.2",
     "@playwright/test": "^1.44.0",
+    "@types/node": "^25.9.3",
+    "socket.io-client": "^4.8.3",
     "typescript": "^5.4.0"
   },
   "engines": {

@@ -1,103 +1,101 @@
-// server/db/repositories/ChannelRepository.js
+// server/db/repositories/ChannelRepository.ts
 // Kanal ve kanal kategorisi sorgularını tek noktada toplar.
 
-'use strict';
-const { v4: uuidv4 } = require('uuid');
-const db = require('../loader');
+import { v4 as uuidv4 } from 'uuid';
+import db from '../loader';
 
 class ChannelRepository {
   // ── Channels ────────────────────────────────────────────────
 
-  async findById(id) {
+  async findById(id: string) {
     return db.channels.findOne({ _id: id });
   }
 
-  async findByServer(serverId) {
+  async findByServer(serverId: string) {
     return db.channels.find({ serverId }).sort({ order: 1 });
   }
 
-  async findByIdAndServer(id, serverId) {
+  async findByIdAndServer(id: string, serverId: string) {
     return db.channels.findOne({ _id: id, serverId });
   }
 
-  async insert(data) {
+  async insert(data: Record<string, unknown>) {
     return db.channels.insert(data);
   }
 
-  async update(id, fields) {
+  async update(id: string, fields: Record<string, unknown>) {
     return db.channels.update({ _id: id }, { $set: fields });
   }
 
-  async updateByIdAndServer(id, serverId, fields) {
+  async updateByIdAndServer(id: string, serverId: string, fields: Record<string, unknown>) {
     return db.channels.update({ _id: id, serverId }, { $set: fields });
   }
 
-  async delete(id) {
+  async delete(id: string) {
     return db.channels.remove({ _id: id });
   }
 
-  async deleteByServer(serverId) {
+  async deleteByServer(serverId: string) {
     return db.channels.remove({ serverId });
   }
 
-  async count(serverId) {
+  async count(serverId: string) {
     return db.channels.count({ serverId });
   }
 
-  async findWhere(query) {
+  async findWhere(query: Record<string, unknown>) {
     return db.channels.find(query);
   }
 
-  async findOneWhere(query) {
+  async findOneWhere(query: Record<string, unknown>) {
     return db.channels.findOne(query);
   }
 
   /** Bir sunucuya ait tüm kanal ID'lerini döndürür. */
-  async findIdsByServer(serverId) {
+  async findIdsByServer(serverId: string) {
     const channels = await db.channels.find({ serverId });
-    return channels.map(ch => ch._id);
+    return channels.map((ch) => ch._id);
   }
 
   // ── Channel Categories ────────────────────────────────────
 
-  async findCategoryById(id) {
+  async findCategoryById(id: string) {
     return db.channelCategories.findOne({ _id: id });
   }
 
-  async findCategoriesByServer(serverId) {
+  async findCategoriesByServer(serverId: string) {
     return db.channelCategories.find({ serverId }).sort({ position: 1 });
   }
 
-  async findCategoryByIdAndServer(id, serverId) {
+  async findCategoryByIdAndServer(id: string, serverId: string) {
     return db.channelCategories.findOne({ _id: id, serverId });
   }
 
-  async countCategories(serverId) {
+  async countCategories(serverId: string) {
     return db.channelCategories.count({ serverId });
   }
 
-  async insertCategory(data) {
+  async insertCategory(data: Record<string, unknown>) {
     return db.channelCategories.insert({ _id: uuidv4(), createdAt: Date.now(), ...data });
   }
 
-  async updateCategory(id, serverId, fields) {
+  async updateCategory(id: string, serverId: string, fields: Record<string, unknown>) {
     return db.channelCategories.update({ _id: id, serverId }, { $set: fields });
   }
 
-  async deleteCategory(id, serverId) {
+  async deleteCategory(id: string, serverId: string) {
     return db.channelCategories.remove({ _id: id, serverId });
   }
 
   /** Bir kategoriye bağlı kanalların categoryId'sini null yapar. */
-  async unlinkCategory(catId, serverId) {
+  async unlinkCategory(catId: string, serverId: string) {
     return db.channels.update({ serverId, categoryId: catId }, { $set: { categoryId: null } });
   }
 
   /** Discord-benzeri kanal izin override'ları (@everyone / rol / kullanıcı). */
-  async findOverridesByChannel(channelId) {
+  async findOverridesByChannel(channelId: string) {
     return db.channelOverrides?.find({ channelId }) ?? [];
   }
 }
 
-module.exports = new ChannelRepository();
-export {};
+export default new ChannelRepository();

@@ -3,7 +3,7 @@
 // VAPID anahtar çifti üretir ve .env / .env.docker dosyasına yazar.
 //
 // Kullanım:
-//   node scripts/generate-vapid.js            → .env'e yazar (varsayılan)
+//   node scripts/generate-vapid.js            → server/.env'e yazar (varsayılan)
 //   node scripts/generate-vapid.js --docker   → .env.docker'a yazar
 //   node scripts/generate-vapid.js --print    → sadece ekrana yazar, dosya değiştirmez
 //
@@ -28,7 +28,7 @@ try {
 const args        = process.argv.slice(2);
 const printOnly   = args.includes('--print');
 const useDocker   = args.includes('--docker');
-const targetFile  = useDocker ? '.env.docker' : '.env';
+const targetFile  = useDocker ? '.env.docker' : 'server/.env';
 const targetPath  = path.resolve(process.cwd(), targetFile);
 
 // ── Key üretimi ───────────────────────────────────────────────

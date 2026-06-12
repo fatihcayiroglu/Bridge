@@ -1,22 +1,18 @@
-// server/routes/channelPerms.js.1
-// Kanal bazlı granüler rol izin matrisi — refactor: kod 3 alt modüle bölündü
-//
-//   channelPerms/helpers.js  — rate limiter'lar, audit, log mesajı, socket
-//   channelPerms/overrides.js — GET/PUT/DELETE tek kanal override + audit-log + kalıtım
-//   channelPerms/bulk.js     — bulk-sync, bulk-sync/preview, batch PUT, export, import
-//
-// Bu dosya Express router'ları birleştiren ince bir wrapper'dır.
-// Tüm iş mantığı alt modüllerdedir; buraya yeni route ekleme.
+// server/routes/channelPerms.ts
+// Kanal bazlı granüler rol izin matrisi
 
-'use strict';
+import express from 'express';
+import bulkRouter from './channelPerms/bulk';
+import overridesRouter from './channelPerms/overrides';
 
-const express  = require('express');
-const router   = express.Router({ mergeParams: true });
+const router = express.Router({ mergeParams: true });
 
-// bulk.js önce mount edilmeli: '/batch', '/export', '/import' gibi sabit path'ler
-// '/:roleId' wildcard route'undan önce eşleşmelidir.
-router.use('/', require('./channelPerms/bulk'));
-router.use('/', require('./channelPerms/overrides'));
+// bulk önce: '/batch', '/export', '/import' sabit path'leri '/:roleId' wildcard'dan önce eşleşmeli
+router.use('/', bulkRouter);
+router.use('/', overridesRouter);
 
+export default router;
+
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-export {};
+module.exports.default = router;

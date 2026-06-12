@@ -1,13 +1,17 @@
 {
-  "id":          "word-filter",
-  "name":        "Word Filter",
-  "version":     "1.0.0",
+  "id": "word-filter",
+  "name": "Word Filter",
+  "version": "1.0.0",
   "description": "Yasaklı kelime içeren mesajları otomatik siler ve uyarı verir",
-  "author":      "Bridge",
-  "disabled":    false,
+  "author": "Bridge",
+  "disabled": false,
   "config": {
-    "blockedWords": ["spam", "scam"],
-    "warnUser":     true,
+    "blockedWords": [
+      "spam",
+      "scam"
+    ],
+    "warnUser": true,
     "logChannelName": "mod-log"
-  }
+  },
+  "main": "index.ts"
 }

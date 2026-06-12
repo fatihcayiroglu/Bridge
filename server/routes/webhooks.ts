@@ -1,106 +1,227 @@
-// server/routes/webhooks.js
-// Kanal webhook'larını yönetir (oluştur, listele, sil)
-// Gelen webhook POST'ları bots.js'de işlenir.
-//
-// ENDPOINTS:
-//   GET    /api/channels/:cid/webhooks         — kanalın webhook'larını listele
-//   POST   /api/channels/:cid/webhooks         — yeni webhook oluştur
-//   DELETE /api/channels/:cid/webhooks/:wid    — webhook sil
-//   GET    /api/webhooks/:wid                  — webhook bilgisi (token ile)
+// server/routes/webhooks.ts — Session 18: @openapi annotation eklendi
 
-const express      = require('express');
-const crypto       = require('crypto');
-const { v4: uuidv4 } = require('uuid');
+import express from 'express';
+import crypto from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
+import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router       = express.Router({ mergeParams: true });
-const { Channels, ChannelWebhooks } = require('../db/repositories');
-const { authMiddleware, castAuthed } = require('../middleware/auth');
-const { resolvePermissions, hasPermission, PERMS } = require('../lib/permissions');
-const asyncHandler = require('../middleware/asyncHandler');
-const { limits } = require('../middleware/rateLimit'); // rate limiting
+import { Channels, ChannelWebhooks } from '../db/repositories';
+import { authMiddleware} from '../middleware/auth';
+import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
+import { limits } from '../middleware/rateLimit';
 
-// GET /api/channels/:cid/webhooks
-router.get('/:cid/webhooks', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /api/channels/{channelId}/webhooks:
+ *   get:
+ *     summary: Kanalın webhook'larını listele
+ *     tags: [Webhooks]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: channelId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Webhook listesi
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/Webhook'
+ *       403:
+ *         $ref: '#/components/responses/Forbidden'
+ *   post:
+ *     summary: Yeni webhook oluştur
+ *     tags: [Webhooks]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: channelId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name]
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: My Webhook
+ *               avatar:
+ *                 type: string
+ *                 description: Avatar URL (opsiyonel)
+ *     responses:
+ *       201:
+ *         description: Webhook oluşturuldu
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Webhook'
+ *       403:
+ *         $ref: '#/components/responses/Forbidden'
+ *       429:
+ *         $ref: '#/components/responses/TooManyRequests'
+ */
+router.get('/', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const channel = await Channels.findById(req.params.cid);
-  if (!channel) return res.status(404).json({ error: 'Channel not found' });
+  const channelId = String(req.params.channelId ?? '');
+
+  const channel = await Channels.findById(channelId);
+  if (!channel) return res.status(404).json({ error: 'Kanal bulunamadı' });
 
   const perms = await resolvePermissions(_u.id, channel.serverId);
-  if (!hasPermission(perms, PERMS.MANAGE_SERVER))
-    return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
+  if (!hasPermission(perms, PERMS.MANAGE_WEBHOOKS) && !hasPermission(perms, PERMS.ADMIN)) {
+    return res.status(403).json({ error: 'MANAGE_WEBHOOKS yetkisi gerekli' });
+  }
 
-  const webhooks = await ChannelWebhooks.findByChannel(req.params.cid);
-  // secret'ı gizle, sadece token (masked) göster
-  res.json(webhooks.map(w => ({
-    _id:       w._id,
-    name:      w.name,
-    channelId: w.channelId,
-    serverId:  w.serverId,
-    url:       `/api/webhooks/${w._id}?token=${w.token}`,
-    createdAt: w.createdAt,
-  })));
-}));
+  const webhooks = await ChannelWebhooks.findByChannel(channelId);
+  res.json(webhooks);
+});
 
-// POST /api/channels/:cid/webhooks
-router.post('/:cid/webhooks', authMiddleware, limits.webhooks(), asyncHandler(async (req, res) => {
+router.post('/', authMiddleware, limits.webhooks(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const channel = await Channels.findById(req.params.cid);
-  if (!channel) return res.status(404).json({ error: 'Channel not found' });
+  const channelId = String(req.params.channelId ?? '');
+  const { name, avatar } = req.body as Record<string, string>;
+
+  if (!name?.trim()) return res.status(400).json({ error: 'name gerekli' });
+
+  const channel = await Channels.findById(channelId);
+  if (!channel) return res.status(404).json({ error: 'Kanal bulunamadı' });
 
   const perms = await resolvePermissions(_u.id, channel.serverId);
-  if (!hasPermission(perms, PERMS.MANAGE_SERVER))
-    return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
+  if (!hasPermission(perms, PERMS.MANAGE_WEBHOOKS) && !hasPermission(perms, PERMS.ADMIN)) {
+    return res.status(403).json({ error: 'MANAGE_WEBHOOKS yetkisi gerekli' });
+  }
 
-  const { name } = req.body;
-  if (!name?.trim()) return res.status(400).json({ error: 'Webhook name required' });
-
-  // Kanal başına max 10 webhook
-  const existing = await ChannelWebhooks.findByChannel(req.params.cid);
-  if (existing.length >= 10)
-    return res.status(429).json({ error: 'Max 10 webhooks per channel' });
-
-  const webhookId = uuidv4();
-  const secret    = crypto.randomBytes(32).toString('hex');
-  // token = HMAC(secret, webhookId) — kullanıcıya URL'de gösterilir
-  const token     = crypto.createHmac('sha256', secret).update(webhookId).digest('hex');
-
-  const webhook = await ChannelWebhooks.insert({
-    _id:       webhookId,
-    serverId:  channel.serverId,
-    channelId: req.params.cid,
-    name:      name.trim().slice(0, 80),
-    secret,
+  const token = crypto.randomBytes(32).toString('hex');
+  const webhook = await ChannelWebhooks.create({
+    _id: uuidv4(),
+    channelId,
+    serverId: channel.serverId,
+    name: name.trim(),
+    avatar: avatar || null,
     token,
     createdBy: _u.id,
-    createdAt: Date.now(),
   });
 
-  res.status(201).json({
-    _id:       webhook._id,
-    name:      webhook.name,
-    channelId: webhook.channelId,
-    serverId:  webhook.serverId,
-    url:       `/api/webhooks/${webhook._id}?token=${token}`,
-    createdAt: webhook.createdAt,
-    warning:   'Bu URL\'i güvenli saklayın — webhook mesajı göndermek için gerekli.',
-  });
-}));
+  res.status(201).json(webhook);
+});
 
-// DELETE /api/channels/:cid/webhooks/:wid
-router.delete('/:cid/webhooks/:wid', authMiddleware, limits.webhooks(), asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /api/channels/{channelId}/webhooks/{webhookId}:
+ *   delete:
+ *     summary: Webhook'u sil
+ *     tags: [Webhooks]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: channelId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: path
+ *         name: webhookId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Webhook silindi
+ *       403:
+ *         $ref: '#/components/responses/Forbidden'
+ *       404:
+ *         description: Webhook bulunamadı
+ */
+router.delete('/:webhookId', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const channel = await Channels.findById(req.params.cid);
-  if (!channel) return res.status(404).json({ error: 'Channel not found' });
+  const channelId = String(req.params.channelId ?? '');
+  const webhookId = String(req.params.webhookId ?? '');
+
+  const channel = await Channels.findById(channelId);
+  if (!channel) return res.status(404).json({ error: 'Kanal bulunamadı' });
 
   const perms = await resolvePermissions(_u.id, channel.serverId);
-  if (!hasPermission(perms, PERMS.MANAGE_SERVER))
-    return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
+  if (!hasPermission(perms, PERMS.MANAGE_WEBHOOKS) && !hasPermission(perms, PERMS.ADMIN)) {
+    return res.status(403).json({ error: 'No permission' });
+  }
 
-  const webhook = await ChannelWebhooks.findOne({ _id: req.params.wid, channelId: req.params.cid });
-  if (!webhook) return res.status(404).json({ error: 'Webhook not found' });
+  await ChannelWebhooks.delete(webhookId, channelId);
+  res.json({ ok: true });
+});
 
-  await ChannelWebhooks.remove({ _id: req.params.wid });
-  res.json({ deleted: true });
-}));
+/**
+ * @openapi
+ * /api/webhooks/{webhookId}:
+ *   get:
+ *     summary: Webhook bilgisini getir (token ile kimlik doğrulama)
+ *     tags: [Webhooks]
+ *     parameters:
+ *       - in: path
+ *         name: webhookId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: token
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Webhook bilgisi
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Webhook'
+ *       401:
+ *         description: Geçersiz token
+ */
+router.get('/:webhookId', async (req, res) => {
+  const webhookId = String(req.params.webhookId ?? '');
+  const { token } = req.query;
 
+  const webhook = await ChannelWebhooks.findById(webhookId) as ({ token?: string } & Record<string, unknown>) | null;
+  
+  // SECURITY: Use timing-safe comparison to prevent token brute-force attacks
+  let isValid = false;
+  if (webhook && token) {
+    try {
+      // Ensure both are buffers for timing-safe comparison
+      const providedToken = Array.isArray(token) ? token[0] : token;
+      const providedTokenString = typeof providedToken === 'string' ? providedToken : '';
+      isValid = crypto.timingSafeEqual(
+        Buffer.from(webhook.token || ''),
+        Buffer.from(providedTokenString)
+      );
+    } catch (err) {
+      // timingSafeEqual throws if lengths differ; treat as invalid
+      isValid = false;
+    }
+  }
+
+  if (!isValid) {
+    return res.status(401).json({ error: 'Geçersiz webhook veya token' });
+  }
+
+  if (!webhook) return res.status(401).json({ error: 'Geçersiz webhook veya token' });
+  const { token: _t, ...safe } = webhook;
+  res.json(safe);
+});
+
+export default router;
+
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-export {};
+module.exports.default = router;

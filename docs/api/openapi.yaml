@@ -1,0 +1,1932 @@
+openapi: 3.1.0
+info:
+  title: Bridge API
+  version: 1.115.0
+  description: |
+    Bridge — federated, self-hosted communication platform REST API.
+
+    **Authentication:** Tüm korumalı endpoint'ler `Authorization: Bearer <accessToken>` header'ı gerektirir.
+    Access token'lar kısa ömürlüdür (15 dk). `POST /api/refresh` ile yenilenebilir (httpOnly cookie).
+
+    **Rate Limiting:** Endpoint başına granüler rate limit uygulanır. 429 döndüğünde `Retry-After` header'ını kontrol edin.
+
+    **Federation:** Bridge sunucular arası ActivityPub protokolü kullanır. Federation endpoint'leri `/api/federation` altındadır.
+  contact:
+    name: Bridge Contributors
+    url: https://github.com/bridge-app/bridge
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://your-bridge-instance.com/api
+    description: Production
+  - url: http://localhost:3001/api
+    description: Local development
+
+tags:
+  - name: auth
+    description: Kimlik doğrulama — kayıt, giriş, token yenileme, 2FA, WebAuthn/Passkey, SSO
+  - name: users
+    description: Kullanıcı profil ve ayarları
+  - name: servers
+    description: Hub/sunucu yönetimi
+  - name: channels
+    description: Kanal CRUD ve izin yönetimi
+  - name: messages
+    description: Mesaj gönderme, düzenleme, silme, arama
+  - name: dm
+    description: Direkt mesajlaşma ve DM ses/video aramaları
+  - name: voice
+    description: Sesli/video kanal operasyonları
+  - name: moderation
+    description: Moderasyon araçları — ban, kick, timeout, uyarı
+  - name: federation
+    description: ActivityPub federation endpoint'leri
+  - name: bots
+    description: Bot kayıt ve yönetimi
+  - name: plugins
+    description: Plugin marketplace
+  - name: e2ee
+    description: Uçtan uca şifreleme anahtar yönetimi
+  - name: search
+    description: Sunucu içi tam metin ve semantik arama
+  - name: admin
+    description: Sunucu yöneticisi operasyonları
+  - name: health
+    description: Health check endpoint'leri
+
+paths:
+  # ── Health ─────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [health]
+      summary: Temel sağlık kontrolü
+      description: Servis ayakta mı kontrolü. Auth gerektirmez.
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: Servis sağlıklı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  uptime: { type: number, example: 3601.4 }
+                  version: { type: string, example: '1.115.0' }
+
+  /health/ready:
+    get:
+      tags: [health]
+      summary: Readiness probe — DB ve Redis bağlantıları
+      operationId: getHealthReady
+      security: []
+      responses:
+        '200':
+          description: Tüm bağımlılıklar hazır
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResult'
+        '503':
+          description: Bir veya daha fazla bağımlılık hazır değil
+
+  # ── Auth ───────────────────────────────────────────────────────────────────
+  /register:
+    post:
+      tags: [auth]
+      summary: Kullanıcı kaydı
+      operationId: register
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Kayıt başarılı
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Kullanıcı adı veya e-posta zaten alınmış
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /login:
+    post:
+      tags: [auth]
+      summary: Kullanıcı girişi
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Giriş başarılı
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+          headers:
+            Set-Cookie:
+              description: httpOnly refresh token cookie (`bridge_refresh`)
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Geçersiz kimlik bilgileri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /refresh:
+    post:
+      tags: [auth]
+      summary: Access token yenile
+      description: httpOnly `bridge_refresh` cookie kullanır. Body gerekmez.
+      operationId: refreshToken
+      security: []
+      responses:
+        '200':
+          description: Yeni access token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string, description: Yeni JWT access token }
+        '401':
+          description: Geçersiz veya süresi dolmuş refresh token
+
+  /logout:
+    post:
+      tags: [auth]
+      summary: Çıkış yap
+      operationId: logout
+      responses:
+        '200':
+          description: Başarıyla çıkış yapıldı
+
+  /2fa/setup:
+    post:
+      tags: [auth]
+      summary: TOTP 2FA kurulumu başlat
+      operationId: setup2FA
+      responses:
+        '200':
+          description: QR code ve secret
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  qrCode: { type: string, description: Base64 QR kod görseli }
+                  secret: { type: string, description: TOTP secret (manuel giriş için) }
+
+  /2fa/verify:
+    post:
+      tags: [auth]
+      summary: TOTP kodunu doğrula ve 2FA'yı etkinleştir
+      operationId: verify2FA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, minLength: 6, maxLength: 6, example: '123456' }
+      responses:
+        '200':
+          description: 2FA etkinleştirildi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  backupCodes: { type: array, items: { type: string }, description: Tek kullanımlık yedek kodlar }
+        '400':
+          description: Geçersiz TOTP kodu
+
+  /webauthn/register/begin:
+    post:
+      tags: [auth]
+      summary: WebAuthn / Passkey kayıt başlat
+      operationId: webauthnRegisterBegin
+      responses:
+        '200':
+          description: PublicKeyCredentialCreationOptions
+          content:
+            application/json:
+              schema:
+                type: object
+                description: WebAuthn credential creation challenge
+
+  /webauthn/register/finish:
+    post:
+      tags: [auth]
+      summary: WebAuthn / Passkey kayıt tamamla
+      operationId: webauthnRegisterFinish
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: PublicKeyCredential attestation response
+      responses:
+        '200':
+          description: Passkey kaydedildi
+        '400':
+          description: Doğrulama başarısız
+
+  /sso/callback:
+    get:
+      tags: [auth]
+      summary: SSO OAuth callback
+      operationId: ssoCallback
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '302':
+          description: JWT ile başarılı yönlendirme
+        '400':
+          description: Geçersiz OAuth state veya code
+
+  # ── Users ──────────────────────────────────────────────────────────────────
+  /users/me:
+    get:
+      tags: [users]
+      summary: Oturum açmış kullanıcıyı getir
+      operationId: getMe
+      responses:
+        '200':
+          description: Kullanıcı profili
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+    patch:
+      tags: [users]
+      summary: Profil güncelle
+      operationId: updateMe
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: Güncellenmiş profil
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+
+  /users/{userId}:
+    get:
+      tags: [users]
+      summary: Kullanıcı profili getir
+      operationId: getUserById
+      parameters:
+        - $ref: '#/components/parameters/userId'
+      responses:
+        '200':
+          description: Kullanıcı profili
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicUser'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Servers ────────────────────────────────────────────────────────────────
+  /servers:
+    get:
+      tags: [servers]
+      summary: Kullanıcının sunucularını listele
+      operationId: listMyServers
+      responses:
+        '200':
+          description: Sunucu listesi
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Server'
+    post:
+      tags: [servers]
+      summary: Yeni sunucu oluştur
+      operationId: createServer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateServerRequest'
+      responses:
+        '201':
+          description: Oluşturulan sunucu
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Server'
+
+  /servers/{serverId}:
+    get:
+      tags: [servers]
+      summary: Sunucu detayı
+      operationId: getServer
+      parameters:
+        - $ref: '#/components/parameters/serverId'
+      responses:
+        '200':
+          description: Sunucu detayı
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Server'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [servers]
+      summary: Sunucu güncelle (yönetici)
+      operationId: updateServer
+      parameters:
+        - $ref: '#/components/parameters/serverId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateServerRequest'
+      responses:
+        '200':
+          description: Güncellenmiş sunucu
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Server'
+    delete:
+      tags: [servers]
+      summary: Sunucuyu sil (sahip)
+      operationId: deleteServer
+      parameters:
+        - $ref: '#/components/parameters/serverId'
+      responses:
+        '200':
+          description: Sunucu silindi
+
+  /servers/{serverId}/join:
+    post:
+      tags: [servers]
+      summary: Davete katıl veya açık sunucuya gir
+      operationId: joinServer
+      parameters:
+        - $ref: '#/components/parameters/serverId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                inviteCode: { type: string }
+      responses:
+        '200':
+          description: Katılım başarılı
+        '403':
+          description: Davet geçersiz veya sunucu kapalı
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /servers/{serverId}/members:
+    get:
+      tags: [servers]
+      summary: Sunucu üyelerini listele
+      operationId: listServerMembers
+      parameters:
+        - $ref: '#/components/parameters/serverId'
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Üye listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Member'
+                  cursor: { type: string, nullable: true }
+
+  # ── Channels ───────────────────────────────────────────────────────────────
+  /channels/{channelId}:
+    get:
+      tags: [channels]
+      summary: Kanal detayı
+      operationId: getChannel
+      parameters:
+        - $ref: '#/components/parameters/channelId'
+      responses:
+        '200':
+          description: Kanal detayı
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Channel'
+    patch:
+      tags: [channels]
+      summary: Kanal güncelle
+      operationId: updateChannel
+      parameters:
+        - $ref: '#/components/parameters/channelId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateChannelRequest'
+      responses:
+        '200':
+          description: Güncellenmiş kanal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Channel'
+    delete:
+      tags: [channels]
+      summary: Kanalı sil
+      operationId: deleteChannel
+      parameters:
+        - $ref: '#/components/parameters/channelId'
+      responses:
+        '200':
+          description: Kanal silindi
+
+  # ── Messages ───────────────────────────────────────────────────────────────
+  /messages/{channelId}:
+    get:
+      tags: [messages]
+      summary: Kanal mesajlarını getir (cursor tabanlı sayfalama)
+      operationId: getMessages
+      parameters:
+        - $ref: '#/components/parameters/channelId'
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 100 }
+        - name: before
+          in: query
+          description: Bu mesaj ID'sinden önceki mesajlar
+          schema: { type: string }
+        - name: after
+          in: query
+          description: Bu mesaj ID'sinden sonraki mesajlar
+          schema: { type: string }
+      responses:
+        '200':
+          description: Mesaj listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+                  hasMore: { type: boolean }
+
+  /messages/{channelId}/send:
+    post:
+      tags: [messages]
+      summary: Mesaj gönder
+      operationId: sendMessage
+      parameters:
+        - $ref: '#/components/parameters/channelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '201':
+          description: Mesaj oluşturuldu
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /messages/{channelId}/{messageId}:
+    patch:
+      tags: [messages]
+      summary: Mesaj düzenle
+      operationId: editMessage
+      parameters:
+        - $ref: '#/components/parameters/channelId'
+        - $ref: '#/components/parameters/messageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, maxLength: 4000 }
+      responses:
+        '200':
+          description: Düzenlenmiş mesaj
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    delete:
+      tags: [messages]
+      summary: Mesaj sil
+      operationId: deleteMessage
+      parameters:
+        - $ref: '#/components/parameters/channelId'
+        - $ref: '#/components/parameters/messageId'
+      responses:
+        '200':
+          description: Mesaj silindi
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── E2EE ───────────────────────────────────────────────────────────────────
+  /e2e/keys:
+    post:
+      tags: [e2ee]
+      summary: Public key kaydet
+      description: Kullanıcının X25519 public key'ini sunucuya kaydeder. Private key asla sunucuya gönderilmez.
+      operationId: registerE2EEKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [publicKey]
+              properties:
+                publicKey: { type: string, maxLength: 200, description: Base64 X25519 public key }
+                keyVersion: { type: integer, default: 1 }
+                algorithm:  { type: string, default: X25519, enum: [X25519] }
+      responses:
+        '200':
+          description: Public key kaydedildi
+
+  /e2e/keys/{userId}:
+    get:
+      tags: [e2ee]
+      summary: Kullanıcının public key'ini getir
+      operationId: getE2EEKey
+      parameters:
+        - $ref: '#/components/parameters/userId'
+      responses:
+        '200':
+          description: Public key bilgisi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hasKey:     { type: boolean }
+                  userId:     { type: string }
+                  publicKey:  { type: string, nullable: true }
+                  keyVersion: { type: integer, nullable: true }
+                  algorithm:  { type: string, nullable: true }
+                  updatedAt:  { type: integer, nullable: true }
+
+  /e2e/feature-status:
+    get:
+      tags: [e2ee]
+      summary: E2EE production feature flag durumu
+      operationId: getE2EEFeatureStatus
+      security: []
+      responses:
+        '200':
+          description: E2EE etkin mi?
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean, example: true }
+
+  # ── Search ─────────────────────────────────────────────────────────────────
+  /servers/{serverId}/search:
+    get:
+      tags: [search]
+      summary: Sunucu içi tam metin arama
+      operationId: searchServer
+      parameters:
+        - $ref: '#/components/parameters/serverId'
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 2, maxLength: 200 }
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [messages, members, channels, files]
+            default: messages
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        '200':
+          description: Arama sonuçları
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SearchResult'
+                  hasMore: { type: boolean }
+                  total:   { type: integer }
+
+  /servers/{serverId}/semantic-search:
+    get:
+      tags: [search]
+      summary: pgvector semantik arama
+      description: Anlamsal benzerlik tabanlı mesaj arama (pgvector + OpenAI embeddings).
+      operationId: semanticSearchServer
+      parameters:
+        - $ref: '#/components/parameters/serverId'
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, maximum: 50 }
+      responses:
+        '200':
+          description: Semantik arama sonuçları
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SearchResult'
+
+  # ── Moderation ─────────────────────────────────────────────────────────────
+  /moderation/{serverId}/ban:
+    post:
+      tags: [moderation]
+      summary: Üyeyi ban'la
+      operationId: banMember
+      parameters:
+        - $ref: '#/components/parameters/serverId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BanRequest'
+      responses:
+        '200':
+          description: Üye ban'landı
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /moderation/{serverId}/timeout:
+    post:
+      tags: [moderation]
+      summary: Üyeye timeout ver
+      operationId: timeoutMember
+      parameters:
+        - $ref: '#/components/parameters/serverId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TimeoutRequest'
+      responses:
+        '200':
+          description: Timeout uygulandı
+
+  # ── Federation ─────────────────────────────────────────────────────────────
+  /federation/inbox/{username}:
+    post:
+      tags: [federation]
+      summary: ActivityPub inbox
+      description: Federe sunuculardan gelen ActivityPub aktiviteleri. HTTP Signature doğrulaması yapılır.
+      operationId: federationInbox
+      security: []
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/activity+json:
+            schema:
+              type: object
+              description: ActivityPub Activity (Create, Follow, Accept, Undo, Delete, vs.)
+      responses:
+        '202':
+          description: Aktivite kabul edildi
+        '401':
+          description: HTTP Signature doğrulaması başarısız
+
+  /federation/actor/{username}:
+    get:
+      tags: [federation]
+      summary: ActivityPub Actor
+      operationId: federationActor
+      security: []
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: ActivityPub Person actor
+          content:
+            application/activity+json:
+              schema:
+                type: object
+                description: ActivityPub Actor object
+
+  # ── Health extended ────────────────────────────────────────────────────────
+  /health/e2ee:
+    get:
+      tags: [health]
+      summary: E2EE subsystem sağlık kontrolü
+      operationId: healthE2EE
+      responses:
+        '200':
+          description: E2EE durumu
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  keysRegistered: { type: integer }
+
+# ── Components ──────────────────────────────────────────────────────────────
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT access token. POST /api/login ile alınır, süresi 15 dakikadır.
+
+  parameters:
+    userId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string }
+    serverId:
+      name: serverId
+      in: path
+      required: true
+      schema: { type: string }
+    channelId:
+      name: channelId
+      in: path
+      required: true
+      schema: { type: string }
+    messageId:
+      name: messageId
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: Geçersiz istek gövdesi
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Token eksik veya geçersiz
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Yetersiz izin
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Kaynak bulunamadı
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RateLimited:
+      description: Çok fazla istek
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Kaç saniye beklenmeli
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:   { type: string }
+        code:    { type: string }
+        details: { type: object, additionalProperties: true }
+
+    RegisterRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 32, pattern: '^[a-zA-Z0-9_.-]+$' }
+        password: { type: string, minLength: 8, maxLength: 128 }
+        email:    { type: string, format: email }
+        captchaToken: { type: string }
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:  { type: string }
+        password:  { type: string }
+        totp_code: { type: string, minLength: 6, maxLength: 8, description: TOTP kodu (2FA etkinse) }
+
+    AuthResponse:
+      type: object
+      properties:
+        token:   { type: string, description: JWT access token (15 dk geçerli) }
+        user:
+          $ref: '#/components/schemas/User'
+
+    User:
+      type: object
+      properties:
+        _id:        { type: string }
+        username:   { type: string }
+        email:      { type: string, format: email }
+        avatarUrl:  { type: string, nullable: true }
+        avatarColor: { type: string }
+        bio:        { type: string, nullable: true }
+        status:     { type: string, enum: [online, idle, dnd, offline], nullable: true }
+        customStatus: { type: string, nullable: true }
+        createdAt:  { type: integer }
+        twoFactorEnabled: { type: boolean }
+        e2ePublicKey: { type: string, nullable: true }
+
+    PublicUser:
+      type: object
+      description: Başka kullanıcılara görünen profil (hassas alanlar çıkarılmış)
+      properties:
+        _id:        { type: string }
+        username:   { type: string }
+        avatarUrl:  { type: string, nullable: true }
+        avatarColor: { type: string }
+        bio:        { type: string, nullable: true }
+        status:     { type: string, nullable: true }
+        customStatus: { type: string, nullable: true }
+        createdAt:  { type: integer }
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        bio:          { type: string, maxLength: 500 }
+        customStatus: { type: string, maxLength: 128 }
+        status:       { type: string, enum: [online, idle, dnd, offline] }
+        email:        { type: string, format: email }
+
+    Server:
+      type: object
+      properties:
+        _id:         { type: string }
+        name:        { type: string }
+        description: { type: string, nullable: true }
+        iconUrl:     { type: string, nullable: true }
+        bannerUrl:   { type: string, nullable: true }
+        ownerId:     { type: string }
+        isPublic:    { type: boolean }
+        isVerified:  { type: boolean }
+        memberCount: { type: integer }
+        category:    { type: string, nullable: true }
+        region:      { type: string, nullable: true }
+        createdAt:   { type: integer }
+        channels:
+          type: array
+          items:
+            $ref: '#/components/schemas/Channel'
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+
+    CreateServerRequest:
+      type: object
+      required: [name]
+      properties:
+        name:        { type: string, minLength: 2, maxLength: 100 }
+        description: { type: string, maxLength: 1000 }
+        isPublic:    { type: boolean, default: false }
+        region:      { type: string }
+
+    UpdateServerRequest:
+      type: object
+      properties:
+        name:        { type: string, minLength: 2, maxLength: 100 }
+        description: { type: string, maxLength: 1000 }
+        isPublic:    { type: boolean }
+
+    Channel:
+      type: object
+      properties:
+        _id:       { type: string }
+        name:      { type: string }
+        serverId:  { type: string }
+        type:      { type: string, enum: [text, voice, video, announcement, stage, forum] }
+        position:  { type: integer }
+        topic:     { type: string, nullable: true }
+        nsfw:      { type: boolean }
+        slowMode:  { type: integer, description: Saniye cinsinden yavaş mod süresi }
+        parentId:  { type: string, nullable: true, description: Kategori kanal ID'si }
+        e2eeEnabled: { type: boolean }
+        createdAt: { type: integer }
+
+    UpdateChannelRequest:
+      type: object
+      properties:
+        name:     { type: string }
+        topic:    { type: string, maxLength: 1024 }
+        nsfw:     { type: boolean }
+        slowMode: { type: integer, minimum: 0, maximum: 21600 }
+        position: { type: integer }
+
+    Message:
+      type: object
+      properties:
+        _id:       { type: string }
+        channelId: { type: string }
+        serverId:  { type: string }
+        userId:    { type: string }
+        content:   { type: string, nullable: true }
+        type:      { type: string, enum: [default, system, reply, thread_start] }
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Attachment'
+        reactions:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+        editedAt:  { type: integer, nullable: true }
+        createdAt: { type: integer }
+        encrypted: { type: boolean, description: E2EE ile şifrelenmiş mi? }
+
+    SendMessageRequest:
+      type: object
+      properties:
+        content:     { type: string, maxLength: 4000 }
+        attachments:
+          type: array
+          items: { type: string, description: Upload token }
+        replyTo:     { type: string, description: Yanıt verilen mesaj ID'si }
+        encrypted:   { type: boolean }
+        ciphertext:  { type: string, description: E2EE şifreli içerik (encrypted=true ise) }
+
+    Attachment:
+      type: object
+      properties:
+        url:      { type: string }
+        fileName: { type: string }
+        mimeType: { type: string }
+        size:     { type: integer }
+
+    Member:
+      type: object
+      properties:
+        userId:    { type: string }
+        username:  { type: string }
+        avatarUrl: { type: string, nullable: true }
+        roles:     { type: array, items: { type: string } }
+        nickname:  { type: string, nullable: true }
+        joinedAt:  { type: integer }
+
+    Role:
+      type: object
+      properties:
+        _id:       { type: string }
+        name:      { type: string }
+        color:     { type: string, nullable: true }
+        position:  { type: integer }
+        permissions: { type: integer, description: Bitfield izin değeri }
+        hoist:     { type: boolean }
+        mentionable: { type: boolean }
+
+    SearchResult:
+      type: object
+      properties:
+        _id:             { type: string }
+        type:            { type: string, enum: [message, member, channel, file] }
+        content:         { type: string, nullable: true }
+        username:        { type: string, nullable: true }
+        channelName:     { type: string, nullable: true }
+        fileName:        { type: string, nullable: true }
+        authorUsername:  { type: string, nullable: true }
+        channelId:       { type: string, nullable: true }
+        createdAt:       { type: integer, nullable: true }
+        score:           { type: number, nullable: true }
+
+    BanRequest:
+      type: object
+      required: [userId]
+      properties:
+        userId: { type: string }
+        reason: { type: string, maxLength: 512 }
+        deleteMessageDays: { type: integer, minimum: 0, maximum: 7, default: 0 }
+
+    TimeoutRequest:
+      type: object
+      required: [userId, duration]
+      properties:
+        userId:   { type: string }
+        duration: { type: integer, description: Dakika cinsinden timeout süresi, minimum: 1, maximum: 40320 }
+        reason:   { type: string, maxLength: 512 }
+
+    ReadinessResult:
+      type: object
+      properties:
+        status:   { type: string, enum: [ok, degraded] }
+        postgres: { type: string, enum: [ok, error] }
+        redis:    { type: string, enum: [ok, error] }
+        uptime:   { type: number }
+
+
+  # ──────────────────────────────────────────────────────────────
+  # WEBHOOK ENDPOINTS
+  # ──────────────────────────────────────────────────────────────
+
+  /servers/{serverId}/webhooks:
+    get:
+      summary: Sunucuya ait webhook'ları listele
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Webhook listesi
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Webhook'
+        "403": { description: Yetersiz izin }
+        "404": { description: Sunucu bulunamadı }
+    post:
+      summary: Yeni webhook oluştur
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebhookRequest'
+      responses:
+        "201":
+          description: Oluşturulan webhook
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Webhook'
+        "400": { description: Geçersiz istek }
+        "403": { description: Yetersiz izin }
+
+  /servers/{serverId}/webhooks/{webhookId}:
+    get:
+      summary: Belirli bir webhook'u getir
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: webhookId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Webhook'
+        "404": { description: Webhook bulunamadı }
+    patch:
+      summary: Webhook güncelle (isim, kanal, aktif/pasif)
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: webhookId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWebhookRequest'
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Webhook'
+        "403": { description: Yetersiz izin }
+        "404": { description: Webhook bulunamadı }
+    delete:
+      summary: Webhook sil
+      tags: [Webhooks]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: webhookId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Silindi }
+        "403": { description: Yetersiz izin }
+        "404": { description: Webhook bulunamadı }
+
+  /webhooks/{webhookId}/{token}:
+    post:
+      summary: Webhook tetikle (harici servisler için — token ile, auth gerekmez)
+      tags: [Webhooks]
+      security: []
+      parameters:
+        - name: webhookId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookTriggerRequest'
+      responses:
+        "204": { description: Webhook başarıyla tetiklendi }
+        "400": { description: Geçersiz payload }
+        "401": { description: Geçersiz token }
+        "404": { description: Webhook bulunamadı }
+        "429": { description: Rate limit aşıldı }
+
+  # ──────────────────────────────────────────────────────────────
+  # PLUGIN / BOT MARKETPLACE ENDPOINTS
+  # ──────────────────────────────────────────────────────────────
+
+  /plugins:
+    get:
+      summary: Public marketplace bot/plugin listesi
+      tags: [Plugins]
+      security: []
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+          description: Arama sorgusu
+        - name: featured
+          in: query
+          schema: { type: boolean }
+          description: Yalnızca öne çıkan plugin'ler
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        "200":
+          description: Plugin listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plugins:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PluginEntry'
+                  total: { type: integer }
+                  page:  { type: integer }
+                  pages: { type: integer }
+
+  /plugins/{pluginId}:
+    get:
+      summary: Belirli plugin detayı
+      tags: [Plugins]
+      security: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginEntry'
+        "404": { description: Plugin bulunamadı }
+
+  /servers/{serverId}/plugins:
+    get:
+      summary: Sunucuya kurulu plugin'leri listele
+      tags: [Plugins]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/InstalledPlugin'
+        "403": { description: Yetersiz izin }
+    post:
+      summary: Sunucuya plugin kur
+      tags: [Plugins]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pluginId]
+              properties:
+                pluginId: { type: string }
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstalledPlugin'
+        "400": { description: Plugin allowlist'te değil }
+        "403": { description: Yetersiz izin }
+
+  /servers/{serverId}/plugins/{pluginId}:
+    delete:
+      summary: Sunucudan plugin kaldır
+      tags: [Plugins]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: pluginId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Kaldırıldı }
+        "403": { description: Yetersiz izin }
+        "404": { description: Plugin kurulu değil }
+
+  # ──────────────────────────────────────────────────────────────
+  # ACTIVITYPUB FEDERATION (tam set)
+  # ──────────────────────────────────────────────────────────────
+
+  /.well-known/webfinger:
+    get:
+      summary: WebFinger — kullanıcı keşfi
+      tags: [Federation]
+      security: []
+      parameters:
+        - name: resource
+          in: query
+          required: true
+          schema:
+            type: string
+            example: "acct:alice@bridge.example.com"
+      responses:
+        "200":
+          description: WebFinger JRD yanıtı
+          content:
+            application/jrd+json:
+              schema:
+                $ref: '#/components/schemas/WebFingerResponse'
+        "404": { description: Kullanıcı bulunamadı }
+
+  /.well-known/nodeinfo:
+    get:
+      summary: NodeInfo tanımlayıcısı
+      tags: [Federation]
+      security: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeInfoIndex'
+
+  /nodeinfo/2.1:
+    get:
+      summary: NodeInfo 2.1 — sunucu meta verisi
+      tags: [Federation]
+      security: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeInfo'
+
+  /federation/actor/{username}:
+    get:
+      summary: ActivityPub Actor nesnesi
+      tags: [Federation]
+      security: []
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Actor (Person) nesnesi
+          content:
+            application/activity+json:
+              schema:
+                $ref: '#/components/schemas/ActivityPubActor'
+        "404": { description: Kullanıcı bulunamadı }
+
+  /federation/inbox/{username}:
+    post:
+      summary: ActivityPub Inbox — uzak sunuculardan gelen aktiviteler
+      tags: [Federation]
+      security: []
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/activity+json:
+            schema:
+              $ref: '#/components/schemas/ActivityPubActivity'
+      responses:
+        "202": { description: Aktivite kuyruğa alındı }
+        "400": { description: Geçersiz aktivite }
+        "401": { description: İmza doğrulaması başarısız }
+        "404": { description: Kullanıcı bulunamadı }
+
+  /federation/outbox/{username}:
+    get:
+      summary: ActivityPub Outbox — kullanıcının yayınladığı aktiviteler
+      tags: [Federation]
+      security: []
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: boolean }
+          description: Sayfalama için true
+        - name: min_id
+          in: query
+          schema: { type: string }
+        - name: max_id
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/activity+json:
+              schema:
+                $ref: '#/components/schemas/ActivityPubOrderedCollection'
+        "404": { description: Kullanıcı bulunamadı }
+
+  /federation/followers/{username}:
+    get:
+      summary: Takipçi listesi (ActivityPub OrderedCollection)
+      tags: [Federation]
+      security: []
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/activity+json:
+              schema:
+                $ref: '#/components/schemas/ActivityPubOrderedCollection'
+
+  /federation/following/{username}:
+    get:
+      summary: Takip edilen listesi (ActivityPub OrderedCollection)
+      tags: [Federation]
+      security: []
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/activity+json:
+              schema:
+                $ref: '#/components/schemas/ActivityPubOrderedCollection'
+
+  # ──────────────────────────────────────────────────────────────
+  # ADMIN ENDPOINTS (eksik olanlar)
+  # ──────────────────────────────────────────────────────────────
+
+  /admin/broadcast:
+    post:
+      summary: Tüm bağlı kullanıcılara sistem duyurusu gönder
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string, maxLength: 2000 }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent: { type: integer, description: Mesajın iletildiği bağlantı sayısı }
+        "403": { description: Admin yetkisi gerekli }
+
+  /admin/reaction-roles:
+    get:
+      summary: Tüm reaction rol kurallarını listele
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ReactionRoleRule'
+    post:
+      summary: Yeni reaction rol kuralı ekle
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReactionRoleRequest'
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReactionRoleRule'
+        "400": { description: Geçersiz istek }
+
+  /admin/reaction-roles/{ruleId}:
+    delete:
+      summary: Reaction rol kuralı sil
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: ruleId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Silindi }
+        "404": { description: Kural bulunamadı }
+
+  /admin/marketplace:
+    get:
+      summary: Admin marketplace listesi (arama dahil)
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BotMarketplaceEntry'
+    post:
+      summary: Marketplace'e bot ekle
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddBotRequest'
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotMarketplaceEntry'
+
+  /admin/marketplace/{botId}:
+    patch:
+      summary: Bot güncelle (isFeatured toggle vb.)
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: botId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                isFeatured: { type: boolean }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotMarketplaceEntry'
+    delete:
+      summary: Botu marketplace'den kaldır
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: botId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Silindi }
+
+  /admin/marketplace/refresh:
+    post:
+      summary: Marketplace cache'ini yenile
+      tags: [Admin]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  refreshed: { type: boolean }
+
+# ──────────────────────────────────────────────────────────────
+# YENİ SCHEMA TANIMLARI
+# ──────────────────────────────────────────────────────────────
+
+
+
+    # Webhook
+    Webhook:
+      type: object
+      properties:
+        _id:       { type: string }
+        serverId:  { type: string }
+        channelId: { type: string }
+        name:      { type: string }
+        token:     { type: string, description: "Yalnızca oluşturma anında döner" }
+        avatar:    { type: string, nullable: true }
+        active:    { type: boolean }
+        createdAt: { type: integer }
+
+    CreateWebhookRequest:
+      type: object
+      required: [name, channelId]
+      properties:
+        name:      { type: string, minLength: 1, maxLength: 80 }
+        channelId: { type: string }
+        avatar:    { type: string, nullable: true }
+
+    UpdateWebhookRequest:
+      type: object
+      properties:
+        name:      { type: string, minLength: 1, maxLength: 80 }
+        channelId: { type: string }
+        active:    { type: boolean }
+        avatar:    { type: string, nullable: true }
+
+    WebhookTriggerRequest:
+      type: object
+      properties:
+        content:   { type: string, maxLength: 2000 }
+        username:  { type: string, maxLength: 80, description: "Override gönderen adı" }
+        avatar_url: { type: string, nullable: true }
+        embeds:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            properties:
+              title:       { type: string }
+              description: { type: string }
+              color:       { type: integer }
+              url:         { type: string }
+              timestamp:   { type: string, format: date-time }
+
+    # Plugin
+    PluginEntry:
+      type: object
+      properties:
+        _id:         { type: string }
+        pluginId:    { type: string }
+        name:        { type: string }
+        description: { type: string }
+        author:      { type: string }
+        version:     { type: string }
+        isFeatured:  { type: boolean }
+        installCount: { type: integer }
+        tags:
+          type: array
+          items: { type: string }
+        createdAt:   { type: integer }
+
+    InstalledPlugin:
+      type: object
+      properties:
+        serverId:   { type: string }
+        pluginId:   { type: string }
+        name:       { type: string }
+        version:    { type: string }
+        active:     { type: boolean }
+        installedAt: { type: integer }
+
+    # Federation
+    WebFingerResponse:
+      type: object
+      properties:
+        subject: { type: string }
+        aliases:
+          type: array
+          items: { type: string }
+        links:
+          type: array
+          items:
+            type: object
+            properties:
+              rel:  { type: string }
+              type: { type: string }
+              href: { type: string }
+
+    NodeInfoIndex:
+      type: object
+      properties:
+        links:
+          type: array
+          items:
+            type: object
+            properties:
+              rel:  { type: string }
+              href: { type: string }
+
+    NodeInfo:
+      type: object
+      properties:
+        version:  { type: string }
+        software:
+          type: object
+          properties:
+            name:    { type: string }
+            version: { type: string }
+        protocols:
+          type: array
+          items: { type: string }
+        usage:
+          type: object
+          properties:
+            users:
+              type: object
+              properties:
+                total:          { type: integer }
+                activeMonth:    { type: integer }
+                activeHalfyear: { type: integer }
+            localPosts: { type: integer }
+        openRegistrations: { type: boolean }
+
+    ActivityPubActor:
+      type: object
+      properties:
+        "@context": { type: array, items: { type: string } }
+        type:       { type: string, enum: [Person, Service] }
+        id:         { type: string, format: uri }
+        name:       { type: string }
+        preferredUsername: { type: string }
+        summary:    { type: string, nullable: true }
+        inbox:      { type: string, format: uri }
+        outbox:     { type: string, format: uri }
+        followers:  { type: string, format: uri }
+        following:  { type: string, format: uri }
+        publicKey:
+          type: object
+          properties:
+            id:           { type: string }
+            owner:        { type: string }
+            publicKeyPem: { type: string }
+
+    ActivityPubActivity:
+      type: object
+      properties:
+        "@context": { type: string }
+        type:       { type: string, enum: [Follow, Undo, Accept, Reject, Create, Update, Delete, Like, Announce] }
+        id:         { type: string, format: uri }
+        actor:      { type: string, format: uri }
+        object:     {}
+
+    ActivityPubOrderedCollection:
+      type: object
+      properties:
+        "@context": { type: string }
+        type:       { type: string, enum: [OrderedCollection, OrderedCollectionPage] }
+        id:         { type: string, format: uri }
+        totalItems: { type: integer }
+        first:      { type: string, format: uri, nullable: true }
+        last:       { type: string, format: uri, nullable: true }
+        orderedItems:
+          type: array
+          items: {}
+
+    # Admin — yeni
+    ReactionRoleRule:
+      type: object
+      properties:
+        _id:       { type: string }
+        serverId:  { type: string }
+        channelId: { type: string }
+        messageId: { type: string }
+        emoji:     { type: string }
+        roleId:    { type: string }
+        createdAt: { type: integer }
+
+    CreateReactionRoleRequest:
+      type: object
+      required: [serverId, channelId, messageId, emoji, roleId]
+      properties:
+        serverId:  { type: string }
+        channelId: { type: string }
+        messageId: { type: string }
+        emoji:     { type: string }
+        roleId:    { type: string }
+
+    BotMarketplaceEntry:
+      type: object
+      properties:
+        _id:         { type: string }
+        name:        { type: string }
+        description: { type: string }
+        isFeatured:  { type: boolean }
+        createdAt:   { type: integer }
+
+    AddBotRequest:
+      type: object
+      required: [name]
+      properties:
+        name:        { type: string, minLength: 1, maxLength: 80 }
+        description: { type: string, maxLength: 500 }
+        token:       { type: string }
+
+security:
+  - bearerAuth: []

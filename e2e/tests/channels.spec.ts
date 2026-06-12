@@ -20,6 +20,15 @@ test.describe('Kanal Yönetimi', () => {
       `Kanal Test Server ${Date.now()}`
     );
     testServerId = server._id || server.id;
+    // Guard: if server creation failed, remaining tests will be skipped via beforeEach
+  });
+
+  test.beforeEach(async ({}, testInfo) => {
+    // If beforeAll server creation failed, skip channel-dependent tests
+    if (!testServerId && testInfo.title.startsWith('API: ') &&
+        (testInfo.title.includes('kanal') || testInfo.title.includes('channel') || testInfo.title.includes('Channel'))) {
+      test.skip(true, 'Sunucu fixture oluşturulamadı — kanal testleri atlanıyor');
+    }
   });
 
   // ── Sunucu Testleri ──────────────────────────────────────
@@ -56,7 +65,6 @@ test.describe('Kanal Yönetimi', () => {
   // ── Kanal Testleri ───────────────────────────────────────
 
   test('API: text kanalı oluşturma', async ({ request }) => {
-    if (!testServerId) test.skip();
 
     const res = await request.post(`${BASE_URL}/api/servers/${testServerId}/channels`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
@@ -69,7 +77,6 @@ test.describe('Kanal Yönetimi', () => {
   });
 
   test('API: voice kanalı oluşturma', async ({ request }) => {
-    if (!testServerId) test.skip();
 
     const res = await request.post(`${BASE_URL}/api/servers/${testServerId}/channels`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
@@ -79,7 +86,6 @@ test.describe('Kanal Yönetimi', () => {
   });
 
   test('API: kanal listesi', async ({ request }) => {
-    if (!testServerId) test.skip();
 
     const res = await request.get(`${BASE_URL}/api/servers/${testServerId}/channels`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
@@ -92,7 +98,6 @@ test.describe('Kanal Yönetimi', () => {
   });
 
   test('API: kanal silme', async ({ request }) => {
-    if (!testServerId) test.skip();
 
     // Silinecek kanal oluştur
     const createRes = await request.post(`${BASE_URL}/api/servers/${testServerId}/channels`, {
@@ -101,7 +106,6 @@ test.describe('Kanal Yönetimi', () => {
     });
     const created = await createRes.json();
     const channelId = (created.channel || created)._id || (created.channel || created).id;
-    if (!channelId) test.skip();
 
     const delRes = await request.delete(
       `${BASE_URL}/api/servers/${testServerId}/channels/${channelId}`,
@@ -111,7 +115,6 @@ test.describe('Kanal Yönetimi', () => {
   });
 
   test('API: yetkisiz kullanıcı kanal oluşturamamalı', async ({ request }) => {
-    if (!testServerId) test.skip();
 
     // Bob sunucuya üye değil
     const res = await request.post(`${BASE_URL}/api/servers/${testServerId}/channels`, {
@@ -122,7 +125,6 @@ test.describe('Kanal Yönetimi', () => {
   });
 
   test('API: özel karakterli kanal ismi', async ({ request }) => {
-    if (!testServerId) test.skip();
 
     const res = await request.post(`${BASE_URL}/api/servers/${testServerId}/channels`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },

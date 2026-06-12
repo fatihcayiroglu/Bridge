@@ -1,12 +1,15 @@
-// client/js/federation-ui.js
-// Federation Discovery UI â€” Admin whitelist/blacklist yÃ¶netimi eklendi
-// Sekmeler: Uzak Sunucular | BaÄŸlÄ± Peerlar | Peer Ekle | Whitelist/Blacklist (admin)
+// client/js/federation-ui.ts
+// Federation Discovery UI — Admin whitelist/blacklist yönetimi eklendi
+// Sekmeler: Uzak Sunucular | Bağlı Peerlar | Peer Ekle | Whitelist/Blacklist (admin)
 
 'use strict';
-export {};
+export { applyFederationBadges, initFederationWidget };
+import { BridgeRegistry } from './core/bridge-registry.ts';
+import { getAPI } from './core/globals.ts';
 
 async function openFederationUI() {
-  const isAdmin = window.__currentUser?.isAdmin || false;
+  const currentUserGetter = BridgeRegistry.get<() => { isAdmin?: boolean } | null>('getCurrentUser');
+  const isAdmin = currentUserGetter?.()?.isAdmin || false;
   const modal = document.createElement('div');
   modal.id = 'federation-modal';
   modal.className = 'modal-overlay';
@@ -14,15 +17,15 @@ async function openFederationUI() {
     <div class="modal-card" style="max-width:660px;width:95%;max-height:85vh;display:flex;flex-direction:column;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
         <div>
-          <h2 style="margin:0;">ğŸŒ Federasyon AÄŸÄ±</h2>
-          <p style="margin:4px 0 0;font-size:12px;color:var(--text-muted);">FarklÄ± Bridge sunucularÄ±nÄ± keÅŸfet ve baÄŸlan</p>
+          <h2 style="margin:0;">🌐 Federasyon Ağı</h2>
+          <p style="margin:4px 0 0;font-size:12px;color:var(--text-muted);">Farklı Bridge sunucularını keşfet ve bağlan</p>
         </div>
-        <button class="icon-btn" onclick="document.getElementById('federation-modal').remove()">âœ•</button>
+        <button class="icon-btn" onclick="document.getElementById('federation-modal').remove()">✕</button>
       </div>
       <div style="display:flex;gap:4px;margin-bottom:16px;background:var(--bg-3);border-radius:8px;padding:4px;flex-wrap:wrap;">
-        <button id="fed-tab-discover" class="btn btn-primary" style="flex:1;justify-content:center;font-size:12px;" onclick="switchFedTab('discover')">ğŸŒ KeÅŸfet</button>
+        <button id="fed-tab-discover" class="btn btn-primary" style="flex:1;justify-content:center;font-size:12px;" onclick="switchFedTab('discover')">ğŸŒ Keşfet</button>
         <button id="fed-tab-peers"    class="btn"             style="flex:1;justify-content:center;font-size:12px;" onclick="switchFedTab('peers')">ğŸ”— Peerlar</button>
-        <button id="fed-tab-add"      class="btn"             style="flex:1;justify-content:center;font-size:12px;" onclick="switchFedTab('add')">â• Ekle</button>
+        <button id="fed-tab-add"      class="btn"             style="flex:1;justify-content:center;font-size:12px;" onclick="switchFedTab('add')">➢ Ekle</button>
         ${isAdmin ? `<button id="fed-tab-acl" class="btn" style="flex:1;justify-content:center;font-size:12px;" onclick="switchFedTab('acl')">ğŸ›¡ï¸ ACL</button>` : ''}
       </div>
       <div id="fed-content" style="flex:1;overflow-y:auto;"></div>
@@ -50,19 +53,19 @@ function switchFedTab(tab) {
   else if (tab === 'acl')   loadFedACL();
 }
 
-// â”€â”€ Uzak sunucularÄ± keÅŸfet â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Uzak sunucuları keşfet ─────────────────────────────────────
 async function loadFedDiscover() {
   const cont = document.getElementById('fed-content');
   if (!cont) return;
   cont.innerHTML = `
     <div style="display:flex;gap:8px;margin-bottom:12px;">
       <input id="fed-peer-url-search" type="text" class="input" placeholder="bridge.example.com" style="flex:1;">
-      <button class="btn btn-primary" onclick="fetchRemoteServers()">KeÅŸfet</button>
+      <button class="btn btn-primary" onclick="fetchRemoteServers()">Keşfet</button>
     </div>
     <div id="fed-remote-results">
       <div style="text-align:center;padding:32px;color:var(--text-muted);">
-        <div style="font-size:32px;margin-bottom:8px;">ğŸŒ</div>
-        <p>Bir Bridge sunucu URL'si girerek uzak sunucularÄ± keÅŸfedin.</p>
+        <div style="font-size:32px;margin-bottom:8px;">🌐</div>
+        <p>Bir Bridge sunucu URL'si girerek uzak sunucuları keşfedin.</p>
       </div>
     </div>`;
 }
@@ -75,25 +78,25 @@ async function fetchRemoteServers() {
   if (!url) return;
   if (!url.startsWith('http')) url = `https://${url}`;
   if (!url.includes('/api/federation')) url = url.replace(/\/$/, '') + '/api/federation/servers';
-  res.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted)"><div class="spinner" style="margin:0 auto 12px"></div>KeÅŸfediliyor...</div>';
+  res.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted)"><div class="spinner" style="margin:0 auto 12px"></div>Keşfediliyor...</div>';
   try {
     const r = await apiFetch(`${API}/api/federation/fetch-remote?url=${encodeURIComponent(url)}`);
-    if (!r.ok) throw new Error('Uzak sunucuya ulaÅŸÄ±lamadÄ±');
+    if (!r.ok) throw new Error('Uzak sunucuya ulaşılamadı');
     const data    = await r.json();
     const servers = data.servers || [];
     if (!servers.length) {
-      res.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted);">Bu sunucuda keÅŸfedilebilir sunucu yok.</div>';
+      res.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted);">Bu sunucuda keşfedilebilir sunucu yok.</div>';
       return;
     }
     res.innerHTML = `
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
-        ğŸŒ <strong>${escHtml(data.instance || url)}</strong> â€” ${servers.length} sunucu
+        🌐 <strong>${escHtml(data.instance || url)}</strong> — ${servers.length} sunucu
       </div>
       <div style="display:flex;flex-direction:column;gap:8px;">
         ${servers.map(s => `
           <div style="background:var(--bg-3);border-radius:8px;padding:12px 14px;display:flex;gap:12px;align-items:flex-start;">
             <div style="width:40px;height:40px;border-radius:50%;background:var(--brand);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">
-              ${s.icon || s.name?.[0] || 'ğŸŒ'}
+              ${escHtml(s.icon || s.name?.[0] || '🌐')}
             </div>
             <div style="flex:1;min-width:0;">
               <div style="font-weight:700;font-size:14px;">${escHtml(s.name)}</div>
@@ -104,7 +107,7 @@ async function fetchRemoteServers() {
                 ${(s.tags||[]).slice(0,3).map(t => `<span style="background:var(--bg-2);padding:1px 6px;border-radius:10px;">${escHtml(t)}</span>`).join('')}
               </div>
             </div>
-            <a href="${escHtml(s.inviteUrl||'#')}" target="_blank" class="btn btn-primary" style="font-size:12px;flex-shrink:0;">KatÄ±l â†’</a>
+            <a href="${escHtml(s.inviteUrl||'#')}" target="_blank" class="btn btn-primary" style="font-size:12px;flex-shrink:0;">Katıl →</a>
           </div>`).join('')}
       </div>`;
   } catch (err) {
@@ -112,22 +115,22 @@ async function fetchRemoteServers() {
   }
 }
 
-// â”€â”€ KayÄ±tlÄ± peerlar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Kayıtlı peerlar ────────────────────────────────────────────
 async function loadFedPeers() {
   const cont = document.getElementById('fed-content');
   if (!cont) return;
-  cont.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted)"><div class="spinner" style="margin:0 auto 12px"></div>YÃ¼kleniyor...</div>';
+  cont.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted)"><div class="spinner" style="margin:0 auto 12px"></div>Yükleniyor...</div>';
   try {
     const r = await apiFetch(`${API}/api/federation/peers`);
     const peers = await r.json();
     if (!peers.length) {
       cont.innerHTML = `<div style="text-align:center;padding:32px;color:var(--text-muted);">
         <div style="font-size:32px;margin-bottom:8px;">ğŸ”—</div>
-        <p>HenÃ¼z baÄŸlÄ± peer yok.</p></div>`;
+        <p>Henüz bağlı peer yok.</p></div>`;
       return;
     }
     cont.innerHTML = `
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">${peers.length} kayÄ±tlÄ± peer</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">${peers.length} kayıtlı peer</div>
       <div style="display:flex;flex-direction:column;gap:8px;">
         ${peers.map(p => {
           const lastSeen = p.lastSeen ? new Date(p.lastSeen).toLocaleString('tr-TR') : 'Bilinmiyor';
@@ -137,9 +140,9 @@ async function loadFedPeers() {
             <div style="flex:1;min-width:0;">
               <div style="font-weight:600;font-size:13px;">${escHtml(p.name||p.url)}</div>
               <div style="font-size:11px;color:var(--text-muted);">${escHtml(p.url)}</div>
-              <div style="font-size:11px;color:var(--text-muted);">Son gÃ¶rÃ¼lme: ${lastSeen}</div>
+              <div style="font-size:11px;color:var(--text-muted);">Son görülme: ${lastSeen}</div>
             </div>
-            ${p.verified ? '<span style="font-size:18px;" title="DoÄŸrulanmÄ±ÅŸ">âœ…</span>' : ''}
+            ${p.verified ? '<span style="font-size:18px;" title="Doğrulanmış">✅</span>' : ''}
           </div>`;
         }).join('')}
       </div>`;
@@ -148,13 +151,13 @@ async function loadFedPeers() {
   }
 }
 
-// â”€â”€ Peer ekle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Peer ekle ─────────────────────────────────────────────────
 function renderFedAdd() {
   const cont = document.getElementById('fed-content');
   if (!cont) return;
   cont.innerHTML = `
     <div style="max-width:420px;">
-      <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">BaÅŸka bir Bridge sunucusunu federasyon aÄŸÄ±na ekle.</p>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px;">Başka bir Bridge sunucusunu federasyon ağına ekle.</p>
       <div class="form-group" style="margin-bottom:12px;">
         <label>Sunucu URL</label>
         <input id="fed-add-url" type="text" class="input" placeholder="https://bridge.example.com" style="width:100%;margin-top:4px;">
@@ -174,18 +177,18 @@ async function submitFedPeer() {
     });
     const d = await r.json();
     if (!r.ok) return toast(d.error || 'Hata', 'error');
-    toast('âœ… Peer eklendi!', 'success');
+    toast('✅ Peer eklendi!', 'success');
     switchFedTab('peers');
   } catch (err) {
     toast('Hata: ' + err.message, 'error');
   }
 }
 
-// â”€â”€ ACL: Whitelist / Blacklist YÃ¶netimi (Admin) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── ACL: Whitelist / Blacklist Yönetimi (Admin) ────────────────
 async function loadFedACL() {
   const cont = document.getElementById('fed-content');
   if (!cont) return;
-  cont.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted)"><div class="spinner" style="margin:0 auto 12px"></div>ACL yÃ¼kleniyor...</div>';
+  cont.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted)"><div class="spinner" style="margin:0 auto 12px"></div>ACL yükleniyor...</div>';
 
   try {
     const [wlRes, blRes] = await Promise.all([
@@ -201,14 +204,14 @@ async function loadFedACL() {
         <!-- WHITELIST -->
         <div>
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-            <h3 style="margin:0;font-size:14px;">âœ… Whitelist <span style="font-weight:400;color:var(--text-muted);">(${whitelist.length})</span></h3>
+            <h3 style="margin:0;font-size:14px;">✅ Whitelist <span style="font-weight:400;color:var(--text-muted);">(${whitelist.length})</span></h3>
             <button class="btn btn-primary" style="font-size:11px;padding:4px 8px;" onclick="fedACLAdd('whitelist')">+ Ekle</button>
           </div>
-          <p style="font-size:11px;color:var(--text-muted);margin:0 0 8px;">YalnÄ±zca bu listeden gelen ActivityPub etkinlikleri kabul edilir. BoÅŸsa herkese aÃ§Ä±k.</p>
+          <p style="font-size:11px;color:var(--text-muted);margin:0 0 8px;">Yalnızca bu listeden gelen ActivityPub etkinlikleri kabul edilir. Boşsa herkese açık.</p>
           <div id="fed-whitelist-list" style="display:flex;flex-direction:column;gap:6px;">
             ${whitelist.length
               ? whitelist.map(entry => renderACLEntry(entry, 'whitelist')).join('')
-              : '<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">BoÅŸ â€” tÃ¼m sunucular kabul ediliyor</div>'}
+              : '<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">Boş — tüm sunucular kabul ediliyor</div>'}
           </div>
         </div>
 
@@ -222,7 +225,7 @@ async function loadFedACL() {
           <div id="fed-blacklist-list" style="display:flex;flex-direction:column;gap:6px;">
             ${blacklist.length
               ? blacklist.map(entry => renderACLEntry(entry, 'blacklist')).join('')
-              : '<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">BoÅŸ â€” engelli sunucu yok</div>'}
+              : '<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">Boş — engelli sunucu yok</div>'}
           </div>
         </div>
 
@@ -234,9 +237,9 @@ async function loadFedACL() {
         <div style="display:flex;gap:8px;margin-bottom:8px;">
           <input id="fed-acl-domain" type="text" class="input" placeholder="example.com veya *.example.com" style="flex:1;">
           <button class="btn btn-primary" onclick="fedACLSubmit()">Kaydet</button>
-          <button class="btn" onclick="document.getElementById('fed-acl-add-form').style.display='none'">Ä°ptal</button>
+          <button class="btn" onclick="document.getElementById('fed-acl-add-form').style.display='none'">İptal</button>
         </div>
-        <input id="fed-acl-reason" type="text" class="input" placeholder="GerekÃ§e (opsiyonel)" style="width:100%;">
+        <input id="fed-acl-reason" type="text" class="input" placeholder="Gerekçe (opsiyonel)" style="width:100%;">
         <input type="hidden" id="fed-acl-type">
       </div>`;
   } catch (err) {
@@ -249,13 +252,13 @@ function renderACLEntry(entry, type) {
   const addedAt = entry.addedAt ? new Date(entry.addedAt).toLocaleDateString('tr-TR') : '';
   return `
     <div style="background:var(--bg-2);border-radius:6px;padding:8px 10px;display:flex;align-items:center;gap:8px;">
-      <span style="font-size:16px;">${isWl ? 'âœ…' : 'ğŸš«'}</span>
+      <span style="font-size:16px;">${isWl ? '✅' : 'ğŸš«'}</span>
       <div style="flex:1;min-width:0;">
         <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(entry.domain)}</div>
         ${entry.reason ? `<div style="font-size:10px;color:var(--text-muted);">${escHtml(entry.reason)}</div>` : ''}
         ${addedAt ? `<div style="font-size:10px;color:var(--text-muted);">Eklendi: ${addedAt}</div>` : ''}
       </div>
-      <button class="icon-btn" title="KaldÄ±r" onclick="fedACLRemove('${type}','${escHtml(entry.domain)}')" style="font-size:12px;color:var(--red,#ed4245);">âœ•</button>
+      <button class="icon-btn" title="Kaldır" onclick="fedACLRemove('${type}','${escHtml(entry.domain)}')" style="font-size:12px;color:var(--red,#ed4245);">✕</button>
     </div>`;
 }
 
@@ -268,7 +271,7 @@ function fedACLAdd(type) {
   const domainInput = document.getElementById('fed-acl-domain');
   const reasonInput = document.getElementById('fed-acl-reason');
   if (!form) return;
-  title.textContent  = type === 'whitelist' ? 'âœ… Whitelist\'e Ekle' : 'ğŸš« Blacklist\'e Ekle';
+  title.textContent  = type === 'whitelist' ? '✅ Whitelist\'e Ekle' : 'ğŸš« Blacklist\'e Ekle';
   typeInput.value    = type;
   domainInput.value  = '';
   reasonInput.value  = '';
@@ -283,7 +286,7 @@ async function fedACLSubmit() {
   if (!domain) return toast('Domain gerekli', 'error');
   // Basit domain validasyonu
   if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(domain)) {
-    return toast('GeÃ§ersiz domain formatÄ± (Ã¶rn: example.com)', 'error');
+    return toast('Geçersiz domain formatı (örn: example.com)', 'error');
   }
   try {
     const r = await apiFetch(`${API}/api/admin/federation/${type}`, {
@@ -293,7 +296,7 @@ async function fedACLSubmit() {
     });
     const d = await r.json();
     if (!r.ok) return toast(d.error || 'Hata', 'error');
-    toast(`âœ… ${domain} ${type === 'whitelist' ? 'whitelist' : 'blacklist'}'e eklendi`, 'success');
+    toast(`✅ ${domain} ${type === 'whitelist' ? 'whitelist' : 'blacklist'}'e eklendi`, 'success');
     loadFedACL(); // yenile
   } catch (err) {
     toast('Hata: ' + err.message, 'error');
@@ -301,43 +304,44 @@ async function fedACLSubmit() {
 }
 
 async function fedACLRemove(type, domain) {
-  if (!confirm(`${domain} adresini ${type === 'whitelist' ? 'whitelist' : 'blacklist'}'ten kaldÄ±r?`)) return;
+  if (!confirm(`${domain} adresini ${type === 'whitelist' ? 'whitelist' : 'blacklist'}'ten kaldır?`)) return;
   try {
     const r = await apiFetch(`${API}/api/admin/federation/${type}/${encodeURIComponent(domain)}`, {
       method: 'DELETE',
     });
     if (!r.ok) { const d = await r.json(); return toast(d.error || 'Hata', 'error'); }
-    toast(`KaldÄ±rÄ±ldÄ±: ${domain}`, 'success');
+    toast(`Kaldırıldı: ${domain}`, 'success');
     loadFedACL();
   } catch (err) {
     toast('Hata: ' + err.message, 'error');
   }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// FEDERATION GÃ–RÃœNÃœRLÃœK â€” Sunucu listesi, profil popup, sidebar widget
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ══════════════════════════════════════════════════════════════════
+// FEDERATION GÖRÜNÜRLÜK — Sunucu listesi, profil popup, sidebar widget
+// ══════════════════════════════════════════════════════════════════
 
-// â”€â”€ 1. Sunucu listesinde federe badge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// renderServerList'ten sonra Ã§aÄŸrÄ±lÄ±r; federe sunuculara kÃ¼Ã§Ã¼k ğŸŒ
+// ── 1. Sunucu listesinde federe badge ─────────────────────────────
+// renderServerList'ten sonra çağrılır; federe sunuculara küçük 🌐
 // rozeti ve tooltip ekler.
 
-window._federationStats = null; // cache
+type FederationStats = { instance?: string; peerCount?: number; [key: string]: unknown };
+let _federationStatsCache: FederationStats | null = null; // module-level cache
 
-async function _getFedStats() {
-  if (window._federationStats) return window._federationStats;
+async function _getFedStats(): Promise<FederationStats | null> {
+  if (_federationStatsCache) return _federationStatsCache;
   try {
-    const r = await fetch(`${window.API || ''}/api/federation/stats`);
+    const r = await fetch(`${getAPI()}/api/federation/stats`);
     if (!r.ok) return null;
-    window._federationStats = await r.json();
-    return window._federationStats;
+    _federationStatsCache = (await r.json()) as FederationStats;
+    return _federationStatsCache;
   } catch { return null; }
 }
 
 /**
- * Sunucu listesindeki federe sunuculara gÃ¶rsel rozet ekler.
- * renderServerList() sonrasÄ±nda otomatik Ã§aÄŸrÄ±lÄ±r.
- * @param {Array} servers â€” /api/servers response
+ * Sunucu listesindeki federe sunuculara görsel rozet ekler.
+ * renderServerList() sonrasında otomatik çağrılır.
+ * @param {Array} servers — /api/servers response
  */
 function applyFederationBadges(servers) {
   if (!Array.isArray(servers)) return;
@@ -348,55 +352,55 @@ function applyFederationBadges(servers) {
 
     const badge = document.createElement('div');
     badge.className = 'fed-badge';
-    badge.title = `Federe sunucu${s.peerUrl ? ` â€” ${s.peerUrl}` : ''}`;
+    badge.title = `Federe sunucu${s.peerUrl ? ` — ${s.peerUrl}` : ''}`;
     badge.style.cssText = `
       position:absolute; bottom:-2px; right:-2px;
       width:14px; height:14px; border-radius:50%;
-      background:var(--brand,#5865f2);
+      background:var(--brand,#2d9cdb);
       border:2px solid var(--bg-1,#1e1f22);
       display:flex; align-items:center; justify-content:center;
       font-size:7px; line-height:1; z-index:5;
     `;
-    badge.textContent = 'ğŸŒ';
+    badge.textContent = '🌐';
     el.style.position = 'relative';
     el.appendChild(badge);
   });
 }
 
-// renderServerList'i wrap et â€” badge'leri otomatik uygula
+// renderServerList'i wrap et — badge'leri otomatik uygula
 (function _patchRenderServerList() {
-  const _orig = window.renderServerList;
-  if (typeof _orig !== 'function') {
-    // Fonksiyon henÃ¼z yÃ¼klenmediyse, load sonrasÄ± dene
+  const _orig = BridgeRegistry.get<(...args: unknown[]) => void>('renderServerList');
+  if (!_orig) {
+    // Fonksiyon henüz yüklenmediyse, load sonrası dene
     window.addEventListener('load', _patchRenderServerList, { once: true });
     return;
   }
-  window.renderServerList = function(servers) {
-    _orig.call(this, servers);
+  BridgeRegistry.register('renderServerList', function(servers: unknown) {
+    _orig(servers);
     applyFederationBadges(servers);
-  };
+  });
 })();
 
-// â”€â”€ 2. Profil popup'Ä±na @user@sunucu federe kimlik ekle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// showMemberProfile'Ä± wrap et; kullanÄ±cÄ±nÄ±n username'ini alÄ±p
-// @username@sunucu formatÄ±nda gÃ¶ster.
+// ── 2. Profil popup'ına @user@sunucu federe kimlik ekle ───────────
+// showMemberProfile'ı wrap et; kullanıcının username'ini alıp
+// @username@sunucu formatında göster.
 
 (function _patchShowMemberProfile() {
-  const _orig = window.showMemberProfile;
-  if (typeof _orig !== 'function') {
+  const _orig = BridgeRegistry.get<(...args: unknown[]) => Promise<void>>('showMemberProfile');
+  if (!_orig) {
     window.addEventListener('load', _patchShowMemberProfile, { once: true });
     return;
   }
-  window.showMemberProfile = async function(e, userId, displayName, avatarColor, bio, badge) {
+  BridgeRegistry.register('showMemberProfile', async function(this: unknown, e, userId, displayName, avatarColor, bio, badge) {
     _orig.call(this, e, userId, displayName, avatarColor, bio, badge);
 
-    // Popup oluÅŸturulduktan sonra federe kimliÄŸi ekle
+    // Popup oluşturulduktan sonra federe kimliği ekle
     const popup = document.querySelector('.member-profile-popup');
     if (!popup) return;
 
-    // KullanÄ±cÄ± detayÄ±nÄ± Ã§ek (username iÃ§in)
+    // Kullanıcı detayını çek (username için)
     try {
-      const r = await fetch(`${window.API || ''}/api/users/${userId}/profile`);
+      const r = await fetch(`${getAPI()}/api/users/${userId}/profile`);
       if (!r.ok) return;
       const user = await r.json();
       const stats = await _getFedStats();
@@ -404,11 +408,11 @@ function applyFederationBadges(servers) {
       const username = user.username || userId;
       const instance = stats?.instance
         ? new URL(stats.instance).hostname
-        : (window.location.hostname || 'bridge.local');
+        : (location.hostname || 'bridge.local');
 
       const handle = `@${username}@${instance}`;
 
-      // Mevcut badge/bio bloÄŸundan sonra handle ekle
+      // Mevcut badge/bio bloğundan sonra handle ekle
       const nameEl = popup.querySelector('.profile-name');
       if (!nameEl || popup.querySelector('.fed-handle')) return;
 
@@ -420,36 +424,36 @@ function applyFederationBadges(servers) {
         display:flex; align-items:center; gap:5px; cursor:pointer;
         user-select:all;
       `;
-      handleEl.innerHTML = `<span style="color:var(--brand,#5865f2)">ğŸŒ</span>${handle}`;
-      handleEl.title = 'Federe kimlik â€” kopyalamak iÃ§in tÄ±kla';
+      handleEl.innerHTML = `<span style="color:var(--brand,#2d9cdb)">🌐</span>${escHtml(handle)}`;
+      handleEl.title = 'Federe kimlik — kopyalamak için tıkla';
       handleEl.onclick = () => {
         navigator.clipboard?.writeText(handle).then(() => {
-          handleEl.textContent = 'âœ“ KopyalandÄ±!';
+          handleEl.textContent = '✓ Kopyalandı!';
           setTimeout(() => {
-            handleEl.innerHTML = `<span style="color:var(--brand,#5865f2)">ğŸŒ</span>${handle}`;
+            handleEl.innerHTML = `<span style="color:var(--brand,#2d9cdb)">🌐</span>${escHtml(handle)}`;
           }, 1500);
         });
       };
 
       nameEl.insertAdjacentElement('afterend', handleEl);
-    } catch { /* sessizce geÃ§ */ }
-  };
+    } catch { /* sessizce geç */ }
+  });
 })();
 
-// â”€â”€ 3. Kanal header'Ä±na "Federe Sunucu" rozeti â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// selectServer Ã§aÄŸrÄ±ldÄ±ÄŸÄ±nda federe sunucular iÃ§in baÅŸlÄ±k altÄ±na
-// kÃ¼Ã§Ã¼k bir bilgi bandÄ± ekler.
+// ── 3. Kanal header'ına "Federe Sunucu" rozeti ────────────────────
+// selectServer çağrıldığında federe sunucular için başlık altına
+// küçük bir bilgi bandı ekler.
 
 (function _patchSelectServer() {
-  const _orig = window.selectServer;
-  if (typeof _orig !== 'function') {
+  const _orig = BridgeRegistry.get<(server: unknown) => Promise<void>>('selectServer');
+  if (!_orig) {
     window.addEventListener('load', _patchSelectServer, { once: true });
     return;
   }
-  window.selectServer = async function(server) {
+  BridgeRegistry.register('selectServer', async function(this: unknown, server: { federated?: boolean; isFederated?: boolean; peerUrl?: string; remoteUrl?: string; [key: string]: unknown }) {
     await _orig.call(this, server);
 
-    // Ã–nceki federation bannerÄ±nÄ± kaldÄ±r
+    // Önceki federation bannerını kaldır
     document.getElementById('fed-server-banner')?.remove();
 
     const isFed = server.federated || server.isFederated || server.peerUrl || server.remoteUrl;
@@ -462,25 +466,25 @@ function applyFederationBadges(servers) {
     banner.id = 'fed-server-banner';
     banner.style.cssText = `
       display:flex; align-items:center; gap:6px;
-      padding:4px 12px; background:rgba(88,101,242,0.1);
-      border-bottom:1px solid rgba(88,101,242,0.2);
-      font-size:11px; color:var(--brand,#5865f2);
+      padding:4px 12px; background:rgba(45,156,219,0.1);
+      border-bottom:1px solid rgba(45,156,219,0.2);
+      font-size:11px; color:var(--brand,#2d9cdb);
     `;
     const remoteHost = server.peerUrl
       ? (() => { try { return new URL(server.peerUrl).hostname; } catch { return server.peerUrl; } })()
-      : 'federe aÄŸ';
-    banner.innerHTML = `ğŸŒ <span style="opacity:.7">Bu sunucu</span> <strong>${remoteHost}</strong> <span style="opacity:.7">Ã¼zerinde federe</span>`;
+      : 'federe ağ';
+    banner.innerHTML = `🌐 <span style="opacity:.7">Bu sunucu</span> <strong>${escHtml(remoteHost)}</strong> <span style="opacity:.7">üzerinde federe</span>`;
 
     nameEl.parentElement?.insertAdjacentElement('afterend', banner);
-  };
+  });
 })();
 
-// â”€â”€ 4. Sidebar federation widget â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Sol alt kÃ¶ÅŸede kaÃ§ peer'a baÄŸlÄ± olduÄŸunu gÃ¶steren canlÄ± widget.
-// KullanÄ±cÄ± tÄ±klayÄ±nca openFederationUI() aÃ§Ä±lÄ±r.
+// ── 4. Sidebar federation widget ──────────────────────────────────
+// Sol alt köşede kaç peer'a bağlı olduğunu gösteren canlı widget.
+// Kullanıcı tıklayınca openFederationUI() açılır.
 
 async function initFederationWidget() {
-  // Zaten varsa Ã§Ä±kma
+  // Zaten varsa çıkma
   if (document.getElementById('fed-sidebar-widget')) return;
 
   const stats = await _getFedStats();
@@ -494,53 +498,56 @@ async function initFederationWidget() {
   widget.style.cssText = `
     display:flex; align-items:center; gap:8px;
     padding:8px 12px; margin:4px 8px;
-    background:rgba(88,101,242,0.08);
-    border:1px solid rgba(88,101,242,0.15);
+    background:rgba(45,156,219,0.08);
+    border:1px solid rgba(45,156,219,0.15);
     border-radius:8px; cursor:pointer;
     font-size:12px; color:var(--text-2,#b5bac1);
     transition:background .15s, border-color .15s;
   `;
   widget.innerHTML = `
-    <span style="font-size:16px">ğŸŒ</span>
+    <span style="font-size:16px">🌐</span>
     <div style="flex:1;min-width:0">
       <div style="font-weight:600;color:var(--text-1,#f2f3f5);font-size:11px;white-space:nowrap">Federasyon</div>
       <div id="fed-widget-count" style="font-size:10px;color:var(--text-muted,#72767d)">
-        ${stats.peerCount} peer baÄŸlÄ±
+        ${stats.peerCount} peer bağlı
       </div>
     </div>
-    <span style="font-size:10px;opacity:.4">â€º</span>
+    <span style="font-size:10px;opacity:.4">›</span>
   `;
-  widget.title = 'Federasyon aÄŸÄ±nÄ± gÃ¶rÃ¼ntÃ¼le';
+  widget.title = 'Federasyon ağını görüntüle';
   widget.onmouseenter = () => {
-    widget.style.background = 'rgba(88,101,242,0.15)';
-    widget.style.borderColor = 'rgba(88,101,242,0.3)';
+    widget.style.background = 'rgba(45,156,219,0.15)';
+    widget.style.borderColor = 'rgba(45,156,219,0.3)';
   };
   widget.onmouseleave = () => {
-    widget.style.background = 'rgba(88,101,242,0.08)';
-    widget.style.borderColor = 'rgba(88,101,242,0.15)';
+    widget.style.background = 'rgba(45,156,219,0.08)';
+    widget.style.borderColor = 'rgba(45,156,219,0.15)';
   };
   widget.onclick = () => {
-    if (typeof openFederationUI === 'function') openFederationUI();
+    BridgeRegistry.call('openFederationUI');
   };
 
   container.insertBefore(widget, container.firstChild);
 
-  // CanlÄ± gÃ¼ncelleme â€” 60 saniyede bir peer sayÄ±sÄ±nÄ± yenile
+  // Canlı güncelleme — 60 saniyede bir peer sayısını yenile
   setInterval(async () => {
     const s = await _getFedStats();
     const countEl = document.getElementById('fed-widget-count');
     if (countEl && s) {
-      window._federationStats = s; // cache gÃ¼ncelle
-      countEl.textContent = `${s.peerCount} peer baÄŸlÄ±`;
+      _federationStatsCache = s; // cache güncelle
+      countEl.textContent = `${s.peerCount} peer bağlı`;
     }
   }, 60_000);
 }
 
-// App yÃ¼klenince widget'Ä± baÅŸlat
+// App yüklenince widget'ı başlat
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initFederationWidget);
 } else {
-  // Biraz bekle â€” user panel render edilmiÅŸ olsun
+  // Biraz bekle — user panel render edilmiş olsun
   setTimeout(initFederationWidget, 800);
 }
 
+
+// Sprint 33: openFederationUI'yi registry'e kaydet
+BridgeRegistry.register('openFederationUI', openFederationUI);

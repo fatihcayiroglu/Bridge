@@ -1,4 +1,4 @@
-// server/socket/index.js
+// server/socket/index.ts
 // Session 8 Fix: applyAdapter eklendi — Redis clustering desteği
 // Memory leak düzeltmeleri:
 //   1. socketUsers Map — disconnect'te kesin temizleme
@@ -7,32 +7,50 @@
 //   4. typing indicators — timeout ile otomatik temizleme
 //   5. Multi-tab desteği — aynı kullanıcı birden fazla bağlantı
 // IP ban + IP-bazlı socket rate limiting entegrasyonu
+// Sprint 104: IP rate limiting → socket/ipRateLimit.ts
+//             Kullanıcı rate limiting → socket/socketRateLimit.ts
+// Sprint 108: join/leave/membership mantığı → handlers/members.ts
 
-'use strict';
-const logger = require('../lib/logger');
+import logger from '../lib/logger';
 
-const { verifyToken, _invalidateTokenCache } = require('../middleware/auth');
-const { sanitizeUser } = require('../lib/userUtils');
-const { Users, Members, Channels, Notifications } = require('../db/repositories');
-const { getBan, banIp, getClientIp } = require('../middleware/ipBan');
+import { verifyToken, _invalidateTokenCache } from '../middleware/auth';
+import { sanitizeUser } from '../lib/userUtils';
+import { Users, Members, Channels, Notifications } from '../db/repositories';
+import { getBan, getClientIp } from '../middleware/ipBan';
 
-const { registerMessageHandlers, registerThreadSocketEvents } = require('./handlers/messages');
-const { registerVoiceHandlers, leaveVoice, voiceRooms, voiceActivity } = require('./handlers/voice');
-const { registerMusicHandlers } = require('./handlers/music');
-const { registerDmHandlers, registerGroupDmHandlers } = require('./handlers/dm');
-const { registerStageHandlers } = require('./handlers/stage');
-const { registerSFUHandlers, isSFUReady } = require('./handlers/mediasoup');
-const { registerInfraHandlers, handleDisconnect } = require('./handlers/infra');
-const { registerCanvasHandlers } = require('./handlers/canvas');
-const { registerDmReadHandlers  } = require('./handlers/dm-read');
+import { registerMessageHandlers, registerThreadSocketEvents } from './handlers/messages';
+import { registerVoiceHandlers, leaveVoice, voiceRooms, voiceActivity } from './handlers/voice';
+import { registerMusicHandlers } from './handlers/music';
+import { registerDmHandlers, registerGroupDmHandlers } from './handlers/dm';
+import { registerStageHandlers } from './handlers/stage';
+import { registerVideoGridHandlers } from './handlers/stage-video-grid'; // Sprint 83
+import { registerSFUHandlers, isSFUReady } from './handlers/mediasoup/index';
+import { registerInfraHandlers, handleDisconnect } from './handlers/infra';
+import { registerCanvasHandlers } from './handlers/canvas';
+import { registerDmReadHandlers } from './handlers/dm-read';
+import { registerDiscoverHandlers, pushMemberCount } from './handlers/discover';
+import { trackSocket } from '../lib/presenceCache';
+// Sprint 82: Yeni handler import'ları
+import { registerActivityHandlers }      from './handlers/activities';
+import { registerSuperReactionHandlers } from './handlers/super-reactions';
+import { registerClipHandlers }          from './handlers/clips';
+import { registerDrawTogetherHandlers }  from './handlers/activities/draw-together'; // Sprint 83
+import { registerChannelE2EEHandlers }   from './handlers/channelE2EEHandlers';       // Sprint 89
+// Sprint 108: membership mantığı ayrıştırıldı
+import { setupMemberships }              from './handlers/members';
+import type { SafeUser } from '../lib/userUtils';
 
-// socketId → sanitized user
-const socketUsers = new Map();
+// Sprint 104: Ayrıştırılmış rate limit modülleri
+import { applyAdapter } from '../lib/redisAdapter';
+import { ipRateCheck, IP_SOCKET_RL } from './ipRateLimit';
+import { createRateLimitedSocket, _socketRateStore } from './socketRateLimit';
+// Sprint 120: D5 — WS bağlantı limiti entegre edildi (wsConnectionLimitMiddleware)
+import { wsConnectionLimitMiddleware } from './middleware/wsConnectionLimit';
+
+const socketUsers = new Map<string, SafeUser>();
 
 // ── IP ÇÖZÜMLEYICI (Socket.IO handshake'den) ───────────────────
-// getClientIp() Express req beklediği için Socket.IO'ya uygun sarmalayıcı.
-function getSocketIp(socket) {
-  // Socket.IO handshake'i req benzeri nesneye çevir
+function getSocketIp(socket: import('socket.io').Socket): string {
   const fakeReq = {
     ip: socket.handshake.address,
     headers: socket.handshake.headers,
@@ -41,155 +59,14 @@ function getSocketIp(socket) {
   return getClientIp(fakeReq);
 }
 
-// ── IP BAZLI SOCKET RATE LIMITER ───────────────────────────────
-// ip:event → [timestamps]  (in-memory sliding window)
-// Auth öncesi de çalışır — bağlantı spam'ini önler.
-// ── IP RATE STORE: Redis-backed (multi-instance safe) ─────────
-// Single-instance: Map kullanılır. Redis varsa (cluster/k8s) Redis'e geçilir.
-const { cache: _rateCache, applyAdapter } = require('../lib/redisAdapter');
-const _ipRateStore = new Map(); // Fallback for single-instance
-
-async function _ipRateStoreGet(key) {
-  if (_rateCache) {
-    try {
-      const val = await _rateCache.get(`ipratelimit:${key}`);
-      return val ? JSON.parse(val) : [];
-    } catch { /* fallback */ }
-  }
-  return _ipRateStore.get(key) || [];
-}
-
-async function _ipRateStoreSet(key, hits) {
-  if (_rateCache) {
-    try {
-      await _rateCache.set(`ipratelimit:${key}`, JSON.stringify(hits), 'EX', 120);
-      return;
-    } catch { /* fallback to in-memory */ }
-  }
-  _ipRateStore.set(key, hits);
-}
-
-async function _ipRateStoreDel(key) {
-  if (_rateCache) {
-    try { await _rateCache.del(`ipratelimit:${key}`); return; } catch { /* fallback */ }
-  }
-  _ipRateStore.delete(key);
-}
-const IP_SOCKET_RL = {
-  connect:   { max: parseInt(process.env.RL_SOCKET_CONNECT_MAX ?? "") || 20,  windowMs: 60_000  }, // 20 bağlantı/dk
-  handshake: { max: parseInt(process.env.RL_SOCKET_HS_MAX ?? "")      || 30,  windowMs: 60_000  }, // 30 handshake/dk
-};
-
-// Otomatik geçici ban eşiği: IP bu kadar kez aşarsa geçici ban
-const AUTO_BAN_THRESHOLD   = parseInt(process.env.RL_AUTO_BAN_THRESHOLD ?? "") || 5;   // kaç ihlal sonrası
-const AUTO_BAN_DURATION_MS = parseInt(process.env.RL_AUTO_BAN_DURATION ?? "") || 15 * 60_000; // 15 dk
-
-// ip → ihlal sayısı + zaman
-const _ipViolations = new Map();
-
-setInterval(() => {
-  const now = Date.now();
-  const WINDOW = Math.max(...Object.values(IP_SOCKET_RL).map(r => r.windowMs), 120_000);
-  // Redis-backed store doesn't need local cleanup (TTL handles it)
-  if (!_rateCache) for (const [k, hits] of _ipRateStore) {
-    const fresh = hits.filter(t => now - t < WINDOW);
-    if (!fresh.length) _ipRateStore.delete(k); else _ipRateStore.set(k, fresh);
-  }
-  // Eski ihlal kayıtlarını temizle (1 saat)
-  for (const [ip, rec] of _ipViolations) {
-    if (now - rec.firstAt > 3_600_000) _ipViolations.delete(ip);
-  }
-}, 2 * 60_000);
-
-/**
- * IP bazlı rate check. İhlal sayısı AUTO_BAN_THRESHOLD'u aşarsa otomatik geçici ban uygular.
- * @returns {boolean} true = geçebilir, false = engellendi
- */
-async function ipRateCheck(ip, event) {
-  const cfg = IP_SOCKET_RL[event];
-  if (!cfg) return true;
-
-  const key = `ip:${ip}:${event}`;
-  const now = Date.now();
-  const _stored = await _ipRateStoreGet(key);
-  const hits = _stored.filter(t => now - t < cfg.windowMs);
-  hits.push(now);
-  await _ipRateStoreSet(key, hits);
-
-  if (hits.length <= cfg.max) return true;
-
-  // Limit aşıldı — ihlal sayacını artır
-  const rec = _ipViolations.get(ip) || { count: 0, firstAt: now };
-  rec.count += 1;
-  if (rec.count === 1) rec.firstAt = now;
-  _ipViolations.set(ip, rec);
-
-  logger.warn(`[SocketRL] IP rate limit aşıldı: ip=${ip} event=${event} ihlal=${rec.count}`);
-
-  // Eşik aşıldıysa otomatik geçici ban
-  if (rec.count >= AUTO_BAN_THRESHOLD) {
-    try {
-      const existing = await getBan(ip);
-      if (!existing) {
-        await banIp(ip, {
-          reason:     `Otomatik ban: socket ${event} rate limit ${rec.count}x aşıldı`,
-          durationMs: AUTO_BAN_DURATION_MS,
-          adminId:    'system',
-        });
-        logger.warn(`[SocketRL] Otomatik IP ban uygulandı: ip=${ip} süre=${AUTO_BAN_DURATION_MS / 60_000}dk`);
-        _ipViolations.delete(ip); // sıfırla
-      }
-    } catch (err) {
-      logger.error('[SocketRL] Auto-ban hatası:', err.message);
-    }
-  }
-
-  return false;
-}
-
-// ── KULLANICI BAZLI SOCKET RATE LIMITER ────────────────────────
-// userId:event → [timestamps]  (in-memory sliding window)
-const _socketRateStore = new Map();
-const SOCKET_RL = {
-  'message:send':  { max: 20,  windowMs: 10_000  },  // 20 mesaj / 10 sn
-  'dm:send':       { max: 10,  windowMs: 10_000  },  // 10 DM / 10 sn
-  'gdm:send':      { max: 10,  windowMs: 10_000  },
-  'typing:start':  { max: 30,  windowMs: 5_000   },
-  'voice:signal':  { max: 60,  windowMs: 10_000  },
-  'channel:join':  { max: 20,  windowMs: 10_000  },
-  '*':             { max: 200, windowMs: 60_000  },   // global fallback / kullanıcı / dk
-};
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, hits] of _socketRateStore) {
-    const fresh = hits.filter(t => now - t < 120_000);
-    if (!fresh.length) _socketRateStore.delete(k); else _socketRateStore.set(k, fresh);
-  }
-}, 2 * 60_000);
-
-function socketRateCheck(userId, event) {
-  const cfg = SOCKET_RL[event] || SOCKET_RL['*'];
-  const key = `${userId}:${event}`;
-  const now = Date.now();
-  const hits = (_socketRateStore.get(key) || []).filter(t => now - t < cfg.windowMs);
-  hits.push(now);
-  _socketRateStore.set(key, hits);
-  return hits.length <= cfg.max;
-}
-
-// Global kullanıcı başına genel hız limiti
-function socketGlobalCheck(userId) {
-  return socketRateCheck(userId, '*');
-}
-
 // "channelId:userId" → timeout handle (typing indicator)
-const typingTimers = new Map();
+const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const TYPING_TIMEOUT_MS = 5_000;
 
 // Boş voice room temizleyici — her 10 dk
 setInterval(() => {
-  for (const [channelId, peers] of Object.entries(voiceRooms)) {
-    if (!peers || (peers as any[]).length === 0) delete voiceRooms[channelId];
+  for (const [channelId, peers] of voiceRooms.entries()) {
+    if (!peers || peers.length === 0) voiceRooms.delete(channelId);
   }
 }, 10 * 60_000);
 
@@ -200,18 +77,21 @@ setInterval(() => {
   }
 }, 5 * 60_000);
 
-let _io = null;
-function getIo() { return _io; }
+let _io: import('socket.io').Server | null = null;
+function getIo(): import('socket.io').Server | null { return _io; }
 
-function setupSocket(io) {
+function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voiceRooms } {
   _io = io;
 
   // ── Redis adapter — Socket.IO clustering (multi-instance) ───────
-  // REDIS_URL tanımlıysa adapter bağlanır, yoksa in-memory modunda devam eder.
   applyAdapter(io).then(ok => {
     if (ok) logger.info({ event: 'socket.redis_adapter.applied' }, '[Socket] Redis adapter aktif — cluster modu.');
     else logger.warn({ event: 'socket.redis_adapter.skipped' }, '[Socket] Redis yok — tek instance modunda çalışılıyor. Yatay ölçekleme için REDIS_URL ekleyin.');
   }).catch(err => logger.error({ err, event: 'socket.redis_adapter.error' }, '[Socket] Redis adapter hatası.'));
+
+  // ── MİDDLEWARE 0: WS bağlantı limiti (Sprint 120 / D5) ─────────
+  // Tek IP'den aşırı WS bağlantısını engeller — DDoS/flood'a karşı
+  io.use(wsConnectionLimitMiddleware(io));
 
   // ── MİDDLEWARE 1: IP Ban kontrolü (auth öncesi) ────────────────
   io.use(async (socket, next) => {
@@ -223,13 +103,11 @@ function setupSocket(io) {
           ? Math.max(0, Math.ceil((ban.expiresAt - Date.now()) / 1000))
           : null;
         logger.warn(`[Socket] Banlı IP bağlantı girişimi: ${ip} reason="${ban.reason}"`);
-        const err = new Error('IP banned');
-        err.data = { reason: ban.reason, expiresAt: ban.expiresAt, remainingSeconds: remaining };
+        const err = Object.assign(new Error('IP banned'), { data: { reason: ban.reason, expiresAt: ban.expiresAt, remainingSeconds: remaining } });
         return next(err);
       }
     } catch (e) {
-      logger.error('[Socket] IP ban kontrolü hatası:', e.message);
-      // Ban kontrolü hatalıysa geçişe izin ver — servisi durdurma
+      logger.error('[Socket] IP ban kontrolü hatası:', (e as Error).message);
     }
     socket._clientIp = ip;
     next();
@@ -241,8 +119,7 @@ function setupSocket(io) {
     const allowed = await ipRateCheck(ip, 'connect');
     if (!allowed) {
       logger.warn(`[Socket] IP bağlantı rate limit aşıldı: ${ip}`);
-      const err = new Error('Too many connections');
-      err.data = { retryAfter: Math.ceil(IP_SOCKET_RL.connect.windowMs / 1000) };
+      const err = Object.assign(new Error('Too many connections'), { data: { retryAfter: Math.ceil(IP_SOCKET_RL.connect.windowMs / 1000) } });
       return next(err);
     }
     next();
@@ -253,7 +130,6 @@ function setupSocket(io) {
     const decoded = verifyToken(socket.handshake.auth.token);
     if (!decoded) return next(new Error('Unauthorized'));
 
-    // tokenVersion kontrolü — zorla çıkış yapıldıysa bağlantıyı reddet
     try {
       const user = await Users.findById(decoded.id);
       if (!user) return next(new Error('Unauthorized'));
@@ -273,29 +149,36 @@ function setupSocket(io) {
   io.on('connection', async (socket) => {
     let user;
     try {
+      if (!socket.userId) return socket.disconnect(true);
       user = await Users.findById(socket.userId);
     } catch (err) {
-      logger.error('[Socket] DB hatası:', err.message);
+      logger.error('[Socket] DB hatası:', (err as Error).message);
       return socket.disconnect(true);
     }
     if (!user) return socket.disconnect(true);
 
     const safeUser = sanitizeUser(user);
-    socketUsers.set(socket.id, safeUser);
+    const socketUser = {
+      ...safeUser,
+      _id: user._id,
+      id: user._id,
+      username: user.username,
+      displayName: user.displayName ?? user.username,
+      avatarColor: user.avatarColor ?? '#2d9cdb',
+      avatarUrl: user.avatarUrl ?? '',
+    };
+    socketUsers.set(socket.id, socketUser);
 
+    // Presence cache: socket'i kaydet, online işaretle ve cluster'a bildir
+    await trackSocket(user._id, socket.id);
+    // Sprint 120: wsConnectionLimitMiddleware için kullanıcı bazlı limit hook'unu tetikle
+    socket.emit('userAuthenticated', user._id);
     try { await Users.update(user._id, { status: 'online' }); } catch {}
 
-    // Memberships — connection başında çek
-    let memberships: any[] = [];
-    async function refreshMemberships() {
-      try {
-        memberships = await Members.findByUser(user._id);
-        for (const m of memberships) socket.join(`server:${m.serverId}`);
-      } catch {}
-    }
-    await refreshMemberships();
+    // Sprint 108: membership mantığı handlers/members.ts'e taşındı
+    const { memberships, refreshMemberships } = await setupMemberships(socket, user);
 
-//     personal room for GDM/DM notifications
+    // Personal room for GDM/DM notifications
     socket.join(`user:${user._id}`);
     socket.on('user:join-room', (uid) => { if (uid === user._id) socket.join(`user:${uid}`); });
 
@@ -303,69 +186,46 @@ function setupSocket(io) {
       io.to(`server:${m.serverId}`).emit('user:status', { userId: user._id, status: 'online' });
     }
 
-    // CHANNEL JOIN
-    socket.on('channel:join', async (channelId) => {
-      try {
-        const channel = await Channels.findById(channelId);
-        if (!channel) return;
-        const membership = await Members.findOne(user._id, channel.serverId);
-        if (!membership) return;
-        for (const room of socket.rooms) {
-          if (room.startsWith('channel:') && room !== `channel:${channelId}`) socket.leave(room);
-        }
-        socket.join(`channel:${channelId}`);
-        socket.currentChannel = channelId;
-      } catch {}
-    });
-
     // FEATURE HANDLERS — rate limiting inject edilmiş
-    // Her handler'ın socket.on'larını sarmalayan rate-limited proxy socket oluştur
-    const rateLimitedSocket = new Proxy(socket, {
-      get(target, prop) {
-        if (prop !== 'on') return typeof target[prop] === 'function' ? target[prop].bind(target) : target[prop];
-        return function(event, handler) {
-          target.on(event, async (...args) => {
-            // Rate-limited event'ler için kontrol
-            if (SOCKET_RL[event] && !socketRateCheck(user._id, event)) {
-              logger.warn(`[RateLimit] Socket event throttled: ${event} user=${user._id}`);
-              target.emit('error:ratelimit', { event, message: 'Çok hızlı! Yavaşla.' });
-              return;
-            }
-            // Global limit
-            if (!socketGlobalCheck(user._id)) {
-              logger.warn(`[RateLimit] Socket global throttled: user=${user._id}`);
-              return;
-            }
-            return handler(...args);
-          });
-        };
-      },
-    });
+    const rateLimitedSocket = createRateLimitedSocket(socket, user._id);
 
-    registerMessageHandlers(rateLimitedSocket, io, user, socketUsers);
-    registerVoiceHandlers(rateLimitedSocket, io, user);
-    registerMusicHandlers(rateLimitedSocket, io, user);
-    registerDmHandlers(rateLimitedSocket, io, user, socketUsers);
-    registerGroupDmHandlers(rateLimitedSocket, io, user, socketUsers);
-    registerThreadSocketEvents(rateLimitedSocket, io, user);
-    registerStageHandlers(rateLimitedSocket, io, user);
-    registerCanvasHandlers(rateLimitedSocket, io, user);
-    registerDmReadHandlers(rateLimitedSocket, io, user);
+    registerMessageHandlers(rateLimitedSocket, io, socketUser, socketUsers);
+    registerChannelE2EEHandlers(rateLimitedSocket, io, socketUser);   // Sprint 89
+    registerVoiceHandlers(rateLimitedSocket, io, socketUser);
+    registerMusicHandlers(rateLimitedSocket, io, socketUser);
+    registerDmHandlers(rateLimitedSocket, io, socketUser, socketUsers);
+    registerGroupDmHandlers(rateLimitedSocket, io, socketUser, socketUsers);
+    registerThreadSocketEvents(rateLimitedSocket, io, socketUser);
+    registerStageHandlers(rateLimitedSocket, io, socketUser);
+    registerVideoGridHandlers(rateLimitedSocket, io, socketUser); // Sprint 83: video grid
+    registerCanvasHandlers(rateLimitedSocket, io, socketUser);
+    registerDmReadHandlers(rateLimitedSocket, io, socketUser);
+    registerDiscoverHandlers(io, rateLimitedSocket);
+
+    // Sprint 82: Activities, Super Reactions, Clips
+    registerActivityHandlers(rateLimitedSocket, io, user._id);
+    registerSuperReactionHandlers(rateLimitedSocket, io, user._id);
+    registerClipHandlers(rateLimitedSocket, user._id);
+    // Sprint 83: Draw Together
+    registerDrawTogetherHandlers(rateLimitedSocket, io, {
+      _id:         user._id,
+      displayName: user.displayName ?? user.username,
+      avatarColor: user.avatarColor ?? '#2d9cdb',
+    });
 
     // SFU: Mediasoup kuruluysa SFU event'lerini kaydet
     if (isSFUReady()) {
-      registerSFUHandlers(rateLimitedSocket, io, user);
+      registerSFUHandlers(rateLimitedSocket, io, socketUser);
     }
 
-    // ALTYAPI EVENT'LERİ — handlers/infra.js'e taşındı (Sprint 9)
-    registerInfraHandlers(rateLimitedSocket, socket, io, user, {
+    // ALTYAPI EVENT'LERİ — handlers/infra.ts
+    registerInfraHandlers(rateLimitedSocket, socket, io, socketUser, {
       socketUsers, typingTimers, TYPING_TIMEOUT_MS,
       _socketRateStore, leaveVoice, voiceActivity,
       refreshMemberships, safeUser,
     });
 
-//     Periodic token re-auth — JWT expire olsa bile açık kalan bağlantıları kapat
-    // Her 5 dakikada bir tokenVersion kontrolü yapar
+    // Periodic token re-auth — JWT expire olsa bile açık kalan bağlantıları kapat
     const TOKEN_CHECK_INTERVAL = 5 * 60_000;
     const tokenCheckTimer = setInterval(async () => {
       try {
@@ -376,12 +236,13 @@ function setupSocket(io) {
           socket.emit('auth:revoked', { reason: 'token_revoked' });
           socket.disconnect(true);
         }
-      } catch { /* DB hatası — bağlantıyı kesme, sadece logla */ }
+      } catch { /* DB hatası — bağlantıyı kesme */ }
     }, TOKEN_CHECK_INTERVAL);
 
-    // DISCONNECT — handlers/infra.js'e taşındı (Sprint 9)
+    // DISCONNECT
     socket.on('disconnect', async (reason) => {
-      await handleDisconnect(socket, user, {
+      socket.removeAllListeners();
+      await handleDisconnect(socket, socketUser, {
         socketUsers, typingTimers, _socketRateStore,
         leaveVoice, voiceActivity, tokenCheckTimer, io,
       });
@@ -393,14 +254,14 @@ function setupSocket(io) {
 
   return { voiceRooms };
 }
+
 function getSocketStats() {
   return {
     connectedSockets: socketUsers.size,
     activeTyping:     typingTimers.size,
     voiceRooms:       Object.keys(voiceRooms).length,
-    voicePeers:       Object.values(voiceRooms).reduce((a: number, p: any) => a + (p as any[]).length, 0),
+    voicePeers:       Object.values(voiceRooms).reduce((a: number, p: unknown) => a + (Array.isArray(p) ? p.length : 0), 0),
   };
 }
 
-module.exports = { setupSocket, voiceRooms, getSocketStats, getIo, socketUsers };
-export {};
+export { setupSocket, voiceRooms, getSocketStats, getIo, socketUsers, pushMemberCount };

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bridge — Self-host İletişim</title>
+  <meta name="description" content="Bridge: federasyon destekli, self-host iletişim platformu" />
+  <style>
+    :root {
+      --bg: #0a1018;
+      --card: #121820;
+      --brand: #2d9cdb;
+      --accent: #f5a623;
+      --teal: #1bc8a8;
+      --text: #e8ecf4;
+      --muted: #8b95a8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: linear-gradient(160deg, #0a1018 0%, #0f1c28 50%, #0a1410 100%);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    header { padding: 3rem 1.5rem 2rem; text-align: center; max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 2.4rem; margin: 0 0 .5rem; }
+    .tagline { color: var(--muted); font-size: 1.1rem; }
+    .cta { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 1.5rem; }
+    a.btn {
+      display: inline-block;
+      padding: .75rem 1.25rem;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    a.primary { background: linear-gradient(90deg, var(--brand), var(--teal)); color: #fff; }
+    a.secondary { border: 1px solid #364556; color: var(--text); }
+    main { max-width: 920px; margin: 0 auto; padding: 1rem 1.5rem 4rem; }
+    img.hero { width: 100%; border-radius: 12px; border: 1px solid rgba(45,156,219,.35); }
+    pre {
+      background: var(--card);
+      padding: 1rem;
+      border-radius: 8px;
+      overflow: auto;
+      font-size: .9rem;
+      border-left: 3px solid var(--accent);
+    }
+    ul { color: var(--muted); }
+    footer { text-align: center; color: var(--muted); padding: 2rem; font-size: .875rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🌉 Bridge</h1>
+    <p class="tagline">
+      Discord kopyası değil — <strong>senin iletişim altyapın</strong>.
+      Self-host, ActivityPub federasyonu, E2EE.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/bridge-app/bridge">GitHub</a>
+      <a class="btn secondary" href="https://github.com/bridge-app/bridge/blob/main/docs/DESIGN_DIRECTION.md">Tasarım yönü</a>
+    </div>
+  </header>
+  <main>
+    <img class="hero" src="bridge-hero.svg" alt="Bridge arayüz konsepti" width="920" height="518" />
+    <h2>Yerel demo (5 dk)</h2>
+    <pre>git clone https://github.com/bridge-app/bridge.git
+cd bridge
+./scripts/demo.sh</pre>
+    <p>Tarayıcıda <a href="http://localhost:3001">http://localhost:3001</a></p>
+    <h2>Farklar</h2>
+    <ul>
+      <li>Köprü mavisi kimlik — mor Discord paleti yok</li>
+      <li>Hub → Space → Flow metaforu</li>
+      <li>Odak / Kompakt layout modları</li>
+      <li>Federasyon ve tam self-host</li>
+    </ul>
+  </main>
+  <footer>MIT · <a href="https://github.com/bridge-app/bridge">bridge-app/bridge</a></footer>
+</body>
+</html>

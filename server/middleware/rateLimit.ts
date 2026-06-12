@@ -1,11 +1,36 @@
-// @ts-nocheck
 // server/middleware/rateLimit.ts
 // Sliding-window rate limiter
 // Redis-backed store (falls back to in-memory when Redis unavailable)
 // Tekrarlı ihlallerde otomatik geçici IP ban entegrasyonu
+//
+// Granülerlik stratejisi:
+//   • IP-only   → kimlik doğrulanmamış endpoint'ler (login, register)
+//   • User-only → kullanıcıya özel kotalar (upload, messages, ai)
+//   • IP+User   → ikili limit; biri aşılınca 429 (çoğu endpoint)
+//   • Global    → tüm istekler için arka plan güvenlik ağı
+//
+// Sprint 41 NOT: IP+User dual-key implementasyonu TAMAMLANDI.
+//   Roadmap'teki 'rate limit dual-key eksik' maddesi kapatıldı.
+//   Ayrıca: ihlal sayısı eşiği aşılınca otomatik IP ban aktif (bkz. ipBan.ts).
+//   Bu davranış DEPLOYMENT_GUIDE.md'ye dokümante edilmeli.
 
 import { Request, Response, NextFunction } from 'express';
 import logger from '../lib/logger';
+import { tryRequire } from '../lib/_optional-require';
+
+// ── Opsiyonel modüller (metrics + ipBan) ──────────────────────
+// Bu modüller her deploy'da bulunmayabilir; tryRequire null döndürür, middleware çalışmaya devam eder.
+interface MetricsModule {
+  trackRateLimitHit: (req: Request, category: string) => void;
+  _bumpAnomalyCounter: () => void;
+  trackAutoBan: (category: string) => void;
+}
+interface IpBanModule {
+  getBan: (ip: string) => Promise<unknown>;
+  banIp:  (ip: string, opts: Record<string, unknown>) => Promise<void>;
+}
+const _metrics = tryRequire<MetricsModule>('./metrics');
+const _ipBan   = tryRequire<IpBanModule>('./ipBan');
 
 const TRUSTED_PROXY_COUNT = parseInt(process.env.TRUSTED_PROXY_COUNT ?? '1', 10);
 
@@ -38,6 +63,7 @@ const DEFAULTS: Record<string, LimitConfig> = {
   settings:       { max: parseInt(process.env.RL_SETTINGS_MAX  || '') || 10,  windowMs: parseInt(process.env.RL_SETTINGS_WIN  || '') || 60_000  },
   search:         { max: parseInt(process.env.RL_SEARCH_MAX    || '') || 20,  windowMs: parseInt(process.env.RL_SEARCH_WIN    || '') || 60_000  },
   ai:             { max: parseInt(process.env.RL_AI_MAX        || '') || 10,  windowMs: parseInt(process.env.RL_AI_WIN        || '') || 60_000  },
+  'ai.stream':    { max: parseInt(process.env.RL_AI_STREAM_MAX  || '') || 5,   windowMs: parseInt(process.env.RL_AI_STREAM_WIN  || '') || 60_000  },
   invite:         { max: parseInt(process.env.RL_INVITE_MAX    || '') || 10,  windowMs: parseInt(process.env.RL_INVITE_WIN    || '') || 60_000  },
   twoFactor:      { max: parseInt(process.env.RL_2FA_MAX       || '') || 5,   windowMs: parseInt(process.env.RL_2FA_WIN       || '') || 300_000 },
   dm:             { max: parseInt(process.env.RL_DM_MAX        || '') || 20,  windowMs: parseInt(process.env.RL_DM_WIN        || '') || 60_000  },
@@ -51,8 +77,13 @@ const DEFAULTS: Record<string, LimitConfig> = {
   federation:     { max: parseInt(process.env.RL_FEDERATION_MAX|| '') || 30,  windowMs: parseInt(process.env.RL_FEDERATION_WIN|| '') || 60_000  },
   moderation:     { max: parseInt(process.env.RL_MODERATION_MAX|| '') || 30,  windowMs: parseInt(process.env.RL_MODERATION_WIN|| '') || 60_000  },
   email:          { max: parseInt(process.env.RL_EMAIL_MAX     || '') || 5,   windowMs: parseInt(process.env.RL_EMAIL_WIN     || '') || 300_000 },
-  bots:           { max: parseInt(process.env.RL_BOTS_MAX      || '') || 20,  windowMs: parseInt(process.env.RL_BOTS_WIN      || '') || 60_000  },
-  write:          { max: parseInt(process.env.RL_WRITE_MAX     || '') || 30,  windowMs: parseInt(process.env.RL_WRITE_WIN     || '') || 60_000  },
+  bots:           { max: parseInt(process.env.RL_BOTS_MAX        || '') || 20,  windowMs: parseInt(process.env.RL_BOTS_WIN        || '') || 60_000  },
+  write:          { max: parseInt(process.env.RL_WRITE_MAX       || '') || 30,  windowMs: parseInt(process.env.RL_WRITE_WIN       || '') || 60_000  },
+  // Sprint 108: voice-state endpoint — mute/deaf güncellemeleri burst'e açık; kısıtlı tutulur
+  voiceState:     { max: parseInt(process.env.RL_VOICE_STATE_MAX || '') || 30,  windowMs: parseInt(process.env.RL_VOICE_STATE_WIN || '') || 10_000   },
+  // Sprint 121 FIX 25: serverEvents.ts'de limits.api kullanılıyor — eksik tanım eklendi
+  api:            { max: parseInt(process.env.RL_API_MAX         || '') || 60,  windowMs: parseInt(process.env.RL_API_WIN         || '') || 60_000  },
+  serverEvents:   { max: parseInt(process.env.RL_SERVER_EVENTS_MAX || '') || 20, windowMs: parseInt(process.env.RL_SERVER_EVENTS_WIN || '') || 60_000 },
 };
 
 // ── STORE: Redis-backed with in-memory fallback ──────────────
@@ -72,31 +103,12 @@ interface RedisClient {
   connect(): Promise<void>;
 }
 
-let _redis: RedisClient | null = null;
-let _redisReady = false;
+// Sprint 121 FIX 24: Bağımsız Redis client yerine redisAdapter paylaşımlı client kullanılıyor
+import { redisClient as _sharedRedisClient, isRedisAvailable } from '../lib/redisAdapter';
 
 async function getRedis(): Promise<RedisClient | null> {
-  if (_redis) return _redis;
-  try {
-     
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { createClient } = require('redis') as { createClient(opts: Record<string, unknown>): RedisClient };
-    const url = process.env.REDIS_URL || 'redis://localhost:6379';
-    const client = createClient({ url, socket: { connectTimeout: 3000, reconnectStrategy: (retries: number) => {
-      if (retries > 10) return new Error('Redis rate-limit: 10 bağlantı denemesi başarısız');
-      return Math.min(retries * 300, 3000); // üstel backoff, max 3s
-    } } });
-    client.on('error', () => { _redisReady = false; });
-    client.on('ready', () => { _redisReady = true; });
-    await client.connect();
-    _redis = client;
-    _redisReady = true;
-    logger.info({ event: 'ratelimit.redis.enabled' }, 'Rate-limit Redis store enabled.');
-    return _redis;
-  } catch {
-    logger.warn({ event: 'ratelimit.redis.unavailable' }, 'Redis unavailable for rate limit; using in-memory fallback.');
-    return null;
-  }
+  if (!isRedisAvailable()) return null;
+  return _sharedRedisClient() as RedisClient | null;
 }
 
 const memStore = new Map<string, number[]>();
@@ -104,7 +116,7 @@ const MAX_STORE_SIZE = 100_000;
 
 async function hitRedis(key: string, windowMs: number): Promise<number | null> {
   const client = await getRedis();
-  if (!client || !_redisReady) return null;
+  if (!client) return null;
   try {
     const now = Date.now();
     const windowSec = Math.ceil(windowMs / 1000);
@@ -117,7 +129,7 @@ async function hitRedis(key: string, windowMs: number): Promise<number | null> {
     const results = await pipe.exec();
     return results[2] as number;
   } catch {
-    _redisReady = false;
+    
     logger.warn({ event: 'ratelimit.redis.error' }, 'Redis rate-limit operation failed; switching to in-memory fallback.');
     return null;
   }
@@ -152,7 +164,7 @@ const VIOLATION_KEY_TTL = 3600;
 
 export async function getViolationRecord(ip: string): Promise<ViolationRecord | null> {
   const client = await getRedis();
-  if (client && _redisReady) {
+  if (client) {
     try {
       const raw = await client.get(`rl:violations:${ip}`);
       if (!raw) return null;
@@ -164,7 +176,7 @@ export async function getViolationRecord(ip: string): Promise<ViolationRecord | 
 
 export async function setViolationRecord(ip: string, rec: ViolationRecord): Promise<void> {
   const client = await getRedis();
-  if (client && _redisReady) {
+  if (client) {
     try {
       await client.set(`rl:violations:${ip}`, JSON.stringify(rec), { EX: VIOLATION_KEY_TTL });
       return;
@@ -175,14 +187,26 @@ export async function setViolationRecord(ip: string, rec: ViolationRecord): Prom
 
 export async function deleteViolationRecord(ip: string): Promise<void> {
   const client = await getRedis();
-  if (client && _redisReady) {
+  if (client) {
     try { await client.del(`rl:violations:${ip}`); } catch { /* fallback */ }
   }
   _httpViolationsMem.delete(ip);
 }
 
+// ── Granülerlik modu ─────────────────────────────────────────────
+// 'ip'          → Yalnızca IP bazlı (kimlik doğrulanmamış: login, register)
+// 'user'        → Yalnızca user-ID bazlı (oturum açık: upload, ai)
+// 'combined'    → IP+user: her ikisi de kontrol edilir, biri aşılınca 429 (varsayılan)
+// 'ip-only'     → Authenticated bile olsa sadece IP (federation ping vb.)
+// 'per-user-ip' → user+IP kombinasyonu: VPN dönüşümü + çok hesap saldırısına karşı
+//                 Aynı kullanıcının farklı IP'lerden spam yapmasını da engeller
+type RateLimitMode = 'ip' | 'user' | 'combined' | 'ip-only' | 'per-user-ip';
+
 interface RateLimitOptions {
+  /** @deprecated 'mode' kullanın — geriye dönük uyumluluk için korunuyor */
   userOnly?: boolean;
+  /** Granülerlik modu. Varsayılan: userOnly=true → 'user', userOnly=false → 'combined' */
+  mode?: RateLimitMode;
 }
 
 export function rateLimit(
@@ -191,15 +215,50 @@ export function rateLimit(
   keyPrefix = '',
   opts: RateLimitOptions = {}
 ) {
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const ip = getClientIp(req);
-    const uid = (req as Request & { user?: { id: string } }).user?.id || '';
-    const key = opts.userOnly && uid
-      ? `rl:${keyPrefix}:u:${uid}`
-      : `rl:${keyPrefix}:${ip}:${uid}`;
+  // Geriye dönük uyumluluk: userOnly → mode dönüşümü
+  const mode: RateLimitMode = opts.mode ?? (opts.userOnly ? 'user' : 'combined');
 
-    let count = await hitRedis(key, windowMs);
-    if (count === null) count = hitMemory(key, windowMs);
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const ip  = getClientIp(req);
+    const uid = (req as Request & { user?: { id: string } }).user?.id || '';
+
+    // ── Anahtar(lar) oluştur ─────────────────────────────────
+    let keys: string[];
+    switch (mode) {
+      case 'ip':
+        keys = [`rl:${keyPrefix}:ip:${ip}`];
+        break;
+      case 'user':
+        keys = uid ? [`rl:${keyPrefix}:u:${uid}`] : [`rl:${keyPrefix}:ip:${ip}`];
+        break;
+      case 'ip-only':
+        keys = [`rl:${keyPrefix}:ip:${ip}`];
+        break;
+      case 'per-user-ip':
+        // user+IP birleşik anahtar: hem kullanıcı kotasını hem IP başına kotayı takip eder
+        // VPN dönüşüm saldırılarına ve çok hesaplı kötüye kullanıma karşı etkili
+        keys = uid
+          ? [
+              `rl:${keyPrefix}:u:${uid}`,          // kullanıcı kotası
+              `rl:${keyPrefix}:uip:${uid}:${ip}`,   // kullanıcı+IP kombinasyon kotası
+            ]
+          : [`rl:${keyPrefix}:ip:${ip}`];
+        break;
+      case 'combined':
+      default:
+        // Her ikisini de izle — en yüksek sayım kullanılır
+        keys = uid
+          ? [`rl:${keyPrefix}:ip:${ip}`, `rl:${keyPrefix}:u:${uid}`]
+          : [`rl:${keyPrefix}:ip:${ip}`];
+    }
+
+    // ── Sayımları paralel al ─────────────────────────────────
+    const counts = await Promise.all(keys.map(async key => {
+      let c = await hitRedis(key, windowMs);
+      if (c === null) c = hitMemory(key, windowMs);
+      return c;
+    }));
+    const count = Math.max(...counts);
 
     const remaining = Math.max(0, max - count);
     const resetAt   = Math.ceil((Date.now() + windowMs) / 1000);
@@ -207,20 +266,20 @@ export function rateLimit(
     res.set('X-RateLimit-Limit',     String(max));
     res.set('X-RateLimit-Remaining', String(remaining));
     res.set('X-RateLimit-Reset',     String(resetAt));
+    // RFC 6585 policy header — client'a mod bilgisi ver
+    res.set('X-RateLimit-Policy',    `${max};w=${Math.ceil(windowMs / 1000)};mode=${mode};keys=${keys.length}`);
 
     if (count > max) {
       const retryAfter = Math.ceil(windowMs / 1000);
       res.set('Retry-After', String(retryAfter));
 
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { trackRateLimitHit, _bumpAnomalyCounter } = require('./metrics') as {
-          trackRateLimitHit: (req: Request, category: string) => void;
-          _bumpAnomalyCounter: () => void;
-        };
-        trackRateLimitHit(req, keyPrefix);
-        _bumpAnomalyCounter();
-      } catch { /* metrics modülü yüklenmemişse atla */ }
+      // _metrics top-level'da yüklendi; yoksa null
+      if (_metrics) {
+        try {
+          _metrics.trackRateLimitHit(req, keyPrefix);
+          _metrics._bumpAnomalyCounter();
+        } catch { /* non-fatal */ }
+      }
 
       try {
         const rec: ViolationRecord = (await getViolationRecord(ip)) || { count: 0, firstAt: Date.now() };
@@ -229,28 +288,21 @@ export function rateLimit(
         await setViolationRecord(ip, rec);
 
         if (rec.count >= HTTP_AUTO_BAN_THRESHOLD) {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const { getBan: getIpBan, banIp } = require('./ipBan') as {
-            getBan: (ip: string) => Promise<unknown>;
-            banIp:  (ip: string, opts: Record<string, unknown>) => Promise<void>;
-          };
-          const existing = await getIpBan(ip);
-          if (!existing) {
-            await banIp(ip, {
-              reason:     `Otomatik ban: HTTP rate limit (${keyPrefix}) ${rec.count}x aşıldı`,
-              durationMs: HTTP_AUTO_BAN_DURATION_MS,
-              adminId:    'system',
-            });
-            try {
-              // eslint-disable-next-line @typescript-eslint/no-var-requires
-              const { trackAutoBan } = require('./metrics') as { trackAutoBan: (c: string) => void };
-              trackAutoBan(keyPrefix);
-            } catch { /* ignore */ }
-            logger.warn(
-              { ip, prefix: keyPrefix, durationMinutes: HTTP_AUTO_BAN_DURATION_MS / 60_000, event: 'ratelimit.auto_ban.applied' },
-              'Automatic HTTP IP ban applied due to repeated rate-limit violations.'
-            );
-            await deleteViolationRecord(ip);
+          if (_ipBan) {
+            const existing = await _ipBan.getBan(ip);
+            if (!existing) {
+              await _ipBan.banIp(ip, {
+                reason:     `Otomatik ban: HTTP rate limit (${keyPrefix}) ${rec.count}x aşıldı`,
+                durationMs: HTTP_AUTO_BAN_DURATION_MS,
+                adminId:    'system',
+              });
+              if (_metrics) { try { _metrics.trackAutoBan(keyPrefix); } catch { /* ignore */ } }
+              logger.warn(
+                { ip, prefix: keyPrefix, durationMinutes: HTTP_AUTO_BAN_DURATION_MS / 60_000, event: 'ratelimit.auto_ban.applied' },
+                'Automatic HTTP IP ban applied due to repeated rate-limit violations.'
+              );
+              await deleteViolationRecord(ip);
+            }
           }
         }
       } catch (banErr) {
@@ -280,33 +332,51 @@ export function pruneMemStore(): void {
 setInterval(pruneMemStore, 5 * 60_000);
 
 // ── Kısa yardımcılar ─────────────────────────────────────────
-const _u = (key: string) => () => rateLimit(DEFAULTS[key].max, DEFAULTS[key].windowMs, key, { userOnly: true });
-const _i = (key: string) => () => rateLimit(DEFAULTS[key].max, DEFAULTS[key].windowMs, key);
+// _ip  → yalnızca IP (kimlik doğrulanmamış endpointler: login, register, 2FA)
+// _u   → yalnızca user-ID (oturum açık, kişisel kota: upload, ai, messages)
+// _c   → combined IP+user (genel authenticated endpointler)
+// _uip → per-user-IP: user+IP kombinasyonu (VPN dönüşüm + çok hesap saldırılarına karşı)
+const _ip  = (key: string) => () => rateLimit(DEFAULTS[key].max, DEFAULTS[key].windowMs, key, { mode: 'ip' });
+const _u   = (key: string) => () => rateLimit(DEFAULTS[key].max, DEFAULTS[key].windowMs, key, { mode: 'user' });
+const _c   = (key: string) => () => rateLimit(DEFAULTS[key].max, DEFAULTS[key].windowMs, key, { mode: 'combined' });
+const _uip = (key: string) => () => rateLimit(DEFAULTS[key].max, DEFAULTS[key].windowMs, key, { mode: 'per-user-ip' });
 
 export const limits = {
-  register:       _i('register'),
-  login:          _i('login'),
-  refresh:        _i('refresh'),
-  changePassword: _u('changePassword'),
-  twoFactor:      _i('twoFactor'),
-  email:          _i('email'),
+  // IP-only: henüz kimlik doğrulanmamış — user-ID yok
+  register:       _ip('register'),
+  login:          _ip('login'),
+  twoFactor:      _ip('twoFactor'),
+  email:          _ip('email'),
+  invite:         _ip('invite'),
+
+  // User-only: kişisel kota, VPN arkasındaki kullanıcılar sorunsuz erişsin
   upload:         _u('upload'),
   messages:       _u('messages'),
   react:          _u('react'),
   settings:       _u('settings'),
   dm:             _u('dm'),
-  friends:        _u('friends'),
-  servers:        _u('servers'),
-  roles:          _u('roles'),
-  channels:       _u('channels'),
-  polls:          _u('polls'),
-  webhooks:       _u('webhooks'),
-  moderation:     _u('moderation'),
-  bots:           _u('bots'),
+  ai:             _uip('ai'),
+  'ai.stream':    _uip('ai.stream'),
   write:          _u('write'),
-  search:         _u('search'),
-  ai:             _u('ai'),
-  invite:         _i('invite'),
-  federation:     _i('federation'),
-  global:         _i('global'),
+  search:         _c('search'),
+
+  // Combined: hem IP hem user-ID izlenir — ikisi de aşılınca 429
+  refresh:        _c('refresh'),
+  changePassword: _c('changePassword'),
+  friends:        _c('friends'),
+  servers:        _c('servers'),
+  roles:          _c('roles'),
+  channels:       _c('channels'),
+  polls:          _c('polls'),
+  webhooks:       _c('webhooks'),
+  moderation:     _uip('moderation'),  // per-user-IP: moderasyon işlemlerinde VPN atlatma engeli
+  bots:           _c('bots'),
+  federation:     _c('federation'),
+  global:         _c('global'),
+  general:        _c('global'),
+  // Sprint 108: voice-state per-user — kullanıcı başına izlenir (IP değil)
+  voiceState:     _u('voiceState'),
+  // Sprint 121 FIX 25: serverEvents.ts / genel API endpoint'leri için
+  api:            _c('api'),
+  serverEvents:   _c('serverEvents'),
 };

@@ -1,18 +1,18 @@
 
 /**
- * Bridge â€” Temel varlik tipleri
+ * Bridge — Temel varlik tipleri
  * server/db/repositories/types/entities.d.ts
  *
- * Tum repository'lerde ortak olarak kullanilan entity ÅŸemalari.
- * Derleme zamani tip guvencesi saÄŸlar â€” runtime davraniÅŸi deÄŸiÅŸmez.
+ * Tum repository'lerde ortak olarak kullanilan entity şemalari.
+ * Derleme zamani tip guvencesi sağlar — runtime davranişi değişmez.
  *
  * Kullanim:
  *   import type { User, Server, Message } from './types/entities';
  */
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Yardimci tipler
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 /** Unix ms timestamp */
 export type Timestamp = number;
@@ -23,41 +23,66 @@ export type UUID = string;
 /** Kullanici cevrimici durumu */
 export type UserStatus = 'online' | 'idle' | 'dnd' | 'offline';
 
-/** ArkadaÅŸlik isteÄŸi durumu */
+/** Arkadaşlik isteği durumu */
 export type FriendshipStatus = 'pending' | 'accepted' | 'declined';
 
 /** Hata raporu turu */
 export type ClientErrorType = 'uncaught' | 'unhandledrejection' | 'resource' | 'manual' | 'crash';
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Kullanici
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface User {
   _id: UUID;
+  id: UUID;
   username: string;
-  displayName?: string;
+  displayName: string;
   email?: string;
   passwordHash?: string;
   emailToken?: string;
   emailVerified?: boolean;
   avatarUrl?: string | null;
-  avatarColor?: string;
+  avatarColor: string;
   bannerColor?: string;
+  bannerUrl?: string | null;
+  statusText?: string;
+  statusEmoji?: string;
   status?: UserStatus;
+  activity?: Record<string, unknown> | string | null;
+  activityUpdatedAt?: Timestamp | null;
+  password?: string;
+  apUrl?: string | null;
   bio?: string;
   website?: string;
   location?: string;
   pronouns?: string;
   isAdmin?: 0 | 1;
   tokenVersion?: number;
+  emailTokenExp?: Timestamp;
+  twoFactorEnabled?: boolean | 0 | 1;
+  twoFactorSecret?: string | null;
+  twoFactorBackup?: string | string[] | null;
+  webauthnCredentials?: WebAuthnCredential[] | null;
+  webauthnEnabled?: boolean | 0 | 1;
   timeoutUntil?: Timestamp | null;
+  e2ePublicKey?: string | null;
+  e2eKeyVersion?: number;
+  e2eAlgorithm?: string;
+  e2eKeyUpdatedAt?: Timestamp | null;
+  x3dhIdentityKey?: string | null;
+  x3dhSignedPreKey?: string | null;
+  x3dhOneTimePreKeys?: string | string[] | null;
+  apPublicKey?: string | null;
+  apPrivateKey?: string | null;
+  dmPrivacy?: string;
+  badge?: string;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Sunucu (Guild)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface Server {
   _id: UUID;
@@ -65,27 +90,43 @@ export interface Server {
   ownerId: UUID;
   icon?: string | null;
   banner?: string | null;
+  iconUrl?: string | null;
+  bannerUrl?: string | null;
   description?: string;
+  slug?: string;
   isPublic?: boolean;
+  color?: string;
+  mfaLevel?: number;
+  discoverable?: boolean | 0 | 1;
+  general?: UUID | null;
+  logChannelId?: UUID | null;
   region?: string;
+  tags?: string | string[];
   createdAt: Timestamp;
 }
 
 export interface Member {
+  _id?: UUID;
   userId: UUID;
   serverId: UUID;
   /** JSON string: string[] */
-  roles?: string;
+  roles?: string | string[];
   nickname?: string;
   joinedAt: Timestamp;
   timeoutUntil?: Timestamp | null;
   deaf?: boolean;
   mute?: boolean;
+  permissions?: Record<string, boolean> | string | null;
+  isOwner?: boolean;
+  displayName?: string;
+  avatarUrl?: string | null;
+  banned?: boolean;
+  serverProfile?: Record<string, unknown> | null;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Kanal
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export type ChannelType =
   | 'text'
@@ -106,6 +147,8 @@ export interface Channel {
   order?: number;
   isNsfw?: boolean;
   slowmode?: number;
+  tags?: string | string[];
+  forumTags?: string | string[];
   createdAt: Timestamp;
 }
 
@@ -126,20 +169,25 @@ export interface ChannelOverride {
   deny?: number;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Mesaj
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface Message {
   _id: UUID;
   channelId: UUID;
   serverId: UUID;
   userId: UUID;
+  username?: string;
+  displayName?: string;
+  avatarColor?: string;
   content?: string;
   attachments?: string; // JSON string: Attachment[]
-  embeds?: string;      // JSON string: Embed[]
+  embeds?: string | null;      // JSON string: Embed[]
   pinned?: 0 | 1;
   edited?: boolean;
+  editHistory?: string | Record<string, unknown>[];
+  type?: string;
   threadId?: UUID | null;
   threadCount?: number;
   reactions?: string;   // JSON string: Reaction[]
@@ -152,18 +200,19 @@ export interface Attachment {
   name?: string;
   size?: number;
   type?: string;
-  width?: number;
-  height?: number;
+  width?: number | null;
+  height?: number | null;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // DM
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface DmConversation {
   _id: UUID;
   participants: UUID[];
   lastMessageAt: Timestamp;
+  readAt?: Record<string, Timestamp>;
   createdAt: Timestamp;
 }
 
@@ -171,21 +220,27 @@ export interface DmMessage {
   _id: UUID;
   dmId: UUID;
   userId: UUID;
+  username?: string;
+  displayName?: string;
+  avatarColor?: string;
   content?: string;
   attachments?: string;
   edited?: boolean;
+  reactions?: Record<string, unknown> | string;
+  senderId?: UUID;
+  apId?: string;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Grup DM
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface GroupDm {
   _id: UUID;
-  name?: string;
+  name: string;
   ownerId: UUID;
-  participants: UUID[];
+  participants?: UUID[];
   icon?: string | null;
   lastMessageAt?: Timestamp;
   createdAt: Timestamp;
@@ -195,15 +250,18 @@ export interface GroupDmMessage {
   _id: UUID;
   groupId: UUID;
   userId: UUID;
+  username?: string;
+  displayName?: string;
+  avatarColor?: string;
   content?: string;
   attachments?: string;
   edited?: boolean;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Rol
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface Role {
   _id: UUID;
@@ -218,9 +276,9 @@ export interface Role {
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Davet
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface Invite {
   _id: UUID;
@@ -232,16 +290,21 @@ export interface Invite {
   uses: number;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Thread
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface Thread {
   _id: UUID;
+  serverId: UUID;
   channelId: UUID;
   parentMessageId?: UUID | null;
-  name?: string;
-  ownerId: UUID;
+  name: string;
+  ownerId?: UUID;
+  createdBy?: UUID;
+  firstMessage?: string;
+  tags?: string | string[];
+  participantCount?: number;
   messageCount: number;
   lastMessageAt?: Timestamp;
   pinned?: 0 | 1;
@@ -252,35 +315,51 @@ export interface Thread {
 export interface ThreadMessage {
   _id: UUID;
   threadId: UUID;
+  channelId?: UUID;
+  serverId?: UUID;
   userId: UUID;
+  username?: string;
+  displayName?: string;
+  avatarColor?: string;
   content?: string;
   attachments?: string;
   edited?: boolean;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Bot
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface Bot {
   _id: UUID;
   name: string;
   ownerId: UUID;
-  token: string;
+  token?: string;
+  tokenHash?: string;
+  serverId?: UUID;
+  username?: string;
   avatarUrl?: string | null;
   description?: string;
+  slug?: string;
   isPublic?: boolean;
-  /** Hangi sunucularda yuklu â€” JSON string: UUID[] */
-  servers?: string;
+  color?: string;
+  mfaLevel?: number;
+  /** Hangi sunucularda yuklu — JSON string: UUID[] */
+  servers?: string | string[];
   rating?: number;
   ratingCount?: number;
+  public?: boolean;
+  active?: boolean;
+  webhookId?: string;
+  channelId?: UUID;
+  contextCommands?: unknown[] | string;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Automod
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface AutomodRule {
   _id: UUID;
@@ -289,12 +368,13 @@ export interface AutomodRule {
   trigger?: string;
   action: string;
   enabled?: boolean;
+  config?: Record<string, unknown> | string;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Reaction Role
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface ReactionRole {
   _id: UUID;
@@ -303,12 +383,13 @@ export interface ReactionRole {
   messageId: UUID;
   emoji: string;
   roleId: UUID;
+  count?: number;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// ZamanlanmiÅŸ Mesaj
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
+// Zamanlanmiş Mesaj
+// ─────────────────────────────────────────────────────────────
 
 export interface ScheduledMessage {
   _id: UUID;
@@ -318,17 +399,24 @@ export interface ScheduledMessage {
   content: string;
   sendAt: Timestamp;
   sent?: boolean;
+  username?: string;
+  displayName?: string;
+  avatarColor?: string;
+  transcript?: string;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Bildirim
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface NativeToken {
   _id: UUID;
   userId: UUID;
-  token: string;
+  token?: string;
+  tokenHash?: string;
+  serverId?: UUID;
+  username?: string;
   platform: 'ios' | 'android';
   createdAt: Timestamp;
 }
@@ -339,11 +427,12 @@ export interface NotificationPref {
   serverId?: UUID;
   muted?: boolean;
   mentions?: boolean;
+  level?: string;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Sosyal (ArkadaÅŸlik, Blok)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
+// Sosyal (Arkadaşlik, Blok)
+// ─────────────────────────────────────────────────────────────
 
 export interface Friendship {
   _id: UUID;
@@ -365,14 +454,16 @@ export interface UserConnection {
   userId: UUID;
   platform: string;
   platformId?: string;
+  username?: string;
+  url?: string;
   accessToken?: string;
   refreshToken?: string;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Sunucu Varliklari (Emoji, GIF, Ses)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface CustomEmoji {
   _id: UUID;
@@ -389,6 +480,7 @@ export interface ServerGif {
   serverId: UUID;
   url: string;
   name?: string;
+  tags?: string | string[];
   createdAt: Timestamp;
 }
 
@@ -402,14 +494,17 @@ export interface SoundboardSound {
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Auth (Refresh Token, WebAuthn)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface RefreshToken {
   _id: UUID;
   userId: UUID;
-  token: string;
+  token?: string;
+  tokenHash?: string;
+  serverId?: UUID;
+  username?: string;
   expiresAt: Timestamp;
   used?: boolean;
   /** Token rotation family ID */
@@ -421,24 +516,38 @@ export interface WebAuthnCredential {
   _id: UUID;
   userId: UUID;
   credentialId: string;
+  credId?: string;
   publicKey: string;
   counter?: number;
+  signCount?: number;
+  name?: string;
+  deviceType?: string;
   transports?: string[];
+  lastUsedAt?: Timestamp | null;
+  aaguid?: string;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Webhook
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface OutgoingWebhook {
   _id: UUID;
   serverId: UUID;
   channelId?: UUID;
   url: string;
+  name?: string;
   secret?: string;
-  events?: string; // JSON string: string[]
+  lastFiredAt?: Timestamp | null;
+  lastStatus?: number | string | null;
+  consecutiveFailures?: number;
+  lastFailedAt?: Timestamp | null;
+  events?: string | string[]; // JSON string veya string[]
   active?: boolean;
+  enabled?: boolean;
+  label?: string;
+  lastError?: string | null;
   createdAt: Timestamp;
 }
 
@@ -449,57 +558,82 @@ export interface ChannelWebhook {
   name?: string;
   avatarUrl?: string | null;
   token?: string;
+  token?: string;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Poll
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface Poll {
   _id: UUID;
+  createdBy?: UUID;
   channelId: UUID;
   serverId: UUID;
   userId: UUID;
   question: string;
-  options: string; // JSON string: PollOption[]
+  options: PollOption[]; // normalize edilmiş seçenekler
+  votes?: Record<string, string[]> | string;
   expiresAt?: Timestamp | null;
   closed?: boolean;
+  multiSelect?: boolean;
+  allowVoteChange?: boolean;
   createdAt: Timestamp;
 }
 
 export interface PollOption {
   id: string;
   text: string;
-  votes?: number;
+  votes: string[];
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Federation (ActivityPub)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface FederationActivity {
   _id: UUID;
+  name?: string;
+  summary?: string;
+  sensitive?: boolean;
+  inReplyTo?: string | null;
+  tag?: unknown[];
+  context?: string;
   type: string;
   actor?: string;
   object?: string;
   serverId?: UUID;
   raw?: string; // JSON string
+  activity?: Record<string, unknown> | string;
+  activityUpdatedAt?: Timestamp;
+  publishedAt?: Timestamp;
+  published?: Timestamp | string;
   createdAt: Timestamp;
 }
 
 export interface FederationPeer {
   _id: UUID;
+  id?: UUID;
+  secret?: string;
   domain: string;
+  name?: string;
+  addedAt?: Timestamp;
+  url?: string;
+  inboxUrl?: string;
   publicKey?: string;
+  verified?: boolean;
   lastSeen?: Timestamp;
   trusted?: boolean;
+  blocked?: boolean;
+  notes?: string;
+  targetActorUrl?: string;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Bridge (Cross-server baÄŸlanti)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
+// Bridge (Cross-server bağlanti)
+// ─────────────────────────────────────────────────────────────
 
 export interface Bridge {
   _id: UUID;
@@ -508,27 +642,54 @@ export interface Bridge {
   sourceServerId: UUID;
   targetServerId: UUID;
   active?: boolean;
+  enabled?: boolean;
+  label?: string;
+  lastError?: string | null;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Podcast
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface Podcast {
   _id: UUID;
-  serverId: UUID;
+  serverId?: UUID;
   channelId?: UUID;
-  title: string;
-  description?: string;
+  title?: string | null;
+  description?: string | null;
   feedUrl?: string;
   coverUrl?: string | null;
+  author?: string | null;
+  imageUrl?: string | null;
+  language?: string;
+  category?: string;
+  explicit?: boolean;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+export interface PodcastEpisode {
+  _id: UUID;
+  channelId: UUID;
+  serverId?: UUID;
+  title: string;
+  description?: string | null;
+  filename?: string | null;
+  audioUrl?: string | null;
+  mimeType?: string;
+  fileSize?: number;
+  durationSeconds?: number | null;
+  season?: number | null;
+  episode?: number | null;
+  published?: boolean;
+  publishedAt: Timestamp;
+  createdBy?: UUID;
+  createdAt: Timestamp;
+}
+
+// ─────────────────────────────────────────────────────────────
 // Voice Mesaj
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface VoiceMessage {
   _id: UUID;
@@ -538,15 +699,17 @@ export interface VoiceMessage {
   url: string;
   duration?: number; // saniye
   waveform?: string; // JSON string: number[]
+  transcript?: string | null;
   createdAt: Timestamp;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 // Kanal Izinleri
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────
 
 export interface ChannelPermission {
   _id: UUID;
+  roleId?: UUID;
   channelId: UUID;
   targetId: UUID;
   targetType: 'role' | 'user';

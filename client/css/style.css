@@ -1,10 +1,12 @@
 /* Bridge CSS — modular entry point */
+/* Sprint 119: sprint91.css + sprint92.css + sprint93.css + sprint94.css → community-features.css olarak birleştirildi */
 /* Generated — edit modules/* directly */
 
 @import "./tokens.css";
 @import "./modules/reset-base.css";
 @import "./modules/auth.css";
 @import "./modules/layout.css";
+@import "./modules/layout-modes.css";
 @import "./modules/messages.css";
 @import "./modules/voice-video.css";
 @import "./modules/modals.css";
@@ -22,3 +24,7 @@
 @import "./modules/transitions-fx.css";
 @import "./modules/high-contrast.css";
 @import "./modules/semantic-search.css";
+@import "./modules/rtl.css";
+@import "./modules/bridge-features.css";
+/* sprint91.css + sprint92.css + sprint93.css + sprint94.css → community-features.css ile değiştirildi */
+@import "./modules/community-features.css";

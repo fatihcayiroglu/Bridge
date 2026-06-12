@@ -1,12 +1,45 @@
-// server/socket/handlers/infra.js
+// server/socket/handlers/infra.ts
 // Altyapı socket event'leri:
 //   typing, status, notif:pref, friend, server/channel yönetimi,
 //   polls, soundboard, bot modals, member nicknames, disconnect
 
-'use strict';
+import logger from '../../lib/logger';
+import { Users, Members, Notifications } from '../../db/repositories';
+import { pushMemberCount } from './discover';
+import {
+  getMembershipsCached,
+  invalidateMemberships,
+  throttleStatusWrite,
+  markOnline,
+  markOffline,
+  releaseSocket,
+} from '../../lib/presenceCache';
 
-const logger = require('../../lib/logger');
-const { Users, Members, Notifications } = require('../../db/repositories');
+import { validateSocketPayload, socketSchemas } from '../../middleware/validate';
+import type { Server, Socket } from 'socket.io';
+import type { SafeUser } from '../../lib/userUtils';
+
+interface InfraHandlerOptions {
+  socketUsers:       Map<string, SafeUser>;
+  typingTimers:      Map<string, ReturnType<typeof setTimeout>>;
+  TYPING_TIMEOUT_MS: number;
+  _socketRateStore:  Map<string, number[]>;
+  leaveVoice:        (socket: Socket, channelId: string, serverId: string | undefined, io: Server) => Promise<void>;
+  voiceActivity:     Map<string, number>;
+  refreshMemberships:(userId: string) => Promise<void>;
+  safeUser:          SafeUser;
+}
+
+interface DisconnectOptions {
+  socketUsers:     Map<string, SafeUser>;
+  typingTimers:    Map<string, ReturnType<typeof setTimeout>>;
+  _socketRateStore:Map<string, number[]>;
+  leaveVoice:      (socket: Socket, channelId: string, serverId: string | undefined, io: Server) => Promise<void>;
+  voiceActivity:   Map<string, number>;
+  tokenCheckTimer: ReturnType<typeof setInterval>;
+  io:              Server;
+}
+
 
 /**
  * Tüm altyapı olaylarını kaydeder.
@@ -23,15 +56,24 @@ const { Users, Members, Notifications } = require('../../db/repositories');
  * @param {Function} refreshMemberships
  * @param {object} safeUser       — sanitize edilmiş user
  */
-function registerInfraHandlers(socket, rawSocket, io, user, {
-  socketUsers, typingTimers, TYPING_TIMEOUT_MS,
-  _socketRateStore, leaveVoice, voiceActivity,
-  refreshMemberships, safeUser,
-}) {
+function registerInfraHandlers(
+  socket: Socket,
+  rawSocket: Socket,
+  io: Server,
+  user: SafeUser & { _id: string },
+  { socketUsers, typingTimers, TYPING_TIMEOUT_MS, _socketRateStore, leaveVoice, voiceActivity, refreshMemberships, safeUser }: InfraHandlerOptions,
+): void {
 
   // ── TYPING INDICATORS ─────────────────────────────────────────
-  socket.on('typing:start', ({ channelId }) => {
-    if (!channelId) return;
+  // FIX: channelId artık socket room üyeliğiyle doğrulanıyor.
+  // Kullanıcı o kanala join olmamışsa (channel:join event'i gelmediyse) typing
+  // event'i yayılmaz. Bu, herhangi bir authenticated kullanıcının rastgele
+  // bir channelId ile typing broadcast yapmasını engelliyor.
+  socket.on('typing:start', (payload: { channelId: string }) => {
+    if (!validateSocketPayload(payload, socketSchemas.typingChannel).valid) return;
+    const { channelId } = payload;
+    // Kanal üyelik kontrolü: rawSocket ancak channel:join sonrası ilgili room'a girer.
+    if (!rawSocket.rooms.has(`channel:${channelId}`)) return;
     const key = `${channelId}:${user._id}`;
     const existing = typingTimers.get(key);
     if (existing) clearTimeout(existing);
@@ -45,8 +87,11 @@ function registerInfraHandlers(socket, rawSocket, io, user, {
     typingTimers.set(key, timer);
   });
 
-  socket.on('typing:stop', ({ channelId }) => {
-    if (!channelId) return;
+  socket.on('typing:stop', (payload: { channelId: string }) => {
+    if (!validateSocketPayload(payload, socketSchemas.typingChannel).valid) return;
+    const { channelId } = payload;
+    // Üye olunmayan kanallar için stop event'i de görmezden gel.
+    if (!rawSocket.rooms.has(`channel:${channelId}`)) return;
     const key = `${channelId}:${user._id}`;
     const timer = typingTimers.get(key);
     if (timer) { clearTimeout(timer); typingTimers.delete(key); }
@@ -54,41 +99,75 @@ function registerInfraHandlers(socket, rawSocket, io, user, {
   });
 
   // ── STATUS ────────────────────────────────────────────────────
-  socket.on('status:update', async ({ status, statusText, statusEmoji }) => {
+  socket.on('status:update', async (payload: { status: string; statusText?: string; statusEmoji?: string }) => {
+    if (!validateSocketPayload(payload, socketSchemas.statusUpdate).valid) return;
+    const { status, statusText, statusEmoji } = payload;
     const allowed = ['online', 'idle', 'dnd', 'offline'];
     if (!allowed.includes(status)) return;
     try {
-      await Users.update(user._id, { status, statusText: statusText || '', statusEmoji: statusEmoji || '' });
-      const current = await Members.findByUser(user._id);
-      for (const m of current) {
-        io.to(`server:${m.serverId}`).emit('user:status', { userId: user._id, status, statusText: statusText || '', statusEmoji: statusEmoji || '' });
+      // Throttle: aynı status kısa sürede tekrar gelirse DB yazmasını atla.
+      // statusText/Emoji değişimlerinde her zaman yaz (içerik farklı olabilir).
+      const hasExtra = (statusText || '') || (statusEmoji || '');
+      const shouldWrite = hasExtra || await throttleStatusWrite(user._id, status);
+      if (shouldWrite) {
+        await Users.update(user._id, { status, statusText: statusText || '', statusEmoji: statusEmoji || '' });
       }
-    } catch {}
-  });
 
-  // ── NOTIFICATION PREFS ────────────────────────────────────────
-  socket.on('notif:pref', async ({ channelId, level }) => {
+      // Üyelik listesini cache'den al — Members.findByUser DB yükünü azaltır
+      const current = await getMembershipsCached(user._id, () => Members.findByUser(user._id));
+      const payload = { userId: user._id, status, statusText: statusText || '', statusEmoji: statusEmoji || '' };
+      for (const m of current) {
+        io.to(`server:${m.serverId}`).emit('user:status', payload);
+      }
+
+      // Presence heartbeat
+      if (status !== 'offline') await markOnline(user._id);
+      else await markOffline(user._id);
+    } catch (e) {
+      logger.warn({ userId: user._id, event: 'socket.status_update.error', err: (e as Error).message },
+        'status:update işlemi başarısız.');
+    }
+  });
+  socket.on('notif:pref', async (payload: { channelId: string; level: string }) => {
+    if (!validateSocketPayload(payload, socketSchemas.notifPref).valid) return;
+    const { channelId, level } = payload;
     const allowed = ['all', 'mentions', 'mute'];
     if (!allowed.includes(level)) return;
     try {
       await Notifications.upsertPref(user._id, channelId, { level, updatedAt: Date.now() });
       rawSocket.emit('notif:pref:updated', { channelId, level });
-    } catch {}
+    } catch (e) {
+      logger.warn({ userId: user._id, channelId, event: 'socket.notif_pref.error', err: (e as Error).message },
+        'notif:pref kaydedilemedi.');
+    }
   });
-
-  // ── FRIEND EVENTS ─────────────────────────────────────────────
-  socket.on('friend:request:notify', ({ toUserId }) => {
+  socket.on('friend:request:notify', (payload: { toUserId: string }) => {
+    if (!validateSocketPayload(payload, socketSchemas.friendRequestNotify).valid) return;
+    const { toUserId } = payload;
     for (const [sid, su] of socketUsers) {
       if ((su._id || su.id) === toUserId) io.to(sid).emit('friend:request:received', { from: safeUser });
     }
   });
 
   // ── SERVER MEMBERSHIP ─────────────────────────────────────────
-  socket.on('server:joined', async ({ serverId }) => {
+  socket.on('server:joined', async (payload: { serverId: string }) => {
+    if (!validateSocketPayload(payload, socketSchemas.serverIdPayload).valid) return;
+    const { serverId } = payload;
     rawSocket.join(`server:${serverId}`);
-    await refreshMemberships();
+    // Üyelik değişti — cache'i geçersiz kıl
+    await invalidateMemberships(user._id);
+    await refreshMemberships(user._id);
+    // Keşif sayfasındaki üye sayısını güncelle
+    pushMemberCount(io, serverId).catch(() => {});
   });
-  socket.on('server:left', ({ serverId }) => rawSocket.leave(`server:${serverId}`));
+  socket.on('server:left', async (payload: { serverId: string }) => {
+    if (!validateSocketPayload(payload, socketSchemas.serverIdPayload).valid) return;
+    const { serverId } = payload;
+    rawSocket.leave(`server:${serverId}`);
+    await invalidateMemberships(user._id);
+    // Keşif sayfasındaki üye sayısını güncelle
+    pushMemberCount(io, serverId).catch(() => {});
+  });
 
   // ── CHANNEL MANAGEMENT ────────────────────────────────────────
   socket.on('channel:created', ({ serverId, channel })   => io.to(`server:${serverId}`).emit('channel:created', channel));
@@ -105,9 +184,11 @@ function registerInfraHandlers(socket, rawSocket, io, user, {
   );
 
   // ── SOUNDBOARD ────────────────────────────────────────────────
-  socket.on('soundboard:play', ({ channelId, soundUrl, soundName, emoji }) =>
-    rawSocket.to(`voice:${channelId}`).emit('soundboard:play', { channelId, soundUrl, soundName, emoji })
-  );
+  socket.on('soundboard:play', (payload: { channelId: string; soundUrl: string; soundName?: string; emoji?: string }) => {
+    if (!validateSocketPayload(payload, socketSchemas.soundboardPlay).valid) return;
+    const { channelId, soundUrl, soundName, emoji } = payload;
+    rawSocket.to(`voice:${channelId}`).emit('soundboard:play', { channelId, soundUrl, soundName, emoji });
+  });
 
   // ── BOT MODAL ─────────────────────────────────────────────────
   socket.on('bot:showModal', ({ userId, modal }) => {
@@ -128,10 +209,11 @@ function registerInfraHandlers(socket, rawSocket, io, user, {
  * Disconnect temizlik işlemleri — token timer dahil.
  * socket/index.js'deki disconnect handler'ında çağrılır.
  */
-async function handleDisconnect(rawSocket, user, {
-  socketUsers, typingTimers, _socketRateStore,
-  leaveVoice, voiceActivity, tokenCheckTimer, io,
-}) {
+async function handleDisconnect(
+  rawSocket: Socket,
+  user: SafeUser & { _id: string },
+  { socketUsers, typingTimers, _socketRateStore, leaveVoice, voiceActivity, tokenCheckTimer, io }: DisconnectOptions,
+): Promise<void> {
   // 0. Token check timer'ı temizle
   clearInterval(tokenCheckTimer);
   socketUsers.delete(rawSocket.id);
@@ -153,17 +235,26 @@ async function handleDisconnect(rawSocket, user, {
   }
 
   // 4. Ses kanalından çık
-  if (rawSocket.currentVoiceChannel) leaveVoice(rawSocket, rawSocket.currentVoiceChannel, rawSocket.currentVoiceServer, io);
+  if (rawSocket.currentVoiceChannel) leaveVoice(rawSocket, rawSocket.currentVoiceChannel, rawSocket.currentVoiceServer ?? undefined, io);
   voiceActivity.delete(rawSocket.id);
 
   // 5. Multi-tab: başka bağlantı yoksa offline yap
-  const stillConnected = [...socketUsers.values()].some(u => (u._id || u.id) === user._id);
+  // releaseSocket, presenceCache'deki socket map'ini günceller ve son socket
+  // kapanınca Redis'e markOffline + cluster pub/sub bildirimi gönderir.
+  const remainingSockets = await releaseSocket(user._id, rawSocket.id);
+  const stillConnected   = remainingSockets > 0
+    // Fallback: presenceCache'de socket yoksa socketUsers Map'ten kontrol et
+    || [...socketUsers.values()].some(u => (u._id || u.id) === user._id);
+
   if (!stillConnected) {
-    try { await Users.update(user._id, { status: 'offline' }); } catch {}
-    const current = await Members.findByUser(user._id).catch(() => []);
+    try { await Users.update(user._id, { status: 'offline' }); } catch (e) {
+      logger.warn({ userId: user._id, event: 'socket.disconnect.offline_update_error', err: (e as Error).message },
+        'Offline durum güncellenemedi.');
+    }
+    // markOffline artık releaseSocket() içinde çağrılıyor; burada tekrar çağrılmaz
+    const current = await getMembershipsCached(user._id, () => Members.findByUser(user._id).catch(() => []));
     for (const m of current) io.to(`server:${m.serverId}`).emit('user:status', { userId: user._id, status: 'offline' });
   }
 }
 
-module.exports = { registerInfraHandlers, handleDisconnect };
-export {};
+export { registerInfraHandlers, handleDisconnect };

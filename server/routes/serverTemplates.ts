@@ -1,4 +1,4 @@
-// server/routes/serverTemplates.js
+// server/routes/serverTemplates.ts
 // Sunucu şablonları: tek tıkla hazır yapılandırılmış sunucu kur
 //
 // DEĞİŞİKLİK (v57): Şablonlar artık DB'de saklanır — tüm adminler paylaşabilir.
@@ -12,20 +12,18 @@
 // DELETE /api/server-templates/:id       — şablon sil (oluşturan)
 // POST   /api/server-templates/:id/apply — şablonu uygula
 
-'use strict';
 
-const express      = require('express');
+import express from 'express';
+import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router       = express.Router();
-const { v4: uuidv4 } = require('uuid');
-const {
-  Servers,
+import { v4 as uuidv4 } from 'uuid';
+import { Servers,
   Channels,
   Messages,
-  ServerAssets,
-} = require('../db/repositories');
-const { limits } = require('../middleware/rateLimit'); // rate limiting
-const { authMiddleware, castAuthed } = require('../middleware/auth');
-const asyncHandler = require('../middleware/asyncHandler');
+  ServerAssets, } from '../db/repositories';
+import { limits } from '../middleware/rateLimit';
+import { authMiddleware} from '../middleware/auth';
+import logger from '../lib/logger';
 
 // ── Yerleşik şablonlar (seed verisi) ──────────────────────────
 const SEED_TEMPLATES = [
@@ -191,8 +189,8 @@ async function ensureSeeded() {
       });
     }
     seeded = true;
-  } catch (err) {
-    console.warn('[serverTemplates] Seed hatası:', err.message);
+  } catch (_err) { const err = _err as Error;
+    logger.warn({ err, event: 'serverTemplates.seed.error' }, '[serverTemplates] Seed hatası')
   }
 }
 
@@ -200,8 +198,52 @@ async function ensureSeeded() {
 ensureSeeded._reset = () => { seeded = false; };
 
 // ── Yardımcı: DB satırını API şekline çevir ───────────────────
-function formatTemplate(row, full = false) {
-  const out: Record<string,any> = {
+interface TemplateRow {
+  _id: string;
+  name: string;
+  icon: string;
+  description: string;
+  tags: string | string[];
+  createdBy: string;
+  createdAt: number;
+  usageCount?: number;
+  categories?: string | TemplateCategory[];
+  channels?: unknown;
+  roles?: unknown;
+}
+
+interface TemplateChannel { name: string; type?: string; topic?: string }
+interface TemplateCategory { name: string; channels: TemplateChannel[] }
+
+function asTemplateRow(row: unknown): TemplateRow {
+  const r = row as Partial<TemplateRow> & Record<string, unknown>;
+  return {
+    _id: String(r._id ?? ''),
+    name: String(r.name ?? ''),
+    icon: String(r.icon ?? '🌐'),
+    description: String(r.description ?? ''),
+    tags: Array.isArray(r.tags) || typeof r.tags === 'string' ? r.tags : [],
+    categories: Array.isArray(r.categories) || typeof r.categories === 'string' ? r.categories as string | TemplateCategory[] : [],
+    createdBy: String(r.createdBy ?? ''),
+    createdAt: typeof r.createdAt === 'number' ? r.createdAt : Date.now(),
+    usageCount: typeof r.usageCount === 'number' ? r.usageCount : undefined,
+    channels: r.channels,
+    roles: r.roles,
+  };
+}
+
+function parseCategories(value: string | TemplateCategory[] | undefined): TemplateCategory[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed as TemplateCategory[] : [];
+  } catch {
+    return [];
+  }
+}
+function formatTemplate(row: TemplateRow, full = false) {
+  const out: Record<string, unknown> = {
     id:          row._id,
     name:        row.name,
     icon:        row.icon,
@@ -219,24 +261,74 @@ function formatTemplate(row, full = false) {
 }
 
 // ── GET /api/server-templates ──────────────────────────────────
-router.get('/', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /server-templates:
+ *   get:
+ *     tags: [Servers]
+ *     summary: Sunucu şablon listesi
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Şablon listesi }
+ *       401: { description: Kimlik doğrulaması gerekli }
+ */
+router.get('/', authMiddleware, async (req, res) => {
   await ensureSeeded();
   const rows = await ServerAssets.findTemplates({});
-  res.json(rows.map(r => formatTemplate(r, false)));
-}));
+  res.json(rows.map(r => formatTemplate(asTemplateRow(r), false)));
+});
 
 // ── GET /api/server-templates/:id ─────────────────────────────
-router.get('/:id', authMiddleware, asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /server-templates/{id}:
+ *   get:
+ *     tags: [Servers]
+ *     summary: Tek şablon detayı
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Şablon detayı }
+ *       404: { description: Şablon bulunamadı }
+ */
+router.get('/:id', authMiddleware, async (req, res) => {
   await ensureSeeded();
-  const row = await ServerAssets.findTemplate(req.params.id);
+  const row = await ServerAssets.findTemplate(String(req.params.id ?? ''));
   if (!row) return res.status(404).json({ error: 'Şablon bulunamadı' });
-  res.json(formatTemplate(row, true));
-}));
+  res.json(formatTemplate(asTemplateRow(row), true));
+});
 
 // ── POST /api/server-templates — yeni şablon oluştur ──────────
-router.post('/', authMiddleware, limits.write(), asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /server-templates:
+ *   post:
+ *     tags: [Servers]
+ *     summary: Yeni sunucu şablonu oluştur
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name]
+ *             properties:
+ *               name: { type: string }
+ *               description: { type: string }
+ *               icon: { type: string }
+ *               tags: { type: array, items: { type: string } }
+ *     responses:
+ *       201: { description: Şablon oluşturuldu }
+ *       400: { description: Geçersiz istek }
+ */
+router.post('/', authMiddleware, limits.write(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { name, icon = '🌐', description = '', tags = [], categories = [] } = req.body;
+  const { name, icon = '🌐', description = '', tags = [], categories = [] } = req.body as Record<string, string>;
 
   if (!name || typeof name !== 'string' || !name.trim())
     return res.status(400).json({ error: 'Şablon adı gerekli' });
@@ -253,67 +345,131 @@ router.post('/', authMiddleware, limits.write(), asyncHandler(async (req, res) =
     updatedAt:   null,
   });
 
-  res.status(201).json(formatTemplate(row, true));
-}));
+  res.status(201).json(formatTemplate(asTemplateRow(row), true));
+});
 
 // ── PUT /api/server-templates/:id — güncelle ──────────────────
-router.put('/:id', authMiddleware, limits.write(), asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /server-templates/{id}:
+ *   put:
+ *     tags: [Servers]
+ *     summary: Şablon güncelle (sadece oluşturan)
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema: { type: object }
+ *     responses:
+ *       200: { description: Şablon güncellendi }
+ *       403: { description: Yetki yok }
+ *       404: { description: Şablon bulunamadı }
+ */
+router.put('/:id', authMiddleware, limits.write(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const row = await ServerAssets.findTemplate(req.params.id);
+  const row = await ServerAssets.findTemplate(String(req.params.id ?? ''));
   if (!row) return res.status(404).json({ error: 'Şablon bulunamadı' });
 
-  if (row.createdBy !== _u.id)
+  if (asTemplateRow(row).createdBy !== _u.id)
     return res.status(403).json({ error: 'Bu şablonu güncelleme yetkiniz yok' });
 
-  const { name, icon, description, tags, categories } = req.body;
-  const $set: Record<string,any> = { updatedAt: Date.now() };
+  const { name, icon, description, tags, categories } = req.body as Record<string, string>;
+  const $set: Record<string, unknown> = { updatedAt: Date.now() };
   if (name        !== undefined) $set.name        = String(name).trim().slice(0, 80);
   if (icon        !== undefined) $set.icon        = String(icon).slice(0, 10);
   if (description !== undefined) $set.description = String(description).slice(0, 300);
   if (tags        !== undefined) $set.tags        = JSON.stringify(Array.isArray(tags) ? tags.slice(0, 10) : []);
   if (categories  !== undefined) $set.categories  = JSON.stringify(categories);
 
-  await ServerAssets.updateTemplate(req.params.id, $set);
-  const updated = await ServerAssets.findTemplate(req.params.id);
-  res.json(formatTemplate(updated, true));
-}));
+  await ServerAssets.updateTemplate(String(req.params.id ?? ''), $set);
+  const updated = await ServerAssets.findTemplate(String(req.params.id ?? ''));
+  if (!updated) return res.status(404).json({ error: 'Şablon bulunamadı' });
+  res.json(formatTemplate(asTemplateRow(updated), true));
+});
 
 // ── DELETE /api/server-templates/:id ──────────────────────────
-router.delete('/:id', authMiddleware, limits.write(), asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /server-templates/{id}:
+ *   delete:
+ *     tags: [Servers]
+ *     summary: Şablon sil (sadece oluşturan)
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       204: { description: Silindi }
+ *       403: { description: Yetki yok }
+ *       404: { description: Şablon bulunamadı }
+ */
+router.delete('/:id', authMiddleware, limits.write(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const row = await ServerAssets.findTemplate(req.params.id);
+  const row = await ServerAssets.findTemplate(String(req.params.id ?? ''));
   if (!row) return res.status(404).json({ error: 'Şablon bulunamadı' });
 
-  if (row.createdBy !== _u.id)
+  if (asTemplateRow(row).createdBy !== _u.id)
     return res.status(403).json({ error: 'Bu şablonu silme yetkiniz yok' });
 
-  await ServerAssets.deleteTemplate(req.params.id);
+  await ServerAssets.deleteTemplate(String(req.params.id ?? ''));
   res.json({ ok: true });
-}));
+});
 
 // ── POST /api/server-templates/:id/apply ──────────────────────
-router.post('/:id/apply', authMiddleware, limits.write(), asyncHandler(async (req, res) => {
+/**
+ * @openapi
+ * /server-templates/{id}/apply:
+ *   post:
+ *     tags: [Servers]
+ *     summary: Şablonu uygula — yeni sunucu oluştur
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name]
+ *             properties:
+ *               name: { type: string, description: Yeni sunucu adı }
+ *     responses:
+ *       201: { description: Sunucu oluşturuldu }
+ *       404: { description: Şablon bulunamadı }
+ */
+router.post('/:id/apply', authMiddleware, limits.write(), async (req, res) => {
   const _u = castAuthed(req).user;
   await ensureSeeded();
 
-  const row = await ServerAssets.findTemplate(req.params.id);
+  const row = await ServerAssets.findTemplate(String(req.params.id ?? ''));
   if (!row) return res.status(404).json({ error: 'Şablon bulunamadı' });
 
-  const serverName = String(req.body.name || row.name).trim().slice(0, 50);
+  const template = asTemplateRow(row);
+  const serverName = String(req.body.name || template.name).trim().slice(0, 50);
   if (!serverName) return res.status(400).json({ error: 'Sunucu adı gerekli' });
 
-  const categories = typeof row.categories === 'string'
-    ? JSON.parse(row.categories)
-    : (row.categories || []);
+  const categories = parseCategories(template.categories);
 
   // Sunucu oluştur
   const server = await Servers.create({
     _id:          uuidv4(),
     name:         serverName,
-    icon:         row.icon,
+    icon:         template.icon,
     ownerId:      _u.id,
-    description:  row.description,
-    tags:         row.tags,
+    description:  template.description,
+    tags:         template.tags,
     discoverable: 0,
     createdAt:    Date.now(),
   });
@@ -364,16 +520,19 @@ router.post('/:id/apply', authMiddleware, limits.write(), asyncHandler(async (re
       userId:      'system',
       username:    'Bridge',
       displayName: 'Bridge',
-      avatarColor: '#5865f2',
-      content:     `🎉 **${serverName}** şablondan oluşturuldu! ${row.icon} ${row.description}`,
+      avatarColor: '#2d9cdb',
+      content:     `🎉 **${serverName}** şablondan oluşturuldu! ${template.icon} ${template.description}`,
       type:        'system',
       reactions:   '{}',
       createdAt:   Date.now(),
     });
   }
 
-  res.json({ server, template: { id: row._id, name: row.name } });
-}));
+  res.json({ server, template: { id: template._id, name: template.name } });
+});
 
+export default router;
+
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-export {};
+module.exports.default = router;

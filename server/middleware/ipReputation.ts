@@ -4,6 +4,7 @@
 //   2. AbuseIPDB API (ABUSEIPDB_KEY tanımlıysa)
 //   3. Tor çıkış düğümleri (BLOCK_TOR=true)
 
+import logger from '../lib/logger';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
@@ -54,9 +55,9 @@ function _loadBlocklist(): void {
     _staticBlocklist = new Set(
       lines.map(l => l.trim()).filter(l => l && !l.startsWith('#'))
     );
-    console.log(`[ipReputation] Statik blocklist yüklendi: ${_staticBlocklist.size} kayıt`);
+    logger.info(`[ipReputation] Statik blocklist yüklendi: ${_staticBlocklist.size} kayıt`);
   } catch (err) {
-    console.warn(`[ipReputation] Blocklist okunamadı (${CONFIG.blocklistPath}): ${(err as Error).message}`);
+    logger.warn(`[ipReputation] Blocklist okunamadı (${CONFIG.blocklistPath}): ${(err as Error).message}`);
   }
 }
 
@@ -97,9 +98,9 @@ async function _refreshTorList(): Promise<void> {
     _torExitNodes = new Set(
       text.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'))
     );
-    console.log(`[ipReputation] Tor exit listesi güncellendi: ${_torExitNodes.size} düğüm`);
+    logger.info(`[ipReputation] Tor exit listesi güncellendi: ${_torExitNodes.size} düğüm`);
   } catch (err) {
-    console.warn('[ipReputation] Tor listesi alınamadı:', (err as Error).message);
+    logger.warn('[ipReputation] Tor listesi alınamadı:', (err as Error).message);
   }
 }
 
@@ -147,7 +148,7 @@ async function _queryAbuseIPDB(ip: string): Promise<AbuseResult | null> {
       totalReports: (data.totalReports as number) ?? 0,
     };
   } catch (err) {
-    console.warn(`[ipReputation] AbuseIPDB sorgu hatası (${ip}):`, (err as Error).message);
+    logger.warn(`[ipReputation] AbuseIPDB sorgu hatası (${ip}):`, (err as Error).message);
     return null;
   }
 }
@@ -240,7 +241,7 @@ export async function ipReputationMiddleware(
     }
     next();
   } catch (err) {
-    console.error('[ipReputation] middleware error:', (err as Error).message);
+    logger.error('[ipReputation] middleware error:', (err as Error).message);
     next();
   }
 }
@@ -249,7 +250,7 @@ export async function ipReputationMiddleware(
 export function _clearCache(): void { _cache.clear(); }
 export function _setCacheEntry(ip: string, val: Omit<CacheEntry, 'expiresAt'>): void { _setCached(ip, val); }
 export function _setStaticBlocklist(set: Set<string>): void { _staticBlocklist = set; }
-export function _setTorExitNodes(set: Set<string>): void { _torExitNodes = set; }
+export function _setTorExitNodes(set: Set<string>): void { _torExitNodes = set; _torLastFetch = Date.now(); }
 export function _setConfig(overrides: Partial<Config>): void { Object.assign(CONFIG, overrides); }
 export function _getConfig(): Config { return { ...CONFIG }; }
 

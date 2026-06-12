@@ -1,25 +1,19 @@
-// server/routes/federation/index.js
+// server/routes/federation/index.ts
 // Federation router — tüm alt modülleri birleştirir
-// Eski: server/routes/federation.js (779 satır)
-// Yeni: peers.js + activitypub.js + helpers.js
-//
-// server/app/setupRoutes.js'de değişiklik gerekmez —
-// bu dosya eskisiyle aynı API'yi dışa aktarır.
 
-'use strict';
+import express from 'express';
+import peersRouter from './peers';
+import activitypubRouter from './activitypub';
+import socialRouter from './social';
 
-const express = require('express');
-const router  = express.Router();
+const router = express.Router();
 
-// Peer yönetimi, keşif, CORS proxy
-router.use('/', require('./peers'));
+router.use('/', peersRouter);
+router.use('/', activitypubRouter);
+router.use('/', socialRouter);
 
-// ActivityPub actor, inbox, outbox, followers, webfinger
-router.use('/', require('./activitypub'));
+export default router;
 
-// Helpers (deliverToFollowers) — route dışı export
-const { deliverToFollowers } = require('./helpers');
-
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-module.exports.deliverToFollowers = deliverToFollowers;
-export {};
+module.exports.default = router;

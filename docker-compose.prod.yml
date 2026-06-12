@@ -1,0 +1,109 @@
+# Bridge production hardening override
+# Kullanım:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Bu dosya ana docker-compose.yml üzerine uygulanır ve production güvenlik
+# sertleştirmelerini açar. Geliştirme ortamında varsayılan compose dosyasını
+# tek başına kullanmak daha rahattır.
+
+services:
+  bridge:
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      - /app/data:size=64m,mode=0750
+    environment:
+      NODE_ENV: production
+      # Production'da metrics endpoint'i yalnızca Bearer token ile açılsın.
+      METRICS_SECRET: "${METRICS_SECRET:?METRICS_SECRET zorunlu - openssl rand -hex 32}"
+      FEDERATION_SECRET: "${FEDERATION_SECRET:?FEDERATION_SECRET zorunlu - openssl rand -hex 32}"
+      AP_ENCRYPTION_KEY: "${AP_ENCRYPTION_KEY:?AP_ENCRYPTION_KEY zorunlu - 64 hex karakter}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health/ready || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+        reservations:
+          memory: 256M
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
+  postgres:
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  redis:
+    command: >-
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1000
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  backup:
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_READ_SEARCH
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  nginx:
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /var/cache/nginx:size=64m
+      - /var/run:size=16m
+      - /tmp:size=64m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

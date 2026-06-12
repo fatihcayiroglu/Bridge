@@ -1,0 +1,24 @@
+{
+  "_comment": "Sprint 56 ✅ — tüm .ts test dosyaları strict gate'e alındı. Sprint 38'de twoFactor.test.js ile başlandı; Sprint 56'da server testleri tamamen .ts'e geçti, include genişletildi.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false,
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "allowJs": true,
+    "checkJs": true
+  },
+  "include": [
+    "tests/helpers/**/*.js",
+    "tests/helpers/**/*.ts",
+    "tests/**/*.test.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "_legacy_js_backup_session4_5",
+    "db/repositories/_legacy_js_backup_session8"
+  ]
+}

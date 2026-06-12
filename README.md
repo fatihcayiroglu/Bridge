@@ -1,27 +1,51 @@
 # Bridge 🌉
 
-![CI](https://github.com/your-org/bridge/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/bridge-app/bridge/actions/workflows/ci.yml/badge.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)
 
-**Discord'un açık kaynak, ücretsiz, gizlilik öncelikli alternatifi.**
+**Self-host, federasyon destekli iletişim platformu** — sohbet, ses ve topluluklar senin altyapında.
 
-Tüm özellikler herkese ücretsiz — animasyonlu avatar, profil banner, yüksek kalite ses, AI asistanı. Ücretli plan yok.
+Bridge bir Discord kopyası değildir. Köprü metaforu (Hub → Space → Flow), köprü mavisi kimlik ve ActivityPub federasyonu ile kendi yolunda ilerler. Tüm özellikler ücretsiz; Nitro yok.
+
+Tasarım yönü: [docs/DESIGN_DIRECTION.md](docs/DESIGN_DIRECTION.md)
+
+## Demo
+
+| | |
+|---|---|
+| **Tanıtım sitesi** | [bridge-app.github.io/bridge](https://bridge-app.github.io/bridge/) |
+| **5 dk yerel demo** | `./scripts/demo.sh` → http://localhost:3001 |
+| **Rehber** | [docs/DEMO.md](docs/DEMO.md) |
+
+![Bridge arayüz konsepti — Hub, Space ve Flow](docs/assets/bridge-hero.svg)
+
+Arayüz düzeni: Ayarlar → Görünüm → **Odak / Kompakt / Klasik**
 
 ---
 
-## Neden Bridge?
+## Bridge ne sunar?
 
-| | Discord | Bridge |
+| Özellik | Açıklama |
+|---------|----------|
+| Self-host | Docker veya bare metal — verin sende |
+| Federasyon | ActivityPub ile diğer instance'lara bağlan |
+| E2EE | Uçtan uca şifreli kanallar |
+| Ses & video | WebRTC + Mediasoup SFU |
+| AI | Özet, çeviri, moderasyon (opsiyonel) |
+| Açık kaynak | MIT lisansı |
+| RTL | Arapça, İbranice, Farsça desteği |
+
+### Kapalı platformlarla kıyas (opsiyonel)
+
+| | Tipik kapalı platform | Bridge |
 |---|---|---|
-| Animasyonlu avatar | Nitro ($10/ay) | ✅ Ücretsiz |
-| Profil banner | Nitro | ✅ Ücretsiz |
-| Yüksek kalite ses | Nitro | ✅ Ücretsiz |
-| AI asistanı | 3. taraf bot | ✅ Native entegre |
-| Mesaj şifreleme | ❌ | ✅ E2EE |
-| Açık kaynak | ❌ | ✅ MIT |
-| Self-host | ❌ | ✅ Docker ile 1 komut |
+| Animasyonlu avatar / banner | Ücretli plan | ✅ Ücretsiz |
+| Yüksek kalite ses | Ücretli plan | ✅ Ücretsiz |
+| Self-host | ❌ | ✅ |
 | Federasyon | ❌ | ✅ ActivityPub |
+| Kaynak kodu | ❌ | ✅ MIT |
 
 ---
 
@@ -30,12 +54,12 @@ Tüm özellikler herkese ücretsiz — animasyonlu avatar, profil banner, yükse
 ### Docker (önerilen)
 
 ```bash
-git clone https://github.com/your-org/bridge.git
+git clone https://github.com/bridge-app/bridge.git
 cd bridge
 cp .env.docker .env
-# .env'i düzenle: JWT_SECRET ve REFRESH_SECRET doldur
+# .env'i düzenle: JWT_SECRET, REFRESH_SECRET, POSTGRES_PASSWORD
 # node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
-docker compose up -d
+docker compose up -d --build
 # → http://localhost:3001
 ```
 
@@ -49,14 +73,18 @@ docker compose up -d
 # 1. PostgreSQL veritabanı oluştur
 createdb bridge
 
-# 2. Sunucuyu kur ve başlat
-cd server
-npm install
-cp .env.example .env
-# .env'i düzenle: JWT_SECRET, REFRESH_SECRET ve DATABASE_URL doldur
+# 2. Kurulum (kök dizinde)
+cp server/.env.example server/.env
+# server/.env → JWT_SECRET, REFRESH_SECRET, DATABASE_URL doldur
+npm run setup          # install + build
 npm start              # İlk çalışmada schema otomatik oluşur
 # → http://localhost:3001
+
+# Geliştirme (hot reload):
+npm run dev
 ```
+
+Türkçe özet: [KURULUM.md](KURULUM.md) · Zip paketi: [DISTRIBUTION.md](DISTRIBUTION.md)
 
 ---
 
@@ -148,6 +176,11 @@ VAPID_PRIVATE_KEY=...
 - Docker + PostgreSQL + Redis + GitHub Actions CI/CD
 - Plugin sistemi (sandbox izolasyonu)
 - Prometheus metrikleri + Grafana dashboard
+
+### Uluslararasılaştırma (i18n)
+- 15 dil desteği: Türkçe, İngilizce, Almanca, Fransızca, İspanyolca, Japonca, Portekizce, Korece, Rusça, İtalyanca, Çince, Arapça, Flemenkçe, **İbranice**, **Farsça**
+- RTL (sağdan sola) düzeni: Arapça (`ar`), İbranice (`he`), Farsça (`fa`) — `<html dir="rtl">` otomatik atanır
+- Lazy-load dil paketleri — varsayılan Türkçe, diğerleri talep üzerine yüklenir
 
 ---
 
@@ -261,12 +294,13 @@ Bridge mesajları ActivityPub `Note` nesnesi olarak sunulur.
 | NodeInfo | ✅ Tam |
 | Kullanıcı Actor (`Person`) | ✅ Tam |
 | Note yayımlama | ✅ Okuma (GET) |
-| Inbox (gelen aktivite) | 🔄 Temel |
-| Follow / Accept | 🔄 Temel |
-| Mastodon'dan takip et | ⚠️ Deneysel |
-| DM (Direct Message) | ❌ Planlanmıyor |
+| Inbox (gelen aktivite) | ✅ Tam |
+| Follow / Accept / Reject / Undo | ✅ Tam |
+| Mastodon'dan takip et | ✅ Destekleniyor |
+| Bridge'den uzak aktör takip et | ✅ Destekleniyor |
+| DM (Direct Message) | ✅ E2EE ile destekleniyor |
 
-> ActivityPub desteği aktif geliştirilmektedir. Bridge-to-Bridge federasyonu tam özellikli ve production kullanımına hazırdır.
+> Bridge-to-Bridge federasyonu tam özellikli ve production kullanımına hazırdır. ActivityPub (Fediverse) desteği de Follow/Accept/Reject/Undo akışları ve E2EE DM ile production kalitesine ulaşmıştır.
 
 ---
 
@@ -324,9 +358,9 @@ bridge/
 ## Bot Geliştirme
 
 ```bash
-cd bot-sdk/examples/welcomebot
-cp .env.example .env   # BOT_TOKEN ekle (Admin → Botlar → Yeni Bot)
-npm install && node index.js
+cd bot-sdk && npm install && npm run build
+cd examples/welcomebot
+BRIDGE_BOT_TOKEN=brg_xxx BRIDGE_SERVER_URL=http://localhost:3001 node index.js
 ```
 
 Bot SDK olayları: `message`, `memberJoin`, `memberLeave`, `reaction`, `voiceJoin`
@@ -340,7 +374,7 @@ Detaylar: [`bot-sdk/README.md`](bot-sdk/README.md) · API: `/api/docs`
 ```bash
 cd server
 npm test                 # Tüm testler
-npm run test:coverage    # Coverage raporu (%70 eşik)
+npm run test:coverage    # Coverage raporu (sunucu: %85 satır eşiği)
 ```
 
 E2E testler (Playwright):
@@ -375,13 +409,13 @@ Detaylar: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Lisans
 
-MIT — [Roadmap](ROADMAP.md)
+[MIT](LICENSE) — [Roadmap](ROADMAP.md) · [Güvenlik](SECURITY.md)
 
 ---
 
-## Discord Bot Uyumluluk Katmanı
+## Bot uyumluluk katmanı (opsiyonel)
 
-`discord-shim/` klasörü, mevcut Discord.js v14 botlarının Bridge'de çalışmasını sağlar.
+`discord-shim/` — mevcut Discord.js v14 botlarını Bridge API'sine uyarlar. Ana ürün kimliği Bridge'dir; bu katman geçiş kolaylığı içindir.
 
 ### Tek Satır Geçiş
 

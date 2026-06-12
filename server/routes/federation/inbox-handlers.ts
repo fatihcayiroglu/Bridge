@@ -1,26 +1,46 @@
-'use strict';
-// server/routes/federation/inbox-handlers.js
+// server/routes/federation/inbox-handlers.ts
 // Gelen ActivityPub aktivitelerini işleyen handler'lar
 // Her handler izole, test edilebilir.
 
-const { v4: uuidv4 } = require('uuid');
-const { Federation, Notifications } = require('../../db/repositories');
-const logger = require('../../lib/logger');
-const { deliverApActivity } = require('./delivery');
+import { v4 as uuidv4 } from 'uuid';
+import { Federation, Notifications, Dms, Users } from '../../db/repositories';
+import logger from '../../lib/logger';
+import { deliverApActivity } from './delivery';
+
+interface ApActor { _id: string; username: string; [key: string]: unknown; }
+interface ApObject extends Record<string, unknown> {
+  id?: string;
+  type?: string;
+  object?: string | ApObject;
+  content?: string;
+  name?: string;
+  summary?: string | null;
+  sensitive?: boolean;
+  inReplyTo?: string | null;
+  published?: string | number;
+  attachment?: Array<Record<string, string>>;
+  tag?: Array<Record<string, string>>;
+  to?: string | string[];
+  cc?: string | string[];
+}
+interface ApActivity { id: string; type: string; actor: string | { id: string }; object?: string | ApObject; }
+function isApObject(value: unknown): value is ApObject {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
 
 const AP_CONTEXT  = 'https://www.w3.org/ns/activitystreams';
 const instanceUrl = () => process.env.INSTANCE_URL || `http://localhost:${process.env.PORT || 3001}`;
 
 // ── Yardımcılar ─────────────────────────────────────────────────
-function actorId(actor) {
+function actorId(actor: string | { id: string } | undefined): string {
   return typeof actor === 'string' ? actor : actor?.id || '';
 }
-function objectId(obj) {
+function objectId(obj: string | { id?: string } | undefined): string {
   return typeof obj === 'string' ? obj : obj?.id || '';
 }
 
 // ── Follow ─────────────────────────────────────────────────────
-async function handleApFollow(targetUser, activity) {
+async function handleApFollow(targetUser: ApActor, activity: ApActivity): Promise<void> {
   try {
     const aUrl = actorId(activity.actor);
     const existing = await Federation.findApFollowOne({ actorUrl: aUrl, targetUserId: targetUser._id });
@@ -64,12 +84,12 @@ async function handleApFollow(targetUser, activity) {
 }
 
 // ── Unfollow (Undo Follow) ─────────────────────────────────────
-async function handleApUnfollow(targetUser, activity) {
+async function handleApUnfollow(targetUser: ApActor | null, activity: ApActivity): Promise<void> {
   try {
     const aUrl = actorId(activity.actor);
     // activity.object may be Follow, Like, or Announce
     const inner = activity.object;
-    if (!inner) return;
+    if (!isApObject(inner)) return;
 
     if (inner.type === 'Follow') {
       await Federation.removeApFollow({ actorUrl: aUrl, targetUserId: targetUser?._id }, {});
@@ -87,7 +107,7 @@ async function handleApUnfollow(targetUser, activity) {
 }
 
 // ── Accept (uzak sunucu Follow'u kabul etti) ───────────────────
-async function handleApAccept(localUser, activity) {
+async function handleApAccept(localUser: ApActor, activity: ApActivity): Promise<void> {
   try {
     const remoteActor = actorId(activity.actor);
     await Federation.updateApOutgoingFollow(
@@ -101,7 +121,7 @@ async function handleApAccept(localUser, activity) {
 }
 
 // ── Reject (uzak sunucu Follow'u reddetti) ────────────────────
-async function handleApReject(localUser, activity) {
+async function handleApReject(localUser: ApActor, activity: ApActivity): Promise<void> {
   try {
     const remoteActor = actorId(activity.actor);
     await Federation.removeApOutgoingFollow(
@@ -113,13 +133,83 @@ async function handleApReject(localUser, activity) {
   }
 }
 
+// ── AP DM tespiti: to[] içinde followers URL yoksa ve cc[] boşsa DM'dir
+// Örnek: { to: ["https://remote/users/alice"], cc: [] } → DM
+function _isApDm(obj: Record<string, unknown>): boolean {
+  const toArr: string[] = Array.isArray(obj.to)
+    ? obj.to
+    : typeof obj.to === 'string' ? [obj.to] : [];
+  const ccArr: string[] = Array.isArray(obj.cc)
+    ? obj.cc
+    : typeof obj.cc === 'string' ? [obj.cc] : [];
+
+  const PUBLIC_STREAM = 'https://www.w3.org/ns/activitystreams#Public';
+  const isPublic = (u: string) => u === PUBLIC_STREAM || u === 'as:Public' || u === 'Public';
+
+  // "to" içinde herkese açık stream yoksa ve followers koleksiyonu yoksa DM
+  const hasPublic    = toArr.some(isPublic) || ccArr.some(isPublic);
+  const hasFollowers = toArr.some(u => u.endsWith('/followers')) || ccArr.some(u => u.endsWith('/followers'));
+
+  return !hasPublic && !hasFollowers && toArr.length > 0;
+}
+
 // ── Create (Note, Article, Question…) ─────────────────────────
-async function handleApCreate(targetUser, activity) {
+async function handleApCreate(targetUser: ApActor | null, activity: ApActivity): Promise<void> {
   try {
     const obj = activity.object;
-    if (!obj || !['Note', 'Article', 'Question'].includes(obj.type)) return;
+    if (!isApObject(obj) || typeof obj.type !== 'string' || !['Note', 'Article', 'Question'].includes(obj.type)) return;
 
     const aUrl = actorId(activity.actor);
+
+    // ── ActivityPub DM tespiti ─────────────────────────────────
+    if (_isApDm(obj) && targetUser) {
+      // Gönderici AP actor URL'sine karşılık gelen yerel kullanıcıyı bul
+      const senderLocal = await Users.findByApUrl(aUrl).catch(() => null);
+
+      if (senderLocal) {
+        // Sprint 75: Güvenlik — senderLocal'ın AP URL'i activity'deki actor ile eşleşmeli.
+        // Bu kontrol HTTP Signature'ın zaten inbox seviyesinde doğrulandığını,
+        // ancak DB kaydındaki apUrl'in activity actor'ıyla tutarlı olmasını garantiler.
+        // Uyumsuzluk: saldırgan farklı bir kullanıcı adıyla kayıtlı ama farklı AP URL
+        // göndermiş olabilir (edge case); bu durumu blokla.
+        const senderApUrl = (senderLocal as unknown as Record<string, unknown>).apUrl as string | undefined;
+        if (senderApUrl && senderApUrl !== aUrl) {
+          logger.warn({
+            actorUrl: aUrl,
+            senderApUrl,
+            event: 'federation.dm.actor_mismatch',
+          }, 'AP DM actor URL mismatch — rejecting to prevent impersonation.');
+          return;
+        }
+
+        // İki yerel kullanıcı arasında DM conversation'ı bul ya da oluştur
+        const { dmId } = await Dms.findOrCreateConversation(senderLocal._id, targetUser._id);
+        await Dms.insertMessage({
+          _id:       uuidv4(),
+          dmId,
+          senderId:  senderLocal._id,
+          content:   obj.content || obj.name || '',
+          apId:      obj.id,
+          createdAt: obj.published ? new Date(obj.published).getTime() : Date.now(),
+        });
+        await Notifications.insertInbox({
+          _id:       uuidv4(),
+          userId:    targetUser._id,
+          type:      'dm',
+          actorUrl:  aUrl,
+          dmId,
+          read:      false,
+          createdAt: Date.now(),
+        });
+        logger.info({ noteId: obj.id, dmId, event: 'federation.dm.received' });
+        return; // federated timeline'a ekleme
+      }
+
+      // Yerel kullanıcı yoksa (remote→remote DM relay) — federation mesajı olarak kaydet
+      logger.warn({ aUrl, event: 'federation.dm.sender_not_local' });
+    }
+    // ── Genel federated note ───────────────────────────────────
+
     const fedMsg = {
       _id:          uuidv4(),
       apId:         obj.id,
@@ -129,7 +219,7 @@ async function handleApCreate(targetUser, activity) {
       summary:      obj.summary || null,
       sensitive:    obj.sensitive || false,
       inReplyTo:    obj.inReplyTo || null,
-      attachments:  (obj.attachment || []).map(a => ({ type: a.mediaType, url: a.url })),
+      attachments:  (obj.attachment || []).map((a: Record<string,string>) => ({ type: a.mediaType, url: a.url })),
       tags:         (obj.tag || []),
       published:    obj.published ? new Date(obj.published).getTime() : Date.now(),
       createdAt:    Date.now(),
@@ -137,7 +227,7 @@ async function handleApCreate(targetUser, activity) {
     await Federation.insertApMessage(fedMsg);
 
     // Mention bildirimi
-    if (targetUser && (obj.tag || []).some(t => t.type === 'Mention')) {
+    if (targetUser && (obj.tag || []).some((t: Record<string,string>) => t.type === 'Mention')) {
       await Notifications.insertInbox({
         _id:      uuidv4(),
         userId:   targetUser._id,
@@ -156,10 +246,10 @@ async function handleApCreate(targetUser, activity) {
 }
 
 // ── Update ─────────────────────────────────────────────────────
-async function handleApUpdate(targetUser, activity) {
+async function handleApUpdate(targetUser: ApActor | null, activity: ApActivity): Promise<void> {
   try {
     const obj  = activity.object;
-    if (!obj?.id) return;
+    if (!isApObject(obj) || typeof obj.id !== 'string') return;
     const aUrl = actorId(activity.actor);
     await Federation.updateApMessage(
       { apId: obj.id, actorUrl: aUrl },
@@ -172,7 +262,7 @@ async function handleApUpdate(targetUser, activity) {
 }
 
 // ── Delete ─────────────────────────────────────────────────────
-async function handleApDelete(targetUser, activity) {
+async function handleApDelete(targetUser: ApActor | null, activity: ApActivity): Promise<void> {
   try {
     const oId  = objectId(activity.object);
     if (!oId) return;
@@ -185,7 +275,7 @@ async function handleApDelete(targetUser, activity) {
 }
 
 // ── Like ───────────────────────────────────────────────────────
-async function handleApLike(targetUser, activity) {
+async function handleApLike(targetUser: ApActor | null, activity: ApActivity): Promise<void> {
   try {
     const aUrl = actorId(activity.actor);
     const oUrl = objectId(activity.object);
@@ -218,7 +308,7 @@ async function handleApLike(targetUser, activity) {
 }
 
 // ── Announce (Boost/Reblog) ────────────────────────────────────
-async function handleApAnnounce(targetUser, activity) {
+async function handleApAnnounce(targetUser: ApActor | null, activity: ApActivity): Promise<void> {
   try {
     const aUrl = actorId(activity.actor);
     const oUrl = objectId(activity.object);
@@ -249,7 +339,17 @@ async function handleApAnnounce(targetUser, activity) {
   }
 }
 
-module.exports = {
+export { handleApFollow,
+  handleApUnfollow,
+  handleApAccept,
+  handleApReject,
+  handleApCreate,
+  handleApUpdate,
+  handleApDelete,
+  handleApLike,
+  handleApAnnounce, };
+
+const inboxHandlers = {
   handleApFollow,
   handleApUnfollow,
   handleApAccept,
@@ -260,4 +360,7 @@ module.exports = {
   handleApLike,
   handleApAnnounce,
 };
-export {};
+
+export default inboxHandlers;
+module.exports = inboxHandlers;
+module.exports.default = inboxHandlers;

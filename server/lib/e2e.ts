@@ -1,5 +1,4 @@
-// @ts-nocheck
-// server/lib/e2e.js Uçtan Uca Şifreleme (E2EE)
+// server/lib/e2e.ts Uçtan Uca Şifreleme (E2EE)
 // Signal Protocol'dan ilham alınmıştır
 // 
 // MİMARİ:
@@ -12,20 +11,17 @@
 // KULLANIM (client-side):
 //   const { generateKeyPair, encryptMessage, decryptMessage } = window.BridgeE2E;
 
-const crypto = require('crypto');
-const express = require('express');
+import crypto from 'crypto';
+import express from 'express';
 const router  = express.Router();
-const { Users } = require('../db/repositories');
-const { authMiddleware } = require('../middleware/auth');
-const asyncHandler = require('../middleware/asyncHandler');
-
-// ─────────────────────────────────────────────────────────────
+import { Users } from '../db/repositories';
+import { authMiddleware } from '../middleware/auth';
 // SUNUCU TARAFI: Sadece public key saklama/alma
 // Private key asla sunucuya gelmez
 // ─────────────────────────────────────────────────────────────
 
 // POST /api/e2e/keys — kullanıcının public key'ini kaydet
-router.post('/keys', authMiddleware, asyncHandler(async (req, res) => {
+router.post('/keys', authMiddleware, async (req, res) => {
   const { publicKey, keyVersion = 1, algorithm = 'X25519' } = req.body;
   if (!publicKey) return res.status(400).json({ error: 'publicKey required' });
   if (typeof publicKey !== 'string' || publicKey.length > 200)
@@ -42,11 +38,11 @@ router.post('/keys', authMiddleware, asyncHandler(async (req, res) => {
   );
 
   res.json({ ok: true, message: 'Public key registered. Private key never leaves your device.' });
-}));
+});
 
 // GET /api/e2e/keys/:userId — bir kullanıcının public key'ini al
-router.get('/keys/:userId', authMiddleware, asyncHandler(async (req, res) => {
-  const user = await Users.findById(req.params.userId);
+router.get('/keys/:userId', authMiddleware, async (req, res) => {
+  const user = await Users.findById(String(req.params.userId ?? ''));
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   if (!user.e2ePublicKey) {
@@ -61,16 +57,16 @@ router.get('/keys/:userId', authMiddleware, asyncHandler(async (req, res) => {
     algorithm:  user.e2eAlgorithm || 'X25519',
     updatedAt:  user.e2eKeyUpdatedAt,
   });
-}));
+});
 
 // GET /api/e2e/keys/batch — birden fazla kullanıcının public key'ini al
-router.post('/keys/batch', authMiddleware, asyncHandler(async (req, res) => {
+router.post('/keys/batch', authMiddleware, async (req, res) => {
   const { userIds } = req.body;
   if (!Array.isArray(userIds) || userIds.length > 50)
     return res.status(400).json({ error: 'userIds must be array, max 50' });
 
   const users = await Users.findByIds(userIds);
-  const result = {};
+  const result: Record<string, { hasKey: true; publicKey: string; keyVersion: number; algorithm: string } | { hasKey: false }> = {};
   users.forEach(u => {
     result[u._id] = u.e2ePublicKey ? {
       hasKey:     true,
@@ -81,19 +77,24 @@ router.post('/keys/batch', authMiddleware, asyncHandler(async (req, res) => {
   });
 
   res.json(result);
-}));
+});
 
 // DELETE /api/e2e/keys — E2EE'yi kapat (key sil)
-router.delete('/keys', authMiddleware, asyncHandler(async (req, res) => {
+router.delete('/keys', authMiddleware, async (req, res) => {
   await Users.updateWhere(
     { _id: req.user.id },
     { $set: { e2ePublicKey: null, e2eKeyVersion: null, e2eAlgorithm: null } }
   );
   res.json({ ok: true, message: 'E2EE keys removed' });
-}));
+});
+
+// GET /api/e2e/feature-status — Production feature flag (no auth needed)
+router.get('/feature-status', (_req, res) => {
+  res.json({ enabled: process.env.BRIDGE_E2EE_ENABLED !== 'false' }); // Sprint 115: default true
+});
 
 // GET /api/e2e/status — E2EE durumu
-router.get('/status', authMiddleware, asyncHandler(async (req, res) => {
+router.get('/status', authMiddleware, async (req, res) => {
   const user = await Users.findById(req.user.id);
   res.json({
     enabled:    !!user?.e2ePublicKey,
@@ -102,7 +103,7 @@ router.get('/status', authMiddleware, asyncHandler(async (req, res) => {
     updatedAt:  user?.e2eKeyUpdatedAt || null,
     info: 'Your private key never leaves your device. The server only stores your public key.',
   });
-}));
+});
 
 // ─────────────────────────────────────────────────────────────
 // X3DH — Extended Triple Diffie-Hellman (Signal Protocol)
@@ -113,7 +114,7 @@ router.get('/status', authMiddleware, asyncHandler(async (req, res) => {
 // Mesaj göndericisi bundle'ı alır, X3DH ile paylaşılan sır türetir.
 
 // POST /api/e2e/prekeys — prekey bundle yükle
-router.post('/prekeys', authMiddleware, asyncHandler(async (req, res) => {
+router.post('/prekeys', authMiddleware, async (req, res) => {
   const {
     identityKey,    // base64 — uzun ömürlü kimlik anahtarı (public)
     signedPreKey,   // { keyId, publicKey, signature } — sunucuda imzalanmış
@@ -142,11 +143,11 @@ router.post('/prekeys', authMiddleware, asyncHandler(async (req, res) => {
   });
 
   res.json({ ok: true, oneTimePreKeysStored: otpks.length });
-}));
+});
 
 // GET /api/e2e/prekeys/:userId — prekey bundle al (bir one-time key tüketilir)
-router.get('/prekeys/:userId', authMiddleware, asyncHandler(async (req, res) => {
-  const user = await Users.findById(req.params.userId);
+router.get('/prekeys/:userId', authMiddleware, async (req, res) => {
+  const user = await Users.findById(String(req.params.userId ?? ''));
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   if (!user.x3dhIdentityKey) {
@@ -172,23 +173,23 @@ router.get('/prekeys/:userId', authMiddleware, asyncHandler(async (req, res) => 
     oneTimePreKey,                        // null olabilir — gönderici bunu handle etmeli
     remainingOneTimeKeys: otpks.length - (oneTimePreKey ? 1 : 0),
   });
-}));
+});
 
 // GET /api/e2e/prekeys/:userId/count — kaç one-time prekey kaldı (replenish sinyali)
-router.get('/prekeys/:userId/count', authMiddleware, asyncHandler(async (req, res) => {
-  if (req.user.id !== req.params.userId) return res.status(403).json({ error: 'Forbidden' });
-  const user = await Users.findById(req.params.userId);
+router.get('/prekeys/:userId/count', authMiddleware, async (req, res) => {
+  if (req.user.id !== String(req.params.userId ?? '')) return res.status(403).json({ error: 'Forbidden' });
+  const user = await Users.findById(String(req.params.userId ?? ''));
   const count = user?.x3dhOneTimePreKeys?.length ?? 0;
   res.json({
     count,
     needsReplenish: count < 10, // < 10 kalınca istemciye bildir
   });
-}));
+});
 
-module.exports = { router };
+export { router };
 // Aşağıdaki kodu client/js/core/e2e.js dosyasına kopyala:
 /*
-// client/js/core/e2e.js İstemci Tarafı E2EE
+// client/js/core/e2e.ts İstemci Tarafı E2EE
 // Web Crypto API kullanır (tüm modern tarayıcılarda desteklenir)
 
 window.BridgeE2E = (() => {
@@ -208,7 +209,7 @@ window.BridgeE2E = (() => {
     });
   }
 
-  async function savePrivateKey(userId, privateKey) {
+  async function savePrivateKey(userId: string, privateKey: string): Promise<void> {
     const db = await openDB();
     return new Promise((resolve, reject) => {
       const tx  = db.transaction(STORE_NAME, 'readwrite');
@@ -218,7 +219,7 @@ window.BridgeE2E = (() => {
     });
   }
 
-  async function loadPrivateKey(userId) {
+  async function loadPrivateKey(userId: string): Promise<string | null> {
     const db = await openDB();
     return new Promise((resolve, reject) => {
       const tx  = db.transaction(STORE_NAME, 'readonly');
@@ -247,7 +248,7 @@ window.BridgeE2E = (() => {
   }
 
   // Mesaj şifrele (alıcının public key'i ile)
-  async function encryptMessage(plaintext, recipientPublicKeyB64) {
+  async function encryptMessage(plaintext: string, recipientPublicKeyB64: string): Promise<string> {
     // Alıcının public key'ini import et
     const recipientKeyData = Uint8Array.from(atob(recipientPublicKeyB64), c => c.charCodeAt(0));
     const recipientKey = await crypto.subtle.importKey(
@@ -286,7 +287,7 @@ window.BridgeE2E = (() => {
   }
 
   // Mesaj şifre çöz (kendi private key'i ile)
-  async function decryptMessage(encrypted, myPrivateKeyB64) {
+  async function decryptMessage(encrypted: string, myPrivateKeyB64: string): Promise<string> {
     const { ciphertext, iv: ivB64, ephPublicKey } = encrypted;
 
     // Kendi private key'ini import et
@@ -319,10 +320,10 @@ window.BridgeE2E = (() => {
   }
 
   // Kurulum: anahtar çifti oluştur ve sunucuya public key gönder
-  async function setup(userId, apiToken, apiBase) {
+  async function setup(userId: string, apiToken: string, apiBase: string): Promise<void> {
     const existing = await loadPrivateKey(userId);
     if (existing) {
-      console.log('[E2EE] Key already exists for this user');
+      logger.debug({ event: 'e2e.key_exists' }, 'E2EE anahtarı zaten mevcut.');
       return { alreadySetup: true };
     }
 
@@ -336,19 +337,21 @@ window.BridgeE2E = (() => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiToken}` },
       body: JSON.stringify({ publicKey, algorithm: 'P-256' }),
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!res.ok) throw new Error('Failed to register public key');
 
-    console.log('[E2EE] ✅ Setup complete. Private key stays on your device.');
+    logger.info({ event: 'e2e.setup_complete' }, 'E2EE kurulumu tamamlandı.');
     return { success: true };
   }
 
   // DM şifreleme için yardımcı
-  async function encryptDM(plaintext, recipientId, myUserId, apiToken, apiBase) {
+  async function encryptDM(plaintext: string, recipientId: string, myUserId: string, apiToken: string, apiBase: string): Promise<string> {
     // Alıcının public key'ini al
     const res = await fetch(`${apiBase}/api/e2e/keys/${recipientId}`, {
       headers: { Authorization: `Bearer ${apiToken}` },
+      signal: AbortSignal.timeout(10_000),
     });
     const data = await res.json();
     if (!data.hasKey) return { encrypted: false, content: plaintext }; // E2EE kurmamış
@@ -357,7 +360,7 @@ window.BridgeE2E = (() => {
     return { encrypted: true, e2e: encrypted, content: '🔒 Şifreli mesaj' };
   }
 
-  async function decryptDM(e2eData, myUserId) {
+  async function decryptDM(e2eData: Record<string, unknown>, myUserId: string): Promise<string> {
     const privateKey = await loadPrivateKey(myUserId);
     if (!privateKey) return null; // Key bulunamadı
     return decryptMessage(e2eData, privateKey);

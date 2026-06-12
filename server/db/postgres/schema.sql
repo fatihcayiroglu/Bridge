@@ -20,10 +20,21 @@ CREATE TABLE IF NOT EXISTS users (
   "bannerUrl"  TEXT,
   "tokenVersion" BIGINT NOT NULL DEFAULT 0,
   "createdAt"  BIGINT NOT NULL,
-  "apPublicKey"  TEXT,
-  "apPrivateKey" TEXT
+  "apPublicKey"  TEXT
+  -- apPrivateKey bu tabloda YOK: migration 006 ile user_ap_keys tablosuna taşındı.
+  -- Şifreli olarak saklanır; erişim için Users.getApPrivateKey() kullanın.
 );
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+
+-- ActivityPub private key — ayrı tablo, uygulama katmanında AES-256-GCM ile şifreli
+-- Anahtar: AP_ENCRYPTION_KEY env değişkeni (32-byte hex, zorunlu FEDERATION_ENABLED=true ise)
+CREATE TABLE IF NOT EXISTS user_ap_keys (
+  "userId"           TEXT PRIMARY KEY REFERENCES users(_id) ON DELETE CASCADE,
+  "apPrivateKeyEnc"  TEXT NOT NULL,  -- AES-256-GCM şifreli: base64(iv:authTag:ciphertext)
+  "keyVersion"       INTEGER NOT NULL DEFAULT 1,
+  "createdAt"        BIGINT NOT NULL,
+  "updatedAt"        BIGINT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS refresh_tokens (
   token      TEXT PRIMARY KEY,
@@ -36,6 +47,10 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_rt_userId   ON refresh_tokens("userId");
 CREATE INDEX IF NOT EXISTS idx_rt_expires  ON refresh_tokens("expiresAt");
+-- Sprint 121 FIX: family bazlı iptal (revokeByFamily) için bileşik index
+CREATE INDEX IF NOT EXISTS idx_rt_family   ON refresh_tokens(family) WHERE family IS NOT NULL;
+-- Sprint 121 FIX: süresi dolmuş + kullanılmış cleanup job için bileşik index
+CREATE INDEX IF NOT EXISTS idx_rt_cleanup  ON refresh_tokens(used, "usedAt") WHERE used = 1;
 
 CREATE TABLE IF NOT EXISTS servers (
   _id          TEXT PRIMARY KEY,
@@ -47,6 +62,8 @@ CREATE TABLE IF NOT EXISTS servers (
   discoverable BOOLEAN NOT NULL DEFAULT FALSE,
   description  TEXT NOT NULL DEFAULT '',
   tags         JSONB NOT NULL DEFAULT '[]',
+  -- Sprint 121 FIX 15: Sunucu bazında 2FA zorunluluğu (0=kapalı, 1=moderatörler, 2=herkes)
+  "mfaLevel"   INTEGER NOT NULL DEFAULT 0,
   "createdAt"  BIGINT NOT NULL
 );
 
@@ -72,6 +89,7 @@ CREATE TABLE IF NOT EXISTS messages (
   username     TEXT NOT NULL,
   "displayName" TEXT NOT NULL,
   "avatarColor" TEXT NOT NULL DEFAULT '#5865f2',
+  "avatarUrl"  TEXT,
   content      TEXT NOT NULL DEFAULT '',
   type         TEXT NOT NULL DEFAULT 'normal',
   "fileUrl"    TEXT,
@@ -82,7 +100,15 @@ CREATE TABLE IF NOT EXISTS messages (
   "replyTo"    JSONB,
   pinned       BOOLEAN NOT NULL DEFAULT FALSE,
   "editHistory" JSONB NOT NULL DEFAULT '[]',
+  "editedAt"   BIGINT,
   "bridgedFrom" JSONB,
+  embeds       JSONB,
+  -- Sprint 89: E2EE mesajları için şifreli içerik alanları
+  "encryptedContent" TEXT,
+  iv           TEXT,
+  -- Sprint 121 FIX 17: Soft delete için audit alanları
+  "deletedAt"  BIGINT,
+  "deletedBy"  TEXT,
   "createdAt"  BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_msg_channel   ON messages("channelId");
@@ -369,7 +395,19 @@ CREATE TABLE IF NOT EXISTS federation_peers (
   name         TEXT NOT NULL DEFAULT '',
   status       TEXT NOT NULL DEFAULT 'active',
   "lastSeen"   BIGINT,
-  "createdAt"  BIGINT NOT NULL
+  "createdAt"  BIGINT NOT NULL,
+  -- ADR-0006 Faz 1 (Sprint 107): per-peer RSA-2048 public key (PEM)
+  -- Nullable — mevcut peer'lar etkilenmez; Sprint 108'de imza doğrulamasında kullanılacak.
+  "publicKey"  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS server_federation_keys (
+  _id             TEXT PRIMARY KEY DEFAULT 'instance',
+  "publicKeyPem"  TEXT NOT NULL,
+  "privateKeyEnc" TEXT NOT NULL,
+  "keyVersion"    INTEGER NOT NULL DEFAULT 1,
+  "createdAt"     BIGINT NOT NULL,
+  "rotatedAt"     BIGINT
 );
 
 CREATE TABLE IF NOT EXISTS admin_logs (
@@ -666,3 +704,142 @@ ALTER TABLE dm_messages ADD COLUMN IF NOT EXISTS "e2eData"     JSONB;
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS "ssoProvider" TEXT;
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS "ssoId"       TEXT;
 ALTER TABLE servers  ADD COLUMN IF NOT EXISTS "ssoConfig"   JSONB;
+
+-- ══════════════════════════════════════════════════════════════════
+-- Tables present only in migrations — added here for clean installs
+-- (ap_outgoing_follows, ap_likes, ap_announces, ap_delivery_queue,
+--  notifications, native_push_tokens, server_templates, user_badges)
+-- ══════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS ap_outgoing_follows (
+  _id              TEXT PRIMARY KEY,
+  "fromUserId"     TEXT NOT NULL,
+  "targetActorUrl" TEXT NOT NULL,
+  "activityId"     TEXT,
+  accepted         BOOLEAN NOT NULL DEFAULT FALSE,
+  "acceptedAt"     BIGINT,
+  "createdAt"      BIGINT NOT NULL
+);
+CREATE INDEX        IF NOT EXISTS idx_ap_outfollows_user   ON ap_outgoing_follows("fromUserId");
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_outfollows_unique ON ap_outgoing_follows("fromUserId", "targetActorUrl");
+
+CREATE TABLE IF NOT EXISTS ap_likes (
+  _id            TEXT PRIMARY KEY,
+  "actorUrl"     TEXT,
+  "fromUserId"   TEXT,
+  "objectUrl"    TEXT NOT NULL,
+  "targetUserId" TEXT,
+  "createdAt"    BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ap_likes_object ON ap_likes("objectUrl");
+
+CREATE TABLE IF NOT EXISTS ap_announces (
+  _id            TEXT PRIMARY KEY,
+  "actorUrl"     TEXT,
+  "fromUserId"   TEXT,
+  "objectUrl"    TEXT NOT NULL,
+  "targetUserId" TEXT,
+  "createdAt"    BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ap_announces_object ON ap_announces("objectUrl");
+
+CREATE TABLE IF NOT EXISTS ap_delivery_queue (
+  _id        TEXT PRIMARY KEY,
+  payload    JSONB   NOT NULL DEFAULT '{}',
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  "nextAt"   BIGINT  NOT NULL,
+  "createdAt" BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_apqueue_nextat ON ap_delivery_queue("nextAt");
+
+CREATE TABLE IF NOT EXISTS notifications (
+  _id        TEXT PRIMARY KEY,
+  "userId"   TEXT    NOT NULL,
+  type       TEXT    NOT NULL,
+  "actorUrl" TEXT,
+  "noteId"   TEXT,
+  "noteUrl"  TEXT,
+  read       BOOLEAN NOT NULL DEFAULT FALSE,
+  "createdAt" BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications("userId", "createdAt" DESC);
+
+CREATE TABLE IF NOT EXISTS native_push_tokens (
+  _id        TEXT PRIMARY KEY,
+  "userId"   TEXT NOT NULL,
+  platform   TEXT NOT NULL DEFAULT 'unknown',
+  token      TEXT UNIQUE NOT NULL,
+  "createdAt" BIGINT NOT NULL,
+  "updatedAt" BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_nativepush_user ON native_push_tokens("userId");
+
+CREATE TABLE IF NOT EXISTS server_templates (
+  _id          TEXT PRIMARY KEY,
+  name         TEXT    NOT NULL,
+  description  TEXT    NOT NULL DEFAULT '',
+  "createdBy"  TEXT    NOT NULL,
+  "isBuiltin"  BOOLEAN NOT NULL DEFAULT FALSE,
+  config       JSONB   NOT NULL DEFAULT '{}',
+  "createdAt"  BIGINT  NOT NULL,
+  "updatedAt"  BIGINT
+);
+
+CREATE TABLE IF NOT EXISTS user_badges (
+  _id         TEXT PRIMARY KEY,
+  "userId"    TEXT   NOT NULL,
+  badge       TEXT   NOT NULL,
+  label       TEXT   NOT NULL DEFAULT '',
+  icon        TEXT   NOT NULL DEFAULT '',
+  "awardedAt" BIGINT NOT NULL,
+  "awardedBy" TEXT   DEFAULT NULL,
+  UNIQUE ("userId", badge)
+);
+CREATE INDEX IF NOT EXISTS idx_user_badges_user ON user_badges("userId");
+
+-- ── Sprint 93: Boost Ekonomisi ────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS server_boosts (
+  _id          TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  "serverId"   TEXT NOT NULL REFERENCES servers(_id) ON DELETE CASCADE,
+  "userId"     TEXT NOT NULL,
+  "boostedAt"  BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,
+  "expiresAt"  BIGINT,
+  active       BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE INDEX IF NOT EXISTS idx_boosts_server ON server_boosts("serverId", active);
+CREATE INDEX IF NOT EXISTS idx_boosts_user   ON server_boosts("userId");
+CREATE UNIQUE INDEX IF NOT EXISTS idx_boosts_user_server ON server_boosts("userId","serverId") WHERE active = TRUE;
+
+-- ── Sprint 93: Vanity URL ────────────────────────────────────────────────────
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS "vanityUrl"  TEXT UNIQUE;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS "boostCount" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS "boostTier"  INTEGER NOT NULL DEFAULT 0;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_servers_vanity ON servers("vanityUrl") WHERE "vanityUrl" IS NOT NULL;
+
+-- ── Sprint 93: Spotify OAuth ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  _id           TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  "userId"      TEXT NOT NULL,
+  platform      TEXT NOT NULL,
+  "accessToken" TEXT NOT NULL,
+  "refreshToken" TEXT,
+  "expiresAt"   BIGINT,
+  scope         TEXT,
+  "createdAt"   BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,
+  UNIQUE("userId", platform)
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_user ON oauth_tokens("userId");
+
+-- ── Sprint 94: Announcement Channel Follow/Crosspost ─────────────────────────
+CREATE TABLE IF NOT EXISTS channel_follows (
+  _id              TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  "sourceChannelId" TEXT NOT NULL,   -- announcement kanalı (kaynak)
+  "sourceServerId"  TEXT NOT NULL,
+  "targetChannelId" TEXT NOT NULL,   -- hedef sunucudaki kanal
+  "targetServerId"  TEXT NOT NULL,
+  "followedAt"      BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,
+  "followedByUserId" TEXT NOT NULL,
+  UNIQUE("sourceChannelId","targetChannelId")
+);
+CREATE INDEX IF NOT EXISTS idx_channel_follows_source ON channel_follows("sourceChannelId");
+CREATE INDEX IF NOT EXISTS idx_channel_follows_target ON channel_follows("targetChannelId");

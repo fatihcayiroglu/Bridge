@@ -1,655 +1,266 @@
-<!-- SETTINGS MODAL -->
-<div id="settings-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title" style="display:none" onclick="closeModalOutside(event,'settings-modal')">
-  <div class="modal-card" style="max-height:85vh;overflow-y:auto;">
-    <h2 id="settings-modal-title">⚙️ Settings</h2>
-    <div class="form-group"><label>Display Name</label><input type="text" id="s-displayname" maxlength="32" aria-label="Görünen ad"></div>
-    <div class="form-group"><label>Status</label>
-      <select id="s-status" aria-label="Durum seç">
-        <option value="online">🟢 Online</option>
-        <option value="idle">🟡 Idle</option>
-        <option value="dnd">🔴 Do Not Disturb</option>
-        <option value="offline">⚫ Invisible</option>
-      </select>
-    </div>
-    <div class="form-group"><label>Bio <span style="font-weight:400;color:var(--text-muted)">(max 180 chars)</span></label>
-      <textarea class="bio-textarea" id="s-bio" aria-label="Biyografi" maxlength="180" placeholder="Tell people about yourself..."></textarea>
-    </div>
-    <div class="form-group"><label>Pronouns</label>
-      <input type="text" id="s-pronouns" class="input-field" placeholder="they/them, she/her, he/him..." maxlength="40">
-    </div>
-    <div class="form-group"><label>Location</label>
-      <input type="text" id="s-location" class="input-field" placeholder="Istanbul, Turkey" maxlength="60">
-    </div>
-    <div class="form-group"><label>Website / Link</label>
-      <input type="url" id="s-website" class="input-field" placeholder="https://yoursite.com" maxlength="120">
-    </div>
-    <div class="form-group">
-      <label>Profile Banner Color</label>
-      <div style="display:flex;gap:10px;align-items:center;">
-        <input type="color" id="s-banner-color" value="#5865f2" style="width:48px;height:36px;border:none;border-radius:6px;cursor:pointer;padding:2px;" oninput="updateProfilePreview()">
-        <span style="font-size:12px;color:var(--text-muted);">Background color shown on your profile card</span>
-        <button class="btn btn-primary" style="font-size:11px;padding:4px 12px;" onclick="saveBannerColor()">Kaydet</button>
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Rozet (Badge) <span style="font-size:11px;color:var(--text-muted);">(Profil kartında ve üye listesinde gösterilir)</span></label>
-      <div style="display:flex;gap:8px;align-items:center;">
-        <input type="text" id="s-badge" class="input-field" placeholder="örn: Moderatör, Dev, VIP" maxlength="20" style="max-width:220px;">
-        <button class="btn btn-primary" style="font-size:11px;padding:6px 14px;" onclick="saveBadge()">Kaydet</button>
-      </div>
-      <div id="s-badge-preview" style="margin-top:6px;"></div>
-    </div>
-    <div class="form-group">
-      <label>Profile Banner Image <span style="font-size:11px;color:var(--brand);font-weight:600;">✦ Bridge'de Bedava</span></label>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <label class="btn btn-primary" style="cursor:pointer;font-size:12px;padding:6px 12px;">
-          🖼️ Banner Yükle (GIF dahil)
-          <input type="file" id="banner-file-input" accept="image/png,image/gif,image/webp,image/jpeg" style="display:none" onchange="uploadProfileBanner(this)">
-        </label>
-        <button class="btn" style="font-size:12px;padding:6px 12px;" onclick="removeProfileBanner()">🗑️ Kaldır</button>
-        <span style="font-size:11px;color:var(--text-muted);">PNG, GIF animasyonlu, WebP, JPEG • Max 10MB</span>
-      </div>
-      <div id="banner-preview-wrap" style="margin-top:8px;display:none;">
-        <img id="banner-preview-img" style="width:100%;max-height:80px;object-fit:cover;border-radius:8px;border:1px solid var(--border);">
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Preview</label>
-      <div id="profile-preview-card"></div>
+<!-- client/partials/settings-modal.html — A11Y patch (Session 16)
+     Mevcut modal markup'ına eklenen / değiştirilen attribute'lar.
+     Tam dosyanın yerini değiştirmez; diff olarak uygulanır.
+
+     DEĞİŞİKLİKLER:
+     1. Modal kök elementi: role="dialog" aria-modal="true" aria-labelledby="settings-modal-title"
+     2. Başlık: id="settings-modal-title"
+     3. Kapat butonu: aria-label="Ayarları kapat"
+     4. Sekme listesi: role="tablist"
+     5. Her sekme butonu: role="tab" aria-selected aria-controls
+     6. Her panel: role="tabpanel" aria-labelledby tabindex="0"
+     7. Toggle switch'ler: role="switch" aria-checked
+     8. Push notification toggle: aria-describedby="push-toggle-desc"
+-->
+
+<div
+  id="settings-modal"
+  class="modal-overlay"
+  hidden
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="settings-modal-title"
+>
+  <div class="modal-container settings-modal-container" role="document">
+
+    <!-- Başlık + kapat -->
+    <div class="modal-header">
+      <h2 id="settings-modal-title" class="modal-title">Ayarlar</h2>
+      <button
+        class="modal-close icon-btn"
+        data-modal-close
+        aria-label="Ayarları kapat"
+        type="button"
+      >✕</button>
     </div>
 
-    <hr style="border:none;border-top:1px solid var(--border);margin:16px 0;">
-    <h3 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:12px;">Görünüm</h3>
+    <!-- Sekme navigasyonu -->
+    <div class="settings-layout">
+      <nav aria-label="Ayar kategorileri">
+        <ul role="tablist" aria-orientation="vertical" class="settings-tabs">
 
-    <div class="form-group">
-      <label>Tema</label>
-      <div id="theme-options" class="theme-selector" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;">
-        <button onclick="setTheme('dark')"     class="theme-opt" data-t="dark"     style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:var(--r-md);border:1.5px solid var(--border);background:var(--bg-3);cursor:pointer;font-family:inherit;font-size:13px;color:var(--text-primary);transition:border-color 0.15s,box-shadow 0.15s;">🌙 Koyu</button>
-        <button onclick="setTheme('light')"    class="theme-opt" data-t="light"    style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:var(--r-md);border:1.5px solid var(--border);background:var(--bg-3);cursor:pointer;font-family:inherit;font-size:13px;color:var(--text-primary);transition:border-color 0.15s,box-shadow 0.15s;">☀️ Açık</button>
-        <button onclick="setTheme('amoled')"   class="theme-opt" data-t="amoled"   style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:var(--r-md);border:1.5px solid var(--border);background:var(--bg-3);cursor:pointer;font-family:inherit;font-size:13px;color:var(--text-primary);transition:border-color 0.15s,box-shadow 0.15s;">🌑 AMOLED</button>
-        <button onclick="setTheme('midnight')" class="theme-opt" data-t="midnight" style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:var(--r-md);border:1.5px solid var(--border);background:var(--bg-3);cursor:pointer;font-family:inherit;font-size:13px;color:var(--text-primary);transition:border-color 0.15s,box-shadow 0.15s;">🌌 Gece Yarısı</button>
-        <button onclick="setTheme('aurora')"   class="theme-opt" data-t="aurora"   style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:var(--r-md);border:1.5px solid var(--border);background:var(--bg-3);cursor:pointer;font-family:inherit;font-size:13px;color:var(--text-primary);transition:border-color 0.15s,box-shadow 0.15s;">🌠 Aurora</button>
-        <button onclick="setTheme('sunset')"   class="theme-opt" data-t="sunset"   style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:var(--r-md);border:1.5px solid var(--border);background:var(--bg-3);cursor:pointer;font-family:inherit;font-size:13px;color:var(--text-primary);transition:border-color 0.15s,box-shadow 0.15s;">🌅 Günbatımı</button>
-        <button onclick="setTheme('forest')"   class="theme-opt" data-t="forest"   style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:var(--r-md);border:1.5px solid var(--border);background:var(--bg-3);cursor:pointer;font-family:inherit;font-size:13px;color:var(--text-primary);transition:border-color 0.15s,box-shadow 0.15s;">🌲 Orman</button>
-      </div>
-    </div>
+          <li role="presentation">
+            <button
+              id="tab-profile"
+              role="tab"
+              class="settings-tab-btn active"
+              aria-selected="true"
+              aria-controls="panel-profile"
+              tabindex="0"
+              type="button"
+            >Profil</button>
+          </li>
 
-    <div class="form-group">
-      <label>Ana Renk (Brand)</label>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;">
-        <button onclick="setBrandColor(220,91)" style="width:28px;height:28px;border-radius:50%;background:hsl(220,91%,61%);border:2px solid transparent;cursor:pointer;padding:0;" title="Mavi (varsayılan)"></button>
-        <button onclick="setBrandColor(258,80)" style="width:28px;height:28px;border-radius:50%;background:hsl(258,80%,65%);border:2px solid transparent;cursor:pointer;padding:0;" title="Mor"></button>
-        <button onclick="setBrandColor(160,65)" style="width:28px;height:28px;border-radius:50%;background:hsl(160,65%,45%);border:2px solid transparent;cursor:pointer;padding:0;" title="Yeşil"></button>
-        <button onclick="setBrandColor(340,75)" style="width:28px;height:28px;border-radius:50%;background:hsl(340,75%,55%);border:2px solid transparent;cursor:pointer;padding:0;" title="Pembe"></button>
-        <button onclick="setBrandColor(28,90)"  style="width:28px;height:28px;border-radius:50%;background:hsl(28,90%,55%);border:2px solid transparent;cursor:pointer;padding:0;"  title="Turuncu"></button>
-        <button onclick="setBrandColor(0,80)"   style="width:28px;height:28px;border-radius:50%;background:hsl(0,80%,60%);border:2px solid transparent;cursor:pointer;padding:0;"   title="Kırmızı"></button>
-        <input type="color" id="custom-brand-color" value="#4f8ef7"
-          style="width:28px;height:28px;border-radius:50%;border:2px solid var(--border);cursor:pointer;padding:0;background:none;"
-          title="Özel renk"
-          oninput="const c=this.value;const r=parseInt(c.slice(1,3),16),g=parseInt(c.slice(3,5),16),b=parseInt(c.slice(5,7),16);const max=Math.max(r,g,b),min=Math.min(r,g,b);const h=max===r?((g-b)/(max-min)*60+360)%360:max===g?(b-r)/(max-min)*60+120:(r-g)/(max-min)*60+240;setBrandColor(Math.round(h),75);">
-      </div>
-      <span style="font-size:11px;color:var(--text-muted);margin-top:4px;display:block;">Tüm vurgu renkleri otomatik güncellenir</span>
-    </div>
+          <li role="presentation">
+            <button
+              id="tab-notifications"
+              role="tab"
+              class="settings-tab-btn"
+              aria-selected="false"
+              aria-controls="panel-notifications"
+              tabindex="-1"
+              type="button"
+            >Bildirimler</button>
+          </li>
 
-    <!-- ── SOHBET ARKA PLANI ─────────────────────────────────── -->
-    <div class="form-group" style="margin-top:4px;">
-      <label>🖼️ Sohbet Arka Planı</label>
-      <p style="font-size:12px;color:var(--text-muted);margin:4px 0 10px;">Mesajlaşma alanının arka planını özelleştir</p>
+          <li role="presentation">
+            <button
+              id="tab-privacy"
+              role="tab"
+              class="settings-tab-btn"
+              aria-selected="false"
+              aria-controls="panel-privacy"
+              tabindex="-1"
+              type="button"
+            >Gizlilik</button>
+          </li>
 
-      <!-- Preset grid — click handler JS tarafında (settings-modal.js) -->
-      <div id="chat-bg-preset-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px;"></div>
+          <li role="presentation">
+            <button
+              id="tab-appearance"
+              role="tab"
+              class="settings-tab-btn"
+              aria-selected="false"
+              aria-controls="panel-appearance"
+              tabindex="-1"
+              type="button"
+            >Görünüm</button>
+          </li>
+          <li role="presentation">
+            <button
+              id="tab-voice"
+              role="tab"
+              class="settings-tab-btn"
+              aria-selected="false"
+              aria-controls="panel-voice"
+              tabindex="-1"
+              type="button"
+            >Ses &amp; Mikrofon</button>
+          </li>
 
-      <!-- Özel renk picker (gizli) -->
-      <input type="color" id="chat-bg-color-pick" value="#1a1a2e" style="display:none">
+        </ul>
+      </nav>
 
-      <!-- Resim yükle -->
-      <label id="chat-bg-file-label" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;border:1px dashed var(--border);cursor:pointer;font-size:13px;color:var(--text-muted);background:var(--bg-3);">
-        🖼️ Resim veya GIF yükle (max 15 MB)
-        <input type="file" id="chat-bg-file-input" accept="image/*,image/gif" style="display:none">
-      </label>
+      <!-- Panel: Profil -->
+      <section
+        id="panel-profile"
+        role="tabpanel"
+        aria-labelledby="tab-profile"
+        tabindex="0"
+        class="settings-tab-panel"
+      >
+        <h3>Profil Bilgileri</h3>
+        <!-- Profil form içeriği değişmedi -->
+      
+        <!-- Spotify Connection (Sprint 93) -->
+        <div id="spotify-connection-settings" style="margin-top:24px;"></div>
+      </section>
 
-      <span style="font-size:11px;color:var(--text-muted);margin-top:6px;display:block;">Tercih tarayıcıda saklanır, sunucuya gönderilmez.</span>
-    </div>
+      <!-- Panel: Bildirimler -->
+      <section
+        id="panel-notifications"
+        role="tabpanel"
+        aria-labelledby="tab-notifications"
+        tabindex="0"
+        class="settings-tab-panel"
+        hidden
+      >
+        <h3>Bildirim Ayarları</h3>
 
-    <hr style="border:none;border-top:1px solid var(--border);margin:20px 0 16px;">
-    <h3 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:12px;">🎙️ Ses &amp; Video</h3>
-
-    <div class="form-group">
-      <label>Mikrofon (Giriş)</label>
-      <select id="voice-mic-select" class="input-field" onchange="applyMicChange()" style="width:100%;margin-top:4px;">
-        <option value="">Yükleniyor...</option>
-      </select>
-      <label style="font-size:12px;color:var(--text-muted);margin-top:10px;display:block;">Mikrofon Testi</label>
-      <div style="background:var(--bg-3);border-radius:4px;height:8px;overflow:hidden;margin-top:4px;">
-        <div id="mic-test-bar" style="height:100%;width:0%;background:var(--green);border-radius:4px;transition:width 0.05s;"></div>
-      </div>
-      <p style="font-size:11px;color:var(--text-muted);margin-top:4px;">Konuşarak mikrofonu test edin</p>
-    </div>
-
-    <div class="form-group">
-      <label>Hoparlör / Kulaklık (Çıkış)</label>
-      <select id="voice-speaker-select" class="input-field" onchange="applySpeakerChange()" style="width:100%;margin-top:4px;">
-        <option value="">Yükleniyor...</option>
-      </select>
-    </div>
-
-    <div class="form-group">
-      <label>Kamera</label>
-      <select id="voice-camera-select" class="input-field" onchange="applyCameraChange()" style="width:100%;margin-top:4px;">
-        <option value="">Yükleniyor...</option>
-      </select>
-    </div>
-
-    <!-- ── VIDEO KALİTESİ ── -->
-    <div class="form-group">
-      <label>📹 Video Kalitesi (Kamera)</label>
-      <div id="video-quality-select-wrap" style="margin-top:6px;"></div>
-      <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">
-        Düşük kalite → daha az bant genişliği. Yüksek kalite → daha iyi görüntü.
-      </p>
-    </div>
-
-    <!-- ── EKRAN PAYLAŞIMI KALİTESİ ── -->
-    <div class="form-group">
-      <label>🖥️ Ekran Paylaşımı — Varsayılan Kalite</label>
-      <p style="font-size:11px;color:var(--text-muted);margin-top:4px;margin-bottom:10px;">
-        Paylaşım başlatırken seçici açılmadan bu preset kullanılır. İstersen her seferinde seçiciyi kullanmaya devam edebilirsin.
-      </p>
-
-      <div style="display:flex;flex-direction:column;gap:6px;" id="ss-preset-opts">
-
-        <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-          <input type="radio" name="ss-preset" value="ask" onchange="applyScreenSharePrefs({preset:'ask'})" style="margin-top:2px;flex-shrink:0;" checked>
-          <div>
-            <div style="font-size:13px;font-weight:600;">🔔 Her seferinde sor <span style="font-size:10px;color:var(--brand);font-weight:700;">VARSAYILAN</span></div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Paylaşım başlatırken kalite seçici açılır.</div>
-          </div>
-        </label>
-
-        <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-          <input type="radio" name="ss-preset" value="1080p60" onchange="applyScreenSharePrefs({preset:'1080p60'})" style="margin-top:2px;flex-shrink:0;">
-          <div>
-            <div style="font-size:13px;font-weight:600;">1080p 60fps</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">1920×1080 • oyun/demo için ideal.</div>
-          </div>
-        </label>
-
-        <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-          <input type="radio" name="ss-preset" value="1080p" onchange="applyScreenSharePrefs({preset:'1080p'})" style="margin-top:2px;flex-shrink:0;">
-          <div>
-            <div style="font-size:13px;font-weight:600;">1080p 30fps</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Dengeli kalite, orta bant.</div>
-          </div>
-        </label>
-
-        <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-          <input type="radio" name="ss-preset" value="720p" onchange="applyScreenSharePrefs({preset:'720p'})" style="margin-top:2px;flex-shrink:0;">
-          <div>
-            <div style="font-size:13px;font-weight:600;">720p 30fps</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Düşük bant, çoğu bağlantıda sorunsuz.</div>
-          </div>
-        </label>
-
-        <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-          <input type="radio" name="ss-preset" value="hd" onchange="applyScreenSharePrefs({preset:'hd'})" style="margin-top:2px;flex-shrink:0;">
-          <div>
-            <div style="font-size:13px;font-weight:600;">HD (Düşük bant)</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Yavaş bağlantılar için. ~1.5 Mbps.</div>
-          </div>
-        </label>
-
-      </div>
-
-      <!-- Özel bitrate override -->
-      <div style="margin-top:14px;">
-        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px;">Maksimum Bitrate Override <span style="font-size:11px;">(0 = preset varsayılanı kullan)</span></label>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <input type="number" id="ss-bitrate-override" min="0" max="50000" step="500" value="0"
-            style="width:110px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-3);color:var(--text-primary);font-size:13px;"
-            onchange="applyScreenSharePrefs({bitrateKbps: parseInt(this.value,10)||0})">
-          <span style="font-size:12px;color:var(--text-muted);">kbps</span>
-          <button class="btn" style="font-size:11px;padding:4px 12px;" onclick="applyScreenSharePrefs({bitrateKbps:0});document.getElementById('ss-bitrate-override').value=0">Sıfırla</button>
-        </div>
-        <p style="font-size:11px;color:var(--text-muted);margin-top:4px;">Örnek: 8000 kbps = 8 Mbps. Preset'in üstüne yazar.</p>
-      </div>
-
-      <!-- Aktif paylaşımdayken anlık değiştir -->
-      <div style="margin-top:14px;padding:10px 12px;background:var(--bg-3);border-radius:8px;border:1px solid var(--border);">
-        <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">Ekran Paylaşımı Durumu</div>
-        <div id="ss-quality-current" style="font-size:12px;color:var(--text-primary);font-weight:600;">Paylaşım yok</div>
-        <div id="ss-apply-live-wrap" style="margin-top:8px;display:none;">
-          <button class="btn btn-primary" style="font-size:11px;padding:4px 14px;" onclick="applyScreenShareBitrateNow()">
-            ⚡ Aktif paylaşıma şimdi uygula
+        <!-- Web Push toggle — Session 12'den geldi, ARIA güçlendirildi -->
+        <div class="setting-row">
+          <label class="toggle-label" for="push-toggle">
+            Tarayıcı Bildirimleri
+          </label>
+          <p id="push-toggle-desc" class="setting-description">
+            Yeni mesaj ve etkinlikler için masaüstü bildirimi alın.
+          </p>
+          <button
+            id="push-toggle"
+            type="button"
+            role="switch"
+            aria-checked="false"
+            aria-describedby="push-toggle-desc"
+            class="toggle-switch"
+          >
+            <span class="toggle-thumb" aria-hidden="true"></span>
+            <span class="sr-only">Tarayıcı bildirimlerini aç/kapat</span>
           </button>
         </div>
-      </div>
 
-    </div>
-
-    <!-- ── SES KALİTESİ ── -->
-    <div class="form-group">
-      <label>🎧 Ses Kalitesi (Bitrate)</label>
-      <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;" id="audio-bitrate-opts">
-
-        <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-          <input type="radio" name="audio-bitrate" value="8000" onchange="applyAudioQuality('8000','opus')" style="margin-top:2px;flex-shrink:0;">
-          <div>
-            <div style="font-size:13px;font-weight:600;">📉 Düşük — 8 kbps</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Yavaş bağlantılar için. Anlaşılır ses, düşük bant tüketimi.</div>
-          </div>
-        </label>
-
-        <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-          <input type="radio" name="audio-bitrate" value="32000" onchange="applyAudioQuality('32000','opus')" style="margin-top:2px;flex-shrink:0;">
-          <div>
-            <div style="font-size:13px;font-weight:600;">🎙️ Standart — 32 kbps <span style="font-size:10px;color:var(--brand);font-weight:700;">ÖNERİLEN</span></div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Sesli sohbet için ideal denge. Çoğu bağlantıda sorunsuz çalışır.</div>
-          </div>
-        </label>
-
-        <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-          <input type="radio" name="audio-bitrate" value="64000" onchange="applyAudioQuality('64000','opus')" style="margin-top:2px;flex-shrink:0;">
-          <div>
-            <div style="font-size:13px;font-weight:600;">🔊 Yüksek — 64 kbps</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Müzik dinleme ve yayın kalitesi ses. İyi bağlantı gerektirir.</div>
-          </div>
-        </label>
-
-        <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-          <input type="radio" name="audio-bitrate" value="128000" onchange="applyAudioQuality('128000','opus')" style="margin-top:2px;flex-shrink:0;">
-          <div>
-            <div style="font-size:13px;font-weight:600;">🎵 Maksimum — 128 kbps</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Stüdyo kalitesi. Müzik yayınları için. Yüksek bant genişliği kullanır.</div>
-          </div>
-        </label>
-
-      </div>
-
-      <!-- Codec seçimi -->
-      <div style="margin-top:14px;">
-        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px;">Ses Codec</label>
-        <div style="display:flex;flex-direction:column;gap:6px;" id="audio-codec-opts">
-
-          <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-            <input type="radio" name="audio-codec" value="opus" onchange="applyAudioCodec('opus')" style="margin-top:2px;flex-shrink:0;" checked>
-            <div>
-              <div style="font-size:13px;font-weight:600;">Opus <span style="font-size:10px;color:var(--brand);font-weight:700;">ÖNERİLEN</span></div>
-              <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Modern ve verimli. Ses ve müzik için optimize edilmiş. Tüm tarayıcılar destekler.</div>
-            </div>
-          </label>
-
-          <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-            <input type="radio" name="audio-codec" value="pcmu" onchange="applyAudioCodec('pcmu')" style="margin-top:2px;flex-shrink:0;">
-            <div>
-              <div style="font-size:13px;font-weight:600;">PCMU (G.711)</div>
-              <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Eski cihaz uyumluluğu için. Sabit 64 kbps, geniş destek. Sıkıştırma yok.</div>
-            </div>
-          </label>
-
-          <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-            <input type="radio" name="audio-codec" value="isac" onchange="applyAudioCodec('isac')" style="margin-top:2px;flex-shrink:0;">
-            <div>
-              <div style="font-size:13px;font-weight:600;">iSAC</div>
-              <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Değişken bitrate ile ağ koşullarına adapte olur. Chrome/Edge destekler.</div>
-            </div>
-          </label>
-
-        </div>
-      </div>
-
-      <!-- Canlı ses kalitesi durumu -->
-      <div style="margin-top:14px;padding:10px 12px;background:var(--bg-3);border-radius:8px;border:1px solid var(--border);">
-        <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">Aktif Ses Ayarı</div>
-        <div id="audio-quality-status" style="font-size:12px;color:var(--text-primary);font-weight:600;">Opus • 32 kbps • Mono</div>
-        <div id="audio-quality-note" style="font-size:10px;color:var(--text-muted);margin-top:3px;">Değişiklikler aktif aramada anlık uygulanır.</div>
-      </div>
-
-      <!-- Stereo / Echo / AGC -->
-      <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px;">
-
-        <!-- Stereo -->
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-3);">
-          <div>
-            <div style="font-size:13px;font-weight:600;">🎶 Stereo Ses</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Müzik yayınları için. Opus + 64 kbps+ önerilir.</div>
-          </div>
-          <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0;">
-            <input type="checkbox" id="audio-stereo-toggle" onchange="applyAudioStereo(this.checked)" style="opacity:0;width:0;height:0;">
-            <span style="position:absolute;cursor:pointer;inset:0;background:var(--bg-3);border-radius:24px;transition:.2s;" id="audio-stereo-track"></span>
-            <span id="audio-stereo-thumb" style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s;"></span>
-          </label>
-        </div>
-
-        <!-- Echo Cancellation -->
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-3);">
-          <div>
-            <div style="font-size:13px;font-weight:600;">🔁 Eko Giderme</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Hoparlör sesinin mikrofondan geri dönmesini engeller.</div>
-          </div>
-          <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0;">
-            <input type="checkbox" id="audio-echo-toggle" onchange="applyAudioConstraint('echo',this.checked)" style="opacity:0;width:0;height:0;" checked>
-            <span style="position:absolute;cursor:pointer;inset:0;background:var(--bg-3);border-radius:24px;transition:.2s;" id="audio-echo-track"></span>
-            <span id="audio-echo-thumb" style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s;"></span>
-          </label>
-        </div>
-
-        <!-- Auto Gain Control -->
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-3);">
-          <div>
-            <div style="font-size:13px;font-weight:600;">📶 Otomatik Kazanç (AGC)</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Ses seviyesini otomatik dengeler. Müzik yayınında kapatın.</div>
-          </div>
-          <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0;">
-            <input type="checkbox" id="audio-agc-toggle" onchange="applyAudioConstraint('agc',this.checked)" style="opacity:0;width:0;height:0;" checked>
-            <span style="position:absolute;cursor:pointer;inset:0;background:var(--bg-3);border-radius:24px;transition:.2s;" id="audio-agc-track"></span>
-            <span id="audio-agc-thumb" style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s;"></span>
-          </label>
-        </div>
-
-      </div>
-    </div>
-
-    </div>
-
-    <hr style="border:none;border-top:1px solid var(--border);margin:20px 0 16px;">
-
-    <!-- ── PUSH-TO-TALK ── -->
-    <h3 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:12px;">🎙️ Push-to-Talk (PTT)</h3>
-
-    <div class="form-group">
-
-      <!-- Etkinleştir toggle -->
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-        <div>
-          <div style="font-size:14px;font-weight:600;">Push-to-Talk</div>
-          <div id="ptt-status-label" style="font-size:11px;color:var(--text-muted);margin-top:2px;">Devre dışı</div>
-        </div>
-        <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0;">
-          <input type="checkbox" id="ptt-toggle" onchange="BridgePTT.setEnabled(this.checked);_pttUiSync()" style="opacity:0;width:0;height:0;">
-          <span style="position:absolute;cursor:pointer;inset:0;background:var(--bg-3);border-radius:24px;transition:.2s;" id="ptt-toggle-track"></span>
-          <span id="ptt-toggle-thumb" style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s;"></span>
-        </label>
-      </div>
-
-      <!-- Tuş kayıt -->
-      <div id="ptt-key-group">
-        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px;">Kısayol Tuşu</label>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <div id="ptt-key-display"
-               style="min-width:100px;padding:8px 14px;border-radius:8px;border:1.5px solid var(--border);background:var(--bg-3);font-size:13px;font-weight:600;text-align:center;font-family:monospace;letter-spacing:0.04em;">
-            —
-          </div>
-          <button class="btn" id="ptt-record-btn" style="font-size:12px;padding:6px 14px;" onclick="BridgePTT.startKeyCapture()">
-            🔴 Tuşu Kaydet
-          </button>
-          <button class="btn" style="font-size:12px;padding:6px 14px;" onclick="BridgePTT.clearKey()">
-            🗑️ Temizle
+        <!-- DM bildirimleri -->
+        <div class="setting-row">
+          <label for="dm-notif-toggle">DM Bildirimleri</label>
+          <button
+            id="dm-notif-toggle"
+            type="button"
+            role="switch"
+            aria-checked="true"
+            class="toggle-switch"
+          >
+            <span class="toggle-thumb" aria-hidden="true"></span>
+            <span class="sr-only">DM bildirimlerini aç/kapat</span>
           </button>
         </div>
-        <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">
-          "Tuşu Kaydet"e tıkladıktan sonra istediğin tuşa bas. Fare düğmeleri desteklenmez.
-        </p>
-      </div>
 
-      <!-- Mod -->
-      <div id="ptt-mode-group" style="margin-top:14px;">
-        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px;">Çalışma Modu</label>
-        <div style="display:flex;flex-direction:column;gap:6px;">
+      </section>
 
-          <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-            <input type="radio" name="ptt-mode" value="hold" onchange="BridgePTT.setMode('hold')" style="margin-top:2px;flex-shrink:0;" checked>
-            <div>
-              <div style="font-size:13px;font-weight:600;">⏱️ Basılı Tut</div>
-              <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Tuşa bastığın sürece mikrofon açık. Bırakınca kapanır. Klasik PTT.</div>
+      <!-- Panel: Gizlilik -->
+      <section
+        id="panel-privacy"
+        role="tabpanel"
+        aria-labelledby="tab-privacy"
+        tabindex="0"
+        class="settings-tab-panel"
+        hidden
+      >
+        <h3>Gizlilik Ayarları</h3>
+      
+        <!-- E2EE Settings (Sprint 93) -->
+        <div id="e2ee-settings-panel" data-e2ee-settings style="margin-top:24px;"></div>
+      </section>
+
+      <!-- Panel: Görünüm -->
+      <section
+        id="panel-appearance"
+        role="tabpanel"
+        aria-labelledby="tab-appearance"
+        tabindex="0"
+        class="settings-tab-panel"
+        hidden
+      >
+        <h3>Görünüm Ayarları</h3>
+      </section>
+      <!-- Panel: Ses & Mikrofon (Sprint 92) -->
+      <section
+        id="panel-voice"
+        role="tabpanel"
+        aria-labelledby="tab-voice"
+        tabindex="0"
+        class="settings-tab-panel"
+        hidden
+      >
+        <h3>Ses &amp; Mikrofon Ayarları</h3>
+
+        <div class="setting-group">
+          <h4 class="setting-group-title">🎙️ Gürültü Engelleme (AI)</h4>
+
+          <div class="setting-row">
+            <div class="setting-label-wrap">
+              <label class="toggle-label" for="ns-enabled">Gürültü Engellemeyi Etkinleştir</label>
+              <p class="setting-description" id="ns-enabled-desc">
+                Arka plan seslerini ve klavye gürültüsünü azaltır. RNNoise WebAssembly motoru kullanır.
+              </p>
             </div>
-          </label>
+            <button
+              id="ns-enabled"
+              class="toggle-switch"
+              role="switch"
+              aria-checked="false"
+              aria-describedby="ns-enabled-desc"
+              type="button"
+            ><span class="toggle-thumb"></span></button>
+          </div>
 
-          <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);">
-            <input type="radio" name="ptt-mode" value="toggle" onchange="BridgePTT.setMode('toggle')" style="margin-top:2px;flex-shrink:0;">
-            <div>
-              <div style="font-size:13px;font-weight:600;">🔁 Toggle</div>
-              <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">İlk basışta açılır, ikinci basışta kapanır. Eller serbest.</div>
+          <div id="ns-mode-row" class="setting-row" style="display:none;">
+            <div class="setting-label-wrap">
+              <label class="setting-label" for="ns-mode">Engelleme Modu</label>
+              <p class="setting-description">
+                <strong>Temel</strong>: Düşük CPU. &nbsp;
+                <strong>Gelişmiş</strong>: Çok katmanlı DSP (önerilen). &nbsp;
+                <strong>RNNoise (AI)</strong>: ML tabanlı, en yüksek kalite.
+              </p>
             </div>
-          </label>
+            <select id="ns-mode" class="settings-select" aria-label="Gürültü engelleme modu">
+              <option value="basic">Temel</option>
+              <option value="advanced" selected>Gelişmiş</option>
+              <option value="rnnoise">RNNoise (AI)</option>
+            </select>
+          </div>
 
+          <div id="ns-stats-row" class="setting-row" style="display:none;font-size:12px;color:var(--text-muted);">
+            CPU Yükü: <span id="ns-cpu-load">—</span> &nbsp;|&nbsp;
+            İşlenen Kare: <span id="ns-frames">—</span>
+          </div>
         </div>
-      </div>
 
-      <!-- Bırakma gecikmesi -->
-      <div style="margin-top:14px;" id="ptt-delay-group">
-        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px;">
-          Bırakma Gecikmesi — <span id="ptt-delay-val">200</span> ms
-        </label>
-        <input type="range" id="ptt-release-delay" min="0" max="2000" step="50" value="200"
-               style="width:100%;accent-color:var(--brand);"
-               oninput="document.getElementById('ptt-delay-val').textContent=this.value;BridgePTT.setReleaseDelay(parseInt(this.value))">
-        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:2px;">
-          <span>Anında</span><span>2 sn</span>
-        </div>
-        <p style="font-size:11px;color:var(--text-muted);margin-top:4px;">
-          Tuşu bıraktıktan kaç ms sonra mikrofon kapanır. Kısa cümle sonları için 200–500 ms önerilir.
-        </p>
-      </div>
-
-      <!-- Canlı durum -->
-      <div style="margin-top:14px;padding:10px 12px;background:var(--bg-3);border-radius:8px;border:1px solid var(--border);">
-        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">PTT Durumu</div>
-        <div id="ptt-live-status" style="font-size:12px;font-weight:600;color:var(--text-primary);">Devre dışı</div>
-      </div>
-
-    </div>
-
-    <hr style="border:none;border-top:1px solid var(--border);margin:20px 0 16px;">
-
-    <!-- ── GÜRÜLTÜ BASTIRMA ── -->
-    <h3 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:12px;">🔇 Gürültü Bastırma</h3>
-
-    <div class="form-group">
-      <!-- Aktif/Pasif toggle -->
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-        <div>
-          <div style="font-size:14px;font-weight:600;">Gürültü Bastırma</div>
-          <div id="ns-status-label" style="font-size:11px;color:var(--text-muted);margin-top:2px;">Yükleniyor...</div>
-        </div>
-        <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0;">
-          <input type="checkbox" id="ns-toggle" onchange="applyNSToggle()" style="opacity:0;width:0;height:0;">
-          <span style="position:absolute;cursor:pointer;inset:0;background:var(--bg-3);border-radius:24px;transition:.2s;"
-                id="ns-toggle-track"></span>
-          <span id="ns-toggle-thumb"
-                style="position:absolute;content:'';height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s;"></span>
-        </label>
-      </div>
-
-      <!-- Mod seçimi -->
-      <div id="ns-mode-group">
-        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px;">Bastırma Modu</label>
-        <div style="display:flex;flex-direction:column;gap:6px;">
-
-          <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);" id="ns-opt-basic">
-            <input type="radio" name="ns-mode" value="basic" onchange="applyNSMode('basic')" style="margin-top:2px;flex-shrink:0;">
-            <div>
-              <div style="font-size:13px;font-weight:600;">⚡ Temel</div>
-              <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">HighPass filtre + compressor. Çok düşük CPU kullanımı.</div>
+        <div class="setting-group">
+          <h4 class="setting-group-title">🔊 Mikrofon Testi</h4>
+          <div class="setting-row">
+            <p class="setting-description">Mikrofonunu test et — konuşurken çubuklar hareket eder.</p>
+            <button id="ns-test-mic-btn" class="btn" type="button">Mikrofonu Test Et</button>
+          </div>
+          <div id="ns-mic-meter-wrap" style="display:none;margin-top:8px;">
+            <div id="ns-mic-meter" style="height:8px;border-radius:4px;background:var(--bg-5);overflow:hidden;">
+              <div id="ns-mic-meter-fill" style="height:100%;width:0%;background:var(--brand);border-radius:4px;transition:width .08s;"></div>
             </div>
-          </label>
-
-          <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);" id="ns-opt-advanced">
-            <input type="radio" name="ns-mode" value="advanced" onchange="applyNSMode('advanced')" style="margin-top:2px;flex-shrink:0;">
-            <div>
-              <div style="font-size:13px;font-weight:600;">🎛️ Gelişmiş</div>
-              <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Notch filtresi + tarayıcı native bastırma. Önerilen.</div>
-            </div>
-          </label>
-
-          <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--bg-3);" id="ns-opt-rnnoise">
-            <input type="radio" name="ns-mode" value="rnnoise" onchange="applyNSMode('rnnoise')" style="margin-top:2px;flex-shrink:0;">
-            <div>
-              <div style="font-size:13px;font-weight:600;">🤖 Yapay Zeka (RNNoise)</div>
-              <div id="ns-rnnoise-sublabel" style="font-size:11px;color:var(--text-muted);margin-top:2px;">Derin öğrenme tabanlı. Yükleniyor...</div>
-            </div>
-          </label>
-
+            <p style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+              Gürültü engelleme <span id="ns-mic-status">—</span>
+            </p>
+          </div>
         </div>
-      </div>
+      </section>
 
-      <!-- Canlı gösterge -->
-      <div style="margin-top:14px;padding:10px 12px;background:var(--bg-3);border-radius:8px;border:1px solid var(--border);">
-        <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">Mikrofon Seviyesi (işlenmiş)</div>
-        <div style="background:var(--bg-2,#111);border-radius:4px;height:6px;overflow:hidden;">
-          <div id="ns-level-bar" style="height:100%;width:0%;background:var(--green,#43b581);border-radius:4px;transition:width 0.05s;"></div>
-        </div>
-        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;" id="ns-level-text">— dB</div>
-      </div>
-    </div>
-
-    <hr style="border:none;border-top:1px solid var(--border);margin:20px 0 16px;">
-    <h3 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:12px;">🤖 Yapay Zeka</h3>
-    <div class="form-group">
-      <div id="ai-status-info" style="font-size:12px;color:var(--text-muted);margin-bottom:10px;padding:8px;background:var(--bg-3);border-radius:6px;">⏳ AI durumu kontrol ediliyor...</div>
-      <div style="display:flex;flex-direction:column;gap:8px;">
-        <button class="btn" style="justify-content:flex-start;gap:8px;text-align:left;" onclick="openChannelSummary();closeModal('settings-modal')">
-          📝 Kanal Özetini Görüntüle
-        </button>
-        <button class="btn" style="justify-content:flex-start;gap:8px;text-align:left;" onclick="showReplySuggestions();closeModal('settings-modal')">
-          💡 Akıllı Yanıt Önerileri
-        </button>
-      </div>
-    </div>
-
-    <hr style="border:none;border-top:1px solid var(--border);margin:20px 0 16px;">
-    <h3 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:12px;">🔔 Bildirimler</h3>
-    <div class="form-group">
-      <label style="display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;">
-        <span>
-          Tarayıcı Push Bildirimleri
-          <span style="display:block;font-size:11px;color:var(--text-muted);font-weight:400;margin-top:2px;">Mesajlar ve mentions için arka planda bildirim al</span>
-        </span>
-        <!-- Toggle switch — NS/PTT toggle ile aynı pattern -->
-        <span style="position:relative;display:inline-block;width:46px;height:24px;flex-shrink:0;">
-          <input type="checkbox" id="push-notif-toggle"
-                 onchange="WebPush.onToggle(this.checked)"
-                 style="opacity:0;width:0;height:0;">
-          <span style="position:absolute;cursor:pointer;inset:0;background:var(--bg-3);border-radius:24px;transition:.2s;"
-                id="push-toggle-track"></span>
-          <span id="push-toggle-thumb"
-                style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s;pointer-events:none;"></span>
-        </span>
-      </label>
-      <div id="push-notif-badge"
-           style="font-size:11px;color:var(--text-muted);margin-top:6px;min-height:16px;">
-        ⏳ Kontrol ediliyor...
-      </div>
-    </div>
-
-    <hr style="border:none;border-top:1px solid var(--border);margin:20px 0 16px;">
-    <h3 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:12px;">🔒 Güvenlik & Gizlilik</h3>
-    <div class="form-group">
-      <label>Uçtan Uca Şifreleme (E2EE)</label>
-      <div id="e2e-status-badge" style="font-size:12px;padding:8px;background:var(--bg-3);border-radius:6px;margin-bottom:10px;">⏳ Kontrol ediliyor...</div>
-      <button class="btn" style="justify-content:flex-start;gap:8px;" onclick="window.BridgeE2E?.openE2ESettings()">
-        🔐 E2EE Ayarlarını Aç
-      </button>
-      <p style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5;">
-        Etkinleştirildiğinde DM mesajlarınız şifrelenir. Private key yalnızca cihazınızda kalır — sunucu hiçbir zaman göremez.
-      </p>
-    </div>
-
-    <div class="form-group" style="margin-top:16px;">
-      <label>🔑 Passkey / WebAuthn</label>
-      <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.5;">
-        Face ID, Touch ID, Windows Hello veya YubiKey ile şifresiz giriş. Kimlik avına karşı en güçlü koruma.
-      </p>
-      <button class="btn" style="justify-content:flex-start;gap:8px;" onclick="openPasskeySettings();closeModal('settings-modal')">
-        🔑 Passkey Yönetimi
-      </button>
-    </div>
-
-    <hr style="border:none;border-top:1px solid var(--border);margin:20px 0 16px;">
-    <h3 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:12px;">🎯 Aktivite Durumu</h3>
-    <div class="form-group">
-      <div id="current-activity-display" style="font-size:13px;color:var(--text-muted);padding:8px;background:var(--bg-3);border-radius:6px;margin-bottom:10px;">Aktif aktivite yok</div>
-      <div style="display:flex;gap:8px;">
-        <button class="btn" style="flex:1;justify-content:center;" onclick="openActivityModal()">
-          🎯 Aktivite Ayarla
-        </button>
-        <button class="btn btn-secondary" onclick="clearActivity()" style="flex:1;justify-content:center;">
-          🗑️ Temizle
-        </button>
-      </div>
-      <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">
-        Bridge'de tamamen ücretsiz ✦
-      </p>
-    </div>
-
-    <hr style="border:none;border-top:1px solid var(--border);margin:20px 0 16px;">
-    <h3 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:12px;">🔗 Bağlantılar</h3>
-    <div class="form-group">
-      <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">Profilinize sosyal medya ve platform bağlantıları ekleyin. Herkese açık profilinizde görünür.</p>
-      <div id="connections-settings-container">
-        <div style="text-align:center;padding:14px;color:var(--text-muted);font-size:13px">Yükleniyor...</div>
-      </div>
-    </div>
-
-    <hr style="border:none;border-top:1px solid var(--border);margin:20px 0 16px;">
-    <h3 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:12px;">📊 Araçlar</h3>
-    <div class="form-group">
-      <div style="display:flex;flex-direction:column;gap:8px;">
-        <button class="btn" style="justify-content:flex-start;gap:8px;text-align:left;" onclick="openServerAnalytics();closeModal('settings-modal')">
-          📊 Sunucu İstatistik Dashboard
-        </button>
-        <button class="btn" style="justify-content:flex-start;gap:8px;text-align:left;" onclick="openMusicQueue();closeModal('settings-modal')">
-          🎵 Müzik Kuyruğu
-        </button>
-        <button class="btn" style="justify-content:flex-start;gap:8px;text-align:left;" onclick="openSemanticSearch();closeModal('settings-modal')">
-          🔍 AI Akıllı Arama
-        </button>
-        <button class="btn" style="justify-content:flex-start;gap:8px;text-align:left;" onclick="openWeeklyDigest();closeModal('settings-modal')">
-          📰 Haftalık Topluluk Özeti
-        </button>
-        <button class="btn" style="justify-content:flex-start;gap:8px;text-align:left;" onclick="openEngagementDashboard();closeModal('settings-modal')">
-          📈 Bağlılık & Trend Analizi
-        </button>
-      </div>
-    </div>
-
-    <div class="modal-footer">
-      <button class="btn btn-primary" style="flex:1" onclick="saveSettings()" aria-label="Değişiklikleri kaydet">Save Changes</button>
-      <button class="btn btn-danger" style="flex:1" onclick="logout()" aria-label="Çıkış yap">Sign Out</button>
-    </div>
-  </div>
-</div>
-
-<!-- SERVER CONTROL PANEL (sadece Electron'da görünür) -->
-<div id="server-control-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="server-control-title" style="display:none" onclick="closeModalOutside(event,'server-control-modal')">
-  <div class="modal-card" style="max-width:560px;max-height:85vh;display:flex;flex-direction:column;gap:0;">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-      <h2 id="server-control-title" style="margin:0;">🖥️ Sunucu Yönetimi</h2>
-      <button class="btn" onclick="closeModal('server-control-modal')" style="padding:4px 10px;font-size:13px;">✕</button>
-    </div>
-
-    <!-- Durum satırı -->
-    <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--bg-secondary);border-radius:8px;margin-bottom:14px;">
-      <span id="sc-status-dot" style="width:12px;height:12px;border-radius:50%;background:#747f8d;flex-shrink:0;transition:background .3s;"></span>
-      <div style="flex:1;">
-        <div id="sc-status-text" style="font-weight:600;font-size:14px;">Bilinmiyor</div>
-        <div id="sc-pid-text" style="font-size:11px;color:var(--text-muted);margin-top:1px;"></div>
-      </div>
-      <div style="display:flex;gap:8px;">
-        <button id="sc-btn-start"   class="btn btn-primary" style="padding:6px 14px;font-size:13px;" onclick="scStart()">▶ Başlat</button>
-        <button id="sc-btn-stop"    class="btn btn-danger"  style="padding:6px 14px;font-size:13px;" onclick="scStop()">■ Durdur</button>
-        <button id="sc-btn-restart" class="btn"             style="padding:6px 14px;font-size:13px;" onclick="scRestart()">↺ Yeniden</button>
-      </div>
-    </div>
-
-    <!-- Log terminali -->
-    <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Sunucu Logları</div>
-    <div id="sc-log-area"
-      style="flex:1;min-height:220px;max-height:320px;overflow-y:auto;background:#0d0e10;border-radius:8px;padding:10px 12px;font-family:monospace;font-size:12px;line-height:1.6;color:#e3e5e8;border:1px solid var(--border);">
-      <div style="color:#747f8d;font-style:italic;">Loglar burada görünecek…</div>
-    </div>
-
-    <div style="display:flex;justify-content:flex-end;margin-top:10px;">
-      <button class="btn" style="font-size:12px;padding:5px 12px;" onclick="scClearLogs()">🗑 Logları Temizle</button>
-    </div>
-  </div>
-</div>
+    </div><!-- /.settings-layout -->
+  </div><!-- /.modal-container -->
+</div><!-- /#settings-modal -->

@@ -1,18 +1,72 @@
-// client/js/webrtc-sfu.js (Mediasoup SFU Client)
+// client/js/webrtc-sfu.ts
+// Bridge WebRTC SFU Client — Mediasoup
+// Sprint 33: Full TypeScript migration — strict types, no implicit any
 //
-// Bu dosya webrtc.js'in (P2P) yerini alÄ±r.
-// Mediasoup SFU kullanarak:
-//   - Eski: 8 kullanÄ±cÄ± â†’ 56 RTCPeerConnection
-//   - Yeni: 8 kullanÄ±cÄ± â†’ 2 transport (1 send + 1 recv) = sabit
-//
-// BaÄŸÄ±mlÄ±lÄ±k: mediasoup-client
-//   <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/dist/mediasoup-client.min.js"></script>
-// VEYA:  npm install mediasoup-client  (build pipeline iÃ§in)
+// P2P yerine SFU (Selective Forwarding Unit) kullanır:
+//   8 kullanıcı → 2 transport (1 send + 1 recv) = sabit, P2P'de 56 RTCPeerConnection
 
 'use strict';
 
-// ── Socket.io–like interface — imported from shared base ─────────────────────
 import type { BridgeSocket } from './webrtc-base';
+import { BridgeRegistry } from './core/bridge-registry.ts';
+import { getAPI } from './core/globals.ts';
+
+import { createLogger } from './core/logger.ts';
+const log = createLogger('SFU');
+
+
+
+// ── Typed registry accessors (window.* yerine) ────────────────────────────────
+interface BridgeNSModule { enabled?: boolean; process(stream: MediaStream): Promise<MediaStream>; }
+interface BridgeVoiceE2EModule {
+  initVoiceE2E(channelId: string | null, peers: PeerInfo[]): Promise<boolean>;
+  renderVoiceE2EBadge(): void;
+  registerSocketEvents(socket: BridgeSocket, userId: string): void;
+}
+interface BridgeVoiceVolumeModule { applyVolume(socketId: string, volume: number): void; }
+interface VoiceActivityUIModule { init(socket: BridgeSocket): void; }
+interface BridgeAppModule {
+  toast(msg: string, type: string): void;
+  showToast?(msg: string, type: string): void;
+  renderVoicePeer(peer: PeerInfo, initiator: boolean): void;
+  removeVoicePeer(socketId: string): void;
+  attachRemoteStream(socketId: string, stream: MediaStream, kind?: string): void;
+  updatePeerState(socketId: string, state: PeerState): void;
+}
+
+function _reg<T>(name: string): T | null {
+  return BridgeRegistry.get<(...args: unknown[]) => unknown>(name) as T | null;
+}
+function _app(): BridgeAppModule | null       { return _reg<BridgeAppModule>('bridgeApp'); }
+function _ns(): BridgeNSModule | null         { return _reg<BridgeNSModule>('BridgeNS'); }
+function _voiceE2E(): BridgeVoiceE2EModule | null  { return _reg<BridgeVoiceE2EModule>('BridgeVoiceE2E'); }
+function _voiceVolume(): BridgeVoiceVolumeModule | null { return _reg<BridgeVoiceVolumeModule>('BridgeVoiceVolume'); }
+function _vaui(): VoiceActivityUIModule | null       { return _reg<VoiceActivityUIModule>('VoiceActivityUI'); }
+function _startVAD(): ((stream: MediaStream, channelId: string) => void) | null {
+  return _reg<(stream: MediaStream, channelId: string) => void>('_bridgeStartLocalVAD');
+}
+function _stopVAD(): (() => void) | null { return _reg<() => void>('_bridgeStopLocalVAD'); }
+function _sfuHandleNewProducer(): ((socketId: string, userId: string | undefined, stream: MediaStream, kind: string) => void) | null {
+  return _reg<(socketId: string, userId: string | undefined, stream: MediaStream, kind: string) => void>('sfuHandleNewProducer');
+}
+function _currentServerChannels(): Array<{ _id: string; bitrate?: number }> | null {
+  const fn = BridgeRegistry.get<() => Array<{ _id: string; bitrate?: number }>>('currentServerChannels');
+  return fn ? fn() : null;
+}
+
+// ── Domain types ──────────────────────────────────────────────────────────────
+export interface PeerInfo {
+  socketId: string;
+  userId?: string;
+  producers?: Array<{ producerId: string; kind: string }>;
+}
+
+interface PeerState {
+  muted?: boolean;
+  deafened?: boolean;
+  screensharing?: boolean;
+  video?: boolean;
+}
 
 // ── Mediasoup client type stubs ───────────────────────────────────────────────
 interface MediasoupTransport {
@@ -20,8 +74,8 @@ interface MediasoupTransport {
   close(): void;
   produce(opts: unknown): Promise<MediasoupProducer>;
   consume(opts: unknown): Promise<MediasoupConsumer>;
-  createSendTransport?: never; // type discriminator
 }
+
 interface MediasoupProducer {
   on(event: string, fn: (...args: unknown[]) => void): void;
   close(): void;
@@ -30,6 +84,7 @@ interface MediasoupProducer {
   replaceTrack(opts: { track: MediaStreamTrack }): Promise<void>;
   readonly rtpParameters?: unknown;
 }
+
 interface MediasoupConsumer {
   on(event: string, fn: (...args: unknown[]) => void): void;
   close(): void;
@@ -38,68 +93,81 @@ interface MediasoupConsumer {
   readonly id: string;
   _socketId?: string;
 }
+
 interface MediasoupDevice {
   load(opts: { routerRtpCapabilities: unknown }): Promise<void>;
   createSendTransport(opts: unknown): MediasoupTransport;
   createRecvTransport(opts: unknown): MediasoupTransport;
   rtpCapabilities: unknown;
 }
-declare var mediasoupClient: { Device: new () => MediasoupDevice } | undefined;
 
+declare const mediasoupClient: { Device: new () => MediasoupDevice } | undefined;
+
+// ── Screen quality ────────────────────────────────────────────────────────────
+type ScreenQuality = '4k60' | '1440p60' | '1440p' | '1080p60' | '1080p' | '720p' | 'hd';
+
+const SCREEN_PRESETS: Record<ScreenQuality, MediaTrackConstraints> = {
+  '4k60':    { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } },
+  '1440p60': { width: { ideal: 2560 }, height: { ideal: 1440 }, frameRate: { ideal: 60 } },
+  '1440p':   { width: { ideal: 2560 }, height: { ideal: 1440 }, frameRate: { ideal: 30 } },
+  '1080p60': { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } },
+  '1080p':   { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+  '720p':    { width: { ideal: 1280 }, height: { ideal: 720  }, frameRate: { ideal: 30 } },
+  'hd':      { width: { ideal: 1280 }, height: { ideal: 720  }, frameRate: { ideal: 30 } },
+};
+
+const SCREEN_BITRATES: Record<ScreenQuality, number> = {
+  '4k60': 20_000_000, '1440p60': 12_000_000, '1440p': 10_000_000,
+  '1080p60': 8_000_000, '1080p': 5_000_000, '720p': 3_000_000, 'hd': 2_000_000,
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// BridgeRTC — SFU WebRTC Manager (drop-in replacement for webrtc.ts)
+// ══════════════════════════════════════════════════════════════════════════════
 class BridgeRTC {
-  // ── Property declarations ─────────────────────────────────────────────────
-  socket!: BridgeSocket;
-  device: MediasoupDevice | null = null;
+  readonly socket: BridgeSocket;
+  device: MediasoupDevice | null           = null;
   sendTransport: MediasoupTransport | null = null;
   recvTransport: MediasoupTransport | null = null;
-  producers: Map<string, MediasoupProducer> = new Map();
-  consumers: Map<string, MediasoupConsumer> = new Map();
+  producers: Map<string, MediasoupProducer>          = new Map();
+  consumers: Map<string, MediasoupConsumer>          = new Map();
   peerStreams: Map<string, { audio: MediaStream; video: MediaStream }> = new Map();
-  localStream: MediaStream | null = null;
-  screenStream: MediaStream | null = null;
-  currentChannelId: string | null = null;
-  currentServerId: string | null = null;
-  muted = false;
-  deafened = false;
-  videoOn = false;
-  screenSharing = false;
-  selectedMicId: string | null = null;
-  selectedCameraId: string | null = null;
-  selectedSpeakerId: string | null = null;
-  channelBitrate = 64_000;
-  _sfuAvailable = false;
-  _iceServers: unknown[] = [];
-  _iceTransportPolicy = 'all';
-  _socketToUserId: Map<string, string> = new Map();
-  _redirectCount = 0;
-  _abrIntervals: Map<string, unknown> = new Map();
-  _screenQuality = 'hd';
-  _mobileAudioOverride = false;
-  peers: Map<string, unknown> = new Map();
-  _p2pPeers: Map<string, unknown> = new Map();
+  localStream: MediaStream | null          = null;
+  screenStream: MediaStream | null         = null;
+  currentChannelId: string | null          = null;
+  currentServerId: string | null           = null;
+  muted                                    = false;
+  deafened                                 = false;
+  videoOn                                  = false;
+  screenSharing                            = false;
+  selectedMicId: string | null             = null;
+  selectedCameraId: string | null          = null;
+  selectedSpeakerId: string | null         = null;
+  channelBitrate                           = 64_000;
+
+  // P2P fallback state
+  peers: Map<string, RTCPeerConnection>    = new Map();
+  private _p2pPeers: Map<string, RTCPeerConnection> = new Map();
+
+  private _sfuAvailable                                              = false;
+  private _iceServers: RTCIceServer[]                                = [];
+  private _iceTransportPolicy: RTCIceTransportPolicy                 = 'all';
+  private _socketToUserId: Map<string, string>                       = new Map();
+  private _redirectCount                                             = 0;
+  private _screenQuality: ScreenQuality                              = 'hd';
+  private _mobileAudioOverride: Partial<MediaTrackConstraints> | false = false;
 
   constructor(socket: BridgeSocket) {
     this.socket = socket;
-
-    // â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-
-
-    // â”€â”€ Device selection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-    // Mediasoup-client library varlÄ±k kontrolÃ¼
     this._sfuAvailable = typeof mediasoupClient !== 'undefined';
-
     this._bindSocketEvents();
   }
 
-  // â”€â”€â”€ PUBLIC API (voice.js ile tam uyumlu) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Public API ────────────────────────────────────────────────────────────
+  isInVoice(): boolean                  { return !!this.currentChannelId; }
+  getLocalStream(): MediaStream | null  { return this.localStream; }
 
-  isInVoice() { return !!this.currentChannelId; }
-  getLocalStream() { return this.localStream; }
-
-  // â”€â”€â”€ DEVICES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async getDevices() {
+  async getDevices(): Promise<{ microphones: MediaDeviceInfo[]; speakers: MediaDeviceInfo[]; cameras: MediaDeviceInfo[] }> {
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => {});
       const devices = await navigator.mediaDevices.enumerateDevices();
@@ -108,90 +176,74 @@ class BridgeRTC {
         speakers:    devices.filter(d => d.kind === 'audiooutput'),
         cameras:     devices.filter(d => d.kind === 'videoinput'),
       };
-    } catch {
-      return { microphones: [], speakers: [], cameras: [] };
-    }
+    } catch { return { microphones: [], speakers: [], cameras: [] }; }
   }
 
   loadSavedDevices(): void {
-    this.selectedMicId     = localStorage.getItem('bridge-mic')     || null;
-    this.selectedCameraId  = localStorage.getItem('bridge-camera')  || null;
-    this.selectedSpeakerId = localStorage.getItem('bridge-speaker') || null;
+    this.selectedMicId     = localStorage.getItem('bridge-mic')     ?? null;
+    this.selectedCameraId  = localStorage.getItem('bridge-camera')  ?? null;
+    this.selectedSpeakerId = localStorage.getItem('bridge-speaker') ?? null;
   }
 
-  // â”€â”€â”€ JOIN VOICE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async joinVoice(channelId: string, serverId: string) {
+  // ── Join voice ────────────────────────────────────────────────────────────
+  async joinVoice(channelId: string, serverId: string): Promise<void> {
     this.currentChannelId = channelId;
     this.currentServerId  = serverId;
+    this.channelBitrate   = 64_000;
 
-    // Bitrate kanaldan oku (eski sistemle uyumluluk)
-    this.channelBitrate = 64_000;
-    if (window.currentServerChannels) {
-      const ch = window.currentServerChannels.find(c => c._id === channelId);
+    const _channels = _currentServerChannels();
+    if (_channels) {
+      const ch = _channels.find(c => c._id === channelId);
       if (ch?.bitrate) this.channelBitrate = ch.bitrate as number;
     }
 
-    // Mikrofon aÃ§
     try {
-      const nsEnabled = window.BridgeNS?.enabled !== false;
-      const audioConstraints = {
+      const _nsModule = _ns();
+      const nsEnabled = _nsModule?.enabled !== false;
+      const audioConstraints: MediaTrackConstraints = {
         ...(this.selectedMicId ? { deviceId: { exact: this.selectedMicId } } : {}),
-        echoCancellation: nsEnabled,
-        noiseSuppression: nsEnabled,
-        autoGainControl:  nsEnabled,
-        sampleRate: 48000,
-        channelCount: 2,
+        echoCancellation: nsEnabled, noiseSuppression: nsEnabled,
+        autoGainControl: nsEnabled, sampleRate: 48000, channelCount: 2,
       };
       const rawStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
-      this.localStream = window.BridgeNS ? await window.BridgeNS.process(rawStream) : rawStream;
+      this.localStream = _nsModule ? await _nsModule.process(rawStream) : rawStream;
     } catch {
       this.localStream = new MediaStream();
-      window.bridgeApp?.toast('Mikrofon bulunamadÄ± â€” sessiz katÄ±lÄ±ndÄ±', 'error');
+      _app()?.toast('Mikrofon bulunamadı — sessiz katılındı', 'error');
     }
 
     if (this._sfuAvailable) {
       await this._sfuJoin(channelId, serverId);
     } else {
-      // Fallback: eski P2P sistemi (mediasoup-client CDN yÃ¼klenemezse)
-      console.warn('[BridgeRTC] mediasoup-client bulunamadÄ± â€” P2P moda geÃ§iliyor');
+      log.warn('[BridgeRTC] mediasoup-client bulunamadı — P2P moda geçiliyor');
       this.socket.emit('voice:join', { channelId, serverId });
     }
+
+    _vaui()?.init(this.socket);
+    if (this.localStream) _startVAD()?.(this.localStream, channelId);
   }
 
-  // â”€â”€â”€ SFU JOIN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async _sfuJoin(channelId: string, serverId: string): Promise<void> {
+  // ── SFU join flow ─────────────────────────────────────────────────────────
+  private _sfuJoin(channelId: string, serverId: string): Promise<void> {
     return new Promise<void>((resolve) => {
-      // 1. Sunucudan RTP capabilities al
       this.socket.emit('sfu:get-rtp-capabilities', { channelId });
       this.socket.once('sfu:rtp-capabilities', async (payload: unknown) => {
         const { rtpCapabilities } = payload as { rtpCapabilities: unknown };
         try {
-          // 2. Mediasoup Device oluÅŸtur
           this.device = new mediasoupClient!.Device();
           await this.device.load({ routerRtpCapabilities: rtpCapabilities });
-
-          // 3. Sunucuya katÄ±l
           this.socket.emit('sfu:join', {
-            channelId,
-            serverId,
-            rtpCapabilities: this.device.rtpCapabilities,
+            channelId, serverId, rtpCapabilities: this.device.rtpCapabilities,
           });
-
-          // 4. Transport'larÄ± oluÅŸtur
           await this._createSendTransport(channelId);
           await this._createRecvTransport(channelId);
-
           resolve();
-        } catch (e) {
-          console.error('[SFU] join error:', e);
-          resolve();
-        }
+        } catch (e) { log.error('[SFU] join error:', e); resolve(); }
       });
     });
   }
 
-  // â”€â”€â”€ SEND TRANSPORT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async _createSendTransport(channelId: string): Promise<void> {
+  private _createSendTransport(channelId: string): Promise<void> {
     return new Promise<void>((resolve) => {
       this.socket.emit('sfu:create-transport', { channelId, direction: 'send' });
       this.socket.once('sfu:transport-created', async (payload: unknown) => {
@@ -199,10 +251,8 @@ class BridgeRTC {
         if (data.direction !== 'send') return;
 
         this.sendTransport = this.device!.createSendTransport({
-          id:             data.id,
-          iceParameters:  data.iceParameters,
-          iceCandidates:  data.iceCandidates,
-          dtlsParameters: data.dtlsParameters,
+          id: data.id, iceParameters: data.iceParameters,
+          iceCandidates: data.iceCandidates, dtlsParameters: data.dtlsParameters,
         });
 
         this.sendTransport.on('connect', (args: unknown, cb: unknown) => {
@@ -216,18 +266,19 @@ class BridgeRTC {
         this.sendTransport.on('produce', async (args: unknown, cb: unknown) => {
           const { kind, rtpParameters, appData } = args as { kind: string; rtpParameters: unknown; appData: unknown };
           this.socket.emit('sfu:produce', { channelId, kind, rtpParameters, appData });
-          this.socket.once('sfu:produced', (res: unknown) => { const { producerId } = res as { producerId: string; kind: string }; (cb as (opts: unknown) => void)({ id: producerId }); });
+          this.socket.once('sfu:produced', (res: unknown) => {
+            const { producerId } = res as { producerId: string };
+            (cb as (opts: { id: string }) => void)({ id: producerId });
+          });
         });
 
-        // Mikrofon producer'Ä± hemen baÅŸlat
         await this._produceAudio();
         resolve();
       });
     });
   }
 
-  // â”€â”€â”€ RECV TRANSPORT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async _createRecvTransport(channelId: string): Promise<void> {
+  private _createRecvTransport(channelId: string): Promise<void> {
     return new Promise<void>((resolve) => {
       this.socket.emit('sfu:create-transport', { channelId, direction: 'recv' });
       this.socket.once('sfu:transport-created', async (payload: unknown) => {
@@ -235,10 +286,8 @@ class BridgeRTC {
         if (data.direction !== 'recv') return;
 
         this.recvTransport = this.device!.createRecvTransport({
-          id:             data.id,
-          iceParameters:  data.iceParameters,
-          iceCandidates:  data.iceCandidates,
-          dtlsParameters: data.dtlsParameters,
+          id: data.id, iceParameters: data.iceParameters,
+          iceCandidates: data.iceCandidates, dtlsParameters: data.dtlsParameters,
         });
 
         this.recvTransport.on('connect', (args: unknown, cb: unknown) => {
@@ -248,131 +297,105 @@ class BridgeRTC {
             if ((d as { direction: string }).direction === 'recv') (cb as () => void)();
           });
         });
-
         resolve();
       });
     });
   }
 
-  // â”€â”€â”€ PRODUCE AUDIO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async _produceAudio() {
+  private async _produceAudio(): Promise<void> {
     if (!this.sendTransport || !this.localStream) return;
     const audioTrack = this.localStream.getAudioTracks()[0];
     if (!audioTrack) return;
-
     try {
       const producer = await this.sendTransport.produce({
         track: audioTrack,
         codecOptions: {
-          opusStereo:    true,
-          opusDtx:       true,  // Sessizlikte paket gÃ¶nderme â€” bant tasarrufu
-          opusFec:       true,  // Hata dÃ¼zeltme
-          opusPtime:     20,
-          opusMaxPlaybackRate: 48000,
+          opusStereo: true, opusDtx: true, opusFec: true,
+          opusPtime: 20, opusMaxPlaybackRate: 48000,
         },
       });
       producer.on('trackended', () => this._closeProducer('audio'));
       this.producers.set('audio', producer);
-    } catch (e) {
-      console.error('[SFU] audio produce error:', e);
-    }
+    } catch (e) { log.error('[SFU] audio produce error:', e); }
   }
 
-  // â”€â”€â”€ CONSUME (baÅŸka peer'Ä±n track'i) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async _consume(producerId, socketId, kind) {
-    if (!this.recvTransport || !this.device) return;
+  // ── Consume ───────────────────────────────────────────────────────────────
+  private async _consume(producerId: string, socketId: string, kind: string): Promise<MediasoupConsumer | null> {
+    if (!this.recvTransport || !this.device) return null;
 
     this.socket.emit('sfu:consume', {
-      channelId:       this.currentChannelId,
-      producerId,
+      channelId: this.currentChannelId, producerId,
       rtpCapabilities: this.device.rtpCapabilities,
     });
 
     return new Promise((resolve) => {
-      this.socket.once('sfu:consumed', async (data) => {
-        if (data.producerId !== producerId) return;
+      this.socket.once('sfu:consumed', async (data: unknown) => {
+        const d = data as { producerId: string; consumerId: string; kind: string; rtpParameters: unknown };
+        if (d.producerId !== producerId) { resolve(null); return; }
         try {
-          const consumer = await this.recvTransport.consume({
-            id:            data.consumerId,
-            producerId:    data.producerId,
-            kind:          data.kind,
-            rtpParameters: data.rtpParameters,
+          const consumer = await this.recvTransport!.consume({
+            id: d.consumerId, producerId: d.producerId,
+            kind: d.kind, rtpParameters: d.rtpParameters,
           });
-
           this.consumers.set(producerId, consumer);
 
-          // Peer stream'i gÃ¼ncelle
           if (!this.peerStreams.has(socketId)) {
             this.peerStreams.set(socketId, { audio: new MediaStream(), video: new MediaStream() });
           }
-          const streams = this.peerStreams.get(socketId);
+          const streams      = this.peerStreams.get(socketId)!;
           const targetStream = (kind === 'video' || kind === 'screen') ? streams.video : streams.audio;
           targetStream.addTrack(consumer.track);
 
-          // UI'a baÄŸla
-          window.bridgeApp?.attachRemoteStream(socketId, targetStream, kind);
+          _app()?.attachRemoteStream(socketId, targetStream, kind);
 
-//           video/screen tile'Ä± video grid'e ekle
           if (kind === 'video' || kind === 'screen') {
-            const peerUserId = this._socketToUserId?.get(socketId);
-            if (typeof sfuHandleNewProducer === 'function') {
-              sfuHandleNewProducer(socketId, peerUserId, targetStream, kind);
+            const peerUserId = this._socketToUserId.get(socketId);
+            _sfuHandleNewProducer()?.(socketId, peerUserId, targetStream, kind);
+            if (false) {
             }
           }
 
-          // KiÅŸiye Ã¶zel ses seviyesi
-          const peerUserId = this._socketToUserId?.get(socketId);
+          const peerUserId = this._socketToUserId.get(socketId);
           if (peerUserId) {
-            const saved = parseFloat(localStorage.getItem(`bridge-vol-${peerUserId}`));
+            const saved = parseFloat(localStorage.getItem(`bridge-vol-${peerUserId}`) ?? '');
             if (!isNaN(saved)) {
-              setTimeout(() => BridgeVoiceVolume?.applyVolume(socketId, saved), 500);
+              setTimeout(() => _voiceVolume()?.applyVolume(socketId, saved), 500);
             }
           }
 
-          // Consumer'Ä± baÅŸlat â€” sunucu paused baÅŸlatÄ±yor
           this.socket.emit('sfu:resume-consumer', { producerId });
           await consumer.resume?.();
-
           resolve(consumer);
-        } catch (e) {
-          console.error('[SFU] consume error:', e);
-          resolve(null);
-        }
+        } catch (e) { log.error('[SFU] consume error:', e); resolve(null); }
       });
     });
   }
 
-  // â”€â”€â”€ LEAVE VOICE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  leaveVoice() {
+  // ── Leave voice ───────────────────────────────────────────────────────────
+  leaveVoice(): void {
     if (!this.currentChannelId) return;
 
     if (this._sfuAvailable) {
-      this.socket.emit('sfu:leave', {
-        channelId: this.currentChannelId,
-        serverId:  this.currentServerId,
-      });
+      this.socket.emit('sfu:leave', { channelId: this.currentChannelId, serverId: this.currentServerId });
       this._sfuCleanup();
     } else {
-      this.socket.emit('voice:leave', {
-        channelId: this.currentChannelId,
-        serverId:  this.currentServerId,
-      });
+      this.socket.emit('voice:leave', { channelId: this.currentChannelId, serverId: this.currentServerId });
     }
 
     this.localStream?.getTracks().forEach(t => t.stop());
     this.localStream = null;
     this.screenStream?.getTracks().forEach(t => t.stop());
-    this.screenStream = null;
-
+    this.screenStream    = null;
     this.currentChannelId = null;
     this.currentServerId  = null;
     this.videoOn          = false;
     this.screenSharing    = false;
+    _stopVAD()?.();
   }
 
-  _sfuCleanup() {
-    for (const consumer of this.consumers.values()) consumer.close?.();
-    for (const producer of this.producers.values()) producer.close?.();
+  private _sfuCleanup(): void {
+    for (const c of this.consumers.values()) c.close?.();
+    for (const p of this.producers.values()) p.close?.();
     this.consumers.clear();
     this.producers.clear();
     this.peerStreams.clear();
@@ -383,7 +406,7 @@ class BridgeRTC {
     this.device        = null;
   }
 
-  _closeProducer(kind) {
+  private _closeProducer(kind: string): void {
     const producer = this.producers.get(kind);
     if (!producer) return;
     producer.close();
@@ -391,33 +414,28 @@ class BridgeRTC {
     this.socket.emit('sfu:close-producer', { kind });
   }
 
-  // â”€â”€â”€ MUTE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  setMuted(muted) {
+  // ── Mute / deafen ─────────────────────────────────────────────────────────
+  setMuted(muted: boolean): void {
     this.muted = muted;
-    // Yerel stream track'ini durdur
-    this.localStream?.getAudioTracks().forEach(t => t.enabled = !muted);
-    // SFU modda producer'Ä± pause/resume et â€” bant geniÅŸliÄŸinden tasarruf
+    this.localStream?.getAudioTracks().forEach(t => { t.enabled = !muted; });
     const audioProducer = this.producers.get('audio');
-    if (audioProducer) {
-      muted ? audioProducer.pause() : audioProducer.resume();
-    }
+    if (audioProducer) { muted ? audioProducer.pause() : audioProducer.resume(); }
     this._broadcastState();
   }
 
-  setDeafened(deafened) {
+  setDeafened(deafened: boolean): void {
     this.deafened = deafened;
-    document.querySelectorAll('.remote-audio').forEach(el => { el.muted = deafened; });
+    document.querySelectorAll<HTMLMediaElement>('.remote-audio').forEach(el => { el.muted = deafened; });
     if (deafened && !this.muted) this.setMuted(true);
     this._broadcastState();
   }
 
-  // â”€â”€â”€ VIDEO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async enableVideo(enable) {
+  // ── Video ─────────────────────────────────────────────────────────────────
+  async enableVideo(enable: boolean): Promise<boolean> {
     if (enable) {
       try {
         const videoConstraints = this.selectedCameraId
-          ? { deviceId: { exact: this.selectedCameraId } }
-          : true;
+          ? { deviceId: { exact: this.selectedCameraId } } : true;
         const videoStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints });
         const videoTrack  = videoStream.getVideoTracks()[0];
         this.localStream?.addTrack(videoTrack);
@@ -426,9 +444,9 @@ class BridgeRTC {
           const producer = await this.sendTransport.produce({
             track: videoTrack,
             encodings: [
-              { maxBitrate: 100_000, scaleResolutionDownBy: 4 },  // simulcast katman 1
-              { maxBitrate: 300_000, scaleResolutionDownBy: 2 },  // simulcast katman 2
-              { maxBitrate: 900_000 },                             // simulcast katman 3 (full)
+              { maxBitrate: 100_000, scaleResolutionDownBy: 4 },
+              { maxBitrate: 300_000, scaleResolutionDownBy: 2 },
+              { maxBitrate: 900_000 },
             ],
             codecOptions: { videoGoogleStartBitrate: 1000 },
           });
@@ -437,7 +455,7 @@ class BridgeRTC {
         }
         this.videoOn = true;
       } catch {
-        window.bridgeApp?.toast('Kamera eriÅŸimi reddedildi', 'error');
+        _app()?.toast('Kamera erişimi reddedildi', 'error');
         return false;
       }
     } else {
@@ -449,214 +467,218 @@ class BridgeRTC {
     return true;
   }
 
-  // â”€â”€â”€ SCREEN SHARE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async startScreenShare(quality = 'hd', includeAudio = true) {
-    const presets = {
-      '4k60':    { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } },
-      '1440p60': { width: { ideal: 2560 }, height: { ideal: 1440 }, frameRate: { ideal: 60 } },
-      '1440p':   { width: { ideal: 2560 }, height: { ideal: 1440 }, frameRate: { ideal: 30 } },
-      '1080p60': { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } },
-      '1080p':   { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
-      '720p':    { width: { ideal: 1280 }, height: { ideal: 720  }, frameRate: { ideal: 30 } },
-      'hd':      { width: { ideal: 1280 }, height: { ideal: 720  }, frameRate: { ideal: 30 } },
-    };
+  // ── Screen share ──────────────────────────────────────────────────────────
+  async startScreenShare(quality: ScreenQuality = 'hd', includeAudio = true): Promise<boolean> {
+    const preset = SCREEN_PRESETS[quality] ?? SCREEN_PRESETS['hd'];
+    this._screenQuality = quality;
     try {
       this.screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { ...presets[quality] || presets['hd'], cursor: 'always' },
-        audio: includeAudio ? { echoCancellation: false, noiseSuppression: false } : false,
+        video: { ...preset, cursor: 'always' } as MediaTrackConstraints,
+        audio: includeAudio
+          ? { echoCancellation: false, noiseSuppression: false } as MediaTrackConstraints
+          : false,
       });
-
-      const screenTrack = this.screenStream.getVideoTracks()[0];
-      screenTrack.onended = () => this.stopScreenShare();
+      const screenTrack      = this.screenStream.getVideoTracks()[0];
+      screenTrack.onended    = () => this.stopScreenShare();
 
       if (this._sfuAvailable && this.sendTransport) {
-        const bitrateMap = {
-          '4k60': 20_000_000, '1440p60': 12_000_000, '1440p': 10_000_000,
-          '1080p60': 8_000_000, '1080p': 5_000_000, '720p': 3_000_000, 'hd': 2_000_000,
-        };
         const producer = await this.sendTransport.produce({
           track:     screenTrack,
           appData:   { screen: true },
-          encodings: [{ maxBitrate: bitrateMap[quality] || 2_000_000 }],
+          encodings: [{ maxBitrate: SCREEN_BITRATES[quality] ?? 2_000_000 }],
           codecOptions: { videoGoogleStartBitrate: 1000 },
         });
         producer.on('trackended', () => this.stopScreenShare());
         this.producers.set('screen', producer);
       }
-
       this.screenSharing = true;
       this._broadcastState();
       return true;
     } catch {
-      window.bridgeApp?.toast('Ekran paylaÅŸÄ±mÄ± iptal edildi', 'error');
+      _app()?.toast('Ekran paylaşımı iptal edildi', 'error');
       return false;
     }
   }
 
-  stopScreenShare() {
+  stopScreenShare(): void {
     this.screenStream?.getTracks().forEach(t => t.stop());
     this.screenStream = null;
     this._closeProducer('screen');
     this.screenSharing = false;
     this._broadcastState();
-    if (this.videoOn) this.enableVideo(true);
+    if (this.videoOn) void this.enableVideo(true);
   }
 
-  // â”€â”€â”€ DEVICE SWITCHING â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async setMicDevice(deviceId: string) {
+  // ── Device switching ──────────────────────────────────────────────────────
+  async setMicDevice(deviceId: string): Promise<void> {
     this.selectedMicId = deviceId;
     localStorage.setItem('bridge-mic', deviceId);
     if (!this.isInVoice() || !this.localStream) return;
     try {
-      const nsEnabled = window.BridgeNS?.enabled !== false;
+      const _nsModule = _ns();
+      const nsEnabled = _nsModule?.enabled !== false;
       const rawStream = await navigator.mediaDevices.getUserMedia({
-        audio: { deviceId: { exact: deviceId }, echoCancellation: nsEnabled, noiseSuppression: nsEnabled, autoGainControl: nsEnabled, sampleRate: 48000 },
+        audio: { deviceId: { exact: deviceId }, echoCancellation: nsEnabled,
+                 noiseSuppression: nsEnabled, autoGainControl: nsEnabled, sampleRate: 48000 },
         video: false,
       });
-      const cleanStream = window.BridgeNS ? await window.BridgeNS.process(rawStream) : rawStream;
-      const newTrack = cleanStream.getAudioTracks()[0];
-      this.localStream.getAudioTracks().forEach(t => { t.stop(); this.localStream.removeTrack(t); });
+      const cleanStream = _nsM.process ? await _nsM.process(rawStream) : rawStream;
+      const newTrack      = cleanStream.getAudioTracks()[0];
+      this.localStream.getAudioTracks().forEach(t => { t.stop(); this.localStream!.removeTrack(t); });
       this.localStream.addTrack(newTrack);
-      // SFU: producer track'ini deÄŸiÅŸtir
       const audioProducer = this.producers.get('audio');
       if (audioProducer) await audioProducer.replaceTrack({ track: newTrack });
-      window.bridgeApp?.toast('Mikrofon deÄŸiÅŸtirildi âœ“', 'success');
-    } catch {
-      window.bridgeApp?.toast('Mikrofon deÄŸiÅŸtirilemedi', 'error');
-    }
+      _app()?.toast('Mikrofon değiştirildi ✓', 'success');
+    } catch { _app()?.toast('Mikrofon değiştirilemedi', 'error'); }
   }
 
-  async setCameraDevice(deviceId: string) {
+  async setCameraDevice(deviceId: string): Promise<void> {
     this.selectedCameraId = deviceId;
     localStorage.setItem('bridge-camera', deviceId);
     if (!this.videoOn || !this.localStream) return;
     try {
-      const newStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: deviceId } } });
-      const newTrack  = newStream.getVideoTracks()[0];
-      this.localStream.getVideoTracks().forEach(t => { t.stop(); this.localStream.removeTrack(t); });
+      const newStream     = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: deviceId } } });
+      const newTrack      = newStream.getVideoTracks()[0];
+      this.localStream.getVideoTracks().forEach(t => { t.stop(); this.localStream!.removeTrack(t); });
       this.localStream.addTrack(newTrack);
       const videoProducer = this.producers.get('video');
       if (videoProducer) await videoProducer.replaceTrack({ track: newTrack });
-      window.bridgeApp?.toast('Kamera deÄŸiÅŸtirildi âœ“', 'success');
-    } catch {
-      window.bridgeApp?.toast('Kamera deÄŸiÅŸtirilemedi', 'error');
-    }
+      _app()?.toast('Kamera değiştirildi ✓', 'success');
+    } catch { _app()?.toast('Kamera değiştirilemedi', 'error'); }
   }
 
-  async setSpeakerDevice(deviceId: string) {
+  async setSpeakerDevice(deviceId: string): Promise<void> {
     this.selectedSpeakerId = deviceId;
     localStorage.setItem('bridge-speaker', deviceId);
-    document.querySelectorAll('.remote-audio, audio').forEach(el => {
-      if (typeof el.setSinkId === 'function') el.setSinkId(deviceId).catch(() => {});
+    type AudioEl = HTMLMediaElement & { setSinkId?(id: string): Promise<void> };
+    document.querySelectorAll<AudioEl>('.remote-audio, audio').forEach(el => {
+      el.setSinkId?.(deviceId).catch(() => {});
     });
-    window.bridgeApp?.toast('HoparlÃ¶r deÄŸiÅŸtirildi âœ“', 'success');
+    _app()?.toast('Hoparlör değiştirildi ✓', 'success');
   }
 
-  async setChannelBitrate(bitrate) {
+  setChannelBitrate(bitrate: number): void {
     this.channelBitrate = bitrate;
-    // SFU modda codec seÃ§eneÄŸini gÃ¼ncellemek iÃ§in producer kapatÄ±p yeniden aÃ§mak gerekir
-    // Åimdilik sadece kaydediyoruz â€” sonraki produce'da uygulanÄ±r
+    // SFU modda codec seçeneğini güncellemek için producer kapatıp yeniden açmak gerekir
+    // Şimdilik sadece kaydediyoruz — sonraki produce'da uygulanır
   }
 
-  // â”€â”€â”€ SOCKET EVENTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  _bindSocketEvents(): void {
-    // â”€ SFU events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    this.socket.on('sfu:joined', async ({ existingPeers, iceServers, iceTransportPolicy }) => {
-      // Sunucudan gelen TURN/STUN listesini sakla â€” transport'larda kullanÄ±lÄ±r
-      if (iceServers && iceServers.length) {
+  // ── Socket events ─────────────────────────────────────────────────────────
+  private _bindSocketEvents(): void {
+    // ─ SFU events ─────────────────────────────────────────────────────────
+    this.socket.on('sfu:joined', async (raw: unknown) => {
+      const { existingPeers, iceServers, iceTransportPolicy } =
+        raw as { existingPeers: PeerInfo[]; iceServers?: RTCIceServer[]; iceTransportPolicy?: RTCIceTransportPolicy };
+
+      if (iceServers?.length) {
         this._iceServers         = iceServers;
-        this._iceTransportPolicy = iceTransportPolicy || 'all';
-        console.log('[SFU] ICE sunucularÄ± gÃ¼ncellendi:', iceServers.map(s => s.urls).flat().join(', '));
+        this._iceTransportPolicy = iceTransportPolicy ?? 'all';
+        log.log('[SFU] ICE sunucuları güncellendi:', iceServers.map(s => s.urls).flat().join(', '));
       }
-      this._socketToUserId = this._socketToUserId || new Map();
+
       for (const peer of existingPeers) {
-        this._socketToUserId.set(peer.socketId, peer.userId);
-        window.bridgeApp?.renderVoicePeer(peer, false);
-        // Mevcut peer'larÄ±n producer'larÄ±nÄ± consume et
-        for (const { producerId, kind } of (peer.producers || [])) {
+        this._socketToUserId.set(peer.socketId, peer.userId ?? '');
+        _app()?.renderVoicePeer(peer, false);
+        for (const { producerId, kind } of peer.producers ?? []) {
           await this._consume(producerId, peer.socketId, kind);
         }
       }
-      // Voice E2E uyumluluÄŸu
-      if (existingPeers.length > 0 && window.BridgeVoiceE2E) {
-        BridgeVoiceE2E.initVoiceE2E(this.currentChannelId, existingPeers)
-          .then(ok => { if (ok) BridgeVoiceE2E.renderVoiceE2EBadge(); });
+
+      const _e2e1 = _voiceE2E();
+      if (existingPeers.length > 0 && _e2e1) {
+        _e2e1.initVoiceE2E(this.currentChannelId, existingPeers)
+          .then(ok => { if (ok) _e2e1.renderVoiceE2EBadge(); });
       }
     });
 
-    this.socket.on('sfu:peer-joined', (peer) => {
-      this._socketToUserId = this._socketToUserId || new Map();
-      this._socketToUserId.set(peer.socketId, peer.userId);
-      window.bridgeApp?.renderVoicePeer(peer, false);
+    this.socket.on('sfu:peer-joined', (raw: unknown) => {
+      const peer = raw as PeerInfo;
+      this._socketToUserId.set(peer.socketId, peer.userId ?? '');
+      _app()?.renderVoicePeer(peer, false);
     });
 
-    this.socket.on('sfu:new-producer', async ({ socketId, userId, producerId, kind }) => {
-      // Yeni bir peer track gÃ¶ndermeye baÅŸladÄ± â€” tÃ¼ket
+    this.socket.on('sfu:new-producer', async (raw: unknown) => {
+      const { socketId, producerId, kind } = raw as { socketId: string; userId?: string; producerId: string; kind: string };
       await this._consume(producerId, socketId, kind);
     });
 
-    this.socket.on('sfu:producer-closed', ({ producerId }) => {
+    this.socket.on('sfu:producer-closed', (raw: unknown) => {
+      const { producerId } = raw as { producerId: string };
       const consumer = this.consumers.get(producerId);
-      if (consumer) {
-        consumer.close?.();
-        this.consumers.delete(producerId);
-      }
+      if (consumer) { consumer.close?.(); this.consumers.delete(producerId); }
     });
 
-    this.socket.on('sfu:peer-left', ({ socketId, userId }) => {
+    this.socket.on('sfu:peer-left', (raw: unknown) => {
+      const { socketId } = raw as { socketId: string };
       this._cleanupPeerStreams(socketId);
-      window.bridgeApp?.removeVoicePeer(socketId);
+      _app()?.removeVoicePeer(socketId);
     });
 
-    // â”€ P2P fallback events (mediasoup-client yoksa) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    this.socket.on('voice:existing-peers', async (peers) => {
-      if (this._sfuAvailable) return; // SFU modda bu eventler gÃ¶rmezden gel
+    // ─ P2P fallback events ────────────────────────────────────────────────
+    this.socket.on('voice:existing-peers', async (raw: unknown) => {
+      if (this._sfuAvailable) return;
+      const peers = raw as PeerInfo[];
       for (const peer of peers) await this._p2pCreateOffer(peer.socketId, peer);
-      if (peers.length > 0 && window.BridgeVoiceE2E) {
-        BridgeVoiceE2E.initVoiceE2E(this.currentChannelId, peers)
-          .then(ok => { if (ok) BridgeVoiceE2E.renderVoiceE2EBadge(); });
+      const _e2e2 = _voiceE2E();
+      if (peers.length > 0 && _e2e2) {
+        _e2e2.initVoiceE2E(this.currentChannelId, peers)
+          .then(ok => { if (ok) _e2e2.renderVoiceE2EBadge(); });
       }
     });
 
-    this.socket.on('voice:peer-joined', (peer) => {
+    this.socket.on('voice:peer-joined', (raw: unknown) => {
       if (this._sfuAvailable) return;
-      window.bridgeApp?.renderVoicePeer(peer, false);
+      _app()?.renderVoicePeer(raw as PeerInfo, false);
     });
 
-    this.socket.on('voice:peer-left', ({ socketId }) => {
+    this.socket.on('voice:peer-left', (raw: unknown) => {
       if (this._sfuAvailable) return;
+      const { socketId } = raw as { socketId: string };
       this._p2pRemovePeer(socketId);
-      window.bridgeApp?.removeVoicePeer(socketId);
+      _app()?.removeVoicePeer(socketId);
     });
 
-    // â”€ Ortak events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    this.socket.on('voice:peer-state', ({ socketId, muted, deafened, screensharing, video }) => {
-      window.bridgeApp?.updatePeerState(socketId, { muted, deafened, screensharing, video });
+    // ─ Common events ──────────────────────────────────────────────────────
+    this.socket.on('voice:peer-state', (raw: unknown) => {
+      const { socketId, ...state } = raw as { socketId: string } & PeerState;
+      _app()?.updatePeerState(socketId, state);
     });
 
-    // P2P sinyalizasyon (fallback mod iÃ§in)
-    this.socket.on('webrtc:offer',         async ({ fromSocketId, offer })    => { if (!this._sfuAvailable) await this._p2pHandleOffer(fromSocketId, offer); });
-    this.socket.on('webrtc:answer',        async ({ fromSocketId, answer })   => { if (!this._sfuAvailable) { const pc = this._p2pPeers?.get(fromSocketId); if (pc && pc.signalingState !== 'stable') await pc.setRemoteDescription(new RTCSessionDescription(answer)); } });
-    this.socket.on('webrtc:ice-candidate', async ({ fromSocketId, candidate }) => { if (!this._sfuAvailable) { const pc = this._p2pPeers?.get(fromSocketId); if (pc && candidate) { try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {} } } });
+    // P2P signalling (fallback)
+    this.socket.on('webrtc:offer', async (raw: unknown) => {
+      if (this._sfuAvailable) return;
+      const { fromSocketId, offer } = raw as { fromSocketId: string; offer: RTCSessionDescriptionInit };
+      await this._p2pHandleOffer(fromSocketId, offer);
+    });
+    this.socket.on('webrtc:answer', async (raw: unknown) => {
+      if (this._sfuAvailable) return;
+      const { fromSocketId, answer } = raw as { fromSocketId: string; answer: RTCSessionDescriptionInit };
+      const pc = this._p2pPeers.get(fromSocketId);
+      if (pc && pc.signalingState !== 'stable') await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    });
+    this.socket.on('webrtc:ice-candidate', async (raw: unknown) => {
+      if (this._sfuAvailable) return;
+      const { fromSocketId, candidate } = raw as { fromSocketId: string; candidate: RTCIceCandidateInit };
+      const pc = this._p2pPeers.get(fromSocketId);
+      if (pc && candidate) { try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch { /* non-fatal */ } }
+    });
 
-    // â”€â”€ sfu:redirect â€” Cluster modda oda baÅŸka node'da â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // Sunucu, bu kanalÄ±n baÅŸka bir node'da olduÄŸunu bildiriyor.
-    // 600ms bekleyip tekrar join dene (load balancer yeniden yÃ¶nlendirmeli).
-    this.socket.on('sfu:redirect', ({ channelId, ownerNodeId, message }) => {
-      console.warn(`[SFU] Redirect: channel=${channelId} owner=${ownerNodeId}`, message);
-      this._redirectCount = (this._redirectCount || 0) + 1;
+    // ─ sfu:redirect — Cluster modda oda başka node'da ─────────────────────
+    this.socket.on('sfu:redirect', (raw: unknown) => {
+      const { channelId, ownerNodeId, message } = raw as { channelId: string; ownerNodeId: string; message?: string };
+      log.warn(`[SFU] Redirect: channel=${channelId} owner=${ownerNodeId}`, message);
+      this._redirectCount = (this._redirectCount ?? 0) + 1;
       if (this._redirectCount > 3) {
-        console.error('[SFU] Redirect dÃ¶ngÃ¼sÃ¼ algÄ±landÄ±, vazgeÃ§iliyor');
+        log.error('[SFU] Redirect döngüsü algılandı, vazgeçiliyor');
         this._redirectCount = 0;
-        window.bridgeApp?.showToast?.('Ses kanalÄ±na baÄŸlanÄ±lamadÄ±. LÃ¼tfen tekrar deneyin.', 'error');
+        _app()?.showToast?.('Ses kanalına bağlanılamadı. Lütfen tekrar deneyin.', 'error');
         return;
       }
       setTimeout(() => {
         if (this.currentChannelId === channelId) {
-          console.log('[SFU] Yeniden join deneniyorâ€¦');
+          log.log('[SFU] Yeniden join deneniyor…');
           this.socket.emit('sfu:join', {
-            channelId,
-            serverId:        this.currentServerId,
+            channelId, serverId: this.currentServerId,
             rtpCapabilities: this.device?.rtpCapabilities,
           });
         }
@@ -664,82 +686,80 @@ class BridgeRTC {
     });
   }
 
-  _broadcastState() {
+  private _broadcastState(): void {
     if (!this.currentChannelId) return;
     this.socket.emit('voice:state-update', {
-      channelId: this.currentChannelId,
-      muted: this.muted, deafened: this.deafened,
-      screensharing: this.screenSharing, video: this.videoOn,
+      channelId: this.currentChannelId, muted: this.muted,
+      deafened: this.deafened, screensharing: this.screenSharing, video: this.videoOn,
     });
   }
 
-  _cleanupPeerStreams(socketId) {
+  private _cleanupPeerStreams(socketId: string): void {
     const streams = this.peerStreams.get(socketId);
     if (streams) {
       streams.audio?.getTracks().forEach(t => t.stop());
       streams.video?.getTracks().forEach(t => t.stop());
       this.peerStreams.delete(socketId);
     }
-    // Bu peer'Ä±n consumer'larÄ±nÄ± bul ve kapat
     for (const [producerId, consumer] of this.consumers) {
-      if (consumer._socketId === socketId) {
-        consumer.close?.();
-        this.consumers.delete(producerId);
-      }
+      if (consumer._socketId === socketId) { consumer.close?.(); this.consumers.delete(producerId); }
     }
   }
 
-  // â”€â”€â”€ P2P FALLBACK (mediasoup-client yoksa) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Mevcut webrtc.js mantÄ±ÄŸÄ±nÄ±n kopyasÄ± â€” tam uyumluluk iÃ§in korundu
-
-  _p2pGetPeers() {
-    if (!this._p2pPeers) this._p2pPeers = new Map();
-    return this._p2pPeers;
-  }
-
-  async _p2pCreateOffer(targetSocketId, peerInfo) {
+  // ── P2P fallback ──────────────────────────────────────────────────────────
+  private async _p2pCreateOffer(targetSocketId: string, peerInfo: PeerInfo): Promise<void> {
     const pc = this._p2pCreatePeer(targetSocketId, peerInfo);
     try {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      this.socket.emit('webrtc:offer', { targetSocketId, offer: pc.localDescription, channelId: this.currentChannelId });
-    } catch (e) { console.error('[P2P] Offer error:', e); }
+      this.socket.emit('webrtc:offer', {
+        targetSocketId, offer: pc.localDescription, channelId: this.currentChannelId,
+      });
+    } catch (e) { log.error('[P2P] Offer error:', e); }
   }
 
-  async _p2pHandleOffer(fromSocketId, offer) {
-    const pc = this._p2pGetPeers().get(fromSocketId) || this._p2pCreatePeer(fromSocketId, { socketId: fromSocketId });
+  private async _p2pHandleOffer(fromSocketId: string, offer: RTCSessionDescriptionInit): Promise<void> {
+    const pc = this._p2pPeers.get(fromSocketId) ?? this._p2pCreatePeer(fromSocketId, { socketId: fromSocketId });
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       this.socket.emit('webrtc:answer', { targetSocketId: fromSocketId, answer: pc.localDescription });
-    } catch (e) { console.error('[P2P] Answer error:', e); }
+    } catch (e) { log.error('[P2P] Answer error:', e); }
   }
 
-  _p2pCreatePeer(socketId, peerInfo) {
-    // Sunucudan gelen ICE listesi varsa kullan; yoksa Google STUN fallback
-    const iceServers = this._iceServers || [{ urls: 'stun:stun.l.google.com:19302' }];
-    const ICE_SERVERS = {
-      iceServers,
-      iceTransportPolicy: this._iceTransportPolicy || 'all',
+  private _p2pCreatePeer(socketId: string, _peerInfo: PeerInfo): RTCPeerConnection {
+    const iceServers = this._iceServers.length
+      ? this._iceServers
+      : [{ urls: 'stun:stun.l.google.com:19302' }];
+    const pc = new RTCPeerConnection({ iceServers, iceTransportPolicy: this._iceTransportPolicy });
+    this._p2pPeers.set(socketId, pc);
+    if (this.localStream) this.localStream.getTracks().forEach(track => pc.addTrack(track, this.localStream!));
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) this.socket.emit('webrtc:ice-candidate', { targetSocketId: socketId, candidate });
     };
-    const pc = new RTCPeerConnection(ICE_SERVERS);
-    this._p2pGetPeers().set(socketId, pc);
-    if (this.localStream) this.localStream.getTracks().forEach(track => pc.addTrack(track, this.localStream));
-    pc.onicecandidate = ({ candidate }) => { if (candidate) this.socket.emit('webrtc:ice-candidate', { targetSocketId: socketId, candidate }); };
-    pc.ontrack = ({ streams }) => { if (streams[0]) window.bridgeApp?.attachRemoteStream(socketId, streams[0]); };
-    pc.onconnectionstatechange = () => { if (['disconnected','failed','closed'].includes(pc.connectionState)) { this._p2pRemovePeer(socketId); window.bridgeApp?.removeVoicePeer(socketId); } };
+    pc.ontrack = ({ streams }) => {
+      if (streams[0]) _app()?.attachRemoteStream(socketId, streams[0]);
+    };
+    pc.onconnectionstatechange = () => {
+      if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+        this._p2pRemovePeer(socketId);
+        _app()?.removeVoicePeer(socketId);
+      }
+    };
     return pc;
   }
 
-  _p2pRemovePeer(socketId) {
-    const pc = this._p2pPeers?.get(socketId);
+  private _p2pRemovePeer(socketId: string): void {
+    const pc = this._p2pPeers.get(socketId);
     if (pc) { pc.close(); this._p2pPeers.delete(socketId); }
   }
 
-  // V2E uyumluluk
-  registerVoiceE2EEvents(myUserId: string) {
-    if (window.BridgeVoiceE2E) BridgeVoiceE2E.registerSocketEvents(this.socket, myUserId);
+  // ── Voice E2E ─────────────────────────────────────────────────────────────
+  registerVoiceE2EEvents(myUserId: string): void {
+    _voiceE2E()?.registerSocketEvents(this.socket, myUserId);
   }
 }
 
+export { BridgeRTC };
+export type { ScreenQuality };

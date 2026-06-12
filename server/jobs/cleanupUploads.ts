@@ -1,75 +1,140 @@
-// server/jobs/cleanupUploads.js — Delete uploaded files that are no longer
-// referenced by any message in the database.
+// server/jobs/cleanupUploads.ts — Veritabanında referans kalmamış yükleme
+// dosyalarını siler.
 //
-// Runs once on startup (after a short delay) and then every 24 hours.
-// Only files older than MAX_FILE_AGE_MS are considered for deletion,
-// so a newly uploaded file that hasn't been attached to a message yet
-// won't be deleted in a race condition.
+// Sunucu başladıktan 5 dakika sonra bir kez çalışır, ardından her 24 saatte bir
+// tekrar eder.  Yarış koşulunu önlemek için yalnızca MAX_FILE_AGE_MS'den eski
+// dosyalar dikkate alınır — yeni yüklenen ama henüz mesaja bağlanmamış bir dosya
+// bu süre geçmeden silinmez.
+//
+// CDN_PROVIDER desteği (Sprint 53):
+//   CDN_PROVIDER=local   → disk (varsayılan)
+//   CDN_PROVIDER=r2      → Cloudflare R2
+//   CDN_PROVIDER=minio   → MinIO
+//   CDN_PROVIDER=s3      → AWS S3
+//
+// Sprint 54: Remote grace period düzeltmesi.
+//   S3 listFiles() artık LastModified döndürüyor; local'de olduğu gibi
+//   remote'da da MAX_FILE_AGE_MS filtresi uygulanır.
+//   lastModifiedMs bilinmiyorsa dosya güvenli tarafta tutulur (silinmez).
+//
+// Sprint 62: OOM düzeltmesi — referenced URL'ler artık DB'den tüm satırlar
+//   çekilmek yerine sadece fileUrl sütunu projection ile alınıyor.
+//   PostgreSQL varsa tek bir UNION ALL sorgusu kullanılır (DB-side set operation).
+//   Bu sayede büyük instance'larda bellek baskısı ortadan kalkar.
 
-const fs = require('fs');
-const path = require('path');
-const { Messages, Dms } = require('../db/repositories');
+import logger from '../lib/logger';
+import { getStorageAdapter } from '../lib/storageAdapter';
+import { Messages, Dms } from '../db/repositories';
+import db from '../db/loader';
 
-const UPLOAD_DIR = path.join(__dirname, '../uploads');
-const MAX_FILE_AGE_MS  = 60 * 60 * 1000;  // 1 hour — grace period for new uploads
-const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_FILE_AGE_MS  = 10 * 60 * 1000;       // 10 dk — upload→DB insert yarış penceresi
+const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000;  // 24 saat
 
-async function runCleanup() {
-  if (!fs.existsSync(UPLOAD_DIR)) return;
+/**
+ * Veritabanındaki referanslı dosya key'lerini döndürür.
+ *
+ * PostgreSQL varsa tek UNION ALL sorgusuyla yalnızca fileUrl sütunu çekilir —
+ * tüm satırları belleğe almaz. Aksi hâlde Collection API projection kullanılır.
+ */
+async function getReferencedKeys(keyFromUrl: (url: string) => string): Promise<Set<string>> {
+  // PostgreSQL yolu — DB-side set operasyonu, yalnızca fileUrl sütunu
+  if (db._pool?.query) {
+    const { rows } = await db._pool.query<{ fileUrl: string }>(
+      `SELECT "fileUrl" FROM messages    WHERE "fileUrl" IS NOT NULL
+       UNION ALL
+       SELECT "fileUrl" FROM dm_messages WHERE "fileUrl" IS NOT NULL`
+    );
+    return new Set(rows.map(r => keyFromUrl(r.fileUrl)));
+  }
 
-  let files;
+  // Collection API yolu — sadece fileUrl alanını project et
+  const msgUrls = (await Messages.findProjected(
+    { type: 'file' },
+    { fileUrl: 1 }
+  ) as Array<{ fileUrl?: string }>)
+    .map(m => m.fileUrl)
+    .filter((u): u is string => !!u);
+
+  const dmUrls = (await Dms.findMessagesWhere(
+    { fileUrl: { $exists: true } }
+  ) as Array<{ fileUrl?: string }>)
+    .map(m => m.fileUrl)
+    .filter((u): u is string => !!u);
+
+  return new Set([...msgUrls, ...dmUrls].map(keyFromUrl));
+}
+
+export async function runCleanup(): Promise<void> {
+  const adapter  = getStorageAdapter();
+  const provider = process.env.CDN_PROVIDER ?? 'local';
+
+  let objects: Awaited<ReturnType<typeof adapter.listFiles>>;
   try {
-    files = fs.readdirSync(UPLOAD_DIR);
-  } catch (e) {
-    console.error('[cleanup] Cannot read uploads dir:', e.message);
+    objects = await adapter.listFiles();
+  } catch (err) {
+    logger.error({ err, provider, event: 'cleanup.list.failed' }, '[cleanup] Dosya listesi alınamadı.');
     return;
   }
 
-  if (!files.length) return;
+  if (!objects.length) return;
 
-  // Collect all fileUrls referenced by channel messages AND DM messages
-  const allMessages   = await Messages.findWhere({ type: 'file' });
-  const allDmMessages = await Dms.findMessagesWhere({ fileUrl: { $exists: true } });
-  const referenced = new Set(
-    [...allMessages, ...allDmMessages]
-      .map(m => m.fileUrl)
-      .filter(Boolean)
-      .map(url => path.basename(url))
-  );
+  const referenced = await getReferencedKeys(url => adapter.keyFromUrl(url));
 
-  const now = Date.now();
-  let deleted = 0;
+  const now     = Date.now();
+  let   deleted = 0;
+  let   skipped = 0; // lastModifiedMs bilinmeyen uzak dosyalar
 
-  for (const filename of files) {
-    if (referenced.has(filename)) continue;
+  for (const obj of objects) {
+    // Referanslı dosyaya dokunma
+    if (referenced.has(obj.key)) continue;
 
-    const filePath = path.join(UPLOAD_DIR, filename);
+    // ── Grace period kontrolü ──────────────────────────────────────────────
+    // lastModifiedMs hem yerel hem uzak adaptörlerden dolu gelir (Sprint 54).
+    // Bilinmiyorsa (undefined) dosyayı güvenli tarafta tut — silme.
+    if (obj.lastModifiedMs === undefined) {
+      skipped++;
+      logger.debug({ key: obj.key, provider }, '[cleanup] lastModifiedMs bilinmiyor — atlandı.');
+      continue;
+    }
+
+    if (now - obj.lastModifiedMs < MAX_FILE_AGE_MS) {
+      // Henüz çok yeni — bir sonraki çalışmada tekrar değerlendir
+      continue;
+    }
+
     try {
-      const stat = fs.statSync(filePath);
-      if (now - stat.mtimeMs < MAX_FILE_AGE_MS) continue; // too new — skip
-      fs.unlinkSync(filePath);
+      await adapter.deleteFile(obj.key);
       deleted++;
-    } catch {
-      // File may have been deleted concurrently — not an error
+    } catch (err) {
+      // Yarış koşulunda dosya zaten silinmiş olabilir — hata değil
+      logger.warn({ err, key: obj.key }, '[cleanup] Dosya silinemedi — atlandı.');
     }
   }
 
-  if (deleted > 0) {
-    console.log(`[cleanup] Deleted ${deleted} orphaned upload(s)`);
+  if (deleted > 0 || skipped > 0) {
+    logger.info({ deleted, skipped, provider }, '[cleanup] Sahipsiz yüklemeler işlendi.');
   }
 }
 
-function startCleanupJob() {
-  // Initial run after 5 minutes (let server stabilize first)
+let _cleanupInterval: ReturnType<typeof setInterval> | null = null;  // Sprint 98
+
+export function startCleanupJob(): void {
+  // İlk çalışma: sunucu başladıktan 5 dakika sonra
   setTimeout(() => {
-    runCleanup().catch(e => console.error('[cleanup] Error:', e));
+    runCleanup().catch((e: unknown) => logger.error({ err: e }, '[cleanup] Hata.'));
   }, 5 * 60 * 1000);
 
-  // Subsequent runs every 24 hours
-  setInterval(() => {
-    runCleanup().catch(e => console.error('[cleanup] Error:', e));
+  // Sonraki çalışmalar: her 24 saatte bir
+  _cleanupInterval = setInterval(() => {
+    runCleanup().catch((e: unknown) => logger.error({ err: e }, '[cleanup] Hata.'));
   }, CLEANUP_INTERVAL);
 }
 
-module.exports = { startCleanupJob, runCleanup };
-export {};
+// Sprint 98: Graceful shutdown desteği
+export function stopCleanupJob(): void {
+  if (_cleanupInterval) {
+    clearInterval(_cleanupInterval);
+    _cleanupInterval = null;
+    logger.info('[cleanup] Job durduruldu');
+  }
+}

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="manifest" href="/manifest.json">
-  <meta name="theme-color" content="#5865f2">
+  <meta name="theme-color" content="#2d9cdb">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -110,6 +110,12 @@
       <div class="form-group"><label data-i18n="username">Username</label><input type="text" id="l-username" placeholder="your_username" autocomplete="username" aria-label="Kullanıcı adı" aria-describedby="auth-msg"></div>
       <div class="form-group"><label data-i18n="password">Password</label><input type="password" id="l-password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter') login()" aria-label="Şifre" aria-describedby="auth-msg"></div>
       <button class="btn btn-primary" onclick="login()" aria-label="Giriş yap" data-i18n="sign_in">Sign In</button>
+      <!-- Sprint 60: Passkey butonu -->
+      <div class="auth-divider"><span>veya</span></div>
+      <button class="btn btn-secondary passkey-btn" onclick="BridgeWebAuthn.passkeyLogin()" aria-label="Passkey ile giriş yap" title="Parmak izi, yüz tanıma veya güvenlik anahtarı">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right:6px;vertical-align:-2px"><path d="M8 1a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/><path d="M6 8a2 2 0 1 1 4 0v.5a.5.5 0 0 1-1 0V8a1 1 0 0 0-2 0v4a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V9.5a.5.5 0 0 1 1 0V12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V8z"/></svg>
+        Passkey ile Giriş Yap
+      </button>
     </div>
     <div id="register-form" style="display:none">
       <div class="form-group"><label data-i18n="display_name">Display Name</label><input type="text" id="r-displayname" placeholder="John Doe"></div>
@@ -121,6 +127,12 @@
         <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">🤖 Bot olmadığını doğrula</p>
       </div>
       <button class="btn btn-primary" onclick="register()" aria-label="Hesap oluştur" aria-describedby="auth-msg" data-i18n="create_account">Create Account</button>
+      <!-- Sprint 60: Passkey ile kayıt butonu -->
+      <div class="auth-divider"><span>veya</span></div>
+      <button class="btn btn-secondary passkey-btn" onclick="BridgeWebAuthn.registerPasskey()" aria-label="Passkey ile kayıt ol" title="Şifresiz hesap oluştur — parmak izi, yüz tanıma veya güvenlik anahtarı kullan">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right:6px;vertical-align:-2px"><path d="M8 1a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm0 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/><path d="M6 8a2 2 0 1 1 4 0v.5a.5.5 0 0 1-1 0V8a1 1 0 0 0-2 0v4a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V9.5a.5.5 0 0 1 1 0V12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V8z"/></svg>
+        Passkey ile Kayıt Ol
+      </button>
     </div>
   </div>
 </div>
@@ -142,11 +154,11 @@
     </button>
     <div class="channel-list" id="channel-list"></div>
     <div class="user-panel">
-      <button type="button" class="user-avatar-wrap tooltip" data-tip-i18n="tip_profile" data-tip="Profile" onclick="openSettings()" aria-label="Profil ve ayarlar">
+      <button type="button" class="user-avatar-wrap tooltip" data-tip-i18n="tip_profile" data-tip="Profile" data-bridge-action="openSettingsModal" aria-label="Profil ve ayarlar">
         <div class="user-avatar" id="my-avatar" style="background:#4f8ef7">?</div>
         <div class="status-dot online" id="my-status-dot"></div>
       </button>
-      <button type="button" class="user-info" onclick="openSettings()" aria-label="Profil ve ayarlar">
+      <button type="button" class="user-info" data-bridge-action="openSettingsModal" aria-label="Profil ve ayarlar">
         <div class="u-name" id="my-username">...</div>
         <div class="u-tag" id="my-tag">Online</div>
       </button>
@@ -156,12 +168,12 @@
         <button type="button" class="u-action-btn tooltip" data-tip-i18n="tip_mute" data-tip="Mute" id="btn-mute" onclick="toggleMute()" aria-label="Mikrofonu sustur" aria-pressed="false">🎙️</button>
         <button type="button" class="u-action-btn tooltip" data-tip-i18n="tip_deafen" data-tip="Deafen" id="btn-deafen" onclick="toggleDeafen()" aria-label="Sesi kapat" aria-pressed="false">🎧</button>
         <button type="button" class="u-action-btn tooltip" data-tip="Aktivite Durumu" onclick="openActivityModal()" aria-label="Aktivite durumunu ayarla">🎯</button>
-        <button type="button" class="u-action-btn tooltip" data-tip="E2E Şifreleme" onclick="window.BridgeE2E?.openE2ESettings()" id="btn-e2e" aria-label="Uçtan uca şifreleme ayarları">🔓</button>
+        <button type="button" class="u-action-btn tooltip" data-tip="E2E Şifreleme" data-bridge-action="BridgeE2E:openSettings" id="btn-e2e" aria-label="Uçtan uca şifreleme ayarları">🔓</button>
         <button type="button" class="u-action-btn tooltip" data-tip="Federasyon — Uzak Sunucular" onclick="openFederationUI()" aria-label="Federasyon — Uzak Sunucular">🌐</button>
 
         <button type="button" class="u-action-btn tooltip" data-tip-i18n="tip_theme" data-tip="Toggle Theme" id="btn-theme" onclick="toggleTheme()" aria-label="Temayı değiştir">☀️</button>
-        <button type="button" class="u-action-btn tooltip" data-tip-i18n="tip_settings" data-tip="Settings" onclick="openSettings()" aria-label="Profil ve ayarlar">⚙️</button>
-        <button type="button" class="u-action-btn tooltip" data-i18n-toggle data-tip-i18n="lang_toggle_tip" data-tip="Switch to English" onclick="i18n.toggleLang()" style="font-size:11px;font-weight:700;letter-spacing:.05em;" aria-label="Switch to English">EN</button>
+        <button type="button" class="u-action-btn tooltip" data-tip-i18n="tip_settings" data-tip="Settings" data-bridge-action="openSettingsModal" aria-label="Profil ve ayarlar">⚙️</button>
+        <button type="button" class="u-action-btn tooltip" data-i18n-toggle data-tip-i18n="lang_toggle_tip" data-tip="Switch to English" data-bridge-action="toggleLang" style="font-size:11px;font-weight:700;letter-spacing:.05em;" aria-label="Switch to English">EN</button>
       </div>
     </div>
   </div>
@@ -186,7 +198,7 @@
         <button type="button" class="h-btn tooltip" data-tip="🤖 AI Kanal Özeti" onclick="openChannelSummary()" aria-label="AI kanal özeti">🤖</button>
         <button type="button" class="h-btn tooltip" data-tip="🎯 Aktivite Durumu" onclick="openActivityModal()" aria-label="Aktivite durumunu ayarla">🎯</button>
         <button type="button" class="h-btn tooltip" data-tip="💡 Yanıt Önerisi" onclick="showReplySuggestions()" aria-label="Akıllı yanıt önerileri">💡</button>
-        <button type="button" class="h-btn tooltip" data-tip-i18n="tip_search" data-tip="Search (/)" onclick="if(window.innerWidth<=768&&window.BridgeSemanticSearch){window.BridgeSemanticSearch.open();}else{document.getElementById('search-wrap').style.display=document.getElementById('search-wrap').style.display==='none'?'flex':'none';}" aria-label="Search (/)">🔍</button>
+        <button type="button" class="h-btn tooltip" data-tip-i18n="tip_search" data-tip="Search (/)" data-bridge-action="toggleSearch" aria-label="Search (/)">🔍</button>
       </div>
     </div>
     <div id="search-wrap" class="search-bar" style="display:none">
@@ -876,8 +888,8 @@
     <div class="dm-chat-header-bar">
       <span id="dm-chat-header">Select a conversation</span>
       <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-        <button id="dm-call-voice-btn" class="icon-btn tooltip" data-tip="Ses Araması" onclick="window._dmCallVoice&&window._dmCallVoice()" style="font-size:18px;display:none" title="Ses Araması">📞</button>
-        <button id="dm-call-video-btn" class="icon-btn tooltip" data-tip="Görüntülü Arama" onclick="window._dmCallVideo&&window._dmCallVideo()" style="font-size:18px;display:none" title="Görüntülü Arama">📹</button>
+        <button id="dm-call-voice-btn" class="icon-btn tooltip" data-tip="Ses Araması" data-bridge-action="dmCallVoice" style="font-size:18px;display:none" title="Ses Araması">📞</button>
+        <button id="dm-call-video-btn" class="icon-btn tooltip" data-tip="Görüntülü Arama" data-bridge-action="dmCallVideo" style="font-size:18px;display:none" title="Görüntülü Arama">📹</button>
         <button onclick="closeDmPanel()" style="margin-left:4px">✕</button>
       </div>
     </div>
@@ -891,7 +903,7 @@
         <textarea id="dm-input" class="dm-input" rows="1" placeholder="Mesaj yaz..." onkeydown="handleDmKey(event)" style="flex:1"></textarea>
         <!-- E2EE toggle — dm.ts tarafından id="dm-e2e-toggle" ile kontrol edilir -->
         <button id="dm-e2e-toggle" class="icon-btn tooltip" data-tip="Uçtan uca şifreleme" onclick="toggleDmE2E()" style="font-size:18px;padding:6px 8px;display:none" title="E2EE">🔓</button>
-        <button class="btn btn-primary" onclick="(currentGroupDm ? sendGroupDm : (window.sendDm||sendDm))()">➤</button>
+        <button class="btn btn-primary" data-bridge-action="sendDmOrGroup">➤</button>
       </div>
     </div>
   </div>
@@ -980,5 +992,50 @@
     ─────────────────────────────────────────────────────────
   -->
   <script type="module" src="js/app.js"></script>
+
+  <script>
+    // Sprint 33 — data-bridge-action tek dispatcher (bridge-registry.ts'de KOPYA YOK).
+    // Tüm eylemler BridgeRegistry.call() ile tetiklenir.
+    // FIX: sendDmOrGroup kopya-yapıştır hatası düzeltildi (sendDm || sendDm → sendDm || sendGroupDm).
+    document.addEventListener('DOMContentLoaded', function () {
+
+      document.addEventListener('click', function (e) {
+        var el = e.target.closest('[data-bridge-action]');
+        if (!el) return;
+        var action = el.getAttribute('data-bridge-action');
+        var arg    = el.getAttribute('data-bridge-arg');
+        if (!action) return;
+        e.stopPropagation();
+
+        // Özel fallback: BridgeRegistry henüz yüklenmemişse window.* dene
+        if (typeof BridgeRegistry !== 'undefined' && BridgeRegistry.has(action)) {
+          // Sprint 47: el objesini ilk argüman olarak geç (cyclePerm, chpermsShowInheritance button referansı ister)
+          BridgeRegistry.call(action, el, ...(arg ? [arg] : []));
+          return;
+        }
+
+        // Geçiş dönemi fallback'leri — BridgeRegistry kaydı yapıldıkça buradan silinir
+        switch (action) {
+          case 'BridgeE2E:openSettings':
+            window.BridgeE2E?.openE2ESettings?.(); break;
+          case 'toggleSearch':
+            if (window.innerWidth <= 768 && window.BridgeSemanticSearch) {
+              window.BridgeSemanticSearch.open();
+            } else {
+              var sw = document.getElementById('search-wrap');
+              if (sw) sw.style.display = sw.style.display === 'none' ? 'flex' : 'none';
+            }
+            break;
+          case 'dmCallVoice':
+            window._dmCallVoice?.(); break;
+          case 'dmCallVideo':
+            window._dmCallVideo?.(); break;
+          case 'sendDmOrGroup':
+            // FIX: önceki kod (window.sendDm || window.sendDm) idi — kopya-yapıştır hatası.
+            (window.currentGroupDm ? window.sendGroupDm : window.sendDm)?.(); break;
+        }
+      });
+    });
+  </script>
 </body>
 </html>

@@ -1,54 +1,33 @@
 {
   /**
-   * Bridge — TypeScript Geçiş Fazı 1
-   * server/db/repositories/tsconfig.json
+   * Bridge — server/db/repositories/tsconfig.json
    *
-   * Sadece repositories katmanını kapsar.
-   * Mevcut .js dosyaları "allowJs: true" ile dahil edilir.
-   * Tip hataları henüz derlemeyi kırmaz (strict: false) — Faz 1 hedefi
-   * mevcut koda dokunmadan IDE desteği + .d.ts çıktısı.
+   * DÜZELTME #10: Çift derleme / çakışan outDir riski giderildi.
+   *   - Bu config server/tsconfig.json'a extends eder.
+   *   - server/tsconfig.json "include" listesi zaten db/**\/*.ts'yi
+   *     kapsar; bu config yalnızca declaration emit ve IDE amaçlıdır.
    *
-   * Geçiş Takvimi:
-   *   Faz 1 (Sprint 8) : allowJs + checkJs false — sadece .d.ts dosyaları
-   *   Faz 2 (Sprint 9) : checkJs: true → mevcut JS'te tip hataları görünür
-   *   Faz 3 (Sprint 10): Kritik repo'lar .ts'ye çevrilir (User, Message, Member)
-   *   Faz 4 (Sprint 11): strict: true + tüm katman
+   * Sprint 26: strict:true base'e alındı. Faz 1–3 geçiş override'ları
+   *   (strict:false, noImplicitAny:false vb.) kaldırıldı — repo dosyaları
+   *   Sprint 10–11'den beri fully typed, override'ların gerekçesi kalmadı.
+   *
+   * Sprint 15+ TODO: server/tsconfig.json tek başına yeterli;
+   *   bu dosya declaration emit gerekmediğinde kaldırılabilir.
    */
+  "extends": "../tsconfig.json",
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "commonjs",
-    "lib": ["ES2020"],
-
-    /* Faz 1: JS kabul et, ama henüz tip hatası verme */
-    "allowJs": true,
-    "checkJs": false,
-
-    /* .d.ts çıktısı — IDE ve SDK üretimi için */
+    /* Declaration çıktısı — IDE ve SDK üretimi için */
     "declaration": true,
     "declarationDir": "./types/generated",
     "emitDeclarationOnly": true,
 
-    /* Yol çözümlemesi */
-    "moduleResolution": "node",
-    "resolveJsonModule": true,
-    "esModuleInterop": true,
-
-    /* Çıktı */
+    /* Çift outDir çakışmasını önle */
     "outDir": "./dist",
     "rootDir": ".",
 
-    /* Henüz strict değil — Faz 3'te açılacak */
-    "strict": false,
-    "noImplicitAny": false,
-
-    /* Faz 2'de açılacak kontroller */
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "noImplicitReturns": false,
-
-    /* Her zaman açık kalacak */
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "allowJs": true,
+    "checkJs": false,
+    "skipLibCheck": true
   },
   "include": [
     "*.js",
@@ -58,9 +37,7 @@
   "exclude": [
     "node_modules",
     "dist",
-    "types/generated"
-  ],
-  "ts-node": {
-    "transpileOnly": true
-  }
+    "types/generated",
+    "_legacy_js_backup_session8"
+  ]
 }

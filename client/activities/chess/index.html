@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Satranç — Bridge</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f1117;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #header {
+      background: #1a1d27;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      flex-shrink: 0;
+    }
+    #header h2 { font-size: 15px; font-weight: 600; color: #fff; }
+    #main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 20px;
+    }
+    #board-wrapper { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    #board {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      width: min(460px, 85vmin);
+      height: min(460px, 85vmin);
+      border: 2px solid rgba(255,255,255,.1);
+      border-radius: 4px;
+      overflow: hidden;
+      cursor: pointer;
+    }
+    .cell {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: clamp(20px, 4vmin, 36px);
+      user-select: none;
+      position: relative;
+      transition: background .1s;
+    }
+    .cell.light { background: #f0d9b5; }
+    .cell.dark  { background: #b58863; }
+    .cell.selected { background: #f6f669 !important; }
+    .cell.valid-move::after {
+      content: '';
+      position: absolute;
+      width: 30%;
+      height: 30%;
+      background: rgba(0,0,0,.2);
+      border-radius: 50%;
+    }
+    .cell.valid-capture { background: rgba(235,97,80,.8) !important; }
+    .cell.last-move { background: rgba(246,246,105,.5) !important; }
+    #coords-bottom {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      width: min(460px, 85vmin);
+      font-size: 11px;
+      color: #6b7280;
+      text-align: center;
+    }
+    #info-panel {
+      width: 200px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .player-card {
+      background: #1a1d27;
+      border-radius: 10px;
+      padding: 14px;
+      border: 2px solid transparent;
+    }
+    .player-card.active { border-color: #2d9cdb; }
+    .player-name { font-size: 14px; font-weight: 600; color: #fff; }
+    .player-color { font-size: 12px; color: #9ba3bc; margin-top: 2px; }
+    .captured-pieces { font-size: 18px; margin-top: 6px; min-height: 22px; letter-spacing: -2px; }
+    #status-box {
+      background: #1a1d27;
+      border-radius: 10px;
+      padding: 14px;
+      text-align: center;
+    }
+    #status-text { font-size: 14px; color: #e0e0e0; }
+    #move-history {
+      background: #12141c;
+      border-radius: 10px;
+      padding: 10px;
+      flex: 1;
+      overflow-y: auto;
+      max-height: 200px;
+    }
+    #move-history-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #6b7280; margin-bottom: 8px; }
+    .move-row { display: grid; grid-template-columns: 20px 1fr 1fr; gap: 4px; font-size: 12px; padding: 2px 0; color: #9ba3bc; }
+    .move-row:last-child { color: #e0e0e0; }
+    .btn-primary {
+      padding: 10px;
+      background: #2d9cdb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+    }
+    .btn-primary:hover { background: #1a6b8a; }
+    #waiting-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,.7);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      border-radius: 4px;
+    }
+    #waiting-overlay h3 { font-size: 18px; color: #fff; }
+    #waiting-overlay p { font-size: 14px; color: #9ba3bc; }
+    #board-wrapper { position: relative; }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <span style="font-size:20px">♟️</span>
+    <h2>Satranç</h2>
+    <span id="header-status" style="font-size:13px;color:#9ba3bc;margin-left:auto"></span>
+  </div>
+
+  <div id="main">
+    <div id="board-wrapper">
+      <div id="board"></div>
+      <div id="coords-bottom">
+        <span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span><span>h</span>
+      </div>
+      <div id="waiting-overlay">
+        <h3>♟️ Rakip Bekleniyor</h3>
+        <p>Başka bir oyuncunun katılmasını bekleyin</p>
+        <button class="btn-primary" onclick="playVsBot()">🤖 Bot ile Oyna</button>
+      </div>
+    </div>
+
+    <div id="info-panel">
+      <div class="player-card" id="black-card">
+        <div class="player-name" id="black-name">Siyah</div>
+        <div class="player-color">♟️ Siyah Taşlar</div>
+        <div class="captured-pieces" id="black-captured"></div>
+      </div>
+
+      <div id="status-box">
+        <div id="status-text">Beyazın hamlesi</div>
+      </div>
+
+      <div id="move-history">
+        <div id="move-history-title">Hamle Geçmişi</div>
+        <div id="moves-list"></div>
+      </div>
+
+      <div class="player-card" id="white-card" style="border-color:#2d9cdb">
+        <div class="player-name" id="white-name">Beyaz</div>
+        <div class="player-color">♙ Beyaz Taşlar</div>
+        <div class="captured-pieces" id="white-captured"></div>
+      </div>
+
+      <button class="btn-primary" id="new-game-btn" onclick="newGame()">🔄 Yeni Oyun</button>
+    </div>
+  </div>
+
+  <script>
+    // ── Chess Engine ──────────────────────────────────────────────────────────
+    const PIECES = {
+      'wK':'♔','wQ':'♕','wR':'♖','wB':'♗','wN':'♘','wP':'♙',
+      'bK':'♚','bQ':'♛','bR':'♜','bB':'♝','bN':'♞','bP':'♟'
+    };
+    const PIECE_VALUES = { P:1, N:3, B:3, R:5, Q:9, K:0 };
+
+    // Initial board: rank 8 top (index 0) → rank 1 bottom (index 7)
+    function initialBoard() {
+      return [
+        ['bR','bN','bB','bQ','bK','bB','bN','bR'],
+        ['bP','bP','bP','bP','bP','bP','bP','bP'],
+        [null,null,null,null,null,null,null,null],
+        [null,null,null,null,null,null,null,null],
+        [null,null,null,null,null,null,null,null],
+        [null,null,null,null,null,null,null,null],
+        ['wP','wP','wP','wP','wP','wP','wP','wP'],
+        ['wR','wN','wB','wQ','wK','wB','wN','wR'],
+      ];
+    }
+
+    let board, turn, selected, validMoves, moveHistory, capturedByWhite, capturedByBlack;
+    let lastFrom, lastTo, gameOver, vsBot;
+
+    const params = new URLSearchParams(location.search);
+    const channelId = params.get('channel') || '';
+    const sessionId = params.get('session') || '';
+
+    function newGame(bot = false) {
+      board = initialBoard();
+      turn = 'w';
+      selected = null;
+      validMoves = [];
+      moveHistory = [];
+      capturedByWhite = [];
+      capturedByBlack = [];
+      lastFrom = null; lastTo = null;
+      gameOver = false;
+      vsBot = bot;
+      document.getElementById('waiting-overlay').style.display = bot ? 'none' : 'flex';
+      if (bot) document.getElementById('waiting-overlay').style.display = 'none';
+      renderBoard();
+      updateStatus();
+      document.getElementById('moves-list').innerHTML = '';
+      document.getElementById('white-captured').textContent = '';
+      document.getElementById('black-captured').textContent = '';
+    }
+
+    function playVsBot() {
+      newGame(true);
+      document.getElementById('waiting-overlay').style.display = 'none';
+    }
+
+    // Get piece color
+    const col = p => p ? p[0] : null;
+    const type = p => p ? p[1] : null;
+
+    function inBounds(r, c) { return r >= 0 && r < 8 && c >= 0 && c < 8; }
+
+    function getMovesRaw(b, r, c) {
+      const p = b[r][c]; if (!p) return [];
+      const clr = col(p); const tp = type(p);
+      const moves = [];
+      const add = (nr, nc) => {
+        if (!inBounds(nr, nc)) return false;
+        if (col(b[nr][nc]) === clr) return false;
+        moves.push([nr, nc]);
+        return !b[nr][nc]; // returns true if empty (can continue sliding)
+      };
+      const slide = (dr, dc) => { let nr=r+dr, nc=c+dc; while(inBounds(nr,nc)) { if(!add(nr,nc)) break; nr+=dr; nc+=dc; } };
+
+      if (tp === 'P') {
+        const dir = clr === 'w' ? -1 : 1;
+        const start = clr === 'w' ? 6 : 1;
+        if (inBounds(r+dir, c) && !b[r+dir][c]) {
+          moves.push([r+dir, c]);
+          if (r === start && !b[r+2*dir][c]) moves.push([r+2*dir, c]);
+        }
+        for (const dc of [-1, 1]) {
+          if (inBounds(r+dir, c+dc) && col(b[r+dir][c+dc]) && col(b[r+dir][c+dc]) !== clr)
+            moves.push([r+dir, c+dc]);
+        }
+      } else if (tp === 'N') {
+        for (const [dr,dc] of [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]) add(r+dr, c+dc);
+      } else if (tp === 'B') {
+        for (const [dr,dc] of [[-1,-1],[-1,1],[1,-1],[1,1]]) slide(dr,dc);
+      } else if (tp === 'R') {
+        for (const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]) slide(dr,dc);
+      } else if (tp === 'Q') {
+        for (const [dr,dc] of [[-1,-1],[-1,1],[1,-1],[1,1],[-1,0],[1,0],[0,-1],[0,1]]) slide(dr,dc);
+      } else if (tp === 'K') {
+        for (const [dr,dc] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) add(r+dr, c+dc);
+      }
+      return moves;
+    }
+
+    function isInCheck(b, clr) {
+      let kr = -1, kc = -1;
+      for (let r=0;r<8;r++) for (let c=0;c<8;c++) if (b[r][c] === clr+'K') { kr=r; kc=c; }
+      const opp = clr === 'w' ? 'b' : 'w';
+      for (let r=0;r<8;r++) for (let c=0;c<8;c++) {
+        if (col(b[r][c]) === opp) {
+          const mvs = getMovesRaw(b, r, c);
+          if (mvs.some(([mr,mc]) => mr===kr && mc===kc)) return true;
+        }
+      }
+      return false;
+    }
+
+    function getLegalMoves(b, r, c) {
+      return getMovesRaw(b, r, c).filter(([nr, nc]) => {
+        const nb = b.map(row => [...row]);
+        nb[nr][nc] = nb[r][c]; nb[r][c] = null;
+        return !isInCheck(nb, col(b[r][c]));
+      });
+    }
+
+    function hasAnyMoves(b, clr) {
+      for (let r=0;r<8;r++) for (let c=0;c<8;c++) {
+        if (col(b[r][c]) === clr && getLegalMoves(b,r,c).length > 0) return true;
+      }
+      return false;
+    }
+
+    function toAN(r, c) { return 'abcdefgh'[c] + (8-r); }
+
+    function applyMove(fromR, fromC, toR, toC) {
+      const piece = board[fromR][fromC];
+      const captured = board[toR][toC];
+      board[toR][toC] = piece;
+      board[fromR][fromC] = null;
+
+      // Promotion
+      if (type(piece) === 'P' && (toR === 0 || toR === 7)) board[toR][toC] = col(piece) + 'Q';
+
+      if (captured) {
+        const capType = type(captured);
+        if (col(piece) === 'w') capturedByWhite.push(PIECES[captured]);
+        else capturedByBlack.push(PIECES[captured]);
+      }
+
+      const notation = toAN(fromR,fromC) + toAN(toR,toC);
+      moveHistory.push({ from: notation.slice(0,2), to: notation.slice(2), piece, captured });
+
+      lastFrom = [fromR, fromC]; lastTo = [toR, toC];
+      turn = turn === 'w' ? 'b' : 'w';
+      selected = null; validMoves = [];
+
+      updateMoveHistory();
+      document.getElementById('white-captured').textContent = capturedByWhite.join('');
+      document.getElementById('black-captured').textContent = capturedByBlack.join('');
+
+      // Check game over
+      if (!hasAnyMoves(board, turn)) {
+        gameOver = true;
+        if (isInCheck(board, turn)) {
+          const winner = turn === 'w' ? 'Siyah' : 'Beyaz';
+          document.getElementById('status-text').textContent = `♛ ${winner} kazandı! Şah mat!`;
+        } else {
+          document.getElementById('status-text').textContent = '🤝 Berabere — Pat!';
+        }
+        renderBoard();
+        return;
+      }
+
+      renderBoard();
+      updateStatus();
+
+      // Bot move
+      if (vsBot && turn === 'b' && !gameOver) {
+        setTimeout(doBotMove, 400);
+      }
+
+      // Notify parent
+      parent.postMessage({ type: 'chess:move', from: toAN(fromR,fromC), to: toAN(toR,toC), channelId, sessionId }, '*');
+    }
+
+    function doBotMove() {
+      // Simple bot: pick random legal move (with mild material preference)
+      const moves = [];
+      for (let r=0;r<8;r++) for (let c=0;c<8;c++) {
+        if (col(board[r][c]) === 'b') {
+          getLegalMoves(board, r, c).forEach(([nr,nc]) => moves.push([r,c,nr,nc]));
+        }
+      }
+      if (!moves.length) return;
+      // Prefer captures
+      const captures = moves.filter(([,,,nc,nr]) => board[moves[0][2]][moves[0][3]] !== null);
+      const pick = (captures.length && Math.random() > 0.3 ? captures : moves)[
+        Math.floor(Math.random() * (captures.length && Math.random() > 0.3 ? captures.length : moves.length))
+      ];
+      applyMove(pick[0], pick[1], pick[2], pick[3]);
+    }
+
+    function handleCellClick(r, c) {
+      if (gameOver) return;
+      if (vsBot && turn === 'b') return; // bot's turn
+
+      const piece = board[r][c];
+
+      if (selected) {
+        const mv = validMoves.find(([mr,mc]) => mr===r && mc===c);
+        if (mv) {
+          applyMove(selected[0], selected[1], r, c);
+          return;
+        }
+      }
+
+      if (piece && col(piece) === turn) {
+        selected = [r, c];
+        validMoves = getLegalMoves(board, r, c);
+      } else {
+        selected = null; validMoves = [];
+      }
+      renderBoard();
+    }
+
+    function renderBoard() {
+      const boardEl = document.getElementById('board');
+      boardEl.innerHTML = '';
+      for (let r=0;r<8;r++) {
+        for (let c=0;c<8;c++) {
+          const cell = document.createElement('div');
+          cell.className = 'cell ' + ((r+c)%2===0?'light':'dark');
+
+          const isSelected = selected && selected[0]===r && selected[1]===c;
+          const isLastFrom = lastFrom && lastFrom[0]===r && lastFrom[1]===c;
+          const isLastTo = lastTo && lastTo[0]===r && lastTo[1]===c;
+          const isValid = validMoves.some(([mr,mc])=>mr===r&&mc===c);
+          const isCapture = isValid && board[r][c];
+
+          if (isSelected) cell.classList.add('selected');
+          else if (isLastFrom || isLastTo) cell.classList.add('last-move');
+          if (isCapture) cell.classList.add('valid-capture');
+          else if (isValid) cell.classList.add('valid-move');
+
+          if (board[r][c]) cell.textContent = PIECES[board[r][c]] || '';
+          cell.addEventListener('click', () => handleCellClick(r, c));
+          boardEl.appendChild(cell);
+        }
+      }
+    }
+
+    function updateStatus() {
+      if (gameOver) return;
+      const inCheck = isInCheck(board, turn);
+      const who = turn === 'w' ? 'Beyaz' : 'Siyah';
+      document.getElementById('status-text').textContent =
+        inCheck ? `⚠️ ${who} şah altında!` : `${turn==='w'?'♙':'♟'} ${who}ın hamlesi`;
+      document.getElementById('white-card').style.borderColor = turn === 'w' ? '#2d9cdb' : 'transparent';
+      document.getElementById('black-card').style.borderColor = turn === 'b' ? '#2d9cdb' : 'transparent';
+    }
+
+    function updateMoveHistory() {
+      const list = document.getElementById('moves-list');
+      const rows = [];
+      for (let i=0;i<moveHistory.length;i+=2) {
+        const wm = moveHistory[i];
+        const bm = moveHistory[i+1];
+        rows.push(`<div class="move-row"><span style="color:#6b7280">${i/2+1}.</span><span>${wm.from}-${wm.to}</span><span>${bm?bm.from+'-'+bm.to:''}</span></div>`);
+      }
+      list.innerHTML = rows.join('');
+      list.scrollTop = list.scrollHeight;
+    }
+
+    // Listen for moves from other player (multiplayer) + server validation responses
+    window.addEventListener('message', e => {
+      const d = e.data;
+      if (!d || typeof d !== 'object') return;
+
+      // Server onaylı hamle (Sprint 85: sunucu arbiter)
+      // Hem kendi hem karşı oyuncunun hamlesi buradan gelir
+      if (d.type === 'chess:move_applied' && d.sessionId === sessionId) {
+        const s = d.state;
+        if (!s) return;
+        // Sunucudan gelen board state'i direkt uygula — client logic'i bypass et
+        board = s.board;
+        turn  = s.turn;
+        moveHistory = s.moveHistory || moveHistory;
+        if (s.inCheck && !s.gameOver) {
+          document.getElementById('status-text').textContent =
+            `⚠️ ${s.turn === 'w' ? 'Beyaz' : 'Siyah'} şah altında!`;
+        }
+        if (s.gameOver) {
+          gameOver = true;
+          if (s.result === 'draw') {
+            document.getElementById('status-text').textContent = '🤝 Berabere!';
+          } else {
+            const winner = s.result === 'w' ? 'Beyaz' : 'Siyah';
+            document.getElementById('status-text').textContent = `♛ ${winner} kazandı!`;
+          }
+        }
+        selected = null; validMoves = [];
+        lastFrom = d.move ? [d.move.from[0], d.move.from[1]] : lastFrom;
+        lastTo   = d.move ? [d.move.to[0],   d.move.to[1]]   : lastTo;
+        renderBoard();
+        updateMoveHistory();
+        if (!s.gameOver) updateStatus();
+        return;
+      }
+
+      // Sunucu geçersiz hamle bildirimi
+      if (d.type === 'chess:invalid' && d.sessionId === sessionId) {
+        // Seçimi temizle, durumu göster
+        selected = null; validMoves = [];
+        renderBoard();
+        const prev = document.getElementById('status-text').textContent;
+        document.getElementById('status-text').textContent = `⛔ ${d.reason || 'Geçersiz hamle'}`;
+        setTimeout(() => { document.getElementById('status-text').textContent = prev; }, 1500);
+        return;
+      }
+
+      // Eski postMessage protokolü (bot modu / tek kişilik — sunucu arbiter yok)
+      if (d.type === 'chess:move' && d.sessionId === sessionId) {
+        const files = 'abcdefgh';
+        const fromC = files.indexOf(d.from[0]), fromR = 8 - parseInt(d.from[1]);
+        const toC   = files.indexOf(d.to[0]),   toR   = 8 - parseInt(d.to[1]);
+        if (col(board[fromR][fromC]) === turn) applyMove(fromR, fromC, toR, toC);
+      }
+
+      if (d.type === 'chess:participants') {
+        document.getElementById('black-name').textContent = d.participants[0]?.name || 'Siyah';
+        document.getElementById('white-name').textContent = d.participants[1]?.name || 'Beyaz';
+        if (d.participants.length >= 2) document.getElementById('waiting-overlay').style.display = 'none';
+      }
+    });
+
+    // Init
+    newGame(false);
+    parent.postMessage({ type: 'chess:ready', channelId, sessionId }, '*');
+  </script>
+</body>
+</html>

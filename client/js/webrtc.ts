@@ -1,73 +1,170 @@
-// Bridge WebRTC Manager
-// Handles: voice, video, screen share with Google STUN + optional TURN
+// client/js/webrtc.ts
+// Bridge WebRTC Manager — P2P Voice, Video, Screen Share
+// Sprint 33: window.* temizliği — BridgeRegistry + typed imports
 
-// ICE config â€” server'dan dinamik olarak yÃ¼kle (TURN desteÄŸi iÃ§in)
-let ICE_SERVERS = {
+import type { BridgeSocket } from './webrtc-base';
+import { BridgeRegistry } from './core/bridge-registry.ts';
+import { getAPI, currentServerChannels as _getServerChannels } from './core/globals.ts';
+
+import { createLogger } from './core/logger.ts';
+const log = createLogger('WebRTC');
+
+
+// ── Domain types ──────────────────────────────────────────────────────────────
+export interface PeerInfo {
+  socketId: string;
+  userId?: string;
+  producers?: Array<{ producerId: string; kind: string }>;
+}
+
+interface PeerState {
+  muted?: boolean;
+  deafened?: boolean;
+  screensharing?: boolean;
+  video?: boolean;
+}
+
+interface IceConfig {
+  iceServers: RTCIceServer[];
+  // Sprint 120: I7 — FORCE_TURN sunucu yanıtından gelen iceTransportPolicy
+  iceTransportPolicy?: RTCIceTransportPolicy;
+}
+
+// ── ICE configuration ─────────────────────────────────────────────────────────
+let ICE_SERVERS: IceConfig = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
-  ]
+  ],
+  iceTransportPolicy: 'all',
 };
 
-// Server'dan TURN bilgisini yÃ¼kle â€” /api/rtc/ice-config endpoint'i
-// bridge-v33: sunucu .env'deki TURN_URL varsa ekler
-(async () => {
+(async (): Promise<void> => {
   try {
-    const API = window.API || '';
+    const API   = getAPI();
     const token = localStorage.getItem('token');
     if (!token) return;
     const r = await fetch(`${API}/api/rtc/ice-config`, {
-      headers: { 'Authorization': `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}` },
     });
     if (r.ok) {
-      const cfg = await r.json();
+      const cfg: IceConfig = await r.json();
       if (cfg?.iceServers?.length) {
-        ICE_SERVERS = cfg;
-        console.log('[WebRTC] ICE config yÃ¼klendi â€”', cfg.iceServers.length, 'sunucu');
+        ICE_SERVERS = {
+          iceServers: cfg.iceServers,
+          iceTransportPolicy: cfg.iceTransportPolicy ?? 'all',
+        };
+        log.log('[WebRTC] ICE config yüklendi —', cfg.iceServers.length, 'sunucu, policy:', ICE_SERVERS.iceTransportPolicy);
       }
     }
-  } catch {}
+  } catch { /* silent — Google STUN fallback */ }
 })();
 
-// ── Socket.io–like interface — imported from shared base ─────────────────────
-import type { BridgeSocket } from './webrtc-base';
+// ── Screen quality presets ────────────────────────────────────────────────────
+type ScreenQuality = '4k60' | '1440p60' | '1440p' | '1080p60' | '1080p' | '720p' | 'hd';
 
+const SCREEN_PRESETS: Record<ScreenQuality, MediaTrackConstraints & { cursor?: string }> = {
+  '4k60':    { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60, max: 60 }, cursor: 'always' },
+  '1440p60': { width: { ideal: 2560 }, height: { ideal: 1440 }, frameRate: { ideal: 60, max: 60 }, cursor: 'always' },
+  '1440p':   { width: { ideal: 2560 }, height: { ideal: 1440 }, frameRate: { ideal: 30, max: 30 }, cursor: 'always' },
+  '1080p60': { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60, max: 60 }, cursor: 'always' },
+  '1080p':   { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 }, cursor: 'always' },
+  '720p':    { width: { ideal: 1280 }, height: { ideal: 720  }, frameRate: { ideal: 30, max: 30 }, cursor: 'always' },
+  'hd':      { width: { ideal: 1280 }, height: { ideal: 720  }, frameRate: { ideal: 30           }, cursor: 'always' },
+};
+
+const SCREEN_BITRATES: Record<ScreenQuality, number> = {
+  '4k60': 20_000_000, '1440p60': 12_000_000, '1440p': 10_000_000,
+  '1080p60': 8_000_000, '1080p': 5_000_000, '720p': 3_000_000, 'hd': 2_000_000,
+};
+
+const SCREEN_FPS: Record<ScreenQuality, number> = {
+  '4k60': 60, '1440p60': 60, '1440p': 30, '1080p60': 60, '1080p': 30, '720p': 30, 'hd': 30,
+};
+
+// ── Typed registry accessors (window.* yerine) ────────────────────────────────
+// Her modül kendi init() içinde BridgeRegistry.register() çağırır.
+// webrtc.ts yalnızca tüketir — window'a dokunmaz.
+
+interface BridgeNSModule {
+  enabled?: boolean;
+  process(stream: MediaStream): Promise<MediaStream>;
+}
+interface BridgeVoiceE2EModule {
+  initVoiceE2E(channelId: string | null, peers: PeerInfo[]): Promise<boolean>;
+  renderVoiceE2EBadge(): void;
+  registerSocketEvents(socket: BridgeSocket, userId: string): void;
+}
+interface BridgeVideoQualityModule {
+  getConstraints(): MediaTrackConstraints;
+}
+interface BridgeVoiceVolumeModule {
+  applyVolume(socketId: string, volume: number): void;
+}
+interface VoiceActivityUIModule {
+  init(socket: BridgeSocket): void;
+}
+interface BridgeAppModule {
+  toast(msg: string, type: string): void;
+  showToast?(msg: string, type: string): void;
+  renderVoicePeer(peer: PeerInfo, initiator: boolean): void;
+  removeVoicePeer(socketId: string): void;
+  attachRemoteStream(socketId: string, stream: MediaStream, kind?: string): void;
+  updatePeerState(socketId: string, state: PeerState): void;
+}
+
+// Helper: registry'den null-safe al
+function reg<T>(name: string): T | null {
+  return BridgeRegistry.get<(...args: unknown[]) => unknown>(name) as T | null;
+}
+
+function app(): BridgeAppModule | null       { return reg<BridgeAppModule>('bridgeApp'); }
+function ns(): BridgeNSModule | null         { return reg<BridgeNSModule>('BridgeNS'); }
+function voiceE2E(): BridgeVoiceE2EModule | null  { return reg<BridgeVoiceE2EModule>('BridgeVoiceE2E'); }
+function videoQuality(): BridgeVideoQualityModule | null { return reg<BridgeVideoQualityModule>('BridgeVideoQuality'); }
+function voiceVolume(): BridgeVoiceVolumeModule | null   { return reg<BridgeVoiceVolumeModule>('BridgeVoiceVolume'); }
+function vauiMod(): VoiceActivityUIModule | null         { return reg<VoiceActivityUIModule>('VoiceActivityUI'); }
+function startVAD(): ((stream: MediaStream, channelId: string) => void) | null {
+  return reg<(stream: MediaStream, channelId: string) => void>('_bridgeStartLocalVAD');
+}
+function stopVAD(): (() => void) | null {
+  return reg<() => void>('_bridgeStopLocalVAD');
+}
+// currentServerChannels — globals.ts'den direkt import edilir (registry gereksiz)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// BridgeRTC — P2P WebRTC Manager
+// ══════════════════════════════════════════════════════════════════════════════
 class BridgeRTC {
-  // ── Property declarations ─────────────────────────────────────────────────
-  socket!: BridgeSocket;
-  peers: Map<string, RTCPeerConnection> = new Map();
-  localStream: MediaStream | null = null;
-  screenStream: MediaStream | null = null;
-  currentChannelId: string | null = null;
-  currentServerId: string | null = null;
-  muted = false;
-  deafened = false;
-  videoOn = false;
-  screenSharing = false;
-  selectedMicId: string | null = null;
-  selectedCameraId: string | null = null;
-  selectedSpeakerId: string | null = null;
-  channelBitrate = 64_000;
-  _iceServers: RTCIceServer[] = [];
-  _iceTransportPolicy: RTCIceTransportPolicy = 'all';
-  _socketToUserId: Map<string, string> = new Map();
-  _redirectCount = 0;
-  _abrIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
-  _screenQuality = 'hd';
-  _mobileAudioOverride = false;
-  _p2pPeers: Map<string, unknown> = new Map();
-  peerStreams: Map<string, MediaStream> = new Map();
+  readonly socket: BridgeSocket;
+  peers: Map<string, RTCPeerConnection>     = new Map();
+  localStream: MediaStream | null           = null;
+  screenStream: MediaStream | null          = null;
+  currentChannelId: string | null           = null;
+  currentServerId: string | null            = null;
+  muted                                     = false;
+  deafened                                  = false;
+  videoOn                                   = false;
+  screenSharing                             = false;
+  selectedMicId: string | null              = null;
+  selectedCameraId: string | null           = null;
+  selectedSpeakerId: string | null          = null;
+  channelBitrate                            = 64_000;
+  peerStreams: Map<string, MediaStream>     = new Map();
+
+  private _abrIntervals: Map<RTCPeerConnection, ReturnType<typeof setInterval>> = new Map();
+  private _screenQuality: ScreenQuality                        = 'hd';
+  private _mobileAudioOverride: Partial<MediaTrackConstraints> | false = false;
 
   constructor(socket: BridgeSocket) {
     this.socket = socket;
     this._bindSocketEvents();
   }
 
-  // â”€â”€â”€ GET DEVICES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async getDevices() {
+  // ── Device enumeration ────────────────────────────────────────────────────
+  async getDevices(): Promise<{ microphones: MediaDeviceInfo[]; speakers: MediaDeviceInfo[]; cameras: MediaDeviceInfo[] }> {
     try {
-      // Request permissions first so labels are populated
       await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => {});
       const devices = await navigator.mediaDevices.enumerateDevices();
       return {
@@ -76,381 +173,211 @@ class BridgeRTC {
         cameras:     devices.filter(d => d.kind === 'videoinput'),
       };
     } catch (e) {
-      console.warn('getDevices error:', e);
+      log.warn('[WebRTC] getDevices error:', e);
       return { microphones: [], speakers: [], cameras: [] };
     }
   }
 
-  // â”€â”€â”€ SET DEAFENED â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  setDeafened(deafened) {
+  loadSavedDevices(): void {
+    const mic    = localStorage.getItem('bridge-mic');
+    const camera = localStorage.getItem('bridge-camera');
+    const speaker = localStorage.getItem('bridge-speaker');
+    if (mic)    this.selectedMicId     = mic;
+    if (camera) this.selectedCameraId  = camera;
+    if (speaker) this.selectedSpeakerId = speaker;
+  }
+
+  setDeafened(deafened: boolean): void {
     this.deafened = deafened;
-    // Mute/unmute all remote audio elements
-    document.querySelectorAll('.remote-audio').forEach(el => {
-      el.muted = deafened;
-    });
-    // SaÄŸÄ±rlaÅŸtÄ±rÄ±ldÄ±ÄŸÄ±nda mikrofonu otomatik kapat
+    document.querySelectorAll<HTMLMediaElement>('.remote-audio').forEach(el => { el.muted = deafened; });
     if (deafened && !this.muted) this.setMuted(true);
     this._broadcastState();
   }
 
-  // â”€â”€â”€ SOCKET EVENTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  _bindSocketEvents() {
-    this.socket.on('voice:existing-peers', async (peers) => {
-      for (const peer of peers) {
-        await this._createOffer(peer.socketId, peer);
-      }
-      // Voice E2E: tÃ¼m mevcut peer'lar iÃ§in key exchange baÅŸlat
-      if (peers.length > 0 && window.BridgeVoiceE2E) {
-        BridgeVoiceE2E.initVoiceE2E(this.currentChannelId, peers)
-          .then(ok => { if (ok) BridgeVoiceE2E.renderVoiceE2EBadge(); });
+  private _bindSocketEvents(): void {
+    this.socket.on('voice:existing-peers', async (rawPeers: unknown) => {
+      const peers = rawPeers as PeerInfo[];
+      for (const peer of peers) await this._createOffer(peer.socketId, peer);
+      const e2e = voiceE2E();
+      if (peers.length > 0 && e2e) {
+        e2e.initVoiceE2E(this.currentChannelId, peers)
+          .then(ok => { if (ok) e2e.renderVoiceE2EBadge(); });
       }
     });
 
-    this.socket.on('voice:peer-joined', async (peer) => {
-      // Will receive offer from them, just render placeholder
-      window.bridgeApp?.renderVoicePeer(peer, false);
+    this.socket.on('voice:peer-joined', (rawPeer: unknown) => {
+      app()?.renderVoicePeer(rawPeer as PeerInfo, false);
     });
 
-    this.socket.on('voice:peer-left', ({ socketId, userId }) => {
+    this.socket.on('voice:peer-left', (raw: unknown) => {
+      const { socketId } = raw as { socketId: string };
       this._removePeer(socketId);
-      window.bridgeApp?.removeVoicePeer(socketId);
+      app()?.removeVoicePeer(socketId);
     });
 
-    this.socket.on('webrtc:offer', async ({ fromSocketId, offer }) => {
+    this.socket.on('webrtc:offer', async (raw: unknown) => {
+      const { fromSocketId, offer } = raw as { fromSocketId: string; offer: RTCSessionDescriptionInit };
       await this._handleOffer(fromSocketId, offer);
     });
 
-    this.socket.on('webrtc:answer', async ({ fromSocketId, answer }) => {
+    this.socket.on('webrtc:answer', async (raw: unknown) => {
+      const { fromSocketId, answer } = raw as { fromSocketId: string; answer: RTCSessionDescriptionInit };
       const pc = this.peers.get(fromSocketId);
       if (pc && pc.signalingState !== 'stable') {
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
       }
     });
 
-    this.socket.on('webrtc:ice-candidate', async ({ fromSocketId, candidate }) => {
+    this.socket.on('webrtc:ice-candidate', async (raw: unknown) => {
+      const { fromSocketId, candidate } = raw as { fromSocketId: string; candidate: RTCIceCandidateInit };
       const pc = this.peers.get(fromSocketId);
       if (pc && candidate) {
-        try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch(e) {}
+        try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch { /* non-fatal */ }
       }
     });
 
-    this.socket.on('voice:peer-state', ({ socketId, muted, deafened, screensharing, video }) => {
-      window.bridgeApp?.updatePeerState(socketId, { muted, deafened, screensharing, video });
+    this.socket.on('voice:peer-state', (raw: unknown) => {
+      const { socketId, ...state } = raw as { socketId: string } & PeerState;
+      app()?.updatePeerState(socketId, state);
     });
   }
 
-  // â”€â”€â”€ JOIN VOICE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async joinVoice(channelId, serverId) {
+  async joinVoice(channelId: string, serverId: string): Promise<void> {
     this.currentChannelId = channelId;
     this.currentServerId  = serverId;
+    this.channelBitrate   = 64_000;
 
-//     kanalÄ±n bitrate ayarÄ±nÄ± al
-    this.channelBitrate = 64_000; // default
-    if (window.currentServerChannels) {
-      const ch = window.currentServerChannels.find(c => c._id === channelId);
+    const channels = _getServerChannels as Array<{ _id: string; bitrate?: number }> | null;
+    if (channels) {
+      const ch = channels.find(c => c._id === channelId);
       if (ch?.bitrate) this.channelBitrate = ch.bitrate;
     }
 
     try {
-      // TarayÄ±cÄ± native gÃ¼rÃ¼ltÃ¼ bastÄ±rma â€” BridgeNS ayarlarÄ±ndan oku
-      const nsEnabled = window.BridgeNS?.enabled !== false;
-
-      // Mobil ses kÄ±sÄ±tlamalarÄ± â€” BridgeMobileUX tarafÄ±ndan ayarlanÄ±r (Capacitor'da)
-      const mobileOverride = this._mobileAudioOverride || {};
-
-      const baseConstraints = {
-        echoCancellation: nsEnabled,
-        noiseSuppression: nsEnabled,
-        autoGainControl:  nsEnabled,
-        sampleRate:       48000,
-//         sampleSize:       16,      16-bit PCM
-//         channelCount:     2,       stereo (Opus stereo iÃ§in gerekli)
-//         latency:          0.01,    ~10ms hedef gecikme
-        ...mobileOverride,  // mobil optimize kÄ±sÄ±tlamalar Ã¼zerine yazar
+      const nsModule  = ns();
+      const nsEnabled = nsModule?.enabled !== false;
+      const mobileOverride = typeof this._mobileAudioOverride === 'object' ? this._mobileAudioOverride : {};
+      const baseConstraints: MediaTrackConstraints = {
+        echoCancellation: nsEnabled, noiseSuppression: nsEnabled,
+        autoGainControl: nsEnabled, sampleRate: 48000, ...mobileOverride,
       };
-
       const audioConstraints = this.selectedMicId
         ? { deviceId: { exact: this.selectedMicId }, ...baseConstraints }
         : baseConstraints;
 
-      const rawStream = await navigator.mediaDevices.getUserMedia({
-        audio: audioConstraints,
-        video: false
-      });
-
-      // Web Audio / RNNoise katmanÄ± â€” tam entegrasyon
-      // BridgeNS.process() rawStream'i alÄ±r ve filtrelenmiÅŸ stream dÃ¶ndÃ¼rÃ¼r
-      // Mod: 'basic' | 'advanced' | 'rnnoise' â€” settings modalÄ±ndan yÃ¶netilir
-      if (window.BridgeNS && this._mobileAudioOverride === undefined) {
-        // Desktop: NS pipeline'dan geÃ§ir
-        this.localStream = await window.BridgeNS.process(rawStream);
-      } else if (window.BridgeNS && nsEnabled) {
-        // Mobil: sadece enabled ise NS pipeline'a sok (performans)
-        this.localStream = await window.BridgeNS.process(rawStream);
-      } else {
-        // NS kapalÄ±: ham stream kullan
-        this.localStream = rawStream;
-      }
-
-    } catch (e) {
-      // No mic â€” create empty stream
+      const rawStream  = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+      this.localStream = nsModule ? await nsModule.process(rawStream) : rawStream;
+    } catch {
       this.localStream = new MediaStream();
-      window.bridgeApp?.toast('Microphone not found â€” joining muted', 'error');
+      app()?.toast('Microphone not found — joining muted', 'error');
     }
 
     this.socket.emit('voice:join', { channelId, serverId });
+    vauiMod()?.init(this.socket);
+    if (this.localStream) startVAD()?.(this.localStream, channelId);
   }
 
-  // â”€â”€â”€ LEAVE VOICE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  leaveVoice() {
+  leaveVoice(): void {
     if (!this.currentChannelId) return;
-
-    this.socket.emit('voice:leave', {
-      channelId: this.currentChannelId,
-      serverId: this.currentServerId
-    });
-
-    // Close all peer connections
-    for (const [id, pc] of this.peers) pc.close();
+    this.socket.emit('voice:leave', { channelId: this.currentChannelId, serverId: this.currentServerId });
+    for (const pc of this.peers.values()) pc.close();
     this.peers.clear();
-
-    // Stop streams
     this.localStream?.getTracks().forEach(t => t.stop());
     this.localStream = null;
     this.screenStream?.getTracks().forEach(t => t.stop());
-    this.screenStream = null;
-
+    this.screenStream    = null;
     this.currentChannelId = null;
-    this.currentServerId = null;
-    this.videoOn = false;
-    this.screenSharing = false;
+    this.currentServerId  = null;
+    this.videoOn          = false;
+    this.screenSharing    = false;
+    stopVAD()?.();
   }
 
-  // â”€â”€â”€ MUTE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  setMuted(muted) {
+  setMuted(muted: boolean): void {
     this.muted = muted;
-    this.localStream?.getAudioTracks().forEach(t => t.enabled = !muted);
+    this.localStream?.getAudioTracks().forEach(t => { t.enabled = !muted; });
     this._broadcastState();
   }
 
-  // â”€â”€â”€ VIDEO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async enableVideo(enable) {
+  async enableVideo(enable: boolean): Promise<boolean> {
     if (enable) {
       try {
-        // Video kalitesi ayarlarÄ± â€” BridgeVideoQuality modÃ¼lÃ¼nden oku
-        const vq = window.BridgeVideoQuality?.getConstraints() || {};
+        const vq = videoQuality()?.getConstraints() ?? {};
         const baseConstraints = this.selectedCameraId
-          ? { deviceId: { exact: this.selectedCameraId }, ...vq }
-          : { ...vq };
+          ? { deviceId: { exact: this.selectedCameraId }, ...vq } : { ...vq };
         const videoConstraints = Object.keys(baseConstraints).length ? baseConstraints : true;
         const videoStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints });
-        const videoTrack = videoStream.getVideoTracks()[0];
+        const videoTrack  = videoStream.getVideoTracks()[0];
+        if (!this.localStream) this.localStream = new MediaStream();
         this.localStream.addTrack(videoTrack);
-        // Replace track in all peers
         for (const pc of this.peers.values()) {
           const sender = pc.getSenders().find(s => s.track?.kind === 'video');
-          if (sender) sender.replaceTrack(videoTrack);
-          else pc.addTrack(videoTrack, this.localStream);
+          if (sender) await sender.replaceTrack(videoTrack);
+          else pc.addTrack(videoTrack, this.localStream!);
         }
         this.videoOn = true;
-      } catch(e) {
-        window.bridgeApp?.toast('Camera access denied', 'error');
+      } catch {
+        app()?.toast('Camera access denied', 'error');
         return false;
       }
     } else {
-      this.localStream?.getVideoTracks().forEach(t => { t.stop(); this.localStream.removeTrack(t); });
+      this.localStream?.getVideoTracks().forEach(t => { t.stop(); this.localStream?.removeTrack(t); });
       this.videoOn = false;
     }
     this._broadcastState();
     return true;
   }
 
-  // â”€â”€â”€ SCREEN SHARE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async startScreenShare(quality = '1080p60', includeAudio = true) {
-    const presets = {
-      '4k60':    { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60, max: 60 }, cursor: 'always' },
-      '1440p60': { width: { ideal: 2560 }, height: { ideal: 1440 }, frameRate: { ideal: 60, max: 60 }, cursor: 'always' },
-      '1440p':   { width: { ideal: 2560 }, height: { ideal: 1440 }, frameRate: { ideal: 30, max: 30 }, cursor: 'always' },
-      '1080p60': { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60, max: 60 }, cursor: 'always' },
-      '1080p':   { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 }, cursor: 'always' },
-      '720p':    { width: { ideal: 1280 }, height: { ideal: 720  }, frameRate: { ideal: 30, max: 30 }, cursor: 'always' },
-      'hd':      { width: { ideal: 1280 }, height: { ideal: 720  }, frameRate: { ideal: 30           }, cursor: 'always' },
-    };
-    const videoConstraints = presets[quality] || presets['1080p60'];
+  async startScreenShare(quality: ScreenQuality = '1080p60', includeAudio = true): Promise<boolean> {
+    const preset = SCREEN_PRESETS[quality] ?? SCREEN_PRESETS['1080p60'];
     this._screenQuality = quality;
     try {
       this.screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: videoConstraints,
+        video: preset as MediaTrackConstraints,
         audio: includeAudio
-          ? { echoCancellation: false, noiseSuppression: false, sampleRate: 48000 }
+          ? { echoCancellation: false, noiseSuppression: false, sampleRate: 48000 } as MediaTrackConstraints
           : false,
       });
-
-      const screenTrack = this.screenStream.getVideoTracks()[0];
+      const screenTrack   = this.screenStream.getVideoTracks()[0];
       screenTrack.onended = () => this.stopScreenShare();
 
-      // Replace/add video track in all peers with high bitrate encoding
       for (const pc of this.peers.values()) {
         const sender = pc.getSenders().find(s => s.track?.kind === 'video');
         if (sender) {
           await sender.replaceTrack(screenTrack);
+          const params = sender.getParameters();
+          if (params?.encodings?.length) {
+            params.encodings[0].maxBitrate  = SCREEN_BITRATES[quality] ?? 3_000_000;
+            params.encodings[0].maxFramerate = SCREEN_FPS[quality] ?? 30;
+            try { await sender.setParameters(params); } catch { /* non-fatal */ }
+          }
         } else {
-          pc.addTrack(screenTrack, this.screenStream);
-        }
-        // Set high bitrate for quality
-        const params = sender ? sender.getParameters() : null;
-        if (params && params.encodings) {
-          const bitrateMap = { '4k60': 20_000_000, '1440p60': 12_000_000, '1440p': 10_000_000, '1080p60': 8_000_000, '1080p': 5_000_000, '720p': 3_000_000 };
-          const fpsMap = { '4k60': 60, '1440p60': 60, '1440p': 30, '1080p60': 60, '1080p': 30, '720p': 30 };
-          params.encodings[0].maxBitrate = bitrateMap[quality] || 3_000_000;
-          params.encodings[0].maxFramerate = fpsMap[quality] || 30;
-          try { await sender.setParameters(params); } catch(e) { console.warn('setParameters:', e); }
+          pc.addTrack(screenTrack, this.screenStream!);
         }
       }
-
       this.screenSharing = true;
       this._broadcastState();
       return true;
-    } catch(e) {
-      window.bridgeApp?.toast('Screen share cancelled', 'error');
+    } catch {
+      app()?.toast('Screen share cancelled', 'error');
       return false;
     }
   }
 
-  stopScreenShare() {
+  stopScreenShare(): void {
     this.screenStream?.getTracks().forEach(t => t.stop());
-    this.screenStream = null;
+    this.screenStream  = null;
     this.screenSharing = false;
     this._broadcastState();
-
-    // Revert to camera or nothing
-    if (this.videoOn) {
-      this.enableVideo(true);
-    } else {
+    if (this.videoOn) { void this.enableVideo(true); }
+    else {
       for (const pc of this.peers.values()) {
-        const sender = pc.getSenders().find(s => s.track?.kind === 'video');
-        if (sender) sender.replaceTrack(null);
+        pc.getSenders().find(s => s.track?.kind === 'video')?.replaceTrack(null);
       }
     }
   }
 
-  // â”€â”€â”€ CREATE OFFER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async _createOffer(targetSocketId, peerInfo) {
-    const pc = this._createPeerConnection(targetSocketId, peerInfo);
-    try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      this.socket.emit('webrtc:offer', {
-        targetSocketId, offer: pc.localDescription, channelId: this.currentChannelId
-      });
-    } catch(e) { console.error('Offer error:', e); }
-  }
-
-  // â”€â”€â”€ HANDLE OFFER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  async _handleOffer(fromSocketId, offer) {
-    const peerInfo = { socketId: fromSocketId };
-    const pc = this.peers.get(fromSocketId) || this._createPeerConnection(fromSocketId, peerInfo);
-    try {
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      this.socket.emit('webrtc:answer', { targetSocketId: fromSocketId, answer: pc.localDescription });
-    } catch(e) { console.error('Answer error:', e); }
-  }
-
-  // â”€â”€â”€ CREATE PEER CONNECTION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  _createPeerConnection(socketId, peerInfo) {
-    const pc = new RTCPeerConnection(ICE_SERVERS);
-    this.peers.set(socketId, pc);
-
-    // Add local tracks
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(track => pc.addTrack(track, this.localStream));
-    }
-
-//     audio bitrate â€” kanalÄ±n bitrate ayarÄ±na gÃ¶re maxBitrate uygula
-    const applyAudioBitrate = async () => {
-      const bitrate = this.channelBitrate || 64_000;
-      const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
-      if (!sender) return;
-      try {
-        const params = sender.getParameters();
-        if (!params.encodings?.length) params.encodings = [{}];
-        params.encodings[0].maxBitrate = bitrate;
-        await sender.setParameters(params);
-      } catch { /* non-fatal */ }
-    };
-
-//     prefer VP9 codec for better quality/compression
-    this.preferVP9(pc);
-
-//     Opus codec tercih â€” yÃ¼ksek kaliteli ses
-    this._preferOpus(pc);
-
-    // ICE candidates
-    pc.onicecandidate = ({ candidate }) => {
-      if (candidate) {
-        this.socket.emit('webrtc:ice-candidate', { targetSocketId: socketId, candidate });
-      }
-    };
-
-    // Remote stream
-    pc.ontrack = ({ streams }) => {
-      if (streams[0]) {
-        window.bridgeApp?.attachRemoteStream(socketId, streams[0]);
-//         KullanÄ±cÄ± baÅŸÄ±na ses seviyesi uygula
-        const userId = peerInfo?.userId;
-        if (userId) {
-          const saved = parseFloat(localStorage.getItem(`bridge-vol-${userId}`));
-          if (!isNaN(saved)) {
-            setTimeout(() => BridgeVoiceVolume.applyVolume(socketId, saved), 500);
-          }
-        }
-      }
-    };
-
-    // Connection state
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'connected') {
-//         Opus parametreleri (FEC, DTX, stereo, bitrate)
-        const opusBitrate = this.channelBitrate || 128_000;
-        this._applyOpusParams(pc, opusBitrate);
-//         start adaptive bitrate monitoring
-        this.startAdaptiveBitrate(pc);
-      }
-      if (['disconnected','failed','closed'].includes(pc.connectionState)) {
-        this.stopAdaptiveBitrate(pc);
-        this._removePeer(socketId);
-        window.bridgeApp?.removeVoicePeer(socketId);
-      }
-    };
-
-    return pc;
-  }
-
-  _removePeer(socketId) {
-    const pc = this.peers.get(socketId);
-    if (pc) { pc.close(); this.peers.delete(socketId); }
-  }
-
-  _broadcastState() {
-    if (!this.currentChannelId) return;
-    this.socket.emit('voice:state-update', {
-      channelId: this.currentChannelId,
-      muted: this.muted,
-      deafened: this.deafened,
-      screensharing: this.screenSharing,
-      video: this.videoOn
-    });
-  }
-
-  getLocalStream() { return this.localStream; }
-  isInVoice() { return !!this.currentChannelId; }
-
-  // â”€â”€â”€ DEVICE SELECTION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-  // Ses kanalÄ± bitrate'ini tÃ¼m aktif peer'lara uygula
-  async setChannelBitrate(bitrate) {
+  async setChannelBitrate(bitrate: number): Promise<void> {
     this.channelBitrate = bitrate;
     for (const pc of this.peers.values()) {
       const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
@@ -464,129 +391,177 @@ class BridgeRTC {
     }
   }
 
-  async setMicDevice(deviceId) {
+  async setMicDevice(deviceId: string): Promise<void> {
     this.selectedMicId = deviceId;
-    localStorage.setItem("bridge-mic", deviceId);
+    localStorage.setItem('bridge-mic', deviceId);
     if (!this.isInVoice() || !this.localStream) return;
     try {
-      const nsEnabled = window.BridgeNS?.enabled !== false;
+      const nsModule  = ns();
+      const nsEnabled = nsModule?.enabled !== false;
       const rawStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId:        { exact: deviceId },
-          echoCancellation: nsEnabled,
-          noiseSuppression: nsEnabled,
-          autoGainControl:  nsEnabled,
-          sampleRate:       48000,
-        },
+        audio: { deviceId: { exact: deviceId }, echoCancellation: nsEnabled,
+                 noiseSuppression: nsEnabled, autoGainControl: nsEnabled, sampleRate: 48000 },
         video: false,
       });
-      // NS pipeline'dan geÃ§ir
-      const cleanStream = window.BridgeNS
-        ? await window.BridgeNS.process(rawStream)
-        : rawStream;
-      const newTrack = cleanStream.getAudioTracks()[0];
-      this.localStream.getAudioTracks().forEach(t => { t.stop(); this.localStream.removeTrack(t); });
+      const cleanStream = nsModule ? await nsModule.process(rawStream) : rawStream;
+      const newTrack    = cleanStream.getAudioTracks()[0];
+      this.localStream.getAudioTracks().forEach(t => { t.stop(); this.localStream!.removeTrack(t); });
       this.localStream.addTrack(newTrack);
       for (const pc of this.peers.values()) {
-        const sender = pc.getSenders().find(s => s.track?.kind === "audio");
-        if (sender) sender.replaceTrack(newTrack);
+        const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
+        if (sender) await sender.replaceTrack(newTrack);
       }
-      window.bridgeApp?.toast("Mikrofon deÄŸiÅŸtirildi âœ“", "success");
-    } catch (e) {
-      window.bridgeApp?.toast("Mikrofon deÄŸiÅŸtirilemedi", "error");
-    }
+      app()?.toast('Mikrofon değiştirildi ✓', 'success');
+    } catch { app()?.toast('Mikrofon değiştirilemedi', 'error'); }
   }
 
-  async setCameraDevice(deviceId) {
+  async setCameraDevice(deviceId: string): Promise<void> {
     this.selectedCameraId = deviceId;
-    localStorage.setItem("bridge-camera", deviceId);
+    localStorage.setItem('bridge-camera', deviceId);
     if (!this.videoOn || !this.localStream) return;
     try {
       const newStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: deviceId } } });
-      const newTrack = newStream.getVideoTracks()[0];
-      this.localStream.getVideoTracks().forEach(t => { t.stop(); this.localStream.removeTrack(t); });
+      const newTrack  = newStream.getVideoTracks()[0];
+      this.localStream.getVideoTracks().forEach(t => { t.stop(); this.localStream!.removeTrack(t); });
       this.localStream.addTrack(newTrack);
       for (const pc of this.peers.values()) {
-        const sender = pc.getSenders().find(s => s.track?.kind === "video");
-        if (sender) sender.replaceTrack(newTrack);
+        const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) await sender.replaceTrack(newTrack);
       }
-      window.bridgeApp?.toast("Kamera deÄŸiÅŸtirildi âœ“", "success");
-    } catch (e) {
-      window.bridgeApp?.toast("Kamera deÄŸiÅŸtirilemedi", "error");
-    }
+      app()?.toast('Kamera değiştirildi ✓', 'success');
+    } catch { app()?.toast('Kamera değiştirilemedi', 'error'); }
   }
 
-  async setSpeakerDevice(deviceId) {
+  async setSpeakerDevice(deviceId: string): Promise<void> {
     this.selectedSpeakerId = deviceId;
-    localStorage.setItem("bridge-speaker", deviceId);
-    document.querySelectorAll(".remote-audio, audio").forEach(el => {
-      if (typeof el.setSinkId === "function") el.setSinkId(deviceId).catch(() => {});
+    localStorage.setItem('bridge-speaker', deviceId);
+    type AudioEl = HTMLMediaElement & { setSinkId?(id: string): Promise<void> };
+    document.querySelectorAll<AudioEl>('.remote-audio, audio').forEach(el => {
+      el.setSinkId?.(deviceId).catch(() => {});
     });
-    window.bridgeApp?.toast("HoparlÃ¶r deÄŸiÅŸtirildi âœ“", "success");
+    app()?.toast('Hoparlör değiştirildi ✓', 'success');
   }
 
-  // â”€â”€ Voice E2E socket events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  registerVoiceE2EEvents(myUserId) {
-    if (window.BridgeVoiceE2E) {
-      BridgeVoiceE2E.registerSocketEvents(this.socket, myUserId);
+  registerVoiceE2EEvents(myUserId: string): void {
+    voiceE2E()?.registerSocketEvents(this.socket, myUserId);
+  }
+
+  // ── Signalling ────────────────────────────────────────────────────────────
+  private async _createOffer(targetSocketId: string, peerInfo: PeerInfo): Promise<void> {
+    const pc = this._createPeerConnection(targetSocketId, peerInfo);
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      this.socket.emit('webrtc:offer', {
+        targetSocketId, offer: pc.localDescription, channelId: this.currentChannelId,
+      });
+    } catch (e) { log.error('[WebRTC] Offer error:', e); }
+  }
+
+  private async _handleOffer(fromSocketId: string, offer: RTCSessionDescriptionInit): Promise<void> {
+    const pc = this.peers.get(fromSocketId) ?? this._createPeerConnection(fromSocketId, { socketId: fromSocketId });
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      this.socket.emit('webrtc:answer', { targetSocketId: fromSocketId, answer: pc.localDescription });
+    } catch (e) { log.error('[WebRTC] Answer error:', e); }
+  }
+
+  private _createPeerConnection(socketId: string, peerInfo: PeerInfo): RTCPeerConnection {
+    // Sprint 120: I7 — iceTransportPolicy sunucudan gelir; FORCE_TURN=true ise 'relay'
+    const pc = new RTCPeerConnection({
+      iceServers: ICE_SERVERS.iceServers,
+      iceTransportPolicy: ICE_SERVERS.iceTransportPolicy ?? 'all',
+    });
+    this.peers.set(socketId, pc);
+
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(track => pc.addTrack(track, this.localStream!));
     }
+
+    this._preferOpus(pc);
+    this.preferVP9(pc);
+
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) this.socket.emit('webrtc:ice-candidate', { targetSocketId: socketId, candidate });
+    };
+
+    pc.ontrack = ({ streams }) => {
+      if (!streams[0]) return;
+      app()?.attachRemoteStream(socketId, streams[0]);
+      const userId = peerInfo.userId;
+      if (userId) {
+        const saved = parseFloat(localStorage.getItem(`bridge-vol-${userId}`) ?? '');
+        if (!isNaN(saved)) {
+          setTimeout(() => voiceVolume()?.applyVolume(socketId, saved), 500);
+        }
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') {
+        void this._applyOpusParams(pc, this.channelBitrate || 128_000);
+        this.startAdaptiveBitrate(pc);
+      }
+      if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+        this.stopAdaptiveBitrate(pc);
+        this._removePeer(socketId);
+        app()?.removeVoicePeer(socketId);
+      }
+    };
+
+    return pc;
   }
 
-  loadSavedDevices() {
-    const mic    = localStorage.getItem("bridge-mic");
-    const camera = localStorage.getItem("bridge-camera");
-    const speaker = localStorage.getItem("bridge-speaker");
-    if (mic)    this.selectedMicId    = mic;
-    if (camera) this.selectedCameraId = camera;
-    if (speaker) this.selectedSpeakerId = speaker;
+  private _removePeer(socketId: string): void {
+    const pc = this.peers.get(socketId);
+    if (pc) { pc.close(); this.peers.delete(socketId); }
   }
 
-  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//   ADAPTIF BITRATE (ABR)
-  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-  startAdaptiveBitrate(pc) {
-    if (this._abrIntervals) this._abrIntervals.set(pc, null);
-    else this._abrIntervals = new Map();
+  private _broadcastState(): void {
+    if (!this.currentChannelId) return;
+    this.socket.emit('voice:state-update', {
+      channelId: this.currentChannelId, muted: this.muted,
+      deafened: this.deafened, screensharing: this.screenSharing, video: this.videoOn,
+    });
+  }
 
-    let lastPacketsLost = 0;
-    let lastPacketsSent = 0;
-    let currentKbps = 1500; // baÅŸlangÄ±Ã§
+  getLocalStream(): MediaStream | null { return this.localStream; }
+  isInVoice(): boolean                 { return !!this.currentChannelId; }
+
+  // ── Adaptive bitrate ──────────────────────────────────────────────────────
+  startAdaptiveBitrate(pc: RTCPeerConnection): void {
+    let lastPacketsLost = 0, lastPacketsSent = 0, currentKbps = 1500;
 
     const interval = setInterval(async () => {
-      if (!pc || pc.connectionState === 'closed') {
-        clearInterval(interval);
-        return;
-      }
+      if (!pc || pc.connectionState === 'closed') { clearInterval(interval); return; }
       try {
         const stats = await pc.getStats();
         stats.forEach(report => {
           if (report.type !== 'outbound-rtp' || report.kind !== 'video') return;
-          const lostDelta = (report.packetsLost || 0) - lastPacketsLost;
-          const sentDelta = (report.packetsSent || 0) - lastPacketsSent;
-          lastPacketsLost = report.packetsLost || 0;
-          lastPacketsSent = report.packetsSent || 0;
+          const lostDelta  = ((report as Record<string, number>).packetsLost ?? 0) - lastPacketsLost;
+          const sentDelta  = ((report as Record<string, number>).packetsSent ?? 0) - lastPacketsSent;
+          lastPacketsLost  = (report as Record<string, number>).packetsLost  ?? 0;
+          lastPacketsSent  = (report as Record<string, number>).packetsSent  ?? 0;
           if (sentDelta <= 0) return;
-
           const lossRate = lostDelta / sentDelta;
-
-          // Adaptif hedef belirleme
-          let targetKbps;
-          if (lossRate > 0.10) targetKbps = Math.max(200,  currentKbps * 0.5);  // %10+ loss â†’ bÃ¼yÃ¼k dÃ¼ÅŸÃ¼ÅŸ
-          else if (lossRate > 0.05) targetKbps = Math.max(300, currentKbps * 0.75); // %5-10 â†’ orta dÃ¼ÅŸÃ¼ÅŸ
-          else if (lossRate < 0.01) targetKbps = Math.min(4000, currentKbps * 1.1); // <%1 â†’ artÄ±ÅŸ
-          else return; // stable
-
-          if (Math.abs(targetKbps - currentKbps) < 50) return; // kÃ¼Ã§Ã¼k deÄŸiÅŸimleri atla
-          currentKbps = targetKbps;
-          this._setVideoBitrate(pc, currentKbps);
+          let target: number;
+          if      (lossRate > 0.10) target = Math.max(200,  currentKbps * 0.5);
+          else if (lossRate > 0.05) target = Math.max(300,  currentKbps * 0.75);
+          else if (lossRate < 0.01) target = Math.min(4000, currentKbps * 1.1);
+          else return;
+          if (Math.abs(target - currentKbps) < 50) return;
+          currentKbps = target;
+          void this._setVideoBitrate(pc, currentKbps);
         });
-      } catch { /* stats hatasÄ± kritik deÄŸil */ }
-    }, 3000); // her 3 saniyede Ã¶lÃ§
+      } catch { /* non-critical */ }
+    }, 3000);
 
     this._abrIntervals.set(pc, interval);
   }
 
-  async _setVideoBitrate(pc, kbps) {
+  private async _setVideoBitrate(pc: RTCPeerConnection, kbps: number): Promise<void> {
     const sender = pc.getSenders().find(s => s.track?.kind === 'video');
     if (!sender) return;
     try {
@@ -594,84 +569,69 @@ class BridgeRTC {
       if (!params.encodings?.length) params.encodings = [{}];
       params.encodings[0].maxBitrate = kbps * 1000;
       await sender.setParameters(params);
-    } catch { /* setParameters hatasÄ± Ã¶nemsiz */ }
+    } catch { /* non-fatal */ }
   }
 
-  stopAdaptiveBitrate(pc) {
-    const interval = this._abrIntervals?.get(pc);
-    if (interval) clearInterval(interval);
-    this._abrIntervals?.delete(pc);
+  stopAdaptiveBitrate(pc: RTCPeerConnection): void {
+    const iv = this._abrIntervals.get(pc);
+    if (iv) clearInterval(iv);
+    this._abrIntervals.delete(pc);
   }
 
-  // â”€â”€ v68: Opus codec â€” yÃ¼ksek kaliteli ses â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Opus/48000/2 (stereo, 48kHz) tercih edilir; DTX + FEC aktif.
-  // SDP'de maxaveragebitrate=128000 + stereo=1 + sprop-stereo=1 header eklenir.
-  _preferOpus(pc) {
+  // ── Codec preferences ─────────────────────────────────────────────────────
+  private _preferOpus(pc: RTCPeerConnection): void {
     try {
-      const transceivers = pc.getTransceivers();
-      for (const transceiver of transceivers) {
-        if (transceiver.receiver.track?.kind !== 'audio') continue;
-        const caps = RTCRtpSender.getCapabilities?.('audio')?.codecs || [];
-        // Opus'u Ã¶ne al â€” tarayÄ±cÄ± Opus'u her zaman destekler
+      for (const t of pc.getTransceivers()) {
+        if (t.receiver.track?.kind !== 'audio') continue;
+        const caps    = RTCRtpSender.getCapabilities?.('audio')?.codecs ?? [];
         const ordered = [
           ...caps.filter(c => c.mimeType.toLowerCase() === 'audio/opus'),
           ...caps.filter(c => c.mimeType.toLowerCase() !== 'audio/opus'),
         ];
-        if (ordered.length && transceiver.setCodecPreferences) {
-          transceiver.setCodecPreferences(ordered);
-        }
+        if (ordered.length && t.setCodecPreferences) t.setCodecPreferences(ordered);
       }
-    } catch { /* setCodecPreferences desteklenmiyor â€” eski tarayÄ±cÄ±, Ã¶nemsiz */ }
+    } catch { /* old browser — non-critical */ }
   }
 
-//   Opus parametrelerini sender Ã¼zerinde uygula
-  // stereo=1, useinbandfec=1, maxaveragebitrate
-  async _applyOpusParams(pc, bitrate = 128_000) {
+  private async _applyOpusParams(pc: RTCPeerConnection, bitrate = 128_000): Promise<void> {
     try {
       const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
       if (!sender) return;
       const params = sender.getParameters();
       if (!params.encodings?.length) params.encodings = [{}];
-
-      // maxBitrate â€” Opus iÃ§in 64k (voice-only) veya 128k (music/hi-fi)
       params.encodings[0].maxBitrate = bitrate;
-
-      // SDP codecParams Ã¼zerinden Opus FEC + DTX
       if (params.codecs) {
         for (const codec of params.codecs) {
           if (codec.mimeType?.toLowerCase() === 'audio/opus') {
-            codec.sdpFmtpLine = [
-              codec.sdpFmtpLine || '',
-              'useinbandfec=1',   // Forward Error Correction â€” paket kaybÄ±na karÅŸÄ±
-              'usedtx=1',         // Discontinuous Transmission â€” sessizlikte bant geniÅŸliÄŸi tasarrufu
-              'stereo=1',         // Stereo stream
-              'sprop-stereo=1',
+            codec.sdpFmtpLine = [codec.sdpFmtpLine ?? '',
+              'useinbandfec=1', 'usedtx=1', 'stereo=1', 'sprop-stereo=1',
               `maxaveragebitrate=${bitrate}`,
             ].filter(Boolean).join(';');
           }
         }
       }
       await sender.setParameters(params);
-    } catch { /* setParameters non-fatal */ }
+    } catch { /* non-fatal */ }
   }
 
-  // â”€â”€ Preferred codec: VP9 > VP8 > H264 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  preferVP9(pc) {
+  preferVP9(pc: RTCPeerConnection): void {
     try {
-      const transceivers = pc.getTransceivers();
-      for (const transceiver of transceivers) {
-        if (transceiver.receiver.track?.kind !== 'video') continue;
-        const caps = RTCRtpSender.getCapabilities?.('video')?.codecs || [];
+      for (const t of pc.getTransceivers()) {
+        if (t.receiver.track?.kind !== 'video') continue;
+        const caps    = RTCRtpSender.getCapabilities?.('video')?.codecs ?? [];
         const ordered = [
           ...caps.filter(c => c.mimeType.toLowerCase() === 'video/vp9'),
           ...caps.filter(c => c.mimeType.toLowerCase() === 'video/vp8'),
-          ...caps.filter(c => !['video/vp9','video/vp8'].includes(c.mimeType.toLowerCase())),
+          ...caps.filter(c => !['video/vp9', 'video/vp8'].includes(c.mimeType.toLowerCase())),
         ];
-        if (ordered.length && transceiver.setCodecPreferences) {
-          transceiver.setCodecPreferences(ordered);
-        }
+        if (ordered.length && t.setCodecPreferences) t.setCodecPreferences(ordered);
       }
     } catch { /* codec preference not supported */ }
   }
 }
 
+// BridgeRTC'yi registry'ye kaydet — diğer modüller BridgeRegistry.get('BridgeRTC') ile erişebilir
+BridgeRegistry.register('BridgeRTC', BridgeRTC as unknown as (...args: unknown[]) => unknown);
+
+export { BridgeRTC };
+export type { ScreenQuality };

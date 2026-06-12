@@ -4,7 +4,6 @@
 //
 // require('../routes/admin')                    → router
 // require('../routes/admin').checkFederationACL → ACL fonksiyonu
-'use strict';
 
-module.exports = require('./admin/index');
-export {};
+export { default } from './admin/index';
+export * from './admin/index';

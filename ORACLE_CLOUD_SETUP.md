@@ -158,13 +158,12 @@ curl http://localhost:3001/api/health
 
 ## 7. Eski SQLite Verisi Varsa Migration
 
-```bash
-# Sadece eski kurulumdan taşıma gerekiyorsa:
-docker compose exec bridge node server/dist/db/migrate-to-postgres.js
+SQLite'dan taşıma gerekiyorsa: [MIGRATION.md](./MIGRATION.md) dosyasındaki adımları izleyin.
 
-# Kuru çalıştırma (veri yazmadan kontrol):
-docker compose exec bridge \
-  sh -c "DRY_RUN=1 node server/dist/db/migrate-to-postgres.js"
+PostgreSQL migration durumu:
+
+```bash
+docker compose exec bridge sh -c "cd server && npm run db:migrate:pg:status"
 ```
 
 ---

@@ -36,7 +36,7 @@ test.describe('Direct Message (DM) Akışları', () => {
   // ── API Testleri ─────────────────────────────────────────
 
   test('API: DM kanalı açma/alma', async ({ request }) => {
-    if (!bobId) test.skip();
+    test.skip(!bobId, 'Test fixture hazır değil'  );
 
     const res = await request.post(`${BASE_URL}/api/dm/open`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
@@ -50,18 +50,18 @@ test.describe('Direct Message (DM) Akışları', () => {
   });
 
   test('API: DM mesajı gönderme', async ({ request }) => {
-    if (!bobId) test.skip();
+    test.skip(!bobId, 'Test fixture hazır değil'  );
 
     // DM kanalını aç
     const openRes = await request.post(`${BASE_URL}/api/dm/open`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ targetUserId: bobId }),
     });
-    if (!openRes.ok()) test.skip();
+    test.skip(!openRes.ok(), 'Test fixture hazır değil'  );
 
     const dmData = await openRes.json();
     const dmChannelId = dmData._id || dmData.id || dmData.channelId;
-    if (!dmChannelId) test.skip();
+    test.skip(!dmChannelId, 'Test fixture hazır değil'  );
 
     // Mesaj gönder
     const msgRes = await request.post(`${BASE_URL}/api/channels/${dmChannelId}/messages`, {
@@ -86,7 +86,7 @@ test.describe('Direct Message (DM) Akışları', () => {
   });
 
   test('API: kendi kendinle DM açılamamalı', async ({ request }) => {
-    if (!aliceId) test.skip();
+    test.skip(!aliceId, 'Alice kullanıcı fixture gerekli'  );
 
     const res = await request.post(`${BASE_URL}/api/dm/open`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
@@ -107,18 +107,18 @@ test.describe('Direct Message (DM) Akışları', () => {
   });
 
   test('API: Bob Alice\'in DM mesajını görebilmeli', async ({ request }) => {
-    if (!bobId) test.skip();
+    test.skip(!bobId, 'Test fixture hazır değil'  );
 
     // DM kanalını aç
     const openRes = await request.post(`${BASE_URL}/api/dm/open`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ targetUserId: bobId }),
     });
-    if (!openRes.ok()) test.skip();
+    test.skip(!openRes.ok(), 'Test fixture hazır değil'  );
 
     const dmData = await openRes.json();
     const dmChannelId = dmData._id || dmData.id || dmData.channelId;
-    if (!dmChannelId) test.skip();
+    test.skip(!dmChannelId, 'Test fixture hazır değil'  );
 
     // Alice mesaj gönder
     const unique = `DM-test-${Date.now()}`;
@@ -211,29 +211,29 @@ test.describe('Direct Message (DM) Akışları', () => {
   // ── Okundu Bilgisi (DM Read Receipt) API Testleri ─────────
 
   test('API: DM mesajı okundu olarak işaretlenebilmeli', async ({ request }) => {
-    if (!bobId) test.skip();
+    test.skip(!bobId, 'Test fixture hazır değil'  );
 
     // DM kanalını aç
     const openRes = await request.post(`${BASE_URL}/api/dm/open`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ targetUserId: bobId }),
     });
-    if (!openRes.ok()) test.skip();
+    test.skip(!openRes.ok(), 'Test fixture hazır değil'  );
 
     const dmData = await openRes.json();
     const dmChannelId = dmData._id || dmData.id || dmData.channelId;
-    if (!dmChannelId) test.skip();
+    test.skip(!dmChannelId, 'Test fixture hazır değil'  );
 
     // Alice mesaj gönder
     const msgRes = await request.post(`${BASE_URL}/api/channels/${dmChannelId}/messages`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ content: `read-receipt-test-${Date.now()}` }),
     });
-    if (!msgRes.ok()) test.skip();
+    test.skip(!msgRes.ok(), 'Test fixture hazır değil'  );
 
     const msgData = await msgRes.json();
     const msgId = msgData._id || msgData.id;
-    if (!msgId) test.skip();
+    test.skip(!msgId, 'Mesaj fixture gerekli'  );
 
     // Bob mesajı okundu işaretle (PATCH veya POST /read endpoint)
     const readRes = await request.post(`${BASE_URL}/api/dm/${dmChannelId}/read`, {
@@ -246,18 +246,18 @@ test.describe('Direct Message (DM) Akışları', () => {
   });
 
   test('API: Yetkisiz kullanıcı DM mesajlarını okumamalı', async ({ request }) => {
-    if (!bobId) test.skip();
+    test.skip(!bobId, 'Test fixture hazır değil'  );
 
     // DM kanalını aç
     const openRes = await request.post(`${BASE_URL}/api/dm/open`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ targetUserId: bobId }),
     });
-    if (!openRes.ok()) test.skip();
+    test.skip(!openRes.ok(), 'Test fixture hazır değil'  );
 
     const dmData = await openRes.json();
     const dmChannelId = dmData._id || dmData.id || dmData.channelId;
-    if (!dmChannelId) test.skip();
+    test.skip(!dmChannelId, 'Test fixture hazır değil'  );
 
     // Yetkisiz istek (token yok)
     const res = await request.get(`${BASE_URL}/api/channels/${dmChannelId}/messages`);
@@ -265,17 +265,17 @@ test.describe('Direct Message (DM) Akışları', () => {
   });
 
   test('API: DM mesaj geçmişinde sayfalama çalışmalı', async ({ request }) => {
-    if (!bobId) test.skip();
+    test.skip(!bobId, 'Test fixture hazır değil'  );
 
     const openRes = await request.post(`${BASE_URL}/api/dm/open`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ targetUserId: bobId }),
     });
-    if (!openRes.ok()) test.skip();
+    test.skip(!openRes.ok(), 'Test fixture hazır değil'  );
 
     const dmData = await openRes.json();
     const dmChannelId = dmData._id || dmData.id || dmData.channelId;
-    if (!dmChannelId) test.skip();
+    test.skip(!dmChannelId, 'Test fixture hazır değil'  );
 
     // limit parametresi ile sayfalama
     const res = await request.get(`${BASE_URL}/api/channels/${dmChannelId}/messages?limit=5`, {

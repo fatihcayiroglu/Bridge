@@ -173,6 +173,7 @@ export interface BotEvents {
   contextCommand:[data: InteractionData];
   commandError: [data: { command: string; error: Error; ctx: CommandContext }];
   rateLimit:    [data: RateLimitData];
+  deprecationWarning: [data: { path: string; method: string; successor: string }];
   error:        [err: unknown];
 }
 
@@ -297,7 +298,7 @@ export class BridgeBot extends EventEmitter<BotEvents> {
       type: c.type,
       description: '',
     }));
-    await this._api('PATCH', '/api/bots/me/context-commands', { commands });
+    await this._api('PATCH', '/api/v1/bots/me/context-commands', { commands });
     this._log(`${commands.length} context command sunucuya kaydedildi`);
   }
 
@@ -330,7 +331,7 @@ export class BridgeBot extends EventEmitter<BotEvents> {
 
   /** Kanala mesaj gönder. */
   async sendMessage(channelId: string, content: string): Promise<BotMessage | null> {
-    return this._api('POST', `/api/messages/${channelId}`, { content });
+    return this._api('POST', `/api/v1/messages/${channelId}`, { content });
   }
 
   /** Mesajı düzenle. */
@@ -339,22 +340,22 @@ export class BridgeBot extends EventEmitter<BotEvents> {
     messageId: string,
     content: string,
   ): Promise<BotMessage | null> {
-    return this._api('PATCH', `/api/messages/${channelId}/${messageId}`, { content });
+    return this._api('PATCH', `/api/v1/messages/${channelId}/${messageId}`, { content });
   }
 
   /** Mesajı sil. */
   async deleteMessage(channelId: string, messageId: string): Promise<null> {
-    return this._api('DELETE', `/api/messages/${channelId}/${messageId}`);
+    return this._api('DELETE', `/api/v1/messages/${channelId}/${messageId}`);
   }
 
   /** Mesaja reaksiyon ekle. */
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<null> {
-    return this._api('POST', `/api/messages/${channelId}/${messageId}/react`, { emoji });
+    return this._api('POST', `/api/v1/messages/${channelId}/${messageId}/react`, { emoji });
   }
 
   /** Kanalın son mesajlarını getir. */
   async getMessages(channelId: string, limit = 50): Promise<BotMessage[]> {
-    return this._api('GET', `/api/messages/${channelId}?limit=${limit}`);
+    return this._api('GET', `/api/v1/messages/${channelId}?limit=${limit}`);
   }
 
   /** Interactive (butonlu) mesaj gönder. */
@@ -363,36 +364,36 @@ export class BridgeBot extends EventEmitter<BotEvents> {
     content: string,
     components: ActionRow[],
   ): Promise<BotMessage | null> {
-    return this._api('POST', `/api/messages/${channelId}`, { content, components });
+    return this._api('POST', `/api/v1/messages/${channelId}`, { content, components });
   }
 
   // ── Sunucu ──────────────────────────────────────────────────
 
   /** Sunucu üyelerini getir. */
   async getMembers(serverId: string): Promise<ServerMember[]> {
-    return this._api('GET', `/api/servers/${serverId}/members`);
+    return this._api('GET', `/api/v1/servers/${serverId}/members`);
   }
 
   /** Üyeye rol ata. */
   async addRole(serverId: string, userId: string, roleId: string): Promise<null> {
-    return this._api('POST', `/api/servers/${serverId}/members/${userId}/roles`, { roleId });
+    return this._api('POST', `/api/v1/servers/${serverId}/members/${userId}/roles`, { roleId });
   }
 
   /** Üyeden rol kaldır. */
   async removeRole(serverId: string, userId: string, roleId: string): Promise<null> {
-    return this._api('DELETE', `/api/servers/${serverId}/members/${userId}/roles/${roleId}`);
+    return this._api('DELETE', `/api/v1/servers/${serverId}/members/${userId}/roles/${roleId}`);
   }
 
   // ── Moderasyon ───────────────────────────────────────────────
 
   /** Kullanıcıyı at (kick). */
   async kick(serverId: string, userId: string, reason = ''): Promise<null> {
-    return this._api('POST', `/api/servers/${serverId}/kick`, { userId, reason });
+    return this._api('POST', `/api/v1/servers/${serverId}/kick`, { userId, reason });
   }
 
   /** Kullanıcıyı yasakla (ban). */
   async ban(serverId: string, userId: string, reason = ''): Promise<null> {
-    return this._api('POST', `/api/servers/${serverId}/ban`, { userId, reason });
+    return this._api('POST', `/api/v1/servers/${serverId}/ban`, { userId, reason });
   }
 
   /** Kullanıcıyı sustur (timeout). */
@@ -402,7 +403,7 @@ export class BridgeBot extends EventEmitter<BotEvents> {
     minutes = 10,
     reason = '',
   ): Promise<null> {
-    return this._api('POST', `/api/servers/${serverId}/timeout`, { userId, minutes, reason });
+    return this._api('POST', `/api/v1/servers/${serverId}/timeout`, { userId, minutes, reason });
   }
 
   // ── Socket Olayları (İç) ─────────────────────────────────────
@@ -509,7 +510,7 @@ export class BridgeBot extends EventEmitter<BotEvents> {
 
   private async _fetchBotInfo(): Promise<BotInfo> {
     try {
-      return await this._api<BotInfo>('GET', '/api/bots/me');
+      return await this._api<BotInfo>('GET', '/api/v1/bots/me');
     } catch {
       return { _id: '', username: 'Bot' };
     }
@@ -533,6 +534,17 @@ export class BridgeBot extends EventEmitter<BotEvents> {
       },
       body: body != null ? JSON.stringify(body) : undefined,
     });
+
+    // Sprint D: Deprecation header uyarısı — /api (versionless) kullanımını tespit et
+    if (res.headers.get('Deprecation') === 'true') {
+      const successor = res.headers.get('Link') ?? '/api/v1';
+      console.warn(
+        `[BridgeBot] ⚠️ Deprecated API endpoint kullandınız: ${path}\n` +
+        `  Lütfen yeni versiyon ile güncelleyin: ${successor}\n` +
+        `  Bot SDK'yı v2+ sürümüne yükseltin.`
+      );
+      this.emit('deprecationWarning', { path, method, successor });
+    }
 
     // Rate limit — Retry-After başlığını oku ve bekle
     if (res.status === 429 && _retryCount < 3) {
@@ -664,6 +676,7 @@ export class EmbedBuilder {
   build(): string {
     const lines: string[] = [];
     if (this._title) lines.push(`**${this._title}**`);
+    if (this._color) lines.push(`Color: ${this._color}`);
     lines.push('─────────────────────');
     if (this._description) lines.push(this._description);
     if (this._description && this._fields.length) lines.push('');

@@ -1,0 +1,108 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: bridge-svc
+  namespace: bridge
+  labels:
+    app: bridge
+spec:
+  selector:
+    app: bridge
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3001
+  type: ClusterIP
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bridge
+  namespace: bridge
+  labels:
+    app: bridge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bridge
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: bridge
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3001"
+        prometheus.io/path: "/metrics"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: bridge
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: bridge
+          image: bridge-app:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3001
+          envFrom:
+            - configMapRef:
+                name: bridge-config
+          env:
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: bridge-secrets
+                  key: JWT_SECRET
+            - name: REFRESH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: bridge-secrets
+                  key: REFRESH_SECRET
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: bridge-secrets
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: bridge-secrets
+                  key: REDIS_URL
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3001
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false

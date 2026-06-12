@@ -1,0 +1,144 @@
+{{/*
+  k8s/helm/bridge/templates/deployment.yaml
+  Bridge uygulama Deployment + HPA + PDB
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bridge.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bridge.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "bridge.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "bridge.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: bridge
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: {{ include "bridge.fullname" . }}-secrets
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- if .Values.postgresql.enabled }}
+            - name: DATABASE_URL
+              value: "postgresql://{{ .Values.postgresql.auth.username }}:$(POSTGRES_PASSWORD)@{{ include "bridge.fullname" . }}-postgresql:5432/{{ .Values.postgresql.auth.database }}"
+            {{- end }}
+            {{- if .Values.redis.enabled }}
+            - name: REDIS_URL
+              value: "redis://{{ include "bridge.fullname" . }}-redis-master:6379"
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.persistence.enabled }}
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/server/uploads
+          {{- end }}
+      {{- if .Values.persistence.enabled }}
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: {{ include "bridge.fullname" . }}-uploads
+      {{- end }}
+
+{{- if .Values.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "bridge.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bridge.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "bridge.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+{{- end }}
+
+{{- if .Values.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "bridge.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bridge.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "bridge.selectorLabels" . | nindent 6 }}
+{{- end }}

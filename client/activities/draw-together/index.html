@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Birlikte Çiz — Bridge</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f1117;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      user-select: none;
+    }
+    #header {
+      background: #1a1d27;
+      padding: 8px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    #header h2 { font-size: 14px; font-weight: 700; color: #fff; }
+    #participant-count { font-size: 11px; color: #6b7280; }
+
+    /* ── Toolbar ── */
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .tool-btn {
+      padding: 5px 10px;
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 6px;
+      color: #ccc;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+      white-space: nowrap;
+    }
+    .tool-btn:hover   { background: rgba(45,156,219,.2); border-color: #2d9cdb; }
+    .tool-btn.active  { background: rgba(45,156,219,.35); border-color: #8892f8; color: #fff; }
+    .tool-btn.danger  { color: #f87171; }
+    .tool-btn.danger:hover { background: rgba(248,113,113,.15); border-color: #f87171; }
+
+    #color-picker {
+      width: 34px; height: 28px;
+      border: 2px solid rgba(255,255,255,.2);
+      border-radius: 6px;
+      cursor: pointer;
+      padding: 0;
+      background: none;
+    }
+    #size-slider { width: 80px; accent-color: #2d9cdb; }
+    #size-label  { font-size: 11px; color: #6b7280; min-width: 28px; }
+
+    /* ── Main area ── */
+    #main { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Canvas ── */
+    #canvas-wrap {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      cursor: crosshair;
+      background: #fff;
+    }
+    #canvas-wrap.tool-eraser { cursor: cell; }
+    canvas { position: absolute; top: 0; left: 0; display: block; }
+    #canvas-main   { z-index: 1; }
+    #canvas-active { z-index: 2; } /* current stroke (local) */
+    #canvas-cursor { z-index: 3; pointer-events: none; } /* remote cursors */
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 160px;
+      min-width: 160px;
+      background: #12121f;
+      border-left: 1px solid rgba(255,255,255,.06);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #sidebar-title {
+      padding: 10px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      border-bottom: 1px solid rgba(255,255,255,.05);
+    }
+    #participants { flex: 1; overflow-y: auto; padding: 6px 0; }
+    .participant {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      font-size: 12px;
+      color: #bbb;
+    }
+    .participant .avatar {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 700; color: #fff; flex-shrink: 0;
+    }
+    .participant .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .participant .host-badge {
+      font-size: 9px; color: #f0a500;
+      margin-left: auto; flex-shrink: 0;
+    }
+
+    /* ── Remote cursor dots ── */
+    .remote-cursor {
+      position: absolute;
+      pointer-events: none;
+      z-index: 10;
+      transform: translate(-4px, -4px);
+    }
+    .remote-cursor::before {
+      content: '';
+      display: block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--cursor-color, #2d9cdb);
+    }
+    .remote-cursor-label {
+      position: absolute;
+      top: 10px; left: 4px;
+      font-size: 10px;
+      color: #fff;
+      background: var(--cursor-color, #2d9cdb);
+      padding: 1px 5px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <h2>🎨 Birlikte Çiz</h2>
+  <span id="participant-count">Bağlanıyor…</span>
+
+  <div id="toolbar">
+    <button class="tool-btn active" data-tool="pen"    onclick="setTool('pen')">✏️ Kalem</button>
+    <button class="tool-btn"       data-tool="line"   onclick="setTool('line')">📏 Çizgi</button>
+    <button class="tool-btn"       data-tool="rect"   onclick="setTool('rect')">⬜ Dikdörtgen</button>
+    <button class="tool-btn"       data-tool="circle" onclick="setTool('circle')">⭕ Daire</button>
+    <button class="tool-btn"       data-tool="eraser" onclick="setTool('eraser')">🧹 Sil</button>
+    <input type="color" id="color-picker" value="#1a1a2e" oninput="setColor(this.value)" title="Renk">
+    <input type="range" id="size-slider" min="1" max="40" value="4" oninput="setSize(+this.value)" title="Boyut">
+    <span id="size-label">4px</span>
+    <button class="tool-btn" onclick="undoStroke()" title="Geri al (Ctrl+Z)">↩️ Geri</button>
+    <button class="tool-btn danger" id="clear-btn" onclick="clearCanvas()" title="Temizle">🗑️ Temizle</button>
+  </div>
+</div>
+
+<div id="main">
+  <div id="canvas-wrap">
+    <canvas id="canvas-main"></canvas>
+    <canvas id="canvas-active"></canvas>
+    <canvas id="canvas-cursor"></canvas>
+  </div>
+
+  <div id="sidebar">
+    <div id="sidebar-title">Katılımcılar</div>
+    <div id="participants"></div>
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────
+let channelId = '', sessionId = '', myUserId = '', myDisplayName = '', myColor = '#2d9cdb';
+let isHost = false;
+let currentTool = 'pen';
+let currentColor = '#1a1a2e';
+let currentSize = 4;
+let drawing = false;
+let currentStrokeId = null;
+let currentPoints = [];
+let participants = new Map(); // userId → { displayName, color, isHost }
+let remoteCursors = new Map(); // userId → { x, y, color, name }
+
+// Canvas refs
+const wrap   = document.getElementById('canvas-wrap');
+const cmain  = document.getElementById('canvas-main');
+const cact   = document.getElementById('canvas-active');
+const ccur   = document.getElementById('canvas-cursor');
+const ctxM   = cmain.getContext('2d');
+const ctxA   = cact.getContext('2d');
+const ctxC   = ccur.getContext('2d');
+
+// ── Resize ────────────────────────────────────────────────────
+function resizeCanvases() {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  [cmain, cact, ccur].forEach(c => { c.width = w; c.height = h; });
+  redrawAll();
+}
+window.addEventListener('resize', resizeCanvases);
+
+// ── postMessage bridge (parent ↔ iframe) ──────────────────────
+window.addEventListener('message', (e) => {
+  const d = e.data;
+  if (!d || !d.type) return;
+  switch (d.type) {
+    case 'draw-together:init':
+      channelId    = d.channelId;
+      sessionId    = d.sessionId;
+      myUserId     = d.userId;
+      myDisplayName = d.displayName || 'Anonim';
+      myColor      = d.avatarColor  || '#2d9cdb';
+      isHost       = !!d.isHost;
+      document.getElementById('clear-btn').style.display = isHost ? '' : 'none';
+      parent.postMessage({ type: 'draw-together:ready', channelId, sessionId }, '*');
+      break;
+
+    // State snapshot from server (on join)
+    case 'draw-together:state':
+      if (d.strokes) { remoteStrokes = d.strokes; redrawAll(); }
+      if (d.participants) {
+        d.participants.forEach(p => participants.set(p.userId, p));
+        renderParticipants();
+      }
+      break;
+
+    // Remote stroke events
+    case 'draw-together:stroke':      applyRemoteStroke(d.stroke);      break;
+    case 'draw-together:stroke-end':  finalizeRemoteStroke(d.strokeId, d.points); break;
+    case 'draw-together:undo':        removeStroke(d.strokeId);         break;
+    case 'draw-together:clear':       clearAll();                       break;
+    case 'draw-together:cursor':      updateRemoteCursor(d);            break;
+    case 'draw-together:participant-joined': addParticipant(d);         break;
+    case 'draw-together:participant-left':   removeParticipant(d.userId); break;
+    case 'draw-together:error':       console.warn('[draw-together]', d.message); break;
+  }
+});
+
+// ── Stroke storage ────────────────────────────────────────────
+let remoteStrokes = []; // completed strokes from server
+let localStrokeMap = new Map(); // strokeId → points (in-progress remote strokes)
+
+function redrawAll() {
+  const w = cmain.width, h = cmain.height;
+  ctxM.clearRect(0, 0, w, h);
+  ctxM.fillStyle = '#fff';
+  ctxM.fillRect(0, 0, w, h);
+  for (const s of remoteStrokes) drawStroke(ctxM, s);
+}
+
+function drawStroke(ctx, stroke) {
+  if (!stroke.points || stroke.points.length < 1) return;
+  ctx.save();
+  ctx.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over';
+  ctx.strokeStyle = stroke.color;
+  ctx.lineWidth   = stroke.size;
+  ctx.lineCap     = 'round';
+  ctx.lineJoin    = 'round';
+  ctx.globalAlpha = stroke.opacity ?? 1;
+
+  const pts = stroke.points;
+
+  if (stroke.tool === 'pen' || stroke.tool === 'eraser') {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+  } else if (stroke.tool === 'line' && pts.length >= 2) {
+    const p0 = pts[0], p1 = pts[pts.length - 1];
+    ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
+  } else if (stroke.tool === 'rect' && pts.length >= 2) {
+    const p0 = pts[0], p1 = pts[pts.length - 1];
+    ctx.strokeRect(p0.x, p0.y, p1.x - p0.x, p1.y - p0.y);
+  } else if (stroke.tool === 'circle' && pts.length >= 2) {
+    const p0 = pts[0], p1 = pts[pts.length - 1];
+    const rx = Math.abs(p1.x - p0.x) / 2, ry = Math.abs(p1.y - p0.y) / 2;
+    const cx = p0.x + (p1.x - p0.x) / 2, cy = p0.y + (p1.y - p0.y) / 2;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ── Local drawing ─────────────────────────────────────────────
+function getPos(e) {
+  const r = wrap.getBoundingClientRect();
+  if (e.touches) return { x: e.touches[0].clientX - r.left, y: e.touches[0].clientY - r.top };
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function genId() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
+
+wrap.addEventListener('pointerdown', (e) => {
+  if (!channelId) return;
+  drawing = true;
+  currentStrokeId = genId();
+  const pos = getPos(e);
+  currentPoints = [pos];
+  parent.postMessage({
+    type: 'draw-together:send',
+    event: 'draw:stroke',
+    payload: {
+      channelId, strokeId: currentStrokeId,
+      tool: currentTool, color: currentColor, size: currentSize, opacity: 1,
+      points: [pos],
+    }
+  }, '*');
+  drawActivePreview();
+  wrap.setPointerCapture(e.pointerId);
+});
+
+wrap.addEventListener('pointermove', (e) => {
+  const pos = getPos(e);
+  // Cursor broadcast (throttled in parent)
+  parent.postMessage({ type: 'draw-together:send', event: 'draw:cursor',
+    payload: { channelId, x: pos.x / cmain.width, y: pos.y / cmain.height } }, '*');
+
+  if (!drawing) return;
+  currentPoints.push(pos);
+  drawActivePreview();
+
+  parent.postMessage({
+    type: 'draw-together:send',
+    event: 'draw:stroke',
+    payload: { channelId, strokeId: currentStrokeId, points: currentPoints.slice(-5) }
+  }, '*');
+});
+
+wrap.addEventListener('pointerup',  finishStroke);
+wrap.addEventListener('pointerout', (e) => { if (e.buttons === 0) finishStroke(e); });
+
+function finishStroke() {
+  if (!drawing) return;
+  drawing = false;
+  const stroke = {
+    id: currentStrokeId, tool: currentTool, color: currentColor, size: currentSize,
+    opacity: 1, points: currentPoints, userId: myUserId, complete: true,
+  };
+  remoteStrokes.push(stroke);
+  redrawAll();
+  ctxA.clearRect(0, 0, cact.width, cact.height);
+  parent.postMessage({
+    type: 'draw-together:send',
+    event: 'draw:stroke-end',
+    payload: { channelId, strokeId: currentStrokeId, points: currentPoints }
+  }, '*');
+}
+
+function drawActivePreview() {
+  ctxA.clearRect(0, 0, cact.width, cact.height);
+  drawStroke(ctxA, {
+    tool: currentTool, color: currentColor, size: currentSize, opacity: 1,
+    points: currentPoints,
+  });
+}
+
+// ── Remote stroke handling ────────────────────────────────────
+function applyRemoteStroke(stroke) {
+  if (!stroke || stroke.userId === myUserId) return;
+  const existing = remoteStrokes.find(s => s.id === stroke.id);
+  if (existing) { Object.assign(existing, stroke); }
+  else { remoteStrokes.push({ ...stroke, complete: false }); }
+  redrawAll();
+}
+
+function finalizeRemoteStroke(strokeId, points) {
+  const s = remoteStrokes.find(s => s.id === strokeId);
+  if (s) { if (points) s.points = points; s.complete = true; }
+  redrawAll();
+}
+
+function removeStroke(strokeId) {
+  remoteStrokes = remoteStrokes.filter(s => s.id !== strokeId);
+  redrawAll();
+}
+
+function clearAll() {
+  remoteStrokes = [];
+  redrawAll();
+  ctxA.clearRect(0, 0, cact.width, cact.height);
+}
+
+// ── Tools ─────────────────────────────────────────────────────
+function setTool(t) {
+  currentTool = t;
+  document.querySelectorAll('.tool-btn[data-tool]').forEach(b =>
+    b.classList.toggle('active', b.dataset.tool === t));
+  wrap.className = t === 'eraser' ? 'tool-eraser' : '';
+  parent.postMessage({ type: 'draw-together:send', event: 'draw:tool',
+    payload: { channelId, tool: t, color: currentColor, size: currentSize } }, '*');
+}
+
+function setColor(c) { currentColor = c; }
+function setSize(s)  {
+  currentSize = s;
+  document.getElementById('size-label').textContent = s + 'px';
+}
+
+function undoStroke() {
+  const myStrokes = remoteStrokes.filter(s => s.userId === myUserId && s.complete);
+  if (!myStrokes.length) return;
+  const last = myStrokes[myStrokes.length - 1];
+  parent.postMessage({ type: 'draw-together:send', event: 'draw:undo',
+    payload: { channelId } }, '*');
+  removeStroke(last.id);
+}
+
+function clearCanvas() {
+  if (!isHost) { alert('Canvas temizlemek için host yetkisi gerekli.'); return; }
+  parent.postMessage({ type: 'draw-together:send', event: 'draw:clear',
+    payload: { channelId } }, '*');
+  clearAll();
+}
+
+// ── Participants ──────────────────────────────────────────────
+function addParticipant(p) {
+  participants.set(p.userId, { displayName: p.displayName, color: p.color || '#2d9cdb', isHost: p.isHost });
+  renderParticipants();
+}
+function removeParticipant(userId) {
+  participants.delete(userId);
+  remoteCursors.delete(userId);
+  renderParticipants();
+  renderCursors();
+}
+function renderParticipants() {
+  const count = participants.size || 1;
+  document.getElementById('participant-count').textContent = count + ' kişi';
+  const el = document.getElementById('participants');
+  el.innerHTML = [...participants.entries()].map(([uid, p]) => `
+    <div class="participant">
+      <div class="avatar" style="background:${p.color}">${(p.displayName||'?')[0].toUpperCase()}</div>
+      <span class="name">${escHtml(p.displayName)}</span>
+      ${p.isHost ? '<span class="host-badge">HOST</span>' : ''}
+    </div>`).join('');
+}
+
+// ── Remote cursors ────────────────────────────────────────────
+let _lastCursorBroadcast = 0;
+function updateRemoteCursor(d) {
+  if (d.userId === myUserId) return;
+  const p = participants.get(d.userId);
+  remoteCursors.set(d.userId, {
+    x: d.x * ccur.width, y: d.y * ccur.height,
+    color: p?.color || '#2d9cdb',
+    name: p?.displayName || '?',
+  });
+  renderCursors();
+}
+
+function renderCursors() {
+  // Remove old DOM cursors
+  document.querySelectorAll('.remote-cursor').forEach(el => el.remove());
+  for (const [uid, cur] of remoteCursors) {
+    const el = document.createElement('div');
+    el.className = 'remote-cursor';
+    el.style.cssText = `left:${cur.x}px;top:${cur.y}px;--cursor-color:${cur.color};`;
+    el.innerHTML = `<div class="remote-cursor-label">${escHtml(cur.name)}</div>`;
+    wrap.appendChild(el);
+  }
+}
+
+// ── Keyboard shortcuts ────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undoStroke(); }
+  if (e.key === 'p') setTool('pen');
+  if (e.key === 'e') setTool('eraser');
+  if (e.key === 'l') setTool('line');
+  if (e.key === 'r') setTool('rect');
+  if (e.key === 'c') setTool('circle');
+});
+
+// ── Utils ─────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+// ── Init ──────────────────────────────────────────────────────
+resizeCanvases();
+redrawAll();
+parent.postMessage({ type: 'draw-together:ready' }, '*');
+</script>
+</body>
+</html>

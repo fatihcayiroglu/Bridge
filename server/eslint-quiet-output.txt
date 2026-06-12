@@ -1,3 +1,0 @@
-# Sprint 16 — ESLint temiz çıktı (güncellendi)
-# Önceki session8 hataları .ts migration ile giderildi.
-# Çalıştır: cd server && npm run lint

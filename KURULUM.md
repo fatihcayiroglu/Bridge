@@ -1,5 +1,7 @@
 # Bridge — Hızlı Kurulum (PostgreSQL)
 
+Tam referans: [README.md](./README.md) · Dağıtım zip'i: [DISTRIBUTION.md](./DISTRIBUTION.md)
+
 ## 1. PostgreSQL kullanıcısı ve veritabanı oluştur
 
 ```bash
@@ -13,72 +15,66 @@ GRANT ALL PRIVILEGES ON DATABASE bridge TO bridge_user;
 \q
 ```
 
-## 2. .env dosyasını hazırla
+## 2. Ortam dosyası
 
 ```bash
-cd server
-cp .env.example .env
+cp server/.env.example server/.env
 ```
 
-`.env` dosyasında şunları doldur:
+`.env` içinde doldur:
 
 ```env
 JWT_SECRET=<node -e "console.log(require('crypto').randomBytes(64).toString('hex'))">
-REFRESH_SECRET=<yukardaki komutu tekrar çalıştır, farklı bir değer>
+REFRESH_SECRET=<aynı komutu tekrar çalıştır, farklı değer>
 DATABASE_URL=postgresql://bridge_user:guvenli_sifre_buraya@localhost:5432/bridge
 ```
 
-## 3. Bağımlılıkları yükle ve başlat
+## 3. Kurulum, derleme ve başlatma
 
 ```bash
-npm install --omit=dev
+# Kök dizinde
+npm run setup          # npm install + server install + client/server build
+
+# veya adım adım:
+npm install
+cd server && npm install && cd ..
+npm run build
 npm start
 ```
 
-İlk başlatmada tüm tablolar otomatik oluşturulur. Konsolda şunu görmelisin:
-
-```
-[DB] PostgreSQL -> postgresql://bridge_user:***@localhost:5432/bridge
-Bridge server started on port 3001
-```
-
-## 4. Doğrula
+İlk başlatmada PostgreSQL şeması otomatik oluşturulur (`initSchema`).
 
 ```bash
 curl http://localhost:3001/api/health/ready
-# {"status":"ok","db":"postgresql"}
+# {"status":"ok",...}
 ```
 
----
+Geliştirme modu (hot reload):
 
-## Docker ile (alternatif)
+```bash
+npm run dev
+```
+
+## Docker ile (önerilen)
 
 ```bash
 cp .env.docker .env
-# .env içinde JWT_SECRET ve REFRESH_SECRET doldur
-docker compose up -d
+# JWT_SECRET, REFRESH_SECRET, POSTGRES_PASSWORD doldur
+docker compose up -d --build
 ```
 
----
+→ http://localhost:3001
 
 ## Sorun mu var?
 
 | Hata | Çözüm |
 |------|-------|
+| `Production build eksik` | `npm run build` |
 | `ECONNREFUSED` | `sudo systemctl start postgresql` |
-| `password authentication failed` | .env'deki şifre ile psql şifresi uyuşmuyor |
-| `DATABASE_URL tanımlı değil` | .env dosyası server/ klasöründe mi? |
+| `password authentication failed` | `.env` şifresi ile psql uyuşmuyor |
+| `DATABASE_URL tanımlı değil` | `server/.env` dosyasını kontrol et |
 | `too many clients` | `PG_POOL_MAX=10` ekle |
 
----
+## Oracle Cloud Free Tier
 
-## Oracle Cloud Free Tier (VPS Kurulumu)
-
-Detaylı rehber için: **[ORACLE_CLOUD_SETUP.md](./ORACLE_CLOUD_SETUP.md)**
-
-Kısa özet:
-1. https://cloud.oracle.com/free → hesap aç
-2. Compute → Instances → **VM.Standard.A1.Flex** (4 OCPU / 24 GB) + Ubuntu 22.04
-3. Security List'te 80, 443, 3001 portlarını aç
-4. SSH ile bağlan → `scp` ile zip aktar → `docker compose up -d --build`
-
+Detaylı rehber: **[ORACLE_CLOUD_SETUP.md](./ORACLE_CLOUD_SETUP.md)**

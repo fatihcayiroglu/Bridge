@@ -1,0 +1,149 @@
+# monitoring/uptime.yml
+# Sprint 110 — Uptime Kuma izleme yapılandırması
+#
+# Uptime Kuma: self-host edilebilir Uptime Robot alternatifi
+# https://github.com/louislam/uptime-kuma
+#
+# Başlatma:
+#   docker compose -f monitoring/docker-compose.yml up uptime-kuma
+#   UI: http://localhost:3001
+#
+# Import için: Uptime Kuma → Settings → Backup → Restore
+
+# Bu dosya Uptime Kuma "Status Page" ve monitor tanımlarını belgeler.
+# Monitors doğrudan UI'dan veya aşağıdaki otomatik import scriptiyle oluşturulabilir:
+#   node monitoring/scripts/create-uptime-monitors.js
+
+monitors:
+  # ── API sağlık kontrolleri ─────────────────────────────────────────────
+
+  - name: "Bridge API — Health"
+    type: http
+    url: "${BRIDGE_URL:-http://localhost:3000}/api/health"
+    method: GET
+    interval: 60          # saniye
+    retryInterval: 30
+    maxretries: 3
+    timeout: 10
+    expectedStatusCodes: [200]
+    keyword: '"status":"ok"'
+    description: "Ana API healthcheck — DB + Redis bağlantısını doğrular"
+
+  - name: "Bridge API — Auth Ping"
+    type: http
+    url: "${BRIDGE_URL:-http://localhost:3000}/api/ping"
+    method: GET
+    interval: 120
+    timeout: 5
+    expectedStatusCodes: [200]
+    description: "Kimlik doğrulama middleware sanity check"
+
+  - name: "Bridge — Discover API"
+    type: http
+    url: "${BRIDGE_URL:-http://localhost:3000}/api/discover/categories"
+    method: GET
+    interval: 300
+    timeout: 10
+    expectedStatusCodes: [200]
+    description: "Keşif API — dış erişim gerektirmez"
+
+  - name: "Bridge — Swagger UI"
+    type: http
+    url: "${BRIDGE_URL:-http://localhost:3000}/api/docs"
+    method: GET
+    interval: 3600
+    timeout: 10
+    expectedStatusCodes: [200]
+    description: "Swagger dokümantasyonu erişilebilir mi?"
+
+  # ── WebSocket / Socket.IO ──────────────────────────────────────────────
+
+  - name: "Bridge — Socket.IO"
+    type: http
+    url: "${BRIDGE_URL:-http://localhost:3000}/socket.io/?EIO=4&transport=polling"
+    method: GET
+    interval: 60
+    timeout: 10
+    expectedStatusCodes: [200]
+    description: "Socket.IO long-poll handshake"
+
+  # ── Altyapı servisleri ─────────────────────────────────────────────────
+
+  - name: "Redis — Bağlantı"
+    type: redis
+    hostname: "${REDIS_HOST:-localhost}"
+    port: "${REDIS_PORT:-6379}"
+    interval: 60
+    description: "Redis PING kontrolü"
+
+  - name: "PostgreSQL — Bağlantı"
+    type: postgres
+    hostname: "${DB_HOST:-localhost}"
+    port: "${DB_PORT:-5432}"
+    database: "${DB_NAME:-bridge}"
+    username: "${DB_USER:-bridge}"
+    password: "${DB_PASSWORD:-}"
+    interval: 60
+    description: "PostgreSQL bağlantı testi"
+
+  # ── MediaSoup SFU ──────────────────────────────────────────────────────
+
+  - name: "MediaSoup — Worker Health"
+    type: http
+    url: "${BRIDGE_URL:-http://localhost:3000}/api/health/mediasoup"
+    method: GET
+    interval: 120
+    timeout: 10
+    expectedStatusCodes: [200]
+    keyword: '"workers"'
+    description: "Ses/video worker'ları çalışıyor mu?"
+
+  # ── CDN / Dosya servisi ────────────────────────────────────────────────
+
+  - name: "CDN / Upload — Erişilebilirlik"
+    type: http
+    url: "${CDN_URL:-http://localhost:3000/uploads/}probe.txt"
+    method: GET
+    interval: 300
+    timeout: 10
+    expectedStatusCodes: [200, 404]   # 404 kabul: servis çalışıyor ama dosya yok
+    description: "Upload storage erişilebilir mi?"
+
+# ── Status Page yapılandırması ─────────────────────────────────────────────
+
+statusPage:
+  title: "Bridge Status"
+  description: "Bridge platform servis durumu"
+  theme: dark
+  showTags: true
+  groups:
+    - name: "API"
+      monitors: ["Bridge API — Health", "Bridge API — Auth Ping", "Bridge — Discover API"]
+    - name: "Gerçek Zamanlı"
+      monitors: ["Bridge — Socket.IO", "MediaSoup — Worker Health"]
+    - name: "Altyapı"
+      monitors: ["Redis — Bağlantı", "PostgreSQL — Bağlantı", "CDN / Upload — Erişilebilirlik"]
+    - name: "Dokümantasyon"
+      monitors: ["Bridge — Swagger UI"]
+
+# ── Bildirim kanalları ─────────────────────────────────────────────────────
+
+notifications:
+  - name: "Discord Webhook"
+    type: discord
+    webhookUrl: "${UPTIME_DISCORD_WEBHOOK:-}"
+    enabled: false   # UPTIME_DISCORD_WEBHOOK ile aktifleştir
+
+  - name: "Email"
+    type: smtp
+    smtpHost:     "${SMTP_HOST:-}"
+    smtpPort:     "${SMTP_PORT:-587}"
+    smtpUser:     "${SMTP_USER:-}"
+    smtpPassword: "${SMTP_PASS:-}"
+    smtpTo:       "${UPTIME_ALERT_EMAIL:-}"
+    enabled: false   # SMTP env'leriyle aktifleştir
+
+  - name: "Slack Webhook"
+    type: slack
+    webhookUrl: "${UPTIME_SLACK_WEBHOOK:-}"
+    enabled: false

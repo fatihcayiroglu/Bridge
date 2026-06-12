@@ -1,0 +1,14 @@
+{
+  "id": "auto-role",
+  "name": "Auto Role",
+  "version": "1.0.0",
+  "description": "Yeni üyelere sunucuya katılınca otomatik rol atar",
+  "author": "Bridge",
+  "category": "utility",
+  "disabled": false,
+  "config": {
+    "roleId": "",
+    "delayMs": 0
+  },
+  "main": "index.ts"
+}

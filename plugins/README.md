@@ -8,13 +8,16 @@ Bridge'e özel işlevsellik eklemek için plugin API'si.
 plugins/
 ├── welcome-bot/
 │   ├── plugin.json   ← Metadata ve config
-│   └── index.js      ← Plugin kodu
+│   └── index.ts      ← Plugin kodu
 ├── word-filter/
 │   ├── plugin.json
-│   └── index.js
+│   └── index.ts
+├── auto-role/
+│   ├── plugin.json
+│   └── index.ts
 └── benim-pluginim/
     ├── plugin.json
-    └── index.js
+    └── index.ts
 ```
 
 ## plugin.json Şeması
@@ -81,7 +84,15 @@ ctx.hooks.on('message:created', async ({ messageId, channelId, content }) => {
 | `voice:joined` | `{ userId, channelId, serverId }` |
 | `voice:left` | `{ userId, channelId, serverId }` |
 
-### Plugin Aksiyonları (emit edilebilir)
+### Plugin Aksiyonları (emit edilebilir — sunucu işler)
+
+Bu event'ler `server/plugins/actions.ts` tarafından işlenir:
+
+| Event | Davranış |
+|-------|----------|
+| `plugin:sendMessage` | Sistem/bot mesajı oluşturur, `message:new` broadcast |
+| `plugin:deleteMessage` | Mesajı siler, `message:deleted` broadcast |
+| `plugin:grantRole` | Üyeye rol atar (`Members.setRoles`) |
 
 ```js
 // Mesaj gönder
@@ -97,6 +108,13 @@ ctx.hooks.emit('plugin:deleteMessage', {
   messageId: '...',
   channelId: '...',
   serverId:  '...',
+});
+
+// Rol ata (sunucu tarafından işlenir)
+ctx.hooks.emit('plugin:grantRole', {
+  userId:   '...',
+  serverId: '...',
+  roleId:   '...',
 });
 ```
 

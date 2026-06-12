@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "main.ts",
+    "preload.ts",
+    "updater.ts",
+    "electron-stubs.d.ts"
+  ],
+  "exclude": [
+    "tests",
+    "dist",
+    "release",
+    "node_modules"
+  ]
+}

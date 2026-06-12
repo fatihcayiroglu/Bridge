@@ -1,143 +1,119 @@
-// @ts-nocheck
-import 'dotenv/config';
-import './lib/env'; // Ortam değişkeni doğrulama — hatalı config'de erken exit
-import http from 'http';
-import seed from './db/seed';
-import db from './db/loader';
-import { socketUsers, voiceRooms } from './socket';
-import { authMiddleware } from './middleware/auth';
-import logger from './lib/logger';
-import { createApp } from './app/createApp';
-import { setupRoutes } from './app/setupRoutes';
-import { createSocketServer, setupSocketInfra } from './app/setupSocket';
-import { startCleanupJob } from './jobs/cleanupUploads';
-import { startScheduledJob } from './jobs/scheduledMessages';
-import { startAutoModerationJob } from './jobs/autoModeration';
-import { startFederationHeartbeat } from './jobs/federationHeartbeat';
+// server/index.ts
+// Sprint 38: require() karışımı → ES import (Sprint 33+ TypeScript altyapısıyla uyumlu)
+// Önceki: 8 adet eslint-disable-next-line @typescript-eslint/no-var-requires
+// Sonraki: sıfır disable comment, tam tip güvenliği
 
+import 'dotenv/config';
+import './lib/env';
+import './lib/telemetry'; // OTel + Sentry — auto-instrumentation için en erken init
+
+import http from 'http';
+import type { Server as SocketServer } from 'socket.io';
+
+// ── DB & Seed ────────────────────────────────────────────────────────────────
+import db from './db/loader';
+import seed from './db/seed';
+import { ensureMarketplaceSeed } from './routes/bot-marketplace'; // Sprint 83
+
+// ── Socket ───────────────────────────────────────────────────────────────────
+import { setupSocket, socketUsers, voiceRooms } from './socket';
+
+// ── Logger ───────────────────────────────────────────────────────────────────
+import logger from './lib/logger';
+
+// ── Jobs ─────────────────────────────────────────────────────────────────────
+import { startCleanupJob, stopCleanupJob }        from './jobs/cleanupUploads';
+import { startScheduledJob, stopScheduledJob }      from './jobs/scheduledMessages';
+import { startAutoModerationJob, stopAutoModerationJob } from './jobs/autoModeration';
+import { startFederationHeartbeat, stopFederationHeartbeat } from './jobs/federationHeartbeat';
+import { startEventReminderJob, stopEventReminderJob } from './jobs/eventReminders';
+// Sprint 120: A4 — pgvector geçmiş mesaj batch embed job kayıt altına alındı
+import { scheduleEmbedHistoryJob, cancelEmbedHistoryJob } from './jobs/embedHistory';
+
+// ── App ──────────────────────────────────────────────────────────────────────
+import { authMiddleware, startAuthCleanup }     from './middleware/auth';
+import { createApp }                            from './app/createApp';
+import { setupRoutes }                          from './app/setupRoutes';
+import { createSocketServer, setupSocketInfra } from './app/setupSocket';
 import { loadPlugins, registerPluginListRoute } from './plugins/loader';
 
+// ── Güvenlik: JWT_SECRET erken kontrol ──────────────────────────────────────
+// Detaylı doğrulama lib/env.ts içinde yapılır; bu blok açık bir hata mesajı için.
 if (!process.env.JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    logger.error('[FATAL] JWT_SECRET is not set. Refusing to start in production without a secret.');
+    process.exit(1);
+  }
   logger.warn(
     { event: 'config.jwt_secret.missing' },
-    'JWT_SECRET is not configured; development fallback will be used.'
+    'JWT_SECRET is not configured; development fallback will be used.',
   );
 }
 
+// ── Express App ──────────────────────────────────────────────────────────────
 const { app, allowedOrigins } = createApp();
 setupRoutes(app);
+
 const server = http.createServer(app);
-const io = createSocketServer(server, allowedOrigins);
-
+const io: SocketServer = createSocketServer(server, allowedOrigins);
 registerPluginListRoute(app, authMiddleware);
-loadPlugins(app, db, io).catch((e: Error) =>
-  logger.error({ err: e, event: 'plugins.load.failed' }, 'Plugin loading failed.')
-);
 
-app.get('/api/voice/:channelId', authMiddleware, (req, res) => {
-  res.json((voiceRooms as Record<string, unknown[]>)[req.params.channelId] || []);
-});
+const PORT = parseInt(process.env.PORT ?? '3000', 10);
+const HOST = process.env.HOST ?? '0.0.0.0';
 
-app.get('/api/config', (_, res) =>
-  res.json({
-    maxFileSizeMB: parseInt(process.env.MAX_FILE_SIZE_MB || '2048'),
-    chunkSizeMB: parseInt(process.env.CHUNK_SIZE_MB || '5'),
-    tenorEnabled: !!process.env.TENOR_API_KEY,
-    translateEnabled: !!process.env.LIBRETRANSLATE_URL,
-  })
-);
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((
-  err: { status?: number; statusCode?: number; message?: string },
-  req: import('express').Request,
-  res: import('express').Response,
-  _next: import('express').NextFunction
-) => {
-  const status = err.status || err.statusCode || 500;
-  const message =
-    process.env.NODE_ENV === 'production' && status === 500
-      ? 'Internal server error'
-      : err.message || 'Internal server error';
-  if (status >= 500) {
-    logger.error(
-      { err, status, path: req.originalUrl, method: req.method, event: 'http.request.failed' },
-      'Unhandled request error.'
-    );
+// ── Bootstrap ────────────────────────────────────────────────────────────────
+async function bootstrap(): Promise<void> {
+  const pgDb = db as { _initSchema?: () => Promise<void> };
+  if (typeof pgDb._initSchema === 'function') {
+    await pgDb._initSchema();
   }
-  res.status(status).json({ error: message });
-});
-
-const PORT = process.env.PORT || 3001;
-app.set('io', io);
-app.set('socketUsers', socketUsers);
-
-async function start(): Promise<void> {
-  const dbAny = db as { _initSchema?: () => Promise<void> };
-  if (process.env.DATABASE_URL && dbAny._initSchema) await dbAny._initSchema();
-  await seed();
   await setupSocketInfra(io);
+  await seed();
+  await ensureMarketplaceSeed(); // Sprint 83: bot marketplace seed
+  await loadPlugins(app, db, io);
+
   startCleanupJob();
+  startAuthCleanup();
   startScheduledJob(io);
   startAutoModerationJob(io);
-  startFederationHeartbeat(db);
-  server.listen(PORT, () =>
-    logger.info({ port: PORT, db: 'PostgreSQL', event: 'server.started' }, 'Bridge server started.')
-  );
+  startEventReminderJob();
+  startFederationHeartbeat();
+  // Sprint 120: A4 — pgvector geçmiş mesaj embed job'u (her gün 03:00 UTC)
+  scheduleEmbedHistoryJob(db as unknown as { query<T extends object = object>(sql: string, values?: unknown[]): Promise<{ rows: T[] }> });
+
+  server.listen(PORT, HOST, () => {
+    logger.info({ event: 'server.start', port: PORT, host: HOST }, `Bridge listening on ${HOST}:${PORT}`);
+  });
 }
 
-start().catch((err: Error) => {
-  logger.fatal({ err, event: 'server.start.failed' }, 'Server startup failed.');
+bootstrap().catch((err: Error) => {
+  logger.fatal({ event: 'server.boot_error', err }, 'Bootstrap failed');
   process.exit(1);
 });
 
-process.on('unhandledRejection', (reason) => {
-  logger.error({ reason, event: 'process.unhandled_rejection' }, 'Unhandled promise rejection captured.');
-});
-
-process.on('uncaughtException', (err: Error) => {
-  logger.fatal({ err, event: 'process.uncaught_exception' }, 'Uncaught exception captured, exiting process.');
-  process.exit(1);
-});
-
-// ── Graceful Shutdown ─────────────────────────────────────────
-let _shuttingDown = false;
-
-async function gracefulShutdown(signal: string): Promise<void> {
-  if (_shuttingDown) return;
-  _shuttingDown = true;
-  logger.info({ signal, event: 'server.shutdown.start' }, 'Graceful shutdown initiated.');
-
-  server.close(async () => {
-    logger.info({ event: 'server.shutdown.http_closed' }, 'HTTP server closed.');
-
-    try {
-      await new Promise<void>((resolve) => {
-        io.close(() => resolve());
-        setTimeout(resolve, 3000);
-      });
-      logger.info({ event: 'server.shutdown.sockets_closed' }, 'Socket.IO connections closed.');
-    } catch (err) {
-      logger.warn({ err, event: 'server.shutdown.sockets_error' }, 'Socket.IO close error.');
-    }
-
-    try {
-      const dbPool = db as { _pool?: { end: () => Promise<void> } };
-      if (dbPool._pool && typeof dbPool._pool.end === 'function') {
-        await dbPool._pool.end();
-      }
-    } catch { /* ignore db shutdown errors */ }
-
-    logger.info({ event: 'server.shutdown.complete' }, 'Shutdown complete. Exiting.');
+// ── Graceful shutdown ────────────────────────────────────────────────────────
+// SIGTERM: Kubernetes pod sonlandırma, `docker stop`
+// SIGINT:  Ctrl-C (geliştirme ortamı)
+function gracefulShutdown(signal: string): void {
+  logger.info({ signal }, 'Shutdown sinyali alındı, kapatılıyor...');
+  stopEventReminderJob();
+  stopFederationHeartbeat();   // Sprint 97: zaten vardı
+  stopAutoModerationJob();     // Sprint 98
+  stopScheduledJob();          // Sprint 98
+  stopCleanupJob();            // Sprint 98
+  cancelEmbedHistoryJob();     // Sprint 120: A4
+  server.close(() => {
+    logger.info('HTTP server kapatıldı. Çıkılıyor.');
     process.exit(0);
   });
-
+  // 10 saniye içinde kapanmazsa zorla çık
   setTimeout(() => {
-    logger.fatal({ event: 'server.shutdown.forced' }, 'Graceful shutdown timed out. Forcing exit.');
+    logger.warn('Graceful shutdown zaman aşımı — zorla çıkılıyor');
     process.exit(1);
   }, 10_000).unref();
 }
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
-export {};
+
+export { socketUsers, voiceRooms, authMiddleware };

@@ -1,4 +1,3 @@
-// @ts-nocheck
 // server/plugins/loader.ts
 // Plugin sistemi: ./plugins/ klasöründeki plugin.json dosyalarını yükler,
 // her plugin'i sandboxed bir context'te çalıştırır.
@@ -21,7 +20,11 @@ import fs from 'fs';
 import path from 'path';
 import vm from 'vm';
 import type { Application, Request, Response, RequestHandler } from 'express';
+import type { Server as IOServer } from 'socket.io';
 import logger from '../lib/logger';
+import { registerPluginActionHandlers } from './actions';
+import { isAllowed } from './allowlist';
+import type { PluginMeta as AllowlistPluginMeta } from './allowlist';
 
 // ── Tipler ────────────────────────────────────────────────────
 
@@ -117,7 +120,7 @@ function makeSandboxedRequire(pluginDir: string, pluginId: string): NodeRequire 
       if (resolved.startsWith(SERVER_ROOT)) {
         throw new Error(`[plugin:${pluginId}] Güvenlik ihlali: sunucu modülüne erişim engellendi: ${id}`);
       }
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+       
       return require(id);
     }
     if (id.startsWith('.')) {
@@ -125,12 +128,12 @@ function makeSandboxedRequire(pluginDir: string, pluginId: string): NodeRequire 
       if (!resolved.startsWith(pluginDir)) {
         throw new Error(`[plugin:${pluginId}] Güvenlik ihlali: path traversal engellendi: ${id}`);
       }
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+       
       return require(resolved);
     }
     const bareId = id.startsWith('node:') ? id.slice(5) : id;
     if (ALLOWED_BUILTINS.has(bareId)) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+       
       return require(id);
     }
     const pkgName = id.split('/')[0];
@@ -141,10 +144,10 @@ function makeSandboxedRequire(pluginDir: string, pluginId: string): NodeRequire 
     }
     const pluginPkg = path.join(pluginDir, 'node_modules', pkgName);
     if (fs.existsSync(pluginPkg)) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+       
       return require(path.join(pluginDir, 'node_modules', id));
     }
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     return require(id);
   } as NodeRequire;
 }
@@ -164,7 +167,7 @@ function makeSafeProcess(pluginId: string): typeof process {
           deleteProperty(): boolean { throw new Error(`[plugin:${pluginId}] process.env silme engellendi`); },
         });
       }
-      const val = (target as Record<string | symbol, unknown>)[prop];
+      const val = Reflect.get(target, prop);
       return typeof val === 'function' ? (val as (...a: unknown[]) => unknown).bind(target) : val;
     },
     set(): boolean { throw new Error(`[plugin:${pluginId}] process nesnesine yazma engellendi`); },
@@ -206,7 +209,7 @@ class PluginHooks {
     if (!handlers) return;
     for (const fn of handlers) {
       try { await fn(payload); } catch (e) {
-        console.error(`[plugin-hooks] ${event} handler error:`, (e as Error).message);
+        logger.error(`[plugin-hooks] ${event} handler error:`, (e as Error).message);
       }
     }
   }
@@ -215,30 +218,60 @@ class PluginHooks {
 // Singleton event bus — server index.ts'den de import edilebilir
 export const hooks = new PluginHooks();
 
+/** TypeScript plugin kaynağını CommonJS'e çevir (vm sandbox için). */
+function transpilePluginTs(code: string, fileName: string): string | null {
+  try {
+     
+    const ts = require('typescript') as typeof import('typescript');
+    const out = ts.transpileModule(code, {
+      compilerOptions: {
+        module:          ts.ModuleKind.CommonJS,
+        target:          ts.ScriptTarget.ES2020,
+        esModuleInterop: true,
+        strict:          false,
+      },
+      fileName,
+    });
+    return out.outputText;
+  } catch {
+    return null;
+  }
+}
+
+function resolvePluginMain(pluginDir: string): string | null {
+  const jsPath = path.join(pluginDir, 'index.js');
+  const tsPath = path.join(pluginDir, 'index.ts');
+  if (fs.existsSync(jsPath)) return jsPath;
+  if (fs.existsSync(tsPath)) return tsPath;
+  return null;
+}
+
 // ── Loaded plugins registry ───────────────────────────────────
 const loadedPlugins = new Map<string, LoadedPlugin>();
 
 // ── DB read-only proxy ────────────────────────────────────────
 function makeReadOnlyDb(db: Record<string, unknown>): ReadOnlyDb {
-  return new Proxy(db as Record<string, Record<string, (...a: unknown[]) => unknown>>, {
-    get(target, prop: string | symbol) {
-      const col = target[prop as string];
-      if (!col || typeof col !== 'object') return col;
+  const empty: ReadOnlyCollection = { find: () => [], findOne: () => null, count: () => 0 };
+  return new Proxy({} as ReadOnlyDb, {
+    get(_target, prop: string | symbol): ReadOnlyCollection {
+      const col = db[prop as string] as Record<string, unknown> | undefined;
+      if (!col || typeof col !== 'object') return empty;
       return {
-        find:    (...a: unknown[]) => col['find']?.(...a),
-        findOne: (...a: unknown[]) => col['findOne']?.(...a),
-        count:   (...a: unknown[]) => col['count']?.(...a),
+        find:    (...a: unknown[]) => typeof col['find'] === 'function' ? (col['find'] as (...args: unknown[]) => unknown)(...a) : [],
+        findOne: (...a: unknown[]) => typeof col['findOne'] === 'function' ? (col['findOne'] as (...args: unknown[]) => unknown)(...a) : null,
+        count:   (...a: unknown[]) => typeof col['count'] === 'function' ? (col['count'] as (...args: unknown[]) => unknown)(...a) : 0,
       };
     },
-  }) as ReadOnlyDb;
+  });
 }
 
 // ── Plugin loader ─────────────────────────────────────────────
 export async function loadPlugins(
   app: Application,
   db: Record<string, unknown>,
-  _io: unknown
+  io: IOServer,
 ): Promise<void> {
+  registerPluginActionHandlers(hooks, io);
   const pluginsDir = path.resolve(__dirname, '../../plugins');
   if (!fs.existsSync(pluginsDir)) {
     logger.info({ pluginsDir, event: 'plugins.dir.missing' }, 'Plugins directory not found, skipping plugin loading.');
@@ -251,15 +284,20 @@ export async function loadPlugins(
   for (const entry of entries) {
     const pluginDir  = path.join(pluginsDir, entry.name);
     const metaPath   = path.join(pluginDir, 'plugin.json');
-    const mainPath   = path.join(pluginDir, 'index.js');
+    const mainPath   = resolvePluginMain(pluginDir);
 
-    if (!fs.existsSync(metaPath) || !fs.existsSync(mainPath)) continue;
+    if (!fs.existsSync(metaPath) || !mainPath) continue;
 
     let meta: PluginMeta;
     try {
       meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as PluginMeta;
     } catch (e) {
       logger.error({ plugin: entry.name, err: e, event: 'plugins.meta.parse_failed' }, 'Plugin metadata parse failed.');
+      continue;
+    }
+
+    if (!isAllowed(meta as AllowlistPluginMeta)) {
+      logger.warn({ plugin: meta.id ?? entry.name, event: 'plugins.allowlist_rejected' }, 'Plugin manifest rejected by allowlist.');
       continue;
     }
 
@@ -276,7 +314,7 @@ export async function loadPlugins(
     const sandboxedHooks: SandboxedHooks = {
       on(event: string, handler: HookHandler) {
         if (hookCount >= MAX_HOOKS_PER_PLUGIN) {
-          console.warn(`[plugin:${pluginId}] Hook limiti aşıldı (max ${MAX_HOOKS_PER_PLUGIN}), "${event}" kaydedilmedi`);
+          logger.warn(`[plugin:${pluginId}] Hook limiti aşıldı (max ${MAX_HOOKS_PER_PLUGIN}), "${event}" kaydedilmedi`);
           return;
         }
         hookCount++;
@@ -295,9 +333,9 @@ export async function loadPlugins(
       hooks: sandboxedHooks,
       db:    makeReadOnlyDb(db),
       logger: {
-        log:   (...a: unknown[]) => console.log(`[plugin:${pluginId}]`, ...a),
-        warn:  (...a: unknown[]) => console.warn(`[plugin:${pluginId}]`, ...a),
-        error: (...a: unknown[]) => console.error(`[plugin:${pluginId}]`, ...a),
+        log:   (...a: unknown[]) => logger.info({ args: a, pluginId, event: 'plugin.log' }, `[plugin:${pluginId}]`),
+        warn:  (...a: unknown[]) => logger.warn({ args: a, pluginId, event: 'plugin.warn' }, `[plugin:${pluginId}]`),
+        error: (...a: unknown[]) => logger.error({ args: a, pluginId, event: 'plugin.error' }, `[plugin:${pluginId}]`),
       },
 
       registerRoute(method: string, subPath: string, handler: RequestHandler) {
@@ -305,7 +343,7 @@ export async function loadPlugins(
         const m = (method ?? 'get').toLowerCase() as HttpMethod;
         const valid: string[] = ['get','post','put','patch','delete'];
         if (!valid.includes(m)) {
-          console.warn(`[plugin:${pluginId}] Geçersiz HTTP metodu: ${method}`);
+          logger.warn(`[plugin:${pluginId}] Geçersiz HTTP metodu: ${method}`);
           return;
         }
         routes.push({ method: m, path: fullPath, handler });
@@ -323,7 +361,18 @@ export async function loadPlugins(
       const sandboxedRequire = makeSandboxedRequire(pluginDir, pluginId);
       const safeProcess      = makeSafeProcess(pluginId);
 
-      const code = fs.readFileSync(mainPath, 'utf8');
+      let code = fs.readFileSync(mainPath, 'utf8');
+      if (mainPath.endsWith('.ts')) {
+        const transpiled = transpilePluginTs(code, mainPath);
+        if (!transpiled) {
+          logger.error(
+            { pluginId, event: 'plugins.ts_transpile_failed' },
+            'TypeScript plugin yüklenemedi — index.js derleyin veya typescript paketini kurun.',
+          );
+          continue;
+        }
+        code = transpiled;
+      }
       const moduleObj = { exports: {} as Record<string, unknown> };
       const sandbox: vm.Context = {
         module: moduleObj,
@@ -341,12 +390,12 @@ export async function loadPlugins(
       };
       vm.createContext(sandbox);
       const wrapped = `(function (exports, require, module, __filename, __dirname, process) { 'use strict'; ${code}\n})`;
-      const script = new vm.Script(wrapped, { filename: mainPath, timeout: SETUP_TIMEOUT_MS });
+      const script = new vm.Script(wrapped, { filename: mainPath });
       const fn = script.runInContext(sandbox, { timeout: SETUP_TIMEOUT_MS }) as Function;
       fn(moduleObj.exports, sandboxedRequire, moduleObj, mainPath, pluginDir, safeProcess);
 
       const plugin = moduleObj.exports as PluginModule;
-      await withTimeout(plugin.setup?.(ctx), pluginId);
+      await withTimeout(Promise.resolve(plugin.setup?.(ctx)), pluginId);
 
       loadedPlugins.set(pluginId, { meta, ctx, routes, socketEvs });
       logger.info({ pluginId, version: meta.version ?? '?', hookCount, event: 'plugins.loaded' }, 'Plugin loaded in sandbox.');
@@ -366,7 +415,7 @@ export function bindPluginSocketEvents(socket: { on: (...a: unknown[]) => void }
         try {
           await handler(data, socket, user);
         } catch (e) {
-          console.error(`[plugin:${pluginId}] socket ${event} error:`, (e as Error).message);
+          logger.error(`[plugin:${pluginId}] socket ${event} error:`, (e as Error).message);
         }
       });
     }

@@ -1,5 +1,4 @@
-// @ts-nocheck
-// server/lib/turnConfig.js
+// server/lib/turnConfig.ts
 // TURN/STUN sunucu konfigürasyonu — istemciye gönderilecek ICE sunucu listesi.
 //
 // Sorun: Sadece Google STUN var. Kurumsal ağlar, simetrik NAT, güvenlik
@@ -14,16 +13,13 @@
 //   - Twilio Network Traversal (kurumsal)
 //   - Fallback: sadece STUN
 
-'use strict';
 
-const crypto = require('crypto');
-
-// ── Time-limited TURN credential üretimi ─────────────────────────────────────
+import crypto from 'crypto';
 // coturn --use-auth-secret ile uyumlu.
 // username = "<unix_timestamp>:<userId>", credential = HMAC-SHA1(secret, username)
 // Token 24 saat geçerli — her join'de taze token gönderilir.
 
-function generateTimeLimitedCredential(userId, secret) {
+function generateTimeLimitedCredential(userId: string, secret: string): { username: string; credential: string; ttl: number } {
   const ttl      = 86400; // 24 saat
   const expiry   = Math.floor(Date.now() / 1000) + ttl;
   const username = `${expiry}:${userId}`;
@@ -39,7 +35,7 @@ function generateTimeLimitedCredential(userId, secret) {
  * @param {string} userId  — Token kişiselleştirme için (coturn auth)
  * @returns {object[]}     — RTCConfiguration.iceServers formatı
  */
-function getIceServers(userId = 'anonymous') {
+function getIceServers(userId: string = 'anonymous'): object[] {
   const servers = [];
 
   // ── 1. STUN (her zaman ekle) ───────────────────────────────────────────────
@@ -134,5 +130,4 @@ function getTurnStatus() {
   };
 }
 
-module.exports = { getIceServers, getIceTransportPolicy, getTurnStatus, generateTimeLimitedCredential };
-export {};
+export { getIceServers, getIceTransportPolicy, getTurnStatus, generateTimeLimitedCredential };

@@ -1,0 +1,59 @@
+/* ── Bridge · uploads-media.css ───────────────────────────────── */
+
+/* ══════════════════════════════════════
+
+══════════════════════════════════════ */
+
+/* ── UPLOAD PROGRESS BAR ─────────────────────────────── */
+.upload-progress-bar {
+  padding: 8px 14px 6px;
+  background: var(--bg-4);
+  border-radius: var(--r-md);
+  margin-bottom: 6px;
+  animation: msgIn 0.2s ease;
+}
+.upload-progress-info {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 5px; font-size: 12px;
+}
+.upload-filename { color: var(--text-2); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+.upload-pct { color: var(--brand); font-weight: 700; flex-shrink: 0; }
+.upload-progress-track {
+  height: 4px; background: var(--bg-5); border-radius: 2px; overflow: hidden;
+}
+.upload-progress-fill {
+  height: 100%; background: linear-gradient(90deg, var(--brand), #a78bfa);
+  border-radius: 2px; transition: width 0.3s ease;
+}
+
+/* ── VIDEO / AUDIO IN MESSAGES ───────────────────────── */
+.msg-video {
+  max-width: 400px; max-height: 280px; border-radius: var(--r-md);
+  display: block; border: 1px solid var(--bg-5); margin-top: 4px;
+}
+.msg-audio {
+  display: block; width: 320px; margin-top: 4px;
+  accent-color: var(--brand);
+}
+.file-name-row {
+  font-size: 12px; color: var(--text-3); margin-top: 3px;
+}
+
+/* ── TRANSLATION ─────────────────────────────────────── */
+.msg-translation {
+  margin-top: 6px; padding: 6px 10px;
+  background: rgba(79,142,247,0.08); border-left: 3px solid var(--brand);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0; font-size: 13px;
+  color: var(--text-2); line-height: 1.4; animation: msgIn 0.2s ease;
+}
+.translation-label { font-weight: 700; color: var(--brand); margin-right: 4px; }
+.translate-btn { font-size: 13px !important; }
+
+/* ── SCHEDULED MESSAGE BADGE ─────────────────────────── */
+.scheduled-badge { font-size: 11px; opacity: 0.7; margin-left: 3px; }
+.scheduled-count-badge {
+  background: var(--yellow); color: #1a1b1e; border-radius: 10px;
+  font-size: 10px; font-weight: 800; padding: 1px 5px; margin-left: 4px;
+}
+.bridged-badge { font-size: 11px; opacity: 0.6; margin-left: 3px; }
+

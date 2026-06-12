@@ -1,13 +1,14 @@
-// @ts-nocheck
-// server/lib/mailer.js — Nodemailer e-posta gönderici
+// server/lib/mailer.ts — Nodemailer e-posta gönderici
 // SMTP veya Resend/Sendgrid API destekler
 // E-posta yoksa konsola basar (development modu)
 
-const nodemailer = require('nodemailer');
+import nodemailer from 'nodemailer';
+import type { Transporter, SendMailOptions } from 'nodemailer';
+import logger from './logger';
 
-let _transporter = null;
+let _transporter: Pick<Transporter, 'sendMail'> | null = null;
 
-function getTransporter() {
+function getTransporter(): Pick<Transporter, 'sendMail'> {
   if (_transporter) return _transporter;
 
   if (process.env.SMTP_HOST) {
@@ -23,12 +24,10 @@ function getTransporter() {
   } else {
     // Development: Ethereal (otomatik test hesabı) veya konsol
     _transporter = {
-      sendMail: async (opts) => {
-        console.log('\n📧 [DEV MAIL] To:', opts.to);
-        console.log('   Subject:', opts.subject);
-        // HTML'den düz metin çıkar
-        const text = (opts.html || opts.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-        console.log('   Body:', text.slice(0, 200));
+      sendMail: async (opts: SendMailOptions) => {
+        const rawBody = typeof opts.html === 'string' ? opts.html : typeof opts.text === 'string' ? opts.text : '';
+        const text = rawBody.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        logger.info({ to: opts.to, subject: opts.subject, body: text.slice(0, 200), event: 'mailer.dev.sent' }, '📧 [DEV MAIL]');
         return { messageId: 'dev-' + Date.now() };
       }
     };
@@ -39,7 +38,7 @@ function getTransporter() {
 const FROM = process.env.SMTP_FROM || '"Bridge" <noreply@bridge.local>';
 const BASE = process.env.INSTANCE_URL || 'http://localhost:3001';
 
-async function sendVerificationEmail(email, token, username) {
+async function sendVerificationEmail(email: string, token: string, username: string): Promise<void> {
   const url = `${BASE}/api/email/verify?token=${token}`;
   await getTransporter().sendMail({
     from:    FROM,
@@ -47,10 +46,10 @@ async function sendVerificationEmail(email, token, username) {
     subject: 'Bridge — E-posta Adresinizi Doğrulayın',
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;">
-        <h2 style="color:#5865f2;">🌉 Bridge</h2>
+        <h2 style="color:#2d9cdb;">🌉 Bridge</h2>
         <p>Merhaba <strong>${username}</strong>,</p>
         <p>E-posta adresinizi doğrulamak için aşağıdaki butona tıklayın:</p>
-        <a href="${url}" style="display:inline-block;background:#5865f2;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0;">
+        <a href="${url}" style="display:inline-block;background:#2d9cdb;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0;">
           ✅ E-postamı Doğrula
         </a>
         <p style="color:#666;font-size:13px;">Link 24 saat geçerlidir. Tıklamazsanız hesabınız çalışmaya devam eder ancak bazı özellikler kısıtlanabilir.</p>
@@ -60,7 +59,7 @@ async function sendVerificationEmail(email, token, username) {
   });
 }
 
-async function sendPasswordResetEmail(email, token, username) {
+async function sendPasswordResetEmail(email: string, token: string, username: string): Promise<void> {
   const url = `${BASE}/reset-password?token=${token}`;
   await getTransporter().sendMail({
     from:    FROM,
@@ -68,7 +67,7 @@ async function sendPasswordResetEmail(email, token, username) {
     subject: 'Bridge — Şifre Sıfırlama',
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;">
-        <h2 style="color:#5865f2;">🌉 Bridge</h2>
+        <h2 style="color:#2d9cdb;">🌉 Bridge</h2>
         <p>Merhaba <strong>${username}</strong>,</p>
         <p>Şifrenizi sıfırlamak için aşağıdaki butona tıklayın:</p>
         <a href="${url}" style="display:inline-block;background:#e8432d;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0;">
@@ -79,14 +78,20 @@ async function sendPasswordResetEmail(email, token, username) {
   });
 }
 
-async function sendSuspiciousLoginAlert({ to, username, ip, userAgent, time }) {
+async function sendSuspiciousLoginAlert({ to, username, ip, userAgent, time }: {
+  to: string;
+  username: string;
+  ip: string;
+  userAgent: string;
+  time: string;
+}): Promise<void> {
   await getTransporter().sendMail({
     from:    FROM,
     to,
     subject: 'Bridge — Yeni Cihazdan Giriş Yapıldı',
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;">
-        <h2 style="color:#5865f2;">🌉 Bridge — Güvenlik Uyarısı</h2>
+        <h2 style="color:#2d9cdb;">🌉 Bridge — Güvenlik Uyarısı</h2>
         <p>Merhaba <strong>${username}</strong>,</p>
         <p>Hesabınıza <strong>yeni bir cihaz veya konumdan</strong> giriş yapıldı:</p>
         <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;">
@@ -103,5 +108,4 @@ async function sendSuspiciousLoginAlert({ to, username, ip, userAgent, time }) {
   });
 }
 
-module.exports = { sendVerificationEmail, sendPasswordResetEmail, sendSuspiciousLoginAlert };
-export {};
+export { sendVerificationEmail, sendPasswordResetEmail, sendSuspiciousLoginAlert };

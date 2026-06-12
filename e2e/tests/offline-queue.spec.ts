@@ -38,7 +38,7 @@ test.beforeAll(async ({ request }) => {
 test.describe('Mesaj Kalıcılığı (API)', () => {
 
   test('mesaj gönderilince veritabanına kaydedilmeli', async ({ request }) => {
-    if (!_sharedChannel) test.skip();
+    test.skip(!_sharedChannel, 'Test fixture hazır değil'  );
     const chId = _sharedChannel._id || _sharedChannel.id;
     const content = `persistence-test-${Date.now()}`;
 
@@ -60,7 +60,7 @@ test.describe('Mesaj Kalıcılığı (API)', () => {
   });
 
   test('mesaj silindikten sonra listede gözükmemeli', async ({ request }) => {
-    if (!_sharedChannel) test.skip();
+    test.skip(!_sharedChannel, 'Test fixture hazır değil'  );
     const chId = _sharedChannel._id || _sharedChannel.id;
     const content = `delete-test-${Date.now()}`;
 
@@ -71,7 +71,7 @@ test.describe('Mesaj Kalıcılığı (API)', () => {
     expect(sendRes.ok()).toBe(true);
     const sent = await sendRes.json();
     const msgId = sent._id || sent.id || sent.message?._id;
-    if (!msgId) test.skip();
+    test.skip(!msgId, 'Mesaj fixture gerekli'  );
 
     // Sil
     const delRes = await request.delete(`${BASE_URL}/api/messages/${msgId}`, {
@@ -104,7 +104,7 @@ test.describe('Offline Queue UI', () => {
     // _flushPendingQueue global fonksiyonu var mı?
     const hasFlush = await page.evaluate(() => typeof window._flushPendingQueue === 'function');
     // Yoksa skip — modul henüz yüklenmiyor olabilir
-    if (!hasFlush) test.skip();
+    test.skip(!hasFlush, 'Test fixture hazır değil'  );
     expect(hasFlush).toBe(true);
   });
 
@@ -114,7 +114,7 @@ test.describe('Offline Queue UI', () => {
     await page.waitForTimeout(1500);
 
     const hasEnqueue = await page.evaluate(() => typeof window._enqueueOfflineMessage === 'function');
-    if (!hasEnqueue) test.skip();
+    test.skip(!hasEnqueue, 'Test fixture hazır değil'  );
 
     // Sahte kanal context'i oluştur
     await page.evaluate(() => {
@@ -148,7 +148,7 @@ test.describe('Service Worker Outbox', () => {
 
   test('sw.js outbox kelimesini içermeli', async ({ request }) => {
     const res = await request.get(`${BASE_URL}/sw.js`);
-    if (!res.ok()) test.skip();
+    test.skip(!res.ok(), 'Test fixture hazır değil'  );
     const body = await res.text();
     expect(body).toContain('outbox');
   });
@@ -170,7 +170,7 @@ test.describe('Service Worker Outbox', () => {
 test.describe('Reconnect Mesaj Sync', () => {
 
   test('kanal yükleme endpoint limit parametresi kabul etmeli', async ({ request }) => {
-    if (!_sharedChannel) test.skip();
+    test.skip(!_sharedChannel, 'Test fixture hazır değil'  );
     const chId = _sharedChannel._id || _sharedChannel.id;
 
     const res = await request.get(`${BASE_URL}/api/channels/${chId}/messages?limit=10`, {
@@ -183,7 +183,7 @@ test.describe('Reconnect Mesaj Sync', () => {
   });
 
   test('before cursor parametresi çalışmalı (pagination)', async ({ request }) => {
-    if (!_sharedChannel) test.skip();
+    test.skip(!_sharedChannel, 'Test fixture hazır değil'  );
     const chId = _sharedChannel._id || _sharedChannel.id;
 
     // Önce mesajları al
@@ -193,11 +193,11 @@ test.describe('Reconnect Mesaj Sync', () => {
     expect(firstRes.ok()).toBe(true);
     const firstData = await firstRes.json();
     const firstMessages = Array.isArray(firstData) ? firstData : firstData.messages || [];
-    if (firstMessages.length === 0) test.skip();
+    test.skip(firstMessages.length === 0, 'Mesaj listesi boş — offline queue testi için mesaj gerekli');
 
     const oldest = firstMessages[0];
     const beforeTs = oldest.createdAt || oldest.timestamp;
-    if (!beforeTs) test.skip();
+    test.skip(!beforeTs, 'Test fixture hazır değil'  );
 
     // Önceki mesajları al
     const prevRes = await request.get(

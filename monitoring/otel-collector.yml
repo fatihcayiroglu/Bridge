@@ -1,0 +1,133 @@
+# monitoring/otel-collector.yml
+# Sprint 110 — OpenTelemetry Collector yapılandırması
+#
+# Bridge → OTel Collector → [Jaeger (trace) | Prometheus (metric) | OTLP remote]
+#
+# Server tarafı env:
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318   (OTLP/HTTP, default)
+#   OTEL_SERVICE_NAME=bridge-server                      (varsayılan)
+#   OTEL_TRACES_SAMPLER=parentbased_traceidratio
+#   OTEL_TRACES_SAMPLER_ARG=0.1                          (prod: %10 örnekleme)
+#
+# Başlatma:
+#   docker compose -f monitoring/docker-compose.yml up otel-collector
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - "http://*"
+            - "https://*"
+
+  # Prometheus scrape — mevcut /metrics endpoint'ini de topla
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: bridge-server
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["bridge-server:9090"]
+          metrics_path: /metrics
+
+processors:
+  # Bellek sınırı — collector OOM'a girmesin
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  # Batch — ağ trafiğini azalt
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+  # PII filtresi — kullanıcı ID'leri, email, IP'yi span attribute'larından temizle
+  attributes/pii_filter:
+    actions:
+      - key: user.email
+        action: delete
+      - key: enduser.id
+        action: hash
+      - key: net.peer.ip
+        action: delete
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+
+  # Kaynak tespiti
+  resourcedetection:
+    detectors: [env, system, docker]
+    override: false
+
+exporters:
+  # Jaeger (traces)
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Prometheus remote write (metrics)
+  prometheusremotewrite:
+    endpoint: "${PROMETHEUS_REMOTE_WRITE_URL:-http://prometheus:9090/api/v1/write}"
+    tls:
+      insecure: true
+
+  # OTLP remote (opsiyonel — Grafana Cloud, Honeycomb vb.)
+  otlp/remote:
+    endpoint: "${OTEL_REMOTE_ENDPOINT:-}"
+    headers:
+      "x-otlp-api-key": "${OTEL_REMOTE_API_KEY:-}"
+    tls:
+      insecure: false
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+
+  # Debug (geliştirme)
+  debug:
+    verbosity: basic
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [memory_limiter, resourcedetection, attributes/pii_filter, batch]
+      exporters:  [otlp/jaeger, debug]
+
+    metrics:
+      receivers:  [otlp, prometheus]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters:  [prometheusremotewrite, debug]
+
+    # Remote pipeline — sadece OTEL_REMOTE_ENDPOINT tanımlıysa aktif
+    # (docker-compose'da profiles ile koşullu aktif edilir)
+    traces/remote:
+      receivers:  [otlp]
+      processors: [memory_limiter, attributes/pii_filter, batch]
+      exporters:  [otlp/remote]
+
+  telemetry:
+    logs:
+      level: warn
+    metrics:
+      address: 0.0.0.0:8888

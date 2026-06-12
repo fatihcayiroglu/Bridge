@@ -1,0 +1,26 @@
+{
+  "_comment": "Sprint 27 — Consolidated subset typecheck (replaces bridge4/bridge15/bridge18 transition configs). Base tsconfig.json already has strict:true; this file is only used by CI to run a focused check on the server layer excluding tests.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false
+  },
+  "include": [
+    "index.ts",
+    "app/**/*.ts",
+    "middleware/**/*.ts",
+    "routes/**/*.ts",
+    "lib/**/*.ts",
+    "db/**/*.ts",
+    "jobs/**/*.ts",
+    "socket/**/*.ts",
+    "types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.test.js",
+    "tests/**/*"
+  ]
+}
