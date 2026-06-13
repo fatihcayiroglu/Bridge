@@ -33,15 +33,15 @@ jobs:
             electron/package-lock.json
             e2e/package-lock.json
       - name: Install root dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Audit root/workspaces
         run: npm audit --audit-level=high
       - name: Install and audit server
-        run: cd server && npm ci --ignore-scripts && npm audit --audit-level=high
+        run: cd server && npm ci --ignore-scripts --no-audit --no-fund && npm audit --audit-level=high
       - name: Install and audit Electron
-        run: cd electron && npm ci --ignore-scripts && npm audit --audit-level=high
+        run: cd electron && npm ci --ignore-scripts --no-audit --no-fund && npm audit --audit-level=high
       - name: Install and audit E2E harness
-        run: cd e2e && npm ci --ignore-scripts && npm audit --audit-level=high
+        run: cd e2e && npm ci --ignore-scripts --no-audit --no-fund && npm audit --audit-level=high
 
   typecheck-build:
     name: Typecheck & build
@@ -65,10 +65,10 @@ jobs:
             e2e/package-lock.json
       - name: Install dependencies
         run: |
-          npm ci
-          cd server && npm ci
-          cd ../electron && npm ci
-          cd ../e2e && npm ci
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund
+          cd ../electron && npm ci --no-audit --no-fund
+          cd ../e2e && npm ci --no-audit --no-fund
       - name: TypeScript all packages
         run: npm run typecheck
       - name: Strict client gates
@@ -145,9 +145,9 @@ jobs:
             electron/package-lock.json
       - name: Install dependencies
         run: |
-          npm ci
-          cd server && npm ci
-          cd ../electron && npm ci
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund
+          cd ../electron && npm ci --no-audit --no-fund
       - name: Run server tests
         run: cd server && npm test -- --runInBand --forceExit
       - name: Run Electron tests
@@ -227,9 +227,9 @@ jobs:
             e2e/package-lock.json
       - name: Install dependencies
         run: |
-          npm ci
-          cd server && npm ci
-          cd ../e2e && npm ci
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund
+          cd ../e2e && npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
       - name: Build server and client
         run: |
