@@ -139,7 +139,7 @@
     "supertest": "^7.0.0",
     "svelte": "^5.56.3",
     "svelte-check": "^4.6.0",
-    "typescript": "^5.9.3",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.8",
     "vite": "^8.0.16",
     "@capacitor/camera": "^8.2.0",
