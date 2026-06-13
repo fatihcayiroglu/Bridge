@@ -1,0 +1,49 @@
+name: Dependabot Auto Merge
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  dependabot-automerge:
+    name: Enable safe Dependabot auto-merge
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'fatihcayiroglu/Bridge'
+
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Block risky dependency graph changes
+        if: |
+          contains(steps.metadata.outputs.dependency-names, 'jsdom') ||
+          contains(steps.metadata.outputs.dependency-names, 'jest-environment-jsdom') ||
+          contains(steps.metadata.outputs.dependency-names, 'mediasoup')
+        run: |
+          echo "Risky dependency detected: ${{ steps.metadata.outputs.dependency-names }}"
+          echo "Not enabling auto-merge for this PR."
+          exit 1
+
+      - name: Enable auto-merge for safe Dependabot updates
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Leave major version updates for manual review
+        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
+        run: |
+          echo "Major version update detected."
+          echo "Auto-merge intentionally skipped."

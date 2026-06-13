@@ -1,0 +1,101 @@
+version: 2
+
+updates:
+  - package-ecosystem: "npm"
+    directories:
+      - "/"
+      - "/server"
+      - "/mobile"
+      - "/bot-sdk"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 6
+    versioning-strategy: increase-if-necessary
+    cooldown:
+      semver-major-days: 21
+      semver-minor-days: 7
+      semver-patch-days: 3
+    labels:
+      - "dependencies"
+      - "npm"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    ignore:
+      - dependency-name: "jsdom"
+      - dependency-name: "jest-environment-jsdom"
+      - dependency-name: "mediasoup"
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:30"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      github-actions-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "10:00"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 7
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "docker"
+      include: "scope"
+
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "10:15"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 7
+    labels:
+      - "dependencies"
+      - "docker-compose"
+    commit-message:
+      prefix: "docker"
+      include: "scope"
