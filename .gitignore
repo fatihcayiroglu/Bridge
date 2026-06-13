@@ -46,3 +46,7 @@ server/tmp/
 # Dependency folders
 node_modules/
 **/node_modules/
+
+# Dependency folders
+node_modules/
+**/node_modules/
