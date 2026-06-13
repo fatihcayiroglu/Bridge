@@ -24,7 +24,7 @@ const COLUMN_MIGRATIONS: string[] = [
 
   // FTS index'leri (unaccent ile)
   `CREATE INDEX IF NOT EXISTS idx_messages_fts ON messages USING GIN(
-    to_tsvector('simple', unaccent(coalesce(content,'') || ' ' || coalesce("displayName",'')))
+    to_tsvector('simple', coalesce(content,'') || ' ' || coalesce("displayName",''))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_messages_trgm ON messages USING GIN(content gin_trgm_ops)`,
 

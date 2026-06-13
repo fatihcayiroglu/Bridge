@@ -33,7 +33,7 @@ export async function setupFTS(pool: Pool): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_messages_fts_combined
       ON messages
       USING GIN (
-        to_tsvector('simple', unaccent(coalesce(content, '') || ' ' || coalesce("displayName", '')))
+        to_tsvector('simple', coalesce(content, '') || ' ' || coalesce("displayName", ''))
       )
   `);
 
@@ -42,7 +42,7 @@ export async function setupFTS(pool: Pool): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_dm_messages_fts
       ON dm_messages
       USING GIN (
-        to_tsvector('simple', unaccent(coalesce(content, '')))
+        to_tsvector('simple', coalesce(content, ''))
       )
   `);
 }
