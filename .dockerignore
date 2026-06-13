@@ -1,0 +1,32 @@
+# Keep Docker build context deterministic and small
+.git
+.gitignore
+.github
+node_modules
+**/node_modules
+
+# Build/test outputs
+dist
+**/dist
+build
+coverage
+.nyc_output
+*.tsbuildinfo
+*.log
+
+# Local/runtime data
+.env
+.env.*
+!.env.example
+!.env.docker
+server/uploads
+uploads
+tmp
+temp
+.quality-logs
+
+# OS/editor metadata
+.DS_Store
+__MACOSX
+.vscode
+.idea

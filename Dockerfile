@@ -4,19 +4,19 @@
 #
 # GÜVENLİK NOTLARI:
 #   • Build sırasında hiçbir secret/env inject edilmez — runtime'da .env'den okunur.
-#   • node:22-alpine minimal attack surface — bash, curl yok.
+#   • node:22-bookworm-slim tabanı — native Node modülleri için glibc uyumluluğu sağlar.
 #   • Non-root kullanıcı (bridge:bridge) — container breakout riski minimize.
 #   • Runtime image'da devDependencies yok — npm audit surface küçültülmüş.
 #   • /app/uploads dışındaki dosya sistemi read-only çalışabilir (docker compose'da
 #     read_only: true + tmpfs eklenebilir, bkz. DEPLOYMENT_GUIDE.md).
-#   • HEALTHCHECK wget ile (curl yok) — Alpine default araçlarıyla.
+#   • HEALTHCHECK wget ile yapılır; curl runtime image içine alınmaz.
 # ════════════════════════════════════════════════════════════════
 
 # ── Stage 1: Bağımlılık kurulumu + Build ────────────────────────
 FROM node:22-bookworm-slim AS build
 
 # Güvenlik: build sırasında gereksiz araçları kaldır
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*   # mediasoup native build için
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip make g++ ca-certificates && rm -rf /var/lib/apt/lists/*   # mediasoup native build için
 
 WORKDIR /app
 
@@ -41,7 +41,7 @@ RUN npm run build
 # ── Stage 2: Sadece production bağımlılıkları ──────────────────
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*   # mediasoup native modülleri için
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip make g++ ca-certificates && rm -rf /var/lib/apt/lists/*   # mediasoup native modülleri için
 COPY scripts ./scripts
 COPY server/package*.json ./server/
 RUN cd server && npm ci --omit=dev --ignore-scripts=false
@@ -64,6 +64,9 @@ COPY --from=build /app/server/package.json ./server/package.json
 
 # Derlenmiş client kodu
 COPY --from=build /app/client/dist         ./client/dist
+
+# Built-in plugin manifestleri ve derlenmiş index.js dosyaları
+COPY --from=build /app/plugins             ./server/plugins
 
 # Production bağımlılıkları
 COPY --from=deps  /app/server/node_modules ./server/node_modules

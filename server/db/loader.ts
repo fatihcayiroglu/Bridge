@@ -120,9 +120,14 @@ if (process.env.NODE_ENV === 'test') {
     { event: 'db.mode.postgres' },
     `[DB] PostgreSQL -> ${process.env.DATABASE_URL.replace(/:[^@]+@/, ':***@')}`
   );
-  const pg = tryRequire<DbInstance>('./postgres');
-  if (!pg) {
-    logger.fatal({ event: 'db.postgres.load_failed' }, '[DB] postgres modülü yüklenemedi.');
+  type PgModule = DbInstance | { default?: DbInstance; db?: DbInstance };
+  const pgModule = tryRequire<PgModule>('./postgres');
+  const pg = (pgModule as { default?: DbInstance; db?: DbInstance } | null)?.default
+    ?? (pgModule as { default?: DbInstance; db?: DbInstance } | null)?.db
+    ?? (pgModule as DbInstance | null);
+
+  if (!pg || typeof pg._initSchema !== 'function' || !pg._pool) {
+    logger.fatal({ event: 'db.postgres.load_failed' }, '[DB] postgres modülü yüklenemedi veya geçersiz export döndürdü.');
     process.exit(1);
   }
   db = pg;
