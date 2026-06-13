@@ -13,7 +13,7 @@
 # ════════════════════════════════════════════════════════════════
 
 # ── Stage 1: Bağımlılık kurulumu + Build ────────────────────────
-FROM node:22-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 
 # Güvenlik: build sırasında gereksiz araçları kaldır
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip make g++ ca-certificates && rm -rf /var/lib/apt/lists/*   # mediasoup native build için
@@ -39,7 +39,7 @@ RUN cd server && npm run build
 RUN npm run build
 
 # ── Stage 2: Sadece production bağımlılıkları ──────────────────
-FROM node:22-bookworm-slim AS deps
+FROM node:26-bookworm-slim AS deps
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip make g++ ca-certificates && rm -rf /var/lib/apt/lists/*   # mediasoup native modülleri için
 COPY scripts ./scripts
@@ -47,7 +47,7 @@ COPY server/package*.json ./server/
 RUN cd server && npm ci --omit=dev --ignore-scripts=false
 
 # ── Stage 3: Minimal runtime image ─────────────────────────────
-FROM node:22-bookworm-slim AS runtime
+FROM node:26-bookworm-slim AS runtime
 
 # Güvenlik: imajı minimal tut — sadece wget (healthcheck için)
 RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates \
