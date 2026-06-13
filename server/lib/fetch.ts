@@ -13,6 +13,55 @@ import dns from 'dns/promises';
 import net from 'net';
 import { Agent, fetch as undiciFetch } from 'undici';
 
+
+function anyAbortSignal(signals: readonly (AbortSignal | null | undefined)[]): AbortSignal | undefined {
+  const validSignals = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+
+  if (validSignals.length === 0) {
+    return undefined;
+  }
+
+  if (validSignals.length === 1) {
+    return validSignals[0];
+  }
+
+  const nativeAny = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+  if (typeof nativeAny === 'function') {
+    return nativeAny(validSignals);
+  }
+
+  const controller = new AbortController();
+  const listeners = new Map<AbortSignal, () => void>();
+
+  const cleanup = () => {
+    for (const [signal, listener] of listeners) {
+      signal.removeEventListener('abort', listener);
+    }
+    listeners.clear();
+  };
+
+  const abortFrom = (signal: AbortSignal) => {
+    if (!controller.signal.aborted) {
+      controller.abort((signal as unknown as { reason?: unknown }).reason);
+    }
+    cleanup();
+  };
+
+  for (const signal of validSignals) {
+    if (signal.aborted) {
+      abortFrom(signal);
+      break;
+    }
+
+    const listener = () => abortFrom(signal);
+    listeners.set(signal, listener);
+    signal.addEventListener('abort', listener, { once: true });
+  }
+
+  return controller.signal;
+}
+
+
 let PKG_VERSION = '0.0.0';
 (async () => {
   try {
@@ -235,7 +284,7 @@ export async function fetchT(url: string | URL, opts: FetchOptions = {}): Promis
 
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const signal = callerSignal
-    ? AbortSignal.any([callerSignal as AbortSignal, timeoutSignal])
+    ? anyAbortSignal([callerSignal as AbortSignal, timeoutSignal])
     : timeoutSignal;
 
   const headers: Record<string, string> = {
