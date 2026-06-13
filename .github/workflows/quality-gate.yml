@@ -150,7 +150,7 @@ jobs:
           cd server && npm ci --no-audit --no-fund
           cd ../electron && npm ci --no-audit --no-fund
       - name: Run server tests
-        run: cd server && npm test -- --runInBand --forceExit
+        run: cd server && ./scripts/ci-tests.sh
       - name: Run Electron tests
         run: cd electron && npm test -- --runInBand --forceExit
       - name: Run mobile bridge tests
