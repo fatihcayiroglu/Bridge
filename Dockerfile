@@ -22,6 +22,7 @@ WORKDIR /app
 
 # Önce sadece package.json — layer cache'i build adımından ayırmak için
 COPY package*.json ./
+COPY scripts ./scripts
 COPY server/package*.json ./server/
 
 # Root devDeps (esbuild + client build için)
