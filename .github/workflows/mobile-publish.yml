@@ -170,7 +170,7 @@ jobs:
             -exportPath $RUNNER_TEMP/Bridge.ipa
 
       - name: Upload to TestFlight
-        uses: apple-actions/upload-testflight-build@v1
+        uses: apple-actions/upload-testflight-build@v5
         with:
           app-path: $RUNNER_TEMP/Bridge.ipa/Bridge.ipa
           issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
