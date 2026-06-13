@@ -196,7 +196,7 @@ jobs:
       REDIS_URL: redis://localhost:6379
       JWT_SECRET: e2e_jwt_secret_minimum_32_chars_required_here
       REFRESH_SECRET: e2e_refresh_secret_minimum_32_chars_here
-      NODE_ENV: test
+      NODE_ENV: e2e
       PORT: 3001
     services:
       postgres:
