@@ -121,8 +121,8 @@ async function resolveInbox(actorOrInboxUrl: string): Promise<string | null> {
       headers: { Accept: 'application/activity+json' },
       timeoutMs: 8000,
     });
-    const actor = await r.json();
-    return actor.endpoints?.sharedInbox || actor.inbox;
+    const actor = await r.json() as { endpoints?: { sharedInbox?: string }; inbox?: string };
+    return actor.endpoints?.sharedInbox || actor.inbox || null;
   } catch { return null; }
 }
 

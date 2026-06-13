@@ -28,6 +28,18 @@ const AI_ENABLED = PROVIDER !== 'rules';
 // Production'da hangi AI servisi kullanıldığı sızdırılmaz
 const safeProvider = (p: string) => process.env.NODE_ENV === 'production' ? 'ai' : p;
 
+type GroqChatResponse = {
+  choices?: Array<{ message?: { content?: string } }>;
+};
+
+type GeminiResponse = {
+  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+};
+
+type OllamaResponse = {
+  response?: string;
+};
+
 if (process.env.NODE_ENV !== 'production') {
   logger.info({ provider: PROVIDER, event: 'ai.provider.init' }, `AI provider: ${PROVIDER.toUpperCase()}`);
 }
@@ -66,7 +78,7 @@ async function callAI(system: string, user: string, maxTokens = 500): Promise<st
         }),
         timeoutMs: 15_000,
       });
-      if (r.ok) { const d = await r.json(); return d.choices[0].message.content.trim(); }
+      if (r.ok) { const d = await r.json() as GroqChatResponse; return d.choices?.[0]?.message?.content?.trim() || ''; }
       if (r.status !== 429) throw new Error(`Groq ${r.status}`);
       logger.warn({ event: 'ai.groq.rate_limit' }, 'Groq rate limit hit, falling back.');
     }
@@ -84,7 +96,7 @@ async function callAI(system: string, user: string, maxTokens = 500): Promise<st
           timeoutMs: 15_000,
         }
       );
-      if (r.ok) { const d = await r.json(); return d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || ''; }
+      if (r.ok) { const d = await r.json() as GeminiResponse; return d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || ''; }
       if (r.status !== 429) throw new Error(`Gemini ${r.status}`);
       logger.warn({ event: 'ai.gemini.rate_limit' }, 'Gemini rate limit hit, falling back.');
     }
@@ -106,7 +118,7 @@ async function callAI(system: string, user: string, maxTokens = 500): Promise<st
         timeoutMs: 15_000,
       });
       if (!r.ok) throw new Error(`OpenRouter ${r.status}`);
-      const d = await r.json(); return d.choices[0].message.content.trim();
+      const d = await r.json() as GroqChatResponse; return d.choices?.[0]?.message?.content?.trim() || '';
     }
 
     if (OLLAMA_URL) {
@@ -123,7 +135,7 @@ async function callAI(system: string, user: string, maxTokens = 500): Promise<st
         skipSsrfCheck: true, // OLLAMA_URL yönetici tarafından yapılandırılır (internal servis)
       });
       if (!r.ok) throw new Error(`Ollama ${r.status}`);
-      const d = await r.json(); return d.response?.trim() || '';
+      const d = await r.json() as OllamaResponse; return d.response?.trim() || '';
     }
 
     throw new Error('AI_DISABLED');

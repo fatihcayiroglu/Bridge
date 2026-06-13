@@ -381,14 +381,22 @@ router.post('/peers', authMiddleware, limits.federation(), async (req: import("e
   const user = await Users.findById(_u.id);
   if (!user?.isAdmin) return res.status(403).json({ error: 'Admin only' });
 
-  let remoteInfo;
+  type RemoteFederationInfo = {
+    software?: string;
+    url?: string;
+    name?: string;
+    description?: string;
+    publicKey?: { publicKeyPem?: string };
+  };
+
+  let remoteInfo: RemoteFederationInfo;
   try {
     const resp = await fetchT(`${url.replace(/\/$/, '')}/api/federation/info`, {
       timeoutMs: 8000,
       headers: { 'User-Agent': USER_AGENT },
     });
     if (!resp.ok) throw new Error('Remote server returned ' + resp.status);
-    remoteInfo = await resp.json();
+    remoteInfo = await resp.json() as RemoteFederationInfo;
     if (remoteInfo.software !== 'bridge') throw new Error('Not a Bridge instance');
   } catch (_e) { const e = _e as Error;
     return res.status(400).json({ error: `Could not reach remote server: ${e.message}` });

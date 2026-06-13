@@ -173,7 +173,8 @@ async function deliverApActivity(inboxUrl: string, activity: Record<string, unkn
   if (!inboxUrl.endsWith('/inbox')) {
     try {
       const r = await fetchT(inboxUrl, { headers: { 'Accept': 'application/activity+json' }, timeoutMs: 8000 });
-      const actor = await r.json();
+      const actor = await r.json() as { inbox?: string };
+      if (!actor.inbox) return;
       targetInbox = actor.inbox;
     } catch { return; }
   }

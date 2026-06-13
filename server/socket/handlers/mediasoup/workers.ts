@@ -18,14 +18,16 @@ import type { MediasoupModule, MediasoupWorker, WorkerOptions } from './types';
 
 let mediasoup: MediasoupModule | null = null;
 
-(async () => {
-  try {
-    mediasoup = await import('mediasoup') as unknown as MediasoupModule;
-  } catch {
-    logger.warn('[SFU] mediasoup paketi yüklü değil — ses kanalları P2P modda çalışır.');
-    logger.warn('[SFU] Etkinleştirmek için: cd server && npm install mediasoup');
-  }
-})();
+try {
+  // mediasoup intentionally stays outside the default dependency graph.
+  // That keeps npm ci free from deprecated transitive install warnings.
+  // Deployments that need SFU can install mediasoup separately; otherwise P2P fallback is used.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  mediasoup = require('mediasoup') as MediasoupModule;
+} catch {
+  logger.warn('[SFU] mediasoup paketi yüklü değil — ses kanalları P2P modda çalışır.');
+  logger.warn('[SFU] Etkinleştirmek için: cd server && npm install mediasoup');
+}
 
 export const sfuWorkers: MediasoupWorker[] = [];
 let workerIndex = 0;

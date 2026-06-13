@@ -508,7 +508,19 @@ router.get('/profile', authMiddleware, async (req: import("express").Request, re
       timeoutMs: 8000,
     });
     if (!r.ok) throw new Error('Remote returned ' + r.status);
-    const actor = await r.json();
+    const actor = await r.json() as {
+      id?: string;
+      type?: string;
+      preferredUsername?: string;
+      name?: string;
+      summary?: string;
+      url?: string;
+      icon?: unknown;
+      image?: unknown;
+      inbox?: string;
+      followers?: string;
+      following?: string;
+    };
 
     // Takip durumu
     const isFollowing = !!(await Federation.findApOutgoingFollowOne({

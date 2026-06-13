@@ -8,36 +8,40 @@
 //   import { sanitizeMessageContent, sanitizeDisplayName } from '../lib/contentSanitizer';
 //   const cleanContent = sanitizeMessageContent(req.body.content);
 
+import sanitizeHtml from 'sanitize-html';
 import { createLogger } from './logger';
 
 const log = createLogger('contentSanitizer');
 
-// DOMPurify is loaded lazily so Jest does not have to transform jsdom's ESM-only dependencies.
-type Purifier = { sanitize(input: string, config?: Record<string, unknown>): string };
-let domPurifyInstance: Purifier | null = null;
-
 function basicSanitize(input: string): string {
   return input
     .replace(/<\s*script[^>]*>[\s\S]*?<\s*\/\s*script\s*>/gi, '')
-    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/(href|src)\s*=\s*(["'])\s*javascript:[^"']*\2/gi, '$1="#"');
+    .replace(/\son[a-z]+\s*=(\"[^\"]*\"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src)\s*=\s*([\"'])\s*javascript:[^\"']*\2/gi, '$1=\"#\"');
 }
 
-function getDOMPurify(): Purifier | null {
-  if (process.env.NODE_ENV === 'test') return null;
-  if (domPurifyInstance) return domPurifyInstance;
+function sanitizeWithAllowlist(
+  input: string,
+  allowedTags: string[],
+  allowedAttributes: Record<string, string[]>,
+): string {
   try {
-    const req = module.require.bind(module) as NodeRequire;
-    const { JSDOM } = req('jsdom') as typeof import('jsdom');
-    const dompurifyModule = req('dompurify') as unknown as ((window: Window & typeof globalThis) => Purifier) | { default?: (window: Window & typeof globalThis) => Purifier };
-    const createDOMPurify = typeof dompurifyModule === 'function' ? dompurifyModule : dompurifyModule.default;
-    if (!createDOMPurify) return null;
-    const jsdomWindow = new JSDOM('').window;
-    domPurifyInstance = createDOMPurify(jsdomWindow as unknown as Window & typeof globalThis);
-    return domPurifyInstance;
+    return sanitizeHtml(input, {
+      allowedTags,
+      allowedAttributes,
+      allowedSchemes: ['http', 'https', 'mailto', 'ftp', 'irc', 'ircs', 'matrix', 'xmpp'],
+      allowProtocolRelative: false,
+      disallowedTagsMode: 'discard',
+      enforceHtmlBoundary: true,
+      transformTags: {
+        a: sanitizeHtml.simpleTransform('a', {
+          rel: 'noopener noreferrer',
+        }, true),
+      },
+    });
   } catch (err) {
-    log.warn({ err, event: 'content_sanitizer_fallback' }, 'DOMPurify unavailable; using basic sanitizer fallback.');
-    return null;
+    log.warn({ err, event: 'content_sanitizer_fallback' }, 'sanitize-html unavailable; using basic sanitizer fallback.');
+    return basicSanitize(input);
   }
 }
 
@@ -101,22 +105,13 @@ export function sanitizeMessageContent(content: unknown): string {
     return content.slice(0, MAX_LEN);
   }
 
-  const purifier = getDOMPurify();
-  const clean = purifier ? purifier.sanitize(content, {
-    ALLOWED_TAGS:  MESSAGE_ALLOWED_TAGS,
-    ALLOWED_ATTR:  MESSAGE_ALLOWED_ATTR,
-    ALLOWED_URI_REGEXP,
-    // target="_blank" güvenli hale getir
-    ADD_ATTR:      ['target'],
-    // data: URI yasak
-    ALLOW_DATA_ATTR: false,
-    // SVG/MathML yasak (XSS vektörü)
-    USE_PROFILES:  { html: true },
-    // rel="noopener noreferrer" ekle
-    FORCE_BODY:    false,
-    RETURN_DOM:    false,
-    RETURN_DOM_FRAGMENT: false,
-  }) : basicSanitize(content);
+  const clean = sanitizeWithAllowlist(content, MESSAGE_ALLOWED_TAGS, {
+    '*': ['class', 'id'],
+    a: ['href', 'title', 'rel', 'target'],
+    img: ['src', 'alt', 'width', 'height', 'loading'],
+    td: ['colspan', 'rowspan'],
+    th: ['colspan', 'rowspan', 'scope'],
+  });
 
   // target="_blank" olan linklere otomatik rel="noopener noreferrer" ekle.
   // Not: DOMPurify zaten rel ekleyebilir; bu yalnızca ek güvence katmanıdır.
@@ -137,8 +132,7 @@ export function sanitizeMessageContent(content: unknown): string {
 export function sanitizeDisplayName(name: unknown): string {
   if (typeof name !== 'string') return '';
   // Tüm HTML taglarını sil, düz metin döndür
-  const purifier = getDOMPurify();
-  const stripped = purifier ? purifier.sanitize(name, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] }) : basicSanitize(name).replace(/<[^>]*>/g, '');
+  const stripped = sanitizeHtml(name, { allowedTags: [], allowedAttributes: {} });
   return stripped.trim();
 }
 
@@ -148,8 +142,7 @@ export function sanitizeDisplayName(name: unknown): string {
  */
 export function sanitizeTitle(title: unknown): string {
   if (typeof title !== 'string') return '';
-  const purifier = getDOMPurify();
-  const clean = purifier ? purifier.sanitize(title, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] }) : basicSanitize(title).replace(/<[^>]*>/g, '');
+  const clean = sanitizeHtml(title, { allowedTags: [], allowedAttributes: {} });
   return clean.replace(/[\r\n\t]/g, ' ').trim().slice(0, 100);
 }
 
@@ -162,14 +155,10 @@ export function sanitizeActivityPubContent(content: unknown): string {
 
   const AP_ALLOWED_TAGS = ['p', 'br', 'a', 'strong', 'em', 'code', 'pre', 'ul', 'ol', 'li'];
 
-  const purifier = getDOMPurify();
-  return purifier ? purifier.sanitize(content, {
-    ALLOWED_TAGS:  AP_ALLOWED_TAGS,
-    ALLOWED_ATTR:  ['href', 'rel', 'class'],
-    ALLOWED_URI_REGEXP,
-    ALLOW_DATA_ATTR: false,
-    USE_PROFILES:  { html: true },
-  }) : basicSanitize(content);
+  return sanitizeWithAllowlist(content, AP_ALLOWED_TAGS, {
+    a: ['href', 'rel', 'class'],
+    '*': ['class'],
+  });
 }
 
 /**

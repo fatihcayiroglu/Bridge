@@ -92,7 +92,7 @@ async function transcribeAudio(filePath: string): Promise<string | null> {
     const r = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, ...form.getHeaders() },
-      body: form as unknown as BodyInit,
+      body: form as any,
       signal: AbortSignal.timeout(30_000),
     });
     if (!r.ok) {
