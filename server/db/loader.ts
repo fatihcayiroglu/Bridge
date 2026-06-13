@@ -121,7 +121,18 @@ if (process.env.NODE_ENV === 'test') {
     `[DB] PostgreSQL -> ${process.env.DATABASE_URL.replace(/:[^@]+@/, ':***@')}`
   );
   type PgModule = DbInstance | { default?: DbInstance; db?: DbInstance };
-  const pgModule = tryRequire<PgModule>('./postgres');
+  let pgModule: PgModule | null = null;
+
+  try {
+    // Bu require burada kalmalı: './postgres' yolu dist/db/loader.js konumuna göre çözülür.
+    // tryRequire() lib klasöründen çalıştığı için relative path'i dist/lib/postgres olarak arar.
+    pgModule = require('./postgres') as PgModule;
+  } catch (err) {
+    if (process.env.NODE_ENV === 'e2e' || process.env.DEBUG_OPTIONAL_REQUIRE === '1') {
+      console.error('[db.loader] failed to load ./postgres', err);
+    }
+  }
+
   const pg = (pgModule as { default?: DbInstance; db?: DbInstance } | null)?.default
     ?? (pgModule as { default?: DbInstance; db?: DbInstance } | null)?.db
     ?? (pgModule as DbInstance | null);
