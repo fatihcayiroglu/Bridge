@@ -55,7 +55,7 @@ jobs:
       # macOS code signing
       - name: Import macOS certificate
         if: matrix.os == 'macos-14'
-        uses: apple-actions/import-codesign-certs@v3
+        uses: apple-actions/import-codesign-certs@v7
         with:
           p12-file-base64: ${{ secrets.MAC_CERTS_P12_BASE64 }}
           p12-password: ${{ secrets.MAC_CERTS_P12_PASSWORD }}
