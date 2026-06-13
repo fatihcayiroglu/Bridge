@@ -16,7 +16,7 @@
 FROM node:22-alpine AS build
 
 # Güvenlik: build sırasında gereksiz araçları kaldır
-RUN apk add --no-cache python3 py3-pip make g++   # mediasoup native build için
+RUN apk add --no-cache python3 py3-pip make g++ linux-headers   # mediasoup native build için
 
 WORKDIR /app
 
@@ -41,7 +41,7 @@ RUN npm run build
 # ── Stage 2: Sadece production bağımlılıkları ──────────────────
 FROM node:22-alpine AS deps
 WORKDIR /app
-RUN apk add --no-cache python3 py3-pip make g++   # mediasoup native modülleri için
+RUN apk add --no-cache python3 py3-pip make g++ linux-headers   # mediasoup native modülleri için
 COPY server/package*.json ./server/
 RUN cd server && npm ci --omit=dev --ignore-scripts=false
 
