@@ -19,7 +19,7 @@
 /** @type {import('jest').Config} */
 module.exports = {
   // jsdom — capacitor-bridge.js DOM API'lerini kullanır (window.localStorage vb.)
-  testEnvironment: 'jsdom',
+  testEnvironment: 'node',
 
   testMatch: ['<rootDir>/mobile/tests/**/*.test.{js,ts}'],
 
@@ -55,7 +55,7 @@ module.exports = {
     }],
   },
 
-  setupFilesAfterEnv: [],
+  setupFilesAfterEnv: ['<rootDir>/mobile/tests/setup-dom-shim.js'],
   clearMocks: true,
   restoreMocks: false,
 
