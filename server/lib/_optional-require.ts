@@ -14,9 +14,11 @@
 export function tryRequire<T>(moduleId: string): T | null {
   try {
     // require() burada kasıtlı: opsiyonel runtime bağımlılığı
-     
     return require(moduleId) as T;
-  } catch {
+  } catch (err) {
+    if (process.env.NODE_ENV === 'e2e' || process.env.DEBUG_OPTIONAL_REQUIRE === '1') {
+      console.error(`[tryRequire] failed to load ${moduleId}`, err);
+    }
     return null;
   }
 }

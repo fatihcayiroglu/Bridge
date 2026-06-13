@@ -13,10 +13,10 @@
 # ════════════════════════════════════════════════════════════════
 
 # ── Stage 1: Bağımlılık kurulumu + Build ────────────────────────
-FROM node:22-alpine AS build
+FROM node:22-bookworm-slim AS build
 
 # Güvenlik: build sırasında gereksiz araçları kaldır
-RUN apk add --no-cache python3 py3-pip make g++ linux-headers   # mediasoup native build için
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*   # mediasoup native build için
 
 WORKDIR /app
 
@@ -39,23 +39,24 @@ RUN cd server && npm run build
 RUN npm run build
 
 # ── Stage 2: Sadece production bağımlılıkları ──────────────────
-FROM node:22-alpine AS deps
+FROM node:22-bookworm-slim AS deps
 WORKDIR /app
-RUN apk add --no-cache python3 py3-pip make g++ linux-headers   # mediasoup native modülleri için
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*   # mediasoup native modülleri için
+COPY scripts ./scripts
 COPY server/package*.json ./server/
 RUN cd server && npm ci --omit=dev --ignore-scripts=false
 
 # ── Stage 3: Minimal runtime image ─────────────────────────────
-FROM node:22-alpine AS runtime
+FROM node:22-bookworm-slim AS runtime
 
 # Güvenlik: imajı minimal tut — sadece wget (healthcheck için)
-RUN apk add --no-cache wget \
- && rm -rf /var/cache/apk/*
+RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Non-root kullanıcı oluştur
-RUN addgroup -S bridge && adduser -S bridge -G bridge
+RUN groupadd --system bridge && useradd --system --gid bridge --home-dir /app --shell /usr/sbin/nologin bridge
 
 # Derlenmiş server kodu
 COPY --from=build /app/server/dist         ./server/dist
