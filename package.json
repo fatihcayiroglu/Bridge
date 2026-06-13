@@ -128,7 +128,7 @@
     "@typescript-eslint/eslint-plugin": "^8.61.0",
     "@typescript-eslint/parser": "^8.61.0",
     "@vitest/coverage-v8": "^4.1.8",
-    "chokidar": "^3.6.0",
+    "chokidar": "^5.0.0",
     "dompurify": "^3.4.9",
     "esbuild": "^0.28.1",
     "esbuild-svelte": "^0.8.1",
