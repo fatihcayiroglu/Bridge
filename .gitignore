@@ -50,3 +50,6 @@ node_modules/
 # Dependency folders
 node_modules/
 **/node_modules/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
