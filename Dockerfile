@@ -13,7 +13,7 @@
 # ════════════════════════════════════════════════════════════════
 
 # ── Stage 1: Bağımlılık kurulumu + Build ────────────────────────
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 
 # Güvenlik: build sırasında gereksiz araçları kaldır
 RUN apk add --no-cache python3 make g++   # mediasoup native build için
@@ -38,14 +38,14 @@ RUN cd server && npm run build
 RUN npm run build
 
 # ── Stage 2: Sadece production bağımlılıkları ──────────────────
-FROM node:22-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 RUN apk add --no-cache python3 make g++   # mediasoup native modülleri için
 COPY server/package*.json ./server/
 RUN cd server && npm ci --omit=dev --ignore-scripts=false
 
 # ── Stage 3: Minimal runtime image ─────────────────────────────
-FROM node:22-alpine AS runtime
+FROM node:26-alpine AS runtime
 
 # Güvenlik: imajı minimal tut — sadece wget (healthcheck için)
 RUN apk add --no-cache wget \
