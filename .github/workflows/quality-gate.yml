@@ -33,15 +33,15 @@ jobs:
             electron/package-lock.json
             e2e/package-lock.json
       - name: Install root dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Audit root/workspaces
         run: npm audit --audit-level=high
       - name: Install and audit server
-        run: cd server && npm ci && npm audit --audit-level=high
+        run: cd server && npm ci --ignore-scripts && npm audit --audit-level=high
       - name: Install and audit Electron
-        run: cd electron && npm ci && npm audit --audit-level=high
+        run: cd electron && npm ci --ignore-scripts && npm audit --audit-level=high
       - name: Install and audit E2E harness
-        run: cd e2e && npm ci && npm audit --audit-level=high
+        run: cd e2e && npm ci --ignore-scripts && npm audit --audit-level=high
 
   typecheck-build:
     name: Typecheck & build
