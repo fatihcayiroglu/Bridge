@@ -1,5 +1,8 @@
 {
   "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "ignoreDeprecations": "6.0"
+  },
   "include": [
     "main.ts",
     "preload.ts",
