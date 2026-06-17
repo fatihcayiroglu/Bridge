@@ -48,7 +48,7 @@
     "socket.io": "^4.8.3",
     "swagger-ui-express": "^5.0.1",
     "undici": "^8.4.1",
-    "uuid": "^11.1.1",
+    "uuid": "^14.0.0",
     "web-push": "^3.6.7"
   },
   "optionalDependencies": {
@@ -60,7 +60,6 @@
     "@babel/core": "^7.29.7",
     "@babel/preset-env": "^7.29.7",
     "@eslint/js": "^10.0.1",
-    "@types/bcryptjs": "^2.4.6",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/dompurify": "^3.0.5",
@@ -339,7 +338,8 @@
       "^@socket/(.*)$": "<rootDir>/socket/$1",
       "^@app/(.*)$": "<rootDir>/app/$1",
       "^(\\.{1,2}/.*)\\.js$": "$1",
-      "^mediasoup$": "<rootDir>/tests/__mocks__/mediasoup.ts"
+      "^mediasoup$": "<rootDir>/tests/__mocks__/mediasoup.ts",
+      "^uuid$": "<rootDir>/tests/shims/uuid.cjs"
     },
     "coverageReporters": [
       "text",
