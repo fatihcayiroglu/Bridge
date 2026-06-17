@@ -1,6 +1,7 @@
 {
   "_comment": "Sprint 26: root plugins/ için bağımsız tsconfig. loader.ts, registry.ts, allowlist.ts artık tsc ile denetleniyor.",
   "compilerOptions": {
+    "ignoreDeprecations": "6.0",
     "target": "ES2022",
     "module": "CommonJS",
     "moduleResolution": "node",
