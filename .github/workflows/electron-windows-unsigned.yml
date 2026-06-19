@@ -1,0 +1,72 @@
+name: Electron Windows Unsigned
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build'
+        required: true
+        default: 'v1.122.0'
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  windows-unsigned:
+    name: Windows unsigned installer
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install root deps
+        run: npm ci
+
+      - name: Install server deps
+        run: cd server && npm ci
+
+      - name: Build server
+        run: cd server && npm run build
+
+      - name: Install Electron deps
+        run: cd electron && npm ci
+
+      - name: Build Windows unsigned
+        shell: bash
+        run: |
+          cd electron
+          npm run compile
+          npx electron-builder --win nsis:x64 nsis:arm64 --publish never \
+            --config.win.signAndEditExecutable=false \
+            --config.win.verifyUpdateCodeSignature=false \
+            --config.publish.provider=github \
+            --config.publish.owner=fatihcayiroglu \
+            --config.publish.repo=Bridge
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to GitHub Release
+        shell: bash
+        run: |
+          gh release upload "${{ inputs.tag }}" electron/release/* \
+            --repo fatihcayiroglu/Bridge \
+            --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show artifacts
+        shell: bash
+        run: |
+          find electron/release -maxdepth 1 -type f -print
