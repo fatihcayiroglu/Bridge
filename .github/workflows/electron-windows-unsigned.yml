@@ -42,17 +42,32 @@ jobs:
       - name: Install Electron deps
         run: cd electron && npm ci
 
+      - name: Disable Windows signing for unsigned build
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const file = 'electron/package.json';
+          const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
+          pkg.build = pkg.build || {};
+          pkg.build.win = pkg.build.win || {};
+          delete pkg.build.win.signtoolOptions;
+          pkg.build.win.signExecutable = false;
+          pkg.build.win.verifyUpdateCodeSignature = false;
+          pkg.build.publish = {
+            provider: 'github',
+            owner: 'fatihcayiroglu',
+            repo: 'Bridge'
+          };
+          fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + '\n');
+          NODE
+
       - name: Build Windows unsigned
         shell: bash
         run: |
           cd electron
           npm run compile
-          npx electron-builder --win nsis:x64 nsis:arm64 --publish never \
-            --config.win.signAndEditExecutable=false \
-            --config.win.verifyUpdateCodeSignature=false \
-            --config.publish.provider=github \
-            --config.publish.owner=fatihcayiroglu \
-            --config.publish.repo=Bridge
+          npx electron-builder --win nsis:x64 nsis:arm64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
