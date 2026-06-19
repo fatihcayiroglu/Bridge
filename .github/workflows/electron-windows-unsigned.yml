@@ -75,7 +75,21 @@ jobs:
       - name: Upload to GitHub Release
         shell: bash
         run: |
-          gh release upload "${{ inputs.tag }}" electron/release/* \
+          shopt -s nullglob
+          files=(
+            electron/release/*.exe
+            electron/release/*.blockmap
+            electron/release/latest.yml
+          )
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "Release upload için dosya bulunamadı."
+            exit 1
+          fi
+
+          printf '%s\n' "${files[@]}"
+
+          gh release upload "${{ inputs.tag }}" "${files[@]}" \
             --repo fatihcayiroglu/Bridge \
             --clobber
         env:
