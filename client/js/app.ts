@@ -25,8 +25,9 @@ import { errorBoundary }             from './core/error-boundary-svelte.ts';
 import { BridgeState }               from './core/state-svelte.ts';
 import { loadTheme }                 from './core/theme-svelte.ts';
 import { getAPI }                    from './core/globals-svelte.ts';
-import { maybeShowOnboarding }       from './core/onboarding-wizard-svelte.ts';
+import { BridgeRegistry }            from './core/bridge-registry.ts';
 import { onNativePushLogin }         from './core/mobile-ux-svelte.ts';  // Sprint 98: native push entegrasyonu
+import './core/empty-server-start-svelte.ts';
 
 import { createLogger } from './core/logger.ts';
 import { initA11yWcagAA } from './core/a11y-wcag-aa-svelte.ts'; // Sprint 108: WCAG AA başlatma
@@ -55,11 +56,13 @@ document.addEventListener('bridge:socket-ready', () => {
   }
 });
 
-// Sprint 64: İlk girişte onboarding wizard'ı göster
+// İlk girişte boş sunucu listesini kontrol et.
 // bridge:auth-success event'i auth.ts tarafından login sonrası tetiklenir
 document.addEventListener('bridge:auth-success', () => {
-  // Kısa gecikme: app shell render tamamlansın
-  setTimeout(() => maybeShowOnboarding(), 800);
+  // Kısa gecikme: app shell render ve oturum depolaması tamamlansın.
+  setTimeout(() => {
+    void BridgeRegistry.call('checkEmptyServerStart');
+  }, 800);
   onNativePushLogin(); // Sprint 98: Capacitor ortamında push token'ı register et (IS_CAPACITOR guard içeriyor)
 });
 
