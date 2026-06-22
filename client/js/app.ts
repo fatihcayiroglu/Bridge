@@ -25,6 +25,7 @@ import { errorBoundary }             from './core/error-boundary-svelte.ts';
 import { BridgeState }               from './core/state-svelte.ts';
 import { loadTheme }                 from './core/theme-svelte.ts';
 import { getAPI }                    from './core/globals-svelte.ts';
+import './core/auth-compat.ts';
 import { BridgeRegistry }            from './core/bridge-registry.ts';
 import { onNativePushLogin }         from './core/mobile-ux-svelte.ts';  // Sprint 98: native push entegrasyonu
 import './core/empty-server-start-svelte.ts';
@@ -71,10 +72,6 @@ errorBoundary.wrap(async () => {
   await loadTheme();
   BridgeState.initState();
   // Sprint 82: Yeni özellikler
-  initActivities();
-  initSuperReactions();
-  initClips();
-  initStickers();
   initStageVideoGrid(); // Sprint 83: Stage video grid
   initA11yWcagAA();     // Sprint 108: WCAG 2.1 AA — skip-link, landmark, reduced-motion
   initDesktopUpdater();  // Desktop: otomatik güncelleme durumu + yeniden başlatma akışı

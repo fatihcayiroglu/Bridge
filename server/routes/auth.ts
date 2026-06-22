@@ -157,11 +157,6 @@ router.post('/register',
   // Kayıt sayacını artır
   await captcha.recordRegistration(captcha._getIp(req));
 
-  const defaultServer = await Servers.findOne({ name: 'Bridge Global' });
-  if (defaultServer) {
-    await Members.insert(user._id, defaultServer._id);
-  }
-
   const token        = makeToken(user);
   const refreshToken = await makeRefreshToken(user);
   _setRefreshCookie(res, refreshToken);

@@ -11,6 +11,13 @@ const JSONB_COLS = new Set([
   'events', 'defaultRoles', 'questions', 'answers',
 ]);
 
+const TABLE_PRIMARY_KEYS: Record<string, string[]> = {
+  members: ['userId', 'serverId'],
+  refresh_tokens: ['token'],
+  unread_counts: ['userId', 'channelId'],
+  user_ap_keys: ['userId'],
+};
+
 // ── Kolon adı whitelist (injection koruması) ─────────────────
 // Tüm schema'daki geçerli kolon adları. buildWhere / insert / update
 // çağrılarında bilinmeyen kolon adları reddedilir.
@@ -29,7 +36,7 @@ const ALLOWED_COLUMNS = new Set([
   'createdAt', 'editedAt', 'sentAt', 'joinedAt', 'addedAt', 'expiresAt',
   'lastSeen', 'lastMessageAt', 'sendAt', 'scheduledId',
   // ── Kullanıcı ─────────────────────────────────────────────
-  'displayName', 'avatarColor', 'avatarUrl', 'bannerColor', 'bannerUrl',
+  'createdBy', 'displayName', 'avatarColor', 'avatarUrl', 'bannerColor', 'bannerUrl',
   'statusText', 'statusEmoji', 'tokenVersion', 'emailVerified', 'emailToken',
   'emailTokenExp', 'twoFactorSecret', 'twoFactorEnabled', 'twoFactorBackup',
   'isAdmin', 'ssoProvider', 'ssoId',
@@ -51,7 +58,11 @@ const ALLOWED_COLUMNS = new Set([
   // ── Diğer ─────────────────────────────────────────────────
   'e2e', 'maxUses', 'multiSelect', 'timeout', 'timeoutUntil',
   'inviteCode', 'inviteCreatedAt',
-]);
+
+  'apPublicKey',
+  'apPrivateKeyEnc',
+  'keyVersion',
+  'updatedAt',]);
 
 /**
  * Kolon adını doğrula — SQL injection'a karşı ikinci savunma katmanı.
@@ -294,7 +305,8 @@ export class PgCollection<T extends object = DbRecord> {
   // ── insert ────────────────────────────────────────────────────
   async insert(doc: DbInsert<T>): Promise<T> {
     const mutableDoc: DbRecord = { ...doc };
-    if (!Object.prototype.hasOwnProperty.call(mutableDoc, '_id') || mutableDoc['_id'] === undefined || mutableDoc['_id'] === null || mutableDoc['_id'] === '') mutableDoc['_id'] = uuidv4();
+    const primaryKeys = TABLE_PRIMARY_KEYS[this.table] || ['_id'];
+    if (primaryKeys.includes('_id') && (!Object.prototype.hasOwnProperty.call(mutableDoc, '_id') || mutableDoc['_id'] === undefined || mutableDoc['_id'] === null || mutableDoc['_id'] === '')) mutableDoc['_id'] = uuidv4();
     const row   = toRow(mutableDoc);
     const keys  = Object.keys(row);
     keys.forEach(assertValidColumn);
@@ -302,7 +314,7 @@ export class PgCollection<T extends object = DbRecord> {
     const vals  = keys.map((_, i) => `$${i + 1}`).join(', ');
     const params = Object.values(row);
     await this._query(
-      `INSERT INTO "${this.table}" (${cols}) VALUES (${vals}) ON CONFLICT (_id) DO NOTHING`,
+      `INSERT INTO "${this.table}" (${cols}) VALUES (${vals}) ON CONFLICT (${primaryKeys.map(key => `"${key}"`).join(", ")}) DO NOTHING`,
       params
     );
     return { ...mutableDoc } as T;

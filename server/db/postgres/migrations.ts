@@ -18,6 +18,7 @@ import { BOT_MARKETPLACE_TABLES } from '../../migrations_pg/010_bot_marketplace_
 // ── KOLON / INDEX MIGRASYONLARI ─────────────────────────────
 // Mevcut production DB'lere eksik sütunları ekler.
 const COLUMN_MIGRATIONS: string[] = [
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS "apPublicKey" TEXT`,
   // Extension'lar
   `CREATE EXTENSION IF NOT EXISTS unaccent`,
   `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
@@ -89,6 +90,13 @@ const COLUMN_MIGRATIONS: string[] = [
 
 // ── EK TABLOLAR (v40-v78+ arasında eklenenler) ──────────────
 const EXTRA_TABLES: string[] = [
+  `CREATE TABLE IF NOT EXISTS user_ap_keys (
+    "userId" TEXT PRIMARY KEY REFERENCES users(_id) ON DELETE CASCADE,
+    "apPrivateKeyEnc" TEXT NOT NULL,
+    "keyVersion" INTEGER NOT NULL DEFAULT 1,
+    "createdAt" BIGINT NOT NULL,
+    "updatedAt" BIGINT NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS channel_permissions (
     _id TEXT PRIMARY KEY,
     "channelId" TEXT NOT NULL,

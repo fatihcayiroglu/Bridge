@@ -12,7 +12,7 @@ class AuthRepository {
   }
 
   async insertRefreshToken(userId: string, token: string, expiresAt: number) {
-    return db.refreshTokens?.insert({ _id: uuidv4(), userId, token, expiresAt, createdAt: Date.now() });
+    return db.refreshTokens?.insert({ userId, token, expiresAt, createdAt: Date.now() });
   }
 
   async revokeRefreshToken(token: string) {
@@ -57,7 +57,6 @@ class AuthRepository {
   /** Tam satır ekleme (rotation / family alanları dahil). */
   async insertRefreshTokenRow(row: Record<string, unknown>) {
     return db.refreshTokens?.insert({
-      _id: uuidv4(),
       createdAt: Date.now(),
       used: false,
       ...row,
