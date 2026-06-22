@@ -107,30 +107,15 @@ export function createApp(): AppBundle {
   app.use('/api', rateLimit(200, 60_000, 'global'));
   app.use('/api', enforceApiCsrf);
   app.use(metricsMiddleware);
-  // ── rawBody capture — federation imza doğrulaması için zorunlu ──────────
-  // federationAuth.ts: req.rawBody üzerinden RSA imza doğrular.
-  // express.json() body'yi parse etmeden ÖNCE ham veriyi yakalamalıyız;
-  // aksi hâlde JSON.stringify(req.body) fallback'i imza uyuşmazlığına yol açar.
-  //
-  // ÖNEMLİ: multipart/form-data isteklerini ATLA — multer kendi stream
-  // okuyucusunu kullanır; rawBody bu isteklerde stream'i tüketip multer'ı kırar.
-  app.use((req, _res, next) => {
-    const ct = (req.headers['content-type'] ?? '') as string;
-    if (ct.startsWith('multipart/form-data')) return next();
-    let raw = '';
-    req.on('data', (chunk: Buffer | string) => { raw += chunk.toString(); });
-    req.on('end', () => {
-      (req as typeof req & { rawBody: string }).rawBody = raw;
-      next();
-    });
-    // Stream hatası durumunda next() asla çağrılmazsa request askıda kalır
-    req.on('error', () => {
-      (req as typeof req & { rawBody: string }).rawBody = raw;
-      next();
-    });
-  });
-
-  app.use(express.json({ limit: '2mb' }));
+  // Federation imza doğrulaması için ham JSON gövdesini parser sırasında al.
+  // Ayrı bir data/end dinleyicisi stream'i tükettiği için express.json() sonrası
+  // req.body undefined kalıyordu.
+  app.use(express.json({
+    limit: '2mb',
+    verify: (req, _res, buf) => {
+      (req as typeof req & { rawBody: string }).rawBody = buf.toString('utf8');
+    },
+  }));
 
   app.use(
     '/uploads',
@@ -174,7 +159,7 @@ export function createApp(): AppBundle {
     const indexPath = path.join(staticRoot, 'index.html');
     if (!fs.existsSync(indexPath)) return res.status(404).end();
     let html = fs.readFileSync(indexPath, 'utf-8');
-    html = html.replace('<script>', `<script nonce="${res.locals.cspNonce}">`);
+    html = html.replace(/<script(?![^>]*\bnonce=)([^>]*)>/gi, `<script nonce="${res.locals.cspNonce}"$1>`);
 
     // Sentry DSN ve versiyon bilgisini client'a inject et.
     // DSN boşsa window.BRIDGE_SENTRY_DSN tanımsız kalır → Sentry devre dışı.

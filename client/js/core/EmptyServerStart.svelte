@@ -69,7 +69,7 @@
     if (csrfToken) return csrfToken;
 
     try {
-      const response = await request('/api/auth/csrf-token');
+      const response = await request('/api/csrf-token');
       if (!response.ok) return null;
 
       const data = await response.json() as { token?: unknown };

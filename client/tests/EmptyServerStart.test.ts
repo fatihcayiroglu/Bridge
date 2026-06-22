@@ -80,7 +80,7 @@ describe('EmptyServerStart', () => {
       if (url === '/api/servers' && init?.method !== 'POST') {
         return Promise.resolve(response([]));
       }
-      if (url === '/api/auth/csrf-token') {
+      if (url === '/api/csrf-token') {
         return Promise.resolve(response({ token: 'csrf-create-token' }));
       }
       return new Promise<Response>(() => {});
@@ -125,7 +125,7 @@ describe('EmptyServerStart', () => {
       if (url === '/api/servers' && init?.method !== 'POST') {
         return Promise.resolve(response([]));
       }
-      if (url === '/api/auth/csrf-token') {
+      if (url === '/api/csrf-token') {
         return Promise.resolve(response({ token: 'csrf-join-token' }));
       }
       return new Promise<Response>(() => {});
