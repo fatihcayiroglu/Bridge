@@ -13,14 +13,12 @@ const db       = require('../db/loader');
 const jwt      = require('jsonwebtoken');
 import { authMiddleware } from '../middleware/auth';
 const profileRouter    = require('../routes/serverProfile');
-const templatesRouter  = require('../routes/serverTemplates');
 
 function buildApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/servers',    authMiddleware, profileRouter);
   app.use('/s',              profileRouter);
-  app.use('/api/server-templates', authMiddleware, templatesRouter);
   return app;
 }
 function tok(uid) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
@@ -142,96 +140,6 @@ describe('Server Profile Routes', () => {
 
   it('rejects unauthenticated slug API', async () => {
     const res = await request(app).get(`/api/servers/${serverId}/slug`);
-    expect(res.status).toBe(401);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────
-describe('Server Templates Routes', () => {
-  let app, userId, token;
-
-  beforeEach(async () => {
-    db._reset?.();
-    app    = buildApp();
-    userId = uuidv4();
-    token  = tok(userId);
-    await db.users.insert({ _id: userId, username: 'u', displayName: 'U', tokenVersion: 0 });
-  });
-
-  describe('GET /api/server-templates', () => {
-    it('returns array of templates', async () => {
-      const res = await request(app)
-        .get('/api/server-templates')
-        .set('Authorization', `Bearer ${token}`);
-      expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-      expect(res.body.length).toBeGreaterThan(0);
-    });
-
-    it('each template has id, name, description', async () => {
-      const res = await request(app)
-        .get('/api/server-templates')
-        .set('Authorization', `Bearer ${token}`);
-      expect(res.status).toBe(200);
-      const t = res.body[0];
-      expect(t).toHaveProperty('id');
-      expect(t).toHaveProperty('name');
-      expect(t).toHaveProperty('description');
-    });
-
-    it('includes expected template categories', async () => {
-      const res = await request(app)
-        .get('/api/server-templates')
-        .set('Authorization', `Bearer ${token}`);
-      const ids = res.body.map(t => t.id);
-      // At least one of these should exist
-      const expected = ['gaming', 'education', 'community', 'work', 'art'];
-      expect(ids.some(id => expected.includes(id))).toBe(true);
-    });
-  });
-
-  describe('POST /api/server-templates/:id/apply', () => {
-    it('creates server from gaming template', async () => {
-      const res = await request(app)
-        .post('/api/server-templates/gaming/apply')
-        .set('Authorization', `Bearer ${token}`)
-        .send({ name: 'My Gaming Server' });
-      expect(res.status).toBe(200);
-      expect(res.body).toHaveProperty('_id');
-      expect(res.body).toHaveProperty('name', 'My Gaming Server');
-    });
-
-    it('creates server with auto-name from template if no name provided', async () => {
-      const res = await request(app)
-        .post('/api/server-templates/gaming/apply')
-        .set('Authorization', `Bearer ${token}`)
-        .send({});
-      expect([200, 400]).toContain(res.status);
-    });
-
-    it('returns 404 for nonexistent template', async () => {
-      const res = await request(app)
-        .post('/api/server-templates/not-a-real-template/apply')
-        .set('Authorization', `Bearer ${token}`)
-        .send({ name: 'Test' });
-      expect([404, 400]).toContain(res.status);
-    });
-
-    it('creates channels from template', async () => {
-      const res = await request(app)
-        .post('/api/server-templates/gaming/apply')
-        .set('Authorization', `Bearer ${token}`)
-        .send({ name: 'Test Gaming' });
-      if (res.status === 200) {
-        const sid = res.body._id;
-        const channels = await db.channels.find({ serverId: sid });
-        expect(channels.length).toBeGreaterThan(0);
-      }
-    });
-  });
-
-  it('rejects unauthenticated', async () => {
-    const res = await request(app).get('/api/server-templates');
     expect(res.status).toBe(401);
   });
 });

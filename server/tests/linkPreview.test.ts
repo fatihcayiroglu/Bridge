@@ -5,7 +5,10 @@ process.env.NODE_ENV   = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 jest.mock('../middleware/rateLimit', () => ({
-  limits: { read: () => (_req, _res, next) => next() },
+  limits: {
+    api: (_req, _res, next) => next(),
+    read: () => (_req, _res, next) => next(),
+  },
 }));
 
 // ── fetchLinkPreview + extractUrls mocked ────────────────────────

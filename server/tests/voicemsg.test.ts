@@ -6,12 +6,6 @@ process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 
-jest.mock('form-data', () => {
-  return jest.fn().mockImplementation(() => ({
-    append:     jest.fn(),
-    getHeaders: jest.fn().mockReturnValue({ 'content-type': 'multipart/form-data; boundary=test' }),
-  }));
-});
 
 // storageAdapter mock — local davranışını simüle eder
 jest.mock('../lib/storageAdapter', () => ({
@@ -135,6 +129,7 @@ describe('Voice Messages Routes', () => {
 
     it('başarılı yüklemede storageAdapter.uploadFile çağrılır', async () => {
       const mockStore = getStorageAdapter();
+      (getStorageAdapter as jest.Mock).mockReturnValue(mockStore);
       const res = await request(app)
         .post('/api/voice-messages')
         .set('Authorization', `Bearer ${ownerToken}`)

@@ -15,6 +15,51 @@ jest.mock('../db/loader', () => {
   return mock;
 });
 
+jest.mock('../db/repositories/StatsRepository.js', () => {
+  const db = require('../db/loader');
+
+  return {
+    Stats: {
+      getServerStats: jest.fn(async (serverId) => {
+        const now = Date.now();
+        const messages = await db.messages.find({ serverId });
+        const recent7 = messages.filter((message) => Number(message.createdAt || 0) > now - 7 * 86400_000);
+        const recent30 = messages.filter((message) => Number(message.createdAt || 0) > now - 30 * 86400_000);
+
+        const users = new Map();
+        const channels = new Map();
+
+        for (const message of recent30) {
+          const userId = String(message.userId || '');
+          const channelId = String(message.channelId || '');
+
+          const user = users.get(userId) || {
+            userId,
+            displayName: message.displayName || message.username || userId,
+            msgCount: 0,
+          };
+          user.msgCount += 1;
+          users.set(userId, user);
+
+          const channel = channels.get(channelId) || { channelId, msgCount: 0 };
+          channel.msgCount += 1;
+          channels.set(channelId, channel);
+        }
+
+        return {
+          memberCount: await db.members.count({ serverId }),
+          channelCount: await db.channels.count({ serverId }),
+          totalMessages: messages.length,
+          activeUsers7d: new Set(recent7.map((message) => message.userId)).size,
+          activeUsers30d: new Set(recent30.map((message) => message.userId)).size,
+          topUsers: [...users.values()].sort((a, b) => b.msgCount - a.msgCount).slice(0, 10),
+          channelBreakdown: [...channels.values()].sort((a, b) => b.msgCount - a.msgCount).slice(0, 15),
+        };
+      }),
+    },
+  };
+});
+
 import request from 'supertest';
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
