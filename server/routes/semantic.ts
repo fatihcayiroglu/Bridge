@@ -109,7 +109,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   if (channelId) filter.channelId = channelId;
 
   const messages = await Messages.messagesFind(filter).sort({ createdAt: -1 }).limit(200);
-  if (!messages.length) return res.json({ results: [], query, provider: 'none', total: 0 });
+  if (!messages.length) return res.json({ matches: [], query, provider: 'none', total: 0, days, aiDisabled: !AI_ENABLED });
 
   // Kullanıcı adlarını getir
   const userIds = [...new Set(messages.map(m => m.userId))];
@@ -309,6 +309,7 @@ router.get('/digest/:serverId', authMiddleware, async (req, res) => {
 
   const out = {
     serverId, days,
+    period: { from: since, to: Date.now() },
     totalMessages: allMsgs.length,
     channelStats: channelStats.filter(c => c.messageCount > 0).sort((a, b) => b.messageCount - a.messageCount),
     topUsers,
