@@ -125,7 +125,7 @@ export async function verifyFederationRequest(
   const peerPublicKey = (peer.publicKey as string) ?? null;
   const rsaSig        = headers['x-bridge-rsa-sig'];
 
-  if (peerPublicKey && rsaSig) {
+  if (peerPublicKey) {
     // publicKey sütununda raw PEM veya JSON doc olabilir
     let pem: string | null = null;
     try {
@@ -136,6 +136,16 @@ export async function verifyFederationRequest(
     }
 
     if (pem?.includes('BEGIN PUBLIC KEY')) {
+      // A peer with a valid RSA key must not downgrade to shared-secret HMAC.
+      if (!rsaSig) {
+        logger.warn(`[httpSignatureV2] RSA signature header missing peer=${peerUrl}`);
+        return {
+          ok: false,
+          reason: 'RSA signature header missing (x-bridge-rsa-sig)',
+          peerId: peerId as string | number,
+        };
+      }
+
       const ok = _verifyRsa(payload, rsaSig, pem);
       if (ok) {
         logger.info(`[httpSignatureV2] RSA doğrulama ✅ peer=${peerUrl} id=${peerId}`);
