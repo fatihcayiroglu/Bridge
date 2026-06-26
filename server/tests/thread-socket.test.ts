@@ -68,128 +68,28 @@ function makeUser(overrides = {}) {
 // ════════════════════════════════════════════════════════════════
 
 describe('thread:message:new', () => {
-  it('kanal odasına thread:message:new broadcast edilir', () => {
-    const user   = makeUser();
+  it('rejects valid-looking client payloads without broadcasting', () => {
+    const user = makeUser();
     const socket = makeSocket('s-tmsg-1');
-    const io     = makeIo();
+    const io = makeIo();
     registerThreadSocketEvents(socket, io, user);
 
-    const msg = {
-      _id:       'msg-1',
-      threadId:  'thread-abc',
-      channelId: 'ch-general',
-      content:   'Thread yanıtı',
-      userId:    user._id,
-    };
-
+    const msg = { _id: 'msg-1', threadId: 'thread-abc', channelId: 'ch-general', content: 'Thread response', userId: user._id };
     socket._trigger('thread:message:new', { threadId: 'thread-abc', msg });
 
-    const toChannel = io._emitted.find(
-      e => e.ev === 'thread:message:new' && e._target === 'channel:ch-general'
-    );
-    expect(toChannel).toBeDefined();
-    expect(toChannel.data.threadId).toBe('thread-abc');
-    expect(toChannel.data.msg).toEqual(msg);
-  });
-
-  it('thread odasına da thread:message:new broadcast edilir', () => {
-    const user   = makeUser();
-    const socket = makeSocket('s-tmsg-2');
-    const io     = makeIo();
-    registerThreadSocketEvents(socket, io, user);
-
-    const msg = {
-      _id:       'msg-2',
-      threadId:  'thread-xyz',
-      channelId: 'ch-dev',
-      content:   'İkinci yanıt',
-      userId:    user._id,
-    };
-
-    socket._trigger('thread:message:new', { threadId: 'thread-xyz', msg });
-
-    const toThread = io._emitted.find(
-      e => e.ev === 'thread:message:new' && e._target === 'thread:thread-xyz'
-    );
-    expect(toThread).toBeDefined();
-    expect(toThread.data.threadId).toBe('thread-xyz');
-  });
-
-  it('hem kanal hem thread odasına aynı anda emit edilir', () => {
-    const user   = makeUser();
-    const socket = makeSocket('s-tmsg-3');
-    const io     = makeIo();
-    registerThreadSocketEvents(socket, io, user);
-
-    const msg = {
-      _id: 'msg-3', threadId: 'th-1', channelId: 'ch-1', content: 'Çift broadcast', userId: user._id,
-    };
-
-    socket._trigger('thread:message:new', { threadId: 'th-1', msg });
-
-    const toChannel = io._emitted.filter(e => e.ev === 'thread:message:new' && e._target === 'channel:ch-1');
-    const toThread  = io._emitted.filter(e => e.ev === 'thread:message:new' && e._target === 'thread:th-1');
-
-    expect(toChannel).toHaveLength(1);
-    expect(toThread).toHaveLength(1);
-  });
-
-  it('channelId yoksa kanal odasına emit yapılmaz', () => {
-    const user   = makeUser();
-    const socket = makeSocket('s-tmsg-noch');
-    const io     = makeIo();
-    registerThreadSocketEvents(socket, io, user);
-
-    // channelId'siz mesaj
-    const msg = { _id: 'msg-4', threadId: 'th-2', content: 'Kanalsız', userId: user._id };
-
-    socket._trigger('thread:message:new', { threadId: 'th-2', msg });
-
-    const toChannel = io._emitted.find(e => e._target?.startsWith('channel:'));
-    expect(toChannel).toBeUndefined();
-
-    // Thread odasına yine de gönderilmeli
-    const toThread = io._emitted.find(e => e._target === 'thread:th-2');
-    expect(toThread).toBeDefined();
-  });
-
-  it('threadId eksikse işlem yapılmaz', () => {
-    const user   = makeUser();
-    const socket = makeSocket('s-tmsg-noth');
-    const io     = makeIo();
-    registerThreadSocketEvents(socket, io, user);
-
-    socket._trigger('thread:message:new', { msg: { channelId: 'ch-1', content: 'test' } });
-
     expect(io._emitted).toHaveLength(0);
   });
 
-  it('msg eksikse işlem yapılmaz', () => {
-    const user   = makeUser();
-    const socket = makeSocket('s-tmsg-nomsg');
-    const io     = makeIo();
+  it('rejects malformed client payloads without broadcasting', () => {
+    const user = makeUser();
+    const socket = makeSocket('s-tmsg-invalid');
+    const io = makeIo();
     registerThreadSocketEvents(socket, io, user);
 
-    expect(() => socket._trigger('thread:message:new', { threadId: 'th-1' })).not.toThrow();
+    expect(() => socket._trigger('thread:message:new', { threadId: 'thread-abc' })).not.toThrow();
+    socket._trigger('thread:message:new', { msg: { channelId: 'ch-general', content: 'test' } });
+
     expect(io._emitted).toHaveLength(0);
-  });
-
-  it('birden fazla thread mesajı ayrı ayrı doğru odalara gönderilir', () => {
-    const user   = makeUser();
-    const socket = makeSocket('s-tmsg-multi');
-    const io     = makeIo();
-    registerThreadSocketEvents(socket, io, user);
-
-    const msg1 = { _id: 'm1', threadId: 'th-A', channelId: 'ch-A', content: 'A yanıtı', userId: user._id };
-    const msg2 = { _id: 'm2', threadId: 'th-B', channelId: 'ch-B', content: 'B yanıtı', userId: user._id };
-
-    socket._trigger('thread:message:new', { threadId: 'th-A', msg: msg1 });
-    socket._trigger('thread:message:new', { threadId: 'th-B', msg: msg2 });
-
-    expect(io._emitted.find(e => e._target === 'channel:ch-A')).toBeDefined();
-    expect(io._emitted.find(e => e._target === 'channel:ch-B')).toBeDefined();
-    expect(io._emitted.find(e => e._target === 'thread:th-A')).toBeDefined();
-    expect(io._emitted.find(e => e._target === 'thread:th-B')).toBeDefined();
   });
 });
 
