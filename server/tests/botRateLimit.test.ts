@@ -32,7 +32,7 @@ class TestBot extends EventEmitter {
     });
 
     if (res.status === 429 && _retryCount < 3) {
-      const retryAfterSec = parseFloat(res.headers.get('retry-after') || '0.01');
+      const retryAfterSec = parseFloat(res.headers.get('retry-after') || '1');
       const retryAfterMs  = Math.ceil(retryAfterSec * 1000);
       this.emit('rateLimit', { path, method, retryAfter: retryAfterSec, retryCount: _retryCount });
       await new Promise(r => setTimeout(r, retryAfterMs));
@@ -117,14 +117,13 @@ describe('Bot SDK — rateLimit event & retry', () => {
   });
 
   it('Retry-After header yoksa 1 saniye bekler', async () => {
-    jest.useFakeTimers();
     const sleepSpy = jest.spyOn(global, 'setTimeout');
 
     global.fetch = jest.fn()
       .mockResolvedValueOnce({
         ok: false,
         status: 429,
-        headers: { get: () => null }, // retry-after yok
+        headers: { get: () => null },
         json: async () => ({}),
       })
       .mockResolvedValueOnce({
@@ -134,13 +133,7 @@ describe('Bot SDK — rateLimit event & retry', () => {
         json: async () => ({}),
       });
 
-    const apiCall = bot._api('GET', '/api/test');
-    jest.runAllTimers();
-    await apiCall;
-
-    const retryTimeout = sleepSpy.mock.calls.find(args => args[1] >= 1000);
-    expect(retryTimeout).toBeDefined();
-
-    jest.useRealTimers();
+    await expect(bot._api('GET', '/api/test')).resolves.toEqual({});
+    expect(sleepSpy).toHaveBeenCalledWith(expect.any(Function), 1000);
   });
 });

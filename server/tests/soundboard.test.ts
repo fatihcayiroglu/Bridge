@@ -169,9 +169,7 @@ describe('POST /api/servers/:sid/soundboard', () => {
   });
 
   it('token olmadan 401 döner', async () => {
-    const res = await request(app)
-      .post(`/api/servers/${server._id}/soundboard`)
-      .attach('sound', FAKE_AUDIO, { contentType: 'audio/mpeg' });
+    const res = await request(app).post(`/api/servers/${server._id}/soundboard`);
     expect(res.status).toBe(401);
   });
 });

@@ -5,6 +5,11 @@ jest.mock('../middleware/rateLimit', () => ({
   rateLimit: () => (_req, _res, next) => next(),
 }));
 
+jest.mock('../middleware/auth', () => ({
+  authMiddleware: (_req, _res, next) => next(),
+  castAuthed: (req) => req,
+}));
+
 // Mock redis adapter used by client-error.js for stats persistence
 jest.mock('../lib/redisAdapter', () => ({
   cache: {

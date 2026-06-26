@@ -4,6 +4,8 @@
 
 process.env.NODE_ENV = 'test';
 
+jest.mock('../db/repositories', () => ({ Auth: {}, Users: {} }));
+
 describe('_validateSecret — Insecure Default Detection (Sprint 106)', () => {
   const INSECURE_DEFAULTS = [
     'bridge-dev-secret-CHANGE-IN-PRODUCTION',

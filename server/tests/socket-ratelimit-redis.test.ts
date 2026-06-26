@@ -121,10 +121,16 @@ describe('socketRateCheck — Redis-backed store', () => {
 
   it('Redis\'te mevcut hitler alınır ve sayaca eklenir', async () => {
     const existingHits = [Date.now() - 1000, Date.now() - 500]; // pencere içi 2 hit
+    const redisValues: Record<string, string> = {
+      'socketrl:u7:message:send': JSON.stringify(existingHits),
+    };
     const redis = {
-      get:  jest.fn().mockResolvedValue(JSON.stringify(existingHits)),
-      set:  jest.fn().mockResolvedValue('OK'),
-      del:  jest.fn().mockResolvedValue(1),
+      get: jest.fn((key: string) => Promise.resolve(redisValues[key] ?? null)),
+      set: jest.fn((key: string, value: string) => {
+        redisValues[key] = value;
+        return Promise.resolve('OK');
+      }),
+      del: jest.fn().mockResolvedValue(1),
     };
     const { rateCheck } = makeStore();
     expect(await rateCheck('u7', 'message:send', redis)).toBe(true); // 3. hit

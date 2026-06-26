@@ -11,9 +11,10 @@ jest.mock('../lib/pgvector', () => ({
   generateEmbedding: jest.fn(),
 }));
 
-jest.mock('../lib/logger', () => ({
-  default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
-}));
+jest.mock('../lib/logger', () => {
+  const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+  return { __esModule: true, default: logger, ...logger };
+});
 
 import { generateEmbedding } from '../lib/pgvector';
 const mockGenerateEmbedding = generateEmbedding as jest.MockedFunction<typeof generateEmbedding>;
@@ -159,9 +160,10 @@ describe('runEmbedHistoryJob — PGVECTOR_ENABLED=false', () => {
       PGVECTOR_ENABLED: false,
       generateEmbedding: jest.fn(),
     }));
-    jest.doMock('../lib/logger', () => ({
-      default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
-    }));
+    jest.doMock('../lib/logger', () => {
+      const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+      return { __esModule: true, default: logger, ...logger };
+    });
 
     const { runEmbedHistoryJob: runDisabled } =
       await import('../jobs/embedHistory');

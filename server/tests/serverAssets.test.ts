@@ -146,8 +146,7 @@ describe('POST /api/servers/:sid/banner', () => {
 
   it('token olmadan 401 döner', async () => {
     const res = await request(app)
-      .post(`/api/servers/${server._id}/banner`)
-      .attach('banner', FAKE_PNG, { contentType: 'image/png' });
+      .post(`/api/servers/${server._id}/banner`);
     expect(res.status).toBe(401);
   });
 });

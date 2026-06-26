@@ -25,6 +25,7 @@ jest.mock('../lib/redisAdapter', () => ({
   subscribeToChannel:  jest.fn().mockResolvedValue(() => Promise.resolve()),
   publishToChannel:    jest.fn().mockResolvedValue(undefined),
   redisClient:         jest.fn().mockReturnValue(null),
+  isRedisAvailable:    jest.fn().mockReturnValue(false),
 }));
 
 import request    from 'supertest';
@@ -172,14 +173,15 @@ describe('Channel List Cache (Sprint 106)', () => {
 
       // Owner'a MANAGE_CHANNELS izni ver
       await db.roles.insert({ _id: uuidv4(), serverId, name: 'admin', color: '#fff', permissions: 0xFFFFFFFF, position: 10 });
-      const roleId = (await db.roles.findByServer(serverId))[0]._id;
-      await db.members.updateRoles(ownerId, serverId, [roleId]);
+      const roleId = (await db.roles.find({ serverId }))[0]._id;
+      await db.members.update({ userId: ownerId, serverId }, { $set: { roles: JSON.stringify([roleId]) } });
 
-      await request(app)
+      const res = await request(app)
         .post(`/api/servers/${serverId}/channels`)
         .set('Authorization', `Bearer ${ownerToken}`)
         .send({ name: 'yeni-kanal', type: 'text' });
 
+      expect(res.status).toBe(200);
       expect(mockCacheDel).toHaveBeenCalledWith(`channels:list:${serverId}`);
       expect(_cacheStore.has(`channels:list:${serverId}`)).toBe(false);
     });

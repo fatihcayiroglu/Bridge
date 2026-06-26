@@ -24,7 +24,17 @@ const mockHasPermission = jest.fn(() => true);
 jest.mock('../routes/roles', () => ({
   getMemberPerms: async () => 0xFFFFFFFF,
   hasPermission: (...args) => mockHasPermission(...args),
-  PERMS: { MANAGE_MESSAGES: 32, ADMIN: 8, MANAGE_CHANNELS: 16, SEND_MESSAGES: 16 },
+  canActOn: async () => true,
+  PERMS: {
+    MANAGE_MESSAGES: 32,
+    TIMEOUT_MEMBERS: 64,
+    ADMIN: 8,
+    MANAGE_CHANNELS: 16,
+    SEND_MESSAGES: 16,
+  },
+}));
+jest.mock('../lib/permCache', () => ({
+  invalidatePerms: jest.fn(),
 }));
 
 import request from 'supertest';
@@ -60,18 +70,34 @@ beforeAll(async () => {
   await mockDb.servers.insert({ _id: SERVER_ID, name: 'TestServer', ownerId: MOD_ID, createdAt: Date.now() });
   await mockDb.members.insert({ userId: MOD_ID,    serverId: SERVER_ID, roles: '[]', joinedAt: Date.now() });
   await mockDb.members.insert({ userId: TARGET_ID, serverId: SERVER_ID, roles: '[]', joinedAt: Date.now() });
+  await mockDb.auditLogs.insert({
+    _id: 'seed-audit',
+    serverId: SERVER_ID,
+    actorId: MOD_ID,
+    actorName: 'Moderator',
+    action: 'timeout',
+    targetId: TARGET_ID,
+    targetName: 'victim',
+    detail: 'seed',
+    createdAt: Date.now(),
+  });
 });
 
-describe('POST /api/servers/:serverId/timeout/:userId', () => {
+beforeEach(() => {
+  mockHasPermission.mockReset();
+  mockHasPermission.mockReturnValue(true);
+});
+
+describe('POST /api/servers/:serverId/members/:userId/timeout', () => {
   it('applies a valid timeout (60s)', async () => {
     const before = Date.now();
     const res = await request(app)
-      .post(`/api/servers/${SERVER_ID}/timeout/${TARGET_ID}`)
+      .post(`/api/servers/${SERVER_ID}/members/${TARGET_ID}/timeout`)
       .set('Authorization', `Bearer ${token(MOD_ID)}`)
-      .send({ duration: 60 });
+      .send({ durationMs: 60_000 });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(res.body.until).toBeGreaterThan(before);
+    expect(Date.parse(res.body.until)).toBeGreaterThan(before);
 
     // member row should have timeoutUntil set
     const member = await mockDb.members.findOne({ userId: TARGET_ID, serverId: SERVER_ID });
@@ -81,58 +107,59 @@ describe('POST /api/servers/:serverId/timeout/:userId', () => {
 
   it('applies a 1-week timeout (604800s)', async () => {
     const res = await request(app)
-      .post(`/api/servers/${SERVER_ID}/timeout/${TARGET_ID}`)
+      .post(`/api/servers/${SERVER_ID}/members/${TARGET_ID}/timeout`)
       .set('Authorization', `Bearer ${token(MOD_ID)}`)
-      .send({ duration: 604800 });
+      .send({ durationMs: 604_800_000 });
     expect(res.status).toBe(200);
   });
 
-  it('rejects invalid duration', async () => {
+  it('accepts millisecond duration values', async () => {
     const res = await request(app)
-      .post(`/api/servers/${SERVER_ID}/timeout/${TARGET_ID}`)
+      .post(`/api/servers/${SERVER_ID}/members/${TARGET_ID}/timeout`)
       .set('Authorization', `Bearer ${token(MOD_ID)}`)
-      .send({ duration: 9999 });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/invalid duration/i);
+      .send({ durationMs: 9_999 });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
   });
 
   it('returns 404 for non-existent user', async () => {
     const res = await request(app)
-      .post(`/api/servers/${SERVER_ID}/timeout/ghost-user`)
+      .post(`/api/servers/${SERVER_ID}/members/ghost-user/timeout`)
       .set('Authorization', `Bearer ${token(MOD_ID)}`)
-      .send({ duration: 60 });
+      .send({ durationMs: 60_000 });
     expect(res.status).toBe(404);
   });
 
   it('rejects without permission', async () => {
-    mockHasPermission.mockReturnValueOnce(false);
+    mockHasPermission.mockReturnValue(false);
     const res = await request(app)
-      .post(`/api/servers/${SERVER_ID}/timeout/${TARGET_ID}`)
+      .post(`/api/servers/${SERVER_ID}/members/${TARGET_ID}/timeout`)
       .set('Authorization', `Bearer ${token(MOD_ID)}`)
-      .send({ duration: 60 });
+      .send({ durationMs: 60_000 });
     expect(res.status).toBe(403);
   });
 
   it('writes an audit log entry', async () => {
     await request(app)
-      .post(`/api/servers/${SERVER_ID}/timeout/${TARGET_ID}`)
+      .post(`/api/servers/${SERVER_ID}/members/${TARGET_ID}/timeout`)
       .set('Authorization', `Bearer ${token(MOD_ID)}`)
-      .send({ duration: 300 });
-    const logs = await mockDb.auditLogs.find({ serverId: SERVER_ID, action: 'TIMEOUT' });
+      .send({ durationMs: 300_000, reason: 'manual test' });
+    const logs = await mockDb.auditLogs.find({ serverId: SERVER_ID, action: 'timeout' });
     expect(logs.length).toBeGreaterThan(0);
     expect(logs[logs.length - 1].targetId).toBe(TARGET_ID);
-    expect(logs[logs.length - 1].detail).toContain('300s');
+    expect(logs[logs.length - 1].detail).toContain('manual test');
   });
 });
 
-describe('DELETE /api/servers/:serverId/timeout/:userId', () => {
+describe('POST /api/servers/:serverId/members/:userId/timeout with durationMs=0', () => {
   it('removes a timeout', async () => {
     // first set a timeout
     await mockDb.members.update({ userId: TARGET_ID, serverId: SERVER_ID }, { $set: { timeoutUntil: Date.now() + 60000 } });
 
     const res = await request(app)
-      .delete(`/api/servers/${SERVER_ID}/timeout/${TARGET_ID}`)
-      .set('Authorization', `Bearer ${token(MOD_ID)}`);
+      .post(`/api/servers/${SERVER_ID}/members/${TARGET_ID}/timeout`)
+      .set('Authorization', `Bearer ${token(MOD_ID)}`)
+      .send({ durationMs: 0 });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
 
@@ -141,10 +168,11 @@ describe('DELETE /api/servers/:serverId/timeout/:userId', () => {
   });
 
   it('rejects without permission', async () => {
-    mockHasPermission.mockReturnValueOnce(false);
+    mockHasPermission.mockReturnValue(false);
     const res = await request(app)
-      .delete(`/api/servers/${SERVER_ID}/timeout/${TARGET_ID}`)
-      .set('Authorization', `Bearer ${token(MOD_ID)}`);
+      .post(`/api/servers/${SERVER_ID}/members/${TARGET_ID}/timeout`)
+      .set('Authorization', `Bearer ${token(MOD_ID)}`)
+      .send({ durationMs: 0 });
     expect(res.status).toBe(403);
   });
 });
@@ -155,11 +183,11 @@ describe('GET /api/servers/:serverId/audit-log', () => {
       .get(`/api/servers/${SERVER_ID}/audit-log`)
       .set('Authorization', `Bearer ${token(MOD_ID)}`);
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body.length).toBeGreaterThan(0);
-    // most recent first
-    if (res.body.length > 1) {
-      expect(res.body[0].createdAt).toBeGreaterThanOrEqual(res.body[1].createdAt);
+    expect(Array.isArray(res.body.entries)).toBe(true);
+    expect(res.body.entries.length).toBeGreaterThan(0);
+    expect(typeof res.body.total).toBe('number');
+    if (res.body.entries.length > 1) {
+      expect(res.body.entries[0].createdAt).toBeGreaterThanOrEqual(res.body.entries[1].createdAt);
     }
   });
 
@@ -167,7 +195,7 @@ describe('GET /api/servers/:serverId/audit-log', () => {
     const res = await request(app)
       .get(`/api/servers/${SERVER_ID}/audit-log`)
       .set('Authorization', `Bearer ${token(MOD_ID)}`);
-    const timeoutEntries = res.body.filter(e => e.action === 'TIMEOUT');
+    const timeoutEntries = res.body.entries.filter(e => e.action === 'timeout');
     expect(timeoutEntries.length).toBeGreaterThan(0);
   });
 

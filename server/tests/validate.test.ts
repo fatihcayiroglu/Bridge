@@ -58,7 +58,7 @@ describe('validateBitmaskMiddleware — tekil alan (varsayılan allow/deny)', ()
   it('çakışan bit allow & deny 400 döner', async () => {
     const res = await request(bApp).post('/test-bitmask').send({ allow: 256, deny: 256 });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/aynı anda/i);
+    expect(res.body.error).toMatch(/overlapping bits/i);
   });
 
   it('negatif allow 400 döner', async () => {
@@ -95,7 +95,7 @@ describe('validateBitmaskMiddleware — dizi modu (overrides)', () => {
     const res = await request(arrApp).post('/test-bitmask')
       .send({ overrides: [{ allow: 64, deny: 64 }] });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/aynı anda/i);
+    expect(res.body.error).toMatch(/overlapping bits/i);
   });
 
   it('dizi elemanında negatif allow 400 döner', async () => {

@@ -192,6 +192,26 @@ router.get('/', authMiddleware, async (req: Request, res: Response) => {
   res.json(result);
 });
 
+// ── POST /api/discover/:serverId/join ────────────────────────────────────────
+router.post('/:serverId/join', authMiddleware, limits.write(), async (req: Request, res: Response) => {
+  const _u = castAuthed(req).user;
+  const serverId = String(req.params.serverId ?? '');
+  const server = await Servers.findById(serverId);
+
+  if (!server || !server.discoverable) {
+    return res.status(404).json({ error: 'Discoverable server not found' });
+  }
+
+  const existing = await Members.findOne(_u.id, serverId);
+  if (existing) {
+    return res.status(400).json({ error: 'Already a member' });
+  }
+
+  await Members.insert(_u.id, serverId, { roles: [] });
+  await invalidateMemberCount(serverId);
+  return res.status(201).json({ ok: true });
+});
+
 // ── GET /api/discover/featured — öne çıkan sunucular ─────────────────────────
 /**
  * @openapi

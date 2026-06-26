@@ -8,6 +8,8 @@ process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 jest.mock('../lib/redisAdapter', () => ({
+  subscribeToChannel: async () => () => {},
+  publishToChannel: async () => {},
   cache: {
     get:   jest.fn().mockResolvedValue(null),
     set:   jest.fn().mockResolvedValue(undefined),
@@ -18,6 +20,10 @@ jest.mock('../lib/redisAdapter', () => ({
 }));
 jest.mock('../lib/presenceCache', () => ({
   isUserOnline: jest.fn().mockResolvedValue(false),
+}));
+
+jest.mock('../middleware/rateLimit', () => ({
+  limits: { write: () => (_req: unknown, _res: unknown, next: () => void) => next() },
 }));
 
 import request from 'supertest';

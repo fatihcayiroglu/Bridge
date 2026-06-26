@@ -36,7 +36,7 @@ import messagesRouter     from '../routes/messages';
 function buildApp(): express.Application {
   const app = express();
   app.use(express.json());
-  app.use('/api', authMiddleware, messagesRouter);
+  app.use('/api/channels', authMiddleware, messagesRouter);
   return app;
 }
 

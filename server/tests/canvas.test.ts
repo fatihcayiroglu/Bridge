@@ -71,7 +71,7 @@ function buildApp(): Express {
 
   // GET /api/canvas/:channelId — get state
   app.get('/api/canvas/:channelId', mockAuth, (_req: Request, res: Response) => {
-    const strokes = mockStrokes.filter(s => s.channelId === _String(req.params.channelId ?? ''));
+    const strokes = mockStrokes.filter(s => s.channelId === String(_req.params.channelId ?? ''));
     res.json({ strokes });
   });
 

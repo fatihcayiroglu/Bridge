@@ -7,6 +7,7 @@ process.env.REFRESH_SECRET = 'test-refresh-secret';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
+jest.mock('../middleware/rateLimit', () => ({ limits: { ai: () => (_req: any, _res: any, next: any) => next() } }));
 jest.mock('../lib/redisAdapter', () => ({
   cache: {
     get:   jest.fn().mockResolvedValue(null),

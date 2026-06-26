@@ -76,15 +76,17 @@ describe('GET /api/health', () => {
   });
 
   it('DB hatası 503 döner', async () => {
-    const dbMod = require('../db/index');
-    const origCount = dbMod.users.count;
-    dbMod.users.count = async () => { throw new Error('DB down'); };
+    const loader = require('../db/loader');
+    const origQuery = loader._pool.query;
+    loader._pool.query = async () => { throw new Error('DB down'); };
 
-    const res = await request(app).get('/api/health');
-    expect(res.status).toBe(503);
-    expect(res.body.status).toBe('error');
-
-    dbMod.users.count = origCount;
+    try {
+      const res = await request(app).get('/api/health');
+      expect(res.status).toBe(503);
+      expect(res.body.status).toBe('error');
+    } finally {
+      loader._pool.query = origQuery;
+    }
   });
 });
 

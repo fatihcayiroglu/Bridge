@@ -23,7 +23,7 @@ function tok(uid) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, {
 
 describe('Pins Routes', () => {
   let app, ownerId, memberId, strangerId, serverId, channelId;
-  let ownerToken, memberToken, strangerToken;
+  let memberToken, strangerToken;
   let pinnedMsgId, unpinnedMsgId;
 
   beforeEach(async () => {
@@ -34,7 +34,6 @@ describe('Pins Routes', () => {
     strangerId = uuidv4();
     serverId  = uuidv4();
     channelId = uuidv4();
-    ownerToken   = tok(ownerId);
     memberToken  = tok(memberId);
     strangerToken = tok(strangerId);
 
@@ -79,48 +78,8 @@ describe('Pins Routes', () => {
     });
   });
 
-  describe('POST /api/channels/:cid/pins/:mid', () => {
-    it('owner can pin a message', async () => {
-      const res = await request(app)
-        .post(`/api/channels/${channelId}/pins/${unpinnedMsgId}`)
-        .set('Authorization', `Bearer ${ownerToken}`);
-      expect([200, 201]).toContain(res.status);
-      const msg = await db.messages.findOne({ _id: unpinnedMsgId });
-      expect(msg?.pinned).toBeTruthy();
-    });
-
-    it('member cannot pin (no MANAGE_MESSAGES)', async () => {
-      const res = await request(app)
-        .post(`/api/channels/${channelId}/pins/${unpinnedMsgId}`)
-        .set('Authorization', `Bearer ${memberToken}`);
-      // Either 403 or 200 depending on permissions implementation
-      // At minimum it should not crash
-      expect([200, 403]).toContain(res.status);
-    });
-
-    it('returns 404 for nonexistent message', async () => {
-      const res = await request(app)
-        .post(`/api/channels/${channelId}/pins/${uuidv4()}`)
-        .set('Authorization', `Bearer ${ownerToken}`);
-      expect([404, 400]).toContain(res.status);
-    });
-  });
-
-  describe('DELETE /api/channels/:cid/pins/:mid', () => {
-    it('owner can unpin a message', async () => {
-      const res = await request(app)
-        .delete(`/api/channels/${channelId}/pins/${pinnedMsgId}`)
-        .set('Authorization', `Bearer ${ownerToken}`);
-      expect([200, 204]).toContain(res.status);
-    });
-
-    it('returns 404 for nonexistent message', async () => {
-      const res = await request(app)
-        .delete(`/api/channels/${channelId}/pins/${uuidv4()}`)
-        .set('Authorization', `Bearer ${ownerToken}`);
-      expect([404, 400]).toContain(res.status);
-    });
-  });
+  // The HTTP pins router is read-only. Pin mutations are covered by the
+  // authenticated message socket handler in messages-edit.test.ts.
 
   describe('GET /api/channels/:cid/files', () => {
     beforeEach(async () => {

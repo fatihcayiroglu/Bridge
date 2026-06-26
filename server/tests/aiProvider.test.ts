@@ -5,6 +5,10 @@
 'use strict';
 process.env.NODE_ENV = 'test';
 
+jest.mock('../lib/fetch', () => ({
+  fetchT: jest.fn((...args) => global.fetch(...args)),
+}));
+
 // Ortam değişkenlerini test için ayarla
 const ORIGINAL_ENV = { ...process.env };
 

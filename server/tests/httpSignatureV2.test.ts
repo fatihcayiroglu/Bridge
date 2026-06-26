@@ -19,6 +19,7 @@ import crypto from 'crypto';
 const _peers: Record<string, unknown> = {};
 
 jest.mock('../db/loader', () => ({
+  __esModule: true,
   default: {
     federationPeers: {
       findOne: jest.fn(async ({ url }: { url: string }) => _peers[url] ?? null),
@@ -27,6 +28,7 @@ jest.mock('../db/loader', () => ({
 }));
 
 jest.mock('../lib/logger', () => ({
+  __esModule: true,
   default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
 

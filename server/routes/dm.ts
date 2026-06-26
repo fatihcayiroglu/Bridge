@@ -4,7 +4,7 @@ import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router     = express.Router();
 import { Dms, Users } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
-import { sanitizeUser } from './auth';
+import { sanitizeUser } from '../lib/userUtils';
 import { limits } from '../middleware/rateLimit';
 
 function getDmId(a: string, b: string): string { return [a, b].sort().join(':'); }
@@ -166,3 +166,4 @@ router.get('/:dmId/messages', authMiddleware, async (req, res) => {
 });
 
 export { router, getDmId };
+export default router;

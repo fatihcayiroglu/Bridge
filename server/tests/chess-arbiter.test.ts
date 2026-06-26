@@ -57,7 +57,7 @@ describe('getLegalMoves', () => {
     expect(count).toBe(20);
   });
 
-  it('pin — şahı tehdit eden taşın önündeki taş hareket edemez', () => {
+  it('pin — piyon yalnızca şahı koruyan hamleleri yapabilir', () => {
     // Elle kurulmuş pozisyon: beyaz kral e1, beyaz piyon e2, siyah kule e8
     const g = newGame(null, null);
     const board = emptyBoard();
@@ -66,7 +66,7 @@ describe('getLegalMoves', () => {
     board[0][4] = 'bR'; // e8 — pin eden
     const pinState = { ...g, board, turn: 'w' as const };
     const moves = getLegalMoves(pinState, 6, 4); // e2 piyonu
-    expect(moves.length).toBe(0);
+    expect(moves).toEqual([[5, 4], [4, 4]]);
   });
 
   it('rok — kral geçtiği kareye gidebilir', () => {

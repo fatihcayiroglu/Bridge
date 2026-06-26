@@ -54,7 +54,7 @@ beforeEach(() => {
 
 describe('handleApiError — HTTP Response', () => {
   const makeResponse = (status: number) =>
-    ({ ok: status < 400, status, headers: new Headers() } as Response);
+    new Response(null, { status });
 
   it('400 → error_bad_request, severity error', () => {
     handleApiError(makeResponse(400));

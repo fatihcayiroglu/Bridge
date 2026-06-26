@@ -3,11 +3,29 @@ process.env.JWT_SECRET     = 'test-jwt-secret';
 process.env.REFRESH_SECRET = 'test-refresh-secret';
 process.env.NODE_ENV       = 'test';
 
-jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
+jest.mock('../lib/permCache', () => ({ invalidatePerms: jest.fn() }));
+jest.mock('express-rate-limit', () => () => (_req, _res, next) => next());
+
+jest.mock('../db/loader', () => {
+  const mock = require('./helpers/mockDb').createMockDb();
+  mock._sqlite = {
+    transaction: (fn) => () => fn(),
+    prepare: () => ({
+      run: jest.fn(),
+      get: jest.fn().mockReturnValue(null),
+      all: jest.fn().mockReturnValue([]),
+    }),
+  };
+  return mock;
+});
+
 jest.mock('../lib/permissions', () => ({
-  resolvePermissions: jest.fn(),
-  hasPermission:      jest.fn(),
-  PERMS: { MANAGE_CHANNELS: 2, ADMINISTRATOR: 1 << 30 },
+  resolvePermissions: jest.fn().mockResolvedValue(2),
+  hasPermission: jest.fn().mockReturnValue(true),
+  PERMS: jest.requireActual('../lib/permissions').PERMS,
+  VALID_BITS: jest.requireActual('../lib/permissions').VALID_BITS,
+  validateBitmask: jest.requireActual('../lib/permissions').validateBitmask,
+  DEFAULT_PERMISSIONS: jest.requireActual('../lib/permissions').DEFAULT_PERMISSIONS ?? 0,
 }));
 
 import request from 'supertest';

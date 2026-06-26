@@ -17,8 +17,8 @@ jest.mock('../db/index', () => {
 });
 
 jest.mock('../routes/roles', () => ({
-  getMemberPerms: async () => 0xFFFFFFFF,
-  hasPermission:  () => true,
+  getMemberPerms: async () => 0,
+  hasPermission:  (perms, permission) => (perms & permission) === permission,
   PERMS: { MANAGE_MESSAGES: 32, SEND_MESSAGES: 16 },
 }));
 
@@ -203,7 +203,8 @@ describe('DELETE /api/messages/:id — mesaj sil', () => {
 
     expect(res.status).toBe(200);
     const deleted = await db.messages.findOne({ _id: msg._id });
-    expect(deleted).toBeNull();
+    expect(deleted).toMatchObject({ content: '[Mesaj silindi]', deletedBy: user._id });
+    expect(deleted.deletedAt).toBeDefined();
   });
 
   it('başkasının mesajını silemez', async () => {

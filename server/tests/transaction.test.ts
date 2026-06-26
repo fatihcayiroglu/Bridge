@@ -18,37 +18,30 @@ describe('db._transaction — SQLite', () => {
   let db;
 
   beforeAll(() => {
-    // Test için in-memory SQLite — dosyaya yazmaz
-    const Database = require('better-sqlite3');
-    const sqlite = new Database(':memory:');
+    let rows: Array<{ id: number; val: string }> = [];
+    let nextId = 1;
 
-    sqlite.pragma('journal_mode = WAL');
-    sqlite.pragma('foreign_keys = ON');
-
-    // Basit test tablosu
-    sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS tx_test (
-        id   INTEGER PRIMARY KEY AUTOINCREMENT,
-        val  TEXT NOT NULL
-      );
-    `);
-
-    // db mock — sadece _transaction için gereken minimum API
     db = {
-      _sqlite: sqlite,
       _transaction: function withTransaction(fn) {
-        const txFn = sqlite.transaction(() => fn(db));
-        return txFn();
+        const snapshot = rows.map((row) => ({ ...row }));
+        const nextIdSnapshot = nextId;
+        try {
+          return fn(db);
+        } catch (err) {
+          rows = snapshot;
+          nextId = nextIdSnapshot;
+          throw err;
+        }
       },
-      // Basit insert/select yardımcıları
       _insert(val) {
-        sqlite.prepare('INSERT INTO tx_test (val) VALUES (?)').run(val);
+        rows.push({ id: nextId++, val });
       },
       _count() {
-        return sqlite.prepare('SELECT count(*) as n FROM tx_test').get().n;
+        return rows.length;
       },
       _clear() {
-        sqlite.prepare('DELETE FROM tx_test').run();
+        rows = [];
+        nextId = 1;
       },
     };
   });

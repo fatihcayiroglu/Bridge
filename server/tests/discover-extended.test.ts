@@ -16,7 +16,13 @@ jest.mock('../lib/redisAdapter', () => ({
     async set(key: string, val: unknown) { (this._store as Map<string,string>).set(key, String(val)); },
     async del(key: string) { (this._store as Map<string,string>).delete(key); },
   },
+  subscribeToChannel: async () => () => {},
+  publishToChannel: async () => {},
   _pubClient: null,
+}));
+
+jest.mock('../middleware/rateLimit', () => ({
+  limits: { write: () => (_req: unknown, _res: unknown, next: () => void) => next() },
 }));
 
 import request    from 'supertest';

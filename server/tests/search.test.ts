@@ -26,9 +26,9 @@ const jwt     = require('jsonwebtoken');
 
 // Wire up _ftsSearch on the mock — simple JS filter
 const _msgStore: Record<string, unknown> = {};
-mockDb._ftsSearch = (_table, query, serverIds, limit = 20) => {
+mockDb._ftsSearch = (query, serverIds, limit = 20) => {
   return Object.values(_msgStore)
-    .filter(m => serverIds.includes(m.serverId) && m.content?.toLowerCase().includes(query.toLowerCase()))
+    .filter((m: any) => serverIds.includes(m.serverId) && m.content?.toLowerCase().includes(query.toLowerCase()))
     .slice(0, limit);
 };
 // intercept messages.insert to also update _msgStore
@@ -84,8 +84,8 @@ describe('GET /api/search', () => {
   it('finds users by displayName', async () => {
     const res = await request(app).get('/api/search?q=Search').set('Authorization', `Bearer ${token()}`);
     expect(res.status).toBe(200);
-    expect(res.body.users.length).toBe(1);
-    expect(res.body.users[0].username).toBe('searcher');
+    expect(res.body.members.length).toBe(1);
+    expect(res.body.members[0].username).toBe('searcher');
   });
 
   it('returns empty for short query (< 2 chars)', async () => {
@@ -93,7 +93,7 @@ describe('GET /api/search', () => {
     expect(res.status).toBe(200);
     expect(res.body.messages).toEqual([]);
     expect(res.body.channels).toEqual([]);
-    expect(res.body.users).toEqual([]);
+    expect(res.body.members).toEqual([]);
   });
 
   it('scopes to serverId — hides messages from other servers', async () => {
@@ -107,7 +107,7 @@ describe('GET /api/search', () => {
     const res = await request(app).get('/api/search?q=general&type=channels').set('Authorization', `Bearer ${token()}`);
     expect(res.status).toBe(200);
     expect(res.body.channels).toBeDefined();
-    expect(res.body.messages).toBeUndefined();
+    expect(res.body.messages).toEqual([]);
   });
 
   it('rejects unauthenticated', async () => {

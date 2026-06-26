@@ -165,7 +165,7 @@ describe('markGameOver / claimBlack (Redis mock)', () => {
   });
 
   it('Redis mevcut iken markGameOver luaEval=1 → true döner', async () => {
-    jest.mock('../lib/redisAdapter', () => ({
+    jest.doMock('../lib/redisAdapter', () => ({
       isRedisAvailable: () => true,
       cache: {
         luaEval: mockLuaEval.mockResolvedValue(1),
@@ -184,11 +184,11 @@ describe('markGameOver / claimBlack (Redis mock)', () => {
     expect(mockLuaEval).toHaveBeenCalledTimes(1);
     expect(mockDel).toHaveBeenCalledTimes(1);
 
-    jest.unmock('../lib/redisAdapter');
+    jest.dontMock('../lib/redisAdapter');
   });
 
   it('Redis mevcut iken markGameOver luaEval=0 → false döner', async () => {
-    jest.mock('../lib/redisAdapter', () => ({
+    jest.doMock('../lib/redisAdapter', () => ({
       isRedisAvailable: () => true,
       cache: {
         luaEval: mockLuaEval.mockResolvedValue(0),
@@ -205,11 +205,11 @@ describe('markGameOver / claimBlack (Redis mock)', () => {
     expect(ok).toBe(false);
     expect(mockDel).not.toHaveBeenCalled();
 
-    jest.unmock('../lib/redisAdapter');
+    jest.dontMock('../lib/redisAdapter');
   });
 
   it('Redis mevcut iken claimBlack luaEval=1 → true döner', async () => {
-    jest.mock('../lib/redisAdapter', () => ({
+    jest.doMock('../lib/redisAdapter', () => ({
       isRedisAvailable: () => true,
       cache: {
         luaEval: mockLuaEval.mockResolvedValue(1),
@@ -226,11 +226,11 @@ describe('markGameOver / claimBlack (Redis mock)', () => {
     expect(ok).toBe(true);
     expect(mockLuaEval).toHaveBeenCalledTimes(1);
 
-    jest.unmock('../lib/redisAdapter');
+    jest.dontMock('../lib/redisAdapter');
   });
 
   it('luaEval hata fırlatırsa in-memory fallback devreye girer', async () => {
-    jest.mock('../lib/redisAdapter', () => ({
+    jest.doMock('../lib/redisAdapter', () => ({
       isRedisAvailable: () => true,
       cache: {
         luaEval: mockLuaEval.mockRejectedValue(new Error('Redis bağlantı hatası')),
@@ -247,7 +247,7 @@ describe('markGameOver / claimBlack (Redis mock)', () => {
     const ok = await store.markGameOver('ch-redis-err');
     expect(ok).toBe(false);
 
-    jest.unmock('../lib/redisAdapter');
+    jest.dontMock('../lib/redisAdapter');
   });
 });
 

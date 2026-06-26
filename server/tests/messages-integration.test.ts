@@ -171,7 +171,7 @@ describe('messages socket integration', () => {
 
     expect(io._emitted.some(e => e.ev === 'message:reaction')).toBe(true);
 
-    await socket._trigger('message:pin', { messageId, channelId: channel._id });
+    await socket._trigger('message:pin', { messageId, channelId: channel._id, serverId: server._id });
     expect(io._emitted.some(e => e.ev === 'message:pinned')).toBe(true);
   });
 });

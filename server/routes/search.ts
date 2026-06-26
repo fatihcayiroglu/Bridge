@@ -136,7 +136,7 @@ router.get('/', authMiddleware, limits.search(), async (req: Request, res: Respo
   const PAGE   = Math.min(50, Math.max(1, parseInt(String(req.query.limit  ?? '')) || 25));
   const offset = Math.max(0,              parseInt(String(req.query.offset ?? '')) || 0);
 
-  if (!rawQ || rawQ.length < 1)
+  if (!rawQ || rawQ.length < 2)
     return res.json({ messages: [], channels: [], members: [], hasMore: false });
 
   // Caller'ın üye olduğu sunucuları al — temel erişim denetimi

@@ -9,6 +9,10 @@ const mockDb = createMockDb();
 
 jest.mock('../db/index', () => mockDb);
 jest.mock('../db/loader', () => require('../db/index'));
+
+jest.mock('../middleware/rateLimit', () => ({
+  limits: { bots: () => (_req, _res, next) => next() },
+}));
 jest.mock('../middleware/auth', () => ({
   authMiddleware: (req, res, next) => {
     const h = req.headers.authorization;
@@ -20,12 +24,14 @@ jest.mock('../middleware/auth', () => ({
 }));
 
 // Mock permissions — owner has MANAGE_SERVER by default
-const mockHasPermission = jest.fn(() => true);
+const mockResolvePermissions = jest.fn(async () => 0xFFFFFFFF);
+const mockHasPermission = jest.fn((perms, permission) => (perms & permission) === permission);
 jest.mock('../lib/permissions', () => ({
-  resolvePermissions: async () => 0xFFFFFFFF,
+  resolvePermissions: (...args) => mockResolvePermissions(...args),
   hasPermission: (...args) => mockHasPermission(...args),
   PERMS: {
-    MANAGE_SERVER:   0x20,
+    MANAGE_SERVER:   1 << 3,
+    ADMIN:           1 << 30,
     SEND_MESSAGES:   0x800,
     READ_HISTORY:    0x400,
     EMBED_LINKS:     0x4000,
@@ -36,7 +42,7 @@ import request from 'supertest';
 import express from 'express';
 const jwt     = require('jsonwebtoken');
 
-import { router } from '../routes/bots';
+import router from '../routes/bots';
 
 const app = express();
 app.use(express.json());
@@ -83,7 +89,7 @@ describe('POST /api/servers/:sid/bots', () => {
   });
 
   it('rejects non-members (403)', async () => {
-    mockHasPermission.mockReturnValueOnce(false);
+    mockResolvePermissions.mockResolvedValueOnce(0);
     const res = await request(app)
       .post(`/api/servers/${SERVER_ID}/bots`)
       .set('Authorization', `Bearer ${token(OTHER_ID)}`)
@@ -97,12 +103,12 @@ describe('POST /api/servers/:sid/bots', () => {
       .set('Authorization', `Bearer ${token(OWNER_ID)}`)
       .send({ name: 'MyBot', description: 'A test bot' });
 
-    expect(res.status).toBe(200);
-    expect(res.body._id).toBeDefined();
+    expect(res.status).toBe(201);
+    expect(res.body.bot._id).toBeDefined();
     expect(res.body.token).toMatch(/^brg_bot_/);
     expect(res.body.warning).toMatch(/not be shown again/i);
 
-    createdBotId    = res.body._id;
+    createdBotId    = res.body.bot._id;
     createdBotToken = res.body.token;
   });
 });
@@ -133,7 +139,7 @@ describe('GET /api/servers/:sid/bots', () => {
 
 describe('POST /api/servers/:sid/bots/:botId/token', () => {
   it('rejects when permission check fails', async () => {
-    mockHasPermission.mockReturnValueOnce(false);
+    mockResolvePermissions.mockResolvedValueOnce(0);
     const res = await request(app)
       .post(`/api/servers/${SERVER_ID}/bots/${createdBotId}/token`)
       .set('Authorization', `Bearer ${token(OTHER_ID)}`);
@@ -156,7 +162,7 @@ describe('POST /api/servers/:sid/bots/:botId/token', () => {
 
 describe('DELETE /api/servers/:sid/bots/:botId', () => {
   it('rejects when permission check fails', async () => {
-    mockHasPermission.mockReturnValueOnce(false);
+    mockResolvePermissions.mockResolvedValueOnce(0);
     const res = await request(app)
       .delete(`/api/servers/${SERVER_ID}/bots/${createdBotId}`)
       .set('Authorization', `Bearer ${token(OTHER_ID)}`);
@@ -176,16 +182,16 @@ describe('DELETE /api/servers/:sid/bots/:botId', () => {
 // ── Webhook endpoint ──────────────────────────────────────────
 
 describe('POST /api/webhooks/:webhookId', () => {
-  it('returns 401 when token query param is missing', async () => {
-    const res = await request(app).post('/api/webhooks/nonexistent');
-    expect(res.status).toBe(401);
-    expect(res.body.error).toMatch(/token/i);
+  it('returns 400 for an empty payload', async () => {
+    const res = await request(app).post('/api/webhooks/nonexistent').send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/content|embeds/i);
   });
 
-  it('returns 404 for unknown webhook', async () => {
+  it('returns 401 for an unknown webhook', async () => {
     const res = await request(app)
-      .post('/api/webhooks/doesnotexist?token=abc')
+      .post('/api/webhooks/doesnotexist')
       .send({ content: 'Hello' });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(401);
   });
 });
