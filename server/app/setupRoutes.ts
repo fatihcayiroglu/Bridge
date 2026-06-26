@@ -25,6 +25,7 @@ import statsRouter                          from '../routes/stats';
 import threadsRouter                        from '../routes/threads';
 import usersRouter                          from '../routes/users';
 import botsRouter                           from '../routes/bots';
+import bridgeRouter                         from '../routes/bridge';
 import botMarketplaceRouter                 from '../routes/bot-marketplace'; // Sprint 83
 import webhooksRouter                       from '../routes/webhooks';
 import pollsRouter                          from '../routes/polls';
@@ -117,6 +118,7 @@ export function setupRoutes(app: Application): void {
   mountApi('/servers', botsRouter);
   mountApi('/bot', botsRouter);
   mountApi('/bots', botsRouter);
+  mountApi('/bridges', bridgeRouter);
   mountApi('/bots/marketplace', botMarketplaceRouter); // Sprint 83: marketplace catalog
   mountApi('/push', pushRouter);
   mountApi('/channels', pollsRouter);
