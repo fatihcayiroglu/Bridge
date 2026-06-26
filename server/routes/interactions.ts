@@ -73,8 +73,10 @@ router.post('/', authMiddleware, limits.write(), async (req: Request, res: Respo
   if (!VALID_TYPES.includes(type as string))
     return void res.status(400).json({ error: 'Invalid interaction type' });
 
-  if (['button', 'select', 'modal_submit'].includes(type as string) && !messageId && !customId)
-    return void res.status(400).json({ error: 'messageId and customId required' });
+  if (['button', 'select', 'modal_submit'].includes(type as string) && !messageId)
+    return void res.status(400).json({ error: 'messageId required' });
+  if (['button', 'select', 'modal_submit'].includes(type as string) && !customId)
+    return void res.status(400).json({ error: 'customId required' });
 
   let bot: BotRow | null = null;
   let msg: { botId?: string | null } | null = null;

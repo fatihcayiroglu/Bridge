@@ -12,8 +12,8 @@ jest.mock('../db/repositories', () => {
   _dbInstance = createMockDb();
 
   const ScheduledMessages = {
-    findDueBefore: (ts) => _dbInstance.scheduled_msgs.find({ sent: false, sendAt: { $lte: ts } }),
-    markSent:      (id, ts) => _dbInstance.scheduled_msgs.update({ _id: id }, { $set: { sent: true, sentAt: ts } }),
+    findDueBefore: (ts) => _dbInstance.scheduledMsgs.find({ sent: false, sendAt: { $lte: ts } }),
+    markSent:      (id, ts) => _dbInstance.scheduledMsgs.update({ _id: id }, { $set: { sent: true, sentAt: ts } }),
   };
   const Users = {
     findById: (id) => _dbInstance.users.findOne({ _id: id }),
@@ -25,8 +25,7 @@ jest.mock('../db/repositories', () => {
   return { ScheduledMessages, Users, Messages, _db: _dbInstance };
 });
 
-import repos from '../db/repositories';
-import { startScheduledJob } from '../jobs/scheduledMessages';
+import { startScheduledJob, stopScheduledJob } from '../jobs/scheduledMessages';
 
 // Expose dispatchDue by monkey-patching module internals via re-require trick:
 // Instead, we test through the exported startScheduledJob by using fake timers.
@@ -46,19 +45,35 @@ async function seedScheduledMsg(overrides = {}) {
     sent:        false,
     ...overrides,
   };
-  await repos._db.scheduled_msgs.insert(doc);
+  await _dbInstance.scheduledMsgs.insert(doc);
   return doc;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────
 
 describe('startScheduledJob', () => {
-  beforeEach(() => repos._db._reset());
+  beforeEach(() => _dbInstance._reset());
+
+  afterEach(() => {
+    stopScheduledJob();
+    jest.useRealTimers();
+  });
 
   it('does not throw when called with null io', () => {
     jest.useFakeTimers();
     expect(() => startScheduledJob(null)).not.toThrow();
     jest.useRealTimers();
+  });
+
+  it('does not schedule duplicate intervals', () => {
+    jest.useFakeTimers();
+    const setIntervalSpy = jest.spyOn(global, 'setInterval');
+
+    startScheduledJob(null);
+    startScheduledJob(null);
+
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+    setIntervalSpy.mockRestore();
   });
 
   it('dispatches due scheduled messages on interval tick', async () => {
@@ -71,7 +86,7 @@ describe('startScheduledJob', () => {
     // Advance past the 30s interval
     await jest.advanceTimersByTimeAsync(31_000);
 
-    const msgs = await repos._db.messages.find({ channelId: 'ch1' });
+    const msgs = await _dbInstance.messages.find({ channelId: 'ch1' });
     expect(msgs.length).toBeGreaterThan(0);
     expect(msgs[0].content).toBe('hello scheduled world');
 
@@ -85,7 +100,7 @@ describe('startScheduledJob', () => {
     startScheduledJob(null);
     await jest.advanceTimersByTimeAsync(31_000);
 
-    const updated = await repos._db.scheduled_msgs.findOne({ _id: sched._id });
+    const updated = await _dbInstance.scheduledMsgs.findOne({ _id: sched._id });
     expect(updated.sent).toBe(true);
     expect(updated.sentAt).toBeGreaterThan(0);
 
@@ -99,7 +114,7 @@ describe('startScheduledJob', () => {
     startScheduledJob(null);
     await jest.advanceTimersByTimeAsync(31_000);
 
-    const msgs = await repos._db.messages.find({ channelId: 'ch1' });
+    const msgs = await _dbInstance.messages.find({ channelId: 'ch1' });
     expect(msgs).toHaveLength(0);
 
     jest.useRealTimers();
@@ -112,7 +127,7 @@ describe('startScheduledJob', () => {
     startScheduledJob(null);
     await jest.advanceTimersByTimeAsync(31_000);
 
-    const msgs = await repos._db.messages.find({ channelId: 'ch1' });
+    const msgs = await _dbInstance.messages.find({ channelId: 'ch1' });
     expect(msgs).toHaveLength(0);
 
     jest.useRealTimers();
@@ -136,7 +151,7 @@ describe('startScheduledJob', () => {
   it('uses user profile data when user exists in DB', async () => {
     jest.useFakeTimers();
     const userId = uuidv4();
-    await repos._db.users.insert({
+    await _dbInstance.users.insert({
       _id: userId, username: 'realuser', displayName: 'Real User', avatarColor: '#ff0000',
     });
     await seedScheduledMsg({ userId, username: 'old-name', displayName: 'Old Name' });
@@ -144,7 +159,7 @@ describe('startScheduledJob', () => {
     startScheduledJob(null);
     await jest.advanceTimersByTimeAsync(31_000);
 
-    const msgs = await repos._db.messages.find({ userId });
+    const msgs = await _dbInstance.messages.find({ userId });
     expect(msgs[0].username).toBe('realuser');
     expect(msgs[0].displayName).toBe('Real User');
 
@@ -158,7 +173,7 @@ describe('startScheduledJob', () => {
     startScheduledJob(null);
     await jest.advanceTimersByTimeAsync(31_000);
 
-    const msgs = await repos._db.messages.find({});
+    const msgs = await _dbInstance.messages.find({});
     expect(msgs[0].username).toBe('ghost');
     expect(msgs[0].displayName).toBe('Ghost User');
 
@@ -172,7 +187,7 @@ describe('startScheduledJob', () => {
     startScheduledJob(null);
     await jest.advanceTimersByTimeAsync(31_000);
 
-    const msgs = await repos._db.messages.find({});
+    const msgs = await _dbInstance.messages.find({});
     expect(msgs[0].scheduledId).toBe(sched._id);
 
     jest.useRealTimers();

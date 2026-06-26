@@ -29,7 +29,7 @@ function remindKey(eventId: string, windowMin: number): string {
   return `evtremind:${eventId}:${windowMin}`;
 }
 
-async function sendEventReminders(): Promise<void> {
+export async function sendEventReminders(): Promise<void> {
   const now = new Date();
 
   for (const windowMin of REMIND_WINDOWS_MIN) {
@@ -125,6 +125,8 @@ let _reminderInterval: ReturnType<typeof setInterval> | null = null;
 let _reminderInitTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function startEventReminderJob(): void {
+  if (_reminderInitTimer !== null || _reminderInterval !== null) return;
+
   // İlk çalışmayı biraz geciktir — server tam ayağa kalksın (15s: app boot süresi marjı)
   _reminderInitTimer = setTimeout(() => {
     _reminderInitTimer = null;
@@ -136,7 +138,9 @@ export function startEventReminderJob(): void {
         logger.error({ err }, '[EventReminder] Interval hatası'),
       );
     }, 60_000); // Her dakika kontrol et
+    _reminderInterval.unref?.();
   }, 15_000);
+  _reminderInitTimer.unref?.();
 
   logger.info('   ✅ Event Reminder Job (1m interval, windows: 5m + 15m)');
 }

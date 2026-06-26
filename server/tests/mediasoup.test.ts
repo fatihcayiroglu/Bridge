@@ -674,3 +674,22 @@ describe('workers — _checkScaling (scale-up / scale-down davranışı)', () =>
     delete process.env.SFU_SCALE_CHECK_MS;
   });
 });
+
+
+describe('rooms — test cleanup lifecycle', () => {
+  it('rooms_reset_cleans_pending_cleanup_timer', async () => {
+    await initMediasoup(mediasoupModule, { codecs: [] }, 1);
+    const room = await getOrCreateRoom('ch-pending-cleanup');
+    const peer = makePeer({ channelId: 'ch-pending-cleanup', userId: 'u-pending-cleanup' });
+    room.peers.set('socket-pending-cleanup', peer);
+    sfuPeers.set('socket-pending-cleanup', peer);
+
+    await cleanupPeer('socket-pending-cleanup', makeIo(), 'ch-pending-cleanup', undefined);
+
+    const clearTimeoutSpy = jest.spyOn(global, 'clearTimeout');
+    _resetRoomsForTest();
+
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+    clearTimeoutSpy.mockRestore();
+  });
+});

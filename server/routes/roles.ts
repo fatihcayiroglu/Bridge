@@ -311,3 +311,4 @@ router.post('/:sid/members/:uid/kick', authMiddleware, limits.roles(), async (re
 });
 
 export { router, getMemberPerms, hasPermission, PERMS, resolvePermissions, canActOn, logAudit };
+export default router;

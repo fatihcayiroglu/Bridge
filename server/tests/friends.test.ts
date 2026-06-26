@@ -9,6 +9,54 @@ const mockDb = createMockDb();
 
 jest.mock('../db/index', () => mockDb);
 jest.mock('../db/loader', () => require('../db/index'));
+jest.mock('../db/repositories', () => ({
+  Users: {
+    findByUsername: async (username) => mockDb.users.findOne({ username }),
+    findByIds: async (ids) => {
+      const users = [];
+      for (const id of ids || []) {
+        const user = await mockDb.users.findOne({ _id: id });
+        if (user) users.push(user);
+      }
+      return users;
+    },
+  },
+  Social: {
+    findFriendship: async (userId, otherId) => mockDb.friendships.findOne({
+      $or: [
+        { userId, friendId: otherId },
+        { userId: otherId, friendId: userId },
+      ],
+    }),
+    findFriendshipById: async (friendshipId) => mockDb.friendships.findOne({ _id: friendshipId }),
+    findFriendships: async (userId) => {
+      const query: any = mockDb.friendships.find({
+        $or: [{ userId }, { friendId: userId }],
+      });
+      if (Array.isArray(query)) return query;
+      if (query && typeof query.toArray === 'function') return await query.toArray();
+      if (query && typeof query.all === 'function') return await query.all();
+      if (query && typeof query.exec === 'function') return await query.exec();
+      if (query && typeof query.then === 'function') return await query;
+      throw new Error('Mock friendship query cannot be materialized');
+    },
+    createFriendship: async (userId, friendId) => mockDb.friendships.insert({
+      userId,
+      friendId,
+      status: 'pending',
+      createdAt: Date.now(),
+    }),
+    acceptFriendship: async (friendshipId) => mockDb.friendships.update(
+      { _id: friendshipId },
+      { $set: { status: 'accepted' } },
+    ),
+    declineFriendship: async (friendshipId) => mockDb.friendships.update(
+      { _id: friendshipId },
+      { $set: { status: 'declined' } },
+    ),
+    removeFriendship: async (friendshipId) => mockDb.friendships.remove({ _id: friendshipId }),
+  },
+}));
 jest.mock('../middleware/auth', () => ({
   authMiddleware: (req, res, next) => {
     const h = req.headers.authorization;
@@ -73,7 +121,7 @@ describe('POST /api/friends/request', () => {
       .set('Authorization', `Bearer ${token('ua')}`)
       .send({ username: 'alice' });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/yourself/i);
+    expect(res.body.error).toMatch(/kendinize|yourself/i);
   });
 
   it('rejects unknown user', async () => {
@@ -146,6 +194,14 @@ describe('POST /api/friends/:id/accept', () => {
     const newReq = await mockDb.friendships.insert({ userId: 'ua', friendId: 'uc', status: 'pending', createdAt: Date.now() });
     const res = await request(app)
       .post(`/api/friends/${newReq._id}/accept`)
+      .set('Authorization', `Bearer ${token('ub')}`); // bob, not carol
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects decline by a third party', async () => {
+    const newReq = await mockDb.friendships.insert({ userId: 'ua', friendId: 'uc', status: 'pending', createdAt: Date.now() });
+    const res = await request(app)
+      .post(`/api/friends/${newReq._id}/decline`)
       .set('Authorization', `Bearer ${token('ub')}`); // bob, not carol
     expect(res.status).toBe(404);
   });

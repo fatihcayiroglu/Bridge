@@ -94,7 +94,7 @@ setInterval(() => {
       if (now - rec.firstAt > 3_600_000) _ipViolationsFallback.delete(ip);
     }
   }
-}, 2 * 60_000);
+}, 2 * 60_000).unref?.();
 
 /**
  * IP bazlı rate check. İhlal sayısı AUTO_BAN_THRESHOLD'u aşarsa otomatik geçici ban uygular.

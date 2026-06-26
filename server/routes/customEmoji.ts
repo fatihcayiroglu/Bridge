@@ -215,7 +215,7 @@ router.post('/', authMiddleware, limits.write(), (req, res, next) => {
     return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-  const name = (req.body.name || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 32);
+  const name = (req.body?.name || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 32);
   if (!name) return res.status(400).json({ error: 'Emoji name required (a-z, 0-9, _)' });
 
   // Check dupe

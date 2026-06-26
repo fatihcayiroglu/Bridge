@@ -68,14 +68,14 @@ setInterval(() => {
   for (const [channelId, peers] of voiceRooms.entries()) {
     if (!peers || peers.length === 0) voiceRooms.delete(channelId);
   }
-}, 10 * 60_000);
+}, 10 * 60_000).unref?.();
 
 // socketUsers boyut izleyici
 setInterval(() => {
   if (socketUsers.size > 10_000) {
     logger.warn(`[Socket] ⚠️ socketUsers Map boyutu yüksek: ${socketUsers.size}`);
   }
-}, 5 * 60_000);
+}, 5 * 60_000).unref?.();
 
 let _io: import('socket.io').Server | null = null;
 function getIo(): import('socket.io').Server | null { return _io; }

@@ -16,6 +16,7 @@ export function escapeHtml(str: unknown): string {
 export function sanitizeMessage(content: unknown): string {
   if (typeof content !== 'string') return '';
   return content
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '')
     .replace(/<[^>]*>/g, '')
     .replace(/javascript:/gi, '')
     .replace(/data:/gi, '')
@@ -126,7 +127,7 @@ function _checkSpamSync(userId: string, content: string, state: SpamState): { re
 export async function checkSpamAsync(userId: string, content: string): Promise<SpamResult> {
   const redisKey = `security:spam:${userId}`;
   const stored = await redisGet<SpamState>(redisKey);
-  const state: SpamState = stored ?? { messages: [], warned: false, muteUntil: 0 };
+  const state: SpamState = stored ?? spamMap.get(userId) ?? { messages: [], warned: false, muteUntil: 0 };
   const { result, state: newState } = _checkSpamSync(userId, content, state);
   const ttl = Math.ceil(Math.max(SPAM_CONFIG.windowMs, newState.muteUntil - Date.now(), 0) / 1000) + 5;
   const saved = await redisSet(redisKey, newState, ttl || 120);

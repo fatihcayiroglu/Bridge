@@ -3,14 +3,19 @@
 process.env.NODE_ENV = 'test';
 
 // ── Logger mock ───────────────────────────────────────────────────────────────
-jest.mock('../lib/logger', () => ({
-  __esModule: true,
-  default: {
+jest.mock('../lib/logger', () => {
+  const logger = {
     info:  jest.fn(),
     warn:  jest.fn(),
     error: jest.fn(),
-  },
-}));
+    debug: jest.fn(),
+  };
+  return {
+    __esModule: true,
+    default: logger,
+    createLogger: jest.fn(() => logger),
+  };
+});
 
 // ── DB / pool mock (sorgu yapmayacağız ama import gerekli) ────────────────────
 const mockPoolQuery = jest.fn().mockResolvedValue({ rows: [] });
@@ -76,7 +81,7 @@ describe('Graceful Shutdown — Job stop fonksiyonları', () => {
   // ── AutoModeration ─────────────────────────────────────────────────────────
 
   describe('AutoModerationJob', () => {
-    it('stopAutoModerationJob() ilk kez çağrılınca interval'ı temizler (hata atmaz)', () => {
+    it('stopAutoModerationJob() ilk kez çağrılınca interval\'ı temizler (hata atmaz)', () => {
       startAutoModerationJob(mockIo);
       expect(() => stopAutoModerationJob()).not.toThrow();
     });

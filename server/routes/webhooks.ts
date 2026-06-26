@@ -85,7 +85,7 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 
   const webhooks = await ChannelWebhooks.findByChannel(channelId);
-  res.json(webhooks);
+  res.json(webhooks.map(({ token: _token, ...safe }) => safe));
 });
 
 router.post('/', authMiddleware, limits.webhooks(), async (req, res) => {
@@ -155,6 +155,11 @@ router.delete('/:webhookId', authMiddleware, async (req, res) => {
   const perms = await resolvePermissions(_u.id, channel.serverId);
   if (!hasPermission(perms, PERMS.MANAGE_WEBHOOKS) && !hasPermission(perms, PERMS.ADMIN)) {
     return res.status(403).json({ error: 'No permission' });
+  }
+
+  const webhook = await ChannelWebhooks.findById(webhookId) as { channelId?: string } | null;
+  if (!webhook || webhook.channelId !== channelId) {
+    return res.status(404).json({ error: 'Webhook not found' });
   }
 
   await ChannelWebhooks.delete(webhookId, channelId);

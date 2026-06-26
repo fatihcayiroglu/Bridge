@@ -57,7 +57,7 @@ const _stateMap = new Map<string, { userId: string; ts: number }>();
 setInterval(() => {
   const cutoff = Date.now() - 10 * 60 * 1000;
   for (const [k, v] of _stateMap) { if (v.ts < cutoff) _stateMap.delete(k); }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000).unref?.();
 
 // ── GET /oauth/spotify — OAuth başlat ─────────────────────────────────────────
 router.get('/spotify', authMiddleware, (req, res) => {

@@ -91,15 +91,20 @@ describe('handleDisconnect — typingTimers', () => {
 
     const timer1 = setTimeout(() => {}, 99999);
     const timer2 = setTimeout(() => {}, 99999);
+    const otherUserTimer = setTimeout(() => {}, 99999);
     ctx.typingTimers.set(`ch-1:${user._id}`, timer1);
     ctx.typingTimers.set(`ch-2:${user._id}`, timer2);
-    ctx.typingTimers.set('ch-1:other-user', setTimeout(() => {}, 99999)); // başkası
+    ctx.typingTimers.set('ch-1:other-user', otherUserTimer); // başkası
 
-    await handleDisconnect(socket, user, ctx);
+    try {
+      await handleDisconnect(socket, user, ctx);
 
-    expect(ctx.typingTimers.has(`ch-1:${user._id}`)).toBe(false);
-    expect(ctx.typingTimers.has(`ch-2:${user._id}`)).toBe(false);
-    expect(ctx.typingTimers.has('ch-1:other-user')).toBe(true); // başkası korunur
+      expect(ctx.typingTimers.has(`ch-1:${user._id}`)).toBe(false);
+      expect(ctx.typingTimers.has(`ch-2:${user._id}`)).toBe(false);
+      expect(ctx.typingTimers.has('ch-1:other-user')).toBe(true); // başkası korunur
+    } finally {
+      clearTimeout(otherUserTimer);
+    }
   });
 
   it('typing timer\'ı olmayan kullanıcı için hata oluşmaz', async () => {

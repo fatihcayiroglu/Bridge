@@ -93,7 +93,7 @@ export function decryptApPrivateKey(encoded: string): string | null {
     const key = _loadKey();
     const buf = Buffer.from(encoded, 'base64');
 
-    if (buf.length < IV_LEN + TAG_LEN + 1) {
+    if (buf.length < IV_LEN + TAG_LEN) {
       logger.warn({ event: 'ap_key.decrypt.too_short' }, '[apKeyEncryption] Encrypted blob too short');
       return null;
     }

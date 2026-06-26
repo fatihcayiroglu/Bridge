@@ -326,6 +326,7 @@ export declare class NotificationRepository {
 
 export declare class SocialRepository {
   findFriendship(userId: UUID, otherId: UUID): Promise<Friendship | null>;
+  findFriendshipById(friendshipId: UUID): Promise<Friendship | null>;
   findFriendships(userId: UUID): Promise<Friendship[]>;
   insertFriendship(userId: UUID, friendId: UUID, status?: Friendship['status']): Promise<Friendship>;
   updateFriendship(id: UUID, fields: Partial<Friendship>): Promise<void>;

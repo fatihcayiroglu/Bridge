@@ -175,7 +175,7 @@ function registerDmHandlers(socket: Socket, io: Server, user: { _id: string; use
           io.to(sid).emit('dm:call:missed', { callId });
         }
       }
-    }, 30_000);
+    }, 30_000).unref();
   });
 
   // ── DM CALL: Accept ───────────────────────────────────────

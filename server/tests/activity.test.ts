@@ -45,8 +45,7 @@ jest.mock('../lib/contentSanitizer', () => ({
   isCleanString: (value: unknown) => typeof value === 'string',
 }));
 
-// Mock index.js (for io access)
-jest.mock('../index', () => ({ app: { get: () => null } }), { virtual: true });
+jest.mock('../socket', () => ({ getIo: () => null }));
 
 import request from 'supertest';
 import express from 'express';

@@ -166,11 +166,7 @@ describe('POST /api/voice-messages', () => {
 
   it('rejects unauthenticated requests', async () => {
     const res = await request(app)
-      .post('/api/voice-messages')
-      .attach('audio', FAKE_AUDIO, { contentType: 'audio/webm' })
-      .field('channelId', CHAN_ID)
-      .field('serverId', SERVER_ID);
-    // No auth header → authMiddleware returns 401
+      .post('/api/voice-messages');
     expect(res.status).toBe(401);
   });
 });

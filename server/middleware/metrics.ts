@@ -324,7 +324,7 @@ if (ENABLED) {
       logger.warn(`[Metrics] ⚠️  Rate limit anomali tespiti: skor=${score.toFixed(2)} (anlık=${shortRate.toFixed(2)}/sn, baseline=${longRate.toFixed(2)}/sn)`);
     }
     _recordRateLimitForAnomaly();
-  }, ANOMALY_CHECK_INTERVAL_MS);
+  }, ANOMALY_CHECK_INTERVAL_MS).unref?.();
 }
 
 export const isEnabled = (): boolean => ENABLED && !!registry;

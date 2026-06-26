@@ -158,7 +158,7 @@ setInterval(() => {
   for (const [ip, rec] of _httpViolationsMem) {
     if (now - rec.firstAt > 3_600_000) _httpViolationsMem.delete(ip);
   }
-}, 10 * 60_000);
+}, 10 * 60_000).unref();
 
 const VIOLATION_KEY_TTL = 3600;
 
@@ -329,7 +329,7 @@ export function pruneMemStore(): void {
   }
 }
 
-setInterval(pruneMemStore, 5 * 60_000);
+setInterval(pruneMemStore, 5 * 60_000).unref();
 
 // ── Kısa yardımcılar ─────────────────────────────────────────
 // _ip  → yalnızca IP (kimlik doğrulanmamış endpointler: login, register, 2FA)

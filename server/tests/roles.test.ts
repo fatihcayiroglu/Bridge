@@ -16,7 +16,7 @@ import rolesRouter from '../routes/roles';
 function buildApp() {
   const app = express();
   app.use(express.json());
-  app.use('/api/servers/:sid/roles', authMiddleware, rolesRouter);
+  app.use('/api/servers', rolesRouter);
   return app;
 }
 function tok(uid) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
@@ -143,18 +143,18 @@ describe('Roles Routes', () => {
 
     it('owner can assign role to member', async () => {
       const res = await request(app)
-        .post(`/api/servers/${serverId}/roles/${roleId}/assign`)
+        .post(`/api/servers/${serverId}/members/${memberId}/roles`)
         .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ userId: memberId });
+        .send({ roleId });
       expect(res.status).toBe(200);
     });
 
     it('returns 400 when assigning to non-member', async () => {
       const stranger = uuidv4();
       const res = await request(app)
-        .post(`/api/servers/${serverId}/roles/${roleId}/assign`)
+        .post(`/api/servers/${serverId}/members/${stranger}/roles`)
         .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ userId: stranger });
+        .send({ roleId });
       expect([400, 404]).toContain(res.status);
     });
   });

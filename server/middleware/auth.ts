@@ -248,23 +248,30 @@ export async function revokeAllRefreshTokens(userId: string): Promise<void> {
 // Artık yalnızca startAuthCleanup() çağrıldığında başlar — test ortamlarında
 // birden fazla import olursa birden fazla timer oluşmaz.
 // server/index.ts'te uygulama başlarken çağrılması gerekir.
-let _authCleanupStarted = false;
+let _authCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
 export function startAuthCleanup(): void {
-  if (_authCleanupStarted) return; // idempotent
-  _authCleanupStarted = true;
-  setInterval(async () => {
+  if (_authCleanupTimer !== null) return;
+  _authCleanupTimer = setInterval(async () => {
     try {
       const now = Date.now();
       await Auth.removeRefreshTokensWhere({ expiresAt: { $lt: now } });
       await Auth.removeRefreshTokensWhere({ used: true, usedAt: { $lt: now - 5 * 60_000 } });
     } catch { /* ignore */ }
-  }, 5 * 60 * 1000); // Sprint 121 FIX 23: her 5 dakikada çalış (önceki 60dk — aktif saldırıda geç kaldı)
+  }, 5 * 60 * 1000);
+  _authCleanupTimer.unref?.();
+}
+
+export function stopAuthCleanup(): void {
+  if (_authCleanupTimer !== null) {
+    clearInterval(_authCleanupTimer);
+    _authCleanupTimer = null;
+  }
 }
 
 /** @internal — sadece testlerde kullanılır */
 export function _resetAuthCleanupForTest(): void {
-  _authCleanupStarted = false;
+  stopAuthCleanup();
 }
 
 export function verifyToken(token: string): JwtPayload | null {

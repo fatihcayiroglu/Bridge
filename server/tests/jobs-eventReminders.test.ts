@@ -89,23 +89,42 @@ function resetAll() {
   Object.keys(mockCacheStore).forEach(k => delete mockCacheStore[k]);
   mockPoolQuery.mockClear();
   jest.clearAllMocks();
+  mockSendPushToUser.mockResolvedValue(undefined);
 }
 
 // ── Import after mocks ────────────────────────────────────────────────────────
 
-import { startEventReminderJob } from '../jobs/eventReminders';
+import { sendEventReminders, startEventReminderJob, stopEventReminderJob } from '../jobs/eventReminders';
+import { ServerEvents } from '../db/repositories/ServerEventRepository';
 import { cache } from '../lib/redisAdapter';
 import { sendPushToUser } from '../lib/pushSender';
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('startEventReminderJob', () => {
-  beforeEach(resetAll);
+  beforeEach(() => {
+    stopEventReminderJob();
+    resetAll();
+  });
+  afterEach(() => {
+    stopEventReminderJob();
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
 
   it('starts without throwing', () => {
     jest.useFakeTimers();
     expect(() => startEventReminderJob()).not.toThrow();
-    jest.useRealTimers();
+  });
+
+  it('does not schedule duplicate startup timers', () => {
+    jest.useFakeTimers();
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+
+    startEventReminderJob();
+    startEventReminderJob();
+
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
   });
 
   it('sends push to going/interested users for 5-min window', async () => {
@@ -113,9 +132,7 @@ describe('startEventReminderJob', () => {
     seedRsvp('evt-1', 'user-a', 'going');
     seedRsvp('evt-1', 'user-b', 'interested');
 
-    jest.useFakeTimers();
-    startEventReminderJob();
-    await jest.advanceTimersByTimeAsync(16_000); // initial 15s delay + tick
+    await sendEventReminders(); // initial 15s delay + tick
 
     expect(mockSendPushToUser).toHaveBeenCalledTimes(2);
     const [uid, payload] = mockSendPushToUser.mock.calls[0];
@@ -124,97 +141,78 @@ describe('startEventReminderJob', () => {
     expect(payload.body).toContain('5 dakika');
     expect(payload.data?.type).toBe('event:reminder');
 
-    jest.useRealTimers();
   });
 
   it('sends push for 15-min window', async () => {
     seedEvent(makeEvent(15));
     seedRsvp('evt-1', 'user-c', 'going');
 
-    jest.useFakeTimers();
-    startEventReminderJob();
-    await jest.advanceTimersByTimeAsync(16_000);
+    await sendEventReminders();
 
     expect(mockSendPushToUser).toHaveBeenCalledTimes(1);
     expect(mockSendPushToUser.mock.calls[0][1].body).toContain('15 dakika');
 
-    jest.useRealTimers();
   });
 
   it('does NOT send to not_going users', async () => {
     seedEvent(makeEvent(5));
     seedRsvp('evt-1', 'user-d', 'not_going');
 
-    jest.useFakeTimers();
-    startEventReminderJob();
-    await jest.advanceTimersByTimeAsync(16_000);
+    await sendEventReminders();
 
     expect(mockSendPushToUser).not.toHaveBeenCalled();
 
-    jest.useRealTimers();
   });
 
   it('does NOT send duplicate within TTL window (Redis flag)', async () => {
     seedEvent(makeEvent(5));
     seedRsvp('evt-1', 'user-e', 'going');
 
-    jest.useFakeTimers();
-    startEventReminderJob();
-
-    // First tick — sends
-    await jest.advanceTimersByTimeAsync(16_000);
+    await sendEventReminders();
     expect(mockSendPushToUser).toHaveBeenCalledTimes(1);
 
     // Second tick (1 min later) — Redis flag still set, should not resend
-    await jest.advanceTimersByTimeAsync(60_000);
+    await sendEventReminders();
     expect(mockSendPushToUser).toHaveBeenCalledTimes(1); // still 1
 
-    jest.useRealTimers();
   });
 
   it('writes Redis flag with 300s TTL after sending', async () => {
     seedEvent(makeEvent(5));
     seedRsvp('evt-1', 'user-f', 'going');
 
-    jest.useFakeTimers();
-    startEventReminderJob();
-    await jest.advanceTimersByTimeAsync(16_000);
+    await sendEventReminders();
 
     const setCalls = (cache.set as jest.Mock).mock.calls;
     const flagCall = setCalls.find(([k]: [string]) => k.startsWith('evtremind:'));
     expect(flagCall).toBeDefined();
     expect(flagCall[2]).toBe(300); // TTL must be 5 minutes
-    jest.useRealTimers();
   });
 
   it('skips events with no RSVP rows without calling sendPushToUser', async () => {
     seedEvent(makeEvent(5));
     // no rsvp
 
-    jest.useFakeTimers();
-    startEventReminderJob();
-    await jest.advanceTimersByTimeAsync(16_000);
+    await sendEventReminders();
 
     expect(mockSendPushToUser).not.toHaveBeenCalled();
-    jest.useRealTimers();
   });
 
   it('continues processing other events if push throws', async () => {
-    seedEvent(makeEvent(5), 'evt-fail');
-    seedEvent(makeEvent(5), 'evt-ok');
-    seedRsvp('evt-fail', 'user-bad',  'going');
-    seedRsvp('evt-ok',   'user-good', 'going');
+    jest.spyOn(ServerEvents, 'findScheduledInWindow').mockResolvedValueOnce([
+      { id: 'evt-fail', server_id: 'srv-1', title: 'Test Etkinliği', starts_at: new Date(), channel_id: 'ch-1' },
+      { id: 'evt-ok', server_id: 'srv-1', title: 'Test Etkinliği', starts_at: new Date(), channel_id: 'ch-1' },
+    ] as never).mockResolvedValueOnce([] as never);
+    jest.spyOn(ServerEvents, 'findAttendees').mockImplementation(async (eventId: string) => [
+      { user_id: eventId === 'evt-fail' ? 'user-bad' : 'user-good' },
+    ]);
 
     mockSendPushToUser
       .mockRejectedValueOnce(new Error('push failed'))
       .mockResolvedValueOnce(undefined);
 
-    jest.useFakeTimers();
-    startEventReminderJob();
-    await jest.advanceTimersByTimeAsync(16_000);
+    await sendEventReminders();
 
-    // Both were attempted; one succeeded
     expect(mockSendPushToUser).toHaveBeenCalledTimes(2);
-    jest.useRealTimers();
   });
 });

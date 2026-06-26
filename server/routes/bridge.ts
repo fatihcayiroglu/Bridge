@@ -1,278 +1,74 @@
-// @ts-nocheck
-// e2e/helpers/bridge.ts — Sprint 14: TypeScript dönüşümü (.js → .ts)
-// e2e/helpers/bridge.js — Bridge'e özgü Playwright yardımcıları
-// Page Object Model yaklaşımı
+// server/routes/bridge.js — Channel Bridge (message forwarding)
+import type { Request, Response } from 'express';
 
-import path from 'path';
-import fs from 'fs';
+const express = require('express');
+const router  = express.Router();
+const { v4: uuidv4 } = require('uuid');
+const { Bridges } = require('../db/repositories');
+const { authMiddleware, castAuthed } = require('../middleware/auth');
+const { getMemberPerms, hasPermission, PERMS } = require('./roles');
+const asyncHandler = require('../middleware/asyncHandler');
+const { limits } = require('../middleware/rateLimit'); // rate limiting
 
-const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
-
-/**
- * Kaydedilmiş token'ları oku
- */
-function getTokens(): { alice: string; bob: string } {
-  const p = path.join(FIXTURES_DIR, 'tokens.json');
-  if (!fs.existsSync(p)) throw new Error('tokens.json bulunamadı — önce setup çalıştır');
-  return JSON.parse(fs.readFileSync(p, 'utf8'));
-}
-
-/**
- * API isteği — authenticated
- */
-async function apiRequest(request: import('@playwright/test').APIRequestContext, method: string, url: string, body?: unknown, token?: string) {
-  const tokens = token ? null : getTokens();
-  const t = token || tokens.alice;
-
-  const options = {
-    headers: {
-      Authorization: `Bearer ${t}`,
-      'Content-Type': 'application/json',
-    },
-  };
-  if (body) options.data = JSON.stringify(body);
-
-  const res = await request[method.toLowerCase()](url, options);
-  return res;
-}
-
-/**
- * Bridge sayfa nesne modeli
- */
-class BridgePage {
-  page: import('@playwright/test').Page;
-  baseURL: string;
-
-  constructor(page: import('@playwright/test').Page) {
-    this.page = page;
-    this.baseURL = process.env.BASE_URL || 'http://localhost:3000';
+// POST /api/bridges — create a bridge between two channels
+router.post('/', authMiddleware, limits.write(), asyncHandler(async (req: Request, res: Response) => {
+  const _u = castAuthed(req).user;
+  const { sourceChannelId, targetChannelId, sourceServerId, targetServerId, label } = req.body;
+  if (!sourceChannelId || !targetChannelId || !sourceServerId || !targetServerId) {
+    return res.status(400).json({ error: 'sourceChannelId, targetChannelId, sourceServerId, targetServerId required' });
   }
+  if (sourceChannelId === targetChannelId) return res.status(400).json({ error: 'Cannot bridge a channel to itself' });
 
-  // ── Selectors ───────────────────────────────────────────
-  get messageInput() {
-    return this.page.locator('[data-testid="message-input"], #message-input, .message-input, [placeholder*="Message"], [placeholder*="Mesaj"]').first();
-  }
+  // Must have MANAGE_CHANNELS in both servers
+  const [sp, tp] = await Promise.all([
+    getMemberPerms(_u.id, sourceServerId),
+    getMemberPerms(_u.id, targetServerId),
+  ]);
+  if (!hasPermission(sp, PERMS.MANAGE_CHANNELS) && !hasPermission(sp, PERMS.ADMINISTRATOR))
+    return res.status(403).json({ error: 'No permission in source server' });
+  if (!hasPermission(tp, PERMS.MANAGE_CHANNELS) && !hasPermission(tp, PERMS.ADMINISTRATOR))
+    return res.status(403).json({ error: 'No permission in target server' });
 
-  get sendButton() {
-    return this.page.locator('[data-testid="send-btn"], #send-btn, .send-btn, button[type="submit"]').first();
-  }
+  // Check for duplicate
+  const existing = await Bridges.findOne({ sourceChannelId, targetChannelId });
+  if (existing) return res.status(409).json({ error: 'Bridge already exists' });
 
-  get channelList() {
-    return this.page.locator('.channel-list, #channel-list, [data-testid="channel-list"]');
-  }
-
-  get serverList() {
-    return this.page.locator('.server-list, #server-list, [data-testid="server-list"]');
-  }
-
-  get messageContainer() {
-    return this.page.locator('.messages-container, #messages, [data-testid="messages"]');
-  }
-
-  // ── Actions ─────────────────────────────────────────────
-
-  async goto(path = '') {
-    await this.page.goto(`${this.baseURL}${path}`);
-  }
-
-  /**
-   * UI'dan login (form üzerinden)
-   */
-  async loginViaUI(email, password) {
-    await this.goto('/login');
-    await this.page.locator('input[type="email"], input[name="email"], #email').fill(email);
-    await this.page.locator('input[type="password"], input[name="password"], #password').fill(password);
-    await this.page.locator('button[type="submit"], .login-btn, #login-btn').click();
-    // Login sonrası ana sayfaya yönlendirme bekle
-    await this.page.waitForURL(/\/$|\/app|\/channels/, { timeout: 10_000 });
-  }
-
-  /**
-   * Token inject ederek hızlı giriş (UI testi değil)
-   */
-  async loginViaToken(token) {
-    await this.goto('/');
-    await this.page.evaluate((t) => {
-      localStorage.setItem('token', t);
-      localStorage.setItem('bridge_token', t);
-    }, token);
-    await this.page.reload();
-    await this.page.waitForTimeout(500);
-  }
-
-  /**
-   * Mesaj gönder
-   */
-  async sendMessage(text) {
-    await this.messageInput.waitFor({ state: 'visible', timeout: 8_000 });
-    await this.messageInput.click();
-    await this.messageInput.fill(text);
-    // Enter veya send button
-    await this.page.keyboard.press('Enter');
-    // Mesajın görünmesini bekle
-    await this.page.locator(`.message, .msg, [data-testid="message"]`).last().waitFor({ timeout: 5_000 }).catch(() => {});
-  }
-
-  /**
-   * Mesajın ekranda göründüğünü doğrula
-   */
-  async expectMessageVisible(text) {
-    await this.page.locator(`text=${text}`).waitFor({ state: 'visible', timeout: 8_000 });
-  }
-
-  /**
-   * Kanala tıkla
-   */
-  async clickChannel(channelName) {
-    await this.page.locator(`text=${channelName}`).first().click();
-    await this.page.waitForTimeout(500);
-  }
-
-  /**
-   * Sunucuya tıkla (sol sidebar)
-   */
-  async clickServer(serverName) {
-    await this.page.locator(`[title="${serverName}"], [alt="${serverName}"]`).first().click();
-    await this.page.waitForTimeout(500);
-  }
-}
-
-/**
- * API üzerinden sunucu oluştur
- */
-async function createTestServer(request: import('@playwright/test').APIRequestContext, token: string, name: string) {
-  const BASE = process.env.BASE_URL || 'http://localhost:3000';
-  const res = await request.post(`${BASE}/api/servers`, {
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    data: JSON.stringify({ name, description: 'E2E test server' }),
+  const bridge = await Bridges.insert({
+    _id: uuidv4(), sourceChannelId, targetChannelId,
+    sourceServerId, targetServerId,
+    label: (label || '').slice(0, 64),
+    createdBy: _u.id,
+    createdAt: Date.now(),
+    active: true,
   });
-  if (!res.ok()) return null;
-  const data = await res.json();
-  return data.server || data;
-}
+  res.json(bridge);
+}));
 
-/**
- * API üzerinden kanal oluştur
- */
-async function createTestChannel(request: import('@playwright/test').APIRequestContext, token: string, serverId: string, name: string) {
-  const BASE = process.env.BASE_URL || 'http://localhost:3000';
-  const res = await request.post(`${BASE}/api/servers/${serverId}/channels`, {
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    data: JSON.stringify({ name, type: 'text' }),
+// GET /api/bridges?channelId=xxx — get bridges for a channel
+router.get('/', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
+  const { channelId } = req.query;
+  if (!channelId) return res.status(400).json({ error: 'channelId required' });
+  const bridges = await Bridges.find({
+    $or: [{ sourceChannelId: channelId }, { targetChannelId: channelId }],
+    active: true,
   });
-  if (!res.ok()) return null;
-  return await res.json();
-}
+  res.json(bridges);
+}));
 
-/**
- * API üzerinden mesaj gönder
- */
-async function sendApiMessage(request: import('@playwright/test').APIRequestContext, token: string, channelId: string, content: string) {
-  const res = await request.post(`/api/channels/${channelId}/messages`, {
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    data: JSON.stringify({ content }),
-  });
-  return await res.json();
-}
+// DELETE /api/bridges/:id — remove bridge
+router.delete('/:id', authMiddleware, limits.write(), asyncHandler(async (req: Request, res: Response) => {
+  const _u = castAuthed(req).user;
+  const bridge = await Bridges.findOne({ _id: req.params.id });
+  if (!bridge) return res.status(404).json({ error: 'Not found' });
+  const perms = await getMemberPerms(_u.id, bridge.sourceServerId);
+  if (!hasPermission(perms, PERMS.MANAGE_CHANNELS) && !hasPermission(perms, PERMS.ADMINISTRATOR))
+    return res.status(403).json({ error: 'No permission' });
+  await Bridges.update({ _id: req.params.id }, { $set: { active: false } });
+  res.json({ removed: true });
+}));
 
-export { BridgePage };
-export { getTokens };
-export { apiRequest };
-export { createTestServer };
-export { createTestChannel };
-export { sendApiMessage };
+export default router;
 
-/**
- * API üzerinden sunucuya üye ol (davet kodu ile)
- */
-async function joinServerViaInvite(request: import('@playwright/test').APIRequestContext, token: string, inviteCode: string) {
-  const BASE = process.env.BASE_URL || 'http://localhost:3000';
-  return request.post(`${BASE}/api/invite/${inviteCode}`, {
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-  });
-}
-
-/**
- * API üzerinden davet kodu oluştur
- */
-async function createInvite(request: import('@playwright/test').APIRequestContext, token: string, serverId: string, opts: Record<string, unknown> = {}) {
-  const BASE = process.env.BASE_URL || 'http://localhost:3000';
-  const res = await request.post(`${BASE}/api/servers/${serverId}/invites`, {
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    data: JSON.stringify(opts),
-  });
-  if (!res.ok()) return null;
-  const data = await res.json();
-  return data.code || data.invite?.code || data._id || null;
-}
-
-/**
- * API üzerinden mesaja reaksiyon ekle
- */
-async function addReaction(request: import('@playwright/test').APIRequestContext, token: string, channelId: string, messageId: string, emoji: string) {
-  const BASE = process.env.BASE_URL || 'http://localhost:3000';
-  return request.post(
-    `${BASE}/api/channels/${channelId}/messages/${messageId}/react`,
-    {
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ emoji }),
-    }
-  );
-}
-
-/**
- * Kullanıcı profilini güncelle
- */
-async function updateProfile(request: import('@playwright/test').APIRequestContext, token: string, fields: Record<string, unknown>) {
-  const BASE = process.env.BASE_URL || 'http://localhost:3000';
-  return request.patch(`${BASE}/api/me`, {
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    data: JSON.stringify(fields),
-  });
-}
-
-/**
- * Link preview al
- */
-async function getLinkPreview(request: import('@playwright/test').APIRequestContext, token: string, url: string) {
-  const BASE = process.env.BASE_URL || 'http://localhost:3000';
-  return request.get(
-    `${BASE}/api/link-preview?url=${encodeURIComponent(url)}`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-}
-
-/**
- * Sunucu kanallarını listele
- */
-async function getChannels(request: import('@playwright/test').APIRequestContext, token: string, serverId: string) {
-  const BASE = process.env.BASE_URL || 'http://localhost:3000';
-  const res = await request.get(`${BASE}/api/servers/${serverId}/channels`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok()) return [];
-  const data = await res.json();
-  return data.channels || data;
-}
-
-/**
- * Mock VAPID abonelik payload'ı (test amaçlı)
- */
-function mockPushSubscription(suffix = ''): { endpoint: string; keys: { p256dh: string; auth: string } } {
-  return {
-    endpoint: `https://fcm.googleapis.com/fcm/send/e2e-mock-${suffix}-${Date.now()}`,
-    keys: {
-      p256dh: 'BNcRdreALRFXTkOOUHK1EtK2wtFBuCCSTBnJJ-A7EPMgWCn4yXqXbcyq5fSMlTGHKMUkqIWBiEUmgQrWp4Xj8Y',
-      auth:   'tBHItJI5svbpez7KI4CCXg',
-    },
-  };
-}
-
-// ── Eski module.exports'u genişlet ───────────────────────────
-export { joinServerViaInvite };
-export { createInvite };
-export { addReaction };
-export { updateProfile };
-export { getLinkPreview };
-export { getChannels };
-export { mockPushSubscription };
+// CommonJS compatibility for legacy Jest/supertest suites.
+module.exports = router;
+module.exports.default = router;

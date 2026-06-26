@@ -28,8 +28,11 @@ let _io: SocketServer | null = null;
 let _scheduledInterval: ReturnType<typeof setInterval> | null = null;  // Sprint 98
 
 export function startScheduledJob(io: SocketServer): void {
+  if (_scheduledInterval !== null) return;
+
   _io = io;
   _scheduledInterval = setInterval(dispatchDue, 30_000);
+  _scheduledInterval.unref?.();
   logger.info('   ✅ Scheduled Message Job (30s interval)');
 }
 
