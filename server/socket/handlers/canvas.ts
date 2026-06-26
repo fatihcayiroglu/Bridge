@@ -142,7 +142,7 @@ setInterval(() => {
   for (const [id, c] of memCanvas) {
     if (c.createdAt < cutoff && !c.strokes.length) memCanvas.delete(id);
   }
-}, 60 * 60 * 1000);
+}, 60 * 60 * 1000).unref?.();
 
 // ── Redis yardımcıları ────────────────────────────────────────
 async function loadStrokes(channelId: string): Promise<CanvasStroke[]> {

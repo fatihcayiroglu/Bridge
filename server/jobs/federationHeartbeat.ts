@@ -44,6 +44,7 @@ interface DbHandle {
 let _db: DbHandle | null = null;
 let _timer: ReturnType<typeof setInterval> | null = null;
 
+let _startupTimer: ReturnType<typeof setTimeout> | null = null;
 const INTERVAL_MS = 5 * 60 * 1000; // 5 dakika
 const TIMEOUT_MS  = 8000;
 
@@ -119,18 +120,24 @@ async function runHeartbeat(): Promise<void> {
 }
 
 export function startFederationHeartbeat(db?: DbHandle): void {
-  if (_timer) return; // zaten çalışıyor
+  if (_timer || _startupTimer) return; // zaten çalışıyor
   if (db) _db = db;  // test enjeksiyonu
 
-  setTimeout(() => {
+  _startupTimer = setTimeout(() => {
+
+    _startupTimer = null;
     void runHeartbeat();
     _timer = setInterval(() => void runHeartbeat(), INTERVAL_MS);
+    _timer.unref?.();
   }, 30 * 1000);
+  _startupTimer.unref?.();
 
   logger.info('[Federation] Heartbeat job başlatıldı (her 5 dakika).');
 }
 
 export function stopFederationHeartbeat(): void {
+  if (_startupTimer) clearTimeout(_startupTimer);
+  _startupTimer = null;
   if (_timer) { clearInterval(_timer); _timer = null; }
   _db = null; // reset for test isolation
 }

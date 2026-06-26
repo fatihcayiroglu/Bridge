@@ -116,22 +116,31 @@ export async function runCleanup(): Promise<void> {
   }
 }
 
-let _cleanupInterval: ReturnType<typeof setInterval> | null = null;  // Sprint 98
+let _cleanupInterval: ReturnType<typeof setInterval> | null = null;
+let _cleanupInitTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function startCleanupJob(): void {
+  if (_cleanupInitTimer !== null || _cleanupInterval !== null) return;
   // İlk çalışma: sunucu başladıktan 5 dakika sonra
-  setTimeout(() => {
+  _cleanupInitTimer = setTimeout(() => {
+    _cleanupInitTimer = null;
     runCleanup().catch((e: unknown) => logger.error({ err: e }, '[cleanup] Hata.'));
   }, 5 * 60 * 1000);
+  _cleanupInitTimer.unref?.();
 
   // Sonraki çalışmalar: her 24 saatte bir
   _cleanupInterval = setInterval(() => {
     runCleanup().catch((e: unknown) => logger.error({ err: e }, '[cleanup] Hata.'));
   }, CLEANUP_INTERVAL);
+  _cleanupInterval.unref?.();
 }
 
 // Sprint 98: Graceful shutdown desteği
 export function stopCleanupJob(): void {
+  if (_cleanupInitTimer !== null) {
+    clearTimeout(_cleanupInitTimer);
+    _cleanupInitTimer = null;
+  }
   if (_cleanupInterval) {
     clearInterval(_cleanupInterval);
     _cleanupInterval = null;

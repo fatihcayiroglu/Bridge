@@ -31,7 +31,7 @@ import { startEventReminderJob, stopEventReminderJob } from './jobs/eventReminde
 import { scheduleEmbedHistoryJob, cancelEmbedHistoryJob } from './jobs/embedHistory';
 
 // ── App ──────────────────────────────────────────────────────────────────────
-import { authMiddleware, startAuthCleanup }     from './middleware/auth';
+import { authMiddleware, startAuthCleanup, stopAuthCleanup }     from './middleware/auth';
 import { createApp }                            from './app/createApp';
 import { setupRoutes }                          from './app/setupRoutes';
 import { createSocketServer, setupSocketInfra } from './app/setupSocket';
@@ -96,6 +96,7 @@ bootstrap().catch((err: Error) => {
 // SIGINT:  Ctrl-C (geliştirme ortamı)
 function gracefulShutdown(signal: string): void {
   logger.info({ signal }, 'Shutdown sinyali alındı, kapatılıyor...');
+  stopAuthCleanup();
   stopEventReminderJob();
   stopFederationHeartbeat();   // Sprint 97: zaten vardı
   stopAutoModerationJob();     // Sprint 98

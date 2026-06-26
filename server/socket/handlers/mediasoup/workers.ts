@@ -68,7 +68,7 @@ async function _createWorker(index: number, isDev = false): Promise<MediasoupWor
   _workerRouterCount.set(index, 0);
   worker.on('died', (error) => {
     logger.error({ err: error, index, event: 'sfu.worker.died' }, `[SFU] Worker ${index} öldü, 2 sn sonra yeniden başlatılıyor`);
-    setTimeout(() => _restartWorker(index), 2000);
+    setTimeout(() => _restartWorker(index), 2000).unref?.();
   });
   return worker;
 }

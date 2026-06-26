@@ -19,7 +19,7 @@ setInterval(() => {
   for (const [k, v] of _cache) {
     if (v.expiresAt < now) _cache.delete(k);
   }
-}, 60_000);
+}, 60_000).unref();
 
 /**
  * İzinleri önbellekten alır; yoksa resolvePermissions'ı çağırır ve önbellekler.

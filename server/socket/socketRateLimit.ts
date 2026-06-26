@@ -55,7 +55,7 @@ setInterval(() => {
     const fresh = hits.filter(t => now - t < 120_000);
     if (!fresh.length) _socketRateStore.delete(k); else _socketRateStore.set(k, fresh);
   }
-}, 2 * 60_000);
+}, 2 * 60_000).unref?.();
 
 /**
  * socketRateCheck — event bazlı kullanıcı rate kontrolü.

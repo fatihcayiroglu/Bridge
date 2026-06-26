@@ -184,6 +184,7 @@ async function runScan(): Promise<void> {
     let modChannelId: string | null = null;
 
     for (const msg of msgs) {
+      if (msg.type === 'system' || msg.autoModAlert) continue;
       const ruleResult = rulesMod(msg.content || '');
 
       let finalResult: ModResult = ruleResult;
@@ -227,13 +228,20 @@ async function runScan(): Promise<void> {
 }
 
 // ── Job başlatıcı ──────────────────────────────────────────────
+let _automodInterval: ReturnType<typeof setInterval> | null = null;
+let _automodInitTimer: ReturnType<typeof setTimeout> | null = null;
+
 export function startAutoModerationJob(io: SocketServer): void {
   _io = io;
+  if (_automodInitTimer !== null || _automodInterval !== null) return;
 
-  setTimeout(() => {
+  _automodInitTimer = setTimeout(() => {
+    _automodInitTimer = null;
     void runScan();
     _automodInterval = setInterval(() => void runScan(), JOB_INTERVAL_MS);
+    _automodInterval.unref?.();
   }, 30_000);
+  _automodInitTimer.unref?.();
 
   if (process.env.NODE_ENV !== 'test') {
     process.stdout.write('   ✅ Auto Moderation Job (5dk aralık)\n');
@@ -241,10 +249,12 @@ export function startAutoModerationJob(io: SocketServer): void {
 }
 
 // Sprint 98: Graceful shutdown desteği
-let _automodInterval: ReturnType<typeof setInterval> | null = null;
-
 export function stopAutoModerationJob(): void {
-  if (_automodInterval) {
+  if (_automodInitTimer !== null) {
+    clearTimeout(_automodInitTimer);
+    _automodInitTimer = null;
+  }
+  if (_automodInterval !== null) {
     clearInterval(_automodInterval);
     _automodInterval = null;
     if (process.env.NODE_ENV !== 'test') {

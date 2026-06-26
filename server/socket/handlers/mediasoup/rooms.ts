@@ -10,13 +10,36 @@ import type { SfuRoom, SfuPeer, MediasoupTransport, MediasoupRouter } from './ty
 export const sfuRooms  = new Map<string, SfuRoom>();
 export const sfuPeers  = new Map<string, SfuPeer>();
 const _roomCreating    = new Map<string, Promise<SfuRoom>>();
+const _pendingRoomCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function _clearScheduledRoomCleanup(channelId: string): void {
+  const timer = _pendingRoomCleanupTimers.get(channelId);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    _pendingRoomCleanupTimers.delete(channelId);
+  }
+}
+
+function _scheduleRoomCleanup(channelId: string): void {
+  _clearScheduledRoomCleanup(channelId);
+  const timer = setTimeout(() => {
+    _pendingRoomCleanupTimers.delete(channelId);
+    cleanupRoom(channelId);
+  }, 5000);
+  timer.unref?.();
+  _pendingRoomCleanupTimers.set(channelId, timer);
+}
 
 // ── Room CRUD ────────────────────────────────────────────────────────────────
 
 const MAX_ROOMS = 500; // mediasoup router başına ~50MB RAM; 500 oda = ~25GB üst sınır
 
 export async function getOrCreateRoom(channelId: string): Promise<SfuRoom> {
-  if (sfuRooms.has(channelId))   return sfuRooms.get(channelId)!;
+  const existingRoom = sfuRooms.get(channelId);
+  if (existingRoom) {
+    _clearScheduledRoomCleanup(channelId);
+    return existingRoom;
+  }
   if (_roomCreating.has(channelId)) return _roomCreating.get(channelId)!;
 
   if (sfuRooms.size >= MAX_ROOMS) {
@@ -47,6 +70,7 @@ export async function getOrCreateRoom(channelId: string): Promise<SfuRoom> {
         workerCloseCapableRouter.on('workerclose', () => {
           logger.warn(`[SFU] Worker kapandı, room temizleniyor — channel: ${channelId}`);
           clearInterval(room._refreshInterval);
+          _clearScheduledRoomCleanup(channelId);
           if (room._workerIndex !== undefined) decrementWorkerLoad(room._workerIndex);
           sfuRooms.delete(channelId);
           sfuRegistry.releaseRoom(channelId).catch(() => {});
@@ -65,6 +89,7 @@ export async function getOrCreateRoom(channelId: string): Promise<SfuRoom> {
 }
 
 export function cleanupRoom(channelId: string): void {
+  _clearScheduledRoomCleanup(channelId);
   const room = sfuRooms.get(channelId);
   if (!room) return;
   if (room.peers.size === 0) {
@@ -144,13 +169,15 @@ export async function cleanupPeer(
         peers: getRoomPeerList(ch),
       });
     }
-    // peers.size tekrar kontrol edilir — 5 sn içinde yeni peer join ederse cleanupRoom no-op döner
-    setTimeout(() => cleanupRoom(ch), 5000);
+    _scheduleRoomCleanup(ch);
   }
 }
 
 /** @internal Test ortamında room/peer map'lerini sıfırlar. Production'da çağrılmaz. */
 export function _resetRoomsForTest(): void {
+  for (const room of sfuRooms.values()) clearInterval(room._refreshInterval);
+  for (const timer of _pendingRoomCleanupTimers.values()) clearTimeout(timer);
+  _pendingRoomCleanupTimers.clear();
   sfuRooms.clear();
   sfuPeers.clear();
 }
