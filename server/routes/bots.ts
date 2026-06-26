@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router   = express.Router();
-import { Bots, Members, Channels, Messages } from '../db/repositories';
+import { Bots, Members, Channels, ChannelWebhooks, Messages } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { limits } from '../middleware/rateLimit';
 import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
@@ -118,6 +118,13 @@ router.post('/:serverId/bots', authMiddleware, limits.bots(), async (req, res) =
   const _u = castAuthed(req).user;
   const serverId = String(req.params.serverId ?? '');
   const { name, description } = req.body as Record<string, string>;
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'Bot name required' });
+  }
+  const normalizedName = name.trim();
+  if (normalizedName.length > 100) {
+    return res.status(400).json({ error: 'Bot name too long' });
+  }
 
   const perms = await resolvePermissions(_u.id, serverId);
   if (!hasPermission(perms, PERMS.MANAGE_SERVER) && !hasPermission(perms, PERMS.ADMIN)) {
@@ -128,8 +135,8 @@ router.post('/:serverId/bots', authMiddleware, limits.bots(), async (req, res) =
   const token = generateBotToken(serverId, botId);
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
 
-  const bot = await Bots.create({ _id: botId, serverId, name, description, tokenHash, createdBy: _u.id });
-  res.status(201).json({ bot, token });
+  const bot = await Bots.create({ _id: botId, serverId, name: normalizedName, description, tokenHash, createdBy: _u.id });
+  res.status(201).json({ bot, token, warning: 'This token will not be shown again.' });
 });
 
 /**
@@ -158,7 +165,7 @@ router.get('/:serverId/bots', authMiddleware, async (req, res) => {
     return res.status(403).json({ error: 'No permission' });
   }
   const bots = await Bots.findByServer(serverId);
-  res.json(bots);
+  res.json(bots.map(({ tokenHash: _tokenHash, ...bot }) => bot));
 });
 
 /**
@@ -215,8 +222,10 @@ router.delete('/:serverId/bots/:botId', authMiddleware, async (req, res) => {
   if (!hasPermission(perms, PERMS.MANAGE_SERVER) && !hasPermission(perms, PERMS.ADMIN)) {
     return res.status(403).json({ error: 'No permission' });
   }
+  const bot = await Bots.findByIdAndServer(botId, serverId);
+  if (!bot) return res.status(404).json({ error: 'Bot not found' });
   await Bots.delete(botId, serverId);
-  res.json({ ok: true });
+  res.json({ ok: true, deleted: true });
 });
 
 /**
@@ -284,10 +293,12 @@ router.post('/:serverId/bots/:botId/token', authMiddleware, limits.bots(), async
   if (!hasPermission(perms, PERMS.MANAGE_SERVER) && !hasPermission(perms, PERMS.ADMIN)) {
     return res.status(403).json({ error: 'No permission' });
   }
+  const bot = await Bots.findByIdAndServer(botId, serverId);
+  if (!bot) return res.status(404).json({ error: 'Bot not found' });
   const token = generateBotToken(serverId, botId);
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   await Bots.updateToken(botId, serverId, tokenHash);
-  res.json({ token });
+  res.json({ token, warning: 'Previous token is no longer valid.' });
 });
 
 /**
@@ -347,21 +358,75 @@ router.post('/:serverId/bots/:botId/token', authMiddleware, limits.bots(), async
  *       200: { description: Mesaj gönderildi }
  *       401: { description: Geçersiz webhook ID }
  */
-router.post('/webhooks/:webhookId', limits.bots(), async (req, res) => {
+const receiveWebhook = async (req: express.Request, res: express.Response): Promise<void> => {
   const webhookId = String(req.params.webhookId ?? '');
-  const { content, embeds } = req.body as { content?: string; embeds?: unknown[] };
-  if (!content && !embeds?.length) return res.status(400).json({ error: 'content veya embeds gerekli' });
+  const { content, embeds } = (req.body ?? {}) as { content?: unknown; embeds?: unknown };
+  const hasContent = typeof content === 'string' && content.length > 0;
+  const hasEmbeds = Array.isArray(embeds) && embeds.length > 0;
 
-  const bot = await Bots.findByWebhookId(webhookId);
-  if (!bot) return res.status(401).json({ error: 'Geçersiz webhook' });
+  if (typeof content === 'string' && content.length > 2000) {
+    res.status(400).json({ error: 'Message too long' });
+    return;
+  }
+  if (!hasContent && !hasEmbeds) {
+    res.status(400).json({ error: 'content veya embeds gerekli' });
+    return;
+  }
 
-  if (typeof bot.channelId !== 'string') return res.status(400).json({ error: 'Bot kanal bilgisi eksik' });
-  const channel = await Channels.findById(bot.channelId);
-  if (!channel) return res.status(404).json({ error: 'Kanal bulunamadı' });
+  const rawToken = req.query.token;
+  const providedToken = Array.isArray(rawToken) ? rawToken[0] : rawToken;
+  if (typeof providedToken !== 'string' || !providedToken) {
+    res.status(401).json({ error: 'Webhook token gerekli' });
+    return;
+  }
 
-  await Messages.create({ channelId: bot.channelId, authorId: bot._id, content: content || '', embeds, isBot: true });
+  const webhook = await ChannelWebhooks.findById(webhookId) as {
+    _id: string;
+    channelId?: string;
+    createdBy?: string;
+    token?: string;
+  } | null;
+  if (!webhook) {
+    res.status(404).json({ error: 'Webhook bulunamadı' });
+    return;
+  }
+
+  let validToken = false;
+  try {
+    validToken = crypto.timingSafeEqual(
+      Buffer.from(webhook.token || ''),
+      Buffer.from(providedToken),
+    );
+  } catch {
+    validToken = false;
+  }
+  if (!validToken) {
+    res.status(401).json({ error: 'Geçersiz webhook token' });
+    return;
+  }
+
+  if (typeof webhook.channelId !== 'string') {
+    res.status(400).json({ error: 'Webhook kanal bilgisi eksik' });
+    return;
+  }
+  const channel = await Channels.findById(webhook.channelId);
+  if (!channel) {
+    res.status(404).json({ error: 'Kanal bulunamadı' });
+    return;
+  }
+
+  await Messages.create({
+    channelId: webhook.channelId,
+    authorId: webhook.createdBy || webhook._id,
+    content: hasContent ? content : '',
+    embeds: hasEmbeds ? embeds : undefined,
+    webhookId: webhook._id,
+    isWebhook: true,
+  });
   res.json({ ok: true });
-});
+};
+
+router.post(['/webhooks/:webhookId', '/:webhookId'], limits.bots(), receiveWebhook);
 
 export default router;
 

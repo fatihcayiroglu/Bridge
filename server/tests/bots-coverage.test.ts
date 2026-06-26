@@ -9,6 +9,10 @@ process.env.BOT_TOKEN_SECRET = 'test-bot-secret';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 
+jest.mock('../middleware/rateLimit', () => ({
+  limits: { bots: () => (_req, _res, next) => next() },
+}));
+
 import request from 'supertest';
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';

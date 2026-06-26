@@ -8,6 +8,10 @@ process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 
+jest.mock('../middleware/rateLimit', () => ({
+  limits: { bots: () => (_req, _res, next) => next() },
+}));
+
 const mockHasPermission = jest.fn().mockReturnValue(true);
 jest.mock('../middleware/auth', () => {
   const jwt = require('jsonwebtoken');
@@ -71,7 +75,7 @@ beforeEach(async () => {
     .post(`/api/servers/${SERVER_ID}/bots`)
     .set('Authorization', `Bearer ${token(OWNER_ID)}`)
     .send({ name: 'TestBot' });
-  createdBotId = createRes.body._id;
+  createdBotId = createRes.body.bot._id;
 
   // Create a webhook entry directly in DB for webhook tests
   webhookToken = 'wh_' + uuidv4().replace(/-/g, '');
