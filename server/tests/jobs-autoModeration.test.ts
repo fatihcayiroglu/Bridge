@@ -51,9 +51,15 @@ jest.mock('../lib/modRules', () => ({
 
 const repos    = require('../db/repositories');
 const { rulesMod }            = require('../lib/modRules');
-import { runScan, startAutoModerationJob } from '../jobs/autoModeration';
+import { runScan, startAutoModerationJob, stopAutoModerationJob } from '../jobs/autoModeration';
 
 import { v4 as uuidv4 } from 'uuid';
+
+beforeEach(() => rulesMod.mockReset());
+afterEach(() => {
+  stopAutoModerationJob();
+  jest.useRealTimers();
+});
 
 // ── helpers ──────────────────────────────────────────────────────
 function seedServer(overrides = {}) {

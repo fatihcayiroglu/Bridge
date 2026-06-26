@@ -4,6 +4,7 @@
 
 import request from 'supertest';
 import express, { Express, Request, Response, NextFunction } from 'express';
+import cookieParser from 'cookie-parser';
 
 process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
 process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
@@ -42,6 +43,7 @@ const { router } = require('../routes/auth');
 function buildApp(): Express {
   const app = express();
   app.use(express.json());
+  app.use(cookieParser());
   app.use('/api', router);
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) =>
     res.status(500).json({ error: err.message }),
@@ -67,7 +69,7 @@ describe('POST /api/register', () => {
   it('rejects duplicate username', async () => {
     await request(app).post('/api/register').send({ username: 'testuser', password: 'securepass123' });
     const res = await request(app).post('/api/register').send({ username: 'testuser', password: 'anotherpass123' });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/taken/i);
   });
 
@@ -108,7 +110,7 @@ describe('POST /api/login', () => {
 describe('POST /api/refresh', () => {
   let refreshToken: string;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     await request(app).post('/api/register').send({ username: 'testuser', password: 'securepass123' });
     const res = await request(app).post('/api/login').send({ username: 'testuser', password: 'securepass123' });
     // refreshToken now set via httpOnly cookie — read from Set-Cookie header
@@ -123,8 +125,11 @@ describe('POST /api/refresh', () => {
   });
 
   it('rejects already-used refresh token (rotation)', async () => {
-    const res = await request(app).post('/api/refresh').set('Cookie', refreshToken).send({});
-    expect(res.status).toBe(401);
+    const first = await request(app).post('/api/refresh').set('Cookie', refreshToken).send({});
+    expect(first.status).toBe(200);
+
+    const second = await request(app).post('/api/refresh').set('Cookie', refreshToken).send({});
+    expect(second.status).toBe(401);
   });
 
   it('rejects invalid token', async () => {
@@ -155,7 +160,7 @@ describe('startAuthCleanup()', () => {
     const spy = jest.spyOn(global, 'setInterval');
     const { startAuthCleanup } = require('../middleware/auth');
     startAuthCleanup();
-    expect(spy).toHaveBeenCalledWith(expect.any(Function), 60 * 60 * 1000);
+    expect(spy).toHaveBeenCalledWith(expect.any(Function), 5 * 60 * 1000);
   });
 
   it('idempotent — iki kez çağrılırsa tek interval açılır', () => {
@@ -164,6 +169,22 @@ describe('startAuthCleanup()', () => {
     startAuthCleanup();
     startAuthCleanup();
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('stopAuthCleanup intervali temizler ve yeniden başlatmaya izin verir', () => {
+    jest.clearAllMocks();
+    const setIntervalSpy = jest.spyOn(global, 'setInterval');
+    const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+    const { startAuthCleanup, stopAuthCleanup } = require('../middleware/auth');
+
+    startAuthCleanup();
+    const timer = setIntervalSpy.mock.results[0]?.value;
+
+    stopAuthCleanup();
+    expect(clearIntervalSpy).toHaveBeenCalledWith(timer);
+
+    startAuthCleanup();
+    expect(setIntervalSpy).toHaveBeenCalledTimes(2);
   });
 
   it('module import edildiğinde otomatik başlamaz', () => {

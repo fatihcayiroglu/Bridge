@@ -23,12 +23,18 @@ jest.mock('../lib/httpSignature', () => {
   };
 });
 
+jest.mock('../lib/fetch', () => ({
+  fetchT: jest.fn((...args) => global.fetch(...args)),
+}));
+
 import { createMockDb } from './helpers/mockDb';
 import { v4 as uuidv4 } from 'uuid';
 
 // ── Build a minimal mock DB with federation_peers ─────────────────
 function buildDb() {
-  return createMockDb();
+  const db = createMockDb() as any;
+  db.federation_peers = db.federationPeers;
+  return db;
 }
 
 let _fetchImpl;

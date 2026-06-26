@@ -21,13 +21,16 @@ let _dms      = [];
 jest.mock('../db/repositories', () => ({
   Messages: {
     findWhere: (q) => Promise.resolve(_messages.filter(m => m.type === 'file')),
+    findProjected: (_q, _projection) => Promise.resolve(_messages.filter(m => m.type === 'file')),
   },
   Dms: {
     findMessagesWhere: (q) => Promise.resolve(_dms),
   },
 }));
 
-import { runCleanup, startCleanupJob } from '../jobs/cleanupUploads';
+jest.mock('../db/loader', () => ({ __esModule: true, default: { _pool: null } }));
+
+import { runCleanup, startCleanupJob, stopCleanupJob } from '../jobs/cleanupUploads';
 
 // ── helpers ──────────────────────────────────────────────────────
 const OLD_TS = Date.now() - 2 * 60 * 60 * 1000; // 2 hours ago → past grace period
@@ -166,9 +169,12 @@ describe('runCleanup — error resilience', () => {
 });
 
 describe('startCleanupJob', () => {
+  afterEach(() => {
+    stopCleanupJob();
+    jest.useRealTimers();
+  });
   it('registers timers without throwing', () => {
     jest.useFakeTimers();
     expect(() => startCleanupJob()).not.toThrow();
-    jest.useRealTimers();
   });
 });
