@@ -17,7 +17,7 @@ function freshRateLimit() {
 function buildApp(max, windowMs) {
   const { rateLimit } = freshRateLimit();
   const app = express();
-  app.use((req, res, next) => { req.ip = '127.0.0.1'; next(); });
+  app.use((req, res, next) => { Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true }); next(); });
   app.get('/test', rateLimit(max, windowMs, 'test'), (req, res) => res.json({ ok: true }));
   return app;
 }
@@ -27,7 +27,7 @@ function buildAppWithMode(max, windowMs, mode, userId = null) {
   const { rateLimit } = freshRateLimit();
   const app = express();
   app.use((req, res, next) => {
-    req.ip = '127.0.0.1';
+    Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true });
     if (userId) req.user = { id: userId, _id: userId };
     next();
   });
@@ -51,7 +51,7 @@ describe('Rate limiter', () => {
     for (let i = 0; i < 3; i++) await request(app).get('/test');
     const res = await request(app).get('/test');
     expect(res.status).toBe(429);
-    expect(res.body.error).toMatch(/çok fazla istek/i);
+    expect(res.body.error).toMatch(/too many requests/i);
     expect(res.body.retryAfter).toBeDefined();
   });
 
@@ -84,7 +84,7 @@ describe('Rate limiter', () => {
     jest.resetModules();
     const { rateLimit } = require('../middleware/rateLimit');
     const app = express();
-    app.use((req, res, next) => { req.ip = '127.0.0.1'; next(); });
+    app.use((req, res, next) => { Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true }); next(); });
     app.get('/a', rateLimit(2, 60_000, 'prefix-a'), (req, res) => res.json({ ok: true }));
     app.get('/b', rateLimit(2, 60_000, 'prefix-b'), (req, res) => res.json({ ok: true }));
 
@@ -156,7 +156,7 @@ describe('mode parametresi', () => {
     jest.resetModules();
     const { rateLimit } = require('../middleware/rateLimit');
     const app = express();
-    app.use((req, res, next) => { req.ip = '127.0.0.1'; next(); });
+    app.use((req, res, next) => { Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true }); next(); });
     // mode opts olmadan — eski imza geriye dönük uyumlu
     app.get('/test', rateLimit(5, 60_000, 'compat-test'), (req, res) => res.json({ ok: true }));
     const res = await request(app).get('/test');
@@ -168,7 +168,7 @@ describe('mode parametresi', () => {
     const { rateLimit } = require('../middleware/rateLimit');
     const app = express();
     app.use((req, res, next) => {
-      req.ip = '127.0.0.1';
+      Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true });
       req.user = { id: 'legacy-user' };
       next();
     });
