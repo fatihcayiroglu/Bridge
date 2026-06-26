@@ -4,6 +4,9 @@ process.env.REFRESH_SECRET = 'test-refresh-secret';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
+jest.mock('../lib/permCache', () => ({
+  invalidatePerms: jest.fn(),
+}));
 
 import request from 'supertest';
 import express from 'express';
@@ -11,7 +14,7 @@ import { v4 as uuidv4 } from 'uuid';
 const db      = require('../db/loader');
 const jwt     = require('jsonwebtoken');
 import { authMiddleware } from '../middleware/auth';
-import channelsRouter from '../routes/channels';
+import channelsRouter from '../routes/servers/channels';
 
 function buildApp() {
   const app = express();

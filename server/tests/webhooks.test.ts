@@ -22,7 +22,7 @@ const perms   = require('../lib/permissions');
 function buildApp() {
   const app = express();
   app.use(express.json());
-  app.use('/api/channels', authMiddleware, webhooksRouter);
+  app.use('/api/channels/:channelId/webhooks', authMiddleware, webhooksRouter);
   return app;
 }
 function tok(uid, v = 0) { return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' }); }

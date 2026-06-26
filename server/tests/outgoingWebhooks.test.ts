@@ -16,13 +16,13 @@ import { v4 as uuidv4 } from 'uuid';
 const db      = require('../db/loader');
 const jwt     = require('jsonwebtoken');
 import { authMiddleware } from '../middleware/auth';
-import owRouter from '../routes/outgoingWebhooks';
+import { router as owRouter } from '../routes/outgoingWebhooks';
 const perms   = require('../lib/permissions');
 
 function buildApp() {
   const app = express();
   app.use(express.json());
-  app.use('/api/servers/:sid/outgoing-webhooks', authMiddleware, owRouter);
+  app.use('/api/servers', owRouter);
   return app;
 }
 function tok(uid, v = 0) { return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
