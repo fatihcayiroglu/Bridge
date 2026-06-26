@@ -1,4 +1,6 @@
 // server/routes/bridge.js — Channel Bridge (message forwarding)
+import type { Request, Response } from 'express';
+
 const express = require('express');
 const router  = express.Router();
 const { v4: uuidv4 } = require('uuid');
@@ -9,7 +11,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const { limits } = require('../middleware/rateLimit'); // rate limiting
 
 // POST /api/bridges — create a bridge between two channels
-router.post('/', authMiddleware, limits.write(), asyncHandler(async (req, res) => {
+router.post('/', authMiddleware, limits.write(), asyncHandler(async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
   const { sourceChannelId, targetChannelId, sourceServerId, targetServerId, label } = req.body;
   if (!sourceChannelId || !targetChannelId || !sourceServerId || !targetServerId) {
@@ -43,7 +45,7 @@ router.post('/', authMiddleware, limits.write(), asyncHandler(async (req, res) =
 }));
 
 // GET /api/bridges?channelId=xxx — get bridges for a channel
-router.get('/', authMiddleware, asyncHandler(async (req, res) => {
+router.get('/', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
   const { channelId } = req.query;
   if (!channelId) return res.status(400).json({ error: 'channelId required' });
   const bridges = await Bridges.find({
@@ -54,7 +56,7 @@ router.get('/', authMiddleware, asyncHandler(async (req, res) => {
 }));
 
 // DELETE /api/bridges/:id — remove bridge
-router.delete('/:id', authMiddleware, limits.write(), asyncHandler(async (req, res) => {
+router.delete('/:id', authMiddleware, limits.write(), asyncHandler(async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
   const bridge = await Bridges.findOne({ _id: req.params.id });
   if (!bridge) return res.status(404).json({ error: 'Not found' });
@@ -65,5 +67,8 @@ router.delete('/:id', authMiddleware, limits.write(), asyncHandler(async (req, r
   res.json({ removed: true });
 }));
 
+export default router;
+
+// CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
-export {};
+module.exports.default = router;

@@ -85,10 +85,7 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 
   const webhooks = await ChannelWebhooks.findByChannel(channelId);
-  res.json(webhooks.map((webhook: Record<string, unknown>) => {
-    const { token: _token, ...safe } = webhook;
-    return safe;
-  }));
+  res.json(webhooks.map(({ token: _token, ...safe }) => safe));
 });
 
 router.post('/', authMiddleware, limits.webhooks(), async (req, res) => {
