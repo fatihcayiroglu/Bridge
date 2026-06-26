@@ -15,7 +15,51 @@ jest.mock('../db/index', () => {
   return db;
 });
 
-import { router: dmRouter } from '../routes/dm';
+jest.mock('../db/repositories', () => {
+  const currentDb = () => require('../db/loader');
+  const buildDmId = (a: string, b: string) => [a, b].sort().join('_');
+
+  return {
+    Dms: {
+      findConversation: (id: string) => currentDb().dmConversations.findOne({ _id: id }),
+      async findConversationsByUser(userId: string) {
+        const conversations = await currentDb().dmConversations.find({});
+        return conversations.filter((conv: { participants?: unknown }) =>
+          Array.isArray(conv.participants) && conv.participants.includes(userId),
+        );
+      },
+      async findOrCreateConversation(userId: string, toUserId: string) {
+        const dmId = buildDmId(userId, toUserId);
+        let conv = await currentDb().dmConversations.findOne({ _id: dmId });
+        if (!conv) {
+          conv = await currentDb().dmConversations.insert({
+            _id: dmId,
+            participants: [userId, toUserId],
+            createdAt: Date.now(),
+            lastMessageAt: Date.now(),
+          });
+        } else {
+          await currentDb().dmConversations.update(
+            { _id: dmId },
+            { $set: { lastMessageAt: Date.now() } },
+          );
+        }
+        return { conv, dmId };
+      },
+      findMessages(dmId: string, { limit = 50, before }: { limit?: number; before?: number } = {}) {
+        const query: Record<string, unknown> = { dmId };
+        if (before) query.createdAt = { $lt: before };
+        return currentDb().dmMessages.find(query).sort({ createdAt: -1 }).limit(Math.min(limit, 100));
+      },
+    },
+    Users: {
+      findById: (id: string) => currentDb().users.findOne({ _id: id }),
+      findByIds: (ids: string[]) => currentDb().users.find({ _id: { $in: ids } }),
+    },
+  };
+});
+
+import dmRouter from '../routes/dm';
 
 function makeToken(userId) {
   return jwt.sign({ id: userId, username: 'tester', v: 0 }, 'test-jwt-secret', { expiresIn: '1h' });
@@ -141,7 +185,7 @@ describe('GET /api/dm/:dmId/messages — mesajlar', () => {
         _id: `dm-msg-${i}`, dmId,
         userId: userA._id, displayName: userA.displayName,
         avatarColor: '#2d9cdb', content: `Mesaj ${i}`,
-        createdAt: Date.now() + i,
+        createdAt: Date.now() - (3 - i),
       });
     }
   });
