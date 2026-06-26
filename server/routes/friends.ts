@@ -6,7 +6,7 @@ import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router  = express.Router();
 import { Social, Users } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
-import { sanitizeUser } from './auth';
+import { sanitizeUser } from '../lib/userUtils';
 import { limits } from '../middleware/rateLimit';
 
 /**
@@ -153,8 +153,14 @@ router.post('/request', authMiddleware, limits.friends(), async (req, res) => {
   const target = await Users.findByUsername(username);
   if (!target) return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
   if (target._id === _u.id) return res.status(400).json({ error: 'Kendinize istek gönderemezsiniz' });
+
+  const existing = await Social.findFriendship(_u.id, target._id);
+  if (existing && (existing.status === 'pending' || existing.status === 'accepted')) {
+    return res.status(409).json({ error: 'Already friends or request pending' });
+  }
+
   await Social.createFriendship(_u.id, target._id);
-  res.json({ ok: true });
+  res.json({ ok: true, status: 'pending', friendId: target._id });
 });
 
 /**
@@ -196,6 +202,12 @@ router.post('/request', authMiddleware, limits.friends(), async (req, res) => {
 router.post('/:requestId/accept', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const requestId = String(req.params.requestId ?? '');
+  const friendship = await Social.findFriendshipById(requestId);
+
+  if (!friendship || friendship.status !== 'pending' || friendship.friendId !== _u.id) {
+    return res.status(404).json({ error: 'Friend request not found' });
+  }
+
   await Social.acceptFriendship(requestId);
   res.json({ ok: true });
 });
@@ -237,6 +249,12 @@ router.post('/:requestId/accept', authMiddleware, async (req, res) => {
 router.post('/:requestId/decline', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const requestId = String(req.params.requestId ?? '');
+  const friendship = await Social.findFriendshipById(requestId);
+
+  if (!friendship || friendship.status !== 'pending' || friendship.friendId !== _u.id) {
+    return res.status(404).json({ error: 'Friend request not found' });
+  }
+
   await Social.declineFriendship(requestId);
   res.json({ ok: true });
 });
@@ -278,6 +296,16 @@ router.post('/:requestId/decline', authMiddleware, async (req, res) => {
 router.delete('/:friendId', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const friendId = String(req.params.friendId ?? '');
+  const friendship = await Social.findFriendshipById(friendId);
+
+  if (!friendship) {
+    return res.status(404).json({ error: 'Friendship not found' });
+  }
+
+  if (friendship.userId !== _u.id && friendship.friendId !== _u.id) {
+    return res.status(403).json({ error: 'Not allowed' });
+  }
+
   await Social.removeFriendship(friendId);
   res.json({ ok: true });
 });

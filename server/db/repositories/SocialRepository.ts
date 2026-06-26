@@ -15,6 +15,10 @@ class SocialRepository {
     ]});
   }
 
+  async findFriendshipById(friendshipId: string) {
+    return db.friendships.findOne({ _id: friendshipId });
+  }
+
   async findFriendships(userId: string) {
     return db.friendships.find({ $or: [{ userId }, { friendId: userId }] });
   }
