@@ -45,7 +45,8 @@ function makeSocket(id: string) {
 }
 
 function makeIo() {
-  return { to: (_r: string) => ({ emit: jest.fn() }) } as unknown as IOServer;
+  const emitted: { event: string; data: unknown }[] = [];
+  return { emitted, to: (_r: string) => ({ emit(event: string, data: unknown) { emitted.push({ event, data }); } }) } as unknown as IOServer & { emitted: { event: string; data: unknown }[] };
 }
 
 function makeUser() {
@@ -58,10 +59,12 @@ function emit(socket: ReturnType<typeof makeSocket>, event: string, payload: unk
 
 describe('stage-video-grid: payload validation', () => {
   let socket: ReturnType<typeof makeSocket>;
+  let io: ReturnType<typeof makeIo>;
 
   beforeEach(() => {
     socket = makeSocket('sock-1');
-    registerStageVideoGridHandlers(socket, makeIo(), makeUser());
+    io = makeIo();
+    registerStageVideoGridHandlers(socket, io, makeUser());
   });
 
   // ── stage:video-join ─────────────────────────────────────────
@@ -94,7 +97,7 @@ describe('stage-video-grid: payload validation', () => {
   it('stage:video-layout — geçerli layout (grid) → emit gönderilir', () => {
     emit(socket, 'stage:video-join', { channelId: 'ch-1' });
     emit(socket, 'stage:video-layout', { channelId: 'ch-1', layout: 'grid' });
-    const layoutEmit = socket.emitted.find(e => e.event === 'stage:video-layout');
+    const layoutEmit = io.emitted.find(e => e.event === 'stage:video-layout-changed');
     expect(layoutEmit).toBeDefined();
   });
 

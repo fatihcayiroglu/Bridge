@@ -206,6 +206,8 @@ export function registerVideoGridHandlers(
 
 // ── İç yardımcılar ────────────────────────────────────────────────────────────
 
+export const registerStageVideoGridHandlers = registerVideoGridHandlers;
+
 function _removePeerFromGrid(socketId: string, channelId: string, io: IOServer): void {
   const room = videoGridRooms.get(channelId);
   if (!room) return;
