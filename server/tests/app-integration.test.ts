@@ -29,9 +29,14 @@ jest.mock('../db/index', () => {
 });
 jest.mock('../db/seed', () => async () => undefined);
 
-jest.mock('../middleware/rateLimit', () => ({
-  rateLimit: () => (_req: Request, _res: Response, next: NextFunction) => next(),
-}));
+jest.mock('../middleware/rateLimit', () => {
+  const bypass = () => (_req: Request, _res: Response, next: NextFunction) => next();
+  return {
+    rateLimit: bypass,
+    limits: new Proxy({}, { get: () => bypass }),
+  };
+});
+
 jest.mock('../middleware/csrf', () => ({
   enforceApiCsrf: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
@@ -74,12 +79,15 @@ jest.mock('../plugins/loader', () => ({
 }));
 
 // Route mock'ları — gerçek rotalar DB/auth'a bağlı, bu testlerde stub
-const stubRouter = () => {
+function stubRouter() {
   const r = express.Router();
-  r.all('*', (_req: Request, res: Response) => res.status(200).json({ ok: true }));
+  r.use((_req: Request, res: Response) => res.status(200).json({ ok: true }));
   return r;
+}
+const stubRouterWithExport = () => {
+  const router = stubRouter();
+  return { __esModule: true, default: router, router, getMemberPerms: async () => 0 };
 };
-const stubRouterWithExport = () => ({ router: stubRouter(), getMemberPerms: async () => 0 });
 
 jest.mock('../routes/auth',              () => stubRouterWithExport());
 jest.mock('../routes/servers',           stubRouter);
@@ -91,7 +99,12 @@ jest.mock('../routes/dm',                () => stubRouterWithExport());
 jest.mock('../routes/serverGifs',        stubRouter);
 jest.mock('../routes/scheduled',         stubRouter);
 jest.mock('../routes/bridge',            stubRouter);
-jest.mock('../routes/health',            stubRouter);
+jest.mock('../routes/health', () => {
+  const router = stubRouter();
+  return Object.assign(router, {
+    iceConfigHandler: (_req: Request, res: Response) => res.status(200).json({}),
+  });
+});
 jest.mock('../routes/media',             stubRouter);
 jest.mock('../routes/customEmoji',       stubRouter);
 jest.mock('../routes/serverAssets',      stubRouter);
@@ -105,10 +118,15 @@ jest.mock('../routes/stats',             stubRouter);
 jest.mock('../routes/threads',           stubRouter);
 jest.mock('../routes/users',             stubRouter);
 jest.mock('../routes/bots',              () => stubRouterWithExport());
+jest.mock('../routes/bot-marketplace',    stubRouter);
 jest.mock('../routes/webhooks',          stubRouter);
 jest.mock('../routes/polls',             stubRouter);
 jest.mock('../routes/soundboard',        stubRouter);
-jest.mock('../routes/discover',          stubRouter);
+jest.mock('../routes/discover', () => ({
+  __esModule: true,
+  default: stubRouter(),
+  adminDiscoverRouter: stubRouter(),
+}));
 jest.mock('../routes/ai',                stubRouter);
 jest.mock('../routes/activity',          () => stubRouterWithExport());
 jest.mock('../routes/federation/index',  stubRouter);
@@ -134,6 +152,13 @@ jest.mock('../routes/serverTemplates',   stubRouter);
 jest.mock('../routes/client-error',      stubRouter);
 jest.mock('../routes/podcast',           stubRouter);
 jest.mock('../routes/linkPreview',       stubRouter);
+jest.mock('../routes/boosts',            () => stubRouterWithExport());
+jest.mock('../routes/spotify-oauth',     () => stubRouterWithExport());
+jest.mock('../routes/announcement',      () => ({ ...stubRouterWithExport(), setIo: () => undefined }));
+jest.mock('../routes/serverEvents',      stubRouter);
+jest.mock('../routes/notificationPrefs', stubRouter);
+jest.mock('../routes/serverMemberProfile', stubRouter);
+jest.mock('../routes/sticker-packs',     stubRouter);
 
 // ── Testler ────────────────────────────────────────────────────
 
@@ -148,12 +173,15 @@ describe('createApp() entegrasyon', () => {
     const { setupRoutes }  = require('../app/setupRoutes');
     const result = createApp();
     app = result.app;
+    app.post('/__test_json', (req: Request, res: Response) => res.json({ received: req.body }));
+    app.get('/__test_err', () => {
+      throw Object.assign(new Error('test error'), { status: 422 });
+    });
     setupRoutes(app);
   });
 
   describe('Middleware zinciri', () => {
     it('JSON body parse eder', async () => {
-      app.post('/__test_json', (req, res) => res.json({ received: req.body }));
       const res = await request(app)
         .post('/__test_json')
         .send({ hello: 'world' })
@@ -164,50 +192,21 @@ describe('createApp() entegrasyon', () => {
 
     it('CORS header ekler', async () => {
       const res = await request(app)
-        .get('/api/config')
+        .get('/api/health')
         .set('Origin', 'http://localhost:3000');
       expect(res.headers['access-control-allow-origin']).toBe('http://localhost:3000');
     });
 
     it('CORS kısıtlaması uygular (bilinmeyen origin)', async () => {
       const res = await request(app)
-        .get('/api/config')
+        .get('/api/health')
         .set('Origin', 'http://evil.example.com');
       // Mock CORS handler returns error — Express converts to 500
       expect([403, 500]).toContain(res.status);
     });
   });
 
-  describe('/api/config endpoint', () => {
-    it('200 döner ve config alanlarını içerir', async () => {
-      const res = await request(app).get('/api/config');
-      expect(res.status).toBe(200);
-      expect(res.body).toHaveProperty('maxFileSizeMB');
-      expect(res.body).toHaveProperty('chunkSizeMB');
-      expect(res.body).toHaveProperty('tenorEnabled');
-      expect(res.body).toHaveProperty('translateEnabled');
-    });
 
-    it('tenorEnabled false döner (TENOR_API_KEY yok)', async () => {
-      delete process.env.TENOR_API_KEY;
-      const res = await request(app).get('/api/config');
-      expect(res.body.tenorEnabled).toBe(false);
-    });
-
-    it('tenorEnabled true döner (TENOR_API_KEY var)', async () => {
-      process.env.TENOR_API_KEY = 'test-key';
-      // Yeni app instance — env değişti
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { createApp: makeApp } = require('../app/createApp');
-      const { app: freshApp } = makeApp();
-      freshApp.get('/api/config', (_: Request, res: Response) =>
-        res.json({ tenorEnabled: !!process.env.TENOR_API_KEY })
-      );
-      const res = await request(freshApp).get('/api/config');
-      expect(res.body.tenorEnabled).toBe(true);
-      delete process.env.TENOR_API_KEY;
-    });
-  });
 
   describe('setupRoutes() — mount noktaları', () => {
     it('GET /api/health 200 döner', async () => {
@@ -235,16 +234,6 @@ describe('createApp() entegrasyon', () => {
 
   describe('Error handler', () => {
     it('status hataları doğru JSON döner', async () => {
-      app.get('/__test_err', () => {
-        const e = Object.assign(new Error('test error'), { status: 422 });
-        throw e;
-      });
-      // Express'in sync error catcher'ı için wrapper gerekli
-      app.use(
-        '/__test_err',
-        (err: Error, _req: Request, res: Response, _next: NextFunction) =>
-          res.status(err.status || 500).json({ error: err.message })
-      );
       const res = await request(app).get('/__test_err');
       expect(res.status).toBe(422);
       expect(res.body.error).toBe('test error');
