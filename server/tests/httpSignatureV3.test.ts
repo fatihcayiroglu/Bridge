@@ -24,6 +24,7 @@ const mockPeer = {
 };
 
 jest.mock('../db/loader', () => ({
+  __esModule: true,
   default: {
     federationPeers: {
       findOne: jest.fn(async ({ url }: { url: string }) =>
@@ -42,6 +43,7 @@ jest.mock('../db/repositories', () => ({
 }));
 
 jest.mock('../lib/logger', () => ({
+  __esModule: true,
   default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
 }));
 

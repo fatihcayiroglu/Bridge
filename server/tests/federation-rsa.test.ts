@@ -210,7 +210,7 @@ describe('federationAuth middleware (Sprint 108 — V2)', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('geçerli HMAC imzası → next() çağrılır, req.federationMethod ayarlanır', async () => {
+  it('RSA public key olmayan peer için HMAC reddedilir', async () => {
     const peerUrl = 'https://peer.bridge.example.com';
     await mockDb.federationPeers.insert({
       _id: 'mw-peer-1', url: peerUrl, name: 'MW Peer',
@@ -238,9 +238,9 @@ describe('federationAuth middleware (Sprint 108 — V2)', () => {
 
     await federationAuth(req, res, next);
 
-    expect(next).toHaveBeenCalled();
-    expect(req.federationMethod).toBe('hmac');
-    expect(req.federationPeerUrl).toBe(peerUrl);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(req.federationMethod).toBeUndefined();
   });
 
   it('geçersiz imza → 401 döner', async () => {

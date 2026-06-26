@@ -18,6 +18,9 @@ jest.mock('../middleware/auth', () => ({
     catch { res.status(401).json({ error: 'Invalid token' }); }
   },
 }));
+jest.mock('../lib/fetch', () => ({
+  fetchT: jest.fn((...args) => global.fetch(...args)),
+}));
 
 global.fetch = jest.fn();
 
@@ -184,7 +187,7 @@ describe('GET /api/federation/users/:username/outbox?page=true', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('deliverToFollowers()', () => {
-  const { deliverToFollowers } = require('../routes/federation');
+  const { deliverToFollowers } = require('../routes/federation/helpers');
 
   const fromUser = {
     _id:          ACTOR_USER_ID,

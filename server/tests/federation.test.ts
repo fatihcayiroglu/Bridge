@@ -19,6 +19,10 @@ jest.mock('../middleware/auth', () => ({
   },
 }));
 
+jest.mock('../lib/fetch', () => ({
+  fetchT: jest.fn((...args) => global.fetch(...args)),
+}));
+
 // Mock global fetch for remote peer calls
 global.fetch = jest.fn();
 
@@ -126,7 +130,7 @@ describe('POST /api/federation/peers', () => {
         software: 'bridge',
         name: 'Remote Bridge',
         description: 'Remote instance',
-        url: 'http://remote.bridge.example.com',
+        url: 'https://remote.bridge.example.com',
         version: 24,
         federation: true,
       }),
@@ -135,7 +139,7 @@ describe('POST /api/federation/peers', () => {
     const res = await request(app)
       .post('/api/federation/peers')
       .set('Authorization', `Bearer ${token(ADMIN_ID)}`)
-      .send({ url: 'http://remote.bridge.example.com' });
+      .send({ url: 'https://remote.bridge.example.com' });
 
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
@@ -149,7 +153,7 @@ describe('POST /api/federation/peers', () => {
       json: async () => ({
         software: 'bridge',
         name: 'Remote Bridge',
-        url: 'http://remote.bridge.example.com',
+        url: 'https://remote.bridge.example.com',
         version: 24,
         federation: true,
       }),
@@ -158,7 +162,7 @@ describe('POST /api/federation/peers', () => {
     const res = await request(app)
       .post('/api/federation/peers')
       .set('Authorization', `Bearer ${token(ADMIN_ID)}`)
-      .send({ url: 'http://remote.bridge.example.com' });
+      .send({ url: 'https://remote.bridge.example.com' });
 
     expect(res.status).toBe(409);
   });
@@ -169,7 +173,7 @@ describe('DELETE /api/federation/peers/:id', () => {
 
   beforeAll(async () => {
     // Insert a peer to delete
-    const peer = await mockDb.federation_peers.insert({
+    const peer = await mockDb.federationPeers.insert({
       url: 'http://todelete.example.com',
       name: 'Delete Me',
       addedAt: Date.now(),
