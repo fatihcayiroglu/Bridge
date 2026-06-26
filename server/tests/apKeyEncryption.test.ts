@@ -115,17 +115,17 @@ describe('apKeyEncryption — wrong key', () => {
     const originalKey = process.env.AP_ENCRYPTION_KEY;
     process.env.AP_ENCRYPTION_KEY = 'b'.repeat(64);
     // Module cache'i temizle (key farklı olsun)
-    delete require.cache[require.resolve('../lib/apKeyEncryption')];
+    jest.resetModules();
     const enc1 = require('../lib/apKeyEncryption').encryptApPrivateKey('test');
 
     // Orijinal key ile çözmeye çalış
     process.env.AP_ENCRYPTION_KEY = originalKey;
-    delete require.cache[require.resolve('../lib/apKeyEncryption')];
+    jest.resetModules();
     const result = require('../lib/apKeyEncryption').decryptApPrivateKey(enc1);
     expect(result).toBeNull();
 
     // Temizlik
     process.env.AP_ENCRYPTION_KEY = originalKey;
-    delete require.cache[require.resolve('../lib/apKeyEncryption')];
+    jest.resetModules();
   });
 });

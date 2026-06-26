@@ -31,7 +31,7 @@ describe('buildWhere column whitelist', () => {
   });
 
   test('bilinmeyen kolon adı hata fırlatır', () => {
-    expect(() => buildWhere({ '__proto__': 'x' })).toThrow(/Unknown column/);
+    expect(() => buildWhere(JSON.parse('{"__proto__":"x"}'))).toThrow(/Unknown column/);
     expect(() => buildWhere({ 'DROP TABLE': '1' })).toThrow(/Unknown column/);
     expect(() => buildWhere({ 'injected; --': 'x' })).toThrow(/Unknown column/);
     expect(() => buildWhere({ constructor: 'x' })).toThrow(/Unknown column/);
@@ -111,8 +111,7 @@ describe('find().sort() column whitelist', () => {
 
   test('bilinmeyen kolon ile sort hata fırlatır', async () => {
     const col = makeCollection();
-    await expect(
-      col.find({}).sort({ 'injected ORDER BY password; --': 1 })
-    ).rejects.toThrow(/Unknown column/);
+    expect(() => col.find({}).sort({ 'injected ORDER BY password; --': 1 }))
+      .toThrow(/Unknown column/);
   });
 });

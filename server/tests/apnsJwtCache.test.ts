@@ -43,14 +43,14 @@ describe('getApnsJwt — in-memory cache TTL davranışı', () => {
     jest.useFakeTimers();
 
     // fs.readFileSync mock
-    mockFs.readFileSync = jest.fn().mockReturnValue(FAKE_P8_KEY) as jest.MockedFunction<typeof fs.readFileSync>;
+    (mockFs.readFileSync as jest.Mock).mockReturnValue(FAKE_P8_KEY);
 
     // crypto.createSign mock — imza üretir
     const mockSign = {
       update   : jest.fn().mockReturnThis(),
       sign     : jest.fn().mockReturnValue('mockSignatureBase64url'),
     };
-    mockCrypto.createSign = jest.fn().mockReturnValue(mockSign as unknown as crypto.Sign);
+    (mockCrypto.createSign as jest.Mock).mockReturnValue(mockSign);
   });
 
   afterEach(() => {

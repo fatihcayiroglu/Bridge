@@ -178,7 +178,7 @@ describe('PgCollection — insert', () => {
     expect(doc._id).toBeDefined();
     const call = pool._client.query.mock.calls[0][0];
     expect(call).toContain('INSERT INTO "users"');
-    expect(call).toContain('ON CONFLICT (_id) DO NOTHING');
+    expect(call).toContain('ON CONFLICT ("_id") DO NOTHING');
   });
 
   it('_id verilmişse kullanır', async () => {
@@ -224,8 +224,8 @@ describe('PgCollection — update', () => {
   it('$push JSONB || kullanır', async () => {
     const pool = makeMockPool();
     pool._client.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-    const col = new PgCollection(pool, 'roles');
-    await col.update({ _id: 'r1' }, { $push: { members: 'u1' } });
+    const col = new PgCollection(pool, 'dm_conversations');
+    await col.update({ _id: 'dm1' }, { $push: { participants: 'u1' } });
     const call = pool._client.query.mock.calls[0][0];
     expect(call).toContain('||');
   });
