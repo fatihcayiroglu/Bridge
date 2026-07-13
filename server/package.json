@@ -57,7 +57,7 @@
     "sharp": "^0.35.1"
   },
   "devDependencies": {
-    "@babel/core": "^7.29.7",
+    "@babel/core": "^8.0.1",
     "@babel/preset-env": "^7.29.7",
     "@eslint/js": "^10.0.1",
     "@types/cookie-parser": "^1.4.10",
