@@ -1,4 +1,3 @@
-// server/middleware/auth.ts
 // JWT auth + refresh token rotation (stored in DB)
 // JWT_SECRET / REFRESH_SECRET hiçbir zaman hardcoded default kullanmıyor.
 // REFRESH_SECRET: refresh token'ları DB'de HMAC-SHA256 ile pepper'lar (plain text saklanmaz).
@@ -12,7 +11,7 @@ import type { AuthedRequest as _AuthedRequest } from '../types/express.d';
 
 export interface JwtPayload {
   id: string;
-  _id?: string;        // alias for id — some routes use _id
+  _id?: string;
   username: string;
   v: number;
   isAdmin?: boolean;
@@ -29,32 +28,12 @@ export interface AuthRequest extends Request {
   headers: Request['headers'] & { authorization?: string };
 }
 
-/**
- * AuthedRequest — authMiddleware'den geçtiği garantili route'lar için.
- * user alanı non-optional'dır; null check gerektirmez.
- * Tek kaynak: types/express.d.ts — buradan re-export edilir.
- *
- * @example
- *   router.get('/profile', authMiddleware, async (req, res) => {
- *     const id = req.user.id; // ✅ tip hatası yok
- *   });
- */
 export type { AuthedRequest } from '../types/express.d';
 
-/**
- * castAuthed — require()-style route'lar için tip dönüşüm yardımcısı.
- * authMiddleware zaten user'ı doldurduğundan bu cast güvenlidir.
- *
- * @example
- *   router.get('/me', authMiddleware, async (req, res) => {
- *     const { id } = castAuthed(req).user;
- *   });
- */
 export function castAuthed(req: Request): _AuthedRequest {
   return req as _AuthedRequest;
 }
 
-// ── SECRET VALIDATION ────────────────────────────────────────
 const INSECURE_DEFAULTS = new Set([
   'bridge-dev-secret-CHANGE-IN-PRODUCTION',
   'bridge-refresh-secret-CHANGE-IN-PRODUCTION',
@@ -84,9 +63,6 @@ function _validateSecret(name: string, value: string | undefined): void {
       logger.fatal({ secretName: name, event: 'auth.secret.insecure_default' }, msg);
       process.exit(1);
     }
-    // Dev ortamında: sadece warn ile geçmeyi zorlaştır — görünür banner + 3s gecikme
-    // Amaç: geliştiricinin uyarıyı görmeden production'a çıkmasını engellemek.
-    // CI ortamında (CI=true) gecikme atlanır.
     console.error('\n' + '█'.repeat(60));
     console.error('█  ⚠️  GÜVENSİZ VARSAYILAN SECRET KULLANILIYOR' + ' '.repeat(13) + '█');
     console.error('█  ' + name.padEnd(55) + '█');
@@ -94,7 +70,6 @@ function _validateSecret(name: string, value: string | undefined): void {
     console.error('█'.repeat(60) + '\n');
     logger.warn({ secretName: name, event: 'auth.secret.insecure_default' }, msg);
     if (process.env.CI !== 'true' && process.env.NODE_ENV !== 'test') {
-      // Sync sleep — kasıtlı: geliştirici dikkatini çekmek için
       const start = Date.now();
       while (Date.now() - start < 3000) { /* intentional busy-wait */ }
     }
@@ -117,7 +92,6 @@ const REFRESH_SECRET = process.env.REFRESH_SECRET as string;
 const ACCESS_TOKEN_TTL = (process.env.ACCESS_TOKEN_TTL || '15m') as import('jsonwebtoken').SignOptions['expiresIn'];
 const REFRESH_TOKEN_TTL = process.env.REFRESH_TOKEN_TTL || '30d';
 
-// TTL in ms for refresh token DB rows
 const REFRESH_TTL_MS = (() => {
   const t = REFRESH_TOKEN_TTL;
   const n = parseInt(t);
@@ -126,7 +100,6 @@ const REFRESH_TTL_MS = (() => {
   return 30 * 86400000;
 })();
 
-/** REFRESH_SECRET ile HMAC — DB'de düz token saklanmaz. */
 function _hashRefreshToken(rawToken: string): string {
   return crypto.createHmac('sha256', REFRESH_SECRET).update(rawToken).digest('hex');
 }
@@ -134,7 +107,6 @@ function _hashRefreshToken(rawToken: string): string {
 async function _findRefreshTokenRow(rawToken: string) {
   const hashed = _hashRefreshToken(rawToken);
   let row = await Auth.findRefreshToken(hashed);
-  // Geçiş: eski plain-text kayıtlar (dev/test)
   if (!row && process.env.NODE_ENV !== 'production') {
     row = await Auth.findRefreshToken(rawToken);
   }
@@ -168,9 +140,6 @@ export function makeToken(user: UserLike): string {
   );
 }
 
-// Each refresh token is a random opaque string stored in the DB
-// This allows true rotation: using a token once invalidates it.
-// family: her giriş oturumuna yeni bir UUID atanır — token zinciri izlenir.
 export async function makeRefreshToken(user: UserLike): Promise<string> {
   const token = crypto.randomBytes(48).toString('hex');
   const family = crypto.randomUUID
@@ -199,7 +168,6 @@ export type RotateResultOrError = RotateResult | { error: RotateError };
 export async function rotateRefreshToken(oldToken: string): Promise<RotateResultOrError | null> {
   const row = await _findRefreshTokenRow(oldToken);
 
-  // ── TOKEN REUSE DETECTION — AİLE BAZLI İPTAL ─────────────────
   if (row && row.used) {
     logger.warn(
       { userId: row.userId, family: row.family, event: 'auth.refresh_token.reuse_detected' },
@@ -219,10 +187,26 @@ export async function rotateRefreshToken(oldToken: string): Promise<RotateResult
     return { error: 'expired' as RotateError };
   }
 
-  await Auth.updateRefreshTokenWhere(
-    { token: row.token },
+  // SECURITY: compare-and-set is the single-use boundary. A plain
+  // "read used=false -> write used=true" sequence is racy: two concurrent
+  // refresh requests could both observe the unused row and mint two tokens.
+  // The DB UPDATE must win exactly once; the loser is treated as reuse.
+  const markedUsed = await Auth.updateRefreshTokenWhere(
+    { token: row.token, used: false },
     { $set: { used: true, usedAt: Date.now() } }
   );
+  if (!markedUsed || markedUsed.updated !== 1) {
+    logger.warn(
+      { userId: row.userId, family: row.family, event: 'auth.refresh_token.concurrent_reuse' },
+      'Refresh token was already consumed by a concurrent request.'
+    );
+    if (row.family) {
+      await Auth.revokeByFamily(row.family);
+    } else {
+      await Auth.revokeAllForUser(row.userId);
+    }
+    return { error: 'reuse' as RotateError };
+  }
 
   const user = await Users.findById(row.userId);
   if (!user) return { error: 'user_not_found' as RotateError };
@@ -243,11 +227,6 @@ export async function revokeAllRefreshTokens(userId: string): Promise<void> {
   await Auth.revokeAllForUser(userId);
 }
 
-// Clean expired + used refresh tokens periodically.
-// Sprint 62: setInterval module-load side effect kaldırıldı.
-// Artık yalnızca startAuthCleanup() çağrıldığında başlar — test ortamlarında
-// birden fazla import olursa birden fazla timer oluşmaz.
-// server/index.ts'te uygulama başlarken çağrılması gerekir.
 let _authCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
 export function startAuthCleanup(): void {
@@ -282,7 +261,6 @@ export function verifyToken(token: string): JwtPayload | null {
   }
 }
 
-// Token version cache (avoids DB hit on every request) — LRU eviction
 const TOKEN_CACHE_TTL = 30_000;
 const MAX_TOKEN_CACHE_ENTRIES = 50_000;
 
@@ -368,7 +346,6 @@ export async function authMiddleware(
     res.status(500).json({ error: 'Auth check failed' });
   }
 }
-
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   const user = (req as AuthRequest).user;
