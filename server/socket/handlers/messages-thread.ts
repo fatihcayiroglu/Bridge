@@ -6,37 +6,44 @@
 import type { Server as IOServer, Socket } from 'socket.io';
 import type { AuthUser } from './messages-types';
 import logger from '../../lib/logger';
-import { Threads } from '../../db/repositories';
+import { Threads, Members } from '../../db/repositories';
 
 export function registerThreadSocketEvents(
   socket: Socket,
   io: IOServer,
-  _user: AuthUser,
+  user: AuthUser,
 ): void {
-  // NOT: thread:message:new sunucu tarafında emit edilmeli; istemciden gelen event'ler
-  // sahte mesaj içeriği enjekte etmek için kullanılabilir.
-  // Bu handler, istemci tetiklemelerini reddeder — relay işlemi routes/threads.ts'de yapılır.
-  socket.on('thread:message:new', () => {
-    // Güvenlik: istemci bu eventi emit etmemeli. Sunucu, REST POST /threads/:id/messages
-    // yanıtında doğrudan io.to() ile yayın yapar. Burada sessizce red.
-    return;
-  });
+  // İstemci bu eventi publish edemez; thread mesajları REST katmanından
+  // oluşturulur ve yalnızca server tarafından broadcast edilir.
+  socket.on('thread:message:new', () => undefined);
 
-  socket.on('thread:join', (threadId: string) => {
+  socket.on('thread:join', async (threadId: string) => {
     try {
-      if (!threadId || typeof threadId !== 'string') return;
+      if (!threadId || typeof threadId !== 'string' || threadId.length > 128) return;
+
+      const thread = await Threads.findById(threadId);
+      if (!thread?.serverId) return;
+
+      // Kritik: socket client'ın istediği herhangi bir thread room'una
+      // katılmasına izin verilmemeli. Önce server membership doğrulanır.
+      const member = await Members.findOne(user._id, thread.serverId);
+      if (!member) return;
+
       for (const room of socket.rooms) {
         if (room.startsWith('thread:')) socket.leave(room);
       }
-      socket.join(`thread:${threadId}`);
+      await socket.join(`thread:${thread._id}`);
     } catch (err) {
       logger.error({ event: 'thread.join.error', err, threadId }, 'thread:join hatası');
     }
   });
 
-  socket.on('thread:leave', (threadId: string) => {
+  socket.on('thread:leave', async (threadId: string) => {
     try {
-      if (!threadId || typeof threadId !== 'string') return;
+      if (!threadId || typeof threadId !== 'string' || threadId.length > 128) return;
+
+      // Leave işlemi için DB sorgusu gerekmese de yalnızca canonical room
+      // adı kullanılır; istemci tarafından room prefix enjeksiyonu mümkün değil.
       socket.leave(`thread:${threadId}`);
     } catch (err) {
       logger.error({ event: 'thread.leave.error', err, threadId }, 'thread:leave hatası');
