@@ -93,7 +93,7 @@ CREATE INDEX IF NOT EXISTS messages_embedding_idx
   ON messages USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 ```
 
-Migration dosyası: `server/db/migrations/sprint112_pgvector_embeddings.sql`
+Runtime şema sahibi: `server/lib/pgvector.ts` içindeki `ensurePgvectorSchema()` (yalnız `PGVECTOR_ENABLED` iken).
 
 ---
 
@@ -108,4 +108,4 @@ pgvector + Ollama/Nomic seçeneği, self-host uyumluluğunu bozmadan gerçek sem
 - [ADR-0004 — Federation ActivityPub](ADR-0004-federation-activitypub.md)
 - [ADR-0009 — Observability Stratejisi](ADR-0009-observability-strategy.md)
 - [server/lib/pgvector.ts](../server/lib/pgvector.ts)
-- [server/db/migrations/sprint112_pgvector_embeddings.sql](../server/db/migrations/sprint112_pgvector_embeddings.sql)
+- [server/lib/pgvector.ts](../server/lib/pgvector.ts) — opsiyonel extension/sütun/index şema sahibi

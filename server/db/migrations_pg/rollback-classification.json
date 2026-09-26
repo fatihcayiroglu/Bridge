@@ -1,0 +1,179 @@
+{
+  "$comment": [
+    "Rollback classification allowlist. Consumed by scripts/verify-migration-rollback.js.",
+    "",
+    "RULES ENFORCED BY THE VERIFIER (no wildcards are accepted):",
+    "  - every entry names ONE exact migration id",
+    "  - every entry carries a classification, an expected structural difference,",
+    "    and a rationale that is specific to that migration",
+    "  - an entry whose migration no longer exists FAILS the gate (no rot)",
+    "  - a migration declared non-lossless that becomes lossless FAILS the gate",
+    "    (the allowlist must shrink when things are fixed)",
+    "  - every object dragged by a declared DRIFT must be NAMED in expectedDifference",
+    "  - every expectedLeftovers tag must still actually be left behind by the down",
+    "  - any migration NOT listed here must be LOSSLESS_PASS, or the gate fails",
+    "",
+    "CLASSIFICATIONS:",
+    "  EXPECTED_IRREVERSIBLE   - the forward migration destroyed/transformed data;",
+    "                            exact structural reversal is impossible.",
+    "  EXPECTED_DEPENDENCY     - isolated reversal is intentionally blocked or degraded by a",
+    "                            LATER migration; ordered rollback is the canonical path.",
+    "  EXPECTED_SHARED_OBJECTS - the migration REDEFINES objects an earlier migration owns.",
+    "                            Its down restores the previous owner's definition instead of",
+    "                            dropping them, so the correct outcome is LOSSLESS *with*",
+    "                            declared leftovers. Any structural difference here is a bug.",
+    "  KNOWN_DEBT              - a real unresolved schema-ownership discrepancy.",
+    "",
+    "The verifier tests each migration IN ISOLATION, on a single-use COPY of a",
+    "fully-migrated database (CREATE DATABASE ... TEMPLATE). Isolation is what makes",
+    "the pairs below meaningful: the EARLIER owner drifts because a later migration's",
+    "additions cannot be recreated by its own re-up, while the LATER refiner is",
+    "lossless. `--ordered` additionally proves the whole chain."
+  ],
+  "006_move_ap_private_key": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "DOWN_FAILED: column k.apPrivateKey does not exist",
+    "dependsOn": [
+      "009_drop_ap_private_key_plaintext"
+    ],
+    "rationale": "006's down copies user_ap_keys.\"apPrivateKey\" back onto users. Migration 009 DROPS that column, so in isolation the column is absent. 009's own down re-adds it (rollback/009...down.sql line 2), therefore an ORDERED rollback (009 -> 008 -> 007 -> 006) succeeds. Proven by the --ordered chain run. The down script is correct; isolated reversal of 006 is not a supported operation."
+  },
+  "008_encrypt_ap_private_keys": {
+    "classification": "EXPECTED_IRREVERSIBLE",
+    "kind": "data-transform",
+    "expectedDifference": "user_ap_keys.\"apPrivateKeyEnc\" loses NOT NULL (both the column flag and the user_ap_keys_apPrivateKeyEnc_not_null constraint row), \"keyVersion\" default reverts from 1 to 0, and chk_key_version is absent after reversal",
+    "rationale": "The forward migration ENCRYPTS private keys in place and stamps keyVersion=1. Reversing it cannot recover plaintext without the encryption key, so the down deliberately relaxes NOT NULL and drops chk_key_version instead of inventing a decryption step. Restoring the original structure would require asserting facts about data that no longer exists in that form."
+  },
+  "002_refresh_token_reuse_detection": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "cross-migration-dependency",
+    "expectedDifference": "idx_rt_cleanup (created by 016) is lost when `used` is dropped and is not recreated by 002's re-up",
+    "dependsOn": [
+      "016_sprint121_message_schema_fix"
+    ],
+    "rationale": "016 builds a partial index whose predicate references refresh_tokens.used. Dropping that column cascades the index away; re-applying 002 alone cannot recreate an object that belongs to 016. Ordered rollback unwinds 016 first, and 016's own isolated cycle is lossless. (The SMALLINT/BOOLEAN type conflict that previously also appeared here was a real defect and has been FIXED in 002.)"
+  },
+  "013_sprint95_server_events": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "constraint server_events_channel_id_fkey reverts from ON DELETE CASCADE to ON DELETE SET NULL; the CHECK constraint is renamed from server_events_ends_after_starts to ends_after_starts",
+    "dependsOn": [
+      "037_server_events_canonical_closure"
+    ],
+    "rationale": "037 deliberately changes the same FK from SET NULL to CASCADE and renames the CHECK constraint. Re-applying 013 alone restores 013's own (older) definitions - which is exactly correct for 013 in isolation. 037's row is the mirror: its down restores these definitions, so 037 itself is lossless. An ordered rollback replays 037 afterwards and converges."
+  },
+  "037_server_events_canonical_closure": {
+    "classification": "EXPECTED_SHARED_OBJECTS",
+    "kind": "redefines-earlier-migrations-objects",
+    "expectedDifference": "no structural difference is expected: the down restores 013's ON DELETE SET NULL definition of server_events_channel_id_fkey and the re-up restores 037's ON DELETE CASCADE definition",
+    "dependsOn": [
+      "013_sprint95_server_events"
+    ],
+    "rationale": "037 redefines the FK that 013 created; its down restores 013's definition, so a full down/up cycle of 037 alone is lossless. 037's up also re-declares CREATE TABLE IF NOT EXISTS server_events / server_event_rsvp and their indexes defensively, but it does NOT own them - 013 does. Its down therefore correctly leaves those objects alone; they are declared in expectedLeftovers so the completeness check does not misattribute 013's objects to 037. 013's row is the mirror and legitimately drifts.",
+    "expectedLeftovers": [
+      "TBL:server_events",
+      "TBL:server_event_rsvp",
+      "IDX:idx_server_events_server_id",
+      "IDX:idx_server_events_starts_at",
+      "IDX:idx_server_events_status",
+      "IDX:idx_server_event_rsvp_event",
+      "IDX:idx_server_event_rsvp_user"
+    ]
+  },
+  "018_sprint122_schema_gaps": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "idx_automod_alert_flagged_msg (created by 036) is lost when messages.\"autoModAlert\" is dropped",
+    "dependsOn": [
+      "036_automod_alert_idempotency"
+    ],
+    "rationale": "036 builds a partial unique index whose predicate references messages.\"autoModAlert\", a column 018 adds. Dropping the column cascades 036's index away, and 018's re-up cannot recreate an object owned by 036. Ordered rollback unwinds 036 first, and 036's own isolated cycle is lossless."
+  },
+  "035_scheduled_dispatch_durability": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "idx_sched_dispatch_due predicate reverts to (sent=false AND failedAt IS NULL), losing the cancelledAt clause added by 041",
+    "dependsOn": [
+      "041_scheduled_cancel_claim_safety"
+    ],
+    "rationale": "041 redefines the same index to also exclude cancelled rows. Re-applying 035 alone restores 035's own predicate, which is correct for 035. 041's row is the mirror and is lossless because its down restores 035's predicate rather than dropping the index."
+  },
+  "041_scheduled_cancel_claim_safety": {
+    "classification": "EXPECTED_SHARED_OBJECTS",
+    "kind": "redefines-earlier-migrations-objects",
+    "expectedDifference": "no structural difference is expected: the down restores 035's idx_sched_dispatch_due predicate and the re-up restores 041's predicate, which also excludes cancelled rows",
+    "dependsOn": [
+      "035_scheduled_dispatch_durability"
+    ],
+    "rationale": "041 REDEFINES idx_sched_dispatch_due rather than creating it - 035 owns it. Its down restores 035's predicate instead of dropping the index, which is the correct reversal, so the index legitimately remains after the down and is declared in expectedLeftovers. A full 041 cycle is therefore lossless; 035's row is the mirror and legitimately drifts.",
+    "expectedLeftovers": [
+      "IDX:idx_sched_dispatch_due"
+    ]
+  },
+  "027_search_index_alignment": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "DOWN_FAILED: cannot drop function bridge_unaccent(text) because other objects depend on it",
+    "dependsOn": [
+      "028_group_dm_search"
+    ],
+    "rationale": "028 creates idx_group_dm_messages_fts_unaccent, whose expression calls bridge_unaccent(). 027's down drops its own three unaccent indexes and then the function, which PostgreSQL correctly refuses while 028's index still references it. An ORDERED rollback drops 028's index first and then succeeds. Using DROP FUNCTION ... CASCADE here would silently destroy an index belonging to another migration, which is worse."
+  },
+  "010_bot_marketplace": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "bot_marketplace.\"executableBotId\", its bot_marketplace_executable_bot_fk foreign key and the uq_bot_marketplace_executable partial unique index (all added by 070) are lost when the table is dropped",
+    "dependsOn": [
+      "070_marketplace_executable_bot"
+    ],
+    "rationale": "010 CREATES bot_marketplace. 070_marketplace_executable_bot later adds executableBotId, its FK to bots(_id) and a partial unique index to that same table. Rolling 010 back in isolation drops the table, and 010's own re-up recreates it in its 010 shape - it cannot recreate columns owned by 070. An ORDERED rollback unwinds 070 first, so the chain converges; 070's own isolated cycle is lossless."
+  },
+  "024_unified_inbox": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "idx_notifications_inbox_message, idx_notifications_inbox_unread and idx_notifications_inbox_channel revert to the 024 predicate type IN ('mention','reply'), losing the 'watch' member added by 067",
+    "dependsOn": [
+      "067_inbox_watch_attention"
+    ],
+    "rationale": "024 OWNS the three unified-inbox partial indexes. 067_inbox_watch_attention redefines all three to also match watch-word notifications. Re-applying 024 alone restores 024's own predicates, which is exactly correct for 024 in isolation; 067's row is the mirror and is lossless because its down restores 024's definitions. An ordered rollback replays 067 afterwards and converges."
+  },
+  "025_saved_followup": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "saved_messages.\"remindAt\", saved_messages.\"remindedAt\" and idx_saved_messages_due_reminder (all added by 064) are lost when the saved_messages table is dropped",
+    "dependsOn": [
+      "064_saved_message_reminders"
+    ],
+    "rationale": "025 CREATES saved_messages. 064_saved_message_reminders later adds the reminder columns and their partial due-reminder index to that same table. Rolling 025 back in isolation drops the table and its re-up recreates the 025 shape only - it cannot recreate objects owned by 064. An ORDERED rollback unwinds 064 first; 064's own isolated cycle is lossless."
+  },
+  "067_inbox_watch_attention": {
+    "classification": "EXPECTED_SHARED_OBJECTS",
+    "kind": "redefines-earlier-migrations-objects",
+    "expectedDifference": "no structural difference is expected: the down restores 024's ('mention','reply') predicates for the three unified-inbox indexes and the re-up restores 067's ('mention','reply','watch') predicates",
+    "expectedLeftovers": [
+      "IDX:idx_notifications_inbox_message",
+      "IDX:idx_notifications_inbox_unread",
+      "IDX:idx_notifications_inbox_channel"
+    ],
+    "rationale": "067 does not CREATE the unified-inbox indexes - 024 does. 067 only widens their partial predicates, so its down correctly DROPs and RECREATEs them in 024's shape rather than leaving the notifications table without inbox coverage. The completeness check sees CREATE INDEX statements in 067's up and would otherwise report the (correctly) still-present indexes as an incomplete down, so they are declared here."
+  },
+  "063_message_reports": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "cross-migration-dependency",
+    "expectedDifference": "idx_message_reports_message (created by 071) is lost when 063 drops message_reports and is not recreated by 063's re-up",
+    "dependsOn": [
+      "071_delete_cascade_fk_indexes"
+    ],
+    "rationale": "071 adds the referencing-column index for the message_reports.messageId ON DELETE CASCADE foreign key. 063's down drops the whole table, taking 071's index with it; re-applying 063 alone cannot recreate an object owned by 071. Ordered rollback unwinds 071 first (its isolated cycle is lossless) and the full ordered chain measures 0 lost / 0 extra (Final21 Phase 19 run). Unclassified since 071 was added in Phase 11; the gate had not completed a full run since."
+  },
+  "065_channel_read_positions": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "cross-migration-dependency",
+    "expectedDifference": "idx_channel_read_positions_channel (created by 071) is lost when 065 drops channel_read_positions and is not recreated by 065's re-up",
+    "dependsOn": [
+      "071_delete_cascade_fk_indexes"
+    ],
+    "rationale": "071 adds the referencing-column index for the channel_read_positions.channelId ON DELETE CASCADE foreign key. 065's down drops the whole table, taking 071's index with it; re-applying 065 alone cannot recreate an object owned by 071. Ordered rollback unwinds 071 first (its isolated cycle is lossless) and the full ordered chain measures 0 lost / 0 extra (Final21 Phase 19 run). Unclassified since 071 was added in Phase 11; the gate had not completed a full run since."
+  }
+}

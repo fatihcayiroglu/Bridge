@@ -43,12 +43,8 @@ jobs:
       - name: Install root deps
         run: npm ci
 
-      - name: Install server deps
-        run: cd server && npm ci
-
-      - name: Build server
-        run: cd server && npm run build
-
+      # The desktop app is a client of a Bridge server (Final21 Phase 12); the
+      # server is not bundled, so it is not built here.
       - name: Install Electron deps
         run: cd electron && npm ci
 
@@ -60,23 +56,35 @@ jobs:
           p12-file-base64: ${{ secrets.MAC_CERTS_P12_BASE64 }}
           p12-password: ${{ secrets.MAC_CERTS_P12_PASSWORD }}
 
-      # Windows code signing
-      - name: Setup Windows signing
+      # Windows code signing. A signed release is REQUIRED on this workflow: an
+      # unsigned build would ship an update feed whose installers nobody verifies.
+      # (electron/updatePolicy.ts also disables updates for such a build.)
+      - name: Require Windows signing certificate
         if: matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CERT_BASE64 }}
         run: |
-          echo "${{ secrets.WIN_CERT_BASE64 }}" | base64 --decode > electron/win-cert.pfx
+          if [ -z "${WIN_CSC_LINK}" ]; then
+            echo "WIN_CERT_BASE64 is not configured: refusing to build an unsigned 'signed' release." >&2
+            exit 1
+          fi
 
+      # The update feed is this repository's releases. It is injected here instead of
+      # being hard-coded in electron/package.json, which pointed at a repository the
+      # project does not control.
       - name: Build Electron app
-        run: cd electron && npm run ${{ matrix.build_script }}
+        shell: bash
+        run: cd electron && npm run ${{ matrix.build_script }} -- -c.publish.provider=github -c.publish.owner=${{ github.repository_owner }} -c.publish.repo=${{ github.event.repository.name }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # macOS notarization
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Windows signing
-          WIN_CERT_PATH: win-cert.pfx
-          WIN_CERT_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
+          # Windows signing (electron-builder reads a base64 PFX from WIN_CSC_LINK)
+          WIN_CSC_LINK: ${{ secrets.WIN_CERT_BASE64 }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
           # Linux
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_TOKEN }}
 
@@ -108,9 +116,17 @@ jobs:
         with:
           path: release-artifacts
 
-      - name: Get version
+      - name: Resolve and validate release version
         id: version
-        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        shell: bash
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF_NAME}" != "${EXPECTED_TAG}" ]; then
+            echo "Release tag/version mismatch: ref=${GITHUB_REF_NAME} package=${EXPECTED_TAG}" >&2
+            exit 1
+          fi
+          echo "version=${EXPECTED_TAG}" >> "${GITHUB_OUTPUT}"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

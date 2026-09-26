@@ -1,199 +1,128 @@
 // client/tests/i18n-sprint82.test.ts
-// Sprint 82: Yeni dil dosyaları ve i18n completeness testleri
+// core/i18n — CANLI sözleşme testleri (native Vitest/ESM).
+//
+// ════════════════════════════════════════════════════════════════════════════
+// FAZ 12 — KISMİ MIGRATION (PARTIAL_MIGRATE)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// ÇÖKME NEDENİ: dosya kendi `test()`/`expect()` runner'ını taşıyordu ve
+// Vitest'e HİÇ suite kaydetmiyordu → "No test suite found" (NO_SUITE).
+// Jest/CJS uyumsuzluğu DEĞİLDİ; 20 iddia stdout'a `✓` basıp geçiyor ama
+// hiçbir sayıma girmiyordu.
+//
+// AYRICA: eski dosya üretimden HİÇBİR ŞEY import etmiyordu. Test ettiği
+// `detectLocale`, `interpolate`, `formatPlural`, `EN_REQUIRED_KEYS`,
+// `SUPPORTED_LOCALES` (dizi) sembollerinin tamamı test dosyasının İÇİNDE
+// yeniden tanımlanmıştı.
+//
+// ESKİ 20 İDDİANIN BUGÜNKÜ DURUMU (js/core/i18n/index.ts, satır kanıtlı):
+//   1–3  desteklenen diller  → STALE: üretimde 10 locale ve Record<Locale,string>
+//                              (:13-24), eski test 9 ve dizi varsayıyordu
+//   4–6  EN_REQUIRED_KEYS    → DEAD: üretim karşılığı yok
+//   7–10 detectLocale        → MOVED+STALE: `_detectLocale` (:65-73) PRIVATE ve
+//                              varsayılanı 'tr'; eski test 'en' fallback diyordu
+//   11–14 interpolate        → DEAD: `t()` interpolasyon YAPMAZ (:115-117)
+//   15–17 formatPlural       → DEAD: çoğullama YOK
+//   18–20 çeviri içeriği     → DEAD: yerel örnek veri üzerinde çalışıyordu
+//
+// KORUNAN CANLI SÖZLEŞME (gerçek import ile): SUPPORTED_LOCALES · t() arama,
+// fallback ve eksik-anahtar davranışı · locale okuma/abonelik · $t takma adı.
+//
+// GÜVENLİK GÖZLEMİ: `t()` interpolasyon yapmadığı için çeviri metnine
+// kullanıcı kontrollü değişken enjekte edilen bir yol YOKTUR. Üretim kodu bu
+// turda değiştirilmemiştir.
 
-'use strict';
+import { describe, it, expect } from 'vitest';
+import { SUPPORTED_LOCALES, locale, t, $t, type Locale } from '../js/core/i18n/index.ts';
 
-let _passed = 0;
-let _failed = 0;
-const _errors: string[] = [];
+describe('SUPPORTED_LOCALES — canlı locale kümesi', () => {
+  it('Record<Locale,string> biçimindedir (dizi DEĞİL)', () => {
+    // Eski test bunu dizi sanıyordu; üretim sözleşmesi nesnedir (index.ts:13).
+    expect(Array.isArray(SUPPORTED_LOCALES)).toBe(false);
+    expect(typeof SUPPORTED_LOCALES).toBe('object');
+  });
 
-function test(name: string, fn: () => void): void {
-  try { fn(); _passed++; console.log(`  ✓ ${name}`); }
-  catch (err) {
-    _failed++;
-    const msg = err instanceof Error ? err.message : String(err);
-    _errors.push(`${name}: ${msg}`);
-    console.log(`  ✗ ${name}: ${msg}`);
-  }
-}
+  it('bugünkü 10 dili içerir', () => {
+    const codes = Object.keys(SUPPORTED_LOCALES).sort();
 
-function expect(val: unknown) {
-  return {
-    toBe:         (e: unknown) => { if (val !== e) throw new Error(`Expected ${JSON.stringify(e)}, got ${JSON.stringify(val)}`); },
-    toBeTruthy:   () => { if (!val) throw new Error(`Expected truthy`); },
-    toBeGreaterThan: (n: number) => { if (typeof val !== 'number' || val <= n) throw new Error(`Expected ${val} > ${n}`); },
-    toContain:    (item: unknown) => { if (Array.isArray(val) && !val.includes(item)) throw new Error(`Expected array to contain ${JSON.stringify(item)}`); },
-  };
-}
+    expect(codes).toEqual(['de', 'en', 'es', 'fr', 'ja', 'ko', 'pt', 'ru', 'tr', 'zh']);
+  });
 
-// ── Mock translations (extracted keys) ───────────────────────────────────────
-// Gerçek modüller import edilemediğinden anahtar listelerini doğrulayacağız.
+  it('her locale için görünen ad taşır', () => {
+    for (const [code, label] of Object.entries(SUPPORTED_LOCALES)) {
+      expect(typeof label).toBe('string');
+      expect(label.length).toBeGreaterThan(0);
+      expect(code).toMatch(/^[a-z]{2}$/);
+    }
+  });
 
-const EN_REQUIRED_KEYS = [
-  'sign_in','create_account','username','display_name','password',
-  'loading','cancel','close','save','create','send','search',
-  'servers','channels','chat','members','profile','friends',
-  'direct_messages','settings','msg_placeholder','error_generic',
-  'error_network','error_unauthorized','error_forbidden','error_not_found',
-  'error_ratelimit','error_upload_size','error_server','kick','ban',
-  'timeout','unban','warn','roles','permissions','edit','delete',
-  'reply','pin','react','confirm','confirm_delete','yes_delete','no_keep',
-  'leave_server','continue','finish','back',
-  // Sprint 82 new keys
-  'activities','activity_launch','activity_join','activity_leave','activity_no_active',
-  'clips','clip_save','clip_recording','clip_saved',
-  'stickers','sticker_send','sticker_pack',
-  'super_react','super_react_tip',
-];
-
-// Simüle edilmiş dil dosyası key setleri (gerçek dosyalarla senkron)
-const LANG_KEY_COUNTS: Record<string, number> = {
-  en: 135,  // mevcut
-  de: 130,  // mevcut
-  fr: 130,  // mevcut
-  tr: 130,  // mevcut
-  es: 138,  // Sprint 82
-  ja: 138,  // Sprint 82
-  pt: 138,  // Sprint 82
-  ko: 138,  // Sprint 82
-  ru: 132,  // Sprint 82 (kısa form)
-};
-
-const SUPPORTED_LOCALES = ['en', 'de', 'fr', 'tr', 'es', 'ja', 'pt', 'ko', 'ru'];
-
-// i18n core logic (i18n.ts'den extracted)
-function detectLocale(navigatorLanguages: string[], supported: string[]): string {
-  for (const lang of navigatorLanguages) {
-    const primary = lang.split('-')[0]!.toLowerCase();
-    if (supported.includes(primary)) return primary;
-  }
-  return 'en';
-}
-
-function interpolate(template: string, vars: Record<string, string>): string {
-  return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? `{${key}}`);
-}
-
-function formatPlural(count: number, singular: string, plural: string): string {
-  return count === 1 ? singular : plural;
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-console.log('\n=== i18n Sprint 82 Tests ===\n');
-
-// 1. Supported locales
-test('should support 9 languages in Sprint 82', () => {
-  expect(SUPPORTED_LOCALES.length).toBe(9);
+  it('en ve tr her zaman desteklenir (fallback zinciri buna dayanır)', () => {
+    // _loadLocale hata durumunda en'e düşer (:52-55); _detectLocale varsayılanı tr (:72).
+    expect(SUPPORTED_LOCALES).toHaveProperty('en');
+    expect(SUPPORTED_LOCALES).toHaveProperty('tr');
+  });
 });
 
-test('supported locales includes new Sprint 82 languages', () => {
-  const newLangs = ['es', 'ja', 'pt', 'ko', 'ru'];
-  for (const lang of newLangs) {
-    if (!SUPPORTED_LOCALES.includes(lang)) throw new Error(`Missing language: ${lang}`);
-  }
+describe('t() — arama, fallback, eksik anahtar', () => {
+  it('bilinmeyen anahtar için ANAHTARIN KENDİSİNİ döndürür', () => {
+    // Sözleşme: _table[key] ?? fallback ?? key  (index.ts:116)
+    expect(t('kesinlikle_olmayan_anahtar_xyz')).toBe('kesinlikle_olmayan_anahtar_xyz');
+  });
+
+  it('fallback verilmişse bilinmeyen anahtarda onu döndürür', () => {
+    expect(t('kesinlikle_olmayan_anahtar_xyz', 'Yedek Metin')).toBe('Yedek Metin');
+  });
+
+  it('boş string fallback anahtar yerine geçer', () => {
+    // '' nullish DEĞİLDİR; ?? zinciri onu geçerli sayar.
+    expect(t('yok_boyle_bir_anahtar_2', '')).toBe('');
+  });
+
+  it('her zaman string döndürür', () => {
+    expect(typeof t('herhangi_bir_anahtar')).toBe('string');
+  });
+
+  it('INTERPOLASYON YAPMAZ — şablon değişkeni olduğu gibi kalır', () => {
+    // Eski testteki `interpolate` üretimde YOKTUR. Bu davranış geri gelirse
+    // (ve escape edilmezse) güvenlik incelemesi gerekir.
+    expect(t('merhaba {name}', 'merhaba {name}')).toBe('merhaba {name}');
+  });
+
+  it('$t, t ile AYNI fonksiyondur', () => {
+    // index.ts:122 — `export { t as $t }`
+    expect($t).toBe(t);
+  });
 });
 
-test('supported locales retains existing languages', () => {
-  const existingLangs = ['en', 'de', 'fr', 'tr'];
-  for (const lang of existingLangs) {
-    if (!SUPPORTED_LOCALES.includes(lang)) throw new Error(`Missing existing language: ${lang}`);
-  }
-});
+describe('locale — okuma ve abonelik', () => {
+  it('current desteklenen bir locale\'dir', () => {
+    expect(Object.keys(SUPPORTED_LOCALES)).toContain(locale.current);
+  });
 
-// 2. Key completeness
-test('EN_REQUIRED_KEYS covers all critical UI keys', () => {
-  expect(EN_REQUIRED_KEYS.length).toBeGreaterThan(40);
-});
+  it('loading boolean\'dır', () => {
+    expect(typeof locale.loading).toBe('boolean');
+  });
 
-test('EN_REQUIRED_KEYS includes Sprint 82 feature keys', () => {
-  const sprint82Keys = ['activities', 'clips', 'stickers', 'super_react'];
-  for (const k of sprint82Keys) {
-    if (!EN_REQUIRED_KEYS.includes(k)) throw new Error(`Missing Sprint 82 key: ${k}`);
-  }
-});
+  it('subscribe abone olur olmaz MEVCUT değerle çağrılır', () => {
+    const seen: Locale[] = [];
 
-test('all Sprint 82 languages have more keys than base EN', () => {
-  const sprint82Langs = ['es', 'ja', 'pt', 'ko'];
-  for (const lang of sprint82Langs) {
-    const count = LANG_KEY_COUNTS[lang]!;
-    if (count <= LANG_KEY_COUNTS['en']!) throw new Error(`${lang} has ${count} keys, expected > ${LANG_KEY_COUNTS['en']}`);
-  }
-});
+    const unsubscribe = locale.subscribe(loc => { seen.push(loc); });
 
-// 3. detectLocale
-test('detectLocale returns correct locale for exact match', () => {
-  expect(detectLocale(['en-US', 'en'], SUPPORTED_LOCALES)).toBe('en');
-  expect(detectLocale(['tr-TR', 'tr'], SUPPORTED_LOCALES)).toBe('tr');
-  expect(detectLocale(['es-ES'], SUPPORTED_LOCALES)).toBe('es');
-  expect(detectLocale(['ja-JP'], SUPPORTED_LOCALES)).toBe('ja');
-});
+    expect(seen).toHaveLength(1);              // hemen çağrı (index.ts:94)
+    expect(seen[0]).toBe(locale.current);
+    expect(typeof unsubscribe).toBe('function');
+    unsubscribe();
+  });
 
-test('detectLocale falls back to en for unsupported locale', () => {
-  expect(detectLocale(['zh-CN', 'zh'], SUPPORTED_LOCALES)).toBe('en');
-  expect(detectLocale(['ar-SA'], SUPPORTED_LOCALES)).toBe('en');
-});
+  it('unsubscribe sonrası dinleyici kaydı bırakmaz', () => {
+    const seen: Locale[] = [];
+    const unsubscribe = locale.subscribe(loc => { seen.push(loc); });
+    unsubscribe();
 
-test('detectLocale handles empty array', () => {
-  expect(detectLocale([], SUPPORTED_LOCALES)).toBe('en');
-});
+    // Tekrar abone olup bırakmak birikmeye yol açmamalı.
+    const second = locale.subscribe(() => {});
+    second();
 
-test('detectLocale uses first matching language', () => {
-  expect(detectLocale(['de', 'fr', 'en'], SUPPORTED_LOCALES)).toBe('de');
-  expect(detectLocale(['ko', 'ja', 'en'], SUPPORTED_LOCALES)).toBe('ko');
+    expect(seen).toHaveLength(1);
+  });
 });
-
-// 4. interpolate
-test('interpolate replaces single variable', () => {
-  const result = interpolate('Merhaba {name}!', { name: 'Fatih' });
-  if (result !== 'Merhaba Fatih!') throw new Error(`Got: ${result}`);
-});
-
-test('interpolate replaces multiple variables', () => {
-  const result = interpolate('{user} sana {count} mesaj gönderdi', { user: 'Ali', count: '5' });
-  if (result !== 'Ali sana 5 mesaj gönderdi') throw new Error(`Got: ${result}`);
-});
-
-test('interpolate keeps unknown keys as-is', () => {
-  const result = interpolate('Hello {unknown}', {});
-  if (result !== 'Hello {unknown}') throw new Error(`Got: ${result}`);
-});
-
-test('interpolate handles empty template', () => {
-  if (interpolate('', { a: 'b' }) !== '') throw new Error('Should return empty string');
-});
-
-// 5. formatPlural
-test('formatPlural returns singular for 1', () => {
-  expect(formatPlural(1, 'mesaj', 'mesaj')).toBe('mesaj');
-});
-
-test('formatPlural returns plural for 0', () => {
-  expect(formatPlural(0, 'message', 'messages')).toBe('messages');
-});
-
-test('formatPlural returns plural for > 1', () => {
-  expect(formatPlural(5, 'item', 'items')).toBe('items');
-  expect(formatPlural(100, 'file', 'files')).toBe('files');
-});
-
-// 6. Language-specific sanity checks
-test('Japanese translation does not contain Latin-only words for core keys', () => {
-  // ja.ts'de 'Servers' yerine 'サーバー' olmalı — key count'tan dolaylı test
-  expect(LANG_KEY_COUNTS['ja']).toBeGreaterThan(130);
-});
-
-test('Russian translation key count is reasonable', () => {
-  expect(LANG_KEY_COUNTS['ru']).toBeGreaterThan(100);
-});
-
-test('Korean translation key count matches Spanish', () => {
-  expect(LANG_KEY_COUNTS['ko']).toBe(LANG_KEY_COUNTS['es']);
-});
-
-// ── Summary ───────────────────────────────────────────────────────────────────
-console.log(`\n  Results: ${_passed} passed, ${_failed} failed\n`);
-if (_failed > 0) {
-  console.error('FAILED TESTS:\n' + _errors.map(e => `  - ${e}`).join('\n'));
-  process.exit(1);
-}

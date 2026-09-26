@@ -23,14 +23,18 @@
 //
 // Sprint 113
 
+import type { DirectQueryingPool } from '../db/postgres/pool-contracts';
 import { generateEmbedding, PGVECTOR_ENABLED } from '../lib/pgvector';
 import logger from '../lib/logger';
+import { envSafeInt } from '../lib/envNumbers';
+import { cache } from '../lib/redisAdapter';
 
 // ── Konfigürasyon ─────────────────────────────────────────────────────────
 
-const BATCH_SIZE      = parseInt(process.env.EMBED_BATCH_SIZE      || '50',  10);
-const BATCH_DELAY_MS  = parseInt(process.env.EMBED_BATCH_DELAY_MS  || '200', 10);
-const HISTORY_LIMIT   = parseInt(process.env.EMBED_HISTORY_LIMIT   || '0',   10); // 0 = sınırsız
+const BATCH_SIZE = envSafeInt('EMBED_BATCH_SIZE', 50, { min: 1, max: 10_000 });
+const BATCH_DELAY_MS = envSafeInt('EMBED_BATCH_DELAY_MS', 200, { min: 0, max: 60 * 60_000 });
+const HISTORY_LIMIT = envSafeInt('EMBED_HISTORY_LIMIT', 0, { min: 0, max: 10_000_000 }); // 0 = sınırsız
+const DAILY_CLAIM_TTL_SECONDS = 26 * 60 * 60; // survives the whole UTC day + scheduler skew
 
 // ── Tipler ────────────────────────────────────────────────────────────────
 
@@ -44,8 +48,26 @@ export interface EmbedJobStats {
   durationMs?: number;
 }
 
-interface DbPool {
-  query<T extends object = object>(sql: string, values?: unknown[]): Promise<{ rows: T[] }>;
+// ── NEDEN `Pick<Pool, 'query'>` DEĞİL ────────────────────────────────────────
+// `pg.Pool.query` ağır biçimde aşırı yüklenmiş ve jeneriktir; hiçbir test ikizi
+// o imzayı karşılayamaz. Ölçüldü: tek bu sebep `tests/embedHistory.test.ts`
+// içinde 18 strict hatası üretiyordu. Bu iş havuzdan yalnızca
+// `query(sql, params) -> { rows }` kullanır; sözleşme onu yazar ve gerçek
+// `pg.Pool`un uyumu `db/postgres/pool-contracts.ts` içinde derleme zamanında
+// kanıtlanır.
+type DbPool = DirectQueryingPool;
+
+/**
+ * Batch satirinin ACIK tipi. Onceden yalnizca `db.query<{...}>` cagri yerinde
+ * satir ici verilmisti ve TypeScript `batchResult` / `rows` / `row` icin
+ * TS7022 ("kendi baslaticisinda dolayli olarak kendine referans") uretiyordu;
+ * ucu de sessizce `any`e dusuyordu. Yani bu dongude satir alanlari
+ * TIPSIZDI — `row.content` yazim hatasi bile yakalanmazdi.
+ */
+interface EmbedBatchRow {
+  _id: string;
+  content: string;
+  createdAt: number;
 }
 
 // ── Yardımcı ──────────────────────────────────────────────────────────────
@@ -98,7 +120,8 @@ export async function runEmbedHistoryJob(
     '[embedHistory] Batch embed job başladı.',
   );
 
-  let offset = 0;
+  let cursorCreatedAt: number | null = null;
+  let cursorId = '';
 
   while (true) {
     // Abort sinyali kontrolü
@@ -119,29 +142,51 @@ export async function runEmbedHistoryJob(
     }
 
     // Sonraki batch: embedding=NULL olan mesajları çek
-    const batchResult = await db.query<{
-      _id: string;
-      content: string;
-    }>(
-      `SELECT _id, content
+    const batchResult = await db.query(
+      `SELECT _id, content, "createdAt" AS "createdAt"
        FROM messages
        WHERE embedding IS NULL
          AND content IS NOT NULL
          AND content != ''
          AND (type IS NULL OR type != 'system')
-       ORDER BY created_at ASC
-       LIMIT $1 OFFSET $2`,
-      [effectiveBatch, offset],
+         AND (
+           $2::bigint IS NULL
+           OR "createdAt" > $2
+           OR ("createdAt" = $2 AND _id > $3)
+         )
+       ORDER BY "createdAt" ASC, _id ASC
+       LIMIT $1`,
+      [effectiveBatch, cursorCreatedAt, cursorId],
     );
 
-    const rows = batchResult.rows;
+    // Havuz sözleşmesi satırları `QueryResultRow` olarak verir (sürücünün kendi
+    // açık indeks imzalı satır tipi). Beklenen alanlar BURADA doğrulanır: eksik
+    // ya da yanlış tipli bir satır sessizce geçmek yerine atlanır ve sayılır.
+    const rows: EmbedBatchRow[] = [];
+    let malformedRows = 0;
+    for (const raw of batchResult.rows) {
+      const id = raw._id;
+      const content = raw.content;
+      const createdAt = raw.createdAt;
+      if (typeof id !== 'string' || typeof content !== 'string' || typeof createdAt !== 'number') {
+        malformedRows += 1;
+        continue;
+      }
+      rows.push({ _id: id, content, createdAt });
+    }
+    if (malformedRows > 0) {
+      logger.warn(
+        { malformedRows, event: 'embedHistory.row.malformed' },
+        '[embedHistory] Beklenen sekilde olmayan satirlar atlandi.',
+      );
+    }
 
     if (rows.length === 0) {
       logger.info({ stats }, '[embedHistory] Embed edilecek mesaj kalmadı.');
       break;
     }
 
-    logger.info({ batchStart: offset, batchCount: rows.length }, '[embedHistory] Batch işleniyor…');
+    logger.info({ cursorCreatedAt, cursorId, batchCount: rows.length }, '[embedHistory] Batch işleniyor…');
 
     for (const row of rows) {
       if (signal?.aborted) break;
@@ -177,9 +222,13 @@ export async function runEmbedHistoryJob(
       }
 
       onProgress?.(stats);
-    }
 
-    offset += rows.length;
+      // Advance the immutable keyset cursor even when embedding generation or
+      // persistence fails. Failed rows remain embedding=NULL and are retried on
+      // the next job run, while later rows in this run are not starved.
+      cursorCreatedAt = row.createdAt;
+      cursorId = row._id;
+    }
 
     // Rate limit: her batch sonrası bekle
     if (rows.length === effectiveBatch && effectiveBatch === batchSize) {
@@ -212,8 +261,17 @@ let _abortController: AbortController | null = null;
  *
  * @param db  pg Pool instance
  */
-export function scheduleEmbedHistoryJob(db: DbPool): void {
+export function scheduleEmbedHistoryJob(db: DbPool | null | undefined): void {
   if (!PGVECTOR_ENABLED) return;
+
+  // PostgreSQL havuzu YOKSA is zaten calisamaz (gecmis mesajlar oradan
+  // okunuyor). Zamanlayiciyi hic kurmamak, saatte bir uyanip cokmesinden
+  // daha durustur — ve operatore sebebi ACIKCA soylenir.
+  if (!db) {
+    logger.warn({ event: 'embedHistory.schedule.skipped_no_pool' },
+      '[embedHistory] PostgreSQL havuzu yok — gunluk embed job zamanlanmadi.');
+    return;
+  }
 
   if (_cronHandle) {
     clearInterval(_cronHandle);
@@ -223,17 +281,49 @@ export function scheduleEmbedHistoryJob(db: DbPool): void {
   // Her saatte bir kontrol et — 03:00'a gelince çalıştır
   _cronHandle = setInterval(async () => {
     const now = new Date();
-    if (now.getHours() !== 3) return;            // yalnızca 03:xx
-    if (now.getMinutes() > 5) return;            // 03:00–03:05 arası
+    // The public contract and operator logs say UTC. Never inherit the host
+    // timezone here: cluster nodes may run with different local TZ settings.
+    if (now.getUTCHours() !== 3) return;         // yalnızca 03:xx UTC
+    if (now.getUTCMinutes() > 5) return;         // 03:00–03:05 UTC arası
 
     if (_abortController) {
       logger.info('[embedHistory] Önceki job hâlâ çalışıyor, atlıyorum.');
       return;
     }
 
+    const utcDay = now.toISOString().slice(0, 10);
+    const claimKey = `jobs:embed-history:daily:${utcDay}`;
+    try {
+      // One cluster-wide claim prevents every pod (and every minute in the
+      // 03:00-03:05 window) from repeating the same expensive provider/DB
+      // work. When REDIS_URL is configured this primitive is authoritative and
+      // fails closed instead of silently degrading to one claim per process.
+      const claimed = await cache.setIfAbsentAuthoritative(
+        claimKey,
+        { claimedAt: now.toISOString() },
+        DAILY_CLAIM_TTL_SECONDS,
+      );
+      if (!claimed) {
+        logger.info({ utcDay, event: 'embedHistory.daily.already_claimed' }, '[embedHistory] Günlük job başka bir worker tarafından alındı.');
+        return;
+      }
+    } catch (err) {
+      logger.error(
+        { err, utcDay, event: 'embedHistory.daily.claim_failed' },
+        '[embedHistory] Günlük cluster claim alınamadı; duplicate execution yerine job atlanıyor.',
+      );
+      return;
+    }
+
     _abortController = new AbortController();
     try {
       await runEmbedHistoryJob(db, { signal: _abortController.signal });
+    } catch (err) {
+      // The daily claim intentionally remains until expiry. A partial run is
+      // idempotently resumed on the next daily window; immediately releasing a
+      // claim after an uncertain failure could let several pods stampede the
+      // same upstream provider.
+      logger.error({ err, utcDay, event: 'embedHistory.daily.run_failed' }, '[embedHistory] Günlük job başarısız oldu.');
     } finally {
       _abortController = null;
     }

@@ -1,7 +1,9 @@
 // server/tests/federation.test.ts
 // Tests for federation endpoints: /info, /servers, /peers (add/delete), /discover
+import type { RequestBody } from './helpers/httpDoubles';
+import { fetchMock, installFetchMock } from './helpers/fetchDouble';
 
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV   = 'test';
 
 import { createMockDb, makeUser, makeServer } from './helpers/mockDb';
@@ -10,35 +12,41 @@ const mockDb = createMockDb();
 jest.mock('../db/index', () => mockDb);
 jest.mock('../db/loader', () => require('../db/index'));
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: (req, res, next) => {
+  authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
     const h = req.headers.authorization;
     if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
     const jwt = require('jsonwebtoken');
-    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret'); next(); }
+    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!'); next(); }
     catch { res.status(401).json({ error: 'Invalid token' }); }
   },
+  castAuthed: (req: Request) => req,
 }));
 
 jest.mock('../lib/fetch', () => ({
-  fetchT: jest.fn((...args) => global.fetch(...args)),
+  fetchT: jest.fn((...args: Parameters<typeof fetch>) => global.fetch(...args)),
 }));
 
 // Mock global fetch for remote peer calls
-global.fetch = jest.fn();
+installFetchMock();
 
 import request from 'supertest';
 import express from 'express';
 const jwt     = require('jsonwebtoken');
 
 import router from '../routes/federation';
+import { requireDoc } from './helpers/mockDb';
 
 const app = express();
 app.use(express.json());
 app.use('/api/federation', router);
-app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
 
-function token(id, opts = {}) {
-  return jwt.sign({ id, username: 'user', displayName: 'User', v: 0 }, 'test-jwt-secret', { expiresIn: '1h', ...opts });
+function token(id: string, opts = {}) {
+  return jwt.sign({ id, username: 'user', displayName: 'User', v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h', ...opts });
 }
 
 const ADMIN_ID  = 'admin1';
@@ -82,7 +90,7 @@ describe('GET /api/federation/servers', () => {
     // Insert a private server
     await mockDb.servers.insert(makeServer(ADMIN_ID, { _id: 'private-srv', discoverable: 0 }));
     const res = await request(app).get('/api/federation/servers');
-    const ids = res.body.servers.map(s => s.id || s._id);
+    const ids = res.body.servers.map((s: Record<string, unknown>) => s.id || s._id);
     expect(ids).not.toContain('private-srv');
   });
 });
@@ -114,7 +122,7 @@ describe('POST /api/federation/peers', () => {
   });
 
   it('returns 400 when remote server is unreachable', async () => {
-    global.fetch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    fetchMock().mockRejectedValueOnce(new Error('ECONNREFUSED'));
     const res = await request(app)
       .post('/api/federation/peers')
       .set('Authorization', `Bearer ${token(ADMIN_ID)}`)
@@ -124,7 +132,7 @@ describe('POST /api/federation/peers', () => {
   });
 
   it('adds a valid Bridge peer', async () => {
-    global.fetch.mockResolvedValueOnce({
+    fetchMock().mockResolvedValueOnce({
       ok: true,
       json: async () => ({
         software: 'bridge',
@@ -148,7 +156,7 @@ describe('POST /api/federation/peers', () => {
 
   it('rejects duplicate peer (409)', async () => {
     // Same URL as above — already added
-    global.fetch.mockResolvedValueOnce({
+    fetchMock().mockResolvedValueOnce({
       ok: true,
       json: async () => ({
         software: 'bridge',
@@ -169,7 +177,7 @@ describe('POST /api/federation/peers', () => {
 });
 
 describe('DELETE /api/federation/peers/:id', () => {
-  let peerId;
+  let peerId: string;
 
   beforeAll(async () => {
     // Insert a peer to delete
@@ -239,7 +247,7 @@ describe('POST /api/federation/users/:username/inbox', () => {
     await mockDb.users.insert(makeUser({ _id: 'inbox-uid', username: INBOX_USER }));
   });
 
-  function inboxPost(username, body) {
+  function inboxPost(username: string, body: RequestBody) {
     return request(app)
       .post(`/api/federation/users/${username}/inbox`)
       .set('Content-Type', 'application/activity+json')
@@ -258,8 +266,8 @@ describe('POST /api/federation/users/:username/inbox', () => {
 
   it('accepts a Follow activity and returns 202', async () => {
     // Mock fetch for Accept delivery back to actor
-    global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ inbox: `${ACTOR_URL}/inbox` }) });
-    global.fetch.mockResolvedValueOnce({ ok: true });
+    fetchMock().mockResolvedValueOnce({ ok: true, json: async () => ({ inbox: `${ACTOR_URL}/inbox` }) });
+    fetchMock().mockResolvedValueOnce({ ok: true });
 
     const res = await inboxPost(INBOX_USER, {
       '@context': 'https://www.w3.org/ns/activitystreams',
@@ -292,10 +300,34 @@ describe('POST /api/federation/users/:username/inbox', () => {
     expect(res.status).toBe(202);
 
     // Mesajın DB'ye kaydedildiğini doğrula
-    const saved = await mockDb.apMessages.findOne({ apId: noteId });
+    const saved = await requireDoc(mockDb.apMessages, { apId: noteId });
     expect(saved).toBeTruthy();
     expect(saved.actorUrl).toBe(ACTOR_URL);
     expect(saved.content).toContain('federe dünya');
+    expect(saved.visibility).toBe('public');
+  });
+
+  it('remote direct Create(Note) timeline kaydını explicit direct olarak sınıflandırır', async () => {
+    const noteId = 'https://mastodon.social/users/remote_actor/statuses/direct-1';
+    const res = await inboxPost(INBOX_USER, {
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: `${noteId}/activity`,
+      type: 'Create',
+      actor: ACTOR_URL,
+      object: {
+        id: noteId,
+        type: 'Note',
+        content: '<p>yalnız alıcı için</p>',
+        to: [`http://localhost:3001/api/federation/users/${INBOX_USER}`],
+        cc: [],
+      },
+    });
+
+    expect(res.status).toBe(202);
+    const saved = await requireDoc(mockDb.apMessages, { apId: noteId });
+    expect(saved).toBeTruthy();
+    expect(saved.targetUserId).toBe('inbox-uid');
+    expect(saved.visibility).toBe('direct');
   });
 
   it('ignores Create activity with non-Note object', async () => {

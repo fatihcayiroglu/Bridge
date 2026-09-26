@@ -1,8 +1,8 @@
 // jest.mobile.config.js  (proje kök dizininde veya mobile/ altında)
 //
 // Capacitor mobile testleri için AYRI Jest konfigürasyonu.
-// Mevcut server/jest.config.js ve client/tests/package.json jest alanıyla
-// çakışmaz — tamamen bağımsız testEnvironment + moduleNameMapper.
+// Server Jest ve client Vitest zincirlerinden bağımsızdır — tamamen ayrı
+// testEnvironment + moduleNameMapper kullanır.
 //
 // Kurulum (mobile/ dizininde):
 //   npm install --save-dev jest @types/jest babel-jest @babel/core @babel/preset-env
@@ -23,7 +23,6 @@ module.exports = {
 
   testMatch: ['<rootDir>/mobile/tests/**/*.test.{js,ts}'],
 
-  modulePathIgnorePatterns: ['<rootDir>/electron/_archived_legacy'],
 
   // Tüm @capacitor/* ve native paketler mock'a yönlendirilir
   moduleNameMapper: {

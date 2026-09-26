@@ -1,9 +1,8 @@
 // client/js/core/offline-banner-svelte.ts
 // Sprint 116 — OfflineBanner mount shim (ADR-0008 Faz 3)
 // Çevrimdışı uyarı banner bileşeni
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import OfflineBanner from './OfflineBanner.svelte';
-import { BridgeRegistry } from './bridge-registry.ts';
 import { createLogger } from './logger.ts';
 const log = createLogger('OfflineBannerShim');
 
@@ -22,7 +21,10 @@ export function mountOfflineBanner(target?: HTMLElement): void {
 }
 
 export function unmountOfflineBanner(): void {
-  if (_instance) { _instance = null; }
+  if (!_instance) return;
+  const mounted = _instance;
+  _instance = null;
+  void unmount(mounted);
 }
 
 if (document.readyState === 'loading') {

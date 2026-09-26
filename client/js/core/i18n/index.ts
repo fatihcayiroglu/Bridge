@@ -17,11 +17,26 @@ export const SUPPORTED_LOCALES: Record<Locale, string> = {
   ru: 'Русский',
   ja: '日本語',
   ko: '한국어',
-  zh: '中文',
+  zh: '简体中文',
   pt: 'Português',
   de: 'Deutsch',
   fr: 'Français',
 };
+
+export type LocaleStatus = 'stable' | 'beta';
+export const LOCALE_STATUS: Record<Locale, LocaleStatus> = {
+  tr: 'stable', en: 'stable', es: 'stable', ru: 'stable', ja: 'stable',
+  ko: 'stable', zh: 'stable', pt: 'stable', de: 'stable', fr: 'stable',
+};
+
+export const LOCALE_TAGS: Record<Locale, string> = {
+  tr: 'tr-TR', en: 'en-US', es: 'es-ES', ru: 'ru-RU', ja: 'ja-JP',
+  ko: 'ko-KR', zh: 'zh-CN', pt: 'pt-BR', de: 'de-DE', fr: 'fr-FR',
+};
+
+export function localeTag(loc: Locale = locale.current): string {
+  return LOCALE_TAGS[loc];
+}
 
 // ── Çeviri tabloları (lazy-loaded) ──────────────────────────────────────────
 type TranslationTable = Record<string, string>;
@@ -79,10 +94,28 @@ let _current: Locale = _detectLocale();
 let _table: TranslationTable = {};
 let _loading = false;
 
-// İlk yükleme
-_loadLocale(_current).then(tbl => {
+
+async function _syncLocaleToServiceWorker(loc: Locale): Promise<void> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const target = navigator.serviceWorker.controller ?? registration.active ?? registration.waiting;
+    target?.postMessage({ type: 'SET_LOCALE', locale: loc });
+  } catch { /* service worker may be unavailable */ }
+}
+
+// İlk yükleme.
+//
+// Bu, modül yüklenirken başlayan ASENKRON bir işti ve hiçbir yerden
+// gözlenemiyordu: tablo gelmeden çağrılan `t('bir_anahtar')` (yedek metin
+// verilmemişse) HAM ANAHTARI döndürüyor. Testlerde bu, süitin hangi anda
+// koştuğuna göre değişen sonuçlar üretti — bazı iddialar `'ui_bridge_user'`,
+// bazıları `'Bridge user'` görüyordu. Söz artık DIŞA AÇILIR; böylece hem
+// testler hem de ilk boyamayı bekleyen çağıranlar tabloyu bekleyebilir.
+export const localeReady: Promise<void> = _loadLocale(_current).then(tbl => {
   _table = tbl;
   document.documentElement.setAttribute('lang', _current);
+  void _syncLocaleToServiceWorker(_current);
   _listeners.forEach(fn => fn(_current));
 });
 
@@ -105,6 +138,9 @@ export async function setLocale(loc: Locale): Promise<void> {
     _table   = tbl;
     try { localStorage.setItem('bridge_locale', loc); } catch { /* ignore */ }
     document.documentElement.setAttribute('lang', loc);
+    void _syncLocaleToServiceWorker(loc);
+    // Final21 Phase 16: the server writes push copy in the language this person reads.
+    void import('./locale-sync.ts').then(m => m.reportLocaleToServer(loc)).catch(() => {});
     _listeners.forEach(fn => fn(loc));
   } finally {
     _loading = false;
@@ -112,8 +148,31 @@ export async function setLocale(loc: Locale): Promise<void> {
 }
 
 // ── Ana çeviri fonksiyonu ────────────────────────────────────────────────────
-export function t(key: string, fallback?: string): string {
-  return _table[key] ?? fallback ?? key;
+//
+// ── ÜÇÜNCÜ PARAMETRE: DEĞİŞKEN YERLEŞTİRME ─────────────────────────────────
+// Kullanıcıya görünen metinlerin bir kısmı değer taşır: "3 okunmamış",
+// "{kullanıcı} susturuldu", "Adım 2". Bunlar dize birleştirmeyle çevrilemez,
+// çünkü sözcük sırası dile göre değişir ve çevirmen cümlenin tamamını göremez.
+//
+// Bu yüzden metin, ADLI yer tutucularla TEK bir çeviri birimi olarak kalır:
+//
+//     t('sl_muted', '🔇 {user} susturuldu', { user: username })
+//
+// Bilinmeyen yer tutucu OLDUĞU GİBİ bırakılır — sessizce boş dize üretmek
+// yerine görünür kalması yeğdir; eksik değişken böylece fark edilir.
+//
+// KANONİK SAHİP BURASIDIR. `i18n/reactive.svelte.ts` yalnızca Svelte
+// reaktifliği ekleyen ince bir sarmalayıcıdır ve bu fonksiyona devreder;
+// ikinci bir yerleştirme uygulaması YOKTUR.
+export function t(
+  key: string,
+  fallback?: string,
+  vars?: Record<string, string | number>,
+): string {
+  const out = _table[key] ?? fallback ?? key;
+  if (!vars) return out;
+  return out.replace(/\{(\w+)\}/g, (m, name: string) =>
+    Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : m);
 }
 
 // Svelte template'lerinde reaktif kullanım için $derived'e benzer wrapper

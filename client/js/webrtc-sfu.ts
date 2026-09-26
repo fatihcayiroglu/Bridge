@@ -8,11 +8,41 @@
 'use strict';
 
 import type { BridgeSocket } from './webrtc-base';
+// ── mediasoup-client TALEBE GÖRE YÜKLENİR ─────────────────────────────────
+// ÖLÇÜM (esbuild metafile): bu kütüphane ilk paketin 190.5 KB'ını tek başına
+// tutuyordu ve yalnızca kullanıcı GERÇEKTEN bir SFU odasına katıldığında
+// gerekiyor. Statik import, her ilk açılışta — sesli görüşmeye hiç girmeyen
+// kullanıcılar dâhil — indirilmesine yol açıyordu. Sunucu zaten mediasoup'suz
+// çalışabiliyor (aşağıdaki yetenek zaman aşımı), yani bu bağımlılık ürünün
+// açılış yolunda ZORUNLU DEĞİL.
+type MediasoupClientModule = typeof import('mediasoup-client');
+let _mediasoupModule: Promise<MediasoupClientModule> | null = null;
+function loadMediasoupClient(): Promise<MediasoupClientModule> {
+  // Tek uçuş: eşzamanlı katılımlar aynı sözü paylaşır.
+  _mediasoupModule ??= import('mediasoup-client');
+  return _mediasoupModule;
+}
 import { BridgeRegistry } from './core/bridge-registry.ts';
 import { getAPI } from './core/globals.ts';
+import { readToken } from './core/auth-compat.ts';
+import { t } from './core/i18n/index';
+import { SFU_SCREEN_PRESETS as SCREEN_PRESETS, SCREEN_BITRATES, normalizeScreenQuality, type ScreenQuality } from './core/rtc-screen-quality.ts';
 
 import { createLogger } from './core/logger.ts';
 const log = createLogger('SFU');
+
+
+type ConnectableBridgeSocket = BridgeSocket & { connect(): BridgeSocket };
+type IoFactory = (url: string, opts: Record<string, unknown>) => ConnectableBridgeSocket;
+const SFU_SIGNAL_TIMEOUT_MS = 10_000;
+const SFU_CAPABILITY_TIMEOUT_MS = 1_500;
+
+class SfuRedirectSignal extends Error {
+  constructor(public readonly ownerNodeId: string | null, public readonly channelId: string) {
+    super(`SFU room ${channelId} is owned by ${ownerNodeId ?? 'unknown'}`);
+    this.name = 'SfuRedirectSignal';
+  }
+}
 
 
 
@@ -23,7 +53,6 @@ interface BridgeVoiceE2EModule {
   renderVoiceE2EBadge(): void;
   registerSocketEvents(socket: BridgeSocket, userId: string): void;
 }
-interface BridgeVoiceVolumeModule { applyVolume(socketId: string, volume: number): void; }
 interface VoiceActivityUIModule { init(socket: BridgeSocket): void; }
 interface BridgeAppModule {
   toast(msg: string, type: string): void;
@@ -40,7 +69,6 @@ function _reg<T>(name: string): T | null {
 function _app(): BridgeAppModule | null       { return _reg<BridgeAppModule>('bridgeApp'); }
 function _ns(): BridgeNSModule | null         { return _reg<BridgeNSModule>('BridgeNS'); }
 function _voiceE2E(): BridgeVoiceE2EModule | null  { return _reg<BridgeVoiceE2EModule>('BridgeVoiceE2E'); }
-function _voiceVolume(): BridgeVoiceVolumeModule | null { return _reg<BridgeVoiceVolumeModule>('BridgeVoiceVolume'); }
 function _vaui(): VoiceActivityUIModule | null       { return _reg<VoiceActivityUIModule>('VoiceActivityUI'); }
 function _startVAD(): ((stream: MediaStream, channelId: string) => void) | null {
   return _reg<(stream: MediaStream, channelId: string) => void>('_bridgeStartLocalVAD');
@@ -101,31 +129,16 @@ interface MediasoupDevice {
   rtpCapabilities: unknown;
 }
 
-declare const mediasoupClient: { Device: new () => MediasoupDevice } | undefined;
-
-// ── Screen quality ────────────────────────────────────────────────────────────
-type ScreenQuality = '4k60' | '1440p60' | '1440p' | '1080p60' | '1080p' | '720p' | 'hd';
-
-const SCREEN_PRESETS: Record<ScreenQuality, MediaTrackConstraints> = {
-  '4k60':    { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } },
-  '1440p60': { width: { ideal: 2560 }, height: { ideal: 1440 }, frameRate: { ideal: 60 } },
-  '1440p':   { width: { ideal: 2560 }, height: { ideal: 1440 }, frameRate: { ideal: 30 } },
-  '1080p60': { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } },
-  '1080p':   { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
-  '720p':    { width: { ideal: 1280 }, height: { ideal: 720  }, frameRate: { ideal: 30 } },
-  'hd':      { width: { ideal: 1280 }, height: { ideal: 720  }, frameRate: { ideal: 30 } },
-};
-
-const SCREEN_BITRATES: Record<ScreenQuality, number> = {
-  '4k60': 20_000_000, '1440p60': 12_000_000, '1440p': 10_000_000,
-  '1080p60': 8_000_000, '1080p': 5_000_000, '720p': 3_000_000, 'hd': 2_000_000,
-};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // BridgeRTC — SFU WebRTC Manager (drop-in replacement for webrtc.ts)
 // ══════════════════════════════════════════════════════════════════════════════
 class BridgeRTC {
+  /** Main application socket. P2P mode always uses this connection. */
   readonly socket: BridgeSocket;
+  /** Canonical SFU signaling socket. It may be a node-targeted connection. */
+  private _sfuSocket: BridgeSocket;
+  private _dedicatedSfuSocket: BridgeSocket | null = null;
   device: MediasoupDevice | null           = null;
   sendTransport: MediasoupTransport | null = null;
   recvTransport: MediasoupTransport | null = null;
@@ -140,6 +153,8 @@ class BridgeRTC {
   deafened                                 = false;
   videoOn                                  = false;
   screenSharing                            = false;
+  /** True only when getDisplayMedia returned a live audio track that Bridge is actually publishing. */
+  screenAudioActive                        = false;
   selectedMicId: string | null             = null;
   selectedCameraId: string | null          = null;
   selectedSpeakerId: string | null         = null;
@@ -147,20 +162,260 @@ class BridgeRTC {
 
   // P2P fallback state
   peers: Map<string, RTCPeerConnection>    = new Map();
-  private _p2pPeers: Map<string, RTCPeerConnection> = new Map();
 
   private _sfuAvailable                                              = false;
+  echoCancellation                                                    = true;
+  noiseSuppression                                                    = true;
+  autoGainControl                                                     = true;
   private _iceServers: RTCIceServer[]                                = [];
   private _iceTransportPolicy: RTCIceTransportPolicy                 = 'all';
   private _socketToUserId: Map<string, string>                       = new Map();
   private _redirectCount                                             = 0;
   private _screenQuality: ScreenQuality                              = 'hd';
   private _mobileAudioOverride: Partial<MediaTrackConstraints> | false = false;
+  private _sessionGeneration                                         = 0;
+  private _videoGeneration                                           = 0;
+  private _screenGeneration                                          = 0;
+  private _sfuRequestSeq                                             = 0;
+  private _socketHandlers: Array<{ socket: BridgeSocket; event: string; handler: (...args: unknown[]) => void }> = [];
 
   constructor(socket: BridgeSocket) {
     this.socket = socket;
-    this._sfuAvailable = typeof mediasoupClient !== 'undefined';
-    this._bindSocketEvents();
+    this._sfuSocket = socket;
+    // Do not activate SFU merely because a client library happens to exist.
+    // The server may intentionally run without the optional mediasoup runtime.
+    // `joinVoice()` negotiates the capability first and otherwise stays P2P.
+    this._sfuAvailable = false;
+    this._bindSocketEvents(socket);
+  }
+
+  private _resetDedicatedSfuSocket(): void {
+    if (this._dedicatedSfuSocket) {
+      this._detachSocketHandlers(this._dedicatedSfuSocket);
+      try { this._dedicatedSfuSocket.disconnect(); } catch { /* already closed */ }
+    }
+    this._dedicatedSfuSocket = null;
+    this._sfuSocket = this.socket;
+  }
+
+  private _onSocket(socket: BridgeSocket, event: string, handler: (...args: unknown[]) => void): void {
+    socket.on(event, handler);
+    this._socketHandlers.push({ socket, event, handler });
+  }
+
+  private _detachSocketHandlers(target?: BridgeSocket): void {
+    const keep: typeof this._socketHandlers = [];
+    for (const owned of this._socketHandlers) {
+      if (!target || owned.socket === target) owned.socket.off(owned.event, owned.handler);
+      else keep.push(owned);
+    }
+    this._socketHandlers = keep;
+  }
+
+  private _assertSessionGeneration(generation: number): void {
+    if (generation === this._sessionGeneration) return;
+    const error = new Error('SFU join cancelled: voice session changed');
+    error.name = 'AbortError';
+    throw error;
+  }
+
+  private _nextSfuRequestId(operation: string): string {
+    this._sfuRequestSeq = (this._sfuRequestSeq + 1) % 1_000_000_000;
+    return `${operation}:${this._sessionGeneration}:${this._sfuRequestSeq}`;
+  }
+
+  private _waitForEvent<T>(
+    socket: BridgeSocket,
+    event: string,
+    predicate: (payload: T) => boolean = () => true,
+    timeoutMs = SFU_SIGNAL_TIMEOUT_MS,
+    scope?: { requestId?: string; operation?: string },
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const cleanup = (): void => {
+        if (timer) clearTimeout(timer);
+        socket.off(event, onEvent as (...args: unknown[]) => void);
+        socket.off('sfu:error', onError as (...args: unknown[]) => void);
+      };
+      const onEvent = (raw: unknown): void => {
+        const payload = raw as T;
+        if (!predicate(payload)) return;
+        cleanup();
+        resolve(payload);
+      };
+      const onError = (raw: unknown): void => {
+        const data = raw as { requestId?: unknown; operation?: unknown; message?: unknown; code?: unknown };
+        // New servers scope errors to the request that caused them. Ignore a
+        // sibling consume/transport failure instead of rejecting the wrong
+        // waiter. Unscoped legacy errors are still accepted for compatibility.
+        if (scope?.requestId && typeof data.requestId === 'string' && data.requestId !== scope.requestId) return;
+        if (scope?.operation && typeof data.operation === 'string' && data.operation !== scope.operation) return;
+        cleanup();
+        const message = typeof data.message === 'string' && data.message.length <= 180
+          ? data.message
+          : 'Ses bağlantısı tamamlanamadı.';
+        const error = new Error(message);
+        error.name = typeof data.code === 'string' ? `SfuError:${data.code}` : 'SfuError';
+        reject(error);
+      };
+      socket.on(event, onEvent as (...args: unknown[]) => void);
+      socket.on('sfu:error', onError as (...args: unknown[]) => void);
+      timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`SFU signaling timeout: ${event}`));
+      }, timeoutMs);
+    });
+  }
+
+  private _waitForRtpCapabilities(
+    socket: BridgeSocket,
+    channelId: string,
+  ): Promise<{ rtpCapabilities: unknown }> {
+    const requestId = this._nextSfuRequestId('capabilities');
+    return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const cleanup = (): void => {
+        if (timer) clearTimeout(timer);
+        socket.off('sfu:rtp-capabilities', onCaps as (...args: unknown[]) => void);
+        socket.off('sfu:redirect', onRedirect as (...args: unknown[]) => void);
+        socket.off('sfu:error', onError as (...args: unknown[]) => void);
+      };
+      const onCaps = (raw: unknown): void => {
+        const data = raw as { requestId?: unknown; rtpCapabilities: unknown };
+        if (typeof data.requestId === 'string' && data.requestId !== requestId) return;
+        cleanup();
+        resolve({ rtpCapabilities: data.rtpCapabilities });
+      };
+      const onRedirect = (raw: unknown): void => {
+        const data = raw as { channelId?: string; ownerNodeId?: string | null };
+        if (data.channelId && data.channelId !== channelId) return;
+        if (typeof (raw as { requestId?: unknown }).requestId === 'string' && (raw as { requestId: string }).requestId !== requestId) return;
+        cleanup();
+        reject(new SfuRedirectSignal(data.ownerNodeId ?? null, channelId));
+      };
+      const onError = (raw: unknown): void => {
+        const data = raw as { requestId?: unknown; operation?: unknown; message?: unknown };
+        if (typeof data.requestId === 'string' && data.requestId !== requestId) return;
+        if (typeof data.operation === 'string' && data.operation !== 'capabilities') return;
+        cleanup();
+        reject(new Error(typeof data.message === 'string' ? data.message : 'Ses altyapısı kullanılamıyor.'));
+      };
+      socket.on('sfu:rtp-capabilities', onCaps as (...args: unknown[]) => void);
+      socket.on('sfu:redirect', onRedirect as (...args: unknown[]) => void);
+      socket.on('sfu:error', onError as (...args: unknown[]) => void);
+      timer = setTimeout(() => { cleanup(); reject(new Error('SFU RTP capability request timed out')); }, SFU_SIGNAL_TIMEOUT_MS);
+      socket.emit('sfu:get-rtp-capabilities', { channelId, requestId });
+    });
+  }
+
+  private _waitForSfuJoin(
+    socket: BridgeSocket,
+    channelId: string,
+    requestId: string,
+  ): Promise<{ existingPeers: PeerInfo[] }> {
+    return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const cleanup = (): void => {
+        if (timer) clearTimeout(timer);
+        socket.off('sfu:joined', onJoined as (...args: unknown[]) => void);
+        socket.off('sfu:redirect', onRedirect as (...args: unknown[]) => void);
+        socket.off('sfu:error', onError as (...args: unknown[]) => void);
+      };
+      const onJoined = (raw: unknown): void => {
+        const data = raw as { requestId?: unknown; existingPeers: PeerInfo[] };
+        if (typeof data.requestId === 'string' && data.requestId !== requestId) return;
+        cleanup();
+        resolve({ existingPeers: data.existingPeers });
+      };
+      const onRedirect = (raw: unknown): void => {
+        const data = raw as { channelId?: string; ownerNodeId?: string | null };
+        if (data.channelId && data.channelId !== channelId) return;
+        if (typeof (raw as { requestId?: unknown }).requestId === 'string' && (raw as { requestId: string }).requestId !== requestId) return;
+        cleanup();
+        reject(new SfuRedirectSignal(data.ownerNodeId ?? null, channelId));
+      };
+      const onError = (raw: unknown): void => {
+        const data = raw as { requestId?: unknown; operation?: unknown; message?: unknown };
+        if (typeof data.requestId === 'string' && data.requestId !== requestId) return;
+        if (typeof data.operation === 'string' && data.operation !== 'join') return;
+        cleanup();
+        reject(new Error(typeof data.message === 'string' ? data.message : 'Ses kanalına katılım tamamlanamadı.'));
+      };
+      socket.on('sfu:joined', onJoined as (...args: unknown[]) => void);
+      socket.on('sfu:redirect', onRedirect as (...args: unknown[]) => void);
+      socket.on('sfu:error', onError as (...args: unknown[]) => void);
+      timer = setTimeout(() => { cleanup(); reject(new Error('SFU join timed out')); }, SFU_SIGNAL_TIMEOUT_MS);
+    });
+  }
+
+  private async _connectSfuOwner(ownerNodeId: string | null): Promise<void> {
+    if (!ownerNodeId || !/^[A-Za-z0-9._-]{1,64}$/.test(ownerNodeId)) {
+      throw new Error('SFU owner node id is missing or invalid');
+    }
+    const io = (globalThis as { io?: IoFactory }).io;
+    const token = readToken();
+    if (typeof io !== 'function' || !token) throw new Error('SFU owner connection cannot be authenticated');
+
+    this._resetDedicatedSfuSocket();
+    const targeted = io(getAPI(), {
+      auth: { token },
+      transports: ['websocket', 'polling'],
+      forceNew: true,
+      // Register auth/error listeners before opening the transport. A fast
+      // owner node can otherwise emit userAuthenticated synchronously enough
+      // for this redirect flow to miss it and time out despite being connected.
+      autoConnect: false,
+      // HAProxy only routes a closed set of INSTANCE_ID values; the server also
+      // verifies this query against its own INSTANCE_ID before JWT auth.
+      query: { bridgeNode: ownerNodeId },
+    });
+    this._dedicatedSfuSocket = targeted;
+    this._sfuSocket = targeted;
+    this._bindSocketEvents(targeted);
+
+    await new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const cleanup = (): void => {
+        if (timer) clearTimeout(timer);
+        targeted.off('userAuthenticated', onReady as (...args: unknown[]) => void);
+        targeted.off('connect_error', onError as (...args: unknown[]) => void);
+      };
+      const onReady = (): void => { cleanup(); resolve(); };
+      const onError = (raw: unknown): void => {
+        cleanup();
+        reject(raw instanceof Error ? raw : new Error('SFU owner socket connection failed'));
+      };
+      targeted.on('userAuthenticated', onReady as (...args: unknown[]) => void);
+      targeted.on('connect_error', onError as (...args: unknown[]) => void);
+      timer = setTimeout(() => { cleanup(); reject(new Error('SFU owner socket authentication timed out')); }, SFU_SIGNAL_TIMEOUT_MS);
+      targeted.connect();
+    }).catch(err => {
+      this._resetDedicatedSfuSocket();
+      throw err;
+    });
+  }
+
+  private _negotiateSfuCapability(): Promise<boolean> {
+    if (!this.socket.connected) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const cleanup = (): void => {
+        if (timer) clearTimeout(timer);
+        this.socket.off('voice:capabilities', onCapabilities as (...args: unknown[]) => void);
+        this.socket.off('disconnect', onDisconnect as (...args: unknown[]) => void);
+      };
+      const finish = (available: boolean): void => { cleanup(); resolve(available); };
+      const onCapabilities = (raw: unknown): void => {
+        const data = raw as { sfu?: unknown };
+        finish(data?.sfu === true);
+      };
+      const onDisconnect = (): void => finish(false);
+      this.socket.on('voice:capabilities', onCapabilities as (...args: unknown[]) => void);
+      this.socket.on('disconnect', onDisconnect as (...args: unknown[]) => void);
+      timer = setTimeout(() => finish(false), SFU_CAPABILITY_TIMEOUT_MS);
+      this.socket.emit('voice:get-capabilities', {});
+    });
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -168,8 +423,9 @@ class BridgeRTC {
   getLocalStream(): MediaStream | null  { return this.localStream; }
 
   async getDevices(): Promise<{ microphones: MediaDeviceInfo[]; speakers: MediaDeviceInfo[]; cameras: MediaDeviceInfo[] }> {
+    let permissionStream: MediaStream | null = null;
     try {
-      await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => {});
+      permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => null);
       const devices = await navigator.mediaDevices.enumerateDevices();
       return {
         microphones: devices.filter(d => d.kind === 'audioinput'),
@@ -177,16 +433,41 @@ class BridgeRTC {
         cameras:     devices.filter(d => d.kind === 'videoinput'),
       };
     } catch { return { microphones: [], speakers: [], cameras: [] }; }
+    finally { permissionStream?.getTracks().forEach(track => track.stop()); }
   }
 
   loadSavedDevices(): void {
-    this.selectedMicId     = localStorage.getItem('bridge-mic')     ?? null;
-    this.selectedCameraId  = localStorage.getItem('bridge-camera')  ?? null;
-    this.selectedSpeakerId = localStorage.getItem('bridge-speaker') ?? null;
+    const read = (canonical: string, legacy: string): string | null =>
+      localStorage.getItem(canonical) || localStorage.getItem(legacy);
+    this.selectedMicId     = read('bridge:device:mic', 'bridge-mic');
+    this.selectedCameraId  = read('bridge:device:camera', 'bridge-camera');
+    this.selectedSpeakerId = read('bridge:device:speaker', 'bridge-speaker');
+    this.echoCancellation  = localStorage.getItem('bridge:device:echo')  !== 'false';
+    this.noiseSuppression  = localStorage.getItem('bridge:device:noise') !== 'false';
+    this.autoGainControl   = localStorage.getItem('bridge:device:gain')  !== 'false';
+  }
+
+  audioProcessingConstraints(): MediaTrackConstraints {
+    return {
+      echoCancellation: this.echoCancellation,
+      noiseSuppression: this.noiseSuppression,
+      autoGainControl: this.autoGainControl,
+      sampleRate: 48_000,
+    };
   }
 
   // ── Join voice ────────────────────────────────────────────────────────────
   async joinVoice(channelId: string, serverId: string): Promise<void> {
+    if (this.currentChannelId === channelId) return;
+    if (this.currentChannelId) this.leaveVoice();
+    if (!this.socket.connected) {
+      const error = new Error('Voice join cancelled: socket disconnected');
+      error.name = 'AbortError';
+      throw error;
+    }
+
+    const generation = ++this._sessionGeneration;
+    this._resetDedicatedSfuSocket();
     this.currentChannelId = channelId;
     this.currentServerId  = serverId;
     this.channelBitrate   = 64_000;
@@ -197,123 +478,236 @@ class BridgeRTC {
       if (ch?.bitrate) this.channelBitrate = ch.bitrate as number;
     }
 
+    // Capability negotiation is intentionally fail-open to P2P: an older
+    // server, a server without mediasoup, or a transient capability timeout
+    // must never turn a working P2P call into a dead SFU join.
+    this._sfuAvailable = await this._negotiateSfuCapability();
+    if (generation !== this._sessionGeneration || !this.socket.connected) return;
+
+    let rawStream: MediaStream | null = null;
     try {
       const _nsModule = _ns();
       const nsEnabled = _nsModule?.enabled !== false;
       const audioConstraints: MediaTrackConstraints = {
         ...(this.selectedMicId ? { deviceId: { exact: this.selectedMicId } } : {}),
-        echoCancellation: nsEnabled, noiseSuppression: nsEnabled,
-        autoGainControl: nsEnabled, sampleRate: 48000, channelCount: 2,
+        echoCancellation: this.echoCancellation && nsEnabled,
+        noiseSuppression: this.noiseSuppression && nsEnabled,
+        autoGainControl: this.autoGainControl, sampleRate: 48000, channelCount: 2,
       };
-      const rawStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
-      this.localStream = _nsModule ? await _nsModule.process(rawStream) : rawStream;
+      rawStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+      const stream = _nsModule ? await _nsModule.process(rawStream) : rawStream;
+      if (generation !== this._sessionGeneration) {
+        stream.getTracks().forEach(track => track.stop());
+        if (stream !== rawStream) rawStream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      this.localStream = stream;
     } catch {
+      rawStream?.getTracks().forEach(track => track.stop());
+      if (generation !== this._sessionGeneration) return;
       this.localStream = new MediaStream();
-      _app()?.toast('Mikrofon bulunamadı — sessiz katılındı', 'error');
+      _app()?.toast(t('rtc_no_mic', 'Mikrofon bulunamadı — sessiz katılındı'), 'error');
     }
 
     if (this._sfuAvailable) {
-      await this._sfuJoin(channelId, serverId);
+      try {
+        await this._sfuJoin(channelId, serverId, generation);
+        if (generation !== this._sessionGeneration) {
+          // An explicit leave has already cleaned this attempt. Clean once more
+          // only when it is still departed, because a replacement join owns the
+          // shared state now and must not be torn down by the older promise.
+          if (!this.currentChannelId) this._cleanupVoiceState();
+          return;
+        }
+      } catch (err) {
+        if (generation !== this._sessionGeneration) return;
+        this._cleanupVoiceState();
+        throw err;
+      }
     } else {
-      log.warn('[BridgeRTC] mediasoup-client bulunamadı — P2P moda geçiliyor');
+      log.info('[BridgeRTC] SFU sunucuda kullanılamıyor — P2P moda geçiliyor');
       this.socket.emit('voice:join', { channelId, serverId });
     }
 
-    _vaui()?.init(this.socket);
+    _vaui()?.init(this._sfuAvailable ? this._sfuSocket : this.socket);
     if (this.localStream) _startVAD()?.(this.localStream, channelId);
   }
 
   // ── SFU join flow ─────────────────────────────────────────────────────────
-  private _sfuJoin(channelId: string, serverId: string): Promise<void> {
-    return new Promise<void>((resolve) => {
-      this.socket.emit('sfu:get-rtp-capabilities', { channelId });
-      this.socket.once('sfu:rtp-capabilities', async (payload: unknown) => {
-        const { rtpCapabilities } = payload as { rtpCapabilities: unknown };
-        try {
-          this.device = new mediasoupClient!.Device();
-          await this.device.load({ routerRtpCapabilities: rtpCapabilities });
-          this.socket.emit('sfu:join', {
-            channelId, serverId, rtpCapabilities: this.device.rtpCapabilities,
-          });
-          await this._createSendTransport(channelId);
-          await this._createRecvTransport(channelId);
-          resolve();
-        } catch (e) { log.error('[SFU] join error:', e); resolve(); }
-      });
+  private async _sfuJoin(
+    channelId: string,
+    serverId: string,
+    sessionGeneration = this._sessionGeneration,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      this._assertSessionGeneration(sessionGeneration);
+      const signalingSocket = this._sfuSocket;
+      try {
+        const { rtpCapabilities } = await this._waitForRtpCapabilities(signalingSocket, channelId);
+        this._assertSessionGeneration(sessionGeneration);
+        // A redirect swaps `_sfuSocket`; never continue a stale attempt on the
+        // previous node after awaiting network work.
+        if (signalingSocket !== this._sfuSocket) continue;
+
+        const { Device } = await loadMediasoupClient();
+        this._assertSessionGeneration(sessionGeneration);
+        const device = new Device() as unknown as MediasoupDevice;
+        await device.load({ routerRtpCapabilities: rtpCapabilities });
+        this._assertSessionGeneration(sessionGeneration);
+        this.device = device;
+
+        // Server join performs async permission/membership checks. Wait until
+        // the peer exists before asking for transports; the previous fire-and-
+        // immediately-create flow could lose the transport request.
+        const joinRequestId = this._nextSfuRequestId('join');
+        const joined = this._waitForSfuJoin(signalingSocket, channelId, joinRequestId);
+        signalingSocket.emit('sfu:join', {
+          channelId, serverId, rtpCapabilities: this.device.rtpCapabilities, requestId: joinRequestId,
+        });
+        await joined;
+        this._assertSessionGeneration(sessionGeneration);
+        if (signalingSocket !== this._sfuSocket) continue;
+
+        await this._createSendTransport(channelId, sessionGeneration);
+        this._assertSessionGeneration(sessionGeneration);
+        await this._createRecvTransport(channelId, sessionGeneration);
+        this._assertSessionGeneration(sessionGeneration);
+        this._redirectCount = 0;
+        return;
+      } catch (e) {
+        if (e instanceof SfuRedirectSignal) {
+          this._redirectCount++;
+          log.warn(`[SFU] Oda ${channelId} ${e.ownerNodeId ?? '?'} node'unda; targeted signaling açılıyor`);
+          await this._connectSfuOwner(e.ownerNodeId);
+          continue;
+        }
+        log.error('[SFU] join error:', e);
+        throw e;
+      }
+    }
+    this._redirectCount = 0;
+    throw new Error('Ses kanalı yönlendirmesi tamamlanamadı.');
+  }
+
+  private async _createSendTransport(channelId: string, sessionGeneration?: number): Promise<void> {
+    const socket = this._sfuSocket;
+    const device = this.device;
+    const createRequestId = this._nextSfuRequestId('create-transport');
+    const created = this._waitForEvent<{
+      direction: string; id: string; iceParameters: unknown; iceCandidates: unknown; dtlsParameters: unknown;
+    }>(socket, 'sfu:transport-created', d => d.direction === 'send', SFU_SIGNAL_TIMEOUT_MS, {
+      requestId: createRequestId, operation: 'create-transport',
+    });
+    socket.emit('sfu:create-transport', { channelId, direction: 'send', requestId: createRequestId });
+    const data = await created;
+    if (socket !== this._sfuSocket) throw new Error('SFU signaling socket changed during send transport creation');
+    if (sessionGeneration !== undefined) this._assertSessionGeneration(sessionGeneration);
+
+    const sendTransport = device!.createSendTransport({
+      id: data.id, iceParameters: data.iceParameters,
+      iceCandidates: data.iceCandidates, dtlsParameters: data.dtlsParameters,
+    });
+    this.sendTransport = sendTransport;
+
+    sendTransport.on('connect', async (args: unknown, cb: unknown, errback: unknown) => {
+      try {
+        const { dtlsParameters } = args as { dtlsParameters: unknown };
+        const requestId = this._nextSfuRequestId('connect-transport');
+        const connected = this._waitForEvent<{ direction: string }>(
+          socket, 'sfu:transport-connected', d => d.direction === 'send', SFU_SIGNAL_TIMEOUT_MS,
+          { requestId, operation: 'connect-transport' },
+        );
+        socket.emit('sfu:connect-transport', { channelId, direction: 'send', dtlsParameters, requestId });
+        await connected;
+        (cb as () => void)();
+      } catch (e) {
+        if (typeof errback === 'function') (errback as (err: Error) => void)(e instanceof Error ? e : new Error(String(e)));
+      }
+    });
+
+    sendTransport.on('produce', async (args: unknown, cb: unknown, errback: unknown) => {
+      try {
+        const { kind, rtpParameters, appData } = args as { kind: string; rtpParameters: unknown; appData?: Record<string, unknown> };
+        const expectedKind = appData?.screenAudio ? 'screen-audio' : (appData?.screen ? 'screen' : kind);
+        const requestId = this._nextSfuRequestId('produce');
+        const produced = this._waitForEvent<{ producerId: string; kind?: string }>(
+          socket, 'sfu:produced', d => !d.kind || d.kind === expectedKind, SFU_SIGNAL_TIMEOUT_MS,
+          { requestId, operation: 'produce' },
+        );
+        socket.emit('sfu:produce', { channelId, kind, rtpParameters, appData, requestId });
+        const { producerId } = await produced;
+        (cb as (opts: { id: string }) => void)({ id: producerId });
+      } catch (e) {
+        if (typeof errback === 'function') (errback as (err: Error) => void)(e instanceof Error ? e : new Error(String(e)));
+      }
+    });
+
+    await this._produceAudio(sessionGeneration, sendTransport);
+    if (sessionGeneration !== undefined && sessionGeneration !== this._sessionGeneration) {
+      sendTransport.close();
+      if (this.sendTransport === sendTransport) this.sendTransport = null;
+      this._assertSessionGeneration(sessionGeneration);
+    }
+  }
+
+  private async _createRecvTransport(channelId: string, sessionGeneration?: number): Promise<void> {
+    const socket = this._sfuSocket;
+    const device = this.device;
+    const createRequestId = this._nextSfuRequestId('create-transport');
+    const created = this._waitForEvent<{
+      direction: string; id: string; iceParameters: unknown; iceCandidates: unknown; dtlsParameters: unknown;
+    }>(socket, 'sfu:transport-created', d => d.direction === 'recv', SFU_SIGNAL_TIMEOUT_MS, {
+      requestId: createRequestId, operation: 'create-transport',
+    });
+    socket.emit('sfu:create-transport', { channelId, direction: 'recv', requestId: createRequestId });
+    const data = await created;
+    if (socket !== this._sfuSocket) throw new Error('SFU signaling socket changed during receive transport creation');
+    if (sessionGeneration !== undefined) this._assertSessionGeneration(sessionGeneration);
+
+    const recvTransport = device!.createRecvTransport({
+      id: data.id, iceParameters: data.iceParameters,
+      iceCandidates: data.iceCandidates, dtlsParameters: data.dtlsParameters,
+    });
+    this.recvTransport = recvTransport;
+
+    recvTransport.on('connect', async (args: unknown, cb: unknown, errback: unknown) => {
+      try {
+        const { dtlsParameters } = args as { dtlsParameters: unknown };
+        const requestId = this._nextSfuRequestId('connect-transport');
+        const connected = this._waitForEvent<{ direction: string }>(
+          socket, 'sfu:transport-connected', d => d.direction === 'recv', SFU_SIGNAL_TIMEOUT_MS,
+          { requestId, operation: 'connect-transport' },
+        );
+        socket.emit('sfu:connect-transport', { channelId, direction: 'recv', dtlsParameters, requestId });
+        await connected;
+        (cb as () => void)();
+      } catch (e) {
+        if (typeof errback === 'function') (errback as (err: Error) => void)(e instanceof Error ? e : new Error(String(e)));
+      }
     });
   }
 
-  private _createSendTransport(channelId: string): Promise<void> {
-    return new Promise<void>((resolve) => {
-      this.socket.emit('sfu:create-transport', { channelId, direction: 'send' });
-      this.socket.once('sfu:transport-created', async (payload: unknown) => {
-        const data = payload as { direction: string; id: string; iceParameters: unknown; iceCandidates: unknown; dtlsParameters: unknown };
-        if (data.direction !== 'send') return;
-
-        this.sendTransport = this.device!.createSendTransport({
-          id: data.id, iceParameters: data.iceParameters,
-          iceCandidates: data.iceCandidates, dtlsParameters: data.dtlsParameters,
-        });
-
-        this.sendTransport.on('connect', (args: unknown, cb: unknown) => {
-          const { dtlsParameters } = args as { dtlsParameters: unknown };
-          this.socket.emit('sfu:connect-transport', { channelId, direction: 'send', dtlsParameters });
-          this.socket.once('sfu:transport-connected', (d: unknown) => {
-            if ((d as { direction: string }).direction === 'send') (cb as () => void)();
-          });
-        });
-
-        this.sendTransport.on('produce', async (args: unknown, cb: unknown) => {
-          const { kind, rtpParameters, appData } = args as { kind: string; rtpParameters: unknown; appData: unknown };
-          this.socket.emit('sfu:produce', { channelId, kind, rtpParameters, appData });
-          this.socket.once('sfu:produced', (res: unknown) => {
-            const { producerId } = res as { producerId: string };
-            (cb as (opts: { id: string }) => void)({ id: producerId });
-          });
-        });
-
-        await this._produceAudio();
-        resolve();
-      });
-    });
-  }
-
-  private _createRecvTransport(channelId: string): Promise<void> {
-    return new Promise<void>((resolve) => {
-      this.socket.emit('sfu:create-transport', { channelId, direction: 'recv' });
-      this.socket.once('sfu:transport-created', async (payload: unknown) => {
-        const data = payload as { direction: string; id: string; iceParameters: unknown; iceCandidates: unknown; dtlsParameters: unknown };
-        if (data.direction !== 'recv') return;
-
-        this.recvTransport = this.device!.createRecvTransport({
-          id: data.id, iceParameters: data.iceParameters,
-          iceCandidates: data.iceCandidates, dtlsParameters: data.dtlsParameters,
-        });
-
-        this.recvTransport.on('connect', (args: unknown, cb: unknown) => {
-          const { dtlsParameters } = args as { dtlsParameters: unknown };
-          this.socket.emit('sfu:connect-transport', { channelId, direction: 'recv', dtlsParameters });
-          this.socket.once('sfu:transport-connected', (d: unknown) => {
-            if ((d as { direction: string }).direction === 'recv') (cb as () => void)();
-          });
-        });
-        resolve();
-      });
-    });
-  }
-
-  private async _produceAudio(): Promise<void> {
-    if (!this.sendTransport || !this.localStream) return;
-    const audioTrack = this.localStream.getAudioTracks()[0];
+  private async _produceAudio(
+    sessionGeneration?: number,
+    sendTransport = this.sendTransport,
+  ): Promise<void> {
+    const localStream = this.localStream;
+    if (!sendTransport || !localStream) return;
+    const audioTrack = localStream.getAudioTracks()[0];
     if (!audioTrack) return;
     try {
-      const producer = await this.sendTransport.produce({
+      const producer = await sendTransport.produce({
         track: audioTrack,
         codecOptions: {
           opusStereo: true, opusDtx: true, opusFec: true,
           opusPtime: 20, opusMaxPlaybackRate: 48000,
         },
       });
+      if ((sessionGeneration !== undefined && sessionGeneration !== this._sessionGeneration) ||
+          sendTransport !== this.sendTransport || localStream !== this.localStream) {
+        producer.close();
+        return;
+      }
       producer.on('trackended', () => this._closeProducer('audio'));
       this.producers.set('audio', producer);
     } catch (e) { log.error('[SFU] audio produce error:', e); }
@@ -322,53 +716,50 @@ class BridgeRTC {
   // ── Consume ───────────────────────────────────────────────────────────────
   private async _consume(producerId: string, socketId: string, kind: string): Promise<MediasoupConsumer | null> {
     if (!this.recvTransport || !this.device) return null;
+    const socket = this._sfuSocket;
 
-    this.socket.emit('sfu:consume', {
-      channelId: this.currentChannelId, producerId,
-      rtpCapabilities: this.device.rtpCapabilities,
-    });
-
-    return new Promise((resolve) => {
-      this.socket.once('sfu:consumed', async (data: unknown) => {
-        const d = data as { producerId: string; consumerId: string; kind: string; rtpParameters: unknown };
-        if (d.producerId !== producerId) { resolve(null); return; }
-        try {
-          const consumer = await this.recvTransport!.consume({
-            id: d.consumerId, producerId: d.producerId,
-            kind: d.kind, rtpParameters: d.rtpParameters,
-          });
-          this.consumers.set(producerId, consumer);
-
-          if (!this.peerStreams.has(socketId)) {
-            this.peerStreams.set(socketId, { audio: new MediaStream(), video: new MediaStream() });
-          }
-          const streams      = this.peerStreams.get(socketId)!;
-          const targetStream = (kind === 'video' || kind === 'screen') ? streams.video : streams.audio;
-          targetStream.addTrack(consumer.track);
-
-          _app()?.attachRemoteStream(socketId, targetStream, kind);
-
-          if (kind === 'video' || kind === 'screen') {
-            const peerUserId = this._socketToUserId.get(socketId);
-            _sfuHandleNewProducer()?.(socketId, peerUserId, targetStream, kind);
-            if (false) {
-            }
-          }
-
-          const peerUserId = this._socketToUserId.get(socketId);
-          if (peerUserId) {
-            const saved = parseFloat(localStorage.getItem(`bridge-vol-${peerUserId}`) ?? '');
-            if (!isNaN(saved)) {
-              setTimeout(() => _voiceVolume()?.applyVolume(socketId, saved), 500);
-            }
-          }
-
-          this.socket.emit('sfu:resume-consumer', { producerId });
-          await consumer.resume?.();
-          resolve(consumer);
-        } catch (e) { log.error('[SFU] consume error:', e); resolve(null); }
+    try {
+      const requestId = this._nextSfuRequestId('consume');
+      const consumed = this._waitForEvent<{
+        producerId: string; consumerId: string; kind: string; rtpParameters: unknown;
+      }>(socket, 'sfu:consumed', d => d.producerId === producerId, SFU_SIGNAL_TIMEOUT_MS, {
+        requestId, operation: 'consume',
       });
-    });
+      socket.emit('sfu:consume', {
+        channelId: this.currentChannelId, producerId,
+        rtpCapabilities: this.device.rtpCapabilities, requestId,
+      });
+      const d = await consumed;
+      if (socket !== this._sfuSocket || !this.recvTransport) return null;
+
+      const consumer = await this.recvTransport.consume({
+        id: d.consumerId, producerId: d.producerId,
+        kind: d.kind, rtpParameters: d.rtpParameters,
+      });
+      consumer._socketId = socketId;
+      this.consumers.set(producerId, consumer);
+
+      if (!this.peerStreams.has(socketId)) {
+        this.peerStreams.set(socketId, { audio: new MediaStream(), video: new MediaStream() });
+      }
+      const streams      = this.peerStreams.get(socketId)!;
+      const targetStream = (kind === 'video' || kind === 'screen') ? streams.video : streams.audio;
+      targetStream.addTrack(consumer.track);
+
+      _app()?.attachRemoteStream(socketId, targetStream, kind);
+
+      if (kind === 'video' || kind === 'screen') {
+        const peerUserId = this._socketToUserId.get(socketId);
+        _sfuHandleNewProducer()?.(socketId, peerUserId, targetStream, kind);
+      }
+
+      socket.emit('sfu:resume-consumer', { producerId, requestId: this._nextSfuRequestId('resume-consumer') });
+      await consumer.resume?.();
+      return consumer;
+    } catch (e) {
+      log.error('[SFU] consume error:', e);
+      return null;
+    }
   }
 
   // ── Leave voice ───────────────────────────────────────────────────────────
@@ -376,12 +767,34 @@ class BridgeRTC {
     if (!this.currentChannelId) return;
 
     if (this._sfuAvailable) {
-      this.socket.emit('sfu:leave', { channelId: this.currentChannelId, serverId: this.currentServerId });
-      this._sfuCleanup();
+      this._sfuSocket.emit('sfu:leave', { channelId: this.currentChannelId, serverId: this.currentServerId });
     } else {
       this.socket.emit('voice:leave', { channelId: this.currentChannelId, serverId: this.currentServerId });
     }
 
+    this._cleanupVoiceState();
+  }
+
+  destroy(): void {
+    const hadVoiceState = Boolean(this.currentChannelId || this.localStream || this.peers.size || this.producers.size || this.consumers.size);
+    // Socket replacement is local teardown, not an explicit user leave. Do not
+    // emit on an obsolete socket; the server already observes its disconnect.
+    this._cleanupVoiceState();
+    this._detachSocketHandlers();
+    if (hadVoiceState) {
+      document.dispatchEvent(new CustomEvent('bridge:voice-left', {
+        detail: { reason: 'socket-replaced' },
+      }));
+    }
+  }
+
+  private _cleanupVoiceState(): void {
+    this._sessionGeneration += 1;
+    this._videoGeneration += 1;
+    this._screenGeneration += 1;
+    this._sfuCleanup();
+    for (const pc of this.peers.values()) pc.close();
+    this.peers.clear();
     this.localStream?.getTracks().forEach(t => t.stop());
     this.localStream = null;
     this.screenStream?.getTracks().forEach(t => t.stop());
@@ -390,6 +803,11 @@ class BridgeRTC {
     this.currentServerId  = null;
     this.videoOn          = false;
     this.screenSharing    = false;
+    this.screenAudioActive = false;
+    this.muted            = false;
+    this.deafened         = false;
+    this._socketToUserId.clear();
+    this._resetDedicatedSfuSocket();
     _stopVAD()?.();
   }
 
@@ -398,6 +816,10 @@ class BridgeRTC {
     for (const p of this.producers.values()) p.close?.();
     this.consumers.clear();
     this.producers.clear();
+    for (const streams of this.peerStreams.values()) {
+      streams.audio.getTracks().forEach(track => track.stop());
+      streams.video.getTracks().forEach(track => track.stop());
+    }
     this.peerStreams.clear();
     this.sendTransport?.close();
     this.recvTransport?.close();
@@ -411,7 +833,7 @@ class BridgeRTC {
     if (!producer) return;
     producer.close();
     this.producers.delete(kind);
-    this.socket.emit('sfu:close-producer', { kind });
+    this._sfuSocket.emit('sfu:close-producer', { kind });
   }
 
   // ── Mute / deafen ─────────────────────────────────────────────────────────
@@ -432,129 +854,341 @@ class BridgeRTC {
 
   // ── Video ─────────────────────────────────────────────────────────────────
   async enableVideo(enable: boolean): Promise<boolean> {
-    if (enable) {
-      try {
-        const videoConstraints = this.selectedCameraId
-          ? { deviceId: { exact: this.selectedCameraId } } : true;
-        const videoStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints });
-        const videoTrack  = videoStream.getVideoTracks()[0];
-        this.localStream?.addTrack(videoTrack);
-
-        if (this._sfuAvailable && this.sendTransport) {
-          const producer = await this.sendTransport.produce({
-            track: videoTrack,
-            encodings: [
-              { maxBitrate: 100_000, scaleResolutionDownBy: 4 },
-              { maxBitrate: 300_000, scaleResolutionDownBy: 2 },
-              { maxBitrate: 900_000 },
-            ],
-            codecOptions: { videoGoogleStartBitrate: 1000 },
-          });
-          producer.on('trackended', () => this.enableVideo(false));
-          this.producers.set('video', producer);
-        }
-        this.videoOn = true;
-      } catch {
-        _app()?.toast('Kamera erişimi reddedildi', 'error');
-        return false;
-      }
-    } else {
-      this.localStream?.getVideoTracks().forEach(t => t.stop());
+    if (!enable) {
+      this._videoGeneration += 1;
+      this.localStream?.getVideoTracks().forEach(track => {
+        track.stop();
+        this.localStream?.removeTrack(track);
+      });
       this._closeProducer('video');
       this.videoOn = false;
+      this._broadcastState();
+      return true;
+    }
+    if (this.videoOn) return true;
+    if (!this.currentChannelId || !this.localStream) return false;
+
+    const generation = ++this._videoGeneration;
+    let videoStream: MediaStream | null = null;
+    let videoTrack: MediaStreamTrack | null = null;
+    let producer: MediasoupProducer | null = null;
+    try {
+      const videoConstraints = this.selectedCameraId
+        ? { deviceId: { exact: this.selectedCameraId } } : true;
+      videoStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints });
+      videoTrack = videoStream.getVideoTracks()[0] ?? null;
+      if (!videoTrack) throw new Error('Camera returned no video track');
+      if (generation !== this._videoGeneration) {
+        videoStream.getTracks().forEach(track => track.stop());
+        return false;
+      }
+      this.localStream.addTrack(videoTrack);
+
+      if (this._sfuAvailable && this.sendTransport) {
+        producer = await this.sendTransport.produce({
+          track: videoTrack,
+          encodings: [
+            { maxBitrate: 100_000, scaleResolutionDownBy: 4 },
+            { maxBitrate: 300_000, scaleResolutionDownBy: 2 },
+            { maxBitrate: 900_000 },
+          ],
+          codecOptions: { videoGoogleStartBitrate: 1000 },
+        });
+        if (generation !== this._videoGeneration) {
+          producer.close();
+          videoStream.getTracks().forEach(track => track.stop());
+          return false;
+        }
+        producer.on('trackended', () => { void this.enableVideo(false); });
+        this.producers.set('video', producer);
+      }
+      this.videoOn = true;
+    } catch {
+      producer?.close();
+      if (videoTrack) this.localStream?.removeTrack(videoTrack);
+      videoStream?.getTracks().forEach(track => track.stop());
+      _app()?.toast(t('rtc_cam_denied', 'Kamera erişimi reddedildi'), 'error');
+      return false;
     }
     this._broadcastState();
     return true;
   }
 
   // ── Screen share ──────────────────────────────────────────────────────────
-  async startScreenShare(quality: ScreenQuality = 'hd', includeAudio = true): Promise<boolean> {
-    const preset = SCREEN_PRESETS[quality] ?? SCREEN_PRESETS['hd'];
-    this._screenQuality = quality;
+  /**
+   * System audio is opt-in and is considered active only if the browser
+   * actually returned an audio track AND the active media path publishes it.
+   * A checked box is never treated as proof of remote audio delivery.
+   */
+  async startScreenShare(quality: ScreenQuality = 'hd', includeAudio = false): Promise<boolean> {
+    if (this.screenSharing) return true;
+    if (!this.currentChannelId) return false;
+    const selectedQuality = normalizeScreenQuality(quality, 'hd');
+    const preset = SCREEN_PRESETS[selectedQuality];
+    const generation = ++this._screenGeneration;
+    this._screenQuality = selectedQuality;
+    this.screenAudioActive = false;
+    let stream: MediaStream | null = null;
+    let producer: MediasoupProducer | null = null;
+    let audioProducer: MediasoupProducer | null = null;
     try {
-      this.screenStream = await navigator.mediaDevices.getDisplayMedia({
+      stream = await navigator.mediaDevices.getDisplayMedia({
         video: { ...preset, cursor: 'always' } as MediaTrackConstraints,
         audio: includeAudio
           ? { echoCancellation: false, noiseSuppression: false } as MediaTrackConstraints
           : false,
       });
-      const screenTrack      = this.screenStream.getVideoTracks()[0];
-      screenTrack.onended    = () => this.stopScreenShare();
+      const screenTrack = stream.getVideoTracks()[0];
+      if (!screenTrack) throw new Error('Screen capture returned no video track');
+      if (generation !== this._screenGeneration) {
+        stream.getTracks().forEach(track => track.stop());
+        return false;
+      }
+      screenTrack.onended = () => this.stopScreenShare();
 
       if (this._sfuAvailable && this.sendTransport) {
-        const producer = await this.sendTransport.produce({
+        producer = await this.sendTransport.produce({
           track:     screenTrack,
           appData:   { screen: true },
-          encodings: [{ maxBitrate: SCREEN_BITRATES[quality] ?? 2_000_000 }],
+          encodings: [{ maxBitrate: SCREEN_BITRATES[selectedQuality] }],
           codecOptions: { videoGoogleStartBitrate: 1000 },
         });
+        if (generation !== this._screenGeneration) {
+          producer.close();
+          stream.getTracks().forEach(track => track.stop());
+          return false;
+        }
         producer.on('trackended', () => this.stopScreenShare());
         this.producers.set('screen', producer);
+
+        const screenAudioTrack = includeAudio ? stream.getAudioTracks()[0] : undefined;
+        if (screenAudioTrack) {
+          try {
+            audioProducer = await this.sendTransport.produce({
+              track: screenAudioTrack,
+              appData: { screenAudio: true },
+              codecOptions: {
+                opusStereo: true, opusDtx: false, opusFec: true,
+                opusPtime: 20, opusMaxPlaybackRate: 48000,
+              },
+            });
+            if (generation !== this._screenGeneration) {
+              audioProducer.close();
+              this._closeProducer('screen');
+              stream.getTracks().forEach(track => track.stop());
+              return false;
+            }
+            audioProducer.on('trackended', () => {
+              this._closeProducer('screen-audio');
+              this.screenAudioActive = false;
+            });
+            this.producers.set('screen-audio', audioProducer);
+            this.screenAudioActive = true;
+          } catch (e) {
+            // Screen video remains useful. Stop the unpublished capture so an
+            // audio permission never leaves an unused live system-audio track.
+            screenAudioTrack.stop();
+            this.screenAudioActive = false;
+            log.warn('[SFU] screen audio produce error:', e);
+          }
+        }
+      } else {
+        // P2P fallback owns the same captured MediaStream. Attach video and,
+        // when the browser really supplied it, system audio as distinct tracks
+        // and renegotiate every live peer. The microphone sender is untouched.
+        this.screenStream = stream;
+        for (const [socketId, pc] of this.peers) {
+          this._p2pAttachScreenTracks(pc);
+          void this._p2pRenegotiate(pc, socketId);
+        }
+        this.screenAudioActive = Boolean(includeAudio && stream.getAudioTracks()[0]);
       }
+      this.screenStream = stream;
       this.screenSharing = true;
       this._broadcastState();
       return true;
     } catch {
-      _app()?.toast('Ekran paylaşımı iptal edildi', 'error');
+      audioProducer?.close();
+      producer?.close();
+      stream?.getTracks().forEach(track => track.stop());
+      if (this.screenStream === stream) this.screenStream = null;
+      this.screenAudioActive = false;
+      _app()?.toast(t('rtc_share_cancel', 'Ekran paylaşımı iptal edildi'), 'error');
       return false;
     }
   }
 
   stopScreenShare(): void {
-    this.screenStream?.getTracks().forEach(t => t.stop());
+    this._screenGeneration += 1;
+    const closingStream = this.screenStream;
+    if (closingStream && !this._sfuAvailable) {
+      const closingTracks = new Set(closingStream.getTracks());
+      for (const [socketId, pc] of this.peers) {
+        for (const sender of pc.getSenders()) {
+          if (sender.track && closingTracks.has(sender.track)) {
+            try { pc.removeTrack(sender); } catch { /* peer may be closing */ }
+          }
+        }
+        void this._p2pRenegotiate(pc, socketId);
+      }
+    }
+    closingStream?.getTracks().forEach(t => t.stop());
     this.screenStream = null;
+    this._closeProducer('screen-audio');
     this._closeProducer('screen');
+    this.screenAudioActive = false;
     this.screenSharing = false;
     this._broadcastState();
-    if (this.videoOn) void this.enableVideo(true);
   }
 
   // ── Device switching ──────────────────────────────────────────────────────
+  async setAudioProcessing(opts: {
+    echoCancellation?: boolean; noiseSuppression?: boolean; autoGainControl?: boolean;
+  }): Promise<void> {
+    if (typeof opts.echoCancellation === 'boolean') this.echoCancellation = opts.echoCancellation;
+    if (typeof opts.noiseSuppression === 'boolean') this.noiseSuppression = opts.noiseSuppression;
+    if (typeof opts.autoGainControl === 'boolean') this.autoGainControl = opts.autoGainControl;
+
+    localStorage.setItem('bridge:device:echo', String(this.echoCancellation));
+    localStorage.setItem('bridge:device:noise', String(this.noiseSuppression));
+    localStorage.setItem('bridge:device:gain', String(this.autoGainControl));
+    if (!this.isInVoice() || !this.localStream) return;
+
+    const generation = this._sessionGeneration;
+    const targetStream = this.localStream;
+    let rawStream: MediaStream | null = null;
+    let cleanStream: MediaStream | null = null;
+    try {
+      const nsModule = _ns();
+      const nsEnabled = nsModule?.enabled !== false;
+      const constraints: MediaTrackConstraints = {
+        ...this.audioProcessingConstraints(),
+        echoCancellation: this.echoCancellation && nsEnabled,
+        noiseSuppression: this.noiseSuppression && nsEnabled,
+        ...(this.selectedMicId ? { deviceId: { exact: this.selectedMicId } } : {}),
+      };
+      rawStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false });
+      cleanStream = nsModule ? await nsModule.process(rawStream) : rawStream;
+      const newTrack = cleanStream.getAudioTracks()[0];
+      if (!newTrack) throw new Error('Microphone returned no audio track');
+      if (generation !== this._sessionGeneration || targetStream !== this.localStream) {
+        cleanStream.getTracks().forEach(track => track.stop());
+        if (cleanStream !== rawStream) rawStream.getTracks().forEach(track => track.stop());
+        return;
+      }
+
+      const previousTracks = targetStream.getAudioTracks();
+      const audioProducer = this.producers.get('audio');
+      if (audioProducer) await audioProducer.replaceTrack({ track: newTrack });
+      if (!this._sfuAvailable) {
+        for (const pc of this.peers.values()) {
+          const sender = pc.getSenders().find(candidate => candidate.track?.kind === 'audio');
+          if (sender) await sender.replaceTrack(newTrack);
+        }
+      }
+      if (generation !== this._sessionGeneration || targetStream !== this.localStream) {
+        cleanStream.getTracks().forEach(track => track.stop());
+        if (cleanStream !== rawStream) rawStream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      previousTracks.forEach(track => { track.stop(); targetStream.removeTrack(track); });
+      targetStream.addTrack(newTrack);
+    } catch (err) {
+      cleanStream?.getTracks().forEach(track => track.stop());
+      if (rawStream && cleanStream !== rawStream) rawStream.getTracks().forEach(track => track.stop());
+      log.warn({ voice: 'audio_processing_failed', err });
+    }
+  }
+
   async setMicDevice(deviceId: string): Promise<void> {
     this.selectedMicId = deviceId;
+    localStorage.setItem('bridge:device:mic', deviceId);
     localStorage.setItem('bridge-mic', deviceId);
     if (!this.isInVoice() || !this.localStream) return;
+    const generation = this._sessionGeneration;
+    const targetStream = this.localStream;
+    let rawStream: MediaStream | null = null;
+    let cleanStream: MediaStream | null = null;
     try {
       const _nsModule = _ns();
       const nsEnabled = _nsModule?.enabled !== false;
-      const rawStream = await navigator.mediaDevices.getUserMedia({
-        audio: { deviceId: { exact: deviceId }, echoCancellation: nsEnabled,
-                 noiseSuppression: nsEnabled, autoGainControl: nsEnabled, sampleRate: 48000 },
+      rawStream = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: { exact: deviceId }, ...this.audioProcessingConstraints(),
+                 echoCancellation: this.echoCancellation && nsEnabled,
+                 noiseSuppression: this.noiseSuppression && nsEnabled },
         video: false,
       });
-      const cleanStream = _nsM.process ? await _nsM.process(rawStream) : rawStream;
-      const newTrack      = cleanStream.getAudioTracks()[0];
-      this.localStream.getAudioTracks().forEach(t => { t.stop(); this.localStream!.removeTrack(t); });
-      this.localStream.addTrack(newTrack);
+      cleanStream = _nsModule ? await _nsModule.process(rawStream) : rawStream;
+      const newTrack = cleanStream.getAudioTracks()[0];
+      if (!newTrack) throw new Error('Microphone returned no audio track');
+      if (generation !== this._sessionGeneration) {
+        cleanStream.getTracks().forEach(track => track.stop());
+        if (cleanStream !== rawStream) rawStream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      const previousTracks = targetStream.getAudioTracks();
       const audioProducer = this.producers.get('audio');
       if (audioProducer) await audioProducer.replaceTrack({ track: newTrack });
-      _app()?.toast('Mikrofon değiştirildi ✓', 'success');
-    } catch { _app()?.toast('Mikrofon değiştirilemedi', 'error'); }
+      if (generation !== this._sessionGeneration) {
+        cleanStream.getTracks().forEach(track => track.stop());
+        if (cleanStream !== rawStream) rawStream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      previousTracks.forEach(t => { t.stop(); targetStream.removeTrack(t); });
+      targetStream.addTrack(newTrack);
+      _app()?.toast(t('rtc_mic_changed', 'Mikrofon değiştirildi ✓'), 'success');
+    } catch {
+      cleanStream?.getTracks().forEach(track => track.stop());
+      if (rawStream && cleanStream !== rawStream) rawStream.getTracks().forEach(track => track.stop());
+      if (generation === this._sessionGeneration) {
+        _app()?.toast(t('rtc_mic_failed', 'Mikrofon değiştirilemedi'), 'error');
+      }
+    }
   }
 
   async setCameraDevice(deviceId: string): Promise<void> {
     this.selectedCameraId = deviceId;
+    localStorage.setItem('bridge:device:camera', deviceId);
     localStorage.setItem('bridge-camera', deviceId);
     if (!this.videoOn || !this.localStream) return;
+    const generation = this._sessionGeneration;
+    const targetStream = this.localStream;
+    let newStream: MediaStream | null = null;
     try {
-      const newStream     = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: deviceId } } });
-      const newTrack      = newStream.getVideoTracks()[0];
-      this.localStream.getVideoTracks().forEach(t => { t.stop(); this.localStream!.removeTrack(t); });
-      this.localStream.addTrack(newTrack);
+      newStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: deviceId } } });
+      const newTrack = newStream.getVideoTracks()[0];
+      if (!newTrack) throw new Error('Camera returned no video track');
+      if (generation !== this._sessionGeneration) {
+        newStream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      const previousTracks = targetStream.getVideoTracks();
       const videoProducer = this.producers.get('video');
       if (videoProducer) await videoProducer.replaceTrack({ track: newTrack });
-      _app()?.toast('Kamera değiştirildi ✓', 'success');
-    } catch { _app()?.toast('Kamera değiştirilemedi', 'error'); }
+      if (generation !== this._sessionGeneration) {
+        newStream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      previousTracks.forEach(t => { t.stop(); targetStream.removeTrack(t); });
+      targetStream.addTrack(newTrack);
+      _app()?.toast(t('rtc_cam_changed', 'Kamera değiştirildi ✓'), 'success');
+    } catch {
+      newStream?.getTracks().forEach(track => track.stop());
+      if (generation === this._sessionGeneration) {
+        _app()?.toast(t('rtc_cam_failed', 'Kamera değiştirilemedi'), 'error');
+      }
+    }
   }
 
   async setSpeakerDevice(deviceId: string): Promise<void> {
     this.selectedSpeakerId = deviceId;
+    localStorage.setItem('bridge:device:speaker', deviceId);
     localStorage.setItem('bridge-speaker', deviceId);
     type AudioEl = HTMLMediaElement & { setSinkId?(id: string): Promise<void> };
     document.querySelectorAll<AudioEl>('.remote-audio, audio').forEach(el => {
       el.setSinkId?.(deviceId).catch(() => {});
     });
-    _app()?.toast('Hoparlör değiştirildi ✓', 'success');
+    _app()?.toast(t('rtc_spk_changed', 'Hoparlör değiştirildi ✓'), 'success');
   }
 
   setChannelBitrate(bitrate: number): void {
@@ -564,9 +1198,9 @@ class BridgeRTC {
   }
 
   // ── Socket events ─────────────────────────────────────────────────────────
-  private _bindSocketEvents(): void {
+  private _bindSocketEvents(socket: BridgeSocket): void {
     // ─ SFU events ─────────────────────────────────────────────────────────
-    this.socket.on('sfu:joined', async (raw: unknown) => {
+    this._onSocket(socket, 'sfu:joined', async (raw: unknown) => {
       const { existingPeers, iceServers, iceTransportPolicy } =
         raw as { existingPeers: PeerInfo[]; iceServers?: RTCIceServer[]; iceTransportPolicy?: RTCIceTransportPolicy };
 
@@ -591,31 +1225,31 @@ class BridgeRTC {
       }
     });
 
-    this.socket.on('sfu:peer-joined', (raw: unknown) => {
+    this._onSocket(socket, 'sfu:peer-joined', (raw: unknown) => {
       const peer = raw as PeerInfo;
       this._socketToUserId.set(peer.socketId, peer.userId ?? '');
       _app()?.renderVoicePeer(peer, false);
     });
 
-    this.socket.on('sfu:new-producer', async (raw: unknown) => {
+    this._onSocket(socket, 'sfu:new-producer', async (raw: unknown) => {
       const { socketId, producerId, kind } = raw as { socketId: string; userId?: string; producerId: string; kind: string };
       await this._consume(producerId, socketId, kind);
     });
 
-    this.socket.on('sfu:producer-closed', (raw: unknown) => {
+    this._onSocket(socket, 'sfu:producer-closed', (raw: unknown) => {
       const { producerId } = raw as { producerId: string };
       const consumer = this.consumers.get(producerId);
       if (consumer) { consumer.close?.(); this.consumers.delete(producerId); }
     });
 
-    this.socket.on('sfu:peer-left', (raw: unknown) => {
+    this._onSocket(socket, 'sfu:peer-left', (raw: unknown) => {
       const { socketId } = raw as { socketId: string };
       this._cleanupPeerStreams(socketId);
       _app()?.removeVoicePeer(socketId);
     });
 
     // ─ P2P fallback events ────────────────────────────────────────────────
-    this.socket.on('voice:existing-peers', async (raw: unknown) => {
+    this._onSocket(socket, 'voice:existing-peers', async (raw: unknown) => {
       if (this._sfuAvailable) return;
       const peers = raw as PeerInfo[];
       for (const peer of peers) await this._p2pCreateOffer(peer.socketId, peer);
@@ -626,12 +1260,12 @@ class BridgeRTC {
       }
     });
 
-    this.socket.on('voice:peer-joined', (raw: unknown) => {
+    this._onSocket(socket, 'voice:peer-joined', (raw: unknown) => {
       if (this._sfuAvailable) return;
       _app()?.renderVoicePeer(raw as PeerInfo, false);
     });
 
-    this.socket.on('voice:peer-left', (raw: unknown) => {
+    this._onSocket(socket, 'voice:peer-left', (raw: unknown) => {
       if (this._sfuAvailable) return;
       const { socketId } = raw as { socketId: string };
       this._p2pRemovePeer(socketId);
@@ -639,56 +1273,51 @@ class BridgeRTC {
     });
 
     // ─ Common events ──────────────────────────────────────────────────────
-    this.socket.on('voice:peer-state', (raw: unknown) => {
+    this._onSocket(socket, 'voice:peer-state', (raw: unknown) => {
       const { socketId, ...state } = raw as { socketId: string } & PeerState;
       _app()?.updatePeerState(socketId, state);
     });
 
     // P2P signalling (fallback)
-    this.socket.on('webrtc:offer', async (raw: unknown) => {
+    this._onSocket(socket, 'webrtc:offer', async (raw: unknown) => {
       if (this._sfuAvailable) return;
       const { fromSocketId, offer } = raw as { fromSocketId: string; offer: RTCSessionDescriptionInit };
       await this._p2pHandleOffer(fromSocketId, offer);
     });
-    this.socket.on('webrtc:answer', async (raw: unknown) => {
+    this._onSocket(socket, 'webrtc:answer', async (raw: unknown) => {
       if (this._sfuAvailable) return;
       const { fromSocketId, answer } = raw as { fromSocketId: string; answer: RTCSessionDescriptionInit };
-      const pc = this._p2pPeers.get(fromSocketId);
+      const pc = this.peers.get(fromSocketId);
       if (pc && pc.signalingState !== 'stable') await pc.setRemoteDescription(new RTCSessionDescription(answer));
     });
-    this.socket.on('webrtc:ice-candidate', async (raw: unknown) => {
+    this._onSocket(socket, 'webrtc:ice-candidate', async (raw: unknown) => {
       if (this._sfuAvailable) return;
       const { fromSocketId, candidate } = raw as { fromSocketId: string; candidate: RTCIceCandidateInit };
-      const pc = this._p2pPeers.get(fromSocketId);
+      const pc = this.peers.get(fromSocketId);
       if (pc && candidate) { try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch { /* non-fatal */ } }
     });
 
-    // ─ sfu:redirect — Cluster modda oda başka node'da ─────────────────────
-    this.socket.on('sfu:redirect', (raw: unknown) => {
+    // Request-scoped listeners in `_sfuJoin` own redirect handling. This
+    // observer is intentionally side-effect free so an owner response can never
+    // cause the old socket to retry itself and loop.
+    this._onSocket(socket, 'sfu:redirect', (raw: unknown) => {
       const { channelId, ownerNodeId, message } = raw as { channelId: string; ownerNodeId: string; message?: string };
       log.warn(`[SFU] Redirect: channel=${channelId} owner=${ownerNodeId}`, message);
-      this._redirectCount = (this._redirectCount ?? 0) + 1;
-      if (this._redirectCount > 3) {
-        log.error('[SFU] Redirect döngüsü algılandı, vazgeçiliyor');
-        this._redirectCount = 0;
-        _app()?.showToast?.('Ses kanalına bağlanılamadı. Lütfen tekrar deneyin.', 'error');
-        return;
-      }
-      setTimeout(() => {
-        if (this.currentChannelId === channelId) {
-          log.log('[SFU] Yeniden join deneniyor…');
-          this.socket.emit('sfu:join', {
-            channelId, serverId: this.currentServerId,
-            rtpCapabilities: this.device?.rtpCapabilities,
-          });
-        }
-      }, 600);
+    });
+
+    this._onSocket(socket, 'disconnect', () => {
+      if (socket !== this.socket) return;
+      if (!this.currentChannelId && !this.localStream && this.peers.size === 0) return;
+      this._cleanupVoiceState();
+      document.dispatchEvent(new CustomEvent('bridge:voice-left', {
+        detail: { reason: 'socket-disconnect' },
+      }));
     });
   }
 
   private _broadcastState(): void {
     if (!this.currentChannelId) return;
-    this.socket.emit('voice:state-update', {
+    (this._sfuAvailable ? this._sfuSocket : this.socket).emit('voice:state-update', {
       channelId: this.currentChannelId, muted: this.muted,
       deafened: this.deafened, screensharing: this.screenSharing, video: this.videoOn,
     });
@@ -707,6 +1336,29 @@ class BridgeRTC {
   }
 
   // ── P2P fallback ──────────────────────────────────────────────────────────
+  private _p2pAttachScreenTracks(pc: RTCPeerConnection): void {
+    const stream = this.screenStream;
+    if (!stream) return;
+    const attached = new Set(pc.getSenders().map(sender => sender.track).filter(Boolean));
+    for (const track of stream.getTracks()) {
+      if (!attached.has(track)) pc.addTrack(track, stream);
+    }
+  }
+
+  private async _p2pRenegotiate(pc: RTCPeerConnection, targetSocketId: string): Promise<void> {
+    if (pc.signalingState === 'closed' || this.peers.get(targetSocketId) !== pc) return;
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      if (this.peers.get(targetSocketId) !== pc || (pc.signalingState as string) === 'closed') return;
+      this.socket.emit('webrtc:offer', {
+        targetSocketId, offer: pc.localDescription, channelId: this.currentChannelId,
+      });
+    } catch (e) {
+      log.warn('[P2P] Screen-share renegotiation failed:', e);
+    }
+  }
+
   private async _p2pCreateOffer(targetSocketId: string, peerInfo: PeerInfo): Promise<void> {
     const pc = this._p2pCreatePeer(targetSocketId, peerInfo);
     try {
@@ -719,7 +1371,7 @@ class BridgeRTC {
   }
 
   private async _p2pHandleOffer(fromSocketId: string, offer: RTCSessionDescriptionInit): Promise<void> {
-    const pc = this._p2pPeers.get(fromSocketId) ?? this._p2pCreatePeer(fromSocketId, { socketId: fromSocketId });
+    const pc = this.peers.get(fromSocketId) ?? this._p2pCreatePeer(fromSocketId, { socketId: fromSocketId });
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.createAnswer();
@@ -733,8 +1385,12 @@ class BridgeRTC {
       ? this._iceServers
       : [{ urls: 'stun:stun.l.google.com:19302' }];
     const pc = new RTCPeerConnection({ iceServers, iceTransportPolicy: this._iceTransportPolicy });
-    this._p2pPeers.set(socketId, pc);
+    this.peers.set(socketId, pc);
     if (this.localStream) this.localStream.getTracks().forEach(track => pc.addTrack(track, this.localStream!));
+    // A peer joining after screen-share started must receive the same display
+    // tracks as existing peers; otherwise late joiners see no share until the
+    // presenter restarts it.
+    this._p2pAttachScreenTracks(pc);
     pc.onicecandidate = ({ candidate }) => {
       if (candidate) this.socket.emit('webrtc:ice-candidate', { targetSocketId: socketId, candidate });
     };
@@ -751,15 +1407,21 @@ class BridgeRTC {
   }
 
   private _p2pRemovePeer(socketId: string): void {
-    const pc = this._p2pPeers.get(socketId);
-    if (pc) { pc.close(); this._p2pPeers.delete(socketId); }
+    const pc = this.peers.get(socketId);
+    if (pc) { pc.close(); this.peers.delete(socketId); }
   }
 
   // ── Voice E2E ─────────────────────────────────────────────────────────────
   registerVoiceE2EEvents(myUserId: string): void {
-    _voiceE2E()?.registerSocketEvents(this.socket, myUserId);
+    _voiceE2E()?.registerSocketEvents(this._sfuAvailable ? this._sfuSocket : this.socket, myUserId);
   }
 }
+
+export type SfuRtcFactory = (socket: BridgeSocket) => BridgeRTC;
+
+// The P2P module owns singleton/registry lifecycle. This module contributes the
+// SFU-capable engine factory only, avoiding two simultaneous RTC owners.
+BridgeRegistry.register('rtc:sfu-factory', ((socket: BridgeSocket) => new BridgeRTC(socket)) as unknown as (...args: unknown[]) => unknown);
 
 export { BridgeRTC };
 export type { ScreenQuality };

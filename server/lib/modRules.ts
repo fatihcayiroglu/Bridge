@@ -47,15 +47,20 @@ function rulesSummary(messages: MessageLike[], userMap: Record<string, string>):
   const names  = [...new Set(messages.map(m => userMap[m.userId] || '?'))];
   const counts: Record<string, number> = {};
   messages.forEach(m => { counts[m.userId] = (counts[m.userId] || 0) + 1; });
-  const [topId, topCnt] = Object.entries(counts).sort((a, b) => (b[1] as number) - (a[1] as number))[0] || [];
+  const [topId, topCnt] = Object.entries(counts)
+    .sort((a, b) => (b[1] as number) - (a[1] as number))[0] ?? ['', 0];
   const links  = messages.filter(m => /https?:\/\//.test(m.content || '')).length;
-  const t1     = new Date(messages[0].createdAt).toLocaleString('tr-TR');
-  const t2     = new Date(messages[messages.length - 1].createdAt).toLocaleString('tr-TR');
+  // Boş liste bu noktaya ulaşmamalı; yine de `undefined` bir tarihten
+  // "Invalid Date" üretmek yerine sınırlar güvenle okunur.
+  const firstAt = messages[0]?.createdAt;
+  const lastAt  = messages[messages.length - 1]?.createdAt;
+  const t1     = firstAt === undefined ? '?' : new Date(firstAt).toLocaleString('tr-TR');
+  const t2     = lastAt === undefined ? '?' : new Date(lastAt).toLocaleString('tr-TR');
 
   return [
     `📊 ${messages.length} mesaj (${t1} — ${t2})`,
     `👥 ${names.length} katılımcı: ${names.slice(0, 4).join(', ')}${names.length > 4 ? '...' : ''}`,
-    `🏆 En aktif: ${userMap[topId] || '?'} (${topCnt} mesaj)`,
+    `🏆 En aktif: ${(topId && userMap[topId]) || '?'} (${topCnt} mesaj)`,
     links ? `🔗 ${links} link paylaşıldı` : null,
     `\n💡 AI özeti için: .env'e GROQ_API_KEY ekle (groq.com — ücretsiz)`,
   ].filter(Boolean).join('\n');

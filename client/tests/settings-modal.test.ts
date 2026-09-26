@@ -74,13 +74,13 @@ function buildSettingsDOM() {
 function setupGlobals() {
   global.API            = 'http://localhost:3000';
   global.token          = 'tok';
-  global.toast          = jest.fn();
+  global.toast          = vi.fn();
   global.escHtml        = (s) => String(s).replace(/</g, '&lt;');
-  global.updateUserPanel = jest.fn();
-  global.loadConnectionsSettings = jest.fn();
-  global.setChatBackground    = jest.fn();
-  global.applyChatBgColor     = jest.fn();
-  global.loadChatBgFromFile   = jest.fn();
+  global.updateUserPanel = vi.fn();
+  global.loadConnectionsSettings = vi.fn();
+  global.setChatBackground    = vi.fn();
+  global.applyChatBgColor     = vi.fn();
+  global.loadChatBgFromFile   = vi.fn();
 
   // BridgeRegistry mock
   global.BridgeRegistry = {
@@ -102,23 +102,23 @@ function setupGlobals() {
   global.rtc = null;
 
   global.BridgeNS = {
-    getStatus: jest.fn(() => ({ enabled: false, mode: 'rnnoise', rnnoiseReady: true, label: 'Kapalı' })),
-    setEnabled: jest.fn(),
-    setMode:    jest.fn(),
+    getStatus: vi.fn(() => ({ enabled: false, mode: 'rnnoise', rnnoiseReady: true, label: 'Kapalı' })),
+    setEnabled: vi.fn(),
+    setMode:    vi.fn(),
   };
   global.BridgePTT = {
-    getStatus: jest.fn(() => ({ enabled: false, mode: 'toggle', key: 'v', releaseDelay: 200, active: false })),
+    getStatus: vi.fn(() => ({ enabled: false, mode: 'toggle', key: 'v', releaseDelay: 200, active: false })),
   };
-  global.Partials = { ensureLoaded: jest.fn().mockResolvedValue(undefined) };
-  global.WebPush  = { syncToggleUI: jest.fn() };
+  global.Partials = { ensureLoaded: vi.fn().mockResolvedValue(undefined) };
+  global.WebPush  = { syncToggleUI: vi.fn() };
   global.THEMES   = ['dark', 'light', 'midnight'];
   global.THEME_ICONS  = { dark: '🌑', light: '☀️', midnight: '🌌' };
   global.THEME_LABELS = { dark: 'Koyu', light: 'Açık', midnight: 'Gece' };
   global.CHAT_BG_PRESETS = [{ id: 'none', label: 'Yok', preview: '' }];
-  global.apiFetch = jest.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
-  global.closeModal = jest.fn();
-  global.getRtc = jest.fn(() => null);
-  global.getMe  = jest.fn(() => global.me);
+  global.apiFetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+  global.closeModal = vi.fn();
+  global.getRtc = vi.fn(() => null);
+  global.getMe  = vi.fn(() => global.me);
 }
 
 beforeAll(() => {
@@ -127,9 +127,9 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  vi.clearAllMocks();
   buildSettingsDOM();
-  global.apiFetch = jest.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+  global.apiFetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -139,19 +139,19 @@ describe('BridgeRegistry — openSettingsModal kaydı', () => {
   test('openSettingsModal kaydedildiğinde BridgeRegistry.has() true döner', () => {
     // settings-modal.ts modülü yüklendiğinde BridgeRegistry.register çağrılır
     // Burada kayıt simülasyonunu test ediyoruz
-    global.BridgeRegistry.register('openSettingsModal', jest.fn());
+    global.BridgeRegistry.register('openSettingsModal', vi.fn());
     expect(global.BridgeRegistry.has('openSettingsModal')).toBe(true);
   });
 
   test('BridgeRegistry.call("openSettingsModal") kayıtlı fonksiyonu çağırır', () => {
-    const mockOpen = jest.fn();
+    const mockOpen = vi.fn();
     global.BridgeRegistry.register('openSettingsModal', mockOpen);
     global.BridgeRegistry.call('openSettingsModal');
     expect(mockOpen).toHaveBeenCalledTimes(1);
   });
 
   test('BridgeRegistry.call("openSettingsModal", "profile") tab argümanını iletir', () => {
-    const mockOpen = jest.fn();
+    const mockOpen = vi.fn();
     global.BridgeRegistry.register('openSettingsModal', mockOpen);
     global.BridgeRegistry.call('openSettingsModal', 'profile');
     expect(mockOpen).toHaveBeenCalledWith('profile');
@@ -182,7 +182,7 @@ describe('Svelte settings-svelte-mount container', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 describe('Profil güncelleme → apiFetch', () => {
   test('displayName dolu olduğunda PATCH /api/users/me çağrılır', async () => {
-    const mockApiFetch = jest.fn().mockResolvedValue({
+    const mockApiFetch = vi.fn().mockResolvedValue({
       ok: true, json: () => Promise.resolve({ displayName: 'Fatih', _id: 'u1' }),
     });
     global.apiFetch = mockApiFetch;
@@ -201,7 +201,7 @@ describe('Profil güncelleme → apiFetch', () => {
   });
 
   test('apiFetch başarısızsa toast("error") çağrılır', async () => {
-    global.apiFetch = jest.fn().mockResolvedValue({
+    global.apiFetch = vi.fn().mockResolvedValue({
       ok: false, json: () => Promise.resolve({ error: 'Unauthorized' }),
     });
     const r = await global.apiFetch(`${global.API}/api/users/me`, { method: 'PATCH', body: '{}' });

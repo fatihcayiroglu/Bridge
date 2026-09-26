@@ -9,7 +9,7 @@ Bu belge, kod tabanının teknik tamamlanma durumu ile gerçek bir üretim ürü
 | Boyut | Durum | Notlar |
 |-------|-------|--------|
 | Kaynak kod tamlığı | ✅ ~%85 | Tüm temel özellikler implement edilmiş |
-| Test coverage | ✅ Yüksek | Server %90 line, E2E 27 spec |
+| Test coverage | ✅ Yüksek | Server global %90 (per-file ratchet debt açıkça envanterli), E2E suite |
 | Deployment altyapısı | ✅ Tam | Docker, K8s, Helm, CI/CD |
 | Güvenlik mekanizmaları | ✅ İyi | E2EE, JWT, WebAuthn, rate limiting |
 | Dokümantasyon | ✅ Kapsamlı | README, OpenAPI, ADR'ler |

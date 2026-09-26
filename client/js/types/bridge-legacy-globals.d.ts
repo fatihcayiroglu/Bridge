@@ -103,7 +103,8 @@ declare global {
   }
   type BridgeSocket = {
     emit(event: string, ...args: unknown[]): void;
-    on(event: string, listener: (...args: any[]) => void): void;
+    // Legacy global socket boundary is intentionally heterogeneous.
+    on(event: string, listener: (...args: never[]) => void): void;
     off(event: string, listener?: (...args: unknown[]) => void): void;
   };
   let socket: BridgeSocket | undefined;
@@ -116,7 +117,7 @@ declare global {
   const rtc: { currentRoomId?: string; isInVoice?: () => boolean; playRemoteSound?: (...args: unknown[]) => void; [key: string]: unknown };
   const currentChannel: { id?: string; _id?: string; serverId?: string; [key: string]: unknown } | null;
   function closeMobilePanels(): void;
-  const BridgeRegistry: import('../core/bridge-registry.ts').BridgeRegistry;
+  const BridgeRegistry: typeof import('../core/bridge-registry.ts').BridgeRegistry;
 }
 
 declare global {

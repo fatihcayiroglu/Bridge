@@ -2,14 +2,14 @@
 // Sprint 69 — Bot route coverage genişletmesi
 // Hedef: webhook doğrulama hataları, bot aktivasyon kısıtlamaları, listing edge-cases
 
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 
 jest.mock('../middleware/rateLimit', () => ({
-  limits: { bots: () => (_req, _res, next) => next() },
+  limits: { bots: () => (_req: unknown, _res: unknown, next: () => void) => next() },
 }));
 
 const mockHasPermission = jest.fn().mockReturnValue(true);
@@ -21,7 +21,10 @@ jest.mock('../middleware/auth', () => {
       if (!h?.startsWith('Bearer ')) { _res.status(401).json({ error: 'No token' }); return; }
       try {
         const decoded = jwt.verify(h.slice(7), process.env.JWT_SECRET) as Record<string, unknown>;
-        req.user = { id: decoded.id, role: decoded.role };
+        // JWT yuku `unknown` alanlar tasir; `JwtPayload` alanlari DIZGEDIR.
+        req.user = makeJwtUser(String(decoded.id ?? ''), {
+          role: typeof decoded.role === 'string' ? decoded.role : undefined,
+        });
         next();
       } catch { _res.status(401).json({ error: 'Invalid token' }); }
     },
@@ -30,6 +33,7 @@ jest.mock('../middleware/auth', () => {
   };
 });
 
+import { makeJwtUser } from './helpers/userDoubles';
 import type { Request, Response, NextFunction } from 'express';
 import request    from 'supertest';
 import express    from 'express';
@@ -58,6 +62,7 @@ let app: ReturnType<typeof buildApp>;
 let createdBotId: string;
 let webhookToken: string;
 let webhookId: string;
+let webhookChannelId: string;
 
 beforeEach(async () => {
   db._reset?.();
@@ -80,10 +85,13 @@ beforeEach(async () => {
   // Create a webhook entry directly in DB for webhook tests
   webhookToken = 'wh_' + uuidv4().replace(/-/g, '');
   webhookId    = uuidv4();
+  webhookChannelId = uuidv4();
+  await db.channels.insert({ _id: webhookChannelId, serverId: SERVER_ID, name: 'hooks', type: 'text', createdAt: Date.now() });
   await db.webhooks.insert({
     _id: webhookId,
     serverId:  SERVER_ID,
-    channelId: uuidv4(),
+    channelId: webhookChannelId,
+    name:      'Deploy Hook',
     token:     webhookToken,
     createdAt: Date.now(),
   });
@@ -200,12 +208,44 @@ describe('POST /api/servers/:sid/bots/:botId/token — edge cases', () => {
 // ── POST /api/webhooks/:webhookId — detailed tests ───────────────────────────
 
 describe('POST /api/webhooks/:webhookId — detailed', () => {
-  it('accepts a valid webhook with token and content', async () => {
+  it('persists a valid webhook as a canonical webhook-authored message', async () => {
     const res = await request(app)
       .post(`/api/webhooks/${webhookId}?token=${webhookToken}`)
       .send({ content: 'Hello from webhook!' });
-    // 200 or 201 on success; 404 if channel not found in test DB is also acceptable
-    expect([200, 201, 404]).toContain(res.status);
+    expect(res.status).toBe(200);
+
+    const rows = await db.messages.find({ channelId: webhookChannelId });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      serverId: SERVER_ID,
+      channelId: webhookChannelId,
+      userId: `webhook:${webhookId}`,
+      username: 'Deploy Hook',
+      displayName: 'Deploy Hook',
+      webhookId,
+      isWebhook: true,
+      content: 'Hello from webhook!',
+    });
+    expect(typeof rows[0]._id).toBe('string');
+    expect(typeof rows[0].createdAt).toBe('number');
+    expect(rows[0]).not.toHaveProperty('authorId');
+  });
+
+  it('delivers the stored webhook post to the channel and to watchers (Final21 Phase 15)', async () => {
+    // Before: persisted but never broadcast — nobody in the channel saw it until a reload.
+    const events: Array<{ room: string; event: string; payload: any }> = [];
+    const live = buildApp();
+    live.set('io', { to: (room: string) => ({ emit: (event: string, payload: unknown) => events.push({ room, event, payload }) }) });
+    const res = await request(live)
+      .post(`/api/webhooks/${webhookId}?token=${webhookToken}`)
+      .send({ content: 'deploy finished' });
+    expect(res.status).toBe(200);
+    const [stored] = await db.messages.find({ channelId: webhookChannelId, content: 'deploy finished' });
+    expect(events).toEqual([
+      { room: `channel:${webhookChannelId}`, event: 'message:new', payload: expect.objectContaining({ _id: stored._id, isWebhook: true, content: 'deploy finished' }) },
+      { room: `watch:${webhookChannelId}`, event: 'channel:activity', payload: expect.objectContaining({ messageId: stored._id, channelId: webhookChannelId }) },
+    ]);
+    expect(events[1]!.payload).not.toHaveProperty('content');
   });
 
   it('rejects request with wrong token (401)', async () => {

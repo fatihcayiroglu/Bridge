@@ -1,6 +1,8 @@
 // server/tests/plugins.test.ts
 // Sprint 66+: plugins/word-filter, plugins/welcome-bot, plugins/allowlist birim testleri
 // Coverage hedefi: lines 80%, functions 75%, branches 70%
+import type { PluginContext } from '../../plugins/lifecycle';
+import { findEmitted, requireEmitted } from './helpers/socketDoubles';
 'use strict';
 
 process.env.NODE_ENV = 'test';
@@ -186,6 +188,20 @@ describe('allowlist — permission/category setleri', () => {
 // ── word-filter testleri ──────────────────────────────────────
 
 // PluginContext mock factory
+/**
+ * Ikizi eklenti sozlesmesine baglar.
+ *
+ * `PluginContext` ayrica `io` (socket.io `Server`) ve `app` (Express
+ * `Application`) ister. Bu testler o iki yuzeye HIC dokunmuyor ve ikisini de
+ * taklit etmek yuzlerce satirlik olu kod demekti. Gecis bu yuzden TEK YERDE,
+ * aciklamali yapilir — cagri yerlerinde 25 ayri cast yerine bir tane.
+ *
+ * SINIR: bu testler eklentinin `hooks`/`db`/`logger`/`registerRoute`
+ * kullanimini olcer; `io`/`app` uzerinden giden davranisi OLCMEZ.
+ */
+const asPluginContext = (ctx: ReturnType<typeof makeCtx>): PluginContext =>
+  ctx as unknown as PluginContext;
+
 function makeCtx(config: Record<string, unknown> = {}) {
   const emitted: { event: string; payload: unknown }[] = [];
   const listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
@@ -205,6 +221,9 @@ function makeCtx(config: Record<string, unknown> = {}) {
   const ctx = {
     meta:   { id: 'word-filter', name: 'Word Filter', version: '1.0.0', config },
     hooks,
+    // `db` ACIKCA genisletilebilir yazilir: `auto-role` suiti calisma aninda
+    // `ctx.db.members` ekliyor. Nesne edebisinden cikan kapali tip bunu
+    // reddediyordu; oysa eklemenin kendisi testin senaryosunun parcasidir.
     db: {
       channels: {
         find: jest.fn(async () => [
@@ -212,7 +231,7 @@ function makeCtx(config: Record<string, unknown> = {}) {
           { _id: 'ch-general', name: 'genel' },
         ]),
       },
-    },
+    } as Record<string, Record<string, jest.Mock>>,
     logger: {
       log:   jest.fn(),
       warn:  jest.fn(),
@@ -231,7 +250,10 @@ function makeCtx(config: Record<string, unknown> = {}) {
 
 describe('word-filter — setup', () => {
   // Dinamik import (ts-jest ile ../../plugins/ resolve edilir)
-  let setup: (ctx: unknown) => Promise<void>;
+  // Eklenti `setup(ctx: PluginContext)` imzasini tasir; ikiz baglami da o
+  // sozlesmeye gore gecirilir. `(ctx: unknown)` yazmak, imza degisirse
+  // testin SESSIZCE eskimesi demekti.
+  let setup: (ctx: PluginContext) => Promise<void>;
 
   beforeAll(async () => {
     const mod = await import('../../plugins/word-filter/index');
@@ -240,19 +262,19 @@ describe('word-filter — setup', () => {
 
   it('blockedWords boşken pasif kalır — warn loglar', async () => {
     const ctx = makeCtx({ blockedWords: [] });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     expect(ctx.logger.warn).toHaveBeenCalled();
   });
 
   it('/blocked route kaydedilir', async () => {
     const ctx = makeCtx({ blockedWords: ['spam'] });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     expect(ctx.registerRoute).toHaveBeenCalledWith('GET', '/blocked', expect.any(Function));
   });
 
   it('/blocked route — yasaklı kelimeleri döndürür', async () => {
     const ctx = makeCtx({ blockedWords: ['spam', 'scam'] });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const route = ctx._routes.find(r => r.path === '/blocked');
     const res = { json: jest.fn() };
     route!.handler({}, res);
@@ -261,13 +283,13 @@ describe('word-filter — setup', () => {
 
   it('message:created hook kaydedilir', async () => {
     const ctx = makeCtx({ blockedWords: ['spam'] });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     expect(ctx.hooks.on).toHaveBeenCalledWith('message:created', expect.any(Function));
   });
 
   it('yasaklı kelime içeren mesaj → deleteMessage emit edilir', async () => {
     const ctx = makeCtx({ blockedWords: ['spam'], warnUser: false });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['message:created'][0];
     await handler({
       messageId:   'msg-1',
@@ -282,7 +304,7 @@ describe('word-filter — setup', () => {
 
   it('warnUser:true → sendMessage emit edilir', async () => {
     const ctx = makeCtx({ blockedWords: ['spam'], warnUser: true });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['message:created'][0];
     await handler({
       messageId:   'msg-2',
@@ -298,7 +320,7 @@ describe('word-filter — setup', () => {
 
   it('temiz mesaj → hiç emit yok', async () => {
     const ctx = makeCtx({ blockedWords: ['spam'] });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['message:created'][0];
     await handler({
       messageId:   'msg-3',
@@ -313,7 +335,7 @@ describe('word-filter — setup', () => {
 
   it('content undefined → sessizce geçer', async () => {
     const ctx = makeCtx({ blockedWords: ['spam'] });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['message:created'][0];
     await expect(
       handler({ messageId: 'm', channelId: 'c', serverId: 's', userId: 'u', content: undefined, displayName: 'd' })
@@ -322,7 +344,7 @@ describe('word-filter — setup', () => {
 
   it('mod-log kanalı bulunursa log mesajı gönderilir', async () => {
     const ctx = makeCtx({ blockedWords: ['spam'], warnUser: false, logChannelName: 'mod-log' });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['message:created'][0];
     await handler({
       messageId:   'msg-4',
@@ -342,7 +364,10 @@ describe('word-filter — setup', () => {
 // ── welcome-bot testleri ──────────────────────────────────────
 
 describe('welcome-bot — setup', () => {
-  let setup: (ctx: unknown) => Promise<void>;
+  // Eklenti `setup(ctx: PluginContext)` imzasini tasir; ikiz baglami da o
+  // sozlesmeye gore gecirilir. `(ctx: unknown)` yazmak, imza degisirse
+  // testin SESSIZCE eskimesi demekti.
+  let setup: (ctx: PluginContext) => Promise<void>;
 
   beforeAll(async () => {
     const mod = await import('../../plugins/welcome-bot/index');
@@ -351,13 +376,13 @@ describe('welcome-bot — setup', () => {
 
   it('/config route kaydedilir', async () => {
     const ctx = makeCtx({});
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     expect(ctx.registerRoute).toHaveBeenCalledWith('GET', '/config', expect.any(Function));
   });
 
   it('/config route — config ve status döndürür', async () => {
     const ctx = makeCtx({ channelName: 'genel' });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const route = ctx._routes.find(r => r.path === '/config');
     const res = { json: jest.fn() };
     route!.handler({}, res);
@@ -367,13 +392,13 @@ describe('welcome-bot — setup', () => {
 
   it('member:joined hook kaydedilir', async () => {
     const ctx = makeCtx({});
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     expect(ctx.hooks.on).toHaveBeenCalledWith('member:joined', expect.any(Function));
   });
 
   it('yeni üye → hoş geldiniz mesajı emit edilir', async () => {
     const ctx = makeCtx({ channelName: 'genel' });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['member:joined'][0];
     await handler({
       userId:      'usr-5',
@@ -386,7 +411,7 @@ describe('welcome-bot — setup', () => {
 
   it('{username} template değişkeni yerine konulur', async () => {
     const ctx = makeCtx({ messageTemplate: 'Merhaba {username}!' });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['member:joined'][0];
     await handler({
       userId:      'usr-6',
@@ -394,14 +419,14 @@ describe('welcome-bot — setup', () => {
       displayName: 'Zeynep',
       username:    'zeynep',
     });
-    const emit = ctx._emitted.find(e => e.event === 'plugin:sendMessage');
+    const emit = requireEmitted(ctx._emitted, 'plugin:sendMessage');
     expect((emit!.payload as { content: string }).content).toContain('Zeynep');
   });
 
   it('kanal bulunamazsa sessizce geçer', async () => {
     const ctx = makeCtx({ channelName: 'genel' });
     (ctx.db.channels.find as jest.Mock).mockResolvedValueOnce([]); // boş liste
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['member:joined'][0];
     await expect(
       handler({ userId: 'u', serverId: 's', displayName: 'd', username: 'u' })
@@ -412,7 +437,7 @@ describe('welcome-bot — setup', () => {
   it('db hatası → error loglanır, fırlatılmaz', async () => {
     const ctx = makeCtx({});
     (ctx.db.channels.find as jest.Mock).mockRejectedValueOnce(new Error('db down'));
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['member:joined'][0];
     await expect(
       handler({ userId: 'u', serverId: 's', displayName: 'd', username: 'u' })
@@ -422,7 +447,7 @@ describe('welcome-bot — setup', () => {
 
   it('displayName boşsa username kullanılır', async () => {
     const ctx = makeCtx({ messageTemplate: 'Hoş geldin {username}!' });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['member:joined'][0];
     await handler({
       userId:      'usr-7',
@@ -430,7 +455,7 @@ describe('welcome-bot — setup', () => {
       displayName: '',
       username:    'tester',
     });
-    const emit = ctx._emitted.find(e => e.event === 'plugin:sendMessage');
+    const emit = requireEmitted(ctx._emitted, 'plugin:sendMessage');
     expect((emit!.payload as { content: string }).content).toContain('tester');
   });
 });
@@ -438,7 +463,10 @@ describe('welcome-bot — setup', () => {
 // ── auto-role testleri ──────────────────────────────────────────
 
 describe('auto-role — setup', () => {
-  let setup: (ctx: unknown) => Promise<void>;
+  // Eklenti `setup(ctx: PluginContext)` imzasini tasir; ikiz baglami da o
+  // sozlesmeye gore gecirilir. `(ctx: unknown)` yazmak, imza degisirse
+  // testin SESSIZCE eskimesi demekti.
+  let setup: (ctx: PluginContext) => Promise<void>;
 
   beforeAll(async () => {
     const mod = await import('../../plugins/auto-role/index');
@@ -457,19 +485,19 @@ describe('auto-role — setup', () => {
 
   it('roleId boşken pasif kalır — warn loglar', async () => {
     const ctx = makeAutoRoleCtx({ roleId: '' });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     expect(ctx.logger.warn).toHaveBeenCalled();
   });
 
   it('/config route kaydedilir', async () => {
     const ctx = makeAutoRoleCtx({ roleId: 'role-member' });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     expect(ctx.registerRoute).toHaveBeenCalledWith('GET', '/config', expect.any(Function));
   });
 
   it('/config route — roleId ve status döndürür', async () => {
     const ctx = makeAutoRoleCtx({ roleId: 'role-member', delayMs: 100 });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const route = ctx._routes.find(r => r.path === '/config');
     const res = { json: jest.fn() };
     route!.handler({}, res);
@@ -480,27 +508,27 @@ describe('auto-role — setup', () => {
 
   it('member:joined hook kaydedilir', async () => {
     const ctx = makeAutoRoleCtx({ roleId: 'role-member' });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     expect(ctx.hooks.on).toHaveBeenCalledWith('member:joined', expect.any(Function));
   });
 
   it('yeni üye → plugin:grantRole emit edilir', async () => {
     const ctx = makeAutoRoleCtx({ roleId: 'role-member' });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['member:joined'][0];
     await handler({ userId: 'usr-ar', serverId: 'srv-1', username: 'ahmet' });
 
     expect(ctx._emitted.some(e => e.event === 'plugin:grantRole')).toBe(true);
-    const emit = ctx._emitted.find(e => e.event === 'plugin:grantRole');
+    const emit = requireEmitted(ctx._emitted, 'plugin:grantRole');
     expect(emit!.payload).toEqual({ userId: 'usr-ar', serverId: 'srv-1', roleId: 'role-member' });
   });
 
   it('rol zaten atanmışsa emit yapılmaz', async () => {
     const ctx = makeAutoRoleCtx({ roleId: 'role-member' });
-    (ctx.db.members.findOne as jest.Mock).mockResolvedValue({
+    ctx.db.members.findOne.mockResolvedValue({
       userId: 'usr-ar', serverId: 'srv-1', roles: '["role-member"]',
     });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['member:joined'][0];
     await handler({ userId: 'usr-ar', serverId: 'srv-1', username: 'ahmet' });
     expect(ctx._emitted).toHaveLength(0);
@@ -509,7 +537,7 @@ describe('auto-role — setup', () => {
   it('delayMs > 0 ile assign gecikmeli çalışır', async () => {
     jest.useFakeTimers();
     const ctx = makeAutoRoleCtx({ roleId: 'role-delay', delayMs: 500 });
-    await setup(ctx);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['member:joined'][0];
     handler({ userId: 'usr-d', serverId: 'srv-1', username: 'delayed' });
     expect(ctx._emitted).toHaveLength(0);
@@ -520,8 +548,8 @@ describe('auto-role — setup', () => {
 
   it('üye bulunamazsa sessizce geçer', async () => {
     const ctx = makeAutoRoleCtx({ roleId: 'role-member' });
-    (ctx.db.members.findOne as jest.Mock).mockResolvedValue(null);
-    await setup(ctx);
+    ctx.db.members.findOne.mockResolvedValue(null);
+    await setup(asPluginContext(ctx));
     const handler = ctx._listeners['member:joined'][0];
     await expect(
       handler({ userId: 'u', serverId: 's', username: 'x' }),

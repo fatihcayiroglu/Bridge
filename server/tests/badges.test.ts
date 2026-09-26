@@ -1,13 +1,22 @@
 // server/tests/badges.test.ts
 // Rozet sistemi testleri
 
+import type { Application } from 'express';
 'use strict';
+
+// Bu suite görüntü işleme davranışını test etmiyor. ZIP Windows `sharp` native
+// binary'si taşıdığı için Linux doğrulamasında yalnız import sınırını izole et.
+jest.mock('sharp', () => ({ __esModule: true, default: jest.fn() }));
 
 import request from 'supertest';
 import { createTestApp, createTestUser, createAdminUser, loginUser } from './helpers/setup';
 
 describe('Badge System', () => {
-  let app, adminToken, userToken, userId, adminId;
+  let adminToken: string;
+  let userToken: string;
+  let userId: string;
+  let adminId: string;
+  let app: Application;
 
   beforeAll(async () => {
     app = await createTestApp();
@@ -33,7 +42,7 @@ describe('Badge System', () => {
 
       expect(Array.isArray(res.body)).toBe(true);
       expect(res.body.length).toBeGreaterThan(0);
-      const earlyAdopter = res.body.find(b => b.badge === 'early_adopter');
+      const earlyAdopter = res.body.find((b: Record<string, unknown>) => b.badge === 'early_adopter');
       expect(earlyAdopter).toBeDefined();
       expect(earlyAdopter).toHaveProperty('label');
       expect(earlyAdopter).toHaveProperty('icon');
@@ -101,7 +110,7 @@ describe('Badge System', () => {
         .set('Authorization', `Bearer ${userToken}`)
         .expect(200);
 
-      const badge = res.body.find(b => b.badge === 'early_adopter');
+      const badge = res.body.find((b: Record<string, unknown>) => b.badge === 'early_adopter');
       expect(badge).toBeDefined();
       expect(badge).toHaveProperty('icon');
       expect(badge).toHaveProperty('awardedAt');
@@ -130,7 +139,7 @@ describe('Badge System', () => {
         .get(`/api/users/${userId}/badges`)
         .set('Authorization', `Bearer ${userToken}`)
         .expect(200);
-      expect(res.body.find(b => b.badge === 'bug_hunter')).toBeUndefined();
+      expect(res.body.find((b: Record<string, unknown>) => b.badge === 'bug_hunter')).toBeUndefined();
     });
   });
 });

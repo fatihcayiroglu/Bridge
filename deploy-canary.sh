@@ -132,7 +132,7 @@ pm2 start "$ECOSYSTEM_FILE" --only "bridge-${TARGET_SLOT}" --env production
 
 # ── Health check ─────────────────────────────────────────────
 log_info "2/4 — Health check (port ${TARGET_PORT})..."
-HEALTH_URL="http://127.0.0.1:${TARGET_PORT}/api/health"
+HEALTH_URL="http://127.0.0.1:${TARGET_PORT}/api/health/ready"
 MAX_TRIES=15; SLEEP=2; PASS=false
 
 for i in $(seq 1 $MAX_TRIES); do

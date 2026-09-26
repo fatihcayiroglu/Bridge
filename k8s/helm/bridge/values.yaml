@@ -7,7 +7,12 @@ replicaCount: 2
 
 image:
   repository: bridge-app
-  tag: "latest"
+  # Final21 Faz 10: boş bırakılınca şablon `Chart.appVersion`ı kullanır
+  # (`deployment.yaml`: `.Values.image.tag | default .Chart.AppVersion`).
+  # Eskiden "latest" idi: değişken etiket, hangi sürümün çalıştığını belirsiz
+  # kılar, `IfNotPresent` ile düğümler FARKLI imajlar çalıştırabilir ve geri
+  # alma tekrarlanabilir değildir.
+  tag: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -30,6 +35,16 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/upgrade: "websocket"
     nginx.ingress.kubernetes.io/connection-upgrade: "Upgrade"
+    # Final21 Faz 10 — F21-10-01: Socket.IO uzun yoklama oturumları çok
+    # replikada AYNI pod'a gitmelidir. İki gerçek örnek önünde yapışkan olmayan
+    # vekille ÖLÇÜLDÜ: 25 sn'de hiç bağlanamadı (86 x "Session ID unknown").
+    # Ayrıntı: k8s/ingress.yaml.
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "bridge_route"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "172800"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: "Lax"
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
   hosts:
     - host: bridge.example.com
       paths:
@@ -77,9 +92,20 @@ affinity:
           topologyKey: kubernetes.io/hostname
 
 # ── Probes ────────────────────────────────────────────────────
+# Final21 Faz 22 (19-40): the server listens only after the schema bootstrap (runtime.ts:
+# _initSchema → seed → listen); on an EMPTY database that took 20–81 s here. Without a
+# startupProbe the liveness probe below restarts the pod after ~60 s on a first install.
+# The startup budget (30 × 10 s = 300 s) only defers liveness until the first success.
+startupProbe:
+  httpGet:
+    path: /api/health/live
+    port: 3001
+  periodSeconds: 10
+  failureThreshold: 30
+
 livenessProbe:
   httpGet:
-    path: /api/health
+    path: /api/health/live
     port: 3001
   initialDelaySeconds: 30
   periodSeconds: 15
@@ -127,6 +153,15 @@ postgresql:
     secretKeys:
       adminPasswordKey: postgres-password
       userPasswordKey: password
+  # Final21 Faz 19 — F21-10-04: PostgreSQL'e yalnızca Bridge pod'ları bağlanabilir (Bridge pod'u
+  # `bridge.io/postgresql-client: "true"` etiketini taşır). NetworkPolicy uygulayan bir CNI gerekir.
+  networkPolicy:
+    enabled: true
+    ingressRules:
+      primaryAccessOnlyFrom:
+        enabled: true
+        podSelector:
+          bridge.io/postgresql-client: "true"
   primary:
     persistence:
       enabled: true
@@ -142,8 +177,19 @@ postgresql:
 # ── Redis (bağımlılık — disable edip harici Redis de kullanılabilir) ──────────
 redis:
   enabled: true
+  # Final21 Faz 19 — F21-10-04: KİMLİK DOĞRULAMASIZ REDIS YOK. Redis hız sınırı, CSRF, oturum
+  # iptali ve soket durumunun yetkili deposudur; parolasız bir Redis ad alanındaki her pod'a
+  # bu durumu sıfırlama/yazma imkânı verir. Parola var olan bir Secret'tan okunur:
+  #   kubectl create secret generic bridge-redis-secret --from-literal=redis-password="$(openssl rand -hex 32)"
   auth:
-    enabled: false
+    enabled: true
+    existingSecret: bridge-redis-secret
+    existingSecretPasswordKey: redis-password
+  # Yalnızca `<release>-redis-client: "true"` etiketli pod'lar bağlanabilir; Bridge pod'u bu
+  # etiketi taşır (templates/deployment.yaml). NetworkPolicy uygulayan bir CNI gerekir.
+  networkPolicy:
+    enabled: true
+    allowExternal: false
   master:
     persistence:
       enabled: true
@@ -178,7 +224,7 @@ podSecurityContext:
 
 securityContext:
   allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: false
+  readOnlyRootFilesystem: true
   capabilities:
     drop:
       - ALL

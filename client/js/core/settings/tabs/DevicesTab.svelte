@@ -3,6 +3,9 @@
 <!-- Sprint 54: DevicesTab tamamlandı.                 -->
 
 <script lang="ts">
+  import { t } from '../../i18n/reactive.svelte.ts';
+  import { createLogger } from '../../logger.ts';
+  const log = createLogger('DevicesTab');
   import type { SettingsStore } from '../stores/settingsStore';
   let { store }: { store: SettingsStore } = $props();
 
@@ -19,14 +22,24 @@
   let selCameraId:   string = $state(localStorage.getItem('bridge:device:camera')   ?? '');
 
   // Ses ayarları
-  let inputVolume:   number = $state(Number(localStorage.getItem('bridge:device:inputVol'))  || 100);
-  let outputVolume:  number = $state(Number(localStorage.getItem('bridge:device:outputVol')) || 100);
+  function storedVolume(key: string): number {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return 100;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 && value <= 200 ? value : 100;
+  }
+
+  // `Number(value) || 100` made the valid 0% setting reload as 100%.
+  let inputVolume:   number = $state(storedVolume('bridge:device:inputVol'));
+  let outputVolume:  number = $state(storedVolume('bridge:device:outputVol'));
   let noiseSuppression = $state(localStorage.getItem('bridge:device:noise') !== 'false');
   let echoCancellation = $state(localStorage.getItem('bridge:device:echo')  !== 'false');
 
   // Test
   let testing = $state(false);
   let testStream: MediaStream | null = null;
+  let testTimer: ReturnType<typeof setTimeout> | null = null;
+  let testRequest = 0;
 
   // Kaydet
   let saving = $state(false);
@@ -46,39 +59,48 @@
       audioOutputs = devices.filter(d => d.kind === 'audiooutput');
       videoInputs  = devices.filter(d => d.kind === 'videoinput');
     } catch {
-      permError = 'Mikrofon iznine ihtiyaç duyuluyor. Tarayıcı izinlerini kontrol edin.';
+      permError = t("ui_mikrofon_iznine_ihtiyac_duyuluyor_tarayici_izinlerin", "Mikrofon iznine ihtiyaç duyuluyor. Tarayıcı izinlerini kontrol edin.");
     } finally {
       loading = false;
     }
   }
 
   // ── Mikrofon testi ────────────────────────────────────────────────────────
+  function stopMicTest(): void {
+    testRequest += 1;
+    if (testTimer !== null) clearTimeout(testTimer);
+    testTimer = null;
+    testStream?.getTracks().forEach(t => t.stop());
+    testStream = null;
+    testing = false;
+  }
+
   async function toggleMicTest() {
-    if (testing) {
-      testStream?.getTracks().forEach(t => t.stop());
-      testStream = null;
-      testing    = false;
-      return;
-    }
+    if (testing) { stopMicTest(); return; }
+    const request = ++testRequest;
     try {
-      testing    = true;
-      testStream = await navigator.mediaDevices.getUserMedia({
+      testing = true;
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           deviceId:       selMicId ? { exact: selMicId } : undefined,
           noiseSuppression,
           echoCancellation,
         },
       });
+
+      // A stop/unmount can happen while the permission prompt is pending.
+      // Never retain a stream acquired for an obsolete request.
+      if (request !== testRequest || !testing) {
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+      testStream = stream;
       // 5 saniye sonra otomatik durdur
-      setTimeout(() => {
-        if (testing) {
-          testStream?.getTracks().forEach(t => t.stop());
-          testStream = null;
-          testing    = false;
-        }
+      testTimer = setTimeout(() => {
+        if (testStream === stream) stopMicTest();
       }, 5000);
     } catch {
-      testing = false;
+      if (request === testRequest) stopMicTest();
     }
   }
 
@@ -90,42 +112,41 @@
     saved  = false;
     error  = null;
     try {
-      const ok = await store.save({
-        deviceMicId:         selMicId,
-        deviceSpeakerId:     selSpeakerId,
-        deviceCameraId:      selCameraId,
-        deviceInputVolume:   inputVolume,
-        deviceOutputVolume:  outputVolume,
-        deviceNoiseSuppression: noiseSuppression,
-        deviceEchoCancellation: echoCancellation,
+      // Device choices are browser-local preferences. Sending them through
+      // SettingsStore.save() could never succeed because PATCH /api/me only
+      // accepts profile/privacy fields. Persist locally, then publish the
+      // already-committed preference to the active voice owner.
+      const preferences: Array<[string, string, unknown]> = [
+        ['bridge:device:mic', 'micDeviceId', selMicId],
+        ['bridge:device:speaker', 'speakerDeviceId', selSpeakerId],
+        ['bridge:device:camera', 'cameraDeviceId', selCameraId],
+        ['bridge:device:inputVol', 'inputVolume', inputVolume],
+        ['bridge:device:outputVol', 'outputVolume', outputVolume],
+        ['bridge:device:noise', 'noiseSuppression', noiseSuppression],
+        ['bridge:device:echo', 'echoCancellation', echoCancellation],
+      ];
+      for (const [storageKey, storeKey, value] of preferences) {
+        localStorage.setItem(storageKey, String(value));
+        store.setDevicePreference(storeKey, value);
+      }
+
+      // BridgeRegistry üzerinden aktif ses oturumuna bildir
+      const reg = (window as unknown as {
+        BridgeRegistry?: { call?: (m: string, data: unknown) => void }
+      }).BridgeRegistry;
+      reg?.call?.('voice:applyDeviceSettings', {
+        micDeviceId:    selMicId,
+        noiseSuppression,
+        echoCancellation,
+        inputVolume,
+        outputVolume,
       });
 
-      if (ok) {
-        localStorage.setItem('bridge:device:mic',       selMicId);
-        localStorage.setItem('bridge:device:speaker',   selSpeakerId);
-        localStorage.setItem('bridge:device:camera',    selCameraId);
-        localStorage.setItem('bridge:device:inputVol',  String(inputVolume));
-        localStorage.setItem('bridge:device:outputVol', String(outputVolume));
-        localStorage.setItem('bridge:device:noise',     String(noiseSuppression));
-        localStorage.setItem('bridge:device:echo',      String(echoCancellation));
-
-        // BridgeRegistry üzerinden aktif ses oturumuna bildir
-        const reg = (window as unknown as {
-          BridgeRegistry?: { call?: (m: string, data: unknown) => void }
-        }).BridgeRegistry;
-        reg?.call?.('voice:applyDeviceSettings', {
-          micDeviceId:    selMicId,
-          noiseSuppression,
-          echoCancellation,
-          inputVolume,
-          outputVolume,
-        });
-
-        saved = true;
-        setTimeout(() => { saved = false; }, 2000);
-      } else {
-        error = store.error ?? 'Kaydedilemedi';
-      }
+      saved = true;
+      setTimeout(() => { saved = false; }, 2000);
+    } catch (cause) {
+      log.error('Cihaz tercihleri kaydedilemedi', cause);
+      error = t('dev_save_failed', 'Cihaz tercihleri kaydedilemedi. Tekrar dene.');
     } finally {
       saving = false;
     }
@@ -133,49 +154,54 @@
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
   import { onMount, onDestroy } from 'svelte';
+  // GIRIS HASSASIYETI — VAD esikleri sabit kodluydu, kullanicinin
+  // yapabilecegi hicbir sey yoktu. Mevcut VAD hattini kullanir; ikinci bir
+  // ses yolu acmaz.
+  import InputSensitivityControl from '../../voice/InputSensitivityControl.svelte';
+  import PushToTalkControl from '../../voice/PushToTalkControl.svelte';
 
   onMount(() => { loadDevices(); });
 
   onDestroy(() => {
-    testStream?.getTracks().forEach(t => t.stop());
+    stopMicTest();
   });
 </script>
 
 <section aria-labelledby="devices-heading">
-  <h2 id="devices-heading" class="section-title">Ses &amp; Video Cihazları</h2>
+  <h2 id="devices-heading" class="section-title">{t('dev_audio_video', 'Ses &amp; Video Cihazları')}</h2>
 
   {#if loading}
-    <p class="status-text">Cihazlar yükleniyor…</p>
+    <p class="status-text">{t('dev_loading', 'Cihazlar yükleniyor…')}</p>
   {:else if permError}
     <div class="perm-error" role="alert">
       <span class="perm-icon">🎙️</span>
       <p>{permError}</p>
-      <button class="btn btn--secondary" onclick={loadDevices}>Tekrar Dene</button>
+      <button class="btn btn--secondary" onclick={loadDevices}>{t('retry')}</button>
     </div>
   {:else}
 
     <!-- ── Giriş cihazı ─────────────────────────────────────────────────── -->
     <div class="field-group">
-      <label class="field-label" for="mic-select">Mikrofon</label>
+      <label class="field-label" for="mic-select">{t('tip_mic')}</label>
       <div class="device-row">
         <select id="mic-select" class="field-select" bind:value={selMicId}>
-          <option value="">Sistem Varsayılanı</option>
+          <option value="">{t('dev_system_default', 'Sistem Varsayılanı')}</option>
           {#each audioInputs as d (d.deviceId)}
-            <option value={d.deviceId}>{d.label || `Mikrofon ${audioInputs.indexOf(d) + 1}`}</option>
+            <option value={d.deviceId}>{d.label || t('device_mic_fallback', undefined, { number: audioInputs.indexOf(d) + 1 })}</option>
           {/each}
         </select>
         <button
           class="btn btn--test"
           class:btn--testing={testing}
-          aria-label={testing ? 'Testi durdur' : 'Mikrofonu test et'}
+          aria-label={testing ? t('device_stop_test') : t('device_test_mic')}
           onclick={toggleMicTest}
         >
-          {testing ? '⏹ Durdur' : '▶ Test'}
+          {testing ? `⏹ ${t('device_stop_test')}` : `▶ ${t('markup_test_640ab2b')}`}
         </button>
       </div>
 
       <div class="volume-row">
-        <label class="vol-label" for="input-vol">Giriş Ses: {inputVolume}%</label>
+        <label class="vol-label" for="input-vol">{t("ui_input_volume", undefined, { value: inputVolume })}</label>
         <input
           id="input-vol"
           type="range" min="0" max="200"
@@ -185,18 +211,23 @@
       </div>
     </div>
 
+    <InputSensitivityControl />
+
+    <!-- Bas-konuş: kanonik `VoicePTTController`a erişilebilir yüzey. -->
+    <PushToTalkControl />
+
     <!-- ── Çıkış cihazı ─────────────────────────────────────────────────── -->
     <div class="field-group">
-      <label class="field-label" for="speaker-select">Hoparlör</label>
+      <label class="field-label" for="speaker-select">{t('dev_speaker', 'Hoparlör')}</label>
       <select id="speaker-select" class="field-select" bind:value={selSpeakerId}>
-        <option value="">Sistem Varsayılanı</option>
+        <option value="">{t('dev_system_default', 'Sistem Varsayılanı')}</option>
         {#each audioOutputs as d (d.deviceId)}
-          <option value={d.deviceId}>{d.label || `Hoparlör ${audioOutputs.indexOf(d) + 1}`}</option>
+          <option value={d.deviceId}>{d.label || t('device_speaker_fallback', undefined, { number: audioOutputs.indexOf(d) + 1 })}</option>
         {/each}
       </select>
 
       <div class="volume-row">
-        <label class="vol-label" for="output-vol">Çıkış Ses: {outputVolume}%</label>
+        <label class="vol-label" for="output-vol">{t("ui_output_volume", undefined, { value: outputVolume })}</label>
         <input
           id="output-vol"
           type="range" min="0" max="200"
@@ -209,11 +240,11 @@
     <!-- ── Kamera ─────────────────────────────────────────────────────────── -->
     {#if videoInputs.length > 0}
       <div class="field-group">
-        <label class="field-label" for="camera-select">Kamera</label>
+        <label class="field-label" for="camera-select">{t('voice_camera')}</label>
         <select id="camera-select" class="field-select" bind:value={selCameraId}>
-          <option value="">Sistem Varsayılanı</option>
+          <option value="">{t('dev_system_default', 'Sistem Varsayılanı')}</option>
           {#each videoInputs as d (d.deviceId)}
-            <option value={d.deviceId}>{d.label || `Kamera ${videoInputs.indexOf(d) + 1}`}</option>
+            <option value={d.deviceId}>{d.label || t('device_camera_fallback', undefined, { number: videoInputs.indexOf(d) + 1 })}</option>
           {/each}
         </select>
       </div>
@@ -221,18 +252,18 @@
 
     <!-- ── Gelişmiş ses ───────────────────────────────────────────────────── -->
     <div class="advanced-section">
-      <p class="field-label">Gelişmiş Ses İşleme</p>
+      <p class="field-label">{t('dev_advanced_audio', 'Gelişmiş Ses İşleme')}</p>
 
       <div class="toggle-row">
         <div class="toggle-info">
-          <span class="toggle-title">Gürültü Bastırma</span>
-          <span class="toggle-desc">Arka plan sesini azalt</span>
+          <span class="toggle-title">{t('dev_noise_suppress', 'Gürültü Bastırma')}</span>
+          <span class="toggle-desc">{t('markup_arka_plan_sesini_azalt_e9f0898', "Arka plan sesini azalt")}</span>
         </div>
         <button
           class="toggle-btn"
           class:on={noiseSuppression}
           aria-pressed={noiseSuppression}
-          aria-label="Gürültü bastırmayı {noiseSuppression ? 'kapat' : 'aç'}"
+          aria-label={t('dev_noise_toggle', 'Gürültü bastırmayı {state}', { state: noiseSuppression ? t('common_off', 'kapat') : t('common_on', 'aç') })}
           onclick={() => { noiseSuppression = !noiseSuppression; }}
         >
           <span class="toggle-knob"></span>
@@ -241,14 +272,14 @@
 
       <div class="toggle-row">
         <div class="toggle-info">
-          <span class="toggle-title">Eko Giderme</span>
-          <span class="toggle-desc">Hoparlör yankısını temizle</span>
+          <span class="toggle-title">{t('markup_eko_giderme_29af580', "Eko Giderme")}</span>
+          <span class="toggle-desc">{t('dev_echo_clean', 'Hoparlör yankısını temizle')}</span>
         </div>
         <button
           class="toggle-btn"
           class:on={echoCancellation}
           aria-pressed={echoCancellation}
-          aria-label="Eko gidermeyi {echoCancellation ? 'kapat' : 'aç'}"
+          aria-label={t('dev_echo_toggle', 'Eko gidermeyi {state}', { state: echoCancellation ? t('common_off', 'kapat') : t('common_on', 'aç') })}
           onclick={() => { echoCancellation = !echoCancellation; }}
         >
           <span class="toggle-knob"></span>
@@ -265,15 +296,15 @@
         onclick={save}
       >
         {#if saving}
-          Kaydediliyor…
+          {t('ui_saving')}
         {:else if saved}
-          ✓ Kaydedildi
+          ✓ {t('ui_saved')}
         {:else}
-          Kaydet
+          {t('save')}
         {/if}
       </button>
       <button class="btn btn--secondary" onclick={loadDevices}>
-        ↺ Cihazları Yenile
+        {t('markup_cihazlari_yenile_6007b50', "↺ Cihazları Yenile")}
       </button>
       {#if error}
         <span class="field-error" role="alert">{error}</span>
@@ -293,8 +324,8 @@
   .status-text { color: var(--text-muted, #6d6f78); font-size: 14px; }
 
   .perm-error {
-    background: rgba(237,66,69,0.1);
-    border: 1px solid rgba(237,66,69,0.3);
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
     border-radius: 8px;
     padding: 16px;
     display: flex;
@@ -319,9 +350,9 @@
   .field-select {
     flex: 1;
     padding: 10px 36px 10px 12px;
-    border: 1px solid var(--border, rgba(255,255,255,0.1));
+    border: 1px solid var(--border, color-mix(in srgb, var(--text-primary) 10%, transparent));
     border-radius: 6px;
-    background: var(--bg-input, rgba(0,0,0,0.2));
+    background: var(--bg-input);
     color: var(--text-primary, #e4e6eb);
     font-size: 14px;
     outline: none;
@@ -369,7 +400,7 @@
     align-items: center;
     justify-content: space-between;
     padding: 14px 0;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
+    border-bottom: 1px solid color-mix(in srgb, var(--text-primary) 6%, transparent);
   }
 
   .toggle-info  { display: flex; flex-direction: column; gap: 2px; }
@@ -379,7 +410,7 @@
   .toggle-btn {
     position: relative; width: 44px; height: 24px;
     border: none; border-radius: 12px;
-    background: var(--bg-input, rgba(0,0,0,0.3));
+    background: var(--bg-input);
     cursor: pointer; transition: background 0.2s; flex-shrink: 0;
   }
 
@@ -388,7 +419,7 @@
   .toggle-knob {
     position: absolute; top: 2px; left: 2px;
     width: 20px; height: 20px; border-radius: 50%;
-    background: #fff; transition: transform 0.2s;
+    background: var(--text-on-solid); transition: transform 0.2s;
   }
 
   .toggle-btn.on .toggle-knob { transform: translateX(20px); }
@@ -403,32 +434,32 @@
   }
 
   .btn--primary {
-    background: var(--brand, #2d9cdb); color: #fff;
+    background: var(--brand, #2d9cdb); color: var(--text-on-solid);
   }
 
   .btn--primary:disabled { opacity: 0.45; cursor: not-allowed; }
   .btn--primary:not(:disabled):hover { background: var(--brand-hover, #677bc4); }
-  .btn--saved { background: #3ba55d !important; }
+  .btn--saved { background: var(--success) !important; }
 
   .btn--secondary {
-    background: var(--bg-secondary, rgba(255,255,255,0.07));
+    background: var(--bg-secondary, color-mix(in srgb, var(--text-primary) 7%, transparent));
     color: var(--text-secondary, #b0b3bb);
   }
 
-  .btn--secondary:hover { background: rgba(255,255,255,0.12); }
+  .btn--secondary:hover { background: color-mix(in srgb, var(--text-primary) 12%, transparent); }
 
   .btn--test {
-    background: var(--bg-secondary, rgba(255,255,255,0.07));
+    background: var(--bg-secondary, color-mix(in srgb, var(--text-primary) 7%, transparent));
     color: var(--text-secondary, #b0b3bb);
     white-space: nowrap;
     padding: 10px 14px;
   }
 
-  .btn--testing { background: rgba(237,66,69,0.2); color: #ed4245; }
+  .btn--testing { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
 
   .field-error {
     font-size: 13px;
-    color: #ed4245;
+    color: var(--danger);
     align-self: center;
   }
 </style>

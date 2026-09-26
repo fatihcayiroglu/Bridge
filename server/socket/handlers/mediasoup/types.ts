@@ -284,7 +284,7 @@ export interface BridgeSocket extends Socket {
  * Tam Server tipi için: import type { Server } from 'socket.io'
  */
 export interface BridgeIO {
-  to(room: string): {
+  to(room: string | string[]): {
     emit(event: string, data: unknown): boolean | void;
   };
 }

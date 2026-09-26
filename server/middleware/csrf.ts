@@ -32,34 +32,29 @@ const EXEMPT_PATHS = new Set([
   '/e2e',
 ]);
 
-// ── Bot token in-memory cache (LRU) ──────────────────────────
-// Sprint 89: FIFO → LRU ile değiştirildi.
-//
-// Önceki FIFO sorun: saldırgan 10.000 farklı sahte token göndererek cache'i
-// doldurabilir; Map.keys().next() ile en eski gerçek token evict edilirdi.
-// LRU çözümü: her get/set'te entry silinip yeniden eklenerek "en son kullanılan"
-// başa taşınır. Evict sırasında daima en uzun süredir kullanılmayan atılır —
-// aktif botların token'larını cache'den düşürmek için 10.001 unique sahte token
-// göndermek artık yetmez.
-//
-// TTL: 60s — revoking a bot token takes effect within 1 minute.
-// Max: 1 000 entries (yeterli — aktif bot sayısı genelde çok düşük).
-// Negative caching: geçersiz token'lar da 60s saklanır ama LRU ile evict edilir.
+// ── Bot token NEGATIVE cache (LRU) ──────────────────────────
+// Yalnızca GEÇERSİZ token hash'leri kısa süre cache'lenir. Pozitif doğrulama
+// security/revocation boundary'dir ve her CSRF bypass denemesinde canonical DB
+// kaydından yeniden okunur; aksi halde revoke edilmiş bir bot token bu worker'da
+// TTL boyunca CSRF bypass etmeye devam ederdi. Negative cache sahte-token flood
+// maliyetini bounded tutar ve yeni/yeniden etkinleştirilen token için en fazla
+// kısa süreli availability etkisi yaratır; privilege uzatmaz.
+// TTL: 60s, Max: 1 000 entries.
 const BOT_TOKEN_CACHE_TTL_MS = 60_000;
 const BOT_TOKEN_CACHE_MAX    = 1_000;
-const _botTokenCache = new Map<string, { valid: boolean; expiresAt: number }>();
+const _botTokenCache = new Map<string, { expiresAt: number }>();
 
-function _getBotTokenCached(hash: string): boolean | undefined {
+function _isBotTokenNegativeCached(hash: string): boolean {
   const entry = _botTokenCache.get(hash);
-  if (!entry) return undefined;
-  if (Date.now() > entry.expiresAt) { _botTokenCache.delete(hash); return undefined; }
+  if (!entry) return false;
+  if (Date.now() > entry.expiresAt) { _botTokenCache.delete(hash); return false; }
   // LRU: erişilen entry'yi sona taşı (Map insertion order)
   _botTokenCache.delete(hash);
   _botTokenCache.set(hash, entry);
-  return entry.valid;
+  return true;
 }
 
-function _setBotTokenCached(hash: string, valid: boolean): void {
+function _cacheInvalidBotToken(hash: string): void {
   // LRU eviction: en az kullanılan (Map'in ilk elemanı) atılır.
   // Sahte token flood'u aktif botları evict edemez; gerçek botlar yakın zamanda
   // kullanıldığı için sona taşınmış olur.
@@ -67,7 +62,7 @@ function _setBotTokenCached(hash: string, valid: boolean): void {
     const lruKey = _botTokenCache.keys().next().value;
     if (lruKey !== undefined) _botTokenCache.delete(lruKey);
   }
-  _botTokenCache.set(hash, { valid, expiresAt: Date.now() + BOT_TOKEN_CACHE_TTL_MS });
+  _botTokenCache.set(hash, { expiresAt: Date.now() + BOT_TOKEN_CACHE_TTL_MS });
 }
 
 /**
@@ -79,19 +74,18 @@ function _setBotTokenCached(hash: string, valid: boolean): void {
 async function _verifyBotToken(token: string): Promise<boolean> {
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
 
-  // 1. Cache hit — no DB round-trip
-  const cached = _getBotTokenCached(tokenHash);
-  if (cached !== undefined) return cached;
+  // Only negative results are cached. A previously-valid token is always
+  // re-read so revocation/disablement takes effect immediately on this node.
+  if (_isBotTokenNegativeCached(tokenHash)) return false;
 
-  // 2. Cache miss — query DB, then cache result
   try {
     const { default: db } = await import('../db/loader');
     const bot = await (db as unknown as {
       bots: { findOne(q: Record<string, unknown>): Promise<Record<string, unknown> | null> }
-    }).bots.findOne({ tokenHash });
-    const valid = bot !== null;
-    _setBotTokenCached(tokenHash, valid);
-    return valid;
+    }).bots.findOne({ tokenHash, active: true });
+    if (bot !== null) return true;
+    _cacheInvalidBotToken(tokenHash);
+    return false;
   } catch {
     // DB erişimi başarısız → güvenli taraf: bypass izin verme.
     // Cache'e yazmıyoruz — geçici bir DB hatası kalıcı olarak negatif önbelleğe alınmamalı.
@@ -130,7 +124,14 @@ export async function csrfMiddleware(req: Request, res: Response, next: NextFunc
     return;
   }
 
-  if (!await verifyCsrfToken(userId, token)) {
+  let csrfValid: boolean;
+  try {
+    csrfValid = await verifyCsrfToken(userId, token);
+  } catch {
+    res.status(503).json({ error: 'CSRF security state unavailable' });
+    return;
+  }
+  if (!csrfValid) {
     res.status(403).json({ error: 'CSRF token invalid or expired' });
     return;
   }
@@ -162,7 +163,14 @@ export async function enforceApiCsrf(req: Request, res: Response, next: NextFunc
 
   const token = req.headers['x-csrf-token'] as string | undefined;
   if (!token) { res.status(403).json({ error: 'CSRF token missing' }); return; }
-  if (!await verifyCsrfToken((decoded as { id: string }).id, token)) {
+  let csrfValid: boolean;
+  try {
+    csrfValid = await verifyCsrfToken((decoded as { id: string }).id, token);
+  } catch {
+    res.status(503).json({ error: 'CSRF security state unavailable' });
+    return;
+  }
+  if (!csrfValid) {
     res.status(403).json({ error: 'CSRF token invalid or expired' });
     return;
   }

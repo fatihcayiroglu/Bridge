@@ -3,7 +3,7 @@
 # ADR-0008 CI Guard — Servis katmanı Svelte import etmemeli
 #
 # Sprint 108
-# CI: lint-and-typecheck job'ında çalışır
+# CI: quality-gate.yml → typecheck-build işinde çalışır (Faz 16: önceden HİÇBİR iş çağırmıyordu)
 
 set -euo pipefail
 

@@ -26,7 +26,7 @@ const {
   BridgeBot,
   EmbedBuilder: BridgeEmbed,
   ButtonBuilder: BridgeButton,
-} = require('../bot-sdk/src/index.js') as {
+} = require('bridge-bot-sdk') as {
   BridgeBot: new (opts: BridgeBotOptions) => BridgeBotInstance;
   EmbedBuilder: new () => BridgeEmbedInstance;
   ButtonBuilder: new () => unknown;

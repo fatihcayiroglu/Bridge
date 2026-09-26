@@ -1,6 +1,6 @@
 // server/tests/stats.test.ts
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => {
@@ -23,8 +23,8 @@ jest.mock('../db/repositories/StatsRepository.js', () => {
       getServerStats: jest.fn(async (serverId) => {
         const now = Date.now();
         const messages = await db.messages.find({ serverId });
-        const recent7 = messages.filter((message) => Number(message.createdAt || 0) > now - 7 * 86400_000);
-        const recent30 = messages.filter((message) => Number(message.createdAt || 0) > now - 30 * 86400_000);
+        const recent7 = messages.filter((message: Record<string, unknown>) => Number(message.createdAt || 0) > now - 7 * 86400_000);
+        const recent30 = messages.filter((message: Record<string, unknown>) => Number(message.createdAt || 0) > now - 30 * 86400_000);
 
         const users = new Map();
         const channels = new Map();
@@ -50,8 +50,8 @@ jest.mock('../db/repositories/StatsRepository.js', () => {
           memberCount: await db.members.count({ serverId }),
           channelCount: await db.channels.count({ serverId }),
           totalMessages: messages.length,
-          activeUsers7d: new Set(recent7.map((message) => message.userId)).size,
-          activeUsers30d: new Set(recent30.map((message) => message.userId)).size,
+          activeUsers7d: new Set(recent7.map((message: Record<string, unknown>) => message.userId)).size,
+          activeUsers30d: new Set(recent30.map((message: Record<string, unknown>) => message.userId)).size,
           topUsers: [...users.values()].sort((a, b) => b.msgCount - a.msgCount).slice(0, 10),
           channelBreakdown: [...channels.values()].sort((a, b) => b.msgCount - a.msgCount).slice(0, 15),
         };
@@ -67,6 +67,7 @@ const db      = require('../db/loader');
 const jwt     = require('jsonwebtoken');
 import { authMiddleware } from '../middleware/auth';
 import statsRouter from '../routes/stats';
+import { PERMS } from '../lib/permissions';
 
 function buildApp() {
   const app = express();
@@ -74,11 +75,18 @@ function buildApp() {
   app.use('/api/servers', authMiddleware, statsRouter);
   return app;
 }
-function tok(uid, v = 0) { return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string, v = 0) { return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 describe('Stats Routes', () => {
-  let app, ownerId, strangerId, memberId, serverId, channelId;
-  let ownerToken, strangerToken, memberToken;
+  let app: express.Express;
+  let ownerId: string;
+  let strangerId: string;
+  let memberId: string;
+  let serverId: string;
+  let channelId: string;
+  let ownerToken: string;
+  let strangerToken: string;
+  let memberToken: string;
 
   beforeEach(async () => {
     db._reset?.();
@@ -113,11 +121,41 @@ describe('Stats Routes', () => {
       expect(res.body).toHaveProperty('topUsers');
     });
 
-    it('returns 200 for any server member (not just owner)', async () => {
+    it('SIRADAN üye 403 alır — istatistikler MANAGE_SERVER gerektirir', async () => {
+      // ── POLİTİKA DEĞİŞTİ ─────────────────────────────────────────────────
+      // Bu test eskiden "herhangi bir üye 200 alır" diyordu. `requireStatsAccess`
+      // (routes/stats.ts:75-80) artık üyeliğe EK OLARAK MANAGE_SERVER istiyor.
+      //
+      // Bu bir gizlilik sıkılaştırmasıdır: sunucu istatistikleri en aktif
+      // kullanıcıları, mesaj hacmini ve üye büyümesini açığa çıkarır — sıradan
+      // bir üyenin görmesi gereken veri değil, moderasyon verisidir.
+      //
+      // Eski iddia korunsaydı, doğru olan kısıtlama "başarısız test" gibi
+      // görünür ve geri alınmaya davet ederdi.
       const res = await request(app)
         .get(`/api/servers/${serverId}/stats`)
         .set('Authorization', `Bearer ${memberToken}`);
+      expect(res.status).toBe(403);
+    });
+
+    it('MANAGE_SERVER rolü olan üye 200 alır (sahip olmasa bile)', async () => {
+      // Ayrım: yukarıdaki iddia, uç nokta HERKESE kapalı olsa da geçerdi.
+      // Bu test yetkinin sahiplikten DEĞİL rolden gelebildiğini kanıtlar.
+      await db.roles.insert({
+        _id: 'role-mod', serverId, name: 'Moderator',
+        permissions: PERMS.MANAGE_SERVER, position: 5, createdAt: Date.now(),
+      });
+      await db.members.update(
+        { userId: memberId, serverId },
+        { $set: { roles: ['role-mod'] } },
+      );
+
+      const res = await request(app)
+        .get(`/api/servers/${serverId}/stats`)
+        .set('Authorization', `Bearer ${memberToken}`);
+
       expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('memberCount');
     });
 
     it('returns 403 for non-member', async () => {
@@ -206,5 +244,16 @@ describe('Stats Routes', () => {
       expect(res.body.topUsers.length).toBeLessThanOrEqual(10);
     });
   });
+  describe('strict analytics query parsing', () => {
+    it.each(['-1', '0', '1.5', '10oops', '9007199254740992'])('rejects malformed days=%s', async (days) => {
+      for (const suffix of ['stats/growth', 'stats/export.csv']) {
+        const res = await request(app)
+          .get(`/api/servers/${serverId}/${suffix}?days=${encodeURIComponent(days)}`)
+          .set('Authorization', `Bearer ${ownerToken}`);
+        expect(res.status).toBe(400);
+      }
+    });
+  });
+
 });
 

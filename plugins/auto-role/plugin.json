@@ -10,5 +10,9 @@
     "roleId": "",
     "delayMs": 0
   },
-  "main": "index.ts"
+  "main": "index.ts",
+  "permissions": [
+    "members:read",
+    "roles:assign"
+  ]
 }

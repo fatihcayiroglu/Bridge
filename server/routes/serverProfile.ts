@@ -68,7 +68,8 @@
 import express from 'express';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router     = express.Router();
-import { Servers, Members, Channels, Users } from '../db/repositories';
+import { Servers, Members, Channels } from '../db/repositories';
+import { Boosts } from '../db/repositories/BoostRepository.js';
 import { authMiddleware} from '../middleware/auth';
 import { limits } from '../middleware/rateLimit';
 import { isUserOnline } from '../lib/presenceCache';
@@ -86,9 +87,16 @@ function slugify(name: string): string {
 
 // ── GET /api/servers/:sid/slug ────────────────────────────────
 router.get('/:sid/slug', authMiddleware, async (req, res) => {
+  const _u = castAuthed(req).user;
   const server = await Servers.findById(String(req.params.sid ?? ''));
   if (!server) return res.status(404).json({ error: 'Not found' });
-  res.json({ slug: server.slug || null });
+  // This is the settings API, not the public vanity resolver. Revealing the
+  // slug from a private server ID would disclose a public capability to any
+  // authenticated account. Keep settings reads aligned with the owner-only PUT.
+  if (server.ownerId !== _u.id) return res.status(403).json({ error: 'Sadece sunucu sahibi görüntüleyebilir' });
+  // API sözleşmesi alan adı `slug`tur; VERİTABANI kolonu `vanityUrl`.
+  // (`servers.slug` diye bir kolon YOKTUR — canlı şemadan doğrulandı.)
+  res.json({ slug: server.vanityUrl || null });
 });
 
 // ── PUT /api/servers/:sid/slug ────────────────────────────────
@@ -101,33 +109,60 @@ router.put('/:sid/slug', authMiddleware, limits.write(), async (req, res) => {
   let slug = String(req.body.slug || '').trim();
   if (!slug) {
     // Boş gönderilirse sunucu adından otomatik üret
-    slug = slugify(server.name);
+    // `servers.name` semada ZORUNLU DEGIL. `slugify(undefined)` calisma
+    // aninda `name.toLowerCase()` uzerinde TypeError -> 500 uretirdi. Bos
+    // stringe dusmek asagidaki `slug.length < 2` kontrolune takilir ve
+    // cagirana dogru 400 doner.
+    slug = slugify(server.name ?? '');
   } else {
     slug = slugify(slug);
   }
   if (slug.length < 2) return res.status(400).json({ error: 'Slug en az 2 karakter olmalı' });
 
-  // Benzersizlik kontrolü
-  const existing = await Servers.findOne({ slug });
-  if (existing && existing._id !== server._id) {
-    return res.status(409).json({ error: 'Bu slug kullanımda. Başka bir isim dene.' });
+  // `slug` ve `/vanity` aynı fiziksel `servers.vanityUrl` alanını yönetir.
+  // Entitlement, ownership ve uniqueness bu yüzden TEK atomik owner'dan
+  // geçmelidir; aksi halde bu eski API Level-3 boost şartını bypass eder.
+  if (!/^[a-z0-9-]{3,32}$/.test(slug)) {
+    return res.status(400).json({ error: 'Slug 3–32 karakter, yalnız harf/rakam/tire olmalı' });
   }
+  const RESERVED = new Set(['api', 'admin', 'login', 'register', 'discover', 'app', 'bridge', 'invite', 'support']);
+  if (RESERVED.has(slug)) return res.status(400).json({ error: 'Bu slug rezerve' });
 
-  await Servers.update(server._id, { slug });
+  const result = await Boosts.mutateVanityAtomic(server._id, _u.id, slug);
+  if (result === 'not_found') return res.status(404).json({ error: 'Not found' });
+  if (result === 'forbidden') return res.status(403).json({ error: 'Sadece sunucu sahibi değiştirebilir' });
+  if (result === 'boost_required') {
+    return res.status(403).json({ error: 'Vanity URL requires Boost Level 3', code: 'BOOST_REQUIRED' });
+  }
+  if (result === 'conflict') return res.status(409).json({ error: 'Bu slug kullanımda. Başka bir isim dene.' });
   res.json({ slug });
 });
 
 // ── GET /s/:slug — Herkese açık HTML profil sayfası ──────────
-router.get('/:slug', async (req, res) => {
+router.get('/:slug', async (req, res, next) => {
+  // Bu HERKESE AÇIK HTML sayfasıdır ve `/s/:slug` yüzeyine aittir.
+  // `setupRoutes.ts` aynı routerı `/api/servers`a da monte eder — çünkü
+  // `GET|PUT /:sid/slug` API uçları oradan servis edilir. Yan etki olarak bu
+  // handler `/api/servers/<herhangi>`yi de yakalıyor ve bir API yoluna HTML
+  // döndürüyordu. API yüzeyinde devreye girmez: istek kanonik JSON 404'e
+  // düşsün diye next() ile geçilir. (Mount topolojisi DEĞİŞTİRİLMEZ; bu
+  // uçlar `/api/servers/:sid/slug` sözleşmesini korumak zorundadır.)
+  if (req.baseUrl.startsWith('/api')) return next();
+
+  const cspNonce = String(res.locals.cspNonce || '');
+
   const slug = String(String(req.params.slug ?? '')).replace(/[^a-z0-9-]/gi,'').toLowerCase().slice(0, 40);
   if (!slug) return res.status(400).send('<h1>Geçersiz</h1>');
 
-  const server = await Servers.findOne({ slug });
+  // Public vanity yalnız saklı kolonun varlığına değil CANLI Level-3
+  // entitlement'a bağlıdır. Süresi dolan ya da banlı booster'ların sağladığı
+  // perk, eski vanity değerini internette sonsuza kadar canlı tutamaz.
+  const server = await Boosts.getLiveVanityServer(slug);
   if (!server) {
     return res.status(404).send(`<!DOCTYPE html>
-<html lang="tr"><head><meta charset="UTF-8"><title>Sunucu Bulunamadı — Bridge</title>
+<html lang="tr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Sunucu Bulunamadı — Bridge</title>
 <meta name="theme-color" content="#ed4245">
-<style>body{background:#1a1b1e;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center}</style>
+<style nonce="${cspNonce}">*{box-sizing:border-box}body{margin:0;background:#1a1b1e;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100dvh;text-align:center;padding:max(1rem,env(safe-area-inset-top)) max(1rem,env(safe-area-inset-right)) max(1rem,env(safe-area-inset-bottom)) max(1rem,env(safe-area-inset-left))}</style>
 </head><body><div><h1 style="font-size:3rem">😕</h1><h2>Sunucu bulunamadı</h2>
 <p style="color:#b5bac1;margin:.5rem 0 1.5rem">Bu slug'a sahip bir sunucu yok.</p>
 <a href="/" style="color:#2d9cdb">← Bridge'e git</a></div></body></html>`);
@@ -151,7 +186,32 @@ router.get('/:slug', async (req, res) => {
   let channels: Array<{ name: string; topic?: string }> = [];
   try {
     const allChannels = await Channels.findWhere({ serverId: server._id, type: 'text' });
-    channels = allChannels.slice(0, 8).map(c => ({ name: String(c.name), topic: typeof c.topic === 'string' ? c.topic : undefined }));
+
+    // FAZ G — OZEL KANAL ADLARI KAMUYA ACIK SAYFADA GOSTERILEMEZ.
+    //
+    // Burasi KIMLIK DOGRULAMASIZ bir vanity landing sayfasidir: hesabi olmayan
+    // herkes gorebilir. Filtre yokken sunucudaki TUM metin kanallarinin ADI ve
+    // KONUSU (ilk 8) yayinlaniyordu — ozel kanallar dahil. Yani bir sunucu
+    // vanity URL actiginda, gizli kanal adlari da internete aciliyordu.
+    //
+    // Kimlik yok, dolayisiyla "gorunur" olcutu @everyone'dir: @everyone icin
+    // VIEW_CHANNELS REDDEDILMIS bir kanal kamuya acik sayilmaz. Kaynak,
+    // `resolvePermissions`in okudugu kanonik override deposudur.
+    const VIEW_CHANNELS_BIT = 1 << 0;
+    const publicChannels = [];
+    for (const c of allChannels) {
+      let denied = false;
+      try {
+        const ovr = await Channels.findOverridesByChannel(String(c._id)) as Array<{ targetType?: string; deny?: number }>;
+        denied = ovr.some(o => o.targetType === 'everyone' && ((o.deny ?? 0) & VIEW_CHANNELS_BIT) !== 0);
+      } catch {
+        denied = true;   // fail-closed: cozulemeyen kanal GIZLI sayilir
+      }
+      if (!denied) publicChannels.push(c);
+      if (publicChannels.length >= 8) break;
+    }
+
+    channels = publicChannels.map(c => ({ name: String(c.name), topic: typeof c.topic === 'string' ? c.topic : undefined }));
   } catch {}
 
   const instanceUrl  = (process.env.INSTANCE_URL || `http://localhost:${process.env.PORT || 3001}`).replace(/\/$/, '');
@@ -160,7 +220,7 @@ router.get('/:slug', async (req, res) => {
   const safeDesc     = escHtml(server.description || `${server.name} topluluğuna Bridge'de katıl!`);
   const safeIcon     = escHtml(server.icon || '🌐');
   const tags: string[] = typeof server.tags === 'string' ? JSON.parse(server.tags || '[]') : (Array.isArray(server.tags) ? server.tags : []);
-  const ogImage      = `${instanceUrl}/api/servers/${server._id}/og-image`;
+  const ogImage      = `${instanceUrl}/api/servers/${server._id}/og-image?vanity=${encodeURIComponent(slug)}`;
   const joinUrl      = `${instanceUrl}/?join=${encodeURIComponent(server._id)}`;
   const pageUrl      = `${instanceUrl}/s/${slug}`;
 
@@ -168,7 +228,7 @@ router.get('/:slug', async (req, res) => {
 <html lang="tr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>${safeName} — Bridge</title>
   <meta name="description" content="${safeDesc}">
 
@@ -188,12 +248,13 @@ router.get('/:slug', async (req, res) => {
 
   <meta name="theme-color" content="#2d9cdb">
 
-  <style>
+  <style nonce="${cspNonce}">
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: #111214; color: #dcddde;
       min-height: 100dvh;
+      padding-bottom: max(20px, env(safe-area-inset-bottom));
     }
     .banner {
       height: 200px;

@@ -157,8 +157,11 @@ router.get('/federation/whitelist', authMiddleware, adminOnly, async (_req: Requ
 
 router.post('/federation/whitelist', authMiddleware, adminOnly, async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
-  const { domain, reason = '' } = req.body as { domain?: string; reason?: string };
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? req.body as Record<string, unknown> : {};
+  const domain = body.domain;
+  const reason = body.reason ?? '';
   if (!validateDomain(domain)) return void res.status(400).json({ error: 'Geçersiz domain formatı' });
+  if (typeof reason !== 'string') return void res.status(400).json({ error: 'reason must be a string' });
   const d = domain.trim().toLowerCase();
   if (await Federation.findWhitelistOne({ domain: d }))
     return void res.status(409).json({ error: "Bu domain zaten whitelist'te" });
@@ -184,8 +187,11 @@ router.get('/federation/blacklist', authMiddleware, adminOnly, async (_req: Requ
 
 router.post('/federation/blacklist', authMiddleware, adminOnly, async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
-  const { domain, reason = '' } = req.body as { domain?: string; reason?: string };
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? req.body as Record<string, unknown> : {};
+  const domain = body.domain;
+  const reason = body.reason ?? '';
   if (!validateDomain(domain)) return void res.status(400).json({ error: 'Geçersiz domain formatı' });
+  if (typeof reason !== 'string') return void res.status(400).json({ error: 'reason must be a string' });
   const d = domain.trim().toLowerCase();
   if (await Federation.findBlacklistOne({ domain: d }))
     return void res.status(409).json({ error: "Bu domain zaten blacklist'te" });

@@ -71,9 +71,11 @@ import { limits } from '../middleware/rateLimit';
 import { callAI, AI_ENABLED } from '../lib/aiProvider';
 import logger from '../lib/logger';
 import { generateEmbedding, vectorSearch, PGVECTOR_ENABLED, EMBEDDING_PROVIDER } from '../lib/pgvector';
+import { viewableChannelIds } from '../lib/permissions';
+import { parsePositiveIntWithinBoundQuery, parsePositiveIntWithinBoundValue } from '../lib/queryNumbers';
 
 // ── KURAL TABANLI FALLBACK ──────────────────────────────────────
-function keywordSearch<T extends { content?: string }>(query: string, messages: T[]): Array<T & { _score: number }> {
+function keywordSearch<T extends { content?: string }>(query: string, messages: T[], limit = 10): Array<T & { _score: number }> {
   const q = query.toLowerCase();
   const keywords = q.split(/\s+/).filter(w => w.length > 2);
   return messages
@@ -84,22 +86,56 @@ function keywordSearch<T extends { content?: string }>(query: string, messages: 
     })
     .filter(m => m._score > 0)
     .sort((a, b) => b._score - a._score)
-    .slice(0, 10);
+    .slice(0, limit);
 }
 
 // ── POST /api/semantic/search — Doğal dil mesaj araması ─────────
 router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { query, serverId, channelId, days: rawDays = 7 } = req.body as { query?: string; serverId?: string; channelId?: string; days?: unknown; limit?: unknown };
-  const days = Number(rawDays) || 7;
-  if (!query?.trim()) return res.status(400).json({ error: 'query gerekli' });
-  if (!serverId)      return res.status(400).json({ error: 'serverId gerekli' });
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+    ? req.body as Record<string, unknown>
+    : {};
+  const query = typeof body.query === 'string' ? body.query.trim() : '';
+  const serverId = typeof body.serverId === 'string' ? body.serverId.trim() : '';
+  const channelId = body.channelId === undefined
+    ? undefined
+    : (typeof body.channelId === 'string' ? body.channelId.trim() : null);
+  const days = parsePositiveIntWithinBoundValue(body.days, 7, 365);
+  const resultLimit = parsePositiveIntWithinBoundValue(body.limit, 10, 50);
+
+  if (!query) return res.status(400).json({ error: 'query gerekli' });
+  if (query.length > 500) return res.status(400).json({ error: 'query çok uzun' });
+  if (!serverId) return res.status(400).json({ error: 'serverId gerekli' });
+  if (channelId === null || (channelId !== undefined && !channelId))
+    return res.status(400).json({ error: 'channelId geçersiz' });
+  if (days === null || resultLimit === null)
+    return res.status(400).json({ error: 'days/limit pozitif güvenli tam sayı olmalıdır' });
 
   // Üyelik kontrolü
   const member = await Members.findOne(_u.id, serverId);
   if (!member) return res.status(403).json({ error: 'Bu sunucuya üye değilsiniz' });
 
-  const cacheKey = `sem:${serverId}:${channelId || ''}:${query.slice(0,50)}:${days}`;
+  // ════════════════════════════════════════════════════════════════════════
+  // ONBELLEK ANAHTARI KULLANICIYA GORE AYRILIR — YETKI SIZINTISI KAPATILDI
+  // ════════════════════════════════════════════════════════════════════════
+  // ONCEKI ANAHTAR: `sem:<serverId>:<channelId>:<query>:<days>`
+  // Kullanici kimligi YOKTU. Asagidaki `viewableChannelIds` filtresi HER
+  // ISTEKTE dogru calisiyordu, ama onbellek onu TAMAMEN kisa devre yapiyordu:
+  //
+  //   1. Sahip (veya yetkili biri) bir sorgu calistirir
+  //      → sonuc, GIZLI kanal icerigiyle birlikte onbellege yazilir
+  //   2. Ayni sunucudaki SIRADAN bir uye AYNI sorguyu calistirir
+  //      → `cache.get` isabet eder ve YETKISIZ icerik dogrudan donulur
+  //
+  // DOGRUDAN OLCULDU (gercek API, ayni sunucu, ayni sorgu):
+  //   alice (sahip)  q=hidden → matches=1     (onbellege yazildi)
+  //   bob   (uye)    q=hidden → matches=1     ← SIZINTI
+  //   Sira tersine cevrildiginde (once bob) her ikisi de 0 donuyordu —
+  //   yani sonuc, SORAN KISIYE degil, SIRAYA bagliydi.
+  //
+  // Anahtara kullanici kimligi eklemek dogru olcektir: gorunurluk kullaniciya
+  // gore hesaplanir, dolayisiyla onbellek de kullaniciya gore ayrilmalidir.
+  const cacheKey = `sem:${_u.id}:${serverId}:${channelId || ''}:${query.slice(0,50)}:${days}:${resultLimit}`;
   const cached = await cache.get(cacheKey);
   if (cached) return res.json({ ...cached, cached: true });
 
@@ -108,8 +144,24 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   const filter: Record<string, unknown> = { serverId, createdAt: { $gt: since }, type: { $ne: 'system' } };
   if (channelId) filter.channelId = channelId;
 
-  const messages = await Messages.messagesFind(filter).sort({ createdAt: -1 }).limit(200);
-  if (!messages.length) return res.json({ matches: [], query, provider: 'none', total: 0, days, aiDisabled: !AI_ENABLED });
+  let messages = await Messages.messagesFind(filter).sort({ createdAt: -1 }).limit(200);
+
+  // FAZ F — VIEW_CHANNELS KAPSAMASI (CANLI SIZINTI KAPATILDI).
+  //
+  // Bu uc yalniz SUNUCU UYELIGINI denetliyordu ve sunucudaki TUM kanallarin
+  // mesajlarini cekiyordu. pgvector ve AI KAPALIYKEN bile (bu dagitimin
+  // mevcut durumu) `keywordSearch` yedegi devreye girip mesajlarin TAM
+  // ICERIGINI donduruyordu. Yani bir uye, goremedigi ozel kanallarin metnini
+  // /api/semantic/search uzerinden okuyabiliyordu.
+  //
+  // Faz D'de `search.ts` sertlestirilmisti; ayni VERIYE giden bu ikinci yol
+  // denetimsiz kalmisti. Filtre, sonuc uretiminden ONCE uygulanir.
+  const viewable = await viewableChannelIds(_u.id, String(serverId), messages.map(m => String(m.channelId)));
+  messages = messages.filter(m => viewable.has(String(m.channelId)));
+
+  if (!messages.length) return res.json({
+    matches: [], query, provider: 'none', total: 0, days, limit: resultLimit, aiDisabled: !AI_ENABLED,
+  });
 
   // Kullanıcı adlarını getir
   const userIds = [...new Set(messages.map(m => m.userId))];
@@ -138,8 +190,12 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
           embedding,
           serverId,
           channelId: channelId || undefined,
+          // Yetki aday kumesini ONCEDEN kisitlar: `viewable` yukarida
+          // hesaplanan GORULEBILIR kanal kumesidir. Boylece yetkisiz icerik
+          // siralamaya bile girmez.
+          channelIds: channelId ? undefined : [...viewable],
           since,
-          limit:     Number(req.body.limit) || 10,
+          limit:     resultLimit,
         });
 
         if (vectorMatches.length > 0) {
@@ -185,7 +241,9 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
       );
 
       const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim()) as { indices?: number[]; explanation?: string };
-      const indices = (parsed.indices || []).slice(0, 15);
+      const indices = (Array.isArray(parsed.indices) ? parsed.indices : [])
+        .filter((i): i is number => Number.isSafeInteger(i) && i >= 0 && i < messages.length)
+        .slice(0, resultLimit);
       results = {
         matches: indices.map((i: number) => messages[i]).filter((m): m is NonNullable<typeof m> => Boolean(m)).map(m => ({
           _id: m._id, content: m.content, userId: m.userId,
@@ -198,7 +256,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
       provider = ((await import('../lib/aiProvider')) as { PROVIDER?: string }).PROVIDER ?? 'unknown';
     } catch {
       // Fallback
-      const matched = keywordSearch(query, messages);
+      const matched = keywordSearch(query, messages, resultLimit);
       results = {
         matches: matched.map(m => ({
           _id: m._id, content: m.content, userId: m.userId,
@@ -210,7 +268,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
     }
   } else if (!results) {
     // pgvector da sonuç vermedi, AI da kapalı — keyword fallback
-    const matched = keywordSearch(query, messages);
+    const matched = keywordSearch(query, messages, resultLimit);
     results = {
       matches: matched.map(m => ({
         _id: m._id, content: m.content, userId: m.userId,
@@ -223,7 +281,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
 
   // Son güvenlik ağı: pgvector + AI her ikisi de sonuç vermediyse keyword fallback
   if (!results) {
-    const matched = keywordSearch(query, messages);
+    const matched = keywordSearch(query, messages, resultLimit);
     results = {
       matches: matched.map(m => ({
         _id: m._id, content: m.content, userId: m.userId,
@@ -235,7 +293,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
     provider = 'rules';
   }
 
-  const out = { ...results, query, provider, total: results.matches.length, days, aiDisabled: !AI_ENABLED };
+  const out = { ...results, query, provider, total: results.matches.length, days, limit: resultLimit, aiDisabled: !AI_ENABLED };
   await cache.set(cacheKey, out, 180); // 3dk cache
   res.json(out);
 });
@@ -244,23 +302,40 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
 router.get('/digest/:serverId', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const serverId = String(req.params.serverId ?? '');
-  const days = parseInt(String(req.query.days ?? '')) || 7;
+  const days = parsePositiveIntWithinBoundQuery(req.query.days, 7, 365);
+  if (days === null) return res.status(400).json({ error: 'days must be a positive safe integer' });
 
   const member = await Members.findOne(_u.id, serverId);
   if (!member) return res.status(403).json({ error: 'Üye değilsiniz' });
 
-  const cacheKey = `digest:${serverId}:${days}`;
+  // Ayni sizinti bu ucta da vardi ve onbellek omru 30 DAKIKAYDI (yukaridaki
+  // ayrintili nota bakiniz). Ozet, kanal etkinligini toparladigi icin
+  // yetkisiz bir uyeye gizli kanallarin icerigini tasiyabilirdi.
+  const cacheKey = `digest:${_u.id}:${serverId}:${days}`;
   const cached = await cache.get(cacheKey);
   if (cached) return res.json({ ...cached, cached: true });
 
   const since = Date.now() - (days * 24 * 60 * 60 * 1000);
 
   // Tüm kanalları getir
-  const channels = await Channels.findWhere({ serverId, type: 'text' });
+  const allChannels = await Channels.findWhere({ serverId, type: 'text' });
+
+  // FAZ F — VIEW_CHANNELS: ozet YALNIZ gorulebilen kanallardan uretilir.
+  // Digest her kanal icin en cok tepki alan mesajlarin ILK 100 KARAKTERINI
+  // donduruyordu; filtre olmadan bu, gorunmeyen ozel kanallarin icerigini
+  // "haftalik ozet" kilifinda sizdiriyordu.
+  const digestViewable = await viewableChannelIds(
+    _u.id, serverId, allChannels.map((c: { _id: string }) => String(c._id)),
+  );
+  const channels = allChannels.filter((c: { _id: string }) => digestViewable.has(String(c._id)));
 
   // Her kanal için mesaj sayısı ve en çok reaction alanlar
   const channelStats = await Promise.all(channels.map(async ch => {
-    const msgs = await Messages.findWhere({ channelId: ch._id, createdAt: { $gt: since } });
+    const returned = await Messages.findWhere({ channelId: ch._id, createdAt: { $gt: since } });
+    // Treat repository filtering as an optimization, not a privacy boundary.
+    // A malformed adapter/result must never let another channel's content
+    // enter this visible channel's digest statistics or top-message payload.
+    const msgs = returned.filter(m => String(m.channelId) === String(ch._id));
     const topMsgs = msgs
       .filter(m => m.content && m.reactions)
       .map(m => {
@@ -275,7 +350,18 @@ router.get('/digest/:serverId', authMiddleware, async (req, res) => {
   }));
 
   // Aktif üyeler
-  const allMsgs = await Messages.findWhere({ serverId, createdAt: { $gt: since } });
+  // FAZ G — META SIZINTISI: toplamlar da yalniz GORULEBILEN kanallardan.
+  //
+  // `channelStats` Faz F'de filtrelenmisti, ancak `totalMessages`, `topUsers`
+  // ve AI ozet girdisi HALA sunucunun TUM mesajlarindan hesaplaniyordu. Ham
+  // metin donmese de bu, gorunmeyen ozel kanallarin varligini ve icindeki
+  // kullanici etkinligini SIZDIRIR: bir kullanici hic "acik" kanala yazmadigi
+  // halde siralamada gorunebiliyordu. Bu, gizli kanal katilimini ifsa eder.
+  const allMsgsRaw = await Messages.findWhere({ serverId, createdAt: { $gt: since } });
+  const digestMsgViewable = await viewableChannelIds(
+    _u.id, serverId, allMsgsRaw.map((m: { channelId: string }) => String(m.channelId)),
+  );
+  const allMsgs = allMsgsRaw.filter((m: { channelId: string }) => digestMsgViewable.has(String(m.channelId)));
   const msgByUser: Record<string, number> = {};
   allMsgs.forEach(m => { msgByUser[m.userId] = (msgByUser[m.userId] || 0) + 1; });
   const topUsers = Object.entries(msgByUser)
@@ -333,7 +419,12 @@ router.get('/engagement/:serverId', authMiddleware, async (req, res) => {
   const periods = [7, 14, 30].map(d => ({ days: d, since: now - d * 86400000 }));
 
   const scores = await Promise.all(periods.map(async ({ days, since }) => {
-    const msgs = await Messages.findWhere({ serverId, createdAt: { $gt: since } });
+    // FAZ G — baglilik skoru gorunmeyen kanallardan ETKILENMEZ.
+    const msgsRaw = await Messages.findWhere({ serverId, createdAt: { $gt: since } });
+    const engViewable = await viewableChannelIds(
+      _u.id, serverId, msgsRaw.map((m: { channelId: string }) => String(m.channelId)),
+    );
+    const msgs = msgsRaw.filter((m: { channelId: string }) => engViewable.has(String(m.channelId)));
     const activeUsers = new Set(msgs.map(m => m.userId)).size;
     const members = await Members.findByServer(serverId);
     const engagement = members.length > 0 ? Math.round((activeUsers / members.length) * 100) : 0;
@@ -341,14 +432,20 @@ router.get('/engagement/:serverId', authMiddleware, async (req, res) => {
   }));
 
   // Trend hesapla
+  // `periods` iki donem tasir, ama indeksli erisim yine `... | undefined`
+  // doner. Eksik donem trendi hesaplanamaz; 0 (trend yok) dogru cevaptir.
   const week = scores[0];
   const twoWeek = scores[1];
-  const trend = twoWeek.messages > 0
+  const trend = week && twoWeek && twoWeek.messages > 0
     ? Math.round(((week.messages - twoWeek.messages / 2) / (twoWeek.messages / 2)) * 100)
     : 0;
 
   // En aktif saatler (son 7 gün)
-  const recentMsgs = await Messages.findWhere({ serverId, createdAt: { $gt: now - 7 * 86400000 } });
+  const recentMsgsRaw = await Messages.findWhere({ serverId, createdAt: { $gt: now - 7 * 86400000 } });
+  const recentViewable = await viewableChannelIds(
+    _u.id, serverId, recentMsgsRaw.map((m: { channelId: string }) => String(m.channelId)),
+  );
+  const recentMsgs = recentMsgsRaw.filter((m: { channelId: string }) => recentViewable.has(String(m.channelId)));
   const hourCounts = new Array(24).fill(0);
   recentMsgs.forEach(m => {
     const hour = new Date(m.createdAt).getHours();

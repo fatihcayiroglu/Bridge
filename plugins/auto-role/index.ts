@@ -20,7 +20,7 @@ interface MemberJoinedPayload {
 interface Member {
   userId:  string;
   serverId: string;
-  roles?:  string;
+  roles?:  unknown;
 }
 
 export async function setup(ctx: PluginContext): Promise<void> {
@@ -28,7 +28,8 @@ export async function setup(ctx: PluginContext): Promise<void> {
 
   const cfg    = (ctx.meta.config ?? {}) as AutoRoleConfig;
   const roleId = (cfg.roleId ?? '').trim();
-  const delay  = Math.max(0, Number(cfg.delayMs) || 0);
+  const rawDelay = typeof cfg.delayMs === 'number' ? cfg.delayMs : Number(cfg.delayMs ?? 0);
+  const delay = Number.isSafeInteger(rawDelay) && rawDelay >= 0 ? Math.min(rawDelay, 60_000) : 0;
 
   if (!roleId) {
     ctx.logger.warn('roleId yapılandırılmamış — plugin pasif');
@@ -47,13 +48,13 @@ export async function setup(ctx: PluginContext): Promise<void> {
         const member = await db.members.findOne({ userId, serverId });
         if (!member) return;
 
-        let roles: string[] = [];
-        try {
-          roles = JSON.parse(member.roles || '[]');
-        } catch {
-          roles = [];
+        let rolesRaw: unknown = member.roles;
+        if (typeof rolesRaw === 'string') {
+          try { rolesRaw = JSON.parse(rolesRaw); } catch { rolesRaw = []; }
         }
-
+        const roles = Array.isArray(rolesRaw)
+          ? rolesRaw.filter((r): r is string => typeof r === 'string' && r.length > 0)
+          : [];
         if (roles.includes(roleId)) return;
 
         // Read-only DB — rol ataması sunucu tarafından işlenir

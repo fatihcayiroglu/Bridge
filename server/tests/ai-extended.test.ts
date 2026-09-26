@@ -6,9 +6,11 @@
 //   /api/ai/ask/stream          — 7 test (SSE)
 //   /api/ai/clyde/stream        — 6 test (SSE multi-turn)
 //   /api/ai/suggest-reply       — 5 test
+import type { Request, Response, NextFunction } from 'express';
+import { fetchMock, installFetchMock } from './helpers/fetchDouble';
 // Toplam: 32 yeni test
 
-process.env.JWT_SECRET  = 'test-jwt-secret';
+process.env.JWT_SECRET  = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV    = 'test';
 
 // AI key'leri kasıtlı olarak UNSET — fallback/rules path'i test eder
@@ -24,25 +26,29 @@ jest.mock('../db/index',  () => mockDb);
 jest.mock('../db/loader', () => require('../db/index'));
 
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: (req, res, next) => {
+  authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
     const h = req.headers.authorization;
     if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
     const jwt = require('jsonwebtoken');
-    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret'); next(); }
+    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!'); next(); }
     catch { res.status(401).json({ error: 'Invalid token' }); }
   },
 }));
 
 // Rate limiter'ı devre dışı bırak
 jest.mock('../middleware/rateLimit', () => ({
-  limits: new Proxy({}, { get: () => () => (_r, _s, n) => n() }),
+  limits: new Proxy({}, { get: () => () => (_r: unknown, _s: unknown, n: () => void) => n() }),
 }));
 
-global.fetch = jest.fn();
+installFetchMock();
 
 jest.mock('../lib/fetch', () => ({
-  fetchT: jest.fn((...args) => global.fetch(...args)),
-  default: jest.fn((...args) => global.fetch(...args)),
+  fetchT: jest.fn((...args: Parameters<typeof fetch>) => global.fetch(...args)),
+  default: jest.fn((...args: Parameters<typeof fetch>) => global.fetch(...args)),
 }));
 
 const request  = require('supertest');
@@ -55,7 +61,7 @@ import aiRouter from '../routes/ai';
 const app = express();
 app.use(express.json());
 app.use('/api/ai', aiRouter);
-app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
 
 // ── Sabit ID'ler ────────────────────────────────────────────────
 const USER_ID   = 'ai-ext-user';
@@ -65,7 +71,7 @@ const SRV2_ID   = 'ai-ext-srv2';
 const CHAN_ID   = 'ai-ext-chan';
 
 function token(id = USER_ID) {
-  return jwt.sign({ id, username: 'aiuser', displayName: 'AI User', v: 0 }, 'test-jwt-secret', { expiresIn: '1h' });
+  return jwt.sign({ id, username: 'aiuser', displayName: 'AI User', v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
 }
 
 beforeAll(async () => {
@@ -80,6 +86,7 @@ beforeAll(async () => {
     autoModerate: false,
   }));
   await mockDb.members.insert({ _id: uuidv4(), userId: USER_ID, serverId: SRV_ID, roles: [], joinedAt: Date.now() });
+  await mockDb.members.insert({ _id: uuidv4(), userId: USER_ID, serverId: SRV2_ID, roles: [], joinedAt: Date.now() });
   await mockDb.channels.insert(makeChannel(SRV_ID, { _id: CHAN_ID, name: 'genel', type: 'text' }));
   for (let i = 0; i < 8; i++) {
     await mockDb.messages.insert(makeMessage(CHAN_ID, SRV_ID, USER_ID, {
@@ -90,7 +97,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  global.fetch.mockReset();
+  fetchMock().mockReset();
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -167,13 +174,29 @@ describe('POST /api/ai/auto-moderate', () => {
     expect(res.body).toHaveProperty('score');
   });
 
-  it('200 — serverId olmadan çalışır, safe döner', async () => {
+  it('400 — non-empty content requires a canonical serverId', async () => {
     const res = await request(app)
       .post('/api/ai/auto-moderate')
       .set('Authorization', `Bearer ${token()}`)
       .send({ content: 'herhangi bir içerik' });
-    expect(res.status).toBe(200);
-    expect(res.body.safe).toBe(true);
+    expect(res.status).toBe(400);
+  });
+
+  it('403 — another server cannot be used as an AI-cost/config oracle', async () => {
+    const outsider = token(USER2_ID);
+    const res = await request(app)
+      .post('/api/ai/auto-moderate')
+      .set('Authorization', `Bearer ${outsider}`)
+      .send({ content: 'normal içerik', serverId: SRV_ID });
+    expect(res.status).toBe(403);
+  });
+
+  it.each([{ content: 123, serverId: SRV_ID }, { content: 'x', serverId: 123 }])('400 — malformed auto-moderate body %#', async (body) => {
+    const res = await request(app)
+      .post('/api/ai/auto-moderate')
+      .set('Authorization', `Bearer ${token()}`)
+      .send(body);
+    expect(res.status).toBe(400);
   });
 });
 
@@ -198,7 +221,7 @@ describe('GET /api/ai/discover-match', () => {
     const res = await request(app)
       .get('/api/ai/discover-match')
       .set('Authorization', `Bearer ${token()}`);
-    const ids = res.body.recommendations.map(r => r.id);
+    const ids = res.body.recommendations.map((r: Record<string, unknown>) => r.id);
     expect(ids).not.toContain(SRV_ID); // USER zaten üye
   });
 
@@ -216,7 +239,7 @@ describe('GET /api/ai/discover-match', () => {
       .get('/api/ai/discover-match')
       .set('Authorization', `Bearer ${token()}`);
     // SRV2_ID'de üye değil, listelenebilir
-    const ids = res.body.recommendations.map(r => r.id);
+    const ids = res.body.recommendations.map((r: Record<string, unknown>) => r.id);
     // discoverable sunucu varsa listeye girer
     expect(Array.isArray(ids)).toBe(true);
   });
@@ -309,15 +332,15 @@ describe('GET /api/ai/ask/stream', () => {
     const freshAiRouter = require('../routes/ai');
     const freshApp = express();
     freshApp.use(express.json());
-    freshApp.use('/api/ai', (req, _res, next) => {
+    freshApp.use('/api/ai', (req: Request, _res: Response, next: NextFunction) => {
       const jwt2 = require('jsonwebtoken');
       const h = req.headers.authorization;
       if (!h?.startsWith('Bearer ')) return _res.status(401).end();
-      try { req.user = jwt2.verify(h.slice(7), 'test-jwt-secret'); next(); } catch { _res.status(401).end(); }
+      try { req.user = jwt2.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!'); next(); } catch { _res.status(401).end(); }
     }, freshAiRouter);
 
     // Groq'u mock'la — stream benzeri yanıt
-    global.fetch.mockResolvedValueOnce({
+    fetchMock().mockResolvedValueOnce({
       ok:   true,
       body: {
         getReader: () => ({
@@ -403,14 +426,14 @@ describe('GET /api/ai/clyde/stream', () => {
     const freshAiRouter2 = require('../routes/ai');
     const freshApp2 = express();
     freshApp2.use(express.json());
-    freshApp2.use('/api/ai', (req, _res, next) => {
+    freshApp2.use('/api/ai', (req: Request, _res: Response, next: NextFunction) => {
       const jwt3 = require('jsonwebtoken');
       const h = req.headers.authorization;
       if (!h?.startsWith('Bearer ')) return _res.status(401).end();
-      try { req.user = jwt3.verify(h.slice(7), 'test-jwt-secret'); next(); } catch { _res.status(401).end(); }
+      try { req.user = jwt3.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!'); next(); } catch { _res.status(401).end(); }
     }, freshAiRouter2);
 
-    global.fetch.mockResolvedValueOnce({
+    fetchMock().mockResolvedValueOnce({
       ok:   true,
       body: {
         getReader: () => ({

@@ -3,7 +3,7 @@
 // DmCall.send4KVideo() — 4K video kayıt ve yükleme mantığı birim testleri
 //
 // Çalıştırma:
-//   cd client/tests && npm test -- dm-call-4k
+//   cd client && npx vitest run --config vitest.config.mts tests/dm-call-4k.test.ts
 
 import './helpers/webrtc-mock';
 
@@ -20,8 +20,8 @@ class MockMediaRecorder {
     this.videoBitsPerSecond  = opts.videoBitsPerSecond || 0;
   }
 
-  start  = jest.fn((_timeslice?: number) => { this.state = 'recording'; });
-  stop   = jest.fn(() => {
+  start  = vi.fn((_timeslice?: number) => { this.state = 'recording'; });
+  stop   = vi.fn(() => {
     this.state = 'inactive';
     // Sahte veri chunk'ı tetikle
     if (this.ondataavailable) {
@@ -30,7 +30,7 @@ class MockMediaRecorder {
     if (this.onstop) this.onstop();
   });
 
-  static isTypeSupported = jest.fn((mime: string) =>
+  static isTypeSupported = vi.fn((mime: string) =>
     ['video/webm;codecs=vp9', 'video/webm', 'video/mp4'].includes(mime)
   );
 }
@@ -38,11 +38,11 @@ class MockMediaRecorder {
 global.MediaRecorder = MockMediaRecorder as unknown as typeof MediaRecorder;
 
 // ── fetch mock ────────────────────────────────────────────────────────────────
-const mockFetch = jest.fn();
+const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
 // ── socket mock ───────────────────────────────────────────────────────────────
-const mockSocket = { emit: jest.fn(), on: jest.fn(), off: jest.fn(), connected: true };
+const mockSocket = { emit: vi.fn(), on: vi.fn(), off: vi.fn(), connected: true };
 
 // ── toast mock ───────────────────────────────────────────────────────────────
 const toastCalls: Array<[string, string]> = [];
@@ -50,7 +50,7 @@ global.toast = (msg: string, type: string) => toastCalls.push([msg, type]);
 
 // ── crypto.randomUUID mock ───────────────────────────────────────────────────
 Object.defineProperty(global.crypto, 'randomUUID', {
-  value: jest.fn(() => 'test-uuid-4k'),
+  value: vi.fn(() => 'test-uuid-4k'),
   configurable: true,
 });
 
@@ -58,12 +58,12 @@ Object.defineProperty(global.crypto, 'randomUUID', {
 const mockTrack = {
   kind: 'video',
   enabled: true,
-  stop: jest.fn(),
+  stop: vi.fn(),
   onended: null as (() => void) | null,
 };
 const mockDisplayStream = {
-  getVideoTracks: jest.fn(() => [mockTrack]),
-  getTracks: jest.fn(() => [mockTrack]),
+  getVideoTracks: vi.fn(() => [mockTrack]),
+  getTracks: vi.fn(() => [mockTrack]),
 };
 
 // ── API ve token global'leri ─────────────────────────────────────────────────
@@ -81,7 +81,7 @@ describe('MediaRecorder.isTypeSupported — codec önceliği', () => {
   });
 
   it('desteklenmeyen codec false döndürmeli', () => {
-    (MediaRecorder.isTypeSupported as jest.Mock).mockReturnValueOnce(false);
+    (MediaRecorder.isTypeSupported as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
     expect(MediaRecorder.isTypeSupported('video/webm;codecs=av1')).toBe(false);
   });
 });
@@ -90,17 +90,17 @@ describe('MediaRecorder.isTypeSupported — codec önceliği', () => {
 
 describe('4K video kayıt — getDisplayMedia parametreleri', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     toastCalls.length = 0;
     Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', {
-      value: jest.fn().mockResolvedValue(mockDisplayStream),
+      value: vi.fn().mockResolvedValue(mockDisplayStream),
       configurable: true,
       writable: true,
     });
   });
 
   it('getDisplayMedia 4K kısıtlamalarla çağrılmalı', async () => {
-    const getDisplayMediaSpy = navigator.mediaDevices.getDisplayMedia as jest.Mock;
+    const getDisplayMediaSpy = navigator.mediaDevices.getDisplayMedia as ReturnType<typeof vi.fn>;
     await navigator.mediaDevices.getDisplayMedia({
       video: { width: { ideal: 3840, max: 3840 }, height: { ideal: 2160, max: 2160 }, frameRate: { ideal: 30, max: 60 } },
       audio: false,
@@ -118,7 +118,7 @@ describe('4K video kayıt — getDisplayMedia parametreleri', () => {
   });
 
   it('kullanıcı izni reddederse hata fırlatmamalı (NotAllowedError)', async () => {
-    (navigator.mediaDevices.getDisplayMedia as jest.Mock).mockRejectedValueOnce(
+    (navigator.mediaDevices.getDisplayMedia as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       Object.assign(new Error('Permission denied'), { name: 'NotAllowedError' })
     );
     // NotAllowedError sessizce görmezden gelinmeli
@@ -148,7 +148,7 @@ describe('4K video kayıt — MediaRecorder akışı', () => {
     const rec = new MockMediaRecorder(stream);
     const chunks: Blob[] = [];
     rec.ondataavailable = (e) => chunks.push(e.data);
-    const stopCb = jest.fn();
+    const stopCb = vi.fn();
     rec.onstop = stopCb;
 
     rec.start(1000);
@@ -170,7 +170,7 @@ describe('4K video kayıt — MediaRecorder akışı', () => {
 
 describe('4K video yükleme — chunked upload mantığı', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     // 3 chunk → done:true son chunk'ta
     let callCount = 0;
     mockFetch.mockImplementation(async () => {
@@ -300,17 +300,17 @@ describe('send4KVideo — _currentDmChannelId guard (davranış testleri)', () =
   //   • null / boş channelId → hata toast + getDisplayMedia çağrılmaz
   //   • dolu channelId        → getDisplayMedia çağrılır (kayıt yolu açık)
 
-  let getDisplayMediaSpy: jest.Mock;
+  let getDisplayMediaSpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     toastCalls.length = 0;
-    getDisplayMediaSpy = jest.fn().mockResolvedValue(mockDisplayStream);
+    getDisplayMediaSpy = vi.fn().mockResolvedValue(mockDisplayStream);
     Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', {
       value: getDisplayMediaSpy, configurable: true, writable: true,
     });
     Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
-      value: jest.fn().mockResolvedValue(mockDisplayStream), configurable: true, writable: true,
+      value: vi.fn().mockResolvedValue(mockDisplayStream), configurable: true, writable: true,
     });
   });
 
@@ -388,7 +388,7 @@ describe('_ask4KSource — kaynak seçici davranışı', () => {
   });
 
   it('null döndüğünde getDisplayMedia çağrılmamalı', async () => {
-    const spy = jest.fn();
+    const spy = vi.fn();
     Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', {
       value: spy, configurable: true, writable: true,
     });
@@ -408,12 +408,14 @@ describe('AbortController — upload iptal davranışı', () => {
   // doğrular: AbortController.abort() çağrısı fetch'i DOMException(AbortError)
   // ile keser, bu hata sessizce yutulur.
 
-  it('abort() fetch'i AbortError ile kesmeli', async () => {
+  it("abort() fetch'i AbortError ile kesmeli", async () => {
     const controller = new AbortController();
 
     const fetchPromise = new Promise<never>((_, reject) => {
       controller.signal.addEventListener('abort', () =>
-        reject(Object.assign(new DOMException('Aborted', 'AbortError'), { name: 'AbortError' }))
+        // DOMException.name salt-okunur bir getter'dır; ikinci kurucu argümanı
+        // zaten adı belirler (Object.assign ile ezmeye çalışmak TypeError verir).
+        reject(new DOMException('Aborted', 'AbortError'))
       );
     });
 
@@ -437,7 +439,9 @@ describe('AbortController — upload iptal davranışı', () => {
 
     // AbortError yakalandığında element kaldırılmalı
     try {
-      throw Object.assign(new DOMException('Aborted', 'AbortError'), { name: 'AbortError' });
+      // DOMException.name salt-okunur; Object.assign burada TypeError fırlatıp
+      // testin asıl senaryosunu (AbortError dalı) hiç çalıştırmıyordu.
+      throw new DOMException('Aborted', 'AbortError');
     } catch (err: unknown) {
       if ((err as DOMException).name === 'AbortError') {
         document.getElementById('dm-call-4k-progress')?.remove();
@@ -451,7 +455,7 @@ describe('AbortController — upload iptal davranışı', () => {
     const controller = new AbortController();
     controller.abort(); // önceden iptal
 
-    const fetchSpy = jest.fn();
+    const fetchSpy = vi.fn();
     let loopRan = false;
 
     for (let i = 0; i < 3; i++) {

@@ -1,0 +1,6 @@
+﻿function basicSanitize(input: string): string {
+  return input
+    .replace(/<\s*script[^>]*>[\s\S]*?<\s*\/\s*script\s*>/gi, '')
+    .replace(/\son[a-z]+\s*=(["'][^"']*["']|[^\s>]+)/gi, '')
+    .replace(/(href|src)\s*=\s*(["'])\s*javascript:[^"']*\2/gi, '$1="#"');
+}

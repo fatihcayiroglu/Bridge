@@ -5,7 +5,6 @@
 import express from 'express';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router     = express.Router();
-import { v4 as uuidv4 } from 'uuid';
 import { Social } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { limits } from '../middleware/rateLimit';
@@ -102,8 +101,9 @@ router.put('/me/connections/:platform'
     return res.status(400).json({ error: `Desteklenmeyen platform. Desteklenenler: ${Object.keys(PLATFORMS).join(', ')}` });
   }
 
-  const { username } = req.body as Record<string, string>;
-  if (!username?.trim()) return res.status(400).json({ error: 'username gerekli' });
+  const username = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+    ? (req.body as Record<string, unknown>).username : undefined;
+  if (typeof username !== 'string' || !username.trim()) return res.status(400).json({ error: 'username gerekli' });
 
   const meta = PLATFORMS[platform];
   const trimmed = username.trim();
@@ -114,28 +114,19 @@ router.put('/me/connections/:platform'
 
   const url = platform === 'website' ? trimmed : `${meta.urlPrefix}${trimmed}`;
 
-  const existing = await Social.findConnection(_u.id, platform);
-  let connection;
-  if (existing) {
-    await Social.updateConnection(
-      { userId: _u.id, platform },
-      { $set: { username: trimmed, url } }
+  let mutation;
+  try {
+    mutation = await Social.upsertConnectionWithinLimit(
+      _u.id, platform, { username: trimmed, url, verified: 0 }, 10,
     );
-    connection = await Social.findConnection(_u.id, platform);
-  } else {
-    const count = await Social.countConnections({ userId: _u.id });
-    if (count >= 10) return res.status(429).json({ error: 'Maksimum 10 bağlantı' });
-
-    connection = await Social.insertConnection({
-      userId:    _u.id,
-      platform,
-      username:  trimmed,
-      url,
-      verified:  0,
-    });
+  } catch {
+    // Capacity/ownership state is authoritative. Storage failures are never
+    // converted into a synthetic free slot.
+    return res.status(503).json({ error: 'Connection capacity unavailable' });
   }
+  if (mutation.status === 'limit') return res.status(429).json({ error: 'Maksimum 10 bağlantı' });
 
-  res.json({ ...connection, label: meta.label, icon: meta.icon });
+  res.json({ ...mutation.connection, label: meta.label, icon: meta.icon });
 });
 
 /**

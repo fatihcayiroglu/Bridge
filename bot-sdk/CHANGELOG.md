@@ -5,6 +5,23 @@ Versiyonlama [Semantic Versioning](https://semver.org/) kurallarını izler.
 
 ---
 
+## [2.1.0] — 2026-09-17
+
+### Eklendi
+- `replyToInteraction(invocationMessageId, content)` — kullanıcının çağırdığı slash komutuna
+  yanıt. Sunucu komut sahipliğini, 15 dakikalık pencereyi, `messages:reply` iznini, AutoMod'u
+  ve çağrı başına 5 yanıt sınırını yeniden doğrular.
+- `BridgeApiError` — reddedilen API çağrıları `status` ve sunucunun `code`'unu taşır
+  (mesaj metni önceki `API hatası <status>: <error>` biçimini korur).
+
+### Düzeltildi
+- Slash komut handler'larındaki `ctx.reply` her zaman `BridgeUnsupportedError` fırlatan
+  `sendMessage`'i çağırıyordu; artık `replyToInteraction` kullanır.
+- `tests/sdk.test.ts` derlenmiyordu (`jest.fn(async () => {})` çağrı tipini `[]` çıkarır);
+  CI'daki `npx jest --ci` adımı 0 test koşuyordu. Tip düzeltildi, suit 55 testle koşar.
+
+---
+
 ## [2.0.0] — 2026-05-08
 
 ### 🚨 Breaking Changes

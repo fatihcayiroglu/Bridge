@@ -50,7 +50,7 @@
 
 /* ── Discover Enhanced ───────────────────────────────────────────────────── */
 
-#discover-root { min-height: 100%; }
+/* #discover-root: kural tek sahipte (community-features.css, Final21 UX U-10). */
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }

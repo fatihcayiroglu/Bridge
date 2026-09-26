@@ -1,18 +1,19 @@
 // server/tests/friends.test.ts
 // Tests for POST /request, GET /, GET /pending, POST /:id/accept, DELETE /:id
+import type { Request, Response, NextFunction } from 'express';
 
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV   = 'test';
 
-import { createMockDb } from './helpers/mockDb';
+import { createMockDb, requireDoc } from './helpers/mockDb';
 const mockDb = createMockDb();
 
 jest.mock('../db/index', () => mockDb);
 jest.mock('../db/loader', () => require('../db/index'));
 jest.mock('../db/repositories', () => ({
   Users: {
-    findByUsername: async (username) => mockDb.users.findOne({ username }),
-    findByIds: async (ids) => {
+    findByUsername: async (username: string) => mockDb.users.findOne({ username }),
+    findByIds: async (ids: string[]) => {
       const users = [];
       for (const id of ids || []) {
         const user = await mockDb.users.findOne({ _id: id });
@@ -22,14 +23,21 @@ jest.mock('../db/repositories', () => ({
     },
   },
   Social: {
-    findFriendship: async (userId, otherId) => mockDb.friendships.findOne({
+    // `findBlock` GERCEK depoda vardir ve `/request` artik engeli denetler
+    // (engellenen kisi istek gonderemez). Mock'ta eksik olmasi, uretimde
+    // olmayan bir 500 uretiyordu — eksik olan MOCK'tu, kod degil.
+    findBlock: async (blockerId: string, blockedId: string) => mockDb.blocks.findOne({ blockerId, blockedId }),
+    findBlocksInvolvingUser: async (userId: string) => mockDb.blocks.find({
+      $or: [{ blockerId: userId }, { blockedId: userId }],
+    }),
+    findFriendship: async (userId: string, otherId: string) => mockDb.friendships.findOne({
       $or: [
         { userId, friendId: otherId },
         { userId: otherId, friendId: userId },
       ],
     }),
-    findFriendshipById: async (friendshipId) => mockDb.friendships.findOne({ _id: friendshipId }),
-    findFriendships: async (userId) => {
+    findFriendshipById: async (friendshipId: string) => mockDb.friendships.findOne({ _id: friendshipId }),
+    findFriendships: async (userId: string) => {
       const query: any = mockDb.friendships.find({
         $or: [{ userId }, { friendId: userId }],
       });
@@ -40,29 +48,33 @@ jest.mock('../db/repositories', () => ({
       if (query && typeof query.then === 'function') return await query;
       throw new Error('Mock friendship query cannot be materialized');
     },
-    createFriendship: async (userId, friendId) => mockDb.friendships.insert({
+    createFriendship: async (userId: string, friendId: string) => mockDb.friendships.insert({
       userId,
       friendId,
       status: 'pending',
       createdAt: Date.now(),
     }),
-    acceptFriendship: async (friendshipId) => mockDb.friendships.update(
+    acceptFriendship: async (friendshipId: string) => mockDb.friendships.update(
       { _id: friendshipId },
       { $set: { status: 'accepted' } },
     ),
-    declineFriendship: async (friendshipId) => mockDb.friendships.update(
+    declineFriendship: async (friendshipId: string) => mockDb.friendships.update(
       { _id: friendshipId },
       { $set: { status: 'declined' } },
     ),
-    removeFriendship: async (friendshipId) => mockDb.friendships.remove({ _id: friendshipId }),
+    removeFriendship: async (friendshipId: string) => mockDb.friendships.remove({ _id: friendshipId }),
   },
 }));
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: (req, res, next) => {
+  authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
     const h = req.headers.authorization;
     if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
     const jwt = require('jsonwebtoken');
-    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret'); next(); }
+    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!'); next(); }
     catch { res.status(401).json({ error: 'Invalid token' }); }
   },
 }));
@@ -79,19 +91,19 @@ const router   = require('../routes/friends');
 
 const app = express();
 app.use(express.json());
-app.use((req, _res, next) => {
+app.use((req: Request, _res: Response, next: NextFunction) => {
   // inject authMiddleware-style req.user from JWT
   const h = req.headers.authorization;
   if (h?.startsWith('Bearer ')) {
-    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret'); } catch {}
+    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!'); } catch {}
   }
   next();
 });
 app.use('/api/friends', router);
-app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
 
-function token(id, username = 'user') {
-  return jwt.sign({ id, username, v: 0 }, 'test-jwt-secret', { expiresIn: '1h' });
+function token(id: string, username = 'user') {
+  return jwt.sign({ id, username, v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
 }
 
 const USER_A = { _id: 'ua', username: 'alice', displayName: 'Alice', avatarColor: '#fff', status: 'online' };
@@ -102,6 +114,18 @@ beforeAll(async () => {
   await mockDb.users.insert(USER_A);
   await mockDb.users.insert(USER_B);
   await mockDb.users.insert(USER_C);
+});
+
+afterEach(async () => {
+  // Relationship rows are test state, unlike the shared user fixtures.  A
+  // stale ua/ub row otherwise makes the peer-id delete test remove an older
+  // relationship and falsely leave the row it just created behind.
+  for (const row of await mockDb.friendships.find({})) {
+    await mockDb.friendships.remove({ _id: row._id });
+  }
+  for (const row of await mockDb.blocks.find({})) {
+    await mockDb.blocks.remove({ _id: row._id });
+  }
 });
 
 describe('POST /api/friends/request', () => {
@@ -133,6 +157,12 @@ describe('POST /api/friends/request', () => {
   });
 
   it('rejects duplicate request', async () => {
+    await mockDb.friendships.insert({
+      userId: 'ua',
+      friendId: 'ub',
+      status: 'pending',
+      createdAt: Date.now(),
+    });
     const res = await request(app)
       .post('/api/friends/request')
       .set('Authorization', `Bearer ${token('ua')}`)
@@ -152,6 +182,12 @@ describe('POST /api/friends/request', () => {
 
 describe('GET /api/friends/pending', () => {
   it('returns pending requests for recipient', async () => {
+    await mockDb.friendships.insert({
+      userId: 'ua',
+      friendId: 'ub',
+      status: 'pending',
+      createdAt: Date.now(),
+    });
     const res = await request(app)
       .get('/api/friends/pending')
       .set('Authorization', `Bearer ${token('ub')}`);
@@ -171,21 +207,19 @@ describe('GET /api/friends/pending', () => {
 });
 
 describe('POST /api/friends/:id/accept', () => {
-  let friendshipId;
-
-  beforeAll(async () => {
-    const rows = await mockDb.friendships.find({ userId: 'ua', friendId: 'ub', status: 'pending' });
-    friendshipId = rows[0]?._id;
-  });
-
   it('accepts the friend request', async () => {
-    expect(friendshipId).toBeDefined();
+    const pending = await mockDb.friendships.insert({
+      userId: 'ua',
+      friendId: 'ub',
+      status: 'pending',
+      createdAt: Date.now(),
+    });
     const res = await request(app)
-      .post(`/api/friends/${friendshipId}/accept`)
+      .post(`/api/friends/${pending._id}/accept`)
       .set('Authorization', `Bearer ${token('ub')}`);
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
-    const updated = await mockDb.friendships.findOne({ _id: friendshipId });
+    const updated = await requireDoc(mockDb.friendships, { _id: pending._id });
     expect(updated.status).toBe('accepted');
   });
 
@@ -209,55 +243,68 @@ describe('POST /api/friends/:id/accept', () => {
 
 describe('GET /api/friends', () => {
   it('lists accepted friends', async () => {
+    await mockDb.friendships.insert({
+      userId: 'ua',
+      friendId: 'ub',
+      status: 'accepted',
+      createdAt: Date.now(),
+    });
     const res = await request(app)
       .get('/api/friends')
       .set('Authorization', `Bearer ${token('ua')}`);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
-    const names = res.body.map(u => u.username);
+    const names = res.body.map((u: Record<string, unknown>) => u.username);
     expect(names).toContain('bob');
   });
 
   it('does not include pending requests in friends list', async () => {
+    await mockDb.friendships.insert({
+      userId: 'ua',
+      friendId: 'uc',
+      status: 'pending',
+      createdAt: Date.now(),
+    });
     const res = await request(app)
       .get('/api/friends')
       .set('Authorization', `Bearer ${token('ua')}`);
     // carol request is still pending
-    const names = res.body.map(u => u.username);
+    const names = res.body.map((u: Record<string, unknown>) => u.username);
     expect(names).not.toContain('carol');
   });
 });
 
 describe('DELETE /api/friends/:id', () => {
-  let friendshipId;
-
-  beforeAll(async () => {
-    const rows = await mockDb.friendships.find({ userId: 'ua', friendId: 'ub', status: 'accepted' });
-    friendshipId = rows[0]?._id;
-  });
-
-  it('removes an accepted friendship', async () => {
+  it('removes an accepted friendship by peer user id (shipping client contract)', async () => {
+    const f = await mockDb.friendships.insert({ userId: 'ua', friendId: 'ub', status: 'accepted', createdAt: Date.now() });
     const res = await request(app)
-      .delete(`/api/friends/${friendshipId}`)
+      .delete('/api/friends/ub')
       .set('Authorization', `Bearer ${token('ua')}`);
     expect(res.status).toBe(200);
-    const gone = await mockDb.friendships.findOne({ _id: friendshipId });
-    expect(gone).toBeNull();
+    expect(await mockDb.friendships.findOne({ _id: f._id })).toBeNull();
   });
 
-  it('returns 404 for non-existent friendship', async () => {
+  it('keeps legacy friendship-row ids compatible for involved users', async () => {
+    const f = await mockDb.friendships.insert({ userId: 'ua', friendId: 'ub', status: 'accepted', createdAt: Date.now() });
+    const res = await request(app)
+      .delete(`/api/friends/${f._id}`)
+      .set('Authorization', `Bearer ${token('ua')}`);
+    expect(res.status).toBe(200);
+    expect(await mockDb.friendships.findOne({ _id: f._id })).toBeNull();
+  });
+
+  it('returns 404 for non-existent friendship or peer', async () => {
     const res = await request(app)
       .delete('/api/friends/nonexistent-id')
       .set('Authorization', `Bearer ${token('ua')}`);
     expect(res.status).toBe(404);
   });
 
-  it('returns 403 if requester is not party to friendship', async () => {
-    // Create a friendship between ub and uc
+  it('returns 403 if requester tries a legacy row id for somebody else friendship', async () => {
     const f = await mockDb.friendships.insert({ userId: 'ub', friendId: 'uc', status: 'accepted', createdAt: Date.now() });
     const res = await request(app)
       .delete(`/api/friends/${f._id}`)
-      .set('Authorization', `Bearer ${token('ua')}`); // alice is not involved
+      .set('Authorization', `Bearer ${token('ua')}`);
     expect(res.status).toBe(403);
   });
 });

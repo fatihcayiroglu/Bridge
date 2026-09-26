@@ -1,8 +1,9 @@
-// @ts-nocheck
 // server/lib/pushSender.ts — Sprint 65: APNs HTTP/2 direkt entegrasyon + FCM v1
 // Web Push (VAPID) + FCM HTTP v1 (OAuth2) + APNs HTTP/2 (p8 key, native)
 
 import logger from './logger';
+import { assertUrlIsPublic } from './ssrfGuard';
+import { isMuted } from './notificationMute';
 import { Notifications, Members, Channels, Messages, Dms } from '../db/repositories';
 import * as http2 from 'http2';
 import * as fs   from 'fs';
@@ -16,6 +17,17 @@ export interface PushPayload {
   badge?: string | number;
   data?:  Record<string, unknown>;
   [key: string]: unknown;
+}
+
+function normalizePushBadge(value: unknown): number {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  }
+  if (typeof value === 'string' && /^(?:0|[1-9]\d*)$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
 export interface WebPushSubscription {
@@ -35,6 +47,36 @@ interface WebPushError extends Error {
 
 interface NativeTokenRow {
   token: string;
+  platform?: string;
+}
+
+function normalizeWebPushRows(rows: unknown): WebPushSubscription[] {
+  if (!Array.isArray(rows)) return [];
+  const out: WebPushSubscription[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const rec = row as Record<string, unknown>;
+    if (typeof rec.endpoint !== 'string' || !rec.endpoint) continue;
+    if (!rec.keys || typeof rec.keys !== 'object' || Array.isArray(rec.keys)) continue;
+    const keys: Record<string, string> = {};
+    let valid = true;
+    for (const [key, value] of Object.entries(rec.keys as Record<string, unknown>)) {
+      if (typeof value !== 'string') { valid = false; break; }
+      keys[key] = value;
+    }
+    if (valid) out.push({ endpoint: rec.endpoint, keys });
+  }
+  return out;
+}
+
+function normalizeNativeTokenRows(rows: unknown): NativeTokenRow[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((row): NativeTokenRow[] => {
+    if (!row || typeof row !== 'object') return [];
+    const rec = row as Record<string, unknown>;
+    if (typeof rec.token !== 'string' || !rec.token) return [];
+    return [{ token: rec.token, ...(typeof rec.platform === 'string' ? { platform: rec.platform } : {}) }];
+  });
 }
 
 // ── webpush lazy-loader ───────────────────────────────────────
@@ -88,12 +130,43 @@ export async function sendWebPush(
 ): Promise<void> {
   const wp = await getWebPush();
   if (!wp) return;
+
+  // ── SSRF: `web-push` KENDI HTTP ISTEGINI YAPAR ────────────────────────────
+  //
+  // `endpoint` KULLANICIDAN gelir (/api/webpush/subscribe) ve veritabaninda
+  // saklanir. `wp.sendNotification()` bu adrese kendi icinde istek atar; bizim
+  // `fetchT` guard'imizdan GECMEZ. Yani kimligi dogrulanmis herhangi bir
+  // kullanici `https://10.0.0.5/...` gibi bir endpoint kaydedip sunucuyu IC
+  // AGA istek atmaya zorlayabilirdi (/api/webpush/test ile tetiklenebilir).
+  //
+  // Yanit saldirgana DONMEZ (kor SSRF) ve `https:` sarti hedefin TLS
+  // konusmasini gerektirir — ama baglanti zamanlamasi ic port taramasi icin
+  // guvenilir bir oracle'dir ve ic HTTPS servisleri erisilebilir kalir.
+  //
+  // Kayit anindaki kontrol tek basina YETMEZ: (a) bu satirdan onceki kayitlar
+  // dogrulanmadan yazildi, (b) DNS kayit ile gonderim arasinda yeniden
+  // baglanabilir. Bu yuzden dogrulama KULLANIM ANINDA da yapilir.
+  try {
+    await assertUrlIsPublic(subscription.endpoint);
+  } catch (err) {
+    logger.warn(
+      { endpoint: subscription.endpoint, err: (err as Error).message, event: 'push.webpush.blocked_ssrf' },
+      'Push endpoint ic aga isaret ediyor — gonderim engellendi.',
+    );
+    return;
+  }
+
   try {
     await _withRetry(() => wp.sendNotification(subscription, JSON.stringify(payload)));
   } catch (err) {
     const e = err as WebPushError;
     if (e.statusCode === 410 || e.statusCode === 404) {
-      await Notifications.removePushSubscriptionWhere({ endpoint: subscription.endpoint }, { multi: false });
+      try {
+        await Notifications.removePushSubscriptionWhere({ endpoint: subscription.endpoint }, { multi: false });
+      } catch (cleanupErr) {
+        logger.warn({ endpoint: subscription.endpoint, err: (cleanupErr as Error).message, event: 'push.webpush.cleanup_failed' },
+          "Geçersiz web-push aboneliği DB'den kaldırılamadı.");
+      }
     } else {
       logger.warn({ err: e.message, endpoint: subscription.endpoint, event: 'push.webpush.failed' }, 'Web push gönderilemedi.');
     }
@@ -182,6 +255,7 @@ export async function sendFCM(
   if (!accessToken) return;
 
   const url = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`;
+  const badge = normalizePushBadge(payload.badge);
 
   const message = {
     token: fcmToken,
@@ -193,7 +267,7 @@ export async function sendFCM(
       notification: {
         icon:               'ic_stat_bridge',
         color:              '#2d9cdb',
-        notification_count: Number(payload.badge) || 0,
+        notification_count: badge,
         channel_id:         'bridge_default',
       },
       priority: 'high',
@@ -201,7 +275,7 @@ export async function sendFCM(
     apns: {
       payload: {
         aps: {
-          badge:               Number(payload.badge) || 0,
+          badge,
           sound:               'default',
           'content-available': 1,
         },
@@ -223,8 +297,13 @@ export async function sendFCM(
     if (!res.ok) {
       const body = await res.text();
       if (res.status === 404 || body.includes('UNREGISTERED')) {
-        await Notifications.removeNativeTokenWhere({ token: fcmToken });
-        await Notifications.removeFcmTokenWhere({ token: fcmToken });
+        try {
+          await Notifications.removeNativeTokenWhere({ token: fcmToken });
+          await Notifications.removeFcmTokenWhere({ token: fcmToken });
+        } catch (cleanupErr) {
+          logger.warn({ err: (cleanupErr as Error).message, tokenPrefix: fcmToken.slice(0, 8), event: 'push.fcm.cleanup_failed' },
+            "Geçersiz FCM tokenı DB'den kaldırılamadı.");
+        }
       } else {
         logger.warn(`[FCM v1] Send error ${res.status}:`, body.slice(0, 200));
       }
@@ -277,7 +356,10 @@ function getApnsJwt(cfg: ApnsConfig): string {
   try {
     privateKey = fs.readFileSync(cfg.keyPath, 'utf8');
   } catch (err) {
-    throw new Error(`[APNs] p8 key okunamadı (${cfg.keyPath}): ${(err as Error).message}`);
+    throw new Error(
+  `[APNs] p8 key okunamadı (${cfg.keyPath}): ${(err as Error).message}`,
+  { cause: err },
+);
   }
 
   const sign     = crypto.createSign('SHA256');
@@ -297,7 +379,7 @@ function getHttp2Client(host: string): http2.ClientHttp2Session {
   if (existing && !existing.destroyed) return existing;
 
   const client = http2.connect(`https://${host}`);
-  client.on('error', (err) => {
+  client.on('error', (err: Error) => {
     logger.warn(`[APNs] HTTP/2 bağlantı hatası (${host}):`, err.message);
     _http2Clients.delete(host);
   });
@@ -316,8 +398,10 @@ function apnsHttp2Request(
     let responseBody = '';
     let statusCode = 0;
 
-    req.on('response', (resHeaders) => {
-      statusCode = resHeaders[':status'] as number;
+    req.on('response', (resHeaders: http2.IncomingHttpHeaders) => {
+      const status = resHeaders[':status'];
+      statusCode = typeof status === 'number' ? status : Number(Array.isArray(status) ? status[0] : status ?? 0);
+      if (!Number.isInteger(statusCode) || statusCode < 0) statusCode = 0;
     });
     req.on('data', (chunk: Buffer) => { responseBody += chunk.toString(); });
     req.on('end', () => resolve({ status: statusCode, body: responseBody }));
@@ -351,7 +435,7 @@ export async function sendAPNs(
   const apsPayload = {
     aps: {
       alert: { title: payload.title, body: payload.body },
-      badge: Number(payload.badge) || 0,
+      badge: normalizePushBadge(payload.badge),
       sound: 'default',
       'content-available': 1,
     },
@@ -385,8 +469,13 @@ export async function sendAPNs(
 
     if (status === 410 || reason === 'Unregistered' || reason === 'BadDeviceToken') {
       // Token geçersiz — DB'den sil
-      await Notifications.removeNativeTokenWhere({ token: deviceToken });
-      logger.info(`[APNs] Geçersiz token kaldırıldı: ${deviceToken.slice(0, 8)}…`);
+      try {
+        await Notifications.removeNativeTokenWhere({ token: deviceToken });
+        logger.info(`[APNs] Geçersiz token kaldırıldı: ${deviceToken.slice(0, 8)}…`);
+      } catch (cleanupErr) {
+        logger.warn({ err: (cleanupErr as Error).message, tokenPrefix: deviceToken.slice(0, 8), event: 'push.apns.cleanup_failed' },
+          "Geçersiz APNs tokenı DB'den kaldırılamadı.");
+      }
     } else {
       logger.warn(`[APNs] Send error ${status}: ${reason}`);
     }
@@ -434,14 +523,19 @@ export async function getUnreadCount(userId: string): Promise<number> {
 
       if (allChannels.length > 0) {
         const channelIds = (allChannels as Array<{ _id: string }>).map(c => c._id);
+        // Preference-store failure must not be interpreted as "no mutes".
+        // Let the outer safety boundary return badge=0 (fail closed).
         const prefs = await Notifications.prefsFind({
           userId,
           channelId: { $in: channelIds },
-        }).catch(() => []) ?? [];
+        }) ?? [];
 
+        // Sessizlik karari TEK SAHIPTEN sorulur: elle `level === 'mute'`
+        // yazmak `muteUntil` suresini yok sayar ve GECICI sessizligi KALICI
+        // hale getirirdi (bkz. lib/notificationMute.ts).
         const mutedSet = new Set(
-          (prefs as Array<{ level: string; channelId: string }>)
-            .filter(p => p.level === 'mute').map(p => p.channelId)
+          (prefs as Array<{ level: string; channelId: string; muteUntil?: number | null }>)
+            .filter(p => isMuted(p)).map(p => p.channelId)
         );
 
         const activeChannelIds = channelIds.filter(id => !mutedSet.has(id));
@@ -493,13 +587,26 @@ export async function sendPushToUser(
       ...(isE2E ? { body: '🔒 Şifreli mesaj' } : {}),
     };
 
-    // Web push
-    const webSubs = await Notifications.findPushSubscriptionsForUser(userId) as WebPushSubscription[];
+    // Delivery is best-effort per transport, but repository failures stay
+    // observable. A broken web-push table must not suppress native delivery,
+    // and vice versa. API/configuration routes still receive repository
+    // failures directly and return 503 instead of claiming success.
+    let webSubs: WebPushSubscription[] = [];
+    try {
+      webSubs = normalizeWebPushRows(await Notifications.findPushSubscriptionsForUser(userId));
+    } catch (err) {
+      logger.warn({ err, userId, event: 'push.targets.webpush_read_failed' }, 'Web-push targets could not be read');
+    }
     await Promise.allSettled(webSubs.map(sub =>
       sendWebPush({ endpoint: sub.endpoint, keys: sub.keys }, enrichedPayload)
     ));
 
-    const nativeTokens = await Notifications.findNativeTokensForUser(userId) as Array<NativeTokenRow & { platform?: string }>;
+    let nativeTokens: Array<NativeTokenRow & { platform?: string }> = [];
+    try {
+      nativeTokens = normalizeNativeTokenRows(await Notifications.findNativeTokensForUser(userId));
+    } catch (err) {
+      logger.warn({ err, userId, event: 'push.targets.native_read_failed' }, 'Native push targets could not be read');
+    }
 
     // Platform bazlı yönlendirme:
     // iOS → APNs HTTP/2 (doğrudan), Android → FCM v1
@@ -513,7 +620,12 @@ export async function sendPushToUser(
     }));
 
     // Legacy FCM token'ları (platform bilgisi olmayan eski kayıtlar)
-    const legacyTokens = await Notifications.findFcmTokensForUser(userId) as NativeTokenRow[];
+    let legacyTokens: NativeTokenRow[] = [];
+    try {
+      legacyTokens = normalizeNativeTokenRows(await Notifications.findFcmTokensForUser(userId));
+    } catch (err) {
+      logger.warn({ err, userId, event: 'push.targets.fcm_read_failed' }, 'Legacy FCM targets could not be read');
+    }
     await Promise.allSettled(legacyTokens.map(r => dispatch.sendFCM(r.token, enrichedPayload)));
   } catch (err) {
     logger.warn('[pushSender] sendPushToUser error:', (err as Error).message);
@@ -522,7 +634,7 @@ export async function sendPushToUser(
 
 export async function clearBadge(userId: string): Promise<void> {
   try {
-    const nativeTokens = await Notifications.findNativeTokensForUser(userId) as Array<NativeTokenRow & { platform?: string }>;
+    const nativeTokens = normalizeNativeTokenRows(await Notifications.findNativeTokensForUser(userId));
     const apnsEnabled  = !!getApnsConfig();
 
     // APNs badge clear
@@ -590,7 +702,12 @@ export async function clearBadge(userId: string): Promise<void> {
             if (!res.ok) {
               const body = await res.text();
               if (res.status === 404 || body.includes('UNREGISTERED')) {
-                await Notifications.removeNativeTokenWhere({ token: r.token });
+                try {
+                  await Notifications.removeNativeTokenWhere({ token: r.token });
+                } catch (cleanupErr) {
+                  logger.warn({ err: (cleanupErr as Error).message, tokenPrefix: r.token.slice(0, 8), event: 'push.clear_badge.cleanup_failed' },
+                    "Geçersiz push tokenı badge temizleme sırasında DB'den kaldırılamadı.");
+                }
               }
             }
           } catch (err) {
@@ -603,3 +720,5 @@ export async function clearBadge(userId: string): Promise<void> {
     logger.warn('[pushSender] clearBadge error:', (err as Error).message);
   }
 }
+
+

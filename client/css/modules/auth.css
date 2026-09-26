@@ -4,6 +4,9 @@
 .auth-screen {
   position: fixed; inset: 0;
   display: flex; align-items: center; justify-content: center;
+  min-height: var(--bridge-visual-viewport-height, 100dvh);
+  padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+  overflow-y: auto;
   background: var(--bg-1); z-index: 999;
 }
 .auth-bg { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
@@ -14,14 +17,26 @@
 @keyframes blobFloat { 0%, 100% { transform: translate(0,0) scale(1); } 50% { transform: translate(20px,-20px) scale(1.05); } }
 
 .auth-card {
-  background: var(--bg-3); border: 1px solid rgba(255,255,255,0.06);
-  border-radius: var(--r-xl); padding: 44px 40px; width: 440px;
-  position: relative; box-shadow: var(--shadow);
+  background: var(--bg-3); border: 1px solid var(--border);
+  border-radius: var(--radius-modal); padding: 44px 40px; width: min(440px, 100%);
+  position: relative; box-shadow: var(--shadow-xl);
   animation: authIn 0.35s cubic-bezier(0.34,1.56,0.64,1);
 }
 @keyframes authIn { from { opacity: 0; transform: translateY(30px) scale(0.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
 
-.auth-logo { font-size: 52px; text-align: center; margin-bottom: 6px; filter: drop-shadow(0 0 20px rgba(79,142,247,0.4)); }
+.auth-logo {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  margin: 0 auto 10px;
+  color: var(--brand);
+  background: var(--brand-bg);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--radius-modal);
+  filter: drop-shadow(0 8px 18px var(--brand-glow));
+  place-items: center;
+}
+.auth-logo svg { width: 38px; height: 38px; stroke-width: 2.3; }
 .auth-brand { text-align: center; margin-bottom: 28px; }
 .auth-brand h1 { font-size: 30px; font-weight: 800; background: linear-gradient(135deg, #4f8ef7, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: -1px; }
 .auth-brand p { color: var(--text-3); font-size: 13px; margin-top: 4px; }
@@ -30,8 +45,8 @@
 .auth-tab { flex: 1; padding: 8px; border: none; background: transparent; color: var(--text-3); border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit; transition: all 0.2s; }
 .auth-tab.active { background: var(--brand); color: white; }
 
-.auth-error { background: rgba(237,66,69,0.12); border: 1px solid rgba(237,66,69,0.25); color: #ed4245; border-radius: var(--r-md); padding: 10px 14px; font-size: 13px; margin-bottom: 16px; }
-.auth-success { background: rgba(59,165,92,0.12); border: 1px solid rgba(59,165,92,0.25); color: var(--green); border-radius: var(--r-md); padding: 10px 14px; font-size: 13px; margin-bottom: 16px; }
+.auth-error { background: var(--red-bg); border: 1px solid var(--danger); color: var(--danger); border-radius: var(--r-md); padding: 10px 14px; font-size: 13px; margin-bottom: 16px; }
+.auth-success { background: var(--green-bg); border: 1px solid var(--green); color: var(--green); border-radius: var(--r-md); padding: 10px 14px; font-size: 13px; margin-bottom: 16px; }
 /* CAPTCHA widget wrap */
 #captcha-widget-wrap { background: var(--bg-3); border: 1px solid var(--bg-4); border-radius: var(--r-md); padding: 10px 12px; }
 #captcha-widget iframe { border-radius: 6px; }
@@ -48,9 +63,7 @@
 .btn-primary { background: var(--brand); color: white; width: 100%; box-shadow: 0 4px 16px var(--brand-glow); }
 .btn-primary:hover:not(:disabled) { background: var(--brand-dark); transform: translateY(-1px); }
 .btn-primary:active:not(:disabled) { transform: translateY(0); }
-.btn-danger { background: #ed4245; color: white; }
-.btn-danger:hover:not(:disabled) { background: #c03537; transform: translateY(-1px); }
-.btn-danger { background: rgba(237,66,69,0.15); color: var(--red); }
+.btn-danger { background: var(--red-bg); color: var(--red); }
 .btn-danger:hover { background: var(--red); color: white; }
 
 /* Sprint 60: Passkey buton + ayraç */
@@ -61,3 +74,39 @@
 
 .auth-divider { display: flex; align-items: center; gap: 10px; margin: 14px 0 12px; color: var(--text-3); font-size: 12px; }
 .auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--bg-5); }
+
+/* Final21 UX (U-01): hesap kurtarma — şifre alanının hemen altında, alışılmış yerde. */
+.auth-link {
+  display: block; margin: -6px 0 14px auto; padding: 4px 0; min-height: 24px;
+  border: 0; background: none; color: var(--text-link, var(--brand)); font: inherit; font-size: 13px; font-weight: 500;
+  cursor: pointer; text-align: right;
+}
+.auth-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+.auth-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: 4px; }
+.auth-help { margin: 0 0 16px; color: var(--text-2); font-size: 13px; line-height: 1.5; }
+
+
+/* P1 responsive polish — authentication must remain usable on narrow phones,
+   landscape keyboards and reduced-motion environments without a horizontal
+   scroll escape hatch. */
+@media (max-width: 560px) {
+  .auth-screen {
+    align-items: flex-start;
+    padding: max(16px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+  }
+  .auth-card { margin: auto 0; padding: 30px 22px; border-radius: var(--radius-modal); }
+  .auth-brand { margin-bottom: 22px; }
+  .auth-brand h1 { font-size: 26px; }
+  .auth-tabs { margin-bottom: 20px; }
+  .auth-tab, .btn { min-height: 44px; }
+}
+
+@media (max-width: 360px) {
+  .auth-card { padding: 24px 16px; }
+  .auth-logo { width: 52px; height: 52px; }
+  .auth-brand h1 { font-size: 24px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-blob, .auth-card { animation: none; }
+}

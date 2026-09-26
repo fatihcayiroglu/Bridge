@@ -1,7 +1,7 @@
 // server/tests/serverTemplates.test.ts
 // Kapsamlı testler: DB tabanlı şablon sistemi, sistem mesajı, CRUD, apply
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
@@ -14,7 +14,7 @@ const jwt     = require('jsonwebtoken');
 import { authMiddleware } from '../middleware/auth';
 
 // Her testten önce seed durumunu sıfırla
-let templatesRouter;
+let templatesRouter: typeof import('../routes/serverTemplates');
 function loadRouter() {
   jest.resetModules();
   jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
@@ -22,18 +22,27 @@ function loadRouter() {
   return templatesRouter;
 }
 
-function buildApp(router) {
+// `require()` bir MODUL dondurur; router `default` altinda ya da modulun
+// kendisi olabilir. Imza bu gercegi yazar.
+function buildApp(router: express.Router | { default?: express.Router }) {
   const app = express();
   app.use(express.json());
-  app.use('/api/server-templates', router);
+  // `require()` CommonJS modulu dondurur: router ya modulun kendisidir ya da
+  // `default` altindadir (routes/serverTemplates.ts ikisini de yazar).
+  const mounted = 'default' in router && router.default ? router.default : (router as express.Router);
+  app.use('/api/server-templates', mounted);
   return app;
 }
-function tok(uid, v = 0) {
+function tok(uid: string, v = 0) {
   return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' });
 }
 
 describe('Server Templates — DB Tabanlı (v57)', () => {
-  let app, userId, userToken, otherUserId, otherToken;
+  let app: express.Express;
+  let userId: string;
+  let userToken: string;
+  let otherUserId: string;
+  let otherToken: string;
 
   beforeEach(async () => {
     db._reset?.();
@@ -196,7 +205,7 @@ describe('Server Templates — DB Tabanlı (v57)', () => {
   // PUT /api/server-templates/:id — Güncelle
   // ─────────────────────────────────────────────────────────────
   describe('PUT /api/server-templates/:id', () => {
-    let templateId;
+    let templateId: string;
 
     beforeEach(async () => {
       const inserted = await db.serverTemplates.insert({
@@ -242,7 +251,7 @@ describe('Server Templates — DB Tabanlı (v57)', () => {
   // DELETE /api/server-templates/:id
   // ─────────────────────────────────────────────────────────────
   describe('DELETE /api/server-templates/:id', () => {
-    let templateId;
+    let templateId: string;
 
     beforeEach(async () => {
       const inserted = await db.serverTemplates.insert({
@@ -399,4 +408,51 @@ describe('Server Templates — DB Tabanlı (v57)', () => {
       expect(applyRes.body.server.name).toBe('Foxland');
     });
   });
+
+  describe('runtime input and persisted-state boundaries', () => {
+    const validCategories = [{ name: 'GENEL', channels: [{ name: 'genel', type: 'text' }] }];
+
+    it.each([
+      [{ name: 7, categories: validCategories }, /ad|required/i],
+      [{ name: 'safe', icon: { value: 'x' }, categories: validCategories }, /icon/i],
+      [{ name: 'safe', description: ['x'], categories: validCategories }, /description/i],
+      [{ name: 'safe', tags: 'tag', categories: validCategories }, /tags/i],
+      [{ name: 'safe', tags: ['ok', 7], categories: validCategories }, /tags/i],
+    ])('rejects malformed create metadata %# instead of coercing it', async (body, pattern) => {
+      const res = await request(app).post('/api/server-templates')
+        .set('Authorization', `Bearer ${userToken}`).send(body);
+      expect(res.status).toBe(400);
+      expect(String(res.body.error)).toMatch(pattern);
+    });
+
+    it('rejects malformed update metadata rather than persisting object stringification', async () => {
+      const inserted = await db.serverTemplates.insert({
+        _id: uuidv4(), name: 'Safe', icon: '🌐', description: '', tags: '[]',
+        categories: JSON.stringify(validCategories), createdBy: userId, createdAt: Date.now(),
+      });
+      for (const body of [{ name: 7 }, { icon: {} }, { description: [] }, { tags: 'tag' }, { categories: 'bad' }]) {
+        const res = await request(app).put(`/api/server-templates/${inserted._id}`)
+          .set('Authorization', `Bearer ${userToken}`).send(body);
+        expect(res.status).toBe(400);
+      }
+    });
+
+    it('fails safe on corrupt stored tags/categories instead of taking down list/detail', async () => {
+      const inserted = await db.serverTemplates.insert({
+        _id: uuidv4(), name: 'Corrupt legacy', icon: '🌐', description: '',
+        tags: '{broken', categories: '{broken', createdBy: userId, createdAt: Date.now(),
+      });
+      const list = await request(app).get('/api/server-templates').set('Authorization', `Bearer ${userToken}`);
+      expect(list.status).toBe(200);
+      const row = list.body.find((x: any) => x.id === inserted._id);
+      expect(row?.tags).toEqual([]);
+
+      const detail = await request(app).get(`/api/server-templates/${inserted._id}`)
+        .set('Authorization', `Bearer ${userToken}`);
+      expect(detail.status).toBe(200);
+      expect(detail.body.tags).toEqual([]);
+      expect(detail.body.categories).toEqual([]);
+    });
+  });
+
 });

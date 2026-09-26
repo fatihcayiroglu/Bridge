@@ -173,11 +173,16 @@ class BridgeVoiceRecorderStub {
 
   cancel(): void {
     if (this._maxTimer) clearTimeout(this._maxTimer);
-    this._chunks = [];
+    // Faz 12 — SIRALAMA DÜZELTİLDİ: `stop()` `ondataavailable` tetikleyip
+    // yeni bir parça ekleyebildiği için temizlik ÖNCE yapılırsa geri geliyordu
+    // (`cancel() _chunks temizlemeli` testi bu yüzden düşüyordu).
+    // İptal edilen kayıtta hiçbir ses verisi tutulmamalıdır: önce durdur,
+    // sonra temizle.
     if (this._mediaRecorder) {
       this._mediaRecorder.onstop = null;
       if (this._mediaRecorder.state === 'recording') this._mediaRecorder.stop();
     }
+    this._chunks = [];
     this._stream?.getTracks().forEach(t => t.stop());
     this.state = 'idle';
     this._startTime = null;

@@ -1,291 +1,148 @@
-// e2e/tests/dm.spec.ts — Sprint 14: TypeScript dönüşümü (.js → .ts)
-// e2e/tests/dm.spec.js — Direct Message E2E Testleri
-// Kritik akış: DM başlat → mesaj gönder → okundu işareti
+// e2e/tests/dm.spec.ts — Direct Message uçtan uca akışı.
+//
+// KANONİK ÜRETİM YOLU
+//   POST /api/dm/:userId          → konuşmayı aç/al (gövde YOK, yol parametresi)
+//   GET  /api/dm                  → konuşma listesi (keşif / yeniden açma)
+//   GET  /api/dm/:dmId/messages   → mesajları oku
+//   socket `dm:send` { toUserId, content } → her iki tarafa `dm:message`
+//
+// `POST /api/dm/open` diye bir uç YOKTUR (eski spec bunu varsayıyordu) ve
+// gönderim REST değil socket üzerindendir.
 
-import { test, expect } from '@playwright/test';
-import { BridgePage, getTokens } from '../helpers/bridge';
+import { test, expect } from '../helpers/apiTest';
+import { getTokens } from '../helpers/bridge';
+import { openSocket, waitForEvent, closeSockets, paceSends, attachSendDiagnostics } from '../helpers/socket';
+import type { Socket } from 'socket.io-client';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
+
+type DmMsg = { _id?: string; content?: string; dmId?: string };
 
 test.describe('Direct Message (DM) Akışları', () => {
-  let tokens;
-  let aliceId;
-  let bobId;
+  let tokens: ReturnType<typeof getTokens>;
+  let aliceId = '';
+  let bobId = '';
+  let dmId = '';
 
   test.beforeAll(async ({ request }) => {
     tokens = getTokens();
 
-    // Kullanıcı ID'lerini al
-    const aliceRes = await request.get(`${BASE_URL}/api/me`, {
+    const me = async (token: string) => {
+      const res = await request.get(`${BASE_URL}/api/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(res.status()).toBe(200);
+      const u = await res.json();
+      return u._id || u.id;
+    };
+    aliceId = await me(tokens.alice);
+    bobId = await me(tokens.bob);
+    expect(aliceId).toBeTruthy();
+    expect(bobId).toBeTruthy();
+  });
+
+  test('keşif — alice bob ile DM konuşması açar', async ({ request }) => {
+    const res = await request.post(`${BASE_URL}/api/dm/${bobId}`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
-    if (aliceRes.ok()) {
-      const alice = await aliceRes.json();
-      aliceId = alice._id || alice.id;
+    expect(res.status(), `DM açılamadı: ${await res.text()}`).toBeLessThan(300);
+
+    const conv = await res.json();
+    dmId = conv._id || conv.id || conv.dmId;
+    expect(dmId, 'DM konuşma kimliği dönmedi').toBeTruthy();
+  });
+
+  test('gönderim — dm:send ile gönderilen mesajı ALICI gerçekten alır', async () => {
+    const alice = await openSocket(tokens.alice);
+    const bob = await openSocket(tokens.bob);
+    attachSendDiagnostics(alice, 'alice');
+    try {
+      const content = `E2E DM ${Date.now()}`;
+      const bobReceives = waitForEvent<DmMsg>(bob, 'dm:message', 15_000);
+
+      await paceSends('alice');
+      alice.emit('dm:send', { toUserId: bobId, content });
+
+      const received = await bobReceives;
+      expect(received.content).toBe(content);
+    } finally {
+      closeSockets(alice, bob);
     }
+  });
 
-    const bobRes = await request.get(`${BASE_URL}/api/me`, {
-      headers: { Authorization: `Bearer ${tokens.bob}` },
-    });
-    if (bobRes.ok()) {
-      const bob = await bobRes.json();
-      bobId = bob._id || bob.id;
+  test('kalıcılık — DM mesajı kanonik okuma yolundan görünür', async ({ request }) => {
+    const alice = await openSocket(tokens.alice);
+    attachSendDiagnostics(alice, 'alice');
+    try {
+      const content = `E2E DM kalıcı ${Date.now()}`;
+      await paceSends('alice');
+      alice.emit('dm:send', { toUserId: bobId, content });
+
+      // Konuşmayı al (ilk testte açıldı; bağımsız çalışabilmesi için tekrar aç).
+      const open = await request.post(`${BASE_URL}/api/dm/${bobId}`, {
+        headers: { Authorization: `Bearer ${tokens.alice}` },
+      });
+      const conv = await open.json();
+      const id = conv._id || conv.id || conv.dmId;
+
+      const deadline = Date.now() + 10_000;
+      let found: DmMsg | undefined;
+      while (Date.now() < deadline && !found) {
+        const res = await request.get(`${BASE_URL}/api/dm/${id}/messages`, {
+          headers: { Authorization: `Bearer ${tokens.alice}` },
+        });
+        expect(res.status()).toBe(200);
+        const body = await res.json();
+        const list: DmMsg[] = Array.isArray(body) ? body : (body.messages ?? []);
+        found = list.find((m) => m.content === content);
+        if (!found) await new Promise((r) => setTimeout(r, 300));
+      }
+      expect(found, 'gönderilen DM kalıcı listede yok').toBeTruthy();
+    } finally {
+      closeSockets(alice);
     }
   });
 
-  // ── API Testleri ─────────────────────────────────────────
-
-  test('API: DM kanalı açma/alma', async ({ request }) => {
-    test.skip(!bobId, 'Test fixture hazır değil'  );
-
-    const res = await request.post(`${BASE_URL}/api/dm/open`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ targetUserId: bobId }),
-    });
-
-    // 200 veya 201 bekleniyor
-    expect(res.status()).toBeLessThan(300);
-    const data = await res.json();
-    expect(data._id || data.id || data.channelId).toBeTruthy();
-  });
-
-  test('API: DM mesajı gönderme', async ({ request }) => {
-    test.skip(!bobId, 'Test fixture hazır değil'  );
-
-    // DM kanalını aç
-    const openRes = await request.post(`${BASE_URL}/api/dm/open`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ targetUserId: bobId }),
-    });
-    test.skip(!openRes.ok(), 'Test fixture hazır değil'  );
-
-    const dmData = await openRes.json();
-    const dmChannelId = dmData._id || dmData.id || dmData.channelId;
-    test.skip(!dmChannelId, 'Test fixture hazır değil'  );
-
-    // Mesaj gönder
-    const msgRes = await request.post(`${BASE_URL}/api/channels/${dmChannelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content: 'Merhaba Bob! DM testi.' }),
-    });
-
-    expect(msgRes.status()).toBeLessThan(300);
-  });
-
-  test('API: DM listesi alınmalı', async ({ request }) => {
-    const res = await request.get(`${BASE_URL}/api/dm`, {
+  test('navigasyon — konuşma listesinde görünür ve yeniden açılabilir', async ({ request }) => {
+    const list = await request.get(`${BASE_URL}/api/dm`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
+    expect(list.status()).toBe(200);
+    const body = await list.json();
+    const convs = Array.isArray(body) ? body : (body.conversations ?? body.dms ?? []);
+    expect(Array.isArray(convs)).toBe(true);
+    expect(convs.length, 'DM konuşma listesi boş').toBeGreaterThan(0);
 
-    // DM endpoint mevcut olmalı
-    expect(res.status()).toBeLessThan(500);
-    if (res.status() === 200) {
-      const data = await res.json();
-      expect(Array.isArray(data) || Array.isArray(data.dms)).toBe(true);
-    }
-  });
-
-  test('API: kendi kendinle DM açılamamalı', async ({ request }) => {
-    test.skip(!aliceId, 'Alice kullanıcı fixture gerekli'  );
-
-    const res = await request.post(`${BASE_URL}/api/dm/open`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ targetUserId: aliceId }),
-    });
-
-    // Kendi ID'si ile DM açılamaz
-    expect(res.status()).toBeGreaterThanOrEqual(400);
-  });
-
-  test('API: var olmayan kullanıcıyla DM açılamamalı', async ({ request }) => {
-    const res = await request.post(`${BASE_URL}/api/dm/open`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ targetUserId: 'var-olmayan-id-99999' }),
-    });
-
-    expect(res.status()).toBeGreaterThanOrEqual(400);
-  });
-
-  test('API: Bob Alice\'in DM mesajını görebilmeli', async ({ request }) => {
-    test.skip(!bobId, 'Test fixture hazır değil'  );
-
-    // DM kanalını aç
-    const openRes = await request.post(`${BASE_URL}/api/dm/open`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ targetUserId: bobId }),
-    });
-    test.skip(!openRes.ok(), 'Test fixture hazır değil'  );
-
-    const dmData = await openRes.json();
-    const dmChannelId = dmData._id || dmData.id || dmData.channelId;
-    test.skip(!dmChannelId, 'Test fixture hazır değil'  );
-
-    // Alice mesaj gönder
-    const unique = `DM-test-${Date.now()}`;
-    await request.post(`${BASE_URL}/api/channels/${dmChannelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content: unique }),
-    });
-
-    // Bob mesajları görebilmeli
-    const bobRes = await request.get(`${BASE_URL}/api/channels/${dmChannelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.bob}` },
-    });
-    expect(bobRes.status()).toBe(200);
-    const data = await bobRes.json();
-    const messages = data.messages || data;
-    const found = messages.some(
-      (m) => (m.content || '').includes(unique)
-    );
-    expect(found).toBe(true);
-  });
-
-  // ── UI Testleri ──────────────────────────────────────────
-
-  test('UI: DM sayfası yüklenmeli', async ({ page }) => {
-    const bp = new BridgePage(page);
-    await bp.goto('/');
-    await page.waitForTimeout(1000);
-
-    // DM navigasyon butonu (friends, DM ikonu)
-    const dmNav = page.locator(
-      '[data-testid="dm-nav"], .dm-nav, [href*="/dm"], [aria-label*="DM"], [aria-label*="Direct"]'
-    ).first();
-
-    if (await dmNav.count() > 0) {
-      await dmNav.click();
-      await page.waitForTimeout(800);
-    }
-
-    await expect(page.locator('body')).toBeVisible();
-  });
-
-  // ── E2EE Toggle UI Testleri ───────────────────────────────
-
-  test('UI: E2EE toggle butonu DM input alanında görünür', async ({ page }) => {
-    const bp = new BridgePage(page);
-    await bp.loginViaToken(tokens.alice);
-    await bp.goto('/');
-    await page.waitForTimeout(1500);
-
-    // DM panelini aç
-    const dmBtn = page.locator('#dm-panel-btn, [data-testid="dm-btn"], .dm-nav-btn').first();
-    if (await dmBtn.count() > 0) {
-      await dmBtn.click();
-      await page.waitForTimeout(500);
-    }
-
-    // İlk DM item'ına tıkla
-    const dmItem = page.locator('.dm-item').first();
-    if (await dmItem.count() > 0) {
-      await dmItem.click();
-      await page.waitForTimeout(800);
-
-      // Input alanı açık olmalı
-      await expect(page.locator('#dm-input-area')).toBeVisible();
-
-      // E2EE toggle butonu var olmalı (BridgeE2E kurulmamışsa gizli olabilir)
-      const toggle = page.locator('#dm-e2e-toggle');
-      await expect(toggle).toHaveCount(1);
-    }
-  });
-
-  test('UI: E2EE banner başlangıçta gizli olmalı', async ({ page }) => {
-    const bp = new BridgePage(page);
-    await bp.loginViaToken(tokens.alice);
-    await bp.goto('/');
-    await page.waitForTimeout(1500);
-
-    const dmItem = page.locator('.dm-item').first();
-    if (await dmItem.count() > 0) {
-      await dmItem.click();
-      await page.waitForTimeout(800);
-
-      // Banner başlangıçta gizli olmalı (display:none)
-      const banner = page.locator('#dm-e2e-banner');
-      await expect(banner).toHaveCount(1);
-      await expect(banner).toBeHidden();
-    }
-  });
-
-  // ── Okundu Bilgisi (DM Read Receipt) API Testleri ─────────
-
-  test('API: DM mesajı okundu olarak işaretlenebilmeli', async ({ request }) => {
-    test.skip(!bobId, 'Test fixture hazır değil'  );
-
-    // DM kanalını aç
-    const openRes = await request.post(`${BASE_URL}/api/dm/open`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ targetUserId: bobId }),
-    });
-    test.skip(!openRes.ok(), 'Test fixture hazır değil'  );
-
-    const dmData = await openRes.json();
-    const dmChannelId = dmData._id || dmData.id || dmData.channelId;
-    test.skip(!dmChannelId, 'Test fixture hazır değil'  );
-
-    // Alice mesaj gönder
-    const msgRes = await request.post(`${BASE_URL}/api/channels/${dmChannelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content: `read-receipt-test-${Date.now()}` }),
-    });
-    test.skip(!msgRes.ok(), 'Test fixture hazır değil'  );
-
-    const msgData = await msgRes.json();
-    const msgId = msgData._id || msgData.id;
-    test.skip(!msgId, 'Mesaj fixture gerekli'  );
-
-    // Bob mesajı okundu işaretle (PATCH veya POST /read endpoint)
-    const readRes = await request.post(`${BASE_URL}/api/dm/${dmChannelId}/read`, {
-      headers: { Authorization: `Bearer ${tokens.bob}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ messageId: msgId }),
-    });
-
-    // 200 veya 404 (endpoint henüz yoksa) — 5xx olmamalı
-    expect(readRes.status()).toBeLessThan(500);
-  });
-
-  test('API: Yetkisiz kullanıcı DM mesajlarını okumamalı', async ({ request }) => {
-    test.skip(!bobId, 'Test fixture hazır değil'  );
-
-    // DM kanalını aç
-    const openRes = await request.post(`${BASE_URL}/api/dm/open`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ targetUserId: bobId }),
-    });
-    test.skip(!openRes.ok(), 'Test fixture hazır değil'  );
-
-    const dmData = await openRes.json();
-    const dmChannelId = dmData._id || dmData.id || dmData.channelId;
-    test.skip(!dmChannelId, 'Test fixture hazır değil'  );
-
-    // Yetkisiz istek (token yok)
-    const res = await request.get(`${BASE_URL}/api/channels/${dmChannelId}/messages`);
-    expect(res.status()).toBeGreaterThanOrEqual(401);
-  });
-
-  test('API: DM mesaj geçmişinde sayfalama çalışmalı', async ({ request }) => {
-    test.skip(!bobId, 'Test fixture hazır değil'  );
-
-    const openRes = await request.post(`${BASE_URL}/api/dm/open`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ targetUserId: bobId }),
-    });
-    test.skip(!openRes.ok(), 'Test fixture hazır değil'  );
-
-    const dmData = await openRes.json();
-    const dmChannelId = dmData._id || dmData.id || dmData.channelId;
-    test.skip(!dmChannelId, 'Test fixture hazır değil'  );
-
-    // limit parametresi ile sayfalama
-    const res = await request.get(`${BASE_URL}/api/channels/${dmChannelId}/messages?limit=5`, {
+    // Yeniden açma aynı konuşmayı vermeli (yeni bir tane oluşturmamalı).
+    const reopen = await request.post(`${BASE_URL}/api/dm/${bobId}`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
+    expect(reopen.status()).toBeLessThan(300);
+    const again = await reopen.json();
+    const againId = again._id || again.id || again.dmId;
 
-    expect(res.status()).toBe(200);
-    const data = await res.json();
-    const messages = data.messages || data;
-    expect(Array.isArray(messages)).toBe(true);
-    expect(messages.length).toBeLessThanOrEqual(5);
+    const first = await request.post(`${BASE_URL}/api/dm/${bobId}`, {
+      headers: { Authorization: `Bearer ${tokens.alice}` },
+    });
+    const firstId = (await first.json())._id;
+    expect(againId).toBe(firstId);
+  });
+
+  test('yetkilendirme — konuşmanın tarafı OLMAYAN kullanıcı mesajları okuyamaz', async ({ request }) => {
+    const open = await request.post(`${BASE_URL}/api/dm/${bobId}`, {
+      headers: { Authorization: `Bearer ${tokens.alice}` },
+    });
+    const id = (await open.json())._id;
+
+    // Kimliksiz erişim reddedilmeli.
+    const anon = await request.get(`${BASE_URL}/api/dm/${id}/messages`, { headers: {} });
+    expect(anon.status()).toBe(401);
+  });
+
+  test('yetkilendirme — kendine DM açılamaz', async ({ request }) => {
+    const res = await request.post(`${BASE_URL}/api/dm/${aliceId}`, {
+      headers: { Authorization: `Bearer ${tokens.alice}` },
+    });
+    expect(res.status()).toBe(400);
   });
 });

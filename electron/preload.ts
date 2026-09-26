@@ -3,7 +3,25 @@
 
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
 
+// bridge:// links from the main process. The preload exists from document start,
+// the web app subscribes only after it boots: links arriving in between are held
+// here (bounded) and replayed on subscription instead of being lost.
+const MAX_PENDING_DEEP_LINKS = 10;
+const pendingDeepLinks: string[] = [];
+let deepLinkListener: ((url: string) => void) | null = null;
+ipcRenderer.on('desktop:deeplink', (_: IpcRendererEvent, url: unknown) => {
+  if (typeof url !== 'string') return;
+  if (deepLinkListener) deepLinkListener(url);
+  else if (pendingDeepLinks.length < MAX_PENDING_DEEP_LINKS) pendingDeepLinks.push(url);
+});
+
 contextBridge.exposeInMainWorld('electronBridge', {
+  onDeepLink: (cb: (url: string) => void): (() => void) => {
+    deepLinkListener = cb;
+    for (const url of pendingDeepLinks.splice(0)) cb(url);
+    return () => { if (deepLinkListener === cb) deepLinkListener = null; };
+  },
+
   // Send a native OS notification via main process
   notify: (title: string, body: string): void =>
     ipcRenderer.send('bridge:notify', { title, body }),
@@ -12,38 +30,15 @@ contextBridge.exposeInMainWorld('electronBridge', {
   onNotificationsToggle: (cb: (enabled: boolean) => void): void => {
     ipcRenderer.on('tray:notifications-toggle', (_: IpcRendererEvent, enabled: boolean) => cb(enabled));
   },
-});
-
-// Sunucu kontrol API'si
-export interface ServerStatusData {
-  status: 'stopped' | 'starting' | 'running' | 'error';
-  pid: number | null;
-}
-export interface ServerLogEntry {
-  t: number;
-  level: 'info' | 'error';
-  line: string;
-}
-
-contextBridge.exposeInMainWorld('serverControl', {
-  start:     (): void  => ipcRenderer.send('server:start'),
-  stop:      (): void  => ipcRenderer.send('server:stop'),
-  restart:   (): void  => ipcRenderer.send('server:restart'),
-  getStatus: (): Promise<ServerStatusData & { logs: ServerLogEntry[] }> =>
-    ipcRenderer.invoke('server:getStatus') as Promise<ServerStatusData & { logs: ServerLogEntry[] }>,
-  onStatus:  (cb: (data: ServerStatusData) => void): void => {
-    ipcRenderer.on('server:status', (_: IpcRendererEvent, data: ServerStatusData) => cb(data));
-  },
-  onLog:     (cb: (data: ServerLogEntry) => void): void => {
-    ipcRenderer.on('server:log', (_: IpcRendererEvent, data: ServerLogEntry) => cb(data));
-  },
-  offStatus: (cb: (...args: unknown[]) => void): void => {
-    ipcRenderer.removeListener('server:status', cb);
-  },
-  offLog:    (cb: (...args: unknown[]) => void): void => {
-    ipcRenderer.removeListener('server:log', cb);
+  onOpenSurface: (cb: (surface: 'voice-check' | 'system-health') => void): (() => void) => {
+    const listener = (_: IpcRendererEvent, surface: 'voice-check' | 'system-health'): void => cb(surface);
+    ipcRenderer.on('tray:open-surface', listener);
+    return () => ipcRenderer.removeListener('tray:open-surface', listener);
   },
 });
+
+// (Final21 Phase 12) The `serverControl` API is gone: the desktop app no longer
+// starts a bundled server; it connects to one (see main.ts / desktopSettings.ts).
 
 // Otomatik güncelleme API'si
 export interface BridgeUpdateState {

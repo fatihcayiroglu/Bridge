@@ -5,12 +5,15 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS server_events (
   id           TEXT        PRIMARY KEY DEFAULT gen_random_uuid()::text,
-  server_id    TEXT        NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
-  creator_id   TEXT        NOT NULL REFERENCES users(id)   ON DELETE SET NULL,
+  -- FK hedefleri: bu şemada birincil anahtarlar "_id" (servers/users/channels).
+  server_id    TEXT        NOT NULL REFERENCES servers(_id) ON DELETE CASCADE,
+  -- NULLABLE: ON DELETE SET NULL ile tutarlı olmalı (NOT NULL olsaydı kullanıcı
+  -- silme işlemi FK ihlaliyle patlardı). Etkinlik, oluşturanı silinse de yaşar.
+  creator_id   TEXT        REFERENCES users(_id)   ON DELETE SET NULL,
   title        TEXT        NOT NULL CHECK (char_length(title) BETWEEN 1 AND 100),
   description  TEXT        CHECK (char_length(description) <= 1000),
   location     TEXT        CHECK (char_length(location) <= 200),
-  channel_id   TEXT        REFERENCES channels(id) ON DELETE SET NULL,
+  channel_id   TEXT        REFERENCES channels(_id) ON DELETE SET NULL,
   starts_at    TIMESTAMPTZ NOT NULL,
   ends_at      TIMESTAMPTZ,
   status       TEXT        NOT NULL DEFAULT 'scheduled'
@@ -24,7 +27,7 @@ CREATE TABLE IF NOT EXISTS server_events (
 
 CREATE TABLE IF NOT EXISTS server_event_rsvp (
   event_id    TEXT        NOT NULL REFERENCES server_events(id) ON DELETE CASCADE,
-  user_id     TEXT        NOT NULL REFERENCES users(id)         ON DELETE CASCADE,
+  user_id     TEXT        NOT NULL REFERENCES users(_id)        ON DELETE CASCADE,
   status      TEXT        NOT NULL CHECK (status IN ('interested','going','not_going')),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),

@@ -3,7 +3,10 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
-    "incremental": false
+    "incremental": false,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "useUnknownInCatchVariables": true
   },
   "include": [
     "js/**/*.ts"

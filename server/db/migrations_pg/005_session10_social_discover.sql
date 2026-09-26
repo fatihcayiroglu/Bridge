@@ -5,7 +5,7 @@
 -- ── 1. user_badges — kullanıcı rozet tablosu ─────────────────────────────────
 CREATE TABLE IF NOT EXISTS user_badges (
   _id          TEXT PRIMARY KEY,
-  "userId"     TEXT NOT NULL,
+  "userId"     TEXT NOT NULL REFERENCES users(_id) ON DELETE CASCADE,
   badge        TEXT NOT NULL,           -- rozet tanımlayıcısı (bkz. BADGE_DEFS)
   label        TEXT NOT NULL DEFAULT '',
   icon         TEXT NOT NULL DEFAULT '',

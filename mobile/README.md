@@ -14,7 +14,7 @@ bridge-v29/
 │   ├── www/         ← Kopyalanan web dosyaları (Capacitor'ın okuduğu yer)
 │   ├── ios/         ← Xcode projesi (cap add ios sonrası oluşur)
 │   ├── android/     ← Android Studio projesi (cap add android sonrası)
-│   ├── capacitor-bridge.js  ← Native entegrasyonlar
+│   ├── index.template.html  ← Canonical mobile HTML template
 │   ├── capacitor.config.ts
 │   └── scripts/setup.js
 └── server/
@@ -94,7 +94,7 @@ npx cap open android
 
 ### Push Bildirimleri
 
-`capacitor-bridge.js` otomatik olarak:
+`capacitor-bridge.ts` build sırasında `www/js/capacitor-bridge.js` olarak üretilir ve:
 1. Kullanıcıdan push bildirimi izni ister
 2. Token alır ve `/api/mobile/push/register` endpoint'ine gönderir
 3. Uygulama açıkken gelen bildirimleri yerel bildirim olarak gösterir
@@ -155,7 +155,7 @@ GET    /api/mobile/info             → Uygulama versiyon bilgisi
 # APNS_KEY_ID=
 # APNS_TEAM_ID=
 # APNS_KEY_FILE=./certs/apns.p8
-# APNS_BUNDLE_ID=app.bridge.chat
+# APNS_BUNDLE_ID=com.bridge.app
 
 # Android / iOS FCM HTTP v1 (Firebase Cloud Messaging)
 # Eski FCM_SERVER_KEY artık kullanılmıyor — Temmuz 2025'te kapandı.

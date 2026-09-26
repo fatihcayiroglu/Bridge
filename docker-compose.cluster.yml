@@ -11,7 +11,51 @@
 #   3. Redis adapter tüm instance'lar arası mesajları iletir
 #   4. k6: k6 run k6/websocket-cluster-test.js
 
-version: '3.9'
+x-bridge-common-environment: &bridge-common-environment
+  NODE_ENV: production
+  PORT: 3001
+  DATABASE_URL: "postgresql://bridge:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/bridge"
+  DATABASE_SSL: "false"
+  REDIS_URL: redis://redis:6379
+  JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required}"
+  REFRESH_SECRET: "${REFRESH_SECRET:?REFRESH_SECRET is required}"
+  FEDERATION_SECRET: "${FEDERATION_SECRET:?FEDERATION_SECRET is required}"
+  AP_ENCRYPTION_KEY: "${AP_ENCRYPTION_KEY:?AP_ENCRYPTION_KEY is required (64 hex chars)}"
+  METRICS_SECRET: "${METRICS_SECRET:?METRICS_SECRET is required}"
+  ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:8080}"
+  # Exactly one trusted reverse-proxy hop: HAProxy. Its config overwrites the
+  # forwarded client headers before any request reaches Bridge.
+  TRUSTED_PROXY_COUNT: "1"
+  # The runtime image writes to /app/server/uploads. Keeping this explicit
+  # prevents a build/layout change from silently bypassing the shared volume.
+  BRIDGE_UPLOAD_ROOT: /app/server/uploads
+  CDN_PROVIDER: "${CDN_PROVIDER:-local}"
+  PRIVATE_STORAGE_PROVIDER: "${PRIVATE_STORAGE_PROVIDER:-local}"
+  PRIVATE_S3_BUCKET: "${PRIVATE_S3_BUCKET:-}"
+  PRIVATE_R2_BUCKET: "${PRIVATE_R2_BUCKET:-}"
+  PRIVATE_MINIO_BUCKET: "${PRIVATE_MINIO_BUCKET:-}"
+  PRIVATE_B2_BUCKET_NAME: "${PRIVATE_B2_BUCKET_NAME:-}"
+  S3_REGION: "${S3_REGION:-us-east-1}"
+  S3_ENDPOINT: "${S3_ENDPOINT:-}"
+  S3_ACCESS_KEY_ID: "${S3_ACCESS_KEY_ID:-}"
+  S3_SECRET_ACCESS_KEY: "${S3_SECRET_ACCESS_KEY:-}"
+  S3_BUCKET: "${S3_BUCKET:-}"
+  S3_PUBLIC_URL: "${S3_PUBLIC_URL:-}"
+  MINIO_ENDPOINT: "${MINIO_ENDPOINT:-http://minio:9000}"
+  MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-}"
+  MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-}"
+  MINIO_BUCKET: "${MINIO_BUCKET:-bridge-uploads}"
+  MINIO_PUBLIC_URL: "${MINIO_PUBLIC_URL:-}"
+  R2_ACCOUNT_ID: "${R2_ACCOUNT_ID:-}"
+  R2_ACCESS_KEY_ID: "${R2_ACCESS_KEY_ID:-}"
+  R2_SECRET_ACCESS_KEY: "${R2_SECRET_ACCESS_KEY:-}"
+  R2_BUCKET: "${R2_BUCKET:-}"
+  R2_PUBLIC_URL: "${R2_PUBLIC_URL:-}"
+  B2_KEY_ID: "${B2_KEY_ID:-}"
+  B2_APP_KEY: "${B2_APP_KEY:-}"
+  B2_BUCKET_NAME: "${B2_BUCKET_NAME:-}"
+  B2_REGION: "${B2_REGION:-us-west-004}"
+  B2_PUBLIC_URL: "${B2_PUBLIC_URL:-}"
 
 services:
 
@@ -23,9 +67,14 @@ services:
     environment:
       POSTGRES_DB:       bridge
       POSTGRES_USER:     bridge
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bridge_dev_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
-      - cluster_postgres_data:/var/lib/postgresql/data
+      # Final21 Faz 19: postgres:18 imajı veriyi /var/lib/postgresql/18/docker altında tutar (PGDATA) ve
+      # bir birim /var/lib/postgresql/data'ya bağlıyken BAŞLAMAYI REDDEDER ("in 18+, these Docker images
+      # are configured to store database data in a format which is compatible with pg_ctlcluster").
+      # Eski bağlama noktasıyla PostgreSQL hiç açılmıyor, Bridge ona bağımlı olduğu için yığın ayağa
+      # kalkmıyordu (ölçüldü: tools/p19-compose-prod-boot.sh). Birim, imajın önerdiği kök dizine bağlanır.
+      - cluster_postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U bridge -d bridge"]
       interval: 10s
@@ -38,7 +87,14 @@ services:
     image: redis:8-alpine
     container_name: bridge-cluster-redis
     restart: unless-stopped
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    # Final21 Faz 10 — F21-10-03: maxmemory-policy MUTLAKA noeviction.
+    # Redis hiz siniri / CSRF / WS baglanti limiti icin YETKILI depodur.
+    # allkeys-lru ile OLCULDU (redis:8-alpine, maxmemory 4mb): arama siniri
+    # doldu (429), bellek baskisi 31 807 anahtar tahliye etti, iki hiz siniri
+    # anahtari da silindi ve AYNI DAKIKADA 5/5 arama 200 dondu — sinir ASILDI.
+    # noeviction ile ayni adimlar: yazmalar reddedildi, anahtarlar kaldi, 5/5 429.
+    # Bellek dolarsa Bridge fail-closed 503 verir (docs/REDIS_PRODUCTION.md).
+    command: redis-server --maxmemory 256mb --maxmemory-policy noeviction
     volumes:
       - cluster_redis_data:/data
     healthcheck:
@@ -58,29 +114,22 @@ services:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
     environment:
-      NODE_ENV:        production
-      PORT:            3001
+      <<: *bridge-common-environment
       INSTANCE_ID:     bridge-1            # Her node kendi ID'sini bilir
       TURN_HOST:       ${TURN_HOST:-}
       TURN_SECRET:     ${TURN_SECRET:-}
       TURN_PORT:       ${TURN_PORT:-3478}
       STUN_URLS:       ${STUN_URLS:-stun:stun.l.google.com:19302}
       MEDIASOUP_ANNOUNCED_IP:  ${MEDIASOUP_ANNOUNCED_IP:-}
-      MEDIASOUP_RTC_MIN_PORT:  ${MEDIASOUP_RTC_MIN_PORT:-40000}
-      MEDIASOUP_RTC_MAX_PORT:  ${MEDIASOUP_RTC_MAX_PORT:-49999}
+      MEDIASOUP_RTC_MIN_PORT:  ${MEDIASOUP_RTC_MIN_PORT_BRIDGE1:-40000}
+      MEDIASOUP_RTC_MAX_PORT:  ${MEDIASOUP_RTC_MAX_PORT_BRIDGE1:-40999}
       MEDIASOUP_WORKERS:       ${MEDIASOUP_WORKERS:-1}
-      DATABASE_URL:    postgresql://bridge:${POSTGRES_PASSWORD:-bridge_dev_password}@postgres:5432/bridge
-      DATABASE_SSL:    "false"
-      REDIS_URL:       redis://redis:6379
-      JWT_SECRET:      ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
-      REFRESH_SECRET:  ${REFRESH_SECRET:-dev_refresh_secret_change_in_prod}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080}
     volumes:
-      - uploads_data:/app/uploads          # Paylaşılan upload volume
+      - uploads_data:/app/server/uploads   # Paylaşılan kanonik upload volume
     ports:
-      - "${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}:${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}/udp"
+      - "${MEDIASOUP_RTC_MIN_PORT_BRIDGE1:-40000}-${MEDIASOUP_RTC_MAX_PORT_BRIDGE1:-40999}:${MEDIASOUP_RTC_MIN_PORT_BRIDGE1:-40000}-${MEDIASOUP_RTC_MAX_PORT_BRIDGE1:-40999}/udp"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health/ready || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -97,29 +146,22 @@ services:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
     environment:
-      NODE_ENV:        production
-      PORT:            3001
+      <<: *bridge-common-environment
       INSTANCE_ID:     bridge-2
       TURN_HOST:       ${TURN_HOST:-}
       TURN_SECRET:     ${TURN_SECRET:-}
       TURN_PORT:       ${TURN_PORT:-3478}
       STUN_URLS:       ${STUN_URLS:-stun:stun.l.google.com:19302}
       MEDIASOUP_ANNOUNCED_IP:  ${MEDIASOUP_ANNOUNCED_IP:-}
-      MEDIASOUP_RTC_MIN_PORT:  ${MEDIASOUP_RTC_MIN_PORT:-40000}
-      MEDIASOUP_RTC_MAX_PORT:  ${MEDIASOUP_RTC_MAX_PORT:-49999}
+      MEDIASOUP_RTC_MIN_PORT:  ${MEDIASOUP_RTC_MIN_PORT_BRIDGE2:-41000}
+      MEDIASOUP_RTC_MAX_PORT:  ${MEDIASOUP_RTC_MAX_PORT_BRIDGE2:-41999}
       MEDIASOUP_WORKERS:       ${MEDIASOUP_WORKERS:-1}
-      DATABASE_URL:    postgresql://bridge:${POSTGRES_PASSWORD:-bridge_dev_password}@postgres:5432/bridge
-      DATABASE_SSL:    "false"
-      REDIS_URL:       redis://redis:6379
-      JWT_SECRET:      ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
-      REFRESH_SECRET:  ${REFRESH_SECRET:-dev_refresh_secret_change_in_prod}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080}
     volumes:
-      - uploads_data:/app/uploads
+      - uploads_data:/app/server/uploads
     ports:
-      - "${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}:${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}/udp"
+      - "${MEDIASOUP_RTC_MIN_PORT_BRIDGE2:-41000}-${MEDIASOUP_RTC_MAX_PORT_BRIDGE2:-41999}:${MEDIASOUP_RTC_MIN_PORT_BRIDGE2:-41000}-${MEDIASOUP_RTC_MAX_PORT_BRIDGE2:-41999}/udp"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health/ready || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -136,29 +178,22 @@ services:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
     environment:
-      NODE_ENV:        production
-      PORT:            3001
+      <<: *bridge-common-environment
       INSTANCE_ID:     bridge-3
       TURN_HOST:       ${TURN_HOST:-}
       TURN_SECRET:     ${TURN_SECRET:-}
       TURN_PORT:       ${TURN_PORT:-3478}
       STUN_URLS:       ${STUN_URLS:-stun:stun.l.google.com:19302}
       MEDIASOUP_ANNOUNCED_IP:  ${MEDIASOUP_ANNOUNCED_IP:-}
-      MEDIASOUP_RTC_MIN_PORT:  ${MEDIASOUP_RTC_MIN_PORT:-40000}
-      MEDIASOUP_RTC_MAX_PORT:  ${MEDIASOUP_RTC_MAX_PORT:-49999}
+      MEDIASOUP_RTC_MIN_PORT:  ${MEDIASOUP_RTC_MIN_PORT_BRIDGE3:-42000}
+      MEDIASOUP_RTC_MAX_PORT:  ${MEDIASOUP_RTC_MAX_PORT_BRIDGE3:-42999}
       MEDIASOUP_WORKERS:       ${MEDIASOUP_WORKERS:-1}
-      DATABASE_URL:    postgresql://bridge:${POSTGRES_PASSWORD:-bridge_dev_password}@postgres:5432/bridge
-      DATABASE_SSL:    "false"
-      REDIS_URL:       redis://redis:6379
-      JWT_SECRET:      ${JWT_SECRET:-dev_jwt_secret_change_in_prod}
-      REFRESH_SECRET:  ${REFRESH_SECRET:-dev_refresh_secret_change_in_prod}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080}
     volumes:
-      - uploads_data:/app/uploads
+      - uploads_data:/app/server/uploads
     ports:
-      - "${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}:${MEDIASOUP_RTC_MIN_PORT:-40000}-${MEDIASOUP_RTC_MAX_PORT:-49999}/udp"
+      - "${MEDIASOUP_RTC_MIN_PORT_BRIDGE3:-42000}-${MEDIASOUP_RTC_MAX_PORT_BRIDGE3:-42999}:${MEDIASOUP_RTC_MIN_PORT_BRIDGE3:-42000}-${MEDIASOUP_RTC_MAX_PORT_BRIDGE3:-42999}/udp"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health/ready || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -182,9 +217,9 @@ services:
       bridge3: { condition: service_healthy }
     ports:
       - "8080:8080"     # HTTP + WebSocket endpoint
-      - "8404:8404"     # HAProxy stats UI (http://localhost:8404/stats)
+      - "127.0.0.1:8404:8404" # Stats UI is host-local only
     volumes:
-      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./haproxy/haproxy.cluster.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
       - ./haproxy/errors:/etc/haproxy/errors:ro
     healthcheck:
       test: ["CMD-SHELL", "haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg && wget -qO- http://localhost:8404/stats || exit 1"]

@@ -9,9 +9,9 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Server as SocketServer } from 'socket.io';
 
 import { Channels, Servers, Messages, Users } from '../db/repositories';
+import { publishPersistedMessage } from '../lib/channelActivity';
 import { rulesMod } from '../lib/modRules';
 import { callAI, AI_ENABLED } from '../lib/aiProvider';
-import logger from '../lib/logger';
 // Sprint 122 FIX 7: atomik mod-log upsert için db loader
 import db from '../db/loader';
 
@@ -58,26 +58,55 @@ async function aiMod(content: string): Promise<ModResult | null> {
 // Sprint 122 FIX 7: PostgreSQL ON CONFLICT ile atomik upsert — paralel job
 // çalışmasında iki ayrı mod-log kanalı oluşmasını engeller.
 async function getOrCreateModChannel(serverId: string): Promise<ChannelRow> {
-  // PostgreSQL atomic path — race condition'dan korunur
-  if ((db as unknown as { _pool?: { query: <T = unknown>(sql: string, params?: unknown[]) => Promise<{ rows: T[] }> } })._pool?.query) {
-    const pool = (db as unknown as { _pool: { query: <T = unknown>(sql: string, params?: unknown[]) => Promise<{ rows: T[] }> } })._pool;
-    const newId = uuidv4();
-    const now = Date.now();
-    // INSERT … ON CONFLICT DO NOTHING — eşzamanlı iki insert gelirse biri sessizce atlanır
-    await pool.query(
-      `INSERT INTO channels ("_id", "serverId", name, type, topic, category, "order", "modOnly", "createdAt")
-       VALUES ($1, $2, 'mod-log', 'text', 'Otomatik moderasyon bildirimleri', 'MOD', 9999, true, $3)
-       ON CONFLICT DO NOTHING`,
-      [newId, serverId, now],
-    );
-    const { rows } = await pool.query<ChannelRow>(
-      `SELECT * FROM channels WHERE "serverId" = $1 AND name ~ '^(mod[- ]log|moderasyon)' LIMIT 1`,
-      [serverId],
-    );
-    if (rows[0]) return rows[0];
+  // PostgreSQL multi-node path. Serialize auto-created mod-log ownership per
+  // server with a transaction-scoped advisory lock; ON CONFLICT alone is not
+  // sufficient because normal channel names are intentionally not unique.
+  const pool = (db as unknown as {
+    _pool?: {
+      connect?: () => Promise<{
+        query: <T = unknown>(sql: string, params?: unknown[]) => Promise<{ rows: T[] }>;
+        release: () => void;
+      }>;
+    };
+  })._pool;
+  if (pool?.connect) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+        [`automod:mod-log:${serverId}`],
+      );
+      const existing = await client.query<ChannelRow>(
+        `SELECT * FROM channels
+          WHERE "serverId" = $1 AND name ~ '^(mod[- ]log|moderasyon)'
+          ORDER BY "createdAt" ASC
+          LIMIT 1`,
+        [serverId],
+      );
+      if (existing.rows[0]) {
+        await client.query('COMMIT');
+        return existing.rows[0];
+      }
+
+      const created = await client.query<ChannelRow>(
+        `INSERT INTO channels ("_id", "serverId", name, type, topic, category, "order", "modOnly", "createdAt")
+         VALUES ($1, $2, 'mod-log', 'text', 'Otomatik moderasyon bildirimleri', 'MOD', 9999, true, $3)
+         RETURNING *`,
+        [uuidv4(), serverId, Date.now()],
+      );
+      await client.query('COMMIT');
+      if (!created.rows[0]) throw new Error('automod_mod_channel_insert_missing');
+      return created.rows[0];
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
-  // Collection API fallback (PostgreSQL yoksa)
+  // Collection API fallback (single-process/test path).
   const rows = await Channels.findWhere({
     serverId,
     name: { $regex: /^(mod[- ]log|moderasyon)/i },
@@ -140,9 +169,7 @@ async function sendModAlert(
     flaggedMsgId: flaggedMsg._id,
   });
 
-  if (_io) {
-    _io.to(`channel:${channelId}`).emit('message:new', alertMsg);
-  }
+  await publishPersistedMessage(_io, alertMsg);
 }
 
 // ── Ana tarama fonksiyonu ──────────────────────────────────────
@@ -169,8 +196,8 @@ async function runScan(): Promise<void> {
   const byServer: Record<string, MsgRow[]> = {};
   for (const msg of recentMessages) {
     if (!msg.serverId) continue;
-    if (!byServer[msg.serverId]) byServer[msg.serverId] = [];
-    byServer[msg.serverId].push(msg);
+    const bucket = byServer[msg.serverId] ?? (byServer[msg.serverId] = []);
+    bucket.push(msg);
   }
 
   for (const [serverId, msgs] of Object.entries(byServer)) {
@@ -185,6 +212,23 @@ async function runScan(): Promise<void> {
 
     for (const msg of msgs) {
       if (msg.type === 'system' || msg.autoModAlert) continue;
+
+      // Overlapping scan windows and multiple backend nodes may see the same
+      // message. Skip known alerts early; the PostgreSQL unique partial index
+      // on flaggedMsgId is the final race-safe guard at persistence time.
+      try {
+        const existingAlerts = await Messages.findWhere({ autoModAlert: true, flaggedMsgId: msg._id });
+        if (existingAlerts?.length) continue;
+      } catch (err) {
+        // State uncertainty must fail closed: do not create a potentially
+        // duplicate moderation alert when idempotency cannot be checked.
+        if (process.env.NODE_ENV !== 'test') {
+          process.stderr.write(`[AutoMod] idempotency lookup failed: ${(err as Error).message}
+`);
+        }
+        continue;
+      }
+
       const ruleResult = rulesMod(msg.content || '');
 
       let finalResult: ModResult = ruleResult;
@@ -222,7 +266,15 @@ async function runScan(): Promise<void> {
 
       try {
         await sendModAlert(serverId, modChannelId, msg, finalResult, authorName);
-      } catch { /* ignore */ }
+      } catch (err) {
+        // Duplicate-key from a competing worker is harmless; all other durable
+        // persistence failures must remain visible instead of disappearing.
+        const e = err as { code?: string; message?: string };
+        if (e.code !== '23505' && process.env.NODE_ENV !== 'test') {
+          process.stderr.write(`[AutoMod] alert persistence failed: ${e.message || String(err)}
+`);
+        }
+      }
     }
   }
 }
@@ -231,7 +283,9 @@ async function runScan(): Promise<void> {
 let _automodInterval: ReturnType<typeof setInterval> | null = null;
 let _automodInitTimer: ReturnType<typeof setTimeout> | null = null;
 
-export function startAutoModerationJob(io: SocketServer): void {
+// `io` NULL olabilir: degisken zaten `SocketServer | null` ve tum kullanim
+// yerleri `if (_io)` ile korunuyor. Imza gercegi soylemiyordu.
+export function startAutoModerationJob(io: SocketServer | null): void {
   _io = io;
   if (_automodInitTimer !== null || _automodInterval !== null) return;
 

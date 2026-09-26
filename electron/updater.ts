@@ -6,6 +6,11 @@
 
 import { app, BrowserWindow, Notification, ipcMain } from 'electron';
 import { autoUpdater } from 'electron-updater';
+import fs from 'fs';
+import path from 'path';
+import { resolveUpdatePolicy, type UpdatePolicy } from './updatePolicy';
+import { nativeText, type NativeTextKey } from './nativeLocale';
+import { assertTrustedIpcSender } from './ipcSecurity';
 
 type UpdatePhase =
   | 'idle'
@@ -54,6 +59,7 @@ type MutableAutoUpdater = typeof autoUpdater & {
   autoDownload?: boolean;
   autoInstallOnAppQuit?: boolean;
   allowPrerelease?: boolean;
+  allowDowngrade?: boolean;
   quitAndInstall?: (isSilent?: boolean, isForceRunAfter?: boolean) => void;
 };
 
@@ -63,6 +69,45 @@ const UPDATE_CHECK_INTERVAL_MS = Math.max(
 );
 
 const FORCE_UPDATER_IN_DEV = process.env.BRIDGE_UPDATER_FORCE === 'true';
+
+function readAppUpdateYml(): string | null {
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  if (!resourcesPath) return null;
+  try {
+    return fs.readFileSync(path.join(resourcesPath, 'app-update.yml'), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function buildAllowsUnsignedUpdates(): boolean {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(app.getAppPath(), 'package.json'), 'utf8')) as {
+      bridgeDesktop?: { allowUnsignedUpdates?: unknown };
+    };
+    return pkg.bridgeDesktop?.allowUnsignedUpdates === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Evaluated once per process: the feed and signing status are fixed at build time. */
+let cachedPolicy: UpdatePolicy | null = null;
+export function getUpdatePolicy(): UpdatePolicy {
+  cachedPolicy ??= resolveUpdatePolicy({
+    isPackaged: app.isPackaged,
+    forceInDevelopment: FORCE_UPDATER_IN_DEV,
+    appUpdateYml: readAppUpdateYml(),
+    allowUnsignedUpdates: buildAllowsUnsignedUpdates(),
+  });
+  return cachedPolicy;
+}
+
+function updaterText(key: NativeTextKey, vars: Record<string, string | number> = {}): string {
+  const locale = typeof app.getLocale === 'function' ? app.getLocale() : process.env.BRIDGE_LOCALE;
+  return nativeText(key, vars, locale);
+}
+
 
 let mainWindowGetter: MainWindowGetter = () => null;
 let setupDone = false;
@@ -106,10 +151,10 @@ function broadcastUpdateState(): void {
 function showUpdateReadyNotification(version: string | null): void {
   if (!Notification.isSupported()) return;
   const notification = new Notification({
-    title: 'Bridge güncellemesi hazır',
+    title: updaterText('updateReadyTitle'),
     body: version
-      ? `v${version} indirildi. Kurmak için Bridge’i yeniden başlat.`
-      : 'Yeni sürüm indirildi. Kurmak için Bridge’i yeniden başlat.',
+      ? updaterText('updateReadyBodyVersion', { version })
+      : updaterText('updateReadyBody'),
     silent: false,
   });
   notification.on('click', () => {
@@ -129,6 +174,8 @@ function wireAutoUpdaterEvents(): void {
 
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
+  // Never replace a newer install with an older build from the feed.
+  updater.allowDowngrade = false;
   updater.allowPrerelease = process.env.BRIDGE_UPDATE_CHANNEL === 'beta';
 
   updater.on('checking-for-update', () => {
@@ -191,7 +238,7 @@ function wireAutoUpdaterEvents(): void {
   updater.on('error', (error: Error) => {
     updateState({
       phase: 'error',
-      lastError: error?.message || 'Güncelleme kontrolü başarısız oldu.',
+      lastError: updaterText('updateCheckFailed'),
       canInstall: false,
     });
   });
@@ -202,11 +249,14 @@ export function getUpdateState(): BridgeUpdateState {
 }
 
 export async function checkForBridgeUpdates(manual = false): Promise<BridgeUpdateState> {
-  if (!app.isPackaged && !FORCE_UPDATER_IN_DEV) {
+  const policy = getUpdatePolicy();
+  if (!policy.enabled) {
     return updateState({
       phase: 'disabled',
       lastCheckedAt: new Date().toISOString(),
-      lastError: manual ? 'Otomatik güncelleme sadece paketlenmiş masaüstü uygulamasında çalışır.' : null,
+      lastError: manual
+        ? updaterText(policy.reason === 'development' ? 'updaterDisabled' : 'updatesNotConfigured')
+        : null,
       canInstall: false,
     });
   }
@@ -228,12 +278,12 @@ export async function checkForBridgeUpdates(manual = false): Promise<BridgeUpdat
       } else if (typeof updater.checkForUpdatesAndNotify === 'function') {
         await updater.checkForUpdatesAndNotify();
       } else {
-        throw new Error('electron-updater check API bulunamadı.');
+        throw new Error('electron-updater check API unavailable');
       }
       return state;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Güncelleme kontrolü başarısız oldu.';
-      return updateState({ phase: 'error', lastError: message, canInstall: false });
+      console.error('[updater] check failed', error);
+      return updateState({ phase: 'error', lastError: updaterText('updateCheckFailed'), canInstall: false });
     } finally {
       activeCheck = null;
     }
@@ -246,19 +296,25 @@ export function installDownloadedUpdate(): BridgeUpdateState {
   if (!state.canInstall) {
     return updateState({
       phase: state.phase === 'downloaded' ? 'downloaded' : 'error',
-      lastError: 'Kurulmaya hazır indirilmiş güncelleme yok.',
+      lastError: updaterText('noUpdateReady'),
     });
   }
 
   (app as typeof app & { isQuitting?: boolean }).isQuitting = true;
-  getUpdater().quitAndInstall?.(false, true);
+  // Final21 Faz 19: güncelleme SESSİZ kurulur (`/S`) ve yeni sürüm kendiliğinden açılır.
+  // `quitAndInstall(false, …)` kurucuyu sihirbaz kipinde başlatıyordu: yardımlı (oneClick=false)
+  // NSIS kurucusu `--updated` iken bile "Bu uygulama kimler için kurulsun?" sayfasını ATLAMAZ
+  // (electron-builder multiUserUi.nsh) — her otomatik güncelleme kullanıcı tıklamasını bekleyip
+  // uygulamayı kapalı bırakıyordu (ölçüldü: tools/desktop-update-lifecycle.mjs P5). Sessiz kipte
+  // kurulum kipi kayıttaki mevcut kurulumdan okunur, konum korunur, `--force-run` uygulamayı açar.
+  getUpdater().quitAndInstall?.(true, true);
   return state;
 }
 
 function registerUpdaterIpc(): void {
-  ipcMain.handle('updater:getStatus', () => getUpdateState());
-  ipcMain.handle('updater:check', () => checkForBridgeUpdates(true));
-  ipcMain.handle('updater:install', () => installDownloadedUpdate());
+  ipcMain.handle('updater:getStatus', (event) => { assertTrustedIpcSender(event); return getUpdateState(); });
+  ipcMain.handle('updater:check', (event) => { assertTrustedIpcSender(event); return checkForBridgeUpdates(true); });
+  ipcMain.handle('updater:install', (event) => { assertTrustedIpcSender(event); return installDownloadedUpdate(); });
 }
 
 export function setupBridgeAutoUpdater(getMainWindow: MainWindowGetter): void {
@@ -266,13 +322,24 @@ export function setupBridgeAutoUpdater(getMainWindow: MainWindowGetter): void {
   if (setupDone) return;
   setupDone = true;
 
-  wireAutoUpdaterEvents();
   registerUpdaterIpc();
+  const policy = getUpdatePolicy();
+  if (!policy.enabled) {
+    updateState({ phase: 'disabled', canInstall: false });
+    console.info(`[updater] disabled: ${policy.reason}`);
+    return;
+  }
+  wireAutoUpdaterEvents();
 
   // Discord benzeri: başlangıçta kısa gecikme ile kontrol et, sonra periyodik kontrol et.
   setTimeout(() => { void checkForBridgeUpdates(false); }, 10_000);
   updateTimer = setInterval(() => { void checkForBridgeUpdates(false); }, UPDATE_CHECK_INTERVAL_MS);
   updateTimer.unref?.();
+}
+
+/** Test hook: forget the per-process policy decision. */
+export function _resetUpdatePolicyForTest(): void {
+  cachedPolicy = null;
 }
 
 export function teardownBridgeAutoUpdater(): void {

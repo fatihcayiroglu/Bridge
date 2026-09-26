@@ -101,7 +101,7 @@ Tüm aktif peer'lar RSA'ya geçtikten sonra HMAC desteği kaldırılır.
 ## Sonuçlar
 
 - Sprint 107: Bu ADR onaylandı, `GET /api/federation/info` key yayımlamaya başladı
-- Sprint 108: İmza/doğrulama katmanı ✅ — `httpSignatureV2.ts` RSA öncelikli doğrulama, `federationAuth.ts` middleware (25 test)
+- Sprint 108: İmza/doğrulama geçiş katmanı tamamlandı; Sprint 113'te canonical runtime `httpSignatureV3.ts` RSA-only modele geçirildi.
 - Sprint 109: Prod peer'larla test, HMAC parallel mode
 - Sprint 115+: HMAC deprecated
 
@@ -111,6 +111,6 @@ Tüm aktif peer'lar RSA'ya geçtikten sonra HMAC desteği kaldırılır.
 - `server/routes/federation/activitypub.ts` — mevcut AP key altyapısı
 - `server/lib/apKeyEncryption.ts` — AES-256-GCM key şifreleme (yeniden kullanılacak)
 - `docs/AP_ENCRYPTION_KEY_ROTATION_RUNBOOK.md` — referans runbook
-- `server/lib/httpSignatureV2.ts` — RSA-2048 doğrulama ve imzalama (Sprint 108)
+- `server/lib/httpSignatureV3.ts` — canonical RSA-only request doğrulama (Sprint 113)
 - `server/middleware/federationAuth.ts` — federation auth middleware (Sprint 108)
-- `server/tests/httpSignatureV2.test.ts` — 25 birim testi (Sprint 108)
+- `server/tests/httpSignatureV3.test.ts` ve federation testleri — current RSA-only davranış doğrulaması

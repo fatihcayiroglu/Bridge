@@ -30,3 +30,8 @@ temp
 __MACOSX
 .vscode
 .idea
+
+# Generated native build outputs (desktop installer/binaries, Capacitor platform projects)
+electron/release
+android
+ios

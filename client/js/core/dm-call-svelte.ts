@@ -1,35 +1,35 @@
 // client/js/core/dm-call-svelte.ts
-// Sprint 115 — DmCallPanel mount shim (ADR-0008 Faz 2)
-// dm-call.ts (898 satır) → DmCallPanel.svelte geçişinin mount köprüsü.
+// FAZ 8/1 — DmCallPanel mount shim.
+//
+// Panel gerçek bir uygulamaydı ama hiçbir giriş noktasından import
+// edilmiyordu: DM araması üründe YOKTU. Kanonik biçim `global-search-svelte.ts`
+// ile aynı — `unmount()` GERÇEKTEN çağrılır, yoksa `onDestroy` çalışmaz ve
+// `startDmCall` kaydı ölü bir bileşene işaret etmeye devam eder.
 
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import DmCallPanel from './DmCallPanel.svelte';
-import { BridgeRegistry } from './bridge-registry.ts';
 
-let _dmCallInstance: ReturnType<typeof mount> | null = null;
+let instance: ReturnType<typeof mount> | null = null;
 
-function mountDmCallPanel() {
-  if (_dmCallInstance) return;
-
-  const el = document.getElementById('dm-call-root') ?? (() => {
+export function mountDmCall(target?: HTMLElement): void {
+  if (instance) return;
+  const el = target ?? document.getElementById('dm-call-root') ?? (() => {
     const div = document.createElement('div');
     div.id = 'dm-call-root';
     document.body.appendChild(div);
     return div;
   })();
-
-  _dmCallInstance = mount(DmCallPanel, { target: el, props: {} });
-
-  // Geriye dönük uyumluluk — vanilla kod bu kayıtları kullanır
-  // BridgeRegistry kayıtları DmCallPanel.svelte'in onMount'unda yapılır
+  instance = mount(DmCallPanel, { target: el, props: {} });
 }
 
-// DOMContentLoaded + bridge:socket-ready dual-listener (voice-svelte.ts pattern)
-function init() { mountDmCallPanel(); }
+export function unmountDmCall(): void {
+  if (!instance) return;
+  void unmount(instance);
+  instance = null;
+}
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init, { once: true });
+  document.addEventListener('DOMContentLoaded', () => mountDmCall(), { once: true });
 } else {
-  init();
+  mountDmCall();
 }
-document.addEventListener('bridge:socket-ready', init, { once: true });

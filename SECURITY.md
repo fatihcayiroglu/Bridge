@@ -4,7 +4,7 @@
 
 | Sürüm    | Destek     | Son Güvenlik Yaması |
 |----------|------------|---------------------|
-| 1.121.x  | ✅ Aktif   | Sprint 121          |
+| 1.125.x  | ✅ Aktif   | Güncel 1.125 serisi |
 | 1.120.x  | ⚠️ Eski    | Sprint 120 (güvenlik güncellemesi alır) |
 | 1.119.x  | ❌ EOL     | Sprint 119          |
 | 1.118.x  | ❌ EOL     | Sprint 118          |
@@ -156,9 +156,9 @@ yalnızca gerekli istemcilere açık olmalı. TCP 3001 (API) ve TCP 9090 (metric
 | SSRF koruması | ✅ | `server/lib/ssrfGuard.ts` |
 | IP kara liste | ✅ | `server/middleware/ipReputation.ts` |
 | Rate limiting | ✅ | `ADR-0007`, `server/middleware/rateLimit.ts` |
-| Sentry hata izleme | ✅ | `server/lib/sentry.ts` |
-| Content Security Policy | ✅ | `server/middleware/csp.ts` |
-| npm audit (CI) | ✅ | `.github/workflows/ci.yml` |
+| Sentry hata izleme | ✅ | `server/lib/telemetry.ts` |
+| Content Security Policy | ✅ | `server/app/createApp.ts` |
+| npm audit (CI) | ✅ | `.github/workflows/quality-gate.yml` |
 
 ---
 

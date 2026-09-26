@@ -11,7 +11,7 @@
 //
 // ENTEGRASYON (zaten yapıldı — referans için):
 //   migrations.ts başındaki import'tan otomatik yüklenir:
-//     import { BOT_MARKETPLACE_TABLES } from '../../migrations_pg/010_bot_marketplace_inline';
+//     import { BOT_MARKETPLACE_TABLES } from '../migrations_pg/010_bot_marketplace_inline';
 //   EXTRA_TABLES dizisine spread edilir:
 //     ...BOT_MARKETPLACE_TABLES,
 

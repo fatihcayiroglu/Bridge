@@ -11,10 +11,10 @@
 //   7. Şifre değiştirme
 
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 import { getTokens } from '../helpers/bridge';
 
-const BASE = process.env.BASE_URL || 'http://localhost:3000';
+const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 test.describe('Profil Yönetimi', () => {
   let tokens;
@@ -31,7 +31,7 @@ test.describe('Profil Yönetimi', () => {
     });
     expect(res.status()).toBe(200);
     const data = await res.json();
-    expect(data.username).toBe('e2e_alice');
+    expect(data.username).toBe(tokens.users.alice.username);
     // Hassas alanlar dönmemeli
     expect(data.password).toBeUndefined();
     expect(data.passwordHash).toBeUndefined();
@@ -87,7 +87,12 @@ test.describe('Profil Yönetimi', () => {
       },
       data: JSON.stringify({ displayName: 'A'.repeat(200) }),
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    // ÜRÜN SÖZLEŞMESİ: aşırı uzun displayName REDDEDİLMEZ, 32 karaktere
+    // KIRPILIR (server/routes/auth.ts: displayName.trim().slice(0, 32)).
+    // Doğrulanan şey sınırın GERÇEKTEN uygulandığıdır.
+    expect(res.status()).toBe(200);
+    const saved = await res.json() as { displayName?: string };
+    expect((saved.displayName ?? '').length).toBeLessThanOrEqual(32);
   });
 
   // ── 3. bio güncelleme ─────────────────────────────────────
@@ -108,8 +113,11 @@ test.describe('Profil Yönetimi', () => {
 
   // ── 4. Status güncelleme ──────────────────────────────────
 
-  test('PATCH /api/me — status online/idle/dnd/invisible olabilmeli', async ({ request }) => {
-    for (const status of ['online', 'idle', 'dnd', 'invisible']) {
+  test('PATCH /api/me — status online/idle/dnd/offline olabilmeli', async ({ request }) => {
+    // Kabul edilen durumlar: online | idle | dnd | offline.
+    // 'invisible' bir DURUM DEĞİLDİR — görünmezlik ayrı bir alanla yönetilir
+    // (presenceVisibility: visible | hidden, migration 026_presence_visibility).
+    for (const status of ['online', 'idle', 'dnd', 'offline']) {
       const res = await request.patch(`${BASE}/api/me`, {
         headers: {
           Authorization: `Bearer ${tokens.alice}`,
@@ -149,12 +157,13 @@ test.describe('Profil Yönetimi', () => {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
 
-    // 200 veya 404 (kullanıcı endpoint'i yoksa)
-    expect([200, 404]).toContain(res.status());
+    // Final21 Faz 22 (19-37): uç VAR ve 200 döner (ölçüldü); 404'ü kabul etmek profil ucunun
+    // kaybolmasını görünmez yapardı.
+    expect(res.status()).toBe(200);
 
     if (res.status() === 200) {
       const profile = await res.json();
-      expect(profile.username).toBe('e2e_bob');
+      expect(profile.username).toBe(tokens.users.bob.username);
       // Şifre hash'i asla dönmemeli
       expect(profile.passwordHash).toBeUndefined();
       expect(profile.password).toBeUndefined();

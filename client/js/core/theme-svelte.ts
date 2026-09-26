@@ -1,9 +1,8 @@
 // client/js/core/theme-svelte.ts
 // Sprint 116 — ThemeManager mount shim (ADR-0008 Faz 3)
 // Tema ve renk şeması yöneticisi
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import ThemeManager from './ThemeManager.svelte';
-import { BridgeRegistry } from './bridge-registry.ts';
 import { createLogger } from './logger.ts';
 const log = createLogger('ThemeManagerShim');
 
@@ -22,7 +21,12 @@ export function mountThemeManager(target?: HTMLElement): void {
 }
 
 export function unmountThemeManager(): void {
-  if (_instance) { _instance = null; }
+  // Tasarım Fazı 2: önceden yalnızca referans null'lanıyordu — bileşen ve
+  // dinleyicileri yaşamaya devam ediyordu (sızıntı).
+  if (!_instance) return;
+  const inst = _instance;
+  _instance = null;
+  void unmount(inst);
 }
 
 if (document.readyState === 'loading') {

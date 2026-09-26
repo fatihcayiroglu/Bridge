@@ -3,22 +3,37 @@
  
 import express, { Request, Response, Router } from 'express';
 import { AuthedRequest, authMiddleware } from '../middleware/auth';
+import { databaseAdminOnly } from '../lib/adminAuthority';
 
 import loader from '../db/loader';
 import { Users, Servers, Members, Channels, Messages, Invites } from '../db/repositories';
+import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
+import { getPrivateStorageAdapter, getPrivateStorageProvider, getStorageAdapter, getProvider } from '../lib/storageAdapter';
+import { getRtcIceConfig, getTurnStatus } from '../lib/turnConfig';
+import { healthCheck as redisHealthCheck } from '../lib/redisAdapter';
 
-interface ServerRow { _id: string; name: string; icon?: string; ownerId: string; createdAt: number }
-interface ChannelRow { _id: string; name: string }
-interface MsgRow    { _id: string; channelId: string; userId: string; serverId?: string; createdAt: number }
-interface InviteRow { _id: string; expiresAt: number; uses?: number }
 
 import pkg from '../../package.json';
 const VERSION: string = (pkg as { version: string }).version;
-const DB_KIND = loader._pool ? 'postgresql' : 'sqlite';
+const DB_KIND = 'postgresql' as const;
 
 async function pingDb(): Promise<void> {
   if (loader._pool?.query) { await loader._pool.query('SELECT 1'); return; }
   await Users.count({});
+}
+
+async function pingStorage(): Promise<void> {
+  // Public assets and protected attachments can use different providers. A
+  // configured provider is part of the node's traffic-serving contract, so a
+  // broken bucket/volume must remove the node from rotation. Deduplicate the
+  // common local adapter used by both roles.
+  const adapters = [getStorageAdapter(), getPrivateStorageAdapter()];
+  const seen = new Set<typeof adapters[number]>();
+  for (const adapter of adapters) {
+    if (seen.has(adapter)) continue;
+    seen.add(adapter);
+    if (!await adapter.healthCheck()) throw new Error('Configured storage is unavailable');
+  }
 }
 
 const router: Router = express.Router();
@@ -93,18 +108,37 @@ router.get('/live', (_req: Request, res: Response) => {
 router.get('/ready', async (_req: Request, res: Response) => {
   try {
     await pingDb();
+    // Redis is optional for a deliberately single-node deployment, but once
+    // REDIS_URL is configured it becomes authoritative for cluster-sensitive
+    // state (rate limits, voice/stage locks, SFU ownership, etc.). Advertising
+    // readiness while that configured dependency is unavailable sends traffic
+    // to a node that cannot uphold those invariants.
+    if (process.env.REDIS_URL) {
+      const redis = await redisHealthCheck();
+      if (!redis.redis) throw new Error('Configured Redis is unavailable');
+    }
+    await pingStorage();
+    // Optional media infrastructure becomes part of node readiness only when
+    // the operator explicitly declares it required. This keeps deliberately
+    // P2P/STUN-only self-hosted nodes valid while making production media
+    // commitments fail closed instead of advertising a false green state.
+    if (process.env.REQUIRE_TURN === 'true' && !getTurnStatus().turn) {
+      throw new Error('Required TURN relay is unavailable');
+    }
+    if (process.env.REQUIRE_SFU === 'true') {
+      const sfu = await import('../socket/handlers/mediasoup/workers') as {
+        getWorkerStats?(): Promise<{ workers: number; healthy: number }>;
+      };
+      const stats = sfu.getWorkerStats ? await sfu.getWorkerStats() : { workers: 0, healthy: 0 };
+      if (stats.healthy < 1) throw new Error('Required SFU is unavailable');
+    }
     res.json({ status: 'ok', check: 'readiness', version: VERSION, db: DB_KIND, ts: Date.now() });
   } catch {
     res.status(503).json({ status: 'error', check: 'readiness', version: VERSION, db: DB_KIND, ts: Date.now() });
   }
 });
 
-router.get('/stats', async (req: Request, res: Response) => {
-  if (process.env.NODE_ENV === 'production') {
-    const ip = req.ip || '';
-    const isInternal = ip === '127.0.0.1' || ip === '::1' || ip.startsWith('172.') || ip.startsWith('10.');
-    if (!isInternal) return void res.status(403).json({ error: 'Forbidden' });
-  }
+router.get('/stats', authMiddleware, databaseAdminOnly, async (_req: Request, res: Response) => {
   const mem = process.memoryUsage();
   let socketStats: Record<string, unknown> = {};
   try {
@@ -121,6 +155,92 @@ router.get('/stats', async (req: Request, res: Response) => {
     },
     socket: socketStats, counts: { users: userCount, servers: serverCount, messages: messageCount },
   });
+});
+
+type ServiceState = 'operational' | 'degraded' | 'unavailable';
+type ServiceHealth = { key: string; label: string; status: ServiceState; detail: string };
+
+// Compact, non-surveillance operational health for authorized server admins.
+// No process memory, hostnames, credentials, ICE entries or raw errors leave
+// this endpoint.
+router.get('/server/:sid/services', authMiddleware, async (req: Request, res: Response) => {
+  const authed = req as AuthedRequest;
+  const sid = String(req.params.sid ?? '');
+  const server = await Servers.findById(sid);
+  if (!server) return void res.status(404).json({ error: 'Server not found' });
+  const membership = await Members.findOne(authed.user.id, sid);
+  if (!membership) return void res.status(403).json({ error: 'Not a member' });
+
+  const perms = await resolvePermissions(authed.user.id, sid);
+  const authorized = server.ownerId === authed.user.id
+    || hasPermission(perms, PERMS.MANAGE_SERVER)
+    || hasPermission(perms, PERMS.ADMINISTRATOR);
+  if (!authorized) return void res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
+
+  const services: ServiceHealth[] = [];
+
+  try {
+    await pingDb();
+    services.push({ key: 'database', label: 'Veri hizmeti', status: 'operational', detail: 'Sunucu verileri erişilebilir.' });
+  } catch {
+    services.push({ key: 'database', label: 'Veri hizmeti', status: 'unavailable', detail: 'Veri hizmeti şu anda yanıt vermiyor.' });
+  }
+
+  try {
+    const ok = await getStorageAdapter().healthCheck();
+    services.push({
+      key: 'uploads', label: 'Dosya yükleme', status: ok ? 'operational' : 'unavailable',
+      detail: ok ? `${getProvider()} depolama sağlayıcısı erişilebilir.` : 'Depolama sağlayıcısı sağlık kontrolünü geçemedi.',
+    });
+  } catch {
+    services.push({ key: 'uploads', label: 'Dosya yükleme', status: 'unavailable', detail: 'Depolama sağlayıcısına erişilemiyor.' });
+  }
+
+
+  try {
+    const ok = await getPrivateStorageAdapter().healthCheck();
+    services.push({
+      key: 'protected_uploads', label: 'Özel dosya yükleme', status: ok ? 'operational' : 'unavailable',
+      detail: ok
+        ? `${getPrivateStorageProvider()} private depolama sağlayıcısı erişilebilir.`
+        : 'Private depolama sağlayıcısı sağlık kontrolünü geçemedi.',
+    });
+  } catch {
+    services.push({ key: 'protected_uploads', label: 'Özel dosya yükleme', status: 'unavailable', detail: 'Private depolama sağlayıcısına erişilemiyor.' });
+  }
+
+  try {
+    const socketMod = await import('../socket') as { getSocketStats?(): { connectedSockets?: number } };
+    const stats = socketMod.getSocketStats?.();
+    services.push({
+      key: 'realtime', label: 'Gerçek zamanlı bağlantı', status: stats ? 'operational' : 'unavailable',
+      detail: stats ? `Socket hizmeti yanıt veriyor · ${Number(stats.connectedSockets ?? 0)} etkin bağlantı.` : 'Socket sağlık bilgisi alınamadı.',
+    });
+  } catch {
+    services.push({ key: 'realtime', label: 'Gerçek zamanlı bağlantı', status: 'unavailable', detail: 'Socket hizmeti sağlık bilgisi alınamadı.' });
+  }
+
+  try {
+    const sfuMod = await import('../socket/handlers/mediasoup') as { isSFUReady?(): boolean };
+    const sfuReady = sfuMod.isSFUReady?.() === true;
+    const turn = getTurnStatus();
+    const status: ServiceState = (sfuReady || turn.turn) ? 'operational' : 'degraded';
+    services.push({
+      key: 'voice', label: 'Ses ve ekran paylaşımı', status,
+      detail: sfuReady
+        ? 'SFU ses/video hizmeti hazır.'
+        : turn.turn
+          ? 'TURN relay hazır; SFU isteğe bağlı veya bu node üzerinde etkin değil.'
+          : 'Temel STUN hazır; TURN relay yapılandırılmadığı için bazı ağlarda bağlantı kurulamayabilir.',
+    });
+  } catch {
+    services.push({ key: 'voice', label: 'Ses ve ekran paylaşımı', status: 'degraded', detail: 'Temel ses bağlantısı kullanılabilir; gelişmiş servis durumu alınamadı.' });
+  }
+
+  const overall: ServiceState = services.some(s => s.status === 'unavailable')
+    ? 'unavailable'
+    : services.some(s => s.status === 'degraded') ? 'degraded' : 'operational';
+  res.json({ serverId: sid, checkedAt: Date.now(), overall, services });
 });
 
 router.get('/server/:sid', authMiddleware, async (req: Request, res: Response) => {
@@ -171,7 +291,7 @@ router.get('/server/:sid', authMiddleware, async (req: Request, res: Response) =
       });
     }
     res.json(stats);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -192,23 +312,13 @@ router.get('/mediasoup', async (_req: Request, res: Response) => {
   res.json({ status: 'ok', workers: null, note: 'mediasoup not configured' });
 });
 
-function _handleIceConfig(_req: Request, res: Response): void {
-  const iceServers: object[] = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
-  const { TURN_URL, TURN_USERNAME, TURN_CREDENTIAL, TURN_URL_TLS } = process.env;
-  if (TURN_URL && TURN_USERNAME && TURN_CREDENTIAL) {
-    iceServers.push({ urls: TURN_URL, username: TURN_USERNAME, credential: TURN_CREDENTIAL });
-    if (TURN_URL_TLS) iceServers.push({ urls: TURN_URL_TLS, username: TURN_USERNAME, credential: TURN_CREDENTIAL });
-  }
-  // Sprint 120: I7 — FORCE_TURN desteği: tüm WebRTC trafiğini TURN üzerinden zorlar (IP sızıntısını engeller)
-  // FORCE_TURN=true → istemci iceTransportPolicy='relay' kullanır, doğrudan P2P bağlantı yapılmaz
-  const iceTransportPolicy = process.env.FORCE_TURN === 'true' ? 'relay' : 'all';
-  if (process.env.FORCE_TURN === 'true' && (!TURN_URL || !TURN_USERNAME || !TURN_CREDENTIAL)) {
-    // TURN sunucu yapılandırılmamışsa FORCE_TURN'u sessizce devre dışı bırak ve uyar
-    // Aksi halde tüm ses/video bağlantıları kesilir
-    res.json({ iceServers, iceTransportPolicy: 'all', warning: 'FORCE_TURN=true ama TURN sunucu yapılandırılmamış; relay modu devre dışı bırakıldı' });
-    return;
-  }
-  res.json({ iceServers, iceTransportPolicy });
+function _handleIceConfig(req: Request, res: Response): void {
+  // One authority for every RTC path. This includes self-hosted coturn
+  // TURN_SECRET/TURN_HOST HMAC credentials, static providers and force-relay
+  // fallback semantics. Do not duplicate TURN env parsing in routes.
+  const authed = req as AuthedRequest;
+  const userId = String(authed.user?._id ?? authed.user?.id ?? 'anonymous');
+  res.json(getRtcIceConfig(userId));
 }
 
 // Sprint 120: /api/rtc/ice-config için tekil import edilebilir handler array

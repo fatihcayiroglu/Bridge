@@ -2,14 +2,17 @@
 // Sprint 110: semantic.ts coverage artırımı — edge case'ler, AI fallback, cache path
 // Hedef: routes/semantic.ts satır coverage %70 → %80
 
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 jest.mock('../middleware/rateLimit', () => ({ limits: { ai: () => (_req: any, _res: any, next: any) => next() } }));
 jest.mock('../lib/redisAdapter', () => ({
   cache: {
+    // Gercek adaptorde MEVCUT (lib/redisAdapter.ts) — mock'ta eksikti ve
+    // `invalidateChannelMessages` her cagrida sessizce TypeError firlatiyordu.
+    invalidatePattern: jest.fn().mockResolvedValue(undefined),
     get:   jest.fn().mockResolvedValue(null),
     set:   jest.fn().mockResolvedValue(undefined),
     del:   jest.fn().mockResolvedValue(undefined),

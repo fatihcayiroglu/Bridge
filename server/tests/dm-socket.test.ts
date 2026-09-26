@@ -6,15 +6,17 @@
 //   - dm:call:decline  (aramayı reddetme)
 //   - dm:call:end      (aramayı bitirme)
 //   - dm:call:offer / answer / ice  (WebRTC sinyalleme)
+import { EmittedLog, SocketDouble, dataOf, findEmitted, requireEmitted, requireEmittedData } from './helpers/socketDoubles';
 //   - dm:send          (mesaj gönderme, E2E, uzunluk limiti)
 //   - dm:join          (oda katılımı)
 
 'use strict';
 process.env.NODE_ENV = 'test';
 
-import { createMockDb, makeUser } from './helpers/mockDb';
+import { createMockDb, makeUser, requireDoc } from './helpers/mockDb';
+import type { MockDb } from './helpers/mockDb';
 
-let db;
+let db: MockDb;
 
 jest.mock('../db/loader', () => {
   const { createMockDb } = require('./helpers/mockDb');
@@ -24,17 +26,21 @@ jest.mock('../db/loader', () => {
 
 // getDmId'ye ihtiyaç var — dm route'ından
 jest.mock('../routes/dm', () => ({
-  getDmId: (a, b) => [a, b].sort().join('_'),
+  getDmId: (a: string, b: string) => [a, b].sort().join('_'),
   router:  require('express').Router(),
 }));
 
 import { registerDmHandlers } from '../socket/handlers/dm';
+// Canonical deterministic DM id owner — the assertion below referenced `Dms`
+// without ever importing it, so the test threw ReferenceError instead of
+// checking that a nonce-rejected send creates no conversation row.
+import DmRepository from '../db/repositories/DmRepository';
 
 // ── Yardımcılar ────────────────────────────────────────────────
 
-function makeSocket(id) {
+function makeSocket(id: string) {
   const handlers: Record<string, unknown> = {};
-  const emitted  = [];
+  const emitted: EmittedLog = [];
   const rooms    = new Set([id]);
 
   const socket = {
@@ -50,21 +56,22 @@ function makeSocket(id) {
     _handlers: handlers,
     _emitted:  emitted,
     _rooms:    rooms,
-    async _trigger(event, data) {
-      if (handlers[event]) await handlers[event](data);
+    async _trigger(event: string, data: unknown) {
+      const fn = handlers[event];
+      if (typeof fn === 'function') await (fn as (payload?: unknown) => unknown)(data);
     },
-  };
+  } satisfies SocketDouble;
   return socket;
 }
 
 // socketUsers Map — io.to(sid) yerine doğrudan soketi bulmak için
 function makeIo(socketUsers = new Map()) {
-  const emitted = [];
+  const emitted: EmittedLog = [];
   return {
     _emitted: emitted,
     _socketStore: new Map(), // sid → socket nesnesi
-    to(target) {
-      return { emit(ev, data) { emitted.push({ ev, data, _target: target }); } };
+    to(target: string) {
+      return { emit(ev: string, data: unknown) { emitted.push({ ev, data, _target: target }); } };
     },
   };
 }
@@ -93,11 +100,11 @@ describe('dm:call:start', () => {
 
     await callerSocket._trigger('dm:call:start', { toUserId: callee._id, type: 'voice' });
 
-    const outgoing = callerSocket._emitted.find(e => e.ev === 'dm:call:outgoing');
+    const outgoing = requireEmittedData(callerSocket._emitted, 'dm:call:outgoing');
     expect(outgoing).toBeDefined();
-    expect(outgoing.data.toUserId).toBe(callee._id);
-    expect(outgoing.data.type).toBe('voice');
-    expect(outgoing.data.callId).toBeDefined();
+    expect(outgoing.toUserId).toBe(callee._id);
+    expect(outgoing.type).toBe('voice');
+    expect(outgoing.callId).toBeDefined();
   });
 
   it('aranan taraf dm:call:incoming alır', async () => {
@@ -115,11 +122,11 @@ describe('dm:call:start', () => {
     await callerSocket._trigger('dm:call:start', { toUserId: callee._id, type: 'voice' });
 
     // io.to('s-callee-2').emit('dm:call:incoming', ...) çağrılmış olmalı
-    const incoming = io._emitted.find(e => e.ev === 'dm:call:incoming' && e._target === 's-callee-2');
+    const incoming = requireEmittedData(io._emitted, 'dm:call:incoming', { target: `user:${callee._id}` });
     expect(incoming).toBeDefined();
-    expect(incoming.data.callerId).toBe(caller._id);
-    expect(incoming.data.callerDisplayName).toBe(caller.displayName);
-    expect(incoming.data.type).toBe('voice');
+    expect(incoming.callerId).toBe(caller._id);
+    expect(incoming.callerDisplayName).toBe(caller.displayName);
+    expect(incoming.type).toBe('voice');
   });
 
   it('geçersiz type reddedilir', async () => {
@@ -136,8 +143,8 @@ describe('dm:call:start', () => {
 
     await socket._trigger('dm:call:start', { toUserId: callee._id, type: 'screenshare' });
 
-    expect(socket._emitted.find(e => e.ev === 'dm:call:outgoing')).toBeUndefined();
-    expect(io._emitted.find(e => e.ev === 'dm:call:incoming')).toBeUndefined();
+    expect(findEmitted(socket._emitted, 'dm:call:outgoing')).toBeUndefined();
+    expect(findEmitted(io._emitted, 'dm:call:incoming')).toBeUndefined();
   });
 
   it('toUserId eksikse işlem yapılmaz', async () => {
@@ -152,7 +159,7 @@ describe('dm:call:start', () => {
 
     await socket._trigger('dm:call:start', { type: 'voice' });
 
-    expect(socket._emitted.find(e => e.ev === 'dm:call:outgoing')).toBeUndefined();
+    expect(findEmitted(socket._emitted, 'dm:call:outgoing')).toBeUndefined();
   });
 
   it('video tipi de kabul edilir', async () => {
@@ -169,9 +176,9 @@ describe('dm:call:start', () => {
 
     await socket._trigger('dm:call:start', { toUserId: callee._id, type: 'video' });
 
-    const outgoing = socket._emitted.find(e => e.ev === 'dm:call:outgoing');
+    const outgoing = requireEmittedData(socket._emitted, 'dm:call:outgoing');
     expect(outgoing).toBeDefined();
-    expect(outgoing.data.type).toBe('video');
+    expect(outgoing.type).toBe('video');
   });
 });
 
@@ -198,7 +205,7 @@ describe('dm:call:accept', () => {
     registerDmHandlers(calleeSocket, io, callee, socketUsers);
 
     await callerSocket._trigger('dm:call:start', { toUserId: callee._id, type: 'voice' });
-    const callId = callerSocket._emitted.find(e => e.ev === 'dm:call:outgoing').data.callId;
+    const callId = requireEmittedData(callerSocket._emitted, 'dm:call:outgoing').callId;
 
     return { caller, callee, callerSocket, calleeSocket, socketUsers, io, callId };
   }
@@ -208,30 +215,30 @@ describe('dm:call:accept', () => {
 
     await calleeSocket._trigger('dm:call:accept', { callId });
 
-    const accepted = io._emitted.find(e => e.ev === 'dm:call:accepted' && e._target === 's-accept-caller');
+    const accepted = requireEmittedData(io._emitted, 'dm:call:accepted', { target: `user:${caller._id}` });
     expect(accepted).toBeDefined();
-    expect(accepted.data.callId).toBe(callId);
-    expect(accepted.data.calleeDisplayName).toBe(callee.displayName);
+    expect(accepted.callId).toBe(callId);
+    expect(accepted.calleeDisplayName).toBe(callee.displayName);
   });
 
   it('her iki tarafa da dm:call:ready gönderilir', async () => {
-    const { calleeSocket, io, callId } = await startCall();
+    const { caller, calleeSocket, io, callId } = await startCall();
 
     await calleeSocket._trigger('dm:call:accept', { callId });
 
-    const readyToCaller = io._emitted.find(e => e.ev === 'dm:call:ready' && e._target === 's-accept-caller');
-    const readyToCallee = calleeSocket._emitted.find(e => e.ev === 'dm:call:ready');
+    const readyToCaller = requireEmittedData(io._emitted, 'dm:call:ready', { target: `user:${caller._id}` });
+    const readyToCallee = requireEmittedData(calleeSocket._emitted, 'dm:call:ready');
 
     expect(readyToCaller).toBeDefined();
     expect(readyToCallee).toBeDefined();
 
     // Roller doğru olmalı
-    expect(readyToCaller.data.role).toBe('caller');
-    expect(readyToCallee.data.role).toBe('callee');
+    expect(readyToCaller.role).toBe('caller');
+    expect(readyToCallee.role).toBe('callee');
 
     // Aynı callId ile
-    expect(readyToCaller.data.callId).toBe(callId);
-    expect(readyToCallee.data.callId).toBe(callId);
+    expect(readyToCaller.callId).toBe(callId);
+    expect(readyToCallee.callId).toBe(callId);
   });
 
   it('callId yoksa ya da callee değilse işlem yapılmaz', async () => {
@@ -240,7 +247,7 @@ describe('dm:call:accept', () => {
     // Caller kendisi kabul etmeye çalışıyor
     await callerSocket._trigger('dm:call:accept', { callId });
 
-    const accepted = io._emitted.find(e => e.ev === 'dm:call:accepted');
+    const accepted = findEmitted(io._emitted, 'dm:call:accepted');
     expect(accepted).toBeUndefined();
   });
 
@@ -249,7 +256,7 @@ describe('dm:call:accept', () => {
 
     await calleeSocket._trigger('dm:call:accept', { callId: 'nonexistent-call' });
 
-    const ready = calleeSocket._emitted.find(e => e.ev === 'dm:call:ready');
+    const ready = findEmitted(calleeSocket._emitted, 'dm:call:ready');
     expect(ready).toBeUndefined();
   });
 });
@@ -277,13 +284,13 @@ describe('dm:call:decline', () => {
     registerDmHandlers(calleeSocket, io, callee, socketUsers);
 
     await callerSocket._trigger('dm:call:start', { toUserId: callee._id, type: 'voice' });
-    const callId = callerSocket._emitted.find(e => e.ev === 'dm:call:outgoing').data.callId;
+    const callId = requireEmittedData(callerSocket._emitted, 'dm:call:outgoing').callId;
 
     await calleeSocket._trigger('dm:call:decline', { callId });
 
-    const declined = io._emitted.find(e => e.ev === 'dm:call:declined' && e._target === 's-decline-caller');
+    const declined = requireEmittedData(io._emitted, 'dm:call:declined', { target: `user:${caller._id}` });
     expect(declined).toBeDefined();
-    expect(declined.data.callId).toBe(callId);
+    expect(declined.callId).toBe(callId);
   });
 
   it('geçersiz callId sessizce reddedilir', async () => {
@@ -294,7 +301,7 @@ describe('dm:call:decline', () => {
     registerDmHandlers(socket, io, user, new Map());
 
     await expect(socket._trigger('dm:call:decline', { callId: 'ghost' })).resolves.not.toThrow();
-    expect(io._emitted.find(e => e.ev === 'dm:call:declined')).toBeUndefined();
+    expect(findEmitted(io._emitted, 'dm:call:declined')).toBeUndefined();
   });
 });
 
@@ -321,23 +328,23 @@ describe('dm:call:end', () => {
     registerDmHandlers(calleeSocket, io, callee, socketUsers);
 
     await callerSocket._trigger('dm:call:start', { toUserId: callee._id, type: 'voice' });
-    const callId = callerSocket._emitted.find(e => e.ev === 'dm:call:outgoing').data.callId;
+    const callId = requireEmittedData(callerSocket._emitted, 'dm:call:outgoing').callId;
     await calleeSocket._trigger('dm:call:accept', { callId });
 
     return { caller, callee, callerSocket, calleeSocket, io, callId };
   }
 
   it('caller aramayi bitirince diğer tarafa dm:call:ended gider', async () => {
-    const { callerSocket, io, callId } = await activeCall();
+    const { callee, callerSocket, io, callId } = await activeCall();
 
     io._emitted.length = 0;
     callerSocket._emitted.length = 0;
 
     await callerSocket._trigger('dm:call:end', { callId });
 
-    const endedToCallee = io._emitted.find(e => e.ev === 'dm:call:ended' && e._target === 's-end-callee');
+    const endedToCallee = requireEmittedData(io._emitted, 'dm:call:ended', { target: `user:${callee._id}` });
     expect(endedToCallee).toBeDefined();
-    expect(endedToCallee.data.callId).toBe(callId);
+    expect(endedToCallee.callId).toBe(callId);
   });
 
   it('caller kendisi de dm:call:ended alır', async () => {
@@ -346,19 +353,19 @@ describe('dm:call:end', () => {
 
     await callerSocket._trigger('dm:call:end', { callId });
 
-    const selfEnded = callerSocket._emitted.find(e => e.ev === 'dm:call:ended');
+    const selfEnded = requireEmittedData(callerSocket._emitted, 'dm:call:ended');
     expect(selfEnded).toBeDefined();
-    expect(selfEnded.data.callId).toBe(callId);
+    expect(selfEnded.callId).toBe(callId);
   });
 
   it('callee de aramayi bitirebilir', async () => {
-    const { calleeSocket, io, callId } = await activeCall();
+    const { caller, calleeSocket, io, callId } = await activeCall();
 
     io._emitted.length = 0;
 
     await calleeSocket._trigger('dm:call:end', { callId });
 
-    const endedToCaller = io._emitted.find(e => e.ev === 'dm:call:ended' && e._target === 's-end-caller');
+    const endedToCaller = requireEmitted(io._emitted, 'dm:call:ended', { target: `user:${caller._id}` });
     expect(endedToCaller).toBeDefined();
   });
 
@@ -393,43 +400,58 @@ describe('WebRTC sinyalleme', () => {
     const io = makeIo(socketUsers);
 
     registerDmHandlers(socket, io, user, socketUsers);
-    return { user, target, socket, io, targetSid };
+
+    // FAZ G — GERCEK bir arama kurulur ve GERCEK callId kullanilir.
+    //
+    // Bu testler eskiden uydurma bir `callId: 'call-1'` ile sinyal
+    // gonderiyordu ve GECIYORDU. Gecmesinin nedeni tam olarak guvenlik
+    // kusuruydu: `dm:call:offer/answer/ice` hicbir arama baglamini
+    // dogrulamiyor, payload'daki `targetUserId`ye korumasizca iletiyordu.
+    // Yani bu testler kusurlu davranisi "beklenen" diye kayit altina
+    // almisti. Artik once gercek bir arama baslatilir; boylece MESRU
+    // sinyal yolu olculur, savunmasiz yol degil.
+    await socket._trigger('dm:call:start', { toUserId: target._id, type: 'voice' });
+    const outgoing = requireEmittedData(socket._emitted, 'dm:call:outgoing');
+    const callId = outgoing.callId;
+    io._emitted.length = 0;
+
+    return { user, target, socket, io, targetSid, callId };
   }
 
   it('dm:call:offer hedef kullanıcının soketine iletilir', async () => {
-    const { target, socket, io } = await setup();
+    const { target, socket, io, callId } = await setup();
     const offer = { type: 'offer', sdp: 'v=0...' };
 
-    await socket._trigger('dm:call:offer', { callId: 'call-1', targetUserId: target._id, offer });
+    await socket._trigger('dm:call:offer', { callId, targetUserId: target._id, offer });
 
-    const fwd = io._emitted.find(e => e.ev === 'dm:call:offer' && e._target === 's-rtc-target');
+    const fwd = requireEmittedData(io._emitted, 'dm:call:offer', { target: `user:${target._id}` });
     expect(fwd).toBeDefined();
-    expect(fwd.data.offer).toEqual(offer);
-    expect(fwd.data.fromSocketId).toBe(socket.id);
-    expect(fwd.data.callId).toBe('call-1');
+    expect(fwd.offer).toEqual(offer);
+    expect(fwd.fromSocketId).toBe(socket.id);
+    expect(fwd.callId).toBe(callId);
   });
 
   it('dm:call:answer hedef kullanıcının soketine iletilir', async () => {
-    const { target, socket, io } = await setup();
+    const { target, socket, io, callId } = await setup();
     const answer = { type: 'answer', sdp: 'v=0...' };
 
-    await socket._trigger('dm:call:answer', { callId: 'call-1', targetUserId: target._id, answer });
+    await socket._trigger('dm:call:answer', { callId, targetUserId: target._id, answer });
 
-    const fwd = io._emitted.find(e => e.ev === 'dm:call:answer' && e._target === 's-rtc-target');
+    const fwd = requireEmittedData(io._emitted, 'dm:call:answer', { target: `user:${target._id}` });
     expect(fwd).toBeDefined();
-    expect(fwd.data.answer).toEqual(answer);
-    expect(fwd.data.fromSocketId).toBe(socket.id);
+    expect(fwd.answer).toEqual(answer);
+    expect(fwd.fromSocketId).toBe(socket.id);
   });
 
   it('dm:call:ice hedef kullanıcının soketine iletilir', async () => {
-    const { target, socket, io } = await setup();
+    const { target, socket, io, callId } = await setup();
     const candidate = { candidate: 'candidate:1...', sdpMid: '0', sdpMLineIndex: 0 };
 
-    await socket._trigger('dm:call:ice', { callId: 'call-1', targetUserId: target._id, candidate });
+    await socket._trigger('dm:call:ice', { callId, targetUserId: target._id, candidate });
 
-    const fwd = io._emitted.find(e => e.ev === 'dm:call:ice' && e._target === 's-rtc-target');
+    const fwd = requireEmittedData(io._emitted, 'dm:call:ice', { target: `user:${target._id}` });
     expect(fwd).toBeDefined();
-    expect(fwd.data.candidate).toEqual(candidate);
+    expect(fwd.candidate).toEqual(candidate);
   });
 
   it('hedef kullanıcı bağlı değilse hata fırlatmaz', async () => {
@@ -470,14 +492,14 @@ describe('dm:send', () => {
     await socketA._trigger('dm:send', { toUserId: userB._id, content: 'Selam!' });
 
     // Gönderene
-    const selfMsg = socketA._emitted.find(e => e.ev === 'dm:message');
+    const selfMsg = requireEmittedData(socketA._emitted, 'dm:message');
     expect(selfMsg).toBeDefined();
-    expect(selfMsg.data.content).toBe('Selam!');
+    expect(selfMsg.content).toBe('Selam!');
 
     // Alıcıya
-    const toB = io._emitted.find(e => e.ev === 'dm:message' && e._target === 's-dm-b');
+    const toB = requireEmittedData(io._emitted, 'dm:message', { target: `user:${userB._id}` });
     expect(toB).toBeDefined();
-    expect(toB.data.content).toBe('Selam!');
+    expect(toB.content).toBe('Selam!');
   });
 
   it('mesaj veritabanına kaydedilir', async () => {
@@ -485,8 +507,7 @@ describe('dm:send', () => {
 
     await socketA._trigger('dm:send', { toUserId: userB._id, content: 'DB test' });
 
-    const saved = await db.dmMessages.findOne({ userId: userA._id });
-    expect(saved).not.toBeNull();
+    const saved = await requireDoc(db.dmMessages, { userId: userA._id });
     expect(saved.content).toBe('DB test');
   });
 
@@ -495,8 +516,8 @@ describe('dm:send', () => {
 
     await socketA._trigger('dm:send', { toUserId: userB._id, content: '   ' });
 
-    expect(socketA._emitted.find(e => e.ev === 'dm:message')).toBeUndefined();
-    expect(io._emitted.find(e => e.ev === 'dm:message')).toBeUndefined();
+    expect(findEmitted(socketA._emitted, 'dm:message')).toBeUndefined();
+    expect(findEmitted(io._emitted, 'dm:message')).toBeUndefined();
   });
 
   it('2000 karakteri aşan normal mesaj reddedilir', async () => {
@@ -504,7 +525,7 @@ describe('dm:send', () => {
 
     await socketA._trigger('dm:send', { toUserId: userB._id, content: 'a'.repeat(2001) });
 
-    expect(socketA._emitted.find(e => e.ev === 'dm:message')).toBeUndefined();
+    expect(findEmitted(socketA._emitted, 'dm:message')).toBeUndefined();
   });
 
   it('E2E mesajları 20KB\'a kadar kabul edilir', async () => {
@@ -513,9 +534,9 @@ describe('dm:send', () => {
     const e2eContent = '🔒e2e:' + 'x'.repeat(10_000);
     await socketA._trigger('dm:send', { toUserId: userB._id, content: e2eContent });
 
-    const msg = socketA._emitted.find(e => e.ev === 'dm:message');
+    const msg = requireEmittedData(socketA._emitted, 'dm:message');
     expect(msg).toBeDefined();
-    expect(msg.data.e2e).toBe(true);
+    expect(msg.e2e).toBe(true);
   });
 
   it('E2E mesajı 20KB\'ı aşarsa reddedilir', async () => {
@@ -524,7 +545,7 @@ describe('dm:send', () => {
     const e2eContent = '🔒e2e:' + 'x'.repeat(20_001);
     await socketA._trigger('dm:send', { toUserId: userB._id, content: e2eContent });
 
-    expect(socketA._emitted.find(e => e.ev === 'dm:message')).toBeUndefined();
+    expect(findEmitted(socketA._emitted, 'dm:message')).toBeUndefined();
   });
 
   it('var olmayan kullanıcıya mesaj reddedilir', async () => {
@@ -532,7 +553,56 @@ describe('dm:send', () => {
 
     await socketA._trigger('dm:send', { toUserId: 'ghost-user', content: 'Test' });
 
-    expect(socketA._emitted.find(e => e.ev === 'dm:message')).toBeUndefined();
+    expect(findEmitted(socketA._emitted, 'dm:message')).toBeUndefined();
+  });
+
+  it('aynı clientNonce retry tek DB mesajı üretir ve yalnız gönderene nonce döner', async () => {
+    const { userA, userB, socketA, io } = await setupDmPair();
+    const clientNonce = 'dm-nonce-retry-001';
+
+    await socketA._trigger('dm:send', { toUserId: userB._id, content: 'Tek kez kaydet', clientNonce });
+    await socketA._trigger('dm:send', { toUserId: userB._id, content: 'Tek kez kaydet', clientNonce });
+
+    const saved = await db.dmMessages.find({ userId: userA._id, clientNonce });
+    expect(saved).toHaveLength(1);
+
+    const senderEchoes = socketA._emitted.filter(e => e.ev === 'dm:message' && dataOf(e).clientNonce === clientNonce);
+    expect(senderEchoes).toHaveLength(2);
+    expect(dataOf(senderEchoes[0])._id).toBe(dataOf(senderEchoes[1])._id);
+
+    const peerMessages = io._emitted.filter(e => e.ev === 'dm:message' && e._target === `user:${userB._id}`);
+    expect(peerMessages).toHaveLength(1);
+    expect(dataOf(peerMessages[0]).clientNonce).toBeUndefined();
+  });
+
+  it('aynı clientNonce başka DM için yeniden kullanılamaz', async () => {
+    const { userA, userB, socketA, socketUsers, io } = await setupDmPair();
+    const userC = makeUser({ displayName: 'Carol' });
+    await db.users.insert(userC);
+    socketUsers.set('s-dm-c', userC);
+    const clientNonce = 'dm-nonce-conflict-001';
+
+    await socketA._trigger('dm:send', { toUserId: userB._id, content: 'B mesajı', clientNonce });
+    await socketA._trigger('dm:send', { toUserId: userC._id, content: 'C mesajı', clientNonce });
+
+    const errors = socketA._emitted.filter(e => e.ev === 'error:message' && dataOf(e).clientNonce === clientNonce);
+    expect(errors).toHaveLength(1);
+    expect(dataOf(errors[0]).code).toBe('NONCE_CONFLICT');
+    expect(findEmitted(io._emitted, 'dm:message', { target: `user:${userC._id}` })).toBeUndefined();
+    expect(await db.dmMessages.find({ userId: userA._id, clientNonce })).toHaveLength(1);
+    const rejectedConversationId = DmRepository.buildDmId(userA._id, userC._id);
+    expect(await db.dmConversations.findOne({ _id: rejectedConversationId })).toBeNull();
+  });
+
+  it('reddedilen gönderim clientNonce ile tam bir kez hata üretir', async () => {
+    const { userB, socketA } = await setupDmPair();
+    const clientNonce = 'dm-nonce-error-001';
+
+    await socketA._trigger('dm:send', { toUserId: userB._id, content: '   ', clientNonce });
+
+    const errors = socketA._emitted.filter(e => e.ev === 'error:message' && dataOf(e).clientNonce === clientNonce);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].data).toEqual(expect.objectContaining({ event: 'dm:send', code: 'EMPTY_MESSAGE', clientNonce }));
   });
 
   it('DM konuşması yoksa oluşturulur', async () => {
@@ -566,6 +636,8 @@ describe('dm:join', () => {
     const socket = makeSocket('s-dmjoin-1');
     const io     = makeIo();
 
+    await db.dmConversations.insert({ _id: 'dm-room-abc', participants: [user._id, 'other-user'] });
+
     registerDmHandlers(socket, io, user, new Map([['s-dmjoin-1', user]]));
 
     await socket._trigger('dm:join', 'dm-room-abc');
@@ -577,6 +649,9 @@ describe('dm:join', () => {
     const user   = makeUser();
     const socket = makeSocket('s-dmjoin-2');
     const io     = makeIo();
+
+    await db.dmConversations.insert({ _id: 'dm-room-1', participants: [user._id, 'other-user'] });
+    await db.dmConversations.insert({ _id: 'dm-room-2', participants: [user._id, 'other-user'] });
 
     registerDmHandlers(socket, io, user, new Map([['s-dmjoin-2', user]]));
 

@@ -1,252 +1,212 @@
-// client/tests/offline-queue.test.ts — Sprint 78
-// core/offline-queue.ts için unit testler
-// Kapsam: _enqueue / badge / MAX_QUEUE_SIZE cap,
-//         flush (bağlı / bağlı değil), sendMessage offline wrap,
-//         getOfflineQueue export, visibilitychange + online events
+// client/tests/offline-queue.test.ts
+// Teslim güvenceleri — CANLI sözleşme testleri (native Vitest/ESM).
+//
+// ════════════════════════════════════════════════════════════════════════════
+// Reliable Outbox — çevrimdışı kalıcılık + reconnect replay sözleşmesi.
+// ════════════════════════════════════════════════════════════════════════════
+//
+// ÇÖKME NEDENİ (ölçüldü): `jest.mock is not a function` @ satır 23 — dosya
+// `js/core/offline-queue.js` modülünü CJS `require` + `jest.mock(...,{virtual})`
+// ile yüklüyordu. Süit Vitest'te 0 test kaydediyordu (collection failure).
+//
+// ── ESKİ MİMARİ: FULL_DEAD (kanıtlı) ────────────────────────────────────────
+// `js/core/offline-queue.ts` ARTIK YOK (0 dosya eşleşmesi). Yerini alanlar:
+//   • js/core/OfflineQueue.svelte      — 52 satırlık placeholder kabuk:
+//       isVisible=$state(false), show/hideOfflineQueue hook'ları, KUYRUK YOK,
+//       enqueue/flush/badge/cap YOK, `children` hiç geçilmez.
+//   • js/core/offline-queue-svelte.ts  — mount shim; ÜRETİMDE 0 import eden
+//       (tek grep isabeti js/types/globals.d.ts tip bildirimi) → auto-mount
+//       hiç çalışmaz.
+// `getOfflineQueue`, `flushOfflineQueue`, `_enqueue`, `MAX_QUEUE_SIZE`,
+// offline-badge, `BridgeRegistry.wrap('sendMessage')`, online/visibilitychange
+// flush — hepsi üretimde YOK. Eski 11 testin 6'sı (getOfflineQueue/badge/
+// enqueue/input-clear/wrap-passthrough/flush-register) bu ölü mimariyi,
+// 3'ü (#3, #10, #11) `expect(true).toBe(true)` / `not.toThrow` ile vakumlu
+// gövde (HARNESS_ONLY) idi.
+//
+// ── MERKEZİ GÜVENCE ─────────────────────────────────────────────────────────
+// MessageInputPanel canonical outbox sahibidir: önce kullanıcıya göre kalıcı
+// kayıt, sonra optimistic pending, bağlantı varsa aynı ackId ile emit. Offline
+// kayıt `queued` kalır; reconnect otomatik replay eder. Sunucudaki kalıcı,
+// kullanıcı-kapsamlı ackId unique index duplicate persistence'ı engeller.
+//
+// ── KORUNAN CANLI ALT-SÖZLEŞMELER (burada, GERÇEK sahibe karşı) ──────────────
+// Eski dosyanın iki güvencesi bugünkü composer'da CANLI ve başka yerde
+// GERÇEK sahibe karşı test EDİLMİYORDU:
+//   #6 → MAX_LENGTH=2000 sınırı (MessageInputPanel.svelte:126). Not:
+//        messages-input-unit.test.ts sınırı test eder ama test-YEREL bir
+//        `validateSendMessage` kopyasına karşı (o dosya:80) — gerçek sahibe
+//        karşı değil.
+//   #8 → replyToId'nin `message:send` payload'ına akışı (:149) — 0 kapsam.
+//
+// Bu testler GERÇEK MessageInputPanel'i mount eder; yalnız socket sınırı
+// (emit yakalama) ve registry vekilleri sağlanır. Kaldırılan kuyruk mimarisi
+// YENİDEN CANLANDIRILMAZ. Üretim kodu bu turda DEĞİŞTİRİLMEMİŞTİR.
 
-'use strict';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mount, unmount, flushSync } from 'svelte';
+import MessageInputPanel from '../js/core/MessageInputPanel.svelte';
+import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
+import { readOutbox, resetOutboxMemory } from '../js/core/outbox-store.ts';
 
-// ── Mocks ─────────────────────────────────────────────────────────────────────
+type Emitted = { event: string; payload: Record<string, unknown> };
 
-const mockSocket = {
-  connected: true,
-  emit: jest.fn(),
-};
+let instance: ReturnType<typeof mount> | null = null;
+let host: HTMLDivElement;
+let channel: { _id: string; type?: string; serverId?: string; name?: string } | null;
+let emitted: Emitted[];
+let rendered: Array<Record<string, unknown>>;
 
-const mockRegistry = {
-  call:     jest.fn(),
-  get:      jest.fn(),
-  register: jest.fn(),
-  wrap:     jest.fn(),
-};
+const REGISTRY_KEYS = [
+  'getCurrentChannel', 'getCurrentServer', 'getMe',
+  'appendMessage', 'updateMessage', 'socket', 'getSocketConnected',
+] as const;
 
-jest.mock('../js/core/bridge-registry.js', () => ({
-  BridgeRegistry: mockRegistry,
-}), { virtual: true });
+const input = (): HTMLTextAreaElement => document.getElementById('msg-input') as HTMLTextAreaElement;
+const status = (): HTMLElement | null => document.getElementById('composer-status');
+const lastSend = (): Emitted | undefined => emitted.filter(e => e.event === 'message:send').at(-1);
 
-// ── Module loader ─────────────────────────────────────────────────────────────
-
-function loadModule(socketConnected = true) {
-  jest.resetModules();
-  document.body.innerHTML = '';
-  mockSocket.connected = socketConnected;
-  mockSocket.emit.mockClear();
-  mockRegistry.call.mockReset();
-  mockRegistry.get.mockReset();
-  mockRegistry.register.mockReset();
-  mockRegistry.wrap.mockReset();
-
-  mockRegistry.call.mockImplementation((name: string) => {
-    if (name === 'getSocket') return mockSocket;
-    return null;
-  });
-
-  jest.mock('../js/core/bridge-registry.js', () => ({
-    BridgeRegistry: mockRegistry,
-  }), { virtual: true });
-
-  return require('../js/core/offline-queue.js');
+/** GERÇEK send yolunu çalıştırır — MessageInputPanel `sendMessage`'ı kayıtlıdır. */
+function send(): void {
+  BridgeRegistry.call('sendMessage');
+  flushSync();
 }
 
-// ── getOfflineQueue export ────────────────────────────────────────────────────
+/** Socket'i registry'den kaldırır → composer'ın "bağlantı yok" dalı. */
+function disconnectSocket(): void {
+  BridgeRegistry.unregister('socket');
+  BridgeRegistry.register('getSocketConnected', (() => false) as AnyFn);
+}
 
-describe('getOfflineQueue', () => {
-  test('başlangıçta boş dizi döner', () => {
-    const { getOfflineQueue } = loadModule();
-    expect(getOfflineQueue()).toEqual([]);
+beforeEach(() => {
+  localStorage.clear();
+  resetOutboxMemory();
+  emitted = [];
+  rendered = [];
+  channel = { _id: 'ch-1', type: 'text', serverId: 'srv-1', name: 'genel' };
+
+  host = document.createElement('div');
+  // Üretimdeki statik kabuk (index.html:224-233) — MessageInputPanel buna bağlanır.
+  host.innerHTML = '<div id="msg-input-wrap"><textarea id="msg-input"></textarea></div>';
+  document.body.appendChild(host);
+
+  BridgeRegistry.register('getCurrentChannel', (() => channel) as AnyFn);
+  BridgeRegistry.register('getCurrentServer', (() => ({ _id: 'srv-1' })) as AnyFn);
+  BridgeRegistry.register('getMe', (() => ({ _id: 'user-a', username: 'a', displayName: 'A' })) as AnyFn);
+  BridgeRegistry.register('appendMessage', ((message: Record<string, unknown>): void => {
+    const index = rendered.findIndex(item => item._id === message._id);
+    if (index >= 0) rendered[index] = { ...rendered[index], ...message };
+    else rendered.push(message);
+  }) as AnyFn);
+  BridgeRegistry.register('updateMessage', ((patch: Record<string, unknown>): void => {
+    const index = rendered.findIndex(item => item._id === patch._id);
+    if (index >= 0) rendered[index] = { ...rendered[index], ...patch };
+  }) as AnyFn);
+  BridgeRegistry.register('getSocketConnected', (() => true) as AnyFn);
+  BridgeRegistry.register('socket', {
+    emit: (event: string, payload: Record<string, unknown>) => { emitted.push({ event, payload }); },
+  } as unknown as AnyFn);
+
+  instance = mount(MessageInputPanel, { target: host });
+  flushSync();
+});
+
+afterEach(() => {
+  if (instance) unmount(instance);   // onDestroy pendingSends ACK timer'larını temizler
+  instance = null;
+  host.remove();
+  for (const key of REGISTRY_KEYS) BridgeRegistry.unregister(key);
+  localStorage.clear();
+  resetOutboxMemory();
+  document.body.innerHTML = '';
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// #1 — Socket yokken kalıcı kuyruk ve otomatik reconnect replay
+// ════════════════════════════════════════════════════════════════════════════
+describe('socket yokken gönderim (canonical reliable outbox)', () => {
+  it('bağlantı yokken emit etmez; mesajı kalıcı queued + görünür pending tutar', () => {
+    disconnectSocket();
+    input().value = 'çevrimdışı yazılan mesaj';
+
+    send();
+
+    expect(lastSend()).toBeUndefined();
+    const queued = readOutbox('user-a')[0];
+    expect(queued).toMatchObject({ content: 'çevrimdışı yazılan mesaj', state: 'queued', attempts: 0 });
+    expect(rendered.find(item => item.ackId === queued.ackId)).toMatchObject({
+      pending: true, queued: true, failed: false,
+    });
+  });
+
+  it('socket geri gelince kullanıcı yeniden basmadan aynı ackId otomatik oynatılır', () => {
+    disconnectSocket();
+    input().value = 'daha sonra';
+    send();
+    expect(lastSend()).toBeUndefined();
+    const queued = readOutbox('user-a')[0];
+
+    BridgeRegistry.register('socket', {
+      emit: (event: string, payload: Record<string, unknown>) => { emitted.push({ event, payload }); },
+    } as unknown as AnyFn);
+    BridgeRegistry.register('getSocketConnected', (() => true) as AnyFn);
+    document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
+    flushSync();
+
+    expect(lastSend()?.payload.content).toBe('daha sonra');
+    expect(lastSend()?.payload.ackId).toBe(queued.ackId);
+    expect(readOutbox('user-a')[0]).toMatchObject({ state: 'sending', attempts: 1 });
   });
 });
 
-// ── Badge davranışı ───────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// #6 — MAX_LENGTH 2000 sınırı (LIVE_MOVED → MessageInputPanel.svelte:126)
+// ════════════════════════════════════════════════════════════════════════════
+describe('MAX_LENGTH 2000 sınırı (gerçek sahip)', () => {
+  it('2000 karakterden uzun içerik GÖNDERİLMEZ ve metin korunur', () => {
+    const uzun = 'x'.repeat(2001);
+    input().value = uzun;
 
-describe('queue badge', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    document.body.innerHTML = '';
+    send();
+
+    expect(lastSend()).toBeUndefined();          // kuyruğa/gönderime alınmaz
+    expect(input().value).toBe(uzun);            // kaybolmaz
+    expect(status()?.textContent).toContain('çok uzun');
   });
 
-  test('kuyruk dolunca badge DOM\'a eklenir', () => {
-    // wrap çağrısını yakalayıp _enqueue'yu simüle edebilmek için
-    // sendMessage wrap callback'ini çağırıyoruz
-    loadModule(false); // socket bağlı değil
+  it('tam 2000 karakter sınırda KABUL edilir ve gönderilir', () => {
+    const tam = 'y'.repeat(2000);
+    input().value = tam;
 
-    // wrap fonksiyonuna geçilen callback'i çalıştır
-    const wrapCb = mockRegistry.wrap.mock.calls[0]?.[1] as Function;
-    if (!wrapCb) return;
+    send();
 
-    mockRegistry.call.mockImplementation((name: string) => {
-      if (name === 'getSocket') return { connected: false };
-      if (name === 'getCurrentChannel') return { _id: 'ch-1' };
-      if (name === 'getCurrentServer') return { _id: 'srv-1' };
-      if (name === 'getReplyingTo') return null;
-      return null;
-    });
-
-    document.body.innerHTML = '<textarea id="msg-input">test mesajı</textarea>';
-    wrapCb(undefined);
-
-    const badge = document.getElementById('offline-queue-badge');
-    expect(badge).not.toBeNull();
-    expect(badge?.textContent).toContain('bekliyor');
-  });
-
-  test('kuyruk boşalınca badge kaldırılır', () => {
-    loadModule();
-    // Badge manuel ekle, ardından boş kuyrukla badge güncellemesini tetikle
-    const badge = document.createElement('div');
-    badge.id = 'offline-queue-badge';
-    document.body.appendChild(badge);
-    // getOfflineQueue boş olduğunda _updateQueueBadge badge'i kaldırır
-    // Bunu dolaylı olarak flushOfflineQueue üzerinden test ediyoruz
-    const registerCalls = mockRegistry.register.mock.calls;
-    const flushEntry = registerCalls.find((c: unknown[]) => c[0] === 'flushOfflineQueue');
-    // flush sıfır öğeyle çalışınca badge kaldırılır
-    if (flushEntry?.[1]) {
-      // sadece boş kuyruk için: badge?.remove() çağrılır
-      expect(true).toBe(true); // davranış diğer testlerde doğrulanıyor
-    }
+    expect(lastSend()?.payload.content).toBe(tam);
   });
 });
 
-// ── sendMessage wrap — offline ────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// #8 — replyToId payload akışı (LIVE_MOVED → MessageInputPanel.svelte:149)
+// ════════════════════════════════════════════════════════════════════════════
+describe('yanıt bağlamı payload akışı (gerçek sahip)', () => {
+  it('yanıt modunda message:send payload\'ı replyToId taşır', () => {
+    BridgeRegistry.call('setReplyTarget', { _id: 'msg-parent', displayName: 'B', content: 'asıl mesaj' });
+    flushSync();
+    input().value = 'yanıt gövdesi';
 
-describe('sendMessage offline wrap', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    document.body.innerHTML = '<textarea id="msg-input">merhaba</textarea>';
+    send();
+
+    const payload = lastSend()?.payload;
+    expect(payload?.content).toBe('yanıt gövdesi');
+    expect(payload?.replyToId).toBe('msg-parent');
   });
 
-  test('socket bağlı değilken mesaj kuyruğa alınır', () => {
-    loadModule(false);
-    const wrapCb = mockRegistry.wrap.mock.calls[0]?.[1] as Function;
-    if (!wrapCb) return;
+  it('normal gönderimde payload replyToId İÇERMEZ', () => {
+    input().value = 'düz mesaj';
 
-    mockRegistry.call.mockImplementation((name: string) => {
-      if (name === 'getSocket') return { connected: false };
-      if (name === 'getCurrentChannel') return { _id: 'ch-offline' };
-      if (name === 'getCurrentServer') return { _id: 'srv-1' };
-      if (name === 'getReplyingTo') return null;
-      return null;
-    });
-    mockRegistry.get.mockReturnValue(jest.fn());
+    send();
 
-    wrapCb(undefined);
-
-    const { getOfflineQueue } = require('../js/core/offline-queue.js');
-    const q = getOfflineQueue();
-    expect(q.length).toBeGreaterThan(0);
-    expect(q[0].channelId).toBe('ch-offline');
-    expect(q[0].content).toBe('merhaba');
-  });
-
-  test('socket bağlı değilken input temizlenir', () => {
-    loadModule(false);
-    const wrapCb = mockRegistry.wrap.mock.calls[0]?.[1] as Function;
-    if (!wrapCb) return;
-
-    document.body.innerHTML = '<textarea id="msg-input">silinecek</textarea>';
-    mockRegistry.call.mockImplementation((name: string) => {
-      if (name === 'getSocket') return { connected: false };
-      if (name === 'getCurrentChannel') return { _id: 'ch-1' };
-      if (name === 'getCurrentServer') return null;
-      if (name === 'getReplyingTo') return null;
-      return null;
-    });
-    mockRegistry.get.mockReturnValue(jest.fn());
-
-    wrapCb(undefined);
-    expect((document.getElementById('msg-input') as HTMLTextAreaElement).value).toBe('');
-  });
-
-  test('2000 karakterden uzun içerik kuyruğa alınmaz', () => {
-    loadModule(false);
-    const wrapCb = mockRegistry.wrap.mock.calls[0]?.[1] as Function;
-    if (!wrapCb) return;
-
-    const uzunMesaj = 'x'.repeat(2001);
-    document.body.innerHTML = `<textarea id="msg-input">${uzunMesaj}</textarea>`;
-    mockRegistry.call.mockImplementation((name: string) => {
-      if (name === 'getSocket') return { connected: false };
-      if (name === 'getCurrentChannel') return { _id: 'ch-1' };
-      if (name === 'getCurrentServer') return null;
-      if (name === 'getReplyingTo') return null;
-      return null;
-    });
-
-    wrapCb(undefined);
-    const { getOfflineQueue } = require('../js/core/offline-queue.js');
-    expect(getOfflineQueue().length).toBe(0);
-  });
-
-  test('socket bağlıyken orijinal fonksiyon çağrılır', () => {
-    loadModule(true);
-    const wrapCb = mockRegistry.wrap.mock.calls[0]?.[1] as Function;
-    if (!wrapCb) return;
-
-    const origFn = jest.fn();
-    mockRegistry.call.mockImplementation((name: string) => {
-      if (name === 'getSocket') return { connected: true, emit: jest.fn() };
-      return null;
-    });
-
-    wrapCb(origFn, 'arg1', 'arg2');
-    expect(origFn).toHaveBeenCalledWith('arg1', 'arg2');
-  });
-
-  test('replyToId içeren mesaj kuyruğa eklenir', () => {
-    loadModule(false);
-    const wrapCb = mockRegistry.wrap.mock.calls[0]?.[1] as Function;
-    if (!wrapCb) return;
-
-    mockRegistry.call.mockImplementation((name: string) => {
-      if (name === 'getSocket') return { connected: false };
-      if (name === 'getCurrentChannel') return { _id: 'ch-reply' };
-      if (name === 'getCurrentServer') return null;
-      if (name === 'getReplyingTo') return 'msg-123';
-      return null;
-    });
-    mockRegistry.get.mockReturnValue(jest.fn());
-
-    document.body.innerHTML = '<textarea id="msg-input">yanıt mesajı</textarea>';
-    wrapCb(undefined);
-
-    const { getOfflineQueue } = require('../js/core/offline-queue.js');
-    const q = getOfflineQueue();
-    const item = q.find((i: { channelId: string; replyToId?: string }) => i.channelId === 'ch-reply');
-    expect(item?.replyToId).toBe('msg-123');
-  });
-});
-
-// ── flushOfflineQueue — BridgeRegistry kaydı ─────────────────────────────────
-
-describe('flushOfflineQueue registration', () => {
-  test('flushOfflineQueue BridgeRegistry\'ye kaydedilir', () => {
-    loadModule();
-    const registered = mockRegistry.register.mock.calls.map((c: unknown[]) => c[0]);
-    expect(registered).toContain('flushOfflineQueue');
-  });
-});
-
-// ── online / visibilitychange event ──────────────────────────────────────────
-
-describe('online / visibilitychange events', () => {
-  beforeEach(() => jest.useFakeTimers());
-  afterEach(() => jest.useRealTimers());
-
-  test('window online event\'i flushOfflineQueue\'u tetikler', () => {
-    loadModule();
-    // 1 saniye delay ile çalışır
-    window.dispatchEvent(new Event('online'));
-    jest.advanceTimersByTime(1001);
-    // socket connected ve kuyruk boş — hata fırlatmamalı
-    expect(true).toBe(true);
-  });
-
-  test('visibilitychange event queue > 0 iken flush çalıştırır', () => {
-    loadModule();
-    Object.defineProperty(document, 'hidden', { value: false, writable: true });
-    expect(() => {
-      document.dispatchEvent(new Event('visibilitychange'));
-    }).not.toThrow();
+    const payload = lastSend()?.payload as Record<string, unknown>;
+    expect(payload.content).toBe('düz mesaj');
+    expect('replyToId' in payload).toBe(false);
   });
 });

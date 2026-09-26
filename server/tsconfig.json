@@ -41,6 +41,7 @@
   },
   "include": [
     "index.ts",
+    "runtime.ts",
     "app/**/*.ts",
     "middleware/**/*.ts",
     "routes/**/*.ts",
@@ -62,8 +63,6 @@
     "_legacy_js_backup_session4_5",
     "db/repositories/_legacy_js_backup_session8",
     "**/*.test.ts",
-    "routes/channels._deprecated.ts",
-    "routes/admin-ipban-routes.ts",
     "tests/**/*"
   ]
 }

@@ -2,7 +2,13 @@
 // Keşif güçlendirme testleri — Session 10
 // Öne çıkan sunucular, kategori filtresi, admin feature endpoint
 
+import { stringOf } from './helpers/narrow';
+import type { Application } from 'express';
 'use strict';
+
+// Bu suite görüntü işleme davranışını test etmiyor. ZIP Windows `sharp` native
+// binary'si taşıdığı için Linux doğrulamasında yalnız import sınırını izole et.
+jest.mock('sharp', () => ({ __esModule: true, default: jest.fn() }));
 
 import request from 'supertest';
 import { createTestApp, createTestUser, createAdminUser, loginUser, createTestServer } from './helpers/setup';
@@ -17,7 +23,11 @@ type DiscoverServerResult = {
 };
 
 describe('Discover — Session 10 enhancements', () => {
-  let app, adminToken, userToken, userId, serverId;
+  let adminToken: string;
+  let userToken: string;
+  let userId: string;
+  let serverId: string;
+  let app: Application;
 
   beforeAll(async () => {
     app = await createTestApp();
@@ -35,7 +45,7 @@ describe('Discover — Session 10 enhancements', () => {
       discoverable: true,
       category: 'gaming',
     });
-    serverId = srv._id;
+    serverId = stringOf(srv._id, 'sunucu kimligi');
   });
 
   // ── Kategori endpoint ───────────────────────────────────────────────────
@@ -47,7 +57,7 @@ describe('Discover — Session 10 enhancements', () => {
         .expect(200);
 
       expect(Array.isArray(res.body)).toBe(true);
-      const ids = res.body.map(c => c.id);
+      const ids = res.body.map((c: Record<string, unknown>) => c.id);
       expect(ids).toContain('gaming');
       expect(ids).toContain('music');
       expect(ids).toContain('other');
@@ -99,12 +109,11 @@ describe('Discover — Session 10 enhancements', () => {
     });
 
     it('should reject invalid category', async () => {
-      const res = await request(app)
+      await request(app)
         .patch('/api/discover/settings')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ serverId, category: 'invalid_xyz' })
-        .expect(200); // update sadece geçerli kategorileri işler, geçersiz olanı yoksayar
-      // category değişmemiş olmalı (hâlâ 'music')
+        .expect(400);
     });
   });
 

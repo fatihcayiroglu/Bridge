@@ -156,3 +156,10 @@ describe('mockToast çağrı sayısı', () => {
     expect(mockToast.show).toHaveBeenCalledTimes(1);
   });
 });
+
+// Bu dosyada ust duzey import/export yoktu; TypeScript onu GLOBAL
+// SCRIPT sayiyor ve ust duzey adlari diger ayni durumdaki test
+// dosyalariyla CAKISIYORDU (TS2393/TS2451, ve arguman tiplerinin
+// baska bir dosyanin bildirimine cozulmesi). Bu satir modul kapsami
+// ilan eder; calisma zamaninda hicbir sey degistirmez.
+export {};

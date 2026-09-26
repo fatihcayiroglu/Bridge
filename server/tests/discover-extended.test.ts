@@ -2,8 +2,8 @@
 // Sprint 69 — Discover route coverage genişletmesi
 // Hedef: featured, categories, PATCH /settings, POST /admin/feature endpoint'leri
 
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
@@ -11,6 +11,9 @@ jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 // cache modülünü in-memory stub ile değiştir
 jest.mock('../lib/redisAdapter', () => ({
   cache: {
+    // Gercek adaptorde MEVCUT (lib/redisAdapter.ts) — mock'ta eksikti ve
+    // `invalidateChannelMessages` her cagrida sessizce TypeError firlatiyordu.
+    invalidatePattern: jest.fn().mockResolvedValue(undefined),
     _store: new Map<string, string>(),
     async get(key: string) { return (this._store as Map<string,string>).get(key) ?? null; },
     async set(key: string, val: unknown) { (this._store as Map<string,string>).set(key, String(val)); },
@@ -66,11 +69,11 @@ beforeEach(async () => {
   featuredServerId = uuidv4();
 
   ownerToken = tok(ownerId);
-  adminToken = tok(adminId, { role: 'admin' });
+  adminToken = tok(adminId, { role: 'admin', isAdmin: true });
   otherToken = tok(otherId);
 
   await db.users.insert({ _id: ownerId, username: 'owner', displayName: 'Owner', tokenVersion: 0 });
-  await db.users.insert({ _id: adminId, username: 'admin', displayName: 'Admin', tokenVersion: 0, role: 'admin' });
+  await db.users.insert({ _id: adminId, username: 'admin', displayName: 'Admin', tokenVersion: 0, role: 'admin', isAdmin: true });
   await db.users.insert({ _id: otherId, username: 'other', displayName: 'Other', tokenVersion: 0 });
 
   // Discoverable server owned by ownerId
@@ -84,7 +87,11 @@ beforeEach(async () => {
   // Featured server
   await db.servers.insert({
     _id: featuredServerId, name: 'Featured Server',
-    ownerId: uuidv4(), discoverable: 1, featured: 1, featuredAt: Date.now(),
+    // `servers.discoverable` ve `servers.featured` PostgreSQL'de BOOLEAN'dır
+    // ve `pg` gerçek `true`/`false` döndürür. Fixture 1/0 tamsayısı yazınca
+    // rota sorgusu (`Servers.find({ featured: true })`) mock'ta EŞLEŞMİYOR ve
+    // öne çıkan sunucu hiç dönmüyordu.
+    ownerId: uuidv4(), discoverable: true, featured: true, featuredAt: Date.now(),
     createdAt: Date.now() - 1000,
   });
   await db.members.insert({ userId: uuidv4(), serverId: featuredServerId, roles: [] });
@@ -187,13 +194,12 @@ describe('PATCH /api/discover/settings', () => {
     expect(res.body.ok).toBe(true);
   });
 
-  it('rejects invalid category silently (ignored, not 400)', async () => {
-    // Invalid category is just not applied, update still succeeds for other fields
+  it('rejects invalid category rather than silently retaining stale configuration', async () => {
     const res = await request(app)
       .patch('/api/discover/settings')
       .set('Authorization', `Bearer ${ownerToken}`)
       .send({ serverId, category: 'totally_fake_category', description: 'ok' });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
   });
 
   it('rejects non-owner attempting to change settings (403)', async () => {

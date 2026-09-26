@@ -3,8 +3,9 @@
 process.env.NODE_ENV = 'test';
 
 import { createMockDb, makeUser, makeServer, makeChannel, makeMessage } from './helpers/mockDb';
+import type { MockDb } from './helpers/mockDb';
 
-let db;
+let db: MockDb;
 jest.mock('../db/loader', () => require('../db/index'));
 jest.mock('../db/index', () => {
   const { createMockDb } = require('./helpers/mockDb');
@@ -19,18 +20,18 @@ jest.mock('../db/repositories', () => {
 
   return {
     Channels: {
-      findWhere: (q) => _db.channels.find(q),
-      insert:    (doc) => _db.channels.insert(doc),
+      findWhere: (q: Record<string, unknown>) => _db.channels.find(q),
+      insert:    (doc: Record<string, unknown>) => _db.channels.insert(doc),
     },
     Servers: {
-      findById:  (id) => _db.servers.findOne({ _id: id }),
+      findById:  (id: string) => _db.servers.findOne({ _id: id }),
     },
     Messages: {
-      findWhere: (q) => _db.messages.find(q),
-      create:    (doc) => _db.messages.insert(doc),
+      findWhere: (q: Record<string, unknown>) => _db.messages.find(q),
+      create:    (doc: Record<string, unknown>) => _db.messages.insert(doc),
     },
     Users: {
-      findById:  (id) => _db.users.findOne({ _id: id }),
+      findById:  (id: string) => _db.users.findOne({ _id: id }),
     },
     _db, // expose for seeding
   };
@@ -68,7 +69,7 @@ function seedServer(overrides = {}) {
 function seedUser(overrides = {}) {
   return repos._db.users.insert({ _id: uuidv4(), username: 'u', displayName: 'User', ...overrides });
 }
-function seedMsg(serverId, overrides = {}) {
+function seedMsg(serverId: string, overrides = {}) {
   return repos._db.messages.insert({
     _id: uuidv4(), serverId, channelId: 'ch1', userId: 'u1',
     username: 'u', displayName: 'User', content: 'hello',
@@ -81,7 +82,7 @@ function seedMsg(serverId, overrides = {}) {
 // ── Tests ─────────────────────────────────────────────────────────
 
 describe('runScan — no messages', () => {
-  beforeEach(() => repos._db._reset());
+  beforeEach(() => repos._db._reset?.());
 
   it('returns silently when no recent messages exist', async () => {
     await expect(runScan()).resolves.toBeUndefined();
@@ -89,7 +90,7 @@ describe('runScan — no messages', () => {
 });
 
 describe('runScan — autoModerate disabled', () => {
-  beforeEach(() => repos._db._reset());
+  beforeEach(() => repos._db._reset?.());
 
   it('skips servers without autoModerate flag', async () => {
     const server = await seedServer({ autoModerate: false });
@@ -105,7 +106,7 @@ describe('runScan — autoModerate disabled', () => {
 });
 
 describe('runScan — safe messages', () => {
-  beforeEach(() => repos._db._reset());
+  beforeEach(() => repos._db._reset?.());
 
   it('ignores messages with safe=true and score < 70', async () => {
     const server = await seedServer();
@@ -120,7 +121,7 @@ describe('runScan — safe messages', () => {
 });
 
 describe('runScan — flagged messages', () => {
-  beforeEach(() => repos._db._reset());
+  beforeEach(() => repos._db._reset?.());
 
   it('creates a mod-alert message for a flagged message', async () => {
     const server = await seedServer();
@@ -135,6 +136,18 @@ describe('runScan — flagged messages', () => {
     expect(alerts[0].userId).toBe('system');
     expect(alerts[0].username).toBe('AutoMod');
     expect(alerts[0].content).toContain('85');
+  });
+
+  it('does not create a second alert when an overlapping scan sees the same flagged message', async () => {
+    const server = await seedServer();
+    await seedMsg(server._id);
+    rulesMod.mockReturnValue({ safe: false, score: 91, reason: 'duplicate-risk', categories: {} });
+
+    await runScan();
+    await runScan();
+
+    const alerts = await repos._db.messages.find({ autoModAlert: true });
+    expect(alerts).toHaveLength(1);
   });
 
   it('auto-creates mod-log channel when none exists', async () => {
@@ -198,7 +211,7 @@ describe('runScan — flagged messages', () => {
 });
 
 describe('runScan — alert content', () => {
-  beforeEach(() => repos._db._reset());
+  beforeEach(() => repos._db._reset?.());
 
   it('alert message contains username, score, reason, and message ID', async () => {
     const server = await seedServer();

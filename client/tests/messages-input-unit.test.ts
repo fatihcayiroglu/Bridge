@@ -196,8 +196,15 @@ describe('formatText() — mention & newline', () => {
 describe('formatText() — XSS saldırı vektörleri', () => {
   it('onerror attribute inject edilememeli', () => {
     const result = formatText('<img src=x onerror=alert(1)>');
+
+    // Savunma HTML kaçışıdır: çıktı `&lt;img src=x onerror=alert(1)&gt;`
+    // olur — etiket değil, düz metin. "onerror" kelimesinin metin olarak
+    // geçmesi zararsızdır (kullanıcı bu kelimeyi yazabilmeli); tehlikeli olan
+    // AYRIŞTIRILABİLİR etiket üretilmesidir. Önceki assertion bunu ayırt
+    // etmiyor ve kaçırılmış çıktıyı da hata sayıyordu.
     expect(result).not.toContain('<img');
-    expect(result).not.toContain('onerror');
+    expect(result).toContain('&lt;img');
+    expect(result).not.toMatch(/<[a-z]+[^>]*\son[a-z]+\s*=/i); // canlı event handler yok
   });
 
   it('javascript: URI inject edilememeli', () => {
@@ -353,7 +360,7 @@ describe('cancelEdit mantığı', () => {
     expect(editingId).toBeNull();
   });
 
-  it('editingId varsa null'a sıfırlanmalı', () => {
+  it("editingId varsa null'a sıfırlanmalı", () => {
     let editingId: string | null = 'msg-123';
     _registry['getEditingMessageId'] = () => editingId;
 

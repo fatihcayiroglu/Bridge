@@ -57,6 +57,8 @@ beforeEach(() => {
   delete process.env.VAULT_TOKEN;
   delete process.env.VAULT_ROLE_ID;
   delete process.env.VAULT_SECRET_ID;
+  delete process.env.VAULT_ALLOW_ENV_FALLBACK;
+  process.env.NODE_ENV = 'test';
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -64,6 +66,14 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════════════
 
 describe('env backend', () => {
+
+  it('rejects an unsupported backend instead of silently downgrading to env', async () => {
+    process.env.VAULT_BACKEND = 'typo-backend';
+    process.env.LOCAL_ONLY = 'must-not-be-used';
+    _resetConfig();
+    await expect(getSecret('LOCAL_ONLY')).rejects.toThrow(/Unsupported VAULT_BACKEND/);
+    delete process.env.LOCAL_ONLY;
+  });
   it('process.env\'den sır okur', async () => {
     process.env.MY_TEST_SECRET = 'hello-world';
     const val = await getSecret('MY_TEST_SECRET');
@@ -180,6 +190,45 @@ describe('hashicorp backend', () => {
     delete process.env.NO_ADDR_KEY;
   });
 
+
+  it('production external backend fails closed instead of silently using env', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.PROD_FALLBACK_KEY = 'stale-local-secret';
+    mockFetchError(503);
+    _resetConfig();
+    await expect(getSecret('PROD_FALLBACK_KEY')).resolves.toBeNull();
+    delete process.env.PROD_FALLBACK_KEY;
+  });
+
+  it('explicit fallback also applies to an external 404', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.VAULT_ALLOW_ENV_FALLBACK = 'true';
+    process.env.MISSING_BUT_LOCAL = 'operator-approved-local';
+    mockFetchNotFound();
+    _resetConfig();
+    await expect(getSecret('MISSING_BUT_LOCAL')).resolves.toBe('operator-approved-local');
+    delete process.env.MISSING_BUT_LOCAL;
+  });
+
+  it('rejects plaintext HashiCorp Vault transport in production', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.VAULT_ADDR = 'http://vault.internal:8200';
+    process.env.VAULT_ALLOW_ENV_FALLBACK = 'false';
+    _resetConfig();
+    await expect(getSecret('PROD_TLS_KEY')).resolves.toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('production env fallback requires explicit operator opt-in', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.VAULT_ALLOW_ENV_FALLBACK = 'true';
+    process.env.PROD_FALLBACK_KEY = 'operator-approved-secret';
+    mockFetchError(503);
+    _resetConfig();
+    await expect(getSecret('PROD_FALLBACK_KEY')).resolves.toBe('operator-approved-secret');
+    delete process.env.PROD_FALLBACK_KEY;
+  });
+
   it('AppRole auth — token alır ve KV okur', async () => {
     delete process.env.VAULT_TOKEN;
     process.env.VAULT_ROLE_ID   = 'role-abc';
@@ -275,13 +324,111 @@ describe('_resetConfig', () => {
     delete process.env.RESET_CFG_TEST;
   });
 
-  it('VAULT_MOUNT değişikliği _resetConfig sonrası yansır', () => {
-    process.env.VAULT_BACKEND = 'env';
+  it('VAULT_MOUNT degisikligi _resetConfig sonrasi GERCEKTEN istenen yola yansir', async () => {
+    // VAKUMLUYDU (Final21 Faz 17): `env` backend'ini seciyordu — oysa mount YALNIZCA
+    // HashiCorp KV yolunu etkiler — ve hicbir sey dogrulamiyordu. Yorumu "getConfig'i
+    // dolayli test ediyoruz" diyordu; gercekte hicbir sey olculmuyordu, yani yanlis
+    // mount'tan sir okuyan bir yapilandirma da bu testi gecerdi.
+    process.env.VAULT_BACKEND = 'hashicorp';
+    process.env.VAULT_ADDR    = 'https://vault.test:8200';
+    process.env.VAULT_TOKEN   = 'hvs.test-token';
     process.env.VAULT_MOUNT   = 'mount-a';
     _resetConfig();
-    // Config yeniden oluşturulur — mount-a değeri kullanılır
-    // (hashicorp çağrısı yapmadan doğrulama için getConfig'i dolaylı test ediyoruz)
+
+    mockFetchOk({ data: { data: { MOUNTED_KEY: 'from-mount-a' } } });
+    await expect(getSecret('MOUNTED_KEY')).resolves.toBe('from-mount-a');
+    expect(String(mockFetch.mock.calls[0][0])).toContain('/v1/mount-a/data/bridge/MOUNTED_KEY');
+
+    // Ve degisiklik _resetConfig'e BAGLIDIR: mount kaldirilinca yol varsayilana doner.
     delete process.env.VAULT_MOUNT;
     _resetConfig();
+    _clearVaultCache();
+    mockFetchOk({ data: { data: { MOUNTED_KEY: 'from-default-mount' } } });
+    await expect(getSecret('MOUNTED_KEY')).resolves.toBe('from-default-mount');
+    expect(String(mockFetch.mock.calls[1][0])).toContain('/v1/secret/data/bridge/MOUNTED_KEY');
+
+    delete process.env.VAULT_BACKEND;
+    delete process.env.VAULT_ADDR;
+    delete process.env.VAULT_TOKEN;
+    _resetConfig();
+  });});
+
+// ════════════════════════════════════════════════════════════════════════════
+// SigV4 digest adapter — @smithy/types SourceData sözleşmesi
+// ════════════════════════════════════════════════════════════════════════════
+//
+// `NodeSha256`, AWS Secrets Manager isteklerini imzalayan SignatureV4'e verilen
+// hash/HMAC kurucusudur. Smithy hem ANAHTARI hem de her PARÇAYI `SourceData`
+// (= string | ArrayBuffer | ArrayBufferView) olarak tiplendirir; bunu yalnızca
+// `Uint8Array`e daraltmak `tsc -p tsconfig.build.json`u KIRIYORDU ve Smithy bir
+// ArrayBuffer/DataView verdiğinde isteği SESSİZCE yanlış imzalardı.
+describe('NodeSha256 — SigV4 digest adapter', () => {
+  const { _NodeSha256, _toSigningBuffer } = require('../lib/vault') as {
+    _NodeSha256: new (secret?: string | ArrayBuffer | ArrayBufferView) => {
+      update(data: string | ArrayBuffer | ArrayBufferView): void;
+      digest(): Promise<Uint8Array>;
+    };
+    _toSigningBuffer: (data: string | ArrayBuffer | ArrayBufferView) => Buffer;
+  };
+  const nodeCrypto = require('crypto') as typeof import('crypto');
+  const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
+
+  it('her SourceData biçimini AYNI baytlara çevirir', () => {
+    const text = 'bridge-signing-payload';
+    const view = Buffer.from(text, 'utf8');
+    const arrayBuffer = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+    const dataView = new DataView(arrayBuffer);
+
+    const expected = view.toString('hex');
+    expect(_toSigningBuffer(text).toString('hex')).toBe(expected);
+    expect(_toSigningBuffer(view).toString('hex')).toBe(expected);
+    expect(_toSigningBuffer(arrayBuffer).toString('hex')).toBe(expected);
+    expect(_toSigningBuffer(dataView).toString('hex')).toBe(expected);
+  });
+
+  it('bir görünümün yalnızca KENDİ diliminden okur (offset/length saygılı)', () => {
+    const backing = Buffer.from('AAAApayloadZZZZ', 'utf8');
+    const slice = new Uint8Array(backing.buffer, backing.byteOffset + 4, 7);
+    expect(_toSigningBuffer(slice).toString('utf8')).toBe('payload');
+  });
+
+  it('anahtarsız kurucu SHA-256 üretir', async () => {
+    const digestor = new _NodeSha256();
+    digestor.update('abc');
+    expect(hex(await digestor.digest()))
+      .toBe(nodeCrypto.createHash('sha256').update('abc').digest('hex'));
+  });
+
+  it('anahtarlı kurucu HMAC-SHA256 üretir ve her SourceData anahtarını kabul eder', async () => {
+    const key = Buffer.from('secret-key', 'utf8');
+    const want = nodeCrypto.createHmac('sha256', key).update('abc').digest('hex');
+
+    for (const variant of [
+      'secret-key',
+      key,
+      key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength),
+    ] as Array<string | ArrayBuffer | ArrayBufferView>) {
+      const digestor = new _NodeSha256(variant);
+      digestor.update('abc');
+      expect(hex(await digestor.digest())).toBe(want);
+    }
+  });
+
+  it('BOŞ anahtar da bir anahtardır — SHA-256\'ya düşmez', async () => {
+    const empty = new _NodeSha256('');
+    empty.update('abc');
+    expect(hex(await empty.digest()))
+      .toBe(nodeCrypto.createHmac('sha256', Buffer.alloc(0)).update('abc').digest('hex'));
+    expect(hex(await empty.digest()))
+      .not.toBe(nodeCrypto.createHash('sha256').update('abc').digest('hex'));
+  });
+
+  it('parçalı update tek seferlik update ile aynı özeti verir', async () => {
+    const chunked = new _NodeSha256(Buffer.from('k'));
+    chunked.update('brid');
+    chunked.update(Buffer.from('ge', 'utf8'));
+    const once = new _NodeSha256(Buffer.from('k'));
+    once.update('bridge');
+    expect(hex(await chunked.digest())).toBe(hex(await once.digest()));
   });
 });

@@ -3,8 +3,8 @@
 // Not: esbuild >=0.25 Safari 14 hedefinde destructuring dönüşümünü reddeder; Safari 14.1+ kullanılır.
 // ESM code splitting: esbuild import grafiğini otomatik çözer.
 //
-// DÜZELTME #7: federation-ui.js ve core/go-live.js
-//              entry point listesine eklendi. Eskiden bundle'a girmiyordu.
+// Entry doğrulaması gerçek production ENTRY_POINTS listesinden türetilir;
+// böylece analiz modu artık kaldırılmış legacy entry isimlerine bağlı kalmaz.
 //
 // Kullanım:
 //   node scripts/build.js            # production
@@ -33,6 +33,12 @@ const CSS_SRC = path.join(SRC, 'css');
 const PUBLIC_PATH = process.env.CDN_URL ? process.env.CDN_URL.replace(/\/$/, '') + '/' : '/';
 if (PUBLIC_PATH !== '/') console.log(`🌐 CDN modu aktif: ${PUBLIC_PATH}`);
 
+// esbuild, splitting ile üretilen chunk import'larını publicPath + dosya adı olarak
+// yazar; outdir bilgisini eklemez. PUBLIC_PATH ('/' ya da CDN kökü) tek başına
+// verilirse chunk'lar /chunk-XXXX.js olarak istenir ve 404 döner — bundle'ların
+// gerçek konumu /dist/js/ olduğu için önek burada tamamlanıyor.
+const JS_PUBLIC_PATH = PUBLIC_PATH + 'dist/js/';
+
 fs.mkdirSync(path.join(DIST, 'js'),  { recursive: true });
 fs.mkdirSync(path.join(DIST, 'css'), { recursive: true });
 
@@ -53,74 +59,26 @@ function entry(name) {
 // app.ts tüm core modüllerini import eder; esbuild bunu
 // otomatik chunk'lara böler (splitting: true, format: 'esm').
 const ENTRY_POINTS = [
+  // ── UX/P1 — GİRDİ MİMARİSİ ENVANTERİ (ölçüm tabanlı) ──────────────────
+  // ÖLÇÜM: hiçbir HTML sayfası ve hiçbir `import()` aşağıdaki eski girdileri
+  // TALEP ETMİYORDU. Tüm `<script src>` taraması yalnız iki girdi buldu:
+  //     index.html        → js/app.js
+  //     marketplace.html  → js/plugin-marketplace-page.js
+  // `app.ts` kökenli import kapanışı da şunları DORMANT gösterdi:
+  //     federation-ui, federation-modal, threads, slash, webauthn, marketplace,
+  //     webrtc-sfu, profile, polls, soundboard, twoFactor, mobile, core/i18n
+  // Yani ~80 KB JS derleniyor ve sevk ediliyor ama TARAYICIYA HİÇ GİTMİYOR.
+  //
+  // KARAR: girdiler kaldırıldı — KAYNAK DURUYOR, SEVK EDİLMİYOR.
+  // (Aynı ilke Faz 12'de channel-perms için uygulanmıştı.)
+  // Bir modül yeniden canlandırılmak istenirse doğru yol girdiyi geri koymak
+  // DEĞİL, onu `app.ts` üzerinden GERÇEK bir kullanıcı girişine bağlamaktır;
+  // `webrtc.ts` tam olarak böyle canlandırıldı (Faz 8.3 ses zinciri).
+  //
+  // DİKKAT: `webrtc.ts` app.ts tarafından import edildiği için ZATEN app.js
+  // içindedir; ayrı `webrtc.js` girdisi yalnız yinelenen bir kabuk üretiyordu.
   entry('app.js'),
-  // Lazy-loaded pages
-  entry('admin.js'),
-  entry('discover.js'),
-  entry('federation-modal.js'),
-  // DÜZELTME #7a: federation-ui.js eksikti — eklendi
-  entry('federation-ui.js'),
-  entry('threads.js'),
-  entry('slash.js'),
-  entry('profile.js'),
-  entry('polls.js'),
-  entry('soundboard.js'),
-  entry('marketplace.js'),
-  entry('plugin-marketplace-page.js'),
-  entry('twoFactor.js'),
-  entry('webauthn.js'),
-  entry('mobile.js'),
-  entry('webrtc.js'),
-  entry('webrtc-sfu.js'),
-// Sprint 30: v41–v44 klasörleri kaldırıldı — dosyalar core/ altına taşındı.
-  entry('core/go-live.ts'),
-  // Sprint 28: channel-perms-modal split — 4 modül (yükleme sırası önemli)
-  entry('core/channel-perms/modal-state.ts'),
-  entry('core/channel-perms/modal-actions.ts'),
-  entry('core/channel-perms/modal-audit-sync.ts'),
-  entry('core/channel-perms/modal-core.ts'),
-  // Sprint 49: JS → TS geçişleri
-  entry('core/mention-autocomplete.ts'),
-  entry('core/messages/reactions.ts'),
-  entry('core/messages/scroll.ts'),
-
-  // ── Sprint 50: Kalan 25 JS → TS tam dönüşümü ──────────────────────────────
-  // Tree-shaking aktif — kullanılmayan export'lar otomatik atılır.
-  // esbuild bu dosyaları import grafiğiyle birleştirir; yinelenen kod olmaz.
-  entry('core/voice.ts'),
-  entry('core/web-push.ts'),
-  entry('core/offline-banner.ts'),
-  entry('core/analytics.ts'),
-  entry('core/mobile.ts'),
-  entry('core/virtual-scroll.ts'),
-  entry('core/i18n.ts'),
-  entry('core/canvas.ts'),
-  entry('core/ip-ban.ts'),
-  entry('core/styles.ts'),
-  entry('core/partials.ts'),
-  entry('core/stage.ts'),
-  entry('core/user-connections.ts'),
-  entry('core/channel-stage.ts'),
-  entry('core/discover.ts'),
-  entry('core/mobile-ux.ts'),
-  entry('core/emoji-picker.ts'),
-  entry('core/calendar-picker.ts'),
-  entry('core/clyde.ts'),
-  entry('core/group-dm-core.ts'),
-  entry('core/onboarding-tour.ts'),
-  entry('core/server-ui.ts'),
-  entry('core/bot-marketplace.ts'),
-  entry('core/channel-perms/channel-perms-svelte.ts'),
-  entry('core/messages/loader.ts'),
-  entry('core/messages/virtual-scroll.ts'),
-  // ── Sprint 92: Yeni modüller ──────────────────────────────────────────────────
-  entry('core/desktop-voice-bar.ts'),
-  entry('core/boost-ui.ts'),               // Sprint 93
-  entry('core/spotify-widget.ts'),         // Sprint 93
-  entry('core/e2ee-toggle.ts'),            // Sprint 93
-  entry('core/analytics-dashboard.ts'),    // Sprint 94
-  entry('core/announcement-ui.ts'),        // Sprint 94
-  entry('core/settings-modal-voice.ts'),
+  entry('plugin-marketplace-page.js'),   // marketplace.html bunu GERÇEKTEN çeker
 ].filter(Boolean).filter(exists);
 
 // ── CSS build ─────────────────────────────────────────────────────────────────
@@ -148,13 +106,51 @@ async function buildCSS() {
 }
 
 // ── Ana JS build (ESM splitting) ──────────────────────────────────────────────
+
+/**
+ * FAZ H1 — ESKI HASH'LI CIKTILARIN TEMIZLENMESI.
+ *
+ * OLCUM: `dist/js` icinde 83 dosya / 5.36 MB birikmisti; oysa manifest yalnizca
+ * 47 girdiye (~681 KB) atifta bulunuyor. Yani 36 dosya / 4.57 MB ESKI
+ * BUILD'lerden kalan YETIM hash'li paketlerdi (`app-<eskiHash>.js` gibi).
+ *
+ * Etkisi dagitimda gercektir: `dist` oldugu gibi servis edilirse canli olanin
+ * ~8 kati olu JS diskte durur ve kamuya acik dizinde eski kod birikir.
+ *
+ * Bu adim YALNIZCA uretilen `dist/js` ciktisini siler — kaynak, yukleme
+ * (`server/uploads/**`) veya baska hicbir dizine DOKUNMAZ. Klasor her build'de
+ * yeniden yazildigi icin islem geri donusludur.
+ */
+function cleanJsOutDir() {
+  const jsDir = path.join(DIST, 'js');
+  if (!fs.existsSync(jsDir)) return 0;
+  let removed = 0;
+  for (const name of fs.readdirSync(jsDir)) {
+    // ÖLÇÜLEN KUSUR (Final20): burada yalnızca `.js` ve `.map` siliniyordu.
+    // Ama esbuild BİLEŞEN CSS'ini de AYNI dizine yazıyor
+    // (`app-<hash>.css`, `chunk-<hash>.css`). Sonuç: her derleme bir öncekinin
+    // CSS parçalarını GERİDE BIRAKIYOR, bunlar birikiyor ve SÜRÜME giriyor.
+    // Ölçüldü — uzun süre derlenen bir ağaçta 5 adet başvurulmayan
+    // `app-*.css` dosyası vardı; taze bir ağaçta 1 tane.
+    // İki sonucu vardı: (a) ölü varlıklar paketleniyordu, (b) arşivin içeriği
+    // DERLEME GEÇMİŞİNE bağlı hâle geliyordu, yani yeniden üretilemiyordu.
+    if (!/\.(js|css|map)$/.test(name)) continue;   // yalniz uretilen JS/CSS/map
+    fs.rmSync(path.join(jsDir, name), { force: true });
+    removed++;
+  }
+  return removed;
+}
+
 async function buildJS() {
+  const cleaned = cleanJsOutDir();
+  if (cleaned) console.log(`🧹 Eski JS ciktisi temizlendi (${cleaned} dosya)`);
+
   const result = await esbuild.build({
     entryPoints:       ENTRY_POINTS,
     bundle:            true,
     splitting:         true,
     format:            'esm',
-    publicPath:        PUBLIC_PATH,
+    publicPath:        JS_PUBLIC_PATH,
     outdir:            path.join(DIST, 'js'),
     entryNames:        '[name]-[hash]',
     chunkNames:        'chunk-[hash]',
@@ -175,30 +171,88 @@ async function buildJS() {
     // DÜZELTME #7c: v41–v44 re-export'larının doğru çözümlenmesi için
     // resolveExtensions .ts'yi de kapsar (tsc öncesi raw TS kullanılıyorsa)
     resolveExtensions: ['.ts', '.js', '.json', '.svelte'],
+    // ══════════════════════════════════════════════════════════════════════
+    // BILESEN CSS'I HARICI DOSYAYA YAZILIR — `injected` DEGIL
+    // ══════════════════════════════════════════════════════════════════════
+    // `css: 'injected'`, her Svelte bileseninin kapsamli stilini CALISMA
+    // ZAMANINDA bir <style> ogesi olusturarak sayfaya ekler. Bridge'in KENDI
+    // guvenlik basligi bunu ENGELLER (app/createApp.ts):
+    //
+    //     style-src-elem 'self' 'nonce-<per-request>'
+    //
+    // Calisma zamaninda uretilen <style> ogesinde nonce YOKTUR, dolayisiyla
+    // tarayici onu reddeder. GERCEK TARAYICIDA OLCULDU: sayfada 41 adet
+    // <style> ogesi var, hepsinin nonce'u BOS ve `document.styleSheets`
+    // yalnizca 2 girdi iceriyor (iki <link> dosyasi). Konsol her biri icin
+    // "Applying inline style violates ... style-src-elem" yaziyor.
+    //
+    // Sonuc yalnizca kozmetik degil: olculen ornekte onboarding sihirbazinin
+    // kapat dugmesi 24x24 yerine 4x19, gezinme noktalari 4x4 CSS px oldu
+    // (WCAG 2.2 SC 2.5.8 ihlali) ve `position: fixed` uygulanmadigi icin
+    // modal ortu 2727 px yuksekliginde bir blok hâline geldi.
+    //
+    // Birim testleri, `svelte-check` ve kapsam olcumleri bunu GOREMEZ; hata
+    // yalnizca gercek basliklarla calisan gercek bir tarayicida ortaya cikar.
+    //
+    // COZUM: CSP GEVSETILMEZ ('unsafe-inline' EKLENMEZ). Stiller derleme
+    // zamaninda toplanip 'self' kaynagindan servis edilen normal bir CSS
+    // dosyasi olarak baglanir; boylece katı politika oldugu gibi kalir.
     plugins: esbuildSvelte
-      ? [esbuildSvelte({ compilerOptions: { css: 'injected', runes: true } })]
+      ? [esbuildSvelte({ compilerOptions: { css: 'external', runes: true } })]
       : [],
   });
 
-  // DÜZELTME #7d: Build sonrası entry doğrulama
+  // Build sonrası entry doğrulama: doğrulanacak isimleri gerçek build girdilerinden
+  // türet. Hard-coded legacy entry listeleri kaldırıldığında bu guard'ın sessizce
+  // anlamsızlaşmasını engeller.
   if (ANALYZE && result.metafile) {
-    const requiredEntries = ['federation-ui', 'go-live'];
-    const outputs = Object.keys(result.metafile.outputs);
+    const requiredEntries = ENTRY_POINTS.map(p => path.basename(p, path.extname(p)));
+    const outputs = Object.entries(result.metafile.outputs);
     for (const required of requiredEntries) {
-      const found = outputs.some(o => path.basename(o).startsWith(required));
+      const found = outputs.some(([outputPath, meta]) => {
+        const entryPoint = meta.entryPoint && path.basename(meta.entryPoint, path.extname(meta.entryPoint));
+        return entryPoint === required || path.basename(outputPath).startsWith(`${required}-`);
+      });
       if (!found) {
-        console.warn(`⚠️  Beklenen entry chunk bulunamadı: ${required}`);
-      } else {
-        console.log(`✅ Entry doğrulandı: ${required}`);
+        throw new Error(`Beklenen production entry chunk bulunamadı: ${required}`);
       }
+      console.log(`✅ Entry doğrulandı: ${required}`);
     }
   }
 
   return result;
 }
 
+// ── Service Worker ───────────────────────────────────────────────────────────
+// Service workers use a cache-first strategy for navigations.  Merely replacing
+// hashed application assets is not enough: an unchanged /sw.js means browsers
+// may keep the previous worker (and its cached index) in control.  Compile the
+// canonical TypeScript worker for every build and embed the manifest version so
+// its update check is deterministic.
+async function buildServiceWorker(buildVersion) {
+  const workerSrc = path.join(SRC, 'sw.ts');
+  if (!exists(workerSrc)) return;
+
+  await esbuild.build({
+    entryPoints: [workerSrc],
+    outfile:     path.join(SRC, 'sw.js'),
+    bundle:      false,
+    format:      'iife',
+    platform:    'browser',
+    target:      ['es2020', 'chrome90', 'firefox90', 'safari14.1'],
+    minify:      PROD,
+    sourcemap:   false,
+    logLevel:    'warning',
+    legalComments: PROD ? 'none' : 'inline',
+    banner: {
+      js: `/* bridge-service-worker-build:${buildVersion} */`,
+    },
+  });
+  console.log('✅ Service Worker' + (PROD ? ' (minified)' : ''));
+}
+
 // ── index.html güncelle (type="module") ──────────────────────────────────────
-function patchHTML(outputFiles) {
+function patchHTML(outputFiles, buildVersion) {
   const htmlSrc = path.join(SRC, 'index.html');
   if (!exists(htmlSrc)) return;
 
@@ -220,6 +274,32 @@ function patchHTML(outputFiles) {
       `<script type="module" src="${scriptSrc}"></script>`,
     );
 
+    // The versioned worker URL guarantees that a freshly served HTML document
+    // asks the browser to install the worker that cached this exact build.
+    html = html.replace(
+      /serviceWorker\.register\(\s*['"]\/sw\.js(?:\?[^'"]*)?['"]\s*\)/g,
+      `serviceWorker.register('/sw.js?v=${encodeURIComponent(String(buildVersion))}')`,
+    );
+
+    // ── DERLENMIS BILESEN CSS'I <link> ILE BAGLANIR ─────────────────────
+    // `css: 'external'` ile esbuild, Svelte bilesen stillerini entry'nin
+    // yanina bir .css dosyasi olarak yazar. Bu dosya 'self' kaynagindan
+    // servis edildigi icin CSP'yi gevsetmeden yuklenir.
+    const cssOutputs = Object.keys(outputFiles || {})
+      .filter(f => f.endsWith('.css'))
+      .map(f => `${cdnBase}${path.relative(SRC, f).replace(/\\/g, '/')}`);
+    if (cssOutputs.length) {
+      const links = cssOutputs
+        .map(href => `<link rel="stylesheet" href="${href}">`)
+        .join('\n  ');
+      html = html.replace('</head>', `  ${links}\n</head>`);
+      console.log(`✅ Bilesen CSS baglandi: ${cssOutputs.join(', ')}`);
+    } else {
+      // Sessiz gerileme olmasin: eklenti CSS uretmediyse bu, bilesen
+      // stillerinin TAMAMEN kaybolmasi demektir.
+      console.warn('⚠️  Svelte bilesen CSS ciktisi bulunamadi — stiller eksik olabilir.');
+    }
+
     // <link rel="modulepreload"> hint'leri — kritik chunk'ları tarayıcıya önceden bildirir
     if (outputFiles) {
       const criticalChunks = Object.keys(outputFiles)
@@ -239,6 +319,54 @@ function patchHTML(outputFiles) {
       console.log(`✅ HTML patched — CDN prefix: ${PUBLIC_PATH}`);
     }
   }
+
+  patchSecondaryHTML('marketplace.html', 'plugin-marketplace-page', outputFiles);
+}
+
+// ── IKINCIL HTML GIRDILERI ───────────────────────────────────────────────────
+// ÖLÇÜLEN KUSUR: `/marketplace`, `marketplace.html`i OLDUĞU GİBİ servis
+// ediyordu ve o dosya `js/plugin-marketplace-page.js`e bakıyordu. Build ise
+// yalnızca HASH'Lİ adı üretir (`plugin-marketplace-page-XXXXXXXX.js`). Canlı
+// sunucuda ölçüldü:
+//
+//     GET /marketplace                      -> 200
+//     GET /js/plugin-marketplace-page.js     -> 404   ← sayfanın TEK script'i
+//
+// Yani eklenti pazarı sayfası HİÇ JavaScript yüklemiyordu; boş bir kabuk
+// dönüyordu. `index.html` için bu sorun `index.dist.html` üretilerek zaten
+// çözülmüştü — ikincil giriş sayfası aynı işlemden geçmiyordu.
+function patchSecondaryHTML(fileName, entryBaseName, outputFiles) {
+  const htmlSrc = path.join(SRC, fileName);
+  if (!exists(htmlSrc) || !outputFiles) return;
+
+  const entry = Object.keys(outputFiles)
+    .find(f => f.endsWith('.js') && path.basename(f).startsWith(`${entryBaseName}-`));
+  if (!entry) {
+    console.warn(`⚠️  ${fileName}: "${entryBaseName}" çıktısı bulunamadı — sayfa script'siz kalır.`);
+    return;
+  }
+
+  const cdnBase = PUBLIC_PATH === '/' ? '' : PUBLIC_PATH;
+  const rel     = path.relative(SRC, entry).replace(/\\/g, '/');
+  let html      = fs.readFileSync(htmlSrc, 'utf8');
+
+  html = html.replace(
+    new RegExp(`<script[^>]+src=["'][^"']*${entryBaseName}[^"']*["'][^>]*></script>`, 'gi'),
+    `<script type="module" src="${cdnBase}${rel}"></script>`,
+  );
+
+  const cssOutputs = Object.keys(outputFiles)
+    .filter(f => f.endsWith('.css'))
+    .map(f => `${cdnBase}${path.relative(SRC, f).replace(/\\/g, '/')}`);
+  if (cssOutputs.length) {
+    const links = cssOutputs
+      .map(href => `<link rel="stylesheet" href="${href}">`)
+      .join('\n  ');
+    html = html.replace('</head>', `  ${links}\n</head>`);
+  }
+
+  fs.writeFileSync(htmlSrc.replace('.html', '.dist.html'), html);
+  console.log(`✅ ${fileName} → ${fileName.replace('.html', '.dist.html')} (${path.basename(entry)})`);
 }
 
 // ── Ana akış ─────────────────────────────────────────────────────────────────
@@ -249,22 +377,57 @@ async function main() {
   const [jsResult] = await Promise.all([buildJS(), buildCSS()]);
 
   if (jsResult?.metafile) {
+    // ── meta.json HER BUILD'DE YAZILIR ───────────────────────────────────
+    // Bu dosya yalnızca `--analyze` ile yazılıyordu; oysa bütçe kapısı
+    // (`check-bundle-budget.js`) ilk-indirme kapanışını HESAPLAMAK için import
+    // grafiğine ihtiyaç duyar. `build:ci` analyze'siz koştuğu için kapı grafiği
+    // hiç göremiyor, chunk/entry alt bütçeleri de SESSİZCE hiç çalışmıyordu.
+    // `metafile: true` zaten koşulsuz; yazmanın ek maliyeti yok.
+    fs.writeFileSync(
+      path.join(DIST, 'meta.json'),
+      JSON.stringify(jsResult.metafile, null, 2),
+    );
     if (ANALYZE) {
-      fs.writeFileSync(
-        path.join(DIST, 'meta.json'),
-        JSON.stringify(jsResult.metafile, null, 2),
-      );
       console.log('📊 meta.json oluşturuldu — esbuild.github.io/bundle-size-analyzer ile analiz edilebilir.');
     }
-    patchHTML(jsResult.metafile?.outputs);
-
     // ── asset-manifest.json: Service Worker'ın hash'li dosya isimlerini bulması için ──
     // SW bu dosyayı install aşamasında fetch eder; STATIC_ASSETS listesini dinamik olarak oluşturur.
     const manifestEntries = Object.keys(jsResult.metafile.outputs)
-      .filter(f => f.endsWith('.js'))
+      .filter(f => f.endsWith('.js') || f.endsWith('.css'))
       .map(f => '/' + path.relative(path.join(__dirname, '../client'), f).replace(/\\/g, '/'));
+    // ── SÜRÜM DAMGASI: ZAMAN DEĞİL, İÇERİK ───────────────────────────────
+    // ÖLÇÜLEN KUSUR (Final20): `buildVersion = Date.now()` idi ve üç yere
+    // gömülüyordu — `client/sw.js` banner'ı, `index.html` içindeki
+    // `serviceWorker.register('/sw.js?v=…')` ve `asset-manifest.json`.
+    // Sonucu iki kat kötüydü:
+    //
+    //   1. YENİDEN ÜRETİLEBİLİRLİK: aynı kaynak iki kez derlendiğinde
+    //      `client/sw.js` FARKLI baytlar veriyordu. Yani "aynı kaynak → aynı
+    //      arşiv" zinciri paketleyicide değil, DERLEMEDE kopuyordu.
+    //      (Ölçüldü: sadece banner satırı farklı —
+    //       `…build:1789053526301` vs `…build:1789089667644`.)
+    //   2. DAVRANIŞ: Service Worker sürümü her derlemede değişiyordu; hiçbir
+    //      varlık değişmese bile istemcilerde SW yeniden kuruluyor ve önbellek
+    //      boşuna geçersizleşiyordu.
+    //
+    // Damga artık ÇIKTI VARLIKLARININ ADLARINDAN türetilir. esbuild bu adlara
+    // içerik hash'i koyduğu için: varlıklar aynıysa damga aynı, bir varlık
+    // değiştiyse damga değişir — istenen davranış tam olarak budur.
+    //
+    // `SOURCE_DATE_EPOCH` (yeniden üretilebilir derleme standardı) verilmişse
+    // ona saygı gösterilir.
+    const buildVersion = (() => {
+      const sourceDateEpoch = Number(process.env.SOURCE_DATE_EPOCH);
+      if (Number.isFinite(sourceDateEpoch) && sourceDateEpoch > 0) return sourceDateEpoch * 1000;
+      const fingerprint = require('crypto')
+        .createHash('sha256')
+        .update(manifestEntries.slice().sort().join('|'))
+        .digest('hex')
+        .slice(0, 12);
+      return fingerprint;
+    })();
     const assetManifest = {
-      version:  Date.now(),
+      version:  buildVersion,
       assets:   ['/', '/css/style.css', '/css/tokens.css', ...manifestEntries],
     };
     fs.writeFileSync(
@@ -272,6 +435,8 @@ async function main() {
       JSON.stringify(assetManifest, null, 2),
     );
     console.log(`📋 asset-manifest.json yazıldı (${manifestEntries.length} JS dosyası)`);
+    await buildServiceWorker(buildVersion);
+    patchHTML(jsResult.metafile?.outputs, buildVersion);
   }
 
   const outputs = jsResult?.metafile?.outputs ?? {};

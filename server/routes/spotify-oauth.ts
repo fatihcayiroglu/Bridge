@@ -43,6 +43,9 @@ const router = express.Router();
 import crypto from 'crypto';
 import { authMiddleware} from '../middleware/auth';
 import { OAuth } from '../db/repositories/OAuthRepository.js';
+import { cache } from '../lib/redisAdapter';
+import logger from '../lib/logger';
+import { parsePersistedEpochMillis } from '../lib/persistedEpoch';
 
 const CLIENT_ID     = process.env.SPOTIFY_CLIENT_ID     || '';
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET || '';
@@ -50,22 +53,16 @@ const REDIRECT_URI  = process.env.SPOTIFY_REDIRECT_URI  || '';
 const APP_URL       = process.env.APP_URL               || 'http://localhost:5173';
 const SCOPES        = 'user-read-currently-playing user-read-playback-state user-read-private';
 
-// state → userId geçici haritası (production: Redis kullan)
-const _stateMap = new Map<string, { userId: string; ts: number }>();
-
-// 10 dakikada bir temizle
-setInterval(() => {
-  const cutoff = Date.now() - 10 * 60 * 1000;
-  for (const [k, v] of _stateMap) { if (v.ts < cutoff) _stateMap.delete(k); }
-}, 5 * 60 * 1000).unref?.();
+const SPOTIFY_STATE_TTL_SECONDS = 10 * 60;
+const stateKey = (state: string) => `oauth:spotify:state:${state}`;
 
 // ── GET /oauth/spotify — OAuth başlat ─────────────────────────────────────────
-router.get('/spotify', authMiddleware, (req, res) => {
-  if (!CLIENT_ID) return res.status(503).json({ error: 'Spotify OAuth not configured' });
+router.get('/spotify', authMiddleware, async (req, res) => {
+  if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) return res.status(503).json({ error: 'Spotify OAuth not configured' });
 
   const me    = castAuthed(req).user as { id: string };
   const state = crypto.randomBytes(16).toString('hex');
-  _stateMap.set(state, { userId: me.id, ts: Date.now() });
+  await cache.setAuthoritative(stateKey(state), { userId: me.id }, SPOTIFY_STATE_TTL_SECONDS);
 
   const url = new URL('https://accounts.spotify.com/authorize');
   url.searchParams.set('client_id',     CLIENT_ID);
@@ -80,15 +77,28 @@ router.get('/spotify', authMiddleware, (req, res) => {
 
 // ── GET /oauth/spotify/callback — OAuth callback ──────────────────────────────
 router.get('/spotify/callback', async (req, res) => {
-  const { code, state, error } = req.query as Record<string, string>;
+  const code = typeof req.query.code === 'string' ? req.query.code : '';
+  const state = typeof req.query.state === 'string' ? req.query.state : '';
+  const providerError = typeof req.query.error === 'string' ? req.query.error : '';
 
-  if (error || !code || !state) {
-    return res.redirect(`${APP_URL}/?spotify_error=${encodeURIComponent(error || 'cancelled')}`);
+  if (providerError || !code || !state) {
+    return res.redirect(`${APP_URL}/?spotify_error=${encodeURIComponent(providerError || 'cancelled')}`);
+  }
+  if (!/^[a-f0-9]{32}$/i.test(state) || code.length > 4096) {
+    return res.redirect(`${APP_URL}/?spotify_error=invalid_state`);
   }
 
-  const stateData = _stateMap.get(state);
-  if (!stateData) return res.redirect(`${APP_URL}/?spotify_error=invalid_state`);
-  _stateMap.delete(state);
+  let stateData: { userId: string } | null;
+  try {
+    stateData = await cache.takeAuthoritative<{ userId: string }>(stateKey(state));
+  } catch (err) {
+    logger.error({ err, event: 'spotify.oauth.state_store_failed' }, 'Spotify OAuth state store failed');
+    return res.redirect(`${APP_URL}/?spotify_error=server_error`);
+  }
+  if (!stateData?.userId) return res.redirect(`${APP_URL}/?spotify_error=invalid_state`);
+  if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
+    return res.redirect(`${APP_URL}/?spotify_error=server_error`);
+  }
 
   // Token exchange
   try {
@@ -102,32 +112,35 @@ router.get('/spotify/callback', async (req, res) => {
     });
 
     if (!tokenRes.ok) throw new Error(`Token exchange failed: ${tokenRes.status}`);
-    const tokens = await tokenRes.json() as {
-      access_token: string; refresh_token?: string; expires_in: number;
-    };
-
-    const expiresAt = Date.now() + tokens.expires_in * 1000;
+    const tokens = await tokenRes.json() as Record<string, unknown>;
+    const accessToken = typeof tokens.access_token === 'string' ? tokens.access_token : '';
+    const refreshToken = typeof tokens.refresh_token === 'string' ? tokens.refresh_token : null;
+    const expiresIn = tokens.expires_in;
+    if (!accessToken || typeof expiresIn !== 'number' || !Number.isSafeInteger(expiresIn) || expiresIn <= 0 || expiresIn > 86400) {
+      throw new Error('Spotify token response is malformed');
+    }
+    const expiresAt = Date.now() + expiresIn * 1000;
 
     // Spotify user ID al
     const profileRes = await fetch('https://api.spotify.com/v1/me', {
-      headers: { Authorization: `Bearer ${tokens.access_token}` }
+      headers: { Authorization: `Bearer ${accessToken}` }
     });
-    const profile = await profileRes.json() as { id: string; display_name?: string };
+    if (!profileRes.ok) throw new Error(`Spotify profile fetch failed: ${profileRes.status}`);
+    const profile = await profileRes.json() as Record<string, unknown>;
+    if (typeof profile.id !== 'string' || !profile.id || profile.id.length > 200) {
+      throw new Error('Spotify profile response is malformed');
+    }
 
-    // DB'ye kaydet (upsert)
-    await OAuth.upsertToken(stateData.userId, 'spotify', tokens.access_token, tokens.refresh_token ?? null, expiresAt);
-
-    // userConnections'a da kaydet (profilde görünsün)
-    await OAuth.upsertConnection(
-      stateData.userId,
-      'spotify',
-      profile.id,
-      `https://open.spotify.com/user/${profile.id}`
-    );
+    // Token + visible connection metadata are one lifecycle unit. Avoid a
+    // half-connected account when one table write succeeds and the other fails.
+    await OAuth.upsertTokenAndConnectionAtomic({
+      userId: stateData.userId, platform: 'spotify', accessToken, refreshToken,
+      expiresAt, username: profile.id, url: `https://open.spotify.com/user/${encodeURIComponent(profile.id)}`,
+    });
 
     res.redirect(`${APP_URL}/?spotify_connected=1`);
   } catch (err) {
-    console.error('Spotify OAuth error:', err);
+    logger.error({ err, event: 'spotify.oauth.callback_failed' }, 'Spotify OAuth callback failed');
     res.redirect(`${APP_URL}/?spotify_error=server_error`);
   }
 });
@@ -141,9 +154,13 @@ router.get('/spotify/now-playing', authMiddleware, async (req, res) => {
   if (!tokenRow) return res.status(404).json({ error: 'Spotify not connected' });
 
   let accessToken = tokenRow.accessToken;
+  let persistedExpiry: number | null;
+  try { persistedExpiry = parsePersistedEpochMillis(tokenRow.expiresAt); }
+  catch { persistedExpiry = null; }
 
-  // Token refresh gerekiyor mu?
-  if (tokenRow.expiresAt < Date.now() + 60_000) {
+  // Token refresh gerekiyor mu? Persisted expiry corruption is treated as
+  // expired rather than silently authorizing a stale provider token.
+  if (persistedExpiry === null || persistedExpiry <= Date.now() + 60_000) {
     if (!tokenRow.refreshToken) return res.status(401).json({ error: 'Token expired, re-connect Spotify' });
     try {
       const refreshRes = await fetch('https://accounts.spotify.com/api/token', {
@@ -154,19 +171,32 @@ router.get('/spotify/now-playing', authMiddleware, async (req, res) => {
         },
         body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: tokenRow.refreshToken }).toString(),
       });
-      const refreshed = await refreshRes.json() as { access_token: string; expires_in: number };
+      if (!refreshRes.ok) return res.status(502).json({ error: 'Token refresh failed' });
+      const refreshed = await refreshRes.json() as Record<string, unknown>;
+      if (typeof refreshed.access_token !== 'string' || !refreshed.access_token ||
+          typeof refreshed.expires_in !== 'number' || !Number.isSafeInteger(refreshed.expires_in) ||
+          refreshed.expires_in <= 0 || refreshed.expires_in > 86400) {
+        return res.status(502).json({ error: 'Token refresh failed' });
+      }
       accessToken = refreshed.access_token;
       const newExpiry = Date.now() + refreshed.expires_in * 1000;
       await OAuth.updateAccessToken(me.id, 'spotify', accessToken, newExpiry);
-    } catch {
-      return res.status(500).json({ error: 'Token refresh failed' });
+    } catch (err) {
+      logger.warn({ err, event: 'spotify.oauth.refresh_failed' }, 'Spotify token refresh failed');
+      return res.status(502).json({ error: 'Token refresh failed' });
     }
   }
 
   // Spotify API'yi çağır
-  const npRes = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
+  let npRes: Response;
+  try {
+    npRes = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+  } catch (err) {
+    logger.warn({ err, event: 'spotify.now_playing.network_failed' }, 'Spotify now-playing request failed');
+    return res.status(502).json({ error: 'Spotify API error' });
+  }
 
   if (npRes.status === 204 || npRes.status === 200 && npRes.headers.get('content-length') === '0') {
     return res.json({ playing: false });
@@ -198,7 +228,7 @@ router.get('/spotify/now-playing', authMiddleware, async (req, res) => {
 // ── DELETE /oauth/spotify — Spotify bağlantısını kes ─────────────────────────
 router.delete('/spotify', authMiddleware, async (req, res) => {
   const me = castAuthed(req).user as { id: string };
-  await OAuth.deleteToken(me.id, 'spotify');
+  await OAuth.deleteTokenAndConnectionAtomic(me.id, 'spotify');
   res.json({ ok: true });
 });
 

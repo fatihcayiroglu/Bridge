@@ -6,7 +6,7 @@ const router       = express.Router();
 import { Users, Members, Servers } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { isUserOnline } from '../lib/presenceCache';
-import { sanitizeUser } from '../lib/userUtils';
+import { sanitizeUser, normalizePresenceVisibility } from '../lib/userUtils';
 
 // GET /api/users/:userId — public profile
 /**
@@ -31,9 +31,14 @@ router.get('/:userId', authMiddleware, async (req, res) => {
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const profile = sanitizeUser(user);
-  // Add extra public fields
-  profile.statusText  = user.statusText  || '';
-  profile.statusEmoji = user.statusEmoji || '';
+  const viewerId = castAuthed(req).user.id;
+  const hidden = normalizePresenceVisibility(user.presenceVisibility) === 'hidden' && viewerId !== user._id;
+
+  // Presence visibility applies to every public profile surface, not only the
+  // dedicated /presence endpoint. Unknown/legacy values fail closed.
+  profile.status      = hidden ? 'offline' : (user.status || 'offline');
+  profile.statusText  = hidden ? '' : (user.statusText || '');
+  profile.statusEmoji = hidden ? '' : (user.statusEmoji || '');
   profile.createdAt   = user.createdAt;
 
   res.json(profile);
@@ -102,16 +107,24 @@ router.get('/:userId/mutual-servers', authMiddleware, async (req, res) => {
  *       404: { description: Kullanıcı bulunamadı }
  */
 router.get('/:userId/presence', authMiddleware, async (req, res) => {
-  const online = await isUserOnline(String(req.params.userId ?? ''));
+  const _u = castAuthed(req).user;
+  const userId = String(req.params.userId ?? '');
+  const online = await isUserOnline(userId);
   // DB'den güncel status metnini de döndür
-  const user = await Users.findById(String(req.params.userId ?? ''));
+  const user = await Users.findById(userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
+
+  // `presenceVisibility=hidden` yalnız canlı online bitini değil, presence
+  // endpoint'inin tamamını gizler. Aksi halde `online:false` denirken kalıcı
+  // status/statusText/statusEmoji alanları hedefin gerçek durumunu sızdırır.
+  // Kullanıcı kendi presence tercihlerini görmeye devam eder.
+  const hidden = normalizePresenceVisibility(user.presenceVisibility) === 'hidden' && _u.id !== userId;
   res.json({
-    userId:      String(req.params.userId ?? ''),
-    online,
-    status:      user.status      || 'offline',
-    statusText:  user.statusText  || '',
-    statusEmoji: user.statusEmoji || '',
+    userId,
+    online:      hidden ? false : online,
+    status:      hidden ? 'offline' : (user.status || 'offline'),
+    statusText:  hidden ? '' : (user.statusText || ''),
+    statusEmoji: hidden ? '' : (user.statusEmoji || ''),
   });
 });
 

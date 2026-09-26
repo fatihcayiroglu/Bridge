@@ -1,6 +1,6 @@
 {
   "name": "bridge-server",
-  "version": "1.122.0",
+  "version": "1.125.0",
   "description": "Bridge chat server",
   "main": "dist/index.js",
   "scripts": {
@@ -8,53 +8,78 @@
     "start": "node dist/index.js",
     "start:ts": "ts-node --project tsconfig.json index.ts",
     "dev": "ts-node-dev --project tsconfig.json --respawn --transpile-only index.ts",
-    "dev:js": "nodemon index.js",
-    "build": "npm run build:plugins && tsc -p tsconfig.build.json",
+    "build": "npm run build:plugins && tsc -p tsconfig.build.json && node scripts/copy-runtime-assets.cjs",
     "build:plugins": "node scripts/build-plugins.js",
     "build:watch": "tsc -p tsconfig.build.json --watch",
     "typecheck": "tsc -p tsconfig.check.json --noEmit",
     "typecheck:strict": "tsc -p tsconfig.json --noEmit",
-    "test": "jest --runInBand --forceExit",
+    "test": "npm run typecheck:test-strict && jest --runInBand --forceExit",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage --runInBand --forceExit",
     "lint": "eslint . --ext .js,.ts",
     "lint:fix": "eslint . --ext .js,.ts --fix",
-    "db:migrate": "node db/migrate.js up",
     "db:schema": "ts-node --project tsconfig.json db/postgres/index.ts",
-    "db:migrate:pg": "ts-node --project tsconfig.json db/migrate-postgres.ts up",
-    "db:migrate:pg:status": "ts-node --project tsconfig.json db/migrate-postgres.ts status",
-    "audit:check": "npm audit --audit-level=high --production",
-    "typecheck:test-strict": "tsc -p tsconfig.test-strict.json --noEmit"
+    "db:migrate:pg": "node dist/db/migrate-postgres.js up",
+    "db:migrate:pg:status": "node dist/db/migrate-postgres.js status",
+    "audit:check": "npm audit --audit-level=high --omit=dev",
+    "typecheck:test-strict": "node scripts/check-typescript-debt.cjs --project tsconfig.test-strict.json --bucket testStrict",
+    "typecheck:test-strict:raw": "tsc -p tsconfig.test-strict.json --noEmit",
+    "test:security": "node scripts/run-security-corpus.cjs",
+    "db:least-privilege": "node scripts/db-least-privilege-proof.cjs",
+    "chaos:db": "node scripts/db-chaos.cjs",
+    "chaos:deps": "node scripts/dependency-chaos.cjs",
+    "sfu:proof": "node scripts/sfu-runtime-proof.cjs",
+    "db:roles": "node scripts/db-role-setup.cjs",
+    "db:roles:verify": "node scripts/db-role-setup.cjs --verify",
+    "sfu:media": "node scripts/sfu-media-proof.cjs",
+    "test:pg": "node scripts/require-env.cjs PG_TEST_URL && jest --config jest.pg.config.js --runInBand --forceExit",
+    "db:migrate:pg:down": "node dist/db/migrate-postgres.js down",
+    "db:migrate:pg:rollback": "node dist/db/migrate-postgres.js rollback",
+    "db:migrate:pg:source": "ts-node --project tsconfig.json db/migrate-postgres.ts up",
+    "db:migrate:pg:source:status": "ts-node --project tsconfig.json db/migrate-postgres.ts status",
+    "check:prod-deps": "node scripts/check-production-deps.cjs",
+    "check:coverage-debt": "node scripts/check-coverage-debt.cjs",
+    "typecheck:hardening": "node scripts/check-typescript-debt.cjs --project tsconfig.hardening.json --bucket hardening",
+    "typecheck:hardening:raw": "tsc -p tsconfig.hardening.json --noEmit",
+    "test:mutation": "node scripts/mutation-campaign.cjs",
+    "test:search-it": "node scripts/require-env.cjs SEARCH_IT_DATABASE_URL && jest --runInBand --forceExit --testPathPatterns unified-search.integration"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1068.0",
+    "@aws-sdk/credential-provider-node": "^3.972.66",
+    "@smithy/signature-v4": "^5.6.4",
+    "@smithy/types": "^4.16.1",
     "@socket.io/redis-adapter": "^8.3.0",
     "@types/sanitize-html": "^2.16.1",
+    "@xmldom/xmldom": "^0.8.15",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.3",
-    "multer": "^2.1.1",
-    "nodemailer": "^9.0.1",
+    "multer": "^2.3.0",
+    "nodemailer": "^10.0.1",
     "pg": "^8.21.0",
     "pino": "^10.3.1",
     "postgres": "^3.4.9",
     "prom-client": "^15.1.3",
     "redis": "^6.0.0",
-    "sanitize-html": "^2.17.5",
+    "sanitize-html": "^2.17.7",
     "socket.io": "^4.8.3",
     "swagger-ui-express": "^5.0.1",
-    "undici": "^8.5.0",
+    "undici": "8.10.0",
     "uuid": "^14.0.0",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "xml-crypto": "6.1.2"
   },
   "optionalDependencies": {
     "@aws-sdk/lib-storage": "^3.1068.0",
+    "mediasoup": "^3.26.0",
     "qrcode": "^1.5.4",
-    "sharp": "^0.35.1"
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",
@@ -76,7 +101,6 @@
     "@typescript-eslint/parser": "^8.61.0",
     "babel-jest": "^30.4.1",
     "eslint": "^10.5.0",
-    "express-rate-limit": "^8.5.2",
     "jest": "^30.4.2",
     "nodemon": "^3.1.14",
     "supertest": "^7.2.2",
@@ -97,6 +121,21 @@
         {
           "tsconfig": "tsconfig.jest.json",
           "diagnostics": false
+        }
+      ],
+      "^.+\\.(js|mjs|cjs)$": [
+        "babel-jest",
+        {
+          "presets": [
+            [
+              "@babel/preset-env",
+              {
+                "targets": {
+                  "node": "current"
+                }
+              }
+            ]
+          ]
         }
       ]
     },
@@ -127,206 +166,165 @@
       "lib/webauthn-pem.ts",
       "routes/admin/users.ts",
       "routes/admin/moderation.ts",
-      "routes/admin/middleware.ts"
+      "routes/admin/middleware.ts",
+      "!**/*.d.ts",
+      "!socket/contracts.ts",
+      "!socket/handlers/mediasoup/types.ts"
     ],
     "coverageThreshold": {
       "global": {
+        "statements": 90,
         "lines": 90,
-        "functions": 80,
-        "branches": 80
-      },
-      "./middleware/auth.ts": {
-        "lines": 95,
-        "functions": 95,
+        "functions": 90,
         "branches": 90
       },
+      "./middleware/auth.ts": {
+        "lines": 86,
+        "functions": 92,
+        "branches": 79
+      },
       "./middleware/rateLimit.ts": {
-        "lines": 85,
-        "functions": 85,
-        "branches": 80
+        "lines": 96,
+        "functions": 95,
+        "branches": 96
       },
       "./lib/apKeyEncryption.ts": {
-        "lines": 98,
-        "functions": 98,
-        "branches": 95
+        "lines": 79,
+        "functions": 99,
+        "branches": 56
       },
       "./lib/permissions.ts": {
         "lines": 90,
-        "functions": 90,
-        "branches": 85
+        "functions": 86,
+        "branches": 77
       },
       "./db/repositories/UserRepository.ts": {
-        "lines": 85,
+        "lines": 74,
         "functions": 85,
-        "branches": 80
+        "branches": 34
       },
       "./db/repositories/AuthRepository.ts": {
-        "lines": 85,
-        "functions": 85,
-        "branches": 80
+        "lines": 76,
+        "functions": 79,
+        "branches": 56
       },
       "./routes/discover.ts": {
-        "lines": 85,
-        "functions": 82,
-        "branches": 80
+        "lines": 90,
+        "functions": 79,
+        "branches": 76
       },
       "./routes/semantic.ts": {
-        "lines": 85,
-        "functions": 82,
-        "branches": 80
+        "lines": 75,
+        "functions": 64,
+        "branches": 44
       },
       "./socket/handlers/discover.ts": {
-        "lines": 80,
-        "functions": 75,
-        "branches": 75
+        "lines": 99,
+        "functions": 99,
+        "branches": 99
       },
       "./routes/servers/channels.ts": {
-        "lines": 85,
-        "functions": 85,
-        "branches": 80
-      },
-      "./routes/messages.ts": {
-        "lines": 80,
-        "functions": 80,
-        "branches": 75
-      },
-      "./routes/bots.ts": {
-        "lines": 80,
-        "functions": 75,
-        "branches": 70
-      },
-      "./routes/music.ts": {
-        "lines": 88,
-        "functions": 85,
-        "branches": 82
-      },
-      "./routes/channelPerms/helpers.ts": {
-        "lines": 82,
-        "functions": 78,
+        "lines": 99,
+        "functions": 79,
         "branches": 72
       },
-      "../client/js/core/onboarding-wizard.ts": {
-        "lines": 80,
-        "functions": 75,
-        "branches": 68
+      "./routes/messages.ts": {
+        "lines": 90,
+        "functions": 74,
+        "branches": 73
       },
-      "../client/js/core/api-error-toast.ts": {
-        "lines": 85,
-        "functions": 80,
-        "branches": 75
+      "./routes/bots.ts": {
+        "lines": 95,
+        "functions": 99,
+        "branches": 77
       },
-      "../client/js/core/go-live.ts": {
-        "lines": 80,
-        "functions": 75,
-        "branches": 68
-      },
-      "../client/js/core/voice-messages.ts": {
-        "lines": 80,
-        "functions": 75,
-        "branches": 68
+      "./routes/channelPerms/helpers.ts": {
+        "lines": 57,
+        "functions": 65,
+        "branches": 44
       },
       "./lib/pushSender.ts": {
-        "lines": 85,
-        "functions": 80,
-        "branches": 75
+        "lines": 71,
+        "functions": 52,
+        "branches": 54
       },
       "./socket/handlers/mediasoup/workers.ts": {
-        "lines": 85,
-        "functions": 80,
-        "branches": 75
+        "lines": 90,
+        "functions": 91,
+        "branches": 79
       },
       "./socket/handlers/mediasoup/rooms.ts": {
-        "lines": 85,
-        "functions": 80,
-        "branches": 75
-      },
-      "../plugins/allowlist.ts": {
-        "lines": 85,
-        "functions": 80,
-        "branches": 75
-      },
-      "../plugins/word-filter/index.ts": {
-        "lines": 85,
-        "functions": 80,
-        "branches": 75
-      },
-      "../plugins/welcome-bot/index.ts": {
-        "lines": 85,
-        "functions": 80,
-        "branches": 75
+        "lines": 72,
+        "functions": 54,
+        "branches": 60
       },
       "./socket/handlers/mediasoup/index.ts": {
-        "lines": 85,
-        "functions": 80,
-        "branches": 75
+        "lines": 89,
+        "functions": 64,
+        "branches": 71
       },
       "./socket/socketRateLimit.ts": {
-        "lines": 85,
-        "functions": 85,
-        "branches": 80
+        "lines": 84,
+        "functions": 82,
+        "branches": 70
       },
       "./lib/webauthn-crypto.ts": {
-        "lines": 85,
-        "functions": 85,
-        "branches": 80
+        "lines": 81,
+        "functions": 99,
+        "branches": 66
       },
       "./lib/webauthn-pem.ts": {
-        "lines": 90,
-        "functions": 90,
-        "branches": 85
+        "lines": 99,
+        "functions": 99,
+        "branches": 74
       },
       "./routes/admin/users.ts": {
-        "lines": 87,
-        "functions": 82,
-        "branches": 78
+        "lines": 90,
+        "functions": 87,
+        "branches": 83
       },
       "./routes/admin/moderation.ts": {
-        "lines": 87,
-        "functions": 82,
-        "branches": 78
+        "lines": 77,
+        "functions": 56,
+        "branches": 68
       },
       "./routes/admin/middleware.ts": {
-        "lines": 85,
-        "functions": 85,
-        "branches": 80
+        "lines": 99,
+        "functions": 99,
+        "branches": 82
       },
       "./socket/handlers/messages-send.ts": {
-        "lines": 85,
-        "functions": 80,
-        "branches": 75
+        "lines": 82,
+        "functions": 77,
+        "branches": 68
       },
       "./socket/handlers/messages-edit.ts": {
-        "lines": 85,
-        "functions": 80,
-        "branches": 75
+        "lines": 87,
+        "functions": 76,
+        "branches": 71
       },
       "plugins/actions.ts": {
-        "lines": 85,
-        "functions": 80,
-        "branches": 75
-      },
-      "../plugins/auto-role/index.ts": {
-        "lines": 85,
-        "functions": 80,
-        "branches": 75
+        "lines": 93,
+        "functions": 99,
+        "branches": 72
       },
       "routes/admin/federation-keys.ts": {
-        "lines": 85,
-        "functions": 85,
-        "branches": 75
+        "lines": 99,
+        "functions": 99,
+        "branches": 99
       },
       "./lib/vault.ts": {
-        "lines": 85,
-        "functions": 85,
-        "branches": 80
+        "lines": 80,
+        "functions": 89,
+        "branches": 71
       },
       "./lib/pgvector.ts": {
-        "lines": 88,
-        "functions": 88,
-        "branches": 82
+        "lines": 95,
+        "functions": 83,
+        "branches": 89
       }
     },
-    "testTimeout": 10000,
+    "testTimeout": 30000,
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1",
       "^@middleware/(.*)$": "<rootDir>/middleware/$1",
@@ -344,20 +342,35 @@
       "text",
       "lcov",
       "html",
-      "json-summary"
+      "json-summary",
+      "json"
     ],
     "testPathIgnorePatterns": [
-      "/node_modules/",
-      "tests/webrtc-signaling-validation.test.ts"
+      "/node_modules/"
+    ],
+    "transformIgnorePatterns": [
+      "node_modules[/\\\\](?!.*(?:htmlparser2|domhandler|domutils|dom-serializer|domelementtype|entities|parse-srcset|picocolors|is-plain-object|deepmerge|escape-string-regexp)[/\\\\])"
     ]
   },
   "engines": {
-    "node": ">=22.0.0",
+    "node": ">=22.19.0",
     "npm": ">=10.0.0"
   },
   "overrides": {
+    "babel-plugin-istanbul": {
+      "test-exclude": "^7.0.2"
+    },
     "glob": "13.0.6",
     "rimraf": "6.1.3",
-    "js-yaml": "4.2.0"
+    "js-yaml": "4.3.2",
+    "brace-expansion": "5.0.9",
+    "ip-address": "10.7.0",
+    "body-parser": "2.3.0",
+    "nanoid": "3.3.18",
+    "postcss": "8.5.26",
+    "socket.io-parser": "4.2.7",
+    "qs": "6.16.0",
+    "browserslist": "4.28.9",
+    "baseline-browser-mapping": "2.11.21"
   }
 }

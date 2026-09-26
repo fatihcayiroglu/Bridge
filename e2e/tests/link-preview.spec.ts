@@ -11,10 +11,10 @@
 //   7. content-type HTML olmayan URL önizleme dönmemeli
 
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 import { getTokens } from '../helpers/bridge';
 
-const BASE = process.env.BASE_URL || 'http://localhost:3000';
+const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 // Bu testler auth gerektirir
 test.use({ storageState: 'fixtures/auth-state.json' });

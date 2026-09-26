@@ -184,7 +184,8 @@
 }
 
 .translated-label {
-  font-size: 10px;
+  /* Okunacak etiket — 10px rozet ölçüsüydü, caption seviyesine çıkarıldı. */
+  font-size: var(--type-caption);
   font-weight: 700;
   color: var(--brand);
   text-transform: uppercase;

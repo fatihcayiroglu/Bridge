@@ -1,12 +1,13 @@
 // server/tests/aiProvider.test.ts
 // lib/aiProvider merkezi AI modülü testleri
 // Gerçek API çağrısı yapılmaz — fetch stub'lanır.
+import { fetchMock, installFetchMock } from './helpers/fetchDouble';
 
 'use strict';
 process.env.NODE_ENV = 'test';
 
 jest.mock('../lib/fetch', () => ({
-  fetchT: jest.fn((...args) => global.fetch(...args)),
+  fetchT: jest.fn((...args: Parameters<typeof fetch>) => global.fetch(...args)),
 }));
 
 // Ortam değişkenlerini test için ayarla
@@ -18,7 +19,7 @@ afterEach(() => {
   jest.resetModules();
 });
 
-function makeOkResponse(text) {
+function makeOkResponse(text: string) {
   return {
     ok: true,
     status: 200,
@@ -32,7 +33,7 @@ function makeRateLimitResponse() {
   return { ok: false, status: 429, json: async () => ({}) };
 }
 
-function makeErrorResponse(status) {
+function makeErrorResponse(status: number) {
   return { ok: false, status, json: async () => ({ error: 'server error' }) };
 }
 
@@ -67,18 +68,18 @@ describe('aiProvider — callAI Groq', () => {
   });
 
   it('başarılı Groq yanıtını döner', async () => {
-    global.fetch = jest.fn().mockResolvedValue(makeOkResponse('merhaba!'));
+    installFetchMock().mockResolvedValue(makeOkResponse('merhaba!'));
     const { callAI } = require('../lib/aiProvider');
     const result = await callAI('sistem', 'kullanıcı', 100);
     expect(result).toBe('merhaba!');
-    expect(fetch).toHaveBeenCalledWith(
+    expect(fetchMock()).toHaveBeenCalledWith(
       expect.stringContaining('groq.com'),
       expect.objectContaining({ method: 'POST' })
     );
   });
 
   it('Groq 500 hatası → Error fırlatır', async () => {
-    global.fetch = jest.fn().mockResolvedValue(makeErrorResponse(500));
+    installFetchMock().mockResolvedValue(makeErrorResponse(500));
     const { callAI } = require('../lib/aiProvider');
     await expect(callAI('sistem', 'kullanıcı')).rejects.toThrow('Groq 500');
   });
@@ -97,7 +98,7 @@ describe('aiProvider — Groq 429 Gemini fallback', () => {
     delete process.env.OPENROUTER_API_KEY;
     delete process.env.OLLAMA_URL;
 
-    global.fetch = jest.fn()
+    installFetchMock()
       .mockResolvedValueOnce(makeRateLimitResponse()) // Groq 429
       .mockResolvedValueOnce({
         ok: true,
@@ -110,8 +111,8 @@ describe('aiProvider — Groq 429 Gemini fallback', () => {
     const { callAI } = require('../lib/aiProvider');
     const result = await callAI('sistem', 'kullanıcı', 100);
     expect(result).toBe('gemini yanıtı');
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(fetch.mock.calls[1][0]).toContain('googleapis.com');
+    expect(fetchMock()).toHaveBeenCalledTimes(2);
+    expect(fetchMock().mock.calls[1][0]).toContain('googleapis.com');
   });
 });
 
@@ -122,11 +123,18 @@ describe('aiProvider — retry mantığı', () => {
     delete process.env.OPENROUTER_API_KEY;
     delete process.env.OLLAMA_URL;
 
-    global.fetch = jest.fn().mockResolvedValue(makeErrorResponse(503));
+    installFetchMock().mockResolvedValue(makeErrorResponse(503));
 
     const { callAI } = require('../lib/aiProvider');
     await expect(callAI('sistem', 'kullanıcı')).rejects.toThrow();
     // withRetry 3 deneme yapar
-    expect(fetch.mock.calls.length).toBe(3);
+    expect(fetchMock().mock.calls.length).toBe(3);
   }, 15000);
 });
+
+// Bu dosyada ust duzey import/export yoktu; TypeScript onu GLOBAL
+// SCRIPT sayiyor ve ust duzey adlari diger ayni durumdaki test
+// dosyalariyla CAKISIYORDU (TS2393/TS2451, ve arguman tiplerinin
+// baska bir dosyanin bildirimine cozulmesi). Bu satir modul kapsami
+// ilan eder; calisma zamaninda hicbir sey degistirmez.
+export {};

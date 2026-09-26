@@ -6,22 +6,53 @@
 //   - stage:updateMute
 //   - stage:handRaise
 //   - stage:promote       (listener → speaker, yetki kontrolü)
+import { ClusterServerDouble, EmittedLog, SocketDouble, findEmitted, readString, requireEmitted, requireEmittedData } from './helpers/socketDoubles';
 //   - stage:leave
 //   - disconnect          (otomatik temizlik)
 //   - Edge case: boş oda, bilinmeyen kullanıcı
 
 'use strict';
+import { present } from './helpers/narrow';
 
 process.env.NODE_ENV       = 'test';
 process.env.JWT_SECRET     = 'test-jwt-secret-minimum-32-chars-long';
 process.env.REFRESH_SECRET = 'test-refresh-secret-minimum-32-chars';
 process.env.DATABASE_URL   = 'postgresql://bridge:bridge_test_pw@localhost:5432/bridge_test';
 
-import { registerStageHandlers, stageRooms } from '../socket/handlers/stage';
+jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
+
+import { registerStageHandlers as registerStageHandlersProduction, stageRooms } from '../socket/handlers/stage';
+const db = require('../db/loader');
+const stageSocketUsers = new WeakMap<object, { _id: string }>();
+
+async function ensureStageFixture(channelId: string, user: { _id: string }, serverId: string = 'sv-1') {
+  // EKSIK FIXTURE: `_stageAccess` -> `resolvePermissions` ILK IS olarak
+  // `Servers.findById(serverId)` yapar; satir yoksa 0 izin doner ve stage
+  // olaylari SESSIZCE reddedilir. Sahip BASKA biri olsun ki testler sahiplik
+  // kestirmesini degil GERCEK uye izin cozumunu olcsun.
+  if (!(await db.servers.findOne({ _id: serverId }))) {
+    await db.servers.insert({ _id: serverId, name: `srv-${serverId}`, ownerId: 'stage-owner', createdAt: Date.now() });
+  }
+  if (!(await db.channels.findOne({ _id: channelId }))) {
+    await db.channels.insert({ _id: channelId, serverId, name: channelId, type: 'stage' });
+  }
+  const channel = await db.channels.findOne({ _id: channelId });
+  if (channel?.serverId && !(await db.members.findOne({ userId: user._id, serverId: channel.serverId }))) {
+    await db.members.insert({ _id: `member-${user._id}-${channel.serverId}`, userId: user._id, serverId: channel.serverId });
+  }
+}
+
+function registerStageHandlers(socket: SocketDouble, io: ClusterServerDouble, user: StageUserDouble) {
+  stageSocketUsers.set(socket, user);
+  return registerStageHandlersProduction(socket, io, user);
+}
 
 // ── Yardımcılar ──────────────────────────────────────────────────
 
-function makeUser(overrides = {}) {
+/** Sahne handler'larinin kullanicidan okudugu yuzey (`AuthenticatedUser`). */
+interface StageUserDouble { _id: string; displayName?: string; avatarColor?: string }
+
+function makeUser(overrides: Partial<StageUserDouble> = {}): StageUserDouble {
   return {
     _id: `u-${Math.random().toString(36).slice(2)}`,
     displayName: 'User',
@@ -30,10 +61,10 @@ function makeUser(overrides = {}) {
   };
 }
 
-function makeSocket(id) {
+function makeSocket(id: string) {
   const handlers: Record<string, unknown> = {};
-  const emitted  = [];
-  const rooms    = new Set();
+  const emitted: EmittedLog = [];
+  const rooms    = new Set<string>();
 
   const socket = {
     id,
@@ -48,19 +79,37 @@ function makeSocket(id) {
     _handlers: handlers,
     _emitted:  emitted,
     _rooms:    rooms,
-    _trigger(event, data) { if (handlers[event]) return handlers[event](data); },
-  };
+    async _trigger(event: string, data?: unknown) {
+      // Yuk GUVENILMEZDIR; alanlar dogrulanarak okunur.
+      const channelId = readString(data, 'channelId');
+      if (event === 'stage:join' && channelId) {
+        await ensureStageFixture(channelId, stageSocketUsers.get(socket)!, readString(data, 'serverId'));
+      }
+      const handler = handlers[event];
+      if (typeof handler === 'function') return handler(data);
+      return undefined;
+    },
+  } satisfies SocketDouble;
   return socket;
 }
 
 function makeIo() {
-  const emitted = [];
+  const emitted: EmittedLog = [];
+  // Kume denetimi (`on` + `serverSideEmit`) sahne handler'larinin GERCEK
+  // bagimliligidir: medya yetkisi iptali Redis adapter'i uzerinden diger
+  // dugumlere tasinir. Ikiz bunlari tasimadan sozlesmeyi karsilamazdi.
+  const clusterListeners: Record<string, unknown> = {};
+  const clusterEmits: EmittedLog = [];
   return {
     _emitted: emitted,
+    _clusterEmits: clusterEmits,
+    _clusterListeners: clusterListeners,
     to(target) {
-      return { emit(ev, data) { emitted.push({ ev, data, _target: target }); } };
+      return { emit(ev, ...args) { emitted.push({ ev, data: args[0], _target: target }); } };
     },
-  };
+    on(event, listener) { clusterListeners[event] = listener; },
+    serverSideEmit(event, ...args) { clusterEmits.push({ event, data: args[0] }); },
+  } satisfies ClusterServerDouble;
 }
 
 function clearStageRooms() {
@@ -84,11 +133,11 @@ describe('stage:join', () => {
     await socket._trigger('stage:join', { channelId: 'ch-s1', serverId: 'sv-1' });
 
     expect(socket._rooms.has('stage:ch-s1')).toBe(true);
-    const stateEvt = socket._emitted.find(e => e.ev === 'stage:state');
+    const stateEvt = requireEmittedData(socket._emitted, 'stage:state');
     expect(stateEvt).toBeDefined();
-    expect(stateEvt.data.channelId).toBe('ch-s1');
-    expect(stateEvt.data.speakers).toEqual([]);
-    expect(stateEvt.data.listeners).toEqual([]);
+    expect(stateEvt.channelId).toBe('ch-s1');
+    expect(stateEvt.speakers).toEqual([]);
+    expect(stateEvt.listeners).toEqual([]);
   });
 
   it('channelId yoksa işlem yapılmaz', async () => {
@@ -115,7 +164,7 @@ describe('stage:setRole', () => {
     await socket._trigger('stage:join',    { channelId: 'ch-role', serverId: 'sv-1' });
     await socket._trigger('stage:setRole', { channelId: 'ch-role', role: 'speaker' });
 
-    const room = stageRooms.get('ch-role');
+    const room = present(stageRooms.get('ch-role'), 'room');
     expect(room.speakers).toHaveLength(1);
     expect(room.speakers[0].userId).toBe(user._id);
     expect(room.listeners).toHaveLength(0);
@@ -129,7 +178,7 @@ describe('stage:setRole', () => {
     await socket._trigger('stage:join',    { channelId: 'ch-role-l', serverId: 'sv-1' });
     await socket._trigger('stage:setRole', { channelId: 'ch-role-l', role: 'listener' });
 
-    const room = stageRooms.get('ch-role-l');
+    const room = present(stageRooms.get('ch-role-l'), 'room');
     expect(room.listeners).toHaveLength(1);
     expect(room.speakers).toHaveLength(0);
   });
@@ -143,7 +192,7 @@ describe('stage:setRole', () => {
     await socket._trigger('stage:setRole', { channelId: 'ch-switch', role: 'speaker'  });
     await socket._trigger('stage:setRole', { channelId: 'ch-switch', role: 'listener' });
 
-    const room = stageRooms.get('ch-switch');
+    const room = present(stageRooms.get('ch-switch'), 'room');
     expect(room.speakers).toHaveLength(0);
     expect(room.listeners).toHaveLength(1);
   });
@@ -156,7 +205,7 @@ describe('stage:setRole', () => {
     await socket._trigger('stage:join',    { channelId: 'ch-badrole', serverId: 'sv-1' });
     await socket._trigger('stage:setRole', { channelId: 'ch-badrole', role: 'moderator' });
 
-    const room = stageRooms.get('ch-badrole');
+    const room = present(stageRooms.get('ch-badrole'), 'room');
     expect(room.speakers).toHaveLength(0);
     expect(room.listeners).toHaveLength(0);
   });
@@ -169,7 +218,7 @@ describe('stage:setRole', () => {
     await socket._trigger('stage:join',    { channelId: 'ch-muted', serverId: 'sv-1' });
     await socket._trigger('stage:setRole', { channelId: 'ch-muted', role: 'speaker'  });
 
-    const room = stageRooms.get('ch-muted');
+    const room = present(stageRooms.get('ch-muted'), 'room');
     expect(room.speakers[0].muted).toBe(true);
   });
 
@@ -182,8 +231,8 @@ describe('stage:setRole', () => {
     io._emitted.length = 0;
     await socket._trigger('stage:setRole', { channelId: 'ch-emit', role: 'speaker' });
 
-    const userJoined = io._emitted.find(e => e.ev === 'stage:userJoined');
-    const state      = io._emitted.find(e => e.ev === 'stage:state');
+    const userJoined = requireEmitted(io._emitted, 'stage:userJoined');
+    const state      = requireEmitted(io._emitted, 'stage:state');
     expect(userJoined).toBeDefined();
     expect(state).toBeDefined();
   });
@@ -204,13 +253,13 @@ describe('stage:updateMute', () => {
     io._emitted.length = 0;
     await socket._trigger('stage:updateMute',  { channelId: 'ch-mupd', muted: false });
 
-    const room = stageRooms.get('ch-mupd');
+    const room = present(stageRooms.get('ch-mupd'), 'room');
     expect(room.speakers[0].muted).toBe(false);
 
-    const muteEvt = io._emitted.find(e => e.ev === 'stage:muteUpdate');
+    const muteEvt = requireEmittedData(io._emitted, 'stage:muteUpdate');
     expect(muteEvt).toBeDefined();
-    expect(muteEvt.data.userId).toBe(user._id);
-    expect(muteEvt.data.muted).toBe(false);
+    expect(muteEvt.userId).toBe(user._id);
+    expect(muteEvt.muted).toBe(false);
   });
 
   it('odada olmayan channel\'da updateMute hata fırlatmaz', async () => {
@@ -239,7 +288,7 @@ describe('stage:updateMute', () => {
     await lSocket._trigger('stage:updateMute',  { channelId: 'ch-listmute', muted: false });
 
     // muteUpdate emit edilmemeli (listener speaker değil)
-    const muteEvt = io._emitted.find(e => e.ev === 'stage:muteUpdate');
+    const muteEvt = findEmitted(io._emitted, 'stage:muteUpdate');
     expect(muteEvt).toBeUndefined();
   });
 });
@@ -259,13 +308,13 @@ describe('stage:handRaise', () => {
     io._emitted.length = 0;
     await socket._trigger('stage:handRaise', { channelId: 'ch-hand', raised: true });
 
-    const room    = stageRooms.get('ch-hand');
-    const inRoom  = [...room.speakers, ...room.listeners].find(u => u.userId === user._id);
+    const room = present(stageRooms.get('ch-hand'), 'room');
+    const inRoom = present([...room.speakers, ...room.listeners].find(u => u.userId === user._id), 'inRoom');
     expect(inRoom.handRaised).toBe(true);
 
-    const handEvt = io._emitted.find(e => e.ev === 'stage:handRaise');
+    const handEvt = requireEmittedData(io._emitted, 'stage:handRaise');
     expect(handEvt).toBeDefined();
-    expect(handEvt.data.raised).toBe(true);
+    expect(handEvt.raised).toBe(true);
   });
 
   it('el indirme çalışır', async () => {
@@ -278,8 +327,8 @@ describe('stage:handRaise', () => {
     await socket._trigger('stage:handRaise', { channelId: 'ch-hd', raised: true  });
     await socket._trigger('stage:handRaise', { channelId: 'ch-hd', raised: false });
 
-    const room   = stageRooms.get('ch-hd');
-    const inRoom = room.listeners.find(u => u.userId === user._id);
+    const room = present(stageRooms.get('ch-hd'), 'room');
+    const inRoom = present(room.listeners.find(u => u.userId === user._id), 'inRoom');
     expect(inRoom.handRaised).toBe(false);
   });
 });
@@ -289,7 +338,7 @@ describe('stage:handRaise', () => {
 // ════════════════════════════════════════════════════════════════
 
 describe('stage:promote', () => {
-  async function setupRoom(channelId) {
+  async function setupRoom(channelId: string) {
     const io   = makeIo();
     const host = makeUser({ displayName: 'Host' });
     const hSock = makeSocket('s-host-promote');
@@ -312,13 +361,13 @@ describe('stage:promote', () => {
 
     await hSock._trigger('stage:promote', { channelId: 'ch-promote', targetUserId: listener._id });
 
-    const room = stageRooms.get('ch-promote');
+    const room = present(stageRooms.get('ch-promote'), 'room');
     expect(room.speakers.some(u => u.userId === listener._id)).toBe(true);
     expect(room.listeners.some(u => u.userId === listener._id)).toBe(false);
 
-    const promEvt = io._emitted.find(e => e.ev === 'stage:promoted');
+    const promEvt = requireEmittedData(io._emitted, 'stage:promoted');
     expect(promEvt).toBeDefined();
-    expect(promEvt.data.userId).toBe(listener._id);
+    expect(promEvt.userId).toBe(listener._id);
   });
 
   it('host olmayan kullanıcı promote edemez', async () => {
@@ -328,7 +377,7 @@ describe('stage:promote', () => {
     // Listener promote etmeye çalışıyor (host değil)
     await lSock._trigger('stage:promote', { channelId: 'ch-promote-deny', targetUserId: 'some-user' });
 
-    const promEvt = io._emitted.find(e => e.ev === 'stage:promoted');
+    const promEvt = findEmitted(io._emitted, 'stage:promoted');
     expect(promEvt).toBeUndefined();
   });
 
@@ -338,7 +387,7 @@ describe('stage:promote', () => {
 
     await hSock._trigger('stage:promote', { channelId: 'ch-promote-missing', targetUserId: 'ghost-id' });
 
-    const promEvt = io._emitted.find(e => e.ev === 'stage:promoted');
+    const promEvt = findEmitted(io._emitted, 'stage:promoted');
     expect(promEvt).toBeUndefined();
   });
 
@@ -348,13 +397,13 @@ describe('stage:promote', () => {
     // Önce el kaldırsın
     const lSock = makeSocket('s-list-hand');
     const io2   = makeIo();
-    const room  = stageRooms.get('ch-promote-state');
+    const room = present(stageRooms.get('ch-promote-state'), 'room');
     const li    = room.listeners.find(u => u.userId === listener._id);
     if (li) li.handRaised = true;
 
     await hSock._trigger('stage:promote', { channelId: 'ch-promote-state', targetUserId: listener._id });
 
-    const updatedRoom = stageRooms.get('ch-promote-state');
+    const updatedRoom = present(stageRooms.get('ch-promote-state'), 'updatedRoom');
     const promoted    = updatedRoom.speakers.find(u => u.userId === listener._id);
     if (promoted) {
       expect(promoted.muted).toBe(true);
@@ -378,16 +427,17 @@ describe('stage:leave', () => {
     io._emitted.length = 0;
     await socket._trigger('stage:leave',   { channelId: 'ch-leave' });
 
+    // Oda SİLİNMİŞ ya da BOŞ olmalı — yokluk burada geçerli bir sonuçtur,
+    // bu yüzden `present()` KULLANILMAZ.
     const room = stageRooms.get('ch-leave');
-    // Oda silinmiş veya boş olmalı
     const total = room ? room.speakers.length + room.listeners.length : 0;
     expect(total).toBe(0);
 
     expect(socket._rooms.has('stage:ch-leave')).toBe(false);
 
-    const leftEvt = io._emitted.find(e => e.ev === 'stage:userLeft');
+    const leftEvt = requireEmittedData(io._emitted, 'stage:userLeft');
     expect(leftEvt).toBeDefined();
-    expect(leftEvt.data.userId).toBe(user._id);
+    expect(leftEvt.userId).toBe(user._id);
   });
 
   it('son kullanıcı ayrılınca oda Map\'ten silinir', async () => {
@@ -420,13 +470,14 @@ describe('disconnect — otomatik temizlik', () => {
       await socket._trigger('stage:setRole', { channelId: ch, role: 'speaker' });
     }
 
-    expect(stageRooms.get('ch-disc-1').speakers).toHaveLength(1);
-    expect(stageRooms.get('ch-disc-2').speakers).toHaveLength(1);
+    expect(present(stageRooms.get('ch-disc-1'), 'stageRooms kaydi').speakers).toHaveLength(1);
+    expect(present(stageRooms.get('ch-disc-2'), 'stageRooms kaydi').speakers).toHaveLength(1);
 
     await socket._trigger('disconnect');
 
     ['ch-disc-1', 'ch-disc-2'].forEach(ch => {
-      const room  = stageRooms.get(ch);
+      // Yokluk geçerli bir sonuç (oda tamamen silinmiş olabilir).
+      const room = stageRooms.get(ch);
       const total = room ? room.speakers.length + room.listeners.length : 0;
       expect(total).toBe(0);
     });
@@ -443,8 +494,8 @@ describe('disconnect — otomatik temizlik', () => {
 
     await socket._trigger('disconnect');
 
-    const leftEvt = io._emitted.find(e => e.ev === 'stage:userLeft');
+    const leftEvt = requireEmittedData(io._emitted, 'stage:userLeft');
     expect(leftEvt).toBeDefined();
-    expect(leftEvt.data.userId).toBe(user._id);
+    expect(leftEvt.userId).toBe(user._id);
   });
 });

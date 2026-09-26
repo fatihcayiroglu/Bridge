@@ -2,13 +2,42 @@
   "name": "bridge-discord-shim",
   "version": "1.0.0",
   "description": "Discord.js v14 uyumlu katman — mevcut Discord botlarını Bridge'de çalıştırır",
-  "main": "src/index.js",
-  "keywords": ["bridge", "discord", "shim", "compatibility", "bot"],
+  "main": "dist/index.js",
+  "keywords": [
+    "bridge",
+    "discord",
+    "shim",
+    "compatibility",
+    "bot"
+  ],
   "license": "MIT",
   "dependencies": {
-    "eventemitter3": "^5.0.1"
+    "eventemitter3": "^5.0.1",
+    "bridge-bot-sdk": "1.125.0"
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "examples"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "typescript": "^6.0.3"
+  },
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./package.json": "./package.json"
   }
 }

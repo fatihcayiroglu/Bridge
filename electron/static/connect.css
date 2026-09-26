@@ -1,0 +1,70 @@
+:root {
+  color-scheme: dark;
+  --bg: #0c0e1a;
+  --card: #151827;
+  --text: #eef1f8;
+  --muted: #a4abc0;
+  --border: #2b3148;
+  --accent: #3b8fef;
+  --accent-text: #ffffff;
+  --error: #ff8a80;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; margin: 0; }
+
+body {
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+.card {
+  width: min(420px, calc(100vw - 32px));
+  padding: 32px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--card);
+  text-align: center;
+}
+
+.mark { display: block; margin: 0 auto 16px; border-radius: 16px; }
+
+h1 { margin: 0 0 8px; font-size: 22px; font-weight: 600; }
+
+.help { margin: 0 0 24px; color: var(--muted); }
+
+form { text-align: left; }
+
+label { display: block; margin-bottom: 6px; font-weight: 600; }
+
+input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.error { min-height: 1.5em; margin: 8px 0 12px; color: var(--error); }
+
+button {
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:disabled { opacity: 0.6; cursor: progress; }

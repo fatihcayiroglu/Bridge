@@ -2,31 +2,34 @@
 'use strict';
 
 process.env.NODE_ENV   = 'test';
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 
 import { createMockDb, makeUser } from './helpers/mockDb';
+import type { UserFixture } from './helpers/mockDb';
 let db = createMockDb();
 jest.mock('../db/index', () => { const { createMockDb } = require('./helpers/mockDb'); return createMockDb(); });
 jest.mock('../db/loader', () => require('../db/index'));
 
 import request from 'supertest';
 import express from 'express';
+import { BRIDGE_VERSION } from '../lib/version';
 const jwt     = require('jsonwebtoken');
 const router  = require('../routes/mobilePush');
 
-function token(userId) {
-  return jwt.sign({ id: userId, username: 'user', v: 0 }, 'test-jwt-secret', { expiresIn: '1h' });
+function token(userId: string) {
+  return jwt.sign({ id: userId, username: 'user', v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
 }
 
 function buildApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/mobile', router);
-  app.use((err, req, res, next) => res.status(err.status || 500).json({ error: err.message }));
+  app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
   return app;
 }
 
-let app, user;
+let app: express.Express;
+let user: UserFixture;
 
 beforeEach(async () => {
   db = createMockDb();
@@ -44,7 +47,7 @@ describe('GET /api/mobile/info', () => {
   it('sunucu bilgilerini döner (auth gerektirmez)', async () => {
     const res = await request(app).get('/api/mobile/info');
     expect(res.status).toBe(200);
-    expect(res.body.serverVersion).toBeDefined();
+    expect(res.body.serverVersion).toBe(BRIDGE_VERSION);
     expect(res.body.minAppVersion).toBeDefined();
     expect(res.body.features).toBeDefined();
     expect(typeof res.body.features.e2ee).toBe('boolean');
@@ -138,5 +141,30 @@ describe('DELETE /api/mobile/push/unregister', () => {
       .delete('/api/mobile/push/unregister')
       .send({ platform: 'android' });
     expect(res.status).toBe(401);
+  });
+
+  // Platform eksikse silme sorgusu BELIRSIZ kalirdi: depo katmanina
+  // `platform: undefined` gidiyor ve hangi kaydin silindigi tanimsiz oluyordu.
+  // Artik acikca reddedilir.
+  it('platform eksikse 400 döner ve hiçbir kayıt silinmez', async () => {
+    await db.nativePushTokens?.insert({
+      _id: `npt_${user._id}_ios`, userId: user._id, platform: 'ios',
+      token: 'apns-token', createdAt: Date.now(), updatedAt: Date.now(),
+    });
+
+    const res = await request(app)
+      .delete('/api/mobile/push/unregister')
+      .set('Authorization', `Bearer ${token(user._id)}`)
+      .send({});
+    expect(res.status).toBe(400);
+    expect(await db.nativePushTokens?.findOne({ _id: `npt_${user._id}_ios` })).not.toBeNull();
+  });
+
+  it('geçersiz platform 400 döner', async () => {
+    const res = await request(app)
+      .delete('/api/mobile/push/unregister')
+      .set('Authorization', `Bearer ${token(user._id)}`)
+      .send({ platform: 'symbian' });
+    expect(res.status).toBe(400);
   });
 });

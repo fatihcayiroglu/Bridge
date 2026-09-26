@@ -5,8 +5,10 @@
 //   - NodeInfo (/.well-known/nodeinfo + /nodeinfo/2.1)
 //   - Kayıt sırasında RSA key üretimi
 //   - HTTP Signature doğrulama (Accept gönderme)
+import type { Request, Response, NextFunction } from 'express';
+import { fetchMock, installFetchMock } from './helpers/fetchDouble';
 
-process.env.JWT_SECRET   = 'test-jwt-secret';
+process.env.JWT_SECRET   = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV     = 'test';
 process.env.INSTANCE_URL = 'https://bridge.test';
 
@@ -16,24 +18,30 @@ const mockDb = createMockDb();
 jest.mock('../db/index', () => mockDb);
 jest.mock('../db/loader', () => require('../db/index'));
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: (req, res, next) => {
+  authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
     const h = req.headers.authorization;
     if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
     const jwt = require('jsonwebtoken');
-    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret'); next(); }
+    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!'); next(); }
     catch { res.status(401).json({ error: 'Invalid token' }); }
   },
+  castAuthed: (req: Request) => req,
 }));
 
-global.fetch = jest.fn();
+installFetchMock();
 
 jest.mock('../lib/fetch', () => ({
-  fetchT: jest.fn((...args) => global.fetch(...args)),
-  default: jest.fn((...args) => global.fetch(...args)),
+  fetchT: jest.fn((...args: Parameters<typeof fetch>) => global.fetch(...args)),
+  default: jest.fn((...args: Parameters<typeof fetch>) => global.fetch(...args)),
 }));
 
 jest.mock('../middleware/rateLimit', () => ({
-  limits: new Proxy({}, { get: () => (_req, _res, next) => next() }),
+  // limits.<x> KANONİK olarak FABRİKADIR.
+  limits: new Proxy({}, { get: () => () => (_req: unknown, _res: unknown, next: () => void) => next() }),
 }));
 
 jest.mock('../routes/admin', () => ({
@@ -41,7 +49,14 @@ jest.mock('../routes/admin', () => ({
 }));
 
 jest.mock('../lib/logger', () => {
-  const makeLogger = () => ({
+  // Fabrika KENDINE atifta bulunuyor (`child: () => makeLogger()`), bu yuzden
+  // donus tipi cikarilamiyordu (TS7023/TS7024). Tip ACIKCA yazilir.
+  interface LoggerDouble {
+    trace: jest.Mock; debug: jest.Mock; info: jest.Mock;
+    warn: jest.Mock; error: jest.Mock; fatal: jest.Mock;
+    child: jest.Mock;
+  }
+  const makeLogger = (): LoggerDouble => ({
     trace: jest.fn(), debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn(), fatal: jest.fn(),
     child: jest.fn(() => makeLogger()),
   });
@@ -59,12 +74,12 @@ app.use(express.json());
 app.use('/api/federation', router);
 
 // NodeInfo simülasyonu (index.js'deki gibi)
-app.get('/.well-known/nodeinfo', (req, res) => {
+app.get('/.well-known/nodeinfo', (req: Request, res: Response) => {
   res.json({
     links: [{ rel: 'http://nodeinfo.diaspora.software/ns/schema/2.1', href: 'https://bridge.test/nodeinfo/2.1' }],
   });
 });
-app.get('/nodeinfo/2.1', async (req, res) => {
+app.get('/nodeinfo/2.1', async (req: Request, res: Response) => {
   const userCount = await mockDb.users.count({}).catch(() => 0);
   res.json({
     version: '2.1',
@@ -75,7 +90,7 @@ app.get('/nodeinfo/2.1', async (req, res) => {
   });
 });
 
-app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
 
 // ── Fixtures ────────────────────────────────────────────────────
 const ACTOR_ID       = 'ap-full-actor-uid';
@@ -132,7 +147,7 @@ beforeAll(async () => {
   });
 });
 
-afterEach(() => { global.fetch.mockReset(); });
+afterEach(() => { fetchMock().mockReset(); });
 
 // ── 1. Actor endpoint ──────────────────────────────────────────
 describe('GET /api/federation/users/:username — Actor', () => {
@@ -240,6 +255,22 @@ describe('GET /api/federation/webfinger', () => {
       .query({ resource: 'acct:ghost_404@bridge.test' });
     expect(res.status).toBe(404);
   });
+
+
+  it('rejects acct resources for a foreign domain instead of aliasing a local user', async () => {
+    const res = await request(app)
+      .get('/api/federation/webfinger')
+      .query({ resource: `acct:${ACTOR_USERNAME}@evil.example` });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/not local/i);
+  });
+
+  it.each(['acct:@bridge.test', 'acct:alice@', 'acct:bridge.test'])(
+    'rejects malformed acct resource %s', async (resource) => {
+      const res = await request(app).get('/api/federation/webfinger').query({ resource });
+      expect(res.status).toBe(400);
+    },
+  );
 });
 
 // ── 6. NodeInfo ────────────────────────────────────────────────
@@ -269,7 +300,7 @@ describe('NodeInfo endpoints', () => {
 describe('POST /api/federation/users/:username/inbox — Follow', () => {
   it('returns 202 for valid Follow (dev mode, no signature required)', async () => {
     // apFollows insert mock için fetch gerekmez
-    global.fetch.mockResolvedValue({ ok: true, status: 202, json: async () => ({}) });
+    fetchMock().mockResolvedValue({ ok: true, status: 202, json: async () => ({}) });
 
     const res = await request(app)
       .post(`/api/federation/users/${ACTOR_USERNAME}/inbox`)

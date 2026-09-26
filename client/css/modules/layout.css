@@ -1,58 +1,403 @@
 /* ── Bridge · layout.css ───────────────────────────────── */
 
-/* APP LAYOUT */
-.app { display: flex; height: 100vh; }
+/* APP LAYOUT — one continuous communication workspace */
+.app {
+  display: flex;
+  width: 100%;
+  height: 100vh;
+  height: var(--bridge-visual-viewport-height, 100dvh);
+  min-width: 0;
+  overflow: hidden;
+  background: var(--surface-content);
+}
 
 /* SERVER LIST */
-.server-list { width: 68px; background: var(--bg-1); display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 6px; overflow-y: auto; flex-shrink: 0; }
+.server-list {
+  width: var(--shell-rail-width);
+  background: var(--surface-rail);
+  border-right: 1px solid var(--shell-divider);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-2) 0;
+  gap: var(--space-2);
+  overflow-x: hidden;
+  overflow-y: auto;
+  flex-shrink: 0;
+  scrollbar-gutter: stable;
+}
 .server-list::-webkit-scrollbar { display: none; }
-.server-icon { width: 46px; height: 46px; border-radius: 50%; background: var(--bg-3); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-radius 0.2s, background 0.2s, transform 0.1s; font-size: 20px; position: relative; flex-shrink: 0; font-weight: 700; color: var(--text-2); overflow: hidden; }
-.server-icon:hover { border-radius: var(--r-lg); background: var(--brand); color: white; transform: scale(1.05); }
-.server-icon.active { border-radius: var(--r-lg); background: var(--brand); color: white; }
-.server-icon .pill { position: absolute; left: -14px; width: 6px; background: white; border-radius: 0 3px 3px 0; transition: height 0.2s, top 0.2s; }
-.server-icon:hover .pill { height: 18px; top: calc(50% - 9px); }
-.server-icon.active .pill { height: 38px; top: calc(50% - 19px); }
-.server-separator { width: 28px; height: 2px; background: var(--bg-4); border-radius: 1px; flex-shrink: 0; }
-.server-add { width: 46px; height: 46px; border-radius: 50%; background: var(--bg-3); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--green); font-size: 26px; font-weight: 300; transition: border-radius 0.2s, background 0.2s; }
-.server-add:hover { border-radius: var(--r-lg); background: var(--green); color: white; }
+.server-icon {
+  /* FAZ 8/2 — okunmamış rozeti mutlak konumlanır; rail düğmesi konumlandırma
+     bağlamı olmadan rozet sayfanın köşesine kaçardı. */
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-md-p);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color var(--duration-base), background var(--duration-base), color var(--duration-fast), transform var(--duration-fast);
+  font-size: var(--text-lg-p);
+  position: relative;
+  flex-shrink: 0;
+  font-weight: 700;
+  color: var(--text-2);
+  overflow: hidden;
+}
+.server-icon:hover { background: var(--bg-4); border-color: var(--brand-border); color: var(--text-primary); transform: translateY(-1px); }
+.server-icon:active { transform: translateY(0) scale(.96); }
+.server-icon.active { background: var(--brand-bg); border-color: var(--brand); color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--brand-border); }
+.server-icon .pill {
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  transform: translateY(-50%);
+  background: var(--shell-selected-edge);
+  border-radius: var(--r-full);
+  transition: height var(--duration-base) var(--ease-out);
+  z-index: 1;
+}
+/* A server with unread channels (Final21 Phase 15); hover/active below still win. */
+.server-icon[data-has-unread="true"] .pill { height: 8px; }
+.server-icon:hover .pill { height: 14px; }
+.server-icon.active .pill { height: 28px; }
+.server-icon.active::after {
+  content: '';
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--surface-rail);
+}
+.server-separator { width: 32px; height: 1px; background: var(--border-strong); border-radius: var(--r-full); flex-shrink: 0; }
+.server-add {
+  width: 44px;
+  height: 44px;
+  /* ══════════════════════════════════════════════════════════════════════════
+     KARDES-YOL ASIMETRISI (WCAG 2.2 SC 2.5.8)
+     ══════════════════════════════════════════════════════════════════════════
+     .server-list bir SUTUN flex kapsayicisidir. Sutun flex'te `height` ana
+     eksendir ve ogeler VARSAYILAN OLARAK kucululur (flex-shrink: 1). Rail
+     dolunca bu dugme 44px'ten 21px'e SIKISIYORDU — yani yeterince sunucusu
+     olan her kullanicida "Sunucu ekle" hedefi standardin altina duyuyordu.
+     Gercek olcum: 44x21 (e2e/tests/ui-target-size.spec.ts, 1280px).
+     Rail'deki KARDESLERIN hepsinde bu koruma zaten vardi:
+        .server-icon      -> flex-shrink: 0  (bu dosyada :46)
+        .server-separator -> flex-shrink: 0  (bu dosyada :79)
+     yalnizca .server-add atlanmisti. Ayni asimetri sinifi bu programda daha
+     once soket handler'larinda bes kez cikmisti; burada CSS'te. */
+  flex-shrink: 0;
+  border-radius: var(--r-md-p);
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--green);
+  transition: border-color var(--duration-base), background var(--duration-base), transform var(--duration-fast);
+}
+.server-add:hover:not([aria-disabled="true"]) { background: var(--green-bg); border-color: var(--green); transform: translateY(-1px); }
+.server-add[aria-disabled="true"] { color: var(--text-disabled); cursor: not-allowed; opacity: .72; }
+.server-add svg { width: 19px; height: 19px; }
 
 /* CHANNEL SIDEBAR */
-.channel-sidebar { width: 236px; background: var(--bg-2); display: flex; flex-direction: column; flex-shrink: 0; }
-.server-header { height: 48px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--bg-1); cursor: pointer; font-weight: 700; font-size: 15px; flex-shrink: 0; transition: background 0.15s; }
-.server-header:hover { background: var(--bg-3); }
-.channel-list { flex: 1; overflow-y: auto; padding: 6px 0; }
+.channel-sidebar { width: var(--shell-sidebar-width); min-width: 0; background: var(--surface-sidebar); border-right: 1px solid var(--shell-divider); display: flex; flex-direction: column; flex-shrink: 0; }
+/* UA VARSAYILANI SIZINTISI — KOYU TEMADA ACIK GRI KUTU.
+   Bu kural `color`, `border-bottom` ve `:hover` arka plani tanimliyordu ama
+   TABAN `background` ve yan/ust KENARLIKLARI tanimlamiyordu. Sonuc: tarayici
+   `<button>` varsayilani devreye giriyor ve koyu temada baslik
+   `rgb(107,107,107)` gri bir kutu olarak ciziliyordu (govde: rgb(21,23,32)).
+   Ekran goruntusunde kenar cubugunun tepesinde beyazimsi bir kutu olarak
+   gorunuyordu. `.h-btn` ve `.user-identity` ile AYNI kusur sinifi. */
+.server-header { background: transparent; border: 0; border-bottom: 1px solid var(--shell-divider); height: var(--shell-header-height); padding: 0 var(--space-3) 0 var(--space-4); display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--shell-divider); cursor: pointer; font-weight: 700; font-size: var(--type-title-sm); flex-shrink: 0; transition: background var(--duration-fast); color: var(--text-primary); min-width: 0; }
+.server-header:hover:not([aria-disabled="true"]) { background: var(--bg-3); }
+.server-header[aria-disabled="true"] { cursor: default; }
+.server-header > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-header svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--text-muted); }
+.channel-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: var(--space-2) var(--space-1); scrollbar-gutter: stable; }
 .ch-category { padding: 14px 8px 4px 10px; display: flex; align-items: center; gap: 4px; color: var(--text-3); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; cursor: pointer; }
 .ch-category:hover { color: var(--text-2); }
-.ch-item { display: flex; align-items: center; gap: 6px; padding: 5px 8px 5px 6px; margin: 1px 6px; border-radius: var(--r-sm); cursor: pointer; color: var(--text-3); font-size: 14px; font-weight: 500; transition: background 0.1s, color 0.1s; position: relative; }
+.ch-item { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 5px 8px; margin: 1px 4px; border-radius: var(--radius-control); cursor: pointer; color: var(--text-muted); font-size: var(--type-body); font-weight: 500; transition: background var(--duration-fast), color var(--duration-fast); position: relative; }
 .ch-item:hover { background: var(--bg-4); color: var(--text-2); }
-.ch-item.active { background: var(--bg-5); color: var(--text-1); }
-.ch-item .ch-icon { font-size: 18px; flex-shrink: 0; min-width: 20px; text-align: center; }
+.ch-item.active { background: var(--shell-selected); color: var(--text-primary); }
+.ch-item .ch-icon { flex-shrink: 0; width: 18px; height: 18px; color: currentColor; }
+.ch-item .ch-icon svg { display: block; width: 18px; height: 18px; }
 .ch-item .voice-count { margin-left: auto; font-size: 11px; color: var(--green); font-weight: 600; }
 
 /* USER PANEL */
-.user-panel { height: 52px; background: rgba(0,0,0,0.2); display: flex; align-items: center; padding: 0 8px; gap: 8px; flex-shrink: 0; }
-.user-avatar-wrap { position: relative; cursor: pointer; }
-.user-avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; color: white; flex-shrink: 0; }
-.status-dot { position: absolute; bottom: -1px; right: -1px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--bg-2); }
-.status-dot.online  { background: var(--green); }
-.status-dot.idle    { background: var(--yellow); }
-.status-dot.dnd     { background: var(--red); }
-.status-dot.offline { background: var(--text-3); }
-.user-info { flex: 1; overflow: hidden; cursor: pointer; }
-.user-info .u-name { font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.user-info .u-tag  { font-size: 11px; color: var(--text-3); }
-.user-actions { display: flex; gap: 1px; }
-.u-action-btn { width: 30px; height: 30px; border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-3); font-size: 16px; transition: background 0.1s, color 0.1s; }
-.u-action-btn:hover { background: var(--bg-4); color: var(--text-2); }
-.u-action-btn.active { color: var(--red); }
+/* UX — ALT KULLANICI PANELI: TEK YUZEY, PARCALI KUTULAR DEGIL.
+   OLCUM (240px kenar cubugunda): sabit tuketim 190px = 32 avatar + 16 bosluk
+   + 126 dort kontrol (4x30 + 3x2) + 16 dolgu. Kullanici adina ~50px kaliyor,
+   adlar aninda kirpiliyordu. Kenar cubugu 256px'e cikarildi ve yatay dolgu
+   kisildi; ad alani ~70px'e yukseldi (+%40).
+   Kimlik (avatar+ad) tek tiklanabilir bolge gibi davranir; kontroller ayri
+   bir kume olarak saga yaslanir. */
+/* ── KULLANICI DOCK'U (Faz K1) ─────────────────────────────────────────────
+   Hiyerarsi: KIMLIK once, SES kontrolleri birincil, yardimci eylemler ikincil.
+   Onceki halde dort esit kare buton vardi; gunluk kullanilan mikrofon/kulaklik
+   ile nadiren kullanilan tema ayni agirliktaydi ve kimlik sutununa ~48px
+   kaliyordu. Grid artik kimlige oncelik verir, kontroller kumelenir.        */
+.user-panel {
+  min-height: var(--shell-user-height);
+  background: var(--surface-chrome);
+  border-top: 1px solid var(--shell-divider);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 0 4px;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SES BAGLI SERIDI
+   ════════════════════════════════════════════════════════════════════════
+   Ses kanalindayken METIN kanalina gecildiginde `#voice-panel` gizlenir ve
+   ayrilma dugmesi onunla birlikte kaybolurdu. Bu serit hem "hala baglisin"
+   bilgisini hem de cikis yolunu kabukta tutar.
+
+   `.user-panel` iki sutunlu bir grid; serit KENDI SATIRINI kaplar. */
+.ud-voice-status {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  min-width: 0;
+  margin: 4px 2px 0;
+  padding: 5px 6px 5px 9px;
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-modifier-selected, var(--bg-3));
+}
+.ud-voice-status[hidden] { display: none; }
+
+.ud-vs-info {
+  display: grid;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.ud-vs-state {
+  font-size: var(--text-xs, 11px);
+  font-weight: 700;
+  /* Bagli durumu OLUMLU bir sinyaldir; nötr metinden ayrilir. */
+  color: var(--success, var(--brand));
+}
+
+.ud-vs-channel {
+  overflow: hidden;
+  font-size: var(--text-xs, 11px);
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ud-vs-channel[hidden] { display: none; }
+
+.ud-vs-leave {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-left: auto;
+  border: 0;
+  border-radius: var(--radius-md, 8px);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.ud-vs-leave svg { width: 17px; height: 17px; }
+.ud-vs-leave:hover {
+  background: var(--danger-subtle, var(--bg-4));
+  color: var(--danger);
+}
+.ud-vs-leave:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Sessize alinmis / kulaklik kapali durumda serit de bunu yansitir. */
+.ud-voice-status[data-state='muted']    .ud-vs-state { color: var(--warning, var(--text-secondary)); }
+.ud-voice-status[data-state='deafened'] .ud-vs-state { color: var(--danger); }
+
+/* Kimlik: TEK buton (eskiden iki ayri buton + `:has()` hilesi). */
+.user-identity {
+  /* Ayni UA sizintisi burada da vardi: kimlik dugmesi gri bir kutu icinde
+     siyah cikintili cerceveyle ciziliyor, yanindaki ikonlar ise cercevesizdi
+     — dock "kart + ciplak ikonlar" gibi parcali gorunuyordu. */
+  border: 0;
+  background: transparent;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 4px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+.user-identity:hover  { background: var(--surface-hover); }
+.user-identity:active { background: var(--surface-pressed); }
+.user-identity:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+.ud-avatar-wrap { position: relative; display: block; flex-shrink: 0; }
+.user-avatar {
+  width: 30px; height: 30px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 800; color: white; flex-shrink: 0;
+}
+
+/* Durum noktasi: renk TEK kaynaktan (data-status) gelir; sinif ve veri
+   ozniteligi birlikte guncellenir, boylece stil ile gercek durum ayrisamaz. */
+.status-dot {
+  position: absolute; bottom: -1px; right: -1px;
+  width: 11px; height: 11px; border-radius: 50%;
+  border: 2px solid var(--surface-chrome);
+  background: var(--status-offline);
+  transition: background var(--duration-fast) var(--ease-out);
+}
+.status-dot.online  { background: var(--status-online); }
+.status-dot.idle    { background: var(--status-idle); }
+.status-dot.dnd     { background: var(--status-dnd); }
+.status-dot.offline { background: var(--status-offline); }
+
+.ud-text { display: grid; gap: 1px; min-width: 0; }
+.ud-text .u-name {
+  font-size: 13px; font-weight: 700; line-height: 1.25;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Ikinci satir: ozel durum metni varsa o, yoksa gercek varlik etiketi. */
+.ud-text .u-tag {
+  font-size: 11px; line-height: 1.25; color: var(--text-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Kontroller: ses kumesi birincil, yardimci kume ikincil. */
+.user-actions { display: flex; align-items: center; gap: 0; min-width: 0; flex-shrink: 0; }
+.ud-cluster   { display: flex; align-items: center; gap: 0; }
+.ud-divider {
+  width: 1px; height: 16px; margin: 0 4px;
+  background: var(--shell-divider); border-radius: 1px; flex-shrink: 0;
+}
+
+.u-action-btn {
+  /* Olcu: 28px ikon hedefi + 4px dis bosluk = 36px dokunma alani (AA uyumlu).
+  /* Tarayici varsayilani `button { background-color: buttonface }` idi: kontroller
+     hicbir arka plan tanimlamadigi icin ISLETIM SISTEMI buton yuzeyiyle
+     boyaniyordu (olculen: rgb(232,234,242) — koyu temada bile acik cip).
+     Acikca seffaf: zemin yalnizca hover/aktif durumda gelir. */
+  background: transparent;
+  border: 0;
+  width: 28px; height: 28px; border-radius: var(--radius-control);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--text-muted);
+  transition: background var(--duration-fast) var(--ease-out),
+              color var(--duration-fast) var(--ease-out),
+              transform var(--duration-fast) var(--ease-out);
+}
+.u-action-btn svg { width: 17px; height: 17px; }
+.u-action-btn:hover:not([aria-disabled="true"]):not(:disabled) { background: var(--bg-4); color: var(--text-primary); }
+.u-action-btn:active:not([aria-disabled="true"]):not(:disabled) { transform: scale(.92); }
+.u-action-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.u-action-btn[aria-disabled="true"], .u-action-btn:disabled { color: var(--text-disabled); cursor: not-allowed; opacity: .8; }
+
+/* Yardimci eylemler daha sessiz durur — gorsel agirlik sese ayrilir. */
+.ud-util-btn { color: var(--text-3); }
+.ud-util-btn:hover:not(:disabled) { color: var(--text-primary); }
+
+/* Ses kontrolu ACIK durumda (mute/deafen) acikca tehlike rengine gecer;
+   sadece ikon degil, zemin de degisir ki bir bakista anlasilsin. */
+.ud-voice-btn.is-active,
+.u-action-btn.active { color: var(--danger); }
+.ud-voice-btn.is-active { background: var(--red-bg); }
+.ud-voice-btn.is-active:hover:not(:disabled) { background: var(--red-bg); color: var(--danger-hover); }
+
 
 /* MAIN CONTENT */
-.main-content { flex: 1; background: var(--bg-3); display: flex; flex-direction: column; overflow: hidden; }
-.channel-header { height: 48px; border-bottom: 1px solid var(--bg-1); display: flex; align-items: center; padding: 0 14px; gap: 8px; flex-shrink: 0; }
-.channel-header .ch-h-icon { color: var(--text-3); font-size: 22px; }
+.main-content { flex: 1 1 auto; min-width: 0; background: var(--surface-content); display: flex; flex-direction: column; overflow: hidden; }
+.channel-header { height: var(--shell-header-height); background: var(--surface-chrome); border-bottom: 1px solid var(--shell-divider); display: flex; align-items: center; padding: 0 var(--space-4); gap: var(--space-2); flex-shrink: 0; min-width: 0; }
+.channel-header .ch-h-icon { width: 20px; height: 20px; color: var(--text-muted); flex-shrink: 0; }
+.channel-header .ch-h-icon svg { display: block; width: 20px; height: 20px; }
+.channel-header .ch-h-icon [data-icon-kind] { display: none; }
+.channel-header .ch-h-icon[data-channel-type="text"] [data-icon-kind="text"],
+.channel-header .ch-h-icon[data-channel-type="voice"] [data-icon-kind="voice"],
+.channel-header .ch-h-icon[data-channel-type="forum"] [data-icon-kind="forum"],
+.channel-header .ch-h-icon[data-channel-type="stage"] [data-icon-kind="stage"],
+.channel-header .ch-h-icon[data-channel-type="announcement"] [data-icon-kind="announcement"] { display: inline; }
 .channel-header .ch-h-name { font-weight: 700; font-size: 15px; }
-.channel-header .ch-h-divider { width: 1px; height: 22px; background: var(--bg-5); margin: 0 2px; }
+.channel-header .ch-h-divider { width: 1px; height: 20px; background: var(--border-strong); margin: 0 var(--space-1); }
 .channel-header .ch-h-topic { color: var(--text-3); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
-.h-btn { width: 30px; height: 30px; border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-3); font-size: 18px; transition: background 0.1s, color 0.1s; flex-shrink: 0; }
-.h-btn:hover { background: var(--bg-4); color: var(--text-2); }
+.channel-header-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+#btn-header-more { display: none; }
+.header-more-menu {
+  position: fixed; z-index: var(--z-dropdown, 200); display: grid; gap: 2px; min-width: 220px;
+  max-height: calc(var(--bridge-visual-viewport-height, 100dvh) - 64px); overflow-y: auto; padding: 6px;
+  border: 1px solid var(--border-subtle, var(--border)); border-radius: var(--radius-md, 10px);
+  background: var(--surface-1, var(--bg-2)); box-shadow: var(--elevation-modal, var(--shadow-xl));
+}
+.header-more-menu button {
+  display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border: 0;
+  border-radius: var(--radius-sm, 6px); background: transparent; color: var(--text-primary); font: inherit; text-align: left; cursor: pointer;
+}
+.header-more-menu button:hover, .header-more-menu button:focus-visible { background: var(--surface-hover, var(--bg-4)); }
+.header-more-menu button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.header-more-menu svg { width: 20px; height: 20px; flex: none; color: var(--text-2); }
+/* ════════════════════════════════════════════════════════════════════════
+   TARAYICI VARSAYILAN DUGME STILI SIFIRLANIR
+   ════════════════════════════════════════════════════════════════════════
+   KAPATILAN GERCEK KUSUR (canli sayfada olculdu): bu kural `background` ve
+   `border` TANIMLAMIYORDU, bu yuzden tarayicinin `<button>` VARSAYILANI
+   sizmisti:
 
+       border: 2px outset rgb(0, 0, 0)
+       background: rgb(240, 240, 240)
+
+   Sonuc: kanal basligindaki 8 eylem dugmesi ve kullanici kimligi, acik gri
+   kutular icinde SIYAH CIKINTILI cerceveyle ciziliyordu. Ekran goruntusunde
+   baslik "yan yana on kutu" gibi gorunuyor, koyu temada ise tamamen yabanci
+   duruyordu.
+
+   Olcum: 42 dugmenin 9'u (h-btn x8, user-identity x1) UA varsayilanindaydi;
+   `.server-icon` gibi dogru bicimlendirilmis kontroller `0px none` doner. */
+.h-btn {
+  width: 32px; height: 32px;
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-control);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: background var(--duration-fast), color var(--duration-fast), transform var(--duration-fast);
+  flex-shrink: 0;
+}
+.h-btn svg { width: 18px; height: 18px; }
+.h-btn:hover:not([aria-disabled="true"]):not(:disabled) { background: var(--bg-4); color: var(--text-primary); }
+.h-btn:active:not([aria-disabled="true"]):not(:disabled) { transform: scale(.92); }
+.h-btn[aria-disabled="true"], .h-btn:disabled { color: var(--text-disabled); cursor: not-allowed; opacity: .78; }
+.h-btn[aria-pressed="true"] { background: var(--brand-bg); color: var(--brand); }
+
+/* Right rail remains a sibling in the shell composition. */
+.member-list { width: var(--shell-members-width); background: var(--surface-members); border-left: 1px solid var(--shell-divider); }
+
+/* UX/P1 — kabuk başlığındaki okunmamış DM göstergesi.
+   Küçük ve sakin: rozet sayfayı ele geçirmez, yalnızca varlığı bildirir. */
+.h-btn { position: relative; }
+.h-unread {
+  position: absolute; top: 2px; right: 2px;
+  min-width: 15px; height: 15px; padding: 0 3px;
+  display: grid; place-items: center;
+  background: var(--red, #ed4245); color: var(--text-on-solid);
+  border-radius: 99px; font-size: 9px; font-weight: 800; line-height: 1;
+  pointer-events: none;
+}

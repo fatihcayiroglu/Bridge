@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ANDROID 12+ (API 31+) VERİ ÇIKARMA KURALLARI
+
+  ══════════════════════════════════════════════════════════════════════════
+  NEDEN VAR
+  ══════════════════════════════════════════════════════════════════════════
+  Bridge oturum JWT'si WebView localStorage'ında (`bridge_token`) saklanır ve
+  DİSKTE ŞİFRESİZDİR:
+      /data/data/<paket>/app_webview/Local Storage/leveldb/
+
+  Manifest'te `android:allowBackup="true"` idi. Bu, taşıyıcı (bearer) kimlik
+  bilgisinin yedek akışlarına girmesi demekti:
+    • `adb backup` ile ROOT GEREKMEDEN çıkarılabilir (USB hata ayıklama açıkken)
+    • bulut yedeğine kopyalanır
+    • cihazdan cihaza aktarımla taşınır
+
+  `allowBackup="false"` bulut yedeğini ve adb yedeğini kapatır, ancak API 31+
+  üzerinde CİHAZDAN CİHAZA AKTARIMI TEK BAŞINA KAPATMAZ. Bu dosya onu da
+  açıkça kapatır — iki yolu birden kapatmak için gereklidir.
+
+  ── ÜRÜN ETKİSİ ────────────────────────────────────────────────────────────
+  Bridge'in kalıcı verisi SUNUCU tarafındadır; cihazdaki localStorage yalnızca
+  önbellek + oturum jetonudur. Yedeklemenin dışında bırakılması kullanıcıya
+  yalnızca yeni cihazda TEKRAR GİRİŞ maliyeti yükler — jetonun sızmasına göre
+  kabul edilebilir bir bedeldir.
+
+  ── BU, TOKEN-AT-REST ŞİFRELEMESİNİN YERİNE GEÇMEZ ────────────────────────
+  Jeton hâlâ uygulama kum havuzunda ŞİFRESİZ durur; root'lu bir cihazda veya
+  fiziksel erişimde okunabilir. Gerçek çözüm Keychain/EncryptedSharedPreferences
+  taşımasıdır ve GERÇEK CİHAZ DOĞRULAMASI ister (bu ortamda cihaz/emülatör yok:
+  `adb` mevcut değil). O iş UNSAFE_TO_CHANGE_WITHOUT_RUNTIME_VERIFICATION
+  olarak sınıflandırıldı; bu dosya yalnızca yedek yoluyla sızıntıyı kapatır.
+-->
+<data-extraction-rules>
+  <cloud-backup>
+    <exclude domain="root" />
+    <exclude domain="database" />
+    <exclude domain="sharedpref" />
+    <exclude domain="file" />
+  </cloud-backup>
+  <device-transfer>
+    <exclude domain="root" />
+    <exclude domain="database" />
+    <exclude domain="sharedpref" />
+    <exclude domain="file" />
+  </device-transfer>
+</data-extraction-rules>

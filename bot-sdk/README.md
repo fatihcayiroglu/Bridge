@@ -22,11 +22,14 @@ const bot = new BridgeBot({
 bot.on('ready', info => console.log(`✅ ${info.username} bağlandı`));
 
 bot.command('ping', {
-  description: 'Pong döndürür',
-  handler: async ctx => ctx.reply('🏓 Pong!'),
+  description: 'Ping komutunu işle',
+  handler: async ctx => {
+    // Komutu çağıran mesaja yanıt (POST /api/v1/bots/interactions/:id/reply).
+    await ctx.reply('🏓 pong');
+  },
 });
 
-bot.connect();
+await bot.connect(); // kimliği doğrular + slash metadata'yı otomatik kaydeder
 ```
 
 ## İçindekiler
@@ -50,20 +53,20 @@ bot.connect();
 
 ```js
 bot.command('yardim', {
-  description: 'Yardım menüsü',
+  description: 'Yardım komutunu işle',
   usage: '/yardim [konu]',
   handler: async ctx => {
-    const konu = ctx.args[0];
-    await ctx.reply(konu ? `${konu} hakkında: ...` : 'Komutlar: /ping /yardim');
+    console.log('yardim', ctx.args);
   },
 });
+// connect() registered slash metadata'yı /api/v1/bots/me/slash-commands'e yazar.
 ```
 
 ### Context Menu (Sağ-tık)
 
 ```js
-bot.contextCommand('Kullanıcı Bilgisi', 'user', async ctx => {
-  await ctx.reply(`ID: ${ctx.targetId}`);
+bot.contextCommand('Kullanıcı Bilgisi', 'USER_COMMAND', async ctx => {
+  console.log('target user', ctx.targetUserId);
 });
 await bot.registerContextCommands();
 ```
@@ -77,13 +80,10 @@ await bot.registerContextCommands();
 | `ready` | `{ username, _id }` |
 | `disconnect` | `reason: string` |
 | `reconnect` | — |
-| `message` | `{ _id, content, userId, channelId, serverId }` |
-| `messageEdit` | `{ messageId, content, channelId }` |
-| `messageDelete` | `{ messageId, channelId }` |
-| `reaction` | `{ messageId, emoji, userId }` |
-| `memberJoin` | `{ userId, serverId }` |
-| `memberLeave` | `{ userId, serverId }` |
-| `interaction` | `{ type, customId, userId, channelId }` |
+| `message` | Hedef bota kayıtlı slash komutu eşleştiğinde `BotMessage` |
+| `interaction` | Bota yönlendirilen context/component interaction |
+| `messageEdit` / `messageDelete` / `reaction` | **Şu an server tarafından bot odasına yayınlanmıyor** |
+| `memberJoin` / `memberLeave` | **Şu an server tarafından bot odasına yayınlanmıyor** |
 | `commandError` | `{ command, error, ctx }` |
 | `rateLimit` | `{ path, method, retryAfter, retryCount }` |
 
@@ -99,12 +99,59 @@ bot.on('rateLimit', ({ path, retryAfter }) => {
 
 ## Mesajlaşma API
 
+### Komuta yanıt — desteklenir
+
+Bir botun yazabildiği tek mesaj, bir kullanıcının çağırdığı slash komutuna yanıttır:
+`ctx.reply(content)` ya da `bot.replyToInteraction(invocationMessageId, content)`.
+Sunucu her yanıtta şunları yeniden doğrular:
+
+| Koşul | Reddedilirse (`BridgeApiError.code`) |
+|-------|--------------------------------------|
+| Mesaj bu botun kayıtlı bir komutunu çağırıyor | `not_invoked` (403) |
+| Çağrı en fazla 15 dakika önce yapıldı | `interaction_expired` (403) |
+| Bot o sunucuda kurulu | `not_installed` (403) |
+| Kurulumda `messages:reply` izni verildi (botun kendi sunucusunda her zaman var) | `scope_required` (403) |
+| Çağıran kullanıcının o kanalda `USE_BOT_COMMANDS` yetkisi var | `not_invoked` (403) |
+| Sunucunun AutoMod kuralları yanıtı engellemiyor (botlar rol muafiyeti alamaz) | `automod_blocked` (403) |
+| Aynı çağrıya en fazla 5 yanıt | `reply_limit` (429) |
+| Metin, 1–2000 karakter | `content required` / `content too long` (400) |
+
+Yanıt kanalda **BOT** etiketiyle görünür ve çağrı mesajına bağlanır. Bot yanıtı mention
+bildirimi, giden webhook, plugin hook ya da sunucular arası köprü tetiklemez.
+
 ```js
-await bot.sendMessage(channelId, 'Merhaba!');
-await bot.editMessage(channelId, messageId, 'Düzeltildi');
-await bot.deleteMessage(channelId, messageId);
-await bot.addReaction(channelId, messageId, '👍');
-const messages = await bot.getMessages(channelId, 50);
+bot.command('zar', {
+  description: 'Zar at',
+  handler: async ctx => {
+    try {
+      await ctx.reply(`🎲 ${1 + Math.floor(Math.random() * 6)}`);
+    } catch (err) {
+      if (err.name === 'BridgeApiError' && err.code === 'scope_required') {
+        console.warn('Bu sunucu yanıt iznini vermedi:', ctx.serverId);
+      } else throw err;
+    }
+  },
+});
+```
+
+Context menu ve modal etkileşimleri bir çağrı mesajı taşımaz; onların `ctx.reply`'ı
+`sendMessage` ile aynı şekilde desteklenmez.
+
+### Serbest mesaj yazma — desteklenmez
+
+> Kanal mesajı oluşturma/düzenleme/silme/reaksiyon/geçmiş authority'si kullanıcı
+> principal'ına bağlıdır. SDK bu rotalara `Authorization: Bot` gönderip 401'i gizlemek
+> yerine aşağıdaki yüzeylerde `BridgeUnsupportedError` fırlatır.
+>
+> `sendMessage`, `editMessage`, `deleteMessage`, `addReaction`, `getMessages` ve
+> `sendInteractiveMessage` için bot-principal policy tamamlanana kadar davranış budur.
+
+```js
+try {
+  await bot.sendMessage(channelId, 'Merhaba!');
+} catch (err) {
+  if (err.name === 'BridgeUnsupportedError') console.error(err.message);
+}
 ```
 
 ---
@@ -210,34 +257,18 @@ store.clear();
 
 ## Moderasyon
 
-```js
-await bot.kick(serverId, userId, 'Spam');
-await bot.ban(serverId, userId, 'Kural ihlali');
-await bot.timeout(serverId, userId, 30, '30 dakika');
-
-const members = await bot.getMembers(serverId);
-await bot.addRole(serverId, userId, roleId);
-await bot.removeRole(serverId, userId, roleId);
-```
+Bot principal için rol hiyerarşisi ve moderasyon authority policy'si henüz tanımlı
+olmadığından `kick`, `ban`, `timeout`, `getMembers`, `addRole` ve `removeRole`
+şu an **açıkça unsupported** durumdadır. Bunlar var olan user-auth endpointlerine
+bot tokenı gönderip sahte destek göstermez.
 
 ---
 
 ## Modal (Form)
 
-```js
-bot.showModal(userId, {
-  customId: 'kayit',
-  title:    '📝 Kayıt Formu',
-  fields: [
-    { id: 'isim',  label: 'İsminiz', required: true  },
-    { id: 'sebep', label: 'Sebep',   required: false },
-  ],
-});
-
-bot.onModalSubmit('kayit', async ctx => {
-  await ctx.reply(`Teşekkürler ${ctx.fields.isim}!`);
-});
-```
+Shipping client `bot:showModal` olayını tüketmediği için `showModal()` şu an
+`BridgeUnsupportedError` fırlatır. `onModalSubmit()` handler kaydı korunur; modal
+transportu gerçekten shipping client'a bağlanmadan destekleniyor gibi ilan edilmez.
 
 ---
 
@@ -246,7 +277,8 @@ bot.onModalSubmit('kayit', async ctx => {
 ```js
 bot.on('commandError', ({ command, error, ctx }) => {
   console.error(`/${command}:`, error.message);
-  ctx.reply('❌ Bir hata oluştu.').catch(() => {});
+  // Yanıt reddi BridgeApiError'dır: error.status + error.code (ör. 'reply_limit').
+  console.error(ctx.channelId, error);
 });
 ```
 
@@ -340,8 +372,9 @@ new BridgeBot(options: BotOptions)
 | Metod | İmza | Açıklama |
 |-------|------|----------|
 | `command(name, def)` | `(name: string, def: CommandDefinition): this` | `/komut` tanımla |
+| `registerSlashCommands()` | `(): Promise<void>` | Slash metadata'yı kaydet (`connect()` otomatik çağırır) |
 | `registerContextCommands()` | `(): Promise<void>` | Context menu komutlarını API'ye kaydet |
-| `showModal(userId, modal)` | `(userId: string, modal: ModalDefinition): void` | Kullanıcıya modal göster |
+| `showModal(userId, modal)` | `(userId: string, modal: ModalDefinition): void` | **Unsupported** — shipping client transportu yok |
 | `onModalSubmit(customId, handler)` | `(customId: string, handler): this` | Modal submit handler |
 
 **`CommandDefinition`:**
@@ -361,8 +394,8 @@ new BridgeBot(options: BotOptions)
   serverId:  string;
   userId:    string;
   args:      string[];          // komuttan sonraki kelimeler
-  reply:     (content: string) => Promise<BotMessage | null>;
-  react:     (emoji: string)   => Promise<void>;
+  reply:     (content: string) => Promise<BotMessage | null>;  // replyToInteraction(message._id, content)
+  react:     (emoji: string)   => Promise<void>;                // unsupported
 }
 ```
 
@@ -372,12 +405,13 @@ new BridgeBot(options: BotOptions)
 
 | Metod | İmza | Dönüş |
 |-------|------|-------|
-| `sendMessage` | `(channelId, content): Promise<BotMessage \| null>` | Mesaj gönder |
-| `editMessage` | `(channelId, messageId, content): Promise<BotMessage \| null>` | Mesajı düzenle |
-| `deleteMessage` | `(channelId, messageId): Promise<null>` | Mesajı sil |
-| `addReaction` | `(channelId, messageId, emoji): Promise<null>` | Reaksiyon ekle |
-| `getMessages` | `(channelId, limit?): Promise<BotMessage[]>` | Mesajları getir (max 100) |
-| `sendInteractiveMessage` | `(channelId, content, components): Promise<BotMessage \| null>` | Butonlu mesaj gönder |
+| `replyToInteraction` | `(invocationMessageId, content): Promise<BotMessage>` | Çağrılan komuta yanıt ver (koşullar: [Mesajlaşma API](#mesajlaşma-api)) |
+| `sendMessage` | `(channelId, content): Promise<BotMessage \| null>` | Mesaj gönder  **Unsupported (bot principal policy pending)** |
+| `editMessage` | `(channelId, messageId, content): Promise<BotMessage \| null>` | Mesajı düzenle  **Unsupported (bot principal policy pending)** |
+| `deleteMessage` | `(channelId, messageId): Promise<null>` | Mesajı sil  **Unsupported (bot principal policy pending)** |
+| `addReaction` | `(channelId, messageId, emoji): Promise<null>` | Reaksiyon ekle  **Unsupported (bot principal policy pending)** |
+| `getMessages` | `(channelId, limit?): Promise<BotMessage[]>` | Mesajları getir (max 100)  **Unsupported (bot principal policy pending)** |
+| `sendInteractiveMessage` | `(channelId, content, components): Promise<BotMessage \| null>` | Butonlu mesaj gönder  **Unsupported (bot principal policy pending)** |
 
 **`BotMessage`:**
 ```ts
@@ -399,9 +433,9 @@ new BridgeBot(options: BotOptions)
 
 | Metod | İmza | Açıklama |
 |-------|------|----------|
-| `kick(serverId, userId, reason?)` | `(): Promise<null>` | Kullanıcıyı at |
-| `ban(serverId, userId, reason?)` | `(): Promise<null>` | Kullanıcıyı yasakla |
-| `timeout(serverId, userId, minutes?, reason?)` | `(): Promise<null>` | Kullanıcıyı sustur |
+| `kick(serverId, userId, reason?)` | `(): Promise<null>` | Kullanıcıyı at  **Unsupported (bot principal policy pending)** |
+| `ban(serverId, userId, reason?)` | `(): Promise<null>` | Kullanıcıyı yasakla  **Unsupported (bot principal policy pending)** |
+| `timeout(serverId, userId, minutes?, reason?)` | `(): Promise<null>` | Kullanıcıyı sustur  **Unsupported (bot principal policy pending)** |
 
 ---
 
@@ -409,9 +443,9 @@ new BridgeBot(options: BotOptions)
 
 | Metod | İmza | Açıklama |
 |-------|------|----------|
-| `getMembers(serverId)` | `(): Promise<ServerMember[]>` | Üye listesini getir |
-| `addRole(serverId, userId, roleId)` | `(): Promise<null>` | Rol ata |
-| `removeRole(serverId, userId, roleId)` | `(): Promise<null>` | Rol kaldır |
+| `getMembers(serverId)` | `(): Promise<ServerMember[]>` | Üye listesini getir  **Unsupported (bot principal policy pending)** |
+| `addRole(serverId, userId, roleId)` | `(): Promise<null>` | Rol ata  **Unsupported (bot principal policy pending)** |
+| `removeRole(serverId, userId, roleId)` | `(): Promise<null>` | Rol kaldır  **Unsupported (bot principal policy pending)** |
 
 ---
 
@@ -420,12 +454,12 @@ new BridgeBot(options: BotOptions)
 | Event | Payload | Tetiklenme |
 |-------|---------|------------|
 | `ready` | `BotInfo` | Bağlantı ve kimlik doğrulama tamamlandı |
-| `message` | `BotMessage` | Yeni mesaj |
-| `messageEdit` | `MessageEditData` | Mesaj düzenlendi |
-| `messageDelete` | `MessageDeleteData` | Mesaj silindi |
-| `reaction` | `ReactionData` | Reaksiyon eklendi/kaldırıldı |
-| `memberJoin` | `MemberEventData` | Üye katıldı |
-| `memberLeave` | `MemberEventData` | Üye ayrıldı |
+| `message` | `BotMessage` | Bu bota kayıtlı slash komutu eşleşti |
+| `messageEdit` | `MessageEditData` | **Şu an bot odasına yayınlanmıyor** |
+| `messageDelete` | `MessageDeleteData` | **Şu an bot odasına yayınlanmıyor** |
+| `reaction` | `ReactionData` | **Şu an bot odasına yayınlanmıyor** |
+| `memberJoin` | `MemberEventData` | **Şu an bot odasına yayınlanmıyor** |
+| `memberLeave` | `MemberEventData` | **Şu an bot odasına yayınlanmıyor** |
 | `interaction` | `InteractionData` | Buton/select tıklandı |
 | `disconnect` | `string` (reason) | Bağlantı koptu |
 | `reconnect` | — | Yeniden bağlandı |
@@ -573,7 +607,8 @@ bot.command('merhaba', {
 // Komut bazlı hata yakalama
 bot.on('commandError', ({ command, error, ctx }) => {
   console.error(`/${command} hatası:`, error);
-  ctx.reply('❌ Bir hata oluştu.').catch(() => {});
+  // Yanıt reddi BridgeApiError'dır: error.status + error.code (ör. 'reply_limit').
+  console.error(ctx.channelId, error);
 });
 
 // Rate limit izleme
@@ -587,3 +622,38 @@ bot.on('disconnect', reason => {
   // SDK otomatik yeniden bağlanır (Socket.IO reconnect)
 });
 ```
+
+---
+
+# Runtime status
+
+## Shipping transport status
+
+Bot transportu artık üç gerçek yüzeye sahiptir:
+
+1. `Authorization: Bot brg_bot_…` ile `/api/v1/bots/me`, slash metadata ve context
+   metadata registration. Token yalnız SHA-256 digest ile DB'de tutulur; yeni tokenlar
+   32-byte CSPRNG opaque bearer secret olarak üretilir ve `active=true` zorunludur.
+2. Socket.IO handshake aynı bot tokenını doğrular ve botu yalnız `bot:<botId>` özel
+   odasına alır. Bot tüm private channel odalarına subscribe edilmez. Persist edilmiş
+   `/command` mesajı yalnız o komutu gerçekten kaydetmiş installed bot(lar)a direct
+   dispatch edilir; interaction'lar da aynı özel bot odasına gider.
+
+3. `POST /api/v1/bots/interactions/:messageId/reply` — çağrılan komuta yanıt
+   (Final21 Phase 14). Kanonik gönderim yolunun bot için anlamlı güvenceleri uygulanır:
+   AutoMod aynı değerlendiriciyle, çağrı başına 5 yanıt sınırı, geçmiş önbelleğinin
+   geçersiz kılınması. Pazaryerinden kurulan bot bu izni ancak yöneticinin açık onayıyla
+   (`acceptedPermissions`) alır; izin kurulum satırında (`server_bots.grantedScopes`) saklanır.
+
+### Deliberately unsupported product surfaces
+
+Serbest kanal mesajı yazma, düzenleme/silme, reaction/history, member/role management,
+moderation ve modal açma hâlâ bot principal için canonical authority sahibi değildir.
+SDK bunları user endpointlerine gönderip 401/404 üretmez; doğrudan
+`BridgeUnsupportedError` fırlatır.
+
+Özellikle `sendMessage` için ikinci bir REST messaging implementation yazılmadı.
+Doğru sonraki adım mevcut `sendChannelMessage()` business authority'sini
+transport-independent bir principal modeline ayırmaktır; permission/slowmode/AutoMod/
+notification/idempotency davranışını kopyalamak kabul edilmez.
+

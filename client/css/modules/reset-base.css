@@ -1,15 +1,31 @@
 /* ── Bridge · reset-base.css ───────────────────────────────── */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
+/* Tasarım denetimi — Google Fonts @import'ları KALDIRILDI.
+ *
+ * Sunucunun CSP'si `style-src 'self' 'unsafe-inline'` olduğu için bu iki
+ * istek her sayfa yüklemesinde TARAYICI TARAFINDAN ENGELLENİYORDU
+ * (konsolda 2 hata). Yani Inter hiçbir zaman yüklenmedi; uygulama zaten
+ * sistem yazı tipiyle render ediliyordu.
+ *
+ * CSP'yi üçüncü taraf bir CDN'e açmak yerine bağımlılık kaldırıldı:
+ *   - 2 render-bloklayan harici istek eksildi (algılanan hız)
+ *   - konsol hataları temizlendi
+ *   - görsel çıktı DEĞİŞMEDİ (font zaten yüklenmiyordu)
+ *
+ * Tasarımın hedeflediği Inter görünümü isteniyorsa doğru yol fontu
+ * self-host etmektir (woff2 + @font-face, 'self' altında). Font ailesi
+ * sırası tokens.css'te korundu: sistemde Inter kuruluysa yine kullanılır.
+ */
 @import '../tokens.css';
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  font-family: 'Inter', system-ui, sans-serif;
+  /* Tek kaynak: tokens.css --font-sans. Burada ayrı bir aile tanımlamak
+     token sisteminden sapmaya yol açıyordu. */
+  font-family: var(--font-sans);
   background: var(--bg-1);
-  color: var(--text-1);
+  color: var(--text-primary);
   height: 100vh;
   overflow: hidden;
   font-size: 14px;

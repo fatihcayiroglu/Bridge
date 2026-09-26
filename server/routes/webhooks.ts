@@ -12,7 +12,7 @@ import { limits } from '../middleware/rateLimit';
 
 /**
  * @openapi
- * /api/channels/{channelId}/webhooks:
+ * /channels/{channelId}/webhooks:
  *   get:
  *     summary: Kanalın webhook'larını listele
  *     tags: [Webhooks]
@@ -79,8 +79,8 @@ router.get('/', authMiddleware, async (req, res) => {
   const channel = await Channels.findById(channelId);
   if (!channel) return res.status(404).json({ error: 'Kanal bulunamadı' });
 
-  const perms = await resolvePermissions(_u.id, channel.serverId);
-  if (!hasPermission(perms, PERMS.MANAGE_WEBHOOKS) && !hasPermission(perms, PERMS.ADMIN)) {
+  const perms = await resolvePermissions(_u.id, channel.serverId, channelId);
+  if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.MANAGE_WEBHOOKS)) {
     return res.status(403).json({ error: 'MANAGE_WEBHOOKS yetkisi gerekli' });
   }
 
@@ -91,15 +91,24 @@ router.get('/', authMiddleware, async (req, res) => {
 router.post('/', authMiddleware, limits.webhooks(), async (req, res) => {
   const _u = castAuthed(req).user;
   const channelId = String(req.params.channelId ?? '');
-  const { name, avatar } = req.body as Record<string, string>;
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+    ? req.body as Record<string, unknown>
+    : {};
+  const name = body.name;
+  const avatar = body.avatar;
 
-  if (!name?.trim()) return res.status(400).json({ error: 'name gerekli' });
+  if (typeof name !== 'string' || !name.trim() || name.trim().length > 100) {
+    return res.status(400).json({ error: 'name 1-100 karakter olmalı' });
+  }
+  if (avatar !== undefined && avatar !== null && (typeof avatar !== 'string' || avatar.length > 2048)) {
+    return res.status(400).json({ error: 'avatar geçersiz' });
+  }
 
   const channel = await Channels.findById(channelId);
   if (!channel) return res.status(404).json({ error: 'Kanal bulunamadı' });
 
-  const perms = await resolvePermissions(_u.id, channel.serverId);
-  if (!hasPermission(perms, PERMS.MANAGE_WEBHOOKS) && !hasPermission(perms, PERMS.ADMIN)) {
+  const perms = await resolvePermissions(_u.id, channel.serverId, channelId);
+  if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.MANAGE_WEBHOOKS)) {
     return res.status(403).json({ error: 'MANAGE_WEBHOOKS yetkisi gerekli' });
   }
 
@@ -109,17 +118,24 @@ router.post('/', authMiddleware, limits.webhooks(), async (req, res) => {
     channelId,
     serverId: channel.serverId,
     name: name.trim(),
-    avatar: avatar || null,
+    avatarUrl: typeof avatar === 'string' && avatar ? avatar : null,
     token,
     createdBy: _u.id,
+    // NOT NULL in PostgreSQL. Missing since the route was written: every webhook
+    // creation failed with 500 (Final21 Phase 15, live probe; the mock DB accepted it).
+    createdAt: Date.now(),
   });
 
+  // The token is a bearer capability and is intentionally disclosed exactly at
+  // creation time. Never let browsers/proxies cache that one-time secret.
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Pragma', 'no-cache');
   res.status(201).json(webhook);
 });
 
 /**
  * @openapi
- * /api/channels/{channelId}/webhooks/{webhookId}:
+ * /channels/{channelId}/webhooks/{webhookId}:
  *   delete:
  *     summary: Webhook'u sil
  *     tags: [Webhooks]
@@ -152,8 +168,8 @@ router.delete('/:webhookId', authMiddleware, async (req, res) => {
   const channel = await Channels.findById(channelId);
   if (!channel) return res.status(404).json({ error: 'Kanal bulunamadı' });
 
-  const perms = await resolvePermissions(_u.id, channel.serverId);
-  if (!hasPermission(perms, PERMS.MANAGE_WEBHOOKS) && !hasPermission(perms, PERMS.ADMIN)) {
+  const perms = await resolvePermissions(_u.id, channel.serverId, channelId);
+  if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.MANAGE_WEBHOOKS)) {
     return res.status(403).json({ error: 'No permission' });
   }
 
@@ -168,11 +184,16 @@ router.delete('/:webhookId', authMiddleware, async (req, res) => {
 
 /**
  * @openapi
- * /api/webhooks/{webhookId}:
+ * /channels/{channelId}/webhooks/{webhookId}:
  *   get:
  *     summary: Webhook bilgisini getir (token ile kimlik doğrulama)
  *     tags: [Webhooks]
  *     parameters:
+ *       - in: path
+ *         name: channelId
+ *         required: true
+ *         schema:
+ *           type: string
  *       - in: path
  *         name: webhookId
  *         required: true
@@ -194,10 +215,15 @@ router.delete('/:webhookId', authMiddleware, async (req, res) => {
  *         description: Geçersiz token
  */
 router.get('/:webhookId', async (req, res) => {
-  const webhookId = String(req.params.webhookId ?? '');
+  const params = req.params as Record<string, string | undefined>;
+  const channelId = String(params.channelId ?? '');
+  const webhookId = String(params.webhookId ?? '');
   const { token } = req.query;
 
-  const webhook = await ChannelWebhooks.findById(webhookId) as ({ token?: string } & Record<string, unknown>) | null;
+  const webhook = await ChannelWebhooks.findById(webhookId) as ({ token?: string; channelId?: string } & Record<string, unknown>) | null;
+  if (!webhook || String(webhook.channelId ?? '') !== channelId) {
+    return res.status(401).json({ error: 'Geçersiz webhook veya token' });
+  }
   
   // SECURITY: Use timing-safe comparison to prevent token brute-force attacks
   let isValid = false;
@@ -210,7 +236,7 @@ router.get('/:webhookId', async (req, res) => {
         Buffer.from(webhook.token || ''),
         Buffer.from(providedTokenString)
       );
-    } catch (err) {
+    } catch {
       // timingSafeEqual throws if lengths differ; treat as invalid
       isValid = false;
     }
@@ -220,8 +246,11 @@ router.get('/:webhookId', async (req, res) => {
     return res.status(401).json({ error: 'Geçersiz webhook veya token' });
   }
 
-  if (!webhook) return res.status(401).json({ error: 'Geçersiz webhook veya token' });
   const { token: _t, ...safe } = webhook;
+  // This endpoint is capability-authenticated; keep token-bearing request URLs
+  // and their metadata out of intermediary/browser caches.
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
   res.json(safe);
 });
 

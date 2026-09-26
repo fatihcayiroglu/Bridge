@@ -2,16 +2,28 @@
 // Thread system + Forum kanalı: oluşturma, liste, pin, lock, tags
 import express from 'express';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
+import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery } from '../lib/queryNumbers';
 const router       = express.Router();
 import { Threads, Members, Channels, Users, Messages } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
-import { getMemberPerms, hasPermission, PERMS } from './roles';
+import { hasPermission, PERMS, resolvePermissions } from './roles';
 import { limits } from '../middleware/rateLimit';
 import { processNotifications } from '../lib/notifications';
+import logger from '../lib/logger';
+import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
 
 // ── helpers ────────────────────────────────────────────────────
 async function memberCheck(userId: string, serverId: string) {
   return Members.findOne(userId, serverId);
+}
+
+async function channelPermissions(userId: string, serverId: string, channelId: string): Promise<number> {
+  return resolvePermissions(userId, serverId, channelId).catch(() => 0);
+}
+
+async function canReadThread(userId: string, thread: { serverId: string; channelId: string }): Promise<boolean> {
+  const perms = await channelPermissions(userId, thread.serverId, thread.channelId);
+  return hasPermission(perms, PERMS.VIEW_CHANNELS) && hasPermission(perms, PERMS.READ_HISTORY);
 }
 
 // ── Forum: POST /api/threads — forum kanalında yeni ileti VEYA mesajdan thread
@@ -41,8 +53,25 @@ async function memberCheck(userId: string, serverId: string) {
  */
 router.post('/', authMiddleware, limits.messages(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { parentMessageId, name, channelId, firstMessage } = req.body as Record<string, string>;
-  const rawTags = Array.isArray(req.body?.tags) ? req.body.tags : [];
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+    ? req.body as Record<string, unknown> : {};
+  const parentMessageId = body.parentMessageId;
+  const name = body.name;
+  const channelId = body.channelId;
+  const firstMessage = body.firstMessage;
+  const rawTags = body.tags ?? [];
+  if (parentMessageId !== undefined && (typeof parentMessageId !== 'string' || !parentMessageId.trim() || parentMessageId.length > 128))
+    return res.status(400).json({ error: 'parentMessageId invalid' });
+  if (channelId !== undefined && (typeof channelId !== 'string' || !channelId.trim() || channelId.length > 128))
+    return res.status(400).json({ error: 'channelId invalid' });
+  if (name !== undefined && typeof name !== 'string')
+    return res.status(400).json({ error: 'name invalid' });
+  if (firstMessage !== undefined && (typeof firstMessage !== 'string' || firstMessage.length > 2000))
+    return res.status(400).json({ error: 'firstMessage invalid' });
+  if (rawTags !== undefined && (!Array.isArray(rawTags) || rawTags.some(t => typeof t !== 'string')))
+    return res.status(400).json({ error: 'tags must be a string array' });
+  if (parentMessageId && channelId) return res.status(400).json({ error: 'Choose parentMessageId or channelId, not both' });
+  const tags = rawTags as string[];
 
   // ── Forum channel thread (channelId + name) ───────────────────
   if (channelId && !parentMessageId) {
@@ -54,11 +83,11 @@ router.post('/', authMiddleware, limits.messages(), async (req, res) => {
 
     const member = await memberCheck(_u.id, channel.serverId);
     if (!member) return res.status(403).json({ error: 'Not a member' });
-    if (member.timeoutUntil && member.timeoutUntil > Date.now())
-      return res.status(403).json({ error: 'You are timed out', until: member.timeoutUntil });
+    if (isMemberTimedOut(member.timeoutUntil))
+      return res.status(403).json({ error: 'You are timed out', until: parseMemberTimeoutUntil(member.timeoutUntil) });
 
-    const perms = await getMemberPerms(_u.id, channel.serverId);
-    if (!hasPermission(perms, PERMS.SEND_MESSAGES)) return res.status(403).json({ error: 'No permission' });
+    const perms = await channelPermissions(_u.id, channel.serverId, channelId);
+    if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.SEND_MESSAGES)) return res.status(403).json({ error: 'No permission' });
 
     const user = await Users.findById(_u.id);
     if (!user) return res.status(401).json({ error: 'User not found' });
@@ -70,14 +99,14 @@ router.post('/', authMiddleware, limits.messages(), async (req, res) => {
       parentMessageId:  null,
       name:             name.trim().slice(0, 100),
       firstMessage:     (firstMessage || '').slice(0, 500),
-      tags:             JSON.stringify(rawTags.slice(0, 5).map((t: unknown) => String(t).slice(0, 20))),
+      tags:             JSON.stringify(tags.slice(0, 5).map(t => t.slice(0, 20))),
       createdBy:        _u.id,
       createdAt:        now,
       lastMessageAt:    now,
       messageCount:     firstMessage?.trim() ? 1 : 0,
       participantCount: 1,
-      pinned:           0,
-      locked:           0,
+      pinned:           false,
+      locked:           false,
     });
 
     // ilk mesajı thread içine ekle
@@ -98,7 +127,7 @@ router.post('/', authMiddleware, limits.messages(), async (req, res) => {
     }
 
     const io = req.app.get('io');
-    if (io) io.to(`server:${channel.serverId}`).emit('forum:thread:created', thread);
+    if (io) io.to(`channel:${channelId}`).emit('forum:thread:created', thread);
 
     return res.status(201).json({ thread });
   }
@@ -111,13 +140,15 @@ router.post('/', authMiddleware, limits.messages(), async (req, res) => {
 
   const member = await memberCheck(_u.id, parent.serverId);
   if (!member) return res.status(403).json({ error: 'Not a member' });
-
-  // One thread per message
-  const existing = await Threads.findByParentMessage(parentMessageId);
-  if (existing) return res.status(409).json({ error: 'Thread already exists', thread: existing });
+  const parentPerms = await channelPermissions(_u.id, parent.serverId, parent.channelId);
+  if (!hasPermission(parentPerms, PERMS.VIEW_CHANNELS) ||
+      !hasPermission(parentPerms, PERMS.READ_HISTORY) ||
+      !hasPermission(parentPerms, PERMS.SEND_MESSAGES)) {
+    return res.status(403).json({ error: 'No permission' });
+  }
 
   const threadName = (name?.trim() || parent.content?.slice(0, 50) || 'Thread').slice(0, 100);
-  const thread = await Threads.insert({
+  const result = await Threads.createForParentAtomic({
     channelId:       parent.channelId,
     serverId:        parent.serverId,
     parentMessageId,
@@ -127,11 +158,9 @@ router.post('/', authMiddleware, limits.messages(), async (req, res) => {
     lastMessageAt:   Date.now(),
     messageCount:    0,
   });
+  if (!result.created) return res.status(409).json({ error: 'Thread already exists', thread: result.thread });
 
-  // Tag original message with threadId
-  await Messages.update(parentMessageId, { threadId: thread._id });
-
-  res.json(thread);
+  res.json(result.thread);
 });
 
 // GET /api/threads/:threadId — thread info
@@ -160,6 +189,7 @@ router.get('/:threadId', authMiddleware, async (req, res) => {
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
   const member = await memberCheck(_u.id, thread.serverId);
   if (!member) return res.status(403).json({ error: 'Not a member' });
+  if (!await canReadThread(_u.id, thread)) return res.status(403).json({ error: 'No permission' });
   res.json(thread);
 });
 
@@ -196,9 +226,13 @@ router.get('/:threadId/messages', authMiddleware, async (req, res) => {
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
   const member = await memberCheck(_u.id, thread.serverId);
   if (!member) return res.status(403).json({ error: 'Not a member' });
+  if (!await canReadThread(_u.id, thread)) return res.status(403).json({ error: 'No permission' });
 
-  const limit  = Math.min(parseInt(String(req.query.limit ?? '')) || 50, 100);
-  const before = parseInt(String(req.query.before ?? '')) || Date.now() + 1;
+  const limit  = parseBoundedPositiveIntQuery(req.query.limit, 50, 100);
+  const before = parseNonNegativeSafeIntQuery(req.query.before, Date.now() + 1);
+  if (limit === null || before === null) {
+    return res.status(400).json({ error: 'limit/before must be safe non-negative integers (limit >= 1)' });
+  }
 
   const msgs = await Threads.findMessages(String(req.params.threadId ?? ''), { limit, before });
   res.json(msgs.reverse());
@@ -234,28 +268,34 @@ router.get('/:threadId/messages', authMiddleware, async (req, res) => {
  */
 router.post('/:threadId/messages', authMiddleware, limits.messages(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { content } = req.body as Record<string, string>;
-  if (!content?.trim()) return res.status(400).json({ error: 'content required' });
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+    ? req.body as Record<string, unknown> : {};
+  const content = body.content;
+  const clientNonce = body.clientNonce;
+  if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: 'content required' });
   if (content.length > 2000) return res.status(400).json({ error: 'Message too long' });
+  if (clientNonce !== undefined && (typeof clientNonce !== 'string' || clientNonce.length < 8 || clientNonce.length > 128))
+    return res.status(400).json({ error: 'clientNonce invalid' });
 
   const thread = await Threads.findById(String(req.params.threadId ?? ''));
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
 
   const member = await memberCheck(_u.id, thread.serverId);
   if (!member) return res.status(403).json({ error: 'Not a member' });
+  if (thread.locked) return res.status(423).json({ error: 'Thread is locked' });
 
   // timeout check
-  if (member.timeoutUntil && member.timeoutUntil > Date.now()) {
-    return res.status(403).json({ error: 'You are timed out', until: member.timeoutUntil });
+  if (isMemberTimedOut(member.timeoutUntil)) {
+    return res.status(403).json({ error: 'You are timed out', until: parseMemberTimeoutUntil(member.timeoutUntil) });
   }
 
-  const perms = await getMemberPerms(_u.id, thread.serverId);
-  if (!hasPermission(perms, PERMS.SEND_MESSAGES)) return res.status(403).json({ error: 'No permission' });
+  const perms = await channelPermissions(_u.id, thread.serverId, thread.channelId);
+  if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY) || !hasPermission(perms, PERMS.SEND_MESSAGES)) return res.status(403).json({ error: 'No permission' });
 
   const user = await Users.findById(_u.id);
   if (!user) return res.status(401).json({ error: 'User not found' });
 
-  const msg = await Threads.insertMessage({
+  const inserted = await Threads.insertMessageIdempotent({
     threadId:    thread._id,
     channelId:   thread.channelId,
     serverId:    thread.serverId,
@@ -264,17 +304,27 @@ router.post('/:threadId/messages', authMiddleware, limits.messages(), async (req
     displayName: user.displayName,
     avatarColor: user.avatarColor,
     content:     content.trim(),
+    clientNonce: typeof clientNonce === 'string' ? clientNonce : null,
     type:        'normal',
     reactions:   {},
     createdAt:   Date.now(),
   });
+  const msg = inserted.message;
+
+  // Retry after a lost HTTP response returns the canonical row and MUST NOT
+  // increment counters or emit notifications a second time.
+  if (!inserted.created) return res.status(200).json(msg);
 
   await Threads.recordReply(thread._id, thread.parentMessageId);
 
+  // Persistence is complete; the server is the sole realtime authority.
+  const threadIo = req.app.get('io');
+  if (threadIo) threadIo.to(`thread:${thread._id}`).emit('thread:message:new', { threadId: thread._id, msg });
+
   // Notify thread participants (mention detection + thread reply notification)
   const io          = req.app.get('io');
-  const socketUsers = req.app.get('socketUsers');
-  if (io && socketUsers) {
+  const socketUsers = req.app.get('socketUsers') ?? new Map();
+  if (io) {
     // Collect unique participants: anyone who previously posted in this thread
     const prevMessages = await Threads.listAllMessages(thread._id);
     const participantIds = [...new Set(
@@ -288,24 +338,22 @@ router.post('/:threadId/messages', authMiddleware, limits.messages(), async (req
       participantIds.push(thread.createdBy);
     }
 
-    // Send real-time thread:reply event to each participant's sockets
+    // Send only to participants who can STILL read the parent channel. A
+    // historical post is not a permanent entitlement after permission removal.
     for (const uid of participantIds) {
-      for (const [sid, su] of socketUsers) {
-        if ((su._id || su.id) === uid) {
-          io.to(sid).emit('notification:thread_reply', {
-            type:        'thread_reply',
-            threadId:    thread._id,
-            threadName:  thread.name,
-            channelId:   thread.channelId,
-            serverId:    thread.serverId,
-            messageId:   msg._id,
-            fromUser:    user.displayName,
-            fromUserId:  _u.id,
-            preview:     content.trim().slice(0, 100),
-            createdAt:   msg.createdAt,
-          });
-        }
-      }
+      if (!await canReadThread(uid, thread)) continue;
+      io.to(`user:${uid}`).emit('notification:thread_reply', {
+        type:        'thread_reply',
+        threadId:    thread._id,
+        threadName:  thread.name,
+        channelId:   thread.channelId,
+        serverId:    thread.serverId,
+        messageId:   msg._id,
+        fromUser:    user.displayName,
+        fromUserId:  _u.id,
+        preview:     content.trim().slice(0, 100),
+        createdAt:   msg.createdAt,
+      });
     }
 
     // Standard mention notifications (handles @username in thread messages)
@@ -313,7 +361,11 @@ router.post('/:threadId/messages', authMiddleware, limits.messages(), async (req
       { ...msg, channelId: msg.channelId ?? thread.channelId, serverId: msg.serverId ?? thread.serverId, userId: _u.id, displayName: user.displayName },
       io,
       socketUsers
-    ).catch(() => {});
+    ).catch((err: unknown) => {
+      logger.warn({ event: 'thread_notification_pipeline_failed', threadId: thread._id,
+        messageId: msg._id, err: err instanceof Error ? err.message : String(err) },
+      'Thread message persisted but notification pipeline failed');
+    });
   }
 
   res.json(msg);
@@ -346,6 +398,9 @@ router.get('/channel/:channelId', authMiddleware, async (req, res) => {
   if (!channel) return res.status(404).json({ error: 'Channel not found' });
   const member = await memberCheck(_u.id, channel.serverId);
   if (!member) return res.status(403).json({ error: 'Not a member' });
+  const perms = await channelPermissions(_u.id, channel.serverId, String(req.params.channelId ?? ''));
+  if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY))
+    return res.status(403).json({ error: 'No permission' });
 
   const sort = String(req.query.sort ?? 'latest');
   const tag = typeof req.query.tag === 'string' ? req.query.tag : '';
@@ -354,7 +409,7 @@ router.get('/channel/:channelId', authMiddleware, async (req, res) => {
 
   // filter
   if (tag)    threads = threads.filter(t => { try { return JSON.parse(String(t.tags || '[]')).includes(tag); } catch { return false; } });
-  if (search) threads = threads.filter(t => t.name.toLowerCase().includes(search.toLowerCase()));
+  if (search) threads = threads.filter(t => String(t.name ?? '').toLowerCase().includes(search.toLowerCase()));
 
   // sort
   if (sort === 'top')     threads.sort((a, b) => (b.messageCount || 0) - (a.messageCount || 0));
@@ -363,6 +418,8 @@ router.get('/channel/:channelId', authMiddleware, async (req, res) => {
 
   // pinned first
   threads.sort((a, b) => (b.pinned || 0) - (a.pinned || 0));
+
+  res.setHeader('X-Bridge-Forum-Can-Manage', hasPermission(perms, PERMS.MANAGE_MESSAGES) ? '1' : '0');
 
   // parse tags JSON
   threads = threads.slice(0, 100).map(t => ({
@@ -392,13 +449,14 @@ router.patch('/:threadId/pin', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const thread = await Threads.findById(String(req.params.threadId ?? ''));
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
-  const perms = await getMemberPerms(_u.id, thread.serverId);
-  if (!hasPermission(perms, PERMS.MANAGE_MESSAGES)) return res.status(403).json({ error: 'No permission' });
+  const perms = await channelPermissions(_u.id, thread.serverId, thread.channelId);
+  if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.MANAGE_MESSAGES)) return res.status(403).json({ error: 'No permission' });
 
+  if (typeof req.body?.pinned !== 'boolean') return res.status(400).json({ error: 'pinned must be boolean' });
   const pinned = req.body.pinned ? 1 : 0;
-  await Threads.setPinned(String(req.params.threadId ?? ''), !!req.body.pinned);
+  await Threads.setPinned(String(req.params.threadId ?? ''), req.body.pinned);
   const io = req.app.get('io');
-  if (io) io.to(`server:${thread.serverId}`).emit('forum:thread:updated', { threadId: thread._id, pinned });
+  if (io) io.to(`channel:${thread.channelId}`).emit('forum:thread:updated', { threadId: thread._id, pinned });
   res.json({ ok: true, pinned });
 });
 
@@ -421,13 +479,14 @@ router.patch('/:threadId/lock', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const thread = await Threads.findById(String(req.params.threadId ?? ''));
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
-  const perms = await getMemberPerms(_u.id, thread.serverId);
-  if (!hasPermission(perms, PERMS.MANAGE_MESSAGES)) return res.status(403).json({ error: 'No permission' });
+  const perms = await channelPermissions(_u.id, thread.serverId, thread.channelId);
+  if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.MANAGE_MESSAGES)) return res.status(403).json({ error: 'No permission' });
 
+  if (typeof req.body?.locked !== 'boolean') return res.status(400).json({ error: 'locked must be boolean' });
   const locked = req.body.locked ? 1 : 0;
-  await Threads.setLocked(String(req.params.threadId ?? ''), !!req.body.locked);
+  await Threads.setLocked(String(req.params.threadId ?? ''), req.body.locked);
   const io = req.app.get('io');
-  if (io) io.to(`server:${thread.serverId}`).emit('forum:thread:updated', { threadId: thread._id, locked });
+  if (io) io.to(`channel:${thread.channelId}`).emit('forum:thread:updated', { threadId: thread._id, locked });
   res.json({ ok: true, locked });
 });
 
@@ -462,19 +521,29 @@ router.patch('/:threadId', authMiddleware, async (req, res) => {
   const thread = await Threads.findById(String(req.params.threadId ?? ''));
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
 
-  const perms   = await getMemberPerms(_u.id, thread.serverId);
-  const canEdit = thread.createdBy === _u.id || hasPermission(perms, PERMS.MANAGE_MESSAGES);
+  const perms   = await channelPermissions(_u.id, thread.serverId, thread.channelId);
+  const canEdit = hasPermission(perms, PERMS.VIEW_CHANNELS) &&
+    (thread.createdBy === _u.id || hasPermission(perms, PERMS.MANAGE_MESSAGES));
   if (!canEdit) return res.status(403).json({ error: 'No permission' });
 
   const patch: Record<string, unknown> = {};
-  if (req.body.name != null) patch.name = req.body.name.trim().slice(0, 100);
-  if (req.body.tags != null) {
-    const bodyTags = Array.isArray(req.body.tags) ? req.body.tags : [];
-    patch.tags = JSON.stringify(bodyTags.slice(0, 5).map((t: unknown) => String(t).slice(0, 20)));
+  const patchBody = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+    ? req.body as Record<string, unknown> : {};
+  if (patchBody.name != null) {
+    if (typeof patchBody.name !== 'string' || !patchBody.name.trim())
+      return res.status(400).json({ error: 'name invalid' });
+    patch.name = patchBody.name.trim().slice(0, 100);
+  }
+  if (patchBody.tags != null) {
+    if (!Array.isArray(patchBody.tags) || patchBody.tags.some(t => typeof t !== 'string'))
+      return res.status(400).json({ error: 'tags must be a string array' });
+    patch.tags = JSON.stringify(patchBody.tags.slice(0, 5).map(t => t.slice(0, 20)));
   }
   if (!Object.keys(patch).length) return res.status(400).json({ error: 'Nothing to update' });
 
   await Threads.update(String(req.params.threadId ?? ''), patch);
+  const io = req.app.get('io');
+  if (io) io.to(`channel:${thread.channelId}`).emit('forum:thread:updated', { threadId: thread._id });
   res.json({ ok: true });
 });
 
@@ -499,11 +568,13 @@ router.delete('/:threadId', authMiddleware, async (req, res) => {
   const thread = await Threads.findById(String(req.params.threadId ?? ''));
   if (!thread) return res.status(404).json({ error: 'Thread not found' });
 
-  const perms = await getMemberPerms(_u.id, thread.serverId);
-  if (!hasPermission(perms, PERMS.MANAGE_MESSAGES)) return res.status(403).json({ error: 'No permission' });
+  const perms = await channelPermissions(_u.id, thread.serverId, thread.channelId);
+  if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.MANAGE_MESSAGES)) return res.status(403).json({ error: 'No permission' });
 
   await Threads.deleteThread(String(req.params.threadId ?? ''));
   await Messages.clearThreadFromParent(thread.parentMessageId);
+  const io = req.app.get('io');
+  if (io) io.to(`channel:${thread.channelId}`).emit('forum:thread:deleted', { threadId: thread._id, channelId: thread.channelId });
 
   res.json({ ok: true });
 });

@@ -1,18 +1,30 @@
 // server/tests/client-error.test.ts
+import type { JwtPayload } from '../middleware/auth';
+import { makeJwtUser } from './helpers/userDoubles';
+import type { Request, Response, NextFunction } from 'express';
 process.env.NODE_ENV = 'test';
 
 jest.mock('../middleware/rateLimit', () => ({
-  rateLimit: () => (_req, _res, next) => next(),
+  rateLimit: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: (_req, _res, next) => next(),
-  castAuthed: (req) => req,
+  authMiddleware: (_req: unknown, _res: unknown, next: () => void) => next(),
+  castAuthed: (req: Request) => req,
+}));
+
+jest.mock('../lib/adminAuthority', () => ({
+  databaseAdminOnly: (req: Request, res: Response, next: NextFunction) => req.user?.isAdmin === true
+    ? next()
+    : res.status(403).json({ error: 'Admin only' }),
 }));
 
 // Mock redis adapter used by client-error.js for stats persistence
 jest.mock('../lib/redisAdapter', () => ({
   cache: {
+    // Gercek adaptorde MEVCUT (lib/redisAdapter.ts) — mock'ta eksikti ve
+    // `invalidateChannelMessages` her cagrida sessizce TypeError firlatiyordu.
+    invalidatePattern: jest.fn().mockResolvedValue(undefined),
     get: jest.fn().mockResolvedValue(null),
     set: jest.fn().mockResolvedValue(true),
   },
@@ -21,11 +33,11 @@ jest.mock('../lib/redisAdapter', () => ({
 import request from 'supertest';
 import express from 'express';
 
-function buildApp(userOverride) {
+function buildApp(userOverride?: Partial<JwtPayload> & { id: string }) {
   const app = express();
   app.use(express.json());
   if (userOverride !== undefined) {
-    app.use((req, _res, next) => { req.user = userOverride; next(); });
+    app.use((req: Request, _res: Response, next: NextFunction) => { req.user = makeJwtUser(userOverride.id, userOverride); next(); });
   }
   app.use('/api/client-error', require('../routes/client-error'));
   return app;

@@ -2,12 +2,13 @@
 // Akışlar: görsel yükleme → WebP dönüşümü doğrulama,
 // dosya tipi reddi, boyut limiti, CDN URL formatı.
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { getTokens } from '../helpers/bridge';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 // Test için küçük bir PNG oluştur (1x1 kırmızı piksel — base64)
 // Bu fixture herhangi bir gerçek görsel kaynağı gerektirmez.
@@ -24,7 +25,8 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
 
   test.beforeAll(() => {
     tokens = getTokens();
-    tmpPng = path.join('/tmp', `bridge-e2e-${Date.now()}.png`);
+    // os.tmpdir(): Windows'ta '/tmp' YOKTUR.
+    tmpPng = path.join(os.tmpdir(), `bridge-e2e-${Date.now()}.png`);
     createTestPng(tmpPng);
   });
 
@@ -162,10 +164,9 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
 
   // ── CDN entegrasyonu ──────────────────────────────────────────────────────
 
-  test('CDN_PROVIDER=r2 ise URL CDN domain\'inden dönüyor', async ({ request }) => {
+  test('CDN_PROVIDER=r2 olsa da özel mesaj eki Bridge yetki URL\'sinden döner', async ({ request }) => {
     const cdnProvider = process.env.CDN_PROVIDER ?? 'local';
-    const cdnPublicUrl = process.env.R2_PUBLIC_URL;
-    test.skip(cdnProvider !== 'r2' || !cdnPublicUrl, 'R2 CDN ortamı yapılandırılmamış');
+    test.skip(cdnProvider !== 'r2', 'R2 CDN ortamı yapılandırılmamış');
 
     const pngBuffer = fs.readFileSync(tmpPng);
     const res = await request.post(`${BASE_URL}/api/upload`, {
@@ -176,9 +177,19 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
     });
 
     expect(res.status()).toBe(200);
-    const body = await res.json() as { url?: string };
+    const body = await res.json() as { url?: string; key?: string };
     const url = body.url ?? '';
-    expect(url.startsWith(cdnPublicUrl), `URL CDN domain ile başlamalı: ${url}`).toBeTruthy();
+    expect(url).toMatch(/^\/uploads\/[A-Za-z0-9._-]+$/);
+    expect(url.startsWith('http')).toBeFalsy();
+    expect(body.key).toBeUndefined();
+
+    // Remote byte teslimi de uygulama yetki sınırından geçmelidir.
+    const denied = await request.get(`${BASE_URL}${url}`);
+    expect(denied.status()).toBe(401);
+    const allowed = await request.get(`${BASE_URL}${url}`, {
+      headers: { Authorization: `Bearer ${tokens.alice}` },
+    });
+    expect(allowed.status()).toBe(200);
   });
 
   test('local provider\'da URL /uploads/ ile başlıyor', async ({ request }) => {
@@ -219,7 +230,9 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
       },
     });
 
-    // 200 (chunk alındı) veya 404 (chunked upload desteklenmiyor) bekliyoruz
-    expect([200, 201, 404]).toContain(res.status());
+    // Final21 Faz 22 (19-37): parçalı yükleme uç VAR (ölçüldü 200); ilk parça kabul edilir, yükleme bitmez.
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.done).toBe(false);
   });
 });

@@ -2,7 +2,8 @@ declare namespace Electron {
   interface Event { preventDefault(): void; }
   interface NativeImage { resize(opts: { width?: number; height?: number }): NativeImage; }
   interface MenuItem { checked?: boolean; }
-  interface IpcMainEvent {}
+  interface IpcMainEvent { sender?: { getURL?(): string } | null; senderFrame?: { url?: string | null } | null }
+  interface IpcMainInvokeEvent { sender?: { getURL?(): string } | null; senderFrame?: { url?: string | null } | null }
   interface IpcRendererEvent {}
 }
 
@@ -19,6 +20,7 @@ declare module 'electron' {
     isQuitting?: boolean;
     isPackaged: boolean;
     getVersion(): string;
+    getLocale(): string;
   };
   export class BrowserWindow {
     static getAllWindows(): BrowserWindow[];
@@ -27,6 +29,15 @@ declare module 'electron' {
       executeJavaScript(script: string): Promise<unknown>;
       send(channel: string, ...args: unknown[]): void;
       setWindowOpenHandler(handler: (details: { url: string }) => { action: 'deny' | 'allow' }): void;
+      /**
+       * Bu saplama `on` ILAN ETMIYORDU. `main.ts` ise Electron guvenlik
+       * kontrol listesinin UC maddesini tam olarak bununla kuruyor:
+       * `will-navigate`, `will-frame-navigate` ve `will-attach-webview`.
+       * Sonuc: electron typecheck'i 7 hatayla kirmiziydi ve bu GUVENLIK
+       * kancalarinin tipleri hic dogrulanmiyordu.
+       */
+      on(event: string, listener: (...args: any[]) => void): void;
+      once(event: string, listener: (...args: any[]) => void): void;
       toggleDevTools(): void;
       zoomFactor: number;
       isDestroyed?(): boolean;
@@ -42,14 +53,16 @@ declare module 'electron' {
     isMinimized(): boolean;
     isVisible(): boolean;
   }
-  export const shell: { openExternal(url: string): Promise<void> | void };
+  // Gercek Electron API'si Promise dondurur; birlesim `void` icerdigi icin
+  // `.catch(...)` cagrilamiyordu (main.ts: harici acilma hatasi yutulur).
+  export const shell: { openExternal(url: string): Promise<void> };
   export const Menu: { buildFromTemplate(tpl: Array<Record<string, unknown>>): unknown; setApplicationMenu(menu: unknown): void };
   export class Tray {
     constructor(image: Electron.NativeImage);
     setToolTip(text: string): void;
     setContextMenu(menu: unknown): void;
     on(event: string, listener: (...args: any[]) => void): void;
-    displayBalloon?(opts: { title: string; content: string }): void;
+    displayBalloon(opts: { title: string; content: string }): void;
     destroy(): void;
   }
   export class Notification {
@@ -69,6 +82,8 @@ declare module 'electron' {
   export const contextBridge: { exposeInMainWorld(key: string, api: unknown): void };
   export const ipcRenderer: { send(channel: string, ...args: unknown[]): void; invoke<T = unknown>(channel: string, ...args: unknown[]): Promise<T>; on(channel: string, listener: (...args: any[]) => void): void; removeListener(channel: string, listener: (...args: any[]) => void): void };
   export type IpcRendererEvent = Electron.IpcRendererEvent;
+  export type IpcMainEvent = Electron.IpcMainEvent;
+  export type IpcMainInvokeEvent = Electron.IpcMainInvokeEvent;
 }
 
 declare module 'electron-updater' {

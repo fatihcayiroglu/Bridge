@@ -2,15 +2,15 @@
 // Sprint 110: bots.ts coverage artırımı — webhook edge cases, token rotation, delete, perm checks
 // Hedef: routes/bots.ts satır coverage %70 → %80
 
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 process.env.BOT_TOKEN_SECRET = 'test-bot-secret';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 
 jest.mock('../middleware/rateLimit', () => ({
-  limits: { bots: () => (_req, _res, next) => next() },
+  limits: { bots: () => (_req: unknown, _res: unknown, next: () => void) => next() },
 }));
 
 import request from 'supertest';

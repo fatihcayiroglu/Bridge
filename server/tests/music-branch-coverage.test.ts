@@ -6,6 +6,8 @@
 //   - isValidMusicUrl: http:// (non-https), boş string, geçersiz URL nesnesi
 //   - handleMusicCommand: '!play' streamUrl fetch hatasından sonra safeMsg iletimi
 //   - handleMusicCommand: hata mesajı "Only YouTube" prefix'iyle başlıyorsa doğrudan iletilir
+import { findEmitted, requireEmitted } from './helpers/socketDoubles';
+import type { ServerDouble, SocketDouble, SocketListener } from './helpers/socketDoubles';
 //   - handleMusicCommand: hata mesajı "Could not" prefix'iyle başlıyorsa doğrudan iletilir
 //   - handleMusicCommand: io null benzeri (edge case)
 //   - registerMusicHandlers: validateSocketPayload geçersiz payload → erken çıkış
@@ -53,19 +55,58 @@ function makeIo() {
         },
       };
     },
-  };
+  } satisfies ServerDouble;
 }
 
-function makeSocket(id = 'sock-branch') {
-  const handlers: Record<string, (d: unknown) => void> = {};
+// Ikiz `HandlerSocket` sozlesmesinin TAMAMINI tasir. `emit` ve `to` eksikti;
+// bu iki uye music handler'larinin cagirabilecegi yuzeyin parcasidir ve
+// eksik birakmak testin urun imzasina baglanmasini imkansiz kiliyordu.
+function makeSocket(id: string = 'sock-branch') {
+  const handlers: Record<string, SocketListener> = {};
+  const rooms = new Set<string>();
+  const emitted: Array<{ ev: string; data: unknown; _room?: string }> = [];
   return {
     id,
-    on(event: string, fn: (d: unknown) => void) { handlers[event] = fn; },
-    _trigger(event: string, data: unknown) { if (handlers[event]) handlers[event](data); },
-  };
+    rooms,
+    currentVoiceChannel: undefined as string | undefined,
+    on(event: string, fn: SocketListener) { handlers[event] = fn; },
+    emit(ev: string, data: unknown) { emitted.push({ ev, data }); },
+    join(room: string) { rooms.add(room); },
+    leave(room: string) { rooms.delete(room); },
+    to(room: string) {
+      return { emit(ev: string, data: unknown) { emitted.push({ ev, data, _room: room }); } };
+    },
+    _emitted: emitted,
+    _trigger(event: string, data: unknown) {
+      const fn = handlers[event];
+      return typeof fn === 'function' ? (fn as (payload: unknown) => unknown)(data) : undefined;
+    },
+  } satisfies SocketDouble;
 }
 
-function makeContext(overrides = {}) {
+/**
+ * `music:ended` YALNIZCA o sesli kanalda BULUNAN soketten kabul edilir
+ * (socket/handlers/music.ts:136-137):
+ *
+ *     if (activeVoice !== channelId || !socket.rooms.has(`voice:${channelId}`)) return;
+ *
+ * Bu bir GÜVENLİK koşuludur: aksi hâlde herhangi bir istemci, üyesi olmadığı
+ * bir kanalda çalan parçayı atlatabilirdi. Testlerdeki sahte soketin `rooms`
+ * kümesi ve `currentVoiceChannel` alanı YOKTU, bu yüzden handler sessizce
+ * dönüyordu. Yardımcı ön koşulu AÇIKÇA kurar.
+ */
+function joinVoice(socket: { rooms: Set<string>; currentVoiceChannel?: string }, channelId: string) {
+  socket.currentVoiceChannel = channelId;
+  socket.rooms.add(`voice:${channelId}`);
+  return socket;
+}
+
+
+function makeContext(overrides: Partial<{
+  channelId: string;
+  serverId:  string;
+  user:      { _id: string; displayName?: string };
+}> = {}) {
   return {
     channelId: 'ch-branch',
     serverId:  'sv-branch',
@@ -153,13 +194,8 @@ describe('isValidMusicUrl — ek branch\'ler', () => {
     expect(isValidMusicUrl('https://youtu.be/dQw4w9WgXcQ')).toBe(true);
   });
 
-  it('ftp:// protokolü geçersiz (YouTube bile olsa)', () => {
-    // new URL('ftp://youtube.com') valid URL ama hostname check'i geçebilir
-    // Gerçek davranışı test ediyoruz
-    const result = isValidMusicUrl('ftp://youtube.com/watch?v=abc');
-    // Bu URL parse edilebilir ve hostname 'youtube.com' içerir → true
-    // Implementasyon sadece hostname kontrol ediyor, protokol değil
-    expect(typeof result).toBe('boolean');
+  it('ftp:// protokolü YouTube hostu olsa bile reddedilir', () => {
+    expect(isValidMusicUrl('ftp://youtube.com/watch?v=abc')).toBe(false);
   });
 });
 
@@ -256,7 +292,7 @@ describe('handleMusicCommand — hata mesajı branch\'leri', () => {
 
     const ctx = makeContext();
     await handleMusicCommand({
-      content:   '!play https://vimeo.com/123',
+      content:   '!play https://youtube.com/watch?v=valid',
       ...ctx,
     });
 
@@ -329,22 +365,22 @@ describe('handleMusicCommand — hata mesajı branch\'leri', () => {
 // ════════════════════════════════════════════════════════════════════════════
 
 describe('registerMusicHandlers — validateSocketPayload branch', () => {
-  it('geçersiz payload → handler erken çıkar, emit çağrılmaz', () => {
+  it('geçersiz payload → handler erken çıkar, emit çağrılmaz', async () => {
     (validateSocketPayload as jest.Mock).mockReturnValueOnce({ valid: false, errors: ['channelId required'] });
 
     const socket = makeSocket();
     const io     = makeIo();
     registerMusicHandlers(socket, io, { _id: 'u', displayName: 'U' });
 
-    socket._trigger('music:ended', { /* channelId yok */ });
+    await socket._trigger('music:ended', { /* channelId yok */ });
 
-    const playEvt = io._emitted.find(e => e.ev === 'music:play');
-    const stopEvt = io._emitted.find(e => e.ev === 'music:stop');
+    const playEvt = findEmitted(io._emitted, 'music:play');
+    const stopEvt = findEmitted(io._emitted, 'music:stop');
     expect(playEvt).toBeUndefined();
     expect(stopEvt).toBeUndefined();
   });
 
-  it('geçerli payload → kuyruk boş → music:stop emit edilir', () => {
+  it('geçerli payload → kuyruk boş → music:stop emit edilir', async () => {
     (validateSocketPayload as jest.Mock).mockReturnValueOnce({ valid: true });
 
     const socket = makeSocket();
@@ -355,9 +391,10 @@ describe('registerMusicHandlers — validateSocketPayload branch', () => {
     q.current = { title: 'Son Parça', duration: 200, url: 'u' };
     q.queue   = [];
 
-    socket._trigger('music:ended', { channelId: 'ch-ended-branch' });
+    joinVoice(socket, 'ch-ended-branch');
+    await socket._trigger('music:ended', { channelId: 'ch-ended-branch' });
 
-    const stopEvt = io._emitted.find(e => e.ev === 'music:stop');
+    const stopEvt = requireEmitted(io._emitted, 'music:stop');
     expect(stopEvt).toBeDefined();
     expect(q.current).toBeNull();
   });

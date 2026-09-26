@@ -1,9 +1,8 @@
 // client/js/core/error-boundary-svelte.ts
 // Sprint 116 — ErrorBoundary mount shim (ADR-0008 Faz 3)
 // Hata sınırı yakalayıcı bileşeni
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import ErrorBoundary from './ErrorBoundary.svelte';
-import { BridgeRegistry } from './bridge-registry.ts';
 import { createLogger } from './logger.ts';
 const log = createLogger('ErrorBoundaryShim');
 
@@ -22,7 +21,10 @@ export function mountErrorBoundary(target?: HTMLElement): void {
 }
 
 export function unmountErrorBoundary(): void {
-  if (_instance) { _instance = null; }
+  if (!_instance) return;
+  const mounted = _instance;
+  _instance = null;
+  void unmount(mounted);
 }
 
 if (document.readyState === 'loading') {
@@ -40,12 +42,12 @@ export const errorBoundary = {
         const result = fn(...args);
         if (result && typeof (result as Promise<unknown>).catch === 'function') {
           return (result as Promise<unknown>).catch((err: unknown) => {
-            console.error(`[Bridge:${context}]`, err);
+            log.error(`[${context}]`, err);
           });
         }
         return result;
       } catch (err) {
-        console.error(`[Bridge:${context}]`, err);
+        log.error(`[${context}]`, err);
         return undefined;
       }
     }) as T;

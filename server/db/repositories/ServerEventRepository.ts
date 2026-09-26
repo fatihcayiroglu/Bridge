@@ -12,7 +12,7 @@ import { pool } from '../postgres/pool';
 export interface EventRow {
   id:          string;
   server_id:   string;
-  creator_id:  string;
+  creator_id:  string | null;
   title:       string;
   description: string | null;
   location:    string | null;
@@ -60,6 +60,29 @@ export interface CreateEventInput {
 
 export type EventStatus = 'scheduled' | 'active' | 'ended' | 'cancelled';
 
+function assertSafePage(limit: number, offset: number): void {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new RangeError('event limit must be a safe integer between 1 and 100');
+  }
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new RangeError('event offset must be a non-negative safe integer');
+  }
+}
+
+function assertValidWindow(windowStart: Date, windowEnd: Date, afterId: string | undefined, limit: number): void {
+  if (!(windowStart instanceof Date) || !Number.isFinite(windowStart.getTime())
+      || !(windowEnd instanceof Date) || !Number.isFinite(windowEnd.getTime())) {
+    throw new TypeError('event reminder window must contain valid Date values');
+  }
+  if (windowEnd < windowStart) throw new RangeError('event reminder windowEnd must not precede windowStart');
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
+    throw new RangeError('event reminder limit must be a safe integer between 1 and 1000');
+  }
+  if (afterId !== undefined && (typeof afterId !== 'string' || afterId.trim().length === 0)) {
+    throw new TypeError('event reminder cursor must be a non-empty string');
+  }
+}
+
 // ── Repository ────────────────────────────────────────────────────────────────
 
 class ServerEventRepository {
@@ -75,7 +98,10 @@ class ServerEventRepository {
     filter:   'upcoming' | 'past' | 'all',
     limit:    number,
     offset:   number,
+    visibleChannelIds: string[] = [],
   ): Promise<{ events: EventWithCreatorRow[]; total: number }> {
+    if (!['upcoming', 'past', 'all'].includes(filter)) throw new TypeError('invalid event filter');
+    assertSafePage(limit, offset);
     // Sprint 98: Sabit $1-$7 indeks — whereExtra dinamik parametre kırılganlığı giderildi.
     // Filter durumu null/not-null ile yönetiliyor; PostgreSQL $N::timestamptz IS NULL
     // short-circuit ile verimli çalışır.
@@ -86,18 +112,19 @@ class ServerEventRepository {
     const countRes = await pool.query<{ count: string }>(
       `SELECT COUNT(*) FROM server_events e
         WHERE e.server_id = $1
-          AND e.status    != 'cancelled'
+          AND e.status    != $2
           AND ($3::timestamptz IS NULL OR e.starts_at >= $3)
-          AND ($4::timestamptz IS NULL OR e.starts_at <  $4)`,
-      [serverId, 'cancelled', filterStart, filterEnd],
+          AND ($4::timestamptz IS NULL OR e.starts_at <  $4)
+          AND (e.channel_id IS NULL OR e.channel_id = ANY($5::text[]))`,
+      [serverId, 'cancelled', filterStart, filterEnd, visibleChannelIds],
     );
     const total = parseInt(countRes.rows[0]?.count ?? '0', 10);
 
     const eventsRes = await pool.query<EventWithCreatorRow>(
       `SELECT e.*,
               u.username     AS creator_username,
-              u.display_name AS creator_display_name,
-              u.avatar       AS creator_avatar,
+              u."displayName" AS creator_display_name,
+              u."avatarUrl"   AS creator_avatar,
               (SELECT COUNT(*)
                  FROM server_event_rsvp r
                 WHERE r.event_id = e.id
@@ -106,17 +133,33 @@ class ServerEventRepository {
                  FROM server_event_rsvp r2
                 WHERE r2.event_id = e.id AND r2.user_id = $5) AS my_rsvp
          FROM server_events e
-         LEFT JOIN users u ON u.id = e.creator_id
+         LEFT JOIN users u ON u._id = e.creator_id
         WHERE e.server_id = $1
-          AND e.status    != 'cancelled'
+          AND e.status    != $2
           AND ($3::timestamptz IS NULL OR e.starts_at >= $3)
           AND ($4::timestamptz IS NULL OR e.starts_at <  $4)
+          AND (e.channel_id IS NULL OR e.channel_id = ANY($8::text[]))
         ORDER BY e.starts_at ASC
         LIMIT $6 OFFSET $7`,
-      [serverId, 'cancelled', filterStart, filterEnd, userId, limit, offset],
+      [serverId, 'cancelled', filterStart, filterEnd, userId, limit, offset, visibleChannelIds],
     );
 
     return { events: eventsRes.rows, total };
+  }
+
+  /**
+   * Only channel ids actually referenced by events in this server.  The route
+   * resolves VIEW_CHANNELS for this bounded set before asking PostgreSQL to
+   * paginate/rank events, so private events never enter the result window.
+   */
+  async findReferencedChannelIds(serverId: string): Promise<string[]> {
+    const res = await pool.query<{ channel_id: string }>(
+      `SELECT DISTINCT channel_id
+         FROM server_events
+        WHERE server_id = $1 AND channel_id IS NOT NULL`,
+      [serverId],
+    );
+    return res.rows.map(row => String(row.channel_id)).filter(Boolean);
   }
 
   // ── FIND ONE ───────────────────────────────────────────────────────────────
@@ -128,10 +171,10 @@ class ServerEventRepository {
     const res = await pool.query<EventWithCreatorRow>(
       `SELECT e.*,
               u.username     AS creator_username,
-              u.display_name AS creator_display_name,
-              u.avatar       AS creator_avatar
+              u."displayName" AS creator_display_name,
+              u."avatarUrl"   AS creator_avatar
          FROM server_events e
-         LEFT JOIN users u ON u.id = e.creator_id
+         LEFT JOIN users u ON u._id = e.creator_id
         WHERE e.id = $1 AND e.server_id = $2`,
       [eventId, serverId],
     );
@@ -157,9 +200,9 @@ class ServerEventRepository {
   async findRsvpList(eventId: string): Promise<RsvpDetailRow[]> {
     const res = await pool.query<RsvpDetailRow>(
       `SELECT r.status, r.created_at,
-              u.id AS user_id, u.username, u.display_name, u.avatar
+              u._id AS user_id, u.username, u."displayName" AS display_name, u."avatarUrl" AS avatar
          FROM server_event_rsvp r
-         JOIN users u ON u.id = r.user_id
+         JOIN users u ON u._id = r.user_id
         WHERE r.event_id = $1
         ORDER BY r.created_at ASC
         LIMIT 50`,
@@ -228,7 +271,12 @@ class ServerEventRepository {
         input.startsAt, input.endsAt, input.coverImage,
       ],
     );
-    return res.rows[0];
+    const created = res.rows[0];
+    // `RETURNING *` bir satır vermek ZORUNDADIR; vermiyorsa sürücü/şema
+    // sözleşmesi bozulmuştur ve bunu `undefined` olarak yukarı taşımak
+    // çağıranı sessizce bozardı.
+    if (!created) throw new Error('server_events INSERT returned no row');
+    return created;
   }
 
   /**
@@ -294,6 +342,7 @@ class ServerEventRepository {
     afterId?:    string,
     limit = 100,
   ): Promise<EventRow[]> {
+    assertValidWindow(windowStart, windowEnd, afterId, limit);
     const params: unknown[] = [
       windowStart.toISOString(),
       windowEnd.toISOString(),

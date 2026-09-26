@@ -112,17 +112,33 @@
 // server/routes/channelPerms/bulk.ts
 // Toplu işlemler: bulk-sync, batch PUT, export, import
 import express, { Request, Response, Router } from 'express';
+import { evictSocketsWithoutChannelAccessBestEffort } from '../../lib/liveMembership';
 import { Channels, ChannelPermissions, Roles, Servers, Users } from '../../db/repositories';
 import { resolvePermissions, hasPermission, PERMS, validateBitmask } from '../../lib/permissions';
-import { v4 as uuidv4 } from 'uuid';
 import { authMiddleware} from '../../middleware/auth';
 import { invalidatePerms } from '../../lib/permCache';
-import { permReadLimiter, permWriteLimiter, getIo, emitPermsUpdated, writePermAudit, sendPermLogMessage } from './helpers';
+import { permReadLimiter, permWriteLimiter, getIo, emitPermsUpdated, writePermAudit, sendPermLogMessage, assertChannelInServer, assertRoleInServer } from './helpers';
 
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
-interface ChanRow  { _id: string; name: string; type?: string }
-interface PermRow  { _id: string; channelId: string; roleId: string; allow: number; deny: number; targetType?: string; targetId?: string; targetName?: string }
+interface _ChanRow  { _id: string; name: string; type?: string }
+      // Kanonik semada olmayan sutunlar yazilmaz — bkz. overrides.ts'deki
+      // ayrintili not. `channel_permissions` yalnizca allow/deny tutar;
+      // targetType/targetId/targetName `roleId`den TURETILIR.
+interface _PermRow  { _id: string; channelId: string; roleId: string; allow: number; deny: number; targetType?: string; targetId?: string; targetName?: string }
 interface OvrInput { roleId: string; allow?: number; deny?: number; targetType?: string; targetId?: string; targetName?: string; roleName?: string }
+
+function strictMasks(ovr: OvrInput): { allow: number; deny: number } | null {
+  const allow = ovr.allow ?? 0, deny = ovr.deny ?? 0;
+  if (typeof allow !== 'number' || typeof deny !== 'number' || !Number.isSafeInteger(allow) || !Number.isSafeInteger(deny)) return null;
+  const check = validateBitmask(allow, deny);
+  return check.ok ? { allow, deny } : null;
+}
+function hasDuplicateStrings(values: string[]): boolean { return new Set(values).size !== values.length; }
+function requestBody(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
 
 const router: Router = express.Router({ mergeParams: true });
 
@@ -134,31 +150,37 @@ router.post('/bulk-sync', authMiddleware, permWriteLimiter, async (req: Request,
   const perms = await resolvePermissions(_u.id, sid);
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS))
     return void res.status(403).json({ error: 'Missing permission: MANAGE_CHANNELS' });
+  if (!await assertChannelInServer(cid, sid))
+    return void res.status(404).json({ error: 'Channel not found in this server' });
 
-  const { channelIds = [], overrides = [] } = req.body as { channelIds?: string[]; overrides?: OvrInput[] };
-  if (!Array.isArray(channelIds) || channelIds.length === 0)
-    return void res.status(400).json({ error: 'channelIds boş olamaz' });
-
-  const targetChannels = await Channels.findWhere({ _id: { $in: channelIds }, serverId: sid }) || [];
-  if (targetChannels.length === 0) return void res.status(400).json({ error: 'Geçerli kanal bulunamadı' });
-  const validIds = targetChannels.map(c => c._id).filter((id): id is string => typeof id === 'string' && id !== cid);
-
-  for (const targetCid of validIds) {
-    await ChannelPermissions.remove({ channelId: targetCid });
-    for (const ovr of overrides) {
-      await ChannelPermissions.insert({
-        _id: uuidv4(), channelId: targetCid, roleId: ovr.roleId, serverId: sid,
-        allow: ovr.allow ?? 0, deny: ovr.deny ?? 0,
-        targetType: ovr.targetType ?? null, targetId: ovr.targetId ?? null,
-        targetName: ovr.targetName ?? null, createdAt: Date.now(),
-      });
-    }
+  const { channelIds = [], overrides = [] } = requestBody(req.body) as { channelIds?: string[]; overrides?: OvrInput[] };
+  if (!Array.isArray(channelIds) || channelIds.length === 0 || channelIds.some(id => typeof id !== 'string' || !id.trim()) || hasDuplicateStrings(channelIds))
+    return void res.status(400).json({ error: 'channelIds benzersiz ve boş olmayan string değerler içermeli' });
+  if (!Array.isArray(overrides)) return void res.status(400).json({ error: 'overrides bir dizi olmalı' });
+  const roleIds = overrides.map(o => typeof o?.roleId === 'string' ? o.roleId : '');
+  if (hasDuplicateStrings(roleIds)) return void res.status(400).json({ error: 'Aynı roleId birden fazla override içeremez' });
+  const normalizedOverrides: Array<{ roleId: string; allow: number; deny: number }> = [];
+  for (const ovr of overrides) {
+    if (!ovr?.roleId || !await assertRoleInServer(ovr.roleId, sid))
+      return void res.status(404).json({ error: `Role not found in this server: ${String(ovr?.roleId ?? '')}` });
+    const masks = strictMasks(ovr);
+    if (!masks) return void res.status(400).json({ error: `Geçersiz bitmask (roleId=${ovr.roleId})` });
+    normalizedOverrides.push({ roleId: ovr.roleId, ...masks });
   }
+
+  const requestedTargets = channelIds.filter(id => id !== cid);
+  const targetChannels = requestedTargets.length ? await Channels.findWhere({ _id: { $in: requestedTargets }, serverId: sid }) || [] : [];
+  const foundIds = new Set(targetChannels.map(c => String(c._id)));
+  if (requestedTargets.some(id => !foundIds.has(id))) return void res.status(404).json({ error: 'Target channel not found in this server' });
+  const validIds = requestedTargets;
+  if (validIds.length && !await ChannelPermissions.replaceManyChannelsAtomic(sid, validIds, normalizedOverrides))
+    return void res.status(404).json({ error: 'Target channel not found in this server' });
   for (const targetCid of validIds) {
     await writePermAudit(sid, _u.id, targetCid, '__bulk__', 'PERM_BULK_SYNC',
       null, { sourceChannelId: cid, overrideCount: overrides.length });
   }
   invalidatePerms(sid);
+  await evictSocketsWithoutChannelAccessBestEffort(req.app.get('io'), sid, null);
   const io = getIo(req);
   if (io) for (const targetCid of validIds)
     io.to(`server:${sid}`).emit('permissions:updated', { serverId: sid, channelId: targetCid });
@@ -173,13 +195,26 @@ router.post('/bulk-sync/preview', authMiddleware, permReadLimiter, async (req: R
   const perms = await resolvePermissions(_u.id, sid);
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS))
     return void res.status(403).json({ error: 'Missing permission: MANAGE_CHANNELS' });
+  if (!await assertChannelInServer(cid, sid))
+    return void res.status(404).json({ error: 'Channel not found in this server' });
 
-  const { channelIds = [], overrides = [] } = req.body as { channelIds?: string[]; overrides?: OvrInput[] };
-  if (!Array.isArray(channelIds) || channelIds.length === 0)
-    return void res.status(400).json({ error: 'channelIds boş olamaz' });
+  const { channelIds = [], overrides = [] } = requestBody(req.body) as { channelIds?: string[]; overrides?: OvrInput[] };
+  if (!Array.isArray(channelIds) || channelIds.length === 0 || channelIds.some(id => typeof id !== 'string' || !id.trim()) || hasDuplicateStrings(channelIds))
+    return void res.status(400).json({ error: 'channelIds benzersiz ve boş olmayan string değerler içermeli' });
+  if (!Array.isArray(overrides)) return void res.status(400).json({ error: 'overrides bir dizi olmalı' });
+  const previewRoleIds = overrides.map(o => typeof o?.roleId === 'string' ? o.roleId : '');
+  if (hasDuplicateStrings(previewRoleIds)) return void res.status(400).json({ error: 'Aynı roleId birden fazla override içeremez' });
+  for (const ovr of overrides) {
+    if (!ovr?.roleId || !await assertRoleInServer(ovr.roleId, sid))
+      return void res.status(404).json({ error: `Role not found in this server: ${String(ovr?.roleId ?? '')}` });
+    if (!strictMasks(ovr)) return void res.status(400).json({ error: `Geçersiz bitmask (roleId=${ovr.roleId})` });
+  }
 
-  const targetChannels = await Channels.findWhere({ _id: { $in: channelIds }, serverId: sid }) || [];
-  const validChannels  = targetChannels.filter(c => c._id !== cid);
+  const previewTargets = channelIds.filter(id => id !== cid);
+  const targetChannels = previewTargets.length ? await Channels.findWhere({ _id: { $in: previewTargets }, serverId: sid }) || [] : [];
+  const previewFound = new Set(targetChannels.map(c => String(c._id)));
+  if (previewTargets.some(id => !previewFound.has(id))) return void res.status(404).json({ error: 'Target channel not found in this server' });
+  const validChannels = targetChannels;
   const srcRoleIds     = new Set(overrides.map(o => o.roleId));
 
   const preview = await Promise.all(validChannels.map(async ch => {
@@ -214,39 +249,40 @@ router.put('/batch', authMiddleware, permWriteLimiter, async (req: Request, res:
   const perms = await resolvePermissions(_u.id, sid);
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS))
     return void res.status(403).json({ error: 'Missing permission: MANAGE_CHANNELS' });
+  if (!await assertChannelInServer(cid, sid))
+    return void res.status(404).json({ error: 'Channel not found in this server' });
 
-  const { overrides = [], deletes = [] } = req.body as { overrides?: OvrInput[]; deletes?: string[] };
+  const { overrides = [], deletes = [] } = requestBody(req.body) as { overrides?: OvrInput[]; deletes?: string[] };
+  if (!Array.isArray(overrides) || !Array.isArray(deletes)) return void res.status(400).json({ error: 'overrides ve deletes dizi olmalı' });
+  if (deletes.some(roleId => typeof roleId !== 'string' || !roleId.trim()) || hasDuplicateStrings(deletes))
+    return void res.status(400).json({ error: 'deletes benzersiz roleId stringleri içermeli' });
+  const batchRoleIds = overrides.map(o => typeof o?.roleId === 'string' ? o.roleId : '');
+  if (hasDuplicateStrings(batchRoleIds)) return void res.status(400).json({ error: 'Aynı roleId birden fazla override içeremez' });
+  if (deletes.some(roleId => batchRoleIds.includes(roleId))) return void res.status(400).json({ error: 'Aynı roleId hem güncellenip hem silinemez' });
+  for (const roleId of [...batchRoleIds, ...deletes]) {
+    if (!roleId || !await assertRoleInServer(roleId, sid)) return void res.status(404).json({ error: `Role not found in this server: ${String(roleId ?? '')}` });
+  }
+  const batchWrites: Array<{ roleId: string; allow: number; deny: number }> = [];
   for (const ovr of overrides) {
-    const a = Number(ovr.allow ?? 0), d = Number(ovr.deny ?? 0);
-    if (!Number.isInteger(a) || a < 0 || !Number.isInteger(d) || d < 0)
-      return void res.status(400).json({ error: `Geçersiz bitmask (roleId=${ovr.roleId})` });
-    if ((a & d) !== 0)
-      return void res.status(400).json({ error: `Çakışan bitmask (roleId=${ovr.roleId})` });
-    const check = validateBitmask(a, d);
-    if (!check.ok) return void res.status(400).json({ error: `Geçersiz bitmask (roleId=${ovr.roleId}): ${check.error}` });
+    const masks = strictMasks(ovr);
+    if (!masks) return void res.status(400).json({ error: `Geçersiz bitmask (roleId=${ovr.roleId})` });
+    batchWrites.push({ roleId: ovr.roleId, ...masks });
   }
 
   const auditEntries: { roleId: string; action: string; oldVals: unknown; newVals: unknown; extra: object }[] = [];
 
   for (const ovr of overrides) {
-    const { roleId, allow = 0, deny = 0, targetType, targetId, targetName } = ovr;
-    const check = validateBitmask(Number(allow), Number(deny));
-    if (!check.ok) return void res.status(400).json({ error: `Geçersiz bitmask: roleId=${roleId}: ${check.error}` });
-    const existing = await ChannelPermissions.findOne({ channelId: cid, roleId });
-    auditEntries.push({ roleId, action: 'PERM_UPDATE', oldVals: existing ? { allow: existing.allow, deny: existing.deny } : null,
-      newVals: { allow, deny }, extra: { targetType: targetType || 'role', targetName } });
-    if (existing) {
-      await ChannelPermissions.update({ channelId: cid, roleId }, { $set: { allow, deny, updatedAt: Date.now() } });
-    } else {
-      await ChannelPermissions.insert({ _id: uuidv4(), channelId: cid, roleId, serverId: sid, allow, deny,
-        targetType: targetType ?? null, targetId: targetId ?? null, targetName: targetName ?? null, createdAt: Date.now() });
-    }
+    const masks = strictMasks(ovr)!;
+    const existing = await ChannelPermissions.findOne({ channelId: cid, roleId: ovr.roleId });
+    auditEntries.push({ roleId: ovr.roleId, action: 'PERM_UPDATE', oldVals: existing ? { allow: existing.allow, deny: existing.deny } : null,
+      newVals: masks, extra: { targetType: ovr.targetType || 'role', targetName: ovr.targetName } });
   }
   for (const roleId of deletes) {
     const existing = await ChannelPermissions.findOne({ channelId: cid, roleId });
     auditEntries.push({ roleId, action: 'PERM_DELETE', oldVals: existing ? { allow: existing.allow, deny: existing.deny } : null, newVals: null, extra: {} });
-    await ChannelPermissions.remove({ channelId: cid, roleId });
   }
+  if ((batchWrites.length || deletes.length) && !await ChannelPermissions.applyChannelBatchAtomic(sid, cid, batchWrites, deletes))
+    return void res.status(404).json({ error: 'Channel not found in this server' });
 
   const actorUser = await Users.findById(_u.id);
   const actorName = actorUser?.displayName || actorUser?.username || _u.id;
@@ -262,6 +298,7 @@ router.put('/batch', authMiddleware, permWriteLimiter, async (req: Request, res:
     await sendPermLogMessage(req, sid, cid, 'PERM_UPDATE', actorName, `Toplu kayıt (${parts.join(', ')})`, null, null);
   }
   invalidatePerms(sid, null, cid);
+  await evictSocketsWithoutChannelAccessBestEffort(req.app.get('io'), sid, cid);
   emitPermsUpdated(req, sid, cid);
   res.json({ ok: true, saved: overrides.length, deleted: deletes.length });
 });
@@ -274,6 +311,8 @@ router.get('/export', authMiddleware, permReadLimiter, async (req: Request, res:
   const perms = await resolvePermissions(_u.id, sid);
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS))
     return void res.status(403).json({ error: 'Missing permission: MANAGE_CHANNELS' });
+  if (!await assertChannelInServer(cid, sid))
+    return void res.status(404).json({ error: 'Channel not found in this server' });
 
   const overrides = await ChannelPermissions.findByChannel(cid) || [];
   const roles     = await Roles.findWhere({ serverId: sid }) || [];
@@ -301,24 +340,38 @@ router.post('/import', authMiddleware, permWriteLimiter, async (req: Request, re
   const perms = await resolvePermissions(_u.id, sid);
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS))
     return void res.status(403).json({ error: 'Missing permission: MANAGE_CHANNELS' });
+  if (!await assertChannelInServer(cid, sid))
+    return void res.status(404).json({ error: 'Channel not found in this server' });
 
-  const { overrides, merge = false } = req.body as { overrides?: OvrInput[]; merge?: boolean };
+  const { overrides, merge = false } = requestBody(req.body) as { overrides?: OvrInput[]; merge?: boolean };
+  if (typeof merge !== 'boolean') return void res.status(400).json({ error: 'merge boolean olmalı' });
   if (!Array.isArray(overrides) || overrides.length === 0)
     return void res.status(400).json({ error: 'overrides dizisi boş olamaz' });
 
-  for (const o of overrides) {
-    if (typeof o.allow !== 'number' || typeof o.deny !== 'number')
-      return void res.status(400).json({ error: 'Her override allow ve deny sayısı içermeli' });
-    const check = validateBitmask(Number(o.allow), Number(o.deny));
+  for (const raw of overrides as unknown[]) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+      return void res.status(400).json({ error: 'Her override nesne olmalı' });
+    const o = raw as OvrInput;
+    if (typeof o.roleId !== 'string' || !o.roleId.trim() || o.roleId.length > 128)
+      return void res.status(400).json({ error: 'Her override geçerli roleId içermeli' });
+    if (o.roleName !== undefined && (typeof o.roleName !== 'string' || o.roleName.length > 128))
+      return void res.status(400).json({ error: 'roleName string olmalı' });
+    if (o.targetType !== undefined && o.targetType !== 'role' && o.targetType !== 'user')
+      return void res.status(400).json({ error: 'targetType role veya user olmalı' });
+    if (typeof o.allow !== 'number' || typeof o.deny !== 'number' ||
+        !Number.isSafeInteger(o.allow) || !Number.isSafeInteger(o.deny))
+      return void res.status(400).json({ error: 'Her override allow ve deny güvenli tamsayı içermeli' });
+    const check = validateBitmask(o.allow, o.deny);
     if (!check.ok) return void res.status(400).json({ error: `Import verisi geçersiz bitmask: ${check.error}` });
   }
 
   const serverRoles = await Roles.findWhere({ serverId: sid }) || [];
-  const roleByName  = Object.fromEntries(serverRoles.map(r => [r.name.toLowerCase(), r._id]));
+  const roleByName = Object.fromEntries(serverRoles
+    .filter(r => typeof r?.name === 'string' && typeof r?._id === 'string')
+    .map(r => [String(r.name).toLowerCase(), r._id]));
   const importedOverrides: object[] = [];
   const skippedUserOverrides: object[] = [];
-
-  if (!merge) await ChannelPermissions.remove({ channelId: cid });
+  const skippedRoleOverrides: object[] = [];
 
   for (const o of overrides) {
     if (o.targetType === 'user') {
@@ -329,27 +382,35 @@ router.post('/import', authMiddleware, permWriteLimiter, async (req: Request, re
     if (o.roleId !== '__everyone__' && o.roleName) {
       const byName = roleByName[o.roleName.toLowerCase()];
       if (byName) resolvedRoleId = byName;
-      else if (!serverRoles.find(r => r._id === o.roleId)) continue;
     }
-    const existing = await ChannelPermissions.findOne({ channelId: cid, roleId: resolvedRoleId });
-    if (existing) {
-      await ChannelPermissions.update({ channelId: cid, roleId: resolvedRoleId }, { $set: { allow: o.allow, deny: o.deny, updatedAt: Date.now() } });
-    } else {
-      await ChannelPermissions.insert({ _id: uuidv4(), channelId: cid, roleId: resolvedRoleId, serverId: sid, allow: o.allow, deny: o.deny,
-        targetType: o.targetType ?? 'role', targetId: null, targetName: o.roleName ?? null, createdAt: Date.now() });
+    if (!resolvedRoleId || !await assertRoleInServer(String(resolvedRoleId), sid)) {
+      skippedRoleOverrides.push({ roleId: o.roleId, roleName: o.roleName || o.roleId, targetType: o.targetType || 'role', reason: 'role not found in this server' });
+      continue;
     }
+    if (importedOverrides.some(row => (row as { roleId?: unknown }).roleId === resolvedRoleId))
+      return void res.status(400).json({ error: `Import aynı hedef role birden fazla override eşliyor: ${resolvedRoleId}` });
     importedOverrides.push({ roleId: resolvedRoleId, allow: o.allow, deny: o.deny });
   }
+
+  if (!merge && importedOverrides.length === 0)
+    return void res.status(400).json({ error: 'Import uygulanabilir hiçbir override içermiyor; mevcut izinler korunuyor', skipped: [...skippedUserOverrides, ...skippedRoleOverrides] });
+  const importWrites = importedOverrides as Array<{ roleId: string; allow: number; deny: number }>;
+  const importOk = merge
+    ? await ChannelPermissions.applyChannelBatchAtomic(sid, cid, importWrites, [])
+    : await ChannelPermissions.replaceManyChannelsAtomic(sid, [cid], importWrites);
+  if (!importOk) return void res.status(404).json({ error: 'Channel not found in this server' });
 
   const actorUser = await Users.findById(_u.id);
   const actorName = actorUser?.displayName || actorUser?.username || _u.id;
   await writePermAudit(sid, _u.id, cid, '__import__', 'PERM_UPDATE', null, { importedCount: importedOverrides.length, merge }, { actorName });
   await sendPermLogMessage(req, sid, cid, 'PERM_UPDATE', actorName, `İzin import (${importedOverrides.length} override, ${merge ? 'birleştir' : 'değiştir'})`, null, null);
   invalidatePerms(sid, null, cid);
+  await evictSocketsWithoutChannelAccessBestEffort(req.app.get('io'), sid, cid);
   emitPermsUpdated(req, sid, cid);
+  const skipped = [...skippedUserOverrides, ...skippedRoleOverrides];
   res.json({
     ok: true, imported: importedOverrides.length, merge,
-    ...(skippedUserOverrides.length > 0 && { skipped: skippedUserOverrides, skippedCount: skippedUserOverrides.length }),
+    ...(skipped.length > 0 && { skipped, skippedCount: skipped.length }),
   });
 });
 

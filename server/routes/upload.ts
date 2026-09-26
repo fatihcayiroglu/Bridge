@@ -14,11 +14,28 @@ import type { ErrorRequestHandler } from 'express';
 import { authMiddleware} from '../middleware/auth';
 import { limits } from '../middleware/rateLimit';
 import { scanFile } from '../lib/contentScanner';
-import { db } from '../db/postgres'; // Sprint 93: boost tier upload limit
+import { db } from '../db/postgres';
+import { Boosts } from '../db/repositories'; // live boost entitlement source
 import { sanitizeSvgFile } from '../lib/svgSanitizer';
-import { getStorageAdapter, getProvider } from '../lib/storageAdapter';
+import { getPrivateStorageAdapter, getPrivateStorageProvider, getStorageAdapter, getProvider } from '../lib/storageAdapter';
+import logger from '../lib/logger';
+import { hasLiveUploadReference, normalizeUploadKey, storageDeleteKey } from '../lib/uploadReferenceSafety';
+import { canonicalExtensionForMime, checkMagicBytes } from '../lib/uploadFileSafety';
+import {
+  allChunksPresent,
+  chunkFileName,
+  mergeChunkFiles,
+  chunkSessionKey,
+  commitChunkTempFile,
+  tryAcquireChunkFinalization,
+  validateChunkMetadata,
+  validateFinalUploadSize,
+} from '../lib/chunkUploadSafety';
 
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
+import { uploadRoot, uploadDir } from '../lib/runtimePaths';
+import { envSafeInt } from '../lib/envNumbers';
+import { isDatabaseAdmin } from '../lib/adminAuthority';
 const router = express.Router();
 
 // ── WebP otomatik dönüşüm (sharp, opsiyonel) ─────────────────────────────────
@@ -34,7 +51,7 @@ let _sharp: SharpFn | null = null;
 let _sharpLoaded = false;
 
 const WEBP_CONVERT = process.env.WEBP_CONVERT === 'true';
-const WEBP_QUALITY = parseInt(process.env.WEBP_QUALITY || '82', 10);
+const WEBP_QUALITY = envSafeInt('WEBP_QUALITY', 82, { min: 1, max: 100 });
 const WEBP_RASTER  = new Set(['image/jpeg', 'image/png', 'image/tiff', 'image/bmp']);
 
 async function getSharp(): Promise<SharpFn | null> {
@@ -63,7 +80,12 @@ async function maybeConvertToWebP(
   const sharp = await getSharp();
   if (!sharp) return { filePath, mimetype, converted: false };
   const webpPath = filePath.replace(/\.[^.]+$/, '.webp');
-  await sharp(filePath).webp({ quality: WEBP_QUALITY, effort: 4 }).toFile(webpPath);
+  try {
+    await sharp(filePath).webp({ quality: WEBP_QUALITY, effort: 4 }).toFile(webpPath);
+  } catch (error) {
+    try { if (fs.existsSync(webpPath)) fs.unlinkSync(webpPath); } catch {}
+    throw error;
+  }
   fs.unlink(filePath, () => {});
   return { filePath: webpPath, mimetype: 'image/webp', converted: true };
 }
@@ -71,30 +93,51 @@ async function maybeConvertToWebP(
 // ── Upload sahipliği kaydı ─────────────────────────────────────────────────────
 // Sprint 75: DELETE /cdn artık bu tabloya bakıyor — messages ILIKE araması yok.
 async function recordUpload(userId: string, key: string, originalName: string, mimeType: string): Promise<void> {
+  const { default: loaderDb } = await import('../db/loader');
+  await (loaderDb as unknown as { uploads: { insert(doc: Record<string, unknown>): Promise<unknown> } })
+    .uploads.insert({
+      _id:          uuidv4(),
+      userId,
+      key,
+      originalName: originalName.slice(0, 500),
+      mimeType:     mimeType.slice(0, 100),
+      createdAt:    Date.now(),
+    });
+}
+
+async function recordUploadOrRollback(
+  userId: string,
+  key: string,
+  originalName: string,
+  mimeType: string,
+  adapter: { deleteFile(key: string): Promise<void> },
+  provider: string,
+): Promise<void> {
   try {
-    const { default: db } = await import('../db/loader');
-    await (db as unknown as { uploads: { insert(doc: Record<string, unknown>): Promise<unknown> } })
-      .uploads.insert({
-        _id:          uuidv4(),
-        userId,
-        key,
-        originalName: originalName.slice(0, 500),
-        mimeType:     mimeType.slice(0, 100),
-        createdAt:    Date.now(),
-      });
-  } catch {
-    // kayıt başarısız olsa da upload yanıtı kesilmemeli — sessizce geç
+    await recordUpload(userId, key, originalName, mimeType);
+  } catch (err) {
+    try {
+      await adapter.deleteFile(storageDeleteKey(key, provider));
+    } catch (rollbackErr) {
+      logger.error(
+        { err: rollbackErr, key, provider, event: 'upload.ownership_rollback_failed' },
+        'Upload ownership kaydı başarısız oldu ve storage rollback de başarısız oldu',
+      );
+    }
+    throw err;
   }
 }
 
-const UPLOAD_DIR = path.join(__dirname, '../uploads');
-const CHUNK_DIR  = path.join(__dirname, '../uploads/_chunks');
-[UPLOAD_DIR, CHUNK_DIR].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); });
+const UPLOAD_DIR = uploadRoot();
+const CHUNK_DIR  = uploadDir('_chunks');
+// `uploadDir()` creates `_chunks` recursively, which also guarantees that the
+// upload root exists.  A second existence/mkdir pass here was unreachable and
+// could only diverge from the canonical runtime-path helper.
 
 const diskStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename:    (req, file, cb) => {
-    const ext = path.extname(file.originalname).slice(0, 10).toLowerCase();
+    const ext = canonicalExtensionForMime(file.mimetype) ?? '';
     cb(null, `${uuidv4()}${ext}`);
   },
 });
@@ -117,46 +160,21 @@ const ALLOWED_TYPES = [
   // Bu MIME türleri tarayıcıda doğrudan çalıştırılabilir — XSS vektörü.
   // Kullanıcı kodu paylaşmak istiyorsa text/plain kullanmalı.
 ];
+const ALLOWED_TYPE_SET = new Set(ALLOWED_TYPES);
 
-const MAGIC = [
-  { mime: 'image/jpeg',       bytes: [0xFF, 0xD8, 0xFF], check: null },
-  { mime: 'image/png',        bytes: [0x89, 0x50, 0x4E, 0x47], check: null },
-  { mime: 'image/gif',        bytes: [0x47, 0x49, 0x46], check: null },
-  { mime: 'image/webp',       bytes: null, check: (b: Buffer) => b.slice(8, 12).toString() === 'WEBP' },
-  { mime: 'application/pdf',  bytes: [0x25, 0x50, 0x44, 0x46], check: null },
-  { mime: 'application/zip',  bytes: [0x50, 0x4B, 0x03, 0x04], check: null },
-];
+export { checkMagicBytes };
 
-const SKIP_MAGIC = [
-  // text/ türleri artık yalnızca text/plain, text/markdown, text/csv, text/xml — bunların magic byte'ı yok
-  'text/',
-  'audio/', 'video/', 'application/json', 'application/javascript',
-  'application/xml', 'text/xml', 'application/msword',
-  'application/x-rar-compressed', 'application/x-7z-compressed',
-  'application/x-tar', 'application/gzip',
-  'image/svg+xml', 'image/tiff', 'image/bmp',
-];
-
-export function checkMagicBytes(filePath: string, declaredMime: string): boolean {
-  if (SKIP_MAGIC.some(p => declaredMime.startsWith(p))) return true;
-  const rule = MAGIC.find(m => m.mime === declaredMime);
-  if (!rule) return true;
-  try {
-    const fd  = fs.openSync(filePath, 'r');
-    const buf = Buffer.alloc(12);
-    fs.readSync(fd, buf, 0, 12, 0);
-    fs.closeSync(fd);
-    if (rule.check) return rule.check(buf);
-    return (rule.bytes ?? []).every((byte, i) => buf[i] === byte);
-  } catch { return false; }
-}
-
-const MAX_FILE_SIZE    = parseInt(process.env.MAX_FILE_SIZE_MB || '5120') * 1024 * 1024;
+const MAX_FILE_SIZE = envSafeInt('MAX_FILE_SIZE_MB', 2_048, { min: 1, max: 100_000 }) * 1024 * 1024;
 const CHUNK_SIZE_LIMIT = 10 * 1024 * 1024; // 10 MB per chunk
 
 /** CDN nesne key'i oluştur; local modda null döner */
-function _cdnKey(filename: string): string | null {
-  return getProvider() !== 'local' ? `uploads/${filename}` : null;
+function _privateStorageKey(filename: string): string | null {
+  return getPrivateStorageProvider() !== 'local' ? `uploads/${filename}` : null;
+}
+
+/** Canonical application URL for protected root-level attachments. */
+function protectedUploadUrl(filename: string): string {
+  return `/uploads/${path.basename(filename)}`;
 }
 
 
@@ -165,14 +183,11 @@ const BOOST_LIMITS: Record<number, number> = { 0: 25, 1: 25, 2: 50, 3: 100 };
 
 async function getBoostUploadLimitBytes(userId: string): Promise<number> {
   try {
-    // Kullanıcının üye olduğu en yüksek tier'lı sunucuyu bul
-    const result = await db._pool.query<{ boostTier: number }>(
-      `SELECT COALESCE(MAX(s."boostTier"), 0) AS "boostTier"
-       FROM members m JOIN servers s ON s._id = m."serverId"
-       WHERE m."userId" = $1`,
-      [userId]
-    );
-    const tier = result.rows[0]?.boostTier ?? 0;
+    // SECURITY/CORRECTNESS: cached servers.boostTier is not an entitlement source.
+    // A 30-day boost can expire without any write touching the denormalized cache,
+    // and banned memberships must not keep granting perks. The repository derives
+    // the tier from current, non-expired boosts on non-banned memberships.
+    const tier = await Boosts.getHighestActiveTierForUser(userId);
     const limitMB = BOOST_LIMITS[tier] ?? 25;
     return limitMB * 1024 * 1024;
   } catch {
@@ -224,7 +239,49 @@ const smallUpload = multer({
  *       415: { description: Desteklenmeyen dosya türü }
  *       429: { description: Rate limit aşıldı }
  */
-router.post('/', authMiddleware, limits.upload(), smallUpload.single('file'), async (req, res) => {
+
+/**
+ * ════════════════════════════════════════════════════════════════════════════
+ * COK PARCALI (multipart) AYRISTIRMA HATALARI 400 DONER, 500 DEGIL
+ * ════════════════════════════════════════════════════════════════════════════
+ * `multer`/`busboy` bozuk bir istegi REDDETTIGINDE hata rota koduna hic
+ * ulasmadan global hata isleyicisine dusuyordu ve istemciye 500 donuyordu.
+ *
+ * DOGRUDAN OLCULDU — dosya adinda NULL bayti:
+ *     POST /api/upload  (filename: "a\0.png")
+ *       → 500 Internal server error
+ *       → sunucu gunlugu: "Malformed part header"
+ *
+ * Bu bir GUVENLIK ACIGI DEGILDIR (veri sizmaz, dogrulama atlanmaz) ama
+ * bozuk ISTEMCI girdisi SUNUCU hatasi olarak raporlanmamalidir: gercek
+ * arizalari maskeler ve izleme gurultusu uretir.
+ *
+ * Boyut asimi da burada dogru kodla (413) yanitlanir.
+ */
+function handleUploadErrors(
+  mw: (req: express.Request, res: express.Response, next: (err?: unknown) => void) => void,
+) {
+  return (req: express.Request, res: express.Response, next: (err?: unknown) => void): void => {
+    mw(req, res, (err?: unknown) => {
+      if (!err) return next();
+      const e = err as { code?: string; status?: number; message?: string };
+      if (e?.code === 'LIMIT_FILE_SIZE') {
+        res.status(413).json({ error: 'File too large' });
+        return;
+      }
+      // ── NEDEN HER ZAMAN 400 ────────────────────────────────────────────
+      // `fileFilter` reddettigi turlere `status: 415` isaretler, ancak
+      // SEVK EDILMIS davranis 400'dur: global hata isleyicisi `err.status`
+      // degerini kullanmiyordu ve `tests/upload.test.ts` bunu 400 olarak
+      // BELGELIYOR. Bu duzeltmenin amaci 500 → 400 idi; mevcut 400 → 415
+      // sozlesmesini DEGISTIRMEK degil. Istemciler kirilmasin diye
+      // durum kodu OLDUGU GIBI birakilir.
+      res.status(400).json({ error: e?.message || 'Invalid upload request' });
+    });
+  };
+}
+
+router.post('/', authMiddleware, limits.upload(), handleUploadErrors(smallUpload.single('file')), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const filePath = req.file.path;
 
@@ -253,6 +310,7 @@ router.post('/', authMiddleware, limits.upload(), smallUpload.single('file'), as
       fileSize: req.file.size,
     });
   } catch (scanErr: unknown) {
+    try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch {}
     const e = scanErr as { statusCode?: number; message?: string; code?: string };
     return res.status(e.statusCode || 422).json({ error: e.message, code: e.code });
   }
@@ -278,22 +336,30 @@ router.post('/', authMiddleware, limits.upload(), smallUpload.single('file'), as
     : req.file.filename;
 
   // Depolama (provider-agnostic)
-  const cdnAdapter = getStorageAdapter();
-  const cdnKey     = _cdnKey(finalFilename);
-  const result     = await cdnAdapter.uploadFile(finalPath, cdnKey ?? finalFilename);
+  const cdnAdapter = getPrivateStorageAdapter();
+  const cdnKey     = _privateStorageKey(finalFilename);
+  let result;
+  try {
+    result = await cdnAdapter.uploadFile(finalPath, cdnKey ?? finalFilename, { contentType: finalMime });
+  } catch (error) {
+    try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch {}
+    throw error;
+  }
 
   // Sahiplik kaydı — DELETE /cdn bu tabloya bakacak
   const uploadKey = cdnKey ?? `uploads/${finalFilename}`;
   const authUser  = castAuthed(req).user as { id: string };
-  await recordUpload(authUser.id, uploadKey, safeOriginalName, finalMime);
+  await recordUploadOrRollback(authUser.id, uploadKey, safeOriginalName, finalMime, cdnAdapter, result.provider);
 
   res.json({
-    url:      result.url,
+    // Never expose a remote public-origin URL for a private message attachment.
+    // `/uploads/<id>` is authorized on every byte request and remote providers
+    // are proxied through that same application boundary.
+    url:      protectedUploadUrl(finalFilename),
     fileName: safeOriginalName.replace(/\.[^.]+$/, finalExt),
     fileType: finalMime,
     size:     req.file.size,
-    ...(webpResult.converted              && { webp: true }),
-    ...(result.provider !== 'local'       && { cdn: result.provider, key: result.key }),
+    ...(webpResult.converted && { webp: true }),
   });
 });
 
@@ -321,63 +387,140 @@ router.post('/', authMiddleware, limits.upload(), smallUpload.single('file'), as
  *         description: Chunk alındı — done:true son chunk'ta gelir
  */
 router.post('/chunk', authMiddleware, async (req, res) => {
-  const uploadId    = String(req.headers['x-upload-id']    || '').replace(/[^a-z0-9-]/gi, '').slice(0, 64);
-  const chunkIndex  = parseInt(req.headers['x-chunk-index']  as string || '0');
-  const totalChunks = parseInt(req.headers['x-total-chunks'] as string || '1');
-  const fileName    = String(req.headers['x-file-name']    || 'file').slice(0, 200);
-  const fileType    = String(req.headers['x-file-type']    || 'application/octet-stream').slice(0, 100);
-
-  if (!uploadId || isNaN(chunkIndex) || isNaN(totalChunks)) {
-    return res.status(400).json({ error: 'Missing chunk metadata headers' });
+  const chunkAuthUser = castAuthed(req).user as { id: string };
+  const metadata = validateChunkMetadata(
+    req.headers as Record<string, string | string[] | undefined>,
+    ALLOWED_TYPE_SET,
+    MAX_FILE_SIZE,
+    CHUNK_SIZE_LIMIT,
+  );
+  if (!metadata.ok) {
+    const error = metadata.status === 413
+      ? `File too large (max ${process.env.MAX_FILE_SIZE_MB || 2048}MB)`
+      : metadata.error;
+    return res.status(metadata.status).json({ error });
   }
-  if (!ALLOWED_TYPES.includes(fileType)) {
-    return res.status(415).json({ error: 'File type not allowed' });
-  }
 
-  const sessionDir = path.join(CHUNK_DIR, uploadId);
+  const { uploadId, chunkIndex, totalChunks, fileName, fileType } = metadata.value;
+  const sessionDir = path.join(CHUNK_DIR, chunkSessionKey(chunkAuthUser.id, uploadId));
   fs.mkdirSync(sessionDir, { recursive: true });
 
-  if (totalChunks * CHUNK_SIZE_LIMIT > MAX_FILE_SIZE + CHUNK_SIZE_LIMIT) {
-    return res.status(413).json({ error: `File too large (max ${process.env.MAX_FILE_SIZE_MB || 5120}MB)` });
+  // A reused uploadId must describe the exact same logical file. Without this
+  // invariant one account could accidentally mix chunks from two uploads.
+  const manifestPath = path.join(sessionDir, 'manifest.json');
+  const manifest = JSON.stringify({ uploadId, totalChunks, fileName, fileType });
+  try {
+    fs.writeFileSync(manifestPath, manifest, { flag: 'wx', encoding: 'utf8' });
+  } catch (error) {
+    const e = error as NodeJS.ErrnoException;
+    if (e.code !== 'EEXIST') {
+      fs.rm(sessionDir, { recursive: true, force: true }, () => {});
+      throw error;
+    }
+    try {
+      if (fs.readFileSync(manifestPath, 'utf8') !== manifest) {
+        return res.status(409).json({ error: 'Upload id is already bound to different metadata' });
+      }
+    } catch (readError) {
+      fs.rm(sessionDir, { recursive: true, force: true }, () => {});
+      throw readError;
+    }
   }
 
-  const chunkPath   = path.join(sessionDir, `chunk_${String(chunkIndex).padStart(6, '0')}`);
-  const writeStream = fs.createWriteStream(chunkPath);
+  // Write into a unique temporary path first. Only a complete request body is
+  // atomically committed to the canonical chunk name, so aborts and concurrent
+  // retries cannot leave a partially-overwritten committed chunk.
+  const tempChunkPath = path.join(sessionDir, `${chunkFileName(chunkIndex)}.part_${uuidv4()}`);
+  const writeStream = fs.createWriteStream(tempChunkPath, { flags: 'wx' });
 
   let chunkSize = 0;
+  let rejected = false;
+  let requestAborted = false;
+  const discardTemp = (): void => {
+    try { if (fs.existsSync(tempChunkPath)) fs.unlinkSync(tempChunkPath); } catch {}
+  };
+
+  req.on('aborted', () => {
+    requestAborted = true;
+    writeStream.destroy();
+    discardTemp();
+  });
   req.on('data', (d: Buffer) => {
+    if (rejected || requestAborted) return;
     chunkSize += d.length;
     if (chunkSize > CHUNK_SIZE_LIMIT) {
+      rejected = true;
+      req.unpipe(writeStream);
       writeStream.destroy();
-      fs.unlink(chunkPath, () => {});
-      return res.status(413).json({ error: 'Single chunk too large (max 10MB per chunk)' });
+      discardTemp();
+      req.resume();
+      if (!res.headersSent) res.status(413).json({ error: 'Single chunk too large (max 10MB per chunk)' });
     }
   });
 
   req.pipe(writeStream);
   writeStream.on('error', () => {
-    if (res.headersSent) return;
+    discardTemp();
+    if (rejected || requestAborted || res.headersSent) return;
     res.status(500).json({ error: 'Chunk write failed' });
   });
   writeStream.on('finish', async () => {
-    if (res.headersSent) return;
-    if (chunkIndex !== totalChunks - 1) {
-      return res.json({ done: false, received: chunkIndex });
+    if (rejected || requestAborted || res.headersSent) return;
+
+    let commitResult: 'stored' | 'duplicate' | 'conflict';
+    try {
+      commitResult = commitChunkTempFile(sessionDir, chunkIndex, tempChunkPath);
+    } catch (error) {
+      logger.error({ err: error, uploadId, chunkIndex, event: 'upload.chunk_commit_failed' }, 'Chunk commit failed');
+      return res.status(500).json({ error: 'Chunk commit failed' });
+    }
+    if (commitResult === 'conflict') {
+      return res.status(409).json({ error: 'Chunk retry bytes do not match the committed chunk' });
     }
 
-    const ext       = path.extname(fileName).slice(0, 10).toLowerCase();
+    // Any arrival can be the one that completes the set. This makes the API
+    // genuinely resumable/out-of-order instead of assuming the numerically-last
+    // chunk also arrives last.
+    if (!allChunksPresent(sessionDir, totalChunks)) {
+      return res.json({ done: false, received: chunkIndex, duplicate: commitResult === 'duplicate' });
+    }
+
+    let finalization;
+    try {
+      finalization = tryAcquireChunkFinalization(sessionDir);
+    } catch (error) {
+      logger.error({ err: error, uploadId, event: 'upload.chunk_finalize_lock_failed' }, 'Chunk finalization lock failed');
+      return res.status(500).json({ error: 'Could not acquire upload finalization lock' });
+    }
+    if (!finalization.acquired) {
+      return res.json({ done: false, received: chunkIndex, finalizing: true });
+    }
+
+    const ext       = canonicalExtensionForMime(fileType) ?? '';
     const finalName = `${uuidv4()}${ext}`;
     const finalPath = path.join(UPLOAD_DIR, finalName);
+    let cleanupPath = finalPath;
+    let purgeSession = false;
 
     try {
-      await mergeChunks(sessionDir, totalChunks, finalPath);
+      await mergeChunkFiles(sessionDir, totalChunks, finalPath);
       const { size } = fs.statSync(finalPath);
-
-      if (size > MAX_FILE_SIZE) {
+      const boostLimitBytes = await getBoostUploadLimitBytes(chunkAuthUser.id);
+      const sizePolicy = validateFinalUploadSize(size, MAX_FILE_SIZE, boostLimitBytes);
+      if (!sizePolicy.ok) {
+        purgeSession = true;
         fs.unlink(finalPath, () => {});
-        return res.status(413).json({ error: `File too large (max ${process.env.MAX_FILE_SIZE_MB || 5120}MB)` });
+        const maxMB = Math.round(sizePolicy.maxBytes / 1024 / 1024);
+        if (sizePolicy.code === 'BOOST_LIMIT') {
+          return res.status(413).json({
+            error: `File too large. Your server's boost tier allows max ${maxMB} MB.`,
+            code: 'BOOST_LIMIT',
+          });
+        }
+        return res.status(413).json({ error: `File too large (max ${maxMB}MB)` });
       }
       if (!checkMagicBytes(finalPath, fileType)) {
+        purgeSession = true;
         fs.unlink(finalPath, () => {});
         return res.status(400).json({ error: 'File content does not match its declared type' });
       }
@@ -391,6 +534,8 @@ router.post('/chunk', authMiddleware, async (req, res) => {
           fileSize: size,
         });
       } catch (scanErr: unknown) {
+        purgeSession = true;
+        try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch {}
         const e = scanErr as { statusCode?: number; message?: string; code?: string };
         return res.status(e.statusCode || 422).json({ error: e.message, code: e.code });
       }
@@ -398,67 +543,71 @@ router.post('/chunk', authMiddleware, async (req, res) => {
       if (fileType === 'image/svg+xml') {
         const svgResult = await sanitizeSvgFile(finalPath);
         if (!svgResult.safe) {
+          purgeSession = true;
           fs.unlink(finalPath, () => {});
           return res.status(422).json({ error: 'SVG contains dangerous content', code: 'SVG_UNSAFE' });
         }
       }
 
-      // WebP dönüşüm
       const chunkWebp      = await maybeConvertToWebP(finalPath, fileType);
       const chunkFinalPath = chunkWebp.filePath;
+      cleanupPath = chunkFinalPath;
       const chunkFinalMime = chunkWebp.mimetype;
       const chunkFinalName = chunkWebp.converted ? finalName.replace(/\.[^.]+$/, '.webp') : finalName;
       const safeFileName   = path.basename(fileName).replace(/[^\w.-]/g, '_').slice(0, 200);
 
-      // Depolama (provider-agnostic)
-      const cdnAdapter = getStorageAdapter();
-      const cdnKey = _cdnKey(chunkFinalName);
-      const result = await cdnAdapter.uploadFile(chunkFinalPath, cdnKey ?? chunkFinalName);
+      const cdnAdapter = getPrivateStorageAdapter();
+      const cdnKey = _privateStorageKey(chunkFinalName);
+      let result;
+      try {
+        result = await cdnAdapter.uploadFile(chunkFinalPath, cdnKey ?? chunkFinalName, { contentType: chunkFinalMime });
+      } catch (error) {
+        try { if (fs.existsSync(chunkFinalPath)) fs.unlinkSync(chunkFinalPath); } catch {}
+        throw error;
+      }
 
-      // Sahiplik kaydı
-      const chunkAuthUser = castAuthed(req).user as { id: string };
-      await recordUpload(chunkAuthUser.id, cdnKey ?? `uploads/${chunkFinalName}`, safeFileName, chunkFinalMime);
+      await recordUploadOrRollback(chunkAuthUser.id, cdnKey ?? `uploads/${chunkFinalName}`, safeFileName, chunkFinalMime, cdnAdapter, result.provider);
+      purgeSession = true;
 
       res.json({
         done:     true,
-        url:      result.url,
+        url:      protectedUploadUrl(chunkFinalName),
         fileName: safeFileName.replace(/\.[^.]+$/, chunkWebp.converted ? '.webp' : ext),
         fileType: chunkFinalMime,
         size,
-        ...(result.provider !== 'local' && { cdn: result.provider, key: result.key }),
       });
     } catch (e: unknown) {
+      // Storage/network/DB transient failures keep the committed chunks so the
+      // client can retry a chunk and re-enter finalization without re-uploading
+      // the whole file. Terminal validation failures above explicitly purge.
+      try { if (fs.existsSync(cleanupPath)) fs.unlinkSync(cleanupPath); } catch {}
+      try { if (cleanupPath !== finalPath && fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch {}
       const err = e as Error;
-      res.status(500).json({ error: 'Merge failed: ' + err.message });
+      if (!res.headersSent) res.status(500).json({ error: 'Finalization failed: ' + err.message });
     } finally {
-      fs.rm(sessionDir, { recursive: true, force: true }, () => {});
+      try { finalization.release(); } catch (error) {
+        logger.warn({ err: error, uploadId, event: 'upload.chunk_finalize_unlock_failed' }, 'Chunk finalization lock cleanup failed');
+      }
+      if (purgeSession) fs.rm(sessionDir, { recursive: true, force: true }, () => {});
     }
   });
 });
 
-async function mergeChunks(sessionDir: string, totalChunks: number, finalPath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const out = fs.createWriteStream(finalPath);
-    let idx = 0;
-    function writeNext() {
-      if (idx === totalChunks) { out.end(); return; }
-      const chunkPath = path.join(sessionDir, `chunk_${String(idx).padStart(6, '0')}`);
-      const inp = fs.createReadStream(chunkPath);
-      inp.pipe(out, { end: false });
-      inp.on('error', reject);
-      inp.on('end', () => { idx++; writeNext(); });
-    }
-    out.on('error', reject);
-    out.on('finish', resolve);
-    writeNext();
-  });
-}
 
 // ── SERVER GIF UPLOAD ─────────────────────────────────────────────────────────
+const SERVER_GIF_DIR = path.join(UPLOAD_DIR, 'server-gifs');
+if (!fs.existsSync(SERVER_GIF_DIR)) fs.mkdirSync(SERVER_GIF_DIR, { recursive: true });
+const serverGifStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, SERVER_GIF_DIR),
+  filename: (_req, file, cb) => {
+    const ext = canonicalExtensionForMime(file.mimetype) ?? '';
+    cb(null, `gif_${uuidv4()}${ext}`);
+  },
+});
 const gifUpload = multer({
-  storage: diskStorage,
+  storage: serverGifStorage,
   limits: { fileSize: 100 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
+  fileFilter: (_req, file, cb) => {
     const allowed = ['image/gif', 'image/webp', 'image/png', 'image/jpeg'];
     if (allowed.includes(file.mimetype)) cb(null, true);
     else cb(Object.assign(new Error('Only image files allowed for GIFs'), { status: 415 }));
@@ -472,17 +621,45 @@ const gifUpload = multer({
  *     tags: [Upload]
  *     summary: Sunucu GIF emoji yükle
  */
-router.post('/server-gif', authMiddleware, gifUpload.single('gif'), async (req, res) => {
+router.post('/server-gif', authMiddleware, limits.upload(), handleUploadErrors(gifUpload.single('gif')), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const gifAuthUser = castAuthed(req).user as { id: string };
+  const limitBytes = await getBoostUploadLimitBytes(gifAuthUser.id);
+  if (req.file.size > limitBytes) {
+    fs.unlink(req.file.path, () => {});
+    const limitMB = Math.round(limitBytes / 1024 / 1024);
+    return res.status(413).json({
+      error: `File too large. Your server's boost tier allows max ${limitMB} MB.`,
+      code: 'BOOST_LIMIT',
+    });
+  }
   if (!checkMagicBytes(req.file.path, req.file.mimetype)) {
     fs.unlink(req.file.path, () => {});
     return res.status(400).json({ error: 'File content mismatch' });
   }
+  try {
+    await scanFile(req.file.path, {
+      userId: req.user?.id,
+      username: req.user?.username,
+      filename: req.file.originalname,
+      mimetype: req.file.mimetype,
+      fileSize: req.file.size,
+    });
+  } catch (scanErr: unknown) {
+    try { if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch {}
+    const e = scanErr as { statusCode?: number; message?: string; code?: string };
+    return res.status(e.statusCode || 422).json({ error: e.message, code: e.code });
+  }
   const store  = getStorageAdapter();
-  const cdnKey = _cdnKey(req.file.filename);
-  const result = await store.uploadFile(req.file.path, cdnKey ?? req.file.filename);
-  const gifAuthUser = castAuthed(req).user as { id: string };
-  await recordUpload(gifAuthUser.id, cdnKey ?? `uploads/${req.file.filename}`, req.file.originalname, req.file.mimetype);
+  const cdnKey = getProvider() !== 'local' ? `uploads/server-gifs/${req.file.filename}` : null;
+  let result;
+  try {
+    result = await store.uploadFile(req.file.path, cdnKey ?? req.file.filename, { contentType: req.file.mimetype });
+  } catch (error) {
+    try { if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch {}
+    throw error;
+  }
+  await recordUploadOrRollback(gifAuthUser.id, cdnKey ?? `uploads/server-gifs/${req.file.filename}`, req.file.originalname, req.file.mimetype, store, result.provider);
   res.json({
     url:      result.url,
     fileType: req.file.mimetype,
@@ -502,18 +679,18 @@ router.post('/server-gif', authMiddleware, gifUpload.single('gif'), async (req, 
  *       kullanıcılar silebilir. Admin kullanıcılar her zaman silebilir.
  */
 router.delete('/cdn', authMiddleware, async (req, res) => {
-  const key = String(req.query.key ?? '').replace(/\.\./g, '').slice(0, 512);
-  if (!key || !key.startsWith('uploads/')) {
+  const key = normalizeUploadKey(req.query.key);
+  if (!key) {
     return res.status(400).json({ error: 'Geçersiz CDN key' });
   }
 
-  const authedUser = castAuthed(req).user as { id: string; isAdmin?: boolean };
+  const authedUser = castAuthed(req).user as { id: string };
   const userId = authedUser.id;
   if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
   // ── Sahiplik Kontrolü ─────────────────────────────────────────────────────
   // Admin kullanıcılar doğrudan silebilir.
-  const isAdmin = authedUser.isAdmin === true;
+  const isAdmin = await isDatabaseAdmin(userId);
 
   if (!isAdmin) {
     // Sprint 75: uploads tablosundan doğrudan key+userId kontrolü.
@@ -528,8 +705,33 @@ router.delete('/cdn', authMiddleware, async (req, res) => {
     }
   }
 
-  const cdnAdapter = getStorageAdapter();
-  await cdnAdapter.deleteFile(key);
+  // Ownership is necessary but not sufficient: a file can be referenced by
+  // messages/GDM/DM/GIF/emoji/soundboard/voice rows after upload. Physical
+  // deletion must fail closed while any canonical live reference remains.
+  if (await hasLiveUploadReference(db._pool, key)) {
+    return res.status(409).json({ error: 'Dosya hâlâ kullanımda', code: 'UPLOAD_IN_USE' });
+  }
+
+  // Root-level `uploads/<file>` objects are protected attachments and live in
+  // the independent private storage boundary. Public subdirectory assets keep
+  // using the public CDN adapter.
+  const protectedObject = /^uploads\/[^/]+$/.test(key);
+  const provider = protectedObject ? getPrivateStorageProvider() : getProvider();
+  const cdnAdapter = protectedObject ? getPrivateStorageAdapter() : getStorageAdapter();
+  await cdnAdapter.deleteFile(storageDeleteKey(key, provider));
+
+  // The object is gone; retire its ownership metadata too. Do this after the
+  // physical delete so a transient storage failure does not make a retry lose
+  // authorization. Metadata cleanup failure is non-destructive and observable.
+  try {
+    const { default: loaderDb } = await import('../db/loader');
+    const uploads = (loaderDb as unknown as { uploads?: { remove?: (q: Record<string, unknown>) => Promise<unknown>; delete?: (q: Record<string, unknown>) => Promise<unknown> } }).uploads;
+    if (uploads?.remove) await uploads.remove({ key });
+    else if (uploads?.delete) await uploads.delete({ key });
+  } catch (error) {
+    logger.warn({ err: error, key, event: 'upload.ownership_delete_failed' },
+      'Physical upload deleted but ownership metadata cleanup failed');
+  }
   res.json({ deleted: true, key });
 });
 

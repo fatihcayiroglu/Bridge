@@ -9,8 +9,8 @@
  * tüm dış bağımlılıklar mock'lanır.
  */
 
-process.env.JWT_SECRET      = 'test-jwt-secret';
-process.env.REFRESH_SECRET  = 'test-refresh-secret';
+process.env.JWT_SECRET      = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET  = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV        = 'test';
 process.env.ALLOWED_ORIGINS = 'http://localhost:3000';
 
@@ -74,8 +74,9 @@ jest.mock('../socket/handlers/mediasoup', () => ({
   initMediasoup: async () => false,
 }));
 jest.mock('../plugins/loader', () => ({
-  loadPlugins:            async () => undefined,
+  loadPlugins:             async () => undefined,
   registerPluginListRoute: () => undefined,
+  bindPluginSocketEvents:  () => undefined,
 }));
 
 // Route mock'ları — gerçek rotalar DB/auth'a bağlı, bu testlerde stub
@@ -181,6 +182,13 @@ describe('createApp() entegrasyon', () => {
   });
 
   describe('Middleware zinciri', () => {
+    it('serves the SPA shell at the external SSO callback navigation target', async () => {
+      const res = await request(app).get('/sso-callback');
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/^text\/html/);
+      expect(res.headers['cache-control']).toContain('no-store');
+    });
+
     it('JSON body parse eder', async () => {
       const res = await request(app)
         .post('/__test_json')

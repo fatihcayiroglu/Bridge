@@ -5,6 +5,8 @@
 //   workers.ts  — initMediasoup, getNextWorker (guard + round-robin), isSFUReady
 //   rooms.ts    — getOrCreateRoom, getRoomPeerList, cleanupPeer, createWebRtcTransport
 //   types.ts    — WorkerOptions, WebRtcTransportConfig, RtpCapabilities şema doğrulaması
+import { present } from './helpers/narrow';
+import { findEmitted, requireEmitted } from './helpers/socketDoubles';
 
 'use strict';
 process.env.NODE_ENV = 'test';
@@ -45,10 +47,16 @@ function makeTransportStub() {
 }
 
 function makeRouterStub() {
+  let workerCloseCallback: (() => void) | null = null;
   return {
     rtpCapabilities:      { codecs: [], headerExtensions: [] },
     canConsume:           jest.fn(() => true),
     createWebRtcTransport: jest.fn(async () => makeTransportStub()),
+    close:                jest.fn(),
+    on:                   jest.fn((event: string, cb: () => void) => {
+      if (event === 'workerclose') workerCloseCallback = cb;
+    }),
+    _emitWorkerClose:     () => workerCloseCallback?.(),
   };
 }
 
@@ -67,6 +75,7 @@ import {
   initMediasoup,
   getNextWorker,
   getNextWorkerWithIndex,
+  getMediasoup,
   incrementWorkerLoad,
   decrementWorkerLoad,
   getWorkerLoad,
@@ -158,6 +167,64 @@ describe('workers — isSFUReady', () => {
   it('initMediasoup sonrası true döner', async () => {
     await initMediasoup(mediasoupModule, { codecs: [] });
     expect(isSFUReady()).toBe(true);
+    expect(getMediasoup()).toBe(mediasoupModule);
+  });
+});
+
+describe('workers — initialization safety', () => {
+  const scalingKeys = [
+    'SFU_SCALE_UP_ROUTERS',
+    'SFU_SCALE_DOWN_ROUTERS',
+    'SFU_MIN_WORKERS',
+    'SFU_MAX_WORKERS',
+  ] as const;
+  const previousValues = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const key of scalingKeys) previousValues.set(key, process.env[key]);
+  });
+
+  afterEach(() => {
+    for (const key of scalingKeys) {
+      const value = previousValues.get(key);
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    previousValues.clear();
+  });
+
+  it('rejects minWorkers > maxWorkers before allocating a worker', async () => {
+    process.env.SFU_MIN_WORKERS = '3';
+    process.env.SFU_MAX_WORKERS = '2';
+
+    await expect(initMediasoup(mediasoupModule, { codecs: [] }, 1)).resolves.toBe(false);
+
+    expect(mediasoupStub.createWorker).not.toHaveBeenCalled();
+    expect(sfuWorkers).toHaveLength(0);
+    expect(isSFUReady()).toBe(false);
+  });
+
+  it('rejects overlapping scale thresholds before allocating a worker', async () => {
+    process.env.SFU_SCALE_UP_ROUTERS = '5';
+    process.env.SFU_SCALE_DOWN_ROUTERS = '5';
+
+    await expect(initMediasoup(mediasoupModule, { codecs: [] }, 1)).resolves.toBe(false);
+
+    expect(mediasoupStub.createWorker).not.toHaveBeenCalled();
+    expect(sfuWorkers).toHaveLength(0);
+    expect(isSFUReady()).toBe(false);
+  });
+
+  it('uses development log verbosity when creating a worker', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'development';
+    try {
+      await expect(initMediasoup(mediasoupModule, { codecs: [] }, 1)).resolves.toBe(true);
+      expect(mediasoupStub.createWorker).toHaveBeenCalledWith(
+        expect.objectContaining({ logLevel: 'warn' }),
+      );
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
   });
 });
 
@@ -174,19 +241,76 @@ describe('workers — getNextWorker', () => {
   });
 
   it('birden fazla worker arasında round-robin yapar', async () => {
+    // KIMLIK karsilastirilir, uydurma bir `_id` alani DEGIL.
+    // `_id` yalnizca ikizde vardi; urun `MediasoupWorker` tipinde boyle bir
+    // uye yok. Nesne kimligi hem daha guclu bir iddiadir hem de urun tipini
+    // zorlamaz.
+    const workerA = makeWorkerStub('w1');
+    const workerB = makeWorkerStub('w2');
     mediasoupStub.createWorker
-      .mockImplementationOnce(async () => makeWorkerStub('w1'))
-      .mockImplementationOnce(async () => makeWorkerStub('w2'));
+      .mockImplementationOnce(async () => workerA)
+      .mockImplementationOnce(async () => workerB);
 
     await initMediasoup(mediasoupModule, { codecs: [] }, 2);
 
-    const first  = getNextWorker();
-    const second = getNextWorker();
-    const third  = getNextWorker();
+    expect(getNextWorker()).toBe(workerA);
+    expect(getNextWorker()).toBe(workerB);
+    expect(getNextWorker()).toBe(workerA);   // wrap-around
+  });
+});
 
-    expect(first._id).toBe('w1');
-    expect(second._id).toBe('w2');
-    expect(third._id).toBe('w1');   // wrap-around
+describe('workers — crash routing safety', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('routes around a restarting worker until its replacement is ready', async () => {
+    const failedWorker = makeWorkerStub('failed');
+    const healthyWorker = makeWorkerStub('healthy');
+    let finishRestart!: (worker: ReturnType<typeof makeWorkerStub>) => void;
+    mediasoupStub.createWorker
+      .mockResolvedValueOnce(failedWorker)
+      .mockResolvedValueOnce(healthyWorker)
+      .mockImplementationOnce(() => new Promise(resolve => { finishRestart = resolve; }));
+
+    await initMediasoup(mediasoupModule, { codecs: [] }, 2);
+    const diedListener = failedWorker.on.mock.calls.find(([event]) => event === 'died')?.[1] as
+      ((error: Error) => void) | undefined;
+    expect(diedListener).toBeDefined();
+
+    diedListener!(new Error('worker crashed'));
+    await jest.advanceTimersByTimeAsync(2_000);
+
+    expect(getNextWorkerWithIndex()).toEqual({ worker: healthyWorker, index: 1 });
+    expect(isSFUReady()).toBe(true);
+
+    const replacement = makeWorkerStub('replacement');
+    finishRestart(replacement);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sfuWorkers[0]).toBe(replacement);
+  });
+
+  it('fails closed while the only worker is being replaced', async () => {
+    const failedWorker = makeWorkerStub('only-worker');
+    let finishRestart!: (worker: ReturnType<typeof makeWorkerStub>) => void;
+    mediasoupStub.createWorker
+      .mockResolvedValueOnce(failedWorker)
+      .mockImplementationOnce(() => new Promise(resolve => { finishRestart = resolve; }));
+
+    await initMediasoup(mediasoupModule, { codecs: [] }, 1);
+    const diedListener = failedWorker.on.mock.calls.find(([event]) => event === 'died')?.[1] as
+      ((error: Error) => void) | undefined;
+    expect(diedListener).toBeDefined();
+
+    diedListener!(new Error('worker crashed'));
+    await jest.advanceTimersByTimeAsync(2_000);
+
+    expect(isSFUReady()).toBe(false);
+    expect(() => getNextWorkerWithIndex()).toThrow('Tüm worker\'lar yeniden başlatılıyor');
+
+    finishRestart(makeWorkerStub('replacement'));
+    await Promise.resolve();
+    await Promise.resolve();
   });
 });
 
@@ -225,6 +349,9 @@ describe('workers — WebRtcTransportConfig tip doğrulaması', () => {
       enableUdp: true,
       enableTcp: true,
       preferUdp: true,
+      // ZORUNLU alan — eksikti; bu test "gecerli config derlenir" diyor, o
+      // yuzden gercekten GECERLI olmasi gerekiyordu.
+      initialAvailableOutgoingBitrate: 1_000_000,
       maxIncomingBitrate: 1_500_000,
     };
     expect(cfg.enableUdp).toBe(true);
@@ -304,6 +431,26 @@ describe('rooms — createWebRtcTransport', () => {
   });
 });
 
+describe('rooms — worker lifecycle cleanup', () => {
+  it('workerclose removes every peer from the global SFU index before releasing the room', async () => {
+    await initMediasoup(mediasoupModule, { codecs: [] }, 1);
+    const room = await getOrCreateRoom('ch-workerclose');
+    const peerA = makePeer({ channelId: 'ch-workerclose', userId: 'u-a' });
+    const peerB = makePeer({ channelId: 'ch-workerclose', userId: 'u-b' });
+    room.peers.set('socket-a', peerA);
+    room.peers.set('socket-b', peerB);
+    sfuPeers.set('socket-a', peerA);
+    sfuPeers.set('socket-b', peerB);
+
+    (room.router as unknown as { _emitWorkerClose(): void })._emitWorkerClose();
+
+    expect(sfuRooms.has('ch-workerclose')).toBe(false);
+    expect(room.peers.size).toBe(0);
+    expect(sfuPeers.has('socket-a')).toBe(false);
+    expect(sfuPeers.has('socket-b')).toBe(false);
+  });
+});
+
 describe('rooms — cleanupPeer', () => {
   it('ayrılan peer\'i maps\'ten siler', async () => {
     await initMediasoup(mediasoupModule, { codecs: [] }, 1);
@@ -336,7 +483,7 @@ describe('rooms — cleanupPeer', () => {
     const io = makeIo();
     await cleanupPeer('socket-out', io, 'ch-left', null);
 
-    const leftEvent = io._emitted.find(e => e.event === 'sfu:peer-left');
+    const leftEvent = requireEmitted(io._emitted, 'sfu:peer-left');
     expect(leftEvent).toBeDefined();
   });
 });
@@ -349,14 +496,17 @@ describe('tip güvenliği — RtpCapabilities', () => {
   it('codecs ve headerExtensions içeren geçerli RtpCapabilities', () => {
     const caps: RtpCapabilities = {
       codecs: [{
+        // `kind` ZORUNLU; `payloadType` ise `RtpCodecCapability` uzerinde YOK
+        // (o, `RtpCodecParameters`in alanidir). Test urun tipini olcecekse
+        // urunun GERCEK seklini kullanmak zorundadir.
+        kind:        'audio',
         mimeType:    'audio/opus',
         clockRate:   48000,
         channels:    2,
-        payloadType: 111,
       }],
       headerExtensions: [],
     };
-    expect(caps.codecs[0].mimeType).toBe('audio/opus');
+    expect(present(caps.codecs, 'codecs')[0].mimeType).toBe('audio/opus');
   });
 });
 
@@ -590,6 +740,7 @@ describe('workers — _checkScaling (scale-up / scale-down davranışı)', () =>
       .mockImplementationOnce(async () => makeWorkerStub('w1')); // scale-up için
 
     process.env.SFU_SCALE_UP_ROUTERS = '5';
+    process.env.SFU_SCALE_DOWN_ROUTERS = '0';
     process.env.SFU_MAX_WORKERS      = '3';
     process.env.SFU_MIN_WORKERS      = '1';
     process.env.SFU_SCALE_CHECK_MS   = '30000';
@@ -599,13 +750,12 @@ describe('workers — _checkScaling (scale-up / scale-down davranışı)', () =>
     // 1 worker'a 6 router yükü: avgLoad = 6 >= threshold 5
     for (let i = 0; i < 6; i++) incrementWorkerLoad(0);
 
-    jest.advanceTimersByTime(30_000);
-    await Promise.resolve();
-    await Promise.resolve(); // birden fazla microtask sırası için
+    await jest.advanceTimersByTimeAsync(30_000);
 
     expect(sfuWorkers.length).toBe(2); // scale-up: 1 → 2
 
     delete process.env.SFU_SCALE_UP_ROUTERS;
+    delete process.env.SFU_SCALE_DOWN_ROUTERS;
     delete process.env.SFU_MAX_WORKERS;
     delete process.env.SFU_MIN_WORKERS;
     delete process.env.SFU_SCALE_CHECK_MS;
@@ -624,9 +774,7 @@ describe('workers — _checkScaling (scale-up / scale-down davranışı)', () =>
     await initMediasoup(mediasoupModule, { codecs: [] }, 2);
     // Her iki worker da yüksüz (0 router) → avgLoad = 0 ≤ threshold 5, count(2) > min(1)
 
-    jest.advanceTimersByTime(30_000);
-    await Promise.resolve();
-    await Promise.resolve();
+    await jest.advanceTimersByTimeAsync(30_000);
 
     expect(sfuWorkers.length).toBe(1); // scale-down: 2 → 1
 
@@ -638,6 +786,7 @@ describe('workers — _checkScaling (scale-up / scale-down davranışı)', () =>
 
   it('MAX worker sayısına ulaşıldığında scale-up yapılmaz', async () => {
     process.env.SFU_SCALE_UP_ROUTERS = '1';
+    process.env.SFU_SCALE_DOWN_ROUTERS = '0';
     process.env.SFU_MAX_WORKERS      = '1'; // zaten max
     process.env.SFU_SCALE_CHECK_MS   = '30000';
 
@@ -651,11 +800,13 @@ describe('workers — _checkScaling (scale-up / scale-down davranışı)', () =>
     expect(sfuWorkers.length).toBe(1); // değişmemeli
 
     delete process.env.SFU_SCALE_UP_ROUTERS;
+    delete process.env.SFU_SCALE_DOWN_ROUTERS;
     delete process.env.SFU_MAX_WORKERS;
     delete process.env.SFU_SCALE_CHECK_MS;
   });
 
   it('MIN worker sayısında scale-down yapılmaz', async () => {
+    process.env.SFU_SCALE_UP_ROUTERS = '100';
     process.env.SFU_SCALE_DOWN_ROUTERS = '99';
     process.env.SFU_MIN_WORKERS        = '1';
     process.env.SFU_SCALE_CHECK_MS     = '30000';
@@ -670,6 +821,7 @@ describe('workers — _checkScaling (scale-up / scale-down davranışı)', () =>
     expect(sfuWorkers.length).toBe(1); // değişmemeli
 
     delete process.env.SFU_SCALE_DOWN_ROUTERS;
+    delete process.env.SFU_SCALE_UP_ROUTERS;
     delete process.env.SFU_MIN_WORKERS;
     delete process.env.SFU_SCALE_CHECK_MS;
   });

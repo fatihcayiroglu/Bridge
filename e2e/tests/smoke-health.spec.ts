@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3001';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 test.describe('production smoke health', () => {
   test.use({ storageState: undefined });
@@ -26,7 +26,9 @@ test.describe('production smoke health', () => {
 
   test('public HTML has hardening headers', async ({ request }) => {
     const res = await request.get(`${BASE_URL}/`);
-    expect([200, 404]).toContain(res.status());
+    // Final21 Faz 22 (19-37): sunucu istemci kabuğunu sunar (ölçüldü 200). 404'te de başlıklar
+    // denetlenirdi ama "kamuya açık HTML" hiç sunulmuyor olurdu.
+    expect(res.status()).toBe(200);
     const headers = res.headers();
     expect(headers['x-content-type-options']).toBe('nosniff');
     expect(headers['content-security-policy']).toContain("default-src");

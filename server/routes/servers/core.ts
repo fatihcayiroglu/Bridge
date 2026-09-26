@@ -4,36 +4,22 @@ import { v4 as uuidv4 } from 'uuid';
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 const router = express.Router();
 
-import { tryRequire } from '../../lib/_optional-require';
-const _dispatchEvent = tryRequire<{ dispatchEvent: (sid: string, ev: string, d: unknown) => Promise<unknown> }>('../outgoingWebhooks')?.dispatchEvent ?? null;
-const _pluginHooks   = tryRequire<{ hooks: { emit: (ev: string, d: unknown) => unknown } }>('../../plugins/loader')?.hooks ?? null;
-
-import { Users, Servers, Channels, Members, Messages, Roles, Invites, ServerAssets, ScheduledMessages, Auth } from '../../db/repositories';
+import { Users, Servers, Members } from '../../db/repositories';
 import { authMiddleware} from '../../middleware/auth';
 import { sanitizeUser } from '../../lib/userUtils';
 import { getMemberPerms, hasPermission, PERMS } from '../roles';
 import { limits } from '../../middleware/rateLimit';
 import { invalidateMemberships } from '../../lib/presenceCache';
+import { invalidatePerms } from '../../lib/permCache';
 import { invalidateMemberCount } from '../discover';
+import { evictUserFromServerRooms } from '../../lib/liveMembership';
+import { envSafeInt } from '../../lib/envNumbers';
+import { joinDiscoverableServer, afterMemberJoined } from '../../lib/serverMembership';
+import { parseServerMfaLevelWrite } from '../../lib/serverMfaPolicy';
 
 // GET /api/servers
 /**
  * @openapi
- * /servers:
- *   get:
- *     tags: [Servers]
- *     summary: Kullanıcının üye olduğu sunucuları listele
- *     security: [{ bearerAuth: [] }]
- *     responses:
- *       200:
- *         description: Sunucu listesi
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items: { $ref: '#/components/schemas/Server' }
-
- *
  * /servers:
  *   get:
  *     tags: [Servers]
@@ -68,7 +54,6 @@ import { invalidateMemberCount } from '../discover';
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/Server' }
- *
  * /servers/{sid}:
  *   get:
  *     tags: [Servers]
@@ -122,7 +107,6 @@ import { invalidateMemberCount } from '../discover';
  *       200:
  *         description: Silindi
  *       403: { $ref: '#/components/responses/Forbidden' }
- *
  * /servers/{sid}/leave:
  *   post:
  *     tags: [Servers]
@@ -136,7 +120,6 @@ import { invalidateMemberCount } from '../discover';
  *     responses:
  *       200:
  *         description: Ayrilindi
- *
  * /servers/{sid}/members:
  *   get:
  *     tags: [Servers]
@@ -149,12 +132,16 @@ import { invalidateMemberCount } from '../discover';
  *         schema: { type: string }
  *       - in: query
  *         name: limit
- *         schema: { type: integer, default: 100 }
+ *         description: Enables the structured cursor response; maximum 100.
+ *         schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+ *       - in: query
+ *         name: cursor
+ *         description: Opaque nextCursor from a previous structured response.
+ *         schema: { type: string }
  *     responses:
  *       200:
- *         description: Uye listesi
+ *         description: Legacy array without query parameters, otherwise a structured cursor page.
  *       403: { $ref: '#/components/responses/Forbidden' }
- *
  * /servers/{sid}/members/{uid}:
  *   patch:
  *     tags: [Servers]
@@ -199,7 +186,6 @@ import { invalidateMemberCount } from '../discover';
  *       200:
  *         description: Kicklendi
  *       403: { $ref: '#/components/responses/Forbidden' }
- *
  * /servers/{sid}/audit-log:
  *   get:
  *     tags: [Servers]
@@ -254,15 +240,22 @@ router.get('/', authMiddleware, async (req, res) => {
  */
 router.post('/', authMiddleware, limits.servers(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { name, icon } = req.body as Record<string, string>;
-  if (!name?.trim())           return res.status(400).json({ error: 'Server name required' });
-  if (name.trim().length > 50) return res.status(400).json({ error: 'Server name too long (max 50)' });
+  // Faz 10.11 — GÖVDE TİP DOĞRULAMASI.
+  // `name?.trim()` yalnız null/undefined'a karşı korumalıydı; sayı veya nesne
+  // gönderildiğinde `.trim` bir fonksiyon olmadığı için TypeError fırlıyor ve
+  // istemci açıklanamayan 500 alıyordu (tests/server-create-join.test.ts).
+  // Yalnız düz string kabul edilir; diğer her tip 400'dür.
+  const body     = req.body as Record<string, unknown> | undefined;
+  const rawName  = body?.name;
+  const icon     = typeof body?.icon === 'string' ? body.icon : undefined;
+  const name     = typeof rawName === 'string' ? rawName.trim() : '';
+  if (!name)           return res.status(400).json({ error: 'Server name required' });
+  if (name.length > 50) return res.status(400).json({ error: 'Server name too long (max 50)' });
 
-  // SECURITY: Kullanıcı başına sunucu üst sınırı — resource exhaustion önleme
-  const MAX_SERVERS_PER_USER = parseInt(process.env.MAX_SERVERS_PER_USER || '100', 10);
-  const ownedServers = await Servers.findByOwner(_u.id);
-  if (ownedServers.length >= MAX_SERVERS_PER_USER)
-    return res.status(400).json({ error: `Server creation limit reached (max ${MAX_SERVERS_PER_USER})` });
+  // SECURITY: the repository enforces this limit inside the same per-owner
+  // PostgreSQL transaction/lock as creation, so concurrent requests cannot
+  // both pass a racy count and exceed the resource bound.
+  const MAX_SERVERS_PER_USER = envSafeInt('MAX_SERVERS_PER_USER', 100, { min: 1, max: 100_000 });
 
   // SECURITY: icon alanı sanitize — XSS ve script injection önleme
   // Yalnızca tek emoji veya boş string kabul edilir; uzun string veya HTML reddedilir.
@@ -276,21 +269,27 @@ router.post('/', authMiddleware, limits.servers(), async (req, res) => {
     safeIcon = trimmed || '🌐';
   }
 
-  const serverId  = uuidv4();
-  const newServer = await Servers.create({
-    _id:       serverId,
-    name:      name.trim(),
-    icon:      safeIcon,
-    ownerId:   _u.id,
-    createdAt: Date.now(),
+  const serverId = uuidv4();
+  const createdAt = Date.now();
+  const created = await Servers.createWithDefaultsAtomic({
+    serverId,
+    ownerId: _u.id,
+    name,
+    icon: safeIcon,
+    textChannelId: uuidv4(),
+    voiceChannelId: uuidv4(),
+    createdAt,
+    maxOwnedServers: MAX_SERVERS_PER_USER,
   });
+  if (created.status === 'limit') {
+    return res.status(400).json({ error: `Server creation limit reached (max ${MAX_SERVERS_PER_USER})` });
+  }
 
-  await Channels.insert({ _id: uuidv4(), serverId, name: 'general',       type: 'text',  topic: 'General chat', category: 'GENERAL', order: 0, createdAt: Date.now() });
-  await Channels.insert({ _id: uuidv4(), serverId, name: 'General Voice', type: 'voice', topic: '',             category: 'VOICE',   order: 1, createdAt: Date.now() });
-  await Members.insert(_u.id, serverId);
-  if (_dispatchEvent) _dispatchEvent(serverId, 'member:join', { userId: _u.id }).catch(() => {});
-
-  res.json(newServer);
+  await afterMemberJoined(
+    { id: _u.id, username: _u.username, displayName: _u.displayName },
+    serverId,
+  );
+  return res.json(created.server);
 });
 
 // PATCH /api/servers/:sid
@@ -339,13 +338,22 @@ router.patch('/:sid', authMiddleware, limits.servers(), async (req, res) => {
   if (!server)                  return res.status(404).json({ error: 'Server not found' });
   if (server.ownerId !== _u.id) return res.status(403).json({ error: 'Only the server owner can rename it' });
 
-  const { name, icon, mfaLevel } = req.body as Record<string, string>;
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+    ? req.body as Record<string, unknown>
+    : {};
+  const { name, icon, mfaLevel } = body;
   const updates: Record<string, unknown> = {};
-  if (name?.trim()) {
+  if (name !== undefined && typeof name !== 'string') {
+    return res.status(400).json({ error: 'Server name must be a string' });
+  }
+  if (icon !== undefined && typeof icon !== 'string') {
+    return res.status(400).json({ error: 'Server icon must be a string' });
+  }
+  if (typeof name === 'string' && name.trim()) {
     if (name.trim().length > 50) return res.status(400).json({ error: 'Server name too long (max 50)' });
     updates.name = name.trim();
   }
-  if (icon?.trim()) {
+  if (typeof icon === 'string' && icon.trim()) {
     // SECURITY: icon XSS validation
     if (/<|>|javascript:|on\w+\s*=/i.test(icon.trim())) {
       return res.status(400).json({ error: 'Invalid icon value' });
@@ -354,10 +362,11 @@ router.patch('/:sid', authMiddleware, limits.servers(), async (req, res) => {
   }
   // Sprint 121 FIX 15: mfaLevel — sadece sunucu sahibi ayarlayabilir (0/1/2)
   if (mfaLevel !== undefined) {
-    if (![0, 1, 2].includes(Number(mfaLevel))) {
-      return res.status(400).json({ error: 'mfaLevel must be 0, 1, or 2' });
+    const parsedMfaLevel = parseServerMfaLevelWrite(mfaLevel);
+    if (parsedMfaLevel === null) {
+      return res.status(400).json({ error: 'mfaLevel must be the integer 0, 1, or 2' });
     }
-    updates.mfaLevel = Number(mfaLevel);
+    updates.mfaLevel = parsedMfaLevel;
   }
   if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'Nothing to update' });
 
@@ -376,14 +385,27 @@ router.patch('/:sid', authMiddleware, limits.servers(), async (req, res) => {
  *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - { name: serverId, in: path, required: true, schema: { type: string } }
+ *       - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+ *       - { name: cursor, in: query, schema: { type: string } }
  *     responses:
  *       200:
- *         description: Üye listesi
+ *         description: Parametresiz çağrıda eski dizi; limit/cursor ile yapılandırılmış cursor sayfası
  *         content:
  *           application/json:
  *             schema:
- *               type: array
- *               items: { $ref: '#/components/schemas/UserProfile' }
+ *               oneOf:
+ *                 - type: array
+ *                   items: { $ref: '#/components/schemas/UserProfile' }
+ *                 - type: object
+ *                   required: [members, hasMore, nextCursor, limit, count]
+ *                   properties:
+ *                     members:
+ *                       type: array
+ *                       items: { $ref: '#/components/schemas/UserProfile' }
+ *                     hasMore: { type: boolean }
+ *                     nextCursor: { type: string, nullable: true }
+ *                     limit: { type: integer }
+ *                     count: { type: integer }
  * /servers/{serverId}/leave:
  *   post:
  *     tags: [Servers]
@@ -423,8 +445,11 @@ router.post('/:sid/leave', authMiddleware, limits.servers(), async (req, res) =>
   const membership = await Members.findOne(_u.id, String(req.params.sid ?? ''));
   if (!membership) return res.status(400).json({ error: 'Not a member' });
 
-  await Members.remove(_u.id, String(req.params.sid ?? ''));
+  const leavingServerId = String(req.params.sid ?? '');
+  await Members.remove(_u.id, leavingServerId);
+  invalidatePerms(leavingServerId, _u.id);
   await invalidateMemberships(_u.id);
+  await evictUserFromServerRooms(req.app.get('io'), _u.id, leavingServerId);
   invalidateMemberCount(String(req.params.sid ?? '')).catch(() => {});
   res.json({ left: true });
 });
@@ -436,72 +461,152 @@ router.delete('/:sid', authMiddleware, limits.servers(), async (req, res) => {
   if (!server)                  return res.status(404).json({ error: 'Server not found' });
   if (server.ownerId !== _u.id) return res.status(403).json({ error: 'Only the server owner can delete it' });
 
-  const sid = String(String(req.params.sid ?? '') ?? "");
-  const channelIds = await Channels.findIdsByServer(sid);
-  for (const cid of channelIds) {
-    await Messages.deleteByChannel(cid);
-  }
-  await Promise.all([
-    Channels.deleteByServer(sid),
-    Members.removeAllFromServer(sid),
-    Roles.deleteByServer(sid),
-    Invites.removeByServer(sid),
-    ServerAssets.deleteGifsByServer(sid),
-    ScheduledMessages.deleteByServer(sid),
-    ServerAssets.deleteEmojisByServer(sid),
-  ]);
-  await Servers.delete(sid);
+  const sid = String(req.params.sid ?? '');
+  // Tek canonical owner: production PostgreSQL'de bütün server graph tek
+  // transaction'da silinir. Route-level paralel kaskadlar yarım tenant ve
+  // yeni tablolar eklendikçe orphan veri bırakıyordu.
+  const result = await Servers.deleteGraphAtomic(sid, _u.id);
+  if (result === 'not_found') return res.status(404).json({ error: 'Server not found' });
+  if (result === 'owner_mismatch') return res.status(403).json({ error: 'Only the current server owner can delete it' });
   res.json({ deleted: true });
 });
 
 // POST /api/servers/:sid/join
 router.post('/:sid/join', authMiddleware, limits.servers(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const server = await Servers.findById(String(req.params.sid ?? ''));
-  if (!server) return res.status(404).json({ error: 'Server not found' });
+  const sid = String(req.params.sid ?? '');
+  const result = await joinDiscoverableServer(
+    { id: _u.id, username: _u.username, displayName: _u.displayName },
+    sid,
+  );
 
-  const existing = await Members.findOne(_u.id, String(req.params.sid ?? ''));
-  if (existing) return res.status(400).json({ error: 'Already a member' });
-
-  // Sprint 121 FIX 15: mfaLevel enforcement — sunucu 2FA zorunluluğu
-  // mfaLevel 0 = kapalı, 1 = mod/admin zorunlu (join'de 1 de enforce edilir), 2 = herkes
-  const mfaLevel = Number((server as unknown as Record<string, unknown>).mfaLevel ?? 0);
-  if (mfaLevel >= 1) {
-    // Kullanıcının kayıtlı passkey'i var mı?
-    const credentials = await Auth.findCredentialsByUser(_u.id).catch(() => []);
-    if (!credentials.length) {
-      return res.status(403).json({
-        error: 'MFA_REQUIRED',
-        message: 'Bu sunucuya katılmak için bir güvenlik anahtarı (passkey) kaydetmeniz gerekiyor.',
-        mfaLevel,
-      });
-    }
+  if (result.status === 'not_found') return res.status(404).json({ error: 'Server not found' });
+  if (result.status === 'invite_required') {
+    return res.status(403).json({ error: 'INVITE_REQUIRED', message: 'Bu sunucuya yalnızca davet ile katılabilirsiniz.' });
+  }
+  if (result.status === 'banned') {
+    return res.status(403).json({ error: 'BANNED', message: 'Bu sunucudan yasaklandınız.' });
+  }
+  if (result.status === 'already_member') return res.status(400).json({ error: 'Already a member' });
+  if (result.status === 'mfa_required') {
+    return res.status(403).json({
+      error: 'MFA_REQUIRED',
+      message: 'Bu sunucuya katılmak için bir güvenlik anahtarı (passkey) kaydetmeniz gerekiyor.',
+      mfaLevel: result.mfaLevel,
+    });
   }
 
-  await Members.insert(_u.id, String(req.params.sid ?? ''));
-  await invalidateMemberships(_u.id);
-  invalidateMemberCount(String(req.params.sid ?? '')).catch(() => {});
-  if (_dispatchEvent) _dispatchEvent(String(req.params.sid ?? ''), 'member:join', { userId: _u.id }).catch(() => {});
-  if (_pluginHooks) (_pluginHooks.emit as Function)('member:joined', { userId: _u.id, serverId: String(req.params.sid ?? ''), displayName: _u.displayName, username: _u.username });
-  res.json(server);
+  return res.json(result.server);
 });
 
 // GET /api/servers/:sid/members
 router.get('/:sid/members', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
-  const membership = await Members.findOne(_u.id, String(req.params.sid ?? ''));
+  const serverId = String(req.params.sid ?? '');
+  const membership = await Members.findOne(_u.id, serverId);
   if (!membership) return res.status(403).json({ error: 'Not a member' });
 
-  const memberships = await Members.findByServer(String(req.params.sid ?? ''));
-  const users       = await Users.findByIds(memberships.map(m => m.userId));
-  const nickMap: Record<string, string> = {};
-  memberships.forEach(m => { if (m.nickname) nickMap[m.userId] = m.nickname; });
+  const paginationRequested = req.query.limit !== undefined || req.query.cursor !== undefined;
+  if (!paginationRequested) {
+    // Backward compatibility: clients that omit pagination parameters retain
+    // the historical bare-array response until every consumer has migrated.
+    const memberships = await Members.findByServer(serverId);
+    const users       = await Users.findByIds(memberships.map(m => m.userId));
+    const nickMap: Record<string, string> = {};
+    memberships.forEach(m => { if (m.nickname) nickMap[m.userId] = m.nickname; });
 
-  res.json(users.map(u => {
-    const safe = sanitizeUser(u) as unknown as Record<string, unknown>;
-    if (nickMap[u._id]) safe.nickname = nickMap[u._id];
-    return safe;
-  }));
+    return res.json(users.map(u => {
+      const safe = sanitizeUser(u) as unknown as Record<string, unknown>;
+      if (nickMap[u._id]) safe.nickname = nickMap[u._id];
+      return safe;
+    }));
+  }
+
+  let limit = 100;
+  if (req.query.limit !== undefined) {
+    if (typeof req.query.limit !== 'string' || !/^\d+$/.test(req.query.limit)) {
+      return res.status(400).json({ error: 'limit must be an integer between 1 and 100' });
+    }
+    const parsed = Number(req.query.limit);
+    if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 100) {
+      return res.status(400).json({ error: 'limit must be an integer between 1 and 100' });
+    }
+    limit = parsed;
+  }
+
+  let cursor: { joinedAt: number; userId: string } | undefined;
+  if (req.query.cursor !== undefined) {
+    const rawCursor = req.query.cursor;
+    if (typeof rawCursor !== 'string' || rawCursor.length === 0 || rawCursor.length > 512) {
+      return res.status(400).json({ error: 'Invalid cursor' });
+    }
+    try {
+      const decoded = JSON.parse(Buffer.from(rawCursor, 'base64').toString('utf8')) as {
+        joinedAt?: unknown;
+        userId?: unknown;
+      } | null;
+      if (!decoded || typeof decoded !== 'object' ||
+          !Number.isSafeInteger(decoded.joinedAt) || Number(decoded.joinedAt) < 0 ||
+          typeof decoded.userId !== 'string' || decoded.userId.length === 0 || decoded.userId.length > 200) {
+        return res.status(400).json({ error: 'Invalid cursor' });
+      }
+      cursor = { joinedAt: Number(decoded.joinedAt), userId: decoded.userId };
+    } catch {
+      return res.status(400).json({ error: 'Invalid cursor' });
+    }
+  }
+
+  const rawPage = await Members.findPageByServer(serverId, { limit: limit + 1, cursor });
+  const hasMore = rawPage.length > limit;
+  const page = hasMore ? rawPage.slice(0, limit) : rawPage;
+  const userIds = page.map(row => String(row.userId));
+  const users = await Users.findByIds(userIds);
+  const usersById = new Map(users.map(user => [user._id, user]));
+  const members = page.flatMap(row => {
+    const userId = String(row.userId);
+    const user = usersById.get(userId);
+    if (!user) return [];
+    const safe = sanitizeUser(user) as unknown as Record<string, unknown>;
+    if (row.nickname) safe.nickname = String(row.nickname);
+    return [safe];
+  });
+  const boundary = page.at(-1);
+  const nextCursor = hasMore && boundary
+    ? Buffer.from(JSON.stringify({
+      joinedAt: Number(boundary.joinedAt),
+      userId: String(boundary.userId),
+    })).toString('base64')
+    : null;
+
+  return res.json({ members, hasMore, nextCursor, limit, count: members.length });
+});
+
+/**
+ * GET /api/servers/:sid/me/permissions
+ *
+ * FAZ C2 — İSTEMCİ YETKİ SİNYALİ.
+ *
+ * İstemcinin, çağıranın ÇÖZÜLMÜŞ sunucu düzeyi izin bitlerini öğrenebileceği
+ * hiçbir uç yoktu. Bu yüzden "MANAGE_CHANNELS varsa göster" gibi bir açıcı
+ * yazılamıyordu: istemci ya herkese ölü bir kontrol gösterecekti ya da yalnız
+ * sahibe gösterip rol tabanlı yöneticileri dışarıda bırakacaktı.
+ *
+ * Bu uç YALNIZCA ÇAĞIRANIN KENDİ bitlerini döner — başkasının izinleri
+ * sızdırılmaz. Kanal izin rotaları da yetkilendirmeyi tam olarak bu düzeyde
+ * yapar (`resolvePermissions(user, sid)`, kanal kimliği verilmeden), bu yüzden
+ * sinyal ile gerçek kapı AYNI değeri kullanır ve sapamaz.
+ *
+ * GÜVENLİK: bu bir GÖRÜNÜRLÜK sinyalidir, yetki sınırı DEĞİLDİR. Gerçek sınır
+ * her zaman yazma rotalarındaki kontrollerdir. Üye olmayan veya var olmayan
+ * sunucu için ayrım yapılmadan 0 döner (varlık sızıntısı yok).
+ */
+router.get('/:sid/me/permissions', authMiddleware, async (req, res) => {
+  const _u  = castAuthed(req).user;
+  const sid = String(req.params.sid ?? '');
+  if (!sid) return res.json({ permissions: 0 });
+
+  const permissions = await getMemberPerms(_u.id, sid);
+  res.json({ permissions: Number(permissions) || 0 });
 });
 
 // PATCH /api/servers/:sid/members/:uid/nickname

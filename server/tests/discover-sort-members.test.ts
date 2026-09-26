@@ -10,11 +10,11 @@
 //   - sort=online → online üye sayısı azalan
 //   - sort parametresi yoksa default members sıralaması
 //   - Eşit üye sayısında sıra sabit kalır (stable)
-//   - DISCOVER_LIMIT (50) aşıldığında truncate edilir
+//   - varsayılan 50 korunur; istemci açıkça daha büyük güvenli limit isteyebilir
 
 'use strict';
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 // ── presenceCache mock — online count için ────────────────────────────────────
@@ -246,8 +246,8 @@ describe('GET /api/discover?sort=members', () => {
     const empty = makeServer({ name: 'Boş Sunucu', discoverable: 1 });
     await db.servers.insert(empty);
 
-    // Üye yok — sadece discoverable=1 olan ve üyesi >1 olan sunucular gösterilir
-    // (discover route'unda memberCount > 1 filtresi var)
+    // Üye yok — yalnız discoverable=1 ve en az bir gerçek üyesi olan sunucular gösterilir
+    // (discover route'unda memberCount > 0 filtresi var)
     const res = await request(app)
       .get('/api/discover?sort=members')
       .set('Authorization', `Bearer ${token}`);
@@ -389,11 +389,11 @@ describe('GET /api/discover?sort=online', () => {
 });
 
 // ════════════════════════════════════════════════════════════════
-// DISCOVER_LIMIT truncation
+// Discover limit contract
 // ════════════════════════════════════════════════════════════════
 
-describe('DISCOVER_LIMIT (50) truncation', () => {
-  it('50\'den fazla sunucu varsa en fazla 50 döner', async () => {
+describe('discover limit contract', () => {
+  it('varsayılan cevap 50 ile sınırlıdır ama açık limit ilk-50 arama körlüğünü kaldırır', async () => {
     // 55 sunucu oluştur, her biri 2 üye ile
     for (let i = 0; i < 55; i++) {
       const srv = makeServer({ name: `Server-${i}`, discoverable: 1 });
@@ -410,7 +410,13 @@ describe('DISCOVER_LIMIT (50) truncation', () => {
       .set('Authorization', `Bearer ${token}`);
 
     expect(res.status).toBe(200);
-    expect(res.body.length).toBeLessThanOrEqual(50);
+    expect(res.body.length).toBe(50);
+
+    const expanded = await request(app)
+      .get('/api/discover?sort=members&limit=1000')
+      .set('Authorization', `Bearer ${token}`);
+    expect(expanded.status).toBe(200);
+    expect(expanded.body.length).toBe(55);
   });
 });
 
@@ -425,7 +431,11 @@ describe('Geçersiz sort parametresi', () => {
     const u = makeUser();
     await db.users.insert(u);
     await db.members.insert(makeMember(u._id, srv._id));
-    await db.members.insert(makeMember((await (async () => { const u2 = makeUser(); await db.users.insert(u2); return u2; })()), srv._id));
+    // `makeMember` KULLANICI KIMLIGI ister, kullanici NESNESI degil; satir ici
+    // IIFE nesneyi geciriyordu. Ayrica okunaksizdi — ikiye bolundu.
+    const u2 = makeUser();
+    await db.users.insert(u2);
+    await db.members.insert(makeMember(u2._id, srv._id));
 
     const res = await request(app)
       .get('/api/discover?sort=invalidvalue')

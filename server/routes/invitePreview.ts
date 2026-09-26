@@ -39,6 +39,7 @@ import express from 'express';
 const router       = express.Router();
 import { Invites, Servers, Members } from '../db/repositories';
 import { escapeHtml } from '../lib/security';
+import { parsePersistedEpochMillis } from '../lib/persistedEpoch';
 
 // ── SSRF Koruması — iconUrl doğrulaması ──────────────────────
 // iconUrl doğrudan OG image olarak kullanılıyor.
@@ -64,7 +65,7 @@ function resolveIcon(server: ServerRow): { type: string; value: string } {
 }
 
 // ── HTML üret ─────────────────────────────────────────────────
-function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl }: { server: ServerRow; memberCount: number; inviteCode: string; instanceName: string; instanceUrl: string }): string {
+function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl, cspNonce }: { server: ServerRow; memberCount: number; inviteCode: string; instanceName: string; instanceUrl: string; cspNonce: string }): string {
   const safeName  = escapeHtml(server.name);
   const safeDesc  = escapeHtml(server.description || `${safeName} topluluğuna katıl!`);
   const icon      = resolveIcon(server);
@@ -76,7 +77,7 @@ function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl 
   // yoksa sunucu ismiyle bir placeholder URL oluştur
   const ogImage = (server.iconUrl && isSafeIconUrl(server.iconUrl))
     ? escapeHtml(server.iconUrl)
-    : `${instanceUrl}/api/servers/${encodeURIComponent(server._id)}/og-image`;
+    : `${instanceUrl}/api/servers/${encodeURIComponent(server._id)}/og-image?invite=${encodeURIComponent(inviteCode)}`;
 
   const iconHtml = icon.type === 'img'
     ? `<img src="${icon.value}" alt="${safeName} ikonu" class="server-icon-img">`
@@ -86,7 +87,7 @@ function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl 
 <html lang="tr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>${safeName} — Bridge Daveti</title>
 
   <!-- Open Graph -->
@@ -106,7 +107,7 @@ function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl 
   <!-- Theme color (Discord-style embed rengi) -->
   <meta name="theme-color" content="#2d9cdb">
 
-  <style>
+  <style nonce="${cspNonce}">
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
@@ -117,7 +118,7 @@ function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl 
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 1rem;
+      padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
     }
 
     .card {
@@ -198,7 +199,7 @@ function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl 
       width: 100%;
     }
 
-    .btn-join:hover { background: #1a6b8a; }
+    .btn-join:hover, .btn-join:focus-visible { background: #1a6b8a; }
 
     .footer {
       margin-top: 1.2rem;
@@ -224,6 +225,7 @@ function buildHtml({ server, memberCount, inviteCode, instanceName, instanceUrl 
 
 // ── GET /invite/:code ─────────────────────────────────────────
 router.get('/:code', async (req, res) => {
+  const cspNonce = String(res.locals.cspNonce || '');
   const code = String(String(req.params.code ?? '') || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
   if (!code) return res.status(400).send('<h1>Geçersiz davet kodu</h1>');
 
@@ -231,18 +233,23 @@ router.get('/:code', async (req, res) => {
   if (!invite) {
     return res.status(404).send(`<!DOCTYPE html>
 <html lang="tr"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Geçersiz Davet</title>
 <meta name="theme-color" content="#ed4245">
-<style>body{background:#1a1b1e;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center;}</style>
+<style nonce="${cspNonce}">*{box-sizing:border-box}body{margin:0;background:#1a1b1e;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100dvh;text-align:center;padding:max(1rem,env(safe-area-inset-top)) max(1rem,env(safe-area-inset-right)) max(1rem,env(safe-area-inset-bottom)) max(1rem,env(safe-area-inset-left));}</style>
 </head><body><div><h1 style="font-size:3rem">😕</h1><h2>Bu davet geçersiz veya süresi dolmuş</h2><p style="color:#b5bac1;margin-top:.5rem">Davet kodu bulunamadı.</p></div></body></html>`);
   }
 
-  if (invite.expiresAt < Date.now()) {
+  let inviteExpiresAt: number | null;
+  try { inviteExpiresAt = parsePersistedEpochMillis(invite.expiresAt); }
+  catch { inviteExpiresAt = null; }
+  if (inviteExpiresAt === null || inviteExpiresAt <= Date.now()) {
     return res.status(410).send(`<!DOCTYPE html>
 <html lang="tr"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Süresi Dolmuş Davet</title>
 <meta name="theme-color" content="#ed4245">
-<style>body{background:#1a1b1e;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center;}</style>
+<style nonce="${cspNonce}">*{box-sizing:border-box}body{margin:0;background:#1a1b1e;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100dvh;text-align:center;padding:max(1rem,env(safe-area-inset-top)) max(1rem,env(safe-area-inset-right)) max(1rem,env(safe-area-inset-bottom)) max(1rem,env(safe-area-inset-left));}</style>
 </head><body><div><h1 style="font-size:3rem">⏰</h1><h2>Bu davetin süresi dolmuş</h2><p style="color:#b5bac1;margin-top:.5rem">Yeni bir davet linki isteyin.</p></div></body></html>`);
   }
 
@@ -267,7 +274,7 @@ router.get('/:code', async (req, res) => {
   const instanceUrl  = (process.env.INSTANCE_URL || `http://localhost:${process.env.PORT || 3001}`)
     .replace(/\/$/, '');
 
-  const html = buildHtml({ server: server as unknown as ServerRow, memberCount, inviteCode: code, instanceName, instanceUrl });
+  const html = buildHtml({ server: server as unknown as ServerRow, memberCount, inviteCode: code, instanceName, instanceUrl, cspNonce });
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   // Önbellek: 5 dakika (üye sayısı sık değişebilir)

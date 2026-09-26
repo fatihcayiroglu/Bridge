@@ -108,8 +108,10 @@ import { ServerEvents }                  from '../db/repositories/ServerEventRep
 import { authMiddleware}    from '../middleware/auth';
 import { limits }                        from '../middleware/rateLimit';
 import { validate, z }                   from '../middleware/validate';
-import { Members }                       from '../db/repositories';
+import { Channels, Members }                       from '../db/repositories';
 import { isSafeUrl }                     from '../lib/security';
+import { PERMS, hasPermission, resolvePermissions } from '../lib/permissions';
+import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery } from '../lib/queryNumbers';
 
 // ── Şemalar ───────────────────────────────────────────────────────────────────
 
@@ -117,7 +119,7 @@ const createEventSchema = z.object({
   title:       z.string().min(1).max(100),
   description: z.string().max(1000).optional(),
   location:    z.string().max(200).optional(),
-  channelId:   z.string().optional(),
+  channelId:   z.string().min(1).optional(),
   startsAt:    z.string().datetime(),
   endsAt:      z.string().datetime().optional(),
   coverImage:  z.string()
@@ -133,13 +135,42 @@ const rsvpSchema = z.object({
   status: z.enum(['interested', 'going', 'not_going']),
 });
 
-// ── İzin kontrol yardımcısı ───────────────────────────────────────────────────
+// ── İzin / görünürlük yardımcıları ──────────────────────────────────────────
 
-async function requireEventPerm(userId: string, serverId: string): Promise<boolean> {
-  const member = await Members.findOne({ userId, serverId });
+async function canViewEventChannel(userId: string, serverId: string, channelId: string | null | undefined): Promise<boolean> {
+  if (!channelId) return true;
+  const channel = await Channels.findByIdAndServer(String(channelId), serverId);
+  if (!channel) return false;
+  const perms = await resolvePermissions(userId, serverId, String(channelId)).catch(() => 0);
+  return hasPermission(perms, PERMS.VIEW_CHANNELS);
+}
+
+/**
+ * Server-wide events are a server-management action.  Channel-bound events may
+ * also be managed by a channel manager, but only while the actor can actually
+ * see that channel.  This deliberately uses the canonical bitmask resolver;
+ * legacy `member.permissions.MANAGE_EVENTS` is not an authorization owner.
+ */
+async function requireEventPerm(userId: string, serverId: string, channelId?: string | null): Promise<boolean> {
+  const member = await Members.findOne(userId, serverId);
   if (!member) return false;
-  const perms = (member.permissions as Record<string, boolean> | null) ?? {};
-  return !!(member.isOwner || perms.ADMINISTRATOR || perms.MANAGE_EVENTS);
+  const perms = await resolvePermissions(userId, serverId, channelId ?? null).catch(() => 0);
+  if (!channelId) return hasPermission(perms, PERMS.MANAGE_SERVER);
+  return hasPermission(perms, PERMS.VIEW_CHANNELS)
+    && (hasPermission(perms, PERMS.MANAGE_CHANNELS) || hasPermission(perms, PERMS.MANAGE_SERVER));
+}
+
+function eventRoom(serverId: string, channelId?: string | null): string {
+  return channelId ? `channel:${channelId}` : `server:${serverId}`;
+}
+
+async function visibleEventChannelIds(userId: string, serverId: string): Promise<string[]> {
+  const ids = await ServerEvents.findReferencedChannelIds(serverId);
+  const visible: string[] = [];
+  for (const channelId of ids) {
+    if (await canViewEventChannel(userId, serverId, channelId)) visible.push(channelId);
+  }
+  return visible;
 }
 
 // ── GET /servers/:sid/events ──────────────────────────────────────────────────
@@ -154,13 +185,19 @@ router.get(
     const member = await Members.findOne({ userId: u.id, serverId: sid });
     if (!member) return res.status(403).json({ error: 'Not a member' });
 
-    const filter = (['upcoming', 'past', 'all'].includes(req.query.filter as string as string)
-      ? req.query.filter as string as 'upcoming' | 'past' | 'all'
-      : 'upcoming');
-    const limit  = Math.min(parseInt(req.query.limit as string  as string) || 20, 100);
-    const offset = parseInt(req.query.offset as string as string) || 0;
+    const rawFilter = req.query.filter;
+    if (rawFilter !== undefined && (typeof rawFilter !== 'string' || !['upcoming', 'past', 'all'].includes(rawFilter))) {
+      return res.status(400).json({ error: 'filter must be upcoming | past | all' });
+    }
+    const filter = (rawFilter ?? 'upcoming') as 'upcoming' | 'past' | 'all';
+    const limit  = parseBoundedPositiveIntQuery(req.query.limit, 20, 100);
+    const offset = parseNonNegativeSafeIntQuery(req.query.offset, 0);
+    if (limit === null || offset === null) {
+      return res.status(400).json({ error: 'limit/offset must be safe non-negative integers' });
+    }
 
-    const { events, total } = await ServerEvents.findByServer(sid, u.id, filter, limit, offset);
+    const visibleChannelIds = await visibleEventChannelIds(u.id, sid);
+    const { events, total } = await ServerEvents.findByServer(sid, u.id, filter, limit, offset, visibleChannelIds);
     return res.json({ events, total, limit, offset });
   },
 );
@@ -170,18 +207,18 @@ router.get(
 router.post(
   '/:sid/events',
   authMiddleware,
-  limits.write,
+  limits.write(),
   validate(createEventSchema),
   async (req: Request, res: Response) => {
     const u   = castAuthed(req).user;
     const sid = String(String(req.params.sid ?? '') ?? "");
 
-    if (!(await requireEventPerm(u.id, sid))) {
-      return res.status(403).json({ error: 'MANAGE_EVENTS permission required' });
-    }
-
     const { title, description, location, channelId, startsAt, endsAt, coverImage } =
       req.body as z.infer<typeof createEventSchema>;
+
+    if (!(await requireEventPerm(u.id, sid, channelId ?? null))) {
+      return res.status(403).json({ error: 'Event management permission required' });
+    }
 
     if (coverImage !== undefined && !isSafeUrl(String(coverImage))) {
       return res.status(400).json({ error: 'coverImage must be a valid http/https URL' });
@@ -192,6 +229,11 @@ router.post(
     if (isNaN(startsDate.getTime())) return res.status(400).json({ error: 'Invalid startsAt' });
     if (endsDate && endsDate <= startsDate) {
       return res.status(400).json({ error: 'endsAt must be after startsAt' });
+    }
+
+    if (channelId) {
+      const channel = await Channels.findByIdAndServer(String(channelId), sid);
+      if (!channel) return res.status(400).json({ error: 'channelId does not belong to this server' });
     }
 
     const event = await ServerEvents.create({
@@ -206,7 +248,7 @@ router.post(
       coverImage:  coverImage  ?? null,
     });
 
-    req.app.get('io')?.to(`server:${sid}`).emit('server:event:created', { event });
+    req.app.get('io')?.to(eventRoom(sid, event.channel_id)).emit('server:event:created', { event });
     return res.status(201).json({ event });
   },
 );
@@ -227,6 +269,9 @@ router.get(
 
     const event = await ServerEvents.findOne(eid, sid);
     if (!event) return res.status(404).json({ error: 'Event not found' });
+    if (!(await canViewEventChannel(u.id, sid, event.channel_id))) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
 
     const [rsvps, myRsvp] = await Promise.all([
       ServerEvents.findRsvpList(eid),
@@ -242,24 +287,56 @@ router.get(
 router.patch(
   '/:sid/events/:eid',
   authMiddleware,
-  limits.write,
+  limits.write(),
   validate(updateEventSchema),
   async (req: Request, res: Response) => {
     const u            = castAuthed(req).user;
     const sid = String(req.params.sid ?? '');
   const eid = String(req.params.eid ?? '');
 
-    if (!(await requireEventPerm(u.id, sid))) {
-      return res.status(403).json({ error: 'MANAGE_EVENTS permission required' });
+    const existing = await ServerEvents.findOne(eid, sid);
+    if (!existing) return res.status(404).json({ error: 'Event not found' });
+    if (!(await requireEventPerm(u.id, sid, existing.channel_id))) {
+      return res.status(403).json({ error: 'Event management permission required' });
     }
 
-    const exists = await ServerEvents.exists(eid, sid);
-    if (!exists) return res.status(404).json({ error: 'Event not found' });
+    const patchBody = req.body as Record<string, string>;
+    if (patchBody.channelId) {
+      const channel = await Channels.findByIdAndServer(String(patchBody.channelId), sid);
+      if (!channel) return res.status(400).json({ error: 'channelId does not belong to this server' });
+      if (!(await requireEventPerm(u.id, sid, String(patchBody.channelId)))) {
+        return res.status(403).json({ error: 'Event management permission required for target channel' });
+      }
+    }
 
-    const updated = await ServerEvents.update(eid, sid, req.body as Record<string, string>);
+    // Partial updates must preserve the same temporal invariant as CREATE.
+    // Validate against the resulting event, not merely against fields present
+    // in the patch (e.g. moving startsAt beyond an existing endsAt).
+    const nextStart = patchBody.startsAt !== undefined
+      ? new Date(patchBody.startsAt)
+      : new Date(existing.starts_at);
+    const nextEnd = patchBody.endsAt !== undefined
+      ? new Date(patchBody.endsAt)
+      : (existing.ends_at ? new Date(existing.ends_at) : null);
+    if (!Number.isFinite(nextStart.getTime()) || (nextEnd && !Number.isFinite(nextEnd.getTime()))) {
+      return res.status(400).json({ error: 'Invalid event date' });
+    }
+    if (nextEnd && nextEnd <= nextStart) {
+      return res.status(400).json({ error: 'endsAt must be after startsAt' });
+    }
+
+    const canonicalPatch: Record<string, unknown> = { ...patchBody };
+    if (patchBody.startsAt !== undefined) canonicalPatch.startsAt = nextStart;
+    if (patchBody.endsAt !== undefined) canonicalPatch.endsAt = nextEnd;
+
+    const updated = await ServerEvents.update(eid, sid, canonicalPatch);
     if (!updated) return res.status(400).json({ error: 'No fields to update' });
 
-    req.app.get('io')?.to(`server:${sid}`).emit('server:event:updated', { event: updated });
+    const io = req.app.get('io');
+    const oldRoom = eventRoom(sid, existing.channel_id);
+    const newRoom = eventRoom(sid, updated.channel_id);
+    if (oldRoom !== newRoom) io?.to(oldRoom).emit('server:event:deleted', { eventId: eid });
+    io?.to(newRoom).emit('server:event:updated', { event: updated });
     return res.json({ event: updated });
   },
 );
@@ -269,18 +346,20 @@ router.patch(
 router.delete(
   '/:sid/events/:eid',
   authMiddleware,
-  limits.write,
+  limits.write(),
   async (req: Request, res: Response) => {
     const u            = castAuthed(req).user;
     const sid = String(req.params.sid ?? '');
   const eid = String(req.params.eid ?? '');
 
-    if (!(await requireEventPerm(u.id, sid))) {
-      return res.status(403).json({ error: 'MANAGE_EVENTS permission required' });
+    const event = await ServerEvents.findOne(eid, sid);
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+    if (!(await requireEventPerm(u.id, sid, event.channel_id))) {
+      return res.status(403).json({ error: 'Event management permission required' });
     }
 
     await ServerEvents.delete(eid, sid);
-    req.app.get('io')?.to(`server:${sid}`).emit('server:event:deleted', { eventId: eid });
+    req.app.get('io')?.to(eventRoom(sid, event.channel_id)).emit('server:event:deleted', { eventId: eid });
     return res.json({ ok: true });
   },
 );
@@ -290,7 +369,7 @@ router.delete(
 router.post(
   '/:sid/events/:eid/rsvp',
   authMiddleware,
-  limits.write,
+  limits.write(),
   validate(rsvpSchema),
   async (req: Request, res: Response) => {
     const u            = castAuthed(req).user;
@@ -304,13 +383,15 @@ router.post(
     const member = await Members.findOne({ userId: u.id, serverId: sid });
     if (!member) return res.status(403).json({ error: 'Not a member' });
 
-    const exists = await ServerEvents.exists(eid, sid);
-    if (!exists) return res.status(404).json({ error: 'Event not found' });
+    const event = await ServerEvents.findOne(eid, sid);
+    if (!event || !(await canViewEventChannel(u.id, sid, event.channel_id))) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
 
     await ServerEvents.upsertRsvp(eid, u.id, status);
     const count = await ServerEvents.countAttendees(eid);
 
-    req.app.get('io')?.to(`server:${sid}`).emit('server:event:rsvp', {
+    req.app.get('io')?.to(eventRoom(sid, event.channel_id)).emit('server:event:rsvp', {
       eventId: eid, userId: u.id, status, count,
     });
     return res.json({ ok: true, status });
@@ -322,14 +403,21 @@ router.post(
 router.delete(
   '/:sid/events/:eid/rsvp',
   authMiddleware,
-  limits.write,
+  limits.write(),
   async (req: Request, res: Response) => {
     const u            = castAuthed(req).user;
     const sid = String(req.params.sid ?? '');
   const eid = String(req.params.eid ?? '');
 
+    const member = await Members.findOne({ userId: u.id, serverId: sid });
+    if (!member) return res.status(403).json({ error: 'Not a member' });
+    const event = await ServerEvents.findOne(eid, sid);
+    if (!event || !(await canViewEventChannel(u.id, sid, event.channel_id))) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
     await ServerEvents.deleteRsvp(eid, u.id);
-    req.app.get('io')?.to(`server:${sid}`).emit('server:event:rsvp', {
+    req.app.get('io')?.to(eventRoom(sid, event.channel_id)).emit('server:event:rsvp', {
       eventId: eid, userId: u.id, status: null,
     });
     return res.json({ ok: true });

@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <!-- Capacitor viewport.
+       `user-scalable=no` KALDIRILDI: kullanıcı yakınlaştırmasını engellemek
+       WCAG 2.1 SC 1.4.4 (Resize Text, AA) ihlalidir ve axe-core'un
+       `meta-viewport` kuralı tarafından da işaretlenir. "Native his" için
+       ödenen bedel, az gören kullanıcıların metni büyütememesiydi.
+       `viewport-fit=cover` korunur — güvenli alan (notch) dolgusu buna bağlı. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
+  <!-- iOS Safari tam ekran + durum çubuğu -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Bridge">
+
+  <!-- Android Chrome tema rengi -->
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="mobile-web-app-capable" content="yes">
+
+  <!-- ══════════════════════════════════════════════════════════════════
+       İÇERİK GÜVENLİĞİ POLİTİKASI (CSP)
+       ══════════════════════════════════════════════════════════════════
+       ÖLÇÜLEN KUSUR: bu politika `default-src *`, `script-src *` ve
+       `'unsafe-eval'` içeriyordu — yani mobil WebView, HERHANGİ bir kaynaktan
+       betik çalıştırmaya ve `eval` kullanmaya izinliydi. Sunucunun web için
+       uyguladığı politika (`server/app/createApp.ts`) ise nonce tabanlı ve
+       `default-src 'self'`. Mobil yüzey, web'in çoktan kapattığı kapıyı
+       açık bırakıyordu.
+
+       Joker karakterler ve `'unsafe-eval'` KALDIRILDI. Paket esbuild ESM'dir
+       ve `eval` / `new Function` kullanmaz; socket.io istemcisi de kullanmaz.
+       Ayrıca web tarafında zaten var olan `object-src`, `frame-src`,
+       `base-uri`, `form-action` ve `worker-src` kısıtları eklendi.
+
+       `connect-src` derleme zamanında `setup.js` tarafından yazılır: bir
+       `BRIDGE_API_URL` verildiyse YALNIZCA o kaynak (ve karşılık gelen
+       WebSocket şeması) izinlenir.
+
+       KALAN İSTİSNA (bilerek, gizlenmeden): `script-src` hâlâ
+       `'unsafe-inline'` içeriyor, çünkü bu kabukta bir satır içi bootstrap
+       `<script>` bloğu ve mobil gezinme düğmelerinde `onclick` öznitelikleri
+       var. Web kabuğu bunu delege edilmiş olay dinleyicilerine geçerek çözdü;
+       mobil kabuk için aynı geçiş ayrı bir iş kalemidir ve TAMAMLANMADI.
+       ══════════════════════════════════════════════════════════════════ -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self';
+                 script-src 'self' 'unsafe-inline';
+                 style-src  'self' 'unsafe-inline';
+                 img-src    'self' data: blob: https:;
+                 media-src  'self' blob: https:;
+                 connect-src __BRIDGE_CONNECT_SRC__;
+                 font-src   'self' data:;
+                 worker-src 'self' blob:;
+                 object-src 'none';
+                 frame-src  'none';
+                 base-uri   'self';
+                 form-action 'self';">
+
+  <title>Bridge</title>
+
+  <!-- ── Temel stiller: client/css kopyası (npx cap sync sonrası gelecek) ── -->
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/style.css">
+  <!-- Derlenmiş bileşen CSS chunk'ları — setup.js doldurur -->
+  <!-- BRIDGE:APP-STYLES:START -->
+  <!-- BRIDGE:APP-STYLES:END -->
+
+  <!-- ── Mobil-özel ek stiller ── -->
+  <style>
+    /* ── SAFE AREA (iPhone notch / Dynamic Island / Android gesture bar) ── */
+    :root {
+      --sat:  env(safe-area-inset-top,    0px);
+      --sar:  env(safe-area-inset-right,  0px);
+      --sab:  env(safe-area-inset-bottom, 0px);
+      --sal:  env(safe-area-inset-left,   0px);
+      --keyboard-height: 0px;
+    }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      /* iOS overscroll bounce'u kapat */
+      overscroll-behavior: none;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* ── Tüm uygulama sarmalayıcısı ── */
+    #bridge-root {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      /* safe area padding — yalnızca içerik için */
+      padding-top:    var(--sat);
+      padding-right:  var(--sar);
+      padding-bottom: var(--sab);
+      padding-left:   var(--sal);
+      box-sizing: border-box;
+      background: var(--bg-1, #1a1b1e);
+    }
+
+    /* ── Klavye: görünüm alanı ZATEN küçülür — klavye yüksekliği İKİNCİ KEZ eklenmez ──
+       Capacitor Keyboard `resize: 'body'` (iOS) ve Android pencere yeniden boyutlandırması WebView'i
+       klavye kadar küçültür. Eski kurallar klavye yüksekliğini bir kez DAHA ekliyordu (besteciye
+       `margin-bottom`, alt gezinmeyi yukarı öteleme). Ölçüldü (Final21 Faz 19, tablet 2560x1600,
+       görünüm 408 px, klavye 368 px): mesaj listesi 6 px'e çöktü, besteci başlığın altına kaçtı;
+       telefonda alt gezinme içeriğin ortasına kayıyordu. Klavye açıkken alt gezinme GİZLENİR ve
+       onun için ayrılan `.app` alt boşluğu kalkar (web kabuğundaki `html.bridge-keyboard-open` ile
+       aynı karar; o sınıf uygulamada hiç oluşmaz çünkü Android'de `innerHeight` da küçülür ve
+       görsel görünüm farkı 0 çıkar — ölçüldü: küçük telefonda besteci altında 60 px boşluk). */
+    body.keyboard-open .mobile-nav {
+      display: none;
+    }
+    body.keyboard-open .app {
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    body.keyboard-open #bridge-root {
+      padding-bottom: 0;
+    }
+
+    /* ── SPLASH (Capacitor SplashScreen hide olana kadar görünür) ── */
+    #native-splash {
+      position: fixed;
+      inset: 0;
+      background: #1a1a2e;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 16px;
+      z-index: 99999;
+      transition: opacity 0.3s ease;
+    }
+    #native-splash.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #native-splash .splash-logo {
+      font-size: 72px;
+      animation: splash-pulse 1.2s ease-in-out infinite alternate;
+    }
+    #native-splash .splash-name {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 28px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: 0.04em;
+    }
+    #native-splash .splash-spinner {
+      width: 32px; height: 32px;
+      border: 3px solid rgba(255,255,255,0.15);
+      border-top-color: #2d9cdb;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes splash-pulse {
+      from { transform: scale(0.92); }
+      to   { transform: scale(1.04); }
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ── Offline banner (capacitor-bridge.js tarafından oluşturulur) ── */
+    #offline-banner {
+      padding-top: calc(8px + var(--sat)) !important;
+    }
+
+    /* ── Push bildirim izin banner'ı ── */
+    #push-permission-banner {
+      position: fixed;
+      bottom: calc(64px + var(--sab));   /* mobile-nav üstü */
+      left: 16px; right: 16px;
+      background: #2d9cdb;
+      color: #fff;
+      border-radius: 12px;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      z-index: 900;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      transform: translateY(0);
+      transition: transform 0.3s ease, opacity 0.3s ease;
+    }
+    #push-permission-banner.hiding {
+      transform: translateY(120%);
+      opacity: 0;
+    }
+    #push-permission-banner .ppb-icon { font-size: 22px; flex-shrink: 0; }
+    #push-permission-banner .ppb-text { flex: 1; line-height: 1.4; }
+    #push-permission-banner .ppb-text strong { display: block; margin-bottom: 2px; }
+    #push-permission-banner .ppb-actions { display: flex; gap: 8px; }
+    #push-permission-banner .ppb-btn {
+      padding: 6px 14px;
+      border-radius: 8px;
+      border: none;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #push-permission-banner .ppb-btn-allow {
+      background: #fff;
+      color: #2d9cdb;
+    }
+    #push-permission-banner .ppb-btn-deny {
+      background: rgba(255,255,255,0.2);
+      color: #fff;
+    }
+
+    /* ── Native ses kanalı bağlantı göstergesi (mobil) ── */
+    #native-voice-badge {
+      position: fixed;
+      top: calc(var(--sat) + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: #2d7a46;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 16px;
+      border-radius: 20px;
+      z-index: 800;
+      display: none;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      white-space: nowrap;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    #native-voice-badge.visible { display: flex; }
+    #native-voice-badge .nvb-dot {
+      width: 8px; height: 8px;
+      background: #57f287;
+      border-radius: 50%;
+      animation: nvb-blink 1.2s ease infinite;
+    }
+    @keyframes nvb-blink {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.4; }
+    }
+
+    /* ── Haptic ile gönder butonu dokunma geri bildirimi ── */
+    #sendButton:active,
+    .send-btn:active,
+    [data-haptic]:active {
+      transform: scale(0.92);
+      transition: transform 0.1s ease;
+    }
+
+    /* ── iOS'ta input zoom'unu önle (font-size 16px altında zoom yapar) ── */
+    input, textarea, select {
+      font-size: 16px !important;
+    }
+
+    /* ── Android geri tuşu görsel ipucu — sadece gösterge, işlevi JS'de ── */
+    .modal-overlay .modal-card,
+    .modal.active,
+    .overlay.active {
+      /* native geri tuşu aktif sınıf — animasyon hook'u */
+    }
+
+    /* ── Uzun basma / context menu ücretsiz scroll engeli (iOS) ── */
+    img, video, .message-content, .msg-img {
+      -webkit-touch-callout: none;
+    }
+    .msg-input, .msg-input textarea {
+      -webkit-user-select: text;
+      user-select: text;
+    }
+  </style>
+</head>
+
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     NATIVE SPLASH — Capacitor SplashScreen.hide() çağrılana kadar
+     görünür kalır; hideSplash() fonksiyonu ile gizlenir.
+     ══════════════════════════════════════════════════════════════════ -->
+<div id="native-splash" role="status" aria-label="Bridge yükleniyor">
+  <div class="splash-logo">🌉</div>
+  <div class="splash-name">Bridge</div>
+  <div class="splash-spinner"></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     PUSH BİLDİRİM İZİN BANNER'I
+     Capacitor PushNotifications.requestPermissions() sonucu
+     beklenmeden önce gösterilir.
+     ══════════════════════════════════════════════════════════════════ -->
+<div id="push-permission-banner" style="display:none" role="alertdialog"
+     aria-labelledby="ppb-title" aria-describedby="ppb-desc">
+  <div class="ppb-icon">🔔</div>
+  <div class="ppb-text">
+    <strong id="ppb-title">Bildirimleri Aç</strong>
+    <span id="ppb-desc">Yeni mesajları kaçırma</span>
+  </div>
+  <div class="ppb-actions">
+    <button class="ppb-btn ppb-btn-allow" type="button" data-native-action="push-allow">İzin Ver</button>
+    <button class="ppb-btn ppb-btn-deny"  type="button" data-native-action="push-dismiss">Sonra</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     SES KANALI BAĞLANTI ROZETI (uygulama arka plandayken görünür)
+     ══════════════════════════════════════════════════════════════════ -->
+<!-- NOT: Buradaki "Ayrıl" düğmesi KALDIRILDI.
+     `onclick="leaveVoice && leaveVoice()"` yazıyordu; `leaveVoice` diye bir
+     global HİÇ tanımlı değil (web kabuğu da aynı sebeple statik ses
+     kontrollerini kaldırmıştı — bkz. client/index.html "Faz 8.3"). Kısa devre
+     koruması sayesinde hata vermiyor, sadece HİÇBİR ŞEY yapmıyordu.
+     Çalışmayan bir kontrolü göstermek, göstermemekten kötüdür.
+     AÇIK KALAN İŞ: sesli görüşmeden çıkışın tek sahibi VoicePanel.svelte;
+     rozete gerçek bir çıkış eylemi bağlamak ayrı bir iş kalemidir. -->
+<div id="native-voice-badge" aria-live="polite">
+  <div class="nvb-dot"></div>
+  <span id="nvb-text">Ses kanalına bağlı</span>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     ANA UYGULAMA SARMALAYICISI
+     ══════════════════════════════════════════════════════════════════ -->
+<div id="bridge-root">
+
+  <!-- ══════════════════════════════════════════════════════════════════
+       UYGULAMA GÖVDESİ — DERLENMİŞ WEB KABUĞUNDAN ÜRETİLİR
+       ══════════════════════════════════════════════════════════════════
+       ÖLÇÜLEN KUSUR (Final20): buraya web kabuğunun ELLE KOPYALANMIŞ eski
+       bir sürümü gömülüydü. Web istemcisi ESM modüllerine ve delege edilmiş
+       (`data-action`) olay işleyicilerine geçtiğinde bu kopya geride kaldı:
+       mobil kabukta 48 adet `onclick="..."` özniteliği ARTIK VAR OLMAYAN
+       global fonksiyonları çağırıyordu. Tarayıcıda ölçüldü:
+       `ReferenceError: switchAuthTab is not defined`,
+       `ReferenceError: login is not defined` — yani mobil giriş ekranındaki
+       düğmeler HİÇBİR ŞEY yapmıyordu.
+
+       Artık tek bir doğruluk kaynağı var: `client/index.dist.html`.
+       `mobile/scripts/setup.js` onun gövdesini buraya yerleştirir; mobil
+       kabuk yalnızca KENDİNE ÖZGÜ parçaları (splash, alt navigasyon, push
+       banner, ses rozeti) katar. Web tarafındaki her değişiklik mobile
+       otomatik yansır ve bu sınıf sapma bir daha oluşamaz.
+       ══════════════════════════════════════════════════════════════════ -->
+  <!-- BRIDGE:APP-MARKUP:START -->
+  <!-- BRIDGE:APP-MARKUP:END -->
+
+</div><!-- /bridge-root -->
+
+<!-- ── MOBİL ALT NAVİGASYON ─────────────────────────────────────────────
+     KALDIRILDI. Burada `<div onclick="mobileNav('chat')">` biçiminde bir kopya
+     duruyordu; `mobileNav` / `closeMobilePanels` ESM modül-içi fonksiyonlardır
+     ve `window`a atanmazlar, dolayısıyla bu düğmelerin HEPSİ ölüydü.
+
+     Web kabuğu (`client/index.html`) aynı navigasyonun ÇALIŞAN ve ERİŞİLEBİLİR
+     sürümünü taşıyor: gerçek `<button>` öğeleri, `role="navigation"`,
+     `aria-label`, ve delege edilen `data-bridge-action="mobileNav"`.
+     Kabuk artık oradan üretildiği için mobil o sürümü DEVRALIR. ── -->
+
+<!-- ════════════════════════════════════════════════════════════════════
+     SCRIPT YÜKLEMESİ
+     Sıra: Capacitor core → Bridge web core → Capacitor Bridge entegrasyonu
+     ════════════════════════════════════════════════════════════════════ -->
+
+<!-- 1. Capacitor Runtime (npx cap sync sonrası gelir) -->
+<script src="capacitor.js"></script>
+
+<!-- 2. Socket.IO istemcisi — PAKETİN İÇİNDEN (Final21 Faz 19, 19-28).
+     Önceden `/socket.io/socket.io.js` isteniyordu: web'de onu Socket.IO SUNUCUSU verir, paketlenmiş
+     uygulamada ise yol uygulamanın KENDİ kökenine (https://localhost) çözülür ve dosya YOKTUR →
+     `io` hiç tanımlanmaz, gerçek zamanlı her şey ölür ve mesajlar sonsuza dek kuyrukta kalır
+     (emülatörde ölçüldü). setup.js mobile/package.json'daki socket.io-client dağıtımını kopyalar. -->
+<script src="js/socket.io.min.js"></script>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     3. Bridge Web Uygulaması — DERLENMİŞ paket girişi
+     ════════════════════════════════════════════════════════════════════
+     Buradaki içerik `mobile/scripts/setup.js` tarafından ÜRETİLİR.
+
+     ÖLÇÜLEN KUSUR: bu blok elle bakılan 62 adet `js/core/*.js` etiketi
+     içeriyordu. İstemci uzun süre önce tek bir ESM paketine geçti
+     (`client/index.dist.html` → `dist/js/app-<hash>.js`), dolayısıyla
+     üretilen `www/index.html` ARTIK VAR OLMAYAN 62 dosyayı yüklemeye
+     çalışıyordu: mobil kabuk splash ekranından sonra hiç açılmıyordu.
+
+     Artık liste elle tutulmaz; `setup.js` gerçek derleme çıktısını okur ve
+     aşağıdaki işaretleyicilerin arasını doldurur. Çözülemeyen tek bir
+     referans bile build'i DÜŞÜRÜR (bkz. verifyLocalReferences).
+     ════════════════════════════════════════════════════════════════════ -->
+<!-- BRIDGE:APP-SCRIPTS:START -->
+<!-- BRIDGE:APP-SCRIPTS:END -->
+
+<!-- 4. Capacitor Bridge entegrasyonu (EN SON yüklenir — tüm API'ler hazır olmalı) -->
+<script src="js/capacitor-bridge.js"></script>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     MOBİL NATIVE BOOTSTRAP
+     ════════════════════════════════════════════════════════════════════ -->
+<script>
+(function () {
+  'use strict';
+
+  // ── SPLASH GİZLE ───────────────────────────────────────────────────
+  // Capacitor SplashScreen.hide() tetikledikten sonra JS splash'ı da kapat.
+  window.hideSplash = function () {
+    const el = document.getElementById('native-splash');
+    if (!el) return;
+    el.classList.add('hidden');
+    setTimeout(() => el.remove(), 400);
+  };
+
+  // SplashScreen plugin yoksa (web önizleme) 800ms sonra gizle
+  window.addEventListener('DOMContentLoaded', () => {
+    if (typeof Capacitor === 'undefined') {
+      setTimeout(window.hideSplash, 800);
+    } else {
+      // Güvenlik ağı (Final21 Faz 19, 19-28): yerel köprü çalışmasa bile bu katman uygulamayı
+      // KİLİTLEMEZ. Önceden köprü HTML katmanını hiç kaldırmıyordu ve giriş formu arkasında kalıyordu.
+      setTimeout(window.hideSplash, 8000);
+    }
+    // Capacitor varsa capacitor-bridge.js içindeki DOMContentLoaded handler'ı
+    // SplashScreen.hide() çağırır, ardından hideSplash() tetiklenir.
+  });
+
+  // ── PUSH BİLDİRİM BANNER YÖNETİMİ ─────────────────────────────────
+  // Daha önce reddedildiyse banner'ı gösterme
+  const PUSH_ASKED_KEY = 'bridge_push_asked';
+
+  window.showPushPermissionBanner = function () {
+    if (localStorage.getItem(PUSH_ASKED_KEY)) return;
+    const banner = document.getElementById('push-permission-banner');
+    if (banner) banner.style.display = 'flex';
+  };
+
+  window.nativeAllowPush = function () {
+    localStorage.setItem(PUSH_ASKED_KEY, '1');
+    nativeDismissPushBanner();
+    // Gerçek izin isteği capacitor-bridge.js → setupPushNotifications() içinde
+    if (typeof Capacitor !== 'undefined' && Capacitor.Plugins?.PushNotifications) {
+      Capacitor.Plugins.PushNotifications.requestPermissions().then(result => {
+        if (result.receive === 'granted') {
+          Capacitor.Plugins.PushNotifications.register();
+        }
+      });
+    }
+  };
+
+  window.nativeDismissPushBanner = function () {
+    const banner = document.getElementById('push-permission-banner');
+    if (!banner) return;
+    banner.classList.add('hiding');
+    setTimeout(() => { banner.style.display = 'none'; banner.classList.remove('hiding'); }, 350);
+  };
+
+  // ── DELEGE EDİLMİŞ NATIVE EYLEMLER ────────────────────────────────
+  // Satır içi `onclick` KULLANILMAZ. Sebep sadece CSP değil: web kabuğu
+  // `data-bridge-action` deseniyle zaten delege dinleyicilere geçmişti ve
+  // mobil kabuk bu geçişi kaçırdığı için düğmeleri ölü kalmıştı. Aynı deseni
+  // burada da uygulamak, işleyicinin gerçekten var olduğunu GARANTİ eder —
+  // çünkü dinleyici ile fonksiyon aynı dosyada durur.
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!target || typeof target.closest !== 'function') return;
+    const el = target.closest('[data-native-action]');
+    if (!el) return;
+    const action = el.getAttribute('data-native-action');
+    if (action === 'push-allow') { event.preventDefault(); window.nativeAllowPush(); }
+    else if (action === 'push-dismiss') { event.preventDefault(); window.nativeDismissPushBanner(); }
+  });
+
+  // Kullanıcı giriş yaptıktan ~2s sonra banner'ı göster
+  window.addEventListener('bridge:loggedin', () => {
+    setTimeout(window.showPushPermissionBanner, 2000);
+  });
+
+  // ── SES KANALI ROZET YÖNETİMİ ──────────────────────────────────────
+  // Uygulama arka plana geçince ses kanalı rozetini göster
+  window.addEventListener('bridge:appstate', e => {
+    const badge = document.getElementById('native-voice-badge');
+    if (!badge) return;
+    // Ses kanalına bağlı mı kontrol et (window.inVoiceChannel global'ı)
+    const inVoice = window.inVoiceChannel || false;
+    badge.classList.toggle('visible', !e.detail.active && inVoice);
+  });
+
+  // Ses kanalına giriş/çıkış olduğunda rozeti güncelle
+  window.addEventListener('bridge:voicejoined', e => {
+    const badge   = document.getElementById('native-voice-badge');
+    const nameEl  = document.getElementById('nvb-text');
+    if (badge && nameEl) {
+      nameEl.textContent = e.detail?.channelName
+        ? `🔊 ${e.detail.channelName}`
+        : 'Ses kanalına bağlı';
+    }
+  });
+  window.addEventListener('bridge:voiceleft', () => {
+    document.getElementById('native-voice-badge')?.classList.remove('visible');
+  });
+
+  // ── CAPACITOR NAVİGASYON YÖNLENDİRMESİ ────────────────────────────
+  // Push bildirim tıklamasından gelen navigasyon olayı
+  window.addEventListener('bridge:navigate', e => {
+    const { channelId, serverId } = e.detail || {};
+    if (!channelId) return;
+    // Bridge'in global selectChannel fonksiyonunu çağır
+    if (typeof selectServer  === 'function' && serverId)  selectServer(serverId);
+    if (typeof selectChannel === 'function' && channelId) selectChannel(channelId);
+  });
+
+  // ── AĞ DURUMU TOAST ENTEGRASYONu ───────────────────────────────────
+  window.addEventListener('bridge:network', e => {
+    if (e.detail.connected && typeof toast === 'function') {
+      toast('Bağlantı yeniden sağlandı ✅', 'success');
+    }
+  });
+
+  // ── iOS SAFE AREA CSS DEĞİŞKENİ GÜNCELLE ───────────────────────────
+  // orientationchange sonrası env() değerlerini güncelle
+  window.addEventListener('orientationchange', () => {
+    setTimeout(() => {
+      // Tarayıcının env() değerlerini yeniden hesaplaması için boş reflow
+      document.documentElement.style.setProperty('--sat',
+        getComputedStyle(document.documentElement).getPropertyValue('--sat'));
+    }, 200);
+  });
+
+  // ── PWA SERVICE WORKER (web modunda — Capacitor'da atlanır) ────────
+  if ('serviceWorker' in navigator && typeof Capacitor === 'undefined') {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js')
+        .then(reg => {
+          reg.addEventListener('updatefound', () => {
+            const w = reg.installing;
+            w.addEventListener('statechange', () => {
+              if (w.state === 'installed' && navigator.serviceWorker.controller) {
+                if (typeof toast === 'function')
+                  toast('Güncelleme mevcut — yenile 🔄', 'info');
+              }
+            });
+          });
+        })
+        .catch(err => console.warn('[Bridge SW]', err));
+
+      navigator.serviceWorker.addEventListener('message', e => {
+        if (e.data?.type === 'NOTIFICATION_CLICK' && e.data.url)
+          window.location.href = e.data.url;
+      });
+    });
+  }
+
+  // ── PWA KURULUM PROMPT (sadece web) ────────────────────────────────
+  let _installPrompt = null;
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    _installPrompt = e;
+    const btn = document.getElementById('pwa-install-btn');
+    if (btn) btn.style.display = 'flex';
+  });
+  window.installPWA = async function () {
+    if (!_installPrompt) return;
+    _installPrompt.prompt();
+    const { outcome } = await _installPrompt.userChoice;
+    if (outcome === 'accepted') {
+      const btn = document.getElementById('pwa-install-btn');
+      if (btn) btn.style.display = 'none';
+    }
+    _installPrompt = null;
+  };
+
+  // ── data-bridge-action dispatch — Sprint 57 ───────────────────────────────
+  // index.html ile tutarlı: onclick yerine data-bridge-action attribute kullanılır
+  document.addEventListener('click', function (e) {
+    const el = e.target.closest('[data-bridge-action]');
+    if (!el) return;
+    const action = el.getAttribute('data-bridge-action');
+    if (!action) return;
+    e.stopPropagation();
+    if (typeof BridgeRegistry !== 'undefined' && BridgeRegistry.has(action)) {
+      BridgeRegistry.call(action, el);
+    }
+  });
+
+})();
+</script>
+
+</body>
+</html>

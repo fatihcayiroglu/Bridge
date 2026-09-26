@@ -4,6 +4,7 @@
 //   1. bot-marketplace route (in-memory Map yerine DB mock)
 //   2. stage-video-grid handler
 //   3. draw-together aktivitesi
+import { findEmitted, requireEmitted } from './helpers/socketDoubles';
 
 'use strict';
 process.env.NODE_ENV = 'test';
@@ -84,6 +85,11 @@ jest.mock('../middleware/auth', () => ({
   castAuthed: (req: Record<string, unknown>) => req,
 }));
 
+jest.mock('../lib/adminAuthority', () => ({
+  databaseAdminOnly: (_req: unknown, _res: unknown, next: () => void) => next(),
+  isDatabaseAdmin: jest.fn().mockResolvedValue(true),
+}));
+
 jest.mock('../middleware/rateLimit', () => ({
   limits: {
     general: () => (_req: unknown, _res: unknown, next: () => void) => next(),
@@ -94,6 +100,34 @@ jest.mock('../middleware/rateLimit', () => ({
 import request from 'supertest';
 import express from 'express';
 import botMarketplaceRouter from '../routes/bot-marketplace';
+import { BotMarketplace } from '../db/repositories/BotMarketplaceRepository';
+
+/**
+ * `draw:join` artik ASENKRONDUR: kanal yetkisi veritabanindan dogrulanir
+ * (capraz kiraci tuval acigi kapatildi). Sahte soketin `_trigger` cagrisi
+ * senkron dondugu icin, is bitmeden iddiaya gecilmemesi adina mikro-gorev
+ * kuyrugu bosaltilir.
+ */
+const flushAsync = () => new Promise(r => setImmediate(r));
+
+// ── AKTIVITE YETKI DENETIMI — BU DOSYADA IZIN VER ──────────────────────────
+// `chess:join` / `draw:join` artik kanal erisimi dogruluyor (capraz kiraci
+// acik kapatildi: uyesi olmayan biri baska bir kanalda oyun/tuval acabiliyordu).
+//
+// Bu dosya SATRANC/CIZIM MANTIGINI sinar, yetkiyi degil. Bu yuzden yetki
+// katmani burada acikca IZIN VERECEK sekilde sahtelenir.
+//
+// Yetkinin GERCEKTEN yerinde oldugunu kanitlayan yerler ayridir:
+//   • tests/activity-tenancy.test.ts   — kaynak sozlesmesi + mutasyon
+//   • e2e/_draw-tenancy.cjs            — canli sunucuda somuru + pozitif kontrol
+jest.mock('../lib/permissions', () => ({
+  ...jest.requireActual('../lib/permissions'),
+  canViewChannel: jest.fn().mockResolvedValue(true),
+}));
+jest.mock('../db/repositories', () => ({
+  ...jest.requireActual('../db/repositories'),
+  Channels: { findById: jest.fn().mockResolvedValue({ _id: 'c', serverId: 's' }) },
+}));
 
 function buildMarketplaceApp() {
   const app = express();
@@ -128,6 +162,23 @@ describe('bot-marketplace route', () => {
     expect(res.status).toBe(200);
   });
 
+
+  it.each(['-1', '1.5', '9007199254740992'])('GET / güvenli olmayan limit=%s için 400 döndürür', async (limit) => {
+    const res = await request(app).get(`/api/bots/marketplace?limit=${limit}`);
+    expect(res.status).toBe(400);
+  });
+
+  it.each(['-1', '1.5', '9007199254740992'])('GET / güvenli olmayan offset=%s için 400 döndürür', async (offset) => {
+    const res = await request(app).get(`/api/bots/marketplace?offset=${offset}`);
+    expect(res.status).toBe(400);
+  });
+
+  it('GET / büyük pozitif limiti 100 ile clamp eder', async () => {
+    const res = await request(app).get('/api/bots/marketplace?limit=1000');
+    expect(res.status).toBe(200);
+    expect(res.body.limit).toBe(100);
+  });
+
   it('GET /:botId bilinen botu döndürür', async () => {
     const res = await request(app).get('/api/bots/marketplace/bridge-music');
     expect(res.status).toBe(200);
@@ -137,6 +188,30 @@ describe('bot-marketplace route', () => {
   it('GET /:botId bilinmeyen bot için 404', async () => {
     const res = await request(app).get('/api/bots/marketplace/unknown-bot-xyz');
     expect(res.status).toBe(404);
+  });
+
+  it('POST /:botId/rating tam sayı 1-5 dışında değeri 400 ile reddeder', async () => {
+    const spy = jest.spyOn(BotMarketplace, 'rateBot');
+    const res = await request(app).post('/api/bots/marketplace/bridge-music/rating').send({ rating: 4.5 });
+    expect(res.status).toBe(400);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('POST /:botId/rating kanonik repository sonucunu döndürür', async () => {
+    const spy = jest.spyOn(BotMarketplace, 'rateBot').mockResolvedValue(_mpRows[0] as never);
+    const res = await request(app).post('/api/bots/marketplace/bridge-music/rating').send({ rating: 5 });
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe('bridge-music');
+    expect(spy).toHaveBeenCalledWith('bridge-music', 'u1', 5);
+    spy.mockRestore();
+  });
+
+  it('POST /:botId/rating onaysız/bilinmeyen botu 404 ile gizler', async () => {
+    const spy = jest.spyOn(BotMarketplace, 'rateBot').mockResolvedValue(null);
+    const res = await request(app).post('/api/bots/marketplace/missing/rating').send({ rating: 5 });
+    expect(res.status).toBe(404);
+    spy.mockRestore();
   });
 
   it('POST / zorunlu alanlar eksikse 400 döner', async () => {
@@ -176,6 +251,13 @@ jest.mock('../socket/handlers/mediasoup/rooms', () => ({
   sfuRooms: new Map(),
 }));
 
+jest.mock('../socket/handlers/stage', () => ({
+  isStageParticipant: jest.fn().mockResolvedValue(true),
+  canManageStage: jest.fn((_channelId: string, userId: string) => Promise.resolve(userId === 'uHost')),
+}));
+
+import { sfuPeers } from '../socket/handlers/mediasoup/rooms';
+
 function makeGridSocket(id: string) {
   const handlers: Record<string, ((...a: unknown[]) => void)> = {};
   const emitted: { ev: string; data: unknown }[] = [];
@@ -185,6 +267,7 @@ function makeGridSocket(id: string) {
     on:   (ev: string, fn: (...a: unknown[]) => void) => { handlers[ev] = fn; },
     emit: (ev: string, data: unknown) => { emitted.push({ ev, data }); },
     join: (room: string) => rooms.add(room),
+    leave: (room: string) => rooms.delete(room),
     to:   (_r: string) => ({ emit: jest.fn() }),
     _handlers: handlers,
     _emitted:  emitted,
@@ -204,8 +287,16 @@ function makeGridIo() {
   };
 }
 
+function seedGridSfuPeer(socketId: string, channelId: string) {
+  (sfuPeers as Map<string, unknown>).set(socketId, {
+    socketId, channelId, userId: `user-${socketId}`,
+    producers: new Map(), consumers: new Map(), transports: new Map(),
+    muted: false, deafened: false, video: false, screensharing: false,
+  });
+}
+
 describe('stage-video-grid handler', () => {
-  beforeEach(() => videoGridRooms.clear());
+  beforeEach(() => { videoGridRooms.clear(); (sfuPeers as Map<string, unknown>).clear(); });
   afterEach(()  => videoGridRooms.clear());
 
   it('stage:video-join — oda oluşturulur ve katılımcı eklenir', async () => {
@@ -214,6 +305,7 @@ describe('stage-video-grid handler', () => {
     const user   = { _id: 'u1', displayName: 'Alice', avatarColor: '#ff0000' };
 
     registerVideoGridHandlers(socket as never, io as never, user);
+    seedGridSfuPeer('s-vg1', 'ch-1');
     await socket._trigger('stage:video-join', { channelId: 'ch-1' });
 
     expect(videoGridRooms.has('ch-1')).toBe(true);
@@ -221,8 +313,22 @@ describe('stage-video-grid handler', () => {
     expect(room.peers.has('s-vg1')).toBe(true);
     expect(socket.rooms.has('video-grid:ch-1')).toBe(true);
 
-    const stateEvent = socket._emitted.find(e => e.ev === 'stage:video-state');
+    const stateEvent = requireEmitted(socket._emitted, 'stage:video-state');
     expect(stateEvent).toBeDefined();
+  });
+
+  it('stage:video-join — SFU peer olsa bile stage participant değilse reddedilir', async () => {
+    const stage = require('../socket/handlers/stage');
+    stage.isStageParticipant.mockResolvedValueOnce(false);
+    const socket = makeGridSocket('s-not-stage');
+    const io = makeGridIo();
+    registerVideoGridHandlers(socket as never, io as never, { _id: 'uX', displayName: 'X', avatarColor: '#000' });
+    seedGridSfuPeer('s-not-stage', 'ch-private-stage');
+
+    await socket._trigger('stage:video-join', { channelId: 'ch-private-stage' });
+
+    expect(videoGridRooms.has('ch-private-stage')).toBe(false);
+    expect(socket._emitted.some(e => e.ev === 'stage:video-error')).toBe(true);
   });
 
   it('stage:video-join — yeni katılana mevcut state gönderilir', async () => {
@@ -234,13 +340,15 @@ describe('stage-video-grid handler', () => {
     const io  = makeGridIo();
 
     registerVideoGridHandlers(s1 as never, io as never, user1);
+    seedGridSfuPeer('s-vg-a', 'ch-multi');
     await s1._trigger('stage:video-join', { channelId: 'ch-multi' });
 
     registerVideoGridHandlers(s2 as never, io as never, user2);
+    seedGridSfuPeer('s-vg-b', 'ch-multi');
     await s2._trigger('stage:video-join', { channelId: 'ch-multi' });
 
     // s2'ye gönderilen state'de s1 zaten var olmalı
-    const stateEvent = s2._emitted.find(e => e.ev === 'stage:video-state');
+    const stateEvent = requireEmitted(s2._emitted, 'stage:video-state');
     expect(stateEvent).toBeDefined();
     const peers = (stateEvent!.data as { peers: unknown[] }).peers;
     expect(peers.length).toBeGreaterThanOrEqual(1);
@@ -252,11 +360,30 @@ describe('stage-video-grid handler', () => {
     const user   = { _id: 'u3', displayName: 'Carol', avatarColor: '#0f0' };
 
     registerVideoGridHandlers(socket as never, io as never, user);
+    seedGridSfuPeer('s-leave', 'ch-leave');
     await socket._trigger('stage:video-join',  { channelId: 'ch-leave' });
     expect(videoGridRooms.get('ch-leave')?.peers.has('s-leave')).toBe(true);
 
     await socket._trigger('stage:video-leave', { channelId: 'ch-leave' });
     expect(videoGridRooms.has('ch-leave')).toBe(false); // oda boştu, silindi
+    expect(socket.rooms.has('video-grid:ch-leave')).toBe(false);
+  });
+
+  it('sfu:leave — mediasoup teardown sırasından bağımsız olarak grid ve Socket.IO room üyeliğini temizler', async () => {
+    const socket = makeGridSocket('s-sfu-leave');
+    const io = makeGridIo();
+    registerVideoGridHandlers(socket as never, io as never, { _id: 'u5', displayName: 'Eve', avatarColor: '#def' });
+    seedGridSfuPeer('s-sfu-leave', 'ch-sfu-leave');
+    await socket._trigger('stage:video-join', { channelId: 'ch-sfu-leave' });
+    expect(socket.rooms.has('video-grid:ch-sfu-leave')).toBe(true);
+
+    // Reproduce the real ordering where the mediasoup handler may have already
+    // removed the global peer before the grid's independent listener runs.
+    (sfuPeers as Map<string, unknown>).delete('s-sfu-leave');
+    await socket._trigger('sfu:leave', { channelId: 'ch-sfu-leave' });
+
+    expect(videoGridRooms.has('ch-sfu-leave')).toBe(false);
+    expect(socket.rooms.has('video-grid:ch-sfu-leave')).toBe(false);
   });
 
   it('disconnect — tüm grid odalarından temizlenir', async () => {
@@ -265,7 +392,10 @@ describe('stage-video-grid handler', () => {
     const user   = { _id: 'u4', displayName: 'Dave', avatarColor: '#abc' };
 
     registerVideoGridHandlers(socket as never, io as never, user);
+    seedGridSfuPeer('s-dc', 'ch-dc1');
     await socket._trigger('stage:video-join', { channelId: 'ch-dc1' });
+    // Bir socket aynı anda tek SFU room sahibidir; ikinci room için canonical peer state değişir.
+    seedGridSfuPeer('s-dc', 'ch-dc2');
     await socket._trigger('stage:video-join', { channelId: 'ch-dc2' });
     expect(videoGridRooms.size).toBe(2);
 
@@ -281,18 +411,20 @@ describe('stage-video-grid handler', () => {
 
     registerVideoGridHandlers(host    as never, io as never, { _id: 'uHost', displayName: 'Host', avatarColor: '#000' });
     registerVideoGridHandlers(nonHost as never, io as never, { _id: 'uGuest', displayName: 'Guest', avatarColor: '#fff' });
+    seedGridSfuPeer('s-host', 'ch-layout');
+    seedGridSfuPeer('s-nonhost', 'ch-layout');
 
     await host._trigger('stage:video-join',    { channelId: 'ch-layout' });
     await nonHost._trigger('stage:video-join', { channelId: 'ch-layout' });
 
     // non-host layout değiştirmeye çalışıyor
     await nonHost._trigger('stage:video-layout', { channelId: 'ch-layout', layout: 'spotlight' });
-    const errEvent = nonHost._emitted.find(e => e.ev === 'stage:video-error');
+    const errEvent = requireEmitted(nonHost._emitted, 'stage:video-error');
     expect(errEvent).toBeDefined();
 
     // host değiştirebilir
     await host._trigger('stage:video-layout', { channelId: 'ch-layout', layout: 'spotlight', spotlightId: 's-host' });
-    const layoutEvent = io._emitted.find(e => e.ev === 'stage:video-layout-changed');
+    const layoutEvent = requireEmitted(io._emitted, 'stage:video-layout-changed');
     expect(layoutEvent).toBeDefined();
     expect((layoutEvent!.data as { layout: string }).layout).toBe('spotlight');
   });
@@ -307,12 +439,18 @@ import { registerDrawTogetherHandlers, drawSessions } from '../socket/handlers/a
 function makeDrawSocket(id: string) {
   const handlers: Record<string, ((...a: unknown[]) => void)> = {};
   const emitted: { ev: string; data: unknown }[] = [];
-  const rooms = new Set<string>();
+  const roomSet = new Set<string>();
+  const rooms = {
+    add: (room: string) => roomSet.add(room),
+    has: (room: string) => room.startsWith('voice:') || roomSet.has(room),
+    delete: (room: string) => roomSet.delete(room),
+  };
   return {
     id, rooms,
     on:   (ev: string, fn: (...a: unknown[]) => void) => { handlers[ev] = fn; },
     emit: (ev: string, data?: unknown) => { emitted.push({ ev, data }); },
     join: (room: string) => rooms.add(room),
+    leave: (room: string) => rooms.delete(room),
     to:   (_r: string) => ({ emit: jest.fn() }),
     _handlers: handlers,
     _emitted:  emitted,
@@ -348,11 +486,13 @@ describe('draw-together handler', () => {
 
     registerDrawTogetherHandlers(socket as never, io as never, user);
     await socket._trigger('draw:join', { channelId: 'ch-dt', sessionId: 'sess-1' });
+    await flushAsync();
+    await flushAsync();
 
     expect(drawSessions.has('ch-dt')).toBe(true);
     expect(socket.rooms.has('draw:ch-dt')).toBe(true);
 
-    const stateEv = socket._emitted.find(e => e.ev === 'draw:state');
+    const stateEv = requireEmitted(socket._emitted, 'draw:state');
     expect(stateEv).toBeDefined();
     expect((stateEv!.data as { strokes: unknown[] }).strokes).toEqual([]);
   });
@@ -364,6 +504,8 @@ describe('draw-together handler', () => {
 
     registerDrawTogetherHandlers(socket as never, io as never, user);
     await socket._trigger('draw:join', { channelId: 'ch-stroke', sessionId: 'sess-2' });
+    await flushAsync();
+    await flushAsync();
 
     const toMock = jest.fn(() => ({ emit: jest.fn() }));
     (socket as unknown as { to: jest.Mock }).to = toMock;
@@ -380,6 +522,8 @@ describe('draw-together handler', () => {
 
     registerDrawTogetherHandlers(socket as never, io as never, user);
     await socket._trigger('draw:join', { channelId: 'ch-badtool', sessionId: 'sess-3' });
+    await flushAsync();
+    await flushAsync();
 
     await socket._trigger('draw:stroke', {
       channelId: 'ch-badtool',
@@ -387,8 +531,65 @@ describe('draw-together handler', () => {
       points: [{ x: 0, y: 0 }],
     });
 
-    const err = socket._emitted.find(e => e.ev === 'draw:error');
+    const err = requireEmitted(socket._emitted, 'draw:error');
     expect(err).toBeDefined();
+  });
+
+  it('draw:stroke — bundled client strokeId + point-only update contract is accepted', async () => {
+    const socket = makeDrawSocket('s-dt-wire');
+    const io     = makeDrawIo();
+    registerDrawTogetherHandlers(socket as never, io as never, {
+      _id: 'u-wire', displayName: 'Wire', avatarColor: '#456',
+    });
+    await socket._trigger('draw:join', { channelId: 'ch-wire', sessionId: 'sess-wire' });
+    await flushAsync();
+    await flushAsync();
+
+    const broadcasts: { ev: string; data: unknown }[] = [];
+    (socket as unknown as { to: () => { emit: (ev: string, data: unknown) => void } }).to =
+      () => ({ emit: (ev, data) => broadcasts.push({ ev, data }) });
+
+    await socket._trigger('draw:stroke', {
+      channelId: 'ch-wire', strokeId: 'client-stroke-1', tool: 'pen', color: '#123456',
+      size: 4, opacity: 1, points: [{ x: 1, y: 2 }],
+    });
+    await socket._trigger('draw:stroke', {
+      channelId: 'ch-wire', strokeId: 'client-stroke-1',
+      points: [{ x: 3, y: 4 }, { x: 5, y: 6 }],
+    });
+
+    const active = drawSessions.get('ch-wire')!.activeStrokes.get('s-dt-wire');
+    expect(active?.id).toBe('client-stroke-1');
+    expect(active?.points).toEqual([{ x: 3, y: 4 }, { x: 5, y: 6 }]);
+    expect(broadcasts.filter(event => event.ev === 'draw:stroke')).toHaveLength(2);
+  });
+
+  it('draw inputs reject non-finite numeric values before state or broadcast mutation', async () => {
+    const socket = makeDrawSocket('s-dt-finite');
+    const io     = makeDrawIo();
+    registerDrawTogetherHandlers(socket as never, io as never, {
+      _id: 'u-finite', displayName: 'Finite', avatarColor: '#789',
+    });
+    await socket._trigger('draw:join', { channelId: 'ch-finite', sessionId: 'sess-finite' });
+    await flushAsync();
+    await flushAsync();
+
+    const broadcasts: unknown[] = [];
+    (socket as unknown as { to: () => { emit: (...args: unknown[]) => void } }).to =
+      () => ({ emit: (...args) => broadcasts.push(args) });
+    await socket._trigger('draw:stroke', {
+      channelId: 'ch-finite', ...STROKE_VALID, points: [{ x: Number.NaN, y: 2 }],
+    });
+    await socket._trigger('draw:tool', {
+      channelId: 'ch-finite', tool: 'pen', color: '#fff', size: Number.POSITIVE_INFINITY,
+    });
+    await socket._trigger('draw:cursor', {
+      channelId: 'ch-finite', x: Number.POSITIVE_INFINITY, y: 0,
+    });
+
+    expect(drawSessions.get('ch-finite')!.activeStrokes.has('s-dt-finite')).toBe(false);
+    expect(socket._emitted.filter(event => event.ev === 'draw:error')).toHaveLength(2);
+    expect(broadcasts).toEqual([]);
   });
 
   it('draw:stroke-end — stroke buffer\'a eklenir', async () => {
@@ -398,6 +599,8 @@ describe('draw-together handler', () => {
 
     registerDrawTogetherHandlers(socket as never, io as never, user);
     await socket._trigger('draw:join', { channelId: 'ch-end', sessionId: 'sess-4' });
+    await flushAsync();
+    await flushAsync();
     await socket._trigger('draw:stroke', { channelId: 'ch-end', ...STROKE_VALID });
     await socket._trigger('draw:stroke-end', { channelId: 'ch-end', strokeId: 'stroke-1' });
 
@@ -414,6 +617,8 @@ describe('draw-together handler', () => {
 
     registerDrawTogetherHandlers(socket as never, io as never, user);
     await socket._trigger('draw:join', { channelId: 'ch-undo', sessionId: 'sess-5' });
+    await flushAsync();
+    await flushAsync();
     await socket._trigger('draw:stroke',     { channelId: 'ch-undo', ...STROKE_VALID });
     await socket._trigger('draw:stroke-end', { channelId: 'ch-undo', strokeId: 'stroke-1' });
 
@@ -422,7 +627,7 @@ describe('draw-together handler', () => {
     await socket._trigger('draw:undo', { channelId: 'ch-undo' });
     expect(drawSessions.get('ch-undo')!.strokes.length).toBe(0);
 
-    const undoEv = io._emitted.find(e => e.ev === 'draw:undo');
+    const undoEv = requireEmitted(io._emitted, 'draw:undo');
     expect(undoEv).toBeDefined();
     expect((undoEv!.data as { strokeId: string }).strokeId).toBe('stroke-1');
   });
@@ -436,7 +641,9 @@ describe('draw-together handler', () => {
     registerDrawTogetherHandlers(nonHost as never, io as never, { _id: 'uG', displayName: 'Guest', avatarColor: '#fff' });
 
     await host._trigger('draw:join',    { channelId: 'ch-clear', sessionId: 'sess-c' });
+    await flushAsync();
     await nonHost._trigger('draw:join', { channelId: 'ch-clear', sessionId: 'sess-c' });
+    await flushAsync();
 
     // Stroke ekle
     await host._trigger('draw:stroke',     { channelId: 'ch-clear', ...STROKE_VALID });
@@ -445,14 +652,14 @@ describe('draw-together handler', () => {
 
     // non-host temizlemeye çalışıyor
     await nonHost._trigger('draw:clear', { channelId: 'ch-clear' });
-    const errEv = nonHost._emitted.find(e => e.ev === 'draw:error');
+    const errEv = requireEmitted(nonHost._emitted, 'draw:error');
     expect(errEv).toBeDefined();
 
     // host temizliyor
     await host._trigger('draw:clear', { channelId: 'ch-clear' });
     expect(drawSessions.get('ch-clear')!.strokes.length).toBe(0);
 
-    const clearEv = io._emitted.find(e => e.ev === 'draw:clear');
+    const clearEv = requireEmitted(io._emitted, 'draw:clear');
     expect(clearEv).toBeDefined();
   });
 
@@ -463,6 +670,8 @@ describe('draw-together handler', () => {
 
     registerDrawTogetherHandlers(socket as never, io as never, user);
     await socket._trigger('draw:join', { channelId: 'ch-cur', sessionId: 'sess-cur' });
+    await flushAsync();
+    await flushAsync();
 
     const toEmits: unknown[] = [];
     (socket as unknown as { to: (...a: unknown[]) => { emit: (...a: unknown[]) => void } }).to =
@@ -487,7 +696,9 @@ describe('draw-together handler', () => {
     registerDrawTogetherHandlers(s2 as never, io as never, u2);
 
     await s1._trigger('draw:join', { channelId: 'ch-dcdraw', sessionId: 'sess-dc' });
+    await flushAsync();
     await s2._trigger('draw:join', { channelId: 'ch-dcdraw', sessionId: 'sess-dc' });
+    await flushAsync();
     expect(drawSessions.get('ch-dcdraw')!.participants.size).toBe(2);
 
     await s1._trigger('disconnect');

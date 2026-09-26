@@ -8,10 +8,11 @@
 //   4. SW outbox API testi (Background Sync yapısı)
 //   5. /api/messages endpoint reconnect senaryosu
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 import { BridgePage, getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
+import { openSocket, waitForEvent, closeSockets, paceSends } from '../helpers/socket';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 // Bu testler auth gerektirir
 test.use({ storageState: 'fixtures/auth-state.json' });
@@ -38,6 +39,7 @@ test.beforeAll(async ({ request }) => {
 test.describe('Mesaj Kalıcılığı (API)', () => {
 
   test('mesaj gönderilince veritabanına kaydedilmeli', async ({ request }) => {
+    test.skip(true, 'GEÇERSİZ MİMARİ: REST gönderim ucu yok; yerini alan kanonik kapsam → tests/message-actions.spec.ts (kalıcılık + ackId idempotency)');
     test.skip(!_sharedChannel, 'Test fixture hazır değil'  );
     const chId = _sharedChannel._id || _sharedChannel.id;
     const content = `persistence-test-${Date.now()}`;
@@ -60,6 +62,7 @@ test.describe('Mesaj Kalıcılığı (API)', () => {
   });
 
   test('mesaj silindikten sonra listede gözükmemeli', async ({ request }) => {
+    test.skip(true, 'GEÇERSİZ MİMARİ: REST gönderim ucu yok; yerini alan kanonik kapsam → tests/message-actions.spec.ts (message:delete kalıcı kaldırma)');
     test.skip(!_sharedChannel, 'Test fixture hazır değil'  );
     const chId = _sharedChannel._id || _sharedChannel.id;
     const content = `delete-test-${Date.now()}`;
@@ -94,45 +97,46 @@ test.describe('Mesaj Kalıcılığı (API)', () => {
 // ══════════════════════════════════════════════════════════════
 // 2. UI: Offline Queue Badge
 // ══════════════════════════════════════════════════════════════
+// Final21 Faz 19 (19-26): buradaki iki test Sprint 10'un `window._flushPendingQueue` /
+// `window._enqueueOfflineMessage` globallerini arıyordu. Svelte istemcisinde bunlar YOK (kalıcı
+// outbox: MessageInputPanel + outbox-store); testler "Test fixture hazır değil" diye HER koşumda
+// atlanıyordu ve ikincisinin son iddiası (`badge.or(body)` görünür) zaten BOŞTU. Çevrimdışı
+// gönderimin uçtan uca doğruluğu hiçbir tarayıcı testinde ölçülmüyordu. Yerine SON DURUM testi:
 test.describe('Offline Queue UI', () => {
+  test('çevrimdışı gönderilen mesaj KUYRUKTA kalır, bağlantı dönünce TAM BİR KEZ teslim edilir', async ({ page, context, request }) => {
+    test.setTimeout(120_000);
+    const sid = _sharedServer?._id || _sharedServer?.id;
+    const chId = _sharedChannel?._id || _sharedChannel?.id;
+    expect(sid && chId, 'offline-queue fikstürü kurulamadı').toBeTruthy();
 
-  test('offline-queue.js global API yüklenmeli', async ({ page }) => {
-    await page.goto(BASE_URL);
-    await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(1500); // scriptlerin yüklenmesi için
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await page.locator(`.server-icon[data-id="${sid}"]`).first().click({ timeout: 20_000 });
+    await page.locator('[aria-label="Kanal: offline-test"]').first().click({ timeout: 15_000 });
+    const input = page.locator('#msg-input');
+    await expect(input).toBeVisible({ timeout: 15_000 });
 
-    // _flushPendingQueue global fonksiyonu var mı?
-    const hasFlush = await page.evaluate(() => typeof window._flushPendingQueue === 'function');
-    // Yoksa skip — modul henüz yüklenmiyor olabilir
-    test.skip(!hasFlush, 'Test fixture hazır değil'  );
-    expect(hasFlush).toBe(true);
-  });
+    await context.setOffline(true);
+    const body = `offline-kuyruk-${Date.now().toString(36)}`;
+    await input.fill(body);
+    await page.keyboard.press('Enter');
+    const bubble = page.locator('.msg').filter({ hasText: body });
+    await expect(bubble.first()).toBeVisible({ timeout: 10_000 });
+    // Ağ yokken teslim EDİLMİŞ sayılamaz (ack gelemez).
+    await page.waitForTimeout(3_000);
+    await expect(bubble.first()).not.toHaveAttribute('data-delivery-state', 'sent');
 
-  test('_enqueueOfflineMessage kuyruğu artırmalı', async ({ page }) => {
-    await page.goto(BASE_URL);
-    await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(1500);
+    await context.setOffline(false);
+    await expect(bubble.first()).toHaveAttribute('data-delivery-state', 'sent', { timeout: 60_000 });
 
-    const hasEnqueue = await page.evaluate(() => typeof window._enqueueOfflineMessage === 'function');
-    test.skip(!hasEnqueue, 'Test fixture hazır değil'  );
-
-    // Sahte kanal context'i oluştur
-    await page.evaluate(() => {
-      window.currentChannel = { _id: 'test-channel-id' };
-      window.currentServer  = { _id: 'test-server-id' };
-      window._enqueueOfflineMessage({
-        channelId: 'test-channel-id',
-        serverId:  'test-server-id',
-        content:   'offline test message',
-      });
+    // SON DURUM: sunucuda TAM BİR kopya, arayüzde TEK balon (yeniden oynatma çiftlemez).
+    const res = await request.get(`${BASE_URL}/api/channels/${chId}/messages?limit=50`, {
+      headers: { Authorization: `Bearer ${_tokens.alice}` },
     });
-
-    // Badge DOM'da görünmeli
-    await page.waitForTimeout(100);
-    const badge = page.locator('#offline-queue-badge');
-    // Badge görünür olabilir ya da olmayabilir (0 mesaj flush edilmiş olabilir)
-    // Önemli olan hata fırlatmaması
-    await expect(badge.or(page.locator('body'))).toBeVisible();
+    expect(res.ok()).toBe(true);
+    const data = await res.json();
+    const stored = (Array.isArray(data) ? data : data.messages || []).filter((m) => m.content === body);
+    expect(stored, 'çevrimdışı mesaj sunucuda tam bir kez olmalı').toHaveLength(1);
+    await expect(bubble).toHaveCount(1);
   });
 });
 
@@ -155,8 +159,9 @@ test.describe('Service Worker Outbox', () => {
 
   test('manifest.json erişilebilir olmalı (PWA desteği)', async ({ request }) => {
     const res = await request.get(`${BASE_URL}/manifest.json`);
-    // 404 ise henüz eklenmemiş — kabul edilir
-    expect([200, 304, 404]).toContain(res.status());
+    // Final21 Faz 22 (19-37): ürün manifest'i SUNAR (ölçüldü 200); 404'ü kabul etmek PWA manifest'inin
+    // kaybolmasını görünmez yapardı.
+    expect(res.status()).toBe(200);
     if (res.ok()) {
       const body = await res.json();
       expect(body).toHaveProperty('name');
@@ -182,29 +187,39 @@ test.describe('Reconnect Mesaj Sync', () => {
     expect(messages.length).toBeLessThanOrEqual(10);
   });
 
+  // Final21 Faz 19 (19-26): bu test kanal BOŞ olduğu için her koşumda atlanıyordu (REST gönderim
+  // ucu yok) ve koşsa bile yalnızca "200 ya da 204" diyordu. Artık kendi mesajlarını KANONİK yoldan
+  // (socket message:send + ack) üretir ve anahtar-küme imlecinin SON DURUMUNU doğrular.
   test('before cursor parametresi çalışmalı (pagination)', async ({ request }) => {
-    test.skip(!_sharedChannel, 'Test fixture hazır değil'  );
-    const chId = _sharedChannel._id || _sharedChannel.id;
+    const sid = _sharedServer?._id || _sharedServer?.id;
+    const chId = _sharedChannel?._id || _sharedChannel?.id;
+    expect(sid && chId, 'offline-queue fikstürü kurulamadı').toBeTruthy();
+    const headers = { Authorization: `Bearer ${_tokens.alice}` };
 
-    // Önce mesajları al
-    const firstRes = await request.get(`${BASE_URL}/api/channels/${chId}/messages?limit=5`, {
-      headers: { Authorization: `Bearer ${_tokens.alice}` },
-    });
-    expect(firstRes.ok()).toBe(true);
-    const firstData = await firstRes.json();
-    const firstMessages = Array.isArray(firstData) ? firstData : firstData.messages || [];
-    test.skip(firstMessages.length === 0, 'Mesaj listesi boş — offline queue testi için mesaj gerekli');
+    const sock = await openSocket(_tokens.alice);
+    const tag = `sayfa-${Date.now().toString(36)}`;
+    const ids: string[] = [];
+    try {
+      for (let i = 1; i <= 3; i++) {
+        await paceSends('alice');
+        const ackId = `${tag}-${i}`;
+        const ack = waitForEvent<{ ackId: string; messageId: string }>(sock, 'message:ack', 15_000, (a) => a?.ackId === ackId);
+        sock.emit('message:send', { channelId: chId, serverId: sid, content: `${tag} #${i}`, ackId });
+        ids.push((await ack).messageId);
+      }
+    } finally {
+      closeSockets(sock);
+    }
 
-    const oldest = firstMessages[0];
-    const beforeTs = oldest.createdAt || oldest.timestamp;
-    test.skip(!beforeTs, 'Test fixture hazır değil'  );
+    const first = await (await request.get(`${BASE_URL}/api/channels/${chId}/messages?limit=2`, { headers })).json();
+    expect(first.messages.map((m) => m._id)).toEqual([ids[1], ids[2]]);   // en yeni 2, eskiden→yeniye
+    expect(first.hasMore).toBe(true);
+    expect(first.prevCursor).toBeTruthy();
 
-    // Önceki mesajları al
-    const prevRes = await request.get(
-      `${BASE_URL}/api/channels/${chId}/messages?before=${beforeTs}&limit=5`,
-      { headers: { Authorization: `Bearer ${_tokens.alice}` } }
-    );
-    // 200 veya 204 (daha eski mesaj yoksa)
-    expect([200, 204]).toContain(prevRes.status());
+    const older = await request.get(`${BASE_URL}/api/channels/${chId}/messages?limit=2&cursor=${encodeURIComponent(first.prevCursor)}`, { headers });
+    expect(older.status()).toBe(200);
+    const olderIds = (await older.json()).messages.map((m) => m._id);
+    expect(olderIds).toContain(ids[0]);                                    // bir önceki sayfa
+    expect(olderIds.some((id) => id === ids[1] || id === ids[2])).toBe(false);   // çakışma YOK
   });
 });

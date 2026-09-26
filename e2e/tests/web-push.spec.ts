@@ -13,10 +13,10 @@
 // Bu testler sunucu tarafı endpoint'lerini doğrular.
 
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 import { getTokens } from '../helpers/bridge';
 
-const BASE = process.env.BASE_URL || 'http://localhost:3000';
+const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 test.describe('Web Push / VAPID', () => {
   let tokens;
@@ -72,9 +72,9 @@ test.describe('Web Push / VAPID', () => {
 
     // 200 (başarılı) — VAPID yapılandırılmamış olsa bile endpoint kaydı yapılır
     // 503 (VAPID eksik ama bazı implementasyonlarda yine kayıt yapılır) — kabul edilebilir
-    expect(res.status()).not.toBe(401);
-    expect(res.status()).not.toBe(500);
-    expect([200, 201, 503]).toContain(res.status());
+    // Final21 Faz 22 (19-37): abonelik VAPID yapılandırmasından BAĞIMSIZ kaydedilir (ölçüldü 200 {ok:true}).
+    expect(res.status()).toBe(200);
+    expect((await res.json()).ok).toBe(true);
   });
 
   test('POST /api/webpush/subscribe — endpoint olmadan 400', async ({ request }) => {

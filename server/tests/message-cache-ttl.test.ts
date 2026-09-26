@@ -14,7 +14,10 @@ const mockSet = jest.fn().mockImplementation(async (key: string, val: unknown) =
 const mockDel = jest.fn().mockImplementation(async (key: string) => { _store.delete(key); });
 
 jest.mock('../lib/redisAdapter', () => ({
-  cache: { get: mockGet, set: mockSet, del: mockDel },
+  cache: {
+    // Gercek adaptorde MEVCUT (lib/redisAdapter.ts) — mock'ta eksikti ve
+    // `invalidateChannelMessages` her cagrida sessizce TypeError firlatiyordu.
+    invalidatePattern: jest.fn().mockResolvedValue(undefined), get: mockGet, set: mockSet, del: mockDel },
   subscribeToChannel: jest.fn().mockResolvedValue(() => Promise.resolve()),
   publishToChannel:   jest.fn().mockResolvedValue(undefined),
   redisClient:        jest.fn().mockReturnValue(null),

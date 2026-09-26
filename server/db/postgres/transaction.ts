@@ -25,7 +25,9 @@ export async function withTransaction<T>(fn: TransactionFn<T>): Promise<T> {
     await client.query('COMMIT');
     return result;
   } catch (err) {
-    await client.query('ROLLBACK');
+    // Rollback is cleanup. A rollback transport failure must never mask the
+    // canonical application/COMMIT failure that caused the transaction to abort.
+    try { await client.query('ROLLBACK'); } catch { /* preserve original error */ }
     throw err;
   } finally {
     client.release();

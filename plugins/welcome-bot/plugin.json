@@ -9,5 +9,9 @@
     "messageTemplate": "👋 Hoş geldin, {username}! Sunucumuza katıldığın için teşekkürler.",
     "channelName": "genel"
   },
-  "main": "index.ts"
+  "main": "index.ts",
+  "permissions": [
+    "channels:read",
+    "messages:send"
+  ]
 }

@@ -2,8 +2,8 @@
 // Branch coverage için discover socket handler testleri
 // Hedef: pushMemberCount try/catch, onlineCount hesabı, boş üye listesi
 
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 // ── Bağımlılık mock'ları ─────────────────────────────────────────────────────

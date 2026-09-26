@@ -1,6 +1,6 @@
 {
   "name": "bridge-bot-sdk",
-  "version": "1.122.0",
+  "version": "1.125.0",
   "description": "Bridge Chat için resmi Bot SDK (TypeScript)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -66,6 +66,14 @@
         "functions": 80,
         "branches": 75
       }
+    },
+    "transform": {
+      "^.+\\.tsx?$": [
+        "ts-jest",
+        {
+          "tsconfig": "tsconfig.jest.json"
+        }
+      ]
     }
   },
   "exports": {

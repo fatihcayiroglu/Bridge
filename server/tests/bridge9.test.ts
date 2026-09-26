@@ -27,37 +27,49 @@ jest.mock('../db/index', () => {
     servers: new Map(),
     members: new Map(),
     refresh_tokens: new Map(),
+    user_ap_keys: new Map(),
   };
 
-  function primaryKey(table, doc) {
+  function primaryKey(table: string, doc: Record<string, unknown>) {
     if (table === 'refresh_tokens') return doc.token;
     if (table === 'members') return `${doc.userId}:${doc.serverId}`;
+    if (table === 'user_ap_keys') return doc.userId;
     return doc._id;
   }
 
+  /** Bellek-içi koleksiyon ikizinin satır tipi. */
+  type Row = Record<string, unknown>;
+  type TableName = keyof typeof tables;
+
   class Col {
-    constructor(t) { this.t = t; this.rows = tables[t]; }
-    async findOne(q) {
+    // Sınıf alanları BİLDİRİLİR: strict altında `this.x = ...` tek başına alan
+    // tanımlamaz; bildirimsiz hâli bu dosyada 16 ayrı TS2339 üretiyordu.
+    readonly t: TableName;
+    readonly rows: Map<unknown, Row>;
+
+    constructor(t: TableName) { this.t = t; this.rows = tables[t]; }
+
+    async findOne(q: Record<string, unknown>): Promise<Row | null> {
       const entries = Array.from(this.rows.values());
       const row = entries.find(item => Object.entries(q).every(([k, v]) => item[k] === v));
       return row ? JSON.parse(JSON.stringify(row)) : null;
     }
     find() {
-      const rows = Array.from(this.rows.values()).map(row => JSON.parse(JSON.stringify(row)));
+      const rows: Row[] = Array.from(this.rows.values()).map(row => JSON.parse(JSON.stringify(row)));
       const cursor = {
-        then: (r) => Promise.resolve(rows).then(r),
+        then: (r: (value: Row[]) => unknown) => Promise.resolve(rows).then(r),
         sort: () => cursor,
         limit: () => cursor,
       };
       return cursor;
     }
-    async insert(doc) {
+    async insert(doc: Record<string, unknown>) {
       if (this.t !== 'refresh_tokens' && this.t !== 'members' && !doc._id) doc._id = uuidv4();
       const clone = JSON.parse(JSON.stringify(doc));
       this.rows.set(primaryKey(this.t, clone), clone);
       return JSON.parse(JSON.stringify(clone));
     }
-    async update(q, upd) {
+    async update(q: Record<string, unknown>, upd: Record<string, unknown>) {
       const row = await this.findOne(q);
       if (!row) return null;
       const key = primaryKey(this.t, row);
@@ -65,12 +77,12 @@ jest.mock('../db/index', () => {
       this.rows.set(key, next);
       return JSON.parse(JSON.stringify(next));
     }
-    async remove(q) {
+    async remove(q: Record<string, unknown>) {
       const row = await this.findOne(q);
       if (!row) return;
       this.rows.delete(primaryKey(this.t, row));
     }
-    async count() { return this.rows.size; }
+    async count(): Promise<number> { return this.rows.size; }
     ensureIndex() {}
   }
 
@@ -79,28 +91,30 @@ jest.mock('../db/index', () => {
     servers:       new Col('servers'),
     members:       new Col('members'),
     refreshTokens: new Col('refresh_tokens'),
+    userApKeys:     new Col('user_ap_keys'),
     _sqlite:       { close: jest.fn() },
   };
 });
 // captcha middleware'leri test ortamında bypass et
 jest.mock('../lib/captcha', () => ({
-  botFilterMiddleware:          () => (req, res, next) => next(),
-  loginLockMiddleware:          (req, res, next) => next(),
-  progressiveCaptchaMiddleware: (req, res, next) => next(),
-  captchaMiddleware:            (req, res, next) => next(),
-  registrationThrottleMiddleware: (req, res, next) => next(),
+  botFilterMiddleware:          () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  loginLockMiddleware:          (_req: unknown, _res: unknown, next: () => void) => next(),
+  progressiveCaptchaMiddleware: (_req: unknown, _res: unknown, next: () => void) => next(),
+  captchaMiddleware:            (_req: unknown, _res: unknown, next: () => void) => next(),
+  registrationThrottleMiddleware: (_req: unknown, _res: unknown, next: () => void) => next(),
   recordFailedLogin:   jest.fn().mockResolvedValue(undefined),
   recordSuccessfulLogin: jest.fn().mockResolvedValue(undefined),
   checkSuspiciousLogin: jest.fn().mockResolvedValue(undefined),
   recordRegistration:  jest.fn().mockResolvedValue(undefined),
+  claimRegistrationSlot:          jest.fn().mockResolvedValue(true),
   _getIp:              () => '127.0.0.1',
   GENERIC_LOGIN_ERROR: 'Invalid username or password',
 }));
 
 // Rate limit middleware'leri bypass et
 jest.mock('../middleware/rateLimit', () => ({
-  rateLimit: () => (req, res, next) => next(),
-  limits: new Proxy({}, { get: () => () => (req, res, next) => next() }),
+  rateLimit: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  limits: new Proxy({}, { get: () => () => (_req: unknown, _res: unknown, next: () => void) => next() }),
 }));
 
 const request  = require('supertest');
@@ -109,16 +123,19 @@ import cookieParser from 'cookie-parser';
 
 // Auth router'ı require et — mocklar hazır
 import authRoutes from '../routes/auth';
-const router = authRoutes.router || authRoutes;
+// `routes/auth` varsayilan disa aktarimi ZATEN Router'dir (bkz. auth.ts:864).
+// Eski `authRoutes.router || authRoutes` yazimi, artik var olmayan bir
+// `.router` alanini okuyordu; CommonJS donemi aliskanligiydi.
+const router = authRoutes;
 
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
 app.use('/api', router);
-app.use((err, req, res, next) => res.status(err.status || 500).json({ error: err.message }));
+app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
 
 // ─── Yardımcı ──────────────────────────────────────────────────────────────
-let _accessToken;
+let _accessToken: string;
 
 async function registerAndLogin(username = 'sprint9user', password = 'securepass123') {
   await request(app).post('/api/register').send({ username, password });
@@ -183,7 +200,7 @@ describe('httpOnly cookie — refresh token akışı', () => {
   it("login yanıtında httpOnly cookie set edilir", async () => {
     const loginRes = await request(app).post('/api/login').send({ username: 'cookieuser', password: 'cookiepass123' });
     const cookies  = loginRes.headers['set-cookie'] || [];
-    const hasCookie = cookies.some(c => c.includes('bridge_refresh') && c.toLowerCase().includes('httponly'));
+    const hasCookie = cookies.some((c: string) => c.includes('bridge_refresh') && c.toLowerCase().includes('httponly'));
     expect(hasCookie).toBe(true);
   });
 
@@ -191,7 +208,7 @@ describe('httpOnly cookie — refresh token akışı', () => {
     const res = await request(app).post('/api/register').send({ username: 'cookieuser2', password: 'cookiepass123' });
     expect(res.status).toBe(200);
     const cookies = res.headers['set-cookie'] || [];
-    const hasCookie = cookies.some(c => c.includes('bridge_refresh') && c.toLowerCase().includes('httponly'));
+    const hasCookie = cookies.some((c: string) => c.includes('bridge_refresh') && c.toLowerCase().includes('httponly'));
     expect(hasCookie).toBe(true);
   });
 
@@ -211,7 +228,7 @@ describe('httpOnly cookie — refresh token akışı', () => {
     expect(res.status).toBe(200);
     // Set-Cookie ile bridge_refresh sıfırlanmalı (Max-Age=0 veya Expires geçmişte)
     const cookies = res.headers['set-cookie'] || [];
-    const cleared = cookies.some(c =>
+    const cleared = cookies.some((c: string) =>
       c.includes('bridge_refresh') &&
       (c.includes('Max-Age=0') || c.includes('Expires=Thu, 01 Jan 1970'))
     );
@@ -223,7 +240,7 @@ describe('httpOnly cookie — refresh token akışı', () => {
 // 3. TOKEN ROTATION — tekrar kullanım saldırısı
 // ═══════════════════════════════════════════════════════════════════
 describe('Refresh token rotation — replay attack koruması', () => {
-  let firstCookie;
+  let firstCookie: string;
 
   beforeAll(async () => {
     await request(app).post('/api/register').send({ username: 'rotateuser', password: 'rotatepass123' });
@@ -238,9 +255,20 @@ describe('Refresh token rotation — replay attack koruması', () => {
   });
 
   it('aynı cookie ikinci kez kullanılınca 401 döner (rotation)', async () => {
-    // firstCookie zaten tüketildi — yeniden deneme reddedilmeli
-    const res = await request(app).post('/api/refresh').set('Cookie', firstCookie).send({});
-    expect(res.status).toBe(401);
+    // SIRA BAĞIMLILIĞI (Final21 Faz 17, `jest --randomize` ile bulundu): bu test
+    // yukarıdaki testin cookie'yi TÜKETMİŞ olmasına dayanıyordu. Sıra değişince ikisi de
+    // düşüyordu — ve daha kötüsü, bir gün ilk test kaldırılsa bu test "401" yerine 200
+    // görür, yani tekrar-kullanım korumasının GERÇEKTEN çalıştığını kanıtlamaz olurdu.
+    // Artık kendi oturumunu kurar: tüket, sonra tekrar dene.
+    await request(app).post('/api/register').send({ username: 'replayuser', password: 'replaypass123' });
+    const login = await request(app).post('/api/login').send({ username: 'replayuser', password: 'replaypass123' });
+    const cookie = login.headers['set-cookie']?.join('; ') || '';
+
+    const first = await request(app).post('/api/refresh').set('Cookie', cookie).send({});
+    expect(first.status).toBe(200);
+
+    const replay = await request(app).post('/api/refresh').set('Cookie', cookie).send({});
+    expect(replay.status).toBe(401);
   });
 
   it('geçersiz token 401 döner', async () => {
@@ -262,7 +290,7 @@ describe('Refresh token rotation — replay attack koruması', () => {
 // ═══════════════════════════════════════════════════════════════════
 describe('File upload validasyonu', () => {
   const UPLOAD_ROUTE = '/api/upload';
-  let authToken;
+  let authToken: string;
 
   beforeAll(async () => {
     const res = await registerAndLogin('uploadtestuser', 'uploadpass123');
@@ -306,7 +334,7 @@ describe('File upload validasyonu', () => {
       );
       const match = src.match(/const ALLOWED_TYPES\s*=\s*\[([\s\S]+?)\]/);
       if (match) {
-        const types = match[1].match(/'([^']+)'/g)?.map(s => s.replace(/'/g, '')) || [];
+        const types = match[1].match(/'([^']+)'/g)?.map((s: string) => s.replace(/'/g, '')) || [];
         const dangerous = ['application/x-msdownload','application/x-executable',
           'text/x-shellscript','application/x-sh','application/bat'];
         for (const d of dangerous) {

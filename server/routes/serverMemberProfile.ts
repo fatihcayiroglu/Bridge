@@ -80,19 +80,25 @@ import sharp          from 'sharp';
 import { authMiddleware} from '../middleware/auth';
 import { Members, Servers }           from '../db/repositories';
 import { limits }                     from '../middleware/rateLimit';
+import db from '../db/loader';
+import logger from '../lib/logger';
+import { hasLiveUploadReference } from '../lib/uploadReferenceSafety';
+import { canonicalExtensionForMime, checkMagicBytes } from '../lib/uploadFileSafety';
 
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
+import { respondDiscardingBody } from '../lib/httpRequestDrain';
+import { uploadDir } from '../lib/runtimePaths';
 const router = express.Router({ mergeParams: true });
 
 // ── Multer storage ──────────────────────────────────────────────────────────
 
-const UPLOAD_DIR = path.join(__dirname, '../uploads/member-profiles');
+const UPLOAD_DIR = uploadDir('member-profiles');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const profileStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
   filename:    (_req, file, cb) => {
-    const ext = path.extname(file.originalname).slice(0, 10).toLowerCase() || '.jpg';
+    const ext = canonicalExtensionForMime(file.mimetype) ?? '.img';
     cb(null, `mp_${uuidv4()}${ext}`);
   },
 });
@@ -119,6 +125,41 @@ function sanitizeStr(val: unknown, max: number): string {
 async function resizeAndSave(srcPath: string, destPath: string, size: number): Promise<void> {
   await sharp(srcPath).resize(size, size, { fit: 'cover' }).toFile(destPath);
   fs.unlinkSync(srcPath);
+}
+
+function safeUnlink(filePath: string): void {
+  try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch {}
+}
+
+async function requireCurrentMembership(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+): Promise<void> {
+  const userId = castAuthed(req).user.id;
+  const serverId = String(req.params.serverId ?? '');
+  const member = await Members.findOne(userId, serverId);
+  if (!member) {
+    // Yetki Multer'DAN ONCE cozulur. Gövde hala akiyorken duz `res.json`
+    // yazmak istemciye 403 yerine ECONNRESET gosteriyordu; gövde akitilip
+    // `end` beklenir. Bkz. lib/httpRequestDrain.ts
+    respondDiscardingBody(req, res, 403, { error: 'Not a member' });
+    return;
+  }
+  next();
+}
+
+async function cleanupOldMemberProfileAsset(url: string | undefined): Promise<void> {
+  if (!url?.startsWith('/uploads/member-profiles/')) return;
+  const fileName = path.basename(url);
+  const canonicalKey = `uploads/member-profiles/${fileName}`;
+  const filePath = path.join(UPLOAD_DIR, fileName);
+  try {
+    if (!await hasLiveUploadReference(db._pool, canonicalKey)) safeUnlink(filePath);
+  } catch (error) {
+    logger.error({ err: error, url, event: 'member_profile.cleanup_failed' },
+      'Member profile DB update succeeded but physical cleanup was blocked');
+  }
 }
 
 // ── GET /profile ─────────────────────────────────────────────────────────────
@@ -165,17 +206,15 @@ router.put('/members/me/profile', authMiddleware, limits.messages(), async (req,
   const bio         = sanitizeStr(req.body.bio,         190);
   const pronouns    = sanitizeStr(req.body.pronouns,    40);
   const bannerColor = sanitizeHex(req.body.bannerColor) ?? '#2d9cdb';
-  const avatarUrl   = typeof req.body.avatarUrl === 'string' ? req.body.avatarUrl : undefined;
-  const bannerUrl   = typeof req.body.bannerUrl === 'string' ? req.body.bannerUrl : undefined;
+  if (Object.prototype.hasOwnProperty.call(req.body, 'avatarUrl') || Object.prototype.hasOwnProperty.call(req.body, 'bannerUrl')) {
+    return res.status(400).json({ error: 'avatarUrl/bannerUrl must be changed through the upload endpoints' });
+  }
 
   const serverProfile: Record<string, unknown> = {
     ...(member.serverProfile ?? {}),
     nickname, bio, pronouns, bannerColor,
     updatedAt: Date.now(),
   };
-  if (avatarUrl) serverProfile.avatarUrl = avatarUrl;
-  if (bannerUrl) serverProfile.bannerUrl = bannerUrl;
-
   await Members.update(user.id, serverId, { serverProfile });
 
   return res.json({
@@ -189,70 +228,96 @@ router.put('/members/me/profile', authMiddleware, limits.messages(), async (req,
 
 // ── POST /members/me/avatar ──────────────────────────────────────────────────
 
-router.post('/members/me/avatar', authMiddleware, profileUpload.single('file'), async (req, res) => {
+router.post('/members/me/avatar', authMiddleware, limits.upload(), requireCurrentMembership, profileUpload.single('file'), async (req, res) => {
   const { user } = castAuthed(req);
   const { serverId } = req.params as { serverId: string };
 
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  if (!checkMagicBytes(req.file.path, req.file.mimetype)) {
+    safeUnlink(req.file.path);
+    return res.status(400).json({ error: 'File content does not match declared type' });
+  }
 
-  const member = await Members.findOne(user.id, serverId);
-  if (!member) { fs.unlinkSync(req.file.path); return res.status(403).json({ error: 'Not a member' }); }
+  let member;
+  try {
+    member = await Members.findOne(user.id, serverId);
+  } catch (error) {
+    safeUnlink(req.file.path);
+    throw error;
+  }
+  if (!member) { safeUnlink(req.file.path); return res.status(403).json({ error: 'Not a member' }); }
 
   const destName = `mp_av_${uuidv4()}.webp`;
   const destPath = path.join(UPLOAD_DIR, destName);
   try {
     await resizeAndSave(req.file.path, destPath, 256);
-  } catch (e) {
-    fs.unlinkSync(req.file.path);
+  } catch {
+    safeUnlink(req.file.path);
+    safeUnlink(destPath);
     return res.status(500).json({ error: 'Image processing failed' });
   }
 
   const avatarUrl = `/uploads/member-profiles/${destName}`;
-  await Members.update(user.id, serverId, {
-    serverProfile: { ...(member.serverProfile ?? {}), avatarUrl, updatedAt: Date.now() }
-  });
-
-  // Delete old avatar file if it was a server-profile avatar
-  const oldAvatarUrl = typeof member.serverProfile?.avatarUrl === 'string' ? member.serverProfile.avatarUrl : undefined;
-  if (oldAvatarUrl?.startsWith('/uploads/member-profiles/')) {
-    const old = path.join(__dirname, '..', oldAvatarUrl);
-    if (fs.existsSync(old)) fs.unlinkSync(old);
+  try {
+    await Members.update(user.id, serverId, {
+      serverProfile: { ...(member.serverProfile ?? {}), avatarUrl, updatedAt: Date.now() }
+    });
+  } catch (error) {
+    // The new file was never committed to DB ownership.
+    safeUnlink(destPath);
+    throw error;
   }
+
+  const oldAvatarUrl = typeof member.serverProfile?.avatarUrl === 'string' ? member.serverProfile.avatarUrl : undefined;
+  await cleanupOldMemberProfileAsset(oldAvatarUrl);
 
   return res.json({ avatarUrl });
 });
 
 // ── POST /members/me/banner ──────────────────────────────────────────────────
 
-router.post('/members/me/banner', authMiddleware, profileUpload.single('file'), async (req, res) => {
+router.post('/members/me/banner', authMiddleware, limits.upload(), requireCurrentMembership, profileUpload.single('file'), async (req, res) => {
   const { user } = castAuthed(req);
   const { serverId } = req.params as { serverId: string };
 
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  if (!checkMagicBytes(req.file.path, req.file.mimetype)) {
+    safeUnlink(req.file.path);
+    return res.status(400).json({ error: 'File content does not match declared type' });
+  }
 
-  const member = await Members.findOne(user.id, serverId);
-  if (!member) { fs.unlinkSync(req.file.path); return res.status(403).json({ error: 'Not a member' }); }
+  let member;
+  try {
+    member = await Members.findOne(user.id, serverId);
+  } catch (error) {
+    safeUnlink(req.file.path);
+    throw error;
+  }
+  if (!member) { safeUnlink(req.file.path); return res.status(403).json({ error: 'Not a member' }); }
 
   const destName = `mp_bn_${uuidv4()}.webp`;
   const destPath = path.join(UPLOAD_DIR, destName);
   try {
     await sharp(req.file.path).resize(1024, 256, { fit: 'cover' }).toFile(destPath);
-    fs.unlinkSync(req.file.path);
+    safeUnlink(req.file.path);
   } catch {
-    fs.unlinkSync(req.file.path);
+    safeUnlink(req.file.path);
+    safeUnlink(destPath);
     return res.status(500).json({ error: 'Image processing failed' });
   }
 
   const bannerUrl = `/uploads/member-profiles/${destName}`;
-  await Members.update(user.id, serverId, {
-    serverProfile: { ...(member.serverProfile ?? {}), bannerUrl, updatedAt: Date.now() }
-  });
+  try {
+    await Members.update(user.id, serverId, {
+      serverProfile: { ...(member.serverProfile ?? {}), bannerUrl, updatedAt: Date.now() }
+    });
+  } catch (error) {
+    safeUnlink(destPath);
+    throw error;
+  }
 
   const oldBannerUrl = typeof member.serverProfile?.bannerUrl === 'string' ? member.serverProfile.bannerUrl : undefined;
-  if (oldBannerUrl?.startsWith('/uploads/member-profiles/')) {
-    const old = path.join(__dirname, '..', oldBannerUrl);
-    if (fs.existsSync(old)) fs.unlinkSync(old);
-  }
+  await cleanupOldMemberProfileAsset(oldBannerUrl);
 
   return res.json({ bannerUrl });
 });

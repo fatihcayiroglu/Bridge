@@ -1,13 +1,15 @@
 // server/tests/linkPreview.test.ts
 // linkPreview route — full coverage
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV   = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 jest.mock('../middleware/rateLimit', () => ({
   limits: {
-    api: (_req, _res, next) => next(),
-    read: () => (_req, _res, next) => next(),
+    // limits.api KANONİK olarak bir FABRİKADIR: limits.api() middleware üretir.
+    // Mock da fabrika olmalı; aksi halde gerçek hatayı gizler.
+    api: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    read: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   },
 }));
 
@@ -15,8 +17,8 @@ jest.mock('../middleware/rateLimit', () => ({
 const mockFetchLinkPreview = jest.fn();
 const mockExtractUrls      = jest.fn();
 jest.mock('../lib/linkPreview', () => ({
-  fetchLinkPreview: (...a) => mockFetchLinkPreview(...a),
-  extractUrls:      (...a) => mockExtractUrls(...a),
+  fetchLinkPreview: (...a: unknown[]) => mockFetchLinkPreview(...a),
+  extractUrls:      (...a: unknown[]) => mockExtractUrls(...a),
 }));
 
 import request from 'supertest';
@@ -34,7 +36,7 @@ function buildApp() {
   return app;
 }
 
-function tok(uid) {
+function tok(uid: string) {
   return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' });
 }
 
@@ -44,7 +46,9 @@ const PREVIEW = {
 };
 
 describe('GET /api/link-preview — auth', () => {
-  let app, uid, token;
+  let app: express.Express;
+  let uid: string;
+  let token: string;
   beforeEach(async () => {
     db._reset?.();
     app = buildApp();
@@ -75,7 +79,9 @@ describe('GET /api/link-preview — auth', () => {
 });
 
 describe('GET /api/link-preview — preview fetch', () => {
-  let app, uid, token;
+  let app: express.Express;
+  let uid: string;
+  let token: string;
   beforeEach(async () => {
     db._reset?.();
     app = buildApp();
@@ -120,7 +126,9 @@ describe('GET /api/link-preview — preview fetch', () => {
 });
 
 describe('POST /api/link-preview — batch extract', () => {
-  let app, uid, token;
+  let app: express.Express;
+  let uid: string;
+  let token: string;
   beforeEach(async () => {
     db._reset?.();
     app = buildApp();

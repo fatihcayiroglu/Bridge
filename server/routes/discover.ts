@@ -13,17 +13,35 @@ const router  = express.Router();
 export const adminDiscoverRouter = express.Router();
 import { Servers, Members, Channels } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
+import { databaseAdminOnly } from '../lib/adminAuthority';
+import { joinDiscoverableServer } from '../lib/serverMembership';
 import { limits } from '../middleware/rateLimit';
 import { isUserOnline } from '../lib/presenceCache';
 import { cache } from '../lib/redisAdapter';
 const MEMBER_COUNT_TTL  = 120; // saniye — üye sayısı cache
 const FEATURED_TTL      = 300; // saniye — öne çıkan liste cache
-const DISCOVER_LIMIT    = 50;
+const DISCOVER_DEFAULT_LIMIT = 50;
+const DISCOVER_MAX_LIMIT     = 1000;
 
 export const DISCOVER_CATEGORIES = [
-  'gaming', 'music', 'art', 'tech', 'edu', 'social', 'other',
+  'gaming', 'music', 'art', 'tech', 'education', 'community', 'anime', 'science', 'social', 'other',
 ] as const;
 export type DiscoverCategory = typeof DISCOVER_CATEGORIES[number];
+
+function normalizeDiscoverCategory(value: unknown): DiscoverCategory {
+  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (raw === 'edu') return 'education'; // legacy migration value
+  return DISCOVER_CATEGORIES.includes(raw as DiscoverCategory)
+    ? raw as DiscoverCategory
+    : 'other';
+}
+
+function requestedLimit(value: unknown): number {
+  if (value === undefined) return DISCOVER_DEFAULT_LIMIT;
+  const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return DISCOVER_DEFAULT_LIMIT;
+  return Math.min(parsed, DISCOVER_MAX_LIMIT);
+}
 
 interface ServerRow {
   _id: string;
@@ -48,6 +66,12 @@ interface MemberRow { userId: string; }
 
 function queryString(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+function parseOptionalBoolean(value: unknown): boolean | undefined | null {
+  if (value === undefined) return undefined;
+  if (value === true || value === false) return value;
+  return null;
 }
 
 function normalizeTags(tags: string | string[] | undefined): string[] {
@@ -103,7 +127,7 @@ async function serializeServer(s: ServerRow) {
     bannerUrl:    s.bannerUrl,
     description:  s.description  || '',
     tags:         normalizeTags(s.tags),
-    category:     s.category      || 'other',
+    category:     normalizeDiscoverCategory(s.category),
     memberCount:  s._memberCount  || 0,
     onlineCount,
     channelCount: channels.length,
@@ -123,7 +147,7 @@ async function serializeServer(s: ServerRow) {
  *     parameters:
  *       - in: query
  *         name: category
- *         schema: { type: string, enum: [gaming, music, art, tech, edu, social, other] }
+ *         schema: { type: string, enum: [gaming, music, art, tech, education, community, anime, science, social, other] }
  *       - in: query
  *         name: q
  *         schema: { type: string }
@@ -138,22 +162,14 @@ async function serializeServer(s: ServerRow) {
  *               items: { $ref: '#/components/schemas/Server' }
  */
 router.get('/', authMiddleware, async (req: Request, res: Response) => {
-  const { q, tag, sort = 'members', category } = req.query;
+  const { q, tag, sort = 'members', category, limit } = req.query;
 
   let servers = await Servers.find({ discoverable: 1 }) as ServerRow[];
-
-  if (!servers.length) {
-    const allServers = await Servers.find({}) as ServerRow[];
-    const counts = await Promise.all(allServers.map((s: ServerRow) => getMemberCountCached(s._id)));
-    allServers.forEach((s: ServerRow, i: number) => { s._memberCount = counts[i]; });
-    servers = allServers.filter((s: ServerRow) => s._memberCount! > 1);
-  } else {
-    const counts = await Promise.all(servers.map((s: ServerRow) => getMemberCountCached(s._id)));
-    servers.forEach((s: ServerRow, i: number) => { s._memberCount = counts[i]; });
-    // Boş sunucuları discover listesinde göstermeyelim. Aksi halde discoverable=1
-    // bırakılmış ama hiç üyesi olmayan test/ghost server kayıtları listede görünür.
-    servers = servers.filter((s: ServerRow) => (s._memberCount ?? 0) > 0);
-  }
+  const counts = await Promise.all(servers.map((s: ServerRow) => getMemberCountCached(s._id)));
+  servers.forEach((s: ServerRow, i: number) => { s._memberCount = counts[i]; });
+  // Gizli/private sunucular hiçbir koşulda fallback olarak keşfe düşmez.
+  // Boş discoverable test/ghost kayıtlarını da listeleme.
+  servers = servers.filter((s: ServerRow) => (s._memberCount ?? 0) > 0);
 
   const qText = queryString(q);
   const tagText = queryString(tag);
@@ -175,8 +191,10 @@ router.get('/', authMiddleware, async (req: Request, res: Response) => {
     );
   }
 
-  if (categoryText.trim() && DISCOVER_CATEGORIES.includes(categoryText.trim() as DiscoverCategory)) {
-    servers = servers.filter((s: ServerRow) => (s.category || 'other') === categoryText.trim());
+  const rawCategory = categoryText.trim().toLowerCase();
+  if (rawCategory && (rawCategory === 'edu' || DISCOVER_CATEGORIES.includes(rawCategory as DiscoverCategory))) {
+    const wanted = normalizeDiscoverCategory(rawCategory);
+    servers = servers.filter((s: ServerRow) => normalizeDiscoverCategory(s.category) === wanted);
   }
 
   if      (sort === 'members') servers.sort((a: ServerRow, b: ServerRow) => (b._memberCount || 0) - (a._memberCount || 0));
@@ -188,7 +206,7 @@ router.get('/', authMiddleware, async (req: Request, res: Response) => {
     servers.sort((a: ServerRow, b: ServerRow) => (b._onlinePre || 0) - (a._onlinePre || 0));
   }
 
-  const result = await Promise.all(servers.slice(0, DISCOVER_LIMIT).map(serializeServer));
+  const result = await Promise.all(servers.slice(0, requestedLimit(limit)).map(serializeServer));
   res.json(result);
 });
 
@@ -196,19 +214,25 @@ router.get('/', authMiddleware, async (req: Request, res: Response) => {
 router.post('/:serverId/join', authMiddleware, limits.write(), async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
   const serverId = String(req.params.serverId ?? '');
-  const server = await Servers.findById(serverId);
+  const result = await joinDiscoverableServer(
+    { id: _u.id, username: _u.username, displayName: _u.displayName },
+    serverId,
+  );
 
-  if (!server || !server.discoverable) {
+  // Legacy discover endpoint keeps its historical 404 for private servers,
+  // but authorization semantics are now identical to /servers/:sid/join.
+  if (result.status === 'not_found' || result.status === 'invite_required') {
     return res.status(404).json({ error: 'Discoverable server not found' });
   }
-
-  const existing = await Members.findOne(_u.id, serverId);
-  if (existing) {
-    return res.status(400).json({ error: 'Already a member' });
+  if (result.status === 'banned') return res.status(403).json({ error: 'BANNED' });
+  if (result.status === 'already_member') return res.status(400).json({ error: 'Already a member' });
+  if (result.status === 'mfa_required') {
+    return res.status(403).json({
+      error: 'MFA_REQUIRED',
+      message: 'Bu sunucuya katılmak için bir güvenlik anahtarı (passkey) kaydetmeniz gerekiyor.',
+      mfaLevel: result.mfaLevel,
+    });
   }
-
-  await Members.insert(_u.id, serverId, { roles: [] });
-  await invalidateMemberCount(serverId);
   return res.status(201).json({ ok: true });
 });
 
@@ -229,13 +253,13 @@ router.post('/:serverId/join', authMiddleware, limits.write(), async (req: Reque
  *               items: { $ref: '#/components/schemas/Server' }
  */
 router.get('/featured', authMiddleware, async (req: Request, res: Response) => {
-  const CACHE_KEY = 'discover:featured:list';
+  const CACHE_KEY = 'discover:featured:list:v2';
   try {
     const cached = await cache.get(CACHE_KEY);
     if (typeof cached === 'string') return res.json(JSON.parse(cached));
   } catch { /* cache miss */ }
 
-  const servers = await Servers.find({ featured: 1 }) as ServerRow[];
+  const servers = await Servers.find({ featured: true, discoverable: 1 }) as ServerRow[];
   const counts = await Promise.all(servers.map((s: ServerRow) => getMemberCountCached(s._id)));
   servers.forEach((s: ServerRow, i: number) => { s._memberCount = counts[i]; });
   servers.sort((a: ServerRow, b: ServerRow) => (b.featuredAt || 0) - (a.featuredAt || 0));
@@ -260,12 +284,18 @@ router.get('/featured', authMiddleware, async (req: Request, res: Response) => {
  *           application/json:
  *             schema:
  *               type: array
- *               items: { type: string }
+ *               items:
+ *                 type: object
+ *                 required: [id, label]
+ *                 properties:
+ *                   id: { type: string, enum: [gaming, music, art, tech, education, community, anime, science, social, other] }
+ *                   label: { type: string }
  */
 router.get('/categories', (req: Request, res: Response) => {
   const LABELS: Record<string, string> = {
     gaming: '🎮 Oyun', music: '🎵 Müzik', art: '🎨 Sanat',
-    tech: '💻 Teknoloji', edu: '📚 Eğitim', social: '💬 Sosyal', other: '🌐 Diğer',
+    tech: '💻 Teknoloji', education: '📚 Eğitim', community: '👥 Topluluk',
+    anime: '⛩️ Anime', science: '🔬 Bilim', social: '💬 Sosyal', other: '🌐 Diğer',
   };
   res.json(DISCOVER_CATEGORIES.map(id => ({ id, label: LABELS[id] || id })));
 });
@@ -284,27 +314,46 @@ router.get('/categories', (req: Request, res: Response) => {
  *             type: object
  *             properties:
  *               serverId: { type: string }
- *               category: { type: string }
- *               listed: { type: boolean }
+ *               category: { type: string, enum: [gaming, music, art, tech, education, community, anime, science, social, other] }
+ *               discoverable: { type: boolean }
+ *               description: { type: string, maxLength: 500 }
+ *               tags:
+ *                 type: array
+ *                 maxItems: 10
+ *                 items: { type: string }
  *     responses:
  *       200: { description: Ayarlar güncellendi }
  */
 router.patch('/settings', authMiddleware, limits.write(), async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
-  const { serverId, discoverable, description, tags, category } = req.body as { serverId?: string; discoverable?: boolean | string; description?: string; tags?: string[]; category?: string };
-  if (!serverId) return res.status(400).json({ error: 'serverId required' });
+  const { serverId, discoverable, description, tags, category } = req.body as { serverId?: unknown; discoverable?: unknown; description?: unknown; tags?: unknown; category?: unknown };
+  if (typeof serverId !== 'string' || !serverId.trim()) return res.status(400).json({ error: 'serverId required' });
+  const discoverableBool = parseOptionalBoolean(discoverable);
+  if (discoverableBool === null) return res.status(400).json({ error: 'discoverable must be boolean' });
+  if (description !== undefined && typeof description !== 'string') return res.status(400).json({ error: 'description must be string' });
+  if (tags !== undefined && (!Array.isArray(tags) || tags.some((tag) => typeof tag !== 'string')))
+    return res.status(400).json({ error: 'tags must be an array of strings' });
+  if (category !== undefined) {
+    if (typeof category !== 'string') return res.status(400).json({ error: 'Invalid category' });
+    const rawCategory = category.trim().toLowerCase();
+    if (rawCategory !== 'edu' && !DISCOVER_CATEGORIES.includes(rawCategory as DiscoverCategory))
+      return res.status(400).json({ error: 'Invalid category' });
+  }
 
   const server = await Servers.findById(serverId);
   if (!server)                  return res.status(404).json({ error: 'Server not found' });
   if (server.ownerId !== _u.id) return res.status(403).json({ error: 'Only owner can update discovery' });
 
   const update: Record<string, unknown> = {};
-  if (discoverable !== undefined) update.discoverable = discoverable ? 1 : 0;
-  if (description  !== undefined) update.description  = String(description).trim().slice(0, 500);
-  if (tags && Array.isArray(tags)) update.tags        = tags.slice(0, 10).map((t: unknown) => String(t).trim().toLowerCase().slice(0, 30));
-  if (category && DISCOVER_CATEGORIES.includes(category as DiscoverCategory)) update.category = category;
+  if (discoverableBool !== undefined) update.discoverable = discoverableBool;
+  if (description !== undefined) update.description = description.trim().slice(0, 500);
+  if (tags !== undefined) update.tags = tags.slice(0, 10).map((t) => t.trim().toLowerCase().slice(0, 30));
+  if (category !== undefined) update.category = normalizeDiscoverCategory(category);
 
   await Servers.update(serverId, update);
+  // Featured sonucu sunucu metadata'sını içerir; discoverable/description/category
+  // değişikliği eski private/public durumunu cache'te tutmamalı.
+  try { await cache.del('discover:featured:list:v2'); } catch {}
   res.json({ ok: true });
 });
 
@@ -331,27 +380,23 @@ router.patch('/settings', authMiddleware, limits.write(), async (req: Request, r
  *       403: { $ref: '#/components/responses/Forbidden' }
  */
 async function updateFeaturedServer(req: Request, res: Response): Promise<Response | void> {
-  const _u = castAuthed(req).user;
-  if (!(_u?.role === 'admin' || _u?.flags?.includes?.('admin') || _u?.isAdmin)) {
-    return res.status(403).json({ error: 'Sadece admin öne çıkarabilir' });
-  }
-  const { serverId } = req.body as { serverId?: string };
-  const featuredRaw = (req.body as { featured?: unknown }).featured;
-  const featured = featuredRaw === true || featuredRaw === 1 || featuredRaw === 'true' || featuredRaw === '1';
-  if (!serverId) return res.status(400).json({ error: 'serverId gerekli' });
+  const { serverId } = req.body as { serverId?: unknown };
+  const featured = parseOptionalBoolean((req.body as { featured?: unknown }).featured);
+  if (typeof serverId !== 'string' || !serverId.trim()) return res.status(400).json({ error: 'serverId gerekli' });
+  if (featured === undefined || featured === null) return res.status(400).json({ error: 'featured must be boolean' });
 
   const server = await Servers.findById(serverId);
   if (!server) return res.status(404).json({ error: 'Sunucu bulunamadı' });
 
   await Servers.update(serverId, {
-    featured:   featured ? 1 : 0,
+    featured,
     featuredAt: featured ? Date.now() : null,
   });
-  try { await cache.del('discover:featured:list'); } catch {}
+  try { await cache.del('discover:featured:list:v2'); } catch {}
   res.json({ ok: true, serverId, featured });
 }
 
-router.post('/admin/feature', authMiddleware, limits.write(), updateFeaturedServer);
-adminDiscoverRouter.post('/feature', authMiddleware, limits.write(), updateFeaturedServer);
+router.post('/admin/feature', authMiddleware, databaseAdminOnly, limits.write(), updateFeaturedServer);
+adminDiscoverRouter.post('/feature', authMiddleware, databaseAdminOnly, limits.write(), updateFeaturedServer);
 
 export default router;

@@ -5,43 +5,18 @@
 
 'use strict';
 
+import { makePoolDouble } from './helpers/pgPoolDouble';
+import { recordOf, arrayOf } from './helpers/narrow';
 import { PgCollection, buildWhere } from '../db/postgres/pgCollection';
+import { requireDoc } from './helpers/mockDb';
 
 // ── Mock Pool ─────────────────────────────────────────────────────────────────
-function makeMockPool(rows = []) {
-  const store = [...rows];
-  const queries = [];
-
-  const client = {
-    query: jest.fn(async (sql, params = []) => {
-      queries.push({ sql, params });
-      // Basit in-memory execute
-      if (sql.includes('SELECT COUNT(*)')) {
-        return { rows: [{ n: store.length }] };
-      }
-      if (sql.startsWith('SELECT')) {
-        return { rows: [...store] };
-      }
-      if (sql.startsWith('INSERT')) {
-        // Extract values and add to store
-        return { rows: [], rowCount: 1 };
-      }
-      if (sql.startsWith('UPDATE')) return { rows: [], rowCount: 1 };
-      if (sql.startsWith('DELETE')) return { rows: [], rowCount: store.length };
-      return { rows: [], rowCount: 0 };
-    }),
-    release: jest.fn(),
-  };
-
-  const pool = {
-    connect: jest.fn(async () => client),
-    _queries: queries,
-    _store:   store,
-    _client:  client,
-  };
-
-  return pool;
-}
+// Elle kurulmuş ikiz KALDIRILDI. TypeScript ikizin dönüş tipini İLK `return`
+// ifadesinden çıkarıyordu (`rows: never[]` / `rows: { n: number }[]`), bu yüzden
+// başka bir satır şekli kuran her `mockResolvedValueOnce(...)` tip hatası
+// veriyordu. Kanonik ikiz `tests/helpers/pgPoolDouble.ts` içindedir ve ÜRÜN
+// sözleşmesine (`db/postgres/pool-contracts.ts`) uyar.
+const makeMockPool = makePoolDouble;
 
 // ── buildWhere testleri ───────────────────────────────────────────────────────
 describe('buildWhere', () => {
@@ -167,14 +142,26 @@ describe('PgCollection — find', () => {
     expect(call).toContain('LIMIT 10');
     expect(call).toContain('OFFSET 20');
   });
+
+
+  it.each([[-1, 'limit'], [1.5, 'limit'], [Number.NaN, 'limit'], [-1, 'skip'], [1.5, 'skip']])(
+    'rejects unsafe %s for %s',
+    (value, kind) => {
+      const pool = makeMockPool();
+      const col = new PgCollection(pool, 'messages');
+      const chain = col.find({});
+      expect(() => kind === 'limit' ? chain.limit(value as number) : chain.skip(value as number)).toThrow(RangeError);
+      expect(pool._client.query).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('PgCollection — insert', () => {
   it('INSERT sorgusu oluşturur', async () => {
     const pool = makeMockPool();
-    pool._client.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    pool._client.query.mockResolvedValueOnce({ rows: [{ _id: 'generated-id', username: 'bob', displayName: 'Bob' }], rowCount: 1 });
     const col = new PgCollection(pool, 'users');
-    const doc = await col.insert({ username: 'bob', displayName: 'Bob' });
+    const doc = await col.insert({ _id: 'generated-id', username: 'bob', displayName: 'Bob' });
     expect(doc._id).toBeDefined();
     const call = pool._client.query.mock.calls[0][0];
     expect(call).toContain('INSERT INTO "users"');
@@ -183,19 +170,40 @@ describe('PgCollection — insert', () => {
 
   it('_id verilmişse kullanır', async () => {
     const pool = makeMockPool();
-    pool._client.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    pool._client.query.mockResolvedValueOnce({ rows: [{ _id: 'custom-id', username: 'carol' }], rowCount: 1 });
     const col = new PgCollection(pool, 'users');
     const doc = await col.insert({ _id: 'custom-id', username: 'carol' });
     expect(doc._id).toBe('custom-id');
   });
 
+
+  it('primary-key conflict returns the row actually stored in PostgreSQL', async () => {
+    const pool = makeMockPool();
+    pool._client.query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ _id: 'same-id', username: 'persisted' }], rowCount: 1 });
+    const col = new PgCollection(pool, 'users');
+    const doc = await col.insert({ _id: 'same-id', username: 'caller-value' });
+    expect(doc.username).toBe('persisted');
+    expect(String(pool._client.query.mock.calls[0][0])).toContain('DO NOTHING RETURNING *');
+  });
+
+  it('fails loudly if conflict recovery cannot load the primary-key row', async () => {
+    const pool = makeMockPool();
+    pool._client.query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    const col = new PgCollection(pool, 'users');
+    await expect(col.insert({ _id: 'ghost', username: 'x' })).rejects.toThrow(/existing primary-key row/i);
+  });
+
   it('JSONB sütunlar serialize edilir', async () => {
     const pool = makeMockPool();
-    pool._client.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    pool._client.query.mockResolvedValueOnce({ rows: [{ _id: 'm1', content: 'hi', reactions: { '👍': ['u1'] } }], rowCount: 1 });
     const col = new PgCollection(pool, 'messages');
     await col.insert({ _id: 'm1', reactions: { '👍': ['u1'] }, content: 'hi' });
-    const params = pool._client.query.mock.calls[0][1];
-    const reactionsParam = params.find(p => typeof p === 'string' && p.includes('👍'));
+    const params = arrayOf(pool._client.query.mock.calls[0]?.[1], 'insert params');
+    const reactionsParam = params.find((p) => typeof p === 'string' && p.includes('👍'));
     expect(reactionsParam).toBeDefined();
   });
 });
@@ -271,9 +279,9 @@ describe('fromRow — JSONB deserialize', () => {
       rows: [{ _id: 'm1', content: 'hi', reactions: '{"👍":["u1"]}' }],
     });
     const col = new PgCollection(pool, 'messages');
-    const res = await col.findOne({ _id: 'm1' });
+    const res = await requireDoc(col, { _id: 'm1' });
     expect(typeof res.reactions).toBe('object');
-    expect(res.reactions['👍']).toContain('u1');
+    expect(recordOf(res.reactions, 'reactions')['👍']).toContain('u1');
   });
 
   it('PostgreSQL parse edilmiş JSONB obje olarak gelirse korunur', async () => {
@@ -282,8 +290,8 @@ describe('fromRow — JSONB deserialize', () => {
       rows: [{ _id: 'm2', reactions: { '❤️': ['u2'] } }],
     });
     const col = new PgCollection(pool, 'messages');
-    const res = await col.findOne({ _id: 'm2' });
-    expect(res.reactions['❤️']).toContain('u2');
+    const res = await requireDoc(col, { _id: 'm2' });
+    expect(recordOf(res.reactions, 'reactions')['❤️']).toContain('u2');
   });
 });
 

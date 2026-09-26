@@ -4,6 +4,33 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Bridge Marketplace</title>
+  <!-- ── TEMA ÖNYÜKLEMESİ ─────────────────────────────────────────────────
+       ÖLÇÜLEN KUSUR (Final20): bu sayfada tema önyüklemesi YOKTU. `data-theme`
+       hiç yazılmadığı için sayfa, kullanıcının seçimi ne olursa olsun `:root`
+       (koyu) tokenlarıyla çiziliyordu. `index.html` ile birebir aynı blok. ── -->
+<script>
+(function () {
+  var THEMES = ['dark', 'light', 'amoled', 'aurora', 'midnight'];
+  var theme = null;
+  try {
+    var saved = localStorage.getItem('bridge:theme:v1') || localStorage.getItem('bridge_theme');
+    if (THEMES.indexOf(saved) !== -1) theme = saved;
+  } catch (e) { /* depolama kapalı — sistem tercihine düşülür */ }
+  if (!theme) {
+    try {
+      theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    } catch (e) { theme = 'dark'; }
+  }
+  var root = document.documentElement;
+  root.setAttribute('data-theme', theme);
+  root.style.colorScheme = theme === 'light' ? 'light' : 'dark';
+  // <body> henüz yok; hazır olur olmaz aynı sözleşme oraya da yazılır.
+  document.addEventListener('DOMContentLoaded', function () {
+    document.body.setAttribute('data-theme', theme);
+    document.body.classList.toggle('theme-light', theme === 'light');
+  });
+})();
+</script>
   <link rel="stylesheet" href="css/style.css">
   <style>
     body { background: var(--bg-1); color: var(--text-1); margin: 0; font-family: Inter, system-ui, sans-serif; }
@@ -18,9 +45,24 @@
     .muted { color: var(--text-3); font-size: 13px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
     .pill { font-size: 12px; padding: 4px 8px; border-radius: 999px; background: var(--bg-3); color: var(--text-2); border: 1px solid var(--bg-4); }
-    .modal { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none; align-items: center; justify-content: center; z-index: 99999; }
+    .modal { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none; align-items: center; justify-content: center; z-index: var(--z-modal); }
     .modal-card { width: min(560px, 95vw); max-height: 90vh; overflow: auto; background: var(--bg-1); border: 1px solid var(--bg-4); border-radius: 14px; padding: 16px; }
     .field { width: 100%; margin-top: 8px; }
+    /* ÖLÇÜLEN KUSUR (Final20): `.btn` bu sayfada HİÇ tanımlı değildi.
+       `<a class="btn">` tarayıcının varsayılan bağlantı rengine düşüyor ve
+       koyu zeminde #0000ee / #151720 = 1.9:1 kontrast veriyordu — WCAG 1.4.3
+       (AA) 4.5:1 ister; pratikte düğme okunmuyordu. */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 8px 14px; border-radius: 8px; cursor: pointer;
+      font-size: 14px; font-weight: 600; line-height: 1.2;
+      text-decoration: none;
+      background: var(--bg-3); color: var(--text-1);
+      border: 1px solid var(--bg-4);
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .btn:hover { background: var(--bg-4); }
+    .btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
   </style>
 </head>
 <body>
@@ -30,22 +72,22 @@
         <div class="title">Marketplace</div>
         <div class="subtitle">Botlar ve pluginler tek ekranda</div>
       </div>
-      <button class="btn" onclick="window.location.href='/'">Uygulamaya Dön</button>
+      <a class="btn" href="/">Uygulamaya Dön</a>
     </div>
     <div class="filters">
-      <input id="q" class="input-field search" type="text" placeholder="Bot / plugin ara">
-      <button class="btn btn-primary" onclick="loadMarketplace()">Yenile</button>
+      <input id="q" class="input-field search" type="search" aria-label="Bot veya plugin ara" placeholder="Bot / plugin ara">
+      <button class="btn btn-primary" type="button" data-bridge-action="loadMarketplace">Yenile</button>
     </div>
     <h3>Pluginler</h3>
     <div id="plugins" class="grid"></div>
     <h3 style="margin-top:18px;">Botlar</h3>
     <div id="bots" class="grid"></div>
   </main>
-  <div id="marketplace-modal" class="modal" role="dialog" aria-modal="true">
+  <div id="marketplace-modal" class="modal" role="dialog" aria-modal="true" aria-label="Marketplace ayrıntıları" tabindex="-1">
     <div class="modal-card">
       <div id="mkt-modal-content"></div>
       <div class="row" style="justify-content:flex-end">
-        <button class="btn" onclick="closeMktModal()">Kapat</button>
+        <button class="btn" type="button" data-bridge-action="closeMktModal">Kapat</button>
       </div>
     </div>
   </div>

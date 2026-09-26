@@ -27,7 +27,6 @@ if (!DB_URL) {
 const ENC_KEY = Buffer.from(ENC_HEX, 'hex');
 const ALG = 'aes-256-gcm';
 const IV_LEN = 12;
-const TAG_LEN = 16;
 
 function encryptPrivateKey(pem) {
   const iv = crypto.randomBytes(IV_LEN);

@@ -14,9 +14,11 @@
 //   - server_events full-scan → cursor-based sayfalı tarama (yüksek yük desteği)
 
 import logger from '../lib/logger';
-import { cache } from '../lib/redisAdapter';
+import { cache, isRedisAvailable } from '../lib/redisAdapter';
 import { sendPushToUser } from '../lib/pushSender';
 import { ServerEvents } from '../db/repositories/ServerEventRepository';
+import { Members } from '../db/repositories';
+import { PERMS, hasPermission, resolvePermissions } from '../lib/permissions';
 
 // Kaç dakika önce bildirim gönderilsin
 const REMIND_WINDOWS_MIN = [5, 15];
@@ -24,10 +26,12 @@ const REMIND_WINDOWS_MIN = [5, 15];
 // Sayfa başına maksimum etkinlik (cursor loop)
 const PAGE_SIZE = 100;
 
-// Redis flag key: eventId + pencere dakikası
-function remindKey(eventId: string, windowMin: number): string {
-  return `evtremind:${eventId}:${windowMin}`;
+// Redis idempotency key: event + reminder window + recipient.
+// Per-user keys let failed recipients retry without duplicating successful pushes.
+function remindKey(eventId: string, windowMin: number, userId: string): string {
+  return `evtremind:${eventId}:${windowMin}:${userId}`;
 }
+
 
 export async function sendEventReminders(): Promise<void> {
   const now = new Date();
@@ -56,19 +60,8 @@ export async function sendEventReminders(): Promise<void> {
       if (!events.length) break pageLoop;
 
       for (const event of events) {
-        const rkey = remindKey(event.id, windowMin);
-
-        // Zaten gönderildi mi?
-        try {
-          const alreadySent = await cache.get(rkey);
-          if (alreadySent) continue;
-          // Flag'i işaretle — 5 dakika TTL (çakışma önleme + multi-instance safe)
-          await cache.set(rkey, '1', 300);
-        } catch {
-          // Redis yoksa devam et — olsa olsa duplicate gönderilir, crash olmaz
-        }
-
-        // RSVP'si olan kullanıcıları çek
+        // RSVP'si olan kullanıcıları çek. No idempotency claim is taken before
+        // this succeeds, so a transient DB failure cannot suppress the reminder.
         let rsvps;
         try {
           rsvps = await ServerEvents.findAttendees(event.id);
@@ -96,10 +89,69 @@ export async function sendEventReminders(): Promise<void> {
 
         let sent = 0;
         for (const rsvp of rsvps) {
+          // RSVP is historical state, not current authorization. Re-check at
+          // delivery time so removed members / revoked private-channel viewers
+          // never receive event metadata through push. Fail closed on DB/perm
+          // uncertainty and do not claim idempotency, allowing a later retry.
+          let authorized = false;
+          try {
+            const member = await Members.findOne(rsvp.user_id, event.server_id);
+            if (member) {
+              if (!event.channel_id) {
+                authorized = true;
+              } else {
+                const perms = await resolvePermissions(
+                  rsvp.user_id, event.server_id, event.channel_id,
+                );
+                authorized = hasPermission(perms, PERMS.VIEW_CHANNELS);
+              }
+            }
+          } catch (err) {
+            logger.warn(
+              { err, userId: rsvp.user_id, eventId: event.id },
+              '[EventReminder] Güncel yetki doğrulanamadı; reminder atlandı',
+            );
+          }
+          if (!authorized) continue;
+
+          const rkey = remindKey(event.id, windowMin, rsvp.user_id);
+
+          // A configured Redis URL means this deployment expects cluster-safe
+          // idempotency. If Redis is unavailable, do not silently fall back to a
+          // process-local key and risk duplicate push delivery across nodes.
+          // In a deliberate single-node deployment with no REDIS_URL, the
+          // bounded in-memory SET-NX fallback remains acceptable.
+          if (process.env.REDIS_URL && !isRedisAvailable()) {
+            logger.warn(
+              { userId: rsvp.user_id, eventId: event.id },
+              '[EventReminder] Redis idempotency backend unavailable; reminder skipped fail-closed',
+            );
+            continue;
+          }
+
+          let claimed = false;
+          try {
+            claimed = await cache.setIfAbsentAuthoritative(rkey, '1', 300);
+          } catch (err) {
+            logger.warn(
+              { err, userId: rsvp.user_id, eventId: event.id },
+              '[EventReminder] Idempotency claim failed; reminder skipped fail-closed',
+            );
+          }
+          if (!claimed) continue;
+
           try {
             await sendPushToUser(rsvp.user_id, payload);
             sent++;
           } catch (err) {
+            // Failed recipients must remain retryable. Successful recipients keep
+            // their key and therefore do not receive duplicates on the next tick.
+            try { await cache.delAuthoritative(rkey); } catch (releaseErr) {
+              logger.warn(
+                { err: releaseErr, userId: rsvp.user_id, eventId: event.id },
+                "[EventReminder] Başarısız push claim'i bırakılamadı",
+              );
+            }
             logger.warn(
               { err, userId: rsvp.user_id, eventId: event.id },
               '[EventReminder] Push gönderilemedi',

@@ -1,20 +1,22 @@
 // client/js/core/server-settings/server-settings-svelte.ts
-// Svelte ServerSettingsModal mount köprüsü
-// Sprint 114: initialTab parametresi eklendi (openEmojiManager gibi çağrılar için)
+// Svelte ServerSettingsModal mount bridge.
+// Owns exactly one modal instance and rejects stale async mounts/close callbacks.
 
 import { createLogger } from '../logger.ts';
 
 const log = createLogger('ServerSettingsSvelte');
 
-type TabId = 'general' | 'media' | 'emoji' | 'webhooks' | 'audit' | 'sso' | 'plugins' | 'onboarding';
+type TabId = 'general' | 'roles' | 'media' | 'emoji' | 'webhooks' | 'audit' | 'health' | 'sso' | 'plugins' | 'onboarding';
 
-let _unmount: (() => void) | null = null;
+type Disposer = () => void;
+
+let _disposeCurrent: Disposer | null = null;
+let _mountGeneration = 0;
 
 export async function mountServerSettingsModal(initialTab: TabId = 'general'): Promise<void> {
-  if (_unmount) {
-    _unmount();
-    _unmount = null;
-  }
+  const generation = ++_mountGeneration;
+  _disposeCurrent?.();
+  _disposeCurrent = null;
 
   let target = document.getElementById('server-settings-svelte-mount');
   if (!target) {
@@ -23,34 +25,54 @@ export async function mountServerSettingsModal(initialTab: TabId = 'general'): P
     document.body.appendChild(target);
   }
 
-  try {
-    const { mount, unmount } = await import('svelte');
-    const { default: ServerSettingsModal } = await import('./ServerSettingsModal.svelte');
+  // Coalesce same-turn tab switches before loading/mounting the modal.
+  await Promise.resolve();
+  if (generation !== _mountGeneration) return;
 
+  try {
+    const [{ mount, unmount }, { default: ServerSettingsModal }] = await Promise.all([
+      import('svelte'),
+      import('./ServerSettingsModal.svelte'),
+    ]);
+
+    // A newer request won while dynamic imports were pending.  The newer
+    // request owns the shared mount host; this stale request must not mount or
+    // remove it.
+    if (generation !== _mountGeneration) return;
+
+    let disposed = false;
+    // `dispose` KENDİ gövdesinden (ve onClose'dan) referans alınır; bu yüzden
+    // bildirimi kullanımından ÖNCE gelir ve tek kez atanır.
+    // eslint-disable-next-line prefer-const
+    let dispose: Disposer;
     const instance = mount(ServerSettingsModal, {
       target,
       props: {
         initialTab,
         onClose: () => {
-          if (_unmount) {
-            _unmount();
-            _unmount = null;
-          }
+          // Close only the instance whose callback fired.  An old component
+          // must never tear down a newer modal that replaced it.
+          dispose();
         },
       },
     });
 
-    _unmount = () => {
+    dispose = () => {
+      if (disposed) return;
+      disposed = true;
       unmount(instance);
-      target?.remove();
+      if (target?.isConnected) target.remove();
+      if (_disposeCurrent === dispose) _disposeCurrent = null;
     };
+    _disposeCurrent = dispose;
   } catch (err) {
     log.error('[server-settings] Svelte modal yüklenemedi:', err);
-    target.remove();
+    if (generation === _mountGeneration && target.isConnected) target.remove();
   }
 }
 
 export function unmountServerSettingsModal(): void {
-  _unmount?.();
-  _unmount = null;
+  ++_mountGeneration; // invalidate any dynamic import still in flight
+  _disposeCurrent?.();
+  _disposeCurrent = null;
 }

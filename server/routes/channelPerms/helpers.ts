@@ -1,14 +1,13 @@
 import type { Request } from 'express';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { Auth, Servers, Channels, Messages, Roles } from '../../db/repositories';
+import { v4 as uuidv4 } from 'uuid';
+import { publishPersistedMessage } from '../../lib/channelActivity';
 
+// Shared helpers: permission rate limits, audit records and socket invalidation.
 type RateLimitRequest = Request & { user?: { id?: string } };
 const permissionRateLimitKey = (req: RateLimitRequest): string =>
   req.user?.id || ipKeyGenerator(req.ip || 'unknown');
-// server/routes/channelPerms/helpers.ts.1
-// Shared yardımcılar: rate limiter'lar, audit log, log mesajı, socket emit
-
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { Auth, Servers, Channels, Messages } from '../../db/repositories';
-import { v4 as uuidv4 } from 'uuid';
 const permReadLimiter = rateLimit({
   windowMs:        60 * 1000,
   max:             60,
@@ -73,6 +72,7 @@ async function sendPermLogMessage(req: Request, serverId: string, channelId: str
       PERM_UPDATE:    '✏️ İzin güncellendi',
       PERM_DELETE:    '🗑️ İzin kaldırıldı',
       PERM_BULK_SYNC: '🔁 Toplu senkronizasyon',
+      PERM_UNDO:      '↩️ İzin değişikliği geri alındı',
     };
     const actionLabel = actionLabels[action] || action;
 
@@ -87,25 +87,52 @@ async function sendPermLogMessage(req: Request, serverId: string, channelId: str
 
     const content = `${actionLabel} — **#${channelName}** kanalı | Hedef: **${targetName || '?'}** | Yapan: **${actorName}**${changeSummary}`;
 
-    const msgId = uuidv4();
-    await Messages.create({
-      _id: msgId, channelId: logChannelId, serverId,
+    const logMessage = await Messages.create({
+      _id: uuidv4(), channelId: logChannelId, serverId,
       userId: 'system', username: 'Bridge', displayName: 'Bridge',
       content, type: 'system', createdAt: Date.now(),
     });
-
-    const io = getIo(req);
-    if (io) {
-      io.to(`channel:${logChannelId}`).emit('message:new', {
-        _id: msgId, channelId: logChannelId, serverId,
-        userId: 'system', username: 'Bridge', displayName: 'Bridge',
-        content, type: 'system', createdAt: Date.now(),
-      });
-    }
+    // Broadcast the stored row (it used to re-build a copy with a second timestamp).
+    await publishPersistedMessage(getIo(req), logMessage);
   } catch { /* sistem mesajı hatası kritik değil */ }
 }
 
+
+/**
+ * GÜVENLİK — KİRACI (TENANT) DOĞRULAMASI.
+ *
+ * `overrides.ts` rotaları yetkiyi `resolvePermissions(user, sid)` ile
+ * doğruluyor, ardından `{ channelId: cid, roleId }` üzerinde işlem yapıyordu —
+ * ancak `cid`in `sid`e ait olduğunu ve `roleId`nin `sid`e ait olduğunu HİÇ
+ * doğrulamıyordu.
+ *
+ * İSTİSMAR: kendi A sunucusunda MANAGE_CHANNELS yetkisi olan bir kullanıcı
+ *   PUT /api/servers/<A>/channels/<B'nin kanalı>/permissions/<B'nin rolü>
+ * çağırarak BAŞKA bir sunucunun kanalına override yazabiliyordu; satır
+ * `serverId: A` ile damgalandığı için veri de bozuluyordu. `GET /` aynı açıkla
+ * B'nin override'larını sızdırıyordu.
+ *
+ * `bulk.ts` bu kapsamı zaten doğru uyguluyor
+ * (`Channels.findWhere({ _id: { $in }, serverId: sid })`); bu yardımcı aynı
+ * sözleşmeyi tekil rotalara taşır. Fail-closed: doğrulanamayan her şey reddedilir.
+ */
+async function assertChannelInServer(cid: string, sid: string): Promise<boolean> {
+  if (!cid || !sid) return false;
+  const channel = await Channels.findById(cid);
+  return Boolean(channel) && String((channel as { serverId?: unknown }).serverId ?? '') === sid;
+}
+
+/** Rol gerçekten bu sunucuya mı ait? (rol-üzerinden çapraz kiracı IDOR engeli) */
+async function assertRoleInServer(roleId: string, sid: string): Promise<boolean> {
+  if (!roleId || !sid) return false;
+  // `@everyone` sözleşmesi sunucu kimliğiyle aynıdır (Bridge kanonik davranışı).
+  if (roleId === sid || roleId === '__everyone__') return true;
+  return Boolean(await Roles.findByIdAndServer(roleId, sid));
+}
+
 export { permReadLimiter,
+  assertChannelInServer,
+  assertRoleInServer,
   permWriteLimiter,
   getIo,
   emitPermsUpdated,

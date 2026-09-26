@@ -31,23 +31,63 @@ import {
   voiceQueues,
 } from '../music';
 
-// ── Payload tipleri (test içi) ─────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// TIPLER URUNDEN GELIR — TESTTE KOPYASI TUTULMAZ
+// ══════════════════════════════════════════════════════════════════════════
+// Burada eskiden urun tiplerinin ELDE YAZILMIS bir kopyasi vardi
+// (`TrackInfo`, `NowPlaying`, `QueuedResult`, ...) ve kopya ESKIMISTI:
+// `MusicTrack.duration` ile `url` urunde ZORUNLU iken kopyada istege bagliydi.
+// Sonuc: testler `makeTrack('X')` yazip eksik parca uretiyor,
+// urun imzasina uymadigi icin 19 strict hatasi cikiyordu — ve daha kotusu,
+// olculen sey urunun gercekten tasidigi veri DEGILDI.
+//
+// Artik tip tek yerde yasar. Urun `MusicTrack`i degistirirse bu dosya
+// DERLEMEDE kirilir; sessizce eskimez.
 
-interface TrackInfo     { title: string; duration?: number; url?: string }
-interface MusicQueue    { current: TrackInfo | null; queue: TrackInfo[] }
-interface NowPlaying    { nowPlaying: TrackInfo }
-interface QueuedResult  { queued: TrackInfo; position: number }
-interface QueueFull     { error: string }
-interface QueueState    { current: TrackInfo | null; queue: TrackInfo[] }
-interface CommandList   { commands: string[] }
-type PlayResult = NowPlaying | QueuedResult | QueueFull;
+import type { MusicTrack, MusicCommandResult } from '../music';
+
+/** TAM bir `MusicTrack` uretir; test yalnizca ilgilendigi alani gecer. */
+function makeTrack(title: string, overrides: Partial<MusicTrack> = {}): MusicTrack {
+  return { title, duration: 0, url: `https://youtube.com/watch?v=${encodeURIComponent(title)}`, ...overrides };
+}
+
+// ── Sonuc daraltmasi: CAST DEGIL, DOGRULAMA ───────────────────────────────
+// `MusicCommandResult` bir BIRLESIMDIR. Eskiden `(result as NowPlaying)`
+// yaziliyordu; yanlis dal dondugunde bu, `undefined okunuyor` gibi okunmasi
+// zor bir kazaya donusuyordu. Asagidakiler hangi dalin beklendigini ACIK
+// yazar ve gelmediyse NE geldigini soyler.
+
+function expectNowPlaying(result: MusicCommandResult): MusicTrack {
+  if (result && typeof result === 'object' && 'nowPlaying' in result) return result.nowPlaying;
+  throw new Error(`'nowPlaying' bekleniyordu, gelen: ${JSON.stringify(result)}`);
+}
+
+function expectQueued(result: MusicCommandResult): { queued: MusicTrack; position: number } {
+  if (result && typeof result === 'object' && 'queued' in result) return result;
+  throw new Error(`'queued' bekleniyordu, gelen: ${JSON.stringify(result)}`);
+}
+
+function expectError(result: MusicCommandResult): string {
+  if (result && typeof result === 'object' && 'error' in result) return result.error;
+  throw new Error(`'error' bekleniyordu, gelen: ${JSON.stringify(result)}`);
+}
+
+function expectQueueState(result: MusicCommandResult): { current: MusicTrack | null; queue: MusicTrack[] } {
+  if (result && typeof result === 'object' && 'queue' in result && 'current' in result) return result;
+  throw new Error(`kuyruk durumu bekleniyordu, gelen: ${JSON.stringify(result)}`);
+}
+
+function expectCommands(result: MusicCommandResult): string[] {
+  if (result && typeof result === 'object' && 'commands' in result) return result.commands;
+  throw new Error(`'commands' bekleniyordu, gelen: ${JSON.stringify(result)}`);
+}
 
 
 // ── Yardımcılar ───────────────────────────────────────────────
 
 /** Her test öncesi tüm queue state'ini temizle */
 function resetQueues() {
-  for (const k of Object.keys(voiceQueues)) delete (voiceQueues as Record<string, unknown>)[k];
+  for (const k of Object.keys(voiceQueues)) delete voiceQueues[k];
 }
 
 beforeEach(() => resetQueues());
@@ -118,7 +158,7 @@ describe('isValidMusicUrl — tam kapsam', () => {
     ['',                                    false],
     ['   ',                                 false],
     ['javascript:alert(1)',                 false],
-    ['ftp://youtube.com/watch?v=abc',       true],  // URL parse edilebiliyor, hostname içeriyor
+    ['ftp://youtube.com/watch?v=abc',       false], // yalnız HTTP(S) kabul edilir
   ] as [string, boolean][])('%s → %s (geçersiz)', (url, expected) => {
     expect(isValidMusicUrl(url)).toBe(expected);
   });
@@ -192,13 +232,13 @@ describe('getQueue', () => {
   it('farklı kanallar bağımsız queue\'ya sahip', () => {
     const q1 = getQueue('ch-a');
     const q2 = getQueue('ch-b');
-    q1.current = { title: 'A' } as TrackInfo;
+    q1.current = makeTrack('A');
     expect(q2.current).toBeNull();
   });
 
   it('voiceQueues export\'u getQueue ile senkron', () => {
     getQueue('ch-export');
-    expect((voiceQueues as Record<string, unknown>)['ch-export']).toBeDefined();
+    expect(voiceQueues['ch-export']).toBeDefined();
   });
 });
 
@@ -209,20 +249,20 @@ describe('getQueue', () => {
 describe('skipCurrent', () => {
   it('kuyrukta şarkı varsa sonrakini current yapar ve döndürür', () => {
     const q = getQueue('ch-skip-1');
-    q.current = { title: 'Playing Now' } as TrackInfo;
-    q.queue   = [{ title: 'Next Up' }, { title: 'Third' }] as TrackInfo[];
+    q.current = makeTrack('Playing Now');
+    q.queue   = [makeTrack('Next Up'), makeTrack('Third')];
 
     const next = skipCurrent('ch-skip-1');
 
-    expect(next).toEqual({ title: 'Next Up' });
-    expect(q.current).toEqual({ title: 'Next Up' });
+    expect(next).toEqual(makeTrack('Next Up'));
+    expect(q.current).toEqual(makeTrack('Next Up'));
     expect(q.queue).toHaveLength(1);
-    expect(q.queue[0]).toEqual({ title: 'Third' });
+    expect(q.queue[0]).toEqual(makeTrack('Third'));
   });
 
   it('kuyruk boşsa null döner ve current null olur', () => {
     const q = getQueue('ch-skip-2');
-    q.current = { title: 'Last Song' } as TrackInfo;
+    q.current = makeTrack('Last Song');
     q.queue   = [];
 
     const next = skipCurrent('ch-skip-2');
@@ -241,8 +281,8 @@ describe('skipCurrent', () => {
 
   it('tek elemanlı kuyruktan skip sonrası queue boş kalır', () => {
     const q = getQueue('ch-skip-4');
-    q.current = { title: 'A' } as TrackInfo;
-    q.queue   = [{ title: 'B' }] as TrackInfo[];
+    q.current = makeTrack('A');
+    q.queue   = [makeTrack('B')];
 
     skipCurrent('ch-skip-4');
     expect(q.queue).toHaveLength(0);
@@ -256,8 +296,8 @@ describe('skipCurrent', () => {
 describe('clearQueue', () => {
   it('current ve queue\'yu sıfırlar', () => {
     const q = getQueue('ch-clear-1');
-    q.current = { title: 'Playing' } as TrackInfo;
-    q.queue   = [{ title: 'Q1' }, { title: 'Q2' }] as TrackInfo[];
+    q.current = makeTrack('Playing');
+    q.queue   = [makeTrack('Q1'), makeTrack('Q2')];
 
     clearQueue('ch-clear-1');
 
@@ -272,7 +312,7 @@ describe('clearQueue', () => {
 
   it('clearQueue sonrası getQueue çağrısı temiz state döndürür', () => {
     const q = getQueue('ch-clear-2');
-    q.current = { title: 'X' } as TrackInfo;
+    q.current = makeTrack('X');
     clearQueue('ch-clear-2');
 
     const fresh = getQueue('ch-clear-2');
@@ -297,47 +337,47 @@ describe('routes/music.ts handleMusicCommand', () => {
   it('!play geçerli URL ile nowPlaying döndürür', async () => {
     const result = await cmd('!play', [VALID_URL]);
     expect(result).toHaveProperty('nowPlaying');
-    expect((result as NowPlaying).nowPlaying.title).toContain(VALID_URL);
+    expect(expectNowPlaying(result).title).toContain(VALID_URL);
   });
 
   it('!play URL olmadan error döndürür', async () => {
     const result = await cmd('!play', []);
     expect(result).toHaveProperty('error');
-    expect((result as QueueFull).error).toContain('URL required');
+    expect(expectError(result)).toContain('URL required');
   });
 
   it('!play geçersiz URL error döndürür', async () => {
     const result = await cmd('!play', ['https://vimeo.com/123']);
     expect(result).toHaveProperty('error');
-    expect((result as QueueFull).error).toContain('Invalid');
+    expect(expectError(result)).toContain('Invalid');
   });
 
   it('!play queue dolu iken error döndürür', async () => {
     const q = getQueue('ch-full');
-    q.current = { title: 'Current' } as TrackInfo;
-    q.queue   = new Array(25).fill({ title: 'x' }) as TrackInfo[];
+    q.current = makeTrack('Current');
+    q.queue   = Array.from({ length: 25 }, (_, i) => makeTrack(`x${i}`));
 
     const result = await routeHandleMusicCommand('!play', [VALID_URL], 'ch-full', null);
-    expect((result as QueueFull).error).toContain('Queue full');
+    expect(expectError(result)).toContain('Queue full');
   });
 
   it('!play kuyrukta şarkı varken queued döndürür', async () => {
     const q = getQueue('ch-queue-route');
-    q.current = { title: 'Playing' } as TrackInfo;
+    q.current = makeTrack('Playing');
 
     const result = await routeHandleMusicCommand('!play', [VALID_URL], 'ch-queue-route', null);
     expect(result).toHaveProperty('queued');
-    expect((result as QueuedResult).position).toBe(1);
+    expect(expectQueued(result).position).toBe(1);
   });
 
   it('!skip sonraki şarkıya geçer', async () => {
     const q = getQueue('ch-skip-route');
-    q.current = { title: 'Old' } as TrackInfo;
-    q.queue   = [{ title: 'New Song' }] as TrackInfo[];
+    q.current = makeTrack('Old');
+    q.queue   = [makeTrack('New Song')];
 
     const result = await cmd('!skip', [], 'ch-skip-route');
     expect(result).toHaveProperty('nowPlaying');
-    expect((result as NowPlaying).nowPlaying.title).toBe('New Song');
+    expect(expectNowPlaying(result).title).toBe('New Song');
   });
 
   it('!skip boş kuyruk stopped döndürür', async () => {
@@ -349,8 +389,8 @@ describe('routes/music.ts handleMusicCommand', () => {
 
   it('!stop clearQueue çağırır ve stopped döndürür', async () => {
     const q = getQueue('ch-stop-route');
-    q.current = { title: 'Playing' } as TrackInfo;
-    q.queue   = [{ title: 'Q1' }] as TrackInfo[];
+    q.current = makeTrack('Playing');
+    q.queue   = [makeTrack('Q1')];
 
     const result = await cmd('!stop', [], 'ch-stop-route');
     expect(result).toHaveProperty('stopped', true);
@@ -362,20 +402,20 @@ describe('routes/music.ts handleMusicCommand', () => {
 
   it('!queue current ve kuyruğu döndürür', async () => {
     const q = getQueue('ch-queue-route2');
-    q.current = { title: 'Now Playing', duration: 180 } as TrackInfo;
-    q.queue   = [{ title: 'Next' }] as TrackInfo[];
+    q.current = makeTrack('Now Playing', { duration: 180 });
+    q.queue   = [makeTrack('Next')];
 
     const result = await cmd('!queue', [], 'ch-queue-route2');
-    expect((result as QueueState).current!.title).toBe('Now Playing');
-    expect((result as QueueState).queue).toHaveLength(1);
+    expect(expectQueueState(result).current?.title).toBe('Now Playing');
+    expect(expectQueueState(result).queue).toHaveLength(1);
   });
 
   it('!help komut listesi döndürür', async () => {
     const result = await cmd('!help', []);
-    expect((result as CommandList).commands).toContain('!play <url>');
-    expect((result as CommandList).commands).toContain('!skip');
-    expect((result as CommandList).commands).toContain('!stop');
-    expect((result as CommandList).commands).toContain('!queue');
+    expect(expectCommands(result)).toContain('!play <url>');
+    expect(expectCommands(result)).toContain('!skip');
+    expect(expectCommands(result)).toContain('!stop');
+    expect(expectCommands(result)).toContain('!queue');
   });
 
   it('bilinmeyen komut false döndürür', async () => {
@@ -401,15 +441,15 @@ describe('voiceQueues export', () => {
 
   it('getQueue ile mutate edince voiceQueues de güncellenir', () => {
     const q = getQueue('ch-vq');
-    q.current = { title: 'VQ Test' } as TrackInfo;
+    q.current = makeTrack('VQ Test');
 
-    expect((voiceQueues as Record<string, any>)['ch-vq'].current.title).toBe('VQ Test');
+    expect(voiceQueues['ch-vq']?.current?.title).toBe('VQ Test');
   });
 
   it('clearQueue sonrası voiceQueues temiz', () => {
     getQueue('ch-vq2');
     clearQueue('ch-vq2');
-    const entry = (voiceQueues as Record<string, any>)['ch-vq2'];
+    const entry = voiceQueues['ch-vq2'];
     expect(entry.current).toBeNull();
     expect(entry.queue).toHaveLength(0);
   });

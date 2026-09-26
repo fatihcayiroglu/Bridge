@@ -28,6 +28,7 @@ jest.mock('../lib/redisAdapter', () => ({
   cache: {
     get:               jest.fn().mockResolvedValue(null),
     set:               jest.fn().mockResolvedValue(undefined),
+    setIfAbsent:       jest.fn().mockResolvedValue(true),
     del:               jest.fn().mockResolvedValue(undefined),
     invalidatePattern: jest.fn().mockResolvedValue(undefined),
     increment:         jest.fn().mockResolvedValue(1),
@@ -70,7 +71,7 @@ jest.mock('../lib/logger', () => ({
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('lib/captcha', () => {
-  let captcha;
+  let captcha: typeof import('../lib/captcha');
 
   beforeEach(() => {
     // Her test öncesi modül cache'i sıfırla → CAPTCHA_ENABLED env'i temiz alınsın.
@@ -131,12 +132,53 @@ describe('lib/captcha', () => {
       expect(captcha._getIp(req)).toBe('5.6.7.8');
     });
 
-    test('proxy arkasında X-Forwarded-For ilk IP kullanılır', () => {
-      const req = {
-        socket: { remoteAddress: '127.0.0.1' },
-        headers: { 'x-forwarded-for': '203.0.113.5, 10.0.0.1' },
-      };
-      expect(captcha._getIp(req)).toBe('203.0.113.5');
+    // ══════════════════════════════════════════════════════════════════════
+    // BU TEST DEGISTIRILDI — eskiden ACIGI bekliyordu
+    // ══════════════════════════════════════════════════════════════════════
+    // Eski adi "X-Forwarded-For ILK IP kullanilir" idi ve '203.0.113.5'
+    // bekliyordu. Ama zincirin ILK hop'u TAMAMEN ISTEMCI TARAFINDAN YAZILIR:
+    // proxy gercek IP'yi SONA ekler. Yani test, kayit kotasinin
+    // (MAX_REG_PER_HOUR = 3/saat/IP) sahte bir baslikla ATLATILMASINI
+    // beklenen davranis olarak kodluyordu.
+    //
+    // Artik kanonik cozumleyici kullaniliyor (lib/clientIp.ts).
+    describe('X-Forwarded-For güven modeli', () => {
+      let saved: string | undefined;
+      beforeEach(() => { saved = process.env.TRUSTED_PROXY_COUNT; });
+      afterEach(() => {
+        if (saved === undefined) delete process.env.TRUSTED_PROXY_COUNT;
+        else process.env.TRUSTED_PROXY_COUNT = saved;
+      });
+
+      test('proxy GÜVENİLMİYORSA (varsayılan) XFF yok sayılır', () => {
+        delete process.env.TRUSTED_PROXY_COUNT;
+        const req = {
+          socket: { remoteAddress: '127.0.0.1' },
+          headers: { 'x-forwarded-for': '203.0.113.5, 10.0.0.1' },
+        };
+        // Saldirganin uydurdugu deger KULLANILMAZ.
+        expect(captcha._getIp(req)).toBe('127.0.0.1');
+      });
+
+      test('proxy GÜVENİLİYORSA proxy’nin eklediği GERÇEK hop kullanılır', () => {
+        process.env.TRUSTED_PROXY_COUNT = '1';
+        const req = {
+          socket: { remoteAddress: '127.0.0.1' },
+          headers: { 'x-forwarded-for': '203.0.113.5, 10.0.0.1' },
+        };
+        expect(captcha._getIp(req)).toBe('10.0.0.1');
+      });
+
+      test('SAHTE ön ek eklemek kotayı ATLATAMAZ', () => {
+        // Ayni gercek istemci, farkli uydurma on ekler -> AYNI anahtar.
+        process.env.TRUSTED_PROXY_COUNT = '1';
+        const mk = (xff: string) => ({
+          socket: { remoteAddress: '127.0.0.1' },
+          headers: { 'x-forwarded-for': xff },
+        });
+        expect(captcha._getIp(mk('sahte1, 10.0.0.1')))
+          .toBe(captcha._getIp(mk('sahte2, 10.0.0.1')));
+      });
     });
   });
 
@@ -192,8 +234,8 @@ describe('lib/captcha', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('lib/contentScanner', () => {
-  let scanner;
-  let tmpDir;
+  let scanner: typeof import('../lib/contentScanner');
+  let tmpDir: string;
 
   beforeEach(() => {
     // Modül cache'i bu describe'a özel sıfırla — diğer describe bloklarını etkilemez.
@@ -254,7 +296,7 @@ describe('lib/contentScanner', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('lib/svgSanitizer', () => {
-  let svg;
+  let svg: typeof import('../lib/svgSanitizer');
 
   beforeAll(() => {
     svg = require('../lib/svgSanitizer');
@@ -330,7 +372,7 @@ describe('lib/svgSanitizer', () => {
   });
 
   describe('sanitizeSvgFile', () => {
-    let tmpDir;
+    let tmpDir: string;
 
     beforeAll(() => {
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-svg-'));
@@ -398,7 +440,7 @@ describe('lib/pushSender', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('lib/permissions', () => {
-  let perms;
+  let perms: typeof import('../lib/permissions');
 
   beforeAll(() => {
     perms = require('../lib/permissions');
@@ -409,7 +451,9 @@ describe('lib/permissions', () => {
       'VIEW_CHANNELS', 'MANAGE_CHANNELS', 'SEND_MESSAGES',
       'ADMINISTRATOR', 'BAN_MEMBERS', 'KICK_MEMBERS',
     ];
-    for (const flag of expected) {
+    // Anahtar tipi ACIKCA yazilir: dizge ile indeksleme `PERMS` nesne
+    // edebisi tipinde tanimli degildir ve ortuk `any` uretiyordu.
+    for (const flag of expected as Array<keyof typeof perms.PERMS>) {
       expect(perms.PERMS).toHaveProperty(flag);
       expect(typeof perms.PERMS[flag]).toBe('number');
     }
@@ -456,8 +500,11 @@ describe('lib/permissions', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('lib/presenceCache', () => {
-  let pc;
-  let cacheGet, cacheSet, cacheDel;
+  let pc: typeof import('../lib/presenceCache');
+  // redisAdapter jest.mock ile degistirildigi icin bunlar birer mock'tur.
+  let cacheGet: jest.Mock;
+  let cacheSet: jest.Mock;
+  let cacheDel: jest.Mock;
 
   beforeAll(() => {
     // jest.mock hoisting sonrası mock referanslarını al
@@ -500,9 +547,36 @@ describe('lib/presenceCache', () => {
   });
 
   test('isUserOnline: cache.get değer dönerse true', async () => {
-    cacheGet.mockResolvedValueOnce(1);
+    // İlk okuma hidden-preference, ikinci okuma online heartbeat içindir.
+    cacheGet.mockResolvedValueOnce(null).mockResolvedValueOnce(1);
     const result = await pc.isUserOnline('online-user');
     expect(result).toBe(true);
+  });
+
+  test('visibility cache okuma hatası policyyi visible saymaz (fail-closed)', async () => {
+    cacheGet.mockRejectedValueOnce(new Error('redis down'));
+    expect(await pc.isPresenceVisible('remote-hidden-unknown')).toBe(false);
+  });
+
+  test('visibility cache hatasında online heartbeat tahmini yapılmaz', async () => {
+    cacheGet.mockRejectedValueOnce(new Error('redis down'));
+    expect(await pc.isUserOnline('remote-hidden-unknown')).toBe(false);
+    expect(cacheGet).toHaveBeenCalledTimes(1);
+  });
+
+  test('hidden kullanıcı aktif socketi olsa bile online görünmez', async () => {
+    await pc.trackSocket('hidden-user', 'hidden-socket', false);
+    expect(cacheSet).toHaveBeenCalledWith(expect.stringContaining('hidden'), 1, 0);
+    expect(await pc.isUserOnline('hidden-user')).toBe(false);
+    await pc.releaseSocket('hidden-user', 'hidden-socket');
+  });
+
+  test('görünürlük yeniden açılınca hidden cluster işareti kaldırılır', async () => {
+    await pc.setPresenceVisibility('toggle-user', false);
+    cacheDel.mockClear();
+    await pc.setPresenceVisibility('toggle-user', true);
+    expect(cacheDel).toHaveBeenCalledWith(expect.stringContaining('hidden'));
+    expect(await pc.isPresenceVisible('toggle-user')).toBe(true);
   });
 });
 
@@ -511,7 +585,7 @@ describe('lib/presenceCache', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('lib/notifications — extractMentions', () => {
-  let notif;
+  let notif: typeof import('../lib/notifications');
 
   beforeAll(() => {
     notif = require('../lib/notifications');

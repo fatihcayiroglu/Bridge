@@ -4,6 +4,7 @@
 
 const PERM_CACHE_TTL_MS = 30_000;  // 30 saniye
 const MAX_CACHE_ENTRIES = 50_000;  // memory guard
+const SHARED_AUTHORITY_CONFIGURED = Boolean(process.env.REDIS_URL);
 
 interface CacheEntry {
   perms: number;
@@ -38,6 +39,16 @@ export async function getCachedPerms(
   ) => Promise<number>,
   channelId: string | null = null,
 ): Promise<number> {
+  // A process-local authorization cache is safe only in explicit single-node
+  // mode. In a Redis/cluster deployment, role/channel revocation may happen on
+  // another worker and local invalidation cannot provide immediate revocation.
+  // Resolve from the canonical repositories instead of accepting a 30-second
+  // cross-node privilege window. This is deliberately correctness-first; a
+  // future shared cache must provide authoritative distributed invalidation.
+  if (SHARED_AUTHORITY_CONFIGURED) {
+    return resolveFn(userId, serverId, channelId);
+  }
+
   const key = channelId
     ? `${userId}:${serverId}:${channelId}`
     : `${userId}:${serverId}`;

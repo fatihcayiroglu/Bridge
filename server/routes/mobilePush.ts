@@ -9,6 +9,7 @@ import { Notifications } from '../db/repositories';
 import { authMiddleware } from '../middleware/auth';
 import { clearBadge } from '../lib/pushSender';
 import { limits } from '../middleware/rateLimit';
+import { BRIDGE_VERSION } from '../lib/version';
 // POST /api/mobile/push/register
 /**
  * @openapi
@@ -32,11 +33,15 @@ import { limits } from '../middleware/rateLimit';
  *       400: { description: Geçersiz token veya platform }
  */
 router.post('/push/register', authMiddleware, limits.write(), async (req, res) => {
-  const { token, platform } = req.body as Record<string, string>;
+  // Govde GUVENILMEZDIR: alanlar EKSIK olabilir. `Record<string, string>`
+  // bunu gizliyordu; `| undefined` gercegi soyler ve dogrulamayi ZORUNLU kilar.
+  const { token, platform } = req.body as Record<string, string | undefined>;
   const userId = req.user.id;
   if (!token || typeof token !== 'string')
     return res.status(400).json({ error: 'token is required' });
-  if (!['ios', 'android'].includes(platform))
+  // `includes` daraltma YAPMAZ; acik karsilastirma hem daraltir hem de
+  // "platform hic gonderilmedi" durumunu ayni kapiya sokar.
+  if (platform !== 'ios' && platform !== 'android')
     return res.status(400).json({ error: 'platform must be ios or android' });
   await Notifications.upsertNativeToken(userId, platform, token);
   res.json({ ok: true });
@@ -50,12 +55,27 @@ router.post('/push/register', authMiddleware, limits.write(), async (req, res) =
  *     tags: [Mobile]
  *     summary: Push token kaldır
  *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [platform]
+ *             properties:
+ *               platform: { type: string, enum: [ios, android] }
  *     responses:
  *       200: { description: Token kaldırıldı }
+ *       400: { description: platform eksik veya geçersiz }
  *       404: { description: Token bulunamadı }
  */
 router.delete('/push/unregister', authMiddleware, limits.write(), async (req, res) => {
-  const { platform } = req.body as Record<string, string>;
+  const { platform } = req.body as Record<string, string | undefined>;
+  // Platform gonderilmediginde `removeNativeToken` daha once `undefined` ile
+  // cagriliyordu; bu, silme sorgusunu belirsiz birakiyordu. Artik acikca
+  // reddedilir.
+  if (platform !== 'ios' && platform !== 'android')
+    return res.status(400).json({ error: 'platform must be ios or android' });
   await Notifications.removeNativeToken(req.user.id, platform);
   res.json({ ok: true });
 });
@@ -97,7 +117,7 @@ router.post('/push/badge/clear', authMiddleware, limits.write(), async (req, res
  */
 router.get('/info', (req, res) => {
   res.json({
-    serverVersion: '50.0.0',
+    serverVersion: BRIDGE_VERSION,
     minAppVersion: '1.0.0',
     platform: 'bridge',
     features: {
@@ -134,11 +154,12 @@ router.get('/info', (req, res) => {
  *       200: { description: Native token kaydedildi }
  */
 router.post('/push/register-native', authMiddleware, limits.write(), async (req, res) => {
-  const { token, platform } = req.body as Record<string, string>;
+  const { token, platform } = req.body as Record<string, string | undefined>;
   const userId = req.user.id;
   if (!token || typeof token !== 'string')
     return res.status(400).json({ error: 'token is required' });
-  const plat = ['ios', 'android'].includes(platform) ? platform : 'unknown';
+  const plat: 'ios' | 'android' | 'unknown' =
+    platform === 'ios' || platform === 'android' ? platform : 'unknown';
   await Notifications.upsertNativeToken(userId, plat, token);
   res.json({ ok: true });
 });

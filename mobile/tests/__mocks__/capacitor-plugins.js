@@ -33,7 +33,7 @@ const NetworkModule = {
 
 // ── App ──────────────────────────────────────────────────────────────────────
 class AppPlugin extends WebPlugin {
-  getInfo    = jest.fn().mockResolvedValue({ id: 'app.bridge.chat', name: 'Bridge', build: '1', version: '45.0.0' });
+  getInfo    = jest.fn().mockResolvedValue({ id: 'com.bridge.app', name: 'Bridge', build: '1', version: '45.0.0' });
   getState   = jest.fn().mockResolvedValue({ isActive: true });
   exitApp    = jest.fn();
   minimizeApp = jest.fn();

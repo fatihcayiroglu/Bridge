@@ -3,7 +3,6 @@
  */
 import type { JwtPayload } from '../middleware/auth';
 import type { Channel, Server, User } from '../db/repositories/types/entities';
-import type { Socket } from 'socket.io';
 
 declare global {
   namespace Express {
@@ -27,6 +26,10 @@ declare module 'socket.io' {
     userId?: string;
     username?: string;
     tokenV?: number;
+    tokenExp?: number;
+    isBot?: boolean;
+    botId?: string;
+    botServerId?: string;
     currentVoiceChannel?: string | null;
     currentVoiceServer?: string | null;
     currentStageChannel?: string;

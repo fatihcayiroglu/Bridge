@@ -59,6 +59,7 @@
  */
 
 import express, { Request, Response } from 'express';
+import { isIP } from 'net';
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 export const moderationRouter = express.Router();
 import { authMiddleware} from '../../middleware/auth';
@@ -66,8 +67,6 @@ import { limits } from '../../middleware/rateLimit';
 import { adminOnly, logAction } from './middleware';
 import { banIp, unbanIp, listBans, getClientIp } from '../../middleware/ipBan';
 import { listQuarantinedFiles, deleteQuarantinedFile } from '../../lib/contentScanner';
-import path from 'path';
-import fs from 'fs';
 
 // ── IP Ban endpoints ───────────────────────────────────────────
 
@@ -79,24 +78,34 @@ moderationRouter.get('/ip-bans', authMiddleware, adminOnly, async (req: Request,
 
 moderationRouter.post('/ip-bans', authMiddleware, limits.moderation(), adminOnly, async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
-  const { ip, reason = 'Admin ban', durationMs = null } = req.body as Record<string, string>;
+  const body = req.body as Record<string, unknown>;
+  const ip = body.ip;
+  const reason = body.reason ?? 'Admin ban';
+  const durationMs = body.durationMs ?? null;
 
-  if (!ip?.trim()) return res.status(400).json({ error: 'ip zorunlu' });
+  if (typeof ip !== 'string' || !ip.trim()) return res.status(400).json({ error: 'ip zorunlu' });
 
   const ipTrimmed = ip.trim();
-  const ipv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(ipTrimmed);
-  const ipv6 = /^[0-9a-fA-F:]+$/.test(ipTrimmed) && ipTrimmed.includes(':');
-  if (!ipv4 && !ipv6) return res.status(400).json({ error: 'Geçersiz IP formatı' });
+  // Structural IP parsing, not a permissive regex: rejects values such as
+  // 999.999.999.999 and malformed IPv6 forms that used to pass.
+  if (isIP(ipTrimmed) === 0) return res.status(400).json({ error: 'Geçersiz IP formatı' });
 
   const adminIp = getClientIp(req);
   if (ipTrimmed === adminIp) {
     return res.status(400).json({ error: 'Kendi IP adresinizi engelleyemezsiniz' });
   }
 
-  const dur = durationMs ? parseInt(durationMs) : null;
+  let dur: number | null = null;
+  if (durationMs !== null && durationMs !== undefined && durationMs !== '' && durationMs !== 0 && durationMs !== '0') {
+    const raw = typeof durationMs === 'number' ? durationMs : Number(String(durationMs).trim());
+    if (!Number.isFinite(raw) || !Number.isSafeInteger(raw) || raw <= 0) {
+      return res.status(400).json({ error: 'durationMs pozitif bir tam sayı olmalı' });
+    }
+    dur = raw;
+  }
   const entry = await banIp(ipTrimmed, {
-    reason: reason.trim().slice(0, 200) || 'Admin ban',
-    durationMs: dur && dur > 0 ? dur : null,
+    reason: String(reason).trim().slice(0, 200) || 'Admin ban',
+    durationMs: dur,
     adminId: _u.id,
   });
 

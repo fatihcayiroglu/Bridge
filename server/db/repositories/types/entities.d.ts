@@ -49,20 +49,43 @@ export interface User {
   statusText?: string;
   statusEmoji?: string;
   status?: UserStatus;
+  presenceVisibility?: 'visible' | 'hidden';
   activity?: Record<string, unknown> | string | null;
   activityUpdatedAt?: Timestamp | null;
+  ssoProvider?: string | null;
+  ssoIssuer?: string | null;
+  ssoId?: string | null;
   password?: string;
   apUrl?: string | null;
   bio?: string;
   website?: string;
   location?: string;
   pronouns?: string;
-  isAdmin?: 0 | 1;
+  /**
+   * Sema: `users."isAdmin" BOOLEAN NOT NULL DEFAULT FALSE`; `pg` surucusu
+   * GERCEK boolean dondurur.
+   *
+   * Tip bir zamanlar `0 | 1` idi (okuma yollari `=== true` yaptigi icin
+   * typecheck kirmiziydi), sonra gecici olarak `boolean | 0 | 1` birlesimi
+   * oldu. Yazma yollari da gercek boolean'a gecirildikten sonra birlesim
+   * GEREKSIZ hale geldi ve kaldirildi: auth/yonetici kodunda tip belirsizligi
+   * birakmak, `Users.count({ isAdmin: ... })` gibi YETKI KAPILARINDA sessiz
+   * uyumsuzluk riski demektir.
+   */
+  isAdmin?: boolean;
   tokenVersion?: number;
   emailTokenExp?: Timestamp;
   twoFactorEnabled?: boolean | 0 | 1;
   twoFactorSecret?: string | null;
   twoFactorBackup?: string | string[] | null;
+  /**
+   * TOTP tekrar-kullanim korumasi: en son kabul edilen zaman adimi.
+   *
+   * Sema (`schema.ts:65`), gecis (`migrations.ts:225`), sanitize izin
+   * listesi (`pgCollection.ts:77`) ve `UserRepository.markTwoFactorStep`
+   * bu alani KULLANIYORDU; yalnizca varlik tipinde eksikti.
+   */
+  twoFactorLastUsedStep?: number | null;
   webauthnCredentials?: WebAuthnCredential[] | null;
   webauthnEnabled?: boolean | 0 | 1;
   timeoutUntil?: Timestamp | null;
@@ -71,8 +94,9 @@ export interface User {
   e2eAlgorithm?: string;
   e2eKeyUpdatedAt?: Timestamp | null;
   x3dhIdentityKey?: string | null;
-  x3dhSignedPreKey?: string | null;
-  x3dhOneTimePreKeys?: string | string[] | null;
+  x3dhSignedPreKey?: { keyId: number; publicKey: string; signature: string } | null;
+  x3dhOneTimePreKeys?: Array<{ keyId: number; publicKey: string }> | null;
+  x3dhUpdatedAt?: Timestamp | null;
   apPublicKey?: string | null;
   apPrivateKey?: string | null;
   dmPrivacy?: string;
@@ -86,14 +110,24 @@ export interface User {
 
 export interface Server {
   _id: UUID;
-  name: string;
+  name?: string;
   ownerId: UUID;
   icon?: string | null;
   banner?: string | null;
   iconUrl?: string | null;
   bannerUrl?: string | null;
   description?: string;
-  slug?: string;
+  /**
+   * Vanity/profil kısa adı. VERİTABANI KOLON ADI BUDUR.
+   * Bu tip önceden var olmayan bir `slug` alanı ilan ediyordu; kod da ona
+   * göre sorgu kuruyor ve PostgreSQL "Unknown column: slug" ile 500
+   * döndürüyordu. API sözleşmesinde alan adı hâlâ `slug`tur — yalnız
+   * depolama adı `vanityUrl`dir.
+   */
+  vanityUrl?: string;
+  featured?: boolean;
+  featuredAt?: Timestamp | null;
+  ssoConfig?: Record<string, unknown> | string | null;
   isPublic?: boolean;
   color?: string;
   mfaLevel?: number;
@@ -108,6 +142,8 @@ export interface Server {
 export interface Member {
   _id?: UUID;
   userId: UUID;
+  /** Client-generated idempotency key, unique only within this user. */
+  ackId?: string | null;
   serverId: UUID;
   /** JSON string: string[] */
   roles?: string | string[];
@@ -148,7 +184,8 @@ export interface Channel {
   isNsfw?: boolean;
   slowmode?: number;
   tags?: string | string[];
-  forumTags?: string | string[];
+  forumTags?: Array<{ id?: string; name?: string; color?: string }> | string;
+  modOnly?: boolean;
   createdAt: Timestamp;
 }
 
@@ -182,17 +219,31 @@ export interface Message {
   displayName?: string;
   avatarColor?: string;
   content?: string;
+  /** 0/absent = LEGACY (sanitized, entity-encoded), 1 = RAW typed text. Final21 Phase 16, lib/storedText.ts. */
+  contentFormat?: 0 | 1;
   attachments?: string; // JSON string: Attachment[]
   embeds?: string | null;      // JSON string: Embed[]
   pinned?: 0 | 1;
   edited?: boolean;
   editHistory?: string | Record<string, unknown>[];
   type?: string;
+  sticker?: { id: string; packId: string; name: string; url: string; width: number; height: number } | null;
   threadId?: UUID | null;
   threadCount?: number;
+  transcript?: string | null;
+  webhookId?: UUID | null;
+  isWebhook?: boolean;
+  flaggedMsgId?: UUID | null;
   reactions?: string;   // JSON string: Reaction[]
+  superReactions?: Record<string, number>; // JSONB emoji → burst count
+  /**
+   * Yanıt anlık görüntüsü (JSONB kolon). Gönderim anında kopyalanır;
+   * `deleted` orijinal mesaj silindiğinde işaretlenir (lib/deleteMessageCascade.ts).
+   */
+  replyTo?: { _id?: UUID; displayName?: string; content?: string; contentFormat?: 0 | 1; deleted?: boolean } | null;
   createdAt: Timestamp;
   editedAt?: Timestamp | null;
+  deletedAt?: Timestamp | null;
 }
 
 export interface Attachment {
@@ -229,6 +280,9 @@ export interface DmMessage {
   reactions?: Record<string, unknown> | string;
   senderId?: UUID;
   apId?: string;
+  clientNonce?: string;
+  e2e?: boolean;
+  type?: string;
   createdAt: Timestamp;
 }
 
@@ -238,7 +292,8 @@ export interface DmMessage {
 
 export interface GroupDm {
   _id: UUID;
-  name: string;
+  /** API display alias; canonical DB column is `username`. */
+  name?: string;
   ownerId: UUID;
   participants?: UUID[];
   icon?: string | null;
@@ -256,6 +311,8 @@ export interface GroupDmMessage {
   content?: string;
   attachments?: string;
   edited?: boolean;
+  clientNonce?: string;
+  type?: string;
   createdAt: Timestamp;
 }
 
@@ -271,6 +328,8 @@ export interface Role {
   position?: number;
   permissions?: number;
   hoist?: boolean;
+  /** Presentation only; never participates in permission resolution. */
+  displayOnProfile?: boolean;
   mentionable?: boolean;
   icon?: string | null;
   createdAt: Timestamp;
@@ -333,7 +392,8 @@ export interface ThreadMessage {
 
 export interface Bot {
   _id: UUID;
-  name: string;
+  /** API display alias; canonical DB column is `username`. */
+  name?: string;
   ownerId: UUID;
   token?: string;
   tokenHash?: string;
@@ -351,9 +411,10 @@ export interface Bot {
   ratingCount?: number;
   public?: boolean;
   active?: boolean;
-  webhookId?: string;
   channelId?: UUID;
   contextCommands?: unknown[] | string;
+  slashCommands?: unknown[] | string;
+  webhookUrl?: string;
   createdAt: Timestamp;
 }
 
@@ -365,11 +426,12 @@ export interface AutomodRule {
   _id: UUID;
   serverId: UUID;
   type: string;
-  trigger?: string;
-  action: string;
-  enabled?: boolean;
-  config?: Record<string, unknown> | string;
+  enabled: boolean;
+  /** PostgreSQL JSONB object; string is retained only for legacy/mock compatibility. */
+  config: Record<string, unknown> | string;
+  createdBy: UUID;
   createdAt: Timestamp;
+  updatedAt?: Timestamp | null;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -384,6 +446,19 @@ export interface ReactionRole {
   emoji: string;
   roleId: UUID;
   count?: number;
+  /**
+   * Kurali OLUSTURAN kullanici. Sema'da `reaction_roles."createdBy" TEXT NOT
+   * NULL` olarak VARDI ama bu arayuzde EKSIKTI.
+   *
+   * `socket/handlers/messages-edit.ts` calisma aninda kural sahibinin rol
+   * hiyerarsisini YENIDEN dogrulamak icin bu alani okur (sonradan yetkisi
+   * alinmis bir moderatorun kurali rol dagitmaya devam etmesin diye). Alan
+   * tipte olmadigi icin dosya derlenmiyordu; `npm run typecheck` boylece
+   * KIRMIZI kaliyor ve gercek hatalari (bkz. `joinGeneration`) gizliyordu.
+   *
+   * Eski satirlar icin opsiyonel: `?? ''` ile fail-closed degerlendirilir.
+   */
+  createdBy?: UUID;
   createdAt: Timestamp;
 }
 
@@ -399,6 +474,14 @@ export interface ScheduledMessage {
   content: string;
   sendAt: Timestamp;
   sent?: boolean;
+  sentAt?: Timestamp;
+  claimOwner?: string | null;
+  claimUntil?: Timestamp | null;
+  dispatchAttempts?: number;
+  lastError?: string | null;
+  failedAt?: Timestamp | null;
+  failureReason?: string | null;
+  cancelledAt?: Timestamp | null;
   username?: string;
   displayName?: string;
   avatarColor?: string;
@@ -422,12 +505,15 @@ export interface NativeToken {
 }
 
 export interface NotificationPref {
+  _id?: UUID;
   userId: UUID;
   channelId?: UUID;
   serverId?: UUID;
   muted?: boolean;
   mentions?: boolean;
   level?: string;
+  muteUntil?: Timestamp | null;
+  updatedAt?: Timestamp;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -484,14 +570,65 @@ export interface ServerGif {
   createdAt: Timestamp;
 }
 
+/**
+ * Kalıcı sticker paketi satırı (migrations_pg/021).
+ *
+ * `seq` DAHİLİdir: belirlenimci ekleme sırası sağlar ve API'ye SIZDIRILMAZ.
+ * PostgreSQL BIGINT'i string olarak döndürdüğü için tipi `string | number`.
+ */
+export interface StickerPackRecord {
+  _id: UUID;
+  serverId: UUID;
+  name: string;
+  description: string;
+  authorId: UUID;
+  createdAt: Timestamp;
+  seq?: string | number;
+}
+
+/**
+ * Kalıcı sticker öğesi satırı (migrations_pg/021).
+ *
+ * `position` DAHİLİdir: yükleme sırasını korur, API'ye SIZDIRILMAZ.
+ * Genel API bu satırı `{ id, packId, name, url, tags, width, height }`
+ * olarak yayınlar — `_id` DEĞİL `id`.
+ */
+export interface StickerPackItemRecord {
+  _id: UUID;
+  packId: UUID;
+  name: string;
+  url: string;
+  tags: string[];
+  width: number;
+  height: number;
+  position: number;
+  createdAt: Timestamp;
+}
+
 export interface SoundboardSound {
   _id: UUID;
   serverId: UUID;
   name: string;
   url: string;
   emoji?: string;
+  category?: string;
   volume?: number;
+  uploadedBy?: UUID;
+  durationSeconds?: number;
+  mimeType?: string;
+  fileSize?: number;
+  updatedAt?: Timestamp;
   createdAt: Timestamp;
+}
+
+export interface SoundboardUserStat {
+  soundId: UUID;
+  userId: UUID;
+  serverId?: UUID | null;
+  favorite: boolean;
+  favoritedAt?: Timestamp | null;
+  playCount: number;
+  lastPlayedAt?: Timestamp | null;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -509,6 +646,8 @@ export interface RefreshToken {
   used?: boolean;
   /** Token rotation family ID */
   family?: UUID;
+  /** User tokenVersion at issuance; stale refresh tokens must never mint fresh access tokens. */
+  tokenVersion: number;
   createdAt: Timestamp;
 }
 
@@ -558,7 +697,8 @@ export interface ChannelWebhook {
   name?: string;
   avatarUrl?: string | null;
   token?: string;
-  token?: string;
+  secret?: string | null;
+  createdBy?: UUID | null;
   createdAt: Timestamp;
 }
 
@@ -568,14 +708,12 @@ export interface ChannelWebhook {
 
 export interface Poll {
   _id: UUID;
-  createdBy?: UUID;
   channelId: UUID;
   serverId: UUID;
-  userId: UUID;
+  createdBy: UUID;
   question: string;
   options: PollOption[]; // normalize edilmiş seçenekler
-  votes?: Record<string, string[]> | string;
-  expiresAt?: Timestamp | null;
+  expiresAt?: Timestamp | string | null;
   closed?: boolean;
   multiSelect?: boolean;
   allowVoteChange?: boolean;
@@ -606,6 +744,17 @@ export interface FederationActivity {
   serverId?: UUID;
   raw?: string; // JSON string
   activity?: Record<string, unknown> | string;
+  activityId?: string | null;
+  targetUserId?: UUID | null;
+  actorUserId?: UUID | null;
+  actorUrl?: string | null;
+  processed?: boolean;
+  processedAt?: Timestamp | null;
+  claimOwner?: string | null;
+  claimUntil?: Timestamp | null;
+  attempts?: number;
+  lastError?: string | null;
+  noteId?: string | null;
   activityUpdatedAt?: Timestamp;
   publishedAt?: Timestamp;
   published?: Timestamp | string;
@@ -671,7 +820,8 @@ export interface Podcast {
 export interface PodcastEpisode {
   _id: UUID;
   channelId: UUID;
-  serverId?: UUID;
+  // `podcast_episodes."serverId" TEXT` — NULL OLABILIR (sema:562-565).
+  serverId?: UUID | null;
   title: string;
   description?: string | null;
   filename?: string | null;
@@ -682,7 +832,7 @@ export interface PodcastEpisode {
   season?: number | null;
   episode?: number | null;
   published?: boolean;
-  publishedAt: Timestamp;
+  publishedAt?: Timestamp | null;
   createdBy?: UUID;
   createdAt: Timestamp;
 }
@@ -717,4 +867,3 @@ export interface ChannelPermission {
   deny?: number;
   createdAt: Timestamp;
 }
-

@@ -33,13 +33,30 @@ Bu script:
 # İlk kez (ios/ ve android/ dizinlerini oluşturur)
 npm run mobile:init
 # Yukarıdaki şununla eşdeğer:
-#   node mobile/scripts/setup.js && npx cap add ios && npx cap add android && npx cap sync
+#   node mobile/scripts/setup.js && npx cap add ios && npx cap add android \
+#     && node mobile/scripts/apply-android-overlay.js && npx cap sync
 
 # Her kod güncellemesinde
 npm run mobile:sync
 ```
 
 > **Not:** `ios/` ve `android/` dizinleri `.gitignore`'da — her makinede `mobile:init` çalıştırılmalı.
+
+### Küratörlü Android katmanı (`mobile/android/`)
+
+`npx cap add android` STANDART bir Capacitor iskelesi üretir. Ürünün yerel katmanı — izinler
+(mikrofon, kamera, bildirim), `bridge://` ve App Link süzgeçleri, `allowBackup="false"`, debug ağ
+güvenliği, bildirim ikonu/rengi, sürüm eşliği ve imzalama — `mobile/android/` altında tutulur ve
+`node mobile/scripts/apply-android-overlay.js` ile üretilen projenin ÜZERİNE yazılır. `mobile:init`,
+`mobile:add`, `mobile:android` ve `mobile:sync` bunu kendileri yapar. Betik önce kimliği doğrular:
+`capacitor.config.js` `appId` değeri küratörlü `applicationId`/`namespace` ile aynı değilse hiçbir
+dosya kopyalanmaz. Gradle sarmalayıcısı ve AGP sürümü küratörlü DEĞİLDİR; Capacitor iskelesininki
+kullanılır. Final21 Faz 19'a kadar bu katman hiçbir adımda uygulanmıyordu: belgelenen yolla üretilen
+APK yerel projelerden FARKLI bir uygulama kimliği, "1.0" sürümü, `allowBackup="true"` ve yalnızca INTERNET izniyle
+çıkıyordu.
+
+`mobile/ios/` iOS için BAŞVURU dosyalarıdır (sürüm/kimlik ayarları, `Info.plist` izin metinleri);
+`project.pbxproj` tam bir Xcode projesi değildir ve otomatik uygulanmaz. iOS derlemesi macOS gerektirir.
 
 ## 4. iOS Build (macOS gerektirir)
 
@@ -108,13 +125,30 @@ npm run vapid:generate
 # VAPID_SUBJECT=mailto:admin@bridge.app
 ```
 
-## 7. Production API URL
+## 7. Sunucu adresi (`BRIDGE_API_URL`) — ZORUNLU
 
-`mobile/scripts/setup.js` çalıştırıldığında `BRIDGE_API_URL` env değişkenini okur.
+Uygulama paketlenir (`www/`) ve sunucuya `BRIDGE_API_URL` ile bağlanır. Adres verilmezse uygulama
+HİÇBİR sunucuya ulaşamaz: kökeni `https://localhost` olduğu için her istek uygulamanın kendisine gider
+(Final21 Faz 19'a kadar adres hiç kullanılmıyordu ve uygulama açılış ekranında kalıyordu).
 
 ```bash
-BRIDGE_API_URL=https://yourdomain.com node mobile/scripts/setup.js
+BRIDGE_API_URL=https://chat.example.com npm run mobile:sync
 ```
+
+- `setup.js` `www/js/bridge-config.js` üretir (`globalThis.BRIDGE_API`) ve onu uygulama paketinden ÖNCE yükler;
+  CSP `connect-src`, `img-src`, `media-src` bu kökene izin verir. Geçersiz adres (http(s) değil, sorgu/parola içeren)
+  derlemeyi DURDURUR.
+- REST istekleri ve çerezler Capacitor'ın yerel HTTP katmanından geçer (`CapacitorHttp`, `CapacitorCookies`):
+  oturum yenileme çerezi `SameSite=strict`tir ve WebView onu çapraz-köken isteğe eklemezdi; erişim jetonu
+  (varsayılan 15 dk) dolunca oturum düşerdi. Socket.IO WebSocket bağlantısı WebView'dan doğrudan kurulur.
+- Sunucuda `ALLOWED_ORIGINS` listesine Capacitor kökenlerini ekleyin: `https://localhost` (Android) ve
+  `capacitor://localhost` (iOS) — Socket.IO'nun polling yedeği ve WebView'dan giden istekler için.
+- Adres **https** olmalıdır. Uygulamanın kökeni `https://localhost` olduğundan WebView düz `ws://`
+  bağlantısını karışık içerik diye engeller (gerçek zamanlı her şey ölür) ve jetonlar açık metinle gider;
+  `setup.js` düz `http`yi YALNIZCA geri döngü adresinde (`localhost`, `127.0.0.1`) kabul eder.
+  Emülatör/cihazda yerel sunucuyla geliştirme:
+  `adb reverse tcp:3000 tcp:3000` ve `BRIDGE_API_URL=http://localhost:3000`.
+- `BRIDGE_SERVER_URL` (Capacitor `server.url`) YALNIZCA geliştirmede canlı yenileme içindir (bkz. §8).
 
 ## 8. Canlı Geliştirme (Hot Reload)
 
@@ -137,7 +171,7 @@ npx cap run ios --livereload --external
 {
   "applinks": {
     "apps": [],
-    "details": [{ "appID": "TEAMID.app.bridge.chat", "paths": ["/invite/*", "/channel/*", "/dm/*"] }]
+    "details": [{ "appID": "TEAMID.com.bridge.app", "paths": ["/invite/*", "/channel/*", "/dm/*"] }]
   }
 }
 ```

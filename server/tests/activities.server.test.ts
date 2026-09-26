@@ -1,228 +1,438 @@
 // server/tests/activities.server.test.ts
-// Sprint 82: Activities server handler unit testleri
+// Faz 12 — CANLI activity socket sözleşmesi regresyonu.
+//
+// ════════════════════════════════════════════════════════════════════════════
+// NEDEN YENİDEN YAZILDI
+// ════════════════════════════════════════════════════════════════════════════
+// Bu dosyanın önceki hâli üretimden HİÇBİR ŞEY import etmiyordu; 14 testi
+// `validatePayload` / `createSession` / `serializeSession` gibi fonksiyonların
+import { findEmitted, requireEmitted } from './helpers/socketDoubles';
+// TEST DOSYASI İÇİNDEKİ yerel kopyalarını doğruluyordu. Dolayısıyla
+// `registerActivityHandlers` hiç çalıştırılmıyor, hiçbir socket olayı
+// kapsanmıyordu — 12/12 PASS yanıltıcı bir güven veriyordu.
+//
+// Buradaki testler GERÇEK üretim modülünü çalıştırır:
+//   registerActivityHandlers → kayıtlı callback → gerçek dal → socket/io etkisi
+//
+// KAYNAKTAN DOĞRULANMIŞ SÖZLEŞME (socket/handlers/activities.ts):
+//   registerActivityHandlers(socket, io, userId: string)
+//   ALLOWED_ACTIVITY_IDS: watch-together, chess, draw-together, word-snack, trivia
+//   _sessions: Map<channelId, session>  (modül seviyesi, in-memory)
+//
+//   activity:start (:63)
+//     bilinmeyen id           → activity:error
+//     kanalda oturum var      → activity:error (mevcut korunur)
+//     resolvePermissions + hasPermission(PERMS.CONNECT) başarısız → activity:error
+//     başarı                  → io.to(`channel:${id}`).emit('activity:started', …)
+//
+//   activity:join (:115)
+//     oturum yok VEYA sessionId EŞLEŞMİYOR → activity:error
+//     başarı → participants_updated (odaya) + activity:join_ok (sokete)
+//
+//   activity:leave (:143)
+//     participants.size === 0 VEYA hostUserId === userId → oturum silinir +
+//       activity:ended   ← host çıkışı ve son-kullanıcı AYNI DALDIR
+//     aksi hâlde → activity:participants_updated
+//
+//   activity:list (:171) → activity:list_result (serialize edilmiş oturum | null)
+//
+// DURUM İZOLASYONU: `_sessions` modül seviyesindedir ve üretimde test için
+// sıfırlama API'si YOKTUR (eklemek de yasaktır). Bu yüzden her test BENZERSİZ
+// channelId kullanır; testler birbirinin durumunu göremez ve sıraya bağlı değildir.
 
 'use strict';
+process.env.NODE_ENV = 'test';
 
-// ── Mock Setup ────────────────────────────────────────────────────────────────
+const mockValidate     = jest.fn(() => ({ valid: true }));
+const mockResolvePerms = jest.fn();
+const mockHasPerm      = jest.fn();
+const mockFindChannel   = jest.fn();
 
-const _ioRooms: Record<string, { event: string; data: unknown }[]> = {};
-const _socketEmits: { event: string; data: unknown }[] = [];
+jest.mock('../middleware/validate', () => ({
+  validateSocketPayload: (...a: unknown[]) => mockValidate(...(a as [])),
+  socketSchemas: { activityStart: {}, activityJoin: {}, activityChannelId: {} },
+}));
 
-const mockIo = {
-  to: (room: string) => ({
-    emit: (event: string, data: unknown) => {
-      if (!_ioRooms[room]) _ioRooms[room] = [];
-      _ioRooms[room].push({ event, data });
+jest.mock('../lib/permissions', () => ({
+  resolvePermissions: (...a: unknown[]) => mockResolvePerms(...(a as [])),
+  hasPermission:      (...a: unknown[]) => mockHasPerm(...(a as [])),
+  PERMS: { VIEW_CHANNELS: 0x400, CONNECT: 0x100 },
+}));
+
+jest.mock('../db/repositories', () => ({
+  Channels: { findById: (...a: unknown[]) => mockFindChannel(...(a as [])) },
+}));
+
+jest.mock('../lib/logger', () => ({
+  __esModule: true,
+  default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+}));
+
+// Alt aktiviteler bu sözleşmenin parçası değil; ağır bağımlılıkları izole edilir.
+jest.mock('../socket/handlers/activities/draw-together', () => ({
+  registerDrawTogetherHandlers: jest.fn(),
+}));
+jest.mock('../socket/handlers/activities/chess-arbiter', () => ({
+  registerChessHandlers: jest.fn(),
+}));
+
+import { registerActivityHandlers } from '../socket/handlers/activities';
+
+// ── Harness (dm-socket / messages-send desenine uyar) ────────────────────────
+
+type Emitted = { ev: string; data: unknown; room?: string };
+
+let _socketN = 0;
+function makeSocket() {
+  const handlers: Record<string, (p: unknown) => unknown> = {};
+  const emitted: Emitted[] = [];
+  const rooms = { has: jest.fn(() => true) };
+  return {
+    id: `activity-test-socket-${++_socketN}`,
+    rooms,
+    on(ev: string, fn: (p: unknown) => unknown) { handlers[ev] = fn; },
+    emit(ev: string, data?: unknown) { emitted.push({ ev, data }); },
+    join() {}, leave() {},
+    _emitted: emitted,
+    _handlers: handlers,
+    async _trigger(ev: string, payload: unknown) { return handlers[ev]?.(payload); },
+  };
+}
+
+function makeIo() {
+  const emitted: Emitted[] = [];
+  return {
+    _emitted: emitted,
+    to(room: string) {
+      return { emit(ev: string, data: unknown) { emitted.push({ ev, data, room }); } };
     },
-  }),
-};
-
-const mockSocket = {
-  _listeners: new Map<string, ((...args: unknown[]) => void)[]>(),
-  on:  function(event: string, cb: (...args: unknown[]) => void) {
-    if (!this._listeners.has(event)) this._listeners.set(event, []);
-    this._listeners.get(event)!.push(cb);
-  },
-  emit: (event: string, data?: unknown) => { _socketEmits.push({ event, data }); },
-  trigger: function(event: string, data?: unknown) {
-    this._listeners.get(event)?.forEach(cb => cb(data));
-  },
-};
-
-// ── Pure logic (activities handler'dan) ──────────────────────────────────────
-
-const ALLOWED_ACTIVITY_IDS = new Set([
-  'watch-together', 'chess', 'draw-together', 'word-snack', 'trivia',
-]);
-
-interface ActivitySession {
-  activityId:   string;
-  channelId:    string;
-  serverId:     string;
-  hostUserId:   string;
-  participants: Set<string>;
-  startedAt:    number;
-  sessionId:    string;
-}
-
-function createSession(
-  activityId: string, channelId: string, serverId: string, hostUserId: string,
-): ActivitySession {
-  return {
-    activityId, channelId, serverId, hostUserId,
-    participants: new Set([hostUserId]),
-    startedAt: Date.now(),
-    sessionId: `sess-${Math.random().toString(36).slice(2)}`,
   };
 }
 
-function serializeSession(s: ActivitySession) {
-  return {
-    activityId:   s.activityId,
-    channelId:    s.channelId,
-    serverId:     s.serverId,
-    hostUserId:   s.hostUserId,
-    participants: [...s.participants],
-    startedAt:    s.startedAt,
-    sessionId:    s.sessionId,
-  };
+let _n = 0;
+/** Her test için benzersiz kanal — modül seviyesi `_sessions` sızıntısını önler. */
+const uniqueChannel = () => `ch-act-${Date.now()}-${++_n}`;
+
+const HOST  = 'user-host';
+const OTHER = 'user-other';
+
+function wire(userId: string, sharedIo?: ReturnType<typeof makeIo>) {
+  const socket = makeSocket();
+  const io     = sharedIo ?? makeIo();
+  registerActivityHandlers(socket as never, io as never, userId);
+  return { socket, io };
 }
 
-function validatePayload(payload: { activityId?: string; channelId?: string; serverId?: string }): string | null {
-  if (!payload?.activityId) return 'activityId gerekli';
-  if (!payload?.channelId)  return 'channelId gerekli';
-  if (!payload?.serverId)   return 'serverId gerekli';
-  if (!ALLOWED_ACTIVITY_IDS.has(payload.activityId)) return 'Bilinmeyen aktivite ID';
-  return null;
-}
+const errors  = (s: ReturnType<typeof makeSocket>) => s._emitted.filter(e => e.ev === 'activity:error');
+const started = (io: ReturnType<typeof makeIo>)    => io._emitted.filter(e => e.ev === 'activity:started');
 
-// ── Test Runner ───────────────────────────────────────────────────────────────
-
-let _passed = 0;
-let _failed = 0;
-const _errors: string[] = [];
-
-function test(name: string, fn: () => void): void {
-  try { fn(); _passed++; console.log(`  ✓ ${name}`); }
-  catch (err) {
-    _failed++;
-    const msg = err instanceof Error ? err.message : String(err);
-    _errors.push(`${name}: ${msg}`);
-    console.log(`  ✗ ${name}: ${msg}`);
-  }
-}
-
-function expect(val: unknown) {
-  return {
-    toBe:          (e: unknown) => { if (val !== e) throw new Error(`Expected ${JSON.stringify(e)}, got ${JSON.stringify(val)}`); },
-    toBeTruthy:    () => { if (!val) throw new Error(`Expected truthy`); },
-    toBeFalsy:     () => { if (val)  throw new Error(`Expected falsy`); },
-    toBeNull:      () => { if (val !== null) throw new Error(`Expected null, got ${JSON.stringify(val)}`); },
-    toContain:     (item: unknown) => { if (Array.isArray(val) && !val.includes(item)) throw new Error(`Array doesn't contain ${JSON.stringify(item)}`); },
-    toBeGreaterThan: (n: number) => { if (typeof val !== 'number' || val <= n) throw new Error(`Expected ${val} > ${n}`); },
-  };
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-console.log('\n=== Activities Server Tests ===\n');
-
-// 1. ALLOWED_ACTIVITY_IDS
-test('should have 5 allowed activities', () => {
-  expect(ALLOWED_ACTIVITY_IDS.size).toBe(5);
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockValidate.mockReturnValue({ valid: true });
+  mockResolvePerms.mockResolvedValue(0xffffffff);
+  mockHasPerm.mockReturnValue(true);       // VIEW_CHANNELS + CONNECT verilir
+  mockFindChannel.mockResolvedValue({ serverId: 'srv-1' });
 });
 
-test('chess is allowed', () => { expect(ALLOWED_ACTIVITY_IDS.has('chess')).toBeTruthy(); });
-test('trivia is allowed', () => { expect(ALLOWED_ACTIVITY_IDS.has('trivia')).toBeTruthy(); });
-test('unknown activity is not allowed', () => { expect(ALLOWED_ACTIVITY_IDS.has('malicious-app')).toBeFalsy(); });
+// ════════════════════════════════════════════════════════════════
+// activity:start
+// ════════════════════════════════════════════════════════════════
 
-// 2. validatePayload
-test('validatePayload returns null for valid payload', () => {
-  expect(validatePayload({ activityId: 'chess', channelId: 'ch-1', serverId: 'srv-1' })).toBeNull();
+describe('activity:start', () => {
+  it('BİLİNMEYEN aktivite id → activity:error, oturum ve yayın YOK', async () => {
+    const ch = uniqueChannel();
+    const { socket, io } = wire(HOST);
+
+    await socket._trigger('activity:start', { activityId: 'yok-boyle', channelId: ch, serverId: 'srv-1' });
+
+    expect(errors(socket)).toHaveLength(1);
+    expect(started(io)).toHaveLength(0);
+  });
+
+  it('GEÇERLİ başlatma → kanal odasına activity:started, host katılımcılarda', async () => {
+    const ch = uniqueChannel();
+    const { socket, io } = wire(HOST);
+
+    await socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-1' });
+
+    expect(errors(socket)).toHaveLength(0);
+    const ev = started(io)[0];
+    expect(ev).toBeDefined();
+    expect(ev!.room).toBe(`channel:${ch}`);          // doğru odaya yayın
+    const data = ev!.data as { activityId: string; hostUserId: string; participants: string[]; sessionId: string };
+    expect(data.activityId).toBe('chess');
+    expect(data.hostUserId).toBe(HOST);
+    expect(data.participants).toEqual([HOST]);
+    expect(typeof data.sessionId).toBe('string');
+  });
+
+  it('AYNI kanalda ikinci başlatma → activity:error, mevcut oturum korunur', async () => {
+    const ch = uniqueChannel();
+    const { socket, io } = wire(HOST);
+    await socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-1' });
+    const firstSessionId = (started(io)[0]!.data as { sessionId: string }).sessionId;
+
+    await socket._trigger('activity:start', { activityId: 'trivia', channelId: ch, serverId: 'srv-1' });
+
+    expect(errors(socket)).toHaveLength(1);
+    expect(started(io)).toHaveLength(1);             // yeni yayın yok
+
+    // Mevcut oturum değişmedi
+    await socket._trigger('activity:list', { channelId: ch });
+    const listed = socket._emitted.filter(e => e.ev === 'activity:list_result').at(-1)!.data as { sessionId: string; activityId: string };
+    expect(listed.sessionId).toBe(firstSessionId);
+    expect(listed.activityId).toBe('chess');
+  });
+
+  it('KANAL İZNİ YOKKEN → activity:error, oturum ve yayın YOK (güvenlik sınırı)', async () => {
+    const ch = uniqueChannel();
+    mockHasPerm.mockReturnValue(false);              // CONNECT reddedilir
+    const { socket, io } = wire(HOST);
+
+    await socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-1' });
+
+    expect(errors(socket)).toHaveLength(1);
+    expect(started(io)).toHaveLength(0);
+
+    // Oturum gerçekten oluşmadı
+    await socket._trigger('activity:list', { channelId: ch });
+    expect(socket._emitted.filter(e => e.ev === 'activity:list_result').at(-1)!.data).toBeNull();
+  });
+
+  it('socket gerçek voice room içinde değilse activity başlatamaz', async () => {
+    const ch = uniqueChannel();
+    const { socket, io } = wire(HOST);
+    socket.rooms.has.mockReturnValue(false);
+
+    await socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-1' });
+
+    expect(errors(socket)).toHaveLength(1);
+    expect(started(io)).toHaveLength(0);
+    expect(mockResolvePerms).not.toHaveBeenCalled();
+  });
+
+  it('istemcinin serverId iddiası kanalın gerçek sunucusuyla eşleşmezse reddedilir', async () => {
+    const ch = uniqueChannel();
+    mockFindChannel.mockResolvedValue({ serverId: 'srv-real' });
+    const { socket, io } = wire(HOST);
+
+    await socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-forged' });
+
+    expect(errors(socket)).toHaveLength(1);
+    expect(started(io)).toHaveLength(0);
+    expect(mockResolvePerms).not.toHaveBeenCalled();
+  });
 });
 
-test('validatePayload catches missing activityId', () => {
-  const err = validatePayload({ channelId: 'ch-1', serverId: 'srv-1' });
-  expect(err).toBeTruthy();
+// ════════════════════════════════════════════════════════════════
+// activity:join
+// ════════════════════════════════════════════════════════════════
+
+describe('activity:join', () => {
+  it('OLMAYAN oturum → activity:error, join_ok ve participants_updated YOK', async () => {
+    const ch = uniqueChannel();
+    const { socket, io } = wire(OTHER);
+
+    await socket._trigger('activity:join', { channelId: ch, sessionId: 'yok' });
+
+    expect(errors(socket)).toHaveLength(1);
+    expect(socket._emitted.filter(e => e.ev === 'activity:join_ok')).toHaveLength(0);
+    expect(io._emitted.filter(e => e.ev === 'activity:participants_updated')).toHaveLength(0);
+  });
+
+  it('YANLIŞ sessionId → activity:error (oturum var ama eşleşmiyor)', async () => {
+    const ch = uniqueChannel();
+    const host = wire(HOST);
+    await host.socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-1' });
+
+    const joiner = wire(OTHER);
+    await joiner.socket._trigger('activity:join', { channelId: ch, sessionId: 'hatali-id' });
+
+    expect(errors(joiner.socket)).toHaveLength(1);
+    expect(joiner.socket._emitted.filter(e => e.ev === 'activity:join_ok')).toHaveLength(0);
+  });
+
+  it('GEÇERLİ katılım → join_ok sokete, participants_updated odaya', async () => {
+    const ch = uniqueChannel();
+    const host = wire(HOST);
+    await host.socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-1' });
+    const sid = (started(host.io)[0]!.data as { sessionId: string }).sessionId;
+
+    const joiner = wire(OTHER);
+    await joiner.socket._trigger('activity:join', { channelId: ch, sessionId: sid });
+
+    const ok = requireEmitted(joiner.socket._emitted, 'activity:join_ok');
+    expect(ok).toBeDefined();
+    expect((ok!.data as { participants: string[] }).participants).toEqual(expect.arrayContaining([HOST, OTHER]));
+
+    const upd = requireEmitted(joiner.io._emitted, 'activity:participants_updated');
+    expect(upd).toBeDefined();
+    expect(upd!.room).toBe(`channel:${ch}`);
+    expect((upd!.data as { participants: string[] }).participants).toEqual(expect.arrayContaining([HOST, OTHER]));
+  });
+
+  it('join sırasında kanal izni artık yoksa sessionId doğru olsa bile katılım reddedilir', async () => {
+    const ch = uniqueChannel();
+    const host = wire(HOST);
+    await host.socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-1' });
+    const sid = (started(host.io)[0]!.data as { sessionId: string }).sessionId;
+
+    mockHasPerm.mockReturnValue(false);
+    const joiner = wire(OTHER);
+    await joiner.socket._trigger('activity:join', { channelId: ch, sessionId: sid });
+
+    expect(errors(joiner.socket)).toHaveLength(1);
+    expect(joiner.socket._emitted.filter(e => e.ev === 'activity:join_ok')).toHaveLength(0);
+    expect(joiner.io._emitted.filter(e => e.ev === 'activity:participants_updated')).toHaveLength(0);
+  });
 });
 
-test('validatePayload catches missing channelId', () => {
-  const err = validatePayload({ activityId: 'chess', serverId: 'srv-1' });
-  expect(err).toBeTruthy();
+// ════════════════════════════════════════════════════════════════
+// activity:leave
+// ════════════════════════════════════════════════════════════════
+
+describe('activity:leave', () => {
+  it('HOST çıkarsa oturum BİTER → activity:ended ve oturum kalmaz', async () => {
+    const ch = uniqueChannel();
+    const host = wire(HOST);
+    await host.socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-1' });
+
+    await host.socket._trigger('activity:leave', { channelId: ch });
+
+    const ended = requireEmitted(host.io._emitted, 'activity:ended');
+    expect(ended).toBeDefined();
+    expect(ended!.room).toBe(`channel:${ch}`);
+
+    await host.socket._trigger('activity:list', { channelId: ch });
+    expect(host.socket._emitted.filter(e => e.ev === 'activity:list_result').at(-1)!.data).toBeNull();
+  });
+
+  it('SON katılımcı çıkarsa oturum BİTER (aynı dal: size===0 || host)', async () => {
+    // Kaynak (:154) her iki koşulu TEK dalda birleştirir; burada host olmayan
+    // son katılımcı senaryosu ayrıca doğrulanır.
+    const ch = uniqueChannel();
+    const host = wire(HOST);
+    await host.socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-1' });
+    const sid = (started(host.io)[0]!.data as { sessionId: string }).sessionId;
+
+    const other = wire(OTHER);
+    await other.socket._trigger('activity:join', { channelId: ch, sessionId: sid });
+
+    await host.socket._trigger('activity:leave', { channelId: ch });   // host çıkar → biter
+
+    await other.socket._trigger('activity:list', { channelId: ch });
+    expect(other.socket._emitted.filter(e => e.ev === 'activity:list_result').at(-1)!.data).toBeNull();
+  });
+
+  it('SIRADAN katılımcı çıkarsa oturum SÜRER → participants_updated, ended YOK', async () => {
+    const ch = uniqueChannel();
+    const host = wire(HOST);
+    await host.socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-1' });
+    const sid = (started(host.io)[0]!.data as { sessionId: string }).sessionId;
+
+    const other = wire(OTHER);
+    await other.socket._trigger('activity:join', { channelId: ch, sessionId: sid });
+    other.io._emitted.length = 0;
+
+    await other.socket._trigger('activity:leave', { channelId: ch });
+
+    expect(other.io._emitted.filter(e => e.ev === 'activity:ended')).toHaveLength(0);
+    const upd = requireEmitted(other.io._emitted, 'activity:participants_updated');
+    expect(upd).toBeDefined();
+    expect((upd!.data as { participants: string[] }).participants).toEqual([HOST]);
+
+    // Oturum hâlâ ayakta
+    await host.socket._trigger('activity:list', { channelId: ch });
+    expect(host.socket._emitted.filter(e => e.ev === 'activity:list_result').at(-1)!.data).not.toBeNull();
+  });
+
+  it('aynı kullanıcının bir sekmesi ayrıldığında diğer sekmenin katılımını veya host oturumunu silmez', async () => {
+    const ch = uniqueChannel();
+    const io = makeIo();
+    const firstTab = wire(HOST, io);
+    const secondTab = wire(HOST, io);
+    await firstTab.socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-1' });
+    const sid = (started(io)[0]!.data as { sessionId: string }).sessionId;
+    await secondTab.socket._trigger('activity:join', { channelId: ch, sessionId: sid });
+    io._emitted.length = 0;
+
+    await firstTab.socket._trigger('disconnect', undefined);
+
+    expect(io._emitted.some(event => event.ev === 'activity:ended')).toBe(false);
+    await secondTab.socket._trigger('activity:list', { channelId: ch });
+    const listed = secondTab.socket._emitted.filter(event => event.ev === 'activity:list_result').at(-1)?.data;
+    expect(listed).toMatchObject({ sessionId: sid, hostUserId: HOST, participants: [HOST] });
+
+    await secondTab.socket._trigger('disconnect', undefined);
+    expect(io._emitted.some(event => event.ev === 'activity:ended')).toBe(true);
+  });
+
+  it('OLMAYAN kanalda leave güvenlidir (hata fırlatmaz, yayın yok)', async () => {
+    const ch = uniqueChannel();
+    const { socket, io } = wire(HOST);
+
+    await expect(socket._trigger('activity:leave', { channelId: ch })).resolves.not.toThrow();
+    expect(io._emitted).toHaveLength(0);
+  });
 });
 
-test('validatePayload catches missing serverId', () => {
-  const err = validatePayload({ activityId: 'chess', channelId: 'ch-1' });
-  expect(err).toBeTruthy();
+// ════════════════════════════════════════════════════════════════
+// activity:list
+// ════════════════════════════════════════════════════════════════
+
+describe('activity:list', () => {
+  it('oturum yokken NULL döner', async () => {
+    const ch = uniqueChannel();
+    const { socket } = wire(HOST);
+
+    await socket._trigger('activity:list', { channelId: ch });
+
+    const res = requireEmitted(socket._emitted, 'activity:list_result');
+    expect(res).toBeDefined();
+    expect(res!.data).toBeNull();
+  });
+
+  it('aktif oturumu SERIALIZE edilmiş döner', async () => {
+    const ch = uniqueChannel();
+    mockFindChannel.mockResolvedValue({ serverId: 'srv-9' });
+    const { socket } = wire(HOST);
+    await socket._trigger('activity:start', { activityId: 'trivia', channelId: ch, serverId: 'srv-9' });
+
+    await socket._trigger('activity:list', { channelId: ch });
+
+    const data = socket._emitted.filter(e => e.ev === 'activity:list_result').at(-1)!.data as Record<string, unknown>;
+    expect(data.activityId).toBe('trivia');
+    expect(data.channelId).toBe(ch);
+    expect(data.serverId).toBe('srv-9');
+    expect(data.hostUserId).toBe(HOST);
+    expect(Array.isArray(data.participants)).toBe(true);   // Set → dizi
+  });
+
+  it('aktif oturum gizli hale gelirse list state sızdırmaz', async () => {
+    const ch = uniqueChannel();
+    const { socket } = wire(HOST);
+    await socket._trigger('activity:start', { activityId: 'trivia', channelId: ch, serverId: 'srv-1' });
+
+    mockHasPerm.mockReturnValue(false);
+    await socket._trigger('activity:list', { channelId: ch });
+
+    expect(socket._emitted.filter(e => e.ev === 'activity:list_result').at(-1)!.data).toBeNull();
+  });
 });
 
-test('validatePayload catches unknown activityId', () => {
-  const err = validatePayload({ activityId: 'evil-app', channelId: 'ch-1', serverId: 'srv-1' });
-  expect(err).toBeTruthy();
-});
+// ════════════════════════════════════════════════════════════════
+// Payload doğrulama sınırı
+// ════════════════════════════════════════════════════════════════
 
-// 3. createSession
-test('createSession initializes with host in participants', () => {
-  const s = createSession('chess', 'ch-1', 'srv-1', 'host-1');
-  expect(s.participants.has('host-1')).toBeTruthy();
-  expect(s.participants.size).toBe(1);
-});
+describe('payload doğrulama', () => {
+  it('geçersiz payload handler\'ı ERKEN durdurur', async () => {
+    const ch = uniqueChannel();
+    mockValidate.mockReturnValue({ valid: false });
+    const { socket, io } = wire(HOST);
 
-test('createSession has unique sessionId', () => {
-  const s1 = createSession('chess', 'ch-1', 'srv-1', 'host-1');
-  const s2 = createSession('chess', 'ch-1', 'srv-1', 'host-1');
-  if (s1.sessionId === s2.sessionId) throw new Error('Session IDs should be unique');
-});
+    await socket._trigger('activity:start', { activityId: 'chess', channelId: ch, serverId: 'srv-1' });
 
-test('createSession records startedAt timestamp', () => {
-  const before = Date.now();
-  const s = createSession('trivia', 'ch-1', 'srv-1', 'host');
-  const after = Date.now();
-  if (s.startedAt < before || s.startedAt > after) throw new Error('startedAt out of range');
-});
-
-// 4. serializeSession
-test('serializeSession converts Set to array', () => {
-  const s = createSession('trivia', 'ch-1', 'srv-1', 'host');
-  s.participants.add('user-2');
-  const serialized = serializeSession(s);
-  if (!Array.isArray(serialized.participants)) throw new Error('participants should be array');
-  expect(serialized.participants.length).toBe(2);
-  expect(serialized.participants).toContain('host');
-  expect(serialized.participants).toContain('user-2');
-});
-
-test('serializeSession includes all required fields', () => {
-  const s = createSession('chess', 'ch-x', 'srv-x', 'h-x');
-  const sr = serializeSession(s);
-  const required = ['activityId', 'channelId', 'serverId', 'hostUserId', 'participants', 'startedAt', 'sessionId'];
-  for (const field of required) {
-    if (!(field in sr)) throw new Error(`Missing field: ${field}`);
-  }
-});
-
-// 5. Session management logic
-test('adding participant increases count', () => {
-  const s = createSession('trivia', 'ch-1', 'srv-1', 'host');
-  s.participants.add('user-2');
-  expect(s.participants.size).toBe(2);
-});
-
-test('removing host triggers end condition', () => {
-  const s = createSession('trivia', 'ch-1', 'srv-1', 'host');
-  s.participants.add('user-2');
-  const shouldEnd = s.hostUserId === 'host'; // host leaves
-  expect(shouldEnd).toBeTruthy();
-});
-
-test('session ends when last participant leaves', () => {
-  const s = createSession('chess', 'ch-1', 'srv-1', 'host');
-  s.participants.delete('host');
-  expect(s.participants.size).toBe(0);
-});
-
-// 6. Payload validation edge cases
-test('validatePayload rejects empty strings', () => {
-  const err = validatePayload({ activityId: '', channelId: 'ch-1', serverId: 'srv-1' });
-  expect(err).toBeTruthy();
-});
-
-test('validatePayload handles null-like payload gracefully', () => {
-  const err = validatePayload({} as { activityId?: string; channelId?: string; serverId?: string });
-  expect(err).toBeTruthy();
-});
-
-// ── Summary ───────────────────────────────────────────────────────────────────
-console.log(`\n  Results: ${_passed} passed, ${_failed} failed\n`);
-if (_failed > 0) {
-  console.error('FAILED TESTS:\n' + _errors.map(e => `  - ${e}`).join('\n'));
-  process.exit(1);
-}
-
-describe('activities server legacy self-test harness', () => {
-  it('legacy inline assertions pass', () => {
-    const jestExpect = (globalThis as unknown as { expect: typeof globalThis.expect }).expect;
-    jestExpect(_failed).toBe(0);
-    jestExpect(_passed).toBeGreaterThan(0);
+    expect(errors(socket)).toHaveLength(0);   // hata bile yayılmaz — erken return
+    expect(started(io)).toHaveLength(0);
   });
 });

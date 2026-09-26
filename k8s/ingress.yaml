@@ -9,11 +9,34 @@ metadata:
     kubernetes.io/ingress.class: nginx
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    # WebSocket desteği (Socket.IO için zorunlu)
     nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection "upgrade";
+    # ── Final21 Faz 10 — F21-10-01: SOCKET.IO OTURUM YAPIŞKANLIĞI ─────────────
+    # İstemci `transports: ['websocket', 'polling']` kullanır; WebSocket
+    # yükseltmesini engelleyen ağlarda UZUN YOKLAMAYA düşer. Uzun yoklamada bir
+    # oturumun TÜM istekleri AYNI pod'a gitmelidir (Redis bağdaştırıcısı yalnızca
+    # yayınları dağıtır, oturum durumunu değil). Bu dağıtım 2+ replika + HPA
+    # çalıştırır ve yapışkanlık YOKTU.
+    #
+    # İki gerçek Bridge örneği (aynı PostgreSQL + Redis) önünde ÖLÇÜLDÜ:
+    #   yapışkan olmayan vekil + yoklama : 25 sn'de HİÇ bağlanamadı,
+    #                                      86 x HTTP 400 "Session ID unknown"
+    #   yapışkan vekil + yoklama        : bağlı, 13/13 uygulama çağrısı
+    #   yapışkan olmayan + WebSocket    : bağlı (denetim)
+    # Çerez tabanlı yapışkanlık ingress-nginx'te pod uç noktasını sabitler.
+    # (Service `sessionAffinity` burada yetmez: ingress-nginx kube-proxy'yi
+    # değil doğrudan uç noktaları kullanır.)
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "bridge_route"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "172800"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: "Lax"
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    # WebSocket yükseltmesi: ingress-nginx `Upgrade`/`Connection` başlıklarını
+    # KENDİSİ iletir. Burada eskiden bir `configuration-snippet` vardı; güncel
+    # ingress-nginx sürümleri snippet açıklamalarını VARSAYILAN OLARAK reddeder
+    # (`allow-snippet-annotations: false`), yani manifest kabul webhook'unda
+    # düşebilirdi. (Bu madde yukarı akış varsayılanına dayanır; bu ortamda bir
+    # küme olmadığı için ÖLÇÜLMEDİ.)
     # TLS — cert-manager kullanıyorsan uncomment et:
     # cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:

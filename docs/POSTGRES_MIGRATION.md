@@ -1,128 +1,71 @@
-# Bridge — PostgreSQL Geçiş Kılavuzu
+# Bridge — PostgreSQL Schema Migration Guide
 
-SQLite'tan PostgreSQL'e geçiş üç adımda tamamlanır.
-Mevcut SQLite veritabanına **dokunulmaz** — her şey güvenle geri alınabilir.
+Bridge v1.125.0 is PostgreSQL-only. The server requires `DATABASE_URL`; there is no
+SQLite runtime fallback and no current-tree automatic SQLite data-conversion runner.
 
----
+## 1. Build before production migration
 
-## Ön Koşullar
-
-- PostgreSQL 14+ kurulu ve çalışıyor olmalı
-- `pg` paketi zaten `package.json`'da mevcut
-
----
-
-## Adım 1 — Veritabanı Oluştur
+A source checkout does not ship `server/dist/`. Build with development dependencies
+first, then prune them only after compilation:
 
 ```bash
-# PostgreSQL'e bağlan
-psql -U postgres
-
-# Veritabanı oluştur
-CREATE DATABASE bridge;
-CREATE USER bridge_user WITH PASSWORD 'güçlü_şifre_buraya';
-GRANT ALL PRIVILEGES ON DATABASE bridge TO bridge_user;
-\q
+npm ci
+npm run build:ci
+npm --prefix server ci
+npm --prefix server run build
+npm --prefix server prune --omit=dev
 ```
 
----
+The server build compiles `db/migrate-postgres.ts` and copies the ordered SQL/JSON
+migration assets to `server/dist/db/migrations_pg/`.
 
-## Adım 2 — `.env` Dosyasını Güncelle
+## 2. Configure PostgreSQL
+
+Set a production connection string through the deployment secret mechanism:
 
 ```env
-# Mevcut SQLite satırını (varsa) kaldır, bunu ekle:
-DATABASE_URL=postgresql://bridge_user:güçlü_şifre_buraya@localhost:5432/bridge
-
-# Opsiyonel — SSL gerektiren cloud DB'ler için (Railway, Supabase, Neon):
-DATABASE_SSL=true
-
-# Opsiyonel — connection pool boyutu (varsayılan: 20)
-PG_POOL_MAX=20
+DATABASE_URL=postgresql://bridge_user:strong-password@db.example.net:5432/bridge
 ```
 
----
+Use the SSL settings documented in `CONFIGURATION.md` when your provider requires
+TLS. Do not commit a populated `.env` file.
 
-## Adım 3 — Mevcut Veriyi Taşı
+## 3. Apply and inspect migrations
 
-### Önce kuru çalıştır (veri yazmadan kontrol):
-```bash
-DRY_RUN=1 DATABASE_URL=postgresql://... node server/db/migrate-to-postgres.js
-```
-
-### Gerçek migration:
-```bash
-node server/db/migrate-to-postgres.js
-```
-
-Örnek çıktı:
-```
-🌉 Bridge SQLite → PostgreSQL Migration
-📂 Kaynak : /home/.../server/data/bridge.db
-🐘 Hedef  : postgresql://bridge_user:***@localhost:5432/bridge
-
-✅ PostgreSQL bağlantısı başarılı
-
-📋 PostgreSQL schema kuruluyor...
-✅ Schema hazır
-
-📦 Tablolar aktarılıyor...
-
-  ✅ users: 1248 eklendi, 0 atlandı, 0 hata
-  ✅ servers: 87 eklendi, 0 atlandı, 0 hata
-  ✅ messages: 94832 eklendi, 0 atlandı, 0 hata
-  ...
-
---------------------------------------------------
-✅ Migration tamamlandı!
-   Toplam satır : 128493
-   Hatalı satır : 0
-   Süre         : 12.4s
-```
-
-### Sunucuyu başlat:
-```bash
-npm start
-# Konsol: [DB] PostgreSQL modu aktif → postgresql://...
-```
-
----
-
-## Doğrulama
+From the `server/` directory after a successful build:
 
 ```bash
-psql -U bridge_user -d bridge -c "SELECT COUNT(*) FROM messages;"
-psql -U bridge_user -d bridge -c "SELECT COUNT(*) FROM users;"
+npm run db:migrate:pg
+npm run db:migrate:pg:status
 ```
 
----
+Rollback commands are intentionally explicit:
 
-## Sorun Giderme
-
-| Hata | Çözüm |
-|------|-------|
-| `ECONNREFUSED` | PostgreSQL servisi çalışmıyor: `sudo systemctl start postgresql` |
-| `password authentication failed` | `.env`'deki şifre ile DB kullanıcısı uyuşmuyor |
-| `database "bridge" does not exist` | Adım 1'i tekrarla |
-| `SSL SYSCALL error` | `DATABASE_SSL=true` ekle veya kaldır |
-| Hatalı satırlar > 0 | Migration logunu incele; genellikle NULL constraint — idempotent olduğu için tekrar çalıştırılabilir |
-
----
-
-## Cloud DB (Railway / Supabase / Neon)
-
-Bu platformlar `DATABASE_URL`'i otomatik sağlar. Kopyala-yapıştır:
-
-```env
-DATABASE_URL=<platform'dan aldığın URL>
-DATABASE_SSL=true
+```bash
+npm run db:migrate:pg:down
+npm run db:migrate:pg:rollback -- 3
 ```
 
-Migration komutu aynıdır.
+The rollback verifier used by CI is stricter than the CLI: it checks each down file,
+classification drift, and the ordered rollback/re-apply chain against PostgreSQL.
 
----
+## 4. Development/source mode
 
-## Geri Alma
+When devDependencies are installed, developers may run the TypeScript source runner
+without building first:
 
-`.env`'den `DATABASE_URL`'i kaldır veya yorum satırına al.
-SQLite dosyası `server/data/bridge.db`'de sağlam duruyor.
-Sunucu otomatik SQLite'a döner.
+```bash
+npm run db:migrate:pg:source
+npm run db:migrate:pg:source:status
+```
+
+These commands are not the production deployment path.
+
+## 5. Legacy SQLite data
+
+Current Bridge does not start against SQLite and does not include a supported
+`migrate-to-postgres.js` converter. If an installation still contains data created
+by a SQLite-era Bridge version, keep that original database immutable, export it
+with tooling from the matching historical release, import into a disposable
+PostgreSQL database, reconcile row counts/constraints, and rehearse the cutover
+before touching production. Do not infer success from server startup alone.

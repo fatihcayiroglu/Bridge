@@ -12,11 +12,23 @@ process.env.NODE_ENV = 'test';
 // Gerçek modülü require etmek tüm socket altyapısını çekiyor;
 // bunun yerine sadece rate-limit fonksiyonlarını izole test edelim.
 
+
+
 describe('Socket IP Rate Limiter — Redis Olmayan Ortam', () => {
-  let _ipRateStore;
-  let _ipRateStoreGet;
-  let _ipRateStoreSet;
-  let _ipRateStoreDel;
+  /** Redis yokken kullanilan in-memory pencere deposu: anahtar -> zaman damgalari. */
+  type RateStore = Map<string, number[]>;
+  // Depo, onbellekten YALNIZCA `set`/`del` kullanir; yuzey o iki uyeyle
+  // yazilir. `unknown` yazmak, kullanim yerlerinde uye okumayi imkansiz
+  // kiliyordu (TS18046).
+  type RateCacheLike = {
+    set?(key: string, value: string, mode: string, ttlSeconds: number): Promise<unknown>;
+    del?(key: string): Promise<unknown>;
+  } | null;
+
+  let _ipRateStore: RateStore;
+  let _ipRateStoreGet: (key: string) => number[];
+  let _ipRateStoreSet: (key: string, hits: number[], _rateCache?: RateCacheLike) => Promise<void>;
+  let _ipRateStoreDel: (key: string, _rateCache?: RateCacheLike) => Promise<void>;
 
   beforeEach(() => {
     // In-memory store
@@ -25,19 +37,21 @@ describe('Socket IP Rate Limiter — Redis Olmayan Ortam', () => {
     _ipRateStoreGet = (key) => _ipRateStore.get(key) || [];
 
     // Düzeltilmiş versiyon — Redis yoksa in-memory'e yaz, kendini çağırma
-    _ipRateStoreSet = async (key, hits, _rateCache = null) => {
+    // Onbellek ISTEGE BAGLIdir ve yalnizca iki uyesi kullanilir; yuzey
+    // acikca yazilinca `unknown` uzerinde uye okuma hatasi kalkar.
+    _ipRateStoreSet = async (key: string, hits: number[], _rateCache: RateCacheLike = null) => {
       if (_rateCache) {
         try {
-          await _rateCache.set(`ipratelimit:${key}`, JSON.stringify(hits), 'EX', 120);
+          await _rateCache.set?.(`ipratelimit:${key}`, JSON.stringify(hits), 'EX', 120);
           return;
         } catch { /* fallback */ }
       }
       _ipRateStore.set(key, hits); // ← Düzeltme: kendini değil Map.set'i çağır
     };
 
-    _ipRateStoreDel = async (key, _rateCache = null) => {
+    _ipRateStoreDel = async (key: string, _rateCache: RateCacheLike = null) => {
       if (_rateCache) {
-        try { await _rateCache.del(`ipratelimit:${key}`); return; } catch {}
+        try { await _rateCache.del?.(`ipratelimit:${key}`); return; } catch {}
       }
       _ipRateStore.delete(key);
     };
@@ -88,7 +102,7 @@ describe('Socket IP Rate Limiter — Redis Olmayan Ortam', () => {
     const WINDOW = 1000;
     const MAX_HITS = 3;
 
-    async function checkRateLimit(ip) {
+    async function checkRateLimit(ip: string) {
       const hits = _ipRateStoreGet(ip);
       const fresh = hits.filter(t => now - t < WINDOW);
       if (fresh.length >= MAX_HITS) return false;
@@ -104,3 +118,10 @@ describe('Socket IP Rate Limiter — Redis Olmayan Ortam', () => {
     expect(await checkRateLimit(ip)).toBe(false); // rate limited
   });
 });
+
+// Bu dosyada ust duzey import/export yoktu; TypeScript onu GLOBAL
+// SCRIPT sayiyor ve ust duzey adlari diger ayni durumdaki test
+// dosyalariyla CAKISIYORDU (TS2393/TS2451, ve arguman tiplerinin
+// baska bir dosyanin bildirimine cozulmesi). Bu satir modul kapsami
+// ilan eder; calisma zamaninda hicbir sey degistirmez.
+export {};

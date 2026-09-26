@@ -4,7 +4,7 @@
 'use strict';
 
 process.env.NODE_ENV   = 'test';
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 
 // ── DB mock ───────────────────────────────────────────────────
 import { createMockDb, makeUser } from './helpers/mockDb';
@@ -17,7 +17,8 @@ const mockRequests: jest.Mock[] = [];
 let mockSessionDestroyed = false;
 
 const mockHttp2Session = {
-  request:   jest.fn((_headers: unknown) => {
+  // Baslik nesnesi cagri kaydindan OKUNUYOR; imza onu sozluk olarak yazar.
+  request:   jest.fn((_headers: Record<string, unknown>) => {
     const req = {
       on:          jest.fn(),
       write:       jest.fn(),
@@ -79,7 +80,9 @@ import * as Repos from '../db/repositories';
 
 // Helpers: APNs response simülatörü
 function simulateApnsResponse(
-  requestMock: jest.Mock,
+  // `on`/`end` UYELERI okunuyor; `jest.Mock` tek bir fonksiyonu temsil eder
+  // ve boyle uyeleri yoktur. Ikizin gercek sekli yazilir.
+  requestMock: { on: jest.Mock; end: jest.Mock; setEncoding?: jest.Mock; write?: jest.Mock },
   statusCode: number,
   body = '',
 ): void {
@@ -192,6 +195,20 @@ describe('sendFCM — FCM HTTP v1', () => {
     expect(removeFcmSpy).toHaveBeenCalledWith({ token: 'dead-token' });
   });
 
+  it('normalizes malformed badge values instead of permissive Number coercion', async () => {
+    const ps = require('../lib/pushSender');
+    const fetchMock = global.fetch as jest.Mock;
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'oauth-token' }) })
+      .mockResolvedValueOnce({ ok: true, text: async () => '' });
+
+    await ps.sendFCM('device-token', { title: 'T', body: 'B', badge: '1e3' });
+    const req = fetchMock.mock.calls.find((call) => String(call[0]).includes('/messages:send'))!;
+    const body = JSON.parse(String(req[1].body));
+    expect(body.message.android.notification.notification_count).toBe(0);
+    expect(body.message.apns.payload.aps.badge).toBe(0);
+  });
+
   it('FCM_SERVICE_ACCOUNT_PATH dosyasından servis hesabı okunur', async () => {
     delete process.env.FCM_SERVICE_ACCOUNT_JSON;
     process.env.FCM_SERVICE_ACCOUNT_PATH = '/tmp/fake-sa.json';
@@ -208,6 +225,72 @@ describe('sendFCM — FCM HTTP v1', () => {
     expect(fs.readFileSync).toHaveBeenCalledWith('/tmp/fake-sa.json', 'utf8');
 
     delete process.env.FCM_SERVICE_ACCOUNT_PATH;
+  });
+
+  it('shares one in-flight OAuth refresh across concurrent sends and then reuses the cached token', async () => {
+    let resolveOAuth!: (value: unknown) => void;
+    mockFetch
+      .mockImplementationOnce(() => new Promise(resolve => { resolveOAuth = resolve; }))
+      .mockResolvedValue({ ok: true });
+    const ps = require('../lib/pushSender');
+    const first = ps.sendFCM('token-one', { title: 'T', body: 'B', badge: '12', data: { count: 2 } });
+    const second = ps.sendFCM('token-two', { title: 'T', body: 'B' });
+    resolveOAuth({ ok: true, json: async () => ({ access_token: 'shared-token' }) });
+    await Promise.all([first, second]);
+    await ps.sendFCM('token-three', { title: 'T', body: 'B' });
+
+    const oauthCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('oauth2.googleapis.com'));
+    const messageCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('/messages:send'));
+    expect(oauthCalls).toHaveLength(1);
+    expect(messageCalls).toHaveLength(3);
+    const firstMessage = JSON.parse(String(messageCalls[0][1].body)).message;
+    expect(firstMessage.android.notification.notification_count).toBe(12);
+    expect(firstMessage.data).toEqual({ count: '2' });
+  });
+
+  it('fails closed on malformed service-account JSON and OAuth HTTP failure', async () => {
+    process.env.FCM_SERVICE_ACCOUNT_JSON = '{not-json';
+    let ps = require('../lib/pushSender');
+    await ps.sendFCM('token', { title: 'T', body: 'B' });
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    jest.resetModules();
+    process.env.FCM_SERVICE_ACCOUNT_JSON = JSON.stringify({
+      private_key: 'key', client_email: 'service@example.test',
+    });
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 503 });
+    ps = require('../lib/pushSender');
+    await ps.sendFCM('token', { title: 'T', body: 'B' });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps provider 5xx and fetch failures best-effort without deleting a live token', async () => {
+    const removeNativeSpy = jest.spyOn(require('../db/repositories').Notifications, 'removeNativeTokenWhere')
+      .mockResolvedValue(undefined as never);
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'oauth' }) })
+      .mockResolvedValueOnce({ ok: false, status: 503, text: async () => 'provider overloaded' });
+    let ps = require('../lib/pushSender');
+    await ps.sendFCM('live-token', { title: 'T', body: 'B' });
+    expect(removeNativeSpy).not.toHaveBeenCalled();
+
+    jest.resetModules();
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'oauth-2' }) })
+      .mockRejectedValueOnce(new Error('network down'));
+    ps = require('../lib/pushSender');
+    await expect(ps.sendFCM('live-token', { title: 'T', body: 'B' })).resolves.toBeUndefined();
+    expect(removeNativeSpy).not.toHaveBeenCalled();
+  });
+
+  it('contains stale-token cleanup failure instead of failing the caller', async () => {
+    jest.spyOn(require('../db/repositories').Notifications, 'removeNativeTokenWhere')
+      .mockRejectedValueOnce(new Error('database down') as never);
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'oauth' }) })
+      .mockResolvedValueOnce({ ok: false, status: 404, text: async () => 'UNREGISTERED' });
+    const ps = require('../lib/pushSender');
+    await expect(ps.sendFCM('stale-token', { title: 'T', body: 'B' })).resolves.toBeUndefined();
   });
 });
 
@@ -370,6 +453,30 @@ describe('sendAPNs — HTTP/2 native', () => {
     await expect(pushSender.sendAPNs('token', { title: 'T', body: 'B' })).resolves.toBeUndefined();
   });
 
+  it('p8 key read failure prevents any APNs network request', async () => {
+    const fs = require('fs');
+    (fs.readFileSync as jest.Mock).mockImplementationOnce(() => { throw new Error('key missing'); });
+    await expect(pushSender.sendAPNs('token', { title: 'T', body: 'B' })).resolves.toBeUndefined();
+    expect(mockHttp2Session.request).not.toHaveBeenCalled();
+  });
+
+  it('contains stale APNs-token cleanup failure after a terminal response', async () => {
+    jest.spyOn(require('../db/repositories').Notifications, 'removeNativeTokenWhere')
+      .mockRejectedValueOnce(new Error('database down') as never);
+    const responseHandlers: Record<string, ((arg?: unknown) => void)> = {};
+    mockHttp2Session.request.mockReturnValueOnce({
+      on: jest.fn((ev: string, cb: (arg?: unknown) => void) => { responseHandlers[ev] = cb; }),
+      write: jest.fn(),
+      end: jest.fn(() => {
+        responseHandlers.response?.({ ':status': 410 });
+        responseHandlers.data?.(Buffer.from('{"reason":"Unregistered"}'));
+        responseHandlers.end?.();
+      }),
+      setEncoding: jest.fn(),
+    });
+    await expect(pushSender.sendAPNs('stale-token', { title: 'T', body: 'B' })).resolves.toBeUndefined();
+  });
+
   it('closeApnsConnections bağlantıları kapatır', async () => {
     // Önce bir bağlantı kur
     let responseHandlers: Record<string, ((arg?: unknown) => void)> = {};
@@ -460,6 +567,64 @@ describe('clearBadge — iOS APNs + FCM', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
     const [url] = mockFetch.mock.calls[1];
     expect(url).toContain('fcm.googleapis.com');
+  });
+
+  it('contains native-token repository failure at the outer badge boundary', async () => {
+    jest.spyOn(require('../db/repositories').Notifications, 'findNativeTokensForUser')
+      .mockRejectedValueOnce(new Error('token store down') as never);
+    const ps = require('../lib/pushSender');
+    await expect(ps.clearBadge('user-db-fail')).resolves.toBeUndefined();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('skips APNs badge I/O when the signing key cannot be read', async () => {
+    delete process.env.FCM_PROJECT_ID;
+    jest.spyOn(require('../db/repositories').Notifications, 'findNativeTokensForUser')
+      .mockResolvedValueOnce([{ token: 'ios-token', platform: 'ios' }] as never);
+    const fs = require('fs');
+    (fs.readFileSync as jest.Mock).mockImplementationOnce(() => { throw new Error('key unavailable'); });
+    const ps = require('../lib/pushSender');
+    await expect(ps.clearBadge('user-key-fail')).resolves.toBeUndefined();
+    expect(mockHttp2Session.request).not.toHaveBeenCalled();
+  });
+
+  it('contains APNs badge request failure per token', async () => {
+    delete process.env.FCM_PROJECT_ID;
+    jest.spyOn(require('../db/repositories').Notifications, 'findNativeTokensForUser')
+      .mockResolvedValueOnce([{ token: 'ios-token', platform: 'ios' }] as never);
+    const handlers: Record<string, ((arg?: unknown) => void)> = {};
+    mockHttp2Session.request.mockReturnValueOnce({
+      on: jest.fn((event: string, cb: (arg?: unknown) => void) => { handlers[event] = cb; }),
+      write: jest.fn(),
+      end: jest.fn(() => handlers.error?.(new Error('APNs reset down'))),
+      setEncoding: jest.fn(),
+    });
+    const ps = require('../lib/pushSender');
+    await expect(ps.clearBadge('user-apns-fail')).resolves.toBeUndefined();
+  });
+
+  it('contains stale FCM badge-token cleanup failure and provider rejection', async () => {
+    delete process.env.APNS_KEY_PATH;
+    jest.resetModules();
+    jest.spyOn(require('../db/repositories').Notifications, 'findNativeTokensForUser')
+      .mockResolvedValue([{ token: 'stale-fcm', platform: 'android' }] as never);
+    jest.spyOn(require('../db/repositories').Notifications, 'removeNativeTokenWhere')
+      .mockRejectedValueOnce(new Error('cleanup down') as never);
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'oauth' }) })
+      .mockResolvedValueOnce({ ok: false, status: 404, text: async () => 'UNREGISTERED' });
+    let ps = require('../lib/pushSender');
+    await expect(ps.clearBadge('user-stale')).resolves.toBeUndefined();
+
+    jest.resetModules();
+    mockFetch.mockReset();
+    jest.spyOn(require('../db/repositories').Notifications, 'findNativeTokensForUser')
+      .mockResolvedValueOnce([{ token: 'live-fcm', platform: 'android' }] as never);
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'oauth-2' }) })
+      .mockRejectedValueOnce(new Error('FCM badge down'));
+    ps = require('../lib/pushSender');
+    await expect(ps.clearBadge('user-network-fail')).resolves.toBeUndefined();
   });
 });
 

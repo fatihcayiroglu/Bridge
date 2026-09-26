@@ -194,6 +194,13 @@
   </div>
 
   <script>
+    // Activity bridge messages are privileged UI/control messages. Accept and
+    // emit them only across the same-origin Bridge parent boundary; external
+    // child frames (for example YouTube) must not be able to impersonate it.
+    function postToBridgeParent(message) {
+      parent.postMessage(message, location.origin);
+    }
+
     // Parse URL params
     const params = new URLSearchParams(location.search);
     const channelId = params.get('channel') || '';
@@ -246,7 +253,7 @@
         .catch(() => {});
 
       // Notify parent frame
-      parent.postMessage({ type: 'watch-together:video-loaded', videoId, channelId, sessionId }, '*');
+      postToBridgeParent({ type: 'watch-together:video-loaded', videoId, channelId, sessionId });
     }
 
     // Load button
@@ -255,7 +262,7 @@
       const vid = extractVideoId(url);
       if (vid) {
         loadVideo(vid);
-        parent.postMessage({ type: 'watch-together:load', videoId: vid, channelId, sessionId }, '*');
+        postToBridgeParent({ type: 'watch-together:load', videoId: vid, channelId, sessionId });
       } else {
         document.getElementById('url-input').style.borderColor = '#ef4444';
         setTimeout(() => { document.getElementById('url-input').style.borderColor = ''; }, 1500);
@@ -269,15 +276,15 @@
     document.getElementById('play-btn').addEventListener('click', () => {
       document.getElementById('youtube-iframe').contentWindow.postMessage(
         '{"event":"command","func":"playVideo","args":""}', '*');
-      parent.postMessage({ type: 'watch-together:play', channelId, sessionId }, '*');
+      postToBridgeParent({ type: 'watch-together:play', channelId, sessionId });
     });
     document.getElementById('pause-btn').addEventListener('click', () => {
       document.getElementById('youtube-iframe').contentWindow.postMessage(
         '{"event":"command","func":"pauseVideo","args":""}', '*');
-      parent.postMessage({ type: 'watch-together:pause', channelId, sessionId }, '*');
+      postToBridgeParent({ type: 'watch-together:pause', channelId, sessionId });
     });
     document.getElementById('sync-btn').addEventListener('click', () => {
-      parent.postMessage({ type: 'watch-together:sync-request', channelId, sessionId }, '*');
+      postToBridgeParent({ type: 'watch-together:sync-request', channelId, sessionId });
     });
     document.getElementById('change-btn').addEventListener('click', () => {
       const iframe = document.getElementById('youtube-iframe');
@@ -292,6 +299,7 @@
 
     // Receive messages from parent (other participants)
     window.addEventListener('message', (e) => {
+      if (e.source !== parent || e.origin !== location.origin) return;
       const d = e.data;
       if (!d || typeof d !== 'object') return;
       switch (d.type) {
@@ -321,7 +329,7 @@
       const list = document.getElementById('participant-list');
       list.innerHTML = participants.map((p, i) => `
         <div class="participant-item">
-          <div class="participant-avatar" style="background:${p.color || '#2d9cdb'}">${(p.name || '?')[0].toUpperCase()}</div>
+          <div class="participant-avatar" style="background:${safeColor(p.color)}">${escHtml((p.name || '?')[0].toUpperCase())}</div>
           <span class="participant-name">${escHtml(p.name || 'Kullanıcı')}</span>
           ${i === 0 ? '<span class="host-badge">HOST</span>' : ''}
         </div>
@@ -334,12 +342,16 @@
       setTimeout(() => t.classList.remove('visible'), 2000);
     }
 
+    function safeColor(value) {
+      return typeof value === 'string' && /^#[0-9a-f]{3,8}$/i.test(value) ? value : '#2d9cdb';
+    }
+
     function escHtml(s) {
-      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     }
 
     // Announce ready to parent
-    parent.postMessage({ type: 'watch-together:ready', channelId, sessionId }, '*');
+    postToBridgeParent({ type: 'watch-together:ready', channelId, sessionId });
   </script>
 </body>
 </html>

@@ -21,14 +21,14 @@ import path from 'path';
 const fs   = require('fs');
 const crypto = require('crypto');
 
-function refreshHashForTest(rawToken) {
+function refreshHashForTest(rawToken: string) {
   return crypto.createHmac('sha256', process.env.REFRESH_SECRET).update(rawToken).digest('hex');
 }
 
 // SVG dosya testleri için geçici klasör (SQLite için değil)
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-sprint10-'));
 
-import { createMockDb } from './helpers/mockDb';
+import { createMockDb, requireDoc } from './helpers/mockDb';
 const _db = createMockDb();
 
 // ── SVG Sanitizer Testleri ─────────────────────────────────────────────────
@@ -43,7 +43,7 @@ describe('SVG Sanitizer — sanitizeSvgString', () => {
     </svg>`;
     const { clean, stripped } = sanitizeSvgString(input);
     expect(clean).not.toMatch(/<script/i);
-    expect(stripped.some(s => s.includes('script'))).toBe(true);
+    expect(stripped.some((s: string) => s.includes('script'))).toBe(true);
   });
 
   it('onerror attribute strip etmeli', () => {
@@ -52,7 +52,7 @@ describe('SVG Sanitizer — sanitizeSvgString', () => {
     </svg>`;
     const { clean, stripped } = sanitizeSvgString(input);
     expect(clean).not.toMatch(/onerror/i);
-    expect(stripped.some(s => s.includes('onerror'))).toBe(true);
+    expect(stripped.some((s: string) => s.includes('onerror'))).toBe(true);
   });
 
   it('javascript: href strip etmeli', () => {
@@ -70,7 +70,7 @@ describe('SVG Sanitizer — sanitizeSvgString', () => {
     </svg>`;
     const { clean, stripped } = sanitizeSvgString(input);
     expect(clean).not.toMatch(/<foreignObject/i);
-    expect(stripped.some(s => s.includes('foreignObject'))).toBe(true);
+    expect(stripped.some((s: string) => s.includes('foreignObject'))).toBe(true);
   });
 
   it('onclick attribute strip etmeli', () => {
@@ -79,7 +79,7 @@ describe('SVG Sanitizer — sanitizeSvgString', () => {
     </svg>`;
     const { clean, stripped } = sanitizeSvgString(input);
     expect(clean).not.toMatch(/onclick/i);
-    expect(stripped.some(s => s.includes('onclick'))).toBe(true);
+    expect(stripped.some((s: string) => s.includes('onclick'))).toBe(true);
   });
 
   it('CDATA bölümünü strip etmeli', () => {
@@ -88,7 +88,7 @@ describe('SVG Sanitizer — sanitizeSvgString', () => {
     </svg>`;
     const { clean, stripped } = sanitizeSvgString(input);
     expect(clean).not.toMatch(/<!\[CDATA\[/);
-    expect(stripped.some(s => s.includes('CDATA'))).toBe(true);
+    expect(stripped.some((s: string) => s.includes('CDATA'))).toBe(true);
   });
 
   it('temiz SVG değiştirilmemeli', () => {
@@ -185,25 +185,26 @@ describe('SVG Sanitizer — sanitizeSvgFile', () => {
 jest.mock('../db/loader', () => _db);
 jest.mock('../db/index',  () => _db);
 
-beforeEach(() => { _db._reset(); });
+beforeEach(() => { _db._reset?.(); });
 
 jest.mock('../lib/captcha', () => ({
-  botFilterMiddleware:             () => (req, res, next) => next(),
-  loginLockMiddleware:             (req, res, next) => next(),
-  progressiveCaptchaMiddleware:    (req, res, next) => next(),
-  captchaMiddleware:               (req, res, next) => next(),
-  registrationThrottleMiddleware:  (req, res, next) => next(),
+  botFilterMiddleware:             () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  loginLockMiddleware:             (_req: unknown, _res: unknown, next: () => void) => next(),
+  progressiveCaptchaMiddleware:    (_req: unknown, _res: unknown, next: () => void) => next(),
+  captchaMiddleware:               (_req: unknown, _res: unknown, next: () => void) => next(),
+  registrationThrottleMiddleware:  (_req: unknown, _res: unknown, next: () => void) => next(),
   recordFailedLogin:    jest.fn().mockResolvedValue(undefined),
   recordSuccessfulLogin: jest.fn().mockResolvedValue(undefined),
   checkSuspiciousLogin: jest.fn().mockResolvedValue(undefined),
   recordRegistration:   jest.fn().mockResolvedValue(undefined),
+  claimRegistrationSlot:          jest.fn().mockResolvedValue(true),
   _getIp:               () => '127.0.0.1',
   GENERIC_LOGIN_ERROR:  'Invalid username or password',
 }));
 
 jest.mock('../middleware/rateLimit', () => ({
-  rateLimit: () => (req, res, next) => next(),
-  limits: new Proxy({}, { get: () => () => (req, res, next) => next() }),
+  rateLimit: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  limits: new Proxy({}, { get: () => () => (_req: unknown, _res: unknown, next: () => void) => next() }),
 }));
 
 describe('Token Family — makeRefreshToken', () => {
@@ -244,7 +245,7 @@ describe('Token Family — rotateRefreshToken', () => {
   const bcrypt = require('bcryptjs');
   const { v4: uuidv4 } = require('uuid');
 
-  async function createTestUser(suffix) {
+  async function createTestUser(suffix: string) {
     const user = {
       _id:          uuidv4(),
       username:     `rotate_user_${suffix}`,
@@ -269,6 +270,50 @@ describe('Token Family — rotateRefreshToken', () => {
 
     const newRow = await db.refreshTokens.findOne({ token: refreshHashForTest(result.newToken) });
     expect(newRow.family).toBe(oldFamily); // aile korunur
+  });
+
+  it('[CONCURRENCY] aynı refresh token için iki eşzamanlı rotate yalnız bir kazanan üretir ve replay aileyi iptal eder', async () => {
+    const user = await createTestUser('parallel_rotate');
+    const oldToken = await makeRefreshToken(user);
+
+    const [a, b] = await Promise.all([
+      rotateRefreshToken(oldToken),
+      rotateRefreshToken(oldToken),
+    ]);
+
+    const results = [a, b];
+    expect(results.filter(r => r && !('error' in r))).toHaveLength(1);
+    expect(results.filter(r => r && 'error' in r && r.error === 'reuse')).toHaveLength(1);
+
+    const winner = results.find(r => r && !('error' in r));
+    expect(winner).toBeTruthy();
+    const winnerRow = await db.refreshTokens.findOne({ token: refreshHashForTest(winner.newToken) });
+    // The second concurrent use is a replay signal, so the whole family —
+    // including the just-issued winner token — must be revoked.
+    expect(winnerRow).toBeNull();
+  });
+
+  it('[SECURITY] tokenVersion artınca eski refresh token yeni access token basamaz', async () => {
+    const user = await createTestUser('version_bound');
+    const token = await makeRefreshToken(user);
+    await db.users.update({ _id: user._id }, { $inc: { tokenVersion: 1 } });
+    const result = await rotateRefreshToken(token);
+    expect(result).toEqual({ error: 'revoked' });
+    expect(await db.refreshTokens.findOne({ token: refreshHashForTest(token) })).toBeNull();
+  });
+
+  it.each([
+    ['non-canonical issuance tokenVersion', { tokenVersion: '01' }, 'revoked'],
+    ['missing issuance tokenVersion', { tokenVersion: null }, 'revoked'],
+    ['non-canonical persisted expiry', { expiresAt: '0x7fffffffffff' }, 'expired'],
+  ])('[SECURITY] %s Number coercion ile oturumu diriltemez', async (_label, patch, expectedError) => {
+    const user = await createTestUser(`persisted_state_${expectedError}_${Date.now()}`);
+    const token = await makeRefreshToken(user);
+    const tokenHash = refreshHashForTest(token);
+    await db.refreshTokens.update({ token: tokenHash }, { $set: patch });
+
+    await expect(rotateRefreshToken(token)).resolves.toEqual({ error: expectedError });
+    expect(await db.refreshTokens.findOne({ token: tokenHash })).toBeNull();
   });
 
   it('token reuse — family bazlı tüm token silinmeli', async () => {
@@ -304,7 +349,7 @@ describe('AuthRepository — revokeByFamily', () => {
       await db.refreshTokens.insert({
         _id: uuidv4(), token: `tok-${i}-${Date.now()}`, userId,
         expiresAt: Date.now() + 3600000, createdAt: Date.now(),
-        used: 0, family,
+        used: 0, family, tokenVersion: 0,
       });
     }
 

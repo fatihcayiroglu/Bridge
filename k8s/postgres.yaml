@@ -29,7 +29,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          image: postgres:18-alpine
           ports:
             - containerPort: 5432
           env:
@@ -43,8 +43,13 @@ spec:
                   name: bridge-secrets
                   key: POSTGRES_PASSWORD
           volumeMounts:
+            # Final21 Faz 19: postgres:18 imajı veriyi /var/lib/postgresql/18/docker altında tutar (PGDATA) ve
+            # bir birim /var/lib/postgresql/data'ya bağlıyken BAŞLAMAYI REDDEDER ("in 18+, these Docker images
+            # are configured to store database data in a format which is compatible with pg_ctlcluster").
+            # Eski bağlama noktasıyla PostgreSQL hiç açılmıyor, Bridge ona bağımlı olduğu için yığın ayağa
+            # kalkmıyordu (ölçüldü: tools/p19-compose-prod-boot.sh). Birim, imajın önerdiği kök dizine bağlanır.
             - name: pg-data
-              mountPath: /var/lib/postgresql/data
+              mountPath: /var/lib/postgresql
           resources:
             requests:
               cpu: 250m

@@ -1,10 +1,17 @@
 // server/tests/serverProfile.test.ts
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+import type { Express } from 'express';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 process.env.INSTANCE_URL   = 'http://localhost:3001';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
+
+const profileBoostMocks = {
+  mutateVanityAtomic: jest.fn(),
+  getLiveVanityServer: jest.fn(),
+};
+jest.mock('../db/repositories/BoostRepository.js', () => ({ Boosts: profileBoostMocks }));
 
 const request  = require('supertest');
 const express  = require('express');
@@ -21,10 +28,15 @@ function buildApp() {
   app.use('/s',              profileRouter);
   return app;
 }
-function tok(uid) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 describe('Server Profile Routes', () => {
-  let app, ownerId, memberId, serverId, ownerToken, memberToken;
+  let ownerId: string;
+  let memberId: string;
+  let serverId: string;
+  let ownerToken: string;
+  let memberToken: string;
+  let app: Express;
 
   beforeEach(async () => {
     db._reset?.();
@@ -40,16 +52,29 @@ describe('Server Profile Routes', () => {
     await db.servers.insert({ _id: serverId, name: 'Bridge Gaming', ownerId, icon: '🎮', discoverable: 1 });
     await db.members.insert({ userId: ownerId,  serverId, roles: [] });
     await db.members.insert({ userId: memberId, serverId, roles: [] });
+    profileBoostMocks.mutateVanityAtomic.mockReset();
+    profileBoostMocks.getLiveVanityServer.mockReset();
+    profileBoostMocks.mutateVanityAtomic.mockResolvedValue('ok');
+    profileBoostMocks.getLiveVanityServer.mockImplementation((slug: string) => db.servers.findOne({ vanityUrl: slug }));
   });
 
   // ── Slug API ─────────────────────────────────────────────────
   describe('GET /api/servers/:sid/slug', () => {
-    it('returns null slug when not set', async () => {
+    it('returns null slug to the owner when not set', async () => {
+      const res = await request(app)
+        .get(`/api/servers/${serverId}/slug`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('slug');
+    });
+
+    it('does not reveal a vanity capability from a server id to non-owners', async () => {
+      await db.servers.update({ _id: serverId }, { $set: { vanityUrl: 'private-capability' } });
       const res = await request(app)
         .get(`/api/servers/${serverId}/slug`)
         .set('Authorization', `Bearer ${memberToken}`);
-      expect(res.status).toBe(200);
-      expect(res.body).toHaveProperty('slug');
+      expect(res.status).toBe(403);
+      expect(res.body.slug).toBeUndefined();
     });
 
     it('returns 404 for nonexistent server', async () => {
@@ -61,13 +86,24 @@ describe('Server Profile Routes', () => {
   });
 
   describe('PUT /api/servers/:sid/slug', () => {
-    it('owner can set slug', async () => {
+    it('owner can set slug only through the live boost entitlement owner', async () => {
       const res = await request(app)
         .put(`/api/servers/${serverId}/slug`)
         .set('Authorization', `Bearer ${ownerToken}`)
         .send({ slug: 'bridge-gaming' });
       expect(res.status).toBe(200);
       expect(res.body.slug).toBe('bridge-gaming');
+      expect(profileBoostMocks.mutateVanityAtomic).toHaveBeenCalledWith(serverId, ownerId, 'bridge-gaming');
+    });
+
+    it('rejects slug mutation when live Level-3 entitlement has expired', async () => {
+      profileBoostMocks.mutateVanityAtomic.mockResolvedValueOnce('boost_required');
+      const res = await request(app)
+        .put(`/api/servers/${serverId}/slug`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ slug: 'bridge-gaming' });
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('BOOST_REQUIRED');
     });
 
     it('auto-slugifies the server name if no slug provided', async () => {
@@ -89,14 +125,8 @@ describe('Server Profile Routes', () => {
       expect(res.status).toBe(403);
     });
 
-    it('rejects slug collision', async () => {
-      // Set same slug on another server
-      const otherOwnerId = uuidv4();
-      const otherServerId = uuidv4();
-      await db.users.insert({ _id: otherOwnerId, username: 'o2', displayName: 'O2', tokenVersion: 0 });
-      await db.servers.insert({ _id: otherServerId, name: 'Other', ownerId: otherOwnerId, slug: 'taken-slug' });
-      await db.members.insert({ userId: otherOwnerId, serverId: otherServerId, roles: [] });
-
+    it('maps atomic slug collision to 409', async () => {
+      profileBoostMocks.mutateVanityAtomic.mockResolvedValueOnce('conflict');
       const res = await request(app)
         .put(`/api/servers/${serverId}/slug`)
         .set('Authorization', `Bearer ${ownerToken}`)
@@ -108,7 +138,7 @@ describe('Server Profile Routes', () => {
   // ── Public profile page /s/:slug ────────────────────────────
   describe('GET /s/:slug', () => {
     beforeEach(async () => {
-      await db.servers.update({ _id: serverId }, { $set: { slug: 'bridge-gaming-test' } });
+      await db.servers.update({ _id: serverId }, { $set: { vanityUrl: 'bridge-gaming-test' } });
     });
 
     it('returns HTML page for valid slug', async () => {
@@ -135,6 +165,13 @@ describe('Server Profile Routes', () => {
       const res = await request(app).get('/s/definitely-not-exists-xyz');
       expect(res.status).toBe(404);
       expect(res.headers['content-type']).toMatch(/html/);
+    });
+
+
+    it('returns 404 when the stored vanity has lost live Level-3 entitlement', async () => {
+      profileBoostMocks.getLiveVanityServer.mockResolvedValueOnce(null);
+      const res = await request(app).get('/s/bridge-gaming-test');
+      expect(res.status).toBe(404);
     });
   });
 

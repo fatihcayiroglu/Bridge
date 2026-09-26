@@ -2,9 +2,11 @@
 <!-- Sprint 119 Refactor: Ekran paylaşımı mantığı VoicePanel.svelte'den ayrıldı (~120 satır tasarruf) -->
 
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { BridgeRegistry } from './bridge-registry.js';
   import { createLogger } from './logger.js';
+  import { toast } from './utils.ts';
+  import { t } from './i18n/reactive.svelte.ts';
 
   const log = createLogger('VoiceScreenShare');
 
@@ -33,18 +35,24 @@
   let { getRtc, onShareStarted, onShareStopped, qualityModalOpen = $bindable(false) }: Props = $props();
 
   // ── State ────────────────────────────────────────────────────────────────────
+  // ── DURUM ────────────────────────────────────────────────────────────────
+  // Bu bilesen MARKUP ICERMEZ: yalnizca mantik tasir ve `bind:this` ile
+  // disari `export function` sunar. Ciziim VoicePanel'e aittir.
+  //
+  // KALDIRILAN OLU DURUM: viewVisible, loadingVisible, localStream,
+  // channelName, sharerName, qualityLabel, stopBtnVisible, shareBtnVisible,
+  // localBadge. Mantik VoicePanel'den buraya tasinirken (Sprint 119/120) bu
+  // degiskenler de kopyalanmisti; oysa DOM artik burada degil. Yalnizca
+  // YAZILIYOR, hicbir yerde OKUNMUYORLARDI.
+  //
+  // NEDEN SILMEK ONEMLI: VoicePanel'in KENDI `sharerName`,
+  // `showScreenShareView`, `localScreenStream` durumu var. Ayni ismi tasiyan
+  // ikinci bir kopya birakmak aktif bir tuzaktir — sonraki bir duzenleme
+  // buradaki kopyayi guncelleyip arayuzun degismesini bekler ve hicbir sey
+  // olmaz.
   let active        = $state(false);
-  let viewVisible   = $state(false);
   let miniMode      = $state(false);
-  let loadingVisible = $state(false);
-  let localStream   = $state<MediaStream | null>(null);
   let remoteStream  = $state<MediaStream | null>(null);
-  let channelName   = $state('');
-  let sharerName    = $state('');
-  let qualityLabel  = $state('');
-    let stopBtnVisible   = $state(false);
-  let shareBtnVisible  = $state(true);
-  let localBadge       = $state(false);
 
   // ── Dahili: kalite etiket çevirisi ──────────────────────────────────────────
   function _label(q: string): string {
@@ -101,24 +109,31 @@
     const r = getRtc();
     if (!r?.isInVoice()) return;
 
-    loadingVisible = true;
-    stopBtnVisible = false;
-    shareBtnVisible = false;
 
     const ok = await r.startScreenShare(quality, includeAudio);
-    loadingVisible = false;
 
     if (!ok) {
       log.warn({ ss: 'start_failed', quality });
-      shareBtnVisible = true;
       return;
     }
 
     active = true;
-    viewVisible = true;
-    stopBtnVisible = true;
-    localBadge = true;
-    qualityLabel = _label(quality);
+
+    // ══════════════════════════════════════════════════════════════════════
+    // GERCEK YAKALANAN SES DURUMU — KUTUNUN ISARETLI OLMASI KANIT DEGILDIR
+    // ══════════════════════════════════════════════════════════════════════
+    // `getDisplayMedia` ses track'i verip vermeyecegi tarayiciya, isletim
+    // sistemine ve SECILEN YUZEYE baglidir (Chrome sekmede verir, cogu
+    // durumda tum ekranda vermez; Firefox/Safari buyuk olcude hic vermez).
+    //
+    // Bu yuzden kullaniciya "ses paylasiliyor" DENMEZ; yalnizca gercekten
+    // yakalanan durum bildirilir. Aksi halde karsi taraf hicbir sey duymazken
+    // paylasan kisi sesin gittigini SANIRDI.
+    if (includeAudio) {
+      const captured = Boolean((r as unknown as { screenAudioActive?: boolean }).screenAudioActive);
+      toast(t(captured ? 'ss_audio_shared' : 'ss_audio_unavailable'), captured ? 'success' : 'info');
+      log.info({ ss: 'audio_state', requested: true, captured });
+    }
 
     // Bitrate override
     try {
@@ -150,30 +165,36 @@
     BridgeRegistry.get('_onScreenShareStopped')?.();
     getRtc()?.stopScreenShare();
     active = false;
-    localStream = null;
-    stopBtnVisible = false;
-    shareBtnVisible = true;
-    localBadge = false;
-    qualityLabel = '';
-    if (!_hasRemote()) viewVisible = false;
     onShareStopped?.();
     log.debug({ ss: 'stopped' });
   }
 
-  export function setRemoteStream(stream: MediaStream | null, sharer: string, ch: string): void {
+  /**
+   * SU AN CAGRILMIYOR — FAZ K+ FANTOM SINIFLANDIRMASI: DELETE adayi.
+   *
+   * Istemcinin tamaminda call site YOKTUR (arama: `setRemoteStream`). Uzak
+   * ekran paylasiminin KANONIK yolu VoicePanel'dedir: paylasan kisinin adini
+   * kendi `sharerName` durumuna yazar (VoicePanel.svelte:437) ve `#ss-sharer
+   * -name` icinde cizer (VoicePanel.svelte:890).
+   *
+   * `sharer` ve `ch` parametreleri BU BILESENDE hicbir zaman kullanilmadi —
+   * bilesen markup icermez. Bu yuzden alt cizgiyle isaretlendiler: imza
+   * korunuyor ama "bu degerler bir yere gidiyor" yanilgisi uretmiyorlar.
+   *
+   * SILINMEDI cunku `bind:this` ile disaridan cagrilabilecek bir yuzeydir ve
+   * bu gecis lint amacli fonksiyon silmemeyi sart kosuyordu. Kalici karar
+   * fantom raporunda verilir.
+   */
+  export function setRemoteStream(stream: MediaStream | null, _sharer: string, _ch: string): void {
     remoteStream = stream;
-    sharerName   = sharer;
-    channelName  = ch;
     if (stream) {
-      viewVisible = true;
-      stopBtnVisible = false;
     } else if (!active) {
-      viewVisible = false;
     }
   }
 
   export function toggleFullscreen(): void {
-    const el = document.getElementById('ss-remote-video') as HTMLVideoElement | null;
+    const el = (document.getElementById('remote-screen-video')
+      ?? document.getElementById('ss-remote-video')) as HTMLVideoElement | null;
     if (!el) return;
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     else el.requestFullscreen().catch(() => {});

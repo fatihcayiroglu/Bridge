@@ -33,6 +33,7 @@ export const ALLOWED_PERMISSIONS = new Set([
 
 export const RESTRICTED_PERMISSIONS = new Set([
   'admin:read',
+  'messages:delete',
   'moderation:timeout',
   'moderation:kick',
   'roles:assign',

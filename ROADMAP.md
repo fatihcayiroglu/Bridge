@@ -41,7 +41,7 @@
 - ~~Discord moru (#5865f2) kaldırıldı~~ ✅ Köprü mavisi `#2d9cdb` + amber vurgu
 - ~~Layout modları (Odak / Kompakt)~~ ✅ Ayarlar → Görünüm
 - ~~Tasarım yönü belgesi~~ ✅ [docs/DESIGN_DIRECTION.md](docs/DESIGN_DIRECTION.md)
-- ~~UI metinlerinde Hub / Space terminolojisi~~ ✅ Sprint 110 — 15 dil i18n dosyasına `hub`/`space`/`flow`/`hubs`/`spaces`/`flows` anahtarları eklendi
+- ~~UI metinlerinde Hub / Space terminolojisi~~ ✅ Sprint 110 — i18n dosyalarına `hub`/`space`/`flow`/`hubs`/`spaces`/`flows` anahtarları eklendi (o sprintte 15 dosya vardı; **güncel kararlı set 10 dildir**)
 - ~~Komut paleti (`⌘K`) — global gezinme~~ ✅ Sprint 111 — `client/js/core/command-palette.ts`, 12 yerleşik komut, fuzzy arama, recent history
 - ~~Varsayılan düzen: Odak modu değerlendirmesi~~ ✅ Sprint 111 — ADR-0011 (Focus Mode ertelendi: kullanıcı araştırması Sprint 115'te)
 
@@ -98,7 +98,7 @@ Redis adapter mevcut — `REDIS_URL` ortam değişkeni yeterli.
 
 **Monitoring**
 - ~~OpenTelemetry entegrasyonu~~ ✅ Sprint 110 — `monitoring/otel-collector.yml`, `OTEL_EXPORTER_OTLP_ENDPOINT` env
-- ~~Sentry error tracking~~ ✅ Sprint 110 — `SENTRY_DSN` env destegi, `server/lib/sentry.ts` wrapper
+- ~~Sentry error tracking~~ ✅ canonical `server/lib/telemetry.ts` owner; request credential redaction + optional SDK boundary
 - ~~Uptime monitoring~~ ✅ Sprint 110 — `monitoring/uptime.yml` (Uptime Kuma), healthcheck endpoint `/api/health`
 
 ### AI Özellikleri
@@ -106,7 +106,7 @@ Redis adapter mevcut — `REDIS_URL` ortam değişkeni yeterli.
 - ~~Vektör embedding ile semantik mesaj arama~~ ✅ Sprint 112 — `lib/pgvector.ts` (generateEmbedding, vectorSearch, saveMessageEmbedding), cosine similarity, OpenAI/Ollama/Nomic provider desteği, migration SQL. ADR-0009 Faz 1 tamamlandı.
 - ~~Doğal dil sorguları ("bu haftaki önemli kararlar")~~ ✅ Sprint 111 — `POST /api/semantic/search` + `GET /api/semantic/digest/:serverId` endpointleri; AI modeli opsiyonel
 - ~~Otomatik moderasyon pipeline (5 dk tarama döngüsü)~~ ✅ Sprint 111 — `PLUGIN_MODERATION.md` + `CONTENT_SCAN_ENABLED` env var + cron job altyapısı
-- ~~Çok dilli arayüz (TR/EN/DE/FR)~~ ✅ Sprint 111 — 15 dil (TR/EN/DE/FR/ES/JA/PT/KO/RU/IT/ZH/AR/NL/HE/FA), 202 anahtar, `check-i18n-parity.js` CI guard
+- ~~Çok dilli arayüz (TR/EN/DE/FR)~~ ✅ Sprint 111 — çok dilli arayüz + `check-i18n-parity.js` CI guard. **Güncel ölçüm (Final21 Faz 19): 10 dil** (TR/EN/DE/FR/ES/JA/PT/KO/RU/ZH) × **2454 anahtar**. O sprintte listelenen IT/AR/NL/HE/FA dosyaları kararlı sette YER ALMIYOR
 
 ---
 
@@ -179,7 +179,7 @@ ActivityPub ile farklı Bridge sunucuları birbirine bağlanabilir. Docker ile t
 | ✅ Tamamlandı | Client-side bundle optimizasyonu — Sprint 50 TS modülleri entry'lere eklendi, check-bundle-budget.js geliştirildi, JS budget 1.2 MB'a güncellendi (Sprint 50) |
 | ✅ Tamamlandı | 25 JS dosyasının TypeScript'e tam dönüşümü (6770 satır TS üretildi) — voice, web-push, offline-banner, analytics, mobile, virtual-scroll, i18n, canvas, ip-ban, styles, partials, stage, user-connections, channel-stage, discover, mobile-ux, emoji-picker, calendar-picker, clyde, group-dm-core, onboarding-tour, server-ui, bot-marketplace, messages/loader, messages/virtual-scroll (Sprint 50) |
 | ✅ Tamamlandı | Test coverage artırımı — 7 yeni client test (web-push, offline-banner, virtual-scroll, emoji-picker, clyde, server-ui) + 2 yeni server test (connections, canvas) (Sprint 50) |
-| ✅ Tamamlandı | **Federation per-peer RSA doğrulaması** — ADR-0006 Faz 2: `httpSignatureV2.ts` RSA-2048 öncelikli doğrulama, HMAC fallback (Sprint 108) |
+| ✅ Tamamlandı | **Federation per-peer RSA doğrulaması** — ADR-0006 Faz 2 ile geçiş başlatıldı; current production owner Faz 3 `httpSignatureV3.ts` RSA-only doğrulamadır |
 | ✅ Tamamlandı | **WCAG 2.1 AA uyumluluğu** — `a11y-wcag-aa.ts`: skip-link, landmark patch, reduced motion, live region, kontrast hesaplayıcı, voice/stage ARIA (Sprint 108) |
 | ✅ Tamamlandı | **Frontend framework sınır kuralları** — ADR-0008: Svelte/vanilla TS katman modeli, CI guard (`check-svelte-boundary.sh`) (Sprint 108) |
 | ✅ Tamamlandı | **Client test coverage** — Global threshold %75 → %80; servers/forum/music/onboarding +48 test (Sprint 108) |
@@ -224,15 +224,4 @@ Bridge tamamen ücretsiz ve açık kaynak olarak konumlanmaktadır.
 
 ---
 
-*Son güncelleme: Haziran 2026 — Versiyon: 1.122.0 / Sprint 122*
-
-
-## Sprint 82 — Tamamlandı ✅
-
-- ✅ Activities sistemi (Watch Together, Satranç, Çiz, Kelime, Trivia)
-- ✅ Super Reactions (uzun basma + parçacık animasyonu)
-- ✅ Clips sistemi (30s rolling buffer, quickClip)
-- ✅ Sticker sistemi (global + sunucu paketleri, REST API)
-- ✅ i18n: ES, JA, PT, KO, RU dil desteği (4 → 9 dil)
-- ✅ 147 yeni test (permissions extended dahil)
-
+*Son güncelleme: Eylül 2026 — Versiyon: 1.125.0*

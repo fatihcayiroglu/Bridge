@@ -79,8 +79,14 @@
   border-color: var(--border);
 }
 
-/* Tooltip */
-[data-theme="light"] .tooltip,
+/* Tooltip
+   DUZELTME: `.tooltip` TETIKLEYICI ogedir (modals.css: yalnizca
+   `position: relative` verir); balon ise `::after` psodo-ogesidir.
+   Selector balon yerine tetikleyiciyi boyuyordu, bu yuzden acik temada
+   `class="tooltip"` tasiyan HER kontrol (dock butonlari, sunucu ikonlari,
+   kanal satirlari) istenmeyen bir arka plan + kenarlik aliyordu.
+   Eslesen `[data-tip]::after` kurali zaten dogru hedefi gosteriyor. */
+[data-theme="light"] .tooltip::after,
 [data-theme="light"] [data-tip]::after {
   background: var(--bg-0);
   color: var(--text-primary);
@@ -194,6 +200,10 @@
 [data-theme="light"] ::-webkit-scrollbar-thumb {
   background: var(--bg-5);
 }
+
+/* FAZ 8/2 — bahsetme, sıradan okunmamıştan AYIRT EDİLİR. Renk tek başına
+   anlam taşımaz: rozet `aria-label` içinde "bahsedilme var" der. */
+.ch-unread.has-mention { background: var(--danger); color: var(--text-on-solid); }
 
 /* ch-unread badge positioning/style */
 .ch-unread {

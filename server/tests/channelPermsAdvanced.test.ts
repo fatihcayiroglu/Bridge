@@ -1,12 +1,12 @@
 // server/tests/channelPermsAdvanced.test.ts
 // Eksik test coverage: export/import, bitmask validation, batch PUT, sistem mesajı
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 jest.mock('../lib/permCache', () => ({ invalidatePerms: jest.fn() }));
-jest.mock('express-rate-limit', () => () => (_req, _res, next) => next());
+jest.mock('express-rate-limit', () => () => (_req: unknown, _res: unknown, next: () => void) => next());
 jest.mock('../lib/permissions', () => ({
   resolvePermissions: jest.fn().mockResolvedValue(2),
   hasPermission:      jest.fn().mockReturnValue(true),
@@ -20,7 +20,7 @@ jest.mock('../db/loader', () => {
   const mock = require('./helpers/mockDb').createMockDb();
   // SQLite transaction mock: callback'i hemen çalıştır
   mock._sqlite = {
-    transaction: (fn) => () => fn(),
+    transaction: (fn: () => unknown) => () => fn(),
     prepare: () => ({
       run:     jest.fn(),
       get:     jest.fn().mockReturnValue(null),
@@ -30,6 +30,7 @@ jest.mock('../db/loader', () => {
   return mock;
 });
 
+import type { BitmaskResult } from '../lib/permissions';
 import request from 'supertest';
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
@@ -45,13 +46,24 @@ function buildApp() {
   app.use('/api/servers/:sid/channels/:cid/permissions', authMiddleware, channelPermsRouter);
   return app;
 }
-function tok(uid, v = 0) {
+function tok(uid: string, v = 0) {
   return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' });
 }
 
 // ─────────────────────────────────────────────────────────────
 // validateBitmask — Unit testler
 // ─────────────────────────────────────────────────────────────
+
+/**
+ * `BitmaskResult` AYRISTIRILMIS bir birlesimdir; `.error` yalnizca
+ * `ok: false` dalinda vardir. Bu yardimci beklentiyi ACIK yazar:
+ * sonuc basariliysa testin kendisi hatali demektir.
+ */
+function bitmaskError(result: BitmaskResult): string {
+  if (result.ok) throw new Error('gecersiz bitmask bekleniyordu ama sonuc ok:true');
+  return result.error;
+}
+
 describe('validateBitmask — lib/permissions', () => {
   it('geçerli allow/deny çifti için ok:true döner', () => {
     const result = validateBitmask(PERMS.SEND_MESSAGES, 0);
@@ -65,21 +77,21 @@ describe('validateBitmask — lib/permissions', () => {
   it('çakışan bit (allow ve deny\'de aynı anda) reddedilir', () => {
     const result = validateBitmask(PERMS.SEND_MESSAGES, PERMS.SEND_MESSAGES);
     expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/aynı anda/i);
+    expect(bitmaskError(result)).toMatch(/aynı anda/i);
   });
 
   it('tanımsız bit allow\'da reddedilir', () => {
     const invalidBit = 1 << 25; // PERMS tanımında yok
     const result = validateBitmask(invalidBit, 0);
     expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/geçersiz bit/i);
+    expect(bitmaskError(result)).toMatch(/geçersiz bit/i);
   });
 
   it('tanımsız bit deny\'de reddedilir', () => {
     const invalidBit = 1 << 25;
     const result = validateBitmask(0, invalidBit);
     expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/geçersiz bit/i);
+    expect(bitmaskError(result)).toMatch(/geçersiz bit/i);
   });
 
   it('negatif allow reddedilir', () => {
@@ -95,6 +107,11 @@ describe('validateBitmask — lib/permissions', () => {
   it('ondalıklı sayı reddedilir', () => {
     const result = validateBitmask(1.5, 0);
     expect(result.ok).toBe(false);
+  });
+
+  it('32-bit wrap ile gizlenebilecek büyük safe integer reddedilir', () => {
+    expect(validateBitmask(2 ** 32, 0).ok).toBe(false);
+    expect(validateBitmask(0, Number.MAX_SAFE_INTEGER).ok).toBe(false);
   });
 
   it('string reddedilir', () => {
@@ -121,7 +138,7 @@ describe('validateBitmask — lib/permissions', () => {
   it('hata mesajında geçersiz hex değeri belirtilir', () => {
     const invalidBit = 1 << 25;
     const result = validateBitmask(invalidBit, 0);
-    expect(result.error).toMatch(/0x/); // hex gösterim
+    expect(bitmaskError(result)).toMatch(/0x/); // hex gösterim
   });
 });
 
@@ -129,7 +146,12 @@ describe('validateBitmask — lib/permissions', () => {
 // Export / Import — HTTP endpoint testleri
 // ─────────────────────────────────────────────────────────────
 describe('Channel Permissions — Export & Import', () => {
-  let app, ownerId, serverId, channelId, roleId, ownerToken;
+  let app: express.Express;
+  let ownerId: string;
+  let serverId: string;
+  let channelId: string;
+  let roleId: string;
+  let ownerToken: string;
 
   beforeEach(async () => {
     db._reset?.();

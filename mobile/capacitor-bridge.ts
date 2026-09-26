@@ -28,6 +28,7 @@ interface PushActionPerformed   { notification: PushNotification }
 interface LocalNotificationItem { title: string; body: string; id: number; extra: Record<string, unknown>; smallIcon?: string; iconColor?: string }
 
 interface IPushNotifications extends CapacitorPlugin {
+  checkPermissions(): Promise<{ receive: string }>;
   requestPermissions(): Promise<PushPermissionResult>;
   register(): Promise<void>;
   addListener(event: 'registration',                    cb: (t: PushToken) => void): void;
@@ -150,6 +151,17 @@ export interface BridgeBiometricAPI {
   disable(): void;
 }
 
+/**
+ * Push izni YÜZEYİ — izin bağlam içinde istenebilsin diye ürüne açılır.
+ * Açılışta HİÇBİR ŞEY sorulmaz; bkz. `initPushNotifications`.
+ */
+export interface BridgePushAPI {
+  /** Kullanıcı eylemiyle izin ister; verildiyse `true`. */
+  enable(): Promise<boolean>;
+  /** Sormadan mevcut izin durumunu okur. */
+  status(): Promise<'granted' | 'denied' | 'prompt' | 'unknown'>;
+}
+
 // Genişletilmiş Window tipi
 declare global {
   interface Window {
@@ -159,6 +171,9 @@ declare global {
     bridgeShare:     BridgeShareAPI;
     bridgeBiometric: BridgeBiometricAPI;
     bridgeDeepLink:  { handle: (url: string) => void };
+    bridgePush:      BridgePushAPI;
+    /** mobile/index.template.html — HTML açılış katmanını kaldırır. */
+    hideSplash?:     () => void;
   }
 }
 
@@ -176,8 +191,12 @@ if (typeof Capacitor === 'undefined') {
   } = Capacitor.Plugins;
 
   // ── SPLASH SCREEN ─────────────────────────────────────────────────────────
+  // Final21 Faz 19 (19-28): yalnızca YEREL açılış ekranı gizleniyordu; şablondaki HTML katmanı
+  // (#native-splash) Capacitor varken HİÇ kaldırılmıyordu (şablonun 800 ms yedeği yalnız Capacitor YOKKEN
+  // çalışır) ve uygulama — giriş formu dahil — kalıcı olarak onun arkasında kalıyordu (emülatörde ölçüldü).
   window.addEventListener('DOMContentLoaded', async () => {
     try { await SplashScreen?.hide({ fadeOutDuration: 300 }); } catch (_) {}
+    window.hideSplash?.();
   });
 
   // ── STATUS BAR ────────────────────────────────────────────────────────────
@@ -243,15 +262,34 @@ if (typeof Capacitor === 'undefined') {
   } as unknown as BridgeBadgeAPI;
   window.bridgeBadge = bridgeBadge;
 
-  // ── PUSH BİLDİRİMLERİ ────────────────────────────────────────────────────
-  async function setupPushNotifications(): Promise<void> {
+  // ══════════════════════════════════════════════════════════════════════════
+  // PUSH BİLDİRİMLERİ — İZİN BAĞLAM İÇİNDE İSTENİR
+  // ══════════════════════════════════════════════════════════════════════════
+  //
+  // ── KAPATILAN GERÇEK KUSUR (Final21, Faz 3) ──────────────────────────────
+  // `setupPushNotifications()` `window.load` üzerinde koşuyor ve İLK İŞ olarak
+  // `requestPermissions()` çağırıyordu. Emülatörde ölçüldü: uygulama SOĞUK
+  // AÇILIŞTA, kullanıcı hiçbir şey yapmadan sistem izin penceresini açıyor
+  // (`GrantPermissionsActivity` odakta, logcat kanıtı: out/android/logcat.txt).
+  //
+  // Bu, kullanıcının HENÜZ GİRİŞ BİLE YAPMADIĞI anda olabiliyordu — nitekim
+  // aşağıdaki `registration` dinleyicisi `bridge_token` yoksa sessizce
+  // vazgeçiyor: yani izin, hiçbir işe yaramayacağı anda isteniyordu.
+  //
+  // Bedeli somuttur: Android 13+ ve iOS'ta reddedilen bildirim izni tekrar
+  // SORULAMAZ — kullanıcı sistem ayarlarına gitmek zorundadır. Bağlamsız
+  // sorulan izin daha çok reddedilir; yani bu davranış kalıcı olarak bildirim
+  // katılımını düşürüyordu.
+  //
+  // ── YENİ DAVRANIŞ ────────────────────────────────────────────────────────
+  //   · Açılışta: izin DURUMU okunur. Zaten verilmişse token kaydı yapılır —
+  //     pencere AÇILMAZ.
+  //   · Verilmemişse HİÇBİR ŞEY sorulmaz; dinleyiciler yine de bağlanır.
+  //   · Ürün, kullanıcı bir eylem yaptığında (ayarlarda bildirimi açmak,
+  //     sunucuya katılmak, ...) `window.bridgePush.enable()` çağırır ve izin
+  //     O ZAMAN, bağlam içinde istenir.
+  async function attachPushListeners(): Promise<void> {
     if (!PushNotifications) return;
-    const permission = await PushNotifications.requestPermissions();
-    if (permission.receive !== 'granted') {
-      console.warn('[Bridge Mobile] Push izni verilmedi');
-      return;
-    }
-    await PushNotifications.register();
 
     PushNotifications.addListener('registration', async (token: PushToken) => {
       try {
@@ -283,6 +321,53 @@ if (typeof Capacitor === 'undefined') {
     });
   }
 
+  /** Açılış: SORMADAN, yalnızca zaten verilmiş izni kullanır. */
+  async function initPushNotifications(): Promise<void> {
+    if (!PushNotifications) return;
+    await attachPushListeners();
+    try {
+      const current = await PushNotifications.checkPermissions();
+      if (current.receive === 'granted') {
+        await PushNotifications.register();
+      } else {
+        console.debug('[Bridge Mobile] Push izni yok — SORULMADI (baglam icinde istenecek).');
+      }
+    } catch (err) {
+      console.warn('[Bridge Mobile] Push izin durumu okunamadi:', err);
+    }
+  }
+
+  /**
+   * Kullanıcı eylemiyle çağrılır (ayarlarda bildirimi açmak gibi).
+   * İzni O AN ister — bağlam içinde.
+   */
+  const bridgePush: BridgePushAPI = {
+    async enable(): Promise<boolean> {
+      if (!PushNotifications) return false;
+      try {
+        const permission = await PushNotifications.requestPermissions();
+        if (permission.receive !== 'granted') {
+          console.warn('[Bridge Mobile] Push izni verilmedi');
+          return false;
+        }
+        await PushNotifications.register();
+        return true;
+      } catch (err) {
+        console.error('[Bridge Mobile] Push etkinlestirilemedi:', err);
+        return false;
+      }
+    },
+    async status(): Promise<'granted' | 'denied' | 'prompt' | 'unknown'> {
+      if (!PushNotifications) return 'unknown';
+      try {
+        const current = await PushNotifications.checkPermissions();
+        const value = current.receive;
+        return value === 'granted' || value === 'denied' || value === 'prompt' ? value : 'unknown';
+      } catch { return 'unknown'; }
+    },
+  };
+  window.bridgePush = bridgePush;
+
   async function showLocalNotification(
     title: string, body: string, data: Record<string, unknown>,
   ): Promise<void> {
@@ -293,8 +378,13 @@ if (typeof Capacitor === 'undefined') {
           title, body,
           id: Date.now(),
           extra: data,
-          smallIcon: 'ic_stat_bridge',
-          iconColor: '#2d9cdb',
+          // [FINAL21 Faz 3] `ic_stat_bridge` DEPODA YOKTU: manifest ve
+          // kaynaklar `ic_notification` tanimliyor. Var olmayan bir drawable
+          // istendiginde Android uygulama ikonuna duser ve durum cubugunda
+          // BEYAZ KARE gosterir. Renk de markadan sapmisti (#2d9cdb);
+          // kanonik deger `client/css/tokens.css` → hsl(210,88%,58%).
+          smallIcon: 'ic_notification',
+          iconColor: '#3694F2',
         }],
       });
     } catch (_) {}
@@ -547,21 +637,81 @@ if (typeof Capacitor === 'undefined') {
       if (state.isActive) void bridgeBadge.clear();
     });
 
+    // ══════════════════════════════════════════════════════════════════════
+    // ANDROID GERİ TUŞU — ÜRÜNÜN GERÇEK DOM SÖZLEŞMESİNE BAĞLI
+    // ══════════════════════════════════════════════════════════════════════
+    //
+    // ── KAPATILAN GERÇEK KUSUR (Final21, Faz 3) ──────────────────────────
+    // Önceki gövde ÜÇ seçiciye bakıyordu ve ÜÇÜ DE ÖLÜYDÜ:
+    //
+    //     .modal.active · .overlay.active · [data-modal].active
+    //     [data-view="channel"]
+    //
+    // İstemci Svelte 5'e taşındığında bu sınıflar kalmadı. Bugünkü ürün
+    // diyalogları `role="dialog" aria-modal="true"` taşıyor (`.search-overlay`,
+    // `#settings-modal-content`, `.inbox-panel`, `.dm-panel`, `.modal-overlay`,
+    // ...), mobil çekmeceler ise `.open` + `#mobile-backdrop.active` ile
+    // açılıyor (`js/mobile.ts`). Depoda `data-view="channel"` HİÇ YOK.
+    //
+    // Kullanıcıya görünen sonuç: Android'de GERİ tuşu açık ayar penceresini
+    // kapatmıyor, kanaldan geri gitmiyordu — DOĞRUDAN UYGULAMAYI KÜÇÜLTÜYORDU.
+    // Yani platformun en temel gezinme jesti bozuktu.
+    //
+    // ── NEDEN SENTETİK TIKLAMA / ESCAPE ──────────────────────────────────
+    // `BridgeRegistry` BİLEREK `window`a atanmaz (bkz. client/js/core/
+    // shell-actions.ts: global atamak çift tetikleme üretiyordu). Mobil köprü
+    // bu yüzden kaydı çağıramaz. Bunun yerine KULLANICININ yolunu kullanır:
+    //   · Diyalog  → Escape (her panel Escape ile kapanır)
+    //   · Çekmece  → `#mobile-backdrop` tıklaması
+    //                (`data-bridge-action="closeMobilePanels"`)
+    //   · Sohbet   → `#mnav-channels` tıklaması
+    //                (`data-bridge-action="mobileNav" data-bridge-arg="channels"`)
+    // Üçü de ürünün kendi delege dinleyicisinden geçer; ayrı bir kod yolu
+    // icat edilmez, dolayısıyla ürün değişirse burası da onunla uyumlu kalır.
     App.addListener('backButton', () => {
-      const modal = document.querySelector<HTMLElement>('.modal.active, .overlay.active, [data-modal].active');
-      if (modal) { modal.classList.remove('active'); void bridgeHaptic.light(); return; }
-      const inChannel = document.querySelector('[data-view="channel"]');
-      if (inChannel) {
-        window.dispatchEvent(new CustomEvent('bridge:navigate', { detail: { view: 'server-list' } }));
+      // 1) AÇIK DİYALOG — en üstteki modal diyalog kapatılır.
+      const dialogs = Array.from(
+        document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]'),
+      ).filter((el) => el.offsetParent !== null || el.getClientRects().length > 0);
+      if (dialogs.length > 0) {
+        const top = dialogs[dialogs.length - 1]!;
+        top.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Escape', code: 'Escape', bubbles: true, cancelable: true,
+        }));
+        document.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Escape', code: 'Escape', bubbles: true, cancelable: true,
+        }));
+        void bridgeHaptic.light();
         return;
       }
+
+      // 2) AÇIK MOBİL ÇEKMECE — arka planı tıklamak hepsini kapatır.
+      const backdrop = document.getElementById('mobile-backdrop');
+      if (backdrop?.classList.contains('active')) {
+        backdrop.click();
+        void bridgeHaptic.light();
+        return;
+      }
+
+      // 3) SOHBET GÖRÜNÜMÜ — geri, kanal listesine döner.
+      //    Alt gezinme yalnızca dar görünümde vardır; yoksa bu adım atlanır.
+      const chatTab = document.getElementById('mnav-chat');
+      const channelsTab = document.getElementById('mnav-channels');
+      const narrow = channelsTab !== null && channelsTab.offsetParent !== null;
+      if (narrow && chatTab?.classList.contains('active')) {
+        channelsTab!.click();
+        void bridgeHaptic.light();
+        return;
+      }
+
+      // 4) Kök — uygulama küçültülür (kapatılmaz: Android beklentisi budur).
       App?.minimizeApp();
     });
   }
 
   // ── BAŞLAT ────────────────────────────────────────────────────────────────
   window.addEventListener('load', () => {
-    void setupPushNotifications();
+    void initPushNotifications();
     console.log('[Bridge Mobile] Capacitor entegrasyonu hazır —', Capacitor!.getPlatform());
     console.log('[Bridge Mobile] Özellikler: push, badge, deep-link, biometric, camera, share');
   });

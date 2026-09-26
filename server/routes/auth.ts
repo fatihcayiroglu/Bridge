@@ -1,30 +1,22 @@
 // server/routes/auth.ts
-import express, { Response } from 'express';
+import express from 'express';
+import { normalizeServerLocale } from '../lib/serverLocale';
 import { checkAndAwardAutoBadges } from './badges';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
-import { checkMagicBytes } from './upload';
+import { canonicalExtensionForMime, checkMagicBytes } from '../lib/uploadFileSafety';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import logger from '../lib/logger';
+import { clearMediaCookie, setMediaCookie } from '../lib/mediaCookie';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router  = express.Router();
 
-// ── httpOnly refresh-token cookie ─────────────────────────────
-// Tarayıcı JS'in erişemeyeceği güvenli cookie ayarı.
-// Sadece /api/refresh yolunda gönderilir (path kısıtı).
-const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 gün
-function _setRefreshCookie(res: Response, token: string): void {
-  res.cookie('bridge_refresh', token, {
-    httpOnly: true,
-    secure:   process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    path:     '/api/refresh',
-    maxAge:   COOKIE_MAX_AGE_MS,
-  });
-}
+import { clearRefreshCookie, setRefreshCookie } from '../lib/authCookies';
+import db from '../db/loader';
+import { hasLiveUploadReference } from '../lib/uploadReferenceSafety';
 
 // ActivityPub için RSA-2048 anahtar çifti üret
 function generateApKeyPair() {
@@ -41,27 +33,78 @@ function generateApKeyPair() {
   }
 }
 
-import { Users, Servers, Members } from '../db/repositories';
-import { makeToken, makeRefreshToken, rotateRefreshToken, revokeAllRefreshTokens, authMiddleware, _invalidateTokenCache, } from '../middleware/auth';
+import { Users, Members } from '../db/repositories';
+import { makeToken, makeRefreshToken, rotateRefreshToken, revokeRefreshToken, revokeAllRefreshTokens, authMiddleware, _invalidateTokenCache, } from '../middleware/auth';
 import type { RotateResultOrError } from '../middleware/auth';
 import { limits } from '../middleware/rateLimit';
 import captcha from '../lib/captcha';
 import { validateBody, schemas } from '../middleware/validate';
 
-import { sanitizeUser } from '../lib/userUtils';
+import { sanitizeOwnUser, sanitizeUser } from '../lib/userUtils';
 import { generateCsrfToken } from '../lib/security';
 import { AVATAR_COLORS } from '../lib/brandDefaults';
+import { sanitizeDisplayName } from '../lib/displayName';
+import { issueTwoFactorLoginChallenge } from '../lib/twoFactorLoginChallenge';
+import { disconnectLiveUserSessions } from '../lib/sessionRevocation';
+import { uploadRoot } from '../lib/runtimePaths';
+import { parseTokenVersion } from '../lib/tokenVersion';
 
 // sanitizeUser artık lib/userUtils.js'de tanımlı — tüm importlar oradan gelsin
 
 // ── Avatar upload (multer) ─────────────────────────────────────────────────
-const UPLOAD_DIR = path.join(__dirname, '../uploads');
+const UPLOAD_DIR = uploadRoot();
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+// ════════════════════════════════════════════════════════════════════════════
+// AVATAR VE BANNER ALT DIZINE YAZILIR — KOKE DEGIL
+// ════════════════════════════════════════════════════════════════════════════
+// `middleware/uploadAuthz.ts` YAPISAL bir kural uygular:
+//   · uploads KOKU        → OZEL mesaj ekleri (yetkilendirilir)
+//   · uploads ALT DIZIN   → HERKESE ACIK varliklar (emoji, sticker, avatar…)
+//
+// Avatar ve banner KOKE yaziliyordu; yani HERKESE ACIK profil gorselleri OZEL
+// ek muamelesi goruyordu. `findOwner` bunlari hicbir mesajda bulamayip
+// `{kind:'orphan', uploaderId:null}` donduruyor, `authorized()` ise null
+// yukleyici icin FALSE donduruyordu. Sonuc: avatar HIC KIMSEYE gorunmuyordu.
+//
+// DOGRUDAN OLCULDU (yukleme basarili, dosya erisilemez):
+//   POST /api/me/avatar                → 200  { avatarUrl: /uploads/avatar_… }
+//   GET  /uploads/avatar_… (sahibi)    → 403
+//   GET  /uploads/avatar_… (anonim)    → 401   ← `<img>` yolu
+//   GET  /uploads/avatar_… (baskasi)   → 403
+//
+// Diger acik varliklar zaten alt dizin kullaniyordu (emojis/, soundboard/,
+// server-assets/, member-profiles/); avatar ve banner bu kaliba UYMUYORDU.
+const AVATAR_DIR = path.join(UPLOAD_DIR, 'avatars');
+const BANNER_DIR = path.join(UPLOAD_DIR, 'banners');
+for (const dir of [AVATAR_DIR, BANNER_DIR]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function safeUnlinkProfileFile(filePath: string): void {
+  try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch {}
+}
+
+async function cleanupOldProfileAsset(
+  url: string | null | undefined,
+  subdir: 'avatars' | 'banners',
+): Promise<void> {
+  if (!url?.startsWith(`/uploads/${subdir}/`)) return;
+  const fileName = path.basename(url);
+  const canonicalKey = `uploads/${subdir}/${fileName}`;
+  const filePath = path.join(UPLOAD_DIR, subdir, fileName);
+  try {
+    if (!await hasLiveUploadReference(db._pool, canonicalKey)) safeUnlinkProfileFile(filePath);
+  } catch (error) {
+    logger.error({ err: error, url, subdir, event: 'profile_asset.cleanup_failed' },
+      'Profile DB state updated but physical cleanup was blocked');
+  }
+}
+
 const avatarStorage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, UPLOAD_DIR),
+  destination: (_, __, cb) => cb(null, AVATAR_DIR),
   filename: (_, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase().slice(0, 6);
+    const ext = canonicalExtensionForMime(file.mimetype) ?? '';
     cb(null, `avatar_${uuidv4()}${ext}`);
   },
 });
@@ -131,13 +174,25 @@ router.post('/register',
   const exists = await Users.findByUsername(username);
   if (exists) return res.status(409).json({ error: 'Username already taken' });
 
+  // Final quota admission is atomic. The earlier middleware is a cheap
+  // rejection path; this reservation closes concurrent-register TOCTOU races.
+  if (!(await captcha.claimRegistrationSlot(captcha._getIp(req)))) {
+    return res.status(429).json({ error: 'Bu IP adresinden son 1 saat içinde çok fazla hesap oluşturuldu. Lütfen bekleyin.', retryAfter: 3600 });
+  }
+
   // ActivityPub RSA anahtar çifti — Mastodon/Fediverse ile iletişim için
   const apKeys = generateApKeyPair();
 
-  const user = await Users.create({
+  if (!apKeys.apPublicKey || !apKeys.apPrivateKey) {
+    return res.status(503).json({ error: 'Identity key generation failed' });
+  }
+  const user = await Users.createWithApKeys({
     _id:          uuidv4(),
     username:     username.toLowerCase(),
-    displayName:  (displayName?.trim() || username).slice(0, 32),
+    // KIMLIK TAKLIDI SAVUNMASI: gorunmez/yapisal karakterler temizlenir.
+    // Temizlik sonrasi bos kalirsa kullanici adina geri dusulur.
+    // Gerekce ve olculen somuru vektorleri: lib/displayName.ts
+    displayName:  sanitizeDisplayName(displayName) || username,
     password:     await bcrypt.hash(password, 12),
     avatarColor:  AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
     avatarUrl:    null,
@@ -145,23 +200,32 @@ router.post('/register',
     bio:          '',
     tokenVersion: 0,
     createdAt:    Date.now(),
-    apPublicKey:  apKeys.apPublicKey,
-    // SECURITY: apPrivateKey users tablosuna yazılmıyor — saveApKeys ayrı tabloya yazar
-  });
+  }, apKeys.apPublicKey, apKeys.apPrivateKey);
 
-  // ActivityPub özel anahtarını ayrı tabloya kaydet
-  if (apKeys.apPublicKey && apKeys.apPrivateKey) {
-    await Users.saveApKeys(user._id, apKeys.apPublicKey, apKeys.apPrivateKey);
+  let token: string;
+  let refreshToken: string;
+  try {
+    token = makeToken(user);
+    refreshToken = await makeRefreshToken(user);
+  } catch (error) {
+    // The registration identity is durable, but it is not usable until the
+    // initial session can be issued. Leaving the user row behind turns a
+    // transient refresh-store outage into a permanently "taken" username.
+    try {
+      await Users.delete(user._id);
+    } catch (rollbackError) {
+      logger.error(
+        { err: rollbackError, userId: user._id, event: 'auth.registration_rollback_failed' },
+        'Registration session issuance failed and the partial identity could not be rolled back.',
+      );
+    }
+    throw error;
   }
-
-  // Kayıt sayacını artır
-  await captcha.recordRegistration(captcha._getIp(req));
-
-  const token        = makeToken(user);
-  const refreshToken = await makeRefreshToken(user);
-  _setRefreshCookie(res, refreshToken);
+  setRefreshCookie(res, refreshToken);
+  // Ozel ek yetkilendirmesi icin medya cerezi (path=/uploads).
+  setMediaCookie(res, user);
   checkAndAwardAutoBadges(user._id).catch(() => {});
-  res.json({ token, user: sanitizeUser(user) });
+  res.json({ token, user: sanitizeOwnUser(user) });
 });
 
 /**
@@ -238,16 +302,29 @@ router.post('/login',
   }
 
   // Şüpheli giriş kontrolü (yeni IP/cihaz → e-posta uyarısı)
-  captcha.checkSuspiciousLogin(req, user).catch(() => {});
+  void captcha.checkSuspiciousLogin(req, user).catch(err => {
+    logger.warn({ err, userId: user._id, event: 'auth.suspicious_login_check_failed' }, 'Suspicious-login advisory check failed');
+  });
+
+  // 2FA is a SERVER-ENFORCED authentication stage. A correct password must
+  // never mint access/refresh/media credentials while the second factor is
+  // still pending. The opaque challenge contains no user id and is resolved
+  // only from server-side state by /api/2fa/check.
+  if (user.twoFactorEnabled) {
+    const tempToken = await issueTwoFactorLoginChallenge(user._id, parseTokenVersion(user.tokenVersion));
+    return res.status(202).json({ requiresTwoFactor: true, tempToken });
+  }
 
   await Users.setStatus(user._id, 'online');
 
   const token        = makeToken(user);
   const refreshToken = await makeRefreshToken(user);
-  _setRefreshCookie(res, refreshToken);
+  setRefreshCookie(res, refreshToken);
+  // Ozel ek yetkilendirmesi icin medya cerezi (path=/uploads).
+  setMediaCookie(res, user);
   // Auto-rozet kontrolü (fire-and-forget — login flow'unu bloklama)
   checkAndAwardAutoBadges(user._id).catch(() => {});
-  res.json({ token, user: sanitizeUser({ ...user, status: 'online' }) });
+  res.json({ token, user: sanitizeOwnUser({ ...user, status: 'online' }) });
 });
 
 // POST /api/refresh  — refresh token rotation
@@ -270,8 +347,13 @@ router.post('/login',
  *       401: { description: Geçersiz veya süresi dolmuş refresh token }
  */
 router.post('/refresh', limits.refresh(), async (req: import("express").Request, res: import("express").Response) => {
-  const refreshToken = req.cookies?.bridge_refresh || req.body?.refreshToken;
-  if (!refreshToken) return res.status(400).json({ error: 'refreshToken required' });
+  const refreshToken = req.cookies?.bridge_refresh ?? req.body?.refreshToken;
+  if (refreshToken === undefined || refreshToken === null || refreshToken === '') {
+    return res.status(400).json({ error: 'refreshToken required' });
+  }
+  if (typeof refreshToken !== 'string' || refreshToken.length > 512) {
+    return res.status(400).json({ error: 'refreshToken invalid' });
+  }
 
   const result: RotateResultOrError | null = await rotateRefreshToken(refreshToken);
   if (!result || 'error' in result) {
@@ -280,12 +362,16 @@ router.post('/refresh', limits.refresh(), async (req: import("express").Request,
       ? 'Token reuse detected. All sessions revoked for security.'
       : reason === 'expired'
       ? 'Refresh token expired. Please log in again.'
+      : reason === 'revoked'
+      ? 'Session revoked. Please log in again.'
       : 'Invalid or expired refresh token';
     return res.status(401).json({ error: msg, reason });
   }
 
   const { user, newToken } = result;
-  _setRefreshCookie(res, newToken);
+  setRefreshCookie(res, newToken);
+  // Ozel ek yetkilendirmesi icin medya cerezi (path=/uploads).
+  setMediaCookie(res, user);
   res.json({ token: makeToken(user) });
 });
 
@@ -299,9 +385,29 @@ router.post('/refresh', limits.refresh(), async (req: import("express").Request,
  *     responses:
  *       200: { description: Çıkış başarılı }
  */
+async function finishLogout(req: import("express").Request, res: import("express").Response) {
+  const refreshToken = req.cookies?.bridge_refresh ?? req.body?.refreshToken;
+  if (refreshToken !== undefined && refreshToken !== null && refreshToken !== '') {
+    if (typeof refreshToken !== 'string' || refreshToken.length > 512) {
+      return res.status(400).json({ error: 'refreshToken invalid' });
+    }
+    await revokeRefreshToken(refreshToken);
+  }
+  clearRefreshCookie(res);
+  clearMediaCookie(res);
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json({ ok: true });
+}
+
+// The refresh cookie is deliberately scoped to /api/refresh, so a browser does
+// not send it to /api/logout. A 307 preserves POST and lets the browser attach
+// the cookie only to this path-scoped endpoint; fetch follows same-origin
+// redirects by default. Native/API callers may alternatively send refreshToken
+// in the request body and complete logout in one hop.
+router.post('/refresh/logout', finishLogout);
 router.post('/logout', async (req: import("express").Request, res: import("express").Response) => {
-  res.clearCookie('bridge_refresh', { httpOnly: true, sameSite: 'strict', path: '/api/refresh' });
-  res.json({ ok: true });
+  if (req.cookies?.bridge_refresh || req.body?.refreshToken) return finishLogout(req, res);
+  return res.redirect(307, '/api/refresh/logout');
 });
 
 // POST /api/change-password
@@ -341,17 +447,20 @@ router.post('/change-password', authMiddleware, limits.changePassword(), validat
     return res.status(400).json({ error: 'Current password is incorrect' });
 
   const newHash    = await bcrypt.hash(newPassword, 12);
-  const newVersion = (user.tokenVersion || 0) + 1;
+  const newVersion = parseTokenVersion(user.tokenVersion) + 1;
   await Users.update(_u.id, { password: newHash, tokenVersion: newVersion });
   await revokeAllRefreshTokens(_u.id);
   _invalidateTokenCache(_u.id);
+  await disconnectLiveUserSessions(_u.id, 'password_changed');
 
   const updated = await Users.findById(_u.id);
   if (!updated) return res.status(404).json({ error: 'User not found after update' });
+  const refreshToken = await makeRefreshToken(updated);
+  setRefreshCookie(res, refreshToken);
+  setMediaCookie(res, updated);
   res.json({
-    message:      'Password changed. All other sessions have been logged out.',
-    token:        makeToken(updated),
-    refreshToken: await makeRefreshToken(updated),
+    message: 'Password changed. All other sessions have been logged out.',
+    token: makeToken(updated),
   });
 });
 
@@ -369,10 +478,12 @@ router.post('/logout-all', authMiddleware, async (req: import("express").Request
   const _u = castAuthed(req).user;
   const user = await Users.findById(_u.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  const newVersion = (user.tokenVersion || 0) + 1;
+  // NOT: burada surum HESAPLANIP atiliyordu; artirimi
+  // `incrementTokenVersion` kendisi yapar.
   await Users.incrementTokenVersion(_u.id);
   await revokeAllRefreshTokens(_u.id);
   _invalidateTokenCache(_u.id);
+  await disconnectLiveUserSessions(_u.id, 'logout_all');
   res.json({ message: 'All sessions logged out.' });
 });
 
@@ -395,7 +506,7 @@ router.get('/me', authMiddleware, async (req: import("express").Request, res: im
   const _u = castAuthed(req).user;
   const user = await Users.findById(_u.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json(sanitizeUser(user));
+  res.json(sanitizeOwnUser(user));
 });
 
 // PATCH /api/me
@@ -414,6 +525,8 @@ router.get('/me', authMiddleware, async (req: import("express").Request, res: im
  *               displayName: { type: string }
  *               bio: { type: string }
  *               status: { type: string, enum: [online, idle, dnd, offline] }
+ *               presenceVisibility: { type: string, enum: [visible, hidden] }
+ *               dmPrivacy: { type: string, enum: [everyone, friends, none] }
  *               pronouns: { type: string }
  *     responses:
  *       200:
@@ -424,28 +537,120 @@ router.get('/me', authMiddleware, async (req: import("express").Request, res: im
  */
 router.patch('/me', authMiddleware, limits.settings(), async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const { displayName, status, bio, website, location, pronouns, bannerColor } = req.body as Record<string, string>;
+  const rawBody = req.body as unknown;
+  if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+    return res.status(400).json({ error: 'Profile update body must be an object' });
+  }
+  const body = rawBody as Record<string, unknown>;
+  const { displayName, status, presenceVisibility, dmPrivacy, bio, website, location, pronouns, bannerColor, locale } = body;
   const allowed = ['online','idle','dnd','offline'];
-  // Sprint 121 FIX 22: Partial<> tipiyle tip güvenliği sağlandı
+  const allowedPresence = ['visible', 'hidden'];
+  const allowedDmPrivacy = ['everyone', 'friends', 'none'];
   const updates: Record<string, unknown> = {};
-  if (displayName?.trim()) updates.displayName = displayName.trim().slice(0, 32);
-  if (status && allowed.includes(status)) updates.status = status;
+  if (typeof displayName === 'string' && displayName.trim()) {
+    // Ayni temizlik guncelleme yolunda da uygulanir — KARDES-YOL asimetrisi
+    // bu programda defalarca gercek acik uretti.
+    const temiz = sanitizeDisplayName(displayName);
+    if (temiz) updates.displayName = temiz;
+  }
+  if (typeof status === 'string' && allowed.includes(status)) {
+    // Backward-compatible REST callers still set the effective field, but the
+    // same choice must survive reconnects via the durable preference owner.
+    updates.status = status;
+    updates.presenceStatus = status;
+  }
+  // Final21 Phase 16: the language this person reads, so server-written push copy is not
+  // Turkish for everyone. Only a locale the server actually has copy for is stored.
+  if (typeof locale === 'string') {
+    const normalized = normalizeServerLocale(locale);
+    if (normalized === locale.trim().toLowerCase().split(/[-_]/)[0]) updates.locale = normalized;
+  }
+  if (typeof presenceVisibility === 'string' && allowedPresence.includes(presenceVisibility)) updates.presenceVisibility = presenceVisibility;
+  if (typeof dmPrivacy === 'string' && allowedDmPrivacy.includes(dmPrivacy)) updates.dmPrivacy = dmPrivacy;
   if (typeof bio === 'string') updates.bio = bio.trim().slice(0, 180);
   if (typeof website === 'string') updates.website = website.trim().slice(0, 120);
   if (typeof location === 'string') updates.location = location.trim().slice(0, 60);
   if (typeof pronouns === 'string') updates.pronouns = pronouns.trim().slice(0, 40);
-  if (typeof bannerColor === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(bannerColor.trim())) updates.bannerColor = bannerColor.trim();
-  if ('bannerUrl' in req.body) updates.bannerUrl = req.body.bannerUrl === null ? null : undefined; // null = kaldır
+  if (typeof bannerColor === 'string' && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(bannerColor.trim())) updates.bannerColor = bannerColor.trim();
+  if ('bannerUrl' in body) {
+    if (body.bannerUrl !== null) return res.status(400).json({ error: 'bannerUrl is storage-owned; only null removal is allowed' });
+    updates.bannerUrl = null; // null = kaldır
+  }
   // Sprint 121 FIX 9: badge alanı kullanıcı tarafından set edilemiyor — sadece sistem/admin atayabilir.
   // Eskiden: if (typeof badge === 'string') updates.badge = badge.trim().slice(0, 20);
   // Bu, kullanıcının herhangi bir rozeti kendine eklemesine izin veriyordu.
   if (Object.keys(updates).length === 0)
     return res.status(400).json({ error: 'Nothing to update' });
 
+  const oldBannerForRemoval = updates.bannerUrl === null
+    ? (await Users.findById(_u.id))?.bannerUrl
+    : undefined;
+
+  const requestedPresence = updates.presenceVisibility === 'hidden' || updates.presenceVisibility === 'visible'
+    ? updates.presenceVisibility
+    : null;
+  const presence = requestedPresence ? await import('../lib/presenceCache') : null;
+
+  // Privacy transitions use asymmetric ordering on purpose:
+  //   hidden  -> authoritative Redis first, then durable DB
+  //   visible -> durable DB first, then authoritative Redis
+  // Every partial-failure state is therefore at least as private as the user's
+  // durable preference. Configured Redis is authority; we never acknowledge a
+  // visibility change while silently degrading to process-local state.
+  if (requestedPresence === 'hidden') {
+    try {
+      await presence!.setPresenceVisibility(_u.id, false);
+    } catch (err) {
+      logger.warn({ userId: _u.id, err, event: 'auth.presence_visibility.authority_unavailable' },
+        'Presence hide rejected because shared visibility authority is unavailable.');
+      return res.status(503).json({ error: 'Presence coordination unavailable' });
+    }
+  }
+
   await Users.update(_u.id, updates);
+  if (updates.bannerUrl === null) await cleanupOldProfileAsset(oldBannerForRemoval, 'banners');
+
+  if (requestedPresence) {
+    const visible = requestedPresence === 'visible';
+    if (visible) {
+      try {
+        await presence!.setPresenceVisibility(_u.id, true);
+      } catch (err) {
+        logger.warn({ userId: _u.id, err, event: 'auth.presence_visibility.authority_unavailable' },
+          'Presence show persisted but remains fail-closed until shared visibility authority recovers.');
+        return res.status(503).json({ error: 'Presence coordination unavailable' });
+      }
+    }
+
+    try {
+      const locallyConnected = presence!.socketCount(_u.id) > 0;
+      if (!visible) await presence!.markOffline(_u.id);
+      else if (locallyConnected) await presence!.markOnline(_u.id);
+
+      if (!visible || locallyConnected) {
+        const memberships = await Members.findByUser(_u.id);
+        const socketMod = await import('../socket');
+        const io = socketMod.getIo?.();
+        // Faz 16: tek yayın, çok oda — alıcı ortak sunucu sayısı kadar kopya alıyordu.
+        const visibilityRooms = [...new Set(memberships.map(m => `server:${m.serverId}`))];
+        if (visibilityRooms.length) {
+          io?.to(visibilityRooms).emit('user:status', {
+            userId: _u.id,
+            status: visible ? 'online' : 'offline',
+          });
+        }
+      }
+    } catch (err) {
+      // Authoritative visibility is already correct. Notification/legacy
+      // heartbeat failures cannot make a hidden user visible, so they remain
+      // best-effort and will self-heal on socket activity/reconnect.
+      logger.warn({ userId: _u.id, err, event: 'auth.presence_visibility.broadcast_failed' },
+        'Presence authority updated; realtime notification cleanup will recover asynchronously.');
+    }
+  }
   const user = await Users.findById(_u.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json(sanitizeUser(user));
+  res.json(sanitizeOwnUser(user));
 });
 
 // POST /api/me/avatar — upload profile photo (GIF animasyonlu avatar dahil)
@@ -461,7 +666,7 @@ router.patch('/me', authMiddleware, limits.settings(), async (req: import("expre
  *           schema:
  *             type: object
  *             properties:
- *               file: { type: string, format: binary }
+ *               avatar: { type: string, format: binary }
  *     responses:
  *       200: { description: Avatar güncellendi }
  */
@@ -478,16 +683,53 @@ router.post('/me/avatar', authMiddleware, limits.settings(), (req, res, next) =>
     fs.unlink(req.file.path, () => {});
     return res.status(400).json({ error: 'File content does not match declared type' });
   }
-  const avatarUrl = `/uploads/${req.file.filename}`;
-  await Users.update(_u.id, { avatarUrl });
+  const avatarUrl = `/uploads/avatars/${req.file.filename}`;
+  // Eski avatar yalnizca temizlik icin okunuyordu; degistirilen avatar artik
+  // silinmedigi icin (F21-8-02, asagida) bu okuma olu bir DB sorgusuydu.
+  try {
+    await Users.update(_u.id, { avatarUrl });
+  } catch (error) {
+    // DB never took ownership of the new file.
+    safeUnlinkProfileFile(req.file.path);
+    throw error;
+  }
+  // ── Final21 Faz 8 — F21-8-02: DEĞİŞTİRİLEN AVATAR SİLİNMEZ ────────────────
+  // Burada eskiden `cleanupOldProfileAsset(oldAvatarUrl, 'avatars')` vardı.
+  //
+  // KUSUR (gerçek uçlar üzerinden ÜRETİLDİ): her mesaj yazarın avatarını
+  // ANLIK GÖRÜNTÜ olarak saklar (`socket/handlers/messages-send.ts:436`) ve
+  // istemci `<img src={message.avatarUrl}>` çizer
+  // (`client/js/core/MessageRenderer.svelte:558`). Eski dosya
+  // `hasLiveUploadReference` ile denetleniyordu, ama o sorgu
+  // `messages.avatarUrl`i KAPSAMIYOR. Sonuç:
+  //
+  //     avatar A yükle → mesaj gönder (mesaj A'yı tutar) → avatar B yükle
+  //     GET A → 404          geçmiş mesaj hâlâ A'yı gösteriyor
+  //
+  // Yani kullanıcı avatarını değiştirdiğinde GEÇMİŞTEKİ TÜM MESAJLARININ avatarı
+  // kırılıyordu. Mevcut test ("keeps the previous avatar while a message still
+  // references it") referans denetimini MOCK'layıp `true` döndürdüğü için
+  // gerçek sorgunun mesajları kapsamadığını hiç göremedi.
+  //
+  // NEDEN "sorguya messages.avatarUrl ekle" DEĞİL: eksiksiz denetim tüm mesaj
+  // tablosunu tarar. 1M mesajda ÖLÇÜLDÜ: referanslı dosya 1 365 ms, referanssız
+  // 1 482 ms — korpusla doğrusal büyür ve her avatar değişiminde koşardı.
+  //
+  // NEDEN SAKLAMAK DOĞRU: anlık görüntü tasarımının amacı geçmiş avatarı
+  // KORUMAKTIR; dosyayı silmek bu tasarımla çelişir. Avatar dosyaları küçüktür
+  // (yükleme sınırı) ve değişimler seyrektir. AÇIK KALDIRMA
+  // (`DELETE /me/avatar`) kullanıcının "fotoğrafımı kaldır" niyetidir ve
+  // dosyayı silmeye DEVAM EDER; geçmiş mesajlar o durumda istemcideki yedek
+  // renk avatarına zarifçe düşer.
   res.json({ avatarUrl });
 });
 
 // POST /api/me/banner — upload profile banner image (Discord Nitro'da ücretli, burada bedava)
 const bannerStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, path.join(__dirname, '../uploads')),
+  // Avatar ile ayni gerekce — bkz. yukaridaki not.
+  destination: (req, file, cb) => cb(null, BANNER_DIR),
   filename:    (req, file, cb) => {
-    const ext = path.extname(file.originalname).slice(0, 10).toLowerCase();
+    const ext = canonicalExtensionForMime(file.mimetype) ?? '';
     cb(null, `banner_${uuidv4()}${ext}`);
   },
 });
@@ -512,7 +754,7 @@ const bannerUpload = multer({
  *           schema:
  *             type: object
  *             properties:
- *               file: { type: string, format: binary }
+ *               banner: { type: string, format: binary }
  *     responses:
  *       200: { description: Banner güncellendi }
  */
@@ -529,8 +771,22 @@ router.post('/me/banner', authMiddleware, limits.settings(), (req, res, next) =>
     fs.unlink(req.file.path, () => {});
     return res.status(400).json({ error: 'File content does not match declared type' });
   }
-  const bannerUrl = `/uploads/${req.file.filename}`;
-  await Users.update(_u.id, { bannerUrl });
+  const bannerUrl = `/uploads/banners/${req.file.filename}`;
+  let currentUser;
+  try {
+    currentUser = await Users.findById(_u.id);
+  } catch (error) {
+    safeUnlinkProfileFile(req.file.path);
+    throw error;
+  }
+  const oldBannerUrl = currentUser?.bannerUrl;
+  try {
+    await Users.update(_u.id, { bannerUrl });
+  } catch (error) {
+    safeUnlinkProfileFile(req.file.path);
+    throw error;
+  }
+  await cleanupOldProfileAsset(oldBannerUrl, 'banners');
   res.json({ bannerUrl });
 });
 
@@ -547,14 +803,14 @@ router.post('/me/banner', authMiddleware, limits.settings(), (req, res, next) =>
  *           schema:
  *             type: object
  *             properties:
- *               color: { type: string, example: '#2d9cdb' }
+ *               bannerColor: { type: string, example: '#2d9cdb' }
  *     responses:
  *       200: { description: Renk güncellendi }
  */
 router.patch('/me/banner-color', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
   const { bannerColor } = req.body as Record<string, string>;
-  if (!bannerColor || !/^#[0-9a-fA-F]{3,8}$/.test(bannerColor))
+  if (!bannerColor || !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(bannerColor))
     return res.status(400).json({ error: 'Invalid color' });
   await Users.update(_u.id, { bannerColor });
   res.json({ bannerColor });
@@ -573,11 +829,9 @@ router.patch('/me/banner-color', authMiddleware, async (req: import("express").R
 router.delete('/me/avatar', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
   const user = await Users.findById(_u.id);
-  if (user?.avatarUrl) {
-    const file = path.join(__dirname, '../uploads', path.basename(user.avatarUrl));
-    fs.unlink(file, () => {});
-  }
+  const oldAvatarUrl = user?.avatarUrl;
   await Users.update(_u.id, { avatarUrl: null });
+  await cleanupOldProfileAsset(oldAvatarUrl, 'avatars');
   res.json({ avatarUrl: null });
 });
 
@@ -625,10 +879,14 @@ router.get('/captcha-config', (req, res) => {
  *               properties:
  *                 csrfToken: { type: string }
  */
-router.get('/csrf-token', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
+router.get('/csrf-token', authMiddleware, limits.csrf(), async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const token = await generateCsrfToken(_u.id);
-  res.json({ token });
+  try {
+    const token = await generateCsrfToken(_u.id);
+    res.json({ token });
+  } catch {
+    res.status(503).json({ error: 'CSRF security state unavailable' });
+  }
 });
 
 export { router, sanitizeUser };

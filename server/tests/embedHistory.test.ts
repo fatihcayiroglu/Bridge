@@ -3,6 +3,7 @@
 // Test framework: Jest 29 (ts-jest) — projeyle tutarlı
 
 import { runEmbedHistoryJob, scheduleEmbedHistoryJob, cancelEmbedHistoryJob } from '../jobs/embedHistory';
+import { makeDirectPoolDouble, type DirectPoolDouble } from './helpers/pgPoolDouble';
 
 // ── Mock'lar ─────────────────────────────────────────────────────────────
 
@@ -16,22 +17,34 @@ jest.mock('../lib/logger', () => {
   return { __esModule: true, default: logger, ...logger };
 });
 
+jest.mock('../lib/redisAdapter', () => ({
+  cache: { setIfAbsentAuthoritative: jest.fn(async () => true) },
+}));
+
 import { generateEmbedding } from '../lib/pgvector';
+import { cache } from '../lib/redisAdapter';
 const mockGenerateEmbedding = generateEmbedding as jest.MockedFunction<typeof generateEmbedding>;
+const mockDailyClaim = cache.setIfAbsentAuthoritative as jest.MockedFunction<typeof cache.setIfAbsentAuthoritative>;
 
 // ── Mock DB ───────────────────────────────────────────────────────────────
 
-function makeMockDb(rows: { _id: string; content: string }[][] = []) {
+// Ikiz, URUN sozlesmesini (`DirectQueryingPool`) tasiyan kanonik yardimciyla
+// kurulur. Eskiden burada elle bir `jest.fn` vardi ve TypeScript donus tipini
+// ilk `return`den cikardigi icin is imzasina UYMUYORDU (18 strict hatasi).
+function makeMockDb(rows: { _id: string; content: string; createdAt?: number }[][] = []): DirectPoolDouble {
   let callCount = 0;
-  return {
-    query: jest.fn(async (sql: string) => {
-      if (sql.includes('SELECT _id')) {
-        const batch = rows[callCount++] ?? [];
-        return { rows: batch };
-      }
-      return { rows: [] }; // UPDATE
-    }),
-  };
+  return makeDirectPoolDouble(async (sql) => {
+    if (sql.includes('SELECT _id')) {
+      const batch = rows[callCount++] ?? [];
+      return {
+        rows: batch.map((row, i) => ({
+          createdAt: row.createdAt ?? (1000 + callCount * 100 + i),
+          ...row,
+        })),
+      };
+    }
+    return { rows: [] }; // UPDATE
+  });
 }
 
 // ── Testler ───────────────────────────────────────────────────────────────
@@ -97,6 +110,30 @@ describe('runEmbedHistoryJob — temel çalışma', () => {
     const [, params] = updateCalls[0];
     expect(params[1]).toBe('msg-abc');
     expect((params[0] as string).startsWith('[')).toBe(true); // vektör literal
+  });
+
+
+  it('uses canonical keyset pagination instead of OFFSET so shrinking NULL sets are not skipped', async () => {
+    const batch1 = [
+      { _id: 'm1', content: 'one', createdAt: 1000 },
+      { _id: 'm2', content: 'two', createdAt: 1000 },
+    ];
+    const batch2 = [
+      { _id: 'm3', content: 'three', createdAt: 2000 },
+      { _id: 'm4', content: 'four', createdAt: 3000 },
+    ];
+    const db = makeMockDb([batch1, batch2, []]);
+    mockGenerateEmbedding.mockResolvedValue(new Array(768).fill(0.1));
+
+    const stats = await runEmbedHistoryJob(db, { batchSize: 2, batchDelayMs: 0 });
+
+    expect(stats.embedded).toBe(4);
+    const selects = (db.query.mock.calls as [string, unknown[]][])
+      .filter(([sql]) => sql.includes('SELECT _id'));
+    expect(selects[0][0]).not.toContain('OFFSET');
+    expect(selects[0][0]).toContain('ORDER BY "createdAt" ASC, _id ASC');
+    expect(selects[1][1][1]).toBe(1000);
+    expect(selects[1][1][2]).toBe('m2');
   });
 
   it('historyLimit=1 ile SQL yalnızca 1 satır ister', async () => {
@@ -187,10 +224,60 @@ describe('runEmbedHistoryJob — PGVECTOR_ENABLED=false', () => {
 });
 
 describe('scheduleEmbedHistoryJob', () => {
+  afterEach(() => {
+    cancelEmbedHistoryJob();
+    jest.useRealTimers();
+    mockDailyClaim.mockReset();
+    mockDailyClaim.mockResolvedValue(true);
+  });
+
   it('PGVECTOR_ENABLED=true ise hata vermez', () => {
     const db = makeMockDb([[]]);
     expect(() => scheduleEmbedHistoryJob(db)).not.toThrow();
     cancelEmbedHistoryJob(); // cleanup
+  });
+
+  it('03:00 UTC penceresinde cluster-wide günlük claim alıp yalnız bir kez çalışır', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-30T03:01:00.000Z'));
+    const db = makeMockDb([[]]);
+    scheduleEmbedHistoryJob(db);
+
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(mockDailyClaim).toHaveBeenCalledWith(
+      'jobs:embed-history:daily:2026-08-30',
+      expect.objectContaining({ claimedAt: expect.stringContaining('2026-08-30T03:02:') }),
+      26 * 60 * 60,
+    );
+    const selectsAfterFirstTick = db.query.mock.calls.filter(([sql]) => String(sql).includes('SELECT _id')).length;
+    expect(selectsAfterFirstTick).toBe(1);
+
+    mockDailyClaim.mockResolvedValue(false);
+    await jest.advanceTimersByTimeAsync(60_000);
+    const selectsAfterSecondTick = db.query.mock.calls.filter(([sql]) => String(sql).includes('SELECT _id')).length;
+    expect(selectsAfterSecondTick).toBe(1);
+  });
+
+  it('configured authority claim hata verirse duplicate-risk yerine fail-closed skip eder', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-30T03:01:00.000Z'));
+    mockDailyClaim.mockRejectedValue(new Error('redis unavailable'));
+    const db = makeMockDb([[]]);
+    scheduleEmbedHistoryJob(db);
+
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(db.query).not.toHaveBeenCalled();
+  });
+
+  it('UTC penceresi dışında host timezone ne olursa olsun günlük claim denemez', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-30T02:57:00.000Z'));
+    const db = makeMockDb([[]]);
+    scheduleEmbedHistoryJob(db);
+
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(mockDailyClaim).not.toHaveBeenCalled();
+    expect(db.query).not.toHaveBeenCalled();
   });
 
   it('cancelEmbedHistoryJob çift çağrıda hata vermez', () => {

@@ -1,0 +1,23 @@
+const { firefox } = require('playwright');
+(async () => {
+  const b = await firefox.launch();
+  const ctx = await b.newContext({ storageState: 'fixtures/auth-state.json', locale: 'tr-TR' });
+  const p = await ctx.newPage();
+  const errs = [], failed = [], pageErrs = [];
+  p.on('console', m => { if (m.type() === 'error') errs.push(m.text().slice(0, 150)); });
+  p.on('pageerror', e => pageErrs.push(String(e.message).slice(0, 150)));
+  p.on('requestfailed', r => failed.push(r.url().slice(0, 110)));
+  const resp = [];
+  p.on('response', r => { if (r.status() >= 400) resp.push(r.status() + ' ' + r.url().slice(0, 110)); });
+  await p.goto('http://127.0.0.1:3000', { waitUntil: 'load' });
+  await p.waitForTimeout(4000);
+  console.log('pageerror      :', pageErrs.length);
+  pageErrs.forEach(e => console.log('   PE', e));
+  console.log('console.error  :', errs.length);
+  errs.forEach(e => console.log('   CE', e));
+  console.log('basarisiz istek:', failed.length);
+  failed.forEach(f => console.log('   RF', f));
+  console.log('4xx/5xx yanit  :', resp.length);
+  resp.forEach(r => console.log('   >>', r));
+  await b.close();
+})();

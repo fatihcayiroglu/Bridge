@@ -168,8 +168,8 @@ describe('markGameOver / claimBlack (Redis mock)', () => {
     jest.doMock('../lib/redisAdapter', () => ({
       isRedisAvailable: () => true,
       cache: {
-        luaEval: mockLuaEval.mockResolvedValue(1),
-        del:     mockDel.mockResolvedValue(undefined),
+        luaEvalAuthoritative: mockLuaEval.mockResolvedValue(1),
+        delAuthoritative:     mockDel.mockResolvedValue(undefined),
         get:     mockGet,
         set:     mockSet,
       },
@@ -191,8 +191,8 @@ describe('markGameOver / claimBlack (Redis mock)', () => {
     jest.doMock('../lib/redisAdapter', () => ({
       isRedisAvailable: () => true,
       cache: {
-        luaEval: mockLuaEval.mockResolvedValue(0),
-        del:     mockDel.mockResolvedValue(undefined), // luaEval=0 → del çağrılmaz ama mock hazır
+        luaEvalAuthoritative: mockLuaEval.mockResolvedValue(0),
+        delAuthoritative:     mockDel.mockResolvedValue(undefined), // luaEval=0 → del çağrılmaz ama mock hazır
         get:     mockGet,
         set:     mockSet,
       },
@@ -212,8 +212,8 @@ describe('markGameOver / claimBlack (Redis mock)', () => {
     jest.doMock('../lib/redisAdapter', () => ({
       isRedisAvailable: () => true,
       cache: {
-        luaEval: mockLuaEval.mockResolvedValue(1),
-        del:     mockDel.mockResolvedValue(undefined),
+        luaEvalAuthoritative: mockLuaEval.mockResolvedValue(1),
+        delAuthoritative:     mockDel.mockResolvedValue(undefined),
         get:     mockGet,
         set:     mockSet,
       },
@@ -229,24 +229,26 @@ describe('markGameOver / claimBlack (Redis mock)', () => {
     jest.dontMock('../lib/redisAdapter');
   });
 
-  it('luaEval hata fırlatırsa in-memory fallback devreye girer', async () => {
+  it('REDIS_URL yapılandırılmışken luaEval hatası local split-brain fallback üretmez', async () => {
+    const previous = process.env.REDIS_URL;
+    process.env.REDIS_URL = 'redis://cluster.example:6379';
     jest.doMock('../lib/redisAdapter', () => ({
       isRedisAvailable: () => true,
       cache: {
-        luaEval: mockLuaEval.mockRejectedValue(new Error('Redis bağlantı hatası')),
-        del:     mockDel.mockResolvedValue(undefined),
+        luaEvalAuthoritative: mockLuaEval.mockRejectedValue(new Error('Redis bağlantı hatası')),
+        delAuthoritative:     mockDel.mockResolvedValue(undefined),
         get:     mockGet,
         set:     mockSet,
+        withKeyLock: jest.fn(),
       },
     }));
 
     const { chessStore: store } = await import('../socket/handlers/activities/chess-store');
     store._clearMemGames_TEST_ONLY();
+    await expect(store.markGameOver('ch-redis-err')).rejects.toThrow('Redis bağlantı hatası');
+    expect(store._memGames.has('ch-redis-err')).toBe(false);
 
-    // In-memory'de oyun yok → fallback false dönmeli
-    const ok = await store.markGameOver('ch-redis-err');
-    expect(ok).toBe(false);
-
+    if (previous === undefined) delete process.env.REDIS_URL; else process.env.REDIS_URL = previous;
     jest.dontMock('../lib/redisAdapter');
   });
 });

@@ -25,12 +25,12 @@ class AutomodRepository {
     return db.automodRules.insert({ _id: uuidv4(), createdAt: Date.now(), ...data });
   }
 
-  async update(id: string, fields: Record<string, unknown>) {
-    return db.automodRules.update({ _id: id }, { $set: fields });
+  async update(id: string, serverId: string, fields: Record<string, unknown>) {
+    return db.automodRules.update({ _id: id, serverId }, { $set: fields });
   }
 
-  async delete(id: string) {
-    return db.automodRules.remove({ _id: id });
+  async delete(id: string, serverId: string) {
+    return db.automodRules.remove({ _id: id, serverId });
   }
 }
 

@@ -1,5 +1,7 @@
 // server/tests/admin-ipban.test.ts
-process.env.JWT_SECRET         = 'test-jwt-secret';
+import type { JwtPayload } from '../middleware/auth';
+import type { Express, Request } from 'express';
+process.env.JWT_SECRET         = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV           = 'test';
 process.env.ADMIN_SETUP_SECRET = 'super-secret-setup';
 
@@ -11,7 +13,7 @@ jest.mock('../lib/captcha', () => ({
   }),
 }));
 
-jest.mock('express-rate-limit', () => () => (_req, _res, next) => next());
+jest.mock('express-rate-limit', () => () => (_req: unknown, _res: unknown, next: () => void) => next());
 
 import { createMockDb, makeUser, makeServer } from './helpers/mockDb';
 const mockDb = createMockDb();
@@ -19,25 +21,29 @@ const mockDb = createMockDb();
 jest.mock('../db/loader', () => mockDb);
 
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: (req, res, next) => {
+  authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
     const h = req.headers.authorization;
     if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
     const jwt = require('jsonwebtoken');
     try {
-      req.user = jwt.verify(h.slice(7), 'test-jwt-secret');
+      req.user = jwt.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!');
       return next();
     } catch {
       return res.status(401).json({ error: 'Invalid token' });
     }
   },
-  castAuthed: (req) => ({ user: req.user }),
+  castAuthed: (req: Request) => ({ user: req.user }),
 }));
 
 // Stub rate-limit middleware used by the IP ban routes
 jest.mock('../middleware/rateLimit', () => ({
-  rateLimit: () => (_req, _res, next) => next(),
+  rateLimit: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   limits: new Proxy({}, {
-    get: () => () => (_req, _res, next) => next(),
+    get: () => () => (_req: unknown, _res: unknown, next: () => void) => next(),
   }),
 }));
 
@@ -66,10 +72,10 @@ const jwt        = require('jsonwebtoken');
 import adminRouter from '../routes/admin';
 import { unbanIp, banIp } from '../middleware/ipBan';
 
-function token(id, extra = {}) {
+function token(id: string, extra = {}) {
   return jwt.sign(
     { id, username: 'u', displayName: 'U', v: 0, ...extra },
-    'test-jwt-secret',
+    'test-jwt-secret-long-enough-32chars!!',
     { expiresIn: '1h' },
   );
 }
@@ -78,7 +84,7 @@ function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/admin', adminRouter);
-  app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+  app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
   return app;
 }
 
@@ -86,7 +92,7 @@ describe('Admin IP bans', () => {
   const ADMIN_ID = 'admin1';
   const USER_ID  = 'user1';
   const TEST_IP  = '1.2.3.4';
-  let app;
+  let app: Express;
 
   beforeAll(async () => {
     mockDb._reset?.();
@@ -101,7 +107,9 @@ describe('Admin IP bans', () => {
     jest.clearAllMocks();
     // Re-wire mock implementations after clearAllMocks
     const { banIp: b, unbanIp: u, listBans: l } = require('../middleware/ipBan');
-    b.mockImplementation(async (ip, opts = {}) => {
+    // `opts = {}` varsayilani tipi `{}` yapiyordu; alanlar ACIKCA yazilir.
+    interface BanOptions { reason?: string; durationMs?: number; adminId?: string | null }
+    b.mockImplementation(async (ip: string, opts: BanOptions = {}) => {
       const entry = {
         ip, reason: opts.reason ?? 'Admin ban',
         bannedAt: Date.now(),
@@ -111,7 +119,7 @@ describe('Admin IP bans', () => {
       ipBanStore[ip] = entry;
       return entry;
     });
-    u.mockImplementation(async (ip) => { delete ipBanStore[ip]; });
+    u.mockImplementation(async (ip: string) => { delete ipBanStore[ip]; });
     l.mockImplementation(async () => Object.values(ipBanStore));
   });
 
@@ -200,14 +208,26 @@ describe('Admin IP bans', () => {
     expect(res.body.error).toMatch(/geçersiz/i);
   });
 
-  it('POST /ip-bans — durationMs is not a valid number string → parseInt → NaN → treated as null', async () => {
-    const res = await request(app)
-      .post('/api/admin/ip-bans')
-      .set('Authorization', `Bearer ${token(ADMIN_ID)}`)
-      .send({ ip: TEST_IP, durationMs: 'banana' });
-    expect(res.status).toBe(200);
-    // NaN duration → treated as permanent ban (expiresAt: null)
-    expect(res.body.ban.expiresAt).toBeNull();
+  it('POST /ip-bans — invalid duration is rejected instead of silently becoming a permanent ban', async () => {
+    for (const durationMs of ['banana', '123oops', -1, 1.5]) {
+      const res = await request(app)
+        .post('/api/admin/ip-bans')
+        .set('Authorization', `Bearer ${token(ADMIN_ID)}`)
+        .send({ ip: TEST_IP, durationMs });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/duration/i);
+    }
+  });
+
+  it('POST /ip-bans — rejects structurally invalid IPv4/IPv6 values that regexes used to accept', async () => {
+    for (const ip of ['999.999.999.999', '256.1.1.1', '::::', 'abcd:']) {
+      const res = await request(app)
+        .post('/api/admin/ip-bans')
+        .set('Authorization', `Bearer ${token(ADMIN_ID)}`)
+        .send({ ip });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/geçersiz/i);
+    }
   });
 
   it('POST /ip-bans — admin banning their own IP → 400', async () => {

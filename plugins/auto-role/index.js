@@ -1,3 +1,4 @@
+// GENERATED FROM index.ts BY scripts/build-plugins.js — DO NOT EDIT.
 // plugins/auto-role/index.ts — Bridge Plugin
 // Yeni üye katılınca yapılandırılmış rolü otomatik atar.
 // Sprint 107: üçüncü resmi plugin örneği (welcome-bot, word-filter ile birlikte).
@@ -8,7 +9,8 @@ async function setup(ctx) {
     ctx.logger.log('Auto Role başlatıldı');
     const cfg = (ctx.meta.config ?? {});
     const roleId = (cfg.roleId ?? '').trim();
-    const delay = Math.max(0, Number(cfg.delayMs) || 0);
+    const rawDelay = typeof cfg.delayMs === 'number' ? cfg.delayMs : Number(cfg.delayMs ?? 0);
+    const delay = Number.isSafeInteger(rawDelay) && rawDelay >= 0 ? Math.min(rawDelay, 60000) : 0;
     if (!roleId) {
         ctx.logger.warn('roleId yapılandırılmamış — plugin pasif');
         return;
@@ -21,13 +23,18 @@ async function setup(ctx) {
                 const member = await db.members.findOne({ userId, serverId });
                 if (!member)
                     return;
-                let roles = [];
-                try {
-                    roles = JSON.parse(member.roles || '[]');
+                let rolesRaw = member.roles;
+                if (typeof rolesRaw === 'string') {
+                    try {
+                        rolesRaw = JSON.parse(rolesRaw);
+                    }
+                    catch {
+                        rolesRaw = [];
+                    }
                 }
-                catch {
-                    roles = [];
-                }
+                const roles = Array.isArray(rolesRaw)
+                    ? rolesRaw.filter((r) => typeof r === 'string' && r.length > 0)
+                    : [];
                 if (roles.includes(roleId))
                     return;
                 // Read-only DB — rol ataması sunucu tarafından işlenir

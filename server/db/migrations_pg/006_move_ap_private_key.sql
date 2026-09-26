@@ -13,14 +13,37 @@ CREATE TABLE IF NOT EXISTS user_ap_keys (
 );
 
 -- Mevcut verileri taşı (apPrivateKey NULL olmayanlar)
-INSERT INTO user_ap_keys ("userId", "apPrivateKey", "createdAt", "updatedAt")
-SELECT _id,
-       "apPrivateKey",
-       EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,
-       EXTRACT(EPOCH FROM NOW())::BIGINT * 1000
-FROM users
-WHERE "apPrivateKey" IS NOT NULL
-ON CONFLICT ("userId") DO NOTHING;
+--
+-- Idempotency guard: taze kurulumlarda users."apPrivateKey" hiç var olmamıştır
+-- (initSchema modern şemayı kurar ve anahtar user_ap_keys."apPrivateKeyEnc"
+-- içinde tutulur). Guard olmadan bu INSERT ... SELECT "column does not exist"
+-- hatası verip migration zincirini 006'da durduruyordu.
+--
+-- Kolon varsa  → taşıma aynen yapılır (eski kurulumların davranışı korunur).
+-- Kolon yoksa  → blok sessizce atlanır.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name   = 'users'
+       AND column_name  = 'apPrivateKey'
+  ) THEN
+    EXECUTE $mig$
+      INSERT INTO user_ap_keys ("userId", "apPrivateKey", "createdAt", "updatedAt")
+      SELECT _id,
+             "apPrivateKey",
+             EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,
+             EXTRACT(EPOCH FROM NOW())::BIGINT * 1000
+      FROM users
+      WHERE "apPrivateKey" IS NOT NULL
+      ON CONFLICT ("userId") DO NOTHING
+    $mig$;
+    RAISE NOTICE '[migration-006] apPrivateKey verileri user_ap_keys tablosuna taşındı.';
+  ELSE
+    RAISE NOTICE '[migration-006] users."apPrivateKey" yok — taşıma atlandı (taze kurulum).';
+  END IF;
+END $$;
 
 -- users tablosundan apPrivateKey sütununu kaldır
 ALTER TABLE users DROP COLUMN IF EXISTS "apPrivateKey";

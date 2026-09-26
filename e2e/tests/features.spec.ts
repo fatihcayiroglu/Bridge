@@ -3,7 +3,7 @@
 // forum, polls, canvas, soundboard, clips, semantic, boost, badges,
 // scheduled-messages, go-live, command-palette
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 import { getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
 
 // ── Ortak setup ──────────────────────────────────────────────────────────────
@@ -49,20 +49,31 @@ test.describe('Forum kanalı', () => {
   });
 
   test('forum kanalında thread açılabilir', async ({ request }) => {
-    test.skip(!forumChannelId, 'Forum kanalı fixture gerekli');
-    const res = await request.post(`/api/channels/${forumChannelId}/threads`, {
+    // v1.123: eski atlama gerekcesi ("uc yok - 404") YANLISTI. Uc sevk
+    // edilmisti; test YANLIS YOLU cagiriyordu. Gercek sozlesme:
+    //   POST /api/threads  { channelId, name, firstMessage? }
+    // Dogru yola gecirilince iki GERCEK urun hatasi ortaya cikti ve
+    // duzeltildi: (1) `locked` sutunu ALLOWED_COLUMNS'ta yoktu,
+    // (2) threads."parentMessageId" NOT NULL idi - oysa forum konusu
+    // KANAL koklidir ve ust mesaji yoktur. Ikisi de 500 uretiyordu.
+    test.skip(!forumChannelId, 'Forum kanali fixture gerekli');
+    const res = await request.post('/api/threads', {
       headers: { Authorization: `Bearer ${token}` },
-      data:    { title: 'Test Konusu', content: 'İlk mesaj içeriği' },
+      data:    { channelId: forumChannelId, name: 'Test Konusu', firstMessage: 'Ilk mesaj' },
     });
-    expect([200, 201]).toContain(res.status());
+    expect(res.status()).toBe(201);
     const body = await res.json();
-    expect(body).toHaveProperty('_id');
-    expect(body.title).toBe('Test Konusu');
+    // Yanit { thread } sarmalayicisi dondurur.
+    expect(body.thread).toHaveProperty('_id');
+    expect(body.thread.name).toBe('Test Konusu');
+    // Kanal kokli konuda ust mesaj YOKTUR - 500'e yol acan tam kosul budur.
+    expect(body.thread.parentMessageId).toBeNull();
   });
 
   test('thread listesi alınabilir', async ({ request }) => {
-    test.skip(!forumChannelId, 'Forum kanalı fixture gerekli');
-    const res = await request.get(`/api/channels/${forumChannelId}/threads`, {
+    // v1.123: yol duzeltildi - GET /api/threads/channel/:channelId
+    test.skip(!forumChannelId, 'Forum kanali fixture gerekli');
+    const res = await request.get(`/api/threads/channel/${forumChannelId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(res.status()).toBe(200);
@@ -77,11 +88,12 @@ test.describe('Forum kanalı', () => {
 
 test.describe('Anket (Polls)', () => {
   test('anket oluşturulabilir', async ({ request }) => {
+    // v1.123: anket ucu SEVK EDILMISTIR; test yanlis yolu cagiriyordu.
+    // Gercek yol kanal kaplidir: POST /api/channels/:channelId/polls
     test.skip(!channelId, 'Kanal fixture gerekli');
-    const res = await request.post('/api/polls', {
+    const res = await request.post(`/api/channels/${channelId}/polls`, {
       headers: { Authorization: `Bearer ${token}` },
       data: {
-        channelId,
         question: 'En iyi programlama dili hangisi?',
         options:  ['TypeScript', 'Rust', 'Python', 'Go'],
         duration: 3600,
@@ -92,6 +104,9 @@ test.describe('Anket (Polls)', () => {
     const body = await res.json();
     expect(body).toHaveProperty('_id');
     expect(body.question).toContain('programlama');
+    // Secenekler sunucuda kimliklendirilir; oy verme bu yapiya dayanir.
+    expect(Array.isArray(body.options)).toBe(true);
+    expect(body.options).toHaveLength(4);
   });
 
   test('ankete oy verilebilir', async ({ request }) => {
@@ -137,18 +152,23 @@ test.describe('Anket (Polls)', () => {
 
 test.describe('Canvas (Ortak Çizim)', () => {
   test('canvas durumu alınabilir', async ({ request }) => {
-    test.skip(!channelId, 'Kanal fixture gerekli');
+    // Final21 Faz 22 (19-37): bu test `[200, 404]` kabul ederek VAR OLMAYAN bir rotaya karşı
+    // GEÇİYORDU — ölçüldü: `GET /api/canvas/:id` → 404 "Not found: GET /api/canvas/…" (genel 404
+    // işleyicisi). Canvas durumu soket üzerinden gelir (`canvas:state-sync`); kardeş test zaten
+    // aynı gerekçeyle atlanıyordu. Geçmiş sayılmaz, AÇIKÇA atlanır.
+    test.skip(true, 'MIMARI: canvas REST degil soket tabanlidir (GET /api/canvas/:id yok — olculdu 404).');
     const res = await request.get(`/api/canvas/${channelId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    expect([200, 404]).toContain(res.status());
-    if (res.status() === 200) {
-      const body = await res.json();
-      expect(body).toHaveProperty('strokes');
-    }
+    expect(res.status()).toBe(200);
+    expect(await res.json()).toHaveProperty('strokes');
   });
 
   test('canvas temizlenebilir', async ({ request }) => {
+    // v1.123 DOGRULANDI: canvas'in REST yonlendiricisi YOKTUR; ozellik
+    // soket olaylari uzerinden sevk edilir (`canvas:state-sync`,
+    // `canvas:stroke-delete`). Atlama gecerlidir - gerekce duzeltildi.
+    test.skip(true, 'MIMARI: canvas REST degil soket tabanlidir.');
     test.skip(!channelId, 'Kanal fixture gerekli');
     const res = await request.delete(`/api/canvas/${channelId}`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -167,14 +187,15 @@ test.describe('Soundboard', () => {
     const res = await request.get(`/api/servers/${serverId}/soundboard`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    expect([200, 404]).toContain(res.status());
-    if (res.status() === 200) {
-      const body = await res.json();
-      expect(Array.isArray(body)).toBe(true);
-    }
+    // Sahibi olduğu yeni sunucuda: 200 ve boş liste (ölçüldü). 404/403 artık kabul edilmez.
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body)).toBe(true);
   });
 
-  test('soundboard ses eklenebilir (URL ile)', async ({ request }) => {
+  test('soundboard: dosyasız (yalnız URL) ekleme reddedilir — ses DOSYASI zorunlu', async ({ request }) => {
+    // Eski başlık "URL ile eklenebilir" diyordu ve `[201, 200, 400, 403]` kabul ediyordu. Ürün
+    // sözleşmesi (ölçüldü): uç yalnızca yüklenen dosyayı kabul eder; URL'li gövde 400 "No file uploaded".
     test.skip(!serverId, 'Sunucu fixture gerekli');
     const res = await request.post(`/api/servers/${serverId}/soundboard`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -185,8 +206,11 @@ test.describe('Soundboard', () => {
         url:      'https://example.com/test.mp3',
       },
     });
-    // 201 başarı, 403 owner değil, 400 validasyon
-    expect([201, 200, 400, 403]).toContain(res.status());
+    expect(res.status()).toBe(400);
+    expect((await res.json()).error).toMatch(/file/i);
+    // Hiçbir şey eklenmedi.
+    const list = await request.get(`/api/servers/${serverId}/soundboard`, { headers: { Authorization: `Bearer ${token}` } });
+    expect(await list.json()).toEqual([]);
   });
 });
 
@@ -195,24 +219,24 @@ test.describe('Soundboard', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 test.describe('Clips', () => {
+  // Final21 Faz 22 (19-37): iki test de `[200, 404]` / `[403, 404]` ile VAR OLMAYAN rotalara karşı
+  // GEÇİYORDU — ölçüldü: `GET /api/clips` → 404 "Not found: GET /api/clips" (genel 404 işleyicisi;
+  // setupRoutes'ta klip yönlendiricisi YOK). Klip özelliği REST üzerinden sevk edilmiyor: açıkça atlanır.
   test('clip listesi alınabilir', async ({ request }) => {
-    test.skip(!serverId, 'Sunucu fixture gerekli');
+    test.skip(true, 'SEVK EDİLMEDİ: /api/clips rotası yok (ölçüldü 404, genel not-found işleyicisi).');
     const res = await request.get(`/api/clips?serverId=${serverId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    expect([200, 404]).toContain(res.status());
-    if (res.status() === 200) {
-      const body = await res.json();
-      expect(Array.isArray(body) || typeof body === 'object').toBe(true);
-    }
+    expect(res.status()).toBe(200);
   });
 
   test('clip silme yetkisiz kullanıcı 403 alır', async ({ request }) => {
+    test.skip(true, 'SEVK EDİLMEDİ: /api/clips rotası yok (ölçüldü 404, genel not-found işleyicisi).');
     const fakeClipId = '00000000-0000-0000-0000-000000000000';
     const res = await request.delete(`/api/clips/${fakeClipId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    expect([403, 404]).toContain(res.status());
+    expect(res.status()).toBe(403);
   });
 });
 
@@ -233,13 +257,15 @@ test.describe('Semantik Arama', () => {
     expect(Array.isArray(body.matches)).toBe(true);
   });
 
-  test('boş sorgu 200 döner', async ({ request }) => {
+  test('boş sorgu reddedilir (400)', async ({ request }) => {
+    // Eski başlık "200 döner" diyordu ve `[200, 400]` kabul ediyordu; ölçülen sözleşme: 400 "query gerekli".
     test.skip(!serverId, 'Sunucu fixture gerekli');
     const res = await request.post('/api/semantic/search', {
       headers: { Authorization: `Bearer ${token}` },
       data:    { query: '', serverId },
     });
-    expect([200, 400]).toContain(res.status());
+    expect(res.status()).toBe(400);
+    expect((await res.json()).error).toBeTruthy();
   });
 
   test('GET /api/semantic/digest/:serverId çalışır', async ({ request }) => {
@@ -270,25 +296,31 @@ test.describe('Semantik Arama', () => {
 
 test.describe('Boost', () => {
   test('boost bilgisi alınabilir', async ({ request }) => {
+    // Final21 Faz 22 (19-37): test TEKİL `/boost`a gidiyordu (rota yok — ölçüldü 404) ve `[200, 404]`
+    // kabul ettiği için GEÇİYORDU; `level` alanı da üründe yok. Gerçek uç `GET /servers/:sid/boosts`.
     test.skip(!serverId, 'Sunucu fixture gerekli');
-    const res = await request.get(`/api/servers/${serverId}/boost`, {
+    const res = await request.get(`/api/servers/${serverId}/boosts`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    expect([200, 404]).toContain(res.status());
-    if (res.status() === 200) {
-      const body = await res.json();
-      expect(body).toHaveProperty('level');
-      expect(body).toHaveProperty('count');
-    }
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(typeof body.count).toBe('number');
+    expect(typeof body.tier).toBe('number');
+    expect(Array.isArray(body.boosters)).toBe(true);
   });
 
   test('boost isteği gönderilebilir', async ({ request }) => {
+    // v1.123: yol TEKIL yazilmisti (`/boost`); gercek uc COGULDUR.
+    // Her koşum YENİ bir sunucu kurar: ilk boost 200 (ölçüldü) ve sayaç artar.
     test.skip(!serverId, 'Sunucu fixture gerekli');
-    const res = await request.post(`/api/servers/${serverId}/boost`, {
+    const before = await (await request.get(`/api/servers/${serverId}/boosts`, { headers: { Authorization: `Bearer ${token}` } })).json();
+    const res = await request.post(`/api/servers/${serverId}/boosts`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    // 200 başarı, 409 zaten boosted, 403 yetki yok
-    expect([200, 201, 409, 403]).toContain(res.status());
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.count).toBe(before.count + 1);
   });
 });
 
@@ -299,36 +331,36 @@ test.describe('Boost', () => {
 test.describe('Badges (Rozetler)', () => {
   test('kullanıcı rozet listesi alınabilir', async ({ request }) => {
     test.skip(!token, 'Auth token gerekli');
-    // Kendi profilimizin rozet listesi
-    const profileRes = await request.get('/api/users/@me', {
+    // Final21 Faz 22 (19-37): test `/api/users/@me`e gidiyordu — rota YOK (ölçüldü 404) — ve 200
+    // olmayınca SESSİZCE `return` ediyordu: hiçbir iddia koşmadan GEÇİYORDU. Kanonik uç `/api/me`.
+    const profileRes = await request.get('/api/me', {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (profileRes.status() !== 200) return;
+    expect(profileRes.status()).toBe(200);
     const me = await profileRes.json();
+    expect(me._id).toBeTruthy();
 
     const res = await request.get(`/api/users/${me._id}/badges`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    expect([200, 404]).toContain(res.status());
-    if (res.status() === 200) {
-      const body = await res.json();
-      expect(Array.isArray(body)).toBe(true);
-    }
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body)).toBe(true);
   });
 
   test('rozet tanımları listelenebilir', async ({ request }) => {
+    // v1.123: bu testin YOLU zaten dogruydu; yalnizca atlama gerekcesi
+    // ("/api/badges 404") yanlisti ve CALISIR bir uc kapatilmisti.
     const res = await request.get('/api/badges/definitions', {
       headers: { Authorization: `Bearer ${token}` },
     });
-    expect([200, 404]).toContain(res.status());
-    if (res.status() === 200) {
-      const body = await res.json();
-      expect(Array.isArray(body)).toBe(true);
-      if (body.length > 0) {
-        expect(body[0]).toHaveProperty('id');
-        expect(body[0]).toHaveProperty('name');
-      }
-    }
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body)).toBe(true);
+    // OLCULDU: tanimlar bos degil; alanlar `badge` / `label` (id/name DEGIL).
+    expect(body.length).toBeGreaterThan(0);
+    expect(body[0]).toHaveProperty('badge');
+    expect(body[0]).toHaveProperty('label');
   });
 });
 
@@ -338,38 +370,41 @@ test.describe('Badges (Rozetler)', () => {
 
 test.describe('Zamanlanmış Mesajlar', () => {
   test('zamanlanmış mesaj oluşturulabilir', async ({ request }) => {
-    test.skip(!channelId, 'Kanal fixture gerekli');
-    const sendAt = Date.now() + 3600 * 1000; // 1 saat sonra
-    const res = await request.post('/api/scheduled-messages', {
+    // v1.123: uc `/api/scheduled` olarak SEVK EDILMISTIR (`-messages` eki
+    // yok) ve `serverId` ZORUNLUDUR - eksikse 400 doner.
+    test.skip(!channelId || !serverId, 'Kanal fixture gerekli');
+    // OLCULDU: rota `sendAt`i STRING bekler (typeof kontrolu); ham epoch
+    // sayisi 'required' hatasina dusuyordu.
+    const sendAt = new Date(Date.now() + 3600 * 1000).toISOString();
+    const res = await request.post('/api/scheduled', {
       headers: { Authorization: `Bearer ${token}` },
-      data:    { channelId, content: 'Zamanlanmış test mesajı', sendAt },
+      data:    { channelId, serverId, content: 'Zamanlanmis test mesaji', sendAt },
     });
-    expect([200, 201, 400]).toContain(res.status());
-    if ([200, 201].includes(res.status())) {
-      const body = await res.json();
-      expect(body).toHaveProperty('_id');
-    }
+    expect([200, 201]).toContain(res.status());
+    const body = await res.json();
+    expect(body).toHaveProperty('_id');
   });
 
   test('zamanlanmış mesaj listesi alınabilir', async ({ request }) => {
     test.skip(!channelId, 'Kanal fixture gerekli');
-    const res = await request.get(`/api/scheduled-messages?channelId=${channelId}`, {
+    const res = await request.get(`/api/scheduled?channelId=${channelId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    expect([200, 404]).toContain(res.status());
-    if (res.status() === 200) {
-      const body = await res.json();
-      expect(Array.isArray(body)).toBe(true);
-    }
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body)).toBe(true);
   });
 
   test('geçmişe ait sendAt reddedilir', async ({ request }) => {
-    test.skip(!channelId, 'Kanal fixture gerekli');
-    const res = await request.post('/api/scheduled-messages', {
+    // v1.123: dogru uca gecirildi. Bu, testin ASIL amaci olan gecmis-tarih
+    // reddini GERCEKTEN dogrular (once uc 404 aldigi icin hic calismamisti).
+    test.skip(!channelId || !serverId, 'Kanal fixture gerekli');
+    const res = await request.post('/api/scheduled', {
       headers: { Authorization: `Bearer ${token}` },
-      data:    { channelId, content: 'Geçmiş zaman', sendAt: Date.now() - 1000 },
+      data:    { channelId, serverId, content: 'Gecmis zaman', sendAt: new Date(Date.now() - 3600 * 1000).toISOString() },
     });
     expect(res.status()).toBe(400);
+    expect((await res.json()).error).toContain('future');
   });
 });
 
@@ -379,6 +414,9 @@ test.describe('Zamanlanmış Mesajlar', () => {
 
 test.describe('Go Live (Ekran Paylaşımı)', () => {
   test('go-live oturumu başlatılabilir (API)', async ({ request }) => {
+    // v1.123 DOGRULANDI: ne /api/golive ne de /api/channels/:id/go-live
+    // mevcuttur (setupRoutes.ts'te hicbir baglama yok). Atlama gecerlidir.
+    test.skip(true, 'SEVK EDILMEDI (v1.123 dogrulandi): go-live REST ucu yok.');
     test.skip(!channelId, 'Kanal fixture gerekli');
     const res = await request.post(`/api/channels/${channelId}/go-live`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -389,11 +427,14 @@ test.describe('Go Live (Ekran Paylaşımı)', () => {
   });
 
   test('go-live oturumu sonlandırılabilir', async ({ request }) => {
-    test.skip(!channelId, 'Kanal fixture gerekli');
+    // Final21 Faz 22 (19-37): `[200, 204, 404]` kabul ederek VAR OLMAYAN rotaya karşı GEÇİYORDU —
+    // ölçüldü: 404 "Not found: DELETE /api/channels/…/go-live". Kardeşi (başlatma) aynı gerekçeyle
+    // zaten atlanıyordu; geçmiş sayılmaz.
+    test.skip(true, 'SEVK EDILMEDI (v1.123 dogrulandi, Faz 22 olculdu): go-live REST ucu yok.');
     const res = await request.delete(`/api/channels/${channelId}/go-live`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    expect([200, 204, 404]).toContain(res.status());
+    expect(res.status()).toBe(204);
   });
 });
 
@@ -401,32 +442,30 @@ test.describe('Go Live (Ekran Paylaşımı)', () => {
 // KOMUT PALETİ (UI — sadece smoke)
 // ══════════════════════════════════════════════════════════════════════════════
 
+// Final21 Faz 19 (19-26): bu iki test `UI_BASE_URL` (UI ile API'nin AYRI sunulduğu döneme ait)
+// tanımlı değil diye HER koşumda atlanıyordu; uygulama `BASE_URL`de sunulur. Ayrıca seçicileri
+// yanlıştı: `.cp-overlay` üründe KANAL İZİN DÜZENLEYİCİSİNİN katmanıdır, komut paletinin değil —
+// yani "Escape kapatır" testi açılsaydı BOŞUNA geçerdi. Palet: `#cp-listbox` taşıyan diyalog.
+const APP_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
+const commandPalette = (page: import('@playwright/test').Page) =>
+  page.locator('[role="dialog"][aria-modal="true"]:has(#cp-listbox)');
+
 test.describe('Komut Paleti (UI)', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('[aria-current="page"]').first()).toBeVisible({ timeout: 20_000 });
+  });
+
   test('⌘K ile komut paleti açılır', async ({ page }) => {
-    test.skip(!process.env.UI_BASE_URL, 'UI_BASE_URL tanımlı değil — UI testleri atlanıyor');
-    await page.goto(process.env.UI_BASE_URL!);
-    // Giriş gerekiyorsa bekle
-    await page.waitForLoadState('networkidle');
-
-    // ⌘K / Ctrl+K gönder
+    await expect(commandPalette(page)).toHaveCount(0);
     await page.keyboard.press('Control+k');
-    await page.waitForTimeout(300);
-
-    const palette = await page.$('.cp-overlay, [role="dialog"][aria-label*="Komut"]');
-    expect(palette).not.toBeNull();
+    await expect(commandPalette(page)).toBeVisible({ timeout: 10_000 });
   });
 
   test('Escape ile komut paleti kapanır', async ({ page }) => {
-    test.skip(!process.env.UI_BASE_URL, 'UI_BASE_URL tanımlı değil — UI testleri atlanıyor');
-    await page.goto(process.env.UI_BASE_URL!);
-    await page.waitForLoadState('networkidle');
-
     await page.keyboard.press('Control+k');
-    await page.waitForTimeout(300);
+    await expect(commandPalette(page)).toBeVisible({ timeout: 10_000 });   // önce GERÇEKTEN açık
     await page.keyboard.press('Escape');
-    await page.waitForTimeout(200);
-
-    const palette = await page.$('.cp-overlay');
-    expect(palette).toBeNull();
+    await expect(commandPalette(page)).toBeHidden({ timeout: 5_000 });
   });
 });

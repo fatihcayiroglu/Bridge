@@ -1,20 +1,30 @@
 // server/tests/customEmoji.test.ts
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+import { Readable } from 'stream';
+import type { Request, Response, NextFunction } from 'express';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 
 jest.mock('multer', () => {
   const multer = () => ({
-    single: () => (req, res, next) => {
+    single: () => (req: Request, res: Response, next: NextFunction) => {
       if (req.headers['x-mock-file']) {
+        // `Express.Multer.File` daha fazla alan ister; rota YALNIZCA
+        // asagidakileri okuyor. Eksikler gercekci varsayilanlarla doldurulur —
+        // boylece ikiz tipe uyar ve urunun gordugu nesneye benzer.
         req.file = {
-          path: '/tmp/emoji_test.png',
+          fieldname:    'file',
+          path:         '/tmp/emoji_test.png',
           originalname: 'test.png',
-          mimetype: 'image/png',
-          size: 10240,
-          filename: 'emoji_test.png',
+          encoding:     '7bit',
+          mimetype:     'image/png',
+          size:         10240,
+          filename:     'emoji_test.png',
+          destination:  '/tmp',
+          stream:       Readable.from([]),
+          buffer:       Buffer.alloc(0),
         };
       }
       next();
@@ -45,11 +55,17 @@ function buildApp() {
   app.use('/api/servers/:sid/emojis', authMiddleware, emojiRouter);
   return app;
 }
-function tok(uid) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 describe('Custom Emoji Routes', () => {
-  let app, ownerId, memberId, strangerId, serverId;
-  let ownerToken, memberToken, strangerToken;
+  let app: express.Express;
+  let ownerId: string;
+  let memberId: string;
+  let strangerId: string;
+  let serverId: string;
+  let ownerToken: string;
+  let memberToken: string;
+  let strangerToken: string;
 
   beforeEach(async () => {
     db._reset?.();
@@ -126,7 +142,7 @@ describe('Custom Emoji Routes', () => {
   });
 
   describe('DELETE /api/servers/:sid/emojis/:eid', () => {
-    let emojiId;
+    let emojiId: string;
     beforeEach(async () => {
       const col = db.server_emojis || db.serverEmojis;
       if (col) {

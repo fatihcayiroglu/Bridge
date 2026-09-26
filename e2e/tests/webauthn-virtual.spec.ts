@@ -1,0 +1,157 @@
+// e2e/tests/webauthn-virtual.spec.ts
+//
+// ════════════════════════════════════════════════════════════════════════════
+// PASSKEY — GERCEK TARAYICI YASAM DONGUSU (SANAL DOGRULAYICI)
+// ════════════════════════════════════════════════════════════════════════════
+// Birim testleri `navigator.credentials`i sahteler; bu dosya sahtelemez.
+// Chromium'un CDP `WebAuthn` alani ile GERCEK bir sanal dogrulayici takilir ve
+// tarayicinin GERCEK WebAuthn uygulamasi calisir:
+//
+//   navigator.credentials.create()  -> gercek attestation
+//   navigator.credentials.get()     -> gercek assertion + imza
+//
+// Sunucu tarafinda da gercek dogrulama kosar (imza, challenge, origin, RP).
+// Yani bu, uctan uca MAKINE kanitidir.
+//
+// ── NE KANITLANMAZ ──────────────────────────────────────────────────────────
+// Fiziksel bir guvenlik anahtari, parmak izi veya yuz tanima DONANIMI
+// KANITLANMAZ. Sanal dogrulayici protokolu uygular, donanimi degil.
+// Donanim dogrulamasi REAL_DEVICE_DEFERRED olarak kalir.
+//
+// ── NEDEN localhost, 127.0.0.1 DEGIL ────────────────────────────────────────
+// Sunucunun RP_ID varsayilani `localhost`. WebAuthn, rpId'nin sayfa
+// origin'inin kayitli alan adi soneki olmasini SART kosar. Sayfa
+// `http://127.0.0.1:3000` uzerinden acilirsa tarayici rpId `localhost` icin
+// SecurityError verir — urun kusuru degil, spesifikasyon geregi. Bu yuzden
+// burada acikca `http://localhost:3000` kullanilir.
+
+import { test, expect } from '@playwright/test';
+import type { CDPSession, Page } from '@playwright/test';
+
+const PORT = process.env.E2E_PORT || '3000';
+// E2E_HOST belongs to the server BIND address (normally 127.0.0.1). It must
+// not choose the WebAuthn page identity: rpId=localhost requires localhost.
+const ORIGIN = process.env.E2E_WEBAUTHN_ORIGIN || `http://localhost:${PORT}`;
+
+/** Chromium'a sanal bir platform dogrulayicisi takar. */
+async function sanalDogrulayiciTak(page: Page): Promise<{ cdp: CDPSession; id: string }> {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('WebAuthn.enable');
+  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
+    options: {
+      protocol: 'ctap2',
+      transport: 'internal',
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+  return { cdp, id: authenticatorId };
+}
+
+test.describe('passkey — sanal dogrulayici ile gercek yasam dongusu', () => {
+  test.skip(({ browserName }) => browserName !== 'chromium',
+    'Sanal dogrulayici yalnizca Chromium/CDP ile kullanilabilir.');
+
+  test('kayit + giris: gercek WebAuthn ile uctan uca', async ({ page }) => {
+    test.setTimeout(120_000);
+
+    // ── Oturumlu sayfa: kayit icin kimlik gerekir ──────────────────────────
+    await page.goto(`${ORIGIN}/`);
+    const { cdp } = await sanalDogrulayiciTak(page);
+
+    // Kanonik sahip yuklendi mi? (Bu dosyanin var olma sebebi: dugmeler
+    // eskiden `BridgeWebAuthn is not defined` firlatiyordu.)
+    const sahipVar = await page.evaluate(
+      () => typeof (window as unknown as { BridgeWebAuthn?: unknown }).BridgeWebAuthn === 'object');
+    expect(sahipVar, 'BridgeWebAuthn kanonik sahibi yuklenmeli').toBe(true);
+
+    const destekli = await page.evaluate(
+      () => (window as unknown as { BridgeWebAuthn: { isSupported(): boolean } }).BridgeWebAuthn.isSupported());
+    expect(destekli, 'sanal dogrulayici takiliyken WebAuthn destekli olmali').toBe(true);
+
+    // ── KAYIT ──────────────────────────────────────────────────────────────
+    const kayitSonuc = await page.evaluate(async () => {
+      const w = window as unknown as { BridgeWebAuthn: { registerPasskey(n?: string): Promise<boolean> } };
+      try { return { ok: await w.BridgeWebAuthn.registerPasskey('E2E Sanal Anahtar') }; }
+      catch (e) { return { ok: false, err: String(e) }; }
+    });
+
+    // Sunucu gercekten sakladi mi?
+    // NOT: Bridge kimligi BEARER JETONU ile tasir (cerez degil). Ilk yazimda
+    // duz `fetch(..., {credentials:'include'})` kullandim ve 401 aldim; test
+    // de bunu "oturum yok" sanip kendini ATLADI. Yani kanit uretmeden yesil
+    // gorunuyordu. Jeton depodan okunup basliga konur.
+    const kimlikler = await page.evaluate(async () => {
+      const jeton = localStorage.getItem('token') || localStorage.getItem('bridge_token');
+      const r = await fetch('/api/webauthn/credentials', {
+        credentials: 'include',
+        headers: jeton ? { Authorization: 'Bearer ' + jeton } : {},
+      });
+      if (!r.ok) return { durum: r.status, adet: -1, jetonVar: Boolean(jeton) };
+      const b = await r.json();
+      const list = Array.isArray(b) ? b : (b.credentials ?? []);
+      return { durum: r.status, adet: Array.isArray(list) ? list.length : -1, jetonVar: Boolean(jeton) };
+    });
+
+    // Kayit kimlik dogrulamasi gerektirir; oturum yoksa bu adim atlanir ama
+    // SESSIZCE GECMEZ — durum acikca raporlanir.
+    expect(kimlikler.jetonVar, 'storageState oturum jetonu tasimali').toBe(true);
+    if (kimlikler.durum === 401) {
+      test.info().annotations.push({
+        type: 'not',
+        description: 'Kayit adimi atlandi: sayfa oturumsuz (401). Giris adimi da atlanir.',
+      });
+      test.skip(true, 'Oturum yok — kayit/giris dongusu bu kosuda dogrulanamaz.');
+    }
+
+    expect(kayitSonuc.ok, `registerPasskey basarisiz: ${kayitSonuc.err ?? ''}`).toBe(true);
+    expect(kimlikler.adet, 'sunucu en az bir passkey saklamali').toBeGreaterThan(0);
+
+    // ── GIRIS ──────────────────────────────────────────────────────────────
+    // Ayni sanal dogrulayici ile assertion uretilir; sunucu imzayi dogrular.
+    const girisSonuc = await page.evaluate(async () => {
+      const r = await fetch('/api/webauthn/login/begin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({}),
+      });
+      if (!r.ok) return { asama: 'begin', durum: r.status };
+      const opts = await r.json();
+      return { asama: 'begin-ok', durum: 200, meydanVar: typeof opts.challenge === 'string' };
+    });
+    expect(girisSonuc.meydanVar, 'sunucu giris meydan okumasi vermeli').toBe(true);
+
+    const girisOk = await page.evaluate(async () => {
+      const w = window as unknown as { BridgeWebAuthn: { passkeyLogin(u?: string | null): Promise<boolean> } };
+      try { return await w.BridgeWebAuthn.passkeyLogin(null); }
+      catch { return false; }
+    });
+    expect(girisOk, 'sanal dogrulayici ile passkey girisi basarili olmali').toBe(true);
+
+    await cdp.send('WebAuthn.disable').catch(() => { /* temizlik */ });
+  });
+
+  test('dogrulayici YOKKEN giris temiz basarisiz olur (arayuz asili kalmaz)', async ({ page }) => {
+    // Sanal dogrulayici TAKILMAZ: tarayici istegi reddeder. Beklenen davranis
+    // cokme veya sonsuz bekleme degil, temiz `false` donusudur.
+    await page.goto(`${ORIGIN}/`);
+
+    const sonuc = await page.evaluate(async () => {
+      const w = window as unknown as { BridgeWebAuthn?: { passkeyLogin(u?: string | null): Promise<boolean> } };
+      if (!w.BridgeWebAuthn) return 'sahip-yok';
+      const t0 = Date.now();
+      try {
+        const ok = await w.BridgeWebAuthn.passkeyLogin('yok-boyle-kullanici');
+        return { ok, ms: Date.now() - t0 };
+      } catch (e) { return { firlatti: String(e) }; }
+    });
+
+    expect(sonuc).not.toBe('sahip-yok');
+    // Istisna SIZDIRMAMALI: dugme onclick'i yakalanmamis hata uretmemeli.
+    expect(sonuc).not.toHaveProperty('firlatti');
+    expect((sonuc as { ok: boolean }).ok).toBe(false);
+  });
+});

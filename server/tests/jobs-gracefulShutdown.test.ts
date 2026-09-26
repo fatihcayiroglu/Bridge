@@ -35,6 +35,8 @@ jest.mock('../lib/redisAdapter', () => ({
     get:               jest.fn().mockResolvedValue(null),
     set:               jest.fn().mockResolvedValue(undefined),
     del:               jest.fn().mockResolvedValue(undefined),
+    delAuthoritative:  jest.fn().mockResolvedValue(undefined),
+    setIfAbsentAuthoritative: jest.fn().mockResolvedValue(true),
     invalidatePattern: jest.fn().mockResolvedValue(undefined),
     increment:         jest.fn().mockResolvedValue(1),
   },

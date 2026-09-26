@@ -5,7 +5,7 @@
 // temizler. Redis olmadığında (test ortamı) davranış değişmedi.
 
 import { _internal, getChessGame, _clearAllGames_TEST_ONLY } from '../socket/handlers/activities/chess-arbiter';
-import type { Board } from '../socket/handlers/activities/chess-types';
+import type { Board, GameState } from '../socket/handlers/activities/chess-types';
 
 const { isInCheck, getLegalMoves, applyMoveToBoard, newGame } = _internal;
 
@@ -188,5 +188,129 @@ describe('applyMoveToBoard', () => {
     const res = applyMoveToBoard(state.board, state, 7, 7, 5, 7); // Rh3
     expect(res.castlingUpdates.wK).toBe(false);
     expect(res.castlingUpdates.wQ).toBeUndefined(); // queen-side etkilenmedi
+  });
+});
+
+describe('chess arbiter deep rule branches', () => {
+  it('detects pawn, knight, bishop, rook, queen and king attacks for both colors', () => {
+    const cases: Array<{ piece: any; at: [number, number]; king: [number, number]; color: 'w'|'b' }> = [
+      { piece: 'bP', at: [6,3], king: [7,4], color: 'w' },
+      { piece: 'bN', at: [5,3], king: [7,4], color: 'w' },
+      { piece: 'bB', at: [4,1], king: [7,4], color: 'w' },
+      { piece: 'bR', at: [2,4], king: [7,4], color: 'w' },
+      { piece: 'bQ', at: [3,0], king: [7,4], color: 'w' },
+      { piece: 'bK', at: [6,4], king: [7,4], color: 'w' },
+      { piece: 'wP', at: [1,3], king: [0,4], color: 'b' },
+      { piece: 'wN', at: [2,3], king: [0,4], color: 'b' },
+    ];
+    for (const tc of cases) {
+      const board = emptyBoard();
+      board[tc.king[0]]![tc.king[1]] = `${tc.color}K` as any;
+      board[tc.at[0]]![tc.at[1]] = tc.piece;
+      // Keep the opposite king somewhere harmless for structurally valid states.
+      const other = tc.color === 'w' ? 'bK' : 'wK';
+      board[tc.color === 'w' ? 0 : 7]![0] = other as any;
+      expect(isInCheck(board, tc.color)).toBe(true);
+    }
+  });
+
+  it('friendly blockers stop sliding attacks while enemy blockers may be captured but not jumped', () => {
+    const g = newGame(null, null);
+    const board = emptyBoard();
+    board[7]![4] = 'wK'; board[0]![4] = 'bK';
+    board[4]![4] = 'wR'; board[4]![5] = 'wP'; board[4]![3] = 'bP';
+    const state = { ...g, board, turn: 'w' as const };
+    const rook = getLegalMoves(state, 4, 4);
+    expect(rook).not.toContainEqual([4, 5]);
+    expect(rook).toContainEqual([4, 3]);
+    expect(rook).not.toContainEqual([4, 2]);
+
+    board[4]![4] = 'wB'; board[5]![5] = 'wP'; board[3]![3] = 'bP';
+    const bishop = getLegalMoves({ ...state, board }, 4, 4);
+    expect(bishop).not.toContainEqual([5, 5]);
+    expect(bishop).toContainEqual([3, 3]);
+    expect(bishop).not.toContainEqual([2, 2]);
+  });
+
+  it('covers white and black rook/captured-rook castling-right transitions', () => {
+    const base = newGame(null, null);
+    const make = () => {
+      const board = emptyBoard();
+      board[7]![4] = 'wK'; board[0]![4] = 'bK';
+      board[7]![0] = 'wR'; board[7]![7] = 'wR';
+      board[0]![0] = 'bR'; board[0]![7] = 'bR';
+      return board;
+    };
+    let board = make();
+    expect(applyMoveToBoard(board, { ...base, board, turn:'w' }, 7,0,6,0).castlingUpdates).toMatchObject({wQ:false});
+    board = make();
+    expect(applyMoveToBoard(board, { ...base, board, turn:'b' }, 0,7,1,7).castlingUpdates).toMatchObject({bK:false});
+    board = make();
+    expect(applyMoveToBoard(board, { ...base, board, turn:'b' }, 0,0,1,0).castlingUpdates).toMatchObject({bQ:false});
+
+    board = make(); board[6]![7] = 'wQ';
+    expect(applyMoveToBoard(board, { ...base, board, turn:'w' }, 6,7,0,7).castlingUpdates).toMatchObject({bK:false});
+    board = make(); board[6]![0] = 'wQ';
+    expect(applyMoveToBoard(board, { ...base, board, turn:'w' }, 6,0,0,0).castlingUpdates).toMatchObject({bQ:false});
+    board = make(); board[1]![7] = 'bQ';
+    expect(applyMoveToBoard(board, { ...base, board, turn:'b' }, 1,7,7,7).castlingUpdates).toMatchObject({wK:false});
+    board = make(); board[1]![0] = 'bQ';
+    expect(applyMoveToBoard(board, { ...base, board, turn:'b' }, 1,0,7,0).castlingUpdates).toMatchObject({wQ:false});
+  });
+
+  it('black king movement clears both black castling rights and black can castle both sides when safe', () => {
+    const g = newGame(null, null);
+    const board = emptyBoard();
+    board[0]![4] = 'bK'; board[0]![0] = 'bR'; board[0]![7] = 'bR'; board[7]![4] = 'wK';
+    const state = { ...g, board, turn:'b' as const, castling:{wK:false,wQ:false,bK:true,bQ:true} };
+    const legal = getLegalMoves(state,0,4);
+    expect(legal).toContainEqual([0,6]);
+    expect(legal).toContainEqual([0,2]);
+    expect(applyMoveToBoard(board,state,0,4,1,4).castlingUpdates).toEqual({bK:false,bQ:false});
+  });
+
+  it('castling is rejected through check, attacked transit squares, and occupied paths', () => {
+    const g = newGame(null, null);
+    const base = emptyBoard(); base[7]![4]='wK'; base[7]![0]='wR'; base[7]![7]='wR'; base[0]![0]='bK';
+    const rights={wK:true,wQ:true,bK:false,bQ:false};
+
+    const inCheck = base.map(r=>[...r]) as Board; inCheck[0]![4]='bR';
+    expect(getLegalMoves({...g,board:inCheck,turn:'w',castling:rights},7,4)).not.toContainEqual([7,6]);
+
+    const transit = base.map(r=>[...r]) as Board; transit[0]![5]='bR';
+    expect(getLegalMoves({...g,board:transit,turn:'w',castling:rights},7,4)).not.toContainEqual([7,6]);
+
+    const blocked = base.map(r=>[...r]) as Board; blocked[7]![1]='wN';
+    expect(getLegalMoves({...g,board:blocked,turn:'w',castling:rights},7,4)).not.toContainEqual([7,2]);
+  });
+
+  it('supports black pawn double-push, capture, en-passant, and promotion choices', () => {
+    const g=newGame(null,null); const board=emptyBoard();
+    board[0]![4]='bK'; board[7]![4]='wK'; board[1]![3]='bP'; board[2]![4]='wN';
+    // Tip ACIKCA yazilir: ilk atamadan cikarilan `enPassant: null` sonraki
+    // atamalari (`[5,2]`) reddediyordu.
+    let state: GameState={...g,board,turn:'b' as const,enPassant:null};
+    const moves=getLegalMoves(state,1,3);
+    expect(moves).toContainEqual([2,3]); expect(moves).toContainEqual([3,3]); expect(moves).toContainEqual([2,4]);
+    const dbl=applyMoveToBoard(board,state,1,3,3,3);
+    expect(dbl.epSquare).toEqual([2,3]);
+
+    const epBoard=emptyBoard(); epBoard[0]![4]='bK'; epBoard[7]![4]='wK'; epBoard[4]![3]='bP'; epBoard[4]![2]='wP';
+    // `ChessState.enPassant` bir DEMETtir (`[number, number] | null`); dizi
+    // edebisi `number[]` cikariyordu. `satisfies` demet cikarimini saglar
+    // ve ayni anda uyumu DENETLER (cast degildir).
+    state={...g,board:epBoard,turn:'b' as const,enPassant:[5,2]};
+    expect(getLegalMoves(state,4,3)).toContainEqual([5,2]);
+    expect(applyMoveToBoard(epBoard,state,4,3,5,2).captured).toBe('wP');
+
+    const promoBoard=emptyBoard(); promoBoard[0]![4]='bK'; promoBoard[7]![4]='wK'; promoBoard[6]![0]='bP';
+    const promoState={...g,board:promoBoard,turn:'b' as const};
+    for(const p of ['R','B','N'] as const) expect(applyMoveToBoard(promoBoard,promoState,6,0,7,0,p).promotion).toBe(`b${p}`);
+  });
+
+  it('returns no legal moves for an empty square or the non-moving color', () => {
+    const g=newGame(null,null);
+    expect(getLegalMoves(g,4,4)).toEqual([]);
+    expect(getLegalMoves(g,1,0)).toEqual([]);
   });
 });

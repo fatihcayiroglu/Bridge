@@ -13,7 +13,7 @@ Sprint 50 ile tüm client kodu TypeScript'e taşındı. Eğer custom fork'unuz v
 1. `client/js/core/*.js` dosyalarının silindiğini ve `.ts` karşılıklarının geldiğini
    unutmayın — `scripts/build.js` entry point listesi güncellendi.
 2. `tsconfig.json`'daki `strict: true` artık tüm server kodu için aktif.
-3. `server/db/postgres/collection.ts` `@deprecated` işaretlidir — `pgCollection.ts`
+3. Eski `server/db/postgres/collection.ts` compatibility owner'ı kaldırıldı; tek PostgreSQL collection owner'ı `pgCollection.ts`
    kullanın.
 
 ## Sprint 50 — Güvenlik Migration Notları

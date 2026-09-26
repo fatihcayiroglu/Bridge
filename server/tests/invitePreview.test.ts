@@ -1,6 +1,6 @@
 // server/tests/invitePreview.test.ts
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
@@ -19,7 +19,10 @@ function buildApp() {
 }
 
 describe('Invite Preview Routes', () => {
-  let app, serverId, inviteCode, ownerId;
+  let app: express.Express;
+  let serverId: string;
+  let inviteCode: string;
+  let ownerId: string;
 
   beforeEach(async () => {
     db._reset?.();

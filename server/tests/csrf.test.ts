@@ -21,7 +21,9 @@ jest.mock('../lib/security', () => {
 jest.mock('../middleware/auth', () => ({
   verifyToken: (token: string) => {
     try {
-      return jwt.verify(token, process.env.JWT_SECRET);
+      // `process.env.X` `string | undefined`tir; `jwt.verify` `string` ister.
+      // Testin sirri zaten sabittir — yoklugunda dogrulama BASARISIZ olur.
+      return jwt.verify(token, process.env.JWT_SECRET ?? '');
     } catch {
       return null;
     }

@@ -13,25 +13,27 @@
 //   • server/db/repositories — Members
 
 
-import type { Server as IOServer, Socket } from 'socket.io';
+import type { HandlerSocket, HandlerServer } from '../handler-contracts';
 import { Members } from '../../db/repositories';
 import { isUserOnline } from '../../lib/presenceCache';
 import { invalidateMemberCount } from '../../routes/discover';
 
 import logger from '../../lib/logger';
+import { isolateSocketHandler } from '../handlerIsolation';
+
 const DISCOVER_ROOM = 'discover:live';
 
 // ── Socket event handler — io.on('connection') içinde çağrılır ───────────────
-export function registerDiscoverHandlers(io: IOServer, socket: Socket): void {
+export function registerDiscoverHandlers(io: HandlerServer, socket: HandlerSocket): void {
   // Kullanıcı keşif sayfasını açtı
-  socket.on('discover:subscribe', () => {
+  socket.on('discover:subscribe', isolateSocketHandler(socket, 'discover:subscribe', () => {
     socket.join(DISCOVER_ROOM);
-  });
+  }));
 
   // Kullanıcı keşif sayfasını kapattı / sayfadan ayrıldı
-  socket.on('discover:unsubscribe', () => {
+  socket.on('discover:unsubscribe', isolateSocketHandler(socket, 'discover:unsubscribe', () => {
     socket.leave(DISCOVER_ROOM);
-  });
+  }));
 }
 
 // ── pushMemberCount — üye sayısı değiştiğinde çağrılır ───────────────────────
@@ -42,7 +44,7 @@ export function registerDiscoverHandlers(io: IOServer, socket: Socket): void {
 //   await pushMemberCount(io, serverId);
 //
 export async function pushMemberCount(
-  io: IOServer,
+  io: HandlerServer,
   serverId: string
 ): Promise<void> {
   try {

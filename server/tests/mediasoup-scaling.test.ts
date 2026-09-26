@@ -1,3 +1,4 @@
+import { present } from './helpers/narrow';
 // server/tests/mediasoup-scaling.test.ts
 // Mediasoup dinamik worker ölçekleme — kapsamlı entegrasyon testleri
 // Sprint 66:  scale-up, scale-down, edge case, index yeniden sıralama
@@ -114,6 +115,7 @@ describe('dinamik ölçekleme — scale-up', () => {
 
   it('MAX_WORKERS sınırına ulaşıldığında scale-up yapılmaz', async () => {
     process.env.SFU_SCALE_UP_ROUTERS = '1';
+    process.env.SFU_SCALE_DOWN_ROUTERS = '0';
     process.env.SFU_MAX_WORKERS      = '2';
     process.env.SFU_MIN_WORKERS      = '1';
 
@@ -150,8 +152,48 @@ describe('dinamik ölçekleme — scale-up', () => {
 
     stopMon!(); reset!();
     delete process.env.SFU_SCALE_UP_ROUTERS;
+    delete process.env.SFU_SCALE_DOWN_ROUTERS;
     delete process.env.SFU_MAX_WORKERS;
     delete process.env.SFU_MIN_WORKERS;
+  });
+
+  it('yavaş worker oluşturma sırasında interval tickleri üst üste scale-up başlatmaz', async () => {
+    process.env.SFU_SCALE_UP_ROUTERS = '1';
+    process.env.SFU_SCALE_DOWN_ROUTERS = '0';
+    process.env.SFU_MIN_WORKERS = '1';
+    process.env.SFU_MAX_WORKERS = '3';
+    process.env.SFU_SCALE_CHECK_MS = '1000';
+
+    let mod!: typeof import('../socket/handlers/mediasoup/workers');
+    await jest.isolateModulesAsync(async () => { mod = await import('../socket/handlers/mediasoup/workers'); });
+    await mod.initMediasoup();
+    mod.incrementWorkerLoad(0);
+    mod.incrementWorkerLoad(0);
+
+    let finishScaleUp!: (worker: ReturnType<typeof makeWorkerStub>) => void;
+    mediasoupStub.createWorker.mockImplementationOnce(() =>
+      new Promise(resolve => { finishScaleUp = resolve; })
+    );
+    const callsBefore = mediasoupStub.createWorker.mock.calls.length;
+
+    jest.advanceTimersByTime(1_000);
+    await Promise.resolve();
+    jest.advanceTimersByTime(3_000);
+    await Promise.resolve();
+    expect(mediasoupStub.createWorker.mock.calls.length).toBe(callsBefore + 1);
+
+    finishScaleUp(makeWorkerStub('slow-scale-up'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mod.sfuWorkers).toHaveLength(2);
+
+    mod.stopScalingMonitor();
+    mod._resetWorkersForTest();
+    delete process.env.SFU_SCALE_UP_ROUTERS;
+    delete process.env.SFU_SCALE_DOWN_ROUTERS;
+    delete process.env.SFU_MIN_WORKERS;
+    delete process.env.SFU_MAX_WORKERS;
+    delete process.env.SFU_SCALE_CHECK_MS;
   });
 });
 
@@ -198,7 +240,7 @@ describe('dinamik ölçekleme — scale-down', () => {
 
   it('MIN_WORKERS sınırında scale-down yapılmaz', async () => {
     process.env.SFU_SCALE_UP_ROUTERS   = '100';
-    process.env.SFU_SCALE_DOWN_ROUTERS = '100'; // her zaman true
+    process.env.SFU_SCALE_DOWN_ROUTERS = '99'; // yük 0 için true; up eşiğinden düşük
     process.env.SFU_MIN_WORKERS        = '1';
 
     let init: typeof initMediasoup;
@@ -273,8 +315,10 @@ describe('worker crash recovery', () => {
     expect(sfuWorkers.length).toBe(1);
 
     // Died callback'i al
-    const onCall = (sfuWorkers[0] as { on: jest.Mock }).on.mock.calls.find(
-      (c: string[]) => c[0] === 'died'
+    // `on` URUN tipinde de vardir; `jest.mocked` imzayi KORUYARAK ikiz
+    // yuzeyini acar — `as { on: jest.Mock }` tipi tamamen kaybettiriyordu.
+    const onCall = jest.mocked(present(sfuWorkers[0], 'worker').on).mock.calls.find(
+      (c) => c[0] === 'died'
     );
     expect(onCall).toBeDefined();
     const diedCallback = onCall![1] as (err: Error) => void;

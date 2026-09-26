@@ -13,5 +13,11 @@
     "warnUser": true,
     "logChannelName": "mod-log"
   },
-  "main": "index.ts"
+  "main": "index.ts",
+  "permissions": [
+    "messages:read",
+    "channels:read",
+    "messages:send",
+    "messages:delete"
+  ]
 }

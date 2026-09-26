@@ -6,7 +6,7 @@ on:
       tag:
         description: 'Release tag to build'
         required: true
-        default: 'v1.122.0'
+        default: 'v1.125.0'
 
 permissions:
   contents: write
@@ -23,6 +23,16 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag }}
+
+      - name: Validate release tag against package version
+        shell: bash
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+          if [ "${{ inputs.tag }}" != "${EXPECTED_TAG}" ]; then
+            echo "Release tag/version mismatch: input=${{ inputs.tag }} package=${EXPECTED_TAG}" >&2
+            exit 1
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -51,9 +61,11 @@ jobs:
           const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
           pkg.build = pkg.build || {};
           pkg.build.win = pkg.build.win || {};
-          delete pkg.build.win.signtoolOptions;
           pkg.build.win.signExecutable = false;
           pkg.build.win.verifyUpdateCodeSignature = false;
+          // Explicit unsigned update channel: electron/updatePolicy.ts refuses updates
+          // from an unsigned feed unless the build says so (Final21 Phase 12).
+          pkg.bridgeDesktop = { ...(pkg.bridgeDesktop || {}), allowUnsignedUpdates: true };
           pkg.build.publish = {
             provider: 'github',
             owner: 'fatihcayiroglu',

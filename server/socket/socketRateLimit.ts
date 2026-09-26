@@ -5,51 +5,87 @@
 //             IP rate limiting (ipRateLimit.ts) ile tutarlı pattern.
 
 import logger from '../lib/logger';
-import { cache as _rateCache } from '../lib/redisAdapter';
+import { cache as _rateCache, isRedisAvailable } from '../lib/redisAdapter';
+import { envSafeInt } from '../lib/envNumbers';
+const REDIS_CONFIGURED = Boolean(process.env.REDIS_URL);
 
 // ── KULLANICI BAZLI SOCKET RATE LIMITER ────────────────────────
 // Redis varsa: tüm instance'lar aynı sayacı görür (cluster-safe)
 // Redis yoksa: in-memory fallback (tek-instance için yeterli)
 export const _socketRateStore = new Map<string, number[]>(); // in-memory fallback
 
+/**
+ * Soket olay hız sınırları.
+ *
+ * ── NEDEN ENV İLE AYARLANABİLİR ───────────────────────────────────────────
+ * Bu değerler daha önce SABİT sayılardı. Projedeki DİĞER TÜM hız sınırları
+ * (`middleware/rateLimit.ts`) zaten `RL_*` ortam değişkenleriyle
+ * ayarlanabiliyordu; burası tutarsızdı ve test ortamında ölçüm yapmayı
+ * imkânsız kılıyordu.
+ *
+ * VARSAYILANLAR DEĞİŞMEDİ. Aşağıdaki her sayı, öncesindeki sabit değerin
+ * BİREBİR aynısıdır. Ortam değişkeni tanımlanmazsa üretim davranışı
+ * bit düzeyinde AYNIDIR. Bu bir gevşetme değil, yalnızca DIŞARIDAN
+ * AYARLANABİLİRLİK eklemesidir.
+ *
+ * ── `'*'` NEDEN ÖNEMLİ (ÖLÇÜLDÜ) ──────────────────────────────────────────
+ * `'*'` kullanıcı BAŞINA dakikada 200 olaydır. WebRTC sinyalleşmesi olay
+ * yoğundur (ICE adayları, offer/answer, yeniden pazarlık). Ölçüm:
+ *
+ *   Aynı kimlikle 3 ekran paylaşımı turu  → her biri 10.6 sn, SAĞLIKLI
+ *   4. tur (aynı kimlik)                  → 70.4 sn, ses yolu 1/2 EKSİK
+ *   5. tur (aynı kimlik)                  → hiç eşleşme yok (pcStates=NO_PC)
+ *   4-5. tur (BAŞKA kimlik)               → yine 10.6 sn, SAĞLIKLI
+ *
+ * Tek değişken kullanıcı kimliğiydi: tarayıcı, sunucu, kanal ve kod aynıydı.
+ * Sınır aşıldığında olaylar SESSİZCE düşürülür; belirti "ses kurulmuyor"
+ * gibi görünür ve HTTP tarafında hiçbir hata görünmez.
+ *
+ * ÜRÜN NOTU: kamerayı açıp kapatan, ekran paylaşımını başlatıp durduran
+ * GERÇEK bir kullanıcı da yoğun bir aramada bu bütçeye yaklaşabilir.
+ * Üretim varsayılanı burada BİLİNÇLİ olarak değiştirilmemiştir; bu
+ * raporlanan bir bulgudur.
+ */
+const _n = (name: string, d: number): number => envSafeInt(name, d);
+
 export const SOCKET_RL: Record<string, { max: number; windowMs: number }> = {
-  'message:send':  { max: 20,  windowMs: 10_000  },  // 20 mesaj / 10 sn
-  'dm:send':       { max: 10,  windowMs: 10_000  },  // 10 DM / 10 sn
-  'gdm:send':      { max: 10,  windowMs: 10_000  },
-  'typing:start':  { max: 30,  windowMs: 5_000   },
-  'voice:signal':  { max: 60,  windowMs: 10_000  },
-  'channel:join':  { max: 20,  windowMs: 10_000  },
-  '*':             { max: 200, windowMs: 60_000  },   // global fallback / kullanıcı / dk
+  'message:send':  { max: _n('RL_SOCK_MSG_MAX', 20),  windowMs: _n('RL_SOCK_MSG_WIN', 10_000) },
+  'dm:send':       { max: _n('RL_SOCK_DM_MAX', 10),  windowMs: _n('RL_SOCK_DM_WIN', 10_000) },
+  'gdm:send':      { max: _n('RL_SOCK_GDM_MAX', 10),  windowMs: _n('RL_SOCK_GDM_WIN', 10_000) },
+  'typing:start':  { max: _n('RL_SOCK_TYPING_MAX', 30),  windowMs: _n('RL_SOCK_TYPING_WIN', 5_000) },
+  'voice:signal':  { max: _n('RL_SOCK_SIGNAL_MAX', 60),  windowMs: _n('RL_SOCK_SIGNAL_WIN', 10_000) },
+  'soundboard:play': { max: _n('RL_SOCK_SOUNDBOARD_MAX', 6), windowMs: _n('RL_SOCK_SOUNDBOARD_WIN', 5_000) },
+  'channel:join':  { max: _n('RL_SOCK_JOIN_MAX', 20),  windowMs: _n('RL_SOCK_JOIN_WIN', 10_000) },
+  // Watch recomputes visibility for a whole server; one per server switch/reconnect is normal.
+  'channels:watch': { max: _n('RL_SOCK_WATCH_MAX', 10), windowMs: _n('RL_SOCK_WATCH_WIN', 10_000) },
+  '*':             { max: _n('RL_SOCK_EVENT_MAX', 200),  windowMs: _n('RL_SOCK_EVENT_WIN', 60_000) },
 };
 
-// ── Redis store yardımcıları ──────────────────────────────────
-const REDIS_KEY_PREFIX = 'socketrl:';
-// Max TTL: en uzun pencere + buffer (120 sn)
-const REDIS_TTL_SEC = 120;
-
-async function _storeGet(key: string): Promise<number[]> {
-  if (_rateCache) {
-    try {
-      const val = await _rateCache.get<string>(`${REDIS_KEY_PREFIX}${key}`);
-      return val ? (JSON.parse(val) as number[]) : [];
-    } catch { /* fallback */ }
+// ── Atomic Redis / in-memory sliding-window owner ───────────────────────────
+async function _windowCount(key: string, windowMs: number, now: number): Promise<number> {
+  if (REDIS_CONFIGURED && !isRedisAvailable()) {
+    logger.warn({ event: 'socket_ratelimit.redis.unavailable' },
+      '[RateLimit] Socket Redis authority unavailable; rejecting event.');
+    return Number.MAX_SAFE_INTEGER;
   }
-  return _socketRateStore.get(key) ?? [];
-}
-
-async function _storeSet(key: string, hits: number[]): Promise<void> {
-  if (_rateCache) {
-    try {
-      await _rateCache.set(`${REDIS_KEY_PREFIX}${key}`, JSON.stringify(hits), REDIS_TTL_SEC);
-      return;
-    } catch { /* fallback */ }
+  try {
+    const count = await _rateCache.slidingWindowCount(`socketrl:${key}`, windowMs, now);
+    if (count !== null) return count;
+  } catch (err) {
+    logger.warn({ event: 'socket_ratelimit.redis.error', err: err instanceof Error ? err.message : String(err) },
+      REDIS_CONFIGURED ? '[RateLimit] Socket Redis window failed; rejecting event.' : '[RateLimit] Socket Redis window failed; using process-local quota');
+    if (REDIS_CONFIGURED) return Number.MAX_SAFE_INTEGER;
   }
+  const stored = _socketRateStore.get(key) ?? [];
+  const hits = stored.filter(t => now - t < windowMs);
+  hits.push(now);
   _socketRateStore.set(key, hits);
+  return hits.length;
 }
 
 // ── In-memory fallback temizleyici (Redis TTL'i otomatik yönetir) ──
 setInterval(() => {
-  if (_rateCache) return; // Redis aktifse in-memory store kullanılmaz
+  if (isRedisAvailable()) return; // Redis aktifse in-memory store kullanılmaz
   const now = Date.now();
   for (const [k, hits] of _socketRateStore) {
     const fresh = hits.filter(t => now - t < 120_000);
@@ -65,11 +101,8 @@ export async function socketRateCheck(userId: string, event: string): Promise<bo
   const cfg = SOCKET_RL[event] ?? SOCKET_RL['*']!;
   const key = `${userId}:${event}`;
   const now = Date.now();
-  const stored = await _storeGet(key);
-  const hits = stored.filter(t => now - t < cfg.windowMs);
-  hits.push(now);
-  await _storeSet(key, hits);
-  return hits.length <= cfg.max;
+  const count = await _windowCount(key, cfg.windowMs, now);
+  return count <= cfg.max;
 }
 
 /** Global kullanıcı başına genel hız limiti */
@@ -94,6 +127,13 @@ export function createRateLimitedSocket(
           : (target as unknown as Record<string | symbol, unknown>)[prop];
       }
       return function(event: string, handler: (...args: unknown[]) => void) {
+        // Lifecycle cleanup is mandatory correctness work, not user traffic.
+        // Throttling it leaves ghost voice/stage/SFU/activity membership after a
+        // busy client disconnects.
+        if (event === 'disconnect' || event === 'disconnecting' || event === 'error') {
+          target.on(event, handler);
+          return;
+        }
         target.on(event, async (...args: unknown[]) => {
           // Event bazlı limit
           if (SOCKET_RL[event] && !(await socketRateCheck(userId, event))) {

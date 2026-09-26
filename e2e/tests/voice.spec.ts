@@ -6,21 +6,23 @@
 //   Socket: beklenmedik disconnect → oda temizliği
 //   UI:  ses kanalı UI elementleri, mute/deafen butonları
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 import { BridgePage, getTokens, createTestServer } from '../helpers/bridge';
 import { openSocket, waitForEvent, closeSockets } from '../helpers/socket';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 test.describe('Ses Kanalı Akışları', () => {
   let tokens: { alice: string; bob: string };
+  let testServerName = '';
   let testServerId:   string;
   let voiceChannelId: string;
 
   test.beforeAll(async ({ request }) => {
     tokens = getTokens();
 
-    const server = await createTestServer(request, tokens.alice, `Voice E2E ${Date.now()}`);
+    testServerName = `Voice E2E ${Date.now()}`;
+    const server = await createTestServer(request, tokens.alice, testServerName);
     testServerId = server?._id || server?.id;
     if (!testServerId) return;
 
@@ -197,55 +199,33 @@ test.describe('Ses Kanalı Akışları', () => {
 
   // ── UI Testleri ──────────────────────────────────────────
 
-  test('UI: ses kanalı listede görünür', async ({ page }) => {
-    test.skip(!testServerId, 'Ses testi için sunucu fixture gerekli');
-    const bp = new BridgePage(page);
-    await bp.loginViaToken(tokens.alice);
-    await bp.goto('/');
-    await page.waitForTimeout(1500);
-    const serverIcon = page.locator(`[data-server-id="${testServerId}"], [data-id="${testServerId}"]`).first();
-    if (await serverIcon.count() > 0) {
-      await serverIcon.click();
-      await page.waitForTimeout(800);
-      const voiceIcon = page.locator('.channel-voice, [data-type="voice"], .voice-channel, [aria-label*="ses"], [aria-label*="voice"]').first();
-      if (await voiceIcon.count() > 0) await expect(voiceIcon).toBeVisible();
-    }
-    await expect(page.locator('body')).toBeVisible();
+  // SEÇİCİLER GÜNCELLENDİ — sunucu düğmeleri erişilebilir ADLA render edilir
+  // (button.server-icon + aria-label="<sunucu adı>"), '[data-server-id]' YOK.
+  // Kanal listesi kökü #channel-list'tir.
+
+  test('UI: kanal listesi kabukta render edilir', async ({ page }) => {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await page.locator('#app').waitFor({ state: 'visible', timeout: 20_000 });
+    await expect(page.locator('#channel-list')).toBeVisible({ timeout: 15_000 });
   });
 
-  test('UI: ses kanalına tıklanınca voice UI açılır', async ({ page }) => {
+  test('UI: ses kanalı oluşturulduğunda kanal listesinde görünür', async ({ page, request }) => {
     test.skip(!testServerId, 'Ses testi için sunucu fixture gerekli');
-    const bp = new BridgePage(page);
-    await bp.loginViaToken(tokens.alice);
-    await bp.goto('/');
-    await page.waitForTimeout(1500);
-    const serverIcon = page.locator(`[data-server-id="${testServerId}"], [data-id="${testServerId}"]`).first();
-    if (await serverIcon.count() > 0) {
-      await serverIcon.click();
-      await page.waitForTimeout(800);
-      const voiceChannel = page.locator('.channel-voice, [data-type="voice"]').first();
-      if (await voiceChannel.count() > 0) {
-        await voiceChannel.click();
-        await page.waitForTimeout(1000);
-        const muteBtn = page.locator('#mute-btn, .mute-btn, [aria-label*="Mute"], [aria-label*="mute"], [data-testid="mute"]').first();
-        if (await muteBtn.count() > 0) await expect(muteBtn).toBeVisible();
-      }
-    }
-    await expect(page.locator('body')).toBeVisible();
-  });
 
-  test('UI: mute butonu tıklanabilir', async ({ page }) => {
-    test.skip(!testServerId, 'Ses testi için sunucu fixture gerekli');
-    const bp = new BridgePage(page);
-    await bp.loginViaToken(tokens.alice);
-    await bp.goto('/');
-    await page.waitForTimeout(1500);
-    const muteBtn = page.locator('#mute-btn, .mute-btn, [aria-label*="Mute"], [data-testid="mute-toggle"]').first();
-    if (await muteBtn.count() > 0) {
-      await expect(muteBtn).toBeVisible();
-      await muteBtn.click({ timeout: 2000 }).catch(() => {});
-      await page.waitForTimeout(300);
-      await expect(page.locator('body')).toBeVisible();
-    }
+    const voiceName = `e2e-ses-${Date.now()}`;
+    const { createTestChannel } = await import('../helpers/bridge');
+    const ch = await createTestChannel(request, tokens.alice, testServerId, voiceName, 'voice');
+    expect(ch, 'ses kanalı oluşturulamadı').toBeTruthy();
+
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await page.locator('#app').waitFor({ state: 'visible', timeout: 20_000 });
+
+    // Sunucu düğmeleri ERİŞİLEBİLİR ADLA render edilir (aria-label = sunucu adı);
+    // '[data-server-id]' diye bir kanca YOKTUR.
+    const serverBtn = page.getByRole('button', { name: testServerName, exact: true });
+    await serverBtn.waitFor({ state: 'visible', timeout: 15_000 });
+    await serverBtn.click();
+
+    await expect(page.locator('#channel-list')).toContainText(voiceName, { timeout: 15_000 });
   });
 });

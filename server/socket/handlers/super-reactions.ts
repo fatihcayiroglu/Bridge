@@ -1,26 +1,43 @@
 // server/socket/handlers/super-reactions.ts
 // Sprint 82: Super Reactions socket handler
 
+import type { HandlerSocket, HandlerServer } from '../handler-contracts';
 import { validateSocketPayload, socketSchemas } from '../../middleware/validate';
 import logger from '../../lib/logger';
 import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
-import { Messages, Reactions } from '../../db/repositories';
-import type { Socket, Server as IOServer } from 'socket.io';
+import { Messages } from '../../db/repositories';
+import { isolateSocketHandler } from '../handlerIsolation';
+import { cache, isRedisAvailable } from '../../lib/redisAdapter';
+
 
 // ── Rate limit (per user) ─────────────────────────────────────────────────────
 
 const _superReactCooldown = new Map<string, number>(); // `${userId}:${messageId}` → lastTimestamp
 const COOLDOWN_MS = 5_000; // bir mesaja 5 saniyede bir super react
+const COOLDOWN_CACHE_MAX = 100_000;
+
+function pruneSuperReactionCooldown(now = Date.now()): void {
+  for (const [key, usedAt] of _superReactCooldown) {
+    if (now - usedAt >= COOLDOWN_MS) _superReactCooldown.delete(key);
+  }
+  while (_superReactCooldown.size >= COOLDOWN_CACHE_MAX) {
+    const oldest = _superReactCooldown.keys().next().value as string | undefined;
+    if (!oldest) break;
+    _superReactCooldown.delete(oldest);
+  }
+}
+
+setInterval(pruneSuperReactionCooldown, 30_000).unref();
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 export function registerSuperReactionHandlers(
-  socket: Socket,
-  io:     IOServer,
+  socket: HandlerSocket,
+  io:     HandlerServer,
   userId: string,
 ): void {
 
-  socket.on('super_reaction:add', async (payload: {
+  socket.on('super_reaction:add', isolateSocketHandler(socket, 'super_reaction:add', async (payload: {
     messageId: string;
     channelId: string;
     emoji:     string;
@@ -36,10 +53,21 @@ export function registerSuperReactionHandlers(
         return;
       }
 
-      // Cooldown
-      const cooldownKey = `${userId}:${messageId}`;
-      const lastUsed    = _superReactCooldown.get(cooldownKey) ?? 0;
-      if (Date.now() - lastUsed < COOLDOWN_MS) {
+      // Cooldown — Redis claim is atomic across Socket.IO nodes. When Redis
+      // is configured for a cluster, losing that authority must not silently
+      // multiply the quota by the number of workers.
+      const cooldownKey = `super-reaction:${userId}:${messageId}`;
+      let remainingMs: number;
+      if (process.env.REDIS_URL && !isRedisAvailable()) {
+        throw new Error('Redis super-reaction cooldown coordination unavailable');
+      }
+      if (typeof cache.claimCooldown === 'function') {
+        remainingMs = await cache.claimCooldown(cooldownKey, COOLDOWN_MS, COOLDOWN_MS + 5_000);
+      } else {
+        const lastUsed = _superReactCooldown.get(cooldownKey) ?? 0;
+        remainingMs = Math.max(0, COOLDOWN_MS - (Date.now() - lastUsed));
+      }
+      if (remainingMs > 0) {
         socket.emit('super_reaction:error', { message: 'Çok hızlısınız. Biraz bekleyin.' });
         return;
       }
@@ -53,30 +81,28 @@ export function registerSuperReactionHandlers(
 
       // İzin kontrolü
       const serverId = msg.serverId as string | undefined;
-      if (serverId) {
-        const perms = await resolvePermissions(userId, serverId, channelId);
-        if (!hasPermission(perms, PERMS.ADD_REACTIONS)) {
-          socket.emit('super_reaction:error', { message: 'Reaksiyon ekleme izniniz yok.' });
-          return;
-        }
+      if (!serverId) {
+        socket.emit('super_reaction:error', { message: 'Mesaj bulunamadı.' });
+        return;
+      }
+      const perms = await resolvePermissions(userId, serverId, channelId);
+      if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.ADD_REACTIONS)) {
+        socket.emit('super_reaction:error', { message: 'Reaksiyon ekleme izniniz yok.' });
+        return;
       }
 
-      // Cooldown güncelle
-      _superReactCooldown.set(cooldownKey, Date.now());
+      // Compatibility-only single-process fallback for legacy adapters.
+      if (typeof cache.claimCooldown !== 'function') {
+        if (_superReactCooldown.size >= COOLDOWN_CACHE_MAX) pruneSuperReactionCooldown();
+        _superReactCooldown.set(cooldownKey, Date.now());
+      }
 
-      // Normal reaksiyon sayısını artır (reactions tablosunu yeniden kullan)
-      let reaction = await Reactions.findOne({ messageId, emoji, type: 'super' });
-      if (reaction) {
-        reaction.count = (reaction.count ?? 1) + 1;
-        await Reactions.update({ _id: reaction._id }, { $set: { count: reaction.count } });
-      } else {
-        reaction = await Reactions.create({
-          messageId,
-          channelId,
-          emoji,
-          type:  'super',
-          count: 1,
-        });
+      // Persist on the canonical message aggregate. This is a single-statement
+      // PostgreSQL increment, so concurrent bursts cannot lose counts.
+      const count = await Messages.incrementSuperReactionAtomic(messageId, emoji);
+      if (count === null) {
+        socket.emit('super_reaction:error', { message: 'Mesaj bulunamadı.' });
+        return;
       }
 
       const broadcastData = {
@@ -84,7 +110,7 @@ export function registerSuperReactionHandlers(
         channelId,
         emoji,
         userId,
-        count:      reaction.count ?? 1,
+        count,
         burstColor: _getBurstColor(emoji),
       };
 
@@ -92,13 +118,13 @@ export function registerSuperReactionHandlers(
       io.to(`channel:${channelId}`).emit('super_reaction:received', broadcastData);
 
       logger.info(
-        { event: 'super_reaction.added', messageId, emoji, userId, count: reaction.count },
+        { event: 'super_reaction.added', messageId, emoji, userId, count },
         'Super reaction added',
       );
     } catch (err) {
       logger.error({ event: 'super_reaction.error', err }, 'super_reaction:add error');
     }
-  });
+  }));
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

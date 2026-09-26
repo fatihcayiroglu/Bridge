@@ -3,8 +3,8 @@
 //   - POST /search  → res.body.matches  (was: results)
 //   - GET  /digest  → res.body.channelStats  (was: activeChannels)
 //   - GET  /engagement → res.body.periods + trend  (was: score)
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
@@ -23,10 +23,14 @@ function buildApp() {
   app.use('/api/semantic', authMiddleware, semanticRouter);
   return app;
 }
-function tok(uid) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 describe('Semantic Routes', () => {
-  let app, userId, serverId, channelId, token;
+  let app: express.Express;
+  let userId: string;
+  let serverId: string;
+  let channelId: string;
+  let token: string;
 
   beforeEach(async () => {
     db._reset?.();
@@ -99,13 +103,43 @@ describe('Semantic Routes', () => {
       expect(res.body).toHaveProperty('days');
     });
 
-    it('limits results to reasonable count', async () => {
+    it('honors the requested result limit', async () => {
       const res = await request(app)
         .post('/api/semantic/search')
         .set('Authorization', `Bearer ${token}`)
         .send({ query: 'decision', serverId, limit: 3 });
       expect(res.status).toBe(200);
-      expect(res.body.matches.length).toBeLessThanOrEqual(10);
+      expect(res.body.limit).toBe(3);
+      expect(res.body.matches.length).toBeLessThanOrEqual(3);
+    });
+
+    it.each([
+      ['negative limit', { limit: -1 }],
+      ['fractional limit', { limit: 1.5 }],
+      ['string limit', { limit: '3' }],
+      ['unsafe limit', { limit: Number.MAX_SAFE_INTEGER + 1 }],
+      ['zero days', { days: 0 }],
+      ['fractional days', { days: 1.2 }],
+      ['string days', { days: '7' }],
+    ])('rejects malformed numeric body input: %s', async (_label, patch) => {
+      const res = await request(app)
+        .post('/api/semantic/search')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ query: 'decision', serverId, ...patch });
+      expect(res.status).toBe(400);
+    });
+
+    it('keeps result limit in the semantic cache key', async () => {
+      const first = await request(app).post('/api/semantic/search')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ query: 'decision', serverId, limit: 8 });
+      const second = await request(app).post('/api/semantic/search')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ query: 'decision', serverId, limit: 2 });
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(second.body.limit).toBe(2);
+      expect(second.body.matches.length).toBeLessThanOrEqual(2);
     });
 
     it('total matches matches.length', async () => {
@@ -171,6 +205,13 @@ describe('Semantic Routes', () => {
       expect(res.status).toBe(200);
       expect(res.body.days).toBe(14);
     });
+
+    it.each(['-1', '1.5', '7x', '9007199254740992'])('rejects malformed digest days=%s', async (days) => {
+      const res = await request(app)
+        .get(`/api/semantic/digest/${serverId}?days=${days}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(400);
+    });
   });
 
   describe('GET /api/semantic/engagement/:serverId', () => {
@@ -210,7 +251,7 @@ describe('Semantic Routes', () => {
         .get(`/api/semantic/engagement/${serverId}`)
         .set('Authorization', `Bearer ${token}`);
       expect(res.status).toBe(200);
-      res.body.periods.forEach(p => {
+      res.body.periods.forEach((p: Record<string, unknown>) => {
         expect(p).toHaveProperty('days');
         expect(p).toHaveProperty('messages');
         expect(p).toHaveProperty('activeUsers');

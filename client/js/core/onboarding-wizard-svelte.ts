@@ -1,9 +1,8 @@
 // client/js/core/onboarding-wizard-svelte.ts
 // Sprint 116 — OnboardingWizard mount shim (ADR-0008 Faz 3)
 // Adım adım onboarding sihirbazı
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import OnboardingWizard from './OnboardingWizard.svelte';
-import { BridgeRegistry } from './bridge-registry.ts';
 import { createLogger } from './logger.ts';
 const log = createLogger('OnboardingWizardShim');
 
@@ -22,7 +21,12 @@ export function mountOnboardingWizard(target?: HTMLElement): void {
 }
 
 export function unmountOnboardingWizard(): void {
-  if (_instance) { _instance = null; }
+  // Faz 8.1: önceden yalnızca referans null'lanıyordu — bileşen DOM'da ve
+  // dinleyicileri bağlı kalıyordu (sızıntı). Gerçekten unmount edilir.
+  if (!_instance) return;
+  const inst = _instance;
+  _instance = null;
+  void unmount(inst);
 }
 
 if (document.readyState === 'loading') {
@@ -32,8 +36,15 @@ if (document.readyState === 'loading') {
 }
 document.addEventListener('bridge:socket-ready', () => mountOnboardingWizard(), { once: true });
 
-// Legacy compatibility export used by app.ts.
+/**
+ * Geriye dönük uyumluluk ihracı.
+ *
+ * Faz 8.1: burada `bridge_onboarding_completed` anahtarı okunuyordu; bileşenin
+ * gerçekte kullandığı anahtar `bridge_onboarding_v3:<userId>` olduğu için bu
+ * kontrol hiçbir zaman doğru sonuç vermiyordu. Uygunluk kararı tek yerde —
+ * OnboardingWizard.svelte içinde (oturum + kullanıcı bazlı) verilir; shim
+ * yalnızca mount eder.
+ */
 export function maybeShowOnboarding(): void {
-  const shown = localStorage.getItem('bridge_onboarding_completed');
-  if (!shown) mountOnboardingWizard();
+  mountOnboardingWizard();
 }

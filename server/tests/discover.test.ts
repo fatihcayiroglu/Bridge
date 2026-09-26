@@ -1,6 +1,6 @@
 // server/tests/discover.test.ts
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
@@ -19,10 +19,12 @@ function buildApp() {
   app.use('/api/discover', authMiddleware, discoverRouter);
   return app;
 }
-function tok(uid) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 describe('Discover Routes', () => {
-  let app, userId, token;
+  let app: express.Express;
+  let userId: string;
+  let token: string;
 
   beforeEach(async () => {
     db._reset?.();
@@ -63,7 +65,7 @@ describe('Discover Routes', () => {
         .get('/api/discover')
         .set('Authorization', `Bearer ${token}`);
       expect(res.status).toBe(200);
-      const names = res.body.map(s => s.name);
+      const names = res.body.map((s: Record<string, unknown>) => s.name);
       expect(names).not.toContain('Private Server');
     });
 
@@ -111,6 +113,36 @@ describe('Discover Routes', () => {
         .post(`/api/discover/${uuidv4()}/join`)
         .set('Authorization', `Bearer ${token}`);
       expect([404, 400]).toContain(res.status);
+    });
+
+    it('legacy discover join cannot bypass server MFA', async () => {
+      const target = (await db.servers.find({ discoverable: 1 }))[0];
+      if (!target) return;
+      await db.servers.update({ _id: target._id }, { $set: { mfaLevel: 2 } });
+
+      const res = await request(app)
+        .post(`/api/discover/${target._id}/join`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('MFA_REQUIRED');
+      expect(await db.members.find({ userId, serverId: target._id })).toHaveLength(0);
+    });
+
+    it('legacy discover join cannot bypass a ban row', async () => {
+      const target = (await db.servers.find({ discoverable: 1 }))[0];
+      if (!target) return;
+      await db.members.insert({ userId, serverId: target._id, roles: [], banned: true, joinedAt: Date.now() });
+
+      const res = await request(app)
+        .post(`/api/discover/${target._id}/join`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('BANNED');
+      const rows = await db.members.find({ userId, serverId: target._id });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].banned).toBe(true);
     });
   });
 

@@ -28,9 +28,9 @@ Sprint 108'de `AP_ENCRYPTION_KEY` için `process.env` bağımlılığı şu soru
 | HashiCorp Vault | `hashicorp` | Kubernetes, production |
 | AWS Secrets Manager | `aws` | AWS deployment |
 
-### Fault Tolerance
+### Fault Tolerance ve authority boundary
 
-Vault erişimi başarısız olursa **`process.env` fallback** devreye girer. Bu, Vault geçici olarak erişilemez durumda bile uygulamanın çalışmaya devam etmesini sağlar; log uyarısı gönderilir.
+Production'da external backend (`hashicorp`/`aws`) seçildiğinde managed secret'lar için **fail-closed** davranılır. `process.env` fallback yalnız operatör açıkça `VAULT_ALLOW_ENV_FALLBACK=true` verdiğinde devreye girer. Development/test ortamında yerel çalışma kolaylığı için fallback varsayılan olarak açıktır.
 
 ### Cache
 
@@ -38,7 +38,9 @@ Vault'a her istek için ağ çağrısı yapılmaz. 5 dakika TTL in-memory cache 
 
 ### Production Güvenlik
 
-`validateRequiredSecrets(['AP_ENCRYPTION_KEY', 'JWT_SECRET', ...])` uygulama başlangıcında çağrılır. Eksik kritik sır varsa `NODE_ENV=production`'da `process.exit(1)` tetiklenir.
+`server/index.ts`, runtime graph'ini import etmeden önce `hydrateRuntimeSecrets()` çağırır. Böylece `JWT_SECRET`, `REFRESH_SECRET`, `DATABASE_URL`, `REDIS_URL`, `AP_ENCRYPTION_KEY`, `FEDERATION_SECRET` ve `METRICS_SECRET` varsayılan olarak external authority'den `process.env`'e hydrate edilir; ardından `lib/env.ts` normal production doğrulamasını fail-fast uygular. Liste `VAULT_MANAGED_SECRETS` ile açıkça değiştirilebilir.
+
+Bu sıra kritiktir: runtime modülleri sırları import-time'da okuyabildiği için Vault hydration **env doğrulamasından ve production runtime importundan önce** tamamlanır. External backend'de bulunmayan managed bir sır, fallback açık değilse stale local env değerini kullanamaz.
 
 ---
 

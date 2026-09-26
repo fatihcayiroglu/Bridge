@@ -9,10 +9,13 @@
 //   stage:video-update    → bir peer'ın video state'i değiştiğinde broadcast
 //   stage:video-layout    → istemcinin preferred layout'u (spotlight / grid)
 
+import type { HandlerSocket, HandlerServer } from '../handler-contracts';
 import { validateSocketPayload, socketSchemas } from '../../middleware/validate';
-import type { Socket, Server as IOServer } from 'socket.io';
 import { sfuPeers } from './mediasoup/rooms';
 import logger from '../../lib/logger';
+import { canManageStage, isStageParticipant, isStageSpeaker } from './stage';
+import { isolateSocketHandler } from '../handlerIsolation';
+
 
 // ── Tipler ────────────────────────────────────────────────────────────────────
 
@@ -81,18 +84,23 @@ function readSfuVideoState(socketId: string): { hasCamera: boolean; hasScreen: b
 // ── Handler kaydı ─────────────────────────────────────────────────────────────
 
 export function registerVideoGridHandlers(
-  socket: Socket,
-  io:     IOServer,
+  socket: HandlerSocket,
+  io:     HandlerServer,
   user:   { _id: string; displayName: string; avatarColor: string },
 ): void {
 
-  socket.on('stage:video-join', (payload: { channelId: string }) => {
+  socket.on('stage:video-join', isolateSocketHandler(socket, 'stage:video-join', async (payload: { channelId: string }) => {
     try {
       if (!validateSocketPayload(payload, socketSchemas.stageVideoChannelId).valid) return;
       const { channelId } = payload;
       if (!channelId) return;
+      const sfuPeer = sfuPeers.get(socket.id);
+      if (!sfuPeer || sfuPeer.channelId !== channelId || !await isStageParticipant(channelId, user._id, socket.id)) {
+        socket.emit('stage:video-error', { message: 'Aktif stage/medya odasıyla video grid eşleşmiyor.' });
+        return;
+      }
       const sfuState = readSfuVideoState(socket.id);
-      const room = getOrCreateGridRoom(channelId);
+      const room = getOrCreateGridRoom(sfuPeer.channelId);
       const peer: VideoGridPeer = {
         socketId:    socket.id,
         userId:      user._id,
@@ -113,41 +121,66 @@ export function registerVideoGridHandlers(
     } catch (err) {
       logger.error({ event: 'video_grid.join.error', err }, 'stage:video-join hatası');
     }
-  });
+  }));
 
-  socket.on('stage:video-leave', (payload: { channelId: string }) => {
+  socket.on('stage:video-leave', isolateSocketHandler(socket, 'stage:video-leave', async (payload: { channelId: string }) => {
     try {
       if (!validateSocketPayload(payload, socketSchemas.stageVideoChannelId).valid) return;
       const { channelId } = payload;
       if (!channelId) return;
+
+      // Leaving the presentation grid is owned by the Socket.IO room + grid
+      // membership itself, not by the mediasoup peer index. `sfu:leave` may
+      // already have removed that index by the time this handler runs. The old
+      // guard therefore stranded sockets in `video-grid:<channelId>`, letting a
+      // user that had left continue receiving later grid/layout metadata.
       _removePeerFromGrid(socket.id, channelId, io);
+      await socket.leave(`video-grid:${channelId}`);
     } catch (err) {
       logger.error({ event: 'video_grid.leave.error', err }, 'stage:video-leave hatası');
     }
-  });
+  }));
 
-  socket.on('stage:video-layout', ({
-    channelId, layout, spotlightId,
-  }: { channelId: string; layout: 'grid' | 'spotlight'; spotlightId?: string }) => {
+  // The canonical WebRTC client leaves via `sfu:leave`; it does not need to
+  // remember to send a second feature-specific teardown event. Register an
+  // independent cleanup listener so event-handler ordering cannot leave stale
+  // grid membership after mediasoup has deleted `sfuPeers`.
+  socket.on('sfu:leave', isolateSocketHandler(socket, 'stage-video-grid:sfu-leave', async (payload: { channelId?: string }) => {
     try {
-      if (!channelId) return;
-      const room = videoGridRooms.get(channelId);
-      if (!room) return;
-      const peers = [...room.peers.values()];
-      const isHost = peers.length === 0 || peers[0].userId === user._id;
-      if (!isHost) {
+      const channelId = typeof payload?.channelId === 'string' ? payload.channelId : '';
+      if (!channelId || channelId.length > 64) return;
+      _removePeerFromGrid(socket.id, channelId, io);
+      await socket.leave(`video-grid:${channelId}`);
+    } catch (err) {
+      logger.error({ event: 'video_grid.sfu_leave.error', err }, 'sfu:leave grid temizliği hatası');
+    }
+  }));
+
+  socket.on('stage:video-layout', isolateSocketHandler(socket, 'stage:video-layout', async (payload: { channelId: string; layout: 'grid' | 'spotlight'; spotlightId?: string }) => {
+    try {
+      if (!validateSocketPayload(payload, socketSchemas.stageVideoLayout).valid) return;
+      const { channelId, layout, spotlightId } = payload;
+      const sfuPeer = sfuPeers.get(socket.id);
+      if (!sfuPeer || sfuPeer.channelId !== channelId) return;
+      const room = videoGridRooms.get(sfuPeer.channelId);
+      if (!room || !room.peers.has(socket.id)) return;
+      if (!await canManageStage(sfuPeer.channelId, user._id)) {
         socket.emit('stage:video-error', { message: 'Layout değiştirme izniniz yok.' });
         return;
       }
+      if (layout === 'spotlight' && spotlightId && !room.peers.has(spotlightId)) {
+        socket.emit('stage:video-error', { message: 'Spotlight hedefi bu video odasında değil.' });
+        return;
+      }
       room.layout      = layout;
-      room.spotlightId = spotlightId ?? null;
-      io.to(`video-grid:${channelId}`).emit('stage:video-layout-changed', { layout, spotlightId: room.spotlightId });
+      room.spotlightId = layout === 'spotlight' ? (spotlightId ?? socket.id) : null;
+      io.to(`video-grid:${sfuPeer.channelId}`).emit('stage:video-layout-changed', { layout, spotlightId: room.spotlightId });
     } catch (err) {
       logger.error({ event: 'video_grid.layout.error', err }, 'stage:video-layout hatası');
     }
-  });
+  }));
 
-  socket.on('sfu:produced', (payload: { kind: string }) => {
+  socket.on('sfu:produced', isolateSocketHandler(socket, 'sfu:produced', (payload: { kind: string }) => {
     try {
       if (!validateSocketPayload(payload, socketSchemas.sfuProduced).valid) return;
       const { kind } = payload;
@@ -156,44 +189,56 @@ export function registerVideoGridHandlers(
     } catch (err) {
       logger.error({ event: 'video_grid.sfu_produced.error', err }, 'sfu:produced grid sync hatası');
     }
-  });
+  }));
 
-  socket.on('voice:activity', (payload: { channelId: string; speaking: boolean }) => {
+  socket.on('voice:activity', isolateSocketHandler(socket, 'voice:activity', async (payload: { channelId: string; speaking: boolean }) => {
     try {
       if (!validateSocketPayload(payload, socketSchemas.voiceActivity).valid) return;
       const { channelId, speaking } = payload;
-      const room = videoGridRooms.get(channelId);
+      const sfuPeer = sfuPeers.get(socket.id);
+      if (!sfuPeer || sfuPeer.channelId !== channelId) return;
+      if (!await isStageSpeaker(channelId, user._id, socket.id)) return;
+      const room = videoGridRooms.get(sfuPeer.channelId);
       if (!room) return;
       const peer = room.peers.get(socket.id);
       if (!peer) return;
       peer.speaking = speaking;
-      io.to(`video-grid:${channelId}`).emit('stage:video-update', { type: 'speaking', socketId: socket.id, speaking });
+      io.to(`video-grid:${sfuPeer.channelId}`).emit('stage:video-update', { type: 'speaking', socketId: socket.id, speaking });
     } catch (err) {
       logger.error({ event: 'video_grid.voice_activity.error', err }, 'voice:activity grid hatası');
     }
-  });
+  }));
 
-  socket.on('voice:state-update', ({
-    channelId, muted, deafened, screensharing, video,
-  }: { channelId: string; muted: boolean; deafened: boolean; screensharing: boolean; video: boolean }) => {
+  socket.on('voice:state-update', isolateSocketHandler(socket, 'voice:state-update', async (payload: { channelId: string; muted: boolean; deafened: boolean; screensharing: boolean; video: boolean }) => {
     try {
-      const room = videoGridRooms.get(channelId);
+      if (!validateSocketPayload(payload, socketSchemas.voiceStateUpdate).valid) return;
+      const { channelId } = payload;
+      const sfuPeer = sfuPeers.get(socket.id);
+      if (!sfuPeer || sfuPeer.channelId !== channelId) return;
+      const room = videoGridRooms.get(sfuPeer.channelId);
       if (!room) return;
       const peer = room.peers.get(socket.id);
       if (!peer) return;
-      peer.muted    = muted;
-      peer.deafened = deafened;
-      peer.hasCamera = video;
-      peer.hasScreen = screensharing;
-      io.to(`video-grid:${channelId}`).emit('stage:video-update', {
-        type: 'state', socketId: socket.id, muted, deafened, hasCamera: video, hasScreen: screensharing,
+
+      // Camera/screen presence is authoritative only when a mediasoup producer
+      // actually exists. Never let client booleans paint fake Stage media.
+      const sfuState = readSfuVideoState(socket.id);
+      const speaker = await isStageSpeaker(channelId, user._id, socket.id);
+      peer.muted = speaker ? sfuState.muted : true;
+      peer.deafened = sfuState.deafened;
+      peer.hasCamera = speaker && sfuState.hasCamera;
+      peer.hasScreen = speaker && sfuState.hasScreen;
+      if (!speaker) peer.speaking = false;
+      io.to(`video-grid:${sfuPeer.channelId}`).emit('stage:video-update', {
+        type: 'state', socketId: socket.id, muted: peer.muted, deafened: peer.deafened,
+        hasCamera: peer.hasCamera, hasScreen: peer.hasScreen,
       });
     } catch (err) {
       logger.error({ event: 'video_grid.state_update.error', err }, 'voice:state-update grid hatası');
     }
-  });
+  }));
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', isolateSocketHandler(socket, 'disconnect', () => {
     try {
       for (const [channelId, room] of videoGridRooms) {
         if (room.peers.has(socket.id)) _removePeerFromGrid(socket.id, channelId, io);
@@ -201,14 +246,14 @@ export function registerVideoGridHandlers(
     } catch (err) {
       logger.error({ event: 'video_grid.disconnect.error', err }, 'video-grid disconnect temizliği hatası');
     }
-  });
+  }));
 }
 
 // ── İç yardımcılar ────────────────────────────────────────────────────────────
 
 export const registerStageVideoGridHandlers = registerVideoGridHandlers;
 
-function _removePeerFromGrid(socketId: string, channelId: string, io: IOServer): void {
+function _removePeerFromGrid(socketId: string, channelId: string, io: HandlerServer): void {
   const room = videoGridRooms.get(channelId);
   if (!room) return;
   room.peers.delete(socketId);
@@ -234,7 +279,7 @@ function _syncSfuStateToGrid(socketId: string): void {
   }
 }
 
-function _broadcastPeerUpdate(socketId: string, io: IOServer): void {
+function _broadcastPeerUpdate(socketId: string, io: HandlerServer): void {
   for (const [channelId, room] of videoGridRooms) {
     const peer = room.peers.get(socketId);
     if (peer) {

@@ -12,7 +12,7 @@
  *     parameters:
  *       - { name: sid, in: path, required: true, schema: { type: string } }
  *     responses:
- *       200: { description: Genel istatistikler (üye, mesaj, aktif kanal sayısı) }
+ *       200: { description: 'Genel istatistikler (üye, mesaj, aktif kanal sayısı)' }
  * /servers/{sid}/stats/growth:
  *   get:
  *     tags: [Stats]
@@ -63,16 +63,21 @@ const router = express.Router();
 import { Stats }         from '../db/repositories/StatsRepository.js';
 import { Members, Channels, Servers } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
+import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
+import { parsePositiveIntWithinBoundQuery } from '../lib/queryNumbers';
 
 // ── Yardımcı: unix ms → YYYY-MM-DD (UTC) ────────────────────────────────────
 function toDateStr(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-// ── Yetki kontrolü: üye ──────────────────────────────────────────────────────
-async function requireMember(userId: string, serverId: string): Promise<boolean> {
+// Analytics may expose channel names, top-user activity and message-volume data.
+// Server membership alone is not sufficient authority for that metadata.
+async function requireStatsAccess(userId: string, serverId: string): Promise<boolean> {
   const m = await Members.findOne(userId, serverId);
-  return m !== null;
+  if (!m) return false;
+  const perms = await resolvePermissions(userId, serverId, null).catch(() => 0);
+  return hasPermission(perms, PERMS.MANAGE_SERVER);
 }
 
 // ── Yetki kontrolü: sunucu sahibi (admin işlemler için) ──────────────────────
@@ -88,7 +93,7 @@ async function requireOwner(userId: string, serverId: string): Promise<boolean> 
 router.get('/:sid/stats', authMiddleware, async (req, res) => {
   const me  = castAuthed(req).user;
   const sid = String(String(req.params.sid ?? '') ?? "");
-  if (!await requireMember(me.id, sid)) return res.status(403).json({ error: 'Not a member' });
+  if (!await requireStatsAccess(me.id, sid)) return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
 
   const stats = await Stats.getServerStats(sid);
 
@@ -122,9 +127,10 @@ router.get('/:sid/stats', authMiddleware, async (req, res) => {
 router.get('/:sid/stats/growth', authMiddleware, async (req, res) => {
   const me  = castAuthed(req).user;
   const sid = String(String(req.params.sid ?? '') ?? "");
-  if (!await requireMember(me.id, sid)) return res.status(403).json({ error: 'Not a member' });
+  if (!await requireStatsAccess(me.id, sid)) return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
 
-  const days  = Math.min(parseInt(String(req.query.days ?? '30'), 10), 90);
+  const days = parsePositiveIntWithinBoundQuery(req.query.days, 30, 90);
+  if (days === null) return res.status(400).json({ error: 'days must be a positive safe integer' });
   const since = Date.now() - days * 86400_000;
 
   const { joinSeries, msgSeries, totalMembers: totalNow } = await Stats.getGrowthSeries(sid, since);
@@ -163,7 +169,7 @@ router.get('/:sid/stats/growth', authMiddleware, async (req, res) => {
 router.get('/:sid/stats/activity', authMiddleware, async (req, res) => {
   const me  = castAuthed(req).user;
   const sid = String(String(req.params.sid ?? '') ?? "");
-  if (!await requireMember(me.id, sid)) return res.status(403).json({ error: 'Not a member' });
+  if (!await requireStatsAccess(me.id, sid)) return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
 
   const since = Date.now() - 30 * 86400_000; // son 30 gün
   const { hours, dows } = await Stats.getActivityDistribution(sid, since);
@@ -197,7 +203,7 @@ router.get('/:sid/stats/activity', authMiddleware, async (req, res) => {
 router.get('/:sid/stats/retention', authMiddleware, async (req, res) => {
   const me  = castAuthed(req).user;
   const sid = String(String(req.params.sid ?? '') ?? "");
-  if (!await requireMember(me.id, sid)) return res.status(403).json({ error: 'Not a member' });
+  if (!await requireStatsAccess(me.id, sid)) return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
 
   const { dau: dauN, wau: wauN, mau: mauN, memberTotal } = await Stats.getRetention(sid);
   const total = memberTotal || 1;
@@ -224,7 +230,8 @@ router.get('/:sid/stats/export.csv', authMiddleware, async (req, res) => {
   if (!await requireOwner(me.id, sid))
     return res.status(403).json({ error: 'Bu işlem için sunucu sahibi olmanız gerekiyor.' });
 
-  const days  = Math.min(parseInt(String(req.query.days ?? '30'), 10), 90);
+  const days = parsePositiveIntWithinBoundQuery(req.query.days, 30, 90);
+  if (days === null) return res.status(400).json({ error: 'days must be a positive safe integer' });
   const since = Date.now() - days * 86400_000;
 
   const { joinRows, msgRows, topUsers, chanBreakdown } = await Stats.getCsvData(sid, since);
@@ -232,7 +239,14 @@ router.get('/:sid/stats/export.csv', authMiddleware, async (req, res) => {
   const allChannels = await Channels.findByServer(sid);
   const chanMap     = Object.fromEntries(allChannels.map(c => [c._id, c.name]));
 
-  const esc = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
+  const esc = (v: string | number) => {
+    const raw = String(v);
+    // Spreadsheet applications may execute cells beginning with formula sigils.
+    // Prefix user-controlled/dynamic values with an apostrophe while preserving
+    // RFC 4180-style quote escaping so CSV export cannot become a formula vector.
+    const safe = /^[\t\r\n ]*[=+\-@]/.test(raw) ? `'${raw}` : raw;
+    return `"${safe.replace(/"/g, '""')}"`;
+  };
   const rows: string[] = [];
 
   rows.push('Bölüm,Gün/Ad,Değer1,Değer2');

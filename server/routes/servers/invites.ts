@@ -55,7 +55,7 @@
  *   get:
  *     tags: [Servers]
  *     summary: Davet QR kodu (HTML sayfasi)
- *     security: []
+ *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: path
  *         name: code
@@ -72,7 +72,7 @@
  *   get:
  *     tags: [Servers]
  *     summary: Davet QR kodu JSON verisi
- *     security: []
+ *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: path
  *         name: code
@@ -86,7 +86,7 @@
  *   get:
  *     tags: [Servers]
  *     summary: Davet QR kodu PNG gorsel
- *     security: []
+ *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: path
  *         name: code
@@ -109,8 +109,8 @@ const router = express.Router({ mergeParams: true });
 import { Invites, Members, Servers } from '../../db/repositories';
 import { authMiddleware} from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
-import { invalidateMemberCount } from '../discover';
-import { tryRequire } from '../../lib/_optional-require';
+import { afterMemberJoined } from '../../lib/serverMembership';
+import { checkServerJoinMfa } from '../../lib/serverMfaPolicy';
 
 
 function assertInvite(invite: Awaited<ReturnType<typeof Invites.findByCode>>, res: express.Response): asserts invite is NonNullable<Awaited<ReturnType<typeof Invites.findByCode>>> {
@@ -121,12 +121,25 @@ function assertInvite(invite: Awaited<ReturnType<typeof Invites.findByCode>>, re
   }
 }
 
-const _dispatchEvent = tryRequire<{ dispatchEvent: (sid: string, ev: string, d: unknown) => Promise<unknown> }>('../outgoingWebhooks')?.dispatchEvent ?? null;
 
 // POST /api/servers/invites
 router.post('/', authMiddleware, limits.servers(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { serverId } = req.body as Record<string, string>;
+
+  // Faz 10.10 — GÖVDE TİP DOĞRULAMASI (sorgu operatörü enjeksiyonu).
+  //
+  // `serverId` gövdeden HAM olarak `Members.findOne(userId, serverId)`e
+  // geçiyordu. Depo katmanı Mongo tarzı sorgu nesneleri kabul eder ve
+  // Postgres adaptörü bunları GERÇEK SQL operatörlerine çevirir
+  // (db/postgres/pgCollection.ts — $in/$ne/$gt/$gte/$lt/$regex/$exists).
+  // `$`-anahtarlarını temizleyen global bir katman YOKTUR.
+  //
+  // Sonuç: `{ "serverId": { "$ne": "yok" } }` yükü, saldırganın HERHANGİ bir
+  // sunucudaki üyelik satırıyla eşleşerek üyelik kontrolünü geçiyordu; ardından
+  // `Servers.findById` rastgele bir sunucu döndürüp adını sızdırıyor ve nesne
+  // `serverId` olarak davet satırına yazılıyordu. Yalnız düz string kabul edilir.
+  const rawServerId = (req.body as Record<string, unknown> | undefined)?.serverId;
+  const serverId    = typeof rawServerId === 'string' ? rawServerId.trim() : '';
   if (!serverId) return res.status(400).json({ error: 'serverId required' });
 
   const membership = await Members.findOne(_u.id, serverId);
@@ -135,7 +148,18 @@ router.post('/', authMiddleware, limits.servers(), async (req, res) => {
   const server = await Servers.findById(serverId);
   if (!server) return res.status(404).json({ error: 'Server not found' });
 
-  const maxUses = parseInt(req.body.maxUses) || 0;
+  // OpenAPI contract is an integer. `parseInt()` was too permissive here:
+  // values such as "3x", [2] or -1 were silently coerced, and negative
+  // values later behaved as unlimited because validity checks use `> 0`.
+  // Keep unlimited explicit (`0`) and reject ambiguous/non-integer input.
+  const rawMaxUses = (req.body as Record<string, unknown> | undefined)?.maxUses;
+  let maxUses = 0;
+  if (rawMaxUses !== undefined && rawMaxUses !== null) {
+    if (typeof rawMaxUses !== 'number' || !Number.isSafeInteger(rawMaxUses) || rawMaxUses < 0) {
+      return res.status(400).json({ error: 'maxUses must be a non-negative integer' });
+    }
+    maxUses = rawMaxUses;
+  }
   const { code, expiresAt } = await Invites.create({ serverId, createdBy: _u.id, maxUses });
   res.json({ code, expiresAt, maxUses, serverName: server.name });
 });
@@ -147,15 +171,67 @@ router.post('/:code/use', authMiddleware, limits.servers(), async (req, res) => 
   const invite = await Invites.findByCode(code);
   try { assertInvite(invite, res); } catch { return; }
 
-  const existing = await Members.findOne(_u.id, invite.serverId);
+  // BANLI SATIRLAR DA GORULMELIDIR: `findOne` artik yetkilendirme icin
+  // banli satirlari eler; burada ise banli birinin davetle GERI DONMESINI
+  // engellemek gerekir. Aksi halde ban, tek bir davet baglantisiyla
+  // atlatilabilirdi.
+  const existing = await Members.findIncludingBanned(_u.id, invite.serverId);
+  if (existing && (existing as { banned?: boolean }).banned) {
+    return res.status(403).json({ error: 'Bu sunucudan yasaklandınız' });
+  }
   if (existing) return res.status(400).json({ error: 'Already a member' });
 
-  await Members.insert(_u.id, invite.serverId);
-  invalidateMemberCount(invite.serverId).catch(() => {});
-  if (_dispatchEvent) _dispatchEvent(invite.serverId, 'member:join', { userId: _u.id }).catch(() => {});
-  await Invites.incrementUses(invite._id);
-
+  // Invite join must enforce the same server MFA policy as the canonical
+  // discoverable join route; an invite is not an authentication-policy bypass.
   const server = await Servers.findById(invite.serverId);
+  if (!server) return res.status(404).json({ error: 'Server not found' });
+  const mfa = await checkServerJoinMfa(
+    _u.id,
+    invite.serverId,
+    (server as unknown as Record<string, unknown>).mfaLevel,
+  );
+  if (mfa.required && !mfa.satisfied) {
+    return res.status(403).json({
+      error: 'MFA_REQUIRED',
+      message: 'Bu sunucuya katılmak için bir güvenlik anahtarı (passkey) kaydetmeniz gerekiyor.',
+      mfaLevel: mfa.level,
+    });
+  }
+
+
+  const atomicConsume = await Invites.consumeForMemberAtomic(invite._id, _u.id, invite.serverId);
+  if (atomicConsume) {
+    if (atomicConsume.status === 'not_found') return res.status(404).json({ error: 'Invalid invite code' });
+    if (atomicConsume.status === 'expired') return res.status(410).json({ error: 'Invite has expired' });
+    if (atomicConsume.status === 'max_uses') return res.status(410).json({ error: 'Invite has reached its maximum uses' });
+    if (atomicConsume.status === 'banned') return res.status(403).json({ error: 'Bu sunucudan yasaklandınız' });
+    if (atomicConsume.status === 'already_member') return res.status(400).json({ error: 'Already a member' });
+    if (atomicConsume.status === 'scope_mismatch') return res.status(409).json({ error: 'Invite scope mismatch' });
+  } else {
+    // In-memory Jest compatibility path only. Production consumption above is
+    // transaction-owned and never uses this read/modify/write fallback.
+    await Members.insert(_u.id, invite.serverId);
+    await Invites.incrementUses(invite._id);
+  }
+
+  // ── UYELIK ONBELLEGI GECERSIZ KILINMALI ──────────────────────────────────
+  // Soket, baglanirken kullanicinin sunucu odalarina `presence:memberships:*`
+  // ONBELLEGINDEN bakarak katilir (lib/presenceCache, TTL 300 sn).
+  //
+  // Burada yalnizca UYE SAYISI onbellegi temizleniyordu; UYELIK LISTESI
+  // temizlenmiyordu. Sonuc: davet baglantisiyla katilan kullanici — ki bu
+  // sunucuya katilmanin ASIL yoludur — 5 dakikaya kadar yeni sunucunun
+  // soket odasina HIC girmiyordu. O sure boyunca sunucu duzeyindeki canli
+  // olaylarin hicbirini almiyordu; yeniden baglanmak da yardimci olmuyordu
+  // cunku bayat onbellek yeniden okunuyordu.
+  //
+  // Dogrudan katilma rotasi (routes/servers/core.ts) bunu ZATEN yapiyordu;
+  // kardes yol olan davet akisi atlanmisti.
+  await afterMemberJoined(
+    { id: _u.id, username: _u.username, displayName: _u.displayName },
+    invite.serverId,
+  );
+
   res.json(server);
 });
 
@@ -167,7 +243,8 @@ router.get('/:code/qr', authMiddleware, async (req, res) => {
 
   const appUrl    = process.env.APP_URL || 'http://localhost:3001';
   const inviteUrl = `${appUrl}/invite/${code}`;
-  const qrSvg    = generateQrSvg(inviteUrl);
+  const qrSvg = await generateQrSvg(inviteUrl);
+  if (!qrSvg) return res.status(501).json({ error: 'QR oluşturucu kullanılamıyor' });
 
   res.setHeader('Content-Type', 'image/svg+xml');
   res.setHeader('Cache-Control', 'public, max-age=300');
@@ -183,7 +260,8 @@ router.get('/:code/qr/data', authMiddleware, async (req, res) => {
   const server    = await Servers.findById(invite.serverId);
   const appUrl    = process.env.APP_URL || 'http://localhost:3001';
   const inviteUrl = `${appUrl}/invite/${code}`;
-  const qrSvg    = generateQrSvg(inviteUrl);
+  const qrSvg = await generateQrSvg(inviteUrl);
+  if (!qrSvg) return res.status(501).json({ error: 'QR oluşturucu kullanılamıyor' });
   const dataUrl  = 'data:image/svg+xml;base64,' + Buffer.from(qrSvg ?? '').toString('base64');
 
   res.json({ code, inviteUrl, qrDataUrl: dataUrl, serverName: server?.name, expiresAt: invite.expiresAt });
@@ -191,9 +269,8 @@ router.get('/:code/qr/data', authMiddleware, async (req, res) => {
 
 // GET /api/servers/invites/:code/qr/png  — PNG (requires 'qrcode' package)
 router.get('/:code/qr/png', authMiddleware, async (req, res) => {
-   
-  let QRCode: { toBuffer: (url: string, opts: unknown) => Promise<Buffer> } | undefined;
-  try { QRCode = await import('qrcode') as typeof QRCode; } catch {
+  const QRCode = await loadQrCode();
+  if (!QRCode) {
     return res.status(501).json({ error: 'QR PNG için: npm install qrcode', hint: 'SVG endpoint kullanın: /qr' });
   }
 
@@ -204,26 +281,38 @@ router.get('/:code/qr/png', authMiddleware, async (req, res) => {
   const appUrl    = process.env.APP_URL || 'http://localhost:3001';
   const inviteUrl = `${appUrl}/invite/${code}`;
 
-  if (!QRCode) return res.status(501).json({ error: 'QR PNG için qrcode modülü yüklenemedi' });
   const pngBuffer = await QRCode.toBuffer(inviteUrl, { width: 300, margin: 2, color: { dark: '#2d9cdb', light: '#ffffff' } });
   res.setHeader('Content-Type', 'image/png');
   res.setHeader('Cache-Control', 'public, max-age=300');
   res.send(pngBuffer);
 });
 
-// ── QR SVG generator (no external dependency) ─────────────────
-function generateQrSvg(text: string): string {
-  const escaped = text
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="240" viewBox="0 0 200 240">
-  <rect width="200" height="240" fill="white"/>
-  <rect x="10" y="10" width="180" height="180" rx="8" fill="none" stroke="#2d9cdb" stroke-width="3" stroke-dasharray="8,4"/>
-  <text x="100" y="105" font-family="monospace" font-size="11" fill="#2d9cdb" text-anchor="middle">QR için:</text>
-  <text x="100" y="120" font-family="monospace" font-size="9" fill="#2d9cdb" text-anchor="middle">npm i qrcode</text>
-  <text x="100" y="210" font-family="sans-serif" font-size="9" fill="#666" text-anchor="middle">${escaped.slice(0, 40)}</text>
-  <text x="100" y="225" font-family="sans-serif" font-size="8" fill="#999" text-anchor="middle">Bridge Davet Linki</text>
-</svg>`;
+type QrCodeModule = {
+  toString(text: string, options: Record<string, unknown>): Promise<string>;
+  toBuffer(text: string, options: Record<string, unknown>): Promise<Buffer>;
+};
+
+async function loadQrCode(): Promise<QrCodeModule | null> {
+  try {
+    const imported = await import('qrcode') as unknown as QrCodeModule & { default?: QrCodeModule };
+    return imported.default ?? imported;
+  } catch {
+    return null;
+  }
+}
+
+// Gerçek, taranabilir SVG QR. Eski sürüm yalnızca "npm i qrcode" yazan bir
+// placeholder SVG üretiyor ve test de sadece `<svg>` arıyordu.
+async function generateQrSvg(text: string): Promise<string | null> {
+  const QRCode = await loadQrCode();
+  if (!QRCode) return null;
+  return QRCode.toString(text, {
+    type: 'svg',
+    width: 300,
+    margin: 2,
+    color: { dark: '#2d9cdb', light: '#ffffff' },
+    errorCorrectionLevel: 'M',
+  });
 }
 
 export default router;

@@ -3,6 +3,8 @@
 //   - verifyHttpSignature: geçerli imza, eksik header, digest mismatch,
 //     replay attack, zaman penceresi, key cache, per-user keyId
 //   - signRequest: Mastodon uyumlu format, per-user keyId, body digest
+import type { Request, Response, NextFunction } from 'express';
+import { fetchMock, installFetchMock } from './helpers/fetchDouble';
 
 'use strict';
 
@@ -18,15 +20,15 @@ const mockDb = createMockDb();
 jest.mock('../db/loader', () => mockDb);
 
 // ── Mock fetch (remote key fetch) ─────────────────────────────────────────────
-global.fetch = jest.fn();
+installFetchMock();
 
 jest.mock('../lib/fetch', () => ({
-  fetchT: jest.fn((...args) => global.fetch(...args)),
-  default: jest.fn((...args) => global.fetch(...args)),
+  fetchT: jest.fn((...args: Parameters<typeof fetch>) => global.fetch(...args)),
+  default: jest.fn((...args: Parameters<typeof fetch>) => global.fetch(...args)),
 }));
 
 // federation.js'i temiz yükle
-let fed;
+let fed: typeof import('../routes/federation');
 beforeAll(() => {
   // Modülü önbellek temizleyerek yükle
   jest.resetModules();
@@ -34,7 +36,7 @@ beforeAll(() => {
 });
 
 afterEach(() => {
-  global.fetch.mockReset();
+  fetchMock().mockReset();
   jest.resetModules();
 });
 
@@ -51,6 +53,20 @@ function genKeyPair() {
  * Bir HTTP isteğini RSA-SHA256 ile imzalar.
  * federation.js içindeki signRequest ile aynı algoritmayı uygular.
  */
+// Parametreler eskiden tipsizdi. Bunun gorunmeyen bedeli su: `dateOverride`
+// ortuk `any` oldugu icin TypeScript onu ZORUNLU sayiyordu ve onu gecmeyen
+// ON BIR cagri TS2345 veriyordu. Tip yazilinca hem hatalar kapandi hem de
+// "hangi alan istege bagli?" sorusu imzada cevaplanmis oldu.
+interface SignedRequestOptions {
+  method?: string;
+  path?: string;
+  body?: string;
+  privateKey: string;
+  keyId: string;
+  /** Saat kaymasi/eskime senaryolari icin; verilmezse SIMDIKI zaman. */
+  dateOverride?: string;
+}
+
 function buildSignedRequest({
   method = 'POST',
   path   = '/api/federation/users/alice/inbox',
@@ -58,7 +74,7 @@ function buildSignedRequest({
   privateKey,
   keyId,
   dateOverride,
-}) {
+}: SignedRequestOptions) {
   const date   = dateOverride ?? new Date().toUTCString();
   const host   = 'bridge.test';
   const digest = 'SHA-256=' + crypto.createHash('sha256').update(body).digest('base64');
@@ -103,11 +119,17 @@ function buildApp() {
   app.use(express.json());
   // Auth middleware'i bypass et
   jest.mock('../middleware/auth', () => ({
-    authMiddleware: (req, _res, next) => { req.user = { id: 'u1' }; next(); },
+    // `JwtPayload` `username` ve `v` de ister; eksik birakmak testi urunun
+    // gercekten gordugu nesneden UZAKLASTIRIRDI.
+    authMiddleware: (req: Request, _res: Response, next: NextFunction) => {
+      req.user = { id: 'u1', username: 'u1', v: 1 };
+      next();
+    },
+    castAuthed: (req: Request) => req,
   }), { virtual: true });
   const router = require('../routes/federation');
   app.use('/api/federation', router);
-  app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+  app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
   return app;
 }
 
@@ -166,9 +188,9 @@ describe('verifyHttpSignature (inbox entegrasyon)', () => {
   });
 
   function mockRemoteKey() {
-    global.fetch.mockResolvedValueOnce({
+    fetchMock().mockResolvedValueOnce({
       ok:   true,
-      json: async () => ({ publicKey: { publicKeyPem: publicKey } }),
+      json: async () => ({ publicKey: { publicKeyPem: publicKey, owner: 'https://mastodon.social/users/remote' } }),
     });
   }
 
@@ -268,13 +290,13 @@ describe('Replay attack koruması (unit)', () => {
     const used = new Map();
     const TTL  = 5 * 60 * 1000;
 
-    function isReplay(sig) {
+    function isReplay(sig: string) {
       const exp = used.get(sig);
       if (!exp) return false;
       if (Date.now() > exp) { used.delete(sig); return false; }
       return true;
     }
-    function markUsed(sig) { used.set(sig, Date.now() + TTL); }
+    function markUsed(sig: string) { used.set(sig, Date.now() + TTL); }
 
     const sig = 'test-signature-abc123';
     expect(isReplay(sig)).toBe(false);
@@ -287,7 +309,7 @@ describe('Replay attack koruması (unit)', () => {
     const sig  = 'old-sig-xyz';
     used.set(sig, Date.now() - 1); // zaten süresi dolmuş
 
-    function isReplay(s) {
+    function isReplay(s: string) {
       const exp = used.get(s);
       if (!exp) return false;
       if (Date.now() > exp) { used.delete(s); return false; }
@@ -309,12 +331,12 @@ describe('Public key cache (unit)', () => {
     const keyId = 'https://mastodon.social/users/bob#main-key';
     const pem   = '-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----';
 
-    function cacheGet(id) {
+    function cacheGet(id: string) {
       const e = cache.get(id);
       if (!e || Date.now() > e.expiresAt) return null;
       return e.pem;
     }
-    function cacheSet(id, p) { cache.set(id, { pem: p, expiresAt: Date.now() + TTL }); }
+    function cacheSet(id: string, p: string) { cache.set(id, { pem: p, expiresAt: Date.now() + TTL }); }
 
     expect(cacheGet(keyId)).toBeNull();
     cacheSet(keyId, pem);
@@ -326,7 +348,7 @@ describe('Public key cache (unit)', () => {
     const keyId = 'https://example.com/users/old#main-key';
     cache.set(keyId, { pem: 'old-pem', expiresAt: Date.now() - 1 });
 
-    function cacheGet(id) {
+    function cacheGet(id: string) {
       const e = cache.get(id);
       if (!e || Date.now() > e.expiresAt) { cache.delete(id); return null; }
       return e.pem;
@@ -361,7 +383,10 @@ describe('Signing string format', () => {
 
   it('imzalı header sırası signing string sırasını belirler', () => {
     const headerList = ['(request-target)', 'host', 'date', 'digest'];
-    const req = {
+    // `headers` ANNOTASYONLA `Record<string, string>`tur (cast DEGIL):
+    // asagida `req.headers[h]` ile DEGISKEN bir ad uzerinden okunuyor ve
+    // nesne edebi tipi bu erisime kapalidir.
+    const req: { method: string; originalUrl: string; headers: Record<string, string> } = {
       method: 'POST',
       originalUrl: '/inbox',
       headers: { host: 'bridge.test', date: 'Thu, 01 Jan 2026 00:00:00 GMT', digest: 'SHA-256=abc' },
@@ -397,7 +422,7 @@ describe('HTTP Signature güvenlik kenar durumları (Sprint 52)', () => {
   });
 
   afterEach(() => {
-    global.fetch.mockReset();
+    fetchMock().mockReset();
     jest.resetModules();
     process.env.NODE_ENV = 'test';
   });
@@ -460,13 +485,13 @@ describe('HTTP Signature güvenlik kenar durumları (Sprint 52)', () => {
         .send(JSON.parse(body));
 
       expect(res.status).toBe(401);
-      expect(global.fetch).not.toHaveBeenCalled();
+      expect(fetchMock()).not.toHaveBeenCalled();
     });
 
     it('3xx redirect yanıtı verilen keyId fetch için 401 döner', async () => {
       // redirect: 'manual' aktif — 3xx response fetch tarafından opaque döner,
       // httpSignature.ts bunu hata olarak işler
-      global.fetch.mockResolvedValueOnce({
+      fetchMock().mockResolvedValueOnce({
         ok:     false,
         status: 301,
         type:   'opaqueredirect',
@@ -502,7 +527,7 @@ describe('HTTP Signature güvenlik kenar durumları (Sprint 52)', () => {
 
     it.each(BAD_ALGORITHMS)('algorithm="%s" gönderildiğinde 401 döner', async (badAlgo) => {
       // Remote key mock — fetch başarılı, key geçerli, SADECE algoritma yanlış
-      global.fetch.mockResolvedValueOnce({
+      fetchMock().mockResolvedValueOnce({
         ok:   true,
         json: async () => ({ publicKey: { publicKeyPem: publicKey } }),
       });
@@ -533,7 +558,7 @@ describe('HTTP Signature güvenlik kenar durumları (Sprint 52)', () => {
 
     it('algorithm parametresi yoksa (hs2019 fallback) geçerli imzayla 202 döner', async () => {
       // RFC draft: algorithm yoksa hs2019 olarak kabul edilir
-      global.fetch.mockResolvedValueOnce({
+      fetchMock().mockResolvedValueOnce({
         ok:   true,
         json: async () => ({ publicKey: { publicKeyPem: publicKey } }),
       });
@@ -567,7 +592,7 @@ describe('HTTP Signature güvenlik kenar durumları (Sprint 52)', () => {
     const REMOTE_KEY_ID = 'https://mastodon.social/users/notarget#main-key';
 
     it('imzalı header listesinde (request-target) yoksa 401 döner', async () => {
-      global.fetch.mockResolvedValueOnce({
+      fetchMock().mockResolvedValueOnce({
         ok:   true,
         json: async () => ({ publicKey: { publicKeyPem: publicKey } }),
       });
@@ -605,7 +630,7 @@ describe('HTTP Signature güvenlik kenar durumları (Sprint 52)', () => {
       // Bu test, (request-target) olmadan imzalı bir isteğin
       // farklı bir path'e replay edilemeyeceğini gösterir.
       // Çünkü sunucu zaten (request-target) zorunluluğunu reddeder.
-      global.fetch.mockResolvedValueOnce({
+      fetchMock().mockResolvedValueOnce({
         ok:   true,
         json: async () => ({ publicKey: { publicKeyPem: publicKey } }),
       });

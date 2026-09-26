@@ -3,8 +3,6 @@
  * tags:
  *   - name: Onboarding
  *     description: Onboarding API endpoints
-
- *
  * /servers/{sid}/onboarding:
  *   get:
  *     tags: [Servers]
@@ -39,7 +37,6 @@
  *       200:
  *         description: Kaydedildi
  *       403: { $ref: '#/components/responses/Forbidden' }
- *
  * /servers/{sid}/onboarding/status:
  *   get:
  *     tags: [Servers]
@@ -53,7 +50,6 @@
  *     responses:
  *       200:
  *         description: Onboarding tamamlandi mi
- *
  * /servers/{sid}/onboarding/complete:
  *   post:
  *     tags: [Servers]
@@ -75,30 +71,6 @@
  *     responses:
  *       200:
  *         description: Tamamlandi
-
- *
- * /servers/{sid}/onboarding:
- *   put:
- *     tags: [Servers]
- *     summary: Onboarding sorularini kaydet / guncelle
- *     security: [{ bearerAuth: [] }]
- *     parameters:
- *       - in: path
- *         name: sid
- *         required: true
- *         schema: { type: string }
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               questions: { type: array, items: { type: object } }
- *     responses:
- *       200:
- *         description: Kaydedildi
- *       403: { $ref: '#/components/responses/Forbidden' }
  */
 
 // server/routes/onboarding.ts
@@ -114,9 +86,10 @@
 import logger from '../lib/logger';
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import { publishPersistedMessage } from '../lib/channelActivity';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router     = express.Router({ mergeParams: true });
-import { Members, Channels, Users, Servers, Messages, ServerAssets, } from '../db/repositories';
+import { Members, Channels, Users, Servers, Messages, ServerAssets, Roles } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
 import { limits } from '../middleware/rateLimit';
@@ -177,20 +150,52 @@ router.put('/:sid/onboarding', authMiddleware, limits.write(), async (req, res) 
   if (!hasPermission(perms, PERMS.MANAGE_SERVER))
     return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
 
-  const {
-    enabled, rulesChannelId, welcomeChannelId,
-    welcomeMessage, verificationLevel, defaultRoles, questions,
-  } = req.body as { enabled?: boolean | string; rulesChannelId?: string; welcomeChannelId?: string; welcomeMessage?: string; verificationLevel?: string | number; defaultRoles?: string[]; questions?: unknown[] };
+  const sid = String(req.params.sid ?? '');
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+    ? req.body as Record<string, unknown>
+    : {};
+  const enabled = body.enabled;
+  const rulesChannelId = body.rulesChannelId;
+  const welcomeChannelId = body.welcomeChannelId;
+  const welcomeMessage = body.welcomeMessage;
+  const verificationLevel = body.verificationLevel;
+  const defaultRoles = body.defaultRoles;
+  const questions = body.questions;
+
+  if (enabled !== undefined && typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be boolean' });
+  if (rulesChannelId !== undefined && rulesChannelId !== null && typeof rulesChannelId !== 'string') return res.status(400).json({ error: 'rulesChannelId invalid' });
+  if (welcomeChannelId !== undefined && welcomeChannelId !== null && typeof welcomeChannelId !== 'string') return res.status(400).json({ error: 'welcomeChannelId invalid' });
+  if (welcomeMessage !== undefined && (typeof welcomeMessage !== 'string' || welcomeMessage.length > 500)) return res.status(400).json({ error: 'welcomeMessage invalid' });
+  if (verificationLevel !== undefined && (!Number.isInteger(verificationLevel) || (verificationLevel as number) < 0 || (verificationLevel as number) > 2147483647)) {
+    return res.status(400).json({ error: 'verificationLevel invalid' });
+  }
+  if (defaultRoles !== undefined && (!Array.isArray(defaultRoles) || defaultRoles.length > 25 || defaultRoles.some(roleId => typeof roleId !== 'string' || !roleId))) {
+    return res.status(400).json({ error: 'defaultRoles invalid' });
+  }
+  if (questions !== undefined && (!Array.isArray(questions) || questions.length > 5 || JSON.stringify(questions).length > 32768)) {
+    return res.status(400).json({ error: 'questions invalid' });
+  }
+
+  for (const channelId of [rulesChannelId, welcomeChannelId]) {
+    if (typeof channelId !== 'string' || !channelId) continue;
+    const channel = await Channels.findByIdAndServer(channelId, sid) as { type?: string } | null;
+    if (!channel || channel.type !== 'text') return res.status(400).json({ error: 'Onboarding channel must be a text channel in this server' });
+  }
+
+  const roleIds = Array.isArray(defaultRoles) ? [...new Set(defaultRoles as string[])] : [];
+  for (const roleId of roleIds) {
+    if (!await Roles.findByIdAndServer(roleId, sid)) return res.status(400).json({ error: 'defaultRoles contains a role outside this server' });
+  }
 
   const now = Date.now();
-  await ServerAssets.upsertOnboarding(String(req.params.sid ?? ''), {
-    enabled: enabled ? 1 : 0,
-    rulesChannelId: rulesChannelId || null,
-    welcomeChannelId: welcomeChannelId || null,
-    welcomeMessage: (welcomeMessage || 'Sunucuya hoş geldin, {user}! 👋').slice(0, 500),
-    verificationLevel: parseInt(String(verificationLevel ?? 0), 10) || 0,
-    defaultRoles: JSON.stringify(defaultRoles || []),
-    questions: JSON.stringify((Array.isArray(questions) ? questions : []).slice(0, 5)),
+  await ServerAssets.upsertOnboarding(sid, {
+    enabled: enabled === true,
+    rulesChannelId: typeof rulesChannelId === 'string' && rulesChannelId ? rulesChannelId : null,
+    welcomeChannelId: typeof welcomeChannelId === 'string' && welcomeChannelId ? welcomeChannelId : null,
+    welcomeMessage: typeof welcomeMessage === 'string' && welcomeMessage ? welcomeMessage : 'Sunucuya hoş geldin, {user}! 👋',
+    verificationLevel: typeof verificationLevel === 'number' ? verificationLevel : 0,
+    defaultRoles: JSON.stringify(roleIds),
+    questions: JSON.stringify(Array.isArray(questions) ? questions : []),
     updatedAt: now,
   });
 
@@ -230,45 +235,54 @@ router.post('/:sid/onboarding/complete', authMiddleware, limits.write(), async (
   const config = await ServerAssets.findOnboarding(String(req.params.sid ?? '')) as OnboardingConfig | null;
   if (!config || !config.enabled) return res.json({ ok: true, skipped: true });
 
-  const { answers = {} } = req.body;
+  const sid = String(req.params.sid ?? '');
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+    ? req.body as Record<string, unknown>
+    : {};
+  const answers = body.answers ?? {};
+  const answersJson = JSON.stringify(answers);
+  if (answersJson.length > 65536) return res.status(400).json({ error: 'answers too large' });
 
-  const existingCompletion = await ServerAssets.findOnboardingCompletion(String(req.params.sid ?? ''), _u.id);
+  const claimed = await ServerAssets.claimOnboardingCompletion({
+    _id: uuidv4(), serverId: sid, userId: _u.id, completedAt: Date.now(), answers: answersJson,
+  });
+  if (!claimed) return res.json({ ok: true, alreadyCompleted: true });
 
-  if (!existingCompletion) {
-    await ServerAssets.insertOnboardingCompletion({
-      _id: uuidv4(),
-      serverId: String(req.params.sid ?? ''),
-      userId: _u.id,
-      completedAt: Date.now(),
-      answers: JSON.stringify(answers),
-    });
-  }
-
-  // Assign default roles if configured
-  const defaultRoles = parseJsonArray(config.defaultRoles).filter((roleId): roleId is string => typeof roleId === 'string');
-  for (const roleId of defaultRoles) {
+  // Assign only roles that still canonically belong to this server. Roles are
+  // stored on members.roles JSONB; there is no separate member_roles owner.
+  const configuredRoles = parseJsonArray(config.defaultRoles).filter((roleId): roleId is string => typeof roleId === 'string');
+  const currentRoles = parseJsonArray((member as { roles?: string | string[] }).roles as string | string[] | undefined)
+    .filter((roleId): roleId is string => typeof roleId === 'string');
+  const nextRoles = new Set(currentRoles);
+  for (const roleId of configuredRoles) {
     try {
-      const already = await ServerAssets.findMemberRole(_u.id, roleId, String(req.params.sid ?? ''));
-      if (!already) {
-        await ServerAssets.insertMemberRole({ _id: uuidv4(), userId: _u.id, roleId, serverId: String(req.params.sid ?? '') });
-      }
-    } catch (err) { logger.warn({ err, event: 'onboarding.fetch.error' }, 'Onboarding fetch failed silently'); }
+      if (await Roles.findByIdAndServer(roleId, sid)) nextRoles.add(roleId);
+      else logger.warn({ roleId, serverId: sid, event: 'onboarding.role.stale' }, 'Skipping stale/cross-server onboarding role');
+    } catch (err) { logger.warn({ err, roleId, event: 'onboarding.role.resolve_error' }, 'Onboarding role resolution failed'); }
+  }
+  if (nextRoles.size !== currentRoles.length) {
+    try { await Members.setRoles(_u.id, sid, [...nextRoles]); }
+    catch (err) { logger.warn({ err, event: 'onboarding.role.assign_error' }, 'Onboarding role assignment failed'); }
   }
 
   // Send welcome message to welcome channel
   if (config.welcomeChannelId) {
     try {
+      const welcomeChannel = await Channels.findByIdAndServer(String(config.welcomeChannelId), sid) as { type?: string } | null;
+      if (!welcomeChannel || welcomeChannel.type !== 'text') {
+        logger.warn({ channelId: config.welcomeChannelId, serverId: sid, event: 'onboarding.welcome.stale' }, 'Skipping stale/cross-server onboarding welcome channel');
+        return res.json({ ok: true, welcomeSkipped: true });
+      }
       const user = await Users.findById(_u.id);
       const displayName = member.nickname || user?.displayName || user?.username || 'yeni üye';
       const text = (config.welcomeMessage || 'Sunucuya hoş geldin, {user}! 👋')
         .replace('{user}', `@${displayName}`)
-        .replace('{server}', (await Servers.findById(String(req.params.sid ?? '')))?.name || 'sunucu');
+        .replace('{server}', (await Servers.findById(sid))?.name || 'sunucu');
 
-        const msgId = uuidv4();
-      await Messages.create({
-        _id: msgId,
+      const welcome = await Messages.create({
+        _id: uuidv4(),
         channelId: config.welcomeChannelId,
-        serverId: String(req.params.sid ?? ''),
+        serverId: sid,
         userId: 'system',
         username: 'Bridge',
         displayName: 'Bridge',
@@ -277,16 +291,9 @@ router.post('/:sid/onboarding/complete', authMiddleware, limits.write(), async (
         createdAt: Date.now(),
       });
 
-      // Broadcast via socket if io is available
+      // Broadcast the stored row (history cache, open channel, watchers).
       try {
-        const io = getIo();
-        if (io) {
-          io.to(`channel:${config.welcomeChannelId}`).emit('message:new', {
-            _id: msgId, channelId: config.welcomeChannelId, serverId: String(req.params.sid ?? ''),
-            userId: 'system', username: 'Bridge', displayName: 'Bridge',
-            content: text, type: 'welcome', createdAt: Date.now(),
-          });
-        }
+        await publishPersistedMessage(getIo(), welcome);
       } catch (err) { logger.warn({ err, event: 'onboarding.fetch.error' }, 'Onboarding fetch failed silently'); }
     } catch (err) { logger.warn({ err, event: 'onboarding.fetch.error' }, 'Onboarding fetch failed silently'); }
   }

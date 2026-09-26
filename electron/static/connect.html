@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bridge</title>
+  <link rel="stylesheet" href="connect.css">
+</head>
+<body>
+  <main class="card">
+    <img class="mark" src="../assets/icon.png" alt="" width="72" height="72">
+    <h1 id="title">Bridge</h1>
+    <p id="help" class="help"></p>
+    <form id="form" novalidate>
+      <label id="label" for="server"></label>
+      <input id="server" name="server" type="text" inputmode="url" autocomplete="url" spellcheck="false"
+             autocapitalize="off" required aria-describedby="error help">
+      <p id="error" class="error" role="alert" aria-live="assertive"></p>
+      <button id="submit" type="submit"></button>
+    </form>
+  </main>
+  <script src="connect.js"></script>
+</body>
+</html>

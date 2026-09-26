@@ -242,7 +242,8 @@
 
 /* Label */
 .mnav-label {
-  font-size: 10px;
+  /* Alt gezinme etiketi — okunması gerekir, rozet değil. */
+  font-size: var(--type-caption);
   font-weight: 500;
   letter-spacing: 0.01em;
   line-height: 1;

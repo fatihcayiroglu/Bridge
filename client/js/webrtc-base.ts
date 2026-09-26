@@ -7,6 +7,7 @@ export interface BridgeSocket {
   once(event: string, fn: (...args: unknown[]) => void): this;
   off(event: string, fn?: (...args: unknown[]) => void): this;
   emit(event: string, ...args: unknown[]): this;
+  disconnect(): this;
   id: string;
   connected: boolean;
 }

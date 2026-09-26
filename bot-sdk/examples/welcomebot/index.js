@@ -3,7 +3,7 @@
  * Kullanım: BRIDGE_BOT_TOKEN=brg_xxx BRIDGE_SERVER_URL=http://localhost:3001 node index.js
  */
 // Önce: cd bot-sdk && npm install && npm run build
-const { BridgeBot } = require('../../dist/index');
+const { BridgeBot } = require('bridge-bot-sdk');
 
 const bot = new BridgeBot({
   token: process.env.BRIDGE_BOT_TOKEN,

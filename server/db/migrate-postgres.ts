@@ -54,7 +54,7 @@ async function main(): Promise<void> {
   `);
 
   const appliedRes = await client.query<{ id: string }>(
-    'SELECT id FROM schema_migrations WHERE rolled_back = FALSE ORDER BY applied_at ASC',
+    'SELECT id FROM schema_migrations WHERE rolled_back = FALSE ORDER BY applied_at ASC, id ASC',
   );
   const applied     = new Set(appliedRes.rows.map((r) => r.id));
   const appliedList = appliedRes.rows.map((r) => r.id);
@@ -102,8 +102,11 @@ async function main(): Promise<void> {
   }
 
   // ── DOWN / ROLLBACK ──────────────────────────────────────────────────────────
-  const steps = command === 'rollback' ? parseInt(process.argv[3] ?? '1', 10) : 1;
-  if (isNaN(steps) || steps < 1) {
+  const stepsRaw = process.argv[3] ?? '1';
+  const steps = command === 'rollback' && /^(?:[1-9]\d*)$/.test(stepsRaw)
+    ? Number(stepsRaw)
+    : command === 'down' ? 1 : NaN;
+  if (!Number.isSafeInteger(steps) || steps < 1) {
     process.stderr.write('rollback için geçerli adım sayısı girin (örn: rollback 2)\n');
     process.exit(1);
   }
@@ -130,11 +133,15 @@ async function main(): Promise<void> {
     const downFile = path.join(rollbackDir, `${baseName}.down.sql`);
 
     if (!fs.existsSync(downFile)) {
+      // Fail closed: never skip a newer applied migration and then roll back an
+      // older one. That would create a schema state no forward chain reproduces.
       process.stderr.write(
-        `⚠️  DOWN script yok: ${downFile}\n` +
-        `   ${migration} için rollback desteği yok — atlanıyor.\n`,
+        `❌ DOWN script yok: ${downFile}\n` +
+        `   Rollback durduruldu; ${migration} ve daha eski migration'lara dokunulmadı.\n`,
       );
-      continue;
+      await client.end();
+      process.exitCode = 1;
+      return;
     }
 
     const sql = fs.readFileSync(downFile, 'utf8');

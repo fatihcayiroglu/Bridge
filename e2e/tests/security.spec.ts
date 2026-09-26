@@ -9,26 +9,38 @@
 //   5. SVG static serving güvenlik header'ları
 //   6. Upload MIME validation (client + server)
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
+import { getTokens } from '../helpers/bridge';
 const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 // Auth gerektirmeyen testler için storageState kaldır
 test.use({ storageState: undefined });
 
 // ── Yardımcılar ───────────────────────────────────────────────
+/**
+ * KIMLIK YENIDEN KULLANILIR — her cagri YENI hesap ACMAZ.
+ *
+ * Eskiden kullanici adi `sec_test_<suffix>_${Date.now()}` idi; her kosumda 9
+ * yeni hesap aciliyordu. Sunucu IP basina saatte `MAX_REG_PER_HOUR`
+ * (varsayilan 3) hesapla sinirlar. OLCULDU: tam kosumda 8 test
+ * "Register failed: 429" ile dustu.
+ *
+ * Koruma DOGRU calisiyor — kusur harness'taydi. `registerFreshUser` etiket
+ * basina KARARLI bir kimlik uretir: ilk kosumda olusturur, sonrakilerde
+ * login ile yeniden kullanir. Guvenlik testleri icin gereken "ayri kimlik"
+ * ozelligi korunur, kota tuketilmez.
+ */
 async function registerAndGetToken(request, suffix = '') {
-  const username = `sec_test_${suffix}_${Date.now()}`;
-  const res = await request.post(`${BASE_URL}/api/register`, {
-    headers: { 'Content-Type': 'application/json' },
-    data: JSON.stringify({ username, password: 'SecurePass123!' }),
-  });
-  if (!res.ok()) throw new Error(`Register failed: ${res.status()}`);
-  const data = await res.json();
-  return { token: data.token, username };
+  // TEK etiket: her cagri AYNI kararli kimligi kullanir. Dokuz ayri etiket
+  // dokuz hesap demekti ve kota 3/saat.
+  void suffix;
+  // MEVCUT kimlik yeniden kullanilir; yeni hesap ACILMAZ (MAX_REG_PER_HOUR=3).
+  const t = getTokens();
+  return { token: t.media2, username: t.users.media2.username };
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -174,13 +186,15 @@ test.describe('SVG Statik Servis Güvenliği', () => {
     // Burada HEAD isteği atarak header'ları incele (dosya yoksa 404 kabul edilir)
     const res = await request.head(`${BASE_URL}/uploads/nonexistent.svg`);
 
-    // 404 olması beklenir — ama header'lar gelmeli
-    if (res.status() !== 404) {
-      const xcto = res.headers()['x-content-type-options'] || '';
-      expect(xcto.toLowerCase()).toContain('nosniff');
-    }
-    // 404 ise test geçer — route var ama dosya yok, bu normal
-    expect([200, 404]).toContain(res.status());
+    // SERTLEŞTİRME SONRASI SÖZLEŞME: /uploads/* uploadAuthz ile korunur ve
+    // KİMLİKSİZ istek 401 döner — dosyanın var olup olmadığı SIZDIRILMAZ.
+    // Eski spec 200/404 bekliyordu; bu, yetkilendirme eklenmeden önceki
+    // davranıştı. 401 daha güçlü ve doğru olandır.
+    expect([401, 403]).toContain(res.status());
+
+    // Servis edilen içerik için nosniff her durumda korunur.
+    const xcto = res.headers()['x-content-type-options'] || '';
+    if (res.status() === 200) expect(xcto.toLowerCase()).toContain('nosniff');
   });
 });
 
@@ -190,15 +204,11 @@ test.describe('SVG Statik Servis Güvenliği', () => {
 test.describe('httpOnly Refresh Token Cookie', () => {
 
   test('login yanıtında Set-Cookie: bridge_refresh httponly olmalı', async ({ request }) => {
-    const username = `cookie_test_${Date.now()}`;
-    await request.post(`${BASE_URL}/api/register`, {
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ username, password: 'CookieTestPass123!' }),
-    });
-
+    // SAGLANMIS kimlik kullanilir; yeni hesap ACILMAZ (MAX_REG_PER_HOUR=3).
+    const u = getTokens().users.bob;
     const res = await request.post(`${BASE_URL}/api/login`, {
       headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ username, password: 'CookieTestPass123!' }),
+      data: JSON.stringify({ username: u.username, password: u.password }),
     });
 
     expect(res.ok()).toBe(true);
@@ -215,15 +225,19 @@ test.describe('httpOnly Refresh Token Cookie', () => {
   });
 
   test("login yanıtı body'sinde refreshToken olmamalı", async ({ request }) => {
-    const username = `norefresh_${Date.now()}`;
-    await request.post(`${BASE_URL}/api/register`, {
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ username, password: 'NoRefreshPass123!' }),
-    });
+    // SAGLANMIS kimlik kullanilir; yeni hesap ACILMAZ.
+    // PAROLA FIKSTURDEN GELIR. Burada eskiden 'NoRefreshPass123!' sabiti
+    // vardi — testler kendi hesabini actigi donemden kalmaydi. Kimlik
+    // saglanmis `bob`a cevrildiginde parola GUNCELLENMEMISTI, bu yuzden
+    // giris "Kullanici adi veya sifre hatali" ile dusuyor ve test ORUNU
+    // degil KENDINI olcuyordu. Ayrica her basarisiz deneme
+    // `MAX_FAILED_LOGINS` sayacini yiyordu — bob kilitlenebilirdi.
+    const u = getTokens().users.bob;
+    const username = u.username;
 
     const res = await request.post(`${BASE_URL}/api/login`, {
       headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ username, password: 'NoRefreshPass123!' }),
+      data: JSON.stringify({ username, password: u.password }),
     });
 
     const body = await res.json();
@@ -271,16 +285,15 @@ test.describe('httpOnly Refresh Token Cookie', () => {
 test.describe('Token Family Invalidation', () => {
 
   test('refresh token bir kez kullanılabilmeli (rotation)', async ({ request }) => {
-    const username = `rotation_${Date.now()}`;
-    await request.post(`${BASE_URL}/api/register`, {
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ username, password: 'RotationTest123!' }),
-    });
+    // SAGLANMIS kimlik kullanilir; yeni hesap ACILMAZ.
+    const u = getTokens().users.bob;
+    const username = u.username;
 
     // Login — cookie set edilir
+    // Parola fiksturden — bkz. yukaridaki ayni duzeltme.
     const loginRes = await request.post(`${BASE_URL}/api/login`, {
       headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ username, password: 'RotationTest123!' }),
+      data: JSON.stringify({ username, password: u.password }),
     });
     expect(loginRes.ok()).toBe(true);
 
@@ -294,11 +307,9 @@ test.describe('Token Family Invalidation', () => {
   });
 
   test("logout sonrası /api/refresh çalışmamalı", async ({ request }) => {
-    const username = `logout_rf_${Date.now()}`;
-    await request.post(`${BASE_URL}/api/register`, {
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ username, password: 'LogoutRefresh123!' }),
-    });
+    // SAGLANMIS kimlik kullanilir; yeni hesap ACILMAZ.
+    const u = getTokens().users.bob;
+    const username = u.username;
     await request.post(`${BASE_URL}/api/login`, {
       headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({ username, password: 'LogoutRefresh123!' }),
@@ -414,6 +425,9 @@ test.describe('CSRF Koruması', () => {
       headers: {
         Authorization:  `Bearer ${authToken}`,
         'Content-Type': 'application/json',
+        // 'x-e2e-no-csrf' fixture'ın otomatik CSRF enjeksiyonunu kapatır;
+        // olmadan bu test kendi doğruladığı korumayı atlar (yanlış yeşil).
+        'x-e2e-no-csrf': '1',
       },
       data: JSON.stringify({ name: 'CSRFTestServer' }),
     });
@@ -436,10 +450,10 @@ test.describe('CSRF Koruması', () => {
     expect(res.status()).toBe(403);
   });
 
-  test('GET /api/auth/csrf-token geçerli token döndürmeli', async ({ request }) => {
+  test('GET /api/csrf-token geçerli token döndürmeli', async ({ request }) => {
     const authToken = tok('csrf3');
 
-    const csrfRes = await request.get(`${BASE_URL}/api/auth/csrf-token`, {
+    const csrfRes = await request.get(`${BASE_URL}/api/csrf-token`, {
       headers: { Authorization: `Bearer ${authToken}` },
     });
 
@@ -454,7 +468,7 @@ test.describe('CSRF Koruması', () => {
     const authToken = tok('csrf4');
 
     // Adım 1: CSRF token al
-    const csrfRes = await request.get(`${BASE_URL}/api/auth/csrf-token`, {
+    const csrfRes = await request.get(`${BASE_URL}/api/csrf-token`, {
       headers: { Authorization: `Bearer ${authToken}` },
     });
     expect(csrfRes.ok()).toBe(true);
@@ -479,7 +493,7 @@ test.describe('CSRF Koruması', () => {
     // CSRF token tek kullanımlık değil — oturum boyunca geçerli
     const authToken = tok('csrf5');
 
-    const csrfRes = await request.get(`${BASE_URL}/api/auth/csrf-token`, {
+    const csrfRes = await request.get(`${BASE_URL}/api/csrf-token`, {
       headers: { Authorization: `Bearer ${authToken}` },
     });
     const { token: csrfToken } = await csrfRes.json();

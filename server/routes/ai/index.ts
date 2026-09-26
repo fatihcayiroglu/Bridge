@@ -7,7 +7,8 @@ import moderationRouter from './moderation';
 import streamingRouter  from './streaming';
 import { authMiddleware } from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
-import { AI_ENABLED, PROVIDER, safeProvider, GROQ_KEY, GEMINI_KEY, OPENROUTER_KEY, OLLAMA_URL, OLLAMA_MODEL } from '../../lib/aiProvider';
+import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
+import { AI_ENABLED, PROVIDER, safeProvider } from '../../lib/aiProvider';
 
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 const router = express.Router();
@@ -76,7 +77,7 @@ import { callAI } from '../../lib/aiProvider';
  *   get:
  *     tags: [AI]
  *     summary: AI sohbet — SSE stream
- *     description: Server-Sent Events ile gerçek zamanlı AI yanıtı. `?q=` ile soru, `?channelId=` ile kanal bağlamı.
+ *     description: 'Server-Sent Events ile gerçek zamanlı AI yanıtı. `?q=` ile soru, `?channelId=` ile kanal bağlamı.'
  *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: query
@@ -88,7 +89,7 @@ import { callAI } from '../../lib/aiProvider';
  *         schema: { type: string }
  *     responses:
  *       200:
- *         description: SSE akışı — `data: {"token":"..."}` / `data: {"done":true}`
+ *         description: 'SSE akışı — `data: {"token":"..."}` / `data: {"done":true}`'
  *         content:
  *           text/event-stream:
  *             schema:
@@ -272,6 +273,13 @@ router.get('/suggest-reply/:channelId', authMiddleware, limits.ai(), async (req,
   if (!await Members.findOne(_u.id, channel.serverId))
     return res.status(403).json({ error: 'Üye değilsiniz' });
 
+  // FAZ F — VIEW_CHANNELS: sunucu uyeligi kanal gorunurlugu degildir.
+  // AI acikken bu uc, kanalin son mesajlarini okuyup oneri uretir; gormeye
+  // yetkisi olmayan bir uyeye ozel kanal ICERIGI sizardi.
+  const suggestionPerms = await resolvePermissions(_u.id, String(channel.serverId), String(req.params.channelId ?? '')).catch(() => 0);
+  if (!hasPermission(suggestionPerms, PERMS.VIEW_CHANNELS) || !hasPermission(suggestionPerms, PERMS.READ_HISTORY))
+    return res.status(403).json({ error: 'Bu kanalın geçmişini görüntüleyemezsiniz.' });
+
   if (!AI_ENABLED) return res.json({ suggestions: ['👍', 'Anladım!', 'Teşekkürler!', '🔥'], provider: safeProvider('rules') });
 
   const msgs = (await Messages.messagesFind({ channelId: String(req.params.channelId ?? '') }).sort({ createdAt: -1 }).limit(6)).reverse();
@@ -315,9 +323,11 @@ router.get('/discover-match', authMiddleware, async (req, res) => {
 
   type EnrichedServer = { id: string; name: string; icon: string; iconUrl?: string; description?: string; tags?: string[]; memberCount: number };
   const normalizeTags = (tags: unknown): string[] => Array.isArray(tags) ? tags.filter((t): t is string => typeof t === 'string') : typeof tags === 'string' ? tags.split(',').map(t => t.trim()).filter(Boolean) : [];
-  const enrich = async (list: Array<{ _id: string; name: string; icon?: string | null; iconUrl?: string | null; description?: string; tags?: string | string[] }>): Promise<EnrichedServer[]> =>
+  // Kanonik `Server.name` OPSIYONELDIR; bu yerel daraltma onu zorunlu
+  // sayiyordu ve `Servers.find(...)` sonucu atanamiyordu.
+  const enrich = async (list: Array<{ _id: string; name?: string; icon?: string | null; iconUrl?: string | null; description?: string; tags?: string | string[] }>): Promise<EnrichedServer[]> =>
     Promise.all(list.map(async s => ({
-      id: s._id, name: s.name, icon: s.icon ?? '', iconUrl: s.iconUrl ?? undefined,
+      id: s._id, name: s.name ?? '', icon: s.icon ?? '', iconUrl: s.iconUrl ?? undefined,
       description: s.description, tags: normalizeTags(s.tags),
       memberCount: (await Members.findByServer(s._id)).length,
     })));

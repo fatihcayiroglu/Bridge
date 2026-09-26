@@ -11,8 +11,9 @@ import type {
   Thread, ThreadMessage, Bot, RefreshToken, WebAuthnCredential,
   NotificationPref, Friendship, Block, UserConnection, FederationActivity,
   FederationPeer, Poll, ScheduledMessage, AutomodRule, ReactionRole,
-  OutgoingWebhook, ChannelWebhook, CustomEmoji, ServerGif, SoundboardSound,
-  Podcast, PodcastEpisode, VoiceMessage, ChannelPermission, Bridge
+  OutgoingWebhook, ChannelWebhook, CustomEmoji, ServerGif, SoundboardSound, SoundboardUserStat,
+  Podcast, PodcastEpisode, VoiceMessage, ChannelPermission, Bridge,
+  StickerPackRecord, StickerPackItemRecord
 } from './repositories/types/entities';
 
 // Tüm bilinen collection'lar — noUncheckedIndexedAccess için explicit property'ler
@@ -21,7 +22,6 @@ export interface DbInstance {
   users:                  PgCollection<User>;
   servers:                PgCollection<Server>;
   members:                PgCollection<Member>;
-  memberRoles:            PgCollection<DbRecord>;
   channels:               PgCollection<Channel>;
   channelCategories:      PgCollection<ChannelCategory>;
   channelPermissions:     PgCollection<ChannelPermission>;
@@ -50,10 +50,14 @@ export interface DbInstance {
   // Notifications
   notifications:          PgCollection<DbRecord>;
   notificationPrefs:      PgCollection<NotificationPref>;
+  notificationKeywords:   PgCollection<DbRecord>;
   pushSubscriptions:      PgCollection<DbRecord>;
   nativePushTokens:       PgCollection<DbRecord>;
   fcmTokens:              PgCollection<DbRecord>;
   unreadCounts:           PgCollection<DbRecord>;
+  channelReadPositions:   PgCollection<DbRecord>;
+  savedMessages:          PgCollection<DbRecord>;
+  messageReports:         PgCollection<DbRecord>;
   // Social
   friendships:            PgCollection<Friendship>;
   blocks:                 PgCollection<Block>;
@@ -67,6 +71,7 @@ export interface DbInstance {
   apMessages:             PgCollection<DbRecord>;
   apOutgoingFollows:      PgCollection<DbRecord>;
   userApKeys:             PgCollection<DbRecord>;
+  serverFederationKeys:   PgCollection<DbRecord>;
   federationPeers:        PgCollection<FederationPeer>;
   federationBlacklist:    PgCollection<DbRecord>;
   federationWhitelist:    PgCollection<DbRecord>;
@@ -76,6 +81,7 @@ export interface DbInstance {
   automodRules:           PgCollection<AutomodRule>;
   reactionRoles:          PgCollection<ReactionRole>;
   outgoingWebhooks:       PgCollection<OutgoingWebhook>;
+  outgoingWebhookDeliveries: PgCollection<DbRecord>;
   webhooks:               PgCollection<ChannelWebhook>;
   serverEmojis:           PgCollection<CustomEmoji>;
   serverGifs:             PgCollection<ServerGif>;
@@ -83,6 +89,12 @@ export interface DbInstance {
   serverOnboarding:       PgCollection<DbRecord>;
   onboardingCompletions:  PgCollection<DbRecord>;
   soundboard:             PgCollection<SoundboardSound>;
+  soundboardUserStats:    PgCollection<SoundboardUserStat>;
+  // Sticker paketleri (migrations_pg/021) — OLUŞTURMA yolu bu koleksiyonları
+  // KULLANMAZ: atomiklik için ServerAssetRepository içinde withTransaction +
+  // ham SQL kullanılır. Bunlar okuma/güncelleme/silme içindir.
+  stickerPacks:           PgCollection<StickerPackRecord>;
+  stickerPackItems:       PgCollection<StickerPackItemRecord>;
   podcastSettings:        PgCollection<Podcast>;
   podcastEpisodes:        PgCollection<PodcastEpisode>;
   voiceMessages:          PgCollection<VoiceMessage>;
@@ -97,10 +109,26 @@ export interface DbInstance {
   oauthTokens?:           PgCollection<DbRecord>;
   oauthCodes?:            PgCollection<DbRecord>;
   // DB internals
-  _pool:                  import('pg').Pool;
+  /**
+   * PostgreSQL havuzu — ISTEGE BAGLI.
+   *
+   * `NODE_ENV=test` altinda loader mock DB dondurur ve mock DB havuzu
+   * VARSAYILAN OLARAK KURMAZ (bkz. tests/helpers/mockDb.ts'deki uzun not:
+   * urun kodu atomik SQL yolunu `db._pool` VARLIGINA bakarak secer).
+   * Zorunlu bildirmek, var olmayan bir garantiyi varmis gibi gosteriyordu.
+   */
+  _pool?:                 import('pg').Pool;
   _ftsSearch:             (...args: unknown[]) => unknown;
+  _unifiedSearch?:        (...args: unknown[]) => unknown;
+  _searchContext?:        (...args: unknown[]) => unknown;
   _transaction:           (...args: unknown[]) => unknown;
   _initSchema:            () => Promise<void>;
+  /**
+   * YALNIZCA `NODE_ENV=test` altinda vardir: loader o modda mock DB
+   * dondurur ve mock DB durumu sifirlayabilir. Istege bagli olmasi bu
+   * gercegin yazilmasidir — uretimde bu uye YOKTUR.
+   */
+  _reset?:                () => void;
   _sqlite:                null;
   // Allow other collections without undefined
   [key: string]:          PgCollection<object> | unknown;
@@ -110,7 +138,7 @@ let db: DbInstance;
 
 if (process.env.NODE_ENV === 'test') {
   // Jest/unit tests must never try to connect to a real database.
-  const mockFactory = tryRequire<{ createMockDb: () => DbInstance }>('../tests/helpers/mockDb');
+  const mockFactory = tryRequire<{ createMockDb: () => DbInstance }>('../tests/helpers/mockDb', require);
   if (!mockFactory) {
     throw new Error('[DB] Test mock DB could not be loaded');
   }

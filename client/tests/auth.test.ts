@@ -1,331 +1,531 @@
-// client/tests/auth.test.ts — Bridge v74
-// core/auth.js için unit testler
-// apiFetch, login flow, register flow, CAPTCHA yardımcıları, lockout geri sayım
+// client/tests/auth.test.ts
+// Auth — CANLI sözleşme testleri (native Vitest/ESM).
+//
+// ════════════════════════════════════════════════════════════════════════════
+// FAZ 12 — LIVE_MOVED_CONTRACT + NATIVE_VITEST_MIGRATION
+// ════════════════════════════════════════════════════════════════════════════
+//
+// ÇÖKME NEDENİ: dosya `loadAuthModule()` içinde CJS `require('../js/core/auth')`
+// kullanıp named export'ları `global`e yayıyordu. `js/core/auth` ARTIK YOK;
+// süit "Cannot find module '../js/core/auth'" ile toplanamıyordu ve içindeki
+// 21 test "skipped" sayılıyordu. Jest→Vitest sözdizimi sorunu DEĞİLDİ:
+// modül sahipliği taşınmıştı.
+//
+// BUGÜNKÜ SAHİPLER (kaynak doğrulandı):
+//   js/core/api-fetch.ts    → apiFetch, refreshAccessToken, resetRefreshState
+//   js/core/auth-compat.ts  → showAuthMsg, switchAuthTab, login, register,
+//                             startApp, logout, readToken, saveToken
+//
+// 21 İDDİANIN TAMAMI CANLI SÖZLEŞMEYE EŞLENDİ (FULL_DEAD = 0). Üç iddia
+// TAŞINMIŞ+DARALMIŞ olduğu için bugünkü davranışa göre yeniden ifade edildi;
+// hiçbiri zayıflatılmadı:
+//
+//   [A] "refresh token yoksa" → refresh artık httpOnly `bridge_refresh`
+//       COOKIE'sine dayanır (api-fetch.ts:9-12). localStorage'daki
+//       `bridge_refresh_token` kapısı ÖLÜ. Bugünkü eşdeğer canlı sözleşme:
+//       yenileme kullanılamaz durumdaysa (`_refreshDisabled`) fetch'e HİÇ
+//       gidilmeden false döner.
+//
+//   [B] "startApp çağrıldı" → `startApp` MODÜL-YEREL binding ile çağrılır
+//       (auth-compat.ts:174, :201). `globalThis.startApp` monkeypatch'i bu
+//       çağrıyı YAKALAYAMAZ. Bunun yerine startApp'in BUGÜNKÜ gözlemlenebilir
+//       etkileri doğrulanır: token kalıcılığı · `bridge:auth-success` olayı ·
+//       auth-screen→app geçişi · currentUser durumu.
+//       Ayrıca eski 3. argüman (`refreshToken`) üretimde YOK — startApp
+//       2 parametrelidir (token, user).
+//
+//   [C] "lockout geri sayımı" → istemcide geri sayım YOK. `login()` 429'u da
+//       diğer hatalar gibi `errorText(payload, ...)` ile gösterir
+//       (auth-compat.ts:165-167). ÖLEN kısım istemci-içi sayaçtır; CANLI kalan
+//       kısım kilit yanıtının kullanıcıya sessizce yutulmadan iletilmesidir.
+//       Test bugünkü davranışı doğrular ve sahte zamanlayıcıyla geri sayımın
+//       GERÇEKTEN olmadığını kanıtlar (mesaj 60 sn sonra değişmez).
+//
+// GÜVENLİK: 401 işleme, yenileme başarısızlığı, logout ve ağ hatası izolasyonu
+// zayıflatılmadı. Test edilen fonksiyonların hiçbiri mock'lanmadı; yalnız dış
+// sınır (`fetch`) mock'landı. Bu turda üretim kodu DEĞİŞTİRİLMEDİ.
+//
+// TOKEN GÜVENLİĞİ: sentetik token dizeleri yalnız bellek içinde karşılaştırılır;
+// hiçbir token / Authorization / cookie değeri stdout'a yazılmaz.
 
-'use strict';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// ── KOPYA METNİ TEST SABİTİ DEĞİLDİR ──────────────────────────────────────
+// Bu dosya kimlik akışlarının kullanıcıya gösterdiği metinleri İNGİLİZCE ham
+// dizgeler (`'Invalid credentials'`, `/fill in all fields/i`) ya da doğrudan
+// SUNUCU/İSTİSNA metni (`'Network error'`) olarak bekliyordu. Üretim bu
+// metinleri i18n sözlüğünden alır ve `api-error.ts` güvenlik sözleşmesi gereği
+// ham sunucu/istisna ayrıntısını ASLA göstermez. Beklentiler bu yüzden
+// anahtarın kendisinden türetilir; ayrıca ham metnin SIZMADIĞI da denetlenir.
+import { t } from '../js/core/i18n/index.ts';
 
-// ─── Modül yükleyici ──────────────────────────────────────────────────────────
-// ESM kaynak dosyası — babel-jest transform ile CommonJS'e dönüştürülür,
-// ardından named export'lar global scope'a yayılır.
-function loadAuthModule() {
-  const authMod = require('../js/core/auth');
-  // Named export'ları global'a yay (showAuthMsg, login, register, vb.)
-  Object.entries(authMod).forEach(([k, v]) => { global[k] = v; });
+import {
+  showAuthMsg,
+  switchAuthTab,
+  login,
+  completeTwoFactorLogin,
+  register,
+  readToken,
+  saveToken,
+} from '../js/core/auth-compat.ts';
+
+import {
+  apiFetch,
+  refreshAccessToken,
+  resetRefreshState,
+  wasLastRefreshFailureTransient,
+} from '../js/core/api-fetch.ts';
+
+// ─── Yardımcılar ────────────────────────────────────────────────────────────
+
+type FetchMock = ReturnType<typeof vi.fn>;
+
+/** Üretimin beklediği yüzey: ok · status · json(). */
+function jsonResponse(status: number, body: unknown = {}): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  } as unknown as Response;
 }
 
-// ─── DOM şablonu ──────────────────────────────────────────────────────────────
-function buildAuthDOM() {
+let fetchMock: FetchMock;
+
+/** Belirli bir yola giden çağrı sayısı — logout'un kendi fetch'ini dışlar. */
+function callsTo(path: string): number {
+  return fetchMock.mock.calls.filter(([url]) => String(url).includes(path)).length;
+}
+
+/** Kaynağın GERÇEKTEN sorguladığı seçiciler (auth-compat.ts taraması). */
+function buildAuthDOM(): void {
   document.body.innerHTML = `
-    <div id="auth-msg"></div>
-    <div id="login-form">
-      <input  id="l-username" value="">
-      <input  id="l-password" type="password" value="">
-      <button class="btn-primary">Sign In</button>
+    <div id="auth-screen">
+      <button class="auth-tab">Giriş</button>
+      <button class="auth-tab">Kayıt</button>
+      <div id="auth-msg"></div>
+      <div id="login-form">
+        <div id="login-credentials">
+          <input  id="l-username" value="">
+          <input  id="l-password" type="password" value="">
+          <button class="btn-primary">Sign In</button>
+        </div>
+        <div id="twofactor-login-form" style="display:none">
+          <input id="l-2fa-code" value="">
+          <button class="btn-primary">Verify</button>
+        </div>
+      </div>
+      <div id="register-form">
+        <input  id="r-displayname" value="">
+        <input  id="r-username"    value="">
+        <input  id="r-password"    type="password" value="">
+        <button class="btn-primary">Create Account</button>
+      </div>
     </div>
-    <div id="register-form">
-      <input  id="r-displayname" value="">
-      <input  id="r-username"    value="">
-      <input  id="r-password"    type="password" value="">
-      <button class="btn-primary">Create Account</button>
+    <div id="app" style="display:none">
+      <div id="my-avatar"></div>
+      <div id="my-username"></div>
     </div>
-    <div id="captcha-widget-wrap" style="display:none">
-      <div id="captcha-widget"></div>
-    </div>
-    <div id="toast-container"></div>
   `;
 }
 
-// ─── Setup ────────────────────────────────────────────────────────────────────
-beforeAll(() => {
-  // Bridge globals
-  global.API = 'http://localhost:3000';
-  global.token = null;
-  global.refreshToken = null;
-  global.clientConfig = {};
-  global.serverEmojiCache = [];
-  global.startApp = jest.fn();   // uygulama başlatıcı stub
+function setValue(id: string, value: string): void {
+  (document.getElementById(id) as HTMLInputElement).value = value;
+}
 
-  buildAuthDOM();
-  loadAuthModule();
-});
+function authMsg(): HTMLElement {
+  return document.getElementById('auth-msg') as HTMLElement;
+}
+
+/** `bridge:auth-success` dinleyicisi — her zaman sökülür. */
+function captureAuthSuccess(): { detail: () => unknown; count: () => number; stop: () => void } {
+  const seen: unknown[] = [];
+  const handler = (event: Event): void => { seen.push((event as CustomEvent).detail); };
+  document.addEventListener('bridge:auth-success', handler);
+  return {
+    detail: () => seen[0],
+    count: () => seen.length,
+    stop: () => document.removeEventListener('bridge:auth-success', handler),
+  };
+}
+
+// ─── İzolasyon ──────────────────────────────────────────────────────────────
 
 beforeEach(() => {
-  jest.clearAllMocks();
-  global.fetch.mockReset();
-  // Her test için temiz DOM
   buildAuthDOM();
-  // token/refreshToken sıfırla
-  global.token = null;
-  global.refreshToken = null;
   localStorage.clear();
+
+  // api-fetch.ts modül-düzeyi durumu (_refreshPromise / _refreshDisabled).
+  resetRefreshState();
+
+  // startApp/logout globalThis'e yazar — testler arası sızmasın.
+  delete (globalThis as Record<string, unknown>).currentUser;
+  delete (globalThis as Record<string, unknown>).me;
+
+  fetchMock = vi.fn(async () => jsonResponse(200, {}));
+  vi.stubGlobal('fetch', fetchMock);
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// apiFetch
-// ══════════════════════════════════════════════════════════════════════════════
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+  document.body.innerHTML = '';
+  localStorage.clear();
+  delete (globalThis as Record<string, unknown>).currentUser;
+  delete (globalThis as Record<string, unknown>).me;
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// apiFetch — api-fetch.ts:90
+// ════════════════════════════════════════════════════════════════════════════
 describe('apiFetch()', () => {
-  test('Authorization header ekler', async () => {
-    global.token = 'test-jwt-token';
-    global.fetch.mockResolvedValueOnce({ ok: true, status: 200, json: () => ({}) });
+  it('token varken Authorization header ekler', async () => {
+    saveToken('test-jwt-token');
 
-    await global.apiFetch(`${global.API}/api/servers`);
+    await apiFetch('/api/servers');
 
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: 'Bearer test-jwt-token' }),
-      })
-    );
+    // withAuth `new Headers(...)` kurar (api-fetch.ts:74) — düz nesne DEĞİL.
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const headers = init.headers as Headers;
+
+    expect(headers.get('Authorization')).toBe('Bearer test-jwt-token');
+    // Aynı sözleşmenin diğer yarısı: varsayılan Accept ve credentials.
+    expect(headers.get('Accept')).toBe('application/json');
+    expect(init.credentials).toBe('include');
   });
 
-  test('401 alınca refresh dener, başarılıysa isteği tekrarlar', async () => {
-    global.token = 'expired-token';
-    global.refreshToken = 'valid-refresh';
-    localStorage.setItem('bridge_refresh_token', 'valid-refresh');
+  it('401 alınca refresh dener, başarılıysa isteği TAM BİR KEZ tekrarlar', async () => {
+    saveToken('expired-token');
 
-    // İlk istek → 401
-    global.fetch
-      .mockResolvedValueOnce({ ok: false, status: 401, json: () => ({}) })
-      // refresh endpoint → yeni tokenlar
-      .mockResolvedValueOnce({
-        ok: true, status: 200,
-        json: () => Promise.resolve({ token: 'new-token', refreshToken: 'new-refresh' }),
-      })
-      // retry → başarı
-      .mockResolvedValueOnce({ ok: true, status: 200, json: () => ({}) });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(401))                              // orijinal
+      .mockResolvedValueOnce(jsonResponse(200, { token: 'renewed-token' }))  // /api/refresh
+      .mockResolvedValueOnce(jsonResponse(200, { ok: true }));               // retry
 
-    const res = await global.apiFetch(`${global.API}/api/me`);
+    const res = await apiFetch('/api/me');
+
     expect(res.status).toBe(200);
-    // Toplam 3 fetch çağrısı: orijinal + refresh + retry
-    expect(global.fetch).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(callsTo('/api/me')).toBe(2);       // orijinal + tek retry
+    expect(callsTo('/api/refresh')).toBe(1);  // tek yenileme
+    expect(readToken()).toBe('renewed-token');
   });
 
-  test('refresh token yoksa sadece orijinal yanıtı döndürür', async () => {
-    global.token = 'expired-token';
-    global.refreshToken = null;
-    localStorage.removeItem('bridge_refresh_token');
+  it('yenileme başarısızsa ORİJİNAL 401 yanıtını döndürür ve retry YAPMAZ', async () => {
+    saveToken('expired-token');
 
-    global.fetch.mockResolvedValueOnce({ ok: false, status: 401, json: () => ({}) });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(401))   // orijinal
+      .mockResolvedValueOnce(jsonResponse(401));  // /api/refresh reddetti
+    // Sonraki çağrılar (logout'un /api/logout'u) varsayılan mock'a düşer.
 
-    const res = await global.apiFetch(`${global.API}/api/me`);
+    const res = await apiFetch('/api/me');
+
     expect(res.status).toBe(401);
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(callsTo('/api/me')).toBe(1);        // TEKRAR DENENMEDİ
+    // logout() yolu: oturum kimliği bırakıldı.
+    expect(readToken()).toBeNull();
   });
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// showAuthMsg
-// ══════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// showAuthMsg — auth-compat.ts:72
+// ════════════════════════════════════════════════════════════════════════════
 describe('showAuthMsg()', () => {
-  test('hata mesajını auth-error class ile gösterir', () => {
-    global.showAuthMsg('Invalid credentials');
-    const el = document.getElementById('auth-msg');
-    expect(el.className).toBe('auth-error');
-    expect(el.textContent).toBe('Invalid credentials');
-    expect(el.style.display).not.toBe('none');
+  it('hata mesajını auth-error class ile gösterir', () => {
+    showAuthMsg('Invalid credentials');
+
+    expect(authMsg().className).toBe('auth-error');
+    expect(authMsg().textContent).toBe('Invalid credentials');
+    expect(authMsg().style.display).not.toBe('none');
   });
 
-  test('başarı mesajını auth-success class ile gösterir', () => {
-    global.showAuthMsg('Account created!', 'success');
-    const el = document.getElementById('auth-msg');
-    expect(el.className).toBe('auth-success');
+  it('başarı mesajını auth-success class ile gösterir', () => {
+    showAuthMsg('Account created!', 'success');
+
+    expect(authMsg().className).toBe('auth-success');
+    expect(authMsg().textContent).toBe('Account created!');
   });
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// switchAuthTab
-// ══════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// switchAuthTab — auth-compat.ts:80
+// ════════════════════════════════════════════════════════════════════════════
 describe('switchAuthTab()', () => {
-  beforeEach(() => {
-    // Tab butonlarını DOM'a ekle
-    document.body.insertAdjacentHTML('beforeend', `
-      <button class="auth-tab">Giriş</button>
-      <button class="auth-tab">Kayıt</button>
-    `);
+  it('"login" sekmesi login-form\'u gösterir ve ilk sekmeyi aktifler', () => {
+    switchAuthTab('login');
+
+    expect(document.getElementById('login-form')!.style.display).not.toBe('none');
+    expect(document.getElementById('register-form')!.style.display).toBe('none');
+
+    const tabs = document.querySelectorAll('.auth-tab');
+    expect(tabs[0].classList.contains('active')).toBe(true);
+    expect(tabs[1].classList.contains('active')).toBe(false);
   });
 
-  test('"login" sekmesi login-form\'u gösterir', () => {
-    global.switchAuthTab('login');
-    expect(document.getElementById('login-form').style.display).not.toBe('none');
-    expect(document.getElementById('register-form').style.display).toBe('none');
+  it('"register" sekmesi register-form\'u gösterir ve ikinci sekmeyi aktifler', () => {
+    switchAuthTab('register');
+
+    expect(document.getElementById('register-form')!.style.display).not.toBe('none');
+    expect(document.getElementById('login-form')!.style.display).toBe('none');
+
+    const tabs = document.querySelectorAll('.auth-tab');
+    expect(tabs[1].classList.contains('active')).toBe(true);
+    expect(tabs[0].classList.contains('active')).toBe(false);
   });
 
-  test('"register" sekmesi register-form\'u gösterir', () => {
-    global.switchAuthTab('register');
-    expect(document.getElementById('register-form').style.display).not.toBe('none');
-    expect(document.getElementById('login-form').style.display).toBe('none');
-  });
+  it('sekme değişince auth-msg gizlenir', () => {
+    showAuthMsg('önceki hata');
+    expect(authMsg().style.display).not.toBe('none');
 
-  test('sekme değişince auth-msg gizlenir', () => {
-    const msg = document.getElementById('auth-msg');
-    msg.style.display = 'block';
-    global.switchAuthTab('login');
-    expect(msg.style.display).toBe('none');
+    switchAuthTab('login');
+
+    expect(authMsg().style.display).toBe('none');
   });
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// login()
-// ══════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// login — auth-compat.ts:157
+// ════════════════════════════════════════════════════════════════════════════
 describe('login()', () => {
-  test('alanlar boşken hata mesajı gösterir, fetch çağırmaz', async () => {
-    document.getElementById('l-username').value = '';
-    document.getElementById('l-password').value = '';
-    await global.login();
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(document.getElementById('auth-msg').textContent).toMatch(/fill in all fields/i);
+  it('alanlar boşken hata mesajı gösterir, fetch çağırmaz', async () => {
+    setValue('l-username', '');
+    setValue('l-password', '');
+
+    await login();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(authMsg().textContent).toBe(t('adm_all_required'));
   });
 
-  test('başarılı girişte startApp çağrılır', async () => {
-    document.getElementById('l-username').value = 'fatih';
-    document.getElementById('l-password').value = 'pass123';
+  it('başarılı girişte oturum kurulur (startApp gözlemlenebilir etkileri)', async () => {
+    // NOT: startApp modül-yerel çağrılır; spy YERİNE etkileri doğrulanır.
+    const user = { id: '1', username: 'fatih', displayName: 'Fatih' };
+    setValue('l-username', 'fatih');
+    setValue('l-password', 'pass123');
 
-    global.fetch.mockResolvedValueOnce({
-      ok: true, status: 200,
-      json: () => Promise.resolve({ token: 'tok', refreshToken: 'ref', user: { id: '1', username: 'fatih' } }),
-    });
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { token: 'session-token', user }));
 
-    await global.login();
-    expect(global.startApp).toHaveBeenCalledWith('tok', { id: '1', username: 'fatih' }, 'ref');
+    const events = captureAuthSuccess();
+    try {
+      await login();
+
+      expect(callsTo('/api/login')).toBe(1);
+      expect(readToken()).toBe('session-token');             // saveToken
+      expect(events.count()).toBe(1);                        // bridge:auth-success
+      expect(events.detail()).toEqual(user);
+      expect((globalThis as Record<string, unknown>).currentUser).toEqual(user);
+      expect(document.getElementById('auth-screen')!.style.display).toBe('none');
+      expect(document.getElementById('app')!.style.display).toBe('flex');
+      expect(document.getElementById('my-username')!.textContent).toBe('Fatih');
+    } finally {
+      events.stop();
+    }
   });
 
-  test('hatalı kimlik bilgilerinde hata mesajı gösterir', async () => {
-    document.getElementById('l-username').value = 'fatih';
-    document.getElementById('l-password').value = 'wrong';
+  it('[SECURITY] 2FA challenge tamamlanmadan oturum kurulmaz; tempToken servera geri gönderilir', async () => {
+    const user = { id: '1', username: 'fatih', displayName: 'Fatih' };
+    setValue('l-username', 'fatih');
+    setValue('l-password', 'pass123');
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(202, { requiresTwoFactor: true, tempToken: 'opaque-temp-token-12345678901234567890' }))
+      .mockResolvedValueOnce(jsonResponse(200, { token: 'session-after-2fa', user }));
 
-    global.fetch.mockResolvedValueOnce({
-      ok: false, status: 401,
-      json: () => Promise.resolve({ error: 'Invalid credentials' }),
-    });
+    await login();
+    expect(readToken()).toBeNull();
+    expect(document.getElementById('login-credentials')!.style.display).toBe('none');
+    expect(document.getElementById('twofactor-login-form')!.style.display).not.toBe('none');
 
-    await global.login();
-    expect(document.getElementById('auth-msg').textContent).toBe('Invalid credentials');
-    expect(global.startApp).not.toHaveBeenCalled();
+    setValue('l-2fa-code', '123456');
+    await completeTwoFactorLogin();
+
+    expect(readToken()).toBe('session-after-2fa');
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(secondBody).toEqual({ tempToken: 'opaque-temp-token-12345678901234567890', code: '123456' });
+    expect(secondBody).not.toHaveProperty('userId');
   });
 
-  test('lockout yanıtı (locked + retryAfter) gelince geri sayım başlar', async () => {
-    jest.useFakeTimers();
-    document.getElementById('l-username').value = 'fatih';
-    document.getElementById('l-password').value = 'wrong';
+  it('hatalı kimlik bilgilerinde hata gösterir, oturum KURULMAZ', async () => {
+    setValue('l-username', 'fatih');
+    setValue('l-password', 'wrong');
 
-    global.fetch.mockResolvedValueOnce({
-      ok: false, status: 429,
-      json: () => Promise.resolve({ locked: true, retryAfter: 60 }),
-    });
+    fetchMock.mockResolvedValueOnce(jsonResponse(401, { error: 'Invalid credentials' }));
 
-    await global.login();
-    const el = document.getElementById('auth-msg');
-    expect(el.textContent).toMatch(/kilitli/i);
-    jest.useRealTimers();
+    const events = captureAuthSuccess();
+    try {
+      await login();
+
+      // Sunucunun `error` gövdesi kullanıcıya SIZMAZ: 401 kanonik metne eşlenir.
+      expect(authMsg().textContent).toBe(t('auth_invalid_credentials'));
+      expect(authMsg().textContent).not.toContain('Invalid credentials');
+      expect(authMsg().className).toBe('auth-error');
+      expect(events.count()).toBe(0);          // startApp'e HİÇ ulaşılmadı
+      expect(readToken()).toBeNull();
+      expect(document.getElementById('app')!.style.display).not.toBe('flex');
+    } finally {
+      events.stop();
+    }
   });
 
-  test('ağ hatası "Cannot connect" mesajını gösterir', async () => {
-    document.getElementById('l-username').value = 'fatih';
-    document.getElementById('l-password').value = 'pass';
-    global.fetch.mockRejectedValueOnce(new Error('Network error'));
+  it('kilit yanıtı (429) kullanıcıya iletilir — istemci geri sayımı YOKTUR', async () => {
+    // TAŞINMIŞ+DARALMIŞ [C]: istemci-içi retryAfter sayacı üretimde yok.
+    // Canlı kalan güvence: kilit yanıtı sessizce yutulmaz.
+    vi.useFakeTimers();
+    setValue('l-username', 'fatih');
+    setValue('l-password', 'wrong');
 
-    await global.login();
-    expect(document.getElementById('auth-msg').textContent).toMatch(/cannot connect/i);
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(429, { error: 'Hesap geçici olarak kilitli', locked: true, retryAfter: 60 }),
+    );
+
+    await login();
+
+    expect(authMsg().textContent).toBe(t('auth_too_many_attempts'));
+    expect(authMsg().className).toBe('auth-error');
+
+    // Geri sayım OLSAYDI metin değişirdi; bugünkü sözleşmede sabit kalır.
+    const afterShow = authMsg().textContent;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(authMsg().textContent).toBe(afterShow);
   });
 
-  test('login sonrası buton enabled/text sıfırlanır', async () => {
-    document.getElementById('l-username').value = 'fatih';
-    document.getElementById('l-password').value = 'pass';
-    const btn = document.querySelector('#login-form .btn-primary');
+  it('ağ hatası kullanıcıya iletilir, sessizce yutulmaz', async () => {
+    setValue('l-username', 'fatih');
+    setValue('l-password', 'pass');
 
-    global.fetch.mockResolvedValueOnce({
-      ok: true, status: 200,
-      json: () => Promise.resolve({ token: 'tok', refreshToken: 'ref', user: {} }),
-    });
+    // Error fırlatılırsa mesajı gösterilir (auth-compat.ts:177).
+    fetchMock.mockRejectedValueOnce(new Error('Network error'));
+    await login();
+    // İstisnanın `message`'ı da ham veridir; ağ hatası kanonik metne eşlenir.
+    expect(authMsg().textContent).toBe(t('error_network'));
+    expect(authMsg().textContent).not.toContain('Network error');
+    expect(authMsg().className).toBe('auth-error');
 
-    await global.login();
+    // Error DIŞI bir reddedişte genel bağlantı mesajına düşülür.
+    fetchMock.mockRejectedValueOnce('boom');
+    await login();
+    expect(authMsg().textContent).toBe(t('auth_connection_failed'));
+  });
+
+  it('login sonrası buton enabled/text sıfırlanır', async () => {
+    setValue('l-username', 'fatih');
+    setValue('l-password', 'pass');
+    const btn = document.querySelector('#login-form .btn-primary') as HTMLButtonElement;
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { token: 'tok', user: {} }));
+
+    await login();
+
     expect(btn.disabled).toBe(false);
-    expect(btn.textContent).toBe('Sign In');
+    expect(btn.textContent).toBe(t('sign_in'));
   });
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// register()
-// ══════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// register — auth-compat.ts:183
+// ════════════════════════════════════════════════════════════════════════════
 describe('register()', () => {
-  test('alanlar boşken hata mesajı gösterir', async () => {
-    document.getElementById('r-username').value = '';
-    document.getElementById('r-password').value = '';
-    await global.register();
-    expect(global.fetch).not.toHaveBeenCalled();
+  it('alanlar boşken fetch çağırmaz ve hata gösterir', async () => {
+    setValue('r-username', '');
+    setValue('r-password', '');
+
+    await register();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(authMsg().textContent).toBe(t('adm_all_required'));
   });
 
-  test('başarılı kayıtta startApp çağrılır', async () => {
-    document.getElementById('r-displayname').value = 'Fatih';
-    document.getElementById('r-username').value    = 'fatih42';
-    document.getElementById('r-password').value    = 'secure123';
+  it('başarılı kayıtta oturum kurulur (startApp gözlemlenebilir etkileri)', async () => {
+    const user = { id: '2', username: 'fatih42', displayName: 'Fatih' };
+    setValue('r-displayname', 'Fatih');
+    setValue('r-username', 'fatih42');
+    setValue('r-password', 'secure123');
 
-    global.fetch.mockResolvedValueOnce({
-      ok: true, status: 201,
-      json: () => Promise.resolve({ token: 'tok', refreshToken: 'ref', user: { id: '2' } }),
-    });
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { token: 'new-session', user }));
 
-    await global.register();
-    expect(global.startApp).toHaveBeenCalledWith('tok', { id: '2' }, 'ref');
+    const events = captureAuthSuccess();
+    try {
+      await register();
+
+      expect(callsTo('/api/register')).toBe(1);
+      // displayName gövdeye dahil edilir (auth-compat.ts:193).
+      const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+      expect(body.username).toBe('fatih42');
+      expect(body.displayName).toBe('Fatih');
+
+      expect(readToken()).toBe('new-session');
+      expect(events.count()).toBe(1);
+      expect(events.detail()).toEqual(user);
+      expect(document.getElementById('app')!.style.display).toBe('flex');
+    } finally {
+      events.stop();
+    }
   });
 
-  test('kullanıcı adı alındıysa sunucu hatasını gösterir', async () => {
-    document.getElementById('r-username').value = 'existing';
-    document.getElementById('r-password').value = 'pass';
+  it('kullanıcı adı alındıysa sunucu hatasını gösterir', async () => {
+    setValue('r-username', 'existing');
+    setValue('r-password', 'gecerli-parola'); // Faz 18: kurala uyan girdi (yanıt işlenişi ölçülüyor)
 
-    global.fetch.mockResolvedValueOnce({
-      ok: false, status: 409,
-      json: () => Promise.resolve({ error: 'Username already taken' }),
-    });
+    fetchMock.mockResolvedValueOnce(jsonResponse(409, { error: 'Username already taken' }));
 
-    await global.register();
-    expect(document.getElementById('auth-msg').textContent).toBe('Username already taken');
+    await register();
+
+    expect(authMsg().textContent).toBe(t('auth_username_taken'));
+    expect(readToken()).toBeNull();
   });
 
-  test('kayıt sonrası buton sıfırlanır', async () => {
-    document.getElementById('r-username').value = 'newuser';
-    document.getElementById('r-password').value = 'pass';
-    const btn = document.querySelector('#register-form .btn-primary');
+  it('kayıt sonrası buton enabled/text sıfırlanır', async () => {
+    setValue('r-username', 'newuser');
+    setValue('r-password', 'gecerli-parola'); // Faz 18: kurala uyan girdi (yanıt işlenişi ölçülüyor)
+    const btn = document.querySelector('#register-form .btn-primary') as HTMLButtonElement;
 
-    global.fetch.mockResolvedValueOnce({
-      ok: true, status: 201,
-      json: () => Promise.resolve({ token: 't', refreshToken: 'r', user: {} }),
-    });
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { token: 't', user: {} }));
 
-    await global.register();
+    await register();
+
     expect(btn.disabled).toBe(false);
-    expect(btn.textContent).toBe('Create Account');
+    expect(btn.textContent).toBe(t('create_account'));
   });
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// refreshAccessToken()
-// ══════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// refreshAccessToken — api-fetch.ts:36
+// ════════════════════════════════════════════════════════════════════════════
 describe('refreshAccessToken()', () => {
-  test('refresh token yoksa false döner', async () => {
-    localStorage.removeItem('bridge_refresh_token');
-    const result = await global.refreshAccessToken();
-    expect(result).toBe(false);
+  it('yenileme kullanılamaz durumdayken fetch\'e GİTMEDEN false döner', async () => {
+    // TAŞINMIŞ [A]: localStorage refresh-token kapısı yok; kapı `_refreshDisabled`.
+    fetchMock.mockResolvedValueOnce(jsonResponse(401));
+    expect(await refreshAccessToken()).toBe(false);   // kalıcı olarak devre dışı bıraktı
+
+    fetchMock.mockClear();
+    expect(await refreshAccessToken()).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  test('başarılı refresh sonrası token güncellenir ve true döner', async () => {
-    localStorage.setItem('bridge_refresh_token', 'refresh-xyz');
-    global.fetch.mockResolvedValueOnce({
-      ok: true, status: 200,
-      json: () => Promise.resolve({ token: 'new-tok', refreshToken: 'new-ref' }),
-    });
+  it('başarılı yenileme token\'ı kaydeder ve true döner', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { token: 'refreshed-token' }));
 
-    const result = await global.refreshAccessToken();
-    expect(result).toBe(true);
-    expect(localStorage.getItem('bridge_token')).toBe('new-tok');
-    expect(localStorage.getItem('bridge_refresh_token')).toBe('new-ref');
+    expect(await refreshAccessToken()).toBe(true);
+    expect(readToken()).toBe('refreshed-token');
+    // saveToken her iki anahtarı da yazar (auth-compat.ts:46-48).
+    expect(localStorage.getItem('bridge_token')).toBe('refreshed-token');
+
+    // Sözleşme: POST + cookie taşıyan credentials.
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toContain('/api/refresh');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('include');
   });
 
-  test('sunucu hatasında false döner', async () => {
-    localStorage.setItem('bridge_refresh_token', 'bad-refresh');
-    global.fetch.mockResolvedValueOnce({ ok: false, status: 401, json: () => ({}) });
+  it('geçici sunucu hatasında oturumu kalıcı olarak kilitlemeden false döner', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(500));
 
-    const result = await global.refreshAccessToken();
-    expect(result).toBe(false);
+    expect(await refreshAccessToken()).toBe(false);
+    expect(wasLastRefreshFailureTransient()).toBe(true);
+    expect(readToken()).toBeNull();
+
+    // 5xx kullanıcının refresh oturumunu geçersiz KANITLAMAZ; sonraki deneme
+    // ağ/dependency düzeldiğinde tekrar sunucuya gidebilmelidir.
+    expect(await refreshAccessToken()).toBe(false);
+    expect(callsTo('/api/refresh')).toBe(2);
   });
 });

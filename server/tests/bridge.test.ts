@@ -1,126 +1,166 @@
-// server/tests/bridge.test.ts
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
-process.env.NODE_ENV       = 'test';
+'use strict';
 
-jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
+process.env.NODE_ENV = 'test';
 
-// Mock roles module used by bridge.js
-jest.mock('../routes/roles', () => ({
-  getMemberPerms: jest.fn(),
-  hasPermission:  jest.fn(),
-  PERMS: { MANAGE_CHANNELS: 2, ADMINISTRATOR: 1 << 30 },
+import { createMockDb, makeUser, makeServer, makeChannel } from './helpers/mockDb';
+let db = createMockDb();
+jest.mock('../db/index', () => { const { createMockDb } = require('./helpers/mockDb'); return createMockDb(); });
+jest.mock('../db/loader', () => require('../db/index'));
+
+const mockResolvePermissions = jest.fn();
+jest.mock('../lib/permissions', () => ({
+  PERMS: { VIEW_CHANNELS: 1 << 0, MANAGE_CHANNELS: 1 << 1, ADMINISTRATOR: 1 << 30 },
+  hasPermission: (perms: number, flag: number) => (perms & (1 << 30)) !== 0 || (perms & flag) !== 0,
+  resolvePermissions: (...args: unknown[]) => mockResolvePermissions(...args),
+}));
+
+jest.mock('../middleware/rateLimit', () => ({
+  limits: { write: () => (_req: any, _res: any, next: () => void) => next() },
 }));
 
 import request from 'supertest';
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-const db      = require('../db/loader');
-const jwt     = require('jsonwebtoken');
-import { authMiddleware } from '../middleware/auth';
+const jwt = require('jsonwebtoken');
 import bridgeRouter from '../routes/bridge';
-const roles   = require('../routes/roles');
 
 function buildApp() {
   const app = express();
   app.use(express.json());
-  app.use('/api/bridges', authMiddleware, bridgeRouter);
+  app.use('/api/bridges', bridgeRouter);
   return app;
 }
-function tok(uid, v = 0) { return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string) {
+  return jwt.sign({ id: uid, username: 'owner', displayName: 'Owner', v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' });
+}
 
-describe('Channel Bridge Routes', () => {
-  let app, ownerId, serverId1, serverId2, channelId1, channelId2;
-  let ownerToken;
+const MANAGE = (1 << 0) | (1 << 1);
+let ownerId: string;
+let sourceServerId: string;
+let targetServerId: string;
+let sourceChannelId: string;
+let targetChannelId: string;
+let ownerToken: string;
 
-  beforeEach(async () => {
-    db._reset?.();
-    app      = buildApp();
-    ownerId  = uuidv4();
-    serverId1 = uuidv4();
-    serverId2 = uuidv4();
-    channelId1 = uuidv4();
-    channelId2 = uuidv4();
-    ownerToken = tok(ownerId);
+beforeEach(async () => {
+  db = createMockDb();
+  Object.assign(require('../db/loader'), db);
+  Object.assign(require('../db/index'), db);
+  jest.clearAllMocks();
 
-    await db.users.insert({ _id: ownerId, username: 'owner', displayName: 'Owner', tokenVersion: 0 });
+  ownerId = uuidv4();
+  sourceServerId = uuidv4();
+  targetServerId = uuidv4();
+  sourceChannelId = uuidv4();
+  targetChannelId = uuidv4();
+  ownerToken = tok(ownerId);
 
-    // Default: owner has MANAGE_CHANNELS in both servers
-    roles.getMemberPerms.mockResolvedValue(2); // MANAGE_CHANNELS bitmask
-    roles.hasPermission.mockReturnValue(true);
+  await db.users.insert(makeUser({ _id: ownerId, username: 'owner', tokenVersion: 0 }));
+  await db.servers.insert(makeServer(ownerId, { _id: sourceServerId }));
+  await db.servers.insert(makeServer(ownerId, { _id: targetServerId }));
+  await db.channels.insert(makeChannel(sourceServerId, { _id: sourceChannelId }));
+  await db.channels.insert(makeChannel(targetServerId, { _id: targetChannelId }));
+  mockResolvePermissions.mockResolvedValue(MANAGE);
+});
+
+describe('Channel Bridge — tenant and permission authority', () => {
+  it('creates a bridge only after both channel/server pairs resolve', async () => {
+    const res = await request(buildApp())
+      .post('/api/bridges')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ sourceChannelId, targetChannelId, sourceServerId, targetServerId, label: 'safe' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      sourceChannelId, targetChannelId, sourceServerId, targetServerId, active: true,
+    }));
+    expect(mockResolvePermissions).toHaveBeenCalledWith(ownerId, sourceServerId, sourceChannelId);
+    expect(mockResolvePermissions).toHaveBeenCalledWith(ownerId, targetServerId, targetChannelId);
   });
 
-  describe('POST /api/bridges — create bridge', () => {
-    it('creates a bridge between two channels', async () => {
-      const res = await request(app)
-        .post('/api/bridges')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ sourceChannelId: channelId1, targetChannelId: channelId2, sourceServerId: serverId1, targetServerId: serverId2 });
-      expect(res.status).toBe(200);
-      expect(res.body.sourceChannelId).toBe(channelId1);
-      expect(res.body.targetChannelId).toBe(channelId2);
-      expect(res.body.active).toBe(true);
-    });
+  it('rejects a self-bridge after canonicalizing mixed-type channel identifiers', async () => {
+    const canonical = '12345';
+    const res = await request(buildApp())
+      .post('/api/bridges')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ sourceChannelId: 12345, targetChannelId: canonical, sourceServerId, targetServerId });
 
-    it('returns 409 if bridge already exists', async () => {
-      await db.channelBridges.insert({ _id: uuidv4(), sourceChannelId: channelId1, targetChannelId: channelId2, active: true });
-      const res = await request(app)
-        .post('/api/bridges')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ sourceChannelId: channelId1, targetChannelId: channelId2, sourceServerId: serverId1, targetServerId: serverId2 });
-      expect(res.status).toBe(409);
-    });
-
-    it('returns 400 when bridging channel to itself', async () => {
-      const res = await request(app)
-        .post('/api/bridges')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ sourceChannelId: channelId1, targetChannelId: channelId1, sourceServerId: serverId1, targetServerId: serverId2 });
-      expect(res.status).toBe(400);
-    });
-
-    it('returns 400 when required fields missing', async () => {
-      const res = await request(app)
-        .post('/api/bridges')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ sourceChannelId: channelId1 });
-      expect(res.status).toBe(400);
-    });
-
-    it('returns 403 when user lacks permission', async () => {
-      roles.hasPermission.mockReturnValue(false);
-      const res = await request(app)
-        .post('/api/bridges')
-        .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ sourceChannelId: channelId1, targetChannelId: channelId2, sourceServerId: serverId1, targetServerId: serverId2 });
-      expect(res.status).toBe(403);
-    });
-
-    it('rejects unauthenticated', async () => {
-      const res = await request(app).post('/api/bridges').send({});
-      expect(res.status).toBe(401);
-    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/itself/i);
+    expect(mockResolvePermissions).not.toHaveBeenCalled();
   });
 
-  describe('GET /api/bridges?channelId=xxx', () => {
-    beforeEach(async () => {
-      await db.channelBridges.insert({ _id: uuidv4(), sourceChannelId: channelId1, targetChannelId: channelId2, active: true });
+  it('rejects blank identifiers instead of turning them into repository lookups', async () => {
+    const res = await request(buildApp())
+      .post('/api/bridges')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ sourceChannelId: '   ', targetChannelId, sourceServerId, targetServerId });
+
+    expect(res.status).toBe(400);
+    expect(await db.channelBridges.find({})).toHaveLength(0);
+  });
+
+  it('rejects a client-supplied target server that does not own the target channel', async () => {
+    const res = await request(buildApp())
+      .post('/api/bridges')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ sourceChannelId, targetChannelId, sourceServerId, targetServerId: sourceServerId });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/mismatch/i);
+    expect(await db.channelBridges.find({})).toHaveLength(0);
+  });
+
+  it('requires manage+view permission independently on the target endpoint', async () => {
+    mockResolvePermissions.mockImplementation(async (_uid: string, sid: string) => sid === sourceServerId ? MANAGE : (1 << 0));
+    const res = await request(buildApp())
+      .post('/api/bridges')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ sourceChannelId, targetChannelId, sourceServerId, targetServerId });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/target/i);
+  });
+
+  it('GET does not leak bridge metadata for a channel whose VIEW permission is revoked', async () => {
+    await db.channelBridges.insert({
+      _id: 'bridge1', sourceChannelId, sourceServerId, targetChannelId, targetServerId, active: true,
+    });
+    mockResolvePermissions.mockResolvedValue(0);
+
+    const res = await request(buildApp())
+      .get(`/api/bridges?channelId=${sourceChannelId}`)
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(403);
+    expect(res.body).not.toEqual(expect.arrayContaining([expect.objectContaining({ _id: 'bridge1' })]));
+  });
+
+  it('DELETE fails closed when a legacy bridge row has a corrupt endpoint tenant', async () => {
+    await db.channelBridges.insert({
+      _id: 'bridge-corrupt',
+      sourceChannelId, sourceServerId,
+      targetChannelId, targetServerId: sourceServerId, // wrong tenant claim
+      active: true,
     });
 
-    it('returns bridges for a channel', async () => {
-      const res = await request(app)
-        .get(`/api/bridges?channelId=${channelId1}`)
-        .set('Authorization', `Bearer ${ownerToken}`);
-      expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-      expect(res.body.length).toBeGreaterThan(0);
-    });
+    const res = await request(buildApp())
+      .delete('/api/bridges/bridge-corrupt')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(409);
+    expect((await db.channelBridges.findOne({ _id: 'bridge-corrupt' }))?.active).toBe(true);
+  });
 
-    it('returns 400 when channelId is missing', async () => {
-      const res = await request(app)
-        .get('/api/bridges')
-        .set('Authorization', `Bearer ${ownerToken}`);
-      expect(res.status).toBe(400);
+  it('DELETE may be authorized from either valid endpoint, but never from neither', async () => {
+    await db.channelBridges.insert({
+      _id: 'bridge2', sourceChannelId, sourceServerId, targetChannelId, targetServerId, active: true,
     });
+    mockResolvePermissions.mockImplementation(async (_uid: string, sid: string) => sid === targetServerId ? MANAGE : 0);
+
+    const ok = await request(buildApp())
+      .delete('/api/bridges/bridge2')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(ok.status).toBe(200);
+    expect((await db.channelBridges.findOne({ _id: 'bridge2' }))?.active).toBe(false);
   });
 });

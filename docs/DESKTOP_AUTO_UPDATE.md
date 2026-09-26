@@ -29,8 +29,9 @@ Bu dosyalar `electron-builder` tarafından üretilir ve `.github/workflows/elect
 ## Release çıkarma
 
 ```bash
-git tag v1.123.0
-git push origin v1.123.0
+VERSION=$(node -p "require('./package.json').version")
+git tag "v${VERSION}"
+git push origin "v${VERSION}"
 ```
 
 Tag push sonrası workflow Windows, macOS ve Linux paketlerini üretir. Release draft olarak oluşturulursa otomatik güncelleme istemcileri tarafından görünmesi için release'i GitHub'da publish etmek gerekir.

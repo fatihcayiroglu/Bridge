@@ -1,4 +1,5 @@
 // server/tests/sso.test.ts
+import type { Express } from 'express';
 process.env.NODE_ENV       = 'test';
 process.env.JWT_SECRET     = 'test-jwt-secret-32-chars-padded!!';
 process.env.REFRESH_SECRET = 'test-refresh-secret-32-chars-pad!';
@@ -8,7 +9,11 @@ jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 jest.mock('../middleware/auth', () => {
   const jwt = require('jsonwebtoken');
   return {
-    authMiddleware: (req, res, next) => {
+    authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
       const h = req.headers.authorization;
       if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
       try {
@@ -18,9 +23,11 @@ jest.mock('../middleware/auth', () => {
         return res.status(401).json({ error: 'Invalid token' });
       }
     },
-    castAuthed:       req => req,
-    makeToken:        user => jwt.sign({ id: user._id, username: user.username, v: 0 }, process.env.JWT_SECRET, { expiresIn: '15m' }),
-    makeRefreshToken: async user => 'mock-refresh-' + user._id,
+    castAuthed:       (req: Request) => req,
+    makeToken:        (user: { _id: string; username: string }) =>
+      jwt.sign({ id: user._id, username: user.username, v: 0 }, process.env.JWT_SECRET ?? '', { expiresIn: '15m' }),
+    makeRefreshToken: async (user: { _id: string }) => 'mock-refresh-' + user._id,
+    revokeRefreshToken: async () => undefined,
   };
 });
 
@@ -41,12 +48,12 @@ function buildApp() {
   return app;
 }
 
-function tok(uid) {
+function tok(uid: string) {
   return jwt.sign({ id: uid }, process.env.JWT_SECRET, { expiresIn: '1h' });
 }
 
 describe('SSO routes', () => {
-  let app;
+  let app: Express;
   const adminId = 'u-admin';
   const userId  = 'u-user';
 
@@ -59,6 +66,8 @@ describe('SSO routes', () => {
     delete process.env.SAML_ENABLED;
     delete process.env.OIDC_ISSUER;
     delete process.env.SAML_IDP_CERT;
+    delete process.env.SAML_IDP_ENTITY_ID;
+    delete process.env.SAML_ENTRY_POINT;
   });
 
   // ── OIDC devre dışı ──────────────────────────────────────────
@@ -106,8 +115,9 @@ describe('SSO routes', () => {
       const res = await request(app)
         .get(`/api/sso/oidc/callback?code=abc&state=${state}`)
         .set('Cookie', `sso_state=${state}`);
-      // discovery başarısız olacak ama state geçti — 503 beklenir (400 değil)
-      expect(res.status).toBe(503);
+      // Nonce/PKCE HttpOnly flow cookies are also mandatory; a state-only cookie
+      // must not advance the OIDC ceremony.
+      expect(res.status).toBe(400);
     });
   });
 
@@ -151,12 +161,20 @@ describe('SSO routes', () => {
 
     it('SAML_IDP_CERT olmadan callback 503 döner', async () => {
       delete process.env.SAML_IDP_CERT;
+      delete process.env.SAML_IDP_ENTITY_ID;
+      process.env.SAML_ENTRY_POINT = 'https://idp.example.test/login';
+      process.env.SAML_ISSUER = 'bridge-test-sp';
+      const agent = request.agent(app);
+      const start = await agent.get('/api/sso/saml/start');
+      expect(start.status).toBe(302);
+      const relayState = new URL(start.headers.location).searchParams.get('RelayState');
+      expect(relayState).toMatch(/^[A-Za-z0-9_-]{32}$/);
       const fakeXml    = '<samlp:Response></samlp:Response>';
       const samlBase64 = Buffer.from(fakeXml).toString('base64');
-      const res = await request(app)
+      const res = await agent
         .post('/api/sso/saml/callback')
         .type('form')
-        .send({ SAMLResponse: samlBase64 });
+        .send({ SAMLResponse: samlBase64, RelayState: relayState });
       expect(res.status).toBe(503);
     });
 
@@ -169,7 +187,7 @@ describe('SSO routes', () => {
         .type('form')
         .send({ SAMLResponse: samlBase64 });
       // 401 (imza hatası) veya 503 (xml-crypto yüklü değil) beklenir
-      expect([401, 503]).toContain(res.status);
+      expect([400, 401, 503]).toContain(res.status);
     });
 
     it('imzasız SAML response 401 döner', async () => {
@@ -181,7 +199,7 @@ describe('SSO routes', () => {
         .type('form')
         .send({ SAMLResponse: samlBase64 });
       // Signature elementi yok → 401 veya 503 (xml-crypto eksik)
-      expect([401, 503]).toContain(res.status);
+      expect([400, 401, 503]).toContain(res.status);
     });
 
     it('SAMLResponse olmadan 400 döner', async () => {

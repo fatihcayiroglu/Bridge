@@ -11,15 +11,40 @@ const mockSocketOn    = jest.fn().mockReturnThis();
 const mockSocketEmit  = jest.fn().mockReturnThis();
 const mockSocketOff   = jest.fn().mockReturnThis();
 const mockSocketClose = jest.fn();
+// SDK `socket.disconnect()` cagirir (socket.io-client kanonik adi).
+// Taklit yalnizca `close` tanimliyordu, bu yuzden `disconnect close() cagirir`
+// testi gercekte HICBIR SEY olcmuyordu.
+const mockSocketDisconnect = jest.fn();
 
-const mockSocket = {
+// AÇIK TİP ZORUNLU: `once` gövdesi `mockSocket`i DÖNDÜRÜYOR, yani nesne kendi
+// başlatıcısında kendine referans veriyor. Anotasyon olmadan TypeScript tipi
+// çıkaramaz ve TS7022/TS7024 verir. Bu dosya HİÇ derlenmediği için (paketin
+// `tsconfig.json`u yalnızca `src/**` içeriyordu, bkz. tsconfig.jest.json) hata
+// hiç görünmedi — suit zaten hiçbir koşucu tarafından çalıştırılmıyordu.
+type MockSocket = {
+  connected: boolean;
+  on:    jest.Mock;
+  off:   jest.Mock;
+  emit:  jest.Mock;
+  close:      jest.Mock;
+  disconnect: jest.Mock;
+  once:       jest.Mock;
+};
+
+const mockSocket: MockSocket = {
   connected: true,
   on:        mockSocketOn,
   off:       mockSocketOff,
   emit:      mockSocketEmit,
-  close:     mockSocketClose,
+  close:      mockSocketClose,
+  disconnect: mockSocketDisconnect,
   once:      jest.fn((event: string, cb: (...args: unknown[]) => void) => {
-    // 'ready' eventi için: hemen callback'i çağır (test kolaylığı)
+    // `connect()` gercek socket.io gibi `once('connect')` bekler. Taklit
+    // yalnizca 'ready' icin ates ediyordu, bu yuzden `await bot.connect()`
+    // HIC cozulmuyor ve testi zaman asimina ugratiyordu.
+    if (event === 'connect') {
+      setTimeout(() => cb(), 0);
+    }
     if (event === 'ready') {
       setTimeout(() => cb({ id: 'bot-id', username: 'TestBot', displayName: 'Test Bot' }), 0);
     }
@@ -46,6 +71,9 @@ import {
   BotStore,
   PaginationHelper,
   SDK_VERSION,
+  BridgeUnsupportedError,
+  BridgeApiError,
+  type CommandContext,
 } from '../src/index';
 
 // ─────────────────────────────────────────────────────────────
@@ -361,108 +389,184 @@ describe('SDK_VERSION', () => {
 describe('BridgeBot', () => {
   let bot: BridgeBot;
 
+  const okResponse = (body: unknown = {}) => ({
+    headers: { get: () => null },
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    json: async () => body,
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockSocket.connected = true;
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('/api/v1/bots/me')) return okResponse({ _id: 'bot-id', username: 'TestBot' });
+      return okResponse({ commands: [] });
+    });
     bot = new BridgeBot({ token: 'brg_bot_test_token', serverUrl: 'http://localhost:3001' });
   });
 
-  afterEach(() => {
-    bot.disconnect();
-  });
+  afterEach(() => bot.disconnect());
 
   it('token zorunlu', () => {
     expect(() => new BridgeBot({ token: '' })).toThrow();
   });
 
-  it('command() kayıt ve chaining çalışır', () => {
-    const result = bot.command('ping', {
-      description: 'Ping komutu',
-      handler: async () => {},
+  it('command() kayıt/chaining yapar ve duplicate adı reddeder', () => {
+    expect(bot.command('ping', { description: 'Ping', handler: async () => {} })).toBe(bot);
+    expect(() => bot.command('ping', { handler: async () => {} })).toThrow(/zaten/i);
+  });
+
+  it('connect gerçek bot identity endpointini doğrular, slash metadata kaydeder ve bot token ile socket açar', async () => {
+    bot.command('ping', { description: 'Pong', usage: '/ping', handler: async () => {} });
+    await bot.connect();
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'http://localhost:3001/api/v1/bots/me',
+      expect.objectContaining({ method: 'GET', headers: expect.objectContaining({ Authorization: 'Bot brg_bot_test_token' }) }),
+    );
+    expect(mockFetch).toHaveBeenCalledWith(
+      'http://localhost:3001/api/v1/bots/me/slash-commands',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ commands: [{ name: 'ping', description: 'Pong', usage: '/ping' }] }),
+      }),
+    );
+    const { io } = require('socket.io-client');
+    expect(io).toHaveBeenCalledWith('http://localhost:3001', expect.objectContaining({ auth: { token: 'brg_bot_test_token', isBot: true } }));
+    expect(bot.info).toMatchObject({ _id: 'bot-id', username: 'TestBot' });
+    expect(bot.isConnected).toBe(true);
+  });
+
+  it('invalid/revoked bot identity connect sırasında görünür hata olur; sahte Bot identity üretilmez', async () => {
+    mockFetch.mockResolvedValueOnce({
+      headers: { get: () => null }, ok: false, status: 401, statusText: 'Unauthorized',
+      json: async () => ({ error: 'Invalid or inactive bot token' }),
     });
-    expect(result).toBe(bot); // fluent API
+    await expect(bot.connect()).rejects.toThrow(/401/);
+    expect(bot.info).toBeNull();
+    const { io } = require('socket.io-client');
+    expect(io).not.toHaveBeenCalled();
   });
 
-  it('aynı komut iki kez kaydedilirse throw atar', () => {
-    bot.command('tekrar', { description: 'x', handler: async () => {} });
-    expect(() =>
-      bot.command('tekrar', { description: 'y', handler: async () => {} })
-    ).toThrow();
+  it('registerContextCommands canonical metadata endpointine yazar', async () => {
+    bot.contextCommand('User info', 'USER_COMMAND', async () => {});
+    await bot.registerContextCommands();
+    expect(mockFetch).toHaveBeenCalledWith(
+      'http://localhost:3001/api/v1/bots/me/context-commands',
+      expect.objectContaining({ method: 'PATCH' }),
+    );
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.commands).toEqual([{ name: 'User info', type: 'USER_COMMAND', description: '' }]);
   });
 
-  it('onModalSubmit chaining çalışır', () => {
-    const result = bot.onModalSubmit('form:confirm', async () => {});
-    expect(result).toBe(bot);
+  it('server canonical message:new olayı kayıtlı slash handlerını tetikler', async () => {
+    // Typed parameter: `jest.fn(async () => {})` records calls as `[]`, so reading the
+    // context below did not compile and this suite ran 0 tests (found in Final21 Phase 14).
+    const handler = jest.fn(async (_ctx: CommandContext) => {});
+    bot.command('ping', { handler });
+    await bot.connect();
+    const call = mockSocketOn.mock.calls.find(([event]) => event === 'message:new');
+    expect(call).toBeTruthy();
+    await call![1]({ _id: 'm1', content: '/ping a b', channelId: 'c1', serverId: 's1', userId: 'u1', createdAt: 1 });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0]![0].args).toEqual(['a', 'b']);
   });
 
-  it('isConnected socket.connected değerini yansıtır', () => {
-    mockSocket.connected = true;
-    // connected getter socket durumuna bağlı
-    expect(typeof bot.isConnected).toBe('boolean');
+  // Final21 Phase 14: before the reply authority existed ctx.reply called sendMessage,
+  // which always throws — every documented command handler failed on its first reply.
+  it('ctx.reply bir slash komutunu çağıran mesaja kanonik yanıt ucuyla cevap verir', async () => {
+    let replied: unknown;
+    bot.command('ping', { handler: async (ctx) => { replied = await ctx.reply('pong'); } });
+    await bot.connect();
+    mockFetch.mockClear();
+    mockFetch.mockResolvedValueOnce(okResponse({ ok: true, message: { _id: 'r1', content: 'pong', botId: 'bot-id' } }));
+    const call = mockSocketOn.mock.calls.find(([event]) => event === 'message:new');
+    await call![1]({ _id: 'inv/1', content: '/ping', channelId: 'c1', serverId: 's1', userId: 'u1', createdAt: 1 });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledWith(
+      'http://localhost:3001/api/v1/bots/interactions/inv%2F1/reply',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ content: 'pong' }),
+        headers: expect.objectContaining({ Authorization: 'Bot brg_bot_test_token' }),
+      }),
+    );
+    expect(replied).toEqual({ _id: 'r1', content: 'pong', botId: 'bot-id' });
   });
 
-  it('disconnect close() çağırır', () => {
+  it('reddedilen yanıt durum ve sunucu kodunu taşıyan BridgeApiError olur', async () => {
+    mockFetch.mockResolvedValueOnce({
+      headers: { get: () => null }, ok: false, status: 403, statusText: 'Forbidden',
+      json: async () => ({ error: 'scope_required' }),
+    });
+    const refusal = bot.replyToInteraction('inv-1', 'pong');
+    await expect(refusal).rejects.toBeInstanceOf(BridgeApiError);
+    await expect(refusal).rejects.toMatchObject({ status: 403, code: 'scope_required', message: 'API hatası 403: scope_required' });
+
+    mockFetch.mockResolvedValueOnce({
+      headers: { get: () => null }, ok: false, status: 502, statusText: 'Bad Gateway',
+      json: async () => { throw new SyntaxError('html'); },
+    });
+    await expect(bot.replyToInteraction('inv-1', 'pong')).rejects.toMatchObject({ status: 502, code: 'Bad Gateway' });
+  });
+
+  it('metin olmayan yanıt ağ çağrısı yapmadan açıkça desteklenmez', async () => {
+    await expect(bot.replyToInteraction('inv-1', { title: 'embed' } as unknown as string)).rejects.toBeInstanceOf(BridgeUnsupportedError);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('disconnect gerçek socket.disconnect() çağırır', async () => {
+    await bot.connect();
     bot.disconnect();
-    expect(mockSocketClose).toHaveBeenCalled();
+    expect(mockSocketDisconnect).toHaveBeenCalled();
+    expect(bot.isConnected).toBe(false);
   });
 
-  describe('sendMessage', () => {
-    it('başarılı API çağrısında BotMessage döner', async () => {
-      const mockMsg = { _id: 'msg-1', channelId: 'ch-1', content: 'Merhaba', userId: 'bot-id', serverId: 's-1', createdAt: Date.now() };
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => mockMsg,
-      });
-
-      const msg = await bot.sendMessage('ch-1', 'Merhaba');
-      expect(msg).toMatchObject({ _id: 'msg-1', content: 'Merhaba' });
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/v1/channels/ch-1/messages'),
-        expect.objectContaining({ method: 'POST' })
-      );
-    });
-
-    it('API hatasında null döner (throw etmez)', async () => {
-      mockFetch.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
-      const msg = await bot.sendMessage('ch-1', 'hata test');
-      expect(msg).toBeNull();
-    });
+  it('429 Retry-After command registration için sınırlı retry yapar', async () => {
+    bot.command('ping', { handler: async () => {} });
+    mockFetch
+      .mockResolvedValueOnce({ headers: { get: () => null }, ok: false, status: 429, statusText: 'Too Many', json: async () => ({}) })
+      .mockResolvedValueOnce(okResponse({ commands: [] }));
+    await bot.registerSlashCommands();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
-  describe('deleteMessage', () => {
-    it('doğru endpoint DELETE çağırır', async () => {
-      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => null });
-      await bot.deleteMessage('ch-1', 'msg-123');
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/ch-1/messages/msg-123'),
-        expect.objectContaining({ method: 'DELETE' })
-      );
+  it('deprecation header warning/event üretir', async () => {
+    const seen: unknown[] = [];
+    bot.on('deprecationWarning', d => seen.push(d));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockFetch.mockResolvedValueOnce({
+      ...okResponse({ commands: [] }),
+      headers: { get: (name: string) => name === 'Deprecation' ? 'true' : name === 'Link' ? '/api/v2' : null },
     });
+    await bot.registerSlashCommands();
+    expect(seen).toHaveLength(1);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
-  describe('kick / ban / timeout', () => {
-    beforeEach(() => {
-      mockFetch.mockResolvedValue({ ok: true, json: async () => null });
-    });
-
-    it('kick doğru endpoint ve body ile çağırır', async () => {
-      await bot.kick('srv-1', 'usr-1', 'test reason');
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/servers/srv-1'),
-        expect.objectContaining({ method: 'POST' })
-      );
-      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(body.reason).toBe('test reason');
-    });
-
-    it('ban çağrılabilir', async () => {
-      await expect(bot.ban('srv-1', 'usr-1')).resolves.toBeNull();
-    });
-
-    it('timeout varsayılan 10 dakika ile çağrılır', async () => {
-      await bot.timeout('srv-1', 'usr-1');
-      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(body.minutes).toBe(10);
-    });
+  it('shipping bot-principal authority olmayan public yüzeylerin tamamı açık unsupported hatası verir ve phantom HTTP çağrısı yapmaz', async () => {
+    const asyncCalls: Array<Promise<unknown>> = [
+      bot.sendMessage('c', 'x'),
+      bot.editMessage('c', 'm', 'x'),
+      bot.deleteMessage('c', 'm'),
+      bot.addReaction('c', 'm', '👍'),
+      bot.getMessages('c'),
+      bot.sendInteractiveMessage('c', 'x', []),
+      bot.getMembers('s'),
+      bot.addRole('s', 'u', 'r'),
+      bot.removeRole('s', 'u', 'r'),
+      bot.kick('s', 'u'),
+      bot.ban('s', 'u'),
+      bot.timeout('s', 'u'),
+    ];
+    for (const promise of asyncCalls) await expect(promise).rejects.toBeInstanceOf(BridgeUnsupportedError);
+    expect(() => bot.showModal('u', { customId: 'x', title: 'X', fields: [] })).toThrow(BridgeUnsupportedError);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });

@@ -17,7 +17,10 @@
 
 /* ── Active state ── */
 .mobile-nav-btn.active {
-  color: var(--brand);
+  /* Gezinme `--bg-1` yüzeyindedir; açık temada `--brand` orada AA altında
+     kalıyordu (ölçüldü: 4.07:1). `--brand-ink` koyu temada `--brand`e
+     eşittir, yani koyu temanın görünümü değişmez. */
+  color: var(--brand-ink, var(--brand));
 }
 .mobile-nav-btn.active .mnav-icon {
   background: hsla(var(--brand-h), var(--brand-s), 60%, 0.12);
@@ -81,7 +84,12 @@
     font-size: 22px;
   }
 
-  /* Channel sidebar: off-canvas */
+  /* Channel sidebar: off-canvas
+     NOT (tasarım denetimi): bu çekmece `.open` sınıfını bekliyor ama onu
+     ekleyen bir tetikleyici hiçbir zaman yazılmamış. Yalnız bu kural
+     geçerliyken 768px altında kanal listesi ekran dışında kalıyor ve
+     kullanıcı KANAL DEĞİŞTİREMİYOR. Aşağıdaki tablet aralığı geçersiz
+     kılması bu ölü noktayı kapatır. */
   .channel-sidebar {
     position: fixed;
     left: 56px; top: 0; bottom: 0;

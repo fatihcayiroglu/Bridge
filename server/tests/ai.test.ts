@@ -20,7 +20,7 @@ for (const keyParts of [
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 jest.mock('../middleware/rateLimit', () => ({
-  limits: new Proxy({}, { get: () => () => (_req, _res, next) => next() }),
+  limits: new Proxy({}, { get: () => () => (_req: unknown, _res: unknown, next: () => void) => next() }),
 }));
 jest.mock('../lib/aiProvider', () => {
   const actual = jest.requireActual('../lib/aiProvider');
@@ -109,6 +109,13 @@ describe('AI Routes', () => {
         .set('Authorization', `Bearer ${makeToken(outsider)}`);
 
       expect(res.status).toBe(403);
+    });
+
+    it.each(['-1', '1.5', '9007199254740992'])('rejects unsafe summarize limit=%s', async (raw) => {
+      const res = await request(app)
+        .get(`/api/ai/summarize/${channelId}?limit=${encodeURIComponent(raw)}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(400);
     });
 
     it('returns a rules-based summary for a member', async () => {
@@ -212,3 +219,10 @@ describe('AI Routes', () => {
     expect(res.status).toBe(401);
   });
 });
+
+// Bu dosyada ust duzey import/export yoktu; TypeScript onu GLOBAL
+// SCRIPT sayiyor ve ust duzey adlari diger ayni durumdaki test
+// dosyalariyla CAKISIYORDU (TS2393/TS2451, ve arguman tiplerinin
+// baska bir dosyanin bildirimine cozulmesi). Bu satir modul kapsami
+// ilan eder; calisma zamaninda hicbir sey degistirmez.
+export {};

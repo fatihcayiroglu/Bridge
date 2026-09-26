@@ -3,16 +3,20 @@ import db from '../loader';
 
 class VoiceRepository {
   async insert(doc: Record<string, unknown>) {
-    if (doc._id) return db.voiceMessages?.insert(doc);
-    return db.voiceMessages?.insert({ _id: uuidv4(), createdAt: Date.now(), ...doc });
+    if (doc._id) return db.voiceMessages.insert(doc);
+    return db.voiceMessages.insert({ _id: uuidv4(), createdAt: Date.now(), ...doc });
   }
 
   async findOne(query: Record<string, unknown>) {
-    return db.voiceMessages?.findOne(query);
+    return db.voiceMessages.findOne(query);
   }
 
   async update(filter: Record<string, unknown>, modifier: Record<string, unknown>) {
-    return db.voiceMessages?.update(filter, modifier);
+    return db.voiceMessages.update(filter, modifier);
+  }
+
+  async remove(filter: Record<string, unknown>) {
+    return db.voiceMessages.remove(filter);
   }
 }
 

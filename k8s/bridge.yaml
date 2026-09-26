@@ -89,20 +89,42 @@ spec:
               memory: 1Gi
           readinessProbe:
             httpGet:
-              path: /api/health
+              path: /api/health/ready
               port: 3001
             initialDelaySeconds: 15
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /api/health
+              path: /api/health/live
               port: 3001
             initialDelaySeconds: 30
             periodSeconds: 20
             failureThreshold: 5
+          # Final21 Faz 22 (19-40): sunucu, BOŞ veritabanında şema kurulumu bitene dek DİNLEMEZ
+          # (runtime.ts: _initSchema → seed → listen). Ölçüldü: 20–81 sn. startupProbe liveness'ı ilk
+          # başarılı yanıta dek erteler (bütçe 30 × 10 sn = 300 sn); sonrasında liveness aynen geçerlidir.
+          startupProbe:
+            httpGet:
+              path: /api/health/live
+              port: 3001
+            periodSeconds: 10
+            failureThreshold: 30
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: uploads
+              mountPath: /app/server/uploads
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: uploads
+          emptyDir: {}

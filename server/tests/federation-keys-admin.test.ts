@@ -1,9 +1,10 @@
 // server/tests/federation-keys-admin.test.ts
 // ADR-0006 Faz 2: rotate-key admin + key-update peer endpoint
+import type { Request, Response, NextFunction } from 'express';
 
 'use strict';
 process.env.NODE_ENV   = 'test';
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 process.env.AP_ENCRYPTION_KEY = 'a'.repeat(64);
 process.env.INSTANCE_URL = 'http://localhost:3001';
 
@@ -25,12 +26,13 @@ import { _resetSignatureReplayCache } from '../lib/httpSignature';
 
 // Sprint 108: federationAuth middleware (V2) — key-update route artık bu middleware'i kullanıyor
 jest.mock('../middleware/federationAuth', () => ({
-  federationAuth: jest.fn((req, res, next) => {
-    req.federationMethod  = 'hmac';
+  federationAuth: jest.fn((req: Request, res: Response, next: NextFunction) => {
+    req.federationMethod  = 'rsa';
     req.federationPeerUrl = req.headers['x-bridge-instance-url'] || req.body?.url || req.body?.instanceUrl || '';
+    req.federationPeerId  = 'peer-1';
     next();
   }),
-  federationAuthRsaRequired: jest.fn((req, res, next) => {
+  federationAuthRsaRequired: jest.fn((req: Request, res: Response, next: NextFunction) => {
     // key-update için RSA zorunlu: gerçek V2 doğrulamasını simüle et
     const ts  = req.headers['x-bridge-ts'] as string;
     const sig = req.headers['x-bridge-rsa-sig'] as string;
@@ -39,12 +41,13 @@ jest.mock('../middleware/federationAuth', () => ({
     }
     req.federationMethod  = 'rsa';
     req.federationPeerUrl = req.headers['x-bridge-instance-url'] || req.body?.url || req.body?.instanceUrl || '';
+    req.federationPeerId  = 'peer-1';
     next();
   }),
 }));
 
 function adminToken(userId: string) {
-  return jwt.sign({ id: userId, username: 'admin', v: 0 }, 'test-jwt-secret', { expiresIn: '1h' });
+  return jwt.sign({ id: userId, username: 'admin', v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
 }
 
 describe('POST /api/admin/federation/rotate-key', () => {
@@ -154,5 +157,31 @@ describe('POST /api/federation/key-update', () => {
 
     const updated = await mockDb.federationPeers.findOne({ _id: 'peer-1' });
     expect(updated!.publicKey).toBe(newPub);
+  });
+
+  it('authenticated peer cannot rotate a different peer key via body target confusion', async () => {
+    await mockDb.federationPeers.insert({
+      _id: 'peer-1', url: 'http://peer-a.example.com', name: 'Peer A',
+      publicKey: 'old-a', verified: true,
+    });
+    await mockDb.federationPeers.insert({
+      _id: 'peer-2', url: 'http://peer-b.example.com', name: 'Peer B',
+      publicKey: 'old-b', verified: true,
+    });
+
+    const body = {
+      url: 'http://peer-b.example.com',
+      publicKey: { publicKeyPem: '-----BEGIN PUBLIC KEY-----\nNEW-BY-ATTACKER\n-----END PUBLIC KEY-----' },
+    };
+    const res = await request(app)
+      .post('/api/federation/key-update')
+      .set('x-bridge-ts', String(Date.now()))
+      .set('x-bridge-rsa-sig', 'authenticated-by-middleware')
+      .set('x-bridge-instance-url', 'http://peer-a.example.com')
+      .send(body);
+
+    expect(res.status).toBe(403);
+    const victim = await mockDb.federationPeers.findOne({ _id: 'peer-2' });
+    expect(victim!.publicKey).toBe('old-b');
   });
 });

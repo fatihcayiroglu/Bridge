@@ -13,8 +13,39 @@ import EventEmitter from 'eventemitter3';
 import { io, Socket } from 'socket.io-client';
 
 // ── SDK Sabitleri ──────────────────────────────────────────────
-export const SDK_VERSION = '2.0.0';
+export const SDK_VERSION = '2.1.0';
 const DEFAULT_URL        = 'http://localhost:3001';
+
+/**
+ * Sunucunun DESTEKLEMEDIGI bir SDK yuzeyi cagrildiginda firlatilir.
+ *
+ * Siradan API hatalarindan ayrıdır: shipping server'da bot principal için
+ * authority sözleşmesi olmayan yüzeyler 401/404'e düşürülmez; çağırana bu
+ * kalıcı capability eksikliği açıkça bildirilir.
+ */
+export class BridgeUnsupportedError extends Error {
+  readonly method: string;
+  constructor(method: string, reason: string) {
+    super(`[BridgeBot] ${method} desteklenmiyor: ${reason}`);
+    this.name = 'BridgeUnsupportedError';
+    this.method = method;
+  }
+}
+
+/**
+ * A refused Bridge API call. `status` is the HTTP status and `code` the server's
+ * `error` string, e.g. `scope_required`, `interaction_expired`, `reply_limit`.
+ */
+export class BridgeApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  constructor(status: number, code: string) {
+    super(`API hatası ${status}: ${code}`);
+    this.name = 'BridgeApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
 
 // ── Temel Tipler ──────────────────────────────────────────────
 
@@ -103,7 +134,10 @@ export interface CommandContext {
   serverId:  string;
   userId:    string;
   args:      string[];
-  /** Kanala cevap gönder */
+  /**
+   * Komutu çağıran mesaja yanıt ver (`replyToInteraction`). Kurulu olduğu sunucuda
+   * `messages:reply` izni gerekir; çağrıdan sonra 15 dakika, en fazla 5 yanıt.
+   */
   reply:     (content: string) => Promise<BotMessage | null>;
   /** Mesaja reaksiyon ekle */
   react:     (emoji: string) => Promise<void>;
@@ -204,6 +238,7 @@ export class BridgeBot extends EventEmitter<BotEvents> {
   /** Bridge sunucusuna bağlan. */
   async connect(): Promise<BridgeBot> {
     this.info = await this._fetchBotInfo();
+    await this.registerSlashCommands();
     this._log(`Bot bağlanıyor: ${this.info?.username ?? 'bilinmiyor'} (SDK ${SDK_VERSION})`);
 
     this.socket = io(this.serverUrl, {
@@ -263,9 +298,28 @@ export class BridgeBot extends EventEmitter<BotEvents> {
     const { description = '', usage = '', handler } = options;
     if (typeof handler !== 'function')
       throw new Error(`[BridgeBot] command handler fonksiyon olmalı: /${name}`);
-    this._commands.set(name.toLowerCase(), { name, description, usage, handler });
+    // Yinelenen kayit SESSIZCE UZERINE YAZIYORDU. Bir bot cerçevesinde ayni
+    // komutu iki kez kaydetmek neredeyse her zaman bir hatadir: hangi
+    // isleyicinin kazandigi kayit sirasina bagli kalir ve digeri hic
+    // calismaz. Artik acikca reddedilir.
+    const key = name.toLowerCase();
+    if (this._commands.has(key)) {
+      throw new Error(`[BridgeBot] komut zaten kayitli: /${name}`);
+    }
+    this._commands.set(key, { name, description, usage, handler });
     this._log(`Komut kaydedildi: /${name}`);
     return this;
+  }
+
+  /** Slash komut metadata'sını Bridge'e kaydet. `connect()` bunu otomatik çağırır. */
+  async registerSlashCommands(): Promise<void> {
+    const commands = [...this._commands.values()].map(c => ({
+      name: c.name.toLowerCase(),
+      description: c.description,
+      usage: c.usage,
+    }));
+    await this._api('PATCH', '/api/v1/bots/me/slash-commands', { commands });
+    this._log(`${commands.length} slash command sunucuya kaydedildi`);
   }
 
   // ── Context Menu Komutları ───────────────────────────────────
@@ -309,12 +363,11 @@ export class BridgeBot extends EventEmitter<BotEvents> {
    * @param userId Hedef kullanıcı ID'si
    * @param modal  Modal tanımı
    */
-  showModal(userId: string, modal: ModalDefinition): void {
-    if (!this.socket) throw new Error('[BridgeBot] Bağlı değil');
-    if (!modal?.customId || !modal?.title)
-      throw new Error('[BridgeBot] Modal customId ve title gerekli');
-    this.socket.emit('bot:showModal', { userId, modal });
-    this._log(`Modal gönderildi: ${modal.title} → ${userId}`);
+  showModal(_userId: string, _modal: ModalDefinition): void {
+    throw new BridgeUnsupportedError(
+      'showModal',
+      'Shipping Bridge istemcisi bot:showModal olayını dinlemiyor. Phantom socket yüzeyi yerine özellik açıkça desteklenmiyor.',
+    );
   }
 
   /**
@@ -329,81 +382,138 @@ export class BridgeBot extends EventEmitter<BotEvents> {
 
   // ── Mesajlaşma ───────────────────────────────────────────────
 
-  /** Kanala mesaj gönder. */
-  async sendMessage(channelId: string, content: string): Promise<BotMessage | null> {
-    return this._api('POST', `/api/v1/messages/${channelId}`, { content });
+  // ══════════════════════════════════════════════════════════════════════
+  // REST YOLLARI DUZELTILDI — `/api/v1/messages/...` DIYE BIR UC YOK
+  // ══════════════════════════════════════════════════════════════════════
+  // Sunucuda mesaj yonlendiricisi `/channels` altina baglanir
+  // (server/app/setupRoutes.ts:93) ve islefyicileri MESAJ kimligiyle
+  // calisir, kanal+mesaj ciftiyle degil:
+  //
+  //     GET    /api/v1/channels/:channelId/messages   (routes/messages.ts:173)
+  //     PATCH  /api/v1/channels/:messageId            (routes/messages.ts:425)
+  //     DELETE /api/v1/channels/:messageId            (routes/messages.ts:380)
+  //     POST   /api/v1/channels/:messageId/react      (routes/messages.ts:501)
+  //
+  // SDK bunlarin hepsini `/api/v1/messages/...` olarak cagiriyordu; hicbiri
+  // mevcut degildi. Yollar kanonik bicime tasindi.
+
+  /**
+   * Kanala mesaj gonder.
+   *
+   * ── DESTEKLENMIYOR: SUNUCUDA REST KARSILIGI YOK ───────────────────────
+   * Bridge'de kanal mesaji OLUSTURMA yalnizca Socket.IO uzerinden yapilir
+   * (`message:send`, server/socket/handlers/messages-send.ts:626). Mesaj
+   * yonlendiricisinde OLUSTURAN hicbir POST rotasi yoktur.
+   *
+   * SDK bunu `POST /api/v1/messages/:channelId` olarak cagiriyordu ve o uc
+   * hicbir zaman var olmadi. Rastgele bir uc UYDURMAK yerine yuzey acikca
+   * desteklenmiyor olarak isaretlendi.
+   *
+   * Bunun calisabilmesi icin sunucu tarafinda IKI sey gerekir ve ikisi de
+   * bir urun kararidir:
+   *   1. BOT KIMLIK DOGRULAMA. `brg_bot_...` jetonlari HMAC ile imzali opak
+   *      dizelerdir, JWT degildir. Ne `middleware/auth.ts` ne de Socket.IO
+   *      el sikismasi (socket/index.ts:130 `verifyToken`) onlari kabul eder;
+   *      `x-bot-token` yalnizca middleware/csrf.ts icinde CSRF muafiyeti
+   *      olarak gecer. Yani bot HICBIR tasima katmaninda kimlik dogrulayamaz.
+   *   2. KANONIK MESAJ OTORITESI. Varsa bile yeni bir uc, izin/slowmode/
+   *      yukleme-sahipligi/ack mantigini KOPYALAMAMALI, mevcut
+   *      `sendChannelMessage()` otoritesini kullanmalidir; o fonksiyon su an
+   *      Socket.IO'ya baglidir (socket, io, socketUsers parametreleri).
+   *
+   * @throws {BridgeUnsupportedError} her zaman
+   */
+  /**
+   * Replies to a slash command a user invoked — the one message a bot may post.
+   *
+   * The server re-checks everything: the message must invoke one of THIS bot's
+   * commands, be at most 15 minutes old, and the bot must hold `messages:reply` in
+   * that server (always true in its own server; granted by admin consent when
+   * installed from the marketplace). AutoMod applies, and one invocation accepts at
+   * most 5 replies. Refusals throw {@link BridgeApiError} with the reason in `code`.
+   * Inside a command handler use `ctx.reply(content)`, which calls this.
+   */
+  async replyToInteraction(invocationMessageId: string, content: string): Promise<BotMessage> {
+    if (typeof content !== 'string') {
+      throw new BridgeUnsupportedError('replyToInteraction', 'Yalnız metin yanıt desteklenir; embed/bileşen için mesaj oluşturma authority tanımlı değil.');
+    }
+    const result = await this._api<{ ok: true; message: BotMessage }>(
+      'POST',
+      `/api/v1/bots/interactions/${encodeURIComponent(invocationMessageId)}/reply`,
+      { content },
+    );
+    return result.message;
   }
 
-  /** Mesajı düzenle. */
-  async editMessage(
-    channelId: string,
-    messageId: string,
-    content: string,
-  ): Promise<BotMessage | null> {
-    return this._api('PATCH', `/api/v1/messages/${channelId}/${messageId}`, { content });
+  async sendMessage(_channelId: string, _content: string): Promise<BotMessage | null> {
+    throw new BridgeUnsupportedError(
+      'sendMessage',
+      'Bot token kimlik doğrulaması artık metadata/realtime command transportunda destekleniyor; ' +
+      'ancak kanal mesajı oluşturma otoritesi hâlâ yalnız kullanıcı Socket.IO `message:send` akışında. ' +
+      'Ayrı bir REST mesaj mimarisi kopyalanmadığı için bu işlem ürün kararı olarak açık kalır.',
+    );
   }
 
-  /** Mesajı sil. */
-  async deleteMessage(channelId: string, messageId: string): Promise<null> {
-    return this._api('DELETE', `/api/v1/messages/${channelId}/${messageId}`);
+  /**
+   * Aşağıdaki kullanıcı-kapsamlı işlemler shipping REST router'larında vardır,
+   * fakat yalnız USER principal kabul eder. Bot tokenını o rotalara gönderip
+   * 401'i `null` diye gizlemek yerine sözleşme açıkça desteklenmiyor.
+   * Bot-principal authority (özellikle rol hiyerarşisi/moderasyon) ayrı ürün
+   * politikası gerektirir ve user auth taklit edilmemelidir.
+   */
+  async editMessage(_channelId: string, _messageId: string, _content: string): Promise<BotMessage | null> {
+    throw new BridgeUnsupportedError('editMessage', 'Bot principal için canonical message-edit authority henüz tanımlı değil.');
   }
 
-  /** Mesaja reaksiyon ekle. */
-  async addReaction(channelId: string, messageId: string, emoji: string): Promise<null> {
-    return this._api('POST', `/api/v1/messages/${channelId}/${messageId}/react`, { emoji });
+  async deleteMessage(_channelId: string, _messageId: string): Promise<null> {
+    throw new BridgeUnsupportedError('deleteMessage', 'Bot principal için canonical message-delete authority henüz tanımlı değil.');
   }
 
-  /** Kanalın son mesajlarını getir. */
-  async getMessages(channelId: string, limit = 50): Promise<BotMessage[]> {
-    return this._api('GET', `/api/v1/messages/${channelId}?limit=${limit}`);
+  async addReaction(_channelId: string, _messageId: string, _emoji: string): Promise<null> {
+    throw new BridgeUnsupportedError('addReaction', 'Bot principal için canonical reaction authority henüz tanımlı değil.');
   }
 
-  /** Interactive (butonlu) mesaj gönder. */
+  async getMessages(_channelId: string, _limit = 50): Promise<BotMessage[]> {
+    throw new BridgeUnsupportedError('getMessages', 'Bot principal için channel-history visibility policy henüz tanımlı değil.');
+  }
+
   async sendInteractiveMessage(
-    channelId: string,
-    content: string,
-    components: ActionRow[],
+    _channelId: string,
+    _content: string,
+    _components: ActionRow[],
   ): Promise<BotMessage | null> {
-    return this._api('POST', `/api/v1/messages/${channelId}`, { content, components });
+    throw new BridgeUnsupportedError('sendInteractiveMessage', 'Mesaj oluşturma authority için bkz. sendMessage.');
   }
 
-  // ── Sunucu ──────────────────────────────────────────────────
+  // ── Sunucu / Moderasyon ──────────────────────────────────────
 
-  /** Sunucu üyelerini getir. */
-  async getMembers(serverId: string): Promise<ServerMember[]> {
-    return this._api('GET', `/api/v1/servers/${serverId}/members`);
+  async getMembers(_serverId: string): Promise<ServerMember[]> {
+    throw new BridgeUnsupportedError('getMembers', 'Bot principal için member-list visibility policy henüz tanımlı değil.');
   }
 
-  /** Üyeye rol ata. */
-  async addRole(serverId: string, userId: string, roleId: string): Promise<null> {
-    return this._api('POST', `/api/v1/servers/${serverId}/members/${userId}/roles`, { roleId });
+  async addRole(_serverId: string, _userId: string, _roleId: string): Promise<null> {
+    throw new BridgeUnsupportedError('addRole', 'Bot role hierarchy authority henüz tanımlı değil.');
   }
 
-  /** Üyeden rol kaldır. */
-  async removeRole(serverId: string, userId: string, roleId: string): Promise<null> {
-    return this._api('DELETE', `/api/v1/servers/${serverId}/members/${userId}/roles/${roleId}`);
+  async removeRole(_serverId: string, _userId: string, _roleId: string): Promise<null> {
+    throw new BridgeUnsupportedError('removeRole', 'Bot role hierarchy authority henüz tanımlı değil.');
   }
 
-  // ── Moderasyon ───────────────────────────────────────────────
-
-  /** Kullanıcıyı at (kick). */
-  async kick(serverId: string, userId: string, reason = ''): Promise<null> {
-    return this._api('POST', `/api/v1/servers/${serverId}/kick`, { userId, reason });
+  async kick(_serverId: string, _userId: string, _reason = ''): Promise<null> {
+    throw new BridgeUnsupportedError('kick', 'Bot moderation hierarchy authority henüz tanımlı değil.');
   }
 
-  /** Kullanıcıyı yasakla (ban). */
-  async ban(serverId: string, userId: string, reason = ''): Promise<null> {
-    return this._api('POST', `/api/v1/servers/${serverId}/ban`, { userId, reason });
+  async ban(_serverId: string, _userId: string, _reason = ''): Promise<null> {
+    throw new BridgeUnsupportedError('ban', 'Bot moderation hierarchy authority henüz tanımlı değil.');
   }
 
-  /** Kullanıcıyı sustur (timeout). */
   async timeout(
-    serverId: string,
-    userId: string,
-    minutes = 10,
-    reason = '',
+    _serverId: string,
+    _userId: string,
+    _minutes = 10,
+    _reason = '',
   ): Promise<null> {
-    return this._api('POST', `/api/v1/servers/${serverId}/timeout`, { userId, minutes, reason });
+    throw new BridgeUnsupportedError('timeout', 'Bot moderation hierarchy authority henüz tanımlı değil.');
   }
 
   // ── Socket Olayları (İç) ─────────────────────────────────────
@@ -428,8 +538,8 @@ export class BridgeBot extends EventEmitter<BotEvents> {
       this.emit('message', msg);
       void this._handleSlashCommand(msg);
     };
-    s.on('message', onMessage);
-    s.on('channel:message', onMessage);
+    // Shipping server emits the canonical channel event as `message:new`.
+    s.on('message:new', onMessage);
 
     s.on('message:edit',   (data: MessageEditData)   => this.emit('messageEdit',   data));
     s.on('message:delete', (data: MessageDeleteData) => this.emit('messageDelete', data));
@@ -495,7 +605,7 @@ export class BridgeBot extends EventEmitter<BotEvents> {
       serverId:  msg.serverId,
       userId:    msg.userId,
       args,
-      reply: (content) => this.sendMessage(ctx.channelId, content),
+      reply: (content) => this.replyToInteraction(msg._id, content),
       react: (emoji)   => this.addReaction(ctx.channelId, msg._id, emoji).then(() => {}),
     };
 
@@ -509,12 +619,12 @@ export class BridgeBot extends EventEmitter<BotEvents> {
   }
 
   private async _fetchBotInfo(): Promise<BotInfo> {
-    try {
-      return await this._api<BotInfo>('GET', '/api/v1/bots/me');
-    } catch {
-      return { _id: '', username: 'Bot' };
-    }
+    // Authentication failures must be visible at connect() time. Returning a
+    // fabricated bot identity used to defer the error until Socket.IO auth,
+    // making invalid/revoked credentials look like a transport outage.
+    return this._api<BotInfo>('GET', '/api/v1/bots/me');
   }
+
 
   private async _api<T = unknown>(
     method: string,
@@ -557,8 +667,8 @@ export class BridgeBot extends EventEmitter<BotEvents> {
     }
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({})) as { error?: string };
-      throw new Error(`API hatası ${res.status}: ${err.error ?? res.statusText}`);
+      const err = await res.json().catch(() => ({})) as { error?: unknown };
+      throw new BridgeApiError(res.status, typeof err.error === 'string' ? err.error : res.statusText);
     }
 
     return res.status === 204 ? null as unknown as T : (res.json() as Promise<T>);

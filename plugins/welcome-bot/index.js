@@ -1,3 +1,4 @@
+// GENERATED FROM index.ts BY scripts/build-plugins.js — DO NOT EDIT.
 // plugins/welcome-bot/index.ts — Bridge Plugin
 // SPRINT65: .js → .ts geçişi
 'use strict';

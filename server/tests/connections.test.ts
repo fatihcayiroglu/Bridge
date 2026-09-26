@@ -3,6 +3,7 @@
 // Sprint 50: JS → TypeScript dönüşümü
 // Kapsam: GET /me/connections, PUT (upsert), DELETE, platform doğrulama
 
+import { makeJwtUser } from './helpers/userDoubles';
 import request from 'supertest';
 import express, { Express, Request, Response, NextFunction } from 'express';
 
@@ -35,7 +36,7 @@ jest.mock('../db', () => ({
 type AuthedReq = Request & { user: { _id: string; id: string; displayName: string } };
 
 function mockAuth(req: Request, _res: Response, next: NextFunction): void {
-  (req as AuthedReq).user = { _id: 'u1', id: 'u1', displayName: 'Test User' };
+  req.user = makeJwtUser('u1', { displayName: 'Test User' });
   next();
 }
 
@@ -81,7 +82,9 @@ function buildApp(): Express {
 
   // DELETE /api/me/connections/:platform
   app.delete('/api/me/connections/:platform', mockAuth, (req: Request, res: Response) => {
-    const { platform } = req.params;
+    // `req.params[x]` Express tiplerinde `string | string[]` olabilir;
+    // rota tek segmentli oldugu icin dizgeye indirgenir.
+    const platform = String(req.params.platform ?? '');
     if (!(SUPPORTED_PLATFORMS as readonly string[]).includes(platform)) {
       return res.status(400).json({ error: 'Geçersiz platform' });
     }

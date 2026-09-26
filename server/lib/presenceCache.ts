@@ -1,182 +1,357 @@
 // server/lib/presenceCache.ts
-// Kullanıcı presence (çevrimiçi durumu) ve üyelik listesi önbelleği
+// Cluster-safe presence and membership cache.
 //
-// ── Socket sayacı (multi-tab, cluster-safe) ────────────────────
-//
-// SORUN (önceki versiyon):
-//   _socketMap process-local'dı. PM2 cluster modunda aynı kullanıcı iki
-//   farklı worker'a düşerse, worker-1 kullanıcıyı online, worker-2 offline
-//   görebilirdi. Sticky-session olmadan online/offline durumu tutarsızdı.
-//
-// ÇÖZÜM (bu versiyon):
-//   - _socketMap hâlâ process-local (her worker kendi socket'larını bilir)
-//   - Kullanıcı gerçekten online/offline olduğunda Redis Pub/Sub üzerinden
-//     diğer worker'lar bilgilendirilir.
-//   - isUserOnline() Redis'teki TTL'li "online heartbeat" key'ini kullanır.
-//     Bu key tüm worker'larda tutarlıdır.
-//   - trackSocket() → markOnline() + publish('joined')
-//   - releaseSocket() → tüm socketler gittiyse markOffline() + publish('left')
-//
-// Tek-instance veya sticky-session kurulumunda öncekiyle davranış aynıdır.
+// Presence truth is a Redis sorted set of live socket ids when REDIS_URL is
+// configured. Each worker refreshes only the sockets it owns; reads prune
+// stale members before counting. This prevents one worker's disconnect from
+// marking a user offline while another worker still owns a live socket, and
+// it also self-heals after process crashes.
 
 import { cache, subscribeToChannel, publishToChannel } from './redisAdapter';
 import logger from './logger';
 
-const MEMBERSHIP_TTL_S  = 300;   // 5 dakika — üyelik listesi nadiren değişir
-const STATUS_THROTTLE_S = 10;    // aynı status için 10 saniyede bir DB yazması yeter
-const ONLINE_TTL_S      = 600;   // 10 dakika — online heartbeat penceresi
-const PRESENCE_CHANNEL  = 'bridge:presence';
+const MEMBERSHIP_TTL_S = 300;
+const STATUS_THROTTLE_S = 10;
+const ONLINE_TTL_S = 600; // single-node compatibility heartbeat
+const PRESENCE_CHANNEL = 'bridge:presence';
+const REDIS_CONFIGURED = Boolean(process.env.REDIS_URL);
+const SOCKET_STALE_MS = 90_000;
+const SOCKET_HEARTBEAT_MS = 30_000;
 
-// ── Process-local socket sayacı ────────────────────────────────
-// userId → Set<socketId>  (bu process'te açık olan socket'lar)
 const _socketMap = new Map<string, Set<string>>();
+const _hiddenUsers = new Set<string>();
+const _manualOfflineUsers = new Set<string>();
+const _socketMutationTails = new Map<string, Promise<void>>();
 
-// ── Cluster Pub/Sub başlatma ───────────────────────────────────
-// Socket.io başlamadan önce bu modül import edilebilir;
-// subscribeToChannel Redis bağlantısı hazır olunca abone olur.
-// Mesaj: JSON { event: 'presence:joined' | 'presence:left', userId: string }
-// Şu an bu mesajları alıcı taraf aktif olarak tüketmiyor;
-// isUserOnline() zaten Redis'teki TTL key'ine bakıyor. Pub/Sub, gelecekte
-// "friend-online" push notification veya socket fanout için kullanılabilir.
+function sharedSocketKey(userId: string): string {
+  return `presence:sockets:${userId}`;
+}
+
+function visibilityKey(userId: string): string {
+  return `presence:visibility:${userId}`;
+}
+
+function visibilityLockKey(userId: string): string {
+  return `presence-visibility:${userId}`;
+}
+
+function parseVisibilityAuthority(value: unknown): boolean | null {
+  if (value === 'visible') return true;
+  if (value === 'hidden') return false;
+  return null;
+}
+
+async function recoverVisibilityAuthority(userId: string): Promise<boolean> {
+  return cache.withKeyLock(visibilityLockKey(userId), async () => {
+    // A concurrent profile update may have restored the key while we waited.
+    const rechecked = parseVisibilityAuthority(
+      await cache.getAuthoritative<string>(visibilityKey(userId)),
+    );
+    if (rechecked !== null) return rechecked;
+
+    try {
+      const [{ Users }, { normalizePresenceVisibility }] = await Promise.all([
+        import('../db/repositories'),
+        import('./userUtils'),
+      ]);
+      const user = await Users.findById(userId);
+      const visible = Boolean(user) && normalizePresenceVisibility(user?.presenceVisibility) === 'visible';
+      await cache.setAuthoritative(visibilityKey(userId), visible ? 'visible' : 'hidden', 0);
+      return visible;
+    } catch (err) {
+      logger.warn({ err, userId, event: 'presence.visibility_recovery.failed' },
+        'Presence visibility authority recovery failed; treating user as hidden.');
+      return false;
+    }
+  }, { leaseSeconds: 5, waitMs: 2_000, retryMs: 10 });
+}
+
+async function withSocketMutation<T>(userId: string, socketId: string, fn: () => Promise<T>): Promise<T> {
+  const key = `${userId}:${socketId}`;
+  const previous = _socketMutationTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const tail = previous.catch(() => undefined).then(() => gate);
+  _socketMutationTails.set(key, tail);
+  await previous.catch(() => undefined);
+  try { return await fn(); }
+  finally {
+    release();
+    if (_socketMutationTails.get(key) === tail) _socketMutationTails.delete(key);
+  }
+}
+
+function parseRedisCount(value: unknown, label: string): number {
+  const count = Number(value);
+  if (!Number.isSafeInteger(count) || count < 0) throw new Error(`Invalid ${label} count`);
+  return count;
+}
+
+async function touchSharedSocket(userId: string, socketId: string, now = Date.now()): Promise<number> {
+  const raw = await cache.luaEvalAuthoritative(
+    `local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local stale = tonumber(ARGV[2])
+redis.call('ZADD', key, now, ARGV[3])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - stale)
+local count = redis.call('ZCARD', key)
+redis.call('PEXPIRE', key, stale + tonumber(ARGV[4]))
+return count`,
+    [sharedSocketKey(userId)],
+    [String(now), String(SOCKET_STALE_MS), socketId, String(SOCKET_HEARTBEAT_MS)],
+  );
+  if (raw === null) throw new Error('Redis presence coordination unavailable');
+  return parseRedisCount(raw, 'presence socket');
+}
+
+async function releaseSharedSocket(userId: string, socketId: string, now = Date.now()): Promise<number> {
+  const raw = await cache.luaEvalAuthoritative(
+    `local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local stale = tonumber(ARGV[2])
+redis.call('ZREM', key, ARGV[3])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - stale)
+local count = redis.call('ZCARD', key)
+if count == 0 then redis.call('DEL', key) else redis.call('PEXPIRE', key, stale + tonumber(ARGV[4])) end
+return count`,
+    [sharedSocketKey(userId)],
+    [String(now), String(SOCKET_STALE_MS), socketId, String(SOCKET_HEARTBEAT_MS)],
+  );
+  if (raw === null) throw new Error('Redis presence coordination unavailable');
+  return parseRedisCount(raw, 'presence socket');
+}
+
+async function sharedSocketCount(userId: string, now = Date.now()): Promise<number> {
+  const raw = await cache.luaEvalAuthoritative(
+    `local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local stale = tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - stale)
+local count = redis.call('ZCARD', key)
+if count == 0 then redis.call('DEL', key) end
+return count`,
+    [sharedSocketKey(userId)],
+    [String(now), String(SOCKET_STALE_MS)],
+  );
+  if (raw === null) throw new Error('Redis presence coordination unavailable');
+  return parseRedisCount(raw, 'presence socket');
+}
+
+// Best-effort pub/sub is notification-only. Redis socket ownership above is
+// the source of truth, so losing a pub/sub message cannot corrupt presence.
 let _unsubscribe: (() => Promise<void>) | null = null;
-
 (async () => {
   try {
     _unsubscribe = await subscribeToChannel(PRESENCE_CHANNEL, (raw) => {
       try {
-        const msg = JSON.parse(raw) as { event: string; userId: string };
-        logger.debug({ msg, event: 'presenceCache.pubsub.received' }, 'Presence pub/sub mesajı alındı');
-      } catch { /* malformed message — ignore */ }
+        const msg = JSON.parse(raw) as { event: string; userId: string; visible?: boolean };
+        if (msg.event === 'presence:visibility' && typeof msg.userId === 'string' && typeof msg.visible === 'boolean') {
+          if (msg.visible) _hiddenUsers.delete(msg.userId);
+          else _hiddenUsers.add(msg.userId);
+        }
+        logger.debug({ msg, event: 'presenceCache.pubsub.received' }, 'Presence pub/sub message received');
+      } catch { /* malformed notification */ }
     });
   } catch (err) {
-    logger.warn({ err, event: 'presenceCache.pubsub.subscribe_failed' }, 'Presence pub/sub aboneliği başlatılamadı — fallback modda çalışılıyor');
+    logger.warn({ err, event: 'presenceCache.pubsub.subscribe_failed' }, 'Presence pub/sub subscription failed');
   }
 })();
 
-// ── Multi-tab socket sayacı ────────────────────────────────────
-
-/**
- * Kullanıcının bir socket bağlantısını kaydeder.
- * İlk socket ise Redis'e online işaret eder ve cluster'a bildirir.
- * @returns kullanıcının bu worker'daki toplam aktif socket sayısı
- */
-async function trackSocket(userId: string, socketId: string): Promise<number> {
+async function trackSocket(userId: string, socketId: string, visible = true): Promise<number> {
+  await setPresenceVisibility(userId, visible);
   if (!_socketMap.has(userId)) _socketMap.set(userId, new Set());
   _socketMap.get(userId)!.add(socketId);
-  const count = _socketMap.get(userId)!.size;
+  const localCount = _socketMap.get(userId)!.size;
 
-  if (count === 1) {
-    // İlk socket: online heartbeat yaz + cluster'a bildir
-    await markOnline(userId);
-    publishToChannel(PRESENCE_CHANNEL, JSON.stringify({ event: 'presence:joined', userId })).catch(() => {});
+  if (REDIS_CONFIGURED) {
+    if (!visible) return localCount;
+    try {
+      const globalCount = await withSocketMutation(userId, socketId, () => touchSharedSocket(userId, socketId));
+      if (globalCount === 1) {
+        // The live-socket ZSET is cluster truth. Legacy online-heartbeat
+        // maintenance must not roll back a socket whose authoritative claim
+        // already succeeded (that would leave an untracked Redis ghost).
+        await markOnline(userId).catch((err) => {
+          logger.warn({ err, userId, event: 'presence.legacy_online_write_failed' }, 'Legacy online heartbeat update failed');
+        });
+        void Promise.resolve(publishToChannel(PRESENCE_CHANNEL, JSON.stringify({ event: 'presence:joined', userId }))).catch(() => {});
+      }
+      return globalCount;
+    } catch (err) {
+      const local = _socketMap.get(userId);
+      local?.delete(socketId);
+      if (local?.size === 0) _socketMap.delete(userId);
+      logger.warn({ err, userId, event: 'presence.socket_track.redis_failed' }, 'Shared presence socket registration failed');
+      throw err;
+    }
   }
 
-  return count;
+  if (localCount === 1) {
+    if (visible) {
+      await markOnline(userId);
+      void Promise.resolve(publishToChannel(PRESENCE_CHANNEL, JSON.stringify({ event: 'presence:joined', userId }))).catch(() => {});
+    } else {
+      await markOffline(userId);
+    }
+  }
+  return localCount;
 }
 
-/**
- * Kullanıcının bir socket bağlantısını kaldırır.
- * Son socket giderse Redis'ten offline işaret eder ve cluster'a bildirir.
- * @returns kalan aktif socket sayısı (0 ise gerçekten offline)
- */
 async function releaseSocket(userId: string, socketId: string): Promise<number> {
   const sockets = _socketMap.get(userId);
-  if (!sockets) return 0;
-  sockets.delete(socketId);
-
-  if (sockets.size === 0) {
-    _socketMap.delete(userId);
-    // Son socket: offline işaret et + cluster'a bildir
-    await markOffline(userId);
-    publishToChannel(PRESENCE_CHANNEL, JSON.stringify({ event: 'presence:left', userId })).catch(() => {});
-    return 0;
+  if (sockets) {
+    sockets.delete(socketId);
+    if (sockets.size === 0) _socketMap.delete(userId);
   }
-  return sockets.size;
+  const localRemaining = sockets?.size ?? 0;
+
+  if (REDIS_CONFIGURED) {
+    let globalRemaining: number;
+    try {
+      globalRemaining = await withSocketMutation(userId, socketId, () => releaseSharedSocket(userId, socketId));
+    } catch (err) {
+      // Never report zero from a process-local view when Redis authority is
+      // unavailable: callers would persist/broadcast a false global offline.
+      logger.warn({ err, userId, event: 'presence.socket_release.redis_failed' }, 'Shared presence socket release failed');
+      return Math.max(1, localRemaining);
+    }
+    if (globalRemaining === 0) {
+      // The authoritative ZSET has already reached zero. A failure deleting
+      // the compatibility heartbeat must not suppress the canonical offline
+      // transition or make callers believe a socket is still alive.
+      await markOffline(userId).catch((err) => {
+        logger.warn({ err, userId, event: 'presence.legacy_offline_write_failed' }, 'Legacy online heartbeat cleanup failed');
+      });
+      void Promise.resolve(publishToChannel(PRESENCE_CHANNEL, JSON.stringify({ event: 'presence:left', userId }))).catch(() => {});
+    }
+    return globalRemaining;
+  }
+
+  if (localRemaining === 0) {
+    await markOffline(userId);
+    void Promise.resolve(publishToChannel(PRESENCE_CHANNEL, JSON.stringify({ event: 'presence:left', userId }))).catch(() => {});
+  }
+  return localRemaining;
 }
 
-/** Kullanıcının bu process'teki aktif socket sayısını döner (0 = bu worker'da yok) */
 function socketCount(userId: string): number {
   return _socketMap.get(userId)?.size ?? 0;
 }
 
-// ── Üyelik cache ───────────────────────────────────────────────
-
-/**
- * Kullanıcının sunucu üyeliklerini önbellekten alır.
- * Cache miss durumunda Members.findByUser() çağırır ve önbellekler.
- */
 async function getMembershipsCached(
   userId: string,
-  fetchFn: () => Promise<Array<{ serverId: string }>>
+  fetchFn: () => Promise<Array<{ serverId: string }>>,
 ): Promise<Array<{ serverId: string }>> {
   const key = `presence:memberships:${userId}`;
   try {
     const cached = await cache.get<Array<{ serverId: string }>>(key);
     if (cached) return cached;
-  } catch { /* cache erişim hatası → DB'ye fall through */ }
+  } catch { /* cache miss/error -> DB */ }
 
   const memberships = await fetchFn();
-
-  try {
-    await cache.set(key, memberships, MEMBERSHIP_TTL_S);
-  } catch { /* cache yazma hatası → devam et */ }
-
+  try { await cache.set(key, memberships, MEMBERSHIP_TTL_S); } catch { /* cache only */ }
   return memberships;
 }
 
-/**
- * Üyelik önbelleğini geçersiz kılar.
- * Kullanıcı bir sunucuya katıldığında veya ayrıldığında çağrılmalıdır.
- */
 async function invalidateMemberships(userId: string): Promise<void> {
-  try {
-    await cache.del(`presence:memberships:${userId}`);
-  } catch {}
+  try { await cache.del(`presence:memberships:${userId}`); } catch { /* cache only */ }
 }
 
-// ── Status throttle ────────────────────────────────────────────
-
-/**
- * Aynı status için DB yazmasını kısa süreyle bastırır.
- * @returns true → DB'ye yaz, false → throttle edildi, atla
- */
 async function throttleStatusWrite(userId: string, newStatus: string): Promise<boolean> {
   const key = `presence:status_throttle:${userId}`;
   try {
     const last = await cache.get<string>(key);
     if (last === newStatus) return false;
     await cache.set(key, newStatus, STATUS_THROTTLE_S);
-  } catch {
-    // Cache erişim hatası → güvenli taraf: her zaman yaz
-  }
+  } catch { /* safe side: write DB */ }
   return true;
 }
 
-// ── Online heartbeat (Redis-backed, cluster-wide) ──────────────
-
-/** Kullanıcıyı tüm cluster'da online olarak işaretler (TTL'li) */
 async function markOnline(userId: string): Promise<void> {
+  _manualOfflineUsers.delete(userId);
   try {
-    await cache.set(`presence:online:${userId}`, 1, ONLINE_TTL_S);
-  } catch {}
+    if (REDIS_CONFIGURED) await cache.delAuthoritative(`presence:manual_offline:${userId}`);
+    else await cache.del(`presence:manual_offline:${userId}`);
+    // Keep the legacy heartbeat for single-node/backward-compatible readers.
+    if (REDIS_CONFIGURED) await cache.setAuthoritative(`presence:online:${userId}`, 1, ONLINE_TTL_S);
+    else await cache.set(`presence:online:${userId}`, 1, ONLINE_TTL_S);
+  } catch (err) {
+    if (REDIS_CONFIGURED) throw err;
+  }
 }
 
-/** Kullanıcıyı tüm cluster'da offline olarak işaretler */
 async function markOffline(userId: string): Promise<void> {
+  _manualOfflineUsers.add(userId);
   try {
-    await cache.del(`presence:online:${userId}`);
-  } catch {}
+    // Cluster truth is the live-socket ZSET; a separate offline marker races a
+    // concurrent connect on another node and can mask a real live socket.
+    if (REDIS_CONFIGURED) await cache.delAuthoritative(`presence:online:${userId}`);
+    else await cache.del(`presence:online:${userId}`);
+  } catch (err) {
+    if (REDIS_CONFIGURED) throw err;
+  }
 }
 
-/**
- * Kullanıcının online olup olmadığını kontrol eder (cluster-wide).
- * Bu process'te socket varsa anında true döner (hızlı path).
- * Yoksa Redis'teki heartbeat key'ine bakar (diğer worker'larda olabilir).
- */
+async function setPresenceVisibility(userId: string, visible: boolean): Promise<void> {
+  try {
+    if (REDIS_CONFIGURED) {
+      // Visibility is explicit authoritative state. Absence must never mean
+      // "visible": after a Redis flush/recovery that interpretation could
+      // expose a user whose durable DB preference is hidden before the owning
+      // socket has had a chance to repopulate coordination state.
+      await cache.withKeyLock(visibilityLockKey(userId), async () => {
+        await cache.setAuthoritative(visibilityKey(userId), visible ? 'visible' : 'hidden', 0);
+      }, { leaseSeconds: 5, waitMs: 2_000, retryMs: 10 });
+    } else if (visible) {
+      await cache.del(`presence:hidden:${userId}`);
+    } else {
+      await cache.set(`presence:hidden:${userId}`, 1, 0);
+    }
+
+    // Local fast-path state changes only AFTER authoritative Redis accepted
+    // the transition. A failed "show me" request must not make this worker
+    // more permissive than cluster truth; a failed "hide me" request is
+    // handled by the route before durable DB persistence.
+    if (visible) _hiddenUsers.delete(userId);
+    else _hiddenUsers.add(userId);
+    void Promise.resolve(publishToChannel(PRESENCE_CHANNEL, JSON.stringify({ event: 'presence:visibility', userId, visible }))).catch(() => {});
+  } catch (err) {
+    if (REDIS_CONFIGURED) throw err;
+  }
+}
+
+async function isPresenceVisible(userId: string): Promise<boolean> {
+  try {
+    if (REDIS_CONFIGURED) {
+      // Redis is authoritative in clustered mode; a process-local hint must
+      // never permanently override a newer preference written on another node.
+      const visibility = parseVisibilityAuthority(
+        await cache.getAuthoritative<string>(visibilityKey(userId)),
+      );
+      if (visibility !== null) return visibility;
+      // Redis restart/flush recovery: reconstruct explicit authority from the
+      // durable DB preference under the same lock used by profile updates.
+      return recoverVisibilityAuthority(userId);
+    }
+    if (_hiddenUsers.has(userId)) return false;
+    const hidden = await cache.get(`presence:hidden:${userId}`);
+    return hidden === null;
+  } catch {
+    return false;
+  }
+}
+
 async function isUserOnline(userId: string): Promise<boolean> {
-  // Önce bu process'in socket map'ini kontrol et (en hızlı)
+  if (!(await isPresenceVisible(userId))) return false;
+
+  if (REDIS_CONFIGURED) {
+    try { return (await sharedSocketCount(userId)) > 0; }
+    catch { return false; }
+  }
+
+  if (_manualOfflineUsers.has(userId)) return false;
+
   if (socketCount(userId) > 0) return true;
-  // Redis'e bak (diğer worker'larda veya kısa süreli yeniden bağlanmalarda)
   try {
     const val = await cache.get(`presence:online:${userId}`);
     return val !== null;
@@ -185,18 +360,38 @@ async function isUserOnline(userId: string): Promise<boolean> {
   }
 }
 
-// ── Diagnostics ────────────────────────────────────────────────
-
-/** Bu process'te takip edilen toplam socket bağlantısı sayısı (debug) */
 function activeSockets(): number {
   let total = 0;
   for (const set of _socketMap.values()) total += set.size;
   return total;
 }
 
-/** Bu process'te en az bir socketi olan kullanıcı sayısı */
 function onlineUserCount(): number {
   return _socketMap.size;
+}
+
+if (REDIS_CONFIGURED) {
+  const heartbeat = setInterval(() => {
+    const now = Date.now();
+    for (const [userId, sockets] of _socketMap) {
+      if (_manualOfflineUsers.has(userId)) continue;
+      // Pub/sub above is only a latency optimization. Re-read explicit Redis
+      // visibility before refreshing ownership so a dropped visibility event
+      // self-heals and a hidden user is never inferred visible from local state.
+      void isPresenceVisible(userId).then(async (visible) => {
+        if (!visible) return;
+        for (const socketId of sockets) {
+          await withSocketMutation(userId, socketId, async () => {
+            if (!_socketMap.get(userId)?.has(socketId)) return;
+            await touchSharedSocket(userId, socketId, now);
+          });
+        }
+      }).catch((err) => {
+        logger.warn({ err, userId, event: 'presence.heartbeat.redis_failed' }, 'Shared presence heartbeat failed');
+      });
+    }
+  }, SOCKET_HEARTBEAT_MS);
+  heartbeat.unref?.();
 }
 
 export {
@@ -208,6 +403,8 @@ export {
   throttleStatusWrite,
   markOnline,
   markOffline,
+  setPresenceVisibility,
+  isPresenceVisible,
   isUserOnline,
   activeSockets,
   onlineUserCount,

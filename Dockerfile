@@ -4,7 +4,7 @@
 #
 # GÜVENLİK NOTLARI:
 #   • Build sırasında hiçbir secret/env inject edilmez — runtime'da .env'den okunur.
-#   • node:22-bookworm-slim tabanı — native Node modülleri için glibc uyumluluğu sağlar.
+#   • node:24.20.0-bookworm-slim tabanı — CI ana runtime ile hizalıdır; proje minimum Node 22.19 uyumluluğunu ayrı CI job'ında doğrular.
 #   • Non-root kullanıcı (bridge:bridge) — container breakout riski minimize.
 #   • Runtime image'da devDependencies yok — npm audit surface küçültülmüş.
 #   • /app/uploads dışındaki dosya sistemi read-only çalışabilir (docker compose'da
@@ -13,7 +13,7 @@
 # ════════════════════════════════════════════════════════════════
 
 # ── Stage 1: Bağımlılık kurulumu + Build ────────────────────────
-FROM node:26-bookworm-slim AS build
+FROM node:24.20.0-bookworm-slim AS build
 
 # Güvenlik: build sırasında gereksiz araçları kaldır
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip make g++ ca-certificates && rm -rf /var/lib/apt/lists/*   # mediasoup native build için
@@ -33,13 +33,13 @@ RUN cd server && npm ci --ignore-scripts=false
 COPY . .
 
 # 1. Server TypeScript → server/dist/
-RUN cd server && npm run build
+RUN node scripts/generate-openapi-runtime.js && cd server && npm run build
 
 # 2. Client bundle → client/dist/
 RUN npm run build
 
 # ── Stage 2: Sadece production bağımlılıkları ──────────────────
-FROM node:26-bookworm-slim AS deps
+FROM node:24.20.0-bookworm-slim AS deps
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip make g++ ca-certificates && rm -rf /var/lib/apt/lists/*   # mediasoup native modülleri için
 COPY scripts ./scripts
@@ -47,7 +47,7 @@ COPY server/package*.json ./server/
 RUN cd server && npm ci --omit=dev --ignore-scripts=false
 
 # ── Stage 3: Minimal runtime image ─────────────────────────────
-FROM node:26-bookworm-slim AS runtime
+FROM node:24.20.0-bookworm-slim AS runtime
 
 # Güvenlik: imajı minimal tut — sadece wget (healthcheck için)
 RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates \

@@ -5,18 +5,18 @@
 //   PUT /batch  → /:roleId'ye düşer (roleId="batch" olur → yanlış davranış)
 // Bu testler söz konusu regresyonları yakalar.
 
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../lib/permCache',  () => ({ invalidatePerms: jest.fn() }));
-jest.mock('express-rate-limit', () => () => (_req, _res, next) => next());
+jest.mock('express-rate-limit', () => () => (_req: unknown, _res: unknown, next: () => void) => next());
 
 // İki ayrı mock bloğu: ilki ezdirmesin diye tek tanım yapıyoruz
 jest.mock('../db/loader', () => {
   const mock = require('./helpers/mockDb').createMockDb();
   mock._sqlite = {
-    transaction: (fn) => () => fn(),
+    transaction: (fn: () => unknown) => () => fn(),
     prepare: () => ({
       run: jest.fn(),
       get: jest.fn().mockReturnValue(null),
@@ -51,10 +51,16 @@ function buildApp() {
   app.use('/api/servers/:sid/channels/:cid/permissions', authMiddleware, channelPermsRouter);
   return app;
 }
-function tok(uid) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 // ─── Fixture ───────────────────────────────────────────────────────────────
-let app, ownerId, serverId, channelId, ch2Id, roleId, ownerToken;
+let app: express.Express;
+let ownerId: string;
+let serverId: string;
+let channelId: string;
+let ch2Id: string;
+let roleId: string;
+let ownerToken: string;
 
 beforeEach(async () => {
   db._reset?.();
@@ -278,11 +284,63 @@ describe('overrides.js — DELETE /:roleId', () => {
     expect(remaining).toHaveLength(0);
   });
 
-  it('var olmayan override\'ı silmek 200 döner', async () => {
+  it('var olmayan override\'ı silmek 200 döner (idempotent)', async () => {
+    // Asıl niyet: override SATIRI olmayan bir rolü silmek idempotent olmalı.
+    // Eskiden rastgele bir UUID kullanılıyordu; C2 güvenlik düzeltmesinden
+    // sonra rota rolün BU sunucuya ait olduğunu doğruluyor, bu yüzden gerçek
+    // (ama override'sız) bir rol kullanılır. Niyet korunur, kapsam sıkılaşır.
+    const roleWithoutOverride = uuidv4();
+    await db.roles.insert({ _id: roleWithoutOverride, serverId, name: 'Override Yok', permissions: 0 });
+
     const res = await request(app)
-      .delete(`/api/servers/${serverId}/channels/${channelId}/permissions/${uuidv4()}`)
+      .delete(`/api/servers/${serverId}/channels/${channelId}/permissions/${roleWithoutOverride}`)
       .set('Authorization', `Bearer ${ownerToken}`);
     expect(res.status).toBe(200);
+  });
+
+  it('GÜVENLİK: bu sunucuya AİT OLMAYAN rol reddedilir (çapraz kiracı IDOR)', async () => {
+    // Rota yetkiyi `sid` üzerinden doğrular; rol sahipliği doğrulanmazsa
+    // A sunucusunu yöneten biri B'nin rolüyle override yazabilirdi.
+    const foreignServerId = uuidv4();
+    const foreignRoleId   = uuidv4();
+    await db.servers.insert({ _id: foreignServerId, name: 'Yabanci', ownerId: uuidv4() });
+    await db.roles.insert({ _id: foreignRoleId, serverId: foreignServerId, name: 'Yabanci Rol', permissions: 0 });
+
+    const res = await request(app)
+      .put(`/api/servers/${serverId}/channels/${channelId}/permissions/${foreignRoleId}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ allow: 1024, deny: 0 });
+
+    expect(res.status).toBe(404);
+    expect(await db.channelPermissions.find({ roleId: foreignRoleId })).toHaveLength(0);
+  });
+
+  it('GÜVENLİK: bu sunucuya AİT OLMAYAN kanal reddedilir (çapraz kiracı IDOR)', async () => {
+    const foreignServerId  = uuidv4();
+    const foreignChannelId = uuidv4();
+    await db.servers.insert({ _id: foreignServerId, name: 'Yabanci2', ownerId: uuidv4() });
+    await db.channels.insert({ _id: foreignChannelId, serverId: foreignServerId, name: 'gizli', type: 'text' });
+
+    const res = await request(app)
+      .put(`/api/servers/${serverId}/channels/${foreignChannelId}/permissions/${roleId}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ allow: 1024, deny: 0 });
+
+    expect(res.status).toBe(404);
+    expect(await db.channelPermissions.find({ channelId: foreignChannelId })).toHaveLength(0);
+  });
+
+  it('GÜVENLİK: başka sunucunun kanal override okuması reddedilir', async () => {
+    const foreignServerId  = uuidv4();
+    const foreignChannelId = uuidv4();
+    await db.servers.insert({ _id: foreignServerId, name: 'Yabanci3', ownerId: uuidv4() });
+    await db.channels.insert({ _id: foreignChannelId, serverId: foreignServerId, name: 'gizli', type: 'text' });
+
+    const res = await request(app)
+      .get(`/api/servers/${serverId}/channels/${foreignChannelId}/permissions`)
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expect(res.status).toBe(404);
   });
 });
 
@@ -450,8 +508,8 @@ describe('bulk.js — POST /bulk-sync', () => {
       .post(`/api/servers/${serverId}/channels/${channelId}/permissions/bulk-sync`)
       .set('Authorization', `Bearer ${ownerToken}`)
       .send({ channelIds: [foreignId], overrides: [] });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/kanal/i);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/channel|kanal/i);
   });
 
   it('MANAGE_CHANNELS olmadan 403 döner', async () => {
@@ -512,7 +570,7 @@ describe('bulk.js — POST /bulk-sync/preview', () => {
 
     expect(res.status).toBe(200);
     // channelId (kaynak) preview'dan çıkarılmış olmalı
-    const previewIds = res.body.preview.map(p => p.channelId);
+    const previewIds = res.body.preview.map((p: Record<string, unknown>) => p.channelId);
     expect(previewIds).not.toContain(channelId);
   });
 });

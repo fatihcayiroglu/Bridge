@@ -21,6 +21,8 @@ import { authMiddleware, makeToken, makeRefreshToken, castAuthed } from '../midd
 import { limits } from '../middleware/rateLimit';
 import { cache } from '../lib/redisAdapter';
 import logger from '../lib/logger';
+import { setRefreshCookie } from '../lib/authCookies';
+import { setMediaCookie } from '../lib/mediaCookie';
 
 // Crypto & PEM helpers
 import {
@@ -29,10 +31,12 @@ import {
 } from '../lib/webauthn-crypto';
 import type { WebAuthnUser } from '../lib/webauthn-crypto';
 import { jwkToPem, rsaJwkToPem } from '../lib/webauthn-pem';
+import { isAllowedWebAuthnOrigin, resolveWebAuthnRpId } from '../lib/webauthn-origin';
 
-const RP_ID = process.env.WEBAUTHN_RP_ID || process.env.DOMAIN || 'localhost';
+export { isAllowedWebAuthnOrigin } from '../lib/webauthn-origin';
+
+const RP_ID = resolveWebAuthnRpId();
 const RP_NAME = process.env.WEBAUTHN_RP_NAME || 'Bridge';
-const ORIGIN = process.env.WEBAUTHN_ORIGIN || process.env.INSTANCE_URL || 'http://localhost';
 
 type MaybeAuthedRequest = import('express').Request & { user?: { id?: string; _id?: string; username?: string } };
 function getAuthedUser(req: import('express').Request) {
@@ -53,6 +57,41 @@ type WebAuthnClientCredential = {
     transports?: string[];
   };
 };
+
+function parseOptionalUsername(value: unknown): { ok: true; value?: string } | { ok: false } {
+  if (value === undefined || value === null || value === '') return { ok: true };
+  if (typeof value !== 'string') return { ok: false };
+  const username = value.trim();
+  if (!username || username.length > 64) return { ok: false };
+  return { ok: true, value: username };
+}
+
+function parseCredentialName(value: unknown): { ok: true; value?: string } | { ok: false } {
+  if (value === undefined || value === null || value === '') return { ok: true };
+  if (typeof value !== 'string') return { ok: false };
+  const name = value.trim();
+  if (!name || name.length > 64) return { ok: false };
+  return { ok: true, value: name };
+}
+
+function validCredentialId(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
+  try {
+    const decoded = b64uDecode(value);
+    return decoded.length > 0 && decoded.length <= 1024 && b64uEncode(decoded) === value;
+  } catch { return false; }
+}
+
+function parseTransports(value: unknown): string[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 16) return null;
+  const transports: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string' || !item || item.length > 64) return null;
+    transports.push(item);
+  }
+  return transports;
+}
 
 type WebAuthnStoredCredential = {
   _id?: string;
@@ -94,7 +133,6 @@ type WebAuthnStoredCredential = {
  *                 timeout:           { type: integer, example: 60000 }
  *                 excludeCredentials: { type: array, items: { type: object } }
  *       401: { $ref: '#/components/responses/Unauthorized' }
- *
  * /webauthn/register/complete:
  *   post:
  *     tags: [WebAuthn]
@@ -124,7 +162,6 @@ type WebAuthnStoredCredential = {
  *                 deviceType:   { type: string, enum: [singleDevice, multiDevice] }
  *       400: { description: 'Geçersiz credential' }
  *       401: { $ref: '#/components/responses/Unauthorized' }
- *
  * /webauthn/login/begin:
  *   post:
  *     tags: [WebAuthn]
@@ -150,7 +187,6 @@ type WebAuthnStoredCredential = {
  *                 timeout:          { type: integer }
  *                 userVerification: { type: string }
  *                 allowCredentials: { type: array, items: { type: object } }
- *
  * /webauthn/login/complete:
  *   post:
  *     tags: [WebAuthn]
@@ -178,7 +214,6 @@ type WebAuthnStoredCredential = {
  *                 user:         { $ref: '#/components/schemas/User' }
  *       400: { description: 'Geçersiz assertion' }
  *       401: { description: 'Challenge bulunamadı veya süresi dolmuş' }
- *
  * /webauthn/credentials:
  *   get:
  *     tags: [WebAuthn]
@@ -201,7 +236,6 @@ type WebAuthnStoredCredential = {
  *                   lastUsedAt: { type: integer }
  *                   transports: { type: array, items: { type: string } }
  *       401: { $ref: '#/components/responses/Unauthorized' }
- *
  * /webauthn/credentials/{id}:
  *   patch:
  *     tags: [WebAuthn]
@@ -252,119 +286,13 @@ type WebAuthnStoredCredential = {
  *                 ok: { type: boolean }
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       404: { $ref: '#/components/responses/NotFound' }
-
- *
- * /webauthn/register/begin:
- *   post:
- *     tags: [WebAuthn]
- *     summary: Passkey kayıt sürecini başlat
- *     security: [{ bearerAuth: [] }]
- *     responses:
- *       200:
- *         description: PublicKeyCredentialCreationOptions
- *
- * /webauthn/register/complete:
- *   post:
- *     tags: [WebAuthn]
- *     summary: Passkey kayıt sürecini tamamla
- *     security: [{ bearerAuth: [] }]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               credential: { type: object }
- *               name:       { type: string, maxLength: 64 }
- *     responses:
- *       200:
- *         description: Passkey kaydedildi
- *
- * /webauthn/login/begin:
- *   post:
- *     tags: [WebAuthn]
- *     summary: Passkey giriş sürecini başlat
- *     security: []
- *     requestBody:
- *       required: false
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               username: { type: string }
- *     responses:
- *       200:
- *         description: PublicKeyCredentialRequestOptions
- *
- * /webauthn/login/complete:
- *   post:
- *     tags: [WebAuthn]
- *     summary: Passkey giriş sürecini tamamla
- *     security: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               credential: { type: object }
- *     responses:
- *       200:
- *         description: Giriş başarılı, JWT döner
- *
- * /webauthn/credentials:
- *   get:
- *     tags: [WebAuthn]
- *     summary: Kayıtlı passkey'leri listele
- *     security: [{ bearerAuth: [] }]
- *     responses:
- *       200:
- *         description: Passkey listesi
- *
- * /webauthn/credentials/{id}:
- *   patch:
- *     tags: [WebAuthn]
- *     summary: Passkey adını güncelle
- *     security: [{ bearerAuth: [] }]
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [name]
- *             properties:
- *               name: { type: string, maxLength: 64 }
- *     responses:
- *       200:
- *         description: Güncellendi
- *   delete:
- *     tags: [WebAuthn]
- *     summary: Passkey'i sil
- *     security: [{ bearerAuth: [] }]
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *     responses:
- *       200:
- *         description: Silindi
  */
 
 // ── KAYIT ─────────────────────────────────────────────────────────────────────
 
 // POST /api/webauthn/register/begin
 // Kimlik doğrulanmış kullanıcı için kayıt challenge'ı oluştur
-router.post('/register/begin', authMiddleware, limits.twoFactor(), async (req: import("express").Request, res: import("express").Response) => {
+router.post('/register/begin', authMiddleware, limits.webauthn(), async (req: import("express").Request, res: import("express").Response) => {
   const _u = getAuthedUser(req);
   const user = await Users.findById(_u.id) as WebAuthnUser | null;
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -374,7 +302,7 @@ router.post('/register/begin', authMiddleware, limits.twoFactor(), async (req: i
 
   const challenge = randomChallenge();
   const sessionKey = `webauthn:reg:${user._id}`;
-  await cache.set(sessionKey, b64uEncode(challenge), 300); // 5 dakika
+  await cache.setAuthoritative(sessionKey, b64uEncode(challenge), 300); // 5 dakika
 
   res.json({
     challenge: b64uEncode(challenge),
@@ -404,21 +332,27 @@ router.post('/register/begin', authMiddleware, limits.twoFactor(), async (req: i
 });
 
 // POST /api/webauthn/register/complete
-router.post('/register/complete', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
+router.post('/register/complete', authMiddleware, limits.webauthn(), async (req: import("express").Request, res: import("express").Response) => {
   const _u = getAuthedUser(req);
   const user = await Users.findById(_u.id) as WebAuthnUser | null;
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const { credential, name: credName } = req.body as { credential?: WebAuthnClientCredential; name?: string };
-  if (!credential?.response?.clientDataJSON || !credential?.response?.attestationObject) {
+  const { credential, name: rawCredName } = (req.body ?? {}) as { credential?: WebAuthnClientCredential; name?: unknown };
+  const parsedName = parseCredentialName(rawCredName);
+  if (!parsedName.ok) return res.status(400).json({ error: 'Invalid credential name' });
+  const credName = parsedName.value;
+  if (!credential?.response?.clientDataJSON || !credential?.response?.attestationObject || !validCredentialId(credential.id)) {
     return res.status(400).json({ error: 'Invalid credential response' });
   }
+  const transports = parseTransports(credential.response.transports);
+  if (transports === null) return res.status(400).json({ error: 'Invalid authenticator transports' });
 
   // Challenge kontrolü
   const sessionKey = `webauthn:reg:${user._id}`;
-  const storedChallenge = await cache.get(sessionKey);
+  // Replay-sensitive challenge consumption must be atomic. A separate get()+del()
+  // allows two concurrent completion requests to observe the same challenge.
+  const storedChallenge = await cache.takeAuthoritative<string>(sessionKey);
   if (!storedChallenge) return res.status(400).json({ error: 'Challenge expired. Please try again.' });
-  await cache.del(sessionKey);
 
   // clientDataJSON parse
   let clientData;
@@ -432,13 +366,15 @@ router.post('/register/complete', authMiddleware, async (req: import("express").
     return res.status(400).json({ error: 'Invalid ceremony type' });
   if (clientData.challenge !== storedChallenge)
     return res.status(400).json({ error: 'Challenge mismatch' });
-  if (!clientData.origin.startsWith(ORIGIN) && ORIGIN !== 'http://localhost')
+  if (!isAllowedWebAuthnOrigin(clientData.origin))
     return res.status(400).json({ error: 'Origin mismatch' });
+  if (clientData.crossOrigin === true)
+    return res.status(400).json({ error: 'Cross-origin WebAuthn ceremonies are not allowed' });
 
   // attestationObject parse (CBOR)
   // attestationObject = { fmt, attStmt, authData }
   // Minimal CBOR decode — sadece authData'ya ihtiyacımız var
-  let authDataBuf: Buffer | null = null;
+  let authDataBuf: Buffer | null;
   try {
     const attObjBuf = b64uDecode(credential.response.attestationObject);
     // "none" formatı için: map { fmt: "none", attStmt: {}, authData: <bytes> }
@@ -450,19 +386,36 @@ router.post('/register/complete', authMiddleware, async (req: import("express").
       if (first === undefined) throw new Error('Unexpected end of CBOR data');
       const major = first >> 5;
       const info  = first & 0x1f;
-      let len = 0;
+      let len: number;
       if (info < 24) len = info;
       else if (info === 24) { const next = buf[pos++]; if (next === undefined) throw new Error('Unexpected end of CBOR data'); len = next; }
-      else if (info === 25) { len = (buf[pos] << 8) | buf[pos+1]; pos += 2; }
-      else if (info === 26) { len = (buf[pos] << 24) | (buf[pos+1] << 16) | (buf[pos+2] << 8) | buf[pos+3]; pos += 4; }
+      else if (info === 25) {
+        if (pos + 2 > buf.length) throw new Error('Unexpected end of CBOR data');
+        len = buf.readUInt16BE(pos); pos += 2;
+      }
+      else if (info === 26) {
+        if (pos + 4 > buf.length) throw new Error('Unexpected end of CBOR data');
+        len = buf.readUInt32BE(pos); pos += 4;
+      } else throw new Error(`Unsupported CBOR additional info ${info}`);
 
       if (major === 0) return len;
       if (major === 1) return -(len + 1);
+      if (!Number.isSafeInteger(len) || len < 0 || pos + len > buf.length) throw new Error('Truncated CBOR value');
       if (major === 2) { const v = buf.slice(pos, pos+len); pos += len; return v; }
       if (major === 3) { const v = buf.slice(pos, pos+len).toString(); pos += len; return v; }
       if (major === 5) {
-        const map: Record<string, unknown> = {};
-        for (let i = 0; i < len; i++) { const k = readCbor(buf); map[String(k)] = readCbor(buf); }
+        // CBOR map keys are attacker-controlled.  A normal object would treat
+        // `__proto__` as a prototype mutation, and silently accepting duplicate
+        // keys lets different decoders disagree about which ceremony field won.
+        // Keep the decoded value data-only and deterministic.
+        const map = Object.create(null) as Record<string, unknown>;
+        for (let i = 0; i < len; i++) {
+          const key = String(readCbor(buf));
+          if (Object.prototype.hasOwnProperty.call(map, key)) {
+            throw new Error(`Duplicate CBOR map key ${key}`);
+          }
+          map[key] = readCbor(buf);
+        }
         return map;
       }
       if (major === 4) {
@@ -472,7 +425,12 @@ router.post('/register/complete', authMiddleware, async (req: import("express").
       }
       throw new Error(`CBOR major ${major} info ${info} not supported`);
     }
-    const attObj = readCbor(attObjBuf) as { authData?: Buffer };
+    const attObj = readCbor(attObjBuf) as { fmt?: unknown; attStmt?: unknown; authData?: Buffer };
+    if (pos !== attObjBuf.length) throw new Error('Trailing CBOR data');
+    if (attObj?.fmt !== 'none' || !attObj.attStmt || typeof attObj.attStmt !== 'object' ||
+        Array.isArray(attObj.attStmt) || Object.keys(attObj.attStmt as Record<string, unknown>).length !== 0) {
+      throw new Error('Only none attestation is accepted');
+    }
     authDataBuf = attObj.authData ?? null;
   } catch (_err) { const err = _err as Error;
     return res.status(400).json({ error: `Failed to parse attestation: ${err.message}` });
@@ -492,6 +450,9 @@ router.post('/register/complete', authMiddleware, async (req: import("express").
   if (!parsedAuth.credentialId) return res.status(400).json({ error: 'No credential data in response' });
 
   const credentialIdB64 = b64uEncode(parsedAuth.credentialId);
+  if (credential.id !== credentialIdB64) {
+    return res.status(400).json({ error: 'Credential ID does not match authenticator data' });
+  }
 
   // Duplicate check
   const dup = await Auth.findCredential(credentialIdB64);
@@ -528,21 +489,27 @@ router.post('/register/complete', authMiddleware, async (req: import("express").
     counter: parsedAuth.signCount,
     name: (credName || deviceType).slice(0, 64),
     deviceType,
-    transports: credential.response.transports || [],
+    transports,
     createdAt: Date.now(),
     lastUsedAt: null,
     aaguid: aaguidHex,
   };
 
-  if (!Auth.hasWebauthnCollection()) {
-    // Koleksiyon yoksa kullanıcı dokümanına göm (basit fallback)
-    const existingKeys = [...(user.webauthnCredentials ?? [])];
-    existingKeys.push(credDoc as unknown as typeof existingKeys[number]);
-    await Users.update(user._id, { webauthnCredentials: existingKeys, webauthnEnabled: true });
-  } else {
-    await Auth.insertCredential(credDoc);
-    await Users.update(user._id, { webauthnEnabled: true });
-  }
+  // Canonical PostgreSQL owner only. `users` has no embedded WebAuthn columns.
+  // Keep aliases in the in-memory `credDoc` only for protocol compatibility;
+  // persist exactly the columns declared by `webauthn_credentials`.
+  await Auth.insertCredential({
+    _id:            credDoc._id,
+    userId:         credDoc.userId,
+    credentialId:   credDoc.credentialId,
+    publicKey:      credDoc.publicKey,
+    counter:        credDoc.counter,
+    deviceType:     credDoc.deviceType,
+    transports:     credDoc.transports,
+    name:           credDoc.name,
+    lastUsedAt:     credDoc.lastUsedAt,
+    createdAt:      credDoc.createdAt,
+  });
 
   res.json({ ok: true, credentialId: credentialIdB64, name: credDoc.name, deviceType });
 });
@@ -551,8 +518,10 @@ router.post('/register/complete', authMiddleware, async (req: import("express").
 
 // POST /api/webauthn/login/begin
 // Body: { username } — kullanıcı adıyla başlat, veya boş (discoverable credential)
-router.post('/login/begin', async (req: import("express").Request, res: import("express").Response) => {
-  const { username } = req.body as Record<string, string>;
+router.post('/login/begin', limits.webauthn(), async (req: import("express").Request, res: import("express").Response) => {
+  const parsedUsername = parseOptionalUsername((req.body as Record<string, unknown> | undefined)?.username);
+  if (!parsedUsername.ok) return res.status(400).json({ error: 'Invalid username' });
+  const username = parsedUsername.value;
 
   const challenge  = randomChallenge();
   const sessionKey = `webauthn:auth:${b64uEncode(challenge)}`;
@@ -564,9 +533,7 @@ router.post('/login/begin', async (req: import("express").Request, res: import("
     const user = await Users.findByUsername(username);
     if (user) {
       userId = user._id;
-      const creds = Auth.hasWebauthnCollection()
-        ? await Auth.findCredentialsByUser(user._id)
-        : (user.webauthnCredentials || []);
+      const creds = await Auth.findCredentialsByUser(user._id);
 
       allowCredentials = creds.map(c => ({
         type: 'public-key',
@@ -576,7 +543,7 @@ router.post('/login/begin', async (req: import("express").Request, res: import("
     }
   }
 
-  await cache.set(sessionKey, {
+  await cache.setAuthoritative(sessionKey, {
     challenge: b64uEncode(challenge),
     userId,
     expiresAt: Date.now() + 300_000,
@@ -592,9 +559,9 @@ router.post('/login/begin', async (req: import("express").Request, res: import("
 });
 
 // POST /api/webauthn/login/complete
-router.post('/login/complete', async (req: import("express").Request, res: import("express").Response) => {
-  const { credential } = req.body as { credential?: WebAuthnClientCredential };
-  if (!credential?.response?.clientDataJSON || !credential?.response?.authenticatorData) {
+router.post('/login/complete', limits.webauthn(), async (req: import("express").Request, res: import("express").Response) => {
+  const { credential } = (req.body ?? {}) as { credential?: WebAuthnClientCredential };
+  if (!credential?.response?.clientDataJSON || !credential?.response?.authenticatorData || !validCredentialId(credential.id)) {
     return res.status(400).json({ error: 'Invalid assertion response' });
   }
 
@@ -609,50 +576,50 @@ router.post('/login/complete', async (req: import("express").Request, res: impor
   if (clientData.type !== 'webauthn.get')
     return res.status(400).json({ error: 'Invalid ceremony type' });
 
+  // FAZ G15 — ORIGIN DENETIMI (onceden TAMAMEN YOKTU).
+  if (!isAllowedWebAuthnOrigin(clientData.origin))
+    return res.status(400).json({ error: 'Origin mismatch' });
+  if (clientData.crossOrigin === true)
+    return res.status(400).json({ error: 'Cross-origin WebAuthn ceremonies are not allowed' });
+
+  if (typeof clientData.challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(clientData.challenge)) {
+    return res.status(400).json({ error: 'Invalid challenge encoding' });
+  }
+
   const sessionKey = `webauthn:auth:${clientData.challenge}`;
-  const session    = await cache.get(sessionKey) as { challenge?: string; userId?: string | null; expiresAt?: number } | null;
+  // Single-use login challenge: consume atomically to make concurrent assertion
+  // replay impossible across both one process and Redis-backed multi-node deployments.
+  const session = await cache.takeAuthoritative<{ challenge?: string; userId?: string | null; expiresAt?: number }>(sessionKey);
   if (!session) return res.status(400).json({ error: 'Challenge expired or not found' });
-  await cache.del(sessionKey);
+  if (!Number.isSafeInteger(session.expiresAt) || Number(session.expiresAt) <= Date.now())
+    return res.status(400).json({ error: 'Challenge expired or not found' });
 
   if (clientData.challenge !== session.challenge)
     return res.status(400).json({ error: 'Challenge mismatch' });
 
   // Credential ara
   const credentialId = credential.id;
-  let storedCred: WebAuthnStoredCredential | null = null;
-  let user: WebAuthnUser | null = null;
-
-  if (Auth.hasWebauthnCollection()) {
-    storedCred = await Auth.findCredential(credentialId) as WebAuthnStoredCredential | null;
-    if (storedCred) {
-      user = await Users.findById(storedCred.userId) as WebAuthnUser | null;
-    }
-  } else {
-    // Kullanıcı dokümanında gömülü credential ara
-    if (session.userId) {
-      user = await Users.findById(String(session.userId)) as WebAuthnUser | null;
-      if (user?.webauthnCredentials) {
-        const embedded = user.webauthnCredentials.find(c => c.credId === credentialId || String(c.credentialId ?? '') === credentialId);
-        storedCred = embedded ? {
-          ...embedded,
-          userId: user._id,
-          credentialId: String(embedded.credentialId ?? embedded.credId),
-          credId: String(embedded.credId ?? embedded.credentialId),
-          publicKey: String(embedded.publicKey),
-          counter: Number(embedded.counter ?? embedded.signCount ?? 0),
-        } as WebAuthnStoredCredential : null;
-      }
-    }
-  }
+  const storedCred = await Auth.findCredential(credentialId) as WebAuthnStoredCredential | null;
+  const user = storedCred
+    ? await Users.findById(storedCred.userId) as WebAuthnUser | null
+    : null;
 
   if (!storedCred || !user)
     return res.status(401).json({ error: 'Credential not found' });
 
+  // If the ceremony was explicitly started for a username, bind completion to
+  // that account. Discoverable (username-less / unknown-user anti-enumeration)
+  // ceremonies intentionally keep userId=null and may resolve by credential.
+  if (session.userId && storedCred.userId !== session.userId) {
+    return res.status(401).json({ error: 'Credential does not belong to requested account' });
+  }
+
   // Authenticator data doğrula
-  const authDataBuf = b64uDecode(credential.response.authenticatorData);
+  let authDataBuf: Buffer;
   let parsedAuth: ReturnType<typeof parseAuthenticatorData>;
   try {
-    if (!authDataBuf) throw new Error('Missing authData');
+    authDataBuf = b64uDecode(credential.response.authenticatorData);
+    if (!authDataBuf.length) throw new Error('Missing authData');
     parsedAuth = parseAuthenticatorData(authDataBuf);
   } catch (_err) { const err = _err as Error;
     return res.status(400).json({ error: `Invalid authenticatorData: ${err.message}` });
@@ -663,15 +630,15 @@ router.post('/login/complete', async (req: import("express").Request, res: impor
 
   // Sign count replay attack koruması
   const storedSignCount = storedCred.signCount ?? storedCred.counter ?? 0;
-  if (parsedAuth.signCount > 0 && storedSignCount > 0) {
-    if (parsedAuth.signCount <= storedSignCount) {
-      logger.warn({ userId: user._id, event: 'webauthn.cloned_authenticator' }, '[WebAuthn] Possible cloned authenticator');
-      return res.status(401).json({ error: 'Sign count replay detected — possible cloned authenticator' });
-    }
+  if ((parsedAuth.signCount !== 0 || storedSignCount !== 0) && parsedAuth.signCount <= storedSignCount) {
+    logger.warn({ userId: user._id, event: 'webauthn.cloned_authenticator' }, '[WebAuthn] Possible cloned authenticator');
+    return res.status(401).json({ error: 'Sign count replay detected — possible cloned authenticator' });
   }
 
   // İmza doğrulama (ES256 / RS256)
-  const publicKeyJwk = JSON.parse(storedCred.publicKey);
+  let publicKeyJwk: Record<string, unknown>;
+  try { publicKeyJwk = JSON.parse(storedCred.publicKey) as Record<string, unknown>; }
+  catch { return res.status(401).json({ error: 'Stored credential is invalid' }); }
 
   // Doğrulanacak veri: authData + SHA256(clientDataJSON)
   const clientDataHash = crypto.createHash('sha256')
@@ -679,18 +646,27 @@ router.post('/login/complete', async (req: import("express").Request, res: impor
     .digest();
   const signedData = Buffer.concat([authDataBuf, clientDataHash]);
   if (!credential.response.signature) return res.status(400).json({ error: 'Missing signature' });
-  const signature  = b64uDecode(credential.response.signature);
+  let signature: Buffer;
+  try { signature = b64uDecode(credential.response.signature); }
+  catch { return res.status(400).json({ error: 'Invalid signature encoding' }); }
 
   let verified = false;
   try {
     if (publicKeyJwk.alg === 'ES256') {
       // ECDSA P-256 doğrulama — Node.js crypto ile
-      const keyPem = jwkToPem(publicKeyJwk);
+      if (publicKeyJwk.kty !== 'EC' || publicKeyJwk.crv !== 'P-256' ||
+          typeof publicKeyJwk.x !== 'string' || typeof publicKeyJwk.y !== 'string') {
+        return res.status(401).json({ error: 'Stored credential is invalid' });
+      }
+      const keyPem = jwkToPem({ x: publicKeyJwk.x, y: publicKeyJwk.y });
       const verify  = crypto.createVerify('SHA256');
       verify.update(signedData);
       verified = verify.verify({ key: keyPem, dsaEncoding: 'der' }, signature);
     } else if (publicKeyJwk.alg === 'RS256') {
-      const keyPem = rsaJwkToPem(publicKeyJwk);
+      if (publicKeyJwk.kty !== 'RSA' || typeof publicKeyJwk.n !== 'string' || typeof publicKeyJwk.e !== 'string') {
+        return res.status(401).json({ error: 'Stored credential is invalid' });
+      }
+      const keyPem = rsaJwkToPem({ n: publicKeyJwk.n, e: publicKeyJwk.e });
       const verify  = crypto.createVerify('SHA256');
       verify.update(signedData);
       verified = verify.verify(keyPem, signature);
@@ -702,25 +678,34 @@ router.post('/login/complete', async (req: import("express").Request, res: impor
 
   if (!verified) return res.status(401).json({ error: 'Invalid signature' });
 
-  // Sign count güncelle
-  const updateData = { lastUsedAt: Date.now(), signCount: parsedAuth.signCount };
-  if (Auth.hasWebauthnCollection()) {
-    if (storedCred._id) await Auth.updateCredentialByDocId(storedCred._id, updateData);
-  } else {
-    const updatedCreds = (user.webauthnCredentials ?? []).map(c =>
-      c.credentialId === credentialId ? { ...c, ...updateData } : c
-    );
-    await Users.update(user._id, { webauthnCredentials: updatedCreds });
+  // ── Sign count güncelle ───────────────────────────────────────────────────
+  // AYNI KUSUR SINIFI, IKINCI YOL: burada da `signCount` yaziliyordu ama
+  // `webauthn_credentials` tablosundaki kolonun adi `counter`. Yani her
+  // basarili passkey girisinde sayac yazma denemesi PostgreSQL uzerinde
+  // BASARISIZ oluyordu.
+  //
+  // Bu yalnizca bir yazma hatasi degil: WebAuthn sayaci KLON/TEKRAR
+  // tespiti icindir. Hic kalici olmadigi icin o koruma etkisizdi.
+  //
+  // Tablo yolu kolon adini kullanir; gomulu (JSONB) yol eski `signCount`
+  // adini KORUR cunku okuma tarafi (satir 717) `counter ?? signCount`
+  // seklinde ikisine de bakar ve mevcut kayitlar eski adi tasiyor.
+  if (!storedCred._id) return res.status(401).json({ error: 'Credential identity missing' });
+  const counterAdvanced = await Auth.advanceCredentialCounterByDocId(storedCred._id, parsedAuth.signCount, Date.now());
+  if (!counterAdvanced) {
+    logger.warn({ userId: user._id, event: 'webauthn.counter_race_rejected' }, '[WebAuthn] Counter no longer monotonic');
+    return res.status(401).json({ error: 'Sign count replay detected — concurrent or cloned authenticator' });
   }
 
   // JWT ver — normal login gibi
   const token        = makeToken(user);
   const refreshToken = await makeRefreshToken(user);
+  setRefreshCookie(res, refreshToken);
+  setMediaCookie(res, user);
 
   res.json({
     ok: true,
     token,
-    refreshToken,
     user: {
       id:          user._id,
       username:    user.username,
@@ -739,12 +724,7 @@ router.get('/credentials', authMiddleware, async (req: import("express").Request
   const user = await Users.findById(_u.id) as WebAuthnUser | null;
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  let creds;
-  if (Auth.hasWebauthnCollection()) {
-    creds = await Auth.findCredentialsByUser(_u.id);
-  } else {
-    creds = user.webauthnCredentials || [];
-  }
+  const creds = await Auth.findCredentialsByUser(_u.id);
 
   res.json(creds.map(c => ({
     id:         c._id,
@@ -760,23 +740,16 @@ router.get('/credentials', authMiddleware, async (req: import("express").Request
 // PATCH /api/webauthn/credentials/:id — isim güncelle
 router.patch('/credentials/:id', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   const _u = getAuthedUser(req);
-  const { name } = req.body as Record<string, string>;
-  if (!name?.trim()) return res.status(400).json({ error: 'name required' });
+  const parsedName = parseCredentialName((req.body as Record<string, unknown> | undefined)?.name);
+  if (!parsedName.ok || !parsedName.value) return res.status(400).json({ error: 'name required' });
+  const name = parsedName.value;
 
   const user = await Users.findById(_u.id) as WebAuthnUser | null;
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  if (Auth.hasWebauthnCollection()) {
-    const cred = await Auth.findCredentialByDocId(String(req.params.id ?? ''), _u.id);
-    if (!cred) return res.status(404).json({ error: 'Credential not found' });
-    await Auth.updateCredentialByDocId(String(req.params.id ?? ''), { name: name.slice(0, 64) });
-  } else {
-    const creds = user.webauthnCredentials ?? [];
-    const idx   = creds.findIndex(c => c._id === String(req.params.id ?? ''));
-    if (idx === -1) return res.status(404).json({ error: 'Credential not found' });
-    creds[idx].name = name.slice(0, 64);
-    await Users.update(user._id, { webauthnCredentials: creds });
-  }
+  const cred = await Auth.findCredentialByDocId(String(req.params.id ?? ''), _u.id);
+  if (!cred) return res.status(404).json({ error: 'Credential not found' });
+  await Auth.updateCredentialByDocId(String(req.params.id ?? ''), { name });
 
   res.json({ ok: true });
 });
@@ -787,23 +760,11 @@ router.delete('/credentials/:id', authMiddleware, async (req: import("express").
   const user = await Users.findById(_u.id) as WebAuthnUser | null;
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  if (Auth.hasWebauthnCollection()) {
-    const cred = await Auth.findCredentialByDocId(String(req.params.id ?? ''), _u.id);
-    if (!cred) return res.status(404).json({ error: 'Credential not found' });
-    await Auth.deleteCredential(String(req.params.id ?? ''), _u.id);
-
-    // Son credential silindiyse webauthnEnabled = false
-    const remaining = await Auth.findCredentialsByUser(_u.id);
-    if (!remaining.length) {
-      await Users.update(user._id, { webauthnEnabled: false });
-    }
-  } else {
-    const creds = (user.webauthnCredentials || []).filter(c => c._id !== String(req.params.id ?? ''));
-    await Users.update(user._id, {
-      webauthnCredentials: creds,
-      webauthnEnabled: creds.length > 0,
-    });
-  }
+  const cred = await Auth.findCredentialByDocId(String(req.params.id ?? ''), _u.id);
+  if (!cred) return res.status(404).json({ error: 'Credential not found' });
+  await Auth.deleteCredential(String(req.params.id ?? ''), _u.id);
+  // No denormalized `webauthnEnabled` flag is persisted; enabled state is
+  // derived from whether this canonical table contains credentials.
 
   res.json({ ok: true });
 });
@@ -813,3 +774,7 @@ export default router;
 // CommonJS compatibility for legacy Jest/supertest suites.
 module.exports = router;
 module.exports.default = router;
+// FAZ G15 — `module.exports = router` ATAMASI adlandirilmis ES export'larini
+// EZER. Origin dogrulayicisi guvenlik testlerinden erisilebilir kalmalidir,
+// bu yuzden router nesnesine ACIKCA yeniden baglanir.
+module.exports.isAllowedWebAuthnOrigin = isAllowedWebAuthnOrigin;

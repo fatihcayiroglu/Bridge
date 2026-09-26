@@ -1,117 +1,62 @@
 // server/db/seed-marketplace.ts
-// Bot Marketplace için örnek bot kayıtları.
-// Bu botlar gerçek üçüncü taraf entegrasyonu olmayan demo/örnek
-// botlardır; topluluktan gerçek bot PR'larına kapı açmak için şablon
-// görevi görür. Gerçek bot geliştirme için: bot-sdk/README.md
+// Optional idempotent seed for the *marketplace catalog*.
+//
+// Historical code accidentally wrote marketplace-shaped rows into the server
+// bot credential table (`bots`). That table intentionally requires serverId,
+// ownerId, username and tokenHash, and has no slug/name/author fields. The seed
+// therefore could never work on real PostgreSQL. Keep the two product domains
+// separate: server bot credentials use BotRepository; public catalog entries use
+// BotMarketplaceRepository.
 
-import { v4 as uuidv4 } from 'uuid';
-import db from './loader';
+import { BotMarketplace } from './repositories/BotMarketplaceRepository';
 import logger from '../lib/logger';
 
-// Örnek botlar — her biri Bridge Bot SDK ile yazılmış bir şablon içeriyor
-const EXAMPLE_BOTS = [
-  {
-    _id:         uuidv4(),
-    name:        'BridgeBot',
-    slug:        'bridgebot',
-    description: 'Resmi Bridge yardımcı botu. Sunucu kurulumu, komut rehberi ve SSS yanıtları.',
-    avatarUrl:   null,
-    authorName:  'Bridge Team',
-    authorUrl:   'https://github.com/bridge-app',
-    sourceUrl:   'https://github.com/bridge-app/bridgebot',
-    installCount: 0,
-    tags:        ['resmi', 'yardımcı', 'komut'],
-    permissions: ['messages:read', 'messages:send'],
-    verified:    true,
-    featured:    true,
-    webhookUrl:  null,
-    createdAt:   Date.now(),
-  },
-  {
-    _id:         uuidv4(),
-    name:        'PollBot',
-    slug:        'pollbot',
-    description: 'Gelişmiş anket ve oylama botu. Zamanlı anketler, çoklu seçenek, sonuç grafikleri.',
-    avatarUrl:   null,
-    authorName:  'Bridge Community',
-    authorUrl:   null,
-    sourceUrl:   null,
-    installCount: 0,
-    tags:        ['anket', 'topluluk', 'oylama'],
-    permissions: ['messages:read', 'messages:send', 'reactions:manage'],
-    verified:    false,
-    featured:    true,
-    webhookUrl:  null,
-    createdAt:   Date.now(),
-  },
-  {
-    _id:         uuidv4(),
-    name:        'MusicBot',
-    slug:        'musicbot',
-    description: 'Ses kanallarında müzik çalma botu. YouTube, Spotify ve SoundCloud desteği.',
-    avatarUrl:   null,
-    authorName:  'Bridge Community',
-    authorUrl:   null,
-    sourceUrl:   null,
-    installCount: 0,
-    tags:        ['müzik', 'ses', 'eğlence'],
-    permissions: ['voice:join', 'messages:read', 'messages:send'],
-    verified:    false,
-    featured:    true,
-    webhookUrl:  null,
-    createdAt:   Date.now(),
-  },
-  {
-    _id:         uuidv4(),
-    name:        'ModBot',
-    slug:        'modbot',
-    description: 'Otomatik moderasyon botu. Spam tespiti, kelime filtresi, uyarı sistemi.',
-    avatarUrl:   null,
-    authorName:  'Bridge Community',
-    authorUrl:   null,
-    sourceUrl:   null,
-    installCount: 0,
-    tags:        ['moderasyon', 'güvenlik', 'otomasyon'],
-    permissions: ['messages:read', 'messages:delete', 'members:timeout', 'members:ban'],
-    verified:    false,
-    featured:    false,
-    webhookUrl:  null,
-    createdAt:   Date.now(),
-  },
-  {
-    _id:         uuidv4(),
-    name:        'WelcomeBot',
-    slug:        'welcomebot',
-    description: 'Yeni üyelere özelleştirilebilir karşılama mesajı gönderir. Rol ataması ve kanala yönlendirme.',
-    avatarUrl:   null,
-    authorName:  'Bridge Community',
-    authorUrl:   null,
-    sourceUrl:   null,
-    installCount: 0,
-    tags:        ['karşılama', 'otomasyon', 'yeni üye'],
-    permissions: ['messages:send', 'roles:assign', 'members:read'],
-    verified:    false,
-    featured:    false,
-    webhookUrl:  null,
-    createdAt:   Date.now(),
-  },
+type ExampleBot = {
+  id: string; name: string; description: string; longDescription: string;
+  author: string; authorVerified: boolean; avatar: string; category: string;
+  tags: string[]; commands: string[]; permissions: string[]; changelog: string;
+  supportUrl: string; sourceUrl: string; verified: boolean; featured: boolean;
+};
+
+// Final21 Phase 14: examples may only claim what a Bridge bot can do — receive the
+// slash commands users invoke and reply to them (lib/botScopes.ts). Music, moderation
+// and welcome/role examples described actions no bot can perform and were removed;
+// no example claims verification or links to a repository the project does not control.
+// Migration 073 applies the same correction to rows an earlier seed already created.
+const EXAMPLE_BOTS: readonly ExampleBot[] = [
+  { id:'bridgebot', name:'BridgeBot', description:'Bridge yardımcı botu örneği: komut rehberi ve SSS yanıtları.', longDescription:'Kullanıcının çağırdığı komutlara yanıt veren örnek yardımcı bot.', author:'Bridge Team', authorVerified:false, avatar:'🤖', category:'utility', tags:['yardımcı','komut'], commands:['help'], permissions:['commands','messages:reply'], changelog:'Built-in example', supportUrl:'#', sourceUrl:'#', verified:false, featured:false },
+  { id:'pollbot', name:'PollBot', description:'Anket ve oylama botu örneği.', longDescription:'Komutla başlatılan anketlere yanıt veren örnek bot.', author:'Bridge Community', authorVerified:false, avatar:'📊', category:'management', tags:['anket','topluluk','oylama'], commands:['poll'], permissions:['commands','messages:reply'], changelog:'Built-in example', supportUrl:'#', sourceUrl:'#', verified:false, featured:false },
 ];
 
-export async function seedMarketplace() {
+export async function seedMarketplace(): Promise<number> {
   let seeded = 0;
   for (const bot of EXAMPLE_BOTS) {
-    const exists = await db.bots?.findOne?.({ slug: bot.slug });
-    if (!exists) {
-      await db.bots?.insert?.(bot);
+    const exists = await BotMarketplace.findById(bot.id);
+    if (exists) continue;
+    const now = Date.now();
+    try {
+      const inserted = await BotMarketplace.submit({
+        id: bot.id, name: bot.name, author: bot.author, authorVerified: bot.authorVerified,
+        avatar: bot.avatar, category: bot.category, tags: [...bot.tags], description: bot.description,
+        longDescription: bot.longDescription, commands: [...bot.commands], permissions: [...bot.permissions],
+        changelog: bot.changelog, supportUrl: bot.supportUrl, sourceUrl: bot.sourceUrl,
+        submittedBy: null, createdAt: now, updatedAt: now,
+      });
+      if (!inserted) continue;
+      await BotMarketplace.update(bot.id, {
+        approved: true, verified: bot.verified, featured: bot.featured,
+        authorVerified: bot.authorVerified,
+      });
       seeded++;
+    } catch (err) {
+      // Concurrent seeders may both observe "missing". A unique conflict means
+      // another process won the idempotent seed race; other errors are real.
+      if ((err as { code?: string }).code !== '23505') throw err;
     }
   }
-  if (seeded > 0) {
-    logger.info(
-      { event: 'db.seed.marketplace.completed', count: seeded },
-      `Bot marketplace: ${seeded} örnek bot eklendi.`
-    );
-  }
+  if (seeded > 0) logger.info({ event:'db.seed.marketplace.completed', count:seeded }, `Bot marketplace: ${seeded} örnek bot eklendi.`);
+  return seeded;
 }
 
+export { EXAMPLE_BOTS };
 export default seedMarketplace;

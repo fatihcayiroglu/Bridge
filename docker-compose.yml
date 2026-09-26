@@ -1,5 +1,3 @@
-version: '3.9'
-
 # ══════════════════════════════════════════════════════════════
 # Bridge — Tam Stack
 # Kullanım: docker compose up -d
@@ -20,7 +18,12 @@ services:
       # ⚠️  Varsayılan değer YOKTUR — eksikse compose başlamaz.
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD zorunlu - .env dosyasina ekle: openssl rand -hex 32}"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # Final21 Faz 19: postgres:18 imajı veriyi /var/lib/postgresql/18/docker altında tutar (PGDATA) ve
+      # bir birim /var/lib/postgresql/data'ya bağlıyken BAŞLAMAYI REDDEDER ("in 18+, these Docker images
+      # are configured to store database data in a format which is compatible with pg_ctlcluster").
+      # Eski bağlama noktasıyla PostgreSQL hiç açılmıyor, Bridge ona bağımlı olduğu için yığın ayağa
+      # kalkmıyordu (ölçüldü: tools/p19-compose-prod-boot.sh). Birim, imajın önerdiği kök dizine bağlanır.
+      - postgres_data:/var/lib/postgresql
     # Fix 4: 5432 expose edilmiyor — container-internal erişim yeterli
     # Lokal geliştirme için: ports: ["5432:5432"] ekle (production'da asla)
     healthcheck:
@@ -35,7 +38,14 @@ services:
     image: redis:8-alpine
     container_name: bridge-redis
     restart: unless-stopped
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    # Final21 Faz 10 — F21-10-03: maxmemory-policy MUTLAKA noeviction.
+    # Redis hiz siniri / CSRF / WS baglanti limiti icin YETKILI depodur.
+    # allkeys-lru ile OLCULDU (redis:8-alpine, maxmemory 4mb): arama siniri
+    # doldu (429), bellek baskisi 31 807 anahtar tahliye etti, iki hiz siniri
+    # anahtari da silindi ve AYNI DAKIKADA 5/5 arama 200 dondu — sinir ASILDI.
+    # noeviction ile ayni adimlar: yazmalar reddedildi, anahtarlar kaldi, 5/5 429.
+    # Bellek dolarsa Bridge fail-closed 503 verir (docs/REDIS_PRODUCTION.md).
+    command: redis-server --maxmemory 256mb --maxmemory-policy noeviction
     volumes:
       - redis_data:/data
     # Fix 4: 6379 expose edilmiyor — container-internal erişim yeterli
@@ -72,6 +82,17 @@ services:
       # JWT — production'da mutlaka değiştir!
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET zorunlu - .env dosyasına ekle}"
       REFRESH_SECRET: "${REFRESH_SECRET:?REFRESH_SECRET zorunlu - .env dosyasına ekle}"
+      FEDERATION_SECRET: "${FEDERATION_SECRET:?FEDERATION_SECRET zorunlu - en az 32 karakter}"
+      AP_ENCRYPTION_KEY: "${AP_ENCRYPTION_KEY:?AP_ENCRYPTION_KEY zorunlu - 64 hex karakter}"
+      METRICS_SECRET: "${METRICS_SECRET:?METRICS_SECRET zorunlu - en az 16 karakter}"
+
+      # Direct 3001 exposure is the default, so forwarded headers are not
+      # trusted unless an operator explicitly enables the nginx profile and
+      # sets TRUSTED_PROXY_COUNT=1.
+      TRUSTED_PROXY_COUNT: "${TRUSTED_PROXY_COUNT:-0}"
+
+      # Must match the named-volume mount below and the image's runtime path.
+      BRIDGE_UPLOAD_ROOT: /app/server/uploads
 
       # CORS
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:3001}"
@@ -102,6 +123,8 @@ services:
       MEDIASOUP_WORKERS: "${MEDIASOUP_WORKERS:-1}"
       MEDIASOUP_OPUS_BITRATE: "${MEDIASOUP_OPUS_BITRATE:-64}"
       MEDIASOUP_VIDEO_MAX_BITRATE: "${MEDIASOUP_VIDEO_MAX_BITRATE:-3000}"
+      REQUIRE_TURN: "${REQUIRE_TURN:-false}"
+      REQUIRE_SFU: "${REQUIRE_SFU:-false}"
 
       # ── WebP Otomatik Dönüşüm (sharp) ────────────────────────
       # JPEG/PNG/TIFF/BMP yüklemelerini otomatik WebP'ye çevirir.
@@ -116,6 +139,23 @@ services:
       # CDN_PROVIDER=r2       → Cloudflare R2
       # CDN_PROVIDER=b2       → Backblaze B2
       CDN_PROVIDER: "${CDN_PROVIDER:-local}"
+
+      # -- Protected message/voice attachments --
+      # Public avatar/emoji/GIF assets may use CDN_PROVIDER, but protected
+      # attachments must use an independent non-public bucket/provider.
+      PRIVATE_STORAGE_PROVIDER: "${PRIVATE_STORAGE_PROVIDER:-local}"
+      PRIVATE_S3_BUCKET: "${PRIVATE_S3_BUCKET:-}"
+      PRIVATE_R2_BUCKET: "${PRIVATE_R2_BUCKET:-}"
+      PRIVATE_MINIO_BUCKET: "${PRIVATE_MINIO_BUCKET:-}"
+      PRIVATE_B2_BUCKET_NAME: "${PRIVATE_B2_BUCKET_NAME:-}"
+
+      # -- AWS S3 public CDN (CDN_PROVIDER=s3) --
+      S3_REGION: "${S3_REGION:-us-east-1}"
+      S3_ENDPOINT: "${S3_ENDPOINT:-}"
+      S3_ACCESS_KEY_ID: "${S3_ACCESS_KEY_ID:-}"
+      S3_SECRET_ACCESS_KEY: "${S3_SECRET_ACCESS_KEY:-}"
+      S3_BUCKET: "${S3_BUCKET:-}"
+      S3_PUBLIC_URL: "${S3_PUBLIC_URL:-}"
 
       # -- MinIO (CDN_PROVIDER=minio) --
       # docker-compose ile entegre MinIO için varsayılanlar çalışır.
@@ -170,6 +210,8 @@ services:
       dockerfile: Dockerfile
     container_name: bridge-backup
     restart: unless-stopped
+    # Final21 Faz 19: tini PID 1 olur (sinyal iletimi, çocuk süreç toplama); backup/scheduler.sh.
+    init: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -179,6 +221,8 @@ services:
 
       # Kaç günlük dump saklanacak (varsayılan: 7)
       BACKUP_KEEP_DAYS: "${BACKUP_KEEP_DAYS:-7}"
+      BACKUP_AT: "${BACKUP_AT:-02:30}"
+      BACKUP_RUN_ON_START: "${BACKUP_RUN_ON_START:-false}"
 
       # ── S3 / MinIO (opsiyonel) ──────────────────────────────
       # Doldurursan dump + uploads S3'e de yüklenir.
@@ -250,8 +294,8 @@ services:
       MINIO_ROOT_USER: "${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY zorunlu - .env dosyasina ekle}"
       MINIO_ROOT_PASSWORD: "${MINIO_SECRET_KEY:?MINIO_SECRET_KEY zorunlu - en az 8 karakter}"
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # MinIO Console (web UI)
+      - "127.0.0.1:9000:9000"   # S3 API; publish through an authenticated proxy if needed
+      - "127.0.0.1:9001:9001"   # MinIO Console is host-local by default
     volumes:
       - minio_data:/data
     healthcheck:
@@ -275,5 +319,3 @@ volumes:
   # Nginx TLS sertifikaları (Let's Encrypt / certbot)
   certs:
   certbot_www:
-
-

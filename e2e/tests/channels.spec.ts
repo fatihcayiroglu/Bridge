@@ -2,10 +2,10 @@
 // e2e/tests/channels.spec.js — Kanal Oluşturma E2E Testleri
 // Kritik akış: sunucu oluştur → kanal oluştur → kanala gir → mesaj gönder
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 import { BridgePage, getTokens, createTestServer } from '../helpers/bridge';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 test.describe('Kanal Yönetimi', () => {
   let tokens;

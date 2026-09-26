@@ -1,7 +1,7 @@
 // server/tests/activity.test.ts
 // Tests for activity endpoints: PATCH /, GET /:userId, GET /server/:serverId, GET /meta/types
 
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV   = 'test';
 
 import { createMockDb, makeUser, makeServer } from './helpers/mockDb';
@@ -10,16 +10,20 @@ const mockDb = createMockDb();
 jest.mock('../db/index', () => mockDb);
 jest.mock('../db/loader', () => require('../db/index'));
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: (req, res, next) => {
+  authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
     const h = req.headers.authorization;
     if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
     const jwt = require('jsonwebtoken');
-    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret'); next(); }
+    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!'); next(); }
     catch { res.status(401).json({ error: 'Invalid token' }); }
   },
 }));
 jest.mock('../middleware/rateLimit', () => ({
-  limits: new Proxy({}, { get: () => () => (_req, _res, next) => next() }),
+  limits: new Proxy({}, { get: () => () => (_req: unknown, _res: unknown, next: () => void) => next() }),
 }));
 
 // Mock redisAdapter cache — simple in-memory
@@ -28,10 +32,13 @@ jest.mock('../lib/redisAdapter', () => ({
   redisClient: () => null,
   subscribeToChannel: async () => undefined,
   cache: {
-    get: async (k) => cacheStore[k] ?? null,
-    set: async (k, v) => { cacheStore[k] = v; },
-    del: async (k) => { delete cacheStore[k]; },
-    delete: async (k) => { delete cacheStore[k]; },
+    // Gercek adaptorde MEVCUT (lib/redisAdapter.ts) — mock'ta eksikti ve
+    // `invalidateChannelMessages` her cagrida sessizce TypeError firlatiyordu.
+    invalidatePattern: jest.fn().mockResolvedValue(undefined),
+    get: async (k: string) => cacheStore[k] ?? null,
+    set: async (k: string, v: unknown) => { cacheStore[k] = v; },
+    del: async (k: string) => { delete cacheStore[k]; },
+    delete: async (k: string) => { delete cacheStore[k]; },
   },
 }));
 
@@ -56,10 +63,10 @@ import { router } from '../routes/activity';
 const app = express();
 app.use(express.json());
 app.use('/api/activity', router);
-app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
 
-function token(id) {
-  return jwt.sign({ id, username: 'user', displayName: 'User', v: 0 }, 'test-jwt-secret', { expiresIn: '1h' });
+function token(id: string) {
+  return jwt.sign({ id, username: 'user', displayName: 'User', v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
 }
 
 const USER_A   = 'userA';
@@ -97,8 +104,11 @@ describe('PATCH /api/activity', () => {
   it('clears activity when body is null/empty', async () => {
     const res = await request(app)
       .patch('/api/activity')
-      .set('Authorization', `Bearer ${token(USER_A)}`)
-      .send(null);
+      .set('Authorization', `Bearer ${token(USER_A)}`);
+      // NOT: burada `.send(null)` yaziliydi. superagent `send(null)` cagrisini
+      // SESSIZCE YOK SAYAR (`isObject(null)` false, `typeof null` 'string'
+      // degil), yani istek zaten BOS govdeyle gidiyordu. Cagri kaldirildi:
+      // davranis aynidir, niyet ("bos govde") artik acikca yaziyor.
 
     // null body → activity should be cleared
     expect([200]).toContain(res.status);
@@ -185,9 +195,24 @@ describe('GET /api/activity/meta/types', () => {
 
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.types)).toBe(true);
-    const keys = res.body.types.map(t => t.key);
+    const keys = res.body.types.map((t: Record<string, unknown>) => t.key);
     expect(keys).toContain('PLAYING');
     expect(keys).toContain('CODING');
     expect(keys).toContain('LISTENING');
+  });
+});
+
+describe('PATCH /api/activity runtime body validation', () => {
+  it.each([
+    [{ type: 7, name: 'x' }, 'type'],
+    [{ type: 'playing', name: 7 }, 'name'],
+    [{ type: 'playing', name: 'x', detail: {} }, 'detail'],
+    [{ type: 'playing', name: 'x', url: [] }, 'url'],
+    [{ type: 'playing', name: 'x', emoji: 1 }, 'emoji'],
+  ])('rejects malformed field types without throwing: %#', async (body, field) => {
+    const res = await request(app).patch('/api/activity')
+      .set('Authorization', `Bearer ${token(USER_A)}`).send(body);
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(new RegExp(field, 'i'));
   });
 });

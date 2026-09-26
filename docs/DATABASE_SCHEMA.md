@@ -1,8 +1,24 @@
 # Bridge — Veritabanı Schema Referansı
 
-**Motor:** PostgreSQL 16+  
-**Dosya:** `server/db/postgres/schema.sql`  
-**Migration sistemi:** `server/db/migrations_pg/` (Sprint 38+)
+**Motor:** PostgreSQL 18 (docker-compose, k8s ve CI aynı ana sürümü kullanır)
+
+**Şemanın SAHİBİ (çalıştırılan yol):**
+
+| dosya | rol |
+|---|---|
+| `server/db/postgres/schema.ts` | Yeni kurulumun tablolarını oluşturan DDL (`SCHEMA` sabiti → `initSchema()`) |
+| `server/db/postgres/migrations.ts` | Açılışta çalışan satır içi `ALTER` adımları |
+| `server/db/migrations_pg/*.sql` | Numaralı migration'lar (Sprint 38+) |
+
+> ⚠️ **`server/db/postgres/schema.sql` ÇALIŞTIRILMAZ ve kaynak DEĞİLDİR.**
+> Ayrı/eski bir soydan gelen bir aynadır ve çalışan şemayla çelişir. Final20'de
+> ölçüldü: ortak 50 tablonun **33'ünde sütun sapması** var, çalışan şemadaki
+> **7 tablo aynada yok**, aynadaki **20 tablo** çalışma zamanında yok.
+> Somut örnek — `threads`: çalışan şemada `name`, `parentMessageId`,
+> `lastMessageAt`, `messageCount` var; aynada bunlar yok, onun yerine
+> `title NOT NULL` duruyor. Aynadan kurulan bir veritabanına uygulama
+> **yazamaz**. Dosyanın kendi başlığı da bunu söylüyor; bu belge eskiden
+> aksini söylüyordu ve okuyucuyu doğrudan o tuzağa yönlendiriyordu.
 
 Bu belge tüm tabloları, ilişkilerini ve kritik tasarım kararlarını açıklar.
 
@@ -254,8 +270,10 @@ Detaylar için → [`server/db/migrations_pg/README.md`](../server/db/migrations
 
 ## Yeni Tablo Ekleme Rehberi
 
-1. `server/db/postgres/schema.sql` güncelle
+1. `server/db/postgres/schema.ts` içindeki `SCHEMA` sabitini güncelle
+   (yeni kurulumlar buradan oluşur — **`schema.sql` DEĞİL**)
 2. `server/db/migrations_pg/NNN_aciklayici_isim.sql` oluştur
+   (mevcut kurulumlar bu yoldan yükselir; ikisi de gereklidir)
 3. `server/db/migrations_pg/rollback/NNN_aciklayici_isim.down.sql` rollback yaz
 4. Migration README tablosunu güncelle
 5. Bu belgeyi güncelle
