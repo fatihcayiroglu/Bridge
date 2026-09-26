@@ -205,21 +205,16 @@ jobs:
           --health-retries 5
         ports:
           - 6379:6379
-      # Gercek S3-uyumlu depo. Bu servis olmadan
-      # tests/pg-integration/minio-storage-boundary.pgtest.ts sessizce
-      # ATLANIYORDU (MINIO_TEST_ENDPOINT yoksa describe.skip): yani ozel
-      # bucket'in anonim erisime GERCEKTEN kapali oldugunu kanitlayan tek suit
-      # CI'da hic calismamisti.
-      minio:
-        image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+      # Gercek S3-uyumlu depo. MinIO'nun Docker Hub/Quay server image'lari
+      # 2026-09'da anonymous pull icin kullanilamaz hale geldi; testin kaniti
+      # vendor'a degil gercek S3 public/private bucket davranisina baglidir.
+      # RustFS aktif bakimli, S3-uyumlu ve MinIO migration/compatibility hedefli
+      # bir sunucudur. Sabit surum kullanarak registry drift'ini sinirlariz.
+      s3:
+        image: rustfs/rustfs:1.0.1
         env:
-          MINIO_ROOT_USER: bridgereview
-          MINIO_ROOT_PASSWORD: bridgereview123
-        options: >-
-          --health-cmd "mc ready local"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          RUSTFS_ACCESS_KEY: bridgereview
+          RUSTFS_SECRET_KEY: bridgereview123
         ports:
           - 9000:9000
     steps:
@@ -232,6 +227,17 @@ jobs:
             package-lock.json
             server/package-lock.json
             electron/package-lock.json
+      - name: Wait for S3 test service
+        run: |
+          for i in {1..30}; do
+            if curl -sS --max-time 2 -o /dev/null http://127.0.0.1:9000/; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "S3 test service did not become reachable on :9000" >&2
+          docker ps -a
+          exit 1
       - name: Install dependencies
         run: |
           npm ci --no-audit --no-fund
@@ -361,12 +367,49 @@ jobs:
       # Bucket'lar suit calismadan ONCE var olmali; genel bucket'in anonim
       # okuma politikasi da yanlis-pozitif kontrolunun on kosuludur (politika
       # verilmezse "her sey 403" olur ve ozel bucket testi hicbir sey kanitlamaz).
-      - name: Provision MinIO buckets
+      - name: Provision S3-compatible buckets
         run: |
-          docker run --rm --network host --entrypoint /bin/sh             quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z -c '
-              mc alias set local http://127.0.0.1:9000 bridgereview bridgereview123 &&
-              mc mb --ignore-existing local/bridge-public local/bridge-private &&
-              mc anonymous set download local/bridge-public'
+          node --input-type=module <<'NODE'
+          import {
+            S3Client,
+            CreateBucketCommand,
+            PutBucketPolicyCommand,
+          } from '@aws-sdk/client-s3';
+
+          const s3 = new S3Client({
+            endpoint: 'http://127.0.0.1:9000',
+            region: 'us-east-1',
+            forcePathStyle: true,
+            credentials: {
+              accessKeyId: 'bridgereview',
+              secretAccessKey: 'bridgereview123',
+            },
+          });
+
+          for (const Bucket of ['bridge-public', 'bridge-private']) {
+            try {
+              await s3.send(new CreateBucketCommand({ Bucket }));
+            } catch (err) {
+              const status = err?.$metadata?.httpStatusCode;
+              if (status !== 409) throw err;
+            }
+          }
+
+          await s3.send(new PutBucketPolicyCommand({
+            Bucket: 'bridge-public',
+            Policy: JSON.stringify({
+              Version: '2012-10-17',
+              Statement: [{
+                Sid: 'BridgeCiPublicRead',
+                Effect: 'Allow',
+                Principal: '*',
+                Action: ['s3:GetObject'],
+                Resource: ['arn:aws:s3:::bridge-public/*'],
+              }],
+            }),
+          }));
+          console.log('S3 test buckets provisioned: bridge-public (anonymous read), bridge-private (private)');
+          NODE
       - name: Real PostgreSQL/Redis/MinIO integration suite
         run: cd server && npm run test:pg
         env:
