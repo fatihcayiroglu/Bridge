@@ -3764,7 +3764,10 @@ paths:
           - music
           - art
           - tech
-          - edu
+          - education
+          - community
+          - anime
+          - science
           - social
           - other
       - in: query
@@ -3811,7 +3814,26 @@ paths:
               schema:
                 type: array
                 items:
-                  type: string
+                  type: object
+                  required:
+                  - id
+                  - label
+                  properties:
+                    id:
+                      type: string
+                      enum:
+                      - gaming
+                      - music
+                      - art
+                      - tech
+                      - education
+                      - community
+                      - anime
+                      - science
+                      - social
+                      - other
+                    label:
+                      type: string
       operationId: get_discover_categories
   /discover/settings:
     patch:
@@ -3828,8 +3850,27 @@ paths:
                   type: string
                 category:
                   type: string
-                listed:
+                  enum:
+                  - gaming
+                  - music
+                  - art
+                  - tech
+                  - education
+                  - community
+                  - anime
+                  - science
+                  - social
+                  - other
+                discoverable:
                   type: boolean
+                description:
+                  type: string
+                  maxLength: 500
+                tags:
+                  type: array
+                  maxItems: 10
+                  items:
+                    type: string
       responses:
         200:
           description: Ayarlar güncellendi
