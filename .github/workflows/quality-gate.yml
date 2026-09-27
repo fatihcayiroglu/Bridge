@@ -460,7 +460,12 @@ jobs:
         run: docker build --pull=false -t bridge:ci .
       - name: Production image import smoke
         run: |
-          docker run --rm --entrypoint node bridge:ci -e "require('./server/dist/app/setupRoutes.js'); require('./server/dist/routes/voicemsg.js'); require('./server/dist/routes/channelPerms/helpers.js'); console.log('production runtime imports: PASS')"
+          docker run --rm \
+            -e DATABASE_URL=postgresql://bridge:test_password@127.0.0.1:5432/bridge_test \
+            -e JWT_SECRET=ci_jwt_secret_minimum_32_chars_value \
+            -e REFRESH_SECRET=ci_refresh_secret_minimum_32_chars \
+            --entrypoint node bridge:ci \
+            -e "require('./server/dist/app/setupRoutes.js'); require('./server/dist/routes/voicemsg.js'); require('./server/dist/routes/channelPerms/helpers.js'); console.log('production runtime imports: PASS')"
 
   # ════════════════════════════════════════════════════════════════════════
   # YUKSEK RISKLI GUVENLIK PAKETLERI — HER PR'DA
@@ -600,6 +605,7 @@ jobs:
       NODE_ENV: e2e
       DEBUG_OPTIONAL_REQUIRE: '1'
       PORT: 3001
+      E2E_SKIP_AUTH_FIXTURES: 'true'
     services:
       postgres:
         image: postgres:18-alpine
