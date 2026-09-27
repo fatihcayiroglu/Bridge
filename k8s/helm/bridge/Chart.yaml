@@ -10,9 +10,9 @@ keywords:
   - self-hosted
   - activitypub
   - federation
-home: https://github.com/bridge-app/bridge
+home: https://github.com/fatihcayiroglu/Bridge
 sources:
-  - https://github.com/bridge-app/bridge
+  - https://github.com/fatihcayiroglu/Bridge
 maintainers:
   - name: bridge-team
     email: hello@bridge.example.com
