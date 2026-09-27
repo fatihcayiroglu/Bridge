@@ -51,7 +51,7 @@
 - ~~GitHub Actions CI pipeline~~ ✅ Sprint 114 — lint, server-tests, structural-guards, e2e, security-audit
 
 **Veritabanı**
-- ~~SQLite → PostgreSQL geçişi~~ ✅ Sprint 38'de tamamlandı — sistem PostgreSQL 16 kullanıyor
+- ~~SQLite → PostgreSQL geçişi~~ ✅ Sprint 38'de tamamlandı — sistem PostgreSQL 18 kullanıyor
 - ~~CDN + WebP otomatik dönüşümü (`sharp`)~~ ✅ Sprint 106'da tamamlandı — `WEBP_CONVERT=true` ile aktif; `sharp` paketine bağlı
 - ~~Cloudflare R2 / MinIO medya depolama~~ ✅ Sprint 95'te tamamlandı — `CDN_PROVIDER=r2|minio|b2|local`
 
@@ -162,7 +162,7 @@ ActivityPub ile farklı Bridge sunucuları birbirine bağlanabilir. Docker ile t
 | ✅ Tamamlandı | Büyük modülleri klasör bazlı böl — `servers.ts` → `routes/servers/`, `ai.ts` → `routes/ai/` (Sprint 27) |
 | ✅ Tamamlandı | `_legacy/` klasörlerini temizle — 73 eski JS dosyası kaldırıldı (Sprint 27) |
 | ✅ Tamamlandı | Geçiş tsconfig'lerini birleştir — bridge4/15/18 → subsets.json (Sprint 27) |
-| ✅ Tamamlandı | CI/CD pipeline'ı Node 22 LTS için güncellendi (.nvmrc = 22, ci.yml node-version-file ile okur) |
+| ✅ Tamamlandı | CI/CD ana runtime'ı Node 24.20.0'a güncellendi (`.nvmrc`); minimum uyumluluk kapısı Node 22.19.0'ı ayrıca doğrular |
 | ✅ Tamamlandı | ActivityPub private key DB'de şifreli saklanıyor — AES-256-GCM (Sprint 38) |
 | ✅ Tamamlandı | **Vault/Secrets Manager adapter** — HashiCorp KV v2 (static token + AppRole), AWS Secrets Manager, env fallback, 5dk TTL cache, validateRequiredSecrets (Sprint 112) |
 | ✅ Tamamlandı | **ActivityPub C2S outbox POST** — `POST /federation/users/:username/outbox`, JWT auth, public/unlisted/followers visibility, deliverToFollowers entegrasyonu (Sprint 112) |
