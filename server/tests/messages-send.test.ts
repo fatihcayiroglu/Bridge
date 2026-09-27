@@ -236,6 +236,50 @@ describe('sendChannelMessage', () => {
     );
   });
 
+  // P1 multi-node harness PG-06r: the INSERT committed but its reply was lost.
+  // The ack resolved to the durable row, yet no one broadcast the message.
+  describe('ambiguous INSERT outcome (commit reached PostgreSQL, reply lost)', () => {
+    const realInsert = mockDb.messages.insert.bind(mockDb.messages);
+    afterEach(() => { mockDb.messages.insert = realInsert; });
+
+    it('this request\'s row is durable → broadcast exactly once and ack that row', async () => {
+      mockDb.messages.insert = (async (doc: Record<string, unknown>) => {
+        await realInsert(doc);
+        throw new Error('Connection terminated unexpectedly');
+      }) as typeof mockDb.messages.insert;
+      await sendChannelMessage(
+        { channelId: channel._id, serverId: server._id, content: 'committed but reply lost', ackId: 'ack-ambiguous' },
+        socket as never, io as never, user, new Map(),
+      );
+      const broadcasts = io._emitted.filter((e) => e.ev === 'message:new');
+      expect(broadcasts).toHaveLength(1);
+      const row = await mockDb.messages.findOne({ ackId: 'ack-ambiguous' });
+      expect(dataOf(broadcasts[0]!)).toMatchObject({ _id: row!._id, content: 'committed but reply lost' });
+      expect(mockSendAck).toHaveBeenCalledWith(socket, 'ack-ambiguous', expect.objectContaining({ messageId: String(row!._id) }));
+    });
+
+    it('negative control: a concurrent duplicate won (different row) → ack the canonical row, no second broadcast', async () => {
+      await mockDb.messages.insert(makeMessage(channel._id, server._id, user._id, { ackId: 'ack-race', content: 'winner' }) as never);
+      const winner = await mockDb.messages.findOne({ ackId: 'ack-race' });
+      mockDb.messages.insert = (async () => { throw new Error('duplicate key value violates unique constraint'); }) as typeof mockDb.messages.insert;
+      await sendChannelMessage(
+        { channelId: channel._id, serverId: server._id, content: 'loser', ackId: 'ack-race' },
+        socket as never, io as never, user, new Map(),
+      ).catch(() => undefined);
+      expect(io._emitted.filter((e) => e.ev === 'message:new')).toHaveLength(0);
+      expect(mockSendAck).toHaveBeenCalledWith(socket, 'ack-race', expect.objectContaining({ messageId: String(winner!._id) }));
+    });
+
+    it('a genuine failure (nothing durable) still surfaces the original error', async () => {
+      mockDb.messages.insert = (async () => { throw new Error('insert refused'); }) as typeof mockDb.messages.insert;
+      await expect(sendChannelMessage(
+        { channelId: channel._id, serverId: server._id, content: 'not stored', ackId: 'ack-failed' },
+        socket as never, io as never, user, new Map(),
+      )).rejects.toThrow('insert refused');
+      expect(io._emitted.filter((e) => e.ev === 'message:new')).toHaveLength(0);
+    });
+  });
+
   it('boş içerik (normal tip) → mesaj oluşturulmaz', async () => {
     await sendChannelMessage(
       { channelId: channel._id, serverId: server._id, content: '   ' },

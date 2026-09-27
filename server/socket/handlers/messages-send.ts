@@ -481,9 +481,21 @@ export async function sendChannelMessage(
   }
 
   let msg;
+  let insertError: unknown;
   try {
     msg = await Messages.create(msgData);
   } catch (error) {
+    insertError = error;
+    // The INSERT can commit while its reply is lost (connection cut at the
+    // commit). The row id was generated HERE, so a durable row carrying it
+    // proves this request's write succeeded: continue to the normal broadcast
+    // and ack. Previously the ack was sent from the durable row but the
+    // message was never broadcast — observers missed a committed message
+    // (multi-node harness, PostgreSQL disruption PG-06r).
+    const own = await Messages.findById(String(msgData._id)).catch(() => null);
+    if (own) msg = own;
+  }
+  if (!msg) {
     // Concurrent emits can both miss the preflight lookup. The per-user unique
     // index chooses one winner; the loser resolves to that canonical row.
     if (validAckId) {
@@ -499,7 +511,7 @@ export async function sendChannelMessage(
         return;
       }
     }
-    throw error;
+    throw insertError ?? new Error('Message insert returned no row');
   }
   const publicMsg = { ...msg } as Record<string, unknown>;
   delete publicMsg.ackId;
