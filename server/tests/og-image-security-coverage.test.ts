@@ -35,7 +35,7 @@ describe('server OG SVG hostile persisted metadata boundary', () => {
 
   it('renders canonical metadata with cache/content headers and bounded escaped text', async () => {
     findById.mockResolvedValue({
-      _id: 'srv', name: 'A<&\"B'.repeat(20), icon: '🌉<&\"', color: '#A1b2C3',
+      _id: 'srv', name: 'A<&\"B'.repeat(20), icon: '🌉<&\"', color: '#A1b2C3', discoverable: 1,
     });
     const res = await request(app()).get('/api/servers/srv/og-image');
     expect(res.status).toBe(200);
