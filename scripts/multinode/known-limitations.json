@@ -1,0 +1,5 @@
+{
+  "_comment": "Checks that FAIL for a verified, documented architectural reason. They are still reported as FAIL (never PASS) with this reason; they do not fail the run's exit code. An entry whose check PASSES fails the run so the list cannot rot. Each entry names exactly one check id — no wildcards.",
+  "UP-02-per-node": "Chunk staging is node-local (Kubernetes emptyDir). A cookie-less API client whose chunks the load balancer spreads across nodes cannot finalize; since P1 every misrouted chunk is refused explicitly (409 CHUNK_STAGED_ELSEWHERE, UP-02x) instead of a silent 200. Supported today: shared upload volume (UP-02-shared PASS) or LB affinity (UP-03). Node-independent object-storage staging is the recorded follow-up (docs/DISTRIBUTED_AUTHORITY.md, 'Chunked upload staging').",
+  "UP-06-per-node": "Chunks staged on node-local disk die with the node. Since P1 the session is declared lost once the node's liveness lease lapses (quota released, UP-06x) and the client restarts the upload; resuming the ORIGINAL session needs shared or object-storage staging (docs/DISTRIBUTED_AUTHORITY.md, 'Chunked upload staging')."
+}

@@ -32,7 +32,7 @@ function sharedSocketKey(userId: string): string {
 // SOCKET_STALE_MS, but staleness was only noticed when the SAME user's next
 // socket event ran a prune. Measured with three real nodes: a user whose node
 // was SIGKILLed and whose replacement socket then closed stayed "online"
-// forever (DB status and every observer), because nothing re-examined him.
+// forever (DB status and every observer), because nothing re-examined them.
 // `presence:users` indexes every user with shared sockets by last heartbeat;
 // the reaper below finds users whose sockets are ALL stale and performs the
 // offline transition exactly once cluster-wide (atomic ZREM decides the owner).

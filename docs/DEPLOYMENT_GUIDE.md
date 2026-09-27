@@ -287,8 +287,15 @@ baytı (canlı boost/küresel dosya hakkı) ve toplam geçici baytı (`CHUNK_UPL
 varsayılan 400) sınırlanır; `CHUNK_UPLOAD_SESSION_TTL_MIN` (varsayılan 60) kadar boşta kalan
 oturumlar diskten silinir. `REDIS_URL` tanımlıysa bu kota Redis'te atomik tutulur ve Redis'e
 ulaşılamazsa parça **503** ile reddedilir. Çok düğümlü dağıtımda `<BRIDGE_UPLOAD_ROOT>/_chunks`
-tüm düğümlerin paylaştığı yükleme biriminde olmalıdır (`docker-compose.cluster.yml` bunu yapar);
-düğüm başına ayrı disk kullanan dağıtımlarda bir yüklemenin tüm parçaları aynı düğüme gitmelidir.
+tüm düğümlerin paylaştığı yükleme biriminde olmalıdır (`docker-compose.cluster.yml` bunu yapar;
+Kubernetes'te yükleme köküne `ReadWriteMany` bir birim bağlayın). Düğüm başına ayrı disk
+(`emptyDir`) kullanan dağıtımlarda bir yüklemenin tüm parçaları aynı düğüme gitmelidir: çerez
+tutmayan API istemcilerinin başka düğüme düşen parçası artık sessizce kabul edilmez, **409
+`CHUNK_STAGED_ELSEWHERE`** (hazırlayan düğüm `stagingNode` alanında) alır; hazırlayan düğüm ölmüşse
+oturum serbest bırakılır ve **409 `CHUNK_STAGING_LOST`** döner (yüklemeyi baştan başlatın).
+Tamamlanmış bir yüklemenin her parçasının yeniden denemesi aynı tamamlanma yanıtını alır.
+Çok düğüm kanıtı ve düğümden bağımsız nesne-deposu hazırlama tasarımı:
+[DISTRIBUTED_AUTHORITY.md](DISTRIBUTED_AUTHORITY.md).
 
 > ⚠️ **Dikkat:** Redis olmadan rate limiter in-memory çalışır. Bu durumda çok instance deployment'ta her instance kendi limitini bağımsız tutar — limitler instance'lar arası paylaşılmaz. Production'da Redis zorunludur.
 

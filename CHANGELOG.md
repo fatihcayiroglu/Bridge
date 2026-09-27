@@ -1,3 +1,46 @@
+## [Unreleased] — 2026-09-27 — P1: multi-node distributed-correctness evidence and fixes
+
+Not part of the packaged Final23 ZIP. A reproducible harness (`scripts/multinode`) now runs Bridge as
+a disposable cluster of **real processes** — three nodes behind a routing load balancer, PostgreSQL,
+Redis and S3-compatible storage, with fault-injecting proxies for PostgreSQL and object storage — and
+exercises auth, realtime, stale sockets, node death, Redis/PostgreSQL failure modes, competing jobs,
+SFU ownership and cross-node uploads. Every defect below was reproduced there first; each has a fast
+regression test in the normal Quality Gate. Findings, the authority matrix and measurements:
+`docs/DISTRIBUTED_AUTHORITY.md`. One host and three nodes: strong correctness evidence, not
+production traffic, a multi-host partition or media quality.
+
+### Fixed
+- **Node crash on a database outage.** A PostgreSQL restart or network cut while a node held a
+  checked-out pool client emitted an unhandled `error` and terminated the process. Pooled clients now
+  carry a permanent error listener; a transaction client whose ROLLBACK failed is destroyed.
+- **Readiness lied while Redis refused writes** (`-OOM`, `-READONLY`): the health check now performs a
+  bounded write; readiness failures log the failing dependency once per state change.
+- **Voice after kick / access revocation on another node:** the kicked socket kept broadcasting voice
+  state and WebRTC offers, and the user stayed in every peer's voice roster (also same-node). P2P voice
+  handlers now require the Socket.IO voice room, and revocations run the real voice leave (roster, SFU
+  peer teardown) on the node that holds the socket (`membership:voice-evict`).
+- **Presence after node death:** a user whose node was SIGKILLed stayed online forever once their other
+  socket closed. A presence index and reaper perform the offline transition exactly once cluster-wide.
+- **SFU room owner death** stranded the voice room for up to the 1-hour registry TTL; **Redis data loss**
+  let a second node open a second router for a live room. Room ownership now carries a node liveness
+  lease (`SFU_NODE_LEASE_MS`, default 30 s) with atomic takeover, heartbeat re-assertion and a settle
+  window after the registry is (re)created; a node that cannot renew closes its rooms before its lease
+  can expire.
+- **Ambiguous commits:** a message whose INSERT committed while the reply was lost was acked but never
+  broadcast; a protected upload whose ownership row committed while the reply was lost had its bytes
+  deleted (row without bytes). Both now resolve the real outcome first.
+- **Chunked uploads across nodes:** a lost final response made the retry open an orphan session; the
+  completion is now replayed. With node-local staging, misrouted chunks returned 200 forever and never
+  finalized — they now get 409 `CHUNK_STAGED_ELSEWHERE`; sessions staged on a dead node are released
+  (409 `CHUNK_STAGING_LOST`, per-node liveness lease `node:alive:<id>`). Cookie-less API clients still
+  need a shared upload volume or affinity; node-independent object-storage staging is designed, not
+  implemented (`docs/DISTRIBUTED_AUTHORITY.md`).
+
+### Added
+- `scripts/multinode/` harness (`run.mjs`, scenarios, report with topology/versions/measurements) and
+  `.github/workflows/multinode-evidence.yml` (weekly + manual; not part of pull-request CI).
+- Real-PostgreSQL proof of ActivityPub inbox single processing across concurrent deliveries.
+
 ## [Unreleased] — 2026-09-27 — Chunked-upload resource-exhaustion boundary (post-Final23)
 
 Focused security hardening on top of the Final23 lineage (not part of the packaged Final23 ZIP).

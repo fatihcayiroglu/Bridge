@@ -1,0 +1,88 @@
+name: Bridge Multi-node Evidence
+
+# Heavy distributed-correctness runs against a disposable cluster of REAL
+# processes (3 Bridge nodes, PostgreSQL, Redis, S3-compatible storage, a
+# routing load balancer and fault-injecting proxies): scripts/multinode.
+#
+# Deliberately NOT part of pull-request CI: a full run takes ~25 minutes and
+# kills/restarts processes. The fast regression tests for every defect this
+# harness found run in the normal Quality Gate (server Jest + real-Redis/PG
+# pgtests). This workflow owns the end-to-end evidence: weekly, and on demand.
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: 'Comma-separated scenarios (auth,realtime,stale,nodedeath,redis,postgres,jobs,sfu,uploads)'
+        required: false
+        default: 'auth,realtime,stale,nodedeath,redis,postgres,jobs,sfu,uploads'
+  schedule:
+    - cron: '17 3 * * 1'
+
+concurrency:
+  group: multinode-evidence-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  cluster:
+    name: 3-node cluster (${{ matrix.uploads }} upload staging)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Kubernetes-style node-local upload roots: every scenario.
+          - uploads: per-node
+            scenarios: ${{ github.event.inputs.scenarios || 'auth,realtime,stale,nodedeath,redis,postgres,jobs,sfu,uploads' }}
+          # docker-compose.cluster.yml-style shared upload volume: staging-sensitive scenarios.
+          - uploads: shared
+            scenarios: uploads
+    env:
+      NODE_VERSION: '24.20.0'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install infrastructure (PostgreSQL binaries, Redis, S3 emulator)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server lsof
+          sudo systemctl stop redis-server || true
+          python -m pip install --quiet 'moto[server]==5.2.3'
+          ls -d /usr/lib/postgresql/*/bin
+      - name: Install and build Bridge
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund && npm run build
+      - name: Run scenarios
+        run: |
+          node scripts/multinode/run.mjs \
+            --scenarios '${{ matrix.scenarios }}' \
+            --uploads '${{ matrix.uploads }}' \
+            --work "$RUNNER_TEMP/bridge-mn" \
+            --out "$RUNNER_TEMP/bridge-mn-report"
+        env:
+          MN_MOTO_SERVER: moto_server
+      - name: Upload report and node logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: multinode-${{ matrix.uploads }}
+          path: |
+            ${{ runner.temp }}/bridge-mn-report/
+            ${{ runner.temp }}/bridge-mn/logs/
+          retention-days: 30
