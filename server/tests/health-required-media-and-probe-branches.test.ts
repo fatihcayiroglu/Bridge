@@ -22,6 +22,7 @@ process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 
 import request from 'supertest';
 import express from 'express';
+const jwt = require('jsonwebtoken');
 import { createMockDb, makeUser, makeServer } from './helpers/mockDb';
 
 let db: ReturnType<typeof createMockDb>;
@@ -71,6 +72,7 @@ function buildApp(ip?: string) {
 const ENV_KEYS = ['NODE_ENV', 'REQUIRE_TURN', 'REQUIRE_SFU', 'REDIS_URL'];
 const ORIGINAL: Record<string, string | undefined> = {};
 const getWorkerStats = jest.fn();
+let adminToken = '';
 
 beforeAll(() => { for (const k of ENV_KEYS) ORIGINAL[k] = process.env[k]; });
 
@@ -97,8 +99,9 @@ beforeEach(async () => {
   workersModule.getWorkerStats = (...a: unknown[]) => getWorkerStats(...a);
   getWorkerStats.mockResolvedValue({ workers: 1, healthy: 1 });
 
-  const owner = makeUser({ username: 'owner' });
+  const owner = makeUser({ username: 'owner', isAdmin: true });
   await db.users.insert(owner);
+  adminToken = jwt.sign({ id: owner._id, username: owner.username, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' });
   await db.servers.insert(makeServer(owner._id, { name: 'Ops' }));
 
   delete process.env.REQUIRE_TURN;
@@ -216,35 +219,33 @@ describe('the mediasoup probe endpoint', () => {
   });
 });
 
-describe('/stats exposes process internals only where it is safe', () => {
-  it('is open outside production', async () => {
-    const res = await request(buildApp('203.0.113.5')).get('/api/health/stats');
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty('memory');
+describe('/stats requires a current database-admin grant', () => {
+  const stats = (ip?: string) =>
+    request(buildApp(ip)).get('/api/health/stats').set('Authorization', `Bearer ${adminToken}`);
+
+  it('rejects unauthenticated requests even outside production', async () => {
+    const res = await request(buildApp('127.0.0.1')).get('/api/health/stats');
+    expect(res.status).toBe(401);
   });
 
-  const internal = ['127.0.0.1', '::1', '10.0.0.4', '172.16.0.9'];
-  for (const ip of internal) {
-    it(`is readable from ${ip} in production`, async () => {
+  for (const ip of ['127.0.0.1', '::1', '10.0.0.4', '172.16.0.9', '203.0.113.5', '8.8.8.8']) {
+    it(`allows an authenticated DB admin from ${ip} in production`, async () => {
       process.env.NODE_ENV = 'production';
-      const res = await request(buildApp(ip)).get('/api/health/stats');
+      const res = await stats(ip);
       expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('memory');
     });
   }
 
-  const external = ['203.0.113.5', '8.8.8.8', ''];
-  for (const ip of external) {
-    it(`is refused from "${ip || 'an unknown address'}" in production`, async () => {
-      process.env.NODE_ENV = 'production';
-      const res = await request(buildApp(ip || undefined)).get('/api/health/stats');
-      expect(res.status).toBe(403);
-      expect(res.body).toEqual({ error: 'Forbidden' });
-    });
-  }
+  it('does not trust a private source IP as authorization', async () => {
+    process.env.NODE_ENV = 'production';
+    const res = await request(buildApp('10.0.0.4')).get('/api/health/stats');
+    expect(res.status).toBe(401);
+  });
 
-  it('still answers when the socket layer cannot report', async () => {
+  it('still answers for an authenticated admin when the socket layer cannot report', async () => {
     socketStats.mockImplementation(() => { throw new Error('socket layer down'); });
-    const res = await request(buildApp('127.0.0.1')).get('/api/health/stats');
+    const res = await stats('127.0.0.1');
     expect(res.status).toBe(200);
   });
 });
