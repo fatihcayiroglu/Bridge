@@ -466,6 +466,15 @@ async function ensureTwoFactorUser(fetch, cachedTwoFactor): Promise<{ username: 
 }
 
 async function setup() {
+  // API-only smoke projesi kimlik/fikstur gerektirmez. Onun icin bes hesap
+  // olusturmak hem anlamsiz hem de urunun dogru kayit kotasini tuketir.
+  // Bu bayrak yalnizca CI'daki api-smoke job'unda kullanilir; normal E2E
+  // paketlerinde global setup aynen zorunludur.
+  if (process.env.E2E_SKIP_AUTH_FIXTURES === 'true') {
+    console.log('ℹ️  API-only smoke: auth fixture global setup atlandi.');
+    return;
+  }
+
   if (!fs.existsSync(FIXTURES_DIR)) {
     fs.mkdirSync(FIXTURES_DIR, { recursive: true });
   }
