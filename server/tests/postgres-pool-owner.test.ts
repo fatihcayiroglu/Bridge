@@ -43,6 +43,29 @@ describe('PostgreSQL pool canonical owner', () => {
     );
   });
 
+  // pg-pool removes its own error listener while a client is checked out; an
+  // unexpected disconnect then emits 'error' on the client, and an unhandled
+  // 'error' event kills the process (reproduced by the P1 multi-node harness:
+  // stopping PostgreSQL crashed the node that held a checked-out client).
+  it('gives every pooled client a permanent error listener so a checked-out disconnect cannot crash the process', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { EventEmitter } = require('events') as typeof import('events');
+    // Negative control: a bare emitter throws on an unhandled 'error'.
+    expect(() => new EventEmitter().emit('error', new Error('Connection terminated unexpectedly'))).toThrow('Connection terminated unexpectedly');
+
+    require('../db/postgres/pool');
+    const connectHandlers = mockPool.on.mock.calls.filter(call => call[0] === 'connect').map(call => call[1] as (c: unknown) => void);
+    expect(connectHandlers.length).toBeGreaterThanOrEqual(1);
+    const client = new EventEmitter();
+    for (const handler of connectHandlers) handler(client);
+    expect(client.listenerCount('error')).toBeGreaterThanOrEqual(1);
+    expect(() => client.emit('error', new Error('Connection terminated unexpectedly'))).not.toThrow();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      { event: 'db.client.error', message: 'Connection terminated unexpectedly' },
+      expect.any(String),
+    );
+  });
+
   it('registers the BIGINT (INT8, OID 20) parser before any query can run', () => {
     require('../db/postgres/pool');
     const int8 = mockSetTypeParser.mock.calls.filter(([oid]) => oid === 20);

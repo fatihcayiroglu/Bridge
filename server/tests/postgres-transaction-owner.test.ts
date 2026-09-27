@@ -72,6 +72,35 @@ describe('PostgreSQL canonical transaction owner', () => {
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
+  // A client whose ROLLBACK failed is disconnected or still inside the aborted
+  // transaction; handing it back to the pool as healthy would poison the next
+  // borrower (P1 multi-node harness, PostgreSQL disruption scenarios).
+  it('destroys a client whose ROLLBACK failed instead of returning it to the pool', async () => {
+    const client = clientHarness();
+    const rollbackFailure = new Error('Connection terminated unexpectedly');
+    client.query.mockImplementation(async (sql: string) => {
+      if (sql === 'ROLLBACK') throw rollbackFailure;
+      return { rows: [] };
+    });
+    connect.mockResolvedValue(client);
+
+    await expect(withTransaction(async () => { throw new Error('write failed'); })).rejects.toThrow('write failed');
+    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(client.release).toHaveBeenCalledWith(rollbackFailure);
+  });
+
+  it('returns a client to the pool (no discard argument) after a successful rollback or commit', async () => {
+    const ok = clientHarness();
+    connect.mockResolvedValue(ok);
+    await withTransaction(async () => 'value');
+    expect(ok.release).toHaveBeenCalledWith(undefined);
+
+    const rolledBack = clientHarness();
+    connect.mockResolvedValue(rolledBack);
+    await expect(withTransaction(async () => { throw new Error('domain'); })).rejects.toThrow('domain');
+    expect(rolledBack.release).toHaveBeenCalledWith(undefined);
+  });
+
   it('does not fabricate a client when pool acquisition itself fails', async () => {
     connect.mockRejectedValue(new Error('pool exhausted'));
     await expect(withTransaction(async () => 'never')).rejects.toThrow('pool exhausted');
