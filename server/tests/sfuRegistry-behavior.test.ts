@@ -22,6 +22,10 @@ function fakeRedis() {
     eval: jest.fn(async(script:string,opts:{keys:string[];arguments:string[]})=>{
       const key=opts.keys[0]!;
       const a=opts.arguments;
+      if(script.includes("tostring(now), 'NX')")){           // registry epoch maintenance
+        if(store.has(key)) return 0;
+        store.set(key,String(Date.now())); return 1;
+      }
       if(script.includes("redis.call('TIME')")){
         const now=Date.now();
         if(!store.has(opts.keys[1]!)) store.set(opts.keys[1]!,String(now));
@@ -157,6 +161,30 @@ describe('sfuRegistry ownership state machine',()=>{
     // the live owner re-asserts its room during the window (heartbeat)
     await expect(mod.refreshRoom('fresh')).resolves.toBe(true);
     expect(r.store.get(K('fresh'))).toBe('node-test');
+  });
+
+  // Measured in the harness: with the epoch created lazily by the first claim,
+  // an idle cluster refused the first voice joins after a Redis restart.
+  it('every node maintains the registry epoch: an idle cluster is settled before the first claim',async()=>{
+    jest.useFakeTimers();
+    try {
+      const {mod,r}=await load();
+      mod.startRegistryMaintenance();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(r.store.has('bridge:sfu:registry-epoch')).toBe(true);
+      const first=r.store.get('bridge:sfu:registry-epoch');
+      await jest.advanceTimersByTimeAsync(mod.NODE_HEARTBEAT_MS);
+      expect(r.store.get('bridge:sfu:registry-epoch')).toBe(first);          // never moved forward
+      r.store.delete('bridge:sfu:registry-epoch');                            // Redis data loss
+      await jest.advanceTimersByTimeAsync(mod.NODE_HEARTBEAT_MS);
+      expect(r.store.has('bridge:sfu:registry-epoch')).toBe(true);           // recreated within one heartbeat
+      mod.stopRegistryMaintenance();
+    } finally { jest.useRealTimers(); }
+    // Single-node: nothing to maintain.
+    const single=await load({redisUrl:false});
+    expect(await single.mod.maintainRegistryEpoch()).toBe(false);
+    single.mod.startRegistryMaintenance();
+    single.mod.stopRegistryMaintenance();
   });
 
   it('release and refresh act only for the canonical local owner',async()=>{

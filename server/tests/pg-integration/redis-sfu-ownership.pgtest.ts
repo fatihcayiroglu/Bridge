@@ -258,6 +258,18 @@ RUN('gerçek Redis — SFU oda sahipliği atomiktir', () => {
     await settleRegistry();
   }, 20_000);
 
+  it('kayıt dönemi bakımı: yoksa oluşturur, varsa ASLA ileri almaz (boşta küme yerleşmiş kalır)', async () => {
+    const nodeA = loadNode('node-A');
+    await settleRegistry();
+    const before = await raw.get(EPOCH_KEY);
+    await expect(nodeA.maintainRegistryEpoch()).resolves.toBe(false);
+    expect(await raw.get(EPOCH_KEY)).toBe(before);
+    await raw.del(EPOCH_KEY);
+    await expect(nodeA.maintainRegistryEpoch()).resolves.toBe(true);
+    expect(Number(await raw.get(EPOCH_KEY))).toBeGreaterThan(Number(before));
+    await settleRegistry();
+  });
+
   it('başka düğüme geçmiş odayı eski sahip kalp atışında KAYBETTİĞİNİ öğrenir (yerel router kapanmalı)', async () => {
     const ch = channel('lost');
     const nodeA = loadNode('node-A');

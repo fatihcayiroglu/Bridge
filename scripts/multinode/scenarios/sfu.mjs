@@ -249,7 +249,9 @@ export async function run({ cluster, lb, record, measure }) {
     const t0 = Date.now();
     let after = null;
     let fresh = null;
-    while (Date.now() - t0 < 30_000) {
+    // A registry restarted EMPTY settles (REGISTRY_SETTLE_MS, ~22 s by default)
+    // before brand-new rooms can be claimed; live owners re-assert meanwhile.
+    while (Date.now() - t0 < 45_000) {
       fresh = fresh || await connectSocket(url('B'), u2.token).catch(() => null);
       if (fresh) {
         after = await capabilities(fresh, ch);
@@ -262,8 +264,10 @@ export async function run({ cluster, lb, record, measure }) {
     socks.A = await connectSocket(url('A'), owner.token);
     socks.B = await connectSocket(url('B'), u2.token);
     socks.C = await connectSocket(url('C'), u3.token);
-    record('SFU-04r', 'registry restored: the room can be claimed again without restarting any node (reconnected client)',
-      after && (after.kind === 'caps' || after.kind === 'redirect') ? 'PASS' : 'FAIL', `${after?.kind} after ${Date.now() - t0}ms`);
+    const recovered = after && (after.kind === 'caps' || after.kind === 'redirect');
+    record('SFU-04r', 'registry restored empty: after the settle window the room can be claimed again without restarting any node (reconnected client)',
+      recovered ? 'PASS' : 'FAIL', `${after?.kind} after ${Date.now() - t0}ms`);
+    if (recovered) measure('sfu.fresh_claim_after_registry_data_loss_ms', Date.now() - t0, 'ms', 'Redis restarted empty → a brand-new room claimable (includes the registry settle window)');
   }
 
   // ── 8. Redis restarted EMPTY while a room is live (no persistence) ───────

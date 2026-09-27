@@ -133,6 +133,50 @@ if not owner then
 end
 return 0`;
 
+// Creates the registry epoch when it is absent (first boot / Redis data loss).
+// Every node runs this on start and every NODE_HEARTBEAT_MS, rooms or not, so
+// the settle window follows a REAL registry (re)creation instead of being
+// opened lazily by the first voice join (measured: after a Redis restart the
+// first joins on an idle cluster were refused for the whole window).
+const MAINTAIN_EPOCH_LUA = `local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+if redis.call('SET', KEYS[1], tostring(now), 'NX') then return 1 end
+return 0`;
+
+/** `true` when this call (re)created the registry epoch. */
+export async function maintainRegistryEpoch(): Promise<boolean> {
+  const r = await _getRedis();
+  if (!r) return false;
+  const created = await runSfuRedisCommand(r, 'maintain registry epoch', client => client.eval(
+    MAINTAIN_EPOCH_LUA, { keys: [EPOCH_KEY], arguments: [] },
+  ));
+  if (Number(created) === 1) {
+    logger.warn({ event: 'sfu.registry.epoch_created', settleMs: REGISTRY_SETTLE_MS },
+      '[SFU Registry] Registry epoch (re)created; brand-new room claims settle while live owners re-assert.');
+    return true;
+  }
+  return false;
+}
+
+let _epochTimer: ReturnType<typeof setInterval> | null = null;
+
+export function startRegistryMaintenance(): void {
+  if (!process.env.REDIS_URL || _epochTimer) return;
+  const tick = () => {
+    maintainRegistryEpoch().catch((err: Error) => {
+      logger.warn({ err: err.message, event: 'sfu.registry.epoch_maintenance_failed' }, '[SFU Registry] Registry epoch maintenance failed.');
+    });
+  };
+  tick();
+  _epochTimer = setInterval(tick, NODE_HEARTBEAT_MS);
+  _epochTimer.unref?.();
+}
+
+export function stopRegistryMaintenance(): void {
+  if (_epochTimer) clearInterval(_epochTimer);
+  _epochTimer = null;
+}
+
 /** A brand-new room cannot be claimed while the registry settles after (re)creation. */
 export class SfuRegistrySettlingError extends Error {
   constructor(public readonly channelId: string) {
