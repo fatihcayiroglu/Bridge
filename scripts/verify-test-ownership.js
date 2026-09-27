@@ -78,7 +78,7 @@ const RUNNERS = [
 const CONFIG_OWNERS = [
   // package.json:33 test:release-integrity; quality-gate.yml ve quality-gate.sh
   // bu komutu ayrıca doğrudan çağırır.
-  { owner: 'release integrity (node:test)', prefix: 'scripts/', suffixes: ['release-integrity.test.js'] },
+  { owner: 'release integrity (node:test)', prefix: 'scripts/', suffixes: ['release-integrity.test.js', 'product-surface-contract.test.js', 'final23-adversarial-contract.test.js'] },
   // e2e/playwright.config.ts:18  testDir: './tests'
   // e2e/playwright.config.ts:23  testIgnore: ['**/tests-legacy/**']
   { owner: 'e2e (playwright)', prefix: 'e2e/tests/',      suffixes: ['.spec.ts', '.test.ts'] },
@@ -94,14 +94,7 @@ const CONFIG_OWNERS = [
 // amacı YENİ sahipsizliği yakalamaktır; bilinen borç görünür kalır ama CI'yi
 // kalıcı kırmızıya çevirmez. Girişler çürüyemez: aşağıda, artık var olmayan
 // bir dosyayı adlandıran giriş kapıyı kırmızıya çevirir.
-const KNOWN_UNOWNED = {
-  'e2e/tests-legacy/activitypub-ci.spec.ts':
-    'e2e/playwright.legacy.config.ts (testDir: ./tests-legacy) var, ama hicbir CI isi ya da npm betigi onu cagirmiyor.',
-  'e2e/tests-legacy/mastodon-activitypub.spec.ts':
-    'Ayni legacy Playwright yapilandirmasi; harici bir Mastodon ornegi gerektirir.',
-  'e2e/tests-legacy/rtl.spec.ts':
-    'Ayni legacy Playwright yapilandirmasi; ana config tests-legacy/ dizinini testIgnore ile disliyor.',
-};
+const KNOWN_UNOWNED = {};
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', 'build', '_archived_legacy']);
 const TEST_SUFFIXES = ['.test.ts', '.test.tsx', '.test.js', '.spec.ts', '.spec.js', '.pgtest.ts'];
