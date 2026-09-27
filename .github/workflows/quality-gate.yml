@@ -177,8 +177,6 @@ jobs:
     needs: [typecheck-build]
     env:
       NODE_VERSION: '24.20.0'
-      DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
-      REDIS_URL: redis://localhost:6379
       JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
       REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
       NODE_ENV: test
@@ -332,6 +330,8 @@ jobs:
           npx ts-node --project tsconfig.json db/postgres/index.ts
           npx ts-node --project tsconfig.json db/migrate-postgres.ts up
           npx ts-node --project tsconfig.json db/migrate-postgres.ts status
+        env:
+          DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
       # ══════════════════════════════════════════════════════════════════
       # GERI ALMA KAPISI — SINIFLANDIRILMIS, ARTIK ENGELLEYICI
       # ══════════════════════════════════════════════════════════════════
@@ -357,14 +357,14 @@ jobs:
       - name: Migration rollback gate (classified, ordered chain proof)
         run: cd server && node scripts/verify-migration-rollback.js --ordered
         env:
-          PG_ADMIN_URL: ${{ env.DATABASE_URL }}
+          PG_ADMIN_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
       # Uretimdeki HER statik SQL literali PostgreSQL'e AYRISTIRILIR.
       # Bu kapi, `jsonb_object_length` gibi VAR OLMAYAN bir fonksiyonu
       # yakalar -- mock'lanmis bir SQL-metni sozlesme testi yakalayamamisti.
       - name: Validate production SQL against PostgreSQL
         run: cd server && node scripts/verify-sql-against-postgres.js
         env:
-          PG_TEST_URL: ${{ env.DATABASE_URL }}
+          PG_TEST_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
       # Gercek eszamanlilik: refresh rotasyonu, davet son slotu, anket oyu,
       # reaksiyon yarisi + gercek Redis coklu-node oda sahipligi.
       # Bucket'lar suit calismadan ONCE var olmali; genel bucket'in anonim
@@ -416,8 +416,8 @@ jobs:
       - name: Real PostgreSQL/Redis/MinIO integration suite
         run: cd server && npm run test:pg
         env:
-          PG_TEST_URL: ${{ env.DATABASE_URL }}
-          REDIS_TEST_URL: ${{ env.REDIS_URL }}
+          PG_TEST_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+          REDIS_TEST_URL: redis://localhost:6379
           MINIO_TEST_ENDPOINT: http://127.0.0.1:9000
       # Birlesik aramanin CANLI planlayici paketi (FTS indeks hizasi, aksan duyarsizlastirma,
       # yetki kapsami). CI'da hic kosmuyordu: Faz 16'da kendi fiksturunde kirikti ve kimse
@@ -426,7 +426,7 @@ jobs:
       - name: Live unified-search planner suite
         run: cd server && npm run test:search-it
         env:
-          SEARCH_IT_DATABASE_URL: ${{ env.DATABASE_URL }}
+          SEARCH_IT_DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
       - name: Upload coverage/log artifacts
         if: always()
         uses: actions/upload-artifact@v7
