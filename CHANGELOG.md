@@ -24,8 +24,9 @@ production traffic, a multi-host partition or media quality.
 - **SFU room owner death** stranded the voice room for up to the 1-hour registry TTL; **Redis data loss**
   let a second node open a second router for a live room. Room ownership now carries a node liveness
   lease (`SFU_NODE_LEASE_MS`, default 30 s) with atomic takeover, heartbeat re-assertion and a settle
-  window after the registry is (re)created; a node that cannot renew closes its rooms before its lease
-  can expire.
+  window (~22 s) after the registry is recreated by Redis data loss (every node maintains the registry
+  epoch, so an idle or freshly started cluster is never settling); a node that cannot renew closes its
+  rooms before its lease can expire.
 - **Ambiguous commits:** a message whose INSERT committed while the reply was lost was acked but never
   broadcast; a protected upload whose ownership row committed while the reply was lost had its bytes
   deleted (row without bytes). Both now resolve the real outcome first.
