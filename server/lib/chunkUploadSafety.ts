@@ -53,6 +53,15 @@ function parseCanonicalNonNegativeInt(value: string | null): number | null {
 }
 
 /**
+ * A chunk's declared body length: one canonical, non-negative decimal header.
+ * `null` for a missing (e.g. `Transfer-Encoding: chunked`), repeated or
+ * malformed value.
+ */
+export function parseChunkContentLength(value: string | string[] | undefined): number | null {
+  return parseCanonicalNonNegativeInt(oneHeader(value));
+}
+
+/**
  * Chunk metadata is intentionally strict. Silently stripping upload-id bytes or
  * accepting signed/partial integer strings can alias two sessions or create
  * impossible chunk paths.
@@ -245,4 +254,86 @@ export function tryAcquireChunkFinalization(sessionDir: string, nowMs = Date.now
   }
   lease = attempt();
   return lease;
+}
+
+/**
+ * Read-only: true while a finalizer holds a lease younger than the 24h
+ * crash-recovery window (same rule and timestamp source as
+ * `tryAcquireChunkFinalization`). Never removes or steals a lease.
+ */
+export function isChunkFinalizationActive(sessionDir: string, nowMs = Date.now()): boolean {
+  const lockPath = path.join(sessionDir, FINALIZE_LOCK);
+  let startedAt: number;
+  try {
+    startedAt = fs.statSync(lockPath).mtimeMs;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { startedAt?: unknown };
+    if (typeof parsed.startedAt === 'number' && Number.isFinite(parsed.startedAt)) startedAt = parsed.startedAt;
+  } catch { /* malformed crash residue falls back to mtime */ }
+  return nowMs - startedAt <= FINALIZE_LOCK_STALE_MS;
+}
+
+/**
+ * Most recent activity of a chunk session: the directory's own mtime (any
+ * temp create/commit/unlink) and every entry's mtime (a slowly streaming
+ * `.part` file). `null` when the directory does not exist.
+ */
+export function chunkSessionLastActivityMs(sessionDir: string): number | null {
+  let latest: number;
+  try {
+    latest = fs.lstatSync(sessionDir).mtimeMs;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  for (const name of fs.readdirSync(sessionDir)) {
+    try { latest = Math.max(latest, fs.lstatSync(path.join(sessionDir, name)).mtimeMs); } catch { /* raced unlink */ }
+  }
+  return latest;
+}
+
+/**
+ * Remove one session directory when it has been idle for at least `idleMs`
+ * and no finalizer holds it. Returns true when the directory was removed.
+ */
+export function purgeChunkSessionIfIdle(sessionDir: string, nowMs: number, idleMs: number): boolean {
+  const last = chunkSessionLastActivityMs(sessionDir);
+  if (last === null || nowMs - last < idleMs) return false;
+  if (isChunkFinalizationActive(sessionDir, nowMs)) return false;
+  fs.rmSync(sessionDir, { recursive: true, force: true });
+  return true;
+}
+
+const SESSION_DIR_RE = /^[a-f0-9]{64}$/;
+
+/**
+ * Abandoned-session reaper for the `_chunks/` root. Only canonical session
+ * directories (`chunkSessionKey` digests) are considered; anything else in the
+ * root is left untouched. Safe to run concurrently from several nodes against
+ * a shared volume: removal is idempotent and never targets a recently touched
+ * or finalizing session.
+ */
+export function sweepStaleChunkSessions(chunkRoot: string, nowMs: number, idleMs: number): { removed: number; kept: number } {
+  let removed = 0;
+  let kept = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(chunkRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { removed, kept };
+    throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !SESSION_DIR_RE.test(entry.name)) continue;
+    try {
+      if (purgeChunkSessionIfIdle(path.join(chunkRoot, entry.name), nowMs, idleMs)) removed += 1;
+      else kept += 1;
+    } catch {
+      kept += 1;
+    }
+  }
+  return { removed, kept };
 }

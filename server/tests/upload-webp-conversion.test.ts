@@ -67,7 +67,7 @@ jest.mock('../middleware/auth', () => ({
     next();
   },
 }));
-jest.mock('../middleware/rateLimit', () => ({ limits: { upload: () => (_r: any, _s: any, n: any) => n() } }));
+jest.mock('../middleware/rateLimit', () => ({ limits: { upload: () => (_r: any, _s: any, n: any) => n(), uploadChunk: () => (_r: any, _s: any, n: any) => n() } }));
 jest.mock('../lib/adminAuthority', () => ({
   isDatabaseAdmin: jest.fn(async () => false),
   databaseAdminOnly: (_r: any, _s: any, n: any) => n(),

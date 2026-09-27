@@ -70,6 +70,14 @@ export function collectLimits(): LimitRow[] {
       fallback: RL_GLOBAL_MAX_DEFAULT, unit: 'istek/dk',        layer: 'middleware/rateLimit' },
     { name: 'Paylaşılan IP çarpanı', env: 'RL_SHARED_IP_FACTOR', value: num('RL_SHARED_IP_FACTOR', 20),
       fallback: 20,  unit: '× kullanıcı kotası', layer: 'middleware/rateLimit (IP tavanı)' },
+    // Parçalı yükleme: hız sınırı ile disk kotası AYRI katmanlardır; biri
+    // yükseltilince diğeri açılmaz (429 CHUNK_SESSION_LIMIT / CHUNK_QUOTA_EXCEEDED).
+    { name: 'Parça yükleme hızı', env: 'RL_UPLOAD_CHUNK_MAX', value: num('RL_UPLOAD_CHUNK_MAX', 120),
+      fallback: 120, unit: 'istek/dk',        layer: 'middleware/rateLimit (uploadChunk)' },
+    { name: 'Parçalı oturum',     env: 'CHUNK_UPLOAD_MAX_SESSIONS', value: num('CHUNK_UPLOAD_MAX_SESSIONS', 4),
+      fallback: 4,   unit: 'eşzamanlı oturum/kullanıcı', layer: 'lib/chunkUploadQuota (AYRI katman)' },
+    { name: 'Parçalı geçici alan', env: 'CHUNK_UPLOAD_MAX_TEMP_MB', value: num('CHUNK_UPLOAD_MAX_TEMP_MB', 400),
+      fallback: 400, unit: 'MB/kullanıcı',    layer: 'lib/chunkUploadQuota (AYRI katman)' },
   ];
 }
 

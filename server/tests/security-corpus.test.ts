@@ -74,6 +74,7 @@ export const SECURITY_CORPUS: ReadonlyArray<{ sinif: string; dosya: string }> = 
   { sinif: 'çıkartma yükleme temizliği',                  dosya: 'sticker-upload-cleanup.test.ts' },
   { sinif: 'yükleme MIME/uzantı içerik sahteciliği (P1)', dosya: 'upload-file-safety.test.ts' },
   { sinif: 'chunk oturum izolasyonu / limit bypassı (P1)',    dosya: 'chunk-upload-safety.test.ts' },
+  { sinif: 'chunk yükleme kaynak tüketme / kota kapalı-başarısız (P1)', dosya: 'chunk-upload-abuse-boundary.test.ts' },
   { sinif: 'mesaj eki görünürlük ve ATTACH_FILES sınırı (P1)', dosya: 'messages-send.test.ts' },
   { sinif: 'mesaj silme payload scrub / transport tutarlılığı (P1)', dosya: 'deleteMessageCascade.test.ts' },
   { sinif: 'private/public storage bucket ayrımı (P1)',     dosya: 'private-storage-boundary.test.ts' },

@@ -27,10 +27,18 @@ import {
   mergeChunkFiles,
   chunkSessionKey,
   commitChunkTempFile,
+  parseChunkContentLength,
+  purgeChunkSessionIfIdle,
   tryAcquireChunkFinalization,
   validateChunkMetadata,
   validateFinalUploadSize,
 } from '../lib/chunkUploadSafety';
+import {
+  chunkQuotaConfig,
+  releaseChunkQuotaSession,
+  reserveChunkQuota,
+  type ChunkReservation,
+} from '../lib/chunkUploadQuota';
 
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 import { uploadRoot, uploadDir } from '../lib/runtimePaths';
@@ -385,8 +393,18 @@ router.post('/', authMiddleware, limits.upload(), handleUploadErrors(smallUpload
  *     responses:
  *       200:
  *         description: Chunk alındı — done:true son chunk'ta gelir
+ *       409:
+ *         description: Metadata/bytes conflict, or session no longer active
+ *       411:
+ *         description: Content-Length header missing or malformed
+ *       413:
+ *         description: Chunk over 10 MB or session over the file entitlement
+ *       429:
+ *         description: Rate, concurrent-session or temporary-storage quota exceeded
+ *       503:
+ *         description: Redis rate-limit or quota authority unavailable (fail closed)
  */
-router.post('/chunk', authMiddleware, async (req, res) => {
+router.post('/chunk', authMiddleware, limits.uploadChunk(), async (req, res) => {
   const chunkAuthUser = castAuthed(req).user as { id: string };
   const metadata = validateChunkMetadata(
     req.headers as Record<string, string | string[] | undefined>,
@@ -401,8 +419,96 @@ router.post('/chunk', authMiddleware, async (req, res) => {
     return res.status(metadata.status).json({ error });
   }
 
+  // The declared length is the quota lease: it is reserved before a single
+  // body byte reaches disk, so it must be known up front. Node's HTTP parser
+  // guarantees the delivered body never exceeds a declared Content-Length.
+  const declaredLength = parseChunkContentLength(req.headers['content-length']);
+  if (declaredLength === null) {
+    return res.status(411).json({ error: 'Content-Length is required for chunk uploads' });
+  }
+  if (declaredLength > CHUNK_SIZE_LIMIT) {
+    return res.status(413).json({ error: 'Single chunk too large (max 10MB per chunk)' });
+  }
+
   const { uploadId, chunkIndex, totalChunks, fileName, fileType } = metadata.value;
-  const sessionDir = path.join(CHUNK_DIR, chunkSessionKey(chunkAuthUser.id, uploadId));
+  const sessionKey = chunkSessionKey(chunkAuthUser.id, uploadId);
+  const sessionDir = path.join(CHUNK_DIR, sessionKey);
+  const canonicalChunkPath = path.join(sessionDir, chunkFileName(chunkIndex));
+  const boostLimitBytes = await getBoostUploadLimitBytes(chunkAuthUser.id);
+  const sessionMaxBytes = Math.min(MAX_FILE_SIZE, boostLimitBytes);
+
+  // A retry of an already committed chunk adds no committed bytes, so it is
+  // not measured against the per-session entitlement (only the user total).
+  const reserve = (retry: boolean) => reserveChunkQuota({
+    userId: chunkAuthUser.id,
+    sessionKey,
+    bytes: declaredLength,
+    retry,
+    sessionMaxBytes,
+  });
+  let reservation: ChunkReservation;
+  try {
+    reservation = await reserve(fs.existsSync(canonicalChunkPath));
+    if (!reservation.ok && reservation.reason === 'SESSION_BYTES' && fs.existsSync(canonicalChunkPath)) {
+      // The same index was committed concurrently between the check and the
+      // reservation: this request is a retry after all.
+      reservation = await reserve(true);
+    }
+  } catch (error) {
+    logger.error({ err: error, event: 'upload.chunk_quota_unavailable' }, 'Chunk quota authority unavailable; chunk rejected');
+    res.set('Retry-After', '1');
+    return res.status(503).json({ error: 'Upload quota service temporarily unavailable' });
+  }
+
+  if (!reservation.ok) {
+    if (reservation.reason === 'SESSIONS') {
+      res.set('Retry-After', '30');
+      return res.status(429).json({
+        error: 'Too many concurrent chunked uploads',
+        code: 'CHUNK_SESSION_LIMIT',
+        maxSessions: chunkQuotaConfig().maxSessions,
+      });
+    }
+    if (reservation.reason === 'USER_BYTES') {
+      res.set('Retry-After', '30');
+      return res.status(429).json({ error: 'Chunked upload storage quota exceeded', code: 'CHUNK_QUOTA_EXCEEDED' });
+    }
+    // SESSION_BYTES: the distinct committed chunks plus this new one already
+    // exceed the entitlement, so finalization can only reject this file.
+    // Purge now (as finalization would) unless another request of the same
+    // session is still streaming into the directory.
+    if (reservation.sessionInflight === 0) {
+      try {
+        await releaseChunkQuotaSession(chunkAuthUser.id, sessionKey);
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+      } catch (error) {
+        logger.warn({ err: error, uploadId, event: 'upload.chunk_session_purge_failed' }, 'Over-limit chunk session could not be purged; the sweeper will reclaim it');
+      }
+    }
+    const maxMB = Math.round(sessionMaxBytes / 1024 / 1024);
+    if (boostLimitBytes <= MAX_FILE_SIZE) {
+      return res.status(413).json({ error: `File too large. Your server's boost tier allows max ${maxMB} MB.`, code: 'BOOST_LIMIT' });
+    }
+    return res.status(413).json({ error: `File too large (max ${maxMB}MB)` });
+  }
+
+  const { lease } = reservation;
+  // Every exit path that does not commit the lease returns its bytes. The
+  // response `close` event is the backstop for aborts and early returns; a
+  // refund that cannot reach the authority simply expires with the lease.
+  const refundLease = (): void => {
+    lease.refund().catch((error: unknown) => {
+      logger.warn({ err: error, uploadId, event: 'upload.chunk_lease_refund_failed' }, 'Chunk quota lease refund failed; it will expire');
+    });
+  };
+  res.once('close', refundLease);
+
+  if (reservation.newSession) {
+    // A session the quota does not know (never seen, expired or forgotten) may
+    // still have an idle directory from an abandoned upload. Its bytes are
+    // not accounted, so it is discarded instead of silently resumed.
+    try { purgeChunkSessionIfIdle(sessionDir, Date.now(), chunkQuotaConfig().sessionTtlMs); } catch { /* sweeper fallback */ }
+  }
   fs.mkdirSync(sessionDir, { recursive: true });
 
   // A reused uploadId must describe the exact same logical file. Without this
@@ -448,17 +554,29 @@ router.post('/chunk', authMiddleware, async (req, res) => {
   req.on('data', (d: Buffer) => {
     if (rejected || requestAborted) return;
     chunkSize += d.length;
-    if (chunkSize > CHUNK_SIZE_LIMIT) {
+    // Defence in depth: the parser already bounds the body by Content-Length,
+    // and Content-Length is bounded by CHUNK_SIZE_LIMIT above.
+    if (chunkSize > CHUNK_SIZE_LIMIT || chunkSize > declaredLength) {
       rejected = true;
       req.unpipe(writeStream);
-      writeStream.destroy();
-      discardTemp();
       req.resume();
-      if (!res.headersSent) res.status(413).json({ error: 'Single chunk too large (max 10MB per chunk)' });
+      // Answer only after `close` (below) has removed the temp file, so the
+      // refusal never races a late open that would recreate it.
+      writeStream.once('close', () => {
+        if (!res.headersSent) res.status(413).json({ error: 'Single chunk too large (max 10MB per chunk)' });
+      });
+      writeStream.destroy();
     }
   });
 
   req.pipe(writeStream);
+  // A rejection or abort can land before the stream's asynchronous open has
+  // created the temp file; `discardTemp()` above then finds nothing and the
+  // late open leaves an unaccounted `.part` behind. `close` fires after the
+  // descriptor is released, so the file is removed for certain.
+  writeStream.on('close', () => {
+    if (rejected || requestAborted) discardTemp();
+  });
   writeStream.on('error', () => {
     discardTemp();
     if (rejected || requestAborted || res.headersSent) return;
@@ -467,12 +585,37 @@ router.post('/chunk', authMiddleware, async (req, res) => {
   writeStream.on('finish', async () => {
     if (rejected || requestAborted || res.headersSent) return;
 
+    // Account the bytes BEFORE they become a committed chunk. If the
+    // authority cannot confirm, nothing is committed (fail closed); an
+    // unconfirmed lease only over-counts until it expires.
+    let quotaCommit: 'committed' | 'gone';
+    try {
+      quotaCommit = await lease.commit();
+    } catch (error) {
+      discardTemp();
+      logger.error({ err: error, uploadId, event: 'upload.chunk_quota_commit_failed' }, 'Chunk quota commit failed; chunk discarded');
+      res.set('Retry-After', '1');
+      return res.status(503).json({ error: 'Upload quota service temporarily unavailable' });
+    }
+    if (quotaCommit === 'gone') {
+      discardTemp();
+      return res.status(409).json({ error: 'Upload session is no longer active; retry the chunk', code: 'CHUNK_SESSION_EXPIRED' });
+    }
+
     let commitResult: 'stored' | 'duplicate' | 'conflict';
     try {
       commitResult = commitChunkTempFile(sessionDir, chunkIndex, tempChunkPath);
     } catch (error) {
+      await lease.uncommit().catch(() => undefined);
       logger.error({ err: error, uploadId, chunkIndex, event: 'upload.chunk_commit_failed' }, 'Chunk commit failed');
       return res.status(500).json({ error: 'Chunk commit failed' });
+    }
+    if (commitResult !== 'stored') {
+      // Duplicate/conflicting bytes were not added to the session. A failed
+      // correction over-counts (safe) until the session is released.
+      await lease.uncommit().catch((error: unknown) => {
+        logger.warn({ err: error, uploadId, event: 'upload.chunk_quota_uncommit_failed' }, 'Chunk quota correction failed');
+      });
     }
     if (commitResult === 'conflict') {
       return res.status(409).json({ error: 'Chunk retry bytes do not match the committed chunk' });
@@ -501,15 +644,35 @@ router.post('/chunk', authMiddleware, async (req, res) => {
     const finalPath = path.join(UPLOAD_DIR, finalName);
     let cleanupPath = finalPath;
     let purgeSession = false;
+    // Terminal outcomes remove the session directory AND return its quota
+    // before the client hears back, so a client that immediately starts its
+    // next upload is not refused a slot this upload still appears to hold.
+    let sessionClosed = false;
+    const closeSession = async (): Promise<void> => {
+      if (sessionClosed) return;
+      sessionClosed = true;
+      try {
+        await fs.promises.rm(sessionDir, { recursive: true, force: true });
+      } catch (error) {
+        logger.warn({ err: error, uploadId, event: 'upload.chunk_session_purge_failed' }, 'Chunk session directory could not be removed; the sweeper will reclaim it');
+      }
+      // If the authority is unreachable the entry over-counts until it goes
+      // stale; it never under-counts.
+      await releaseChunkQuotaSession(chunkAuthUser.id, sessionKey).catch((error: unknown) => {
+        logger.warn({ err: error, uploadId, event: 'upload.chunk_quota_release_failed' }, 'Chunk quota release failed; entry will expire');
+      });
+    };
 
     try {
       await mergeChunkFiles(sessionDir, totalChunks, finalPath);
       const { size } = fs.statSync(finalPath);
-      const boostLimitBytes = await getBoostUploadLimitBytes(chunkAuthUser.id);
-      const sizePolicy = validateFinalUploadSize(size, MAX_FILE_SIZE, boostLimitBytes);
+      // Re-read the live entitlement: a boost can expire mid-upload.
+      const finalBoostLimitBytes = await getBoostUploadLimitBytes(chunkAuthUser.id);
+      const sizePolicy = validateFinalUploadSize(size, MAX_FILE_SIZE, finalBoostLimitBytes);
       if (!sizePolicy.ok) {
         purgeSession = true;
         fs.unlink(finalPath, () => {});
+        await closeSession();
         const maxMB = Math.round(sizePolicy.maxBytes / 1024 / 1024);
         if (sizePolicy.code === 'BOOST_LIMIT') {
           return res.status(413).json({
@@ -522,6 +685,7 @@ router.post('/chunk', authMiddleware, async (req, res) => {
       if (!checkMagicBytes(finalPath, fileType)) {
         purgeSession = true;
         fs.unlink(finalPath, () => {});
+        await closeSession();
         return res.status(400).json({ error: 'File content does not match its declared type' });
       }
 
@@ -536,6 +700,7 @@ router.post('/chunk', authMiddleware, async (req, res) => {
       } catch (scanErr: unknown) {
         purgeSession = true;
         try { if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); } catch {}
+        await closeSession();
         const e = scanErr as { statusCode?: number; message?: string; code?: string };
         return res.status(e.statusCode || 422).json({ error: e.message, code: e.code });
       }
@@ -545,6 +710,7 @@ router.post('/chunk', authMiddleware, async (req, res) => {
         if (!svgResult.safe) {
           purgeSession = true;
           fs.unlink(finalPath, () => {});
+          await closeSession();
           return res.status(422).json({ error: 'SVG contains dangerous content', code: 'SVG_UNSAFE' });
         }
       }
@@ -568,6 +734,7 @@ router.post('/chunk', authMiddleware, async (req, res) => {
 
       await recordUploadOrRollback(chunkAuthUser.id, cdnKey ?? `uploads/${chunkFinalName}`, safeFileName, chunkFinalMime, cdnAdapter, result.provider);
       purgeSession = true;
+      await closeSession();
 
       res.json({
         done:     true,
@@ -588,7 +755,7 @@ router.post('/chunk', authMiddleware, async (req, res) => {
       try { finalization.release(); } catch (error) {
         logger.warn({ err: error, uploadId, event: 'upload.chunk_finalize_unlock_failed' }, 'Chunk finalization lock cleanup failed');
       }
-      if (purgeSession) fs.rm(sessionDir, { recursive: true, force: true }, () => {});
+      if (purgeSession) await closeSession();
     }
   });
 });
