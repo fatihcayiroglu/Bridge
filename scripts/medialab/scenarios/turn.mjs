@@ -106,9 +106,16 @@ export async function run({ lab, record, measure }) {
     const { A, B } = await pair(lab, 'turntcp');
     const ab = await waitAudible(B, [0], both, 25_000);
     const ba = await waitAudible(A, [1], both, 25_000);
+    const sa = await A.sample();
     const sb = await B.sample();
     const tcp = rtp(sb).pairs.every((p) => p.local?.type === 'relay' && p.local?.relayProtocol === 'tcp');
-    record('TURN-09', 'UDP blocked: two-way audio via TURN over TCP', ab.ok && ba.ok && tcp ? 'PASS' : 'FAIL', `B paths ${paths(sb).join(', ') || 'none'}`);
+    // Per-transport states and their history, so a failure says which
+    // transport never connected and whether recovery kicked in.
+    const pcState = (s) => s.pcs.map((p) => `${p.id}:${p.conn}/${p.ice}/${p.dtlsState ?? '-'}`).join(' ');
+    const history = async (c) => (await c.events(c.joinedAt)).filter((e) => e.ev === 'conn').map((e) => `${e.pc}:${e.state}@${e.t - c.joinedAt}`).join(' ');
+    record('TURN-09', 'UDP blocked: two-way audio via TURN over TCP', ab.ok && ba.ok && tcp ? 'PASS' : 'FAIL',
+      `A→B ${ab.ok ? `${ab.ms} ms` : 'NO'}; B→A ${ba.ok ? `${ba.ms} ms` : 'NO'}; A paths ${paths(sa).join(', ') || 'none'}; B paths ${paths(sb).join(', ') || 'none'}; ` +
+      `A pcs ${pcState(sa)} [${await history(A)}]; B pcs ${pcState(sb)} [${await history(B)}]; B console ${JSON.stringify(B.console.slice(-3).map((m) => m.text.slice(0, 100)))}`);
     if (ab.ok) {
       const x0 = await B.sample(); await sleep(10_000); const x1 = await B.sample();
       measure('audio.relayTcp.B', rates(x0, x1), 'window');
