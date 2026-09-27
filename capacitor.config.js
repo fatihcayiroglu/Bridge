@@ -19,7 +19,11 @@ const serverUrl = process.env.BRIDGE_SERVER_URL;
 
 /** @type {import('@capacitor/cli').CapacitorConfig} */
 const config = {
-  appId:   'app.bridge.chat',
+  // Uygulama kimligi: yerel projelerle (mobile/android app/build.gradle applicationId/namespace,
+  // mobile/ios PRODUCT_BUNDLE_IDENTIFIER) AYNI olmak ZORUNDADIR. Final21 Faz 19'a kadar burada
+  // `app.bridge.chat` yaziyordu: `cap add` ile uretilen proje ve FCM/APNs/App Links belgeleri
+  // kurulan uygulamadan FARKLI bir kimlige isaret ediyordu (mobile/tests/native-identity.test.js).
+  appId:   'com.bridge.app',
   appName: 'Bridge',
   // mobile/capacitor.config.ts'de webDir: 'www' (mobile/ klasöründen relative)
   // Kök config'de kök'ten relative olması gerekir:
@@ -30,6 +34,12 @@ const config = {
     : {}),
 
   plugins: {
+    // Final21 Faz 19 (19-28): paketlenmiş uygulamanın kökeni https://localhost, API başka bir kökendir.
+    // Oturum yenileme çerezi SameSite=strict olduğundan WebView onu çapraz-site isteğe EKLEMEZDİ ve
+    // erişim jetonu (15 dk) dolunca oturum düşerdi. REST istekleri ve çerezler yerel HTTP katmanından geçer
+    // (CORS ve SameSite tarayıcı kısıtları yerel istekte yoktur); Socket.IO WebSocket'i doğrudan kalır.
+    CapacitorHttp: { enabled: true },
+    CapacitorCookies: { enabled: true },
     SplashScreen: {
       launchShowDuration:          1500,
       backgroundColor:             '#1a1a2e',

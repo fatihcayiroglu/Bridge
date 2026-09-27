@@ -167,6 +167,20 @@ pm2 restart bridge-server
 
 ---
 
+## Eski kurulum: düz metin anahtarları ilk kez şifrelemek (`encrypt-ap-keys.ts`)
+
+Rotasyon, anahtarların ZATEN şifreli olduğunu varsayar. `apPrivateKey` alanını düz metin
+saklayan eski bir kurulumdan yükseltiyorsan önce bu tek seferlik aracı çalıştır. Araç
+idempotenttir ve zaten şifreli (`keyVersion=1`) satırlara dokunmaz.
+
+```bash
+# server/ dizininden, geliştirme bağımlılıkları kurulu bir kopyada (ts-node gerekir)
+AP_ENCRYPTION_KEY=<64-hex> DATABASE_URL=postgresql://... npx ts-node scripts/encrypt-ap-keys.ts
+```
+
+> Final21 Faz 16: araç depoda vardı ama hiçbir runbook ona işaret etmiyordu; yükselten bir
+> operatör onun varlığını bilemezdi.
+
 ## `rotate-ap-keys.js` Script
 
 Bu script henüz `server/scripts/` altında yoksa aşağıdaki içerikle oluştur:

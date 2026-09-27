@@ -3,7 +3,7 @@ name: bridge
 description: Self-hosted, ActivityPub federated chat platform
 type: application
 version: 1.0.0
-appVersion: "1.117.0"
+appVersion: "1.125.0"
 keywords:
   - chat
   - messaging

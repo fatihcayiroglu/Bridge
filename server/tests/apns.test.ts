@@ -3,7 +3,7 @@
 'use strict';
 
 process.env.NODE_ENV   = 'test';
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 
 // ── DB mock ───────────────────────────────────────────────────
 import { createMockDb, makeUser } from './helpers/mockDb';
@@ -50,9 +50,17 @@ function currentCrypto(): typeof import('crypto') { return require('crypto'); }
 let pushSender: typeof import('../lib/pushSender');
 
 function makeMockRequest(statusCode: number, responseBody = ''): void {
-  const mockReq = {
+  // `on` KENDI nesnesini donduruyor (zincirleme); bu ozyineleme tipin
+  // cikarilmasini engelliyordu (TS7022/TS7024). Sekil ACIKCA yazilir.
+  interface Http2RequestDouble {
+    on: jest.Mock;
+    setEncoding: jest.Mock;
+    write: jest.Mock;
+    end: jest.Mock;
+  }
+  const mockReq: Http2RequestDouble = {
     on: jest.fn((event: string, cb: (data?: unknown) => void) => {
-      if (event === 'response') cb({ ':status': statusCode } as unknown);
+      if (event === 'response') cb({ ':status': statusCode });
       if (event === 'data')     cb(Buffer.from(responseBody));
       if (event === 'end')      cb();
       return mockReq;

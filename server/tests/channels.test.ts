@@ -1,6 +1,6 @@
 // server/tests/channels.test.ts
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
@@ -22,10 +22,15 @@ function buildApp() {
   app.use('/api/servers/:sid/channels', authMiddleware, channelsRouter);
   return app;
 }
-function tok(uid) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 describe('Channels Routes', () => {
-  let app, ownerId, memberId, serverId, ownerToken, memberToken;
+  let app: express.Express;
+  let ownerId: string;
+  let memberId: string;
+  let serverId: string;
+  let ownerToken: string;
+  let memberToken: string;
 
   beforeEach(async () => {
     db._reset?.();
@@ -71,7 +76,7 @@ describe('Channels Routes', () => {
         .post(`/api/servers/${serverId}/channels`)
         .set('Authorization', `Bearer ${ownerToken}`)
         .send({ name: 'new-channel', type: 'text' });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       expect(res.body).toHaveProperty('_id');
       expect(res.body.name).toBe('new-channel');
     });
@@ -81,7 +86,7 @@ describe('Channels Routes', () => {
         .post(`/api/servers/${serverId}/channels`)
         .set('Authorization', `Bearer ${ownerToken}`)
         .send({ name: 'Voice', type: 'voice' });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       expect(res.body.type).toBe('voice');
     });
 
@@ -90,7 +95,7 @@ describe('Channels Routes', () => {
         .post(`/api/servers/${serverId}/channels`)
         .set('Authorization', `Bearer ${ownerToken}`)
         .send({ name: 'Stage', type: 'stage' });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       expect(res.body.type).toBe('stage');
     });
 
@@ -120,7 +125,7 @@ describe('Channels Routes', () => {
   });
 
   describe('PATCH /api/servers/:sid/channels/:cid', () => {
-    let channelId;
+    let channelId: string;
     beforeEach(async () => {
       const ch = await db.channels.insert({ _id: uuidv4(), serverId, name: 'edit-me', type: 'text', order: 1, createdAt: Date.now() });
       channelId = ch._id;
@@ -145,7 +150,7 @@ describe('Channels Routes', () => {
   });
 
   describe('DELETE /api/servers/:sid/channels/:cid', () => {
-    let channelId;
+    let channelId: string;
     beforeEach(async () => {
       const ch = await db.channels.insert({ _id: uuidv4(), serverId, name: 'bye', type: 'text', order: 2, createdAt: Date.now() });
       channelId = ch._id;

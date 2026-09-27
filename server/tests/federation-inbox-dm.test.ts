@@ -1,7 +1,7 @@
 // server/tests/federation-inbox-dm.test.ts
 // ActivityPub DM routing — handleApCreate (Sprint 60)
 
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV = 'test';
 process.env.INSTANCE_URL = 'https://bridge.example.com';
 
@@ -9,6 +9,7 @@ const mockInsertMessage = jest.fn().mockResolvedValue({});
 const mockFindOrCreate = jest.fn().mockResolvedValue({ dmId: 'dm-conv-1' });
 const mockFindByApUrl = jest.fn();
 const mockInsertApMessage = jest.fn().mockResolvedValue({});
+const mockFindApMessageOne = jest.fn().mockResolvedValue(null);
 const mockInsertInbox = jest.fn().mockResolvedValue({});
 
 jest.mock('../db/repositories', () => ({
@@ -17,7 +18,10 @@ jest.mock('../db/repositories', () => ({
     findOrCreateConversation: (...args: unknown[]) => mockFindOrCreate(...args),
     insertMessage: (...args: unknown[]) => mockInsertMessage(...args),
   },
-  Federation: { insertApMessage: (...args: unknown[]) => mockInsertApMessage(...args) },
+  Federation: {
+    findApMessageOne: (...args: unknown[]) => mockFindApMessageOne(...args),
+    insertApMessage: (...args: unknown[]) => mockInsertApMessage(...args),
+  },
   Notifications: { insertInbox: (...args: unknown[]) => mockInsertInbox(...args) },
 }));
 
@@ -37,6 +41,7 @@ beforeEach(() => {
   mockFindOrCreate.mockReset().mockResolvedValue({ dmId: 'dm-conv-1' });
   mockInsertMessage.mockReset().mockResolvedValue({});
   mockInsertApMessage.mockReset().mockResolvedValue({});
+  mockFindApMessageOne.mockReset().mockResolvedValue(null);
   mockInsertInbox.mockReset().mockResolvedValue({});
 });
 
@@ -65,13 +70,14 @@ describe('handleApCreate — ActivityPub DM routing', () => {
     expect(mockInsertMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         dmId: 'dm-conv-1',
-        senderId: SENDER._id,
+        userId: SENDER._id,
+        displayName: expect.any(String),
+        avatarColor: expect.any(String),
         content: 'Merhaba DM',
-        apId: 'https://remote.social/notes/dm-1',
       }),
     );
     expect(mockInsertInbox).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: TARGET_USER._id, type: 'dm', dmId: 'dm-conv-1' }),
+      expect.objectContaining({ userId: TARGET_USER._id, type: 'dm', activityId: 'act-dm-1', dmId: 'dm-conv-1' }),
     );
     expect(mockInsertApMessage).not.toHaveBeenCalled();
   });
@@ -93,7 +99,9 @@ describe('handleApCreate — ActivityPub DM routing', () => {
     await handleApCreate(TARGET_USER, activity);
 
     expect(mockInsertMessage).not.toHaveBeenCalled();
-    expect(mockInsertApMessage).toHaveBeenCalled();
+    expect(mockInsertApMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ visibility: 'public' }),
+    );
   });
 
   it('yerel gönderici bulunamazsa → insertMessage çağrılmaz', async () => {
@@ -116,6 +124,23 @@ describe('handleApCreate — ActivityPub DM routing', () => {
 
     expect(mockInsertMessage).not.toHaveBeenCalled();
     expect(mockFindOrCreate).not.toHaveBeenCalled();
-    expect(mockInsertApMessage).toHaveBeenCalled();
+    expect(mockInsertApMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ visibility: 'direct', targetUserId: TARGET_USER._id }),
+    );
+  });
+
+  it('direct audience sender lookup storage failure cannot downgrade the message to public', async () => {
+    mockFindByApUrl.mockRejectedValueOnce(new Error('users store unavailable'));
+    const activity = {
+      id: 'act-dm-store-fail', type: 'Create', actor: SENDER_AP,
+      object: {
+        id: 'https://remote.social/notes/dm-store-fail', type: 'Note', content: 'secret',
+        to: [SENDER_AP], cc: [],
+      },
+    };
+
+    await expect(handleApCreate(TARGET_USER, activity)).rejects.toThrow('users store unavailable');
+    expect(mockInsertMessage).not.toHaveBeenCalled();
+    expect(mockInsertApMessage).not.toHaveBeenCalled();
   });
 });

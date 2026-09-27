@@ -173,17 +173,20 @@ export function buildFederationHeadersV3(
 ): Record<string, string> {
   const ts = String(Date.now());
 
-  let rsaSig = '';
+  const rsaSig = (() => {
   try {
     const sign = crypto.createSign('sha256');
     sign.update(payload);
-    rsaSig = sign.sign(privateKeyPem, 'base64');
+    return sign.sign(privateKeyPem, 'base64');
   } catch (err) {
     logger.error({ detail: err }, '[httpSignatureV3] RSA imzalama hatası:');
-    throw new Error('[httpSignatureV3] RSA imzalama başarısız.');
+    throw new Error(
+      '[httpSignatureV3] RSA imzalama başarısız.',
+      { cause: err },
+    );
   }
-
-  return {
+})();
+return {
     'x-bridge-ts':      ts,
     'x-bridge-keyid':   keyId,
     'x-bridge-rsa-sig': rsaSig,
@@ -193,3 +196,6 @@ export function buildFederationHeadersV3(
 }
 
 export default { verifyFederationRequestV3, buildFederationHeadersV3 };
+
+
+

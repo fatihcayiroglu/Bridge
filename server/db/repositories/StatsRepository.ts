@@ -64,7 +64,7 @@ class StatsRepository {
 
     const [memberRow, channelRow, totalMsgRow, activeLast7Row, activeLast30Row, topUsersRes, channelBreakdownRes] =
       await Promise.all([
-        pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM members WHERE "serverId"=$1`, [serverId]),
+        pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM members WHERE "serverId"=$1 AND COALESCE(banned, FALSE)=FALSE`, [serverId]),
         pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM channels WHERE "serverId"=$1`, [serverId]),
         pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM messages WHERE "serverId"=$1`, [serverId]),
         pool.query<{ count: string }>(`SELECT COUNT(DISTINCT "userId") AS count FROM messages WHERE "serverId"=$1 AND "createdAt">$2`, [serverId, d7]),
@@ -99,7 +99,7 @@ class StatsRepository {
       pool.query<{ day: string; newMembers: string }>(
         `SELECT TO_CHAR(TO_TIMESTAMP("joinedAt"/1000) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
                 COUNT(*) AS "newMembers"
-         FROM members WHERE "serverId"=$1 AND "joinedAt">=$2
+         FROM members WHERE "serverId"=$1 AND COALESCE(banned, FALSE)=FALSE AND "joinedAt">=$2
          GROUP BY day ORDER BY day ASC`,
         [serverId, since]
       ),
@@ -110,7 +110,7 @@ class StatsRepository {
          GROUP BY day ORDER BY day ASC`,
         [serverId, since]
       ),
-      pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM members WHERE "serverId"=$1`, [serverId]),
+      pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM members WHERE "serverId"=$1 AND COALESCE(banned, FALSE)=FALSE`, [serverId]),
     ]);
 
     return {
@@ -150,7 +150,7 @@ class StatsRepository {
       pool.query<{ count: string }>(`SELECT COUNT(DISTINCT "userId") AS count FROM messages WHERE "serverId"=$1 AND "createdAt">=$2`, [serverId, now - 86400_000]),
       pool.query<{ count: string }>(`SELECT COUNT(DISTINCT "userId") AS count FROM messages WHERE "serverId"=$1 AND "createdAt">=$2`, [serverId, now - 7 * 86400_000]),
       pool.query<{ count: string }>(`SELECT COUNT(DISTINCT "userId") AS count FROM messages WHERE "serverId"=$1 AND "createdAt">=$2`, [serverId, now - 30 * 86400_000]),
-      pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM members WHERE "serverId"=$1`, [serverId]),
+      pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM members WHERE "serverId"=$1 AND COALESCE(banned, FALSE)=FALSE`, [serverId]),
     ]);
 
     return {
@@ -171,7 +171,7 @@ class StatsRepository {
       pool.query<{ day: string; newMembers: string }>(
         `SELECT TO_CHAR(TO_TIMESTAMP("joinedAt"/1000) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
                 COUNT(*) AS "newMembers"
-         FROM members WHERE "serverId"=$1 AND "joinedAt">=$2
+         FROM members WHERE "serverId"=$1 AND COALESCE(banned, FALSE)=FALSE AND "joinedAt">=$2
          GROUP BY day ORDER BY day ASC`,
         [serverId, since]
       ),

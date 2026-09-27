@@ -4,38 +4,34 @@
   import { onMount, onDestroy } from 'svelte';
   import { BridgeRegistry } from './bridge-registry.js';
   import { createLogger } from './logger.js';
+  import { t } from './i18n/reactive.svelte.ts';
   const log = createLogger('OfflineBanner');
 
   let isOffline      = $state(false);
   let isReconnecting = $state(false);
   let pendingCount   = $state(0);
-  let reconnectSecs  = $state(0);
-
-  let reconnectInterval: ReturnType<typeof setInterval> | null = null;
-  let RECONNECT_DELAY = 5;
+  let pendingClearTimer: ReturnType<typeof setTimeout> | null = null;
 
   function setOffline() {
     isOffline = true;
     isReconnecting = false;
-    reconnectSecs = RECONNECT_DELAY;
-    reconnectInterval = setInterval(() => {
-      reconnectSecs--;
-      if (reconnectSecs <= 0) {
-        clearInterval(reconnectInterval!);
-        isReconnecting = true;
-        reconnectSecs = 0;
-      }
-    }, 1000);
-    log.warn('Connection lost — banner shown');
+    log.warn('Network unavailable — banner shown');
+  }
+
+  function setSocketReconnecting(): void {
+    if (!navigator.onLine) { setOffline(); return; }
+    isOffline = true;
+    isReconnecting = true;
+    log.warn('Realtime connection lost — waiting for Socket.IO reconnect');
   }
 
   function setOnline(pending = 0) {
     isOffline = false;
     isReconnecting = false;
     pendingCount = pending;
-    if (reconnectInterval) { clearInterval(reconnectInterval); reconnectInterval = null; }
+    if (pendingClearTimer) { clearTimeout(pendingClearTimer); pendingClearTimer = null; }
     if (pending > 0) {
-      setTimeout(() => { pendingCount = 0; }, 4000);
+      pendingClearTimer = setTimeout(() => { pendingCount = 0; pendingClearTimer = null; }, 4000);
     }
     log.info('Connection restored');
   }
@@ -52,6 +48,8 @@
   // BUGFIX: Store stable references for proper cleanup
   const _onOnline  = () => setOnline();
   const _onOffline = () => setOffline();
+  const _onSocketDisconnected = () => setSocketReconnecting();
+  const _onSocketReconnected = () => setOnline();
 
   onMount(() => {
     BridgeRegistry.register('setOffline', setOffline);
@@ -60,6 +58,9 @@
     window.addEventListener('online',  _onOnline);
     window.addEventListener('offline', _onOffline);
     navigator.serviceWorker?.addEventListener('message', onSWMessage);
+    document.addEventListener('bridge:socket-disconnected', _onSocketDisconnected);
+    document.addEventListener('bridge:socket-reconnected', _onSocketReconnected);
+    document.addEventListener('bridge:socket-ready', _onSocketReconnected);
 
     if (!navigator.onLine) setOffline();
   });
@@ -68,7 +69,12 @@
     window.removeEventListener('online',  _onOnline);
     window.removeEventListener('offline', _onOffline);
     navigator.serviceWorker?.removeEventListener('message', onSWMessage);
-    if (reconnectInterval) clearInterval(reconnectInterval);
+    document.removeEventListener('bridge:socket-disconnected', _onSocketDisconnected);
+    document.removeEventListener('bridge:socket-reconnected', _onSocketReconnected);
+    document.removeEventListener('bridge:socket-ready', _onSocketReconnected);
+    if (BridgeRegistry.get('setOffline') === setOffline) BridgeRegistry.unregister('setOffline');
+    if (BridgeRegistry.get('setOnline') === setOnline) BridgeRegistry.unregister('setOnline');
+    if (pendingClearTimer) clearTimeout(pendingClearTimer);
   });
 </script>
 
@@ -83,9 +89,9 @@
     <span class="ob-icon" aria-hidden="true">📡</span>
     <span class="ob-text">
       {#if isReconnecting}
-        Yeniden bağlanılıyor…
+        {t("ui_realtime_reconnecting")}
       {:else}
-        Bağlantı kesildi. {reconnectSecs}s sonra yeniden deneniyor.
+        {t("ui_offline_waiting")}
       {/if}
     </span>
     {#if isReconnecting}
@@ -93,7 +99,7 @@
     {/if}
   {:else if pendingCount > 0}
     <span class="ob-icon" aria-hidden="true">☁️</span>
-    <span class="ob-text">{pendingCount} bekleyen mesaj gönderildi.</span>
+    <span class="ob-text">{t("ui_pending_messages_sent", undefined, { count: pendingCount })}</span>
   {/if}
 </div>
 {/if}
@@ -104,17 +110,18 @@
   display: flex; align-items: center; justify-content: center;
   gap: 8px; padding: 8px 16px;
   font-size: .875rem; font-weight: 500;
-  z-index: 10000;
+  /* Baglanti seridi bir bildirim yuzeyidir: kabugun ustunde, ama cokme ortusunun altinda. */
+    z-index: var(--z-toast);
   animation: slideDown .25s ease;
 }
-.offline-banner.offline  { background: var(--bridge-danger, #f04747); color: #fff; }
-.offline-banner.syncing  { background: var(--bridge-green, #43b581); color: #fff; }
+.offline-banner.offline  { background: var(--bridge-danger, #e05260); color: var(--text-on-solid); }
+.offline-banner.syncing  { background: var(--bridge-green, #2ecc9a); color: var(--text-on-solid); }
 .ob-icon { font-size: 1rem; }
 @keyframes slideDown { from { transform: translateY(-100%); } to { transform: translateY(0); } }
 .ob-spinner {
   width: 14px; height: 14px; border-radius: 50%;
-  border: 2px solid rgba(255,255,255,.4);
-  border-top-color: #fff;
+  border: 2px solid color-mix(in srgb, var(--text-on-solid) 40%, transparent);
+  border-top-color: var(--text-on-solid);
   animation: spin .6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }

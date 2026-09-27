@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ════════════════════════════════════════════════════════════════════════════
+  ANDROID RENK KAYNAKLARI
+  ════════════════════════════════════════════════════════════════════════════
+
+  ── KAPATILAN GERÇEK KUSUR (Final21, Faz 3) ────────────────────────────────
+  `AndroidManifest.xml` bildirim rengi için `@color/bridge_blue`e atıfta
+  bulunuyordu:
+
+      <meta-data android:name="com.google.firebase.messaging.default_notification_color"
+                 android:resource="@color/bridge_blue" />
+
+  ama depoda `@color/bridge_blue` TANIMLI DEĞİLDİ — hiçbir `values/colors.xml`
+  yoktu. Aynı şekilde `@drawable/ic_notification` de yoktu.
+
+  Sonuç: `mobile/BUILD.md`de belgelenen yol (`npx cap add android` + bu overlay)
+  izlendiğinde derleme `AAPT: error: resource color/bridge_blue not found` ile
+  DURUYORDU. Yani Android uygulaması, belgelenen yordamla DERLENEMİYORDU —
+  ve bunu hiçbir test ölçmüyordu (native derleme CI'da hiç koşmuyor).
+
+  ── DEĞER NEREDEN GELİYOR ──────────────────────────────────────────────────
+  Uydurulmadı: ürünün kanonik marka jetonundan türetildi
+  (`client/css/tokens.css`):
+
+      brand-h: 210 · brand-s: 88% · brand lightness: 58%
+      hsl(210, 88%, 58%) → #3694F2
+
+  Böylece bildirim vurgusu web ve mobilde AYNI markadır.
+-->
+<resources>
+  <color name="bridge_blue">#3694F2</color>
+</resources>

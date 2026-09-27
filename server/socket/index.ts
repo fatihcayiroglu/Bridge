@@ -13,23 +13,24 @@
 
 import logger from '../lib/logger';
 
-import { verifyToken, _invalidateTokenCache } from '../middleware/auth';
-import { sanitizeUser } from '../lib/userUtils';
-import { Users, Members, Channels, Notifications } from '../db/repositories';
+import { verifyToken, verifiedTokenSubject, _invalidateTokenCache } from '../middleware/auth';
+import { sanitizeUser, normalizePresenceVisibility, normalizePresenceStatus } from '../lib/userUtils';
+import { Users } from '../db/repositories';
+import { resolveBotToken } from '../middleware/botAuth';
 import { getBan, getClientIp } from '../middleware/ipBan';
 
 import { registerMessageHandlers, registerThreadSocketEvents } from './handlers/messages';
-import { registerVoiceHandlers, leaveVoice, voiceRooms, voiceActivity } from './handlers/voice';
+import { registerVoiceHandlers, leaveVoice, voiceRooms, voiceActivity, getVoiceRoomCount } from './handlers/voice';
 import { registerMusicHandlers } from './handlers/music';
 import { registerDmHandlers, registerGroupDmHandlers } from './handlers/dm';
-import { registerStageHandlers } from './handlers/stage';
+import { bindStageMediaClusterControl, registerStageHandlers } from './handlers/stage';
 import { registerVideoGridHandlers } from './handlers/stage-video-grid'; // Sprint 83
 import { registerSFUHandlers, isSFUReady } from './handlers/mediasoup/index';
 import { registerInfraHandlers, handleDisconnect } from './handlers/infra';
 import { registerCanvasHandlers } from './handlers/canvas';
 import { registerDmReadHandlers } from './handlers/dm-read';
 import { registerDiscoverHandlers, pushMemberCount } from './handlers/discover';
-import { trackSocket } from '../lib/presenceCache';
+import { trackSocket, markOffline } from '../lib/presenceCache';
 // Sprint 82: Yeni handler import'ları
 import { registerActivityHandlers }      from './handlers/activities';
 import { registerSuperReactionHandlers } from './handlers/super-reactions';
@@ -41,11 +42,12 @@ import { setupMemberships }              from './handlers/members';
 import type { SafeUser } from '../lib/userUtils';
 
 // Sprint 104: Ayrıştırılmış rate limit modülleri
-import { applyAdapter } from '../lib/redisAdapter';
-import { ipRateCheck, IP_SOCKET_RL } from './ipRateLimit';
+import { ipRateCheckFor, IP_SOCKET_RL } from './ipRateLimit';
 import { createRateLimitedSocket, _socketRateStore } from './socketRateLimit';
 // Sprint 120: D5 — WS bağlantı limiti entegre edildi (wsConnectionLimitMiddleware)
 import { wsConnectionLimitMiddleware } from './middleware/wsConnectionLimit';
+import { parseTokenVersion } from '../lib/tokenVersion';
+import { bindPluginSocketEvents } from '../plugins/loader';
 
 const socketUsers = new Map<string, SafeUser>();
 
@@ -80,14 +82,19 @@ setInterval(() => {
 let _io: import('socket.io').Server | null = null;
 function getIo(): import('socket.io').Server | null { return _io; }
 
+async function releaseConnectionLimitReservation(socket: import('socket.io').Socket): Promise<void> {
+  try {
+    await (socket as typeof socket & { _bridgeReleaseConnectionLimit?: () => void | Promise<void> })
+      ._bridgeReleaseConnectionLimit?.();
+  } catch (err) {
+    logger.warn({ err, event: 'socket.connection_limit.release_failed' },
+      '[Socket] Bağlantı limiti rezervasyonu temizlenemedi.');
+  }
+}
+
 function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voiceRooms } {
   _io = io;
-
-  // ── Redis adapter — Socket.IO clustering (multi-instance) ───────
-  applyAdapter(io).then(ok => {
-    if (ok) logger.info({ event: 'socket.redis_adapter.applied' }, '[Socket] Redis adapter aktif — cluster modu.');
-    else logger.warn({ event: 'socket.redis_adapter.skipped' }, '[Socket] Redis yok — tek instance modunda çalışılıyor. Yatay ölçekleme için REDIS_URL ekleyin.');
-  }).catch(err => logger.error({ err, event: 'socket.redis_adapter.error' }, '[Socket] Redis adapter hatası.'));
+  bindStageMediaClusterControl(io);
 
   // ── MİDDLEWARE 0: WS bağlantı limiti (Sprint 120 / D5) ─────────
   // Tek IP'den aşırı WS bağlantısını engeller — DDoS/flood'a karşı
@@ -96,6 +103,7 @@ function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voice
   // ── MİDDLEWARE 1: IP Ban kontrolü (auth öncesi) ────────────────
   io.use(async (socket, next) => {
     const ip = getSocketIp(socket);
+    socket._clientIp = ip;
     try {
       const ban = await getBan(ip);
       if (ban) {
@@ -104,49 +112,128 @@ function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voice
           : null;
         logger.warn(`[Socket] Banlı IP bağlantı girişimi: ${ip} reason="${ban.reason}"`);
         const err = Object.assign(new Error('IP banned'), { data: { reason: ban.reason, expiresAt: ban.expiresAt, remainingSeconds: remaining } });
+        await releaseConnectionLimitReservation(socket);
         return next(err);
       }
     } catch (e) {
       logger.error('[Socket] IP ban kontrolü hatası:', (e as Error).message);
+      const err = Object.assign(new Error('IP access control unavailable'), { data: { retryable: true } });
+      await releaseConnectionLimitReservation(socket);
+      return next(err);
     }
-    socket._clientIp = ip;
     next();
   });
 
   // ── MİDDLEWARE 2: IP bağlantı rate limit (auth öncesi) ─────────
   io.use(async (socket, next) => {
     const ip = socket._clientIp || getSocketIp(socket);
-    const allowed = await ipRateCheck(ip, 'connect');
+    // Kimlik YALNIZCA imzası doğrulanan jetondan gelir (sayaç anahtarı; yetki kararı değil).
+    // Aynı NAT arkasındaki kişiler artık birbirinin bağlantı kotasını tüketmez (Faz 19).
+    const allowed = await ipRateCheckFor(ip, 'connect', verifiedTokenSubject(socket.handshake.auth?.token));
     if (!allowed) {
       logger.warn(`[Socket] IP bağlantı rate limit aşıldı: ${ip}`);
       const err = Object.assign(new Error('Too many connections'), { data: { retryAfter: Math.ceil(IP_SOCKET_RL.connect.windowMs / 1000) } });
+      await releaseConnectionLimitReservation(socket);
       return next(err);
     }
     next();
   });
 
-  // ── MİDDLEWARE 3: JWT doğrulama ────────────────────────────────
+  // ── MİDDLEWARE 3: user JWT OR canonical bot-token auth ───────────
   io.use(async (socket, next) => {
-    const decoded = verifyToken(socket.handshake.auth.token);
-    if (!decoded) return next(new Error('Unauthorized'));
+    // Dedicated SFU signaling sockets may ask the load balancer for a specific
+    // room-owner node. Do not silently accept an LB/configuration mismatch: a
+    // socket that reached the wrong node would otherwise enter a redirect loop.
+    const requestedNodeRaw = socket.handshake.query?.bridgeNode;
+    const requestedNode = Array.isArray(requestedNodeRaw) ? requestedNodeRaw[0] : requestedNodeRaw;
+    if (typeof requestedNode === 'string' && requestedNode.length > 0) {
+      const localNode = process.env.INSTANCE_ID || `node-${process.pid}`;
+      if (requestedNode !== localNode) {
+        logger.error({ requestedNode, localNode, event: 'socket.sfu_route_mismatch' },
+          '[Socket] SFU targeted socket yanlış node\'a yönlendirildi.');
+        await releaseConnectionLimitReservation(socket);
+        return next(new Error('SFU route mismatch'));
+      }
+    }
+
+    const rawToken = socket.handshake.auth.token;
+    if (typeof rawToken === 'string' && rawToken.startsWith('brg_bot_')) {
+      try {
+        const bot = await resolveBotToken(rawToken);
+        if (!bot) {
+          await releaseConnectionLimitReservation(socket);
+          return next(new Error('Unauthorized'));
+        }
+        socket.isBot = true;
+        socket.botId = bot._id;
+        socket.botServerId = bot.serverId;
+        socket.username = bot.username;
+        const mark = (socket as typeof socket & { _bridgeMarkAuthenticated?: (userId: string) => boolean | Promise<boolean> })
+          ._bridgeMarkAuthenticated;
+        if (mark && !(await mark(`bot:${bot._id}`))) {
+          await releaseConnectionLimitReservation(socket);
+          return next(new Error('TOO_MANY_CONNECTIONS_FROM_USER'));
+        }
+        return next();
+      } catch {
+        await releaseConnectionLimitReservation(socket);
+        return next(new Error('Auth check failed'));
+      }
+    }
+
+    const decoded = verifyToken(rawToken);
+    if (!decoded) {
+      await releaseConnectionLimitReservation(socket);
+      return next(new Error('Unauthorized'));
+    }
 
     try {
       const user = await Users.findById(decoded.id);
-      if (!user) return next(new Error('Unauthorized'));
-      if ((decoded.v ?? 0) !== (user.tokenVersion || 0)) {
+      if (!user) {
+        await releaseConnectionLimitReservation(socket);
+        return next(new Error('Unauthorized'));
+      }
+      if ((decoded.v ?? 0) !== parseTokenVersion(user.tokenVersion)) {
+        await releaseConnectionLimitReservation(socket);
         return next(new Error('Token revoked'));
       }
     } catch {
+      await releaseConnectionLimitReservation(socket);
       return next(new Error('Auth check failed'));
     }
 
     socket.userId   = decoded.id;
     socket.username = decoded.username;
     socket.tokenV   = decoded.v ?? 0;
+    socket.tokenExp = decoded.exp;
+    // Connection-limit user accounting is a server-internal transition.
+    // Never accept a client-originated `userAuthenticated` event as identity.
+    try {
+      const mark = (socket as typeof socket & { _bridgeMarkAuthenticated?: (userId: string) => boolean | Promise<boolean> })
+        ._bridgeMarkAuthenticated;
+      if (mark && !(await mark(decoded.id))) {
+        await releaseConnectionLimitReservation(socket);
+        return next(new Error('TOO_MANY_CONNECTIONS_FROM_USER'));
+      }
+    } catch (err) {
+      logger.warn({ err, userId: decoded.id, event: 'socket.connection_limit.user_rejected' },
+        '[Socket] Kullanıcı bağlantı kotası reddetti.');
+      await releaseConnectionLimitReservation(socket);
+      return next(new Error((err as Error)?.message || 'Too many user connections'));
+    }
     next();
   });
 
   io.on('connection', async (socket) => {
+    // Bot sockets are deliberately command/interaction-scoped. They join only
+    // their private bot room; they are NOT subscribed to every server/channel
+    // room, which would leak private-channel traffic to server-wide bots.
+    if (socket.isBot && socket.botId && socket.botServerId) {
+      socket.join(`bot:${socket.botId}`);
+      socket.emit('botAuthenticated', { botId: socket.botId, serverId: socket.botServerId });
+      return;
+    }
+
     let user;
     try {
       if (!socket.userId) return socket.disconnect(true);
@@ -169,21 +256,71 @@ function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voice
     };
     socketUsers.set(socket.id, socketUser);
 
-    // Presence cache: socket'i kaydet, online işaretle ve cluster'a bildir
-    await trackSocket(user._id, socket.id);
-    // Sprint 120: wsConnectionLimitMiddleware için kullanıcı bazlı limit hook'unu tetikle
-    socket.emit('userAuthenticated', user._id);
-    try { await Users.update(user._id, { status: 'online' }); } catch {}
+    // ════════════════════════════════════════════════════════════════════════
+    // KISISEL ODA, HAZIR SINYALINDEN ONCE
+    // ════════════════════════════════════════════════════════════════════════
+    // KAPATILAN GERCEK KUSUR: `user:<id>` odasina katilma, asagida
+    // `userAuthenticated` yayildiktan VE iki `await`ten (durum guncelleme,
+    // uyelik kurulumu — ikisi de DB'ye gider) SONRA yapiliyordu.
+    //
+    // `userAuthenticated` istemci icin "artik hazirsin" anlamina gelir; bu
+    // sirayla sinyal, soket HENUZ HICBIR DM/arama/gelen-kutusu olayini
+    // ALAMAZKEN gonderiliyordu. Pencere gercek: uyelik kurulumu DB okumasi
+    // yapar ve yuk altinda genisler.
+    //
+    // Olcum (iki ornek, ayni Redis): B'den yayilan `dm:call:incoming`,
+    // A'daki istemci `userAuthenticated` aldiktan hemen sonra arama
+    // baslattiginda KAYBOLUYORDU — A'daki soket odaya daha katilmamisti.
+    // Ayni pencere tek ornekte de gecerlidir: yeniden baglanan bir istemci
+    // bu araliktaki DM'leri ve gelen aramalari sessizce kacirir.
+    //
+    // Sira artik: odaya katil → HAZIR sinyalini yay. Sinyalin anlami boylece
+    // dogrudur.
+    socket.join(`user:${user._id}`);
+    socket.on('user:join-room', (uid) => { if (uid === user._id) socket.join(`user:${uid}`); });
+
+    // Presence cache: kalıcı görünürlük tercihi ilk broadcast'ten ÖNCE
+    // uygulanır. Gizli kullanıcı bağlantı kursa bile kısa süreli "online"
+    // sızıntısı üretmez.
+    // Kanonik degere gore karar verilir; ham dizge karsilastirmasi
+    // `'Hidden'` gibi alan disi bir degerde varligi SIZDIRIRDI.
+    const presenceVisible = normalizePresenceVisibility(user.presenceVisibility) === 'visible';
+    try {
+      await trackSocket(user._id, socket.id, presenceVisible);
+    } catch (err) {
+      socketUsers.delete(socket.id);
+      logger.error({ err, userId: user._id, event: 'socket.presence_registration_failed' },
+        'Authoritative presence registration failed; disconnecting fail-closed.');
+      return socket.disconnect(true);
+    }
+    const preferredStatus = normalizePresenceStatus((user as unknown as { presenceStatus?: unknown }).presenceStatus);
+    const connectedStatus = presenceVisible ? preferredStatus : 'offline';
+    // `presenceStatus` is the durable user preference. `status` is only the
+    // effective live state and may be forced offline by privacy/disconnect.
+    try { await Users.update(user._id, { status: connectedStatus }); } catch {}
+    if (connectedStatus === 'offline') {
+      try { await markOffline(user._id); } catch (err) {
+        logger.warn({ err, userId: user._id, event: 'socket.presence_manual_offline_failed' },
+          'Manual offline preference could not be reflected in presence cache.');
+      }
+    }
 
     // Sprint 108: membership mantığı handlers/members.ts'e taşındı
     const { memberships, refreshMemberships } = await setupMemberships(socket, user);
 
-    // Personal room for GDM/DM notifications
-    socket.join(`user:${user._id}`);
-    socket.on('user:join-room', (uid) => { if (uid === user._id) socket.join(`user:${uid}`); });
-
-    for (const m of memberships) {
-      io.to(`server:${m.serverId}`).emit('user:status', { userId: user._id, status: 'online' });
+    // ════════════════════════════════════════════════════════════════════════
+    // TEK YAYIN, ÇOK ODA (Final21 Faz 16)
+    // ════════════════════════════════════════════════════════════════════════
+    // Döngü her sunucu odasına AYRI bir yayın yapıyordu. Kullanıcılar sunucu
+    // paylaşır; ortak N sunucusu olan bir alıcı AYNI `user:status` olayını
+    // N KEZ alıyordu. Ölçüldü (`p16-perm-revocation-probe` tanılama günlüğü):
+    // tek bir bağlantıda alıcıya 8 kopya ulaştı.
+    //
+    // Socket.IO oda LİSTESİYLE yayın yapıldığında alıcıyı TEKİLLEŞTİRİR: aynı
+    // bilgi tek kopya gider. Kapsam birebir aynı — aynı odalar, aynı olay.
+    const membershipRooms = [...new Set(memberships.map(m => `server:${m.serverId}`))];
+    if (membershipRooms.length) {
+      io.to(membershipRooms).emit('user:status', { userId: user._id, status: connectedStatus });
     }
 
     // FEATURE HANDLERS — rate limiting inject edilmiş
@@ -191,7 +328,7 @@ function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voice
 
     registerMessageHandlers(rateLimitedSocket, io, socketUser, socketUsers);
     registerChannelE2EEHandlers(rateLimitedSocket, io, socketUser);   // Sprint 89
-    registerVoiceHandlers(rateLimitedSocket, io, socketUser);
+    registerVoiceHandlers(rateLimitedSocket, io, socketUser, { sfuReady: isSFUReady() });
     registerMusicHandlers(rateLimitedSocket, io, socketUser);
     registerDmHandlers(rateLimitedSocket, io, socketUser, socketUsers);
     registerGroupDmHandlers(rateLimitedSocket, io, socketUser, socketUsers);
@@ -225,27 +362,82 @@ function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voice
       refreshMemberships, safeUser,
     });
 
+    // Plugin socket API is a real production surface, but it is intentionally
+    // bound through the same global rate-limited socket as first-party events.
+    // The loader only exposes plugin-owned namespaced events and passes a
+    // minimal emit-only facade to plugin code, never the server-side Socket.
+    bindPluginSocketEvents(rateLimitedSocket, {
+      id: String(user._id),
+      username: user.username,
+      displayName: user.displayName ?? user.username,
+    });
+
+    // ════════════════════════════════════════════════════════════════════════
+    // HAZIR SINYALI — TUM DINLEYICILER KAYITLI OLDUKTAN SONRA
+    // ════════════════════════════════════════════════════════════════════════
+    // KAPATILAN GERCEK KUSUR: `userAuthenticated` yukarida, `trackSocket`in
+    // hemen ardindan yayiliyordu — yani ozellik dinleyicileri (`dm:*`,
+    // `message:*`, `voice:*` …) HENUZ KAYITLI DEGILKEN. Arada iki `await`
+    // vardi (`Users.update`, `setupMemberships`; ikisi de DB'ye gider).
+    //
+    // Socket.IO, dinleyicisi olmayan bir olayi SESSIZCE ATAR: hata yok, log
+    // yok, istemciye geri bildirim yok. Istemci "hazirsin" sinyalini alip
+    // hemen bir olay yayarsa, o olay HICBIR ZAMAN islenmez.
+    //
+    // Olcum: her soketin YAYDIGI ILK OLAY dusuyordu. Iki ornekli testte
+    // `dm:call:start` hicbir sey uretmiyordu — arayana `dm:call:outgoing`
+    // bile donmuyordu, cunku sunucuda dinleyici yoktu. Ayni olay ikinci kez
+    // yayildiginda calisiyordu; bu yuzden kusur "cok ornekli teslimat
+    // sorunu" gibi gorunuyordu, oysa TEK ornekte de gecerlidir.
+    //
+    // Gercek etki: yeniden baglanan istemcinin ilk eylemi (kuyruktaki mesaj,
+    // sesli kanala geri katilma, gelen aramayi kabul) sessizce kayboluyordu.
+    //
+    // Sinyal artik yalnizca soket GERCEKTEN hazir oldugunda yayilir:
+    // kisisel odaya katilmis (yukarida) VE tum dinleyiciler kayitli.
+    socket.emit('userAuthenticated', user._id);
+
     // Periodic token re-auth — JWT expire olsa bile açık kalan bağlantıları kapat
     const TOKEN_CHECK_INTERVAL = 5 * 60_000;
     const tokenCheckTimer = setInterval(async () => {
       try {
         const freshUser = await Users.findById(user._id);
         if (!freshUser) { clearInterval(tokenCheckTimer); return socket.disconnect(true); }
-        if ((socket.tokenV ?? 0) !== (freshUser.tokenVersion || 0)) {
+        if ((socket.tokenV ?? 0) !== parseTokenVersion(freshUser.tokenVersion)) {
           clearInterval(tokenCheckTimer);
           socket.emit('auth:revoked', { reason: 'token_revoked' });
           socket.disconnect(true);
         }
-      } catch { /* DB hatası — bağlantıyı kesme */ }
+      } catch (err) {
+        // Authentication state is authoritative DB state. If it cannot be
+        // revalidated, keeping a long-lived socket alive turns an auth-store
+        // outage into a fail-open authorization window.
+        clearInterval(tokenCheckTimer);
+        logger.warn({ userId: user._id, event: 'socket.auth_recheck_failed', err: (err as Error)?.message },
+          'Periodic socket authentication re-check failed; connection revoked fail-closed.');
+        socket.emit('auth:revoked', { reason: 'auth_check_failed' });
+        socket.disconnect(true);
+      }
     }, TOKEN_CHECK_INTERVAL);
+    const tokenExpiryTimer = Number.isSafeInteger(socket.tokenExp)
+      ? setTimeout(() => {
+          socket.emit('auth:revoked', { reason: 'token_expired' });
+          socket.disconnect(true);
+        }, Math.max(0, Number(socket.tokenExp) * 1000 - Date.now()))
+      : null;
+    tokenExpiryTimer?.unref?.();
 
     // DISCONNECT
     socket.on('disconnect', async (reason) => {
       socket.removeAllListeners();
-      await handleDisconnect(socket, socketUser, {
-        socketUsers, typingTimers, _socketRateStore,
-        leaveVoice, voiceActivity, tokenCheckTimer, io,
-      });
+      try {
+        await handleDisconnect(socket, socketUser, {
+          socketUsers, typingTimers, _socketRateStore,
+          leaveVoice, voiceActivity, tokenCheckTimer, tokenExpiryTimer, io,
+        });
+      } catch (err) {
+        logger.error({ err, userId: user._id, event: 'socket.disconnect_cleanup_failed' }, 'Socket disconnect cleanup failed.');
+      }
       if (process.env.NODE_ENV !== 'production') {
         logger.debug({ userId: user._id, reason, remainingSockets: socketUsers.size, event: 'socket.disconnect' }, 'Socket disconnected.');
       }
@@ -264,4 +456,4 @@ function getSocketStats() {
   };
 }
 
-export { setupSocket, voiceRooms, getSocketStats, getIo, socketUsers, pushMemberCount };
+export { setupSocket, voiceRooms, getVoiceRoomCount, getSocketStats, getIo, socketUsers, pushMemberCount };

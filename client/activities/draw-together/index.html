@@ -180,6 +180,13 @@
 </div>
 
 <script>
+    // Activity bridge messages are privileged UI/control messages. Accept and
+    // emit them only across the same-origin Bridge parent boundary; external
+    // child frames (for example YouTube) must not be able to impersonate it.
+    function postToBridgeParent(message) {
+      parent.postMessage(message, location.origin);
+    }
+
 // ── State ─────────────────────────────────────────────────────
 let channelId = '', sessionId = '', myUserId = '', myDisplayName = '', myColor = '#2d9cdb';
 let isHost = false;
@@ -211,6 +218,7 @@ window.addEventListener('resize', resizeCanvases);
 
 // ── postMessage bridge (parent ↔ iframe) ──────────────────────
 window.addEventListener('message', (e) => {
+      if (e.source !== parent || e.origin !== location.origin) return;
   const d = e.data;
   if (!d || !d.type) return;
   switch (d.type) {
@@ -222,7 +230,7 @@ window.addEventListener('message', (e) => {
       myColor      = d.avatarColor  || '#2d9cdb';
       isHost       = !!d.isHost;
       document.getElementById('clear-btn').style.display = isHost ? '' : 'none';
-      parent.postMessage({ type: 'draw-together:ready', channelId, sessionId }, '*');
+      postToBridgeParent({ type: 'draw-together:ready', channelId, sessionId });
       break;
 
     // State snapshot from server (on join)
@@ -307,7 +315,7 @@ wrap.addEventListener('pointerdown', (e) => {
   currentStrokeId = genId();
   const pos = getPos(e);
   currentPoints = [pos];
-  parent.postMessage({
+  postToBridgeParent({
     type: 'draw-together:send',
     event: 'draw:stroke',
     payload: {
@@ -315,7 +323,7 @@ wrap.addEventListener('pointerdown', (e) => {
       tool: currentTool, color: currentColor, size: currentSize, opacity: 1,
       points: [pos],
     }
-  }, '*');
+  });
   drawActivePreview();
   wrap.setPointerCapture(e.pointerId);
 });
@@ -323,18 +331,18 @@ wrap.addEventListener('pointerdown', (e) => {
 wrap.addEventListener('pointermove', (e) => {
   const pos = getPos(e);
   // Cursor broadcast (throttled in parent)
-  parent.postMessage({ type: 'draw-together:send', event: 'draw:cursor',
-    payload: { channelId, x: pos.x / cmain.width, y: pos.y / cmain.height } }, '*');
+  postToBridgeParent({ type: 'draw-together:send', event: 'draw:cursor',
+    payload: { channelId, x: pos.x / cmain.width, y: pos.y / cmain.height } });
 
   if (!drawing) return;
   currentPoints.push(pos);
   drawActivePreview();
 
-  parent.postMessage({
+  postToBridgeParent({
     type: 'draw-together:send',
     event: 'draw:stroke',
     payload: { channelId, strokeId: currentStrokeId, points: currentPoints.slice(-5) }
-  }, '*');
+  });
 });
 
 wrap.addEventListener('pointerup',  finishStroke);
@@ -350,11 +358,11 @@ function finishStroke() {
   remoteStrokes.push(stroke);
   redrawAll();
   ctxA.clearRect(0, 0, cact.width, cact.height);
-  parent.postMessage({
+  postToBridgeParent({
     type: 'draw-together:send',
     event: 'draw:stroke-end',
     payload: { channelId, strokeId: currentStrokeId, points: currentPoints }
-  }, '*');
+  });
 }
 
 function drawActivePreview() {
@@ -397,8 +405,8 @@ function setTool(t) {
   document.querySelectorAll('.tool-btn[data-tool]').forEach(b =>
     b.classList.toggle('active', b.dataset.tool === t));
   wrap.className = t === 'eraser' ? 'tool-eraser' : '';
-  parent.postMessage({ type: 'draw-together:send', event: 'draw:tool',
-    payload: { channelId, tool: t, color: currentColor, size: currentSize } }, '*');
+  postToBridgeParent({ type: 'draw-together:send', event: 'draw:tool',
+    payload: { channelId, tool: t, color: currentColor, size: currentSize } });
 }
 
 function setColor(c) { currentColor = c; }
@@ -411,21 +419,21 @@ function undoStroke() {
   const myStrokes = remoteStrokes.filter(s => s.userId === myUserId && s.complete);
   if (!myStrokes.length) return;
   const last = myStrokes[myStrokes.length - 1];
-  parent.postMessage({ type: 'draw-together:send', event: 'draw:undo',
-    payload: { channelId } }, '*');
+  postToBridgeParent({ type: 'draw-together:send', event: 'draw:undo',
+    payload: { channelId } });
   removeStroke(last.id);
 }
 
 function clearCanvas() {
   if (!isHost) { alert('Canvas temizlemek için host yetkisi gerekli.'); return; }
-  parent.postMessage({ type: 'draw-together:send', event: 'draw:clear',
-    payload: { channelId } }, '*');
+  postToBridgeParent({ type: 'draw-together:send', event: 'draw:clear',
+    payload: { channelId } });
   clearAll();
 }
 
 // ── Participants ──────────────────────────────────────────────
 function addParticipant(p) {
-  participants.set(p.userId, { displayName: p.displayName, color: p.color || '#2d9cdb', isHost: p.isHost });
+  participants.set(p.userId, { displayName: p.displayName, color: safeColor(p.color), isHost: p.isHost });
   renderParticipants();
 }
 function removeParticipant(userId) {
@@ -440,7 +448,7 @@ function renderParticipants() {
   const el = document.getElementById('participants');
   el.innerHTML = [...participants.entries()].map(([uid, p]) => `
     <div class="participant">
-      <div class="avatar" style="background:${p.color}">${(p.displayName||'?')[0].toUpperCase()}</div>
+      <div class="avatar" style="background:${safeColor(p.color)}">${escHtml((p.displayName||'?')[0].toUpperCase())}</div>
       <span class="name">${escHtml(p.displayName)}</span>
       ${p.isHost ? '<span class="host-badge">HOST</span>' : ''}
     </div>`).join('');
@@ -453,7 +461,7 @@ function updateRemoteCursor(d) {
   const p = participants.get(d.userId);
   remoteCursors.set(d.userId, {
     x: d.x * ccur.width, y: d.y * ccur.height,
-    color: p?.color || '#2d9cdb',
+    color: safeColor(p?.color),
     name: p?.displayName || '?',
   });
   renderCursors();
@@ -465,7 +473,7 @@ function renderCursors() {
   for (const [uid, cur] of remoteCursors) {
     const el = document.createElement('div');
     el.className = 'remote-cursor';
-    el.style.cssText = `left:${cur.x}px;top:${cur.y}px;--cursor-color:${cur.color};`;
+    el.style.cssText = `left:${cur.x}px;top:${cur.y}px;--cursor-color:${safeColor(cur.color)};`;
     el.innerHTML = `<div class="remote-cursor-label">${escHtml(cur.name)}</div>`;
     wrap.appendChild(el);
   }
@@ -482,6 +490,10 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ── Utils ─────────────────────────────────────────────────────
+function safeColor(value) {
+  return typeof value === 'string' && /^#[0-9a-f]{3,8}$/i.test(value) ? value : '#2d9cdb';
+}
+
 function escHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c =>
     ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -490,7 +502,7 @@ function escHtml(s) {
 // ── Init ──────────────────────────────────────────────────────
 resizeCanvases();
 redrawAll();
-parent.postMessage({ type: 'draw-together:ready' }, '*');
+postToBridgeParent({ type: 'draw-together:ready' });
 </script>
 </body>
 </html>

@@ -14,8 +14,8 @@
 //   channel:e2ee:keys:err       — Anahtar bulunamadı
 //   channel:e2ee:status:result  — { enabled: boolean, epoch?: number }
 
+import type { HandlerSocket, HandlerServer } from '../handler-contracts';
 import { validateSocketPayload, socketSchemas } from '../../middleware/validate';
-import type { Socket, Server as IOServer } from 'socket.io';
 import { Members, Channels } from '../../db/repositories';
 import {
   setChannelKeyPackage,
@@ -25,11 +25,17 @@ import {
   getChannelKeyPackage,
 } from '../../lib/channelE2EE';
 import logger from '../../lib/logger';
+import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
+import { isolateSocketHandler } from '../handlerIsolation';
 
-// ── Sprint 93: E2EE Production Toggle ────────────────────────────────────────
-// BRIDGE_E2EE_ENABLED=true env flag ile production'da aktif edilir.
-// Varsayılan: true (Sprint 115) — BRIDGE_E2EE_ENABLED=false ile devre dışı bırakılabilir
-const E2EE_ENABLED = process.env.BRIDGE_E2EE_ENABLED !== 'false'; // Sprint 115: default true — E2EE production-ready
+
+// ── E2EE üretim bayrağı ──────────────────────────────────────────────────────
+//
+// FAZ D0: VARSAYILAN KAPALI. `lib/e2e.ts` feature-status ile AYNI sözleşme;
+// iki yer ayrışırsa arayüz ile soket katmanı farklı şey iddia ederdi.
+// Gerekçe: istemcide gerçek şifreleme YOK (bkz. lib/e2e.ts açıklaması).
+// Durum: E2EE = ARCHITECTURE_REQUIRED — açık rıza olmadan etkinleşmez.
+const E2EE_ENABLED = process.env.BRIDGE_E2EE_ENABLED === 'true';
 
 export function isE2EEProductionEnabled(): boolean { return E2EE_ENABLED; }
 
@@ -63,21 +69,32 @@ interface StatusPayload {
   serverId:  string;
 }
 
+
+async function canViewE2EEChannel(userId: string, channelId: string, serverId: string): Promise<boolean> {
+  const [membership, channel] = await Promise.all([
+    Members.findOne(userId, serverId),
+    Channels.findByIdAndServer(channelId, serverId),
+  ]);
+  if (!membership || !channel) return false;
+  const perms = await resolvePermissions(userId, serverId, channelId);
+  return hasPermission(perms, PERMS.VIEW_CHANNELS);
+}
+
 export function registerChannelE2EEHandlers(
-  socket: Socket,
-  _io:    IOServer,
+  socket: HandlerSocket,
+  _io:    HandlerServer,
   user:   AuthUser,
 ): void {
   // Sprint 93: Production flag guard
   if (!E2EE_ENABLED) {
     // E2EE kapalı — status sorgularına false döndür, setup'ı reddet
-    socket.on('channel:e2ee:status', (payload: { channelId: string }) => {
+    socket.on('channel:e2ee:status', isolateSocketHandler(socket, 'channel:e2ee:status', (payload: { channelId: string }) => {
       if (!validateSocketPayload(payload, socketSchemas.e2eeChannelId).valid) return;
       socket.emit('channel:e2ee:status:result', { channelId: payload?.channelId, enabled: false, disabled: true });
-    });
-    socket.on('channel:e2ee:setup', () => {
+    }));
+    socket.on('channel:e2ee:setup', isolateSocketHandler(socket, 'channel:e2ee:setup', () => {
       socket.emit('channel:e2ee:setup:err', { error: 'E2EE is not enabled on this server instance', code: 'E2EE_DISABLED' });
-    });
+    }));
     return;
   }
 
@@ -86,7 +103,7 @@ export function registerChannelE2EEHandlers(
   // Kanalı E2EE'ye açar. Çağıran üye olmalı; wrappedKeys'in tüm kanal
   // üyelerini kapsayıp kapsamadığını kontrol ETMEZ (client sorumluluğu) —
   // server yalnızca paket bütünlüğünü ve yetkilendirmeyi doğrular.
-  socket.on('channel:e2ee:setup', async (payload: SetupPayload) => {
+  socket.on('channel:e2ee:setup', isolateSocketHandler(socket, 'channel:e2ee:setup', async (payload: SetupPayload) => {
     try {
       const { channelId, serverId, wrappedKeys } = payload;
 
@@ -95,16 +112,10 @@ export function registerChannelE2EEHandlers(
         return;
       }
 
-      // Üyelik + kanal sahipliği kontrolü
-      const membership = await Members.findOne(user._id, serverId);
-      if (!membership) {
+      // Canonical channel/server relation + current visibility. An E2EE key
+      // package is channel-confidential state, not merely server-member state.
+      if (!await canViewE2EEChannel(user._id, channelId, serverId)) {
         socket.emit('channel:e2ee:setup:err', { error: 'Yetkisiz.' });
-        return;
-      }
-
-      const channel = await Channels.findByIdAndServer(channelId, serverId);
-      if (!channel) {
-        socket.emit('channel:e2ee:setup:err', { error: 'Kanal bulunamadı.' });
         return;
       }
 
@@ -123,12 +134,12 @@ export function registerChannelE2EEHandlers(
       logger.error('[E2EE] setup hatası:', (err as Error).message);
       socket.emit('channel:e2ee:setup:err', { error: 'Sunucu hatası.' });
     }
-  });
+  }));
 
   // ── channel:e2ee:keys:get ──────────────────────────────────────────────
   // Çağıranın kendi wrappedKey'ini döner. Başka kullanıcının anahtarını
   // isteyemez — her zaman user._id kullanılır.
-  socket.on('channel:e2ee:keys:get', async (payload: KeysGetPayload) => {
+  socket.on('channel:e2ee:keys:get', isolateSocketHandler(socket, 'channel:e2ee:keys:get', async (payload: KeysGetPayload) => {
     if (!validateSocketPayload(payload, socketSchemas.e2eeKeysGet).valid) return;
     try {
       const { channelId, serverId } = payload;
@@ -137,8 +148,7 @@ export function registerChannelE2EEHandlers(
         return;
       }
 
-      const membership = await Members.findOne(user._id, serverId);
-      if (!membership) {
+      if (!await canViewE2EEChannel(user._id, channelId, serverId)) {
         socket.emit('channel:e2ee:keys:err', { error: 'Yetkisiz.' });
         return;
       }
@@ -158,12 +168,12 @@ export function registerChannelE2EEHandlers(
       logger.error('[E2EE] keys:get hatası:', (err as Error).message);
       socket.emit('channel:e2ee:keys:err', { error: 'Sunucu hatası.' });
     }
-  });
+  }));
 
   // ── channel:e2ee:keys:add ──────────────────────────────────────────────
   // Kanal E2EE kuruluysa yeni bir üyeye wrappedKey ekler.
   // Çağıran kanala üye olmalı; hedef userId de sunucu üyesi olmalı.
-  socket.on('channel:e2ee:keys:add', async (payload: KeysAddPayload) => {
+  socket.on('channel:e2ee:keys:add', isolateSocketHandler(socket, 'channel:e2ee:keys:add', async (payload: KeysAddPayload) => {
     try {
       const { channelId, serverId, userId, wrappedKey } = payload;
       if (!channelId || !serverId || !userId || !wrappedKey) {
@@ -171,17 +181,22 @@ export function registerChannelE2EEHandlers(
         return;
       }
 
-      const [callerMembership, targetMembership] = await Promise.all([
-        Members.findOne(user._id, serverId),
-        Members.findOne(userId,   serverId),
+      const [callerCanView, targetMembership, targetCanView] = await Promise.all([
+        canViewE2EEChannel(user._id, channelId, serverId),
+        Members.findOne(userId, serverId),
+        canViewE2EEChannel(userId, channelId, serverId),
       ]);
 
-      if (!callerMembership) {
+      if (!callerCanView) {
         socket.emit('channel:e2ee:keys:err', { error: 'Yetkisiz.' });
         return;
       }
       if (!targetMembership) {
         socket.emit('channel:e2ee:keys:err', { error: 'Hedef kullanıcı sunucu üyesi değil.' });
+        return;
+      }
+      if (!targetCanView) {
+        socket.emit('channel:e2ee:keys:err', { error: 'Hedef kullanıcının bu kanala erişimi yok.' });
         return;
       }
 
@@ -196,10 +211,10 @@ export function registerChannelE2EEHandlers(
       logger.error('[E2EE] keys:add hatası:', (err as Error).message);
       socket.emit('channel:e2ee:keys:err', { error: 'Sunucu hatası.' });
     }
-  });
+  }));
 
   // ── channel:e2ee:status ────────────────────────────────────────────────
-  socket.on('channel:e2ee:status', async (payload: StatusPayload) => {
+  socket.on('channel:e2ee:status', isolateSocketHandler(socket, 'channel:e2ee:status', async (payload: StatusPayload) => {
     if (!validateSocketPayload(payload, socketSchemas.e2eeChannelId).valid) return;
     try {
       const { channelId, serverId } = payload;
@@ -208,8 +223,7 @@ export function registerChannelE2EEHandlers(
         return;
       }
 
-      const membership = await Members.findOne(user._id, serverId);
-      if (!membership) {
+      if (!await canViewE2EEChannel(user._id, channelId, serverId)) {
         socket.emit('channel:e2ee:status:result', { channelId, enabled: false });
         return;
       }
@@ -226,5 +240,5 @@ export function registerChannelE2EEHandlers(
       logger.error('[E2EE] status hatası:', (err as Error).message);
       socket.emit('channel:e2ee:status:result', { channelId: payload?.channelId, enabled: false });
     }
-  });
+  }));
 }

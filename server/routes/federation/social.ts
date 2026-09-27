@@ -5,14 +5,27 @@
 import express from 'express';
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 const router       = express.Router();
+
+function parseFederatedHttpUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!raw || raw.length > 2048) return null;
+  try {
+    const parsed = new URL(raw);
+    if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:') || parsed.username || parsed.password) return null;
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
 import { v4 as uuidv4 } from 'uuid';
 import { generateKeyPairSync } from 'crypto';
 import { Users, Federation, Notifications } from '../../db/repositories';
 import { authMiddleware} from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
-import logger from '../../lib/logger';
 import { sendFollowRequest, sendUnfollow, sendLike, sendAnnounce, deliverApActivity } from './delivery';
 import { fetchT } from '../../lib/fetch';
+import { parseBoundedPositiveIntQuery } from '../../lib/queryNumbers';
 
 /**
  * @openapi
@@ -331,8 +344,8 @@ import { fetchT } from '../../lib/fetch';
  */
 router.post('/follow', authMiddleware, limits.federation(), async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const { actorUrl } = req.body as Record<string, string>;
-  if (!actorUrl) return res.status(400).json({ error: 'actorUrl required' });
+  const actorUrl = parseFederatedHttpUrl((req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? (req.body as Record<string, unknown>).actorUrl : undefined);
+  if (!actorUrl) return res.status(400).json({ error: 'actorUrl must be a valid http(s) URL' });
 
   const user = await Users.findById(_u.id);
   if (!user) return res.status(401).json({ error: 'Not found' });
@@ -362,8 +375,8 @@ router.post('/follow', authMiddleware, limits.federation(), async (req: import("
 // ── DELETE /api/federation/follow — Takibi bırak ──────────────
 router.delete('/follow', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const { actorUrl } = req.body as Record<string, string>;
-  if (!actorUrl) return res.status(400).json({ error: 'actorUrl required' });
+  const actorUrl = parseFederatedHttpUrl((req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? (req.body as Record<string, unknown>).actorUrl : undefined);
+  if (!actorUrl) return res.status(400).json({ error: 'actorUrl must be a valid http(s) URL' });
 
   const user = await Users.findById(_u.id);
   if (!user) return res.status(401).json({ error: 'Not found' });
@@ -398,8 +411,8 @@ router.get('/followers', authMiddleware, async (req: import("express").Request, 
 // ── POST /api/federation/like — Uzak notu beğen ───────────────
 router.post('/like', authMiddleware, limits.federation(), async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const { objectUrl } = req.body as Record<string, string>;
-  if (!objectUrl) return res.status(400).json({ error: 'objectUrl required' });
+  const objectUrl = parseFederatedHttpUrl((req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? (req.body as Record<string, unknown>).objectUrl : undefined);
+  if (!objectUrl) return res.status(400).json({ error: 'objectUrl must be a valid http(s) URL' });
 
   const user = await Users.findById(_u.id);
   if (!user?.apPublicKey) return res.status(400).json({ error: 'ActivityPub key not set up. Follow someone first.' });
@@ -411,8 +424,8 @@ router.post('/like', authMiddleware, limits.federation(), async (req: import("ex
 // ── DELETE /api/federation/like — Beğeniyi geri al ────────────
 router.delete('/like', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const { objectUrl } = req.body as Record<string, string>;
-  if (!objectUrl) return res.status(400).json({ error: 'objectUrl required' });
+  const objectUrl = parseFederatedHttpUrl((req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? (req.body as Record<string, unknown>).objectUrl : undefined);
+  if (!objectUrl) return res.status(400).json({ error: 'objectUrl must be a valid http(s) URL' });
 
   const user = await Users.findById(_u.id);
   if (!user) return res.status(401).json({ error: 'Not found' });
@@ -438,8 +451,8 @@ router.delete('/like', authMiddleware, async (req: import("express").Request, re
 // ── POST /api/federation/announce — Boost / Reblog ────────────
 router.post('/announce', authMiddleware, limits.federation(), async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const { objectUrl } = req.body as Record<string, string>;
-  if (!objectUrl) return res.status(400).json({ error: 'objectUrl required' });
+  const objectUrl = parseFederatedHttpUrl((req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? (req.body as Record<string, unknown>).objectUrl : undefined);
+  if (!objectUrl) return res.status(400).json({ error: 'objectUrl must be a valid http(s) URL' });
 
   const user = await Users.findById(_u.id);
   if (!user?.apPublicKey) return res.status(400).json({ error: 'ActivityPub key not set up.' });
@@ -452,9 +465,11 @@ router.post('/announce', authMiddleware, limits.federation(), async (req: import
 // Takip edilen uzak aktörlerin son postları (apMessages)
 router.get('/timeline', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const page    = Math.max(1, parseInt(String(req.query.page ?? ''), 10) || 1);
-  const limit   = Math.min(50, parseInt(String(req.query.limit ?? ''), 10) || 20);
-  const skip    = (page - 1) * limit;
+  const page  = parseBoundedPositiveIntQuery(req.query.page, 1, 1_000_000);
+  const limit = parseBoundedPositiveIntQuery(req.query.limit, 20, 50);
+  if (page === null || limit === null)
+    return res.status(400).json({ error: 'page/limit must be positive safe integers' });
+  const skip = (page - 1) * limit;
 
   // Kullanıcının takip ettiği uzak aktörleri bul
   const outgoing   = await Federation.findApOutgoingFollows({ fromUserId: _u.id, accepted: true }) || [];
@@ -463,8 +478,14 @@ router.get('/timeline', authMiddleware, async (req: import("express").Request, r
 
   if (!actorUrls.length) return res.json({ items: [], total: 0, page, limit, pages: 0 });
 
-  // Bu aktörlerden gelen mesajlar
-  const q = { actorUrl: { $in: actorUrls } };
+  // Yalnız açıkça PUBLIC olarak sınıflandırılmış mesajlar timeline'a girer.
+  // targetUserId teslim edildiği yerel inbox'ı gösterebilir; public audience
+  // için görünürlüğü kısıtlamaz. Migration 046 eski targeted satırları
+  // fail-closed biçimde `direct` yaptığı için legacy private içerik sızmaz.
+  const q = {
+    actorUrl: { $in: actorUrls },
+    visibility: 'public',
+  };
   let items = await Federation.apMessagesFind(q).sort({ published: -1 }).skip(skip).limit(limit) || [];
   if (!Array.isArray(items)) items = await items || [];
 
@@ -476,7 +497,9 @@ router.get('/timeline', authMiddleware, async (req: import("express").Request, r
 // ── GET /api/federation/notifications — AP bildirimleri ────────
 router.get('/notifications', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   const _u = castAuthed(req).user;
-  const limit = Math.min(50, parseInt(String(req.query.limit ?? ''), 10) || 20);
+  const limit = parseBoundedPositiveIntQuery(req.query.limit, 20, 50);
+  if (limit === null)
+    return res.status(400).json({ error: 'limit must be a positive safe integer' });
   const items = await Notifications.inboxFind({
     userId: _u.id,
     type:   { $in: ['ap_follow', 'ap_mention', 'ap_like', 'ap_announce'] },

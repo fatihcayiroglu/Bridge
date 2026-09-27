@@ -17,9 +17,17 @@ const IMAGE_ALLOWED    = new Set(['image/jpeg', 'image/png', 'image/gif', 'image
 // ── Yardımcı: sahte File nesnesi ───────────────────────────────────────────
 function makeFile(sizeBytes: number, type = 'image/jpeg', name = 'test.jpg'): File {
   // Gerçek veri oluşturmak yerine boyut bilgisi olan stub
+  // Faz 12 — YARDIMCI HATASI DÜZELTİLDİ.
+  //
+  // `size` BLOB üzerinde geçersiz kılınıyor, ardından blob `new File([blob])`
+  // ile sarılıyordu. File kendi boyutunu gerçek içerikten (≤100 bayt) yeniden
+  // hesapladığı için geçersiz kılma KAYBOLUYORDU: "5GB reddedilmeli" gibi
+  // testler aslında 100 baytlık dosya sınıyor ve boyut kontrolü hiç
+  // tetiklenmiyordu. Geçersiz kılma FILE üzerinde yapılmalıdır.
   const blob = new Blob([new Uint8Array(Math.min(sizeBytes, 100))], { type });
-  Object.defineProperty(blob, 'size', { value: sizeBytes });
-  return new File([blob], name, { type });
+  const file = new File([blob], name, { type });
+  Object.defineProperty(file, 'size', { value: sizeBytes });
+  return file;
 }
 
 // ── Limit mantığını izole eden saf fonksiyon ───────────────────────────────

@@ -45,3 +45,20 @@ server/tmp/
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+# CI/lint tarafindan uretilen raporlar -- surumlenmez.
+# `jest --outputFile` ve `eslint -f json -o` ciktilari; birlikte ~9 MB.
+jest-results.json
+eslint-errors.json
+
+# Capacitor generated web root
+mobile/www/
+
+# e2e ölçüm raporları (yerel koşum çıktısı) -- sürümlenmez, pakete girmez.
+e2e/_*-report.json
+
+# Generated native build outputs -- never source (curated sources: mobile/android, mobile/ios,
+# electron/*). Also excluded by scripts/package-release.js and .dockerignore.
+electron/release/
+/android/
+/ios/

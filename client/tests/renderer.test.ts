@@ -1,415 +1,178 @@
-// client/tests/renderer.test.ts — Sprint 81
-// core/messages/renderer.ts için unit testler
+// client/tests/renderer.test.ts
+// Mesaj sunumu — CANLI sözleşme testleri (native Vitest/ESM, gerçek bileşen).
 //
-// Kapsam:
-//   - renderMessage(): DOM ekleme, tekrar ekleme engeli, blocked user filtresi
-//   - renderMessage(): isContinuation=true / msg.type=system şubesi
-//   - renderMessage(): file tipi (image / video / audio / generic)
-//   - renderMessage(): voice_message + transcript
-//   - renderMessage(): replyTo quote HTML
-//   - renderMessage(): editedBadge, pinnedBadge, scheduledBadge, bridgedBadge
-//   - updateMessage(): içerik güncelleme
-//   - deleteMessage(): DOM kaldırma
+// ════════════════════════════════════════════════════════════════════════════
+// FAZ 12 — LIVE_MOVED + BÜYÜK ORANDA ALREADY_COVERED
+// ════════════════════════════════════════════════════════════════════════════
+//
+// ÇÖKME NEDENİ (ölçüldü): `jest.mock is not a function` @ satır 25. Dosya
+// `js/core/messages/renderer` modülünü CJS `require` + SEKİZ adet
+// `{virtual:true}` mock ile yüklüyordu; süit 0 test kaydediyordu.
+//
+// ── ESKİ HEDEF: FULL_DEAD (kanıtlı) ─────────────────────────────────────────
+// `js/core/messages/` DİZİNİ YOK. `renderMessage` üretimde yalnızca
+// `js/types/globals.d.ts:179` tip bildirimi olarak yaşıyor. Çağrılabilir
+// `renderMessage()` / `updateMessage()` / `deleteMessage()` API'leri YOK.
+// Bugünkü sahip: `js/core/MessageRenderer.svelte` (384 satır).
+//
+// ── GÜVENLİK: REPLACED_BY_STRONGER_CONTRACT ─────────────────────────────────
+// Eski renderer `innerHTML` + ELLE `escHtml` kullanıyordu. Eski test ise
+// `utils.js`'i KENDİ yerel `escHtml` kopyasıyla mock'luyordu (o dosya:19) —
+// yani ürünün kaçışını HİÇ çalıştırmıyordu. Bugün kullanıcı içeriği Svelte
+// metin enterpolasyonu ile basılır; render zincirinde `innerHTML`/`{@html}`
+// 0 kullanım (MessageRenderer.svelte + MessageListPanel.svelte doğrulandı).
+// Ek katmanlar: `safeUrl()` javascript:/data: şemalarını eler, `avatarColor`
+// `/^#[0-9a-f]{3,8}$/i` ile doğrulanır.
+//
+// ── ALREADY_COVERED (tests/Phase9Messaging.test.ts, GEÇEN süit) ─────────────
+// Gerçek bileşene karşı zaten kapsanan ve BURADA TEKRARLANMAYAN sözleşmeler:
+//   • XSS: `<img src=x onerror=...>` metin olarak basılır, eleman oluşmaz (:106)
+//   • `javascript:` fileUrl → ek tamamen reddedilir (:106)
+//   • `avatarColor` CSS enjeksiyonu engellenir (:106)
+//   • semantik <article> + makine-okunur zaman damgası (:43)
+//   • compact/gutter hizalaması (:53) · eylem düğmeleri + sahiplik (:60)
+//   • reply durumları: jumpable / snapshot / deleted (:74)
+//   • ek türleri (image/video/audio) + loading/preload (:96)
+//   • reaksiyon pill'leri + pending/failed/retry (:116)
+//
+// ── FULL_DEAD (üretimde 0 eşleşme) ──────────────────────────────────────────
+//   pinned · scheduledId · bridgedFrom · voice_message · transcript
+//   blocked-user filtresi → `_blockedUserIds` yalnız globals.d.ts:145 tip
+//   bildirimi; ÜRETİM UYGULAMASI YOK (dormant).
+//   `.msg-group` / `.msg-continue` / `reply-quote` / `file-link` gibi eski CSS
+//   seçicileri → bugünkü karşılıkları farklı (`.msg-compact`, `.msg-reply-ref`,
+//   `.msg-file`) ve ilgili davranışlar Phase9Messaging'de kapsanıyor. Seçici
+//   adları uygulama detayıdır; korunmaz.
+//
+// ── BU DOSYANIN KALAN GÖREVİ: UNIQUE_LIVE boşluklar ─────────────────────────
+// Eski süitten YALNIZCA iki sözleşme hem CANLI hem de hiçbir geçen testte
+// kapsanmıyordu (tests/ genelinde 0 eşleşme ile doğrulandı):
+//   #6,#7 → sistem mesajı sunumu (`.msg-system` / `.sys-text`)
+//   #16   → düzenlenmiş işareti (`(düzenlendi)`)
+// Bunlar gerçek bileşene karşı burada korunur. Ham test sayısı yapay olarak
+// korunmaz. Üretim kodu bu turda DEĞİŞTİRİLMEMİŞTİR.
 
-'use strict';
+import { describe, it, expect, afterEach } from 'vitest';
+import { render } from '@testing-library/svelte';
+import MessageRenderer, { type MessageData } from '../js/core/MessageRenderer.svelte';
 
-// ── Yardımcılar ───────────────────────────────────────────────────────────────
-
-function escHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c: string) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
-}
-
-// ── Mocks ─────────────────────────────────────────────────────────────────────
-
-jest.mock('../../js/core/logger.js', () => ({
-  createLogger: () => ({
-    log: jest.fn(), info: jest.fn(), warn: jest.fn(),
-    error: jest.fn(), debug: jest.fn(),
-  }),
-}), { virtual: true });
-
-jest.mock('../../js/core/utils.js', () => ({
-  escHtml,
-  toast:    jest.fn(),
-  initials: (s: string) => s?.[0]?.toUpperCase() ?? '?',
-}), { virtual: true });
-
-jest.mock('../../js/core/api-fetch.js', () => ({
-  apiFetch: jest.fn().mockResolvedValue({ ok: true, json: jest.fn().mockResolvedValue([]) }),
-}), { virtual: true });
-
-jest.mock('../../js/core/messages/reactions.js', () => ({
-  renderReactionsHtml: jest.fn(() => ''),
-}), { virtual: true });
-
-jest.mock('../../js/core/messages/embeds.js', () => ({
-  renderEmbed: jest.fn(() => ''),
-}), { virtual: true });
-
-jest.mock('../../js/core/messages/input.js', () => ({
-  formatText: jest.fn((s: string) => escHtml(s ?? '')),
-}), { virtual: true });
-
-let _currentMe: Record<string, unknown> | null = null;
-let _currentChannel: Record<string, unknown> | null = null;
-let _blockedIds: Set<string> = new Set();
-const _registryStore: Record<string, unknown> = {};
-
-jest.mock('../../js/core/globals.js', () => ({
-  getAPI:            () => 'http://localhost:3001',
-  getMe:             () => _currentMe,
-  getCurrentChannel: () => _currentChannel,
-}), { virtual: true });
-
-jest.mock('../../js/core/bridge-registry.js', () => ({
-  BridgeRegistry: {
-    get:      (key: string) => {
-      if (key === '_blockedUserIds') return _blockedIds;
-      if (key === 'bridgeOfflineCache') return null;
-      return _registryStore[key] ?? null;
-    },
-    register: jest.fn(),
-    call:     jest.fn(),
-  },
-}), { virtual: true });
-
-// ── Module loader ─────────────────────────────────────────────────────────────
-
-function loadModule() {
-  jest.resetModules();
-  jest.mock('../../js/core/logger.js', () => ({
-    createLogger: () => ({ log: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }),
-  }), { virtual: true });
-  jest.mock('../../js/core/utils.js', () => ({ escHtml, toast: jest.fn(), initials: (s: string) => s?.[0]?.toUpperCase() ?? '?' }), { virtual: true });
-  jest.mock('../../js/core/api-fetch.js', () => ({ apiFetch: jest.fn().mockResolvedValue({ ok: true, json: jest.fn().mockResolvedValue([]) }) }), { virtual: true });
-  jest.mock('../../js/core/messages/reactions.js', () => ({ renderReactionsHtml: jest.fn(() => '') }), { virtual: true });
-  jest.mock('../../js/core/messages/embeds.js', () => ({ renderEmbed: jest.fn(() => '') }), { virtual: true });
-  jest.mock('../../js/core/messages/input.js', () => ({ formatText: jest.fn((s: string) => escHtml(s ?? '')) }), { virtual: true });
-  jest.mock('../../js/core/globals.js', () => ({ getAPI: () => 'http://localhost:3001', getMe: () => _currentMe, getCurrentChannel: () => _currentChannel }), { virtual: true });
-  jest.mock('../../js/core/bridge-registry.js', () => ({ BridgeRegistry: { get: (key: string) => { if (key === '_blockedUserIds') return _blockedIds; if (key === 'bridgeOfflineCache') return null; return null; }, register: jest.fn(), call: jest.fn() } }), { virtual: true });
-  return require('../../js/core/messages/renderer');
-}
-
-// ── DOM kurulum ───────────────────────────────────────────────────────────────
-
-function buildDOM() {
-  document.body.innerHTML = `
-    <div id="messages"></div>
-    <div id="toast-container"></div>
-  `;
-}
-
-// ── Mesaj fixture ─────────────────────────────────────────────────────────────
-
-function makeMsg(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function message(overrides: Partial<MessageData> = {}): MessageData {
   return {
-    _id:         'msg-001',
-    channelId:   'ch-001',
-    userId:      'user-1',
-    displayName: 'Ahmet',
-    username:    'ahmet',
-    content:     'Merhaba dünya',
-    createdAt:   1700000000000,
+    _id: 'm-1', userId: 'u-1', displayName: 'Ada Lovelace',
+    content: 'Merhaba Bridge', createdAt: 1_754_000_000_000,
     ...overrides,
   };
 }
 
-// ── [1] Temel renderMessage ───────────────────────────────────────────────────
+afterEach(() => {
+  document.body.innerHTML = '';
+});
 
-describe('renderMessage() — temel', () => {
-  let mod: ReturnType<typeof loadModule>;
+// ════════════════════════════════════════════════════════════════════════════
+// Sistem mesajı — UNIQUE_LIVE (MessageRenderer.svelte:134-138)
+// ════════════════════════════════════════════════════════════════════════════
+describe('sistem mesajı sunumu', () => {
+  it('type=system ayrı bir sistem makalesi üretir', () => {
+    const view = render(MessageRenderer, {
+      props: { message: message({ type: 'system', content: 'Kanal oluşturuldu' }) },
+    });
 
-  beforeEach(() => {
-    buildDOM();
-    _currentMe = { _id: 'user-X', id: 'user-X' };
-    _currentChannel = { _id: 'ch-001', name: 'genel' };
-    _blockedIds = new Set();
-    mod = loadModule();
+    const article = view.container.querySelector('article.msg-system');
+    expect(article).not.toBeNull();
+    expect(article?.getAttribute('aria-label')).toBe('Sistem mesajı');
+    expect(view.container.querySelector('.sys-text')?.textContent).toBe('Kanal oluşturuldu');
   });
 
-  it('mesaj alanına yeni bir div ekler', () => {
-    mod.renderMessage(makeMsg());
-    expect(document.getElementById('msg-msg-001')).not.toBeNull();
+  it('sistem mesajı normal mesaj kromunu (avatar/başlık/eylemler) taşımaz', () => {
+    const view = render(MessageRenderer, {
+      props: { message: message({ type: 'system', content: 'Kanal oluşturuldu' }) },
+    });
+
+    expect(view.container.querySelector('.msg-avatar')).toBeNull();
+    expect(view.container.querySelector('.msg-head')).toBeNull();
+    expect(view.container.querySelector('.msg-actions')).toBeNull();
   });
 
-  it('aynı _id ile iki kez çağrılırsa DOM\'a bir kez eklenir', () => {
-    mod.renderMessage(makeMsg());
-    mod.renderMessage(makeMsg());
-    const area = document.getElementById('messages');
-    const count = area?.querySelectorAll('#msg-msg-001').length ?? 0;
-    expect(count).toBe(1);
+  it('GÜVENLİK: sistem mesajı içeriği de metin olarak basılır', () => {
+    // Sistem metinleri sunucu üretimlidir ama kullanıcı adı taşıyabilir.
+    const view = render(MessageRenderer, {
+      props: { message: message({ type: 'system', content: '<img src=x onerror=alert(1)>' }) },
+    });
+
+    expect(view.container.querySelector('.sys-text')?.textContent).toBe('<img src=x onerror=alert(1)>');
+    expect(view.container.querySelector('.sys-text img')).toBeNull();
   });
 
-  it('messages alanı yoksa hata fırlatmaz', () => {
-    document.body.innerHTML = ''; // messages div yok
-    expect(() => mod.renderMessage(makeMsg())).not.toThrow();
+  it('normal mesaj sistem sınıfını ALMAZ', () => {
+    const view = render(MessageRenderer, { props: { message: message() } });
+
+    expect(view.container.querySelector('article.msg-system')).toBeNull();
+    expect(view.container.querySelector('article.msg')).not.toBeNull();
   });
 });
 
-// ── [2] Engellenmiş kullanıcı filtresi ───────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// Kimlik/dosya alanlarında kaçış — SECURITY_UNIQUE
+// (messages-render.test.ts'in #7,#9,#14 iddialarının GERÇEK karşılığı; eski
+//  test bunları test-yerel escHtml ile ölçüyordu, Phase9Messaging ise yalnız
+//  content/fileUrl/avatarColor'ı açıkça iddia ediyor.)
+// ════════════════════════════════════════════════════════════════════════════
+describe('kullanıcı kontrollü alanların kaçışı', () => {
+  const PAYLOAD = '<img src=x onerror=alert(1)>';
 
-describe('renderMessage() — blocked user', () => {
-  let mod: ReturnType<typeof loadModule>;
+  it('displayName HTML olarak enjekte EDİLMEZ', () => {
+    const view = render(MessageRenderer, { props: { message: message({ displayName: PAYLOAD }) } });
 
-  beforeEach(() => {
-    buildDOM();
-    _currentMe = { _id: 'user-X', id: 'user-X' };
-    _currentChannel = { _id: 'ch-001' };
-    mod = loadModule();
+    expect(view.container.querySelector('.msg-author')?.textContent).toBe(PAYLOAD);
+    expect(view.container.querySelector('.msg-author img')).toBeNull();
+    expect(view.container.querySelector('img[onerror]')).toBeNull();
   });
 
-  it('engellenen kullanıcının mesajı DOM\'a eklenmez', () => {
-    _blockedIds = new Set(['user-blocked']);
-    mod.renderMessage(makeMsg({ _id: 'msg-b', userId: 'user-blocked' }));
-    expect(document.getElementById('msg-msg-b')).toBeNull();
+  it('replyTo displayName ve içeriği HTML olarak enjekte EDİLMEZ', () => {
+    const view = render(MessageRenderer, {
+      props: { message: message({ replyTo: { _id: 'm-0', displayName: PAYLOAD, content: PAYLOAD } }) },
+    });
+
+    const ref = view.container.querySelector('.msg-reply-ref');
+    expect(ref?.querySelector('.reply-author')?.textContent).toBe(PAYLOAD);
+    expect(ref?.querySelector('img')).toBeNull();
   });
 
-  it('engellenmeyen kullanıcının mesajı eklenir', () => {
-    _blockedIds = new Set(['user-blocked']);
-    mod.renderMessage(makeMsg({ _id: 'msg-ok', userId: 'user-ok' }));
-    expect(document.getElementById('msg-msg-ok')).not.toBeNull();
-  });
-});
+  it('fileName HTML olarak enjekte EDİLMEZ (metin ve alt niteliğinde)', () => {
+    const view = render(MessageRenderer, {
+      props: { message: message({ fileUrl: '/uploads/x', fileName: PAYLOAD, fileType: 'application/pdf' }) },
+    });
 
-// ── [3] Mesaj tipi şubeleri ───────────────────────────────────────────────────
-
-describe('renderMessage() — msg.type şubeleri', () => {
-  let mod: ReturnType<typeof loadModule>;
-
-  beforeEach(() => {
-    buildDOM();
-    _currentMe = { _id: 'user-X', id: 'user-X' };
-    _currentChannel = { _id: 'ch-001' };
-    _blockedIds = new Set();
-    mod = loadModule();
-  });
-
-  it('type=system → .sys-msg class alır', () => {
-    mod.renderMessage(makeMsg({ _id: 'msg-sys', type: 'system', content: 'Hoş geldin' }));
-    const el = document.getElementById('msg-msg-sys');
-    expect(el?.className).toBe('sys-msg');
-  });
-
-  it('type=system → sistem ikonu içerir', () => {
-    mod.renderMessage(makeMsg({ _id: 'msg-sys2', type: 'system', content: 'Katıldı' }));
-    const el = document.getElementById('msg-msg-sys2');
-    expect(el?.innerHTML).toContain('sys-icon');
-  });
-
-  it('isContinuation=true → .msg-continue class alır', () => {
-    mod.renderMessage(makeMsg({ _id: 'msg-cont' }), true);
-    const el = document.getElementById('msg-msg-cont');
-    expect(el?.className).toBe('msg-continue');
-  });
-
-  it('normal mesaj → .msg-group class alır', () => {
-    mod.renderMessage(makeMsg({ _id: 'msg-normal' }));
-    const el = document.getElementById('msg-msg-normal');
-    expect(el?.className).toContain('msg-group');
+    expect(view.container.querySelector('.msg-file')?.textContent).toContain(PAYLOAD);
+    expect(view.container.querySelector('.msg-attachment img')).toBeNull();
   });
 });
 
-// ── [4] Dosya tipleri ─────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// Düzenlenmiş işareti — UNIQUE_LIVE (MessageRenderer.svelte:190, :194)
+// ════════════════════════════════════════════════════════════════════════════
+describe('düzenlenmiş işareti', () => {
+  it('editedAt varsa başlıkta (düzenlendi) görünür', () => {
+    const view = render(MessageRenderer, {
+      props: { message: message({ editedAt: 1_754_000_100_000 }) },
+    });
 
-describe('renderMessage() — file tipi', () => {
-  let mod: ReturnType<typeof loadModule>;
-
-  beforeEach(() => {
-    buildDOM();
-    _currentMe = { _id: 'user-X', id: 'user-X' };
-    _currentChannel = { _id: 'ch-001' };
-    _blockedIds = new Set();
-    mod = loadModule();
+    expect(view.container.querySelector('.msg-edited')?.textContent).toContain('düzenlendi');
   });
 
-  it('image/* → img tag içerir', () => {
-    mod.renderMessage(makeMsg({
-      _id: 'msg-img', type: 'file', fileType: 'image/png',
-      fileData: 'http://localhost:3001/uploads/test.png', fileName: 'test.png',
-    }));
-    const el = document.getElementById('msg-msg-img');
-    expect(el?.innerHTML).toContain('<img');
-    expect(el?.innerHTML).toContain('msg-image');
+  it('editedAt yoksa işaret ÇIKMAZ', () => {
+    const view = render(MessageRenderer, { props: { message: message() } });
+
+    expect(view.container.querySelector('.msg-edited')).toBeNull();
   });
 
-  it('video/* → video tag içerir', () => {
-    mod.renderMessage(makeMsg({
-      _id: 'msg-vid', type: 'file', fileType: 'video/mp4',
-      fileData: 'http://localhost:3001/uploads/test.mp4', fileName: 'test.mp4',
-    }));
-    const el = document.getElementById('msg-msg-vid');
-    expect(el?.innerHTML).toContain('<video');
-  });
+  it('compact mesajda da düzenlendi işareti korunur (başlık satırı yokken)', () => {
+    // Gruplanmış mesajda .msg-head çizilmez; işaret satır-içi varyanta düşer.
+    const view = render(MessageRenderer, {
+      props: { message: message({ editedAt: 1_754_000_100_000 }), compact: true },
+    });
 
-  it('audio/* → audio tag içerir', () => {
-    mod.renderMessage(makeMsg({
-      _id: 'msg-aud', type: 'file', fileType: 'audio/mpeg',
-      fileData: 'http://localhost:3001/uploads/test.mp3', fileName: 'test.mp3',
-    }));
-    const el = document.getElementById('msg-msg-aud');
-    expect(el?.innerHTML).toContain('<audio');
-  });
-
-  it('generic dosya → file-link anchor içerir', () => {
-    mod.renderMessage(makeMsg({
-      _id: 'msg-gen', type: 'file', fileType: 'application/pdf',
-      fileData: 'http://localhost:3001/uploads/doc.pdf', fileName: 'doc.pdf',
-    }));
-    const el = document.getElementById('msg-msg-gen');
-    expect(el?.innerHTML).toContain('file-link');
-    expect(el?.innerHTML).toContain('doc.pdf');
-  });
-});
-
-// ── [5] voice_message ─────────────────────────────────────────────────────────
-
-describe('renderMessage() — voice_message', () => {
-  let mod: ReturnType<typeof loadModule>;
-
-  beforeEach(() => {
-    buildDOM();
-    _currentMe = { _id: 'user-X', id: 'user-X' };
-    _currentChannel = { _id: 'ch-001' };
-    _blockedIds = new Set();
-    mod = loadModule();
-  });
-
-  it('transkript varsa voice-transcript içerir', () => {
-    mod.renderMessage(makeMsg({
-      _id: 'msg-vm1', type: 'voice_message',
-      fileUrl: '/uploads/voice.ogg', transcript: 'Test ses',
-    }));
-    const el = document.getElementById('msg-msg-vm1');
-    expect(el?.innerHTML).toContain('voice-transcript');
-    expect(el?.innerHTML).toContain('Test ses');
-  });
-
-  it('transkript yoksa hazırlanıyor mesajı görünür', () => {
-    mod.renderMessage(makeMsg({
-      _id: 'msg-vm2', type: 'voice_message',
-      fileUrl: '/uploads/voice.ogg', transcript: null,
-    }));
-    const el = document.getElementById('msg-msg-vm2');
-    expect(el?.innerHTML).toContain('voice-transcript--pending');
-  });
-});
-
-// ── [6] Badge'ler ─────────────────────────────────────────────────────────────
-
-describe('renderMessage() — badge\'ler', () => {
-  let mod: ReturnType<typeof loadModule>;
-
-  beforeEach(() => {
-    buildDOM();
-    _currentMe = { _id: 'user-X', id: 'user-X' };
-    _currentChannel = { _id: 'ch-001' };
-    _blockedIds = new Set();
-    mod = loadModule();
-  });
-
-  it('editedAt varsa (edited) badge çıkar', () => {
-    mod.renderMessage(makeMsg({ _id: 'msg-ed', editedAt: 1700000001000 }));
-    const el = document.getElementById('msg-msg-ed');
-    expect(el?.innerHTML).toContain('msg-edited');
-  });
-
-  it('pinned=true → pin-badge çıkar', () => {
-    mod.renderMessage(makeMsg({ _id: 'msg-pin', pinned: true }));
-    const el = document.getElementById('msg-msg-pin');
-    expect(el?.innerHTML).toContain('pin-badge');
-    expect(el?.className).toContain('pinned-msg');
-  });
-
-  it('scheduledId varsa scheduled-badge çıkar', () => {
-    mod.renderMessage(makeMsg({ _id: 'msg-sch', scheduledId: 'sched-1' }));
-    const el = document.getElementById('msg-msg-sch');
-    expect(el?.innerHTML).toContain('scheduled-badge');
-  });
-
-  it('bridgedFrom varsa bridged-badge çıkar', () => {
-    mod.renderMessage(makeMsg({ _id: 'msg-br', bridgedFrom: 'ch-other' }));
-    const el = document.getElementById('msg-msg-br');
-    expect(el?.innerHTML).toContain('bridged-badge');
-  });
-});
-
-// ── [7] replyTo quote ────────────────────────────────────────────────────────
-
-describe('renderMessage() — replyTo', () => {
-  let mod: ReturnType<typeof loadModule>;
-
-  beforeEach(() => {
-    buildDOM();
-    _currentMe = { _id: 'user-X', id: 'user-X' };
-    _currentChannel = { _id: 'ch-001' };
-    _blockedIds = new Set();
-    mod = loadModule();
-  });
-
-  it('replyTo varsa reply-quote DOM\'a eklenir', () => {
-    mod.renderMessage(makeMsg({
-      _id: 'msg-reply',
-      replyTo: { _id: 'msg-parent', displayName: 'Zeynep', content: 'Nasılsın?' },
-    }));
-    const el = document.getElementById('msg-msg-reply');
-    expect(el?.innerHTML).toContain('reply-quote');
-    expect(el?.innerHTML).toContain('Zeynep');
-  });
-
-  it('replyTo yoksa reply-quote DOM\'a eklenmez', () => {
-    mod.renderMessage(makeMsg({ _id: 'msg-no-reply', replyTo: null }));
-    const el = document.getElementById('msg-msg-no-reply');
-    expect(el?.innerHTML).not.toContain('reply-quote');
-  });
-});
-
-// ── [8] updateMessage ─────────────────────────────────────────────────────────
-
-describe('updateMessage()', () => {
-  let mod: ReturnType<typeof loadModule>;
-
-  beforeEach(() => {
-    buildDOM();
-    _currentMe = { _id: 'user-X', id: 'user-X' };
-    _currentChannel = { _id: 'ch-001' };
-    _blockedIds = new Set();
-    mod = loadModule();
-  });
-
-  it('var olan mesajın metin içeriğini günceller', () => {
-    mod.renderMessage(makeMsg({ _id: 'msg-upd', content: 'Eski içerik' }));
-    mod.updateMessage({ _id: 'msg-upd', content: 'Yeni içerik', editedAt: Date.now() });
-    const el = document.getElementById('msgtext-msg-upd');
-    expect(el?.innerHTML).toContain('Yeni içerik');
-  });
-
-  it('DOM\'da olmayan mesaj için hata fırlatmaz', () => {
-    expect(() => mod.updateMessage({ _id: 'ghost-msg', content: 'x', editedAt: Date.now() })).not.toThrow();
-  });
-});
-
-// ── [9] deleteMessage ─────────────────────────────────────────────────────────
-
-describe('deleteMessage()', () => {
-  let mod: ReturnType<typeof loadModule>;
-
-  beforeEach(() => {
-    buildDOM();
-    _currentMe = { _id: 'user-X', id: 'user-X' };
-    _currentChannel = { _id: 'ch-001' };
-    _blockedIds = new Set();
-    mod = loadModule();
-  });
-
-  it('silinen mesaj DOM\'dan kaldırılır', () => {
-    mod.renderMessage(makeMsg({ _id: 'msg-del' }));
-    expect(document.getElementById('msg-msg-del')).not.toBeNull();
-    mod.deleteMessage('msg-del');
-    expect(document.getElementById('msg-msg-del')).toBeNull();
-  });
-
-  it('DOM\'da olmayan mesaj için hata fırlatmaz', () => {
-    expect(() => mod.deleteMessage('nonexistent')).not.toThrow();
+    expect(view.container.querySelector('.msg-head')).toBeNull();
+    expect(view.container.querySelector('.msg-edited')?.textContent).toContain('düzenlendi');
   });
 });

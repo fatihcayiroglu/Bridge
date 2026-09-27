@@ -4,23 +4,23 @@
 import { createLogger, logger } from '../js/core/logger';
 
 describe('createLogger', () => {
-  let spyLog: jest.SpyInstance;
-  let spyWarn: jest.SpyInstance;
-  let spyError: jest.SpyInstance;
-  let spyInfo: jest.SpyInstance;
+  let spyLog: ReturnType<typeof vi.spyOn>;
+  let spyWarn: ReturnType<typeof vi.spyOn>;
+  let spyError: ReturnType<typeof vi.spyOn>;
+  let spyInfo: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    spyLog   = jest.spyOn(console, 'log').mockImplementation(() => {});
-    spyWarn  = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    spyError = jest.spyOn(console, 'error').mockImplementation(() => {});
-    spyInfo  = jest.spyOn(console, 'info').mockImplementation(() => {});
+    spyLog   = vi.spyOn(console, 'log').mockImplementation(() => {});
+    spyWarn  = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    spyError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    spyInfo  = vi.spyOn(console, 'info').mockImplementation(() => {});
     // Dev modda tüm loglar aktif
     (window as Window & { BRIDGE_ENV?: string; BRIDGE_DEBUG?: boolean }).BRIDGE_ENV = 'development';
     (window as Window & { BRIDGE_DEBUG?: boolean }).BRIDGE_DEBUG = undefined;
   });
 
   afterEach(() => {
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('prefix ile logger oluşturur', () => {
@@ -48,7 +48,7 @@ describe('createLogger', () => {
   });
 
   it('debug çıkışı dev modda aktif (console.debug kullanır)', () => {
-    const spyDebug = jest.spyOn(console, 'debug').mockImplementation(() => {});
+    const spyDebug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const log = createLogger('State');
     log.debug('debug mesajı');
     expect(spyDebug).toHaveBeenCalledWith('[State]', 'debug mesajı');
@@ -59,20 +59,20 @@ describe('createLogger', () => {
 });
 
 describe('createLogger — production modu', () => {
-  let spyLog: jest.SpyInstance;
-  let spyWarn: jest.SpyInstance;
-  let spyError: jest.SpyInstance;
+  let spyLog: ReturnType<typeof vi.spyOn>;
+  let spyWarn: ReturnType<typeof vi.spyOn>;
+  let spyError: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    spyLog   = jest.spyOn(console, 'log').mockImplementation(() => {});
-    spyWarn  = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    spyError = jest.spyOn(console, 'error').mockImplementation(() => {});
+    spyLog   = vi.spyOn(console, 'log').mockImplementation(() => {});
+    spyWarn  = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    spyError = vi.spyOn(console, 'error').mockImplementation(() => {});
     (window as Window & { BRIDGE_ENV?: string }).BRIDGE_ENV = 'production';
     (window as Window & { BRIDGE_DEBUG?: boolean }).BRIDGE_DEBUG = undefined;
   });
 
   afterEach(() => {
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('[production] log() sessizdir', () => {
@@ -88,7 +88,7 @@ describe('createLogger — production modu', () => {
   });
 
   it('[production] debug() sessizdir', () => {
-    const spyDebug = jest.spyOn(console, 'debug').mockImplementation(() => {});
+    const spyDebug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const log = createLogger('App');
     log.debug('bu görünmemeli');
     expect(spyDebug).not.toHaveBeenCalled();
@@ -110,20 +110,20 @@ describe('createLogger — production modu', () => {
 });
 
 describe('createLogger — BRIDGE_DEBUG override', () => {
-  let spyLog: jest.SpyInstance;
+  let spyLog: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    spyLog = jest.spyOn(console, 'log').mockImplementation(() => {});
+    spyLog = vi.spyOn(console, 'log').mockImplementation(() => {});
     (window as Window & { BRIDGE_ENV?: string }).BRIDGE_ENV = 'production';
     (window as Window & { BRIDGE_DEBUG?: boolean }).BRIDGE_DEBUG = true;
   });
 
   afterEach(() => {
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('[production + BRIDGE_DEBUG] debug() aktif olur (console.debug)', () => {
-    const spyDebug = jest.spyOn(console, 'debug').mockImplementation(() => {});
+    const spyDebug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const log = createLogger('Debug');
     log.debug('override ile görünmeli');
     expect(spyDebug).toHaveBeenCalledWith('[Debug]', 'override ile görünmeli');
@@ -138,18 +138,18 @@ describe('createLogger — BRIDGE_DEBUG override', () => {
 });
 
 describe('createLogger — Sentry entegrasyonu', () => {
-  let spyError: jest.SpyInstance;
-  let spyReport: jest.Mock;
+  let spyError: ReturnType<typeof vi.spyOn>;
+  let spyReport: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    spyError  = jest.spyOn(console, 'error').mockImplementation(() => {});
-    spyReport = jest.fn();
-    (window as Window & { errorBoundary?: { report: jest.Mock } }).errorBoundary = { report: spyReport };
+    spyError  = vi.spyOn(console, 'error').mockImplementation(() => {});
+    spyReport = vi.fn();
+    (window as Window & { errorBoundary?: { report: ReturnType<typeof vi.fn> } }).errorBoundary = { report: spyReport };
     (window as Window & { BRIDGE_ENV?: string }).BRIDGE_ENV = 'development';
   });
 
   afterEach(() => {
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
     delete (window as Window & { errorBoundary?: unknown }).errorBoundary;
   });
 
@@ -175,10 +175,10 @@ describe('createLogger — Sentry entegrasyonu', () => {
 
 describe('varsayılan logger export', () => {
   it('logger [Bridge] prefiksiyle çalışır', () => {
-    const spyWarn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const spyWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     (window as Window & { BRIDGE_ENV?: string }).BRIDGE_ENV = 'development';
     logger.warn('test');
     expect(spyWarn).toHaveBeenCalledWith('[Bridge]', 'test');
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 });

@@ -85,6 +85,13 @@ module.exports = [
       '@typescript-eslint': tsPlugin,
     },
     rules: {
+      // TypeScript syntax (interface/type declarations included) için temel
+      // kural yerine TypeScript-aware eşdeğerini kullan.
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': ['warn', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+      }],
       '@typescript-eslint/no-var-requires': 'off',
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unsafe-assignment': 'off',
@@ -129,10 +136,10 @@ module.exports = [
       '**/*.test.ts',
       '**/*.test.js',
       'ts-out/',
+      'dist/',          // tsconfig.build.json outDir — derlenmiş çıktı lint'lenmez
       '_legacy_js_backup_session4_5/',
       'db/repositories/types/*.d.js',
       'routes/admin-ipban-routes.js',
-      'routes/channels._deprecated.ts',
     ],
   },
   {

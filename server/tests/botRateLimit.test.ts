@@ -1,5 +1,6 @@
 // server/tests/botRateLimit.test.ts
 // Bot SDK rateLimit event ve otomatik retry davranışı testleri
+import { installFetchMock } from './helpers/fetchDouble';
 
 'use strict';
 process.env.NODE_ENV = 'test';
@@ -11,6 +12,12 @@ import EventEmitter from 'eventemitter3';
 
 // Minimal _api izolasyonu için BridgeBot'ı subclass'lıyoruz
 class TestBot extends EventEmitter {
+  // Strict mod alan BILDIRIMI ister: `this.x = ...` tek basina bir alan
+  // TANIMLAMAZ. Bildirilmeyince her erisim TS2339 veriyordu.
+  readonly token:     string;
+  readonly serverUrl: string;
+  readonly debug:     boolean;
+
   constructor() {
     super();
     this.token     = 'brg_bot_test';
@@ -18,9 +25,9 @@ class TestBot extends EventEmitter {
     this.debug     = false;
   }
 
-  _log(...args) { if (this.debug) console.log('[TestBot]', ...args); }
+  _log(...args: unknown[]): void { if (this.debug) console.log('[TestBot]', ...args); }
 
-  async _api(method, path, body, _retryCount = 0) {
+  async _api(method: string, path: string, body?: unknown, _retryCount = 0): Promise<unknown> {
     const url = `${this.serverUrl}${path}`;
     const res = await fetch(url, {
       method,
@@ -49,19 +56,22 @@ class TestBot extends EventEmitter {
 }
 
 describe('Bot SDK — rateLimit event & retry', () => {
-  let bot;
-  const rateLimitEvents = [];
+  /** `rateLimit` olayinin tasidigi bilgi — `_api` retry yolunda yayimlanir. */
+  interface RateLimitEvent { path: string; method: string; retryAfter: number; retryCount: number }
+
+  let bot: TestBot;
+  const rateLimitEvents: RateLimitEvent[] = [];
 
   beforeEach(() => {
     bot = new TestBot();
     rateLimitEvents.length = 0;
-    bot.on('rateLimit', (info) => rateLimitEvents.push(info));
+    bot.on('rateLimit', (info: RateLimitEvent) => rateLimitEvents.push(info));
   });
 
   afterEach(() => { jest.restoreAllMocks(); });
 
   it('429 alınca rateLimit event\'i tetiklenir', async () => {
-    global.fetch = jest.fn()
+    installFetchMock()
       .mockResolvedValueOnce({
         ok: false,
         status: 429,
@@ -82,7 +92,7 @@ describe('Bot SDK — rateLimit event & retry', () => {
   });
 
   it('maks 3 retry sonra hata fırlatır', async () => {
-    global.fetch = jest.fn().mockResolvedValue({
+    installFetchMock().mockResolvedValue({
       ok: false,
       status: 429,
       headers: { get: (h) => h === 'retry-after' ? '0.001' : null },
@@ -99,7 +109,7 @@ describe('Bot SDK — rateLimit event & retry', () => {
 
   it('rateLimit subscribe edilmezse hata fırlatılmaz', async () => {
     const quietBot = new TestBot(); // hiç listener yok
-    global.fetch = jest.fn()
+    installFetchMock()
       .mockResolvedValueOnce({
         ok: false,
         status: 429,
@@ -119,7 +129,7 @@ describe('Bot SDK — rateLimit event & retry', () => {
   it('Retry-After header yoksa 1 saniye bekler', async () => {
     const sleepSpy = jest.spyOn(global, 'setTimeout');
 
-    global.fetch = jest.fn()
+    installFetchMock()
       .mockResolvedValueOnce({
         ok: false,
         status: 429,

@@ -34,14 +34,15 @@
 //   B2_PUBLIC_URL        Backblaze public URL (opsiyonel)
 //   MINIO_ENDPOINT       MinIO endpoint (varsayılan: http://minio:9000)
 //   MINIO_BUCKET         MinIO bucket adı (varsayılan: bridge-uploads)
-//   MINIO_ACCESS_KEY     MinIO access key (varsayılan: minioadmin)
-//   MINIO_SECRET_KEY     MinIO secret key (varsayılan: minioadmin)
+//   MINIO_ACCESS_KEY     MinIO access key (zorunlu; production'da default minioadmin reddedilir)
+//   MINIO_SECRET_KEY     MinIO secret key (zorunlu; production'da default minioadmin reddedilir)
 //   MINIO_PUBLIC_URL     MinIO public download URL
 
 import fs   from 'fs';
 import path from 'path';
 import logger from './logger';
 import { tryRequire } from './_optional-require';
+import { uploadRoot } from './runtimePaths';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tip tanımları
@@ -69,15 +70,30 @@ export interface UploadResult {
   provider: CdnProvider;
 }
 
+export interface StorageReadResult {
+  /** Provider'dan gelen okunabilir byte stream'i. */
+  body: NodeJS.ReadableStream;
+  contentType?: string;
+  contentLength?: number;
+  contentRange?: string;
+  acceptRanges?: string;
+  etag?: string;
+  lastModified?: Date;
+}
+
 export interface StorageAdapter {
   /** Nesne listesi — key + lastModifiedMs içerir */
   listFiles(): Promise<StorageObject[]>;
   /** CDN'e dosya yükle, URL döndür */
   uploadFile(localPath: string, key: string, opts?: UploadOpts): Promise<UploadResult>;
+  /** Yetkili uygulama proxy'si için nesneyi oku. */
+  readFile(key: string, opts?: { range?: string }): Promise<StorageReadResult>;
   /** Dosya sil */
   deleteFile(key: string): Promise<void>;
   /** Upload URL'sinden key'i çıkar (örn. /uploads/foo.jpg → foo.jpg) */
   keyFromUrl(url: string): string;
+  /** Bir storage key'i için sağlayıcıya ait kanonik servis URL'sini üret. */
+  publicUrlForKey(key: string): string;
   /** Sağlık kontrolü — bağlantıyı test eder */
   healthCheck(): Promise<boolean>;
 }
@@ -110,7 +126,7 @@ interface S3ListResult {
 }
 
 interface IS3Client {
-  send(command: IS3Command): Promise<S3ListResult>;
+  send(command: IS3Command): Promise<unknown>;
 }
 
 interface IS3ClientConstructor {
@@ -133,6 +149,17 @@ interface IS3Sdk {
   ListObjectsV2Command: IS3CommandConstructor;
   PutObjectCommand:     IS3CommandConstructor;
   DeleteObjectCommand:  IS3CommandConstructor;
+  GetObjectCommand:     IS3CommandConstructor;
+}
+
+interface S3GetResult {
+  Body?: unknown;
+  ContentType?: string;
+  ContentLength?: number;
+  ContentRange?: string;
+  AcceptRanges?: string;
+  ETag?: string;
+  LastModified?: Date;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -169,19 +196,54 @@ function requireS3Sdk(provider: CdnProvider): IS3Sdk {
 // Local adapter
 // ─────────────────────────────────────────────────────────────────────────────
 
-const LOCAL_UPLOAD_DIR = path.join(__dirname, '../uploads');
+// Kok HER ERISIMDE okunur, modul yuklenirken YAKALANMAZ.
+//
+// Yakalanmis bir deger, `BRIDGE_UPLOAD_ROOT` calisma aninda degistiginde eski
+// dizini kullanmaya devam ederdi. Bu yalnizca bir test kolayligi degil:
+// operator kokU degistirdiginde surecin dogru yere yazmasi gerekir.
+function localUploadDir(): string { return uploadRoot(); }
 
 export const localAdapter: StorageAdapter = {
   async listFiles(): Promise<StorageObject[]> {
-    if (!fs.existsSync(LOCAL_UPLOAD_DIR)) return [];
-    return fs.readdirSync(LOCAL_UPLOAD_DIR).map(key => {
+    if (!fs.existsSync(localUploadDir())) return [];
+    // FAZ J — YALNIZ DUZ DOSYALAR LISTELENIR.
+    //
+    // CANLI CALISTIRMADA GORULEN KUSUR: burasi `readdirSync` ciktisinin
+    // TAMAMINI dosya gibi donduruyordu — alt DIZINLER dahil
+    // (`member-profiles`, `server-assets`, `soundboard`, `_chunks`,
+    // `_quarantine`, `stickers`). Temizlik isi bunlari `deleteFile` ile
+    // silmeye calisiyor, o da `unlinkSync` cagirdigi icin dizinlerde
+    // EPERM firlatiyordu. Sonuc: her temizlik dongusunde tekrarlayan hata
+    // gurultusu (islevsel zarar yok, cunku hata yakalanip atlaniyordu).
+    //
+    // `statSync` zaten cagriliyordu; eksik olan tek sey `isFile()` suzgeciydi.
+    // Bu duzeltme DAR kapsamlidir: dizinler artik LISTELENMEZ, dolayisiyla
+    // asla silinmeye calisilmaz. Hicbir dizin OZYINELEMELI silinmez ve
+    // `uploads/stickers` gibi tarihsel klasorler tumuyle dokunulmadan kalir.
+    const out: StorageObject[] = [];
+    for (const key of fs.readdirSync(localUploadDir())) {
       try {
-        const stat = fs.statSync(path.join(LOCAL_UPLOAD_DIR, key));
-        return { key, lastModifiedMs: stat.mtimeMs };
+        const stat = fs.statSync(path.join(localUploadDir(), key));
+        // YALNIZ KESIN OLARAK DIZIN olanlar elenir.
+        //
+        // `isFile()` ZORUNLU TUTULMAZ: bazi cagiranlar/testler `statSync`ten
+        // yalnizca `{ mtimeMs }` benzeri duz nesneler dondurur. `isFile()`
+        // sart kosulsaydi bu girdiler sessizce listelenmez, temizlik hicbir
+        // seyi degerlendiremezdi. Bu yuzden yalnizca `isDirectory()` VARSA ve
+        // true ise atlanir — davranis degisikligi tam olarak kusurla sinirli.
+        if (typeof (stat as { isDirectory?: () => boolean }).isDirectory === 'function'
+            && (stat as { isDirectory: () => boolean }).isDirectory()) {
+          continue;
+        }
+        out.push({ key, lastModifiedMs: (stat as { mtimeMs?: number }).mtimeMs });
       } catch {
-        return { key };
+        // ESKI SOZLESME KORUNUR: stat basarisizsa oge yine listelenir ama
+        // `lastModifiedMs` undefined kalir; temizlik bu durumda dosyayi
+        // GUVENLI TARAFTA tutup silmez (grace-period mantigi).
+        out.push({ key });
       }
-    });
+    }
+    return out;
   },
 
   async uploadFile(localPath: string, _key: string, _opts: UploadOpts = {}): Promise<UploadResult> {
@@ -189,26 +251,101 @@ export const localAdapter: StorageAdapter = {
     // döngüsünü çağıran katman yönetir. Remote adapter'ların deleteLocal
     // davranışını burada taklit etmek, testlerde ve local geliştirmede beklenmeyen
     // veri kaybına yol açabilir.
-    const filename = path.basename(localPath);
-    return { url: `/uploads/${filename}`, key: null, provider: 'local' };
+    //
+    // Alt dizinleri KORU: server-assets/emojis gibi kalıcı varlıklar fiziksel
+    // olarak server/uploads/<subdir>/ altında durur. Yalnız basename döndürmek
+    // `/uploads/sa_x.png` üretip gerçek `/uploads/server-assets/sa_x.png` ile
+    // ayrışıyordu. localPath uploads kökünün dışındaysa eski basename fallback'i
+    // korunur (test/tool geçici dosyaları).
+    const resolvedRoot = path.resolve(localUploadDir());
+    const resolvedPath = path.resolve(localPath);
+    const relative = path.relative(resolvedRoot, resolvedPath);
+    const insideUploads = relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+    const key = insideUploads ? relative.split(path.sep).join('/') : path.basename(localPath);
+    return { url: `/uploads/${key}`, key: null, provider: 'local' };
+  },
+
+  async readFile(key: string, opts: { range?: string } = {}): Promise<StorageReadResult> {
+    // Local caller normalde express.static kullanır; bu uygulama yine de adapter
+    // sözleşmesini tam tutar ve path traversal'a izin vermez.
+    const normalizedKey = key.replace(/^uploads\//, '');
+    const filePath = path.join(localUploadDir(), normalizedKey);
+    const resolved = path.resolve(filePath);
+    const root = path.resolve(localUploadDir()) + path.sep;
+    if (!resolved.startsWith(root)) throw Object.assign(new Error('Invalid storage key'), { code: 'EINVAL' });
+
+    const stat = fs.statSync(resolved);
+    let start: number | undefined;
+    let end: number | undefined;
+    let contentRange: string | undefined;
+    if (opts.range) {
+      const m = /^bytes=(\d*)-(\d*)$/.exec(opts.range);
+      if (!m) throw Object.assign(new Error('Invalid range'), { code: 'ERANGE' });
+      start = m[1] ? Number(m[1]) : undefined;
+      end = m[2] ? Number(m[2]) : undefined;
+      if (start === undefined && end !== undefined) {
+        const suffix = Math.min(end, stat.size);
+        start = Math.max(0, stat.size - suffix);
+        end = stat.size - 1;
+      } else {
+        start = start ?? 0;
+        end = Math.min(end ?? stat.size - 1, stat.size - 1);
+      }
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= stat.size) {
+        throw Object.assign(new Error('Unsatisfiable range'), { code: 'ERANGE', size: stat.size });
+      }
+      contentRange = `bytes ${start}-${end}/${stat.size}`;
+    }
+
+    const body = fs.createReadStream(resolved, start !== undefined ? { start, end } : undefined);
+    return {
+      body,
+      contentType: mimeFromPath(resolved),
+      contentLength: start !== undefined && end !== undefined ? end - start + 1 : stat.size,
+      contentRange,
+      acceptRanges: 'bytes',
+      lastModified: stat.mtime,
+    };
   },
 
   async deleteFile(key: string): Promise<void> {
-    const filePath = path.join(LOCAL_UPLOAD_DIR, key);
+    const filePath = path.join(localUploadDir(), key);
     // Path traversal koruması: çözümlenmiş yol uploads/ dizinin dışına çıkmamalı
-    if (!path.resolve(filePath).startsWith(path.resolve(LOCAL_UPLOAD_DIR) + path.sep)) {
+    if (!path.resolve(filePath).startsWith(path.resolve(localUploadDir()) + path.sep)) {
       logger.warn({ key, event: 'storage.delete_traversal_blocked' }, 'Path traversal girişimi engellendi');
-      return;
+      throw Object.assign(new Error('Invalid storage key'), { code: 'EINVAL' });
     }
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   },
 
   keyFromUrl(url: string): string {
-    return path.basename(url);
+    // Local URL'lerde alt dizini koru: /uploads/server-assets/x.png
+    // -> server-assets/x.png. Basename'e indirgemek deleteFile'ın yanlış kök
+    // dosyasını hedeflemesine ve gerçek nesneyi orphan bırakmasına yol açıyordu.
+    let pathname = url;
+    try { pathname = new URL(url, 'http://bridge.local').pathname; } catch {}
+    const marker = '/uploads/';
+    const idx = pathname.indexOf(marker);
+    if (idx >= 0) return pathname.slice(idx + marker.length).replace(/^\/+/, '');
+    return path.basename(pathname);
+  },
+
+  publicUrlForKey(key: string): string {
+    const normalized = key.replace(/^uploads\//, '');
+    return `/uploads/${normalized}`;
   },
 
   async healthCheck(): Promise<boolean> {
-    return true;
+    try {
+      // A local provider is not healthy merely because it requires no network.
+      // Readiness must catch a missing/read-only volume before accepting an
+      // upload request that would fail after traffic has reached the node.
+      fs.accessSync(localUploadDir(), fs.constants.R_OK | fs.constants.W_OK);
+      return true;
+    } catch (err) {
+      logger.error({ err, provider: 'local' }, '[storageAdapter] Yerel upload kökü erişilebilir/yazılabilir değil');
+      return false;
+    }
   },
 };
 
@@ -224,13 +361,15 @@ export interface S3AdapterConfig {
   accessKeyId:     string;
   secretAccessKey: string;
   forcePathStyle?: boolean;
-  /** Dosya URL'lerinin önüne eklenecek public base URL */
-  publicUrl: string;
+  /** Dosya URL'lerinin önüne eklenecek public base URL. Private adapter'da bilinçli olarak yoktur. */
+  publicUrl?: string;
+  /** Provider-level upload cache default. Protected buckets force private/no-store. */
+  defaultCacheControl?: string;
 }
 
 export function buildS3Adapter(cfg: S3AdapterConfig): StorageAdapter {
   const sdk = requireS3Sdk(cfg.provider);
-  const { S3Client, ListObjectsV2Command, PutObjectCommand, DeleteObjectCommand } = sdk;
+  const { S3Client, ListObjectsV2Command, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = sdk;
 
   if (!cfg.bucket) throw new Error(`[storageAdapter] ${cfg.provider}: bucket zorunlu`);
 
@@ -244,7 +383,7 @@ export function buildS3Adapter(cfg: S3AdapterConfig): StorageAdapter {
     forcePathStyle: cfg.forcePathStyle ?? false,
   });
 
-  const publicUrl = cfg.publicUrl.replace(/\/$/, '');
+  const publicUrl = cfg.publicUrl?.replace(/\/$/, '') || null;
 
   return {
     async listFiles(): Promise<StorageObject[]> {
@@ -252,12 +391,31 @@ export function buildS3Adapter(cfg: S3AdapterConfig): StorageAdapter {
       let continuationToken: string | undefined;
 
       do {
+        // `Delimiter: '/'` — YEREL ADAPTÖRLE AYNI SÖZLEŞME.
+        //
+        // Yerel `listFiles()` özyinelemeli DEĞİLDİR: yalnızca kök düzeyi
+        // döndürür, alt dizinleri atlar. Uzak adaptör ise önek/ayırıcı
+        // olmadan çağrıldığı için KOVANIN TAMAMINI döndürüyordu —
+        // `stickers/`, `avatars/`, `server-assets/` dahil. Tek tüketici olan
+        // temizlik işi için bu, kalıcı varlıkları silme adayı yapıyordu.
+        //
+        // Ayırıcı ile uzak liste de yalnızca kök düzeyi verir; alt dizinler
+        // `CommonPrefixes` altında toplanır ve OKUNMAZ. Böylece iki mod
+        // aynı davranışa oturur ve büyük kovalarda gereksiz sayfalama da
+        // ortadan kalkar.
         const cmd = new ListObjectsV2Command({
           Bucket:            cfg.bucket,
+          // Tüm Bridge upload nesneleri bu önek altında yaşar. Prefix olmadan
+          // Delimiter='/' kullanmak gerçekte yalnız `uploads/` CommonPrefix'ini
+          // döndürür ve kök mesaj eklerinin cleanup tarafından hiç görülmemesine
+          // yol açar. Prefix + Delimiter yalnız `uploads/<dosya>` nesnelerini
+          // listeler; `uploads/avatars/...` gibi kalıcı alt dizinleri dışarıda tutar.
+          Prefix:            'uploads/',
+          Delimiter:         '/',
           ContinuationToken: continuationToken,
           MaxKeys:           1000,
         });
-        const res = await client.send(cmd);
+        const res = await client.send(cmd) as S3ListResult;
 
         for (const obj of res.Contents ?? []) {
           if (!obj.Key) continue;
@@ -283,7 +441,7 @@ export function buildS3Adapter(cfg: S3AdapterConfig): StorageAdapter {
       const {
         deleteLocal  = true,
         contentType  = mimeFromPath(localPath),
-        cacheControl = 'public, max-age=31536000, immutable',
+        cacheControl = cfg.defaultCacheControl ?? 'public, max-age=31536000, immutable',
       } = opts;
 
       const body = fs.createReadStream(localPath);
@@ -305,7 +463,26 @@ export function buildS3Adapter(cfg: S3AdapterConfig): StorageAdapter {
         });
       }
 
-      return { url: `${publicUrl}/${key}`, key, provider: cfg.provider };
+      return { url: publicUrl ? `${publicUrl}/${key}` : '', key, provider: cfg.provider };
+    },
+
+    async readFile(key: string, opts: { range?: string } = {}): Promise<StorageReadResult> {
+      const input: S3CommandInput = { Bucket: cfg.bucket, Key: key };
+      if (opts.range) input.Range = opts.range;
+      const res = await client.send(new GetObjectCommand(input)) as S3GetResult;
+      const body = res.Body as { pipe?: (dest: NodeJS.WritableStream) => unknown; on?: (...args: unknown[]) => unknown } | undefined;
+      if (!body || typeof body.pipe !== 'function') {
+        throw new Error(`[storageAdapter] ${cfg.provider}: GetObject body readable stream değil`);
+      }
+      return {
+        body: body as unknown as NodeJS.ReadableStream,
+        contentType: res.ContentType,
+        contentLength: res.ContentLength,
+        contentRange: res.ContentRange,
+        acceptRanges: res.AcceptRanges ?? 'bytes',
+        etag: res.ETag,
+        lastModified: res.LastModified,
+      };
     },
 
     async deleteFile(key: string): Promise<void> {
@@ -318,13 +495,23 @@ export function buildS3Adapter(cfg: S3AdapterConfig): StorageAdapter {
       //   https://s3.amazonaws.com/<bucket>/<key>
       //   https://<bucket>.s3.amazonaws.com/<key>
       try {
-        const parsed = new URL(url);
+        // Relative Bridge refs (`/uploads/<id>`) are canonical for protected
+        // attachments, while absolute provider/CDN URLs remain supported for
+        // legacy rows and public assets.
+        const parsed = new URL(url, 'http://bridge.local');
         const parts  = parsed.pathname.split('/').filter(Boolean);
         if (parts[0] === cfg.bucket) parts.shift();
         return parts.join('/');
       } catch {
         return path.basename(url);
       }
+    },
+
+    publicUrlForKey(key: string): string {
+      if (!publicUrl) {
+        throw new Error(`[storageAdapter] ${cfg.provider}: private storage nesnelerinin public URL'si yoktur`);
+      }
+      return `${publicUrl}/${key.replace(/^\/+/, '')}`;
     },
 
     async healthCheck(): Promise<boolean> {
@@ -379,24 +566,8 @@ function _minioConfig(): S3AdapterConfig {
     bucket,
     region:    'us-east-1',
     endpoint,
-    // Not: MINIO_ACCESS_KEY ve MINIO_SECRET_KEY _validateRemoteCredentials tarafından
-    // zorunlu kılınır; boş string veya 'minioadmin' gibi varsayılan değerler
-    // _validateRemoteCredentials'ı geçemez — bu satırlara asla ulaşılmamalı.
     accessKeyId:     process.env.MINIO_ACCESS_KEY ?? '',
     secretAccessKey: process.env.MINIO_SECRET_KEY ?? '',
-    // SECURITY: MinIO varsayılan kimlik bilgilerini tespit et
-    ...(() => {
-      const accessKey = process.env.MINIO_ACCESS_KEY ?? '';
-      const secretKey = process.env.MINIO_SECRET_KEY ?? '';
-      if (accessKey === 'minioadmin' || secretKey === 'minioadmin') {
-        logger.warn(
-          { event: 'storage.minio.default_credentials' },
-          'SECURITY: MinIO varsayılan kimlik bilgileri kullanılıyor (minioadmin). ' +
-          'Production ortamında MINIO_ACCESS_KEY ve MINIO_SECRET_KEY değiştirin!'
-        );
-      }
-      return {};
-    })(),
     forcePathStyle:  true,
     publicUrl: (process.env.MINIO_PUBLIC_URL ?? `${endpoint}/${bucket}`).replace(/\/$/, ''),
   };
@@ -415,6 +586,158 @@ function _b2Config(): S3AdapterConfig {
     publicUrl: process.env.B2_PUBLIC_URL
       ?? `https://f000.backblazeb2.com/file/${bucket}`,
   };
+}
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Protected attachment storage
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic message/file and voice-message bytes are authorization-protected data.
+// They MUST NOT share a publicly reachable CDN bucket with avatars/emoji/GIF/etc.
+// `PRIVATE_STORAGE_PROVIDER` therefore has an independent singleton and defaults
+// to local disk even when `CDN_PROVIDER` is remote. Remote private storage reuses
+// the provider credentials/endpoints but REQUIRES a distinct private bucket.
+
+function _privateBucketEnv(provider: CdnProvider): { key: string; value: string } {
+  switch (provider) {
+    case 's3':    return { key: 'PRIVATE_S3_BUCKET', value: process.env.PRIVATE_S3_BUCKET ?? '' };
+    case 'r2':    return { key: 'PRIVATE_R2_BUCKET', value: process.env.PRIVATE_R2_BUCKET ?? '' };
+    case 'minio': return { key: 'PRIVATE_MINIO_BUCKET', value: process.env.PRIVATE_MINIO_BUCKET ?? '' };
+    case 'b2':    return { key: 'PRIVATE_B2_BUCKET_NAME', value: process.env.PRIVATE_B2_BUCKET_NAME ?? '' };
+    default:      return { key: '', value: '' };
+  }
+}
+
+function _publicBucketFor(provider: CdnProvider): string {
+  switch (provider) {
+    case 's3':    return process.env.S3_BUCKET ?? '';
+    case 'r2':    return process.env.R2_BUCKET ?? '';
+    case 'minio': return process.env.MINIO_BUCKET ?? 'bridge-uploads';
+    case 'b2':    return process.env.B2_BUCKET_NAME ?? '';
+    default:      return '';
+  }
+}
+
+function _validateMinioDefaultCredentials(): void {
+  const accessKey = process.env.MINIO_ACCESS_KEY ?? '';
+  const secretKey = process.env.MINIO_SECRET_KEY ?? '';
+  if (accessKey !== 'minioadmin' && secretKey !== 'minioadmin') return;
+
+  if ((process.env.NODE_ENV ?? '').toLowerCase() === 'production') {
+    throw new Error(
+      '[storageAdapter] Production MinIO varsayılan minioadmin kimlik bilgileriyle başlatılamaz. ' +
+      'MINIO_ACCESS_KEY ve MINIO_SECRET_KEY için benzersiz secret değerleri kullanın.',
+    );
+  }
+  logger.warn(
+    { event: 'storage.minio.default_credentials' },
+    'SECURITY: MinIO varsayılan kimlik bilgileri kullanılıyor (minioadmin). Production ortamında bu yapılandırma reddedilir.',
+  );
+}
+
+function _validatePrivateRemoteCredentials(provider: CdnProvider): void {
+  const privateBucket = _privateBucketEnv(provider);
+  const credentialKeys: Record<string, string[]> = {
+    s3:    ['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY'],
+    r2:    ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'],
+    minio: ['MINIO_ENDPOINT', 'MINIO_ACCESS_KEY', 'MINIO_SECRET_KEY'],
+    b2:    ['B2_KEY_ID', 'B2_APP_KEY'],
+  };
+  const missing = [privateBucket.key, ...(credentialKeys[provider] ?? [])]
+    .filter(Boolean)
+    .filter(key => !process.env[key]?.trim());
+  if (missing.length) {
+    throw new Error(
+      `[storageAdapter] PRIVATE_STORAGE_PROVIDER=${provider} için zorunlu env değişkenleri eksik veya boş: ${missing.join(', ')}.`,
+    );
+  }
+  if (provider === 'minio') _validateMinioDefaultCredentials();
+
+  // A separate variable name is not enough: reject the exact same bucket when
+  // the public CDN uses the same provider. Otherwise a public bucket policy or
+  // custom CDN origin can bypass Bridge's current authorization middleware.
+  if (getProvider() === provider) {
+    const publicBucket = _publicBucketFor(provider).trim();
+    if (publicBucket && publicBucket === privateBucket.value.trim()) {
+      throw new Error(
+        `[storageAdapter] Private attachment bucket (${privateBucket.key}) public CDN bucket ile aynı olamaz. ` +
+        'Protected bytes için ayrı ve public olmayan bir bucket kullanın.',
+      );
+    }
+  }
+}
+
+function _privateRemoteConfig(provider: CdnProvider): S3AdapterConfig {
+  const bucket = _privateBucketEnv(provider).value;
+  switch (provider) {
+    case 's3':
+      return {
+        provider, bucket,
+        region: process.env.S3_REGION ?? 'us-east-1',
+        endpoint: process.env.S3_ENDPOINT,
+        accessKeyId: process.env.S3_ACCESS_KEY_ID ?? '',
+        secretAccessKey: process.env.S3_SECRET_ACCESS_KEY ?? '',
+        defaultCacheControl: 'private, no-store',
+      };
+    case 'r2':
+      return {
+        provider, bucket, region: 'auto',
+        endpoint: `https://${process.env.R2_ACCOUNT_ID ?? ''}.r2.cloudflarestorage.com`,
+        accessKeyId: process.env.R2_ACCESS_KEY_ID ?? '',
+        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? '',
+        defaultCacheControl: 'private, no-store',
+      };
+    case 'minio':
+      return {
+        provider, bucket, region: 'us-east-1',
+        endpoint: (process.env.MINIO_ENDPOINT ?? '').replace(/\/$/, ''),
+        accessKeyId: process.env.MINIO_ACCESS_KEY ?? '',
+        secretAccessKey: process.env.MINIO_SECRET_KEY ?? '',
+        forcePathStyle: true,
+        defaultCacheControl: 'private, no-store',
+      };
+    case 'b2': {
+      const region = process.env.B2_REGION ?? 'us-west-004';
+      return {
+        provider, bucket, region,
+        endpoint: `https://s3.${region}.backblazeb2.com`,
+        accessKeyId: process.env.B2_KEY_ID ?? '',
+        secretAccessKey: process.env.B2_APP_KEY ?? '',
+        defaultCacheControl: 'private, no-store',
+      };
+    }
+    default:
+      throw new Error(`[storageAdapter] Unsupported private storage provider: ${provider}`);
+  }
+}
+
+let _privateAdapter: StorageAdapter | null = null;
+
+export function getPrivateStorageProvider(): CdnProvider {
+  return (process.env.PRIVATE_STORAGE_PROVIDER ?? 'local').toLowerCase() as CdnProvider;
+}
+
+export function getPrivateStorageAdapter(): StorageAdapter {
+  if (_privateAdapter) return _privateAdapter;
+  const provider = getPrivateStorageProvider();
+  if (provider === 'local') {
+    _privateAdapter = localAdapter;
+    if (getProvider() !== 'local') {
+      logger.warn(
+        { publicProvider: getProvider(), privateProvider: provider, event: 'storage.private_local_with_remote_public' },
+        '[storageAdapter] Public CDN remote, protected attachment storage local. Multi-node deployments should configure a shared PRIVATE_STORAGE_PROVIDER.',
+      );
+    }
+    return _privateAdapter;
+  }
+  if (!['s3', 'r2', 'minio', 'b2'].includes(provider)) {
+    throw new Error(`[storageAdapter] Bilinmeyen PRIVATE_STORAGE_PROVIDER=${provider}; fail-closed.`);
+  }
+  _validatePrivateRemoteCredentials(provider);
+  _privateAdapter = buildS3Adapter(_privateRemoteConfig(provider));
+  logger.info({ provider }, '[storageAdapter] Protected attachments private remote storage kullanıyor');
+  return _privateAdapter;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -470,6 +793,7 @@ function _validateRemoteCredentials(provider: CdnProvider): void {
       `Lütfen .env dosyasını kontrol edin.`,
     );
   }
+  if (provider === 'minio') _validateMinioDefaultCredentials();
 }
 
 export function getStorageAdapter(): StorageAdapter {
@@ -508,8 +832,7 @@ export function getStorageAdapter(): StorageAdapter {
       break;
 
     default:
-      logger.warn({ provider }, '[storageAdapter] Bilinmeyen CDN_PROVIDER, local kullanılıyor');
-      _adapter = localAdapter;
+      throw new Error(`[storageAdapter] Bilinmeyen CDN_PROVIDER=${provider}; fail-closed.`);
   }
 
   return _adapter;
@@ -533,6 +856,7 @@ export function getStorageAdapter(): StorageAdapter {
  */
 export function _resetAdapterForTest(): void {
   _adapter = null;
+  _privateAdapter = null;
 }
 
 // PROVIDER: modül yüklendiğinde sabit değil, her çağrıda env'den okunur.

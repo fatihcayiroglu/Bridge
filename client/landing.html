@@ -251,6 +251,7 @@ footer{position:relative;z-index:1;border-top:1px solid var(--border);padding:32
 
       <!-- LOGIN -->
       <div id="tab-login" style="display:none">
+        <div id="landing-login-credentials">
         <div class="form-group">
           <label class="form-label">Kullanıcı adı</label>
           <input type="text" id="l-username" class="form-input" placeholder="kullaniciadi"
@@ -277,6 +278,15 @@ footer{position:relative;z-index:1;border-top:1px solid var(--border);padding:32
         
         <div style="font-size:11px;color:var(--dim);text-align:center;margin-top:12px;line-height:1.5;">
           Face ID, Touch ID, Windows Hello veya güvenlik anahtarı ile şifresiz giriş
+        </div>
+        </div>
+        <div id="landing-twofactor" style="display:none">
+          <div class="form-group">
+            <label class="form-label">İki adımlı doğrulama kodu</label>
+            <input type="text" id="landing-2fa-code" class="form-input" inputmode="numeric" autocomplete="one-time-code" placeholder="123456 veya yedek kod" onkeydown="if(event.key==='Enter')completeLandingTwoFactor()">
+          </div>
+          <button class="btn-submit" id="btn-2fa" onclick="completeLandingTwoFactor()"><div class="btn-spinner"></div><span class="btn-text">Doğrula →</span></button>
+          <button class="btn-passkey" onclick="cancelLandingTwoFactor()" style="width:100%;margin-top:8px">Geri</button>
         </div>
       </div>
 
@@ -462,12 +472,50 @@ async function doRegister() {
 
     if (data.token) {
       localStorage.setItem('token', data.token);
-      if (data.refreshToken) localStorage.setItem('refreshToken', data.refreshToken);
     }
     showSuccess(`Hoş geldin, ${data.user?.displayName || username}!`);
   } catch {
     showMsg('Bağlantı hatası. Lütfen tekrar dene.', 'error');
     setLoading('btn-register', false);
+  }
+}
+
+let pendingTwoFactorToken = null;
+
+function setLandingTwoFactor(active) {
+  document.getElementById('landing-login-credentials').style.display = active ? 'none' : '';
+  document.getElementById('landing-twofactor').style.display = active ? '' : 'none';
+  if (active) document.getElementById('landing-2fa-code').focus();
+}
+
+function cancelLandingTwoFactor() {
+  pendingTwoFactorToken = null;
+  document.getElementById('landing-2fa-code').value = '';
+  setLandingTwoFactor(false);
+  clearMsg();
+}
+
+async function completeLandingTwoFactor() {
+  const code = document.getElementById('landing-2fa-code').value.trim();
+  if (!pendingTwoFactorToken || !code) return showMsg('Doğrulama kodunu gir.', 'error');
+  setLoading('btn-2fa', true);
+  try {
+    const res = await fetch('/api/2fa/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ tempToken: pendingTwoFactorToken, code }),
+    });
+    const data = await res.json();
+    if (!res.ok) return showMsg(data.error || 'İki adımlı doğrulama başarısız.', 'error');
+    if (!data.token || !data.user) return showMsg('Geçersiz oturum yanıtı.', 'error');
+    pendingTwoFactorToken = null;
+    localStorage.setItem('token', data.token);
+    showSuccess('İki adımlı doğrulama başarılı!');
+  } catch {
+    showMsg('Bağlantı hatası. Lütfen tekrar dene.', 'error');
+  } finally {
+    setLoading('btn-2fa', false);
   }
 }
 
@@ -488,6 +536,14 @@ async function doLogin() {
     });
     const data = await res.json();
 
+    if (res.status === 202 && data.requiresTwoFactor === true && typeof data.tempToken === 'string') {
+      pendingTwoFactorToken = data.tempToken;
+      setLandingTwoFactor(true);
+      showMsg('Doğrulama uygulamandaki kodu veya yedek kodu gir.', 'success');
+      setLoading('btn-login', false);
+      return;
+    }
+
     if (!res.ok) {
       showMsg(data.error || 'Giriş başarısız.', 'error');
       setLoading('btn-login', false);
@@ -496,7 +552,6 @@ async function doLogin() {
 
     if (data.token) {
       localStorage.setItem('token', data.token);
-      if (data.refreshToken) localStorage.setItem('refreshToken', data.refreshToken);
     }
     showSuccess('Tekrar hoş geldin!');
   } catch {
@@ -583,6 +638,7 @@ async function doPasskeyLogin() {
     const completeRes = await fetch('/api/webauthn/login/complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(completePayload),
     });
     const completeData = await completeRes.json();
@@ -591,7 +647,6 @@ async function doPasskeyLogin() {
     // Token'ları kaydet
     if (completeData.token) {
       localStorage.setItem('token', completeData.token);
-      if (completeData.refreshToken) localStorage.setItem('refreshToken', completeData.refreshToken);
     }
     showSuccess('Passkey ile giriş başarılı!');
   } catch (err) {

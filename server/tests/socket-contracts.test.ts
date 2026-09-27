@@ -3,12 +3,15 @@
 // These tests document the payload structure emitted by the server.
 // Each test validates field presence and types — NOT business logic.
 process.env.NODE_ENV   = 'test';
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 
+import { stringOf } from './helpers/narrow';
 import { v4 as uuidv4 } from 'uuid';
 
 // ── Payload factories (mirror server emit shapes) ─────────────────
-function makeMessagePayload(overrides = {}) {
+// Ezmeler ISTEGE BAGLI alanlar ekler (`scheduledId`, `fileUrl`, ...); donus
+// tipi bunu tasimali ki sonradan okunabilsinler.
+function makeMessagePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     _id:         uuidv4(),
     channelId:   uuidv4(),
@@ -26,7 +29,9 @@ function makeMessagePayload(overrides = {}) {
   };
 }
 
-function makeDmMessagePayload(overrides = {}) {
+// Ezmeler ISTEGE BAGLI alanlar ekler (`fileUrl`, ...); donus tipi bunu
+// tasimali ki sonradan okunabilsinler.
+function makeDmMessagePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     _id:          uuidv4(),
     conversationId: uuidv4(),
@@ -119,7 +124,7 @@ function makeMentionPayload(overrides = {}) {
 }
 
 // ── Contract validators ───────────────────────────────────────────
-function assertHasRequiredFields(payload, fields) {
+function assertHasRequiredFields(payload: unknown, fields: readonly string[]) {
   for (const field of fields) {
     expect(payload).toHaveProperty(field);
   }
@@ -140,7 +145,7 @@ describe('message:new payload contract', () => {
   it('_id is a non-empty string', () => {
     const p = makeMessagePayload();
     expect(typeof p._id).toBe('string');
-    expect(p._id.length).toBeGreaterThan(0);
+    expect(stringOf(p._id, '_id').length).toBeGreaterThan(0);
   });
 
   it('createdAt is a number (Unix timestamp ms)', () => {

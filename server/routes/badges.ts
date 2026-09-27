@@ -10,6 +10,7 @@ const router = express.Router();
 import { v4 as uuidv4 } from 'uuid';
 import { Users, Servers } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
+import { databaseAdminOnly } from '../lib/adminAuthority';
 import logger from '../lib/logger';
 import { limits } from '../middleware/rateLimit';
 
@@ -87,11 +88,6 @@ function getBadgeRepo(options: { optional?: boolean } = {}): BadgeRepo | null {
       return col.remove({ userId, badge });
     },
   };
-}
-
-// ── Yardımcı: admin mi? ───────────────────────────────────────────────────────
-function isAdmin(user: { role?: string; flags?: string[] } | undefined): boolean {
-  return user?.role === 'admin' || user?.flags?.includes?.('admin') || false;
 }
 
 // ── GET /api/users/:userId/badges — public profil rozetleri ─────────────────
@@ -185,10 +181,8 @@ router.get('/badges/definitions', (req: Request, res: Response) => {
  *       200: { description: Rozet verildi }
  *       403: { $ref: '#/components/responses/Forbidden' }
  */
-router.post('/admin/badges/award', authMiddleware, limits.write(), async (req: Request, res: Response) => {
+router.post('/admin/badges/award', authMiddleware, databaseAdminOnly, limits.write(), async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
-  if (!isAdmin(_u)) return res.status(403).json({ error: 'Sadece admin rozet verebilir' });
-
   const { userId, badge } = req.body as Record<string, string>;
   if (!userId || !badge) return res.status(400).json({ error: 'userId ve badge gerekli' });
   if (!BADGE_DEFS[badge])  return res.status(400).json({ error: `Bilinmeyen rozet: ${badge}` });
@@ -236,10 +230,8 @@ router.post('/admin/badges/award', authMiddleware, limits.write(), async (req: R
  *       200: { description: Rozet geri alındı }
  *       403: { $ref: '#/components/responses/Forbidden' }
  */
-router.delete('/admin/badges/revoke', authMiddleware, limits.write(), async (req: Request, res: Response) => {
+router.delete('/admin/badges/revoke', authMiddleware, databaseAdminOnly, limits.write(), async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
-  if (!isAdmin(_u)) return res.status(403).json({ error: 'Sadece admin rozet kaldırabilir' });
-
   const { userId, badge } = req.body as Record<string, string>;
   if (!userId || !badge) return res.status(400).json({ error: 'userId ve badge gerekli' });
 
@@ -292,8 +284,8 @@ export async function checkAndAwardAutoBadges(userId: string): Promise<void> {
         _id:       uuidv4(),
         userId,
         badge,
-        label:     def.label,
-        icon:      def.icon,
+        label:     def?.label ?? '',
+        icon:      def?.icon ?? '',
         awardedAt: Date.now(),
         awardedBy: 'system',
       }).catch(() => {/* UNIQUE ihlali — zaten var, yoksay */});

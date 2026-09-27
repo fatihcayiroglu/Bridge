@@ -1,6 +1,16 @@
 import '@testing-library/jest-dom';
 
+// The isolated suite asserts the Turkish product copy. Set the locale before
+// Svelte/i18n modules are imported; changing it in beforeEach is too late
+// because the translation owner resolves its initial locale at module load.
+document.documentElement.lang = 'tr';
+Object.defineProperty(navigator, 'language', {
+  configurable: true,
+  value: 'tr-TR',
+});
+
 const values = new Map<string, string>();
+values.set('bridge_locale', 'tr');
 
 const storage: Storage = {
   get length() { return values.size; },

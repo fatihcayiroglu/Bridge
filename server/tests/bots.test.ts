@@ -1,7 +1,7 @@
 // server/tests/bots.test.ts
 // Tests for bot management endpoints: create, list, delete, token-rotate, webhook
 
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV   = 'test';
 
 import { createMockDb, makeUser, makeServer } from './helpers/mockDb';
@@ -11,24 +11,34 @@ jest.mock('../db/index', () => mockDb);
 jest.mock('../db/loader', () => require('../db/index'));
 
 jest.mock('../middleware/rateLimit', () => ({
-  limits: { bots: () => (_req, _res, next) => next() },
+  limits: { bots: () => (_req: unknown, _res: unknown, next: () => void) => next() },
 }));
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: (req, res, next) => {
+  authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
     const h = req.headers.authorization;
     if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
     const jwt = require('jsonwebtoken');
-    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret'); next(); }
+    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!'); next(); }
     catch { res.status(401).json({ error: 'Invalid token' }); }
   },
 }));
 
 // Mock permissions — owner has MANAGE_SERVER by default
-const mockResolvePermissions = jest.fn(async () => 0xFFFFFFFF);
-const mockHasPermission = jest.fn((perms, permission) => (perms & permission) === permission);
+const mockResolvePermissions = jest.fn(async (..._args: unknown[]) => 0xFFFFFFFF);
+// Yayilimla cagrildigi icin imza REST parametre alir; degerler `unknown`tan
+// SAYIYA daraltilir (iddia degil, donusturme).
+const mockHasPermission = jest.fn((...args: unknown[]) => {
+  const perms = Number(args[0] ?? 0);
+  const permission = Number(args[1] ?? 0);
+  return (perms & permission) === permission;
+});
 jest.mock('../lib/permissions', () => ({
-  resolvePermissions: (...args) => mockResolvePermissions(...args),
-  hasPermission: (...args) => mockHasPermission(...args),
+  resolvePermissions: (...args: unknown[]) => mockResolvePermissions(...args),
+  hasPermission: (...args: unknown[]) => mockHasPermission(...args),
   PERMS: {
     MANAGE_SERVER:   1 << 3,
     ADMIN:           1 << 30,
@@ -50,10 +60,10 @@ app.use(express.json());
 app.use('/api/servers', router);
 app.use('/api/bot', router);
 app.use('/api/webhooks', router);
-app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
 
-function token(id) {
-  return jwt.sign({ id, username: 'owner', displayName: 'Owner', v: 0 }, 'test-jwt-secret', { expiresIn: '1h' });
+function token(id: string) {
+  return jwt.sign({ id, username: 'owner', displayName: 'Owner', v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
 }
 
 const OWNER_ID  = 'owner1';
@@ -68,8 +78,8 @@ beforeAll(async () => {
   await mockDb.members.insert({ userId: OTHER_ID, serverId: SERVER_ID, roles: '[]', joinedAt: Date.now() });
 });
 
-let createdBotId;
-let createdBotToken;
+let createdBotId: string;
+let createdBotToken: string;
 
 // ── Create bot ────────────────────────────────────────────────
 
@@ -129,7 +139,7 @@ describe('GET /api/servers/:sid/bots', () => {
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
     // tokenHash must not be exposed to clients
-    res.body.forEach(bot => {
+    res.body.forEach((bot: Record<string, unknown>) => {
       expect(bot.tokenHash).toBeUndefined();
     });
   });

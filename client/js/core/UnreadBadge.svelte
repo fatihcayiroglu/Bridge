@@ -1,6 +1,7 @@
 <!-- client/js/core/UnreadBadge.svelte -->
 <!-- Sprint 116 — unread.ts → Svelte 5 Runes -->
 <script lang="ts">
+  import { t } from './i18n/reactive.svelte.ts';
   import { onMount, onDestroy } from 'svelte';
   import { BridgeRegistry } from './bridge-registry.js';
 
@@ -16,13 +17,19 @@
     Object.values(unread).reduce((s, u) => s + u.count, 0) + totalDms
   );
 
+  function normalizeCount(value: unknown): number {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0;
+  }
+
   function setChannelUnread(channelId: string, count: number, mention = false) {
-    if (count === 0) {
+    if (typeof channelId !== 'string' || !channelId) return;
+    const safeCount = normalizeCount(count);
+    if (safeCount === 0) {
       const next = { ...unread };
       delete next[channelId];
       unread = next;
     } else {
-      unread = { ...unread, [channelId]: { count, mention } };
+      unread = { ...unread, [channelId]: { count: safeCount, mention: mention === true } };
     }
     syncFavicon();
   }
@@ -32,35 +39,51 @@
   }
 
   function setDmUnread(count: number) {
-    totalDms = count; syncFavicon();
+    totalDms = normalizeCount(count); syncFavicon();
   }
 
   function syncFavicon() {
     const total = totalUnread;
     const link = document.querySelector<HTMLLinkElement>("link[rel='icon']");
-    if (!link) return;
-    link.href = total > 0 ? '/favicon-unread.ico' : '/favicon.ico';
+    if (link) link.href = total > 0 ? '/favicon-unread.ico' : '/favicon.ico';
     document.title = total > 0
       ? `(${total > 99 ? '99+' : total}) Bridge`
       : 'Bridge';
   }
 
+  const getUnreadCount = () => totalUnread;
+  const getMentionCount = () => totalMentions;
+
+  const registrations = [
+    ['setChannelUnread', setChannelUnread],
+    ['clearChannelUnread', clearChannel],
+    ['setDmUnread', setDmUnread],
+    ['getUnreadCount', getUnreadCount],
+    ['getMentionCount', getMentionCount],
+  ] as const;
+
   onMount(() => {
-    BridgeRegistry.register('setChannelUnread', setChannelUnread);
-    BridgeRegistry.register('clearChannelUnread', clearChannel);
-    BridgeRegistry.register('setDmUnread', setDmUnread);
-    BridgeRegistry.register('getUnreadCount', () => totalUnread);
-    BridgeRegistry.register('getMentionCount', () => totalMentions);
+    for (const [name, fn] of registrations) BridgeRegistry.register(name, fn);
+    syncFavicon();
+  });
+
+  onDestroy(() => {
+    // Delete only registrations still owned by this component. This makes
+    // teardown safe even if a replacement instance was mounted while an
+    // outro/async unmount was finishing.
+    for (const [name, fn] of registrations) {
+      if (BridgeRegistry.get(name) === fn) BridgeRegistry.unregister(name);
+    }
   });
 </script>
 
 <!-- This is a headless component — renders badges via BridgeRegistry -->
 {#if totalMentions > 0}
-<div class="unread-badge mention" aria-label="{totalMentions} mention" role="status">
+<div class="unread-badge mention" aria-label={t('unread_mentions_count_aria', undefined, { count: totalMentions })} role="status">
   {totalMentions > 99 ? '99+' : totalMentions}
 </div>
 {:else if totalUnread > 0}
-<div class="unread-badge" aria-label="{totalUnread} okunmamış" role="status">
+<div class="unread-badge" aria-label={t('unread_count', '{count} okunmamış', { count: totalUnread })} role="status">
   {totalUnread > 99 ? '99+' : totalUnread}
 </div>
 {/if}
@@ -69,9 +92,9 @@
 .unread-badge {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 18px; height: 18px; border-radius: 9px;
-  background: var(--bridge-surface3, #393c40);
-  color: #fff; font-size: .7rem; font-weight: 700;
+  background: var(--bridge-surface3, #2c3048);
+  color: var(--text-on-solid); font-size: .7rem; font-weight: 700;
   padding: 0 5px;
 }
-.unread-badge.mention { background: var(--bridge-danger, #f04747); }
+.unread-badge.mention { background: var(--bridge-danger, #e05260); }
 </style>

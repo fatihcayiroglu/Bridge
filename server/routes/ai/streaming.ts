@@ -5,7 +5,7 @@
  *   get:
  *     tags: [AI]
  *     summary: AI sohbet — SSE stream
- *     description: Provider sırası Groq → Gemini → Ollama. event:token / event:done / event:error.
+ *     description: 'Provider sırası Groq → Gemini → Ollama. event:token / event:done / event:error.'
  *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: query
@@ -29,7 +29,7 @@
  *   get:
  *     tags: [AI]
  *     summary: Clyde asistanı — SSE stream (çok turlu)
- *     description: Provider sırası Groq → Gemini → OpenRouter → Ollama. Tüm eventler data: biçiminde.
+ *     description: 'Provider sırası Groq → Gemini → OpenRouter → Ollama. Tüm eventler data: biçiminde.'
  *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: query
@@ -89,11 +89,13 @@
 import express from 'express';
 const router = express.Router();
 
-import { Messages } from '../../db/repositories';
+import { Messages, Channels } from '../../db/repositories';
 import { authMiddleware } from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
 import { callAI, AI_ENABLED, GROQ_KEY, GEMINI_KEY, OPENROUTER_KEY, OLLAMA_URL, OLLAMA_MODEL } from '../../lib/aiProvider';
 import { fetchT } from '../../lib/fetch';
+import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
+import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -122,17 +124,29 @@ function calculateMaxTokens(modelName: string, contextLen: number): number {
   return Math.min(2048, availableTokens); // Cap at 2048 for safety
 }
 
-async function getChannelContext(channelId: string, maxMessages: number = 20): Promise<string> {
-  if (!channelId) return '';
+async function getAuthorizedChannelContext(
+  userId: string,
+  channelId: string,
+  maxMessages: number = 20,
+): Promise<{ ok: true; context: string } | { ok: false; status: 403 | 404 | 503; error: string }> {
+  if (!channelId) return { ok: true, context: '' };
+  const channel = await Channels.findById(channelId).catch(() => null) as { _id: string; serverId: string } | null;
+  if (!channel) return { ok: false, status: 404, error: 'Kanal bulunamadı' };
+  const perms = await resolvePermissions(userId, String(channel.serverId), channelId).catch(() => 0);
+  if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY)) {
+    return { ok: false, status: 403, error: 'Bu kanalın geçmişini görüntüleme izniniz yok.' };
+  }
   try {
-    // Dynamically adjust message limit based on context needs
     const msgs = await Messages.messagesFind({ channelId }).sort({ createdAt: -1 }).limit(maxMessages);
-    return msgs.reverse()
-      .map((m: { displayName?: string; username?: string; content?: string }) =>
-        `${m.displayName || m.username}: ${m.content}`)
-      .join('\n');
+    return {
+      ok: true,
+      context: msgs.reverse()
+        .map((m: { displayName?: string; username?: string; content?: string }) =>
+          `${m.displayName || m.username}: ${m.content}`)
+        .join('\n'),
+    };
   } catch {
-    return '';
+    return { ok: false, status: 503, error: 'Kanal bağlamı okunamadı' };
   }
 }
 
@@ -221,6 +235,8 @@ router.get('/ask/stream', authMiddleware, limits['ai.stream'](), async (req, res
 
   if (!q) return res.status(400).json({ error: 'q parametresi gerekli' });
   if (!AI_ENABLED) return res.status(503).json({ error: 'AI devre dışı' });
+  const ctx = await getAuthorizedChannelContext(castAuthed(req).user.id, channelId);
+  if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
 
   sseHeaders(res);
   
@@ -242,7 +258,7 @@ router.get('/ask/stream', authMiddleware, limits['ai.stream'](), async (req, res
     try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* client gone */ }
   };
 
-  const channelContext = await getChannelContext(channelId);
+  const channelContext = ctx.context;
   const messages: StreamMessage[] = [
     { role: 'system', content: `Bağlam:\n${channelContext}` },
     { role: 'user', content: q },
@@ -269,6 +285,8 @@ router.get('/stream', authMiddleware, limits['ai.stream'](), async (req, res) =>
   const channelId = String(req.query.channelId ?? '');
   if (!q)          return res.status(400).json({ error: 'q parametresi gerekli' });
   if (!AI_ENABLED) return res.status(503).json({ error: 'AI devre dışı' });
+  const ctx = await getAuthorizedChannelContext(castAuthed(req).user.id, channelId);
+  if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
 
   sseHeaders(res);
 
@@ -276,7 +294,7 @@ router.get('/stream', authMiddleware, limits['ai.stream'](), async (req, res) =>
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
-  const context  = await getChannelContext(channelId);
+  const context  = ctx.context;
   const system   = 'Bridge chat uygulamasının yardımcı asistanısın. Türkçe yanıt ver. Kısa ve öz ol.';
   const userMsg  = context ? `Son mesajlar:\n${context}\n\nSoru: ${q}` : q;
   const messages = [
@@ -315,6 +333,8 @@ router.get('/clyde/stream', authMiddleware, limits['ai.stream'](), async (req, r
   const channelId = String(req.query.channelId ?? '');
   if (!q)          return res.status(400).json({ error: 'q parametresi gerekli' });
   if (!AI_ENABLED) return res.status(503).json({ error: 'AI devre dışı — GROQ_API_KEY veya GEMINI_API_KEY gerekli' });
+  const ctx = await getAuthorizedChannelContext(castAuthed(req).user.id, channelId);
+  if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
 
   let history: StreamMessage[] = [];
   try {
@@ -348,7 +368,7 @@ router.get('/clyde/stream', authMiddleware, limits['ai.stream'](), async (req, r
     try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* client gone */ }
   };
 
-  const channelContext = await getChannelContext(channelId);
+  const channelContext = ctx.context;
   const systemPrompt   = [
     'Sen Bridge chat uygulamasının AI asistanı Clyde\'sın.',
     'Kişiliğin: Samimi, yardımsever, zeki ve esprili.',

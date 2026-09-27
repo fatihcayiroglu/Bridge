@@ -9,13 +9,13 @@
       "ES2020"
     ],
     "strict": true,
-    "noImplicitAny": false,
+    "noImplicitAny": true,
     "skipLibCheck": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "noUnusedLocals": false,
-    "useUnknownInCatchVariables": false,
-    "strictNullChecks": false
+    "useUnknownInCatchVariables": true,
+    "strictNullChecks": true
   },
   "include": [
     "js/**/*.ts"
@@ -24,5 +24,5 @@
     "node_modules",
     "dist-session5"
   ],
-  "_comment": "Sprint 51: base tsconfig.json strict:true oldu. Bu config ignoreDeprecations i\u00e7in korunuyor."
+  "_comment": "Sprint 51: base tsconfig.json strict:true oldu. Bu config ignoreDeprecations için korunuyor."
 }

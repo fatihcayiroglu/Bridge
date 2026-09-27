@@ -43,7 +43,8 @@
 import express from 'express';
 const router  = express.Router();
 import { rateLimit } from '../middleware/rateLimit';
-import { authMiddleware, castAuthed } from '../middleware/auth';
+import { authMiddleware } from '../middleware/auth';
+import { databaseAdminOnly } from '../lib/adminAuthority';
 import { cache } from '../lib/redisAdapter';
 import logger from '../lib/logger';
 
@@ -146,8 +147,7 @@ router.post(
 );
 
 // GET /api/client-error/stats — sadece admin
-router.get('/stats', authMiddleware, (req, res) => {
-  if (!req.user?.isAdmin) return res.status(403).json({ error: 'Unauthorized' });
+router.get('/stats', authMiddleware, databaseAdminOnly, (_req, res) => {
   res.json({
     total:  _errorStats.total,
     byType: _errorStats.byType,

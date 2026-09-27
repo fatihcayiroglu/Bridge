@@ -1,9 +1,19 @@
 // electron/main.ts
-// Additions: deep link (bridge://), system tray, native OS notifications
+//
+// Bridge desktop — a native client for a Bridge server: deep links (bridge://),
+// system tray, native notifications, user-controlled start with Windows, updates.
+//
+// ── Final21 Phase 12: CLIENT, NOT BUNDLED SERVER ─────────────────────────────
+// This process used to spawn a bundled copy of the Bridge server on 127.0.0.1:3001.
+// Measured on an installed build: the copy shipped without node_modules, database
+// or secrets, crashed on `Cannot find module 'dotenv/config'`, and the window stayed
+// empty. A Bridge server needs PostgreSQL and operator secrets; a consumer install
+// cannot provide them. The desktop app now opens the server the user connects to
+// (desktopSettings.ts), like other self-hosted chat clients.
 
 import {
-  app, BrowserWindow, shell, Menu, Tray,
-  Notification, nativeImage, session, ipcMain,
+  app, BrowserWindow, dialog, shell, Menu, Tray,
+  Notification, nativeImage, session, ipcMain, net,
 } from 'electron';
 import {
   checkForBridgeUpdates,
@@ -12,14 +22,42 @@ import {
   teardownBridgeAutoUpdater,
 } from './updater';
 import path from 'path';
-import { spawn, ChildProcess } from 'child_process';
-import http from 'http';
+import { pathToFileURL } from 'url';
+import { getAppOrigin, isAllowedExternalUrl, isSameAppOrigin, setAppOrigin } from './navigationPolicy';
+import { nativeText, normalizeNativeLocale, type NativeTextKey } from './nativeLocale';
+import { ipcSenderUrl, isTrustedIpcSender } from './ipcSecurity';
+import { normalizeServerUrl, readDesktopSettings, writeDesktopSettings, type ServerUrlRejection } from './desktopSettings';
 
 let mainWindow: BrowserWindow | null = null;
+let connectWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
-let serverProcess: ChildProcess | null = null;
+let isQuitting = false;
+let backgroundNoticeShown = false;
 
 const DEEP_LINK_SCHEME = 'bridge';
+const APP_USER_MODEL_ID = 'com.bridge.desktop';
+/** Passed by the "Start with Windows" login item: start in the tray, not in the user's face. */
+const BACKGROUND_ARG = '--background';
+const SERVER_PROBE_TIMEOUT_MS = 8_000;
+
+/** electron/ in both layouts: compiled code runs from electron/dist, tests load electron/*.ts. */
+const APP_ROOT = path.basename(__dirname) === 'dist' ? path.join(__dirname, '..') : __dirname;
+const assetPath = (file: string): string => path.join(APP_ROOT, 'assets', file);
+const connectPagePath = (): string => path.join(APP_ROOT, 'static', 'connect.html');
+const settingsFile = (): string => path.join(app.getPath('userData'), 'desktop-settings.json');
+
+function shellText(key: NativeTextKey, vars: Record<string, string | number> = {}): string {
+  const locale = typeof app.getLocale === 'function' ? app.getLocale() : process.env.BRIDGE_LOCALE;
+  return nativeText(key, vars, locale);
+}
+
+function openExternalSafely(url: string): void {
+  if (!isAllowedExternalUrl(url)) {
+    console.warn('[navigation] Unsafe external URL scheme rejected:', url);
+    return;
+  }
+  void shell.openExternal(url).catch(() => { /* harici acilamadi — yut */ });
+}
 
 // ─── DEEP LINK PROTOCOL ───────────────────────────────────────
 if (process.defaultApp) {
@@ -30,21 +68,6 @@ if (process.defaultApp) {
   app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
 }
 
-// Windows: single instance lock for deep link handling
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.quit();
-} else {
-  app.on('second-instance', (_event: Electron.Event, argv: string[]) => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
-    const url = argv.find((a) => a.startsWith(`${DEEP_LINK_SCHEME}://`));
-    if (url) handleDeepLink(url);
-  });
-}
-
 // Geçerli bridge:// yolu kalıpları
 const DEEPLINK_PATTERNS: RegExp[] = [
   /^bridge:\/\/servers\/([a-zA-Z0-9_-]{1,64})$/,
@@ -52,53 +75,81 @@ const DEEPLINK_PATTERNS: RegExp[] = [
   /^bridge:\/\/invite\/([a-zA-Z0-9_-]{1,32})$/,
 ];
 
+function deepLinkFromArgv(argv: readonly string[]): string | null {
+  return argv.find((a) => a.startsWith(`${DEEP_LINK_SCHEME}://`)) ?? null;
+}
+
+/**
+ * A link that launched the app (cold start) arrives in process.argv, before any
+ * window exists. It used to be dropped: only `second-instance` links were read.
+ * Links wait here until the Bridge page has loaded.
+ */
+let pendingDeepLink: string | null = deepLinkFromArgv(process.argv);
+let appPageLoaded = false;
+
 function handleDeepLink(url: string): void {
-  if (!mainWindow) return;
   const isAllowed = DEEPLINK_PATTERNS.some((pattern) => pattern.test(url));
   if (!isAllowed) {
     console.warn('[deeplink] Geçersiz veya izinsiz URL reddedildi:', url);
     return;
   }
-  mainWindow.webContents.executeJavaScript(
-    `window.dispatchEvent(new CustomEvent('bridge:deeplink', { detail: { url: ${JSON.stringify(url)} } }))`
-  );
+  if (!mainWindow || !appPageLoaded) {
+    pendingDeepLink = url;
+    return;
+  }
+  pendingDeepLink = null;
+  // Delivered over IPC; preload.ts holds it until the web app subscribes, so a
+  // link is not lost when the app boots after the page's load event.
+  mainWindow.webContents.send('desktop:deeplink', url);
 }
 
-// ─── WAIT FOR SERVER ──────────────────────────────────────────
-function waitForServer(retries = 20): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const check = (n: number): void => {
-      http.get('http://localhost:3001', () => resolve())
-        .on('error', () => {
-          if (n <= 0) return reject(new Error('Server did not start'));
-          setTimeout(() => check(n - 1), 500);
-        });
-    };
-    check(retries);
+function revealMainWindow(): void {
+  const win = mainWindow ?? connectWindow;
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+// Windows: single instance — a second launch focuses the running app.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event: Electron.Event, argv: string[]) => {
+    revealMainWindow();
+    const url = deepLinkFromArgv(argv);
+    if (url) handleDeepLink(url);
   });
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleDeepLink(url);
+});
+
+// ─── START WITH WINDOWS (USER-CONTROLLED, OFF BY DEFAULT) ─────
+export function isStartWithWindowsEnabled(): boolean {
+  if (process.platform !== 'win32') return false;
+  return app.getLoginItemSettings({ args: [BACKGROUND_ARG] }).openAtLogin === true;
+}
+
+export function setStartWithWindows(enabled: boolean): void {
+  if (process.platform !== 'win32') return;
+  app.setLoginItemSettings({ openAtLogin: enabled, args: [BACKGROUND_ARG] });
 }
 
 // ─── SYSTEM TRAY ─────────────────────────────────────────────
 function createTray(): void {
-  let icon: Electron.NativeImage;
-  const iconPath = path.join(__dirname, 'icon.png');
-  try {
-    icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
-  } catch {
-    icon = nativeImage.createEmpty();
-  }
-
-  tray = new Tray(icon);
+  const icon = nativeImage.createFromPath(assetPath('tray.png'));
+  tray = new Tray(icon.isEmpty?.() ? nativeImage.createFromPath(assetPath('icon.png')) : icon);
   tray.setToolTip('Bridge');
 
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: 'Bridge\'i Aç',
-      click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } },
-    },
+  const template: Electron.MenuItemConstructorOptions[] = [
+    { label: shellText('openBridge'), click: () => revealMainWindow() },
     { type: 'separator' },
     {
-      label: 'Bildirimler',
+      label: shellText('notifications'),
       type: 'checkbox',
       checked: true,
       click: (item: Electron.MenuItem) => {
@@ -107,276 +158,347 @@ function createTray(): void {
     },
     { type: 'separator' },
     {
-      label: 'Güncellemeleri Kontrol Et',
-      click: () => { void checkForBridgeUpdates(true); },
+      label: shellText('voiceDiagnostics'),
+      click: () => {
+        revealMainWindow();
+        mainWindow?.webContents.send('tray:open-surface', 'voice-check');
+      },
     },
     {
-      label: 'Güncellemeyi Kur ve Yeniden Başlat',
-      click: () => { installDownloadedUpdate(); },
+      label: shellText('systemStatus'),
+      click: () => {
+        revealMainWindow();
+        mainWindow?.webContents.send('tray:open-surface', 'system-health');
+      },
     },
     { type: 'separator' },
-    {
-      label: 'Çıkış',
-      click: () => { (app as any).isQuitting = true; app.quit(); },
-    },
-  ]);
+    { label: shellText('checkUpdates'), click: () => { void checkForBridgeUpdates(true); } },
+    { label: shellText('installRestart'), click: () => { installDownloadedUpdate(); } },
+    { type: 'separator' },
+    { label: shellText('changeServer'), click: () => openConnectWindow() },
+  ];
+  if (process.platform === 'win32') {
+    template.push({
+      label: shellText('startWithWindows'),
+      type: 'checkbox',
+      checked: isStartWithWindowsEnabled(),
+      click: (item: Electron.MenuItem) => setStartWithWindows(item.checked),
+    });
+  }
+  template.push(
+    { type: 'separator' },
+    { label: shellText('quit'), click: () => { isQuitting = true; app.quit(); } },
+  );
 
-  tray.setContextMenu(contextMenu);
-  tray.on('click', () => {
-    if (!mainWindow) return;
-    mainWindow.isVisible() ? mainWindow.hide() : mainWindow.show();
-  });
-  tray.on('double-click', () => { mainWindow?.show(); mainWindow?.focus(); });
+  tray.setContextMenu(Menu.buildFromTemplate(template));
+  tray.on('click', () => revealMainWindow());
 }
 
 // ─── NATIVE NOTIFICATIONS ─────────────────────────────────────
 interface NotifyPayload { title: string; body: string; icon?: string; }
 
-ipcMain.on('bridge:notify', (_event: Electron.IpcMainEvent, { title, body }: NotifyPayload) => {
-  if (!Notification.isSupported()) return;
+ipcMain.on('bridge:notify', (event: Electron.IpcMainEvent, payload: NotifyPayload) => {
+  if (!isTrustedIpcSender(event) || !Notification.isSupported()) return;
+  const title = typeof payload?.title === 'string' ? payload.title.slice(0, 160) : '';
+  const body = typeof payload?.body === 'string' ? payload.body.slice(0, 1000) : '';
   const n = new Notification({
     title: title || 'Bridge',
-    body:  body  || '',
+    body,
+    icon: assetPath('icon.png'),
     silent: false,
   });
-  n.on('click', () => { mainWindow?.show(); mainWindow?.focus(); });
+  n.on('click', () => revealMainWindow());
   n.show();
 });
 
-// ─── SERVER CONTROL IPC ───────────────────────────────────────
-function resolveBundledServerEntry(): string {
-  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? path.join(__dirname, '..');
-  const candidates = app.isPackaged
-    ? [
-        path.join(resourcesPath, 'server', 'index.js'),
-        path.join(resourcesPath, 'server', 'dist', 'index.js'),
-      ]
-    : [
-        path.join(__dirname, '..', '..', 'server', 'dist', 'index.js'),
-        path.join(__dirname, '..', '..', 'server', 'index.js'),
-      ];
+// ─── CONNECT TO A SERVER ──────────────────────────────────────
+const REJECTION_TEXT: Record<ServerUrlRejection, NativeTextKey> = {
+  empty: 'connectInvalid',
+  invalid: 'connectInvalid',
+  insecure: 'connectInsecure',
+  credentials: 'connectCredentials',
+};
 
-  return candidates.find((candidate) => {
-    try { return require('fs').existsSync(candidate); } catch { return false; }
-  }) ?? candidates[0]!;
+/** True only for a Bridge server: `/api/health/live` answers `{ status: 'ok', check: 'liveness' }`. */
+export async function probeBridgeServer(origin: string): Promise<boolean> {
+  try {
+    const response = await net.fetch(`${origin}/api/health/live`, {
+      redirect: 'error',
+      signal: AbortSignal.timeout(SERVER_PROBE_TIMEOUT_MS),
+    });
+    if (!response.ok) return false;
+    const body = await response.json() as { status?: unknown; check?: unknown };
+    return body?.status === 'ok' && body?.check === 'liveness';
+  } catch {
+    return false;
+  }
 }
 
-type ServerStatus = 'stopped' | 'starting' | 'running' | 'error';
-interface LogEntry { t: number; level: 'info' | 'error'; line: string; }
-
-let serverLogs: LogEntry[] = [];
-let serverStatus: ServerStatus = 'stopped';
-
-function broadcastServerStatus(): void {
-  mainWindow?.webContents.send('server:status', {
-    status: serverStatus,
-    pid: serverProcess?.pid ?? null,
-  });
+/** The connect IPC answers only the local connect page in the connect window. */
+function isConnectPageSender(event: Electron.IpcMainInvokeEvent): boolean {
+  if (!connectWindow || event.sender !== connectWindow.webContents) return false;
+  const url = ipcSenderUrl(event).split(/[?#]/)[0];
+  return url === pathToFileURL(connectPagePath()).href;
 }
 
-function broadcastLog(line: string, level: 'info' | 'error' = 'info'): void {
-  const entry: LogEntry = { t: Date.now(), level, line };
-  serverLogs.push(entry);
-  if (serverLogs.length > 200) serverLogs.shift();
-  mainWindow?.webContents.send('server:log', entry);
-}
+ipcMain.handle('desktop:connect-context', (event) => {
+  if (!isConnectPageSender(event)) throw new Error('Untrusted IPC sender');
+  const locale = normalizeNativeLocale(app.getLocale());
+  return {
+    locale,
+    lastOrigin: getAppOrigin(),
+    strings: {
+      connectTitle: shellText('connectTitle'),
+      connectHelp: shellText('connectHelp'),
+      connectLabel: shellText('connectLabel'),
+      connectButton: shellText('connectButton'),
+      connecting: shellText('connecting'),
+    },
+  };
+});
 
-function startServerControlled(): void {
-  if (serverProcess && !serverProcess.killed) return;
-  serverStatus = 'starting';
-  broadcastServerStatus();
-  broadcastLog('Sunucu başlatılıyor…', 'info');
+ipcMain.handle('desktop:connect', async (event, address: unknown) => {
+  if (!isConnectPageSender(event)) throw new Error('Untrusted IPC sender');
+  const normalized = normalizeServerUrl(address);
+  if (!normalized.ok) return { ok: false, message: shellText(REJECTION_TEXT[normalized.reason]) };
+  if (!(await probeBridgeServer(normalized.origin))) return { ok: false, message: shellText('connectUnreachable') };
 
-  const serverPath = resolveBundledServerEntry();
-  serverProcess = spawn(process.execPath, [serverPath], {
-    env: { ...process.env, PORT: '3001', ELECTRON_RUN_AS_NODE: '1' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  writeDesktopSettings(settingsFile(), { serverOrigin: normalized.origin });
+  const changed = normalized.origin !== getAppOrigin();
+  setAppOrigin(normalized.origin);
+  if (!mainWindow) createMainWindow();
+  else if (changed) loadAppOrigin();
+  revealMainWindow();
+  connectWindow?.close();
+  return { ok: true };
+});
 
-  serverProcess.stdout?.on('data', (d: Buffer) => {
-    const line = d.toString().trim();
-    console.log('[Server]', line);
-    if (serverStatus === 'starting') { serverStatus = 'running'; broadcastServerStatus(); }
-    broadcastLog(line, 'info');
-  });
-
-  serverProcess.stderr?.on('data', (d: Buffer) => {
-    const line = d.toString().trim();
-    console.error('[Server Error]', line);
-    broadcastLog(line, 'error');
-  });
-
-  serverProcess.on('exit', (code: number | null) => {
-    broadcastLog(`Sunucu durdu (kod: ${code})`, code === 0 ? 'info' : 'error');
-    serverProcess = null;
-    serverStatus = code === 0 ? 'stopped' : 'error';
-    broadcastServerStatus();
-  });
-}
-
-function stopServerControlled(): void {
-  if (!serverProcess || serverProcess.killed) {
-    serverStatus = 'stopped';
-    broadcastServerStatus();
+function openConnectWindow(): void {
+  if (connectWindow) {
+    connectWindow.show();
+    connectWindow.focus();
     return;
   }
-  broadcastLog('Sunucu durduruluyor…', 'info');
-  serverProcess.kill('SIGTERM');
-  setTimeout(() => {
-    if (serverProcess && !serverProcess.killed) {
-      serverProcess.kill('SIGKILL');
-    }
-  }, 5000);
+  connectWindow = new BrowserWindow({
+    width: 520,
+    height: 600,
+    resizable: false,
+    maximizable: false,
+    title: 'Bridge',
+    backgroundColor: '#0c0e1a',
+    autoHideMenuBar: true,
+    icon: assetPath('icon.png'),
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      preload: path.join(__dirname, 'connectPreload.js'),
+    },
+  });
+  connectWindow.setMenu(null);
+  connectWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  connectWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  void connectWindow.loadFile(connectPagePath());
+  connectWindow.once('ready-to-show', () => connectWindow?.show());
+  connectWindow.on('closed', () => { connectWindow = null; });
 }
 
-ipcMain.on('server:start',   () => startServerControlled());
-ipcMain.on('server:stop',    () => stopServerControlled());
-ipcMain.on('server:restart', () => {
-  broadcastLog('Yeniden başlatılıyor…', 'info');
-  if (serverProcess && !serverProcess.killed) {
-    serverProcess.once('exit', () => startServerControlled());
-    stopServerControlled();
-  } else {
-    startServerControlled();
-  }
-});
-ipcMain.handle('server:getStatus', () => ({
-  status: serverStatus,
-  pid: serverProcess?.pid ?? null,
-  logs: serverLogs,
-}));
+// ─── MAIN WINDOW ──────────────────────────────────────────────
+function loadAppOrigin(): void {
+  const origin = getAppOrigin();
+  if (!mainWindow || !origin) return;
+  appPageLoaded = false;
+  void mainWindow.loadURL(origin).catch((err: unknown) => console.error('[window] load failed:', err));
+}
 
-// ─── CREATE WINDOW ────────────────────────────────────────────
-function createWindow(): void {
-  mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 900,
-    minHeight: 600,
-    backgroundColor: '#1a1b1e',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    frame: process.platform !== 'win32',
-    autoHideMenuBar: true,
-    webPreferences: {
-      nodeIntegration:            false,
-      contextIsolation:           true,
-      webSecurity:                true,
-      allowRunningInsecureContent: false,
-      preload: path.join(__dirname, 'preload.js'),
-    },
-    icon: path.join(__dirname, 'icon.png'),
-    show: false,
-  });
-
-  // Sprint 122 FIX 8: Content Security Policy — Electron'da XSS → RCE zincirini engeller.
-  // nodeIntegration=false + contextIsolation=true ile birlikte derinlemesine savunma.
+function installSessionPolicies(): void {
+  // Electron must never weaken the server-owned nonce CSP. If the server
+  // unexpectedly omits CSP on a document, install a strict fail-closed fallback
+  // without unsafe-inline/eval. An existing policy is preserved byte-for-byte.
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const headers = details.responseHeaders ?? {};
+    const hasCsp = Object.keys(headers).some((key) => key.toLowerCase() === 'content-security-policy');
+    const isDocument = details.resourceType === 'mainFrame' || details.resourceType === 'subFrame';
+    if (hasCsp || !isDocument || !isSameAppOrigin(details.url)) return callback({ responseHeaders: headers });
     callback({
       responseHeaders: {
-        ...details.responseHeaders,
+        ...headers,
         'Content-Security-Policy': [
-          "default-src 'self' http://localhost:3001 ws://localhost:3001;" +
-          "script-src 'self' 'unsafe-inline' http://localhost:3001;" +
-          "style-src 'self' 'unsafe-inline';" +
-          "img-src 'self' data: blob: http://localhost:3001 https:;" +
-          "media-src 'self' blob: http://localhost:3001;" +
-          "connect-src 'self' http://localhost:3001 ws://localhost:3001 wss://localhost:3001;" +
-          "font-src 'self' data:;" +
-          "worker-src 'self' blob:;" +
-          "frame-ancestors 'none';"
+          "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; " +
+          "media-src 'self' blob:; connect-src 'self' wss: https:; font-src 'self' data:; worker-src 'self' blob:; " +
+          "object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
         ],
       },
     });
   });
 
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
     const allowed: string[] = ['media', 'display-capture', 'mediaKeySystem', 'notifications'];
-    callback(allowed.includes(permission));
+    const requesterUrl = (webContents as { getURL?: () => string }).getURL?.() ?? '';
+    callback(isSameAppOrigin(requesterUrl) && allowed.includes(permission));
+  });
+}
+
+function createMainWindow(): void {
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
+    title: 'Bridge',
+    backgroundColor: '#0c0e1a',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    autoHideMenuBar: true,
+    webPreferences: {
+      nodeIntegration:            false,
+      contextIsolation:           true,
+      sandbox:                    true,
+      webSecurity:                true,
+      allowRunningInsecureContent: false,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+    icon: assetPath('icon.png'),
+    show: false,
   });
 
-  mainWindow.loadURL('http://localhost:3001');
-  mainWindow.once('ready-to-show', () => mainWindow!.show());
+  const startInBackground = process.argv.includes(BACKGROUND_ARG);
+  mainWindow.once('ready-to-show', () => { if (!startInBackground) mainWindow?.show(); });
+  mainWindow.webContents.on('did-finish-load', () => {
+    appPageLoaded = isSameAppOrigin(mainWindow?.webContents.getURL() ?? '');
+    if (appPageLoaded && pendingDeepLink) handleDeepLink(pendingDeepLink);
+  });
+  loadAppOrigin();
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalSafely(url);
     return { action: 'deny' };
   });
 
-  app.on('open-url', (event, url) => {
+  // ══════════════════════════════════════════════════════════════════════════
+  // PENCERE ICI GEZINME KILITLENIR — DERINLEMESINE SAVUNMA
+  // ══════════════════════════════════════════════════════════════════════════
+  // `setWindowOpenHandler` YALNIZCA YENI pencere/sekme acilislarini kapsar.
+  // ANA pencerenin KENDI icinde baska bir adrese gitmesini engellemez
+  // (`window.location`, `<a target="_self">`, meta refresh, JS yonlendirme).
+  //
+  // NEDEN ONEMLI: `setPermissionRequestHandler` bu oturuma mikrofon/kamera gibi
+  // izinleri VERIR. Pencere dusman bir adrese giderse, o kaynak ZATEN VERILMIS
+  // izinleri devralir. Bridge masaustu istemcisi TEK bir sunucu kaynagini yukler;
+  // disari cikan her gezinme varsayilan tarayiciya devredilir.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (isSameAppOrigin(url)) return;                // uygulama ici gezinme serbest
     event.preventDefault();
-    handleDeepLink(url);
+    openExternalSafely(url);
+  });
+
+  // Alt cerceve (iframe/webview) gezinmeleri de ayni kurala tabidir.
+  mainWindow.webContents.on('will-frame-navigate', (event: Electron.Event & { url?: string }) => {
+    const url = String((event as { url?: string }).url ?? '');
+    if (!isSameAppOrigin(url)) event.preventDefault();
+  });
+
+  // Yeni bir webview eklenmesi ENGELLENIR.
+  mainWindow.webContents.on('will-attach-webview', (event) => {
+    event.preventDefault();
   });
 
   mainWindow.on('close', (e: Electron.Event) => {
-    if (!(app as any).isQuitting && process.platform !== 'darwin') {
+    if (!isQuitting && process.platform !== 'darwin') {
       e.preventDefault();
       mainWindow!.hide();
-      (tray as any)?.displayBalloon?.({
-        title: 'Bridge',
-        content: 'Bridge arka planda çalışmaya devam ediyor.',
-      });
+      if (!backgroundNoticeShown) {
+        backgroundNoticeShown = true;
+        tray?.displayBalloon({ title: 'Bridge', content: shellText('backgroundRunning'), iconType: 'info' });
+      }
     }
   });
 
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('closed', () => { mainWindow = null; appPageLoaded = false; });
+
+  const viewItems: Electron.MenuItemConstructorOptions[] = [
+    { label: shellText('reload'), accelerator: 'CmdOrCtrl+R', click: () => mainWindow!.reload() },
+  ];
+  // Developer tools only in development builds; an installed app exposes no dev console.
+  if (!app.isPackaged) {
+    viewItems.push({ label: 'DevTools', accelerator: 'F12', click: () => mainWindow!.webContents.toggleDevTools() });
+  }
+  viewItems.push(
+    { type: 'separator' },
+    { label: shellText('zoomIn'), accelerator: 'CmdOrCtrl+Plus',  click: () => { mainWindow!.webContents.zoomFactor = Math.min(mainWindow!.webContents.zoomFactor + 0.1, 3); } },
+    { label: shellText('zoomOut'),  accelerator: 'CmdOrCtrl+-',     click: () => { mainWindow!.webContents.zoomFactor = Math.max(mainWindow!.webContents.zoomFactor - 0.1, 0.5); } },
+    { label: shellText('resetZoom'),     accelerator: 'CmdOrCtrl+0',     click: () => { mainWindow!.webContents.zoomFactor = 1; } },
+  );
 
   const menu = Menu.buildFromTemplate([
     {
       label: 'Bridge',
       submenu: [
-        { label: 'Bridge Hakkında', click: () => {} },
+        { label: shellText('about'), click: () => showAbout() },
         { type: 'separator' },
-        { label: 'Güncellemeleri Kontrol Et', click: () => { void checkForBridgeUpdates(true); } },
-        {
-          label: 'Güncellemeyi Kur ve Yeniden Başlat',
-          click: () => { installDownloadedUpdate(); },
-        },
+        { label: shellText('checkUpdates'), click: () => { void checkForBridgeUpdates(true); } },
+        { label: shellText('installRestart'), click: () => { installDownloadedUpdate(); } },
+        { label: shellText('changeServer'), click: () => openConnectWindow() },
         { type: 'separator' },
-        { label: 'Çıkış', accelerator: 'CmdOrCtrl+Q', click: () => { (app as any).isQuitting = true; app.quit(); } },
+        { label: shellText('quit'), accelerator: 'CmdOrCtrl+Q', click: () => { isQuitting = true; app.quit(); } },
       ],
     },
-    {
-      label: 'Görünüm',
-      submenu: [
-        { label: 'Yenile',       accelerator: 'CmdOrCtrl+R',    click: () => mainWindow!.reload() },
-        { label: 'DevTools',     accelerator: 'F12',             click: () => mainWindow!.webContents.toggleDevTools() },
-        { type: 'separator' },
-        { label: 'Yakınlaştır', accelerator: 'CmdOrCtrl+Plus',  click: () => { mainWindow!.webContents.zoomFactor = Math.min(mainWindow!.webContents.zoomFactor + 0.1, 3); } },
-        { label: 'Uzaklaştır',  accelerator: 'CmdOrCtrl+-',     click: () => { mainWindow!.webContents.zoomFactor = Math.max(mainWindow!.webContents.zoomFactor - 0.1, 0.5); } },
-        { label: 'Sıfırla',     accelerator: 'CmdOrCtrl+0',     click: () => { mainWindow!.webContents.zoomFactor = 1; } },
-      ],
-    },
+    { label: shellText('view'), submenu: viewItems },
   ]);
   Menu.setApplicationMenu(menu);
 }
 
+function showAbout(): void {
+  void dialog.showMessageBox({
+    type: 'info',
+    title: 'Bridge',
+    message: shellText('about'),
+    detail: shellText('aboutDetail', { version: app.getVersion() }),
+    icon: nativeImage.createFromPath(assetPath('icon.png')),
+  });
+}
+
 // ─── APP LIFECYCLE ────────────────────────────────────────────
-app.whenReady().then(async () => {
-  console.log('🌉 Bridge başlatılıyor…');
-  startServerControlled();
+app.whenReady().then(() => {
+  if (!gotLock) return;
+  if (process.platform === 'win32') app.setAppUserModelId(APP_USER_MODEL_ID);
+  console.log(`🌉 ${shellText('appStarting')}`);
 
-  try {
-    await waitForServer();
-    console.log('✅ Sunucu hazır');
-  } catch (e) {
-    console.error('Sunucu başlatılamadı');
-  }
-
+  installSessionPolicies();
   createTray();
-  createWindow();
+
+  const { serverOrigin } = readDesktopSettings(settingsFile());
+  if (serverOrigin) {
+    setAppOrigin(serverOrigin);
+    createMainWindow();
+  } else {
+    openConnectWindow();
+  }
 
   setupBridgeAutoUpdater(() => mainWindow);
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    else mainWindow?.show();
+    if (mainWindow) mainWindow.show();
+    else if (getAppOrigin()) createMainWindow();
+    else openConnectWindow();
   });
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-app.on('before-quit', () => { (app as any).isQuitting = true; });
+app.on('before-quit', () => { isQuitting = true; });
 app.on('quit', () => {
   teardownBridgeAutoUpdater();
-  serverProcess?.kill();
   tray?.destroy();
 });
+
+/** Test hooks — module state is otherwise private to the Electron main process. */
+export const _testing = {
+  handleDeepLink,
+  deepLinkFromArgv,
+  getPendingDeepLink: (): string | null => pendingDeepLink,
+  getMainWindow: (): BrowserWindow | null => mainWindow,
+  getConnectWindow: (): BrowserWindow | null => connectWindow,
+  isConnectPageSender,
+  connectPagePath,
+};

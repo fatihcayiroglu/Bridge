@@ -44,18 +44,35 @@ import { Channels, Members, Messages, Users } from '../../db/repositories';
 import { authMiddleware} from '../../middleware/auth';
 import { cache } from '../../lib/redisAdapter';
 import { rulesSummary, MessageLike } from '../../lib/modRules';
-import { callAI, AI_ENABLED, PROVIDER, safeProvider } from '../../lib/aiProvider';
+import { callAI, AI_ENABLED, PROVIDER } from '../../lib/aiProvider';
+import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
+import { parseBoundedPositiveIntQuery } from '../../lib/queryNumbers';
 
 // GET /api/ai/summarize/:channelId
 router.get('/:channelId', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const channelId = String(req.params.channelId ?? '');
-  const limit = Math.min(parseInt(String(req.query.limit ?? '')) || 50, 100);
+  const limit = parseBoundedPositiveIntQuery(req.query.limit, 50, 100);
+  if (limit === null) return res.status(400).json({ error: 'limit must be a positive safe integer' });
 
   const channel = await Channels.findById(channelId);
   if (!channel) return res.status(404).json({ error: 'Kanal bulunamadı' });
   if (!await Members.findOne(_u.id, channel.serverId))
     return res.status(403).json({ error: 'Üye değilsiniz' });
+
+  // FAZ F — VIEW_CHANNELS DENETIMI (sunucu uyeligi YETMEZ).
+  //
+  // Onceden yalniz uyelik denetleniyordu; oysa ozel bir kanal ayni sunucunun
+  // uyesine de KAPALI olabilir. Sizinti AI'a bagli DEGILDI: saglayici
+  // yapilandirilmamisken bile `rulesSummary` yedegi devreye giriyor ve
+  // katilimci ADLARINI, en aktif kullaniciyi, mesaj sayisini, ilk/son zaman
+  // damgalarini ve link sayisini donduruyordu. Yani gormeye yetkisi olmayan
+  // bir uye, ozel kanali profilleyebiliyordu.
+  //
+  // Ayni kusur sinifi Faz D'de `search.ts` icinde duzeltilmisti.
+  const perms = await resolvePermissions(_u.id, String(channel.serverId), channelId).catch(() => 0);
+  if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY))
+    return res.status(403).json({ error: 'Bu kanalın geçmişini görüntüleyemezsiniz.' });
 
   const cacheKey = `ai:sum:${channelId}:${limit}`;
   const cached = await cache.get(cacheKey);

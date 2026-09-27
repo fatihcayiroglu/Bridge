@@ -1,25 +1,41 @@
 // server/tests/ipReputation.test.ts
+import { makeMiddlewareDoubles, injectMissingHeaderBag, type ReqDouble, type ResDouble, type NextDouble } from './helpers/expressDoubles';
 // IP Reputation Kontrolü — birim + entegrasyon testleri
 //
 // Bu testler hiçbir harici ağ isteği yapmaz.
 // AbuseIPDB ve Tor listesi tamamen mock'lanır.
 
 process.env.NODE_ENV       = 'test';
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 
 // ipBan.js, ipReputation.js tarafından import ediliyor —
 // getClientIp'in çalışması için gerçek modül yüklenmeli.
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 
 // https modülünü mock'la — AbuseIPDB isteklerini simüle etmek için
-let _mockHttpsResponse = null; // { statusCode, body } | null (= timeout)
+//
+// `null` = yanıt hiç gelmez (zaman aşımı senaryosu). Bildirimin TİPLİ olması
+// şart: aksi halde `_mockHttpsResponse` örtük `any` olur ve her kullanım yeri
+// ayrı bir strict hatası doğurur.
+// `statusCode` ISTEGE BAGLIdir: ne ikiz onu `mockRes`e koyuyor ne de urun
+// (`middleware/ipReputation.ts`) okuyor. Zorunlu yazmak, var olmayan bir
+// sozlesmeyi varmis gibi gosteriyor ve bes cagri yerinde TS2741 uretiyordu.
+type MockHttpsResponse = { statusCode?: number; body: string } | null;
+type HttpsDataHandler = (chunk: string) => void;
+type HttpsEndHandler = () => void;
+/** `https.IncomingMessage`in bu testin dokunduğu alt kümesi. */
+interface HttpsResponseDouble {
+  on: jest.Mock;
+}
+
+let _mockHttpsResponse: MockHttpsResponse = null;
 jest.mock('https', () => ({
-  get: jest.fn((url, optsOrCb, cb) => {
+  get: jest.fn((url: string, optsOrCb: unknown, cb?: unknown) => {
     // https.get(url, headers, callback) veya https.get(url, callback)
     const callback = typeof optsOrCb === 'function' ? optsOrCb : cb;
-    const mockRes = {
-      on: jest.fn((event, handler) => {
+    const mockRes: HttpsResponseDouble = {
+      on: jest.fn((event: string, handler: HttpsDataHandler & HttpsEndHandler) => {
         if (event === 'data' && _mockHttpsResponse) handler(_mockHttpsResponse.body);
         if (event === 'end')                         handler();
         return mockRes;
@@ -30,7 +46,7 @@ jest.mock('https', () => ({
         // timeout simülasyonu — req.setTimeout callback'ini tetikle
         return;
       }
-      if (callback) callback(mockRes);
+      if (typeof callback === 'function') callback(mockRes);
     });
     return {
       setTimeout: jest.fn(),
@@ -73,9 +89,16 @@ beforeEach(() => {
 // ══════════════════════════════════════════════════════════════
 
 describe('_isPrivateIp', () => {
-  it('loopback adreslerini özel kabul eder', () => {
+  it('loopback/link-local/ULA ve mapped adresleri non-public kabul eder', () => {
     expect(_isPrivateIp('127.0.0.1')).toBe(true);
+    expect(_isPrivateIp('127.9.8.7')).toBe(true);
+    expect(_isPrivateIp('169.254.10.20')).toBe(true);
+    expect(_isPrivateIp('100.64.1.1')).toBe(true);
     expect(_isPrivateIp('::1')).toBe(true);
+    expect(_isPrivateIp('fc00::1234')).toBe(true);
+    expect(_isPrivateIp('fd12:3456::1')).toBe(true);
+    expect(_isPrivateIp('fe80::1')).toBe(true);
+    expect(_isPrivateIp('::ffff:10.1.2.3')).toBe(true);
   });
 
   it('RFC-1918 bloklarını özel kabul eder', () => {
@@ -92,10 +115,11 @@ describe('_isPrivateIp', () => {
     expect(_isPrivateIp('203.0.113.5')).toBe(false);
   });
 
-  it('bilinmeyen / boş değerleri güvenli kabul eder', () => {
+  it('bilinmeyen / boş / malformed değerleri dış servise göndermez', () => {
     expect(_isPrivateIp('unknown')).toBe(true);
     expect(_isPrivateIp('')).toBe(true);
     expect(_isPrivateIp(null)).toBe(true);
+    expect(_isPrivateIp('not-an-ip')).toBe(true);
   });
 });
 
@@ -116,6 +140,22 @@ describe('_ipInCidr', () => {
   it('CIDR olmayan girdi düz IP karşılaştırması yapar', () => {
     expect(_ipInCidr('5.5.5.5', '5.5.5.5')).toBe(true);
     expect(_ipInCidr('5.5.5.6', '5.5.5.5')).toBe(false);
+  });
+
+  it.each([
+    ['192.168.1.1', '192.168.1.0/24junk'],
+    ['192.168.1.1', '192.168.1.0/-1'],
+    ['192.168.1.1', '192.168.1.0/33'],
+    ['999.1.1.1', '192.168.1.0/24'],
+    ['192.168.1.1', '999.168.1.0/24'],
+    ['2001:db8::1', '2001:db8::/64'],
+    ['192.168.1.1', '192.168.1.0/24/extra'],
+  ])('malformed/unsupported CIDR input fails closed: %s in %s', (ip, cidr) => {
+    expect(_ipInCidr(ip, cidr)).toBe(false);
+  });
+
+  it('/0 IPv4 CIDR aralığını doğru işler', () => {
+    expect(_ipInCidr('203.0.113.5', '0.0.0.0/0')).toBe(true);
   });
 });
 
@@ -329,15 +369,13 @@ describe('checkIpReputation — öncelik sırası', () => {
 // ══════════════════════════════════════════════════════════════
 
 describe('ipReputationMiddleware', () => {
-  let req, res, next;
+  // Ikizler KANONIK ve TIPLI fabrikadan gelir (tests/helpers/expressDoubles).
+  // Onceden `let req, res, next;` bildirimi ortuk `any` uretiyor ve bu TEK
+  // satir bu dosyada 57 strict hatasi doguruyordu.
+  let req: ReqDouble, res: ResDouble, next: NextDouble;
 
   beforeEach(() => {
-    req  = { ip: '8.8.8.8', path: '/api/messages', headers: {} };
-    res  = {
-      status: jest.fn().mockReturnThis(),
-      json:   jest.fn().mockReturnThis(),
-    };
-    next = jest.fn();
+    ({ req, res, next } = makeMiddlewareDoubles({ ip: '8.8.8.8', path: '/api/messages' }));
   });
 
   it('temiz IP\'de next() çağrılır', async () => {
@@ -374,23 +412,74 @@ describe('ipReputationMiddleware', () => {
     expect(next).toHaveBeenCalled();
   });
 
-  it('beklenmedik hata trafiği durdurmuyor', async () => {
-    // getClientIp yerine hatalı req verelim
-    req.ip      = undefined;
-    req.headers = null; // headers erişimi hata fırlatabilir
-    // Middleware catch bloğuna girip next() çağırmalı
+  it('beklenmedik middleware hatasında fail-closed 503 döner', async () => {
+    req.ip = undefined;
+    // Kasıtlı BOZUK istek: başlık torbası hiç yok. Express'in kendi tipleri bu
+    // durumu ifade edemez ama çalışma zamanı üretebilir (bozuk upgrade, araya
+    // giren proxy). Üretim kodu bunu FAIL-CLOSED karşılamak zorunda.
+    injectMissingHeaderBag(req);
     await expect(ipReputationMiddleware(req, res, next)).resolves.not.toThrow();
-    // next ya da res.status çağrılmış olmalı (hata toleransı)
-    // (sonuç implementation detayına göre değişebilir)
+    if (res.status.mock.calls.length > 0) {
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(next).not.toHaveBeenCalled();
+    }
   });
 
-  it('X-Forwarded-For başlığından IP okur', async () => {
-    req.ip      = '127.0.0.1';  // proxy arkasında
-    req.headers = { 'x-forwarded-for': '8.8.8.8, 172.16.0.1' };
-    _setStaticBlocklist(new Set(['8.8.8.8']));
-    await ipReputationMiddleware(req, res, next);
-    // 8.8.8.8 blocklist'te olduğu için 403 beklenir
-    expect(res.status).toHaveBeenCalledWith(403);
+  // ══════════════════════════════════════════════════════════════════════════
+  // PROXY GUVEN MODELI
+  // ══════════════════════════════════════════════════════════════════════════
+  // BU TEST DEGISTIRILDI. Eski hali soyleydi:
+  //
+  //     req.headers = { 'x-forwarded-for': '8.8.8.8, 172.16.0.1' };
+  //     ... 8.8.8.8 engelli oldugu icin 403 bekle
+  //
+  // Yani zincirin ILK hop'unun karar verdigini iddia ediyordu. Ama ilk hop
+  // TAMAMEN ISTEMCI TARAFINDAN YAZILIR: proxy gercek IP'yi SONA ekler. Test
+  // boylece tam olarak GUVENLIK ACIGINI beklenen davranis olarak kodluyordu —
+  // saldirganin itibar kararini kendi secmesini.
+  //
+  // Yerine guven modelinin HER IKI yonu test edilir. Ayrintilar: lib/clientIp.ts
+  describe('X-Forwarded-For güven modeli', () => {
+    let savedN: string | undefined;
+    beforeEach(() => { savedN = process.env.TRUSTED_PROXY_COUNT; });
+    afterEach(() => {
+      if (savedN === undefined) delete process.env.TRUSTED_PROXY_COUNT;
+      else process.env.TRUSTED_PROXY_COUNT = savedN;
+    });
+
+    it('proxy GÜVENİLİYORSA gerçek istemci hop’u okunur', () => {
+      // Mesru dagitim: proxy gercek IP'yi (8.8.8.8) sona ekledi.
+      process.env.TRUSTED_PROXY_COUNT = '1';
+      req.ip      = '127.0.0.1';
+      req.headers = { 'x-forwarded-for': '1.2.3.4, 8.8.8.8' };
+      _setStaticBlocklist(new Set(['8.8.8.8']));
+      return ipReputationMiddleware(req, res, next).then(() => {
+        expect(res.status).toHaveBeenCalledWith(403);
+      });
+    });
+
+    it('ENGELLİ istemci sahte ön ek ekleyerek KAÇAMAZ', () => {
+      // Gercek istemci 8.8.8.8 (engelli) ve temiz bir IP uydurmaya calisiyor.
+      process.env.TRUSTED_PROXY_COUNT = '1';
+      req.ip      = '127.0.0.1';
+      req.headers = { 'x-forwarded-for': '203.0.113.7, 8.8.8.8' };
+      _setStaticBlocklist(new Set(['8.8.8.8']));
+      return ipReputationMiddleware(req, res, next).then(() => {
+        expect(res.status).toHaveBeenCalledWith(403);
+      });
+    });
+
+    it('proxy GÜVENİLMİYORSA (varsayılan) XFF hiç dikkate ALINMAZ', () => {
+      // Saldirgan bir baskasini engelletmek icin XFF uydurabilirdi.
+      delete process.env.TRUSTED_PROXY_COUNT;
+      req.ip      = '127.0.0.1';
+      req.headers = { 'x-forwarded-for': '8.8.8.8' };
+      _setStaticBlocklist(new Set(['8.8.8.8']));
+      return ipReputationMiddleware(req, res, next).then(() => {
+        expect(res.status).not.toHaveBeenCalledWith(403);
+        expect(next).toHaveBeenCalled();
+      });
+    });
   });
 });
 
@@ -411,3 +500,10 @@ describe('_getConfig', () => {
     expect(_getConfig().abuseThreshold).toBe(50);
   });
 });
+
+// Bu dosyada ust duzey import/export yoktu; TypeScript onu GLOBAL
+// SCRIPT sayiyor ve ust duzey adlari diger ayni durumdaki test
+// dosyalariyla CAKISIYORDU (TS2393/TS2451, ve arguman tiplerinin
+// baska bir dosyanin bildirimine cozulmesi). Bu satir modul kapsami
+// ilan eder; calisma zamaninda hicbir sey degistirmez.
+export {};

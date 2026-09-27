@@ -2,6 +2,7 @@
   k8s/helm/bridge/templates/deployment.yaml
   Bridge uygulama Deployment + HPA + PDB
 */}}
+{{- include "bridge.validateUploadStorage" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,6 +26,12 @@ spec:
     metadata:
       labels:
         {{- include "bridge.selectorLabels" . | nindent 8 }}
+        {{- if and .Values.redis.enabled .Values.redis.networkPolicy.enabled }}
+        {{ include "bridge.dependencyFullname" (list . "redis") }}-client: "true"
+        {{- end }}
+        {{- if and .Values.postgresql.enabled .Values.postgresql.networkPolicy.enabled }}
+        bridge.io/postgresql-client: "true"
+        {{- end }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -32,7 +39,11 @@ spec:
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        # The Secret lives in service-ingress-secret.yaml; there is no
+        # templates/secret.yaml. `include` on a missing template name is a
+        # RENDER-TIME error, so this annotation made `helm template/install`
+        # fail outright — the chart could not be deployed at all.
+        checksum/secret: {{ include (print $.Template.BasePath "/service-ingress-secret.yaml") . | sha256sum }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -71,30 +82,55 @@ spec:
               value: {{ $value | quote }}
             {{- end }}
             {{- if .Values.postgresql.enabled }}
+            # Parola çizelgenin kullandığı Secret'tan gelir; `$(POSTGRES_PASSWORD)` başka türlü
+            # yalnızca kullanıcı onu ayrıca `secrets` içine kopyalarsa tanımlı oluyordu.
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.auth.existingSecret | required "postgresql.auth.existingSecret is required" }}
+                  key: {{ .Values.postgresql.auth.secretKeys.userPasswordKey | default "password" }}
             - name: DATABASE_URL
-              value: "postgresql://{{ .Values.postgresql.auth.username }}:$(POSTGRES_PASSWORD)@{{ include "bridge.fullname" . }}-postgresql:5432/{{ .Values.postgresql.auth.database }}"
+              value: "postgresql://{{ .Values.postgresql.auth.username }}:$(POSTGRES_PASSWORD)@{{ include "bridge.dependencyFullname" (list . "postgresql") }}:5432/{{ .Values.postgresql.auth.database }}"
             {{- end }}
             {{- if .Values.redis.enabled }}
+            {{- if .Values.redis.auth.enabled }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.auth.existingSecret | required "redis.auth.existingSecret is required when redis.auth.enabled" }}
+                  key: {{ .Values.redis.auth.existingSecretPasswordKey | default "redis-password" }}
             - name: REDIS_URL
-              value: "redis://{{ include "bridge.fullname" . }}-redis-master:6379"
+              value: "redis://:$(REDIS_PASSWORD)@{{ include "bridge.dependencyFullname" (list . "redis") }}-master:6379"
+            {{- else }}
+            - name: REDIS_URL
+              value: "redis://{{ include "bridge.dependencyFullname" (list . "redis") }}-master:6379"
             {{- end }}
+            {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if .Values.persistence.enabled }}
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
             - name: uploads
               mountPath: /app/server/uploads
-          {{- end }}
-      {{- if .Values.persistence.enabled }}
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: uploads
+          {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "bridge.fullname" . }}-uploads
-      {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
 
 {{- if .Values.autoscaling.enabled }}
 ---

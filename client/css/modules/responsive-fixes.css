@@ -1,0 +1,201 @@
+/* ── Bridge · responsive-fixes.css ─────────────────────────────
+   Phase 9 final-source-order responsive contract.
+
+   Wide desktop     > 1100  four-column communication shell
+   Compact desktop  769–1100 compact member rail, navigation stays in flow
+   Narrow window    <= 768  member panel is a drawer
+   Phone window     <= 600  all navigation uses working bottom-nav drawers
+   ───────────────────────────────────────────────────────────── */
+
+/* Canonical desktop collapse state owned by MemberListPanel. */
+#member-list.is-collapsed,
+.member-list.is-collapsed {
+  width: 0;
+  min-width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-left-width: 0;
+  overflow: hidden;
+}
+
+@media (min-width: 1101px) {
+  #member-list:not(.is-collapsed),
+  .member-list:not(.is-collapsed) {
+    width: var(--member-width);
+    min-width: var(--member-width);
+  }
+}
+
+/* Keep the center conversation readable before a window becomes tablet-sized,
+   while preserving the canonical desktop member toggle. */
+@media (min-width: 769px) and (max-width: 1100px) {
+  :root { --shell-sidebar-width: 220px; }
+
+  #member-list:not(.is-collapsed),
+  .member-list:not(.is-collapsed) {
+    width: 200px;
+    min-width: 200px;
+  }
+
+  .channel-header { padding-inline: var(--space-3); }
+}
+
+/* 601–768 remains fully navigable: rail and channel list stay in flow. The
+   earlier marketplace stylesheet moves them off-canvas; these rules are last
+   in source order and deliberately restore the compact desktop composition. */
+@media (min-width: 601px) and (max-width: 768px) {
+  :root {
+    --shell-rail-width: 56px;
+    --shell-sidebar-width: 192px;
+  }
+
+  .server-list {
+    position: static;
+    inset: auto;
+    width: var(--rail-width);
+    padding: var(--space-2) 0;
+    transform: none;
+    box-shadow: none;
+    z-index: auto;
+  }
+
+  .server-icon, .server-add { width: 40px; height: 40px; }
+
+  .channel-sidebar {
+    position: static;
+    inset: auto;
+    width: var(--channel-width);
+    transform: none;
+    box-shadow: none;
+    z-index: auto;
+  }
+
+  #member-list,
+  .member-list {
+    display: block;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(280px, 82vw);
+    min-width: 0;
+    padding: var(--space-2) 0;
+    border-left: 1px solid var(--border);
+    transform: translateX(100%);
+    transition: transform var(--duration-slow) var(--ease-out);
+    box-shadow: var(--shadow-lg);
+    z-index: calc(var(--z-sidebar) + 1);
+    overflow-y: auto;
+  }
+
+  #member-list.is-collapsed,
+  .member-list.is-collapsed {
+    width: min(280px, 82vw);
+    padding: var(--space-2) 0;
+    border-left-width: 1px;
+  }
+
+  #member-list.open,
+  .member-list.open { transform: translateX(0); }
+
+  .channel-header .ch-h-topic,
+  .channel-header .ch-h-divider { display: none; }
+}
+
+/* 481–600 was previously a dead zone: sidebars were off-canvas while bottom
+   navigation remained hidden. It now shares the same working phone shell. */
+@media (max-width: 600px) {
+  .app { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+  .mobile-nav {
+    display: flex;
+    height: calc(60px + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .server-list {
+    display: flex;
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: calc(60px + env(safe-area-inset-bottom));
+    width: 64px;
+    padding: var(--space-2) 0;
+    transform: translateX(-105%);
+    transition: transform var(--duration-slow) var(--ease-out);
+    box-shadow: var(--shadow-lg);
+    z-index: calc(var(--z-sidebar) + 2);
+  }
+  .server-list.open { transform: translateX(0); }
+
+  .channel-sidebar {
+    display: flex;
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: calc(60px + env(safe-area-inset-bottom));
+    width: min(316px, 88vw);
+    max-width: none;
+    transform: translateX(-105%);
+    transition: transform var(--duration-slow) var(--ease-out);
+    box-shadow: var(--shadow-lg);
+    z-index: calc(var(--z-sidebar) + 1);
+  }
+  .channel-sidebar.open { transform: translateX(0); }
+
+  #member-list,
+  .member-list {
+    display: block;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: calc(60px + env(safe-area-inset-bottom));
+    width: min(300px, 88vw);
+    min-width: 0;
+    padding: var(--space-2) 0;
+    border-left: 1px solid var(--border);
+    transform: translateX(105%);
+    transition: transform var(--duration-slow) var(--ease-out);
+    box-shadow: var(--shadow-lg);
+    z-index: calc(var(--z-sidebar) + 1);
+    overflow-y: auto;
+  }
+  #member-list.is-collapsed,
+  .member-list.is-collapsed {
+    width: min(300px, 88vw);
+    padding: var(--space-2) 0;
+    border-left-width: 1px;
+  }
+  #member-list.open,
+  .member-list.open { width: min(300px, 88vw); transform: translateX(0); }
+
+  .main-content { width: 100%; }
+  .channel-header { height: 46px; padding-inline: 10px; }
+  .channel-header .ch-h-topic,
+  .channel-header .ch-h-divider { display: none; }
+  .channel-header-actions { margin-left: auto; }
+  .channel-header .ch-h-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Final21 UX (U-14): 390 px'te 10 simge (320 px) kanal adını "# ge…"ye indiriyordu. Telefonda
+     başlıkta yalnız arama ve "⋯" kalır; diğerleri shell-actions.ts'teki menüde, AYNI düğmelere
+     vekâlet ederek listelenir (sabitlenmişler dahil — önceden telefonda hiç erişilemiyordu). */
+  .channel-header-actions > .h-btn:not(#btn-search):not(#btn-header-more) { display: none; }
+  #btn-header-more { display: grid; }
+
+  .user-panel { min-height: var(--shell-user-height); }
+}
+
+/* Horizontal overflow safety net for user content. */
+.msg-content a,
+.msg-content code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+
+/* v1.125 — mobile virtual-keyboard ownership. JS exposes the actual visual
+   viewport; CSS only adapts presentation. The bottom navigation yields while
+   the keyboard is open so the composer keeps maximum usable space. */
+@media (max-width: 600px) {
+  .app { height: var(--bridge-visual-viewport-height, 100dvh); }
+  html.bridge-keyboard-open .mobile-nav { display: none; }
+  html.bridge-keyboard-open .app { padding-bottom: env(safe-area-inset-bottom); }
+}

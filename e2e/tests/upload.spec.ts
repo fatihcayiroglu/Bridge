@@ -5,12 +5,13 @@
 //   API: yükleme sonrası socket bildirimi (message:new)
 //   UI:  upload butonu görünürlüğü, dosya seçici, preview
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
+import { request as pwRequest } from '@playwright/test';
 import * as path from 'path';
 import { BridgePage, getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
 import { openSocket, waitForEvent, closeSockets } from '../helpers/socket';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 const TINY_PNG_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -77,45 +78,66 @@ test.describe('Dosya Yükleme Akışları', () => {
     expect(res.status()).toBeGreaterThanOrEqual(400);
   });
 
-  test('API: yüklenen dosya mesaj olarak gönderildiğinde kanalda görünür', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
-    const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
-    const uploadRes = await request.post(`${BASE_URL}/api/upload`, {
-      headers: { Authorization: `Bearer ${tokens.alice}` },
-      multipart: { file: { name: 'attach.png', mimeType: 'image/png', buffer: imgBuffer }, channelId: testChannelId },
-    });
-    test.skip(!uploadRes.ok(), 'Test fixture hazır değil'  );
-    const uploadData = await uploadRes.json();
-    const fileUrl = uploadData.url || uploadData.fileUrl;
-    test.skip(!fileUrl, 'Test fixture hazır değil'  );
-    const msgRes = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content: `Dosya: ${fileUrl}`, attachments: [fileUrl] }),
-    });
-    expect(msgRes.status()).toBeLessThan(300);
-  });
+  // KALDIRILDI — 'API: yüklenen dosya mesaj olarak gönderildiğinde kanalda görünür'
+  // `POST /api/channels/:id/messages` uygulanmayan bir uçtu (gönderim kanonik
+  // olarak Socket.IO `file:send` üzerindendir). Aynı davranışın uçtan uca ve
+  // yetkilendirme kanıtı tests/attachments.spec.ts içindedir; burada
+  // tekrarlanmaz ve OBSOLET uç YENİDEN CANLANDIRILMAZ.
 
   // ── YENİ: Gerçek akış testleri ──────────────────────────
 
-  test('API: yüklenen URL HEAD isteğiyle erişilebilir ve Content-Type doğru', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+  test('API: yükleme yanıtı geçerli URL döndürür ve URL yetkisiz erişime KAPALIDIR', async ({ request }) => {
+    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli');
 
     const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
     const uploadRes = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
       multipart: { file: { name: 'head-check.png', mimeType: 'image/png', buffer: imgBuffer }, channelId: testChannelId },
     });
+    expect(uploadRes.status()).toBe(200);
 
-    test.skip(!uploadRes.ok(), 'Test fixture hazır değil'  );
-    const body = await uploadRes.json();
-    const finalUrl: string | undefined = body.url ?? body.fileUrl;
-    test.skip(!finalUrl, 'Test fixture hazır değil'  );
+    const body = await uploadRes.json() as { url?: string; fileUrl?: string; fileType?: string };
+    const finalUrl = body.url ?? body.fileUrl;
+    expect(finalUrl, 'yükleme url döndürmedi').toBeTruthy();
 
-    expect(finalUrl).toMatch(/^https?:\/\//);
+    // Yerel depolama sağlayıcısı GÖRELİ yol döndürür ('/uploads/...'); mutlak
+    // URL yalnızca CDN sağlayıcısında geçerlidir. Her ikisi de kabul edilir.
+    expect(finalUrl!).toMatch(/^(https?:\/\/|\/)/);
+    expect(body.fileType ?? '').toMatch(/image/);
 
-    const headRes = await request.head(finalUrl);
-    expect(headRes.status()).toBeLessThan(400);
-    expect(headRes.headers()['content-type'] ?? '').toMatch(/image/);
+    // ════════════════════════════════════════════════════════════════════
+    // BU TEST BİR KUSURU "BEKLENEN DAVRANIŞ" SANIYORDU
+    // ════════════════════════════════════════════════════════════════════
+    // Eski hâli, henüz mesaja iliştirilmemiş bir yüklemenin YÜKLEYEN için de
+    // kapalı olduğunu iddia ediyordu. Oysa `middleware/uploadAuthz.ts` bunu
+    // açıkça tersine tanımlar:
+    //     "orphan: yalnız yükleyen erişebilir (sahibi bilinmiyorsa kimse)"
+    //
+    // Gerçek sebep bir ANAHTAR BİÇİMİ uyuşmazlığıydı: `recordUpload` anahtarı
+    // `uploads/<ad>` olarak saklarken `findOwner` yalnızca `/uploads/<ad>` ve
+    // `<ad>` biçimlerini arıyordu. Hiçbiri eşleşmediği için `uploaderId`
+    // DAİMA null kalıyor ve yükleyen kendi dosyasını okuyamıyordu (403).
+    // Gönderim öncesi önizleme bu yüzden kırıktı.
+    //
+    // Ayrıca eski hâl GERÇEKTEN kimliksiz DEĞİLDİ: paylaşılan `request`
+    // fixture'ı `bridge_media` çerezi taşır, yani ölçülen şey "anonim" değil
+    // "alice" idi. Aşağıda iki ayrı özellik AYRI AYRI doğrulanır.
+    const absolute = finalUrl!.startsWith('http') ? finalUrl! : `${BASE_URL}${finalUrl}`;
+
+    // 1) YÜKLEYEN kendi dosyasını okuyabilmeli (önizleme yolu).
+    const owner = await request.get(absolute, {
+      headers: { Authorization: `Bearer ${tokens.alice}` },
+    });
+    expect(owner.status(), 'yükleyen kendi dosyasını okuyamıyor').toBe(200);
+
+    // 2) GERÇEKTEN kimliksiz erişim reddedilmeli — çerezsiz temiz bağlam.
+    const anonCtx = await pwRequest.newContext({
+      baseURL: BASE_URL, storageState: { cookies: [], origins: [] },
+    });
+    try {
+      const anon = await anonCtx.get(absolute);
+      expect([401, 403], 'kimliksiz erişim açık').toContain(anon.status());
+    } finally { await anonCtx.dispose(); }
   });
 
   test('Socket: dosya mesajı gönderilince kanaldaki üyeye message:new gelir', async ({ request }) => {
@@ -157,48 +179,50 @@ test.describe('Dosya Yükleme Akışları', () => {
 
   // ── UI Testleri ──────────────────────────────────────────
 
-  test('UI: upload butonu mesaj input alanında görünür', async ({ page }) => {
-    test.skip(!testServerId || !testChannelId, 'Upload test kanalı fixture gerekli'  );
-    const bp = new BridgePage(page);
-    await bp.loginViaToken(tokens.alice);
-    await bp.goto('/');
-    await page.waitForTimeout(1500);
-    const serverIcon = page.locator(`[data-server-id="${testServerId}"], [data-id="${testServerId}"]`).first();
-    if (await serverIcon.count() > 0) { await serverIcon.click(); await page.waitForTimeout(800); }
-    const uploadBtn = page.locator('#upload-btn, .upload-btn, [aria-label*="upload"], [aria-label*="Attach"], [aria-label*="Dosya"], [data-testid="upload"]').first();
-    if (await uploadBtn.count() > 0) await expect(uploadBtn).toBeVisible();
-    await expect(page.locator('body')).toBeVisible();
+  // SEÇİCİLER GÜNCELLENDİ — gerçek besteci (composer) sözleşmesi:
+  //   ek butonu : #btn-attach  (aria-label "Dosya ekle")
+  //   dosya girişi : #msg-file-input  (görsel olarak gizli — standart desen)
+  // Eski spec '#upload-btn' ve '[data-server-id]' arıyordu; ikisi de yok
+  // (sunucu düğmeleri erişilebilir ADLA render edilir, veri kimliğiyle değil).
+
+  /** Oturumlu kabuğu aç (storageState alice oturumunu taşır). */
+  async function openShell(page: import('@playwright/test').Page) {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await page.locator('#app').waitFor({ state: 'visible', timeout: 20_000 });
+  }
+
+  test('UI: ek (attach) butonu bestecide görünür', async ({ page }) => {
+    await openShell(page);
+    await expect(page.locator('#btn-attach')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('#btn-attach')).toHaveAttribute('aria-label', 'Dosya ekle');
   });
 
-  test('UI: dosya seçici file input içeriyor', async ({ page }) => {
-    test.skip(!testServerId, 'Test sunucusu fixture gerekli'  );
-    const bp = new BridgePage(page);
-    await bp.loginViaToken(tokens.alice);
-    await bp.goto('/');
-    await page.waitForTimeout(1500);
-    const serverIcon = page.locator(`[data-server-id="${testServerId}"], [data-id="${testServerId}"]`).first();
-    if (await serverIcon.count() > 0) { await serverIcon.click(); await page.waitForTimeout(800); }
-    const fileInput = page.locator('input[type="file"]').first();
-    await expect(fileInput).toHaveCount(1);
+  test('UI: gizli dosya girişi bestecide mevcut', async ({ page }) => {
+    await openShell(page);
+    const input = page.locator('#msg-file-input');
+    await expect(input).toHaveCount(1);
+    await expect(input).toHaveAttribute('type', 'file');
   });
 
-  test('UI: görsel yükleme sonrası önizleme gösterilir', async ({ page }) => {
-    test.skip(!testServerId, 'Test sunucusu fixture gerekli'  );
-    const bp = new BridgePage(page);
-    await bp.loginViaToken(tokens.alice);
-    await bp.goto('/');
-    await page.waitForTimeout(1500);
-    const serverIcon = page.locator(`[data-server-id="${testServerId}"], [data-id="${testServerId}"]`).first();
-    if (await serverIcon.count() > 0) { await serverIcon.click(); await page.waitForTimeout(800); }
-    const fileInput = page.locator('input[type="file"]').first();
-    test.skip(await fileInput.count() === 0, 'Dosya input elementi bulunamadı — UI render edilmedi');
-    const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
-    const tmpPath   = '/tmp/bridge-e2e-test.png';
-    require('fs').writeFileSync(tmpPath, imgBuffer);
-    await fileInput.setInputFiles(tmpPath);
-    await page.waitForTimeout(800);
-    const preview = page.locator('.upload-preview, .attachment-preview, [data-testid="upload-preview"], img[src*="blob:"]').first();
-    if (await preview.count() > 0) await expect(preview).toBeVisible();
-    await expect(page.locator('body')).toBeVisible();
+  test('UI: dosya seçilince besteci eki sahneler', async ({ page }) => {
+    await openShell(page);
+    // KULLANICININ ULAŞABİLDİĞİ ÖN KOŞUL (Final21 Faz 19, 19-25): besteci yalnızca bir metin kanalı
+    // açıkken GÖRÜNÜR. Test eskiden gizli dosya girişine, açılışta son kanal geri yüklenmeden ÖNCE
+    // dosya veriyordu (ölçüldü: +366 ms, kanal yok); kanal açılınca ek, tasarım gereği başka bir
+    // hedefe TAŞINMAZ ve düşer. Kullanıcı o pencerede besteciyi göremez/odaklayamaz (20 örnek, 8 açılış).
+    await expect(page.locator('#btn-attach')).toBeVisible({ timeout: 15_000 });
+    const input = page.locator('#msg-file-input');
+    await expect(input).toHaveCount(1);
+
+    const tmpPath = require('path').join(require('os').tmpdir(), `bridge-e2e-ui-${Date.now()}.png`);
+    require('fs').writeFileSync(tmpPath, Buffer.from(TINY_PNG_B64, 'base64'));
+
+    // ÜRÜN SÖZLEŞMESİ: dosya seçimi ANINDA yüklemez; besteciye SAHNELER ve
+    // gerçek yükleme gönderim anında yapılır (MessageInputPanel.acceptFile).
+    // Bu yüzden burada ağ isteği değil, sahnelenen ek göstergesi doğrulanır.
+    await input.setInputFiles(tmpPath);
+    const chip = page.locator('[data-composer-mode="attach"]');
+    await expect(chip).toBeVisible({ timeout: 10_000 });
+    await expect(chip).toContainText(require('path').basename(tmpPath));
   });
 });

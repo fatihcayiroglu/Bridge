@@ -15,18 +15,20 @@
 import logger from '../../../lib/logger';
 import { config } from './config';
 import type { MediasoupModule, MediasoupWorker, WorkerOptions } from './types';
+import { envSafeInt } from '../../../lib/envNumbers';
 
 let mediasoup: MediasoupModule | null = null;
 
 try {
-  // mediasoup intentionally stays outside the default dependency graph.
-  // That keeps npm ci free from deprecated transitive install warnings.
-  // Deployments that need SFU can install mediasoup separately; otherwise P2P fallback is used.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // mediasoup is a declared optional dependency: small/self-hosted installs may
+  // continue with P2P if the native optional package cannot be installed.
   mediasoup = require('mediasoup') as MediasoupModule;
 } catch {
-  logger.warn('[SFU] mediasoup paketi yüklü değil — ses kanalları P2P modda çalışır.');
-  logger.warn('[SFU] Etkinleştirmek için: cd server && npm install mediasoup');
+  // Say what is missing AND how to fix it: an operator reading only
+  // "P2P modda" cannot tell whether that is a decision or a defect.
+  logger.warn('[SFU] mediasoup paketi yüklü değil — ses kanalları P2P modda çalışır. '
+    + 'SFU (çok katılımcılı ses/video) için: npm install mediasoup');
+  logger.warn('[SFU] Etkinleştirmek için server optional dependencies kurulmalı (npm ci --include=optional).');
 }
 
 export const sfuWorkers: MediasoupWorker[] = [];
@@ -77,6 +79,11 @@ export async function initMediasoup(moduleOverride?: MediasoupModule, _configOve
   if (moduleOverride) mediasoup = moduleOverride;
   if (!mediasoup) return false;
   try {
+    // Validate operator-supplied scaling limits before allocating any worker.
+    // Otherwise a bad limit could make init return false after the first worker
+    // was already published, leaving callers with a contradictory "failed but
+    // ready" pool and a leaked mediasoup process.
+    const scaling = getScalingConfig();
     const isDev = process.env.NODE_ENV === 'development';
     const workerCount = workerCountOverride ?? config.numWorkers;
     for (let i = 0; i < workerCount; i++) {
@@ -84,7 +91,7 @@ export async function initMediasoup(moduleOverride?: MediasoupModule, _configOve
       sfuWorkers.push(worker);
     }
     logger.info(`[SFU] Mediasoup başlatıldı — ${config.numWorkers} worker, portlar: ${config.rtcMinPort}-${config.rtcMaxPort}`);
-    _startScalingMonitor();
+    _startScalingMonitor(scaling);
     return true;
   } catch (e: unknown) {
     logger.error('[SFU] Mediasoup başlatılamadı:', (e as Error).message);
@@ -139,37 +146,62 @@ export function getNextWorkerWithIndex(): { worker: MediasoupWorker; index: numb
   }
 
   workerIndex = (selectedIdx + 1) % sfuWorkers.length;
-  return { worker: sfuWorkers[selectedIdx], index: selectedIdx };
+  const worker = sfuWorkers[selectedIdx];
+  if (!worker) {
+    throw new Error('[mediasoup] Secilen worker artik mevcut degil.');
+  }
+  return { worker, index: selectedIdx };
 }
 
 export const isSFUReady = (): boolean =>
   sfuWorkers.length > 0 && sfuWorkers.length > _restartingSlots.size;
 
 // ── Dinamik ölçekleme ─────────────────────────────────────────────────────
-const getScaleUpThreshold = (): number => parseInt(process.env.SFU_SCALE_UP_ROUTERS   || '20', 10);
-const getScaleDownThreshold = (): number => parseInt(process.env.SFU_SCALE_DOWN_ROUTERS || '5', 10);
-const getMinWorkers = (): number => parseInt(process.env.SFU_MIN_WORKERS || '1', 10);
-const getMaxWorkers = (): number => parseInt(process.env.SFU_MAX_WORKERS || '8', 10);
-const getScaleCheckMs = (): number => parseInt(process.env.SFU_SCALE_CHECK_MS || '30000', 10);
+function getScalingConfig() {
+  const scaleUpThreshold = envSafeInt('SFU_SCALE_UP_ROUTERS', 20, { min: 1, max: 100_000 });
+  const scaleDownThreshold = envSafeInt('SFU_SCALE_DOWN_ROUTERS', 5, { min: 0, max: 100_000 });
+  const minWorkers = envSafeInt('SFU_MIN_WORKERS', 1, { min: 1, max: 64 });
+  const maxWorkers = envSafeInt('SFU_MAX_WORKERS', 8, { min: 1, max: 64 });
+  const scaleCheckMs = envSafeInt('SFU_SCALE_CHECK_MS', 30_000, { min: 1_000, max: 24 * 60 * 60_000 });
+  if (minWorkers > maxWorkers) throw new Error('SFU_MIN_WORKERS must be <= SFU_MAX_WORKERS');
+  if (scaleDownThreshold >= scaleUpThreshold) {
+    throw new Error('SFU_SCALE_DOWN_ROUTERS must be < SFU_SCALE_UP_ROUTERS');
+  }
+  return { scaleUpThreshold, scaleDownThreshold, minWorkers, maxWorkers, scaleCheckMs };
+}
 
 let _scalingTimer: ReturnType<typeof setInterval> | null = null;
+let _scalingCheckInFlight = false;
 
-function _startScalingMonitor(): void {
+function _startScalingMonitor(scaling: ReturnType<typeof getScalingConfig>): void {
   if (_scalingTimer) return;
-  const scaleCheckMs = getScaleCheckMs();
-  _scalingTimer = setInterval(_checkScaling, scaleCheckMs);
+  _scalingTimer = setInterval(_checkScaling, scaling.scaleCheckMs);
   _scalingTimer.unref?.();
-  logger.info(`[SFU] Dinamik ölçekleme aktif — kontrol aralığı: ${scaleCheckMs / 1000}s, min: ${getMinWorkers()}, max: ${getMaxWorkers()} worker`);
+  logger.info(`[SFU] Dinamik ölçekleme aktif — kontrol aralığı: ${scaling.scaleCheckMs / 1000}s, min: ${scaling.minWorkers}, max: ${scaling.maxWorkers} worker`);
 }
 
 async function _checkScaling(): Promise<void> {
+  // setInterval does not await async callbacks. A slow createWorker() used to
+  // let later ticks enter with the same stale worker count and start parallel
+  // scale-ups, potentially overshooting SFU_MAX_WORKERS.
+  if (_scalingCheckInFlight) return;
+  _scalingCheckInFlight = true;
+  try {
+    await _checkScalingOnce();
+  } finally {
+    _scalingCheckInFlight = false;
+  }
+}
+
+async function _checkScalingOnce(): Promise<void> {
   if (!mediasoup || sfuWorkers.length === 0) return;
 
   const currentCount = sfuWorkers.length;
   const totalRouters = [..._workerRouterCount.values()].reduce((a, b) => a + b, 0);
   const avgLoad      = totalRouters / currentCount;
+  const scaling = getScalingConfig();
 
-  if (avgLoad >= getScaleUpThreshold() && currentCount < getMaxWorkers()) {
+  if (avgLoad >= scaling.scaleUpThreshold && currentCount < scaling.maxWorkers) {
     const newIndex = sfuWorkers.length;
     try {
       const worker = await _createWorker(newIndex);
@@ -181,7 +213,7 @@ async function _checkScaling(): Promise<void> {
     return;
   }
 
-  if (avgLoad <= getScaleDownThreshold() && currentCount > getMinWorkers()) {
+  if (avgLoad <= scaling.scaleDownThreshold && currentCount > scaling.minWorkers) {
     let idleIdx = -1;
     let minLoad = Infinity;
     for (let i = 0; i < sfuWorkers.length; i++) {
@@ -192,7 +224,7 @@ async function _checkScaling(): Promise<void> {
 
     if (idleIdx >= 0 && minLoad === 0) {
       try {
-        sfuWorkers[idleIdx].close();
+        sfuWorkers[idleIdx]?.close();
         sfuWorkers.splice(idleIdx, 1);
         const newMap = new Map<number, number>();
         for (let i = 0; i < sfuWorkers.length; i++) {
@@ -224,6 +256,7 @@ export function _resetWorkersForTest(): void {
   workerIndex = 0;
   _workerRouterCount.clear();
   _restartingSlots.clear();
+  _scalingCheckInFlight = false;
   if (_scalingTimer) { clearInterval(_scalingTimer); _scalingTimer = null; }
 }
 

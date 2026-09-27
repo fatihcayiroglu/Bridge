@@ -31,7 +31,9 @@ const { serverId } = body  // Hub ID
 
 
 ### Gereksinimler
-- **Node.js**: 22.x veya üstü
+- **Node.js**: `.nvmrc` **24.20.0** sürümünü sabitler — CI ana işi ve `Dockerfile`
+  aynı sürümü kullanır (`nvm use` / `fnm use`). En düşük desteklenen sürüm
+  **22.19.0**'dır ve ayrı bir CI işiyle ayrıca doğrulanır.
 - **npm**: 10.x veya üstü
 - **PostgreSQL**: 14+
 - **Redis**: 7+

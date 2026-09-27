@@ -3,6 +3,8 @@
 //   - stage:speaking  (VAD tabanlı konuşma indikatörü)
 //   - stage:setTopic  (host konu güncelleme, yetki kontrolü)
 //   - stage:setLive   (host CANLI badge toggle)
+import { present } from './helpers/narrow';
+import { ClusterServerDouble, EmittedLog, SocketDouble, dataOf, findEmitted, readString, requireEmitted } from './helpers/socketDoubles';
 
 'use strict';
 process.env.NODE_ENV = 'test';
@@ -12,11 +14,39 @@ jest.mock('../db/loader', () => {
   return createMockDb();
 });
 
-import { registerStageHandlers, stageRooms } from '../socket/handlers/stage';
+import { registerStageHandlers as registerStageHandlersProduction, stageRooms } from '../socket/handlers/stage';
+import type { AuthenticatedUser } from '../socket/handlers/stage';
+const db = require('../db/loader');
+const stageSocketUsers = new WeakMap<object, { _id: string }>();
+
+async function ensureStageFixture(channelId: string, user: { _id: string }, serverId: string = 'sv-1') {
+  // EKSIK FIXTURE: `_stageAccess` -> `resolvePermissions` ILK IS olarak
+  // `Servers.findById(serverId)` yapar; satir yoksa 0 izin doner ve stage
+  // olaylari SESSIZCE reddedilir. Sahip BASKA biri olsun ki testler sahiplik
+  // kestirmesini degil GERCEK uye izin cozumunu olcsun.
+  if (!(await db.servers.findOne({ _id: serverId }))) {
+    await db.servers.insert({ _id: serverId, name: `srv-${serverId}`, ownerId: 'stage-owner', createdAt: Date.now() });
+  }
+  if (!(await db.channels.findOne({ _id: channelId }))) {
+    await db.channels.insert({ _id: channelId, serverId, name: channelId, type: 'stage' });
+  }
+  const channel = await db.channels.findOne({ _id: channelId });
+  if (channel?.serverId && !(await db.members.findOne({ userId: user._id, serverId: channel.serverId }))) {
+    await db.members.insert({ _id: `member-${user._id}-${channel.serverId}`, userId: user._id, serverId: channel.serverId });
+  }
+}
+
+function registerStageHandlers(socket: SocketDouble, io: ClusterServerDouble, user: StageUserDouble) {
+  stageSocketUsers.set(socket, user);
+  return registerStageHandlersProduction(socket, io, user);
+}
 
 // ── Yardımcılar ─────────────────────────────────────────────────
 
-function makeUser(overrides = {}) {
+/** Sahne handler'larinin kullanicidan okudugu yuzey (`AuthenticatedUser`). */
+interface StageUserDouble { _id: string; displayName?: string; avatarColor?: string }
+
+function makeUser(overrides: Partial<StageUserDouble> = {}): StageUserDouble {
   return {
     _id:         `u-${Math.random().toString(36).slice(2)}`,
     displayName: 'StageUser',
@@ -25,12 +55,12 @@ function makeUser(overrides = {}) {
   };
 }
 
-function makeSocket(id) {
+function makeSocket(id: string) {
   const handlers: Record<string, unknown> = {};
-  const emitted  = [];
-  const rooms    = new Set();
+  const emitted: EmittedLog = [];
+  const rooms    = new Set<string>();
 
-  return {
+  const socket = {
     id,
     rooms,                         // disconnect handler socket.rooms üzerinden iterate eder
     on(event, fn)  { handlers[event] = fn; },
@@ -43,24 +73,45 @@ function makeSocket(id) {
     _handlers: handlers,
     _emitted:  emitted,
     _rooms:    rooms,
-    async _trigger(event, data) {
-      if (handlers[event]) await handlers[event](data);
+    async _trigger(event: string, data?: unknown) {
+      // Yuk GUVENILMEZDIR; alanlar dogrulanarak okunur.
+      const channelId = readString(data, 'channelId');
+      if (event === 'stage:join' && channelId) {
+        await ensureStageFixture(channelId, stageSocketUsers.get(socket)!, readString(data, 'serverId'));
+      }
+      const handler = handlers[event];
+      if (typeof handler === 'function') await handler(data);
     },
-  };
+  } satisfies SocketDouble;
+  return socket;
 }
 
 function makeIo() {
-  const emitted = [];
+  const emitted: EmittedLog = [];
+  // Kume denetimi (`on` + `serverSideEmit`) sahne handler'larinin GERCEK
+  // bagimliligidir: medya yetkisi iptali Redis adapter'i uzerinden diger
+  // dugumlere tasinir. Ikiz bunlari tasimadan sozlesmeyi karsilamazdi.
+  const clusterListeners: Record<string, unknown> = {};
+  const clusterEmits: EmittedLog = [];
   return {
     _emitted: emitted,
+    _clusterEmits: clusterEmits,
+    _clusterListeners: clusterListeners,
     to(target) {
-      return { emit(ev, data) { emitted.push({ ev, data, _target: target }); } };
+      return { emit(ev, ...args) { emitted.push({ ev, data: args[0], _target: target }); } };
     },
-  };
+    on(event, listener) { clusterListeners[event] = listener; },
+    serverSideEmit(event, ...args) { clusterEmits.push({ event, data: args[0] }); },
+  } satisfies ClusterServerDouble;
 }
 
 /** Bir kullanıcıyı verilen rolle odaya ekler */
-async function addToStage(io, channelId, role, userOverrides = {}) {
+async function addToStage(
+  io: ClusterServerDouble,
+  channelId: string,
+  role: 'speaker' | 'listener' | 'moderator',
+  userOverrides: Partial<AuthenticatedUser> = {},
+) {
   const user   = makeUser(userOverrides);
   const socket = makeSocket(`sock-${Math.random().toString(36).slice(2)}`);
   registerStageHandlers(socket, io, user);
@@ -88,10 +139,10 @@ describe('stage:speaking', () => {
 
     await socket._trigger('stage:speaking', { channelId: 'ch-sp', speaking: true });
 
-    const ev = io._emitted.find(e => e.ev === 'stage:speaking');
+    const ev = requireEmitted(io._emitted, 'stage:speaking');
     expect(ev).toBeDefined();
-    expect(ev.data.userId).toBe(user._id);
-    expect(ev.data.speaking).toBe(true);
+    expect(dataOf(ev).userId).toBe(user._id);
+    expect(dataOf(ev).speaking).toBe(true);
     expect(ev._target).toBe('stage:ch-sp');
   });
 
@@ -103,9 +154,9 @@ describe('stage:speaking', () => {
 
     await socket._trigger('stage:speaking', { channelId: 'ch-sp2', speaking: false });
 
-    const ev = io._emitted.find(e => e.ev === 'stage:speaking');
+    const ev = requireEmitted(io._emitted, 'stage:speaking');
     expect(ev).toBeDefined();
-    expect(ev.data.speaking).toBe(false);
+    expect(dataOf(ev).speaking).toBe(false);
   });
 
   it('mute durumdaki speaker speaking:true gönderemez', async () => {
@@ -118,7 +169,7 @@ describe('stage:speaking', () => {
     await socket._trigger('stage:speaking', { channelId: 'ch-sp3', speaking: true });
 
     // Mute olduğunda speaking emit edilmemeli
-    const ev = io._emitted.find(e => e.ev === 'stage:speaking');
+    const ev = findEmitted(io._emitted, 'stage:speaking');
     expect(ev).toBeUndefined();
   });
 
@@ -130,7 +181,7 @@ describe('stage:speaking', () => {
     await socket._trigger('stage:speaking', { channelId: 'ch-sp4', speaking: true });
 
     // Listener speakers listesinde değil → emit olmamalı
-    const ev = io._emitted.find(e => e.ev === 'stage:speaking');
+    const ev = findEmitted(io._emitted, 'stage:speaking');
     expect(ev).toBeUndefined();
   });
 
@@ -158,8 +209,8 @@ describe('stage:speaking', () => {
 
     await socket._trigger('stage:speaking', { channelId: 'ch-sp5', speaking: true });
 
-    const room = stageRooms.get('ch-sp5');
-    const sp   = room.speakers.find(u => u.userId === user._id);
+    const room = present(stageRooms.get('ch-sp5'), 'stage odasi');
+    const sp   = present(room.speakers.find(u => u.userId === user._id), 'konusmaci');
     expect(sp.speaking).toBe(true);
   });
 });
@@ -177,10 +228,10 @@ describe('stage:setTopic', () => {
 
     await socket._trigger('stage:setTopic', { channelId: 'ch-topic', topic: 'Haftalık buluşma' });
 
-    const ev = io._emitted.find(e => e.ev === 'stage:topicUpdate');
+    const ev = requireEmitted(io._emitted, 'stage:topicUpdate');
     expect(ev).toBeDefined();
-    expect(ev.data.topic).toBe('Haftalık buluşma');
-    expect(ev.data.channelId).toBe('ch-topic');
+    expect(dataOf(ev).topic).toBe('Haftalık buluşma');
+    expect(dataOf(ev).channelId).toBe('ch-topic');
     expect(ev._target).toBe('stage:ch-topic');
   });
 
@@ -192,7 +243,7 @@ describe('stage:setTopic', () => {
 
     await guestSock._trigger('stage:setTopic', { channelId: 'ch-topic2', topic: 'Değiştirilmemeli' });
 
-    const ev = io._emitted.find(e => e.ev === 'stage:topicUpdate');
+    const ev = findEmitted(io._emitted, 'stage:topicUpdate');
     expect(ev).toBeUndefined();
   });
 
@@ -204,10 +255,10 @@ describe('stage:setTopic', () => {
 
     await listenerSock._trigger('stage:setTopic', { channelId: 'ch-topic3', topic: 'Deneme' });
 
-    expect(io._emitted.find(e => e.ev === 'stage:topicUpdate')).toBeUndefined();
+    expect(findEmitted(io._emitted, 'stage:topicUpdate')).toBeUndefined();
   });
 
-  it('200 karakter sınırı uygulanır', async () => {
+  it('200 karakteri aşan konu doğrulamada reddedilir', async () => {
     const io = makeIo();
     const { socket } = await addToStage(io, 'ch-topic4', 'speaker');
     const longTopic  = 'A'.repeat(300);
@@ -215,9 +266,9 @@ describe('stage:setTopic', () => {
 
     await socket._trigger('stage:setTopic', { channelId: 'ch-topic4', topic: longTopic });
 
-    const ev = io._emitted.find(e => e.ev === 'stage:topicUpdate');
-    expect(ev).toBeDefined();
-    expect(ev.data.topic.length).toBeLessThanOrEqual(200);
+    const ev = findEmitted(io._emitted, 'stage:topicUpdate');
+    expect(ev).toBeUndefined();
+    expect(present(stageRooms.get('ch-topic4'), 'stage odasi').topic).toBe('');
   });
 
   it('topic undefined/null → boş string olarak kaydedilir', async () => {
@@ -226,7 +277,7 @@ describe('stage:setTopic', () => {
 
     await socket._trigger('stage:setTopic', { channelId: 'ch-topic5', topic: null });
 
-    const room = stageRooms.get('ch-topic5');
+    const room = present(stageRooms.get('ch-topic5'), 'stage odasi');
     expect(typeof room.topic).toBe('string');
     expect(room.topic.length).toBe(0);
   });
@@ -245,7 +296,7 @@ describe('stage:setTopic', () => {
 
     await socket._trigger('stage:setTopic', { channelId: 'ch-topic6', topic: 'Yeni konu' });
 
-    expect(stageRooms.get('ch-topic6').topic).toBe('Yeni konu');
+    expect(present(stageRooms.get('ch-topic6'), 'stage odasi').topic).toBe('Yeni konu');
   });
 });
 
@@ -261,10 +312,10 @@ describe('stage:setLive', () => {
 
     await socket._trigger('stage:setLive', { channelId: 'ch-live', live: true });
 
-    const ev = io._emitted.find(e => e.ev === 'stage:liveUpdate');
+    const ev = requireEmitted(io._emitted, 'stage:liveUpdate');
     expect(ev).toBeDefined();
-    expect(ev.data.live).toBe(true);
-    expect(ev.data.channelId).toBe('ch-live');
+    expect(dataOf(ev).live).toBe(true);
+    expect(dataOf(ev).channelId).toBe('ch-live');
     expect(ev._target).toBe('stage:ch-live');
   });
 
@@ -276,9 +327,9 @@ describe('stage:setLive', () => {
 
     await socket._trigger('stage:setLive', { channelId: 'ch-live2', live: false });
 
-    const ev = io._emitted.find(e => e.ev === 'stage:liveUpdate');
+    const ev = requireEmitted(io._emitted, 'stage:liveUpdate');
     expect(ev).toBeDefined();
-    expect(ev.data.live).toBe(false);
+    expect(dataOf(ev).live).toBe(false);
   });
 
   it('host olmayan kullanıcı live durumunu değiştiremez', async () => {
@@ -289,7 +340,7 @@ describe('stage:setLive', () => {
 
     await guestSock._trigger('stage:setLive', { channelId: 'ch-live3', live: true });
 
-    expect(io._emitted.find(e => e.ev === 'stage:liveUpdate')).toBeUndefined();
+    expect(findEmitted(io._emitted, 'stage:liveUpdate')).toBeUndefined();
   });
 
   it('listener live durumunu değiştiremez', async () => {
@@ -300,7 +351,7 @@ describe('stage:setLive', () => {
 
     await lSock._trigger('stage:setLive', { channelId: 'ch-live4', live: true });
 
-    expect(io._emitted.find(e => e.ev === 'stage:liveUpdate')).toBeUndefined();
+    expect(findEmitted(io._emitted, 'stage:liveUpdate')).toBeUndefined();
   });
 
   it('live durum Room state\'e kaydedilir', async () => {
@@ -309,7 +360,7 @@ describe('stage:setLive', () => {
 
     await socket._trigger('stage:setLive', { channelId: 'ch-live5', live: true });
 
-    expect(stageRooms.get('ch-live5').live).toBe(true);
+    expect(present(stageRooms.get('ch-live5'), 'stage odasi').live).toBe(true);
   });
 
   it('live:false sonrası Room state güncellenir', async () => {
@@ -319,7 +370,7 @@ describe('stage:setLive', () => {
 
     await socket._trigger('stage:setLive', { channelId: 'ch-live6', live: false });
 
-    expect(stageRooms.get('ch-live6').live).toBe(false);
+    expect(present(stageRooms.get('ch-live6'), 'stage odasi').live).toBe(false);
   });
 
   it('channelId yoksa hata fırlatmaz', async () => {
@@ -349,12 +400,12 @@ describe('stage:setLive', () => {
     await socket._trigger('stage:setTopic', { channelId: 'ch-combo', topic: 'AMA Oturumu' });
     await socket._trigger('stage:setLive',  { channelId: 'ch-combo', live: true });
 
-    const room = stageRooms.get('ch-combo');
+    const room = present(stageRooms.get('ch-combo'), 'stage odasi');
     expect(room.topic).toBe('AMA Oturumu');
     expect(room.live).toBe(true);
 
-    const topicEv = io._emitted.find(e => e.ev === 'stage:topicUpdate');
-    const liveEv  = io._emitted.find(e => e.ev === 'stage:liveUpdate');
+    const topicEv = requireEmitted(io._emitted, 'stage:topicUpdate');
+    const liveEv  = requireEmitted(io._emitted, 'stage:liveUpdate');
     expect(topicEv).toBeDefined();
     expect(liveEv).toBeDefined();
   });

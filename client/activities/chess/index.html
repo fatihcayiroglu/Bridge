@@ -184,6 +184,13 @@
   </div>
 
   <script>
+    // Activity bridge messages are privileged UI/control messages. Accept and
+    // emit them only across the same-origin Bridge parent boundary; external
+    // child frames (for example YouTube) must not be able to impersonate it.
+    function postToBridgeParent(message) {
+      parent.postMessage(message, location.origin);
+    }
+
     // ── Chess Engine ──────────────────────────────────────────────────────────
     const PIECES = {
       'wK':'♔','wQ':'♕','wR':'♖','wB':'♗','wN':'♘','wP':'♙',
@@ -358,7 +365,7 @@
       }
 
       // Notify parent
-      parent.postMessage({ type: 'chess:move', from: toAN(fromR,fromC), to: toAN(toR,toC), channelId, sessionId }, '*');
+      postToBridgeParent({ type: 'chess:move', from: toAN(fromR,fromC), to: toAN(toR,toC), channelId, sessionId });
     }
 
     function doBotMove() {
@@ -451,6 +458,7 @@
 
     // Listen for moves from other player (multiplayer) + server validation responses
     window.addEventListener('message', e => {
+      if (e.source !== parent || e.origin !== location.origin) return;
       const d = e.data;
       if (!d || typeof d !== 'object') return;
 
@@ -513,7 +521,7 @@
 
     // Init
     newGame(false);
-    parent.postMessage({ type: 'chess:ready', channelId, sessionId }, '*');
+    postToBridgeParent({ type: 'chess:ready', channelId, sessionId });
   </script>
 </body>
 </html>

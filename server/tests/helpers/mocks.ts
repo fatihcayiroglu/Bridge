@@ -3,6 +3,8 @@
  * Common test mocks and utilities — TypeScript version (Sprint 50)
  */
 
+import type { JwtPayload } from '../../middleware/auth';
+import { makeJwtUser } from './userDoubles';
 import type { Request, Response, NextFunction } from 'express';
 
 // ── Mock interfaces ───────────────────────────────────────────
@@ -68,7 +70,8 @@ export const mockIO: MockIO = {
 // ── Request / Response factories ─────────────────────────────
 
 export interface MockRequestOverrides {
-  user?:    { id: string; username: string; [key: string]: unknown };
+  /** Ezme de TAM bir `JwtPayload` olmalidir — `req.user` tipi budur. */
+  user?:    JwtPayload;
   headers?: Record<string, string>;
   body?:    Record<string, unknown>;
   params?:  Record<string, string>;
@@ -78,7 +81,8 @@ export interface MockRequestOverrides {
 
 export function createMockRequest(overrides: MockRequestOverrides = {}): Partial<Request> {
   return {
-    user: { id: 'test-user-id', username: 'testuser' } as never,
+    // `as never` KALDIRILDI: `JwtPayload` `v` de ister ve ikiz onu tasimali.
+    user: makeJwtUser('test-user-id', { username: 'testuser' }),
     headers: {},
     body: {},
     params: {},

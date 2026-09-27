@@ -7,6 +7,12 @@
     "main.ts",
     "preload.ts",
     "updater.ts",
+    "nativeLocale.ts",
+    "ipcSecurity.ts",
+    "navigationPolicy.ts",
+    "desktopSettings.ts",
+    "updatePolicy.ts",
+    "connectPreload.ts",
     "electron-stubs.d.ts"
   ],
   "exclude": [

@@ -84,7 +84,7 @@ import { adminOnly } from './core';
 export const router: Router = express.Router();
 
 router.get('/sfu/stats', authMiddleware, adminOnly, async (_req: Request, res: Response) => {
-  let sfuStats: Record<string, unknown> = { available: false };
+  let sfuStats: Record<string, unknown>;
   try {
     const stats = await sfuRegistry.getStats();
 

@@ -1,8 +1,9 @@
 // @ts-check
 // server/tests/twoFactor.test.ts
 // Sprint 38 — strict gate'e dahil edildi (tsconfig.test-strict.json)
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+import type { Express } from 'express';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
@@ -14,6 +15,7 @@ const db       = require('../db/loader');
 const jwt      = require('jsonwebtoken');
 import { authMiddleware } from '../middleware/auth';
 import twoFactorRouter from '../routes/twoFactor';
+import { _resetRateLimitStoreForTest } from '../middleware/rateLimit';
 
 function buildApp() {
   const app = express();
@@ -22,12 +24,15 @@ function buildApp() {
   return app;
 }
 /** @param {string} uid */
-function tok(uid) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 describe('Two Factor Auth Routes', () => {
-  let app, userId, token;
+  let userId: string;
+  let token: string;
+  let app: Express;
 
   beforeEach(async () => {
+    _resetRateLimitStoreForTest();
     db._reset?.();
     app    = buildApp();
     userId = uuidv4();
@@ -43,6 +48,7 @@ describe('Two Factor Auth Routes', () => {
       expect(res.status).toBe(200);
       expect(res.body).toHaveProperty('secret');
       expect(res.body).toHaveProperty('qrCode');
+      expect(String(res.body.qrCode)).toMatch(/^data:image\/(?:png|svg\+xml)/);
     });
   });
 
@@ -52,6 +58,15 @@ describe('Two Factor Auth Routes', () => {
         .post('/api/2fa/verify')
         .set('Authorization', `Bearer ${token}`)
         .send({});
+      expect(res.status).toBe(400);
+    });
+
+    it.each([123, {}, [], null])('rejects non-string verification code %p before TOTP', async (code) => {
+      await request(app).post('/api/2fa/setup').set('Authorization', `Bearer ${token}`);
+      const res = await request(app)
+        .post('/api/2fa/verify')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ code });
       expect(res.status).toBe(400);
     });
 
@@ -72,6 +87,14 @@ describe('Two Factor Auth Routes', () => {
         .post('/api/2fa/disable')
         .set('Authorization', `Bearer ${token}`)
         .send({});
+      expect(res.status).toBe(400);
+    });
+
+    it.each([123, {}, [], null])('rejects non-string password %p before bcrypt', async (password) => {
+      const res = await request(app)
+        .post('/api/2fa/disable')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ password });
       expect(res.status).toBe(400);
     });
 

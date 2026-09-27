@@ -1,0 +1,33 @@
+-- Migration 022 — Rolün üye profilinde gösterilmesi (SUNUM AYARI)
+-- Çalıştır: npm run db:migrate:pg
+--
+-- ════════════════════════════════════════════════════════════════════════════
+-- NEDEN
+-- ════════════════════════════════════════════════════════════════════════════
+-- Üye profili artık kişinin GERÇEK sunucu rollerini gösteriyor. Sunucu
+-- yöneticileri hangi rollerin profilde görüneceğini denetleyebilmeli
+-- (örneğin dahili/teknik roller gizlenebilsin).
+--
+-- Mevcut şemada "hoist" benzeri bir sunum bayrağı YOKTU:
+--     roles(_id, "serverId", name, color, permissions, position, "createdAt")
+-- Bu yüzden EN DAR sunum özelliği eklenir.
+--
+-- ════════════════════════════════════════════════════════════════════════════
+-- GÜVENLİK SÖZLEŞMESİ — BU ALAN YETKİ DEĞİLDİR
+-- ════════════════════════════════════════════════════════════════════════════
+-- `displayOnProfile` YALNIZCA GÖRÜNÜRLÜKTÜR. Değiştirilmesi:
+--   · izin VERMEZ,
+--   · izin KALDIRMAZ,
+--   · rol hiyerarşisini (position) DEĞİŞTİRMEZ,
+--   · kanal yetkilendirmesini ETKİLEMEZ.
+-- Yetki hesabı yalnızca `roles.permissions` + kanal override'ları üzerinden
+-- yapılmaya devam eder (lib/permissions.ts). Bu ayrımın testi:
+--   server/tests/profile-roles.test.ts
+--
+-- Yalnızca MANAGE_ROLES yetkisi olanlar değiştirebilir (routes/roles.ts).
+--
+-- VARSAYILAN `TRUE`: mevcut roller davranış değiştirmeden görünür kalır;
+-- yönetici istediğini açıkça gizler. (Sessiz bir davranış değişikliği olmaz.)
+
+ALTER TABLE roles
+  ADD COLUMN IF NOT EXISTS "displayOnProfile" BOOLEAN NOT NULL DEFAULT TRUE;

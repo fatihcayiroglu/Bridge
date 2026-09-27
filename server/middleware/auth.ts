@@ -4,11 +4,14 @@
 // REFRESH_SECRET: refresh token'ları DB'de HMAC-SHA256 ile pepper'lar (plain text saklanmaz).
 
 import jwt from 'jsonwebtoken';
+import { attachActor } from '../lib/requestContext';
 import crypto from 'crypto';
 import logger from '../lib/logger';
 import { Auth, Users } from '../db/repositories';
 import { Request, Response, NextFunction } from 'express';
 import type { AuthedRequest as _AuthedRequest } from '../types/express.d';
+import { parseTokenVersion } from '../lib/tokenVersion';
+import { parsePersistedEpochMillis } from '../lib/persistedEpoch';
 
 export interface JwtPayload {
   id: string;
@@ -119,11 +122,13 @@ const REFRESH_TOKEN_TTL = process.env.REFRESH_TOKEN_TTL || '30d';
 
 // TTL in ms for refresh token DB rows
 const REFRESH_TTL_MS = (() => {
-  const t = REFRESH_TOKEN_TTL;
-  const n = parseInt(t);
-  if (t.endsWith('d')) return n * 86400000;
-  if (t.endsWith('h')) return n * 3600000;
-  return 30 * 86400000;
+  const match = /^(\d+)([dh])$/.exec(REFRESH_TOKEN_TTL);
+  if (!match) throw new Error('[Auth] REFRESH_TOKEN_TTL must be an integer followed by d or h');
+  const amount = Number(match[1]);
+  const unitMs = match[2] === 'd' ? 86_400_000 : 3_600_000;
+  const ttl = amount * unitMs;
+  if (!Number.isSafeInteger(ttl) || ttl <= 0) throw new Error('[Auth] REFRESH_TOKEN_TTL is out of range');
+  return ttl;
 })();
 
 /** REFRESH_SECRET ile HMAC — DB'de düz token saklanmaz. */
@@ -150,6 +155,38 @@ export interface UserLike {
   flags?: string[];
 }
 
+/**
+ * MEDYA JETONU — yalnizca `/uploads` yolundaki EK yetkilendirmesi icin.
+ *
+ * NEDEN AYRI BIR JETON: erisim jetonu 15 dakikada dolar. Medya cerezi bunu
+ * tasisaydi, bosta duran bir sekmede `<img>` istekleri 15 dakika sonra 401
+ * almaya baslardi (yenileme yalnizca bir API cagrisi 401 alinca tetiklenir).
+ * Yani ekler "bazen kirik" gorunurdu.
+ *
+ * NEDEN DAHA UZUN OMUR GUVENLI: bu jeton YETKI TASIMAZ, yalnizca KIMLIK.
+ * Her istekte dosyanin sahibi cozulur ve kanal gorunurlugu / DM / GDM uyeligi
+ * YENIDEN hesaplanir. Ayrica cerez `httpOnly`, `sameSite=strict` ve
+ * `path=/uploads` kapsamlidir; API uclarina hic gonderilmez.
+ */
+const MEDIA_TOKEN_TTL = (process.env.MEDIA_TOKEN_TTL || '7d') as import('jsonwebtoken').SignOptions['expiresIn'];
+
+export function makeMediaToken(user: UserLike): string {
+  return jwt.sign(
+    {
+      id: String(user._id ?? ''),
+      username: user.username ?? '',
+      // IPTAL EDILEBILIRLIK: normal erisim jetonu gibi `v` tasir. Kullanici
+      // tum oturumlari iptal ettiginde (tokenVersion artar) medya jetonu da
+      // GECERSIZ olur. Medya kolayligi ugruna iptal semantigi ZAYIFLATILMAZ.
+      v: parseTokenVersion(user.tokenVersion),
+      // Yetki iddiasi TASIMAZ: isAdmin/role/flags BILEREK yok.
+      purpose: 'media',
+    },
+    JWT_SECRET,
+    { expiresIn: MEDIA_TOKEN_TTL },
+  );
+}
+
 export function makeToken(user: UserLike): string {
   const flags = Array.isArray(user.flags) ? user.flags : [];
   const adminByClaims = Boolean(user.isAdmin) || user.role === 'admin' || flags.includes('admin');
@@ -158,7 +195,7 @@ export function makeToken(user: UserLike): string {
     {
       id: user._id,
       username: user.username,
-      v: user.tokenVersion || 0,
+      v: parseTokenVersion(user.tokenVersion),
       ...(adminByClaims && { isAdmin: true as const }),
       ...(user.role && { role: user.role }),
       ...(flags.length && { flags }),
@@ -184,6 +221,7 @@ export async function makeRefreshToken(user: UserLike): Promise<string> {
     createdAt: now,
     used: false,
     family,
+    tokenVersion: parseTokenVersion(user.tokenVersion),
   });
   return token;
 }
@@ -193,50 +231,129 @@ export interface RotateResult {
   newToken: string;
 }
 
-export type RotateError = 'reuse' | 'expired' | 'not_found' | 'user_not_found';
+export type RotateError = 'reuse' | 'expired' | 'not_found' | 'user_not_found' | 'revoked';
 export type RotateResultOrError = RotateResult | { error: RotateError };
 
+const _refreshTokenLocks = new Map<string, Promise<void>>();
+
+async function withRefreshTokenLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = _refreshTokenLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.then(() => gate);
+  _refreshTokenLocks.set(key, tail);
+
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (_refreshTokenLocks.get(key) === tail) _refreshTokenLocks.delete(key);
+  }
+}
+
 export async function rotateRefreshToken(oldToken: string): Promise<RotateResultOrError | null> {
-  const row = await _findRefreshTokenRow(oldToken);
-
-  // ── TOKEN REUSE DETECTION — AİLE BAZLI İPTAL ─────────────────
-  if (row && row.used) {
-    logger.warn(
-      { userId: row.userId, family: row.family, event: 'auth.refresh_token.reuse_detected' },
-      'Refresh token reuse detected. Revoking token family.'
-    );
-    if (row.family) {
-      await Auth.revokeByFamily(row.family);
-    } else {
-      await Auth.revokeAllForUser(row.userId);
-    }
-    return { error: 'reuse' as RotateError };
-  }
-
-  if (!row) return { error: 'not_found' as RotateError };
-  if (row.expiresAt < Date.now()) {
-    await Auth.revokeRefreshToken(row.token as string);
-    return { error: 'expired' as RotateError };
-  }
-
-  await Auth.updateRefreshTokenWhere(
-    { token: row.token },
-    { $set: { used: true, usedAt: Date.now() } }
-  );
-
-  const user = await Users.findById(row.userId);
-  if (!user) return { error: 'user_not_found' as RotateError };
-
+  const oldTokenHash = _hashRefreshToken(oldToken);
+  const now = Date.now();
   const newToken = crypto.randomBytes(48).toString('hex');
-  await Auth.insertRefreshTokenRow({
-    token: _hashRefreshToken(newToken),
-    userId: user._id,
-    expiresAt: Date.now() + REFRESH_TTL_MS,
-    createdAt: Date.now(),
-    used: false,
-    family: row.family || oldToken.slice(0, 16),
+  const newTokenHash = _hashRefreshToken(newToken);
+  const newFamily = crypto.randomUUID
+    ? crypto.randomUUID()
+    : crypto.randomBytes(16).toString('hex');
+
+  // Production PostgreSQL path: SELECT ... FOR UPDATE + consume + insert are
+  // one transaction. Two concurrent refreshes can no longer both observe
+  // the old token as unused.
+  const atomic = await Auth.rotateRefreshTokenAtomic({
+    oldTokenHash,
+    newTokenHash,
+    newFamily,
+    now,
+    expiresAt: now + REFRESH_TTL_MS,
   });
-  return { user, newToken };
+  if (atomic) {
+    // `rotateRefreshTokenAtomic` satiri `Record<string, unknown>` olarak
+    // dondurur; dogrudan daraltma TS2352 verir (yeterli ortusme yok).
+    if (atomic.status === 'ok') return { user: atomic.user as unknown as UserLike, newToken };
+    if (atomic.status === 'reuse') {
+      logger.warn(
+        { event: 'auth.refresh_token.reuse_detected' },
+        'Refresh token reuse detected. Revoking token family.'
+      );
+    }
+    return { error: atomic.status as RotateError };
+  }
+
+  // Unit-test/in-memory adapter fallback. Serialize by the HMAC of the token
+  // so the mock exercises the same one-winner/replay-revokes-family contract.
+  return withRefreshTokenLock(oldTokenHash, async () => {
+    const row = await _findRefreshTokenRow(oldToken);
+
+    if (row && row.used) {
+      logger.warn(
+        { userId: row.userId, family: row.family, event: 'auth.refresh_token.reuse_detected' },
+        'Refresh token reuse detected. Revoking token family.'
+      );
+      if (row.family) await Auth.revokeByFamily(row.family);
+      else await Auth.revokeAllForUser(row.userId);
+      return { error: 'reuse' as RotateError };
+    }
+
+    if (!row) return { error: 'not_found' as RotateError };
+    let rowExpiresAt: number | null;
+    try {
+      rowExpiresAt = parsePersistedEpochMillis(row.expiresAt);
+    } catch {
+      rowExpiresAt = null;
+    }
+    if (rowExpiresAt === null || rowExpiresAt <= Date.now()) {
+      await Auth.revokeRefreshToken(row.token as string);
+      return { error: 'expired' as RotateError };
+    }
+
+    const family = row.family || newFamily;
+    const user = await Users.findById(row.userId);
+    if (!user) {
+      await Auth.revokeRefreshToken(row.token as string);
+      return { error: 'user_not_found' as RotateError };
+    }
+    let issuedVersion: number | null = null;
+    let currentVersion: number | null = null;
+    try {
+      if (row.tokenVersion === null || row.tokenVersion === undefined) throw new TypeError('Missing refresh tokenVersion');
+      issuedVersion = parseTokenVersion(row.tokenVersion);
+      currentVersion = parseTokenVersion(user.tokenVersion);
+    } catch {
+      // Persisted revocation state must never be interpreted through Number()
+      // coercion. Treat corruption exactly like a stale generation.
+    }
+    if (issuedVersion === null || currentVersion === null || issuedVersion !== currentVersion) {
+      if (row.family) await Auth.revokeByFamily(row.family);
+      else await Auth.revokeRefreshToken(row.token as string);
+      return { error: 'revoked' as RotateError };
+    }
+
+    await Auth.updateRefreshTokenWhere(
+      { token: row.token },
+      { $set: { used: true, usedAt: Date.now(), family } }
+    );
+
+    await Auth.insertRefreshTokenRow({
+      token: newTokenHash,
+      userId: user._id,
+      expiresAt: Date.now() + REFRESH_TTL_MS,
+      createdAt: Date.now(),
+      used: false,
+      family,
+      tokenVersion: currentVersion,
+    });
+    return { user, newToken };
+  });
+}
+
+export async function revokeRefreshToken(rawToken: string): Promise<void> {
+  if (!rawToken) return;
+  await Auth.revokeRefreshToken(_hashRefreshToken(rawToken));
 }
 
 export async function revokeAllRefreshTokens(userId: string): Promise<void> {
@@ -257,7 +374,9 @@ export function startAuthCleanup(): void {
       const now = Date.now();
       await Auth.removeRefreshTokensWhere({ expiresAt: { $lt: now } });
       await Auth.removeRefreshTokensWhere({ used: true, usedAt: { $lt: now - 5 * 60_000 } });
-    } catch { /* ignore */ }
+    } catch (error) {
+      logger.warn({ event: 'auth.refresh_cleanup.failed', error }, 'Refresh-token cleanup failed');
+    }
   }, 5 * 60 * 1000);
   _authCleanupTimer.unref?.();
 }
@@ -274,12 +393,56 @@ export function _resetAuthCleanupForTest(): void {
   stopAuthCleanup();
 }
 
-export function verifyToken(token: string): JwtPayload | null {
+/**
+ * Token dogrular; gecersizse `null` doner.
+ *
+ * IMZA `string | null | undefined` KABUL EDER — bu bir gevsetme degil,
+ * GERCEGIN yazilmasidir: cagiranlarin cogu `authorization?.slice(7)` gibi
+ * ISTEGE BAGLI bir degerle gelir ve fonksiyon zaten bu durumda `null`
+ * donuyordu (`jwt.verify` firlatir, catch yutar). Imza `string` dedigi surece
+ * her cagri yeri ya bir daraltma yazmak ya da cast etmek zorundaydi.
+ *
+ * FAIL-CLOSED korunur: dizge OLMAYAN her girdi dogrudan `null`dur.
+ */
+export function verifyToken(token: string | null | undefined): JwtPayload | null {
+  if (typeof token !== 'string' || token.length === 0) return null;
   try {
     return jwt.verify(token, JWT_SECRET) as JwtPayload;
   } catch {
     return null;
   }
+}
+
+/**
+ * Kimlik doğrulamadan ÖNCE çalışan hız sınırlayıcı için hesap kimliği.
+ *
+ * Final21 Faz 11 (F21-11-04): küresel `/api` sınırlayıcısı rotaların
+ * `authMiddleware`inden önce bağlıdır ve `req.user` göremiyordu; aynı NAT
+ * arkasındaki kimlikli kullanıcıların hepsi tek bir IP kovasını (200/dk)
+ * paylaşıyor ve 10 aşımda IP'nin tamamı banlanıyordu.
+ *
+ * YALNIZCA imzası doğrulanan erişim jetonu kimlik verir. Medya jetonu ve sahte
+ * imza `null`dır (anonim → sıkı IP tavanı). `tokenVersion` burada BİLEREK
+ * sorgulanmaz: bu bir yetki kararı değil, sayaç anahtarıdır; iptal edilmiş
+ * jeton yine rotanın `authMiddleware`inde 401 alır ve kullanıcı kotasıyla
+ * sınırlı kalır. `req.user` AYARLANMAZ — kimlik doğrulaması rotada kalır.
+ */
+/**
+ * Kimliği YALNIZCA imzası doğrulanmış bir erişim jetonundan çıkarır (sayaç anahtarı içindir,
+ * yetki kararı DEĞİL: `tokenVersion` sorgulanmaz). Medya jetonu ve sahte imza `null` döner.
+ * HTTP küresel sınırlayıcısı (F21-11-04) ve soket bağlantı sınırlayıcısı aynı kuralı kullanır.
+ */
+export function verifiedTokenSubject(token: unknown): string | null {
+  if (typeof token !== 'string' || token.length === 0) return null;
+  const decoded = verifyToken(token);
+  if (!decoded || (decoded as { purpose?: string }).purpose === 'media') return null;
+  return typeof decoded.id === 'string' && decoded.id.length > 0 ? decoded.id : null;
+}
+
+export function verifiedAccessTokenSubject(req: Request): string | null {
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return null;
+  return verifiedTokenSubject(header.slice(7));
 }
 
 // Token version cache (avoids DB hit on every request) — LRU eviction
@@ -325,13 +488,28 @@ function _setTokenCache(userId: string, version: number): void {
   _cache.set(userId, { version, expiresAt: Date.now() + TOKEN_CACHE_TTL });
 }
 
+/**
+ * Jeton surumu — iptal semantigi. `uploadAuthz` de bunu kullanir ki medya
+ * jetonlari oturum iptalini AYNEN onurlandirsin.
+ */
+export async function getTokenVersion(userId: string): Promise<number | null> {
+  return _getTokenVersion(userId);
+}
+
 async function _getTokenVersion(userId: string): Promise<number | null> {
-  const cached = _cache.get(userId);
-  if (cached && cached.expiresAt > Date.now()) return cached.version;
+  // tokenVersion is an immediate revocation boundary. A worker-local cache is
+  // safe only in an explicit single-node deployment; in a Redis-configured
+  // cluster another node may bump tokenVersion and cannot invalidate this
+  // process's LRU. Bypass it in cluster mode so password/2FA/email security
+  // changes take effect on every node without a 30-second stale-token window.
+  if (!process.env.REDIS_URL) {
+    const cached = _cache.get(userId);
+    if (cached && cached.expiresAt > Date.now()) return cached.version;
+  }
   const user = await Users.findById(userId);
   if (!user) return null;
-  const version = (user as UserLike & { tokenVersion?: number }).tokenVersion || 0;
-  _setTokenCache(userId, version);
+  const version = parseTokenVersion((user as UserLike & { tokenVersion?: unknown }).tokenVersion);
+  if (!process.env.REDIS_URL) _setTokenCache(userId, version);
   return version;
 }
 
@@ -352,6 +530,19 @@ export async function authMiddleware(
     return;
   }
 
+  // ── AYRICALIK YUKSELTMESI KAPATILDI ────────────────────────────────────────
+  // `verifyToken` YALNIZCA imzayi dogrular. Medya jetonu da ayni sirla
+  // imzalandigi ve 7 GUN yasadigi icin, denetlenmeseydi API'ye tam erisim
+  // saglayan uzun omurlu bir kimlik olurdu (olculdu: /api/servers, /api/me,
+  // /api/friends hepsi 200 donuyordu).
+  //
+  // Medya jetonunun TEK isi `/uploads` altindaki ek yetkilendirmesidir.
+  // Burada acikca REDDEDILIR; kapsam ayrimi kanit haline gelir.
+  if ((decoded as { purpose?: string }).purpose === 'media') {
+    res.status(401).json({ error: 'Invalid or expired token' });
+    return;
+  }
+
   try {
     const currentVersion = await _getTokenVersion(decoded.id);
     if (currentVersion === null) {
@@ -363,6 +554,11 @@ export async function authMiddleware(
       return;
     }
     req.user = decoded;
+    // Kimlik ARTIK bilinir: korelasyon bağlamına iliştirilir; bundan sonraki
+    // her günlük satırı isteği HEM `requestId` HEM sahibiyle gösterir.
+    // Yeni bir bağlam AÇILMAZ — o, buraya kadar biriken asenkron zinciri
+    // koparırdı.
+    attachActor(decoded.id);
     next();
   } catch {
     res.status(500).json({ error: 'Auth check failed' });
@@ -370,11 +566,37 @@ export async function authMiddleware(
 }
 
 
-export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
-  const user = (req as AuthRequest).user;
-  if (!user?.isAdmin && user?.role !== 'admin' && !user?.flags?.includes('admin')) {
-    res.status(403).json({ error: 'Admin required' });
+/**
+ * FAZ G1 — YONETICI DENETIMI ARTIK DB GERCEGINE BAKAR.
+ *
+ * ONCEKI HAL: yetki karari TAMAMEN JWT ICERIGINDEN veriliyordu
+ * (`user.isAdmin`, `user.role`, `user.flags`). Bu, "yetkiyle ilgili iddiayi
+ * token'dan okuma" kusurudur: yoneticiligi ALINMIS bir kullanici, elindeki
+ * token suresi dolana kadar yonetici kalmaya devam ederdi. `tokenVersion`
+ * denetimi yalniz oturum iptalini kapsar; rol degisikligini KAPSAMAZ.
+ *
+ * Olcum: bu fonksiyonun GERCEK cagirani YOKTU (webpush.ts yalnizca import
+ * ediyordu, hicbir rotaya baglamiyordu). Yani sevk edilen bir acik degildi —
+ * ama ayni ada sahip, DOGRU gorunen ve YANLIS calisan bir tuzakti. Kanonik
+ * sahip `routes/admin/middleware.ts::adminOnly`dir ve DB'den okur; bu
+ * fonksiyon da ayni sozlesmeye hizalandi.
+ */
+export async function requireAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const claim = (req as AuthRequest).user;
+  if (!claim?.id) {
+    res.status(401).json({ error: 'Not authenticated' });
     return;
   }
-  next();
+  try {
+    const { Users } = await import('../db/repositories');
+    const dbUser = await Users.findById(claim.id);
+    if (!dbUser?.isAdmin) {
+      res.status(403).json({ error: 'Admin required' });
+      return;
+    }
+    next();
+  } catch {
+    // Fail-closed: cozumleme basarisizsa yonetici DEGIL sayilir.
+    res.status(403).json({ error: 'Admin required' });
+  }
 }

@@ -3,12 +3,13 @@
 // Her handler izole, test edilebilir.
 
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'crypto';
 import { Federation, Notifications, Dms, Users } from '../../db/repositories';
 import logger from '../../lib/logger';
 import { deliverApActivity } from './delivery';
 
-interface ApActor { _id: string; username: string; [key: string]: unknown; }
-interface ApObject extends Record<string, unknown> {
+interface ApActor { _id: string; username: string; }
+export interface ApObject extends Record<string, unknown> {
   id?: string;
   type?: string;
   object?: string | ApObject;
@@ -23,7 +24,11 @@ interface ApObject extends Record<string, unknown> {
   to?: string | string[];
   cc?: string | string[];
 }
-interface ApActivity { id: string; type: string; actor: string | { id: string }; object?: string | ApObject; }
+// Testler bu sozlesmeye uyan aktivite kurmak zorunda; tip disa acilmadan
+// ikizler ya eksik kalir ya da `as any` ile denetimden kacardi.
+// `object` AGDAN gelir: uzak sunucu `null` yollayabilir ve fiilen yolluyor.
+// Tip bu gercegi yazar; `objectId()` zaten bos dizgeye dusuyordu.
+export interface ApActivity { id: string; type: string; actor: string | { id: string }; object?: string | ApObject | null; }
 function isApObject(value: unknown): value is ApObject {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -31,11 +36,18 @@ function isApObject(value: unknown): value is ApObject {
 const AP_CONTEXT  = 'https://www.w3.org/ns/activitystreams';
 const instanceUrl = () => process.env.INSTANCE_URL || `http://localhost:${process.env.PORT || 3001}`;
 
+function stableApRowId(namespace: string, ...parts: unknown[]): string {
+  const digest = createHash('sha256')
+    .update(parts.map(part => String(part ?? '')).join('\u001f'))
+    .digest('hex');
+  return `${namespace}_${digest}`;
+}
+
 // ── Yardımcılar ─────────────────────────────────────────────────
 function actorId(actor: string | { id: string } | undefined): string {
   return typeof actor === 'string' ? actor : actor?.id || '';
 }
-function objectId(obj: string | { id?: string } | undefined): string {
+function objectId(obj: string | { id?: string } | null | undefined): string {
   return typeof obj === 'string' ? obj : obj?.id || '';
 }
 
@@ -60,7 +72,7 @@ async function handleApFollow(targetUser: ApActor, activity: ApActivity): Promis
     const url    = `${instanceUrl()}/api/federation/users/${targetUser.username}`;
     const accept = {
       '@context': AP_CONTEXT,
-      id:         `${url}/activities/${uuidv4()}`,
+      id:         `${url}/activities/${stableApRowId('accept', activity.id, aUrl)}`,
       type:       'Accept',
       actor:      url,
       object:     activity,
@@ -69,10 +81,11 @@ async function handleApFollow(targetUser: ApActor, activity: ApActivity): Promis
 
     // Yerel bildirim
     await Notifications.insertInbox({
-      _id:      uuidv4(),
+      _id:      stableApRowId('apnotify', targetUser._id, 'ap_follow', aUrl, activity.id),
       userId:   targetUser._id,
       type:     'ap_follow',
       actorUrl: aUrl,
+      activityId: activity.id,
       read:     false,
       createdAt: Date.now(),
     });
@@ -80,6 +93,7 @@ async function handleApFollow(targetUser: ApActor, activity: ApActivity): Promis
     logger.info({ targetUser: targetUser.username, actor: aUrl, event: 'federation.follow.received' });
   } catch (err) {
     logger.warn({ err, event: 'federation.follow.handle_failed' });
+    throw err;
   }
 }
 
@@ -103,6 +117,7 @@ async function handleApUnfollow(targetUser: ApActor | null, activity: ApActivity
     }
   } catch (err) {
     logger.warn({ err, event: 'federation.unfollow.handle_failed' });
+    throw err;
   }
 }
 
@@ -117,6 +132,7 @@ async function handleApAccept(localUser: ApActor, activity: ApActivity): Promise
     logger.info({ localUser: localUser.username, remoteActor, event: 'federation.follow.accepted' });
   } catch (err) {
     logger.warn({ err, event: 'federation.follow.accept_handle_failed' });
+    throw err;
   }
 }
 
@@ -130,6 +146,7 @@ async function handleApReject(localUser: ApActor, activity: ApActivity): Promise
     logger.info({ localUser: localUser.username, remoteActor, event: 'federation.follow.rejected' });
   } catch (err) {
     logger.warn({ err, event: 'federation.follow.reject_handle_failed' });
+    throw err;
   }
 }
 
@@ -161,10 +178,15 @@ async function handleApCreate(targetUser: ApActor | null, activity: ApActivity):
 
     const aUrl = actorId(activity.actor);
 
-    // ── ActivityPub DM tespiti ─────────────────────────────────
-    if (_isApDm(obj) && targetUser) {
-      // Gönderici AP actor URL'sine karşılık gelen yerel kullanıcıyı bul
-      const senderLocal = await Users.findByApUrl(aUrl).catch(() => null);
+    // ── ActivityPub audience classification ──────────────────────
+    // Direct/private audience is persisted explicitly and never inferred from
+    // targetUserId at read time. A repository failure must not downgrade a DM
+    // into a public timeline note.
+    const isDirect = _isApDm(obj);
+    if (isDirect && targetUser) {
+      // Gönderici AP actor URL'sine karşılık gelen yerel kullanıcıyı bul.
+      // Storage failure propagates: "lookup unavailable" is not "remote sender".
+      const senderLocal = await Users.findByApUrl(aUrl);
 
       if (senderLocal) {
         // Sprint 75: Güvenlik — senderLocal'ın AP URL'i activity'deki actor ile eşleşmeli.
@@ -184,19 +206,22 @@ async function handleApCreate(targetUser: ApActor | null, activity: ApActivity):
 
         // İki yerel kullanıcı arasında DM conversation'ı bul ya da oluştur
         const { dmId } = await Dms.findOrCreateConversation(senderLocal._id, targetUser._id);
+        const federatedMessageKey = obj.id || activity.id;
         await Dms.insertMessage({
-          _id:       uuidv4(),
+          _id:         stableApRowId('apdm', targetUser._id, aUrl, federatedMessageKey),
           dmId,
-          senderId:  senderLocal._id,
-          content:   obj.content || obj.name || '',
-          apId:      obj.id,
-          createdAt: obj.published ? new Date(obj.published).getTime() : Date.now(),
+          userId:      senderLocal._id,
+          displayName: String((senderLocal as unknown as Record<string, unknown>).displayName || senderLocal.username || 'Federated user'),
+          avatarColor: String((senderLocal as unknown as Record<string, unknown>).avatarColor || '#2d9cdb'),
+          content:     obj.content || obj.name || '',
+          createdAt:   obj.published ? new Date(obj.published).getTime() : Date.now(),
         });
         await Notifications.insertInbox({
-          _id:       uuidv4(),
+          _id:       stableApRowId('apnotify', targetUser._id, 'dm', aUrl, federatedMessageKey),
           userId:    targetUser._id,
           type:      'dm',
           actorUrl:  aUrl,
+          activityId: activity.id,
           dmId,
           read:      false,
           createdAt: Date.now(),
@@ -211,10 +236,11 @@ async function handleApCreate(targetUser: ApActor | null, activity: ApActivity):
     // ── Genel federated note ───────────────────────────────────
 
     const fedMsg = {
-      _id:          uuidv4(),
+      _id:          stableApRowId('apmsg', aUrl, obj.id || activity.id, targetUser?._id || ''),
       apId:         obj.id,
       actorUrl:     aUrl,
       targetUserId: targetUser?._id || null,
+      visibility:   isDirect ? 'direct' : 'public',
       content:      obj.content || obj.name || '',
       summary:      obj.summary || null,
       sensitive:    obj.sensitive || false,
@@ -224,15 +250,24 @@ async function handleApCreate(targetUser: ApActor | null, activity: ApActivity):
       published:    obj.published ? new Date(obj.published).getTime() : Date.now(),
       createdAt:    Date.now(),
     };
-    await Federation.insertApMessage(fedMsg);
+    const existingMessage = obj.id ? await Federation.findApMessageOne({ apId: obj.id }) : null;
+    if (!existingMessage) {
+      await Federation.insertApMessage(fedMsg);
+    } else if (existingMessage.actorUrl !== aUrl) {
+      logger.warn({ apId: obj.id, actorUrl: aUrl, existingActor: existingMessage.actorUrl,
+        event: 'federation.note.ap_id_actor_conflict' },
+      'ActivityPub object id is already owned by a different actor; refusing overwrite.');
+      return;
+    }
 
     // Mention bildirimi
     if (targetUser && (obj.tag || []).some((t: Record<string,string>) => t.type === 'Mention')) {
       await Notifications.insertInbox({
-        _id:      uuidv4(),
+        _id:      stableApRowId('apnotify', targetUser._id, 'ap_mention', aUrl, obj.id || activity.id),
         userId:   targetUser._id,
         type:     'ap_mention',
         actorUrl: aUrl,
+        activityId: activity.id,
         noteId:   obj.id,
         read:     false,
         createdAt: Date.now(),
@@ -242,6 +277,7 @@ async function handleApCreate(targetUser: ApActor | null, activity: ApActivity):
     logger.info({ noteId: obj.id, event: 'federation.note.created' });
   } catch (err) {
     logger.warn({ err, event: 'federation.note.create_handle_failed' });
+    throw err;
   }
 }
 
@@ -258,6 +294,7 @@ async function handleApUpdate(targetUser: ApActor | null, activity: ApActivity):
     logger.info({ noteId: obj.id, event: 'federation.note.updated' });
   } catch (err) {
     logger.warn({ err, event: 'federation.note.update_handle_failed' });
+    throw err;
   }
 }
 
@@ -271,6 +308,7 @@ async function handleApDelete(targetUser: ApActor | null, activity: ApActivity):
     logger.info({ objectId: oId, event: 'federation.note.deleted' });
   } catch (err) {
     logger.warn({ err, event: 'federation.note.delete_handle_failed' });
+    throw err;
   }
 }
 
@@ -282,8 +320,9 @@ async function handleApLike(targetUser: ApActor | null, activity: ApActivity): P
     if (!oUrl) return;
 
     await Federation.insertApLike({
-      _id:      uuidv4(),
+      _id:      stableApRowId('aplike', targetUser?._id || '', aUrl, activity.id || oUrl),
       actorUrl: aUrl,
+      activityId: activity.id,
       objectUrl: oUrl,
       targetUserId: targetUser?._id || null,
       createdAt: Date.now(),
@@ -292,10 +331,11 @@ async function handleApLike(targetUser: ApActor | null, activity: ApActivity): P
     // Bildirim — bu instance'daki bir nota beğenildiyse
     if (targetUser) {
       await Notifications.insertInbox({
-        _id:      uuidv4(),
+        _id:      stableApRowId('apnotify', targetUser._id, 'ap_like', aUrl, activity.id || oUrl),
         userId:   targetUser._id,
         type:     'ap_like',
         actorUrl: aUrl,
+        activityId: activity.id,
         noteUrl:  oUrl,
         read:     false,
         createdAt: Date.now(),
@@ -304,6 +344,7 @@ async function handleApLike(targetUser: ApActor | null, activity: ApActivity): P
     logger.info({ actor: aUrl, object: oUrl, event: 'federation.like.received' });
   } catch (err) {
     logger.warn({ err, event: 'federation.like.handle_failed' });
+    throw err;
   }
 }
 
@@ -315,8 +356,9 @@ async function handleApAnnounce(targetUser: ApActor | null, activity: ApActivity
     if (!oUrl) return;
 
     await Federation.insertApAnnounce({
-      _id:          uuidv4(),
+      _id:          stableApRowId('apannounce', targetUser?._id || '', aUrl, activity.id || oUrl),
       actorUrl:     aUrl,
+      activityId:   activity.id,
       objectUrl:    oUrl,
       targetUserId: targetUser?._id || null,
       createdAt:    Date.now(),
@@ -324,10 +366,11 @@ async function handleApAnnounce(targetUser: ApActor | null, activity: ApActivity
 
     if (targetUser) {
       await Notifications.insertInbox({
-        _id:      uuidv4(),
+        _id:      stableApRowId('apnotify', targetUser._id, 'ap_announce', aUrl, activity.id || oUrl),
         userId:   targetUser._id,
         type:     'ap_announce',
         actorUrl: aUrl,
+        activityId: activity.id,
         noteUrl:  oUrl,
         read:     false,
         createdAt: Date.now(),
@@ -336,6 +379,7 @@ async function handleApAnnounce(targetUser: ApActor | null, activity: ApActivity
     logger.info({ actor: aUrl, object: oUrl, event: 'federation.announce.received' });
   } catch (err) {
     logger.warn({ err, event: 'federation.announce.handle_failed' });
+    throw err;
   }
 }
 

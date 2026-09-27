@@ -78,7 +78,9 @@ async function dbGet(url: string): Promise<LinkPreviewValue | null> {
         'SELECT data FROM link_preview_cache WHERE url = $1 AND "expiresAt" > $2',
         [url, Date.now()]
       );
-      if (rows.length > 0) return rows[0].data;
+      // Indeksli erisim `... | undefined` doner; `length > 0` bunu daraltmaz.
+      const first = rows[0];
+      if (first) return first.data;
     }
   } catch (err) {
     logger.debug({ err: (err as Error).message }, '[linkPreview] dbGet error (non-fatal)');
@@ -157,9 +159,9 @@ export async function fetchLinkPreview(url: string): Promise<LinkPreviewValue | 
     if (parsed.hostname === 'open.spotify.com') {
       const parts = parsed.pathname.split('/').filter(Boolean); // ['track','3n3...']
       const validTypes = ['track', 'album', 'playlist', 'episode', 'artist'];
-      if (parts.length >= 2 && validTypes.includes(parts[0])) {
-        const embedType = parts[0];
-        const embedId   = parts[1];
+      const embedType = parts[0];
+      const embedId   = parts[1];
+      if (embedType && embedId && validTypes.includes(embedType)) {
         const spotifyValue: LinkPreviewValue = {
           type:        'spotify',
           url,
@@ -197,11 +199,13 @@ export async function fetchLinkPreview(url: string): Promise<LinkPreviewValue | 
     const getMeta = (prop: string): string | null => {
       const m = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${prop}["'][^>]+content=["']([^"']+)["']`, 'i'))
         || html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${prop}["']`, 'i'));
-      return m ? m[1].trim() : null;
+      // Yakalama grubu eslesmede her zaman DOLU degildir (tip duzeyinde
+      // `string | undefined`); bos yakalama `null` ile ayni anlama gelir.
+      return m?.[1] ? m[1].trim() : null;
     };
 
     const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-    const title = getMeta('og:title') || (titleMatch ? titleMatch[1].trim() : null);
+    const title = getMeta('og:title') || (titleMatch?.[1] ? titleMatch[1].trim() : null);
     if (!title) return null;
 
     const value: LinkPreviewValue = {

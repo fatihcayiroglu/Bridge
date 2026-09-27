@@ -61,13 +61,15 @@ const router = express.Router();
 import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
-import FormData from 'form-data';
-import { Members, Messages, VoiceMessages } from '../db/repositories';
+import { Channels, Messages, VoiceMessages } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import logger from '../lib/logger';
 import { limits } from '../middleware/rateLimit';
-import { getStorageAdapter } from '../lib/storageAdapter';
+import { getPrivateStorageAdapter } from '../lib/storageAdapter';
+import { PERMS, hasAllPermissions, resolvePermissions } from '../lib/permissions';
 
+import { uploadRoot } from '../lib/runtimePaths';
+import { parseNonNegativeSafeIntText } from '../lib/queryNumbers';
 // ── AI TRANSKRİPSİYON ─────────────────────────────────────────
 async function transcribeAudio(filePath: string): Promise<string | null> {
   const GROQ_KEY   = process.env.GROQ_API_KEY;
@@ -78,8 +80,11 @@ async function transcribeAudio(filePath: string): Promise<string | null> {
   const fileBuffer = fs.readFileSync(filePath);
   const fileName   = path.basename(filePath);
 
+  // Node >=22 exposes the WHATWG FormData/Blob implementation used by native
+  // fetch. Avoid the legacy `form-data` stream package and its extra runtime
+  // dependency chain; undici sets the multipart boundary header itself.
   const form = new FormData();
-  form.append('file', fileBuffer, { filename: fileName, contentType: 'audio/webm' });
+  form.append('file', new Blob([fileBuffer], { type: 'audio/webm' }), fileName);
   form.append('model', GROQ_KEY ? 'whisper-large-v3-turbo' : 'whisper-1');
   form.append('response_format', 'text');
 
@@ -91,8 +96,8 @@ async function transcribeAudio(filePath: string): Promise<string | null> {
   try {
     const r = await fetch(apiUrl, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${apiKey}`, ...form.getHeaders() },
-      body: form as any,
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      body: form,
       signal: AbortSignal.timeout(30_000),
     });
     if (!r.ok) {
@@ -107,78 +112,163 @@ async function transcribeAudio(filePath: string): Promise<string | null> {
   }
 }
 
-const UPLOAD_DIR = path.join(__dirname, '../../uploads');
+const UPLOAD_DIR = uploadRoot();
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-  filename: (req, file, cb) => cb(null, `vm_${Date.now()}_${uuidv4().slice(0, 8)}.webm`),
+const VOICE_MIME_EXT: Record<string, string> = {
+  'audio/webm': '.webm',
+  'audio/ogg': '.ogg',
+};
+
+// Multipart alanlarını okuyabilmek için multer gerekir; ancak diskStorage
+// kullanılırsa channel/server yetkisi doğrulanmadan önce saldırgan diske dosya
+// yazdırabilir. Buffer bellekte (10 MB üst sınır) tutulur, fiziksel dosya ancak
+// canonical channel authorization başarıyla geçtikten sonra oluşturulur.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (VOICE_MIME_EXT[file.mimetype]) cb(null, true);
+    else cb(Object.assign(new Error('Voice message file type not allowed'), { status: 415 }));
+  },
 });
-const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } }); // 10MB max
+
+function safeUnlink(filePath: string): void {
+  try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (err) {
+    logger.warn({ err, filePath, event: 'voicemsg.local_cleanup_failed' }, 'Voice message yerel cleanup başarısız');
+  }
+}
+
+async function cleanupUploadedObject(
+  store: ReturnType<typeof getPrivateStorageAdapter>,
+  result: { url: string; key: string | null; provider: string },
+  localPath: string,
+): Promise<void> {
+  try {
+    const key = result.key ?? store.keyFromUrl(result.url);
+    if (key) await store.deleteFile(key);
+  } catch (err) {
+    logger.error({ err, url: result.url, event: 'voicemsg.storage_rollback_failed' }, 'Voice message storage rollback başarısız');
+  }
+  // Remote provider nesnesinden ayrı tuttuğumuz transkripsiyon kopyasıdır.
+  if (result.provider !== 'local') safeUnlink(localPath);
+}
 
 router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async (req, res) => {
   const _u = castAuthed(req).user;
   if (!req.file) return res.status(400).json({ error: 'No audio file' });
   const { channelId, serverId, duration } = req.body as Record<string, string>;
   if (!channelId || !serverId) return res.status(400).json({ error: 'channelId and serverId required' });
-  const membership = await Members.findOne(_u.id, serverId);
-  if (!membership) return res.status(403).json({ error: 'Not a member' });
 
-  // CDN'e yükle (local modda sadece /uploads/<filename> döner)
-  const store    = getStorageAdapter();
-  const cdnKey   = `uploads/${req.file.filename}`;
-  const result   = await store.uploadFile(req.file.path, cdnKey, { deleteLocal: false });
-  const fileUrl  = result.url;
+  // Client-supplied serverId/channelId yalnız locator'dır, authority değildir.
+  // Kanalın gerçekten belirtilen sunucuya ait olduğu ve kullanıcının bu kanalda
+  // voice-message gönderebildiği server-side resolver ile kanıtlanır.
+  const channel = await Channels.findByIdAndServer(channelId, serverId);
+  if (!channel) return res.status(403).json({ error: 'Channel unavailable' });
+  const perms = await resolvePermissions(_u.id, serverId, channelId);
+  if (!hasAllPermissions(perms, PERMS.VIEW_CHANNELS, PERMS.SEND_MESSAGES, PERMS.ATTACH_FILES)) {
+    return res.status(403).json({ error: 'Missing channel permissions' });
+  }
 
-  const vm = await VoiceMessages.insert({
-    _id: uuidv4(), channelId, serverId,
-    userId: _u.id, displayName: _u.displayName,
-    avatarColor: _u.avatarColor || '#2d9cdb',
-    fileUrl, duration: parseInt(duration) || 0, createdAt: Date.now(),
-  });
+  const parsedDuration = parseNonNegativeSafeIntText(duration, 0);
+  if (parsedDuration === null) return res.status(400).json({ error: 'duration must be a non-negative safe integer' });
 
-  const msg = await Messages.create({
-    _id: uuidv4(), channelId, serverId,
-    userId: _u.id, username: _u.username,
-    displayName: _u.displayName, avatarColor: _u.avatarColor || '#2d9cdb',
-    content: '', type: 'voice_message',
-    fileUrl, fileName: req.file.filename, fileType: 'audio/webm',
-    reactions: {}, createdAt: Date.now(),
-  });
+  const ext = VOICE_MIME_EXT[req.file.mimetype];
+  if (!ext) return res.status(415).json({ error: 'Voice message file type not allowed' });
+  const fileName = `vm_${Date.now()}_${uuidv4().slice(0, 8)}${ext}`;
+  const filePath = path.join(UPLOAD_DIR, fileName);
+  fs.writeFileSync(filePath, req.file.buffer);
 
-  res.json({ ok: true, msg, vmId: vm._id });
+  const store = getPrivateStorageAdapter();
+  let result: Awaited<ReturnType<typeof store.uploadFile>> | null = null;
+  let vm: Awaited<ReturnType<typeof VoiceMessages.insert>> | null = null;
+  try {
+    // Local modda fiziksel dosya zaten server/uploads altındadır; remote modda
+    // transkripsiyon bitene kadar yerel kopyayı koruruz.
+    result = await store.uploadFile(filePath, `uploads/${fileName}`, {
+      deleteLocal: false,
+      contentType: req.file.mimetype,
+    });
+    // Voice messages are private channel attachments. Keep their persisted
+    // reference on Bridge even when bytes live in S3/R2/MinIO/B2; uploadAuthz
+    // re-checks current channel visibility before proxying remote bytes.
+    const fileUrl = `/uploads/${fileName}`;
 
-  setImmediate(async () => {
-    // Transkripsiyon için dosya hâlâ diskte (deleteLocal: false)
-    // Remote provider'da yükleme sonrası yerel kopyayı temizle
-    if (result.provider !== 'local') {
-      fs.unlink(req.file!.path, () => {});
-    }
+    vm = await VoiceMessages.insert({
+      _id: uuidv4(), channelId, serverId,
+      userId: _u.id,
+      // `voice_messages."displayName"` is NOT NULL with no default and was never written here,
+      // so this insert could only fail on real PostgreSQL — the unit-test store does not
+      // enforce NOT NULL (Final21 Phase 16: every insert audited against the schema).
+      displayName: _u.displayName || _u.username,
+      url: fileUrl, duration: parsedDuration, createdAt: Date.now(),
+    });
+    if (!vm?._id) throw new Error('Voice message persistence failed');
 
-    try {
-      const transcript = await transcribeAudio(req.file!.path);
-      if (transcript) {
-        await VoiceMessages.update({ _id: vm._id }, { $set: { transcript } });
-        await Messages.update(msg._id, { transcript });
-        const io = req.app.get('io'); if (io) {
-          io.to(channelId).emit('message:transcript', {
-            messageId: msg._id,
-            transcript,
-          });
+    const msg = await Messages.create({
+      _id: uuidv4(), channelId, serverId,
+      userId: _u.id, username: _u.username,
+      displayName: _u.displayName, avatarColor: _u.avatarColor || '#2d9cdb',
+      content: '', type: 'voice_message',
+      fileUrl, fileName, fileType: req.file.mimetype,
+      reactions: {}, createdAt: Date.now(),
+    });
+    if (!msg?._id) throw new Error('Message persistence failed');
+
+    res.json({ ok: true, msg, vmId: vm._id });
+
+    const vmId = String(vm._id);
+    const messageId = String(msg._id);
+    const provider = result.provider;
+    setImmediate(async () => {
+      try {
+        const transcript = await transcribeAudio(filePath);
+        if (transcript) {
+          await VoiceMessages.update({ _id: vmId }, { $set: { transcript } });
+          await Messages.update(messageId, { transcript });
+          const io = req.app.get('io'); if (io) {
+            io.to(channelId).emit('message:transcript', { messageId, transcript });
+          }
         }
+      } catch (_err) { const err = _err as Error;
+        logger.warn({ err, event: 'transcription.background.error' }, '[Transcription] Arka plan hatası');
+      } finally {
+        // Remote provider'da bu kopya yalnız transkripsiyon içindi. Local
+        // provider'da ise aynı dosya /uploads URL'sinin gerçek backing object'i.
+        if (provider !== 'local') safeUnlink(filePath);
       }
-    } catch (_err) { const err = _err as Error;
-      logger.warn({ err, event: 'transcription.background.error' }, '[Transcription] Arka plan hatası');
+    });
+  } catch (err) {
+    // İki tablo transaction paylaşmıyor. Voice row yazıldıktan sonra Message
+    // insert'i başarısız olursa önce DB referansını geri al; DB rollback
+    // başarısızsa fiziksel objeyi korumak fail-closed davranıştır.
+    let safeToDeleteObject = true;
+    if (vm?._id) {
+      try { await VoiceMessages.remove({ _id: vm._id }); }
+      catch (rollbackErr) {
+        safeToDeleteObject = false;
+        logger.error({ rollbackErr, vmId: vm._id, event: 'voicemsg.db_rollback_failed' }, 'Voice message DB rollback başarısız');
+      }
     }
-  });
+    if (result && safeToDeleteObject) await cleanupUploadedObject(store, result, filePath);
+    else if (!result) safeUnlink(filePath);
+    throw err;
+  }
 });
 
 router.get('/:vmId/transcript', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const vm = await VoiceMessages.findOne({ _id: String(req.params.vmId ?? '') });
   if (!vm) return res.status(404).json({ error: 'Voice message not found' });
-  const member = await Members.findOne(_u.id, vm.serverId);
-  if (!member) return res.status(403).json({ error: 'Not a member' });
+
+  const channelId = String(vm.channelId ?? '');
+  const serverId = String(vm.serverId ?? '');
+  const channel = channelId && serverId ? await Channels.findByIdAndServer(channelId, serverId) : null;
+  if (!channel) return res.status(404).json({ error: 'Voice message not found' });
+  const perms = await resolvePermissions(_u.id, serverId, channelId);
+  if (!hasAllPermissions(perms, PERMS.VIEW_CHANNELS, PERMS.READ_HISTORY)) {
+    return res.status(403).json({ error: 'Missing channel permissions' });
+  }
   if (!vm.transcript) return res.json({ transcript: null, status: 'pending' });
   res.json({ transcript: vm.transcript, status: 'done' });
 });

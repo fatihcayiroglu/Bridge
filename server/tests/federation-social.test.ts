@@ -3,8 +3,9 @@
 // timeline, notifications, read-all, profile — tam coverage
 //
 // Test sayısı: 44 test / 11 endpoint
+import { fetchMock, installFetchMock } from './helpers/fetchDouble';
 
-process.env.JWT_SECRET  = 'test-jwt-secret';
+process.env.JWT_SECRET  = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV    = 'test';
 process.env.INSTANCE_URL = 'https://bridge.example.com';
 
@@ -15,11 +16,15 @@ jest.mock('../db/index',  () => mockDb);
 jest.mock('../db/loader', () => require('../db/index'));
 
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: (req, res, next) => {
+  authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
     const h = req.headers.authorization;
     if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
     const jwt = require('jsonwebtoken');
-    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret'); next(); }
+    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!'); next(); }
     catch { res.status(401).json({ error: 'Invalid token' }); }
   },
 }));
@@ -35,15 +40,16 @@ jest.mock('../routes/federation/delivery', () => ({
   signRequest:        jest.fn(),
 }));
 
-global.fetch = jest.fn();
+installFetchMock();
 
 jest.mock('../lib/fetch', () => ({
-  fetchT: jest.fn((...args) => global.fetch(...args)),
-  default: jest.fn((...args) => global.fetch(...args)),
+  fetchT: jest.fn((...args: Parameters<typeof fetch>) => global.fetch(...args)),
+  default: jest.fn((...args: Parameters<typeof fetch>) => global.fetch(...args)),
 }));
 
 import request from 'supertest';
 import express from 'express';
+import { _resetRateLimitStoreForTest } from '../middleware/rateLimit';
 const jwt     = require('jsonwebtoken');
 
 const {
@@ -57,7 +63,7 @@ const socialRouter = socialModule.default || socialModule;
 const app = express();
 app.use(express.json());
 app.use('/api/federation', socialRouter);
-app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
 
 // ── Fixture IDs ─────────────────────────────────────────────────
 const USER_ID       = 'social-test-user';
@@ -65,10 +71,10 @@ const USER2_ID      = 'social-test-user2';
 const REMOTE_ACTOR  = 'https://mastodon.social/users/remoteuser';
 const REMOTE_NOTE   = 'https://mastodon.social/users/remoteuser/statuses/123';
 
-function token(id) {
+function token(id: string) {
   return jwt.sign(
     { id, username: 'socialuser', displayName: 'Social User', v: 0 },
-    'test-jwt-secret',
+    'test-jwt-secret-long-enough-32chars!!',
     { expiresIn: '1h' }
   );
 }
@@ -99,7 +105,7 @@ beforeEach(async () => {
   sendAnnounce.mockResolvedValue({ type: 'Announce', id: 'https://bridge.example.com/activities/a1' });
   sendUnfollow.mockResolvedValue(undefined);
   deliverApActivity.mockResolvedValue(undefined);
-  global.fetch.mockReset();
+  fetchMock().mockReset();
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -235,7 +241,7 @@ describe('GET /api/federation/following', () => {
       .set('Authorization', `Bearer ${token(USER_ID)}`);
 
     expect(res.status).toBe(200);
-    const item = res.body.find(f => f.actorUrl === REMOTE_ACTOR);
+    const item = res.body.find((f: Record<string, unknown>) => f.actorUrl === REMOTE_ACTOR);
     expect(item).toBeDefined();
     expect(item).toHaveProperty('accepted');
     expect(item).toHaveProperty('createdAt');
@@ -278,7 +284,7 @@ describe('GET /api/federation/followers', () => {
       .set('Authorization', `Bearer ${token(USER_ID)}`);
 
     expect(res.status).toBe(200);
-    const item = res.body.find(f => f.actorUrl === REMOTE_ACTOR);
+    const item = res.body.find((f: Record<string, unknown>) => f.actorUrl === REMOTE_ACTOR);
     expect(item).toBeDefined();
     expect(item).toHaveProperty('createdAt');
 
@@ -467,6 +473,22 @@ describe('GET /api/federation/timeline', () => {
     expect(res.body.limit).toBe(50);
   });
 
+
+  it.each([
+    ['negative page', { page: -1 }],
+    ['fractional page', { page: 1.5 }],
+    ['unsafe page', { page: 9007199254740992 }],
+    ['negative limit', { limit: -1 }],
+    ['fractional limit', { limit: 1.5 }],
+    ['unsafe limit', { limit: 9007199254740992 }],
+  ])('400 — %s adapter pagination katmanına ulaşmaz', async (_name, query) => {
+    const res = await request(app)
+      .get('/api/federation/timeline')
+      .set('Authorization', `Bearer ${token(USER_ID)}`)
+      .query(query);
+    expect(res.status).toBe(400);
+  });
+
   it('200 — kabul edilmiş takip sonrası mesajlar listelenir', async () => {
     // Accepted outgoing follow ekle
     await mockDb.apOutgoingFollows.insert({
@@ -478,10 +500,12 @@ describe('GET /api/federation/timeline', () => {
     });
     // O aktörden bir mesaj ekle
     await mockDb.apMessages.insert({
-      _id:       'tl-msg-1',
-      actorUrl:  REMOTE_ACTOR,
-      content:   'Hello from remote',
-      published: new Date().toISOString(),
+      _id:          'tl-msg-1',
+      actorUrl:     REMOTE_ACTOR,
+      targetUserId: USER_ID,
+      visibility:   'public',
+      content:      'Hello from remote',
+      published:    Date.now(),
     });
 
     const res = await request(app)
@@ -493,6 +517,43 @@ describe('GET /api/federation/timeline', () => {
 
     await mockDb.apOutgoingFollows.remove({ _id: 'tl-follow-1' });
     await mockDb.apMessages.remove({ _id: 'tl-msg-1' });
+  });
+
+  it('public timeline direct ve legacy-unclassified ActivityPub içeriklerini fail-closed dışarıda tutar', async () => {
+    await mockDb.apOutgoingFollows.insert({
+      _id: 'tl-follow-privacy', fromUserId: USER_ID,
+      targetActorUrl: REMOTE_ACTOR, accepted: true, createdAt: Date.now(),
+    });
+    await mockDb.apMessages.insert({
+      _id: 'tl-public-targeted', actorUrl: REMOTE_ACTOR, targetUserId: 'another-local-inbox',
+      visibility: 'public', content: 'public post', published: Date.now(), createdAt: Date.now(),
+    });
+    await mockDb.apMessages.insert({
+      _id: 'tl-direct-self', actorUrl: REMOTE_ACTOR, targetUserId: USER_ID,
+      visibility: 'direct', content: 'private for me', published: Date.now(), createdAt: Date.now(),
+    });
+    await mockDb.apMessages.insert({
+      _id: 'tl-direct-other', actorUrl: REMOTE_ACTOR, targetUserId: 'other-user',
+      visibility: 'direct', content: 'private for someone else', published: Date.now(), createdAt: Date.now(),
+    });
+    // Pre-046 dirty/legacy row: absence of an explicit public classification
+    // must never be treated as public by the read path.
+    await mockDb.apMessages.insert({
+      _id: 'tl-legacy-unknown', actorUrl: REMOTE_ACTOR, targetUserId: USER_ID,
+      content: 'unknown legacy audience', published: Date.now(), createdAt: Date.now(),
+    });
+
+    const res = await request(app)
+      .get('/api/federation/timeline')
+      .set('Authorization', `Bearer ${token(USER_ID)}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.items.map((item: Record<string, unknown>) => item._id)).toEqual(['tl-public-targeted']);
+    expect(res.body.total).toBe(1);
+
+    for (const id of ['tl-public-targeted', 'tl-direct-self', 'tl-direct-other', 'tl-legacy-unknown'])
+      await mockDb.apMessages.remove({ _id: id });
+    await mockDb.apOutgoingFollows.remove({ _id: 'tl-follow-privacy' });
   });
 });
 
@@ -544,6 +605,15 @@ describe('GET /api/federation/notifications', () => {
     // İstek başarılı olmalı (sınır enforcement test — sonuç sayısı 0 olabilir)
     expect(Array.isArray(res.body)).toBe(true);
   });
+
+
+  it.each([-1, 1.5, 9007199254740992])('400 — güvenli olmayan limit=%s reddedilir', async (limit) => {
+    const res = await request(app)
+      .get('/api/federation/notifications')
+      .set('Authorization', `Bearer ${token(USER_ID)}`)
+      .query({ limit });
+    expect(res.status).toBe(400);
+  });
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -573,7 +643,8 @@ describe('PATCH /api/federation/notifications/read-all', () => {
 
     // Bildirimlerin artık okundu olduğunu doğrula
     const remaining = await mockDb.notifications.find({ userId: USER_ID, read: false });
-    const unread = (await remaining).filter(n => ['ap_follow', 'ap_like'].includes(n.type));
+    const unread = (await remaining).filter(n =>
+      typeof n.type === 'string' && ['ap_follow', 'ap_like'].includes(n.type));
     expect(unread).toHaveLength(0);
 
     await mockDb.notifications.remove({ _id: 'unread-1' });
@@ -626,7 +697,7 @@ describe('GET /api/federation/profile', () => {
       following:         `${REMOTE_ACTOR}/following`,
     };
 
-    global.fetch.mockResolvedValueOnce({
+    fetchMock().mockResolvedValueOnce({
       ok:   true,
       json: async () => mockActor,
     });
@@ -654,7 +725,7 @@ describe('GET /api/federation/profile', () => {
       createdAt:      Date.now(),
     });
 
-    global.fetch.mockResolvedValueOnce({
+    fetchMock().mockResolvedValueOnce({
       ok:   true,
       json: async () => ({ id: REMOTE_ACTOR, type: 'Person', preferredUsername: 'remoteuser' }),
     });
@@ -671,7 +742,7 @@ describe('GET /api/federation/profile', () => {
   });
 
   it('502 — uzak sunucu erişilemezse hata döner', async () => {
-    global.fetch.mockRejectedValueOnce(new Error('Connection refused'));
+    fetchMock().mockRejectedValueOnce(new Error('Connection refused'));
 
     const res = await request(app)
       .get('/api/federation/profile')
@@ -683,7 +754,7 @@ describe('GET /api/federation/profile', () => {
   });
 
   it('502 — uzak sunucu 404 dönerse hata döner', async () => {
-    global.fetch.mockResolvedValueOnce({ ok: false, status: 404 });
+    fetchMock().mockResolvedValueOnce({ ok: false, status: 404 });
 
     const res = await request(app)
       .get('/api/federation/profile')
@@ -692,4 +763,29 @@ describe('GET /api/federation/profile', () => {
 
     expect(res.status).toBe(502);
   });
+});
+
+describe('federation social outbound URL boundary', () => {
+  beforeEach(() => _resetRateLimitStoreForTest());
+  const invalidUrls: unknown[] = [7, {}, [], '', 'javascript:alert(1)', 'file:///etc/passwd', 'https://user:pass@example.com/x', 'x'.repeat(2050)];
+
+  it.each(invalidUrls)('rejects malformed follow actorUrl before durable/network work: %p', async (actorUrl) => {
+    const res = await request(app).post('/api/federation/follow')
+      .set('Authorization', `Bearer ${token(USER_ID)}`).send({ actorUrl });
+    expect(res.status).toBe(400);
+  });
+
+  it.each(invalidUrls)('rejects malformed unfollow actorUrl: %p', async (actorUrl) => {
+    const res = await request(app).delete('/api/federation/follow')
+      .set('Authorization', `Bearer ${token(USER_ID)}`).send({ actorUrl });
+    expect(res.status).toBe(400);
+  });
+
+  for (const [method, path] of [['post', '/api/federation/like'], ['delete', '/api/federation/like'], ['post', '/api/federation/announce']] as const) {
+    it.each(invalidUrls)(`${method.toUpperCase()} ${path} rejects malformed objectUrl: %p`, async (objectUrl) => {
+      const res = await (request(app)[method] as any)(path)
+        .set('Authorization', `Bearer ${token(USER_ID)}`).send({ objectUrl });
+      expect(res.status).toBe(400);
+    });
+  }
 });

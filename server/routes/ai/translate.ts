@@ -54,9 +54,17 @@ const LANG_NAMES: Record<string, string> = {
 
 // POST /api/ai/translate
 router.post('/', authMiddleware, limits.ai(), async (req, res) => {
-  const { text, targetLang = 'tr', sourceLang = 'auto' } = req.body as Record<string, string>;
-  if (!text?.trim())      return res.status(400).json({ error: 'text gerekli' });
+  const body = (req.body && typeof req.body === 'object') ? req.body as Record<string, unknown> : {};
+  const text = body.text;
+  const targetLang = body.targetLang ?? 'tr';
+  const sourceLang = body.sourceLang ?? 'auto';
+  if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'text gerekli' });
   if (text.length > 1000) return res.status(400).json({ error: 'Max 1000 karakter' });
+  const languageCode = /^(?:auto|[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?)$/;
+  if (typeof targetLang !== 'string' || !languageCode.test(targetLang) ||
+      typeof sourceLang !== 'string' || !languageCode.test(sourceLang)) {
+    return res.status(400).json({ error: 'sourceLang/targetLang geçersiz' });
+  }
 
   // LibreTranslate (self-hosted, free)
   if (TRANSLATE_URL) {

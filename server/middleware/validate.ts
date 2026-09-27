@@ -4,6 +4,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { escapeHtml } from '../lib/security';
+import { VALID_BITS } from '../lib/permissions';
 
 export type FieldType = 'string' | 'number' | 'array' | 'object' | 'boolean';
 
@@ -55,10 +56,11 @@ export function validateField(
   }
 
   if (rules.type === 'number') {
-    const n = Number(val);
-    if (isNaN(n)) { errors.push(`${path} must be a number`); return; }
-    if (rules.min !== undefined && n < rules.min) errors.push(`${path} must be >= ${rules.min}`);
-    if (rules.max !== undefined && n > rules.max) errors.push(`${path} must be <= ${rules.max}`);
+    if (typeof val !== 'number' || !Number.isFinite(val)) {
+      errors.push(`${path} must be a number`); return;
+    }
+    if (rules.min !== undefined && val < rules.min) errors.push(`${path} must be >= ${rules.min}`);
+    if (rules.max !== undefined && val > rules.max) errors.push(`${path} must be <= ${rules.max}`);
     return;
   }
 
@@ -106,7 +108,12 @@ export function validateBody(schema: Schema) {
 }
 
 // Common schemas
-export const schemas: Record<string, Schema> = {
+// `Record<string, Schema>` ANNOTASYONU, `noUncheckedIndexedAccess` altında
+// her erişimi `Schema | undefined` yapıyordu — oysa buradaki anahtarlar
+// SABİTTİR ve `schemas.register` her zaman vardır. `satisfies` hem
+// değerleri şemaya karşı doğrular hem de anahtarları KESİN tutar; yani
+// yazım hatası olan bir anahtar (`schemas.registr`) derleme hatası olur.
+export const schemas = {
   message: {
     content: { type: 'string', required: true, min: 1, max: 2000 },
   },
@@ -140,7 +147,7 @@ export const schemas: Record<string, Schema> = {
     name:   { type: 'string', required: true, min: 1, max: 50 },
     events: { type: 'array', max: 20, each: { type: 'string', max: 64 } },
   },
-};
+} satisfies Record<string, Schema>;
 
 export interface BitmaskPair {
   allow?: string;
@@ -160,12 +167,14 @@ export function validateBitmaskMiddleware(target?: string | BitmaskPair[]) {
       if (!Array.isArray(items)) { next(); return; }
       for (let i = 0; i < items.length; i++) {
         const item = items[i] as Record<string, unknown>;
-        const a = Number(item.allow ?? 0);
-        const d = Number(item.deny  ?? 0);
-        if (!Number.isInteger(a) || a < 0) {
+        const rawA = item.allow ?? 0;
+        const rawD = item.deny ?? 0;
+        const a = rawA;
+        const d = rawD;
+        if (typeof a !== 'number' || !Number.isSafeInteger(a) || a < 0 || a > VALID_BITS) {
           res.status(400).json({ error: `${target}[${i}].allow must be a valid non-negative integer` }); return;
         }
-        if (!Number.isInteger(d) || d < 0) {
+        if (typeof d !== 'number' || !Number.isSafeInteger(d) || d < 0 || d > VALID_BITS) {
           res.status(400).json({ error: `${target}[${i}].deny must be a valid non-negative integer` }); return;
         }
         if ((a & d) !== 0) {
@@ -183,12 +192,12 @@ export function validateBitmaskMiddleware(target?: string | BitmaskPair[]) {
       const rawA = body[af];
       const rawD = body[df];
       if (rawA === undefined && rawD === undefined) continue;
-      const a = Number(rawA ?? 0);
-      const d = Number(rawD ?? 0);
-      if (!Number.isInteger(a) || a < 0) {
+      const a = rawA ?? 0;
+      const d = rawD ?? 0;
+      if (typeof a !== 'number' || !Number.isSafeInteger(a) || a < 0 || a > VALID_BITS) {
         res.status(400).json({ error: `${af} must be a valid non-negative integer` }); return;
       }
-      if (!Number.isInteger(d) || d < 0) {
+      if (typeof d !== 'number' || !Number.isSafeInteger(d) || d < 0 || d > VALID_BITS) {
         res.status(400).json({ error: `${df} must be a valid non-negative integer` }); return;
       }
       if ((a & d) !== 0) {
@@ -227,34 +236,40 @@ export const socketSchemas = {
     channelId: { type: 'string' as const, required: true, min: 1, max: 64 },
     serverId:  { type: 'string' as const, required: true, min: 1, max: 64 },
     content:   { type: 'string' as const, max: 2000 },          // file mesajlarında opsiyonel
-    type:      { type: 'string' as const, enum: ['normal', 'file'] },
+    type:      { type: 'string' as const, enum: ['normal', 'file', 'sticker'] },
     replyToId: { type: 'string' as const, max: 64 },
     fileUrl:   { type: 'string' as const, max: 512 },
     fileName:  { type: 'string' as const, max: 200 },
     fileType:  { type: 'string' as const, max: 64 },
+    stickerPackId: { type: 'string' as const, max: 64 },
+    stickerId:     { type: 'string' as const, max: 64 },
   } satisfies Schema,
 
   editMessage: {
     messageId: { type: 'string' as const, required: true, min: 1, max: 64 },
     channelId: { type: 'string' as const, required: true, min: 1, max: 64 },
     content:   { type: 'string' as const, required: true, min: 1, max: 2000 },
+    clientNonce: { type: 'string' as const, min: 1, max: 64 },
   } satisfies Schema,
 
   reactMessage: {
     messageId: { type: 'string' as const, required: true, min: 1, max: 64 },
     channelId: { type: 'string' as const, required: true, min: 1, max: 64 },
     emoji:     { type: 'string' as const, required: true, min: 1, max: 10 },
+    active:    { type: 'boolean' as const },
   } satisfies Schema,
 
   deleteMessage: {
     messageId: { type: 'string' as const, required: true, min: 1, max: 64 },
     channelId: { type: 'string' as const, required: true, min: 1, max: 64 },
+    clientNonce: { type: 'string' as const, min: 1, max: 64 },
   } satisfies Schema,
 
   pinMessage: {
     messageId: { type: 'string' as const, required: true, min: 1, max: 64 },
     channelId: { type: 'string' as const, required: true, min: 1, max: 64 },
     serverId:  { type: 'string' as const, required: true, min: 1, max: 64 },
+    pinned:    { type: 'boolean' as const },
   } satisfies Schema,
 
   fileSend: {
@@ -269,8 +284,9 @@ export const socketSchemas = {
 
   /** dm:send */
   dmSend: {
-    toUserId: { type: 'string' as const, required: true, min: 1, max: 64 },
-    content:  { type: 'string' as const, required: true, min: 1, max: 20_000 },
+    toUserId:    { type: 'string' as const, required: true, min: 1, max: 64 },
+    content:     { type: 'string' as const, required: true, min: 1, max: 20_000 },
+    clientNonce: { type: 'string' as const, min: 1, max: 64 },
   } satisfies Schema,
 
   /** dm:react */
@@ -293,8 +309,9 @@ export const socketSchemas = {
 
   /** gdm:send */
   gdmSend: {
-    groupId: { type: 'string' as const, required: true, min: 1, max: 64 },
-    content: { type: 'string' as const, required: true, min: 1, max: 2000 },
+    groupId:     { type: 'string' as const, required: true, min: 1, max: 64 },
+    content:     { type: 'string' as const, required: true, min: 1, max: 2000 },
+    clientNonce: { type: 'string' as const, min: 1, max: 64 },
   } satisfies Schema,
 
   /** gdm:typing */
@@ -376,7 +393,7 @@ export const socketSchemas = {
   /** stage:setTopic */
   stageSetTopic: {
     channelId: { type: 'string' as const, required: true, min: 1, max: 64 },
-    topic:     { type: 'string' as const, max: 10000 },
+    topic:     { type: 'string' as const, max: 200 },
   } satisfies Schema,
 
   /** stage:setLive */
@@ -407,15 +424,16 @@ export const socketSchemas = {
   voiceJoin: {
     channelId: { type: 'string' as const, required: true, min: 1, max: 64 },
     serverId:  { type: 'string' as const, required: true, min: 1, max: 64 },
+    requestId: { type: 'string' as const, max: 96, pattern: /^[A-Za-z0-9:_-]+$/ },
   } satisfies Schema,
 
   /** voice:state-update */
   voiceStateUpdate: {
     channelId:     { type: 'string' as const, required: true, min: 1, max: 64 },
-    muted:         { type: 'boolean' as const },
-    deafened:      { type: 'boolean' as const },
-    screensharing: { type: 'boolean' as const },
-    video:         { type: 'boolean' as const },
+    muted:         { type: 'boolean' as const, required: true },
+    deafened:      { type: 'boolean' as const, required: true },
+    screensharing: { type: 'boolean' as const, required: true },
+    video:         { type: 'boolean' as const, required: true },
   } satisfies Schema,
 
   /** voice:activity */
@@ -498,12 +516,12 @@ export const socketSchemas = {
   /** stage:video-layout */
   stageVideoLayout: {
     channelId: { type: 'string' as const, required: true, min: 1, max: 64 },
-    layout:    { type: 'string' as const, required: true, enum: ['grid', 'spotlight', 'sidebar'] },
+    layout:    { type: 'string' as const, required: true, enum: ['grid', 'spotlight'] },
   } satisfies Schema,
 
   /** sfu:produced */
   sfuProduced: {
-    kind: { type: 'string' as const, required: true, enum: ['audio', 'video'] },
+    kind: { type: 'string' as const, required: true, enum: ['audio', 'video', 'screen'] },
   } satisfies Schema,
 
   // ── Infra schemas ────────────────────────────────────────────────────────
@@ -543,10 +561,8 @@ export const socketSchemas = {
 
   /** soundboard:play */
   soundboardPlay: {
-    channelId:  { type: 'string' as const, required: true, min: 1, max: 64 },
-    soundUrl:   { type: 'string' as const, required: true, min: 1, max: 512 },
-    soundName:  { type: 'string' as const, max: 100 },
-    emoji:      { type: 'string' as const, max: 10 },
+    channelId: { type: 'string' as const, required: true, min: 1, max: 64 },
+    soundId:   { type: 'string' as const, required: true, min: 1, max: 64 },
   } satisfies Schema,
 
   // ── Channel E2EE schemas ─────────────────────────────────────────────────
@@ -588,31 +604,120 @@ export interface ZSchema<T = unknown> {
   extend<U extends Record<string, ZSchema>>(shape: U): ZSchema<T & { [K in keyof U]: unknown }>;
 }
 
+type SchemaParser<T> = (value: unknown) => SafeParseResult<T>;
+
+function success<T>(data: T): SafeParseResult<T> { return { success: true, data }; }
+function failure(message: string, path?: Array<string | number>): SafeParseResult<never> {
+  return { success: false, error: { issues: [{ ...(path ? { path } : {}), message }] } };
+}
+
 class ChainSchema<T = unknown> implements ZSchema<T> {
-  constructor(private readonly check: (value: unknown) => boolean = () => true) {}
-  safeParse(value: unknown): SafeParseResult<T> {
-    return this.check(value)
-      ? { success: true, data: value as T }
-      : { success: false, error: { issues: [{ message: 'Invalid payload' }] } };
+  constructor(
+    private readonly parser: SchemaParser<T> = (value) => success(value as T),
+    private readonly objectShape?: Record<string, ZSchema>,
+  ) {}
+
+  safeParse(value: unknown): SafeParseResult<T> { return this.parser(value); }
+
+  private constrained(predicate: (value: T) => boolean, message: string): ChainSchema<T> {
+    return new ChainSchema<T>((value) => {
+      const base = this.safeParse(value);
+      if (!base.success) return base;
+      try {
+        return predicate(base.data as T) ? base : failure(message);
+      } catch {
+        return failure(message);
+      }
+    }, this.objectShape);
   }
-  optional(): ZSchema<T | undefined> { return new ChainSchema<T | undefined>((v) => v === undefined || this.check(v)); }
-  min(_n: number): ZSchema<T> { return this; }
-  max(_n: number): ZSchema<T> { return this; }
-  datetime(): ZSchema<T> { return this; }
-  refine(_fn: (value: T) => boolean, _opts?: { message?: string }): ZSchema<T> { return this; }
-  partial(): ZSchema<Partial<T>> { return this as unknown as ZSchema<Partial<T>>; }
-  extend<U extends Record<string, ZSchema>>(_shape: U): ZSchema<T & { [K in keyof U]: unknown }> { return this as unknown as ZSchema<T & { [K in keyof U]: unknown }>; }
+
+  optional(): ZSchema<T | undefined> {
+    return new ChainSchema<T | undefined>((value) => value === undefined ? success(undefined) : this.safeParse(value));
+  }
+
+  min(n: number): ZSchema<T> {
+    return this.constrained((value) => {
+      if (typeof value === 'string' || Array.isArray(value)) return value.length >= n;
+      if (typeof value === 'number') return value >= n;
+      return false;
+    }, `Must be at least ${n}`);
+  }
+
+  max(n: number): ZSchema<T> {
+    return this.constrained((value) => {
+      if (typeof value === 'string' || Array.isArray(value)) return value.length <= n;
+      if (typeof value === 'number') return value <= n;
+      return false;
+    }, `Must be at most ${n}`);
+  }
+
+  datetime(): ZSchema<T> {
+    return this.constrained((value) => {
+      if (typeof value !== 'string') return false;
+      // Require an ISO-8601 date-time, not values Date.parse happens to coerce.
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return false;
+      return Number.isFinite(Date.parse(value));
+    }, 'Invalid datetime');
+  }
+
+  refine(fn: (value: T) => boolean, opts?: { message?: string }): ZSchema<T> {
+    return this.constrained(fn, opts?.message || 'Invalid payload');
+  }
+
+  partial(): ZSchema<Partial<T>> {
+    if (!this.objectShape) return this as unknown as ZSchema<Partial<T>>;
+    const partialShape: Record<string, ZSchema> = {};
+    for (const [key, schema] of Object.entries(this.objectShape)) partialShape[key] = schema.optional();
+    return makeObjectSchema(partialShape) as unknown as ZSchema<Partial<T>>;
+  }
+
+  extend<U extends Record<string, ZSchema>>(shape: U): ZSchema<T & { [K in keyof U]: unknown }> {
+    if (!this.objectShape) return this as unknown as ZSchema<T & { [K in keyof U]: unknown }>;
+    return makeObjectSchema({ ...this.objectShape, ...shape }) as unknown as ZSchema<T & { [K in keyof U]: unknown }>;
+  }
+}
+
+function makeObjectSchema<T extends Record<string, ZSchema>>(shape: T): ChainSchema<{ [K in keyof T]: ZInfer<T[K]> }> {
+  return new ChainSchema<{ [K in keyof T]: ZInfer<T[K]> }>((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return failure('Expected object');
+    const input = value as Record<string, unknown>;
+    for (const [key, schema] of Object.entries(shape)) {
+      const parsed = schema.safeParse(input[key]);
+      if (!parsed.success) {
+        const issue = parsed.error?.issues?.[0];
+        return failure(issue?.message || 'Invalid payload', [key, ...(issue?.path || [])]);
+      }
+    }
+    return success(value as { [K in keyof T]: ZInfer<T[K]> });
+  }, shape);
 }
 
 type ZInfer<T> = T extends ZSchema<infer U> ? U : unknown;
 
 export const z = {
-  string: () => new ChainSchema<string>((value) => typeof value === 'string'),
-  number: () => new ChainSchema<number>((value) => typeof value === 'number'),
-  boolean: () => new ChainSchema<boolean>((value) => typeof value === 'boolean'),
-  array: <T = unknown>(_schema?: ZSchema<T>) => new ChainSchema<T[]>((value) => Array.isArray(value)),
-  object: <T extends Record<string, ZSchema>>(_shape?: T) => new ChainSchema<{ [K in keyof T]: ZInfer<T[K]> }>((value) => !!value && typeof value === 'object' && !Array.isArray(value)),
-  enum: <T extends readonly string[]>(values: T) => new ChainSchema<T[number]>((value) => typeof value === 'string' && (values as readonly string[]).includes(value)),
+  string: () => new ChainSchema<string>((value) => typeof value === 'string' ? success(value) : failure('Expected string')),
+  number: () => new ChainSchema<number>((value) => typeof value === 'number' && Number.isFinite(value) ? success(value) : failure('Expected number')),
+  boolean: () => new ChainSchema<boolean>((value) => typeof value === 'boolean' ? success(value) : failure('Expected boolean')),
+  array: <T = unknown>(schema?: ZSchema<T>) => new ChainSchema<T[]>((value) => {
+    if (!Array.isArray(value)) return failure('Expected array');
+    if (schema) {
+      for (let i = 0; i < value.length; i++) {
+        const parsed = schema.safeParse(value[i]);
+        if (!parsed.success) {
+          const issue = parsed.error?.issues?.[0];
+          return failure(issue?.message || 'Invalid array item', [i, ...(issue?.path || [])]);
+        }
+      }
+    }
+    return success(value as T[]);
+  }),
+  object: <T extends Record<string, ZSchema>>(shape?: T) => shape
+    ? makeObjectSchema(shape)
+    : new ChainSchema<Record<string, unknown>>((value) => value && typeof value === 'object' && !Array.isArray(value)
+      ? success(value as Record<string, unknown>) : failure('Expected object')) as unknown as ChainSchema<{ [K in keyof T]: ZInfer<T[K]> }>,
+  enum: <T extends readonly string[]>(values: T) => new ChainSchema<T[number]>((value) =>
+    typeof value === 'string' && (values as readonly string[]).includes(value)
+      ? success(value as T[number]) : failure(`Expected one of: ${values.join(', ')}`)),
 };
 
 export namespace z {

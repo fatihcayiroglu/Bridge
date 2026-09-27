@@ -38,7 +38,7 @@ run_bash() {
 }
 
 section "Ortam"
-run_bash "node-version" "cd '$ROOT' && node -e \"const major=+process.versions.node.split('.')[0]; if(major<22){throw new Error('Node 22+ gerekli, mevcut '+process.version)}; console.log(process.version)\""
+run_bash "node-version" "cd '$ROOT' && node -e \"const [M,m,p]=process.versions.node.split('.').map(Number); if(M<22||(M===22&&(m<19||(m===19&&p<0)))){throw new Error('Node >=22.19.0 gerekli, mevcut '+process.version)}; console.log(process.version)\""
 run_bash "npm-version" "cd '$ROOT' && npm --version"
 
 if [[ "$SKIP_INSTALL" != "1" ]]; then
@@ -58,6 +58,11 @@ if [[ -d "$ROOT/electron" ]]; then run_bash "electron-audit" "cd '$ROOT/electron
 if [[ -f "$ROOT/e2e/package.json" ]]; then run_bash "e2e-audit" "cd '$ROOT/e2e' && npm audit --audit-level=high"; fi
 
 section "Statik kalite"
+run_bash "i18n-parity" "cd '$ROOT' && npm run check:i18n"
+run_bash "openapi-validation" "cd '$ROOT' && npm run validate:openapi"
+run_bash "brand-colors" "cd '$ROOT' && npm run check:brand"
+run_bash "no-legacy" "cd '$ROOT' && node scripts/check-no-legacy.mjs"
+run_bash "rollback-static" "cd '$ROOT' && node server/scripts/verify-migration-rollback.js --static"
 run_bash "root-typecheck" "cd '$ROOT' && npm run typecheck"
 run_bash "strict-client" "cd '$ROOT' && npm run typecheck:strict-client"
 run_bash "client-bridge5" "cd '$ROOT' && npm run typecheck:client-bridge5"
@@ -71,6 +76,7 @@ if [[ -d "$ROOT/electron" ]]; then run_bash "electron-compile" "cd '$ROOT/electr
 run_bash "mobile-build" "cd '$ROOT' && npm run mobile:build:ci"
 
 section "Test"
+run_bash "release-integrity-tests" "cd '$ROOT' && npm run test:release-integrity"
 run_bash "server-tests" "cd '$ROOT/server' && npm test -- --runInBand --forceExit"
 if [[ -d "$ROOT/electron" ]]; then run_bash "electron-tests" "cd '$ROOT/electron' && npm test -- --runInBand --forceExit"; fi
 run_bash "mobile-tests" "cd '$ROOT' && npx jest --config jest.mobile.config.js --passWithNoTests --runInBand --forceExit"

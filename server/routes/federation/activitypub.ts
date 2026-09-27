@@ -5,16 +5,18 @@ import express from 'express';
 const router       = express.Router();
 import { v4 as uuidv4 } from 'uuid';
 import { Users, Federation } from '../../db/repositories';
+import { authMiddleware, castAuthed } from '../../middleware/auth';
 import { verifyHttpSignature } from '../../lib/httpSignature';
 import logger from '../../lib/logger';
 import { checkFederationACL } from '../admin';
 import { handleApFollow, handleApUnfollow, handleApAccept,
-  handleApReject, handleApCreate, handleApDelete,
-  deliverApActivity, deliverToFollowers } from './helpers';
+  handleApReject, handleApCreate, handleApDelete, handleApUpdate,
+  handleApLike, handleApAnnounce, fanOutActivityToFollowers } from './helpers';
 // Sprint 120: D6 — ActivityPub inbox flood koruması entegre edildi
 import { federationGlobalRateLimit, federationInboxRateLimit } from '../../middleware/federationRateLimit';
 // Sprint 121 FIX 6: webfinger / actor endpoint'leri public, rate limit zorunlu
 import { limits } from '../../middleware/rateLimit';
+import { parseNonNegativeSafeIntQuery } from '../../lib/queryNumbers';
 
 const AP_CONTEXT = 'https://www.w3.org/ns/activitystreams';
 const activityPubJsonParser = express.json({
@@ -27,6 +29,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function getRecord(value: unknown): Record<string, unknown> | null {
   return isRecord(value) ? value : null;
+}
+
+function normalizeActorIdentity(value: unknown): string | null {
+  const raw = typeof value === 'string'
+    ? value
+    : isRecord(value) && typeof value.id === 'string' ? value.id : '';
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    url.hash = '';
+    // Actor URLs are identifiers; tolerate only an insignificant trailing slash.
+    url.pathname = url.pathname.replace(/\/+$/, '') || '/';
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -45,15 +63,24 @@ function getRecord(value: unknown): Record<string, unknown> | null {
  *       400: { description: Geçersiz resource parametresi }
  *       404: { description: Kullanıcı bulunamadı }
  */
-router.get('/webfinger', limits.api, async (req: import("express").Request, res: import("express").Response) => {
+router.get('/webfinger', limits.api(), async (req: import("express").Request, res: import("express").Response) => {
   const resource = String(req.query.resource ?? '');
-  if (!resource?.startsWith('acct:')) return res.status(400).json({ error: 'Invalid resource' });
+  if (!resource.startsWith('acct:')) return res.status(400).json({ error: 'Invalid resource' });
 
-  const [localPart] = resource.slice(5).split('@');
+  const acct = resource.slice(5);
+  const at = acct.lastIndexOf('@');
+  if (at <= 0 || at === acct.length - 1) return res.status(400).json({ error: 'Invalid resource' });
+  const localPart = acct.slice(0, at);
+  const requestedDomain = acct.slice(at + 1).toLowerCase();
+  const instanceUrl = process.env.INSTANCE_URL || `http://localhost:${process.env.PORT || 3001}`;
+  let localDomain: string;
+  try { localDomain = new URL(instanceUrl).hostname.toLowerCase(); }
+  catch { return res.status(500).json({ error: 'Federation instance URL is invalid' }); }
+  if (requestedDomain !== localDomain) return res.status(400).json({ error: 'Resource is not local to this instance' });
+
   const user = await Users.findByUsername(localPart);
   if (!user) return res.status(404).json({ error: 'Not found' });
 
-  const instanceUrl = process.env.INSTANCE_URL || `http://localhost:${process.env.PORT || 3001}`;
   res.set('Content-Type', 'application/jrd+json');
   res.json({
     subject: resource,
@@ -80,7 +107,7 @@ router.get('/webfinger', limits.api, async (req: import("express").Request, res:
  *       200: { description: activity+json Actor nesnesi }
  *       404: { description: Kullanıcı bulunamadı }
  */
-router.get('/users/:username', limits.api, async (req: import("express").Request, res: import("express").Response) => {
+router.get('/users/:username', limits.api(), async (req: import("express").Request, res: import("express").Response) => {
   const user = await Users.findByUsername(String(req.params.username ?? ''));
   if (!user) return res.status(404).json({ error: 'Not found' });
 
@@ -151,6 +178,24 @@ router.post('/users/:username/inbox', activityPubJsonParser, federationGlobalRat
   const activity = req.body;
   if (!activity?.type) return res.status(400).json({ error: 'Invalid activity' });
 
+  // A valid RSA signature proves a key, not automatically the actor named in
+  // the JSON body. Bind those identities before any ACL lookup or persistence;
+  // otherwise any federated actor with a valid key could spoof another actor.
+  const signedRequest = process.env.NODE_ENV === 'production' || !!req.headers['signature'];
+  const claimedActor = normalizeActorIdentity(activity.actor ?? activity.attributedTo);
+  if (signedRequest) {
+    const signer = normalizeActorIdentity(sigResult.signerActor);
+    if (!signer || !claimedActor || signer !== claimedActor) {
+      logger.warn({ signer, claimedActor, keyId: sigResult.keyId, event: 'federation.inbox.actor_mismatch' },
+        'HTTP signature signer does not match ActivityPub activity actor.');
+      return res.status(401).json({ error: 'HTTP Signature actor mismatch' });
+    }
+    if (activity.id !== undefined &&
+        (typeof activity.id !== 'string' || !activity.id.trim() || activity.id.length > 2048)) {
+      return res.status(400).json({ error: 'ActivityPub activity id must be a bounded non-empty string' });
+    }
+  }
+
   // Federation ACL
   const actorDomain = (() => {
     try {
@@ -167,26 +212,71 @@ router.post('/users/:username/inbox', activityPubJsonParser, federationGlobalRat
     }
   }
 
-  await Federation.insertActivity({
-    _id: uuidv4(),
-    targetUserId: user._id,
-    activity,
-    processed: false,
-    createdAt: Date.now(),
-  });
+  const now = Date.now();
+  let inboxJournalId = uuidv4();
+  let inboxClaimOwner: string | null = null;
 
+  if (signedRequest && claimedActor && typeof activity.id === 'string') {
+    inboxClaimOwner = uuidv4();
+    const claim = await Federation.claimInboundActivity({
+      id: inboxJournalId,
+      targetUserId: user._id,
+      actorUrl: claimedActor,
+      activityId: activity.id,
+      type: String(activity.type),
+      activity,
+      claimOwner: inboxClaimOwner,
+      claimUntil: now + 5 * 60 * 1000,
+      createdAt: now,
+    });
+    inboxJournalId = claim.id;
+    if (claim.status === 'processed') {
+      return res.status(202).json({ ok: true, duplicate: true });
+    }
+    if (claim.status === 'busy') {
+      res.set('Retry-After', '5');
+      return res.status(503).json({ error: 'ActivityPub activity is already being processed' });
+    }
+  } else {
+    // Development/test compatibility for intentionally unsigned fixtures. Real
+    // signed federation traffic always uses the atomic claim path above.
+    await Federation.insertActivity({
+      _id: inboxJournalId,
+      targetUserId: user._id,
+      actorUrl: claimedActor,
+      type: String(activity.type),
+      activityId: typeof activity.id === 'string' ? activity.id : null,
+      activity,
+      processed: false,
+      createdAt: now,
+    });
+  }
+
+  try {
   switch (activity.type) {
     case 'Follow':
       await handleApFollow(user, activity);
       break;
     case 'Undo':
-      if (activity.object?.type === 'Follow') await handleApUnfollow(user, activity);
+      if (activity.object && typeof activity.object === 'object' &&
+          ['Follow', 'Like', 'Announce'].includes(String(activity.object.type))) {
+        await handleApUnfollow(user, activity);
+      }
       break;
     case 'Create':
       await handleApCreate(user, activity);
       break;
+    case 'Update':
+      await handleApUpdate(user, activity);
+      break;
     case 'Delete':
       await handleApDelete(user, activity);
+      break;
+    case 'Like':
+      await handleApLike(user, activity);
+      break;
+    case 'Announce':
+      await handleApAnnounce(user, activity);
       break;
     case 'Accept':
       if (activity.object?.type === 'Follow' || typeof activity.object === 'string') {
@@ -200,7 +290,27 @@ router.post('/users/:username/inbox', activityPubJsonParser, federationGlobalRat
       break;
   }
 
+  if (inboxClaimOwner) {
+    await Federation.completeInboundActivity(inboxJournalId, inboxClaimOwner);
+  } else {
+    await Federation.updateActivity({ _id: inboxJournalId }, { $set: { processed: true, processedAt: Date.now() } });
+  }
   res.status(202).json({ ok: true });
+  } catch (err) {
+    if (inboxClaimOwner) {
+      try {
+        await Federation.failInboundActivity(
+          inboxJournalId,
+          inboxClaimOwner,
+          err instanceof Error ? err.message : String(err),
+        );
+      } catch (releaseErr) {
+        logger.error({ err: releaseErr, activityId: activity.id, event: 'federation.inbox.claim_release_failed' },
+          'Failed to release ActivityPub inbox claim after handler failure.');
+      }
+    }
+    throw err;
+  }
 });
 
 /**
@@ -233,10 +343,14 @@ router.get('/users/:username/outbox', async (req: import("express").Request, res
 
   if (req.query.page as string === 'true') {
     const PAGE_SIZE = 20;
-    const minId     = parseInt(String(req.query.min_id ?? ''), 10) || 0;
+    const minId = parseNonNegativeSafeIntQuery(req.query.min_id, 0);
+    if (minId === null) return res.status(400).json({ error: 'min_id must be a safe non-negative integer' });
 
     const q: Record<string, unknown> = { actorUserId: user._id, type: 'Create' };
-    if (minId) q.publishedAt = { $gt: minId };
+    // Historical API calls the cursor `min_id`, but it is emitted as the NEXT
+    // cursor. Therefore it must select OLDER rows, otherwise page 2 repeats
+    // page 1 forever. Keep the public parameter name for compatibility.
+    if (minId) q.publishedAt = { $lt: minId };
 
     let items = await Federation.apActivitiesFind(q).sort({ publishedAt: -1 }).limit(PAGE_SIZE);
     if (!Array.isArray(items)) items = [];
@@ -326,7 +440,7 @@ router.get('/users/:username/following', async (req: import("express").Request, 
   const actorUrl    = `${instanceUrl}/api/federation/users/${user.username}`;
 
   // Kullanıcının dışarıya (remote) follow ettiği aktörler
-  const outgoing = await Federation.findApOutgoingFollows({ sourceUserId: user._id, accepted: true }) || [];
+  const outgoing = await Federation.findApOutgoingFollows({ fromUserId: user._id, accepted: true }) || [];
   const items    = Array.isArray(outgoing) ? outgoing : await outgoing;
 
   res.set('Content-Type', 'application/activity+json');
@@ -433,22 +547,9 @@ router.get('/users/:username/notes/:noteId', async (req: import("express").Reque
  *       403: { description: Başka kullanıcı adına yayın yasak }
  *       404: { description: Kullanıcı bulunamadı }
  */
-router.post('/users/:username/outbox', activityPubJsonParser, async (req: import("express").Request, res: import("express").Response) => {
+router.post('/users/:username/outbox', activityPubJsonParser, authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
   try {
-  // C2S kimlik doğrulama — Authorization: Bearer <jwt>
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return res.status(401).json({ error: 'Authentication required' });
-
-  let callerId: string | null = null;
-  try {
-    const jwt = await import('jsonwebtoken');
-    const secret = process.env.JWT_SECRET || 'bridge-dev-secret';
-    const payload = jwt.default.verify(token, secret) as { id?: string; sub?: string };
-    callerId = payload.id || payload.sub || null;
-  } catch {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
+  const callerId = castAuthed(req).user.id;
 
   const user = await Users.findByUsername(String(req.params.username ?? ''));
   if (!user) return res.status(404).json({ error: 'Not found' });
@@ -458,13 +559,24 @@ router.post('/users/:username/outbox', activityPubJsonParser, async (req: import
     return res.status(403).json({ error: 'Cannot publish on behalf of another user' });
   }
 
-  const { content, sensitive = false, summary = null, inReplyTo = null, visibility = 'public' } = req.body as Record<string, string>;
+  const body = isRecord(req.body) ? req.body : {};
+  const content = body.content;
+  const sensitive = body.sensitive ?? false;
+  const summary = body.summary ?? null;
+  const inReplyTo = body.inReplyTo ?? null;
+  const visibility = body.visibility ?? 'public';
 
-  if (!content?.trim()) {
-    return res.status(400).json({ error: 'content is required' });
+  if (typeof content !== 'string' || !content.trim()) {
+    return res.status(400).json({ error: 'content is required and must be a string' });
   }
   if (content.length > 5000) {
     return res.status(400).json({ error: 'content exceeds maximum length of 5000 characters' });
+  }
+  if (typeof sensitive !== 'boolean') return res.status(400).json({ error: 'sensitive must be a boolean' });
+  if (summary !== null && typeof summary !== 'string') return res.status(400).json({ error: 'summary must be a string or null' });
+  if (inReplyTo !== null && typeof inReplyTo !== 'string') return res.status(400).json({ error: 'inReplyTo must be a string or null' });
+  if (!['public', 'unlisted', 'followers'].includes(String(visibility))) {
+    return res.status(400).json({ error: 'visibility must be public, unlisted, or followers' });
   }
 
   const instanceUrl = process.env.INSTANCE_URL || `http://localhost:${process.env.PORT || 3001}`;
@@ -522,23 +634,21 @@ router.post('/users/:username/outbox', activityPubJsonParser, async (req: import
     noteId:      noteId,
     activity:    createActivity,
     publishedAt: Date.now(),
+    createdAt:   Date.now(),
   });
 
-  // Takipçilere ilet (public/unlisted ise)
-  if (visibility !== 'followers') {
-    await deliverToFollowers(user, content.trim(), noteId);
-  } else {
-    // followers-only: sadece kabul edilmiş follow listesine ilet
-    const follows = await Federation.findApFollows({ targetUserId: user._id }) || [];
-    const followArr = Array.isArray(follows) ? follows : await follows;
-    if (followArr.length) {
-      await Promise.allSettled(
-        followArr.map((f) => {
-          const actorUrl = isRecord(f) && typeof f.actorUrl === 'string' ? f.actorUrl : '';
-          return actorUrl ? deliverApActivity(actorUrl, createActivity, user) : Promise.resolve();
-        })
-      );
-    }
+  // Deliver the EXACT activity persisted above. The previous implementation
+  // called deliverToFollowers(), which generated and persisted a SECOND Create
+  // with a new id and always-public audience, corrupting C2S visibility and
+  // doubling outbox counts. Delivery failures are reported as degraded while
+  // the already-durable local publish remains successful.
+  let delivery = { followers: 0, failed: 0 };
+  try {
+    delivery = await fanOutActivityToFollowers(user, createActivity);
+  } catch (err) {
+    logger.warn({ err, noteId, event: 'federation.outbox.fanout_lookup_failed' },
+      'C2S activity persisted but follower fanout could not be enumerated.');
+    delivery = { followers: 0, failed: 1 };
   }
 
   const infoLogger = logger as typeof logger & { info?: (objOrMsg?: unknown, msg?: string) => void };
@@ -552,6 +662,7 @@ router.post('/users/:username/outbox', activityPubJsonParser, async (req: import
     noteId,
     published: publishedAt,
     url:       noteId,
+    delivery,
   });
   } catch (err) {
     const errorLogger = logger as typeof logger & { error?: (objOrMsg?: unknown, msg?: string) => void };

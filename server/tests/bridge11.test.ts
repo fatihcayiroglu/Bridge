@@ -1,12 +1,16 @@
 // server/tests/sprint11.test.ts
 // Sprint 11 — Web Push /test endpoint · Embed Cache · message:delete Transaction
+import { present } from './helpers/narrow';
+import type { QueryingClient } from '../db/postgres/pool-contracts';
+import { fetchMock, installFetchMock, uninstallFetchMock } from './helpers/fetchDouble';
 'use strict';
 
 process.env.NODE_ENV   = 'test';
-process.env.JWT_SECRET = 'test-jwt-secret-sprint11';
+process.env.JWT_SECRET = 'test-jwt-secret-sprint11xxxxxxxx';
 
 // ── DB mock ──────────────────────────────────────────────────
 import { createMockDb, makeUser } from './helpers/mockDb';
+import type { UserFixture } from './helpers/mockDb';
 let db = createMockDb();
 jest.mock('../db/index',  () => { const { createMockDb } = require('./helpers/mockDb'); return createMockDb(); });
 jest.mock('../db/loader', () => require('../db/index'));
@@ -14,7 +18,7 @@ jest.mock('../db/loader', () => require('../db/index'));
 // ── pushSender mock ───────────────────────────────────────────
 const mockSendPushToUser = jest.fn().mockResolvedValue(undefined);
 jest.mock('../lib/pushSender', () => ({
-  sendPushToUser: (...a) => mockSendPushToUser(...a),
+  sendPushToUser: (...a: unknown[]) => mockSendPushToUser(...a),
   sendWebPush:    jest.fn().mockResolvedValue(undefined),
 }));
 
@@ -34,7 +38,7 @@ import express from 'express';
 const jwt     = require('jsonwebtoken');
 import { v4 as uuidv4 } from 'uuid';
 
-function tok(uid) {
+function tok(uid: string) {
   return jwt.sign({ id: uid, username: 'tester', v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' });
 }
 
@@ -42,7 +46,9 @@ function tok(uid) {
 // 1. WEB PUSH — /api/webpush/test endpoint
 // ════════════════════════════════════════════════════════════════
 describe('POST /api/webpush/test', () => {
-  let app, user, token;
+  let app: express.Express;
+  let token: string;
+  let user: UserFixture;
 
   beforeEach(async () => {
     db = createMockDb();
@@ -58,7 +64,7 @@ describe('POST /api/webpush/test', () => {
     app = express();
     app.use(express.json());
     app.use('/api/webpush', webpushRouter);
-    app.use((err, req, res, _n) => res.status(err.status || 500).json({ error: err.message }));
+    app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _n: unknown) => res.status(err.status || 500).json({ error: err.message }));
 
     process.env.VAPID_PUBLIC_KEY  = 'BTestPublicKey';
     process.env.VAPID_PRIVATE_KEY = 'TestPrivateKey';
@@ -143,7 +149,12 @@ describe('POST /api/webpush/test', () => {
 // 2. EMBED CACHE — linkPreview PostgreSQL TTL cache
 // ════════════════════════════════════════════════════════════════
 describe('fetchLinkPreview — dual-layer cache', () => {
-  let fetchLinkPreview, extractUrls, _resetCache;
+  // Modul her `beforeEach`te `jest.resetModules()` sonrasi yeniden yuklendigi
+  // icin `let` sart; tipler modulun KENDISINDEN turetilir, elle yazilmaz.
+  type LinkPreviewModule = typeof import('../lib/linkPreview');
+  let fetchLinkPreview: LinkPreviewModule['fetchLinkPreview'];
+  let extractUrls: LinkPreviewModule['extractUrls'];
+  let _resetCache: LinkPreviewModule['_resetCache'];
 
   const PREVIEW = {
     type: 'link', url: 'https://example.com', title: 'Example',
@@ -153,7 +164,7 @@ describe('fetchLinkPreview — dual-layer cache', () => {
   beforeEach(() => {
     jest.resetModules();
     // fetch'i mock'la — dış istek gitmesin
-    global.fetch = jest.fn().mockResolvedValue({
+    installFetchMock().mockResolvedValue({
       ok: true,
       headers: { get: () => 'text/html; charset=utf-8' },
       text: async () => '<html><head><title>Example</title><meta property="og:title" content="Example"><meta name="og:site_name" content="example.com"></head></html>',
@@ -163,24 +174,26 @@ describe('fetchLinkPreview — dual-layer cache', () => {
   });
 
   afterEach(() => {
-    delete global.fetch;
+    // `globalThis.fetch` ZORUNLU bir uyedir; `delete` istege bagli olmayan
+    // bir uyede calismaz. Ikiz `uninstallFetchMock()` ile kaldirilir —
+    // yardimci zaten ONCEKI degeri geri koyar.
+    uninstallFetchMock();
     jest.resetModules();
   });
 
   it('ilk çağrıda dış HTTP isteği yapılır ve sonuç döner', async () => {
-    const result = await fetchLinkPreview('https://example.com');
-    expect(result).not.toBeNull();
+    const result = present(await fetchLinkPreview('https://example.com'), 'onizleme');
     expect(result.title).toBe('Example');
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(fetchMock()).toHaveBeenCalledTimes(1);
   });
 
   it('ikinci çağrıda in-process cache kullanılır (fetch çağrılmaz)', async () => {
     await fetchLinkPreview('https://example.com');
-    global.fetch.mockClear();
+    fetchMock().mockClear();
 
-    const result = await fetchLinkPreview('https://example.com');
+    const result = present(await fetchLinkPreview('https://example.com'), 'onizleme');
     expect(result.title).toBe('Example');
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(fetchMock()).not.toHaveBeenCalled();
   });
 
   it('private IP\'lere istek yapılmaz', async () => {
@@ -190,11 +203,11 @@ describe('fetchLinkPreview — dual-layer cache', () => {
     expect(r1).toBeNull();
     expect(r2).toBeNull();
     expect(r3).toBeNull();
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(fetchMock()).not.toHaveBeenCalled();
   });
 
   it('title yoksa null döner', async () => {
-    global.fetch.mockResolvedValueOnce({
+    fetchMock().mockResolvedValueOnce({
       ok: true,
       headers: { get: () => 'text/html' },
       text: async () => '<html><head></head><body>no title</body></html>',
@@ -204,13 +217,13 @@ describe('fetchLinkPreview — dual-layer cache', () => {
   });
 
   it('HTTP 404 yanıtında null döner', async () => {
-    global.fetch.mockResolvedValueOnce({ ok: false, status: 404 });
+    fetchMock().mockResolvedValueOnce({ ok: false, status: 404 });
     const result = await fetchLinkPreview('https://missing.example.com');
     expect(result).toBeNull();
   });
 
   it('content-type text/html değilse null döner', async () => {
-    global.fetch.mockResolvedValueOnce({
+    fetchMock().mockResolvedValueOnce({
       ok: true,
       headers: { get: () => 'application/json' },
       text: async () => '{}',
@@ -242,13 +255,18 @@ describe('fetchLinkPreview — dual-layer cache', () => {
 // ════════════════════════════════════════════════════════════════
 describe('message:delete — atomic transaction wrapper', () => {
   // Mock transaction client
-  function makeMockClient(overrides = {}) {
-    const queries = [];
+  interface RecordedQuery { sql: string; params?: readonly unknown[] }
+  interface MockClientOverrides { queryResult?: { rowCount: number; rows?: unknown[] } }
+
+  function makeMockClient(overrides: MockClientOverrides = {}) {
+    // `const queries = []` bir KAPANIS icinden dolduruldugu icin TypeScript'in
+    // "evolving any" cikarimi devre disi kalir ve dizi ortuk `any[]` olurdu.
+    const queries: RecordedQuery[] = [];
     return {
       queries,
-      query: jest.fn().mockImplementation(async (sql, params) => {
+      query: jest.fn(async (sql: string, params?: readonly unknown[]) => {
         queries.push({ sql, params });
-        return overrides.queryResult || { rowCount: 0 };
+        return overrides.queryResult ?? { rowCount: 0 };
       }),
     };
   }
@@ -267,7 +285,7 @@ describe('message:delete — atomic transaction wrapper', () => {
     let rolledBack = false;
 
     // Transaction sarmalayıcı mantığını doğrudan test et
-    async function withTransaction(fn) {
+    async function withTransaction(fn: (client: QueryingClient) => Promise<unknown>) {
       try {
         await client.query('BEGIN');
         const result = await fn(client);
@@ -302,7 +320,7 @@ describe('message:delete — atomic transaction wrapper', () => {
       release: jest.fn(),
     };
 
-    async function withTransaction(fn) {
+    async function withTransaction(fn: (client: QueryingClient) => Promise<unknown>) {
       try {
         await client.query('BEGIN');
         await fn(client);
@@ -360,8 +378,9 @@ describe('message:delete — atomic transaction wrapper', () => {
     const q = client.queries[0];
     expect(q.sql).toContain('unread_counts');
     expect(q.sql).toContain('GREATEST(0, count - 1)');
-    expect(q.params[1]).toBe(channelId);
-    expect(q.params[2]).toBe(serverId);
+    const params = present(q.params, 'sorgu parametreleri');
+    expect(params[1]).toBe(channelId);
+    expect(params[2]).toBe(serverId);
   });
 
   it('unread count negatife düşmez (GREATEST 0 koruması)', async () => {

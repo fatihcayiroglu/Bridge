@@ -32,6 +32,7 @@ Bu komut şunları kontrol eder:
 Production'a çıkmadan önce:
 
 ```bash
+# Gerçek production secret env'leri ve Docker Compose mevcut olmalıdır.
 npm run deploy:preflight
 ```
 
@@ -43,6 +44,8 @@ Bu kontrol ağ gerektirmez ve şunları doğrular:
 - `/api/health/live` ve `/api/health/ready` endpoint'leri var mı?
 - `/metrics` endpoint'i `METRICS_SECRET` ile korunuyor mu?
 - Electron release metadata dosyaları GitHub Release'e yüklenecek mi?
+- Gerçek deploy komutunda gerekli production secret env'leri tanımlı mı?
+- Docker Compose şeması gerçekten doğrulanabiliyor mu?
 
 ## 3. Production Docker çalıştırma
 
@@ -82,8 +85,9 @@ curl -fsS http://localhost:3001/api/health/ready
 3. Git tag oluştur:
 
    ```bash
-   git tag v1.123.0
-   git push origin v1.123.0
+   VERSION=$(node -p "require('./package.json').version")
+   git tag "v${VERSION}"
+   git push origin "v${VERSION}"
    ```
 
 4. `Electron Release` workflow'unun Windows/macOS/Linux artifact ve `latest*.yml` metadata dosyalarını GitHub Release'e yüklediğini doğrula.
@@ -103,7 +107,9 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d bridge
 Önceki git tag'e dönmek gerekiyorsa:
 
 ```bash
-git checkout v1.122.0
+# PREVIOUS_GOOD_TAG değerini doğrulanmış önceki release tag'iyle doldur.
+PREVIOUS_GOOD_TAG=vX.Y.Z
+git checkout "${PREVIOUS_GOOD_TAG}"
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build bridge
 ```
 

@@ -1,6 +1,6 @@
 // server/tests/userConnections.test.ts
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
@@ -12,6 +12,7 @@ const db      = require('../db/loader');
 const jwt     = require('jsonwebtoken');
 import { authMiddleware } from '../middleware/auth';
 import connRouter from '../routes/userConnections';
+import { requireDoc } from './helpers/mockDb';
 
 function buildApp() {
   const app = express();
@@ -19,11 +20,14 @@ function buildApp() {
   app.use('/api', authMiddleware, connRouter);
   return app;
 }
-function tok(uid, v = 0) { return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string, v = 0) { return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 describe('UserConnections Routes', () => {
-  let app, userId, otherId;
-  let userToken, otherToken;
+  let app: express.Express;
+  let userId: string;
+  let otherId: string;
+  let userToken: string;
+  let otherToken: string;
 
   beforeEach(async () => {
     db._reset?.();
@@ -105,6 +109,18 @@ describe('UserConnections Routes', () => {
         .send({ username: 'new-name' });
       expect([200, 201]).toContain(res.status);
     });
+
+    it('fails closed when the authoritative connection count cannot be read', async () => {
+      const social = require('../db/repositories').Social;
+      const spy = jest.spyOn(social, 'upsertConnectionWithinLimit').mockRejectedValueOnce(new Error('db unavailable'));
+      const res = await request(app)
+        .put('/api/me/connections/github')
+        .set('Authorization', `Bearer ${userToken}`)
+        .send({ username: 'alice-dev' });
+      expect(res.status).toBe(503);
+      expect(await db.userConnections.findOne({ userId, platform: 'github' })).toBeNull();
+      spy.mockRestore();
+    });
   });
 
   describe('DELETE /api/me/connections/:platform', () => {
@@ -129,5 +145,16 @@ describe('UserConnections Routes', () => {
   it('rejects unauthenticated requests', async () => {
     const res = await request(app).get('/api/me/connections');
     expect(res.status).toBe(401);
+  });
+});
+
+describe('UserConnections runtime body validation', () => {
+  it.each([7, {}, ['alice']])('rejects non-string usernames as 400 instead of throwing: %p', async (username) => {
+    const app = buildApp();
+    const userId = uuidv4();
+    await db.users.insert({ _id: userId, username: 'runtime-user', displayName: 'Runtime', tokenVersion: 0 });
+    const res = await request(app).put('/api/me/connections/github')
+      .set('Authorization', `Bearer ${tok(userId)}`).send({ username });
+    expect(res.status).toBe(400);
   });
 });

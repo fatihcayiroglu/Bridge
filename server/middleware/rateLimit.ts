@@ -17,6 +17,8 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from '../lib/logger';
 import { tryRequire } from '../lib/_optional-require';
+import { envSafeInt } from '../lib/envNumbers';
+import { RL_GLOBAL_MAX_DEFAULT } from '../lib/rateLimitDefaults';
 
 // ── Opsiyonel modüller (metrics + ipBan) ──────────────────────
 // Bu modüller her deploy'da bulunmayabilir; tryRequire null döndürür, middleware çalışmaya devam eder.
@@ -29,23 +31,12 @@ interface IpBanModule {
   getBan: (ip: string) => Promise<unknown>;
   banIp:  (ip: string, opts: Record<string, unknown>) => Promise<void>;
 }
-const _metrics = tryRequire<MetricsModule>('./metrics');
-const _ipBan   = tryRequire<IpBanModule>('./ipBan');
+const _metrics = tryRequire<MetricsModule>('./metrics', require);
+const _ipBan   = tryRequire<IpBanModule>('./ipBan', require);
 
-const TRUSTED_PROXY_COUNT = parseInt(process.env.TRUSTED_PROXY_COUNT ?? '1', 10);
+// NOT: proxy guven modelinin TEK sahibi `lib/clientIp.ts`. Buradaki eski
+// kopya, kanonik cozumleyiciye gecisten sonra olu kalmisti.
 
-function getClientIp(req: Request): string {
-  const reqIp = (req as Request & { ip?: string }).ip;
-  if (reqIp && reqIp !== '::1' && reqIp !== '127.0.0.1') return reqIp;
-  const xff = req.headers['x-forwarded-for'] as string | undefined;
-  if (!xff || TRUSTED_PROXY_COUNT === 0) {
-    return ((req.socket?.remoteAddress) || 'unknown').replace(/^::ffff:/, '');
-  }
-  const hops = xff.split(',').map(s => s.trim()).filter(Boolean);
-  const clientIdx = hops.length - TRUSTED_PROXY_COUNT;
-  const ip = clientIdx >= 0 ? hops[clientIdx] : hops[0];
-  return ip.replace(/^::ffff:/, '');
-}
 
 interface LimitConfig {
   max:      number;
@@ -53,37 +44,54 @@ interface LimitConfig {
 }
 
 const DEFAULTS: Record<string, LimitConfig> = {
-  register:       { max: parseInt(process.env.RL_REGISTER_MAX  || '') || 5,   windowMs: parseInt(process.env.RL_REGISTER_WIN  || '') || 60_000  },
-  login:          { max: parseInt(process.env.RL_LOGIN_MAX     || '') || 10,  windowMs: parseInt(process.env.RL_LOGIN_WIN     || '') || 60_000  },
-  refresh:        { max: parseInt(process.env.RL_REFRESH_MAX   || '') || 30,  windowMs: parseInt(process.env.RL_REFRESH_WIN   || '') || 60_000  },
-  changePassword: { max: parseInt(process.env.RL_CHGPWD_MAX   || '') || 3,   windowMs: parseInt(process.env.RL_CHGPWD_WIN   || '') || 300_000 },
-  upload:         { max: parseInt(process.env.RL_UPLOAD_MAX    || '') || 20,  windowMs: parseInt(process.env.RL_UPLOAD_WIN    || '') || 60_000  },
-  messages:       { max: parseInt(process.env.RL_MESSAGES_MAX  || '') || 30,  windowMs: parseInt(process.env.RL_MESSAGES_WIN  || '') || 60_000  },
-  react:          { max: parseInt(process.env.RL_REACT_MAX     || '') || 60,  windowMs: parseInt(process.env.RL_REACT_WIN     || '') || 60_000  },
-  settings:       { max: parseInt(process.env.RL_SETTINGS_MAX  || '') || 10,  windowMs: parseInt(process.env.RL_SETTINGS_WIN  || '') || 60_000  },
-  search:         { max: parseInt(process.env.RL_SEARCH_MAX    || '') || 20,  windowMs: parseInt(process.env.RL_SEARCH_WIN    || '') || 60_000  },
-  ai:             { max: parseInt(process.env.RL_AI_MAX        || '') || 10,  windowMs: parseInt(process.env.RL_AI_WIN        || '') || 60_000  },
-  'ai.stream':    { max: parseInt(process.env.RL_AI_STREAM_MAX  || '') || 5,   windowMs: parseInt(process.env.RL_AI_STREAM_WIN  || '') || 60_000  },
-  invite:         { max: parseInt(process.env.RL_INVITE_MAX    || '') || 10,  windowMs: parseInt(process.env.RL_INVITE_WIN    || '') || 60_000  },
-  twoFactor:      { max: parseInt(process.env.RL_2FA_MAX       || '') || 5,   windowMs: parseInt(process.env.RL_2FA_WIN       || '') || 300_000 },
-  dm:             { max: parseInt(process.env.RL_DM_MAX        || '') || 20,  windowMs: parseInt(process.env.RL_DM_WIN        || '') || 60_000  },
-  global:         { max: parseInt(process.env.RL_GLOBAL_MAX    || '') || 300, windowMs: parseInt(process.env.RL_GLOBAL_WIN    || '') || 60_000  },
-  friends:        { max: parseInt(process.env.RL_FRIENDS_MAX   || '') || 20,  windowMs: parseInt(process.env.RL_FRIENDS_WIN   || '') || 60_000  },
-  servers:        { max: parseInt(process.env.RL_SERVERS_MAX   || '') || 10,  windowMs: parseInt(process.env.RL_SERVERS_WIN   || '') || 60_000  },
-  roles:          { max: parseInt(process.env.RL_ROLES_MAX     || '') || 20,  windowMs: parseInt(process.env.RL_ROLES_WIN     || '') || 60_000  },
-  channels:       { max: parseInt(process.env.RL_CHANNELS_MAX  || '') || 20,  windowMs: parseInt(process.env.RL_CHANNELS_WIN  || '') || 60_000  },
-  polls:          { max: parseInt(process.env.RL_POLLS_MAX     || '') || 10,  windowMs: parseInt(process.env.RL_POLLS_WIN     || '') || 60_000  },
-  webhooks:       { max: parseInt(process.env.RL_WEBHOOKS_MAX  || '') || 15,  windowMs: parseInt(process.env.RL_WEBHOOKS_WIN  || '') || 60_000  },
-  federation:     { max: parseInt(process.env.RL_FEDERATION_MAX|| '') || 30,  windowMs: parseInt(process.env.RL_FEDERATION_WIN|| '') || 60_000  },
-  moderation:     { max: parseInt(process.env.RL_MODERATION_MAX|| '') || 30,  windowMs: parseInt(process.env.RL_MODERATION_WIN|| '') || 60_000  },
-  email:          { max: parseInt(process.env.RL_EMAIL_MAX     || '') || 5,   windowMs: parseInt(process.env.RL_EMAIL_WIN     || '') || 300_000 },
-  bots:           { max: parseInt(process.env.RL_BOTS_MAX        || '') || 20,  windowMs: parseInt(process.env.RL_BOTS_WIN        || '') || 60_000  },
-  write:          { max: parseInt(process.env.RL_WRITE_MAX       || '') || 30,  windowMs: parseInt(process.env.RL_WRITE_WIN       || '') || 60_000  },
+  register:       { max: envSafeInt('RL_REGISTER_MAX', 5),   windowMs: envSafeInt('RL_REGISTER_WIN', 60_000)  },
+  login:          { max: envSafeInt('RL_LOGIN_MAX', 10),  windowMs: envSafeInt('RL_LOGIN_WIN', 60_000)  },
+  adminSetup:     { max: envSafeInt('RL_ADMIN_SETUP_MAX', 20), windowMs: envSafeInt('RL_ADMIN_SETUP_WIN', 300_000) },
+  refresh:        { max: envSafeInt('RL_REFRESH_MAX', 30),  windowMs: envSafeInt('RL_REFRESH_WIN', 60_000)  },
+  changePassword: { max: envSafeInt('RL_CHGPWD_MAX', 3),   windowMs: envSafeInt('RL_CHGPWD_WIN', 300_000) },
+  upload:         { max: envSafeInt('RL_UPLOAD_MAX', 20),  windowMs: envSafeInt('RL_UPLOAD_WIN', 60_000)  },
+  messages:       { max: envSafeInt('RL_MESSAGES_MAX', 30),  windowMs: envSafeInt('RL_MESSAGES_WIN', 60_000)  },
+  react:          { max: envSafeInt('RL_REACT_MAX', 60),  windowMs: envSafeInt('RL_REACT_WIN', 60_000)  },
+  settings:       { max: envSafeInt('RL_SETTINGS_MAX', 10),  windowMs: envSafeInt('RL_SETTINGS_WIN', 60_000)  },
+  search:         { max: envSafeInt('RL_SEARCH_MAX', 20),  windowMs: envSafeInt('RL_SEARCH_WIN', 60_000)  },
+  ai:             { max: envSafeInt('RL_AI_MAX', 10),  windowMs: envSafeInt('RL_AI_WIN', 60_000)  },
+  'ai.stream':    { max: envSafeInt('RL_AI_STREAM_MAX', 5),   windowMs: envSafeInt('RL_AI_STREAM_WIN', 60_000)  },
+  invite:         { max: envSafeInt('RL_INVITE_MAX', 10),  windowMs: envSafeInt('RL_INVITE_WIN', 60_000)  },
+  twoFactor:      { max: envSafeInt('RL_2FA_MAX', 5),   windowMs: envSafeInt('RL_2FA_WIN', 300_000) },
+  webauthn:       { max: envSafeInt('RL_WEBAUTHN_MAX', 20), windowMs: envSafeInt('RL_WEBAUTHN_WIN', 300_000) },
+  dm:             { max: envSafeInt('RL_DM_MAX', 20),  windowMs: envSafeInt('RL_DM_WIN', 60_000)  },
+  global:         { max: envSafeInt('RL_GLOBAL_MAX', RL_GLOBAL_MAX_DEFAULT), windowMs: envSafeInt('RL_GLOBAL_WIN', 60_000)  },
+  friends:        { max: envSafeInt('RL_FRIENDS_MAX', 20),  windowMs: envSafeInt('RL_FRIENDS_WIN', 60_000)  },
+  servers:        { max: envSafeInt('RL_SERVERS_MAX', 10),  windowMs: envSafeInt('RL_SERVERS_WIN', 60_000)  },
+  // CSRF jeton uretimi. Gercek istemci sekme basina BIR jeton alir ve onu
+  // onbellekler; yalnizca 403 sonrasi yeniler. 20/5dk fazlasiyla yeterlidir.
+  // NEDEN SINIR GEREKIYOR: jetonlar artik jeton basina anahtar olarak
+  // saklanir (es zamanli sekmeler icin — bkz. lib/security.ts). Ureticiye
+  // sinir konmazsa kimligi dogrulanmis bir istemci Redis'te anahtar
+  // sisirebilir. TTL(1sa) x bu sinir = kullanici basina en fazla ~240 anahtar.
+  csrf:           { max: envSafeInt('RL_CSRF_MAX', 20),  windowMs: envSafeInt('RL_CSRF_WIN', 300_000) },
+  // Arama BAGLAM onizlemesi. `search` ile ayni kotayi PAYLASMAZ ve bu bir
+  // gevsetme DEGILDIR — iki ucun maliyeti ve kullanim profili farklidir:
+  //   · /search        → FTS taramasi, kullanici SORGU YAZDIKCA calisir
+  //   · /search/context→ birincil anahtar araması + iki kucuk aralik taramasi,
+  //                      kullanici sonuclar arasinda GEZINDIKCE calisir
+  // Onizleme secili sonuca gore yuklenir; klavyeyle on sonuc arasinda gezinen
+  // bir kullanici arama kotasini tuketirdi. Yetki denetimi AYNIDIR.
+  searchContext:  { max: envSafeInt('RL_SEARCH_CTX_MAX', 60),  windowMs: envSafeInt('RL_SEARCH_CTX_WIN', 60_000)  },
+  roles:          { max: envSafeInt('RL_ROLES_MAX', 20),  windowMs: envSafeInt('RL_ROLES_WIN', 60_000)  },
+  channels:       { max: envSafeInt('RL_CHANNELS_MAX', 20),  windowMs: envSafeInt('RL_CHANNELS_WIN', 60_000)  },
+  polls:          { max: envSafeInt('RL_POLLS_MAX', 10),  windowMs: envSafeInt('RL_POLLS_WIN', 60_000)  },
+  webhooks:       { max: envSafeInt('RL_WEBHOOKS_MAX', 15),  windowMs: envSafeInt('RL_WEBHOOKS_WIN', 60_000)  },
+  federation:     { max: envSafeInt('RL_FEDERATION_MAX', 30),  windowMs: envSafeInt('RL_FEDERATION_WIN', 60_000)  },
+  moderation:     { max: envSafeInt('RL_MODERATION_MAX', 30),  windowMs: envSafeInt('RL_MODERATION_WIN', 60_000)  },
+  email:          { max: envSafeInt('RL_EMAIL_MAX', 5),   windowMs: envSafeInt('RL_EMAIL_WIN', 300_000) },
+  bots:           { max: envSafeInt('RL_BOTS_MAX', 20),  windowMs: envSafeInt('RL_BOTS_WIN', 60_000)  },
+  write:          { max: envSafeInt('RL_WRITE_MAX', 30),  windowMs: envSafeInt('RL_WRITE_WIN', 60_000)  },
   // Sprint 108: voice-state endpoint — mute/deaf güncellemeleri burst'e açık; kısıtlı tutulur
-  voiceState:     { max: parseInt(process.env.RL_VOICE_STATE_MAX || '') || 30,  windowMs: parseInt(process.env.RL_VOICE_STATE_WIN || '') || 10_000   },
+  voiceState:     { max: envSafeInt('RL_VOICE_STATE_MAX', 30),  windowMs: envSafeInt('RL_VOICE_STATE_WIN', 10_000)   },
   // Sprint 121 FIX 25: serverEvents.ts'de limits.api kullanılıyor — eksik tanım eklendi
-  api:            { max: parseInt(process.env.RL_API_MAX         || '') || 60,  windowMs: parseInt(process.env.RL_API_WIN         || '') || 60_000  },
-  serverEvents:   { max: parseInt(process.env.RL_SERVER_EVENTS_MAX || '') || 20, windowMs: parseInt(process.env.RL_SERVER_EVENTS_WIN || '') || 60_000 },
+  api:            { max: envSafeInt('RL_API_MAX', 60),  windowMs: envSafeInt('RL_API_WIN', 60_000)  },
+  serverEvents:   { max: envSafeInt('RL_SERVER_EVENTS_MAX', 20), windowMs: envSafeInt('RL_SERVER_EVENTS_WIN', 60_000) },
 };
 
 // ── STORE: Redis-backed with in-memory fallback ──────────────
@@ -104,33 +112,53 @@ interface RedisClient {
 }
 
 // Sprint 121 FIX 24: Bağımsız Redis client yerine redisAdapter paylaşımlı client kullanılıyor
-import { redisClient as _sharedRedisClient, isRedisAvailable } from '../lib/redisAdapter';
+import { redisClient as _sharedRedisClient, isRedisAvailable, cache as _sharedCache, redisAuthoritativeCommand } from '../lib/redisAdapter';
+const REDIS_CONFIGURED = Boolean(process.env.REDIS_URL);
+import { getClientIp } from '../lib/clientIp';
 
-async function getRedis(): Promise<RedisClient | null> {
-  if (!isRedisAvailable()) return null;
-  return _sharedRedisClient() as RedisClient | null;
+type RedisOperationResult<T> = { used: false } | { used: true; value: T };
+
+async function runRateLimitRedis<T>(
+  operation: string,
+  command: (client: RedisClient) => Promise<T>,
+): Promise<RedisOperationResult<T>> {
+  if (REDIS_CONFIGURED) {
+    const value = await redisAuthoritativeCommand(`rate limit ${operation}`, raw =>
+      command(raw as RedisClient));
+    return { used: true, value };
+  }
+
+  // Deliberate no-Redis/single-node mode may still have an optional client in
+  // tests or local deployments. It is acceleration only; failures may fall
+  // back to the process-local store because no shared authority was promised.
+  if (!isRedisAvailable()) return { used: false };
+  const client = _sharedRedisClient() as RedisClient | null;
+  if (!client) return { used: false };
+  return { used: true, value: await command(client) };
 }
 
 const memStore = new Map<string, number[]>();
 const MAX_STORE_SIZE = 100_000;
 
 async function hitRedis(key: string, windowMs: number): Promise<number | null> {
-  const client = await getRedis();
-  if (!client) return null;
   try {
     const now = Date.now();
     const windowSec = Math.ceil(windowMs / 1000);
     const member = `${now}:${Math.random()}`;
-    const pipe = client.multi();
-    pipe.zAdd(key, [{ score: now, value: member }]);
-    pipe.zRemRangeByScore(key, '-inf', now - windowMs);
-    pipe.zCard(key);
-    pipe.expire(key, windowSec + 1);
-    const results = await pipe.exec();
-    return results[2] as number;
-  } catch {
-    
-    logger.warn({ event: 'ratelimit.redis.error' }, 'Redis rate-limit operation failed; switching to in-memory fallback.');
+    const result = await runRateLimitRedis('sliding window', async client => {
+      const pipe = client.multi();
+      pipe.zAdd(key, [{ score: now, value: member }]);
+      pipe.zRemRangeByScore(key, '-inf', now - windowMs);
+      pipe.zCard(key);
+      pipe.expire(key, windowSec + 1);
+      const results = await pipe.exec();
+      return results[2] as number;
+    });
+    return result.used ? result.value : null;
+  } catch (error) {
+    logger.warn({ event: 'ratelimit.redis.error', err: error instanceof Error ? error.message : String(error) },
+      REDIS_CONFIGURED ? 'Redis rate-limit operation failed; rejecting request.' : 'Redis rate-limit operation failed; switching to in-memory fallback.');
+    if (REDIS_CONFIGURED) throw error;
     return null;
   }
 }
@@ -144,8 +172,8 @@ function hitMemory(key: string, windowMs: number): number {
   return hits.length;
 }
 
-const HTTP_AUTO_BAN_THRESHOLD   = parseInt(process.env.RL_HTTP_AUTO_BAN_THRESHOLD || '') || 10;
-const HTTP_AUTO_BAN_DURATION_MS = parseInt(process.env.RL_HTTP_AUTO_BAN_DURATION  || '') || 10 * 60_000;
+const HTTP_AUTO_BAN_THRESHOLD   = envSafeInt('RL_HTTP_AUTO_BAN_THRESHOLD', 10);
+const HTTP_AUTO_BAN_DURATION_MS = envSafeInt('RL_HTTP_AUTO_BAN_DURATION', 10 * 60_000);
 
 interface ViolationRecord {
   count: number;
@@ -163,34 +191,64 @@ setInterval(() => {
 const VIOLATION_KEY_TTL = 3600;
 
 export async function getViolationRecord(ip: string): Promise<ViolationRecord | null> {
-  const client = await getRedis();
-  if (client) {
-    try {
-      const raw = await client.get(`rl:violations:${ip}`);
-      if (!raw) return null;
-      return JSON.parse(raw) as ViolationRecord;
-    } catch { /* fallback */ }
+  try {
+    const result = await runRateLimitRedis('get violation', client => client.get(`rl:violations:${ip}`));
+    if (result.used) {
+      if (!result.value) return null;
+      return JSON.parse(result.value) as ViolationRecord;
+    }
+  } catch (err) {
+    if (REDIS_CONFIGURED) throw err;
   }
   return _httpViolationsMem.get(ip) || null;
 }
 
 export async function setViolationRecord(ip: string, rec: ViolationRecord): Promise<void> {
-  const client = await getRedis();
-  if (client) {
-    try {
-      await client.set(`rl:violations:${ip}`, JSON.stringify(rec), { EX: VIOLATION_KEY_TTL });
-      return;
-    } catch { /* fallback */ }
+  try {
+    const result = await runRateLimitRedis('set violation', client =>
+      client.set(`rl:violations:${ip}`, JSON.stringify(rec), { EX: VIOLATION_KEY_TTL }));
+    if (result.used) return;
+  } catch (err) {
+    if (REDIS_CONFIGURED) throw err;
   }
   _httpViolationsMem.set(ip, rec);
 }
 
 export async function deleteViolationRecord(ip: string): Promise<void> {
-  const client = await getRedis();
-  if (client) {
-    try { await client.del(`rl:violations:${ip}`); } catch { /* fallback */ }
+  try {
+    const result = await runRateLimitRedis('delete violation', client => client.del(`rl:violations:${ip}`));
+    if (result.used) {
+      _httpViolationsMem.delete(ip);
+      return;
+    }
+  } catch (err) {
+    if (REDIS_CONFIGURED) throw err;
   }
   _httpViolationsMem.delete(ip);
+}
+
+
+async function incrementViolationCount(ip: string): Promise<number> {
+  const now = Date.now();
+  if (REDIS_CONFIGURED || isRedisAvailable()) {
+    try {
+      // Atomic across HTTP workers/nodes. When Redis is configured this call
+      // is authoritative and must throw rather than dilute into a per-node
+      // violation counter if Redis has already been marked unavailable.
+      return await _sharedCache.increment(`httpviolation:${ip}`, VIOLATION_KEY_TTL);
+    } catch (err) {
+      logger.warn({ event: 'ratelimit.violation.redis.error', err: err instanceof Error ? err.message : String(err) },
+        REDIS_CONFIGURED
+          ? 'Redis violation counter failed; shared authority remains mandatory.'
+          : 'Redis violation counter failed; using process-local fallback.');
+      if (REDIS_CONFIGURED) throw err;
+    }
+  }
+  const rec = _httpViolationsMem.get(ip) ?? { count: 0, firstAt: now };
+  rec.count += 1;
+  if (rec.count === 1) rec.firstAt = now;
+  _httpViolationsMem.set(ip, rec);
+  return rec.count;
 }
 
 // ── Granülerlik modu ─────────────────────────────────────────────
@@ -202,11 +260,24 @@ export async function deleteViolationRecord(ip: string): Promise<void> {
 //                 Aynı kullanıcının farklı IP'lerden spam yapmasını da engeller
 type RateLimitMode = 'ip' | 'user' | 'combined' | 'ip-only' | 'per-user-ip';
 
+/**
+ * `combined` modda IP anahtarinin tavanini kullanici kotasinin kac kati
+ * yapacagi. Paylasilan NAT arkasindaki mesru kullanicilarin birbirini
+ * kilitlemesini onler; IP yine de sinirsiz degildir.
+ */
+const SHARED_IP_CEILING_FACTOR = envSafeInt('RL_SHARED_IP_FACTOR', 20);
+
 interface RateLimitOptions {
   /** @deprecated 'mode' kullanın — geriye dönük uyumluluk için korunuyor */
   userOnly?: boolean;
   /** Granülerlik modu. Varsayılan: userOnly=true → 'user', userOnly=false → 'combined' */
   mode?: RateLimitMode;
+  /**
+   * `req.user` henüz yokken kimliği sağlar — kimlik doğrulamadan ÖNCE bağlanan
+   * sınırlayıcılar için (küresel `/api`). Yalnızca DOĞRULANMIŞ bir kimlik
+   * döndürmelidir; `null` anonim demektir ve IP tavanı aynen uygulanır.
+   */
+  identify?: (req: Request) => string | null;
 }
 
 export function rateLimit(
@@ -220,47 +291,156 @@ export function rateLimit(
 
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const ip  = getClientIp(req);
-    const uid = (req as Request & { user?: { id: string } }).user?.id || '';
+    const uid = (req as Request & { user?: { id: string } }).user?.id || opts.identify?.(req) || '';
 
-    // ── Anahtar(lar) oluştur ─────────────────────────────────
-    let keys: string[];
+    // ── Anahtar(lar) ve HER ANAHTARIN KENDI TAVANI ───────────
+    // ══════════════════════════════════════════════════════════════════════
+    // PAYLASILAN IP'DE YAN HASAR — KATMANLI TAVAN
+    // ══════════════════════════════════════════════════════════════════════
+    // `combined` modu ONCEDEN her iki anahtari da AYNI `max` degeriyle
+    // olcuyordu (`Math.max(ipCount, userCount) > max`). Sonuc: kimligi
+    // dogrulanmis TEK bir kullanici, paylasilan IP kovasini tuketip AYNI
+    // NAT arkasindaki ILGISIZ kullanicilari kilitleyebiliyordu.
+    //
+    // GERCEK SENARYO (kod incelemesiyle dogrulandi): `csrf` siniri 5 dakikada
+    // 20'dir ve `combined` modda calisir. Bir ofis/yurt/universite NAT'i
+    // arkasindaki 20 kullanici uygulamayi actiginda 20 jeton uretilir;
+    // 21. mesru kullanici 429 alir. Ayni sinif `servers` (10/dk),
+    // `search` ve `friends` uclarinda da gecerlidir.
+    //
+    // COZUM (IP korumasi KALDIRILMAZ): kimlik dogrulanmis isteklerde IP
+    // anahtari genis bir ACIL DURUM TAVANI olur, gercek kota ise KULLANICI
+    // anahtarindadir. Boylece:
+    //   · tek kullanici komsularini ac birakamaz,
+    //   · IP hala sinirsiz degildir (kacak istemci/botnet yine yakalanir),
+    //   · kimlik DOGRULANMAMIS istekte IP tavani AYNEN sikidir.
+    //
+    // Carpan ortamdan ayarlanabilir; varsayilan muhafazakardir.
+    let keyed: Array<{ key: string; limit: number }>;
     switch (mode) {
       case 'ip':
-        keys = [`rl:${keyPrefix}:ip:${ip}`];
+        keyed = [{ key: `rl:${keyPrefix}:ip:${ip}`, limit: max }];
         break;
       case 'user':
-        keys = uid ? [`rl:${keyPrefix}:u:${uid}`] : [`rl:${keyPrefix}:ip:${ip}`];
+        keyed = uid
+          ? [{ key: `rl:${keyPrefix}:u:${uid}`, limit: max }]
+          : [{ key: `rl:${keyPrefix}:ip:${ip}`, limit: max }];
         break;
       case 'ip-only':
-        keys = [`rl:${keyPrefix}:ip:${ip}`];
+        keyed = [{ key: `rl:${keyPrefix}:ip:${ip}`, limit: max }];
         break;
       case 'per-user-ip':
         // user+IP birleşik anahtar: hem kullanıcı kotasını hem IP başına kotayı takip eder
         // VPN dönüşüm saldırılarına ve çok hesaplı kötüye kullanıma karşı etkili
-        keys = uid
+        keyed = uid
           ? [
-              `rl:${keyPrefix}:u:${uid}`,          // kullanıcı kotası
-              `rl:${keyPrefix}:uip:${uid}:${ip}`,   // kullanıcı+IP kombinasyon kotası
+              { key: `rl:${keyPrefix}:u:${uid}`, limit: max },
+              { key: `rl:${keyPrefix}:uip:${uid}:${ip}`, limit: max },
             ]
-          : [`rl:${keyPrefix}:ip:${ip}`];
+          : [{ key: `rl:${keyPrefix}:ip:${ip}`, limit: max }];
         break;
       case 'combined':
       default:
-        // Her ikisini de izle — en yüksek sayım kullanılır
-        keys = uid
-          ? [`rl:${keyPrefix}:ip:${ip}`, `rl:${keyPrefix}:u:${uid}`]
-          : [`rl:${keyPrefix}:ip:${ip}`];
+        keyed = uid
+          ? [
+              // ACIL DURUM tavani — komsulari korur ama IP'yi sinirsiz birakmaz.
+              // AYRI anahtar (`ipa`): kimlikli trafik, anonim istegin sayacina
+              // yazilirsa meşgul bir NAT'ta giris/kayit gibi kimliksiz uclar
+              // 429 alir (Final21 F21-11-04, e2e'de olculdu). Anonim tavan
+              // `ip` anahtarinda aynen `max` kalir.
+              { key: `rl:${keyPrefix}:ipa:${ip}`, limit: max * SHARED_IP_CEILING_FACTOR },
+              // GERCEK kota: kullanici basina.
+              { key: `rl:${keyPrefix}:u:${uid}`, limit: max },
+            ]
+          : [{ key: `rl:${keyPrefix}:ip:${ip}`, limit: max }];
     }
 
-    // ── Sayımları paralel al ─────────────────────────────────
-    const counts = await Promise.all(keys.map(async key => {
-      let c = await hitRedis(key, windowMs);
-      if (c === null) c = hitMemory(key, windowMs);
-      return c;
-    }));
-    const count = Math.max(...counts);
+    // ── PAYLASILAN IP ADALETI (v1.124) ───────────────────────
+    // OLCULDU: her istek, KENDI kotasi kontrol edilmeden ONCE hem hesap hem
+    // IP sayacini artiriyordu. Sonuc, ayni NAT arkasindaki komsular icin
+    // haksizdi: kendi kotasini coktan asmis bir kullanicinin REDDEDILEN
+    // istekleri bile paylasilan IP butcesini tuketmeye devam ediyordu.
+    //
+    // Regresyon testi bunu somut olarak gosterdi (tests/shared-ip-fairness):
+    // bir kotuye kullananin taskini sonrasinda AYNI IP'deki temiz bir
+    // kullanicinin 4 istekten 0'i geciyordu.
+    //
+    // DUZELTME: kimligi dogrulanmis trafikte once HESAP kotasi olculur.
+    // Hesap kendi kotasini asmissa istek reddedilir ve IP toplamina
+    // DOKUNULMAZ — boylece bir kullanici komsularinin butcesini tuketemez.
+    //
+    // GUVENLIK GEVSETILMEDI:
+    //   · anonim trafik  → yalnizca IP anahtari, aynen eskisi gibi
+    //   · kota ICINDEKI hesaplar → IP toplamina sayilmaya DEVAM eder,
+    //     dolayisiyla cok-hesapli taskin hâlâ tavana carpar
+    //   · degisen tek sey: ZATEN reddedilmis istekler artik ceza olarak
+    //     baskalarinin butcesini yakmaz
+    // `combined` modda son anahtar HESAP kotasidir (yukaridaki siralama).
+    const accountIdx = keyed.length - 1;
+    const ipIdx = 0;
+    // Anahtarlar BIR KEZ alinir. Dizi indekslemesi `noUncheckedIndexedAccess`
+    // altinda `undefined` verebilir ve bir hiz siniri yolunda `undefined.limit`
+    // ile karsilastirma yapmak sessizce HER ISTEGI GECIRIRDI. Varlik denetimi
+    // AYRI bir `if` degil, `accountFirst` kosulunun parcasidir: boylece
+    // TypeScript blok icinde daraltma yapar ve ULASILAMAYAN bir dal olusmaz.
+    // Anahtar kumesi bozuksa akis asagidaki genel yola duser; orada eksik
+    // sayac "asilmis" sayilir (fail-closed).
+    const accountKey = keyed[accountIdx];
+    const ipKey = keyed[ipIdx];
+    const accountFirst = keyed.length > 1 && accountKey !== undefined && ipKey !== undefined;
+    let counts: number[];
+    try {
+      if (accountFirst) {
+        let accountCount = await hitRedis(accountKey.key, windowMs);
+        if (accountCount === null) accountCount = hitMemory(accountKey.key, windowMs);
 
-    const remaining = Math.max(0, max - count);
+        if (accountCount > accountKey.limit) {
+          // Hesap kendi kotasini asti: IP toplamini ARTIRMADAN reddet.
+          counts = [];
+          counts[accountIdx] = accountCount;
+          counts[ipIdx] = 0;                     // IP butcesi harcanmadi
+          const retryAfterSelf = Math.ceil(windowMs / 1000);
+          res.set('X-RateLimit-Limit', String(max));
+          res.set('X-RateLimit-Remaining', '0');
+          res.set('Retry-After', String(retryAfterSelf));
+          try { _metrics?.trackRateLimitHit(req, keyPrefix); } catch { /* metrik opsiyonel */ }
+          logger.warn({ event: 'ratelimit.account_quota', prefix: keyPrefix, count: accountCount, limit: accountKey.limit },
+            'Account exceeded its own quota; shared IP budget NOT charged.');
+          res.status(429).json({ error: 'Çok fazla istek. Lütfen biraz bekleyin.' });
+          return;
+        }
+
+        let ipCount = await hitRedis(ipKey.key, windowMs);
+        if (ipCount === null) ipCount = hitMemory(ipKey.key, windowMs);
+        counts = [];
+        counts[ipIdx] = ipCount;
+        counts[accountIdx] = accountCount;
+      } else {
+        counts = await Promise.all(keyed.map(async ({ key }) => {
+          let c = await hitRedis(key, windowMs);
+          if (c === null) c = hitMemory(key, windowMs);
+          return c;
+        }));
+      }
+    } catch (error) {
+      logger.error({ event: 'ratelimit.authority_unavailable', err: error instanceof Error ? error.message : String(error) },
+        'Configured Redis rate-limit authority is unavailable; request rejected fail-closed.');
+      res.set('Retry-After', '1');
+      res.status(503).json({ error: 'Rate limit service temporarily unavailable' });
+      return;
+    }
+    const keys = keyed.map(k => k.key);
+    // Her anahtar KENDI tavaniyla karsilastirilir.
+    // Sayac okunamiyorsa `undefined > limit` HER ZAMAN false olur ve istek
+    // sessizce GECERDI. Eksik sayac = asilmis kabul edilir (fail-closed).
+    const exceeded = keyed.some((k, i) => (counts[i] ?? Number.POSITIVE_INFINITY) > k.limit);
+    // Basliklar KULLANICI kotasini yansitir (anlamli olan budur); kimlik
+    // yoksa tek anahtarin kendisi kullanilir.
+    const budgetIdx = keyed.length > 1 ? keyed.length - 1 : 0;
+    const count = counts[budgetIdx] ?? 0;
+    const budgetLimit = keyed[budgetIdx]?.limit ?? max;
+
+    const remaining = Math.max(0, budgetLimit - count);
     const resetAt   = Math.ceil((Date.now() + windowMs) / 1000);
 
     res.set('X-RateLimit-Limit',     String(max));
@@ -269,7 +449,7 @@ export function rateLimit(
     // RFC 6585 policy header — client'a mod bilgisi ver
     res.set('X-RateLimit-Policy',    `${max};w=${Math.ceil(windowMs / 1000)};mode=${mode};keys=${keys.length}`);
 
-    if (count > max) {
+    if (exceeded) {
       const retryAfter = Math.ceil(windowMs / 1000);
       res.set('Retry-After', String(retryAfter));
 
@@ -282,17 +462,14 @@ export function rateLimit(
       }
 
       try {
-        const rec: ViolationRecord = (await getViolationRecord(ip)) || { count: 0, firstAt: Date.now() };
-        rec.count += 1;
-        if (rec.count === 1) rec.firstAt = Date.now();
-        await setViolationRecord(ip, rec);
+        const violationCount = await incrementViolationCount(ip);
 
-        if (rec.count >= HTTP_AUTO_BAN_THRESHOLD) {
+        if (violationCount >= HTTP_AUTO_BAN_THRESHOLD) {
           if (_ipBan) {
             const existing = await _ipBan.getBan(ip);
             if (!existing) {
               await _ipBan.banIp(ip, {
-                reason:     `Otomatik ban: HTTP rate limit (${keyPrefix}) ${rec.count}x aşıldı`,
+                reason:     `Otomatik ban: HTTP rate limit (${keyPrefix}) ${violationCount}x aşıldı`,
                 durationMs: HTTP_AUTO_BAN_DURATION_MS,
                 adminId:    'system',
               });
@@ -302,6 +479,7 @@ export function rateLimit(
                 'Automatic HTTP IP ban applied due to repeated rate-limit violations.'
               );
               await deleteViolationRecord(ip);
+              await _sharedCache.del(`httpviolation:${ip}`).catch(() => undefined);
             }
           }
         }
@@ -331,21 +509,53 @@ export function pruneMemStore(): void {
 
 setInterval(pruneMemStore, 5 * 60_000).unref();
 
+/**
+ * @internal — YALNIZCA TESTLERDE.
+ *
+ * `pruneMemStore` yalnizca EN UZUN pencereden daha eski girisleri atar; 5
+ * dakikalik 2FA penceresi gibi uzun pencerelerde ayni sureci paylasan testler
+ * birbirinin sayacini miras alir. Bunun sonucu sessiz bir olcum kaybidir: bir
+ * suit icinde ilk birkac test gecer, sonrakiler 429 alir ve "urun bozuk"
+ * gibi gorunur.
+ *
+ * Uretim davranisi DEGISMEZ; bu fonksiyonun hicbir uretim cagirani yoktur.
+ */
+export function _resetRateLimitStoreForTest(): void {
+  memStore.clear();
+  _httpViolationsMem.clear();
+}
+
 // ── Kısa yardımcılar ─────────────────────────────────────────
 // _ip  → yalnızca IP (kimlik doğrulanmamış endpointler: login, register, 2FA)
 // _u   → yalnızca user-ID (oturum açık, kişisel kota: upload, ai, messages)
 // _c   → combined IP+user (genel authenticated endpointler)
 // _uip → per-user-IP: user+IP kombinasyonu (VPN dönüşüm + çok hesap saldırılarına karşı)
-const _ip  = (key: string) => () => rateLimit(DEFAULTS[key].max, DEFAULTS[key].windowMs, key, { mode: 'ip' });
-const _u   = (key: string) => () => rateLimit(DEFAULTS[key].max, DEFAULTS[key].windowMs, key, { mode: 'user' });
-const _c   = (key: string) => () => rateLimit(DEFAULTS[key].max, DEFAULTS[key].windowMs, key, { mode: 'combined' });
-const _uip = (key: string) => () => rateLimit(DEFAULTS[key].max, DEFAULTS[key].windowMs, key, { mode: 'per-user-ip' });
+/**
+ * Yapilandirma araması TEK yerde ve KESIN yapilir.
+ *
+ * Eskiden her yardimci `DEFAULTS[key].max` yaziyordu; `noUncheckedIndexedAccess`
+ * altinda bu `undefined.max` olabilir. Bir yazim hatasi (`_ip('logn')`)
+ * uretimde ANINDA cokerdi ve hangi limitin bozuk oldugu belli olmazdi.
+ * Simdi eksik anahtar, hangi anahtar oldugunu soyleyen acik bir hata verir.
+ */
+function limitConfig(key: string): LimitConfig {
+  const config = DEFAULTS[key];
+  if (!config) throw new Error(`[rateLimit] Tanımsız limit anahtarı: ${key}`);
+  return config;
+}
+
+const _ip  = (key: string) => () => { const c = limitConfig(key); return rateLimit(c.max, c.windowMs, key, { mode: 'ip' }); };
+const _u   = (key: string) => () => { const c = limitConfig(key); return rateLimit(c.max, c.windowMs, key, { mode: 'user' }); };
+const _c   = (key: string) => () => { const c = limitConfig(key); return rateLimit(c.max, c.windowMs, key, { mode: 'combined' }); };
+const _uip = (key: string) => () => { const c = limitConfig(key); return rateLimit(c.max, c.windowMs, key, { mode: 'per-user-ip' }); };
 
 export const limits = {
   // IP-only: henüz kimlik doğrulanmamış — user-ID yok
   register:       _ip('register'),
   login:          _ip('login'),
+  adminSetup:     _ip('adminSetup'),
   twoFactor:      _ip('twoFactor'),
+  webauthn:       _ip('webauthn'),
   email:          _ip('email'),
   invite:         _ip('invite'),
 
@@ -365,6 +575,8 @@ export const limits = {
   changePassword: _c('changePassword'),
   friends:        _c('friends'),
   servers:        _c('servers'),
+  csrf:           _c('csrf'),
+  searchContext:  _c('searchContext'),
   roles:          _c('roles'),
   channels:       _c('channels'),
   polls:          _c('polls'),
@@ -373,7 +585,9 @@ export const limits = {
   bots:           _c('bots'),
   federation:     _c('federation'),
   global:         _c('global'),
-  general:        _c('global'),
+  // `general` KALDIRILDI (Final21 Faz 19): `global` önekini paylaşan ikinci bir sınırlayıcıydı;
+  // uygulama çapındaki /api sınırlayıcısı zaten her rotaya uygulanır, rota düzeyinde tekrar
+  // bağlanması her isteği küresel bütçeden İKİ kez düşürüyordu (tests/route-limiter-no-double-count).
   // Sprint 108: voice-state per-user — kullanıcı başına izlenir (IP değil)
   voiceState:     _u('voiceState'),
   // Sprint 121 FIX 25: serverEvents.ts / genel API endpoint'leri için

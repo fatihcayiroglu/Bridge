@@ -7,7 +7,7 @@ groups:
       - alert: MemoryUsageHigh
         expr: |
           (
-            process_resident_memory_bytes{job="bridge"}
+            bridge_process_resident_memory_bytes{job="bridge"}
             / on() group_left()
             (node_memory_MemTotal_bytes or vector(1073741824))
           ) > 0.80
@@ -21,7 +21,7 @@ groups:
       - alert: MemoryUsageCritical
         expr: |
           (
-            process_resident_memory_bytes{job="bridge"}
+            bridge_process_resident_memory_bytes{job="bridge"}
             / on() group_left()
             (node_memory_MemTotal_bytes or vector(1073741824))
           ) > 0.90
@@ -34,8 +34,8 @@ groups:
 
       - alert: HeapUsageCritical
         expr: |
-          nodejs_heap_size_used_bytes{job="bridge"}
-          / nodejs_heap_size_total_bytes{job="bridge"} > 0.90
+          bridge_nodejs_heap_size_used_bytes{job="bridge"}
+          / bridge_nodejs_heap_size_total_bytes{job="bridge"} > 0.90
         for: 1m
         labels:
           severity: critical
@@ -44,7 +44,7 @@ groups:
           description: "Heap kullanımı {{ $value | humanizePercentage }}. OOM hatası yaklaşıyor olabilir."
 
       - alert: ExternalMemoryHigh
-        expr: nodejs_external_memory_bytes{job="bridge"} > 256000000
+        expr: bridge_nodejs_external_memory_bytes{job="bridge"} > 256000000
         for: 5m
         labels:
           severity: warning
@@ -217,10 +217,78 @@ groups:
 
       - alert: BridgeRestartDetected
         expr: |
-          changes(process_start_time_seconds{job="bridge"}[15m]) > 0
+          changes(bridge_process_start_time_seconds{job="bridge"}[15m]) > 0
         for: 0m
         labels:
           severity: warning
         annotations:
           summary: "Bridge süreci yeniden başladı"
           description: "Son 15 dakikada process_start_time değişti — crash veya deploy olabilir."
+
+  # ──────────────────────────────────────────────────────────────
+  # BAĞIMLILIK SAĞLIĞI (v1.124)
+  # ──────────────────────────────────────────────────────────────
+  # v1.123 Redis kesintisini ve toparlanmasını KANITLADI, ama uyarı
+  # yazılamıyordu: Bridge bağımlılık durumunu hiç yaymıyordu. v1.124
+  # `bridge_redis_up` / `bridge_db_up` göstergelerini ekledi ve `/metrics`
+  # ucunu IP-yasağı yolundan MUAF tuttu — aksi hâlde izleme ucu, tam da
+  # izlemesi gereken kesintide kararıyordu ve kural hiç ateşlenemiyordu.
+  #
+  # DOĞRULANDI (v1.124, tek kullanımlık ortam):
+  #   redis çalışıyor      → bridge_redis_up 1
+  #   redis durduruldu     → bridge_redis_up 0   (metrics HÂLÂ kazınabilir)
+  #   redis geri geldi     → bridge_redis_up 1   (gözetimsiz)
+  - name: bridge_dependencies
+    rules:
+      - alert: RedisUnavailable
+        expr: bridge_redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis erişilemiyor — Bridge fail-closed 503 döndürüyor"
+          description: >-
+            Redis yetkili hız-sınırı deposudur. Erişilemezken Bridge TÜM
+            istekleri reddeder (bilinçli fail-closed). Bridge kendiliğinden
+            toparlanır; süreç yeniden başlatmayın.
+            Runbook: docs/RUNBOOK-REDIS-OUTAGE.md
+
+      - alert: RedisFlapping
+        expr: changes(bridge_redis_up[10m]) > 4
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis bağlantısı 10 dakikada 4+ kez durum değiştirdi"
+          description: "Kararsız Redis bağlantısı — ağ veya kaynak sorunu araştırın."
+
+      - alert: DatabaseUnavailable
+        expr: bridge_db_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL katmanı erişilemiyor"
+          description: >-
+            Kalıcı veri katmanı yok. Veri kaybı riski için
+            docs/RUNBOOK-DATABASE-RESTORE.md kontrol listesini izleyin.
+
+      - alert: EventLoopLagHigh
+        expr: bridge_nodejs_eventloop_lag_mean_seconds > 0.25
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node.js olay döngüsü gecikmesi yüksek ({{ $value }}s)"
+          description: "Süreç CPU'ya bağlı; istek gecikmesi artacaktır."
+
+      - alert: SocketCountCollapse
+        expr: >-
+          bridge_active_sockets == 0
+          and bridge_active_sockets offset 10m > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tüm socket bağlantıları düştü"
+          description: "10 dakika önce 5+ soket vardı, şimdi hiç yok — gerçek zamanlı katmanı kontrol edin."

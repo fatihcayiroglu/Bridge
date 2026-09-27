@@ -71,7 +71,7 @@ UI metinleri i18n üzerinden değiştirilir; API ve DB katmanı korunur.
 
 **Seçenek B (yalnızca UI/i18n katmanı)** kabul edildi. Sprint 110'da:
 
-1. 15 dil dosyasına `hub`, `space`, `flow`, `hubs`, `spaces`, `flows` anahtarları eklendi
+1. 15 dil dosyasına `hub`, `space`, `flow`, `hubs`, `spaces`, `flows` anahtarları eklendi (tarihsel Sprint 110 durumu; güncel production stable set 10 dildir)
 2. `scripts/check-i18n-parity.js` CI guard'ı eklendi — yeni dil eklendiğinde eksik anahtar hemen yakalanır
 3. CI'ya Hub/Space/Flow anahtar varlığını doğrulayan adım eklendi
 
@@ -79,7 +79,7 @@ UI metinleri i18n üzerinden değiştirilir; API ve DB katmanı korunur.
 
 ```
 Sprint 110 (✅ Tamamlandı)
-  └── i18n anahtarları eklendi (15 dil)
+  └── i18n anahtarları eklendi (tarihsel Sprint 110: 15 dosya; güncel stable production set: 10 dil)
   └── CI parity guard eklendi
 
 Sprint 112 (Planlandı)

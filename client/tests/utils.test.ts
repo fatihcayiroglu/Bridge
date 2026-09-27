@@ -1,131 +1,122 @@
-// client/tests/utils.test.ts — Bridge v74
-// client/js/core/utils.js için unit testler
+// client/tests/utils.test.ts
+// core/utils.ts — CANLI sözleşme testleri (native Vitest/ESM).
+//
+// ════════════════════════════════════════════════════════════════════════════
+// FAZ 12 — KISMİ EMEKLİLİK + NATIVE MIGRATION
+// ════════════════════════════════════════════════════════════════════════════
+//
+// ÇÖKME NEDENİ: dosya `loadClientModule()` içinde CJS `require('../js/core/utils.js')`
+// kullanıyordu ve export'ları `global`e yayıyordu. Bu, Jest'in `moduleNameMapper`
+// + `babel-jest` kurulumuna bağlıydı; Vitest'te böyle bir eşleme yok, bu yüzden
+// süit "Cannot find module '../js/core/utils.js'" ile toplanamıyor ve içindeki
+// 16 test "skipped" olarak sayılıyordu.
+//
+// ESKİ TESTİN KAPSADIĞI 6 API — bugünkü durum (kaynak taraması, types/dist/tests hariç):
+//
+//   escHtml       → CANLI  (js/core/utils.ts:1)                 → burada test edilir
+//   toast         → CANLI  ama SÖZLEŞMESİ DEĞİŞTİ (utils.ts:9)  → yeni sözleşme test edilir
+//   cssColor      → TAŞINDI: artık paylaşılan util değil, bileşen-içi yerel
+//                   fonksiyon (GroupDmPanel.svelte:104, VoicePanel.svelte:158)
+//   initials      → TAŞINDI: bileşen-içi yerel fonksiyon
+//                   (GroupDmPanel.svelte:108, MemberListPanel.svelte:42)
+//   safeFileUrl   → KALDIRILDI: kaynakta 0 eşleşme
+//   closeModal    → KALDIRILDI: kaynakta 0 eşleşme
+//
+// `toast` Faz 8'de yeniden yazıldı: artık DOM elemanı OLUŞTURMUYOR; alıcıya
+// `BridgeRegistry` üzerinden devrediyor (utils.ts:13-21). Eski "toast DOM'a
+// eklenir / süre dolunca kaldırılır" iddiaları bu yüzden ölü sözleşmedir;
+// yerlerine BUGÜNKÜ devretme sözleşmesi test edilir.
+//
+// GÜVENLİK NOTU: `escHtml` bir XSS savunmasıdır ve kapsamı KORUNMUŞTUR.
+// `safeFileUrl` (URL doğrulama) üretimden tamamen kalkmıştır — bu bir
+// gözlem olarak kaydedilir; bu turda üretim kodu değiştirilmemiştir.
 
-'use strict';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { escHtml, toast } from '../js/core/utils.ts';
+import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 
-// utils.ts ESM export'larını require() + global spread ile yükle.
-// babel-jest transform TypeScript + ESM'i CommonJS'e çevirir.
-function loadClientModule(relPath: string) {
-  // .js uzantısı moduleNameMapper ile .ts kaynağa yönlendirilir
-  const mod = require(`../js/${relPath}`);
-  Object.entries(mod).forEach(([k, v]) => { (global as Record<string, unknown>)[k] = v; });
-}
-
-beforeAll(() => {
-  // toast için container DOM'u kur
-  document.body.innerHTML = '<div id="toast-container"></div>';
-  loadClientModule('core/utils.js');
+afterEach(() => {
+  BridgeRegistry.unregister('toast');
+  delete (globalThis as Record<string, unknown>).toast;
+  vi.restoreAllMocks();
 });
 
-// ── escHtml ───────────────────────────────────────────────────
-describe('escHtml()', () => {
-  test('< > & " karakterlerini escape eder', () => {
-    expect(global.escHtml('<script>')).toBe('&lt;script&gt;');
-    expect(global.escHtml('"quoted"')).toBe('&quot;quoted&quot;');
-    expect(global.escHtml('a & b')).toBe('a &amp; b');
+describe('escHtml() — XSS kaçışı (canlı)', () => {
+  it('< > & " karakterlerini escape eder', () => {
+    expect(escHtml('<script>')).toBe('&lt;script&gt;');
+    expect(escHtml('"quoted"')).toBe('&quot;quoted&quot;');
+    expect(escHtml('a & b')).toBe('a &amp; b');
   });
 
-  test('sayıları string\'e çevirir', () => {
-    expect(global.escHtml(42)).toBe('42');
+  it('tek tırnağı da escape eder', () => {
+    // Üretim sözleşmesi ' karakterini de kapsar (utils.ts:2).
+    expect(escHtml("it's")).toBe('it&#39;s');
   });
 
-  test('boş string\'i boş döndürür', () => {
-    expect(global.escHtml('')).toBe('');
-  });
-});
-
-// ── cssColor ──────────────────────────────────────────────────
-describe('cssColor()', () => {
-  test('geçerli hex rengi olduğu gibi döndürür', () => {
-    expect(global.cssColor('#fff')).toBe('#fff');
-    expect(global.cssColor('#aabbcc')).toBe('#aabbcc');
-    expect(global.cssColor('#12345678')).toBe('#12345678');
+  it('sayıları string\'e çevirir', () => {
+    expect(escHtml(42)).toBe('42');
   });
 
-  test('geçersiz değer için fallback döndürür', () => {
-    expect(global.cssColor('red')).toBe('#808080');
-    expect(global.cssColor('javascript:evil')).toBe('#808080');
-    expect(global.cssColor(null)).toBe('#808080');
-    expect(global.cssColor(123)).toBe('#808080');
-  });
-});
-
-// ── initials ──────────────────────────────────────────────────
-describe('initials()', () => {
-  test('iki kelimeden ilk harfleri alır', () => {
-    expect(global.initials('Ali Veli')).toBe('AV');
-    expect(global.initials('john doe')).toBe('JD');
+  it('boş / null / undefined için boş string döndürür', () => {
+    expect(escHtml('')).toBe('');
+    expect(escHtml(null)).toBe('');
+    expect(escHtml(undefined)).toBe('');
   });
 
-  test('tek kelime için ilk iki harfi alır', () => {
-    expect(global.initials('Alice')).toBe('AL');
-  });
+  it('script enjeksiyonu düz metne dönüşür (regresyon)', () => {
+    const out = escHtml('<img src=x onerror="alert(1)">');
 
-  test('boş/undefined için ? döndürür', () => {
-    expect(global.initials('')).toBe('?');
-    expect(global.initials(null)).toBe('?');
-    expect(global.initials(undefined)).toBe('?');
-  });
-});
-
-// ── safeFileUrl ───────────────────────────────────────────────
-describe('safeFileUrl()', () => {
-  test('/uploads/ ile başlayan URL\'ye izin verir', () => {
-    expect(global.safeFileUrl('/uploads/img.png')).toBe('/uploads/img.png');
-  });
-
-  test('data:image/ ile başlayan URL\'ye izin verir', () => {
-    const dataUrl = 'data:image/png;base64,abc';
-    expect(global.safeFileUrl(dataUrl)).toBe(dataUrl);
-  });
-
-  test('harici URL için boş string döndürür', () => {
-    expect(global.safeFileUrl('https://evil.com/xss')).toBe('');
-  });
-
-  test('string olmayan için boş string döndürür', () => {
-    expect(global.safeFileUrl(null)).toBe('');
-    expect(global.safeFileUrl(42)).toBe('');
+    expect(out).not.toContain('<');
+    expect(out).not.toContain('>');
+    expect(out).not.toContain('"');
   });
 });
 
-// ── toast ─────────────────────────────────────────────────────
-describe('toast()', () => {
+describe('toast() — BUGÜNKÜ devretme sözleşmesi', () => {
   beforeEach(() => {
-    document.getElementById('toast-container').innerHTML = '';
-    jest.useFakeTimers();
+    document.body.innerHTML = '';
   });
 
-  afterEach(() => {
-    jest.useRealTimers();
+  it('kayıtlı BridgeRegistry alıcısına devreder', () => {
+    const received: unknown[][] = [];
+    BridgeRegistry.register('toast', ((...args: unknown[]) => { received.push(args); }) as AnyFn);
+
+    toast('merhaba', 'error', 1234);
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toEqual(['merhaba', 'error', 1234]);
   });
 
-  test('toast elementini DOM\'a ekler', () => {
-    global.toast('Test mesajı', 'success');
-    const el = document.querySelector('.toast');
-    expect(el).not.toBeNull();
-    expect(el.textContent).toBe('Test mesajı');
-    expect(el.classList.contains('success')).toBe(true);
+  it('DOM elemanı OLUŞTURMAZ (Faz 8 sözleşmesi)', () => {
+    BridgeRegistry.register('toast', (() => {}) as AnyFn);
+
+    toast('mesaj');
+
+    // Eski uygulama #toast-container'a span ekliyordu; artık alıcı sorumlu.
+    expect(document.body.innerHTML).toBe('');
   });
 
-  test('süre dolunca DOM\'dan kaldırır', () => {
-    global.toast('Geçici', '', 1000);
-    expect(document.querySelector('.toast')).not.toBeNull();
-    jest.advanceTimersByTime(1100);
-    expect(document.querySelector('.toast')).toBeNull();
-  });
-});
+  it('alıcı yoksa legacy global sözleşmeye düşer', () => {
+    const calls: unknown[][] = [];
+    (globalThis as Record<string, unknown>).toast = (...args: unknown[]) => { calls.push(args); };
 
-// ── closeModal ────────────────────────────────────────────────
-describe('closeModal()', () => {
-  test('elementi gizler', () => {
-    document.body.innerHTML += '<div id="test-modal" style="display:block"></div>';
-    global.closeModal('test-modal');
-    const el = document.getElementById('test-modal');
-    expect(el.style.display).toBe('none');
+    toast('geri düşüş', 'info');
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe('geri düşüş');
   });
 
-  test('olmayan id için hata vermez', () => {
-    expect(() => global.closeModal('non-existent')).not.toThrow();
+  it('hiç alıcı yoksa SESSİZCE KAYBOLMAZ ve hata fırlatmaz', () => {
+    // Alıcı da global de yokken logger'a düşer (utils.ts:21).
+    expect(() => toast('kimse dinlemiyor', 'error')).not.toThrow();
+  });
+
+  it('varsayılan tip "info"dur', () => {
+    const received: unknown[][] = [];
+    BridgeRegistry.register('toast', ((...args: unknown[]) => { received.push(args); }) as AnyFn);
+
+    toast('varsayılan');
+
+    expect(received[0][1]).toBe('info');
   });
 });

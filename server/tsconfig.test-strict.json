@@ -4,6 +4,23 @@
   "compilerOptions": {
     "noEmit": true,
     "incremental": false,
+
+    // ROOT DIR — DEPO KOKU
+    //
+    // `tsconfig.json` `rootDir: "./"` (yani `server/`) der; bu, DERLEME CIKTISI
+    // duzeni icin dogrudur. Ama bu config `noEmit: true`dur: hicbir sey
+    // uretmez, yalnizca TIP DENETLER. Sunucu testlerinin bir bolumu depo
+    // kokundeki `plugins/` paketini MESRU bicimde import eder
+    // (tests/plugins.test.ts, plugins-sandbox.test.ts,
+    // plugin-registry-isolation.test.ts). `rootDir` `server/` kaldigi surece
+    // TypeScript bu ithalleri TS6059 ile reddediyor ve GERCEK bir tip hatasi
+    // olmadigi halde 6 hata uretiyordu.
+    //
+    // `rootDir` bir KATILIK ayari DEGILDIR (cikti yerlesim ayaridir); burada
+    // dogru degere cekilmesi hicbir denetimi gevsetmez. `tsconfig.build.json`
+    // ve `tsconfig.json` DOKUNULMAMISTIR — uretim ciktisi aynen `server/`
+    // kokunde uretilmeye devam eder.
+    "rootDir": "..",
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
@@ -11,6 +28,8 @@
     "checkJs": true
   },
   "include": [
+    "types/**/*.ts",
+    "db/repositories/types/*.d.ts",
     "tests/helpers/**/*.js",
     "tests/helpers/**/*.ts",
     "tests/**/*.test.ts"

@@ -12,7 +12,6 @@
 'use strict';
 
 import crypto from 'crypto';
-import path from 'path';
 
 const dryRun = process.argv.includes('--dry-run');
 

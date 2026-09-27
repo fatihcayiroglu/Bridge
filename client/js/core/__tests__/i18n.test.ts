@@ -2,7 +2,7 @@
 // i18n utility functions for translation management
 // No Svelte component rendering, just pure function tests
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 // Mock implementation of i18n for testing
 const mockTranslations: Record<string, Record<string, string>> = {
@@ -68,8 +68,8 @@ describe('i18n utilities', () => {
 
   describe('translation validation', () => {
     it('should have no empty translations', () => {
-      Object.entries(mockTranslations).forEach(([lang, dict]) => {
-        Object.entries(dict).forEach(([key, value]) => {
+      Object.entries(mockTranslations).forEach(([_lang, dict]) => {
+        Object.entries(dict).forEach(([_key, value]) => {
           expect(value.length).toBeGreaterThan(0);
         });
       });

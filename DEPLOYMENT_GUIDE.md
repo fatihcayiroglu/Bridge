@@ -757,3 +757,8 @@ docker compose restart bridge
 - [ ] Upload boyut limiti `MAX_UPLOAD_SIZE_MB` ile sınırlandırılmış
 - [ ] Dosya tipi whitelist aktif (sadece izin verilen MIME type'lar)
 
+
+
+### Voice / SFU deployment contract
+
+`mediasoup` server dependency'si opsiyoneldir. Native paket kurulamazsa veya `MEDIASOUP_ANNOUNCED_IP` yapılandırılmamışsa Bridge çağrıları fail etmek yerine P2P fallback kullanır. SFU modu için production image'da optional dependencies kurulmuş olmalı ve announced IP açıkça ayarlanmalıdır.

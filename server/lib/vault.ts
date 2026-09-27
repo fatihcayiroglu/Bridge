@@ -1,4 +1,3 @@
-// @ts-nocheck
 // server/lib/vault.ts
 // Sprint 112 — HashiCorp Vault / AWS Secrets Manager entegrasyonu
 //
@@ -27,6 +26,10 @@
 //   AWS_SECRET_PREFIX = bridge/  (AWS Secrets Manager prefix)
 
 import logger from './logger';
+import crypto from 'crypto';
+import { defaultProvider } from '@aws-sdk/credential-provider-node';
+import { SignatureV4 } from '@smithy/signature-v4';
+import type { HttpRequest } from '@smithy/types';
 
 type VaultLogger = {
   warn?: (...args: unknown[]) => void;
@@ -57,7 +60,7 @@ import { tryRequire } from './_optional-require';
 function _getAuth(): { insertAuditLog(data: object): Promise<void> } | null {
   try {
      
-    const repos = tryRequire<{ Auth: { insertAuditLog(data: object): Promise<void> } }>('../db/repositories');
+    const repos = tryRequire<{ Auth: { insertAuditLog(data: object): Promise<void> } }>('../db/repositories', require);
     return repos?.Auth ?? null;
   } catch { return null; }
 }
@@ -89,6 +92,7 @@ export interface VaultConfig {
   pathPrefix?: string;
   awsRegion?: string;
   awsPrefix?: string;
+  allowEnvFallback?: boolean;
 }
 
 // ── Konfigürasyon singleton ───────────────────────────────────────────────────
@@ -98,9 +102,19 @@ export interface VaultConfig {
 
 let _config: VaultConfig | null = null;
 
+const VAULT_BACKENDS = new Set<VaultBackend>(['hashicorp', 'aws', 'env']);
+
+export function getVaultBackend(): VaultBackend {
+  const raw = (process.env.VAULT_BACKEND || 'env').trim().toLowerCase();
+  if (!VAULT_BACKENDS.has(raw as VaultBackend)) {
+    throw new Error(`[vault] Unsupported VAULT_BACKEND: ${raw || '(empty)'}`);
+  }
+  return raw as VaultBackend;
+}
+
 function getConfig(): VaultConfig {
   if (_config) return _config;
-  const backend = (process.env.VAULT_BACKEND || 'env') as VaultBackend;
+  const backend = getVaultBackend();
   _config = {
     backend,
     addr:       process.env.VAULT_ADDR,
@@ -111,6 +125,10 @@ function getConfig(): VaultConfig {
     pathPrefix: process.env.VAULT_PATH_PREFIX || 'bridge',
     awsRegion:  process.env.AWS_REGION        || 'us-east-1',
     awsPrefix:  process.env.AWS_SECRET_PREFIX || 'bridge/',
+    // A configured external secret backend is an authority boundary in
+    // production. Silent downgrade to process.env is allowed only when
+    // explicitly opted in; dev/test keeps the historical convenience.
+    allowEnvFallback: process.env.VAULT_ALLOW_ENV_FALLBACK === 'true' || process.env.NODE_ENV !== 'production',
   };
   return _config;
 }
@@ -154,6 +172,22 @@ export function _clearVaultCache(): void {
 let _vaultToken: string | null = null;
 let _vaultTokenExp = 0;
 
+function hashicorpBaseUrl(cfg: VaultConfig): URL {
+  if (!cfg.addr) throw new Error('[vault] VAULT_ADDR gerekli (backend=hashicorp).');
+  const url = new URL(cfg.addr);
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error('[vault] VAULT_ADDR must be a credential-free origin URL.');
+  }
+  if (process.env.NODE_ENV === 'production' && url.protocol !== 'https:') {
+    throw new Error('[vault] VAULT_ADDR must use HTTPS in production.');
+  }
+  if (!['https:', 'http:'].includes(url.protocol)) {
+    throw new Error('[vault] VAULT_ADDR must use HTTP(S).');
+  }
+  url.pathname = url.pathname.replace(/\/+$/, '');
+  return url;
+}
+
 async function getVaultToken(cfg: VaultConfig): Promise<string> {
   if (_vaultToken && Date.now() < _vaultTokenExp) return _vaultToken;
 
@@ -169,10 +203,12 @@ async function getVaultToken(cfg: VaultConfig): Promise<string> {
     throw new Error('[vault] HashiCorp Vault için VAULT_TOKEN veya VAULT_ROLE_ID+VAULT_SECRET_ID gerekli.');
   }
 
-  const resp = await fetch(`${cfg.addr}/v1/auth/approle/login`, {
+  const base = hashicorpBaseUrl(cfg);
+  const resp = await fetch(new URL(`${base.pathname}/v1/auth/approle/login`, base).toString(), {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ role_id: cfg.roleId, secret_id: cfg.secretId }),
+    signal:  AbortSignal.timeout(10_000),
   });
 
   if (!resp.ok) {
@@ -195,16 +231,22 @@ async function getVaultToken(cfg: VaultConfig): Promise<string> {
 
 async function readFromHashicorp(secretName: string, cfg: VaultConfig): Promise<string | null> {
   const token = await getVaultToken(cfg);
-  const path  = `${cfg.addr}/v1/${cfg.mount}/data/${cfg.pathPrefix}/${secretName}`;
+  const base = hashicorpBaseUrl(cfg);
+  const mount = encodeURIComponent(cfg.mount ?? 'secret');
+  const prefix = (cfg.pathPrefix ?? 'bridge').split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  const key = encodeURIComponent(secretName);
+  const relativePath = `${base.pathname}/v1/${mount}/data/${prefix}/${key}`.replace(/\/{2,}/g, '/');
+  const url = new URL(relativePath, base);
 
-  const resp = await fetch(path, {
+  const resp = await fetch(url.toString(), {
     headers: { 'X-Vault-Token': token },
+    signal: AbortSignal.timeout(10_000),
   });
 
   if (resp.status === 404) return null;
   if (!resp.ok) {
     const body = await resp.text().catch(() => '');
-    throw new Error(`[vault] KV okuma başarısız (${resp.status}) — path: ${path}: ${body.slice(0, 200)}`);
+    throw new Error(`[vault] KV okuma başarısız (${resp.status}) — path: ${url.pathname}: ${body.slice(0, 200)}`);
   }
 
   const data = await resp.json() as { data?: { data?: Record<string, string> } };
@@ -213,38 +255,119 @@ async function readFromHashicorp(secretName: string, cfg: VaultConfig): Promise<
 
 // ── AWS Secrets Manager okuma ─────────────────────────────────────────────────
 
-async function readFromAws(secretName: string, cfg: VaultConfig): Promise<string | null> {
-  // AWS SDK dinamik import — opsiyonel bağımlılık
-  let SecretsManagerClient: unknown, GetSecretValueCommand: unknown;
-  try {
-    const mod = await import('@aws-sdk/client-secrets-manager');
-    SecretsManagerClient  = mod.SecretsManagerClient;
-    GetSecretValueCommand = mod.GetSecretValueCommand;
-  } catch {
-    throw new Error('[vault] AWS Secrets Manager için @aws-sdk/client-secrets-manager paketi gerekli.');
+/**
+ * Smithy SignatureV4 needs a SHA-256/HMAC-SHA256 constructor.  Node's crypto
+ * implementation keeps this dependency-free while preserving the standard AWS
+ * credential provider chain (env, shared config, ECS/EC2 IAM roles, web identity).
+ *
+ * Both the key and every chunk are typed `SourceData` by @smithy/types, i.e.
+ * `string | ArrayBuffer | ArrayBufferView` — not just `Uint8Array`. Narrowing
+ * them broke `tsc -p tsconfig.build.json` outright and would have silently
+ * mis-signed any request where Smithy handed over an ArrayBuffer/DataView.
+ */
+type SmithySourceData = string | ArrayBuffer | ArrayBufferView;
+
+function toSigningBuffer(data: SmithySourceData): Buffer {
+  if (typeof data === 'string') return Buffer.from(data, 'utf8');
+  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  return Buffer.from(new Uint8Array(data));
+}
+
+/**
+ * Test hook — the SigV4 digest adapter is otherwise reachable only through a
+ * live AWS signing round trip. Exported so the SourceData contract (string /
+ * ArrayBuffer / ArrayBufferView) and the HMAC-vs-hash selection can be
+ * asserted directly, in the same spirit as _resetConfig/_clearVaultCache.
+ */
+export { toSigningBuffer as _toSigningBuffer };
+
+class NodeSha256 {
+  private readonly digestor: crypto.Hash | crypto.Hmac;
+
+  constructor(secret?: SmithySourceData) {
+    // An empty HMAC key is still an HMAC key: presence, not truthiness, picks
+    // the algorithm (`''` and a zero-length view must not fall back to SHA-256).
+    this.digestor = secret === undefined || secret === null
+      ? crypto.createHash('sha256')
+      : crypto.createHmac('sha256', toSigningBuffer(secret));
   }
 
-  const client  = new (SecretsManagerClient as new (cfg: { region: string }) => unknown)({ region: cfg.awsRegion });
-  const command = new (GetSecretValueCommand as new (i: { SecretId: string }) => unknown)({
-    SecretId: `${cfg.awsPrefix}${secretName}`,
+  update(data: SmithySourceData): void {
+    this.digestor.update(toSigningBuffer(data));
+  }
+
+  async digest(): Promise<Uint8Array> {
+    return new Uint8Array(this.digestor.digest());
+  }
+}
+
+function awsSecretsEndpoint(region: string): URL {
+  const override = process.env.AWS_SECRETS_MANAGER_ENDPOINT?.trim();
+  const raw = override || `https://secretsmanager.${region}.${region.startsWith('cn-') ? 'amazonaws.com.cn' : 'amazonaws.com'}`;
+  const url = new URL(raw);
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) {
+    throw new Error('[vault] AWS Secrets Manager endpoint must be a credential-free HTTPS origin.');
+  }
+  return url;
+}
+
+async function readFromAws(secretName: string, cfg: VaultConfig): Promise<string | null> {
+  const region = cfg.awsRegion ?? 'us-east-1';
+  const endpoint = awsSecretsEndpoint(region);
+  const body = JSON.stringify({ SecretId: `${cfg.awsPrefix ?? 'bridge/'}${secretName}` });
+
+  const signer = new SignatureV4({
+    credentials: defaultProvider(),
+    region,
+    service: 'secretsmanager',
+    sha256: NodeSha256,
   });
 
-  try {
-    const response = await (client as { send: (c: unknown) => Promise<{ SecretString?: string }> }).send(command);
-    const str = response.SecretString;
-    if (!str) return null;
+  const request: HttpRequest = {
+    method: 'POST',
+    protocol: endpoint.protocol,
+    hostname: endpoint.hostname,
+    port: endpoint.port ? Number(endpoint.port) : undefined,
+    path: endpoint.pathname || '/',
+    query: {},
+    headers: {
+      host: endpoint.host,
+      'content-type': 'application/x-amz-json-1.1',
+      'x-amz-target': 'secretsmanager.GetSecretValue',
+      'content-length': String(Buffer.byteLength(body)),
+    },
+    body,
+  };
 
-    // JSON formatında saklanmış sır {"key": "value"}
-    try {
-      const parsed = JSON.parse(str) as Record<string, string>;
-      return parsed[secretName] ?? parsed.value ?? str;
-    } catch {
-      return str; // Düz string
-    }
-  } catch (err: unknown) {
-    const name = (err as { name?: string }).name;
-    if (name === 'ResourceNotFoundException') return null;
-    throw err;
+  const signed = await signer.sign(request);
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: signed.headers,
+    body,
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  const text = await response.text();
+  let parsed: Record<string, unknown> = {};
+  if (text) {
+    try { parsed = JSON.parse(text) as Record<string, unknown>; }
+    catch { parsed = {}; }
+  }
+
+  if (!response.ok) {
+    const type = String(parsed.__type ?? parsed.code ?? '');
+    if (response.status === 404 || /ResourceNotFoundException/.test(type)) return null;
+    throw new Error(`[vault] AWS Secrets Manager request failed (${response.status})`);
+  }
+
+  const str = typeof parsed.SecretString === 'string' ? parsed.SecretString : '';
+  if (!str) return null;
+  try {
+    const value = JSON.parse(str) as Record<string, unknown>;
+    const selected = value[secretName] ?? value.value;
+    return typeof selected === 'string' ? selected : str;
+  } catch {
+    return str;
   }
 }
 
@@ -265,8 +388,11 @@ function readFromEnv(secretName: string): string | null {
  */
 export async function getSecret(
   secretName: string,
-  options: { override?: boolean } = {},
+  options: { override?: boolean; audit?: boolean } = {},
 ): Promise<string | null> {
+  if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(secretName)) {
+    throw new Error(`[vault] Invalid secret name: ${secretName}`);
+  }
   if (!options.override) {
     const cached = cacheGet(secretName);
     if (cached !== null) return cached;
@@ -274,12 +400,11 @@ export async function getSecret(
 
   const cfg = getConfig();
 
-  let value: string | null = null;
+  let value: string | null;
 
   try {
     switch (cfg.backend) {
       case 'hashicorp':
-        if (!cfg.addr) throw new Error('[vault] VAULT_ADDR gerekli (backend=hashicorp).');
         value = await readFromHashicorp(secretName, cfg);
         break;
 
@@ -293,20 +418,31 @@ export async function getSecret(
         break;
     }
   } catch (err) {
+    const allowFallback = cfg.backend === 'env' || cfg.allowEnvFallback === true;
     logWarn(
-      { err, secretName, backend: cfg.backend, event: 'vault.get_secret.error' },
-      `[vault] ${secretName} okunamadı — env fallback deneniyor.`,
+      { err, secretName, backend: cfg.backend, allowEnvFallback: allowFallback, event: 'vault.get_secret.error' },
+      allowFallback
+        ? `[vault] ${secretName} okunamadı — env fallback deneniyor.`
+        : `[vault] ${secretName} okunamadı — production secret authority fail-closed.`,
     );
-    // Vault erişimi başarısız → env'e düş
+    // External secret authority was selected explicitly. In production, do
+    // not silently resurrect an older/local env secret unless operators opted
+    // into that downgrade with VAULT_ALLOW_ENV_FALLBACK=true.
+    value = allowFallback ? readFromEnv(secretName) : null;
+  }
+
+  // A clean "not found" response is not an exception, but explicit fallback
+  // means the operator also permits process.env to satisfy an absent external key.
+  if (value === null && cfg.backend !== 'env' && cfg.allowEnvFallback === true) {
     value = readFromEnv(secretName);
   }
 
   if (value !== null) {
     cacheSet(secretName, value);
-    // Sprint 120: Vault erişimi başarılı — audit log'a yaz
-    void _auditVaultAccess(secretName, cfg.backend, true, false);
-  } else {
-    // Sprint 120: Sır bulunamadı — audit log'a yaz
+    if (options.audit !== false) {
+      void _auditVaultAccess(secretName, cfg.backend, true, false);
+    }
+  } else if (options.audit !== false) {
     void _auditVaultAccess(secretName, cfg.backend, false, false);
   }
 
@@ -346,4 +482,6 @@ export async function validateRequiredSecrets(required: string[]): Promise<void>
   }
 }
 
-export default { getSecret, getSecrets, validateRequiredSecrets, _clearVaultCache, _resetConfig };
+export { NodeSha256 as _NodeSha256 };
+
+export default { getSecret, getSecrets, getVaultBackend, validateRequiredSecrets, _clearVaultCache, _resetConfig };

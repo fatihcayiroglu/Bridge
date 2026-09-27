@@ -6,6 +6,8 @@ import crypto from 'crypto';
 import db from '../db/loader';
 import { Federation } from '../db/repositories';
 import { fetchT } from './fetch';
+import { cache } from './redisAdapter';
+import logger from './logger';
 import {
   getFederationKeyId,
   getOrCreateFederationKeys,
@@ -22,6 +24,8 @@ import {
 interface SigVerifyResult {
   ok: boolean;
   keyId?: string;
+  /** Canonical actor identity proven by the key document / fragment keyId. */
+  signerActor?: string;
   reason?: string;
 }
 
@@ -61,52 +65,81 @@ function _isBlockedHost(host: string): boolean {
 
 // ── Public Key Cache ──────────────────────────────────────────────────────────
 // Remote key fetch'i cache'ler: TTL 10 dk, maks 500 kayıt
-interface KeyCacheEntry { pem: string; expiresAt: number; }
+interface KeyCacheEntry { pem: string; owner?: string; expiresAt: number; }
 const _keyCache = new Map<string, KeyCacheEntry>();
 const KEY_CACHE_TTL_MS  = 10 * 60 * 1000; // 10 dakika
 const KEY_CACHE_MAX     = 500;
 
-function _cacheGet(keyId: string): string | null {
+function _cacheGetEntry(keyId: string): KeyCacheEntry | null {
   const entry = _keyCache.get(keyId);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) { _keyCache.delete(keyId); return null; }
-  return entry.pem;
+  return entry;
 }
 
-function _cacheSet(keyId: string, pem: string): void {
+function _cacheGet(keyId: string): string | null {
+  return _cacheGetEntry(keyId)?.pem ?? null;
+}
+
+function _cacheSet(keyId: string, pem: string, owner?: string): void {
   if (_keyCache.size >= KEY_CACHE_MAX) {
     const oldest = _keyCache.keys().next().value;
     if (oldest) _keyCache.delete(oldest);
   }
-  _keyCache.set(keyId, { pem, expiresAt: Date.now() + KEY_CACHE_TTL_MS });
+  _keyCache.set(keyId, { pem, owner, expiresAt: Date.now() + KEY_CACHE_TTL_MS });
 }
 
 // ── Replay Attack Koruması ────────────────────────────────────────────────────
-const _usedSignatures = new Map<string, number>(); // signature → expiresAt
 const SIG_REPLAY_TTL_MS = 5 * 60 * 1000;
+let _replayNamespace = 0;
 
-function _isReplay(sig: string): boolean {
-  const exp = _usedSignatures.get(sig);
-  if (!exp) return false;
-  if (Date.now() > exp) { _usedSignatures.delete(sig); return false; }
-  return true;
+function _replayCacheKey(raw: string): string {
+  const digest = crypto.createHash('sha256').update(raw).digest('hex');
+  return `federation:signature-replay:${_replayNamespace}:${digest}`;
 }
 
-function _markUsed(sig: string): void {
-  if (_usedSignatures.size % 100 === 0) {
-    const now = Date.now();
-    for (const [k, v] of _usedSignatures) { if (now > v) _usedSignatures.delete(k); }
+async function _claimReplay(raw: string): Promise<boolean> {
+  try {
+    return await cache.setIfAbsentAuthoritative(_replayCacheKey(raw), 1, Math.ceil(SIG_REPLAY_TTL_MS / 1000));
+  } catch (err) {
+    // Signature replay protection is a security decision: cache uncertainty must
+    // never become an implicit allow.  Return false (fail closed) while keeping
+    // the infrastructure failure visible to operators.
+    logger.error({ err: (err as Error).message, event: 'federation.signature_replay_store_failed' },
+      'Federation signature replay store unavailable; rejecting request.');
+    return false;
   }
-  _usedSignatures.set(sig, Date.now() + SIG_REPLAY_TTL_MS);
+}
+
+const FEDERATION_TS_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * Federasyon zaman damgası tazelik kontrolü.
+ *
+ * Önceki biçim `Math.abs(Date.now() - parseInt(ts, 10)) > 5 * 60 * 1000` idi.
+ * `parseInt('2026-08-29T10:00:00Z', 10)` NaN döndürür ve `NaN > 300000`
+ * DAİMA false'tur — yani sayısal olmayan bir damga, zaman penceresi
+ * kontrolünü sessizce tamamen atlatıyordu. Damgasını ISO-8601 olarak
+ * gönderen bir eş (peer) için imza süresiz geçerli kalırdı: replay kaydı
+ * 5 dakika sonra TTL ile düştüğünde aynı istek sonsuza dek yeniden kabul
+ * edilebilirdi.
+ *
+ * `Number()` kullanılır, `parseInt` değil: `parseInt('123abc')` 123 döndürür
+ * ve sondaki çöp sessizce yutulur.
+ */
+function _isFreshTimestamp(ts: string): boolean {
+  const parsed = Number(ts);
+  if (!Number.isFinite(parsed)) return false;
+  return Math.abs(Date.now() - parsed) <= FEDERATION_TS_WINDOW_MS;
 }
 
 function _federationReplayKey(ts: string, signature: string): string {
   return `fed:${ts}:${signature}`;
 }
 
-/** Test izolasyonu — replay + public key cache temizle. */
+/** Test isolation: move subsequent replay claims into a fresh namespace. */
 export function _resetSignatureReplayCache(): void {
-  _usedSignatures.clear();
+  _replayNamespace++;
   _keyCache.clear();
 }
 
@@ -115,7 +148,12 @@ function _parseSigHeader(header: string): Record<string, string> {
   const params: Record<string, string> = {};
   const re = /(\w+)="([^"]*)"/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(header)) !== null) params[m[1]] = m[2];
+  while ((m = re.exec(header)) !== null) {
+    const [, key, value] = m;
+    // Desen iki grubu da zorunlu kılar; yine de anahtar/değer eksikse
+    // yarım bir imza parametresi yazmak yerine ATLANIR.
+    if (key !== undefined && value !== undefined) params[key] = value;
+  }
   return params;
 }
 
@@ -130,10 +168,24 @@ function _buildSigningString(req: IncomingReq, headerList: string[]): string {
 }
 
 // ── Public Key Resolver (SSRF korumalı) ──────────────────────────────────────
-async function _resolvePublicKey(keyId: string): Promise<string | null> {
-  // 1. Cache
-  const cached = _cacheGet(keyId);
-  if (cached) return cached;
+interface ResolvedHttpSignatureKey { pem: string; owner: string | null; }
+
+function _fragmentKeyOwner(keyId: string): string | null {
+  try {
+    const parsed = new URL(keyId);
+    if (!parsed.hash) return null;
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function _resolvePublicKey(keyId: string): Promise<ResolvedHttpSignatureKey | null> {
+  // 1. Cache. Owner identity is cached together with the PEM so a warm-cache
+  // verification cannot lose the actor-binding evidence from the key document.
+  const cached = _cacheGetEntry(keyId);
+  if (cached) return { pem: cached.pem, owner: cached.owner ?? _fragmentKeyOwner(keyId) };
 
   // 2. Yerel kullanıcı?
   const instanceUrl = process.env.INSTANCE_URL || `http://localhost:${process.env.PORT || 3001}`;
@@ -142,8 +194,9 @@ async function _resolvePublicKey(keyId: string): Promise<string | null> {
     if (match) {
       const user = await db.users.findOne({ username: match[1] });
       if (user?.apPublicKey) {
-        _cacheSet(keyId, user.apPublicKey);
-        return user.apPublicKey;
+        const owner = _fragmentKeyOwner(keyId);
+        _cacheSet(keyId, user.apPublicKey, owner ?? undefined);
+        return { pem: user.apPublicKey, owner };
       }
     }
     return null;
@@ -182,8 +235,26 @@ async function _resolvePublicKey(keyId: string): Promise<string | null> {
   const doc = await r.json() as Record<string, unknown>;
   const keyDoc = doc?.publicKey as Record<string, unknown> | undefined;
   const pem = (keyDoc?.publicKeyPem ?? doc?.publicKeyPem ?? null) as string | null;
-  if (pem) _cacheSet(keyId, pem);
-  return pem;
+  if (!pem) return null;
+
+  // ActivityPub actor documents normally expose publicKey.owner. Fragment-style
+  // keyIds (actor#main-key) are a safe fallback because the owner is encoded in
+  // the signed key identity itself. A detached key URL without an owner remains
+  // unbound and is rejected by the inbox rather than trusted by assumption.
+  const declaredOwner = typeof keyDoc?.owner === 'string' ? keyDoc.owner : null;
+  const fragmentOwner = _fragmentKeyOwner(keyId);
+  // Never trust a remote document's `publicKey.owner` assertion on its own:
+  // an attacker controls that document and could point owner at a victim actor.
+  // Fragment-style actor keys cryptographically bind the key identifier to the
+  // actor URL. Detached key URLs remain intentionally unbound until Bridge has
+  // an actor-document verification flow for them.
+  const owner = fragmentOwner;
+  if (declaredOwner && fragmentOwner && declaredOwner !== fragmentOwner) {
+    logger.warn({ keyId, declaredOwner, fragmentOwner, event: 'federation.signature_key_owner_mismatch' },
+      'Remote key document owner disagrees with fragment key identity; fragment identity remains authoritative.');
+  }
+  _cacheSet(keyId, pem, owner ?? undefined);
+  return { pem, owner };
 }
 
 // ── Ana Doğrulama Fonksiyonu ──────────────────────────────────────────────────
@@ -213,10 +284,8 @@ async function verifyHttpSignature(req: IncomingReq): Promise<SigVerifyResult> {
       return { ok: false, reason: '(request-target) imzalanmış header listesinde zorunludur' };
     }
 
-    // ── 2. Replay attack kontrolü ──────────────────────────────────────────────
-    if (_isReplay(signature)) {
-      return { ok: false, reason: 'Replay attack: signature already used' };
-    }
+    // Replay claim is taken only after cryptographic verification, atomically
+    // across backend nodes through the canonical shared cache.
 
     // ── 3. Date header — zaman penceresi ±5 dakika ────────────────────────────
     const dateStr = _reqHeader(req, 'date');
@@ -239,22 +308,23 @@ async function verifyHttpSignature(req: IncomingReq): Promise<SigVerifyResult> {
     const signingString = _buildSigningString(req, headerList);
 
     // ── 6. Public key resolve (SSRF korumalı) ────────────────────────────────
-    let publicKeyPem: string | null;
+    let resolvedKey: ResolvedHttpSignatureKey | null;
     try {
-      publicKeyPem = await _resolvePublicKey(keyId);
+      resolvedKey = await _resolvePublicKey(keyId);
     } catch (e) {
       return { ok: false, reason: `Key resolve error: ${(e as Error).message}` };
     }
-    if (!publicKeyPem) return { ok: false, reason: 'Public key not found' };
+    if (!resolvedKey) return { ok: false, reason: 'Public key not found' };
 
     // ── 7. RSA-SHA256 doğrulama ───────────────────────────────────────────────
     const verify = createVerify('RSA-SHA256');
     verify.update(signingString);
-    const valid = verify.verify(publicKeyPem, signature, 'base64');
+    const valid = verify.verify(resolvedKey.pem, signature, 'base64');
 
     if (valid) {
-      _markUsed(signature);
-      return { ok: true, keyId };
+      const claimed = await _claimReplay(`http:${signature}`);
+      if (!claimed) return { ok: false, reason: 'Replay attack: signature already used' };
+      return { ok: true, keyId, signerActor: resolvedKey.owner ?? undefined };
     }
     return { ok: false, reason: 'Signature cryptographically invalid' };
 
@@ -284,24 +354,23 @@ function _getFederationSecret(): string | null {
   return 'bridge-federation-dev-only-NOT-FOR-PRODUCTION';
 }
 
-function _verifyFederationHmac(req: IncomingReq): boolean {
+async function _verifyFederationHmac(req: IncomingReq): Promise<boolean> {
   const sig    = _reqHeader(req, 'x-bridge-sig');
   const ts     = _reqHeader(req, 'x-bridge-ts');
   if (!sig || !ts) return false;
-  if (Math.abs(Date.now() - parseInt(ts, 10)) > 5 * 60 * 1000) return false;
+  if (!_isFreshTimestamp(ts)) return false;
 
   const secret = _getFederationSecret();
   if (!secret) return false;
 
   const replayKey = _federationReplayKey(ts, sig);
-  if (_isReplay(replayKey)) return false;
 
   const payload = ts + JSON.stringify(req.body);
   const expected = crypto.createHmac('sha256', secret).update(payload).digest('hex');
   try {
     const valid = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
-    if (valid) _markUsed(replayKey);
-    return valid;
+    if (!valid) return false;
+    return await _claimReplay(replayKey);
   } catch {
     return false;
   }
@@ -352,13 +421,12 @@ async function _verifyFederationRsa(req: IncomingReq): Promise<boolean> {
   const sigHeader = _reqHeader(req, 'x-bridge-signature');
   const ts        = _reqHeader(req, 'x-bridge-ts');
   if (!sigHeader || !ts) return false;
-  if (Math.abs(Date.now() - parseInt(ts, 10)) > 5 * 60 * 1000) return false;
+  if (!_isFreshTimestamp(ts)) return false;
 
   const parsed = parseBridgeSignatureHeader(sigHeader);
   if (!parsed) return false;
 
   const replayKey = _federationReplayKey(ts, parsed.signature);
-  if (_isReplay(replayKey)) return false;
 
   const body = req.body as { url?: string } | undefined;
   const publicKeyPem = await _resolvePeerPublicKey(body?.url ?? '', parsed.keyId);
@@ -368,8 +436,8 @@ async function _verifyFederationRsa(req: IncomingReq): Promise<boolean> {
   const verify  = crypto.createVerify('RSA-SHA256');
   verify.update(payload);
   const valid = verify.verify(publicKeyPem, parsed.signature, 'base64');
-  if (valid) _markUsed(replayKey);
-  return valid;
+  if (!valid) return false;
+  return await _claimReplay(replayKey);
 }
 
 /** Outgoing federation isteği için HMAC + RSA imza header'ları üret. */
@@ -404,10 +472,13 @@ export async function buildFederationAuthHeaders(body: unknown): Promise<Record<
 
 // ── YARDIMCI: Uzak sunucu isteklerini doğrula ──────────────────
 async function verifyFederationRequest(req: IncomingReq): Promise<boolean> {
+  // When an RSA header is present it is authoritative. Falling back to HMAC
+  // after an invalid/replayed RSA signature would give the same dual-signed
+  // request a second acceptance path.
   if (_reqHeader(req, 'x-bridge-signature')) {
-    if (await _verifyFederationRsa(req)) return true;
+    return await _verifyFederationRsa(req);
   }
-  return _verifyFederationHmac(req);
+  return await _verifyFederationHmac(req);
 }
 
 

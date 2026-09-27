@@ -7,6 +7,7 @@ import path from 'path';
 import { Request, Response, NextFunction } from 'express';
 import logger from './logger';
 import { fetchT } from './fetch';
+import { uploadDir } from './runtimePaths';
 
 // ── Tipler ────────────────────────────────────────────────────
 export interface ScanContext {
@@ -70,7 +71,7 @@ export interface QuarantineEntry {
 // ── Config ────────────────────────────────────────────────────
 const VIRUSTOTAL_API_KEY   = process.env.VIRUSTOTAL_API_KEY || null;
 const CONTENT_SCAN_ENABLED = process.env.CONTENT_SCAN_ENABLED !== 'false';
-const KARANTINA_DIR        = path.join(__dirname, '../uploads/_quarantine');
+const KARANTINA_DIR        = uploadDir('_quarantine');
 
 if (!fs.existsSync(KARANTINA_DIR)) {
   fs.mkdirSync(KARANTINA_DIR, { recursive: true });

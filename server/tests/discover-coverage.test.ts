@@ -2,8 +2,8 @@
 // Sprint 110: discover.ts coverage artırımı — admin/feature, settings, categories, cache path
 // Hedef: routes/discover.ts satır coverage %70 → %80
 
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
@@ -11,6 +11,9 @@ jest.mock('../lib/redisAdapter', () => ({
   subscribeToChannel: async () => () => {},
   publishToChannel: async () => {},
   cache: {
+    // Gercek adaptorde MEVCUT (lib/redisAdapter.ts) — mock'ta eksikti ve
+    // `invalidateChannelMessages` her cagrida sessizce TypeError firlatiyordu.
+    invalidatePattern: jest.fn().mockResolvedValue(undefined),
     get:   jest.fn().mockResolvedValue(null),
     set:   jest.fn().mockResolvedValue(undefined),
     del:   jest.fn().mockResolvedValue(undefined),
@@ -62,7 +65,7 @@ describe('Discover — coverage artırımı', () => {
     adminToken = tok(adminId, 'admin');
 
     await db.users.insert({ _id: userId,   username: 'user',  displayName: 'User',  tokenVersion: 0 });
-    await db.users.insert({ _id: adminId,  username: 'admin', displayName: 'Admin', tokenVersion: 0, role: 'admin' });
+    await db.users.insert({ _id: adminId,  username: 'admin', displayName: 'Admin', tokenVersion: 0, role: 'admin', isAdmin: true });
 
     await db.servers.insert({
       _id: serverId, name: 'Test Server', ownerId: userId,
@@ -110,12 +113,21 @@ describe('Discover — coverage artırımı', () => {
     });
 
     it('returns featured servers when present', async () => {
-      await db.servers.update(serverId, { featured: 1, featuredAt: Date.now() });
+      await db.servers.update({ _id: serverId }, { $set: { featured: 1, featuredAt: Date.now() } });
       const res = await request(app)
         .get('/api/discover/featured')
         .set('Authorization', `Bearer ${token}`);
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body)).toBe(true);
+    });
+
+    it('never returns a featured server after it becomes private', async () => {
+      await db.servers.update({ _id: serverId }, { $set: { featured: 1, featuredAt: Date.now(), discoverable: 0 } });
+      const res = await request(app)
+        .get('/api/discover/featured')
+        .set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([]);
     });
 
     it('uses cache when available', async () => {
@@ -132,7 +144,7 @@ describe('Discover — coverage artırımı', () => {
 
   describe('GET /api/discover — filtre dalları', () => {
     it('filters by category', async () => {
-      await db.servers.update(serverId, { category: 'gaming' });
+      await db.servers.update({ _id: serverId }, { $set: { category: 'gaming' } });
       const res = await request(app)
         .get('/api/discover?category=gaming')
         .set('Authorization', `Bearer ${token}`);
@@ -166,6 +178,22 @@ describe('Discover — coverage artırımı', () => {
         .get('/api/discover?sort=activity')
         .set('Authorization', `Bearer ${token}`);
       expect(res.status).toBe(200);
+    });
+
+    it('does not fall back to private servers when the public catalog is empty', async () => {
+      await db.servers.update({ _id: serverId }, { $set: { discoverable: 0 } });
+      const res = await request(app).get('/api/discover?limit=1000')
+        .set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([]);
+    });
+
+    it('canonicalizes legacy edu category records to education', async () => {
+      await db.servers.update({ _id: serverId }, { $set: { category: 'edu' } });
+      const res = await request(app).get('/api/discover?category=education')
+        .set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body[0]?.category).toBe('education');
     });
 
     it('returns 401 without token', async () => {
@@ -210,12 +238,38 @@ describe('Discover — coverage artırımı', () => {
       expect(res.status).toBe(200);
     });
 
-    it('ignores invalid category value', async () => {
+    it('accepts legacy edu input but stores the canonical education category', async () => {
+      const res = await request(app)
+        .patch('/api/discover/settings')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ serverId, category: 'edu' });
+      expect(res.status).toBe(200);
+      const updated = await db.servers.findOne({ _id: serverId });
+      expect(updated.category).toBe('education');
+    });
+
+    it('rejects invalid category value instead of silently accepting a stale setting', async () => {
       const res = await request(app)
         .patch('/api/discover/settings')
         .set('Authorization', `Bearer ${token}`)
         .send({ serverId, category: 'not_a_real_category' });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(400);
+    });
+
+    it.each([{ discoverable: 'false' }, { discoverable: 0 }, { discoverable: 1 }])('rejects boolean coercion payload %#', async (body) => {
+      const res = await request(app)
+        .patch('/api/discover/settings')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ serverId, ...body });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects malformed tags instead of coercing objects into strings', async () => {
+      const res = await request(app)
+        .patch('/api/discover/settings')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ serverId, tags: ['ok', { hidden: true }] });
+      expect(res.status).toBe(400);
     });
 
     it('returns 400 when serverId missing', async () => {
@@ -310,13 +364,22 @@ describe('Discover — coverage artırımı', () => {
       expect(res.status).toBe(404);
     });
 
+
+    it.each(['true', 1, 0, null])('rejects non-boolean featured=%p', async (featured) => {
+      const res = await request(app)
+        .post('/api/discover/admin/feature')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ serverId, featured });
+      expect(res.status).toBe(400);
+    });
+
     it('invalidates featured cache on feature', async () => {
       const { cache } = require('../lib/redisAdapter');
       await request(app)
         .post('/api/discover/admin/feature')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ serverId, featured: true });
-      expect(cache.del).toHaveBeenCalledWith('discover:featured:list');
+      expect(cache.del).toHaveBeenCalledWith('discover:featured:list:v2');
     });
   });
 });

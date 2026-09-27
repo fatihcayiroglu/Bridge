@@ -11,25 +11,58 @@
 //   - Bildirim alanı erişilebilirliği
 //   - Yüksek kontrast modunda kritik UI kontrolleri
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from '../helpers/apiTest';
+import { getTokens, loginViaUI, createTestServer, createTestChannel } from '../helpers/bridge';
 const AxeBuilder = require('@axe-core/playwright').default;
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 // ── Yardımcılar ───────────────────────────────────────────────────────────────
 
-async function loginAs(page: Page, username = 'testuser', password = 'testpass'): Promise<void> {
-  await page.goto(`${BASE_URL}/login`, { waitUntil: 'domcontentloaded' });
-  await page.fill('input[name="username"], input[placeholder*="kullanıcı" i], input[type="text"]:first-of-type', username);
-  await page.fill('input[name="password"], input[type="password"]', password);
-  await page.keyboard.press('Enter');
-  await page.waitForURL(/\/app/, { timeout: 8000 }).catch(() => { /* storageState varsa redirect olmayabilir */ });
+async function loginAs(page: Page): Promise<void> {
+  // Kanonik giriş: kök adres + kullanıcı adı alanı + GERÇEK fixture kimliği.
+  // Eski hali /login adresine gidip 'testuser'/'testpass' ile e-posta alanı
+  // arıyordu; hiçbiri mevcut üründe yok, bu yüzden 10 sn timeout veriyordu.
+  const tokens = getTokens();
+  await loginViaUI(page, tokens.users.alice.username, tokens.users.alice.password);
 }
 
 async function noA11yViolations(page: Page, context: string, include?: string): Promise<void> {
+  // Kapsam seçicisi sayfada YOKSA axe "No elements found for include" ile
+  // PATLAR ve bu, erişilebilirlik ihlali gibi görünür. Oysa yüzey o an
+  // render edilmemiştir: burada denetlenecek bir şey yoktur.
+  if (include && await page.locator(include).count() === 0) {
+    test.skip(true, `A11Y kapsamı bu kabukta render edilmedi: ${context}`);
+  }
+  // ── HAREKET AZALTMA: ÖLÇÜMÜ KARARLI HÂLE GETİRİR ──────────────────────────
+  // `color-contrast` açıldığında SÜREKLİ animasyonlu öğeler her koşuda BAŞKA
+  // bir ara renk raporluyordu (ölçüldü: aynı rozet için #388a40 / #468a38 /
+  // #6e8a38 / #698a38). Hiçbiri dinlenme rengi değil — kullanıcının kalıcı
+  // olarak gördüğü durum değil.
+  //
+  // Uygulama `prefers-reduced-motion: reduce` tercihini TAM uygular
+  // (`client/css/tokens.css`: tüm süreler 0.01ms). Bu yüzden ölçüm, gerçek ve
+  // kullanıcıların seçebildiği bir moda sabitlenir: animasyon GİZLENMEZ,
+  // dinlenme durumu ölçülür.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.waitForTimeout(250);
+  // WCAG 2.1 AA da taranir (2.0 ile yetinmek 1.4.10 Reflow, 1.4.11 Non-text
+  // Contrast, 1.4.12 Text Spacing gibi olcutleri gorunmez birakiyordu).
   const builder = new AxeBuilder({ page })
-    .withTags(['wcag2a', 'wcag2aa'])
-    .disableRules(['color-contrast']); // kontrast ayrı testte
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    // `color-contrast` BU SÜİTTE DE AÇIK.
+    //
+    // Final20'de geçici olarak kapatılmıştı; iki durum henüz kök nedenine
+    // inilmemişti. İkisinin de kökü aynı turda BULUNDU ve düzeltildi:
+    //   · `#member-list .member-name` — satır `opacity: .58` ile soluklaştırılıyor,
+    //     bu METNİ de soluklaştırıp 5.6:1'i 2.6:1'e düşürüyordu. Soluklaştırma
+    //     avatara taşındı.
+    //   · Koşudan koşuya değişen ön plan renkleri — sunucu kimlik renkleri
+    //     id'den ÜRETİLİYORDU ve bazı tonlarda hiçbir metin rengi AA'yı
+    //     geçemiyordu. Üretici artık ölçerek koyulaştırıyor
+    //     (`identityBackground`).
+    // Final21'de kural yeniden açıldı ve süit bu hâliyle YEŞİL ölçüldü.
+    ;
   if (include) builder.include(include);
   const results = await builder.analyze();
   expect(
@@ -44,31 +77,74 @@ async function noA11yViolations(page: Page, context: string, include?: string): 
 
 test.describe('a11y — gerçek kullanıcı akışları', () => {
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // KENDI FIKSTURUNU KURAR — SIRA BAGIMLILIGI KALDIRILDI (v1.123)
+  // ══════════════════════════════════════════════════════════════════════════
+  // Bu paket, alice'in ZATEN bir sunucusu oldugunu varsayiyordu. Varsayim
+  // baska testlerin yan etkisiyle karsilaniyordu; tek basina veya farkli
+  // sirada kosuldugunda kanal listesi hic render edilmiyordu.
+  //
+  // OLCULDU (v1.123): tam paket kosumunda `a11y.flows.spec.ts:161` TEK
+  // basarisizlikti ("[aria-label^='Kanal: ']" 10 sn icinde gorunmedi) ama
+  // AYNI test tek basina ve dosya butun olarak kosuldugunda GECIYORDU —
+  // yani urun kusuru degil, test yalitim borcuydu.
+  //
+  // Artik paket kendi sunucusunu ve metin kanalini API ile kurar; kabuk
+  // her kosumda dolu olur ve sonuc sira bagimsiz hale gelir.
+  // Final21 Faz 19 (19-26): kurulan sunucunun KİMLİĞİ tutulur ve beforeEach onu açar. Eskiden
+  // "ilk sunucu simgesi" tıklanıyordu; fikstür hesabı zamanla başka testlerin sunucularına da üye
+  // olduğundan ilk simge çoğu zaman alice'in SAHİBİ OLMADIĞI bir sunucuydu: sunucu ayarları düğmesi
+  // yoktu ve iki modal testi SEBEP YAZMADAN atlanıyordu (ölçüldü: X9, 34 atlamanın 2'si).
+  let fixtureServerId = '';
+  test.beforeAll(async ({ request }) => {
+    const token = getTokens().alice;
+    const srv = await createTestServer(request, token, `A11Y ${Date.now()}`);
+    fixtureServerId = String(srv?._id || srv?.id || '');
+    expect(fixtureServerId, 'a11y fikstür sunucusu kurulamadı').toBeTruthy();
+    await createTestChannel(request, token, fixtureServerId, 'a11y-genel', 'text');
+  });
+
   test.beforeEach(async ({ page }) => {
-    // storageState varsa doğrudan app'e git, yoksa login ol
-    try {
-      await page.goto(`${BASE_URL}/app`, { waitUntil: 'domcontentloaded', timeout: 5000 });
-      const inApp = await page.locator('[data-testid="app-shell"], #app-shell, .channel-list').isVisible({ timeout: 2000 });
-      if (!inApp) await loginAs(page);
-    } catch {
-      await loginAs(page);
-    }
+    // '/app' diye bir sunucu rotası YOK (SPA) — eski hali her testte 5 sn'lik
+    // başarısız bir navigasyon + tam UI girişi yapıyordu ve beforeEach 30 sn
+    // zaman aşımına düşüyordu. chromium projesi zaten storageState ile alice
+    // oturumunu taşır; doğrudan kök adres yeterlidir.
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await page.locator('#app').waitFor({ state: 'visible', timeout: 20_000 });
+
+    // ══════════════════════════════════════════════════════════════════════
+    // KABUK DOLU OLMALI — YOKSA TESTLER SESSİZCE ATLANIR
+    // ══════════════════════════════════════════════════════════════════════
+    // Kanal listesi, üye listesi ve emoji seçici YALNIZCA bir sunucu
+    // seçiliyken render edilir. Sunucu seçilmediğinde bu yüzeyler hiç
+    // oluşmuyor ve testler `return test.skip()` ile SESSİZCE atlanıyordu
+    // (ölçüldü: 4 atlandı / 6 geçti). Atlanan bir a11y testi hiçbir şey
+    // KANITLAMAZ ama pakette yeşil görünür.
+    // Fikstür sunucusu (alice SAHİBİ) açılır; kabuk dolu olmazsa test ATLANMAZ, DÜŞER.
+    await page.locator(`.server-icon[data-id="${fixtureServerId}"]`).first().click({ timeout: 15_000 });
+    // Kanal listesi gerçek konteyneri: `.channel-list-host`
+    await expect(page.locator('.channel-list-host').first()).toBeVisible({ timeout: 10_000 });
+    // Metin kanalını aç — mesaj kutusu ve emoji kontrolü böyle gelir.
+    await page.locator('[aria-label="Kanal: a11y-genel"]').first().click({ timeout: 10_000 });
+    await expect(page.locator('#msg-input')).toBeVisible({ timeout: 10_000 });
   });
 
   // ── DM akışı ────────────────────────────────────────────────────────────────
 
   test('DM listesi — ARIA listbox & keyboard navigasyonu', async ({ page }) => {
     // DM ikonuna git
+    // OLCULEN: `aria-label="Direkt mesajları aç"`. Genis joker secici
+    // gorunmez bir eslesmeyi ONCE yakalayabiliyordu; tam etiket kullanilir.
     const dmBtn = page.locator(
-      '[aria-label*="Direkt" i], [aria-label*="Direct" i], [data-testid="dm-btn"], #dm-btn',
+      '[aria-label="Direkt mesajları aç"], [data-testid="dm-btn"], #dm-btn',
     ).first();
-    if (!await dmBtn.isVisible({ timeout: 2000 })) return test.skip();
+    await expect(dmBtn, 'yüzey görünmedi (Faz 19: sessiz atlama kaldırıldı)').toBeVisible({ timeout: 10_000 });
 
     await dmBtn.click();
     await page.waitForTimeout(300);
 
     // DM listesinde axe tarama
-    await noA11yViolations(page, 'DM listesi', '[data-testid="dm-list"], .dm-list, #dm-list, [role="listbox"], [role="list"]');
+    await noA11yViolations(page, 'DM listesi', '.dm-panel, [aria-label="Direkt mesajlar"], [data-testid="dm-list"], .dm-list, #dm-list');
 
     // Keyboard: Tab ile DM girişlerine ulaşılabiliyor olmalı
     await page.keyboard.press('Tab');
@@ -81,7 +157,7 @@ test.describe('a11y — gerçek kullanıcı akışları', () => {
 
   test('DM penceresi — landmark\'lar & mesaj kutusu ARIA', async ({ page }) => {
     const dmBtn = page.locator('[aria-label*="Direkt" i], [aria-label*="Direct" i]').first();
-    if (!await dmBtn.isVisible({ timeout: 2000 })) return test.skip();
+    await expect(dmBtn, 'yüzey görünmedi (Faz 19: sessiz atlama kaldırıldı)').toBeVisible({ timeout: 10_000 });
     await dmBtn.click();
 
     // İlk DM'e tıkla
@@ -107,40 +183,65 @@ test.describe('a11y — gerçek kullanıcı akışları', () => {
 
   // ── Kanal geçişi ─────────────────────────────────────────────────────────────
 
-  test('Kanal listesi — klavye ile geçiş, focus görünür kalmalı', async ({ page }) => {
-    const channelList = page.locator(
-      '[data-testid="channel-list"], .channel-list, [role="tree"], [role="listbox"]',
-    ).first();
-    if (!await channelList.isVisible({ timeout: 2000 })) return test.skip();
+  // ══════════════════════════════════════════════════════════════════════════
+  // KANAL LİSTESİ — ÜRÜNÜN GERÇEK KLAVYE SÖZLEŞMESİ
+  // ══════════════════════════════════════════════════════════════════════════
+  // Bu test eskiden ArrowDown ile odak taşınmasını bekliyor, olmayınca
+  // `return test.skip()` ile SESSİZCE atlanıyordu — yani hiçbir şey
+  // kanıtlamıyordu.
+  //
+  // ÜRÜN İNCELENDİ (client/js/core/channel-list/ChannelItem.svelte,
+  // ChannelList.svelte): her kanal GERÇEK bir `<button>`dır. Enter/Space'i
+  // tarayıcı natif işler, Tab her kanala tek tek ulaşır. Bu BİLİNÇLİ bir
+  // tercihtir; ok tuşlu tek-durak (composite widget) kalıbı KULLANILMAZ.
+  // Kaynak yorumları bunu açıkça söylüyor.
+  //
+  // Dolayısıyla ok tuşu beklemek YANLIŞ sözleşmeyi ölçmekti. Bu test artık
+  // ürünün GERÇEKTEN garanti ettiğini doğrular:
+  //   · kanallar Tab ile ULAŞILABİLİR,
+  //   · odaklanan kanal GÖRÜNÜR bir odak göstergesine sahiptir,
+  //   · Enter kanalı GERÇEKTEN açar.
+  //
+  // KANITLAR   : kanal listesinin klavyeyle kullanılabilir olduğunu.
+  // KANITLAMAZ : ekran okuyucunun ne seslendirdiğini (insan doğrulaması).
+  test('Kanal listesi — Tab ile ulaşılır, odak görünür, Enter açar', async ({ page }) => {
+    const channelBtn = page.locator('[aria-label^="Kanal: "]').first();
+    await channelBtn.waitFor({ state: 'visible', timeout: 10_000 });
 
-    await channelList.focus().catch(() => {
-      channelList.click();
-    });
+    // Gerçek bir buton mu? (natif Enter/Space davranışının şartı)
+    const tag = await channelBtn.evaluate(el => el.tagName);
+    expect(tag, 'kanal öğesi gerçek bir <button> değil').toBe('BUTTON');
 
-    // ArrowDown ile kanal seçimi
-    await page.keyboard.press('Tab');
-    const before = await page.evaluate(() => document.activeElement?.getAttribute('data-channel-id') || document.activeElement?.id);
+    // GERÇEK KLAVYE ile ulaş — programatik `.focus()` YETMEZ.
+    // Ürünün odak halkası global `:focus-visible` kuralıdır
+    // (client/css/tokens.css:666). `:focus-visible` tarayıcı sezgiseline
+    // bağlıdır ve programatik odakta UYGULANMAYABİLİR. Programatik odakla
+    // ölçmek "odak göstergesi yok" gibi YANLIŞ bir sonuç üretir; bu test
+    // bir kez tam olarak bu şekilde yanılmıştı.
+    await page.locator('body').click({ position: { x: 5, y: 5 } });
+    let reached = '';
+    for (let i = 0; i < 60 && !reached.startsWith('Kanal: '); i++) {
+      await page.keyboard.press('Tab');
+      reached = await page.evaluate(() =>
+        document.activeElement?.getAttribute('aria-label') ?? '');
+    }
+    expect(reached, 'kanal butonuna Tab ile ULAŞILAMADI').toContain('Kanal: ');
 
-    await page.keyboard.press('ArrowDown');
-    await page.waitForTimeout(100);
-    const after = await page.evaluate(() => document.activeElement?.getAttribute('data-channel-id') || document.activeElement?.id);
-
-    // Kanal listesi yok / keyboard desteği yoksa skip
-    if (!before && !after) return test.skip();
-
-    // Focus mutlaka görünür olmalı (outline kontrolü)
+    // Odak GÖRÜNÜR olmalı: outline ya da belirgin bir box-shadow.
     const focusVisible = await page.evaluate(() => {
       const el = document.activeElement as HTMLElement | null;
       if (!el) return false;
-      const style = window.getComputedStyle(el);
-      const outlineW = parseFloat(style.outlineWidth);
-      const boxShadow = style.boxShadow;
-      return outlineW > 0 || boxShadow !== 'none';
+      const st = getComputedStyle(el);
+      const ow = parseFloat(st.outlineWidth || '0');
+      const hasOutline = ow > 0 && st.outlineStyle !== 'none';
+      const hasShadow = !!st.boxShadow && st.boxShadow !== 'none';
+      return hasOutline || hasShadow;
     });
-    // Bu soft assertion — bazı custom focus stilleri box-shadow kullanır
-    if (!focusVisible) {
-      console.warn('⚠️ Kanal listesinde focus indicator zayıf veya yok');
-    }
+    expect(focusVisible, 'odaklanan kanalda görünür odak göstergesi yok').toBe(true);
+
+    // Enter kanalı GERÇEKTEN açmalı — mesaj kutusu erişilebilir hale gelir.
+    await page.keyboard.press('Enter');
+    await page.locator('#msg-input').waitFor({ state: 'visible', timeout: 10_000 });
   });
 
   test('Kanal geçişi sonrası — mesaj alanı A11Y', async ({ page }) => {
@@ -148,7 +249,7 @@ test.describe('a11y — gerçek kullanıcı akışları', () => {
     const firstChannel = page.locator(
       '[data-type="text"], [data-channel-type="text"], .channel-item[data-type="text"]',
     ).first();
-    if (!await firstChannel.isVisible({ timeout: 2000 })) return test.skip();
+    await expect(firstChannel, 'yüzey görünmedi (Faz 19: sessiz atlama kaldırıldı)').toBeVisible({ timeout: 10_000 });
     await firstChannel.click();
     await page.waitForTimeout(400);
 
@@ -158,22 +259,33 @@ test.describe('a11y — gerçek kullanıcı akışları', () => {
   // ── Modallar ──────────────────────────────────────────────────────────────────
 
   test('Kanal ayarları modalı — focus trap & Esc kapatma', async ({ page }) => {
+    // OLCULEN URUN ETIKETLERI (canli kabuktan):
+    //   "general kanal işlemleri"   → kanal aksiyon menusu
+    //   "Sunucu ayarlarını aç"      → sunucu ayarlari
+    // Eski secici listesi ("kanal ayar", "channel setting") urunde YOKTU,
+    // bu yuzden test her kosumda SESSIZCE atlaniyordu.
     const gearBtn = page.locator(
-      '[aria-label*="kanal ayar" i], [aria-label*="channel setting" i], [data-testid="channel-settings-btn"]',
+      '[aria-label$="kanal işlemleri"], [aria-label="Sunucu ayarlarını aç"], '
+      + '[aria-label*="kanal ayar" i], [data-testid="channel-settings-btn"]',
     ).first();
-    if (!await gearBtn.isVisible({ timeout: 2000 })) return test.skip();
+    await expect(gearBtn, 'yüzey görünmedi (Faz 19: sessiz atlama kaldırıldı)').toBeVisible({ timeout: 10_000 });
 
     await gearBtn.click();
     await page.waitForTimeout(400);
 
-    const modal = page.locator('[role="dialog"], .modal-overlay, #channel-settings-modal').first();
-    if (!await modal.isVisible({ timeout: 2000 })) return test.skip();
+    // OLCULEN: kanal islemleri dugmesi bir DIALOG degil, `role="menu"`
+    // (.cam-menu) acar. Eski secici yalnizca dialog ariyordu ve test
+    // SESSIZCE atlaniyordu. Menu de odak/Esc sozlesmesine tabidir.
+    const modal = page.locator('[role="menu"], [role="dialog"], .cam-menu, .modal-overlay, #channel-settings-modal').first();
+    await expect(modal, 'yüzey görünmedi (Faz 19: sessiz atlama kaldırıldı)').toBeVisible({ timeout: 10_000 });
 
-    // ARIA: modal role ve aria-modal
-    await expect(modal).toHaveAttribute('role', 'dialog');
+    // ARIA: yüzey ya `dialog` ya `menu` olmalı — ikisi de geçerli kalıptır.
+    // Ürün burada `role="menu"` kullanır (ölçüldü: `.cam-menu`).
+    const role = await modal.getAttribute('role');
+    expect(['dialog', 'menu'], `beklenmeyen rol: ${role}`).toContain(role);
 
-    // A11Y tarama — yalnızca modal içinde
-    await noA11yViolations(page, 'Kanal ayarları modalı', '[role="dialog"]');
+    // A11Y tarama — yalnızca açılan yüzeyin İÇİNDE.
+    await noA11yViolations(page, 'Kanal işlemleri menüsü', '[role="menu"], [role="dialog"]');
 
     // Focus trap: Shift+Tab ile focus modal dışına çıkmamalı
     await page.keyboard.press('Tab');
@@ -194,12 +306,12 @@ test.describe('a11y — gerçek kullanıcı akışları', () => {
     const settingsGear = page.locator(
       '[aria-label*="Sunucu Ayarları" i], [aria-label*="Server Settings" i], [data-testid="server-settings-btn"]',
     ).first();
-    if (!await settingsGear.isVisible({ timeout: 2000 })) return test.skip();
+    await expect(settingsGear, 'yüzey görünmedi (Faz 19: sessiz atlama kaldırıldı)').toBeVisible({ timeout: 10_000 });
     await settingsGear.click();
     await page.waitForTimeout(400);
 
     const modal = page.locator('[role="dialog"]').first();
-    if (!await modal.isVisible({ timeout: 2000 })) return test.skip();
+    await expect(modal, 'yüzey görünmedi (Faz 19: sessiz atlama kaldırıldı)').toBeVisible({ timeout: 10_000 });
 
     await noA11yViolations(page, 'Sunucu ayarları modalı', '[role="dialog"]');
   });
@@ -210,12 +322,12 @@ test.describe('a11y — gerçek kullanıcı akışları', () => {
     const membersBtn = page.locator(
       '[aria-label*="Üyeler" i], [aria-label*="Members" i], [data-testid="members-btn"]',
     ).first();
-    if (!await membersBtn.isVisible({ timeout: 2000 })) return test.skip();
+    await expect(membersBtn, 'yüzey görünmedi (Faz 19: sessiz atlama kaldırıldı)').toBeVisible({ timeout: 10_000 });
     await membersBtn.click();
     await page.waitForTimeout(300);
 
     const memberList = page.locator('[data-testid="member-list"], .member-list, [role="listbox"], [role="list"]').first();
-    if (!await memberList.isVisible({ timeout: 2000 })) return test.skip();
+    await expect(memberList, 'yüzey görünmedi (Faz 19: sessiz atlama kaldırıldı)').toBeVisible({ timeout: 10_000 });
 
     await noA11yViolations(page, 'Üye listesi');
 
@@ -231,15 +343,15 @@ test.describe('a11y — gerçek kullanıcı akışları', () => {
   // ── Emoji picker ──────────────────────────────────────────────────────────────
 
   test('Emoji picker — klavye navigasyonu & ARIA grid', async ({ page }) => {
-    const emojiBtn = page.locator(
-      '[aria-label*="emoji" i], [data-testid="emoji-btn"], .emoji-btn, [aria-label*="Emoji" i]',
-    ).first();
-    if (!await emojiBtn.isVisible({ timeout: 2000 })) return test.skip();
+    // OLCULEN: acma dugmesi `aria-label="Emoji ekle"`,
+    // panelin kendisi `aria-label="Emoji seç"` (EmojiPickerPanel.svelte).
+    const emojiBtn = page.locator('[aria-label="Emoji ekle"], [data-testid="emoji-btn"], .emoji-btn').first();
+    await expect(emojiBtn, 'yüzey görünmedi (Faz 19: sessiz atlama kaldırıldı)').toBeVisible({ timeout: 10_000 });
     await emojiBtn.click();
     await page.waitForTimeout(300);
 
-    const picker = page.locator('[data-testid="emoji-picker"], .emoji-picker, #emoji-picker').first();
-    if (!await picker.isVisible({ timeout: 2000 })) return test.skip();
+    const picker = page.locator('[aria-label="Emoji seç"], [data-testid="emoji-picker"], .emoji-picker, #emoji-picker').first();
+    await expect(picker, 'yüzey görünmedi (Faz 19: sessiz atlama kaldırıldı)').toBeVisible({ timeout: 10_000 });
 
     await noA11yViolations(page, 'Emoji picker');
 

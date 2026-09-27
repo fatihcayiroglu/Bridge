@@ -24,6 +24,7 @@ import { Servers,
 import { limits } from '../middleware/rateLimit';
 import { authMiddleware} from '../middleware/auth';
 import logger from '../lib/logger';
+import { envSafeInt } from '../lib/envNumbers';
 
 // ── Yerleşik şablonlar (seed verisi) ──────────────────────────
 const SEED_TEMPLATES = [
@@ -242,21 +243,95 @@ function parseCategories(value: string | TemplateCategory[] | undefined): Templa
     return [];
   }
 }
+/**
+ * ŞABLON KATEGORİ/KANAL YAPISINI SINIRLA VE KANONİK SÖZLEŞMEYE UYARLA.
+ *
+ * ── DÜZELTİLEN GERÇEK SORUN ───────────────────────────────────────────────
+ * `name`/`icon`/`description`/`tags` alanları sınırlıydı (80/10/300/10) ama
+ * GERÇEK KAYNAK YARATAN alan olan `categories` HİÇ sınırlanmıyordu:
+ * `JSON.stringify(categories)` ham hâliyle saklanıyor, `/:id/apply` de onu
+ * dolaşarak kanal başına bir satır açıyordu. Kimliği doğrulanmış herhangi bir
+ * kullanıcı, tek bir POST ile 50.000 kanallı bir şablon oluşturup tek bir
+ * POST ile uygulayarak sınırsız kaynak tüketimi tetikleyebilirdi. İki istek de
+ * ayrı ayrı rate-limit'liydi ama HER BİRİ sınırsız iş yapıyordu.
+ *
+ * Ayrıca uygulama yolu kanonik kanal sözleşmesini ATLIYORDU
+ * (`routes/servers/channels.ts`): tip beyaz listesi, ad normalizasyonu (32),
+ * topic (100) ve kategori (32) sınırları uygulanmıyordu — şablon üzerinden
+ * geçersiz `type` ve sınırsız uzunlukta ad yazılabiliyordu.
+ *
+ * Sınır UYDURULMADI: kanal üst sınırı, ürünün kanonik değeriyle aynıdır
+ * (`MAX_CHANNELS_PER_SERVER`, varsayılan 500 — routes/servers/channels.ts).
+ */
+const TEMPLATE_CHANNEL_TYPES = new Set(['text', 'voice', 'announcement', 'forum', 'stage']);
+const MAX_TEMPLATE_CATEGORIES = 50;
+
+function maxTemplateChannels(): number {
+  return envSafeInt('MAX_CHANNELS_PER_SERVER', 500, { min: 1, max: 100_000 });
+}
+
+function sanitizeCategories(value: unknown): TemplateCategory[] {
+  if (!Array.isArray(value)) return [];
+  const cap = maxTemplateChannels();
+  const out: TemplateCategory[] = [];
+  let total = 0;
+
+  for (const rawCat of value.slice(0, MAX_TEMPLATE_CATEGORIES)) {
+    if (!rawCat || typeof rawCat !== 'object') continue;
+    const cat = rawCat as Record<string, unknown>;
+    const name = String(cat.name ?? '').trim().slice(0, 32);
+    if (!name) continue;
+
+    const channels: TemplateCategory['channels'] = [];
+    const rawChannels = Array.isArray(cat.channels) ? cat.channels : [];
+
+    for (const rawCh of rawChannels) {
+      if (total >= cap) break;
+      if (!rawCh || typeof rawCh !== 'object') continue;
+      const ch = rawCh as Record<string, unknown>;
+
+      // Kanonik ad normalizasyonu (channels.ts:179 ile aynı).
+      const chName = String(ch.name ?? '').trim().toLowerCase()
+        .replace(/[^a-z0-9\-_]/g, '-').slice(0, 32);
+      if (!chName) continue;
+
+      const type = String(ch.type ?? 'text');
+      channels.push({
+        name:  chName,
+        type:  TEMPLATE_CHANNEL_TYPES.has(type) ? type : 'text',
+        topic: String(ch.topic ?? '').trim().slice(0, 100),
+      } as TemplateCategory['channels'][number]);
+      total++;
+    }
+
+    out.push({ name, channels } as TemplateCategory);
+    if (total >= cap) break;
+  }
+  return out;
+}
+
+function parseStoredArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function formatTemplate(row: TemplateRow, full = false) {
   const out: Record<string, unknown> = {
     id:          row._id,
     name:        row.name,
     icon:        row.icon,
     description: row.description,
-    tags:        typeof row.tags === 'string' ? JSON.parse(row.tags) : (row.tags || []),
+    tags:        parseStoredArray(row.tags),
     createdBy:   row.createdBy,
     createdAt:   row.createdAt,
   };
-  if (full) {
-    out.categories = typeof row.categories === 'string'
-      ? JSON.parse(row.categories)
-      : (row.categories || []);
-  }
+  if (full) out.categories = parseStoredArray(row.categories);
   return out;
 }
 
@@ -328,10 +403,19 @@ router.get('/:id', authMiddleware, async (req, res) => {
  */
 router.post('/', authMiddleware, limits.write(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { name, icon = '🌐', description = '', tags = [], categories = [] } = req.body as Record<string, string>;
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? req.body as Record<string, unknown> : {};
+  const name = body.name;
+  const icon = body.icon ?? '🌐';
+  const description = body.description ?? '';
+  const tags = body.tags ?? [];
+  const categories = body.categories ?? [];
 
-  if (!name || typeof name !== 'string' || !name.trim())
+  if (typeof name !== 'string' || !name.trim())
     return res.status(400).json({ error: 'Şablon adı gerekli' });
+  if (typeof icon !== 'string' || typeof description !== 'string')
+    return res.status(400).json({ error: 'icon and description must be strings' });
+  if (!Array.isArray(tags) || tags.some(tag => typeof tag !== 'string'))
+    return res.status(400).json({ error: 'tags must be a string array' });
   if (!Array.isArray(categories) || categories.length === 0)
     return res.status(400).json({ error: 'En az bir kategori gerekli' });
 
@@ -340,7 +424,8 @@ router.post('/', authMiddleware, limits.write(), async (req, res) => {
     icon:        String(icon).slice(0, 10),
     description: String(description).slice(0, 300),
     tags:        JSON.stringify(Array.isArray(tags) ? tags.slice(0, 10) : []),
-    categories:  JSON.stringify(categories),
+    // Sınırlandırılmış hâli SAKLANIR: bozuk/aşırı yapı hiç kalıcı olmaz.
+    categories:  JSON.stringify(sanitizeCategories(categories)),
     createdBy:   _u.id,
     updatedAt:   null,
   });
@@ -379,13 +464,19 @@ router.put('/:id', authMiddleware, limits.write(), async (req, res) => {
   if (asTemplateRow(row).createdBy !== _u.id)
     return res.status(403).json({ error: 'Bu şablonu güncelleme yetkiniz yok' });
 
-  const { name, icon, description, tags, categories } = req.body as Record<string, string>;
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? req.body as Record<string, unknown> : {};
+  const { name, icon, description, tags, categories } = body;
+  if (name !== undefined && (typeof name !== 'string' || !name.trim())) return res.status(400).json({ error: 'name must be a non-empty string' });
+  if (icon !== undefined && typeof icon !== 'string') return res.status(400).json({ error: 'icon must be a string' });
+  if (description !== undefined && typeof description !== 'string') return res.status(400).json({ error: 'description must be a string' });
+  if (tags !== undefined && (!Array.isArray(tags) || tags.some(tag => typeof tag !== 'string'))) return res.status(400).json({ error: 'tags must be a string array' });
+  if (categories !== undefined && !Array.isArray(categories)) return res.status(400).json({ error: 'categories must be an array' });
   const $set: Record<string, unknown> = { updatedAt: Date.now() };
-  if (name        !== undefined) $set.name        = String(name).trim().slice(0, 80);
-  if (icon        !== undefined) $set.icon        = String(icon).slice(0, 10);
-  if (description !== undefined) $set.description = String(description).slice(0, 300);
-  if (tags        !== undefined) $set.tags        = JSON.stringify(Array.isArray(tags) ? tags.slice(0, 10) : []);
-  if (categories  !== undefined) $set.categories  = JSON.stringify(categories);
+  if (typeof name === 'string')        $set.name        = name.trim().slice(0, 80);
+  if (typeof icon === 'string')        $set.icon        = icon.slice(0, 10);
+  if (typeof description === 'string') $set.description = description.slice(0, 300);
+  if (Array.isArray(tags))             $set.tags        = JSON.stringify(tags.slice(0, 10));
+  if (Array.isArray(categories))       $set.categories  = JSON.stringify(sanitizeCategories(categories));
 
   await ServerAssets.updateTemplate(String(req.params.id ?? ''), $set);
   const updated = await ServerAssets.findTemplate(String(req.params.id ?? ''));
@@ -460,7 +551,10 @@ router.post('/:id/apply', authMiddleware, limits.write(), async (req, res) => {
   const serverName = String(req.body.name || template.name).trim().slice(0, 50);
   if (!serverName) return res.status(400).json({ error: 'Sunucu adı gerekli' });
 
-  const categories = parseCategories(template.categories);
+  // SAVUNMA KATMANI: yazma anındaki sınırlama tek başına yetmez — bu satır
+  // sınırlama eklenmeden ÖNCE oluşturulmuş (veya doğrudan DB'ye yazılmış)
+  // olabilir. Uygulama anında da kanonik sözleşme zorlanır.
+  const categories = sanitizeCategories(parseCategories(template.categories));
 
   // Sunucu oluştur
   const server = await Servers.create({
@@ -479,8 +573,9 @@ router.post('/:id/apply', authMiddleware, limits.write(), async (req, res) => {
 
   // Kategoriler ve kanalları oluştur
   let channelOrder = 0;
-  for (let catIdx = 0; catIdx < categories.length; catIdx++) {
-    const cat = categories[catIdx];
+  // `entries()` hem sirayi hem de KESIN tanimli ogeyi verir; indeksli erisimin
+  // `... | undefined` donmesi sorununu kokunden kaldirir.
+  for (const [catIdx, cat] of categories.entries()) {
 
     let category;
     try {

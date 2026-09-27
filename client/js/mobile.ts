@@ -1,198 +1,224 @@
 // client/js/mobile.ts
-// Mobile navigation, panel open/close, swipe gestures
+// Phase 9 — responsive shell controller. Presentation classes only; feature
+// state remains with each canonical Svelte owner.
 
-(function () {
-  const BREAKPOINT_PHONE  = 480;
-  const BREAKPOINT_TABLET = 768;
+import { BridgeRegistry } from './core/bridge-registry.ts';
 
-  function isMobile()  { return window.innerWidth <= BREAKPOINT_PHONE; }
-  function isTablet()  { return window.innerWidth <= BREAKPOINT_TABLET; }
-  function isTouchDevice() { return window.matchMedia('(hover:none) and (pointer:coarse)').matches; }
+const BREAKPOINT_NARROW = 600;
+const BREAKPOINT_TABLET = 768;
 
-  // ── PANEL MANAGEMENT ─────────────────────────────────────────
-  BridgeRegistry.register('closeMobilePanels', function closeMobilePanels() {
+type MobileTab = 'servers' | 'channels' | 'chat' | 'members' | 'profile';
+type MemberToggle = () => void;
+
+let memberOwner: MemberToggle | null = null;
+
+function updateVisualViewport(): void {
+  const viewport = window.visualViewport;
+  const height = Math.round(viewport?.height ?? window.innerHeight);
+  const pageHeight = Math.round(window.innerHeight);
+  const keyboardInset = Math.max(0, pageHeight - height - Math.round(viewport?.offsetTop ?? 0));
+  document.documentElement.style.setProperty('--bridge-visual-viewport-height', `${height}px`);
+  document.documentElement.style.setProperty('--bridge-keyboard-inset', `${keyboardInset}px`);
+  document.documentElement.classList.toggle('bridge-keyboard-open', isNarrow() && keyboardInset >= 120);
+}
+
+function isNarrow(): boolean { return window.innerWidth <= BREAKPOINT_NARROW; }
+function isTablet(): boolean { return window.innerWidth <= BREAKPOINT_TABLET; }
+
+function updateMobileNav(active: MobileTab | null): void {
+  document.querySelectorAll<HTMLElement>('.mobile-nav-btn').forEach((button) => {
+    const id = button.id.replace('mnav-', '');
+    const selected = id === active;
+    button.classList.toggle('active', selected);
+    if (selected) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
+}
+
+function setBackdrop(active: boolean): void {
+  const backdrop = document.getElementById('mobile-backdrop');
+  backdrop?.classList.toggle('active', active);
+  backdrop?.setAttribute('aria-hidden', active ? 'false' : 'true');
+}
+
+function closeMobilePanels(syncMemberOwner = true): void {
+  document.querySelector('.server-list')?.classList.remove('open');
+  document.querySelector('.channel-sidebar')?.classList.remove('open');
+
+  const members = document.querySelector('.member-list');
+  const memberWasOpen = members?.classList.contains('open') ?? false;
+  members?.classList.remove('open');
+  if (memberWasOpen && syncMemberOwner && members && !members.classList.contains('is-collapsed')) memberOwner?.();
+
+  setBackdrop(false);
+  updateMobileNav(isNarrow() ? 'chat' : null);
+}
+
+function openDrawer(panel: Element | null, tab: MobileTab): void {
+  closeMobilePanels();
+  if (!panel) return;
+  panel.classList.add('open');
+  setBackdrop(true);
+  updateMobileNav(tab);
+}
+
+function toggleMemberPresentation(): void {
+  const members = document.querySelector('.member-list');
+
+  // Desktop visibility belongs entirely to MemberListPanel.
+  if (!isTablet()) {
+    memberOwner?.();
+    return;
+  }
+
+  if (members?.classList.contains('open')) {
+    closeMobilePanels();
+    return;
+  }
+
+  closeMobilePanels();
+  if (members?.classList.contains('is-collapsed')) memberOwner?.();
+  members?.classList.add('open');
+  setBackdrop(true);
+  if (isNarrow()) updateMobileNav('members');
+}
+
+function normalizeTab(first?: unknown, second?: unknown): MobileTab | null {
+  const value = typeof second === 'string' ? second : typeof first === 'string' ? first : '';
+  return ['servers', 'channels', 'chat', 'members', 'profile'].includes(value)
+    ? value as MobileTab
+    : null;
+}
+
+function mobileNav(first?: unknown, second?: unknown): void {
+  const tab = normalizeTab(first, second);
+  if (!tab || !isNarrow()) return;
+
+  if (tab === 'servers') {
+    openDrawer(document.querySelector('.server-list'), tab);
+  } else if (tab === 'channels') {
+    openDrawer(document.querySelector('.channel-sidebar'), tab);
+  } else if (tab === 'members') {
+    toggleMemberPresentation();
+  } else if (tab === 'profile') {
+    closeMobilePanels();
+    const me = BridgeRegistry.call<{ id?: string } | null>('getMe');
+    if (me?.id && BridgeRegistry.has('openProfileModal')) BridgeRegistry.call('openProfileModal', me.id);
+    else BridgeRegistry.call('openSettingsModal');
+    updateMobileNav('profile');
+  } else {
+    closeMobilePanels();
+    updateMobileNav('chat');
+  }
+}
+
+BridgeRegistry.register('closeMobilePanels', () => closeMobilePanels());
+BridgeRegistry.register('mobileNav', mobileNav);
+BridgeRegistry.register('setMobileNavPip', (tab: unknown, on: unknown) => {
+  const button = document.getElementById(`mnav-${String(tab)}`);
+  button?.classList.toggle('has-pip', Boolean(on));
+});
+
+/**
+ * MemberListPanel registers the real feature owner independently. Re-wrap it
+ * after mount and after socket boot; this adapter only adds drawer classes.
+ */
+function installMemberToggleAdapter(): void {
+  const current = BridgeRegistry.get<MemberToggle>('toggleMemberList');
+  if (current === toggleMemberPresentation) return;
+  if (typeof current === 'function') memberOwner = current;
+  BridgeRegistry.register('toggleMemberList', toggleMemberPresentation);
+}
+
+installMemberToggleAdapter();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    queueMicrotask(installMemberToggleAdapter);
+    window.setTimeout(installMemberToggleAdapter, 50);
+  }, { once: true });
+} else {
+  queueMicrotask(installMemberToggleAdapter);
+}
+document.addEventListener('bridge:socket-ready', () => queueMicrotask(installMemberToggleAdapter));
+document.addEventListener('bridge:auth-success', () => window.setTimeout(installMemberToggleAdapter, 0));
+
+// The document's compatibility dispatcher cannot see ESM bindings. Keep this
+// delegate intentionally limited to shell actions so no second feature router
+// is created and markup never depends on window globals.
+const SHELL_ACTIONS = new Set(['mobileNav', 'closeMobilePanels', 'toggleMemberList']);
+document.addEventListener('click', (event) => {
+  const target = event.target instanceof Element
+    ? event.target.closest<HTMLElement>('[data-bridge-action]')
+    : null;
+  const action = target?.dataset.bridgeAction ?? '';
+  if (!target || !SHELL_ACTIONS.has(action)) return;
+
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (action === 'mobileNav') mobileNav(target, target.dataset.bridgeArg);
+  else BridgeRegistry.call(action);
+}, true);
+
+// Web/tablet swipe: right from the left edge opens channels, left closes.
+const capacitor = (window as unknown as {
+  Capacitor?: { isNativePlatform?(): boolean };
+}).Capacitor;
+if (!capacitor?.isNativePlatform?.()) {
+  let touchStartX = 0;
+  let touchStartY = 0;
+  let swipeActive = false;
+
+  document.addEventListener('touchstart', (event) => {
+    if (!isNarrow()) return;
+    touchStartX = event.touches[0]?.clientX ?? 0;
+    touchStartY = event.touches[0]?.clientY ?? 0;
+    swipeActive = true;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', (event) => {
+    if (!swipeActive || !isNarrow()) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    const dx = touch.clientX - touchStartX;
+    const dy = touch.clientY - touchStartY;
+    if (Math.abs(dy) > Math.abs(dx)) { swipeActive = false; return; }
+    if (touchStartX < 36 && dx > 56) {
+      openDrawer(document.querySelector('.channel-sidebar'), 'channels');
+      swipeActive = false;
+    } else if (dx < -56) {
+      closeMobilePanels();
+      swipeActive = false;
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchend', () => { swipeActive = false; }, { passive: true });
+}
+
+function onResize(): void {
+  const members = document.querySelector('.member-list');
+
+  if (!isNarrow()) {
     document.querySelector('.server-list')?.classList.remove('open');
     document.querySelector('.channel-sidebar')?.classList.remove('open');
-    document.querySelector('.member-list')?.classList.remove('open');
-    document.getElementById('mobile-backdrop')?.classList.remove('active');
-    updateMobileNav(null);
-  });
-
-  function openPanel(panelEl) {
-    closeMobilePanels();
-    panelEl?.classList.add('open');
-    document.getElementById('mobile-backdrop')?.classList.add('active');
   }
+  if (!isTablet()) members?.classList.remove('open');
 
-  // ── BOTTOM NAV HANDLER ───────────────────────────────────────
-  BridgeRegistry.register('mobileNav', function mobileNav(tab: unknown) {
-    if (!isMobile() && !isTablet()) return;
-
-    switch (tab) {
-      case 'servers':
-        openPanel(document.querySelector('.server-list'));
-        updateMobileNav('servers');
-        break;
-      case 'channels':
-        openPanel(document.querySelector('.channel-sidebar'));
-        updateMobileNav('channels');
-        break;
-      case 'chat':
-        closeMobilePanels();
-        updateMobileNav('chat');
-        break;
-      case 'members':
-        openPanel(document.querySelector('.member-list'));
-        updateMobileNav('members');
-        break;
-      case 'profile':
-        closeMobilePanels();
-        // Sprint 33 FIX: openProfileModal import edilmeden kullanılıyordu.
-        // BridgeRegistry üzerinden çağır; profile.ts kaydı yapıyor.
-        const meObj = BridgeRegistry.call('getMe') as { id?: string } | null;
-        if (meObj?.id) {
-          if (BridgeRegistry.has('openProfileModal')) {
-            BridgeRegistry.call('openProfileModal', meObj.id);
-          } else if (typeof (window as unknown as { openProfileModal?: (id: string) => void }).openProfileModal === 'function') {
-            // geçiş köprüsü — profile.ts BridgeRegistry'ye geçince silinir
-            (window as unknown as { openProfileModal: (id: string) => void }).openProfileModal(meObj.id);
-          }
-        } else {
-          // Sprint 57: window.openSettings kaldırıldı — BridgeRegistry üzerinden çağır
-          BridgeRegistry.call('openSettingsModal');
-        }
-        updateMobileNav('profile');
-        break;
-    }
-  });
-
-  function updateMobileNav(active) {
-    document.querySelectorAll('.mobile-nav-btn').forEach(btn => {
-      const id = btn.id.replace('mnav-', '');
-      btn.classList.toggle('active', id === active);
-    });
-  }
-
-  // ── AUTO-CLOSE PANELS ON CHANNEL SELECT ──────────────────────
-  // Patch selectChannel to close panels on mobile after selection
-  const _origSelectChannel = BridgeRegistry.get<(ch: unknown) => Promise<void>>('selectChannel');
-  if (typeof _origSelectChannel === 'function') {
-    BridgeRegistry.register('selectChannel', async function selectChannel(channel: unknown) {
-      await _origSelectChannel(channel);
-      if (isMobile() || isTablet()) {
-        // Small delay so user sees the selection
-        setTimeout(closeMobilePanels, 120);
-        updateMobileNav('chat');
-      }
-    });
-  }
-
-  // ── SWIPE TO OPEN SIDEBAR ────────────────────────────────────
-  // Sprint 96: Capacitor ortamında mobile-ux.ts'deki gelişmiş swipe devreye girer;
-  // bu blok yalnızca Capacitor olmayan web/tablet için çalışır.
-  const _isCapacitor = typeof window !== 'undefined' && !!(
-    (window as Record<string, unknown>).Capacitor &&
-    ((window as Record<string, unknown>).Capacitor as { isNativePlatform?(): boolean }).isNativePlatform?.()
+  // A member drawer remains valid from phone through tablet widths. Keep its
+  // modal backdrop in sync when the viewport crosses the 600px navigation
+  // breakpoint; desktop member state itself still belongs to MemberListPanel.
+  const drawerOpen = isTablet() && (members?.classList.contains('open') ?? false);
+  const narrowDrawerOpen = isNarrow() && Boolean(
+    document.querySelector('.server-list.open, .channel-sidebar.open'),
   );
+  setBackdrop(drawerOpen || narrowDrawerOpen);
+  updateMobileNav(isNarrow() ? 'chat' : null);
+}
 
-  if (!_isCapacitor) {
-    let touchStartX = 0;
-    let touchStartY = 0;
-    let swipeActive = false;
-
-    document.addEventListener('touchstart', (e) => {
-      touchStartX = e.touches[0].clientX;
-      touchStartY = e.touches[0].clientY;
-      swipeActive = true;
-    }, { passive: true });
-
-    document.addEventListener('touchmove', (e) => {
-      if (!swipeActive || !isTablet()) return;
-      const dx = e.touches[0].clientX - touchStartX;
-      const dy = e.touches[0].clientY - touchStartY;
-      if (Math.abs(dy) > Math.abs(dx)) { swipeActive = false; return; } // vertical scroll
-      if (Math.abs(dx) < 10) return;
-
-      // Swipe right from left edge → open channel sidebar
-      if (touchStartX < 40 && dx > 60) {
-        openPanel(document.querySelector('.channel-sidebar'));
-        updateMobileNav('channels');
-        swipeActive = false;
-      }
-      // Swipe left → close any open panel
-      if (dx < -60) {
-        closeMobilePanels();
-        updateMobileNav('chat');
-        swipeActive = false;
-      }
-    }, { passive: true });
-
-    document.addEventListener('touchend', () => { swipeActive = false; }, { passive: true });
-  }
-
-  // ── VIEWPORT HEIGHT FIX (iOS keyboard) ───────────────────────
-  // iOS shrinks viewport when keyboard opens; this compensates
-  function setVh() {
-    document.documentElement.style.setProperty('--real-vh', `${window.innerHeight * 0.01}px`);
-  }
-  setVh();
-  window.addEventListener('resize', setVh, { passive: true });
-
-  // ── TABLET: TOGGLE MEMBER LIST ───────────────────────────────
-  // Override toggleMemberList for tablet to use overlay
-  const _origToggleMemberList = BridgeRegistry.get<() => void>('toggleMemberList');
-  BridgeRegistry.register('toggleMemberList', function toggleMemberList() {
-    if (isTablet()) {
-      const ml = document.querySelector('.member-list');
-      if (ml?.classList.contains('open')) {
-        closeMobilePanels();
-      } else {
-        openPanel(ml);
-        updateMobileNav('members');
-      }
-    } else if (typeof _origToggleMemberList === 'function') {
-      _origToggleMemberList();
-    }
-  });
-
-  // ── SHOW/HIDE MOBILE NAV ─────────────────────────────────────
-  function updateNavVisibility() {
-    const nav = document.getElementById('mobile-nav');
-    if (!nav) return;
-    nav.style.display = isMobile() ? 'flex' : 'none';
-  }
-  updateNavVisibility();
-  window.addEventListener('resize', updateNavVisibility, { passive: true });
-
-  // ── APPLY TABLET CLASS ON RESIZE ─────────────────────────────
-  function onResize() {
-    if (!isTablet()) {
-      // Desktop: reset any mobile state
-      document.querySelector('.server-list')?.classList.remove('open');
-      document.querySelector('.channel-sidebar')?.classList.remove('open');
-      document.querySelector('.member-list')?.classList.remove('open');
-      document.getElementById('mobile-backdrop')?.classList.remove('active');
-    }
-  }
-  window.addEventListener('resize', onResize, { passive: true });
-
-
-  // ── v72: Notification pip API ─────────────────────────────────
-  // Usage: window.setMobileNavPip('channels', true)  → dot on
-  //        window.setMobileNavPip('channels', false) → dot off
-  BridgeRegistry.register('setMobileNavPip', function setMobileNavPip(tab: unknown, on: unknown) {
-    const btn = document.getElementById(`mnav-${tab}`);
-    if (btn) btn.classList.toggle('has-pip', !!on);
-  });
-
-  // Sync active state on channel select (re-patch in case selectChannel
-  // was defined after mobile.js loaded)
-  document.addEventListener('bridge:channel-selected', () => {
-    if (isMobile() || isTablet()) {
-      updateMobileNav('chat');
-      BridgeRegistry.call('setMobileNavPip', 'channels', false);
-    }
-  });
-
-})();
-
+window.addEventListener('resize', () => { onResize(); updateVisualViewport(); }, { passive: true });
+window.visualViewport?.addEventListener('resize', updateVisualViewport, { passive: true });
+window.visualViewport?.addEventListener('scroll', updateVisualViewport, { passive: true });
+updateVisualViewport();
+document.addEventListener('bridge:channel-selected', () => {
+  if (isNarrow()) closeMobilePanels();
+  BridgeRegistry.call('setMobileNavPip', 'channels', false);
+});

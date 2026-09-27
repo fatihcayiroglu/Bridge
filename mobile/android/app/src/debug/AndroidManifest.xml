@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ════════════════════════════════════════════════════════════════════════════
+  DEBUG-ONLY MANIFEST OVERLAY — YEREL GELİŞTİRME AĞI
+  ════════════════════════════════════════════════════════════════════════════
+
+  ── KAPATILAN GERÇEK KUSUR (Final21, Faz 3) ────────────────────────────────
+  `res/xml/network_security_config.xml` depoda vardı, doğru içeriği taşıyordu
+  (yalnızca `localhost` ve `10.0.2.2` için açık metin) ve bir testle de
+  kilitlenmişti — ama HİÇBİR MANİFEST ONA ATIFTA BULUNMUYORDU.
+
+  Sonuç: dosya ÖLÜ koddu. Android 9'dan (API 28) beri açık metin varsayılan
+  olarak kapalı olduğu için, emülatörde `http://10.0.2.2:3000` üzerinden
+  çalışan bir geliştirme sunucusuna bağlanmak SESSİZCE başarısız oluyordu —
+  ve dosyanın varlığı "çözülmüş" izlenimi veriyordu.
+
+  ── NEDEN MAIN DEĞİL, DEBUG ────────────────────────────────────────────────
+  Yapılandırmayı `src/main/AndroidManifest.xml`e koymak da kusuru kapatırdı,
+  ama SÜRÜM (release) paketine de loopback açık metin istisnası taşırdı.
+  Gerek yok: istisna yalnızca geliştirme içindir.
+
+  Bu overlay yalnızca `debug` varyantına uygulanır
+  (`applicationIdSuffix ".debug"`). Üretim paketi DEĞİŞMEZ: açık metin her
+  alan adı için kapalı kalır. Yani bu bir GEVŞETME değil, ölü bir dosyanın
+  DOĞRU KAPSAMDA canlandırılmasıdır.
+
+  Kilit: `mobile/tests/android-manifest-security.test.js`
+    · main manifest açık metin İZNİ TAŞIMAZ (ne öznitelik ne de yapılandırma)
+    · debug overlay yapılandırmaya ATIFTA BULUNUR
+    · yapılandırma yalnızca loopback/emülatör adreslerini içerir
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools">
+
+  <application
+    android:networkSecurityConfig="@xml/network_security_config"
+    tools:replace="android:networkSecurityConfig" />
+
+</manifest>

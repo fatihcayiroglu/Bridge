@@ -3,6 +3,8 @@
 // Sprint 50: JS → TypeScript dönüşümü
 // Kapsam: GET state, POST stroke, DELETE stroke, clear, yetki kontrolü
 
+import type { JwtPayload } from '../middleware/auth';
+import { makeJwtUser } from './helpers/userDoubles';
 import request from 'supertest';
 import express, { Express, Request, Response, NextFunction } from 'express';
 
@@ -40,8 +42,9 @@ jest.mock('../db', () => ({
 // ── Mock auth ─────────────────────────────────────────────────────────────────
 
 function mockAuth(req: Request, _res: Response, next: NextFunction): void {
-  (req as Request & { user: { _id: string; id: string; displayName: string } }).user =
-    { _id: 'u1', id: 'u1', displayName: 'Test User' };
+  // `req.user` Express augmentation'i uzerinden `JwtPayload`tir; TAM yuk
+  // uretilince dar `as` sarmalayicisina da gerek kalmiyor.
+  req.user = makeJwtUser('u1', { displayName: 'Test User' });
   next();
 }
 

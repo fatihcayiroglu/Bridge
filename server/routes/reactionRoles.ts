@@ -9,9 +9,10 @@
 import express from 'express';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router       = express.Router({ mergeParams: true });
-import { Members, ReactionRoles } from '../db/repositories';
+import { Channels, Members, Messages, ReactionRoles, Roles } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { getMemberPerms, hasPermission, PERMS } from './roles';
+import { canManageRole, canViewChannel } from '../lib/permissions';
 import { limits } from '../middleware/rateLimit';
 
 // ── GET /api/servers/:sid/reaction-roles ─────────────────────
@@ -32,7 +33,11 @@ router.get('/', authMiddleware, async (req, res) => {
   const membership = await Members.findOne(_u.id, sid);
   if (!membership) return res.status(403).json({ error: 'Not a member' });
   const rules = await ReactionRoles.findByServer(sid);
-  res.json(rules);
+  const visible = [];
+  for (const rule of rules) {
+    if (await canViewChannel(_u.id, sid, String(rule.channelId ?? ''))) visible.push(rule);
+  }
+  res.json(visible);
 });
 
 // ── POST /api/servers/:sid/reaction-roles ────────────────────
@@ -73,13 +78,29 @@ router.post('/', authMiddleware, limits.roles(), async (req, res) => {
   }
   if (emoji.length > 64) return res.status(400).json({ error: 'Emoji çok uzun' });
 
-  const existing = await ReactionRoles.findDuplicate(messageId, emoji, roleId);
-  if (existing) return res.status(409).json({ error: 'Bu kural zaten mevcut' });
+  // Tenant + hierarchy authority: identifiers supplied by the client are never
+  // trusted to belong to this server. Resolve the full chain before storing a
+  // rule so a malformed/hostile rule cannot later grant a foreign role.
+  const channel = await Channels.findByIdAndServer(channelId, sid);
+  if (!channel) return res.status(404).json({ error: 'Channel not found in this server' });
+  if (!await canViewChannel(_u.id, sid, channelId)) return res.status(403).json({ error: 'Channel is not visible' });
 
-  const rule = await ReactionRoles.insert({
+  const message = await Messages.findById(messageId);
+  if (!message || String(message.channelId) !== channelId || String(message.serverId) !== sid) {
+    return res.status(404).json({ error: 'Message not found in this channel' });
+  }
+
+  const role = await Roles.findByIdAndServer(roleId, sid);
+  if (!role) return res.status(404).json({ error: 'Role not found in this server' });
+  if (!await canManageRole(_u.id, roleId, sid)) {
+    return res.status(403).json({ error: 'Role hierarchy prevents managing this role' });
+  }
+
+  const created = await ReactionRoles.createIfAbsent({
     serverId: sid, channelId, messageId, emoji, roleId, createdBy: _u.id,
   });
-  res.json(rule);
+  if (!created.created) return res.status(409).json({ error: 'Bu kural zaten mevcut' });
+  res.json(created.rule);
 });
 
 // ── DELETE /api/servers/:sid/reaction-roles/:rrId ────────────
@@ -110,6 +131,10 @@ router.delete('/:rrId', authMiddleware, limits.roles(), async (req, res) => {
   }
   const rule = await ReactionRoles.findByIdAndServer(rrId, sid);
   if (!rule) return res.status(404).json({ error: 'Kural bulunamadı' });
+  const role = await Roles.findByIdAndServer(String(rule.roleId ?? ''), sid);
+  if (role && !await canManageRole(_u.id, String(rule.roleId), sid)) {
+    return res.status(403).json({ error: 'Role hierarchy prevents managing this role' });
+  }
   await ReactionRoles.delete(rrId);
   res.json({ ok: true });
 });

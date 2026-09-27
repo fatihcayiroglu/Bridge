@@ -2,8 +2,8 @@
 // ADR-0006 Faz 1+2 — federation RSA key + imza doğrulama
 
 process.env.NODE_ENV = 'test';
-process.env.JWT_SECRET = 'test-jwt-secret';
-process.env.FEDERATION_SECRET = 'test-federation-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
+process.env.FEDERATION_SECRET = 'test-federation-secretxxxxxxxxxx';
 process.env.INSTANCE_URL = 'http://localhost:3001';
 process.env.AP_ENCRYPTION_KEY = 'a'.repeat(64);
 
@@ -13,6 +13,7 @@ const mockDb = createMockDb();
 jest.mock('../db/loader', () => mockDb);
 
 import crypto from 'crypto';
+import { encryptApPrivateKey } from '../lib/apKeyEncryption';
 import request from 'supertest';
 import express from 'express';
 import {
@@ -33,6 +34,29 @@ beforeEach(() => {
   _resetFederationKeyCache();
   _resetSignatureReplayCache();
   mockDb._reset();
+});
+
+describe('federation instance-key concurrency', () => {
+  it('initialisation race uses the primary-key winner returned by persistence', async () => {
+    const winner = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    });
+    const findSpy = jest.spyOn(mockDb.serverFederationKeys, 'findOne').mockResolvedValueOnce(null);
+    const insertSpy = jest.spyOn(mockDb.serverFederationKeys, 'insert').mockResolvedValueOnce({
+      _id: 'instance', publicKeyPem: winner.publicKey,
+      privateKeyEnc: encryptApPrivateKey(winner.privateKey), keyVersion: 7, createdAt: Date.now(),
+    });
+    try {
+      const effective = await getOrCreateFederationKeys();
+      expect(effective.publicKeyPem).toBe(winner.publicKey);
+      expect(effective.privateKeyPem).toBe(winner.privateKey);
+      expect(effective.keyVersion).toBe(7);
+    } finally {
+      findSpy.mockRestore(); insertSpy.mockRestore(); _resetFederationKeyCache();
+    }
+  });
 });
 
 describe('GET /api/federation/info — publicKey (ADR-0006 Faz 1)', () => {
@@ -121,6 +145,41 @@ describe('Bridge-to-Bridge RSA imza (ADR-0006 Faz 2)', () => {
     await expect(verifyFederationRequest(req)).resolves.toBe(true);
   });
 
+  it('dual-signed replay RSA reddedildikten sonra HMAC fallback ile tekrar kabul edilmez', async () => {
+    const body = { url: process.env.INSTANCE_URL, _nonce: `dual-replay-${Date.now()}` };
+    const signed = await signFederationRequest(body);
+    const req = {
+      method: 'POST',
+      url: '/api/federation/ping',
+      headers: {
+        'x-bridge-ts': signed.ts,
+        'x-bridge-sig': signed.hmacSig,
+        'X-Bridge-Signature': formatBridgeSignatureHeader(signed.keyId, signed.rsaSignature),
+      },
+      body,
+    };
+
+    await expect(verifyFederationRequest(req)).resolves.toBe(true);
+    await expect(verifyFederationRequest(req)).resolves.toBe(false);
+  });
+
+  it('eşzamanlı aynı HMAC replay denemelerinden yalnız biri kabul edilir', async () => {
+    const body = { url: 'http://localhost:3001', _nonce: `hmac-race-${Date.now()}` };
+    const ts = String(Date.now());
+    const payload = ts + JSON.stringify(body);
+    const hmacSig = crypto.createHmac('sha256', process.env.FEDERATION_SECRET!)
+      .update(payload).digest('hex');
+    const req = {
+      method: 'POST',
+      url: '/api/federation/ping',
+      headers: { 'x-bridge-ts': ts, 'x-bridge-sig': hmacSig },
+      body,
+    };
+
+    const results = await Promise.all(Array.from({ length: 8 }, () => verifyFederationRequest(req)));
+    expect(results.filter(Boolean)).toHaveLength(1);
+  });
+
   it('RSA imza replay reddedilir', async () => {
     const body = { url: process.env.INSTANCE_URL, _nonce: `replay-${Date.now()}` };
     const signed = await signFederationRequest(body);
@@ -161,12 +220,11 @@ describe('Bridge-to-Bridge RSA imza (ADR-0006 Faz 2)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// federationAuth middleware (Sprint 108 — httpSignatureV2)
+// federationAuth middleware — canonical RSA-only V3 verifier
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { federationAuth, federationAuthRsaRequired } from '../middleware/federationAuth';
 import type { Request, Response, NextFunction } from 'express';
-import { buildFederationHeaders } from '../lib/httpSignatureV2';
 
 function makeRes() {
   const res: Partial<Response> = {};
@@ -179,7 +237,7 @@ function makeNext(): NextFunction {
   return jest.fn();
 }
 
-describe('federationAuth middleware (Sprint 108 — V2)', () => {
+describe('federationAuth middleware — RSA-only V3', () => {
   beforeEach(() => {
     _resetFederationKeyCache();
     mockDb._reset();

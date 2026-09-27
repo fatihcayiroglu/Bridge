@@ -1,489 +1,339 @@
 // electron/tests/main.test.ts
-// Electron main.ts ve preload.ts birim testleri
+//
+// Final21 Phase 12: these tests load the REAL main.ts / preload.ts / connectPreload.ts
+// against the Electron mock. The previous file re-implemented each handler inside
+// the test body (notify handler, server status, deep-link patterns, waitForServer)
+// and never imported main.ts — all 45 tests would have passed with main.ts deleted.
 
-'use strict';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { pathToFileURL } from 'url';
 
-jest.mock('electron', () => jest.requireActual('./__mocks__/electron'));
-jest.mock('electron-updater', () => jest.requireActual('./__mocks__/electron-updater'));
-jest.mock('child_process');
-jest.mock('http');
+type Electron = any;
 
-import {
-  app,
-  BrowserWindow,
-  ipcMain,
-  ipcRenderer,
-  contextBridge,
-  Notification,
-} from 'electron';
-import { spawn } from 'child_process';
-import http from 'http';
-
-// ── Type helpers ──────────────────────────────────────────────────────────────
-interface MockProcess {
-  killed: boolean;
-  pid: number;
-  stdout: { on: jest.Mock };
-  stderr: { on: jest.Mock };
-  on: jest.Mock;
-  kill: jest.Mock;
-  once: jest.Mock;
+interface Loaded {
+  electron: Electron;
+  main: typeof import('../main');
+  userData: string;
 }
 
-// ── Spawn mock'u ──────────────────────────────────────────────────────────────
-const makeSpawnMock = (_exitCode = 0): MockProcess => {
-  const proc: MockProcess = {
-    killed: false,
-    pid: 12345,
-    stdout: { on: jest.fn() },
-    stderr: { on: jest.fn() },
-    on: jest.fn(),
-    kill: jest.fn(function (this: MockProcess) { this.killed = true; }),
-    once: jest.fn(),
+const tempDirs: string[] = [];
+afterAll(() => { for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true }); });
+
+const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+async function loadMain(options: { packaged?: boolean; serverOrigin?: string | null; argv?: string[] } = {}): Promise<Loaded> {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-desktop-test-'));
+  tempDirs.push(userData);
+  if (options.serverOrigin) {
+    fs.writeFileSync(path.join(userData, 'desktop-settings.json'), JSON.stringify({ serverOrigin: options.serverOrigin }));
+  }
+  const originalArgv = process.argv;
+  process.argv = ['Bridge.exe', ...(options.argv ?? [])];
+  let loaded!: Loaded;
+  try {
+    jest.isolateModules(() => {
+      const electron = require('electron');
+      electron.app.getPath.mockImplementation(() => userData);
+      electron.app.isPackaged = options.packaged ?? false;
+      const main = require('../main');
+      loaded = { electron, main, userData };
+    });
+    await flush();
+  } finally {
+    process.argv = originalArgv;
+  }
+  return loaded;
+}
+
+const windows = (electron: Electron) => electron.BrowserWindow.instances as any[];
+const connectWindowOf = (electron: Electron) => windows(electron).find((w) => String(w.options.webPreferences?.preload).endsWith('connectPreload.js'));
+const mainWindowOf = (electron: Electron) => windows(electron).find((w) => String(w.options.webPreferences?.preload).endsWith(`${path.sep}preload.js`));
+
+function connectEvent(win: any) {
+  return { sender: win.webContents, senderFrame: { url: win.webContents.getURL() } };
+}
+function appEvent(url: string) {
+  return { sender: { getURL: () => url }, senderFrame: { url } };
+}
+function bridgeHealthResponse(body: unknown = { status: 'ok', check: 'liveness' }) {
+  return { ok: true, json: async () => body };
+}
+
+describe('first run — connect to a server', () => {
+  it('opens only the connect window, with the connect preload and the local connect page', async () => {
+    const { electron } = await loadMain();
+    const connect = connectWindowOf(electron);
+    expect(windows(electron)).toHaveLength(1);
+    expect(connect.options.webPreferences).toMatchObject({ nodeIntegration: false, contextIsolation: true, sandbox: true });
+    expect(connect.loadFile).toHaveBeenCalledWith(expect.stringMatching(/static[\\/]connect\.html$/));
+  });
+
+  it('answers connect IPC only from the connect page inside the connect window', async () => {
+    const { electron } = await loadMain();
+    const connect = connectWindowOf(electron);
+    await expect(electron.ipcMain._invoke('desktop:connect', appEvent('https://evil.example.com/'), 'chat.example.com'))
+      .rejects.toThrow('Untrusted IPC sender');
+    const foreignWindow = { sender: {}, senderFrame: { url: connect.webContents.getURL() } };
+    await expect(electron.ipcMain._invoke('desktop:connect-context', foreignWindow)).rejects.toThrow('Untrusted IPC sender');
+    await expect(electron.ipcMain._invoke('desktop:connect-context', connectEvent(connect))).resolves.toMatchObject({
+      locale: 'tr', lastOrigin: null, strings: { connectButton: 'Bağlan' },
+    });
+  });
+
+  it('refuses an insecure address without probing or saving anything', async () => {
+    const { electron, userData } = await loadMain();
+    const result = await electron.ipcMain._invoke('desktop:connect', connectEvent(connectWindowOf(electron)), 'http://chat.example.com');
+    expect(result).toEqual({ ok: false, message: expect.stringContaining('https://') });
+    expect(electron.net.fetch).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(userData, 'desktop-settings.json'))).toBe(false);
+  });
+
+  it.each([
+    ['network error', () => Promise.reject(new Error('ENOTFOUND'))],
+    ['HTTP error', () => Promise.resolve({ ok: false, json: async () => ({}) })],
+    ['a server that is not Bridge', () => Promise.resolve(bridgeHealthResponse({ status: 'ok' }))],
+  ])('reports an unreachable server on %s', async (_label, response) => {
+    const { electron, userData } = await loadMain();
+    electron.net.fetch.mockImplementation(response);
+    const result = await electron.ipcMain._invoke('desktop:connect', connectEvent(connectWindowOf(electron)), 'chat.example.com');
+    expect(result).toEqual({ ok: false, message: 'Bu adreste bir Bridge sunucusuna ulaşılamadı.' });
+    expect(fs.existsSync(path.join(userData, 'desktop-settings.json'))).toBe(false);
+    expect(mainWindowOf(electron)).toBeUndefined();
+  });
+
+  it('saves a verified Bridge server, opens it and closes the connect window', async () => {
+    const { electron, userData } = await loadMain();
+    electron.net.fetch.mockResolvedValue(bridgeHealthResponse());
+    const connect = connectWindowOf(electron);
+    const result = await electron.ipcMain._invoke('desktop:connect', connectEvent(connect), ' chat.example.com/ignored/path ');
+
+    expect(result).toEqual({ ok: true });
+    expect(electron.net.fetch).toHaveBeenCalledWith('https://chat.example.com/api/health/live', expect.objectContaining({ redirect: 'error' }));
+    expect(JSON.parse(fs.readFileSync(path.join(userData, 'desktop-settings.json'), 'utf8'))).toEqual({ serverOrigin: 'https://chat.example.com' });
+    expect(mainWindowOf(electron).loadURL).toHaveBeenCalledWith('https://chat.example.com');
+    expect(connect.close).toHaveBeenCalled();
+  });
+});
+
+describe('returning user — the saved server', () => {
+  const ORIGIN = 'https://chat.example.com';
+
+  it('opens the saved server directly, with a sandboxed window and the Bridge icon', async () => {
+    const { electron } = await loadMain({ serverOrigin: ORIGIN });
+    const win = mainWindowOf(electron);
+    expect(connectWindowOf(electron)).toBeUndefined();
+    expect(win.loadURL).toHaveBeenCalledWith(ORIGIN);
+    expect(win.options).toMatchObject({ title: 'Bridge', webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } });
+    expect(win.options.frame).toBeUndefined();
+    expect(fs.existsSync(win.options.icon)).toBe(true);
+    const trayImage = electron.Tray.instances[0].image.source;
+    expect(fs.existsSync(trayImage)).toBe(true);
+    expect(electron.app.setAppUserModelId).toHaveBeenCalledTimes(process.platform === 'win32' ? 1 : 0);
+  });
+
+  it('shows native notifications only for the connected server page', async () => {
+    const { electron } = await loadMain({ serverOrigin: ORIGIN });
+    electron.ipcMain._trigger('bridge:notify', appEvent('https://evil.example.com/'), { title: 'x', body: 'y' });
+    expect(electron.Notification).not.toHaveBeenCalled();
+
+    electron.ipcMain._trigger('bridge:notify', appEvent(`${ORIGIN}/channels/1`), { title: 'T'.repeat(200), body: 'hello' });
+    expect(electron.Notification).toHaveBeenCalledTimes(1);
+    const notification = electron.Notification.mock.instances[0];
+    expect(notification.options).toMatchObject({ title: 'T'.repeat(160), body: 'hello' });
+    expect(notification.show).toHaveBeenCalled();
+  });
+
+  it('grants media and notification permissions only to the connected server', async () => {
+    const { electron } = await loadMain({ serverOrigin: ORIGIN });
+    const handler = electron.session.defaultSession.setPermissionRequestHandler.mock.calls[0][0];
+    const decide = (url: string, permission: string) => new Promise((resolve) => handler({ getURL: () => url }, permission, resolve));
+    await expect(decide(`${ORIGIN}/`, 'media')).resolves.toBe(true);
+    await expect(decide(`${ORIGIN}/`, 'geolocation')).resolves.toBe(false);
+    await expect(decide('https://evil.example.com/', 'media')).resolves.toBe(false);
+  });
+
+  it('adds a strict CSP only to server documents that lack one', async () => {
+    const { electron } = await loadMain({ serverOrigin: ORIGIN });
+    const handler = electron.session.defaultSession.webRequest.onHeadersReceived.mock.calls[0][0];
+    const run = (details: object) => new Promise<any>((resolve) => handler(details, resolve));
+
+    const added = await run({ url: `${ORIGIN}/`, resourceType: 'mainFrame', responseHeaders: {} });
+    const policy = added.responseHeaders['Content-Security-Policy'][0];
+    expect(policy).toContain("default-src 'self'");
+    expect(policy).not.toMatch(/unsafe-inline|unsafe-eval/);
+
+    const kept = { 'content-security-policy': ["default-src 'self'; script-src 'nonce-abc'"] };
+    await expect(run({ url: `${ORIGIN}/`, resourceType: 'mainFrame', responseHeaders: kept })).resolves.toEqual({ responseHeaders: kept });
+    await expect(run({ url: 'https://cdn.example.com/a.js', resourceType: 'script', responseHeaders: {} })).resolves.toEqual({ responseHeaders: {} });
+  });
+
+  it('keeps navigation on the server and hands everything else to the browser', async () => {
+    const { electron } = await loadMain({ serverOrigin: ORIGIN });
+    const win = mainWindowOf(electron);
+    const same = { preventDefault: jest.fn() };
+    win.webContents.emit('will-navigate', same, `${ORIGIN}/settings`);
+    expect(same.preventDefault).not.toHaveBeenCalled();
+
+    const away = { preventDefault: jest.fn() };
+    win.webContents.emit('will-navigate', away, 'https://example.org/');
+    expect(away.preventDefault).toHaveBeenCalled();
+    expect(electron.shell.openExternal).toHaveBeenCalledWith('https://example.org/');
+
+    const script = { preventDefault: jest.fn() };
+    win.webContents.emit('will-navigate', script, 'javascript:alert(1)');
+    expect(script.preventDefault).toHaveBeenCalled();
+    expect(electron.shell.openExternal).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('deep links', () => {
+  const ORIGIN = 'https://chat.example.com';
+
+  it('delivers a link that launched the app once the Bridge page has loaded', async () => {
+    const { electron, main } = await loadMain({ serverOrigin: ORIGIN, argv: ['bridge://invite/ABC123'] });
+    const win = mainWindowOf(electron);
+    const deepLinkSends = () => win.webContents.send.mock.calls.filter(([channel]: [string]) => channel === 'desktop:deeplink');
+    expect(main._testing.getPendingDeepLink()).toBe('bridge://invite/ABC123');
+    expect(deepLinkSends()).toHaveLength(0);
+
+    win.webContents.emit('did-finish-load');
+    expect(deepLinkSends()).toEqual([['desktop:deeplink', 'bridge://invite/ABC123']]);
+    expect(main._testing.getPendingDeepLink()).toBeNull();
+    expect(win.webContents.executeJavaScript).not.toHaveBeenCalled();
+  });
+
+  it('focuses the running window on a second launch and ignores links outside the allow-list', async () => {
+    const { electron } = await loadMain({ serverOrigin: ORIGIN });
+    const win = mainWindowOf(electron);
+    win.webContents.emit('did-finish-load');
+
+    const deepLinkSends = () => win.webContents.send.mock.calls.filter(([channel]: [string]) => channel === 'desktop:deeplink');
+    electron.app.emit('second-instance', {}, ['Bridge.exe', 'bridge://admin/exec']);
+    expect(win.show).toHaveBeenCalled();
+    expect(win.focus).toHaveBeenCalled();
+    expect(deepLinkSends()).toHaveLength(0);
+
+    electron.app.emit('second-instance', {}, ['Bridge.exe', 'bridge://channels/general-1']);
+    expect(deepLinkSends()).toEqual([['desktop:deeplink', 'bridge://channels/general-1']]);
+  });
+
+  it('does not open a window when another instance already holds the lock', async () => {
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-desktop-test-'));
+    tempDirs.push(userData);
+    let electron: Electron;
+    jest.isolateModules(() => {
+      electron = require('electron');
+      electron.app.getPath.mockImplementation(() => userData);
+      electron.app.requestSingleInstanceLock.mockReturnValue(false);
+      require('../main');
+    });
+    await flush();
+    expect(electron.app.quit).toHaveBeenCalled();
+    expect(windows(electron)).toHaveLength(0);
+  });
+});
+
+describe('shell chrome', () => {
+  const ORIGIN = 'https://chat.example.com';
+  const viewItems = (electron: Electron) => {
+    const template = electron.Menu.setApplicationMenu.mock.calls[0][0].items;
+    return template[1].submenu as Array<{ label?: string }>;
   };
-  (spawn as jest.Mock).mockReturnValue(proc);
-  return proc;
-};
 
-// ── http.get mock'u ────────────────────────────────────────────────────────────
-const mockHttpGetSuccess = (): void => {
-  (http as any).get = jest.fn((url: string, cb?: () => void) => {
-    if (cb) cb();
-    return { on: jest.fn() };
-  });
-};
-
-// ═════════════════════════════════════════════════════════════════════════════
-// MAIN.TS — IPC handler testleri
-// ═════════════════════════════════════════════════════════════════════════════
-
-describe("IPC: bridge:notify — bildirim handler'ı", () => {
-  let notifyHandler: (event: unknown, payload: { title: string; body: string }) => void;
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    notifyHandler = (_event, { title, body }) => {
-      if (!(Notification as any).isSupported()) return;
-      const n = new (Notification as any)({ title: title || 'Bridge', body: body || '' });
-      n.show();
-      return n;
-    };
+  it('offers DevTools only in development builds', async () => {
+    const dev = await loadMain({ serverOrigin: ORIGIN, packaged: false });
+    expect(viewItems(dev.electron).some((item) => item.label === 'DevTools')).toBe(true);
+    const installed = await loadMain({ serverOrigin: ORIGIN, packaged: true });
+    expect(viewItems(installed.electron).some((item) => item.label === 'DevTools')).toBe(false);
   });
 
-  it('Notification.isSupported() false ise bildirim oluşturmamalı', () => {
-    (Notification as any).isSupported.mockReturnValue(false);
-    const n = notifyHandler({}, { title: 'Test', body: 'Mesaj' });
-    expect(n).toBeUndefined();
-    expect(Notification).not.toHaveBeenCalled();
+  it('hides to the tray on close and explains it only once', async () => {
+    const { electron } = await loadMain({ serverOrigin: ORIGIN });
+    const win = mainWindowOf(electron);
+    for (let i = 0; i < 2; i++) {
+      const event = { preventDefault: jest.fn() };
+      win.emit('close', event);
+      expect(event.preventDefault).toHaveBeenCalled();
+    }
+    expect(win.hide).toHaveBeenCalledTimes(2);
+    expect(electron.Tray.instances[0].displayBalloon).toHaveBeenCalledTimes(1);
   });
 
-  it('Notification.isSupported() true ise n.show() çağrılmalı', () => {
-    (Notification as any).isSupported.mockReturnValue(true);
-    notifyHandler({}, { title: 'Yeni mesaj', body: 'Merhaba' });
-    expect(Notification).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Yeni mesaj', body: 'Merhaba' })
-    );
-    const instance = (Notification as any).mock.instances[0];
-    expect(instance.show).toHaveBeenCalled();
+  it('quits for real from the tray menu', async () => {
+    const { electron } = await loadMain({ serverOrigin: ORIGIN });
+    const items = electron.Tray.instances[0].setContextMenu.mock.calls[0][0].items as Array<{ label?: string; click?: () => void }>;
+    items.find((item) => item.label === 'Çıkış')!.click!();
+    expect(electron.app.quit).toHaveBeenCalled();
+    const event = { preventDefault: jest.fn() };
+    mainWindowOf(electron).emit('close', event);
+    expect(event.preventDefault).not.toHaveBeenCalled();
   });
 
-  it('title/body boşsa varsayılan değerleri kullanmalı', () => {
-    (Notification as any).isSupported.mockReturnValue(true);
-    notifyHandler({}, { title: '', body: '' });
-    expect(Notification).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Bridge', body: '' })
-    );
+  (process.platform === 'win32' ? it : it.skip)('Start with Windows is off by default and follows the tray checkbox', async () => {
+    const { electron, main } = await loadMain({ serverOrigin: ORIGIN });
+    const items = electron.Tray.instances[0].setContextMenu.mock.calls[0][0].items as Array<{ label?: string; checked?: boolean; click?: (i: object) => void }>;
+    const toggle = items.find((item) => item.label === 'Windows ile başlat')!;
+    expect(toggle.checked).toBe(false);
+    toggle.click!({ checked: true });
+    expect(electron.app.setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: true, args: ['--background'] });
+    expect(main.isStartWithWindowsEnabled()).toBe(true);
+    toggle.click!({ checked: false });
+    expect(main.isStartWithWindowsEnabled()).toBe(false);
+  });
+
+  it('stays in the tray when started by the login item', async () => {
+    const { electron } = await loadMain({ serverOrigin: ORIGIN, argv: ['--background'] });
+    const win = mainWindowOf(electron);
+    win.emit('ready-to-show');
+    expect(win.show).not.toHaveBeenCalled();
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-describe("IPC: server:getStatus — durum handler'ı", () => {
-  it('status ve pid döndürmeli', async () => {
-    const serverStatus = 'running';
-    const serverProcess = { pid: 9999 };
-
-    const handler = () => ({
-      status: serverStatus,
-      pid: serverProcess?.pid ?? null,
-      logs: [] as unknown[],
+describe('preloads', () => {
+  it('the web app gets notifications and the updater — no server process control', () => {
+    jest.isolateModules(() => {
+      const electron = require('electron');
+      require('../preload');
+      expect(Object.keys(electron._exposedApis).sort()).toEqual(['bridgeUpdater', 'electronBridge']);
+      (electron._exposedApis.electronBridge as { notify: (t: string, b: string) => void }).notify('Title', 'Body');
+      expect(electron.ipcRenderer.send).toHaveBeenCalledWith('bridge:notify', { title: 'Title', body: 'Body' });
     });
-
-    const result = handler();
-    expect(result.status).toBe('running');
-    expect(result.pid).toBe(9999);
-    expect(Array.isArray(result.logs)).toBe(true);
   });
 
-  it('process null iken pid null döndürmeli', () => {
-    const serverStatus = 'stopped';
-    const serverProcess: null = null;
-
-    const handler = () => ({
-      status: serverStatus,
-      pid: serverProcess ?? null,
-      logs: [] as unknown[],
+  it('holds deep links that arrive before the web app subscribes, then replays them once', () => {
+    jest.isolateModules(() => {
+      const electron = require('electron');
+      require('../preload');
+      electron.ipcRenderer._trigger('desktop:deeplink', 'bridge://invite/EARLY');
+      electron.ipcRenderer._trigger('desktop:deeplink', { not: 'a string' });
+      const bridge = electron._exposedApis.electronBridge as { onDeepLink: (cb: (url: string) => void) => () => void };
+      const received: string[] = [];
+      const unsubscribe = bridge.onDeepLink((url) => received.push(url));
+      expect(received).toEqual(['bridge://invite/EARLY']);
+      electron.ipcRenderer._trigger('desktop:deeplink', 'bridge://servers/LIVE');
+      expect(received).toEqual(['bridge://invite/EARLY', 'bridge://servers/LIVE']);
+      unsubscribe();
+      electron.ipcRenderer._trigger('desktop:deeplink', 'bridge://servers/AFTER');
+      expect(received).toHaveLength(2);
     });
-
-    const result = handler();
-    expect(result.status).toBe('stopped');
-    expect(result.pid).toBeNull();
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-describe('server control — startServerControlled mantığı', () => {
-  let mockProc: MockProcess;
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    mockProc = makeSpawnMock();
   });
 
-  it('spawn çağrıldığında stdout.on ve stderr.on dinleyici kaydeder', () => {
-    const proc = spawn('node', ['server/index.js'], { stdio: ['ignore', 'pipe', 'pipe'] }) as unknown as MockProcess;
-    proc.stdout.on('data', jest.fn());
-    proc.stderr.on('data', jest.fn());
-
-    expect(spawn).toHaveBeenCalledWith('node', ['server/index.js'], expect.any(Object));
-    expect(proc.stdout.on).toHaveBeenCalledWith('data', expect.any(Function));
-    expect(proc.stderr.on).toHaveBeenCalledWith('data', expect.any(Function));
-  });
-
-  it('process.kill("SIGTERM") çağrıldığında killed true olmalı', () => {
-    const proc = spawn('node', ['x']) as unknown as MockProcess;
-    proc.kill('SIGTERM');
-    expect(proc.killed).toBe(true);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-describe('handleDeepLink — derin bağlantı güvenlik doğrulaması', () => {
-  const DEEPLINK_PATTERNS: RegExp[] = [
-    /^bridge:\/\/servers\/([a-zA-Z0-9_-]{1,64})$/,
-    /^bridge:\/\/channels\/([a-zA-Z0-9_-]{1,64})$/,
-    /^bridge:\/\/invite\/([a-zA-Z0-9_-]{1,32})$/,
-  ];
-
-  function isAllowed(url: string): boolean {
-    return DEEPLINK_PATTERNS.some((p) => p.test(url));
-  }
-
-  it.each([
-    ['bridge://servers/abc123',  true],
-    ['bridge://channels/ch-xyz', true],
-    ['bridge://invite/CODE99',   true],
-    ['bridge://servers/' + 'a'.repeat(64), true],
-  ] as [string, boolean][])('geçerli URL kabul edilmeli: %s', (url, expected) => {
-    expect(isAllowed(url)).toBe(expected);
-  });
-
-  it.each([
-    ['bridge://admin/exec',                   false],
-    ['bridge://servers/' + 'a'.repeat(65),    false],
-    ['javascript:alert(1)',                   false],
-    ['bridge://invite/../../etc/passwd',      false],
-    ['bridge://servers/<script>xss</script>', false],
-    ['',                                      false],
-  ] as [string, boolean][])('geçersiz URL reddedilmeli: %s', (url, expected) => {
-    expect(isAllowed(url)).toBe(expected);
-  });
-
-  it('mainWindow null iken erken dönmeli (crash yok)', () => {
-    let mainWindow: BrowserWindow | null = null;
-    const handleDeepLink = (url: string): string => {
-      if (!mainWindow) return 'early-return';
-      if (!isAllowed(url)) return 'rejected';
-      (mainWindow as BrowserWindow).webContents.executeJavaScript(`...`);
-      return 'executed';
-    };
-    expect(handleDeepLink('bridge://servers/test')).toBe('early-return');
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-describe('waitForServer — retry mantığı', () => {
-  it('sunucu hemen yanıt verirse resolve etmeli', async () => {
-    mockHttpGetSuccess();
-
-    const waitForServer = (retries = 20): Promise<void> =>
-      new Promise((resolve, reject) => {
-        const check = (n: number): void => {
-          (http as any).get('http://localhost:3001', () => resolve())
-            .on('error', () => {
-              if (n <= 0) return reject(new Error('Server did not start'));
-              setTimeout(() => check(n - 1), 500);
-            });
-        };
-        check(retries);
-      });
-
-    await expect(waitForServer(3)).resolves.toBeUndefined();
-    expect((http as any).get).toHaveBeenCalledWith('http://localhost:3001', expect.any(Function));
-  });
-
-  it('tüm retrylar başarısız olursa reject etmeli', async () => {
-    (http as any).get = jest.fn((_url: string, _cb?: unknown) => {
-      const req = {
-        on: jest.fn((event: string, handler: (e: Error) => void) => {
-          if (event === 'error') handler(new Error('ECONNREFUSED'));
-        }),
-      };
-      return req;
+  it('the connect page gets only the connect API', async () => {
+    let electron: Electron;
+    jest.isolateModules(() => {
+      electron = require('electron');
+      require('../connectPreload');
     });
-    jest.useFakeTimers();
-
-    const waitForServer = (retries = 2): Promise<void> =>
-      new Promise((resolve, reject) => {
-        const check = (n: number): void => {
-          (http as any).get('http://localhost:3001', () => resolve())
-            .on('error', () => {
-              if (n <= 0) return reject(new Error('Server did not start'));
-              setTimeout(() => check(n - 1), 10);
-            });
-        };
-        check(retries);
-      });
-
-    const promise = waitForServer(0);
-    await expect(promise).rejects.toThrow('Server did not start');
-    jest.useRealTimers();
-  });
-});
-
-// ═════════════════════════════════════════════════════════════════════════════
-// ENTEGRASYON: main.ts handler kayıt + davranış doğrulaması
-// ═════════════════════════════════════════════════════════════════════════════
-
-describe('main.ts — IPC handler kayıt + davranış entegrasyon testleri', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-
-    (ipcMain as any).handle('server:getStatus', () => ({
-      status: 'running',
-      pid: 42,
-      logs: ['Server started'],
-    }));
-
-    (ipcMain as any).handle('bridge:getConfig', () => ({
-      version: '69.0.0',
-      features: ['canvas', 'stage', 'dm-call'],
-    }));
-
-    (ipcMain.on as jest.Mock)('server:start',   jest.fn());
-    (ipcMain.on as jest.Mock)('server:stop',    jest.fn());
-    (ipcMain.on as jest.Mock)('server:restart', jest.fn());
-    (ipcMain.on as jest.Mock)('bridge:notify',  jest.fn());
+    expect(Object.keys(electron._exposedApis)).toEqual(['bridgeConnect']);
+    await (electron._exposedApis.bridgeConnect as { connect: (a: unknown) => Promise<unknown> }).connect(undefined);
+    expect(electron.ipcRenderer.invoke).toHaveBeenCalledWith('desktop:connect', '');
   });
 
-  it('server:getStatus handler kayıtlı ve doğru veri döndürmeli', async () => {
-    const result = await (ipcMain as any)._invoke('server:getStatus', {});
-    expect(result.status).toBe('running');
-    expect(result.pid).toBe(42);
-    expect(Array.isArray(result.logs)).toBe(true);
-  });
-
-  it('bridge:getConfig handler kayıtlı ve version döndürmeli', async () => {
-    const result = await (ipcMain as any)._invoke('bridge:getConfig', {});
-    expect(result.version).toBe('69.0.0');
-    expect(result.features).toContain('canvas');
-  });
-
-  it('kayıtsız kanal _invoke edilince hata fırlatmalı', async () => {
-    await expect((ipcMain as any)._invoke('nonexistent:channel', {}))
-      .rejects.toThrow('No handler for channel: nonexistent:channel');
-  });
-
-  it('server:start kanalı ipcMain.on ile kayıtlı olmalı', () => {
-    const onChannels = (ipcMain.on as jest.Mock).mock.calls.map(([ch]: [string]) => ch);
-    expect(onChannels).toContain('server:start');
-  });
-
-  it('server:stop kanalı ipcMain.on ile kayıtlı olmalı', () => {
-    const onChannels = (ipcMain.on as jest.Mock).mock.calls.map(([ch]: [string]) => ch);
-    expect(onChannels).toContain('server:stop');
-  });
-
-  it('bridge:notify kanalı ipcMain.on ile kayıtlı olmalı', () => {
-    const onChannels = (ipcMain.on as jest.Mock).mock.calls.map(([ch]: [string]) => ch);
-    expect(onChannels).toContain('bridge:notify');
-  });
-
-  it('server:start tetiklenince handler çağrılmalı', () => {
-    (ipcMain as any)._trigger('server:start', {});
-    const startHandler = (ipcMain.on as jest.Mock).mock.calls
-      .find(([ch]: [string]) => ch === 'server:start')?.[1];
-    expect(startHandler).toBeDefined();
-  });
-});
-
-// ═════════════════════════════════════════════════════════════════════════════
-// PRELOAD.TS — contextBridge.exposeInMainWorld testleri
-// ═════════════════════════════════════════════════════════════════════════════
-
-describe('preload.ts — electronBridge API kayıt ve mesajlaşma', () => {
-  interface ElectronBridgeAPI {
-    notify: (title: string, body: string) => void;
-    onNotificationsToggle: (cb: (enabled: boolean) => void) => void;
-  }
-
-  let electronBridge: ElectronBridgeAPI;
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    electronBridge = {
-      notify: (title, body) => ipcRenderer.send('bridge:notify', { title, body }),
-      onNotificationsToggle: (cb) =>
-        (ipcRenderer.on as jest.Mock)('tray:notifications-toggle', (_: unknown, enabled: boolean) => cb(enabled)),
-    };
-    contextBridge.exposeInMainWorld('electronBridge', electronBridge);
-  });
-
-  it('contextBridge.exposeInMainWorld çağrılmış olmalı', () => {
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledWith('electronBridge', expect.any(Object));
-  });
-
-  it('electronBridge.notify() ipcRenderer.send ile bridge:notify kanalına mesaj göndermeli', () => {
-    electronBridge.notify('Test', 'Mesaj');
-    expect(ipcRenderer.send).toHaveBeenCalledWith('bridge:notify', { title: 'Test', body: 'Mesaj' });
-  });
-
-  it('electronBridge.onNotificationsToggle() ipcRenderer.on kaydeder', () => {
-    const cb = jest.fn();
-    electronBridge.onNotificationsToggle(cb);
-    expect(ipcRenderer.on).toHaveBeenCalledWith('tray:notifications-toggle', expect.any(Function));
-  });
-});
-
-describe('preload.ts — serverControl API kayıt ve IPC köprüsü', () => {
-  interface ServerControlAPI {
-    start:     () => void;
-    stop:      () => void;
-    restart:   () => void;
-    getStatus: () => Promise<{ status: string; pid: number | null; logs: unknown[] }>;
-    onStatus:  (cb: (data: { status: string; pid: number | null }) => void) => void;
-    onLog:     (cb: (data: { t: number; level: string; line: string }) => void) => void;
-    offStatus: (cb: (...args: unknown[]) => void) => void;
-    offLog:    (cb: (...args: unknown[]) => void) => void;
-  }
-
-  let serverControl: ServerControlAPI;
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    serverControl = {
-      start:     ()    => ipcRenderer.send('server:start'),
-      stop:      ()    => ipcRenderer.send('server:stop'),
-      restart:   ()    => ipcRenderer.send('server:restart'),
-      getStatus: ()    => ipcRenderer.invoke('server:getStatus') as Promise<any>,
-      onStatus:  (cb)  => (ipcRenderer.on as jest.Mock)('server:status',
-        (_: unknown, data: { status: string; pid: number | null }) => cb(data)),
-      onLog:     (cb)  => (ipcRenderer.on as jest.Mock)('server:log',
-        (_: unknown, data: { t: number; level: string; line: string }) => cb(data)),
-      offStatus: (cb)  => ipcRenderer.removeListener('server:status', cb),
-      offLog:    (cb)  => ipcRenderer.removeListener('server:log', cb),
-    };
-    contextBridge.exposeInMainWorld('serverControl', serverControl);
-  });
-
-  it('start() server:start kanalına send etmeli', () => {
-    serverControl.start();
-    expect(ipcRenderer.send).toHaveBeenCalledWith('server:start');
-  });
-
-  it('stop() server:stop kanalına send etmeli', () => {
-    serverControl.stop();
-    expect(ipcRenderer.send).toHaveBeenCalledWith('server:stop');
-  });
-
-  it('restart() server:restart kanalına send etmeli', () => {
-    serverControl.restart();
-    expect(ipcRenderer.send).toHaveBeenCalledWith('server:restart');
-  });
-
-  it('getStatus() ipcRenderer.invoke ile server:getStatus çağrılmalı', async () => {
-    (ipcRenderer.invoke as jest.Mock).mockResolvedValue({ status: 'running', pid: 42, logs: [] });
-    const result = await serverControl.getStatus();
-    expect(ipcRenderer.invoke).toHaveBeenCalledWith('server:getStatus');
-    expect(result.status).toBe('running');
-  });
-
-  it('onStatus(cb) tray eventi tetiklenince cb çağrılmalı', () => {
-    const cb = jest.fn();
-    serverControl.onStatus(cb);
-    const [, registeredCb] = (ipcRenderer.on as jest.Mock).mock.calls
-      .find(([ch]: [string]) => ch === 'server:status') ?? [];
-    registeredCb({}, { status: 'stopped', pid: null });
-    expect(cb).toHaveBeenCalledWith({ status: 'stopped', pid: null });
-  });
-
-  it('offStatus(cb) removeListener çağrılmalı', () => {
-    const cb = jest.fn();
-    serverControl.offStatus(cb);
-    expect(ipcRenderer.removeListener).toHaveBeenCalledWith('server:status', cb);
-  });
-});
-
-describe('preload.ts — bridgeUpdater API kayıt ve IPC köprüsü', () => {
-  interface BridgeUpdateState {
-    phase: string;
-    currentVersion: string;
-    availableVersion: string | null;
-    percent: number;
-    canInstall: boolean;
-    isPackaged: boolean;
-  }
-
-  interface BridgeUpdaterAPI {
-    getStatus: () => Promise<BridgeUpdateState>;
-    check:     () => Promise<BridgeUpdateState>;
-    install:   () => Promise<BridgeUpdateState>;
-    onStatus:  (cb: (data: BridgeUpdateState) => void) => (() => void);
-  }
-
-  let bridgeUpdater: BridgeUpdaterAPI;
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    bridgeUpdater = {
-      getStatus: () => ipcRenderer.invoke('updater:getStatus') as Promise<BridgeUpdateState>,
-      check:     () => ipcRenderer.invoke('updater:check') as Promise<BridgeUpdateState>,
-      install:   () => ipcRenderer.invoke('updater:install') as Promise<BridgeUpdateState>,
-      onStatus:  (cb) => {
-        const listener = (_: unknown, data: BridgeUpdateState): void => cb(data);
-        (ipcRenderer.on as jest.Mock)('updater:status', listener);
-        return () => ipcRenderer.removeListener('updater:status', listener);
-      },
-    };
-    contextBridge.exposeInMainWorld('bridgeUpdater', bridgeUpdater);
-  });
-
-  it('contextBridge bridgeUpdater API kaydını yapmalı', () => {
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledWith('bridgeUpdater', expect.any(Object));
-  });
-
-  it('getStatus/check/install doğru IPC kanallarını çağırmalı', async () => {
-    const status = { phase: 'downloaded', currentVersion: '1.0.0', availableVersion: '1.1.0', percent: 100, canInstall: true, isPackaged: true };
-    (ipcRenderer.invoke as jest.Mock).mockResolvedValue(status);
-
-    await expect(bridgeUpdater.getStatus()).resolves.toEqual(status);
-    await bridgeUpdater.check();
-    await bridgeUpdater.install();
-
-    expect(ipcRenderer.invoke).toHaveBeenCalledWith('updater:getStatus');
-    expect(ipcRenderer.invoke).toHaveBeenCalledWith('updater:check');
-    expect(ipcRenderer.invoke).toHaveBeenCalledWith('updater:install');
-  });
-
-  it('onStatus status eventini dinlemeli ve unsubscribe removeListener çağırmalı', () => {
-    const cb = jest.fn();
-    const off = bridgeUpdater.onStatus(cb);
-    const [, registeredCb] = (ipcRenderer.on as jest.Mock).mock.calls
-      .find(([ch]: [string]) => ch === 'updater:status') ?? [];
-    const payload = { phase: 'downloading', currentVersion: '1.0.0', availableVersion: '1.1.0', percent: 42, canInstall: false, isPackaged: true };
-    registeredCb({}, payload);
-    expect(cb).toHaveBeenCalledWith(payload);
-
-    off();
-    expect(ipcRenderer.removeListener).toHaveBeenCalledWith('updater:status', registeredCb);
+  it('the connect page is the file main.ts trusts', async () => {
+    const { main } = await loadMain();
+    expect(pathToFileURL(main._testing.connectPagePath()).href).toMatch(/\/static\/connect\.html$/);
+    expect(fs.existsSync(main._testing.connectPagePath())).toBe(true);
   });
 });

@@ -14,8 +14,16 @@ process.env.NODE_ENV = 'test';
 
 // ── SQLite testleri ───────────────────────────────────────────────────────────
 
+/** Testin kurdugu, islem (transaction) semantigi tasiyan minimal SQLite ikizi. */
+interface SqliteTransactionDouble {
+  _transaction<T>(fn: (db: SqliteTransactionDouble) => T): T;
+  _insert(val: string): void;
+  _count(): number;
+  _clear(): void;
+}
+
 describe('db._transaction — SQLite', () => {
-  let db;
+  let db: SqliteTransactionDouble;
 
   beforeAll(() => {
     let rows: Array<{ id: number; val: string }> = [];
@@ -107,9 +115,13 @@ describe('db._transaction — SQLite', () => {
 // ── PostgreSQL withTransaction testleri ──────────────────────────────────────
 
 describe('db._transaction — PostgreSQL (pool mock)', () => {
-  let withTransaction;
-  let mockClient;
-  let mockPool;
+  /** `pg` istemcisinin islem yolunda kullanilan yuzeyi. */
+  type PgClientDouble = { query: jest.Mock; release: jest.Mock };
+  type PgPoolDouble = { connect: jest.Mock };
+
+  let withTransaction: <T>(fn: (client: PgClientDouble) => T | Promise<T>) => Promise<T>;
+  let mockClient: PgClientDouble;
+  let mockPool: PgPoolDouble;
 
   beforeEach(() => {
     // Client mock
@@ -197,3 +209,10 @@ describe('db._transaction — PostgreSQL (pool mock)', () => {
     expect(mockClient.release).toHaveBeenCalledTimes(1);
   });
 });
+
+// Bu dosyada ust duzey import/export yoktu; TypeScript onu GLOBAL
+// SCRIPT sayiyor ve ust duzey adlari diger ayni durumdaki test
+// dosyalariyla CAKISIYORDU (TS2393/TS2451, ve arguman tiplerinin
+// baska bir dosyanin bildirimine cozulmesi). Bu satir modul kapsami
+// ilan eder; calisma zamaninda hicbir sey degistirmez.
+export {};

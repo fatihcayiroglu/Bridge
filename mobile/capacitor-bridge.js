@@ -107,6 +107,7 @@
         await SplashScreen?.hide({ fadeOutDuration: 300 });
       } catch (_) {
       }
+      window.hideSplash?.();
     });
     async function applyStatusBar(isDark) {
       try {
@@ -172,14 +173,8 @@
       }
     };
     window.bridgeBadge = bridgeBadge;
-    async function setupPushNotifications() {
+    async function attachPushListeners() {
       if (!PushNotifications) return;
-      const permission = await PushNotifications.requestPermissions();
-      if (permission.receive !== "granted") {
-        console.warn("[Bridge Mobile] Push izni verilmedi");
-        return;
-      }
-      await PushNotifications.register();
       PushNotifications.addListener("registration", async (token) => {
         try {
           const jwt = localStorage.getItem("bridge_token");
@@ -207,6 +202,48 @@
         }
       });
     }
+    async function initPushNotifications() {
+      if (!PushNotifications) return;
+      await attachPushListeners();
+      try {
+        const current = await PushNotifications.checkPermissions();
+        if (current.receive === "granted") {
+          await PushNotifications.register();
+        } else {
+          console.debug("[Bridge Mobile] Push izni yok \u2014 SORULMADI (baglam icinde istenecek).");
+        }
+      } catch (err) {
+        console.warn("[Bridge Mobile] Push izin durumu okunamadi:", err);
+      }
+    }
+    const bridgePush = {
+      async enable() {
+        if (!PushNotifications) return false;
+        try {
+          const permission = await PushNotifications.requestPermissions();
+          if (permission.receive !== "granted") {
+            console.warn("[Bridge Mobile] Push izni verilmedi");
+            return false;
+          }
+          await PushNotifications.register();
+          return true;
+        } catch (err) {
+          console.error("[Bridge Mobile] Push etkinlestirilemedi:", err);
+          return false;
+        }
+      },
+      async status() {
+        if (!PushNotifications) return "unknown";
+        try {
+          const current = await PushNotifications.checkPermissions();
+          const value = current.receive;
+          return value === "granted" || value === "denied" || value === "prompt" ? value : "unknown";
+        } catch {
+          return "unknown";
+        }
+      }
+    };
+    window.bridgePush = bridgePush;
     async function showLocalNotification(title, body, data) {
       if (!LocalNotifications) return;
       try {
@@ -216,8 +253,13 @@
             body,
             id: Date.now(),
             extra: data,
-            smallIcon: "ic_stat_bridge",
-            iconColor: "#2d9cdb"
+            // [FINAL21 Faz 3] `ic_stat_bridge` DEPODA YOKTU: manifest ve
+            // kaynaklar `ic_notification` tanimliyor. Var olmayan bir drawable
+            // istendiginde Android uygulama ikonuna duser ve durum cubugunda
+            // BEYAZ KARE gosterir. Renk de markadan sapmisti (#2d9cdb);
+            // kanonik deger `client/css/tokens.css` → hsl(210,88%,58%).
+            smallIcon: "ic_notification",
+            iconColor: "#3694F2"
           }]
         });
       } catch (_) {
@@ -389,22 +431,45 @@
         if (state.isActive) void bridgeBadge.clear();
       });
       App.addListener("backButton", () => {
-        const modal = document.querySelector(".modal.active, .overlay.active, [data-modal].active");
-        if (modal) {
-          modal.classList.remove("active");
+        const dialogs = Array.from(
+          document.querySelectorAll('[role="dialog"][aria-modal="true"]')
+        ).filter((el) => el.offsetParent !== null || el.getClientRects().length > 0);
+        if (dialogs.length > 0) {
+          const top = dialogs[dialogs.length - 1];
+          top.dispatchEvent(new KeyboardEvent("keydown", {
+            key: "Escape",
+            code: "Escape",
+            bubbles: true,
+            cancelable: true
+          }));
+          document.dispatchEvent(new KeyboardEvent("keydown", {
+            key: "Escape",
+            code: "Escape",
+            bubbles: true,
+            cancelable: true
+          }));
           void bridgeHaptic.light();
           return;
         }
-        const inChannel = document.querySelector('[data-view="channel"]');
-        if (inChannel) {
-          window.dispatchEvent(new CustomEvent("bridge:navigate", { detail: { view: "server-list" } }));
+        const backdrop = document.getElementById("mobile-backdrop");
+        if (backdrop?.classList.contains("active")) {
+          backdrop.click();
+          void bridgeHaptic.light();
+          return;
+        }
+        const chatTab = document.getElementById("mnav-chat");
+        const channelsTab = document.getElementById("mnav-channels");
+        const narrow = channelsTab !== null && channelsTab.offsetParent !== null;
+        if (narrow && chatTab?.classList.contains("active")) {
+          channelsTab.click();
+          void bridgeHaptic.light();
           return;
         }
         App?.minimizeApp();
       });
     }
     window.addEventListener("load", () => {
-      void setupPushNotifications();
+      void initPushNotifications();
       console.log("[Bridge Mobile] Capacitor entegrasyonu haz\u0131r \u2014", Capacitor.getPlatform());
       console.log("[Bridge Mobile] \xD6zellikler: push, badge, deep-link, biometric, camera, share");
     });

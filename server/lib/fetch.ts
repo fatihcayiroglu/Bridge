@@ -9,9 +9,25 @@
 //   - DNS çözümlemesi bağlantı anında yeniden doğrulanır (DNS rebinding koruması)
 //   - SSRF_ALLOWLIST env (virgülle ayrılmış hostname listesi) whitelist geçişi sağlar
 
-import dns from 'dns/promises';
 import net from 'net';
 import { Agent, fetch as undiciFetch } from 'undici';
+
+// SSRF politikasi ARTIK BURADA YASAMIYOR — tek kaynak `lib/ssrfGuard.ts`.
+// Bu dosya yalnizca TASIYICI tarafini ekler: baglanti aninda yeniden
+// dogrulayan undici dispatcher'i ve yonlendirme zinciri denetimi.
+import {
+  SSRFError,
+  assertTargetAllowed,
+  assertAddressesNotPrivate,
+  resolveHostnameAddresses,
+} from './ssrfGuard';
+import { envSafeInt } from './envNumbers';
+import { BRIDGE_VERSION } from './version';
+
+// Geriye donuk uyumluluk: bu semboller uzun suredir `lib/fetch.ts`den
+// import ediliyor. Kanonik tanim `./ssrfGuard`dir; burada yalnizca yeniden
+// disa aktarilir (KOPYA DEGIL).
+export { SSRFError, isPrivateIP, assertUrlIsPublic } from './ssrfGuard';
 
 
 function anyAbortSignal(signals: readonly (AbortSignal | null | undefined)[]): AbortSignal | undefined {
@@ -61,110 +77,28 @@ function anyAbortSignal(signals: readonly (AbortSignal | null | undefined)[]): A
   return controller.signal;
 }
 
-
-let PKG_VERSION = '0.0.0';
-(async () => {
-  try {
-    const pkg = await import('../../package.json') as { default?: { version?: string }; version?: string };
-    PKG_VERSION = pkg.default?.version ?? pkg.version ?? '0.0.0';
-  } catch { /* package.json okunamadı — varsayılan kullan */ }
-})();
-
-const DEFAULT_UA  = `Bridge/${PKG_VERSION} (Node/${process.version})`;
-const DEFAULT_MS  = parseInt(process.env.HTTP_FETCH_TIMEOUT_MS || '10000', 10);
-
-// Whitelist: SSRF_ALLOWLIST="idp.example.com,accounts.google.com"
-function isSsrfAllowlisted(hostname: string): boolean {
-  const list = (process.env.SSRF_ALLOWLIST || '')
-    .split(',')
-    .map(s => s.trim().toLowerCase())
-    .filter(Boolean);
-  return list.includes(hostname);
+/** DNS/SSRF hazırlığı da HTTP isteğiyle aynı uçtan uca süre sınırına tabidir. */
+function withAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error('Fetch aborted'));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new Error('Fetch aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }
 
-// ── Özel IP aralıkları (SSRF hedefleri) ─────────────────────────────────────
-// IPv4 CIDR blokları — RFC 1918, RFC 5735, RFC 3927, Cloud metadata
-const PRIVATE_RANGES_V4: Array<{ base: number; mask: number; label: string }> = [
-  { base: ip4ToInt('0.0.0.0'),       mask: 0xff000000, label: '0.0.0.0/8'       },
-  { base: ip4ToInt('10.0.0.0'),      mask: 0xff000000, label: '10.0.0.0/8'      },
-  { base: ip4ToInt('100.64.0.0'),    mask: 0xffc00000, label: '100.64.0.0/10'   }, // CGNAT
-  { base: ip4ToInt('127.0.0.0'),     mask: 0xff000000, label: '127.0.0.0/8'     }, // loopback
-  { base: ip4ToInt('169.254.0.0'),   mask: 0xffff0000, label: '169.254.0.0/16'  }, // link-local + AWS metadata
-  { base: ip4ToInt('172.16.0.0'),    mask: 0xfff00000, label: '172.16.0.0/12'   },
-  { base: ip4ToInt('192.0.0.0'),     mask: 0xffffff00, label: '192.0.0.0/24'    },
-  { base: ip4ToInt('192.168.0.0'),   mask: 0xffff0000, label: '192.168.0.0/16'  },
-  { base: ip4ToInt('198.18.0.0'),    mask: 0xfffe0000, label: '198.18.0.0/15'   },
-  { base: ip4ToInt('198.51.100.0'),  mask: 0xffffff00, label: '198.51.100.0/24' }, // TEST-NET-2
-  { base: ip4ToInt('203.0.113.0'),   mask: 0xffffff00, label: '203.0.113.0/24'  }, // TEST-NET-3
-  { base: ip4ToInt('224.0.0.0'),     mask: 0xf0000000, label: '224.0.0.0/4'     }, // multicast
-  { base: ip4ToInt('240.0.0.0'),     mask: 0xf0000000, label: '240.0.0.0/4'     }, // reserved
-  { base: ip4ToInt('255.255.255.255'), mask: 0xffffffff, label: '255.255.255.255' },
-];
 
-// IPv6 — loopback, link-local, ULA, mapped
-const PRIVATE_PREFIXES_V6 = [
-  '::1',            // loopback
-  '::ffff:',        // IPv4-mapped
-  '64:ff9b::',      // IPv4-translated
-  'fc',             // ULA fc00::/7
-  'fd',             // ULA fd00::/7
-  'fe80',           // link-local
-  'ff',             // multicast
-  '2002:a',         // 6to4 RFC1918
-  '2002:ac1',       // 6to4 RFC1918 172.16
-  '2002:c0a8',      // 6to4 RFC1918 192.168
-];
-
-function ip4ToInt(ip: string): number {
-  return ip.split('.').reduce((acc, octet) => (acc << 8) | parseInt(octet, 10), 0) >>> 0;
-}
-
-function isPrivateIPv4(ip: string): boolean {
-  if (!net.isIPv4(ip)) return false;
-  const n = ip4ToInt(ip);
-  return PRIVATE_RANGES_V4.some(({ base, mask }) => (n & mask) === (base & mask));
-}
-
-function isPrivateIPv6(ip: string): boolean {
-  if (!net.isIPv6(ip)) return false;
-  const lower = ip.toLowerCase();
-  // ::1 tam eşleşme
-  if (lower === '::1') return true;
-  return PRIVATE_PREFIXES_V6.some(prefix => lower.startsWith(prefix));
-}
-
-export function isPrivateIP(ip: string): boolean {
-  return isPrivateIPv4(ip) || isPrivateIPv6(ip);
-}
-
-function assertAddressesNotPrivate(hostname: string, addresses: string[]): void {
-  for (const addr of addresses) {
-    if (isPrivateIP(addr)) {
-      throw new SSRFError(
-        `SSRF: ${hostname} resolved to private IP ${addr}`,
-        hostname,
-        addr,
-      );
-    }
-  }
-}
-
-/** Hostname için A/AAAA kayıtlarını çöz ve private IP kontrolü yap. */
-async function resolveHostnameAddresses(hostname: string): Promise<string[]> {
-  try {
-    return await dns.resolve(hostname);
-  } catch {
-    try {
-      return await dns.resolve6(hostname);
-    } catch {
-      return [];
-    }
-  }
-}
+const DEFAULT_UA  = `Bridge/${BRIDGE_VERSION} (Node/${process.version})`;
+const DEFAULT_MS = envSafeInt('HTTP_FETCH_TIMEOUT_MS', 10_000, { min: 100, max: 10 * 60_000 });
+/** Yonlendirme zinciri ust siniri — her adim ayrica SSRF denetiminden gecer. */
+const MAX_REDIRECTS = envSafeInt('HTTP_MAX_REDIRECTS', 5, { min: 0, max: 20 });
 
 /**
- * Bağlantı anında DNS yeniden çözülür — DNS rebinding saldırılarına karşı
+ * Baglanti aninda DNS yeniden cozulur — DNS rebinding saldirilarina karsi
  * lookup callback'i private IP'leri reddeder.
+ *
+ * Kural `./ssrfGuard`dan gelir; burada yalnizca undici'ye baglanir.
  */
 function createSsrfSafeDispatcher(hostname: string): Agent {
   return new Agent({
@@ -191,6 +125,9 @@ function createSsrfSafeDispatcher(hostname: string): Agent {
             }
 
             const first = entries[0];
+            // Boş bir sonuç kümesi `undefined` verir; bunu adres gibi
+            // geçirmek çağıranı bozardı.
+            if (!first) { callback(new Error('DNS lookup returned no address'), []); return; }
             callback(null, first.address, first.family);
           } catch (err) {
             callback(err as Error, []);
@@ -208,45 +145,30 @@ function createSsrfSafeDispatcher(hostname: string): Agent {
  * Bağlantı anında lookup callback'i ile ikinci doğrulama yapılır (DNS rebinding).
  */
 async function assertNotSSRF(url: string | URL): Promise<{ dispatcher?: Agent }> {
-  const parsed = typeof url === 'string' ? new URL(url) : url;
-  const hostname = parsed.hostname.toLowerCase();
+  const verdict = await assertTargetAllowed(url);
 
-  // Protokol kontrolü — sadece http/https
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new SSRFError(`Protocol not allowed: ${parsed.protocol}`, hostname);
+  // Allowlist ve ciplak IP: dogrulama zaten tamamlandi, dispatcher gereksiz.
+  if (verdict.allowlisted || verdict.bareIp) return {};
+
+  // ── KAPATILAN FAIL-OPEN ──────────────────────────────────────────────────
+  // Burasi eskiden "adres cozulemedi" durumunda `{}` donup istegi
+  // GUARD'SIZ birakiyordu: undici kendi resolver'ina duser ve BIZIM
+  // dogrulamadigimiz bir adrese baglanabilirdi. Gecici DNS hatasinin tum
+  // giden istekleri kirmamasi icin bilincli bir odundu — ama odun
+  // GEREKSIZDI:
+  //
+  // `resolveHostnameAddresses` zaten IKI yol dener; once `dns.resolve4/6`,
+  // sonra sistem cozumleyicisi (`dns.lookup`, /etc/hosts dahil) — yani
+  // undici'nin kullanacagi yolu da kapsar. Ikisi birden bos donduyse ad
+  // GERCEKTEN cozulemiyordur ve istek nasilsa basarisiz olacaktir.
+  //
+  // Dolayisiyla burada durmak islevsel bir kayip degil, yalnizca hatanin
+  // GUVENLI tarafta olmasidir: dogrulanmamis hicbir hedefe baglanilmaz.
+  if (!verdict.addresses.length) {
+    throw new SSRFError(`Hostname could not be resolved: ${verdict.hostname}`, verdict.hostname);
   }
 
-  // Whitelist bypass
-  if (isSsrfAllowlisted(hostname)) return {};
-
-  // Hostname zaten IP mi?
-  const bareIp = hostname.replace(/^\[|\]$/g, '');
-  if (net.isIPv4(bareIp) || net.isIPv6(bareIp)) {
-    if (isPrivateIP(bareIp)) {
-      throw new SSRFError(`Request to private IP address is not allowed: ${bareIp}`, hostname);
-    }
-    return {};
-  }
-
-  const addresses = await resolveHostnameAddresses(hostname);
-  if (!addresses.length) {
-    // DNS çözüm başarısız — undici varsayılan resolver'a bırak
-    return {};
-  }
-
-  assertAddressesNotPrivate(hostname, addresses);
-  return { dispatcher: createSsrfSafeDispatcher(hostname) };
-}
-
-export class SSRFError extends Error {
-  hostname: string;
-  resolvedIp?: string;
-  constructor(message: string, hostname: string, resolvedIp?: string) {
-    super(message);
-    this.name = 'SSRFError';
-    this.hostname = hostname;
-    this.resolvedIp = resolvedIp;
-  }
+  return { dispatcher: createSsrfSafeDispatcher(verdict.hostname) };
 }
 
 export interface FetchOptions extends RequestInit {
@@ -277,15 +199,18 @@ export async function fetchT(url: string | URL, opts: FetchOptions = {}): Promis
     ...rest
   } = opts;
 
-  let dispatcher: Agent | undefined;
-  if (!skipSsrfCheck) {
-    ({ dispatcher } = await assertNotSSRF(url));
-  }
-
+  // Süre sinyali SSRF/DNS hazırlığından ÖNCE başlar. Önceki sıra, DNS çözümü
+  // takıldığında AbortSignal'ın hiç oluşturulmamasına ve çağrının sınırsız
+  // beklemesine yol açıyordu.
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const signal = callerSignal
     ? anyAbortSignal([callerSignal as AbortSignal, timeoutSignal])
     : timeoutSignal;
+
+  let dispatcher: Agent | undefined;
+  if (!skipSsrfCheck) {
+    ({ dispatcher } = await withAbort(assertNotSSRF(url), signal));
+  }
 
   const headers: Record<string, string> = {
     'User-Agent': DEFAULT_UA,
@@ -293,9 +218,83 @@ export async function fetchT(url: string | URL, opts: FetchOptions = {}): Promis
   };
 
   const { body, ...safeRest } = rest;
-  const init = { signal, headers, dispatcher, ...safeRest } as Parameters<typeof undiciFetch>[1];
+
+  // ════════════════════════════════════════════════════════════════════════
+  // YONLENDIRMELER HER ADIMDA YENIDEN DENETLENIR
+  // ════════════════════════════════════════════════════════════════════════
+  // ONCEKI HALI undici'nin varsayilan `redirect: 'follow'` davranisina
+  // birakiyordu ve SSRF denetimi YALNIZCA ILK adrese uygulaniyordu.
+  // Dogrudan olculdu (yerel kanit sunucusu ile):
+  //
+  //     http://<ilk hedef>/      → 302 Location: http://127.0.0.1:38111/
+  //     sonuc: 200 "INTERNAL_SECRET_DATA"   ← ic veri OKUNDU ve DONDURULDU
+  //
+  // `assertNotSSRF` bazi durumlarda dispatcher URETMEDEN gecer:
+  //   · host SSRF_ALLOWLIST'te ise
+  //   · host duz bir GENEL IP ise
+  //   · DNS cozumu bos donerse
+  // Bu durumlarda hicbir baglanti-ani denetimi kalmaz ve yonlendirme
+  // ZINCIRI ozel bir adrese inebilir. Yani saldirgan KENDI genel sunucusunu
+  // hedef gosterip oradan ic aga sicrayabilirdi.
+  //
+  // COZUM: yonlendirmeler ELLE izlenir; HER adres yeniden dogrulanir.
+  // Cagiran acikca `redirect` belirtmisse ona saygi duyulur.
+  const explicitRedirect = (safeRest as { redirect?: string }).redirect;
+  const followManually = !skipSsrfCheck && explicitRedirect === undefined;
+
+  const init = {
+    signal, headers, dispatcher,
+    ...safeRest,
+    ...(followManually ? { redirect: 'manual' as const } : {}),
+  } as Parameters<typeof undiciFetch>[1];
   if (body !== null && body !== undefined) (init as { body?: typeof body }).body = body;
-  return undiciFetch(url, init) as unknown as Promise<Response>;
+
+  if (!followManually) {
+    return undiciFetch(url, init) as unknown as Promise<Response>;
+  }
+
+  let currentUrl = typeof url === 'string' ? url : url.toString();
+  let currentInit = init;
+
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const res = await undiciFetch(currentUrl, currentInit) as unknown as Response;
+
+    const isRedirect = res.status === 301 || res.status === 302 || res.status === 303
+      || res.status === 307 || res.status === 308;
+    if (!isRedirect) return res;
+
+    const location = res.headers.get('location');
+    if (!location) return res;                       // Location yoksa yanit oldugu gibi doner
+
+    if (hop === MAX_REDIRECTS) {
+      throw new SSRFError(
+        `Too many redirects (>${MAX_REDIRECTS})`,
+        (() => { try { return new URL(currentUrl).hostname; } catch { return currentUrl; } })(),
+      );
+    }
+
+    // Goreli Location mutlaklastirilir.
+    const nextUrl = new URL(location, currentUrl).toString();
+
+    // HER ADIM yeniden dogrulanir — asil duzeltme budur.
+    const { dispatcher: nextDispatcher } = await withAbort(assertNotSSRF(nextUrl), signal);
+
+    // 303 ve POST→301/302 icin yontem GET'e duser ve govde birakilir (RFC 9110).
+    const method = String((currentInit as { method?: string }).method ?? 'GET').toUpperCase();
+    const downgrade = res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST');
+
+    const nextInit = { ...currentInit, dispatcher: nextDispatcher } as typeof currentInit;
+    if (downgrade) {
+      (nextInit as { method?: string }).method = 'GET';
+      delete (nextInit as { body?: unknown }).body;
+    }
+
+    currentUrl = nextUrl;
+    currentInit = nextInit;
+  }
+
+  // Ulasilamaz: dongu ya doner ya firlatir.
+  throw new SSRFError('Redirect handling failed', currentUrl);
 }
 
 export default fetchT;

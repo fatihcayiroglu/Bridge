@@ -40,7 +40,7 @@ function getIceServers(userId: string = 'anonymous'): object[] {
 
   // ── 1. STUN (her zaman ekle) ───────────────────────────────────────────────
   const stunUrls = (process.env.STUN_URLS || 'stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302')
-    .split(',')
+    .split(/[,\s]+/)
     .map(u => u.trim())
     .filter(Boolean);
 
@@ -74,9 +74,22 @@ function getIceServers(userId: string = 'anonymous'): object[] {
   }
 
   // ── 3. Metered.ca (statik credential — ücretsiz başlangıç) ───────────────
-  else if (process.env.METERED_API_KEY && process.env.METERED_APP_NAME) {
+  // ONCELIK TUZAGI DUZELTILDI: bu dal eskiden yalnizca METERED_API_KEY +
+  // METERED_APP_NAME ile SECILIYOR, ama iceride TURN_URL/USERNAME/CREDENTIAL
+  // yoksa HICBIR SEY push etmiyordu. `else if` zinciri yuzunden 4. dal
+  // (manuel statik TURN) da ATLANIYOR ve sonuc SIFIR TURN sunucusu oluyordu —
+  // operator TURN yapilandirdigini sanarken.
+  //
+  // Kapiya gercek gereksinimler eklendi: metered yayin yapamiyorsa akis
+  // dogal olarak statik dala DUSER. Daha once TURN ureten hicbir yapilandirma
+  // bundan etkilenmez (ayni kosullar hala metered dalini secer).
+  else if (
+    process.env.METERED_API_KEY && process.env.METERED_APP_NAME &&
+    process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL
+  ) {
     // Metered dynamic credentials API
     // Prod'da bu kısım async yapılabilir (/api/turn endpoint'i ile)
+    // (Kosul artik dal kapisinda da var; burada savunma amacli birakildi.)
     if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
       servers.push({
         urls: [
@@ -90,14 +103,14 @@ function getIceServers(userId: string = 'anonymous'): object[] {
   }
 
   // ── 4. Manuel statik TURN (TURN_URL + TURN_USERNAME + TURN_CREDENTIAL) ───
-  else if (process.env.TURN_URL && process.env.TURN_USERNAME) {
+  else if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
     servers.push({
       urls: [
         process.env.TURN_URL,
         process.env.TURN_URL_TLS,
       ].filter(Boolean),
       username:   process.env.TURN_USERNAME,
-      credential: process.env.TURN_CREDENTIAL || '',
+      credential: process.env.TURN_CREDENTIAL,
     });
   }
 
@@ -106,28 +119,80 @@ function getIceServers(userId: string = 'anonymous'): object[] {
 
 /**
  * ICE transport policy — TURN varsa 'all', yoksa 'all' yine de OK.
- * Debug/test için FORCE_RELAY=true ayarlanabilir (sadece TURN üzerinden).
+ * Ürün bayrağı FORCE_TURN=true; FORCE_RELAY eski teşhis/uyumluluk alias'ıdır.
  */
 function getIceTransportPolicy() {
-  return process.env.FORCE_RELAY === 'true' ? 'relay' : 'all';
+  // FORCE_TURN is the documented product flag. FORCE_RELAY is retained as a
+  // backwards-compatible diagnostic alias so older self-hosted deployments do
+  // not silently change behavior during upgrade.
+  return process.env.FORCE_TURN === 'true' || process.env.FORCE_RELAY === 'true' ? 'relay' : 'all';
+}
+
+function hasTurnServer(servers: object[]): boolean {
+  return servers.some(entry => {
+    const raw = (entry as { urls?: string | string[] }).urls;
+    const urls = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    return urls.some(u => typeof u === 'string' && /^turns?:/i.test(u));
+  });
+}
+
+/**
+ * Canonical RTC ICE response used by P2P, GDM voice and SFU joins.
+ * A relay-only flag without an actual TURN server must never black-hole all
+ * media: fall back to `all` and expose an operator/user diagnostic warning.
+ */
+function getRtcIceConfig(userId: string = 'anonymous'): {
+  iceServers: object[];
+  iceTransportPolicy: 'all' | 'relay';
+  warning?: string;
+} {
+  const iceServers = getIceServers(userId);
+  const requested = getIceTransportPolicy() === 'relay';
+  const hasTurn = hasTurnServer(iceServers);
+  if (requested && !hasTurn) {
+    return {
+      iceServers,
+      iceTransportPolicy: 'all',
+      warning: 'FORCE_TURN/FORCE_RELAY etkin ancak kullanılabilir TURN sunucusu yok; relay-only modu devre dışı bırakıldı.',
+    };
+  }
+  return { iceServers, iceTransportPolicy: requested ? 'relay' : 'all' };
 }
 
 /**
  * Durum raporu — /api/health veya admin panel için.
  */
 function getTurnStatus() {
-  const hasCoturn   = !!(process.env.TURN_SECRET && process.env.TURN_HOST);
-  const hasMetered  = !!(process.env.METERED_API_KEY);
-  const hasStatic   = !!(process.env.TURN_URL && process.env.TURN_USERNAME);
+  // ══════════════════════════════════════════════════════════════════════════
+  // DUZELTILEN GERCEK KUSUR — DURUM RAPORU YALAN SOYLUYORDU
+  // ══════════════════════════════════════════════════════════════════════════
+  // Eskiden:  const hasMetered = !!(process.env.METERED_API_KEY);
+  // Ama `getIceServers` metered dali icin METERED_APP_NAME *ve*
+  // TURN_URL/TURN_USERNAME/TURN_CREDENTIAL de istiyordu.
+  //
+  // Sonuc: yalnizca METERED_API_KEY ayarlanmis bir kurulumda
+  //   getTurnStatus()  -> { turn: true,  provider: 'metered', warning: null }
+  //   getIceServers()  -> SIFIR turn girdisi
+  // Yani /api/health "TURN hazir" derken NAT arkasindaki kullanicilar hicbir
+  // zaman baglanamiyordu ve uyari da BASTIRILIYORDU.
+  //
+  // DUZELTME: durum artik iddiadan degil, GERCEKTEN YAYILAN listeden turetilir.
+  // Boylece raporun ciktiyla celismesi YAPISAL OLARAK imkansizdir.
+  const servers = getIceServers('turn-status-probe');
+  const hasTurn = hasTurnServer(servers);
+
+  // Saglayici etiketi yalnizca GERCEKTEN turn yayildiginda anlamlidir.
+  const isCoturn  = !!(process.env.TURN_SECRET && process.env.TURN_HOST);
+  const isMetered = !!(process.env.METERED_API_KEY && process.env.METERED_APP_NAME);
 
   return {
     stun: true,
-    turn: hasCoturn || hasMetered || hasStatic,
-    provider: hasCoturn ? 'coturn' : hasMetered ? 'metered' : hasStatic ? 'static' : 'none',
-    warning: (!hasCoturn && !hasMetered && !hasStatic)
+    turn: hasTurn,
+    provider: !hasTurn ? 'none' : isCoturn ? 'coturn' : isMetered ? 'metered' : 'static',
+    warning: !hasTurn
       ? 'TURN sunucu yapılandırılmamış — NAT arkasındaki kullanıcılar ses bağlantısı kuramayabilir.'
       : null,
   };
 }
 
-export { getIceServers, getIceTransportPolicy, getTurnStatus, generateTimeLimitedCredential };
+export { getIceServers, getIceTransportPolicy, getRtcIceConfig, getTurnStatus, generateTimeLimitedCredential };

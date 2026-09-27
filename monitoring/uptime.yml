@@ -106,8 +106,8 @@ monitors:
     method: GET
     interval: 300
     timeout: 10
-    expectedStatusCodes: [200, 404]   # 404 kabul: servis çalışıyor ama dosya yok
-    description: "Upload storage erişilebilir mi?"
+    expectedStatusCodes: [200, 401, 404]   # 401: kök /uploads yetki sınırı çalışıyor; 404: probe dosyası yok
+    description: "Upload route/storage sınırı erişilebilir mi?"
 
 # ── Status Page yapılandırması ─────────────────────────────────────────────
 

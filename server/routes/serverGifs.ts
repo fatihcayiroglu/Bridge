@@ -83,12 +83,14 @@
 import express from 'express';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router  = express.Router({ mergeParams: true });
-import path from 'path';
-import fs from 'fs';
 import { Members, Servers, ServerAssets } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { getMemberPerms, hasPermission, PERMS } from './roles';
 import { limits } from '../middleware/rateLimit';
+import { getStorageAdapter } from '../lib/storageAdapter';
+import db from '../db/loader';
+import logger from '../lib/logger';
+import { hasLiveUploadReference, normalizeUploadKey } from '../lib/uploadReferenceSafety';
 
 // Helper: verify membership + return member perms
 async function requireMember(userId: string, serverId: string, res: import('express').Response): Promise<import('../db/repositories/types/entities').Member | null> {
@@ -138,15 +140,39 @@ router.post('/', authMiddleware, limits.write(), async (req, res) => {
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS) && !hasPermission(perms, PERMS.ADMINISTRATOR)) {
     return res.status(403).json({ error: 'Missing permission: MANAGE_CHANNELS' });
   }
-  const { name, tags, url, fileType } = req.body as Record<string, string>;
-  if (!name?.trim() || !url?.startsWith('/uploads/')) {
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? req.body as Record<string, unknown> : {};
+  const { name, tags, url, fileType } = body;
+  if (typeof name !== 'string' || !name.trim() || typeof url !== 'string' || !url) {
     return res.status(400).json({ error: 'name and valid url are required' });
   }
+
+  // Never persist an arbitrary client-supplied URL. The pre-upload endpoint
+  // records an authenticated owner and a generated `uploads/server-gifs/...`
+  // key; resolve that key, verify current ownership, then regenerate the
+  // provider's canonical public URL server-side. This also keeps remote CDN
+  // mode working without allowing an attacker-controlled external origin.
+  const store = getStorageAdapter();
+  if (tags !== undefined && (!Array.isArray(tags) || tags.some(t => typeof t !== 'string'))) return res.status(400).json({ error: 'tags must be a string array' });
+  if (fileType !== undefined && typeof fileType !== 'string') return res.status(400).json({ error: 'fileType must be a string' });
+  const extractedKey = store.keyFromUrl(url);
+  const canonicalKey = normalizeUploadKey(
+    extractedKey.startsWith('uploads/') ? extractedKey : `uploads/${extractedKey}`,
+  );
+  if (!canonicalKey || !/^uploads\/server-gifs\/gif_[0-9a-f-]{36}\.(?:gif|webp|png|jpe?g)$/i.test(canonicalKey)) {
+    return res.status(400).json({ error: 'GIF must come from /api/upload/server-gif' });
+  }
+  const ownedUpload = await (db as unknown as { uploads: { findOne(q: Record<string, unknown>): Promise<unknown> } })
+    .uploads.findOne({ key: canonicalKey, userId: _u.id });
+  if (!ownedUpload) {
+    return res.status(403).json({ error: 'GIF upload is not owned by the current user' });
+  }
+  const canonicalUrl = store.publicUrlForKey(canonicalKey);
+
   const gif = await ServerAssets.insertGif({
     serverId,
     name: name.trim().slice(0, 64),
     tags: Array.isArray(tags) ? tags.map(t => String(t).toLowerCase().slice(0, 32)).slice(0, 10) : [],
-    url,
+    url: canonicalUrl,
     fileType: fileType || 'image/gif',
     uploadedBy: _u.id,
     createdAt: Date.now(),
@@ -166,10 +192,30 @@ router.delete('/:gifId', authMiddleware, limits.write(), async (req, res) => {
   const gif = await ServerAssets.findGifByIdAndServer(gifId, serverId);
   if (!gif) return res.status(404).json({ error: 'GIF not found' });
 
-  // Delete file from disk
-  const filePath = path.join(__dirname, '../uploads', path.basename(gif.url));
-  fs.unlink(filePath, () => {});
+  // DB ownership first: if this mutation fails, the physical object must stay.
   await ServerAssets.deleteGif(gifId, serverId);
+
+  // Physical cleanup is best-effort and shared-reference aware. Server GIF files
+  // originate from the provider-agnostic upload route, so use the same adapter
+  // for local/S3/R2/MinIO/B2 deletion instead of guessing a local basename.
+  const store = getStorageAdapter();
+  const storageKey = store.keyFromUrl(gif.url);
+  const canonicalKey = normalizeUploadKey(
+    storageKey.startsWith('uploads/') ? storageKey : `uploads/${storageKey}`,
+  );
+  if (canonicalKey) {
+    try {
+      if (!await hasLiveUploadReference(db._pool, canonicalKey)) {
+        await store.deleteFile(storageKey);
+      }
+    } catch (error) {
+      logger.error({ err: error, gifId, serverId, storageKey, event: 'server_gif.cleanup_failed' },
+        'Server GIF DB row removed but physical cleanup failed/was blocked');
+    }
+  } else {
+    logger.warn({ gifId, serverId, url: gif.url, event: 'server_gif.cleanup_invalid_key' },
+      'Server GIF physical cleanup skipped because storage key was invalid');
+  }
   res.json({ deleted: true });
 });
 

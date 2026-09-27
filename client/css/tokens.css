@@ -28,6 +28,17 @@
   --brand-glow:   hsla(var(--brand-h), var(--brand-s), 58%, 0.28);
   --brand-dark:   hsl(var(--brand-h), var(--brand-s), 46%);
 
+  /* ── MARKA METNİ — AÇIK YÜZEYLER ÜZERİNDE ─────────────────────────────────
+     ÖLÇÜLEN KUSUR (Final20): açık temada `--brand` L46'ya çekilmişti ve BEYAZ
+     (`--bg-2`) üzerinde 4.56:1 veriyordu. Ama marka rengi BEYAZDAN BİRAZ KOYU
+     yüzeylerde de metin olarak kullanılıyor: mobil alt gezinme `--bg-1`
+     (#f0f2f9, 4.07:1) ve arama ipucu rozetleri `--bg-3` (#f5f7ff, 4.26:1).
+     İkisi de WCAG 1.4.3 (AA, 4.5:1) altındaydı. Canlı ölçümle bulundu — `color-contrast`
+     kuralı a11y süitinde kapalı olduğu için yıllardır görünmüyordu.
+     Koyu temada gezinme yüzeyi koyudur; orada `--brand` zaten yüksek
+     kontrastlıdır ve DEĞİŞMEZ. */
+  --brand-ink: var(--brand);
+
   /* Hex fallback — meta theme-color, canvas, harici entegrasyonlar */
   --brand-hex:      #2d9cdb;
   --brand-hex-alt:  #1bc8a8;
@@ -56,7 +67,19 @@
   --purple:   #a67ee8;
   --teal:     #1bc8a8;
   --danger:   #e05260;
+  /* Faz E — `--brand-hover` ile aynı sözleşme: yıkıcı/onaylayıcı eylemlerin
+     hover'ı bileşenlerde tek tek sabit renkle yazılmasın (VoiceControlBar
+     `#d84040 !important`, DmCallPanel `#3aa870`/`#d84040` yapıyordu).
+     Tek kaynaktan türetilir. */
+  --danger-hover:  color-mix(in srgb, var(--danger) 86%, black);
+  --success-hover: color-mix(in srgb, var(--green) 86%, black);
+
+  /* Video yüzeyi: letterbox alanı TEMADAN BAĞIMSIZ siyah olmalıdır (görüntü
+     kenarları nötr kalsın). Bileşenlerde `#000` dağıtmak yerine niyet
+     isimlendirilir — VoicePanel `.sfu-tile` ve DmCallPanel uzak video. */
+  --surface-video: #000;
   --online:   #2ecc9a;
+  --text-on-solid: #ffffff;
 
   /* Status */
   --status-online:  #2ecc9a;
@@ -64,29 +87,74 @@
   --status-dnd:     #e05260;
   --status-offline: #6b7280;
 
-  /* Tipografi — Inter + JetBrains Mono */
-  --font-sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-  --font-display: 'Inter', system-ui, sans-serif;
+  /* Tipografi — Inter tercih edilir, yoksa platformun kendi arayüz yazı tipi.
+     Inter CDN'den YÜKLENMİYOR (CSP engelliyordu, bkz. reset-base.css);
+     sistemde kuruluysa kullanılır, değilse yerel yığın devreye girer.
+     Yığın kasıtlı olarak platform-native: desktop uygulama hissi verir. */
+  --font-sans: 'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, 'Liberation Mono', monospace;
+  --font-display: var(--font-sans);
 
-  /* Yazı boyutları */
+  /* ── Yazı boyutu ölçeği ────────────────────────────────────────────────
+     Denetimde 12 farklı ham font-size sayıldı; en çok kullanılan (13px, ~80
+     bildirim) ölçekte HİÇ YOKTU, dolayısıyla token kullanmak isteyen kod
+     ham değere düşüyordu. Eksik basamaklar eklendi. */
+  --text-2xs:  10px;   /* yalnız sayısal rozet — okunacak metin için KULLANMA */
   --text-xs:   11px;
   --text-sm:   12px;
+  --text-sm-p: 13px;   /* yoğun arayüz metni — ölçeğin en çok kullanılan adımı */
   --text-base: 14px;
   --text-md:   15px;
   --text-lg:   16px;
+  --text-lg-p: 18px;   /* modal/panel başlıkları */
   --text-xl:   20px;
   --text-2xl:  24px;
   --text-3xl:  32px;
 
-  /* Border radius — Discord'dan daha yuvarlak, modern */
+  /* ── Semantik tipografi rolleri ────────────────────────────────────────
+     Yeni kod ROL kullanmalı, ham boyut değil: rol bir kez değişince o
+     anlamdaki her yer birlikte değişir.
+
+     ERİŞİLEBİLİRLİK KURALI: --type-badge (10px) yalnızca yüksek kontrastlı,
+     kalın, sayısal rozetler içindir (okunmamış sayacı, mention sayısı).
+     Okunması gereken hiçbir etiket --type-caption'ın (11px) altına inmez. */
+  --type-badge:    var(--text-2xs);
+  --type-caption:  var(--text-xs);    /* zaman damgası, metadata */
+  --type-label:    var(--text-sm);    /* bölüm etiketi, form label */
+  --type-body-sm:  var(--text-sm-p);  /* yoğun liste/panel metni */
+  --type-body:     var(--text-base);  /* varsayılan gövde */
+  --type-title-sm: var(--text-md);
+  --type-title:    var(--text-lg);
+  --type-heading:  var(--text-lg-p);
+  --type-display:  var(--text-xl);
+
+  /* ── Köşe yarıçapı ölçeği ──────────────────────────────────────────────
+     Denetimde 9 farklı ham değer sayıldı (2/3/4/6/8/10/12/14/16/20px);
+     bunların 4'ü (2, 4, 8, 12, 16) ölçekte yoktu. Eksik basamaklar
+     eklenerek ham değere düşme ihtiyacı ortadan kaldırıldı. */
+  --r-2xs:  2px;
   --r-xs:   3px;
+  --r-xs-p: 4px;
   --r-sm:   6px;
+  --r-sm-p: 8px;
   --r-md:   10px;
+  --r-md-p: 12px;
   --r-lg:   14px;
+  --r-lg-p: 16px;
   --r-xl:   20px;
   --r-2xl:  28px;
   --r-full: 9999px;
+
+  /* ── Semantik yarıçap rolleri ──────────────────────────────────────────
+     Aynı TÜR bileşen aynı yarıçapı kullanmalı; farklı türler farklı
+     kalabilir — görsel hiyerarşi bilinçli korunur:
+       kontrol (buton/girdi) < yüzey (menü/kart) < modal < pill/avatar */
+  --radius-control: var(--r-sm);     /* buton, input, select */
+  --radius-chip:    var(--r-sm-p);   /* etiket, küçük rozet kutusu */
+  --radius-surface: var(--r-md);     /* menü, dropdown, kart */
+  --radius-modal:   var(--r-lg);     /* modal, büyük panel */
+  --radius-pill:    var(--r-full);   /* pill rozet, sayaç */
+  --radius-avatar:  50%;             /* dairesel avatar */
 
   /* Spacing */
   --space-1: 4px;
@@ -113,6 +181,13 @@
   --z-toast:    400;
   --z-tooltip:  500;
   --z-onboard:  600;
+  /* KRITIK: cokme ortusu her seyin ustunde kalmalidir. Onceden
+     `ErrorBoundary` bunu `99999` sabitiyle yapiyordu — olcekteki en ust
+     basamak adlandirilmadigi icin herkes kendi sihirli sayisini uyduruyordu
+     (1000 → 1200 → 1450 → 9000 → 9999 → 10000 → 99999). O tirmanma yarisi
+     gercek bir P0 uretti: onboarding turu (9999) bos-sunucu ekraninin
+     (10000) altinda kalip FARE ILE KAPATILAMAZ hale gelmisti. */
+  --z-critical: 700;
 
   /* Gölge sistemi */
   --shadow-xs:  0 1px 2px rgba(0,0,0,0.20);
@@ -121,6 +196,70 @@
   --shadow-lg:  0 8px 32px rgba(0,0,0,0.44);
   --shadow-xl:  0 16px 56px rgba(0,0,0,0.52);
   --shadow-brand: 0 4px 20px hsla(var(--brand-h), var(--brand-s), 58%, 0.35);
+
+  /* Phase 9 · communication shell roles.
+     These are shared semantic relationships, not component-specific colors. */
+  --shell-rail-width:    64px;
+  /* UX — KANAL KENAR CUBUGU 240 -> 256px.
+     OLCUM: 240px'de alt kullanici panelinin SABIT tuketimi 190px idi
+     (32 avatar + 16 bosluk + 126 dort kontrol + 16 dolgu) ve kullanici adina
+     yalnizca ~50px kaliyordu — adlar neredeyse aninda kirpiliyordu.
+     256px + daha sikilastirilmis dolgu ile ad alani ~70px'e cikar (+%40).
+     Discord 240px kullanir; 256px hala kompakt ve 1366px'de sohbete 806px kalir. */
+  --shell-sidebar-width: 256px;
+  /* UX — UYE LISTESI 232 -> 244px: avatar/ad/durum uclusu 232px'de
+     sikisiyordu; 244px satir ici nefes payi verir, sohbet genisligini
+     anlamli olcude azaltmadan. */
+  --shell-members-width: 244px;
+  --shell-header-height: 52px;
+  /* UX — kimlik + kontrol bir arada nefes alsin diye 60 -> 64px. */
+  --shell-user-height:   64px;
+  --shell-divider:       var(--border);
+  --shell-selected:      var(--brand-bg);
+  --shell-selected-edge: var(--brand);
+  --shell-unread:        var(--text-primary);
+  --shell-mention:       var(--red);
+
+  /* Public shell aliases used by owned components. The `--shell-*` names stay
+     available for legacy CSS while new work consumes the shorter roles. */
+  --rail-width:    var(--shell-rail-width);
+  --channel-width: var(--shell-sidebar-width);
+  --member-width:  var(--shell-members-width);
+  --header-height: var(--shell-header-height);
+
+  /* Interaction/elevation vocabulary shared across themes. */
+  --surface-hover:    var(--bg-4);
+  --surface-pressed:  var(--bg-5);
+  --surface-selected: var(--brand-bg);
+  --surface-raised:   var(--bg-3);
+  --surface-overlay:  var(--bg-2);
+  --focus-ring:       var(--brand);
+
+  /* Overlay layers describe intent without replacing the stable z-index API. */
+  --layer-menu:    var(--z-dropdown);
+  --layer-modal:   var(--z-modal);
+  --layer-toast:   var(--z-toast);
+  --layer-tooltip: var(--z-tooltip);
+
+  /* ── TAM EKRAN PAYLASIM SAHNESI ──────────────────────────────────────────
+     `.screen-share-view` tarihsel olarak sabit `z-index: 1000` tasiyordu.
+     Deger KORUNUYOR (eski yigin 1000-2000 arasinda yerlesik), fakat artik
+     ADLANDIRILMIS: sihirli sayi yerine niyet.
+
+     `--z-stage-modal` sahnenin USTUNDE acilmasi gereken modallar icindir.
+     KAPATILAN GERCEK KUSUR (P1): ekran paylasimi kalite secici
+     `--layer-modal` (300) tasiyordu, sahne ise 1000 — yani secici sahnenin
+     ALTINDA kaliyordu. Olcum: `document.elementFromPoint` her kalite dugmesi
+     icin `VIDEO` donduruyordu. Sonuc: paylasim gorunumu acikken kullanici
+     YENI paylasim BASLATAMIYORDU (kendi paylasimini durdurduktan sonra ya da
+     baskasinin paylasimini izlerken). */
+  --z-stage:       1000;
+  --z-stage-modal: 1010;
+
+  /* White remains readable on dark themes; Light overrides use ink colors. */
+  --success-text: #dffbef;
+  --warning-text: #fff2d1;
+  --danger-text:  #ffe8eb;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -129,6 +268,16 @@
 ═══════════════════════════════════════════════════════════ */
 :root,
 [data-theme="dark"] {
+  /* ── WCAG AA KONTRAST DÜZELTMESİ (ölçüm tabanlı) ──────────────────────────
+     Canlı ölçümde bu tema için AA (4.5:1) altında kalan çiftler düzeltildi.
+     TON ve DOYGUNLUK KORUNUR — yalnızca AÇIKLIK ve katı yüzey üstü mürekkep
+     değişir; tema kimliği bozulmaz. */
+  /* beyaz metin marka dolgusunda 3.15 idi -> koyu mürekkep 5.95 */
+  --text-on-solid: #0b1220;
+  /* danger metni 4.32 idi -> 4.76 */
+  --red:    hsl(354, 70%, 63%);
+  --danger: hsl(354, 70%, 63%);
+
   /* Katmanlı arka planlar: Discord'un soğuk mavi-grisinden farklı */
   --bg-0: #0f1117;   /* En derin: tam siyah değil, biraz warm */
   --bg-1: #151720;   /* Sidebar arka planı */
@@ -141,7 +290,9 @@
   /* Yazı renkleri */
   --text-primary:  #eef0f8;
   --text-2:        #b8bdd4;
-  --text-muted:    #7b82a0;
+  /* Denetim: #7b82a0 mesaj zemininde 3.95:1 idi — zaman damgası/metadata
+     WCAG AA'yı (4.5:1) geçmiyordu. 4.80:1; hâlâ belirgin şekilde ikincil. */
+  --text-muted:    #8a91ad;
   --text-disabled: #4a5168;
   --text-link:     hsl(var(--brand-h), 80%, 72%);
 
@@ -156,12 +307,38 @@
   /* Scrollbar */
   --scrollbar-track: var(--bg-1);
   --scrollbar-thumb: var(--bg-5);
+
+  --surface-rail:    #11131b;
+  --surface-sidebar: #181b28;
+  --surface-content: #202331;
+  --surface-members: #191c29;
+  --surface-chrome:  #1d202d;
 }
 
 /* ═══════════════════════════════════════════════════════════
    AÇIK TEMA
 ═══════════════════════════════════════════════════════════ */
 [data-theme="light"] {
+  /* ── WCAG AA KONTRAST DÜZELTMESİ (ölçüm tabanlı) ──────────────────────────
+     Canlı ölçümde bu tema için AA (4.5:1) altında kalan çiftler düzeltildi.
+     TON ve DOYGUNLUK KORUNUR — yalnızca AÇIKLIK ve katı yüzey üstü mürekkep
+     değişir; tema kimliği bozulmaz. */
+  /* marka metni 3.15, beyaz-üzeri-marka 3.15 idi -> L46 ile ikisi de 4.56 */
+  --brand:        hsl(var(--brand-h), var(--brand-s), 46%);
+  --brand-hover:  hsl(var(--brand-h), var(--brand-s), 40%);
+  --brand-active: hsl(var(--brand-h), var(--brand-s), 34%);
+  /* Ölçülen kontrastlar (marka metni, açık tema):
+       `--bg-1` #f0f2f9        4.07  ->  L38 ile 5.52
+       `--bg-3` #f5f7ff        4.26  ->  L38 ile 5.72
+       `--brand-subtle` #d4e4f8 3.52  ->  L38 ile 4.79
+     L38, üç yüzeyin de AA (4.5:1) eşiğini geçtiği en açık tondur. */
+  --brand-ink: hsl(var(--brand-h), var(--brand-s), 38%);
+  --text-on-solid: #ffffff;
+  /* danger 3.79 -> 4.90 ; green 2.05 -> 4.63 */
+  --red:    hsl(354, 70%, 50%);
+  --danger: hsl(354, 70%, 50%);
+  --green:  hsl(160, 62%, 32%);
+
   --bg-0: #e8eaf2;
   --bg-1: #f0f2f9;
   --bg-2: #ffffff;
@@ -172,7 +349,7 @@
 
   --text-primary:  #1a1d2e;
   --text-2:        #3d4263;
-  --text-muted:    #7077a0;
+  --text-muted:    #5f6689;  /* denetim: 4.06 → 5.24:1 */
   --text-disabled: #aab0cc;
   --text-link:     hsl(var(--brand-h), 80%, 40%);
 
@@ -185,12 +362,30 @@
 
   --scrollbar-track: var(--bg-1);
   --scrollbar-thumb: var(--bg-5);
+
+  --surface-rail:    #e9ecf6;
+  --surface-sidebar: #f3f5fb;
+  --surface-content: #ffffff;
+  --surface-members: #f5f7fc;
+  --surface-chrome:  #fafbfe;
+
+  --success-text: #126448;
+  --warning-text: #744a00;
+  --danger-text:  #8f2430;
 }
 
 /* ═══════════════════════════════════════════════════════════
    AMOLED TEMA
 ═══════════════════════════════════════════════════════════ */
 [data-theme="amoled"] {
+  /* ── WCAG AA KONTRAST DÜZELTMESİ (ölçüm tabanlı) ──────────────────────────
+     Canlı ölçümde bu tema için AA (4.5:1) altında kalan çiftler düzeltildi.
+     TON ve DOYGUNLUK KORUNUR — yalnızca AÇIKLIK ve katı yüzey üstü mürekkep
+     değişir; tema kimliği bozulmaz. */
+  --text-on-solid: #0b1220;
+  --red:    hsl(354, 70%, 57%);
+  --danger: hsl(354, 70%, 57%);
+
   --bg-0: #000000;
   --bg-1: #080a10;
   --bg-2: #0d1018;
@@ -201,7 +396,7 @@
 
   --text-primary:  #f0f2ff;
   --text-2:        #a8adc8;
-  --text-muted:    #606880;
+  --text-muted:    #7b8399;  /* denetim: 3.28 → 4.81:1 */
   --text-disabled: #383d52;
   --text-link:     hsl(var(--brand-h), 80%, 75%);
 
@@ -211,6 +406,12 @@
   --msg-hover: rgba(255,255,255,0.02);
   --scrollbar-track: var(--bg-0);
   --scrollbar-thumb: var(--bg-4);
+
+  --surface-rail:    #000000;
+  --surface-sidebar: #070910;
+  --surface-content: #0d1018;
+  --surface-members: #090b12;
+  --surface-chrome:  #0b0e16;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -218,6 +419,15 @@
    Yeşil-teal aurora renkleri
 ═══════════════════════════════════════════════════════════ */
 [data-theme="aurora"] {
+  /* ── WCAG AA KONTRAST DÜZELTMESİ (ölçüm tabanlı) ──────────────────────────
+     Canlı ölçümde bu tema için AA (4.5:1) altında kalan çiftler düzeltildi.
+     TON ve DOYGUNLUK KORUNUR — yalnızca AÇIKLIK ve katı yüzey üstü mürekkep
+     değişir; tema kimliği bozulmaz. */
+  /* beyaz metin parlak teal üzerinde 1.60 idi -> koyu mürekkep 11.72 */
+  --text-on-solid: #0b1220;
+  --red:    hsl(354, 70%, 63%);
+  --danger: hsl(354, 70%, 63%);
+
   --brand-h: 168;
   --brand-s: 75%;
 
@@ -231,7 +441,7 @@
 
   --text-primary:  #d8f5ef;
   --text-2:        #8cc8bc;
-  --text-muted:    #4d8a7e;
+  --text-muted:    #6fae9f;  /* denetim: 3.61 → 5.66:1 */
   --text-disabled: #2d5550;
   --text-link:     #5dd8c0;
 
@@ -243,12 +453,30 @@
   --msg-hover: rgba(93, 216, 192, 0.03);
   --scrollbar-track: var(--bg-1);
   --scrollbar-thumb: var(--bg-5);
+
+  --surface-rail:    #07130f;
+  --surface-sidebar: #0b1d18;
+  --surface-content: #0f2420;
+  --surface-members: #0c1e1a;
+  --surface-chrome:  #102620;
 }
 
 /* ═══════════════════════════════════════════════════════════
    MIDNIGHT TEMA
 ═══════════════════════════════════════════════════════════ */
 [data-theme="midnight"] {
+  /* ── WCAG AA KONTRAST DÜZELTMESİ (ölçüm tabanlı) ──────────────────────────
+     Canlı ölçümde bu tema için AA (4.5:1) altında kalan çiftler düzeltildi.
+     TON ve DOYGUNLUK KORUNUR — yalnızca AÇIKLIK ve katı yüzey üstü mürekkep
+     değişir; tema kimliği bozulmaz. */
+  /* marka metni 3.37 idi -> L65 ile 4.58 */
+  --brand:        hsl(var(--brand-h), var(--brand-s), 65%);
+  --brand-hover:  hsl(var(--brand-h), var(--brand-s), 59%);
+  --brand-active: hsl(var(--brand-h), var(--brand-s), 53%);
+  --text-on-solid: #0b1220;
+  --red:    hsl(354, 70%, 59%);
+  --danger: hsl(354, 70%, 59%);
+
   --brand-h: 230;
   --brand-s: 80%;
 
@@ -262,7 +490,7 @@
 
   --text-primary:  #e0e4ff;
   --text-2:        #8890c0;
-  --text-muted:    #4a5080;
+  --text-muted:    #8087b3;  /* denetim: 2.24 → ~4.7:1 (en kötü durumdu) */
   --text-disabled: #2c3060;
   --text-link:     hsl(230, 80%, 75%);
 
@@ -272,6 +500,153 @@
   --msg-hover: rgba(130, 140, 255, 0.03);
   --scrollbar-track: var(--bg-1);
   --scrollbar-thumb: var(--bg-5);
+
+  --surface-rail:    #080a18;
+  --surface-sidebar: #0d1124;
+  --surface-content: #11152b;
+  --surface-members: #0e1226;
+  --surface-chrome:  #12162d;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   UYUMLULUK ALIAS'LARI  —  Tasarım denetimi (P0)
+
+   SORUN: Kod tabanında 231 yerde TANIMSIZ değişken kullanılıyordu
+   (--text-3 ×84, --text-1 ×49, --bg-secondary ×14, --bg-hover ×9 …).
+   CSS'te `color: var(--tanimsiz)` bildirimi "invalid at computed-value
+   time" olur ve `unset`e döner; `color` kalıtsal olduğu için `inherit`
+   anlamına gelir.
+
+   Zincirin kökü `reset-base.css:12` idi: `body { color: var(--text-1) }`.
+   --text-1 tanımsız → body rengi html'den miras alındı → html'in başlangıç
+   değeri SİYAH. Sonuç: koyu temada tüm metin siyaha düştü.
+   Ölçüm (denetim öncesi, canlı tarayıcı):
+     yazar adı  1.40:1   zaman damgası 1.40:1
+     üye adı    1.28:1   composer      1.91:1
+     kanal adı  2.76:1   (WCAG AA eşiği 4.5:1)
+
+   ÇÖZÜM: Eski adları YENİ ölçeğin semantik karşılığına bağla. Böylece
+   231 çağrı yerinin hiçbirine dokunmadan tek noktadan düzelir ve tema
+   değişimi de doğru çalışır (alias'lar her tema bloğunda çözülür).
+
+   NOT: Bunlar geriye dönük uyumluluk içindir. YENİ kodda --text-primary /
+   --text-2 / --text-muted ve --bg-0…--bg-5 kullanın.
+═══════════════════════════════════════════════════════════ */
+:root,
+[data-theme="dark"],
+[data-theme="light"],
+[data-theme="amoled"],
+[data-theme="aurora"],
+[data-theme="midnight"] {
+  /* Metin seviyeleri — 1: birincil, 2: ikincil (zaten var), 3: üçüncül/meta */
+  --text-1:         var(--text-primary);
+  --text:           var(--text-primary);
+  --text-normal:    var(--text-primary);
+  --text-3:         var(--text-muted);
+  --text-secondary: var(--text-2);
+
+  /* Yüzey seviyeleri — eski Discord dönemi adları */
+  --bg-primary:          var(--bg-2);
+  --bg-secondary:        var(--bg-1);
+  --bg-tertiary:         var(--bg-0);
+  --bg-hover:            var(--bg-4);
+  --bg-modifier-hover:   var(--bg-4);
+  --bg-modifier-selected: var(--shell-selected);
+
+  /* Older Svelte surfaces still consume the `--bridge-*` vocabulary. Keep
+     those aliases theme-aware so the same geometry works in every theme. */
+  --bridge-surface:  var(--bg-2);
+  --bridge-surface2: var(--bg-3);
+  --bridge-surface3: var(--bg-4);
+  --bridge-surface4: var(--bg-5);
+  --bridge-text:     var(--text-primary);
+  --bridge-muted:    var(--text-muted);
+  --bridge-border:   var(--border);
+  --bridge-danger:   var(--red);
+  --bridge-green:    var(--green);
+  --bridge-yellow:   var(--yellow);
+  --bridge-blue:     var(--brand);
+
+  /* ── FAZ E — TANIMSIZ TOKEN'LARIN KAPATILMASI ────────────────────────────
+     Aşağıdaki altı ad canlı yüzeylerde `var(--x, #hex)` biçiminde
+     KULLANILIYOR ama hiçbir yerde TANIMLI DEĞİLDİ. Tanımsız bir token'da
+     fallback her zaman kazanır: yani o ham renk beş temanın HEPSİNDE
+     render ediliyordu — Light temada koyu bir input kutusu gibi.
+
+     Tasarım sistemi guard'ı bunları göremiyordu; `RAW_COLOR` deseni
+     `:\s*#hex` arıyor, oysa buradaki hex `var(--x, #hex)` içinde virgülden
+     sonra geliyor. Boşluk `design-system-tokens.test.ts` içinde kapatıldı.
+
+     Hepsi MEVCUT temalı token'lara bağlanır; yeni renk icat edilmez. */
+  --surface:        var(--bg-3);          /* kart/modal yüzeyi */
+
+  /* ══════════════════════════════════════════════════════════════════════
+     TANIMSIZ JETON SIZINTISI — GERCEK GORSEL KUSUR
+     ══════════════════════════════════════════════════════════════════════
+     Asagidaki adlar bilesenlerde YEDEKSIZ kullaniliyordu ama HICBIR YERDE
+     TANIMLI DEGILDI. Gecersiz bir `var()` ozelligi GECERSIZ kilar; sonuc
+     "biraz yanlis renk" degil, OZELLIGIN TAMAMEN KAYBOLMASIDIR.
+
+     Olculen etki: `.dm-panel { background: var(--surface-1) }` saydam
+     kaliyordu ve DM paneli kabugun UZERINDE SEFFAF cikiyordu — kanal
+     listesi ve dock, DM listesinin altindan gorunuyor, metinler ust uste
+     biniyordu (ekran goruntusuyle dogrulandi).
+
+     Kullanim sayilari: --border-subtle 24, --radius-sm 13, --surface-1 7,
+     --surface-2 6, --elevation-modal 5, --radius-md 4.
+
+     Hepsi MEVCUT kanonik jetonlara baglanir; yeni renk/olcek ICAT EDILMEZ. */
+  /* NOT: `--surface-1` = `--bg-2`. Deger keyfi DEGILDIR:
+     `theme-contrast-aa.test.ts` bu jetonu okurken YEDEK olarak `--bg-2`
+     kullaniyordu — yani beklenen anlam zaten oydu. Ilk denemede `--bg-1`
+     baglanmisti ve acik temada marka/hata/basari metni yuzeye karsi
+     4.07:1'e dusup AA esigini (4.5:1) KIRIYORDU. Muhafizi gevsetmek yerine
+     jeton dogru basamaga baglandi. */
+  --surface-1:      var(--bg-2);          /* birincil panel yuzeyi */
+  --surface-2:      var(--bg-3);          /* ikincil/kenar cubugu yuzeyi */
+  --border-subtle:  var(--border);
+  --radius-sm:      var(--radius-chip);
+  --radius-md:      var(--radius-control);
+  --elevation-modal: var(--shadow-lg);
+  --warning:        var(--yellow);
+  --type-title-lg:  var(--text-xl);
+  /* ÖLÇÜLEN KUSUR: aşağıdaki adlar canlı bileşenlerde YEDEKSİZ kullanılıyor
+     ama hiçbir yerde tanımlı değildi. Geçersiz bir `var()` — yedeği yoksa —
+     ÖZELLİĞİN TAMAMINI düşürür: yani `background`, `border-radius`,
+     `font-size` gibi bildirimler hiç uygulanmıyordu. Hepsi MEVCUT kanonik
+     jetonlara bağlanır; yeni renk/ölçek İCAT EDİLMEZ. */
+  --danger-bg:      var(--danger);          /* dolu tehlike yüzeyi */
+  --surface-3:      var(--bg-4);            /* --surface-2'den bir basamak üstü */
+  --surface-active: var(--surface-selected);/* etkin/seçili satır */
+  --radius-lg:      var(--radius-surface);  /* kart/menü yarıçapı */
+  --type-title-md:  var(--type-title);      /* başlık orta basamak */
+  --type-body-md:   var(--type-body);       /* gövde orta basamak */
+  --muted:          var(--text-muted);
+  --bg-input:       color-mix(in srgb, var(--bg-0) 82%, transparent);
+  --bridge-skel:    var(--bg-3);          /* iskelet taban */
+  --bridge-skel2:   var(--bg-4);          /* iskelet parıltı tepesi */
+  /* Degrade eşlikçisi: koyu temada hsl(38+134)=hsl(172) ≈ #00e0c3, yani
+     eski sabit #00e0c6 ile görsel olarak aynı — farkı, artık temanın
+     `--accent-h` değerini İZLEMESİ. */
+  --accent-g:       hsl(calc(var(--accent-h) + 134), 100%, 44%);
+
+  /* Sınır ve gölge */
+  --border-faint: var(--border);
+  --shadow:       var(--shadow-md);
+
+  /* Semantik renkler */
+  --success:      var(--green);
+  --brand-muted:  var(--brand-subtle);
+  --brand-alpha:  var(--brand-bg);
+  --tag-color:    var(--brand);
+
+  /* Ölçüler */
+  --sidebar-width: 220px;
+  --desktop-voice-bar-height: 52px;
+
+  /* rgba() içinde kullanılan RGB üçlüleri */
+  --red-rgb:         224, 82, 96;
+  --bg-primary-rgb:  var(--bg-rgb);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -322,144 +697,50 @@ body {
   border-radius: var(--r-sm);
 }
 
-/* ── Bridge logo font animasyonu ── */
-@keyframes bridge-pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.7; }
+/* ═══════════════════════════════════════════════════════════
+   HAREKET AZALTMA  —  prefers-reduced-motion
+
+   Denetim öncesi bu tercih yalnızca 3 animasyonu (.msg-enter,
+   .reaction-pop, .send-pop) kapsıyordu; animations.css ve
+   transitions-fx.css içindeki onlarca geçiş etkilenmiyordu.
+
+   Süreler TOKEN seviyesinde sıfırlanır: geçişler zaten
+   var(--duration-*) kullandığı için tek noktadan etkisizleşir.
+   Ardından kalan doğrudan tanımlar için genel bir güvenlik ağı gelir.
+   Geçişler kaldırılmaz, süreleri ihmal edilebilir hale getirilir —
+   böylece durum değişimleri (hover/focus) yine anında uygulanır.
+═══════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0.01ms;
+    --duration-base: 0.01ms;
+    --duration-slow: 0.01ms;
+  }
+
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
-.bridge-logo-animated {
-  animation: bridge-pulse 3s ease-in-out infinite;
+
+/* ==========================================================================\n   v1.125 PRODUCT EXCELLENCE — density is a user preference, not a new theme.\n   Compact mode preserves the same hierarchy while increasing information\n   density on chat-heavy desktop use. Touch layouts keep accessible targets.\n   ========================================================================== */
+:root[data-ui-density="compact"] {
+  --shell-header-height: 44px;
+  --space-density-row: 3px;
 }
-
-/* ─── Sprint 95: Pending Message States ─────────────────────────────────── */
-.msg-pending { opacity: 0.75; }
-
-.msg-pending-badge {
-  display: inline-flex;
-  align-items: center;
-  margin-left: 6px;
-  font-size: 11px;
-  vertical-align: middle;
-  transition: opacity 0.3s;
+:root[data-ui-density="comfortable"] {
+  --space-density-row: 5px;
 }
-.msg-pending-badge--sent  { color: var(--green); }
-.msg-pending-badge--failed { color: var(--red); }
-
-/* ─── Sprint 95: Server Events ──────────────────────────────────────────── */
-.events-modal        { width: min(680px, 95vw); max-height: 80vh; overflow-y: auto; }
-.events-modal__body  { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
-
-.events-section__title {
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .05em;
-  color: var(--text-3);
-  margin-bottom: 8px;
+:root[data-ui-density="compact"] .ch-item { min-height: 30px; padding-block: 3px; }
+:root[data-ui-density="compact"] .msg-group { padding-block: 2px; }
+:root[data-ui-density="compact"] .message { padding-block: 1px; }
+:root[data-ui-density="compact"] .member-item { min-height: 34px; }
+:root[data-ui-density="compact"] .channel-list { padding-block: 4px; }
+@media (pointer: coarse), (max-width: 720px) {
+  :root[data-ui-density="compact"] .ch-item,
+  :root[data-ui-density="compact"] .member-item,
+  :root[data-ui-density="compact"] button { min-height: 40px; }
 }
-.events-section--past { border-top: 1px solid var(--bg-3); padding-top: 12px; }
-.events-empty         { color: var(--text-muted); font-size: 14px; }
-
-.event-card {
-  border: 1px solid var(--bg-3);
-  border-radius: 8px;
-  overflow: hidden;
-  cursor: pointer;
-  transition: border-color .15s, box-shadow .15s;
-}
-.event-card:hover  { border-color: var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,.15); }
-.event-card:focus  { outline: 2px solid var(--accent); outline-offset: 2px; }
-
-.event-card__cover {
-  height: 80px;
-  background: var(--bg-3);
-  position: relative;
-}
-.event-badge {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  background: rgba(0,0,0,.65);
-  border-radius: 4px;
-  font-size: 11px;
-  padding: 2px 6px;
-  color: #fff;
-}
-.event-badge--live { color: #ff4444; }
-
-.event-card__body    { padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
-.event-card__time    { font-size: 11px; color: var(--accent); font-weight: 600; }
-.event-card__title   { font-size: 15px; font-weight: 700; }
-.event-card__location { font-size: 12px; color: var(--text-3); }
-.event-card__meta    { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
-.event-card__rsvp-count { font-size: 12px; color: var(--text-3); }
-
-.event-rsvp-btn        { font-size: 12px; }
-.event-rsvp-btn--active { background: var(--accent); color: #fff; }
-
-.events-create-btn   { align-self: flex-start; }
-
-/* Create form */
-.event-create-modal  { width: min(520px, 95vw); }
-.form-row            { display: flex; gap: 12px; }
-.form-row .form-group { flex: 1; }
-.form-actions        { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-
-/* RSVP dropdown */
-.rsvp-dropdown {
-  background: var(--bg-2);
-  border: 1px solid var(--bg-3);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0,0,0,.3);
-  overflow: hidden;
-  min-width: 160px;
-}
-.rsvp-dropdown__item {
-  display: block;
-  width: 100%;
-  padding: 8px 12px;
-  background: none;
-  border: none;
-  text-align: left;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--text-1);
-}
-.rsvp-dropdown__item:hover { background: var(--bg-3); }
-
-/* Event detail */
-.event-detail-modal      { width: min(560px, 95vw); }
-.event-detail__cover     { width: 100%; height: 160px; object-fit: cover; border-radius: 6px; margin-bottom: 12px; }
-.event-detail__time,
-.event-detail__location  { font-size: 13px; color: var(--text-2); margin-bottom: 6px; }
-.event-detail__desc      { font-size: 14px; line-height: 1.5; margin: 12px 0; }
-.event-detail__creator,
-.event-detail__rsvp      { font-size: 13px; color: var(--text-3); margin-top: 8px; }
-
-/* Upcoming event banner */
-.upcoming-event-banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: color-mix(in srgb, var(--accent) 15%, var(--bg-2));
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-  font-size: 13px;
-}
-.upcoming-event-banner__icon  { font-size: 16px; }
-.upcoming-event-banner__text  { flex: 1; }
-.upcoming-event-banner__btn   { margin-left: auto; }
-
-/* Sidebar events button */
-.sidebar-events-btn {
-  background: none;
-  border: none;
-  font-size: 18px;
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
-  opacity: 0.7;
-  transition: opacity .15s;
-}
-.sidebar-events-btn:hover { opacity: 1; }

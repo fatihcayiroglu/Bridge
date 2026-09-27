@@ -12,7 +12,7 @@
  *     summary: Platform istatistikleri (admin)
  *     security: [{ bearerAuth: [] }]
  *     responses:
- *       200: { description: Kullanıcı, sunucu, mesaj, aktif oturum sayıları }
+ *       200: { description: 'Kullanıcı, sunucu, mesaj, aktif oturum sayıları' }
  * /admin/logs:
  *   get:
  *     tags: [Admin]
@@ -57,18 +57,22 @@
  */
 
 import express, { Request, Response } from 'express';
+import crypto from 'crypto';
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 export const router = express.Router();
-import { v4 as uuidv4 } from 'uuid';
-import { Users, Servers, Messages, Members, Channels, Roles, Auth, Dms } from '../../db/repositories';
+import { Users, Servers, Messages, Members, Auth, Dms } from '../../db/repositories';
 import { authMiddleware} from '../../middleware/auth';
 import * as captcha from '../../lib/captcha';
-import { rateLimit, limits } from '../../middleware/rateLimit';
+import { limits } from '../../middleware/rateLimit';
 import { adminOnly, logAction } from './middleware';
+import { parseBoundedPositiveIntQuery } from '../../lib/queryNumbers';
 import { usersRouter }      from './users';
 import { moderationRouter } from './moderation';
 
-const adminRateLimit = rateLimit(30, 60_000, 'admin');
+// NOT: eski `adminRateLimit` KALDIRILDI — hicbir rotaya baglanmamisti.
+// Mutasyon yapan TUM admin uclari `limits.moderation()` kullanir (kanonik).
+// Baglanmamis bir limitin durmasi, admin'in ayri bir kotasi varmis
+// yanilgisi uretiyordu.
 
 // Sub-routers
 router.use('/', usersRouter);
@@ -138,101 +142,13 @@ router.get('/stats', authMiddleware, adminOnly, async (req: Request, res: Respon
   });
 });
 
-// ── GET /api/admin/users ───────────────────────────────────────
-router.get('/users', authMiddleware, adminOnly, async (req: Request, res: Response) => {
-  const { q = '' } = req.query;
-  const pageNum  = Math.max(1, parseInt(String(req.query.page ?? '1'))  || 1);
-  const limitNum = Math.min(100, parseInt(String(req.query.limit ?? '50')) || 50);
-  const offset   = (pageNum - 1) * limitNum;
-
-  let query: Record<string, unknown> = {};
-  if (String(q ?? '').trim()) {
-    query = { $or: [
-      { username:    { $regex: String(q ?? '').trim() } },
-      { displayName: { $regex: String(q ?? '').trim() } },
-      { email:       { $regex: String(q ?? '').trim() } },
-    ]};
-  }
-
-  const total = await Users.count(query);
-  const users = (await Users.searchPaginated(query, { skip: offset, limit: limitNum }))
-    .map(u => ({
-      _id: u._id, username: u.username, displayName: u.displayName,
-      email: u.email || null, emailVerified: u.emailVerified || false,
-      isAdmin: u.isAdmin || false, twoFactorEnabled: u.twoFactorEnabled || false,
-      status: u.status, createdAt: u.createdAt,
-    }));
-
-  res.json({ users, total, page: pageNum, pages: Math.ceil(total / limitNum) });
-});
-
-// ── PATCH /api/admin/users/:id ─────────────────────────────────
-router.patch('/users/:id', authMiddleware, limits.moderation(), adminOnly, async (req: Request, res: Response) => {
-  const _u = castAuthed(req).user;
-  const { isAdmin } = req.body as Record<string, string>;
-  const target = await Users.findById(String(req.params.id ?? ''));
-  if (!target) return res.status(404).json({ error: 'User not found' });
-  if (target._id === _u.id) return res.status(400).json({ error: 'Cannot modify yourself' });
-
-  const updates: Record<string, unknown> = {};
-  if (typeof isAdmin === 'boolean') updates.isAdmin = isAdmin ? 1 : 0;
-  if (Object.keys(updates).length) {
-    await Users.update(target._id, updates);
-    await logAction(_u.id, 'update_user', target._id, { updates });
-  }
-  res.json({ ok: true });
-});
-
-// ── DELETE /api/admin/users/:id ────────────────────────────────
-router.delete('/users/:id', authMiddleware, limits.moderation(), adminOnly, async (req: Request, res: Response) => {
-  const _u = castAuthed(req).user;
-  const target = await Users.findById(String(req.params.id ?? ''));
-  if (!target) return res.status(404).json({ error: 'User not found' });
-  if (target._id === _u.id) return res.status(400).json({ error: 'Cannot delete yourself' });
-
-  await Promise.all([
-    Messages.removeByUser(target._id),
-    Members.removeAllForUser(target._id),
-    Auth.revokeAllForUser(target._id),
-  ]);
-  await Users.delete(target._id);
-  await logAction(_u.id, 'delete_user', target._id, { username: target.username });
-  res.json({ ok: true });
-});
-
-// ── GET /api/admin/servers ─────────────────────────────────────
-router.get('/servers', authMiddleware, adminOnly, async (req: Request, res: Response) => {
-  const allServers = await Servers.findRecentSorted(100);
-  const serverIds  = allServers.map(s => s._id);
-  const allMembers = await Members.findByServerIds(serverIds, { fields: { serverId: 1 } });
-  const countMap: Record<string, number> = {};
-  for (const m of allMembers) countMap[m.serverId] = (countMap[m.serverId] || 0) + 1;
-  const result = allServers
-    .map(s => ({ _id: s._id, name: s.name, icon: s.icon, discoverable: s.discoverable, createdAt: s.createdAt, memberCount: countMap[s._id] || 0 }))
-    .sort((a, b) => b.memberCount - a.memberCount);
-  res.json(result);
-});
-
-// ── DELETE /api/admin/servers/:id ──────────────────────────────
-router.delete('/servers/:id', authMiddleware, limits.moderation(), adminOnly, async (req: Request, res: Response) => {
-  const _u = castAuthed(req).user;
-  const server = await Servers.findById(String(req.params.id ?? ''));
-  if (!server) return res.status(404).json({ error: 'Server not found' });
-
-  await Promise.all([
-    Messages.removeByServer(server._id),
-    Channels.deleteByServer(server._id),
-    Members.removeAllFromServer(server._id),
-    Roles.deleteByServer(server._id),
-  ]);
-  await Servers.delete(server._id);
-  await logAction(_u.id, 'delete_server', server._id, { name: server.name });
-  res.json({ ok: true });
-});
+// User/server CRUD lives exclusively in ./users.ts (mounted above).
 
 // ── GET /api/admin/logs ────────────────────────────────────────
 router.get('/logs', authMiddleware, adminOnly, async (req: Request, res: Response) => {
-  const logs = await Auth.findAdminLogs({}, 200);
+  const limit = parseBoundedPositiveIntQuery(req.query.limit, 50, 200);
+  if (limit === null) return res.status(400).json({ error: 'limit must be a positive safe integer' });
+  const logs = await Auth.findAdminLogs({}, limit);
   const adminIds = [...new Set(logs.map(l => l.adminId).filter((v): v is string => typeof v === 'string' && v.length > 0))];
   const admins   = adminIds.length ? await Users.findByIds(adminIds) : [];
   const adminMap = Object.fromEntries(admins.map(u => [u._id, u.username]));
@@ -243,36 +159,50 @@ router.get('/logs', authMiddleware, adminOnly, async (req: Request, res: Respons
 // ── POST /api/admin/broadcast ──────────────────────────────────
 router.post('/broadcast', authMiddleware, limits.moderation(), adminOnly, async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
-  const { message } = req.body as Record<string, string>;
-  if (!message?.trim()) return res.status(400).json({ error: 'message required' });
+  const rawMessage = (req.body && typeof req.body === 'object') ? (req.body as Record<string, unknown>).message : undefined;
+  if (typeof rawMessage !== 'string') return res.status(400).json({ error: 'message must be a string' });
+  const message = rawMessage.trim();
+  if (!message) return res.status(400).json({ error: 'message required' });
+  if (message.length > 500) return res.status(400).json({ error: 'message too long (max 500)' });
 
   const io = req.app.get('io');
   if (io) {
     io.emit('system_announcement', {
-      message: message.trim(),
+      message,
       from:    req.adminUser?.displayName || req.adminUser?.username || 'admin',
       ts:      Date.now(),
     });
   }
-  await logAction(_u.id, 'broadcast', null, { message: message.trim() });
+  await logAction(_u.id, 'broadcast', null, { message });
   res.json({ ok: true });
 });
 
 // ── POST /api/admin/make-first-admin ───────────────────────────
-router.post('/make-first-admin', async (req: Request, res: Response) => {
-  const { secret, username } = req.body as Record<string, string>;
+function constantTimeSetupSecretEqual(provided: string, expected: string): boolean {
+  // Hash both values first so comparison length never leaks the configured secret
+  // length and timingSafeEqual always receives equal-size buffers.
+  const a = crypto.createHash('sha256').update(provided, 'utf8').digest();
+  const b = crypto.createHash('sha256').update(expected, 'utf8').digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+router.post('/make-first-admin', limits.adminSetup(), async (req: Request, res: Response) => {
+  const body = (req.body && typeof req.body === 'object') ? req.body as Record<string, unknown> : {};
+  const secret = body.secret;
+  const usernameRaw = body.username;
   const adminSecret = process.env.ADMIN_SETUP_SECRET;
-  if (!adminSecret || secret !== adminSecret)
+  if (!adminSecret || typeof secret !== 'string' || !constantTimeSetupSecretEqual(secret, adminSecret))
     return res.status(403).json({ error: 'Invalid secret' });
 
-  const existingAdminCount = await Users.count({ isAdmin: 1 });
+  const existingAdminCount = await Users.count({ isAdmin: true });
   if (existingAdminCount > 0) return res.status(400).json({ error: 'Admin already exists' });
-  if (!username) return res.status(400).json({ error: 'username required' });
+  if (typeof usernameRaw !== 'string' || !usernameRaw.trim()) return res.status(400).json({ error: 'username required' });
+  const username = usernameRaw.trim();
 
   const user = await Users.findByUsername(username);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  await Users.update(user._id, { isAdmin: 1 });
+  await Users.update(user._id, { isAdmin: true });
   res.json({ ok: true, message: `${user.username} is now admin` });
 });
 

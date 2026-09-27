@@ -2,10 +2,10 @@
 // Svelte geçişinin doğrulanması: SettingsModal açılıyor, sekmeler gezilebiliyor,
 // profil güncelleme kaydediliyor, modal kapatılabiliyor.
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 import { BridgePage, getTokens } from '../helpers/bridge';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 test.describe('Settings Modal — Svelte', () => {
   let tokens: ReturnType<typeof getTokens>;
@@ -14,76 +14,45 @@ test.describe('Settings Modal — Svelte', () => {
     tokens = getTokens();
   });
 
+  // SEÇİCİLER GÜNCELLENDİ — gerçek kabuk sözleşmesi:
+  //   tetikleyici : #btn-settings  (aria-label "Profil ve ayarlar")
+  //   modal       : #settings-modal-content  (.settings-modal)
+  //   sekmeler    : [role="tab"] — Profil / Görünüm / Bildirimler / Gizlilik / Cihazlar
+  // Eski spec '[aria-label="Ayarlar"]' ve '#user-settings-btn' arıyordu; ikisi de yok.
+  // Üretilmiş Svelte sınıf adlarına (svelte-1ikukxw) BAĞLANILMAZ.
+
+  /** Uygulama kabuğunu aç ve ayarlar modalını göster. */
+  async function openSettings(page: import('@playwright/test').Page) {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await page.locator('#app').waitFor({ state: 'visible', timeout: 20_000 });
+    await page.locator('#btn-settings').click();
+    const modal = page.locator('#settings-modal-content');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+    return modal;
+  }
+
   test('settings modal açılabiliyor', async ({ page }) => {
-    const bp = new BridgePage(page);
-    await bp.goto('/');
-    await page.waitForSelector('[data-testid="app-loaded"], .channel-list, #sidebar', { timeout: 10_000 });
-
-    // settings tetikleme — dişli ikonu veya avatar tıklaması
-    const settingsBtn = page.locator(
-      '[data-testid="open-settings"], [aria-label="Ayarlar"], .settings-btn, #user-settings-btn'
-    ).first();
-    await settingsBtn.click({ timeout: 5_000 });
-
-    // Svelte modal açıldı mı?
-    await expect(
-      page.locator('[data-testid="settings-modal"], .settings-modal, [role="dialog"]').first()
-    ).toBeVisible({ timeout: 5_000 });
+    const modal = await openSettings(page);
+    await expect(modal).toBeVisible();
   });
 
   test('settings modal sekmeler arası geçiş yapılabiliyor', async ({ page }) => {
-    const bp = new BridgePage(page);
-    await bp.goto('/');
-    await page.waitForSelector('[data-testid="app-loaded"], .channel-list, #sidebar', { timeout: 10_000 });
+    const modal = await openSettings(page);
 
-    const settingsBtn = page.locator(
-      '[data-testid="open-settings"], [aria-label="Ayarlar"], .settings-btn, #user-settings-btn'
-    ).first();
-    await settingsBtn.click({ timeout: 5_000 });
+    const görünüm = modal.getByRole('tab', { name: 'Görünüm' });
+    await expect(görünüm).toBeVisible();
+    await görünüm.click();
+    await expect(görünüm).toHaveAttribute('aria-selected', 'true');
 
-    const modal = page.locator('[data-testid="settings-modal"], .settings-modal, [role="dialog"]').first();
-    await expect(modal).toBeVisible({ timeout: 5_000 });
-
-    // Görünüm sekmesine tıkla
-    const appearanceTab = modal.locator('button, [role="tab"]').filter({ hasText: /görünüm|appearance/i }).first();
-    if (await appearanceTab.isVisible()) {
-      await appearanceTab.click();
-      await page.waitForTimeout(300);
-      // Tema veya renk seçeneği görünür olmalı
-      const themeSection = modal.locator('[data-tab-content="appearance"], .appearance-tab, [data-testid="appearance-content"]').first();
-      if (await themeSection.isVisible()) {
-        await expect(themeSection).toBeVisible();
-      }
-    }
-
-    // Bildirimler sekmesi
-    const notifTab = modal.locator('button, [role="tab"]').filter({ hasText: /bildirim|notification/i }).first();
-    if (await notifTab.isVisible()) {
-      await notifTab.click();
-      await page.waitForTimeout(300);
-    }
+    const profil = modal.getByRole('tab', { name: 'Profil' });
+    await profil.click();
+    await expect(profil).toHaveAttribute('aria-selected', 'true');
   });
 
   test('settings modal Escape ile kapatılabiliyor', async ({ page }) => {
-    const bp = new BridgePage(page);
-    await bp.goto('/');
-    await page.waitForSelector('[data-testid="app-loaded"], .channel-list, #sidebar', { timeout: 10_000 });
-
-    const settingsBtn = page.locator(
-      '[data-testid="open-settings"], [aria-label="Ayarlar"], .settings-btn, #user-settings-btn'
-    ).first();
-    await settingsBtn.click({ timeout: 5_000 });
-
-    await expect(
-      page.locator('[data-testid="settings-modal"], .settings-modal, [role="dialog"]').first()
-    ).toBeVisible({ timeout: 5_000 });
-
+    const modal = await openSettings(page);
     await page.keyboard.press('Escape');
-    await page.waitForTimeout(500);
-
-    await expect(
-      page.locator('[data-testid="settings-modal"], .settings-modal, [role="dialog"]').first()
-    ).toBeHidden({ timeout: 3_000 });
+    await expect(modal).toBeHidden({ timeout: 5_000 });
   });
 
   test('API: profil güncelleme', async ({ request }) => {

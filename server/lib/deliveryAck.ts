@@ -16,7 +16,7 @@
 import { cache } from './redisAdapter';
 
 const ACK_TTL_SECONDS = 300; // 5 dakika
-const redisKey = (ackId: string) => `msg:ack:${ackId}`;
+const redisKey = (userId: string, ackId: string) => `msg:ack:${userId}:${ackId}`;
 
 export interface AckRecord {
   messageId: string;
@@ -29,15 +29,15 @@ export interface AckRecord {
 /**
  * Bir ackId daha önce görülmüş mü? (deduplication)
  */
-export async function getAckRecord(ackId: string): Promise<AckRecord | null> {
-  return (await cache.get(redisKey(ackId))) as AckRecord | null;
+export async function getAckRecord(ackId: string, userId: string): Promise<AckRecord | null> {
+  return (await cache.get(redisKey(userId, ackId))) as AckRecord | null;
 }
 
 /**
  * Mesaj başarıyla işlenince ACK kaydını Redis'e yaz.
  */
 export async function setAckRecord(ackId: string, record: AckRecord): Promise<void> {
-  await cache.set(redisKey(ackId), record, ACK_TTL_SECONDS);
+  await cache.set(redisKey(record.userId, ackId), record, ACK_TTL_SECONDS);
 }
 
 /**

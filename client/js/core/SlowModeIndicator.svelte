@@ -1,6 +1,18 @@
 <!-- client/js/core/SlowModeIndicator.svelte -->
-<!-- Sprint 116 — slow-mode.ts → Svelte 5 Runes -->
+<!--
+  FAZ 8/6 — YAVAŞ MOD GÖRÜNÜR HALE GETİRİLDİ.
+
+  Sunucu yavaş modu ZATEN uyguluyordu (`socket/handlers/messages-send.ts`:
+  `checkSlowmode` → `error:slowmode { remaining, channelId }`), ama kullanıcı
+  tarafında HİÇBİR açıklama yoktu: mesaj sessizce gitmiyordu ve neden
+  olduğunu anlamanın yolu yoktu.
+
+  Bu bileşen gerçek bir uygulamaydı ama hiçbir giriş noktasından import
+  edilmiyordu ve `setSlowMode` / `startSlowModeCooldown` sözleşmesini ÇAĞIRAN
+  yoktu. Arka uç davranışı DEĞİŞTİRİLMEDİ — yalnızca görünür kılındı.
+-->
 <script lang="ts">
+  import { t } from './i18n/reactive.svelte.ts';
   import { onMount, onDestroy } from 'svelte';
   import { BridgeRegistry } from './bridge-registry.js';
 
@@ -27,10 +39,14 @@
   }
 
   let pct = $derived(slowModeSecs > 0 ? (cooldown / slowModeSecs) * 100 : 0);
+  // Tam cümle: rozet dar, ama ekran okuyucu ve tooltip NEDENİNİ söylemeli.
+  // "Sessizce gitmedi" en kötü hatadır; kullanıcı ne olduğunu bilmelidir.
   let label = $derived(
     isActive
-      ? `Yavaş mod: ${cooldown}s bekle`
-      : slowModeSecs > 0 ? `Yavaş mod: ${slowModeSecs}s` : ''
+      ? t('slow_mode_cooldown', 'Yavaş mod açık. {seconds} saniye sonra tekrar mesaj gönderebilirsiniz.', { seconds: cooldown })
+      : slowModeSecs > 0
+        ? t('slow_mode_interval', 'Yavaş mod açık. Bu kanalda {seconds} saniyede bir mesaj gönderilebilir.', { seconds: slowModeSecs })
+        : ''
   );
 
   onMount(() => {
@@ -39,11 +55,15 @@
   });
   onDestroy(() => {
     if (_timer) clearInterval(_timer);
+    // Kayıtlar BIRAKILIR: sökülmüş bir bileşene işaret eden kayıt, çağıranın
+    // sessizce hiçbir şey yapmamasına yol açar.
+    BridgeRegistry.unregister?.('startSlowModeCooldown');
+    BridgeRegistry.unregister?.('setSlowMode');
   });
 </script>
 
 {#if slowModeSecs > 0}
-<div class="slow-mode {isActive ? 'active' : ''}" role="status" aria-label={label} title={label}>
+<div class="slow-mode {isActive ? 'active' : ''}" role="status" aria-live="polite" aria-label={label} title={label}>
   <div class="sm-icon" aria-hidden="true">🐌</div>
   {#if isActive}
     <div class="sm-bar">
@@ -60,13 +80,13 @@
 .slow-mode {
   display: flex; align-items: center; gap: 5px;
   padding: 2px 8px; border-radius: 4px;
-  background: var(--bridge-surface2, #2c2f33);
-  font-size: .75rem; color: var(--bridge-muted, #99aab5);
+  background: var(--bridge-surface2, #232636);
+  font-size: .75rem; color: var(--bridge-muted, #8a91ad);
 }
 .slow-mode.active { color: var(--bridge-yellow, #faa61a); }
 .sm-bar {
   width: 48px; height: 4px; border-radius: 2px;
-  background: var(--bridge-surface3, #393c40); overflow: hidden;
+  background: var(--bridge-surface3, #2c3048); overflow: hidden;
 }
 .sm-fill {
   height: 100%; border-radius: 2px;

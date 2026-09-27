@@ -2,10 +2,14 @@
 // Sprint 108: join/leave/membership mantığı socket/index.ts'den ayrıştırıldı.
 // setupMemberships() çağrısı index.ts'de ~40 satırın yerini alır.
 
+import type { HandlerSocket } from '../handler-contracts';
 import logger from '../../lib/logger';
+import { canViewChannel } from '../../lib/permissions';
 import { Members, Channels }    from '../../db/repositories';
 import { getMembershipsCached } from '../../lib/presenceCache';
-import type { Socket }          from 'socket.io';
+import { isolateSocketHandler } from '../handlerIsolation';
+import { watchServerChannels } from '../../lib/channelActivity';
+
 
 interface UserRef { _id: string }
 
@@ -26,7 +30,7 @@ export interface MembershipsHandle {
  * @param user    { _id } içeren kullanıcı referansı
  */
 export async function setupMemberships(
-  socket: Socket,
+  socket: HandlerSocket,
   user:   UserRef,
 ): Promise<MembershipsHandle> {
 
@@ -56,13 +60,27 @@ export async function setupMemberships(
   await refreshMemberships();
 
   // ── CHANNEL JOIN ────────────────────────────────────────────
-  socket.on('channel:join', async (channelId: unknown) => {
+  socket.on('channel:join', isolateSocketHandler(socket, 'channel:join', async (channelId: unknown) => {
     if (typeof channelId !== 'string') return;
     try {
       const channel = await Channels.findById(channelId);
       if (!channel) return;
       const membership = await Members.findOne(user._id, channel.serverId);
       if (!membership) return;
+
+      // FAZ G5 — KANAL GORUNURLUGU (CANLI YAYIN SIZINTISI KAPATILDI).
+      //
+      // Onceden yalniz SUNUCU UYELIGI denetleniyordu. Oysa `channel:<id>`
+      // odasina `message:new`, `message:edited`, `message:deleted` ve
+      // `message:reaction` yayinlanir (messages-send.ts:212, messages-edit.ts).
+      // Yani sunucunun sirade bir uyesi, GOREMEDIGI ozel bir kanalin odasina
+      // katilip TUM canli mesaj trafigini surekli olarak alabiliyordu.
+      //
+      // Bu, HTTP tarafinda Faz D/F/G'de kapatilan ayni kusur sinifinin
+      // gercek zamanli esdegeridir ve daha agirdir: tek seferlik bir okuma
+      // degil, sureklilik arz eden bir akistir.
+      if (!await canViewChannel(user._id, String(channel.serverId), channelId)) return;
+
       // Önceki text kanalından çık
       for (const room of socket.rooms) {
         if (room.startsWith('channel:') && room !== `channel:${channelId}`) {
@@ -77,13 +95,24 @@ export async function setupMemberships(
         'channel:join işlemi başarısız.',
       );
     }
-  });
+  }));
 
   // ── CHANNEL LEAVE ───────────────────────────────────────────
   // Explicit leave (text kanal değiştirme, voice leave vb.)
   // infra.ts disconnect handler'ı tüm odaları zaten temizler;
   // bu handler explicit event'ler için ek güvence sağlar.
-  socket.on('channel:leave', (channelId: unknown) => {
+  // ── CHANNEL WATCH (Final21 Phase 15) ─────────────────────────
+  // Live unread state for the server the user is looking at: the socket joins
+  // `watch:<channelId>` for each message channel it can VIEW and receives only
+  // content-free `channel:activity` there. Re-sent on server switch/reconnect.
+  socket.on('channels:watch', isolateSocketHandler(socket, 'channels:watch', async (payload: unknown, ack?: unknown) => {
+    const serverId = typeof (payload as { serverId?: unknown } | null)?.serverId === 'string'
+      ? String((payload as { serverId: string }).serverId) : '';
+    const watched = await watchServerChannels(socket as unknown as Parameters<typeof watchServerChannels>[0], user._id, serverId);
+    if (typeof ack === 'function') ack({ ok: true, channels: watched.length });
+  }));
+
+  socket.on('channel:leave', isolateSocketHandler(socket, 'channel:leave', (channelId: unknown) => {
     if (typeof channelId !== 'string') return;
     try {
       if (socket.rooms.has(`channel:${channelId}`)) {
@@ -97,7 +126,7 @@ export async function setupMemberships(
         'channel:leave işlemi başarısız.',
       );
     }
-  });
+  }));
 
   return handle;
 }

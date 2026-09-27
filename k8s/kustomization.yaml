@@ -14,3 +14,12 @@ resources:
   - hpa.yaml
   - pdb.yaml
   - servicemonitor.yaml  # Sprint 85 fix: Prometheus ServiceMonitor
+  - networkpolicy.yaml   # Final21 Faz 19: Redis/PostgreSQL yalnızca Bridge pod'larından
+
+# Final21 Faz 10: `bridge.yaml` `bridge-app:latest` taşır. Değişken etiket,
+# hangi sürümün çalıştığını belirsiz kılar ve `IfNotPresent` ile düğümler
+# farklı imajlar çalıştırabilir. Sürüm, kök `package.json` ile eşlidir
+# (scripts/product-surface-contract.test.js denetler).
+images:
+  - name: bridge-app
+    newTag: "1.125.0"

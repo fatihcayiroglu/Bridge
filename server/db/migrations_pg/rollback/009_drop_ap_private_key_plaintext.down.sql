@@ -11,4 +11,7 @@ ALTER TABLE user_ap_keys ALTER COLUMN "apPrivateKeyEnc" DROP NOT NULL;
 -- keyVersion CHECK constraint kaldır
 ALTER TABLE user_ap_keys DROP CONSTRAINT IF EXISTS chk_key_version;
 
+-- DEFAULT'u 008'in biraktigi degere dondur (009 onu 1'e cekmisti).
+ALTER TABLE user_ap_keys ALTER COLUMN "keyVersion" SET DEFAULT 0;
+
 COMMIT;

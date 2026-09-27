@@ -1,13 +1,15 @@
 // server/lib/telemetry.ts
 // OpenTelemetry tracer + Sentry entegrasyonu
 //
-// Erken başlatma için server/index.ts'de import edilir:
-//   import './lib/telemetry';
+// External secrets are hydrated by server/index.ts first; server/runtime.ts
+// imports telemetry before the rest of the production runtime graph.
 //
 // OTel SDK'yı diğer modüllerden ÖNCE init etmek zorunludur (auto-instrumentation için).
 
 import logger from './logger';
 import { tryRequire } from './_optional-require';
+import { envSafeNumber } from './envNumbers';
+import { BRIDGE_VERSION } from './version';
 
 // ── Tip tanımları (opsiyonel bağımlılıklar için) ────────────────────────────
 
@@ -34,6 +36,7 @@ type OtelApiModule = {
 type SentryModule = {
   init(opts: Record<string, unknown>): void;
   captureException(err: unknown): void;
+  flush?(timeout?: number): Promise<boolean>;
 };
 
 // ── Ortam değişkenleri ──────────────────────────────────────────────────────
@@ -41,12 +44,13 @@ type SentryModule = {
 const OTEL_ENABLED   = process.env.OTEL_ENABLED !== 'false' && !!process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 const SENTRY_ENABLED = !!process.env.SENTRY_DSN;
 const SERVICE_NAME   = process.env.OTEL_SERVICE_NAME || 'bridge';
-const SERVICE_VERSION = process.env.npm_package_version || '0.0.0';
+const SERVICE_VERSION = BRIDGE_VERSION;
 const ENVIRONMENT    = process.env.NODE_ENV || 'development';
 
 // ── OTel başlatma ───────────────────────────────────────────────────────────
 
 let sdk: OtelSDK | null = null;
+let sentrySdk: SentryModule | null = null;
 
 function initOpenTelemetry(): void {
   if (!OTEL_ENABLED) {
@@ -70,6 +74,14 @@ function initOpenTelemetry(): void {
     const { OTLPTraceExporter }      = exporterMod;
     const { Resource }               = resourceMod;
     const { SEMRESATTRS_SERVICE_NAME, SEMRESATTRS_SERVICE_VERSION } = semConvMod;
+    // OpenTelemetry bu sabitleri surumden surume yeniden adlandirdi. Modul
+    // bunlari vermiyorsa hesaplanan anahtar `undefined` olur ve kaynak
+    // (resource) SESSIZCE bozulur. Kanonik oznitelik adlarina duserek hem
+    // tip guvenligi hem de calisma zamani dayanikliligi saglanir.
+    const serviceNameKey =
+      typeof SEMRESATTRS_SERVICE_NAME === 'string' ? SEMRESATTRS_SERVICE_NAME : 'service.name';
+    const serviceVersionKey =
+      typeof SEMRESATTRS_SERVICE_VERSION === 'string' ? SEMRESATTRS_SERVICE_VERSION : 'service.version';
     const { getNodeAutoInstrumentations } = autoInstMod;
 
     const exporter = new OTLPTraceExporter({
@@ -85,8 +97,8 @@ function initOpenTelemetry(): void {
 
     sdk = new NodeSDK({
       resource: new Resource({
-        [SEMRESATTRS_SERVICE_NAME]:    SERVICE_NAME,
-        [SEMRESATTRS_SERVICE_VERSION]: SERVICE_VERSION,
+        [serviceNameKey]:    SERVICE_NAME,
+        [serviceVersionKey]: SERVICE_VERSION,
         'deployment.environment':      ENVIRONMENT,
       }),
       traceExporter: exporter,
@@ -124,11 +136,29 @@ function initSentry(): void {
     Sentry.init({
       dsn:         process.env.SENTRY_DSN,
       environment: ENVIRONMENT,
-      release:     `${SERVICE_NAME}@${SERVICE_VERSION}`,
-      tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || '0.1'),
+      release:     process.env.SENTRY_RELEASE?.trim() || `${SERVICE_NAME}@${SERVICE_VERSION}`,
+      tracesSampleRate: envSafeNumber('SENTRY_TRACES_SAMPLE_RATE', 0.1, { min: 0, max: 1 }),
+      // Authentication/session material must never leave the process via
+      // automatic request context capture.
+      beforeSend(event: Record<string, unknown>) {
+        if (event.request && typeof event.request === 'object') {
+          const request = event.request as Record<string, unknown>;
+          delete request.cookies;
+          if (request.headers && typeof request.headers === 'object') {
+            const headers = request.headers as Record<string, unknown>;
+            for (const key of Object.keys(headers)) {
+              if (['authorization', 'cookie', 'set-cookie', 'x-api-key', 'proxy-authorization'].includes(key.toLowerCase())) {
+                delete headers[key];
+              }
+            }
+          }
+        }
+        return event;
+      },
       // OTel aktifse Sentry trace'lerini OTel üzerinden yönlendir
       integrations: OTEL_ENABLED ? [] : undefined,
     });
+    sentrySdk = Sentry;
 
     logger.info({ sentry: true }, 'Sentry başlatıldı');
   } catch (err) {
@@ -153,6 +183,13 @@ async function shutdownTelemetry(): Promise<void> {
       logger.warn({ err }, 'OTel SDK kapatma hatası');
     }
   }
+  if (sentrySdk?.flush) {
+    try {
+      await sentrySdk.flush(2_000);
+    } catch (err) {
+      logger.warn({ err }, 'Sentry flush başarısız');
+    }
+  }
 }
 
 // SIGTERM/SIGINT'te temiz kapat. Jest isolateModules/resetModules gibi
@@ -167,7 +204,7 @@ if (!telemetrySignalState[telemetrySignalHookKey]) {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 // Bu dosya import edildiği anda başlatır.
-// server/index.ts'de diğer import'lardan ÖNCE gelmelidir.
+// server/runtime.ts'de diğer production-runtime import'larından ÖNCE gelmelidir.
 
 initOpenTelemetry();
 initSentry();

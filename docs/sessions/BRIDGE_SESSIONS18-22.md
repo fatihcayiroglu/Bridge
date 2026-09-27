@@ -70,7 +70,7 @@ Tüm middleware dosyaları (`auth.ts`, `validate.ts`, `asyncHandler.ts`, `csrf.t
 
 ## Oturum 22 — DB Katmanı
 
-`server/db/repositories/` zaten `any`-free olduğu doğrulandı. `IRepository<T>` generic interface mevcut.
+`server/db/repositories/` zaten `any`-free olduğu doğrulandı. Kullanılmayan `IRepository<T>` generic compatibility interface'i release tree'den kaldırıldı.
 
 Ek düzeltmeler:
 - `types/global.d.ts`: `user?: any` → `JwtPayload` import; `Record<string, any>` → `unknown`

@@ -22,6 +22,8 @@ services:
       METRICS_SECRET: "${METRICS_SECRET:?METRICS_SECRET zorunlu - openssl rand -hex 32}"
       FEDERATION_SECRET: "${FEDERATION_SECRET:?FEDERATION_SECRET zorunlu - openssl rand -hex 32}"
       AP_ENCRYPTION_KEY: "${AP_ENCRYPTION_KEY:?AP_ENCRYPTION_KEY zorunlu - 64 hex karakter}"
+      # Final21 Faz 19 — F21-10-04: Redis parolasız çalışmaz (docs/REDIS_PRODUCTION.md `requirepass`).
+      REDIS_URL: "redis://:${REDIS_PASSWORD:?REDIS_PASSWORD zorunlu - openssl rand -hex 32}@redis:6379"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health/ready || exit 1"]
       interval: 20s
@@ -61,13 +63,41 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  # Final21 Faz 10 — F21-10-03: maxmemory-policy MUTLAKA noeviction.
+  # Redis hiz siniri / CSRF / WS baglanti limiti icin YETKILI depodur.
+  # allkeys-lru ile OLCULDU (redis:8-alpine, maxmemory 4mb): arama siniri
+  # doldu (429), bellek baskisi 31 807 anahtar tahliye etti, iki hiz siniri
+  # anahtari da silindi ve AYNI DAKIKADA 5/5 arama 200 dondu — sinir ASILDI.
+  # noeviction ile ayni adimlar: yazmalar reddedildi, anahtarlar kaldi, 5/5 429.
+  # Bellek dolarsa Bridge fail-closed 503 verir (docs/REDIS_PRODUCTION.md).
+  #
+  # Final21 Faz 19 — F21-10-04: KİMLİK DOĞRULAMASIZ REDIS YOK. Üretim rehberi `requirepass`
+  # ister ("Never expose an unauthenticated Redis"); bu dosya ayarlamıyordu. Parola `.env`ten
+  # gelir (yoksa `docker compose up` DURUR) ve yapılandırma STDIN ile verilir: argüman olsaydı
+  # `ps`/`docker top` ile okunurdu. Sağlık denetimi kimlik doğrulayarak PONG bekler.
+  #
+  # `user: 999:1000` (imajın `redis` kullanıcısı): bu dosyanın önceki hâli de ÇALIŞMIYORDU.
+  # `cap_drop: ALL` ile imajın giriş betiği `redis` kullanıcısına geçemiyor, Redis yeteneksiz
+  # root olarak kalıyor ve `redis`e ait `/data`ya yazamıyordu: "Can't open or create append-only
+  # dir: Permission denied", sürekli yeniden başlatma (ölçüldü, tools/p19-compose-redis-proof.sh).
+  # Doğrudan `redis` kullanıcısıyla çalışınca hiçbir yetenek gerekmez.
   redis:
-    command: >-
-      redis-server
-      --appendonly yes
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
-      --save 60 1000
+    user: "999:1000"
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?REDIS_PASSWORD zorunlu - openssl rand -hex 32}"
+    command:
+      - sh
+      - -c
+      - |
+        exec redis-server - --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction --save 60 1000 <<EOF
+        requirepass $$REDIS_PASSWORD
+        EOF
+    healthcheck:
+      # `$$`: Compose yorumlamaz, kapsayıcıdaki kabuk açar (parola oluşturulan yapılandırmaya yazılmaz).
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     security_opt:
       - no-new-privileges:true
     cap_drop:

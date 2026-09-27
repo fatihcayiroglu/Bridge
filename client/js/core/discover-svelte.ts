@@ -9,28 +9,38 @@
 //   DOMContentLoaded: normal sayfa yükü için
 //   bridge:socket-ready: modül geç yüklendiyse güvenlik ağı
 
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import { BridgeRegistry } from './bridge-registry.ts';
 import DiscoverPanel from './DiscoverPanel.svelte';
+import { safeApiErrorMessage } from './api-error.ts';
+import { t } from './i18n/index.ts';
 
 // Çifte mount koruması
 let _discoverPanelInstance: ReturnType<typeof mount> | null = null;
 
 function _mountDiscoverPanel(): void {
-  const target = document.getElementById('discover-root');
-  if (!target || _discoverPanelInstance) return;
+  if (_discoverPanelInstance) return;
+
+  // Faz 12 sonrası — BAĞLANDI. Eskiden yalnız var olan bir `#discover-root`
+  // aranıyordu; böyle bir eleman index.html'de HİÇ yoktu, dolayısıyla mount
+  // sessizce hiçbir şey yapmıyordu. Kardeş yüzey friends-svelte.ts ile aynı
+  // desen: konteyner yoksa oluşturulur. Panel kendi `isVisible` durumunu
+  // yönetir, bu yüzden mount edilmiş olması onu GÖRÜNÜR yapmaz.
+  const target = document.getElementById('discover-root') ?? (() => {
+    const div = document.createElement('div');
+    div.id = 'discover-root';
+    document.body.appendChild(div);
+    return div;
+  })();
 
   _discoverPanelInstance = mount(DiscoverPanel, { target });
 }
 
 function _unmountDiscoverPanel(): void {
-  if (_discoverPanelInstance) {
-    // Svelte 5 unmount
-    (_discoverPanelInstance as unknown as { destroy?: () => void })?.destroy?.();
-    _discoverPanelInstance = null;
-    const target = document.getElementById('discover-root');
-    if (target) target.innerHTML = '';
-  }
+  if (!_discoverPanelInstance) return;
+  const mounted = _discoverPanelInstance;
+  _discoverPanelInstance = null;
+  void unmount(mounted);
 }
 
 // ── Lifecycle mount noktaları (voice-svelte.ts ile aynı pattern) ──────────────
@@ -66,10 +76,9 @@ BridgeRegistry.register('joinServerFromDiscover', async (serverId: string) => {
   const API = getAPI();
   const r = await apiFetch(`${API}/api/servers/${serverId}/join`, { method: 'POST' });
   if (!r.ok) {
-    const d = await r.json().catch(() => ({})) as { error?: string };
-    BridgeRegistry.call('toast', d.error ?? 'Katılım başarısız', 'error');
+    BridgeRegistry.call('toast', safeApiErrorMessage(r, t('discover_join_failed', 'Topluluğa katılınamadı. Tekrar dene.'), { report: true }), 'error');
     return;
   }
-  BridgeRegistry.call('toast', '✅ Topluluğa katıldın!', 'success');
+  BridgeRegistry.call('toast', t('ui_topluluga_katildin', '✅ Topluluğa katıldın!'), 'success');
   BridgeRegistry.call('loadServers');
 });

@@ -1,0 +1,235 @@
+# promtool birim testleri — uyarilarin GERCEKTEN atesLENDIGINI kanitlar.
+#
+# Kural sozdizimi gecerli olabilir ama yanlis seriyi/esigi kullaniyorsa
+# olay aninda SESSIZ kalir. Bu dosya, v1.124'te olculen ariza modlarini
+# sentetik zaman serileriyle yeniden oynatir ve uyarinin ciktigini dogrular.
+#
+# Kosum:
+#   docker run --rm --entrypoint promtool -v "$PWD/rules:/rules" \
+#     prom/prometheus:latest test rules //rules/bridge_alerts.test.yml
+rule_files:
+  - bridge_alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ── Redis kesintisi: v1.124'te GERCEKTEN olculen senaryo ──────────────────
+  - interval: 1m
+    input_series:
+      - series: 'bridge_redis_up'
+        values: '1 1 0 0 0 0 1 1'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RedisUnavailable
+        exp_alerts: []          # daha `for: 1m` dolmadi
+      - eval_time: 4m
+        alertname: RedisUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Redis erişilemiyor — Bridge fail-closed 503 döndürüyor"
+              description: >-
+                Redis yetkili hız-sınırı deposudur. Erişilemezken Bridge TÜM
+                istekleri reddeder (bilinçli fail-closed). Bridge kendiliğinden
+                toparlanır; süreç yeniden başlatmayın. Runbook:
+                docs/RUNBOOK-REDIS-OUTAGE.md
+      - eval_time: 7m
+        alertname: RedisUnavailable
+        exp_alerts: []          # toparlandi -> uyari cozuldu
+
+  # ── PostgreSQL erisilemez ────────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'bridge_db_up'
+        values: '1 0 0 0'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: DatabaseUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "PostgreSQL katmanı erişilemiyor"
+              description: >-
+                Kalıcı veri katmanı yok. Veri kaybı riski için
+                docs/RUNBOOK-DATABASE-RESTORE.md kontrol listesini izleyin.
+
+  # ── Saglikli durumda HICBIR bagimlilik uyarisi olmamali (gurultu kontrolu) ─
+  - interval: 1m
+    input_series:
+      - series: 'bridge_redis_up'
+        values: '1+0x10'
+      - series: 'bridge_db_up'
+        values: '1+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RedisUnavailable
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: DatabaseUnavailable
+        exp_alerts: []
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Final21 Faz 9 — F21-9-01: ONCEDEN ATESLENEMEYEN ALARMLAR
+  # ════════════════════════════════════════════════════════════════════════
+  # Bu kurallar sunucunun YAYMADIGI metrikleri sorguluyordu (onek eksikti ya da
+  # metrik hic beslenmiyordu). Asagidaki seriler URETIM ADLARIYLA ve URETIM
+  # ETIKETLERIYLE yazilmistir: `server/tests/alert-rules-metric-contract.test.ts`
+  # adlarin sunucu kaydinda var oldugunu, bu dosya da kuralin o adlarla
+  # GERCEKTEN ateslendigini kilitler.
+
+  # ── Heap %95 dolu ────────────────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'bridge_nodejs_heap_size_used_bytes{job="bridge"}'
+        values: '500000000 950000000 950000000 950000000 950000000'
+      - series: 'bridge_nodejs_heap_size_total_bytes{job="bridge"}'
+        values: '1000000000x4'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: HeapUsageCritical
+        exp_alerts: []          # `for: 1m` dolmadi
+      - eval_time: 3m
+        alertname: HeapUsageCritical
+        exp_alerts:
+          - exp_labels: { severity: critical, job: bridge }
+            exp_annotations:
+              summary: "🚨 Node.js heap %90 dolu"
+              description: "Heap kullanımı 95%. OOM hatası yaklaşıyor olabilir."
+
+  # ── External bellek > 256 MB ─────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'bridge_nodejs_external_memory_bytes{job="bridge"}'
+        values: '300000000x8'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ExternalMemoryHigh
+        exp_alerts: []          # `for: 5m` dolmadi
+      - eval_time: 7m
+        alertname: ExternalMemoryHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, job: bridge }
+            exp_annotations:
+              summary: "Node.js external bellek yüksek (>256MB)"
+              description: "286.1Mi external bellek kullanılıyor — Buffer/native sızıntısı olabilir."
+
+  # ── RSS %80 (node_exporter YOK — kuralin 1 GB yedegi kullanilir) ─────────
+  - interval: 1m
+    input_series:
+      - series: 'bridge_process_resident_memory_bytes{job="bridge"}'
+        values: '900000000x6'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MemoryUsageHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, job: bridge }
+            exp_annotations:
+              summary: "Bridge bellek kullanımı %80'i aştı"
+              description: "Bellek kullanımı 83.82% — 2 dakikadır bu seviyenin üzerinde."
+      - eval_time: 4m
+        alertname: MemoryUsageCritical
+        exp_alerts: []          # 0.84 < 0.90
+
+  # ── Surec yeniden basladi ────────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'bridge_process_start_time_seconds{job="bridge"}'
+        values: '1700000000 1700000000 1700000300 1700000300'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: BridgeRestartDetected
+        exp_alerts:
+          - exp_labels: { severity: warning, job: bridge }
+            exp_annotations:
+              summary: "Bridge süreci yeniden başladı"
+              description: "Son 15 dakikada process_start_time değişti — crash veya deploy olabilir."
+
+  # ── DB p95 > 500 ms (messages tablosu) ───────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'bridge_db_query_duration_seconds_bucket{job="bridge",operation="select",collection="messages",le="0.1"}'
+        values: '0+1x10'
+      - series: 'bridge_db_query_duration_seconds_bucket{job="bridge",operation="select",collection="messages",le="0.5"}'
+        values: '0+2x10'
+      - series: 'bridge_db_query_duration_seconds_bucket{job="bridge",operation="select",collection="messages",le="1"}'
+        values: '0+100x10'
+      - series: 'bridge_db_query_duration_seconds_bucket{job="bridge",operation="select",collection="messages",le="+Inf"}'
+        values: '0+100x10'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: SlowDbQueries
+        exp_alerts:
+          - exp_labels: { severity: warning, collection: messages }
+            exp_annotations:
+              summary: "DB sorgu süresi p95 > 500ms"
+              description: "Koleksiyon: messages — p95=974.5ms"
+
+  # ── DB hata firtinasi (2/sn) ─────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'bridge_db_queries_total{job="bridge",operation="select_err",collection="messages"}'
+        values: '0+120x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: DbQueryErrorSpike
+        exp_alerts:
+          - exp_labels: { severity: critical, job: bridge, operation: select_err, collection: messages }
+            exp_annotations:
+              summary: "🚨 DB sorgu hataları artıyor"
+              description: "Hata oranı: 2/sn"
+
+  # ── WebSocket baglantisi cokusu (500 -> 50) ──────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'bridge_websocket_connections{job="bridge"}'
+        values: '500 500 500 500 50 50 50'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: WebSocketConnectionDrop
+        exp_alerts:
+          - exp_labels: { severity: warning, job: bridge }
+            exp_annotations:
+              summary: "WebSocket bağlantılarında ani düşüş"
+              description: "5 dakikada -562.5 bağlantı koptu — sunucu yeniden başladı mı?"
+
+  # ── GURULTU KONTROLU: saglikli degerlerde bu alarmlarin HICBIRI calmaz ────
+  - interval: 1m
+    input_series:
+      - series: 'bridge_nodejs_heap_size_used_bytes{job="bridge"}'
+        values: '300000000x10'
+      - series: 'bridge_nodejs_heap_size_total_bytes{job="bridge"}'
+        values: '1000000000x10'
+      - series: 'bridge_nodejs_external_memory_bytes{job="bridge"}'
+        values: '5000000x10'
+      - series: 'bridge_process_resident_memory_bytes{job="bridge"}'
+        values: '150000000x10'
+      - series: 'bridge_process_start_time_seconds{job="bridge"}'
+        values: '1700000000x10'
+      - series: 'bridge_db_queries_total{job="bridge",operation="select",collection="messages"}'
+        values: '0+600x10'
+      - series: 'bridge_websocket_connections{job="bridge"}'
+        values: '500x10'
+    alert_rule_test:
+      - { eval_time: 10m, alertname: HeapUsageCritical, exp_alerts: [] }
+      - { eval_time: 10m, alertname: ExternalMemoryHigh, exp_alerts: [] }
+      - { eval_time: 10m, alertname: MemoryUsageHigh, exp_alerts: [] }
+      - { eval_time: 10m, alertname: BridgeRestartDetected, exp_alerts: [] }
+      - { eval_time: 10m, alertname: DbQueryErrorSpike, exp_alerts: [] }
+      - { eval_time: 10m, alertname: WebSocketConnectionDrop, exp_alerts: [] }
+
+  # ── Olay dongusu gecikmesi ───────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'bridge_nodejs_eventloop_lag_mean_seconds'
+        values: '0.01 0.02 0.4 0.4 0.4 0.4'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: EventLoopLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Node.js olay döngüsü gecikmesi yüksek (0.4s)"
+              description: "Süreç CPU'ya bağlı; istek gecikmesi artacaktır."

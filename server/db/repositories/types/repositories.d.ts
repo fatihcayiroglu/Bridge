@@ -19,7 +19,7 @@ import type {
   Message, DmConversation, DmMessage, GroupDm, GroupDmMessage,
   Role, Invite, Thread, ThreadMessage, Bot, AutomodRule, ReactionRole,
   ScheduledMessage, NativeToken, NotificationPref, Friendship, Block,
-  UserConnection, CustomEmoji, ServerGif, SoundboardSound,
+  UserConnection, CustomEmoji, ServerGif, SoundboardSound, SoundboardUserStat,
   RefreshToken, WebAuthnCredential, OutgoingWebhook, ChannelWebhook,
   Poll, FederationActivity, FederationPeer, Bridge, Podcast,
   VoiceMessage, ChannelPermission,
@@ -63,6 +63,7 @@ export declare class UserRepository {
   findByUsernames(usernames: string[]): Promise<User[]>;
   count(query?: Partial<User>): Promise<number>;
   delete(id: UUID): Promise<void>;
+  deleteGraphAtomic(id: UUID, expectedOwnerId?: UUID): Promise<'deleted' | 'not_found' | 'owner_mismatch'>;
   searchPaginated(query: Partial<User>, opts?: PaginationOptions): Promise<User[]>;
   findWhere(query: Partial<User>): Promise<User[]>;
 }
@@ -107,6 +108,8 @@ export declare class MemberRepository {
   countWhere(query?: Partial<Member>): Promise<number>;
   isTimedOut(userId: UUID, serverId: UUID): Promise<boolean>;
   setRoles(userId: UUID, serverId: UUID, roles: string[]): Promise<void>;
+  addRole(userId: UUID, serverId: UUID, roleId: string): Promise<string[] | null>;
+  removeRole(userId: UUID, serverId: UUID, roleId: string): Promise<string[] | null>;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -134,6 +137,8 @@ export declare class ChannelRepository {
   insertCategory(data: Partial<ChannelCategory>): Promise<ChannelCategory>;
   updateCategory(id: UUID, serverId: UUID, fields: Partial<ChannelCategory>): Promise<void>;
   deleteCategory(id: UUID, serverId: UUID): Promise<void>;
+  deleteCategoryAtomic(id: UUID, serverId: UUID): Promise<boolean>;
+  reorderCategoriesAtomic(serverId: UUID, order: Array<{ id: UUID; position: number }>): Promise<boolean>;
   unlinkCategory(catId: UUID, serverId: UUID): Promise<void>;
   findOverridesByChannel(channelId: UUID): Promise<ChannelOverride[]>;
 }
@@ -145,6 +150,13 @@ export declare class ChannelRepository {
 export declare class MessageRepository {
   hasFtsSearch(): boolean;
   ftsSearch(searchTerm: string, serverIds: UUID[], limit: number): Promise<Message[]>;
+  hasUnifiedSearch(): boolean;
+  /** Kanal + DM + grup DM + thread; her satır `_source` taşır. */
+  unifiedSearch(
+    searchTerm: string,
+    scope: { userId: UUID; serverIds: UUID[]; sources?: readonly string[] },
+    limit?: number,
+  ): Promise<(Record<string, unknown> & { _source: string; _score: number })[]>;
   findByChannel(channelId: UUID, opts?: MessageSearchOptions): Promise<Message[]>;
   findById(id: UUID): Promise<Message | null>;
   create(data: Partial<Message>): Promise<Message>;
@@ -172,6 +184,8 @@ export declare class DmRepository {
   findConversation(id: UUID): Promise<DmConversation | null>;
   static buildDmId(a: UUID, b: UUID): string;
   findConversationsByUser(userId: UUID): Promise<DmConversation[]>;
+  markReadWithReceipt(dmId: string, userId: UUID): Promise<{ participants: UUID[]; readAt: Timestamp } | null>;
+  markRead(dmId: string, userId: UUID): Promise<boolean>;
   findOrCreateConversation(userId: UUID, toUserId: UUID): Promise<{ conv: DmConversation; dmId: string }>;
   touchConversation(id: string): Promise<void>;
   findMessages(dmId: string, opts?: CursorOptions): Promise<DmMessage[]>;
@@ -257,15 +271,30 @@ export declare class ThreadRepository {
 
 export declare class BotRepository {
   findById(id: UUID): Promise<Bot | null>;
-  findByIdAndToken(id: UUID, token: string): Promise<Bot | null>;
-  findByOwner(ownerId: UUID): Promise<Bot[]>;
-  findPublic(): Promise<Bot[]>;
+  findByIdAndServer(id: UUID, serverId: UUID): Promise<Bot | null>;
+  findByIdAndToken(id: UUID, serverId: UUID, tokenHash: string): Promise<Bot | null>;
+  findByTokenHash(tokenHash: string): Promise<Bot | null>;
+  findByServer(serverId: UUID): Promise<Bot[]>;
+  findPublic(query?: Record<string, unknown>): Promise<Bot[]>;
+  findByIds(ids: UUID[]): Promise<(Bot | null)[]>;
   insert(data: Partial<Bot>): Promise<Bot>;
+  create(data: Partial<Bot>): Promise<Bot>;
   update(id: UUID, fields: Partial<Bot>): Promise<void>;
-  delete(id: UUID): Promise<void>;
-  addToServer(botId: UUID, serverId: UUID): Promise<void>;
-  removeFromServer(botId: UUID, serverId: UUID): Promise<void>;
-  findInServer(serverId: UUID): Promise<Bot[]>;
+  updateByIdAndServer(id: UUID, serverId: UUID, fields: Partial<Bot>): Promise<void>;
+  deactivate(id: UUID, serverId: UUID): Promise<void>;
+  delete(id: UUID, serverId?: UUID): Promise<void>;
+  updateToken(id: UUID, serverIdOrTokenHash: string, maybeTokenHash?: string): Promise<void>;
+  findServerBot(botId: UUID, serverId: UUID): Promise<Record<string, unknown> | null>;
+  findServerBots(serverId: UUID): Promise<Record<string, unknown>[]>;
+  findInstalledForServer(serverId: UUID): Promise<Record<string, unknown>[]>;
+  countServerInstalls(botId: UUID): Promise<number>;
+  addToServer(botId: UUID, serverId: UUID, addedBy: UUID): Promise<Record<string, unknown>>;
+  findRating(botId: UUID, userId: UUID): Promise<Record<string, unknown> | null>;
+  findAllRatings(botId: UUID): Promise<Record<string, unknown>[]>;
+  insertRating(botId: UUID, userId: UUID, rating: number): Promise<Record<string, unknown>>;
+  updateRating(id: UUID, rating: number): Promise<void>;
+  findIncomingWebhook(id: UUID): Promise<Record<string, unknown> | null>;
+  findWhere(query: Record<string, unknown>): Promise<Bot[]>;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -275,6 +304,7 @@ export declare class BotRepository {
 export declare class AutomodRepository {
   findByServer(serverId: UUID): Promise<AutomodRule[]>;
   findById(id: UUID): Promise<AutomodRule | null>;
+  findByIdAndServer(id: UUID, serverId: UUID): Promise<AutomodRule | null>;
   insert(data: Partial<AutomodRule>): Promise<AutomodRule>;
   update(id: UUID, serverId: UUID, fields: Partial<AutomodRule>): Promise<void>;
   delete(id: UUID, serverId: UUID): Promise<void>;
@@ -299,11 +329,17 @@ export declare class ReactionRoleRepository {
 // ─────────────────────────────────────────────────────────────
 
 export declare class ScheduledMessageRepository {
-  findPending(): Promise<ScheduledMessage[]>;
-  findByChannel(channelId: UUID): Promise<ScheduledMessage[]>;
+  findPending(userId: UUID): Promise<ScheduledMessage[]>;
+  findById(id: UUID, userId: UUID): Promise<ScheduledMessage | null>;
   insert(data: Partial<ScheduledMessage>): Promise<ScheduledMessage>;
-  markSent(id: UUID): Promise<void>;
   delete(id: UUID): Promise<void>;
+  deleteByServer(serverId: UUID): Promise<void>;
+  claimDueBefore(timestamp: number, claimOwner: string, leaseMs?: number, limit?: number): Promise<ScheduledMessage[]>;
+  finalizeSent(id: UUID, claimOwner: string, sentAt?: number): Promise<boolean>;
+  releaseClaim(id: UUID, claimOwner: string, error: string, retryAt: number): Promise<boolean>;
+  markFailed(id: UUID, claimOwner: string, reason: string, failedAt?: number): Promise<boolean>;
+  markSent(id: UUID, sentAt?: number): Promise<void>;
+  findDueBefore(timestamp: number): Promise<ScheduledMessage[]>;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -329,15 +365,22 @@ export declare class SocialRepository {
   findFriendshipById(friendshipId: UUID): Promise<Friendship | null>;
   findFriendships(userId: UUID): Promise<Friendship[]>;
   insertFriendship(userId: UUID, friendId: UUID, status?: Friendship['status']): Promise<Friendship>;
+  createFriendship(userId: UUID, friendId: UUID): Promise<Friendship>;
   updateFriendship(id: UUID, fields: Partial<Friendship>): Promise<void>;
   removeFriendship(id: UUID): Promise<void>;
   findBlock(blockerId: UUID, blockedId: UUID): Promise<Block | null>;
   findBlocksByUser(blockerId: UUID): Promise<Block[]>;
+  findBlocksInvolvingUser(userId: UUID): Promise<Block[]>;
   insertBlock(blockerId: UUID, blockedId: UUID): Promise<Block>;
   removeBlock(blockerId: UUID, blockedId: UUID): Promise<void>;
   findConnection(userId: UUID, platform: string): Promise<UserConnection | null>;
   findConnectionsByUser(userId: UUID): Promise<UserConnection[]>;
   insertConnection(data: Partial<UserConnection>): Promise<UserConnection>;
+  upsertConnectionWithinLimit(
+    userId: UUID, platform: string,
+    fields: { username: string; url: string; verified?: boolean | number },
+    maxConnections?: number,
+  ): Promise<{ status: 'ok'; connection: UserConnection } | { status: 'limit' }>;
   removeConnection(userId: UUID, platform: string): Promise<void>;
   updateConnection(filter: Partial<UserConnection>, modifier: object): Promise<void>;
   countConnections(query: Partial<UserConnection>): Promise<number>;
@@ -356,10 +399,14 @@ export declare class ServerAssetRepository {
   findGifsByServer(serverId: UUID): Promise<ServerGif[]>;
   insertGif(data: Partial<ServerGif>): Promise<ServerGif>;
   deleteGif(id: UUID, serverId: UUID): Promise<void>;
-  findSoundsByServer(serverId: UUID): Promise<SoundboardSound[]>;
+  findSounds(serverId: UUID, limit?: number): Promise<SoundboardSound[]>;
+  findSoundsSorted(serverId: UUID, limit?: number): Promise<SoundboardSound[]>;
+  findSoundByIdAndServer(id: UUID, serverId: UUID): Promise<SoundboardSound | null>;
   insertSound(data: Partial<SoundboardSound>): Promise<SoundboardSound>;
-  updateSound(id: UUID, serverId: UUID, fields: Partial<SoundboardSound>): Promise<void>;
-  deleteSound(id: UUID, serverId: UUID): Promise<void>;
+  updateSound(id: UUID, serverId: UUID, fields: Partial<SoundboardSound>): Promise<SoundboardSound | null>;
+  setSoundFavorite(soundId: UUID, userId: UUID, serverId: UUID | null, favorite: boolean): Promise<SoundboardUserStat | null | Record<string, unknown>>;
+  recordSoundPlay(soundId: UUID, userId: UUID, serverId: UUID | null): Promise<SoundboardUserStat | null | Record<string, unknown>>;
+  deleteSound(id: UUID, serverId: UUID): Promise<{ deleted: number | null }>;
   upsertOnboarding(serverId: UUID, data: object): Promise<void>;
   markOnboardingComplete(serverId: UUID): Promise<void>;
 }
@@ -370,7 +417,7 @@ export declare class ServerAssetRepository {
 
 export declare class AuthRepository {
   findRefreshToken(token: string): Promise<RefreshToken | null>;
-  insertRefreshToken(userId: UUID, token: string, expiresAt: Timestamp): Promise<RefreshToken>;
+  insertRefreshToken(userId: UUID, token: string, expiresAt: Timestamp, tokenVersion: number): Promise<RefreshToken>;
   revokeRefreshToken(token: string): Promise<void>;
   revokeAllForUser(userId: UUID): Promise<void>;
   /** Token ailesi bazli toplu iptal — reuse attack tespitinde cağrilir. */
@@ -427,6 +474,13 @@ export declare class PollRepository {
 
 export declare class FederationRepository {
   insertActivity(data: Partial<FederationActivity>): Promise<FederationActivity>;
+  updateActivity(filter: Query, modifier: UpdateModifier): Promise<unknown>;
+  claimInboundActivity(input: {
+    id: UUID; targetUserId: UUID; actorUrl: string; activityId: string; type: string;
+    activity: Record<string, unknown>; claimOwner: string; claimUntil: Timestamp; createdAt: Timestamp;
+  }): Promise<{ status: 'claimed' | 'processed' | 'busy'; id: UUID }>;
+  completeInboundActivity(id: UUID, claimOwner: string, processedAt?: Timestamp): Promise<void>;
+  failInboundActivity(id: UUID, claimOwner: string, error: string): Promise<void>;
   countActivities(query?: Partial<FederationActivity>): Promise<number>;
   findActivities(query?: Partial<FederationActivity>, limit?: number): Promise<FederationActivity[]>;
   findPeer(domain: string): Promise<FederationPeer | null>;
@@ -461,10 +515,14 @@ export declare class WebhookRepository {
 
 export declare class ChannelPermissionRepository {
   findByChannel(channelId: UUID): Promise<ChannelPermission[]>;
-  findOne(channelId: UUID, targetId: UUID): Promise<ChannelPermission | null>;
-  upsert(data: Partial<ChannelPermission>): Promise<void>;
-  delete(channelId: UUID, targetId: UUID): Promise<void>;
-  deleteByChannel(channelId: UUID): Promise<void>;
+  findOne(query: Partial<ChannelPermission>): Promise<ChannelPermission | null>;
+  find(query: Partial<ChannelPermission>): Promise<ChannelPermission[]>;
+  insert(doc: Partial<ChannelPermission>): Promise<ChannelPermission>;
+  update(filter: Partial<ChannelPermission>, modifier: object): Promise<void>;
+  remove(query: Partial<ChannelPermission>): Promise<void>;
+  removeByChannel(channelId: UUID): Promise<void>;
+  replaceManyChannelsAtomic(serverId: UUID, channelIds: UUID[], overrides: Array<{ roleId: string; allow: number; deny: number }>): Promise<boolean>;
+  applyChannelBatchAtomic(serverId: UUID, channelId: UUID, upserts: Array<{ roleId: string; allow: number; deny: number }>, deletes: string[]): Promise<boolean>;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -520,4 +578,3 @@ export declare const ChannelWebhooks: WebhookRepository;
 export declare const ChannelPermissions: ChannelPermissionRepository;
 export declare const Podcasts: PodcastRepository;
 export declare const VoiceMessages: VoiceRepository;
-

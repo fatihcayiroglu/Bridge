@@ -1,16 +1,58 @@
 // server/tests/groupDm.test.ts
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
+
+// ── ATOMIK OLUSTURMA YOLU ────────────────────────────────────────────────────
+// `POST /api/gdm` artik UC yazmayi TEK transaction icinde yapar
+// (GroupDmRepository.createAtomic). Bunun nedeni canli bir kusurdu: yazmalar
+// tamamlaniyor, ardindan zenginlestirme patliyor, istek 500 donuyor ve GERIDE
+// YETIM GRUP kaliyordu.
+//
+// `withTransaction` gercek bir PoolClient verir; `PgCollection` ise havuzdan
+// KENDI baglantisini aldigi icin repository cagrilari transaction'a KATILMAZ.
+// Bu yuzden kanonik yol HAM SQL kullanir. Testte de ayni sozlesme taklit
+// edilir: sahte client, ayni UC INSERT'i mockDb'ye yazar. Boylece test
+// gercek yolu olcmeye DEVAM eder (yalnizca 201 degil, uyelikler de dogrulanir).
+jest.mock('../db/postgres/transaction', () => ({
+  withTransaction: async (fn: (c: unknown) => Promise<unknown>) => fn({
+    query: async (sql: string, params: unknown[]) => {
+      const db = require('../db/loader');
+      if (/INSERT INTO group_dm_conversations/.test(sql)) {
+        const row = {
+          _id: params[0], name: params[1], ownerId: params[2],
+          icon: params[3], createdAt: params[4], lastMessageAt: params[5],
+        };
+        await db.groupDmConversations.insert(row);
+        return { rows: [row] };
+      }
+      if (/INSERT INTO group_dm_members/.test(sql)) {
+        const [ids, gids, uids, joined] = params as string[][];
+        for (let i = 0; i < ids.length; i++) {
+          await db.groupDmMembers.insert({ _id: ids[i], groupId: gids[i], userId: uids[i], joinedAt: joined[i] });
+        }
+        return { rows: [] };
+      }
+      if (/INSERT INTO group_dm_messages/.test(sql)) {
+        await db.groupDmMessages.insert({
+          _id: params[0], groupId: params[1], userId: params[2], displayName: params[3],
+          avatarColor: params[4], content: params[5], type: params[6], reactions: {}, createdAt: params[7],
+        });
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+  }),
+}));
 jest.mock('../middleware/rateLimit', () => ({
-  limits: { messages: () => (_req, _res, next) => next(), dm: () => (_req, _res, next) => next() },
+  limits: { messages: () => (_req: unknown, _res: unknown, next: () => void) => next(), dm: () => (_req: unknown, _res: unknown, next: () => void) => next() },
 }));
 
 // groupDm.js imports sanitizeUser from ./auth — mock it
 jest.mock('../routes/auth', () => ({
-  sanitizeUser: (u) => ({ _id: u._id, username: u.username, displayName: u.displayName, avatarColor: u.avatarColor || '#2d9cdb', avatarUrl: u.avatarUrl || null }),
+  sanitizeUser: (u: Record<string, unknown>) => ({ _id: u._id, username: u.username, displayName: u.displayName, avatarColor: u.avatarColor || '#2d9cdb', avatarUrl: u.avatarUrl || null }),
   router: { use: jest.fn() },
 }));
 
@@ -29,11 +71,16 @@ function buildApp() {
   app.use('/api/gdm', authMiddleware, gdmRouter);
   return app;
 }
-function tok(uid, v = 0) { return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string, v = 0) { return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 describe('Group DM Routes', () => {
-  let app, user1Id, user2Id, user3Id;
-  let token1, token2, token3;
+  let app: express.Express;
+  let user1Id: string;
+  let user2Id: string;
+  let user3Id: string;
+  let token1: string;
+let token2: string;
+let token3: string;
 
   beforeEach(async () => {
     db._reset?.();
@@ -102,7 +149,7 @@ describe('Group DM Routes', () => {
   });
 
   describe('GET /api/gdm/:gid', () => {
-    let gid;
+    let gid: string;
     beforeEach(async () => {
       gid = uuidv4();
       await db.groupDmConversations.insert({ _id: gid, name: 'MyGroup', ownerId: user1Id, createdAt: Date.now() });
@@ -133,7 +180,7 @@ describe('Group DM Routes', () => {
   });
 
   describe('DELETE /api/gdm/:gid — disband group', () => {
-    let gid;
+    let gid: string;
     beforeEach(async () => {
       gid = uuidv4();
       await db.groupDmConversations.insert({ _id: gid, name: 'ToDelete', ownerId: user1Id, createdAt: Date.now() });

@@ -1,9 +1,8 @@
 // client/js/core/notification-prefs-svelte.ts
 // Sprint 116 — NotificationPrefsPanel mount shim (ADR-0008 Faz 3)
 // Bildirim tercih yöneticisi
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import NotificationPrefsPanel from './NotificationPrefsPanel.svelte';
-import { BridgeRegistry } from './bridge-registry.ts';
 import { createLogger } from './logger.ts';
 const log = createLogger('NotificationPrefsPanelShim');
 
@@ -21,8 +20,18 @@ export function mountNotificationPrefsPanel(target?: HTMLElement): void {
   log.info('NotificationPrefsPanel mounted via shim');
 }
 
+/**
+ * FAZ K/5 — GERCEK SOKME.
+ *
+ * Onceki hali yalnizca referansi `null`liyordu; Svelte'in `unmount()`u HIC
+ * cagrilmadigi icin `onDestroy` calismiyordu. Panel artik registry kaydi
+ * yaptigindan bu onemli: kayitlar sokulmus bir bilesene isaret etmeye devam
+ * ederdi (`search-svelte.ts` ve `global-search-svelte.ts` ile ayni sozlesme).
+ */
 export function unmountNotificationPrefsPanel(): void {
-  if (_instance) { _instance = null; }
+  if (!_instance) return;
+  void unmount(_instance);
+  _instance = null;
 }
 
 if (document.readyState === 'loading') {

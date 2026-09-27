@@ -5,6 +5,10 @@
 // Kullanım: server/index.js'in en başında require('./lib/env') ekle.
 // Test ortamında (NODE_ENV=test) zorunluluklar gevşetilir.
 
+import { auditProxyConfig } from './clientIp';
+import { validateWebAuthnOriginConfiguration } from './webauthn-origin';
+import { sharedUploadStorageProblem } from './uploadStorageTopology';
+
 const IS_TEST = process.env.NODE_ENV === 'test';
 const IS_PROD = process.env.NODE_ENV === 'production';
 
@@ -52,32 +56,12 @@ function int(
     if (def !== null) return { name, ok: true, value: def };
     return { name, ok: true, value: null };
   }
-  const n = parseInt(raw, 10);
-  if (isNaN(n)) return { name, ok: false, message: `${name} sayısal olmalı, alındı: "${raw}"` };
+  if (!/^\d+$/.test(raw)) return { name, ok: false, message: `${name} tam sayı olmalı, alındı: "${raw}"` };
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n)) return { name, ok: false, message: `${name} güvenli tam sayı aralığında olmalı, alındı: "${raw}"` };
   if (min !== null && n < min) return { name, ok: false, message: `${name} en az ${min} olmalı (alındı: ${n})` };
   if (max !== null && n > max) return { name, ok: false, message: `${name} en fazla ${max} olmalı (alındı: ${n})` };
   return { name, ok: true, value: n };
-}
-
-function url(
-  name: string,
-  { required = false, protocols = ['http', 'https'] }: { required?: boolean; protocols?: string[] } = {}
-): EnvResult {
-  const val = process.env[name];
-  if (!val) {
-    if (required && !IS_TEST) return { name, ok: false, message: `${name} zorunlu ama tanımlı değil` };
-    return { name, ok: true, value: null };
-  }
-  try {
-    const parsed = new URL(val);
-    const proto = parsed.protocol.replace(':', '');
-    if (!protocols.includes(proto)) {
-      return { name, ok: false, message: `${name} geçersiz protokol "${proto}" (izin verilenler: ${protocols.join(', ')})` };
-    }
-  } catch {
-    return { name, ok: false, message: `${name} geçerli bir URL değil: "${val}"` };
-  }
-  return { name, ok: true, value: val };
 }
 
 // ── Kural tanımları ───────────────────────────────────────────
@@ -110,23 +94,10 @@ const rules = [
 
   // WebAuthn — yanlış origin passkey girişini kırar
   (() => {
-    const rpId     = process.env.WEBAUTHN_RP_ID;
-    const origin   = process.env.WEBAUTHN_ORIGIN;
-    if (rpId && origin) {
-      try {
-        const u = new URL(origin);
-        if (!u.hostname.endsWith(rpId)) {
-          return {
-            name: 'WEBAUTHN_ORIGIN',
-            ok: false,
-            message: `WEBAUTHN_ORIGIN hostname (${u.hostname}) WEBAUTHN_RP_ID (${rpId}) ile eşleşmiyor`,
-          };
-        }
-      } catch {
-        return { name: 'WEBAUTHN_ORIGIN', ok: false, message: 'WEBAUTHN_ORIGIN geçerli bir URL değil' };
-      }
-    }
-    return { name: 'WEBAUTHN', ok: true };
+    const result = validateWebAuthnOriginConfiguration(process.env);
+    return result.ok
+      ? { name: 'WEBAUTHN', ok: true }
+      : { name: result.field || 'WEBAUTHN', ok: false, message: result.message };
   })(),
 
   // İzin verilen originler CORS için
@@ -187,6 +158,64 @@ const rules = [
       };
     }
     return { name: 'LOG_LEVEL', ok: true };
+  })(),
+
+  // Production SSO — etkinleştirilen protokol tam yapılandırılmış olmalı.
+  // Özellikle BASE_URL eksikse sso.ts localhost callback üretir; production'da
+  // request-time 5xx yerine startup'ta fail-fast olmak daha güvenlidir.
+  (() => {
+    if (!IS_PROD) return { name: 'SSO', ok: true };
+    const oidc = process.env.OIDC_ENABLED === 'true';
+    const saml = process.env.SAML_ENABLED === 'true';
+    if (!oidc && !saml) return { name: 'SSO', ok: true };
+
+    const problems: string[] = [];
+    const base = process.env.BASE_URL?.trim();
+    if (!base) problems.push('BASE_URL');
+    else {
+      try {
+        const u = new URL(base);
+        if (u.protocol !== 'https:' || !u.hostname || u.username || u.password) problems.push('BASE_URL(https)');
+      } catch { problems.push('BASE_URL(valid https URL)'); }
+    }
+
+    if (oidc) {
+      if (!process.env.OIDC_ISSUER?.trim()) problems.push('OIDC_ISSUER');
+      if (!process.env.OIDC_CLIENT_ID?.trim()) problems.push('OIDC_CLIENT_ID');
+      const issuer = process.env.OIDC_ISSUER?.trim();
+      if (issuer) {
+        try {
+          const u = new URL(issuer);
+          if (u.protocol !== 'https:' || u.username || u.password) problems.push('OIDC_ISSUER(https)');
+        } catch { problems.push('OIDC_ISSUER(valid https URL)'); }
+      }
+    }
+    if (saml) {
+      if (!process.env.SAML_ENTRY_POINT?.trim()) problems.push('SAML_ENTRY_POINT');
+      if (!process.env.SAML_IDP_CERT?.trim()) problems.push('SAML_IDP_CERT');
+      if (!process.env.SAML_IDP_ENTITY_ID?.trim()) problems.push('SAML_IDP_ENTITY_ID');
+      const entry = process.env.SAML_ENTRY_POINT?.trim();
+      if (entry) {
+        try {
+          const u = new URL(entry);
+          if (u.protocol !== 'https:' || u.username || u.password) problems.push('SAML_ENTRY_POINT(https)');
+        } catch { problems.push('SAML_ENTRY_POINT(valid https URL)'); }
+      }
+    }
+
+    return problems.length
+      ? { name: 'SSO', ok: false, message: `Production SSO yapılandırması eksik/geçersiz: ${problems.join(', ')}` }
+      : { name: 'SSO', ok: true };
+  })(),
+
+  // Final21 Faz 10 — F21-10-02: çok düğümlü dağıtımda yüklemeler düğüme yerel
+  // olamaz (ölçüldü: örnek A'ya yüklenen dosya örnek B'de 404). Dağıtım
+  // `BRIDGE_MULTI_NODE=true` ilan ederse açılış fail-closed reddedilir.
+  (() => {
+    const problem = sharedUploadStorageProblem(process.env);
+    return problem
+      ? { name: 'UPLOAD_STORAGE', ok: false, message: problem }
+      : { name: 'UPLOAD_STORAGE', ok: true };
   })(),
 
   // Production: Redis — rate limit / CSRF / socket cluster için zorunlu
@@ -267,6 +296,16 @@ for (const result of rules) {
       warnings.push(`  ⚠  ${result.message}`);
     }
   }
+}
+
+// ── PROXY GUVEN MODELI ────────────────────────────────────────
+// `X-Forwarded-For` ISTEMCI TARAFINDAN YAZILABILIR. Ona ne zaman guvenilecegini
+// yalnizca operator bilir. Yanlis yapilandirma iki yonde de tehlikelidir:
+//   fazla guven  -> herkes kendi IP'sini uydurur, hiz siniri ve IP yasagi coker
+//   eksik guven  -> tum istemciler tek IP'ye duser, biri digerlerini yasaklatir
+// Bu yuzden uretimde ACIK bir secim bekleriz; sessiz varsayilan kabul edilmez.
+for (const uyari of auditProxyConfig(process.env)) {
+  warnings.push(`  ⚠  ${uyari}`);
 }
 
 // NOT: Bu dosya sunucunun en başında (logger initialize edilmeden önce) çalışır.

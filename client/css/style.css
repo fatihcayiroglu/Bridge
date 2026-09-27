@@ -28,3 +28,6 @@
 @import "./modules/bridge-features.css";
 /* sprint91.css + sprint92.css + sprint93.css + sprint94.css → community-features.css ile değiştirildi */
 @import "./modules/community-features.css";
+/* En sonda: dar pencere düzeltmeleri önceki breakpoint kurallarını
+   kasıtlı olarak geçersiz kılar (kaynak sırası kazanır). */
+@import "./modules/responsive-fixes.css";

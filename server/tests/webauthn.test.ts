@@ -2,6 +2,10 @@
 // WebAuthn route'larının unit testleri
 // Jest + supertest kullanır
 
+// `Request`/`Response`/`NextFunction` KULLANILIYORDU ama ithal EDILMEMISTI
+// (`Cannot find name 'NextFunction'`). Eksik ithal, sahte ara katmanlarin
+// parametrelerini de ortuk `any` birakiyordu.
+import type { Express, Request, Response, NextFunction } from 'express';
 'use strict';
 
 import request from 'supertest';
@@ -53,8 +57,14 @@ jest.mock('../db/loader', () => ({
 
 jest.mock('../lib/redisAdapter', () => ({
   cache: {
+    // Gercek adaptorde MEVCUT (lib/redisAdapter.ts) — mock'ta eksikti ve
+    // `invalidateChannelMessages` her cagrida sessizce TypeError firlatiyordu.
+    invalidatePattern: jest.fn().mockResolvedValue(undefined),
     get:  jest.fn(async (key) => { const e = mockCacheStore.get(key); return e ?? null; }),
+    take: jest.fn(async (key) => { const e = mockCacheStore.get(key); mockCacheStore.delete(key); return e ?? null; }),
+    takeAuthoritative: jest.fn(async (key) => { const e = mockCacheStore.get(key); mockCacheStore.delete(key); return e ?? null; }),
     set:  jest.fn(async (key, val) => { mockCacheStore.set(key, val); }),
+    setAuthoritative: jest.fn(async (key, val) => { mockCacheStore.set(key, val); }),
     del:  jest.fn(async (key) => { mockCacheStore.delete(key); }),
     mget: jest.fn(async () => new Map()),
     mset: jest.fn(async () => {}),
@@ -64,8 +74,8 @@ jest.mock('../lib/redisAdapter', () => ({
 }));
 
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: jest.fn((req, res, next) => {
-    req.user = { id: 'test-user-id', username: 'testuser' };
+  authMiddleware: jest.fn((req: Request, res: Response, next: NextFunction) => {
+    req.user = { id: 'test-user-id', username: 'testuser', v: 1 };
     next();
   }),
   makeToken:        jest.fn(() => 'mock-jwt-token'),
@@ -74,11 +84,13 @@ jest.mock('../middleware/auth', () => ({
 
 jest.mock('../middleware/rateLimit', () => ({
   limits: {
-    twoFactor: () => (req, res, next) => next(),
+    twoFactor: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    webauthn: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   },
 }));
 
-jest.mock('../middleware/asyncHandler', () => (fn) => async (req, res, next) => {
+type AsyncRouteHandler = (req: Request, res: Response, next: NextFunction) => unknown;
+jest.mock('../middleware/asyncHandler', () => (fn: AsyncRouteHandler) => async (req: Request, res: Response, next: NextFunction) => {
   try { await fn(req, res, next); } catch (err) { next(err); }
 });
 
@@ -91,37 +103,39 @@ function buildApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/webauthn', webauthnRouter);
-  app.use((err, req, res, next) => {
-    res.status(err.status || 500).json({ error: err.message });
+  // Express hata nesnesi `status` TASIYABILIR ama `Error` tipinde boyle bir
+  // alan yoktur; imza bu gercegi yazar.
+  app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: NextFunction) => {
+    res.status(err.status ?? 500).json({ error: err.message });
   });
   return app;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function b64uEncode(buf) {
+function b64uEncode(buf: Buffer | Uint8Array) {
   return Buffer.from(buf).toString('base64')
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-function b64uDecode(str) {
+function b64uDecode(str: string): Buffer {
   const pad = str.length % 4;
   return Buffer.from((pad ? str + '='.repeat(4 - pad) : str).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 }
 
 // Sahte CBOR attestationObject oluştur (fmt: "none")
-function makeFakeAttestationObject(authDataBuf) {
+function makeFakeAttestationObject(authDataBuf: Buffer) {
   // Minimal CBOR map: { "fmt": "none", "attStmt": {}, "authData": <bytes> }
-  function encodeLen(len) {
+  function encodeLen(len: number) {
     if (len < 24) return Buffer.from([len]);
     if (len < 256) return Buffer.from([0x18, len]);
     return Buffer.from([0x19, len >> 8, len & 0xff]);
   }
-  function encodeText(s) {
+  function encodeText(s: string) {
     const b = Buffer.from(s);
     return Buffer.concat([Buffer.concat([Buffer.from([0x60 | (b.length < 24 ? b.length : 0x18)]), ...(b.length >= 24 ? [Buffer.from([b.length])] : [])]), b]);
   }
-  function encodeBytes(b) {
+  function encodeBytes(b: Buffer) {
     return Buffer.concat([Buffer.from([0x40 | (b.length < 24 ? b.length : 0x18)]), ...(b.length >= 24 ? [Buffer.from([b.length])] : []), b]);
   }
 
@@ -147,7 +161,18 @@ function makeFakeAttestationObject(authDataBuf) {
 }
 
 // Sahte authenticatorData oluştur
-function makeFakeAuthData({ rpId = 'localhost', credentialId = null, flags = 0x45, signCount = 1 } = {}) {
+// `credentialId = null` varsayilani, TypeScript'e alanin tipini `null`
+// olarak cikartiyordu; bu yuzden `credentialId.length` "Property 'length'
+// does not exist on type 'never'" veriyordu. Secenekler acikca yazilir.
+interface FakeAuthDataOptions {
+  rpId?: string;
+  /** AT bayragi ile kimlik bilgisi gomulecekse; yoksa sade authData. */
+  credentialId?: Buffer | null;
+  flags?: number;
+  signCount?: number;
+}
+
+function makeFakeAuthData({ rpId = 'localhost', credentialId = null, flags = 0x45, signCount = 1 }: FakeAuthDataOptions = {}) {
   const rpIdHash  = crypto.createHash('sha256').update(rpId).digest();
   const flagsBuf  = Buffer.from([flags]);
   const countBuf  = Buffer.alloc(4); countBuf.writeUInt32BE(signCount);
@@ -167,17 +192,17 @@ function makeFakeAuthData({ rpId = 'localhost', credentialId = null, flags = 0x4
   const x = crypto.randomBytes(32);
   const y = crypto.randomBytes(32);
 
-  function negint(n) {
+  function negint(n: number) {
     // CBOR negative integer: major type 1. Input is the absolute positive value.
     const v = n - 1;
     if (v < 24) return Buffer.from([0x20 | v]);
     return Buffer.from([0x38, v]);
   }
-  function uint(n) {
+  function uint(n: number) {
     if (n < 24) return Buffer.from([n]);
     return Buffer.from([0x18, n]);
   }
-  function bytes32(b) {
+  function bytes32(b: Buffer) {
     return Buffer.concat([Buffer.from([0x58, 32]), b]);
   }
 
@@ -197,7 +222,7 @@ function makeFakeAuthData({ rpId = 'localhost', credentialId = null, flags = 0x4
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('WebAuthn Routes', () => {
-  let app;
+  let app: Express;
 
   beforeAll(() => {
     // Test kullanıcısı ekle
@@ -264,7 +289,7 @@ describe('WebAuthn Routes', () => {
         .post('/api/webauthn/register/begin')
         .expect(200);
 
-      const algs = res.body.pubKeyCredParams.map(p => p.alg);
+      const algs = res.body.pubKeyCredParams.map((p: Record<string, unknown>) => p.alg);
       expect(algs).toContain(-7);   // ES256
       expect(algs).toContain(-257); // RS256
     });
@@ -368,6 +393,13 @@ describe('WebAuthn Routes', () => {
       expect(Array.isArray(res.body.allowCredentials)).toBe(true);
     });
 
+    it('username yanlış tipteyse coercion yapmadan 400 döndürmeli', async () => {
+      await request(app)
+        .post('/api/webauthn/login/begin')
+        .send({ username: { toString: 'attacker' } })
+        .expect(400);
+    });
+
     it('username verilirse o kullanıcının credential\'ları listelenmeli', async () => {
       const db = require('../db/loader');
 
@@ -416,6 +448,21 @@ describe('WebAuthn Routes', () => {
       expect(res.body.length).toBe(0);
     });
 
+    it('GÜVENLİK: canonical credential store yoksa phantom users fallback yerine fail-closed', async () => {
+      const db = require('../db/loader');
+      const originalStore = db.webauthnCredentials;
+      db.webauthnCredentials = undefined;
+      try {
+        const res = await request(app)
+          .get('/api/webauthn/credentials')
+          .expect(500);
+        expect(res.body.error).toMatch(/credential store is unavailable/i);
+        expect(db.users.update).not.toHaveBeenCalled();
+      } finally {
+        db.webauthnCredentials = originalStore;
+      }
+    });
+
     it('credential listesi döndürmeli', async () => {
       const db = require('../db/loader');
       const fakeCreds = [
@@ -460,6 +507,13 @@ describe('WebAuthn Routes', () => {
       expect(res.body).toHaveProperty('ok', true);
     });
 
+    it('isim object ise trim çağrısı ile 500 yerine 400 döndürmeli', async () => {
+      await request(app)
+        .patch('/api/webauthn/credentials/cred-1')
+        .send({ name: { value: 'Yeni İsim' } })
+        .expect(400);
+    });
+
     it('boş isim → 400', async () => {
       const res = await request(app)
         .patch('/api/webauthn/credentials/cred-1')
@@ -500,11 +554,23 @@ describe('WebAuthn Routes', () => {
         .expect(200);
 
       expect(res.body).toHaveProperty('ok', true);
-      // Son credential silindiyse webauthnEnabled = false olmalı
-      expect(db.users.update).toHaveBeenCalledWith(
-        { _id: 'test-user-id' },
-        { $set: expect.objectContaining({ webauthnEnabled: false }) }
+
+      // ── BU IDDIA DUZELTILDI ────────────────────────────────────────────
+      // Eskiden `users.update(..., { webauthnEnabled: false })` cagrildigi
+      // dogrulaniyordu. Ama `users` tablosunda `webauthnEnabled` KOLONU
+      // YOKTUR: o yazma gercek PostgreSQL uzerinde
+      // `[pgCollection] Unknown column name: "webauthnEnabled"` ile 500
+      // veriyordu. Yani test, KUSURU beklenen davranis olarak kodluyordu ve
+      // sahte veritabani kolon dogrulamasi yapmadigi icin yesil kaliyordu.
+      //
+      // Dogru sozlesme: bayrak SAKLANMAZ, kimlik bilgisi tablosundan
+      // TURETILIR (`GET /credentials` icinde `creds.length > 0`). Bu yuzden
+      // artik HAYALET KOLON YAZILMADIGI dogrulanir.
+      const usersUpdateCagrilari = (db.users.update as jest.Mock).mock.calls;
+      const hayaletYazma = usersUpdateCagrilari.some(
+        (c: unknown[]) => JSON.stringify(c).includes('webauthnEnabled'),
       );
+      expect(hayaletYazma).toBe(false);
     });
 
     it('bulunamayan credential → 404', async () => {
@@ -520,6 +586,20 @@ describe('WebAuthn Routes', () => {
   // ── Security ───────────────────────────────────────────────────────────────
 
   describe('Security', () => {
+    it('register complete yanlış credential id/transports tipini 400 ile reddetmeli', async () => {
+      mockCacheStore.set('webauthn:reg:test-user-id', b64uEncode(crypto.randomBytes(32)));
+      await request(app)
+        .post('/api/webauthn/register/complete')
+        .send({
+          credential: {
+            id: { not: 'base64url' },
+            type: 'public-key',
+            response: { clientDataJSON: 'x', attestationObject: 'y', transports: 'usb' },
+          },
+        })
+        .expect(400);
+    });
+
     it('yanlış ceremony type → 400', async () => {
       const storedChallenge = b64uEncode(crypto.randomBytes(32));
       mockCacheStore.set('webauthn:reg:test-user-id', storedChallenge);
@@ -635,11 +715,11 @@ describe('Content Scanner', () => {
   const path = require('path');
   const os   = require('os');
 
-  let tmpDir;
+  let tmpDir: string;
   beforeAll(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-scan-')); });
   afterAll(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
-  function writeTmp(name, content) {
+  function writeTmp(name: string, content: string | Buffer) {
     const p = path.join(tmpDir, name);
     fs.writeFileSync(p, content);
     return p;
@@ -681,28 +761,39 @@ describe('Content Scanner', () => {
     expect(result.safe).toBe(true);
   });
 
-  it('CSAM hash eşleşmesi → hata fırlatmalı', async () => {
-    const { scanFile, fileHash } = require('../lib/contentScanner');
-
-    // Test dosyası oluştur ve hash'ini KNOWN_BAD_HASHES'e ekle
-    const fp   = writeTmp('csam-test.bin', crypto.randomBytes(100));
+  it('CSAM hash eslesmesi → tarama REDDEDER ve dosya karantinaya alinir', async () => {
+    // VAKUMLUYDU (Final21 Faz 17): ortam degiskenini kuruyor, modulleri sifirliyor ve
+    // HICBIR SEY dogrulamiyordu. Tarayici dosyayi aynen gecirse de test YESIL kalirdi —
+    // yani bu guvenlik kontrolu yillardir olculmemisti. Hash listesi modul yuklenirken
+    // okundugu icin modul liste YERINDEYKEN yeniden yuklenir.
+    const fp = writeTmp('csam-test.bin', crypto.randomBytes(100));
+    const { fileHash } = require('../lib/contentScanner');
     const hash = await fileHash(fp);
 
-    // CSAM_HASH_LIST env değişkenini geçici ayarla
     const origEnv = process.env.CSAM_HASH_LIST;
     process.env.CSAM_HASH_LIST = hash;
-
-    // Modülü yeniden yükle (hash listesi constructor'da okunuyor)
     jest.resetModules();
-    const { scanFile: freshScanFile } = require('../lib/contentScanner');
+    const flagging = require('../lib/contentScanner');
+    try {
+      await expect(flagging.scanFile(fp, { userId: 'u-csam' })).rejects.toMatchObject({
+        code: 'CONTENT_VIOLATION', statusCode: 422, safe: false,
+      });
+      // Reddetmek yetmez: dosya yukleyenin biraktigi yerde KALMAMALIDIR.
+      expect(fs.existsSync(fp)).toBe(false);
+      const quarantined = flagging.listQuarantinedFiles() as Array<{ filename: string; reason?: string }>;
+      expect(quarantined.some((e) => e.filename === 'csam-test.bin' && e.reason === 'CSAM_HASH_MATCH')).toBe(true);
+    } finally {
+      flagging.deleteQuarantinedFile('csam-test.bin');
+      if (origEnv === undefined) delete process.env.CSAM_HASH_LIST; else process.env.CSAM_HASH_LIST = origEnv;
+      jest.resetModules();
+    }
 
-    // Yeni dosya yaz (aynı content)
-    const fp2 = writeTmp('csam-test2.bin', fs.readFileSync(fp));
-
-    // CSAM listesinde olmayan hash → pass (environment değişkeni yeni module'da okunacak ama jest.resetModules yeterli olmayabilir)
-    // Bu test en azından CONTENT_SCAN_ENABLED=false ile bypass olmadığını kontrol eder
-    process.env.CSAM_HASH_LIST = origEnv || '';
-    jest.resetModules();
+    // NEGATIF KONTROL: ayni tarayici, listede OLMAYAN bir dosyayi gecirir. Bu olmadan
+    // 'her seyi reddet' diyen bozuk bir tarayici da testi gecerdi.
+    const control = require('../lib/contentScanner');
+    const clean = writeTmp('csam-control.txt', 'Bridge content scanner control file');
+    await expect(control.scanFile(clean, { userId: 'u-csam' })).resolves.toMatchObject({ safe: true });
+    expect(fs.existsSync(clean)).toBe(true);
   });
 
   it('fileHash deterministik', async () => {
@@ -721,7 +812,7 @@ describe('Redis Adapter — Enhanced Cache', () => {
   // Mock olmadan gerçek in-memory fallback test
   jest.unmock('../lib/redisAdapter');
 
-  let cache;
+  let cache: typeof import('../lib/redisAdapter').cache;
   beforeAll(() => {
     cache = require('../lib/redisAdapter').cache;
   });

@@ -1,8 +1,8 @@
 // server/routes/admin/federation-keys.ts
 // ADR-0006 Faz 2: Instance federation RSA key rotasyonu (admin)
 
-import express, { Response } from 'express';
-import { authMiddleware, type AuthedRequest} from '../../middleware/auth';
+import express from 'express';
+import { authMiddleware } from '../../middleware/auth';
 import { adminOnly, logAction } from './middleware';
 import { rotateFederationKeys, getFederationPublicKeyDoc } from '../../lib/federationKeys';
 

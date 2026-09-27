@@ -1,13 +1,14 @@
 // server/tests/dm.test.ts
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV   = 'test';
 
 import request from 'supertest';
 import express from 'express';
 const jwt     = require('jsonwebtoken');
 import { createMockDb, makeUser } from './helpers/mockDb';
+import type { MockDb, UserFixture } from './helpers/mockDb';
 
-let db;
+let db: MockDb;
 jest.mock('../db/loader', () => require('../db/index'));
 jest.mock('../db/index', () => {
   const { createMockDb } = require('./helpers/mockDb');
@@ -46,11 +47,43 @@ jest.mock('../db/repositories', () => {
         }
         return { conv, dmId };
       },
-      findMessages(dmId: string, { limit = 50, before }: { limit?: number; before?: number } = {}) {
+      findMessages(dmId: string, { limit = 50, before, beforeId }: { limit?: number; before?: number; beforeId?: string } = {}) {
+        // Faz 10.2 kompozit cursor — gerçek repository ile aynı semantik.
+        // (Sorgu semantiğinin ASIL testi tests/dm-pagination.test.ts'tedir;
+        //  burası yalnızca route seviyesini besler.)
         const query: Record<string, unknown> = { dmId };
-        if (before) query.createdAt = { $lt: before };
-        return currentDb().dmMessages.find(query).sort({ createdAt: -1 }).limit(Math.min(limit, 100));
+        if (before) {
+          query.$or = beforeId
+            ? [{ createdAt: { $lt: before } }, { createdAt: before, _id: { $lt: beforeId } }]
+            : [{ createdAt: { $lt: before } }];
+        }
+        return currentDb().dmMessages.find(query).sort({ createdAt: -1, _id: -1 }).limit(Math.min(limit, 100));
       },
+      // Faz 10.3 — route artık türetilmiş okunmamış sayacı istiyor.
+      // Gerçek sayım semantiği tests/dm-unread.test.ts'te sınanır.
+      async countUnread(dmId: string, userId: string, readAt?: number) {
+        const query: Record<string, unknown> = { dmId, userId: { $ne: userId } };
+        if (typeof readAt === 'number' && readAt > 0) query.createdAt = { $gt: readAt };
+        return currentDb().dmMessages.count(query);
+      },
+      async markRead(dmId: string, userId: string) {
+        const conv = await currentDb().dmConversations.findOne({ _id: dmId });
+        if (!conv || !Array.isArray(conv.participants) || !conv.participants.includes(userId)) return false;
+        const readAt = { ...(conv.readAt || {}), [userId]: Date.now() };
+        await currentDb().dmConversations.update({ _id: dmId }, { $set: { readAt } });
+        return true;
+      },
+      // Faz 10.8 — route gizlilik kontrolü için mevcut konuşmayı sorguluyor.
+      async findConversationByParticipants(a: string, b: string) {
+        return currentDb().dmConversations.findOne({ _id: buildDmId(a, b) });
+      },
+    },
+    // Faz 10.8 — DM açılışında engel/gizlilik kontrolü. Bu süitte kısıtlama
+    // yok (varsayılan 'everyone'); asıl politika testi
+    // tests/dm-privacy-security.test.ts'tedir.
+    Social: {
+      findBlock: async () => null,
+      findFriendship: async () => null,
     },
     Users: {
       findById: (id: string) => currentDb().users.findOne({ _id: id }),
@@ -61,11 +94,15 @@ jest.mock('../db/repositories', () => {
 
 import dmRouter from '../routes/dm';
 
-function makeToken(userId) {
-  return jwt.sign({ id: userId, username: 'tester', v: 0 }, 'test-jwt-secret', { expiresIn: '1h' });
+function makeToken(userId: string) {
+  return jwt.sign({ id: userId, username: 'tester', v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
 }
 
-let app, userA, userB, tokenA, tokenB;
+let app: express.Express;
+let userA: UserFixture;
+let userB: UserFixture;
+let tokenA: string;
+let tokenB: string;
 
 beforeEach(async () => {
   const { createMockDb, makeUser } = require('./helpers/mockDb');
@@ -84,7 +121,7 @@ beforeEach(async () => {
   app = express();
   app.use(express.json());
   app.use('/api/dm', dmRouter);
-  app.use((err, req, res, next) => res.status(500).json({ error: err.message }));
+  app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(500).json({ error: err.message }));
 });
 
 describe('POST /api/dm/:userId — konuşma başlat', () => {
@@ -171,7 +208,7 @@ describe('GET /api/dm — konuşma listesi', () => {
 });
 
 describe('GET /api/dm/:dmId/messages — mesajlar', () => {
-  let dmId;
+  let dmId: string;
 
   beforeEach(async () => {
     const createRes = await request(app)
@@ -227,5 +264,19 @@ describe('GET /api/dm/:dmId/messages — mesajlar', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.length).toBeLessThanOrEqual(2);
+  });
+
+  it.each(['-1', '1.5', '9007199254740992'])('rejects unsafe limit=%s before querying history', async (raw) => {
+    const res = await request(app)
+      .get(`/api/dm/${dmId}/messages?limit=${encodeURIComponent(raw)}`)
+      .set('Authorization', `Bearer ${tokenA}`);
+    expect(res.status).toBe(400);
+  });
+
+  it.each(['-1', '1.5', '9007199254740992'])('rejects unsafe before=%s cursor', async (raw) => {
+    const res = await request(app)
+      .get(`/api/dm/${dmId}/messages?before=${encodeURIComponent(raw)}`)
+      .set('Authorization', `Bearer ${tokenA}`);
+    expect(res.status).toBe(400);
   });
 });

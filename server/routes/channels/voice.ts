@@ -19,13 +19,14 @@ import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 // Statik import: handlers/voice.ts circular bağımlılık oluşturmaz
 // (voice handler routes'u import etmez; bağımlılık tek yönlü kalır)
 // Path: server/routes/channels/ → server/socket/handlers/voice.ts
-import { voiceRooms }                from '../../socket/handlers/voice';
+import { getVoiceRoomPeers }         from '../../socket/handlers/voice';
+import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
 
 const router = Router({ mergeParams: true });
 
 /**
  * @openapi
- * /api/channels/{channelId}/voice-state:
+ * /channels/{channelId}/voice-state:
  *   post:
  *     tags: [Voice]
  *     summary: Ses durumunu güncelle (mute/deaf)
@@ -44,8 +45,8 @@ const router = Router({ mergeParams: true });
  *           schema:
  *             type: object
  *             properties:
- *               selfMute: { type: boolean, description: Mikrofon kapalı mı? }
- *               selfDeaf: { type: boolean, description: Kulaklık kapalı mı? }
+ *               selfMute: { type: boolean, description: 'Mikrofon kapalı mı?' }
+ *               selfDeaf: { type: boolean, description: 'Kulaklık kapalı mı?' }
  *     responses:
  *       200:
  *         description: Durum güncellendi
@@ -80,11 +81,17 @@ router.post(
 
       const membership = await Members.findOne(userId, channel.serverId);
       if (!membership) return void res.status(403).json({ error: 'Yetkisiz.' });
+      const perms = await resolvePermissions(userId, String(channel.serverId), channelId).catch(() => 0);
+      if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.CONNECT))
+        return void res.status(403).json({ error: 'Yetkisiz.' });
+      const peers = await getVoiceRoomPeers(channelId);
+      if (!peers.some((peer: { userId?: string }) => String(peer.userId ?? '') === userId))
+        return void res.status(409).json({ error: 'Kullanıcı bu ses kanalında değil.' });
 
       // Voice state güncellemesini socket üzerinden sunucu odasına yay
       const io = getIo();
       if (io) {
-        io.to(`server:${channel.serverId}`).emit('voice:state-update', {
+        io.to([`voice:${channelId}`, `channel:${channelId}`]).emit('voice:state-update', {
           channelId,
           userId,
           selfMute:  !!selfMute,
@@ -93,7 +100,7 @@ router.post(
       }
 
       return void res.json({ ok: true });
-    } catch (err) {
+    } catch {
       return void res.status(500).json({ error: 'Sunucu hatası.' });
     }
   },
@@ -101,7 +108,7 @@ router.post(
 
 /**
  * @openapi
- * /api/channels/{channelId}/voice-members:
+ * /channels/{channelId}/voice-members:
  *   get:
  *     tags: [Voice]
  *     summary: Ses kanalı aktif üye listesi
@@ -145,11 +152,14 @@ router.get(
 
       const membership = await Members.findOne(userId, channel.serverId);
       if (!membership) return void res.status(403).json({ error: 'Yetkisiz.' });
+      const perms = await resolvePermissions(userId, String(channel.serverId), channelId).catch(() => 0);
+      if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.CONNECT))
+        return void res.status(403).json({ error: 'Yetkisiz.' });
 
-      const peers = voiceRooms.get(channelId) ?? [];
+      const peers = await getVoiceRoomPeers(channelId);
 
       return void res.json(peers);
-    } catch (err) {
+    } catch {
       return void res.status(500).json({ error: 'Sunucu hatası.' });
     }
   },

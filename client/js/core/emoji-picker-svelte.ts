@@ -1,33 +1,34 @@
 // client/js/core/emoji-picker-svelte.ts
-// Sprint 116 — EmojiPickerPanel mount shim (ADR-0008 Faz 3)
-// Emoji seçici popup paneli
-import { mount } from 'svelte';
+// FAZ K/4 — EmojiPickerPanel mount shim.
+//
+// Kanonik biçim `global-search-svelte.ts` / `search-svelte.ts` ile AYNI:
+// kendi kökünü üretir ve `unmount()` GERÇEKTEN çağrılır (yoksa `onDestroy`
+// çalışmaz, registry kayıtları ölü bileşene işaret etmeye devam eder).
+
+import { mount, unmount } from 'svelte';
 import EmojiPickerPanel from './EmojiPickerPanel.svelte';
-import { BridgeRegistry } from './bridge-registry.ts';
-import { createLogger } from './logger.ts';
-const log = createLogger('EmojiPickerPanelShim');
 
-let _instance: ReturnType<typeof mount> | null = null;
+let instance: ReturnType<typeof mount> | null = null;
 
-export function mountEmojiPickerPanel(target?: HTMLElement): void {
-  if (_instance) return;
+export function mountEmojiPicker(target?: HTMLElement): void {
+  if (instance) return;
   const el = target ?? document.getElementById('emoji-picker-root') ?? (() => {
     const div = document.createElement('div');
     div.id = 'emoji-picker-root';
     document.body.appendChild(div);
     return div;
   })();
-  _instance = mount(EmojiPickerPanel, { target: el, props: {} });
-  log.info('EmojiPickerPanel mounted via shim');
+  instance = mount(EmojiPickerPanel, { target: el, props: {} });
 }
 
-export function unmountEmojiPickerPanel(): void {
-  if (_instance) { _instance = null; }
+export function unmountEmojiPicker(): void {
+  if (!instance) return;
+  void unmount(instance);
+  instance = null;
 }
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => mountEmojiPickerPanel(), { once: true });
+  document.addEventListener('DOMContentLoaded', () => mountEmojiPicker(), { once: true });
 } else {
-  mountEmojiPickerPanel();
+  mountEmojiPicker();
 }
-document.addEventListener('bridge:socket-ready', () => mountEmojiPickerPanel(), { once: true });

@@ -1,0 +1,24 @@
+{
+  // ══════════════════════════════════════════════════════════════════════════
+  // ts-jest DERLEME YAPILANDIRMASI
+  // ══════════════════════════════════════════════════════════════════════════
+  // NEDEN AYRI BIR DOSYA: `tsconfig.json` yalnizca `src/**/*.ts` iceriyor
+  // (paketin yayimlanan yuzeyi budur). ts-jest o yapilandirmayi kullandigi
+  // icin `tests/` dosyalari programin PARCASI DEGILDI ve `@types/jest`
+  // global tipleri uygulanmiyordu. Sonuc:
+  //
+  //     tests/sdk.test.ts:10:25 - error TS2304: Cannot find name 'jest'.
+  //
+  // Suit HIC calismadigi icin bu kimseye gorunmedi -- hicbir CI isi bot-sdk
+  // testlerini kosmuyordu. Ayni sinif `plugins/tests/` icin de bulundu.
+  //
+  // `rootDir` ve `outDir` GENISLETILIR: yayin derlemesi hala `tsconfig.json`
+  // kullanir, dolayisiyla yayimlanan cikti bu dosyadan ETKILENMEZ.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "types": ["jest", "node"],
+    "noUnusedLocals": false
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}

@@ -5,11 +5,12 @@
 //   - channel:e2ee:keys:get geçersiz payload → işlem yapılmaz
 //   - channel:e2ee:keys:add (setup gerektirmez, sadece erken çıkış)
 //   - Geçerli payload'larda handler normal çalışmalı
+import { findEmitted, requireEmitted } from './helpers/socketDoubles';
 
 'use strict';
 process.env.NODE_ENV      = 'test';
-process.env.JWT_SECRET    = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET    = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 
 jest.mock('../db/loader', () => {
   const { createMockDb } = require('./helpers/mockDb');
@@ -17,7 +18,10 @@ jest.mock('../db/loader', () => {
 });
 
 jest.mock('../lib/redisAdapter', () => ({
-  cache: { get: jest.fn().mockResolvedValue(null), set: jest.fn(), del: jest.fn() },
+  cache: {
+    // Gercek adaptorde MEVCUT (lib/redisAdapter.ts) — mock'ta eksikti ve
+    // `invalidateChannelMessages` her cagrida sessizce TypeError firlatiyordu.
+    invalidatePattern: jest.fn().mockResolvedValue(undefined), get: jest.fn().mockResolvedValue(null), set: jest.fn(), del: jest.fn() },
 }));
 
 import { registerChannelE2EEHandlers } from '../socket/handlers/channelE2EEHandlers';
@@ -61,30 +65,35 @@ describe('channelE2EEHandlers: payload validation', () => {
   it('channel:e2ee:status — eksik channelId → error emit yok', async () => {
     emit(socket, 'channel:e2ee:status', {});
     await new Promise(r => setTimeout(r, 10));
-    const errEmit = socket.emitted.find(e => e.event === 'channel:e2ee:error');
+    const errEmit = findEmitted(socket.emitted, 'channel:e2ee:error');
     // validation should block before any db call, no error emit expected
     expect(errEmit).toBeUndefined();
   });
 
-  it('channel:e2ee:status — geçerli channelId → db sorgular (hata vermez)', async () => {
-    // DB mock varsayılan olarak null döner; handler gracefully tamamlanmalı
+  it('channel:e2ee:status — geçerli channelId → istemciye KESİN bir cevap döner', async () => {
+    // VAKUMLUYDU (Final21 Faz 17): gövdesi yalnızca "// no crash expected" diyordu ve hiçbir
+    // şey doğrulamıyordu. Oysa sözleşme sessiz kalmamaktır: istemci bu cevabı bekler ve
+    // gelmezse kilit simgesi belirsiz kalır. Handler hiç cevap vermese de test GEÇİYORDU.
     emit(socket, 'channel:e2ee:status', { channelId: 'ch-e2ee-1' });
-    await new Promise(r => setTimeout(r, 20));
-    // no crash expected
+    await new Promise((r) => setTimeout(r, 20));
+
+    const result = requireEmitted(socket.emitted, 'channel:e2ee:status:result');
+    expect(result.data).toMatchObject({ channelId: 'ch-e2ee-1' });
+    expect(typeof (result.data as { enabled?: unknown }).enabled).toBe('boolean');
   });
 
   // ── channel:e2ee:keys:get ────────────────────────────────────
   it('channel:e2ee:keys:get — eksik channelId → erken çıkış', async () => {
     emit(socket, 'channel:e2ee:keys:get', {});
     await new Promise(r => setTimeout(r, 10));
-    const keysEmit = socket.emitted.find(e => e.event === 'channel:e2ee:keys');
+    const keysEmit = findEmitted(socket.emitted, 'channel:e2ee:keys');
     expect(keysEmit).toBeUndefined();
   });
 
   it('channel:e2ee:keys:get — channelId çok uzun (>64 karakter) → erken çıkış', async () => {
     emit(socket, 'channel:e2ee:keys:get', { channelId: 'x'.repeat(65) });
     await new Promise(r => setTimeout(r, 10));
-    const keysEmit = socket.emitted.find(e => e.event === 'channel:e2ee:keys');
+    const keysEmit = findEmitted(socket.emitted, 'channel:e2ee:keys');
     expect(keysEmit).toBeUndefined();
   });
 

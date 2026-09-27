@@ -7,7 +7,7 @@ const {
   Events,
   EmbedBuilder,
   SlashCommandBuilder,
-} = require('../');
+} = require('bridge-discord-shim');
 
 const client = new Client({
   intents: [

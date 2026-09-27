@@ -59,7 +59,7 @@ npx cap sync
 **iOS — `GoogleService-Info.plist`**
 
 1. [Firebase Console](https://console.firebase.google.com) → Proje → iOS uygulaması ekle
-2. Bundle ID: `app.bridge.chat`
+2. Bundle ID: `com.bridge.app`
 3. `GoogleService-Info.plist` indir
 4. Xcode'da `ios/App/App/GoogleService-Info.plist` olarak ekle (projeye sürükle)
 5. Target → `App`'e dahil et
@@ -67,7 +67,7 @@ npx cap sync
 **Android — `google-services.json`**
 
 1. Firebase Console → Android uygulaması ekle
-2. Package: `app.bridge.chat`
+2. Package: `com.bridge.app`
 3. `google-services.json` indir
 4. `android/app/google-services.json` olarak yerleştir
 
@@ -91,7 +91,7 @@ npx cap sync
 APNS_KEY_PATH=/secrets/AuthKey_XXXXXXXXXX.p8
 APNS_KEY_ID=XXXXXXXXXX
 APNS_TEAM_ID=YYYYYYYYYY
-APNS_BUNDLE_ID=app.bridge.chat
+APNS_BUNDLE_ID=com.bridge.app
 ```
 
 ### 1.5 Android FCM Yapılandırması
@@ -137,7 +137,7 @@ Aşağıdaki satırlar `.env.example`'a eklenmiştir:
 # APNS_KEY_PATH=/secrets/AuthKey_XXXXXXXXXX.p8
 # APNS_KEY_ID=your_10char_key_id
 # APNS_TEAM_ID=your_10char_team_id
-# APNS_BUNDLE_ID=app.bridge.chat
+# APNS_BUNDLE_ID=com.bridge.app
 # APNS_ENV=production          # production | development
 
 # Android FCM v1
@@ -175,7 +175,7 @@ curl -X POST http://localhost:3001/api/mobile/push/register \
 
 # 2. Mesaj gönder → bildirim geldi mi kontrol et
 # Android Emulator: Extended Controls → Google Play → Push Notifications
-# iOS Simulator: simctl push <device_id> app.bridge.chat payload.json
+# iOS Simulator: simctl push <device_id> com.bridge.app payload.json
 ```
 
 **iOS Simulator push payload (`payload.json`):**
@@ -195,7 +195,7 @@ curl -X POST http://localhost:3001/api/mobile/push/register \
 
 ```bash
 # iOS Simulator'a gönder
-xcrun simctl push booted app.bridge.chat payload.json
+xcrun simctl push booted com.bridge.app payload.json
 ```
 
 ### 4.3 Playwright E2E (API Seviyesi)

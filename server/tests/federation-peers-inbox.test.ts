@@ -4,8 +4,10 @@
 //   inbox-handlers.js → handleApReject, handleApLike, handleApAnnounce, handleApUpdate
 //
 // Test sayısı: 42
+import type { Request, Response, NextFunction } from 'express';
+import { fetchMock, installFetchMock } from './helpers/fetchDouble';
 
-process.env.JWT_SECRET   = 'test-jwt-secret';
+process.env.JWT_SECRET   = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV     = 'test';
 process.env.INSTANCE_URL = 'https://bridge.example.com';
 process.env.INSTANCE_NAME = 'Test Bridge';
@@ -17,11 +19,15 @@ jest.mock('../db/index',  () => mockDb);
 jest.mock('../db/loader', () => require('../db/index'));
 
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: (req, res, next) => {
+  authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
     const h = req.headers.authorization;
     if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
     const jwt = require('jsonwebtoken');
-    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret'); next(); }
+    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!'); next(); }
     catch { res.status(401).json({ error: 'Invalid token' }); }
   },
 }));
@@ -29,20 +35,22 @@ jest.mock('../middleware/auth', () => ({
 // federationAuth middleware — Sprint 108: V1 httpSignature yerine V2 middleware mock'la
 let _mockFederationAuthFail = false;
 jest.mock('../middleware/federationAuth', () => ({
-  federationAuth: jest.fn().mockImplementation((req, res, next) => {
-    if (_mockFederationAuthFail) {
-      return res.status(401).json({ error: 'Federation authentication failed' });
-    }
-    req.federationPeerUrl = req.headers['x-bridge-instance-url'] || req.body?.url || req.body?.instanceUrl || '';
-    req.federationMethod  = 'hmac';
-    next();
-  }),
-  federationAuthRsaRequired: jest.fn().mockImplementation((req, res, next) => {
+  federationAuth: jest.fn().mockImplementation((req: Request, res: Response, next: NextFunction) => {
     if (_mockFederationAuthFail) {
       return res.status(401).json({ error: 'Federation authentication failed' });
     }
     req.federationPeerUrl = req.headers['x-bridge-instance-url'] || req.body?.url || req.body?.instanceUrl || '';
     req.federationMethod  = 'rsa';
+    req.federationPeerId  = 'peer-1';
+    next();
+  }),
+  federationAuthRsaRequired: jest.fn().mockImplementation((req: Request, res: Response, next: NextFunction) => {
+    if (_mockFederationAuthFail) {
+      return res.status(401).json({ error: 'Federation authentication failed' });
+    }
+    req.federationPeerUrl = req.headers['x-bridge-instance-url'] || req.body?.url || req.body?.instanceUrl || '';
+    req.federationMethod  = 'rsa';
+    req.federationPeerId  = 'peer-1';
     next();
   }),
 }));
@@ -64,10 +72,10 @@ jest.mock('../routes/federation/delivery', () => ({
   signRequest:        jest.fn(),
 }));
 
-global.fetch = jest.fn();
+installFetchMock();
 
 jest.mock('../lib/fetch', () => ({
-  fetchT: jest.fn((url: string, opts?: unknown) => (global.fetch as jest.Mock)(url, opts)),
+  fetchT: jest.fn((url: string, opts?: RequestInit) => fetchMock()(url, opts)),
 }));
 
 import request from 'supertest';
@@ -76,13 +84,29 @@ const jwt     = require('jsonwebtoken');
 
 import { deliverApActivity } from '../routes/federation/delivery';
 import inboxHandlers from '../routes/federation/inbox-handlers';
+import type { ApActivity } from '../routes/federation/inbox-handlers';
 const peersRouter   = require('../routes/federation/peers');
+import { requireDoc } from './helpers/mockDb';
 
 // ── App sadece peers router'ını mount eder ──────────────────────
 const app = express();
 app.use(express.json());
 app.use('/api/federation', peersRouter);
-app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
+
+// ══════════════════════════════════════════════════════════════════════════
+// AKTIVITE FABRIKASI — URUN SOZLESMESINE UYAR
+// ══════════════════════════════════════════════════════════════════════════
+// `ApActivity` `id` ISTER (ActivityPub'da her aktivitenin kalici bir kimligi
+// vardir ve urun bunu tekrar-teslim ayiklamasinda kullanir). Testler `id`siz
+// nesne edebileri yaziyordu; bu hem 11 strict hatasi uretiyor hem de urunun
+// gercekte aldigi yuku eksik temsil ediyordu.
+function makeActivity(activity: Omit<ApActivity, 'id'> & { id?: string }): ApActivity {
+  return {
+    id: activity.id ?? `https://remote.example/activities/${activity.type.toLowerCase()}-${Math.random().toString(36).slice(2)}`,
+    ...activity,
+  };
+}
 
 // ── Sabit ID'ler ────────────────────────────────────────────────
 const ADMIN_ID  = 'peers-admin-id';
@@ -90,8 +114,8 @@ const USER_ID   = 'peers-user-id';
 const SERVER_ID = 'peers-server-id';
 const PEER_URL  = 'https://other.bridge.example.com';
 
-function token(id) {
-  return jwt.sign({ id, username: 'tester', displayName: 'Tester', v: 0 }, 'test-jwt-secret', { expiresIn: '1h' });
+function token(id: string) {
+  return jwt.sign({ id, username: 'tester', displayName: 'Tester', v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
 }
 
 // ── Fixtures ────────────────────────────────────────────────────
@@ -122,8 +146,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  deliverApActivity.mockResolvedValue(undefined);
-  global.fetch.mockReset();
+  jest.mocked(deliverApActivity).mockResolvedValue(undefined);
+  fetchMock().mockReset();
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -182,12 +206,13 @@ describe('POST /api/federation/ping', () => {
     expect(res.body.ts).toBeGreaterThanOrEqual(before);
   });
 
-  it('200 — bilinmeyen peer URL ile ping yine ok döner', async () => {
+  it('403 — imzalanan peer kimliği body içindeki başka peer hedefini değiştiremez', async () => {
     const res = await request(app)
       .post('/api/federation/ping')
-      .send({ url: 'https://unknown-peer.example.com' });
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
+      .set('x-bridge-instance-url', PEER_URL)
+      .send({ url: 'https://victim-peer.example.com' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/signed peer identity/i);
   });
 });
 
@@ -223,7 +248,7 @@ describe('GET /api/federation/health', () => {
     const res = await request(app)
       .get('/api/federation/health')
       .set('Authorization', `Bearer ${token(ADMIN_ID)}`);
-    const peer = res.body.peers.find(p => p.url === PEER_URL);
+    const peer = res.body.peers.find((p: Record<string, unknown>) => p.url === PEER_URL);
     expect(peer).toBeDefined();
     expect(peer).toHaveProperty('id');
     expect(peer).toHaveProperty('online');
@@ -235,7 +260,7 @@ describe('GET /api/federation/health', () => {
     const res = await request(app)
       .get('/api/federation/health')
       .set('Authorization', `Bearer ${token(ADMIN_ID)}`);
-    const peer = res.body.peers.find(p => p.url === PEER_URL);
+    const peer = res.body.peers.find((p: Record<string, unknown>) => p.url === PEER_URL);
     expect(peer.online).toBe(true);
   });
 });
@@ -268,7 +293,7 @@ describe('POST /api/federation/join-remote', () => {
   });
 
   it('404 — remote sunucuda server bulunamazsa 404 döner', async () => {
-    global.fetch.mockResolvedValueOnce({
+    fetchMock().mockResolvedValueOnce({
       ok:   true,
       json: async () => ({ servers: [] }),
     });
@@ -282,7 +307,7 @@ describe('POST /api/federation/join-remote', () => {
 
   it('200 — remote sunucuda server bulunursa inviteUrl ile döner', async () => {
     const remoteServer = { id: 'remote-srv-1', name: 'Remote Server', inviteUrl: `${PEER_URL}/invite/abc` };
-    global.fetch.mockResolvedValueOnce({
+    fetchMock().mockResolvedValueOnce({
       ok:   true,
       json: async () => ({ servers: [remoteServer] }),
     });
@@ -297,7 +322,7 @@ describe('POST /api/federation/join-remote', () => {
   });
 
   it('502 — remote instance erişilemezse hata döner', async () => {
-    global.fetch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    fetchMock().mockRejectedValueOnce(new Error('ECONNREFUSED'));
     const res = await request(app)
       .post('/api/federation/join-remote')
       .set('Authorization', `Bearer ${token(USER_ID)}`)
@@ -343,7 +368,7 @@ describe('GET /api/federation/fetch-remote', () => {
 
   it('200 — geçerli URL ile remote JSON döner', async () => {
     const remoteData = { id: REMOTE_ACTOR, type: 'Person', preferredUsername: 'remote' };
-    global.fetch.mockResolvedValueOnce({
+    fetchMock().mockResolvedValueOnce({
       ok:   true,
       json: async () => remoteData,
     });
@@ -356,7 +381,7 @@ describe('GET /api/federation/fetch-remote', () => {
   });
 
   it('502 — remote 4xx/5xx dönerse hata döner', async () => {
-    global.fetch.mockResolvedValueOnce({ ok: false, status: 404 });
+    fetchMock().mockResolvedValueOnce({ ok: false, status: 404 });
     const res = await request(app)
       .get('/api/federation/fetch-remote')
       .set('Authorization', `Bearer ${token(USER_ID)}`)
@@ -366,7 +391,7 @@ describe('GET /api/federation/fetch-remote', () => {
   });
 
   it('502 — ağ hatası olursa hata döner', async () => {
-    global.fetch.mockRejectedValueOnce(new Error('Network timeout'));
+    fetchMock().mockRejectedValueOnce(new Error('Network timeout'));
     const res = await request(app)
       .get('/api/federation/fetch-remote')
       .set('Authorization', `Bearer ${token(USER_ID)}`)
@@ -389,11 +414,11 @@ describe('handleApReject', () => {
       createdAt:      Date.now(),
     });
 
-    const activity = {
+    const activity = makeActivity({
       type:   'Reject',
       actor:  REMOTE_ACTOR,
       object: { type: 'Follow', actor: `https://bridge.example.com/api/federation/users/${AP_USER.username}` },
-    };
+    });
 
     await inboxHandlers.handleApReject(AP_USER, activity);
 
@@ -404,11 +429,11 @@ describe('handleApReject', () => {
   });
 
   it('kaydı olmayan reject sessizce geçer (hata fırlatmaz)', async () => {
-    const activity = {
+    const activity = makeActivity({
       type:  'Reject',
       actor: 'https://other.social/users/nobody',
       object: { type: 'Follow' },
-    };
+    });
     await expect(inboxHandlers.handleApReject(AP_USER, activity)).resolves.toBeUndefined();
   });
 });
@@ -418,29 +443,31 @@ describe('handleApReject', () => {
 // ════════════════════════════════════════════════════════════════
 describe('handleApLike', () => {
   it('like kaydı oluşturur', async () => {
-    const activity = {
+    const activity = makeActivity({
       type:   'Like',
       actor:  REMOTE_ACTOR,
       object: REMOTE_NOTE,
-    };
+    });
 
     await inboxHandlers.handleApLike(AP_USER, activity);
 
-    const like = await mockDb.apLikes.findOne({ actorUrl: REMOTE_ACTOR, objectUrl: REMOTE_NOTE });
-    expect(like).not.toBeNull();
+    // `requireDoc` hem daraltir hem de satir yoksa HANGI sorgunun
+    // karsiliksiz kaldigini soyler; `expect(...).not.toBeNull()` sonrasi
+    // dogrudan alan okumak strict altinda derlenmiyordu.
+    const like = await requireDoc(mockDb.apLikes, { actorUrl: REMOTE_ACTOR, objectUrl: REMOTE_NOTE });
     expect(like.targetUserId).toBe(AP_USER._id);
   });
 
   it('hedef kullanıcıya ap_like bildirimi oluşturur', async () => {
-    const activity = {
+    const activity = makeActivity({
       type:   'Like',
       actor:  'https://mastodon.social/users/liker',
       object: 'https://bridge.example.com/notes/xyz',
-    };
+    });
 
     await inboxHandlers.handleApLike(AP_USER, activity);
 
-    const notif = await mockDb.notifications.findOne({
+    const notif = await requireDoc(mockDb.notifications, {
       userId: AP_USER._id,
       type:   'ap_like',
     });
@@ -449,18 +476,18 @@ describe('handleApLike', () => {
   });
 
   it('objectUrl yoksa sessizce döner', async () => {
-    const activity = { type: 'Like', actor: REMOTE_ACTOR, object: null };
+    const activity = makeActivity({ type: 'Like', actor: REMOTE_ACTOR, object: null });
     await expect(inboxHandlers.handleApLike(AP_USER, activity)).resolves.toBeUndefined();
   });
 
   it('targetUser null olsa bile like kaydı oluşturur', async () => {
-    const activity = {
+    const activity = makeActivity({
       type:   'Like',
       actor:  REMOTE_ACTOR,
       object: 'https://other.example.com/notes/public',
-    };
+    });
     await expect(inboxHandlers.handleApLike(null, activity)).resolves.toBeUndefined();
-    const like = await mockDb.apLikes.findOne({
+    const like = await requireDoc(mockDb.apLikes, {
       actorUrl: REMOTE_ACTOR, objectUrl: 'https://other.example.com/notes/public',
     });
     expect(like).not.toBeNull();
@@ -472,37 +499,36 @@ describe('handleApLike', () => {
 // ════════════════════════════════════════════════════════════════
 describe('handleApAnnounce', () => {
   it('announce kaydı oluşturur', async () => {
-    const activity = {
+    const activity = makeActivity({
       type:   'Announce',
       actor:  REMOTE_ACTOR,
       object: REMOTE_NOTE,
-    };
+    });
 
     await inboxHandlers.handleApAnnounce(AP_USER, activity);
 
-    const ann = await mockDb.apAnnounces.findOne({ actorUrl: REMOTE_ACTOR, objectUrl: REMOTE_NOTE });
-    expect(ann).not.toBeNull();
+    const ann = await requireDoc(mockDb.apAnnounces, { actorUrl: REMOTE_ACTOR, objectUrl: REMOTE_NOTE });
     expect(ann.targetUserId).toBe(AP_USER._id);
   });
 
   it('hedef kullanıcıya ap_announce bildirimi oluşturur', async () => {
     const noteUrl = 'https://bridge.example.com/notes/boosted';
-    const activity = {
+    const activity = makeActivity({
       type:   'Announce',
       actor:  'https://mastodon.social/users/booster',
       object: noteUrl,
-    };
+    });
 
     await inboxHandlers.handleApAnnounce(AP_USER, activity);
 
-    const notif = await mockDb.notifications.findOne({
+    const notif = await requireDoc(mockDb.notifications, {
       userId: AP_USER._id, type: 'ap_announce',
     });
     expect(notif).not.toBeNull();
   });
 
   it('objectUrl yoksa sessizce döner', async () => {
-    const activity = { type: 'Announce', actor: REMOTE_ACTOR, object: '' };
+    const activity = makeActivity({ type: 'Announce', actor: REMOTE_ACTOR, object: '' });
     await expect(inboxHandlers.handleApAnnounce(AP_USER, activity)).resolves.toBeUndefined();
   });
 });
@@ -520,7 +546,7 @@ describe('handleApUpdate', () => {
       createdAt: Date.now(),
     });
 
-    const activity = {
+    const activity = makeActivity({
       type:  'Update',
       actor: REMOTE_ACTOR,
       object: {
@@ -528,7 +554,7 @@ describe('handleApUpdate', () => {
         type:    'Note',
         content: 'Yeni içerik',
       },
-    };
+    });
 
     await inboxHandlers.handleApUpdate(AP_USER, activity);
 
@@ -539,16 +565,16 @@ describe('handleApUpdate', () => {
   });
 
   it('object.id yoksa sessizce döner', async () => {
-    const activity = { type: 'Update', actor: REMOTE_ACTOR, object: { type: 'Note' } };
+    const activity = makeActivity({ type: 'Update', actor: REMOTE_ACTOR, object: { type: 'Note' } });
     await expect(inboxHandlers.handleApUpdate(AP_USER, activity)).resolves.toBeUndefined();
   });
 
   it('var olmayan apId ile update çağrısı hata fırlatmaz', async () => {
-    const activity = {
+    const activity = makeActivity({
       type:  'Update',
       actor: REMOTE_ACTOR,
       object: { id: 'https://mastodon.social/notes/ghost', content: 'New' },
-    };
+    });
     await expect(inboxHandlers.handleApUpdate(AP_USER, activity)).resolves.toBeUndefined();
   });
 });

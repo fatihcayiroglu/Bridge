@@ -1,9 +1,9 @@
 # Bridge 🌉
 
-![CI](https://github.com/bridge-app/bridge/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/bridge-app/bridge/actions/workflows/quality-gate.yml/badge.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)
+![Node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen)
 
 **Self-host, federasyon destekli iletişim platformu** — sohbet, ses ve topluluklar senin altyapında.
 
@@ -35,7 +35,6 @@ Arayüz düzeni: Ayarlar → Görünüm → **Odak / Kompakt / Klasik**
 | Ses & video | WebRTC + Mediasoup SFU |
 | AI | Özet, çeviri, moderasyon (opsiyonel) |
 | Açık kaynak | MIT lisansı |
-| RTL | Arapça, İbranice, Farsça desteği |
 
 ### Kapalı platformlarla kıyas (opsiyonel)
 
@@ -67,7 +66,7 @@ docker compose up -d --build
 
 ### Manuel (geliştirme)
 
-**Gereksinimler:** Node.js 22+, PostgreSQL 14+
+**Gereksinimler:** Node.js **24.20.0** (üretim/CI ana sürümü, `.nvmrc` ile sabit; `nvm use` yeterlidir) — en düşük desteklenen sürüm 22.19.0, PostgreSQL **18** (docker-compose, k8s ve CI aynı ana sürümü kullanır)
 
 ```bash
 # 1. PostgreSQL veritabanı oluştur
@@ -143,13 +142,13 @@ VAPID_PRIVATE_KEY=...
 - Büyük dosya yükleme (chunked)
 
 ### Sesli & Video
-- WebRTC P2P ses + adaptif bitrate (VP9)
+- WebRTC ses/görüntü: P2P güvenli fallback; server-side `mediasoup` opsiyonel olarak kurulu ve `MEDIASOUP_ANNOUNCED_IP` yapılandırılmışsa SFU kullanılır
 - Sesli mesajlar + AI transkripsiyon (Groq Whisper)
 - Soundboard, müzik botu desteği
 - SFU group voice (Mediasoup)
 
 ### Sunucu Yönetimi
-- Sınırsız sunucu & kanal, kategoriler, forum kanallar
+- Yapılandırılabilir sunucu & kanal limitleri, kategoriler, forum kanallar
 - Rol & izin sistemi (kanal bazlı granüler)
 - Moderasyon (ban, kick, timeout, auto-mod AI)
 - Admin dashboard, özel emoji, QR davet + sosyal paylaşım
@@ -178,9 +177,10 @@ VAPID_PRIVATE_KEY=...
 - Prometheus metrikleri + Grafana dashboard
 
 ### Uluslararasılaştırma (i18n)
-- 15 dil desteği: Türkçe, İngilizce, Almanca, Fransızca, İspanyolca, Japonca, Portekizce, Korece, Rusça, İtalyanca, Çince, Arapça, Flemenkçe, **İbranice**, **Farsça**
-- RTL (sağdan sola) düzeni: Arapça (`ar`), İbranice (`he`), Farsça (`fa`) — `<html dir="rtl">` otomatik atanır
-- Lazy-load dil paketleri — varsayılan Türkçe, diğerleri talep üzerine yüklenir
+- **10 stable production language packs:** Türkçe, English, Español, Русский, 日本語, 한국어, 简体中文, Português, Deutsch ve Français.
+- Her stable locale **2350/2350** canonical anahtarı taşır; key parity, placeholder parity, boş-değer ve English-fallback oranı CI quality gate ile korunur.
+- Dil paketleri lazy-load edilir; varsayılan dil Türkçedir ve tarayıcı dili destekleniyorsa otomatik algılanır.
+- Production selector yalnızca `stable` statüsündeki tam paketleri yayımlar.
 
 ---
 
@@ -373,8 +373,10 @@ Detaylar: [`bot-sdk/README.md`](bot-sdk/README.md) · API: `/api/docs`
 
 ```bash
 cd server
-npm test                 # Tüm testler
-npm run test:coverage    # Coverage raporu (sunucu: %85 satır eşiği)
+npm test                 # Tüm server testleri
+npm run test:coverage    # Coverage: global %90; açık per-file ratchet istisnaları server/COVERAGE_DEBT.json içinde
+npm run test:mutation    # Mutasyon kampanyası: testler ürünü bozduğumuzda GERÇEKTEN düşüyor mu?
+cd .. && npm run test:svelte:coverage   # İstemci paketi + %90 S/B/F/L kapsam kapısı
 ```
 
 E2E testler (Playwright):

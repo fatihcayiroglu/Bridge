@@ -1,7 +1,13 @@
 {
   "name": "bridge-electron",
-  "version": "1.122.0",
+  "version": "1.125.0",
   "description": "Bridge — Desktop Application",
+  "author": {
+    "name": "Bridge Contributors"
+  },
+  "bridgeDesktop": {
+    "allowUnsignedUpdates": false
+  },
   "main": "dist/main.js",
   "scripts": {
     "start": "npm run compile && electron .",
@@ -12,7 +18,8 @@
     "dist": "npm run build",
     "dist:win": "npm run compile && electron-builder --win",
     "dist:mac": "npm run compile && electron-builder --mac",
-    "dist:linux": "npm run compile && electron-builder --linux"
+    "dist:linux": "npm run compile && electron-builder --linux",
+    "icons": "node scripts/build-icons.cjs"
   },
   "build": {
     "appId": "com.bridge.desktop",
@@ -24,18 +31,13 @@
     },
     "files": [
       "dist/**/*",
+      "!dist/**/*.map",
+      "!dist/**/*.d.ts",
+      "assets/icon.png",
+      "assets/tray.png",
+      "static/**/*",
       "package.json",
       "!node_modules/.cache"
-    ],
-    "extraResources": [
-      {
-        "from": "../server/dist",
-        "to": "server"
-      },
-      {
-        "from": "../client",
-        "to": "client"
-      }
     ],
     "win": {
       "target": [
@@ -47,11 +49,8 @@
           ]
         }
       ],
-      "signtoolOptions": {
-        "certificateFile": "${WIN_CERT_PATH}",
-        "certificatePassword": "${WIN_CERT_PASSWORD}",
-        "publisherName": "Bridge Contributors"
-      }
+      "icon": "assets/icon.ico",
+      "legalTrademarks": "Bridge"
     },
     "mac": {
       "target": [
@@ -86,14 +85,17 @@
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
-    },
-    "publish": {
-      "provider": "github",
-      "owner": "bridge-app",
-      "repo": "bridge"
+      "createStartMenuShortcut": true,
+      "shortcutName": "Bridge",
+      "uninstallDisplayName": "Bridge",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
     },
     "protocols": [
       {
@@ -102,7 +104,10 @@
           "bridge"
         ]
       }
-    ]
+    ],
+    "toolsets": {
+      "winCodeSign": "1.1.0"
+    }
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
@@ -118,6 +123,8 @@
     "typescript": "^6.0.3"
   },
   "overrides": {
-    "js-yaml": "4.2.0"
+    "js-yaml": "4.3.2",
+    "browserslist": "4.28.9",
+    "baseline-browser-mapping": "2.11.21"
   }
 }

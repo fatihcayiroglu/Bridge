@@ -2,10 +2,12 @@
 <!-- ADR-0008 Faz 2 — server-settings.ts openEmojiManager / refreshEmojiGrid /
      uploadServerEmoji / deleteServerEmoji → Svelte 5 Runes                   -->
 <script lang="ts">
+  import { t } from '../../i18n/reactive.svelte.ts';
+  import { getCurrentServerFromRegistry, isStillCurrentServer } from '../stores/serverSettingsStore';
   import { getAPI } from '../../globals.js';
   import { apiFetch } from '../../api-fetch.js';
+  import { safeApiErrorMessage } from '../../api-error.ts';
   import { toast } from '../../utils.js';
-  import { BridgeRegistry } from '../../bridge-registry.js';
 
   interface ServerEmoji {
     _id:    string;
@@ -14,7 +16,28 @@
   }
 
   const API = getAPI();
-  const server = BridgeRegistry.get('getCurrentServer') as { _id: string } | null;
+  // TEK kanonik çözümleyici. Daha önce burada `BridgeRegistry.get(...)`
+  // kullanılıyordu; o çağrı kayıtlı GETTER FONKSİYONUNU döndürür, sunucuyu
+  // değil — bu yüzden `server._id` undefined kalıyor ve istekler
+  // `/api/servers/undefined/...` adresine gidiyordu.
+  const server = getCurrentServerFromRegistry() as { _id: string } | null;
+
+  // C1.7 — BAYAT SUNUCU KAPISI (yalnız MUTASYONLAR için).
+  // `server` bileşen kurulurken çözülür. Kullanıcı modal açıkken başka bir
+  // sunucuya geçerse, yükleme/silme YAKALANMIŞ eski kimliğe giderdi. Arka uç
+  // yetkiyi doğrular, ama iki sunucunun da sahibi olan bir kullanıcıda bu
+  // sessizce YANLIŞ sunucuyu değiştirebilirdi. Fail-closed.
+  //
+  // NOT: `load()` (GET) bilinçli olarak kanonik davranışını korur — salt okuma,
+  // mount anında çalışır ve arka uçta ayrıca izin denetimine tabidir.
+  function emojiServerId(): string | null {
+    const id = String(server?._id ?? '');
+    if (!id || !isStillCurrentServer(id)) {
+      toast(t('srv_changed2', 'Sunucu değişti — ayarlar yeniden yüklenmeli'), 'error');
+      return null;
+    }
+    return id;
+  }
 
   let emojis   = $state<ServerEmoji[]>([]);
   let loading  = $state(true);
@@ -23,11 +46,23 @@
 
   // ── Load ──────────────────────────────────────────────────────────────────
   async function load(): Promise<void> {
-    if (!server) return;
+    if (!server) {
+      emojis = [];
+      loading = false;
+      return;
+    }
     loading = true;
     try {
-      const r = await apiFetch(`${API}/api/servers/${server._id}/emojis`);
-      emojis = r.ok ? await r.json() : [];
+      const r = await apiFetch(`${API}/api/servers/${encodeURIComponent(server._id)}/emojis`);
+      if (!r.ok) {
+        emojis = [];
+        return;
+      }
+      const data = await r.json();
+      emojis = Array.isArray(data) ? data : [];
+    } catch {
+      emojis = [];
+      toast(t('emo_load_failed', 'Emojiler yüklenemedi'), 'error');
     } finally {
       loading = false;
     }
@@ -41,16 +76,18 @@
 
     if (file.size > 256 * 1024)   { toast('Max 256KB!', 'error'); input.value = ''; return; }
     const safeName = newName.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
-    if (!safeName)                 { toast('Emoji adı gir!', 'error'); input.value = ''; return; }
+    if (!safeName)                 { toast(t('emo_name_req', 'Emoji adı gir!'), 'error'); input.value = ''; return; }
 
     uploading = true;
     try {
       const fd = new FormData();
       fd.append('emoji', file);
       fd.append('name', safeName);
-      const r = await apiFetch(`${API}/api/servers/${server._id}/emojis`, { method: 'POST', body: fd });
-      if (!r.ok) { const d = await r.json(); toast(d.error ?? 'Hata', 'error'); return; }
-      toast(`✅ :${safeName}: eklendi!`, 'success');
+      const sid = emojiServerId();
+      if (!sid) return;
+      const r = await apiFetch(`${API}/api/servers/${encodeURIComponent(sid)}/emojis`, { method: 'POST', body: fd });
+      if (!r.ok) { toast(safeApiErrorMessage(r, t("ui_emoji_yuklenemedi", "Emoji yüklenemedi."), { report: true }), 'error'); return; }
+      toast(t('emoji_added', '✅ :{name}: eklendi!', { name: safeName }), 'success');
       newName = '';
     } finally {
       uploading = false;
@@ -62,9 +99,11 @@
   // ── Delete ─────────────────────────────────────────────────────────────────
   async function deleteEmoji(emojiId: string): Promise<void> {
     if (!server) return;
-    const r = await apiFetch(`${API}/api/servers/${server._id}/emojis/${emojiId}`, { method: 'DELETE' });
-    if (!r.ok) { toast('Silinemedi', 'error'); return; }
-    toast('Emoji silindi', 'success');
+    const sid = emojiServerId();
+    if (!sid) return;
+    const r = await apiFetch(`${API}/api/servers/${encodeURIComponent(sid)}/emojis/${encodeURIComponent(emojiId)}`, { method: 'DELETE' });
+    if (!r.ok) { toast(t('common_delete_failed'), 'error'); return; }
+    toast(t('emoji_deleted', 'Emoji silindi'), 'success');
     await load();
   }
 
@@ -74,18 +113,18 @@
 
 <div class="emoji-tab">
   <p class="emoji-tab-hint">
-    Nitro gerektirmez • Sunucuya özel • <strong>Sınırsız emoji</strong> • Cross-server kullanım
+    {t('markup_nitro_gerektirmez_sunucuya_ozel_3561903', "Nitro gerektirmez • Sunucuya özel •")} <strong>{t('emo_unlimited', 'Sınırsız emoji')}</strong> {t('markup_cross_server_kullanim_2c63c5e', "• Cross-server kullanım")}
   </p>
 
   <div class="emoji-upload-row">
     <input
       class="input-field"
-      placeholder="emoji_adı (a-z, 0-9, _)"
+      placeholder={t('emo_name_ph', 'emoji_adı (a-z, 0-9, _)')}
       maxlength="32"
       bind:value={newName}
     />
     <label class="btn btn-primary emoji-upload-label" class:disabled={uploading}>
-      📤 Yükle
+      {t('upload')}
       <input
         type="file"
         accept="image/png,image/gif,image/webp,image/jpeg"
@@ -95,12 +134,12 @@
       />
     </label>
   </div>
-  <p class="emoji-upload-hint">PNG, GIF (animasyonlu!), WebP, JPEG • Max 256KB</p>
+  <p class="emoji-upload-hint">{t('markup_png_gif_animasyonlu_webp_jpeg_max_256kb_e2841e4', "PNG, GIF (animasyonlu!), WebP, JPEG • Max 256KB")}</p>
 
   {#if loading}
-    <div class="emoji-loading">Yükleniyor…</div>
+    <div class="emoji-loading">{t('sso_loading', 'Yükleniyor…')}</div>
   {:else if !emojis.length}
-    <div class="emoji-empty">Henüz emoji yok. Yükle!</div>
+    <div class="emoji-empty">{t('emo_none', 'Henüz emoji yok. Yükle!')}</div>
   {:else}
     <div class="emoji-grid">
       {#each emojis as e (e._id)}
@@ -110,7 +149,7 @@
           <button
             type="button"
             class="emoji-del-btn"
-            aria-label="Sil"
+            aria-label={t('msg_action_delete')}
             onclick={() => deleteEmoji(e._id)}
           >×</button>
         </div>
@@ -149,7 +188,7 @@
   .emoji-name { font-size: 10px; color: var(--text-muted); word-break: break-all; }
   .emoji-del-btn {
     position: absolute; top: 2px; right: 2px;
-    background: var(--danger, #ed4245); border: none; color: #fff;
+    background: var(--danger, #e05260); border: none; color: var(--text-on-solid);
     border-radius: 50%; width: 16px; height: 16px;
     font-size: 10px; cursor: pointer;
     display: flex; align-items: center; justify-content: center;

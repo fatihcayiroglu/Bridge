@@ -3,9 +3,10 @@
 'use strict';
 
 process.env.NODE_ENV   = 'test';
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 
 import { createMockDb, makeUser } from './helpers/mockDb';
+import type { UserFixture } from './helpers/mockDb';
 let db = createMockDb();
 jest.mock('../db/index',  () => { const { createMockDb } = require('./helpers/mockDb'); return createMockDb(); });
 jest.mock('../db/loader', () => require('../db/index'));
@@ -13,28 +14,31 @@ jest.mock('../db/loader', () => require('../db/index'));
 // pushSender mock — gerçek VAPID isteği atmasın
 const mockSendPushToUser = jest.fn().mockResolvedValue(undefined);
 jest.mock('../lib/pushSender', () => ({
-  sendPushToUser: (...a) => mockSendPushToUser(...a),
+  sendPushToUser: (...a: unknown[]) => mockSendPushToUser(...a),
   sendWebPush:    jest.fn().mockResolvedValue(undefined),
 }));
 
 import request from 'supertest';
 import express from 'express';
+import { Notifications } from '../db/repositories';
 const jwt     = require('jsonwebtoken');
 const router  = require('../routes/webpush');
 
-function makeToken(userId) {
-  return jwt.sign({ id: userId, username: 'tester', v: 0 }, 'test-jwt-secret', { expiresIn: '1h' });
+function makeToken(userId: string) {
+  return jwt.sign({ id: userId, username: 'tester', v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
 }
 
 function buildApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/webpush', router);
-  app.use((err, req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+  app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
   return app;
 }
 
-let app, user, token;
+let app: express.Express;
+let token: string;
+let user: UserFixture;
 
 beforeEach(async () => {
   db = createMockDb();
@@ -104,6 +108,27 @@ describe('POST /api/webpush/subscribe', () => {
       .send({ ...validSub, keys: { p256dh: 'NEW_KEY', auth: 'NEW_AUTH' } });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+    const row = await db.pushSubscriptions?.findOne({ endpoint: validSub.endpoint });
+    expect(row?.keys).toEqual({ p256dh: 'NEW_KEY', auth: 'NEW_AUTH' });
+  });
+
+  it('storage lookup/yazma hatasını başarı gibi göstermez', async () => {
+    const lookup = jest.spyOn(Notifications, 'findPushSubscriptionByEndpoint').mockRejectedValueOnce(new Error('db down'));
+    let res = await request(app)
+      .post('/api/webpush/subscribe')
+      .set('Authorization', `Bearer ${token}`)
+      .send(validSub);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/storage unavailable/i);
+    lookup.mockRestore();
+
+    const insert = jest.spyOn(Notifications, 'insertPushSubscription').mockRejectedValueOnce(new Error('disk full'));
+    res = await request(app)
+      .post('/api/webpush/subscribe')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ ...validSub, endpoint: 'https://push.example.com/new-sub' });
+    expect(res.status).toBe(503);
+    insert.mockRestore();
   });
 
   it('endpoint eksikse 400 döner', async () => {
@@ -164,6 +189,16 @@ describe('DELETE /api/webpush/unsubscribe', () => {
       .send({ endpoint: 'https://nonexistent.example.com/push' });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+  });
+
+  it('storage delete hatasında 503 döner', async () => {
+    const spy = jest.spyOn(Notifications, 'removePushSubscriptionWhere').mockRejectedValueOnce(new Error('db down'));
+    const res = await request(app)
+      .delete('/api/webpush/unsubscribe')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ endpoint: 'https://push.example.com/sub' });
+    expect(res.status).toBe(503);
+    spy.mockRestore();
   });
 
   it('token olmadan 401 döner', async () => {
@@ -238,6 +273,16 @@ describe('POST /api/webpush/test', () => {
       .send({});
     expect(res.status).toBe(503);
     expect(mockSendPushToUser).not.toHaveBeenCalled();
+  });
+
+  it('subscription store okunamıyorsa 404 yerine 503 döner', async () => {
+    const spy = jest.spyOn(Notifications, 'findPushSubscriptionsForUser').mockRejectedValueOnce(new Error('db down'));
+    const res = await request(app)
+      .post('/api/webpush/test')
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    expect(res.status).toBe(503);
+    spy.mockRestore();
   });
 
   it('token olmadan 401 döner', async () => {

@@ -19,7 +19,7 @@
     "allowJs": true,
     "checkJs": false,
     "outDir": "./dist",
-    "rootDir": "./",
+    "rootDir": "../",
     "types": [
       "node"
     ]

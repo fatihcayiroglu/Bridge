@@ -3,7 +3,7 @@
 // Sprint 107: messages.ts (505 satır) üç odaklanmış modüle ayrıldı.
 // Sprint 118: uuid import ES module static'e çekildi; systemMsg try/catch ile güçlendirildi.
 
-import type { Server as IOServer, Socket } from 'socket.io';
+import type { HandlerSocket, HandlerServer } from '../handler-contracts';
 import { v4 as uuidv4 } from 'uuid';
 import logger from '../../lib/logger';
 
@@ -29,6 +29,9 @@ export interface SendMessagePayload {
   fileUrl?: string;
   fileName?: string;
   fileType?: string;
+  /** P3: canonical sticker message identity; server resolves an immutable safe snapshot. */
+  stickerPackId?: string;
+  stickerId?: string;
   /** Sprint 89: E2EE kanal mesajı — server OPAK olarak saklar, içeriği açmaz */
   encryptedContent?: string; // base64 AES-GCM ciphertext
   /** Sprint 89: E2EE IV (12 byte, base64) */
@@ -40,8 +43,8 @@ export interface SendMessagePayload {
 }
 
 export interface MessageHandlerContext {
-  socket: Socket;
-  io: IOServer;
+  socket: HandlerSocket;
+  io: HandlerServer;
   user: AuthUser;
   socketUsers: Map<string, SocketUser>;
 }

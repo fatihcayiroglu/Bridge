@@ -97,9 +97,15 @@ export interface ClientToServerEvents {
   }) => void;
 
   'dm:send': (payload: {
-    conversationId: string;
-    content:        string;
-    nonce?:         string;
+    toUserId:    string;
+    content:     string;
+    clientNonce?: string;
+  }) => void;
+
+  'gdm:send': (payload: {
+    groupId:      string;
+    content:      string;
+    clientNonce?: string;
   }) => void;
 
   // ── Yazıyor göstergesi ───────────────────────────────────
@@ -109,6 +115,8 @@ export interface ClientToServerEvents {
   // ── Kanal / oda ──────────────────────────────────────────
   'channel:join':  (channelId: string) => void;
   'channel:leave': (channelId: string) => void;
+  /** Watch the message channels of one server for `channel:activity` (Final21 Phase 15). */
+  'channels:watch': (payload: { serverId: string }, ack?: (result: { ok: boolean; channels: number }) => void) => void;
 
   // ── DM okundu bildirimi ──────────────────────────────────
   /**
@@ -160,6 +168,12 @@ export interface ClientToServerEvents {
     targetLang: string;
   }) => void;
 
+  // ── Kullanıcı durumu ─────────────────────────────────────
+  'status:update': (
+    payload: { status: 'online' | 'idle' | 'dnd' | 'offline'; statusText?: string; statusEmoji?: string },
+    ack?: (result: { ok: boolean; status?: 'online' | 'idle' | 'dnd' | 'offline'; code?: string }) => void,
+  ) => void;
+
   // ── Ses aktivitesi ───────────────────────────────────────
   /**
    * Mikrofon durumu değişti.
@@ -182,6 +196,14 @@ export interface ClientToServerEvents {
 
 export interface ServerToClientEvents {
   // ── Mesajlaşma ───────────────────────────────────────────
+  /** A message exists in a watched channel. Carries no content. */
+  'channel:activity': (payload: {
+    channelId: string;
+    serverId:  string;
+    messageId: string;
+    userId:    string | null;
+    createdAt: number;
+  }) => void;
   'message:new': (payload: {
     _id:         string;
     channelId:   string;
@@ -208,6 +230,8 @@ export interface ServerToClientEvents {
   'user:status': (payload: {
     userId: string;
     status: 'online' | 'idle' | 'dnd' | 'offline';
+    statusText?: string;
+    statusEmoji?: string;
   }) => void;
 
   // ── Hata / sistem ────────────────────────────────────────
@@ -216,6 +240,24 @@ export interface ServerToClientEvents {
     message:      string;
     retryAfter?:  number;
   }) => void;
+
+  /**
+   * Sunucu tarafında bir socket handler'ı beklenmedik şekilde hata verdiğinde
+   * gönderilir. Süreç ayakta kalır; istemci işlemi başarısız sayar.
+   */
+  'error:message': (payload: {
+    event:   string;
+    message: string;
+  }) => void;
+
+  /**
+   * Gönderim reddi (Final21 UX U-11): istemci hangi bekleyen mesajın reddedildiğini
+   * ackId/tmpId ile eşler; ret nedeni ve kalan süre kullanıcıya gösterilir.
+   */
+  'error:spam': (payload: { reason: string; remainingMs: number; ackId?: string; tmpId?: string }) => void;
+  'warn:spam': (payload: { message: string; ackId?: string; tmpId?: string }) => void;
+  'error:slowmode': (payload: { remaining: number; channelId: string; ackId?: string; tmpId?: string }) => void;
+  'error:timeout': (payload: { remaining: number; ackId?: string; tmpId?: string }) => void;
 
   'auth:revoked': (payload: {
     reason: 'token_revoked' | 'ban' | 'session_expired' | string;
@@ -289,6 +331,12 @@ export interface ServerToClientEvents {
     messageId: string;
     error:     string;
   }) => void;
+
+  // ── Kullanıcı durumu ─────────────────────────────────────
+  'status:update': (
+    payload: { status: 'online' | 'idle' | 'dnd' | 'offline'; statusText?: string; statusEmoji?: string },
+    ack?: (result: { ok: boolean; status?: 'online' | 'idle' | 'dnd' | 'offline'; code?: string }) => void,
+  ) => void;
 
   // ── Ses aktivitesi ───────────────────────────────────────
   /**

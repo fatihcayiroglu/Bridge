@@ -15,12 +15,12 @@
 //   - Admin kullanıcısı: ADMIN_USERNAME / ADMIN_PASSWORD env var
 //   - Test plugin'leri: fixtures/plugins/ altında (aşağıda inline tanımlanır)
 
-import { test, expect, request as pwRequest } from '@playwright/test';
+import { test, expect, request as pwRequest } from '../helpers/apiTest';
 import * as path from 'path';
 import * as fs   from 'fs';
 import * as os   from 'os';
 
-const BASE_URL       = process.env.BASE_URL        || 'http://localhost:3000';
+const BASE_URL       = process.env.BASE_URL        || 'http://127.0.0.1:3000';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME  || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD  || 'AdminPass123!';
 
@@ -55,6 +55,28 @@ test.describe('Plugin sistemi E2E', () => {
   test.beforeAll(async () => {
     request = await pwRequest.newContext({ baseURL: BASE_URL });
     token   = await adminToken(request);
+
+    // ── v1.123: ATLAMA GEREKCESI DUZELTILDI ────────────────────────────────
+    // Bu paketin 6 testi "Admin giris yapilamadi (401) - ortam hazir degil"
+    // diye atlaniyordu. Bu YANILTICIYDI: sorun ortam degil, ucun HIC SEVK
+    // EDILMEMIS olmasiydi. v1.123'te e2e kurulumu artik gercek bir yonetici
+    // sagliyor (global.setup.ts -> ensureAdminUser) ve giris 200 donuyor;
+    // buna ragmen API yok:
+    //
+    //   GET  /api/admin/plugins       -> 404  "Not found"
+    //   POST /api/admin/plugins/load  -> 403  "CSRF token missing"
+    //
+    // Testlerin kendi 404/501 muhafazasi CALISMIYORDU, cunku CSRF katmani
+    // yonlendirmeden ONCE 403 donuyor ve 404 hic gorulmuyor. Bu yuzden
+    // muhafaza GET ile, yani CSRF'den etkilenmeyen bir ucla yapilir.
+    const probe = await request.get(`${BASE_URL}/api/admin/plugins`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    test.skip(
+      probe.status() === 404,
+      'SEVK EDILMEDI (v1.123 dogrulandi): yonetici eklenti API ucu yok - GET /api/admin/plugins 404. '
+      + 'Yonetici kullanicisi ARTIK saglaniyor; engel yetki degil, ucun yoklugudur.',
+    );
   });
 
   test.afterAll(async () => {

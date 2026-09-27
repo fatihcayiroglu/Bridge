@@ -2,10 +2,33 @@
 // e2e/tests/messaging.spec.js — Mesaj Gönderme E2E Testleri
 // Kritik akış: mesaj gönder, al, gerçek zamanlı güncelleme
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 import { BridgePage, getTokens, createTestServer, createTestChannel, sendApiMessage } from '../helpers/bridge';
+import { openSocket, waitForEvent, closeSockets, paceSends, joinChannelConfirmed } from '../helpers/socket';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
+
+/**
+ * Creates a message through the product's ONLY send path (Socket.IO `message:send` → own ack).
+ * Final21 Faz 19 (19-33): the REST edit/delete tests below used to skip forever with
+ * "Mesaj fixture gerekli" because their fixture came from a REST send endpoint that does not exist
+ * (and they addressed `/channels/:cid/messages/:mid`, which is not the mutation route either).
+ */
+async function sendViaSocket(token: string, serverId: string, channelId: string, content: string): Promise<string> {
+  const socket = await openSocket(token);
+  try {
+    await joinChannelConfirmed(socket, channelId, serverId);
+    await paceSends('messaging-rest');
+    const ackId = `e2e-rest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const ack = waitForEvent<{ ackId: string; messageId: string }>(socket, 'message:ack', 15_000, (a) => a?.ackId === ackId);
+    socket.emit('message:send', { channelId, serverId, content, ackId });
+    const { messageId } = await ack;
+    expect(messageId).toBeTruthy();
+    return messageId;
+  } finally {
+    closeSockets(socket);
+  }
+}
 
 test.describe('Mesajlaşma Akışları', () => {
   let testServerId;
@@ -28,6 +51,7 @@ test.describe('Mesajlaşma Akışları', () => {
   // ── API Testleri ─────────────────────────────────────────
 
   test('API: mesaj gönderme', async ({ request }) => {
+    test.skip(true, 'GEÇERSİZ MİMARİ: REST gönderim ucu yok; yerini alan kanonik kapsam → tests/message-actions.spec.ts (Socket.IO message:send)');
     test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
 
     const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
@@ -44,6 +68,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('API: mesajları listeleme', async ({ request }) => {
+    test.skip(true, 'GEÇERSİZ MİMARİ: REST gönderim ucu yok; yerini alan kanonik kapsam → tests/message-actions.spec.ts (gönderim + kanonik REST okuma)');
     test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
 
     // Önce bir mesaj gönder
@@ -76,6 +101,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('API: üye olmayan kullanıcı mesaj gönderememeli', async ({ request }) => {
+    test.skip(true, 'GEÇERSİZ MİMARİ: REST gönderim ucu yok; yerini alan kanonik kapsam → tests/message-actions.spec.ts (üye olmayan yayın/yazma reddi)');
     test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
 
     const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
@@ -87,45 +113,57 @@ test.describe('Mesajlaşma Akışları', () => {
     expect(res.status()).toBe(403);
   });
 
-  test('API: mesaj silme', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
-
-    // Mesaj gönder
-    const sendRes = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content: 'Silinecek mesaj' }),
+  /** Canonical REST read: the channel's first page. */
+  async function listIds(request: import('@playwright/test').APIRequestContext): Promise<Map<string, { content?: string; editedAt?: unknown }>> {
+    const res = await request.get(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
+      headers: { Authorization: `Bearer ${tokens.alice}` },
     });
-    const sent = await sendRes.json();
-    const msgId = sent._id || sent.id || sent.message?._id;
-    test.skip(!msgId, 'Mesaj fixture gerekli'  );
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    const rows = (Array.isArray(body) ? body : body.messages ?? []) as Array<{ _id?: string; id?: string; content?: string; editedAt?: unknown }>;
+    return new Map(rows.map((m) => [String(m._id ?? m.id), m]));
+  }
 
-    // Sil
-    const delRes = await request.delete(
-      `${BASE_URL}/api/channels/${testChannelId}/messages/${msgId}`,
-      { headers: { Authorization: `Bearer ${tokens.alice}` } }
-    );
-    expect(delRes.status()).toBeLessThan(300);
+  test('API: mesaj silme (REST mutasyon yolu, DELETE /api/channels/:messageId)', async ({ request }) => {
+    expect(testChannelId, 'test kanalı oluşturulamadı').toBeTruthy();
+    const msgId = await sendViaSocket(tokens.alice, testServerId, testChannelId, `Silinecek mesaj ${Date.now()}`);
+    expect((await listIds(request)).has(msgId)).toBe(true);
+
+    // A non-member cannot delete it (the channel is not visible to bob) — and it stays.
+    const foreign = await request.delete(`${BASE_URL}/api/channels/${msgId}`, { headers: { Authorization: `Bearer ${tokens.bob}` } });
+    expect(foreign.status()).toBe(403);
+    expect((await listIds(request)).has(msgId)).toBe(true);
+
+    const delRes = await request.delete(`${BASE_URL}/api/channels/${msgId}`, { headers: { Authorization: `Bearer ${tokens.alice}` } });
+    expect(delRes.status()).toBe(200);
+    expect(await delRes.json()).toEqual({ deleted: true, id: msgId });
+    // Final state: the very next canonical read no longer lists it (cache dropped before the answer).
+    expect((await listIds(request)).has(msgId)).toBe(false);
   });
 
-  test('API: mesaj düzenleme', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+  test('API: mesaj düzenleme (REST mutasyon yolu, PATCH /api/channels/:messageId)', async ({ request }) => {
+    expect(testChannelId, 'test kanalı oluşturulamadı').toBeTruthy();
+    const original = `Orijinal içerik ${Date.now()}`;
+    const msgId = await sendViaSocket(tokens.alice, testServerId, testChannelId, original);
 
-    const sendRes = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content: 'Orijinal içerik' }),
+    const foreign = await request.patch(`${BASE_URL}/api/channels/${msgId}`, {
+      headers: { Authorization: `Bearer ${tokens.bob}`, 'Content-Type': 'application/json' },
+      data: JSON.stringify({ content: 'ele geçirme denemesi' }),
     });
-    const sent = await sendRes.json();
-    const msgId = sent._id || sent.id || sent.message?._id;
-    test.skip(!msgId, 'Mesaj fixture gerekli'  );
+    expect(foreign.status()).toBe(403);
+    expect((await listIds(request)).get(msgId)?.content).toBe(original);
 
-    const editRes = await request.patch(
-      `${BASE_URL}/api/channels/${testChannelId}/messages/${msgId}`,
-      {
-        headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-        data: JSON.stringify({ content: 'Düzenlenmiş içerik' }),
-      }
-    );
-    expect(editRes.status()).toBeLessThan(300);
+    const edited = `Düzenlenmiş içerik <b> & ${Date.now()}`;
+    const editRes = await request.patch(`${BASE_URL}/api/channels/${msgId}`, {
+      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
+      data: JSON.stringify({ content: edited }),
+    });
+    expect(editRes.status()).toBe(200);
+    expect((await editRes.json()).content).toBe(edited);
+    // Final state from the canonical read: new text exactly as typed, marked edited.
+    const row = (await listIds(request)).get(msgId);
+    expect(row?.content).toBe(edited);
+    expect(row?.editedAt).toBeTruthy();
   });
 
   test('API: sayfalama cursor çalışmalı', async ({ request }) => {

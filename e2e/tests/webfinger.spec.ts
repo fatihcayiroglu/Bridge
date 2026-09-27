@@ -3,28 +3,57 @@
 // Federation WebFinger & ActivityPub Actor E2E Testleri
 //
 // Gereksinimler:
-//   BASE_URL   — Bridge sunucusu (varsayılan: http://localhost:3001)
+//   BASE_URL   — Bridge sunucusu (varsayılan: http://127.0.0.1:3000)
 //
 // Çalıştırma:
-//   BASE_URL=http://localhost:3001 npx playwright test e2e/tests/webfinger.spec.js
+//   BASE_URL=http://127.0.0.1:3000 npx playwright test e2e/tests/webfinger.spec.js
 
 
-import { test, expect, request } from '@playwright/test';
+import { test, expect, request } from '../helpers/apiTest';
+import { getTokens } from '../helpers/bridge';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3001';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 // ── Yardımcı: API isteği ─────────────────────────────────────────
 async function apiGet(ctx, path, headers = {}) {
   return ctx.get(`${BASE_URL}${path}`, { headers });
 }
 
-// ── Test hesabı oluştur ──────────────────────────────────────────
-async function registerTestUser(ctx, suffix = '') {
-  const username = `wftest_${Date.now()}${suffix}`;
-  const res = await ctx.post(`${BASE_URL}/api/auth/register`, {
-    data: { username, email: `${username}@example.com`, password: 'TestPass123!' },
-  });
-  return { username, res };
+// ── Test kimliği ─────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════
+// YENİ HESAP AÇILMAZ — SAĞLANMIŞ KİMLİKLER KULLANILIR
+// ════════════════════════════════════════════════════════════════
+// Bu yardımcı eskiden HER ÇAĞRIDA `POST /api/register` ile yeni bir hesap
+// açıyordu. Sunucu IP başına saatte `MAX_REG_PER_HOUR` (varsayılan 3) hesapla
+// sınırlıdır. Kota dolunca:
+//
+//     POST /api/register  → 429 "Too many requests"
+//     → kullanıcı HİÇ OLUŞMAZ
+//     → /.well-known/webfinger → 404
+//     → `body.links` undefined → "Cannot read properties of undefined"
+//
+// Bu bir FEDERASYON HATASI DEĞİLDİR. Doğrudan ölçüldü: sağlanmış bir
+// kimlikle aynı uç 200 döner ve doğru JRD üretir:
+//
+//     webfinger(bob) = 200 {"subject":"acct:e2e_bob_…@127.0.0.1", "links":[…]}
+//
+// Sınır DOĞRUDUR ve değiştirilmez. Global setup zaten beş kalıcı kimlik
+// sağlar; her test kendine ait birini alır. Aynı ders medya paketinde de
+// çıkmıştı (bkz. media-automation.spec.ts beforeAll).
+const FIXTURE_IDENTITIES = ['alice', 'bob', 'carol', 'media1', 'media2'] as const;
+let _identityCursor = 0;
+
+function fixtureUsername(): string {
+  const key = FIXTURE_IDENTITIES[_identityCursor % FIXTURE_IDENTITIES.length];
+  _identityCursor += 1;
+  const u = getTokens().users[key];
+  if (!u?.username) throw new Error(`fikstür kimliği yok: ${key}`);
+  return u.username;
+}
+
+/** Geriye dönük imza korunur; artık KAYIT YAPMAZ, mevcut kimlik döner. */
+async function registerTestUser(_ctx?: unknown, _suffix = '') {
+  return { username: fixtureUsername(), res: null as unknown };
 }
 
 // ════════════════════════════════════════════════════════════════

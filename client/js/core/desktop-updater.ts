@@ -1,3 +1,6 @@
+import { BridgeRegistry } from './bridge-registry.ts';
+import { t } from './i18n/index.ts';
+
 // client/js/core/desktop-updater.ts
 // Electron preload üzerinden gelen güncelleme durumunu Discord benzeri küçük bir panel/toast ile gösterir.
 
@@ -32,6 +35,9 @@ interface BridgeUpdaterAPI {
 declare global {
   interface Window {
     bridgeUpdater?: BridgeUpdaterAPI;
+    electronBridge?: {
+      onOpenSurface?(cb: (surface: 'voice-check' | 'system-health') => void): (() => void) | void;
+    };
   }
 }
 
@@ -72,7 +78,7 @@ function ensureStyles(): void {
       font-weight: 700;
     }
     #${TOAST_ID} button.secondary { background: rgba(255,255,255,.12); }
-    #${TOAST_ID} progress { width: 100%; height: 8px; margin: 0 0 12px; accent-color: #5865f2; }
+    #${TOAST_ID} progress { width: 100%; height: 8px; margin: 0 0 12px; accent-color: var(--brand, #2d9cdb); }
   `;
   document.head.appendChild(style);
 }
@@ -92,11 +98,20 @@ function ensureToast(): HTMLElement {
 }
 
 function formatVersion(version: string | null): string {
-  return version ? `v${version}` : 'yeni sürüm';
+  return version ? `v${version}` : t('updater_new_version', 'yeni sürüm');
 }
 
 function shouldHide(state: BridgeUpdateState): boolean {
   return state.phase === 'idle' || state.phase === 'disabled' || state.phase === 'not-available';
+}
+
+function appendAction(toast: HTMLElement, label: string, action: 'hide' | 'check' | 'install', secondary = false): void {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.dataset.action = action;
+  button.textContent = label;
+  if (secondary) button.classList.add('secondary');
+  toast.appendChild(button);
 }
 
 function renderUpdaterToast(state: BridgeUpdateState): void {
@@ -106,59 +121,112 @@ function renderUpdaterToast(state: BridgeUpdateState): void {
     return;
   }
 
-  let title = 'Güncelleme kontrol ediliyor';
-  let body = 'Bridge yeni sürüm olup olmadığını kontrol ediyor.';
-  let progress = '';
-  let actions = '<button class="secondary" type="button" data-action="hide">Kapat</button>';
+  let title = t('updater_checking_title', 'Güncelleme kontrol ediliyor');
+  let body = t('updater_checking_body', 'Bridge yeni sürüm olup olmadığını kontrol ediyor.');
+  let showProgress = false;
+  let actions: Array<{ label: string; action: 'hide' | 'check' | 'install'; secondary?: boolean }> = [
+    { label: t('close', 'Kapat'), action: 'hide', secondary: true },
+  ];
 
   if (state.phase === 'available') {
-    title = `${formatVersion(state.availableVersion)} bulundu`;
-    body = 'Güncelleme arka planda indiriliyor. Bittiğinde yeniden başlatma düğmesi çıkacak.';
+    title = t('updater_available_title', '{version} bulundu', { version: formatVersion(state.availableVersion) });
+    body = t('updater_available_body', 'Güncelleme arka planda indiriliyor. Bittiğinde yeniden başlatma düğmesi çıkacak.');
   } else if (state.phase === 'downloading') {
-    title = `${formatVersion(state.availableVersion)} indiriliyor`;
-    body = 'Uygulamayı kullanmaya devam edebilirsin.';
-    progress = `<progress max="100" value="${Math.round(state.percent)}"></progress>`;
+    title = t('updater_downloading_title', '{version} indiriliyor', { version: formatVersion(state.availableVersion) });
+    body = t('updater_downloading_body', 'Uygulamayı kullanmaya devam edebilirsin.');
+    showProgress = true;
   } else if (state.phase === 'downloaded') {
-    title = 'Güncelleme hazır';
-    body = `${formatVersion(state.availableVersion)} indirildi. Kurulum için Bridge yeniden başlatılacak.`;
-    actions = '<button class="secondary" type="button" data-action="hide">Sonra</button><button type="button" data-action="install">Yeniden başlat ve kur</button>';
+    title = t('updater_ready_title', 'Güncelleme hazır');
+    body = t('updater_ready_body', '{version} indirildi. Kurulum için Bridge yeniden başlatılacak.', { version: formatVersion(state.availableVersion) });
+    actions = [
+      { label: t('updater_later', 'Sonra'), action: 'hide', secondary: true },
+      { label: t('updater_restart_install', 'Yeniden başlat ve kur'), action: 'install' },
+    ];
   } else if (state.phase === 'error') {
-    title = 'Güncelleme kontrolü başarısız';
-    body = state.lastError || 'Güncelleme sunucusuna ulaşılamadı.';
-    actions = '<button class="secondary" type="button" data-action="hide">Kapat</button><button type="button" data-action="check">Tekrar dene</button>';
+    title = t('updater_failed_title', 'Güncelleme kontrolü başarısız');
+    body = t('updater_server_unreachable', 'Güncelleme sunucusuna ulaşılamadı.');
+    actions = [
+      { label: t('close', 'Kapat'), action: 'hide', secondary: true },
+      { label: t('retry', 'Tekrar dene'), action: 'check' },
+    ];
   }
 
+  // Updater metadata ultimately comes from a remote release feed. Never inject
+  // it via innerHTML; keep every externally-derived value in textContent.
+  toast.replaceChildren();
+  const strong = document.createElement('strong');
+  strong.textContent = title;
+  toast.appendChild(strong);
+
+  const paragraph = document.createElement('p');
+  paragraph.textContent = body;
+  toast.appendChild(paragraph);
+
+  if (showProgress) {
+    const progress = document.createElement('progress');
+    progress.max = 100;
+    const rawPercent = Number.isFinite(state.percent) ? state.percent : 0;
+    progress.value = Math.max(0, Math.min(100, Math.round(rawPercent)));
+    toast.appendChild(progress);
+  }
+
+  const actionContainer = document.createElement('div');
+  actionContainer.className = 'bridge-updater-actions';
+  for (const action of actions) appendAction(actionContainer, action.label, action.action, Boolean(action.secondary));
+  toast.appendChild(actionContainer);
   toast.hidden = false;
-  toast.innerHTML = `
-    <strong>${title}</strong>
-    <p>${body}</p>
-    ${progress}
-    <div class="bridge-updater-actions">${actions}</div>
-  `;
 }
 
+let actionsBound = false;
+let boundUpdater: BridgeUpdaterAPI | null = null;
+let statusUnsubscribe: (() => void) | null = null;
+
 function bindToastActions(): void {
+  if (actionsBound) return;
+  actionsBound = true;
   document.addEventListener('click', (event) => {
     const target = event.target as HTMLElement | null;
     const button = target?.closest<HTMLButtonElement>(`#${TOAST_ID} button[data-action]`);
-    if (!button || !window.bridgeUpdater) return;
+    const updater = window.bridgeUpdater;
+    if (!button || !updater) return;
 
     const action = button.dataset.action;
     if (action === 'hide') {
       const toast = document.getElementById(TOAST_ID);
       if (toast) toast.hidden = true;
     } else if (action === 'check') {
-      void window.bridgeUpdater.check().then(renderUpdaterToast);
+      void updater.check().then(renderUpdaterToast).catch(() => {
+        renderUpdaterToast({
+          phase: 'error', currentVersion: '', availableVersion: null, releaseDate: null,
+          releaseName: null, percent: 0, lastCheckedAt: null,
+          lastError: t('updater_server_unreachable', 'Güncelleme sunucusuna ulaşılamadı.'), canInstall: false, isPackaged: true,
+        });
+      });
     } else if (action === 'install') {
-      void window.bridgeUpdater.install();
+      // The updater process owns user-facing installation errors. Still attach
+      // a rejection handler here so preload/process failures cannot surface as
+      // an unhandled renderer promise rejection.
+      void updater.install().catch(() => undefined);
     }
   });
 }
 
 export function initDesktopUpdater(): void {
-  if (!window.bridgeUpdater) return;
+  window.electronBridge?.onOpenSurface?.((surface) => {
+    if (surface === 'voice-check') BridgeRegistry.call('openVoiceCheck');
+    else if (surface === 'system-health') BridgeRegistry.call('openServerSettings', 'health');
+  });
+
+  const updater = window.bridgeUpdater;
+  if (!updater) return;
   bindToastActions();
 
-  window.bridgeUpdater.onStatus((state) => renderUpdaterToast(state));
-  void window.bridgeUpdater.getStatus().then(renderUpdaterToast).catch(() => {});
+  // Re-initialization can happen during hot reload or shell remounts. Keep a
+  // single status subscription per preload API instance.
+  if (boundUpdater !== updater) {
+    statusUnsubscribe?.();
+    statusUnsubscribe = updater.onStatus((state) => renderUpdaterToast(state)) || null;
+    boundUpdater = updater;
+  }
+  void updater.getStatus().then(renderUpdaterToast).catch(() => {});
 }

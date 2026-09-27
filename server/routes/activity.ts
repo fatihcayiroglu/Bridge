@@ -104,7 +104,8 @@ const ACTIVITY_ICONS: Record<string, string> = {
 // ─────────────────────────────────────────────────────────────
 router.patch('/', authMiddleware, limits.settings(), async (req, res) => {
   const _u = castAuthed(req).user;
-  const { type, name, detail, url, emoji } = req.body as Record<string, string> || {};
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? req.body as Record<string, unknown> : {};
+  const { type, name, detail, url, emoji } = body;
 
   // null body → aktiviteyi temizle
   if (!req.body || (!type && !name)) {
@@ -125,18 +126,28 @@ router.patch('/', authMiddleware, limits.settings(), async (req, res) => {
   }
 
   // Validasyon
-  if (type && !Object.values(ACTIVITY_TYPES).includes(type)) {
+  for (const [field, value] of Object.entries({ type, name, detail, url, emoji })) {
+    if (value !== undefined && value !== null && typeof value !== 'string') {
+      return res.status(400).json({ error: `${field} must be a string` });
+    }
+  }
+  const activityType = typeof type === 'string' ? type : '';
+  const activityName = typeof name === 'string' ? name : '';
+  const activityDetail = typeof detail === 'string' ? detail : '';
+  const activityUrl = typeof url === 'string' ? url : '';
+  const activityEmoji = typeof emoji === 'string' ? emoji : '';
+  if (activityType && !Object.values(ACTIVITY_TYPES).includes(activityType)) {
     return res.status(400).json({ error: 'Invalid activity type', valid: Object.values(ACTIVITY_TYPES) });
   }
-  if (name && name.length > 64) return res.status(400).json({ error: 'name max 64 chars' });
-  if (detail && detail.length > 128) return res.status(400).json({ error: 'detail max 128 chars' });
+  if (activityName && activityName.length > 64) return res.status(400).json({ error: 'name max 64 chars' });
+  if (activityDetail && activityDetail.length > 128) return res.status(400).json({ error: 'detail max 128 chars' });
 
   const activity = {
-    type:      type || 'custom',
-    name:      name?.trim()   || '',
-    detail:    detail?.trim() || '',
-    url:       url?.trim()    || '',
-    emoji:     emoji?.trim()  || ACTIVITY_ICONS[type] || '✏️',
+    type:      activityType || 'custom',
+    name:      activityName.trim(),
+    detail:    activityDetail.trim(),
+    url:       activityUrl.trim(),
+    emoji:     activityEmoji.trim() || ACTIVITY_ICONS[activityType] || '✏️',
     startedAt: Date.now(),
   };
 

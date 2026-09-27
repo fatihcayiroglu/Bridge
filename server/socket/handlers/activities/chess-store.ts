@@ -23,6 +23,11 @@ import type { GameState } from './chess-types';
 
 const KEY_PREFIX = 'chess:game:';
 const GAME_TTL   = 60 * 60 * 4; // 4 saat
+const REDIS_CONFIGURED = Boolean(process.env.REDIS_URL);
+
+function coordinationUnavailable(op: string): Error {
+  return new Error(`Redis chess coordination unavailable during ${op}`);
+}
 
 // In-memory fallback — Redis yoksa (geliştirme, test)
 const _memGames = new Map<string, GameState>();
@@ -31,10 +36,13 @@ export const chessStore = {
   async get(channelId: string): Promise<GameState | null> {
     if (isRedisAvailable()) {
       try {
-        return await cache.get<GameState>(`${KEY_PREFIX}${channelId}`);
+        return await cache.getAuthoritative<GameState>(`${KEY_PREFIX}${channelId}`);
       } catch (err) {
-        logger.warn({ err, event: 'chess.store.get.error', channelId }, 'Redis get hatası, in-memory fallback');
+        logger.warn({ err, event: 'chess.store.get.error', channelId }, 'Redis chess read failed');
+        if (REDIS_CONFIGURED) throw err;
       }
+    } else if (REDIS_CONFIGURED) {
+      throw coordinationUnavailable('get');
     }
     return _memGames.get(channelId) ?? null;
   },
@@ -42,11 +50,14 @@ export const chessStore = {
   async set(channelId: string, state: GameState): Promise<void> {
     if (isRedisAvailable()) {
       try {
-        await cache.set(`${KEY_PREFIX}${channelId}`, state, GAME_TTL);
+        await cache.setAuthoritative(`${KEY_PREFIX}${channelId}`, state, GAME_TTL);
         return;
       } catch (err) {
-        logger.warn({ err, event: 'chess.store.set.error', channelId }, 'Redis set hatası, in-memory fallback');
+        logger.warn({ err, event: 'chess.store.set.error', channelId }, 'Redis chess write failed');
+        if (REDIS_CONFIGURED) throw err;
       }
+    } else if (REDIS_CONFIGURED) {
+      throw coordinationUnavailable('set');
     }
     _memGames.set(channelId, state);
   },
@@ -54,13 +65,21 @@ export const chessStore = {
   async del(channelId: string): Promise<void> {
     if (isRedisAvailable()) {
       try {
-        await cache.del(`${KEY_PREFIX}${channelId}`);
+        await cache.delAuthoritative(`${KEY_PREFIX}${channelId}`);
         return;
       } catch (err) {
-        logger.warn({ err, event: 'chess.store.del.error', channelId }, 'Redis del hatası, in-memory fallback');
+        logger.warn({ err, event: 'chess.store.del.error', channelId }, 'Redis chess delete failed');
+        if (REDIS_CONFIGURED) throw err;
       }
+    } else if (REDIS_CONFIGURED) {
+      throw coordinationUnavailable('delete');
     }
     _memGames.delete(channelId);
+  },
+
+  /** Serialize every authoritative game mutation across application nodes. */
+  async withLock<T>(channelId: string, fn: () => Promise<T>): Promise<T> {
+    return cache.withKeyLock(`chess-game:${channelId}`, fn, { leaseSeconds: 5, waitMs: 2_000, retryMs: 10 });
   },
 
   // Atomik: gameOver false ise true'ya çek ve sil. Başarılıysa true döner.
@@ -78,15 +97,18 @@ export const chessStore = {
         return 1
       `;
       try {
-        const result = await cache.luaEval(lua, [key], [String(GAME_TTL)]);
+        const result = await cache.luaEvalAuthoritative(lua, [key], [String(GAME_TTL)]);
         if (result === 1) {
-          await cache.del(key);
+          await cache.delAuthoritative(key);
           return true;
         }
         return false;
       } catch (err) {
-        logger.warn({ err, event: 'chess.store.markGameOver.error', channelId }, 'Lua eval hatası, in-memory fallback');
+        logger.warn({ err, event: 'chess.store.markGameOver.error', channelId }, 'Redis chess game-over CAS failed');
+        if (REDIS_CONFIGURED) throw err;
       }
+    } else if (REDIS_CONFIGURED) {
+      throw coordinationUnavailable('markGameOver');
     }
     // In-memory fallback (single-instance, JS single-threaded → atomik)
     const game = _memGames.get(channelId);
@@ -111,11 +133,14 @@ export const chessStore = {
         return 1
       `;
       try {
-        const result = await cache.luaEval(lua, [key], [userId, String(GAME_TTL)]);
+        const result = await cache.luaEvalAuthoritative(lua, [key], [userId, String(GAME_TTL)]);
         return result === 1;
       } catch (err) {
-        logger.warn({ err, event: 'chess.store.claimBlack.error', channelId }, 'Lua eval hatası, in-memory fallback');
+        logger.warn({ err, event: 'chess.store.claimBlack.error', channelId }, 'Redis chess seat CAS failed');
+        if (REDIS_CONFIGURED) throw err;
       }
+    } else if (REDIS_CONFIGURED) {
+      throw coordinationUnavailable('claimBlack');
     }
     // In-memory fallback
     const game = _memGames.get(channelId);

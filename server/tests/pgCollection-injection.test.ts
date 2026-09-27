@@ -22,6 +22,20 @@ function makeCollection() {
   return new PgCollection(pool, 'users');
 }
 
+/**
+ * `jest.mock('pg')` fabrikasinin modul yuzeyine EKLEDIGI sorgu ikizi.
+ *
+ * `pg` modulunun gercek tipinde boyle bir uye YOKTUR — olmasi da dogru degil:
+ * bu bir test dikisidir. Gecis TEK YERDE yapilir ve dikisin gercekten kurulu
+ * oldugu CALISMA ZAMANINDA dogrulanir; uc ayri yerde tipsiz alan okumaktansa
+ * bir kez dogrulamak hem daha guvenli hem de daha anlasilir.
+ */
+function mockQuery(): jest.Mock {
+  const seam = (pg as unknown as { _mockQuery?: jest.Mock })._mockQuery;
+  if (!seam) throw new Error("pg ikizi kurulmadi: modulde '_mockQuery' yok");
+  return seam;
+}
+
 // ── buildWhere whitelist ────────────────────────────────────────
 describe('buildWhere column whitelist', () => {
   test('geçerli kolon adı geçer', () => {
@@ -55,6 +69,7 @@ describe('buildWhere column whitelist', () => {
 describe('insert column whitelist', () => {
   test('geçerli doc insert edilir', async () => {
     const col = makeCollection();
+    mockQuery().mockResolvedValueOnce({ rows: [{ _id: 'u1', username: 'alice', displayName: 'Alice' }], rowCount: 1 });
     await expect(
       col.insert({ _id: 'u1', username: 'alice', displayName: 'Alice', password: 'x',
                    avatarColor: '#fff', email: 'a@b.c', createdAt: Date.now() })
@@ -73,7 +88,7 @@ describe('insert column whitelist', () => {
 describe('update column whitelist', () => {
   test('$set geçerli kolon', async () => {
     const col = makeCollection();
-    pg._mockQuery.mockResolvedValue({ rows: [], rowCount: 1 });
+    mockQuery().mockResolvedValue({ rows: [], rowCount: 1 });
     await expect(
       col.update({ _id: 'u1' }, { $set: { status: 'online' } })
     ).resolves.not.toThrow();
@@ -105,7 +120,7 @@ describe('update column whitelist', () => {
 describe('find().sort() column whitelist', () => {
   test('geçerli kolon ile sort', async () => {
     const col = makeCollection();
-    pg._mockQuery.mockResolvedValue({ rows: [] });
+    mockQuery().mockResolvedValue({ rows: [] });
     await expect(col.find({}).sort({ createdAt: -1 })).resolves.not.toThrow();
   });
 

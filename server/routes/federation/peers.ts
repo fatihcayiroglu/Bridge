@@ -16,6 +16,27 @@ import pkg from '../../../package.json';
 const PKG_VERSION: string = (pkg as { version: string }).version;
 const USER_AGENT  = `Bridge/${PKG_VERSION}`;
 
+
+function normalizePeerBaseUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim().length === 0) return null;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    url.hash = '';
+    url.search = '';
+    url.pathname = url.pathname.replace(/\/+$/, '') || '/';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
+function signedPeerMatches(req: import('express').Request, candidate: unknown): boolean {
+  const signed = normalizePeerBaseUrl(req.federationPeerUrl);
+  const target = normalizePeerBaseUrl(candidate);
+  return Boolean(signed && target && signed === target);
+}
+
 /**
  * @openapi
  * /federation/info:
@@ -105,44 +126,6 @@ const USER_AGENT  = `Bridge/${PKG_VERSION}`;
  *         schema: { type: string }
  *     responses:
  *       200: { description: Keşif sonuçları }
- * /federation/ping:
- *   post:
- *     tags: [Federation]
- *     summary: Peer'e ping gönder
- *     security: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               url: { type: string, format: uri }
- *     responses:
- *       200: { description: Pong }
- * /federation/health:
- *   get:
- *     tags: [Federation]
- *     summary: Federasyon sağlık durumu
- *     security: [{ bearerAuth: [] }]
- *     responses:
- *       200: { description: Sağlık raporu }
- * /federation/join-remote:
- *   post:
- *     tags: [Federation]
- *     summary: Uzak sunucuya katıl
- *     security: [{ bearerAuth: [] }]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [serverUrl]
- *             properties:
- *               serverUrl: { type: string, format: uri }
- *     responses:
- *       200: { description: Katılım isteği gönderildi }
  * /federation/fetch-remote:
  *   get:
  *     tags: [Federation]
@@ -155,93 +138,6 @@ const USER_AGENT  = `Bridge/${PKG_VERSION}`;
  *         schema: { type: string, format: uri }
  *     responses:
  *       200: { description: ActivityPub nesnesi }
- * /federation/stats:
- *   get:
- *     tags: [Federation]
- *     summary: Federasyon özet istatistikleri
- *     security: []
- *     responses:
- *       200:
- *         description: Peer sayısı ve instance bilgisi
-
- *
- * /federation/info:
- *   get:
- *     tags: [Federation]
- *     summary: Bu instance'in federation bilgisi
- *     security: []
- *     responses:
- *       200:
- *         description: Instance adi, URL, public key
- *
- * /federation/servers:
- *   get:
- *     tags: [Federation]
- *     summary: Federe sunuculari listele
- *     security: []
- *     responses:
- *       200:
- *         description: Federe sunucu listesi
- *
- * /federation/stats:
- *   get:
- *     tags: [Federation]
- *     summary: Federation istatistikleri
- *     security: []
- *     responses:
- *       200:
- *         description: Peer sayisi, mesaj sayisi
- *
- * /federation/peers:
- *   get:
- *     tags: [Federation]
- *     summary: Peer listesini getir
- *     security: [{ bearerAuth: [] }]
- *     responses:
- *       200:
- *         description: Peer listesi
- *   post:
- *     tags: [Federation]
- *     summary: Yeni peer ekle
- *     security: [{ bearerAuth: [] }]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [url]
- *             properties:
- *               url: { type: string, format: uri }
- *     responses:
- *       201:
- *         description: Peer eklendi
- *       409:
- *         description: Peer zaten mevcut
- *
- * /federation/peers/{id}:
- *   delete:
- *     tags: [Federation]
- *     summary: Peer'i kaldir
- *     security: [{ bearerAuth: [] }]
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *     responses:
- *       200:
- *         description: Kaldirildi
- *
- * /federation/discover:
- *   get:
- *     tags: [Federation]
- *     summary: Yeni peer'leri otomatik kesif
- *     security: [{ bearerAuth: [] }]
- *     responses:
- *       200:
- *         description: Bulunan peer listesi
- *
  * /federation/ping:
  *   post:
  *     tags: [Federation]
@@ -259,7 +155,6 @@ const USER_AGENT  = `Bridge/${PKG_VERSION}`;
  *     responses:
  *       200:
  *         description: Pong
- *
  * /federation/health:
  *   get:
  *     tags: [Federation]
@@ -268,7 +163,6 @@ const USER_AGENT  = `Bridge/${PKG_VERSION}`;
  *     responses:
  *       200:
  *         description: Saglik durumu
- *
  * /federation/join-remote:
  *   post:
  *     tags: [Federation]
@@ -287,20 +181,6 @@ const USER_AGENT  = `Bridge/${PKG_VERSION}`;
  *     responses:
  *       200:
  *         description: Katilindi
- *
- * /federation/fetch-remote:
- *   get:
- *     tags: [Federation]
- *     summary: Uzak sunucudan veri getir
- *     security: [{ bearerAuth: [] }]
- *     parameters:
- *       - in: query
- *         name: url
- *         required: true
- *         schema: { type: string, format: uri }
- *     responses:
- *       200:
- *         description: Uzak sunucu verisi
  */
 // ── GET /api/federation/info — Bu sunucunun genel bilgisi ──────
 router.get('/info', async (req: import("express").Request, res: import("express").Response) => {
@@ -487,21 +367,24 @@ router.post('/key-update', federationAuthRsaRequired, async (req: import("expres
     publicKey?:    { id?: string; owner?: string; publicKeyPem?: string };
   };
 
-  const peerUrl = (url || instanceUrl || '').replace(/\/$/, '');
-  if (!peerUrl || !publicKey?.publicKeyPem) {
+  const bodyPeerUrl = url || instanceUrl || '';
+  const normalized = normalizePeerBaseUrl(bodyPeerUrl);
+  if (!normalized || !publicKey?.publicKeyPem) {
     return res.status(400).json({ error: 'url (or instanceUrl) and publicKey.publicKeyPem required' });
+  }
+  if (!signedPeerMatches(req, normalized)) {
+    return res.status(403).json({ error: 'Signed peer identity does not match key-update target' });
   }
   if (!publicKey.publicKeyPem.includes('BEGIN PUBLIC KEY')) {
     return res.status(400).json({ error: 'Invalid publicKeyPem' });
   }
 
-  const normalized = peerUrl;
-  const peer = await Federation.findPeerByUrl(normalized);
-  if (!peer) {
-    return res.status(404).json({ error: 'Peer not registered' });
+  const authenticatedPeerId = req.federationPeerId;
+  if (authenticatedPeerId === undefined || authenticatedPeerId === null) {
+    return res.status(401).json({ error: 'Authenticated federation peer identity missing' });
   }
 
-  await Federation.updatePeer(peer._id as string, {
+  await Federation.updatePeer(String(authenticatedPeerId), {
     $set: {
       publicKey:  publicKey.publicKeyPem,
       lastSeen:   Date.now(),
@@ -510,16 +393,27 @@ router.post('/key-update', federationAuthRsaRequired, async (req: import("expres
     },
   });
 
-  res.json({ ok: true, peerId: peer._id, instanceUrl: normalized });
+  res.json({ ok: true, peerId: String(authenticatedPeerId), instanceUrl: normalized });
 });
 
 // ── POST /api/federation/ping ──────────────────────────────────
 router.post('/ping', federationAuth, async (req: import("express").Request, res: import("express").Response) => {
   const { url } = req.body as Record<string, string>;
-  if (!url) return res.status(400).json({ error: 'url required' });
+  const signedPeerUrl = normalizePeerBaseUrl(req.federationPeerUrl);
+  if (!url || !signedPeerUrl) return res.status(400).json({ error: 'url required' });
+  if (!signedPeerMatches(req, url)) {
+    return res.status(403).json({ error: 'Signed peer identity does not match ping target' });
+  }
 
-  await Federation.updatePeersWhere(
-    { url },
+  // Never trust the body as the mutation authority. The middleware has already
+  // cryptographically authenticated federationPeerUrl against the registered
+  // peer key; use that canonical identity for the write.
+  const authenticatedPeerId = req.federationPeerId;
+  if (authenticatedPeerId === undefined || authenticatedPeerId === null) {
+    return res.status(401).json({ error: 'Authenticated federation peer identity missing' });
+  }
+  await Federation.updatePeer(
+    String(authenticatedPeerId),
     { $set: { lastSeen: Date.now(), verified: true } }
   );
   res.json({ ok: true, ts: Date.now() });

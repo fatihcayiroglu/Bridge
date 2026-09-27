@@ -11,7 +11,7 @@
 //   - insertActivity çağrısı
 
 process.env.NODE_ENV = 'test';
-process.env.JWT_SECRET = 'test-secret';
+process.env.JWT_SECRET = 'test-secretxxxxxxxxxxxxxxxxxxxxx';
 process.env.INSTANCE_URL = 'http://localhost:3001';
 
 import express from 'express';
@@ -20,12 +20,13 @@ import jwt from 'jsonwebtoken';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-const mockUser = { _id: 'user-001', username: 'alice', displayName: 'Alice', apPublicKey: 'pk', apPrivateKey: null };
-const mockUser2 = { _id: 'user-002', username: 'bob', displayName: 'Bob' };
+const mockUser = { _id: 'user-001', username: 'alice', displayName: 'Alice', apPublicKey: 'pk', apPrivateKey: null, tokenVersion: 0 };
+const mockUser2 = { _id: 'user-002', username: 'bob', displayName: 'Bob', tokenVersion: 0 };
 
 jest.mock('../db/repositories', () => ({
   Users: {
     findByUsername: jest.fn(),
+    findById: jest.fn(async (id: string) => id === mockUser._id ? mockUser : id === mockUser2._id ? mockUser2 : null),
     getApPrivateKey: jest.fn().mockResolvedValue(null),
   },
   Federation: {
@@ -37,8 +38,11 @@ jest.mock('../db/repositories', () => ({
   },
 }));
 
+const mockLogger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), fatal: jest.fn() };
 jest.mock('../lib/logger', () => ({
-  default: { info: jest.fn(), warn: jest.fn(), fatal: jest.fn() },
+  __esModule: true,
+  default: mockLogger,
+  createLogger: () => mockLogger,
 }));
 
 jest.mock('../routes/admin', () => ({
@@ -51,6 +55,7 @@ jest.mock('../lib/httpSignature', () => ({
 
 const mockDeliverToFollowers = jest.fn().mockResolvedValue(undefined);
 const mockDeliverApActivity  = jest.fn().mockResolvedValue(undefined);
+const mockFanOutActivity = jest.fn().mockResolvedValue({ followers: 0, failed: 0 });
 
 jest.mock('../routes/federation/helpers', () => ({
   handleApFollow:       jest.fn(),
@@ -61,6 +66,7 @@ jest.mock('../routes/federation/helpers', () => ({
   handleApDelete:       jest.fn(),
   deliverApActivity:    mockDeliverApActivity,
   deliverToFollowers:   mockDeliverToFollowers,
+  fanOutActivityToFollowers: mockFanOutActivity,
 }));
 
 import { Users, Federation } from '../db/repositories';
@@ -75,7 +81,7 @@ app.use('/federation', apRouter);
 // ── Yardımcılar ──────────────────────────────────────────────────────────────
 
 function makeToken(userId: string) {
-  return jwt.sign({ id: userId }, 'test-secret', { expiresIn: '1h' });
+  return jwt.sign({ id: userId, username: userId, v: 0 }, 'test-secretxxxxxxxxxxxxxxxxxxxxx', { expiresIn: '1h' });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -88,6 +94,7 @@ describe('POST /federation/users/:username/outbox — C2S Note yayınlama', () =
     jest.clearAllMocks();
     (Federation.insertActivity as jest.Mock).mockResolvedValue({ ok: true });
     (Federation.findApFollows   as jest.Mock).mockResolvedValue([]);
+    mockFanOutActivity.mockResolvedValue({ followers: 0, failed: 0 });
   });
 
   // ── 401 ─────────────────────────────────────────────────────────────────
@@ -99,7 +106,7 @@ describe('POST /federation/users/:username/outbox — C2S Note yayınlama', () =
         .post('/federation/users/alice/outbox')
         .send({ content: 'Merhaba!' });
       expect(res.status).toBe(401);
-      expect(res.body.error).toMatch(/Authentication required/i);
+      expect(res.body.error).toMatch(/No token provided/i);
     });
 
     it('Geçersiz JWT ile 401 döner', async () => {
@@ -109,7 +116,7 @@ describe('POST /federation/users/:username/outbox — C2S Note yayınlama', () =
         .set('Authorization', 'Bearer tamamen-gecersiz-token')
         .send({ content: 'Merhaba!' });
       expect(res.status).toBe(401);
-      expect(res.body.error).toMatch(/Invalid token/i);
+      expect(res.body.error).toMatch(/Invalid or expired token/i);
     });
   });
 
@@ -160,6 +167,24 @@ describe('POST /federation/users/:username/outbox — C2S Note yayınlama', () =
         .set('Authorization', `Bearer ${token}`)
         .send({ content: '   ' });
       expect(res.status).toBe(400);
+    });
+
+    it.each([
+      [{ content: 123 }, /content/i],
+      [{ content: { text: 'x' } }, /content/i],
+      [{ content: 'x', visibility: 'secret' }, /visibility/i],
+      [{ content: 'x', sensitive: 'true' }, /sensitive/i],
+      [{ content: 'x', summary: { text: 'cw' } }, /summary/i],
+      [{ content: 'x', inReplyTo: { id: 'https://remote.test/n/1' } }, /inReplyTo/i],
+    ])('runtime body contract rejects malformed C2S payload %#', async (body, expected) => {
+      (Users.findByUsername as jest.Mock).mockResolvedValue(mockUser);
+      const token = makeToken('user-001');
+      const res = await request(app)
+        .post('/federation/users/alice/outbox')
+        .set('Authorization', `Bearer ${token}`)
+        .send(body);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(expected);
     });
 
     it('5001 karakter içerik 400 döner', async () => {
@@ -217,7 +242,7 @@ describe('POST /federation/users/:username/outbox — C2S Note yayınlama', () =
       expect(call.activity.object.content).toBe('Test notu');
     });
 
-    it('public visibility → deliverToFollowers çağrılır', async () => {
+    it('public visibility → persisted exact activity is fanned out', async () => {
       (Users.findByUsername as jest.Mock).mockResolvedValue(mockUser);
       const token = makeToken('user-001');
       await request(app)
@@ -225,11 +250,13 @@ describe('POST /federation/users/:username/outbox — C2S Note yayınlama', () =
         .set('Authorization', `Bearer ${token}`)
         .send({ content: 'Herkese açık not', visibility: 'public' });
 
-      expect(mockDeliverToFollowers).toHaveBeenCalledTimes(1);
-      expect(mockDeliverToFollowers.mock.calls[0][0]._id).toBe('user-001');
+      expect(mockFanOutActivity).toHaveBeenCalledTimes(1);
+      expect(mockFanOutActivity.mock.calls[0][0]._id).toBe('user-001');
+      expect(mockFanOutActivity.mock.calls[0][1].id)
+        .toBe((Federation.insertActivity as jest.Mock).mock.calls[0][0].activity.id);
     });
 
-    it('unlisted visibility → deliverToFollowers çağrılır', async () => {
+    it('unlisted visibility preserves its exact audience during fanout', async () => {
       (Users.findByUsername as jest.Mock).mockResolvedValue(mockUser);
       const token = makeToken('user-001');
       await request(app)
@@ -237,15 +264,13 @@ describe('POST /federation/users/:username/outbox — C2S Note yayınlama', () =
         .set('Authorization', `Bearer ${token}`)
         .send({ content: 'Listede yok ama iletiliyor', visibility: 'unlisted' });
 
-      expect(mockDeliverToFollowers).toHaveBeenCalledTimes(1);
+      expect(mockFanOutActivity).toHaveBeenCalledTimes(1);
+      expect(mockFanOutActivity.mock.calls[0][1].cc)
+        .toContain('https://www.w3.org/ns/activitystreams#Public');
     });
 
-    it('followers-only visibility → deliverApActivity per-follow çağrılır (takipçi varsa)', async () => {
-      const mockFollows = [
-        { actorUrl: 'https://mastodon.social/users/follower1' },
-        { actorUrl: 'https://fosstodon.org/users/follower2' },
-      ];
-      (Federation.findApFollows as jest.Mock).mockResolvedValue(mockFollows);
+    it('followers-only visibility delegates the followers audience unchanged', async () => {
+      mockFanOutActivity.mockResolvedValueOnce({ followers: 2, failed: 0 });
       (Users.findByUsername as jest.Mock).mockResolvedValue(mockUser);
       const token = makeToken('user-001');
 
@@ -254,12 +279,14 @@ describe('POST /federation/users/:username/outbox — C2S Note yayınlama', () =
         .set('Authorization', `Bearer ${token}`)
         .send({ content: 'Sadece takipçiler', visibility: 'followers' });
 
-      expect(mockDeliverToFollowers).not.toHaveBeenCalled();
-      expect(mockDeliverApActivity).toHaveBeenCalledTimes(2);
+      expect(mockFanOutActivity).toHaveBeenCalledTimes(1);
+      expect(mockFanOutActivity.mock.calls[0][1].to).toEqual([
+        'http://localhost:3001/api/federation/users/alice/followers',
+      ]);
     });
 
-    it('followers-only, hiç takipçi yoksa deliverApActivity çağrılmaz', async () => {
-      (Federation.findApFollows as jest.Mock).mockResolvedValue([]);
+    it('followers-only, hiç takipçi yoksa yine başarılı yerel yayın döner', async () => {
+      mockFanOutActivity.mockResolvedValueOnce({ followers: 0, failed: 0 });
       (Users.findByUsername as jest.Mock).mockResolvedValue(mockUser);
       const token = makeToken('user-001');
 
@@ -269,7 +296,7 @@ describe('POST /federation/users/:username/outbox — C2S Note yayınlama', () =
         .send({ content: 'Sadece takipçiler ama yok', visibility: 'followers' });
 
       expect(res.status).toBe(201);
-      expect(mockDeliverApActivity).not.toHaveBeenCalled();
+      expect(mockFanOutActivity).toHaveBeenCalledTimes(1);
     });
 
     it('sensitive + summary alanları Note nesnesine eklenir', async () => {
@@ -320,7 +347,7 @@ describe('POST /federation/users/:username/outbox — C2S Note yayınlama', () =
         .send({ content: 'Varsayılan visibility' });
 
       expect(res.status).toBe(201);
-      expect(mockDeliverToFollowers).toHaveBeenCalledTimes(1);
+      expect(mockFanOutActivity).toHaveBeenCalledTimes(1);
     });
   });
 });

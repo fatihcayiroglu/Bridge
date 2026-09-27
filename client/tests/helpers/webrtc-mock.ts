@@ -1,19 +1,9 @@
 // client/tests/helpers/webrtc-mock.ts
 //
 // jsdom'da RTCPeerConnection, RTCSessionDescription, RTCIceCandidate yoktur.
-// jest-webrtc-mock paketi alternatiftir FAKAT mevcut package.json'da yok.
-//
-// Bu dosya iki seçenek sunar:
-//  OPTİON A (önerilen): jest-webrtc-mock paket kurulumu talimatları + mock
-//  OPTİON B (sıfır kurulum): manuel minimal WebRTC mock — şu an kullanılıyor
-//
-// package.json'a eklenecek:
-//   "devDependencies": {
-//     "jest-webrtc-mock": "^0.3.0"   <-- OPTİON A
-//   }
-//
-// setup.ts'e (ya da jest config setupFiles'a) eklenecek:
-//   import './helpers/webrtc-mock';  <-- bu dosya
+// Vitest/jsdom için sıfır-ek-bağımlılık minimal WebRTC mock.
+// İhtiyaç duyan test dosyası bunu doğrudan import eder; global test setup'a
+// bağlanmaz, böylece medya davranışı istemeyen testlere sahte RTC sızmaz.
 
 // ── OPTION B: Manuel WebRTC mock ─────────────────────────────────────────────
 
@@ -54,11 +44,11 @@ class MockRTCPeerConnection extends EventTarget {
   private _listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
 
   // EventTarget API
-  addEventListener = jest.fn((type: string, handler: EventListenerOrEventListenerObject) => {
+  addEventListener = vi.fn((type: string, handler: EventListenerOrEventListenerObject) => {
     const fn = typeof handler === 'function' ? handler : handler.handleEvent.bind(handler);
     (this._listeners[type] = this._listeners[type] || []).push(fn as (...args: unknown[]) => void);
   });
-  removeEventListener = jest.fn();
+  removeEventListener = vi.fn();
 
   // Callback properties
   onicecandidate: ((e: { candidate: MockRTCIceCandidate | null }) => void) | null = null;
@@ -68,24 +58,24 @@ class MockRTCPeerConnection extends EventTarget {
   ondatachannel: ((e: { channel: RTCDataChannel }) => void) | null = null;
 
   // Core methods
-  createOffer  = jest.fn().mockResolvedValue({ type: 'offer',  sdp: 'v=0\r\n' });
-  createAnswer = jest.fn().mockResolvedValue({ type: 'answer', sdp: 'v=0\r\n' });
-  setLocalDescription  = jest.fn().mockImplementation((desc: RTCSessionDescriptionInit) => {
+  createOffer  = vi.fn().mockResolvedValue({ type: 'offer',  sdp: 'v=0\r\n' });
+  createAnswer = vi.fn().mockResolvedValue({ type: 'answer', sdp: 'v=0\r\n' });
+  setLocalDescription  = vi.fn().mockImplementation((desc: RTCSessionDescriptionInit) => {
     this.localDescription = new MockRTCSessionDescription(desc);
     return Promise.resolve();
   });
-  setRemoteDescription = jest.fn().mockImplementation((desc: RTCSessionDescriptionInit) => {
+  setRemoteDescription = vi.fn().mockImplementation((desc: RTCSessionDescriptionInit) => {
     this.remoteDescription = new MockRTCSessionDescription(desc);
     return Promise.resolve();
   });
-  addIceCandidate = jest.fn().mockResolvedValue(undefined);
-  addTrack        = jest.fn().mockReturnValue({} as RTCRtpSender);
-  removeTrack     = jest.fn();
-  close           = jest.fn(() => { this.iceConnectionState = 'closed'; });
-  getStats        = jest.fn().mockResolvedValue(new Map());
-  createDataChannel = jest.fn().mockReturnValue({} as RTCDataChannel);
-  getSenders        = jest.fn().mockReturnValue([]);
-  getReceivers      = jest.fn().mockReturnValue([]);
+  addIceCandidate = vi.fn().mockResolvedValue(undefined);
+  addTrack        = vi.fn().mockReturnValue({} as RTCRtpSender);
+  removeTrack     = vi.fn();
+  close           = vi.fn(() => { this.iceConnectionState = 'closed'; });
+  getStats        = vi.fn().mockResolvedValue(new Map());
+  createDataChannel = vi.fn().mockReturnValue({} as RTCDataChannel);
+  getSenders        = vi.fn().mockReturnValue([]);
+  getReceivers      = vi.fn().mockReturnValue([]);
 
   // Test yardımcısı: ICE candidate simüle et
   _triggerIceCandidate(candidate: MockRTCIceCandidate | null = null): void {
@@ -114,18 +104,18 @@ if (!global.navigator) {
 }
 
 const mockMediaStream = {
-  getTracks    : jest.fn().mockReturnValue([]),
-  getAudioTracks: jest.fn().mockReturnValue([{ enabled: true, stop: jest.fn() }]),
-  getVideoTracks: jest.fn().mockReturnValue([]),
-  addTrack      : jest.fn(),
-  removeTrack   : jest.fn(),
+  getTracks    : vi.fn().mockReturnValue([]),
+  getAudioTracks: vi.fn().mockReturnValue([{ enabled: true, stop: vi.fn() }]),
+  getVideoTracks: vi.fn().mockReturnValue([]),
+  addTrack      : vi.fn(),
+  removeTrack   : vi.fn(),
 };
 
 Object.defineProperty((global as Record<string, unknown>).navigator as object, 'mediaDevices', {
   value: {
-    getUserMedia    : jest.fn().mockResolvedValue(mockMediaStream),
-    getDisplayMedia : jest.fn().mockResolvedValue(mockMediaStream),
-    enumerateDevices: jest.fn().mockResolvedValue([]),
+    getUserMedia    : vi.fn().mockResolvedValue(mockMediaStream),
+    getDisplayMedia : vi.fn().mockResolvedValue(mockMediaStream),
+    enumerateDevices: vi.fn().mockResolvedValue([]),
   },
   writable: true,
   configurable: true,

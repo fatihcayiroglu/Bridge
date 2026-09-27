@@ -11,11 +11,36 @@
 // KULLANIM (client-side):
 //   const { generateKeyPair, encryptMessage, decryptMessage } = window.BridgeE2E;
 
-import crypto from 'crypto';
 import express from 'express';
 const router  = express.Router();
 import { Users } from '../db/repositories';
 import { authMiddleware } from '../middleware/auth';
+import { evaluateDmAccess } from './dmAccessPolicy';
+
+const E2E_ALGORITHMS = new Set(['X25519', 'P-256']);
+const MAX_KEY_ID = 2_147_483_647;
+
+function validKeyId(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= MAX_KEY_ID;
+}
+
+function validBoundedString(value: unknown, max: number): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= max;
+}
+
+function validSignedPreKey(value: unknown): value is { keyId: number; publicKey: string; signature: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return Object.keys(v).every((key) => ['keyId', 'publicKey', 'signature'].includes(key)) &&
+    validKeyId(v.keyId) && validBoundedString(v.publicKey, 256) && validBoundedString(v.signature, 512);
+}
+
+function validOneTimePreKey(value: unknown): value is { keyId: number; publicKey: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return Object.keys(v).every((key) => ['keyId', 'publicKey'].includes(key)) &&
+    validKeyId(v.keyId) && validBoundedString(v.publicKey, 256);
+}
 // SUNUCU TARAFI: Sadece public key saklama/alma
 // Private key asla sunucuya gelmez
 // ─────────────────────────────────────────────────────────────
@@ -24,8 +49,12 @@ import { authMiddleware } from '../middleware/auth';
 router.post('/keys', authMiddleware, async (req, res) => {
   const { publicKey, keyVersion = 1, algorithm = 'X25519' } = req.body;
   if (!publicKey) return res.status(400).json({ error: 'publicKey required' });
-  if (typeof publicKey !== 'string' || publicKey.length > 200)
+  if (!validBoundedString(publicKey, 200))
     return res.status(400).json({ error: 'Invalid publicKey format' });
+  if (!Number.isSafeInteger(keyVersion) || keyVersion < 1 || keyVersion > MAX_KEY_ID)
+    return res.status(400).json({ error: 'Invalid keyVersion' });
+  if (typeof algorithm !== 'string' || !E2E_ALGORITHMS.has(algorithm))
+    return res.status(400).json({ error: 'Invalid algorithm' });
 
   await Users.updateWhere(
     { _id: req.user.id },
@@ -83,24 +112,42 @@ router.post('/keys/batch', authMiddleware, async (req, res) => {
 router.delete('/keys', authMiddleware, async (req, res) => {
   await Users.updateWhere(
     { _id: req.user.id },
-    { $set: { e2ePublicKey: null, e2eKeyVersion: null, e2eAlgorithm: null } }
+    { $set: { e2ePublicKey: null, e2eKeyUpdatedAt: Date.now() } }
   );
   res.json({ ok: true, message: 'E2EE keys removed' });
 });
 
-// GET /api/e2e/feature-status — Production feature flag (no auth needed)
+/**
+ * GET /api/e2e/feature-status — üretim özellik bayrağı (kimlik gerekmez)
+ *
+ * ── FAZ D0: VARSAYILAN KAPALI (AÇIK RIZA GEREKİR) ─────────────────────────
+ * Bayrak Sprint 115'te varsayılan AÇIK yapılmıştı. Ölçülen gerçek şuydu:
+ * istemci HİÇBİR şifreleme yapmıyor — `crypto.subtle` yok, `encryptedContent`
+ * üretilmiyor, sunucudaki anahtar değişim olaylarını (`channel:e2ee:setup`,
+ * `keys:get`, `keys:add`) çağıran TEK BİR istemci dosyası yok ve cihaz
+ * kimliği/anahtar dağıtımı için tablo yok. Yani bayrak açıkken kullanıcıya
+ * "uçtan uca şifreleme aktif" denip mesajlar DÜZ METİN olarak saklanıyordu.
+ *
+ * Eksik bir özellik olmaktan farklı olarak bu YANILTICIDIR: kullanıcı hassas
+ * bilgiyi şifreli sanarak paylaşabilir. Bu yüzden bayrak açık rıza ister.
+ *
+ * Arka uç iskelesi (anahtar değişim rotaları/olayları, `encryptedContent`/`iv`
+ * sütunları, migration'lar) KASITLI olarak korunur — gelecekteki gerçek
+ * mimari için gereklidir. Durum: E2EE = ARCHITECTURE_REQUIRED.
+ */
 router.get('/feature-status', (_req, res) => {
-  res.json({ enabled: process.env.BRIDGE_E2EE_ENABLED !== 'false' }); // Sprint 115: default true
+  res.json({ enabled: process.env.BRIDGE_E2EE_ENABLED === 'true' });
 });
 
 // GET /api/e2e/status — E2EE durumu
 router.get('/status', authMiddleware, async (req, res) => {
   const user = await Users.findById(req.user.id);
+  const enabled = !!user?.e2ePublicKey;
   res.json({
-    enabled:    !!user?.e2ePublicKey,
-    keyVersion: user?.e2eKeyVersion || null,
-    algorithm:  user?.e2eAlgorithm || null,
-    updatedAt:  user?.e2eKeyUpdatedAt || null,
+    enabled,
+    keyVersion: enabled ? (user?.e2eKeyVersion || 1) : null,
+    algorithm:  enabled ? (user?.e2eAlgorithm || 'X25519') : null,
+    updatedAt:  enabled ? (user?.e2eKeyUpdatedAt || null) : null,
     info: 'Your private key never leaves your device. The server only stores your public key.',
   });
 });
@@ -124,14 +171,30 @@ router.post('/prekeys', authMiddleware, async (req, res) => {
   if (!identityKey || !signedPreKey?.publicKey || !signedPreKey?.signature) {
     return res.status(400).json({ error: 'identityKey, signedPreKey (publicKey+signature) gerekli' });
   }
-  if (typeof identityKey !== 'string' || identityKey.length > 256) {
+  if (!validBoundedString(identityKey, 256)) {
     return res.status(400).json({ error: 'Geçersiz identityKey' });
   }
+  if (!validSignedPreKey(signedPreKey)) {
+    return res.status(400).json({ error: 'Geçersiz signedPreKey' });
+  }
+  if (oneTimePreKeys !== undefined && !Array.isArray(oneTimePreKeys)) {
+    return res.status(400).json({ error: 'oneTimePreKeys array olmalı' });
+  }
 
-  // one-time prekey sayısı sınırı
-  const otpks = Array.isArray(oneTimePreKeys)
-    ? oneTimePreKeys.slice(0, 100)
-    : [];
+  // one-time prekey sayısı sınırı; malformed entries are rejected instead of
+  // being persisted and failing later during a security-sensitive key fetch.
+  if (Array.isArray(oneTimePreKeys) && oneTimePreKeys.length > 100) {
+    return res.status(400).json({ error: 'En fazla 100 oneTimePreKey yüklenebilir' });
+  }
+  const otpks = Array.isArray(oneTimePreKeys) ? oneTimePreKeys : [];
+  if (!otpks.every(validOneTimePreKey)) {
+    return res.status(400).json({ error: 'Geçersiz oneTimePreKey' });
+  }
+  const keyIds = new Set(otpks.map((key) => key.keyId));
+  const publicKeys = new Set(otpks.map((key) => key.publicKey));
+  if (keyIds.size !== otpks.length || publicKeys.size !== otpks.length) {
+    return res.status(400).json({ error: 'oneTimePreKey kimlikleri ve anahtarları benzersiz olmalı' });
+  }
 
   await Users.updateWhere({ _id: req.user.id }, {
     $set: {
@@ -147,31 +210,31 @@ router.post('/prekeys', authMiddleware, async (req, res) => {
 
 // GET /api/e2e/prekeys/:userId — prekey bundle al (bir one-time key tüketilir)
 router.get('/prekeys/:userId', authMiddleware, async (req, res) => {
-  const user = await Users.findById(String(req.params.userId ?? ''));
-  if (!user) return res.status(404).json({ error: 'User not found' });
+  const targetId = String(req.params.userId ?? '');
+  const target = await Users.findById(targetId);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  if (targetId !== req.user.id) {
+    const access = await evaluateDmAccess(req.user.id, target);
+    if (!access.allowed) return res.status(403).json({ error: 'DM key access is not allowed' });
+  }
+  const bundle = await Users.consumeX3dhPreKeyBundle(targetId);
+  if (!bundle) return res.status(404).json({ error: 'User not found' });
+  if (bundle.invalidState) return res.status(503).json({ error: 'Stored X3DH bundle is invalid' });
 
-  if (!user.x3dhIdentityKey) {
+  if (!validBoundedString(bundle.identityKey, 256) || !validSignedPreKey(bundle.signedPreKey)) {
     return res.json({ hasBundle: false, message: 'Kullanıcı X3DH prekey bundle kurmamış' });
   }
-
-  // Bir one-time prekey tüket (varsa)
-  let oneTimePreKey = null;
-  const otpks = user.x3dhOneTimePreKeys || [];
-  if (otpks.length > 0) {
-    oneTimePreKey = otpks[0];
-    // Kullanılan one-time key'i listeden çıkar
-    await Users.updateWhere({ _id: user._id }, {
-      $set: { x3dhOneTimePreKeys: otpks.slice(1) },
-    });
+  if (bundle.oneTimePreKey !== null && !validOneTimePreKey(bundle.oneTimePreKey)) {
+    return res.status(503).json({ error: 'Stored X3DH bundle is invalid' });
   }
 
   res.json({
     hasBundle:    true,
-    userId:       user._id,
-    identityKey:  user.x3dhIdentityKey,
-    signedPreKey: user.x3dhSignedPreKey,
-    oneTimePreKey,                        // null olabilir — gönderici bunu handle etmeli
-    remainingOneTimeKeys: otpks.length - (oneTimePreKey ? 1 : 0),
+    userId:       bundle._id,
+    identityKey:  bundle.identityKey,
+    signedPreKey: bundle.signedPreKey,
+    oneTimePreKey: bundle.oneTimePreKey, // null olabilir — gönderici bunu handle etmeli
+    remainingOneTimeKeys: bundle.remainingOneTimeKeys,
   });
 });
 
@@ -179,7 +242,11 @@ router.get('/prekeys/:userId', authMiddleware, async (req, res) => {
 router.get('/prekeys/:userId/count', authMiddleware, async (req, res) => {
   if (req.user.id !== String(req.params.userId ?? '')) return res.status(403).json({ error: 'Forbidden' });
   const user = await Users.findById(String(req.params.userId ?? ''));
-  const count = user?.x3dhOneTimePreKeys?.length ?? 0;
+  const stored = user?.x3dhOneTimePreKeys;
+  if (stored !== undefined && (!Array.isArray(stored) || stored.length > 100 || !stored.every(validOneTimePreKey))) {
+    return res.status(503).json({ error: 'Stored X3DH prekey state is invalid' });
+  }
+  const count = Array.isArray(stored) ? stored.length : 0;
   res.json({
     count,
     needsReplenish: count < 10, // < 10 kalınca istemciye bildir

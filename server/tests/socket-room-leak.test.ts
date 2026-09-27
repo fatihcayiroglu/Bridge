@@ -17,26 +17,53 @@ jest.mock('../db/repositories', () => ({
 }));
 
 import { handleDisconnect } from '../socket/handlers/infra';
+import type { DisconnectOptions } from '../socket/handlers/infra';
+import type { SocketDouble } from './helpers/socketDoubles';
+import { makeSafeUser } from './helpers/userDoubles';
 
 // ── Test yardımcıları ──────────────────────────────────────────
 
-function makeSocket(id = `sock-${Math.random().toString(36).slice(2)}`) {
+// ══════════════════════════════════════════════════════════════════════════
+// IKIZLER URUN SOZLESMESINE BAGLANIR
+// ══════════════════════════════════════════════════════════════════════════
+// Eskiden bu ikizler tipsizdi ve `handleDisconnect(socket, user, ctx)` cagrisi
+// `Map<any, any>` cikarimina dusuyordu: hata gorunmuyordu ama denetim de
+// yoktu. Simdi ikizler URUNUN kendi tiplerine (`SocketDouble` -> `HandlerSocket`,
+// `DisconnectOptions`) baglanmistir; urun imzasi degisirse burasi DERLEMEDE
+// kirilir.
+//
+// Yan urun — bir GERCEKLIK HATASI duzeltildi: `voiceActivity` urunde
+// `Map<string, number>`dur (son etkinlik zaman damgasi, voice.ts:355). Test
+// ona `{ channelId, joinedAt }` nesneleri koyuyordu; yani olculen sey urunun
+// gercekten tuttugu veri degildi.
+
+/** `currentVoice*` alanlari testlerde DEGISTIRILDIGI icin acikca yazilir. */
+interface DisconnectSocketDouble extends SocketDouble {
+  currentVoiceChannel: string | null;
+  currentVoiceServer: string | null;
+}
+
+function makeSocket(id = `sock-${Math.random().toString(36).slice(2)}`): DisconnectSocketDouble {
   const rooms = new Set([id]); // Socket.IO her socket'i kendi id'si ile bir room'a ekler
   return {
     id,
     rooms,
     currentVoiceChannel: null,
     currentVoiceServer:  null,
-    leave: jest.fn((room) => rooms.delete(room)),
+    leave: jest.fn((room: string) => rooms.delete(room)),
     emit:  jest.fn(),
+    // Sozlesmenin geri kalani: `handleDisconnect` bunlari cagirmaz ama
+    // `HandlerSocket` tasidigi icin ikiz de tasimak zorundadir. Cagrilmayan
+    // uyeyi kurmak, cagrilan uyeyi tipsiz birakmaktan iyidir.
+    join:  jest.fn((room: string) => rooms.add(room)),
+    on:    jest.fn(),
+    to:    jest.fn(() => ({ emit: jest.fn() })),
   };
 }
 
-function makeUser(id = 'u-test') {
-  return { _id: id, displayName: 'Test User' };
-}
+const makeUser = makeSafeUser;
 
-function makeDisconnectCtx(overrides = {}) {
+function makeDisconnectCtx(overrides: Partial<DisconnectOptions> = {}): DisconnectOptions {
   return {
     socketUsers:      new Map(),
     typingTimers:     new Map(),
@@ -44,6 +71,7 @@ function makeDisconnectCtx(overrides = {}) {
     leaveVoice:       jest.fn(),
     voiceActivity:    new Map(),
     tokenCheckTimer:  setInterval(() => {}, 99999), // temizlenecek
+    tokenExpiryTimer: null,
     io:               { to: () => ({ emit: jest.fn() }) },
     ...overrides,
   };
@@ -144,7 +172,7 @@ describe('handleDisconnect — voiceActivity', () => {
     const user   = makeUser('u-voice');
     const ctx    = makeDisconnectCtx();
 
-    ctx.voiceActivity.set(socket.id, { channelId: 'ch-1', joinedAt: Date.now() });
+    ctx.voiceActivity.set(socket.id, Date.now());
 
     await handleDisconnect(socket, user, ctx);
 
@@ -179,33 +207,26 @@ describe('handleDisconnect — voiceActivity', () => {
 
 describe('Hızlı connect/disconnect döngüsü — Map büyümemeli', () => {
   it('100 socket bağlanıp ayrılınca Map boş kalır', async () => {
-    const socketUsers      = new Map();
-    const typingTimers     = new Map();
-    const _socketRateStore = new Map();
-    const voiceActivity    = new Map();
-    const io               = { to: () => ({ emit: jest.fn() }) };
+    // Tek bir baglam 100 dongu boyunca PAYLASILIR — sizinti tam olarak burada
+    // gorunur: haritalar dongu sonunda bosalmiyorsa temizlik eksiktir.
+    const ctx = makeDisconnectCtx();
 
     for (let i = 0; i < 100; i++) {
       const socket = makeSocket(`sock-${i}`);
       const user   = makeUser(`user-${i}`);
 
       // Bağlan
-      socketUsers.set(socket.id, user);
-      _socketRateStore.set(`${user._id}:msg`, [Date.now()]);
-      voiceActivity.set(socket.id, { channelId: 'ch-x' });
+      ctx.socketUsers.set(socket.id, user);
+      ctx._socketRateStore.set(`${user._id}:msg`, [Date.now()]);
+      ctx.voiceActivity.set(socket.id, Date.now());
 
       // Ayrıl
-      await handleDisconnect(socket, user, {
-        socketUsers, typingTimers, _socketRateStore,
-        leaveVoice: jest.fn(), voiceActivity,
-        tokenCheckTimer: setInterval(() => {}, 99999),
-        io,
-      });
+      await handleDisconnect(socket, user, ctx);
     }
 
-    expect(socketUsers.size).toBe(0);
-    expect(voiceActivity.size).toBe(0);
+    expect(ctx.socketUsers.size).toBe(0);
+    expect(ctx.voiceActivity.size).toBe(0);
     // _socketRateStore'da başkasının kaydı kalmamış olmalı
-    expect(_socketRateStore.size).toBe(0);
+    expect(ctx._socketRateStore.size).toBe(0);
   });
 });

@@ -1,16 +1,61 @@
+// CANLI KUSUR: `sanitizeUser` './auth'ten import ediliyordu ama orada
+// EXPORT EDILMIYOR (auth.ts onu yalnizca ithal ediyor). Sonuc: calisma
+// zamaninda `(0, auth_2.sanitizeUser) is not a function` -> GRUP DM
+// OLUSTURMA her seferinde 500. Kanonik kaynak: lib/userUtils (auth.ts:55
+// zaten bunu soyluyor, friends.ts de boyle kullaniyor).
+import { sanitizeUser } from '../lib/userUtils';
 // server/routes/groupDm.ts
 import express, { Request, Response, Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { authMiddleware} from '../middleware/auth';
 
 import { GroupDms, Users } from '../db/repositories';
-import { sanitizeUser } from './auth';
+
 import { limits } from '../middleware/rateLimit';
 
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
-interface GroupRow { _id: string; name: string; ownerId: string; icon?: string | null; createdAt: number; lastMessageAt?: number }
-interface MsgRow   { _id: string; groupId: string; userId: string; content?: string; type?: string; createdAt?: number }
-interface UserRow  { _id: string; username: string; displayName?: string; avatarColor?: string }
+import { createLogger } from '../lib/logger';
+import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery } from '../lib/queryNumbers';
+import { parsePersistedEpochMillis } from '../lib/persistedEpoch';
+const logger = createLogger('groupDm');
+// Kanonik `GroupDm` varliginda `name` OPSIYONELDIR (DB kolonu `username`
+// takma adidir ve NULL olabilir). Bu yerel daraltma onu ZORUNLU ilan ediyordu;
+// repository sonucu bu yuzden atanamiyor ve dosya derlenmiyordu.
+interface GroupRow { _id: string; name?: string; ownerId: string; icon?: string | null; createdAt: number; lastMessageAt?: number }
+
+/**
+ * FAZ C4 — SOKET ODASI ÜYELİĞİ, VERİTABANI ÜYELİĞİNİ TAKİP ETMEK ZORUNDA.
+ *
+ * ── KAPATILAN GERÇEK AÇIK ──────────────────────────────────────────────────
+ * Soket bağlanırken kullanıcının TÜM gruplarına katılıyordu
+ * (socket/handlers/dm.ts:400 `joinGroupRooms`). Bir üye gruptan ÇIKARILDIĞINDA
+ * yalnızca veritabanı satırı siliniyor, `gdm:<groupId>` ODASINDAN
+ * ÇIKARILMIYORDU. Sonuç: çıkarılan kullanıcı mesaj GÖNDEREMESE de
+ * (`gdm:send` üyelik kontrol eder) ve REST geçmişini okuyamasa da,
+ *     io.to(`gdm:${groupId}`).emit('gdm:message', ...)
+ * yayınlarını CANLI olarak almaya devam ediyordu — soket kopana kadar.
+ * İstemciye gönderilen `gdm:deleted` yalnızca arayüzü gizler; bu güvenlik
+ * değildir.
+ *
+ * `socketsLeave`/`socketsJoin` (socket.io v4) odayı sunucu tarafında zorlar.
+ */
+type IoLike = {
+  to(r: string): { emit(e: string, d: unknown): void };
+  in?(r: string): { socketsLeave?(room: string): void; socketsJoin?(room: string): void };
+};
+
+/** Kullanıcının TÜM soketlerini text + voice grup odalarından çıkarır. */
+function forceLeaveGroupRoom(io: IoLike | undefined, userId: string, groupId: string): void {
+  if (!io?.in) return;
+  const userRoom = io.in(`user:${userId}`);
+  userRoom.socketsLeave?.(`gdm:${groupId}`);
+  userRoom.socketsLeave?.(`gdm:voice:${groupId}`);
+}
+
+/** Yeni üyeyi odaya alır; aksi hâlde yeniden bağlanana dek canlı mesaj görmez. */
+function forceJoinGroupRoom(io: IoLike | undefined, userId: string, groupId: string): void {
+  try { io?.in?.(`user:${userId}`)?.socketsJoin?.(`gdm:${groupId}`); } catch { /* yayın hatası akışı bozmasın */ }
+}
 
 const MAX_MEMBERS = 20;
 
@@ -21,7 +66,20 @@ async function getGroupWithCheck(gid: string, userId: string) {
   return { group, member };
 }
 
-async function enrichGroup(group: GroupRow) {
+function membershipCursor(membership: Record<string, unknown>): number {
+  const parse = (value: unknown, missing: number): number => {
+    try { return parsePersistedEpochMillis(value) ?? missing; }
+    catch { return Number.MAX_SAFE_INTEGER; }
+  };
+  // joinedAt is mandatory authority history. Missing/corrupt data must not
+  // expose messages from before the membership was established.
+  return Math.max(
+    parse(membership.joinedAt, Number.MAX_SAFE_INTEGER),
+    parse(membership.readAt, 0),
+  );
+}
+
+async function enrichGroup(group: GroupRow, userId?: string, knownMembership?: Record<string, unknown>) {
   const memberRows = await GroupDms.findMembers(group._id) as Array<{ userId: string }>;
   // PERF: Bulk fetch instead of N+1 loop
   const userIds = memberRows.map(m => m.userId);
@@ -32,7 +90,15 @@ async function enrichGroup(group: GroupRow) {
     .filter((u): u is NonNullable<typeof u> => !!u)
     .map(u => sanitizeUser(u));
   const msgs = await GroupDms.findMessages(group._id, { limit: 1 });
-  return { ...group, members: users, memberCount: users.length, lastMessage: msgs[0] || null };
+  let unreadCount = 0;
+  if (userId) {
+    const membership = knownMembership ?? await GroupDms.findMember(group._id, userId);
+    if (membership) {
+      const after = membershipCursor(membership);
+      unreadCount = await GroupDms.countUnread(group._id, userId, after);
+    }
+  }
+  return { ...group, members: users, memberCount: users.length, lastMessage: msgs[0] || null, unreadCount };
 }
 
 const router: Router = express.Router();
@@ -56,7 +122,7 @@ router.get('/', authMiddleware, async (req: Request, res: Response) => {
   const groups: object[] = [];
   for (const m of memberships) {
     const group = await GroupDms.findById(m.groupId);
-    if (group) groups.push(await enrichGroup(group));
+    if (group) groups.push(await enrichGroup(group, _u.id, m as unknown as Record<string, unknown>));
   }
   (groups as GroupRow[]).sort((a, b) => (b.lastMessageAt || b.createdAt) - (a.lastMessageAt || a.createdAt));
   res.json(groups);
@@ -83,10 +149,20 @@ router.get('/', authMiddleware, async (req: Request, res: Response) => {
  */
 router.post('/', authMiddleware, async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
-  const { name, memberIds, icon } = req.body as { name?: string; memberIds?: string[]; icon?: string };
-  if (!name?.trim()) return void res.status(400).json({ error: 'Grup adı gerekli' });
+  const body = req.body as Record<string, unknown>;
+  const name = body.name;
+  const memberIdsRaw = body.memberIds;
+  const icon = body.icon;
+  if (typeof name !== 'string' || !name.trim()) return void res.status(400).json({ error: 'Grup adı gerekli' });
+  if (memberIdsRaw !== undefined && !Array.isArray(memberIdsRaw))
+    return void res.status(400).json({ error: 'memberIds dizi olmalı' });
+  const memberIds = (memberIdsRaw ?? []) as unknown[];
+  if (memberIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 128))
+    return void res.status(400).json({ error: 'memberIds yalnızca geçerli kullanıcı kimlikleri içermeli' });
+  if (icon !== undefined && icon !== null && typeof icon !== 'string')
+    return void res.status(400).json({ error: 'icon string olmalı' });
 
-  const uniqueIds = [...new Set([_u.id, ...(memberIds || [])])].slice(0, MAX_MEMBERS);
+  const uniqueIds = [...new Set([_u.id, ...memberIds.map(id => (id as string).trim())])].slice(0, MAX_MEMBERS);
   if (uniqueIds.length < 2) return void res.status(400).json({ error: 'En az 2 üye gerekli' });
 
   // PERF: Bulk fetch instead of N+1 validation loop
@@ -95,25 +171,52 @@ router.post('/', authMiddleware, async (req: Request, res: Response) => {
   const missingId = uniqueIds.find(uid => !foundIds.has(uid));
   if (missingId) return void res.status(404).json({ error: `Kullanıcı bulunamadı: ${missingId}` });
 
-  const now   = Date.now();
-  const group = await GroupDms.create({
-    _id: uuidv4(), name: name.trim().slice(0, 64), ownerId: _u.id,
-    icon: icon?.slice(0, 4) || null, createdAt: now, lastMessageAt: now,
-  });
+  const now = Date.now();
+  const me  = await Users.findById(_u.id);
 
-  // PERF: Bulk insert instead of loop (N+1 fix)
-  await GroupDms.addMembersMany(group._id, uniqueIds);
+  // ── ATOMIK OLUSTURMA ───────────────────────────────────────────────────────
+  // Onceden grup / uyelikler / sistem mesaji AYRI AYRI yazilir, sonra
+  // zenginlestirme yapilirdi. Zenginlestirme patlayinca 500 donuyor ama UC
+  // YAZMA DA KALICI kaliyordu -> yetim grup, tekrar denemede yinelenme.
+  // (Canli olcumde tam olarak bu yasandi.) Artik tek transaction: ya hepsi,
+  // ya hicbiri.
+  let group: GroupRow;
+  try {
+    group = await GroupDms.createAtomic({
+      group: {
+        _id: uuidv4(), name: name.trim().slice(0, 64), ownerId: _u.id,
+        icon: typeof icon === 'string' ? (icon.slice(0, 4) || null) : null, createdAt: now, lastMessageAt: now,
+      },
+      memberIds: uniqueIds,
+      systemMessage: {
+        _id: uuidv4(), userId: 'system', displayName: 'Bridge', avatarColor: '#2d9cdb',
+        content: `${me?.displayName || 'Biri'} grubu oluşturdu 🎉`, type: 'system',
+        createdAt: now,
+      },
+    }) as unknown as GroupRow;
+  } catch (err) {
+    // Transaction ROLLBACK edildi: KALICI HICBIR SEY YOK. Tekrar deneme
+    // guvenlidir cunku yetim kayit birakilmaz.
+    logger.error({ err, event: 'gdm.create.failed' }, '[gdm] Grup olusturulamadi (rollback)');
+    return void res.status(500).json({ error: 'Grup oluşturulamadı' });
+  }
 
-  const me = await Users.findById(_u.id);
-  await GroupDms.insertMessage({
-    groupId: group._id, userId: 'system', displayName: 'Bridge', avatarColor: '#2d9cdb',
-    content: `${me?.displayName || 'Biri'} grubu oluşturdu 🎉`, type: 'system',
-  });
+  // ── COMMIT SONRASI ─────────────────────────────────────────────────────────
+  // Buradan sonrasi SUNUM katmanidir. Zenginlestirme YALNIZCA okumadir;
+  // patlarsa grup GERCEKTEN olusmustur ve 500 donmek YANLIS olur (kullanici
+  // tekrar dener, ikinci grup olusur). Bu yuzden hata YUTULMAZ ama istek
+  // BASARILI sayilir ve elimizdeki dogru veriyle minimal yanit doner.
+  let payload: unknown;
+  try {
+    payload = await enrichGroup(group, _u.id);
+  } catch (err) {
+    logger.error({ err, event: 'gdm.enrich.failed' }, '[gdm] Zenginlestirme basarisiz — minimal yanit');
+    payload = { ...group, members: [], memberCount: uniqueIds.length, lastMessage: null };
+  }
 
-  const enriched = await enrichGroup(group);
   const io = req.app.get('io') as { to(room: string): { emit(e: string, d: unknown): void } } | undefined;
-  if (io) for (const uid of uniqueIds) io.to(`user:${uid}`).emit('gdm:created', enriched);
-  res.status(201).json(enriched);
+  if (io) for (const uid of uniqueIds) io.to(`user:${uid}`).emit('gdm:created', payload);
+  res.status(201).json(payload);
 });
 
 /**
@@ -135,7 +238,7 @@ router.get('/:gid', authMiddleware, async (req: Request, res: Response) => {
   const { group, member } = await getGroupWithCheck(String(req.params.gid ?? ''), _u.id);
   if (!group)  return void res.status(404).json({ error: 'Grup bulunamadı' });
   if (!member) return void res.status(403).json({ error: 'Bu grubun üyesi değilsiniz' });
-  res.json(await enrichGroup(group));
+  res.json(await enrichGroup(group, _u.id));
 });
 
 /**
@@ -166,10 +269,17 @@ router.patch('/:gid', authMiddleware, async (req: Request, res: Response) => {
   if (!member) return void res.status(403).json({ error: 'Üye değilsiniz' });
   if (group.ownerId !== _u.id) return void res.status(403).json({ error: 'Sadece grup sahibi düzenleyebilir' });
 
-  const body  = req.body as { name?: string; icon?: string };
+  const body = req.body as Record<string, unknown>;
   const patch: Record<string, unknown> = {};
-  if (body.name != null) patch['name'] = body.name.trim().slice(0, 64);
-  if (body.icon != null) patch['icon'] = body.icon.slice(0, 4) || null;
+  if (body.name != null) {
+    if (typeof body.name !== 'string' || !body.name.trim())
+      return void res.status(400).json({ error: 'name boş olmayan string olmalı' });
+    patch['name'] = body.name.trim().slice(0, 64);
+  }
+  if (body.icon != null) {
+    if (typeof body.icon !== 'string') return void res.status(400).json({ error: 'icon string olmalı' });
+    patch['icon'] = body.icon.slice(0, 4) || null;
+  }
   if (!Object.keys(patch).length) return void res.status(400).json({ error: 'Güncellenecek alan yok' });
 
   await GroupDms.update(String(req.params.gid ?? ''), patch);
@@ -242,8 +352,10 @@ router.post('/:gid/members', authMiddleware, async (req: Request, res: Response)
   if (!member) return void res.status(403).json({ error: 'Üye değilsiniz' });
   if (group.ownerId !== _u.id) return void res.status(403).json({ error: 'Sadece sahip üye ekleyebilir' });
 
-  const { userId } = req.body as { userId?: string };
-  if (!userId) return void res.status(400).json({ error: 'userId gerekli' });
+  const userIdRaw = (req.body as Record<string, unknown>).userId;
+  if (typeof userIdRaw !== 'string' || !userIdRaw.trim() || userIdRaw.length > 128)
+    return void res.status(400).json({ error: 'userId gerekli' });
+  const userId = userIdRaw.trim();
 
   if (await GroupDms.findMember(String(req.params.gid ?? ''), userId)) return void res.status(409).json({ error: 'Zaten üye' });
   if (await GroupDms.countMembers(String(req.params.gid ?? '')) >= MAX_MEMBERS)
@@ -259,9 +371,12 @@ router.post('/:gid/members', authMiddleware, async (req: Request, res: Response)
     content: `${me?.displayName || 'Biri'} ${newUser.displayName} kullanıcısını gruba ekledi`, type: 'system',
   });
 
-  const io = req.app.get('io') as { to(r: string): { emit(e: string, d: unknown): void } } | undefined;
+  const io = req.app.get('io') as IoLike | undefined;
   if (io) {
-    io.to(`user:${userId}`).emit('gdm:created', await enrichGroup(group));
+    // Yeni üye odaya ALINIR; yoksa yeniden bağlanana kadar canlı mesajları
+    // görmezdi (üyelik veritabanında var ama soket odasında yok).
+    forceJoinGroupRoom(io, userId, String(req.params.gid ?? ''));
+    io.to(`user:${userId}`).emit('gdm:created', await enrichGroup(group, userId));
     const allMembers = await GroupDms.findMembers(String(req.params.gid ?? ''));
     for (const m of allMembers) {
       if (m.userId !== userId)
@@ -295,14 +410,20 @@ router.delete('/:gid/members/:uid', authMiddleware, async (req: Request, res: Re
   if (!group)  return void res.status(404).json({ error: 'Grup bulunamadı' });
   if (!member) return void res.status(403).json({ error: 'Üye değilsiniz' });
 
-  const targetId = String(String(req.params.uid ?? '') ?? "");
+  const targetId = String(req.params.uid ?? '').trim();
+  if (!targetId || targetId.length > 128) {
+    return void res.status(400).json({ error: 'Geçersiz kullanıcı kimliği' });
+  }
   const isSelf   = targetId === _u.id;
   const isOwner  = group.ownerId === _u.id;
 
   if (!isSelf && !isOwner) return void res.status(403).json({ error: 'Sadece sahip üye çıkarabilir' });
   if (targetId === group.ownerId && !isSelf) return void res.status(403).json({ error: 'Sahibi çıkaramazsınız' });
 
-  await GroupDms.removeMember(String(req.params.gid ?? ''), targetId);
+  const removed = await GroupDms.removeMember(String(req.params.gid ?? ''), targetId);
+  if (removed?.deleted !== 1) {
+    return void res.status(404).json({ error: 'Üye bulunamadı' });
+  }
   const remaining = await GroupDms.countMembers(String(req.params.gid ?? ''));
 
   if (remaining === 0) {
@@ -317,8 +438,11 @@ router.delete('/:gid/members/:uid', authMiddleware, async (req: Request, res: Re
     });
   }
 
-  const io = req.app.get('io') as { to(r: string): { emit(e: string, d: unknown): void } } | undefined;
+  const io = req.app.get('io') as IoLike | undefined;
   if (io) {
+    // GÜVENLİK: ÖNCE odadan çıkar, SONRA haber ver. Sıra önemlidir — arada
+    // yayınlanan bir mesaj çıkarılan üyeye ulaşmamalıdır.
+    forceLeaveGroupRoom(io, targetId, String(req.params.gid ?? ''));
     io.to(`user:${targetId}`).emit('gdm:deleted', { groupId: String(req.params.gid ?? '') });
     if (remaining > 0) {
       const allMembers = await GroupDms.findMembers(String(req.params.gid ?? ''));
@@ -360,10 +484,27 @@ router.get('/:gid/messages', authMiddleware, async (req: Request, res: Response)
   const { group, member } = await getGroupWithCheck(String(req.params.gid ?? ''), _u.id);
   if (!group)  return void res.status(404).json({ error: 'Grup bulunamadı' });
   if (!member) return void res.status(403).json({ error: 'Üye değilsiniz' });
-  const limit  = Math.min(parseInt(String(req.query.limit ?? '')) || 50, 100);
-  const before = parseInt(String(req.query.before ?? '')) || Date.now() + 1;
-  const msgs   = await GroupDms.findMessages(String(req.params.gid ?? ''), { limit, before });
-  res.json(msgs.reverse());
+  const limit  = parseBoundedPositiveIntQuery(req.query.limit, 50, 100);
+  const before = parseNonNegativeSafeIntQuery(req.query.before, Date.now() + 1);
+  if (limit === null || before === null) {
+    return void res.status(400).json({ error: 'limit/before must be safe non-negative integers (limit >= 1)' });
+  }
+  // Faz 10.6B — kompozit cursor. `beforeId` opsiyoneldir: verilmezse eski
+  // (yalnız zaman damgalı) davranış korunur. Aynı milisaniyede yazılmış
+  // mesajlar sayfa sınırına denk geldiğinde bu ayırıcı olmadan sessizce
+  // kayboluyorlardı (bkz. tests/gdm-pagination.test.ts).
+  const beforeIdRaw = String(req.query.beforeId ?? '').trim();
+  const beforeId    = beforeIdRaw.length > 0 && beforeIdRaw.length <= 64 ? beforeIdRaw : undefined;
+
+  const groupId = String(req.params.gid ?? '');
+  const msgs = await GroupDms.findMessages(groupId, { limit, before, beforeId });
+  // Membership can be revoked while the history query is in flight. Never
+  // serialize rows obtained under a stale membership snapshot.
+  if (!await GroupDms.findMember(groupId, _u.id)) {
+    return void res.status(403).json({ error: 'Üye değilsiniz' });
+  }
+  await GroupDms.markRead(groupId, _u.id);
+  res.json(msgs.reverse().map(({ clientNonce: _clientNonce, ...message }) => message));
 });
 
 /**
@@ -395,15 +536,21 @@ router.get('/:gid/messages', authMiddleware, async (req: Request, res: Response)
  */
 router.post('/:gid/messages', authMiddleware, limits.messages(), async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
-  const { content } = req.body as { content?: string };
-  if (!content?.trim()) return void res.status(400).json({ error: 'content gerekli' });
-  if (content.length > 2000) return void res.status(400).json({ error: 'Mesaj çok uzun' });
+  const contentRaw = (req.body as Record<string, unknown>).content;
+  if (typeof contentRaw !== 'string' || !contentRaw.trim()) return void res.status(400).json({ error: 'content gerekli' });
+  if (contentRaw.length > 2000) return void res.status(400).json({ error: 'Mesaj çok uzun' });
+  const content = contentRaw;
 
   const { group, member } = await getGroupWithCheck(String(req.params.gid ?? ''), _u.id);
   if (!group)  return void res.status(404).json({ error: 'Grup bulunamadı' });
   if (!member) return void res.status(403).json({ error: 'Üye değilsiniz' });
 
   const user = await Users.findById(_u.id);
+  // The membership used above is only a snapshot. Re-check after intervening
+  // repository work so a concurrent removal cannot authorize a late write.
+  if (!await GroupDms.findMember(String(req.params.gid ?? ''), _u.id)) {
+    return void res.status(403).json({ error: 'Üye değilsiniz' });
+  }
   const now  = Date.now();
   const msg  = await GroupDms.insertMessage({
     groupId: String(req.params.gid ?? ''), userId: _u.id,
@@ -415,7 +562,10 @@ router.post('/:gid/messages', authMiddleware, limits.messages(), async (req: Req
   const io = req.app.get('io') as { to(r: string): { emit(e: string, d: unknown): void } } | undefined;
   if (io) {
     const memberRows = await GroupDms.findMembers(String(req.params.gid ?? ''));
-    for (const m of memberRows) io.to(`user:${m.userId}`).emit('gdm:message', msg);
+    for (const m of memberRows) {
+      io.to(`user:${m.userId}`).emit('gdm:message', msg);
+      if (m.userId !== _u.id) io.to(`user:${m.userId}`).emit('inbox:changed', { reason: 'gdm' });
+    }
   }
   res.status(201).json(msg);
 });

@@ -8,10 +8,31 @@
 //   4. Eski mesaj yükleme (infinite scroll üst kısım)
 //   5. scrollToMsg — pencere dışındaki mesaja scroll
 
-import { test, expect } from '@playwright/test';
+// ════════════════════════════════════════════════════════════════════════════
+// DURUM: SEVK EDİLMEDİ — BU DOSYA VAR OLMAYAN BİR ÖZELLİĞİ TEST EDİYORDU
+// ════════════════════════════════════════════════════════════════════════════
+// Bu paket `window._bridgeVS` adlı bir hata ayıklama API'sine dayanıyordu.
+// DOĞRUDAN ÖLÇÜM:
+//
+//   · `_bridgeVS` istemci kaynağında YALNIZCA bir TİP bildirimi olarak var:
+//         client/js/types/globals.d.ts:154   `_bridgeVS?: unknown;`
+//     Hiçbir yerde ATANMIYOR — uygulama kodunda tek bir kullanım yok.
+//   · Derlenmiş pakette (public/js/) `_bridgeVS` GEÇMİYOR.
+//   · `MessageListPanel.svelte` mesajları `{#each grouped ...}` ile TAMAMEN
+//     render eder; pencereleme/sanallaştırma YOKTUR. Ürün sayfalama
+//     (`hasMore` + eski sayfa yükleme) kullanır, virtual scroll DEĞİL.
+//
+// Yani testler geçici bir ortam sorunundan değil, ÖZELLİK OLMADIĞI için
+// atlanıyordu. Eski mesaj "Test fixture hazır değil" idi ve bu YANILTICIYDI:
+// düzeltilebilir bir kurulum hatası varmış izlenimi veriyordu.
+//
+// Bu dosya SİLİNMEDİ: sanallaştırma ileride eklenirse iddialar hazır.
+// Ancak artık DÜRÜSTÇE "sevk edilmedi" diyor ve kapsam sayılmıyor.
+
+import { test, expect } from '../helpers/apiTest';
 import { BridgePage, getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 test.use({ storageState: 'fixtures/auth-state.json' });
 
@@ -62,7 +83,7 @@ test.describe('Virtual Scroll Modül Yükleme', () => {
     const hasVS = await page.evaluate(() => typeof window._bridgeVS !== 'undefined');
     if (!hasVS) {
       // Virtual scroll henüz aktif değil — diğer testleri skip et
-      test.skip(true, 'Virtual scroll container bulunamadı — UI render edilmedi');
+      test.skip(true, 'SEVK EDİLMEDİ: `window._bridgeVS` uygulanmadı (yalnızca globals.d.ts tip bildirimi) ve ürün sanallaştırma kullanmıyor.');
     }
     expect(hasVS).toBe(true);
   });
@@ -73,7 +94,7 @@ test.describe('Virtual Scroll Modül Yükleme', () => {
     await page.waitForTimeout(2000);
 
     const hasVS = await page.evaluate(() => typeof window._bridgeVS !== 'undefined');
-    test.skip(!hasVS, 'Test fixture hazır değil'  );
+    test.skip(!hasVS, 'SEVK EDİLMEDİ: `window._bridgeVS` yok — sanallaştırma uygulanmadı.');
 
     const stats = await page.evaluate(() => window._bridgeVS.stats());
     expect(stats).toHaveProperty('total');
@@ -99,12 +120,12 @@ test.describe('DOM Penceresi Limiti', () => {
     await page.waitForTimeout(2000);
 
     const hasVS = await page.evaluate(() => typeof window._bridgeVS !== 'undefined');
-    test.skip(!hasVS, 'Test fixture hazır değil'  );
+    test.skip(!hasVS, 'SEVK EDİLMEDİ: `window._bridgeVS` yok — sanallaştırma uygulanmadı.');
 
     // Kanal ve sunucuyu seç (URL hash veya localStorage üzerinden)
     // Bu adım uygulamaya özel — test en azından modülün var olduğunu doğrular
     const stats = await page.evaluate(() => window._bridgeVS?.stats());
-    test.skip(!stats, 'Test fixture hazır değil'  );
+    test.skip(!stats, 'SEVK EDİLMEDİ: `_bridgeVS.stats()` yok — sanallaştırma uygulanmadı.');
 
     // DOM'daki mesaj sayısı toplam mesajdan az veya eşit olmalı
     expect(stats.inDOM).toBeLessThanOrEqual(stats.total + 1); // spacer toleransı
@@ -136,7 +157,7 @@ test.describe('Mesaj Alanı DOM', () => {
     await page.waitForTimeout(2000);
 
     const hasVS = await page.evaluate(() => typeof window._bridgeVS !== 'undefined');
-    test.skip(!hasVS, 'Test fixture hazır değil'  );
+    test.skip(!hasVS, 'SEVK EDİLMEDİ: `window._bridgeVS` yok — sanallaştırma uygulanmadı.');
 
     // Spacer elementleri virtual scroll init sonrası eklenir
     const topSpacer = await page.evaluate(() =>

@@ -1,9 +1,8 @@
 // client/js/core/friends-svelte.ts
 // Sprint 116 — FriendsPanel mount shim (ADR-0008 Faz 3)
 // Arkadaş listesi ve istek yönetimi
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import FriendsPanel from './FriendsPanel.svelte';
-import { BridgeRegistry } from './bridge-registry.ts';
 import { createLogger } from './logger.ts';
 const log = createLogger('FriendsPanelShim');
 
@@ -21,8 +20,23 @@ export function mountFriendsPanel(target?: HTMLElement): void {
   log.info('FriendsPanel mounted via shim');
 }
 
+/**
+ * FAZ E — GERCEK SOKME.
+ *
+ * Onceki govde YALNIZCA `_instance = null` yaziyordu; Svelte'in
+ * `unmount()`u HIC cagrilmiyordu. Sonuc: bilesen DOM'da ve bellekte
+ * yasamaya devam ediyor, `onDestroy` hic calismiyordu — yani socket
+ * dinleyicileri, `window` keydown isleyicileri, BridgeRegistry kayitlari
+ * ve odak tuzagi TEMIZLENMIYORDU. Ayrica `_instance` null'landigi icin
+ * sonraki `mount` IKINCI bir ornek yaratabilir (cift sahip riski).
+ *
+ * Kanonik bicim `group-dm-svelte.ts` ve `settings-modal-svelte.ts`
+ * icinde zaten mevcuttu; bu dosya onlarla hizalandi.
+ */
 export function unmountFriendsPanel(): void {
-  if (_instance) { _instance = null; }
+  if (!_instance) return;
+  void unmount(_instance);
+  _instance = null;
 }
 
 if (document.readyState === 'loading') {

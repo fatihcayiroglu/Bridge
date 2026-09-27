@@ -74,7 +74,7 @@ Bridge Server
 
 ## Uygulama Detayları
 
-### `server/lib/sentry.ts`
+### `server/lib/telemetry.ts` — Sentry owner
 - `initSentry()` — uygulama başlangıcında çağrılır, DSN yoksa no-op
 - `captureException(err, context?)` — tüm route catch bloklarından çağrılır
 - `sentryErrorHandler()` — Express hata middleware olarak monte edilir
@@ -125,6 +125,6 @@ OTEL_TRACES_SAMPLER_ARG=0.1       # %10 trace örnekleme
 - [Sentry Self-Hosted](https://develop.sentry.dev/self-hosted/)
 - [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/)
 - [ADR-0007: Rate Limit Stratejisi](./ADR-0007-rate-limit-strategy.md)
-- `server/lib/sentry.ts`
+- `server/lib/telemetry.ts`
 - `monitoring/otel-collector.yml`
 - `monitoring/uptime.yml`

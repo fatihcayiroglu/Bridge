@@ -5,10 +5,20 @@
 
 'use strict';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type AnyFn = (...args: any[]) => any;
+// Dynamic registry boundary: callers register heterogeneous signatures.
+// `never[]` is the safe top-type for accepting arbitrary function signatures
+// without turning the registry boundary into an `any` escape hatch.
+export type AnyFn = (...args: unknown[]) => unknown;
+type RegistrableFn = (...args: never[]) => unknown;
 
 const _registry = new Map<string, AnyFn>();
+
+// logger.ts import edilmiyor: bu modül neredeyse her yerden import edildiği için
+// döngüsel bağımlılık riski alınmıyor. Ölçüt logger.ts:36-41 ile aynı.
+function _isDev(): boolean {
+  return typeof window !== 'undefined'
+    && (window as { BRIDGE_ENV?: string }).BRIDGE_ENV !== 'production';
+}
 
 /**
  * Modüller arası fonksiyon paylaşımı için merkezi kayıt defteri.
@@ -39,8 +49,8 @@ export const BridgeRegistry = {
    * @param name - Kayıt adı (global isim alanından bağımsız, benzersiz string).
    * @param fn   - Kaydedilecek fonksiyon.
    */
-  register<T extends AnyFn>(name: string, fn: T): void {
-    _registry.set(name, fn as AnyFn);
+  register<T extends RegistrableFn>(name: string, fn: T): void {
+    _registry.set(name, fn as unknown as AnyFn);
   },
 
   /**
@@ -50,9 +60,18 @@ export const BridgeRegistry = {
    * @param args - Fonksiyona iletilecek argümanlar.
    * @returns Fonksiyonun dönüş değeri; kayıtlı değilse `undefined`.
    */
-  call<T = any>(name: string, ...args: unknown[]): T | undefined {
+    call<T = unknown>(name: string, ...args: unknown[]): T | undefined {
     const fn = _registry.get(name);
-    return fn ? (fn(...args) as T) : undefined;
+    if (!fn) {
+      // Production davranışı değişmez (sessiz undefined); geliştirmede kayıp
+      // kayıtlar sessizce yutulmasın — Faz 1 teşhis kolaylığı.
+      if (_isDev()) {
+        // eslint-disable-next-line no-console
+        console.warn(`[BridgeRegistry] "${name}" kayıtlı değil — çağrı yok sayıldı.`);
+      }
+      return undefined;
+    }
+    return Reflect.apply(fn, undefined, args) as T;
   },
 
   /**
@@ -61,7 +80,24 @@ export const BridgeRegistry = {
    * @param name - Kayıt adı.
    * @returns Fonksiyon referansı veya `null` (kayıtlı değilse).
    */
-  get<T = any>(name: string): T | null {
+    /**
+   * VARSAYILAN TIP `AnyFn`dir, `unknown` DEGIL.
+   *
+   * `register` yalnizca fonksiyon kabul eder (`RegistrableFn`), dolayisiyla
+   * tip argumani verilmeyen bir `get` cagrisinin sonucu SOZLESME GEREGI
+   * cagrilabilirdir. Varsayilan `unknown` iken yaygin
+   *
+   *     BridgeRegistry.get('voicePanel:toggleMute')?.()
+   *
+   * kalibi "This expression is not callable" (TS2349) veriyordu — tek basina
+   * `client` typecheck'inde 24 hata. Bu, tum client typecheck kapisini
+   * kirmizi tutuyor ve GERCEK client tip hatalarini gizliyordu.
+   *
+   * Fonksiyon OLMAYAN bir deger saklayan tek cagiran (SocketManager'daki
+   * `socket`) zaten hem yazarken hem okurken ACIK tip verir; bu varsayilan
+   * onu etkilemez.
+   */
+    get<T = AnyFn>(name: string): T | null {
     return (_registry.get(name) as T | undefined) ?? null;
   },
 
@@ -78,8 +114,8 @@ export const BridgeRegistry = {
    *   return orig?.(query);
    * });
    */
-  wrap<T extends AnyFn>(name: string, wrapper: (orig: T | null, ...args: Parameters<T>) => ReturnType<T>): void {
-    const orig = (_registry.get(name) as T | undefined) ?? null;
+  wrap<T extends RegistrableFn>(name: string, wrapper: (orig: T | null, ...args: Parameters<T>) => ReturnType<T>): void {
+    const orig = (_registry.get(name) as unknown as T | undefined) ?? null;
     _registry.set(name, (...args: unknown[]) => wrapper(orig, ...(args as Parameters<T>)));
   },
 

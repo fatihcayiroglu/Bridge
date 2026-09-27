@@ -1,3 +1,195 @@
+## [Unreleased] — 2026-09-26 — Final23 adversarial backend/security/privacy closure
+
+Adversarial re-audit of the certified Final22 post-UX source. This round does not claim a full
+production certification: the package must still be re-run through the complete Jest/Vitest/E2E/real-DB
+chain in an environment with the repository dependencies installed. The source-level negative-control
+contract is 16/16 on this tree and 0/16 on the untouched Final22 baseline.
+
+### Security / privacy
+- Private servers can no longer leak into Discover through an empty-catalog fallback or a `featured` flag;
+  the featured cache namespace was bumped so stale private entries cannot survive the fix.
+- `/uploads/` is never served directly by the shipped Nginx configurations; requests reach Bridge's
+  authorization middleware first. Monitoring accepts the protected route's 401 response.
+- `/api/health/stats` now requires authenticated database-admin authority instead of trusting RFC1918 /
+  loopback source addresses that a reverse proxy can present for public requests.
+- Private server OpenGraph metadata requires either a discoverable server or an explicit valid invite /
+  vanity capability. Private capability responses are `no-store`.
+- Hidden presence now fails closed in both the dedicated presence endpoint and the ordinary public-user
+  profile; invalid legacy visibility values are treated as hidden.
+- Reading a server's vanity slug through the server-id settings API is owner-only; the public `/s/:slug`
+  capability remains public.
+- `/dist/meta.json` is denied before the static file server so esbuild module graphs and build-machine
+  paths are not exposed.
+- First-admin bootstrap uses a dedicated IP limiter and constant-time setup-secret comparison.
+- Webhook capability responses are non-cacheable and suppress referrers; the webhook token is still never
+  returned by the list API.
+
+### Product / API correctness
+- Discover uses one canonical category vocabulary (`education`, with legacy `edu` normalized), exposes
+  matching OpenAPI schemas, and the client requests enough catalog rows for its local search/filter model.
+- Server Settings now exposes the real discoverability/category controls and wires the existing vanity-slug
+  GET/PUT APIs instead of claiming the endpoint does not exist.
+- Invite SVG QR codes are real scannable QR images rather than placeholder SVG text.
+- 2FA setup returns an image QR data URI instead of placing `otpauth://...` text in an `<img>` source.
+- `/api/mobile/info` reports the canonical Bridge package version instead of the stale `50.0.0` literal.
+- Webhook creation shows the secret URL exactly once from the create response; reloaded list rows no longer
+  offer a broken "copy URL" action for a token the server correctly does not return.
+- Discover generated OpenAPI now matches runtime category objects and `discoverable` settings.
+- The CSP nonce detector uses a real regex word boundary; the source no longer contains the accidental
+  literal backspace control byte.
+
+### Regression evidence added
+- `scripts/final23-adversarial-contract.test.js`: 16 dependency-free contracts covering the above cross-layer
+  failures. The final tree passes 16/16; the untouched Final22 source fails all 16 when the same contract is
+  pointed at it.
+- Existing focused server/client tests were strengthened for privacy, QR payloads, discovery, settings,
+  webhook one-time secrets and backward compatibility. No test threshold or security contract was lowered.
+
+## [1.125.0-final22] — 2026-09-26 — Final21 end-user UX round
+
+Packaged as `bridge-v1.125.0-final22-post-ux-complete-2026-09-26.zip` after the Final21 UX round; the
+Final21 archive remained unchanged. Every item was
+reproduced in a real browser against the Final21 build first, fixed, re-measured with the same
+script and guarded by a regression test whose negative control fails without the fix.
+
+### Upgrade notes
+- **Password reset tokens are purpose-scoped.** Verification links now carry `v.` tokens and reset
+  links `r.` tokens; each endpoint accepts only its own kind. A reset is only sent to, and only
+  accepted for, a **verified** address. Verification/reset links issued before the upgrade stop
+  working — users request a new one. (Before, the 24-hour verification link sent to a newly added,
+  unverified address was also a valid password-reset key.)
+- `GET /reset-password` now serves the app (it fell through to the API 404, so every reset email
+  link was dead). `GET /api/email/verify` redirects to `/?email=verified` instead of an English HTML page.
+- Self-auth responses (`/api/me`, login/register/2FA) include the owner's own `email` and
+  `emailVerified` (Settings › Security shows the recovery address).
+- `error:spam`, `warn:spam`, `error:slowmode` and `error:timeout` socket payloads additionally echo
+  `ackId`/`tmpId` of the rejected send (additive; limits and decisions unchanged).
+
+### Changed — user experience
+- Account recovery: "Şifremi unuttum" on sign-in, in-app reset form, optional recovery email with
+  verification in Settings › Security (sign-up still does not ask for an email).
+- The app shell can no longer be scrolled off-screen (an empty full-height `#discover-root` made the
+  document twice the viewport; jumping to a reply scrolled the whole app with no way back).
+- Touch devices of any width use the long-press action sheet; mouse users keep hover actions at any
+  width. The release of the long press no longer activates the sheet item under the finger.
+- Desktop right-click / Menu key opens the message actions at the pointer ("Metni kopyala" added);
+  the browser menu is kept on selected text, links and media. Near the bottom or right edge the menu
+  opens upward/leftward with its corner at the pointer, like platform menus, instead of being pushed
+  on top of the pointer (where the next click at the same spot hit "Düzenle"/"Sil").
+- Rate-limited and slow-mode sends wait in the queue with the real reason and are sent automatically
+  (same ackId) when the server's wait ends; duplicates and moderator timeouts fail with the real reason.
+  Failed messages can be deleted; undelivered rows no longer offer react/reply; a failed message's
+  text is no longer also restored into the composer (it was appended to the next message).
+- Light theme: the first-run card title was invisible; `--text-on-solid` tints (onboarding dots,
+  progress, secondary button) and video tile name labels were unreadable in every theme.
+- Onboarding tour: 6 accurate steps (it described an E2EE lock and a federation button that do not
+  exist in the client); new single-member servers suggest inviting friends in the empty channel.
+- Header: distinct icons (Friends and Members shared one SVG); on phones a "⋯" menu keeps the channel
+  name readable and makes pinned messages reachable again.
+- Own presence in the user panel follows the live connection (it showed "Çevrimdışı" after creating a server).
+- Inbox and Saved close on Escape with focus inside; the channel actions menu returns focus; Turkish
+  uses "Gelen kutusu / Bahsetmeler"; Discover hides empty tabs; server settings use one icon style in
+  four groups; your own profile card offers "Profili düzenle"; misleading login placeholders removed.
+
+### Removed
+- 238 translation keys that nothing in the repository references (code, HTML, tests, scripts, docs),
+  in all 10 locales. JS bundle total 97 % of the enforced budget (the budget was not changed).
+
+### Tests
+- `pg-integration/activity-unread.pgtest.ts`: the query-plan assertion now seeds realistic volume and
+  runs `ANALYZE` first, like the other plan suites. It asserted a plan on a handful of rows against
+  whatever statistics the shared test database last recorded, and failed on the unchanged Final21
+  tree as well once those statistics changed. The assertion itself is unchanged and still fails when
+  the query cannot use `idx_messages_channel_cursor`.
+
+## [1.125.0] — 2026-09-25 — Final21 pre-production hardening
+
+Version number unchanged (1.125.0); this entry records what the Final21 program changed on top of
+the Final20 source. Every item was reproduced first and carries a regression test; the program's
+report lists evidence, negative controls and what remains EXTERNAL/BLOCKED.
+
+### Upgrade notes — read before deploying over 1.124.x / Final20
+- **PostgreSQL 18 volume path.** `docker-compose.yml`, `docker-compose.cluster.yml` and
+  `k8s/postgres.yaml` now mount the data volume at `/var/lib/postgresql` (the postgres:18 image keeps
+  PGDATA in `/var/lib/postgresql/18/docker` and refuses to start with a volume on the old
+  `/var/lib/postgresql/data`; the previous files therefore never started PostgreSQL 18). Data written
+  by PostgreSQL ≤ 17 needs `pg_upgrade`.
+- **Redis requires a password everywhere.** Production compose refuses to start without
+  `REDIS_PASSWORD`; kustomize reads it from the Secret (`k8s/sealed-secret.yaml`); Helm uses
+  `redis.auth.existingSecret: bridge-redis-secret` (key `redis-password`). `REDIS_URL` carries the
+  password. `maxmemory-policy` is `noeviction` in all deployment files (eviction deleted rate-limit
+  counters and bypassed limits).
+- **Network policies.** `k8s/networkpolicy.yaml` admits Redis/PostgreSQL traffic only from
+  `app: bridge`; the Helm chart enables the subcharts' policies with client labels.
+- **Multi-replica upload storage.** Helm refuses to render, and the server refuses to boot with
+  `BRIDGE_MULTI_NODE=true`, when uploads would live on pod-local disk: use a remote provider
+  (s3/r2/minio/b2) for public and private storage, or a ReadWriteMany volume, or one replica.
+- **Ingress cookie affinity** for Socket.IO long-polling on multi-replica deployments.
+- **startupProbe** (Helm and kustomize): the server listens only after the schema bootstrap, which
+  took 20–81 s against an empty database in testing; liveness is now deferred until the first
+  successful start (budget 300 s) so a first install is not restarted mid-bootstrap.
+- **Migrations 071–075** (cascade-delete FK indexes, bot granted scopes, marketplace seed
+  truthfulness, message `contentFormat`, user `locale`), each with a rollback script; the ordered
+  rollback/re-apply of all 75 migrations is verified on real PostgreSQL.
+- **Backup service**: PostgreSQL 18 client, unprivileged scheduler (`BACKUP_AT`,
+  `BACKUP_RUN_ON_START`) instead of cron; checksum sidecar paths are relative (copied backups verify).
+- **Alert rules** now query the metric names the server actually emits (`bridge_` prefix);
+  dashboards/alerts copied from older releases should be refreshed.
+- **Mobile**: app id is `com.bridge.app` everywhere (register Firebase / APNs / App Links for it);
+  `BRIDGE_API_URL` (https) is mandatory for packaged builds and the server's `ALLOWED_ORIGINS` must
+  include `https://localhost` and `capacitor://localhost` (`mobile/BUILD.md` §7).
+- **Desktop**: the Windows app connects to a server URL (no bundled server); updates install
+  silently and relaunch; unsigned update feeds are accepted only with an explicit build flag.
+
+### Security / privacy
+- Account deletion (self and admin) goes through one policy owner and erases author snapshots
+  (names, avatars, quoted names) and profile files; admin deletion no longer bypasses it.
+- Permission revocation reaches already-open sockets; kicked/banned members leave watch rooms.
+- One mutation path for socket and HTTP edits/deletes (AutoMod can no longer be bypassed over HTTP).
+- Rate limiting counts verified users per user behind shared NATs (HTTP and socket connect)
+  without loosening anonymous limits; `RL_GLOBAL_MAX` default reported as enforced (200).
+- Bots: enforced scopes with explicit install consent, reply authority with AutoMod and volume
+  limits, BOT badge from server fields only.
+
+### Reliability / correctness
+- PostgreSQL BIGINT values are parsed as numbers (history paging beyond 50 messages works on
+  PostgreSQL; group-DM history times no longer show "Invalid Date").
+- Graceful shutdown closes Socket.IO first (clean exit with connected clients).
+- Search scoring and first-unread scans are bounded (1M-row measurements in the report).
+- Channel text is stored exactly as typed; deleted messages no longer return after reload.
+
+### Release / packaging
+- The release packager, `.gitignore` and `.dockerignore` exclude generated native outputs
+  (`electron/release/`, root `android/` and `ios/`); archive entry names must be portable.
+
+---
+
+## [1.124.4] — 2026-09-04 — Independent Best-in-Class Review Candidate
+
+### Reliability / delivery
+- DM and Group DM optimistic sending now uses a persistent `clientNonce`, bounded acknowledgement timeout, explicit failed state and same-nonce retry.
+- PostgreSQL migration 061 adds sender+nonce uniqueness so a lost realtime confirmation followed by retry cannot create duplicate persisted messages.
+- Replayed nonces return the authoritative existing message to the sender; nonce conflicts across conversations are rejected without creating a new conversation.
+
+### RTC / TURN
+- P2P, DM calls, Group DM voice and SFU signaling now consume one authenticated ICE configuration authority.
+- `TURN_SECRET + TURN_HOST` HMAC credentials reach the live `/api/rtc/ice-config` path.
+- `FORCE_TURN` is canonical, `FORCE_RELAY` remains a compatibility alias, and relay-only is not allowed to black-hole media when no TURN server exists.
+- `STUN_URLS` accepts both comma- and whitespace-separated configuration, matching the documented self-hosting contract.
+
+### Product UX / correctness
+- Canonical mutually-exclusive shell overlay lifecycle prevents peer panels/tooltips from outliving their context.
+- Production-reachable native browser dialogs were replaced by the accessible Bridge product dialog.
+- Production-facing raw backend/exception leakage was hardened across auth, Friends/GDM, Soundboard and server-settings surfaces.
+- Legacy and unified search both enforce exact stable `channelId` scoping and visibility checks.
+
+### Verification
+- Dependency-free release/product contracts cover product dialogs, overlay lifecycle, exact channel search scope, durable DM/GDM delivery and canonical RTC ICE wiring.
+- Full dependency-backed Jest/Vitest/build/typecheck remains environment-blocked when dependencies cannot be installed; it is not reported as PASS.
+- Real TURN relay, SFU media, real-device mobile and human multi-user voice validation remain separate external validation gates.
+
+---
+
 ## [1.122.0] — 2026-06-08 — Sprint 122: Güvenlik Sertleştirme, DM Gizlilik Politikası & Kararlılık
 
 ### 🎯 Sprint Hedefi

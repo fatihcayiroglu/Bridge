@@ -6,6 +6,8 @@
 //
 // NOT: mediasoup opsiyonel bağımlılık olduğundan virtual mock kullanılır.
 // sfuRegistry ve turnConfig da stub'lanır — test ortamında Redis/ICE gerekmez.
+import { present } from './helpers/narrow';
+import { findEmitted } from './helpers/socketDoubles';
 
 'use strict';
 process.env.NODE_ENV = 'test';
@@ -69,7 +71,7 @@ function makeTransportStub(id = 'transport-1') {
 function makeRouterStub() {
   const transport = makeTransportStub();
   return {
-    rtpCapabilities:       { codecs: [{ mimeType: 'audio/opus', clockRate: 48000, channels: 2 }], headerExtensions: [] },
+    rtpCapabilities:       { codecs: [{ kind: 'audio' as const, mimeType: 'audio/opus', clockRate: 48000, channels: 2 }], headerExtensions: [] },
     canConsume:            jest.fn(() => true),
     createWebRtcTransport: jest.fn(async () => transport),
     close:                 jest.fn(),
@@ -96,27 +98,45 @@ jest.mock('mediasoup', () => mediasoupStub, { virtual: true });
 
 jest.mock('../lib/sfuRegistry', () => ({
   INSTANCE_ID:   'test-node',
+  ROOM_LEASE_TTL_SECONDS: 3600,
   isLocalRoom:   jest.fn(async () => true),
   getRoomOwner:  jest.fn(async () => null),
-  claimRoom:     jest.fn(async () => {}),
+  // `claimRoom` ARTIK bir sonuç döndürür: `{ owned, owner }`. Eskiden
+  // `undefined` döndürüyordu; `getOrCreateRoom` atomik talebi beklemeye
+  // başlayınca (yarış düzeltmesi) bu stub sessizce "sahiplik kaybedildi"
+  // anlamına gelirdi ve TÜM SFU süiti düşerdi.
+  claimRoom:     jest.fn(async () => ({ owned: true, owner: 'test-node' })),
   releaseRoom:   jest.fn(async () => {}),
-  refreshRoom:   jest.fn(async () => {}),
+  refreshRoom:   jest.fn(async () => true),
 }));
 
 
 // ── Stub: repositories ──────────────────────────────────────────────────────
 
 jest.mock('../db/repositories', () => ({
+  Channels: {
+    findById: jest.fn(async (channelId: string) =>
+      channelId.startsWith('gdm-') ? null : { _id: channelId, serverId: 'srv-1', type: 'voice' }
+    ),
+  },
+  GroupDms: {
+    findMember: jest.fn(async () => ({ userId: 'user-1' })),
+  },
   Members: {
     findOne: jest.fn(async () => ({ timeoutUntil: null })),
   },
 }));
 
+jest.mock('../lib/permissions', () => ({
+  PERMS: { VIEW_CHANNELS: 1, CONNECT: 2, SPEAK: 4 },
+  hasPermission: jest.fn((permissions: number, permission: number) => (permissions & permission) === permission),
+  resolvePermissions: jest.fn(async () => 1 | 2 | 4),
+}));
+
 // ── Stub: turnConfig ────────────────────────────────────────────────────────
 
 jest.mock('../lib/turnConfig', () => ({
-  getIceServers:          jest.fn(() => []),
-  getIceTransportPolicy:  jest.fn(() => 'all'),
+  getRtcIceConfig: jest.fn(() => ({ iceServers: [], iceTransportPolicy: 'all' })),
 }));
 
 // ── Stub: logger ─────────────────────────────────────────────────────────────
@@ -139,6 +159,7 @@ import {
 } from '../socket/handlers/mediasoup/rooms';
 
 import { registerSFUHandlers } from '../socket/handlers/mediasoup/index';
+const repositories = require('../db/repositories');
 
 import type { RtpCapabilities, BridgeSocket, BridgeIO, BridgeUser, MediasoupModule, RtpParameters, DtlsParameters } from '../socket/handlers/mediasoup/types';
 
@@ -155,7 +176,7 @@ interface ActivityPayload         { speaking: boolean; userId: string }
 // ── Test yardımcıları ────────────────────────────────────────────────────────
 
 const DEFAULT_RTP_CAPS: RtpCapabilities = {
-  codecs: [{ mimeType: 'audio/opus', clockRate: 48000, channels: 2 }],
+  codecs: [{ kind: 'audio' as const, mimeType: 'audio/opus', clockRate: 48000, channels: 2 }],
   headerExtensions: [],
 };
 
@@ -169,15 +190,18 @@ function makeUser(overrides: Partial<BridgeUser> = {}): BridgeUser {
 }
 
 /** Basit bir Socket.IO socket stub'ı döner. */
-function makeSocket(id = 'socket-1') {
+function makeSocket(id: string = 'socket-1') {
   const emitted: { event: string; data: unknown }[] = [];
   const joined: string[] = [];
+  const left: string[] = [];
+  const activeRooms = new Set<string>();
   const handlers: Record<string, (...args: unknown[]) => unknown> = {};
 
   const socket = {
     id,
     emit: jest.fn((event: string, data: unknown) => { emitted.push({ event, data }); }),
-    join: jest.fn((room: string) => { joined.push(room); }),
+    join: jest.fn((room: string) => { joined.push(room); activeRooms.add(room); }),
+    leave: jest.fn(async (room: string) => { left.push(room); activeRooms.delete(room); }),
     to:   jest.fn((room: string) => ({
       emit: jest.fn((event: string, data: unknown) => { emitted.push({ event: `to:${room}:${event}`, data }); }),
     })),
@@ -188,6 +212,8 @@ function makeSocket(id = 'socket-1') {
     // Test helpers
     _emitted:  emitted,
     _joined:   joined,
+    _left:     left,
+    _activeRooms: activeRooms,
     _handlers: handlers,
     /** Kayıtlı bir handler'ı elle tetikler */
     _fire: async (event: string, data: unknown) => {
@@ -200,6 +226,8 @@ function makeSocket(id = 'socket-1') {
   } as unknown as BridgeSocket & {
     _emitted:    typeof emitted;
     _joined:     typeof joined;
+    _left:       typeof left;
+    _activeRooms: Set<string>;
     _handlers:   typeof handlers;
     _fire:       (event: string, data: unknown) => Promise<unknown>;
     _getEmit:    (event: string) => { event: string; data: unknown } | undefined;
@@ -243,6 +271,15 @@ beforeEach(async () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('sfu:get-rtp-capabilities', () => {
+  it('rejects an unbounded room id before repository lookup', async () => {
+    const socket = makeSocket('sock-unbounded-capabilities');
+    registerSFUHandlers(socket, makeIo(), makeUser());
+    repositories.Channels.findById.mockClear();
+    await socket._fire('sfu:get-rtp-capabilities', { channelId: 'x'.repeat(129) });
+    expect(socket._getEmit('sfu:error')).toBeDefined();
+    expect(repositories.Channels.findById).not.toHaveBeenCalled();
+  });
+
   it('mevcut bir oda için rtpCapabilities emit eder', async () => {
     const socket = makeSocket();
     const io     = makeIo();
@@ -253,6 +290,23 @@ describe('sfu:get-rtp-capabilities', () => {
     const ev = socket._getEmit('sfu:rtp-capabilities');
     expect(ev).toBeDefined();
     expect((ev!.data as RtpCapabilitiesPayload).rtpCapabilities).toBeDefined();
+  });
+
+  it('oda başka node tarafından sahiplenilmişse capability isteğinde de redirect eder', async () => {
+    const registry = require('../lib/sfuRegistry');
+    registry.claimRoom.mockImplementationOnce(async () => ({ owned: false, owner: 'bridge-2' }));
+
+    const socket = makeSocket('sock-caps-redirect');
+    registerSFUHandlers(socket, makeIo(), makeUser());
+    await socket._fire('sfu:get-rtp-capabilities', { channelId: 'ch-caps-remote' });
+
+    const redirect = socket._getEmit('sfu:redirect');
+    expect(redirect).toBeDefined();
+    expect((redirect!.data as { channelId: string; ownerNodeId: string })).toMatchObject({
+      channelId: 'ch-caps-remote', ownerNodeId: 'bridge-2',
+    });
+    expect(socket._getEmit('sfu:error')).toBeUndefined();
+    expect(sfuRooms.has('ch-caps-remote')).toBe(false);
   });
 
   it('oda oluşturulamazsa sfu:error emit eder', async () => {
@@ -267,6 +321,24 @@ describe('sfu:get-rtp-capabilities', () => {
 
     const ev = socket._getEmit('sfu:error');
     expect(ev).toBeDefined();
+    expect(require('../lib/sfuRegistry').releaseRoom).toHaveBeenCalledWith('ch-error');
+  });
+
+  it('capability isteğinden sonra katılım gelmezse boş router ve lease temizlenir', async () => {
+    jest.useFakeTimers();
+    try {
+      const socket = makeSocket('sock-caps-abandoned');
+      registerSFUHandlers(socket, makeIo(), makeUser());
+      await socket._fire('sfu:get-rtp-capabilities', { channelId: 'ch-caps-abandoned' });
+      expect(sfuRooms.has('ch-caps-abandoned')).toBe(true);
+
+      jest.advanceTimersByTime(5_001);
+
+      expect(sfuRooms.has('ch-caps-abandoned')).toBe(false);
+      expect(require('../lib/sfuRegistry').releaseRoom).toHaveBeenCalledWith('ch-caps-abandoned');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -300,6 +372,58 @@ describe('sfu:join', () => {
     expect((joined!.data as JoinPayload)).toHaveProperty('iceServers');
   });
 
+  it('Redis lease artık bu nodea ait değilse yerel router ve peerleri kapatır', async () => {
+    jest.useFakeTimers();
+    try {
+      const registry = require('../lib/sfuRegistry');
+      registry.refreshRoom.mockResolvedValueOnce(false);
+      const socket = makeSocket('sock-lost-lease');
+      registerSFUHandlers(socket, makeIo(), makeUser());
+      await socket._fire('sfu:join', {
+        channelId: 'ch-lost-lease', serverId: 'srv-1', rtpCapabilities: DEFAULT_RTP_CAPS,
+      });
+      const router = sfuRooms.get('ch-lost-lease')!.router;
+
+      await jest.advanceTimersByTimeAsync(10 * 60 * 1_000);
+
+      expect(sfuRooms.has('ch-lost-lease')).toBe(false);
+      expect(sfuPeers.has('sock-lost-lease')).toBe(false);
+      expect(router.close).toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('daha yeni join eski yavaş authorization sonucunu geçersiz kılar', async () => {
+    const repositories = jest.requireMock('../db/repositories');
+    let resolveSlow!: (value: unknown) => void;
+    (repositories.Channels.findById as jest.Mock).mockImplementation((channelId: string) => {
+      if (channelId === 'ch-slow') {
+        return new Promise(resolve => { resolveSlow = resolve; });
+      }
+      return Promise.resolve({ _id: channelId, serverId: 'srv-1', type: 'voice' });
+    });
+
+    const socket = makeSocket('sock-stale-join');
+    const io = makeIo();
+    registerSFUHandlers(socket, io, makeUser());
+
+    const slowJoin = socket._fire('sfu:join', {
+      channelId: 'ch-slow', serverId: 'srv-1', rtpCapabilities: DEFAULT_RTP_CAPS,
+    });
+    const fastJoin = socket._fire('sfu:join', {
+      channelId: 'ch-fast', serverId: 'srv-1', rtpCapabilities: DEFAULT_RTP_CAPS,
+    });
+
+    await fastJoin;
+    resolveSlow({ _id: 'ch-slow', serverId: 'srv-1', type: 'voice' });
+    await slowJoin;
+
+    expect(sfuPeers.get('sock-stale-join')?.channelId).toBe('ch-fast');
+    expect(socket._activeRooms.has('voice:ch-slow')).toBe(false);
+    expect(socket._activeRooms.has('voice:ch-fast')).toBe(true);
+  });
+
   it('join sırasında mevcut peer temizlenerek yeniden kaydolur', async () => {
     const socket = makeSocket('sock-rejoin');
     const io     = makeIo();
@@ -311,8 +435,12 @@ describe('sfu:join', () => {
     // İkinci join — aynı socket farklı kanala
     await socket._fire('sfu:join', { channelId: 'ch-rejoin2', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
 
-    // Yeni oda oluştu
+    // Yeni oda oluştu ve eski Socket.IO voice room gerçekten bırakıldı.
     expect(sfuRooms.has('ch-rejoin2')).toBe(true);
+    expect(socket._left).toContain('voice:ch-rejoin');
+    expect(socket._activeRooms.has('voice:ch-rejoin')).toBe(false);
+    expect(socket._activeRooms.has('voice:ch-rejoin2')).toBe(true);
+    expect(sfuPeers.get('sock-rejoin')?.channelId).toBe('ch-rejoin2');
   });
 
   it('oda başka node\'da ise sfu:redirect emit edilir', async () => {
@@ -360,13 +488,27 @@ describe('sfu:group-join', () => {
     registerSFUHandlers(socket, io, makeUser());
 
     await socket._fire('sfu:group-join', {
-      channelId:       'ch-group',
-      serverId:        'srv-g',
+      channelId:       'gdm-group',
       rtpCapabilities: DEFAULT_RTP_CAPS,
     });
 
     expect(socket._getEmit('_sfu:join-routed')).toBeDefined();
     expect(sfuPeers.has('sock-group')).toBe(true);
+  });
+
+  it('GDM room için client-supplied serverId claim fail-closed olur', async () => {
+    const socket = makeSocket('sock-group-claim');
+    const io = makeIo();
+    registerSFUHandlers(socket, io, makeUser());
+
+    await socket._fire('sfu:group-join', {
+      channelId: 'gdm-group',
+      serverId: 'srv-forged',
+      rtpCapabilities: DEFAULT_RTP_CAPS,
+    });
+
+    expect(sfuPeers.has('sock-group-claim')).toBe(false);
+    expect(socket._getEmit('sfu:error')).toBeDefined();
   });
 });
 
@@ -406,6 +548,24 @@ describe('sfu:create-transport', () => {
     expect((ev!.data as TransportPayload).direction).toBe('recv');
   });
 
+  it('aynı yönde ikinci transport oluşturarak worker kaynağı sızdıramaz', async () => {
+    const { socket } = await setupPeer('sock-duplicate-transport', 'ch-duplicate-transport');
+    await socket._fire('sfu:create-transport', { channelId: 'ch-duplicate-transport', direction: 'send' });
+    await socket._fire('sfu:create-transport', { channelId: 'ch-duplicate-transport', direction: 'send' });
+
+    const room = sfuRooms.get('ch-duplicate-transport')!;
+    expect(room.router.createWebRtcTransport).toHaveBeenCalledTimes(1);
+    expect(socket._getEmit('sfu:error')).toBeDefined();
+  });
+
+  it('bilinmeyen direction değerini recv olarak yorumlamaz', async () => {
+    const { socket } = await setupPeer('sock-invalid-direction', 'ch-invalid-direction');
+    await socket._fire('sfu:create-transport', { channelId: 'ch-invalid-direction', direction: 'sideways' });
+
+    expect(sfuPeers.get('sock-invalid-direction')?.recvTransport).toBeNull();
+    expect(socket._getEmit('sfu:error')).toBeDefined();
+  });
+
   it('oda yoksa sfu:error emit eder', async () => {
     const socket = makeSocket('sock-noroom');
     const io     = makeIo();
@@ -424,6 +584,30 @@ describe('sfu:create-transport', () => {
 
     await socket._fire('sfu:create-transport', { channelId: 'ch-nopeer', direction: 'send' });
     expect(socket._getEmit('sfu:error')).toBeDefined();
+  });
+
+  it('transport provider failure leaves no half-attached transport', async () => {
+    const { socket } = await setupPeer('sock-transport-provider-failure', 'ch-transport-provider-failure');
+    const room = sfuRooms.get('ch-transport-provider-failure')!;
+    (room.router.createWebRtcTransport as jest.Mock).mockRejectedValueOnce(new Error('worker transport failure'));
+    await socket._fire('sfu:create-transport', { channelId: 'ch-transport-provider-failure', direction: 'send' });
+    expect(sfuPeers.get('sock-transport-provider-failure')?.sendTransport).toBeNull();
+    // KANONIK: istemciye SABIT, sinirli bir mesaj doner. Saglayicinin ic hata
+    // metni ('worker transport failure') sokete SIZDIRILMAZ; teshis yalnizca
+    // sunucu loguna gider.
+    const emitted = socket._getEmit('sfu:error')?.data as { code?: string; message?: string };
+    expect(emitted).toMatchObject({ code: 'TRANSPORT_FAILED', message: 'Medya bağlantısı oluşturulamadı.' });
+    expect(JSON.stringify(emitted)).not.toContain('worker transport failure');
+  });
+
+  it('failed DTLS state closes and detaches the canonical transport', async () => {
+    const { socket } = await setupPeer('sock-dtls-failure', 'ch-dtls-failure');
+    await socket._fire('sfu:create-transport', { channelId: 'ch-dtls-failure', direction: 'send' });
+    const peer = sfuPeers.get('sock-dtls-failure')!;
+    const transport = peer.sendTransport as any;
+    transport._trigger('dtlsstatechange', 'failed');
+    expect(transport.close).toHaveBeenCalled();
+    expect(peer.sendTransport).toBeNull();
   });
 });
 
@@ -469,6 +653,18 @@ describe('sfu:connect-transport', () => {
     await expect(
       socket._fire('sfu:connect-transport', { direction: 'send', dtlsParameters: DTLS })
     ).resolves.not.toThrow();
+  });
+
+  it('membership revoked after allocation prevents transport connection', async () => {
+    const socket = makeSocket('sock-connect-revoked');
+    registerSFUHandlers(socket, makeIo(), makeUser());
+    await socket._fire('sfu:join', { channelId: 'ch-connect-revoked', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
+    await socket._fire('sfu:create-transport', { channelId: 'ch-connect-revoked', direction: 'send' });
+    const transport = sfuPeers.get('sock-connect-revoked')!.sendTransport!;
+    repositories.Members.findOne.mockResolvedValueOnce(null);
+    await socket._fire('sfu:connect-transport', { channelId: 'ch-connect-revoked', direction: 'send', dtlsParameters: DTLS });
+    expect(transport.connect).not.toHaveBeenCalled();
+    expect(socket._getEmit('sfu:error')).toBeDefined();
   });
 });
 
@@ -539,14 +735,15 @@ describe('sfu:produce', () => {
     // Asıl doğrulama: transport.produce()'a geçilen normalizedRtp içinde
     // her encoding'e maxBitrate ve scalabilityMode inject edilmiş olmalı.
     const peer = sfuPeers.get('sock-video');
-    const sendTransport = peer?.sendTransport;
-    expect(sendTransport).not.toBeNull();
+    const sendTransport = present(peer?.sendTransport, 'gonderim tasiyicisi');
 
-    const produceCall = (sendTransport.produce as jest.Mock).mock.calls[0]?.[0];
+    const produceCall = jest.mocked(sendTransport.produce).mock.calls[0]?.[0];
     expect(produceCall).toBeDefined();
     expect(produceCall.kind).toBe('video');
 
-    const encodings: Array<Record<string, unknown>> = produceCall.rtpParameters.encodings;
+    // `encodings` ISTEGE BAGLIdir (`RtpEncodingParameters[] | undefined`);
+    // varligi bu testin IDDIASININ parcasi oldugu icin dogrulanir.
+    const encodings = present(produceCall.rtpParameters.encodings, 'encodings');
     expect(encodings).toHaveLength(3);
 
     // rid korunsun, maxBitrate ve scalabilityMode eklensin
@@ -574,6 +771,17 @@ describe('sfu:produce', () => {
     expect((ev!.data as ProducerPayload).kind).toBe('screen');
   });
 
+  it('aynı track kind için ikinci producer oluşturarak kaynak sızdıramaz', async () => {
+    const { socket } = await setupWithTransport('sock-duplicate-producer', 'ch-duplicate-producer');
+    const payload = { channelId: 'ch-duplicate-producer', kind: 'audio', rtpParameters: AUDIO_RTP };
+    await socket._fire('sfu:produce', payload);
+    await socket._fire('sfu:produce', payload);
+
+    const transport = sfuPeers.get('sock-duplicate-producer')!.sendTransport!;
+    expect(transport.produce).toHaveBeenCalledTimes(1);
+    expect(socket._getEmit('sfu:error')).toBeDefined();
+  });
+
   it('peer veya sendTransport yoksa sessizce dönüş yapar', async () => {
     const socket = makeSocket('sock-no-send');
     const io     = makeIo();
@@ -585,6 +793,19 @@ describe('sfu:produce', () => {
 
     expect(socket._getEmit('sfu:produced')).toBeUndefined();
   });
+
+  it('producer lifecycle events are scoped to its canonical room and clean the peer map', async () => {
+    const { socket } = await setupWithTransport('sock-producer-lifecycle', 'ch-producer-lifecycle');
+    await socket._fire('sfu:produce', { channelId: 'ch-producer-lifecycle', kind: 'audio', rtpParameters: AUDIO_RTP });
+    const peer = sfuPeers.get('sock-producer-lifecycle')!;
+    const producer = peer.producers.get('audio') as any;
+    producer._trigger('score', [{ score: 10 }]);
+    producer._trigger('videoorientationchange', { rotation: 90 });
+    expect(socket._getEmit('sfu:producer-score')).toBeDefined();
+    expect(findEmitted(socket._emitted, 'to:voice:ch-producer-lifecycle:sfu:video-orientation')).toBeDefined();
+    producer._trigger('transportclose');
+    expect(peer.producers.has('audio')).toBe(false);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -592,27 +813,53 @@ describe('sfu:produce', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('sfu:consume', () => {
+  const CONSUME_AUDIO_RTP: import('../socket/handlers/mediasoup/types').RtpParameters = {
+    codecs: [{ mimeType: 'audio/opus', payloadType: 111, clockRate: 48000, channels: 2 }],
+  };
+
+  /**
+   * ── KANONİK SAHİPLİK: producer ODAYA AİT OLMALI ─────────────────────────
+   * `sfu:consume` artık istemcinin bildirdiği `producerId`e GÜVENMİYOR;
+   * producer'ın GERÇEKTEN o medya odasında bulunduğunu doğruluyor
+   * (mediasoup/index.ts:332-337). Aksi hâlde bir istemci BAŞKA bir odadaki
+   * producer'ı consume edebilirdi — doğrudan bir ses/görüntü sızıntısı.
+   *
+   * Bu yardımcı eskiden uydurma bir `'remote-producer-1'` kimliği kullanıyordu;
+   * koruma eklendikten sonra istek doğru şekilde reddediliyor ve testler
+   * düşüyordu. Artık odada GERÇEK bir producer üretilir ve consume o kimlikle
+   * yapılır — yani mutlu yol gerçekten yürütülür.
+   */
   async function setupConsumer(socketId: string, channelId: string) {
+    // Odada yayın yapan bir akran oluştur.
+    const producerSocket = makeSocket(socketId + '-producer');
+    const producerIo     = makeIo();
+    registerSFUHandlers(producerSocket, producerIo, makeUser());
+    await producerSocket._fire('sfu:join',             { channelId, serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
+    await producerSocket._fire('sfu:create-transport', { channelId, direction: 'send' });
+    await producerSocket._fire('sfu:produce',          { channelId, kind: 'audio', rtpParameters: CONSUME_AUDIO_RTP });
+    const producedEvent = producerSocket._getEmit('sfu:produced');
+    const producerId = String((producedEvent!.data as ProducerPayload).producerId);
+
     const socket = makeSocket(socketId);
     const io     = makeIo();
     registerSFUHandlers(socket, io, makeUser());
     await socket._fire('sfu:join',             { channelId, serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
     await socket._fire('sfu:create-transport', { channelId, direction: 'recv' });
-    return { socket, io };
+    return { socket, io, producerId, producerSocket };
   }
 
   it('consumer oluşturur ve sfu:consumed emit eder', async () => {
-    const { socket } = await setupConsumer('sock-consume', 'ch-consume');
+    const { socket, producerId } = await setupConsumer('sock-consume', 'ch-consume');
 
     await socket._fire('sfu:consume', {
       channelId:       'ch-consume',
-      producerId:      'remote-producer-1',
+      producerId,
       rtpCapabilities: DEFAULT_RTP_CAPS,
     });
 
     const ev = socket._getEmit('sfu:consumed');
     expect(ev).toBeDefined();
-    expect((ev!.data as ProducerPayload).producerId).toBe('remote-producer-1');
+    expect((ev!.data as ProducerPayload).producerId).toBe(producerId);
     expect((ev!.data as ConsumerPayload).consumerId).toBeDefined();
     expect((ev!.data as ConsumerPayload).rtpParameters).toBeDefined();
   });
@@ -642,7 +889,40 @@ describe('sfu:consume', () => {
       socket._fire('sfu:consume', { channelId: 'ch-ghost', producerId: 'p1', rtpCapabilities: DEFAULT_RTP_CAPS })
     ).resolves.not.toThrow();
   });
+
+  it('consumer transport/producer closure callbacks retire canonical state and notify the socket', async () => {
+    const { socket, producerId } = await setupConsumer('sock-consumer-lifecycle', 'ch-consumer-lifecycle');
+    await socket._fire('sfu:consume', { channelId: 'ch-consumer-lifecycle', producerId, rtpCapabilities: DEFAULT_RTP_CAPS });
+    const peer = sfuPeers.get('sock-consumer-lifecycle')!;
+    const consumer = peer.consumers.get(producerId) as any;
+    consumer._trigger('transportclose');
+    expect(peer.consumers.has(producerId)).toBe(false);
+    peer.consumers.set(producerId, consumer);
+    consumer._trigger('producerclose');
+    expect(peer.consumers.has(producerId)).toBe(false);
+    expect(socket._getEmit('sfu:producer-closed')?.data).toEqual({ producerId });
+  });
 });
+
+
+/**
+ * Odada GERÇEK bir producer üretip kimliğini döndürür.
+ *
+ * `sfu:consume` artık producer'ın o medya odasına AİT olduğunu doğruluyor
+ * (mediasoup/index.ts:332-337); uydurma kimlikler doğru şekilde reddediliyor.
+ * Consumer gerektiren süitler bu yüzden önce gerçek bir yayın kurmalı.
+ */
+async function seedRoomProducer(channelId: string, tag: string): Promise<string> {
+  const AUDIO: import('../socket/handlers/mediasoup/types').RtpParameters = {
+    codecs: [{ mimeType: 'audio/opus', payloadType: 111, clockRate: 48000, channels: 2 }],
+  };
+  const s = makeSocket(`producer-${tag}`);
+  registerSFUHandlers(s, makeIo(), makeUser());
+  await s._fire('sfu:join',             { channelId, serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
+  await s._fire('sfu:create-transport', { channelId, direction: 'send' });
+  await s._fire('sfu:produce',          { channelId, kind: 'audio', rtpParameters: AUDIO });
+  return String((s._getEmit('sfu:produced')!.data as ProducerPayload).producerId);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 7. sfu:resume-consumer
@@ -653,16 +933,18 @@ describe('sfu:resume-consumer', () => {
     const socket = makeSocket('sock-resume');
     const io     = makeIo();
     registerSFUHandlers(socket, io, makeUser());
+    const producerId = await seedRoomProducer('ch-resume', 'resume');
     await socket._fire('sfu:join',             { channelId: 'ch-resume', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
     await socket._fire('sfu:create-transport', { channelId: 'ch-resume', direction: 'recv' });
-    await socket._fire('sfu:consume',          { channelId: 'ch-resume', producerId: 'prod-r', rtpCapabilities: DEFAULT_RTP_CAPS });
+    await socket._fire('sfu:consume',          { channelId: 'ch-resume', producerId, rtpCapabilities: DEFAULT_RTP_CAPS });
 
     const peer = sfuPeers.get('sock-resume');
-    const consumerMock = peer?.consumers.get('prod-r');
+    const consumerMock = peer?.consumers.get(producerId);
+    expect(consumerMock).toBeDefined();
 
-    await socket._fire('sfu:resume-consumer', { producerId: 'prod-r' });
+    await socket._fire('sfu:resume-consumer', { producerId });
 
-    expect(consumerMock?.resume).toHaveBeenCalled();
+    expect(consumerMock!.resume).toHaveBeenCalled();
   });
 
   it('peer yoksa hata fırlatmaz', async () => {
@@ -673,6 +955,20 @@ describe('sfu:resume-consumer', () => {
     await expect(
       socket._fire('sfu:resume-consumer', { producerId: 'x' })
     ).resolves.not.toThrow();
+  });
+
+  it('membership revoked after consume prevents the paused consumer from resuming', async () => {
+    const socket = makeSocket('sock-resume-revoked');
+    registerSFUHandlers(socket, makeIo(), makeUser());
+    const producerId = await seedRoomProducer('ch-resume-revoked', 'resume-revoked');
+    await socket._fire('sfu:join', { channelId: 'ch-resume-revoked', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
+    await socket._fire('sfu:create-transport', { channelId: 'ch-resume-revoked', direction: 'recv' });
+    await socket._fire('sfu:consume', { channelId: 'ch-resume-revoked', producerId, rtpCapabilities: DEFAULT_RTP_CAPS });
+    const consumer = sfuPeers.get('sock-resume-revoked')!.consumers.get(producerId)!;
+    repositories.Members.findOne.mockResolvedValueOnce(null);
+    await socket._fire('sfu:resume-consumer', { producerId });
+    expect(consumer.resume).not.toHaveBeenCalled();
+    expect(socket._getEmit('sfu:error')).toBeDefined();
   });
 });
 
@@ -716,32 +1012,36 @@ describe('sfu:set-preferred-layer', () => {
     const socket = makeSocket('sock-layer');
     const io     = makeIo();
     registerSFUHandlers(socket, io, makeUser());
+    const producerId = await seedRoomProducer('ch-layer', 'layer');
     await socket._fire('sfu:join',             { channelId: 'ch-layer', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
     await socket._fire('sfu:create-transport', { channelId: 'ch-layer', direction: 'recv' });
-    await socket._fire('sfu:consume',          { channelId: 'ch-layer', producerId: 'prod-layer', rtpCapabilities: DEFAULT_RTP_CAPS });
+    await socket._fire('sfu:consume',          { channelId: 'ch-layer', producerId, rtpCapabilities: DEFAULT_RTP_CAPS });
 
     const peer = sfuPeers.get('sock-layer');
-    const consumer = peer?.consumers.get('prod-layer');
+    const consumer = peer?.consumers.get(producerId);
+    expect(consumer).toBeDefined();
     // type'ı simulcast yap
-    if (consumer) Object.defineProperty(consumer, 'type', { value: 'simulcast' });
+    Object.defineProperty(consumer!, 'type', { value: 'simulcast' });
 
-    await socket._fire('sfu:set-preferred-layer', { producerId: 'prod-layer', spatialLayer: 2, temporalLayer: 2 });
-    expect(consumer?.setPreferredLayers).toHaveBeenCalledWith({ spatialLayer: 2, temporalLayer: 2 });
+    await socket._fire('sfu:set-preferred-layer', { producerId, spatialLayer: 2, temporalLayer: 2 });
+    expect(consumer!.setPreferredLayers).toHaveBeenCalledWith({ spatialLayer: 2, temporalLayer: 2 });
   });
 
   it('consumer simple type ise setPreferredLayers çağrılmaz', async () => {
     const socket = makeSocket('sock-simple-layer');
     const io     = makeIo();
     registerSFUHandlers(socket, io, makeUser());
+    const producerId = await seedRoomProducer('ch-simple-layer', 'simple');
     await socket._fire('sfu:join',             { channelId: 'ch-simple-layer', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
     await socket._fire('sfu:create-transport', { channelId: 'ch-simple-layer', direction: 'recv' });
-    await socket._fire('sfu:consume',          { channelId: 'ch-simple-layer', producerId: 'prod-simple', rtpCapabilities: DEFAULT_RTP_CAPS });
+    await socket._fire('sfu:consume',          { channelId: 'ch-simple-layer', producerId, rtpCapabilities: DEFAULT_RTP_CAPS });
 
     const peer = sfuPeers.get('sock-simple-layer');
-    const consumer = peer?.consumers.get('prod-simple');
+    const consumer = peer?.consumers.get(producerId);
+    expect(consumer).toBeDefined();
 
-    await socket._fire('sfu:set-preferred-layer', { producerId: 'prod-simple', spatialLayer: 1, temporalLayer: 1 });
-    expect(consumer?.setPreferredLayers).not.toHaveBeenCalled();
+    await socket._fire('sfu:set-preferred-layer', { producerId, spatialLayer: 1, temporalLayer: 1 });
+    expect(consumer!.setPreferredLayers).not.toHaveBeenCalled();
   });
 
   it('peer yoksa hata fırlatmaz', async () => {
@@ -751,6 +1051,20 @@ describe('sfu:set-preferred-layer', () => {
     await expect(
       socket._fire('sfu:set-preferred-layer', { producerId: 'x', spatialLayer: 0, temporalLayer: 0 })
     ).resolves.not.toThrow();
+  });
+
+  it('revoked membership cannot keep changing consumer layers', async () => {
+    const socket = makeSocket('sock-layer-revoked');
+    registerSFUHandlers(socket, makeIo(), makeUser());
+    const producerId = await seedRoomProducer('ch-layer-revoked', 'layer-revoked');
+    await socket._fire('sfu:join', { channelId: 'ch-layer-revoked', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
+    await socket._fire('sfu:create-transport', { channelId: 'ch-layer-revoked', direction: 'recv' });
+    await socket._fire('sfu:consume', { channelId: 'ch-layer-revoked', producerId, rtpCapabilities: DEFAULT_RTP_CAPS });
+    const consumer = sfuPeers.get('sock-layer-revoked')!.consumers.get(producerId)!;
+    Object.defineProperty(consumer, 'type', { value: 'simulcast' });
+    repositories.Members.findOne.mockResolvedValueOnce(null);
+    await socket._fire('sfu:set-preferred-layer', { producerId, spatialLayer: 1, temporalLayer: 1 });
+    expect(consumer.setPreferredLayers).not.toHaveBeenCalled();
   });
 });
 
@@ -792,6 +1106,8 @@ describe('voice:state-update', () => {
       video:        false,
     });
 
+    await flushAsyncAuth();
+
     const peer = sfuPeers.get('sock-state');
     expect(peer?.muted).toBe(true);
 
@@ -808,7 +1124,30 @@ describe('voice:state-update', () => {
       socket._fire('voice:state-update', { channelId: 'ch-x', muted: false, deafened: false, screensharing: false, video: false })
     ).resolves.not.toThrow();
   });
+
+  it('rejects non-boolean state before mutating or broadcasting peer state', async () => {
+    const socket = makeSocket('sock-state-malformed');
+    registerSFUHandlers(socket, makeIo(), makeUser());
+    await socket._fire('sfu:join', { channelId: 'ch-state-malformed', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
+    const peer = sfuPeers.get('sock-state-malformed')!;
+    await socket._fire('voice:state-update', {
+      channelId: 'ch-state-malformed', muted: 'yes', deafened: false, screensharing: false, video: false,
+    });
+    expect(peer.muted).toBe(false);
+    expect(socket._emitted.find(e => e.event.includes('voice:peer-state'))).toBeUndefined();
+  });
 });
+
+
+/**
+ * `voice:state-update` ve `voice:activity` dinleyicileri SENKRONdur ama içeride
+ * `void authorizeMediaRoom(...).then(...)` çalıştırır: yetki çözümü bir sonraki
+ * mikrogörev turunda tamamlanır. `_fire()` döndüğünde etki HENÜZ uygulanmamıştır.
+ *
+ * Bu, yetkilendirmenin asenkron hâle getirilmesinin bir sonucudur ve testlerin
+ * "hiç yayın yapılmadı" gibi YANLIŞ bir sonuç görmesine yol açıyordu.
+ */
+const flushAsyncAuth = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 12. voice:activity
@@ -819,13 +1158,39 @@ describe('voice:activity', () => {
     const socket = makeSocket('sock-activity');
     const io     = makeIo();
     registerSFUHandlers(socket, io, makeUser({ _id: 'user-activity' }));
+    // ── ÖN KOŞUL: ODADA OLMAK ────────────────────────────────────────────
+    // `voice:activity` artık `requireOwnPeerChannel(channelId)` ile başlıyor:
+    // katılmamış bir soket, üyesi olmadığı kanala "konuşuyor" sinyali
+    // YAYINLAYAMAZ. Test önce gerçekten katılır.
+    await socket._fire('sfu:join', { channelId: 'ch-activity', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
 
     await socket._fire('voice:activity', { channelId: 'ch-activity', speaking: true });
+    await flushAsyncAuth();
 
     const broadcast = socket._emitted.find(e => e.event.includes('voice:activity'));
     expect(broadcast).toBeDefined();
     expect((broadcast!.data as ActivityPayload).speaking).toBe(true);
     expect((broadcast!.data as ActivityPayload).userId).toBe('user-activity');
+  });
+
+  it('GÜVENLİK: odada OLMAYAN soket aktivite yayınlayamaz', async () => {
+    // Aksi hâlde herhangi bir istemci, üyesi olmadığı bir sesli kanala sahte
+    // "konuşuyor" göstergesi enjekte edebilirdi.
+    const socket = makeSocket('sock-activity-outsider');
+    registerSFUHandlers(socket, makeIo(), makeUser({ _id: 'user-outsider' }));
+
+    await socket._fire('voice:activity', { channelId: 'ch-activity', speaking: true });
+    await flushAsyncAuth();
+
+    expect(socket._emitted.find(e => e.event.includes('voice:activity'))).toBeUndefined();
+  });
+
+  it('malformed non-boolean speaking state is not broadcast', async () => {
+    const socket = makeSocket('sock-activity-malformed');
+    registerSFUHandlers(socket, makeIo(), makeUser());
+    await socket._fire('sfu:join', { channelId: 'ch-activity-malformed', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
+    await socket._fire('voice:activity', { channelId: 'ch-activity-malformed', speaking: 'true' });
+    expect(socket._emitted.find(e => e.event.includes('voice:activity'))).toBeUndefined();
   });
 });
 
@@ -855,5 +1220,75 @@ describe('disconnect', () => {
     await expect(
       socket._fire('disconnect', undefined)
     ).resolves.not.toThrow();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ÇOK-NODE SAHİPLİK YARIŞI — KAYBEDEN YÖNLENDİRİR, İKİNCİ ODA AÇMAZ
+// ═══════════════════════════════════════════════════════════════════════════
+// `isLocalRoom()` kontrolü ile oda oluşturma arasında BAŞKA bir node odayı
+// sahiplenebilir (kontrol-et-sonra-davran). Eskiden kayıt koşulsuz `SETEX`
+// kullandığı için iki node aynı kanal için AYRI odalar açıyor ve
+// katılımcılar birbirini duyamıyordu.
+//
+// Artık talep atomiktir; kaybeden node yerel oda AÇMAZ ve istemciyi kanonik
+// node'a yönlendirir. Bu davranış ölçülmezse düzeltme sessizce geri alınabilir.
+describe('sfu:join — oda başka node tarafından sahiplenilmişse', () => {
+  const registry = require('../lib/sfuRegistry');
+
+  afterEach(() => {
+    registry.claimRoom.mockImplementation(async () => ({ owned: true, owner: 'test-node' }));
+    registry.isLocalRoom.mockImplementation(async () => true);
+  });
+
+  it('YEREL ODA AÇMAZ ve sfu:redirect emit eder', async () => {
+    // Kayıt "boş" göründü (isLocalRoom true) ama talep anında başka node kazandı.
+    registry.isLocalRoom.mockImplementation(async () => true);
+    registry.claimRoom.mockImplementation(async () => ({ owned: false, owner: 'other-node' }));
+
+    const socket = makeSocket('sock-claim-lost');
+    registerSFUHandlers(socket, makeIo(), makeUser());
+
+    await socket._fire('sfu:join', {
+      channelId: 'ch-claim-lost', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS,
+    });
+
+    const redirect = socket._getEmit('sfu:redirect');
+    expect(redirect).toBeDefined();
+    expect((redirect!.data as { ownerNodeId: string }).ownerNodeId).toBe('other-node');
+
+    // EN ÖNEMLİ İDDİA: ikinci bir yerel oda OLUŞMAMALI.
+    expect(sfuRooms.has('ch-claim-lost')).toBe(false);
+    expect(socket._getEmit('sfu:joined')).toBeUndefined();
+  });
+
+  it('YANLIŞ POZİTİF KONTROLÜ: talep kazanılırsa normal katılım sürer', async () => {
+    registry.claimRoom.mockImplementation(async () => ({ owned: true, owner: 'test-node' }));
+
+    const socket = makeSocket('sock-claim-won');
+    registerSFUHandlers(socket, makeIo(), makeUser());
+
+    await socket._fire('sfu:join', {
+      channelId: 'ch-claim-won', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS,
+    });
+
+    expect(socket._getEmit('sfu:redirect')).toBeUndefined();
+    expect(socket._getEmit('sfu:joined')).toBeDefined();
+    expect(sfuRooms.has('ch-claim-won')).toBe(true);
+  });
+
+  it('registry claim hatasında yerel oda açmaz ve SFU katılımını fail-closed reddeder', async () => {
+    registry.claimRoom.mockRejectedValueOnce(new Error('redis ownership unavailable'));
+
+    const socket = makeSocket('sock-claim-error');
+    registerSFUHandlers(socket, makeIo(), makeUser());
+
+    await socket._fire('sfu:join', {
+      channelId: 'ch-claim-error', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS,
+    });
+
+    expect(sfuRooms.has('ch-claim-error')).toBe(false);
+    expect(socket._getEmit('sfu:joined')).toBeUndefined();
+    expect(socket._getEmit('sfu:error')).toBeDefined();
   });
 });

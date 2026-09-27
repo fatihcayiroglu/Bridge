@@ -1,7 +1,7 @@
 // client/js/core/socket-svelte.ts
 // Sprint 116 — SocketManager mount shim (ADR-0008 Faz 3)
 // WebSocket bağlantı yöneticisi
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import SocketManager from './SocketManager.svelte';
 import { BridgeRegistry } from './bridge-registry.ts';
 import { createLogger } from './logger.ts';
@@ -22,7 +22,10 @@ export function mountSocketManager(target?: HTMLElement): void {
 }
 
 export function unmountSocketManager(): void {
-  if (_instance) { _instance = null; }
+  if (!_instance) return;
+  const mounted = _instance;
+  _instance = null;
+  void unmount(mounted);
 }
 
 if (document.readyState === 'loading') {

@@ -1,5 +1,7 @@
 // server/tests/rateLimit.test.ts — Session 18 güncelleme
 // Yeni `mode` parametresi ('ip' | 'user' | 'combined') için testler eklendi.
+import { makeJwtUser } from './helpers/userDoubles';
+import type { Request, Response, NextFunction } from 'express';
 
 process.env.NODE_ENV = 'test';
 
@@ -14,24 +16,24 @@ function freshRateLimit() {
 
 // ── Temel app builder'lar ─────────────────────────────────────────────────
 
-function buildApp(max, windowMs) {
+function buildApp(max: number, windowMs: number) {
   const { rateLimit } = freshRateLimit();
   const app = express();
-  app.use((req, res, next) => { Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true }); next(); });
-  app.get('/test', rateLimit(max, windowMs, 'test'), (req, res) => res.json({ ok: true }));
+  app.use((req: Request, res: Response, next: NextFunction) => { Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true }); next(); });
+  app.get('/test', rateLimit(max, windowMs, 'test'), (req: Request, res: Response) => res.json({ ok: true }));
   return app;
 }
 
 /** mode destekli app builder */
-function buildAppWithMode(max, windowMs, mode, userId = null) {
+function buildAppWithMode(max: number, windowMs: number, mode: string, userId: string | null = null) {
   const { rateLimit } = freshRateLimit();
   const app = express();
-  app.use((req, res, next) => {
+  app.use((req: Request, res: Response, next: NextFunction) => {
     Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true });
-    if (userId) req.user = { id: userId, _id: userId };
+    if (userId) req.user = makeJwtUser(userId);
     next();
   });
-  app.get('/test', rateLimit(max, windowMs, 'test', { mode }), (req, res) => res.json({ ok: true }));
+  app.get('/test', rateLimit(max, windowMs, 'test', { mode }), (req: Request, res: Response) => res.json({ ok: true }));
   return app;
 }
 
@@ -84,9 +86,9 @@ describe('Rate limiter', () => {
     jest.resetModules();
     const { rateLimit } = require('../middleware/rateLimit');
     const app = express();
-    app.use((req, res, next) => { Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true }); next(); });
-    app.get('/a', rateLimit(2, 60_000, 'prefix-a'), (req, res) => res.json({ ok: true }));
-    app.get('/b', rateLimit(2, 60_000, 'prefix-b'), (req, res) => res.json({ ok: true }));
+    app.use((req: Request, res: Response, next: NextFunction) => { Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true }); next(); });
+    app.get('/a', rateLimit(2, 60_000, 'prefix-a'), (req: Request, res: Response) => res.json({ ok: true }));
+    app.get('/b', rateLimit(2, 60_000, 'prefix-b'), (req: Request, res: Response) => res.json({ ok: true }));
 
     await request(app).get('/a');
     await request(app).get('/a');
@@ -156,9 +158,9 @@ describe('mode parametresi', () => {
     jest.resetModules();
     const { rateLimit } = require('../middleware/rateLimit');
     const app = express();
-    app.use((req, res, next) => { Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true }); next(); });
+    app.use((req: Request, res: Response, next: NextFunction) => { Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true }); next(); });
     // mode opts olmadan — eski imza geriye dönük uyumlu
-    app.get('/test', rateLimit(5, 60_000, 'compat-test'), (req, res) => res.json({ ok: true }));
+    app.get('/test', rateLimit(5, 60_000, 'compat-test'), (req: Request, res: Response) => res.json({ ok: true }));
     const res = await request(app).get('/test');
     expect(res.status).toBe(200);
   });
@@ -167,13 +169,13 @@ describe('mode parametresi', () => {
     jest.resetModules();
     const { rateLimit } = require('../middleware/rateLimit');
     const app = express();
-    app.use((req, res, next) => {
+    app.use((req: Request, res: Response, next: NextFunction) => {
       Object.defineProperty(req, 'ip', { value: '127.0.0.1', configurable: true });
-      req.user = { id: 'legacy-user' };
+      req.user = makeJwtUser('legacy-user');
       next();
     });
     // userOnly eski API — @deprecated ama çalışmaya devam etmeli
-    app.get('/test', rateLimit(2, 60_000, 'legacy', { userOnly: true }), (req, res) => res.json({ ok: true }));
+    app.get('/test', rateLimit(2, 60_000, 'legacy', { userOnly: true }), (req: Request, res: Response) => res.json({ ok: true }));
     await request(app).get('/test');
     await request(app).get('/test');
     const res = await request(app).get('/test');

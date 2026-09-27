@@ -1,15 +1,15 @@
 // server/tests/channelPerms.test.ts
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../lib/permCache', () => ({ invalidatePerms: jest.fn() }));
-jest.mock('express-rate-limit', () => () => (_req, _res, next) => next());
+jest.mock('express-rate-limit', () => () => (_req: unknown, _res: unknown, next: () => void) => next());
 
 jest.mock('../db/loader', () => {
   const mock = require('./helpers/mockDb').createMockDb();
   mock._sqlite = {
-    transaction: (fn) => () => fn(),
+    transaction: (fn: () => unknown) => () => fn(),
     prepare: () => ({
       run: jest.fn(),
       get: jest.fn().mockReturnValue(null),
@@ -43,11 +43,15 @@ function buildApp() {
   app.use('/api/servers/:sid/channels/:cid/permissions', authMiddleware, channelPermsRouter);
   return app;
 }
-function tok(uid, v = 0) { return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string, v = 0) { return jwt.sign({ id: uid, v }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 describe('Channel Permissions Routes', () => {
-  let app, ownerId, serverId, channelId, roleId;
-  let ownerToken;
+  let app: express.Express;
+  let ownerId: string;
+  let serverId: string;
+  let channelId: string;
+  let roleId: string;
+  let ownerToken: string;
 
   beforeEach(async () => {
     db._reset?.();
@@ -61,6 +65,10 @@ describe('Channel Permissions Routes', () => {
     await db.users.insert({ _id: ownerId, username: 'owner', displayName: 'Owner', tokenVersion: 0 });
     await db.servers.insert({ _id: serverId, name: 'TestServer', ownerId });
     await db.channels.insert({ _id: channelId, serverId, name: 'general', type: 'text' });
+    // C2 GÜVENLİK: rota artık rolün BU sunucuya ait olduğunu doğruluyor
+    // (çapraz kiracı IDOR engeli). Gerçek veride rol her zaman vardır;
+    // fikstür bunu yansıtmalıdır.
+    await db.roles.insert({ _id: roleId, serverId, name: 'Test Rol', permissions: 0 });
 
     perms.resolvePermissions.mockResolvedValue(2); // MANAGE_CHANNELS
     perms.hasPermission.mockReturnValue(true);

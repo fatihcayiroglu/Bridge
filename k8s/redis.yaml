@@ -28,7 +28,32 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
-          args: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+          # Final21 Faz 10 — F21-10-03: maxmemory-policy MUTLAKA noeviction.
+          # Redis hiz siniri / CSRF / WS baglanti limiti icin YETKILI depodur.
+          # allkeys-lru ile OLCULDU (redis:8-alpine, maxmemory 4mb): arama siniri
+          # doldu (429), bellek baskisi 31 807 anahtar tahliye etti, iki hiz siniri
+          # anahtari da silindi ve AYNI DAKIKADA 5/5 arama 200 dondu — sinir ASILDI.
+          # noeviction ile ayni adimlar: yazmalar reddedildi, anahtarlar kaldi, 5/5 429.
+          # Bellek dolarsa Bridge fail-closed 503 verir (docs/REDIS_PRODUCTION.md).
+          # Final21 Faz 19 — F21-10-04: KİMLİK DOĞRULAMASIZ REDIS YOK.
+          # Redis hız sınırı, CSRF, oturum iptali ve soket durumunun YETKİLİ deposudur; ad alanındaki
+          # herhangi bir pod parolasız bağlanıp sınırları sıfırlayabilir, iptal edilmiş oturumları
+          # geri açabilirdi. Parola `bridge-secrets/REDIS_PASSWORD`tan gelir ve yapılandırma STDIN
+          # ile verilir: `--requirepass` argümanı olsaydı pod içinde `ps` ile okunurdu. Ölçüldü
+          # (redis:7-alpine, tools/p19-redis-auth-proof.sh): parolasız PING NOAUTH, PID 1 komut
+          # satırında parola yok, noeviction korunuyor.
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bridge-secrets
+                  key: REDIS_PASSWORD
+          command: ["sh", "-c"]
+          args:
+            - |
+              exec redis-server - --maxmemory 256mb --maxmemory-policy noeviction <<EOF
+              requirepass $REDIS_PASSWORD
+              EOF
           ports:
             - containerPort: 6379
           resources:
@@ -40,7 +65,8 @@ spec:
               memory: 512Mi
           readinessProbe:
             exec:
-              command: ["redis-cli", "ping"]
+              # Parola argüman değil ortam değişkeniyle verilir (REDISCLI_AUTH).
+              command: ["sh", "-c", "REDISCLI_AUTH=\"$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
             initialDelaySeconds: 5
             periodSeconds: 5
           volumeMounts:

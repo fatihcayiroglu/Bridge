@@ -5,23 +5,35 @@
 //   - thread:join         (thread odasına katılma, eski thread odasından çıkma)
 //   - thread:leave        (thread odasından ayrılma)
 //   - Edge case: eksik threadId / msg, boş content
+import { EmittedLog, SocketDouble } from './helpers/socketDoubles';
 
 'use strict';
 process.env.NODE_ENV = 'test';
 
-// messages.js bazı db/loader kullanımı yapabilir — stub'la
-jest.mock('../db/loader', () => {
-  const { createMockDb } = require('./helpers/mockDb');
-  return createMockDb();
-});
+const mockFindThread = jest.fn();
+const mockFindMember = jest.fn();
+const mockResolvePermissions = jest.fn();
+
+jest.mock('../db/repositories', () => ({
+  Threads: { findById: (...args: unknown[]) => mockFindThread(...args) },
+  Members: { findOne: (...args: unknown[]) => mockFindMember(...args) },
+}));
+
+jest.mock('../lib/permissions', () => ({
+  PERMS: { VIEW_CHANNELS: 1, READ_HISTORY: 2 },
+  resolvePermissions: (...args: unknown[]) => mockResolvePermissions(...args),
+  hasPermission: (mask: number, bit: number) => (mask & bit) === bit,
+}));
 
 import { registerThreadSocketEvents } from '../socket/handlers/messages';
+import type { AuthUser } from '../socket/handlers/messages-types';
+import { deferred } from './helpers/deferred';
 
 // ── Yardımcılar ────────────────────────────────────────────────
 
-function makeSocket(id) {
+function makeSocket(id: string) {
   const handlers: Record<string, unknown> = {};
-  const emitted  = [];
+  const emitted: EmittedLog = [];
   const rooms    = new Set([id]);
 
   const socket = {
@@ -37,31 +49,49 @@ function makeSocket(id) {
     _handlers: handlers,
     _emitted:  emitted,
     _rooms:    rooms,
-    _trigger(event, data) {
-      if (handlers[event]) handlers[event](data);
+    _trigger(event: string, data: unknown) {
+      // `handlers` degerleri `unknown`tur (dogrusu budur: `on()` sozlesmesi
+      // dinleyiciyi saklamak zorunda degil). Cagrilabilirlik IDDIA edilmez,
+      // DENETLENIR — kayitli olmayan bir olay sessizce `undefined` doner.
+      const fn = handlers[event];
+      return typeof fn === 'function' ? (fn as (payload: unknown) => unknown)(data) : undefined;
     },
-  };
+  } satisfies SocketDouble;
   return socket;
 }
 
 function makeIo() {
-  const emitted = [];
+  const emitted: EmittedLog = [];
   return {
     _emitted: emitted,
-    to(target) {
-      return { emit(ev, data) { emitted.push({ ev, data, _target: target }); } };
+    to(target: string) {
+      return { emit(ev: string, data: unknown) { emitted.push({ ev, data, _target: target }); } };
     },
   };
 }
 
-function makeUser(overrides = {}) {
+// Urun sozlesmesi `AuthUser`dir ve `username` ISTER. Ikiz onu tasimiyordu;
+// bu, 11 cagri yerinde TS2345 uretiyor ve daha onemlisi testi urunun
+// gercekten gordugu nesneden uzaklastiriyordu.
+function makeUser(overrides: Partial<AuthUser> = {}): AuthUser {
+  const id = `u-${Math.random().toString(36).slice(2)}`;
   return {
-    _id:         `u-${Math.random().toString(36).slice(2)}`,
+    _id:         id,
+    username:    id,
     displayName: 'ThreadUser',
     avatarColor: '#2d9cdb',
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  mockFindThread.mockReset();
+  mockFindMember.mockReset();
+  mockResolvePermissions.mockReset();
+  mockFindThread.mockImplementation(async (threadId) => ({ _id: threadId, serverId: 'srv-1', channelId: 'ch-1' }));
+  mockFindMember.mockResolvedValue({ userId: 'member', serverId: 'srv-1' });
+  mockResolvePermissions.mockResolvedValue(1 | 2);
+});
 
 // ════════════════════════════════════════════════════════════════
 // thread:message:new
@@ -98,45 +128,45 @@ describe('thread:message:new', () => {
 // ════════════════════════════════════════════════════════════════
 
 describe('thread:join', () => {
-  it('socket thread odasına katılır', () => {
+  it('socket thread odasına katılır', async () => {
     const user   = makeUser();
     const socket = makeSocket('s-tjoin-1');
     const io     = makeIo();
     registerThreadSocketEvents(socket, io, user);
 
-    socket._trigger('thread:join', 'thread-123');
+    await socket._trigger('thread:join', 'thread-123');
 
     expect(socket._rooms.has('thread:thread-123')).toBe(true);
   });
 
-  it('yeni thread odasına katılınca önceki thread odası terk edilir', () => {
+  it('yeni thread odasına katılınca önceki thread odası terk edilir', async () => {
     const user   = makeUser();
     const socket = makeSocket('s-tjoin-switch');
     const io     = makeIo();
     registerThreadSocketEvents(socket, io, user);
 
-    socket._trigger('thread:join', 'thread-AAA');
+    await socket._trigger('thread:join', 'thread-AAA');
     expect(socket._rooms.has('thread:thread-AAA')).toBe(true);
 
-    socket._trigger('thread:join', 'thread-BBB');
+    await socket._trigger('thread:join', 'thread-BBB');
     expect(socket._rooms.has('thread:thread-BBB')).toBe(true);
     expect(socket._rooms.has('thread:thread-AAA')).toBe(false);
   });
 
-  it('aynı thread odasına iki kez katılmak sorun çıkarmaz', () => {
+  it('aynı thread odasına iki kez katılmak sorun çıkarmaz', async () => {
     const user   = makeUser();
     const socket = makeSocket('s-tjoin-dup');
     const io     = makeIo();
     registerThreadSocketEvents(socket, io, user);
 
-    socket._trigger('thread:join', 'thread-DUP');
-    socket._trigger('thread:join', 'thread-DUP');
+    await socket._trigger('thread:join', 'thread-DUP');
+    await socket._trigger('thread:join', 'thread-DUP');
 
     expect(socket._rooms.has('thread:thread-DUP')).toBe(true);
     // Hata fırlatmamış olmalı — test zaten geçerse OK
   });
 
-  it('thread:join önceki DM/kanal odalarını etkilemez', () => {
+  it('thread:join önceki DM/kanal odalarını etkilemez', async () => {
     const user   = makeUser();
     const socket = makeSocket('s-tjoin-iso');
     const io     = makeIo();
@@ -146,7 +176,7 @@ describe('thread:join', () => {
     socket.join('channel:ch-1');
     socket.join('dm:dm-abc');
 
-    socket._trigger('thread:join', 'thread-NEW');
+    await socket._trigger('thread:join', 'thread-NEW');
 
     // Sadece thread odaları temizlenmeli
     expect(socket._rooms.has('channel:ch-1')).toBe(true);
@@ -155,18 +185,47 @@ describe('thread:join', () => {
   });
 });
 
+
+  it('slower stale join cannot overwrite a newer thread selection', async () => {
+    const user = makeUser();
+    const socket = makeSocket('s-tjoin-race');
+    const io = makeIo();
+    registerThreadSocketEvents(socket, io, user);
+
+    // Cozucu fonksiyonlar `Promise` yapicisinin ICINDE atanir; TypeScript bu
+    // atamayi goremez. `deferred()` bunu KESIN ATAMA IDDIASI (`!`) olmadan,
+    // dogrulayarak cozer — bkz. helpers/deferred.ts.
+    type ThreadRow = { _id: string; serverId: string; channelId: string };
+    const a = deferred<ThreadRow>();
+    const b = deferred<ThreadRow>();
+    mockFindThread.mockImplementation((id: unknown) => id === 'thread-A' ? a.promise : b.promise);
+
+    const pendingA = socket._trigger('thread:join', 'thread-A');
+    const pendingB = socket._trigger('thread:join', 'thread-B');
+    b.resolve({ _id: 'thread-B', serverId: 'srv-1', channelId: 'ch-1' });
+    await pendingB;
+    a.resolve({ _id: 'thread-A', serverId: 'srv-1', channelId: 'ch-1' });
+    await pendingA;
+
+    expect(socket._rooms.has('thread:thread-B')).toBe(true);
+    expect(socket._rooms.has('thread:thread-A')).toBe(false);
+    expect(socket._emitted.filter(e => e.ev === 'thread:joined')).toEqual([
+      { ev: 'thread:joined', data: { threadId: 'thread-B' } },
+    ]);
+  });
+
 // ════════════════════════════════════════════════════════════════
 // thread:leave
 // ════════════════════════════════════════════════════════════════
 
 describe('thread:leave', () => {
-  it('socket thread odasından ayrılır', () => {
+  it('socket thread odasından ayrılır', async () => {
     const user   = makeUser();
     const socket = makeSocket('s-tleave-1');
     const io     = makeIo();
     registerThreadSocketEvents(socket, io, user);
 
-    socket._trigger('thread:join',  'thread-leave-test');
+    await socket._trigger('thread:join',  'thread-leave-test');
     expect(socket._rooms.has('thread:thread-leave-test')).toBe(true);
 
     socket._trigger('thread:leave', 'thread-leave-test');
@@ -182,14 +241,14 @@ describe('thread:leave', () => {
     expect(() => socket._trigger('thread:leave', 'nonexistent-thread')).not.toThrow();
   });
 
-  it('leave sonrası diğer odalar etkilenmez', () => {
+  it('leave sonrası diğer odalar etkilenmez', async () => {
     const user   = makeUser();
     const socket = makeSocket('s-tleave-iso');
     const io     = makeIo();
     registerThreadSocketEvents(socket, io, user);
 
-    socket._trigger('thread:join', 'thread-A');
-    socket._trigger('thread:join', 'thread-B'); // Bu thread-A'yı zaten çıkarır
+    await socket._trigger('thread:join', 'thread-A');
+    await socket._trigger('thread:join', 'thread-B'); // Bu thread-A'yı zaten çıkarır
     socket.join('thread:thread-extra');           // Manuel ekle
 
     socket._trigger('thread:leave', 'thread-B');

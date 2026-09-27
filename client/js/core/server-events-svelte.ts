@@ -1,33 +1,11 @@
-// client/js/core/server-events-svelte.ts
-// Sprint 116 — ServerEventsPanel mount shim (ADR-0008 Faz 3)
-// Sunucu etkinlik yönetimi paneli
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import ServerEventsPanel from './ServerEventsPanel.svelte';
-import { BridgeRegistry } from './bridge-registry.ts';
-import { createLogger } from './logger.ts';
-const log = createLogger('ServerEventsPanelShim');
-
-let _instance: ReturnType<typeof mount> | null = null;
-
-export function mountServerEventsPanel(target?: HTMLElement): void {
-  if (_instance) return;
-  const el = target ?? document.getElementById('server-events-root') ?? (() => {
-    const div = document.createElement('div');
-    div.id = 'server-events-root';
-    document.body.appendChild(div);
-    return div;
-  })();
-  _instance = mount(ServerEventsPanel, { target: el, props: {} });
-  log.info('ServerEventsPanel mounted via shim');
+let instance: ReturnType<typeof mount> | null = null;
+export function mountServerEvents(target?: HTMLElement): void {
+  if (instance) return;
+  const host = target ?? document.getElementById('server-events-root') ?? (() => { const el = document.createElement('div'); el.id = 'server-events-root'; document.body.appendChild(el); return el; })();
+  instance = mount(ServerEventsPanel, { target: host });
 }
-
-export function unmountServerEventsPanel(): void {
-  if (_instance) { _instance = null; }
-}
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => mountServerEventsPanel(), { once: true });
-} else {
-  mountServerEventsPanel();
-}
-document.addEventListener('bridge:socket-ready', () => mountServerEventsPanel(), { once: true });
+export function unmountServerEvents(): void { if (!instance) return; void unmount(instance); instance = null; }
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => mountServerEvents(), { once: true });
+else mountServerEvents();

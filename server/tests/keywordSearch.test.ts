@@ -8,11 +8,25 @@
 'use strict';
 
 // ── keywordSearch — routes/semantic.js'ten izole edilmiş pure function ──────
-function keywordSearch(query, messages) {
+
+/** Aramaya giren mesajın bu fonksiyonun okuduğu alanları. */
+interface SearchableMessage {
+  _id: string;
+  /** Mesaj gövdesi; testler NULL ve eksik içeriği de bilerek zorlar. */
+  content?: string | null;
+  userId?: string;
+  channelId?: string;
+  createdAt?: number;
+}
+
+/** Skorlanmış sonuç — girdi alanları + hesaplanan eşleşme skoru. */
+type ScoredMessage = SearchableMessage & { _score: number };
+
+function keywordSearch(query: string, messages: SearchableMessage[]): ScoredMessage[] {
   const q = query.toLowerCase();
   const keywords = q.split(/\s+/).filter(w => w.length > 2);
   return messages
-    .map(m => {
+    .map((m): ScoredMessage => {
       const content = (m.content || '').toLowerCase();
       const score = keywords.reduce((s, kw) => s + (content.includes(kw) ? 1 : 0), 0);
       return { ...m, _score: score };
@@ -23,8 +37,8 @@ function keywordSearch(query, messages) {
 }
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
-function makeMessages(defs) {
-  return defs.map((content, i) => ({ _id: `msg-${i}`, content, userId: 'u1', channelId: 'ch1', createdAt: Date.now() - i * 1000 }));
+function makeMessages(defs: string[]): SearchableMessage[] {
+  return defs.map((content, i: number) => ({ _id: `msg-${i}`, content, userId: 'u1', channelId: 'ch1', createdAt: Date.now() - i * 1000 }));
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -158,3 +172,10 @@ describe('keywordSearch (pure function)', () => {
     });
   });
 });
+
+// Bu dosyada ust duzey import/export yoktu; TypeScript onu GLOBAL
+// SCRIPT sayiyor ve ust duzey adlari diger ayni durumdaki test
+// dosyalariyla CAKISIYORDU (TS2393/TS2451, ve arguman tiplerinin
+// baska bir dosyanin bildirimine cozulmesi). Bu satir modul kapsami
+// ilan eder; calisma zamaninda hicbir sey degistirmez.
+export {};

@@ -3,9 +3,9 @@
 // Interfaces, encoding, challenge üretimi, authenticator data parse, COSE key dönüşümü
 
 import crypto from 'crypto';
+import { resolveWebAuthnRpId } from './webauthn-origin';
 
-// verifyRpIdHash için RP_ID — webauthn.ts ile aynı env var
-const RP_ID = process.env.WEBAUTHN_RP_ID || 'localhost';
+export { resolveWebAuthnRpId } from './webauthn-origin';
 
 export interface WebAuthnUser {
   _id: string;
@@ -26,6 +26,12 @@ export function b64uEncode(buf: Buffer | Uint8Array): string {
 }
 
 export function b64uDecode(str: string): Buffer {
+  // Node's base64 decoder is deliberately permissive and may ignore invalid
+  // characters. WebAuthn fields are base64url without padding; accepting
+  // garbage here would make challenge/credential byte identity ambiguous.
+  if (typeof str !== 'string' || !/^[A-Za-z0-9_-]*$/.test(str) || str.length % 4 === 1) {
+    throw new Error('Invalid base64url encoding');
+  }
   const pad = str.length % 4;
   const padded = pad ? str + '='.repeat(4 - pad) : str;
   return Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
@@ -53,7 +59,12 @@ export function parseAuthenticatorData(authDataBuf: Buffer): {
 
   let offset = 0;
   const rpIdHash = authDataBuf.slice(offset, offset + 32); offset += 32;
-  const flags    = authDataBuf[offset]; offset += 1;
+  // Indeksli erisim (`buf[i]`) `noUncheckedIndexedAccess` altinda
+  // `number | undefined` doner ve tum bayrak testleri tip hatasi verir.
+  // `readUInt8` KESIN `number` doner ve sinir disi okumada SESSIZCE
+  // `undefined` vermek yerine ACIKCA hata firlatir — kriptografik bir
+  // ayristiricida dogru davranis budur.
+  const flags    = authDataBuf.readUInt8(offset); offset += 1;
   const signCount = authDataBuf.readUInt32BE(offset); offset += 4;
 
   const UP  = !!(flags & 0x01); // User Present
@@ -65,11 +76,21 @@ export function parseAuthenticatorData(authDataBuf: Buffer): {
   let credentialPublicKey = null;
   let aaguid = null;
 
-  if (AT && authDataBuf.length > offset + 16 + 2) {
+  if (AT) {
+    // AT means the remaining attested-credential structure is mandatory. Do not
+    // let Buffer.slice() silently truncate malformed authenticator input.
+    if (authDataBuf.length < offset + 18) {
+      throw new Error('attested credential data truncated');
+    }
     aaguid = authDataBuf.slice(offset, offset + 16); offset += 16;
     const credIdLen = authDataBuf.readUInt16BE(offset); offset += 2;
+    if (credIdLen <= 0 || authDataBuf.length < offset + credIdLen) {
+      throw new Error('credentialId truncated or empty');
+    }
     credentialId = authDataBuf.slice(offset, offset + credIdLen); offset += credIdLen;
-    // CBOR-encoded public key — store raw for now, verify signature separately
+    // A credential public key is mandatory when AT is set. The CBOR decoder
+    // below performs its own strict bounds checks on the encoded key.
+    if (offset >= authDataBuf.length) throw new Error('credential public key missing');
     credentialPublicKey = authDataBuf.slice(offset);
   }
 
@@ -78,7 +99,7 @@ export function parseAuthenticatorData(authDataBuf: Buffer): {
 
 // RP ID hash doğrula
 export function verifyRpIdHash(rpIdHash: Buffer): boolean {
-  const expected = crypto.createHash('sha256').update(RP_ID).digest();
+  const expected = crypto.createHash('sha256').update(resolveWebAuthnRpId()).digest();
   return expected.equals(rpIdHash);
 }
 
@@ -114,15 +135,26 @@ export function coseToJwk(coseBuf: Buffer): Record<string, unknown> {
     } else if (info === 26) {
       const b3 = readByte(); const b2 = readByte();
       const b1 = readByte(); const b0 = readByte();
-      val = (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
+      // Avoid signed 32-bit bitwise overflow for CBOR uint32 values.
+      val = b3 * 0x1000000 + b2 * 0x10000 + b1 * 0x100 + b0;
     } else {
       throw new Error(`Unsupported CBOR additional info: ${info}`);
     }
 
     if (major === 0) return val;                                        // uint
     if (major === 1) return -(val + 1);                                 // negint
-    if (major === 2) { const v = b.slice(pos, pos + val); pos += val; return v; } // bytes
-    if (major === 3) { const v = b.slice(pos, pos + val).toString(); pos += val; return v; } // text
+    if (major === 2) {
+      if (!Number.isSafeInteger(val) || val < 0 || pos + val > b.length) {
+        throw new Error('CBOR parse error: truncated byte string');
+      }
+      const v = b.slice(pos, pos + val); pos += val; return v;
+    } // bytes
+    if (major === 3) {
+      if (!Number.isSafeInteger(val) || val < 0 || pos + val > b.length) {
+        throw new Error('CBOR parse error: truncated text string');
+      }
+      const v = b.slice(pos, pos + val).toString(); pos += val; return v;
+    } // text
     if (major === 5) {                                                  // map
       const map: Record<number | string, unknown> = {};
       for (let i = 0; i < val; i++) {
@@ -138,6 +170,7 @@ export function coseToJwk(coseBuf: Buffer): Record<string, unknown> {
   }
 
   const raw = readCbor();
+  if (pos !== b.length) throw new Error('COSE key contains trailing CBOR data');
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     throw new Error('COSE key must be a CBOR map');
   }
@@ -149,14 +182,17 @@ export function coseToJwk(coseBuf: Buffer): Record<string, unknown> {
     // EC2 key (ES256) — P-256
     const x = map[-2]; const y = map[-3];
     if (!Buffer.isBuffer(x) || !Buffer.isBuffer(y)) throw new Error('ES256: x/y must be bytes');
+    if (x.length !== 32 || y.length !== 32) throw new Error('ES256: x/y must be 32-byte P-256 coordinates');
     return { kty: 'EC', crv: 'P-256', alg: 'ES256', x: b64uEncode(x), y: b64uEncode(y) };
   }
-  if (kty === 3) {
-    // RSA key (RS256)
+  if (kty === 3 && alg === -257) {
+    // RSA key (RS256). kty alone is not enough: accepting a mismatched COSE
+    // algorithm would register key material under a different verification
+    // contract than the authenticator actually declared.
     const n = map[-1]; const e = map[-2];
     if (!Buffer.isBuffer(n) || !Buffer.isBuffer(e)) throw new Error('RS256: n/e must be bytes');
+    if (n.length === 0 || e.length === 0) throw new Error('RS256: n/e must not be empty');
     return { kty: 'RSA', alg: 'RS256', n: b64uEncode(n), e: b64uEncode(e) };
   }
   throw new Error(`Unsupported COSE key type: kty=${kty} alg=${alg}`);
 }
-

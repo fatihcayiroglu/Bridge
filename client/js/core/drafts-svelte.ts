@@ -1,9 +1,8 @@
 // client/js/core/drafts-svelte.ts
 // Sprint 116 — DraftManager mount shim (ADR-0008 Faz 3)
-// Kanal başına mesaj taslak yönetimi
-import { mount } from 'svelte';
+// Faz 8.2: bu shim hiçbir yerden import edilmiyordu; app.ts artık import ediyor.
+import { mount, unmount } from 'svelte';
 import DraftManager from './DraftManager.svelte';
-import { BridgeRegistry } from './bridge-registry.ts';
 import { createLogger } from './logger.ts';
 const log = createLogger('DraftManagerShim');
 
@@ -22,7 +21,13 @@ export function mountDraftManager(target?: HTMLElement): void {
 }
 
 export function unmountDraftManager(): void {
-  if (_instance) { _instance = null; }
+  // Faz 8.2: önceden yalnızca referans null'lanıyordu — bileşen ve bekleyen
+  // zamanlayıcıları yaşamaya devam ediyordu (sızıntı). Gerçekten unmount
+  // edilir; DraftManager onDestroy içinde bekleyen taslağı diske indirir.
+  if (!_instance) return;
+  const inst = _instance;
+  _instance = null;
+  void unmount(inst);
 }
 
 if (document.readyState === 'loading') {
@@ -30,4 +35,6 @@ if (document.readyState === 'loading') {
 } else {
   mountDraftManager();
 }
+// `_instance` guard'ı sayesinde ikinci çağrı yeni örnek üretmez (çift yönetici
+// aynı taslağı iki kez yazıp birbirini ezerdi).
 document.addEventListener('bridge:socket-ready', () => mountDraftManager(), { once: true });

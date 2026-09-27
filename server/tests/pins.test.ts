@@ -1,6 +1,6 @@
 // server/tests/pins.test.ts
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
@@ -19,12 +19,19 @@ function buildApp() {
   app.use('/api/channels', authMiddleware, pinsRouter);
   return app;
 }
-function tok(uid) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 describe('Pins Routes', () => {
-  let app, ownerId, memberId, strangerId, serverId, channelId;
-  let memberToken, strangerToken;
-  let pinnedMsgId, unpinnedMsgId;
+  let app: express.Express;
+  let ownerId: string;
+  let memberId: string;
+  let strangerId: string;
+  let serverId: string;
+  let channelId: string;
+  let memberToken: string;
+  let strangerToken: string;
+  let pinnedMsgId: string;
+  let unpinnedMsgId: string;
 
   beforeEach(async () => {
     db._reset?.();
@@ -58,9 +65,18 @@ describe('Pins Routes', () => {
         .set('Authorization', `Bearer ${memberToken}`);
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body)).toBe(true);
-      const ids = res.body.map(m => m._id);
+      const ids = res.body.map((m: Record<string, unknown>) => m._id);
       expect(ids).toContain(pinnedMsgId);
       expect(ids).not.toContain(unpinnedMsgId);
+    });
+
+    it('rejects unsafe file-history pagination before it reaches the repository', async () => {
+      for (const query of ['limit=-1', 'limit=1.5', 'limit=9007199254740992', 'before=-1', 'before=1.5', 'before=9007199254740992']) {
+        const res = await request(app)
+          .get(`/api/channels/${channelId}/files?${query}`)
+          .set('Authorization', `Bearer ${memberToken}`);
+        expect(res.status).toBe(400);
+      }
     });
 
     it('returns 403 for non-member', async () => {

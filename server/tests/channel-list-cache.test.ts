@@ -18,6 +18,9 @@ const mockCacheDel = jest.fn().mockImplementation(async (key: string) => { _cach
 
 jest.mock('../lib/redisAdapter', () => ({
   cache: {
+    // Gercek adaptorde MEVCUT (lib/redisAdapter.ts) — mock'ta eksikti ve
+    // `invalidateChannelMessages` her cagrida sessizce TypeError firlatiyordu.
+    invalidatePattern: jest.fn().mockResolvedValue(undefined),
     get: mockCacheGet,
     set: mockCacheSet,
     del: mockCacheDel,
@@ -181,7 +184,7 @@ describe('Channel List Cache (Sprint 106)', () => {
         .set('Authorization', `Bearer ${ownerToken}`)
         .send({ name: 'yeni-kanal', type: 'text' });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       expect(mockCacheDel).toHaveBeenCalledWith(`channels:list:${serverId}`);
       expect(_cacheStore.has(`channels:list:${serverId}`)).toBe(false);
     });

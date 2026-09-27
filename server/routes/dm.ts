@@ -6,6 +6,9 @@ import { Dms, Users } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { sanitizeUser } from '../lib/userUtils';
 import { limits } from '../middleware/rateLimit';
+import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery } from '../lib/queryNumbers';
+import { evaluateDmAccess } from '../lib/dmAccessPolicy';
+import logger from '../lib/logger';
 
 function getDmId(a: string, b: string): string { return [a, b].sort().join(':'); }
 
@@ -78,14 +81,27 @@ router.get('/', authMiddleware, async (req, res) => {
     .filter((id): id is string => !!id);
   const userList = await Users.findByIds([...new Set(otherIds)]);
   const userMap  = new Map(userList.map(u => [u._id, u]));
-  const result = convs
+  const visible = convs
     .map(conv => {
       const otherId = conv.participants.find((p: string) => p !== _u.id);
       const other   = otherId ? userMap.get(otherId) : undefined;
       if (!other) return null;
-      return { ...conv, other: sanitizeUser(other) };
+      return { conv, other };
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
+
+  // Faz 10.3 — türetilmiş okunmamış sayacı. Yeni tablo/kolon YOK: mevcut
+  // `readAt` imleci ile mesaj zaman damgalarından hesaplanır. GET salt
+  // okumadır; burada hiçbir okundu durumu değiştirilmez.
+  // Not: konuşma başına bir sayım sorgusu yapılır. DM listesi sınırlı
+  // olduğundan kabul edilebilir; erken optimizasyon için index/migration
+  // eklenmedi.
+  const result = await Promise.all(visible.map(async ({ conv, other }) => {
+    const readAt = (conv.readAt as Record<string, number> | undefined)?.[_u.id];
+    const unreadCount = await Dms.countUnread(conv._id, _u.id, readAt);
+    return { ...conv, other: sanitizeUser(other), unreadCount };
+  }));
+
   res.json(result);
 });
 
@@ -121,6 +137,29 @@ router.post('/:userId', authMiddleware, limits.dm(), async (req, res) => {
   const other = await Users.findById(String(req.params.userId ?? ''));
   if (!other)                    return res.status(404).json({ error: 'User not found' });
   if (other._id === _u.id) return res.status(400).json({ error: 'Cannot DM yourself' });
+
+  // Faz 10.8 — GİZLİLİK VE ENGEL KONTROLÜ.
+  //
+  // Bu uç önceden hiçbir kontrol yapmıyordu; oysa socket yolu
+  // (socket/handlers/dm.ts:290-317) hem engeli hem `dmPrivacy`yi uyguluyordu.
+  // Sonuç bir BYPASS ZİNCİRİYDİ: saldırgan REST ile konuşmayı açar, sonra
+  // socket'in "konuşma zaten var" muafiyetine (a.g.e. satır 301-303) girerek
+  // DM'i reddetmiş ya da kendisini engellemiş kullanıcıya KALICI erişim
+  // kazanırdı. Aynı kurallar burada da uygulanır; sözleşme birebir aynıdır:
+  // kısıtlama yalnız YENİ konuşma açılışına uygulanır.
+  let access;
+  try {
+    access = await evaluateDmAccess(_u.id, other as { _id: string; dmPrivacy?: unknown });
+  } catch (err) {
+    logger.error({ event: 'dm.access_policy.failed', userId: _u.id, otherUserId: other._id, err },
+      '[dm] privacy/block policy could not be evaluated');
+    return res.status(503).json({ error: 'DM policy is temporarily unavailable' });
+  }
+  if (!access.allowed) {
+    if (access.reason === 'blocked') return res.status(403).json({ error: 'Bu kullanıcıyla mesajlaşamazsınız.' });
+    if (access.reason === 'privacy_none') return res.status(403).json({ error: 'Bu kullanıcı DM almıyor.' });
+    return res.status(403).json({ error: 'Bu kullanıcı yalnızca arkadaşlarından DM kabul ediyor.' });
+  }
 
   const { conv, dmId } = await Dms.findOrCreateConversation(_u.id, other._id);
   res.json({ ...conv, _id: dmId, other: sanitizeUser(other) });
@@ -159,10 +198,23 @@ router.get('/:dmId/messages', authMiddleware, async (req, res) => {
   if (!conv) return res.status(404).json({ error: 'Conversation not found' });
   if (!conv.participants.includes(_u.id)) return res.status(403).json({ error: 'Forbidden' });
 
-  const limit    = Math.min(parseInt(String(req.query.limit ?? '')) || 50, 100);
-  const before   = parseInt(String(req.query.before ?? '')) || Date.now() + 1;
-  const messages = await Dms.findMessages(String(req.params.dmId ?? ''), { limit, before });
-  res.json(messages.reverse());
+  const limit  = parseBoundedPositiveIntQuery(req.query.limit, 50, 100);
+  const before = parseNonNegativeSafeIntQuery(req.query.before, Date.now() + 1);
+  if (limit === null || before === null) {
+    return res.status(400).json({ error: 'limit/before must be safe non-negative integers (limit >= 1)' });
+  }
+  // Faz 10.2 — kompozit cursor. `beforeId` opsiyoneldir: verilmezse eski
+  // (yalnız zaman damgalı) davranış korunur. Aynı milisaniyede yazılmış
+  // mesajlar sayfa sınırına denk geldiğinde bu ayırıcı olmadan sessizce
+  // kayboluyorlardı (bkz. tests/dm-pagination.test.ts).
+  const beforeIdRaw = String(req.query.beforeId ?? '').trim();
+  const beforeId    = beforeIdRaw.length > 0 && beforeIdRaw.length <= 64 ? beforeIdRaw : undefined;
+
+  const messages = await Dms.findMessages(String(req.params.dmId ?? ''), { limit, before, beforeId });
+  // Fetching an authorized conversation is the canonical "opened" action;
+  // keep the durable read cursor correct even when the socket is unavailable.
+  await Dms.markRead(String(req.params.dmId ?? ''), _u.id);
+  res.json(messages.reverse().map(({ clientNonce: _clientNonce, ...message }) => message));
 });
 
 export { router, getDmId };

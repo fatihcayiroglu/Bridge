@@ -5,13 +5,16 @@
 <!-- haberleşme yapılır.                                           -->
 
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { createSettingsStore, type SettingsTab } from './stores/settingsStore';
+  import { t } from '../i18n/reactive.svelte.ts';
+  import { focusTrap } from '../a11y/focusTrap.ts';
+  import { onMount, onDestroy, type Component } from 'svelte';
+  import { createSettingsStore, type SettingsStore, type SettingsTab } from './stores/settingsStore';
   import ProfileTab       from './tabs/ProfileTab.svelte';
   import AppearanceTab    from './tabs/AppearanceTab.svelte';
   import NotificationsTab from './tabs/NotificationsTab.svelte';
   import PrivacyTab       from './tabs/PrivacyTab.svelte';
   import DevicesTab       from './tabs/DevicesTab.svelte';
+  import SecurityTab      from './tabs/SecurityTab.svelte';
 
   // ── Props ─────────────────────────────────────────────────────────────────
   interface Props {
@@ -22,84 +25,160 @@
   let { initialTab = 'profile', onClose }: Props = $props();
 
   // ── Store ─────────────────────────────────────────────────────────────────
-  function getInitialTab(): SettingsTab { return initialTab; }
+  type CanonicalTab = 'profile' | 'appearance' | 'notifications' | 'privacy' | 'devices' | 'security';
+  const TAB_IDS: CanonicalTab[] = ['profile', 'appearance', 'notifications', 'privacy', 'devices', 'security'];
+  function canonicalTab(value: SettingsTab): CanonicalTab {
+    return TAB_IDS.includes(value as CanonicalTab) ? value as CanonicalTab : 'profile';
+  }
+  function getInitialTab(): CanonicalTab { return canonicalTab(initialTab); }
   const store = createSettingsStore(getInitialTab());
+  let activeTab = $state<CanonicalTab>(getInitialTab());
+  let storeError = $state<string | null>(null);
+  const unsubscribeStore = store.subscribe((state) => {
+    activeTab = canonicalTab(state.activeTab as SettingsTab);
+    storeError = typeof state.error === 'string' ? state.error : null;
+  });
 
   // ── Tab tanımları ─────────────────────────────────────────────────────────
-  const TABS: Array<{ id: SettingsTab; label: string; icon: string }> = [
-    { id: 'profile',       label: 'Profil',       icon: '👤' },
-    { id: 'appearance',    label: 'Görünüm',       icon: '🎨' },
-    { id: 'notifications', label: 'Bildirimler',   icon: '🔔' },
-    { id: 'privacy',       label: 'Gizlilik',      icon: '🔒' },
-    { id: 'devices',       label: 'Cihazlar',      icon: '🎙️' },
-  ];
+  const TABS: Array<{ id: CanonicalTab; label: string }> = $derived.by(() => [
+    { id: 'profile',       label: t('ui_profile_label', 'Profil') },
+    { id: 'appearance',    label: t("app_appearance", "Görünüm") },
+    { id: 'notifications', label: t('ui_notifications_label', 'Bildirimler') },
+    { id: 'privacy',       label: t("ui_gizlilik", "Gizlilik") },
+    { id: 'devices',       label: t('ui_devices_label', 'Cihazlar') },
+    // GUVENLIK: sunucu 2FA'yi tam destekliyordu ama uretim istemcisinde
+    // hicbir yonetim yuzeyi yoktu (ulasilabilirlik olcumu ortaya cikardi).
+    { id: 'security',      label: t("ui_guvenlik", "Güvenlik") },
+  ]);
+
+  let dialog: HTMLElement;
+  let previousBodyOverflow = '';
+  let closing = false;
 
   // ── Klavye desteği ────────────────────────────────────────────────────────
+  //
+  // FAZ E — TAB TUZAĞI BURADAN KALDIRILDI.
+  //
+  // Bu bileşen kendi Tab sarmalama kodunu taşıyordu (FOCUSABLE listesi +
+  // focusableElements() + Tab dalı). Aynı mantık CommandPalettePanel ve
+  // VoicePanel içinde de tekrarlanıyordu: üründe ÜÇ ayrı tuzak uygulaması.
+  // Artık tek kanonik sahip `a11y/focusTrap.ts` action'ıdır ve şablondaki
+  // `use:focusTrap` ile bağlanır.
+  //
+  // KRİTİK: ikisi BİRLİKTE bırakılamazdı. Her ikisi de Tab'da
+  // preventDefault() + focus() çağırdığı için odak TEK Tab'da İKİ adım
+  // atlardı — yani "iki tuzak" tek tuzaktan DAHA kötü davranırdı.
+  //
+  // Escape burada KALIR: kapatma bu bileşenin sözleşmesidir, tuzağın değil.
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') close();
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    }
   }
 
   function close() {
+    if (closing) return;
+    closing = true;
     onClose?.();
-    // BridgeRegistry köprüsü aracılığıyla Vanilla JS tarafını bilgilendir
-    (window as unknown as { BridgeRegistry?: { emit?: (ev: string) => void } })
-      .BridgeRegistry?.emit?.('settings:closed');
+  }
+
+  function selectTab(tab: CanonicalTab): void {
+    store.setTab(tab);
+  }
+
+  function handleTabKeydown(event: KeyboardEvent, index: number): void {
+    let next = index;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') next = (index + 1) % TABS.length;
+    else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') next = (index - 1 + TABS.length) % TABS.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = TABS.length - 1;
+    else return;
+
+    event.preventDefault();
+    const tab = TABS[next];
+    selectTab(tab.id);
+    queueMicrotask(() => document.getElementById(`tab-${tab.id}`)?.focus());
   }
 
   onMount(() => {
     window.addEventListener('keydown', handleKeydown);
-    // İlk odağı modal'a ver — a11y
-    document.getElementById('settings-modal-content')?.focus();
+    previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    queueMicrotask(() => document.getElementById(`tab-${canonicalTab(initialTab)}`)?.focus());
   });
 
   onDestroy(() => {
     window.removeEventListener('keydown', handleKeydown);
+    document.body.style.overflow = previousBodyOverflow;
+    unsubscribeStore();
   });
 
   // ── Aktif tab bileşeni ────────────────────────────────────────────────────
-  const TAB_COMPONENTS: Record<SettingsTab, any> = {
+  const TAB_COMPONENTS: Record<CanonicalTab, Component<{ store: SettingsStore }>> = {
     profile:       ProfileTab,
     appearance:    AppearanceTab,
     notifications: NotificationsTab,
     privacy:       PrivacyTab,
     devices:       DevicesTab,
+    security:      SecurityTab,
   };
 
-  let ActiveComponent = $derived(TAB_COMPONENTS[store.activeTab] as any);
+  let ActiveComponent = $derived(TAB_COMPONENTS[activeTab]);
 </script>
 
 <!-- ── Overlay ──────────────────────────────────────────────────────────────── -->
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<div
-  class="settings-overlay"
-  role="dialog"
-  aria-modal="true"
-  aria-label="Ayarlar"
-  tabindex="-1"
-  onclick={(e) => { if (e.target === e.currentTarget) close(); }}
->
+<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+<div class="settings-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) close(); }}>
   <div
+    bind:this={dialog}
     id="settings-modal-content"
     class="settings-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="settings-title"
     tabindex="-1"
+    use:focusTrap
   >
     <!-- ── Sidebar ──────────────────────────────────────────────────────── -->
-    <nav class="settings-sidebar" aria-label="Ayarlar kategorileri">
-      <h2 class="settings-sidebar-title">Ayarlar</h2>
+    <nav class="settings-sidebar" aria-label={t('attr_ayarlar_kategorileri_e1c54bf', "Ayarlar kategorileri")}>
+      <div class="settings-brand" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M5 7.5h14M7.5 4v7M16.5 4v7M5 16.5h14M9 13v7M15 13v7"/></svg>
+      </div>
+      <h2 id="settings-title" class="settings-sidebar-title">{t('settings')}</h2>
       <ul role="tablist">
-        {#each TABS as tab (tab.id)}
+        {#each TABS as tab, index (tab.id)}
           <li role="presentation">
             <button
               role="tab"
               id="tab-{tab.id}"
-              aria-selected={store.activeTab === tab.id}
+              aria-selected={activeTab === tab.id}
               aria-controls="tabpanel-{tab.id}"
               class="settings-tab-btn"
-              class:active={store.activeTab === tab.id}
-              onclick={() => store.setTab(tab.id)}
+              class:active={activeTab === tab.id}
+              tabindex={activeTab === tab.id ? 0 : -1}
+              onclick={() => selectTab(tab.id)}
+              onkeydown={(event) => handleTabKeydown(event, index)}
             >
-              <span class="tab-icon" aria-hidden="true">{tab.icon}</span>
-              {tab.label}
+              <span class="tab-icon" aria-hidden="true">
+                {#if tab.id === 'profile'}
+                  <svg viewBox="0 0 20 20"><circle cx="10" cy="6.5" r="3"/><path d="M4.5 16c.7-3 2.5-4.5 5.5-4.5s4.8 1.5 5.5 4.5"/></svg>
+                {:else if tab.id === 'appearance'}
+                  <svg viewBox="0 0 20 20"><path d="M4 15.5 10 3l6 12.5M6 12h8"/><path d="M13.5 5.5 16 3"/></svg>
+                {:else if tab.id === 'notifications'}
+                  <svg viewBox="0 0 20 20"><path d="M5 13.5h10l-1.5-2V8a3.5 3.5 0 0 0-7 0v3.5zM8.5 16h3"/></svg>
+                {:else if tab.id === 'privacy'}
+                  <svg viewBox="0 0 20 20"><rect x="4.5" y="8" width="11" height="8" rx="2"/><path d="M7 8V6.5a3 3 0 0 1 6 0V8M10 11v2"/></svg>
+                {:else if tab.id === 'security'}
+                  <!-- Kalkan: guvenlik. Kendi ikonu OLMASAYDI `{:else}` dali
+                       devreye girip CIHAZLAR ikonunu gosterirdi; iki tab ayni
+                       ikonla ayirt edilemez olurdu. -->
+                  <svg viewBox="0 0 20 20"><path d="M10 3l5.5 2.2v4.3c0 3.2-2.2 6-5.5 7-3.3-1-5.5-3.8-5.5-7V5.2z"/><path d="M7.8 10.2l1.6 1.6 3-3.2"/></svg>
+                {:else}
+                  <svg viewBox="0 0 20 20"><rect x="4" y="3.5" width="12" height="8" rx="1.5"/><path d="M8 15.5h4M10 11.5v4M6.5 7.5h.01M9 7.5h4.5"/></svg>
+                {/if}
+              </span>
+              <span>{tab.label}</span>
             </button>
           </li>
         {/each}
@@ -108,13 +187,13 @@
 
     <!-- ── İçerik paneli ────────────────────────────────────────────────── -->
     <div
-      id="tabpanel-{store.activeTab}"
+      id="tabpanel-{activeTab}"
       role="tabpanel"
-      aria-labelledby="tab-{store.activeTab}"
+      aria-labelledby="tab-{activeTab}"
       class="settings-content"
     >
-      {#if store.error}
-        <div class="settings-error" role="alert">{store.error}</div>
+      {#if storeError}
+        <div class="settings-error" role="alert">{storeError}</div>
       {/if}
 
       {#if ActiveComponent}
@@ -125,9 +204,9 @@
     <!-- ── Kapat butonu ──────────────────────────────────────────────────── -->
     <button
       class="settings-close"
-      aria-label="Ayarları kapat"
+      aria-label={t('settings_close', 'Ayarları kapat')}
       onclick={close}
-    >✕</button>
+    ><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5.5 5.5 9 9M14.5 5.5l-9 9"/></svg></button>
   </div>
 </div>
 
@@ -135,41 +214,47 @@
   .settings-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
+    padding: var(--space-6);
+    background: color-mix(in srgb, var(--bg-0) 78%, transparent);
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1000;
+    z-index: var(--layer-modal);
+    animation: settings-fade var(--duration-base) var(--ease-out);
   }
 
   .settings-modal {
     position: relative;
     display: flex;
-    width: min(900px, 95vw);
-    height: min(680px, 90vh);
-    background: var(--bg-primary, #1a1b1e);
-    border-radius: 12px;
+    width: min(920px, calc(100vw - (var(--space-6) * 2)));
+    height: min(680px, calc(var(--bridge-visual-viewport-height, 100dvh) - (var(--space-6) * 2)));
+    min-height: 480px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-modal);
+    background: var(--bg-2);
+    box-shadow: var(--shadow-xl);
     overflow: hidden;
     outline: none;
+    animation: settings-in var(--duration-base) var(--ease-out);
   }
 
   .settings-sidebar {
-    width: 220px;
+    position: relative;
+    width: 224px;
     flex-shrink: 0;
-    background: var(--bg-secondary, #141517);
-    padding: 24px 12px;
+    border-right: 1px solid var(--border);
+    background: var(--bg-1);
+    padding: var(--space-6) var(--space-3);
     overflow-y: auto;
   }
 
   .settings-sidebar-title {
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-muted, #6d6f78);
-    padding: 0 8px 12px;
-    margin: 0 0 4px;
+    margin: 0 0 var(--space-4); padding: 0 var(--space-2) 0 36px;
+    color: var(--text-primary); font-size: var(--type-title-sm); font-weight: 700; letter-spacing: -.01em;
   }
+
+  .settings-brand { position: absolute; top: 19px; left: var(--space-5); display: grid; width: 26px; height: 26px; place-items: center; border-radius: var(--radius-control); background: var(--brand-subtle); color: var(--brand); }
+  .settings-brand svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
 
   .settings-sidebar ul {
     list-style: none;
@@ -181,68 +266,106 @@
     width: 100%;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 12px;
+    gap: var(--space-2);
+    min-height: 40px;
+    padding: var(--space-2) var(--space-3);
     border: none;
-    border-radius: 6px;
+    border-radius: var(--radius-control);
     background: transparent;
-    color: var(--text-secondary, #b0b3bb);
-    font-size: 14px;
+    color: var(--text-2);
+    font-size: var(--type-body);
     cursor: pointer;
     text-align: left;
-    transition: background 0.1s, color 0.1s;
+    transition: background var(--duration-fast), color var(--duration-fast), transform var(--duration-fast);
   }
 
   .settings-tab-btn:hover {
-    background: var(--bg-hover, rgba(255,255,255,0.06));
-    color: var(--text-primary, #e4e6eb);
+    background: var(--bg-4);
+    color: var(--text-primary);
   }
 
   .settings-tab-btn.active {
-    background: var(--bg-active, rgba(114, 137, 218, 0.15));
-    color: var(--brand, #2d9cdb);
+    background: var(--brand-subtle);
+    /* Marka metni, marka tonlu (%15 alfa) bir zeminin üzerinde duruyor; açık
+       temada ölçülen kontrast 3.52:1 idi (WCAG 1.4.3 AA = 4.5:1).
+       `--brand-ink` koyu temada `--brand`e eşittir; koyu tema değişmez. */
+    color: var(--brand-ink, var(--brand));
   }
 
-  .tab-icon { font-size: 16px; }
+  .tab-icon { display: grid; width: 20px; height: 20px; flex: none; place-items: center; }
+  .tab-icon svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
 
   .settings-content {
     flex: 1;
-    padding: 32px;
+    padding: var(--space-8);
     overflow-y: auto;
-    color: var(--text-primary, #e4e6eb);
+    color: var(--text-primary);
+    scrollbar-gutter: stable;
   }
 
   .settings-error {
-    background: rgba(237, 66, 69, 0.12);
-    border: 1px solid rgba(237, 66, 69, 0.4);
-    border-radius: 6px;
-    padding: 10px 14px;
-    margin-bottom: 16px;
-    font-size: 13px;
-    color: #ed4245;
+    background: var(--red-bg);
+    border: 1px solid var(--red);
+    border-radius: var(--radius-control);
+    padding: var(--space-3) var(--space-4);
+    margin-bottom: var(--space-4);
+    font-size: var(--type-body-sm);
+    color: var(--red);
   }
 
 
   .settings-close {
     position: absolute;
-    top: 12px;
-    right: 12px;
-    width: 32px;
-    height: 32px;
+    top: var(--space-4);
+    right: var(--space-4);
+    width: 36px;
+    height: 36px;
     border: none;
-    border-radius: 50%;
-    background: var(--bg-hover, rgba(255,255,255,0.08));
-    color: var(--text-secondary, #b0b3bb);
-    font-size: 16px;
+    border-radius: var(--radius-pill);
+    background: var(--bg-3);
+    color: var(--text-muted);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: background 0.1s, color 0.1s;
+    transition: background var(--duration-fast), color var(--duration-fast), transform var(--duration-fast);
   }
 
   .settings-close:hover {
-    background: rgba(237, 66, 69, 0.15);
-    color: #ed4245;
+    background: var(--red-bg);
+    color: var(--red);
+  }
+  .settings-close:active { transform: scale(.94); }
+  .settings-close svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 1.7; }
+
+  .settings-tab-btn:focus-visible,
+  .settings-close:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  @keyframes settings-fade { from { opacity: 0; } }
+  @keyframes settings-in { from { opacity: 0; transform: translateY(var(--space-2)) scale(.985); } }
+
+  @media (max-width: 720px) {
+    .settings-overlay { padding: var(--space-3); align-items: stretch; }
+    .settings-modal { flex-direction: column; width: 100%; height: calc(var(--bridge-visual-viewport-height, 100dvh) - (var(--space-3) * 2)); min-height: 0; }
+    .settings-sidebar { width: 100%; flex: none; padding: max(var(--space-3), env(safe-area-inset-top)) 52px var(--space-2) var(--space-3); border-right: 0; border-bottom: 1px solid var(--border); overflow: hidden; }
+    .settings-brand, .settings-sidebar-title { display: none; }
+    .settings-sidebar ul { display: flex; gap: var(--space-1); overflow-x: auto; }
+    .settings-sidebar li { flex: none; }
+    .settings-tab-btn { width: auto; min-height: 38px; white-space: nowrap; }
+    .settings-content { padding: var(--space-5); }
+    .settings-close { top: max(var(--space-3), env(safe-area-inset-top)); right: max(var(--space-3), env(safe-area-inset-right)); }
+  }
+
+  @media (max-width: 480px) {
+    .settings-overlay { padding: 0; }
+    .settings-modal { height: var(--bridge-visual-viewport-height, 100dvh); border: 0; border-radius: 0; }
+    .settings-content { padding: var(--space-4) var(--space-4) max(var(--space-4), env(safe-area-inset-bottom)); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .settings-overlay, .settings-modal { animation: none; }
   }
 </style>

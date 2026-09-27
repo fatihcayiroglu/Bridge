@@ -1,9 +1,8 @@
 // client/js/core/messages-loader-svelte.ts
 // Sprint 116 — MessageLoader mount shim (ADR-0008 Faz 3)
 // Mesaj yükleme, cursor tabanlı sayfalama
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import MessageLoader from './MessageLoader.svelte';
-import { BridgeRegistry } from './bridge-registry.ts';
 import { createLogger } from './logger.ts';
 const log = createLogger('MessageLoaderShim');
 
@@ -22,7 +21,10 @@ export function mountMessageLoader(target?: HTMLElement): void {
 }
 
 export function unmountMessageLoader(): void {
-  if (_instance) { _instance = null; }
+  if (!_instance) return;
+  const mounted = _instance;
+  _instance = null;
+  void unmount(mounted);
 }
 
 if (document.readyState === 'loading') {

@@ -7,11 +7,39 @@
 //   4. Stage Video Grid — socket olayı flow (API + mock)
 //   5. Draw Together — socket olayı flow (API + mock)
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 import { getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
 
-const BASE = process.env.BASE_URL || 'http://localhost:3000';
+const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
 const API  = `${BASE}/api`;
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'AdminPass123!';
+
+// Final21 Faz 19 (19-32): the marketplace sections below used to hard-skip three tests with
+// "POST /api/bots/marketplace route missing; the request lands in another handler" — the very
+// defect Phase 14 fixed (F21-14-06) — and the admin tests accepted `[200, 403, 404]` /
+// `[204, 403, 404]` with alice's token, i.e. they passed whether or not the feature worked (and
+// left their listings behind). They now assert the real contract with exact statuses, use the
+// provisioned admin for admin actions, and remove what they create.
+async function adminLogin(request: import('@playwright/test').APIRequestContext): Promise<string> {
+  const res = await request.post(`${API}/login`, {
+    headers: { 'Content-Type': 'application/json' },
+    data: JSON.stringify({ username: ADMIN_USERNAME, password: ADMIN_PASSWORD }),
+  });
+  expect(res.status(), 'admin fixture login (global setup provisions the admin)').toBe(200);
+  const { token } = await res.json() as { token?: string };
+  if (!token) throw new Error('admin login returned no token');
+  return token;
+}
+
+async function submitListing(
+  request: import('@playwright/test').APIRequestContext, token: string, id: string, extra: Record<string, unknown> = {},
+) {
+  return request.post(`${API}/bots/marketplace`, {
+    data: JSON.stringify({ id, name: `E2E ${id}`, description: 'Playwright e2e listing.', category: 'utility', ...extra }),
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. BOT MARKETPLACE — Public Endpoints
@@ -71,14 +99,18 @@ test.describe('Bot Marketplace — public API', () => {
     expect(bots.length).toBeLessThanOrEqual(2);
   });
 
-  test('GET /api/bots/marketplace/:botId — seed botu (bridge-music) döner', async ({ request }) => {
-    const res = await request.get(`${API}/bots/marketplace/bridge-music`);
+  test('GET /api/bots/marketplace/:botId — built-in example (bridgebot, seeded at every boot) is returned approved', async ({ request }) => {
+    // The product never shipped a `bridge-music` listing; the boot seed (`db/seed-marketplace.ts`)
+    // creates `bridgebot` and `pollbot`, approved, claiming only enforced scopes (migration 073).
+    const res = await request.get(`${API}/bots/marketplace/bridgebot`);
     expect(res.status()).toBe(200);
     const bot = await res.json();
-    expect(bot.id).toBe('bridge-music');
-    expect(bot).toHaveProperty('name');
-    expect(bot).toHaveProperty('category');
+    expect(bot.id).toBe('bridgebot');
+    expect(bot.name).toBe('BridgeBot');
     expect(bot.approved).toBe(true);
+    expect(bot.verified).toBe(false);
+    expect(bot.requestedScopes).toEqual(['commands', 'messages:reply']);
+    expect(bot.unsupportedPermissions).toEqual([]);
   });
 
   test('GET /api/bots/marketplace/:botId — bilinmeyen bot 404', async ({ request }) => {
@@ -112,20 +144,23 @@ test.describe('Bot Marketplace — public API', () => {
 
 test.describe('Bot Marketplace — authenticated API', () => {
   let tokens: { alice: string; bob: string };
-  let submittedBotId: string;
+  let adminToken = '';
+  const created: string[] = [];
 
-  test.beforeAll(() => {
+  test.beforeAll(async ({ request }) => {
     tokens = getTokens();
+    adminToken = await adminLogin(request);
+  });
+
+  test.afterAll(async ({ request }) => {
+    for (const id of created) {
+      await request.delete(`${API}/bots/marketplace/${id}`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    }
   });
 
   test('POST /api/bots/marketplace — auth olmadan 401', async ({ request }) => {
     const res = await request.post(`${API}/bots/marketplace`, {
-      data: JSON.stringify({
-        id: 'test-bot-noauth',
-        name: 'Test Bot',
-        description: 'Açıklama',
-        category: 'utility',
-      }),
+      data: JSON.stringify({ id: `e2e-noauth-${Date.now()}`, name: 'Test Bot', description: 'Açıklama', category: 'utility' }),
       headers: { 'Content-Type': 'application/json' },
     });
     expect(res.status()).toBe(401);
@@ -134,69 +169,51 @@ test.describe('Bot Marketplace — authenticated API', () => {
   test('POST /api/bots/marketplace — zorunlu alanlar eksik → 400', async ({ request }) => {
     const res = await request.post(`${API}/bots/marketplace`, {
       data: JSON.stringify({ name: 'Eksik Bot' }),
-      headers: {
-        Authorization: `Bearer ${tokens.alice}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
     });
     expect(res.status()).toBe(400);
   });
 
   test('POST /api/bots/marketplace — geçersiz id formatı → 400', async ({ request }) => {
-    const res = await request.post(`${API}/bots/marketplace`, {
-      data: JSON.stringify({
-        id: 'INVALID ID!',
-        name: 'Bot',
-        description: 'Açıklama',
-        category: 'utility',
-      }),
-      headers: {
-        Authorization: `Bearer ${tokens.alice}`,
-        'Content-Type': 'application/json',
-      },
-    });
+    const res = await submitListing(request, tokens.alice, 'INVALID ID!');
     expect(res.status()).toBe(400);
   });
 
-  test('POST /api/bots/marketplace — geçerli submit 201 döner, approved=false', async ({ request }) => {
-    submittedBotId = `e2e-test-bot-${Date.now()}`;
-    const res = await request.post(`${API}/bots/marketplace`, {
-      data: JSON.stringify({
-        id: submittedBotId,
-        name: 'E2E Test Bot',
-        description: 'Playwright e2e testi için geçici bot.',
-        category: 'utility',
-        tags: ['test'],
-      }),
-      headers: {
-        Authorization: `Bearer ${tokens.alice}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    // 201 veya 409 (aynı isim çakışması) kabul edilir
-    expect([201, 409]).toContain(res.status());
-    if (res.status() === 201) {
-      const body = await res.json();
-      expect(body.id).toBe(submittedBotId);
-      expect(body.approved).toBe(false);
-    }
+  test('POST /api/bots/marketplace — desteklenmeyen izin bildiren liste → 400 (yalnız uygulanan kapsamlar)', async ({ request }) => {
+    const id = `e2e-scope-${Date.now()}`;
+    const res = await submitListing(request, tokens.alice, id, { permissions: ['members:ban'] });
+    expect(res.status()).toBe(400);
+    expect((await request.get(`${API}/bots/marketplace/${id}`)).status()).toBe(404);
   });
 
-  test('POST /api/bots/marketplace — aynı id tekrar → 409', async ({ request }) => {
-    test.skip(!submittedBotId, 'Bot submission fixture gerekli'); if (!submittedBotId) return;
-    const res = await request.post(`${API}/bots/marketplace`, {
-      data: JSON.stringify({
-        id: submittedBotId,
-        name: 'Duplicate Bot',
-        description: 'Duplicate',
-        category: 'utility',
-      }),
-      headers: {
-        Authorization: `Bearer ${tokens.alice}`,
-        'Content-Type': 'application/json',
-      },
+  test('POST /api/bots/marketplace — geçerli gönderim 201, onaysız ve herkese GÖRÜNMEZ', async ({ request }) => {
+    const id = `e2e-submit-${Date.now()}`;
+    const res = await submitListing(request, tokens.alice, id, { tags: ['test'], permissions: ['commands'] });
+    expect(res.status()).toBe(201);
+    created.push(id);
+    const body = await res.json();
+    expect(body.id).toBe(id);
+    expect(body.approved).toBe(false);
+    expect(body.installable).toBe(false);
+    expect(body.verified).toBe(false);
+    expect(body.requestedScopes).toEqual(['commands']);
+    // Unapproved listings are not published: the public detail route does not reveal them.
+    expect((await request.get(`${API}/bots/marketplace/${id}`)).status()).toBe(404);
+  });
+
+  test('POST /api/bots/marketplace — aynı id tekrar → 409 ve ilk gönderim değişmez', async ({ request }) => {
+    const id = `e2e-dup-${Date.now()}`;
+    expect((await submitListing(request, tokens.alice, id)).status()).toBe(201);
+    created.push(id);
+    const again = await submitListing(request, tokens.bob, id, { name: 'Hijack attempt' });
+    expect(again.status()).toBe(409);
+    const approve = await request.patch(`${API}/bots/marketplace/${id}`, {
+      data: JSON.stringify({ approved: true }),
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
     });
-    expect(res.status()).toBe(409);
+    expect(approve.status()).toBe(200);
+    const listing = await (await request.get(`${API}/bots/marketplace/${id}`)).json();
+    expect(listing.name).toBe(`E2E ${id}`);
   });
 });
 
@@ -206,51 +223,64 @@ test.describe('Bot Marketplace — authenticated API', () => {
 
 test.describe('Bot Marketplace — admin API', () => {
   let tokens: { alice: string; bob: string };
+  let adminToken = '';
   let testBotId: string;
 
   test.beforeAll(async ({ request }) => {
     tokens = getTokens();
-    // Admin testi için önce bir bot submit et
+    adminToken = await adminLogin(request);
     testBotId = `e2e-admin-bot-${Date.now()}`;
-    await request.post(`${API}/bots/marketplace`, {
-      data: JSON.stringify({
-        id: testBotId,
-        name: 'Admin Test Bot',
-        description: 'Admin E2E testi botu.',
-        category: 'moderation',
-      }),
-      headers: {
-        Authorization: `Bearer ${tokens.alice}`,
-        'Content-Type': 'application/json',
-      },
-    });
+    const res = await submitListing(request, tokens.alice, testBotId, { category: 'moderation' });
+    expect(res.status(), 'admin fixture listing').toBe(201);
   });
 
-  test('PATCH /api/bots/marketplace/:botId — admin onaylayabilir', async ({ request }) => {
+  test.afterAll(async ({ request }) => {
+    // Idempotent cleanup: 404 once the DELETE test has removed it.
+    await request.delete(`${API}/bots/marketplace/${testBotId}`, { headers: { Authorization: `Bearer ${adminToken}` } });
+  });
+
+  test('PATCH /api/bots/marketplace/:botId — yönetici OLMAYAN onaylayamaz (403) ve liste yayımlanmaz', async ({ request }) => {
+    const res = await request.patch(`${API}/bots/marketplace/${testBotId}`, {
+      data: JSON.stringify({ approved: true }),
+      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
+    });
+    expect(res.status()).toBe(403);
+    expect((await request.get(`${API}/bots/marketplace/${testBotId}`)).status()).toBe(404);
+  });
+
+  test('PATCH /api/bots/marketplace/:botId — yönetici onaylar, liste herkese açılır', async ({ request }) => {
     const res = await request.patch(`${API}/bots/marketplace/${testBotId}`, {
       data: JSON.stringify({ approved: true, note: 'E2E onayı' }),
-      headers: {
-        Authorization: `Bearer ${tokens.alice}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
     });
-    // Admin değilse 403, admin ise 200
-    expect([200, 403, 404]).toContain(res.status());
+    expect(res.status()).toBe(200);
+    expect((await res.json()).approved).toBe(true);
+    const pub = await request.get(`${API}/bots/marketplace/${testBotId}`);
+    expect(pub.status()).toBe(200);
+    expect((await pub.json()).approved).toBe(true);
   });
 
-  test('DELETE /api/bots/marketplace/:botId — admin silebilir', async ({ request }) => {
+  test('DELETE /api/bots/marketplace/:botId — yönetici OLMAYAN silemez (403)', async ({ request }) => {
     const res = await request.delete(`${API}/bots/marketplace/${testBotId}`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
-    // 204 (silindi) veya 403 (admin değil) veya 404 (yoktu)
-    expect([204, 403, 404]).toContain(res.status());
+    expect(res.status()).toBe(403);
+    expect((await request.get(`${API}/bots/marketplace/${testBotId}`)).status()).toBe(200);
   });
 
-  test('DELETE /api/bots/marketplace/:botId — bilinmeyen bot 404', async ({ request }) => {
-    const res = await request.delete(`${API}/bots/marketplace/nonexistent-bot-${Date.now()}`, {
-      headers: { Authorization: `Bearer ${tokens.alice}` },
+  test('DELETE /api/bots/marketplace/:botId — yönetici siler (204), liste artık yok', async ({ request }) => {
+    const res = await request.delete(`${API}/bots/marketplace/${testBotId}`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
     });
-    expect([403, 404]).toContain(res.status());
+    expect(res.status()).toBe(204);
+    expect((await request.get(`${API}/bots/marketplace/${testBotId}`)).status()).toBe(404);
+  });
+
+  test('DELETE /api/bots/marketplace/:botId — bilinmeyen bot 404 (yönetici)', async ({ request }) => {
+    const res = await request.delete(`${API}/bots/marketplace/nonexistent-bot-${Date.now()}`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    expect(res.status()).toBe(404);
   });
 });
 
@@ -335,6 +365,10 @@ test.describe('Draw Together — API ve güvenlik', () => {
   });
 
   test('Activities endpoint — auth ile çalışır (veya 404 if endpoint eksik)', async ({ request }) => {
+    // Final21 Faz 22 (19-37): `[200, 201, 404, 405]` kabul ederek VAR OLMAYAN rotaya karşı GEÇİYORDU —
+    // ölçüldü: 404 "Not found: POST /api/channels/…/activities". Etkinlikler soket üzerindendir
+    // (kardeş test aynı gerekçeyle atlanıyor); geçmiş sayılmaz.
+    test.skip(true, 'SEVK EDİLMEDİ: /api/channels/:id/activities REST ucu yok (ölçüldü 404) — etkinlikler soket tabanlı.');
     const res = await request.post(`${API}/channels/${channelId}/activities`, {
       headers: {
         Authorization: `Bearer ${tokens.alice}`,
@@ -380,11 +414,27 @@ test.describe('Sprint 83 — Genel Sağlık', () => {
     expect(limit).toBeLessThanOrEqual(100);
   });
 
-  test('GET /api/bots/marketplace offset negatif değer sıfıra çekilir', async ({ request }) => {
+  // ── GÜNCELLENDİ: SESSİZ DÜZELTME DEĞİL, AÇIK RET ───────────────────────────
+  // Bu test eskiden negatif `offset`in sessizce 0'a çekilmesini bekliyordu.
+  // Üretim artık `lib/queryNumbers.ts` içindeki kanonik ayrıştırıcıyı kullanır
+  // (11 rota dosyası aynı sözleşmeyi paylaşır): geçersiz sayfalama parametresi
+  // UYDURULMAZ, 400 ile REDDEDİLİR.
+  //
+  // Bu daha güçlü davranıştır — sessiz düzeltme, istemcinin gönderdiğiyle
+  // sunucunun uyguladığını ayrıştırır ve hatayı gizler. Test bu yüzden
+  // gerçek sözleşmeye göre güncellendi; doğrulama GEVŞETİLMEDİ.
+  test('GET /api/bots/marketplace negatif offset AÇIKÇA reddedilir', async ({ request }) => {
     const res = await request.get(`${API}/bots/marketplace?offset=-5`);
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(String(body.error)).toMatch(/offset/i);
+  });
+
+  test('GET /api/bots/marketplace geçerli offset aynen uygulanır', async ({ request }) => {
+    const res = await request.get(`${API}/bots/marketplace?offset=5`);
     expect(res.status()).toBe(200);
     const { offset } = await res.json();
-    expect(offset).toBeGreaterThanOrEqual(0);
+    expect(offset).toBe(5);
   });
 
   test('GET /api/docs (Swagger) Sprint 83 route\'larını içeriyor', async ({ request }) => {

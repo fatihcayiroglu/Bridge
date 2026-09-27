@@ -13,9 +13,13 @@
 //   import { registerChessHandlers } from './activities/chess-arbiter';
 //   registerChessHandlers(socket, io, userId);
 
-import type { Socket, Server as IOServer } from 'socket.io';
+import type { HandlerSocket, HandlerServer } from '../../handler-contracts';
 import logger from '../../../lib/logger';
 import { chessStore } from './chess-store';
+import { canViewChannel } from '../../../lib/permissions';
+import { Channels } from '../../../db/repositories';
+import { isolateSocketHandler } from '../../handlerIsolation';
+
 
 // ── Types ─────────────────────────────────────────────────────
 // GameState ve bağlı tipler chess-types.ts'e taşındı (döngüsel bağımlılık fix — Sprint 85)
@@ -337,51 +341,64 @@ export function newGame(whiteUserId: string | null, blackUserId: string | null):
 // ── Socket handler ────────────────────────────────────────────
 
 export function registerChessHandlers(
-  socket: Socket,
-  io:     IOServer,
+  socket: HandlerSocket,
+  io:     HandlerServer,
   userId: string,
 ): void {
 
   // chess:join — oyuna katıl (beyaz/siyah ata)
-  socket.on('chess:join', async (payload: { channelId: string }) => {
+
+// ── KANAL ERISIM DENETIMI ────────────────────────────────────────────────────
+// `chess:join` istemcinin gonderdigi `channelId` degerine kosulsuz guveniyordu:
+// uyesi OLMAYAN biri herhangi bir kanalda oyun OLUSTURABILIYOR ve siyah
+// koltugu KAPABILIYORDU (mesru uyeyi engelleyen bir griefing yolu), ayrica
+// oyun durumunu okuyabiliyordu.
+//
+// Hamleler zaten koltuk sahipligiyle korunuyordu (`expectedUser !== userId`);
+// eksik olan tek sey KATILMA anindaki kanal yetkisiydi. `draw-together` ile
+// ayni sinif kusur — kardes yol asimetrisi.
+async function mayJoinChannelGame(socket: HandlerSocket, userId: string, channelId: string): Promise<boolean> {
+  if (!channelId || typeof channelId !== 'string') return false;
+  if (!socket.rooms.has(`voice:${channelId}`)) return false;
+  const channel = await Channels.findById(channelId).catch(() => null);
+  if (!channel) return false;
+  // Sunucu kimligi KANALDAN okunur — istemcinin iddiasindan degil.
+  return canViewChannel(userId, String(channel.serverId), channelId).catch(() => false);
+}
+
+  socket.on('chess:join', isolateSocketHandler(socket, 'chess:join', async (payload: { channelId: string }) => {
     const { channelId } = payload ?? {};
     if (!channelId) return;
+    // YETKI HER SEYDEN ONCE: oyun olusturmadan, koltuk kapmadan ve
+    // durum sizdirmadan once dogrulanir.
+    if (!await mayJoinChannelGame(socket, userId, channelId)) return;
 
-    let game = await chessStore.get(channelId);
-    if (!game) {
-      game = newGame(userId, null);
-      await chessStore.set(channelId, game);
-      socket.emit('chess:joined', { color: 'w', state: _publicState(game) });
-      logger.info({ event: 'chess.created', channelId, userId }, 'Chess game created');
-      return;
-    }
-
-    if (!game.blackUserId && game.whiteUserId !== userId) {
-      // Atomik CAS: blackUserId hâlâ null ise bu userId'yi yaz, aksi hâlde başkası kazandı
-      const claimed = await chessStore.claimBlack(channelId, userId);
-      if (!claimed) {
-        // Race: başka biri siyahı aldı; güncel state'i çek ve reconnect gibi davran
-        const latest = await chessStore.get(channelId);
-        const color = latest?.whiteUserId === userId ? 'w' : latest?.blackUserId === userId ? 'b' : null;
-        socket.emit('chess:state', { color, state: latest ? _publicState(latest) : null });
+    await chessStore.withLock(channelId, async () => {
+      let game = await chessStore.get(channelId);
+      if (!game) {
+        game = newGame(userId, null);
+        await chessStore.set(channelId, game);
+        socket.emit('chess:joined', { color: 'w', state: _publicState(game) });
+        logger.info({ event: 'chess.created', channelId, userId }, 'Chess game created');
         return;
       }
-      // Güncel state'i oku (claimBlack içinde yazıldı)
-      const started = await chessStore.get(channelId);
-      if (started) {
-        io.to(`channel:${channelId}`).emit('chess:started', { state: _publicState(started) });
-        logger.info({ event: 'chess.started', channelId }, 'Chess game started');
-      }
-      return;
-    }
 
-    // Reconnect: belirle rengi
-    const color = game.whiteUserId === userId ? 'w' : game.blackUserId === userId ? 'b' : null;
-    socket.emit('chess:state', { color, state: _publicState(game) });
-  });
+      if (!game.blackUserId && game.whiteUserId !== userId) {
+        game.blackUserId = userId;
+        await chessStore.set(channelId, game);
+        io.to(`channel:${channelId}`).emit('chess:started', { state: _publicState(game) });
+        logger.info({ event: 'chess.started', channelId }, 'Chess game started');
+        return;
+      }
+
+      // Reconnect / spectator state after the authoritative seat mutation.
+      const color = game.whiteUserId === userId ? 'w' : game.blackUserId === userId ? 'b' : null;
+      socket.emit('chess:state', { color, state: _publicState(game) });
+    });
+  }));
 
   // chess:move — hamle doğrula ve uygula
-  socket.on('chess:move', async (payload: {
+  socket.on('chess:move', isolateSocketHandler(socket, 'chess:move', async (payload: {
     channelId:  string;
     from:       string;   // algebraic: "e2"
     to:         string;   // algebraic: "e4"
@@ -391,6 +408,7 @@ export function registerChessHandlers(
       const { channelId, from, to, promoteTo } = payload ?? {};
       if (!channelId || !from || !to) return;
 
+      await chessStore.withLock(channelId, async () => {
       const game = await chessStore.get(channelId);
       if (!game || game.gameOver) {
         socket.emit('chess:invalid', { reason: 'Oyun mevcut değil veya bitti.' });
@@ -481,56 +499,81 @@ export function registerChessHandlers(
         });
         logger.info({ event: 'chess.over', channelId, result: game.result }, 'Chess game over');
       }
+      });
 
     } catch (err) {
       logger.error({ event: 'chess.move.error', err }, 'chess:move handler error');
       socket.emit('chess:invalid', { reason: 'Sunucu hatası.' });
     }
-  });
+  }));
+
+
+/**
+ * Bu kullanici bu oyunun OYUNCUSU mu?
+ *
+ * ── KAPATILAN GERCEK KUSUR ─────────────────────────────────────────────────
+ * `chess:resign`, `chess:draw_offer` ve `chess:draw_accept` oyuncu kimligini
+ * HIC denetlemiyordu. Kimligi dogrulanmis HERHANGI bir kullanici, herhangi
+ * bir kanaldaki oyunu bitirebiliyordu:
+ *
+ *   • `resign` → `markGameOver` cagrilir, oyun BITER.
+ *   • Dahasi `whiteUserId === userId ? 'w' : 'b'` ifadesi, oyuncu OLMAYAN
+ *     birini SIYAH sayar ve sonucu BEYAZ KAZANDI diye yayinlar.
+ *   • `draw_offer` → baskasinin adina sahte beraberlik teklifi yayinlanir.
+ *
+ * `chess:move` zaten koltuk sahipligiyle korunuyordu; kardes olaylar
+ * atlanmisti — bu programda dorduncu kez gorulen ayni asimetri.
+ */
+function isPlayer(game: { whiteUserId?: string | null; blackUserId?: string | null }, userId: string): boolean {
+  return game.whiteUserId === userId || game.blackUserId === userId;
+}
 
   // chess:resign — teslim ol
-  socket.on('chess:resign', async (payload: { channelId: string }) => {
+  socket.on('chess:resign', isolateSocketHandler(socket, 'chess:resign', async (payload: { channelId: string }) => {
     const { channelId } = payload ?? {};
     if (!channelId) return;
-    const game = await chessStore.get(channelId);
-    if (!game || game.gameOver) return;
+    await chessStore.withLock(channelId, async () => {
+      const game = await chessStore.get(channelId);
+      if (!game || game.gameOver) return;
+      if (!isPlayer(game, userId)) return;      // yalnizca oyuncular teslim olabilir
 
-    const resigned = await chessStore.markGameOver(channelId);
-    if (!resigned) return; // başka bir event kazandı (race condition koruması)
-
-    const resignColor = game.whiteUserId === userId ? 'w' : 'b';
-    game.result = resignColor === 'w' ? 'b' : 'w';
-    io.to(`channel:${channelId}`).emit('chess:game_over', {
-      result: game.result,
-      reason: `${resignColor === 'w' ? 'Beyaz' : 'Siyah'} teslim oldu.`,
-      state:  _publicState({ ...game, gameOver: true }),
+      await chessStore.del(channelId);
+      const resignColor = game.whiteUserId === userId ? 'w' : 'b';
+      game.result = resignColor === 'w' ? 'b' : 'w';
+      io.to(`channel:${channelId}`).emit('chess:game_over', {
+        result: game.result,
+        reason: `${resignColor === 'w' ? 'Beyaz' : 'Siyah'} teslim oldu.`,
+        state:  _publicState({ ...game, gameOver: true }),
+      });
     });
-  });
+  }));
 
   // chess:draw_offer / chess:draw_accept — beraberlik teklifi
-  socket.on('chess:draw_offer', async (payload: { channelId: string }) => {
+  socket.on('chess:draw_offer', isolateSocketHandler(socket, 'chess:draw_offer', async (payload: { channelId: string }) => {
     const { channelId } = payload ?? {};
     if (!channelId) return;
     const game = await chessStore.get(channelId);
     if (!game || game.gameOver) return;
+    if (!isPlayer(game, userId)) return;      // sahte teklif yayinlanamaz
     io.to(`channel:${channelId}`).emit('chess:draw_offered', { by: userId });
-  });
+  }));
 
-  socket.on('chess:draw_accept', async (payload: { channelId: string }) => {
+  socket.on('chess:draw_accept', isolateSocketHandler(socket, 'chess:draw_accept', async (payload: { channelId: string }) => {
     const { channelId } = payload ?? {};
     if (!channelId) return;
-    const game = await chessStore.get(channelId);
-    if (!game || game.gameOver) return;
+    await chessStore.withLock(channelId, async () => {
+      const game = await chessStore.get(channelId);
+      if (!game || game.gameOver) return;
+      if (!isPlayer(game, userId)) return;      // yalnizca oyuncular kabul edebilir
 
-    const accepted = await chessStore.markGameOver(channelId);
-    if (!accepted) return; // başka bir event kazandı (race condition koruması)
-
-    io.to(`channel:${channelId}`).emit('chess:game_over', {
-      result: 'draw',
-      reason: 'Anlaşmalı beraberlik.',
-      state:  _publicState({ ...game, gameOver: true, result: 'draw' }),
+      await chessStore.del(channelId);
+      io.to(`channel:${channelId}`).emit('chess:game_over', {
+        result: 'draw',
+        reason: 'Anlaşmalı beraberlik.',
+        state:  _publicState({ ...game, gameOver: true, result: 'draw' }),
+      });
     });
-  });
+  }));
 }
 
 // ── Public state (istemciye gönderilecek subset) ──────────────

@@ -3,6 +3,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import db from '../loader';
+import { parsePermissionMask } from '../../lib/permissionMaskInvariant';
 
 class RoleRepository {
   async findById(id: string) {
@@ -18,11 +19,19 @@ class RoleRepository {
   }
 
   async insert(data: Record<string, unknown>) {
-    return db.roles.insert({ _id: uuidv4(), createdAt: Date.now(), ...data });
+    const normalized = { ...data };
+    if (normalized.permissions !== undefined) {
+      normalized.permissions = parsePermissionMask(normalized.permissions, 'role permissions');
+    }
+    return db.roles.insert({ _id: uuidv4(), createdAt: Date.now(), ...normalized });
   }
 
   async update(id: string, serverId: string, fields: Record<string, unknown>) {
-    return db.roles.update({ _id: id, serverId }, { $set: fields });
+    const normalized = { ...fields };
+    if (normalized.permissions !== undefined) {
+      normalized.permissions = parsePermissionMask(normalized.permissions, 'role permissions');
+    }
+    return db.roles.update({ _id: id, serverId }, { $set: normalized });
   }
 
   async delete(id: string, serverId: string) {

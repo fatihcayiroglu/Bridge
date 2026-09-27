@@ -50,7 +50,7 @@ export function toggleDeafen(): void {
 }
 
 export function toggleVideo(): Promise<void> {
-  return BridgeRegistry.get('voicePanel:toggleVideo')?.() ?? Promise.resolve();
+  return BridgeRegistry.get<() => Promise<void>>('voicePanel:toggleVideo')?.() ?? Promise.resolve();
 }
 
 export function toggleScreenShare(): void {
@@ -58,7 +58,7 @@ export function toggleScreenShare(): void {
 }
 
 export function openScreenShareQualityPicker(): void {
-  BridgeRegistry.get('voicePanel:toggleScreenShare')?.();
+  BridgeRegistry.get('voicePanel:openScreenShareQualityPicker')?.();
 }
 
 export function leaveVoice(): void {

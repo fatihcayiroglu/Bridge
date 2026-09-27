@@ -31,7 +31,8 @@ const BASELINE_FILE  = path.resolve(__dirname, '../client/.any-baseline.json');
 const CEILING = 0;
 
 // Server test/mock dizinleri hariç tutulur
-const SERVER_EXCLUDE = new Set(['tests', '__mocks__', '__tests__']);
+const SERVER_EXCLUDE = new Set(['tests', '__mocks__', '__tests__', 'dist', 'coverage', 'node_modules', '_archived_legacy']);
+const CLIENT_EXCLUDE = new Set(['dist', 'coverage', 'node_modules', '_archived_legacy']);
 
 // ── Pattern'lar ───────────────────────────────────────────────────────────────
 const ANY_PATTERNS = [
@@ -69,7 +70,7 @@ function collectTsFiles(dir, excludeDirs = new Set()) {
 }
 
 function buildReport() {
-  const clientFiles = collectTsFiles(CLIENT_DIR);
+  const clientFiles = collectTsFiles(CLIENT_DIR, CLIENT_EXCLUDE);
   const serverFiles = collectTsFiles(SERVER_DIR, SERVER_EXCLUDE);
   const files   = [...clientFiles, ...serverFiles];
   const byFile  = {};
@@ -122,7 +123,7 @@ if (args.includes('--diff')) {
 // ── Normal CI kontrolü ────────────────────────────────────────────────────────
 const { total, byFile } = buildReport();
 
-console.log(`\n📊 Client TypeScript 'any' sayısı: ${total} / ${CEILING} (eşik)\n`);
+console.log(`\n📊 Production TypeScript 'any' sayısı: ${total} / ${CEILING} (eşik)\n`);
 
 if (total > CEILING) {
   console.error(`❌ BAŞARISIZ: ${total} any > ${CEILING} eşik`);

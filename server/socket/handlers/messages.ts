@@ -10,7 +10,7 @@
 // Mevcut import'lar değişmeden çalışmaya devam eder:
 //   import { registerMessageHandlers, systemMsg, formatDuration } from './messages';
 
-import type { Server as IOServer, Socket } from 'socket.io';
+import type { HandlerSocket, HandlerServer } from '../handler-contracts';
 import type { AuthUser, SocketUser } from './messages-types';
 import { systemMsg, formatDuration } from './messages-types';
 import { registerSendHandlers } from './messages-send';
@@ -25,8 +25,8 @@ export { registerThreadSocketEvents };
  * socket/index.ts'teki kullanım değişmez.
  */
 export function registerMessageHandlers(
-  socket: Socket,
-  io: IOServer,
+  socket: HandlerSocket,
+  io: HandlerServer,
   user: AuthUser,
   socketUsers: Map<string, SocketUser>,
 ): void {

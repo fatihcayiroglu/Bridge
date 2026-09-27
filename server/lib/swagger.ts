@@ -2,9 +2,9 @@
 // OpenAPI 3.0 spec + Swagger UI
 //
 // MİMARİ:
-//   - BASE_SPEC: components/schemas/tags/servers/security — burada tanımlı
-//   - paths:     route dosyalarındaki @openapi JSDoc → swagger-jsdoc ile otomatik merge
-//   - Fallback:  swagger-jsdoc yüklü değilse BASE_SPEC (paths: {}) döner
+//   - Canonical source: docs/api/openapi.yaml
+//   - Build-time snapshot: server/generated/openapi.json
+//   - Runtime never scans source files and never depends on swagger-jsdoc
 //
 // Oturum C (Sprint 79):
 //   - JSON tip güvenliği: OpenApiSchema, OpenApiPath, OpenApiSpec arayüzleri
@@ -14,12 +14,11 @@
 //   - BASE_SPEC artık OpenApiSpec ile tam tip güvenli
 //
 // KURULUM (zaten kurulu):
-//   npm install swagger-ui-express swagger-jsdoc
+//   Runtime dependency: swagger-ui-express (spec snapshot is generated at build time)
 
 import express, { Request, Response, NextFunction } from 'express';
 import swaggerUi from 'swagger-ui-express';
-import path from 'path';
-import { tryRequire } from './_optional-require';
+import runtimeSpec from '../generated/openapi.json';
 
 // ── Oturum C: Tip tanımları ─────────────────────────────────────
 
@@ -117,175 +116,20 @@ export interface OpenApiSpec {
   paths:       Record<string, OpenApiPath>;
 }
 
-// ── Base spec (paths route JSDoc'tan otomatik gelir) ────────────
-const BASE_SPEC: OpenApiSpec = {
-  openapi: '3.0.3',
-  info: {
-    title:       'Bridge API',
-    version:     '46.0.0',
-    description: 'Bridge — Açık kaynaklı Discord alternatifi. REST API dökümantasyonu.',
-    contact: { name: 'Bridge', url: 'https://github.com/bridge-app/bridge' },
-    license: { name: 'MIT' },
-  },
-  servers: [
-    { url: '/api/v1', description: 'v1 — stabil, canonical (önerilen)' },
-    { url: '/api',    description: '⚠️ Deprecated — Deprecation: true header döner. /api/v1 kullanın.' },
-  ],
-  tags: [
-    { name: 'Auth',        description: 'Kimlik doğrulama & token yönetimi' },
-    { name: 'Servers',     description: 'Sunucu yönetimi' },
-    { name: 'Channels',    description: 'Kanal yönetimi' },
-    { name: 'Messages',    description: 'Mesaj gönderme & alma' },
-    { name: 'DM',          description: 'Direkt mesajlar' },
-    { name: 'GroupDM',     description: 'Grup direkt mesajlar' },
-    { name: 'Friends',     description: 'Arkadaşlık sistemi' },
-    { name: 'Roles',       description: 'Rol & izin yönetimi' },
-    { name: 'Moderation',  description: 'Moderasyon araçları' },
-    { name: 'Upload',      description: 'Dosya yükleme' },
-    { name: 'Search',      description: 'Mesaj & kullanıcı arama' },
-    { name: 'Threads',     description: 'Thread sistemi' },
-    { name: 'Polls',       description: 'Anket sistemi' },
-    { name: 'Discover',    description: 'Sunucu keşif' },
-    { name: 'Badges',      description: 'Kullanıcı rozetleri' },
-    { name: 'Bots',        description: 'Bot API & Webhook' },
-    { name: 'Activity',    description: 'Kullanıcı aktivite durumu' },
-    { name: 'E2E',         description: 'Uçtan uca şifreleme' },
-    { name: 'TwoFactor',   description: 'İki faktörlü doğrulama' },
-    { name: 'WebAuthn',    description: 'Passkey / WebAuthn kimlik doğrulama' },
-    { name: 'AI',          description: 'Yapay zeka özellikleri' },
-    { name: 'Federation',  description: 'ActivityPub & peer federation' },
-    { name: 'Admin',       description: 'Admin dashboard — sadece isAdmin:1 kullanıcılar' },
-    { name: 'Health',      description: 'Sistem sağlığı & metrikler' },
-  ],
-  components: {
-    securitySchemes: {
-      bearerAuth: {
-        type:         'http',
-        scheme:       'bearer',
-        bearerFormat: 'JWT',
-        description:  'JWT access token. /api/auth/login\'den alın.',
-      },
-    },
-    responses: {
-      Forbidden: {
-        description: 'Yetki hatası',
-        content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
-      },
-      NotFound: {
-        description: 'Kaynak bulunamadı',
-        content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
-      },
-      Unauthorized: {
-        description: 'Kimlik doğrulama gerekli',
-        content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
-      },
-    },
-    schemas: {
-      Error: {
-        type: 'object',
-        properties: {
-          error: { type: 'string', example: 'Not found' },
-        },
-      },
-      User: {
-        type: 'object',
-        properties: {
-          _id:         { type: 'string', format: 'uuid' },
-          username:    { type: 'string', example: 'john_doe' },
-          displayName: { type: 'string', example: 'John Doe' },
-          avatarColor: { type: 'string', example: '#2d9cdb' },
-          avatarUrl:   { type: 'string', nullable: true },
-          status:      { type: 'string', enum: ['online', 'idle', 'dnd', 'offline'] },
-          bio:         { type: 'string' },
-          website:     { type: 'string' },
-          location:    { type: 'string' },
-          pronouns:    { type: 'string' },
-          bannerColor: { type: 'string' },
-          bannerUrl:   { type: 'string', nullable: true },
-          createdAt:   { type: 'integer', description: 'Unix ms timestamp' },
-        },
-      },
-      Server: {
-        type: 'object',
-        properties: {
-          _id:         { type: 'string', format: 'uuid' },
-          name:        { type: 'string', example: 'My Server' },
-          description: { type: 'string' },
-          icon:        { type: 'string', nullable: true },
-          ownerId:     { type: 'string', format: 'uuid' },
-          createdAt:   { type: 'integer' },
-        },
-      },
-      Channel: {
-        type: 'object',
-        properties: {
-          _id:      { type: 'string', format: 'uuid' },
-          name:     { type: 'string' },
-          type:     { type: 'string', enum: ['text', 'voice', 'announcement', 'stage', 'forum'] },
-          serverId: { type: 'string', format: 'uuid' },
-          topic:    { type: 'string' },
-          position: { type: 'integer' },
-        },
-      },
-      Message: {
-        type: 'object',
-        properties: {
-          _id:         { type: 'string', format: 'uuid' },
-          content:     { type: 'string', example: 'Hello!' },
-          authorId:    { type: 'string', format: 'uuid' },
-          channelId:   { type: 'string', format: 'uuid' },
-          createdAt:   { type: 'integer' },
-          editedAt:    { type: 'integer', nullable: true },
-          reactions:   { type: 'array', items: { type: 'object' } },
-          attachments: { type: 'array', items: { type: 'object' } },
-        },
-      },
-      Pagination: {
-        type: 'object',
-        properties: {
-          before: { type: 'string', description: 'Cursor — bu mesaj ID\'sinden öncekiler' },
-          limit:  { type: 'integer', default: 50, maximum: 100 },
-        },
-      },
-      Role: {
-        type: 'object',
-        properties: {
-          _id:         { type: 'string', format: 'uuid' },
-          name:        { type: 'string' },
-          color:       { type: 'string', example: '#ff0000' },
-          permissions: { type: 'integer', description: 'Bitmask izin değeri' },
-          position:    { type: 'integer' },
-          serverId:    { type: 'string', format: 'uuid' },
-        },
-      },
-      Thread: {
-        type: 'object',
-        properties: {
-          _id:       { type: 'string', format: 'uuid' },
-          title:     { type: 'string' },
-          channelId: { type: 'string', format: 'uuid' },
-          authorId:  { type: 'string', format: 'uuid' },
-          pinned:    { type: 'boolean' },
-          locked:    { type: 'boolean' },
-          createdAt: { type: 'integer' },
-        },
-      },
-      Poll: {
-        type: 'object',
-        properties: {
-          _id:       { type: 'string', format: 'uuid' },
-          question:  { type: 'string' },
-          options:   { type: 'array', items: { type: 'string' } },
-          channelId: { type: 'string', format: 'uuid' },
-          closed:    { type: 'boolean' },
-          createdAt: { type: 'integer' },
-        },
-      },
-    },
-  },
-  security: [{ bearerAuth: [] }],
-  paths: {},
-};
+// ── Canonical runtime spec ───────────────────────────────────────
+// Production installs only server dependencies. Runtime documentation is the
+// validated snapshot generated from docs/api/openapi.yaml, so /api/docs does
+// not depend on an undeclared swagger-jsdoc package at process startup.
+function asOpenApiSpec(value: unknown): OpenApiSpec {
+  if (!value || typeof value !== 'object') throw new Error('Generated OpenAPI snapshot is not an object');
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.openapi !== 'string' || !candidate.info || typeof candidate.info !== 'object' || !candidate.paths || typeof candidate.paths !== 'object') {
+    throw new Error('Generated OpenAPI snapshot is missing required openapi/info/paths fields');
+  }
+  return value as unknown as OpenApiSpec;
+}
+
+const BASE_SPEC: OpenApiSpec = asOpenApiSpec(runtimeSpec);
 
 // ── Oturum C: $ref resolver ─────────────────────────────────────
 // spec içindeki '#/components/...' referanslarını çözümleyip
@@ -435,41 +279,11 @@ export function validateSpec(spec: OpenApiSpec): SpecWarning[] {
   return warnings;
 }
 
-// ── swagger-jsdoc ile route annotation'larını merge et ──────────
-
+// ── Deterministic canonical spec ─────────────────────────────────
 function buildSpec(): OpenApiSpec {
-  const swaggerJsdoc = tryRequire<(opts: Record<string, unknown>) => OpenApiSpec>('swagger-jsdoc');
-  if (!swaggerJsdoc) return BASE_SPEC;
-
-  try {
-    const merged = swaggerJsdoc({
-      definition: BASE_SPEC,
-      apis: [
-        path.join(__dirname, '../routes/**/*.{ts,js}'),
-        path.join(__dirname, '../lib/**/*.{ts,js}'),
-      ],
-      failOnErrors: false,
-    });
-
-    // Oturum C: operationId'leri otomatik doldur
-    const withIds = ensureOperationIds(merged);
-
-    // Oturum C: geliştirme modunda uyarıları logla
-    if (process.env['NODE_ENV'] !== 'production') {
-      const warnings = validateSpec(withIds);
-      for (const w of warnings) {
-        if (w.level === 'error') {
-          process.stderr.write(`[Swagger] ❌ ${w.path}: ${w.message}\n`);
-        } else {
-          process.stderr.write(`[Swagger] ⚠️  ${w.path}: ${w.message}\n`);
-        }
-      }
-    }
-
-    return withIds;
-  } catch {
-    return BASE_SPEC;
-  }
+  // ensureOperationIds returns a new paths object, keeping the imported JSON
+  // immutable for tests and for any code retaining BASE_SPEC.
+  return ensureOperationIds(BASE_SPEC);
 }
 
 // ── Spec cache (process başına bir kez üretilir) ─────────────────

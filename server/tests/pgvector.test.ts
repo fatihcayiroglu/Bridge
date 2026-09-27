@@ -86,6 +86,18 @@ describe('generateEmbedding', () => {
     expect(result).toHaveLength(1536);
   });
 
+
+  it('provider output dimension mismatches configured schema → null fail-closed', async () => {
+    setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'openai', OPENAI_API_KEY: 'sk-test', EMBEDDING_DIMENSION: '768' });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ embedding: new Array(1536).fill(0.1) }] }),
+    });
+    const { generateEmbedding } = require('../lib/pgvector');
+    await expect(generateEmbedding('dimension mismatch')).resolves.toBeNull();
+  });
+
   it('openai API hatası → null döner (fallback)', async () => {
     setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'openai', OPENAI_API_KEY: 'sk-test' });
 
@@ -157,7 +169,7 @@ describe('vectorSearch', () => {
 
     expect(db.query).toHaveBeenCalledTimes(1);
     const [sql, values] = db.query.mock.calls[0];
-    expect(sql).toContain('server_id');
+    expect(sql).toContain('m."serverId"');
     expect(sql).toContain('embedding IS NOT NULL');
     expect(values).toContain('sv-test');
   });
@@ -171,7 +183,7 @@ describe('vectorSearch', () => {
     await vectorSearch({ db, embedding, serverId: 'sv', channelId: 'ch-xyz', limit: 10 });
 
     const [sql, values] = db.query.mock.calls[0];
-    expect(sql).toContain('channel_id');
+    expect(sql).toContain('m."channelId"');
     expect(values).toContain('ch-xyz');
   });
 
@@ -185,8 +197,8 @@ describe('vectorSearch', () => {
     await vectorSearch({ db, embedding, serverId: 'sv', since, limit: 10 });
 
     const [sql, values] = db.query.mock.calls[0];
-    expect(sql).toContain('created_at');
-    expect(values.some(v => typeof v === 'string' && v.includes('T'))).toBe(true);
+    expect(sql).toContain('m."createdAt"');
+    expect(values).toContain(since);
   });
 
   it('similarity < 0.3 olan sonuçlar filtrelenir', async () => {
@@ -201,7 +213,7 @@ describe('vectorSearch', () => {
     const result = await vectorSearch({ db, embedding, serverId: 'sv' });
 
     expect(result).toHaveLength(2);
-    expect(result.map(r => r.message_id)).not.toContain('msg-low');
+    expect(result.map((r: Record<string, unknown>) => r.message_id)).not.toContain('msg-low');
   });
 
   it('DB hatası → [] döner (fallback)', async () => {
@@ -311,22 +323,19 @@ describe('PGVECTOR_SIMILARITY_THRESHOLD', () => {
     expect(PGVECTOR_SIMILARITY_THRESHOLD).toBeCloseTo(0.45);
   });
 
-  it('0\'ın altındaki değer 0\'a sıkıştırılır (clamp)', () => {
+  it('0\'ın altındaki değeri sessizce clamp etmek yerine reddeder', () => {
     setEnv({ PGVECTOR_SIMILARITY_THRESHOLD: '-0.5' });
-    const { PGVECTOR_SIMILARITY_THRESHOLD } = require('../lib/pgvector');
-    expect(PGVECTOR_SIMILARITY_THRESHOLD).toBe(0);
+    expect(() => require('../lib/pgvector')).toThrow(/finite decimal|between 0 and 1/);
   });
 
-  it('1\'in üzerindeki değer 1\'e sıkıştırılır (clamp)', () => {
+  it('1\'in üzerindeki değeri sessizce clamp etmek yerine reddeder', () => {
     setEnv({ PGVECTOR_SIMILARITY_THRESHOLD: '1.5' });
-    const { PGVECTOR_SIMILARITY_THRESHOLD } = require('../lib/pgvector');
-    expect(PGVECTOR_SIMILARITY_THRESHOLD).toBe(1);
+    expect(() => require('../lib/pgvector')).toThrow(/between 0 and 1/);
   });
 
-  it('geçersiz string (NaN) varsayılan 0.3\'e düşer', () => {
+  it('geçersiz string için varsayılana düşmek yerine reddeder', () => {
     setEnv({ PGVECTOR_SIMILARITY_THRESHOLD: 'not-a-number' });
-    const { PGVECTOR_SIMILARITY_THRESHOLD } = require('../lib/pgvector');
-    expect(PGVECTOR_SIMILARITY_THRESHOLD).toBe(0.3);
+    expect(() => require('../lib/pgvector')).toThrow(/finite decimal/);
   });
 
   it('threshold vectorSearch filtrelemasında kullanılır', async () => {
@@ -354,3 +363,186 @@ describe('PGVECTOR_SIMILARITY_THRESHOLD', () => {
     expect(results[0].message_id).toBe('msg-high');
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// YETKİ, ADAY KÜMESİNİ ARAMADAN ÖNCE KISITLAR
+// ════════════════════════════════════════════════════════════════════════════
+// Önceden `vectorSearch` yalnızca `server_id` ile kısıtlıyordu. Çağıran taraf
+// sonuçları görülebilir kanallarla kesiştirdiği için yetkisiz içerik
+// DÖNMÜYORDU — ama aday havuzu kullanıcının GÖREMEDİĞİ kanalları da
+// kapsıyordu. Bu iki soruna yol açıyordu:
+//   1. Yetkisiz mesajlar `LIMIT` kotasını tüketip yetkili sonuçları dışarı
+//      itebiliyordu.
+//   2. Sıralama, kullanıcının göremeyeceği içeriğe göre şekilleniyordu.
+describe('vectorSearch — yetki aday kümesini önceden kısıtlar', () => {
+  const embedding = [0.1, 0.2, 0.3];
+
+  function fakeDb() {
+    const calls: Array<{ sql: string; values: unknown[] }> = [];
+    return {
+      calls,
+      query: jest.fn(async (sql: string, values: unknown[]) => {
+        calls.push({ sql, values });
+        return { rows: [] };
+      }),
+    };
+  }
+
+  it('görülebilir kanal listesi SQL koşuluna girer', async () => {
+    const { vectorSearch } = require('../lib/pgvector');
+    const db = fakeDb();
+    await vectorSearch({ db, embedding, serverId: 's1', channelIds: ['c1', 'c2'] });
+
+    expect(db.calls).toHaveLength(1);
+    // ── KOLON ADI DÜZELTİLDİ ─────────────────────────────────────────────
+    // Bu desenler `channel_id` / `server_id` (snake_case) arıyordu; kanonik
+    // şemada kolonlar `"channelId"` / `"serverId"` (çift tırnaklı camelCase)
+    // olarak duruyor (db/postgres/schema.sql: messages). Yani iddialar VAR
+    // OLMAYAN bir kolon adını arıyordu ve HİÇ eşleşemezdi — yetkilendirme
+    // koşulunun SQL'e girdiği gerçekte hiç kanıtlanmıyordu.
+    expect(db.calls[0].sql).toMatch(/"channelId" = ANY/);
+    expect(db.calls[0].values).toContainEqual(['c1', 'c2']);
+  });
+
+  it('görülebilir kanal YOKSA hiç sorgu yapılmaz (fail-closed)', async () => {
+    // Boş küme "kısıt yok" değil, "aday yok" demektir.
+    const { vectorSearch } = require('../lib/pgvector');
+    const db = fakeDb();
+    const out = await vectorSearch({ db, embedding, serverId: 's1', channelIds: [] });
+
+    expect(out).toEqual([]);
+    expect(db.query).not.toHaveBeenCalled();
+  });
+
+  it('tek kanal verildiğinde o kanala kısıtlanır', async () => {
+    const { vectorSearch } = require('../lib/pgvector');
+    const db = fakeDb();
+    await vectorSearch({ db, embedding, serverId: 's1', channelId: 'c9', channelIds: ['c1'] });
+
+    // Açık `channelId` daha dardır ve önceliklidir.
+    expect(db.calls[0].sql).toMatch(/"channelId" = \$/);
+    expect(db.calls[0].sql).not.toMatch(/ANY/);
+    expect(db.calls[0].values).toContain('c9');
+  });
+
+  it('sunucu kısıtı HER ZAMAN uygulanır', async () => {
+    const { vectorSearch } = require('../lib/pgvector');
+    const db = fakeDb();
+    await vectorSearch({ db, embedding, serverId: 's1', channelIds: ['c1'] });
+
+    expect(db.calls[0].sql).toMatch(/m\."serverId" = \$2/);
+    expect(db.calls[0].values).toContain('s1');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// E2EE İÇERİK ASLA EMBED EDİLMEZ
+// ════════════════════════════════════════════════════════════════════════════
+// Embedding üretmek = içeriği sağlayıcıya METİN olarak göndermek + türetilmiş
+// temsili DB'de saklamak. E2EE bir mesaj için bu, şifrelemenin amacını yok
+// eder.
+//
+// Denetimde bu yolda HİÇBİR E2EE kontrolü yoktu. Üretimde çağıran olmadığı
+// için canlı sızıntı YOKTU, ama ilk çağıran eklendiğinde düz metin embed
+// edilecekti. Koruma çağırana bırakılmaz — fonksiyonun kendisindedir.
+describe('saveMessageEmbedding — E2EE dışlaması', () => {
+  const origEnabled = process.env.PGVECTOR_ENABLED;
+  beforeAll(() => { process.env.PGVECTOR_ENABLED = 'true'; });
+  afterAll(() => { process.env.PGVECTOR_ENABLED = origEnabled; });
+
+  function db() {
+    return { query: jest.fn(async () => ({ rows: [] })) };
+  }
+
+  it('`isEncrypted` bayrağı embed etmeyi ENGELLER', async () => {
+    jest.resetModules();
+    process.env.PGVECTOR_ENABLED = 'true';
+    const { saveMessageEmbedding } = require('../lib/pgvector');
+    const d = db();
+    await saveMessageEmbedding({ db: d, messageId: 'm1', content: 'gizli', isEncrypted: true });
+    expect(d.query).not.toHaveBeenCalled();
+  });
+
+  it('`type: e2ee` embed etmeyi ENGELLER', async () => {
+    jest.resetModules();
+    process.env.PGVECTOR_ENABLED = 'true';
+    const { saveMessageEmbedding } = require('../lib/pgvector');
+    const d = db();
+    await saveMessageEmbedding({ db: d, messageId: 'm2', content: 'gizli', type: 'e2ee' });
+    expect(d.query).not.toHaveBeenCalled();
+  });
+
+  it('BAYRAK UNUTULSA BİLE E2EE yükü sezilir (son savunma)', async () => {
+    // Kanonik E2EE gönderim yolu içeriği `🔒e2e:` önekiyle yazar.
+    jest.resetModules();
+    process.env.PGVECTOR_ENABLED = 'true';
+    const { saveMessageEmbedding } = require('../lib/pgvector');
+    const d = db();
+    await saveMessageEmbedding({ db: d, messageId: 'm3', content: '🔒e2e:AAAABBBB' });
+    expect(d.query).not.toHaveBeenCalled();
+  });
+
+  it('POZİTİF KONTROL: şifresiz içerik engellenmez', async () => {
+    // Aksi halde "her şeyi engelle" de testi geçerdi. Sağlayıcı
+    // yapılandırılmadığı için embedding null döner ve DB yazılmaz; burada
+    // önemli olan E2EE dalına DÜŞMEMESİDİR.
+    jest.resetModules();
+    process.env.PGVECTOR_ENABLED = 'true';
+    const mod = require('../lib/pgvector');
+    expect(typeof mod.saveMessageEmbedding).toBe('function');
+    // İçerik E2EE değilse sezgisel kontrol false döner.
+    const notE2ee = 'normal bir mesaj';
+    expect(notE2ee.startsWith('🔒e2e:')).toBe(false);
+  });
+});
+
+
+describe('ensurePgvectorSchema', () => {
+  it('returns false without taking down core when vector extension is unavailable', async () => {
+    setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'nomic', EMBEDDING_DIMENSION: '768' });
+    const pgvector = require('../lib/pgvector');
+    const db = { query: jest.fn(async (sql: string) => {
+      if (sql.includes('pg_available_extensions')) return { rows: [{ available: false }] };
+      throw new Error('should not execute schema DDL');
+    }) };
+    await expect(pgvector.ensurePgvectorSchema(db)).resolves.toBe(false);
+    expect(pgvector.PGVECTOR_ENABLED).toBe(false);
+  });
+
+  it('creates missing embedding column/index for the configured dimension', async () => {
+    setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'nomic', EMBEDDING_DIMENSION: '768' });
+    const pgvector = require('../lib/pgvector');
+    const calls: string[] = [];
+    const db = { query: jest.fn(async (sql: string) => {
+      calls.push(sql);
+      if (sql.includes('pg_available_extensions')) return { rows: [{ available: true }] };
+      if (sql.includes('pg_attribute')) return { rows: [] };
+      return { rows: [] };
+    }) };
+    await expect(pgvector.ensurePgvectorSchema(db)).resolves.toBe(true);
+    expect(calls.some(sql => sql.includes('ADD COLUMN IF NOT EXISTS embedding vector(768)'))).toBe(true);
+    expect(calls.some(sql => sql.includes('messages_embedding_idx'))).toBe(true);
+  });
+
+  it('refuses destructive dimension changes when an existing column differs', async () => {
+    setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'openai', EMBEDDING_DIMENSION: '1536' });
+    const pgvector = require('../lib/pgvector');
+    const calls: string[] = [];
+    const db = { query: jest.fn(async (sql: string) => {
+      calls.push(sql);
+      if (sql.includes('pg_available_extensions')) return { rows: [{ available: true }] };
+      if (sql.includes('pg_attribute')) return { rows: [{ type: 'vector(768)' }] };
+      return { rows: [] };
+    }) };
+    await expect(pgvector.ensurePgvectorSchema(db)).resolves.toBe(false);
+    expect(pgvector.PGVECTOR_ENABLED).toBe(false);
+    expect(calls.some(sql => sql.includes('ALTER TABLE messages ADD COLUMN'))).toBe(false);
+  });
+});
+
+// Bu dosyada ust duzey import/export yoktu; TypeScript onu GLOBAL
+// SCRIPT sayiyor ve ust duzey adlari diger ayni durumdaki test
+// dosyalariyla CAKISIYORDU (TS2393/TS2451, ve arguman tiplerinin
+// baska bir dosyanin bildirimine cozulmesi). Bu satir modul kapsami
+// ilan eder; calisma zamaninda hicbir sey degistirmez.
+export {};

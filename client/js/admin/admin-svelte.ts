@@ -8,29 +8,47 @@
 //   - _adminPanelInstance guard: çifte mount koruması
 //   - BridgeRegistry: tüm public API'lar geriye dönük uyumluluk için kayıtlı
 
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import AdminPanel from './AdminPanel.svelte';
+import { BridgeRegistry } from '../core/bridge-registry.ts';
+import { t } from '../core/i18n/index.ts';
 
 let _adminPanelInstance: ReturnType<typeof mount> | null = null;
+let _adminPanelContainer: HTMLElement | null = null;
+let _adminPanelObserver: MutationObserver | null = null;
 
-function mountAdminPanel() {
+export function unmountAdminPanel(removeContainer = true) {
+  const instance = _adminPanelInstance;
+  const container = _adminPanelContainer;
+  _adminPanelInstance = null;
+  _adminPanelContainer = null;
+  _adminPanelObserver?.disconnect();
+  _adminPanelObserver = null;
+  if (instance) void unmount(instance);
+  if (removeContainer && container?.isConnected) container.remove();
+}
+
+export function closeAdminDashboard() {
+  unmountAdminPanel(true);
+}
+
+export function mountAdminPanel() {
   if (_adminPanelInstance) return;
 
   // Admin overlay container — önceki shell.ts'teki gibi body'e ekleniyor
   const container = document.createElement('div');
   container.id = 'admin-overlay';
   document.body.appendChild(container);
+  _adminPanelContainer = container;
 
   _adminPanelInstance = mount(AdminPanel, { target: container });
 
-  // Overlay kaldırıldığında instance'ı temizle
-  const observer = new MutationObserver(() => {
-    if (!document.getElementById('admin-overlay')) {
-      _adminPanelInstance = null;
-      observer.disconnect();
-    }
+  // Overlay dışarıdan kaldırılırsa Svelte instance'ını da gerçekten dispose et.
+  _adminPanelObserver?.disconnect();
+  _adminPanelObserver = new MutationObserver(() => {
+    if (!container.isConnected) unmountAdminPanel(false);
   });
-  observer.observe(document.body, { childList: true });
+  _adminPanelObserver.observe(document.body, { childList: true });
 }
 
 // ── Buton enjeksiyonu (shell.ts'ten taşındı) ──────────────────
@@ -45,7 +63,7 @@ export function adminInjectButton(user: { isAdmin?: boolean; displayName?: strin
   btn.setAttribute('data-tip', 'Admin Paneli');
   btn.setAttribute('role', 'button');
   btn.setAttribute('tabindex', '0');
-  btn.setAttribute('aria-label', 'Admin Panelini Aç');
+  btn.setAttribute('aria-label', t('ts_admin_open', 'Admin Panelini Aç'));
   btn.style.cssText = 'color:#f0a500;font-size:16px;';
   btn.textContent = '🛡️';
   btn.onclick = openAdminDashboard;
@@ -55,7 +73,11 @@ export function adminInjectButton(user: { isAdmin?: boolean; displayName?: strin
 
 export function openAdminDashboard() {
   const existing = document.getElementById('admin-overlay');
-  if (existing) { existing.remove(); _adminPanelInstance = null; return; }
+  if (existing || _adminPanelInstance) {
+    if (_adminPanelInstance) unmountAdminPanel(true);
+    else existing?.remove();
+    return;
+  }
   mountAdminPanel();
 }
 
@@ -68,12 +90,10 @@ export function adminTab(_tab: string) {
 
 // ── BridgeRegistry kayıtları (geriye dönük uyumluluk) ─────────
 function registerBridgeApi() {
-  const reg = (window as any).BridgeRegistry;
-  if (!reg) return;
-
-  reg.register('adminInjectButton',  adminInjectButton);
-  reg.register('openAdminDashboard', openAdminDashboard);
-  reg.register('adminTab',           adminTab);
+  BridgeRegistry.register('adminInjectButton',  adminInjectButton);
+  BridgeRegistry.register('openAdminDashboard', openAdminDashboard);
+  BridgeRegistry.register('closeAdminDashboard', closeAdminDashboard);
+  BridgeRegistry.register('adminTab',           adminTab);
 }
 
 // ── Mount timing ──────────────────────────────────────────────

@@ -10,37 +10,76 @@
 //   6. Yetkisiz reaksiyon reddedilmeli (401)
 
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../helpers/apiTest';
 import { getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
+import { openSocket, closeSockets, waitForEvent, paceSends } from '../helpers/socket';
+import type { Socket } from 'socket.io-client';
 
-const BASE = process.env.BASE_URL || 'http://localhost:3000';
+const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
+// ════════════════════════════════════════════════════════════════════════════
+// KANONIK REAKSIYON UCU
+// ════════════════════════════════════════════════════════════════════════════
+// Bu dosya eskiden `/api/channels/<kanal>/messages/<mesaj>/react` kullaniyordu.
+// BOYLE BIR YOL YOK. Gercek tanim (server/routes/messages.ts):
+//
+//     router.post('/:id/react', ...)            // :id = MESAJ kimligi
+//
+// ve bu router `app/setupRoutes.ts` icinde soyle baglanir:
+//
+//     mountApi('/channels', messagesRouter)
+//
+// Dolayisiyla kanonik yol: POST /api/channels/<MESAJ id>/react
+// (Isim yaniltici olabilir: mount yolu `/channels` olsa da parametre MESAJ
+// kimligidir.) Okuma yolu ayridir: GET /api/channels/<KANAL id>/messages
 test.describe('Reaksiyon Akışları', () => {
   let tokens;
+  let serverId;
   let channelId;
   let msgId;
+  let alice: Socket;
 
+  // ════════════════════════════════════════════════════════════════════════
+  // FIKSTUR KANONIK YOLDAN KURULUR — 7 TEST SESSIZCE ATLANIYORDU
+  // ════════════════════════════════════════════════════════════════════════
+  // Burada eskiden mesaj `POST /api/channels/:id/messages` ile olusturuluyordu.
+  // BOYLE BIR UC YOK — dogrudan olculdu:
+  //
+  //   POST /api/channels/<id>/messages
+  //     → 404 {"error":"Not found: POST /api/channels/<id>/messages"}
+  //
+  // Sonuc: `msgId` hic atanmiyor ve 8 testin 7'si
+  // `test.skip(!msgId, ...)` ile SESSIZCE atlaniyordu. Paket "yesil"
+  // gorunuyor ama reaksiyon ozelliginin neredeyse TAMAMI dogrulanmiyordu
+  // (olculdu: 7 atlandi / 1 gecti).
+  //
+  // Bridge'de kanal mesaji yazma yolu SOCKET.IO'dur (bkz.
+  // message-actions.spec.ts): `message:send` → `message:ack`. Fikstur artik
+  // URUNUN GERCEK yolunu kullanir; okuma tarafi kanonik REST'tir.
   test.beforeAll(async ({ request }) => {
     tokens = getTokens();
 
     const srv = await createTestServer(request, tokens.alice, `React-Server-${Date.now()}`);
-    const sid = srv?._id || srv?.id;
-    if (!sid) return;
+    serverId = srv?._id || srv?.id;
+    if (!serverId) throw new Error('reaksiyon fikstur sunucusu olusturulamadi');
 
-    const ch = await createTestChannel(request, tokens.alice, sid, 'reactions');
+    const ch = await createTestChannel(request, tokens.alice, serverId, `reactions-${Date.now().toString(36)}`);
     channelId = ch?._id || ch?.id;
-    if (!channelId) return;
+    if (!channelId) throw new Error('reaksiyon fikstur kanali olusturulamadi');
 
-    // Test mesajı oluştur
-    const res = await request.post(`${BASE}/api/channels/${channelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content: 'Reaksiyon test mesajı 🎯' }),
-    });
-    if (res.ok()) {
-      const data = await res.json();
-      msgId = data._id || data.id || data.message?._id;
-    }
+    alice = await openSocket(tokens.alice);
+    alice.emit('channel:join', { channelId, serverId });
+    await paceSends('alice');
+
+    const ackId = `react-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const ack = waitForEvent<{ ackId: string; messageId: string }>(alice, 'message:ack', 15_000);
+    alice.emit('message:send', { channelId, serverId, content: 'Reaksiyon test mesajı 🎯', ackId });
+    const received = await ack;
+    msgId = received.messageId;
+    if (!msgId) throw new Error('reaksiyon fikstur mesaji olusturulamadi');
   });
+
+  test.afterAll(() => { closeSockets(alice); });
 
   // ── 1. Reaksiyon ekleme ───────────────────────────────────
 
@@ -48,7 +87,7 @@ test.describe('Reaksiyon Akışları', () => {
     test.skip(!msgId, 'Mesaj fixture bekleniyor — önceki test başarısız'); if (!msgId) return;
 
     const res = await request.post(
-      `${BASE}/api/channels/${channelId}/messages/${msgId}/react`,
+      `${BASE}/api/channels/${msgId}/react`,
       {
         headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
         data: JSON.stringify({ emoji: '👍' }),
@@ -63,7 +102,7 @@ test.describe('Reaksiyon Akışları', () => {
 
     // Reaksiyon ekle
     await request.post(
-      `${BASE}/api/channels/${channelId}/messages/${msgId}/react`,
+      `${BASE}/api/channels/${msgId}/react`,
       {
         headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
         data: JSON.stringify({ emoji: '❤️' }),
@@ -99,7 +138,7 @@ test.describe('Reaksiyon Akışları', () => {
 
     // İlk reaksiyon — ekle
     const add = await request.post(
-      `${BASE}/api/channels/${channelId}/messages/${msgId}/react`,
+      `${BASE}/api/channels/${msgId}/react`,
       {
         headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
         data: JSON.stringify({ emoji }),
@@ -109,7 +148,7 @@ test.describe('Reaksiyon Akışları', () => {
 
     // İkinci kez aynı emoji — kaldır (toggle) veya idempotent
     const remove = await request.post(
-      `${BASE}/api/channels/${channelId}/messages/${msgId}/react`,
+      `${BASE}/api/channels/${msgId}/react`,
       {
         headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
         data: JSON.stringify({ emoji }),
@@ -127,14 +166,16 @@ test.describe('Reaksiyon Akışları', () => {
     // Bob'u sunucuya üye et — davet linki veya direkt join
     // Bob üye olmayabilir, bu durumda 403 beklenir — her iki durum geçerli
     const res = await request.post(
-      `${BASE}/api/channels/${channelId}/messages/${msgId}/react`,
+      `${BASE}/api/channels/${msgId}/react`,
       {
         headers: { Authorization: `Bearer ${tokens.bob}`, 'Content-Type': 'application/json' },
         data: JSON.stringify({ emoji: '👋' }),
       }
     );
     // 200 (üye ise) veya 403 (üye değilse) — ikisi de doğru davranış
-    expect([200, 201, 403]).toContain(res.status());
+    // Final21 Faz 22 (19-37): fikstür sunucusunu alice kurar ve bob HİÇ katılmaz — üye olmayanın
+    // tepkisi 403 olmalıdır (ölçüldü). 200'ü de kabul etmek yetki kontrolünün kaybolmasını gizlerdi.
+    expect(res.status()).toBe(403);
   });
 
   // ── 4. Geçersiz emoji ─────────────────────────────────────
@@ -143,7 +184,7 @@ test.describe('Reaksiyon Akışları', () => {
     test.skip(!msgId, 'Mesaj fixture bekleniyor — önceki test başarısız'); if (!msgId) return;
 
     const res = await request.post(
-      `${BASE}/api/channels/${channelId}/messages/${msgId}/react`,
+      `${BASE}/api/channels/${msgId}/react`,
       {
         headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
         data: JSON.stringify({ emoji: '' }),
@@ -156,7 +197,7 @@ test.describe('Reaksiyon Akışları', () => {
     test.skip(!msgId, 'Mesaj fixture bekleniyor — önceki test başarısız'); if (!msgId) return;
 
     const res = await request.post(
-      `${BASE}/api/channels/${channelId}/messages/${msgId}/react`,
+      `${BASE}/api/channels/${msgId}/react`,
       {
         headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
         data: JSON.stringify({ emoji: 'a'.repeat(200) }),
@@ -171,7 +212,7 @@ test.describe('Reaksiyon Akışları', () => {
     test.skip(!msgId, 'Mesaj fixture bekleniyor — önceki test başarısız'); if (!msgId) return;
 
     const res = await request.post(
-      `${BASE}/api/channels/${channelId}/messages/${msgId}/react`,
+      `${BASE}/api/channels/${msgId}/react`,
       {
         headers: { 'Content-Type': 'application/json' },
         data: JSON.stringify({ emoji: '👍' }),
@@ -182,7 +223,7 @@ test.describe('Reaksiyon Akışları', () => {
 
   test('API: var olmayan mesaja reaksiyon 404 dönmeli', async ({ request }) => {
     const res = await request.post(
-      `${BASE}/api/channels/${channelId}/messages/nonexistent-msg-id-xyz/react`,
+      `${BASE}/api/channels/nonexistent-msg-id-xyz/react`,
       {
         headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
         data: JSON.stringify({ emoji: '👍' }),

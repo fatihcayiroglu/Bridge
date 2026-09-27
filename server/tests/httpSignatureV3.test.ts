@@ -2,6 +2,7 @@
 // Sprint 113 — ADR-0006 Faz 3: RSA-only, HMAC fallback kaldırıldı
 // Test framework: Jest 29 (ts-jest) — projeyle tutarlı
 
+import { recordOf, recordsOf } from './helpers/narrow';
 import crypto from 'crypto';
 
 // ── Anahtar çifti (testler için) ─────────────────────────────────────────
@@ -226,6 +227,6 @@ describe('federationAuth middleware — ADR-0006 Faz 3 uyumluluk', () => {
     const headers = validHeaders();
     const result = await verifyFederationRequestV3(TEST_PEER_URL, TEST_PAYLOAD, headers);
     expect(result.method).toBe('rsa');
-    expect((result as Record<string, unknown>).method).not.toBe('hmac');
+    expect(recordOf(result, 'sonuc').method).not.toBe('hmac');
   });
 });

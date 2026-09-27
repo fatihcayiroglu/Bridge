@@ -1,14 +1,14 @@
 // client/js/core/command-palette-svelte.ts
 // Sprint 115 — CommandPalettePanel mount shim (ADR-0008 Faz 2)
-import { mount } from 'svelte';
+// Faz 8.1: bu shim hiçbir yerden import edilmiyordu; app.ts artık import ediyor.
+import { mount, unmount } from 'svelte';
 import CommandPalettePanel from './CommandPalettePanel.svelte';
-import { BridgeRegistry } from './bridge-registry.ts';
 
 let _instance: ReturnType<typeof mount> | null = null;
 
-function mountCommandPalette() {
+export function mountCommandPalette(target?: HTMLElement): void {
   if (_instance) return;
-  const el = document.getElementById('command-palette-root') ?? (() => {
+  const el = target ?? document.getElementById('command-palette-root') ?? (() => {
     const div = document.createElement('div');
     div.id = 'command-palette-root';
     document.body.appendChild(div);
@@ -17,9 +17,18 @@ function mountCommandPalette() {
   _instance = mount(CommandPalettePanel, { target: el, props: {} });
 }
 
+export function unmountCommandPalette(): void {
+  if (!_instance) return;
+  const inst = _instance;
+  _instance = null;
+  void unmount(inst);
+}
+
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', mountCommandPalette, { once: true });
+  document.addEventListener('DOMContentLoaded', () => mountCommandPalette(), { once: true });
 } else {
   mountCommandPalette();
 }
-document.addEventListener('bridge:socket-ready', mountCommandPalette, { once: true });
+// Socket hazır olduğunda ikinci kez çağrılır; `_instance` guard'ı sayesinde
+// çift mount olmaz (iki panel / iki klavye dinleyicisi oluşmaz).
+document.addEventListener('bridge:socket-ready', () => mountCommandPalette(), { once: true });

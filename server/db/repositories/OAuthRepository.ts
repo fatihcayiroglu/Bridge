@@ -55,6 +55,55 @@ class OAuthRepository {
     );
   }
 
+  async upsertTokenAndConnectionAtomic(input: {
+    userId: string;
+    platform: string;
+    accessToken: string;
+    refreshToken: string | null;
+    expiresAt: number;
+    username: string;
+    url: string;
+  }): Promise<void> {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO oauth_tokens ("userId", platform, "accessToken", "refreshToken", "expiresAt")
+         VALUES($1, $2, $3, $4, $5)
+         ON CONFLICT ("userId", platform) DO UPDATE
+           SET "accessToken"=EXCLUDED."accessToken", "refreshToken"=EXCLUDED."refreshToken", "expiresAt"=EXCLUDED."expiresAt"`,
+        [input.userId, input.platform, input.accessToken, input.refreshToken, input.expiresAt],
+      );
+      await client.query(
+        `INSERT INTO user_connections("userId", platform, username, url)
+         VALUES($1, $2, $3, $4)
+         ON CONFLICT("userId", platform) DO UPDATE SET username=EXCLUDED.username, url=EXCLUDED.url`,
+        [input.userId, input.platform, input.username, input.url],
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async deleteTokenAndConnectionAtomic(userId: string, platform: string): Promise<void> {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`DELETE FROM oauth_tokens WHERE "userId"=$1 AND platform=$2`, [userId, platform]);
+      await client.query(`DELETE FROM user_connections WHERE "userId"=$1 AND platform=$2`, [userId, platform]);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async upsertConnection(userId: string, platform: string, username: string, url: string): Promise<void> {
     await pool.query(
       `INSERT INTO user_connections("userId", platform, username, url)

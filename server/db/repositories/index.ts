@@ -40,7 +40,8 @@ import { Boosts }        from './BoostRepository';
 import { Announcements } from './AnnouncementRepository';
 import { BotMarketplace } from './BotMarketplaceRepository';
 import { OAuth }         from './OAuthRepository';
-const Reactions = ReactionRoles;
+import SavedMessages     from './SavedMessageRepository';
+import MessageReports     from './MessageReportRepository';
 
 export {
   Users,
@@ -75,5 +76,6 @@ export {
   Announcements,
   BotMarketplace,
   OAuth,
-  Reactions,
+  SavedMessages,
+  MessageReports,
 };

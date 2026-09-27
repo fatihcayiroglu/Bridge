@@ -46,22 +46,24 @@ export async function setChannelKeyPackage(
   channelId:   string,
   wrappedKeys: Record<string, string>,
 ): Promise<ChannelKeyPackage> {
-  const existing = await getChannelKeyPackage(channelId);
-  const pkg: ChannelKeyPackage = {
-    channelId,
-    wrappedKeys,
-    epoch:     (existing?.epoch ?? 0) + 1,
-    updatedAt: Date.now(),
-  };
-  await cache.set(redisKey(channelId), pkg, KEY_TTL_SECONDS);
-  return pkg;
+  return cache.withKeyLock(`e2ee-channel:${channelId}`, async () => {
+    const existing = await getChannelKeyPackage(channelId);
+    const pkg: ChannelKeyPackage = {
+      channelId,
+      wrappedKeys: { ...wrappedKeys },
+      epoch:     (existing?.epoch ?? 0) + 1,
+      updatedAt: Date.now(),
+    };
+    await cache.setAuthoritative(redisKey(channelId), pkg, KEY_TTL_SECONDS);
+    return pkg;
+  });
 }
 
 /** Kanal için mevcut anahtar paketini getir */
 export async function getChannelKeyPackage(
   channelId: string,
 ): Promise<ChannelKeyPackage | null> {
-  return (await cache.get(redisKey(channelId))) as ChannelKeyPackage | null;
+  return (await cache.getAuthoritative(redisKey(channelId))) as ChannelKeyPackage | null;
 }
 
 /** Belirli bir üyenin sarmalanmış anahtarını getir */
@@ -88,18 +90,26 @@ export async function addMemberKey(
   userId:     string,
   wrappedKey: string,
 ): Promise<void> {
-  const pkg = await getChannelKeyPackage(channelId);
-  if (!pkg) return; // E2EE aktif değil
-  pkg.wrappedKeys[userId] = wrappedKey;
-  pkg.updatedAt = Date.now();
-  await cache.set(redisKey(channelId), pkg, KEY_TTL_SECONDS);
+  await cache.withKeyLock(`e2ee-channel:${channelId}`, async () => {
+    const pkg = await getChannelKeyPackage(channelId);
+    if (!pkg) return; // E2EE aktif değil
+    const next: ChannelKeyPackage = {
+      ...pkg,
+      wrappedKeys: { ...pkg.wrappedKeys, [userId]: wrappedKey },
+      updatedAt: Date.now(),
+    };
+    await cache.setAuthoritative(redisKey(channelId), next, KEY_TTL_SECONDS);
+  });
 }
 
 /** Üye ayrılınca onun anahtarını paketten sil (forward secrecy için rotate önerilir) */
 export async function removeMemberKey(channelId: string, userId: string): Promise<void> {
-  const pkg = await getChannelKeyPackage(channelId);
-  if (!pkg) return;
-  delete pkg.wrappedKeys[userId];
-  pkg.updatedAt = Date.now();
-  await cache.set(redisKey(channelId), pkg, KEY_TTL_SECONDS);
+  await cache.withKeyLock(`e2ee-channel:${channelId}`, async () => {
+    const pkg = await getChannelKeyPackage(channelId);
+    if (!pkg) return;
+    const wrappedKeys = { ...pkg.wrappedKeys };
+    delete wrappedKeys[userId];
+    const next: ChannelKeyPackage = { ...pkg, wrappedKeys, updatedAt: Date.now() };
+    await cache.setAuthoritative(redisKey(channelId), next, KEY_TTL_SECONDS);
+  });
 }

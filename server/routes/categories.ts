@@ -6,6 +6,7 @@ import { Channels, Members } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { getMemberPerms, hasPermission, PERMS } from './roles';
 import { limits } from '../middleware/rateLimit';
+import { parseNonNegativeSafeIntValue } from '../lib/queryNumbers';
 
 /**
  * @openapi
@@ -64,8 +65,9 @@ router.post('/'
   const serverId = String(req.params.serverId ?? '');
   const perms = await getMemberPerms(_u.id, serverId);
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS)) return res.status(403).json({ error: 'No permission' });
-  const { name } = req.body as Record<string, string>;
-  if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
+  const body = req.body as Record<string, unknown>;
+  const name = body.name;
+  if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'Name required' });
   const count = await Channels.countCategories(serverId);
   const cat = await Channels.insertCategory({
     serverId, name: name.trim().toUpperCase(), position: count, collapsed: false,
@@ -106,11 +108,21 @@ router.patch('/:catId'
   const catId = String(req.params.catId ?? '');
   const perms = await getMemberPerms(_u.id, serverId);
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS)) return res.status(403).json({ error: 'No permission' });
-  const { name, position, collapsed } = req.body as Record<string, string>;
+  const { name, position, collapsed } = req.body as Record<string, unknown>;
   const $set: Record<string, unknown> = {};
-  if (name !== undefined) $set.name = name.trim().toUpperCase();
-  if (position !== undefined) $set.position = parseInt(position);
-  if (collapsed !== undefined) $set.collapsed = collapsed ? 1 : 0;
+  if (name !== undefined) {
+    if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name must be a non-empty string' });
+    $set.name = name.trim().toUpperCase();
+  }
+  if (position !== undefined) {
+    const parsed = parseNonNegativeSafeIntValue(position, 0);
+    if (parsed === null) return res.status(400).json({ error: 'position must be a non-negative safe integer' });
+    $set.position = parsed;
+  }
+  if (collapsed !== undefined) {
+    if (typeof collapsed !== 'boolean') return res.status(400).json({ error: 'collapsed must be a boolean' });
+    $set.collapsed = collapsed;
+  }
   await Channels.updateCategory(catId, serverId, $set);
   res.json({ ok: true });
 });
@@ -139,8 +151,8 @@ router.delete('/:catId'
   const catId = String(req.params.catId ?? '');
   const perms = await getMemberPerms(_u.id, serverId);
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS)) return res.status(403).json({ error: 'No permission' });
-  await Channels.deleteCategory(catId, serverId);
-  await Channels.unlinkCategory(catId, serverId);
+  const deleted = await Channels.deleteCategoryAtomic(catId, serverId);
+  if (!deleted) return res.status(404).json({ error: 'Category not found' });
   res.json({ ok: true });
 });
 
@@ -182,11 +194,21 @@ router.post('/reorder', authMiddleware, limits.channels(), async (req, res) => {
   const serverId = String(req.params.serverId ?? '');
   const perms = await getMemberPerms(_u.id, serverId);
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS)) return res.status(403).json({ error: 'No permission' });
-  const { order } = req.body as Record<string, string>; // array of { id, position }
-  if (!Array.isArray(order)) return res.status(400).json({ error: 'order array required' });
-  for (const item of order) {
-    await Channels.updateCategory(item.id, serverId, { position: item.position });
+  const { order } = req.body as { order?: unknown };
+  if (!Array.isArray(order) || order.length > 500) return res.status(400).json({ error: 'order array required' });
+  const normalized: Array<{ id: string; position: number }> = [];
+  const seen = new Set<string>();
+  for (const raw of order) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return res.status(400).json({ error: 'invalid category order item' });
+    const item = raw as Record<string, unknown>;
+    if (typeof item.id !== 'string' || !item.id.trim() || seen.has(item.id)) return res.status(400).json({ error: 'invalid or duplicate category id' });
+    const position = parseNonNegativeSafeIntValue(item.position, 0);
+    if (position === null) return res.status(400).json({ error: 'position must be a non-negative safe integer' });
+    seen.add(item.id);
+    normalized.push({ id: item.id, position });
   }
+  const updated = await Channels.reorderCategoriesAtomic(serverId, normalized);
+  if (!updated) return res.status(404).json({ error: 'Category not found' });
   res.json({ ok: true });
 });
 

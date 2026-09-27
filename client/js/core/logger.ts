@@ -59,27 +59,27 @@ function _buildLogger(prefix: string): BridgeLogger {
   return {
     debug(...args: unknown[]) {
       if (!_shouldLog('debug')) return;
-      // eslint-disable-next-line no-console
+       
       console.debug(tag, ...args);
     },
     log(...args: unknown[]) {
       if (!_shouldLog('info')) return;
-      // eslint-disable-next-line no-console
+       
       console.log(tag, ...args);
     },
     info(...args: unknown[]) {
       if (!_shouldLog('info')) return;
-      // eslint-disable-next-line no-console
+       
       console.info(tag, ...args);
     },
     warn(...args: unknown[]) {
       if (!_shouldLog('warn')) return;
-      // eslint-disable-next-line no-console
+       
       console.warn(tag, ...args);
     },
     error(first: unknown, ...rest: unknown[]) {
       if (!_shouldLog('error')) return;
-      // eslint-disable-next-line no-console
+       
       console.error(tag, first, ...rest);
       // Sentry entegrasyonu — sadece Error instance'ları iletilir
       if (

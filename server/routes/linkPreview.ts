@@ -39,7 +39,7 @@ import type { LinkPreviewValue } from '../lib/linkPreview';
 
 const router = express.Router();
 
-router.get('/', authMiddleware, limits.api, async (req, res) => {
+router.get('/', authMiddleware, limits.api(), async (req, res) => {
   const rawUrl = String(req.query.url ?? '').trim();
   if (!rawUrl) return res.status(400).json({ error: 'url query param required' });
 
@@ -48,7 +48,7 @@ router.get('/', authMiddleware, limits.api, async (req, res) => {
   res.json(preview);
 });
 
-router.post('/', authMiddleware, limits.api, async (req, res) => {
+router.post('/', authMiddleware, limits.api(), async (req, res) => {
   const content = String(req.body?.content || '');
   const urls = extractUrls(content, 3);
   if (!urls.length) return res.json({ previews: [] });

@@ -1,0 +1,31 @@
+{
+  "_comment": "Final15 ratchet: stricter indexed-access/catch semantics for security- and correctness-sensitive production owners, including the pre-runtime secret bootstrap. Expand only when zero-error.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false,
+    "useUnknownInCatchVariables": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": [
+    "lib/version.ts",
+    "lib/runtimeSecrets.ts",
+    "index.ts",
+    "routes/sso.ts",
+    "routes/polls.ts",
+    "routes/dm.ts",
+    "routes/groupDm.ts",
+    "routes/notificationPrefs.ts",
+    "routes/channelPerms/**/*.ts",
+    "lib/vault.ts",
+    "lib/pushSender.ts",
+    "socket/handlers/dm.ts",
+    "types/**/*.ts",
+    "db/repositories/types/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests"
+  ]
+}

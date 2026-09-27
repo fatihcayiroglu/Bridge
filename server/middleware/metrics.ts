@@ -4,6 +4,7 @@
 import logger from '../lib/logger';
 import { Request, Response, NextFunction } from 'express';
 import { tryRequire } from '../lib/_optional-require';
+import crypto from 'crypto';
 
 const ENABLED = process.env.METRICS_ENABLED !== 'false';
 const PREFIX  = process.env.METRICS_PREFIX || 'bridge_';
@@ -28,6 +29,57 @@ let voiceRoomCount!:      Gauge;
 let rateLimitHitsTotal!:  Counter;
 let autoBanTotal!:        Counter;
 let rateLimitAnomalyGauge!: Gauge;
+let redisUpGauge!:        Gauge;
+let dbUpGauge!:           Gauge;
+
+// Bagimlilik modullerinin TEK SEFERLIK aramasi. `undefined` = henuz
+// bakilmadi, `null` = modul yok (ve tekrar aranmayacak).
+let _redisModCache: { isRedisAvailable?: () => boolean } | null | undefined;
+interface DbProbePool { query(sql: string): Promise<unknown> }
+interface DbLoaderModule { default?: { _pool?: DbProbePool & { totalCount?: number } } }
+let _dbModCache: DbLoaderModule | null | undefined;
+
+// ── VERİTABANI ERİŞİLEBİLİRLİK YOKLAMASI (F21-9-01) ─────────────────────────
+// Kazımadan BAĞIMSIZ, sınırlı bir yoklama. İlk `/metrics` çağrısında başlar
+// (izleme etkinse gösterge anlamlıdır), `unref` edilir ve süreç kapanışını
+// engellemez. Her tur tek bir `SELECT 1` ve sabit bir zaman aşımıdır.
+const DB_PROBE_INTERVAL_MS = 10_000;
+const DB_PROBE_TIMEOUT_MS  = 3_000;
+const _dbProbe: { up: boolean | null; at: number; timer: ReturnType<typeof setInterval> | null } = {
+  up: null, at: 0, timer: null,
+};
+
+async function runDbProbe(pool: DbProbePool): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      pool.query('SELECT 1'),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('db probe timeout')), DB_PROBE_TIMEOUT_MS);
+        timeout.unref?.();
+      }),
+    ]);
+    _dbProbe.up = true;
+  } catch {
+    _dbProbe.up = false;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    _dbProbe.at = Date.now();
+  }
+}
+
+function ensureDbProbe(pool: DbProbePool): void {
+  if (_dbProbe.timer) return;
+  void runDbProbe(pool);
+  _dbProbe.timer = setInterval(() => { void runDbProbe(pool); }, DB_PROBE_INTERVAL_MS);
+  _dbProbe.timer.unref?.();
+}
+
+/** Test kancası: yoklama durumunu sıfırlar. */
+export function _resetDbProbeForTest(): void {
+  if (_dbProbe.timer) clearInterval(_dbProbe.timer);
+  _dbProbe.up = null; _dbProbe.at = 0; _dbProbe.timer = null;
+}
 
 if (ENABLED) {
   try {
@@ -112,6 +164,26 @@ if (ENABLED) {
       registers: [reg],
     });
 
+    // ── BAGIMLILIK SAGLIGI (v1.124) ───────────────────────────────────────
+    // v1.123 Redis kesintisini ve toparlanmasini KANITLADI, ama uyari
+    // yazilamiyordu: Bridge bagimliliklarinin durumunu HIC yaymiyordu.
+    // Uyari kurallari "Redis dustu" diyemiyordu cunku olculecek bir seri
+    // yoktu. En kanitlanmis ariza modunun uyarisi olmamasi gercek bir
+    // gozlemlenebilirlik bosluguydu.
+    //
+    // Kardinalite: etiket YOK, deger 0/1. Sinirsiz seri riski bulunmaz.
+    redisUpGauge = new prom.Gauge({
+      name: `${PREFIX}redis_up`,
+      help: 'Redis erisilebilir mi (1) degil mi (0). REDIS_URL ayarli degilse 1 (tek dugum modu).',
+      registers: [reg],
+    });
+
+    dbUpGauge = new prom.Gauge({
+      name: `${PREFIX}db_up`,
+      help: 'PostgreSQL son saglik yoklamasinda erisilebilir miydi (1/0)',
+      registers: [reg],
+    });
+
     rateLimitHitsTotal = new prom.Counter({
       name: `${PREFIX}rate_limit_hits_total`,
       help: 'Rate limit aşım sayısı (429 yanıt)',
@@ -139,16 +211,33 @@ if (ENABLED) {
 }
 
 // ── Normalize route ──────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// KAPATILAN GERCEK ACIK — SINIRSIZ METRIK KARDINALITESI (P2)
+// ════════════════════════════════════════════════════════════════════════════
+// `route` bir Prometheus ETIKETIDIR: her farkli deger KALICI yeni bir zaman
+// serisi yaratir. Eski kod, Express hicbir rotayi eslestirmediginde HAM YOLA
+// dusuyor ve yalnizca UUID/uzun-sayi normalizasyonu yapiyordu.
+//
+// SOMURU: kimlik dogrulamasi GEREKTIRMEYEN 404'ler.
+//     GET /api/aaaa   GET /api/aaab   GET /api/aaac ...
+// Her istek YENI bir seri uretirdi. Saldirgan ucuz isteklerle sunucu
+// surecinde sinirsiz bellek buyumesi ve metrik arkasinda kardinalite
+// patlamasi olusturabilirdi — izlemenin kendisi bir DoS yuzeyine donusurdu.
+//
+// DUZELTME: yalnizca GERCEKTEN eslesen rota kaliplari etiket olur. Eslesmeyen
+// her sey TEK bir kovaya dusur. Sinyal kaybi yoktur: eslesen rotalar tam
+// ayrintisini korur ve 404 hacmi zaten toplu olarak izlenmek istenir.
+const UNMATCHED_ROUTE = '<unmatched>';
+
 function normalizeRoute(req: Request): string {
   const r = req as Request & { route?: { path: string }; baseUrl?: string };
   if (r.route?.path) {
     const base = r.baseUrl || '';
     return base + r.route.path;
   }
-  return (req.path || (req as Request & { url?: string }).url || '/').replace(
-    /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
-    '/:id'
-  ).replace(/\/\d{6,}/g, '/:id');
+  // Rota eslesmedi (404, middleware sonlandirmasi, statik dosya). Ham yolu
+  // ETIKET OLARAK KULLANMA — saldirgan tarafindan sinirsiz secilebilir.
+  return UNMATCHED_ROUTE;
 }
 
 // ── Express middleware ───────────────────────────────────────
@@ -171,6 +260,18 @@ export function metricsMiddleware(req: Request, res: Response, next: NextFunctio
 }
 
 // ── /metrics endpoint handler ────────────────────────────────
+// ── SABIT ZAMANLI SIR KARSILASTIRMASI ────────────────────────────────────────
+// Onceden: auth !== `Bearer ${secret}`
+// JS dize karsilastirmasi ILK FARKLI BAYTTA kisa devre yapar. Bu, metrik
+// sirrinin bayt bayt zamanlama ile tahmin edilmesine kapi aralar. Uzunluk
+// farki zaten sizar (kabul edilir); icerik karsilastirmasi sabit zamanlidir.
+function sabitZamanliEsit(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
 export async function metricsEndpoint(req: Request, res: Response): Promise<void> {
   if (!ENABLED || !registry) {
     res.status(503).json({ error: 'Metrikler devre dışı' });
@@ -189,7 +290,7 @@ export async function metricsEndpoint(req: Request, res: Response): Promise<void
     // Dev: uyarı ver ama devam et
   } else {
     const auth = (req.headers.authorization as string) || '';
-    if (auth !== `Bearer ${secret}`) {
+    if (!sabitZamanliEsit(auth, `Bearer ${secret}`)) {
       res.status(401).json({ error: 'Yetkisiz' });
       return;
     }
@@ -199,15 +300,82 @@ export async function metricsEndpoint(req: Request, res: Response): Promise<void
     const socketMod = tryRequire<{
       socketUsers?: Map<string, { _id?: string; id?: string }>;
       voiceRooms?:  Record<string, unknown>;
-    }>('../socket');
-    const { socketUsers, voiceRooms } = socketMod ?? {};
+      getVoiceRoomCount?: () => Promise<number>;
+    }>('../socket', require);
+    const { socketUsers, voiceRooms, getVoiceRoomCount } = socketMod ?? {};
     if (socketUsers) {
       const uniqueUsers = new Set([...socketUsers.values()].map(u => u._id || u.id));
       activeUsers?.set(uniqueUsers.size);
       activeSockets?.set(socketUsers.size);
     }
-    if (voiceRooms) voiceRoomCount?.set(Object.keys(voiceRooms).length);
+    // ── F21-6-01 ─────────────────────────────────────────────────────────────
+    // Eskiden burada `Object.keys(voiceRooms).length` okunuyordu. `voiceRooms`
+    // yalnizca BELLEK YEDEGINI sarar ve Redis yapilandirildiginda o yedege HIC
+    // yazilmaz; dolayisiyla gosterge her URETIM kurulumunda sonsuza dek 0
+    // gosteriyordu. Artik KANONIK sayim okunur (Redis-farkinda, kisa sureli
+    // onbellekli). Eski yol yalnizca sayimi saglamayan eski bir modul icin
+    // yedek olarak durur.
+    if (typeof getVoiceRoomCount === 'function') {
+      voiceRoomCount?.set(await getVoiceRoomCount());
+    } else if (voiceRooms) {
+      voiceRoomCount?.set(Object.keys(voiceRooms).length);
+    }
   } catch { /* socket modülü henüz yüklenmemişse atla */ }
+
+  // ── BAGIMLILIK DURUMU ────────────────────────────────────────────────────
+  // Kasitli olarak UCUZ: yalnizca adapterin zaten tuttugu durumu okur,
+  // her kazima isteginde yeni bir yoklama YAPMAZ. Kazima araligi, bir
+  // saglik yoklamasi araligina donusmemelidir.
+  // Modul aramasi BIR KEZ yapilir. Her kazimada yeniden `require` etmek,
+  // sicak bir yolda gereksiz is ve olculebilir gecikme demekti (tam paket
+  // kosumunda `/metrics` testi 10 sn zaman asimina dustu).
+  try {
+    if (_redisModCache === undefined) {
+      _redisModCache = tryRequire<{ isRedisAvailable?: () => boolean }>('../lib/redisAdapter', require) ?? null;
+    }
+    const redisMod = _redisModCache;
+    if (redisMod?.isRedisAvailable) {
+      // REDIS_URL yoksa Redis bir bagimlilik DEGILDIR; tek dugum modu
+      // saglikli sayilir, aksi halde uyari surekli calardi.
+      const configured = Boolean(process.env.REDIS_URL);
+      redisUpGauge?.set(!configured || redisMod.isRedisAvailable() ? 1 : 0);
+    }
+  } catch { /* adapter yuklu degilse atla */ }
+
+  try {
+    if (_dbModCache === undefined) {
+      _dbModCache = tryRequire<DbLoaderModule>('../db/loader', require) ?? null;
+    }
+    const dbMod = _dbModCache;
+    // ── Final21 Faz 9 — F21-9-01: bridge_db_up ARTIK GERÇEK ──────────────────
+    // Eskiden burada `dbUpGauge.set(dbMod?.default ? 1 : 0)` vardı ve not
+    // açıkça "havuz nesnesinin VARLIĞI" dediğini söylüyordu. GERÇEK KESİNTİDE
+    // ÖLÇÜLDÜ: PostgreSQL 32 sn durdurulmuşken `/api/health` 503 verdi ama
+    // `bridge_db_up` 1'de KALDI. `DatabaseUnavailable` alarmı (bridge_db_up == 0)
+    // koruması gereken anda HİÇ ateşlenemiyordu.
+    //
+    // Kazıma hâlâ bir sağlık yoklamasına DÖNÜŞMEZ (eski notun haklı kaygısı):
+    // yoklama AYRI, sınırlı, `unref`li bir zamanlayıcıda koşar; kazıma yalnızca
+    // son sonucu OKUR. PostgreSQL havuzu yoksa (tek düğüm / test bağdaştırıcısı)
+    // eski anlam korunur: katman yüklüyse 1.
+    const pool = dbMod?.default?._pool;
+    if (pool && typeof pool.query === 'function') {
+      ensureDbProbe(pool);
+      dbUpGauge?.set(_dbProbe.up === false ? 0 : 1);
+    } else {
+      dbUpGauge?.set(dbMod?.default ? 1 : 0);
+    }
+  } catch { dbUpGauge?.set(0); }
+
+  // ── Final21 Faz 9 — F21-9-01: bridge_websocket_connections ARTIK BESLENİYOR ─
+  // `setWsConnectionCount` ürün kodunda HİÇ çağrılmıyordu; gösterge sonsuza dek
+  // 0'dı ve `WebSocketConnectionDrop` (delta < -100) hiçbir koşulda
+  // ateşlenemiyordu. Kazımada motorun GERÇEK istemci sayısı okunur.
+  try {
+    const sockMod = tryRequire<{ getIo?: () => { engine?: { clientsCount?: number } } | null }>('../socket', require);
+    const clients = sockMod?.getIo?.()?.engine?.clientsCount;
+    if (typeof clients === 'number' && Number.isFinite(clients)) wsConnections?.set(clients);
+  } catch { /* soket katmani yuklu degil */ }
 
   try {
     const data = await registry.metrics();
@@ -216,6 +384,81 @@ export async function metricsEndpoint(req: Request, res: Response): Promise<void
   } catch (err) {
     res.status(500).json({ error: 'Metrik toplama hatası', detail: (err as Error).message });
   }
+}
+
+// ── PostgreSQL İSTEMCİ ENSTRÜMANTASYONU (Final21 Faz 9 — F21-9-01) ───────────
+// `bridge_db_query_duration_seconds` ve `bridge_db_queries_total` TANIMLIYDI
+// ama HİÇ beslenmiyordu: tek besleyici olan `wrapDb` ürün kodunda hiçbir yerden
+// çağrılmıyordu. `SlowDbQueries` ve `DbQueryErrorSpike` alarmları bu yüzden
+// ölüydü. Üstelik `wrapDb` koleksiyon API'sini sarar; sıcak SQL'in önemli kısmı
+// (arama, depolar) doğrudan `pool.query` ile koşar ve yine görünmezdi — Faz 7'de
+// yavaş olan arama sorgusu dahil.
+//
+// Doğru nokta İSTEMCİDİR: `pool.query` içeride bir istemci alıp `client.query`
+// çağırır, işlemler (`getClient`) de `client.query` kullanır. Havuzun `connect`
+// olayında her istemci BİR KEZ sarılır; her sorgu tam bir kez sayılır.
+//
+// KARDİNALİTE SINIRLI: `operation` sabit bir kümedir; `collection` ilk tablo
+// adıdır, katı bir desenle doğrulanır ve en fazla `DB_COLLECTION_LABEL_CAP`
+// farklı değer alır, fazlası `other` olur.
+const DB_COLLECTION_LABEL_CAP = 128;
+const _dbCollectionLabels = new Set<string>();
+const PG_INSTRUMENTED = Symbol.for('bridge.metrics.pgInstrumented');
+
+export function classifySql(sql: string): { operation: string; collection: string } {
+  const head = sql.slice(0, 600).replace(/--[^\n]*\n/g, ' ').replace(/\s+/g, ' ').trim();
+  const kw = (/^([A-Za-z]+)/.exec(head)?.[1] ?? '').toLowerCase();
+  const operation =
+    kw === 'select' || kw === 'insert' || kw === 'update' || kw === 'delete' || kw === 'with' ? kw
+      : kw === 'begin' || kw === 'commit' || kw === 'rollback' || kw === 'savepoint' || kw === 'release' ? 'tx'
+      : kw === 'create' || kw === 'alter' || kw === 'drop' ? 'ddl'
+      : 'other';
+
+  let raw = '';
+  if (operation === 'insert') raw = /\bINTO\s+(?:ONLY\s+)?("?[A-Za-z_][A-Za-z0-9_]*"?)/i.exec(head)?.[1] ?? '';
+  else if (operation === 'update') raw = /^UPDATE\s+(?:ONLY\s+)?("?[A-Za-z_][A-Za-z0-9_]*"?)/i.exec(head)?.[1] ?? '';
+  else if (operation === 'select' || operation === 'delete' || operation === 'with') {
+    raw = /\bFROM\s+(?:ONLY\s+)?("?[A-Za-z_][A-Za-z0-9_]*"?)/i.exec(head)?.[1] ?? '';
+  }
+  let collection = raw.replace(/"/g, '').toLowerCase();
+  if (!/^[a-z_][a-z0-9_]{0,62}$/.test(collection)) collection = 'other';
+  else if (!_dbCollectionLabels.has(collection)) {
+    if (_dbCollectionLabels.size >= DB_COLLECTION_LABEL_CAP) collection = 'other';
+    else _dbCollectionLabels.add(collection);
+  }
+  return { operation, collection };
+}
+
+interface InstrumentablePgClient { query: (...args: unknown[]) => unknown; [PG_INSTRUMENTED]?: boolean }
+
+export function instrumentPgClient(client: InstrumentablePgClient): void {
+  if (!ENABLED || !dbQueryDuration || !dbQueryTotal || !client || client[PG_INSTRUMENTED]) return;
+  const original = client.query.bind(client);
+  client.query = (...args: unknown[]) => {
+    const first = args[0] as { text?: unknown; submit?: unknown } | string | undefined;
+    const last = args[args.length - 1];
+    // Geri çağrılı ve akış (Submittable) biçimleri DOKUNULMADAN geçer.
+    if (typeof last === 'function' || (first && typeof first === 'object' && typeof first.submit === 'function')) {
+      return original(...args);
+    }
+    const text = typeof first === 'string' ? first : typeof first?.text === 'string' ? first.text : '';
+    const labels = classifySql(text);
+    const start = process.hrtime.bigint();
+    const result = original(...args) as Promise<unknown>;
+    if (!result || typeof (result as Promise<unknown>).then !== 'function') return result;
+    return result.then(
+      (value) => {
+        dbQueryTotal.inc(labels);
+        dbQueryDuration.observe(labels, Number(process.hrtime.bigint() - start) / 1e9);
+        return value;
+      },
+      (err: unknown) => {
+        dbQueryTotal.inc({ ...labels, operation: `${labels.operation}_err` });
+        throw err;
+      },
+    );
+  };
+  client[PG_INSTRUMENTED] = true;
 }
 
 // ── DB sorgu izleyici ────────────────────────────────────────
@@ -284,21 +527,34 @@ const _anomalyWindow: { ts: number; count: number }[] = [];
 const ANOMALY_CHECK_INTERVAL_MS = 30_000;
 const ANOMALY_SHORT_WINDOW_MS   = 5 * 60_000;
 const ANOMALY_LONG_WINDOW_MS    = 60 * 60_000;
+/** Kısa pencerede anomali sayılabilmek için gereken en az isabet (F21-7-02). */
+export const ANOMALY_MIN_SHORT_HITS = 20;
+const ANOMALY_REWARN_MS         = 5 * 60_000;
+let _anomalyActive = false;
+let _anomalyLastWarnAt = 0;
 
 function _recordRateLimitForAnomaly(): number {
   const now = Date.now();
   const recentCount = _anomalyWindow.reduce((s, e) => s + e.count, 0);
   _anomalyWindow.push({ ts: now, count: 0 });
-  while (_anomalyWindow.length && now - _anomalyWindow[0].ts > ANOMALY_LONG_WINDOW_MS) {
+  while (_anomalyWindow.length && now - (_anomalyWindow[0]?.ts ?? now) > ANOMALY_LONG_WINDOW_MS) {
     _anomalyWindow.shift();
   }
   return recentCount;
 }
 
 export function _bumpAnomalyCounter(): void {
-  if (_anomalyWindow.length) {
-    _anomalyWindow[_anomalyWindow.length - 1].count++;
+  // The first implementation only incremented an existing bucket while the
+  // periodic worker refused to run when the window was empty.  That created a
+  // dead state: after process start no caller could ever create the first
+  // bucket, so anomaly detection stayed disabled forever.  Seed the current
+  // bucket on the first observed rate-limit hit; subsequent interval ticks
+  // rotate/prune it through _recordRateLimitForAnomaly().
+  if (!_anomalyWindow.length) {
+    _anomalyWindow.push({ ts: Date.now(), count: 0 });
   }
+  const bucket = _anomalyWindow[_anomalyWindow.length - 1];
+  if (bucket) bucket.count++;
 }
 
 if (ENABLED) {
@@ -317,14 +573,60 @@ if (ENABLED) {
     const shortRate = shortSum / (ANOMALY_SHORT_WINDOW_MS / 1000);
     const longDurationSec = (ANOMALY_LONG_WINDOW_MS - ANOMALY_SHORT_WINDOW_MS) / 1000;
     const longRate = longDurationSec > 0 ? longSum / longDurationSec : 0;
-    const score = longRate > 0 ? shortRate / longRate : (shortRate > 0 ? 3 : 0);
+
+    // ── Final21 Faz 9 — F21-7-02: ASGARİ HACİM TABANI ────────────────────────
+    // Eskiden `longRate > 0 ? oran : (shortRate > 0 ? 3 : 0)` idi. Açılıştan
+    // hemen sonra taban çizgisi yokken kısa pencerede TEK bir isabet bile skoru
+    // uyarı eşiğinin tam kendisine (3) taşıyordu. ÖLÇÜLDÜ: sunucu açılışından
+    // beri `bridge_rate_limit_hits_total` = 1 iken 30 sn arayla ON uyarı
+    // üretildi ve `toFixed(2)` 0.0033/sn'yi "0.00" bastığı için satır
+    // "0.00/sn'ye karşı 0.00/sn anomali" gibi okunuyordu.
+    //
+    // Oran tabanlı bir dedektör, hacim anlamlı olmadan ORANDAN söz edemez.
+    // Kısa pencerede `ANOMALY_MIN_SHORT_HITS`'ten az isabet anomali DEĞİLDİR
+    // (tek bir meşru 429, kotasına takılan bir kullanıcıdır). Gerçek bir
+    // kötüye kullanım dalgası yüzlerce 429 üretir ve tabanı rahatça aşar.
+    // Eşik, yeniden ölçümden ÖNCE bu gerekçeyle belirlendi.
+    const score = shortSum < ANOMALY_MIN_SHORT_HITS
+      ? 0
+      : (longRate > 0 ? shortRate / longRate : 3);
     rateLimitAnomalyGauge.set(Math.min(score, 100));
 
+    // Günlük hijyeni — BASTIRMA DEĞİL: başlangıçta uyarılır, sürdükçe
+    // `ANOMALY_REWARN_MS` aralıkla yeniden uyarılır, bitince bilgi verilir.
+    // Sayılar oran yerine MUTLAK isabet olarak yazılır; yuvarlama yanıltmaz.
+    const now2 = Date.now();
+    const detail = `skor=${score.toFixed(2)} (son 5 dk: ${shortSum} isabet, önceki 55 dk: ${longSum} isabet)`;
     if (score >= 3) {
-      logger.warn(`[Metrics] ⚠️  Rate limit anomali tespiti: skor=${score.toFixed(2)} (anlık=${shortRate.toFixed(2)}/sn, baseline=${longRate.toFixed(2)}/sn)`);
+      if (!_anomalyActive || now2 - _anomalyLastWarnAt >= ANOMALY_REWARN_MS) {
+        logger.warn(`[Metrics] ⚠️  Rate limit anomali tespiti: ${detail}`);
+        _anomalyLastWarnAt = now2;
+      }
+      _anomalyActive = true;
+    } else if (_anomalyActive) {
+      logger.info(`[Metrics] Rate limit anomalisi sona erdi: ${detail}`);
+      _anomalyActive = false;
     }
     _recordRateLimitForAnomaly();
   }, ANOMALY_CHECK_INTERVAL_MS).unref?.();
 }
 
 export const isEnabled = (): boolean => ENABLED && !!registry;
+
+// Test kancasi: kardinalite sinirinin gercekten uygulandigini dogrulamak icin.
+export const __normalizeRouteForTest = normalizeRoute;
+export const __UNMATCHED_ROUTE = UNMATCHED_ROUTE;
+
+/**
+ * Test kancası (Final21 Faz 9 — F21-9-01): KAYITLI metriklerin adı, türü ve
+ * etiketleri. Alarm kuralı sözleşme testi, kuralların sorguladığı her metriğin
+ * ve etiketin sunucunun GERÇEK kaydında var olduğunu bununla doğrular.
+ */
+export function _metricCatalogForTest(): Array<{ name: string; type: string; labelNames: string[] }> {
+  const reg = registry as unknown as {
+    getMetricsAsArray?: () => Array<{ name: string; type?: string; labelNames?: string[] }>;
+  } | undefined;
+  return (reg?.getMetricsAsArray?.() ?? []).map((m) => ({
+    name: m.name, type: String(m.type ?? ''), labelNames: [...(m.labelNames ?? [])],
+  }));
+}

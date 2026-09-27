@@ -4,7 +4,7 @@
 
 | Bileşen | Minimum | Önerilen |
 |---------|---------|----------|
-| Node.js | 22+ | 22 LTS |
+| Node.js | 22.19+ | 22.19+ |
 | RAM | 512 MB | 2 GB |
 | Disk | 5 GB | 20 GB |
 | OS | Linux/macOS | Ubuntu 22.04 |
@@ -49,15 +49,38 @@ MAX_FILE_SIZE_MB=2048
 LOG_LEVEL=info
 ```
 
+### Public CDN ve private attachment storage ayrımı
+
+Avatar, emoji, GIF ve benzeri **public asset**'ler `CDN_PROVIDER` ile uzak CDN/bucket'a taşınabilir. Mesaj ekleri ve voice-message byte'ları ise URL bilgisi bir sohbet katılımcısına ulaştığında bile yetki kontrolünü aşmamalıdır; bu yüzden ayrı `PRIVATE_STORAGE_PROVIDER` kullanır.
+
+```env
+# Public assets
+CDN_PROVIDER=r2
+R2_BUCKET=bridge-public-assets
+R2_PUBLIC_URL=https://cdn.example.com
+
+# Protected message/voice attachments — ayrı, public olmayan bucket
+PRIVATE_STORAGE_PROVIDER=r2
+PRIVATE_R2_BUCKET=bridge-private-uploads
+```
+
+`PRIVATE_STORAGE_PROVIDER` belirtilmezse **local** kabul edilir. Bu güvenli bir varsayılandır, fakat çok-instance deployment'ta ortak disk olmadığı için production HA kurulumunda shared private S3/R2/MinIO/B2 bucket önerilir. Private bucket ile public CDN bucket **aynı olamaz**; uygulama bunu fail-closed reddeder. Private bucket'a public-read policy, r2.dev veya public custom-domain bağlamayın. Protected byte'lar yalnız Bridge'in authenticated `/uploads/<id>` proxy'sinden servis edilmelidir.
+
 ---
 
 ## 2. Kurulum
 
 ```bash
-cd server
-npm install --omit=dev
+# Kaynak checkout'tan production build
+npm ci
+npm run build:ci
+npm --prefix server ci
+npm --prefix server run build
+
+# Build tamamlandıktan sonra server devDependencies temizlenebilir
+npm --prefix server prune --omit=dev
 cp server/.env.example server/.env
-# .env'i yukarıdaki değerlerle doldur
+# server/.env'i yukarıdaki değerlerle doldur
 ```
 
 ---
@@ -254,7 +277,7 @@ RL_MESSAGES_MAX=30
 RL_AI_MAX=10
 RL_AI_STREAM_MAX=5
 RL_UPLOAD_MAX=20
-RL_GLOBAL_MAX=300
+RL_GLOBAL_MAX=200
 ```
 
 > ⚠️ **Dikkat:** Redis olmadan rate limiter in-memory çalışır. Bu durumda çok instance deployment'ta her instance kendi limitini bağımsız tutar — limitler instance'lar arası paylaşılmaz. Production'da Redis zorunludur.
@@ -275,12 +298,16 @@ haproxy -f haproxy/haproxy.cfg
 
 ```bash
 git pull
-cd server && npm install --omit=dev
-npm run db:migrate:pg
+npm ci
+npm run build:ci
+npm --prefix server ci
+npm --prefix server run build
+npm --prefix server prune --omit=dev
+npm --prefix server run db:migrate:pg
 
 # Yeniden başlat
 pm2 restart bridge
-# veya Docker:
+# veya Docker (image build server runtime asset'lerini de içerir):
 docker compose up -d --build bridge
 ```
 
@@ -293,10 +320,12 @@ docker compose up -d --build bridge
 pg_dump bridge > backup_$(date +%Y%m%d).sql
 ```
 
-Upload dosyaları:
+Local upload/private attachment dosyaları:
 ```bash
 rsync -av server/uploads/ backup-server:/backups/bridge-uploads/
 ```
+
+Remote `PRIVATE_STORAGE_PROVIDER` kullanılıyorsa private bucket için sağlayıcı-native versioning/backup da ayrıca etkinleştirilmelidir; public CDN yedeği private attachment yedeği yerine geçmez.
 
 > ⚠️ **Kritik:** `AP_ENCRYPTION_KEY` değerini de yedekle. Bu anahtar olmadan
 > federation private key'leri kurtarılamaz. Güvenli bir password manager'da sakla.
@@ -321,7 +350,7 @@ Mevcut eşik: **%70** (CI'da zorunlu). Yeni route eklenirse annotasyon eklemeyi 
 
 ### CI Entegrasyonu
 
-`.github/workflows/ci.yml`'de Swagger sağlık kontrolü:
+`.github/workflows/quality-gate.yml`'de Swagger sağlık kontrolü:
 
 ```yaml
 - name: Swagger endpoint check

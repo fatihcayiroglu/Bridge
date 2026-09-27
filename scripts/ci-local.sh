@@ -24,7 +24,7 @@ docker run -d --name "$PG_CONTAINER" \
   -e POSTGRES_USER=bridge \
   -e POSTGRES_PASSWORD=bridge_test_pw \
   -p 5432:5432 \
-  postgres:16-alpine >/dev/null
+  postgres:18-alpine >/dev/null
 
 echo "🔴 Redis başlatılıyor..."
 docker rm -f "$REDIS_CONTAINER" 2>/dev/null || true

@@ -1,7 +1,9 @@
 // server/tests/federation-outbox.test.ts
 // ActivityPub Outbox endpoint + deliverToFollowers delivery testi
+import type { Request } from 'express';
+import { fetchMock, installFetchMock } from './helpers/fetchDouble';
 
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV   = 'test';
 
 import { createMockDb, makeUser } from './helpers/mockDb';
@@ -10,29 +12,36 @@ const mockDb = createMockDb();
 jest.mock('../db/index', () => mockDb);
 jest.mock('../db/loader', () => require('../db/index'));
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: (req, res, next) => {
+  authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
     const h = req.headers.authorization;
     if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
     const jwt = require('jsonwebtoken');
-    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret'); next(); }
+    try { req.user = jwt.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!'); next(); }
     catch { res.status(401).json({ error: 'Invalid token' }); }
   },
+  castAuthed: (req: Request) => req,
 }));
 jest.mock('../lib/fetch', () => ({
-  fetchT: jest.fn((...args) => global.fetch(...args)),
+  fetchT: jest.fn((...args: Parameters<typeof fetch>) => global.fetch(...args)),
 }));
 
-global.fetch = jest.fn();
+installFetchMock();
 
 const request    = require('supertest');
 const express    = require('express');
 const jwt        = require('jsonwebtoken');
 const router     = require('../routes/federation');
+import { requireDoc } from './helpers/mockDb';
+import { at, stringsOf } from './helpers/narrow';
 
 const app = express();
 app.use(express.json());
 app.use('/api/federation', router);
-app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
 
 // ── Fixture IDs ────────────────────────────────────────────────
 const ACTOR_USER_ID  = 'outbox-actor-uid';
@@ -47,7 +56,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
-  global.fetch.mockReset();
+  fetchMock().mockReset();
   // ap_activities ve ap_follows temizle (her testin başından itibaren temiz)
   mockDb.apActivities?.remove?.({});
   mockDb.apFollows?.remove?.({});
@@ -133,7 +142,7 @@ describe('GET /api/federation/users/:username/outbox?page=true', () => {
       .get(`/api/federation/users/${ACTOR_USERNAME}/outbox?page=true`);
 
     expect(res.body.orderedItems.length).toBeGreaterThanOrEqual(1);
-    const ids = res.body.orderedItems.map(a => a.id);
+    const ids = res.body.orderedItems.map((a: Record<string, unknown>) => a.id);
     expect(ids).toContain('https://example.com/act/1');
   });
 
@@ -147,7 +156,7 @@ describe('GET /api/federation/users/:username/outbox?page=true', () => {
     const res = await request(app)
       .get(`/api/federation/users/${ACTOR_USERNAME}/outbox?page=true`);
 
-    const ids = res.body.orderedItems.map(a => a.id);
+    const ids = res.body.orderedItems.map((a: Record<string, unknown>) => a.id);
     expect(ids).not.toContain('https://other.com/act/99');
   });
 
@@ -169,6 +178,32 @@ describe('GET /api/federation/users/:username/outbox?page=true', () => {
     expect(res.body.next).toContain('min_id=');
   });
 
+  it('uses next cursor to return strictly older disjoint activities', async () => {
+    const now = Date.now();
+    for (let i = 0; i < 25; i++) {
+      await mockDb.apActivities.insert({
+        actorUserId: ACTOR_USER_ID, type: 'Create',
+        activity: { type: 'Create', id: `https://x/cursor/${i}` },
+        publishedAt: now - i * 1000,
+      });
+    }
+    const first = await request(app).get(`/api/federation/users/${ACTOR_USERNAME}/outbox?page=true`);
+    expect(first.status).toBe(200);
+    const next = new URL(first.body.next);
+    const minId = next.searchParams.get('min_id');
+    expect(minId).toMatch(/^\d+$/);
+    const second = await request(app).get(`/api/federation/users/${ACTOR_USERNAME}/outbox?page=true&min_id=${minId}`);
+    expect(second.status).toBe(200);
+    const firstIds = new Set(first.body.orderedItems.map((a: Record<string, unknown>) => a.id));
+    expect(second.body.orderedItems.length).toBeGreaterThan(0);
+    expect(second.body.orderedItems.every((a: Record<string, unknown>) => !firstIds.has(a.id))).toBe(true);
+  });
+
+  it.each(['-1', '1.5', '1x', '9007199254740992'])('rejects malformed min_id=%s', async (minId) => {
+    const res = await request(app).get(`/api/federation/users/${ACTOR_USERNAME}/outbox?page=true&min_id=${minId}`);
+    expect(res.status).toBe(400);
+  });
+
   it('does not include next link when results are fewer than PAGE_SIZE', async () => {
     await mockDb.apActivities.insert({
       actorUserId: ACTOR_USER_ID, type: 'Create',
@@ -179,6 +214,20 @@ describe('GET /api/federation/users/:username/outbox?page=true', () => {
       .get(`/api/federation/users/${ACTOR_USERNAME}/outbox?page=true`);
 
     expect(res.body.next).toBeUndefined();
+  });
+});
+
+describe('GET /api/federation/users/:username/following', () => {
+  it('reads canonical fromUserId outgoing-follow ownership', async () => {
+    await mockDb.apOutgoingFollows.insert({
+      fromUserId: ACTOR_USER_ID,
+      targetActorUrl: 'https://remote.social/users/bob',
+      accepted: true,
+      createdAt: Date.now(),
+    });
+    const res = await request(app).get(`/api/federation/users/${ACTOR_USERNAME}/following`);
+    expect(res.status).toBe(200);
+    expect(res.body.orderedItems).toContain('https://remote.social/users/bob');
   });
 });
 
@@ -209,20 +258,22 @@ describe('deliverToFollowers()', () => {
     // Küçük bir bekleme: deliverToFollowers async işlemi tamamlasın
     await new Promise(r => setTimeout(r, 50));
 
-    const saved = await mockDb.apActivities.findOne({ actorUserId: ACTOR_USER_ID, type: 'Create' });
+    const saved = await requireDoc(mockDb.apActivities, { actorUserId: ACTOR_USER_ID, type: 'Create' });
     expect(saved).toBeTruthy();
-    expect(saved.activity.type).toBe('Create');
-    expect(saved.activity.object.type).toBe('Note');
-    expect(saved.activity.object.content).toBe('<p>Federe mesaj</p>');
+    expect(at(saved, 'activity.type', 'kayitli aktivite')).toBe('Create');
+    expect(at(saved, 'activity.object.type', 'kayitli aktivite')).toBe('Note');
+    expect(at(saved, 'activity.object.content', 'kayitli aktivite')).toBe('<p>Federe mesaj</p>');
   });
 
   it('saves Note with correct to/cc (public + followers)', async () => {
     await deliverToFollowers(fromUser, '<p>Herkese açık mesaj</p>');
     await new Promise(r => setTimeout(r, 50));
 
-    const saved = await mockDb.apActivities.findOne({ actorUserId: ACTOR_USER_ID, type: 'Create' });
-    expect(saved.activity.object.to).toContain('https://www.w3.org/ns/activitystreams#Public');
-    expect(saved.activity.object.cc.some(u => u.includes('/followers'))).toBe(true);
+    const saved = await requireDoc(mockDb.apActivities, { actorUserId: ACTOR_USER_ID, type: 'Create' });
+    expect(stringsOf(at(saved, 'activity.object.to', 'kayitli aktivite'), 'to'))
+      .toContain('https://www.w3.org/ns/activitystreams#Public');
+    expect(stringsOf(at(saved, 'activity.object.cc', 'kayitli aktivite'), 'cc')
+      .some(u => u.includes('/followers'))).toBe(true);
   });
 
   it('delivers to each follower inbox', async () => {
@@ -241,14 +292,15 @@ describe('deliverToFollowers()', () => {
     });
 
     // fetch mock: actor profile → inbox URL, sonra POST inbox
-    global.fetch
-      .mockResolvedValue({ ok: true, json: async () => ({ inbox: FOLLOWER_INBOX }) });
+    // `global.fetch` URUN tipindedir; ikiz yuzeyi `fetchMock()` uzerinden
+    // okunur — `global.fetch.mockResolvedValue(...)` tip olarak yanlisti.
+    fetchMock().mockResolvedValue({ ok: true, status: 200, json: async () => ({ inbox: FOLLOWER_INBOX }) });
 
     await deliverToFollowers(fromUser, '<p>Follower delivery testi</p>');
     await new Promise(r => setTimeout(r, 100));
 
     // Her follower için en az bir fetch çağrısı yapılmış olmalı
-    expect(global.fetch).toHaveBeenCalled();
+    expect(fetchMock()).toHaveBeenCalled();
   });
 
   it('does not throw when fetch fails for one follower', async () => {
@@ -259,7 +311,7 @@ describe('deliverToFollowers()', () => {
       createdAt: Date.now(),
     });
 
-    global.fetch.mockRejectedValue(new Error('ECONNREFUSED'));
+    fetchMock().mockRejectedValue(new Error('ECONNREFUSED'));
 
     await expect(deliverToFollowers(fromUser, '<p>Hata testi</p>')).resolves.not.toThrow();
   });
@@ -269,9 +321,9 @@ describe('deliverToFollowers()', () => {
     await deliverToFollowers(fromUser, '<p>Custom id testi</p>', customNoteId);
     await new Promise(r => setTimeout(r, 50));
 
-    const saved = await mockDb.apActivities.findOne({ noteId: customNoteId });
+    const saved = await requireDoc(mockDb.apActivities, { noteId: customNoteId });
     expect(saved).toBeTruthy();
-    expect(saved.activity.object.id).toBe(customNoteId);
+    expect(at(saved, 'activity.object.id', 'kayitli aktivite')).toBe(customNoteId);
   });
 
   it('outbox totalItems increases after delivery', async () => {

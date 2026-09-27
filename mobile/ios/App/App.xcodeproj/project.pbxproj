@@ -13,11 +13,11 @@
         CLANG_ENABLE_MODULES = YES;
         CLANG_ENABLE_OBJC_ARC = YES;
         CODE_SIGN_IDENTITY = "iPhone Developer";
-        CURRENT_PROJECT_VERSION = 1;
+        CURRENT_PROJECT_VERSION = 1125000;
         ENABLE_BITCODE = NO;
         INFOPLIST_FILE = "App/Info.plist";
         LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-        MARKETING_VERSION = "1.98.0";
+        MARKETING_VERSION = "1.125.0";
         OTHER_LDFLAGS = "$(inherited)";
         PRODUCT_BUNDLE_IDENTIFIER = "com.bridge.app";
         PRODUCT_NAME = "$(TARGET_NAME)";
@@ -35,11 +35,11 @@
         CLANG_ENABLE_MODULES = YES;
         CLANG_ENABLE_OBJC_ARC = YES;
         CODE_SIGN_IDENTITY = "iPhone Developer";
-        CURRENT_PROJECT_VERSION = 1;
+        CURRENT_PROJECT_VERSION = 1125000;
         ENABLE_BITCODE = NO;
         INFOPLIST_FILE = "App/Info.plist";
         LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-        MARKETING_VERSION = "1.98.0";
+        MARKETING_VERSION = "1.125.0";
         OTHER_LDFLAGS = "$(inherited)";
         PRODUCT_BUNDLE_IDENTIFIER = "com.bridge.app";
         PRODUCT_NAME = "$(TARGET_NAME)";

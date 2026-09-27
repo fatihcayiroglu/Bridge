@@ -1,6 +1,6 @@
 // server/tests/roles.test.ts
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 process.env.NODE_ENV       = 'test';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
@@ -19,10 +19,15 @@ function buildApp() {
   app.use('/api/servers', rolesRouter);
   return app;
 }
-function tok(uid) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
+function tok(uid: string) { return jwt.sign({ id: uid, v: 0 }, process.env.JWT_SECRET, { expiresIn: '1h' }); }
 
 describe('Roles Routes', () => {
-  let app, ownerId, memberId, serverId, ownerToken, memberToken;
+  let app: express.Express;
+  let ownerId: string;
+  let memberId: string;
+  let serverId: string;
+  let ownerToken: string;
+  let memberToken: string;
 
   beforeEach(async () => {
     db._reset?.();
@@ -64,7 +69,7 @@ describe('Roles Routes', () => {
       const res = await request(app)
         .post(`/api/servers/${serverId}/roles`)
         .set('Authorization', `Bearer ${ownerToken}`)
-        .send({ name: 'Moderator', color: '#ff0000', permissions: ['KICK_MEMBERS'] });
+        .send({ name: 'Moderator', color: '#ff0000', permissions: 1 << 4 });
       expect(res.status).toBe(200);
       expect(res.body).toHaveProperty('_id');
       expect(res.body.name).toBe('Moderator');
@@ -88,7 +93,7 @@ describe('Roles Routes', () => {
   });
 
   describe('PATCH /api/servers/:sid/roles/:roleId', () => {
-    let roleId;
+    let roleId: string;
     beforeEach(async () => {
       const r = await db.roles.insert({ _id: uuidv4(), serverId, name: 'Mod', color: '#fff', permissions: [], createdAt: Date.now() });
       roleId = r._id;
@@ -113,7 +118,7 @@ describe('Roles Routes', () => {
   });
 
   describe('DELETE /api/servers/:sid/roles/:roleId', () => {
-    let roleId;
+    let roleId: string;
     beforeEach(async () => {
       const r = await db.roles.insert({ _id: uuidv4(), serverId, name: 'ToDelete', color: '#fff', permissions: [], createdAt: Date.now() });
       roleId = r._id;
@@ -135,7 +140,7 @@ describe('Roles Routes', () => {
   });
 
   describe('POST /api/servers/:sid/roles/:roleId/assign', () => {
-    let roleId;
+    let roleId: string;
     beforeEach(async () => {
       const r = await db.roles.insert({ _id: uuidv4(), serverId, name: 'R', color: '#fff', permissions: [], createdAt: Date.now() });
       roleId = r._id;

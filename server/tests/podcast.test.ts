@@ -1,7 +1,8 @@
 // server/tests/podcast.test.ts
+import type { Express } from 'express';
 process.env.NODE_ENV       = 'test';
-process.env.JWT_SECRET     = 'test-jwt-secret';
-process.env.REFRESH_SECRET = 'test-refresh-secret';
+process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
+process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
 
 jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 
@@ -9,7 +10,11 @@ jest.mock('../db/loader', () => require('./helpers/mockDb').createMockDb());
 jest.mock('../middleware/auth', () => {
   const jwt = require('jsonwebtoken');
   return {
-    authMiddleware: (req, res, next) => {
+    authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
       const h = req.headers.authorization;
       if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
       try {
@@ -35,13 +40,17 @@ function buildApp() {
   return app;
 }
 
-function tok(uid) {
+function tok(uid: string) {
   return jwt.sign({ id: uid }, process.env.JWT_SECRET, { expiresIn: '1h' });
 }
 
 describe('Podcast routes', () => {
-  let app;
-  let adminId, userId, serverId, channelId, episodeId;
+  let app: Express;
+  let adminId: string;
+  let userId: string;
+  let serverId: string;
+  let channelId: string;
+  let episodeId: string;
 
   beforeEach(async () => {
     db._reset?.();

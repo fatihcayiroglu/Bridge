@@ -1,6 +1,6 @@
 {
   "name": "bridge-mobile",
-  "version": "1.122.0",
+  "version": "1.125.0",
   "description": "Bridge Chat — iOS & Android (Capacitor)",
   "main": "index.js",
   "scripts": {
@@ -32,6 +32,7 @@
     "@capacitor/share": "^8.0.1",
     "@capacitor/splash-screen": "^8.0.1",
     "@capacitor/status-bar": "^8.0.2",
-    "@capawesome/capacitor-badge": "^8.0.2"
+    "@capawesome/capacitor-badge": "^8.0.2",
+    "socket.io-client": "4.8.3"
   }
 }

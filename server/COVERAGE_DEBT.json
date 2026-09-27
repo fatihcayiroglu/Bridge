@@ -1,0 +1,447 @@
+{
+  "schemaVersion": 1,
+  "description": "Explicit coverage-threshold inventory derived from server/package.json. This file documents per-file ratchets; server/package.json remains the executable Jest threshold owner.",
+  "globalFloor": {
+    "statements": 90,
+    "lines": 90,
+    "functions": 90,
+    "branches": 90
+  },
+  "exceptions": {
+    "./middleware/auth.ts": {
+      "currentFloor": {
+        "lines": 86,
+        "functions": 92,
+        "branches": 79
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./middleware/rateLimit.ts": {
+      "currentFloor": {
+        "lines": 96,
+        "functions": 95,
+        "branches": 96
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": false,
+      "policy": "Explicit per-file ratchet at or above the global floor; do not lower."
+    },
+    "./lib/apKeyEncryption.ts": {
+      "currentFloor": {
+        "lines": 79,
+        "functions": 99,
+        "branches": 56
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./lib/permissions.ts": {
+      "currentFloor": {
+        "lines": 90,
+        "functions": 86,
+        "branches": 77
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./db/repositories/UserRepository.ts": {
+      "currentFloor": {
+        "lines": 74,
+        "functions": 85,
+        "branches": 34
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./db/repositories/AuthRepository.ts": {
+      "currentFloor": {
+        "lines": 76,
+        "functions": 79,
+        "branches": 56
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./routes/discover.ts": {
+      "currentFloor": {
+        "lines": 90,
+        "functions": 79,
+        "branches": 76
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./routes/semantic.ts": {
+      "currentFloor": {
+        "lines": 75,
+        "functions": 64,
+        "branches": 44
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./socket/handlers/discover.ts": {
+      "currentFloor": {
+        "lines": 99,
+        "functions": 99,
+        "branches": 99
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": false,
+      "policy": "Explicit per-file ratchet at or above the global floor; do not lower."
+    },
+    "./routes/servers/channels.ts": {
+      "currentFloor": {
+        "lines": 99,
+        "functions": 79,
+        "branches": 72
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./routes/messages.ts": {
+      "currentFloor": {
+        "lines": 90,
+        "functions": 74,
+        "branches": 73
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./routes/bots.ts": {
+      "currentFloor": {
+        "lines": 95,
+        "functions": 99,
+        "branches": 77
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./routes/channelPerms/helpers.ts": {
+      "currentFloor": {
+        "lines": 57,
+        "functions": 65,
+        "branches": 44
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./lib/pushSender.ts": {
+      "currentFloor": {
+        "lines": 71,
+        "functions": 52,
+        "branches": 54
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./socket/handlers/mediasoup/workers.ts": {
+      "currentFloor": {
+        "lines": 90,
+        "functions": 91,
+        "branches": 79
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./socket/handlers/mediasoup/rooms.ts": {
+      "currentFloor": {
+        "lines": 72,
+        "functions": 54,
+        "branches": 60
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./socket/handlers/mediasoup/index.ts": {
+      "currentFloor": {
+        "lines": 89,
+        "functions": 64,
+        "branches": 71
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./socket/socketRateLimit.ts": {
+      "currentFloor": {
+        "lines": 84,
+        "functions": 82,
+        "branches": 70
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./lib/webauthn-crypto.ts": {
+      "currentFloor": {
+        "lines": 81,
+        "functions": 99,
+        "branches": 66
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./lib/webauthn-pem.ts": {
+      "currentFloor": {
+        "lines": 99,
+        "functions": 99,
+        "branches": 74
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./routes/admin/users.ts": {
+      "currentFloor": {
+        "lines": 90,
+        "functions": 87,
+        "branches": 83
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./routes/admin/moderation.ts": {
+      "currentFloor": {
+        "lines": 77,
+        "functions": 56,
+        "branches": 68
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./routes/admin/middleware.ts": {
+      "currentFloor": {
+        "lines": 99,
+        "functions": 99,
+        "branches": 82
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./socket/handlers/messages-send.ts": {
+      "currentFloor": {
+        "lines": 82,
+        "functions": 77,
+        "branches": 68
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./socket/handlers/messages-edit.ts": {
+      "currentFloor": {
+        "lines": 87,
+        "functions": 76,
+        "branches": 71
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "plugins/actions.ts": {
+      "currentFloor": {
+        "lines": 93,
+        "functions": 99,
+        "branches": 72
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "routes/admin/federation-keys.ts": {
+      "currentFloor": {
+        "lines": 99,
+        "functions": 99,
+        "branches": 99
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": false,
+      "policy": "Explicit per-file ratchet at or above the global floor; do not lower."
+    },
+    "./lib/vault.ts": {
+      "currentFloor": {
+        "lines": 80,
+        "functions": 89,
+        "branches": 71
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    },
+    "./lib/pgvector.ts": {
+      "currentFloor": {
+        "lines": 95,
+        "functions": 83,
+        "branches": 89
+      },
+      "targetFloor": {
+        "statements": 90,
+        "lines": 90,
+        "functions": 90,
+        "branches": 90
+      },
+      "belowGlobal": true,
+      "policy": "Ratcheted debt: do not lower; raise only when measured coverage supports it."
+    }
+  }
+}

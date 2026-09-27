@@ -209,7 +209,6 @@ interface Window {
   saveDraft?: (...args: unknown[]) => void;
   restoreDraft?: (...args: unknown[]) => void;
   adminTab?: (...args: unknown[]) => void;
-  serverControl?: (...args: unknown[]) => void;
   bridgeUpdater?: BridgeDesktopUpdaterAPI;
   obNext?: (...args: unknown[]) => void;
   obPrev?: (...args: unknown[]) => void;
@@ -230,11 +229,8 @@ interface Window {
   adminRevokeBadge?: (...args: unknown[]) => void;
   loadAdminBadgePanel?: (...args: unknown[]) => void;
   loadBotSlashCommands?: (...args: unknown[]) => void;
-  addBotToServer?: (...args: unknown[]) => void;
-  installBotFlow?: (...args: unknown[]) => void;
-  installBotWithServer?: (...args: unknown[]) => void;
-  rateBot?: (...args: unknown[]) => void;
   showBotDetails?: (...args: unknown[]) => void;
+  rateMarketplaceBot?: (...args: unknown[]) => void;
   toggleBotInstall?: (...args: unknown[]) => void;
   showPluginDetails?: (...args: unknown[]) => void;
   debounceMktSearch?: (...args: unknown[]) => void;

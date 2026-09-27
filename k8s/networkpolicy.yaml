@@ -1,0 +1,46 @@
+# Final21 Faz 19 — F21-10-04: veri depolarına yalnızca Bridge pod'ları bağlanabilir.
+#
+# Redis ve PostgreSQL ClusterIP servisleriyle ad alanındaki HER pod'a açıktı. Parola tek
+# başına yeterli değildir (sızan bir sır, ele geçirilmiş komşu bir pod); ağ düzeyinde de
+# yalnızca `app: bridge` etiketli pod'lar kabul edilir. Bu politika yalnızca veri
+# depolarını seçer: Bridge'e giden Ingress trafiği etkilenmez.
+#
+# NOT: NetworkPolicy'yi UYGULAYAN bir CNI gerekir (Calico, Cilium, …). Uygulamayan bir
+# CNI'de nesne kabul edilir ama ETKİSİZDİR — docs: k8s/README.md.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-from-bridge-only
+  namespace: bridge
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: bridge
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-from-bridge-only
+  namespace: bridge
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: bridge
+      ports:
+        - protocol: TCP
+          port: 5432

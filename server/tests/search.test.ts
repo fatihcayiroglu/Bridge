@@ -1,5 +1,5 @@
 // server/tests/search.test.ts
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV   = 'test';
 
 import { createMockDb } from './helpers/mockDb';
@@ -8,16 +8,20 @@ const mockDb = createMockDb();
 jest.mock('../db/index', () => mockDb);
 jest.mock('../db/loader', () => require('../db/index'));
 jest.mock('../middleware/auth', () => ({
-  authMiddleware: (req, res, next) => {
+  authMiddleware: (
+    req: { headers: { authorization?: string }; user?: unknown },
+    res: { status: (c: number) => { json: (b: unknown) => unknown } },
+    next: () => void,
+  ) => {
     const h = req.headers.authorization;
     if (!h?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
     const jwt = require('jsonwebtoken');
     try {
-      req.user = jwt.verify(h.slice(7), 'test-jwt-secret');
+      req.user = jwt.verify(h.slice(7), 'test-jwt-secret-long-enough-32chars!!');
       next();
     } catch { res.status(401).json({ error: 'Invalid token' }); }
   },
-  verifyToken: (t) => { try { return require('jsonwebtoken').verify(t, 'test-jwt-secret'); } catch { return null; } },
+  verifyToken: (t: string) => { try { return require('jsonwebtoken').verify(t, 'test-jwt-secret-long-enough-32chars!!'); } catch { return null; } },
 }));
 
 import request from 'supertest';
@@ -26,11 +30,23 @@ const jwt     = require('jsonwebtoken');
 
 // Wire up _ftsSearch on the mock — simple JS filter
 const _msgStore: Record<string, unknown> = {};
-mockDb._ftsSearch = (query, serverIds, limit = 20) => {
+// Kanca URUNUN cagri bicimiyle yazilir: `(query: string, serverIds: string[],
+// limit?: number)`. Onceden `query` `Record<string, unknown>` ilan edilmis ama
+// `query.toLowerCase()` cagriliyordu — yani bildirim ile kullanim CELISIYORDU.
+// `m: any` de kaldirildi; satirlar dogrulanarak okunuyor.
+mockDb._ftsSearch = ((query: string, serverIds: string[], limit = 20) => {
+  const needle = String(query).toLowerCase();
   return Object.values(_msgStore)
-    .filter((m: any) => serverIds.includes(m.serverId) && m.content?.toLowerCase().includes(query.toLowerCase()))
+    .filter((row): row is Record<string, unknown> =>
+      typeof row === 'object' && row !== null && !Array.isArray(row))
+    .filter((row) => {
+      const serverId = row.serverId;
+      const content = row.content;
+      return typeof serverId === 'string' && serverIds.includes(serverId)
+        && typeof content === 'string' && content.toLowerCase().includes(needle);
+    })
     .slice(0, limit);
-};
+}) as typeof mockDb._ftsSearch;
 // intercept messages.insert to also update _msgStore
 const origInsert = mockDb.messages.insert.bind(mockDb.messages);
 mockDb.messages.insert = async (doc) => {
@@ -46,10 +62,10 @@ const app = express();
 app.use(express.json());
 app.use('/api/search',   searchRouter);
 app.use('/api/channels', pinsRouter);
-app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
+app.use((err: Error & { status?: number }, _req: unknown, res: { status: (c: number) => { json: (b: unknown) => unknown } }, _next: unknown) => res.status(err.status || 500).json({ error: err.message }));
 
 function token(id = 'u1') {
-  return jwt.sign({ id, username: 'searcher', v: 0 }, 'test-jwt-secret', { expiresIn: '1h' });
+  return jwt.sign({ id, username: 'searcher', v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
 }
 
 const USER_ID   = 'u1';
@@ -57,7 +73,21 @@ const SERVER_ID = 'srv1';
 const CHAN_ID   = 'ch1';
 
 beforeAll(async () => {
-  await mockDb.members.insert({ userId: USER_ID, serverId: SERVER_ID, roles: '[]', joinedAt: Date.now() });
+  // Arama artık kanal başına VIEW_CHANNELS uyguluyor (routes/search.ts).
+  // `resolvePermissions` ÖNCE sunucu satırını okur:
+  //     const server = await Servers.findById(serverId); if (!server) return 0;
+  // Bu fixture sunucu satırını hiç oluşturmuyordu, yani izin sözleşmesini
+  // MODELLEMİYORDU ve her şey (doğru biçimde) fail-closed eleniyordu.
+  //
+  // Sahip BAŞKA bir kullanıcıdır: böylece sahip kısayolu (0x7FFFFFFF) değil,
+  // GERÇEK üye yolu çalışır — üyelik + rolsüz DEFAULT_PERMISSIONS, ki bu
+  // VIEW_CHANNELS içerir. Üretim güvenliği GEVŞETİLMEDİ.
+  await mockDb.servers.insert({ _id: SERVER_ID, name: 'Test Server', ownerId: 'owner-1', createdAt: Date.now() });
+  // `roles` üretimde JSONB'dir (schema.ts: members.roles JSONB) — sürücü
+  // GERÇEK dizi döndürür. Fixture'daki `'[]'` DİZESİ üretim şeklini yansıtmıyordu
+  // ve `resolvePermissions` içinde `roleIds.length > 0` dalını yanlışlıkla
+  // tetikliyordu (uzunluk 2), sonuçta taban izinler 0'a düşüyordu.
+  await mockDb.members.insert({ userId: USER_ID, serverId: SERVER_ID, roles: [], joinedAt: Date.now() });
   await mockDb.channels.insert({ _id: CHAN_ID,  serverId: SERVER_ID, name: 'general',       type: 'text', createdAt: Date.now() });
   await mockDb.channels.insert({ _id: 'ch2',    serverId: SERVER_ID, name: 'announcements', type: 'text', createdAt: Date.now() });
   await mockDb.users.insert({ _id: USER_ID, username: 'searcher', displayName: 'Searcher', avatarColor: '#fff', status: 'online' });
@@ -88,6 +118,12 @@ describe('GET /api/search', () => {
     expect(res.body.members[0].username).toBe('searcher');
   });
 
+  it('treats regex metacharacters as literal member-search text', async () => {
+    const res = await request(app).get('/api/search?q=.*&type=users').set('Authorization', `Bearer ${token()}`);
+    expect(res.status).toBe(200);
+    expect(res.body.members).toEqual([]);
+  });
+
   it('returns empty for short query (< 2 chars)', async () => {
     const res = await request(app).get('/api/search?q=h').set('Authorization', `Bearer ${token()}`);
     expect(res.status).toBe(200);
@@ -100,7 +136,7 @@ describe('GET /api/search', () => {
     await mockDb.messages.insert({ _id: 'mx', channelId: 'chx', serverId: 'other-srv', userId: 'ux', displayName: 'X', content: 'hello hidden', type: 'normal', pinned: false, reactions: {}, createdAt: 9000 });
     const res = await request(app).get(`/api/search?q=hello&serverId=${SERVER_ID}`).set('Authorization', `Bearer ${token()}`);
     expect(res.status).toBe(200);
-    expect(res.body.messages.map(m => m._id)).not.toContain('mx');
+    expect(res.body.messages.map((m: Record<string, unknown>) => m._id)).not.toContain('mx');
   });
 
   it('type=channels returns only channels', async () => {
@@ -120,13 +156,13 @@ describe('GET /api/channels/:cid/pins', () => {
   it('returns only pinned messages', async () => {
     const res = await request(app).get(`/api/channels/${CHAN_ID}/pins`).set('Authorization', `Bearer ${token()}`);
     expect(res.status).toBe(200);
-    expect(res.body.every(m => m.pinned)).toBe(true);
-    expect(res.body.find(m => m._id === 'm3')).toBeDefined();
+    expect(res.body.every((m: Record<string, unknown>) => m.pinned)).toBe(true);
+    expect(res.body.find((m: Record<string, unknown>) => m._id === 'm3')).toBeDefined();
   });
 
   it('excludes non-pinned messages', async () => {
     const res = await request(app).get(`/api/channels/${CHAN_ID}/pins`).set('Authorization', `Bearer ${token()}`);
-    expect(res.body.find(m => m._id === 'm1')).toBeUndefined();
+    expect(res.body.find((m: Record<string, unknown>) => m._id === 'm1')).toBeUndefined();
   });
 
   it('returns 403 for non-members', async () => {
@@ -144,8 +180,8 @@ describe('GET /api/channels/:cid/files', () => {
   it('returns only file messages', async () => {
     const res = await request(app).get(`/api/channels/${CHAN_ID}/files`).set('Authorization', `Bearer ${token()}`);
     expect(res.status).toBe(200);
-    expect(res.body.every(m => m.type === 'file')).toBe(true);
-    expect(res.body.find(m => m._id === 'm4')).toBeDefined();
+    expect(res.body.every((m: Record<string, unknown>) => m.type === 'file')).toBe(true);
+    expect(res.body.find((m: Record<string, unknown>) => m._id === 'm4')).toBeDefined();
   });
 
   it('respects the limit param', async () => {

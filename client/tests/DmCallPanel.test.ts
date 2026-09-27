@@ -3,6 +3,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import DmCallPanel from '../js/core/DmCallPanel.svelte';
+import { BridgeRegistry as _BridgeRegistry } from '../js/core/bridge-registry.js';
+
+// Faz 12 — CJS `require()` KALDIRILDI.
+//
+// Bu dosya mock'lanmış modüle `require('../js/core/bridge-registry.js')` ile
+// erişiyordu. Vite `import` ifadelerini çözümleyip `.js` → `.ts` eşler, ancak
+// çalışma zamanındaki `require()` dönüştürülmez: Node'un CJS çözümleyicisi
+// literal `bridge-registry.js` arar ve kaynak `.ts` olduğu için bulamaz.
+// Sonuç: dosyadaki 9 test "Cannot find module" ile düşüyordu.
+//
+// `vi.mock` derleme sırasında hoist edildiğinden, aşağıdaki STATİK import
+// zaten mock'lanmış modülü alır. Sahte bir `.js` dosyası eklenmedi.
+const BridgeRegistry = _BridgeRegistry as unknown as {
+  get: ReturnType<typeof vi.fn>;
+  call: ReturnType<typeof vi.fn>;
+  register: ReturnType<typeof vi.fn>;
+};
 
 // Mock BridgeRegistry
 vi.mock('../js/core/bridge-registry.js', () => ({
@@ -15,6 +32,11 @@ vi.mock('../js/core/bridge-registry.js', () => ({
     }),
     call: vi.fn(),
     register: vi.fn(),
+    // Completed against the canonical BridgeRegistry surface (register /
+    // unregister / call / get / has); a missing member throws before any
+    // assertion runs.
+    unregister: vi.fn(),
+    has: vi.fn(() => false),
   },
 }));
 
@@ -58,25 +80,30 @@ describe('DmCallPanel', () => {
   });
 
   it('onMount BridgeRegistry kayıtları yapılır', () => {
-    const { BridgeRegistry } = require('../js/core/bridge-registry.js');
     render(DmCallPanel);
     expect(BridgeRegistry.register).toHaveBeenCalledWith('startDmCall', expect.any(Function));
     expect(BridgeRegistry.register).toHaveBeenCalledWith('hangUpDmCall', expect.any(Function));
   });
 
   it('socket listener\'lar bağlanır', () => {
-    const { BridgeRegistry } = require('../js/core/bridge-registry.js');
     const mockSocket = { on: vi.fn(), off: vi.fn(), emit: vi.fn() };
     BridgeRegistry.get.mockImplementation((key: string) => key === 'socket' ? mockSocket : null);
     render(DmCallPanel);
-    expect(mockSocket.on).toHaveBeenCalledWith('dm:call:incoming', expect.any(Function));
-    expect(mockSocket.on).toHaveBeenCalledWith('dm:call:answered', expect.any(Function));
-    expect(mockSocket.on).toHaveBeenCalledWith('dm:call:ice', expect.any(Function));
-    expect(mockSocket.on).toHaveBeenCalledWith('dm:call:ended', expect.any(Function));
+    // FAZ 8/1 — `dm:call:answered` BEKLENTISI KALDIRILDI.
+    // Sunucu boyle bir olay HIC YAYMAZ (`socket/handlers/dm.ts`); onu
+    // dinlemek, kabul akisinin sessizce olmesinin ta kendisiydi. Panel artik
+    // sunucunun GERCEKTEN yaydigi olaylari dinler.
+    for (const event of [
+      'dm:call:incoming', 'dm:call:outgoing', 'dm:call:accepted', 'dm:call:ready',
+      'dm:call:offer', 'dm:call:answer', 'dm:call:ice', 'dm:call:declined',
+      'dm:call:missed', 'dm:call:ended',
+    ]) {
+      expect(mockSocket.on).toHaveBeenCalledWith(event, expect.any(Function));
+    }
+    expect(mockSocket.on).not.toHaveBeenCalledWith('dm:call:answered', expect.any(Function));
   });
 
   it('onDestroy socket listener\'lar kaldırılır', () => {
-    const { BridgeRegistry } = require('../js/core/bridge-registry.js');
     const mockSocket = { on: vi.fn(), off: vi.fn(), emit: vi.fn() };
     BridgeRegistry.get.mockImplementation((key: string) => key === 'socket' ? mockSocket : null);
     const { unmount } = render(DmCallPanel);
@@ -86,7 +113,6 @@ describe('DmCallPanel', () => {
   });
 
   it('gelen arama overlay\'i gösterir', async () => {
-    const { BridgeRegistry } = require('../js/core/bridge-registry.js');
     let incomingHandler: Function;
     const mockSocket = {
       on: vi.fn((event: string, handler: Function) => {
@@ -103,7 +129,6 @@ describe('DmCallPanel', () => {
   });
 
   it('gelen arama "kabul et" ve "reddet" butonlarını gösterir', async () => {
-    const { BridgeRegistry } = require('../js/core/bridge-registry.js');
     let incomingHandler: Function;
     const mockSocket = {
       on: vi.fn((event: string, handler: Function) => {
@@ -121,7 +146,6 @@ describe('DmCallPanel', () => {
   });
 
   it('reddet butonuna tıklayınca socket event emit edilir ve overlay kapanır', async () => {
-    const { BridgeRegistry } = require('../js/core/bridge-registry.js');
     let incomingHandler: Function;
     const mockSocket = {
       on: vi.fn((event: string, handler: Function) => {
@@ -134,14 +158,16 @@ describe('DmCallPanel', () => {
     incomingHandler!({ callId: 'call-xyz', callerId: 'user-2', type: 'voice', callerName: 'Bob' });
     await waitFor(() => container.querySelector('.dm-btn-reject'));
     fireEvent.click(container.querySelector('.dm-btn-reject')!);
-    expect(mockSocket.emit).toHaveBeenCalledWith('dm:call:end', { callId: 'call-xyz' });
+    // FAZ 8/1 — REDDETME kendi olayidir. `dm:call:end` KURULMUS bir gorusmeyi
+    // kapatir; henuz kabul edilmemis bir cagri icin arayan tarafta hicbir
+    // geri bildirim uretmezdi. `dm:call:decline` arayana `declined` yayar.
+    expect(mockSocket.emit).toHaveBeenCalledWith('dm:call:decline', { callId: 'call-xyz' });
     await waitFor(() => {
       expect(container.querySelector('.dm-call-overlay')).toBeNull();
     }, { timeout: 3000 });
   });
 
   it('video aramasında video elementleri render edilir', async () => {
-    const { BridgeRegistry } = require('../js/core/bridge-registry.js');
     let incomingHandler: Function;
     const mockSocket = {
       on: vi.fn((event: string, handler: Function) => {
@@ -158,7 +184,6 @@ describe('DmCallPanel', () => {
   });
 
   it('voice aramasında avatar gösterilir, video elementi yok', async () => {
-    const { BridgeRegistry } = require('../js/core/bridge-registry.js');
     let incomingHandler: Function;
     const mockSocket = {
       on: vi.fn((event: string, handler: Function) => {
@@ -176,7 +201,6 @@ describe('DmCallPanel', () => {
   });
 
   it('ARIA dialog attribute\'ları doğru', async () => {
-    const { BridgeRegistry } = require('../js/core/bridge-registry.js');
     let incomingHandler: Function;
     const mockSocket = {
       on: vi.fn((event: string, handler: Function) => {

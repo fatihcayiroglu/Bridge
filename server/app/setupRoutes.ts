@@ -45,6 +45,7 @@ import ssoRouter                            from '../routes/sso';
 import invitePreviewRouter                  from '../routes/invitePreview';
 import mobilePushRouter                     from '../routes/mobilePush';
 import webpushRouter                        from '../routes/webpush';
+import accountRouter                        from '../routes/account';
 import interactionsRouter                   from '../routes/interactions';
 import channelPermsRouter                   from '../routes/channelPerms';
 import groupDmRouter                        from '../routes/groupDm';
@@ -53,9 +54,11 @@ import userConnectionsRouter                from '../routes/userConnections';
 import { router as outgoingWebhooksRouter } from '../routes/outgoingWebhooks';
 import { router as boostsRouter }           from '../routes/boosts'; // Sprint 93
 import { router as spotifyOAuthRouter }     from '../routes/spotify-oauth'; // Sprint 93
-import { router as announcementRouter, setIo as setAnnouncementIo } from '../routes/announcement'; // Sprint 94
+import { router as announcementRouter } from '../routes/announcement'; // Sprint 94
 import serverEventsRouter                   from '../routes/serverEvents';    // Sprint 95
 import notificationPrefsRouter              from '../routes/notificationPrefs'; // Sprint 91
+import inboxRouter                          from '../routes/inbox';
+import savedRouter                          from '../routes/saved';
 import serverMemberProfileRouter            from '../routes/serverMemberProfile'; // Sprint 91
 import onboardingRouter                     from '../routes/onboarding';
 import reactionRolesRouter                  from '../routes/reactionRoles';
@@ -93,9 +96,17 @@ export function setupRoutes(app: Application): void {
   mountApi('/servers/:sid/emojis', customEmojiRouter);
   mountApi('/servers/:sid', serverAssetsRouter);
   mountApi('/servers', channelsRouter);
-  mountApi('/servers', categoriesRouter);
+  // C3 sınıfı — YÖNLENDİRME DÜZELTMESİ. Router `mergeParams: true` kullanır ve
+  // handler'lar `req.params.serverId` okur; eski `/servers` mount'unda bu
+  // parametre HİÇ dolmuyordu. OpenAPI `/servers/{serverId}/categories` ilan
+  // ediyor ve tests/categories.test.ts zaten bu yolla mount ediyordu.
+  mountApi('/servers/:serverId/categories', categoriesRouter);
   mountApi('/dm', dmRouter);
-  mountApi('/servers', serverGifsRouter);
+  // C3 sınıfı — YÖNLENDİRME DÜZELTMESİ. Handler'lar `req.params.id` okur
+  // (serverId DEĞİL); parametre adı BİLEREK korunur — kaynak değiştirilmez,
+  // yalnız eksik ebeveyn segmenti eklenir. OpenAPI `/servers/{sid}/gifs`,
+  // tests/serverGifs.test.ts ise `/api/servers/:id/gifs` ile mount ediyor.
+  mountApi('/servers/:id/gifs', serverGifsRouter);
   mountApi('/scheduled', scheduledRouter);
   mountApi('/health', healthRouter);
   // Sprint 120: I7 — /api/rtc/ice-config yalnızca bu endpoint'i açar.
@@ -106,7 +117,17 @@ export function setupRoutes(app: Application): void {
   mountApi('/docs', swaggerRouter);
   mountApi('/media', mediaRouter);
   mountApi('/friends', friendsRouter);
-  mountApi('/servers', moderationRouter);
+  // C3 — YÖNLENDİRME DÜZELTMESİ: eskiden `/servers` altına mount ediliyordu.
+  // moderationRouter `mergeParams: true` kullanır ve 6 handler'ın tamamı
+  // `req.params.serverId` okur; ancak mount yolunda `:serverId` segmenti YOKTU.
+  // Sonuç: gerçek yollar `/api/servers/audit-log`, `/api/servers/bans` oluyor,
+  // `serverId` her zaman '' kalıyordu — belgelenen ve istemcinin çağırdığı
+  // `/api/servers/:serverId/...` uçları ise 404 dönüyordu.
+  // Sözleşme beş bağımsız kaynakla doğrulandı: handler'ların params kullanımı,
+  // mergeParams, OpenAPI (`/servers/{sid}/audit-log`), istemci çağrıları ve
+  // komşu sunucu-kapsamlı mount deseni. Param adı `serverId` OLMALIDIR —
+  // handler'lar bu adı okur. (Sticker paketlerinde düzeltilen hatayla aynı sınıf.)
+  mountApi('/servers/:serverId', moderationRouter);
   mountApi('/voice-messages', voiceMsgRouter);
   mountApi('/search', searchRouter);
   mountApi('/servers', searchRouter);
@@ -140,10 +161,16 @@ export function setupRoutes(app: Application): void {
   app.use('/invite', invitePreviewRouter);
   mountApi('/mobile', mobilePushRouter);
   mountApi('/webpush', webpushRouter);
+  // Kisisel veri disa aktarma + hesap silme (FAZ 5/6).
+  mountApi('/account', accountRouter);
   mountApi('/interactions', interactionsRouter);
   mountApi('/servers/:sid/channels/:cid/permissions', channelPermsRouter);
   mountApi('/webhooks', botsRouter);
-  mountApi('/channels', webhooksRouter);
+  // C3 sınıfı — YÖNLENDİRME DÜZELTMESİ. Handler'lar `req.params.channelId`
+  // okur; eski `/channels` mount'unda hiç dolmuyordu. Bu ailenin CANLI bir
+  // istemci çağıranı vardır (WebhookTab: `/api/channels/${id}/webhooks`),
+  // OpenAPI aynı yolu ilan eder ve tests/webhooks.test.ts da onu kullanır.
+  mountApi('/channels/:channelId/webhooks', webhooksRouter);
   mountApi('/gdm', groupDmRouter);
   mountApi('/servers/:sid/automod', automodRouter);
   mountApi('', userConnectionsRouter);
@@ -155,7 +182,13 @@ export function setupRoutes(app: Application): void {
 
   mountApi('/servers', serverEventsRouter);           // Sprint 95: Sunucu Etkinlikleri
   mountApi('/notification-prefs', notificationPrefsRouter); // Sprint 91: Bildirim tercihleri
-  mountApi('/servers', serverMemberProfileRouter);    // Sprint 91: Per-server member profil
+  mountApi('/inbox', inboxRouter);
+  mountApi('/saved', savedRouter);
+  // Sunucu-kapsamlı üye profili: handler'lar `req.params.serverId` okur, mount onu SAĞLAMALI.
+  // Final21 Faz 19: `/servers` altına bağlıydı → belgelenen `/api/servers/{serverId}/members/me/*`
+  // uçlarının hepsi 404 dönüyordu (moderation/categories/GIF/webhook ile aynı sınıf;
+  // genel koruma: tests/route-mount-params-contract.test.ts).
+  mountApi('/servers/:serverId', serverMemberProfileRouter);    // Sprint 91: Per-server member profil
   mountApi('/servers/:sid/reaction-roles', reactionRolesRouter);
   mountApi('/semantic', semanticRouter);
   mountApi('/servers', serverProfileRouter);
@@ -164,7 +197,12 @@ export function setupRoutes(app: Application): void {
   mountApi('/client-error', clientErrorRouter);
   mountApi('/podcast', podcastRouter);
   mountApi('/link-preview', linkPreviewRouter);
-  mountApi('/servers', stickerPacksRouter); // Sprint 82: sticker packs
+  // Faz 12 — YÖNLENDİRME DÜZELTMESİ: eskiden `/servers` altına mount ediliyordu.
+  // Router yolları `/`, `/:packId`, `/:packId/stickers/:stickerId` olduğundan
+  // belgelenen `/api/servers/:serverId/sticker-packs` uçları 404 dönüyor,
+  // `mergeParams` için `:serverId` hiç doldurulmuyor (handler'lar '' görüyordu)
+  // ve `/api/servers/:packId` serversRouter ile çakışıyordu.
+  mountApi('/servers/:serverId/sticker-packs', stickerPacksRouter); // Sprint 82: sticker packs
   app.get('/metrics', metricsEndpoint);
 
   app.get(
@@ -212,6 +250,25 @@ export function setupRoutes(app: Application): void {
     }
   });
 
+  // Plugin HTTP surface: GET /api/plugins and each plugin's /api/plugins/<id>/* routes.
+  // They are registered at runtime, after plugins load (runtime.ts), so they get their own
+  // router mounted HERE, before the 404 handler. Registering them on `app` afterwards —
+  // as runtime.ts did until Final21 Phase 14 — put them behind notFoundHandler: every
+  // plugin request answered 404 and the marketplace, the server-settings Plugins tab and
+  // the plugin page could never list a plugin.
+  const pluginRouter = Router();
+  app.use(pluginRouter);
+  app.set(PLUGIN_ROUTER_SETTING, pluginRouter);
+
   app.use(notFoundHandler);
   app.use(errorHandler);
+}
+
+const PLUGIN_ROUTER_SETTING = 'bridge.pluginRouter';
+
+/** The router plugin routes must be registered on (mounted before the 404 handler). */
+export function pluginRouterOf(app: Application): Router {
+  const router = app.get(PLUGIN_ROUTER_SETTING) as Router | undefined;
+  if (!router) throw new Error('setupRoutes(app) must run before plugin routes are registered');
+  return router;
 }

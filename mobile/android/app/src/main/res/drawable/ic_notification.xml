@@ -1,0 +1,52 @@
+<!--
+  ════════════════════════════════════════════════════════════════════════════
+  BİLDİRİM İKONU — TEK RENK SİLUET (Android şartı)
+  ════════════════════════════════════════════════════════════════════════════
+
+  ── KAPATILAN GERÇEK KUSUR (Final21, Faz 3) ────────────────────────────────
+  `AndroidManifest.xml` bunu şöyle istiyordu:
+
+      <meta-data android:name="com.google.firebase.messaging.default_notification_icon"
+                 android:resource="@drawable/ic_notification" />
+
+  ama depoda hiçbir `drawable/` klasörü yoktu. Belgelenen derleme yolu
+  (`npx cap add android` + overlay) `AAPT: error: resource drawable/ic_notification
+  not found` ile duruyordu.
+
+  ── NEDEN SİLUET, NEDEN VEKTÖR ─────────────────────────────────────────────
+  Android 5'ten (API 21) beri durum çubuğu bildirim ikonları BEYAZ SİLUET
+  olarak çizilir: alfa dışındaki tüm renk bilgisi atılır. Renkli bir PNG
+  koymak, kullanıcıda BEYAZ BİR KARE görünmesine yol açar — bu, gerçek
+  uygulamalarda sık görülen ve mağaza incelemesinde göze batan bir kusurdur.
+  Bu yüzden ikon tek renk (`#FFFFFFFF`) ve vektördür: her yoğunlukta keskin,
+  tek dosya, ek PNG kovaları gerekmez.
+
+  Biçim: Bridge işareti — iki kıyıyı bağlayan bir köprü tabliyesi ve ayakları.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+
+  <!-- Tabliye (köprü döşemesi) -->
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:pathData="M2,10.5h20v2H2z" />
+
+  <!-- Sol ayak -->
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:pathData="M4.5,12.5h2v7h-2z" />
+
+  <!-- Sağ ayak -->
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:pathData="M17.5,12.5h2v7h-2z" />
+
+  <!-- Askı kemeri: iki ayağı birleştiren yay -->
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:pathData="M5.5,10.5c0,-3.6 2.9,-6.5 6.5,-6.5s6.5,2.9 6.5,6.5h-2c0,-2.5 -2,-4.5 -4.5,-4.5s-4.5,2 -4.5,4.5z" />
+</vector>

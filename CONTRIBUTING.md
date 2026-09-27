@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/bridge-app/bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/bridge-app/bridge/actions/workflows/ci.yml)
 [![Server Coverage](https://img.shields.io/badge/server%20coverage-%E2%89%A590%25-1D9E75)](https://github.com/bridge-app/bridge/actions)
-[![Client Coverage](https://img.shields.io/badge/client%20coverage-%E2%89%A585%25-1D9E75)](https://github.com/bridge-app/bridge/actions)
+[![Client Coverage](https://img.shields.io/badge/client%20coverage-%E2%89%A590%25-1D9E75)](https://github.com/bridge-app/bridge/actions)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%2B%200%20any-378ADD)](https://github.com/bridge-app/bridge)
-[![i18n](https://img.shields.io/badge/i18n-15%20dil%20%7C%20202%20anahtar-BA7517)](./client/js/core/i18n)
+[![i18n](https://img.shields.io/badge/i18n-10%20dil%20%7C%202454%20anahtar-BA7517)](./client/js/core/i18n)
 
 Bridge açık kaynak bir projedir. Her türlü katkıya açığız!
 
@@ -49,23 +49,77 @@ chore: build, bağımlılık güncellemeleri
 ### Server testleri
 ```bash
 cd server
-npm test                    # Tüm testler (146 dosya)
-npm run test:coverage       # Coverage raporu (eşik: %90 satır)
+npm test                    # Tüm server testleri
+npm run test:coverage       # Coverage raporu / release eşikleri
 npm run test:watch          # Watch modu (geliştirme sırasında)
 ```
 
+### Gerçek PostgreSQL testleri (Final21 Faz 16'da belgelendi)
+
+Bazı davranışlar YALNIZCA gerçek veritabanında görünür: birim testlerin bellek-içi deposu
+NOT NULL'ı ve sütun izin listesini zorlamaz. İki paket vardır. Varsayılan `npm test` içinde
+bağlantı dizesi olmadığı için **atlanırlar** (ATLANMIŞ olarak raporlanır). Aşağıdaki özel
+komutlar ise adres verilmezse **çalışmayı reddeder (çıkış 1)**: Final21 Faz 19'a kadar
+adressiz çağrı tüm testleri atlayıp çıkış 0 veriyordu, yani bir kapı "geçti" diye kaydedebiliyordu:
+
+```bash
+cd server
+# Şema / eşzamanlılık / sorgu planı paketi (tests/pg-integration/*.pgtest.ts)
+PG_TEST_URL=postgresql://user:pass@host:port/tek_kullanimlik_db npm run test:pg
+
+# Birleşik arama canlı paketi (FTS indeks hizası, aksan duyarsızlaştırma, yetki kapsamı)
+SEARCH_IT_DATABASE_URL=postgresql://user:pass@host:port/tek_kullanimlik_db npm run test:search-it
+```
+
+Veritabanı **tek kullanımlık** olmalı ve migration'ları uygulanmış olmalıdır
+(`DATABASE_URL=... npm run db:migrate:pg`). Faz 16'ya kadar bu paketler hiçbir yerde
+belgelenmemişti: arama paketi kendi fikstüründe kırıktı (migration 071'de eklenen yabancı
+anahtarlar) ve 16 test yalnızca "atlanmış" görünüyordu.
+
 ### Client testleri
 ```bash
-cd client/tests
-npm test                    # Tüm client testleri (65 dosya)
-npm run test:coverage       # Coverage raporu (eşik: %85 satır)
+npm run test:svelte              # tüm client paketi (CI bunu koşar)
+npm run test:svelte:coverage     # + %90 S/B/F/L kapsam kapısı (CI bunu da koşar)
 ```
+
+`test:svelte:coverage`, vitest kapsamını ölçtükten sonra
+`client/scripts/production-reachable-coverage.js --enforce-90` çalıştırır ve İKİ sayı basar:
+**TÜM KAYNAK** ve **ÜRETİMDE ULAŞILABİLİR** (yalnızca gerçek giriş noktalarından import
+grafiğiyle erişilen dosyalar). Ulaşılamayan dosyalar kapsamdan DIŞLANMAZ — gizlemek yüzde
+oyunu olurdu; iki sayı arasındaki fark ürün hakkında bir bulgudur (bağlanmamış özellik /
+ölü modül). Son ölçüm: 223/223 dosya ulaşılabilir, yani ölü modül yok.
+
+> Faz 17 notu: bu betik package.json'da tanımlıydı ama hiçbir yerde ÇAĞRILMIYORDU —
+> ne CI, ne `verify:all`, ne preflight. Yani istemci eşiği yalnızca birinin elle
+> yazmasına bağlıydı. Artık `quality-gate.yml` içinde koşuyor ve preflight varlığını
+> mandallıyor.
+
+Client testlerinin tek canonical koşucusu Vitest'tir; `client/tests` altında ayrı npm/Jest toolchain tutulmaz.
+
+### Mutasyon kampanyası — testler gerçekten koruyor mu?
+
+Geçen test sayısı bir şey kanıtlamaz. Kanıt şudur: ürün kodunu bilerek bozduğumuzda
+testler başarısız oluyor mu?
+
+```bash
+cd server
+npm run test:mutation
+```
+
+Her mutasyon GERÇEK bir güvenlik/doğruluk özelliğini tersine çevirir (XFF güveni, 2FA yedek
+kodları, WS bağlantı limiti, DB ayrıcalık denetimi, HAM mesaj saklama, yetki iptalinde oda
+tahliyesi, AutoMod fail-closed, silinen mesajın geri gelmemesi, push dili, "yazıyor" olayı).
+Bir mutasyon HAYATTA KALIRSA o özellik test EDİLMİYOR demektir; aranan metin bulunamazsa
+"geçti" sayılmaz, BULUNAMADI olarak raporlanır.
+
+Yeni bir güvenlik düzeltmesi yazarken kampanyaya o düzeltmeyi TERSİNE ÇEVİREN bir mutasyon
+ekleyin: kapsam yüzdesi değil, bu kilitler regresyonu durdurur.
 
 ### E2E testleri
 ```bash
 cd e2e
-npx playwright test         # Tüm E2E (26 spec)
-npx playwright test auth    # Tek spec
+npx playwright test         # Tüm E2E
+npx playwright test auth    # Tek spec / eşleşen test
 npx playwright test --ui    # Playwright UI modu
 ```
 
@@ -74,7 +128,7 @@ npx playwright test --ui    # Playwright UI modu
 # TypeScript any kontrolü (ceiling = 0)
 node scripts/check-any-count.js
 
-# i18n parity (15 dil eşleşmeli)
+# i18n parity (10 dil eşleşmeli: de en es fr ja ko pt ru tr zh)
 node scripts/check-i18n-parity.js
 
 # Hub/Space/Flow terminoloji anahtarları

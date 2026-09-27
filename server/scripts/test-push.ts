@@ -4,10 +4,11 @@
 //
 // Kullanım:
 //   DATABASE_URL=... VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=... \
-//   node server/scripts/test-push.js <userId>
+//   (server/ dizininden) npx ts-node scripts/test-push.ts <userId>
+//   Final21 Faz 16: önceki satır var olmayan `test-push.js` dosyasını gösteriyordu.
 //
 // Örnek:
-//   node server/scripts/test-push.js 64abc123def456
+//   npx ts-node scripts/test-push.ts 64abc123def456
 //
 // Ne yapar:
 //   1. Verilen kullanıcının push subscription'larını DB'den çeker

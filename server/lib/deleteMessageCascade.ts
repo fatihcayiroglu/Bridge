@@ -14,7 +14,7 @@ let _db: DbModule | null = null;
 let _dbResolved = false;
 function getDb(): DbModule | null {
   if (!_dbResolved) {
-    _db = tryRequire<DbModule>('../db/loader');
+    _db = tryRequire<DbModule>('../db/loader', require);
     _dbResolved = true;
   }
   return _db;
@@ -32,6 +32,7 @@ export async function deleteMessageWithCascade(
   messageId: string,
   channelId: string,
   msg: MessageForDelete,
+  deletedBy = 'system',
 ): Promise<boolean> {
   const db = getDb();
   // In-memory mockDb (_reset) — repository silme; gerçek PG'de _transaction kullan
@@ -45,7 +46,37 @@ export async function deleteMessageWithCascade(
           await client.query('DELETE FROM thread_messages WHERE "threadId" = $1', [msg.threadId]);
           await client.query('DELETE FROM threads WHERE _id = $1', [msg.threadId]);
         }
-        await client.query('DELETE FROM messages WHERE _id = $1', [messageId]);
+        // Canonical delete semantics are soft-delete across REST, Socket.IO and
+        // plugin transports. Scrub every user-controlled payload field so a
+        // deleted row cannot leak original plaintext/ciphertext/attachment data
+        // through a raw API client while retaining only audit metadata.
+        await client.query(
+          `UPDATE messages
+              SET content = '[Mesaj silindi]',
+                  "deletedAt" = $1,
+                  "deletedBy" = $2,
+                  embeds = NULL,
+                  "encryptedContent" = NULL,
+                  iv = NULL,
+                  "fileUrl" = NULL,
+                  "fileName" = NULL,
+                  "fileType" = NULL,
+                  "editHistory" = '[]'::jsonb,
+                  transcript = NULL
+            WHERE _id = $3`,
+          [Date.now(), deletedBy, messageId],
+        );
+        // Sprint 122: bu mesaja yapılmış yanıtların anlık görüntüsü (replyTo JSONB)
+        // soft-delete sonrasında da mesajda kalır. Discord gibi "orijinal mesaj silindi"
+        // gösterebilmek için işaretlenir — böylece durum reload'dan sonra da korunur.
+        await client.query(
+          `UPDATE messages
+              SET "replyTo" = jsonb_set("replyTo", '{deleted}', 'true'::jsonb)
+            WHERE "channelId" = $1
+              AND "replyTo" IS NOT NULL
+              AND "replyTo"->>'_id' = $2`,
+          [channelId, messageId],
+        );
         await client.query(
           `UPDATE unread_counts
            SET count = GREATEST(0, count - 1), "updatedAt" = $1
@@ -62,7 +93,9 @@ export async function deleteMessageWithCascade(
         await Messages.deleteByChannel?.(msg.threadId);
         await Threads.delete(msg.threadId);
       }
-      await Messages.delete(messageId);
+      await Messages.softDelete(messageId, deletedBy);
+      // tx'siz yol (mock/in-memory): aynı işaretleme repository üzerinden.
+      await Messages.markRepliesDeleted?.(msg.channelId, messageId);
     }
     return true;
   } catch (err) {

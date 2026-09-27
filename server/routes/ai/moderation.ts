@@ -40,7 +40,6 @@
  *       400: { description: 'messageId eksik' }
  *       403: { $ref: '#/components/responses/Forbidden' }
  *       404: { $ref: '#/components/responses/NotFound' }
- *
  * /ai/auto-moderate:
  *   post:
  *     tags: [AI]
@@ -69,26 +68,6 @@
  *                 reason:   { type: string }
  *                 provider: { type: string }
  *       429: { description: 'Rate limit aşıldı' }
-
- *
- * /ai/moderate:
- *   post:
- *     tags: [AI]
- *     summary: Icerik AI ile moderasyon kontrolunden gec
- *     security: [{ bearerAuth: [] }]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [content]
- *             properties:
- *               content:  { type: string }
- *               serverId: { type: string }
- *     responses:
- *       200:
- *         description: Moderasyon sonucu
  */
 
 import express from 'express';
@@ -96,6 +75,7 @@ import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 const router = express.Router();
 
 import { Members, Messages, Servers } from '../../db/repositories';
+import { PERMS, hasAllPermissions, resolvePermissions } from '../../lib/permissions';
 import { authMiddleware} from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
 import { cache } from '../../lib/redisAdapter';
@@ -112,6 +92,9 @@ router.post('/moderate', authMiddleware, async (req, res) => {
   if (!msg) return res.status(404).json({ error: 'Mesaj bulunamadı' });
   if (!await Members.findOne(_u.id, msg.serverId))
     return res.status(403).json({ error: 'Üye değilsiniz' });
+  const perms = await resolvePermissions(_u.id, msg.serverId, msg.channelId).catch(() => 0);
+  if (!hasAllPermissions(perms, PERMS.VIEW_CHANNELS, PERMS.READ_HISTORY))
+    return res.status(403).json({ error: 'Mesajı görüntüleme yetkiniz yok' });
 
   const cacheKey = `ai:mod:${messageId}`;
   const cached = await cache.get(cacheKey);
@@ -138,11 +121,20 @@ router.post('/moderate', authMiddleware, async (req, res) => {
 
 // POST /api/ai/auto-moderate
 router.post('/auto-moderate', authMiddleware, limits.ai(), async (req, res) => {
-  const { content, serverId } = req.body as Record<string, string>;
-  if (!content?.trim()) return res.json({ safe: true, score: 100 });
+  const _u = castAuthed(req).user;
+  const contentRaw = (req.body as { content?: unknown } | undefined)?.content;
+  const serverIdRaw = (req.body as { serverId?: unknown } | undefined)?.serverId;
+  if (typeof contentRaw !== 'string') return res.status(400).json({ error: 'content must be a string' });
+  const content = contentRaw.trim();
+  if (!content) return res.json({ safe: true, score: 100 });
+  if (content.length > 4000) return res.status(400).json({ error: 'content too long' });
+  if (typeof serverIdRaw !== 'string' || !serverIdRaw.trim()) return res.status(400).json({ error: 'serverId required' });
+  const serverId = serverIdRaw.trim();
 
   const server = await Servers.findById(serverId);
-  if (!((server as unknown as Record<string, unknown>)?.autoModerate)) return res.json({ safe: true, score: 100 });
+  if (!server) return res.status(404).json({ error: 'Server not found' });
+  if (!await Members.findOne(_u.id, serverId)) return res.status(403).json({ error: 'Not a server member' });
+  if (!((server as unknown as Record<string, unknown>).autoModerate)) return res.json({ safe: true, score: 100 });
 
   const ruleResult = rulesMod(content);
   if (!ruleResult.safe) return res.json({ ...ruleResult, provider: safeProvider('rules') });

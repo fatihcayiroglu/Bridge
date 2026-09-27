@@ -348,3 +348,20 @@ describe('Deep link dispatch', () => {
     expect(dispatchedEvents).toHaveLength(0);
   });
 });
+
+// Final21 Faz 19 (19-28): köprü yalnız YEREL açılış ekranını gizliyordu; şablondaki HTML katmanı
+// (#native-splash) Capacitor varken hiç kaldırılmıyordu ve uygulama — giriş formu dahil — kalıcı olarak
+// onun arkasında kalıyordu (emülatörde ölçüldü). DOMContentLoaded'da HTML katmanı da kaldırılmalı.
+describe('Açılış katmanı', () => {
+  it('DOMContentLoaded yerel açılış ekranını VE HTML katmanını kaldırır', async () => {
+    const hideSplash = jest.fn();
+    window.hideSplash = hideSplash;
+    try {
+      window.dispatchEvent(new Event('DOMContentLoaded'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(hideSplash).toHaveBeenCalled();
+    } finally {
+      delete window.hideSplash;
+    }
+  });
+});

@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main, develop]
   workflow_dispatch:
+  # Agir tarayici/medya paketleri her PR'da degil, gecelik kosar.
+  schedule:
+    - cron: '0 2 * * *'
 
 concurrency:
   group: quality-gate-${{ github.ref }}
@@ -23,7 +26,7 @@ jobs:
     name: Security audit
     runs-on: ubuntu-latest
     env:
-      NODE_VERSION: '22'
+      NODE_VERSION: '24.20.0'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -44,12 +47,37 @@ jobs:
       - name: Audit E2E harness
         run: cd e2e && npm audit --audit-level=high
 
+  node-minimum-compat:
+    name: Node 22.19 minimum compatibility
+    runs-on: ubuntu-latest
+    needs: [audit]
+    env:
+      NODE_VERSION: '22.19.0'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - name: Install root and server dependencies
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund
+      - name: Minimum-runtime release contracts
+        run: |
+          npm run test:release-integrity
+          npm run typecheck:server
+          npm run typecheck:strict-client
+
   typecheck-build:
     name: Typecheck & build
     runs-on: ubuntu-latest
     needs: [audit]
     env:
-      NODE_VERSION: '22'
+      NODE_VERSION: '24.20.0'
       JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
       REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
       NODE_ENV: test
@@ -70,6 +98,39 @@ jobs:
           cd server && npm ci --no-audit --no-fund
           cd ../electron && npm ci --no-audit --no-fund
           cd ../e2e && npm ci --no-audit --no-fund
+      # ══════════════════════════════════════════════════════════════════
+      # LINT — CI'DA HIC KOSMUYORDU
+      # ══════════════════════════════════════════════════════════════════
+      # 2026-08-28 incelemesinde sunucu lint'i 3 gercek hatayla KIRMIZIYDI
+      # (`no-useless-assignment`, biri WebAuthn kimlik dogrulama yolunda) ve
+      # hicbir CI isi bunu calistirmadigi icin fark edilmemisti.
+      - name: Lint (server)
+        run: cd server && npm run lint
+      - name: Lint (client)
+        run: npm run lint:client
+      - name: i18n production-locale parity
+        run: npm run check:i18n
+      - name: OpenAPI parse + schema validation
+        run: npm run validate:openapi
+      # ══════════════════════════════════════════════════════════════════
+      # HARDENING RATCHETS — LOKALDE VARDI, CI'DA YOKTU (Final21 Faz 16)
+      # ══════════════════════════════════════════════════════════════════
+      # Bu bes kapi `npm run verify:all` icinde kosuyordu, yani YALNIZCA
+      # biri elle calistirdiginda. En onemlisi `check:any`: `as any`
+      # sayacini tutan mandal: CI'da kosmadigi icin yeni bir `as any`
+      # sessizce girebilirdi. `check-svelte-boundary.sh` daha da kotusu,
+      # kendi basliginda "CI: lint-and-typecheck job'inda calisir" YAZIYOR
+      # ama hicbir is onu cagirmiyordu (ADR-0008 muhafizi kagit uzerindeydi).
+      - name: TypeScript escape-hatch ratchet (as any)
+        run: npm run check:any
+      - name: Brand color contract
+        run: npm run check:brand
+      - name: Native version parity
+        run: npm run check:native-version
+      - name: No legacy runtime entry points
+        run: node scripts/check-no-legacy.mjs
+      - name: Service layer must not import Svelte (ADR-0008)
+        run: bash scripts/check-svelte-boundary.sh
       - name: TypeScript all packages
         run: npm run typecheck
       - name: Strict client gates
@@ -82,10 +143,20 @@ jobs:
         run: cd e2e && npm run typecheck
       - name: Client production build + budget
         run: npm run build:ci
+      - name: Server production dependency contract
+        run: cd server && npm run check:prod-deps
+      - name: Coverage policy/debt contract
+        run: cd server && npm run check:coverage-debt
       - name: Server build
         run: cd server && npm run build
       - name: Electron compile
         run: cd electron && npm run compile
+      # Bot SDK CI'da HIC derlenmiyordu. `npm run build` HER ZAMAN kirikti:
+      # `build:esm` var olmayan `scripts/rename-esm.js` dosyasini cagiriyor,
+      # dolayisiyla `package.json` exports.import -> ./dist/index.mjs hedefi
+      # HIC uretilmiyordu (ESM tuketicileri ERR_MODULE_NOT_FOUND alirdi).
+      - name: Bot SDK typecheck + build
+        run: cd bot-sdk && npm run typecheck && npm run build
       - name: Mobile web asset build
         run: npm run mobile:build:ci
       - name: Production preflight
@@ -105,15 +176,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: [typecheck-build]
     env:
-      NODE_VERSION: '22'
-      DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
-      REDIS_URL: redis://localhost:6379
+      NODE_VERSION: '24.20.0'
       JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
       REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
       NODE_ENV: test
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_DB: bridge_test
           POSTGRES_USER: bridge
@@ -134,6 +203,21 @@ jobs:
           --health-retries 5
         ports:
           - 6379:6379
+      # Gercek S3-uyumlu depo. Testin kaniti vendor'a degil gercek
+      # public/private bucket davranisina baglidir.
+      s3:
+        image: rustfs/rustfs:1.0.0-rc.6
+        env:
+          RUSTFS_ACCESS_KEY: bridgereview
+          RUSTFS_SECRET_KEY: bridgereview123
+          RUSTFS_VOLUMES: /data
+        options: >-
+          --health-cmd "curl -fsS http://127.0.0.1:9000/health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 6
+        ports:
+          - 9000:9000
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -144,17 +228,205 @@ jobs:
             package-lock.json
             server/package-lock.json
             electron/package-lock.json
+      - name: Wait for S3 test service
+        run: |
+          for i in {1..30}; do
+            if curl -sS --max-time 2 -o /dev/null http://127.0.0.1:9000/; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "S3 test service did not become reachable on :9000" >&2
+          docker ps -a
+          exit 1
       - name: Install dependencies
         run: |
           npm ci --no-audit --no-fund
           cd server && npm ci --no-audit --no-fund
           cd ../electron && npm ci --no-audit --no-fund
-      - name: Run server tests
-        run: cd server && ./scripts/ci-tests.sh
+      # ══════════════════════════════════════════════════════════════════
+      # TAM SUNUCU PAKETI — 7 DOSYALIK ALT KUME YETERSIZDI
+      # ══════════════════════════════════════════════════════════════════
+      # `scripts/ci-tests.sh` yalnizca 7 test dosyasi kosuyordu (226 suite
+      # icinden). Bu programda kapatilan 18 gercek kusurun regresyon testleri
+      # -- SSRF atlatma, rol yukseltme, ban tersine donmesi, semantik onbellek
+      # sizintisi, reaksiyon yarisi, dosya yetkilendirmesi -- CI tarafindan
+      # HIC korunmuyordu. PostgreSQL ve Redis servisleri bu iste zaten
+      # tanimli oldugundan tam paket burada kosabilir.
+      # ══════════════════════════════════════════════════════════════════
+      # SUNUCU PAKETI *KAPSAM ILE* KOSAR — VE TOPLAMA DOGRULANIR
+      # ══════════════════════════════════════════════════════════════════
+      # KRITIK: burada eskiden `jest --runInBand` (kapsamsiz) kosuyordu.
+      # `--coverage` HIC calistirilmadigi icin, `glob@13` override'inin
+      # `test-exclude@6`yi bozdugu ve 277 suitten 254'unun "failed to run"
+      # oldugu AYLARCA gorunmedi. Iki P0 kusur o bosluga saklandi.
+      #
+      # Artik kapsamla kosar ve sonuc JSON'a yazilir; bir sonraki adim
+      # toplamanin GERCEKTEN tam oldugunu dogrular.
+      - name: Run server tests (full suite, with coverage)
+        run: cd server && npx jest --coverage --runInBand --forceExit --json --outputFile=jest-results.json
+      # Yesil olmak yetmez: kosunun ne kadarini OLCTUGU de dogrulanir.
+      # Bu kapi, "hicbir sey calistirmadan gecen" bir koguyu yakalar.
+      - name: Verify test collection was complete
+        run: |
+          node scripts/verify-test-collection.js \
+            --results server/jest-results.json \
+            --coverage server/coverage/coverage-summary.json \
+            --test-dir server/tests --test-glob '.test.ts'
+      # Guvenlik gerileme korpusu ADLI bir kapi olarak kosar. Tam paketin
+      # icinde yer alsa da, ayri kosmasi hangi sinifin dustugunu aninda
+      # gorunur kilar.
+      - name: Security regression corpus
+        run: cd server && npm run test:security
+      # Istemci paketi (2224 test) CI'da hic kosmuyordu.
+      # Vitest resolves --config RELATIVE TO --root, so the previous
+      # `--config client/vitest.config.mts --root client` looked for
+      # `client/client/vitest.config.mts` and died with a startup error: the
+      # client suite never actually ran in CI. Use the canonical package script.
+      # ══════════════════════════════════════════════════════════════════
+      # ISTEMCI PAKETI KAPSAMLA KOSAR — ESIK BURADA UYGULANIR
+      # ══════════════════════════════════════════════════════════════════
+      # FAZ 17: `test:svelte:coverage` (vitest --coverage + production-reachable
+      # --enforce-90) package.json icinde TANIMLIYDI ama HICBIR YERDE cagrilmiyordu:
+      # ne CI, ne `verify:all`, ne preflight, ne dokuman. Yani istemcinin %90 S/B/F/L
+      # esigi yalnizca birinin elle yazmasina bagliydi. Sunucu tarafi kapsamla kosarken
+      # istemci tarafinda ayni koruma YOKTU.
+      #
+      # Olculdu (2026-09-23, tek basina kosum): 273 dosya / 4824 test PASS,
+      # statements %95.61, branches %90.70, functions %95.05, lines %96.44 — her iki
+      # kume (TUM KAYNAK ve URETIMDE ULASILABILIR) esigi GECIYOR. Kapi bu yuzden
+      # simdi baglanabilir: bugun yesil olan bir garantiyi korumak icin.
+      - name: Run client tests (full suite, with coverage + 90% gate)
+        run: npm run test:svelte:coverage
+      - name: Run release integrity tooling tests
+        run: npm run test:release-integrity
+      # ══════════════════════════════════════════════════════════════════
+      # HER TEST DOSYASININ BIR KOSUCUSU OLMALI
+      # ══════════════════════════════════════════════════════════════════
+      # Bu incelemede IKI test agaci hicbir kosucu tarafindan calistirilmiyordu:
+      #   · plugins/tests/plugin-system.test.ts  (32 test) -> arsivlendi, 15'i
+      #     mevcut urun koduna karsi BASARISIZDI
+      #   · bot-sdk/tests/sdk.test.ts            (54 test) -> derlenmiyordu bile
+      # "Suit yesil" ile "her test calisti" AYNI SEY DEGILDIR. Kapi her test
+      # dosyasini bir kosucuya sorarak esler; sahipsiz kalan varsa kirmizidir.
+      - name: Every test file has an owning runner
+        run: node scripts/verify-test-ownership.js
+      # Bot SDK suiti (54 test) CI'da hic kosmuyordu.
+      - name: Run bot-sdk tests
+        run: cd bot-sdk && npx jest --ci
       - name: Run Electron tests
         run: cd electron && npm test -- --runInBand --forceExit
       - name: Run mobile bridge tests
         run: npx jest --config jest.mobile.config.js --passWithNoTests --runInBand --forceExit
+      # ══════════════════════════════════════════════════════════════════
+      # GERCEK PostgreSQL KAPILARI
+      # ══════════════════════════════════════════════════════════════════
+      # Bu is zaten bir PostgreSQL servisi tanimliyordu ama YALNIZCA birim
+      # testleri icin kullaniyordu. Asagidakiler veritabanini gercek bir
+      # yargic olarak kullanir.
+      - name: Migration chain on a clean database
+        run: |
+          cd server
+          npx ts-node --project tsconfig.json db/postgres/index.ts
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts up
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts status
+        env:
+          DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+      # ══════════════════════════════════════════════════════════════════
+      # GERI ALMA KAPISI — SINIFLANDIRILMIS, ARTIK ENGELLEYICI
+      # ══════════════════════════════════════════════════════════════════
+      # Bir `.down.sql` dosyasinin VAR OLMASI hicbir sey kanitlamaz. Bu adim
+      # her down betigini GERCEKTEN calistirir ve semayi karsilastirir.
+      #
+      # `continue-on-error` KALDIRILDI. Kapi artik anlamli VE yesil:
+      #   70 migration / 70 down script
+      #   10 EXPECTED_DEPENDENCY / 2 EXPECTED_IRREVERSIBLE / 0 KNOWN_DEBT
+      #   Listelenmeyen tum migration'lar LOSSLESS_PASS olmak zorunda.
+      #
+      # Tarihsel borc `db/migrations_pg/rollback-classification.json` icinde
+      # TEK TEK, gerekcesiyle ilan edilir. Joker yok. Kapi sunlarda kirmizi:
+      #   · ilan edilmemis fark ya da SQL hatasi (yeni ACTUAL_FAILURE)
+      #   · LOSSLESS ilan edilen bir migration'in bozulmasi
+      #   · ilan edilen nesne kumesiyle olculenin uyusmamasi
+      #   · eksik .down.sql
+      #   · artik var olmayan migration icin allowlist girdisi (curume)
+      #   · duzeltilmis ama allowlist'te kalmis girdi (liste KUCULMELI)
+      #
+      # `--ordered` ayrica TUM zinciri sirayla geri alip yeniden uygular;
+      # "sirali akista cozulur" diyen siniflandirmalarin KANITI budur.
+      - name: Migration rollback gate (classified, ordered chain proof)
+        run: cd server && node scripts/verify-migration-rollback.js --ordered
+        env:
+          PG_ADMIN_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+      # Uretimdeki HER statik SQL literali PostgreSQL'e AYRISTIRILIR.
+      # Bu kapi, `jsonb_object_length` gibi VAR OLMAYAN bir fonksiyonu
+      # yakalar -- mock'lanmis bir SQL-metni sozlesme testi yakalayamamisti.
+      - name: Validate production SQL against PostgreSQL
+        run: cd server && node scripts/verify-sql-against-postgres.js
+        env:
+          PG_TEST_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+      # Gercek eszamanlilik: refresh rotasyonu, davet son slotu, anket oyu,
+      # reaksiyon yarisi + gercek Redis coklu-node oda sahipligi.
+      # Bucket'lar suit calismadan ONCE var olmali; genel bucket'in anonim
+      # okuma politikasi da yanlis-pozitif kontrolunun on kosuludur (politika
+      # verilmezse "her sey 403" olur ve ozel bucket testi hicbir sey kanitlamaz).
+      - name: Provision S3-compatible buckets
+        run: |
+          node --input-type=module <<'NODE'
+          import {
+            S3Client,
+            CreateBucketCommand,
+            PutBucketPolicyCommand,
+          } from '@aws-sdk/client-s3';
+
+          const s3 = new S3Client({
+            endpoint: 'http://127.0.0.1:9000',
+            region: 'us-east-1',
+            forcePathStyle: true,
+            credentials: {
+              accessKeyId: 'bridgereview',
+              secretAccessKey: 'bridgereview123',
+            },
+          });
+
+          for (const Bucket of ['bridge-public', 'bridge-private']) {
+            try {
+              await s3.send(new CreateBucketCommand({ Bucket }));
+            } catch (err) {
+              const status = err?.$metadata?.httpStatusCode;
+              if (status !== 409) throw err;
+            }
+          }
+
+          await s3.send(new PutBucketPolicyCommand({
+            Bucket: 'bridge-public',
+            Policy: JSON.stringify({
+              Version: '2012-10-17',
+              Statement: [{
+                Sid: 'BridgeCiPublicRead',
+                Effect: 'Allow',
+                Principal: '*',
+                Action: ['s3:GetObject'],
+                Resource: ['arn:aws:s3:::bridge-public/*'],
+              }],
+            }),
+          }));
+          console.log('S3 test buckets provisioned: bridge-public (anonymous read), bridge-private (private)');
+          NODE
+      - name: Real PostgreSQL/Redis/MinIO integration suite
+        run: cd server && npm run test:pg
+        env:
+          PG_TEST_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+          REDIS_TEST_URL: redis://localhost:6379
+          MINIO_TEST_ENDPOINT: http://127.0.0.1:9000
+      # Birlesik aramanin CANLI planlayici paketi (FTS indeks hizasi, aksan duyarsizlastirma,
+      # yetki kapsami). CI'da hic kosmuyordu: Faz 16'da kendi fiksturunde kirikti ve kimse
+      # gormedi. Sema bir onceki adimda (test:pg) kurulur. Komut adres olmadan calismayi
+      # reddeder (scripts/require-env.cjs), yani yanlis degisken adi burada KIRMIZI olur.
+      - name: Live unified-search planner suite
+        run: cd server && npm run test:search-it
+        env:
+          SEARCH_IT_DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
       - name: Upload coverage/log artifacts
         if: always()
         uses: actions/upload-artifact@v7
@@ -162,6 +434,7 @@ jobs:
           name: quality-gate-artifacts
           path: |
             server/coverage/
+            server/jest-results.json
             electron/coverage/
           retention-days: 14
 
@@ -181,16 +454,149 @@ jobs:
           METRICS_SECRET: ci_metrics_secret_minimum_16_chars
           MINIO_ACCESS_KEY: minioadmin
           MINIO_SECRET_KEY: minioadmin123
+          REDIS_PASSWORD: ci-redis-password-32chars-required
         run: docker compose -f docker-compose.yml -f docker-compose.prod.yml config
       - name: Docker build
         run: docker build --pull=false -t bridge:ci .
+      - name: Production image import smoke
+        run: |
+          docker run --rm \
+            -e DATABASE_URL=postgresql://bridge:test_password@127.0.0.1:5432/bridge_test \
+            -e JWT_SECRET=ci_jwt_secret_minimum_32_chars_value \
+            -e REFRESH_SECRET=ci_refresh_secret_minimum_32_chars \
+            --entrypoint node bridge:ci \
+            -e "require('./server/dist/app/setupRoutes.js'); require('./server/dist/routes/voicemsg.js'); require('./server/dist/routes/channelPerms/helpers.js'); console.log('production runtime imports: PASS')"
+
+  # ════════════════════════════════════════════════════════════════════════
+  # YUKSEK RISKLI GUVENLIK PAKETLERI — HER PR'DA
+  # ════════════════════════════════════════════════════════════════════════
+  # Bu programda kapatilan kusurlarin cogu GUVENLIK sinifindaydi ve hicbiri
+  # CI tarafindan korunmuyordu. Tam tarayici paketi (425 test, ~6 dk) her PR
+  # icin agirdir; yuksek riskli alt kume PR'da, tamami gecelik kosar.
+  e2e-security:
+    name: E2E security suites
+    runs-on: ubuntu-latest
+    needs: [tests]
+    env:
+      NODE_VERSION: '24.20.0'
+      DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+      JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
+      REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
+      BASE_URL: http://127.0.0.1:3000
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: bridge_test
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: test_password
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install dependencies
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund
+          cd ../e2e && npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Build
+        run: |
+          npm run build
+          cd server && npm run build
+      - name: Run security-critical E2E
+        run: |
+          cd e2e && npx playwright test             tests/webhook-security.spec.ts             tests/permission-matrix.spec.ts             tests/permission-matrix-actions.spec.ts             tests/role-escalation.spec.ts             tests/search-security.spec.ts             tests/search-security-extended.spec.ts             tests/file-security.spec.ts             tests/privacy-lifecycle.spec.ts             tests/channel-permissions.spec.ts             tests/attachments.spec.ts             tests/locale-journey.spec.ts             --project=chromium --reporter=list
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-security-report
+          path: e2e/playwright-report/
+          retention-days: 14
+
+  # ════════════════════════════════════════════════════════════════════════
+  # TAM TARAYICI + MEDYA — GECELIK / ELLE
+  # ════════════════════════════════════════════════════════════════════════
+  # 425 tarayici testi (~6 dk) + 33 medya testi (~4.5 dk) her PR icin
+  # agirdir; gecelik kosar ve elle tetiklenebilir.
+  e2e-full:
+    name: E2E full + media (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: [tests]
+    env:
+      NODE_VERSION: '24.20.0'
+      DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+      JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
+      REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
+      BASE_URL: http://127.0.0.1:3000
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: bridge_test
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: test_password
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install dependencies
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund
+          cd ../e2e && npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium firefox webkit
+      - name: Build
+        run: |
+          npm run build
+          cd server && npm run build
+      - name: Full Chromium suite
+        run: cd e2e && npx playwright test --project=chromium --reporter=list
+      - name: Firefox compatibility suite
+        run: cd e2e && npx playwright test --project=firefox --reporter=list
+      - name: WebKit compatibility suite
+        run: cd e2e && npx playwright test --project=webkit --reporter=list
+      - name: Media suite
+        run: cd e2e && npx playwright test --project=voice-media --reporter=list
+      - name: Mobile and a11y
+        run: |
+          cd e2e
+          npx playwright test --project=mobile --reporter=list
+          npx playwright test --project=a11y --reporter=list
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-full-report
+          path: e2e/playwright-report/
+          retention-days: 14
 
   e2e-smoke:
     name: Playwright smoke
     runs-on: ubuntu-latest
     needs: [tests]
     env:
-      NODE_VERSION: '22'
+      NODE_VERSION: '24.20.0'
       BASE_URL: http://localhost:3001
       DATABASE_URL: postgresql://bridge:e2e_password@localhost:5432/bridge_e2e
       REDIS_URL: redis://localhost:6379
@@ -199,9 +605,10 @@ jobs:
       NODE_ENV: e2e
       DEBUG_OPTIONAL_REQUIRE: '1'
       PORT: 3001
+      E2E_SKIP_AUTH_FIXTURES: 'true'
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_DB: bridge_e2e
           POSTGRES_USER: bridge

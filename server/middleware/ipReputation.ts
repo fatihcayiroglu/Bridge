@@ -8,8 +8,10 @@ import logger from '../lib/logger';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
+import net from 'net';
 import { Request, Response, NextFunction } from 'express';
 import { getClientIp } from './ipBan';
+import { envSafeInt } from '../lib/envNumbers';
 
 // ── Yapılandırma ────────────────────────────────────────────
 interface Config {
@@ -26,13 +28,26 @@ interface Config {
 const CONFIG: Config = {
   enabled:        (process.env.IP_REPUTATION_ENABLED ?? 'true') !== 'false',
   abuseIpDbKey:   process.env.ABUSEIPDB_KEY || null,
-  abuseThreshold: parseInt(process.env.ABUSEIPDB_THRESHOLD ?? '80', 10),
-  cacheTtlMs:     parseInt(process.env.ABUSEIPDB_CACHE_TTL ?? '3600', 10) * 1000,
+  abuseThreshold: envSafeInt('ABUSEIPDB_THRESHOLD', 80, { min: 0, max: 100 }),
+  cacheTtlMs:     envSafeInt('ABUSEIPDB_CACHE_TTL', 3_600, { min: 1, max: 7 * 24 * 60 * 60 }) * 1000,
   blocklistPath:  process.env.IP_BLOCKLIST_PATH || null,
   blockTor:       process.env.BLOCK_TOR === 'true',
   torListUrl:     'https://check.torproject.org/torbulkexitlist',
   torRefreshMs:   6 * 60 * 60 * 1000,
 };
+
+// Reputation providers are external trust boundaries. Never send non-public
+// addresses (including IPv6 ULA/link-local or IPv4-mapped IPv6) to them.
+// Node's BlockList gives us one canonical range matcher instead of hand-rolled
+// octet logic that only covered part of IPv4.
+const _nonPublicIps = new net.BlockList();
+for (const [address, prefix] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+  ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16],
+] as const) _nonPublicIps.addSubnet(address, prefix, 'ipv4');
+for (const [address, prefix] of [
+  ['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10],
+] as const) _nonPublicIps.addSubnet(address, prefix, 'ipv6');
 
 // ── In-memory cache ─────────────────────────────────────────
 interface CacheEntry {
@@ -43,6 +58,20 @@ interface CacheEntry {
 }
 
 const _cache = new Map<string, CacheEntry>();
+const IP_REPUTATION_CACHE_MAX = 100_000;
+
+function _pruneCache(now = Date.now()): void {
+  for (const [ip, entry] of _cache) {
+    if (entry.expiresAt <= now) _cache.delete(ip);
+  }
+  while (_cache.size >= IP_REPUTATION_CACHE_MAX) {
+    const oldest = _cache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    _cache.delete(oldest);
+  }
+}
+
+setInterval(_pruneCache, 5 * 60_000).unref();
 
 // ── Statik blocklist ─────────────────────────────────────────
 let _staticBlocklist = new Set<string>();
@@ -62,14 +91,21 @@ function _loadBlocklist(): void {
 }
 
 function _ipToInt(ip: string): number {
-  return ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
+  if (net.isIP(ip) !== 4) throw new TypeError('IPv4 address required');
+  return ip.split('.').reduce((acc, octet) => (acc << 8) + Number(octet), 0) >>> 0;
 }
 
 export function _ipInCidr(ip: string, cidr: string): boolean {
   try {
-    const [network, bits] = cidr.split('/');
-    if (!bits) return ip === cidr;
-    const mask = ~((1 << (32 - parseInt(bits, 10))) - 1) >>> 0;
+    const pieces = cidr.split('/');
+    if (pieces.length === 1) return net.isIP(ip) === 4 && net.isIP(cidr) === 4 && ip === cidr;
+    if (pieces.length !== 2) return false;
+    const [network, bitsRaw] = pieces;
+    if (network === undefined || bitsRaw === undefined) return false;
+    if (!/^\d{1,2}$/.test(bitsRaw) || net.isIP(network) !== 4 || net.isIP(ip) !== 4) return false;
+    const bits = Number(bitsRaw);
+    if (!Number.isSafeInteger(bits) || bits < 0 || bits > 32) return false;
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
     const ipInt = _ipToInt(ip);
     const netInt = _ipToInt(network);
     return (ipInt & mask) === (netInt & mask);
@@ -155,13 +191,13 @@ async function _queryAbuseIPDB(ip: string): Promise<AbuseResult | null> {
 
 export function _isPrivateIp(ip: string): boolean {
   if (!ip || ip === 'unknown') return true;
-  if (ip === '127.0.0.1' || ip === '::1') return true;
-  const parts = ip.split('.').map(Number);
-  if (parts.length !== 4) return false;
-  if (parts[0] === 10) return true;
-  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
-  if (parts[0] === 192 && parts[1] === 168) return true;
-  return false;
+  const normalized = String(ip).trim().replace(/^::ffff:/i, '');
+  const family = net.isIP(normalized);
+  if (family === 4) return _nonPublicIps.check(normalized, 'ipv4');
+  if (family === 6) return _nonPublicIps.check(normalized, 'ipv6');
+  // Invalid input is not a legitimate public address. Treat it as non-public
+  // so malformed proxy/header state is never exfiltrated to reputation APIs.
+  return true;
 }
 
 // ── Cache yardımcıları ───────────────────────────────────────
@@ -174,6 +210,8 @@ function _getCached(ip: string): CacheEntry | undefined {
 
 function _setCached(ip: string, value: Omit<CacheEntry, 'expiresAt'>): void {
   const ttl = value.blocked ? CONFIG.cacheTtlMs : CONFIG.cacheTtlMs / 4;
+  if (_cache.size >= IP_REPUTATION_CACHE_MAX) _pruneCache();
+  _cache.delete(ip); // refresh insertion order for oldest-entry eviction
   _cache.set(ip, { ...value, expiresAt: Date.now() + ttl });
 }
 
@@ -241,8 +279,13 @@ export async function ipReputationMiddleware(
     }
     next();
   } catch (err) {
+    // Provider/network failures are already converted to a clean allow result
+    // inside checkIpReputation(). Reaching this boundary therefore means the
+    // middleware itself could not establish the client's reputation state
+    // (for example canonical IP resolution or an unexpected internal error).
+    // Do not silently bypass the security layer in that case.
     logger.error('[ipReputation] middleware error:', (err as Error).message);
-    next();
+    res.status(503).json({ error: 'IP reputation service unavailable' });
   }
 }
 

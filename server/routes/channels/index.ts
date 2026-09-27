@@ -6,16 +6,14 @@
 //   import channelsRouter from '../routes/channels/index';
 //
 // Alt modüller:
-//   crud.ts   → POST/PATCH/GET/DELETE /servers/:sid/channels[/:cid]
+//   CRUD is owned by routes/servers/channels.ts; crud.ts is compatibility-only.
 //   voice.ts  → POST/GET /channels/:channelId/voice-state|voice-members
 
 import { Router } from 'express';
-import crudRouter  from './crud';
 import voiceRouter from './voice';
 
 const router = Router({ mergeParams: true });
 
-router.use('/', crudRouter);
 router.use('/', voiceRouter);
 
 export default router;

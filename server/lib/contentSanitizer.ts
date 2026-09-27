@@ -14,12 +14,16 @@ import { createLogger } from './logger';
 const log = createLogger('contentSanitizer');
 
 function basicSanitize(input: string): string {
+  // Exceptional fallback must be strictly safer than the normal allowlist.
+  // Escape all markup instead of trying to maintain a partial HTML parser with
+  // regular expressions (which is easy to bypass with malformed attributes).
   return input
-    .replace(/<\s*script[^>]*>[\s\S]*?<\s*\/\s*script\s*>/gi, '')
-    .replace(/\son[a-z]+\s*=(\"[^\"]*\"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/(href|src)\s*=\s*([\"'])\s*javascript:[^\"']*\2/gi, '$1=\"#\"');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
-
 function sanitizeWithAllowlist(
   input: string,
   allowedTags: string[],
@@ -70,20 +74,6 @@ const MESSAGE_ALLOWED_TAGS = [
   'span', 'div', 'details', 'summary',
 ];
 
-// DOMPurify ALLOWED_ATTR bir string dizisi bekler — element bazlı kısıtlama değil.
-// Per-element attribute kısıtlaması için DOMPurify hook'ları kullanılabilir
-// ancak bu, uygulama katmanında (Markdown renderer) zaten ele alınıyor.
-const MESSAGE_ALLOWED_ATTR = [
-  // Tüm elementlerde izinliler
-  'class', 'id',
-  // <a> elementinde izinliler
-  'href', 'title', 'rel', 'target',
-  // <img> elementinde izinliler
-  'src', 'alt', 'width', 'height', 'loading',
-  // <td>/<th> elementlerinde izinliler
-  'colspan', 'rowspan', 'scope',
-];
-
 // Yalnızca güvenli protokoller
 const ALLOWED_URI_REGEXP = /^(?:https?|mailto|ftp|ircs?|matrix|xmpp):/i;
 
@@ -100,12 +90,13 @@ export function sanitizeMessageContent(content: unknown): string {
 
   // Makul boyut sınırı (10K karakter — büyük mesajlar reddedilmeli)
   const MAX_LEN = 10_000;
+  let boundedContent = content;
   if (content.length > MAX_LEN) {
     log.warn({ event: 'content_too_long', length: content.length, max: MAX_LEN });
-    return content.slice(0, MAX_LEN);
+    boundedContent = content.slice(0, MAX_LEN);
   }
 
-  const clean = sanitizeWithAllowlist(content, MESSAGE_ALLOWED_TAGS, {
+  const clean = sanitizeWithAllowlist(boundedContent, MESSAGE_ALLOWED_TAGS, {
     '*': ['class', 'id'],
     a: ['href', 'title', 'rel', 'target'],
     img: ['src', 'alt', 'width', 'height', 'loading'],
@@ -192,3 +183,9 @@ export function isCleanString(value: unknown, maxLen = 255): boolean {
   if (/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(value)) return false;
   return true;
 }
+
+
+
+
+
+
