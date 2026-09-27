@@ -3,6 +3,17 @@ import { t } from '../js/core/i18n/index.ts';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import DevicesTab from '../js/core/settings/tabs/DevicesTab.svelte';
 
+// The tab reaches the live voice session through the canonical registry
+// module. (It used to read `window.BridgeRegistry`, which production never
+// sets — these tests used to install that global and hid the defect.)
+const registry = vi.hoisted(() => ({ call: vi.fn() }));
+vi.mock('../js/core/bridge-registry', () => ({
+  BridgeRegistry: {
+    call: (...args: unknown[]) => registry.call(...args),
+    get: vi.fn(() => null), has: vi.fn(() => false), register: vi.fn(), unregister: vi.fn(),
+  },
+}));
+
 function track() {
   return { stop: vi.fn() } as unknown as MediaStreamTrack;
 }
@@ -26,8 +37,7 @@ let registryCall: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   localStorage.clear();
   document.body.innerHTML = '';
-  registryCall = vi.fn();
-  (window as any).BridgeRegistry = { call: registryCall };
+  registryCall = registry.call; registryCall.mockReset();
   getUserMedia = vi.fn();
   enumerateDevices = vi.fn();
   Object.defineProperty(navigator, 'mediaDevices', {
@@ -40,7 +50,6 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
-  delete (window as any).BridgeRegistry;
 });
 
 describe('DevicesTab production owner behavior', () => {
@@ -305,7 +314,6 @@ describe('DevicesTab production owner behavior', () => {
 
   it('saves without an active voice registry and clears its transient success state', async () => {
     vi.useFakeTimers();
-    delete (window as any).BridgeRegistry;
     getUserMedia.mockResolvedValue(stream(track()));
     enumerateDevices.mockResolvedValue([]);
     const setDevicePreference = vi.fn();

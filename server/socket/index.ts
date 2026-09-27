@@ -31,8 +31,8 @@ import { registerCanvasHandlers } from './handlers/canvas';
 import { registerDmReadHandlers } from './handlers/dm-read';
 import { registerDiscoverHandlers, pushMemberCount } from './handlers/discover';
 import { trackSocket, markOffline, getMembershipsCached, startPresenceReaper } from '../lib/presenceCache';
-import { bindVoiceEvictionClusterControl, registerLocalVoiceEvictor } from '../lib/liveMembership';
-import { evictLocalVoiceSessions } from './voiceEviction';
+import { bindVoiceEvictionClusterControl, registerLocalVoiceEvictor, registerLocalVoicePublishRevoker } from '../lib/liveMembership';
+import { evictLocalVoiceSessions, revokeLocalVoicePublishing } from './voiceEviction';
 // Sprint 82: Yeni handler import'ları
 import { registerActivityHandlers }      from './handlers/activities';
 import { registerSuperReactionHandlers } from './handlers/super-reactions';
@@ -98,6 +98,7 @@ function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voice
   _io = io;
   bindStageMediaClusterControl(io);
   registerLocalVoiceEvictor(evictLocalVoiceSessions);
+  registerLocalVoicePublishRevoker(revokeLocalVoicePublishing);
   bindVoiceEvictionClusterControl(io);
   // Users whose only remaining sockets belonged to a dead node: the same
   // offline transition a last-socket disconnect performs (handleDisconnect).

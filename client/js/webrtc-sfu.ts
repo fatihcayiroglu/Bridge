@@ -8,20 +8,10 @@
 'use strict';
 
 import type { BridgeSocket } from './webrtc-base';
-// ── mediasoup-client TALEBE GÖRE YÜKLENİR ─────────────────────────────────
-// ÖLÇÜM (esbuild metafile): bu kütüphane ilk paketin 190.5 KB'ını tek başına
-// tutuyordu ve yalnızca kullanıcı GERÇEKTEN bir SFU odasına katıldığında
-// gerekiyor. Statik import, her ilk açılışta — sesli görüşmeye hiç girmeyen
-// kullanıcılar dâhil — indirilmesine yol açıyordu. Sunucu zaten mediasoup'suz
-// çalışabiliyor (aşağıdaki yetenek zaman aşımı), yani bu bağımlılık ürünün
-// açılış yolunda ZORUNLU DEĞİL.
-type MediasoupClientModule = typeof import('mediasoup-client');
-let _mediasoupModule: Promise<MediasoupClientModule> | null = null;
-function loadMediasoupClient(): Promise<MediasoupClientModule> {
-  // Tek uçuş: eşzamanlı katılımlar aynı sözü paylaşır.
-  _mediasoupModule ??= import('mediasoup-client');
-  return _mediasoupModule;
-}
+// mediasoup-client is loaded on demand; the loader also unwraps the CommonJS
+// namespace shape the production bundle produces (see the loader module).
+import { loadMediasoupClient } from './core/mediasoup-client-loader.ts';
+import { voicePanelAdapter, type VoicePanelAdapter } from './core/voice-panel-adapter.ts';
 import { BridgeRegistry } from './core/bridge-registry.ts';
 import { getAPI } from './core/globals.ts';
 import { readToken } from './core/auth-compat.ts';
@@ -36,6 +26,60 @@ type ConnectableBridgeSocket = BridgeSocket & { connect(): BridgeSocket };
 type IoFactory = (url: string, opts: Record<string, unknown>) => ConnectableBridgeSocket;
 const SFU_SIGNAL_TIMEOUT_MS = 10_000;
 const SFU_CAPABILITY_TIMEOUT_MS = 1_500;
+// How long a lost media session keeps retrying before the call is ended.
+// It must outlive an SFU owner's liveness lease (SFU_NODE_LEASE_MS, 30 s)
+// plus the registry settle window so a surviving node can take the room over.
+const SFU_RECOVERY_WINDOW_MS = 90_000;
+const SFU_RECOVERY_MAX_BACKOFF_MS = 8_000;
+// A session that the server refused (authorization, invalid room) is never
+// retried: recovery goes through the same checks as a manual join.
+const SFU_TERMINAL_CODES = new Set(['FORBIDDEN', 'INVALID_ROOM', 'INVALID_JOIN', 'SESSION_MISMATCH']);
+// Only transport-level socket losses are recovered. A server- or client-
+// initiated disconnect (revocation, logout, replacement) ends the call.
+const TRANSIENT_DISCONNECT_REASONS = new Set(['transport close', 'transport error', 'ping timeout']);
+
+/**
+ * Simulcast layers for a camera track, sized to what libwebrtc will actually
+ * send. libwebrtc limits the layer count by capture resolution (fewer than
+ * 960x540 pixels -> 2 layers, fewer than 480x270 -> 1) and, with explicit
+ * scale factors, drops the TOP layers. The old fixed /4 /2 /1 set therefore
+ * never sent the full-resolution layer of a default 640x480 camera:
+ * receivers topped out at 320x240 (measured in the P2 media lab).
+ */
+export function cameraSimulcastEncodings(track: Pick<MediaStreamTrack, 'getSettings'>): RTCRtpEncodingParameters[] {
+  const { width = 640, height = 480 } = track.getSettings?.() ?? {};
+  const pixels = width * height;
+  if (pixels >= 960 * 540) {
+    return [
+      { maxBitrate: 100_000, scaleResolutionDownBy: 4 },
+      { maxBitrate: 300_000, scaleResolutionDownBy: 2 },
+      { maxBitrate: 900_000 },
+    ];
+  }
+  if (pixels >= 480 * 270) {
+    return [
+      { maxBitrate: 200_000, scaleResolutionDownBy: 2 },
+      { maxBitrate: 900_000 },
+    ];
+  }
+  return [{ maxBitrate: 900_000 }];
+}
+
+/** An `sfu:error` as an Error whose name carries the server's code. */
+function sfuError(data: { message?: unknown; code?: unknown }, fallback: string): Error {
+  const error = new Error(typeof data.message === 'string' ? data.message : fallback);
+  if (typeof data.code === 'string') error.name = `SfuError:${data.code}`;
+  return error;
+}
+
+function isSignalingTimeout(err: unknown): boolean {
+  return err instanceof Error && /timed out|timeout/i.test(err.message) && !err.name.startsWith('SfuError:');
+}
+
+function isTerminalSfuError(err: unknown): boolean {
+  const name = err instanceof Error ? err.name : '';
+  return name.startsWith('SfuError:') && SFU_TERMINAL_CODES.has(name.slice('SfuError:'.length));
+}
 
 class SfuRedirectSignal extends Error {
   constructor(public readonly ownerNodeId: string | null, public readonly channelId: string) {
@@ -54,19 +98,11 @@ interface BridgeVoiceE2EModule {
   registerSocketEvents(socket: BridgeSocket, userId: string): void;
 }
 interface VoiceActivityUIModule { init(socket: BridgeSocket): void; }
-interface BridgeAppModule {
-  toast(msg: string, type: string): void;
-  showToast?(msg: string, type: string): void;
-  renderVoicePeer(peer: PeerInfo, initiator: boolean): void;
-  removeVoicePeer(socketId: string): void;
-  attachRemoteStream(socketId: string, stream: MediaStream, kind?: string): void;
-  updatePeerState(socketId: string, state: PeerState): void;
-}
-
 function _reg<T>(name: string): T | null {
   return BridgeRegistry.get<(...args: unknown[]) => unknown>(name) as T | null;
 }
-function _app(): BridgeAppModule | null       { return _reg<BridgeAppModule>('bridgeApp'); }
+// Voice UI owner shared with the P2P engine; `bridgeApp` is never registered.
+function _app(): VoicePanelAdapter { return voicePanelAdapter; }
 function _ns(): BridgeNSModule | null         { return _reg<BridgeNSModule>('BridgeNS'); }
 function _voiceE2E(): BridgeVoiceE2EModule | null  { return _reg<BridgeVoiceE2EModule>('BridgeVoiceE2E'); }
 function _vaui(): VoiceActivityUIModule | null       { return _reg<VoiceActivityUIModule>('VoiceActivityUI'); }
@@ -74,9 +110,6 @@ function _startVAD(): ((stream: MediaStream, channelId: string) => void) | null 
   return _reg<(stream: MediaStream, channelId: string) => void>('_bridgeStartLocalVAD');
 }
 function _stopVAD(): (() => void) | null { return _reg<() => void>('_bridgeStopLocalVAD'); }
-function _sfuHandleNewProducer(): ((socketId: string, userId: string | undefined, stream: MediaStream, kind: string) => void) | null {
-  return _reg<(socketId: string, userId: string | undefined, stream: MediaStream, kind: string) => void>('sfuHandleNewProducer');
-}
 function _currentServerChannels(): Array<{ _id: string; bitrate?: number }> | null {
   const fn = BridgeRegistry.get<() => Array<{ _id: string; bitrate?: number }>>('currentServerChannels');
   return fn ? fn() : null;
@@ -178,6 +211,20 @@ class BridgeRTC {
   private _screenGeneration                                          = 0;
   private _sfuRequestSeq                                             = 0;
   private _socketHandlers: Array<{ socket: BridgeSocket; event: string; handler: (...args: unknown[]) => void }> = [];
+  // Producers announced before this client's receive transport exists: the
+  // existing peers listed in `sfu:joined`, or a `sfu:new-producer` that races
+  // transport setup. They are consumed as soon as the transport is ready.
+  private _pendingConsumes: Array<{ producerId: string; socketId: string; kind: string }> = [];
+  // Media session recovery: a lost SFU session (ICE failure, or the socket
+  // carrying SFU signaling dropped) is re-established through the normal,
+  // fully re-authorized join path instead of leaving a dead call on screen.
+  private _recovery: Promise<void> | null = null;
+  // Set while we deliberately close a stale signaling transport: Socket.IO
+  // reports that as 'forced close', which must not end the call.
+  private _forcedSignalingClose = false;
+  // Socket id that carried the current SFU session; a recovery join names it
+  // so the owner drops that (same-user) peer instead of keeping a ghost.
+  private _sfuSessionSocketId: string | null = null;
 
   constructor(socket: BridgeSocket) {
     this.socket = socket;
@@ -295,11 +342,11 @@ class BridgeRTC {
         reject(new SfuRedirectSignal(data.ownerNodeId ?? null, channelId));
       };
       const onError = (raw: unknown): void => {
-        const data = raw as { requestId?: unknown; operation?: unknown; message?: unknown };
+        const data = raw as { requestId?: unknown; operation?: unknown; message?: unknown; code?: unknown };
         if (typeof data.requestId === 'string' && data.requestId !== requestId) return;
         if (typeof data.operation === 'string' && data.operation !== 'capabilities') return;
         cleanup();
-        reject(new Error(typeof data.message === 'string' ? data.message : 'Ses altyapısı kullanılamıyor.'));
+        reject(sfuError(data, 'Ses altyapısı kullanılamıyor.'));
       };
       socket.on('sfu:rtp-capabilities', onCaps as (...args: unknown[]) => void);
       socket.on('sfu:redirect', onRedirect as (...args: unknown[]) => void);
@@ -336,11 +383,11 @@ class BridgeRTC {
         reject(new SfuRedirectSignal(data.ownerNodeId ?? null, channelId));
       };
       const onError = (raw: unknown): void => {
-        const data = raw as { requestId?: unknown; operation?: unknown; message?: unknown };
+        const data = raw as { requestId?: unknown; operation?: unknown; message?: unknown; code?: unknown };
         if (typeof data.requestId === 'string' && data.requestId !== requestId) return;
         if (typeof data.operation === 'string' && data.operation !== 'join') return;
         cleanup();
-        reject(new Error(typeof data.message === 'string' ? data.message : 'Ses kanalına katılım tamamlanamadı.'));
+        reject(sfuError(data, 'Ses kanalına katılım tamamlanamadı.'));
       };
       socket.on('sfu:joined', onJoined as (...args: unknown[]) => void);
       socket.on('sfu:redirect', onRedirect as (...args: unknown[]) => void);
@@ -561,8 +608,11 @@ class BridgeRTC {
         // immediately-create flow could lose the transport request.
         const joinRequestId = this._nextSfuRequestId('join');
         const joined = this._waitForSfuJoin(signalingSocket, channelId, joinRequestId);
+        const replaces = this._sfuSessionSocketId && this._sfuSessionSocketId !== signalingSocket.id
+          ? this._sfuSessionSocketId : undefined;
         signalingSocket.emit('sfu:join', {
           channelId, serverId, rtpCapabilities: this.device.rtpCapabilities, requestId: joinRequestId,
+          ...(replaces ? { replaces } : {}),
         });
         await joined;
         this._assertSessionGeneration(sessionGeneration);
@@ -572,6 +622,8 @@ class BridgeRTC {
         this._assertSessionGeneration(sessionGeneration);
         await this._createRecvTransport(channelId, sessionGeneration);
         this._assertSessionGeneration(sessionGeneration);
+        await this._consumePending(sessionGeneration);
+        this._sfuSessionSocketId = signalingSocket.id ?? null;
         this._redirectCount = 0;
         return;
       } catch (e) {
@@ -587,6 +639,20 @@ class BridgeRTC {
     }
     this._redirectCount = 0;
     throw new Error('Ses kanalı yönlendirmesi tamamlanamadı.');
+  }
+
+  /**
+   * STUN/TURN servers and the relay policy the server issued in `sfu:joined`
+   * (FORCE_TURN -> 'relay'). mediasoup is ICE-lite: a client whose network
+   * cannot reach the SFU's media ports directly only gets media through a
+   * TURN relay candidate of its own. The transports used to be created
+   * without these, so TURN was never used for SFU media (P2 media lab).
+   */
+  private _transportIceOptions(): { iceServers?: RTCIceServer[]; iceTransportPolicy: RTCIceTransportPolicy } {
+    return {
+      ...(this._iceServers.length ? { iceServers: this._iceServers } : {}),
+      iceTransportPolicy: this._iceTransportPolicy,
+    };
   }
 
   private async _createSendTransport(channelId: string, sessionGeneration?: number): Promise<void> {
@@ -606,8 +672,10 @@ class BridgeRTC {
     const sendTransport = device!.createSendTransport({
       id: data.id, iceParameters: data.iceParameters,
       iceCandidates: data.iceCandidates, dtlsParameters: data.dtlsParameters,
+      ...this._transportIceOptions(),
     });
     this.sendTransport = sendTransport;
+    this._watchTransport(sendTransport, sessionGeneration);
 
     sendTransport.on('connect', async (args: unknown, cb: unknown, errback: unknown) => {
       try {
@@ -667,8 +735,10 @@ class BridgeRTC {
     const recvTransport = device!.createRecvTransport({
       id: data.id, iceParameters: data.iceParameters,
       iceCandidates: data.iceCandidates, dtlsParameters: data.dtlsParameters,
+      ...this._transportIceOptions(),
     });
     this.recvTransport = recvTransport;
+    this._watchTransport(recvTransport, sessionGeneration);
 
     recvTransport.on('connect', async (args: unknown, cb: unknown, errback: unknown) => {
       try {
@@ -698,6 +768,11 @@ class BridgeRTC {
     try {
       const producer = await sendTransport.produce({
         track: audioTrack,
+        // The app owns capture tracks (leave, device switch and camera/screen
+        // stop all stop them explicitly). mediasoup-client's default would
+        // stop the microphone whenever its producer or transport closes, so a
+        // session recovery had nothing left to publish (P2 media lab).
+        stopTracks: false,
         codecOptions: {
           opusStereo: true, opusDtx: true, opusFec: true,
           opusPtime: 20, opusMaxPlaybackRate: 48000,
@@ -708,14 +783,22 @@ class BridgeRTC {
         producer.close();
         return;
       }
-      producer.on('trackended', () => this._closeProducer('audio'));
+      producer.on('trackended', () => this._onMicrophoneLost());
       this.producers.set('audio', producer);
     } catch (e) { log.error('[SFU] audio produce error:', e); }
   }
 
   // ── Consume ───────────────────────────────────────────────────────────────
   private async _consume(producerId: string, socketId: string, kind: string): Promise<MediasoupConsumer | null> {
-    if (!this.recvTransport || !this.device) return null;
+    if (!this.recvTransport || !this.device) {
+      // The join flow creates the receive transport only AFTER `sfu:joined`.
+      // Dropping these producers made a late joiner deaf to everyone already
+      // in the room (measured with real browsers in the P2 media lab).
+      if (this.currentChannelId && !this._pendingConsumes.some(p => p.producerId === producerId)) {
+        this._pendingConsumes.push({ producerId, socketId, kind });
+      }
+      return null;
+    }
     const socket = this._sfuSocket;
 
     try {
@@ -750,7 +833,7 @@ class BridgeRTC {
 
       if (kind === 'video' || kind === 'screen') {
         const peerUserId = this._socketToUserId.get(socketId);
-        _sfuHandleNewProducer()?.(socketId, peerUserId, targetStream, kind);
+        _app().sfuHandleNewProducer(socketId, peerUserId, targetStream, kind);
       }
 
       socket.emit('sfu:resume-consumer', { producerId, requestId: this._nextSfuRequestId('resume-consumer') });
@@ -760,6 +843,174 @@ class BridgeRTC {
       log.error('[SFU] consume error:', e);
       return null;
     }
+  }
+
+  private async _consumePending(sessionGeneration: number): Promise<void> {
+    const pending = this._pendingConsumes.splice(0);
+    for (const { producerId, socketId, kind } of pending) {
+      if (sessionGeneration !== this._sessionGeneration) return;
+      await this._consume(producerId, socketId, kind);
+    }
+  }
+
+  // ── Media session recovery ────────────────────────────────────────────────
+  /**
+   * ICE on a transport that reaches `failed` does not come back by itself
+   * (it did not in the P2 media lab: TURN restart, long WAN loss, worker or
+   * owner death). The call used to stay on screen with no media.
+   */
+  private _watchTransport(transport: MediasoupTransport, sessionGeneration?: number): void {
+    transport.on('connectionstatechange', (state: unknown) => {
+      if (state !== 'failed') return;
+      if (sessionGeneration !== undefined && sessionGeneration !== this._sessionGeneration) return;
+      if (transport !== this.sendTransport && transport !== this.recvTransport) return;
+      this._recoverSession('transport-failed');
+    });
+  }
+
+  private _recoverSession(reason: string): void {
+    if (this._recovery || !this.currentChannelId || !this._sfuAvailable) return;
+    const channelId = this.currentChannelId;
+    const serverId = this.currentServerId ?? '';
+    const generation = this._sessionGeneration;
+    log.warn(`[SFU] media session lost (${reason}); re-establishing`);
+    document.dispatchEvent(new CustomEvent('bridge:voice-reconnecting', { detail: { reason } }));
+    this._recovery = this._runRecovery(channelId, serverId, generation)
+      .catch(err => log.error('[SFU] recovery error:', err))
+      .finally(() => { this._recovery = null; });
+  }
+
+  private async _runRecovery(channelId: string, serverId: string, generation: number): Promise<void> {
+    const deadline = Date.now() + SFU_RECOVERY_WINDOW_MS;
+    let backoff = 0;
+    for (let attempt = 1; Date.now() < deadline; attempt++) {
+      if (backoff) await new Promise(r => setTimeout(r, backoff));
+      if (generation !== this._sessionGeneration) return;
+      backoff = Math.min(SFU_RECOVERY_MAX_BACKOFF_MS, backoff ? backoff * 2 : 1_000);
+      if (!await this._waitForMainSocket(deadline - Date.now())) break;
+      if (generation !== this._sessionGeneration) return;
+      try {
+        this._teardownMediaForRecovery();
+        const known = new Set(this.peerStreams.keys());
+        await this._sfuJoin(channelId, serverId, generation);
+        // Peers that were not in the fresh roster left while we were away.
+        for (const socketId of known) {
+          if (this._socketToUserId.has(socketId)) continue;
+          this._cleanupPeerStreams(socketId);
+          _app().removeVoicePeer(socketId);
+        }
+        await this._restoreLocalMedia(generation);
+        _vaui()?.init(this._sfuSocket);
+        log.info(`[SFU] media session re-established (attempt ${attempt})`);
+        document.dispatchEvent(new CustomEvent('bridge:voice-reconnected', { detail: { attempt } }));
+        return;
+      } catch (err) {
+        if (generation !== this._sessionGeneration) return;
+        if (isTerminalSfuError(err)) {
+          log.warn('[SFU] recovery refused by the server; leaving the call', err);
+          break;
+        }
+        log.warn(`[SFU] recovery attempt ${attempt} failed`, err);
+        if (isSignalingTimeout(err)) this._reconnectStaleSignaling();
+      }
+    }
+    if (generation !== this._sessionGeneration) return;
+    this._cleanupVoiceState();
+    document.dispatchEvent(new CustomEvent('bridge:voice-left', { detail: { reason: 'media-session-lost' } }));
+    _app().toast(t('rtc_session_lost', 'Ses bağlantısı kurtarılamadı — kanaldan çıkıldı.'), 'error');
+  }
+
+  /**
+   * A signaling request that times out on a socket that still reports
+   * `connected` means its transport is dead — typically the client's address
+   * changed (Wi-Fi -> cellular). Close that transport so Socket.IO reconnects
+   * now instead of after its ~45 s ping timeout (measured in the P2 lab: a
+   * handoff took ~55 s to recover without this).
+   */
+  private _reconnectStaleSignaling(): void {
+    if (this._dedicatedSfuSocket) this._resetDedicatedSfuSocket();
+    const engine = (this.socket as unknown as { io?: { engine?: { close?: () => void } } }).io?.engine;
+    if (this.socket.connected && engine?.close) {
+      this._forcedSignalingClose = true;
+      engine.close();
+    }
+  }
+
+  /** Resolves true once the main socket is connected and authenticated. */
+  private _waitForMainSocket(timeoutMs: number): Promise<boolean> {
+    if (this.socket.connected) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      const done = (ok: boolean): void => {
+        clearTimeout(timer);
+        this.socket.off('userAuthenticated', onReady as (...args: unknown[]) => void);
+        resolve(ok);
+      };
+      const onReady = (): void => done(true);
+      const timer = setTimeout(() => done(false), Math.max(0, timeoutMs));
+      this.socket.on('userAuthenticated', onReady as (...args: unknown[]) => void);
+    });
+  }
+
+  /**
+   * Drop the SFU state (transports, producers, consumers) but keep the local
+   * capture tracks and the remote MediaStream objects the UI already renders,
+   * so a re-established consumer lands in the same element.
+   */
+  private _teardownMediaForRecovery(): void {
+    this._pendingConsumes = [];
+    for (const c of this.consumers.values()) c.close?.();
+    for (const p of this.producers.values()) p.close?.();
+    this.consumers.clear();
+    this.producers.clear();
+    for (const streams of this.peerStreams.values()) {
+      for (const stream of [streams.audio, streams.video]) {
+        for (const track of stream.getTracks()) { track.stop(); stream.removeTrack(track); }
+      }
+    }
+    this._socketToUserId.clear();
+    this.sendTransport?.close();
+    this.recvTransport?.close();
+    this.sendTransport = null;
+    this.recvTransport = null;
+    this.device = null;
+    if (this._dedicatedSfuSocket && !this._dedicatedSfuSocket.connected) this._resetDedicatedSfuSocket();
+  }
+
+  /** Re-publish what the user was publishing before the session was lost. */
+  private async _restoreLocalMedia(generation: number): Promise<void> {
+    const transport = this.sendTransport;
+    if (!transport) return;
+    if (this.muted) this.producers.get('audio')?.pause();
+    const camera = this.localStream?.getVideoTracks().find(track => track.readyState === 'live');
+    if (this.videoOn && camera) {
+      const producer = await this._produceCamera(transport, camera);
+      if (generation !== this._sessionGeneration) { producer.close(); return; }
+      producer.on('trackended', () => { void this.enableVideo(false); });
+      this.producers.set('video', producer);
+    } else {
+      this.videoOn = false;
+    }
+    const screen = this.screenStream?.getVideoTracks().find(track => track.readyState === 'live');
+    if (this.screenSharing && screen) {
+      const producer = await this._produceScreen(transport, screen);
+      if (generation !== this._sessionGeneration) { producer.close(); return; }
+      producer.on('trackended', () => this.stopScreenShare());
+      this.producers.set('screen', producer);
+      const screenAudio = this.screenAudioActive
+        ? this.screenStream?.getAudioTracks().find(track => track.readyState === 'live')
+        : undefined;
+      if (screenAudio) {
+        const audioProducer = await this._produceScreenAudio(transport, screenAudio);
+        if (generation !== this._sessionGeneration) { audioProducer.close(); return; }
+        audioProducer.on('trackended', () => { this._closeProducer('screen-audio'); this.screenAudioActive = false; });
+        this.producers.set('screen-audio', audioProducer);
+      } else {
+        this.screenAudioActive = false;
+      }
+    } else if (this.screenSharing) {
+      this.stopScreenShare();
+    }
+    this._broadcastState();
   }
 
   // ── Leave voice ───────────────────────────────────────────────────────────
@@ -789,6 +1040,7 @@ class BridgeRTC {
   }
 
   private _cleanupVoiceState(): void {
+    this._sfuSessionSocketId = null;
     this._sessionGeneration += 1;
     this._videoGeneration += 1;
     this._screenGeneration += 1;
@@ -812,6 +1064,7 @@ class BridgeRTC {
   }
 
   private _sfuCleanup(): void {
+    this._pendingConsumes = [];
     for (const c of this.consumers.values()) c.close?.();
     for (const p of this.producers.values()) p.close?.();
     this.consumers.clear();
@@ -885,15 +1138,7 @@ class BridgeRTC {
       this.localStream.addTrack(videoTrack);
 
       if (this._sfuAvailable && this.sendTransport) {
-        producer = await this.sendTransport.produce({
-          track: videoTrack,
-          encodings: [
-            { maxBitrate: 100_000, scaleResolutionDownBy: 4 },
-            { maxBitrate: 300_000, scaleResolutionDownBy: 2 },
-            { maxBitrate: 900_000 },
-          ],
-          codecOptions: { videoGoogleStartBitrate: 1000 },
-        });
+        producer = await this._produceCamera(this.sendTransport, videoTrack);
         if (generation !== this._videoGeneration) {
           producer.close();
           videoStream.getTracks().forEach(track => track.stop());
@@ -912,6 +1157,37 @@ class BridgeRTC {
     }
     this._broadcastState();
     return true;
+  }
+
+  private _produceCamera(transport: MediasoupTransport, track: MediaStreamTrack): Promise<MediasoupProducer> {
+    return transport.produce({
+      track,
+      stopTracks: false,
+      encodings: cameraSimulcastEncodings(track),
+      codecOptions: { videoGoogleStartBitrate: 1000 },
+    });
+  }
+
+  private _produceScreen(transport: MediasoupTransport, track: MediaStreamTrack): Promise<MediasoupProducer> {
+    return transport.produce({
+      track,
+      stopTracks: false,
+      appData:   { screen: true },
+      encodings: [{ maxBitrate: SCREEN_BITRATES[this._screenQuality] }],
+      codecOptions: { videoGoogleStartBitrate: 1000 },
+    });
+  }
+
+  private _produceScreenAudio(transport: MediasoupTransport, track: MediaStreamTrack): Promise<MediasoupProducer> {
+    return transport.produce({
+      track,
+      stopTracks: false,
+      appData: { screenAudio: true },
+      codecOptions: {
+        opusStereo: true, opusDtx: false, opusFec: true,
+        opusPtime: 20, opusMaxPlaybackRate: 48000,
+      },
+    });
   }
 
   // ── Screen share ──────────────────────────────────────────────────────────
@@ -947,12 +1223,7 @@ class BridgeRTC {
       screenTrack.onended = () => this.stopScreenShare();
 
       if (this._sfuAvailable && this.sendTransport) {
-        producer = await this.sendTransport.produce({
-          track:     screenTrack,
-          appData:   { screen: true },
-          encodings: [{ maxBitrate: SCREEN_BITRATES[selectedQuality] }],
-          codecOptions: { videoGoogleStartBitrate: 1000 },
-        });
+        producer = await this._produceScreen(this.sendTransport, screenTrack);
         if (generation !== this._screenGeneration) {
           producer.close();
           stream.getTracks().forEach(track => track.stop());
@@ -964,14 +1235,7 @@ class BridgeRTC {
         const screenAudioTrack = includeAudio ? stream.getAudioTracks()[0] : undefined;
         if (screenAudioTrack) {
           try {
-            audioProducer = await this.sendTransport.produce({
-              track: screenAudioTrack,
-              appData: { screenAudio: true },
-              codecOptions: {
-                opusStereo: true, opusDtx: false, opusFec: true,
-                opusPtime: 20, opusMaxPlaybackRate: 48000,
-              },
-            });
+            audioProducer = await this._produceScreenAudio(this.sendTransport, screenAudioTrack);
             if (generation !== this._screenGeneration) {
               audioProducer.close();
               this._closeProducer('screen');
@@ -1238,12 +1502,14 @@ class BridgeRTC {
 
     this._onSocket(socket, 'sfu:producer-closed', (raw: unknown) => {
       const { producerId } = raw as { producerId: string };
+      this._pendingConsumes = this._pendingConsumes.filter(p => p.producerId !== producerId);
       const consumer = this.consumers.get(producerId);
       if (consumer) { consumer.close?.(); this.consumers.delete(producerId); }
     });
 
     this._onSocket(socket, 'sfu:peer-left', (raw: unknown) => {
       const { socketId } = raw as { socketId: string };
+      this._pendingConsumes = this._pendingConsumes.filter(p => p.socketId !== socketId);
       this._cleanupPeerStreams(socketId);
       _app()?.removeVoicePeer(socketId);
     });
@@ -1300,14 +1566,40 @@ class BridgeRTC {
     // Request-scoped listeners in `_sfuJoin` own redirect handling. This
     // observer is intentionally side-effect free so an owner response can never
     // cause the old socket to retry itself and loop.
+    // The server evicted this voice session (kick, ban, access or connect
+    // permission revoked, timeout). End the call now instead of waiting for
+    // ICE to fail — or showing a live call that never recovers.
+    this._onSocket(socket, 'voice:evicted', (raw: unknown) => {
+      const { channelId } = (raw ?? {}) as { channelId?: unknown };
+      if (!this.currentChannelId || channelId !== this.currentChannelId) return;
+      this._cleanupVoiceState();
+      document.dispatchEvent(new CustomEvent('bridge:voice-left', { detail: { reason: 'evicted' } }));
+      _app().toast(t('rtc_voice_evicted', 'Bu ses kanalına erişimin kaldırıldı.'), 'warning');
+    });
+
     this._onSocket(socket, 'sfu:redirect', (raw: unknown) => {
       const { channelId, ownerNodeId, message } = raw as { channelId: string; ownerNodeId: string; message?: string };
       log.warn(`[SFU] Redirect: channel=${channelId} owner=${ownerNodeId}`, message);
     });
 
-    this._onSocket(socket, 'disconnect', () => {
+    this._onSocket(socket, 'disconnect', (reason: unknown) => {
+      const forced = reason === 'forced close' && socket === this.socket && this._forcedSignalingClose;
+      if (socket === this.socket) this._forcedSignalingClose = false;
+      const transient = forced || (typeof reason === 'string' && TRANSIENT_DISCONNECT_REASONS.has(reason));
+      if (socket === this._dedicatedSfuSocket) {
+        // The owner node discards our peer when this socket drops.
+        if (transient && this.currentChannelId && this._sfuAvailable) this._recoverSession('sfu-socket-lost');
+        return;
+      }
       if (socket !== this.socket) return;
       if (!this.currentChannelId && !this.localStream && this.peers.size === 0) return;
+      if (transient && this.currentChannelId && this._sfuAvailable) {
+        // Media signaling on a live dedicated owner socket is unaffected by
+        // the loss of the app socket (e.g. a non-owner node died).
+        if (this._dedicatedSfuSocket?.connected) return;
+        this._recoverSession('socket-lost');
+        return;
+      }
       this._cleanupVoiceState();
       document.dispatchEvent(new CustomEvent('bridge:voice-left', {
         detail: { reason: 'socket-disconnect' },
@@ -1321,6 +1613,26 @@ class BridgeRTC {
       channelId: this.currentChannelId, muted: this.muted,
       deafened: this.deafened, screensharing: this.screenSharing, video: this.videoOn,
     });
+    // The voice UI keeps its own copy of these flags. Changes that start in
+    // the engine — a camera or microphone that disappeared, a recovered
+    // session that could not re-publish the camera — must reach it too; the
+    // P2 media lab measured a UI still showing the camera on after the device
+    // ended.
+    document.dispatchEvent(new CustomEvent('bridge:voice-local-state', {
+      detail: { muted: this.muted, deafened: this.deafened, video: this.videoOn, screensharing: this.screenSharing },
+    }));
+  }
+
+  /**
+   * The microphone track ended underneath the call (device unplugged,
+   * permission revoked). Stop publishing, show the user as muted and say why:
+   * before, the call silently kept going with nothing being sent.
+   */
+  private _onMicrophoneLost(): void {
+    this._closeProducer('audio');
+    this.muted = true;
+    _app().toast(t('rtc_mic_lost', 'Mikrofon bağlantısı kesildi — sesin iletilmiyor.'), 'error');
+    this._broadcastState();
   }
 
   private _cleanupPeerStreams(socketId: string): void {

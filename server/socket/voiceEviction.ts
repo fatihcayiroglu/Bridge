@@ -10,7 +10,7 @@
 import type { Server as SocketIOServer } from 'socket.io';
 import logger from '../lib/logger';
 import { leaveVoice } from './handlers/voice';
-import { cleanupPeer, sfuPeers } from './handlers/mediasoup/rooms';
+import { cleanupPeer, revokeStagePublishers, sfuPeers } from './handlers/mediasoup/rooms';
 
 type VoiceSocket = Parameters<typeof leaveVoice>[0] & {
   rooms: Set<string>;
@@ -39,7 +39,37 @@ export async function evictLocalVoiceSessions(
     }
     const channelId = p2pChannel ?? sfuChannel!;
     await leaveVoice(socket, channelId, socket.currentVoiceServer ?? undefined, io);
+    // Tell the evicted client: without this it only noticed through an ICE
+    // failure (if ever) and kept showing a live call (P2 media lab, AZ-03).
+    (socket as unknown as { emit?: (event: string, data: unknown) => void }).emit?.('voice:evicted', { channelId });
     logger.info({ userId, channelId, sfu: Boolean(sfuChannel), event: 'socket.voice_evicted' },
       'Voice session evicted after access revocation.');
+  }
+}
+
+/**
+ * The node-local half of a SPEAK revocation (lib/liveMembership.ts). The user
+ * may keep listening, but every producer they publish in that room is closed
+ * on this node (a no-op unless this node owns the room); other participants'
+ * consumers receive `producerclose`. P2P voice has no server-side media to
+ * close, so a P2P session in that channel is ended instead (fail closed).
+ */
+export async function revokeLocalVoicePublishing(
+  io: SocketIOServer,
+  userId: string,
+  channelId: string,
+): Promise<void> {
+  // `revokeStagePublishers` is room-generic: every producer of that user in the room.
+  const closed = revokeStagePublishers(channelId, userId);
+  const sockets = await io.in(`user:${userId}`).local.fetchSockets();
+  for (const remote of sockets) {
+    const socket = remote as unknown as VoiceSocket;
+    if (sfuPeers.has(socket.id) || socket.currentVoiceChannel !== channelId) continue;
+    await leaveVoice(socket, channelId, socket.currentVoiceServer ?? undefined, io);
+    logger.info({ userId, channelId, event: 'socket.voice_evicted' }, 'P2P voice session ended after speak revocation.');
+  }
+  if (closed) {
+    logger.info({ userId, channelId, producers: closed, event: 'socket.voice_publish_revoked' },
+      'Voice producers closed after speak revocation.');
   }
 }

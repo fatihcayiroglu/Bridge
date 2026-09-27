@@ -21,8 +21,9 @@ import http from 'node:http';
 import net from 'node:net';
 
 export class RoutingProxy {
-  constructor({ port, nodes, mode = 'round-robin' }) {
+  constructor({ port, nodes, mode = 'round-robin', host = '127.0.0.1' }) {
     this.port = port;
+    this.host = host;
     this.nodes = nodes; // [{ name, host, port }]
     this.mode = mode;
     this.pinned = nodes[0]?.name;
@@ -76,7 +77,7 @@ export class RoutingProxy {
   start() {
     this.server = http.createServer((req, res) => this.#http(req, res));
     this.server.on('upgrade', (req, socket, head) => this.#upgrade(req, socket, head));
-    return new Promise((resolve) => this.server.listen(this.port, '127.0.0.1', resolve));
+    return new Promise((resolve) => this.server.listen(this.port, this.host, resolve));
   }
 
   stop() { return new Promise((resolve) => this.server.close(() => resolve())); }

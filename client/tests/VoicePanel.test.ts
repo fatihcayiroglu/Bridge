@@ -226,6 +226,26 @@ describe('VoicePanel — reconnect state truth', () => {
   });
 });
 
+describe('VoicePanel — engine-originated state (P2 media lab)', () => {
+  it('a camera or microphone that ends underneath the call is reflected in the controls', async () => {
+    mockRtc.videoOn = false;
+    mockRtc.enableVideo.mockResolvedValueOnce(true);
+    const { container } = render(VoicePanel);
+    const video = container.querySelector('#vc-video') as HTMLButtonElement;
+    const mute = container.querySelector('#vc-mute') as HTMLButtonElement;
+    await fireEvent.click(video);
+    await new Promise(r => setTimeout(r, 0));
+    expect(video.getAttribute('aria-pressed')).toBe('true');
+
+    // The device went away: the engine closed the producer and says so.
+    document.dispatchEvent(new CustomEvent('bridge:voice-local-state', { detail: { muted: true, deafened: false, video: false, screensharing: false } }));
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(video.getAttribute('aria-pressed')).toBe('false');
+    expect(mute.getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
 describe('VoicePanel — toggleVideo', () => {
   it('video açılırken rtc.enableVideo(true) çağrılır', async () => {
     const { container } = render(VoicePanel);

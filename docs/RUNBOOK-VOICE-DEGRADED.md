@@ -37,9 +37,10 @@ If `/api/health` is `503`, this is **not** a voice incident — see
 
 | Cause | Action |
 |---|---|
-| SFU process down | Restart it. Active calls drop; users rejoin. |
+| SFU worker or node down | The worker pool restarts a dead worker by itself. Clients re-establish their media session automatically (measured in the P2 media lab: ~19 s after a worker death or an owner-node restart, ~27 s after an owner-node crash — the 30 s owner lease must expire first). A client that cannot recover within 90 s leaves the call and is told so. Restart a node only if it does not come back. |
 | TURN credentials expired | Rotate and redeploy (`TURN_*`, see `CONFIGURATION.md`). |
-| UDP blocked | Restore firewall rules. |
+| TURN server restarted | Relayed calls re-establish by themselves (lab: ~15 s after TURN is back). |
+| UDP blocked | Restore firewall rules. With TURN configured, SFU media relays through it (TURN over TCP when UDP is blocked; `FORCE_TURN=true` makes clients relay-only). |
 | SFU resource exhaustion | Scale up, or cap concurrent rooms. |
 
 Text, DMs, uploads and Soundboard metadata continue working throughout. Do **not**
@@ -55,9 +56,11 @@ restart the Bridge application to fix voice — that converts a SEV-2 into a SEV
 
 ## Honest limitation
 
-Bridge's voice stack has **not** been validated under real multi-network conditions in
-this release pass. Voice E2E coverage is Chromium-only and uses fake media flags;
-TURN relay and SFU behaviour under load are unproven.
+Bridge's voice stack has **not** been validated under real multi-network conditions
+or on physical devices. The P2 media lab (`scripts/medialab`, `docs/MEDIA_RELIABILITY.md`)
+proves real packets end to end — two nodes, real mediasoup, real coturn, real Chromium
+clients behind synthetic WAN impairment — but it is one host, Chromium only, fake
+capture devices and synthetic impairment; perceptual quality needs human validation.
 
 For the controlled private beta, treat voice as **experimental**: expect to gather
 first real evidence from beta users rather than to rely on it.

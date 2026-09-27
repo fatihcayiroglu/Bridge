@@ -153,8 +153,8 @@ export function registerSFUHandlers(
 
   // ── sfu:join / sfu:group-join ────────────────────────────────────────────
   async function sfuJoinHandler({
-    channelId, serverId, rtpCapabilities, requestId,
-  }: { channelId: string; serverId: string | null; rtpCapabilities: RtpCapabilities; requestId?: string }): Promise<void> {
+    channelId, serverId, rtpCapabilities, requestId, replaces,
+  }: { channelId: string; serverId: string | null; rtpCapabilities: RtpCapabilities; requestId?: string; replaces?: unknown }): Promise<void> {
     const generation = ++sfuJoinGeneration;
     try {
       if (!isBoundedId(channelId) || (serverId !== null && serverId !== undefined && !isBoundedId(serverId)) ||
@@ -207,6 +207,19 @@ export function registerSFUHandlers(
         throw err;
       }
       if (generation !== sfuJoinGeneration) return;
+
+      // A client re-establishing a lost session (new socket after a network
+      // change) names the session it replaces. Until the server notices the
+      // old socket is dead (ping timeout, up to ~45 s) that peer would stay in
+      // the room as a ghost the other participants still render (P2 media
+      // lab). Only the SAME user's peer in the SAME room is ever removed.
+      if (isBoundedId(replaces) && replaces !== socket.id) {
+        const stale = sfuPeers.get(replaces);
+        if (stale && stale.userId === user._id && stale.channelId === channelId) {
+          await cleanupPeer(replaces, io, stale.channelId, stale.serverId ?? undefined);
+          if (generation !== sfuJoinGeneration) return;
+        }
+      }
 
       const previousPeer = sfuPeers.get(socket.id);
       if (previousPeer) {
@@ -284,10 +297,10 @@ export function registerSFUHandlers(
     }
   }
 
-  socket.on('sfu:join', isolateSocketHandler(socket, 'sfu:join', (p: { channelId: string; serverId: string | null; rtpCapabilities: RtpCapabilities; requestId?: string }) => {
+  socket.on('sfu:join', isolateSocketHandler(socket, 'sfu:join', (p: { channelId: string; serverId: string | null; rtpCapabilities: RtpCapabilities; requestId?: string; replaces?: unknown }) => {
     return sfuJoinHandler(p);
   }));
-  socket.on('sfu:group-join', isolateSocketHandler(socket, 'sfu:group-join', (p: { channelId: string; serverId?: string; rtpCapabilities: RtpCapabilities; requestId?: string }) => {
+  socket.on('sfu:group-join', isolateSocketHandler(socket, 'sfu:group-join', (p: { channelId: string; serverId?: string; rtpCapabilities: RtpCapabilities; requestId?: string; replaces?: unknown }) => {
     socket.emit('_sfu:join-routed');
     return sfuJoinHandler({ ...p, serverId: p.serverId ?? null });
   }));

@@ -1,0 +1,98 @@
+name: Bridge Media Evidence
+
+# Heavy real-media runs (scripts/medialab): two real Bridge nodes with real
+# mediasoup workers, PostgreSQL, Redis, S3 emulator, a real coturn and real
+# Chromium clients inside Linux network namespaces behind userspace impairment
+# links (latency / jitter / loss / bandwidth / interruption). Evidence is what
+# the receiving browsers DECODE (per-sender tone and colour identity) plus
+# getStats, TURN relay candidates and server process/socket counters.
+#
+# Deliberately NOT part of pull-request CI: a full run takes ~90 minutes,
+# needs root (netns, TUN, nftables) and kills/restarts processes. The fast
+# regression tests for every defect this lab found run in the normal Quality
+# Gate (client Vitest). This workflow owns the end-to-end media evidence:
+# weekly, and on demand.
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: 'Comma-separated scenarios (e2e,turn,impair,netchange,failover,lifecycle,authz,multiuser,soak)'
+        required: false
+        default: 'e2e,turn,impair,netchange,failover,lifecycle,authz,multiuser,soak'
+      soak_minutes:
+        description: 'Soak duration in minutes'
+        required: false
+        default: '20'
+  schedule:
+    - cron: '41 4 * * 2'
+
+concurrency:
+  group: media-evidence-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  medialab:
+    name: real media lab
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      NODE_VERSION: '24.20.0'
+      PLAYWRIGHT_BROWSERS_PATH: /opt/pw-browsers
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            e2e/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install infrastructure (PostgreSQL binaries, Redis, coturn, iproute2, nftables, faketime, S3 emulator)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server coturn iproute2 nftables faketime lsof
+          sudo systemctl stop redis-server coturn || true
+          python -m pip install --quiet 'moto[server]==5.2.3'
+          ls -d /usr/lib/postgresql/*/bin
+          ls -l /dev/net/tun
+      - name: Install and build Bridge (server + production web bundle)
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          cd server && npm ci --no-audit --no-fund && npm run build
+      - name: Install Chromium for the lab clients
+        run: |
+          cd e2e && npm ci --no-audit --no-fund
+          sudo -E env "PATH=$PATH" npx playwright install --with-deps chromium
+      - name: "Run media scenarios (as root: network namespaces, TUN, nftables)"
+        run: |
+          sudo -E env "PATH=$PATH" \
+            MN_MOTO_SERVER="$(command -v moto_server)" \
+            SOAK_MINUTES='${{ github.event.inputs.soak_minutes || '20' }}' \
+            node scripts/medialab/run.mjs \
+              --scenarios '${{ github.event.inputs.scenarios || 'e2e,turn,impair,netchange,failover,lifecycle,authz,multiuser,soak' }}' \
+              --work "$RUNNER_TEMP/bridge-medialab" \
+              --out "$RUNNER_TEMP/bridge-medialab-report"
+      - name: Make artifacts readable
+        if: always()
+        run: sudo chmod -R a+rX "$RUNNER_TEMP/bridge-medialab" "$RUNNER_TEMP/bridge-medialab-report" || true
+      - name: Upload report and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: medialab-report
+          path: |
+            ${{ runner.temp }}/bridge-medialab-report/
+            ${{ runner.temp }}/bridge-medialab/logs/
+            ${{ runner.temp }}/bridge-medialab/cluster/logs/
+          retention-days: 30

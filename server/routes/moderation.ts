@@ -552,6 +552,9 @@ router.post('/members/:userId/timeout', authMiddleware, limits.moderation(), asy
   await writeAudit(serverId, _u, durationMs > 0 ? 'timeout' : 'timeout_remove', userId, target.username, reason || '');
   // Sprint 121 FIX 12: Timeout sonrası permCache temizle
   invalidatePerms(serverId, userId);
+  // A timed-out member may not stay in a live call: the SFU only checks the
+  // timeout when an operation starts (P2 media lab: media kept flowing).
+  if (durationMs > 0) await evictSocketsWithoutChannelAccessBestEffort(req.app.get('io'), serverId, null);
 
   res.json({ ok: true, until });
 });
