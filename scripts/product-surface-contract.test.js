@@ -2841,16 +2841,22 @@ test('PostgreSQL 18 data volumes are mounted where the 18 image keeps its data',
   }
 });
 
-test('CI runs the real MinIO storage-boundary suite instead of silently skipping it', () => {
+test('CI runs the real S3 storage-boundary suite instead of silently skipping it', () => {
   // `minio-storage-boundary.pgtest.ts` MINIO_TEST_ENDPOINT yoksa describe.skip
   // olur. O değişken CI'da hiç verilmediği için, özel bucket'ın anonim erişime
   // kapalı olduğunu kanıtlayan TEK süit hiç çalışmamıştı.
+  //
+  // Bu sözleşme belirli bir vendor/image adına değil, korumamız gereken kanıta
+  // kilitlenir: gerçek S3-uyumlu servis, endpoint'in teste verilmesi ve
+  // public bucket için anonim GetObject politikası.
   const workflow = read('.github/workflows/quality-gate.yml');
-  assert.match(workflow, /minio:\n\s+image: quay\.io\/minio\/minio:RELEASE\./);
+  assert.match(workflow, /s3:\n\s+image: rustfs\/rustfs:/);
   assert.match(workflow, /MINIO_TEST_ENDPOINT: http:\/\/127\.0\.0\.1:9000/);
   // Yanlış-pozitif kontrolünün ön koşulu: genel bucket gerçekten anonim
   // okunabilir olmalı, yoksa "her şey 403" olur ve test hiçbir şey kanıtlamaz.
-  assert.match(workflow, /mc anonymous set download local\/bridge-public/);
+  assert.match(workflow, /PutBucketPolicyCommand/);
+  assert.match(workflow, /bridge-public\/\*/);
+  assert.match(workflow, /s3:GetObject/);
 });
 
 test('bundle budget measures INITIAL download, not the sum of every emitted chunk', () => {
