@@ -11,6 +11,7 @@ import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
 import { getPrivateStorageAdapter, getPrivateStorageProvider, getStorageAdapter, getProvider } from '../lib/storageAdapter';
 import { getRtcIceConfig, getTurnStatus } from '../lib/turnConfig';
 import { healthCheck as redisHealthCheck } from '../lib/redisAdapter';
+import logger from '../lib/logger';
 
 
 import pkg from '../../package.json';
@@ -105,7 +106,13 @@ router.get('/live', (_req: Request, res: Response) => {
   res.json({ status: 'ok', check: 'liveness', version: VERSION, uptime: Math.floor(process.uptime()), ts: Date.now() });
 });
 
+// The public 503 body stays generic; the operator learns WHICH dependency
+// removed the node from rotation from one structured log line per state
+// change (not per probe — orchestrators probe every few seconds).
+let readinessFailure: string | null = null;
+
 router.get('/ready', async (_req: Request, res: Response) => {
+  let dependency = 'database';
   try {
     await pingDb();
     // Redis is optional for a deliberately single-node deployment, but once
@@ -114,17 +121,21 @@ router.get('/ready', async (_req: Request, res: Response) => {
     // readiness while that configured dependency is unavailable sends traffic
     // to a node that cannot uphold those invariants.
     if (process.env.REDIS_URL) {
+      dependency = 'redis';
       const redis = await redisHealthCheck();
-      if (!redis.redis) throw new Error('Configured Redis is unavailable');
+      if (!redis.redis) throw new Error(redis.error || 'Configured Redis is unavailable');
     }
+    dependency = 'storage';
     await pingStorage();
     // Optional media infrastructure becomes part of node readiness only when
     // the operator explicitly declares it required. This keeps deliberately
     // P2P/STUN-only self-hosted nodes valid while making production media
     // commitments fail closed instead of advertising a false green state.
+    dependency = 'turn';
     if (process.env.REQUIRE_TURN === 'true' && !getTurnStatus().turn) {
       throw new Error('Required TURN relay is unavailable');
     }
+    dependency = 'sfu';
     if (process.env.REQUIRE_SFU === 'true') {
       const sfu = await import('../socket/handlers/mediasoup/workers') as {
         getWorkerStats?(): Promise<{ workers: number; healthy: number }>;
@@ -132,8 +143,19 @@ router.get('/ready', async (_req: Request, res: Response) => {
       const stats = sfu.getWorkerStats ? await sfu.getWorkerStats() : { workers: 0, healthy: 0 };
       if (stats.healthy < 1) throw new Error('Required SFU is unavailable');
     }
+    if (readinessFailure !== null) {
+      logger.info({ event: 'health.readiness_recovered', previous: readinessFailure }, '[Health] Node is ready again');
+      readinessFailure = null;
+    }
     res.json({ status: 'ok', check: 'readiness', version: VERSION, db: DB_KIND, ts: Date.now() });
-  } catch {
+  } catch (err) {
+    if (readinessFailure !== dependency) {
+      logger.warn(
+        { event: 'health.readiness_failed', dependency, reason: err instanceof Error ? err.message.slice(0, 200) : 'unknown' },
+        '[Health] Node is NOT ready; removed from load-balancer rotation',
+      );
+      readinessFailure = dependency;
+    }
     res.status(503).json({ status: 'error', check: 'readiness', version: VERSION, db: DB_KIND, ts: Date.now() });
   }
 });

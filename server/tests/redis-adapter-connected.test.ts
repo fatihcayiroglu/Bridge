@@ -371,6 +371,20 @@ describe('redisAdapter connected protocol paths',()=>{
     await r.disconnect();
   });
 
+  // P1 multi-node harness RD-C: Redis under maxmemory+noeviction answers PING
+  // and INFO but refuses every write; readiness stayed green while every
+  // Redis-authoritative request failed closed.
+  it('health requires a successful write: PING/INFO alone is not readiness',async()=>{
+    const r=load(); await r.applyAdapter({adapter:jest.fn()});
+    await expect(r.healthCheck()).resolves.toMatchObject({redis:true});
+    const probe=pub.set.mock.calls.find((c:any[])=>String(c[0]).startsWith('bridge:health:write:'));
+    expect(probe?.[2]).toEqual({EX:60});
+    pub.set.mockRejectedValueOnce(new Error("OOM command not allowed when used memory > 'maxmemory'."));
+    await expect(r.healthCheck()).resolves.toMatchObject({redis:false,error:expect.stringContaining('OOM')});
+    expect(pub.ping).toHaveBeenCalled();
+    await r.disconnect();
+  });
+
   it('health failure returns error and disconnect logs quit failures but resets singleton',async()=>{
     const r=load(); await r.applyAdapter({adapter:jest.fn()}); pub.ping.mockRejectedValueOnce(new Error('ping down')); expect(await r.healthCheck()).toMatchObject({redis:false,error:'ping down'});
     pub.quit.mockRejectedValueOnce(new Error('pub quit')); sub.quit.mockRejectedValueOnce(new Error('sub quit')); await expect(r.disconnect()).resolves.toBeUndefined(); expect(r.redisClient()).toBeNull(); expect(r.isRedisAvailable()).toBe(false);
