@@ -3085,7 +3085,11 @@ test('opt-in live database commands refuse to run without their address instead 
   const pgStep = workflow.indexOf('run: cd server && npm run test:pg');
   const searchStep = workflow.indexOf('run: cd server && npm run test:search-it');
   assert.ok(pgStep > 0 && searchStep > pgStep, 'search-it must run after test:pg in CI');
-  assert.match(workflow.slice(searchStep, searchStep + 200), /SEARCH_IT_DATABASE_URL: \$\{\{ env\.DATABASE_URL \}\}/);
+  assert.match(
+    workflow.slice(searchStep, searchStep + 260),
+    /SEARCH_IT_DATABASE_URL:\s+(?:\$\{\{ env\.DATABASE_URL \}\}|postgresql:\/\/[^\s]+)/,
+    'search-it CI step must set a non-empty PostgreSQL address through the exact variable the suite reads',
+  );
 });
 
 // ── Final21 Faz 22 (19-40) ───────────────────────────────────────────────────
