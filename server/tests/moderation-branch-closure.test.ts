@@ -769,10 +769,17 @@ describe('POST /members/:userId/timeout', () => {
       action: 'timeout', targetId: TARGET, targetName: 'kurban', detail: 'spam',
     }));
     expect(permCache.invalidatePerms).toHaveBeenCalledWith(SRV, TARGET);
+    // P2 media lab: a timed-out member's established call kept flowing; the
+    // live access re-check now ends it on every node.
+    const live = jest.requireMock('../lib/liveMembership') as { evictSocketsWithoutChannelAccessBestEffort: jest.Mock };
+    expect(live.evictSocketsWithoutChannelAccessBestEffort).toHaveBeenCalledWith(app.get('io'), SRV, null);
   });
 
   it('SIFIR süre timeout KALDIRIR ve ayrı bir eylem olarak kaydedilir', async () => {
+    const live = jest.requireMock('../lib/liveMembership') as { evictSocketsWithoutChannelAccessBestEffort: jest.Mock };
+    live.evictSocketsWithoutChannelAccessBestEffort.mockClear();
     const res = await timeout({ durationMs: 0 });
+    expect(live.evictSocketsWithoutChannelAccessBestEffort).not.toHaveBeenCalled();
 
     expect(res.body.until).toBeNull();
     expect(repos.Members.setTimeout).toHaveBeenCalledWith(SRV, TARGET, null);

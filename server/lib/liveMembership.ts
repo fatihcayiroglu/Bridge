@@ -1,6 +1,7 @@
 import type { Server as SocketIOServer, Socket } from 'socket.io';
-import { Channels, Threads } from '../db/repositories';
-import { canViewChannel } from './permissions';
+import { Channels, Members, Threads } from '../db/repositories';
+import { PERMS, canViewChannel, hasPermission, resolvePermissions } from './permissions';
+import { isMemberTimedOut } from './memberTimeout';
 import { newRequestId, runWithRequestContext } from './requestContext';
 import logger from './logger';
 
@@ -47,14 +48,27 @@ export type LocalVoiceEvictor = (
   channelIds: readonly string[],
 ) => Promise<void>;
 
+export type LocalVoicePublishRevoker = (
+  io: SocketIOServer,
+  userId: string,
+  channelId: string,
+) => Promise<void>;
+
 const VOICE_EVICT_EVENT = 'membership:voice-evict';
+const VOICE_PUBLISH_REVOKE_EVENT = 'membership:voice-publish-revoke';
 const MAX_EVICT_CHANNELS = 5_000;
 let localVoiceEvictor: LocalVoiceEvictor | null = null;
+let localVoicePublishRevoker: LocalVoicePublishRevoker | null = null;
 const clusterBound = new WeakSet<object>();
 
 /** Socket setup registers the node-local leave path (voice roster + SFU peer). */
 export function registerLocalVoiceEvictor(evictor: LocalVoiceEvictor | null): void {
   localVoiceEvictor = evictor;
+}
+
+/** Socket setup registers the node-local publish revocation (SFU producers of one user in one room). */
+export function registerLocalVoicePublishRevoker(revoker: LocalVoicePublishRevoker | null): void {
+  localVoicePublishRevoker = revoker;
 }
 
 /** One cluster listener per Socket.IO server: run the local leave path for revocations decided elsewhere. */
@@ -69,6 +83,57 @@ export function bindVoiceEvictionClusterControl(io: SocketIOServer): void {
     if (!channelIds.every(id => typeof id === 'string' && id.length > 0 && id.length <= 128)) return;
     void runLocalVoiceEviction(io, userId, channelIds as string[]);
   }) as never);
+  io.on(VOICE_PUBLISH_REVOKE_EVENT as never, ((payload: unknown) => {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return;
+    const { userId, channelId } = payload as { userId?: unknown; channelId?: unknown };
+    if (typeof userId !== 'string' || !userId || userId.length > 128) return;
+    if (typeof channelId !== 'string' || !channelId || channelId.length > 128) return;
+    void runLocalVoicePublishRevoke(io, userId, channelId);
+  }) as never);
+}
+
+async function runLocalVoicePublishRevoke(io: SocketIOServer, userId: string, channelId: string): Promise<void> {
+  if (!localVoicePublishRevoker) return;
+  try {
+    await localVoicePublishRevoker(io, userId, channelId);
+  } catch (err) {
+    logger.error({ err, userId, channelId, event: 'socket.voice_publish_revoke.failed' }, 'Voice publish revocation failed on this node.');
+  }
+}
+
+/**
+ * The user may stay in the call but must no longer be heard or seen: close
+ * their SFU producers wherever the room lives (only the owning node has them).
+ */
+export async function revokeVoicePublishingEverywhere(
+  io: SocketIOServer,
+  userId: string,
+  channelId: string,
+): Promise<void> {
+  if (!userId || !channelId) return;
+  await runLocalVoicePublishRevoke(io, userId, channelId);
+  if (!process.env.REDIS_URL) return;
+  const cluster = io as unknown as { serverSideEmit?: (event: string, ...args: unknown[]) => unknown };
+  if (typeof cluster.serverSideEmit !== 'function') return;
+  try {
+    cluster.serverSideEmit(VOICE_PUBLISH_REVOKE_EVENT, { userId, channelId });
+  } catch (err) {
+    logger.error({ err, userId, event: 'socket.voice_publish_revoke.broadcast_failed' }, 'Voice publish revocation could not reach other nodes.');
+  }
+}
+
+/**
+ * Live voice access of a user who can still VIEW the channel. The SFU checks
+ * CONNECT / SPEAK / member timeout only when an operation starts; without this
+ * re-check an established call kept flowing after any of them was revoked
+ * (measured with real media in the P2 media lab).
+ */
+async function liveVoiceAccess(userId: string, serverId: string, channelId: string): Promise<'full' | 'listen' | 'none'> {
+  const member = await Members.findOne(userId, serverId);
+  if (!member || isMemberTimedOut(member.timeoutUntil)) return 'none';
+  const perms = await resolvePermissions(userId, serverId, channelId);
+  if (!hasPermission(perms, PERMS.CONNECT)) return 'none';
+  return hasPermission(perms, PERMS.SPEAK) ? 'full' : 'listen';
 }
 
 async function runLocalVoiceEviction(io: SocketIOServer, userId: string, channelIds: readonly string[]): Promise<void> {
@@ -211,6 +276,7 @@ export async function evictSocketsWithoutChannelAccess(
   const sockets = await io.in(`server:${serverId}`).fetchSockets();
   let leaves = 0;
   const voiceEvicted = new Set<string>();
+  const publishRevoked = new Set<string>();
 
   for (const socket of sockets as unknown as Array<Socket>) {
     const userId = socketUserId(socket);
@@ -247,7 +313,32 @@ export async function evictSocketsWithoutChannelAccess(
     // One request scope per socket so repeated permission resolution is memoized.
     await runWithRequestContext({ requestId: newRequestId(), userId, socketId: socket.id, memo: new Map() }, async () => {
       for (const [cid, rooms] of roomsByChannel) {
-        if (await canViewChannel(userId, serverId, cid)) continue;
+        if (await canViewChannel(userId, serverId, cid)) {
+          if (!rooms.includes(`voice:${cid}`)) continue;
+          const access = await liveVoiceAccess(userId, serverId, cid);
+          const key = `${userId}:${cid}`;
+          if (access === 'none') {
+            if (!voiceEvicted.has(key)) {
+              voiceEvicted.add(key);
+              await evictVoiceEverywhere(io, userId, [cid]);
+            }
+            await socket.leave(`voice:${cid}`);
+            leaves += 1;
+            const voiceSocket = socket as Socket & { currentVoiceChannel?: string; currentVoiceServer?: string };
+            if (voiceSocket.currentVoiceChannel === cid) {
+              voiceSocket.currentVoiceChannel = undefined;
+              voiceSocket.currentVoiceServer = undefined;
+            }
+            logger.info({ userId, serverId, channelId: cid, event: 'socket.voice_access_evicted' },
+              'Voice connect permission revoked; live voice session evicted.');
+          } else if (access === 'listen' && !publishRevoked.has(key)) {
+            publishRevoked.add(key);
+            await revokeVoicePublishingEverywhere(io, userId, cid);
+            logger.info({ userId, serverId, channelId: cid, event: 'socket.voice_publish_revoked' },
+              'Voice speak permission revoked; live producers closed.');
+          }
+          continue;
+        }
         if (rooms.includes(`voice:${cid}`) && !voiceEvicted.has(`${userId}:${cid}`)) {
           voiceEvicted.add(`${userId}:${cid}`);
           await evictVoiceEverywhere(io, userId, [cid]);

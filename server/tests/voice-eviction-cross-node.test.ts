@@ -32,7 +32,7 @@ import {
   evictUserFromServerRooms,
   registerLocalVoiceEvictor,
 } from '../lib/liveMembership';
-import { evictLocalVoiceSessions } from '../socket/voiceEviction';
+import { evictLocalVoiceSessions, revokeLocalVoicePublishing } from '../socket/voiceEviction';
 import { registerVoiceHandlers, __setVoiceRoomForTest, __getVoiceRoomForTest } from '../socket/handlers/voice';
 import { sfuPeers, sfuRooms, _resetRoomsForTest } from '../socket/handlers/mediasoup/rooms';
 
@@ -149,6 +149,8 @@ describe('local voice eviction (the node that holds the socket)', () => {
 
     expect(sfuPeers.has('sock-sfu')).toBe(false);
     expect(closed.sort()).toEqual(['consumer', 'producer', 'recv', 'send']);
+    // The evicted client is told, so it ends the call instead of showing it live.
+    expect(s.emit).toHaveBeenCalledWith('voice:evicted', { channelId: 'vc1' });
     expect(io.broadcasts).toContainEqual(expect.objectContaining({ event: 'sfu:peer-left' }));
     expect(s.currentVoiceChannel).toBeNull();
   });
@@ -203,5 +205,49 @@ describe('revocation reaches the node that holds the socket', () => {
     listener({ userId: 'u1', channelIds: ['vc1'] });
     await new Promise(r => setImmediate(r));
     expect(evictor).toHaveBeenCalledWith(io, 'u1', ['vc1']);
+  });
+});
+
+describe('speak revocation on the node that owns the room (P2 media lab)', () => {
+  it('closes every producer of that user in the room, keeps the peer listening, leaves other users alone', async () => {
+    const s = localSocket('sock-sfu', 'u1');
+    const io = fakeIo([s]);
+    const closed: string[] = [];
+    const producer = (id: string) => ({ id, close: () => closed.push(id) });
+    const mine = {
+      channelId: 'vc1', serverId: 'srv', userId: 'u1', displayName: 'a', avatarColor: '#000', rtpCapabilities: {},
+      sendTransport: { close: jest.fn() }, recvTransport: { close: jest.fn() },
+      producers: new Map([['audio', producer('p-audio')], ['video', producer('p-video')]]),
+      consumers: new Map(), muted: false, deafened: false, screensharing: false, video: true,
+    };
+    const other = { ...mine, userId: 'u2', producers: new Map([['audio', producer('p-other')]]) };
+    sfuPeers.set('sock-sfu', mine as never);
+    sfuPeers.set('sock-other', other as never);
+    sfuRooms.set('vc1', { router: { close() {} }, peers: new Map([['sock-sfu', mine], ['sock-other', other]]), createdAt: 0, channelId: 'vc1' } as never);
+    s.currentVoiceChannel = 'vc1'; s.join('voice:vc1');
+
+    await revokeLocalVoicePublishing(io as never, 'u1', 'vc1');
+
+    expect(closed.sort()).toEqual(['p-audio', 'p-video']);
+    expect(mine.producers.size).toBe(0);
+    expect(other.producers.size).toBe(1);
+    expect(sfuPeers.has('sock-sfu')).toBe(true);           // still listening
+    expect(mine.recvTransport.close).not.toHaveBeenCalled();
+    expect(s.currentVoiceChannel).toBe('vc1');
+  });
+
+  it('a P2P voice session (no server-side media to close) is ended instead', async () => {
+    const s = localSocket('sock-p2p', 'u1');
+    const io = fakeIo([s]);
+    await __setVoiceRoomForTest('vc1', [
+      { socketId: 'sock-p2p', userId: 'u1', displayName: 'a', avatarColor: '#000' },
+      { socketId: 'sock-b', userId: 'u2', displayName: 'b', avatarColor: '#000' },
+    ]);
+    s.currentVoiceChannel = 'vc1'; s.currentVoiceServer = 'srv'; s.join('voice:vc1');
+
+    await revokeLocalVoicePublishing(io as never, 'u1', 'vc1');
+
+    expect((await __getVoiceRoomForTest('vc1')).map(p => p.socketId)).toEqual(['sock-b']);
+    expect(s.currentVoiceChannel).toBeNull();
   });
 });

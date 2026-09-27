@@ -516,6 +516,44 @@ describe('sfu:join', () => {
   });
 });
 
+describe('sfu:join replacing a lost session (P2 media lab)', () => {
+  it('drops the SAME user\'s stale peer named in `replaces` — no ghost after a network change', async () => {
+    const io = makeIo();
+    const stale = makeSocket('sock-before-handoff');
+    registerSFUHandlers(stale, io, makeUser({ _id: 'user-moving' }));
+    await stale._fire('sfu:join', { channelId: 'ch-move', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
+    expect(sfuPeers.has('sock-before-handoff')).toBe(true);
+
+    const fresh = makeSocket('sock-after-handoff');
+    registerSFUHandlers(fresh, io, makeUser({ _id: 'user-moving' }));
+    await fresh._fire('sfu:join', { channelId: 'ch-move', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS, replaces: 'sock-before-handoff' });
+
+    expect(sfuPeers.has('sock-before-handoff')).toBe(false);
+    expect(sfuPeers.has('sock-after-handoff')).toBe(true);
+    expect((fresh._getEmit('sfu:joined')!.data as JoinPayload).existingPeers).toHaveLength(0);
+  });
+
+  it('never removes ANOTHER user\'s peer, nor a peer in another room', async () => {
+    const io = makeIo();
+    const victim = makeSocket('sock-victim');
+    registerSFUHandlers(victim, io, makeUser({ _id: 'user-victim' }));
+    await victim._fire('sfu:join', { channelId: 'ch-shared', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
+    const own = makeSocket('sock-own-elsewhere');
+    registerSFUHandlers(own, io, makeUser({ _id: 'user-attacker' }));
+    await own._fire('sfu:join', { channelId: 'ch-elsewhere', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS });
+
+    const attacker = makeSocket('sock-attacker');
+    registerSFUHandlers(attacker, io, makeUser({ _id: 'user-attacker' }));
+    await attacker._fire('sfu:join', { channelId: 'ch-shared', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS, replaces: 'sock-victim' });
+    expect(sfuPeers.has('sock-victim')).toBe(true);
+
+    const again = makeSocket('sock-attacker-2');
+    registerSFUHandlers(again, io, makeUser({ _id: 'user-attacker' }));
+    await again._fire('sfu:join', { channelId: 'ch-shared', serverId: null, rtpCapabilities: DEFAULT_RTP_CAPS, replaces: 'sock-own-elsewhere' });
+    expect(sfuPeers.has('sock-own-elsewhere')).toBe(true);
+  });
+});
+
 describe('sfu:group-join', () => {
   it('_sfu:join-routed emit eder ve peer kaydolur', async () => {
     const socket = makeSocket('sock-group');
