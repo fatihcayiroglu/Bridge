@@ -74,7 +74,7 @@ jobs:
         run: |
           cd e2e && npm ci --no-audit --no-fund
           sudo -E env "PATH=$PATH" npx playwright install --with-deps chromium
-      - name: Run media scenarios (root: network namespaces, TUN, nftables)
+      - name: "Run media scenarios (as root: network namespaces, TUN, nftables)"
         run: |
           sudo -E env "PATH=$PATH" \
             MN_MOTO_SERVER="$(command -v moto_server)" \
