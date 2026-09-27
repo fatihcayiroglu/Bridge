@@ -107,15 +107,30 @@ stay outside the unreferenced-upload sweep's scope.
 
 ## Measurements (baseline, one host)
 
-See the latest harness report for the full table. Representative values from
-the P1 run: cross-node socket revocation ≈ 250 ms; cross-node message p50 ≈
-400 ms; client reconnect after SIGKILL ≈ 350 ms; all in-flight sends acked ≈
-10.4 s after SIGKILL (client retries at 1/s); node restart to ready ≈ 8.9 s;
-PostgreSQL restart recovery ≈ 0.45 s; severed pools: 0/30 failed requests;
-Redis recovery 1.4–4.8 s; worst probe while Redis hung ≈ 3.2 s (command
-timeout bound); scheduled lease recovery ≈ 5 s; orphaned claim recovery ≈
-120.5 s (120 s lease); webhook redelivery after owner death ≈ 121 s; presence
-offline after a dead node ≈ 85 s.
+Final full run on the P1 pull-request head (`903b46e`): **93 PASS, 14 INFO, 2 FAIL** — the two
+FAILs are the documented per-node chunk-staging limitations (UP-02-per-node, UP-06-per-node);
+`uploads --uploads shared` on the same build: 7 PASS. Versions: PostgreSQL 16.13, Redis 7.0.15,
+moto_server 5.2.3 (S3 API), Node 22.22.2, Bridge 1.125.0.
+
+| Measurement | Value |
+|---|---|
+| logout-all on A → socket on B disconnected | 246 ms |
+| cross-node message delivery p50 / max | 403 / 418 ms |
+| presence online / offline across nodes | 187 / 48 ms |
+| SIGKILL → client re-authenticated on a survivor | 312 ms |
+| SIGKILL → every in-flight send acknowledged (client retries at 1/s) | 10.4 s |
+| dead node's user shown offline (stale window + reaper) | 84.8 s |
+| node process start → ready | 8.9 s |
+| PostgreSQL restart → all nodes serving | 0.45 s |
+| requests failed right after severing every pooled connection | 0 of 30 |
+| Redis restored → everything OK (refused / killed / OOM / hung) | 4.8 / 1.4 / 1.3 / 1.7 s |
+| slowest request while Redis hung (command timeout bound) | 3.2 s |
+| scheduled job lease recovery after a crashed claimant | 8.2 s |
+| ambiguous scheduled claim → dispatched once (120 s lease) | 120.5 s |
+| webhook redelivery after the delivering node died (120 s lease) | 121.4 s |
+| SFU room usable again after its owner node died (30 s node lease) | 30.3 s |
+| Redis restarted empty → brand-new room claimable (settle window) | 23.3 s |
+| staging node killed → chunk answered `CHUNK_STAGING_LOST` (30 s node lease) | 31.3 s |
 
 ## Remaining external evidence (not provided by this harness)
 
