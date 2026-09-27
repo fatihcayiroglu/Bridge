@@ -1,17 +1,17 @@
 # Bridge'e Katkıda Bulunma
 
-[![CI](https://github.com/bridge-app/bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/bridge-app/bridge/actions/workflows/ci.yml)
-[![Server Coverage](https://img.shields.io/badge/server%20coverage-%E2%89%A590%25-1D9E75)](https://github.com/bridge-app/bridge/actions)
-[![Client Coverage](https://img.shields.io/badge/client%20coverage-%E2%89%A590%25-1D9E75)](https://github.com/bridge-app/bridge/actions)
-[![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%2B%200%20any-378ADD)](https://github.com/bridge-app/bridge)
-[![i18n](https://img.shields.io/badge/i18n-10%20dil%20%7C%202454%20anahtar-BA7517)](./client/js/core/i18n)
+[![CI](https://github.com/fatihcayiroglu/Bridge/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/fatihcayiroglu/Bridge/actions/workflows/quality-gate.yml)
+[![Server Coverage](https://img.shields.io/badge/server%20coverage-%E2%89%A590%25-1D9E75)](https://github.com/fatihcayiroglu/Bridge/actions)
+[![Client Coverage](https://img.shields.io/badge/client%20coverage-%E2%89%A590%25-1D9E75)](https://github.com/fatihcayiroglu/Bridge/actions)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%2B%200%20any-378ADD)](https://github.com/fatihcayiroglu/Bridge)
+[![i18n](https://img.shields.io/badge/i18n-10%20dil%20%7C%202270%20anahtar-BA7517)](./client/js/core/i18n)
 
 Bridge açık kaynak bir projedir. Her türlü katkıya açığız!
 
 ## Başlamak
 
 ```bash
-git clone https://github.com/bridge-app/bridge.git
+git clone https://github.com/fatihcayiroglu/Bridge.git
 cd bridge/server
 npm install
 cp server/.env.example server/.env   # JWT_SECRET ve REFRESH_SECRET doldur
@@ -240,7 +240,7 @@ router.use(errHandler);
 
 ## Sorun Bildirimi
 
-[Issues](https://github.com/bridge-app/bridge/issues) sayfasını kullan.  
+[Issues](https://github.com/fatihcayiroglu/Bridge/issues) sayfasını kullan.  
 Güvenlik açıkları için lütfen önce özel mesaj at.
 
 ## Lisans

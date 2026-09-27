@@ -6,7 +6,7 @@
     "description": "Bridge — federated, self-hosted communication platform REST API.\n\n**Authentication:** Tüm korumalı endpoint'ler `Authorization: Bearer <accessToken>` header'ı gerektirir.\nAccess token'lar kısa ömürlüdür (15 dk). `POST /api/refresh` ile yenilenebilir (httpOnly cookie).\n\n**Rate Limiting:** Endpoint başına granüler rate limit uygulanır. 429 döndüğünde `Retry-After` header'ını kontrol edin.\n\n**Federation:** Bridge sunucular arası ActivityPub protokolü kullanır. Federation endpoint'leri `/api/federation` altındadır.\n",
     "contact": {
       "name": "Bridge Contributors",
-      "url": "https://github.com/bridge-app/bridge"
+      "url": "https://github.com/fatihcayiroglu/Bridge"
     },
     "license": {
       "name": "MIT",

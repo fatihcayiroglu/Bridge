@@ -106,7 +106,7 @@ secrets:
 
 ```bash
 # 1. Repository
-git clone https://github.com/bridge-app/bridge.git
+git clone https://github.com/fatihcayiroglu/Bridge.git
 cd bridge
 
 # 2. .env dosyasını oluştur ve doldur (yukarıya bak)

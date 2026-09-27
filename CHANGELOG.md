@@ -1,9 +1,21 @@
-## [Unreleased] — 2026-09-26 — Final23 adversarial backend/security/privacy closure
+## [Unreleased] — 2026-09-27 — Final23 GitHub sync + CI closure
 
-Adversarial re-audit of the certified Final22 post-UX source. This round does not claim a full
-production certification: the package must still be re-run through the complete Jest/Vitest/E2E/real-DB
-chain in an environment with the repository dependencies installed. The source-level negative-control
-contract is 16/16 on this tree and 0/16 on the untouched Final22 baseline.
+Final23 remained the packaged source-of-truth artifact, then its source tree was synchronized into this
+repository and the GitHub-only CI/contract drift found during that import was closed without weakening
+the product security contracts. The current `main` is therefore **Final23 plus 13 intentional post-package
+CI/contract files**, not byte-for-byte identical to the ZIP.
+
+GitHub evidence: PR #95 merged at `8ebe8de222ac58f828c0390386b21b3d8a4a9227`; the post-merge
+**Bridge Quality Gate #245** completed successfully, covering security audit, Node 22.19 minimum
+compatibility, typecheck/build, full unit+integration coverage gates, Docker smoke, Playwright smoke and
+security-critical E2E. The scheduled full browser/media job remains a separate nightly/manual gate and
+was intentionally skipped on the ordinary push event.
+
+Packaged Final23 artifact:
+`bridge-v1.125.0-final23-adversarial-audit-fixes-2026-09-26.zip`
+SHA-256 `b8fcc2116f3a2bdddc093c92e635e4bdfbde7594b7b4a798d75e5e03807ee8f4`.
+The source-level negative-control contract remains 16/16 on the corrected lineage and 0/16 on the
+untouched Final22 baseline.
 
 ### Security / privacy
 - Private servers can no longer leak into Discover through an empty-catalog fallback or a `featured` flag;

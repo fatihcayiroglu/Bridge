@@ -2,16 +2,16 @@
 
 ## Canlı demo (GitHub Pages)
 
-Statik tanıtım ve ekran görüntüsü:
+Statik tanıtım kaynağı:
 
-**https://bridge-app.github.io/bridge/**
+**[`docs/demo/index.html`](demo/index.html)**
 
-> Tam özellikli sunucu barındırmak için aşağıdaki yerel veya kendi VPS kurulumunu kullanın.
+> Bu repoda GitHub Pages etkin değil. Tam özellikli sunucu için aşağıdaki yerel veya kendi VPS kurulumunu kullanın.
 
 ## 5 dakikada yerel demo
 
 ```bash
-git clone https://github.com/bridge-app/bridge.git
+git clone https://github.com/fatihcayiroglu/Bridge.git
 cd bridge
 ./scripts/demo.sh
 ```

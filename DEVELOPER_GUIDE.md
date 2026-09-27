@@ -42,7 +42,7 @@ const { serverId } = body  // Hub ID
 
 ```bash
 # 1. Repository'yi klonla
-git clone https://github.com/bridge-app/bridge.git
+git clone https://github.com/fatihcayiroglu/Bridge.git
 cd bridge
 
 # 2. Dependencies'leri yükle
@@ -224,8 +224,8 @@ A: Main branch'e merge olunca otomatik production'a push olur. Develop'e merge o
 ## Yardım
 
 - Discord: [Topluluğa katıl](https://bridge.example.com/discord)
-- GitHub Issues: [Sorun bildir](https://github.com/bridge-app/bridge/issues)
-- GitHub Discussions: [Soru sor](https://github.com/bridge-app/bridge/discussions)
+- GitHub Issues: [Sorun bildir](https://github.com/fatihcayiroglu/Bridge/issues)
+- Pull Requests: [Katkı gönder](https://github.com/fatihcayiroglu/Bridge/pulls)
 
 ---
 
