@@ -205,16 +205,19 @@ jobs:
           --health-retries 5
         ports:
           - 6379:6379
-      # Gercek S3-uyumlu depo. MinIO'nun Docker Hub/Quay server image'lari
-      # 2026-09'da anonymous pull icin kullanilamaz hale geldi; testin kaniti
-      # vendor'a degil gercek S3 public/private bucket davranisina baglidir.
-      # RustFS aktif bakimli, S3-uyumlu ve MinIO migration/compatibility hedefli
-      # bir sunucudur. Sabit surum kullanarak registry drift'ini sinirlariz.
+      # Gercek S3-uyumlu depo. Testin kaniti vendor'a degil gercek
+      # public/private bucket davranisina baglidir.
       s3:
-        image: rustfs/rustfs:1.0.1
+        image: rustfs/rustfs:1.0.0-rc.6
         env:
           RUSTFS_ACCESS_KEY: bridgereview
           RUSTFS_SECRET_KEY: bridgereview123
+          RUSTFS_VOLUMES: /data
+        options: >-
+          --health-cmd "curl -fsS http://127.0.0.1:9000/health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 6
         ports:
           - 9000:9000
     steps:
