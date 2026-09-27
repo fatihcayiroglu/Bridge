@@ -42,10 +42,11 @@ function _invalidateRoomOwnership(channelId: string, expectedRoom: SfuRoom, reas
 
 function _armRoomLeaseWatchdog(channelId: string, room: SfuRoom): void {
   _clearRoomLeaseWatchdog(channelId);
-  // Stop shortly before the Redis lease can expire. If this node cannot renew
-  // while another node can reach Redis, continuing past this boundary would
-  // permit two independent routers for the same channel.
-  const delayMs = Math.max(1_000, sfuRegistry.ROOM_LEASE_TTL_SECONDS * 1_000 - 5_000);
+  // Stop shortly before this node's liveness lease can expire. Other nodes take
+  // over a room whose owner's lease is gone (lib/sfuRegistry.ts); a node that
+  // cannot renew while another node can reach Redis must not keep serving past
+  // that boundary, or two independent routers could exist for one channel.
+  const delayMs = Math.max(1_000, sfuRegistry.NODE_LEASE_MS - 5_000);
   const timer = setTimeout(() => _invalidateRoomOwnership(channelId, room, 'lease_refresh_unconfirmed'), delayMs);
   timer.unref?.();
   _roomLeaseWatchdogs.set(channelId, timer);
@@ -151,7 +152,7 @@ export async function getOrCreateRoom(channelId: string): Promise<SfuRoom> {
             logger.warn({ err: err.message, channelId, event: 'sfu.registry.refresh_failed' }, '[SFU] Registry room lease refresh failed.');
           });
         },
-        10 * 60 * 1000
+        sfuRegistry.NODE_HEARTBEAT_MS,
       );
       room._refreshInterval.unref?.();
 

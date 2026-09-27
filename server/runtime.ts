@@ -25,6 +25,8 @@ import { getPrivateStorageAdapter, getStorageAdapter } from './lib/storageAdapte
 // ── Jobs ─────────────────────────────────────────────────────────────────────
 import { startCleanupJob, stopCleanupJob }        from './jobs/cleanupUploads';
 import { startChunkSessionSweeper, stopChunkSessionSweeper } from './jobs/chunkSessionSweeper';
+import { startNodeLiveness, stopNodeLiveness } from './lib/nodeLiveness';
+import { startRegistryMaintenance, stopRegistryMaintenance } from './lib/sfuRegistry';
 import { startScheduledJob, stopScheduledJob }      from './jobs/scheduledMessages';
 import { startAutoModerationJob, stopAutoModerationJob } from './jobs/autoModeration';
 import { startFederationHeartbeat, stopFederationHeartbeat } from './jobs/federationHeartbeat';
@@ -87,6 +89,8 @@ async function bootstrap(): Promise<void> {
 
   startCleanupJob();
   startChunkSessionSweeper();
+  startNodeLiveness();
+  startRegistryMaintenance();
   startAuthCleanup();
   startScheduledJob(io);
   startAutoModerationJob(io);
@@ -138,6 +142,8 @@ const gracefulShutdown = createGracefulShutdown({
     stopScheduledJob();          // Sprint 98
     stopCleanupJob();            // Sprint 98
     stopChunkSessionSweeper();
+    stopNodeLiveness();
+    stopRegistryMaintenance();
     cancelEmbedHistoryJob();     // Sprint 120: A4
   },
   exit: (code) => process.exit(code),

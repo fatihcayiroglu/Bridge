@@ -7865,6 +7865,15 @@ paths:
         live boost/global file limit) and total temporary bytes
         (`CHUNK_UPLOAD_MAX_TEMP_MB`). Sessions idle for
         `CHUNK_UPLOAD_SESSION_TTL_MIN` expire and their chunks are removed.
+        Once an upload has completed, every retry of any of its chunks (for
+        example after the final response was lost) receives the same
+        `done: true` completion for the session TTL. With a configured Redis
+        (multi-node) chunks are staged on the node that received the first
+        chunk unless the upload root is shared: a chunk that reaches another
+        node is refused with 409 `CHUNK_STAGED_ELSEWHERE` (`stagingNode` names
+        the staging node), and a session whose staging no longer exists (node
+        restarted without persistent storage, or dead) is released and
+        answered with 409 `CHUNK_STAGING_LOST` — restart the upload.
       security:
       - bearerAuth: []
       parameters:
@@ -7903,7 +7912,7 @@ paths:
         200:
           description: Chunk alındı — done:true son chunk'ta gelir
         409:
-          description: Upload id bound to different metadata, retry bytes differ from the committed chunk, or the session is no longer active (CHUNK_SESSION_EXPIRED)
+          description: Upload id bound to different metadata, retry bytes differ from the committed chunk, the session is no longer active (CHUNK_SESSION_EXPIRED), is staged on another node (CHUNK_STAGED_ELSEWHERE, with stagingNode) or its staging was lost (CHUNK_STAGING_LOST)
         411:
           description: Content-Length header missing or malformed
         413:

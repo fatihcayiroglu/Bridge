@@ -88,6 +88,9 @@ interface MemCacheEntry<T = unknown> {
 
 const REDIS_URL = process.env.REDIS_URL || null;
 const REDIS_COMMAND_TIMEOUT_MS = envSafeInt('REDIS_COMMAND_TIMEOUT_MS', 2_000, { min: 100, max: 30_000 });
+// Health-check write key: one per process, so concurrent probes from every
+// node never contend and a restarted process simply overwrites its own key.
+const HEALTH_WRITE_ID = `${process.env.INSTANCE_ID || 'node'}:${process.pid}`;
 const REDIS_RECOVERY_PROBE_MS = envSafeInt('REDIS_RECOVERY_PROBE_MS', 500, { min: 100, max: 30_000 });
 // Yeniden baglanma denemeleri arasindaki EN UZUN bekleme. Deneme SAYISI
 // sinirsizdir (yukariya bakiniz); sinirlanan yalnizca sikligidir.
@@ -1193,6 +1196,13 @@ async function healthCheck(): Promise<HealthCheckResult> {
     const start = Date.now();
     const info = await runRedisCommand(_pubClient, 'health check', async client => {
       await client.ping();
+      // Every Redis-authoritative decision (rate limits, CSRF, quotas, locks)
+      // is a WRITE. A Redis that answers PING/INFO but refuses writes (-OOM
+      // under maxmemory+noeviction, -READONLY after a failover, -MISCONF) left
+      // readiness green while every such request failed closed — measured in
+      // the multi-node harness (scripts/multinode, RD-C). One bounded write
+      // to a per-process key proves the dependency can actually serve.
+      await client.set(`bridge:health:write:${HEALTH_WRITE_ID}`, String(Date.now()), { EX: 60 });
       return client.info('memory');
     });
     const latencyMs = Date.now() - start;

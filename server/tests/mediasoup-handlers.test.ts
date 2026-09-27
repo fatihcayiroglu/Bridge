@@ -99,6 +99,8 @@ jest.mock('mediasoup', () => mediasoupStub, { virtual: true });
 jest.mock('../lib/sfuRegistry', () => ({
   INSTANCE_ID:   'test-node',
   ROOM_LEASE_TTL_SECONDS: 3600,
+  NODE_LEASE_MS: 30_000,
+  NODE_HEARTBEAT_MS: 10_000,
   isLocalRoom:   jest.fn(async () => true),
   getRoomOwner:  jest.fn(async () => null),
   // `claimRoom` ARTIK bir sonuç döndürür: `{ owned, owner }`. Eskiden
@@ -390,6 +392,39 @@ describe('sfu:join', () => {
       expect(sfuPeers.has('sock-lost-lease')).toBe(false);
       expect(router.close).toHaveBeenCalled();
     } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // P1 çok-düğüm: devralma artık sahibin 30 sn'lik canlılık kirasına bağlı.
+  // Kirasını doğrulayamayan düğüm (Redis'ten kopuk) kira dolmadan yerel
+  // router'ı kapatmalı; aksi halde devralan düğümle İKİ router olur.
+  it('kalp atışı doğrulanamazsa yerel router düğüm kirası dolmadan kapanır; doğrulanan oda açık kalır', async () => {
+    jest.useFakeTimers();
+    try {
+      const registry = require('../lib/sfuRegistry');
+      registry.refreshRoom.mockRejectedValue(new Error('redis unreachable'));
+      const lost = makeSocket('sock-fenced');
+      registerSFUHandlers(lost, makeIo(), makeUser());
+      await lost._fire('sfu:join', { channelId: 'ch-fenced', serverId: 'srv-1', rtpCapabilities: DEFAULT_RTP_CAPS });
+      expect(sfuRooms.has('ch-fenced')).toBe(true);
+
+      await jest.advanceTimersByTimeAsync(registry.NODE_LEASE_MS - 5_000 + 1);
+      expect(sfuRooms.has('ch-fenced')).toBe(false);
+      expect(sfuPeers.has('sock-fenced')).toBe(false);
+
+      // Negatif kontrol: kalp atışı doğrulanıyorsa oda aynı süre sonra açıktır.
+      registry.refreshRoom.mockReset();
+      registry.refreshRoom.mockResolvedValue(true);
+      const ok = makeSocket('sock-confirmed');
+      registerSFUHandlers(ok, makeIo(), makeUser());
+      await ok._fire('sfu:join', { channelId: 'ch-confirmed', serverId: 'srv-1', rtpCapabilities: DEFAULT_RTP_CAPS });
+      await jest.advanceTimersByTimeAsync(registry.NODE_LEASE_MS * 3);
+      expect(sfuRooms.has('ch-confirmed')).toBe(true);
+    } finally {
+      const registry = require('../lib/sfuRegistry');
+      registry.refreshRoom.mockReset();
+      registry.refreshRoom.mockResolvedValue(true);
       jest.useRealTimers();
     }
   });

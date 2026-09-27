@@ -33,6 +33,21 @@ pool.on('error', (err: Error) => {
   logger.error({ event: 'db.pool.error', message: err.message }, '[DB] PostgreSQL pool hatası');
 });
 
+// ── ÖDÜNÇ ALINMIŞ İSTEMCİ HATASI (P1 çok-düğüm, PG-01) ───────────────────────
+// `pool.on('error')` yalnızca BOŞTAKİ istemcileri kapsar: pg-pool, istemci
+// ödünç verilirken (`getClient`, işlemler) kendi dinleyicisini kaldırır. Bağlantı
+// o sırada beklenmedik biçimde kapanırsa (veritabanı yeniden başlatma, ağ kesintisi,
+// pg_terminate_backend) pg istemci üzerinde 'error' yayar; dinleyicisiz 'error'
+// olayı TÜM süreci düşürür. Çok-düğüm düzeneğinde ölçüldü: PostgreSQL durdurulunca
+// o anda istemci ödünç almış düğüm çöktü, diğer ikisi ayakta kaldı.
+// Bu dinleyici yalnızca günlükler: bekleyen sorgu yine çağırana hata olarak döner,
+// istemci sorgulanamaz işaretlenir ve pg-pool onu iade sırasında havuzdan atar.
+pool.on('connect', (client) => {
+  client.on('error', (err: Error) => {
+    logger.warn({ event: 'db.client.error', message: err.message }, '[DB] Ödünç alınmış PostgreSQL istemcisi bağlantısını kaybetti');
+  });
+});
+
 // ── SORGU METRİKLERİ (Final21 Faz 9 — F21-9-01) ──────────────────────────────
 // Her yeni istemci bir kez enstrümante edilir; `pool.query` ve işlem
 // istemcileri (`getClient`) aynı `client.query` yolundan geçtiği için her sorgu

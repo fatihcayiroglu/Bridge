@@ -158,6 +158,32 @@ describe('GET /api/health/ready — a configured dependency is part of readiness
     });
   });
 
+  it('names the failed dependency in one structured log per state change, never in the public body', async () => {
+    const logger = require('../lib/logger').default;
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const info = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+    try {
+      await withRedisUrl(async () => {
+        // Start from a known-ready state: the transition log is module state.
+        redisHealth.mockResolvedValue({ redis: true, mode: 'redis', latencyMs: 1 });
+        expect((await request(buildApp()).get('/api/health/ready')).status).toBe(200);
+        info.mockClear();
+        redisHealth.mockResolvedValue({ redis: false, error: "OOM command not allowed when used memory > 'maxmemory'." });
+        const first = await request(buildApp()).get('/api/health/ready');
+        await request(buildApp()).get('/api/health/ready');
+        expect(first.status).toBe(503);
+        expect(JSON.stringify(first.body)).not.toMatch(/redis|OOM/i);
+        const failed = warn.mock.calls.filter(c => (c[0] as { event?: string })?.event === 'health.readiness_failed');
+        expect(failed).toHaveLength(1);
+        expect(failed[0][0]).toMatchObject({ dependency: 'redis', reason: expect.stringContaining('OOM') });
+
+        redisHealth.mockResolvedValue({ redis: true, mode: 'redis', latencyMs: 1 });
+        expect((await request(buildApp()).get('/api/health/ready')).status).toBe(200);
+        expect(info.mock.calls.filter(c => (c[0] as { event?: string })?.event === 'health.readiness_recovered')).toHaveLength(1);
+      });
+    } finally { warn.mockRestore(); info.mockRestore(); }
+  });
+
   it('refuses readiness when configured storage fails its check', async () => {
     publicHealth.mockResolvedValue(false);
     const res = await request(buildApp()).get('/api/health/ready');

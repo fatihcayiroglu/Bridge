@@ -27,6 +27,80 @@ export function roomBelongsToServer(
   return CHANNEL_SCOPED_PREFIXES.has(prefix) && channelIds.has(id);
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// VOICE STATE MUST FOLLOW A REVOCATION ON EVERY NODE (P1 multi-node, STALE-02/03)
+// ════════════════════════════════════════════════════════════════════════════
+// Leaving Socket.IO rooms is not enough for voice. A voice session also lives in
+// the shared voice roster (Redis `voice:room:<ch>`, which `webrtc:*` signalling
+// trusts), in the socket's `currentVoiceChannel`, and — for SFU sessions — in the
+// owning node's mediasoup peer state. `fetchSockets()` returns sockets on OTHER
+// nodes as RemoteSocket proxies: `leave()`/`emit()` travel through the adapter,
+// but assigning `currentVoiceChannel` on a proxy changes nothing. Measured with
+// three real nodes: a user kicked through another node kept injecting voice
+// state and WebRTC offers, and stayed in every peer's roster as a ghost.
+//
+// The node that holds the socket must run the real leave path. The revoking
+// node runs it for its own sockets and asks every other node to do the same.
+export type LocalVoiceEvictor = (
+  io: SocketIOServer,
+  userId: string,
+  channelIds: readonly string[],
+) => Promise<void>;
+
+const VOICE_EVICT_EVENT = 'membership:voice-evict';
+const MAX_EVICT_CHANNELS = 5_000;
+let localVoiceEvictor: LocalVoiceEvictor | null = null;
+const clusterBound = new WeakSet<object>();
+
+/** Socket setup registers the node-local leave path (voice roster + SFU peer). */
+export function registerLocalVoiceEvictor(evictor: LocalVoiceEvictor | null): void {
+  localVoiceEvictor = evictor;
+}
+
+/** One cluster listener per Socket.IO server: run the local leave path for revocations decided elsewhere. */
+export function bindVoiceEvictionClusterControl(io: SocketIOServer): void {
+  if (clusterBound.has(io)) return;
+  clusterBound.add(io);
+  io.on(VOICE_EVICT_EVENT as never, ((payload: unknown) => {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return;
+    const { userId, channelIds } = payload as { userId?: unknown; channelIds?: unknown };
+    if (typeof userId !== 'string' || !userId || userId.length > 128) return;
+    if (!Array.isArray(channelIds) || channelIds.length === 0 || channelIds.length > MAX_EVICT_CHANNELS) return;
+    if (!channelIds.every(id => typeof id === 'string' && id.length > 0 && id.length <= 128)) return;
+    void runLocalVoiceEviction(io, userId, channelIds as string[]);
+  }) as never);
+}
+
+async function runLocalVoiceEviction(io: SocketIOServer, userId: string, channelIds: readonly string[]): Promise<void> {
+  if (!localVoiceEvictor) return;
+  try {
+    await localVoiceEvictor(io, userId, channelIds);
+  } catch (err) {
+    logger.error({ err, userId, event: 'socket.voice_evict.failed' }, 'Voice eviction failed on this node.');
+  }
+}
+
+/** Evict the user's voice sessions in these channels on this node and on every other node. */
+export async function evictVoiceEverywhere(
+  io: SocketIOServer,
+  userId: string,
+  channelIds: readonly string[],
+): Promise<void> {
+  if (!userId || channelIds.length === 0) return;
+  await runLocalVoiceEviction(io, userId, channelIds);
+  if (!process.env.REDIS_URL) return;
+  const cluster = io as unknown as { serverSideEmit?: (event: string, ...args: unknown[]) => unknown };
+  if (typeof cluster.serverSideEmit !== 'function') return;
+  try {
+    cluster.serverSideEmit(VOICE_EVICT_EVENT, { userId, channelIds: channelIds.slice(0, MAX_EVICT_CHANNELS) });
+  } catch (err) {
+    // Room membership was already revoked through the adapter and the P2P
+    // handlers require that membership, so a lost signal cannot re-open
+    // injection; the roster entry then clears with the socket's disconnect.
+    logger.error({ err, userId, event: 'socket.voice_evict.broadcast_failed' }, 'Voice eviction could not reach other nodes.');
+  }
+}
+
 /**
  * Membership revocation must take effect on already-open sockets immediately.
  * This deliberately leaves user:/dm:/gdm: rooms alone because they are not
@@ -56,6 +130,9 @@ export async function evictUserFromServerRooms(
       .filter((thread): thread is NonNullable<typeof thread> => !!thread && String(thread.serverId) === serverId)
       .map(thread => String(thread._id)),
   );
+
+  // Voice first, while the local sockets still carry `currentVoiceChannel`.
+  await evictVoiceEverywhere(io, userId, Array.from(channelIds));
 
   let leaves = 0;
   for (const socket of sockets as unknown as Array<Socket>) {
@@ -133,6 +210,7 @@ export async function evictSocketsWithoutChannelAccess(
 
   const sockets = await io.in(`server:${serverId}`).fetchSockets();
   let leaves = 0;
+  const voiceEvicted = new Set<string>();
 
   for (const socket of sockets as unknown as Array<Socket>) {
     const userId = socketUserId(socket);
@@ -170,6 +248,10 @@ export async function evictSocketsWithoutChannelAccess(
     await runWithRequestContext({ requestId: newRequestId(), userId, socketId: socket.id, memo: new Map() }, async () => {
       for (const [cid, rooms] of roomsByChannel) {
         if (await canViewChannel(userId, serverId, cid)) continue;
+        if (rooms.includes(`voice:${cid}`) && !voiceEvicted.has(`${userId}:${cid}`)) {
+          voiceEvicted.add(`${userId}:${cid}`);
+          await evictVoiceEverywhere(io, userId, [cid]);
+        }
         for (const room of rooms) { await socket.leave(room); leaves += 1; }
 
         const mutable = socket as Socket & {

@@ -89,7 +89,7 @@ jest.mock('../socket/socketRateLimit', () => ({
 jest.mock('../socket/middleware/wsConnectionLimit', () => ({
   wsConnectionLimitMiddleware: () => mockWsMiddleware,
 }));
-jest.mock('../lib/presenceCache', () => ({ trackSocket: (...a: any[]) => mockTrackSocket(...a) }));
+jest.mock('../lib/presenceCache', () => ({ trackSocket: (...a: any[]) => mockTrackSocket(...a), startPresenceReaper: jest.fn(), getMembershipsCached: jest.fn(async () => []) }));
 jest.mock('../socket/handlers/messages', () => ({ registerMessageHandlers: jest.fn(), registerThreadSocketEvents: jest.fn() }));
 jest.mock('../socket/handlers/voice', () => ({
   registerVoiceHandlers: jest.fn(), leaveVoice: jest.fn(), voiceRooms, voiceActivity,

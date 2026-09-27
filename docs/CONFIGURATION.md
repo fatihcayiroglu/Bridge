@@ -74,7 +74,7 @@ Absence disables the feature; it must never weaken a security control.
 
 `ACCESS_TOKEN_TTL`, `MEDIA_TOKEN_TTL`, `MAX_FILE_SIZE_MB`, `CHUNK_SIZE_MB`,
 `MAX_SERVERS_PER_USER`, `MAX_CHANNELS_PER_SERVER`, `LOG_LEVEL`,
-`REDIS_COMMAND_TIMEOUT_MS`, `REDIS_RECOVERY_PROBE_MS`,
+`REDIS_COMMAND_TIMEOUT_MS`, `REDIS_RECOVERY_PROBE_MS`, `SFU_NODE_LEASE_MS` (SFU room-owner liveness lease, added with P1),
 `REDIS_RECONNECT_MAX_DELAY_MS` (added in v1.123), `AP_INBOX_*` rate limits,
 `RL_*` rate-limit knobs, `BACKUP_KEEP_DAYS`.
 

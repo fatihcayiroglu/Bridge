@@ -15,7 +15,8 @@ Tasarım yönü: [docs/DESIGN_DIRECTION.md](docs/DESIGN_DIRECTION.md)
 > Final23 ürün/CI lineage merge'i PR #95 ile `8ebe8de222ac58f828c0390386b21b3d8a4a9227`
 > üzerinde kapandı ve post-merge **Bridge Quality Gate #245** başarıyla geçti. Sonraki `main`
 > değişiklikleri docs/metadata doğruluk güncellemeleri ile `CHANGELOG.md` `[Unreleased]` altında
-> kayıtlı, PR üzerinden Quality Gate'ten geçerek merge edilen odaklı güvenlik sertleştirmeleridir
+> kayıtlı, PR üzerinden Quality Gate'ten geçerek merge edilen odaklı güvenlik sertleştirmeleri ve
+> çok düğümlü dağıtık-doğruluk düzeltmeleridir
 > (Final23 paketinde yoktur). Paketli baseline:
 > `bridge-v1.125.0-final23-adversarial-audit-fixes-2026-09-26.zip`
 > (SHA-256 `b8fcc2116f3a2bdddc093c92e635e4bdfbde7594b7b4a798d75e5e03807ee8f4`).
@@ -387,6 +388,13 @@ npm run test:coverage    # Coverage: global %90; açık per-file ratchet istisna
 npm run test:mutation    # Mutasyon kampanyası: testler ürünü bozduğumuzda GERÇEKTEN düşüyor mu?
 cd .. && npm run test:svelte:coverage   # İstemci paketi + %90 S/B/F/L kapsam kapısı
 ```
+
+Çok düğümlü dağıtık-doğruluk kanıtı (3 gerçek Bridge süreci + PostgreSQL + Redis + S3 uyumlu
+depo, yük dengeleyici ve hata enjeksiyonu; ağır olduğu için PR CI'ında değil, haftalık/elle
+`.github/workflows/multinode-evidence.yml`): [scripts/multinode/README.md](scripts/multinode/README.md).
+Bulgular, düzeltmeler ve ölçümler: [docs/DISTRIBUTED_AUTHORITY.md](docs/DISTRIBUTED_AUTHORITY.md).
+Tek makinedeki üç düğüm dağıtık doğruluk kanıtıdır; üretim trafiği ya da çok makineli ağ bölünmesi
+kanıtı değildir.
 
 E2E testler (Playwright):
 

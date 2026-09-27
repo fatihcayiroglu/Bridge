@@ -41,6 +41,15 @@ import {
 } from '../lib/chunkUploadQuota';
 
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
+import { isNodeAlive } from '../lib/nodeLiveness';
+import {
+  CHUNK_NODE_ID,
+  clearChunkStagingNode,
+  markChunkStagingNode,
+  readChunkStagingNode,
+  readFinalizedChunkUpload,
+  recordFinalizedChunkUpload,
+} from '../lib/chunkUploadSession';
 import { uploadRoot, uploadDir } from '../lib/runtimePaths';
 import { envSafeInt } from '../lib/envNumbers';
 import { isDatabaseAdmin } from '../lib/adminAuthority';
@@ -113,6 +122,18 @@ async function recordUpload(userId: string, key: string, originalName: string, m
     });
 }
 
+/** `true` = the ownership row is durable, `false` = it is not, `null` = unknown. */
+async function uploadRowCommitted(userId: string, key: string): Promise<boolean | null> {
+  try {
+    const { default: loaderDb } = await import('../db/loader');
+    const row = await (loaderDb as unknown as { uploads: { findOne(q: Record<string, unknown>): Promise<unknown> } })
+      .uploads.findOne({ key, userId });
+    return Boolean(row);
+  } catch {
+    return null;
+  }
+}
+
 async function recordUploadOrRollback(
   userId: string,
   key: string,
@@ -124,6 +145,23 @@ async function recordUploadOrRollback(
   try {
     await recordUpload(userId, key, originalName, mimeType);
   } catch (err) {
+    // A failed INSERT is not proof that nothing was written: the COMMIT can
+    // reach PostgreSQL while its reply is lost. Deleting the bytes then leaves
+    // an ownership row for an object that no longer exists (measured in the
+    // multi-node harness, UPF-02). Resolve the outcome before any rollback.
+    const committed = await uploadRowCommitted(userId, key);
+    if (committed === true) {
+      logger.warn({ key, event: 'upload.ownership_commit_ambiguous_resolved' },
+        'Upload ownership INSERT reported an error but the row is durable; upload kept');
+      return;
+    }
+    if (committed === null) {
+      // Outcome unknown: keep the bytes. An unreferenced object is reclaimed by
+      // the unreferenced-upload sweep; a row without bytes would be permanent.
+      logger.error({ err, key, provider, event: 'upload.ownership_outcome_unknown' },
+        'Upload ownership outcome unknown; stored object kept for the unreferenced-upload sweep');
+      throw err;
+    }
     try {
       await adapter.deleteFile(storageDeleteKey(key, provider));
     } catch (rollbackErr) {
@@ -135,6 +173,10 @@ async function recordUploadOrRollback(
     throw err;
   }
 }
+
+// With a configured Redis the deployment may run several nodes; chunk staging
+// locality is then recorded in the shared authority.
+const CHUNK_STAGING_AUTHORITY = Boolean(process.env.REDIS_URL);
 
 const UPLOAD_DIR = uploadRoot();
 const CHUNK_DIR  = uploadDir('_chunks');
@@ -392,9 +434,9 @@ router.post('/', authMiddleware, limits.upload(), handleUploadErrors(smallUpload
  *           schema: { type: string, format: binary }
  *     responses:
  *       200:
- *         description: Chunk alındı — done:true son chunk'ta gelir
+ *         description: Chunk alındı — done:true son chunk'ta gelir; tamamlanmış yüklemenin her yeniden denemesi aynı done:true yanıtını alır
  *       409:
- *         description: Metadata/bytes conflict, or session no longer active
+ *         description: Metadata/bytes conflict, session no longer active, staged on another node (CHUNK_STAGED_ELSEWHERE) or staging lost (CHUNK_STAGING_LOST)
  *       411:
  *         description: Content-Length header missing or malformed
  *       413:
@@ -434,6 +476,70 @@ router.post('/chunk', authMiddleware, limits.uploadChunk(), async (req, res) => 
   const sessionKey = chunkSessionKey(chunkAuthUser.id, uploadId);
   const sessionDir = path.join(CHUNK_DIR, sessionKey);
   const canonicalChunkPath = path.join(sessionDir, chunkFileName(chunkIndex));
+  const manifestPath = path.join(sessionDir, 'manifest.json');
+  const manifest = JSON.stringify({ uploadId, totalChunks, fileName, fileType });
+  const sessionTtlSeconds = chunkQuotaConfig().sessionTtlMs / 1000;
+  const sessionAuthorityUnavailable = (error: unknown) => {
+    logger.error({ err: error, event: 'upload.chunk_session_authority_unavailable' }, 'Chunk session authority unavailable; chunk rejected');
+    res.set('Retry-After', '1');
+    return res.status(503).json({ error: 'Upload quota service temporarily unavailable' });
+  };
+
+  // An upload that already completed answers every retry with the SAME
+  // completion: the final response can be lost after finalization closed the
+  // session, and a retry must not open a new (orphan) session instead.
+  let finalized: Awaited<ReturnType<typeof readFinalizedChunkUpload>>;
+  try {
+    finalized = await readFinalizedChunkUpload(sessionKey);
+  } catch (error) {
+    return sessionAuthorityUnavailable(error);
+  }
+  if (finalized) {
+    if (finalized.manifest !== manifest) {
+      return res.status(409).json({ error: 'Upload id is already bound to different metadata' });
+    }
+    return res.json(finalized.result);
+  }
+
+  // Multi-node: a session is staged on the node that received its first chunk
+  // unless every node shares the upload root. A chunk that reaches a node
+  // without the session's staging must fail loudly — accepting it would stage
+  // a partial set that can never be finalized while every chunk returns 200.
+  if (CHUNK_STAGING_AUTHORITY && !fs.existsSync(manifestPath)) {
+    let stagedOn: string | null;
+    try {
+      stagedOn = await readChunkStagingNode(sessionKey);
+    } catch (error) {
+      return sessionAuthorityUnavailable(error);
+    }
+    // An unknown liveness answer is treated as "alive": the conservative
+    // outcome keeps the other node's session intact.
+    const stagingNodeAlive = stagedOn && stagedOn !== CHUNK_NODE_ID
+      ? await isNodeAlive(stagedOn).catch(() => true)
+      : true;
+    if (stagedOn && stagedOn !== CHUNK_NODE_ID && stagingNodeAlive) {
+      logger.warn({ uploadId, stagingNode: stagedOn, event: 'upload.chunk_staged_elsewhere' },
+        'Chunk reached a node that does not hold the session staging');
+      return res.status(409).json({
+        error: 'This upload is staged on another server node; route the upload to that node or restart it',
+        code: 'CHUNK_STAGED_ELSEWHERE',
+        stagingNode: stagedOn,
+      });
+    }
+    if (stagedOn) {
+      // The staging is gone: this node lost it (restart without persistent
+      // storage, or the idle sweep) or the staging node itself is dead. The
+      // committed chunks are unreachable: return the quota the session still
+      // holds (else it blocks the user's session slots until the TTL) and make
+      // the client restart.
+      await releaseChunkQuotaSession(chunkAuthUser.id, sessionKey).catch((error: unknown) => {
+        logger.warn({ err: error, uploadId, event: 'upload.chunk_quota_release_failed' }, 'Chunk quota release failed; entry will expire');
+      });
+      await clearChunkStagingNode(sessionKey).catch(() => undefined);
+      logger.warn({ uploadId, stagingNode: stagedOn, event: 'upload.chunk_staging_lost' }, 'Chunk session staging lost; client must restart');
+      return res.status(409).json({ error: 'Upload staging was lost; restart the upload', code: 'CHUNK_STAGING_LOST' });
+    }
+  }
   const boostLimitBytes = await getBoostUploadLimitBytes(chunkAuthUser.id);
   const sessionMaxBytes = Math.min(MAX_FILE_SIZE, boostLimitBytes);
 
@@ -481,6 +587,7 @@ router.post('/chunk', authMiddleware, limits.uploadChunk(), async (req, res) => 
       try {
         await releaseChunkQuotaSession(chunkAuthUser.id, sessionKey);
         fs.rmSync(sessionDir, { recursive: true, force: true });
+        if (CHUNK_STAGING_AUTHORITY) await clearChunkStagingNode(sessionKey).catch(() => undefined);
       } catch (error) {
         logger.warn({ err: error, uploadId, event: 'upload.chunk_session_purge_failed' }, 'Over-limit chunk session could not be purged; the sweeper will reclaim it');
       }
@@ -513,10 +620,13 @@ router.post('/chunk', authMiddleware, limits.uploadChunk(), async (req, res) => 
 
   // A reused uploadId must describe the exact same logical file. Without this
   // invariant one account could accidentally mix chunks from two uploads.
-  const manifestPath = path.join(sessionDir, 'manifest.json');
-  const manifest = JSON.stringify({ uploadId, totalChunks, fileName, fileType });
   try {
     fs.writeFileSync(manifestPath, manifest, { flag: 'wx', encoding: 'utf8' });
+    if (CHUNK_STAGING_AUTHORITY) {
+      await markChunkStagingNode(sessionKey, sessionTtlSeconds).catch((error: unknown) => {
+        logger.warn({ err: error, uploadId, event: 'upload.chunk_staging_mark_failed' }, 'Chunk staging node could not be recorded');
+      });
+    }
   } catch (error) {
     const e = error as NodeJS.ErrnoException;
     if (e.code !== 'EEXIST') {
@@ -661,6 +771,7 @@ router.post('/chunk', authMiddleware, limits.uploadChunk(), async (req, res) => 
       await releaseChunkQuotaSession(chunkAuthUser.id, sessionKey).catch((error: unknown) => {
         logger.warn({ err: error, uploadId, event: 'upload.chunk_quota_release_failed' }, 'Chunk quota release failed; entry will expire');
       });
+      if (CHUNK_STAGING_AUTHORITY) await clearChunkStagingNode(sessionKey).catch(() => undefined);
     };
 
     try {
@@ -733,16 +844,22 @@ router.post('/chunk', authMiddleware, limits.uploadChunk(), async (req, res) => 
       }
 
       await recordUploadOrRollback(chunkAuthUser.id, cdnKey ?? `uploads/${chunkFinalName}`, safeFileName, chunkFinalMime, cdnAdapter, result.provider);
-      purgeSession = true;
-      await closeSession();
-
-      res.json({
-        done:     true,
+      const completion = {
+        done:     true as const,
         url:      protectedUploadUrl(chunkFinalName),
         fileName: safeFileName.replace(/\.[^.]+$/, chunkWebp.converted ? '.webp' : ext),
         fileType: chunkFinalMime,
         size,
+      };
+      // Recorded BEFORE the session closes, so no retry can fall into the gap
+      // between "session gone" and "completion known".
+      await recordFinalizedChunkUpload(sessionKey, { manifest, result: completion }, sessionTtlSeconds).catch((error: unknown) => {
+        logger.warn({ err: error, uploadId, event: 'upload.chunk_completion_record_failed' }, 'Chunk upload completion could not be recorded; a lost response cannot be replayed');
       });
+      purgeSession = true;
+      await closeSession();
+
+      res.json(completion);
     } catch (e: unknown) {
       // Storage/network/DB transient failures keep the committed chunks so the
       // client can retry a chunk and re-enter finalization without re-uploading

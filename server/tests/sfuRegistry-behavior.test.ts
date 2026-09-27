@@ -16,11 +16,34 @@ function fakeRedis() {
     get: jest.fn(async(k:string)=>store.get(k)??null),
     del: jest.fn(async(k:string)=>store.delete(k)?1:0),
     expire: jest.fn(async(k:string,s:number)=>{ if(!store.has(k)) return 0; ttls.set(k,s); return 1; }),
+    // Models the registry's atomic scripts (claim / re-assert / release) with
+    // the same decision table the Lua implements; real-Redis semantics are
+    // proven in tests/pg-integration/redis-sfu-ownership.pgtest.ts.
     eval: jest.fn(async(script:string,opts:{keys:string[];arguments:string[]})=>{
       const key=opts.keys[0]!;
-      if(store.get(key)!==opts.arguments[0]) return 0;
+      const a=opts.arguments;
+      if(script.includes("tostring(now), 'NX')")){           // registry epoch maintenance
+        if(store.has(key)) return 0;
+        store.set(key,String(Date.now())); return 1;
+      }
+      if(script.includes("redis.call('TIME')")){
+        const now=Date.now();
+        if(!store.has(opts.keys[1]!)) store.set(opts.keys[1]!,String(now));
+        const epoch=Number(store.get(opts.keys[1]!));
+        store.set(opts.keys[2]!,a[4]!);                                  // own node lease
+        const owner=store.get(key);
+        const claim=script.includes("'takeover'");
+        if(owner===a[0]){ttls.set(key,Number(a[1]));return claim?['owned',a[0]]:1;}
+        if(owner===undefined){
+          if(claim && now-epoch<Number(a[2])) return ['settling',''];
+          store.set(key,a[0]!);ttls.set(key,Number(a[1]));return claim?['owned',a[0]]:1;
+        }
+        if(!claim) return 0;
+        if(store.has(`${a[3]}${owner}`)) return ['remote',owner];
+        store.set(key,a[0]!);ttls.set(key,Number(a[1]));return ['takeover',owner];
+      }
+      if(store.get(key)!==a[0]) return 0;
       if(script.includes("redis.call('DEL'")) return store.delete(key)?1:0;
-      if(script.includes("redis.call('EXPIRE'")){ttls.set(key,Number(opts.arguments[1]));return 1;}
       return 0;
     }),
     keys: jest.fn(async(pattern:string)=>{const p=pattern.replace(/\*$/,'');return [...store.keys()].filter(k=>k.startsWith(p));}),
@@ -92,29 +115,86 @@ describe('sfuRegistry ownership state machine',()=>{
     expect(r.connect).toHaveBeenCalledTimes(2);
   });
 
-  it('atomic claim wins once, renews own lease, and reports a remote owner',async()=>{
+  const settledEpoch=(r:Fake)=>r.store.set('bridge:sfu:registry-epoch',String(Date.now()-10*60_000));
+  const alive=(r:Fake,node:string)=>r.store.set(`bridge:sfu:node:${node}`,'nonce');
+
+  it('atomic claim wins once, renews own lease, and reports a LIVE remote owner',async()=>{
     const {mod,r}=await load();
+    settledEpoch(r);
     expect(await mod.claimRoom('a')).toEqual({owned:true,owner:'node-test'});
-    expect(r.set).toHaveBeenCalledWith(K('a'),'node-test',{NX:true,EX:3600});
+    expect(r.store.get(K('a'))).toBe('node-test');
+    expect(r.ttls.get(K('a'))).toBe(3600);
+    // One atomic script decides; ownership is never inferred from a separate read.
+    expect(r.set).not.toHaveBeenCalled();
+    expect(r.get).not.toHaveBeenCalled();
 
-    // second claim sees NX fail, observes same owner and renews
+    // second claim observes our own ownership and renews
+    r.ttls.set(K('a'),5);
     expect(await mod.claimRoom('a')).toEqual({owned:true,owner:'node-test'});
-    expect(r.eval).toHaveBeenCalledWith(expect.stringContaining("redis.call('EXPIRE'"), {
-      keys: [K('a')], arguments: ['node-test','3600'],
-    });
+    expect(r.ttls.get(K('a'))).toBe(3600);
+    // claiming keeps this node's liveness lease
+    expect(r.store.has('bridge:sfu:node:node-test')).toBe(true);
 
-    r.store.set(K('b'),'node-other');
+    r.store.set(K('b'),'node-other'); alive(r,'node-other');
     expect(await mod.claimRoom('b')).toEqual({owned:false,owner:'node-other'});
+    expect(r.store.get(K('b'))).toBe('node-other');
     expect(await mod.isLocalRoom('b')).toBe(false);
     expect(await mod.isLocalRoom('unknown')).toBe(true);
+  });
+
+  // P1 multi-node SFU-05: a SIGKILLed owner stranded its room for ~1 hour.
+  it('takes over a room whose owner node lease has expired (dead owner)',async()=>{
+    const {mod,r}=await load();
+    settledEpoch(r);
+    r.store.set(K('orphan'),'node-dead');           // no bridge:sfu:node:node-dead
+    expect(await mod.claimRoom('orphan')).toEqual({owned:true,owner:'node-test'});
+    expect(r.store.get(K('orphan'))).toBe('node-test');
+  });
+
+  // P1 multi-node SFU-08: Redis restarted empty while a room was live; another
+  // node opened a second router for the same channel.
+  it('refuses a brand-new claim while a freshly (re)created registry settles',async()=>{
+    const {mod,r}=await load();
+    // no epoch: registry just (re)created
+    await expect(mod.claimRoom('fresh')).rejects.toBeInstanceOf(mod.SfuRegistrySettlingError);
+    expect(r.store.has(K('fresh'))).toBe(false);
+    // the live owner re-asserts its room during the window (heartbeat)
+    await expect(mod.refreshRoom('fresh')).resolves.toBe(true);
+    expect(r.store.get(K('fresh'))).toBe('node-test');
+  });
+
+  // Measured in the harness: with the epoch created lazily by the first claim,
+  // an idle cluster refused the first voice joins after a Redis restart.
+  it('every node maintains the registry epoch: an idle cluster is settled before the first claim',async()=>{
+    jest.useFakeTimers();
+    try {
+      const {mod,r}=await load();
+      mod.startRegistryMaintenance();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(r.store.has('bridge:sfu:registry-epoch')).toBe(true);
+      const first=r.store.get('bridge:sfu:registry-epoch');
+      await jest.advanceTimersByTimeAsync(mod.NODE_HEARTBEAT_MS);
+      expect(r.store.get('bridge:sfu:registry-epoch')).toBe(first);          // never moved forward
+      r.store.delete('bridge:sfu:registry-epoch');                            // Redis data loss
+      await jest.advanceTimersByTimeAsync(mod.NODE_HEARTBEAT_MS);
+      expect(r.store.has('bridge:sfu:registry-epoch')).toBe(true);           // recreated within one heartbeat
+      mod.stopRegistryMaintenance();
+    } finally { jest.useRealTimers(); }
+    // Single-node: nothing to maintain.
+    const single=await load({redisUrl:false});
+    expect(await single.mod.maintainRegistryEpoch()).toBe(false);
+    single.mod.startRegistryMaintenance();
+    single.mod.stopRegistryMaintenance();
   });
 
   it('release and refresh act only for the canonical local owner',async()=>{
     const {mod,r}=await load();
     r.store.set(K('local'),'node-test'); r.store.set(K('remote'),'node-other');
+    r.ttls.set(K('local'),5);
     await expect(mod.refreshRoom('local')).resolves.toBe(true);
+    expect(r.ttls.get(K('local'))).toBe(3600);
     await expect(mod.refreshRoom('remote')).resolves.toBe(false);
-    expect(r.eval).toHaveBeenCalledWith(expect.stringContaining("redis.call('EXPIRE'"), { keys: [K('local')], arguments: ['node-test','3600'] });
+    expect(r.store.get(K('remote'))).toBe('node-other');
     await mod.releaseRoom('remote'); expect(r.store.get(K('remote'))).toBe('node-other');
     await mod.releaseRoom('local'); expect(r.store.has(K('local'))).toBe(false);
   });

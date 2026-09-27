@@ -227,6 +227,29 @@ describe('single upload deep error/safety paths', () => {
     expect(mockDeleteFile).toHaveBeenCalledTimes(1);
   });
 
+  // P1 multi-node harness UPF-02: the ownership INSERT committed but its reply
+  // was lost. The old rollback deleted the bytes and left a durable row that
+  // pointed at a nonexistent object.
+  it('an ambiguous ownership INSERT whose row is durable keeps the bytes and succeeds', async () => {
+    mockUploadsInsert.mockRejectedValueOnce(new Error('Connection terminated unexpectedly'));
+    mockUploadsFindOne.mockImplementationOnce(async (q: { key: string; userId: string }) => ({ _id: 'row', ...q }));
+    const res = await request(app).post('/api/upload').set('Authorization', auth())
+      .attach('file', bytes, { filename: 'x.txt', contentType: 'text/plain' });
+    expect(res.status).toBe(200);
+    expect(res.body.url).toMatch(/^\/uploads\//);
+    expect(mockDeleteFile).not.toHaveBeenCalled();
+    expect(mockUploadsFindOne).toHaveBeenCalledWith(expect.objectContaining({ userId: expect.any(String), key: expect.any(String) }));
+  });
+
+  it('an ownership outcome that cannot be determined keeps the bytes (never a row without bytes) and fails', async () => {
+    mockUploadsInsert.mockRejectedValueOnce(new Error('Connection terminated unexpectedly'));
+    mockUploadsFindOne.mockRejectedValueOnce(new Error('database unavailable'));
+    const res = await request(app).post('/api/upload').set('Authorization', auth())
+      .attach('file', bytes, { filename: 'x.txt', contentType: 'text/plain' });
+    expect(res.status).toBe(500);
+    expect(mockDeleteFile).not.toHaveBeenCalled();
+  });
+
   it('accepts a clean SVG and preserves the sanitized result', async () => {
     const res = await request(app).post('/api/upload').set('Authorization', auth())
       .attach('file', Buffer.from('<svg/>'), { filename: 'clean.svg', contentType: 'image/svg+xml' });

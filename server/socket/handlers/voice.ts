@@ -146,8 +146,20 @@ async function mayJoinVoice(userId: string, channelId: string, claimedServerId: 
  * Kural: hem GONDEREN hem HEDEF, gonderenin GERCEK mevcut ses odasinda
  * bulunmalidir. Oda kimligi payload'dan degil soketin durumundan alinir.
  */
-async function signalAllowed(socket: { id: string; currentVoiceChannel?: string }, targetSocketId: unknown): Promise<string | null> {
-  const room = socket.currentVoiceChannel;
+/**
+ * The socket's P2P voice room — only while it still HOLDS the Socket.IO room.
+ * A revocation decided on another node removes the room through the adapter but
+ * cannot clear this node's `currentVoiceChannel` field (P1 multi-node, STALE-02);
+ * the cached field alone must never authorize a broadcast into the room.
+ */
+function activeVoiceChannel(socket: { currentVoiceChannel?: string | null; rooms?: Set<string> }): string | null {
+  const channelId = socket.currentVoiceChannel;
+  if (!channelId) return null;
+  return socket.rooms?.has(`voice:${channelId}`) ? channelId : null;
+}
+
+async function signalAllowed(socket: { id: string; currentVoiceChannel?: string; rooms?: Set<string> }, targetSocketId: unknown): Promise<string | null> {
+  const room = activeVoiceChannel(socket);
   if (!room || typeof targetSocketId !== 'string' || !targetSocketId) return null;
   // Oda uyeligi ALAN GERCEGIDIR: Socket.IO ic yapilarini ( io.sockets.sockets )
   // yoklamak yerine, sesin kendi peer listesi kullanilir. Hem daha saglam hem
@@ -298,14 +310,14 @@ async function signalAllowed(socket: { id: string; currentVoiceChannel?: string 
     // FAZ G6 — oda payload'dan ALINMAZ: kullanici yalniz GERCEKTEN icinde
     // oldugu odaya durum yayabilir. Aksi halde hic katilmadigi bir odaya
     // sahte mute/screenshare durumu enjekte edilebilirdi.
-    const channelId = socket.currentVoiceChannel;
+    const channelId = activeVoiceChannel(socket);
     if (!channelId) return;
     socket.to(`voice:${channelId}`).emit('voice:peer-state', { socketId: socket.id, userId: user._id, muted, deafened, screensharing, video });
   }));
 
   socket.on('voice:activity', isolateSocketHandler(socket, 'voice:activity', (payload: { channelId: string; speaking: boolean }) => {
     if (!validateSocketPayload(payload, socketSchemas.voiceActivity).valid) return;
-    const room = socket.currentVoiceChannel;
+    const room = activeVoiceChannel(socket);
     if (!room) return;   // FAZ G6 — yalniz gercek odaya konusma sinyali
     socket.to(`voice:${room}`).emit('voice:activity', { socketId: socket.id, userId: user._id, speaking: payload.speaking });
   }));
@@ -317,7 +329,7 @@ async function signalAllowed(socket: { id: string; currentVoiceChannel?: string 
     return (async () => {
       // FAZ G6 — GONDEREN de odada olmalidir; aksi halde disaridan anahtar
       // enjekte edilebilirdi.
-      if (socket.currentVoiceChannel !== channelId) return;
+      if (activeVoiceChannel(socket) !== channelId) return;
       const room   = await _loadRoom(channelId);
       if (!room.some(p => p.socketId === socket.id)) return;
       const target = room.find(p => p.userId === targetUserId);

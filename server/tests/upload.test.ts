@@ -488,6 +488,9 @@ describe('recordUpload — uploads tablosuna kayıt', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockUploads.insert.mockResolvedValue({ _id: 'new-id' });
+    // A failed INSERT is re-checked before rollback (commit ambiguity); the
+    // failure cases here are genuine failures: no durable ownership row.
+    mockUploads.findOne.mockResolvedValue(null);
   });
 
   it('[INTEGRITY] ownership persistence failure returns 500 and rolls storage back', async () => {

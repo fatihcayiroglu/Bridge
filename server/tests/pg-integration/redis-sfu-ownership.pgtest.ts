@@ -47,6 +47,8 @@ RUN('gerçek Redis — SFU oda sahipliği atomiktir', () => {
     jest.isolateModules(() => {
       process.env.INSTANCE_ID = instanceId;
       process.env.REDIS_URL = REDIS_URL;
+      // Short liveness lease so the takeover/settle windows are observable in a test.
+      process.env.SFU_NODE_LEASE_MS = '3000';
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       mod = require('../../lib/sfuRegistry');
     });
@@ -54,17 +56,29 @@ RUN('gerçek Redis — SFU oda sahipliği atomiktir', () => {
     return mod;
   }
 
+  const EPOCH_KEY = 'bridge:sfu:registry-epoch';
+  let savedEpoch: string | null = null;
+  // A long-running registry has a settled epoch; brand-new claims are refused
+  // only right after the registry is (re)created (first boot / Redis data loss).
+  const settleRegistry = () => raw.set(EPOCH_KEY, String(Date.now() - 10 * 60_000));
+
   beforeAll(async () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createClient } = require('redis');
     raw = createClient({ url: REDIS_URL });
     await raw.connect();
+    savedEpoch = await raw.get(EPOCH_KEY);
+    await settleRegistry();
   });
 
   afterAll(async () => {
     for (const ch of channels) {
       try { await raw.del(KEY_PREFIX + ch); } catch { /* yok */ }
     }
+    try {
+      await raw.del(['bridge:sfu:node:node-A', 'bridge:sfu:node:node-B']);
+      if (savedEpoch === null) await raw.del(EPOCH_KEY); else await raw.set(EPOCH_KEY, savedEpoch);
+    } catch { /* yok */ }
     // Her izole modülün açtığı Redis istemcisini kapat.
     for (const node of loadedNodes) {
       const disconnect = (node as unknown as { _closeForTest?: () => Promise<void> })._closeForTest;
@@ -198,6 +212,73 @@ RUN('gerçek Redis — SFU oda sahipliği atomiktir', () => {
       if (previousTimeout === undefined) delete process.env.REDIS_COMMAND_TIMEOUT_MS;
       else process.env.REDIS_COMMAND_TIMEOUT_MS = previousTimeout;
     }
+  });
+
+  // ── P1 çok-düğüm: SFU-05 (ölü sahip) ve SFU-08 (Redis veri kaybı) ─────────
+  it('sahibinin canlılık kirası DOLMUŞ oda atomik olarak devralınır; CANLI sahip devralınamaz', async () => {
+    const ch = channel('takeover');
+    const nodeA = loadNode('node-A');
+    const nodeB = loadNode('node-B');
+    expect((await nodeA.claimRoom(ch)).owned).toBe(true);
+    expect(await raw.exists('bridge:sfu:node:node-A')).toBe(1);
+
+    // Negatif kontrol: sahip canlıyken B yalnızca yönlendirilir.
+    expect(await nodeB.claimRoom(ch)).toEqual({ owned: false, owner: 'node-A' });
+
+    // Sahip SIGKILL: kalp atışı durur, kira dolar (burada: 3 sn).
+    await raw.del('bridge:sfu:node:node-A');
+    const [x, y] = await Promise.all([nodeB.claimRoom(ch), nodeB.claimRoom(ch)]);
+    expect(x.owned && y.owned).toBe(true);
+    expect(await raw.get(KEY_PREFIX + ch)).toBe('node-B');
+  });
+
+  it('Redis boş başladıktan sonra: yeni talep yerleşme süresince reddedilir, canlı sahip odasını geri yazar, ikinci router AÇILMAZ', async () => {
+    const ch = channel('dataloss');
+    const nodeA = loadNode('node-A');
+    const nodeB = loadNode('node-B');
+    expect((await nodeA.claimRoom(ch)).owned).toBe(true);
+
+    // Veri kaybı: oda kaydı ve kayıt dönemi yok.
+    await raw.del([KEY_PREFIX + ch, EPOCH_KEY]);
+    await expect(nodeB.claimRoom(ch)).rejects.toBeInstanceOf(nodeB.SfuRegistrySettlingError);
+    expect(await raw.exists(KEY_PREFIX + ch)).toBe(0);
+
+    // Canlı sahip bir kalp atışında odasını geri yazar.
+    await expect(nodeA.refreshRoom(ch)).resolves.toBe(true);
+    expect(await raw.get(KEY_PREFIX + ch)).toBe('node-A');
+
+    // Yerleşme bittikten sonra B yönlendirilir; sahiplik A'da kalır. A canlıdır:
+    // üründeki gibi her NODE_HEARTBEAT_MS'de kalp atışı yapar.
+    const deadline = Date.now() + nodeB.REGISTRY_SETTLE_MS + 200;
+    while (Date.now() < deadline) {
+      await expect(nodeA.refreshRoom(ch)).resolves.toBe(true);
+      await new Promise(r => setTimeout(r, nodeA.NODE_HEARTBEAT_MS));
+    }
+    expect(await nodeB.claimRoom(ch)).toEqual({ owned: false, owner: 'node-A' });
+    await settleRegistry();
+  }, 20_000);
+
+  it('kayıt dönemi bakımı: yoksa oluşturur, varsa ASLA ileri almaz (boşta küme yerleşmiş kalır)', async () => {
+    const nodeA = loadNode('node-A');
+    await settleRegistry();
+    const before = await raw.get(EPOCH_KEY);
+    await expect(nodeA.maintainRegistryEpoch()).resolves.toBe(false);
+    expect(await raw.get(EPOCH_KEY)).toBe(before);
+    await raw.del(EPOCH_KEY);
+    await expect(nodeA.maintainRegistryEpoch()).resolves.toBe(true);
+    expect(Number(await raw.get(EPOCH_KEY))).toBeGreaterThan(Number(before));
+    await settleRegistry();
+  });
+
+  it('başka düğüme geçmiş odayı eski sahip kalp atışında KAYBETTİĞİNİ öğrenir (yerel router kapanmalı)', async () => {
+    const ch = channel('lost');
+    const nodeA = loadNode('node-A');
+    const nodeB = loadNode('node-B');
+    expect((await nodeA.claimRoom(ch)).owned).toBe(true);
+    await raw.del('bridge:sfu:node:node-A');          // A duraksadı, kira doldu
+    expect((await nodeB.claimRoom(ch)).owned).toBe(true);
+    await expect(nodeA.refreshRoom(ch)).resolves.toBe(false);
+    expect(await raw.get(KEY_PREFIX + ch)).toBe('node-B');
   });
 });
 
