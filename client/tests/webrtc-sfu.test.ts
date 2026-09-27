@@ -73,6 +73,18 @@ vi.mock('../js/core/logger', () => ({
 vi.mock('../js/core/bridge-registry', () => ({
   BridgeRegistry: { register: vi.fn(), get: vi.fn(() => null), call: vi.fn(), has: vi.fn(() => false) },
 }));
+// Remote-media UI effects are owned by VoicePanel under `voicePanel:*`
+// registry keys, toasts by core/utils (core/voice-panel-adapter.ts). The
+// legacy `bridgeApp` object these tests used to register is never registered
+// in production, which is why SFU mode played no remote audio.
+const uiToast = vi.hoisted(() => vi.fn());
+vi.mock('../js/core/utils', async (importOriginal) => ({ ...(await importOriginal<object>()), toast: uiToast }));
+function voicePanelOwners(owners: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+  return ((name: string) => {
+    if (name in extra) return extra[name];
+    return name.startsWith('voicePanel:') ? (owners[name.slice('voicePanel:'.length)] ?? null) : null;
+  }) as any;
+}
 vi.mock('../js/core/globals', () => ({
   getAPI: () => 'http://localhost:3000',
   currentServerChannels: () => [],
@@ -758,8 +770,8 @@ describe('SFU transport and consume protocol', () => {
     const attachRemoteStream = vi.fn(); const handleNewProducer = vi.fn();
     const registry = (await import('../js/core/bridge-registry')).BridgeRegistry;
     vi.mocked(registry.get).mockImplementation((name: string) => {
-      if (name === 'bridgeApp') return { attachRemoteStream, toast: vi.fn() } as any;
-      if (name === 'sfuHandleNewProducer') return handleNewProducer as any;
+      if (name === 'voicePanel:attachRemoteStream') return attachRemoteStream as any;
+      if (name === 'voicePanel:sfuHandleNewProducer') return handleNewProducer as any;
       return null;
     });
     socket.emit.mockImplementation((event: string, payload: any) => {
@@ -861,10 +873,9 @@ describe('SFU media/device owner behavior', () => {
     const oldStream = makeStream([oldTrack]); const raw = makeStream([makeTrack('audio')]); const clean = makeStream([newTrack]);
     const getUserMedia = vi.fn(async () => raw); const process = vi.fn(async () => clean);
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
-    const toast = vi.fn(); const registry = (await import('../js/core/bridge-registry')).BridgeRegistry;
+    const toast = uiToast; toast.mockClear(); const registry = (await import('../js/core/bridge-registry')).BridgeRegistry;
     vi.mocked(registry.get).mockImplementation((name: string) => {
       if (name === 'BridgeNS') return { enabled: true, process } as any;
-      if (name === 'bridgeApp') return { toast } as any;
       return null;
     });
     const producer = makeProducer('audio-live');
@@ -969,9 +980,8 @@ describe('SFU and P2P socket event routing', () => {
     const initVoiceE2E = vi.fn(async () => true); const renderVoiceE2EBadge = vi.fn();
     const registry = (await import('../js/core/bridge-registry')).BridgeRegistry;
     vi.mocked(registry.get).mockImplementation((name: string) => {
-      if (name === 'bridgeApp') return { renderVoicePeer: render, removeVoicePeer: remove, updatePeerState: update, attachRemoteStream: attach } as any;
       if (name === 'BridgeVoiceE2E') return { initVoiceE2E, renderVoiceE2EBadge, registerSocketEvents: vi.fn() } as any;
-      return null;
+      return voicePanelOwners({ renderVoicePeer: render, removeVoicePeer: remove, updatePeerState: update, attachRemoteStream: attach })(name);
     });
     rtc._consume = vi.fn(async () => makeConsumer('routed'));
     rtc.currentChannelId = 'voice-events';
@@ -1005,8 +1015,7 @@ describe('SFU and P2P socket event routing', () => {
     const socket = makeInteractiveSocket(); const rtc = new BridgeRTC(socket as any) as any;
     const render = vi.fn(); const remove = vi.fn(); const attach = vi.fn();
     const registry = (await import('../js/core/bridge-registry')).BridgeRegistry;
-    vi.mocked(registry.get).mockImplementation((name: string) => name === 'bridgeApp'
-      ? { renderVoicePeer: render, removeVoicePeer: remove, attachRemoteStream: attach } as any : null);
+    vi.mocked(registry.get).mockImplementation(voicePanelOwners({ renderVoicePeer: render, removeVoicePeer: remove, attachRemoteStream: attach }));
     rtc.localStream = makeStream([makeTrack('audio')]); rtc.currentChannelId = 'voice-p2p';
 
     await socket.dispatch('voice:existing-peers', [{ socketId: 'peer-p2p' }]);
@@ -1024,7 +1033,7 @@ describe('SFU and P2P socket event routing', () => {
     socket.dispatch('webrtc:ice-candidate', { fromSocketId: 'peer-p2p', candidate: { candidate: 'ice' } });
     await Promise.resolve(); expect(pc.addIceCandidate).toHaveBeenCalled();
     const stream = makeStream([makeTrack('audio')]); pc.ontrack?.({ streams: [stream as any] });
-    expect(attach).toHaveBeenCalledWith('peer-p2p', stream);
+    expect(attach).toHaveBeenCalledWith('peer-p2p', stream, undefined);
     pc.onicecandidate?.({ candidate: { candidate: 'local' } });
     expect(socket.emitted.some(entry => entry.event === 'webrtc:ice-candidate')).toBe(true);
     pc.connectionState = 'failed'; pc.onconnectionstatechange?.();
@@ -1072,8 +1081,8 @@ describe('BridgeRTC hardened session lifecycle', () => {
     const { rtc, socket } = await makeRTC({ sfu: false });
     const getUserMedia = vi.fn(async () => { throw new DOMException('denied', 'NotAllowedError'); });
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
-    const toast = vi.fn();
-    vi.mocked(BridgeRegistry.get).mockImplementation((name: string) => name === 'bridgeApp' ? { toast } as any : null);
+    const toast = uiToast; toast.mockClear();
+    vi.mocked(BridgeRegistry.get).mockImplementation(() => null);
 
     await rtc.joinVoice('voice-silent', 'server-a');
     await rtc.joinVoice('voice-silent', 'server-a');
@@ -1499,8 +1508,8 @@ describe('SFU media ownership edge cases', () => {
   it('stops empty/failed/stale display captures without publishing sharing state', async () => {
     const { rtc } = await makeRTC({ sfu: true });
     rtc.currentChannelId = 'voice-screen-errors';
-    const toast = vi.fn();
-    vi.mocked(BridgeRegistry.get).mockImplementation((name: string) => name === 'bridgeApp' ? { toast } as any : null);
+    const toast = uiToast; toast.mockClear();
+    vi.mocked(BridgeRegistry.get).mockImplementation(() => null);
     const emptyAudio = makeTrack('audio');
     const empty = makeStream([emptyAudio]);
     const getDisplayMedia = vi.fn(async () => empty);
@@ -1543,7 +1552,7 @@ describe('SFU device replacement containment', () => {
       .mockResolvedValueOnce(makeStream([nextAudio]))
       .mockResolvedValueOnce(makeStream([nextVideo]));
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
-    vi.mocked(BridgeRegistry.get).mockImplementation((name: string) => name === 'bridgeApp' ? { toast: vi.fn() } as any : null);
+    vi.mocked(BridgeRegistry.get).mockImplementation(() => null);
 
     await rtc.setMicDevice('mic-canonical');
     await rtc.setCameraDevice('camera-canonical');
@@ -1571,15 +1580,14 @@ describe('SFU device replacement containment', () => {
       .mockResolvedValueOnce(makeStream([emptyAudioTrack]))
       .mockResolvedValueOnce(makeStream([emptyVideoTrack]));
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
-    const toast = vi.fn();
+    const toast = uiToast; toast.mockClear();
     vi.mocked(BridgeRegistry.get).mockImplementation((name: string) => {
       if (name === 'BridgeNS') return { enabled: true, process: vi.fn(async () => { throw new Error('processor failed'); }) } as any;
-      if (name === 'bridgeApp') return { toast } as any;
       return null;
     });
 
     await rtc.setMicDevice('mic-fail');
-    vi.mocked(BridgeRegistry.get).mockImplementation((name: string) => name === 'bridgeApp' ? { toast } as any : null);
+    vi.mocked(BridgeRegistry.get).mockImplementation(() => null);
     await rtc.setMicDevice('mic-empty');
     await rtc.setCameraDevice('camera-empty');
 
@@ -1609,8 +1617,8 @@ describe('SFU device replacement containment', () => {
     videoProducer.replaceTrack.mockRejectedValueOnce(new Error('video sender rejected replacement'));
     rtc.producers.set('audio', audioProducer);
     rtc.producers.set('video', videoProducer);
-    const toast = vi.fn();
-    vi.mocked(BridgeRegistry.get).mockImplementation((name: string) => name === 'bridgeApp' ? { toast } as any : null);
+    const toast = uiToast; toast.mockClear();
+    vi.mocked(BridgeRegistry.get).mockImplementation(() => null);
 
     await rtc.setMicDevice('mic-rejected');
     await rtc.setCameraDevice('camera-rejected');
@@ -1661,8 +1669,7 @@ describe('SFU/P2P alternate routing outcomes', () => {
     // kutuphanesi var diye SFU'yu acmaz (webrtc-sfu.ts:171).
     rtc._sfuAvailable = true;
     const render = vi.fn();
-    vi.mocked(BridgeRegistry.get).mockImplementation((name: string) => name === 'bridgeApp'
-      ? { renderVoicePeer: render, removeVoicePeer: vi.fn() } as any : null);
+    vi.mocked(BridgeRegistry.get).mockImplementation(voicePanelOwners({ renderVoicePeer: render, removeVoicePeer: vi.fn() }));
 
     await socket.dispatch('voice:existing-peers', [{ socketId: 'ignored' }]);
     await socket.dispatch('voice:peer-joined', { socketId: 'ignored' });
@@ -1702,8 +1709,7 @@ describe('SFU/P2P alternate routing outcomes', () => {
     const socket = makeInteractiveSocket();
     const rtc = new BridgeRTC(socket as any) as any;
     const remove = vi.fn();
-    vi.mocked(BridgeRegistry.get).mockImplementation((name: string) => name === 'bridgeApp'
-      ? { removeVoicePeer: remove } as any : null);
+    vi.mocked(BridgeRegistry.get).mockImplementation(voicePanelOwners({ removeVoicePeer: remove }));
 
     await socket.dispatch('voice:peer-left', { socketId: 'missing-peer' });
     expect(remove).toHaveBeenCalledWith('missing-peer');
@@ -1763,8 +1769,7 @@ describe('SFU/P2P alternate routing outcomes', () => {
     const remove = vi.fn();
     vi.mocked(BridgeRegistry.get).mockImplementation((name: string) => {
       if (name === 'BridgeVoiceE2E') return { initVoiceE2E, renderVoiceE2EBadge: badge, registerSocketEvents: vi.fn() } as any;
-      if (name === 'bridgeApp') return { renderVoicePeer: vi.fn(), removeVoicePeer: remove } as any;
-      return null;
+      return voicePanelOwners({ renderVoicePeer: vi.fn(), removeVoicePeer: remove })(name);
     });
     rtc._consume = vi.fn();
 
@@ -1896,10 +1901,9 @@ describe('BridgeRTC late-operation ownership', () => {
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: {
       getUserMedia: vi.fn(async () => makeStream([rawTrack])),
     } });
-    const toast = vi.fn();
+    const toast = uiToast; toast.mockClear();
     vi.mocked(BridgeRegistry.get).mockImplementation((name: string) => {
       if (name === 'BridgeNS') return { enabled: true, process } as any;
-      if (name === 'bridgeApp') return { toast } as any;
       return null;
     });
 
@@ -2195,5 +2199,414 @@ describe('Remaining protocol alternatives', () => {
     const receiveError = vi.fn();
     await recv.handlers.get('connect')?.({ dtlsParameters: {} }, vi.fn(), receiveError);
     expect(receiveError).toHaveBeenCalledWith(expect.objectContaining({ message: 'receive string' }));
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// P2 media lab regressions (real browsers, real mediasoup): a late joiner was
+// deaf to everyone already in the room, and SFU remote audio was never
+// attached to a playing element.
+// ════════════════════════════════════════════════════════════════════════════
+describe('SFU late join consumes producers announced before the receive transport', () => {
+  it('existing peers from sfu:joined are consumed once the receive transport exists and reach the voice UI owner', async () => {
+    setMediasoupPresent(true); vi.resetModules();
+    const { BridgeRTC } = await import('../js/webrtc-sfu');
+    const socket = makeInteractiveSocket();
+    const rtc = new BridgeRTC(socket as any) as any;
+    const attach = vi.fn();
+    const registry = (await import('../js/core/bridge-registry')).BridgeRegistry;
+    vi.mocked(registry.get).mockImplementation(voicePanelOwners({ attachRemoteStream: attach, renderVoicePeer: vi.fn() }));
+
+    const consumer = makeConsumer('consumer-early');
+    const recv = makeTransport('recv-late'); recv.consume.mockResolvedValue(consumer);
+    socket.emit.mockImplementation((event: string, payload: any) => {
+      socket.emitted.push({ event, payload });
+      if (event === 'sfu:consume') queueMicrotask(() => socket.dispatch('sfu:consumed', {
+        producerId: payload.producerId, consumerId: 'consumer-early', kind: 'audio', rtpParameters: {},
+      }));
+      return socket;
+    });
+    rtc.currentChannelId = 'voice-late-join';
+    rtc._waitForRtpCapabilities = vi.fn(async () => ({ rtpCapabilities: { codecs: [] } }));
+    // The owner answers the join with the peers already in the room — BEFORE
+    // this client has created any transport.
+    rtc._waitForSfuJoin = vi.fn(async () => {
+      await socket.dispatch('sfu:joined', {
+        existingPeers: [{ socketId: 'peer-early', userId: 'user-early', producers: [{ producerId: 'producer-early', kind: 'audio' }] }],
+      });
+      expect(socket.emitted.some(e => e.event === 'sfu:consume')).toBe(false);
+      return {};
+    });
+    rtc._createSendTransport = vi.fn(async () => undefined);
+    rtc._createRecvTransport = vi.fn(async () => { rtc.recvTransport = recv; });
+
+    await rtc._sfuJoin('voice-late-join', 'server-a', rtc._sessionGeneration);
+
+    expect(socket.emitted).toContainEqual({ event: 'sfu:consume', payload: expect.objectContaining({ producerId: 'producer-early' }) });
+    expect(rtc.consumers.get('producer-early')).toBe(consumer);
+    expect(attach).toHaveBeenCalledWith('peer-early', expect.anything(), 'audio');
+  });
+
+  it('forgets a queued producer that closes, or whose peer leaves, before the transport exists', async () => {
+    setMediasoupPresent(true); vi.resetModules();
+    const { BridgeRTC } = await import('../js/webrtc-sfu');
+    const socket = makeInteractiveSocket();
+    const rtc = new BridgeRTC(socket as any) as any;
+    rtc.currentChannelId = 'voice-queue';
+    await socket.dispatch('sfu:new-producer', { socketId: 'peer-1', producerId: 'p-closed', kind: 'audio' });
+    await socket.dispatch('sfu:new-producer', { socketId: 'peer-2', producerId: 'p-left', kind: 'video' });
+    await socket.dispatch('sfu:new-producer', { socketId: 'peer-3', producerId: 'p-kept', kind: 'audio' });
+    await socket.dispatch('sfu:new-producer', { socketId: 'peer-3', producerId: 'p-kept', kind: 'audio' });
+    await socket.dispatch('sfu:producer-closed', { producerId: 'p-closed' });
+    await socket.dispatch('sfu:peer-left', { socketId: 'peer-2' });
+    expect(rtc._pendingConsumes).toEqual([{ producerId: 'p-kept', socketId: 'peer-3', kind: 'audio' }]);
+    rtc.leaveVoice();
+    expect(rtc._pendingConsumes).toEqual([]);
+  });
+});
+
+describe('SFU transports use the ICE servers and relay policy issued at join', () => {
+  it('passes TURN servers and iceTransportPolicy from sfu:joined to both mediasoup transports', async () => {
+    setMediasoupPresent(true); vi.resetModules();
+    const { BridgeRTC } = await import('../js/webrtc-sfu');
+    const socket = makeInteractiveSocket();
+    const rtc = new BridgeRTC(socket as any) as any;
+    const iceServers = [{ urls: ['stun:turn.example:3478'] }, { urls: ['turn:turn.example:3478'], username: '1:u', credential: 'c' }];
+    await socket.dispatch('sfu:joined', { existingPeers: [], iceServers, iceTransportPolicy: 'relay' });
+
+    const send = makeTransport('send-relay'); const recv = makeTransport('recv-relay');
+    const createSendTransport = vi.fn(() => send); const createRecvTransport = vi.fn(() => recv);
+    rtc.device = { rtpCapabilities: {}, load: vi.fn(), createSendTransport, createRecvTransport };
+    rtc._sfuSocket = socket;
+    socket.emit.mockImplementation((event: string, payload: any) => {
+      socket.emitted.push({ event, payload });
+      if (event === 'sfu:create-transport') queueMicrotask(() => socket.dispatch('sfu:transport-created', {
+        direction: payload.direction, id: `${payload.direction}-id`, iceParameters: {}, iceCandidates: [], dtlsParameters: {},
+      }));
+      return socket;
+    });
+
+    await rtc._createSendTransport('voice-relay');
+    await rtc._createRecvTransport('voice-relay');
+
+    expect(createSendTransport).toHaveBeenCalledWith(expect.objectContaining({ iceServers, iceTransportPolicy: 'relay' }));
+    expect(createRecvTransport).toHaveBeenCalledWith(expect.objectContaining({ iceServers, iceTransportPolicy: 'relay' }));
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Media session recovery (P2 media lab): ICE failure, owner/worker death and
+// signaling loss used to leave a call on screen with no media, or drop the
+// user from voice although the media path was intact.
+// ════════════════════════════════════════════════════════════════════════════
+describe('SFU media session recovery', () => {
+  async function inCall(opts: { connected?: boolean } = {}) {
+    setMediasoupPresent(true); vi.resetModules();
+    const { BridgeRTC } = await import('../js/webrtc-sfu');
+    const socket = makeInteractiveSocket();
+    socket.connected = opts.connected ?? true;
+    const rtc = new BridgeRTC(socket as any) as any;
+    rtc._sfuAvailable = true;
+    rtc.currentChannelId = 'voice-recover';
+    rtc.currentServerId = 'server-recover';
+    rtc.localStream = makeStream([makeTrack('audio')]);
+    const events: Array<{ type: string; detail: unknown }> = [];
+    const listen = (type: string) => document.addEventListener(type, (e) => events.push({ type, detail: (e as CustomEvent).detail }));
+    ['bridge:voice-reconnecting', 'bridge:voice-reconnected', 'bridge:voice-left'].forEach(listen);
+    return { rtc, socket, events };
+  }
+  const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+
+  it('a failed transport re-establishes the session through a fresh join and keeps the user muted', async () => {
+    const { rtc, events } = await inCall();
+    const failed = makeTransport('send-failed');
+    rtc.sendTransport = failed;
+    rtc._watchTransport(failed, rtc._sessionGeneration);
+    rtc.muted = true;
+    const producer = makeProducer('audio-again');
+    rtc._sfuJoin = vi.fn(async () => {
+      rtc.sendTransport = makeTransport('send-new');
+      rtc.producers.set('audio', producer);
+    });
+
+    failed.handlers.get('connectionstatechange')?.('failed');
+    await rtc._recovery;
+
+    expect(rtc._sfuJoin).toHaveBeenCalledWith('voice-recover', 'server-recover', expect.any(Number));
+    expect(failed.close).toHaveBeenCalled();
+    expect(producer.pause).toHaveBeenCalledOnce();
+    expect(rtc.currentChannelId).toBe('voice-recover');
+    expect(events.map(e => e.type)).toEqual(['bridge:voice-reconnecting', 'bridge:voice-reconnected']);
+  });
+
+  it('never retries a join the server refused: the call ends (no authorization bypass)', async () => {
+    const { rtc, events } = await inCall();
+    const refused = new Error('forbidden'); refused.name = 'SfuError:FORBIDDEN';
+    rtc._sfuJoin = vi.fn(async () => { throw refused; });
+
+    rtc._recoverSession('transport-failed');
+    await rtc._recovery;
+
+    expect(rtc._sfuJoin).toHaveBeenCalledOnce();
+    expect(rtc.currentChannelId).toBeNull();
+    expect(events.at(-1)).toEqual({ type: 'bridge:voice-left', detail: { reason: 'media-session-lost' } });
+  });
+
+  it('keeps the call when only the app socket drops while the dedicated owner socket is alive', async () => {
+    const { rtc, socket } = await inCall();
+    const owner = makeInteractiveSocket(); owner.connected = true;
+    rtc._dedicatedSfuSocket = owner;
+    rtc._sfuJoin = vi.fn();
+
+    await socket.dispatch('disconnect', 'transport close');
+
+    expect(rtc.currentChannelId).toBe('voice-recover');
+    expect(rtc._recovery).toBeNull();
+    expect(rtc._sfuJoin).not.toHaveBeenCalled();
+  });
+
+  it('waits for the app socket to reconnect, then rejoins', async () => {
+    const { rtc, socket } = await inCall();
+    rtc._sfuJoin = vi.fn(async () => { rtc.sendTransport = makeTransport('send-back'); });
+
+    socket.connected = false;
+    await socket.dispatch('disconnect', 'ping timeout');
+    await settle();
+    expect(rtc._recovery).not.toBeNull();
+    expect(rtc._sfuJoin).not.toHaveBeenCalled();
+    expect(rtc.currentChannelId).toBe('voice-recover');
+
+    socket.connected = true;
+    await socket.dispatch('userAuthenticated');
+    await rtc._recovery;
+    expect(rtc._sfuJoin).toHaveBeenCalledOnce();
+  });
+
+  it('a server-initiated disconnect still ends the call without any rejoin', async () => {
+    const { rtc, socket, events } = await inCall();
+    rtc._sfuJoin = vi.fn();
+
+    await socket.dispatch('disconnect', 'io server disconnect');
+
+    expect(rtc._sfuJoin).not.toHaveBeenCalled();
+    expect(rtc.currentChannelId).toBeNull();
+    expect(events.at(-1)).toEqual({ type: 'bridge:voice-left', detail: { reason: 'socket-disconnect' } });
+  });
+
+  it('an explicit leave during recovery stops it', async () => {
+    const { rtc, socket } = await inCall();
+    rtc._sfuJoin = vi.fn();
+    socket.connected = false;
+    await socket.dispatch('disconnect', 'transport close');
+    rtc.leaveVoice();
+    socket.connected = true;
+    await socket.dispatch('userAuthenticated');
+    await rtc._recovery;
+    expect(rtc._sfuJoin).not.toHaveBeenCalled();
+    expect(rtc.currentChannelId).toBeNull();
+  });
+
+  it('the dedicated owner socket dropping triggers recovery', async () => {
+    const { rtc } = await inCall();
+    const owner = makeInteractiveSocket(); owner.connected = true;
+    rtc._dedicatedSfuSocket = owner;
+    rtc._sfuSocket = owner;
+    rtc._bindSocketEvents(owner);
+    rtc._sfuJoin = vi.fn(async () => { rtc.sendTransport = makeTransport('send-owner'); });
+
+    owner.connected = false;
+    await owner.dispatch('disconnect', 'transport close');
+    await rtc._recovery;
+
+    expect(rtc._sfuJoin).toHaveBeenCalledOnce();
+    expect(rtc.currentChannelId).toBe('voice-recover');
+  });
+});
+
+describe('camera simulcast layers match what libwebrtc sends for the capture size', () => {
+  it('uses the full-resolution top layer for a default 640x480 camera (2 layers)', async () => {
+    const { cameraSimulcastEncodings } = await import('../js/webrtc-sfu');
+    const vga = cameraSimulcastEncodings({ getSettings: () => ({ width: 640, height: 480 }) } as any);
+    expect(vga).toEqual([{ maxBitrate: 200_000, scaleResolutionDownBy: 2 }, { maxBitrate: 900_000 }]);
+  });
+  it('keeps three layers from 960x540 up and a single layer for tiny captures', async () => {
+    const { cameraSimulcastEncodings } = await import('../js/webrtc-sfu');
+    expect(cameraSimulcastEncodings({ getSettings: () => ({ width: 1280, height: 720 }) } as any)).toHaveLength(3);
+    expect(cameraSimulcastEncodings({ getSettings: () => ({ width: 320, height: 240 }) } as any)).toEqual([{ maxBitrate: 900_000 }]);
+    expect(cameraSimulcastEncodings({ getSettings: () => ({}) } as any)).toHaveLength(2);
+  });
+});
+
+describe('capture tracks survive producer/transport teardown', () => {
+  it('every SFU producer is created with stopTracks: false (the app owns capture tracks)', async () => {
+    setMediasoupPresent(true); vi.resetModules();
+    const { BridgeRTC } = await import('../js/webrtc-sfu');
+    const rtc = new BridgeRTC(makeInteractiveSocket() as any) as any;
+    const transport = makeTransport('send-own'); transport.produce.mockResolvedValue(makeProducer('p'));
+    const video = { ...makeTrack('video'), getSettings: () => ({ width: 640, height: 480 }) };
+    await rtc._produceCamera(transport, video);
+    await rtc._produceScreen(transport, makeTrack('video'));
+    await rtc._produceScreenAudio(transport, makeTrack('audio'));
+    rtc.localStream = makeStream([makeTrack('audio')]);
+    rtc.sendTransport = transport;
+    await rtc._produceAudio(undefined, transport);
+    expect(transport.produce).toHaveBeenCalledTimes(4);
+    for (const [opts] of transport.produce.mock.calls) expect(opts).toEqual(expect.objectContaining({ stopTracks: false }));
+  });
+});
+
+describe('SFU recovery over a dead signaling transport', () => {
+  it('a recovery request that times out on a "connected" socket closes that transport so it reconnects now', async () => {
+    setMediasoupPresent(true); vi.resetModules();
+    const { BridgeRTC } = await import('../js/webrtc-sfu');
+    const socket = makeInteractiveSocket() as any;
+    // Socket.IO reports a deliberately closed engine as 'forced close'.
+    const close = vi.fn(() => { socket.connected = false; void socket.dispatch('disconnect', 'forced close'); });
+    socket.io = { engine: { close } };
+    const rtc = new BridgeRTC(socket) as any;
+    rtc._sfuAvailable = true;
+    rtc.currentChannelId = 'voice-handoff';
+    rtc.currentServerId = 'server-handoff';
+    rtc.localStream = makeStream([makeTrack('audio')]);
+    let calls = 0;
+    rtc._sfuJoin = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('SFU RTP capability request timed out');
+      rtc.sendTransport = makeTransport('send-handoff');
+    });
+
+    rtc._recoverSession('transport-failed');
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    socket.connected = true;
+    await socket.dispatch('userAuthenticated');
+    await rtc._recovery;
+
+    expect(rtc._sfuJoin).toHaveBeenCalledTimes(2);
+    expect(rtc.currentChannelId).toBe('voice-handoff');
+  });
+
+  it('an authorization refusal is not treated as a dead transport', async () => {
+    setMediasoupPresent(true); vi.resetModules();
+    const { BridgeRTC } = await import('../js/webrtc-sfu');
+    const socket = makeInteractiveSocket() as any;
+    const close = vi.fn();
+    socket.io = { engine: { close } };
+    const rtc = new BridgeRTC(socket) as any;
+    rtc._sfuAvailable = true;
+    rtc.currentChannelId = 'voice-refused';
+    const refused = new Error('join timed out? no: forbidden'); refused.name = 'SfuError:FORBIDDEN';
+    rtc._sfuJoin = vi.fn(async () => { throw refused; });
+    rtc._recoverSession('transport-failed');
+    await rtc._recovery;
+    expect(close).not.toHaveBeenCalled();
+    expect(rtc.currentChannelId).toBeNull();
+  });
+});
+
+describe('server-side voice eviction reaches the SFU client', () => {
+  it('voice:evicted for the current channel ends the call at once (no ghost call, no recovery)', async () => {
+    setMediasoupPresent(true); vi.resetModules();
+    const { BridgeRTC } = await import('../js/webrtc-sfu');
+    const socket = makeInteractiveSocket();
+    const rtc = new BridgeRTC(socket as any) as any;
+    rtc._sfuAvailable = true;
+    rtc.currentChannelId = 'voice-evicted';
+    rtc.localStream = makeStream([makeTrack('audio')]);
+    const left: unknown[] = [];
+    document.addEventListener('bridge:voice-left', (e) => left.push((e as CustomEvent).detail));
+    rtc._sfuJoin = vi.fn();
+
+    await socket.dispatch('voice:evicted', { channelId: 'other-channel' });
+    expect(rtc.currentChannelId).toBe('voice-evicted');
+
+    await socket.dispatch('voice:evicted', { channelId: 'voice-evicted' });
+    expect(rtc.currentChannelId).toBeNull();
+    expect(left).toContainEqual({ reason: 'evicted' });
+    expect(rtc._recovery).toBeNull();
+    expect(rtc._sfuJoin).not.toHaveBeenCalled();
+  });
+});
+
+it('a forced close we did not request still ends the call (no silent auto-rejoin)', async () => {
+  setMediasoupPresent(true); vi.resetModules();
+  const { BridgeRTC } = await import('../js/webrtc-sfu');
+  const socket = makeInteractiveSocket();
+  const rtc = new BridgeRTC(socket as any) as any;
+  rtc._sfuAvailable = true;
+  rtc.currentChannelId = 'voice-forced';
+  rtc.localStream = makeStream([makeTrack('audio')]);
+  rtc._sfuJoin = vi.fn();
+  await socket.dispatch('disconnect', 'forced close');
+  expect(rtc.currentChannelId).toBeNull();
+  expect(rtc._sfuJoin).not.toHaveBeenCalled();
+});
+
+describe('engine-originated state reaches the voice UI', () => {
+  it('broadcasts the local state on every change so the panel mirrors it', async () => {
+    const { rtc } = await makeRTC({ sfu: true });
+    rtc.currentChannelId = 'voice-local';
+    const seen: unknown[] = [];
+    document.addEventListener('bridge:voice-local-state', (e) => seen.push((e as CustomEvent).detail));
+    rtc.videoOn = false;
+    (rtc as any)._broadcastState();
+    expect(seen.at(-1)).toEqual({ muted: false, deafened: false, video: false, screensharing: false });
+  });
+
+  it('a microphone that ends underneath the call stops publishing, marks the user muted and says so', async () => {
+    const { rtc, socket } = await makeRTC({ sfu: true });
+    rtc.currentChannelId = 'voice-mic-lost';
+    (rtc as any)._sfuSocket = socket;
+    const producer = makeProducer('audio-lost');
+    rtc.producers.set('audio', producer);
+    uiToast.mockClear();
+    const seen: Array<{ muted: boolean }> = [];
+    document.addEventListener('bridge:voice-local-state', (e) => seen.push((e as CustomEvent).detail));
+
+    (rtc as any)._onMicrophoneLost();
+
+    expect(producer.close).toHaveBeenCalledOnce();
+    expect(rtc.producers.has('audio')).toBe(false);
+    expect(rtc.muted).toBe(true);
+    expect(uiToast).toHaveBeenCalledWith(expect.any(String), 'error');
+    expect(seen.at(-1)?.muted).toBe(true);
+    expect(socket.emitted.map(e => e.event)).toEqual(expect.arrayContaining(['sfu:close-producer', 'voice:state-update']));
+  });
+});
+
+describe('recovery join names the session it replaces', () => {
+  it('sends `replaces` with the socket that carried the lost session and records the new one', async () => {
+    setMediasoupPresent(true); vi.resetModules();
+    const { BridgeRTC } = await import('../js/webrtc-sfu');
+    const socket = makeInteractiveSocket();
+    const rtc = new BridgeRTC(socket as any) as any;
+    rtc.currentChannelId = 'voice-replace';
+    rtc._sfuSessionSocketId = 'sock-before-handoff';
+    rtc._waitForRtpCapabilities = vi.fn(async () => ({ rtpCapabilities: { codecs: [] } }));
+    rtc._waitForSfuJoin = vi.fn(async () => ({ existingPeers: [] }));
+    rtc._createSendTransport = vi.fn(async () => undefined);
+    rtc._createRecvTransport = vi.fn(async () => undefined);
+
+    await rtc._sfuJoin('voice-replace', 'server-a', rtc._sessionGeneration);
+
+    const join = socket.emitted.find(e => e.event === 'sfu:join');
+    expect(join?.payload).toEqual(expect.objectContaining({ replaces: 'sock-before-handoff' }));
+    expect(rtc._sfuSessionSocketId).toBe('interactive');
+
+    rtc.leaveVoice();
+    expect(rtc._sfuSessionSocketId).toBeNull();
+  });
+
+  it('a first join sends no `replaces`', async () => {
+    setMediasoupPresent(true); vi.resetModules();
+    const { BridgeRTC } = await import('../js/webrtc-sfu');
+    const socket = makeInteractiveSocket();
+    const rtc = new BridgeRTC(socket as any) as any;
+    rtc.currentChannelId = 'voice-first';
+    rtc._waitForRtpCapabilities = vi.fn(async () => ({ rtpCapabilities: { codecs: [] } }));
+    rtc._waitForSfuJoin = vi.fn(async () => ({ existingPeers: [] }));
+    rtc._createSendTransport = vi.fn(async () => undefined);
+    rtc._createRecvTransport = vi.fn(async () => undefined);
+    await rtc._sfuJoin('voice-first', 'server-a', rtc._sessionGeneration);
+    expect(socket.emitted.find(e => e.event === 'sfu:join')?.payload).not.toHaveProperty('replaces');
   });
 });

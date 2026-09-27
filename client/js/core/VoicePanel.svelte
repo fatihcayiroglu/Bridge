@@ -725,6 +725,20 @@
     return { inVoice, muted, deafened };
   }
 
+  /** Engine-originated state changes (device lost, session recovered). */
+  function _onLocalState(event: Event): void {
+    if (!inVoice) return;
+    const detail = (event as CustomEvent<{ muted?: unknown; video?: unknown }>).detail ?? {};
+    if (typeof detail.muted === 'boolean' && detail.muted !== muted) {
+      muted = detail.muted;
+      document.dispatchEvent(new CustomEvent('bridge:voice-mute-changed', { detail: { muted } }));
+    }
+    if (typeof detail.video === 'boolean' && detail.video !== videoOn) {
+      videoOn = detail.video;
+      if (!videoOn) sfuRemoveVideoTile('local');
+    }
+  }
+
   function _onVoiceLeft(): void {
     inVoice = false;
     remoteAudioStreams = new Map();
@@ -789,6 +803,7 @@
     document.addEventListener('fullscreenchange', _onFullscreenChange);
     document.addEventListener('bridge:voice-joined', _onVoiceJoined);
     document.addEventListener('bridge:voice-left', _onVoiceLeft);
+    document.addEventListener('bridge:voice-local-state', _onLocalState);
     document.addEventListener('bridge:channel-selected', _onChannelSelected);
     inVoice = Boolean(rtc()?.isInVoice());
 
@@ -835,6 +850,7 @@
     document.removeEventListener('fullscreenchange', _onFullscreenChange);
     document.removeEventListener('bridge:voice-joined', _onVoiceJoined);
     document.removeEventListener('bridge:voice-left', _onVoiceLeft);
+    document.removeEventListener('bridge:voice-local-state', _onLocalState);
     document.removeEventListener('bridge:channel-selected', _onChannelSelected);
     remoteAudioStreams = new Map();
 

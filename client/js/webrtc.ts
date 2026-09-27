@@ -9,6 +9,7 @@ import { t } from './core/i18n/index';
 // sözleşmesini arıyordu ve o anahtarı HİÇBİR ŞEY kaydetmiyor → tüm ses
 // hataları sessizce yutuluyordu (mikrofon reddi dahil).
 import { toast } from './core/utils.ts';
+import { voicePanelAdapter, type VoicePanelAdapter } from './core/voice-panel-adapter.ts';
 import { getAPI, currentServerChannels as _getServerChannels } from './core/globals.ts';
 import { apiFetch } from './core/api-fetch.ts';
 import { P2P_SCREEN_PRESETS as SCREEN_PRESETS, SCREEN_BITRATES, SCREEN_FPS, type ScreenQuality } from './core/rtc-screen-quality.ts';
@@ -89,38 +90,13 @@ interface BridgeVideoQualityModule {
 interface VoiceActivityUIModule {
   init(socket: BridgeSocket): void;
 }
-interface BridgeAppModule {
-  toast(msg: string, type: string): void;
-  showToast?(msg: string, type: string): void;
-  renderVoicePeer(peer: PeerInfo, initiator: boolean): void;
-  removeVoicePeer(socketId: string): void;
-  attachRemoteStream(socketId: string, stream: MediaStream, kind?: string): void;
-  updatePeerState(socketId: string, state: PeerState): void;
-  /** Faz K2 — uzak katilimcinin GERCEK konusma durumu. */
-  updatePeerSpeaking?(socketId: string, speaking: boolean): void;
-}
+// Voice UI: the canonical adapter shared with the SFU engine (core/voice-panel-adapter.ts).
+type BridgeAppModule = VoicePanelAdapter;
 
 // Helper: registry'den null-safe al
 function reg<T>(name: string): T | null {
   return BridgeRegistry.get<(...args: unknown[]) => unknown>(name) as T | null;
 }
-
-/**
- * Voice UI adapter.
- *
- * `bridgeApp` was a legacy object contract that is not registered anywhere in
- * the production boot path.  The Svelte VoicePanel owns these effects under
- * explicit registry keys, so signalling must target those reachable owners.
- */
-const voicePanelAdapter: BridgeAppModule = {
-  toast,
-  showToast: toast,
-  renderVoicePeer: (peer, initiator) => reg<BridgeAppModule['renderVoicePeer']>('voicePanel:renderVoicePeer')?.(peer, initiator),
-  removeVoicePeer: socketId => reg<BridgeAppModule['removeVoicePeer']>('voicePanel:removeVoicePeer')?.(socketId),
-  attachRemoteStream: (socketId, stream, kind) => reg<BridgeAppModule['attachRemoteStream']>('voicePanel:attachRemoteStream')?.(socketId, stream, kind),
-  updatePeerState: (socketId, state) => reg<BridgeAppModule['updatePeerState']>('voicePanel:updatePeerState')?.(socketId, state),
-  updatePeerSpeaking: (socketId, speaking) => reg<NonNullable<BridgeAppModule['updatePeerSpeaking']>>('voicePanel:updatePeerSpeaking')?.(socketId, speaking),
-};
 
 function app(): BridgeAppModule { return voicePanelAdapter; }
 

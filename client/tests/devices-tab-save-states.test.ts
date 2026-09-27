@@ -19,6 +19,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import DevicesTab from '../js/core/settings/tabs/DevicesTab.svelte';
 
+// The tab reaches the live voice session through the canonical registry
+// module. (It used to read `window.BridgeRegistry`, which production never
+// sets — these tests used to install that global and hid the defect.)
+const registry = vi.hoisted(() => ({ call: vi.fn() }));
+vi.mock('../js/core/bridge-registry', () => ({
+  BridgeRegistry: {
+    call: (...args: unknown[]) => registry.call(...args),
+    get: vi.fn(() => null), has: vi.fn(() => false), register: vi.fn(), unregister: vi.fn(),
+  },
+}));
+
 function track() { return { stop: vi.fn() } as unknown as MediaStreamTrack; }
 function stream(...tracks: MediaStreamTrack[]) { return { getTracks: () => tracks } as unknown as MediaStream; }
 function device(kind: MediaDeviceKind, deviceId: string, label = ''): MediaDeviceInfo {
@@ -37,8 +48,7 @@ const saveButton = () => document.querySelector('.btn--primary') as HTMLButtonEl
 beforeEach(() => {
   localStorage.clear();
   document.body.innerHTML = '';
-  registryCall = vi.fn();
-  (window as unknown as Record<string, unknown>).BridgeRegistry = { call: registryCall };
+  registryCall = registry.call; registryCall.mockReset();
   getUserMedia = vi.fn().mockResolvedValue(stream(track()));
   enumerateDevices = vi.fn().mockResolvedValue([
     device('audioinput', 'mic-1', 'Studio Mic'),
@@ -56,7 +66,6 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
-  delete (window as unknown as Record<string, unknown>).BridgeRegistry;
 });
 
 describe('device labels', () => {
@@ -162,7 +171,6 @@ describe('save state machine', () => {
   });
 
   it('still saves when no voice session is listening on the registry', async () => {
-    delete (window as unknown as Record<string, unknown>).BridgeRegistry;
     render(DevicesTab, { props: { store: makeStore() } });
     await waitFor(() => expect(saveButton()).not.toBeNull());
     await fireEvent.click(saveButton());

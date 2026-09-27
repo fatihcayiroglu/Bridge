@@ -1282,9 +1282,16 @@ test('canonical SFU engine is locally bundled, server-negotiated and request-cor
   // zaman yuklendigidir: ilk boyamada degil, kullanici bir SFU odasina
   // katildiginda (dinamik `import()`). Sozlesmenin amaci "CDN/global
   // degil, yerel paket" olmaya devam eder.
-  assert.match(sfuClient, /import\('mediasoup-client'\)/);
-  assert.doesNotMatch(sfuClient, /^import \{ Device \} from 'mediasoup-client';/m);
-  assert.doesNotMatch(sfuClient, /declare const mediasoupClient|window\.mediasoupClient|_sfuClientAvailable/);
+  // P2: the dynamic import lives in one loader module, which also unwraps the
+  // CommonJS namespace shape of the code-split production bundle (without it
+  // every SFU join failed with "Device is not a constructor").
+  const msLoader = read('client/js/core/mediasoup-client-loader.ts');
+  assert.match(msLoader, /import\('mediasoup-client'\)/);
+  assert.match(sfuClient, /import \{ loadMediasoupClient \} from '\.\/core\/mediasoup-client-loader\.ts';/);
+  for (const source of [sfuClient, msLoader]) {
+    assert.doesNotMatch(source, /^import \{ Device \} from 'mediasoup-client';/m);
+    assert.doesNotMatch(source, /declare const mediasoupClient|window\.mediasoupClient|_sfuClientAvailable/);
+  }
   const htmlCode = html.replace(/<!--[\s\S]*?-->/g, ' ');
   assert.doesNotMatch(htmlCode, /cdn\.jsdelivr\.net\/npm\/mediasoup-client|window\.mediasoupClient/);
   assert.match(html, /SFU \(mediasoup\) — YEREL BUNDLE \/ TEK RTC OWNER/);

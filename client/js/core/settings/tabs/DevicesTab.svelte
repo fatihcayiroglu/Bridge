@@ -5,6 +5,7 @@
 <script lang="ts">
   import { t } from '../../i18n/reactive.svelte.ts';
   import { createLogger } from '../../logger.ts';
+  import { BridgeRegistry } from '../../bridge-registry.ts';
   const log = createLogger('DevicesTab');
   import type { SettingsStore } from '../stores/settingsStore';
   let { store }: { store: SettingsStore } = $props();
@@ -130,11 +131,11 @@
         store.setDevicePreference(storeKey, value);
       }
 
-      // BridgeRegistry üzerinden aktif ses oturumuna bildir
-      const reg = (window as unknown as {
-        BridgeRegistry?: { call?: (m: string, data: unknown) => void }
-      }).BridgeRegistry;
-      reg?.call?.('voice:applyDeviceSettings', {
+      // Aktif ses oturumuna KANONIK registry modülü üzerinden bildir. Eskiden
+      // `window.BridgeRegistry` okunuyordu; üretimde o global HİÇ atanmaz, bu
+      // yüzden kaydedilen mikrofon/ses ayarı canlı görüşmeye ULAŞMIYORDU (P2
+      // medya laboratuvarı: kayıttan sonra yeni yakalama yok).
+      BridgeRegistry.call('voice:applyDeviceSettings', {
         micDeviceId:    selMicId,
         noiseSuppression,
         echoCancellation,
