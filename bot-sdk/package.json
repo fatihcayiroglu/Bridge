@@ -88,11 +88,11 @@
   "sideEffects": false,
   "repository": {
     "type": "git",
-    "url": "https://github.com/bridge-app/bridge.git",
+    "url": "https://github.com/fatihcayiroglu/Bridge.git",
     "directory": "bot-sdk"
   },
   "bugs": {
-    "url": "https://github.com/bridge-app/bridge/issues"
+    "url": "https://github.com/fatihcayiroglu/Bridge/issues"
   },
   "homepage": "https://github.com/bridge-app/bridge/tree/main/bot-sdk#readme",
   "publishConfig": {
