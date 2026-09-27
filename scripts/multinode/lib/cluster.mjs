@@ -79,6 +79,12 @@ function ensureTraversable(dir) {
   }
 }
 
+function pgUserHome() {
+  const r = spawnSync('getent', ['passwd', PG_USER], { encoding: 'utf8' });
+  const home = r.status === 0 ? r.stdout.trim().split(':')[5] : '';
+  return home || '/var/lib/postgresql';
+}
+
 function runPg(cmd, args, opts = {}) {
   if (!PG_USER) return run(cmd, args, opts);
   const dIdx = args.indexOf('-D');
@@ -117,7 +123,19 @@ export class Cluster {
   get s3Endpoint() { return process.env.MN_S3_ENDPOINT || `http://127.0.0.1:${this.s3Port}`; }
 
   // ── PostgreSQL ────────────────────────────────────────────────────────────
-  get pgDir() { return path.join(this.workDir, 'pg'); }
+  // As root, PostgreSQL runs as an unprivileged account. Its data directory
+  // lives under that account's own home, not inside the work directory: some
+  // sandboxes reset the permissions of their temp root mid-run, and a data
+  // directory the server can no longer traverse makes PostgreSQL PANIC and
+  // shut down (measured: pg_control "Permission denied" during a run).
+  get pgDir() {
+    if (!this._pgDir) {
+      this._pgDir = PG_USER
+        ? path.join(process.env.MN_PG_HOME || pgUserHome(), 'bridge-mn', path.basename(this.workDir))
+        : path.join(this.workDir, 'pg');
+    }
+    return this._pgDir;
+  }
 
   async startPostgres() {
     if (!this.pgBin) throw new Error('PostgreSQL binaries not found (set MN_PG_BIN)');
@@ -364,7 +382,8 @@ export class Cluster {
     return {
       workDir: this.workDir,
       versions: this.versions,
-      postgres: { port: this.pgPort, faultProxyPort: this.pgProxyPort, shared: true },
+      postgres: {
+        dataDir: this.pgDir, port: this.pgPort, faultProxyPort: this.pgProxyPort, shared: true },
       redis: { port: this.redisPort, shared: true },
       s3: { endpoint: this.s3Endpoint, nodeEndpoint: this.nodeS3Endpoint, faultProxy: 'http (per-method failure injection)', buckets: ['bridge-public', 'bridge-private'], shared: true },
       uploads: this.uploads,
@@ -378,6 +397,9 @@ export class Cluster {
     try { this.redisCli('SHUTDOWN', 'NOSAVE'); } catch { /* already down */ }
     this.resumeRedis();
     try { this.stopPostgres('fast'); } catch { /* already down */ }
+    // The server log is evidence; the data directory is disposable.
+    try { fs.copyFileSync(path.join(this.pgDir, 'postgres.log'), path.join(this.logs, 'postgres.log')); } catch { /* no log */ }
+    if (PG_USER) { try { fs.rmSync(this.pgDir, { recursive: true, force: true }); } catch { /* best effort */ } }
     await this.s3Proxy?.stop();
     this.s3Proc?.kill('SIGKILL');
   }
