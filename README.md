@@ -1,6 +1,6 @@
 # Bridge 🌉
 
-![CI](https://github.com/bridge-app/bridge/actions/workflows/quality-gate.yml/badge.svg)
+![CI](https://github.com/fatihcayiroglu/Bridge/actions/workflows/quality-gate.yml/badge.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen)
@@ -11,11 +11,17 @@ Bridge bir Discord kopyası değildir. Köprü metaforu (Hub → Space → Flow)
 
 Tasarım yönü: [docs/DESIGN_DIRECTION.md](docs/DESIGN_DIRECTION.md)
 
+> **Güncel kaynak durumu (2026-09-27):** `main`, Final23 paket ağacının üzerine yalnızca
+> GitHub CI/contract kapanışı için yapılan doğrulanmış düzeltmeleri içerir. PR #95 ve
+> post-merge **Bridge Quality Gate #245** başarıyla geçti. Son paketli kaynak:
+> `bridge-v1.125.0-final23-adversarial-audit-fixes-2026-09-26.zip`
+> (SHA-256 `b8fcc2116f3a2bdddc093c92e635e4bdfbde7594b7b4a798d75e5e03807ee8f4`).
+
 ## Demo
 
 | | |
 |---|---|
-| **Tanıtım sitesi** | [bridge-app.github.io/bridge](https://bridge-app.github.io/bridge/) |
+| **Statik demo kaynağı** | [docs/demo/index.html](docs/demo/index.html) |
 | **5 dk yerel demo** | `./scripts/demo.sh` → http://localhost:3001 |
 | **Rehber** | [docs/DEMO.md](docs/DEMO.md) |
 
@@ -53,7 +59,7 @@ Arayüz düzeni: Ayarlar → Görünüm → **Odak / Kompakt / Klasik**
 ### Docker (önerilen)
 
 ```bash
-git clone https://github.com/bridge-app/bridge.git
+git clone https://github.com/fatihcayiroglu/Bridge.git
 cd bridge
 cp .env.docker .env
 # .env'i düzenle: JWT_SECRET, REFRESH_SECRET, POSTGRES_PASSWORD
@@ -178,7 +184,7 @@ VAPID_PRIVATE_KEY=...
 
 ### Uluslararasılaştırma (i18n)
 - **10 stable production language packs:** Türkçe, English, Español, Русский, 日本語, 한국어, 简体中文, Português, Deutsch ve Français.
-- Her stable locale **2350/2350** canonical anahtarı taşır; key parity, placeholder parity, boş-değer ve English-fallback oranı CI quality gate ile korunur.
+- Her stable locale **2270/2270** canonical anahtarı taşır; key parity, placeholder parity, boş-değer ve English-fallback oranı CI quality gate ile korunur.
 - Dil paketleri lazy-load edilir; varsayılan dil Türkçedir ve tarayıcı dili destekleniyorsa otomatik algılanır.
 - Production selector yalnızca `stable` statüsündeki tam paketleri yayımlar.
 
@@ -327,7 +333,7 @@ FEDERATION_SECRET=paylasilan-gizli-anahtar
 
 ```
 bridge/
-├── client/               # Frontend (vanilla JS)
+├── client/               # Frontend (Svelte + TypeScript)
 │   ├── index.html
 │   ├── css/              # tokens.css + style.css
 │   └── js/
