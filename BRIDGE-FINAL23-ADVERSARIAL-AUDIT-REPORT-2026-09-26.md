@@ -137,3 +137,20 @@ This score is **not** a production certification and should be re-evaluated afte
 ## Required next handoff
 
 Treat the packaged Final23 artifact as the next source of truth, then run the complete certification chain from a fresh extract. Do not treat unavailable tests as passed, do not weaken assertions to accommodate the fixes, and preserve the 16 adversarial contracts as regression evidence.
+
+---
+
+## Post-GitHub certification update — 2026-09-27
+
+This section is a later certification note. The historical 2026-09-26 audit text above is preserved as originally recorded; its local-environment `PENDING / BLOCKED` statements describe the audit environment at that time and are not rewritten retroactively.
+
+- The packaged Final23 source tree was imported into GitHub from `bridge-v1.125.0-final23-adversarial-audit-fixes-2026-09-26.zip` (SHA-256 `b8fcc2116f3a2bdddc093c92e635e4bdfbde7594b7b4a798d75e5e03807ee8f4`).
+- The import commit `013af23e21dad16fc3bed4572af8d3a0ff77885c` recorded the GitHub tree as byte-for-byte equal to the packaged Final23 tree: 2,456 files, missing 0, extra 0, mismatch 0.
+- CI/contract failures found during GitHub certification were fixed without weakening the privacy/security contracts. PR #95 was then merged at `8ebe8de222ac58f828c0390386b21b3d8a4a9227`.
+- Post-merge **Bridge Quality Gate #245** concluded **SUCCESS**. Its ordinary push path passed the security audit, Node 22.19 minimum-compatibility check, typecheck/build, OpenAPI validation, unit/integration suites, Docker build smoke, Playwright API smoke, and security-critical E2E suites.
+- The scheduled full browser/media nightly path was intentionally skipped by that ordinary push workflow and is **not** counted as PASS.
+- The GitHub tree after PR #95 is no longer byte-identical to the Final23 ZIP: it is **Final23 lineage plus intentional post-package CI/contract closure fixes**. The verified post-Final23 code/CI delta at `8ebe8de...` touches 13 files and adds or deletes no files relative to the imported Final23 tree.
+- Later repository-head changes may include documentation/metadata corrections only; those do not change the packaged Final23 artifact and should not be described as a new packaged release.
+
+This GitHub certification closes the dependency-complete regression work that was pending in the original audit environment. It does **not** convert external validation into PASS. The following remain external / not verified by this certification unless separately evidenced: real multi-node production infrastructure, real TURN/WAN human A/V quality, macOS/iOS physical-device and store validation, code signing/notarization, independent penetration/security review, real production traffic, and human screen-reader validation.
+
