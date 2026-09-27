@@ -277,8 +277,18 @@ RL_MESSAGES_MAX=30
 RL_AI_MAX=10
 RL_AI_STREAM_MAX=5
 RL_UPLOAD_MAX=20
+RL_UPLOAD_CHUNK_MAX=120
 RL_GLOBAL_MAX=200
 ```
+
+**Parçalı yükleme (`/api/upload/chunk`) kaynak sınırları.** Hız sınırından ayrı olarak her
+kullanıcının eşzamanlı oturum sayısı (`CHUNK_UPLOAD_MAX_SESSIONS`, varsayılan 4), oturum başına
+baytı (canlı boost/küresel dosya hakkı) ve toplam geçici baytı (`CHUNK_UPLOAD_MAX_TEMP_MB`,
+varsayılan 400) sınırlanır; `CHUNK_UPLOAD_SESSION_TTL_MIN` (varsayılan 60) kadar boşta kalan
+oturumlar diskten silinir. `REDIS_URL` tanımlıysa bu kota Redis'te atomik tutulur ve Redis'e
+ulaşılamazsa parça **503** ile reddedilir. Çok düğümlü dağıtımda `<BRIDGE_UPLOAD_ROOT>/_chunks`
+tüm düğümlerin paylaştığı yükleme biriminde olmalıdır (`docker-compose.cluster.yml` bunu yapar);
+düğüm başına ayrı disk kullanan dağıtımlarda bir yüklemenin tüm parçaları aynı düğüme gitmelidir.
 
 > ⚠️ **Dikkat:** Redis olmadan rate limiter in-memory çalışır. Bu durumda çok instance deployment'ta her instance kendi limitini bağımsız tutar — limitler instance'lar arası paylaşılmaz. Production'da Redis zorunludur.
 
