@@ -1,3 +1,52 @@
+## [Unreleased] — 2026-09-27 — P2: real-media reliability evidence and fixes
+
+Not part of the packaged Final23 ZIP. A disposable media lab (`scripts/medialab`) runs two real Bridge
+nodes with real mediasoup workers, PostgreSQL, Redis, S3, a real coturn and real Chromium clients —
+each inside its own Linux network namespace behind a userspace impairment link (latency, jitter, loss,
+bandwidth, interruption; the host kernel has no `netem`) — and proves media by what the receiving
+browser **decodes**: a per-sender tone and a per-sender video colour, plus `getStats()` and the
+selected ICE candidate pair. Every defect below was reproduced there first (FAIL on the unfixed
+build) and has a fast regression test in the normal Quality Gate. Media path, authority matrix and
+measurements: `docs/MEDIA_RELIABILITY.md`. One host, synthetic impairment, fake capture devices:
+media-path evidence, not perceptual quality, physical devices or real Wi-Fi/cellular networks.
+
+### Fixed
+- **Every SFU voice join failed in the production web bundle.** The lazily loaded `mediasoup-client`
+  (CommonJS) resolves to a namespace with only `default` in the code-split esbuild output, so
+  `new Device()` threw "is not a constructor". The loader now unwraps both shapes; a regression test
+  bundles it with the production esbuild settings.
+- **A late joiner never heard the people already in the room.** Producers announced in `sfu:joined`
+  (or racing transport setup) were consumed before the receive transport existed and dropped; they
+  are now queued and consumed once it exists.
+- **SFU calls played no remote audio at all** and rendered no peer tiles, peer state or video
+  tiles: the SFU engine targeted a `bridgeApp` registry object nothing registers. Both RTC engines
+  now share one adapter to the VoicePanel's `voicePanel:*` owners.
+- **SFU media never used TURN**: transports were created without the issued ICE servers and relay
+  policy, so a client that could reach the SFU only through TURN had no media and `FORCE_TURN` had
+  no effect on SFU calls. Relay-only calls now work over TURN/UDP and TURN/TCP.
+- **Lost media sessions were never re-established.** ICE failure (TURN restart, WAN loss over
+  ~15 s, mediasoup worker or owner-node death, a Redis-fenced room) left a live-looking call with no
+  media; losing the app socket ended the call even when the media path was healthy. The SFU client
+  now re-establishes the session through the normal, fully re-authorized join path (bounded backoff,
+  90 s window; an authorization refusal ends the call), keeps a call whose dedicated owner socket is
+  alive, keeps the user muted, re-publishes camera/screen, reconnects a stale signaling transport
+  instead of waiting for its ping timeout, and names the session it replaces so no ghost peer
+  lingers after a network change.
+- **CONNECT or SPEAK revoked, or the member timed out, during a call: media kept flowing.** The live
+  access re-check now also enforces voice access for sockets in a voice room (CONNECT lost or timed
+  out → the voice session is evicted on every node; SPEAK lost → that user's producers are closed on
+  the room owner, listening stays); the timeout route runs the re-check. An evicted client is told
+  (`voice:evicted`) and ends the call instead of showing it live.
+- **Settings → Devices never reached the live call** (it read `window.BridgeRegistry`, which
+  production never sets); **camera video never exceeded 320x240** (a fixed 3-layer simulcast set lost
+  its full-resolution layer for a default 640x480 camera); **a camera or microphone that ended
+  underneath the call** left the controls showing it active and the microphone loss silent.
+
+### Added
+- `scripts/medialab` (lab, scenarios `e2e`, `turn`, `impair`, `netchange`, `failover`, `lifecycle`,
+  `authz`, `multiuser`, `soak`) and `.github/workflows/media-evidence.yml` (weekly + manual, not PR CI).
+- `docs/MEDIA_RELIABILITY.md`; the voice runbook states the measured recovery behaviour.
+
 ## [Unreleased] — 2026-09-27 — P1: multi-node distributed-correctness evidence and fixes
 
 Not part of the packaged Final23 ZIP. A reproducible harness (`scripts/multinode`) now runs Bridge as
