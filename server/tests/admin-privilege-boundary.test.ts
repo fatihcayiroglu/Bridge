@@ -47,6 +47,7 @@ jest.mock('../middleware/rateLimit', () => ({
     moderation: () => (_req: unknown, _res: unknown, next: () => void) => next(),
     settings:   () => (_req: unknown, _res: unknown, next: () => void) => next(),
     write:      () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    adminSetup: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   },
   rateLimit: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
