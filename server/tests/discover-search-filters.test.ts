@@ -155,7 +155,7 @@ describe('category filtering applies only for a known category', () => {
 
   it('treats a server with no category as "other"', async () => {
     const res = await request(app).get('/api/discover?category=other').set('Authorization', `Bearer ${token}`);
-    expect(names(res.body)).toEqual(['Kategorisiz']);
+    expect(names(res.body)).toEqual(['Kategorisiz', 'Kodcular']);
   });
 
   it('ignores an unrecognised category rather than emptying the list', async () => {
@@ -174,8 +174,9 @@ describe('empty servers never reach the discover list', () => {
     expect(names(res.body)).toEqual(['Dolu']);
   });
 
-  it('falls back to popular servers when nothing is explicitly discoverable', async () => {
-    // Hicbir sunucu isaretlenmemis: liste bos kalmaz, uyesi olanlar gosterilir.
+  it('does not expose private servers when nothing is explicitly discoverable', async () => {
+    // Hicbir sunucu isaretlenmemis: privacy geregi liste bos kalir; uye sayisi
+    // private bir sunucuyu discoverable yapmaz.
     const sid = uuidv4();
     const ownerId = uuidv4();
     await db.users.insert({ _id: ownerId, username: 'fb', displayName: 'FB', tokenVersion: 0 });
@@ -188,8 +189,7 @@ describe('empty servers never reach the discover list', () => {
     await db.members.insert({ _id: uuidv4(), userId: uuidv4(), serverId: lonely, joinedAt: Date.now() });
 
     const res = await request(app).get('/api/discover').set('Authorization', `Bearer ${token}`);
-    // Tek uyeli sunucu geri dususte de gosterilmez.
-    expect(names(res.body)).toEqual(['Kalabalik']);
+    expect(names(res.body)).toEqual([]);
   });
 });
 
