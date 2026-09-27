@@ -48,7 +48,7 @@ beforeEach(async () => {
   Object.assign(require('../db/loader'), db);
   Object.assign(require('../db/index'), db);
 
-  owner    = makeUser({ username: 'owner' });
+  owner    = makeUser({ username: 'owner', isAdmin: true });
   member   = makeUser({ username: 'member' });
   outsider = makeUser({ username: 'outsider' });
   server   = makeServer(owner._id, { name: 'Test Sunucu' });
@@ -136,7 +136,7 @@ describe('GET /api/health/ready', () => {
 // ══════════════════════════════════════════════════════════════
 describe('GET /api/health/stats', () => {
   it('test ortamında stats döner', async () => {
-    const res = await request(app).get('/api/health/stats');
+    const res = await request(app).get('/api/health/stats').set('Authorization', `Bearer ${ownerToken}`);
     expect(res.status).toBe(200);
     expect(res.body.memory).toBeDefined();
     expect(res.body.memory.heapUsed).toMatch(/MB/);
@@ -145,7 +145,7 @@ describe('GET /api/health/stats', () => {
   });
 
   it('socket stats dahil edilir', async () => {
-    const res = await request(app).get('/api/health/stats');
+    const res = await request(app).get('/api/health/stats').set('Authorization', `Bearer ${ownerToken}`);
     expect(res.status).toBe(200);
     expect(res.body.socket.connectedSockets).toBe(5);
     expect(res.body.socket.voiceRooms).toBe(2);
