@@ -16,6 +16,36 @@ describe('presence cluster ownership contract', () => {
     jest.clearAllMocks();
   });
 
+  // P1 multi-node ND-07: a user whose sockets all belonged to a dead node was
+  // never re-examined and stayed online forever.
+  it('the stale-presence reaper performs the offline transition once, and a reconnect in between wins', async () => {
+    process.env.REDIS_URL = 'redis://cluster.test';
+    const luaEval = jest.fn();
+    jest.doMock('../lib/redisAdapter', () => ({
+      cache: { withKeyLock: runLock, luaEval, luaEvalAuthoritative: luaEval,
+        get: jest.fn().mockResolvedValue(null), getAuthoritative: jest.fn().mockResolvedValue('visible'),
+        set: jest.fn(), setAuthoritative: jest.fn(), del: jest.fn(), delAuthoritative: jest.fn().mockResolvedValue(undefined) },
+      subscribeToChannel: jest.fn().mockResolvedValue(null),
+      publishToChannel: jest.fn().mockResolvedValue(undefined),
+    }));
+    jest.doMock('../lib/logger', () => ({ debug: jest.fn(), warn: jest.fn(), info: jest.fn() }));
+    const presence = require('../lib/presenceCache');
+    const onExpired = jest.fn(async () => undefined);
+
+    luaEval
+      .mockResolvedValueOnce(['dead-node-user', 'reconnected-user']) // candidates
+      .mockResolvedValueOnce(1)   // dead-node-user: this caller won the transition
+      .mockResolvedValueOnce(1)   // reconnected-user: won too...
+      .mockResolvedValueOnce(0)   // re-check dead-node-user: no live socket
+      .mockResolvedValueOnce(1);  // re-check reconnected-user: reconnected meanwhile
+    presence.startPresenceReaper(onExpired, 1_000);
+    await jest.advanceTimersByTimeAsync(1_000);
+    presence.stopPresenceReaper();
+
+    expect(onExpired).toHaveBeenCalledTimes(1);
+    expect(onExpired).toHaveBeenCalledWith('dead-node-user');
+  });
+
   it('does not persist a false global offline when another node still owns a socket', async () => {
     process.env.REDIS_URL = 'redis://cluster.test';
     const luaEval = jest.fn()

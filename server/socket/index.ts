@@ -15,7 +15,7 @@ import logger from '../lib/logger';
 
 import { verifyToken, verifiedTokenSubject, _invalidateTokenCache } from '../middleware/auth';
 import { sanitizeUser, normalizePresenceVisibility, normalizePresenceStatus } from '../lib/userUtils';
-import { Users } from '../db/repositories';
+import { Members, Users } from '../db/repositories';
 import { resolveBotToken } from '../middleware/botAuth';
 import { getBan, getClientIp } from '../middleware/ipBan';
 
@@ -30,7 +30,9 @@ import { registerInfraHandlers, handleDisconnect } from './handlers/infra';
 import { registerCanvasHandlers } from './handlers/canvas';
 import { registerDmReadHandlers } from './handlers/dm-read';
 import { registerDiscoverHandlers, pushMemberCount } from './handlers/discover';
-import { trackSocket, markOffline } from '../lib/presenceCache';
+import { trackSocket, markOffline, getMembershipsCached, startPresenceReaper } from '../lib/presenceCache';
+import { bindVoiceEvictionClusterControl, registerLocalVoiceEvictor } from '../lib/liveMembership';
+import { evictLocalVoiceSessions } from './voiceEviction';
 // Sprint 82: Yeni handler import'ları
 import { registerActivityHandlers }      from './handlers/activities';
 import { registerSuperReactionHandlers } from './handlers/super-reactions';
@@ -95,6 +97,15 @@ async function releaseConnectionLimitReservation(socket: import('socket.io').Soc
 function setupSocket(io: import('socket.io').Server): { voiceRooms: typeof voiceRooms } {
   _io = io;
   bindStageMediaClusterControl(io);
+  registerLocalVoiceEvictor(evictLocalVoiceSessions);
+  bindVoiceEvictionClusterControl(io);
+  // Users whose only remaining sockets belonged to a dead node: the same
+  // offline transition a last-socket disconnect performs (handleDisconnect).
+  startPresenceReaper(async (userId) => {
+    await Users.update(userId, { status: 'offline' });
+    const memberships = await getMembershipsCached(userId, () => Members.findByUser(userId).catch(() => []));
+    for (const m of memberships) io.to(`server:${m.serverId}`).emit('user:status', { userId, status: 'offline' });
+  });
 
   // ── MİDDLEWARE 0: WS bağlantı limiti (Sprint 120 / D5) ─────────
   // Tek IP'den aşırı WS bağlantısını engeller — DDoS/flood'a karşı

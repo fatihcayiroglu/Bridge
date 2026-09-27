@@ -27,6 +27,18 @@ function sharedSocketKey(userId: string): string {
   return `presence:sockets:${userId}`;
 }
 
+// ── PRESENCE AFTER NODE DEATH (P1 multi-node, ND-07) ─────────────────────────
+// A node that dies never releases its sockets. Their entries go stale after
+// SOCKET_STALE_MS, but staleness was only noticed when the SAME user's next
+// socket event ran a prune. Measured with three real nodes: a user whose node
+// was SIGKILLed and whose replacement socket then closed stayed "online"
+// forever (DB status and every observer), because nothing re-examined him.
+// `presence:users` indexes every user with shared sockets by last heartbeat;
+// the reaper below finds users whose sockets are ALL stale and performs the
+// offline transition exactly once cluster-wide (atomic ZREM decides the owner).
+const PRESENCE_INDEX_KEY = 'presence:users';
+const REAP_BATCH = 500;
+
 function visibilityKey(userId: string): string {
   return `presence:visibility:${userId}`;
 }
@@ -96,9 +108,10 @@ redis.call('ZADD', key, now, ARGV[3])
 redis.call('ZREMRANGEBYSCORE', key, '-inf', now - stale)
 local count = redis.call('ZCARD', key)
 redis.call('PEXPIRE', key, stale + tonumber(ARGV[4]))
+redis.call('ZADD', KEYS[2], now, ARGV[5])
 return count`,
-    [sharedSocketKey(userId)],
-    [String(now), String(SOCKET_STALE_MS), socketId, String(SOCKET_HEARTBEAT_MS)],
+    [sharedSocketKey(userId), PRESENCE_INDEX_KEY],
+    [String(now), String(SOCKET_STALE_MS), socketId, String(SOCKET_HEARTBEAT_MS), userId],
   );
   if (raw === null) throw new Error('Redis presence coordination unavailable');
   return parseRedisCount(raw, 'presence socket');
@@ -112,10 +125,15 @@ local stale = tonumber(ARGV[2])
 redis.call('ZREM', key, ARGV[3])
 redis.call('ZREMRANGEBYSCORE', key, '-inf', now - stale)
 local count = redis.call('ZCARD', key)
-if count == 0 then redis.call('DEL', key) else redis.call('PEXPIRE', key, stale + tonumber(ARGV[4])) end
+if count == 0 then
+  redis.call('DEL', key)
+  redis.call('ZREM', KEYS[2], ARGV[5])
+else
+  redis.call('PEXPIRE', key, stale + tonumber(ARGV[4]))
+end
 return count`,
-    [sharedSocketKey(userId)],
-    [String(now), String(SOCKET_STALE_MS), socketId, String(SOCKET_HEARTBEAT_MS)],
+    [sharedSocketKey(userId), PRESENCE_INDEX_KEY],
+    [String(now), String(SOCKET_STALE_MS), socketId, String(SOCKET_HEARTBEAT_MS), userId],
   );
   if (raw === null) throw new Error('Redis presence coordination unavailable');
   return parseRedisCount(raw, 'presence socket');
@@ -135,6 +153,77 @@ return count`,
   );
   if (raw === null) throw new Error('Redis presence coordination unavailable');
   return parseRedisCount(raw, 'presence socket');
+}
+
+/**
+ * One reaper pass: users whose every shared socket is stale. Returns the users
+ * for which THIS caller won the offline transition (at most one caller per
+ * user, whatever the number of nodes running the reaper).
+ */
+async function reapStalePresence(now = Date.now()): Promise<string[]> {
+  const candidates = await cache.luaEvalAuthoritative(
+    `return redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', tonumber(ARGV[1]), 'LIMIT', 0, tonumber(ARGV[2]))`,
+    [PRESENCE_INDEX_KEY],
+    [String(now - SOCKET_STALE_MS), String(REAP_BATCH)],
+  );
+  if (!Array.isArray(candidates)) return [];
+  const expired: string[] = [];
+  for (const candidate of candidates) {
+    const userId = String(candidate);
+    if (!userId) continue;
+    const won = await cache.luaEvalAuthoritative(
+      `local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local stale = tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - stale)
+if redis.call('ZCARD', key) > 0 then
+  local newest = redis.call('ZRANGE', key, -1, -1, 'WITHSCORES')
+  redis.call('ZADD', KEYS[2], newest[2], ARGV[3])
+  return 0
+end
+redis.call('DEL', key)
+return redis.call('ZREM', KEYS[2], ARGV[3])`,
+      [sharedSocketKey(userId), PRESENCE_INDEX_KEY],
+      [String(now), String(SOCKET_STALE_MS), userId],
+    );
+    if (Number(won) === 1) expired.push(userId);
+  }
+  return expired;
+}
+
+type PresenceExpiredHandler = (userId: string) => Promise<void>;
+let _reaper: ReturnType<typeof setInterval> | null = null;
+
+/** Start the cluster presence reaper (idempotent). The handler performs the user-visible offline transition. */
+function startPresenceReaper(onExpired: PresenceExpiredHandler, intervalMs = SOCKET_HEARTBEAT_MS): void {
+  if (!REDIS_CONFIGURED || _reaper) return;
+  let running = false;
+  _reaper = setInterval(() => {
+    if (running) return;
+    running = true;
+    void (async () => {
+      const expired = await reapStalePresence();
+      for (const userId of expired) {
+        if (_socketMap.get(userId)?.size) continue; // a live local socket re-touches it
+        // A reconnect elsewhere between the reap and now must win.
+        if ((await sharedSocketCount(userId).catch(() => 1)) > 0) continue;
+        await markOffline(userId).catch(() => undefined);
+        void Promise.resolve(publishToChannel(PRESENCE_CHANNEL, JSON.stringify({ event: 'presence:left', userId }))).catch(() => {});
+        await onExpired(userId).catch((err: unknown) => {
+          logger.warn({ err, userId, event: 'presence.reap.transition_failed' }, 'Stale presence offline transition failed');
+        });
+        logger.info({ userId, event: 'presence.reaped' }, 'User with only stale sockets (dead node) marked offline');
+      }
+    })().catch((err: unknown) => {
+      logger.warn({ err, event: 'presence.reap.redis_failed' }, 'Presence reaper pass failed');
+    }).finally(() => { running = false; });
+  }, intervalMs);
+  _reaper.unref?.();
+}
+
+function stopPresenceReaper(): void {
+  if (_reaper) clearInterval(_reaper);
+  _reaper = null;
 }
 
 // Best-effort pub/sub is notification-only. Redis socket ownership above is
@@ -395,6 +484,9 @@ if (REDIS_CONFIGURED) {
 }
 
 export {
+  reapStalePresence,
+  startPresenceReaper,
+  stopPresenceReaper,
   trackSocket,
   releaseSocket,
   socketCount,
