@@ -113,7 +113,7 @@ describe('Discover — coverage artırımı', () => {
     });
 
     it('returns featured servers when present', async () => {
-      await db.servers.update(serverId, { featured: 1, featuredAt: Date.now() });
+      await db.servers.update({ _id: serverId }, { $set: { featured: 1, featuredAt: Date.now() } });
       const res = await request(app)
         .get('/api/discover/featured')
         .set('Authorization', `Bearer ${token}`);
@@ -122,7 +122,7 @@ describe('Discover — coverage artırımı', () => {
     });
 
     it('never returns a featured server after it becomes private', async () => {
-      await db.servers.update(serverId, { featured: 1, featuredAt: Date.now(), discoverable: 0 });
+      await db.servers.update({ _id: serverId }, { $set: { featured: 1, featuredAt: Date.now(), discoverable: 0 } });
       const res = await request(app)
         .get('/api/discover/featured')
         .set('Authorization', `Bearer ${token}`);
@@ -144,7 +144,7 @@ describe('Discover — coverage artırımı', () => {
 
   describe('GET /api/discover — filtre dalları', () => {
     it('filters by category', async () => {
-      await db.servers.update(serverId, { category: 'gaming' });
+      await db.servers.update({ _id: serverId }, { $set: { category: 'gaming' } });
       const res = await request(app)
         .get('/api/discover?category=gaming')
         .set('Authorization', `Bearer ${token}`);
@@ -181,7 +181,7 @@ describe('Discover — coverage artırımı', () => {
     });
 
     it('does not fall back to private servers when the public catalog is empty', async () => {
-      await db.servers.update(serverId, { discoverable: 0 });
+      await db.servers.update({ _id: serverId }, { $set: { discoverable: 0 } });
       const res = await request(app).get('/api/discover?limit=1000')
         .set('Authorization', `Bearer ${token}`);
       expect(res.status).toBe(200);
@@ -189,7 +189,7 @@ describe('Discover — coverage artırımı', () => {
     });
 
     it('canonicalizes legacy edu category records to education', async () => {
-      await db.servers.update(serverId, { category: 'edu' });
+      await db.servers.update({ _id: serverId }, { $set: { category: 'edu' } });
       const res = await request(app).get('/api/discover?category=education')
         .set('Authorization', `Bearer ${token}`);
       expect(res.status).toBe(200);
@@ -379,7 +379,7 @@ describe('Discover — coverage artırımı', () => {
         .post('/api/discover/admin/feature')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ serverId, featured: true });
-      expect(cache.del).toHaveBeenCalledWith('discover:featured:list');
+      expect(cache.del).toHaveBeenCalledWith('discover:featured:list:v2');
     });
   });
 });
