@@ -7856,6 +7856,15 @@ paths:
       tags:
       - Upload
       summary: Parçalı yükleme (chunked upload, max 2GB)
+      description: >
+        Resumable, out-of-order chunk upload. `Content-Length` is required and
+        must not exceed 10 MB per chunk; it is reserved against the caller's
+        chunk quota before any byte is stored. Per authenticated user the
+        server bounds the request rate (`RL_UPLOAD_CHUNK_MAX`), concurrent
+        upload sessions (`CHUNK_UPLOAD_MAX_SESSIONS`), bytes per session (the
+        live boost/global file limit) and total temporary bytes
+        (`CHUNK_UPLOAD_MAX_TEMP_MB`). Sessions idle for
+        `CHUNK_UPLOAD_SESSION_TTL_MIN` expire and their chunks are removed.
       security:
       - bearerAuth: []
       parameters:
@@ -7893,6 +7902,16 @@ paths:
       responses:
         200:
           description: Chunk alındı — done:true son chunk'ta gelir
+        409:
+          description: Upload id bound to different metadata, retry bytes differ from the committed chunk, or the session is no longer active (CHUNK_SESSION_EXPIRED)
+        411:
+          description: Content-Length header missing or malformed
+        413:
+          description: Chunk larger than 10 MB, or the session would exceed the boost/global file limit (session purged)
+        429:
+          description: Rate limit, concurrent session limit (CHUNK_SESSION_LIMIT) or per-user temporary storage quota (CHUNK_QUOTA_EXCEEDED); see Retry-After
+        503:
+          description: Configured Redis rate-limit or quota authority unavailable; the chunk was not stored (fail closed)
       operationId: post_upload_chunk
   /upload/server-gif:
     post:

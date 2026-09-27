@@ -1,3 +1,37 @@
+## [Unreleased] — 2026-09-27 — Chunked-upload resource-exhaustion boundary (post-Final23)
+
+Focused security hardening on top of the Final23 lineage (not part of the packaged Final23 ZIP).
+Reproduced on `main @ 8508a5c` before the fix: 10 of 11 black-box boundary tests failed
+(`server/tests/chunk-upload-abuse-boundary.test.ts`); the eleventh, a legitimate upload exactly at
+the entitlement, is a negative control and passes both before and after.
+
+### Security
+- `POST /api/upload/chunk` now has its own user-scoped limiter (`RL_UPLOAD_CHUNK_MAX`, default
+  120/min). Previously only the global `/api` budget applied (200/min ≈ 2 GB/min of 10 MB chunks).
+- Per-user chunk quota (`server/lib/chunkUploadQuota.ts`): concurrent sessions
+  (`CHUNK_UPLOAD_MAX_SESSIONS`, default 4), bytes per session bounded by the live boost/global file
+  entitlement (previously only checked after the last chunk, so a 25 MB account could park up to
+  2 GB per upload id), and total temporary bytes including in-flight bodies
+  (`CHUNK_UPLOAD_MAX_TEMP_MB`, default 400). With `REDIS_URL` set, every decision is one atomic Lua
+  script on Redis and a Redis outage rejects the chunk with 503 (fail closed); without it the same
+  state machine runs in process memory (deliberate single-node mode).
+- `Content-Length` is required (411) and checked against the 10 MB chunk limit (413) before any
+  session directory, manifest or byte is written; the declared length is reserved as a lease first.
+- Abandoned sessions are reclaimed: sessions idle for `CHUNK_UPLOAD_SESSION_TTL_MIN` (default 60)
+  leave the quota, and `jobs/chunkSessionSweeper.ts` removes their `_chunks/` directories (never a
+  session with a live finalization lease). Previously `_chunks/` was outside every cleanup path.
+- A chunk rejected or aborted before its temp file finished opening could leave an unaccounted
+  `.part` file behind; the temp file is now removed on stream close and the 413 is sent only after.
+
+### Pull-request triage
+- PR #90 (refresh-token compare-and-set) and PR #91 (hardened chunk route, thread-room membership,
+  dependency floors) were compared against current `main`: their invariants are already enforced
+  by stronger mechanisms (`rotateRefreshTokenAtomic` `SELECT … FOR UPDATE` transaction with real
+  PostgreSQL concurrency tests; `chunkSessionKey`, immutable manifests, canonical indexes, atomic
+  commit and finalization lease; membership **and** channel-permission checks before `thread:join`;
+  newer dependency pins). The one invariant still missing — a chunk-route limiter — is implemented
+  here as part of the stronger quota design instead of porting the stale route.
+
 ## [Unreleased] — 2026-09-27 — Final23 GitHub sync + CI closure
 
 Final23 remained the packaged source-of-truth artifact, then its source tree was synchronized into this

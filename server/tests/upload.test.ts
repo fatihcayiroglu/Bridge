@@ -24,7 +24,10 @@ jest.mock('../middleware/auth', () => ({
   },
 }));
 jest.mock('../middleware/rateLimit', () => ({
-  limits: { upload: () => (_req: unknown, _res: unknown, next: () => void) => next() },
+  limits: {
+    upload: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    uploadChunk: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  },
 }));
 
 const mockPgQuery = jest.fn(async (sql: string) => {

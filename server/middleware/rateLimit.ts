@@ -50,6 +50,10 @@ const DEFAULTS: Record<string, LimitConfig> = {
   refresh:        { max: envSafeInt('RL_REFRESH_MAX', 30),  windowMs: envSafeInt('RL_REFRESH_WIN', 60_000)  },
   changePassword: { max: envSafeInt('RL_CHGPWD_MAX', 3),   windowMs: envSafeInt('RL_CHGPWD_WIN', 300_000) },
   upload:         { max: envSafeInt('RL_UPLOAD_MAX', 20),  windowMs: envSafeInt('RL_UPLOAD_WIN', 60_000)  },
+  // Parçalı yükleme: parça başına bir istek. `upload` (20/dk) dosya başınadır ve
+  // 100 MB'lık bir dosya 1 MB'lık parçalarla 100 istek sürer; ayrı bütçe gerekir.
+  // Disk tüketimi bu sayaçla DEĞİL, lib/chunkUploadQuota.ts ile sınırlanır.
+  uploadChunk:    { max: envSafeInt('RL_UPLOAD_CHUNK_MAX', 120), windowMs: envSafeInt('RL_UPLOAD_CHUNK_WIN', 60_000) },
   messages:       { max: envSafeInt('RL_MESSAGES_MAX', 30),  windowMs: envSafeInt('RL_MESSAGES_WIN', 60_000)  },
   react:          { max: envSafeInt('RL_REACT_MAX', 60),  windowMs: envSafeInt('RL_REACT_WIN', 60_000)  },
   settings:       { max: envSafeInt('RL_SETTINGS_MAX', 10),  windowMs: envSafeInt('RL_SETTINGS_WIN', 60_000)  },
@@ -561,6 +565,7 @@ export const limits = {
 
   // User-only: kişisel kota, VPN arkasındaki kullanıcılar sorunsuz erişsin
   upload:         _u('upload'),
+  uploadChunk:    _u('uploadChunk'),
   messages:       _u('messages'),
   react:          _u('react'),
   settings:       _u('settings'),

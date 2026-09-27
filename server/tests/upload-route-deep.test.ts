@@ -47,7 +47,7 @@ jest.mock('../middleware/auth', () => ({
     next();
   },
 }));
-jest.mock('../middleware/rateLimit', () => ({ limits: { upload: () => (_req: any, _res: any, next: any) => next() } }));
+jest.mock('../middleware/rateLimit', () => ({ limits: { upload: () => (_req: any, _res: any, next: any) => next(), uploadChunk: () => (_req: any, _res: any, next: any) => next() } }));
 jest.mock('../lib/adminAuthority', () => ({
   isDatabaseAdmin: jest.fn(async (id: unknown) => id === 'admin'),
   databaseAdminOnly: (_req: any, _res: any, next: any) => next(),
@@ -92,6 +92,9 @@ jest.mock('../lib/logger', () => ({
 
 const router = require('../routes/upload').default;
 const { chunkSessionKey } = require('../lib/chunkUploadSafety') as typeof import('../lib/chunkUploadSafety');
+// Chunk quota state (sessions/bytes per user) is module-level; each test here
+// exercises finalization, not the quota, so every test starts from zero.
+const { _resetChunkQuotaForTest } = require('../lib/chunkUploadQuota') as typeof import('../lib/chunkUploadQuota');
 
 function buildApp() {
   const app = express();
@@ -117,6 +120,7 @@ function chunkReq(id: string, index: number, total: number, body: Buffer, opts: 
 
 beforeEach(() => {
   jest.clearAllMocks();
+  _resetChunkQuotaForTest();
   mockCheckMagic.mockReturnValue(true);
   mockScanFile.mockResolvedValue(undefined);
   mockSanitizeSvg.mockResolvedValue({ safe: true });
