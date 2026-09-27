@@ -454,6 +454,7 @@ jobs:
           METRICS_SECRET: ci_metrics_secret_minimum_16_chars
           MINIO_ACCESS_KEY: minioadmin
           MINIO_SECRET_KEY: minioadmin123
+          REDIS_PASSWORD: ci-redis-password-32chars-required
         run: docker compose -f docker-compose.yml -f docker-compose.prod.yml config
       - name: Docker build
         run: docker build --pull=false -t bridge:ci .
