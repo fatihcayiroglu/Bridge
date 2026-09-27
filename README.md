@@ -11,9 +11,10 @@ Bridge bir Discord kopyası değildir. Köprü metaforu (Hub → Space → Flow)
 
 Tasarım yönü: [docs/DESIGN_DIRECTION.md](docs/DESIGN_DIRECTION.md)
 
-> **Güncel kaynak durumu (2026-09-27):** `main`, Final23 paket ağacının üzerine yalnızca
-> GitHub CI/contract kapanışı için yapılan doğrulanmış düzeltmeleri içerir. PR #95 ve
-> post-merge **Bridge Quality Gate #245** başarıyla geçti. Son paketli kaynak:
+> **Güncel kaynak durumu (2026-09-27):** Geliştirme için source of truth GitHub `main`'dir.
+> Final23 ürün/CI lineage merge'i PR #95 ile `8ebe8de222ac58f828c0390386b21b3d8a4a9227`
+> üzerinde kapandı ve post-merge **Bridge Quality Gate #245** başarıyla geçti. Sonraki `main`
+> değişiklikleri yalnız docs/metadata doğruluk güncellemeleridir. Paketli baseline:
 > `bridge-v1.125.0-final23-adversarial-audit-fixes-2026-09-26.zip`
 > (SHA-256 `b8fcc2116f3a2bdddc093c92e635e4bdfbde7594b7b4a798d75e5e03807ee8f4`).
 
