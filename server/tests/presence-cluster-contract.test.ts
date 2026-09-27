@@ -46,6 +46,55 @@ describe('presence cluster ownership contract', () => {
     expect(onExpired).toHaveBeenCalledWith('dead-node-user');
   });
 
+  it('reaper failures are contained and logged; a user with a live LOCAL socket is never reaped; single-node runs no reaper', async () => {
+    process.env.REDIS_URL = 'redis://cluster.test';
+    const luaEval = jest.fn();
+    const warn = jest.fn();
+    jest.doMock('../lib/redisAdapter', () => ({
+      cache: { withKeyLock: runLock, luaEval, luaEvalAuthoritative: luaEval,
+        get: jest.fn().mockResolvedValue(null), getAuthoritative: jest.fn().mockResolvedValue('visible'),
+        set: jest.fn(), setAuthoritative: jest.fn().mockResolvedValue(undefined), del: jest.fn(), delAuthoritative: jest.fn().mockResolvedValue(undefined) },
+      subscribeToChannel: jest.fn().mockResolvedValue(null),
+      publishToChannel: jest.fn().mockResolvedValue(undefined),
+    }));
+    jest.doMock('../lib/logger', () => ({ debug: jest.fn(), warn, info: jest.fn() }));
+    const presence = require('../lib/presenceCache');
+
+    // A local live socket for u-local (tracked on this node).
+    luaEval.mockResolvedValueOnce(1);
+    await presence.trackSocket('u-local', 'sock-local');
+    const onExpired = jest.fn(async (userId: string) => { if (userId === 'u-throws') throw new Error('db down'); });
+    luaEval
+      .mockResolvedValueOnce(['u-local', 'u-throws'])  // candidates
+      .mockResolvedValueOnce(1).mockResolvedValueOnce(1) // both won in Redis
+      .mockResolvedValueOnce(0);                        // u-throws: no live socket
+    presence.startPresenceReaper(onExpired, 1_000);
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(onExpired).toHaveBeenCalledTimes(1);
+    expect(onExpired).toHaveBeenCalledWith('u-throws');
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ event: 'presence.reap.transition_failed', userId: 'u-throws' }), expect.any(String));
+
+    luaEval.mockRejectedValueOnce(new Error('redis down'));
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ event: 'presence.reap.redis_failed' }), expect.any(String));
+    presence.stopPresenceReaper();
+    presence.stopPresenceReaper();
+
+    jest.resetModules();
+    delete process.env.REDIS_URL;
+    jest.doMock('../lib/redisAdapter', () => ({
+      cache: { withKeyLock: runLock, luaEval: jest.fn(), luaEvalAuthoritative: jest.fn(), get: jest.fn(), set: jest.fn(), del: jest.fn() },
+      subscribeToChannel: jest.fn().mockResolvedValue(null), publishToChannel: jest.fn().mockResolvedValue(undefined),
+    }));
+    jest.doMock('../lib/logger', () => ({ debug: jest.fn(), warn: jest.fn(), info: jest.fn() }));
+    const single = require('../lib/presenceCache');
+    const handler = jest.fn();
+    single.startPresenceReaper(handler, 1_000);
+    await jest.advanceTimersByTimeAsync(3_000);
+    expect(handler).not.toHaveBeenCalled();
+    single.stopPresenceReaper();
+  });
+
   it('does not persist a false global offline when another node still owns a socket', async () => {
     process.env.REDIS_URL = 'redis://cluster.test';
     const luaEval = jest.fn()
