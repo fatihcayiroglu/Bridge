@@ -39,8 +39,8 @@ describe('Users Routes', () => {
     userToken  = tok(userId);
     otherToken = tok(otherId);
 
-    await db.users.insert({ _id: userId, username: 'alice', displayName: 'Alice', tokenVersion: 0, status: 'online', statusText: 'coding', statusEmoji: '💻', createdAt: Date.now() });
-    await db.users.insert({ _id: otherId, username: 'bob',   displayName: 'Bob',   tokenVersion: 0, status: 'offline', createdAt: Date.now() });
+    await db.users.insert({ _id: userId, username: 'alice', displayName: 'Alice', tokenVersion: 0, status: 'online', statusText: 'coding', statusEmoji: '💻', presenceVisibility: 'visible', createdAt: Date.now() });
+    await db.users.insert({ _id: otherId, username: 'bob',   displayName: 'Bob',   tokenVersion: 0, status: 'offline', presenceVisibility: 'visible', createdAt: Date.now() });
     await db.servers.insert({ _id: serverId, name: 'Common Server', ownerId: userId });
     await db.members.insert({ userId, serverId, roles: [] });
     await db.members.insert({ userId: otherId, serverId, roles: [] });
@@ -169,7 +169,7 @@ describe('Users Routes', () => {
 
     it('fills empty defaults for a user without status fields', async () => {
       const bareId = uuidv4();
-      await db.users.insert({ _id: bareId, username: 'bare', displayName: 'Bare', tokenVersion: 0 });
+      await db.users.insert({ _id: bareId, username: 'bare', displayName: 'Bare', tokenVersion: 0, presenceVisibility: 'visible' });
       const res = await request(app).get(`/api/users/${bareId}/presence`).set('Authorization', `Bearer ${userToken}`);
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ userId: bareId, online: false, status: 'offline', statusText: '', statusEmoji: '' });
