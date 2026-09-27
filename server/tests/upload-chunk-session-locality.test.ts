@@ -67,6 +67,8 @@ jest.mock('../db/postgres', () => ({ db: { _pool: { query: async (sql: string) =
 jest.mock('../db/repositories', () => ({ Boosts: { getHighestActiveTierForUser: jest.fn(async () => 3) } }));
 jest.mock('../db/loader', () => ({ __esModule: true, default: { uploads: { insert: jest.fn(async () => ({})), findOne: jest.fn(async () => null) } } }));
 jest.mock('../lib/logger', () => ({ __esModule: true, default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() } }));
+const mockDeadNodes = new Set<string>();
+jest.mock('../lib/nodeLiveness', () => ({ isNodeAlive: async (id: string) => !mockDeadNodes.has(id) }));
 
 const roots: string[] = [];
 function node(instanceId: string, root: string) {
@@ -94,7 +96,7 @@ function chunk(app: express.Express, id: string, index: number, total: number, b
 }
 const sessionDirs = (root: string) => { try { return fs.readdirSync(path.join(root, '_chunks')); } catch { return []; } };
 
-beforeEach(() => { mockAuthority.clear(); jest.clearAllMocks(); });
+beforeEach(() => { mockAuthority.clear(); mockDeadNodes.clear(); jest.clearAllMocks(); });
 afterAll(() => { for (const r of roots) fs.rmSync(r, { recursive: true, force: true }); });
 
 describe('completed upload replay (lost final response)', () => {
@@ -143,6 +145,20 @@ describe('staging locality with node-local upload roots', () => {
     // Routed to the staging node, the same upload completes.
     const done = await chunk(a, 'split-1', 1, 2, 'part one\n');
     expect(done.body.done).toBe(true);
+  });
+
+  it('a session staged on a DEAD node releases its quota and asks for a restart instead of holding the slot', async () => {
+    const a = node('node-a', mkRoot());
+    const b = node('node-b', mkRoot());
+    expect((await chunk(a, 'dead-1', 0, 2, 'part zero\n')).body.done).toBe(false);
+    mockDeadNodes.add('node-a');                      // node A was SIGKILLed; its lease expired
+    const next = await chunk(b, 'dead-1', 1, 2, 'part one\n');
+    expect(next.status).toBe(409);
+    expect(next.body.code).toBe('CHUNK_STAGING_LOST');
+    expect(mockRelease).toHaveBeenCalledWith('u1', expect.any(String));
+    // Restarting the upload on a live node works.
+    expect((await chunk(b, 'dead-1', 0, 2, 'part zero\n')).body.done).toBe(false);
+    expect((await chunk(b, 'dead-1', 1, 2, 'part one\n')).body.done).toBe(true);
   });
 
   it('negative control: with a SHARED upload root the other node finalizes the session', async () => {

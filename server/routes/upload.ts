@@ -41,6 +41,7 @@ import {
 } from '../lib/chunkUploadQuota';
 
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
+import { isNodeAlive } from '../lib/nodeLiveness';
 import {
   CHUNK_NODE_ID,
   clearChunkStagingNode,
@@ -433,9 +434,9 @@ router.post('/', authMiddleware, limits.upload(), handleUploadErrors(smallUpload
  *           schema: { type: string, format: binary }
  *     responses:
  *       200:
- *         description: Chunk alındı — done:true son chunk'ta gelir
+ *         description: Chunk alındı — done:true son chunk'ta gelir; tamamlanmış yüklemenin her yeniden denemesi aynı done:true yanıtını alır
  *       409:
- *         description: Metadata/bytes conflict, or session no longer active
+ *         description: Metadata/bytes conflict, session no longer active, staged on another node (CHUNK_STAGED_ELSEWHERE) or staging lost (CHUNK_STAGING_LOST)
  *       411:
  *         description: Content-Length header missing or malformed
  *       413:
@@ -511,7 +512,12 @@ router.post('/chunk', authMiddleware, limits.uploadChunk(), async (req, res) => 
     } catch (error) {
       return sessionAuthorityUnavailable(error);
     }
-    if (stagedOn && stagedOn !== CHUNK_NODE_ID) {
+    // An unknown liveness answer is treated as "alive": the conservative
+    // outcome keeps the other node's session intact.
+    const stagingNodeAlive = stagedOn && stagedOn !== CHUNK_NODE_ID
+      ? await isNodeAlive(stagedOn).catch(() => true)
+      : true;
+    if (stagedOn && stagedOn !== CHUNK_NODE_ID && stagingNodeAlive) {
       logger.warn({ uploadId, stagingNode: stagedOn, event: 'upload.chunk_staged_elsewhere' },
         'Chunk reached a node that does not hold the session staging');
       return res.status(409).json({
@@ -520,15 +526,17 @@ router.post('/chunk', authMiddleware, limits.uploadChunk(), async (req, res) => 
         stagingNode: stagedOn,
       });
     }
-    if (stagedOn === CHUNK_NODE_ID) {
-      // This node staged the session but no longer has it (restart without
-      // persistent storage, or the idle sweep). The committed chunks are gone:
-      // return the quota the session still holds and make the client restart.
+    if (stagedOn) {
+      // The staging is gone: this node lost it (restart without persistent
+      // storage, or the idle sweep) or the staging node itself is dead. The
+      // committed chunks are unreachable: return the quota the session still
+      // holds (else it blocks the user's session slots until the TTL) and make
+      // the client restart.
       await releaseChunkQuotaSession(chunkAuthUser.id, sessionKey).catch((error: unknown) => {
         logger.warn({ err: error, uploadId, event: 'upload.chunk_quota_release_failed' }, 'Chunk quota release failed; entry will expire');
       });
       await clearChunkStagingNode(sessionKey).catch(() => undefined);
-      logger.warn({ uploadId, event: 'upload.chunk_staging_lost' }, 'Chunk session staging lost on this node; client must restart');
+      logger.warn({ uploadId, stagingNode: stagedOn, event: 'upload.chunk_staging_lost' }, 'Chunk session staging lost; client must restart');
       return res.status(409).json({ error: 'Upload staging was lost; restart the upload', code: 'CHUNK_STAGING_LOST' });
     }
   }
