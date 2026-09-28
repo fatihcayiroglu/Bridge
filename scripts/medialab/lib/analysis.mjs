@@ -82,7 +82,12 @@ export function rtp(sample) {
 
 /** Rates between two samples (kbit/s, loss %, concealment %). */
 export function rates(a, b) {
-  const ra = rtp(a); const rb = rtp(b);
+  // Difference only transports alive in both samples; one created inside the
+  // window counts from zero, one closed inside it is dropped (its final
+  // counters are unknown). Summing across a replaced transport would go
+  // negative when a session is re-established mid-window.
+  const liveB = new Set(b.pcs.filter((p) => p.conn !== 'closed').map((p) => p.id));
+  const ra = rtp({ ...a, pcs: a.pcs.filter((p) => liveB.has(p.id)) }); const rb = rtp(b);
   const dt = (b.t - a.t) / 1000;
   const kbps = (x, y) => Math.round(((y - x) * 8) / dt / 100) / 10;
   const pct = (num, den) => (den > 0 ? Math.round((num / den) * 1000) / 10 : 0);

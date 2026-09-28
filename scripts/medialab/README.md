@@ -47,10 +47,19 @@ sudo -E MN_MOTO_SERVER=$(command -v moto_server) \
 
 Scenarios: `e2e`, `turn`, `impair`, `netchange`, `failover`, `lifecycle`,
 `authz`, `multiuser`, `soak` (`SOAK_MINUTES`, default 10;
-`IMPAIR_ONLY=interruptions` skips the profile matrix). Each writes
+`IMPAIR_ONLY=interruptions` skips the profile matrix). `congestion` (not in the
+default set) repeats a 64 kbit/s squeeze-and-clear on one call
+(`CONGESTION_CYCLES`, default 3) and times the return of video in each
+direction — the reproduction for the open finding MEDIA-11. Each writes
 `report.json` / `report.md`: `PASS`, `FAIL`, `BLOCKED`, `SKIPPED` (never
 counted as passing) and `INFO`/measurements. The report is written before
 teardown.
+
+coturn runs in its own process group and is stopped as a group (`faketime`
+forks it as a child); a start removes stray lab TURN servers and refuses to
+continue while any other process listens on the TURN address — a second
+server on the port (SO_REUSEPORT) silently refuses a share of the
+allocations. `TURN-LAB` records that no stray had to be removed.
 
 CI: `.github/workflows/media-evidence.yml` (weekly + manual). Not part of PR
 CI; the fast regression tests for the defects found here are client Vitest
