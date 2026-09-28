@@ -14,7 +14,6 @@ import { sfuRooms, sfuPeers, getOrCreateRoom, createWebRtcTransport, getRoomPeer
 import type { BridgeSocket, BridgeIO, BridgeUser, SfuPeer, RtpCapabilities, DtlsParameters, RtpParameters } from './types';
 // Sprint 120: A3 — Merkezi simulcast encoding config'den import
 import { SIMULCAST_ENCODINGS, SCREENSHARE_ENCODINGS } from './config';
-import { watchStalledVideo } from './bweReprobe';
 // Sprint 122 FIX 3: Kanal üyelik kontrolü için Members repository
 import { Channels, GroupDms, Members } from '../../../db/repositories';
 import { PERMS, hasPermission, resolvePermissions } from '../../../lib/permissions';
@@ -332,8 +331,6 @@ export function registerSFUHandlers(
       const transport = await createWebRtcTransport(room.router);
       if (direction === 'send') peer.sendTransport = transport;
       else                      peer.recvTransport = transport;
-      // MEDIA-11: re-probe when congestion left the estimate below every layer.
-      if (direction === 'recv') watchStalledVideo(transport, () => peer.consumers.values(), () => peer.recvTransport === transport);
 
       transport.on('dtlsstatechange', (state) => {
         if (state === 'closed' || state === 'failed') {

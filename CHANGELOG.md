@@ -55,14 +55,14 @@ media-path evidence, not perceptual quality, physical devices or real Wi-Fi/cell
 - New lab check `IMP-04`: video resumes after congestion clears (the matrix alone could not tell a
   slow bandwidth-estimate climb from stuck video). It found MEDIA-11 (below).
 
-### Fixed (MEDIA-11)
-- **Video from the SFU stayed off after heavy congestion.** When a receiver's link was squeezed, the
-  SFU's bandwidth estimate towards it could fall to its 30 kbit/s floor; no simulcast layer fits, so
-  no video was sent, and nothing fed the estimator again (mediasoup requests no congestion feedback on
-  forwarded audio; libwebrtc only probes when the allocated maximum changes). The video stayed off for
-  more than 90 s on a healthy link. Receive transports now re-probe while a simulcast consumer stays
-  without a layer: in the lab 4 of 6 floor episodes stayed stuck without it, 4 of 5 recovered in
-  3.1–4.9 s with it (the fifth by a session re-establishment).
+### Open (MEDIA-11)
+- **Video from the SFU can stay off after heavy congestion.** When a receiver's link is squeezed, the
+  SFU's bandwidth estimate towards it can fall to its 30 kbit/s floor; no simulcast layer fits, no
+  video is sent, and nothing feeds the estimator again (no congestion feedback on forwarded audio; no
+  probe while the desired bitrate is constant) — in the lab 4 of 6 such episodes stayed stuck ≥ 90 s.
+  A re-probe prototype cured it (4 of 5 recovered in 3–5 s) but raised audio concealment on a link
+  that stays at 150 kbit/s from ≤ 0.8 % to 6.6–10.6 %, so it is **not merged**; the fix needs an
+  audio-first bandwidth rule as well (P3). Details: `docs/MEDIA_RELIABILITY.md`.
 
 ## [Unreleased] — 2026-09-27 — P1: multi-node distributed-correctness evidence and fixes
 

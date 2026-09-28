@@ -211,8 +211,6 @@ export interface MediasoupTransport {
   close(): void;
   on(event: 'dtlsstatechange', cb: (state: DtlsState) => void): void;
   setMaxIncomingBitrate?(bitrate: number): Promise<void>;
-  setMaxOutgoingBitrate?(bitrate: number): Promise<void>;
-  readonly closed?: boolean;
 }
 
 export interface MediasoupProducer {
@@ -231,11 +229,6 @@ export interface MediasoupConsumer {
   kind:          'audio' | 'video';
   rtpParameters: RtpParameters;
   type:          'simple' | 'simulcast' | 'svc' | 'pipe';
-  readonly closed?:         boolean;
-  readonly paused?:         boolean;
-  readonly producerPaused?: boolean;
-  readonly currentLayers?:  { spatialLayer: number; temporalLayer?: number };
-  readonly score?:          { score: number; producerScore: number; producerScores: number[] };
   close(): void;
   resume(): Promise<void>;
   setPreferredLayers(layers: { spatialLayer: number; temporalLayer: number }): Promise<void>;
