@@ -9,7 +9,7 @@
 // impairment link's own counters prove the impairment was really applied.
 
 import { rates, toneContinuity, rtp } from '../lib/analysis.mjs';
-import { sleep, waitAudible } from '../lib/util.mjs';
+import { sleep, waitAudible, waitUntil } from '../lib/util.mjs';
 
 const both = [0, 1];
 
@@ -107,6 +107,44 @@ export async function run({ lab, record, measure }) {
   const lowBw = table.find((r) => r.profile === 'bw-severe-150k');
   if (table.length) record('IMP-03', 'severe bandwidth (150 kbit/s): video yields, audio stays audible', lowBw && lowBw.downlink_AtoB.toneAudiblePct >= 90 ? 'PASS' : 'FAIL',
     lowBw ? `A→B audible ${lowBw.downlink_AtoB.toneAudiblePct}% conceal ${lowBw.downlink_AtoB.concealedPct}% video ${lowBw.downlink_AtoB.videoRes} ${lowBw.downlink_AtoB.videoKbps} kbps` : 'missing');
+
+  // ── video after congestion clears ───────────────────────────────────────
+  // The matrix runs profiles back to back, so a profile after a squeeze also
+  // measures the bandwidth estimate climbing back. This isolates it: squeeze
+  // B's link to 64 kbit/s, clear it, and time until decoded video returns
+  // (≥ 1 frame/s over 2 s) and until the full-resolution layer returns.
+  {
+    const flow = async (c) => { const s0 = await c.sample(); await sleep(2000); return rates(s0, await c.sample()); };
+    const full = (r) => r.videoInRes.some((x) => x.startsWith('640x480'));
+    const until = async (pred, timeoutMs) => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < timeoutMs) { if (pred(await flow(B), await flow(A))) return Date.now() - t0; }
+      return null;
+    };
+    const warm = await until((b, a) => full(b) && full(a), 90_000);
+    const tSqueeze = Date.now();
+    await lab.net.impair(1, sym({ rate_kbps: 64, queue_ms: 300 }));
+    await sleep(20_000);
+    const [sqB, sqA] = [await flow(B), await flow(A)];
+    await lab.net.impair(1, sym({}));
+    const t0 = Date.now();
+    // New transports during the squeeze = the session was re-established.
+    const replaced = async (c) => (await c.events(tSqueeze)).filter((e) => e.ev === 'created' && e.t <= t0).length;
+    const [newB, newA] = [await replaced(B), await replaced(A)];
+    const resumedB = await waitUntil(async () => ((await flow(B)).videoFps >= 1 ? true : null), { timeoutMs: 90_000 });
+    const resumedA = await waitUntil(async () => ((await flow(A)).videoFps >= 1 ? true : null), { timeoutMs: 30_000 });
+    const resumeMs = resumedB.ok && resumedA.ok ? Date.now() - t0 : null;
+    const fullB = await waitUntil(async () => (full(await flow(B)) ? true : null), { timeoutMs: 90_000 });
+    const fullA = await waitUntil(async () => (full(await flow(A)) ? true : null), { timeoutMs: 30_000 });
+    const fullMs = fullB.ok && fullA.ok ? Date.now() - t0 : null;
+    const row = {
+      fullResBeforeSqueezeMs: warm, squeezed: { AtoB: { kbps: sqB.videoInKbps, fps: sqB.videoFps }, BtoA: { kbps: sqA.videoInKbps, fps: sqA.videoFps } },
+      transportsCreatedDuringSqueeze: { A: newA, B: newB }, resumeBothWaysMs: resumeMs, fullResBothWaysMs: fullMs,
+    };
+    measure('videoAfterCongestion', row, 'ms after the 64 kbit/s squeeze cleared');
+    record('IMP-04', 'video resumes both ways without user action once a 64 kbit/s squeeze clears', resumeMs !== null ? 'PASS' : 'FAIL',
+      `${resumeMs !== null ? `decoded video both ways ${resumeMs} ms after the link cleared` : `NOT resumed (A→B ${resumedB.ok}, B→A ${resumedA.ok})`}; full 640x480 both ways ${fullMs !== null ? `${fullMs} ms` : 'not within 90 s'}; during squeeze A→B ${sqB.videoInKbps} kbps ${sqB.videoFps} fps, B→A ${sqA.videoInKbps} kbps ${sqA.videoFps} fps; transports created during the squeeze A ${newA}, B ${newB}; before squeeze full resolution after ${warm === null ? '>90 s' : `${warm} ms`} on the clean link`);
+  }
 
   // ── interruptions (blackhole both directions) ───────────────────────────
   for (const seconds of [2, 5, 10, 20, 40]) {

@@ -39,6 +39,7 @@ async function closeAll(lab) {
 }
 
 export async function run({ lab, record, measure }) {
+  const turnHistoryStart = lab.turn.history.length;
   await lab.restartNodes({ FORCE_TURN: 'true' });
   await lab.settle();
 
@@ -174,4 +175,10 @@ export async function run({ lab, record, measure }) {
   await lab.restartNodes({ FORCE_TURN: 'false' });
   await lab.settle();
   measure('coturn.final', lab.turn.logSummary(), 'log counts');
+  // Lab integrity: a TURN server that survives stop() shares the port with
+  // the next one and refuses some allocations (see lib/turn.mjs).
+  const events = lab.turn.history.slice(turnHistoryStart).map((h) => h.event);
+  const strays = events.filter((e) => /stray/.test(e));
+  record('TURN-LAB', 'lab integrity: every TURN stop (incl. the faketime instance) left no TURN server behind',
+    strays.length ? 'FAIL' : 'PASS', events.join(', '));
 }
