@@ -235,17 +235,52 @@ changed*).
 
 The profiles run back to back on one call, so a profile after a squeeze also
 measures the bandwidth estimate climbing back. **Video after congestion
-clears** (IMP-04: 64 kbit/s for 20 s, then a clean link) — **OPEN
-(MEDIA-11), 1 PASS / 1 FAIL**. First run: decoded video returned both ways
-6.3 s after the link cleared (its full-resolution reading is not used: the
-check then counted the size of a frozen frame — fixed). Second run: the
-video the SFU sends to the congested receiver (A→B) had **not resumed 90 s
-after the link cleared**, while B→A did; already before the squeeze — right
-after the matrix — the clean link had not brought full resolution back within
-90 s. No transport was re-established and audio was unaffected. Until this is
-root-caused, video recovery after heavy downlink congestion is **not
-proven**. (The first run also exposed a lab analysis bug — rates summed across
-a transport replaced inside the window went negative — fixed in `rates()`.)
+clears** (IMP-04: 64 kbit/s for 20 s, then a clean link) found **MEDIA-11**
+on the build merged with P2: 1 PASS / 1 FAIL — in the failing run the video
+the SFU sends to the congested receiver had not resumed 90 s after the link
+cleared (audio unaffected, no transport re-established). (The first run also
+exposed two lab analysis bugs — rates summed across a replaced transport went
+negative; a frozen frame's size counted as full resolution — both fixed.)
+
+MEDIA-11 was reproduced with the `congestion` scenario (repeated 64 kbit/s,
+20 s squeezes on one call) and traced inside mediasoup (local debug build):
+whenever the congested receiver's estimate ended the squeeze at its
+**30 kbit/s floor**, no simulcast layer fit, no video was sent, and nothing
+fed the estimator again — mediasoup requests no congestion feedback on the
+audio it forwards (transport-wide-cc is `recvonly` for audio), and libwebrtc
+only probes when the allocated maximum changes, which it does not while the
+desired bitrate stays constant. Counting only those floor episodes on the
+build merged with P2: 6 episodes in 10 cycles, **4 stuck ≥ 90 s** (until a
+session re-establishment happened to replace the transport), 2 recovered
+after ~9.7 s.
+
+**A fix was prototyped and measured, and is not merged.** Re-probing a
+receive transport while a simulcast consumer stays without a layer (a
+temporary outgoing cap, lifted again, makes libwebrtc probe) cures the
+deadlock — 4 of 5 floor episodes recovered in 3.1–4.9 s, 10/10 congestion
+cycles resumed video — but it **costs audio on a link that stays narrow**:
+the recovered estimate is just high enough for the lowest video layer, which
+the link cannot carry next to the audio (mediasoup's layer selection reserves
+nothing for audio; the layer switches also request key frames from the
+sender):
+
+| 150 kbit/s profile | merged build (3 runs) | with re-probe (3 variants) |
+|---|---|---|
+| A→B audio concealment | 0–0.4 % | 6.6–10.1 % |
+| B→A audio concealment | 0.2–0.8 % | 7.5–10.6 % |
+| video forwarded | 0–3 kbit/s | 25–44 kbit/s |
+
+Backing off by time (8/16/30 s) or by outcome (a probe that let video
+through which stalled again → 60 s, doubling to 5 min) reduced but did not
+remove that cost. On the merged build the deadlock is, in effect, what keeps
+video off — and audio clean — on narrow links; any mechanism that brings
+video back does so there too. Choosing between video recovery and narrow-link
+audio is a product decision, so MEDIA-11 stays **open**; the prototype is in
+the history of PR #104 (`bweReprobe.ts`, commit `225ad69`) as the starting
+point. Workaround: leave and rejoin the call (a fresh transport starts at
+800 kbit/s). Recommended fix (P3): re-probe **plus** audio-first admission —
+forward video only while the estimate covers the audio plus the lowest layer
+plus a margin.
 
 Link interruptions (blackhole both ways), all recovered without user action:
 
@@ -332,17 +367,12 @@ part of the device validation below.
 
 ## What is not proven
 
-- **Video recovery after heavy downlink congestion (MEDIA-11, open):** in one
-  of two runs the SFU→receiver video had not resumed 90 s after a 64 kbit/s
-  squeeze cleared (IMP-04); the `congestion` reproduction stuck in 2 of 4
-  cycles. mediasoup's own trace shows why: the receive transport's bandwidth
-  estimate sits at its 30 kbit/s floor, no simulcast layer fits, so no video
-  is sent — and mediasoup does not request congestion feedback on the audio
-  it forwards (transport-wide-cc is `recvonly` for audio), so nothing raises
-  the estimate again; no probe is triggered while the desired bitrate stays
-  constant. A session that is re-established for another reason recovers at
-  once (fresh transport). Audio is unaffected; leaving and rejoining the call
-  is the known workaround until it is fixed.
+- **Video recovery after heavy downlink congestion (MEDIA-11, open):** after a
+  squeeze that drives the SFU's estimate towards a receiver to its floor, that
+  receiver's video can stay off for good (audio is unaffected); see *Evidence*
+  for the root cause, the unmerged prototype and its measured audio cost.
+  How often real bufferbloat or a cellular link reaches that floor is not
+  measured.
 
 - **Human perceptual quality** (echo, noise suppression, loudness, lip sync):
   the fake capture device has no acoustic path. HUMAN VALIDATION REQUIRED

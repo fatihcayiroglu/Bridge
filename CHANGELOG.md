@@ -53,8 +53,16 @@ media-path evidence, not perceptual quality, physical devices or real Wi-Fi/cell
   port — fixed in the lab (coturn in its own process group, no other listener allowed) and re-run:
   24 PASS, 0 FAIL, 0 BLOCKED, 0 SKIPPED (TURN-09 and NC-02 pass). Measurements: `docs/MEDIA_RELIABILITY.md#evidence`.
 - New lab check `IMP-04`: video resumes after congestion clears (the matrix alone could not tell a
-  slow bandwidth-estimate climb from stuck video). 1 PASS / 1 FAIL: in one run the SFU→receiver video
-  had not resumed 90 s after a 64 kbit/s squeeze cleared — **open (MEDIA-11)**, not claimed as fixed.
+  slow bandwidth-estimate climb from stuck video). It found MEDIA-11 (below).
+
+### Open (MEDIA-11)
+- **Video from the SFU can stay off after heavy congestion.** When a receiver's link is squeezed, the
+  SFU's bandwidth estimate towards it can fall to its 30 kbit/s floor; no simulcast layer fits, no
+  video is sent, and nothing feeds the estimator again (no congestion feedback on forwarded audio; no
+  probe while the desired bitrate is constant) — in the lab 4 of 6 such episodes stayed stuck ≥ 90 s.
+  A re-probe prototype cured it (4 of 5 recovered in 3–5 s) but raised audio concealment on a link
+  that stays at 150 kbit/s from ≤ 0.8 % to 6.6–10.6 %, so it is **not merged**; the fix needs an
+  audio-first bandwidth rule as well (P3). Details: `docs/MEDIA_RELIABILITY.md`.
 
 ## [Unreleased] — 2026-09-27 — P1: multi-node distributed-correctness evidence and fixes
 
