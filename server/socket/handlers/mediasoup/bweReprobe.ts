@@ -15,16 +15,25 @@
 // While a simulcast consumer has been stalled for STALL_MS, this briefly caps
 // the transport's outgoing bitrate and lifts the cap again: each change of the
 // allocated maximum makes libwebrtc send a short probe cluster, whose feedback
-// moves the estimate to what the link really carries. On a link that is still
-// congested the probe finds nothing and video stays off, as it should.
+// moves the estimate to what the link really carries.
+//
+// On a link that really is narrow a probe costs audio: it lifts the estimate
+// just enough for the lowest video layer, which the link cannot carry next to
+// the audio, until the estimator backs off again (lab, 150 kbit/s: audio loss
+// 0 % → 9 % when probing every 8 s). Repeated probes therefore back off —
+// 8, 16, 30 s — until video has flowed steadily for HEALTHY_RESET_MS.
 
 import logger from '../../../lib/logger';
 
 export const TICK_MS = 2_000;
 /** A consumer must be stalled this long before the first probe. */
 export const STALL_MS = 6_000;
-/** Minimum time between probes while a consumer stays stalled. */
+/** Time to the second probe; each further probe waits twice as long ... */
 export const REPROBE_INTERVAL_MS = 8_000;
+/** ... up to this. */
+export const MAX_REPROBE_INTERVAL_MS = 30_000;
+/** Video must flow this long before probing starts again at full pace. */
+export const HEALTHY_RESET_MS = 20_000;
 /** Temporary cap: below the smallest allocated maximum mediasoup uses
  *  (initialAvailableOutgoingBitrate, 800 kbit/s), so setting it always changes
  *  the maximum, and far above the 30 kbit/s floor, so a probe is allowed. */
@@ -74,8 +83,10 @@ export function watchStalledVideo(
 ): () => void {
   if (typeof transport.setMaxOutgoingBitrate !== 'function') return () => {};
   let stalledSince: number | null = null;
+  let healthySince: number | null = null;
   let lastProbeAt = -Infinity;
-  let probesThisStall = 0;
+  let nextInterval = REPROBE_INTERVAL_MS;
+  let probesSinceHealthy = 0;
   let capTimer: ReturnType<typeof setTimeout> | null = null;
 
   const uncap = (): void => {
@@ -93,10 +104,19 @@ export function watchStalledVideo(
   const tick = async (): Promise<void> => {
     if (transport.closed || !isCurrent()) { stop(); return; }
     const t = now();
-    if (![...consumers()].some(isStalled)) { stalledSince = null; probesThisStall = 0; return; }
+    if (![...consumers()].some(isStalled)) {
+      stalledSince = null;
+      healthySince ??= t;
+      if (t - healthySince >= HEALTHY_RESET_MS) { nextInterval = REPROBE_INTERVAL_MS; probesSinceHealthy = 0; }
+      return;
+    }
+    healthySince = null;
     stalledSince ??= t;
-    if (t - stalledSince < STALL_MS || t - lastProbeAt < REPROBE_INTERVAL_MS || capTimer) return;
+    if (t - stalledSince < STALL_MS || capTimer) return;
+    if (probesSinceHealthy > 0 && t - lastProbeAt < nextInterval) return;
+    if (probesSinceHealthy > 0) nextInterval = Math.min(nextInterval * 2, MAX_REPROBE_INTERVAL_MS);
     lastProbeAt = t;
+    const first = probesSinceHealthy++ === 0;
     try {
       await transport.setMaxOutgoingBitrate!(PROBE_CAP_BPS);
     } catch (err) {
@@ -104,7 +124,7 @@ export function watchStalledVideo(
       return;
     }
     // One line per stall at info; the repeats of a long stall at debug.
-    logger[probesThisStall++ === 0 ? 'info' : 'debug'](
+    logger[first ? 'info' : 'debug'](
       { transportId: transport.id, stalledMs: t - stalledSince, event: 'sfu.bwe.reprobe' },
       '[SFU] Stalled video: re-probing the receive bandwidth.');
     capTimer = setTimeout(() => { capTimer = null; uncap(); }, CAP_HOLD_MS);

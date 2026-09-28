@@ -10,8 +10,8 @@
 jest.mock('../lib/logger', () => ({ __esModule: true, default: { error: jest.fn(), info: jest.fn(), warn: jest.fn(), debug: jest.fn() } }));
 
 import {
-  watchStalledVideo, isStalled, TICK_MS, STALL_MS, REPROBE_INTERVAL_MS, PROBE_CAP_BPS, CAP_HOLD_MS,
-  type ReprobeConsumer, type ReprobeTransport,
+  watchStalledVideo, isStalled, TICK_MS, STALL_MS, REPROBE_INTERVAL_MS, MAX_REPROBE_INTERVAL_MS, HEALTHY_RESET_MS,
+  PROBE_CAP_BPS, CAP_HOLD_MS, type ReprobeConsumer, type ReprobeTransport,
 } from '../socket/handlers/mediasoup/bweReprobe';
 
 const healthy = (over: Partial<ReprobeConsumer> = {}): ReprobeConsumer => ({
@@ -79,16 +79,68 @@ describe('watchStalledVideo', () => {
     stop();
   });
 
-  it('keeps re-probing at REPROBE_INTERVAL_MS while stalled, and stops once video flows', async () => {
+  // Probe times (ms since the watch started) for a consumer stalled throughout.
+  async function probeTimes(consumerAt: (ms: number, probes: number[]) => ReprobeConsumer, totalMs: number): Promise<number[]> {
+    const t = transport();
+    let elapsed = 0;
+    const times: number[] = [];
+    t.setMaxOutgoingBitrate.mockImplementation(async (b: number) => { if (b === PROBE_CAP_BPS) times.push(elapsed); });
+    const stop = watchStalledVideo(t, () => [consumerAt(elapsed, times)], () => true);
+    for (; elapsed < totalMs;) { elapsed += TICK_MS; await jest.advanceTimersByTimeAsync(TICK_MS); }
+    stop();
+    return times;
+  }
+
+  it('backs off while the stall persists: 8, 16, then every 30 s (a narrow link is not probed every 8 s)', async () => {
+    const times = await probeTimes(() => stalled(), 130_000);
+    const gaps = times.slice(1).map((x, i) => x - times[i]);
+    expect(times[0]).toBe(STALL_MS + TICK_MS);
+    expect(gaps.slice(0, 3)).toEqual([REPROBE_INTERVAL_MS, 2 * REPROBE_INTERVAL_MS, MAX_REPROBE_INTERVAL_MS]);
+    expect(gaps.slice(2).every((g) => g === MAX_REPROBE_INTERVAL_MS)).toBe(true);
+  });
+
+  it('a brief recovery after a probe does not reset the backoff', async () => {
+    // Stalled, except the tick right after each probe sees video — a narrow link
+    // where the probe briefly lets the lowest layer through.
+    const flickers: number[] = [];
+    const times = await probeTimes((ms, probes) => {
+      const last = probes[probes.length - 1];
+      if (last !== undefined && ms - last > 0 && ms - last <= TICK_MS) { flickers.push(ms); return healthy(); }
+      return stalled();
+    }, 130_000);
+    const gaps = times.slice(1).map((x, i) => x - times[i]);
+    expect(flickers.length).toBeGreaterThan(0);
+    // Each flicker restarts the stall clock, but never the backoff.
+    expect(gaps[0]).toBeGreaterThanOrEqual(REPROBE_INTERVAL_MS);
+    expect(gaps[1]).toBeGreaterThanOrEqual(2 * REPROBE_INTERVAL_MS);
+    expect(gaps.slice(2).every((g) => g >= MAX_REPROBE_INTERVAL_MS)).toBe(true);
+  });
+
+  it('video flowing for HEALTHY_RESET_MS restores the fast first probe', async () => {
     const t = transport();
     let consumer = stalled();
     const stop = watchStalledVideo(t, () => [consumer], () => true);
-    await advance(STALL_MS + TICK_MS + 2 * REPROBE_INTERVAL_MS);
-    const probes = t.setMaxOutgoingBitrate.mock.calls.filter(([b]) => b === PROBE_CAP_BPS).length;
-    expect(probes).toBe(3);
+    await advance(STALL_MS + TICK_MS + REPROBE_INTERVAL_MS + 2 * REPROBE_INTERVAL_MS);
+    expect(t.setMaxOutgoingBitrate.mock.calls.filter(([b]) => b === PROBE_CAP_BPS)).toHaveLength(3);
+    consumer = healthy();
+    await advance(HEALTHY_RESET_MS + TICK_MS);
+    t.setMaxOutgoingBitrate.mockClear();
+    consumer = stalled();
+    await advance(STALL_MS + TICK_MS);
+    expect(t.setMaxOutgoingBitrate).toHaveBeenCalledWith(PROBE_CAP_BPS);
+    await advance(REPROBE_INTERVAL_MS);
+    expect(t.setMaxOutgoingBitrate.mock.calls.filter(([b]) => b === PROBE_CAP_BPS)).toHaveLength(2);
+    stop();
+  });
+
+  it('stops probing once video flows', async () => {
+    const t = transport();
+    let consumer = stalled();
+    const stop = watchStalledVideo(t, () => [consumer], () => true);
+    await advance(STALL_MS + TICK_MS);
     consumer = healthy();
     t.setMaxOutgoingBitrate.mockClear();
-    await advance(60_000);
+    await advance(120_000);
     expect(t.setMaxOutgoingBitrate.mock.calls.filter(([b]) => b === PROBE_CAP_BPS)).toHaveLength(0);
     stop();
   });
@@ -141,15 +193,16 @@ describe('watchStalledVideo', () => {
     expect(t.setMaxOutgoingBitrate).toHaveBeenCalledTimes(2);
   });
 
-  it('a rejected cap is logged, not thrown, and retried on the next interval', async () => {
+  it('a rejected cap is logged, not thrown, and retried after the backoff interval', async () => {
     const t = transport();
     t.setMaxOutgoingBitrate.mockRejectedValueOnce(new Error('transport closed'));
     const stop = watchStalledVideo(t, () => [stalled()], () => true);
     await advance(STALL_MS + TICK_MS);
     expect(t.setMaxOutgoingBitrate).toHaveBeenCalledTimes(1);
-    await advance(REPROBE_INTERVAL_MS);
-    expect(t.setMaxOutgoingBitrate).toHaveBeenCalledWith(PROBE_CAP_BPS);
-    expect(t.setMaxOutgoingBitrate.mock.calls.length).toBeGreaterThanOrEqual(2);
+    await advance(REPROBE_INTERVAL_MS - TICK_MS);
+    expect(t.setMaxOutgoingBitrate).toHaveBeenCalledTimes(1);
+    await advance(TICK_MS);
+    expect(t.setMaxOutgoingBitrate).toHaveBeenCalledTimes(2);
     stop();
   });
 
