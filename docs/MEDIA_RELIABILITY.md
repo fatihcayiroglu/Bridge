@@ -160,7 +160,7 @@ group, removes stray lab TURN servers before a start and refuses to run while
 anything else listens on the TURN port (`TURN-LAB` checks it).
 **Re-run of `turn`, `netchange`, `impair` on the fixed lab** (same product
 build): **24 PASS, 0 FAIL, 0 BLOCKED, 0 SKIPPED**, 7 INFO — TURN-09 and NC-02
-pass; `impair` was run once more after a lab analysis fix (see IMP-04).
+pass; `TURN-LAB` confirms no stray TURN server.
 
 ### Two-way media on a clean network (e2e)
 
@@ -234,7 +234,12 @@ changed*).
 
 The profiles run back to back on one call, so a profile after a squeeze also
 measures the bandwidth estimate climbing back. **Video after congestion
-clears** (IMP-04: 64 kbit/s for 20 s, then a clean link): ⟪RERUN-IMP04⟫
+clears** (IMP-04: 64 kbit/s for 20 s, then a clean link; re-run on the
+fixed lab): decoded video returns **both ways 6.3 s** after the link clears
+and the full **640x480** layer both ways after **10.3 s**, without user
+action (during the squeeze A→B video was 11 kbit/s, 0 fps). Its first run
+also exposed a lab analysis bug — rates summed across a transport replaced
+inside the window went negative — fixed in `rates()`.
 
 Link interruptions (blackhole both ways), all recovered without user action:
 

@@ -51,9 +51,10 @@ media-path evidence, not perceptual quality, physical devices or real Wi-Fi/cell
 - Final full lab run on the merged product code: 72 PASS, 0 SKIPPED; the one FAIL (TURN over TCP)
   and one BLOCKED (relay-only handoff) were a lab defect — stray coturn processes sharing the TURN
   port — fixed in the lab (coturn in its own process group, no other listener allowed) and re-run:
-  ⟪RERUN-CHANGELOG⟫. Measurements: `docs/MEDIA_RELIABILITY.md#evidence`.
+  24 PASS, 0 FAIL, 0 BLOCKED, 0 SKIPPED (TURN-09 and NC-02 pass). Measurements: `docs/MEDIA_RELIABILITY.md#evidence`.
 - New lab check `IMP-04`: video resumes after congestion clears (the matrix alone could not tell a
-  slow bandwidth-estimate climb from stuck video).
+  slow bandwidth-estimate climb from stuck video) — both ways 6.3 s after a 64 kbit/s squeeze clears,
+  full resolution after 10.3 s.
 
 ## [Unreleased] — 2026-09-27 — P1: multi-node distributed-correctness evidence and fixes
 
