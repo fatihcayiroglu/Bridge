@@ -160,7 +160,8 @@ group, removes stray lab TURN servers before a start and refuses to run while
 anything else listens on the TURN port (`TURN-LAB` checks it).
 **Re-run of `turn`, `netchange`, `impair` on the fixed lab** (same product
 build): **24 PASS, 0 FAIL, 0 BLOCKED, 0 SKIPPED**, 7 INFO — TURN-09 and NC-02
-pass; `TURN-LAB` confirms no stray TURN server.
+pass; `TURN-LAB` confirms no stray TURN server. A second `impair` run (after
+the `rates()` fix): 7 PASS, **1 FAIL** (IMP-04, open finding MEDIA-11 below).
 
 ### Two-way media on a clean network (e2e)
 
@@ -234,12 +235,16 @@ changed*).
 
 The profiles run back to back on one call, so a profile after a squeeze also
 measures the bandwidth estimate climbing back. **Video after congestion
-clears** (IMP-04: 64 kbit/s for 20 s, then a clean link; re-run on the
-fixed lab): decoded video returns **both ways 6.3 s** after the link clears
-and the full **640x480** layer both ways after **10.3 s**, without user
-action (during the squeeze A→B video was 11 kbit/s, 0 fps). Its first run
-also exposed a lab analysis bug — rates summed across a transport replaced
-inside the window went negative — fixed in `rates()`.
+clears** (IMP-04: 64 kbit/s for 20 s, then a clean link) — **OPEN
+(MEDIA-11), 1 PASS / 1 FAIL**. First run: decoded video returned both ways
+6.3 s after the link cleared and full 640x480 after 10.3 s. Second run: the
+video the SFU sends to the congested receiver (A→B) had **not resumed 90 s
+after the link cleared**, while B→A did; already before the squeeze — right
+after the matrix — the clean link had not brought full resolution back within
+90 s. No transport was re-established and audio was unaffected. Until this is
+root-caused, video recovery after heavy downlink congestion is **not
+proven**. (The first run also exposed a lab analysis bug — rates summed across
+a transport replaced inside the window went negative — fixed in `rates()`.)
 
 Link interruptions (blackhole both ways), all recovered without user action:
 
@@ -325,6 +330,11 @@ camera content compresses far better; camera frame rate on real devices is
 part of the device validation below.
 
 ## What is not proven
+
+- **Video recovery after heavy downlink congestion (MEDIA-11, open):** in one
+  of two runs the SFU→receiver video had not resumed 90 s after a 64 kbit/s
+  squeeze cleared (IMP-04). Audio is unaffected; leaving and rejoining the
+  call is the known workaround until it is root-caused.
 
 - **Human perceptual quality** (echo, noise suppression, loudness, lip sync):
   the fake capture device has no acoustic path. HUMAN VALIDATION REQUIRED
