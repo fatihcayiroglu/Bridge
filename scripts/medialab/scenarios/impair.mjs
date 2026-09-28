@@ -115,7 +115,8 @@ export async function run({ lab, record, measure }) {
   // (≥ 1 frame/s over 2 s) and until the full-resolution layer returns.
   {
     const flow = async (c) => { const s0 = await c.sample(); await sleep(2000); return rates(s0, await c.sample()); };
-    const full = (r) => r.videoInRes.some((x) => x.startsWith('640x480'));
+    // frameWidth survives a freeze, so the resolution only counts while frames decode.
+    const full = (r) => r.videoFps >= 1 && r.videoInRes.some((x) => x.startsWith('640x480'));
     const until = async (pred, timeoutMs) => {
       const t0 = Date.now();
       while (Date.now() - t0 < timeoutMs) { if (pred(await flow(B), await flow(A))) return Date.now() - t0; }

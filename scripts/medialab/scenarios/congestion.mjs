@@ -29,32 +29,38 @@ export async function run({ lab, record, measure }) {
   await B.toggleVideo();
 
   const flow = async (c) => { const s0 = await c.sample(); await sleep(2000); return rates(s0, await c.sample()); };
-  const full = (r) => r.videoInRes.some((x) => x.startsWith('640x480'));
-  // Polls one receiver until `pred` holds; ms since `t0`, or null on timeout.
-  const until = async (c, pred, t0, timeoutMs) => {
-    while (Date.now() - t0 < timeoutMs) { if (pred(await flow(c))) return Date.now() - t0; }
-    return null;
+  const flowing = (r) => r.videoFps >= 1;
+  // frameWidth survives a freeze, so the resolution only counts while frames decode.
+  const full = (r) => flowing(r) && r.videoInRes.some((x) => x.startsWith('640x480'));
+  // Samples both receivers in parallel until every condition held once (or
+  // the timeout); each value is ms since `t0` at which it first held, or null.
+  const watch = async (t0, timeoutMs) => {
+    const got = { resumeAtoB: null, resumeBtoA: null, fullAtoB: null, fullBtoA: null };
+    while (Date.now() - t0 < timeoutMs && Object.values(got).some((v) => v === null)) {
+      const [atB, atA] = await Promise.all([flow(B), flow(A)]);
+      const t = Date.now() - t0;
+      if (got.resumeAtoB === null && flowing(atB)) got.resumeAtoB = t;
+      if (got.resumeBtoA === null && flowing(atA)) got.resumeBtoA = t;
+      if (got.fullAtoB === null && full(atB)) got.fullAtoB = t;
+      if (got.fullBtoA === null && full(atA)) got.fullBtoA = t;
+    }
+    return got;
   };
 
   const cycles = Number(process.env.CONGESTION_CYCLES || 3);
   const rows = [];
   for (let i = 0; i < cycles; i++) {
-    const tw = Date.now();
-    const warmB = await until(B, full, tw, 60_000);
-    const warmA = await until(A, full, tw, 60_000);
+    const warm = await watch(Date.now(), 90_000);
     await lab.net.impair(1, sym({ rate_kbps: 64, queue_ms: 300 }));
     await sleep(20_000);
-    const [sqB, sqA] = [await flow(B), await flow(A)];
+    const [sqB, sqA] = await Promise.all([flow(B), flow(A)]);
     await lab.net.impair(1, sym({}));
     const t0 = Date.now();
-    const resumeAtoB = await until(B, (r) => r.videoFps >= 1, t0, 90_000);
-    const resumeBtoA = await until(A, (r) => r.videoFps >= 1, t0, 90_000);
-    const fullAtoB = await until(B, full, t0, 90_000);
-    const fullBtoA = await until(A, full, t0, 90_000);
+    const got = await watch(t0, 90_000);
     const row = {
-      cycle: i + 1, clearedAt: t0, warmFullMs: { AtoB: warmB, BtoA: warmA },
+      cycle: i + 1, clearedAt: t0, warmFullMs: { AtoB: warm.fullAtoB, BtoA: warm.fullBtoA },
       squeezed: { AtoB: `${sqB.videoInKbps}k/${sqB.videoFps}fps`, BtoA: `${sqA.videoInKbps}k/${sqA.videoFps}fps` },
-      resumeMs: { AtoB: resumeAtoB, BtoA: resumeBtoA }, fullResMs: { AtoB: fullAtoB, BtoA: fullBtoA },
+      resumeMs: { AtoB: got.resumeAtoB, BtoA: got.resumeBtoA }, fullResMs: { AtoB: got.fullAtoB, BtoA: got.fullBtoA },
     };
     rows.push(row);
     console.log(`  congestion cycle ${i + 1}: ${JSON.stringify(row)}`);

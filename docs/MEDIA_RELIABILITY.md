@@ -237,7 +237,8 @@ The profiles run back to back on one call, so a profile after a squeeze also
 measures the bandwidth estimate climbing back. **Video after congestion
 clears** (IMP-04: 64 kbit/s for 20 s, then a clean link) — **OPEN
 (MEDIA-11), 1 PASS / 1 FAIL**. First run: decoded video returned both ways
-6.3 s after the link cleared and full 640x480 after 10.3 s. Second run: the
+6.3 s after the link cleared (its full-resolution reading is not used: the
+check then counted the size of a frozen frame — fixed). Second run: the
 video the SFU sends to the congested receiver (A→B) had **not resumed 90 s
 after the link cleared**, while B→A did; already before the squeeze — right
 after the matrix — the clean link had not brought full resolution back within
@@ -333,8 +334,15 @@ part of the device validation below.
 
 - **Video recovery after heavy downlink congestion (MEDIA-11, open):** in one
   of two runs the SFU→receiver video had not resumed 90 s after a 64 kbit/s
-  squeeze cleared (IMP-04). Audio is unaffected; leaving and rejoining the
-  call is the known workaround until it is root-caused.
+  squeeze cleared (IMP-04); the `congestion` reproduction stuck in 2 of 4
+  cycles. mediasoup's own trace shows why: the receive transport's bandwidth
+  estimate sits at its 30 kbit/s floor, no simulcast layer fits, so no video
+  is sent — and mediasoup does not request congestion feedback on the audio
+  it forwards (transport-wide-cc is `recvonly` for audio), so nothing raises
+  the estimate again; no probe is triggered while the desired bitrate stays
+  constant. A session that is re-established for another reason recovers at
+  once (fresh transport). Audio is unaffected; leaving and rejoining the call
+  is the known workaround until it is fixed.
 
 - **Human perceptual quality** (echo, noise suppression, loudness, lip sync):
   the fake capture device has no acoustic path. HUMAN VALIDATION REQUIRED
