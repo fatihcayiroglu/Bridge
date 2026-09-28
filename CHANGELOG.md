@@ -47,6 +47,14 @@ media-path evidence, not perceptual quality, physical devices or real Wi-Fi/cell
   `authz`, `multiuser`, `soak`) and `.github/workflows/media-evidence.yml` (weekly + manual, not PR CI).
 - `docs/MEDIA_RELIABILITY.md`; the voice runbook states the measured recovery behaviour.
 
+### Evidence
+- Final full lab run on the merged product code: 72 PASS, 0 SKIPPED; the one FAIL (TURN over TCP)
+  and one BLOCKED (relay-only handoff) were a lab defect — stray coturn processes sharing the TURN
+  port — fixed in the lab (coturn in its own process group, no other listener allowed) and re-run:
+  ⟪RERUN-CHANGELOG⟫. Measurements: `docs/MEDIA_RELIABILITY.md#evidence`.
+- New lab check `IMP-04`: video resumes after congestion clears (the matrix alone could not tell a
+  slow bandwidth-estimate climb from stuck video).
+
 ## [Unreleased] — 2026-09-27 — P1: multi-node distributed-correctness evidence and fixes
 
 Not part of the packaged Final23 ZIP. A reproducible harness (`scripts/multinode`) now runs Bridge as
