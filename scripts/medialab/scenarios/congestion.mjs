@@ -5,7 +5,8 @@
 // come back in each direction and to reach the full-resolution layer again.
 // A→B is what the SFU forwards to the congested receiver (mediasoup's
 // bandwidth estimate and layer selection); B→A is B's own uplink (the
-// browser's estimate). CONGESTION_CYCLES (default 3) sets the cycle count.
+// browser's estimate). CONGESTION_CYCLES (default 3) sets the cycle count;
+// CONGESTION_KBPS (default 64) and CONGESTION_SECONDS (default 20) the squeeze.
 
 import { rates } from '../lib/analysis.mjs';
 import { sleep, waitAudible } from '../lib/util.mjs';
@@ -48,11 +49,13 @@ export async function run({ lab, record, measure }) {
   };
 
   const cycles = Number(process.env.CONGESTION_CYCLES || 3);
+  const kbps = Number(process.env.CONGESTION_KBPS || 64);
+  const squeezeMs = Number(process.env.CONGESTION_SECONDS || 20) * 1000;
   const rows = [];
   for (let i = 0; i < cycles; i++) {
     const warm = await watch(Date.now(), 90_000);
-    await lab.net.impair(1, sym({ rate_kbps: 64, queue_ms: 300 }));
-    await sleep(20_000);
+    await lab.net.impair(1, sym({ rate_kbps: kbps, queue_ms: 300 }));
+    await sleep(squeezeMs);
     const [sqB, sqA] = await Promise.all([flow(B), flow(A)]);
     await lab.net.impair(1, sym({}));
     const t0 = Date.now();
@@ -65,9 +68,9 @@ export async function run({ lab, record, measure }) {
     rows.push(row);
     console.log(`  congestion cycle ${i + 1}: ${JSON.stringify(row)}`);
   }
-  measure('cycles', rows, 'ms after the 64 kbit/s squeeze cleared (null = not within 90 s)');
+  measure('cycles', rows, `ms after the ${kbps} kbit/s, ${squeezeMs / 1000} s squeeze cleared (null = not within 90 s)`);
   const stuck = rows.filter((r) => r.resumeMs.AtoB === null || r.resumeMs.BtoA === null);
-  record('CONG-01', `video resumes both ways after each of ${cycles} congestion cycles without user action`,
+  record('CONG-01', `video resumes both ways after each of ${cycles} congestion cycles (${kbps} kbit/s, ${squeezeMs / 1000} s) without user action`,
     stuck.length ? 'FAIL' : 'PASS',
     rows.map((r) => `#${r.cycle} resume A→B ${r.resumeMs.AtoB ?? 'NO'} / B→A ${r.resumeMs.BtoA ?? 'NO'} ms, full ${r.fullResMs.AtoB ?? 'NO'} / ${r.fullResMs.BtoA ?? 'NO'} ms`).join('; '));
 }

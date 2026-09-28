@@ -161,6 +161,7 @@ import {
 } from '../socket/handlers/mediasoup/rooms';
 
 import { registerSFUHandlers } from '../socket/handlers/mediasoup/index';
+import { STALL_MS, TICK_MS, PROBE_CAP_BPS } from '../socket/handlers/mediasoup/bweReprobe';
 const repositories = require('../db/repositories');
 
 import type { RtpCapabilities, BridgeSocket, BridgeIO, BridgeUser, MediasoupModule, RtpParameters, DtlsParameters } from '../socket/handlers/mediasoup/types';
@@ -629,6 +630,32 @@ describe('sfu:create-transport', () => {
     const room = sfuRooms.get('ch-duplicate-transport')!;
     expect(room.router.createWebRtcTransport).toHaveBeenCalledTimes(1);
     expect(socket._getEmit('sfu:error')).toBeDefined();
+  });
+
+  // P2 media lab MEDIA-11: congestion left the receive estimate below every
+  // simulcast layer and the video never came back; recv transports re-probe.
+  describe('stalled video re-probe (MEDIA-11)', () => {
+    const stalledVideo = { type: 'simulcast', paused: false, producerPaused: false, currentLayers: undefined, score: { score: 10, producerScore: 0, producerScores: [10, 10] } };
+    afterEach(() => { jest.useRealTimers(); });
+
+    async function watched(socketId: string, channelId: string, direction: 'send' | 'recv') {
+      const { socket } = await setupPeer(socketId, channelId);
+      const stub = (sfuRooms.get(channelId)!.router as unknown as { _transport: { setMaxOutgoingBitrate?: jest.Mock } })._transport;
+      stub.setMaxOutgoingBitrate = jest.fn(async () => {});
+      jest.useFakeTimers();
+      await socket._fire('sfu:create-transport', { channelId, direction });
+      sfuPeers.get(socketId)!.consumers.set('producer-video', stalledVideo as never);
+      await jest.advanceTimersByTimeAsync(STALL_MS + 2 * TICK_MS);
+      return stub.setMaxOutgoingBitrate;
+    }
+
+    it('a recv transport whose simulcast consumer stays without a layer is re-probed', async () => {
+      expect(await watched('sock-reprobe-recv', 'ch-reprobe-recv', 'recv')).toHaveBeenCalledWith(PROBE_CAP_BPS);
+    });
+
+    it('a send transport is not watched', async () => {
+      expect(await watched('sock-reprobe-send', 'ch-reprobe-send', 'send')).not.toHaveBeenCalled();
+    });
   });
 
   it('bilinmeyen direction değerini recv olarak yorumlamaz', async () => {
