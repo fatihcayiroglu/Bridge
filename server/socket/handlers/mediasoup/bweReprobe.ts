@@ -19,19 +19,30 @@
 //
 // On a link that really is narrow a probe costs audio: it lifts the estimate
 // just enough for the lowest video layer, which the link cannot carry next to
-// the audio, until the estimator backs off again (lab, 150 kbit/s: audio loss
-// 0 % → 9 % when probing every 8 s). Repeated probes therefore back off —
-// 8, 16, 30 s — until video has flowed steadily for HEALTHY_RESET_MS.
+// the audio, until the estimator backs off again (lab, 150 kbit/s: audio
+// concealment 0 % → 9-10 % with probes every 8-16 s). So the probe's outcome
+// sets the pace: a probe after which no video flowed was cheap (the link is
+// still congested) and is repeated after 8, 16, then every 30 s; a probe that
+// let video through which then stalled again marks a narrow link — the next
+// one waits 60 s, doubling up to 5 min. Video that flows steadily for
+// HEALTHY_RESET_MS resets both.
 
 import logger from '../../../lib/logger';
 
 export const TICK_MS = 2_000;
 /** A consumer must be stalled this long before the first probe. */
 export const STALL_MS = 6_000;
-/** Time to the second probe; each further probe waits twice as long ... */
+/** After a probe that let no video through: 8 s, doubling ... */
 export const REPROBE_INTERVAL_MS = 8_000;
 /** ... up to this. */
 export const MAX_REPROBE_INTERVAL_MS = 30_000;
+/** Video that resumed after a probe and stalled again within this window
+ *  marks a narrow link ... */
+export const FLAP_WINDOW_MS = 30_000;
+/** ... after which the next probe waits this long, doubling ... */
+export const NARROW_BACKOFF_MS = 60_000;
+/** ... up to this. */
+export const MAX_NARROW_BACKOFF_MS = 300_000;
 /** Video must flow this long before probing starts again at full pace. */
 export const HEALTHY_RESET_MS = 20_000;
 /** Temporary cap: below the smallest allocated maximum mediasoup uses
@@ -87,6 +98,8 @@ export function watchStalledVideo(
   let lastProbeAt = -Infinity;
   let nextInterval = REPROBE_INTERVAL_MS;
   let probesSinceHealthy = 0;
+  let videoAfterProbe = false;
+  let narrow = false;
   let capTimer: ReturnType<typeof setTimeout> | null = null;
 
   const uncap = (): void => {
@@ -105,16 +118,25 @@ export function watchStalledVideo(
     if (transport.closed || !isCurrent()) { stop(); return; }
     const t = now();
     if (![...consumers()].some(isStalled)) {
+      if (t - lastProbeAt <= FLAP_WINDOW_MS) videoAfterProbe = true;
       stalledSince = null;
       healthySince ??= t;
-      if (t - healthySince >= HEALTHY_RESET_MS) { nextInterval = REPROBE_INTERVAL_MS; probesSinceHealthy = 0; }
+      if (t - healthySince >= HEALTHY_RESET_MS) {
+        nextInterval = REPROBE_INTERVAL_MS; probesSinceHealthy = 0; videoAfterProbe = false; narrow = false;
+      }
       return;
     }
     healthySince = null;
+    if (videoAfterProbe) {
+      // The last probe let video through and it stalled again: a narrow link.
+      videoAfterProbe = false;
+      nextInterval = narrow ? Math.min(nextInterval * 2, MAX_NARROW_BACKOFF_MS) : NARROW_BACKOFF_MS;
+      narrow = true;
+    }
     stalledSince ??= t;
     if (t - stalledSince < STALL_MS || capTimer) return;
     if (probesSinceHealthy > 0 && t - lastProbeAt < nextInterval) return;
-    if (probesSinceHealthy > 0) nextInterval = Math.min(nextInterval * 2, MAX_REPROBE_INTERVAL_MS);
+    if (probesSinceHealthy > 0 && !narrow) nextInterval = Math.min(nextInterval * 2, MAX_REPROBE_INTERVAL_MS);
     lastProbeAt = t;
     const first = probesSinceHealthy++ === 0;
     try {

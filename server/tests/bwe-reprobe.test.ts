@@ -11,7 +11,7 @@ jest.mock('../lib/logger', () => ({ __esModule: true, default: { error: jest.fn(
 
 import {
   watchStalledVideo, isStalled, TICK_MS, STALL_MS, REPROBE_INTERVAL_MS, MAX_REPROBE_INTERVAL_MS, HEALTHY_RESET_MS,
-  PROBE_CAP_BPS, CAP_HOLD_MS, type ReprobeConsumer, type ReprobeTransport,
+  NARROW_BACKOFF_MS, MAX_NARROW_BACKOFF_MS, PROBE_CAP_BPS, CAP_HOLD_MS, type ReprobeConsumer, type ReprobeTransport,
 } from '../socket/handlers/mediasoup/bweReprobe';
 
 const healthy = (over: Partial<ReprobeConsumer> = {}): ReprobeConsumer => ({
@@ -99,21 +99,31 @@ describe('watchStalledVideo', () => {
     expect(gaps.slice(2).every((g) => g === MAX_REPROBE_INTERVAL_MS)).toBe(true);
   });
 
-  it('a brief recovery after a probe does not reset the backoff', async () => {
-    // Stalled, except the tick right after each probe sees video — a narrow link
-    // where the probe briefly lets the lowest layer through.
-    const flickers: number[] = [];
-    const times = await probeTimes((ms, probes) => {
-      const last = probes[probes.length - 1];
-      if (last !== undefined && ms - last > 0 && ms - last <= TICK_MS) { flickers.push(ms); return healthy(); }
-      return stalled();
-    }, 130_000);
+  // A narrow link: each probe briefly lets the lowest layer through (the tick
+  // right after it sees video), then the video stalls again.
+  const flickerAfterProbe = (ms: number, probes: number[]): ReprobeConsumer => {
+    const last = probes[probes.length - 1];
+    return last !== undefined && ms - last > 0 && ms - last <= TICK_MS ? healthy() : stalled();
+  };
+
+  it('a probe that lets video through which stalls again marks a narrow link: 60 s, doubling to 5 min', async () => {
+    const times = await probeTimes(flickerAfterProbe, 1_000_000);
     const gaps = times.slice(1).map((x, i) => x - times[i]);
-    expect(flickers.length).toBeGreaterThan(0);
-    // Each flicker restarts the stall clock, but never the backoff.
-    expect(gaps[0]).toBeGreaterThanOrEqual(REPROBE_INTERVAL_MS);
-    expect(gaps[1]).toBeGreaterThanOrEqual(2 * REPROBE_INTERVAL_MS);
-    expect(gaps.slice(2).every((g) => g >= MAX_REPROBE_INTERVAL_MS)).toBe(true);
+    expect(times[0]).toBe(STALL_MS + TICK_MS);
+    expect(gaps.slice(0, 4)).toEqual([NARROW_BACKOFF_MS, 2 * NARROW_BACKOFF_MS, 4 * NARROW_BACKOFF_MS, MAX_NARROW_BACKOFF_MS]);
+    expect(gaps.slice(3).every((g) => g === MAX_NARROW_BACKOFF_MS)).toBe(true);
+  });
+
+  it('steady video resets narrow mode to the fast first probe', async () => {
+    let steady = false;
+    const times = await probeTimes((ms, probes) => {
+      if (probes.length === 2 && !steady) steady = true;
+      if (steady && ms < (probes[1] ?? 0) + TICK_MS + HEALTHY_RESET_MS + TICK_MS) return healthy();
+      return flickerAfterProbe(ms, probes);
+    }, 200_000);
+    // probe 1 → flicker → narrow (60 s) → probe 2 → steady video ≥ 20 s → reset → next stall probed after STALL_MS.
+    expect(times[1] - times[0]).toBe(NARROW_BACKOFF_MS);
+    expect(times[2] - times[1]).toBeLessThan(NARROW_BACKOFF_MS);
   });
 
   it('video flowing for HEALTHY_RESET_MS restores the fast first probe', async () => {
