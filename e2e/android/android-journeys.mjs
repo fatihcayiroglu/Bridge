@@ -19,6 +19,7 @@
 import { _android as android, chromium, devices } from '@playwright/test';
 import { io } from 'socket.io-client';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
@@ -30,6 +31,40 @@ const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
 const PASSWORD = 'P4-android-journey-pass-1';
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
+
+// ── Controllable network path ───────────────────────────────────────────────
+// `adb reverse` tunnels over the adb connection, NOT through the emulated radio: turning Wi-Fi and
+// mobile data off in Android does not cut it (measured: the first run's "offline" message reached
+// the server). The app therefore reaches the server through this proxy
+// (adb reverse tcp:3000 → host PROXY_PORT → 127.0.0.1:3000). `cut()` resets every open connection
+// and refuses new ones — a real loss of the path — while `svc wifi/data disable` makes the OS and the
+// WebView report offline. `delay(ms)` adds one-way latency per chunk for the latency probe.
+class NetPath {
+  constructor(listenPort, targetPort) {
+    this.listenPort = listenPort; this.targetPort = targetPort;
+    this.sockets = new Set(); this.down = false; this.delayMs = 0;
+    this.server = net.createServer((client) => this.accept(client));
+  }
+  start() { return new Promise((resolve) => this.server.listen(this.listenPort, '127.0.0.1', resolve)); }
+  accept(client) {
+    if (this.down) { client.destroy(); return; }
+    const upstream = net.connect(this.targetPort, '127.0.0.1');
+    this.sockets.add(client); this.sockets.add(upstream);
+    const relay = (from, to) => from.on('data', (chunk) => {
+      if (!this.delayMs) { to.write(chunk); return; }
+      from.pause(); setTimeout(() => { if (!to.destroyed) to.write(chunk); from.resume(); }, this.delayMs);
+    });
+    relay(client, upstream); relay(upstream, client);
+    const close = () => { client.destroy(); upstream.destroy(); this.sockets.delete(client); this.sockets.delete(upstream); };
+    client.on('error', close); upstream.on('error', close); client.on('close', close); upstream.on('close', close);
+  }
+  cut() { this.down = true; for (const s of this.sockets) s.destroy(); this.sockets.clear(); }
+  restore() { this.down = false; }
+  delay(ms) { this.delayMs = ms; }
+  stop() { this.cut(); this.server.close(); }
+}
+const PROXY_PORT = Number(process.env.ANDROID_PROXY_PORT || 0);
+const netPath = PROXY_PORT ? new NetPath(PROXY_PORT, Number(new URL(API).port || 80)) : null;
 
 // ── Result model ───────────────────────────────────────────────────────────
 class Skip extends Error {}
@@ -63,9 +98,25 @@ async function check(id, title, fn) {
       return;
     }
     const shot = await screenshot(`${id}-fail`);
-    results.push({ id, title, status: 'FAIL', ms: Date.now() - started, error: String(err?.message ?? err).slice(0, 2000), screenshot: shot });
+    const dom = await domSummary();
+    results.push({ id, title, status: 'FAIL', ms: Date.now() - started, error: String(err?.message ?? err).slice(0, 2000), screenshot: shot, dom });
+    if (dom) log(`  DOM ${id}: ${dom}`);
     log(`  FAIL ${id}: ${err?.message ?? err}`);
   }
+}
+
+/** What the user was looking at when a check failed (the artifact host may be unreachable). */
+async function domSummary() {
+  if (!page) return null;
+  return page.evaluate(() => {
+    const vis = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+    const text = (el) => (el?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+    const dialogs = [...document.querySelectorAll('[role="dialog"]')].filter(vis).map((d) => d.getAttribute('aria-label') || d.className).slice(0, 4);
+    const alerts = [...document.querySelectorAll('[role="alert"], [role="status"], .toast')].filter(vis).map(text).filter(Boolean).slice(0, 4);
+    return JSON.stringify({ url: location.href, app: vis(document.getElementById('app')), auth: vis(document.getElementById('auth-screen')),
+      activeChannel: document.querySelector('.ch-item.active')?.getAttribute('data-id') ?? null, dialogs, alerts,
+      dmPanel: vis(document.querySelector('.dm-panel')) ? text(document.querySelector('.dm-panel')) : null });
+  }).catch((e) => `unavailable: ${e.message}`);
 }
 
 /** Measurement-only probe: records numbers, asserts nothing, and is NEVER counted as a PASS. */
@@ -193,7 +244,9 @@ const platform = {
   },
   async network(on) {
     if (MODE === 'dryrun') { await page.context().setOffline(!on); return; }
-    await sh(on ? 'svc wifi enable; svc data enable' : 'svc wifi disable; svc data disable');
+    if (!netPath) throw new Error('ANDROID_PROXY_PORT not set: adb reverse bypasses the emulated network, an offline test would be invalid');
+    if (on) { netPath.restore(); await sh('svc wifi enable; svc data enable'); }
+    else { await sh('svc wifi disable; svc data disable'); netPath.cut(); }
   },
   async permission(perm, grant) {
     if (MODE === 'dryrun') throw new Skip('runtime permissions need a device');
@@ -235,12 +288,27 @@ async function outboundAudio() {
     return out;
   }).catch(() => ({ pcs: 0, packetsSent: 0, audioLevel: null }));
 }
-async function permissionDialog(timeout = 20_000) {
-  // The real Android runtime-permission sheet (com.android.permissioncontroller).
-  try {
-    await device.wait({ res: 'com.android.permissioncontroller:id/permission_deny_button' }, { timeout });
-    return true;
-  } catch { return false; }
+/** The real Android runtime-permission sheet (AOSP or Google permission controller). */
+async function permissionSheet(timeout = 20_000) {
+  if (MODE === 'dryrun') return { shown: false, reason: 'dryrun' };
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const xml = await sh('uiautomator dump /sdcard/p4-ui.xml >/dev/null 2>&1; cat /sdcard/p4-ui.xml').catch(() => '');
+    if (/permissioncontroller/.test(xml) && /permission_(deny|allow)/.test(xml)) {
+      return { shown: true, pkg: (/package="([^"]*permissioncontroller[^"]*)"/.exec(xml) || [])[1] ?? null };
+    }
+    await sleep(700);
+  }
+  const xml = await sh('uiautomator dump /sdcard/p4-ui.xml >/dev/null 2>&1; cat /sdcard/p4-ui.xml').catch(() => '');
+  const packages = [...new Set([...xml.matchAll(/package="([^"]+)"/g)].map((m) => m[1]))];
+  return { shown: false, foregroundPackages: packages.slice(0, 5) };
+}
+async function tapPermissionButton(kind) {
+  const id = kind === 'deny' ? 'permission_deny_button' : 'permission_allow_foreground_only_button';
+  for (const pkg of ['com.android.permissioncontroller', 'com.google.android.permissioncontroller']) {
+    try { await device.tap({ res: `${pkg}:id/${id}` }, { timeout: 3_000 }); return; } catch { /* next */ }
+  }
+  await device.tap({ text: kind === 'deny' ? /Don.t allow|Deny/i : /While using the app|Allow/i }, { timeout: 5_000 });
 }
 async function appVisible(p = page) {
   return p.evaluate(() => { const a = document.getElementById('app'); return !!a && getComputedStyle(a).display !== 'none' && a.getBoundingClientRect().height > 0; }).catch(() => false);
@@ -309,6 +377,7 @@ async function main() {
   peerSock.emit('channel:join', { channelId, serverId });
   Object.assign(facts, { deviceUser: me.username, serverId, channelId, otherId, voiceId, privateChannelId });
 
+  if (netPath) { await netPath.start(); facts.networkPath = `adb reverse → proxy :${PROXY_PORT} → server :${netPath.targetPort}`; }
   if (MODE === 'android') {
     const list = await android.devices();
     assert(list.length > 0, 'no adb device');
@@ -422,34 +491,46 @@ async function main() {
   await check('N01', 'offline: banner shows, composed message is held, delivered exactly once on reconnect', async () => {
     await openServer(serverId);
     await openChannel(channelId);
-    await platform.network(false);
-    const offlineShown = await until(() => page.evaluate(() => {
-      const b = document.querySelector('.offline-banner.offline');
-      return !!b && getComputedStyle(b).display !== 'none';
-    }), { timeout: 45_000, message: 'offline banner' }).then(() => true).catch(() => false);
     const needle = `android-offline-${Date.now().toString(36)}`;
-    await sendFromComposer(needle);
-    await sleep(3_000);
-    const whileOffline = (await channelHas(me.token, channelId, needle)).length;
-    const t0 = Date.now();
-    await platform.network(true);
+    let offlineShown = false; let whileOffline = -1; let t0 = 0;
+    try {
+      await platform.network(false);
+      offlineShown = await until(() => page.evaluate(() => {
+        const b = document.querySelector('.offline-banner.offline');
+        return !!b && getComputedStyle(b).display !== 'none';
+      }), { timeout: 45_000, message: 'offline banner' }).then(() => true).catch(() => false);
+      await sendFromComposer(needle);
+      await sleep(3_000);
+      whileOffline = (await channelHas(me.token, channelId, needle)).length;
+    } finally {
+      t0 = Date.now();
+      await platform.network(true);
+    }
     await until(async () => (await channelHas(me.token, channelId, needle)).length >= 1, { timeout: 60_000, message: 'queued message delivered' });
+    const deliveredAfterReconnectMs = Date.now() - t0;
     await sleep(3_000);
     const copies = (await channelHas(me.token, channelId, needle)).length;
     assert(offlineShown, 'offline banner never appeared while the network was off');
     assert(whileOffline === 0, `message reached the server while offline (${whileOffline})`);
     assert(copies === 1, `queued message delivered ${copies} times`);
-    return { deliveredAfterReconnectMs: Date.now() - t0 };
+    return { deliveredAfterReconnectMs };
   });
 
   await check('N02', 'offline 30 s while another user posts → reconnect resync shows the missed message', async () => {
-    await platform.network(false);
-    await sleep(5_000);
     const needle = `android-missed-${Date.now().toString(36)}`;
-    await sendChannel(peerSock, serverId, channelId, needle);
-    await sleep(25_000);
-    const t0 = Date.now();
-    await platform.network(true);
+    let visibleWhileOffline = false; let t0 = 0;
+    try {
+      await platform.network(false);
+      await sleep(5_000);
+      await sendChannel(peerSock, serverId, channelId, needle);
+      await sleep(25_000);
+      // Negative check: with the path really cut, the message must NOT have arrived yet.
+      visibleWhileOffline = await visibleMessage(needle);
+    } finally {
+      t0 = Date.now();
+      await platform.network(true);
+    }
+    assert(!visibleWhileOffline, 'the message was visible while offline — the network was not actually cut');
     await until(() => visibleMessage(needle), { timeout: 60_000, message: 'missed message after reconnect' });
     return { visibleAfterReconnectMs: Date.now() - t0 };
   });
@@ -513,14 +594,14 @@ async function main() {
     await until(() => appVisible(), { timeout: 45_000, message: 'app after permission revoke' });
     await openServer(serverId);
     await page.evaluate((cid) => { document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`)?.click(); }, voiceId);
-    const sheet = await permissionDialog();
-    assert(sheet, 'Android microphone permission sheet did not appear on voice join');
-    await device.tap({ res: 'com.android.permissioncontroller:id/permission_deny_button' });
+    const sheet = await permissionSheet();
+    facts.micPermissionSheet = sheet;
+    if (sheet.shown) await tapPermissionButton('deny');
     const text = await until(() => page.evaluate(() => {
       const t = [...document.querySelectorAll('[role="alert"], [role="status"], .toast')].map((e) => e.textContent || '').join(' | ');
       return /mikrofon|microphone/i.test(t) ? t : null;
     }), { timeout: 25_000, message: 'microphone denial explained in the UI' });
-    return { shown: text.slice(0, 200) };
+    return { osSheet: sheet, shown: text.slice(0, 200) };
   });
 
   await check('P03', 'microphone permission granted → voice join sends audio (SFU outbound RTP)', async () => {
@@ -538,11 +619,11 @@ async function main() {
     return flow;
   });
 
-  await measure('P04', 'voice while backgrounded 20 s: does the OS keep the microphone capture alive?', async () => {
+  await measure('P04', 'voice while backgrounded 60 s: does the OS keep the microphone capture alive?', async () => {
     const before = await outboundAudio();
     assert(before.packetsSent > 0, 'no active voice session to background');
     await platform.home();
-    await sleep(20_000);
+    await sleep(60_000);
     const recording = MODE === 'android' ? await sh('dumpsys audio | grep -i -E "silenced|rec_activity|recording" | head -20').catch(() => '') : '';
     const fg = await platform.foreground();
     await attachPage();
@@ -557,13 +638,64 @@ async function main() {
     await attachPage();
     await until(() => appVisible(), { timeout: 45_000, message: 'app' });
     const status = await page.evaluate(() => window.bridgePush?.status?.() ?? 'no-bridgePush');
-    assert(status === 'denied' || status === 'prompt', `unexpected push permission status: ${status}`);
+    assert(['denied', 'prompt', 'unavailable'].includes(status), `unexpected push permission status: ${status}`);
     return { status };
   });
 
-  await check('P05', 'notification permission granted on a build without Firebase config → app launches and stays alive', async () => {
-    // Self-hosted builds without google-services.json are the documented default. Granting the
-    // notification permission makes the bridge call PushNotifications.register() at launch.
+  await check('UI01', 'landscape: no horizontal overflow and the composer stays visible', async () => {
+    await openServer(serverId);
+    await openChannel(channelId);
+    await platform.rotate(true);
+    await sleep(2_500);
+    const m = await page.evaluate(() => {
+      const c = document.getElementById('msg-input')?.getBoundingClientRect();
+      return { sw: document.documentElement.scrollWidth, iw: window.innerWidth, ih: window.innerHeight, composerBottom: c ? Math.round(c.bottom) : null, composerH: c ? Math.round(c.height) : null };
+    });
+    await platform.rotate(false);
+    await sleep(1_500);
+    assert(m.sw <= m.iw + 1, `horizontal overflow in landscape: scrollWidth ${m.sw} > innerWidth ${m.iw}`);
+    assert(m.composerBottom !== null && m.composerBottom <= m.ih + 1, `composer outside the landscape viewport: ${JSON.stringify(m)}`);
+    return m;
+  });
+
+  await check('UI02', 'software keyboard: the composer stays above the keyboard', async () => {
+    if (MODE === 'dryrun') throw new Skip('the software keyboard needs a device');
+    await openChannel(channelId);
+    await page.tap('#msg-input');
+    const imeShown = await until(async () => /mInputShown=true/.test(await sh('dumpsys input_method')), { timeout: 8_000, message: 'IME shown' }).then(() => true).catch(() => false);
+    await sleep(1_500);
+    const m = await page.evaluate(() => {
+      const r = document.getElementById('msg-input').getBoundingClientRect();
+      return { composerBottom: Math.round(r.bottom), visibleHeight: Math.round(window.visualViewport?.height ?? window.innerHeight),
+        innerHeight: window.innerHeight, keyboardOpenClass: document.body.classList.contains('keyboard-open'), focused: document.activeElement?.id ?? null };
+    });
+    if (imeShown) await platform.back();
+    assert(imeShown, `the software keyboard never appeared for the composer (${JSON.stringify(m)})`);
+    assert(m.composerBottom <= m.visibleHeight + 2, `composer hidden behind the keyboard: bottom ${m.composerBottom} > visible ${m.visibleHeight}`);
+    return m;
+  });
+
+  await measure('N03', 'high latency (≈400 ms one way on every packet): composer send → persisted and rendered', async () => {
+    if (!netPath) throw new Skip('needs the controllable network path');
+    netPath.delay(400);
+    try {
+      const needle = `android-slow-${Date.now().toString(36)}`;
+      const t0 = Date.now();
+      await sendFromComposer(needle);
+      await until(async () => (await channelHas(me.token, channelId, needle)).length === 1, { timeout: 40_000, message: 'message persisted under latency' });
+      const persistedMs = Date.now() - t0;
+      await until(() => visibleMessage(needle), { timeout: 20_000, message: 'rendered under latency' });
+      return { oneWayDelayMs: 400, sendToPersistMs: persistedMs, copies: (await channelHas(me.token, channelId, needle)).length };
+    } finally { netPath.delay(0); }
+  });
+
+  await measure('PERF01', 'memory footprint after the journeys (PSS)', async () => {
+    const kb = await platform.memInfoKb();
+    return { totalPssKb: kb };
+  });
+
+  // Last on purpose: before P4 this launch killed the process (the negative control for P4-18).
+  await check('P05', 'notification permission granted on a build without Firebase config → app launches, stays alive and says push is unavailable', async () => {
     await platform.permission('android.permission.POST_NOTIFICATIONS', true);
     await platform.forceStop();
     const launch = await platform.foreground();
@@ -574,24 +706,8 @@ async function main() {
     await attachPage();
     await until(() => appVisible(), { timeout: 45_000, message: 'app visible' });
     const status = await page.evaluate(() => window.bridgePush?.status?.() ?? 'no-bridgePush');
-    return { pid: alive, status, launchMs: launch.totalTimeMs, crashBuffer: crash ? crash.slice(-400) : '' };
-  });
-
-  await check('UI01', 'landscape: no horizontal overflow and the composer stays visible', async () => {
-    await platform.rotate(true);
-    await sleep(2_500);
-    const m = await page.evaluate(() => {
-      const c = document.getElementById('msg-input')?.getBoundingClientRect();
-      return { sw: document.documentElement.scrollWidth, iw: window.innerWidth, ih: window.innerHeight, composerBottom: c ? Math.round(c.bottom) : null, composerH: c ? Math.round(c.height) : null };
-    });
-    await platform.rotate(false);
-    assert(m.sw <= m.iw + 1, `horizontal overflow in landscape: scrollWidth ${m.sw} > innerWidth ${m.iw}`);
-    return m;
-  });
-
-  await measure('PERF01', 'memory footprint after the journeys (PSS)', async () => {
-    const kb = await platform.memInfoKb();
-    return { totalPssKb: kb };
+    assert(status === 'unavailable', `a build without FCM must report push as unavailable, got ${status}`);
+    return { pid: alive, status, launchMs: launch.totalTimeMs };
   });
 
   peerSock.close();

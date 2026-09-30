@@ -137,6 +137,16 @@ jobs:
           cd ../e2e && npm ci --no-audit --no-fund
       - name: Build server
         run: cd server && npm run build
+      # The server's boot creates only the base schema; migration-added columns (e.g.
+      # dm_conversations."readAt") exist only after the chain has run. Without this step the
+      # first emulator run failed every DM open with a 500 — an environment defect of the job,
+      # not of the product. Same commands as the Quality Gate nightly job.
+      - name: Database schema and migrations
+        run: |
+          cd server
+          npx ts-node --project tsconfig.json db/postgres/index.ts
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts up
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts status
       - name: Start Bridge server
         run: |
           nohup node scripts/e2e-server.js > server.log 2>&1 &

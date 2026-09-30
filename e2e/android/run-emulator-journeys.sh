@@ -8,7 +8,11 @@ set -euo pipefail
 APK="${APK_PATH:?APK_PATH is required}"
 adb wait-for-device
 adb shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 1; done'
-adb reverse tcp:3000 tcp:3000
+# The app's server address is http://localhost:3000 inside the emulator. It is forwarded to a
+# proxy owned by the journey runner (ANDROID_PROXY_PORT), which relays to the real server on :3000:
+# adb reverse bypasses the emulated radio, so only the proxy can really cut the network path.
+export ANDROID_PROXY_PORT="${ANDROID_PROXY_PORT:-3100}"
+adb reverse tcp:3000 "tcp:${ANDROID_PROXY_PORT}"
 adb install -r "$APK"
 adb shell pm list packages com.bridge.app.debug
 # Keep the screen awake so lifecycle transitions are driven by the journeys, not by a screen timeout.

@@ -31,8 +31,10 @@ const shell = `
 let fetchMock: ReturnType<typeof vi.fn>;
 let logoutEvents: number;
 const onLogout = (): void => { logoutEvents += 1; };
+// P4: the client posts straight to the path-scoped `/api/refresh/logout` (the
+// refresh cookie is never sent to `/api/logout`; see p4-session-logout.test.ts).
 const logoutPostCount = () =>
-  fetchMock.mock.calls.filter(c => String(c[0]).includes('/api/logout')).length;
+  fetchMock.mock.calls.filter(c => String(c[0]).endsWith('/api/refresh/logout')).length;
 
 beforeEach(() => {
   document.body.innerHTML = shell;

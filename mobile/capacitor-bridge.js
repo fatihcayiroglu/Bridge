@@ -4,7 +4,20 @@
   if (typeof Capacitor === "undefined") {
     console.debug("[Bridge Mobile] Capacitor bulunamad\u0131, native mod\xFCl devre d\u0131\u015F\u0131.");
   } else {
-    let handleDeepLink = function(url) {
+    let nativePushAvailable = function() {
+      if (!pushAvailability) {
+        pushAvailability = (async () => {
+          if (Capacitor.getPlatform() !== "android") return true;
+          if (!BridgePushSupport) return false;
+          try {
+            return (await BridgePushSupport.status()).available === true;
+          } catch {
+            return false;
+          }
+        })();
+      }
+      return pushAvailability;
+    }, handleDeepLink = function(url) {
       if (!url) return;
       let parsed;
       try {
@@ -100,8 +113,15 @@
       BiometricAuth,
       Camera,
       Badge,
-      Share
+      Share,
+      BridgePushSupport
     } = Capacitor.Plugins;
+    let pushAvailability = null;
+    async function registerIfAvailable() {
+      if (!PushNotifications || !await nativePushAvailable()) return false;
+      await PushNotifications.register();
+      return true;
+    }
     window.addEventListener("DOMContentLoaded", async () => {
       try {
         await SplashScreen?.hide({ fadeOutDuration: 300 });
@@ -162,31 +182,29 @@
       },
       async clear() {
         await this.set(0);
-        const jwt = localStorage.getItem("bridge_token");
-        if (jwt) {
-          fetch("/api/mobile/push/badge/clear", {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${jwt}` }
-          }).catch(() => {
-          });
-        }
+        window.dispatchEvent(new CustomEvent("bridge:badge-cleared"));
       }
     };
     window.bridgeBadge = bridgeBadge;
     async function attachPushListeners() {
       if (!PushNotifications) return;
-      PushNotifications.addListener("registration", async (token) => {
-        try {
-          const jwt = localStorage.getItem("bridge_token");
-          if (!jwt) return;
-          await fetch("/api/mobile/push/register-native", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${jwt}` },
-            body: JSON.stringify({ token: token.value, platform: Capacitor.getPlatform() })
-          });
-        } catch (err) {
-          console.error("[Bridge Mobile] Token kayd\u0131 ba\u015Far\u0131s\u0131z:", err);
-        }
+      PushNotifications.addListener("registration", (token) => {
+        if (!token?.value) return;
+        window.dispatchEvent(new CustomEvent("bridge:native-push-token", {
+          detail: { token: token.value, platform: Capacitor.getPlatform() }
+        }));
+      });
+      PushNotifications.addListener("registrationError", (error) => {
+        console.warn("[Bridge Mobile] Push kayd\u0131 ba\u015Far\u0131s\u0131z:", error?.error ?? error);
+        window.dispatchEvent(new CustomEvent("bridge:native-push-error", { detail: { error: String(error?.error ?? "unknown") } }));
+      });
+      document.addEventListener("bridge:auth-logout", () => {
+        void PushNotifications.unregister?.().catch(() => {
+        });
+      });
+      document.addEventListener("bridge:auth-success", () => {
+        void PushNotifications.checkPermissions().then((current) => current.receive === "granted" ? registerIfAvailable() : void 0).catch(() => {
+        });
       });
       PushNotifications.addListener("pushNotificationReceived", (notification) => {
         void showLocalNotification(notification.title ?? "", notification.body ?? "", notification.data ?? {});
@@ -208,7 +226,7 @@
       try {
         const current = await PushNotifications.checkPermissions();
         if (current.receive === "granted") {
-          await PushNotifications.register();
+          if (!await registerIfAvailable()) console.warn("[Bridge Mobile] Push bu derlemede yap\u0131land\u0131r\u0131lmam\u0131\u015F \u2014 kay\u0131t atland\u0131.");
         } else {
           console.debug("[Bridge Mobile] Push izni yok \u2014 SORULMADI (baglam icinde istenecek).");
         }
@@ -219,14 +237,14 @@
     const bridgePush = {
       async enable() {
         if (!PushNotifications) return false;
+        if (!await nativePushAvailable()) return false;
         try {
           const permission = await PushNotifications.requestPermissions();
           if (permission.receive !== "granted") {
             console.warn("[Bridge Mobile] Push izni verilmedi");
             return false;
           }
-          await PushNotifications.register();
-          return true;
+          return await registerIfAvailable();
         } catch (err) {
           console.error("[Bridge Mobile] Push etkinlestirilemedi:", err);
           return false;
@@ -234,6 +252,7 @@
       },
       async status() {
         if (!PushNotifications) return "unknown";
+        if (!await nativePushAvailable()) return "unavailable";
         try {
           const current = await PushNotifications.checkPermissions();
           const value = current.receive;

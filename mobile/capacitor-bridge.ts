@@ -31,7 +31,9 @@ interface IPushNotifications extends CapacitorPlugin {
   checkPermissions(): Promise<{ receive: string }>;
   requestPermissions(): Promise<PushPermissionResult>;
   register(): Promise<void>;
+  unregister?(): Promise<void>;
   addListener(event: 'registration',                    cb: (t: PushToken) => void): void;
+  addListener(event: 'registrationError',               cb: (e: { error?: string }) => void): void;
   addListener(event: 'pushNotificationReceived',        cb: (n: PushNotification) => void): void;
   addListener(event: 'pushNotificationActionPerformed', cb: (a: PushActionPerformed) => void): void;
 }
@@ -78,6 +80,8 @@ interface ICamera extends CapacitorPlugin {
   requestPermissions(opts: { permissions: string[] }): Promise<{ camera: string; photos: string }>;
 }
 interface IBadge extends CapacitorPlugin { set(opts: { count: number }): Promise<void> }
+/** P4: native guard (mobile/android/.../BridgePushSupportPlugin.java) — is FCM configured in this APK? */
+interface IBridgePushSupport extends CapacitorPlugin { status(): Promise<{ available: boolean; reason?: string }> }
 interface IShare extends CapacitorPlugin {
   share(opts: { title?: string; text?: string; url?: string; dialogTitle?: string }): Promise<void>;
 }
@@ -96,6 +100,7 @@ interface CapacitorGlobal {
     Camera?: ICamera;
     Badge?: IBadge;
     Share?: IShare;
+    BridgePushSupport?: IBridgePushSupport;
   };
   getPlatform(): string;
 }
@@ -158,8 +163,11 @@ export interface BridgeBiometricAPI {
 export interface BridgePushAPI {
   /** Kullanıcı eylemiyle izin ister; verildiyse `true`. */
   enable(): Promise<boolean>;
-  /** Sormadan mevcut izin durumunu okur. */
-  status(): Promise<'granted' | 'denied' | 'prompt' | 'unknown'>;
+  /**
+   * Sormadan mevcut izin durumunu okur. `unavailable`: bu derlemede push yapılandırılmamış
+   * (Android'de FCM yok) — izin verilse bile bildirim gelmez; kullanıcıya bu söylenmelidir.
+   */
+  status(): Promise<'granted' | 'denied' | 'prompt' | 'unknown' | 'unavailable'>;
 }
 
 // Genişletilmiş Window tipi
@@ -188,7 +196,32 @@ if (typeof Capacitor === 'undefined') {
     StatusBar, SplashScreen, Keyboard,
     Haptics, Network, App,
     BiometricAuth, Camera, Badge, Share,
+    BridgePushSupport,
   } = Capacitor.Plugins;
+
+  // ── P4: PUSH KAYDI YALNIZCA ÇALIŞABİLECEĞİ YERDE ─────────────────────────
+  // ÖLÇÜLDÜ (Android 14 emülatörü, belgelenen yolla derlenen APK, google-services.json YOK —
+  // kendi sunucusunu barındıranların varsayılanı): bildirim izni verildiği anda açılışta
+  // `register()` → FirebaseMessaging.getInstance() → IllegalStateException ve süreç ÖLDÜ.
+  // Android 12 ve öncesinde bildirim izni varsayılan olarak verilidir: her açılış çökerdi.
+  // iOS'ta APNs kaydı Firebase gerektirmez. Android'de yerel koruma yoksa (eski kabuk) kayıt
+  // YAPILMAZ: çökme riskine karşı sessiz ama güvenli taraf.
+  let pushAvailability: Promise<boolean> | null = null;
+  function nativePushAvailable(): Promise<boolean> {
+    if (!pushAvailability) {
+      pushAvailability = (async () => {
+        if (Capacitor!.getPlatform() !== 'android') return true;
+        if (!BridgePushSupport) return false;
+        try { return (await BridgePushSupport.status()).available === true; } catch { return false; }
+      })();
+    }
+    return pushAvailability;
+  }
+  async function registerIfAvailable(): Promise<boolean> {
+    if (!PushNotifications || !(await nativePushAvailable())) return false;
+    await PushNotifications.register();
+    return true;
+  }
 
   // ── SPLASH SCREEN ─────────────────────────────────────────────────────────
   // Final21 Faz 19 (19-28): yalnızca YEREL açılış ekranı gizleniyordu; şablondaki HTML katmanı
@@ -251,13 +284,10 @@ if (typeof Capacitor === 'undefined') {
     },
     async clear(): Promise<void> {
       await this.set(0);
-      const jwt = localStorage.getItem('bridge_token');
-      if (jwt) {
-        fetch('/api/mobile/push/badge/clear', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${jwt}` },
-        }).catch(() => {});
-      }
+      // P4: the server-side count is cleared by the app (client/js/core/native-push.ts) through
+      // its authenticated client. This used to be a RELATIVE fetch without the CSRF header: in
+      // the packaged app it reached https://localhost (the app itself), never the server.
+      window.dispatchEvent(new CustomEvent('bridge:badge-cleared'));
     },
   } as unknown as BridgeBadgeAPI;
   window.bridgeBadge = bridgeBadge;
@@ -291,18 +321,35 @@ if (typeof Capacitor === 'undefined') {
   async function attachPushListeners(): Promise<void> {
     if (!PushNotifications) return;
 
-    PushNotifications.addListener('registration', async (token: PushToken) => {
-      try {
-        const jwt = localStorage.getItem('bridge_token');
-        if (!jwt) return;
-        await fetch('/api/mobile/push/register-native', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${jwt}` },
-          body: JSON.stringify({ token: token.value, platform: Capacitor!.getPlatform() }),
-        });
-      } catch (err) {
-        console.error('[Bridge Mobile] Token kaydı başarısız:', err);
-      }
+    // ── P4: TOKEN KAYDI UYGULAMAYA DEVREDİLDİ ──────────────────────────────
+    // Burada eskiden `fetch('/api/mobile/push/register-native')` vardı: GÖRELİ
+    // adres (paketlenmiş uygulamanın kökeni https://localhost → istek uygulamanın
+    // KENDİSİNE gidiyordu) ve CSRF başlığı yoktu (Bearer istek 403). Yerel cihaz
+    // push için HİÇ kaydolamıyordu. Köprü artık yalnızca jetonu bildirir; sunucu
+    // konuşması uygulamanındır (client/js/core/native-push.ts → apiFetch).
+    PushNotifications.addListener('registration', (token: PushToken) => {
+      if (!token?.value) return;
+      window.dispatchEvent(new CustomEvent('bridge:native-push-token', {
+        detail: { token: token.value, platform: Capacitor!.getPlatform() },
+      }));
+    });
+
+    PushNotifications.addListener('registrationError', (error) => {
+      console.warn('[Bridge Mobile] Push kaydı başarısız:', error?.error ?? error);
+      window.dispatchEvent(new CustomEvent('bridge:native-push-error', { detail: { error: String(error?.error ?? 'unknown') } }));
+    });
+
+    // ── P4: PUSH OTURUMLA BİRLİKTE BİTER ───────────────────────────────────
+    // Çıkış: sunucu satırı çıkış isteğiyle silinir; burada cihaz jetonu da
+    // bırakılır ki kaçırılmış bir çıkış isteği teslimatı canlı tutamasın.
+    // Giriş: izin zaten verilmişse yeniden kaydolunur (yeni jeton → yeni hesap).
+    document.addEventListener('bridge:auth-logout', () => {
+      void PushNotifications.unregister?.().catch(() => {});
+    });
+    document.addEventListener('bridge:auth-success', () => {
+      void PushNotifications.checkPermissions()
+        .then((current) => (current.receive === 'granted' ? registerIfAvailable() : undefined))
+        .catch(() => {});
     });
 
     PushNotifications.addListener('pushNotificationReceived', (notification: PushNotification) => {
@@ -328,7 +375,7 @@ if (typeof Capacitor === 'undefined') {
     try {
       const current = await PushNotifications.checkPermissions();
       if (current.receive === 'granted') {
-        await PushNotifications.register();
+        if (!(await registerIfAvailable())) console.warn('[Bridge Mobile] Push bu derlemede yapılandırılmamış — kayıt atlandı.');
       } else {
         console.debug('[Bridge Mobile] Push izni yok — SORULMADI (baglam icinde istenecek).');
       }
@@ -344,21 +391,23 @@ if (typeof Capacitor === 'undefined') {
   const bridgePush: BridgePushAPI = {
     async enable(): Promise<boolean> {
       if (!PushNotifications) return false;
+      // Yapılandırılmamış bir derlemede izin İSTENMEZ: işe yaramayacak bir izin penceresi açılmaz.
+      if (!(await nativePushAvailable())) return false;
       try {
         const permission = await PushNotifications.requestPermissions();
         if (permission.receive !== 'granted') {
           console.warn('[Bridge Mobile] Push izni verilmedi');
           return false;
         }
-        await PushNotifications.register();
-        return true;
+        return await registerIfAvailable();
       } catch (err) {
         console.error('[Bridge Mobile] Push etkinlestirilemedi:', err);
         return false;
       }
     },
-    async status(): Promise<'granted' | 'denied' | 'prompt' | 'unknown'> {
+    async status(): Promise<'granted' | 'denied' | 'prompt' | 'unknown' | 'unavailable'> {
       if (!PushNotifications) return 'unknown';
+      if (!(await nativePushAvailable())) return 'unavailable';
       try {
         const current = await PushNotifications.checkPermissions();
         const value = current.receive;

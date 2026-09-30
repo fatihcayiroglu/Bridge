@@ -151,6 +151,8 @@ import { initI18nDom } from './core/i18n-dom.ts';
 // boot bloğundaki nota bakın.
 import { initDesktopUpdater } from './core/desktop-updater.ts'; // Desktop: Discord benzeri otomatik güncelleme UI
 import { initDesktopDeepLinks } from './core/desktop-deeplink.ts'; // Desktop: bridge:// bağlantılarını kanonik gezinmeye yönlendirir
+import { initNativePush } from './core/native-push.ts'; // P4: yerel cihaz jetonu uygulamanın kimlikli istemcisiyle kaydedilir
+import { bindWebPushToSession } from './core/notifications/web-push-client.ts'; // P4: çıkışta bu tarayıcının Web Push aboneliği biter
 // Sprint 82: Yeni özellik modülleri
 // import { initActivities }    from './core/activities/index.ts';
 // import { initSuperReactions } from './core/super-reactions/index.ts';
@@ -319,5 +321,7 @@ export const bootReady: Promise<void> = errorBoundary.wrap(async () => {
   // bileşenlerinde durur ve kendi testleriyle korunur.
   initDesktopUpdater();  // Desktop: otomatik güncelleme durumu + yeniden başlatma akışı
   initDesktopDeepLinks(); // Desktop: bridge://invite|servers|channels (Final21 Faz 12)
+  initNativePush();       // P4: Capacitor push jetonu → /api/mobile/push/register-native (CSRF + API kökü)
+  bindWebPushToSession(); // P4: çıkış → tarayıcı aboneliği ve bu kurulumun kaydı temizlenir
   log.log(`[Bridge] Boot tamamlandı — API: ${getAPI()}`);
 }, 'app:boot')();

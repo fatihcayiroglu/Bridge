@@ -15,6 +15,7 @@
   import PrivacyTab       from './tabs/PrivacyTab.svelte';
   import DevicesTab       from './tabs/DevicesTab.svelte';
   import SecurityTab      from './tabs/SecurityTab.svelte';
+  import { logout }       from '../auth-compat.ts';
 
   // ── Props ─────────────────────────────────────────────────────────────────
   interface Props {
@@ -183,6 +184,17 @@
           </li>
         {/each}
       </ul>
+      <!-- P4: üründe görünür bir çıkış denetimi YOKTU. Geniş düzende kenar
+           çubuğunun altında durur; dar düzende (telefon) Güvenlik sekmesinin
+           "Oturumlar" bölümündedir (sekme şeridine ikinci satır eklenmez). -->
+      <div class="settings-sidebar-footer">
+        <button type="button" class="settings-logout-btn" onclick={() => logout()} data-testid="settings-logout">
+          <span class="tab-icon" aria-hidden="true">
+            <svg viewBox="0 0 20 20"><path d="M8 4.5H5.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1H8M12 13.5 15.5 10 12 6.5M15.5 10H8"/></svg>
+          </span>
+          <span>{t('settings_logout', 'Çıkış yap')}</span>
+        </button>
+      </div>
     </nav>
 
     <!-- ── İçerik paneli ────────────────────────────────────────────────── -->
@@ -292,6 +304,16 @@
     color: var(--brand-ink, var(--brand));
   }
 
+  .settings-sidebar-footer { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+  .settings-logout-btn {
+    width: 100%; display: flex; align-items: center; gap: var(--space-2); min-height: 40px;
+    padding: var(--space-2) var(--space-3); border: none; border-radius: var(--radius-control);
+    background: transparent; color: var(--danger); font-size: var(--type-body);
+    cursor: pointer; text-align: left;
+  }
+  .settings-logout-btn:hover { background: var(--bg-4); }
+  .settings-logout-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
   .tab-icon { display: grid; width: 20px; height: 20px; flex: none; place-items: center; }
   .tab-icon svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
 
@@ -354,6 +376,7 @@
     .settings-brand, .settings-sidebar-title { display: none; }
     .settings-sidebar ul { display: flex; gap: var(--space-1); overflow-x: auto; }
     .settings-sidebar li { flex: none; }
+    .settings-sidebar-footer { display: none; }
     .settings-tab-btn { width: auto; min-height: 38px; white-space: nowrap; }
     .settings-content { padding: var(--space-5); }
     .settings-close { top: max(var(--space-3), env(safe-area-inset-top)); right: max(var(--space-3), env(safe-area-inset-right)); }

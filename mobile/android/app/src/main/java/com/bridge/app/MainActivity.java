@@ -7,9 +7,10 @@ import com.getcapacitor.BridgeActivity;
  * BRIDGE ANDROID GİRİŞ NOKTASI
  * ════════════════════════════════════════════════════════════════════════════
  *
- * Gövde KASITLI OLARAK boştur: tüm ürün davranışı WebView katmanında
+ * Gövde KASITLI OLARAK küçüktür: ürün davranışı WebView katmanında
  * (`mobile/capacitor-bridge.ts`) yaşar. `BridgeActivity` yaşam döngüsünü,
- * eklenti köprüsünü ve WebView kurulumunu zaten yapar.
+ * eklenti köprüsünü ve WebView kurulumunu zaten yapar. Tek yerel ek (P4):
+ * `BridgePushSupportPlugin` kaydı — aşağıdaki onCreate'e bakın.
  *
  * ── NEDEN JAVA, NEDEN KOTLIN DEĞİL (Final21, Faz 3) ────────────────────────
  * Burada eskiden `MainActivity.kt` vardı ve `app/build.gradle`
@@ -29,4 +30,15 @@ import com.getcapacitor.BridgeActivity;
  * native kod yazılacağı gün eklentiyi eklemek bilinçli bir adım olur.
  */
 public class MainActivity extends BridgeActivity {
+
+    /**
+     * P4: local plugins are registered BEFORE the bridge is created in super.onCreate().
+     * BridgePushSupport tells the web layer whether FCM is configured so it never calls
+     * PushNotifications.register() on a build where that call crashes the process.
+     */
+    @Override
+    public void onCreate(android.os.Bundle savedInstanceState) {
+        registerPlugin(BridgePushSupportPlugin.class);
+        super.onCreate(savedInstanceState);
+    }
 }

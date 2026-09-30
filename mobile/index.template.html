@@ -436,13 +436,11 @@
   window.nativeAllowPush = function () {
     localStorage.setItem(PUSH_ASKED_KEY, '1');
     nativeDismissPushBanner();
-    // Gerçek izin isteği capacitor-bridge.js → setupPushNotifications() içinde
-    if (typeof Capacitor !== 'undefined' && Capacitor.Plugins?.PushNotifications) {
-      Capacitor.Plugins.PushNotifications.requestPermissions().then(result => {
-        if (result.receive === 'granted') {
-          Capacitor.Plugins.PushNotifications.register();
-        }
-      });
+    // P4: izin ve kayıt YALNIZCA köprünün korumalı yolundan geçer (window.bridgePush.enable):
+    // doğrudan `register()` çağrısı FCM yapılandırılmamış bir Android derlemesinde süreci
+    // öldürüyordu (emülatörde ölçüldü, IllegalStateException: Default FirebaseApp ...).
+    if (window.bridgePush && typeof window.bridgePush.enable === 'function') {
+      void window.bridgePush.enable();
     }
   };
 

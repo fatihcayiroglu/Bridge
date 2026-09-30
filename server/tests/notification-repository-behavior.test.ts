@@ -97,12 +97,30 @@ describe('NotificationRepository behavior and fail-safe branches',()=>{
     expect(query.mock.calls[0][1]).toEqual(['u','c',10]);
   });
 
-  it('native tokens are stable per user/platform and update instead of duplicating',async()=>{
+  // P4-04: a device token identifies one installation. Before P4 rows were keyed per
+  // user+platform while `token` is UNIQUE, so a second account on the same phone failed to
+  // register and the first account kept receiving there (pg-integration/native-push-token-ownership).
+  it('native tokens move to the account that registers them, per installation, without duplicates',async()=>{
+    native.find.mockResolvedValue([]);
     await Notifications.upsertNativeToken('u','ios','a');
-    expect(native.insert).toHaveBeenCalledWith(expect.objectContaining({_id:'npt_u_ios',userId:'u',platform:'ios',token:'a',createdAt:expect.any(Number),updatedAt:expect.any(Number)}));
-    native.findOne.mockResolvedValueOnce({_id:'old'}); await Notifications.upsertNativeToken('u','ios','b');
-    expect(native.update).toHaveBeenCalledWith({_id:'old'},{$set:{token:'b',updatedAt:expect.any(Number)}});
+    expect(native.remove).toHaveBeenCalledWith({token:'a',userId:{$ne:'u'}});
+    expect(native.insert).toHaveBeenCalledWith(expect.objectContaining({userId:'u',platform:'ios',token:'a',createdAt:expect.any(Number),updatedAt:expect.any(Number)}));
+    expect(String(native.insert.mock.calls[0][0]._id)).toMatch(/^npt_/);
+
+    native.insert.mockClear();
+    native.findOne.mockResolvedValueOnce({_id:'old'}); await Notifications.upsertNativeToken('u','ios','a');
+    expect(native.update).toHaveBeenCalledWith({_id:'old'},{$set:{platform:'ios',updatedAt:expect.any(Number)}});
+    expect(native.insert).not.toHaveBeenCalled();
+
     await Notifications.removeNativeToken('u','ios'); expect(native.remove).toHaveBeenCalledWith({userId:'u',platform:'ios'});
+    await Notifications.removeNativeTokenForUser('u','a'); expect(native.remove).toHaveBeenCalledWith({userId:'u',token:'a'});
+  });
+
+  it('keeps at most NATIVE_TOKENS_PER_USER installations, dropping the least recently updated',async()=>{
+    const rows=Array.from({length:12},(_,i)=>({_id:`r${i}`,updatedAt:i}));
+    native.find.mockResolvedValueOnce(rows);
+    await Notifications.upsertNativeToken('u','android','fresh');
+    expect(native.remove).toHaveBeenCalledWith({_id:{$in:['r1','r0']}});
   });
 
   it('channel attention is idempotent and distinguishes duplicates from real write failures',async()=>{

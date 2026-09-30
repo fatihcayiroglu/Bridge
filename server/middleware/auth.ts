@@ -356,6 +356,19 @@ export async function revokeRefreshToken(rawToken: string): Promise<void> {
   await Auth.revokeRefreshToken(_hashRefreshToken(rawToken));
 }
 
+/**
+ * Revokes one refresh session and reports whose it was (null when the token is
+ * unknown or already gone). Logout uses the owner to end push delivery to the
+ * signing-out installation without trusting any client-supplied user id.
+ */
+export async function revokeRefreshSession(rawToken: string): Promise<string | null> {
+  if (!rawToken) return null;
+  const hash = _hashRefreshToken(rawToken);
+  const row = await Auth.findRefreshToken(hash) as { userId?: unknown } | null;
+  await Auth.revokeRefreshToken(hash);
+  return row && typeof row.userId === 'string' && row.userId ? row.userId : null;
+}
+
 export async function revokeAllRefreshTokens(userId: string): Promise<void> {
   await Auth.revokeAllForUser(userId);
 }
