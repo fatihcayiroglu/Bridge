@@ -75,6 +75,37 @@ Every chunk is an ES module, which browsers, Electron and Capacitor decode as UT
 also sends `text/javascript; charset=utf-8`. The locale journey (non-ASCII UI end to end) passes
 on the new build.
 
+### Direct messages (1:1 and group)
+Found by driving long conversations in a real browser (1280×720 and 390×844), not by the existing
+DM specs, which exercise the server contract only. All are **product defects**; each fix has a unit
+test and a browser journey (`e2e/tests/dm-daily-use.spec.ts`) that fail on the old code.
+
+| Defect | Old behaviour (measured) | Fix |
+|---|---|---|
+| DM panel grows past the viewport | `.dm-panel` is a fixed grid with no row template; its implicit `auto` row grew with the content. 50 messages at 1280×720: chat 3917 px tall, composer at y=3845, list never scrolls — the composer is unreachable by mouse | one bounded row (`minmax(0,1fr)`), the chat may shrink; the list is the scroll container |
+| Group DM panel is not an overlay | `.gdm-panel` (a `role=dialog aria-modal`) had no positioning; `height:100%` of the auto-height `#gdm-root` resolved to content height and the panel fell into document flow under the shell (y=625, 1109 px; composer at y=1677) | fixed full-viewport overlay, the same contract as the DM panel |
+| Composer squeezed by a global rule | `auth.css` `.btn-primary{width:100%}` (login form) leaked into both composers: DM textarea 22 px beside a 942 px button; group DM input 205 px beside 815 px | the composer buttons size to their content |
+| Conversation opens at the top | DM opened at the oldest loaded message; incoming and own messages were not scrolled into view | opens at the newest; own sends and incoming messages while at the bottom follow; reading older history is not interrupted (DM and group DM) |
+| History beyond 50 unreachable | the client asked for the last 50 only; the server's `before` + `beforeId` cursor was never used (DM and group DM) | "Load older messages" (button, keyboard, or scrolling to the top) with the composite cursor; the reading position is kept |
+| Enter did not send a DM | Enter added a newline in 1:1 DMs (group DMs and channels send) | Enter sends; Shift+Enter and IME composition do not |
+| Stale sidebar unread badge | a message to a conversation other than the open one left its badge unchanged until the panel was reopened (DM and group DM) | the server-derived list is re-read (debounced); no local counter, so duplicate delivery cannot inflate it |
+
+### Server search panel
+| Defect | Old behaviour | Fix |
+|---|---|---|
+| Stale results | requests carried no sequence number: a late response for "ab" replaced the results of "abc"; a response in flight when the query was cleared refilled the panel (tab switch and "load more" had the same race) | only the newest request writes results — the contract the global search already had |
+| Wrong structure | results were `<button role="option" aria-selected="false">` inside a `role="listbox"` that also held the skeleton, error, count and "load more"; no selection, no arrow keys | a list of buttons (Tab reaches every result); ↓ from the query moves to the first result, ↑/↓/Home/End move between results, ↑ on the first returns to the query; visible focus |
+
+Unit tests fail on the old code (5/5). Edited messages: the full-text match is an expression over
+the current `content` (`server/db/postgres/fts.ts`), so an edit is searchable by its new text by
+construction; deleted messages are covered by `search-security-extended.spec.ts`.
+
+Test/harness finding while writing the journey: seeding 54 DMs from two users at ~1 msg/s tripped
+the product's DM limit (20 per minute per user, `RL_DM_SOCKET_MAX`), which answers with the legacy
+event `error:dm_rate` even when the send carries a `clientNonce`. The client listens for it; the
+helper now does too, so a rejection fails with its code instead of a silent 15 s timeout, and
+seeding is paced under the limit.
+
 ## CI — nightly full E2E
 The scheduled job now: runs the migration chain; runs every suite even when an earlier one fails
 (`!cancelled()`), so one red suite no longer hides the others; adds `a11y-mobile` and

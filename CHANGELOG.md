@@ -19,6 +19,25 @@ skipped, never counted as passing. Evidence: `docs/P3_DAILY_USE.md`.
   session is back or the call ends.
 - **The server's public-profile address field had no accessible name** (axe `label`, critical): it
   is now labelled by its section heading.
+- **Long DM conversations pushed the composer off the screen.** The DM panel's grid row grew with
+  its content (50 messages at 1280×720: the composer at y=3845, the list never scrolled); the panel
+  now fits the viewport and the message list scrolls.
+- **The group DM panel was not an overlay.** It fell into the page flow under the app shell
+  (starting at y=625 at 1280×720, its composer at y=1677); it is now a full-viewport dialog like the
+  DM panel.
+- **Both DM composers were squeezed by the login form's button rule** (`.btn-primary{width:100%}`):
+  a 22 px DM text field beside a 942 px button. The buttons now size to their content.
+- **DMs and group DMs open at the newest message** and follow new ones while you are at the bottom,
+  without jumping while you read older history (they opened at the oldest loaded message).
+- **Older DM and group DM history is reachable**: "Load older messages" (or scrolling to the top)
+  pages back with the server's composite cursor; only the last 50 messages were ever shown.
+- **Enter sends a DM** (Shift+Enter adds a line), as in group DMs and channels.
+- **The DM and group DM lists update a conversation's unread badge live** when a message arrives
+  for a conversation other than the open one (it was stale until the panel was reopened).
+- **Server search no longer shows results for an older query**: a slow response for "ab" could
+  replace the results of "abc", and a response in flight could refill a cleared panel.
+- **Server search results are a keyboard-navigable list** (↓ from the query, ↑/↓/Home/End between
+  results) instead of a listbox without selection or arrow keys.
 
 ### Changed
 - **Client bundle ships UTF-8 instead of `\uXXXX` escapes** — total shipped JS 3418.7 → 2971.5 KB
@@ -35,6 +54,11 @@ skipped, never counted as passing. Evidence: `docs/P3_DAILY_USE.md`.
   rejects it as stale (a browser page of the same user replaces the per-user token); keyboard
   journeys pace their sends under the product's anti-spam rule instead of tripping its 30 s hold.
 - Client: the audit-log export test waits for the download instead of racing `response.blob()`.
+- Real-PostgreSQL deletion suites mock the token-cache invalidation the deletion routes now call
+  (their mocks lacked it, so the route answered 500 after erasing).
+- New browser journey `dm-daily-use.spec.ts`: a 54-message DM (open at newest, load older by
+  keyboard, order, Enter-send, reload), a live unread badge, and a long group DM (overlay, composer
+  on screen and usable, Enter-send). All three fail on the old code.
 
 ## [Unreleased] — 2026-09-27 — P2: real-media reliability evidence and fixes
 
