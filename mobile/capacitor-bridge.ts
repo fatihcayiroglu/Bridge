@@ -352,18 +352,25 @@ if (typeof Capacitor === 'undefined') {
         .catch(() => {});
     });
 
+    // P4: uygulama ÖNDEYKEN gelen push, uygulama içi bildirimle (soket) AYNI olayı ikinci kez
+    // gösteriyordu. Görünür uygulamada sistem bildirimi planlanmaz; arka planda/kilitliyken
+    // davranış değişmez.
     PushNotifications.addListener('pushNotificationReceived', (notification: PushNotification) => {
+      if (document.visibilityState === 'visible') return;
       void showLocalNotification(notification.title ?? '', notification.body ?? '', notification.data ?? {});
       void bridgeBadge.increment();
     });
 
+    // P4: bildirime dokunmak hiçbir yere gitmiyordu — `bridge:navigate`in tek dinleyicisi (mobil
+    // şablon) var olmayan `selectServer`/`selectChannel` global'lerini çağırıyordu. Dokunuş artık
+    // derin bağlantıyla AYNI, izin denetimli yoldan geçer (client/js/core/native-deeplink.ts).
     PushNotifications.addListener('pushNotificationActionPerformed', (action: PushActionPerformed) => {
-      const data = action.notification.data;
+      const data = action.notification.data ?? {};
       void bridgeBadge.clear();
-      if (data?.channelId) {
-        window.dispatchEvent(new CustomEvent('bridge:navigate', {
-          detail: { channelId: data.channelId, serverId: data.serverId },
-        }));
+      if (data.type === 'dm' && data.fromUserId) {
+        emitDeepLink({ type: 'navigate:dm', userId: data.fromUserId });
+      } else if (data.channelId) {
+        emitDeepLink({ type: 'navigate:channel', channelId: data.channelId, serverId: data.serverId });
       }
     });
   }
@@ -440,6 +447,9 @@ if (typeof Capacitor === 'undefined') {
   }
 
   // ── DEEP LINK ─────────────────────────────────────────────────────────────
+  // P4: `auth:callback` (bridge://auth/callback?token=…) KALDIRILDI. Herhangi bir uygulama veya
+  // sayfa `bridge://` açabilir; bağlantıdan jeton kabul etmek, kurbanı saldırganın hesabına
+  // sokmanın (oturum sabitleme) kapısıydı. Tüketen kod yoktu; kapı açık bırakılmaz.
   type DeepLinkPayload =
     | { type: 'navigate:channel';  channelId: string; serverId?: string }
     | { type: 'navigate:dm';       userId: string }
@@ -447,8 +457,16 @@ if (typeof Capacitor === 'undefined') {
     | { type: 'navigate:server';   serverId: string }
     | { type: 'navigate:invite';   code: string }
     | { type: 'navigate:activity'; channelId: string; activityId: string }
-    | { type: 'navigate:settings'; tab: string }
-    | { type: 'auth:callback';     token: string | null };
+    | { type: 'navigate:settings'; tab: string };
+
+  // Soğuk açılışta (ve bildirim dokunuşunda) bağlantı, uygulama paketi yüklenmeden ÖNCE gelebilir.
+  // Her bağlantı `window.__bridgePendingDeepLinks` kuyruğuna da bırakılır; uygulama hazır olunca
+  // kuyruğu boşaltır (native-deeplink.ts). Olay yalnızca "kuyruğa bak" sinyalidir.
+  function emitDeepLink(payload: DeepLinkPayload): void {
+    const w = window as Window & { __bridgePendingDeepLinks?: DeepLinkPayload[] };
+    (w.__bridgePendingDeepLinks ??= []).push(payload);
+    window.dispatchEvent(new CustomEvent('bridge:deeplink', { detail: payload }));
+  }
 
   function handleDeepLink(url: string): void {
     if (!url) return;
@@ -475,13 +493,6 @@ if (typeof Capacitor === 'undefined') {
         case 'invite':   return { type: 'navigate:invite',   code: rest[0] };
         case 'activity': return { type: 'navigate:activity', channelId: rest[0], activityId: rest[1] };
         case 'settings': return { type: 'navigate:settings', tab: rest[0] ?? 'account' };
-        case 'auth':
-          if (rest[0] === 'callback') {
-            const idx = url.indexOf('?');
-            const qs  = idx !== -1 ? url.slice(idx + 1) : '';
-            return { type: 'auth:callback', token: new URLSearchParams(qs).get('token') };
-          }
-          return null;
         default:
           console.warn('[Bridge Mobile] Bilinmeyen deep link:', section, '| URL:', url);
           return null;
@@ -490,8 +501,8 @@ if (typeof Capacitor === 'undefined') {
 
     if (navPayload) {
       void bridgeHaptic.light();
-      window.dispatchEvent(new CustomEvent('bridge:deeplink', { detail: navPayload }));
-      console.debug('[Bridge Mobile] Deep link dispatched:', navPayload);
+      emitDeepLink(navPayload);
+      console.debug('[Bridge Mobile] Deep link dispatched:', navPayload.type);
     }
   }
 

@@ -178,3 +178,44 @@ describe('native push is only registered where FCM is configured (P4-18)', () =>
     expect(push.register).toHaveBeenCalledTimes(1);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// P4-07 / P4-11 — notification taps navigate; foreground pushes do not duplicate the in-app alert
+// ════════════════════════════════════════════════════════════════════════════
+describe('notification taps and foreground pushes', () => {
+  afterEach(() => { delete window.__bridgePendingDeepLinks; delete document.visibilityState; });
+
+  it('tapping a channel notification queues a navigate:channel link (the old path went nowhere)', async () => {
+    const push = pushPlugin('granted');
+    loadBridge({ PushNotifications: push, BridgePushSupport: fcmConfigured() });
+    window.dispatchEvent(new Event('load'));
+    await flush();
+    push.emit('pushNotificationActionPerformed', { notification: { data: { type: 'mention', channelId: 'ch-1', serverId: 'srv-1' } } });
+    expect(window.__bridgePendingDeepLinks).toEqual([{ type: 'navigate:channel', channelId: 'ch-1', serverId: 'srv-1' }]);
+  });
+
+  it('tapping a DM notification queues navigate:dm for the sender', async () => {
+    const push = pushPlugin('granted');
+    loadBridge({ PushNotifications: push, BridgePushSupport: fcmConfigured() });
+    window.dispatchEvent(new Event('load'));
+    await flush();
+    push.emit('pushNotificationActionPerformed', { notification: { data: { type: 'dm', fromUserId: 'user-7' } } });
+    expect(window.__bridgePendingDeepLinks).toEqual([{ type: 'navigate:dm', userId: 'user-7' }]);
+  });
+
+  it('a push received while the app is visible does not schedule a second (system) notification', async () => {
+    const push = pushPlugin('granted');
+    const local = { schedule: jest.fn().mockResolvedValue(undefined) };
+    loadBridge({ PushNotifications: push, BridgePushSupport: fcmConfigured(), LocalNotifications: local });
+    window.dispatchEvent(new Event('load'));
+    await flush();
+    document.visibilityState = 'visible';
+    push.emit('pushNotificationReceived', { title: 'Ada', body: 'hi', data: {} });
+    await flush();
+    expect(local.schedule).not.toHaveBeenCalled();
+    document.visibilityState = 'hidden';
+    push.emit('pushNotificationReceived', { title: 'Ada', body: 'hi', data: {} });
+    await flush();
+    expect(local.schedule).toHaveBeenCalledTimes(1);
+  });
+});

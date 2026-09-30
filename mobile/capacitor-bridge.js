@@ -17,6 +17,10 @@
         })();
       }
       return pushAvailability;
+    }, emitDeepLink = function(payload) {
+      const w = window;
+      (w.__bridgePendingDeepLinks ?? (w.__bridgePendingDeepLinks = [])).push(payload);
+      window.dispatchEvent(new CustomEvent("bridge:deeplink", { detail: payload }));
     }, handleDeepLink = function(url) {
       if (!url) return;
       let parsed;
@@ -46,13 +50,6 @@
             return { type: "navigate:activity", channelId: rest[0], activityId: rest[1] };
           case "settings":
             return { type: "navigate:settings", tab: rest[0] ?? "account" };
-          case "auth":
-            if (rest[0] === "callback") {
-              const idx = url.indexOf("?");
-              const qs = idx !== -1 ? url.slice(idx + 1) : "";
-              return { type: "auth:callback", token: new URLSearchParams(qs).get("token") };
-            }
-            return null;
           default:
             console.warn("[Bridge Mobile] Bilinmeyen deep link:", section, "| URL:", url);
             return null;
@@ -60,8 +57,8 @@
       })();
       if (navPayload) {
         void bridgeHaptic.light();
-        window.dispatchEvent(new CustomEvent("bridge:deeplink", { detail: navPayload }));
-        console.debug("[Bridge Mobile] Deep link dispatched:", navPayload);
+        emitDeepLink(navPayload);
+        console.debug("[Bridge Mobile] Deep link dispatched:", navPayload.type);
       }
     }, formatPhoto = function(photo) {
       const ext = (photo.format ?? "jpeg").toLowerCase();
@@ -207,16 +204,17 @@
         });
       });
       PushNotifications.addListener("pushNotificationReceived", (notification) => {
+        if (document.visibilityState === "visible") return;
         void showLocalNotification(notification.title ?? "", notification.body ?? "", notification.data ?? {});
         void bridgeBadge.increment();
       });
       PushNotifications.addListener("pushNotificationActionPerformed", (action) => {
-        const data = action.notification.data;
+        const data = action.notification.data ?? {};
         void bridgeBadge.clear();
-        if (data?.channelId) {
-          window.dispatchEvent(new CustomEvent("bridge:navigate", {
-            detail: { channelId: data.channelId, serverId: data.serverId }
-          }));
+        if (data.type === "dm" && data.fromUserId) {
+          emitDeepLink({ type: "navigate:dm", userId: data.fromUserId });
+        } else if (data.channelId) {
+          emitDeepLink({ type: "navigate:channel", channelId: data.channelId, serverId: data.serverId });
         }
       });
     }

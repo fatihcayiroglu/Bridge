@@ -323,9 +323,18 @@ describe('Deep link dispatch', () => {
     expect(dispatchedEvents[0]).toMatchObject({ type: 'navigate:settings', tab: 'notifications' });
   });
 
-  it('bridge://auth/callback?token=tok_xyz → auth:callback token', () => {
+  // P4: a link must never carry a session. Any app or web page can open bridge://…; accepting a
+  // token from a link would let an attacker sign the victim into the attacker's account.
+  it('bridge://auth/callback?token=… is REJECTED (no token ever enters through a link)', () => {
     window.bridgeDeepLink.handle('bridge://auth/callback?token=tok_xyz_123');
-    expect(dispatchedEvents[0]).toMatchObject({ type: 'auth:callback', token: 'tok_xyz_123' });
+    expect(dispatchedEvents).toHaveLength(0);
+  });
+
+  it('every accepted link is also parked in window.__bridgePendingDeepLinks (cold start)', () => {
+    window.__bridgePendingDeepLinks = [];
+    window.bridgeDeepLink.handle('bridge://channel/ch-cold');
+    expect(window.__bridgePendingDeepLinks).toEqual([{ type: 'navigate:channel', channelId: 'ch-cold' }]);
+    delete window.__bridgePendingDeepLinks;
   });
 
   it('geçersiz şema → event dispatch edilmez', () => {
