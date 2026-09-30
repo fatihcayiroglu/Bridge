@@ -65,6 +65,7 @@ const translations: Record<string, string> = {
   "retry": "다시 시도",
   "voice_connected": "연결됨",
   "voice_disconnected": "연결 끊김",
+  "voice_reconnecting": "다시 연결하는 중…",
   "voice_check": "음성 확인",
   "voice_in_room": "방에 참여 중입니다",
   "voice_ready": "준비되면 음성을 사용할 수 있습니다",

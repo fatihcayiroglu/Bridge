@@ -724,8 +724,16 @@
     isFullscreen = Boolean(document.fullscreenElement);
   }
 
+  // Medya oturumu kurtarılırken (ICE `failed`, soket kopması; P2: 3–30 sn,
+  // en çok 90 sn) arama ekranda CANLI görünüyor ama medya akmıyordu; durum
+  // satırı "Bağlı" demeye devam ediyordu. Motor olayları durumu taşır.
+  let reconnecting = $state(false);
+  function _onVoiceReconnecting(): void { if (inVoice) reconnecting = true; }
+  function _onVoiceReconnected(): void { reconnecting = false; }
+
   function _onVoiceJoined(): void {
     inVoice = true;
+    reconnecting = false;
     muted = Boolean(rtc()?.muted);
     deafened = Boolean(rtc()?.deafened);
   }
@@ -750,6 +758,7 @@
 
   function _onVoiceLeft(): void {
     inVoice = false;
+    reconnecting = false;
     remoteAudioStreams = new Map();
     peers = new Map();
     peerStates = new Map();
@@ -812,6 +821,8 @@
     document.addEventListener('fullscreenchange', _onFullscreenChange);
     document.addEventListener('bridge:voice-joined', _onVoiceJoined);
     document.addEventListener('bridge:voice-left', _onVoiceLeft);
+    document.addEventListener('bridge:voice-reconnecting', _onVoiceReconnecting);
+    document.addEventListener('bridge:voice-reconnected', _onVoiceReconnected);
     document.addEventListener('bridge:voice-local-state', _onLocalState);
     document.addEventListener('bridge:channel-selected', _onChannelSelected);
     inVoice = Boolean(rtc()?.isInVoice());
@@ -859,6 +870,8 @@
     document.removeEventListener('fullscreenchange', _onFullscreenChange);
     document.removeEventListener('bridge:voice-joined', _onVoiceJoined);
     document.removeEventListener('bridge:voice-left', _onVoiceLeft);
+    document.removeEventListener('bridge:voice-reconnecting', _onVoiceReconnecting);
+    document.removeEventListener('bridge:voice-reconnected', _onVoiceReconnected);
     document.removeEventListener('bridge:voice-local-state', _onLocalState);
     document.removeEventListener('bridge:channel-selected', _onChannelSelected);
     remoteAudioStreams = new Map();
@@ -932,9 +945,17 @@
           {t('voice_check', 'Ses Kontrolü')}
         </button>
       {/if}
-      <div class="voice-connection" class:connected={inVoice} role="status" aria-live="polite">
+      <div
+        class="voice-connection"
+        class:connected={inVoice && !reconnecting}
+        class:reconnecting={inVoice && reconnecting}
+        role="status"
+        aria-live="polite"
+      >
         <span class="voice-connection-dot"></span>
-        {inVoice ? t('voice_connected', 'Bağlı') : t('voice_disconnected', 'Bağlı değil')}
+        {inVoice
+          ? (reconnecting ? t('voice_reconnecting', 'Yeniden bağlanıyor…') : t('voice_connected', 'Bağlı'))
+          : t('voice_disconnected', 'Bağlı değil')}
       </div>
       {#if inVoice}
         <!-- Renk TEK BAŞINA anlam taşımaz: rozet kaliteyi METİN olarak da yazar. -->
@@ -1450,6 +1471,8 @@
   .voice-connection-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--status-offline); }
   .voice-connection.connected { color: var(--success-text, var(--green)); border-color: var(--green); background: var(--green-bg); }
   .voice-connection.connected .voice-connection-dot { background: var(--green); box-shadow: 0 0 0 3px var(--green-bg); }
+  .voice-connection.reconnecting { color: var(--warning-text, var(--yellow)); border-color: var(--yellow); background: var(--yellow-bg); }
+  .voice-connection.reconnecting .voice-connection-dot { background: var(--yellow); box-shadow: 0 0 0 3px var(--yellow-bg); }
 
   .voice-stage-content {
     position: relative; flex: 1; min-height: 0;
@@ -1847,8 +1870,8 @@
 
   @media (max-width: 480px) {
     .voice-connection { padding: 0 7px; }
-    .voice-connection:not(.connected) { max-width: 34px; overflow: hidden; color: transparent; gap: 0; }
-    .voice-connection:not(.connected) .voice-connection-dot { flex: none; }
+    .voice-connection:not(.connected):not(.reconnecting) { max-width: 34px; overflow: hidden; color: transparent; gap: 0; }
+    .voice-connection:not(.connected):not(.reconnecting) .voice-connection-dot { flex: none; }
     .vc-label { display: none; }
     .vc-btn { min-height: 42px; }
     .voice-empty { padding: 24px 18px; }

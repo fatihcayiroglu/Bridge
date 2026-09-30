@@ -72,6 +72,7 @@ const translations: Record<string, string> = {
   // Voice surface strings — previously hardcoded in the component.
   'voice_connected': 'Connected',
   'voice_disconnected': 'Disconnected',
+  'voice_reconnecting': 'Reconnecting…',
   'voice_check': 'Voice Check',
   'voice_in_room': 'You are in the room',
   'voice_ready': 'Voice is ready when you are',

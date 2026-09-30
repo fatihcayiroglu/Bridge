@@ -65,6 +65,7 @@ const translations: Record<string, string> = {
   "retry": "Réessayer",
   "voice_connected": "Connecté",
   "voice_disconnected": "Déconnecté",
+  "voice_reconnecting": "Reconnexion…",
   "voice_check": "Vérification vocale",
   "voice_in_room": "Vous êtes dans le salon",
   "voice_ready": "L’audio est prêt quand vous l’êtes",
