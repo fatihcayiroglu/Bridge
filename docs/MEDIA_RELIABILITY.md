@@ -332,6 +332,31 @@ point. Workaround: leave and rejoin the call (a fresh transport starts at
 forward video only while the estimate covers the audio plus the lowest layer
 plus a margin.
 
+**P3 bounded investigation (2026-09-30): not shipped, still open.** Acceptance
+for a fix: (A) narrow-link audio not regressed, (B) video recovers without the
+90 s deadlock, (C) no uncontrolled probing, (D) regression tests. On main
+`a76a9b2` (mediasoup 3.26.0, unchanged since P2) the deadlock **did not
+reproduce**: 16/16 congestion cycles resumed without user action (64 kbit/s ×
+20 s × 6: A→B 2.0–10.1 s; 32 kbit/s × 30 s × 10: A→B 2.0–12.1 s), and IMP-04
+resumed in 6.3 s. On the same build the 150 kbit/s profile keeps audio clean
+(concealment 0 % both ways) and video yields.
+
+Audio-first admission with a bounded re-probe was implemented (hold camera
+consumers below 90 kbit/s per audio stream + 80 kbit/s, re-probe every
+3 s → 30 s while held, resume above need × 1.3 with a key frame; 14 model
+tests including a no-probe negative control that deadlocks) and measured on
+the same lab: congestion 6/6 resumed in 6.0–10.2 s — no better than without
+it — while narrow-link audio got **worse** (150 kbit/s concealment A→B
+0 % → 3.0 %, B→A 0 % → 10.5 %; 500 kbit/s A→B 0 % → 3.9 %; one run each).
+That fails (A) with nothing to show for (B), so it was reverted; the code is
+in the P3 history (commits `f561254`, reverted by `611c7ad`). Single runs per
+profile are noisy; the decision does not rest on the size of the regression
+but on there being no measured benefit to pay it for.
+
+What would reopen it: a reproduction of the floor deadlock on a current
+build (the lab's `congestion` scenario, `CONGESTION_CYCLES` / `_KBPS` /
+`_SECONDS`), or field reports of video not returning after congestion.
+
 Link interruptions (blackhole both ways), all recovered without user action:
 
 | Outage | Audible again after the link returns (final run / re-run) |
@@ -420,9 +445,10 @@ part of the device validation below.
 - **Video recovery after heavy downlink congestion (MEDIA-11, open):** after a
   squeeze that drives the SFU's estimate towards a receiver to its floor, that
   receiver's video can stay off for good (audio is unaffected); see *Evidence*
-  for the root cause, the unmerged prototype and its measured audio cost.
-  How often real bufferbloat or a cellular link reaches that floor is not
-  measured.
+  for the root cause, the unmerged prototypes and their measured audio cost.
+  Reproduced on the P2 build (4 of 10 cycles); **not reproduced on the P3
+  build** (0 of 16). How often real bufferbloat or a cellular link reaches
+  that floor is not measured.
 
 - **Human perceptual quality** (echo, noise suppression, loudness, lip sync):
   the fake capture device has no acoustic path. HUMAN VALIDATION REQUIRED

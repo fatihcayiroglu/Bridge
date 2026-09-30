@@ -32,12 +32,28 @@ skipped, never counted as passing. Evidence: `docs/P3_DAILY_USE.md`.
 - **Older DM and group DM history is reachable**: "Load older messages" (or scrolling to the top)
   pages back with the server's composite cursor; only the last 50 messages were ever shown.
 - **Enter sends a DM** (Shift+Enter adds a line), as in group DMs and channels.
+- **DM messages show when they were sent** (time today, day and time before), as group DMs do.
+- **A message sent while offline no longer looks stuck after reconnecting.** The reconnect history
+  reload could answer with a snapshot taken before the queued message was stored and replace the
+  list after the message had been delivered and acknowledged; the message disappeared and showed as
+  "queued" until a reload (nightly E2E, 7 of 18 local runs). The same race revived messages deleted
+  and reverted messages edited during the reload. Live changes are now kept when the snapshot lands.
 - **The DM and group DM lists update a conversation's unread badge live** when a message arrives
   for a conversation other than the open one (it was stale until the panel was reopened).
 - **Server search no longer shows results for an older query**: a slow response for "ab" could
   replace the results of "abc", and a response in flight could refill a cleared panel.
 - **Server search results are a keyboard-navigable list** (↓ from the query, ↑/↓/Home/End between
   results) instead of a listbox without selection or arrow keys.
+
+### Known limitations
+- **MEDIA-11 stays open.** The video-after-congestion deadlock did not reproduce on the P3 build
+  (0 of 16 lab cycles; 4 of 10 on the P2 build). Audio-first admission with a bounded re-probe was
+  built and measured: no better recovery, worse narrow-link audio (150 kbit/s concealment 0 → 3.0 %
+  / 0 → 10.5 %) — reverted, kept in history. Evidence: `docs/MEDIA_RELIABILITY.md`.
+- DMs and group DMs have no edit/delete of your own messages and no attachments (feature gaps).
+- The channel message list is not virtualised: measured, a session that scrolls back past ~1000
+  messages pays a 0.3–0.7 s freeze per further page and ~0.1 MB heap per loaded message (3000
+  messages: 97k DOM nodes, 291 MB). Typing stays within one frame. Evidence: `docs/P3_DAILY_USE.md`.
 
 ### Changed
 - **Client bundle ships UTF-8 instead of `\uXXXX` escapes** — total shipped JS 3418.7 → 2971.5 KB
@@ -56,6 +72,10 @@ skipped, never counted as passing. Evidence: `docs/P3_DAILY_USE.md`.
 - Client: the audit-log export test waits for the download instead of racing `response.blob()`.
 - Real-PostgreSQL deletion suites mock the token-cache invalidation the deletion routes now call
   (their mocks lacked it, so the route answered 500 after erasing).
+- Keyboard journey: server search without a mouse (↓ to the first result, Enter jumps to it).
+- Firefox cross-browser avatar test reads the fallback background through a retrying assertion
+  (a main-world `evaluate` hung once in the nightly run; same property asserted).
+- Media lab: `IMPAIR_PROFILES` runs only the named impairment profiles.
 - New browser journey `dm-daily-use.spec.ts`: a 54-message DM (open at newest, load older by
   keyboard, order, Enter-send, reload), a live unread badge, and a long group DM (overlay, composer
   on screen and usable, Enter-send). All three fail on the old code.
