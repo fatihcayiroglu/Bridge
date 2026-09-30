@@ -3,7 +3,7 @@
 // Page Object Model yaklaşımı
 
 import path from 'path';
-import { getCsrf } from './csrf';
+import { getCsrf, invalidateCsrf, refreshCsrf } from './csrf';
 import fs from 'fs';
 
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
@@ -59,6 +59,27 @@ async function authHeaders(
     if (t) headers['X-CSRF-Token'] = t;
   }
   return headers;
+}
+
+/**
+ * Kurulum icin durum degistiren istek; CSRF 403'unde BIR KEZ tazeleyip yeniden
+ * gonderir (`apiTest` fikstürüyle ayni kural). Sunucu kullanici basina TEK
+ * CSRF token tutar ve ayni kullanicinin tarayici sayfasi token alinca
+ * onbellektekini gecersiz kilar (csrf.ts). Olculdu: `voice-media` tam
+ * kosumunda kanal olusturma ve sunucuya katilma `403 CSRF token invalid or
+ * expired` aldi; yardimcilar bunu sessizce `null`/`false`a ceviriyordu.
+ * Gercek bir yetki 403'u yeniden denemede de 403 kalir.
+ */
+async function sendWithCsrf(
+  request: import('@playwright/test').APIRequestContext,
+  bearer: string,
+  send: (headers: Record<string, string>) => Promise<import('@playwright/test').APIResponse>,
+): Promise<import('@playwright/test').APIResponse> {
+  const res = await send(await authHeaders(request, bearer));
+  if (res.status() !== 403) return res;
+  invalidateCsrf(bearer);
+  await refreshCsrf(request, bearer);
+  return send(await authHeaders(request, bearer));
 }
 
 /**
@@ -183,10 +204,10 @@ class BridgePage {
  */
 async function createTestServer(request: import('@playwright/test').APIRequestContext, token: string, name: string) {
   const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
-  const res = await request.post(`${BASE}/api/servers`, {
-    headers: await authHeaders(request, token),
+  const res = await sendWithCsrf(request, token, headers => request.post(`${BASE}/api/servers`, {
+    headers,
     data: JSON.stringify({ name, description: 'E2E test server' }),
-  });
+  }));
   if (!res.ok()) {
     console.error(`[e2e] createTestServer ${res.status()}: ${(await res.text()).slice(0, 200)}`);
     return null;
@@ -200,10 +221,10 @@ async function createTestServer(request: import('@playwright/test').APIRequestCo
  */
 async function createTestChannel(request: import('@playwright/test').APIRequestContext, token: string, serverId: string, name: string, type = 'text') {
   const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
-  const res = await request.post(`${BASE}/api/servers/${serverId}/channels`, {
-    headers: await authHeaders(request, token),
+  const res = await sendWithCsrf(request, token, headers => request.post(`${BASE}/api/servers/${serverId}/channels`, {
+    headers,
     data: JSON.stringify({ name, type }),
-  });
+  }));
   if (!res.ok()) return null;
   return await res.json();
 }
@@ -336,17 +357,17 @@ async function joinServer(
   serverId: string,
 ): Promise<boolean> {
   const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
-  const created = await request.post(`${BASE}/api/servers/invites`, {
-    headers: await authHeaders(request, ownerToken),
+  const created = await sendWithCsrf(request, ownerToken, headers => request.post(`${BASE}/api/servers/invites`, {
+    headers,
     data: JSON.stringify({ serverId }),
-  });
+  }));
   if (!created.ok()) return false;
   const { code } = await created.json() as { code?: string };
   if (!code) return false;
-  const used = await request.post(`${BASE}/api/servers/invites/${code}/use`, {
-    headers: await authHeaders(request, memberToken),
+  const used = await sendWithCsrf(request, memberToken, headers => request.post(`${BASE}/api/servers/invites/${code}/use`, {
+    headers,
     data: JSON.stringify({}),
-  });
+  }));
   return used.ok();
 }
 

@@ -2265,6 +2265,76 @@ describe('SFU late join consumes producers announced before the receive transpor
   });
 });
 
+describe('SFU remote media keeps one stream per producer kind', () => {
+  async function consumingRTC() {
+    setMediasoupPresent(true); vi.resetModules();
+    const { BridgeRTC } = await import('../js/webrtc-sfu');
+    const socket = makeInteractiveSocket();
+    const rtc = new BridgeRTC(socket as any) as any;
+    const attach = vi.fn(); const tiles = vi.fn();
+    const registry = (await import('../js/core/bridge-registry')).BridgeRegistry;
+    vi.mocked(registry.get).mockImplementation(voicePanelOwners({ attachRemoteStream: attach, sfuHandleNewProducer: tiles }));
+    const pending = new Map<string, ReturnType<typeof makeConsumer>>();
+    const recv = makeTransport('recv-kinds');
+    recv.consume.mockImplementation(async ({ producerId }: { producerId: string }) => pending.get(producerId));
+    socket.emit.mockImplementation((event: string, payload: any) => {
+      socket.emitted.push({ event, payload });
+      if (event === 'sfu:consume') queueMicrotask(() => socket.dispatch('sfu:consumed', {
+        producerId: payload.producerId, consumerId: `consumer-${payload.producerId}`,
+        kind: pending.get(payload.producerId)!.track.kind, rtpParameters: {},
+      }));
+      return socket;
+    });
+    rtc.recvTransport = recv;
+    rtc.device = { rtpCapabilities: { codecs: [] }, load: vi.fn() };
+    rtc.currentChannelId = 'voice-kinds';
+    const consume = async (producerId: string, kind: string, trackKind: 'audio' | 'video') => {
+      const consumer = makeConsumer(producerId); consumer.track = makeTrack(trackKind);
+      pending.set(producerId, consumer);
+      expect(await rtc._consume(producerId, 'peer-k', kind)).toBe(consumer);
+      return consumer;
+    };
+    const streamOf = (kind: string) => attach.mock.calls.filter(call => call[2] === kind).at(-1)![1] as MediaStream;
+    return { rtc, socket, attach, tiles, consume, streamOf };
+  }
+
+  it('routes microphone, system audio, camera and screen to separate streams and names each for the UI', async () => {
+    const { rtc, attach, tiles, consume, streamOf } = await consumingRTC();
+    const mic = await consume('p-mic', 'audio', 'audio');
+    const system = await consume('p-system', 'screen-audio', 'audio');
+    const camera = await consume('p-camera', 'video', 'video');
+    const screen = await consume('p-screen', 'screen', 'video');
+
+    expect(streamOf('audio').getTracks()).toEqual([mic.track]);
+    expect(streamOf('screen-audio').getTracks()).toEqual([system.track]);
+    expect(streamOf('video').getTracks()).toEqual([camera.track]);
+    expect(streamOf('screen').getTracks()).toEqual([screen.track]);
+    expect(new Set(attach.mock.calls.map(call => call[1])).size).toBe(4);
+    expect(tiles).toHaveBeenCalledWith('peer-k', undefined, streamOf('video'), 'video');
+    expect(tiles).toHaveBeenCalledWith('peer-k', undefined, streamOf('screen'), 'screen');
+
+    rtc.leaveVoice();
+    for (const consumer of [mic, system, camera, screen]) expect(consumer.track.stop).toHaveBeenCalled();
+    expect(rtc.peerStreams.size).toBe(0);
+  });
+
+  it('drops a closed producer\'s track from its stream, so a restarted share is the only track', async () => {
+    const { socket, consume, streamOf } = await consumingRTC();
+    const mic = await consume('p-mic', 'audio', 'audio');
+    const first = await consume('p-screen-1', 'screen', 'video');
+    const stream = streamOf('screen');
+
+    await socket.dispatch('sfu:producer-closed', { producerId: 'p-screen-1' });
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(stream.getTracks()).toEqual([]);
+    expect(streamOf('audio').getTracks()).toEqual([mic.track]);
+
+    const second = await consume('p-screen-2', 'screen', 'video');
+    expect(streamOf('screen')).toBe(stream);
+    expect(stream.getTracks()).toEqual([second.track]);
+  });
+});
+
 describe('SFU transports use the ICE servers and relay policy issued at join', () => {
   it('passes TURN servers and iceTransportPolicy from sfu:joined to both mediasoup transports', async () => {
     setMediasoupPresent(true); vi.resetModules();

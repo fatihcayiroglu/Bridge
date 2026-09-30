@@ -87,10 +87,18 @@ async function rtp(page: Page, kind: 'audio' | 'video') {
       .filter(pc => pc.connectionState !== 'closed');
     const out = { inBytes: 0, inPackets: 0, outPackets: 0, inTracks: 0, outTracks: 0, frames: 0, pcs: pcs.length };
     for (const pc of pcs) {
+      // A closed SFU consumer leaves its media section in the receive
+      // transport as an inactive transceiver whose inbound stats (frozen
+      // bytes) stay in getStats(). Only live receiving paths are counted, so
+      // a dead one can neither look like a duplicate nor like flowing media.
+      const live = new Set(pc.getTransceivers()
+        .filter(t => (t.currentDirection === 'recvonly' || t.currentDirection === 'sendrecv') &&
+          t.receiver.track.readyState === 'live')
+        .map(t => t.mid));
       const stats = await pc.getStats();
       stats.forEach((r: Record<string, unknown>) => {
         if (r.kind !== k) return;
-        if (r.type === 'inbound-rtp') {
+        if (r.type === 'inbound-rtp' && live.has(r.mid as string)) {
           out.inTracks += 1;
           out.inBytes += Number(r.bytesReceived ?? 0);
           out.inPackets += Number(r.packetsReceived ?? 0);
@@ -207,7 +215,9 @@ async function twoInVoice(
   opts: OpenOpts = {},
 ) {
   const vcName = `ma-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
-  await createTestChannel(request, ownerTok, srvId, vcName, 'voice');
+  // Olusturulamayan kanal 25 sn'lik bir dugme beklemesine donusuyordu; neden
+  // burada, adiyla gorunsun.
+  expect(await createTestChannel(request, ownerTok, srvId, vcName, 'voice'), 'ses kanalı oluşturulamadı').toBeTruthy();
   const ctxA = await browser.newContext();
   const ctxB = await browser.newContext();
   const pageA = await openApp(ctxA, ownerTok, opts);

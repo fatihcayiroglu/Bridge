@@ -41,9 +41,16 @@ export function displayFixture(withAudio: boolean): string {
   // DOM hazirdir.
   return `(() => {
     const WANT_AUDIO = ${withAudio ? 'true' : 'false'};
-    let built = null;
+    let source = null;
 
-    function build() {
+    // Kaynak (canvas + osilator) BIR KEZ kurulur; her \`getDisplayMedia\`
+    // cagrisi ise gercek tarayici gibi YENI track'ler dondurur. Eskiden ayni
+    // akis nesnesi geri veriliyordu: urun paylasimi durdururken track'leri
+    // DURDURDUGU icin ikinci paylasim BITMIS track'lerle basliyor ve
+    // basarisiz oluyordu (olculdu: S3/S4 yeniden baslatma, "Ekran paylasimi
+    // iptal edildi"). Gercek \`getDisplayMedia\` hicbir zaman bitmis track
+    // dondurmez.
+    function buildSource() {
       const canvas = document.createElement('canvas');
       canvas.width = 320; canvas.height = 180;
       // Canvas DOM'A EKLENIR: bagli olmayan bir canvas kompozite edilmeyebilir
@@ -63,28 +70,33 @@ export function displayFixture(withAudio: boolean): string {
         ctx.fillText(String(frame), 12, 100);
       }, 40);
 
-      const stream = canvas.captureStream(25);
-
+      let ac = null, osc = null;
       if (WANT_AUDIO) {
         const AC = window.AudioContext || window.webkitAudioContext;
-        const ac = new AC();
-        const osc = ac.createOscillator();
+        ac = new AC();
+        osc = ac.createOscillator();
         osc.frequency.value = 660;          // mikrofonun 440 Hz tonundan AYRI
-        const dest = ac.createMediaStreamDestination();
-        osc.connect(dest);
         osc.start();
-        const at = dest.stream.getAudioTracks();
-        for (let i = 0; i < at.length; i++) stream.addTrack(at[i]);
         window.__fixtureAudioContext = ac;
       }
+      return { canvas, ac, osc };
+    }
 
+    function capture() {
+      if (!source) source = buildSource();
+      const stream = source.canvas.captureStream(25);
+      if (source.ac) {
+        const dest = source.ac.createMediaStreamDestination();
+        source.osc.connect(dest);
+        const at = dest.stream.getAudioTracks();
+        for (let i = 0; i < at.length; i++) stream.addTrack(at[i]);
+      }
       window.__displayFixtureStream = stream;
       return stream;
     }
 
     navigator.mediaDevices.getDisplayMedia = async function () {
-      if (!built) built = build();
-      return built;
+      return capture();
     };
   })();`;
 }

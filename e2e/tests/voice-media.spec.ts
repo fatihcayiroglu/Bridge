@@ -52,6 +52,8 @@ const INSTRUMENT = () => {
 interface AudioFlow {
   pcCount: number;
   openPcCount: number;
+  /** Open connections carry only one-way transceivers: SFU send/receive transports, not P2P pairings. */
+  sfuTransports: boolean;
   packetsSent: number;
   packetsReceived: number;
   bytesReceived: number;
@@ -66,17 +68,29 @@ async function readAudioFlow(page: Page): Promise<AudioFlow> {
     const open = pcs.filter(pc => pc.connectionState !== 'closed');
     const out: AudioFlow = {
       pcCount: pcs.length, openPcCount: open.length,
+      // P2P pairs carry `sendrecv` transceivers; mediasoup transports only
+      // `sendonly` (send) or `recvonly` (receive) ones.
+      sfuTransports: open.length > 0 && open.every(pc => pc.getTransceivers().every(t => t.direction !== 'sendrecv')),
       packetsSent: 0, packetsReceived: 0, bytesReceived: 0,
       inboundAudioTracks: 0, outboundAudioTracks: 0,
     };
     for (const pc of open) {
+      // A closed SFU consumer leaves its media section in the receive
+      // transport as an inactive transceiver whose inbound stats (frozen
+      // bytes) stay in getStats(). Only live receiving paths are counted, so
+      // a dead one can neither look like double playback nor like flowing
+      // audio.
+      const live = new Set(pc.getTransceivers()
+        .filter(t => (t.currentDirection === 'recvonly' || t.currentDirection === 'sendrecv') &&
+          t.receiver.track.readyState === 'live')
+        .map(t => t.mid));
       const stats = await pc.getStats();
       stats.forEach((r: Record<string, unknown>) => {
         if (r.type === 'outbound-rtp' && r.kind === 'audio') {
           out.outboundAudioTracks += 1;
           out.packetsSent += Number(r.packetsSent ?? 0);
         }
-        if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+        if (r.type === 'inbound-rtp' && r.kind === 'audio' && live.has(r.mid as string)) {
           out.inboundAudioTracks += 1;
           out.packetsReceived += Number(r.packetsReceived ?? 0);
           out.bytesReceived += Number(r.bytesReceived ?? 0);
@@ -85,6 +99,15 @@ async function readAudioFlow(page: Page): Promise<AudioFlow> {
     }
     return out;
   }) as Promise<AudioFlow>;
+}
+
+/**
+ * Open connections the media topology does not account for. P2P needs one
+ * pairing per remote peer; the SFU exactly one send and one receive transport
+ * per client, whatever the number of peers.
+ */
+function orphanPcs(flow: AudioFlow, remotePeers = 1): number {
+  return flow.openPcCount - (flow.sfuTransports ? 2 : remotePeers);
 }
 
 /** DOM'daki uzak ses elemanları — çift çalma buradan görünür. */
@@ -265,8 +288,8 @@ test.describe('ses — iki tarayıcı arasında GERÇEK medya', () => {
       expect(await remoteAudioCount(pageB), 'B tarafında fazladan uzak ses elemanı').toBe(1);
 
       // ── AYNI KİŞİ İÇİN İKİNCİ BAĞLANTI YOK ───────────────────────────────
-      expect(flowA.openPcCount, 'A tarafında yetim eşleşme kaldı').toBe(1);
-      expect(flowB.openPcCount, 'B tarafında yetim eşleşme kaldı').toBe(1);
+      expect(orphanPcs(flowA), 'A tarafında yetim eşleşme kaldı').toBe(0);
+      expect(orphanPcs(flowB), 'B tarafında yetim eşleşme kaldı').toBe(0);
     } finally {
       await ctxA.close();
       await ctxB.close();
@@ -352,7 +375,7 @@ test.describe('ses — iki tarayıcı arasında GERÇEK medya', () => {
 
       const again = await waitForFlow(pageB, f => f.packetsReceived > 0 && f.openPcCount > 0);
       expect(again.packetsReceived, 'tekrar katılımda ses gelmedi').toBeGreaterThan(0);
-      expect(again.openPcCount, 'tekrar katılımda yetim eşleşme kaldı').toBe(1);
+      expect(orphanPcs(again), 'tekrar katılımda yetim eşleşme kaldı').toBe(0);
       expect(again.inboundAudioTracks, 'tekrar katılımda ses akışı çiftlendi').toBe(1);
       expect(await remoteAudioCount(pageB), 'tekrar katılımda uzak ses elemanı çiftlendi').toBe(1);
     } finally {

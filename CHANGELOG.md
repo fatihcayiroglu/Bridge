@@ -41,6 +41,13 @@ media-path evidence, not perceptual quality, physical devices or real Wi-Fi/cell
   production never sets); **camera video never exceeded 320x240** (a fixed 3-layer simulcast set lost
   its full-resolution layer for a default 640x480 camera); **a camera or microphone that ended
   underneath the call** left the controls showing it active and the microphone loss silent.
+- **SFU calls mixed a shared screen's system audio into the microphone, and the camera into the
+  screen view (MEDIA-12).** The SFU client kept one audio and one video stream per peer, so system
+  audio played inside the microphone's element (it never got its own, and stopping the share could
+  not remove it) and the camera and screen views showed the same stream; a closed producer's ended
+  track also stayed in it. Each producer kind now has its own stream, a closed producer's track is
+  removed, and the voice panel trusts the kind the SFU names — a camera turned on during a share no
+  longer takes over the screen view. Found by the two-browser `voice-media` suite.
 
 ### Added
 - `scripts/medialab` (lab, scenarios `e2e`, `turn`, `impair`, `netchange`, `failover`, `lifecycle`,
@@ -54,6 +61,25 @@ media-path evidence, not perceptual quality, physical devices or real Wi-Fi/cell
   24 PASS, 0 FAIL, 0 BLOCKED, 0 SKIPPED (TURN-09 and NC-02 pass). Measurements: `docs/MEDIA_RELIABILITY.md#evidence`.
 - New lab check `IMP-04`: video resumes after congestion clears (the matrix alone could not tell a
   slow bandwidth-estimate climb from stuck video). It found MEDIA-11 (below).
+- Two-browser Playwright suite `voice-media` (33 tests, local SFU): 15 passed / 18 failed on `main`
+  as CI starts the server (no announced SFU address → no RTP), 23 / 10 with the address set; the 10
+  were MEDIA-12 (6), a display-capture stub that returned ended tracks on a second share (1) and
+  three P2P-era assertions that counted the SFU's two transports and a closed consumer's leftover
+  stats as duplicates (now topology-aware and counting only live paths). A clean run then exposed a
+  harness defect — API setup helpers kept a CSRF token the same user's browser page had replaced and
+  silently failed on the 403 — fixed by one refresh-and-retry. With this change: 33 / 0 in two
+  consecutive runs (see `docs/MEDIA_RELIABILITY.md`). The e2e server now defaults the SFU address to
+  loopback.
+
+### Security (dependencies)
+- Advisories that appeared after main's last green Quality Gate (2026-09-28) turned its
+  `npm audit --audit-level=high` step red for the root, server and electron trees (none in e2e). Updated to the patched releases within the
+  declared ranges: nodemailer 10.0.13, multer 2.4.0, engine.io 6.6.11, devalue 5.9.4, fast-uri 3.1.8,
+  ip-address 10.7.2, brace-expansion 5.0.12 (and 1.1.21 / 2.1.7 in electron), electron 42.11.9. The
+  exact pins moved to the first patched version: `undici` 7.29.1 (root override) and 8.10.2 (server),
+  `brace-expansion` 5.0.12 and `ip-address` 10.7.2 (server overrides); eslint's minimatch gets a
+  scoped `brace-expansion` override like the existing one for minimatch 3.1.5. Lockfiles regenerated
+  with npm; `npm audit` reports 0 vulnerabilities in all four trees.
 
 ### Open (MEDIA-11)
 - **Video from the SFU can stay off after heavy congestion.** When a receiver's link is squeezed, the
