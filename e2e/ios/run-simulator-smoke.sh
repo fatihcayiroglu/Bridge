@@ -15,6 +15,10 @@ mkdir -p "$OUT"
 RESULTS="$OUT/ios-evidence.txt"
 : > "$RESULTS"
 fails=0
+# Every simulator command gets a hard time limit (macOS has no coreutils `timeout`), and progress is
+# timestamped, so a hang shows WHERE it happened instead of eating the job's whole timeout.
+limit() { local secs=$1; shift; perl -e 'alarm shift; exec @ARGV' "$secs" "$@"; }
+step() { echo "[ios-smoke $(date -u +%H:%M:%S)] $*"; }
 record() { # status id title detail
   printf '%-8s %-5s %s\n          ↳ %s\n' "$1" "$2" "$3" "$4" | tee -a "$RESULTS"
   [ "$1" = "FAIL" ] && fails=$((fails + 1))
@@ -34,26 +38,36 @@ else
 fi
 
 # ── Simulator ───────────────────────────────────────────────────────────────────────────────
-UDID=$(xcrun simctl list devices available -j | python3 -c '
+step "selecting a simulator"
+UDID=$(limit 120 xcrun simctl list devices available -j | python3 -c '
 import json,sys
 d=json.load(sys.stdin)["devices"]
 cands=[(rt,x) for rt,xs in d.items() if "iOS" in rt for x in xs if x["name"].startswith("iPhone")]
 cands.sort(key=lambda c: c[0])
 print(cands[-1][1]["udid"] if cands else "")')
 if [ -z "$UDID" ]; then record FAIL I00 "an iPhone simulator is available" "none found"; exit 1; fi
-DEVICE=$(xcrun simctl list devices | grep "$UDID" | head -1 | sed 's/^ *//')
-echo "simulator: $DEVICE"
-xcrun simctl boot "$UDID" 2>/dev/null || true
-xcrun simctl bootstatus "$UDID" -b >/dev/null
-xcrun simctl install "$UDID" "$APP"
+DEVICE=$(limit 60 xcrun simctl list devices | grep "$UDID" | head -1 | sed 's/^ *//')
+step "simulator: $DEVICE"
+limit 240 xcrun simctl boot "$UDID" 2>/dev/null || true
+step "waiting for boot"
+if ! limit 480 xcrun simctl bootstatus "$UDID" -b >/dev/null; then
+  record FAIL I00 "the simulator boots" "bootstatus did not finish within 480 s ($DEVICE)"
+  exit 1
+fi
+step "installing the app"
+if ! limit 240 xcrun simctl install "$UDID" "$APP"; then
+  record FAIL I00 "the app installs on the simulator" "simctl install did not finish within 240 s"
+  exit 1
+fi
 
 # ── I02 / I03: cold launch survives and the native bridge comes up in the WebView ────────────
 start=$(date +%s)
-xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" > "$OUT/console.log" 2>&1 &
+step "launching $BUNDLE_ID"
+limit 300 xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" > "$OUT/console.log" 2>&1 < /dev/null &
 LAUNCH_PID=$!
 sleep 25
-xcrun simctl io "$UDID" screenshot "$OUT/cold-launch.png" >/dev/null 2>&1 || true
-alive=$(xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -c "$BUNDLE_ID" || true)
+limit 60 xcrun simctl io "$UDID" screenshot "$OUT/cold-launch.png" >/dev/null 2>&1 || true
+alive=$(limit 60 xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -c "$BUNDLE_ID" || true)
 if [ "$alive" -ge 1 ]; then
   record PASS I02 "cold launch: the app process is alive 25 s after launch" "device=$DEVICE"
 else
@@ -66,17 +80,20 @@ else
 fi
 
 # ── I04: a bridge:// link reaches the running app ────────────────────────────────────────────
-xcrun simctl openurl "$UDID" "bridge://channel/p4-ios-smoke-channel" || true
+step "opening bridge://channel/p4-ios-smoke-channel"
+limit 60 xcrun simctl openurl "$UDID" "bridge://channel/p4-ios-smoke-channel" || true
 sleep 6
 if grep -q "Deep link dispatched: navigate:channel" "$OUT/console.log"; then
   record PASS I04 "bridge://channel/<id> reaches the running app (bridge dispatch)" "routing itself is covered by the Android emulator and unit tests"
 else
   record FAIL I04 "bridge://channel/<id> reaches the running app (bridge dispatch)" "$(grep -i 'deep' "$OUT/console.log" | tail -5 | tr '\n' ' ' | cut -c1-400)"
 fi
-xcrun simctl io "$UDID" screenshot "$OUT/after-deeplink.png" >/dev/null 2>&1 || true
+limit 60 xcrun simctl io "$UDID" screenshot "$OUT/after-deeplink.png" >/dev/null 2>&1 || true
 record MEASURED I05 "time from launch command to evidence capture" "$(( $(date +%s) - start )) s (includes fixed waits)"
 
 kill "$LAUNCH_PID" 2>/dev/null || true
-xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
+limit 120 xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
+step "done"
+tail -n 40 "$OUT/console.log" || true
 echo "TOTAL fail=$fails (evidence category: AUTOMATED / SIMULATOR — not device evidence)" | tee -a "$RESULTS"
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)
