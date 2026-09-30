@@ -1528,6 +1528,13 @@ class BridgeRTC {
       }
     });
 
+    // MEDIA-11: the SFU holds camera video while this downlink cannot carry it
+    // next to the audio, and admits it again when a re-probe finds room.
+    this._onSocket(socket, 'sfu:downlink-video', (raw: unknown) => {
+      const held = Boolean((raw as { held?: unknown } | null)?.held);
+      document.dispatchEvent(new CustomEvent('bridge:voice-video-held', { detail: { held } }));
+    });
+
     this._onSocket(socket, 'sfu:peer-left', (raw: unknown) => {
       const { socketId } = raw as { socketId: string };
       this._pendingConsumes = this._pendingConsumes.filter(p => p.socketId !== socketId);

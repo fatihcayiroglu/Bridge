@@ -66,6 +66,7 @@ const translations: Record<string, string> = {
   "voice_connected": "已连接",
   "voice_disconnected": "已断开",
   "voice_reconnecting": "正在重新连接…",
+  "voice_video_held": "视频已暂停：连接较弱，优先保证音频",
   "dm_load_older": "加载更早的消息",
   "dm_history_load_failed": "无法加载更早的消息。",
   "voice_check": "语音检查",

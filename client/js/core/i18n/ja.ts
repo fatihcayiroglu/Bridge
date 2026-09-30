@@ -66,6 +66,7 @@ const translations: Record<string, string> = {
   "voice_connected": "接続済み",
   "voice_disconnected": "切断済み",
   "voice_reconnecting": "再接続中…",
+  "voice_video_held": "映像を一時停止中：接続が弱いため音声を優先しています",
   "dm_load_older": "以前のメッセージを読み込む",
   "dm_history_load_failed": "以前のメッセージを読み込めませんでした。",
   "voice_check": "ボイスチェック",
