@@ -66,6 +66,8 @@ const translations: Record<string, string> = {
   "voice_connected": "Подключено",
   "voice_disconnected": "Отключено",
   "voice_reconnecting": "Переподключение…",
+  "dm_load_older": "Загрузить более ранние сообщения",
+  "dm_history_load_failed": "Не удалось загрузить более ранние сообщения.",
   "voice_check": "Проверка голоса",
   "voice_in_room": "Вы в комнате",
   "voice_ready": "Голосовая связь готова",

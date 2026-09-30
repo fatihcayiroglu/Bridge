@@ -61,7 +61,8 @@
   $effect(() => {
     const q = trimmedQuery;
     if (_debounceTimer) clearTimeout(_debounceTimer);
-    if (q.length < 2) { results = []; error = null; return; }
+    // 2 karakterin altına inildi: uçuştaki yanıt artık geçersizdir.
+    if (q.length < 2) { searchSeq += 1; results = []; error = null; isLoading = false; return; }
     _debounceTimer = setTimeout(() => {
       // Do not retain an expired timer handle: later effect cleanup must only
       // cancel work that is still pending.
@@ -123,8 +124,18 @@
     }));
   }
 
+  /**
+   * P3 — BAYAT YANIT KORUMASI. Her istek bir sıra numarası alır; yalnız EN
+   * GÜNCEL isteğin yanıtı sonuçlara yazılır. Önceden "ab" yanıtı "abc"den
+   * sonra gelirse "abc" sorgusunun altında "ab" sonuçları kalıyordu; sekme
+   * değişimi ve "daha fazla yükle" de aynı yarışa açıktı. Küresel arama
+   * (`GlobalSearchPanel`) aynı sözleşmeyi zaten uyguluyordu.
+   */
+  let searchSeq = 0;
+
   async function runSearch(q: string, p = 1) {
     if (!serverId) return;
+    const seq = ++searchSeq;
     isLoading = true; error = null;
     try {
       const apiFetch = BridgeRegistry.get<(u: string) => Promise<Response>>('apiFetch');
@@ -136,29 +147,34 @@
         limit:  String(PAGE_SIZE),
         offset: String((p - 1) * PAGE_SIZE),
       });
+      const tab = activeTab;
       const res = await apiFetch(`/api/search?${params.toString()}`);
+      if (seq !== searchSeq) return;
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as SearchResponse;
-      const mapped = toResults(data, activeTab);
+      if (seq !== searchSeq) return;
+      const mapped = toResults(data, tab);
       results = p === 1 ? mapped : [...results, ...mapped];
       // `hasMore` yalnız mesaj dalı için anlamlıdır (sunucu kanal/üyeyi
       // sabit üst sınırla döndürür), bu yüzden diğer sekmelerde zorlanmaz.
-      hasMore = activeTab === 'messages' ? Boolean(data.hasMore) : false;
+      hasMore = tab === 'messages' ? Boolean(data.hasMore) : false;
       page = p;
     } catch (err) {
+      if (seq !== searchSeq) return;
       log.error('Search failed', err);
       error = t("ui_arama_sirasinda_hata_olustu_lutfen_tekrar_deneyin", "Arama sırasında hata oluştu. Lütfen tekrar deneyin.");
       results = [];
       hasMore = false;
     } finally {
-      isLoading = false;
+      if (seq === searchSeq) isLoading = false;
     }
   }
 
   function loadMore() { if (hasMore && !isLoading) runSearch(trimmedQuery, page + 1); }
 
   function clear() {
-    query = ''; results = []; error = null; page = 1; hasMore = false;
+    searchSeq += 1; // uçuştaki yanıt temizlenmiş panele yazılmaz
+    query = ''; results = []; error = null; page = 1; hasMore = false; isLoading = false;
   }
 
   function navigateToResult(result: SearchResult) {
@@ -233,6 +249,42 @@
     BridgeRegistry.unregister?.('openSearchFromShell');
   });
 
+  /**
+   * P3 — KLAVYE. Sonuçlar düğmelerden oluşan bir LİSTEDİR (Tab ile gezilir).
+   * Eskiden `role="listbox"` / `role="option" aria-selected="false"` taşıyordu
+   * ama listbox'ın ne seçimi ne ok tuşları vardı; içine iskelet, hata, sayaç
+   * ve "daha fazla yükle" de giriyordu — ekran okuyucuya yanlış bir yapı
+   * bildiriliyordu. Ok tuşları artık aramadan sonuçlara ve sonuçlar arasında
+   * odak taşır; ilk sonuçta ↑ aramaya döner.
+   */
+  let searchInputEl = $state<HTMLInputElement | null>(null);
+  let resultListEl = $state<HTMLUListElement | null>(null);
+
+  function resultButtons(): HTMLButtonElement[] {
+    return resultListEl ? [...resultListEl.querySelectorAll<HTMLButtonElement>('.search-result-item')] : [];
+  }
+
+  function onInputKeydown(e: KeyboardEvent): void {
+    if (e.key !== 'ArrowDown' || e.isComposing) return;
+    const first = resultButtons()[0];
+    if (!first) return;
+    e.preventDefault();
+    first.focus();
+  }
+
+  function onResultKeydown(e: KeyboardEvent, index: number): void {
+    const buttons = resultButtons();
+    let next: number | null = null;
+    if (e.key === 'ArrowDown') next = Math.min(index + 1, buttons.length - 1);
+    else if (e.key === 'ArrowUp') next = index - 1;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = buttons.length - 1;
+    if (next === null) return;
+    e.preventDefault();
+    if (next < 0) searchInputEl?.focus();
+    else buttons[next]?.focus();
+  }
+
   function formatDate(ts?: number) {
     if (!ts) return '';
     return new Date(ts).toLocaleDateString(localeTag(), { day: 'numeric', month: 'short' });
@@ -253,7 +305,9 @@
         <input
           class="search-input"
           type="search"
+          bind:this={searchInputEl}
           bind:value={query}
+          onkeydown={onInputKeydown}
           placeholder={t('sp_placeholder', 'Mesaj, üye veya kanal ara…')}
           aria-label={t("ui_search_query_aria")}
           autocomplete="off"
@@ -283,7 +337,7 @@
     </div>
 
     <!-- Results -->
-    <div class="search-results" role="listbox">
+    <div class="search-results">
       {#if isLoading && results.length === 0}
         <div class="search-skeleton" aria-live="polite" aria-label={t('sp_loading', 'Yükleniyor')}>
           {#each Array(5) as _}
@@ -294,12 +348,14 @@
         <div class="search-error" role="alert">{error}</div>
       {:else if hasResults}
         <div class="search-count" aria-live="polite">{totalLabel}</div>
-        {#each results as result (result._id)}
+        <ul class="search-result-list" bind:this={resultListEl} aria-label={t('gsp_results', 'Arama sonuçları')}>
+        {#each results as result, index (result._id)}
+          <li>
           <button
+            type="button"
             class="search-result-item"
-            role="option"
-            aria-selected="false"
             onclick={() => navigateToResult(result)}
+            onkeydown={(e) => onResultKeydown(e, index)}
           >
             {#if result.type === 'message'}
               <div class="result-meta">
@@ -316,7 +372,9 @@
               <span class="result-name">{result.channelName}</span>
             {/if}
           </button>
+          </li>
         {/each}
+        </ul>
         {#if hasMore}
           <button class="search-load-more" onclick={loadMore} disabled={isLoading}>
             {isLoading ? t("loading") : t("surface_daha_fazla_yukle_776858")}
@@ -385,6 +443,7 @@
   border-bottom-color: var(--bridge-blue, #2d9cdb);
 }
 .search-results { flex: 1; overflow-y: auto; padding: 8px; }
+.search-result-list { list-style: none; margin: 0; padding: 0; }
 .search-skeleton-item {
   height: 52px; background: var(--bridge-surface2, #232636);
   border-radius: 8px; margin-bottom: 4px; animation: pulse 1.2s infinite;
@@ -396,7 +455,8 @@
   display: flex; flex-direction: column; gap: 2px;
   transition: background .1s;
 }
-.search-result-item:hover { background: var(--bridge-surface2, #232636); }
+.search-result-item:hover, .search-result-item:focus-visible { background: var(--bridge-surface2, #232636); }
+.search-result-item:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 .result-meta { display: flex; gap: 8px; font-size: .75rem; color: var(--bridge-muted, #8a91ad); }
 .result-content { font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .result-name { font-size: .9rem; font-weight: 500; }

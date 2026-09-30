@@ -8,7 +8,7 @@
   import { avatarStyleFromResolved } from './avatar-color.ts';
   import { t } from './i18n/reactive.svelte.ts';
   import { focusTrap } from './a11y/focusTrap.ts';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { BridgeRegistry }     from './bridge-registry.js';
   import { friendsCache }        from './globals.js';
   import { createLogger }        from './logger.js';
@@ -52,6 +52,14 @@
   let listError      = $state(false);
   const SEND_TIMEOUT_MS = 10_000;
   const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Geçmiş sayfa boyutu. Sunucu `before` + `beforeId` bileşik imlecini
+   * destekliyordu (Faz 10.6B) ama istemci yalnız son 50 mesajı istiyordu:
+   * daha eski grup geçmişine arayüzden ulaşılamıyordu (P3).
+   */
+  const GDM_PAGE = 50;
+  let hasOlder       = $state(false);
+  let loadingOlder   = $state(false);
 
   // Modaller
   type ModalKind = 'create' | 'info' | 'settings' | null;
@@ -159,10 +167,10 @@
   // ── GDM listesi ──────────────────────────────────────────────────────────
 
   let listLoadSeq = 0;
-  async function loadGroupDmList(): Promise<void> {
+  /** `silent`: arka planda tazeleme — yükleniyor durumu ve hata bayrağı değişmez. */
+  async function loadGroupDmList(silent = false): Promise<void> {
     const seq = ++listLoadSeq;
-    loading = true;
-    listError = false;
+    if (!silent) { loading = true; listError = false; }
     try {
       const r = await apiFetch(`${API()}/api/gdm`);
       if (!r.ok) throw new Error(`group list HTTP ${r.status}`);
@@ -171,12 +179,32 @@
       groups = normalizeGdmGroups(data, cssColor);
     } catch (e) {
       if (seq === listLoadSeq) {
-        listError = true;
+        if (!silent) listError = true;
         log.warn('loadGroupDmList hata:', e);
       }
     } finally {
       if (seq === listLoadSeq) loading = false;
     }
+  }
+
+  /**
+   * Açık OLMAYAN bir gruba mesaj geldiğinde yan listedeki okunmamış rozeti
+   * panel yeniden açılana kadar bayat kalıyordu. Sayaç yerelde artırılmaz
+   * (çift teslim şişirirdi); sunucunun türettiği liste sessizce yeniden okunur.
+   */
+  let listRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function refreshGroupListSoon(): void {
+    if (listRefreshTimer) clearTimeout(listRefreshTimer);
+    listRefreshTimer = setTimeout(() => { listRefreshTimer = null; void loadGroupDmList(true); }, 300);
+  }
+
+  function messagesArea(): HTMLElement | null {
+    return document.getElementById('gdm-messages');
+  }
+
+  function nearBottom(): boolean {
+    const area = messagesArea();
+    return !area || area.scrollHeight - area.scrollTop - area.clientHeight < 80;
   }
 
   // ── Grup aç / mesajlar ────────────────────────────────────────────────────
@@ -238,8 +266,11 @@
     const seq = ++msgLoadSeq;
     msgLoading = true;
     messages = [];
+    // Önceki grubun yarım kalmış eski-sayfa isteği bu grubu kilitlemez.
+    hasOlder = false;
+    loadingOlder = false;
     try {
-      const r = await apiFetch(`${API()}/api/gdm/${groupId}/messages?limit=50`);
+      const r = await apiFetch(`${API()}/api/gdm/${groupId}/messages?limit=${GDM_PAGE}`);
       if (!r.ok) return false;
       const data = await r.json() as GdmMessage[];
 
@@ -248,6 +279,7 @@
       if (currentGroup?._id !== groupId) return false;      // başka gruba geçildi/kapandı
 
       messages = normalizeGdmMessages(data, groupId, cssColor);
+      hasOlder = Array.isArray(data) && data.length >= GDM_PAGE;
     } catch { return false; }
     finally {
       // Yalnız en güncel istek yükleme durumunu temizler.
@@ -271,6 +303,49 @@
       area.scrollTop = area.scrollHeight;
     }, 0);
     return true;
+  }
+
+  /** Bir önceki geçmiş sayfası — en eski yüklü mesajın bileşik imleciyle. */
+  async function loadOlder(): Promise<void> {
+    const group = currentGroup;
+    if (!group || loadingOlder || !hasOlder || msgLoading) return;
+    const oldest = messages.find(item => item._id && !item.pending && !item.failed);
+    const before = oldest ? (typeof oldest.createdAt === 'number' ? oldest.createdAt : Date.parse(String(oldest.createdAt))) : NaN;
+    if (!oldest?._id || !Number.isFinite(before) || before <= 0) { hasOlder = false; return; }
+    const seq = msgLoadSeq;
+    const area = messagesArea();
+    const prevHeight = area?.scrollHeight ?? 0;
+    const prevTop = area?.scrollTop ?? 0;
+    loadingOlder = true;
+    try {
+      const params = new URLSearchParams({ limit: String(GDM_PAGE), before: String(before), beforeId: oldest._id });
+      const r = await apiFetch(`${API()}/api/gdm/${group._id}/messages?${params}`);
+      if (seq !== msgLoadSeq || currentGroup?._id !== group._id) return;
+      if (!r.ok) throw new Error(`group history HTTP ${r.status}`);
+      const data = await r.json() as unknown;
+      if (seq !== msgLoadSeq || currentGroup?._id !== group._id) return;
+      if (!Array.isArray(data)) throw new Error('Invalid group history response');
+      const known = new Set(messages.map(item => item._id).filter(Boolean));
+      const older = normalizeGdmMessages(data, group._id, cssColor).filter(item => !item._id || !known.has(item._id));
+      messages = [...older, ...messages];
+      hasOlder = data.length >= GDM_PAGE;
+      // Okuma yeri korunur: eklenen içerik kadar aşağı kaydırılır.
+      await tick();
+      const after = messagesArea();
+      if (area && after === area) area.scrollTop = prevTop + (area.scrollHeight - prevHeight);
+    } catch (e) {
+      if (seq === msgLoadSeq) {
+        log.warn('loadOlder hata:', e);
+        toast(t('dm_history_load_failed', 'Daha eski mesajlar yüklenemedi.'), 'error');
+      }
+    } finally {
+      if (seq === msgLoadSeq) loadingOlder = false;
+    }
+  }
+
+  function onMessagesScroll(event: Event): void {
+    const area = event.currentTarget as HTMLElement | null;
+    if (area && area.scrollTop < 48) void loadOlder();
   }
 
   function saveForLater(message: GdmMessage): void {
@@ -336,6 +411,7 @@
       content, createdAt: Date.now(), clientNonce, pending: true, failed: false,
     };
     messages = [...messages, pending];
+    void tick().then(() => { const area = messagesArea(); if (area) area.scrollTop = area.scrollHeight; });
     socket()?.emit('gdm:send', { groupId: currentGroup._id, content, clientNonce });
     scheduleSendTimeout(clientNonce);
     clearDraft(gdmDraftIdentity(currentGroup));
@@ -399,7 +475,10 @@
     // `joinGroupRooms`), bu yüzden buraya BAŞKA bir grubun mesajı da düşebilir.
     // Kimlik kontrolü olmadan B grubunun mesajı, açık olan A grubunun altına
     // eklenirdi — kullanıcı yanlış konuşmada olduğunu sanarak yanıt verebilirdi.
-    if (String(msg?.groupId ?? '') !== currentGroup._id) return;
+    if (String(msg?.groupId ?? '') !== currentGroup._id) {
+      if (isVisible && msg?.groupId) refreshGroupListSoon();
+      return;
+    }
     const normalized = normalizeGdmMessages([msg], currentGroup._id, cssColor)[0];
     if (!normalized) return;
     const clientNonce = normalized.clientNonce;
@@ -409,13 +488,17 @@
     normalized.pending = false;
     normalized.failed = false;
     normalized.lastError = '';
+    // Geçmişi okuyan kullanıcı başkasının mesajıyla en alta atılmaz.
+    const followLatest = nearBottom() || normalized.userId === me()?.id;
     messages = [...messages.filter(item => clientNonce ? item.clientNonce !== clientNonce : item._id !== normalized._id), normalized];
     socket()?.emit('gdm:read', { groupId: currentGroup._id });
     groups = groups.map(item => item._id === currentGroup?._id ? { ...item, unreadCount: 0 } : item);
-    setTimeout(() => {
-      const area = document.getElementById('gdm-messages');
-      if (area) area.scrollTop = area.scrollHeight;
-    }, 0);
+    if (followLatest) {
+      setTimeout(() => {
+        const area = document.getElementById('gdm-messages');
+        if (area) area.scrollTop = area.scrollHeight;
+      }, 0);
+    }
   }
 
   function _onGdmUpdate(raw: unknown): void {
@@ -764,6 +847,7 @@
   onDestroy(() => {
     persistGdmDraft();
     clearAllPendingTimers();
+    if (listRefreshTimer) { clearTimeout(listRefreshTimer); listRefreshTimer = null; }
     // Bağlı olduğumuz NESNEDEN çözülür — `socket()` bu anda başka bir nesne
     // döndürebilir. Aynı (olay, callback referansı) çifti kullanılır;
     // `removeAllListeners()` KULLANILMAZ (paylaşılan soket mimarisinde başka
@@ -873,10 +957,15 @@
       </div>
 
       <!-- Mesajlar -->
-      <div id="gdm-messages" class="gdm-messages">
+      <div id="gdm-messages" class="gdm-messages" onscroll={onMessagesScroll}>
         {#if msgLoading}
           <div class="gdm-loading">{t('gdm_messages_loading', 'Mesajlar yükleniyor…')}</div>
         {:else}
+          {#if hasOlder}
+            <button type="button" class="gdm-load-older" onclick={() => void loadOlder()} disabled={loadingOlder}>
+              {loadingOlder ? t('sso_loading', 'Yükleniyor…') : t('dm_load_older', 'Daha eski mesajları yükle')}
+            </button>
+          {/if}
           {#each messages as msg (msg._key)}
             {#if msg.type === 'system'}
               <div class="gdm-system-msg">{msg.content}</div>
@@ -1041,7 +1130,14 @@
 {/if}
 
 <style>
+  /* DmPanel ile aynı sözleşme: görünür alanı kaplayan modal örtü. Konumlandırma
+     yoktu; `height: 100%` yüksekliksiz `#gdm-root`a göre çözülüp içerikle
+     büyüyordu ve panel kabuğun ALTINA, belge akışına düşüyordu (1280×720'de
+     y=625'ten başlayıp 1109px — konuşmanın çoğu ve yazma alanı ekran dışında). */
   .gdm-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
     display: flex;
     height: 100%;
     background: var(--bg-2);
@@ -1094,6 +1190,7 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
+    min-height: 0;
   }
   .gdm-placeholder {
     flex: 1;
@@ -1116,10 +1213,16 @@
   .gdm-header-count { font-size: 12px; }
   .gdm-header-actions { margin-left: auto; display: flex; gap: 6px; }
   .gdm-messages { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 4px; }
+  .gdm-load-older { align-self: center; margin-bottom: 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--surface-2); color: var(--text-primary); padding: 6px 12px; cursor: pointer; font: inherit; font-size: 12px; }
+  .gdm-load-older:hover, .gdm-load-older:focus-visible { background: var(--surface-hover); }
+  .gdm-load-older:disabled { opacity: .6; cursor: default; }
   .gdm-system-msg { text-align: center; color: var(--text-muted); font-size: 12px; font-style: italic; padding: 4px 0; }
   .gdm-input-area { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
   .gdm-input { flex: 1; background: var(--bg-3); border: none; border-radius: 4px; padding: 8px 12px; color: var(--text); font-size: 14px; }
   .gdm-input:focus { outline: 2px solid var(--brand); }
+  /* auth.css'in genel `.btn-primary { width: 100% }` kuralı (giriş formu için)
+     buraya sızıyordu: düğme 815px, yazma alanı 205px oluyordu. */
+  .gdm-input-area .btn { flex: none; width: auto; }
 
   /* Messages */
   .dm-msg { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0; }

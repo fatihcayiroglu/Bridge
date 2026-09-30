@@ -66,6 +66,8 @@ const translations: Record<string, string> = {
   "voice_connected": "已连接",
   "voice_disconnected": "已断开",
   "voice_reconnecting": "正在重新连接…",
+  "dm_load_older": "加载更早的消息",
+  "dm_history_load_failed": "无法加载更早的消息。",
   "voice_check": "语音检查",
   "voice_in_room": "你已在房间中",
   "voice_ready": "准备好后即可使用语音",
