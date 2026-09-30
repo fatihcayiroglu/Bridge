@@ -605,17 +605,23 @@
       // ayni anahtara yazip MIKROFON akisini DUSURURDU — karsi tarafin sesi
       // tamamen kesilirdi.
       //
-      // Ayirt edici: mikrofon akisi akran katildiginda kurulur ve ILK gelendir.
-      // Sonradan gelen FARKLI kimlikli ses akisi paylasim sesidir.
+      // Ayirt edici: SFU yolu `kind` gecer ve o YETKILIDIR (paylasim turundeki
+      // bir akisin sesi paylasim sesidir). P2P `kind` gecmez; orada mikrofon
+      // akisi akran katildiginda kurulur ve ILK gelendir, sonradan gelen FARKLI
+      // kimlikli ses akisi paylasim sesidir.
       const existing = remoteAudioStreams.get(socketId);
-      const isScreenAudio = Boolean(existing) && existing!.id !== stream.id;
+      const isScreenAudio = kind !== undefined
+        ? kind === 'screen-audio' || kind === 'screen'
+        : Boolean(existing) && existing!.id !== stream.id;
       const key = isScreenAudio ? `${socketId}${SCREEN_AUDIO_SUFFIX}` : socketId;
       remoteAudioStreams = new Map(remoteAudioStreams).set(key, stream);
     }
 
     // Görüntü taşıyan akış SAKLANIR: paylaşım durumu track'ten SONRA gelebilir
-    // (aşağıya bakınız) ve o an akışa yeniden ulaşmak gerekir.
-    if (stream.getVideoTracks().length > 0) {
+    // (aşağıya bakınız) ve o an akışa yeniden ulaşmak gerekir. SFU kamera
+    // akışı (`kind === 'video'`) paylaşım adayı DEĞİLDİR: saklansaydı paylaşım
+    // durumu geldiğinde kamera ekran görünümüne yükselirdi.
+    if (stream.getVideoTracks().length > 0 && kind !== 'video') {
       remoteVideoStreams = new Map(remoteVideoStreams).set(socketId, stream);
     }
 
@@ -637,8 +643,11 @@
     // Doğru kaynak sunucunun yetkilendirdiği `voice:peer-state` yayınıdır
     // (`screensharing`). Yerel sezgiler KORUNUR (SFU yolu `kind` geçebilir),
     // fakat artık tek dayanak değildir.
+    //
+    // SFU yolu `kind` geçer ve o YETKİLİDİR: paylaşım sürerken açılan kamera
+    // (`kind === 'video'`) ekran görünümünü DEVRALMAMALI.
     const peerSharing = peerStates.get(socketId)?.screensharing === true;
-    const hasScreen = kind === 'screen' || peerSharing || stream.getVideoTracks().some(t =>
+    const hasScreen = kind !== undefined ? kind === 'screen' : peerSharing || stream.getVideoTracks().some(t =>
       t.label.toLowerCase().includes('screen') ||
       t.label.toLowerCase().includes('window') ||
       t.label.toLowerCase().includes('tab') ||

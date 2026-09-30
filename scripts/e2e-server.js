@@ -126,6 +126,14 @@ const env = {
   // DEGISMEZ; kimlik dogrulama/yetkilendirme mantigina dokunulmaz.
   ACCESS_TOKEN_TTL: process.env.E2E_ACCESS_TOKEN_TTL || '2h',
 
+  // ── SFU ADRESI: TARAYICI VE SUNUCU AYNI MAKINEDE ────────────────────────
+  // Duyurulan adres yoksa mediasoup 0.0.0.0'i ICE adayi olarak verir ve
+  // tarayici baglanamaz: `voice-media` projesinde RTP hic akmadi (olculdu:
+  // 8 test, P2 medya dogrulamasi). Uretimde bu deger dagitimin isidir ve
+  // tanimsizsa sunucu uyarir; burada tarayicilar ayni makinededir.
+  MEDIASOUP_LISTEN_IP: process.env.MEDIASOUP_LISTEN_IP || '127.0.0.1',
+  MEDIASOUP_ANNOUNCED_IP: process.env.MEDIASOUP_ANNOUNCED_IP || '127.0.0.1',
+
   // ── HIZ SINIRLARI: YALNIZCA VERIM, YALNIZCA E2E ─────────────────────────
   // OLCULEN SORUN: uygulama her acilista 17 API cagrisi yapar. Kuresel sinir
   // varsayilan 200 istek/dakikadir (`RL_GLOBAL_MAX`; kimlikli istekte kullanici

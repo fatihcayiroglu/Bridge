@@ -122,6 +122,24 @@ export interface PeerInfo {
   producers?: Array<{ producerId: string; kind: string }>;
 }
 
+/**
+ * Remote media of one peer, one MediaStream per producer kind. The UI keys its
+ * elements by stream: microphone and system audio are separate `<audio>`
+ * elements, camera and screen separate views. Sharing one audio and one video
+ * stream per peer merged system audio into the microphone element and let the
+ * camera stand in for the screen (P2 voice-media suite).
+ */
+interface PeerStreams {
+  audio: MediaStream;
+  video: MediaStream;
+  screen?: MediaStream;
+  screenAudio?: MediaStream;
+}
+
+const peerStreamList = (streams: PeerStreams): MediaStream[] =>
+  [streams.audio, streams.video, streams.screen, streams.screenAudio]
+    .filter((stream): stream is MediaStream => Boolean(stream));
+
 interface PeerState {
   muted?: boolean;
   deafened?: boolean;
@@ -177,7 +195,7 @@ class BridgeRTC {
   recvTransport: MediasoupTransport | null = null;
   producers: Map<string, MediasoupProducer>          = new Map();
   consumers: Map<string, MediasoupConsumer>          = new Map();
-  peerStreams: Map<string, { audio: MediaStream; video: MediaStream }> = new Map();
+  peerStreams: Map<string, PeerStreams> = new Map();
   localStream: MediaStream | null          = null;
   screenStream: MediaStream | null         = null;
   currentChannelId: string | null          = null;
@@ -822,11 +840,7 @@ class BridgeRTC {
       consumer._socketId = socketId;
       this.consumers.set(producerId, consumer);
 
-      if (!this.peerStreams.has(socketId)) {
-        this.peerStreams.set(socketId, { audio: new MediaStream(), video: new MediaStream() });
-      }
-      const streams      = this.peerStreams.get(socketId)!;
-      const targetStream = (kind === 'video' || kind === 'screen') ? streams.video : streams.audio;
+      const targetStream = this._peerStream(socketId, kind, consumer.track.kind);
       targetStream.addTrack(consumer.track);
 
       _app()?.attachRemoteStream(socketId, targetStream, kind);
@@ -963,7 +977,7 @@ class BridgeRTC {
     this.consumers.clear();
     this.producers.clear();
     for (const streams of this.peerStreams.values()) {
-      for (const stream of [streams.audio, streams.video]) {
+      for (const stream of peerStreamList(streams)) {
         for (const track of stream.getTracks()) { track.stop(); stream.removeTrack(track); }
       }
     }
@@ -1070,8 +1084,7 @@ class BridgeRTC {
     this.consumers.clear();
     this.producers.clear();
     for (const streams of this.peerStreams.values()) {
-      streams.audio.getTracks().forEach(track => track.stop());
-      streams.video.getTracks().forEach(track => track.stop());
+      for (const stream of peerStreamList(streams)) stream.getTracks().forEach(track => track.stop());
     }
     this.peerStreams.clear();
     this.sendTransport?.close();
@@ -1504,7 +1517,15 @@ class BridgeRTC {
       const { producerId } = raw as { producerId: string };
       this._pendingConsumes = this._pendingConsumes.filter(p => p.producerId !== producerId);
       const consumer = this.consumers.get(producerId);
-      if (consumer) { consumer.close?.(); this.consumers.delete(producerId); }
+      if (consumer) {
+        consumer.close?.();
+        this.consumers.delete(producerId);
+        // Otherwise the peer's stream keeps the ended track and a restarted
+        // camera or share adds its new track next to it; a <video> element
+        // renders only one video track of a stream.
+        const streams = consumer._socketId ? this.peerStreams.get(consumer._socketId) : undefined;
+        if (streams) for (const stream of peerStreamList(streams)) stream.removeTrack(consumer.track);
+      }
     });
 
     this._onSocket(socket, 'sfu:peer-left', (raw: unknown) => {
@@ -1635,11 +1656,23 @@ class BridgeRTC {
     this._broadcastState();
   }
 
+  /** The stream a consumer of `kind` belongs to; created on first use. */
+  private _peerStream(socketId: string, kind: string, trackKind: string): MediaStream {
+    let streams = this.peerStreams.get(socketId);
+    if (!streams) {
+      streams = { audio: new MediaStream(), video: new MediaStream() };
+      this.peerStreams.set(socketId, streams);
+    }
+    if (kind === 'screen') return streams.screen ??= new MediaStream();
+    if (kind === 'screen-audio') return streams.screenAudio ??= new MediaStream();
+    if (kind === 'video' || kind === 'audio') return streams[kind];
+    return trackKind === 'video' ? streams.video : streams.audio;
+  }
+
   private _cleanupPeerStreams(socketId: string): void {
     const streams = this.peerStreams.get(socketId);
     if (streams) {
-      streams.audio?.getTracks().forEach(t => t.stop());
-      streams.video?.getTracks().forEach(t => t.stop());
+      for (const stream of peerStreamList(streams)) stream.getTracks().forEach(t => t.stop());
       this.peerStreams.delete(socketId);
     }
     for (const [producerId, consumer] of this.consumers) {

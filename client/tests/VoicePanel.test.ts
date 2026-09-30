@@ -956,6 +956,50 @@ describe('VoicePanel — deep SFU and remote-media ownership', () => {
     expect(container.querySelector('#screen-share-view')).toBeNull();
   });
 
+  it('SFU: system audio keeps its own element whichever consumer arrives first', async () => {
+    const { container } = render(VoicePanel);
+    await domTick();
+    const attach = mockRegistry['voicePanel:attachRemoteStream'] as Function;
+    const system = deepStream('sfu-system-audio', { audio: 1 });
+    const microphone = deepStream('sfu-microphone', { audio: 1 });
+
+    // The SFU names the producer kind; arrival order must not decide the owner.
+    attach('peer-a', system, 'screen-audio');
+    attach('peer-a', microphone, 'audio');
+    await domTick();
+    expect(container.querySelectorAll('audio.remote-audio')).toHaveLength(2);
+    expect((container.querySelector('audio.remote-audio[data-socket="peer-a"]') as HTMLAudioElement).srcObject).toBe(microphone);
+    expect((container.querySelector('audio.remote-audio[data-socket="peer-a::screen-audio"]') as HTMLAudioElement).srcObject).toBe(system);
+  });
+
+  it('SFU: a camera turned on during a share does not take over the screen view', async () => {
+    (window as Record<string, unknown>).voiceChannelPeers = new Map([
+      ['peer', { id: 'u1', socketId: 'peer-a', displayName: 'Alice', avatarColor: '#123' }],
+    ]);
+    const { container } = render(VoicePanel);
+    await domTick();
+    const attach = mockRegistry['voicePanel:attachRemoteStream'] as Function;
+    const state = mockRegistry['voicePanel:updatePeerState'] as Function;
+    const screen = deepStream('sfu-screen', { video: [{}] });
+    const camera = deepStream('sfu-camera', { video: [{}] });
+
+    attach('peer-a', screen, 'screen');
+    state('peer-a', { screensharing: true, video: true });
+    attach('peer-a', camera, 'video');
+    await domTick();
+    const shown = () => ((container.querySelector('#remote-screen-video') as HTMLVideoElement | null)?.srcObject as MediaStream | null)?.id ?? null;
+    expect(shown()).toBe('sfu-screen');
+
+    // Camera first, share state next: the camera is no screen candidate.
+    state('peer-a', { screensharing: false, video: true });
+    await domTick();
+    expect(container.querySelector('#remote-screen-video')).toBeNull();
+    attach('peer-a', camera, 'video');
+    state('peer-a', { screensharing: true, video: true });
+    await domTick();
+    expect(shown()).toBe('sfu-screen');
+  });
+
   it('promotes track-first screen state and does not let an unrelated peer clear the active sharer', async () => {
     (window as Record<string, unknown>).voiceChannelPeers = new Map([
       ['peer', { id: 'u1', socketId: 'peer-a', displayName: 'Alice', avatarColor: '#123' }],

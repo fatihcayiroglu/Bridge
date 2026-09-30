@@ -100,9 +100,10 @@ objects are reused so the UI's audio elements keep playing.
 
 ## Defects found with real media (all fixed)
 
-Each was reproduced in the lab on the unfixed build (lab check FAIL), fixed,
-covered by a fast regression test that fails on the old code (negative
-control run), and re-verified in the lab (PASS).
+Each was reproduced with real media on the unfixed build (FAIL) — in the lab,
+or for MEDIA-12 in the two-browser Playwright suite (`e2e`, project
+`voice-media`) — fixed, covered by a fast regression test that fails on the
+old code (negative control run), and re-verified the same way (PASS).
 
 | Id | Lab check (before → after) | Defect | Fix | Fast regression test |
 |---|---|---|---|---|
@@ -116,6 +117,7 @@ control run), and re-verified in the lab (PASS).
 | MEDIA-08 | AZ-04/05/06 FAIL (media kept flowing) → PASS | CONNECT / SPEAK revocation and member timeout did not affect an established call | live voice-access re-check; cross-node publish revocation; timeout hook | `live-voice-access-revocation.test.ts`, `voice-eviction-cross-node.test.ts`, `moderation-branch-closure.test.ts` |
 | MEDIA-09 | AZ-03: UI still in call 48 s after VIEW revoked → ends immediately | an evicted client was never told and kept showing a live call | server `voice:evicted` → client ends the call | `voice-eviction-cross-node.test.ts`, `webrtc-sfu.test.ts` |
 | MEDIA-10 | LC-04 FAIL (camera shown on after the device ended); LC-05 silent mic loss → PASS / muted + notice | engine-side state changes never reached the VoicePanel | `bridge:voice-local-state`; microphone loss marks muted and tells the user | `VoicePanel.test.ts`, `webrtc-sfu.test.ts` |
+| MEDIA-12 | `voice-media` SA1–SA11 FAIL (1 `audio.remote-audio` element for microphone + system audio) → PASS | the SFU client kept one audio and one video `MediaStream` per peer: a share's system audio played inside the microphone element (its own element, and its removal when the share stops, never happened), camera and screen views rendered the same stream, and a closed producer's ended track stayed in it | one stream per producer kind; a closed producer's track leaves its stream; the VoicePanel trusts the kind the SFU names (a camera turned on during a share no longer takes over the screen view) | `webrtc-sfu.test.ts` › one stream per producer kind; `VoicePanel.test.ts` › SFU system audio / camera during a share |
 
 Classified, not changed:
 
@@ -162,6 +164,54 @@ anything else listens on the TURN port (`TURN-LAB` checks it).
 build): **24 PASS, 0 FAIL, 0 BLOCKED, 0 SKIPPED**, 7 INFO — TURN-09 and NC-02
 pass; `TURN-LAB` confirms no stray TURN server. A second `impair` run (after
 the `rates()` fix): 7 PASS, **1 FAIL** (IMP-04, open finding MEDIA-11 below).
+
+### Two-browser suite (`e2e`, Playwright project `voice-media`)
+
+33 tests, two or three real Chromium contexts against one local Bridge server
+with its mediasoup SFU (fake capture devices, a synthetic display source with
+a moving canvas and a 660 Hz tone). It asserts on the UI (remote
+`<audio>`/`<video>` elements) as well as `getStats()`, which the lab does not —
+that is how it found MEDIA-12. It is not part of PR CI (nightly `e2e-full`,
+itself not yet runnable: its job has no schema/migrations and no Redis).
+
+| Run | Passed | Failed | Cause of the failures |
+|---|---|---|---|
+| `main e07dc85`, server started as CI starts it | 15 | 18 | **environment**: no announced SFU address, so mediasoup offered `0.0.0.0` and no RTP flowed (8 tests); plus the 10 below |
+| same, `MEDIASOUP_ANNOUNCED_IP=127.0.0.1` | 23 | 10 | **product** MEDIA-12 (6 system-audio tests); **fixture** (S3/S4); **stale contract** (3) |
+| this change, first two runs | 32 | 1 | **harness** (below): SA1/SA3's voice channel was never created — the same test both times |
+| after the harness fix, third run | 30 | 1 (+2 not run) | **harness**, same defect in the next setup call (`voice-media.spec` `beforeAll`) |
+| after the harness fix covers setup calls, two runs | **33** | **0** | — |
+
+The lab's `e2e` and `lifecycle` scenarios on the same build: 22 PASS, 0 FAIL,
+0 BLOCKED, 0 SKIPPED (as in the final run above).
+
+- **Fixture defect (S3/S4, share restart):** the `getDisplayMedia` stub
+  returned the same stream object on every call. Bridge stops the capture
+  tracks when a share ends, so the second share published ended tracks and
+  failed ("screen share cancelled"). A real `getDisplayMedia` never returns
+  ended tracks; the stub now returns a fresh capture of the same source.
+- **Stale contracts (V13/V14, voice-media "no double playback" and "rejoin"):**
+  written for P2P (one connection per peer). With the SFU a client has one
+  send and one receive transport, and a closed consumer leaves its media
+  section in the receive transport as an `inactive` transceiver whose inbound
+  stats stay in `getStats()` (measured: frozen at 16 bytes, track `ended`,
+  next to the one live path). The old count read that as a second inbound
+  track, and its "bytes > 0" check could have been satisfied by those frozen
+  bytes. The suites now count only live receiving paths and judge orphan
+  connections against the topology in use (P2P: one per peer; SFU: exactly
+  one send and one receive transport) — a real duplicate or orphan still
+  fails.
+- **Environment:** `scripts/e2e-server.js` now defaults the SFU listen and
+  announced address to `127.0.0.1` (browsers and server share the host).
+- **Harness defect (hidden until the suite ran clean):** the server keeps one
+  CSRF token per user and a browser page of the same user replaces it; the
+  API setup helpers cached the old one, got `403 CSRF token invalid or
+  expired` and silently returned `null`/`false` — measured on the 15th channel
+  of a run, which the test then waited 25 s for. Earlier failures had hidden
+  it (a failed test restarts the Playwright worker, which clears the cache).
+  The setup helpers now refresh the token once on a 403 (the rule the
+  `apiTest` fixture already follows; a real authorization 403 stays 403) and
+  the suite asserts that its channel was created.
 
 ### Two-way media on a clean network (e2e)
 
