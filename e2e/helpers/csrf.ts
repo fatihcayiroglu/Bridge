@@ -36,3 +36,15 @@ export async function refreshCsrf(request: APIRequestContext, bearer: string): P
 export function invalidateCsrf(bearer: string): void {
   cache.delete(bearer);
 }
+
+/** Önbellekteki token (varsa) — getirmeden. */
+export function cachedCsrf(bearer: string): string | undefined {
+  return cache.get(bearer);
+}
+
+/** Sunucunun CSRF reddi mi? (yetki 403'ünden ayırt etmek için gövdeye bakılır) */
+export async function isCsrfRejection(res: { status(): number; text(): Promise<string> }): Promise<boolean> {
+  if (res.status() !== 403) return false;
+  const body = await res.text().catch(() => '');
+  return /"error"\s*:\s*"CSRF token (invalid or expired|missing)"/.test(body);
+}

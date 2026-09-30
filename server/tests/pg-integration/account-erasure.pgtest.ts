@@ -27,8 +27,12 @@ const X = `${P}-x`;          // hesabını silen kişi
 const A = `${P}-a`;          // kalan üye
 const PASSWORD = 'Erasure-Test-Pass-1!';
 
+// Silme, tek düğümlü tokenVersion önbelleğini düşürür (P3); sahte modül aynı
+// dışa aktarımı sunmazsa rota silmeden SONRA TypeError ile 500 döner.
+const mockInvalidateTokenCache = jest.fn();
 jest.mock('../../middleware/auth', () => ({
   authMiddleware: (req: { user?: unknown }, _res: unknown, next: () => void) => { req.user = { id: 'pgt-erase-x' }; next(); },
+  _invalidateTokenCache: (id: string) => mockInvalidateTokenCache(id),
 }));
 jest.mock('../../middleware/rateLimit', () => ({
   limits: new Proxy({}, { get: () => () => (_req: unknown, _res: unknown, next: () => void) => next() }),
@@ -137,6 +141,8 @@ RUN('gerçek PostgreSQL — hesap silmede kişisel görünüm silinir', () => {
   it('silme başarılı ve kişinin kimlik satırı yok', async () => {
     expect(response.status).toBe(200);
     expect(await q(`SELECT 1 FROM users WHERE _id = $1`, [X])).toHaveLength(0);
+    // Silinen hesabın erişim jetonu önbellekten doğrulanmaya devam etmez.
+    expect(mockInvalidateTokenCache).toHaveBeenCalledWith(X);
   });
 
   it('kişinin kanal mesajları: içerik KALIR, ad/avatar/renk GİDER', async () => {

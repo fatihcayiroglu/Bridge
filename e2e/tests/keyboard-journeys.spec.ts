@@ -6,6 +6,16 @@
 // kullanılabilir mi" sorusunu yanıtlamaz. Bu paket gerçek etkileşimleri sürer.
 import { test, expect, type Page } from '@playwright/test';
 import { createTestServer, createTestChannel, getTokens } from '../helpers/bridge';
+import { paceSends } from '../helpers/socket';
+
+// Oturum alice'indir. Urunun anti-spam kurali (4 sn'de 5'ten fazla mesaj →
+// 30 sn susturma) kullanici bazlidir ve spec'ler arasinda paylasilir. Bu
+// yolculuklar mesajlari ard arda gonderiyordu: tam pakette uzlasma testi
+// mesajini "Sirada — hiz siniri" olarak 30 sn bekletilmis buldu (olculdu,
+// ekran goruntusu) ve 20 sn'lik beklemesi doldu; eylem cubugu testi de
+// sirada bekleyen mesajda kaldi. Urun dogru davraniyor; gonderimler kurala
+// uyacak sekilde araliklandirilir.
+const sendAsAlice = async (page: Page) => { await paceSends('alice'); await page.keyboard.press('Enter'); };
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
@@ -207,7 +217,7 @@ test.describe('klavye — günlük görev tamamlama', () => {
     const body = `klavye-gonderi-${Date.now().toString(36)}`;
     await page.locator('#msg-input').focus();
     await page.keyboard.type(body);
-    await page.keyboard.press('Enter');
+    await sendAsAlice(page);
 
     // Gerçek kanıt: mesaj listede görünür.
     await expect(page.locator('.msg').filter({ hasText: body }).first())
@@ -267,7 +277,7 @@ test.describe('klavye — günlük görev tamamlama', () => {
     for (const b of ['bir', 'iki', 'uc']) {
       await page.locator('#msg-input').focus();
       await page.keyboard.type(`cok-${b}-${Date.now().toString(36)}`);
-      await page.keyboard.press('Enter');
+      await sendAsAlice(page);
       await page.waitForTimeout(300);
     }
     // Kaç mesaj olursa olsun günlükte YALNIZCA BİR odaklanabilir mesaj olur.
@@ -280,7 +290,7 @@ test.describe('klavye — günlük görev tamamlama', () => {
     for (const b of ['ok1', 'ok2']) {
       await page.locator('#msg-input').focus();
       await page.keyboard.type(`${b}-${Date.now().toString(36)}`);
-      await page.keyboard.press('Enter');
+      await sendAsAlice(page);
       await page.waitForTimeout(300);
     }
     await page.locator('.msg[tabindex="0"]').first().focus();
@@ -355,7 +365,7 @@ test.describe('klavye — günlük görev tamamlama', () => {
 
     await page.locator('#msg-input').focus();
     await page.keyboard.type(`uzlasma-${Date.now().toString(36)}`);
-    await page.keyboard.press('Enter');
+    await sendAsAlice(page);
 
     // Uzlaşmanın GERÇEKLEŞTİĞİNİ bekle — pending düğüm kalmamalı.
     await page.waitForFunction(
@@ -391,7 +401,7 @@ test.describe('klavye — günlük görev tamamlama', () => {
     const body = `klavye-eylem-${Date.now().toString(36)}`;
     await page.locator('#msg-input').focus();
     await page.keyboard.type(body);
-    await page.keyboard.press('Enter');
+    await sendAsAlice(page);
 
     const msg = page.locator('.msg').filter({ hasText: body }).first();
     await msg.waitFor({ state: 'visible', timeout: 15_000 });

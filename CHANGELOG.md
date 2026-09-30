@@ -1,3 +1,41 @@
+## [Unreleased] — 2026-09-30 — P3: daily-use, DM, search and media UX
+
+Baseline on `main 822150d` with every locally runnable Playwright project (chromium 495 passed /
+5 failed / 26 skipped; a11y, a11y-mobile, a11y-keyboard, mobile, voice-media and api-smoke all
+passing). Every failure was classified before anything changed; skipped tests are listed as
+skipped, never counted as passing. Evidence: `docs/P3_DAILY_USE.md`.
+
+### Security
+- **A deleted account's access token kept working for up to 30 seconds.** On a single node (no
+  `REDIS_URL`) the auth middleware caches each user's `tokenVersion`; account deletion — by the
+  person or by an admin — never dropped that entry, so the old token still passed authentication
+  (the e2e journey saw `GET /api/me` answer 404 behind a passing auth check instead of 401). Both
+  deletion paths now invalidate the cache; a test runs the real middleware and route (the old code
+  answered 200).
+
+### Fixed
+- **Voice calls said "Connected" while the media session was being re-established** (P2 measured
+  3–30 s, up to 90 s): the voice panel now shows "Reconnecting…" (a polite live region) until the
+  session is back or the call ends.
+- **The server's public-profile address field had no accessible name** (axe `label`, critical): it
+  is now labelled by its section heading.
+
+### Changed
+- **Client bundle ships UTF-8 instead of `\uXXXX` escapes** — total shipped JS 3418.7 → 2971.5 KB
+  (budget use 98 % → 85 %); the Russian locale chunk 372.6 → 168.4 KB. Transfer size (gzip) drops
+  7–13 % for non-Latin locales, ~0 % for English. All chunks are ES modules, decoded as UTF-8 by
+  every browser, Electron and Capacitor; the server also sends `charset=utf-8`.
+
+### Tests and CI
+- The nightly full E2E job migrates its database (it failed on `relation "server_boosts" does not
+  exist`), runs every suite even after one fails, adds the `a11y-mobile` and `a11y-keyboard`
+  projects (never run in CI before), runs without retries so nondeterminism surfaces, and uploads
+  per-project results (it uploaded an HTML report the list reporter never wrote).
+- E2E harness: a hand-written copy of the shared CSRF token is refreshed once when the server
+  rejects it as stale (a browser page of the same user replaces the per-user token); keyboard
+  journeys pace their sends under the product's anti-spam rule instead of tripping its 30 s hold.
+- Client: the audit-log export test waits for the download instead of racing `response.blob()`.
+
 ## [Unreleased] — 2026-09-27 — P2: real-media reliability evidence and fixes
 
 Not part of the packaged Final23 ZIP. A disposable media lab (`scripts/medialab`) runs two real Bridge

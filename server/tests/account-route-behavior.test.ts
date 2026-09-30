@@ -21,7 +21,11 @@ jest.mock('../db/repositories', () => ({ Users: users, Auth: auth }));
 jest.mock('bcryptjs', () => ({ compare: (...args: unknown[]) => compare(...args) }));
 jest.mock('../lib/sessionRevocation', () => ({ disconnectLiveUserSessions: (...args: unknown[]) => disconnect(...args) }));
 jest.mock('../lib/logger', () => ({ __esModule: true, default: { info, warn, error } }));
-jest.mock('../middleware/auth', () => ({ authMiddleware: (req: any, _res: any, next: () => void) => { req.user = { id: 'me' }; next(); } }));
+const invalidateTokenCache = jest.fn();
+jest.mock('../middleware/auth', () => ({
+  authMiddleware: (req: any, _res: any, next: () => void) => { req.user = { id: 'me' }; next(); },
+  _invalidateTokenCache: (id: string) => invalidateTokenCache(id),
+}));
 jest.mock('../middleware/rateLimit', () => ({ limits: { write: () => (_req: any, _res: any, next: () => void) => next() } }));
 const invalidateChannelMessages = jest.fn(async (_channelId: string) => undefined);
 jest.mock('../lib/messageCache', () => ({ invalidateChannelMessages: (id: string) => invalidateChannelMessages(id) }));
@@ -239,6 +243,8 @@ describe('account export/delete production behavior', () => {
     expect(sqls.some(s => s.includes('audit_logs'))).toBe(false); // RETAIN
     expect(sqls.at(-1)).toContain('DELETE FROM users');
     expect(disconnect).toHaveBeenCalledWith('me', 'account_deleted');
+    // The deleted account's access token must not survive in the token-version cache.
+    expect(invalidateTokenCache).toHaveBeenCalledWith('me');
     expect(info).toHaveBeenCalledWith(expect.objectContaining({ event: 'account.deleted' }), expect.any(String));
   });
 

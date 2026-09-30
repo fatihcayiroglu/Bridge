@@ -548,7 +548,7 @@ jobs:
           POSTGRES_USER: bridge
           POSTGRES_PASSWORD: test_password
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U bridge -d bridge_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -570,25 +570,51 @@ jobs:
         run: |
           npm run build
           cd server && npm run build
+      # The server's boot creates only the base schema; migration-added tables
+      # (e.g. `server_boosts`) exist only after the chain has run. Without this
+      # step the first nightly run failed on `relation "server_boosts" does not
+      # exist` (run 36393580675). Same commands as the unit job's migration gate.
+      - name: Database schema and migrations
+        run: |
+          cd server
+          npx ts-node --project tsconfig.json db/postgres/index.ts
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts up
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts status
+      # Every suite runs even when an earlier one failed (`!cancelled()`), so one
+      # red suite no longer hides the others; the job still fails. Retries are
+      # off here: a nondeterministic test must surface as a failure to classify,
+      # not pass on a second attempt. Each project keeps its own artifacts.
       - name: Full Chromium suite
-        run: cd e2e && npx playwright test --project=chromium --reporter=list
+        if: ${{ !cancelled() }}
+        run: cd e2e && npx playwright test --project=chromium --retries=0 --output=test-results/chromium --reporter=list
       - name: Firefox compatibility suite
-        run: cd e2e && npx playwright test --project=firefox --reporter=list
+        if: ${{ !cancelled() }}
+        run: cd e2e && npx playwright test --project=firefox --retries=0 --output=test-results/firefox --reporter=list
       - name: WebKit compatibility suite
-        run: cd e2e && npx playwright test --project=webkit --reporter=list
+        if: ${{ !cancelled() }}
+        run: cd e2e && npx playwright test --project=webkit --retries=0 --output=test-results/webkit --reporter=list
       - name: Media suite
-        run: cd e2e && npx playwright test --project=voice-media --reporter=list
-      - name: Mobile and a11y
+        if: ${{ !cancelled() }}
+        run: cd e2e && npx playwright test --project=voice-media --retries=0 --output=test-results/voice-media --reporter=list
+      - name: Mobile suite
+        if: ${{ !cancelled() }}
+        run: cd e2e && npx playwright test --project=mobile --retries=0 --output=test-results/mobile --reporter=list
+      - name: Accessibility suites (desktop, mobile, keyboard journeys)
+        if: ${{ !cancelled() }}
         run: |
           cd e2e
-          npx playwright test --project=mobile --reporter=list
-          npx playwright test --project=a11y --reporter=list
+          status=0
+          for project in a11y a11y-mobile a11y-keyboard; do
+            npx playwright test --project=$project --retries=0 --output=test-results/$project --reporter=list || status=1
+          done
+          exit $status
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-full-report
-          path: e2e/playwright-report/
+          name: e2e-full-results
+          path: e2e/test-results/
+          if-no-files-found: ignore
           retention-days: 14
 
   e2e-smoke:

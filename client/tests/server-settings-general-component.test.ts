@@ -72,6 +72,15 @@ describe('GeneralTab behavior', () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
+  it('names the public profile slug field for assistive technology', () => {
+    render(GeneralTab, { props: { store: makeStore() } });
+    const input = document.querySelector<HTMLInputElement>('#srv-slug-input')!;
+    // A fieldset legend names the group, not the field inside it.
+    const labelledBy = input.getAttribute('aria-labelledby') ?? '';
+    const name = labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim() ?? '').join(' ').trim();
+    expect(name).toBe('Herkese Açık Profil Adresi');
+  });
+
   it('persists the public profile slug through the dedicated store action', async () => {
     const store = makeStore({ slug: 'bridge-old', isSlugDirty: () => true });
     render(GeneralTab, { props: { store } });

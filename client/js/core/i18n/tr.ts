@@ -77,6 +77,7 @@ const translations: Record<string, string> = {
   // ve Turkce arayuzde oldugu gibi gorunuyordu.
   'voice_connected': 'Bağlı',
   'voice_disconnected': 'Bağlı değil',
+  'voice_reconnecting': 'Yeniden bağlanıyor…',
   'voice_check': 'Ses Kontrolü',
   'voice_in_room': 'Ses odasındasınız',
   'voice_ready': 'Hazır olduğunuzda ses odasına katılın',

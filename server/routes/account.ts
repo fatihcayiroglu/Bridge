@@ -30,7 +30,7 @@
 import express from 'express';
 import type { Request, Response } from 'express';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, _invalidateTokenCache } from '../middleware/auth';
 import { limits } from '../middleware/rateLimit';
 import { Users, Auth } from '../db/repositories';
 import db from '../db/loader';
@@ -229,7 +229,12 @@ router.delete('/', authMiddleware, limits.write(), async (req: Request, res: Res
     const { applied, plan } = await eraseAccountData(p, transaction, _u.id);
 
     // ── Yetki iptali ─────────────────────────────────────────────────────
-    // `tokenVersion` hem erişim jetonunu hem MEDYA çerezini geçersizler.
+    // Kullanıcı satırı artık yok: erişim jetonu `tokenVersion` bulunamadığı
+    // için reddedilir — ANCAK yalnızca süreç içi sürüm önbelleği de
+    // boşaltılırsa. Tek düğümde (REDIS_URL yok) önbellek 30 sn tutulur ve
+    // silinmiş hesabın jetonu bu süre boyunca kimlik doğrulamaya devam
+    // ediyordu (P3: `GET /api/me` silmeden hemen sonra 401 yerine 404).
+    _invalidateTokenCache(_u.id);
     await Auth.revokeAllForUser(_u.id).catch(() => { /* satırlar zaten silindi */ });
     await disconnectLiveUserSessions(_u.id, 'account_deleted');
 

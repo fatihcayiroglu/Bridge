@@ -66,14 +66,17 @@
 </div>
 
 <fieldset class="srv-section">
-  <legend>{t('srv_public_profile_url', 'Herkese Açık Profil Adresi')}</legend>
+  <legend id="srv-slug-legend">{t('srv_public_profile_url', 'Herkese Açık Profil Adresi')}</legend>
   <div class="srv-inline-row">
+    <!-- `legend` grubu adlandırır, içindeki alanı DEĞİL: ad açıkça bağlanır,
+         yoksa ekran okuyucu etiketsiz bir metin alanı okur (axe `label`). -->
     <input
       id="srv-slug-input"
       class="input-field"
       maxlength="32"
       autocomplete="off"
       value={store.slug}
+      aria-labelledby="srv-slug-legend"
       aria-describedby="srv-slug-hint"
       oninput={(e) => store.setSlug((e.currentTarget as HTMLInputElement).value)}
     />

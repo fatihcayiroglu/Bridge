@@ -16,8 +16,12 @@ import path from 'path';
 const UPLOAD_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-admin-del-'));
 process.env.BRIDGE_UPLOAD_ROOT = UPLOAD_ROOT;
 
+// Silme, tek düğümlü tokenVersion önbelleğini düşürür (P3); sahte modül aynı
+// dışa aktarımı sunmazsa rota silmeden SONRA TypeError ile 500 döner.
+const mockInvalidateTokenCache = jest.fn();
 jest.mock('../../middleware/auth', () => ({
   authMiddleware: (req: { user?: unknown }, _res: unknown, next: () => void) => { req.user = { id: 'pgt-adm-admin' }; next(); },
+  _invalidateTokenCache: (id: string) => mockInvalidateTokenCache(id),
 }));
 jest.mock('../../middleware/rateLimit', () => ({
   limits: new Proxy({}, { get: () => () => (_req: unknown, _res: unknown, next: () => void) => next() }),
@@ -99,6 +103,8 @@ RUN('gerçek PostgreSQL — yönetici kullanıcı silmesi', () => {
     const res = await request(app()).delete(`/api/admin/users/${SPAMMER}`);
     expect(res.status).toBe(200);
     expect(await q(`SELECT 1 FROM users WHERE _id=$1`, [SPAMMER])).toHaveLength(0);
+    // Silinen hesabın erişim jetonu önbellekten doğrulanmaya devam etmez.
+    expect(mockInvalidateTokenCache).toHaveBeenCalledWith(SPAMMER);
     // Moderasyon niyeti (önceki davranış): kişinin KANAL mesajları silinir; başkasınınki kalır.
     expect(await q(`SELECT 1 FROM messages WHERE _id=$1`, [`${P}-m1`])).toHaveLength(0);
     expect(await q(`SELECT 1 FROM messages WHERE _id=$1`, [`${P}-m2`])).toHaveLength(1);

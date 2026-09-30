@@ -226,6 +226,42 @@ describe('VoicePanel — reconnect state truth', () => {
   });
 });
 
+describe('VoicePanel — media session recovery is visible', () => {
+  it('shows reconnecting while the engine re-establishes the session, then connected or disconnected', async () => {
+    const { container } = render(VoicePanel);
+    const status = () => container.querySelector('.voice-connection') as HTMLElement;
+    document.dispatchEvent(new CustomEvent('bridge:voice-joined'));
+    await new Promise(r => setTimeout(r, 0));
+    const connectedText = status().textContent?.trim();
+    expect(status().classList.contains('connected')).toBe(true);
+
+    // ICE failed / socket lost: the call must not keep claiming "connected".
+    document.dispatchEvent(new CustomEvent('bridge:voice-reconnecting', { detail: { reason: 'transport-failed' } }));
+    await new Promise(r => setTimeout(r, 0));
+    expect(status().classList.contains('reconnecting')).toBe(true);
+    expect(status().classList.contains('connected')).toBe(false);
+    expect(status().textContent?.trim()).not.toBe(connectedText);
+    expect(status().getAttribute('role')).toBe('status');
+
+    document.dispatchEvent(new CustomEvent('bridge:voice-reconnected', { detail: { attempt: 1 } }));
+    await new Promise(r => setTimeout(r, 0));
+    expect(status().classList.contains('reconnecting')).toBe(false);
+    expect(status().textContent?.trim()).toBe(connectedText);
+
+    // Recovery that gives up ends the call: no stale "reconnecting" state remains.
+    document.dispatchEvent(new CustomEvent('bridge:voice-reconnecting', { detail: { reason: 'transport-failed' } }));
+    document.dispatchEvent(new CustomEvent('bridge:voice-left', { detail: { reason: 'media-session-lost' } }));
+    await new Promise(r => setTimeout(r, 0));
+    expect(status().classList.contains('reconnecting')).toBe(false);
+    expect(status().classList.contains('connected')).toBe(false);
+
+    // A recovery event outside a call is ignored.
+    document.dispatchEvent(new CustomEvent('bridge:voice-reconnecting', { detail: { reason: 'transport-failed' } }));
+    await new Promise(r => setTimeout(r, 0));
+    expect(status().classList.contains('reconnecting')).toBe(false);
+  });
+});
+
 describe('VoicePanel — engine-originated state (P2 media lab)', () => {
   it('a camera or microphone that ends underneath the call is reflected in the controls', async () => {
     mockRtc.videoOn = false;

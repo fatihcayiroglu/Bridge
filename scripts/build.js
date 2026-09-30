@@ -164,6 +164,12 @@ async function buildJS() {
     },
     sourcemap:     WATCH ? 'inline' : (ANALYZE ? 'external' : false),
     target:        ['es2020', 'chrome90', 'firefox90', 'safari14.1'],
+    // Non-ASCII text ships as UTF-8, not as `\uXXXX` escapes. esbuild's
+    // default ASCII output wrote every Cyrillic/CJK/Turkish character of the
+    // locale chunks as 6 bytes (ru.ts: 186.9 KB source → 372.6 KB chunk). Every
+    // chunk here is an ES module (`format: 'esm'`), which browsers, Electron and
+    // Capacitor always decode as UTF-8, so the output text is unchanged.
+    charset:       'utf8',
     logLevel:      'warning',
     legalComments: PROD ? 'none' : 'inline',
     metafile:      true,
