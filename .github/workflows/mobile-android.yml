@@ -130,7 +130,9 @@ jobs:
           name: bridge-android-debug-apk
           path: apk
       - name: Install server and harness dependencies
+        # The server build compiles the bundled plugins with the ROOT toolchain (TypeScript).
         run: |
+          npm ci --no-audit --no-fund
           cd server && npm ci --no-audit --no-fund
           cd ../e2e && npm ci --no-audit --no-fund
       - name: Build server
