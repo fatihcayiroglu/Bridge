@@ -391,8 +391,13 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
           .toBe(avatarUrl);
 
         await expect(row.locator('.msg-avatar img'), 'kırık avatar resmi hâlâ çiziliyor').toHaveCount(0, { timeout: 15_000 });
-        const background = await row.locator('.msg-avatar').first().evaluate((el) => (el as HTMLElement).style.background);
-        expect(background, 'yedek renk avatarı arka planı yok').not.toBe('');
+        // Aynı iddia (satır içi arka plan dolu), yeniden deneyen yardımcı dünyada okunur.
+        // P3 gecelik koşu: Firefox'ta taze bağlamda ana dünya `locator.evaluate`
+        // 10 sn yanıtsız kaldı — hemen önceki `toHaveCount(0)` geçmiş, öğe görünür
+        // çözülmüştü; yeniden koşu ve Chromium/WebKit geçti. Ürün durumu değil,
+        // okuma yolu takılıyordu.
+        await expect(row.locator('.msg-avatar').first(), 'yedek renk avatarı arka planı yok')
+          .toHaveAttribute('style', /background\s*:\s*\S/, { timeout: 15_000 });
       } finally {
         await fresh.close();
       }

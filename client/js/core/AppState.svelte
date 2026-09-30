@@ -122,10 +122,13 @@
    * yeniden yükleme, kullanıcının başarısız mesajını sessizce yok ederdi.
    * Kanal değişiminde `resetMessageState()` zaten hepsini temizler.
    */
-  registerOwned('setMessages', (list: AppMessage[]) => {
+  registerOwned('setMessages', (list: AppMessage[], liveIds?: Iterable<string>) => {
     const server = Array.isArray(list) ? list : [];
     const serverIds = new Set(server.map(m => m._id));
-    const localOnly = messages.filter(m => (m.pending || m.failed) && !serverIds.has(m._id));
+    // P3: `liveIds` — istek uçuştayken soketten gelmiş (anlık görüntüden yeni)
+    // mesajlar; yanıtta olmamaları silindikleri anlamına gelmez.
+    const live = new Set(liveIds ?? []);
+    const localOnly = messages.filter(m => (m.pending || m.failed || live.has(m._id)) && !serverIds.has(m._id));
     messages = sortByTime([...server, ...localOnly]);
   });
   registerOwned('setMessagesLoading', (value: boolean) => { messagesLoading = Boolean(value); });

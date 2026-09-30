@@ -350,3 +350,34 @@ describe('yan liste', () => {
     expect(rowIds()).toHaveLength(3);
   });
 });
+
+describe('gönderim zamanı', () => {
+  it('her mesaj makine-okunur bir zaman taşır; metin BIGINT dizgesi de olabilir', async () => {
+    const at = Date.UTC(2026, 0, 15, 9, 30);
+    pages.set('', [
+      { _id: 'm-num', dmId: 'dm-a', userId: 'user-a', content: 'sayı', createdAt: at },
+      { _id: 'm-str', dmId: 'dm-a', userId: 'user-a', content: 'metin', createdAt: String(at + 60_000) },
+      { _id: 'm-bad', dmId: 'dm-a', userId: 'user-a', content: 'bozuk', createdAt: 'yok' },
+    ]);
+    await openConversation();
+
+    const times = [...document.querySelectorAll<HTMLTimeElement>('.dm-message time.dm-time')];
+    expect(times.map(n => n.dateTime)).toEqual([new Date(at).toISOString(), new Date(at + 60_000).toISOString()]);
+    expect(times.every(n => (n.textContent ?? '').trim().length > 0)).toBe(true);
+    expect(document.querySelector('[data-id="m-bad"] time')).toBeNull();
+  });
+
+  it('henüz onaylanmamış (gönderiliyor) satır zaman göstermez; onayla gelir', async () => {
+    await openConversation();
+    type('merhaba');
+    await flush(2);
+    document.querySelector<HTMLFormElement>('.dm-composer')!.requestSubmit();
+    await flush();
+    expect(document.querySelector('.dm-message.pending time')).toBeNull();
+
+    const nonce = String((dmSends().at(-1)!.payload as { clientNonce?: string }).clientNonce);
+    socket.fire('dm:message', { _id: 'c-1', dmId: 'dm-a', userId: 'me', content: 'merhaba', clientNonce: nonce, createdAt: Date.now() });
+    await flush();
+    expect(document.querySelector('[data-id="c-1"] time.dm-time')).not.toBeNull();
+  });
+});

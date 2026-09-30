@@ -1,6 +1,6 @@
 <script lang="ts">
   import { avatarStyle } from './avatar-color.ts';
-  import { t } from './i18n/reactive.svelte.ts';
+  import { t, localeTag } from './i18n/reactive.svelte.ts';
   import { focusTrap } from './a11y/focusTrap.ts';
   import { onMount, onDestroy, tick } from 'svelte';
   import { BridgeRegistry } from './bridge-registry.js';
@@ -113,6 +113,24 @@
     socket.on?.('disconnect', onSocketDisconnect);
     boundSocket = socket;
   }
+  /**
+   * Gönderim zamanı (P3): DM satırları zaman taşımıyordu — "bu ne zaman
+   * yazıldı?" sorusu cevapsızdı. Bugünkü mesajda saat, eskisinde gün + saat.
+   * PostgreSQL BIGINT metin olarak gelebilir; ISO metni de kabul edilir.
+   */
+  function messageStamp(message: Message): { iso: string; label: string } | null {
+    if (message.createdAt === undefined || message.pending) return null;
+    const numeric = Number(message.createdAt);
+    const ms = Number.isFinite(numeric) ? numeric : Date.parse(String(message.createdAt));
+    if (!Number.isFinite(ms) || ms <= 0) return null;
+    const date = new Date(ms);
+    const today = date.toDateString() === new Date().toDateString();
+    const label = today
+      ? date.toLocaleTimeString(localeTag(), { hour: '2-digit', minute: '2-digit' })
+      : date.toLocaleString(localeTag(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    return { iso: date.toISOString(), label };
+  }
+
   const initials = (user: User): string => (user.displayName || user.username || '?').slice(0, 2).toUpperCase();
   const name = (user: User): string => user.displayName || user.username || t('ui_bridge_user');
 
@@ -641,7 +659,7 @@
           </button>
         {/if}
         {#each messages as message (message._id)}
-          <article class:pending={message.pending} class:failed={message.failed} class="dm-message" data-id={message._id}><span class="dm-avatar small" style={avatarStyle(message.avatarColor)}>{(message.displayName || '?').slice(0, 2).toUpperCase()}</span><div class="dm-message-copy"><strong>{message.displayName || t('ui_bridge_user')}</strong><p>{message.content}</p>{#if message.pending}<small>{t('dm_sending', 'Gönderiliyor…')}</small>{:else if message.failed}<small class="dm-failed" role="alert">{message.lastError || t('dm_send_failed', 'Gönderilemedi.')}</small><button type="button" class="dm-retry" onclick={() => retryMessage(message)}>{t('retry', 'Yeniden dene')}</button>{/if}</div>{#if message._id && !message.pending && !message.failed}<button type="button" class="dm-save" aria-label={t('msg_action_save')} title={t('msg_action_save')} onclick={() => saveForLater(message)}>⌑</button>{/if}</article>
+          <article class:pending={message.pending} class:failed={message.failed} class="dm-message" data-id={message._id}><span class="dm-avatar small" style={avatarStyle(message.avatarColor)}>{(message.displayName || '?').slice(0, 2).toUpperCase()}</span><div class="dm-message-copy"><strong>{message.displayName || t('ui_bridge_user')}</strong>{#if messageStamp(message)}{@const stamp = messageStamp(message)!}<time class="dm-time" datetime={stamp.iso}>{stamp.label}</time>{/if}<p>{message.content}</p>{#if message.pending}<small>{t('dm_sending', 'Gönderiliyor…')}</small>{:else if message.failed}<small class="dm-failed" role="alert">{message.lastError || t('dm_send_failed', 'Gönderilemedi.')}</small><button type="button" class="dm-retry" onclick={() => retryMessage(message)}>{t('retry', 'Yeniden dene')}</button>{/if}</div>{#if message._id && !message.pending && !message.failed}<button type="button" class="dm-save" aria-label={t('msg_action_save')} title={t('msg_action_save')} onclick={() => saveForLater(message)}>⌑</button>{/if}</article>
         {/each}
       </div>
       <form class="dm-composer" onsubmit={(event) => { event.preventDefault(); sendMessage(); }}>
@@ -662,6 +680,7 @@
 .dm-panel{position:fixed;inset:0;z-index:1200;display:grid;grid-template-columns:280px minmax(0,1fr);grid-template-rows:minmax(0,1fr);background:var(--surface-1);color:var(--text-primary)}
 .dm-sidebar{display:flex;flex-direction:column;min-width:0;padding:16px;background:var(--surface-2);border-right:1px solid var(--border-subtle);overflow:auto}.dm-heading,.dm-chat-header{display:flex;align-items:center;gap:10px;padding-bottom:12px}.dm-heading h2{font-size:18px;margin:0;flex:1}.dm-heading button{border:0;background:transparent;color:inherit;font-size:24px;cursor:pointer}.friends-link{border:1px solid var(--border-subtle);background:var(--surface-hover);color:var(--text-primary);border-radius:var(--radius-control);padding:8px;text-align:left;cursor:pointer;margin-bottom:10px}.dm-conversation{display:flex;align-items:center;gap:10px;border:0;background:transparent;color:inherit;padding:9px 6px;text-align:left;border-radius:var(--radius-control);cursor:pointer}.dm-conversation:hover,.dm-conversation.active{background:var(--surface-selected)}.dm-avatar{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;color:var(--text-on-solid);font-size:12px;font-weight:700;flex:none}.dm-avatar.small{width:28px;height:28px;font-size:10px}.dm-person{display:grid;min-width:0;flex:1}
 .dm-unread{display:grid;place-items:center;min-width:20px;height:20px;padding:0 6px;border-radius:var(--radius-pill);background:var(--brand);color:var(--text-on-solid);font-size:var(--type-badge);font-weight:700;font-variant-numeric:tabular-nums;flex:none}.dm-person strong,.dm-person small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dm-person small,.dm-muted,.dm-message small{color:var(--text-muted);font-size:12px}.dm-chat{display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0;min-height:0}.dm-chat-header{padding:16px;border-bottom:1px solid var(--border-subtle)}.dm-messages{overflow:auto;padding:18px}.dm-message{display:flex;gap:9px;margin-bottom:14px;padding:4px;border-radius:8px}.dm-message-copy{min-width:0;flex:1}.dm-message p{margin:3px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.dm-message.pending{opacity:.65}.dm-message.failed{opacity:.9}.dm-failed{display:block;color:var(--danger)!important}.dm-retry{margin-top:4px;border:0;background:transparent;color:var(--brand);cursor:pointer;padding:0;font:inherit;font-size:12px}.dm-retry:hover,.dm-retry:focus-visible{text-decoration:underline}:global(.dm-message.dm-message-highlight){background:var(--brand-subtle)}.dm-save{align-self:flex-start;flex:none;width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer}.dm-save:hover,.dm-save:focus-visible{background:var(--surface-hover);color:var(--text-primary)}.dm-composer{display:flex;gap:8px;padding:14px;border-top:1px solid var(--border-subtle)}.dm-composer .btn{flex:none;width:auto}.dm-composer textarea{flex:1;resize:none;min-height:38px;padding:10px;border:1px solid var(--border-subtle);border-radius:var(--radius-control);background:var(--surface-2);color:inherit;font:inherit}.dm-empty{display:grid;place-content:center;text-align:center;color:var(--text-muted)}.bridge-error{padding:8px;color:var(--danger);font-size:12px}
+.dm-time{margin-inline-start:8px;color:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums}
 .dm-load-older{display:block;margin:0 auto 14px;border:1px solid var(--border-subtle);border-radius:var(--radius-control);background:var(--surface-2);color:var(--text-primary);padding:6px 12px;cursor:pointer;font:inherit;font-size:12px}.dm-load-older:hover,.dm-load-older:focus-visible{background:var(--surface-hover)}.dm-load-older:disabled{opacity:.6;cursor:default}
 .dm-mobile-back{display:none}.dm-call-actions{margin-inline-start:auto;display:flex;gap:6px}
 .dm-call-btn{display:grid;place-items:center;width:32px;height:32px;border:1px solid var(--border-subtle);border-radius:8px;background:transparent;color:var(--text-muted);cursor:pointer}

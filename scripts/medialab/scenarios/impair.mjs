@@ -53,8 +53,11 @@ export async function run({ lab, record, measure }) {
   await sleep(12_000);
 
   const table = [];
-  // IMPAIR_ONLY=interruptions skips the profile matrix (targeted re-runs).
-  const profiles = process.env.IMPAIR_ONLY === 'interruptions' ? [] : PROFILES;
+  // IMPAIR_ONLY=interruptions skips the profile matrix (targeted re-runs);
+  // IMPAIR_PROFILES=a,b runs only the named profiles, in matrix order.
+  const only = (process.env.IMPAIR_PROFILES || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const profiles = process.env.IMPAIR_ONLY === 'interruptions' ? []
+    : only.length ? PROFILES.filter(([name]) => only.includes(name)) : PROFILES;
   for (const [name, profile] of profiles) {
     await lab.net.impair(1, profile);
     const applied = Date.now();
