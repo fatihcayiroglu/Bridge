@@ -170,7 +170,8 @@ describe('MessageLoader — request state machine', () => {
     apiFetchMock.mockResolvedValueOnce(apiResponse({}));
     render(MessageLoader);
     select('active');
-    await waitFor(() => expect(calls.setMessages).toHaveBeenCalledWith([]));
+    // İkinci argüman: istek uçuştayken canlı gelen mesaj kimlikleri (P3) — burada hiçbiri.
+    await waitFor(() => expect(calls.setMessages).toHaveBeenCalledWith([], new Set()));
     expect(cursor).toBeNull();
     expect(hasMore).toBe(false);
 

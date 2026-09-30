@@ -38,6 +38,16 @@
 
   let channelId: string | null = null;
   let requestSeq = 0;
+  /**
+   * P3 — BAYAT ANLIK GÖRÜNTÜ. Geçmiş isteği uçuştayken soketten gelen olaylar
+   * yanıttan YENİ olabilir. Ölçüldü (yeniden bağlanma): kuyruktaki mesaj
+   * gönderildi, `message:new` + `message:ack` geldi, ardından istekten ÖNCE
+   * alınmış 0 mesajlık yanıt listeyi ezdi — teslim edilmiş mesaj kayboldu ve
+   * kullanıcı onu "sırada" gördü. Uçuş süresince gelen ekleme/silme/düzenleme
+   * kaydedilir ve anlık görüntü uygulanırken korunur.
+   */
+  type LiveSinceLoad = { added: Set<string>; removed: Set<string>; edited: Map<string, Message> };
+  let liveSinceLoad: LiveSinceLoad | null = null;
   let joinedChannel: string | null = null;
   // Faz 10.4: `socketBound` boolean'ı kaldırıldı — yerine `boundSocket`
   // referansı kullanılıyor (bkz. bindSocketEvents). Boolean guard, socket
@@ -78,6 +88,8 @@
 
     const seq = ++requestSeq;
     channelId = target;
+    const live: LiveSinceLoad = { added: new Set(), removed: new Set(), edited: new Map() };
+    liveSinceLoad = live;
 
     BridgeRegistry.call('setMessagesLoading', true);
     BridgeRegistry.call('setMessagesError', '');
@@ -98,7 +110,10 @@
         return;
       }
 
-      BridgeRegistry.call('setMessages', withoutDeleted(data.messages));
+      const rows = withoutDeleted(data.messages)
+        .filter((row) => !live.removed.has(String((row as { _id?: unknown } | null)?._id ?? '')));
+      BridgeRegistry.call('setMessages', rows, live.added);
+      for (const edited of live.edited.values()) BridgeRegistry.call('updateMessage', edited);
       BridgeRegistry.call('setFirstUnreadAnchor', firstUnreadId);
       BridgeRegistry.call('setMessageCursor', data.prevCursor ?? null);
       BridgeRegistry.call('setMessagesHasMore', Boolean(data.hasMore));
@@ -111,6 +126,7 @@
       const info = handleApiError(unwrapApiError(error), { silent: true, report: true });
       BridgeRegistry.call('setMessagesError', info.message);
     } finally {
+      if (liveSinceLoad === live) liveSinceLoad = null;
       if (seq === requestSeq) BridgeRegistry.call('setMessagesLoading', false);
       notifyUpdated();
     }
@@ -213,6 +229,7 @@
     bindOne(socket, 'message:new', (...args: unknown[]) => {
       const msg = args[0] as Message;
       if (!isNonEmptyString(msg?._id) || !isNonEmptyString(msg.channelId) || msg.channelId !== channelId) return;
+      liveSinceLoad?.added.add(msg._id);
       if (BridgeRegistry.call<boolean>('appendMessage', msg)) notifyUpdated();
     });
 
@@ -223,6 +240,7 @@
       const payload = args[0] as { ackId?: string; tmpId?: string; messageId?: string; ts?: number };
       const key = payload?.ackId ?? payload?.tmpId;
       if (!isNonEmptyString(key) || !isNonEmptyString(payload?.messageId)) return;
+      liveSinceLoad?.added.add(payload.messageId);
 
       BridgeRegistry.call('replaceMessage', `pending:${key}`, {
         _id: payload.messageId,
@@ -272,11 +290,17 @@
       const { clientNonce: _mutationNonce, ...canonical } = msg;
       if (BridgeRegistry.call<boolean>('updateMessage', canonical)) notifyUpdated();
       if (clientNonce) BridgeRegistry.call('resolveEditMutation', clientNonce, msg._id);
+      liveSinceLoad?.edited.set(msg._id, canonical as Message);
     });
 
     bindOne(socket, 'message:deleted', (...args: unknown[]) => {
       const payload = args[0] as { id?: string; clientNonce?: string };
       if (!isNonEmptyString(payload?.id)) return;
+      if (liveSinceLoad) {
+        liveSinceLoad.removed.add(payload.id);
+        liveSinceLoad.added.delete(payload.id);
+        liveSinceLoad.edited.delete(payload.id);
+      }
 
       // Bu mesaja yapılmış yanıtların önizlemesini "silindi" olarak işaretle.
       // Sunucu aynı işareti kalıcı olarak da yazıyor (lib/deleteMessageCascade.ts);
