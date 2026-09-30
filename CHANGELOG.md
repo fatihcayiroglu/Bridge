@@ -71,6 +71,16 @@ media-path evidence, not perceptual quality, physical devices or real Wi-Fi/cell
   consecutive runs (see `docs/MEDIA_RELIABILITY.md`). The e2e server now defaults the SFU address to
   loopback.
 
+### Security (dependencies)
+- Advisories that appeared after main's last green Quality Gate (2026-09-28) turned its
+  `npm audit --audit-level=high` step red for the root, server and electron trees (none in e2e). Updated to the patched releases within the
+  declared ranges: nodemailer 10.0.13, multer 2.4.0, engine.io 6.6.11, devalue 5.9.4, fast-uri 3.1.8,
+  ip-address 10.7.2, brace-expansion 5.0.12 (and 1.1.21 / 2.1.7 in electron), electron 42.11.9. The
+  exact pins moved to the first patched version: `undici` 7.29.1 (root override) and 8.10.2 (server),
+  `brace-expansion` 5.0.12 and `ip-address` 10.7.2 (server overrides); eslint's minimatch gets a
+  scoped `brace-expansion` override like the existing one for minimatch 3.1.5. Lockfiles regenerated
+  with npm; `npm audit` reports 0 vulnerabilities in all four trees.
+
 ### Open (MEDIA-11)
 - **Video from the SFU can stay off after heavy congestion.** When a receiver's link is squeezed, the
   SFU's bandwidth estimate towards it can fall to its 30 kbit/s floor; no simulcast layer fits, no
