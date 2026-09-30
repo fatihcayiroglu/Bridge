@@ -234,7 +234,9 @@ describe('Audit Log admin UX', () => {
     expect(url.pathname).not.toContain('/export');
     expect(url.searchParams.get('format')).toBe('csv');
     expect(url.searchParams.get('limit')).toBe('500');
-    expect(clicked).toEqual(['blob:audit']);
+    // The download follows `await response.blob()`, one async step after the
+    // second fetch call: wait for it instead of racing it (failed under Node 22).
+    await waitFor(() => expect(clicked).toEqual(['blob:audit']));
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:audit');
   });
 

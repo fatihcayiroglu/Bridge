@@ -10,7 +10,7 @@
 
 import { test as base } from '@playwright/test';
 import type { APIRequestContext } from '@playwright/test';
-import { getCsrf, refreshCsrf, invalidateCsrf } from './csrf';
+import { getCsrf, refreshCsrf, invalidateCsrf, cachedCsrf, isCsrfRejection } from './csrf';
 
 const MUTATING = new Set(['post', 'put', 'patch', 'delete', 'fetch']);
 const BASE = () => process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -48,9 +48,24 @@ function withCsrf(ctx: APIRequestContext): APIRequestContext {
           delete headers[optOut];
           return (original as (u: string, o: unknown) => unknown).call(target, url, { ...options, headers });
         }
-        const manualCsrf = Object.keys(headers).some((h) => h.toLowerCase() === 'x-csrf-token');
-        if (!bearer || manualCsrf) {
-          return (original as (u: string, o: unknown) => unknown).call(target, url, { ...options, headers });
+        const manualKey = Object.keys(headers).find((h) => h.toLowerCase() === 'x-csrf-token');
+        if (!bearer || manualKey) {
+          type Res = { status(): number; text(): Promise<string> };
+          const call = (h: HeaderBag) => (original as (u: string, o: unknown) => Promise<Res>)
+            .call(target, url, { ...options, headers: h });
+          const res = await call(headers);
+          // `'X-CSRF-Token': await getCsrf(...)` elle yazilmis olsa da PAYLASILAN
+          // onbellegin kopyasidir. Ayni kullanicinin tarayici sayfasi token
+          // alinca o kopya bayatlar (sunucu kullanici basina TEK token tutar) —
+          // olculdu: tam paketde avatar yuklemesi 403 aldi. Yalnizca gonderilen
+          // deger onbellekteki token IKEN ve sunucu gercekten CSRF reddi
+          // dondugunde bir kez tazelenir; kasitli yanlis/eksik token gonderen
+          // guvenlik testleri oldugu gibi kalir.
+          if (bearer && manualKey && headers[manualKey] === cachedCsrf(bearer) && await isCsrfRejection(res)) {
+            invalidateCsrf(bearer);
+            return call({ ...headers, [manualKey]: await refreshCsrf(target, bearer) });
+          }
+          return res;
         }
         const send = async (token: string) => {
           const h = token ? { ...headers, 'X-CSRF-Token': token } : headers;
