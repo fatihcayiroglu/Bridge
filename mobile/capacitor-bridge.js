@@ -213,6 +213,8 @@
         void bridgeBadge.clear();
         if (data.type === "dm" && data.fromUserId) {
           emitDeepLink({ type: "navigate:dm", userId: data.fromUserId });
+        } else if (data.type === "gdm" && data.groupId) {
+          emitDeepLink({ type: "navigate:gdm", groupId: data.groupId });
         } else if (data.channelId) {
           emitDeepLink({ type: "navigate:channel", channelId: data.channelId, serverId: data.serverId });
         }

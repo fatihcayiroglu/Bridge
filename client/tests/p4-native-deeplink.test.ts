@@ -37,6 +37,7 @@ function makeDeps(overrides: Partial<NativeDeepLinkDeps> = {}) {
     toast: vi.fn(),
     signedIn: () => true,
     openDm: vi.fn(async () => true),
+    openGroupDm: vi.fn(async (groupId: string) => groupId === 'g-mine'),
     ...overrides,
   };
   return deps;
@@ -51,6 +52,7 @@ describe('parseNativeDeepLink — untrusted input', () => {
     expect(parseNativeDeepLink({ type: 'navigate:server', serverId: 'srv-1' })).toEqual({ kind: 'server', serverId: 'srv-1' });
     expect(parseNativeDeepLink({ type: 'navigate:invite', code: 'abcDEF12' })).toEqual({ kind: 'invite', code: 'abcDEF12' });
     expect(parseNativeDeepLink({ type: 'navigate:dm', userId: 'u-1' })).toEqual({ kind: 'dm', userId: 'u-1' });
+    expect(parseNativeDeepLink({ type: 'navigate:gdm', groupId: 'g-1' })).toEqual({ kind: 'gdm', groupId: 'g-1' });
   });
 
   it('rejects tokens, unknown types and malformed ids', () => {
@@ -103,6 +105,13 @@ describe('routeNativeDeepLink — only permission-checked destinations', () => {
     const deps = makeDeps();
     await expect(routeNativeDeepLink({ kind: 'dm', userId: 'u-9' }, deps, 1_000)).resolves.toBe(true);
     expect(deps.openDm).toHaveBeenCalledWith('u-9');
+  });
+
+  it('a group DM link opens only a group in the user\'s own list', async () => {
+    const deps = makeDeps();
+    await expect(routeNativeDeepLink({ kind: 'gdm', groupId: 'g-mine' }, deps, 1_000)).resolves.toBe(true);
+    await expect(routeNativeDeepLink({ kind: 'gdm', groupId: 'g-other' }, deps, 1_000)).resolves.toBe(false);
+    expect(deps.toast).toHaveBeenCalledTimes(1);
   });
 
   it('an empty server list is loaded before the lookup (cold start)', async () => {

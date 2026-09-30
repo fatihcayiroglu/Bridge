@@ -13,7 +13,8 @@
 //     (channels the user may not view are not listed), otherwise "not available";
 //   · server  → only a server already in the user's list;
 //   · invite  → the server validates the code (the same flow as desktop bridge:// invites);
-//   · dm      → the DM panel's own open flow (POST /api/dm/:userId enforces privacy and blocks).
+//   · dm      → the DM panel's own open flow (POST /api/dm/:userId enforces privacy and blocks);
+//   · gdm     → only a group in the user's own group list (the server lists memberships only).
 // Links that arrive before sign-in wait for it (bounded); a signed-out app never navigates.
 
 import { BridgeRegistry } from './bridge-registry.ts';
@@ -29,7 +30,8 @@ export type NativeDeepLink =
   | { kind: 'channel'; channelId: string; serverId?: string; messageId?: string }
   | { kind: 'server'; serverId: string }
   | { kind: 'invite'; code: string }
-  | { kind: 'dm'; userId: string };
+  | { kind: 'dm'; userId: string }
+  | { kind: 'gdm'; groupId: string };
 
 const ID = /^[a-zA-Z0-9_-]{1,64}$/;
 const INVITE = /^[a-zA-Z0-9_-]{1,32}$/;
@@ -62,6 +64,10 @@ export function parseNativeDeepLink(payload: unknown): NativeDeepLink | null {
       const userId = idOrNull(p.userId);
       return userId ? { kind: 'dm', userId } : null;
     }
+    case 'navigate:gdm': {
+      const groupId = idOrNull(p.groupId);
+      return groupId ? { kind: 'gdm', groupId } : null;
+    }
     default:
       return null;
   }
@@ -72,6 +78,8 @@ interface ServerLike { _id?: string }
 export interface NativeDeepLinkDeps extends DeepLinkDeps {
   signedIn(): boolean;
   openDm(userId: string): Promise<boolean> | boolean;
+  /** Opens a group DM only if it is in the user's own group list (membership is server-side). */
+  openGroupDm(groupId: string): Promise<boolean> | boolean;
 }
 
 async function waitFor(check: () => boolean, timeoutMs: number, pollMs = 250): Promise<boolean> {
@@ -102,6 +110,8 @@ export async function routeNativeDeepLink(link: NativeDeepLink, deps: NativeDeep
       return routeDesktopDeepLink({ kind: 'server', id: link.serverId }, deps, timeoutMs);
     case 'dm':
       return Boolean(await deps.openDm(link.userId));
+    case 'gdm':
+      return (await deps.openGroupDm(link.groupId)) ? true : unavailable();
     case 'channel': {
       const servers = deps.servers().filter((s) => typeof s._id === 'string');
       // The hinted server (notification data) is checked first; the rest in list order, bounded.
@@ -133,6 +143,15 @@ const registryDeps: NativeDeepLinkDeps = {
   openDm: async (userId) => {
     if (!(await waitFor(() => BridgeRegistry.has('openDm'), SHELL_READY_WAIT_MS))) return false;
     return Boolean(await BridgeRegistry.call<Promise<boolean> | boolean>('openDm', userId));
+  },
+  openGroupDm: async (groupId) => {
+    const ready = () => BridgeRegistry.has('groupDmPanel:openGroupDm') && BridgeRegistry.has('groupDmPanel:getGroups');
+    if (!(await waitFor(ready, SHELL_READY_WAIT_MS))) return false;
+    await BridgeRegistry.call('groupDmPanel:loadList');
+    const groups = BridgeRegistry.call<Array<{ _id?: string }>>('groupDmPanel:getGroups') ?? [];
+    const group = groups.find((g) => g?._id === groupId);
+    if (!group) return false;
+    return Boolean(await BridgeRegistry.call<Promise<boolean> | boolean>('groupDmPanel:openGroupDm', group));
   },
 };
 

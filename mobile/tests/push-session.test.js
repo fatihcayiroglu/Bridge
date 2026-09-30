@@ -203,6 +203,15 @@ describe('notification taps and foreground pushes', () => {
     expect(window.__bridgePendingDeepLinks).toEqual([{ type: 'navigate:dm', userId: 'user-7' }]);
   });
 
+  it('tapping a group DM notification queues navigate:gdm', async () => {
+    const push = pushPlugin('granted');
+    loadBridge({ PushNotifications: push, BridgePushSupport: fcmConfigured() });
+    window.dispatchEvent(new Event('load'));
+    await flush();
+    push.emit('pushNotificationActionPerformed', { notification: { data: { type: 'gdm', groupId: 'g-1' } } });
+    expect(window.__bridgePendingDeepLinks).toEqual([{ type: 'navigate:gdm', groupId: 'g-1' }]);
+  });
+
   it('a push received while the app is visible does not schedule a second (system) notification', async () => {
     const push = pushPlugin('granted');
     const local = { schedule: jest.fn().mockResolvedValue(undefined) };

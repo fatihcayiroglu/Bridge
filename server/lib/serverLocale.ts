@@ -23,7 +23,9 @@ export type ServerTextKey =
   | 'push_mention_title'      // {name} mentioned you
   | 'push_watch_word_title'   // {name} — a word you follow
   | 'push_many_notifications' // {count} new notifications — {channel}
-  | 'push_many_mentions';     // {count} new mentions — {channel}
+  | 'push_many_mentions'      // {count} new mentions — {channel}
+  | 'push_dm_many'            // {count} new messages — {name}   (P4: DM / group DM batches)
+  | 'push_encrypted_message'; // an end-to-end encrypted message (no preview leaves the server)
 
 type Catalog = Record<ServerTextKey, string>;
 
@@ -33,60 +35,80 @@ const CATALOGS: Record<ServerLocale, Catalog> = {
     push_watch_word_title: '{name} — takip ettiğin kelime',
     push_many_notifications: '{count} yeni bildirim — {channel}',
     push_many_mentions: '{count} yeni mention — {channel}',
+    push_dm_many: '{count} yeni mesaj — {name}',
+    push_encrypted_message: '🔒 Şifreli mesaj',
   },
   en: {
     push_mention_title: '{name} mentioned you',
     push_watch_word_title: '{name} — a word you follow',
     push_many_notifications: '{count} new notifications — {channel}',
     push_many_mentions: '{count} new mentions — {channel}',
+    push_dm_many: '{count} new messages — {name}',
+    push_encrypted_message: '🔒 Encrypted message',
   },
   es: {
     push_mention_title: '{name} te mencionó',
     push_watch_word_title: '{name} — una palabra que sigues',
     push_many_notifications: '{count} notificaciones nuevas — {channel}',
     push_many_mentions: '{count} menciones nuevas — {channel}',
+    push_dm_many: '{count} mensajes nuevos — {name}',
+    push_encrypted_message: '🔒 Mensaje cifrado',
   },
   ru: {
     push_mention_title: '{name} упомянул вас',
     push_watch_word_title: '{name} — слово, за которым вы следите',
     push_many_notifications: '{count} новых уведомлений — {channel}',
     push_many_mentions: '{count} новых упоминаний — {channel}',
+    push_dm_many: '{count} новых сообщений — {name}',
+    push_encrypted_message: '🔒 Зашифрованное сообщение',
   },
   ja: {
     push_mention_title: '{name} があなたにメンションしました',
     push_watch_word_title: '{name} — フォロー中のキーワード',
     push_many_notifications: '新しい通知が {count} 件 — {channel}',
     push_many_mentions: '新しいメンションが {count} 件 — {channel}',
+    push_dm_many: '新しいメッセージが {count} 件 — {name}',
+    push_encrypted_message: '🔒 暗号化されたメッセージ',
   },
   ko: {
     push_mention_title: '{name}님이 회원님을 멘션했습니다',
     push_watch_word_title: '{name} — 팔로우 중인 단어',
     push_many_notifications: '새 알림 {count}개 — {channel}',
     push_many_mentions: '새 멘션 {count}개 — {channel}',
+    push_dm_many: '새 메시지 {count}개 — {name}',
+    push_encrypted_message: '🔒 암호화된 메시지',
   },
   zh: {
     push_mention_title: '{name} 提到了你',
     push_watch_word_title: '{name} — 你关注的关键词',
     push_many_notifications: '{count} 条新通知 — {channel}',
     push_many_mentions: '{count} 条新提及 — {channel}',
+    push_dm_many: '{count} 条新消息 — {name}',
+    push_encrypted_message: '🔒 加密消息',
   },
   pt: {
     push_mention_title: '{name} mencionou você',
     push_watch_word_title: '{name} — uma palavra que você segue',
     push_many_notifications: '{count} novas notificações — {channel}',
     push_many_mentions: '{count} novas menções — {channel}',
+    push_dm_many: '{count} novas mensagens — {name}',
+    push_encrypted_message: '🔒 Mensagem criptografada',
   },
   de: {
     push_mention_title: '{name} hat dich erwähnt',
     push_watch_word_title: '{name} — ein Wort, dem du folgst',
     push_many_notifications: '{count} neue Benachrichtigungen — {channel}',
     push_many_mentions: '{count} neue Erwähnungen — {channel}',
+    push_dm_many: '{count} neue Nachrichten — {name}',
+    push_encrypted_message: '🔒 Verschlüsselte Nachricht',
   },
   fr: {
     push_mention_title: '{name} t’a mentionné',
     push_watch_word_title: '{name} — un mot que tu suis',
     push_many_notifications: '{count} nouvelles notifications — {channel}',
     push_many_mentions: '{count} nouvelles mentions — {channel}',
+    push_dm_many: '{count} nouveaux messages — {name}',
+    push_encrypted_message: '🔒 Message chiffré',
   },
 };
 

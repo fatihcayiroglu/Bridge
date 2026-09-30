@@ -369,6 +369,8 @@ if (typeof Capacitor === 'undefined') {
       void bridgeBadge.clear();
       if (data.type === 'dm' && data.fromUserId) {
         emitDeepLink({ type: 'navigate:dm', userId: data.fromUserId });
+      } else if (data.type === 'gdm' && data.groupId) {
+        emitDeepLink({ type: 'navigate:gdm', groupId: data.groupId });
       } else if (data.channelId) {
         emitDeepLink({ type: 'navigate:channel', channelId: data.channelId, serverId: data.serverId });
       }
@@ -453,6 +455,7 @@ if (typeof Capacitor === 'undefined') {
   type DeepLinkPayload =
     | { type: 'navigate:channel';  channelId: string; serverId?: string }
     | { type: 'navigate:dm';       userId: string }
+    | { type: 'navigate:gdm';      groupId: string }
     | { type: 'navigate:profile';  userId: string }
     | { type: 'navigate:server';   serverId: string }
     | { type: 'navigate:invite';   code: string }
