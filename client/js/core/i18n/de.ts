@@ -66,6 +66,8 @@ const translations: Record<string, string> = {
   "voice_connected": "Verbunden",
   "voice_disconnected": "Getrennt",
   "voice_reconnecting": "Verbindung wird wiederhergestellt…",
+  "dm_load_older": "Ältere Nachrichten laden",
+  "dm_history_load_failed": "Ältere Nachrichten konnten nicht geladen werden.",
   "voice_check": "Sprachtest",
   "voice_in_room": "Du bist im Raum",
   "voice_ready": "Sprachchat ist bereit, wenn du es bist",

@@ -66,6 +66,8 @@ const translations: Record<string, string> = {
   "voice_connected": "연결됨",
   "voice_disconnected": "연결 끊김",
   "voice_reconnecting": "다시 연결하는 중…",
+  "dm_load_older": "이전 메시지 불러오기",
+  "dm_history_load_failed": "이전 메시지를 불러오지 못했습니다.",
   "voice_check": "음성 확인",
   "voice_in_room": "방에 참여 중입니다",
   "voice_ready": "준비되면 음성을 사용할 수 있습니다",

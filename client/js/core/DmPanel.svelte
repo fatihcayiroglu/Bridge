@@ -2,7 +2,7 @@
   import { avatarStyle } from './avatar-color.ts';
   import { t } from './i18n/reactive.svelte.ts';
   import { focusTrap } from './a11y/focusTrap.ts';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { BridgeRegistry } from './bridge-registry.js';
   import { createLogger } from './logger.js';
   import { closeExclusivePeers } from './exclusive-surface.ts';
@@ -42,6 +42,15 @@
   let listSeq = 0;
   let openSeq = 0;
   const SEND_TIMEOUT_MS = 10_000;
+  /**
+   * Geçmiş sayfa boyutu. Sunucu `before` + `beforeId` bileşik imlecini zaten
+   * destekliyordu (tests/dm-pagination.test.ts) ama istemci yalnız son 50
+   * mesajı istiyordu: daha eski DM geçmişine ARAYÜZDEN hiç ulaşılamıyordu (P3).
+   */
+  const DM_PAGE = 50;
+  let hasOlder = $state(false);
+  let loadingOlder = $state(false);
+  let messagesEl = $state<HTMLDivElement | null>(null);
   const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const apiFetch = (url: string, options?: RequestInit): Promise<Response> => {
@@ -107,9 +116,10 @@
   const initials = (user: User): string => (user.displayName || user.username || '?').slice(0, 2).toUpperCase();
   const name = (user: User): string => user.displayName || user.username || t('ui_bridge_user');
 
-  async function loadConversations(): Promise<void> {
+  /** `silent`: arka planda tazeleme — yükleniyor metni ve hata sıfırlaması yok. */
+  async function loadConversations(silent = false): Promise<void> {
     const seq = ++listSeq;
-    isLoading = true; errorMsg = '';
+    if (!silent) { isLoading = true; errorMsg = ''; }
     try {
       const response = await apiFetch(`${apiBase()}/api/dm`);
       if (seq !== listSeq) return;
@@ -121,7 +131,7 @@
       if (!Array.isArray(data)) throw new Error(t("ui_dm_listesi_gecersiz", "DM listesi geçersiz."));
       conversations = data as Conversation[];
     } catch (error) {
-      if (seq === listSeq) {
+      if (seq === listSeq && !silent) {
         // Panel her basarisizligi TEK bir genel metne indiriyordu: cevrimdisi
         // bir kullaniciya da, 500 donen bir sunucuya da ayni sey yaziliyordu.
         // Uygulamanin geri kalani `safeApiErrorMessage` ile duruma uygun ve
@@ -132,6 +142,29 @@
       }
     }
     finally { if (seq === listSeq) isLoading = false; }
+  }
+
+  /**
+   * Açık OLMAYAN bir konuşmaya mesaj geldiğinde yan liste (okunmamış sayısı,
+   * son mesaj, sıra) panel yeniden açılana kadar bayat kalıyordu. Sayaç yerelde
+   * artırılmaz (çift teslim şişirirdi); sunucunun türettiği liste kısa bir
+   * gecikmeyle sessizce yeniden okunur.
+   */
+  let listRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function refreshConversationsSoon(): void {
+    if (listRefreshTimer) clearTimeout(listRefreshTimer);
+    listRefreshTimer = setTimeout(() => { listRefreshTimer = null; void loadConversations(true); }, 300);
+  }
+
+  function nearBottom(): boolean {
+    const el = messagesEl;
+    return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
+
+  /** En yeni mesaja kaydır — açılışta, kendi gönderiminde, altta okurken gelen mesajda. */
+  async function scrollToLatest(): Promise<void> {
+    await tick();
+    if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
   async function openConversation(userId: string, displayName?: string, avatarColor?: string, messageId?: string): Promise<boolean> {
@@ -156,7 +189,9 @@
       messages = [];
       const dmId = convId(conversation);
       currentSocket()?.emit?.('dm:join', dmId);
-      const response = await apiFetch(`${apiBase()}/api/dm/${encodeURIComponent(dmId)}/messages?limit=50`);
+      // Önceki konuşmanın yarım kalmış eski-sayfa isteği bu konuşmayı kilitlemez.
+      hasOlder = false; loadingOlder = false;
+      const response = await apiFetch(`${apiBase()}/api/dm/${encodeURIComponent(dmId)}/messages?limit=${DM_PAGE}`);
       if (seq !== openSeq) return false;
       if (!response.ok) {
         // History or a stale list may point at a DM the user can no longer
@@ -171,7 +206,11 @@
       if (seq !== openSeq) return false;
       if (!Array.isArray(history)) throw new Error('Invalid DM history response');
       messages = history as Message[];
-      if (messageId) queueMicrotask(() => jumpToMessage(messageId));
+      hasOlder = history.length >= DM_PAGE;
+      // Konuşma EN YENİ mesajda açılır (eskiden en üstte, 50 mesajın en
+      // eskisinde açılıyordu); kaydedilmiş bir mesaja gidiliyorsa o öne çıkar.
+      if (messageId) void tick().then(() => jumpToMessage(messageId));
+      else void scrollToLatest();
       // Konuşma gerçekten AÇILDI → okundu bildir (Faz 10.3.4).
       markRead(conversation);
       const other = conversation.other ?? { _id: userId, displayName, avatarColor };
@@ -201,6 +240,53 @@
     target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
     target.classList.add('dm-message-highlight');
     setTimeout(() => target.classList.remove('dm-message-highlight'), reduceMotion ? 1 : 1600);
+  }
+
+  /** Bir önceki geçmiş sayfası — en eski yüklü mesajın bileşik imleciyle. */
+  async function loadOlder(): Promise<void> {
+    const conversation = active;
+    if (!conversation || loadingOlder || !hasOlder) return;
+    const oldest = messages.find(item => item._id && !item.pending && !item.failed && item.createdAt !== undefined);
+    const before = oldest ? (typeof oldest.createdAt === 'number' ? oldest.createdAt : Date.parse(String(oldest.createdAt))) : NaN;
+    if (!oldest?._id || !Number.isFinite(before)) { hasOlder = false; return; }
+    const seq = openSeq;
+    const list = messagesEl;
+    const prevHeight = list?.scrollHeight ?? 0;
+    const prevTop = list?.scrollTop ?? 0;
+    loadingOlder = true;
+    try {
+      const params = new URLSearchParams({ limit: String(DM_PAGE), before: String(before), beforeId: oldest._id });
+      const response = await apiFetch(`${apiBase()}/api/dm/${encodeURIComponent(convId(conversation))}/messages?${params}`);
+      if (seq !== openSeq) return;
+      if (!response.ok) throw new ApiResponseError(response);
+      const page = await response.json() as unknown;
+      if (seq !== openSeq) return;
+      if (!Array.isArray(page)) throw new Error('Invalid DM history response');
+      const known = new Set(messages.map(item => item._id));
+      const older = (page as Message[]).filter(item => item._id && !known.has(item._id));
+      messages = [...older, ...messages];
+      hasOlder = page.length >= DM_PAGE;
+      // Okuma yeri korunur: eklenen içerik kadar aşağı kaydırılır.
+      await tick();
+      if (list && messagesEl === list) list.scrollTop = prevTop + (list.scrollHeight - prevHeight);
+    } catch (error) {
+      if (seq === openSeq) {
+        errorMsg = safeApiErrorMessage(error, t('dm_history_load_failed', 'Daha eski mesajlar yüklenemedi.'), { report: true });
+      }
+    } finally {
+      if (seq === openSeq) loadingOlder = false;
+    }
+  }
+
+  function onMessagesScroll(): void {
+    if (messagesEl && messagesEl.scrollTop < 48) void loadOlder();
+  }
+
+  /** Enter gönderir, Shift+Enter satır ekler — kanal ve grup DM yazma alanlarıyla aynı. */
+  function onComposerKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    sendMessage();
   }
 
   function saveForLater(message: Message): void {
@@ -311,8 +397,12 @@
     // AKTİF OLMAYAN konuşmaya gelen mesaj → sunucuda okunmamış olarak durur.
     // Burada yerel sayaç ARTIRILMAZ: çift socket teslimi sayacı şişirirdi.
     // Liste bir sonraki yüklemede sunucudan türetilmiş doğru değeri alır.
-    if (message.dmId !== activeId) return;
+    if (message.dmId !== activeId) {
+      if (isVisible) refreshConversationsSoon();
+      return;
+    }
 
+    const followLatest = nearBottom() || !fromSomeoneElse;
     const clientNonce = typeof message.clientNonce === 'string' ? message.clientNonce : undefined;
     if (clientNonce) clearPendingTimer(clientNonce);
     // Exact nonce reconciliation is authoritative. `_id` dedupe keeps event
@@ -326,6 +416,7 @@
         : !(item.pending && item.content === message.content && item.userId === message.userId))
       .concat({ ...(message as Message), pending: false, failed: false, lastError: '' });
     isSending = false;
+    if (followLatest) void scrollToLatest();
 
     // Aktif konuşmaya gelen mesaj yanlış "okunmamış" bırakmamalı.
     // Kendi mesajımız için okundu göndermeye gerek yok (self-unread zaten yok).
@@ -346,6 +437,7 @@
       clientNonce, pending: true, failed: false,
     };
     messages = messages.concat(pending);
+    void scrollToLatest();
     clearDraft(dmDraftIdentity(active));
     draft = ''; isSending = true;
     currentSocket()?.emit?.('dm:send', { toUserId: active.other._id, content, clientNonce });
@@ -481,6 +573,7 @@
     document.removeEventListener('bridge:socket-ready', syncSocketBinding);
     document.removeEventListener('bridge:socket-reconnected', syncSocketBinding);
     clearAllPendingTimers();
+    if (listRefreshTimer) { clearTimeout(listRefreshTimer); listRefreshTimer = null; }
     // Bağlı olduğumuz nesneden çöz — `currentSocket()` bu anda başka bir
     // nesne olabilir; o zaman eski nesnede dinleyici kalırdı.
     unbindSocket();
@@ -541,13 +634,18 @@
           </span>
         {/if}
       </header>
-      <div class="dm-messages" aria-live="polite">
+      <div class="dm-messages" aria-live="polite" bind:this={messagesEl} onscroll={onMessagesScroll}>
+        {#if hasOlder}
+          <button type="button" class="dm-load-older" onclick={() => void loadOlder()} disabled={loadingOlder}>
+            {loadingOlder ? t('sso_loading', 'Yükleniyor…') : t('dm_load_older', 'Daha eski mesajları yükle')}
+          </button>
+        {/if}
         {#each messages as message (message._id)}
           <article class:pending={message.pending} class:failed={message.failed} class="dm-message" data-id={message._id}><span class="dm-avatar small" style={avatarStyle(message.avatarColor)}>{(message.displayName || '?').slice(0, 2).toUpperCase()}</span><div class="dm-message-copy"><strong>{message.displayName || t('ui_bridge_user')}</strong><p>{message.content}</p>{#if message.pending}<small>{t('dm_sending', 'Gönderiliyor…')}</small>{:else if message.failed}<small class="dm-failed" role="alert">{message.lastError || t('dm_send_failed', 'Gönderilemedi.')}</small><button type="button" class="dm-retry" onclick={() => retryMessage(message)}>{t('retry', 'Yeniden dene')}</button>{/if}</div>{#if message._id && !message.pending && !message.failed}<button type="button" class="dm-save" aria-label={t('msg_action_save')} title={t('msg_action_save')} onclick={() => saveForLater(message)}>⌑</button>{/if}</article>
         {/each}
       </div>
       <form class="dm-composer" onsubmit={(event) => { event.preventDefault(); sendMessage(); }}>
-        <textarea bind:value={draft} oninput={(e) => persistDmDraft(e.currentTarget.value)} maxlength="2000" rows="1" placeholder={t('attr_mesaj_yaz_410bf7e', "Mesaj yaz…")} aria-label={t('dm_message', 'DM mesajı')}></textarea>
+        <textarea bind:value={draft} oninput={(e) => persistDmDraft(e.currentTarget.value)} onkeydown={onComposerKeydown} maxlength="2000" rows="1" placeholder={t('attr_mesaj_yaz_410bf7e', "Mesaj yaz…")} aria-label={t('dm_message', 'DM mesajı')}></textarea>
         <button class="btn btn-primary" type="submit" disabled={!draft.trim() || isSending}>{t('dm_send', 'Gönder')}</button>
       </form>
     {:else}
@@ -558,9 +656,13 @@
 {/if}
 
 <style>
-.dm-panel{position:fixed;inset:0;z-index:1200;display:grid;grid-template-columns:280px minmax(0,1fr);background:var(--surface-1);color:var(--text-primary)}
+/* Tek satır görünür alana SINIRLANIR: örtük `auto` satır içerikle büyüyordu —
+   uzun bir konuşmada sohbet sütunu ekrandan uzadı, mesaj listesi hiç kaymadı ve
+   yazma alanı görünür alanın altında kaldı (1280×720'de 50 mesaj: y=3899). */
+.dm-panel{position:fixed;inset:0;z-index:1200;display:grid;grid-template-columns:280px minmax(0,1fr);grid-template-rows:minmax(0,1fr);background:var(--surface-1);color:var(--text-primary)}
 .dm-sidebar{display:flex;flex-direction:column;min-width:0;padding:16px;background:var(--surface-2);border-right:1px solid var(--border-subtle);overflow:auto}.dm-heading,.dm-chat-header{display:flex;align-items:center;gap:10px;padding-bottom:12px}.dm-heading h2{font-size:18px;margin:0;flex:1}.dm-heading button{border:0;background:transparent;color:inherit;font-size:24px;cursor:pointer}.friends-link{border:1px solid var(--border-subtle);background:var(--surface-hover);color:var(--text-primary);border-radius:var(--radius-control);padding:8px;text-align:left;cursor:pointer;margin-bottom:10px}.dm-conversation{display:flex;align-items:center;gap:10px;border:0;background:transparent;color:inherit;padding:9px 6px;text-align:left;border-radius:var(--radius-control);cursor:pointer}.dm-conversation:hover,.dm-conversation.active{background:var(--surface-selected)}.dm-avatar{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;color:var(--text-on-solid);font-size:12px;font-weight:700;flex:none}.dm-avatar.small{width:28px;height:28px;font-size:10px}.dm-person{display:grid;min-width:0;flex:1}
-.dm-unread{display:grid;place-items:center;min-width:20px;height:20px;padding:0 6px;border-radius:var(--radius-pill);background:var(--brand);color:var(--text-on-solid);font-size:var(--type-badge);font-weight:700;font-variant-numeric:tabular-nums;flex:none}.dm-person strong,.dm-person small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dm-person small,.dm-muted,.dm-message small{color:var(--text-muted);font-size:12px}.dm-chat{display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0}.dm-chat-header{padding:16px;border-bottom:1px solid var(--border-subtle)}.dm-messages{overflow:auto;padding:18px}.dm-message{display:flex;gap:9px;margin-bottom:14px;padding:4px;border-radius:8px}.dm-message-copy{min-width:0;flex:1}.dm-message p{margin:3px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.dm-message.pending{opacity:.65}.dm-message.failed{opacity:.9}.dm-failed{display:block;color:var(--danger)!important}.dm-retry{margin-top:4px;border:0;background:transparent;color:var(--brand);cursor:pointer;padding:0;font:inherit;font-size:12px}.dm-retry:hover,.dm-retry:focus-visible{text-decoration:underline}:global(.dm-message.dm-message-highlight){background:var(--brand-subtle)}.dm-save{align-self:flex-start;flex:none;width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer}.dm-save:hover,.dm-save:focus-visible{background:var(--surface-hover);color:var(--text-primary)}.dm-composer{display:flex;gap:8px;padding:14px;border-top:1px solid var(--border-subtle)}.dm-composer textarea{flex:1;resize:none;min-height:38px;padding:10px;border:1px solid var(--border-subtle);border-radius:var(--radius-control);background:var(--surface-2);color:inherit;font:inherit}.dm-empty{display:grid;place-content:center;text-align:center;color:var(--text-muted)}.bridge-error{padding:8px;color:var(--danger);font-size:12px}
+.dm-unread{display:grid;place-items:center;min-width:20px;height:20px;padding:0 6px;border-radius:var(--radius-pill);background:var(--brand);color:var(--text-on-solid);font-size:var(--type-badge);font-weight:700;font-variant-numeric:tabular-nums;flex:none}.dm-person strong,.dm-person small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dm-person small,.dm-muted,.dm-message small{color:var(--text-muted);font-size:12px}.dm-chat{display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0;min-height:0}.dm-chat-header{padding:16px;border-bottom:1px solid var(--border-subtle)}.dm-messages{overflow:auto;padding:18px}.dm-message{display:flex;gap:9px;margin-bottom:14px;padding:4px;border-radius:8px}.dm-message-copy{min-width:0;flex:1}.dm-message p{margin:3px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.dm-message.pending{opacity:.65}.dm-message.failed{opacity:.9}.dm-failed{display:block;color:var(--danger)!important}.dm-retry{margin-top:4px;border:0;background:transparent;color:var(--brand);cursor:pointer;padding:0;font:inherit;font-size:12px}.dm-retry:hover,.dm-retry:focus-visible{text-decoration:underline}:global(.dm-message.dm-message-highlight){background:var(--brand-subtle)}.dm-save{align-self:flex-start;flex:none;width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer}.dm-save:hover,.dm-save:focus-visible{background:var(--surface-hover);color:var(--text-primary)}.dm-composer{display:flex;gap:8px;padding:14px;border-top:1px solid var(--border-subtle)}.dm-composer .btn{flex:none;width:auto}.dm-composer textarea{flex:1;resize:none;min-height:38px;padding:10px;border:1px solid var(--border-subtle);border-radius:var(--radius-control);background:var(--surface-2);color:inherit;font:inherit}.dm-empty{display:grid;place-content:center;text-align:center;color:var(--text-muted)}.bridge-error{padding:8px;color:var(--danger);font-size:12px}
+.dm-load-older{display:block;margin:0 auto 14px;border:1px solid var(--border-subtle);border-radius:var(--radius-control);background:var(--surface-2);color:var(--text-primary);padding:6px 12px;cursor:pointer;font:inherit;font-size:12px}.dm-load-older:hover,.dm-load-older:focus-visible{background:var(--surface-hover)}.dm-load-older:disabled{opacity:.6;cursor:default}
 .dm-mobile-back{display:none}.dm-call-actions{margin-inline-start:auto;display:flex;gap:6px}
 .dm-call-btn{display:grid;place-items:center;width:32px;height:32px;border:1px solid var(--border-subtle);border-radius:8px;background:transparent;color:var(--text-muted);cursor:pointer}
 .dm-call-btn:hover,.dm-call-btn:focus-visible{background:var(--surface-hover);color:var(--text-primary)}
