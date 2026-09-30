@@ -23,8 +23,10 @@ const repos = {
 };
 const fakeDb: { _pool?: unknown; _transaction: jest.Mock } = { _pool: undefined, _transaction: jest.fn() };
 
+const invalidateTokenCache = jest.fn();
 jest.mock('../middleware/auth', () => ({
   authMiddleware: (req: any, _res: any, next: any) => { req.user = { id: 'admin1', isAdmin: true }; next(); },
+  _invalidateTokenCache: (id: string) => invalidateTokenCache(id),
 }));
 jest.mock('../lib/authSafe', () => ({ safeCastAuthed: (req: any) => ({ user: req.user }) }));
 jest.mock('../middleware/rateLimit', () => ({ limits: { moderation: () => (_req: any, _res: any, next: any) => next() } }));
@@ -85,6 +87,7 @@ describe('DELETE /api/admin/users/:id', () => {
     expect(res.body.remedy).toMatch(/DELETE \/api\/admin\/servers/);
     expect(eraseAccountData).not.toHaveBeenCalled();
     expect(repos.Auth.revokeAllForUser).not.toHaveBeenCalled();
+    expect(invalidateTokenCache).not.toHaveBeenCalled();
     expect(disconnectLiveUserSessions).not.toHaveBeenCalled();
     expect(logAction).not.toHaveBeenCalled();
   });
@@ -104,11 +107,13 @@ describe('DELETE /api/admin/users/:id', () => {
     });
     expect(eraseAccountData).toHaveBeenCalledWith(pool, fakeDb._transaction, 'u1', { purgeChannelMessages: true });
     expect(disconnectLiveUserSessions).toHaveBeenCalledWith('u1', 'account_deleted_by_admin');
+    // The deleted account's access token must not survive in the token-version cache.
+    expect(invalidateTokenCache).toHaveBeenCalledWith('u1');
     expect(releaseAfterErasure).toHaveBeenCalledWith(pool, plan, expect.any(Function));
     expect(logError).toHaveBeenCalledWith(expect.objectContaining({ event: 'admin.user_delete.asset_release_failed', url: '/uploads/avatars/a.png' }), expect.any(String));
     expect(logAction).toHaveBeenCalledWith('admin1', 'delete_user', 'u1', { username: 'name-u1' });
     // Order: the account is gone before sessions are cut and files released.
-    const order = [eraseAccountData, repos.Auth.revokeAllForUser, disconnectLiveUserSessions, releaseAfterErasure, logAction]
+    const order = [eraseAccountData, invalidateTokenCache, repos.Auth.revokeAllForUser, disconnectLiveUserSessions, releaseAfterErasure, logAction]
       .map((m) => m.mock.invocationCallOrder[0]);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
@@ -120,6 +125,7 @@ describe('DELETE /api/admin/users/:id', () => {
     expect(res.body).toEqual({ error: 'Deletion failed' });
     expect(logError).toHaveBeenCalledWith(expect.objectContaining({ event: 'admin.user_delete.failed', userId: 'u1' }), expect.any(String));
     expect(disconnectLiveUserSessions).not.toHaveBeenCalled();
+    expect(invalidateTokenCache).not.toHaveBeenCalled();
     expect(releaseAfterErasure).not.toHaveBeenCalled();
     expect(logAction).not.toHaveBeenCalled();
   });

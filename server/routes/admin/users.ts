@@ -67,7 +67,7 @@ import {
   eraseAccountData, ownershipBlockers, releaseAfterErasure,
   type Queryable, type TransactionRunner,
 } from '../../lib/accountDeletion';
-import { authMiddleware} from '../../middleware/auth';
+import { authMiddleware, _invalidateTokenCache } from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
 import { adminOnly, logAction } from './middleware';
 import { disconnectLiveUserSessions } from '../../lib/sessionRevocation';
@@ -151,6 +151,9 @@ usersRouter.delete('/users/:id', authMiddleware, limits.moderation(), adminOnly,
     const transaction = (db as unknown as { _transaction: TransactionRunner })._transaction;
     const { applied, plan } = await eraseAccountData(p, transaction, target._id, { purgeChannelMessages: true });
 
+    // Silinen hesabın jetonu süreç içi sürüm önbelleğinden de düşer (bkz.
+    // routes/account.ts): aksi halde tek düğümde 30 sn geçerli kalırdı.
+    _invalidateTokenCache(target._id);
     await Auth.revokeAllForUser(target._id).catch(() => { /* satırlar zaten silindi */ });
     await disconnectLiveUserSessions(target._id, 'account_deleted_by_admin');
     const assets = await releaseAfterErasure(p, plan, (url, err) => {
