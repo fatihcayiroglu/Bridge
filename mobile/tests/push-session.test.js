@@ -80,7 +80,7 @@ describe('native push registration is owned by the app (P4-05)', () => {
 
   it('sign-out unregisters the device token natively', async () => {
     const push = pushPlugin('granted');
-    loadBridge({ PushNotifications: push });
+    loadBridge({ PushNotifications: push, BridgePushSupport: fcmConfigured() });
     window.dispatchEvent(new Event('load'));
     await flush();
 
@@ -151,6 +151,38 @@ describe('native push is only registered where FCM is configured (P4-18)', () =>
     // Enabling does not even open the OS permission sheet for a feature that cannot work.
     await expect(window.bridgePush.enable()).resolves.toBe(false);
     expect(push.requestPermissions).not.toHaveBeenCalled();
+  });
+
+  // Negative control: the bridge on this branch before the fix called unregister() on every
+  // sign-out. The plugin's unregister() runs FirebaseMessaging.getInstance(), which throws
+  // IllegalStateException without Firebase config — on the plugin thread, killing the process.
+  it('Android build without FCM: sign-out does NOT call unregister() (it would crash the app)', async () => {
+    const push = pushPlugin('granted');
+    const support = { status: jest.fn().mockResolvedValue({ available: false, reason: 'firebase_not_configured' }) };
+    loadBridge({ PushNotifications: push, BridgePushSupport: support });
+    window.dispatchEvent(new Event('load'));
+    await flush();
+    document.dispatchEvent(new CustomEvent('bridge:auth-logout'));
+    await flush();
+    expect(push.unregister).not.toHaveBeenCalled();
+  });
+
+  it('Android: the bridge_default channel named by the server payload is created at launch, without Firebase', async () => {
+    const push = { ...pushPlugin('prompt'), createChannel: jest.fn().mockResolvedValue(undefined) };
+    const support = { status: jest.fn().mockResolvedValue({ available: false, reason: 'firebase_not_configured' }) };
+    loadBridge({ PushNotifications: push, BridgePushSupport: support });
+    window.dispatchEvent(new Event('load'));
+    await flush();
+    expect(push.createChannel).toHaveBeenCalledWith(expect.objectContaining({ id: 'bridge_default', name: expect.any(String) }));
+    expect(push.register).not.toHaveBeenCalled();
+  });
+
+  it('iOS has no channels: createChannel is not called', async () => {
+    const push = { ...pushPlugin('prompt'), createChannel: jest.fn().mockResolvedValue(undefined) };
+    loadBridge({ PushNotifications: push }, 'ios');
+    window.dispatchEvent(new Event('load'));
+    await flush();
+    expect(push.createChannel).not.toHaveBeenCalled();
   });
 
   it('Android shell without the native guard (older APK): never registers', async () => {

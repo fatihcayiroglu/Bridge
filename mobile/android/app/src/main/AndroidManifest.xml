@@ -52,6 +52,9 @@
       android:resource="@drawable/ic_notification" />
     <meta-data android:name="com.google.firebase.messaging.default_notification_color"
       android:resource="@color/bridge_blue" />
+    <!-- P4: the channel the bridge creates at launch (mobile/capacitor-bridge.ts) -->
+    <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id"
+      android:value="bridge_default" />
   </application>
 
   <uses-permission android:name="android.permission.INTERNET" />

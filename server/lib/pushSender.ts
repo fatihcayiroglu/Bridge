@@ -265,8 +265,10 @@ export async function sendFCM(
     ),
     android: {
       notification: {
-        icon:               'ic_stat_bridge',
-        color:              '#2d9cdb',
+        // P4: names that exist in the app — `ic_notification` (mobile/android res) and the
+        // channel the bridge creates at launch. `ic_stat_bridge` never existed.
+        icon:               'ic_notification',
+        color:              '#3694F2',
         notification_count: badge,
         channel_id:         'bridge_default',
       },

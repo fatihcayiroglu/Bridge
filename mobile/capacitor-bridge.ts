@@ -32,6 +32,7 @@ interface IPushNotifications extends CapacitorPlugin {
   requestPermissions(): Promise<PushPermissionResult>;
   register(): Promise<void>;
   unregister?(): Promise<void>;
+  createChannel?(channel: { id: string; name: string; description?: string; importance?: number; visibility?: number; vibration?: boolean }): Promise<void>;
   addListener(event: 'registration',                    cb: (t: PushToken) => void): void;
   addListener(event: 'registrationError',               cb: (e: { error?: string }) => void): void;
   addListener(event: 'pushNotificationReceived',        cb: (n: PushNotification) => void): void;
@@ -81,6 +82,9 @@ interface ICamera extends CapacitorPlugin {
 }
 interface IBadge extends CapacitorPlugin { set(opts: { count: number }): Promise<void> }
 /** P4: native guard (mobile/android/.../BridgePushSupportPlugin.java) — is FCM configured in this APK? */
+/** Android notification channel named by the server's FCM payloads (server/lib/pushSender.ts). */
+const NATIVE_PUSH_CHANNEL_ID = 'bridge_default';
+
 interface IBridgePushSupport extends CapacitorPlugin { status(): Promise<{ available: boolean; reason?: string }> }
 interface IShare extends CapacitorPlugin {
   share(opts: { title?: string; text?: string; url?: string; dialogTitle?: string }): Promise<void>;
@@ -321,6 +325,16 @@ if (typeof Capacitor === 'undefined') {
   async function attachPushListeners(): Promise<void> {
     if (!PushNotifications) return;
 
+    // P4: server FCM payloads name the `bridge_default` channel, which the app never created —
+    // Android filed every Bridge push under the generic "Miscellaneous" channel, so it could not
+    // be tuned or silenced separately. Creating a channel needs no Firebase; it is idempotent.
+    if (Capacitor!.getPlatform() === 'android') {
+      void PushNotifications.createChannel?.({
+        id: NATIVE_PUSH_CHANNEL_ID, name: 'Bridge', description: 'Messages, mentions and calls',
+        importance: 4, visibility: 0, vibration: true,
+      }).catch(() => {});
+    }
+
     // ── P4: TOKEN KAYDI UYGULAMAYA DEVREDİLDİ ──────────────────────────────
     // Burada eskiden `fetch('/api/mobile/push/register-native')` vardı: GÖRELİ
     // adres (paketlenmiş uygulamanın kökeni https://localhost → istek uygulamanın
@@ -343,8 +357,13 @@ if (typeof Capacitor === 'undefined') {
     // Çıkış: sunucu satırı çıkış isteğiyle silinir; burada cihaz jetonu da
     // bırakılır ki kaçırılmış bir çıkış isteği teslimatı canlı tutamasın.
     // Giriş: izin zaten verilmişse yeniden kaydolunur (yeni jeton → yeni hesap).
+    // `unregister()` also calls FirebaseMessaging.getInstance(): on an Android build without
+    // Firebase config that throws on the plugin thread and kills the process — signing out would
+    // crash the app. There is no device token to release there, so nothing is called.
     document.addEventListener('bridge:auth-logout', () => {
-      void PushNotifications.unregister?.().catch(() => {});
+      void nativePushAvailable()
+        .then((available) => (available ? PushNotifications.unregister?.() : undefined))
+        .catch(() => {});
     });
     document.addEventListener('bridge:auth-success', () => {
       void PushNotifications.checkPermissions()

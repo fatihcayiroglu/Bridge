@@ -137,12 +137,26 @@ describe('apply-android-overlay.js', () => {
 describe('belgelenen npm komutları katmanı uygular', () => {
   const scripts = JSON.parse(read('package.json')).scripts;
   const OV = 'node mobile/scripts/apply-android-overlay.js';
+  const IOS = 'node mobile/scripts/apply-ios-overlay.js';
+  // Every curated layer runs AFTER its `cap add` and BEFORE the `cap sync` that copies the project.
+  const before = (script, first, second) => {
+    const a = script.indexOf(first);
+    const b = script.indexOf(second);
+    return a >= 0 && b >= 0 && a < b;
+  };
   it.each([
-    ['mobile:init', `npx cap add android && ${OV} && npx cap sync`],
-    ['mobile:add', `npx cap add android && ${OV}`],
-    ['mobile:android', `${OV} && npx cap sync android && npx cap open android`],
-    ['mobile:sync', `${OV} --if-present && npx cap sync`],
-  ])('%s', (name, fragment) => {
-    expect(scripts[name]).toContain(fragment);
+    ['mobile:init', `npx cap add android && ${OV} && `, [OV, IOS], 'npx cap sync'],
+    ['mobile:add', `npx cap add android && ${OV}`, [OV, IOS], null],
+    ['mobile:android', `${OV} && npx cap sync android && npx cap open android`, [OV], 'npx cap sync android'],
+    ['mobile:sync', `${OV} --if-present && `, [`${OV} --if-present`, `${IOS} --if-present`], 'npx cap sync'],
+    ['mobile:ios', `${IOS} && npx cap sync ios && npx cap open ios`, [IOS], 'npx cap sync ios'],
+  ])('%s', (name, fragment, overlays, sync) => {
+    const script = scripts[name];
+    expect(script).toContain(fragment);
+    for (const overlay of overlays) {
+      expect(script).toContain(overlay);
+      if (sync) expect(before(script, overlay, sync)).toBe(true);
+    }
+    if (script.includes('npx cap add ios')) expect(before(script, 'npx cap add ios', IOS)).toBe(true);
   });
 });

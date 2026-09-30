@@ -1,6 +1,7 @@
 "use strict";
 (() => {
   // mobile/capacitor-bridge.ts
+  var NATIVE_PUSH_CHANNEL_ID = "bridge_default";
   if (typeof Capacitor === "undefined") {
     console.debug("[Bridge Mobile] Capacitor bulunamad\u0131, native mod\xFCl devre d\u0131\u015F\u0131.");
   } else {
@@ -185,6 +186,17 @@
     window.bridgeBadge = bridgeBadge;
     async function attachPushListeners() {
       if (!PushNotifications) return;
+      if (Capacitor.getPlatform() === "android") {
+        void PushNotifications.createChannel?.({
+          id: NATIVE_PUSH_CHANNEL_ID,
+          name: "Bridge",
+          description: "Messages, mentions and calls",
+          importance: 4,
+          visibility: 0,
+          vibration: true
+        }).catch(() => {
+        });
+      }
       PushNotifications.addListener("registration", (token) => {
         if (!token?.value) return;
         window.dispatchEvent(new CustomEvent("bridge:native-push-token", {
@@ -196,7 +208,7 @@
         window.dispatchEvent(new CustomEvent("bridge:native-push-error", { detail: { error: String(error?.error ?? "unknown") } }));
       });
       document.addEventListener("bridge:auth-logout", () => {
-        void PushNotifications.unregister?.().catch(() => {
+        void nativePushAvailable().then((available) => available ? PushNotifications.unregister?.() : void 0).catch(() => {
         });
       });
       document.addEventListener("bridge:auth-success", () => {
