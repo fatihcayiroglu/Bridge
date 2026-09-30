@@ -209,6 +209,29 @@ async function channelHas(token, channelId, needle) {
   return list.filter((m) => String(m.content ?? '').includes(needle));
 }
 
+// ── Long-channel seeding (direct SQL, the same shape the P3 measurement used) ─────────────
+const LONG_CHANNEL_MESSAGES = Number(process.env.ANDROID_LONG_CHANNEL_MESSAGES || 2000);
+async function seedLongChannel(serverId, userId, count) {
+  if (!process.env.DATABASE_URL) return null;
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  let pg;
+  try { pg = require('../../server/node_modules/pg'); } catch { return null; }
+  const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    const channelId = `p4long-${Date.now().toString(36)}`;
+    const pos = await client.query('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM channels WHERE "serverId" = $1', [serverId]).catch(() => ({ rows: [{ p: 99 }] }));
+    await client.query('INSERT INTO channels (_id, "serverId", name, type, position, "createdAt") VALUES ($1, $2, $3, $4, $5, $6)',
+      [channelId, serverId, 'android-uzun', 'text', pos.rows[0].p, Date.now()]);
+    const base = Date.now() - count * 60_000;
+    await client.query(`INSERT INTO messages (_id, "channelId", "serverId", "userId", username, "displayName", content, "createdAt")
+      SELECT $1::text || '-' || g, $1::text, $2::text, $3::text, 'seed', 'Seed', 'Uzun kanal ölçüm mesajı #' || g || ' — gerçekçi uzunlukta bir satır.', $4::bigint + g * 60000
+      FROM generate_series(1, $5::int) g`, [channelId, serverId, userId, base, count]);
+    return { channelId };
+  } finally { await client.end(); }
+}
+
 // ── Platform layer ─────────────────────────────────────────────────────────
 const sh = async (cmd) => (await device.shell(cmd)).toString().trim();
 
@@ -235,7 +258,29 @@ const platform = {
     const out = await sh(`am start -W -n ${ACTIVITY}`);
     return { totalTimeMs: Number((/TotalTime:\s*(\d+)/.exec(out) || [])[1]) || null, launchState: (/LaunchState:\s*(\w+)/.exec(out) || [])[1] ?? null };
   },
-  async killInBackground() { if (MODE === 'dryrun') throw new Skip('process death needs a device'); await sh(`am kill ${PKG}`); },
+  /**
+   * Process death while backgrounded. `am kill` asks the OS for exactly what the low-memory killer
+   * does, but only once the process has dropped to a background importance, so it is retried while
+   * the launcher takes over. If the OS still keeps the process, it is SIGKILLed as its own uid
+   * (debuggable build) — the same signal LMK sends. The method used is recorded, never hidden.
+   */
+  async killInBackground() {
+    if (MODE === 'dryrun') throw new Skip('process death needs a device');
+    let tries = 0;
+    const deadline = Date.now() + 12_000;
+    while (Date.now() < deadline) {
+      await sh(`am kill ${PKG}`);
+      tries += 1;
+      await sleep(1_000);
+      if (!(await pid())) return { method: 'am kill', tries };
+    }
+    const target = await pid();
+    const state = (await sh(`dumpsys activity processes ${PKG} | grep -E "oom adj|procState|curProcState|setAdj" | head -4`).catch(() => '')).replace(/\s+/g, ' ').slice(0, 300);
+    const out = await sh(`run-as ${PKG} kill -9 ${target} 2>&1`).catch((err) => String(err));
+    await sleep(1_000);
+    if (!(await pid())) return { method: 'run-as kill -9 (am kill left it alive)', tries, stateBefore: state };
+    throw new Error(`process survived am kill x${tries} and SIGKILL (${out.slice(0, 120)}); ${state}`);
+  },
   async forceStop() { if (MODE === 'dryrun') throw new Skip('force-stop needs a device'); await sh(`am force-stop ${PKG}`); },
   async deepLink(url, { cold = false } = {}) {
     if (MODE === 'dryrun') throw new Skip('deep links need the native shell');
@@ -277,16 +322,25 @@ const INSTRUMENT_PCS = () => {
 };
 async function outboundAudio() {
   return page.evaluate(async () => {
-    const out = { pcs: 0, packetsSent: 0, audioLevel: null };
+    const out = { pcs: 0, packetsSent: 0, videoPacketsSent: 0, audioLevel: null, states: [] };
     for (const pc of (window.__pcs || []).filter((p) => p.connectionState !== 'closed')) {
       out.pcs += 1;
+      out.states.push(pc.connectionState);
       (await pc.getStats()).forEach((r) => {
         if (r.type === 'outbound-rtp' && r.kind === 'audio') out.packetsSent += Number(r.packetsSent || 0);
+        if (r.type === 'outbound-rtp' && r.kind === 'video') out.videoPacketsSent += Number(r.packetsSent || 0);
         if (r.type === 'media-source' && r.kind === 'audio' && typeof r.audioLevel === 'number') out.audioLevel = r.audioLevel;
       });
     }
     return out;
-  }).catch(() => ({ pcs: 0, packetsSent: 0, audioLevel: null }));
+  }).catch(() => ({ pcs: 0, packetsSent: 0, videoPacketsSent: 0, audioLevel: null, states: [] }));
+}
+async function alertText(pattern) {
+  return page.evaluate((src) => {
+    const re = new RegExp(src, 'i');
+    const t = [...document.querySelectorAll('[role="alert"], [role="status"], .toast')].map((e) => e.textContent || '').join(' | ');
+    return re.test(t) ? t : null;
+  }, pattern.source);
 }
 /** The real Android runtime-permission sheet (AOSP or Google permission controller). */
 async function permissionSheet(timeout = 20_000) {
@@ -303,12 +357,43 @@ async function permissionSheet(timeout = 20_000) {
   const packages = [...new Set([...xml.matchAll(/package="([^"]+)"/g)].map((m) => m[1]))];
   return { shown: false, foregroundPackages: packages.slice(0, 5) };
 }
+/**
+ * Taps the first on-screen node `match` accepts, through the OS input system (`input tap`) — a real
+ * touch, as a user's. (Playwright's `device.tap` needs its driver APK, which is not installed.)
+ */
+async function tapUiNode(match, what) {
+  const xml = await sh('uiautomator dump /sdcard/p4-ui.xml >/dev/null 2>&1; cat /sdcard/p4-ui.xml');
+  for (const [node] of xml.matchAll(/<node [^>]*>/g)) {
+    if (!match(node)) continue;
+    const b = /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(node);
+    if (!b) continue;
+    const [x1, y1, x2, y2] = b.slice(1).map(Number);
+    await sh(`input tap ${Math.round((x1 + x2) / 2)} ${Math.round((y1 + y2) / 2)}`);
+    return { x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) };
+  }
+  throw new Error(`no on-screen node for ${what}`);
+}
 async function tapPermissionButton(kind) {
   const id = kind === 'deny' ? 'permission_deny_button' : 'permission_allow_foreground_only_button';
-  for (const pkg of ['com.android.permissioncontroller', 'com.google.android.permissioncontroller']) {
-    try { await device.tap({ res: `${pkg}:id/${id}` }, { timeout: 3_000 }); return; } catch { /* next */ }
-  }
-  await device.tap({ text: kind === 'deny' ? /Don.t allow|Deny/i : /While using the app|Allow/i }, { timeout: 5_000 });
+  const text = kind === 'deny' ? /text="(Don.t allow|Deny)"/i : /text="(While using the app|Allow)"/i;
+  return tapUiNode((node) => node.includes(`:id/${id}"`) || text.test(node), `permission ${kind} button`);
+}
+/** A real touch on a WebView element: CSS box → device pixels via the WebView's on-screen bounds. */
+async function tapWebElement(selector) {
+  const box = await page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, dpr: window.devicePixelRatio };
+  }, selector);
+  if (!box) throw new Error(`no element ${selector}`);
+  const xml = await sh('uiautomator dump /sdcard/p4-ui.xml >/dev/null 2>&1; cat /sdcard/p4-ui.xml');
+  const wv = [...xml.matchAll(/<node [^>]*class="android\.webkit\.WebView"[^>]*>/g)].map(([n]) => /bounds="\[(\d+),(\d+)\]/.exec(n)).find(Boolean);
+  if (!wv) throw new Error('WebView bounds not found on screen');
+  const x = Math.round(Number(wv[1]) + box.x * box.dpr);
+  const y = Math.round(Number(wv[2]) + box.y * box.dpr);
+  await sh(`input tap ${x} ${y}`);
+  return { x, y, dpr: box.dpr };
 }
 async function appVisible(p = page) {
   return p.evaluate(() => { const a = document.getElementById('app'); return !!a && getComputedStyle(a).display !== 'none' && a.getBoundingClientRect().height > 0; }).catch(() => false);
@@ -465,9 +550,10 @@ async function main() {
   await check('L03', 'process killed while backgrounded → relaunch restores session, channel and missed messages', async () => {
     const before = await pid();
     await platform.home();
+    await until(async () => !(await sh('dumpsys activity activities | grep -m1 topResumedActivity')).includes(PKG),
+      { timeout: 10_000, message: 'launcher in front (app backgrounded)' });
     await sleep(2_000);
-    await platform.killInBackground();
-    await until(async () => !(await pid()), { timeout: 10_000, message: 'process gone' });
+    const killed = await platform.killInBackground();
     const needle = `android-dead-${Date.now().toString(36)}`;
     await sendChannel(peerSock, serverId, channelId, needle);
     const launch = await platform.foreground();
@@ -477,7 +563,7 @@ async function main() {
     await openServer(serverId);
     await openChannel(channelId);
     await until(() => visibleMessage(needle), { timeout: 30_000, message: 'missed message after relaunch' });
-    return { pidBefore: before, pidAfter: await pid(), relaunchTotalMs: launch.totalTimeMs };
+    return { pidBefore: before, pidAfter: await pid(), kill: killed, relaunchTotalMs: launch.totalTimeMs };
   });
 
   await check('L04', 'force-stop (user kill) → cold relaunch restores the session', async () => {
@@ -632,6 +718,54 @@ async function main() {
     return { packetsBefore: before.packetsSent, packetsAfter: after.packetsSent, osReportsSilenced: silenced, audioDump: recording.slice(0, 1200), resumeMs: fg.totalTimeMs };
   });
 
+  await check('V02', 'voice survives a 10 s network loss: the connection recovers and audio flows again', async () => {
+    const before = await outboundAudio();
+    assert(before.pcs > 0, 'no active voice session');
+    let during = null;
+    try {
+      await platform.network(false);
+      await sleep(10_000);
+      during = await outboundAudio();
+    } finally {
+      await platform.network(true);
+    }
+    const t0 = Date.now();
+    const base = (await outboundAudio()).packetsSent;
+    const after = await until(async () => {
+      const a = await outboundAudio();
+      return a.pcs > 0 && a.states.every((st) => st === 'connected') && a.packetsSent > base + 50 ? a : null;
+    }, { timeout: 60_000, message: 'voice connection recovered with flowing audio' });
+    return { recoveredAfterMs: Date.now() - t0, statesDuringLoss: during?.states ?? null, statesAfter: after.states };
+  });
+
+  await check('P06', 'camera permission denied in the real Android sheet → the camera toggle tells the user', async () => {
+    await page.evaluate(() => document.getElementById('vc-video')?.click());
+    const sheet = await permissionSheet();
+    facts.cameraPermissionSheet = sheet;
+    if (sheet.shown) await tapPermissionButton('deny');
+    const text = await until(() => alertText(/kamera|camera/), { timeout: 25_000, message: 'camera denial explained in the UI' });
+    const videoOn = await page.evaluate(() => document.getElementById('vc-video')?.getAttribute('aria-pressed'));
+    assert(videoOn !== 'true', 'camera toggle claims to be on after the permission was denied');
+    return { osSheet: sheet, shown: text.slice(0, 200) };
+  });
+
+  await check('P07', 'camera permission granted → video is sent (emulated camera, outbound video RTP)', async () => {
+    await platform.permission('android.permission.CAMERA', true);
+    await sleep(1_000);
+    await page.evaluate(() => document.getElementById('vc-video')?.click());
+    const sheet = await permissionSheet(4_000);
+    if (sheet.shown) await tapPermissionButton('allow');
+    const flow = await until(async () => { const a = await outboundAudio(); return a.videoPacketsSent > 30 ? a : null; }, { timeout: 45_000, message: 'outbound video RTP' });
+    await page.evaluate(() => document.getElementById('vc-video')?.click());
+    return { videoPacketsSent: flow.videoPacketsSent };
+  });
+
+  await check('V03', 'leaving voice closes the media connections', async () => {
+    await page.evaluate(() => document.querySelector('.vc-controls .vc-btn-danger')?.click());
+    const closed = await until(async () => (await outboundAudio()).pcs === 0, { timeout: 20_000, message: 'all peer connections closed' });
+    return { closed };
+  });
+
   await check('P02', 'notification permission state is readable without prompting', async () => {
     await platform.permission('android.permission.POST_NOTIFICATIONS', false).catch(() => {});
     await platform.foreground();
@@ -661,7 +795,7 @@ async function main() {
   await check('UI02', 'software keyboard: the composer stays above the keyboard', async () => {
     if (MODE === 'dryrun') throw new Skip('the software keyboard needs a device');
     await openChannel(channelId);
-    await page.tap('#msg-input');
+    const tap = await tapWebElement('#msg-input');
     const imeShown = await until(async () => /mInputShown=true/.test(await sh('dumpsys input_method')), { timeout: 8_000, message: 'IME shown' }).then(() => true).catch(() => false);
     await sleep(1_500);
     const m = await page.evaluate(() => {
@@ -670,9 +804,9 @@ async function main() {
         innerHeight: window.innerHeight, keyboardOpenClass: document.body.classList.contains('keyboard-open'), focused: document.activeElement?.id ?? null };
     });
     if (imeShown) await platform.back();
-    assert(imeShown, `the software keyboard never appeared for the composer (${JSON.stringify(m)})`);
+    assert(imeShown, `the software keyboard never appeared for the composer (${JSON.stringify({ ...m, tap })})`);
     assert(m.composerBottom <= m.visibleHeight + 2, `composer hidden behind the keyboard: bottom ${m.composerBottom} > visible ${m.visibleHeight}`);
-    return m;
+    return { ...m, tap };
   });
 
   await measure('N03', 'high latency (≈400 ms one way on every packet): composer send → persisted and rendered', async () => {
@@ -687,6 +821,40 @@ async function main() {
       await until(() => visibleMessage(needle), { timeout: 20_000, message: 'rendered under latency' });
       return { oneWayDelayMs: 400, sendToPersistMs: persistedMs, copies: (await channelHas(me.token, channelId, needle)).length };
     } finally { netPath.delay(0); }
+  });
+
+  await measure('PERF02', 'long channel: memory, DOM and main-thread stalls while loading history (Android WebView)', async () => {
+    if (MODE !== 'android') throw new Skip('the long-channel measurement is for the device WebView');
+    const seeded = await seedLongChannel(serverId, me.id, LONG_CHANNEL_MESSAGES);
+    if (!seeded) throw new Skip('DATABASE_URL not available to seed the channel');
+    await page.evaluate(() => {
+      window.__longTasks = [];
+      try { new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__longTasks.push(e.duration); }).observe({ entryTypes: ['longtask'] }); } catch {}
+    });
+    await openServer(serverId);
+    await openChannel(seeded.channelId);
+    const sample = async (step) => ({
+      step,
+      msgs: await page.evaluate(() => document.querySelectorAll('.msg').length),
+      domNodes: await page.evaluate(() => document.getElementsByTagName('*').length),
+      jsHeapMB: await page.evaluate(() => (performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null)),
+      pssKb: await platform.memInfoKb(),
+      longTasks: await page.evaluate(() => window.__longTasks.length),
+      longestTaskMs: await page.evaluate(() => Math.round(Math.max(0, ...window.__longTasks))),
+    });
+    await until(() => page.evaluate(() => document.querySelectorAll('.msg').length > 0), { timeout: 30_000, message: 'first page' });
+    const rows = [await sample('open')];
+    let prev = rows[0].msgs;
+    for (let i = 1; i <= 40; i++) {
+      await page.evaluate(() => { const el = document.querySelector('.msg-list'); if (el) { el.scrollTop = 0; el.dispatchEvent(new Event('scroll')); } });
+      const grew = await until(() => page.evaluate((p) => document.querySelectorAll('.msg').length > p, prev), { timeout: 6_000, message: 'history page' }).then(() => true).catch(() => false);
+      if (!grew) break;
+      prev = await page.evaluate(() => document.querySelectorAll('.msg').length);
+      if (i % 5 === 0 || prev >= LONG_CHANNEL_MESSAGES) rows.push(await sample(`older#${i}`));
+      if (prev >= LONG_CHANNEL_MESSAGES) break;
+    }
+    rows.push(await sample('end'));
+    return { seeded: LONG_CHANNEL_MESSAGES, samples: rows };
   });
 
   await measure('PERF01', 'memory footprint after the journeys (PSS)', async () => {
