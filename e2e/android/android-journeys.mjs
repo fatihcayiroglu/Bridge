@@ -499,6 +499,15 @@ async function main() {
     return { how, ms: Date.now() - t0 };
   });
 
+  await check('PN01', 'the notification channel named by server pushes (bridge_default) exists on the device', async () => {
+    if (MODE === 'dryrun') throw new Skip('notification channels need a device');
+    const lines = await until(async () => {
+      const out = await sh(`dumpsys notification | grep -m4 "bridge_default"`).catch(() => '');
+      return out.includes('bridge_default') ? out : null;
+    }, { timeout: 15_000, message: 'bridge_default channel registered' });
+    return { channel: lines.split('\n')[0].trim().slice(0, 200) };
+  });
+
   await check('A03', 'server + channel list render and a channel opens', async () => {
     await openServer(serverId);
     await openChannel(channelId);
@@ -876,6 +885,25 @@ async function main() {
     const status = await page.evaluate(() => window.bridgePush?.status?.() ?? 'no-bridgePush');
     assert(status === 'unavailable', `a build without FCM must report push as unavailable, got ${status}`);
     return { pid: alive, status, launchMs: launch.totalTimeMs };
+  });
+
+  // Last: a crash here would end the process the remaining checks need.
+  await check('LO01', 'sign out on a build without Firebase → sign-in screen, the app process stays alive', async () => {
+    await until(() => appVisible(), { timeout: 30_000, message: 'app visible before sign-out' });
+    const before = await pid();
+    await page.evaluate(() => document.querySelector('[data-bridge-action="openSettingsModal"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await until(() => page.evaluate(() => !!document.getElementById('tab-security')), { timeout: 15_000, message: 'settings open' });
+    await page.evaluate(() => document.getElementById('tab-security')?.click());
+    await until(() => page.evaluate(() => !!document.querySelector('[data-testid="sec-logout"]')), { timeout: 15_000, message: 'security tab' });
+    await page.evaluate(() => document.querySelector('[data-testid="sec-logout"]')?.click());
+    await sleep(8_000);
+    const after = await pid();
+    const crash = MODE === 'android' ? await sh('logcat -d -b crash | tail -40').catch(() => '') : '';
+    assert(after && after === before, `app process ended after sign-out (before ${before}, after ${after})\n${crash.slice(-1500)}`);
+    await attachPage();
+    await until(() => authVisible(), { timeout: 20_000, message: 'sign-in screen after sign-out' });
+    return { pid: after };
   });
 
   peerSock.close();
