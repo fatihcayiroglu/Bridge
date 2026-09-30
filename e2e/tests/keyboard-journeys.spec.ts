@@ -419,4 +419,29 @@ test.describe('klavye — günlük görev tamamlama', () => {
       !!document.activeElement?.closest('.msg-actions'));
     expect(inActions, 'eylem düğmelerine Tab ile girilemedi').toBe(true);
   });
+
+  // P3: sunucu arama sonuçları eskiden `role="option"` taşıyan ama ok tuşu
+  // olmayan bir listbox'tı. Artık aramadan ↓ ilk sonuca, Enter mesaja götürür.
+  test('sunucu araması FARE OLMADAN: ↓ ilk sonuca, Enter mesaja götürür', async ({ page }) => {
+    expect(await openChannel(page)).toBe(true);
+    const token = `kbara${Date.now().toString(36)}`;
+    await page.locator('#msg-input').focus();
+    await page.keyboard.type(`aranacak ${token} mesaj`);
+    await sendAsAlice(page);
+    await expect(page.locator('.msg').filter({ hasText: token }).first()).toBeVisible({ timeout: 15_000 });
+
+    // Kabuktaki arama düğmesi: sunucu seçiliyken sunucu içi arama açılır.
+    await page.locator('#btn-search').focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.search-overlay .search-input')).toBeFocused({ timeout: 10_000 });
+    await page.keyboard.type(token);
+    const first = page.locator('.search-result-item').first();
+    await expect(first).toContainText(token, { timeout: 15_000 });
+
+    await page.keyboard.press('ArrowDown');
+    await expect(first).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.search-overlay')).toHaveCount(0, { timeout: 5_000 });
+    await expect(page.locator('.msg').filter({ hasText: token }).first()).toBeInViewport({ timeout: 15_000 });
+  });
 });
