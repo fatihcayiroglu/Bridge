@@ -193,4 +193,22 @@ First real runs (dispatched on `2a8ad05`, run 36709923407, attempts 1 and 2):
 | Failure | Class | Evidence and action |
 |---|---|---|
 | chromium `offline-queue` › queued message never "sent" | **product defect** | the reconnect resync race above; reproduced 7/18 locally, fixed, 30/30 |
-| firefox `cross-browser-product` › fallback avatar background | **test/harness defect** | 1 of 2 runs, Firefox only: a main-world `locator.evaluate` hung 10 s right after a passing utility-world assertion on the same element; the same property is now asserted with a retrying `toHaveAttribute`. Firefox is not runnable in this environment and the artifact host is blocked by the egress policy, so the next nightly is the confirmation |
+| firefox `cross-browser-product` › fallback avatar background | **test/harness defect** | 1 of 2 runs, Firefox only: a main-world `locator.evaluate` hung 10 s right after a passing utility-world assertion on the same element; the same property is now asserted with a retrying `toHaveAttribute`. Firefox is not runnable in this environment and the artifact host is blocked by the egress policy; confirmed by the nightly on the fix (below): passed |
+
+After the fixes (dispatched on `8cc18c4`, run 36722807564, `--retries=0`): chromium 504 passed /
+0 failed / 26 skipped; firefox 27/27 (the avatar test included); webkit 27/27; voice-media 33/33;
+mobile 6/6; a11y 10/10, a11y-mobile 10/10, a11y-keyboard 8/8. The offline-queue test passed. One
+green run is evidence, not proof of absence: the job runs nightly without retries so a recurrence
+surfaces as a failure to classify.
+
+## P3 closure
+| PR | Merged as | Post-merge Quality Gate |
+|---|---|---|
+| #108 — batch 1 | `0b11880` | #289 (run 36711791307) success |
+| #109 — batch 2 (DM / group DM / search) | `a76a9b2` | #291 (run 36715112777) success |
+| #110 — batch 3 (resync race, DM times, MEDIA-11 outcome) | `32e680e` | #294 (run 36725030946) success |
+
+Chromium full suite: 495 passed / 5 failed / 26 skipped at the start of P3 → 504 / 0 / 26 at the
+end (5 failures fixed, 4 journeys added); the 26 skips are classified above and not counted as
+passing. Open items carried forward: MEDIA-11, long-channel virtualisation, DM edit/delete and
+attachments, real-device and real-network validation.
