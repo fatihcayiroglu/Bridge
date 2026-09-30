@@ -731,17 +731,9 @@
   function _onVoiceReconnecting(): void { if (inVoice) reconnecting = true; }
   function _onVoiceReconnected(): void { reconnecting = false; }
 
-  // MEDIA-11: the SFU holds camera video while this downlink cannot carry it
-  // next to the audio. Without a notice remote video simply froze.
-  let videoHeld = $state(false);
-  function _onVideoHeld(event: Event): void {
-    videoHeld = inVoice && Boolean((event as CustomEvent<{ held?: unknown }>).detail?.held);
-  }
-
   function _onVoiceJoined(): void {
     inVoice = true;
     reconnecting = false;
-    videoHeld = false;
     muted = Boolean(rtc()?.muted);
     deafened = Boolean(rtc()?.deafened);
   }
@@ -767,7 +759,6 @@
   function _onVoiceLeft(): void {
     inVoice = false;
     reconnecting = false;
-    videoHeld = false;
     remoteAudioStreams = new Map();
     peers = new Map();
     peerStates = new Map();
@@ -831,7 +822,6 @@
     document.addEventListener('bridge:voice-joined', _onVoiceJoined);
     document.addEventListener('bridge:voice-left', _onVoiceLeft);
     document.addEventListener('bridge:voice-reconnecting', _onVoiceReconnecting);
-    document.addEventListener('bridge:voice-video-held', _onVideoHeld);
     document.addEventListener('bridge:voice-reconnected', _onVoiceReconnected);
     document.addEventListener('bridge:voice-local-state', _onLocalState);
     document.addEventListener('bridge:channel-selected', _onChannelSelected);
@@ -881,7 +871,6 @@
     document.removeEventListener('bridge:voice-joined', _onVoiceJoined);
     document.removeEventListener('bridge:voice-left', _onVoiceLeft);
     document.removeEventListener('bridge:voice-reconnecting', _onVoiceReconnecting);
-    document.removeEventListener('bridge:voice-video-held', _onVideoHeld);
     document.removeEventListener('bridge:voice-reconnected', _onVoiceReconnected);
     document.removeEventListener('bridge:voice-local-state', _onLocalState);
     document.removeEventListener('bridge:channel-selected', _onChannelSelected);
@@ -968,11 +957,6 @@
           ? (reconnecting ? t('voice_reconnecting', 'Yeniden bağlanıyor…') : t('voice_connected', 'Bağlı'))
           : t('voice_disconnected', 'Bağlı değil')}
       </div>
-      {#if inVoice && videoHeld && !reconnecting}
-        <div class="voice-video-held" role="status" aria-live="polite">
-          {t('voice_video_held', 'Görüntü duraklatıldı: bağlantı zayıf, ses öncelikli')}
-        </div>
-      {/if}
       {#if inVoice}
         <!-- Renk TEK BAŞINA anlam taşımaz: rozet kaliteyi METİN olarak da yazar. -->
         <div
@@ -1488,7 +1472,6 @@
   .voice-connection.connected { color: var(--success-text, var(--green)); border-color: var(--green); background: var(--green-bg); }
   .voice-connection.connected .voice-connection-dot { background: var(--green); box-shadow: 0 0 0 3px var(--green-bg); }
   .voice-connection.reconnecting { color: var(--warning-text, var(--yellow)); border-color: var(--yellow); background: var(--yellow-bg); }
-  .voice-video-held { font-size: 12px; color: var(--warning-text, var(--yellow)); }
   .voice-connection.reconnecting .voice-connection-dot { background: var(--yellow); box-shadow: 0 0 0 3px var(--yellow-bg); }
 
   .voice-stage-content {

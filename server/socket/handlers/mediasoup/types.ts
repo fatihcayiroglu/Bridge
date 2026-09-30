@@ -211,10 +211,6 @@ export interface MediasoupTransport {
   close(): void;
   on(event: 'dtlsstatechange', cb: (state: DtlsState) => void): void;
   setMaxIncomingBitrate?(bitrate: number): Promise<void>;
-  // Audio-first video admission (videoAdmission.ts, MEDIA-11).
-  closed?: boolean;
-  getStats?(): Promise<Array<{ availableOutgoingBitrate?: number }>>;
-  setMaxOutgoingBitrate?(bitrate: number): Promise<void>;
 }
 
 export interface MediasoupProducer {
@@ -236,12 +232,6 @@ export interface MediasoupConsumer {
   close(): void;
   resume(): Promise<void>;
   setPreferredLayers(layers: { spatialLayer: number; temporalLayer: number }): Promise<void>;
-  // Audio-first video admission (videoAdmission.ts, MEDIA-11).
-  closed?: boolean;
-  paused?: boolean;
-  producerPaused?: boolean;
-  pause?(): Promise<void>;
-  requestKeyFrame?(): Promise<void>;
   on(event: 'transportclose', cb: () => void): void;
   on(event: 'producerclose',  cb: () => void): void;
 }
@@ -269,8 +259,6 @@ export interface SfuPeer {
   recvTransport:   MediasoupTransport | null;
   producers:       Map<string, MediasoupProducer>;
   consumers:       Map<string, MediasoupConsumer>;
-  /** Audio-first video admission of the current receive transport (MEDIA-11). */
-  videoAdmission?: import('./videoAdmission').VideoAdmission | null;
   muted:           boolean;
   deafened:        boolean;
   screensharing:   boolean;

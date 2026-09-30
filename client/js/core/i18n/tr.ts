@@ -78,7 +78,6 @@ const translations: Record<string, string> = {
   'voice_connected': 'Bağlı',
   'voice_disconnected': 'Bağlı değil',
   'voice_reconnecting': 'Yeniden bağlanıyor…',
-  'voice_video_held': 'Görüntü duraklatıldı: bağlantı zayıf, ses öncelikli',
   'dm_load_older': 'Daha eski mesajları yükle',
   'dm_history_load_failed': 'Daha eski mesajlar yüklenemedi.',
   'voice_check': 'Ses Kontrolü',

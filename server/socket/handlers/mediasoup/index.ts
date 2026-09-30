@@ -14,7 +14,6 @@ import { sfuRooms, sfuPeers, getOrCreateRoom, createWebRtcTransport, getRoomPeer
 import type { BridgeSocket, BridgeIO, BridgeUser, SfuPeer, RtpCapabilities, DtlsParameters, RtpParameters } from './types';
 // Sprint 120: A3 — Merkezi simulcast encoding config'den import
 import { SIMULCAST_ENCODINGS, SCREENSHARE_ENCODINGS } from './config';
-import { watchVideoAdmission } from './videoAdmission';
 // Sprint 122 FIX 3: Kanal üyelik kontrolü için Members repository
 import { Channels, GroupDms, Members } from '../../../db/repositories';
 import { PERMS, hasPermission, resolvePermissions } from '../../../lib/permissions';
@@ -332,15 +331,6 @@ export function registerSFUHandlers(
       const transport = await createWebRtcTransport(room.router);
       if (direction === 'send') peer.sendTransport = transport;
       else                      peer.recvTransport = transport;
-      // MEDIA-11: camera video only while the downlink estimate covers the audio
-      // plus the lowest layer; re-probe (bounded) while it is held.
-      if (direction === 'recv') {
-        peer.videoAdmission?.stop();
-        peer.videoAdmission = watchVideoAdmission(
-          transport, () => peer.consumers.values(), () => peer.recvTransport === transport, Date.now,
-          (held) => socket.emit('sfu:downlink-video', { held }),
-        );
-      }
 
       transport.on('dtlsstatechange', (state) => {
         if (state === 'closed' || state === 'failed') {
@@ -540,9 +530,7 @@ export function registerSFUHandlers(
         return emitSfuError(socket, 'resume-consumer', requestId, 'FORBIDDEN', 'Ses kanalı erişimi artık geçerli değil.');
       }
       const consumer = peer.consumers.get(producerId);
-      // While camera video is held for this downlink the resume is deferred;
-      // admission resumes the consumer when the estimate recovers.
-      if (consumer && (peer.videoAdmission?.requestResume(consumer) ?? true)) await consumer.resume();
+      if (consumer) await consumer.resume();
     } catch (e: unknown) {
       logger.error({ detail: e }, '[SFU] resume-consumer error:');
     }

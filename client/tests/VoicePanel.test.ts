@@ -262,35 +262,6 @@ describe('VoicePanel — media session recovery is visible', () => {
   });
 });
 
-describe('VoicePanel — held video is explained (MEDIA-11)', () => {
-  it('says video is paused for a weak connection while the SFU holds it, and clears it', async () => {
-    const { container } = render(VoicePanel);
-    const notice = () => container.querySelector('.voice-video-held') as HTMLElement | null;
-    document.dispatchEvent(new CustomEvent('bridge:voice-joined'));
-    await new Promise(r => setTimeout(r, 0));
-    expect(notice()).toBeNull();
-
-    document.dispatchEvent(new CustomEvent('bridge:voice-video-held', { detail: { held: true } }));
-    await new Promise(r => setTimeout(r, 0));
-    expect(notice()).not.toBeNull();
-    expect(notice()!.getAttribute('role')).toBe('status');
-    expect(notice()!.textContent?.trim()).toBeTruthy();
-
-    document.dispatchEvent(new CustomEvent('bridge:voice-video-held', { detail: { held: false } }));
-    await new Promise(r => setTimeout(r, 0));
-    expect(notice()).toBeNull();
-
-    // Leaving the call clears a hold; a hold outside a call is ignored.
-    document.dispatchEvent(new CustomEvent('bridge:voice-video-held', { detail: { held: true } }));
-    document.dispatchEvent(new CustomEvent('bridge:voice-left', { detail: { reason: 'user' } }));
-    await new Promise(r => setTimeout(r, 0));
-    expect(notice()).toBeNull();
-    document.dispatchEvent(new CustomEvent('bridge:voice-video-held', { detail: { held: true } }));
-    await new Promise(r => setTimeout(r, 0));
-    expect(notice()).toBeNull();
-  });
-});
-
 describe('VoicePanel — engine-originated state (P2 media lab)', () => {
   it('a camera or microphone that ends underneath the call is reflected in the controls', async () => {
     mockRtc.videoOn = false;
