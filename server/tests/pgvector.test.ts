@@ -546,3 +546,29 @@ describe('ensurePgvectorSchema', () => {
 // baska bir dosyanin bildirimine cozulmesi). Bu satir modul kapsami
 // ilan eder; calisma zamaninda hicbir sey degistirmez.
 export {};
+
+// ════════════════════════════════════════════════════════════════════════════
+// P6 AI-10 — AI_PROVIDER=none turns embeddings off too
+// ════════════════════════════════════════════════════════════════════════════
+// An embedding sends message text (or a search query) to a provider. docs/AI.md
+// promises AI_PROVIDER=none means "nowhere, even if keys are set"; the
+// embedding path had its own switch and ignored it.
+describe('P6 AI-10: the installation master switch covers embeddings', () => {
+  afterEach(() => setEnv({ AI_PROVIDER: undefined }));
+
+  it.each(['none', 'off', 'rules'])('AI_PROVIDER=%s: no provider request, null embedding', async (sel) => {
+    setEnv({ AI_PROVIDER: sel, PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'openai', OPENAI_API_KEY: 'sk-test' });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ data: [{ embedding: new Array(1536).fill(0.1) }] }) });
+    const { generateEmbedding } = require('../lib/pgvector');
+    expect(await generateEmbedding('private message text')).toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('control: with AI_PROVIDER unset the configured embedding provider is used', async () => {
+    setEnv({ AI_PROVIDER: undefined, PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'openai', OPENAI_API_KEY: 'sk-test', EMBEDDING_DIMENSION: undefined });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ data: [{ embedding: new Array(1536).fill(0.1) }] }) });
+    const { generateEmbedding } = require('../lib/pgvector');
+    expect(await generateEmbedding('text')).toHaveLength(1536);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+});

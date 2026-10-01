@@ -28,6 +28,10 @@
     if (await store.saveDiscovery()) toast(t('srv_discovery_saved', 'Keşif ayarları kaydedildi'), 'success');
   }
 
+  async function handleAiSave() {
+    if (await store.saveAi()) toast(t('srv_ai_saved', 'Yapay zekâ ayarı kaydedildi'), 'success');
+  }
+
   const categories = $derived([
     ['gaming', '🎮', t('ui_discover_gaming', 'Oyun')],
     ['community', '👥', t('ui_discover_community', 'Topluluk')],
@@ -117,6 +121,27 @@
   <div class="srv-section-actions">
     <button type="button" class="btn btn-secondary" disabled={store.discoverySaving || !store.isDiscoveryDirty()} onclick={handleDiscoverySave}>
       {store.discoverySaving ? t('ui_saving') : t('save')}
+    </button>
+  </div>
+</fieldset>
+
+<fieldset class="srv-section">
+  <legend>{t('srv_ai_title', 'Yapay zekâ özellikleri')}</legend>
+  <label class="srv-toggle-row" for="srv-ai-enabled-input">
+    <input
+      id="srv-ai-enabled-input"
+      type="checkbox"
+      checked={store.aiEnabled}
+      onchange={(e) => store.setAiEnabled((e.currentTarget as HTMLInputElement).checked)}
+    />
+    <span>
+      <strong>{t('srv_ai_label', 'Bu sunucuda yapay zekâ özelliklerine izin ver')}</strong>
+      <small>{t('srv_ai_hint', 'Kapalıysa bu sunucudan hiçbir şey — mesajlar, sesli mesajlar ya da aramalar — bir yapay zekâ sağlayıcısına gönderilmez. Özetler ve arama yerel sonuçlara döner.')}</small>
+    </span>
+  </label>
+  <div class="srv-section-actions">
+    <button type="button" class="btn btn-secondary" disabled={store.aiSaving || !store.isAiDirty()} onclick={handleAiSave}>
+      {store.aiSaving ? t('ui_saving') : t('save')}
     </button>
   </div>
 </fieldset>

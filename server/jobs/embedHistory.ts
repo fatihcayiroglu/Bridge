@@ -142,6 +142,9 @@ export async function runEmbedHistoryJob(
     }
 
     // Sonraki batch: embedding=NULL olan mesajları çek
+    // P6 AI-11 / per-server opt-out: never embed a deleted message's
+    // placeholder, an E2EE payload, or anything from a server whose owner
+    // turned AI off (the text would be sent to the embedding provider).
     const batchResult = await db.query(
       `SELECT _id, content, "createdAt" AS "createdAt"
        FROM messages
@@ -149,6 +152,10 @@ export async function runEmbedHistoryJob(
          AND content IS NOT NULL
          AND content != ''
          AND (type IS NULL OR type != 'system')
+         AND "deletedAt" IS NULL
+         AND "encryptedContent" IS NULL
+         AND content NOT LIKE '🔒e2e:%'
+         AND EXISTS (SELECT 1 FROM servers s WHERE s._id = messages."serverId" AND s."aiEnabled" = TRUE)
          AND (
            $2::bigint IS NULL
            OR "createdAt" > $2

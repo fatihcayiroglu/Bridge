@@ -209,6 +209,9 @@ const ALLOWED_COLUMNS = new Set([
   // GUVENLIK: koruma GEVSETILMEDI. Bu adlar serbest metin degil, semada
   // dogrulanmis sabitlerdir; degerler her zaman $1/$2 ile parametrelenir.
   'bridgeMessageId', 'crosspostedAt', 'explicit', 'language', 'lastPlayedAt', 'locked',
+
+  // P6 — servers."aiEnabled" (migration 078): per-server AI opt-out.
+  'aiEnabled',
 ]);
 
 /**

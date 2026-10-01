@@ -70,12 +70,14 @@ import { PERMS, hasAllPermissions, resolvePermissions } from '../lib/permissions
 
 import { uploadRoot } from '../lib/runtimePaths';
 import { parseNonNegativeSafeIntText } from '../lib/queryNumbers';
+import { transcriptionTarget } from '../lib/aiProvider';
+import { serverAllowsAi } from '../lib/aiServerPolicy';
 // ── AI TRANSKRİPSİYON ─────────────────────────────────────────
+// P6 AI-09: the provider decision lives in lib/aiProvider (AI_PROVIDER governs
+// it); the server's own setting is checked by the caller before this runs.
 async function transcribeAudio(filePath: string): Promise<string | null> {
-  const GROQ_KEY   = process.env.GROQ_API_KEY;
-  const OPENAI_KEY = process.env.OPENAI_API_KEY;
-
-  if (!GROQ_KEY && !OPENAI_KEY) return null;
+  const target = transcriptionTarget();
+  if (!target) return null;
 
   const fileBuffer = fs.readFileSync(filePath);
   const fileName   = path.basename(filePath);
@@ -85,18 +87,13 @@ async function transcribeAudio(filePath: string): Promise<string | null> {
   // dependency chain; undici sets the multipart boundary header itself.
   const form = new FormData();
   form.append('file', new Blob([fileBuffer], { type: 'audio/webm' }), fileName);
-  form.append('model', GROQ_KEY ? 'whisper-large-v3-turbo' : 'whisper-1');
+  form.append('model', target.model);
   form.append('response_format', 'text');
 
-  const apiUrl = GROQ_KEY
-    ? 'https://api.groq.com/openai/v1/audio/transcriptions'
-    : 'https://api.openai.com/v1/audio/transcriptions';
-  const apiKey = GROQ_KEY || OPENAI_KEY;
-
   try {
-    const r = await fetch(apiUrl, {
+    const r = await fetch(target.url, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: { 'Authorization': `Bearer ${target.key}` },
       body: form,
       signal: AbortSignal.timeout(30_000),
     });
@@ -222,7 +219,8 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
     const provider = result.provider;
     setImmediate(async () => {
       try {
-        const transcript = await transcribeAudio(filePath);
+        // P6: a server that turned AI off never has its members' audio sent out.
+        const transcript = await serverAllowsAi(String(channel.serverId)) ? await transcribeAudio(filePath) : null;
         if (transcript) {
           await VoiceMessages.update({ _id: vmId }, { $set: { transcript } });
           await Messages.update(messageId, { transcript });

@@ -310,6 +310,7 @@ router.post('/', authMiddleware, limits.servers(), async (req, res) => {
  *             properties:
  *               name: { type: string, maxLength: 50 }
  *               icon: { type: string }
+ *               aiEnabled: { type: boolean, description: "P6: false = this server's content is never sent to an AI provider" }
  *     responses:
  *       200: { description: Güncellenmiş sunucu }
  *       403: { description: Yetki yok }
@@ -341,8 +342,15 @@ router.patch('/:sid', authMiddleware, limits.servers(), async (req, res) => {
   const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
     ? req.body as Record<string, unknown>
     : {};
-  const { name, icon, mfaLevel } = body;
+  const { name, icon, mfaLevel, aiEnabled } = body;
   const updates: Record<string, unknown> = {};
+  // P6 — per-server AI opt-out. Owner only (this route is owner-only); a strict
+  // boolean, never coerced: "false" or 0 from a careless client is refused
+  // rather than silently re-enabling or disabling AI.
+  if (aiEnabled !== undefined) {
+    if (typeof aiEnabled !== 'boolean') return res.status(400).json({ error: 'aiEnabled must be a boolean' });
+    updates.aiEnabled = aiEnabled;
+  }
   if (name !== undefined && typeof name !== 'string') {
     return res.status(400).json({ error: 'Server name must be a string' });
   }

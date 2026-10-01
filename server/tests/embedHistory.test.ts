@@ -309,3 +309,19 @@ describe('runEmbedHistoryJob — çok batch', () => {
     expect(elapsed).toBeGreaterThanOrEqual(40); // en az bir bekleme
   });
 });
+
+// P6 — the batch embedder sends message text to the embedding provider, so its
+// SELECT is the boundary: deleted placeholders, E2EE payloads and every server
+// whose owner turned AI off stay out. (Real-PostgreSQL evidence needs the
+// pgvector extension; the SQL itself is pinned here.)
+describe('P6: what the batch embedder may read', () => {
+  it('excludes deleted rows, E2EE payloads and servers with AI off', async () => {
+    const db = makeMockDb([[]] as { _id: string; content: string }[][]);
+    await runEmbedHistoryJob(db, { batchSize: 10 });
+    const select = String((db.query.mock.calls as [string, unknown[]][]).find(([sql]) => String(sql).includes('SELECT _id'))?.[0] ?? '');
+    expect(select).toMatch(/"deletedAt" IS NULL/);
+    expect(select).toMatch(/"encryptedContent" IS NULL/);
+    expect(select).toMatch(/content NOT LIKE '🔒e2e:%'/);
+    expect(select).toMatch(/EXISTS \(SELECT 1 FROM servers s WHERE s\._id = messages\."serverId" AND s\."aiEnabled" = TRUE\)/);
+  });
+});

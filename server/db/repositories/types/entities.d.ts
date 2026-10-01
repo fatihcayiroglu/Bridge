@@ -131,6 +131,8 @@ export interface Server {
   isPublic?: boolean;
   color?: string;
   mfaLevel?: number;
+  /** P6: false = this server's content is never sent to an AI provider (migration 078). */
+  aiEnabled?: boolean;
   discoverable?: boolean | 0 | 1;
   general?: UUID | null;
   logChannelId?: UUID | null;

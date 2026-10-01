@@ -81,6 +81,7 @@ import { limits } from '../../middleware/rateLimit';
 import { cache } from '../../lib/redisAdapter';
 import { rulesMod } from '../../lib/modRules';
 import { callAI, AI_ENABLED, PROVIDER, safeProvider } from '../../lib/aiProvider';
+import { serverAllowsAi } from '../../lib/aiServerPolicy';
 
 // POST /api/ai/moderate
 // P5 AI-08: this calls the provider; it had no AI rate limit.
@@ -97,12 +98,18 @@ router.post('/moderate', authMiddleware, limits.ai(), async (req, res) => {
   if (!hasAllPermissions(perms, PERMS.VIEW_CHANNELS, PERMS.READ_HISTORY))
     return res.status(403).json({ error: 'Mesajı görüntüleme yetkiniz yok' });
 
+  // P6: read the server's AI setting before the cache; a server with AI off
+  // gets the local rules result, uncached, and nothing is sent out.
+  const serverAi = await serverAllowsAi(String(msg.serverId));
   const cacheKey = `ai:mod:${messageId}`;
-  const cached = await cache.get(cacheKey);
+  const cached = serverAi ? await cache.get(cacheKey) : null;
   if (cached) return res.json({ ...cached, cached: true });
 
   const ruleResult = rulesMod(msg.content ?? '');
   let result: Record<string, unknown> = { ...ruleResult, provider: safeProvider('rules') };
+  if (!serverAi) {
+    return res.json({ ...result, messageId, ...(AI_ENABLED ? { aiDisabledForServer: true } : {}) });
+  }
 
   if (AI_ENABLED && ruleResult.safe) {
     try {
@@ -140,7 +147,8 @@ router.post('/auto-moderate', authMiddleware, limits.ai(), async (req, res) => {
   const ruleResult = rulesMod(content);
   if (!ruleResult.safe) return res.json({ ...ruleResult, provider: safeProvider('rules') });
 
-  if (AI_ENABLED) {
+  // P6: a server with AI off never has this content sent out.
+  if (AI_ENABLED && await serverAllowsAi(serverId)) {
     try {
       const raw = await callAI(
         'Moderasyon. JSON: {"safe":bool,"score":0-100,"reason":"Türkçe"}',

@@ -42,7 +42,10 @@ const router = express.Router();
 import { authMiddleware } from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
 import { callAI, AI_ENABLED, PROVIDER, safeProvider, aiFailureForClient } from '../../lib/aiProvider';
+import { serverAllowsAi, AI_DISABLED_FOR_SERVER, AI_DISABLED_FOR_SERVER_MESSAGE } from '../../lib/aiServerPolicy';
 import { fetchT } from '../../lib/fetch';
+import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
+import { Members } from '../../db/repositories';
 
 const TRANSLATE_URL = process.env.LIBRETRANSLATE_URL;
 const TRANSLATE_KEY = process.env.LIBRETRANSLATE_KEY || '';
@@ -64,6 +67,19 @@ router.post('/', authMiddleware, limits.ai(), async (req, res) => {
   if (typeof targetLang !== 'string' || !languageCode.test(targetLang) ||
       typeof sourceLang !== 'string' || !languageCode.test(sourceLang)) {
     return res.status(400).json({ error: 'sourceLang/targetLang geçersiz' });
+  }
+
+  // P6: text from a server's channel carries that server's id. The requester
+  // must be a member, and a server whose owner turned AI off has nothing
+  // translated by a machine service. (Text sent WITHOUT a serverId cannot be
+  // attributed by the server; clients send it for server content.)
+  if (body.serverId !== undefined) {
+    if (typeof body.serverId !== 'string' || !body.serverId.trim()) return res.status(400).json({ error: 'serverId geçersiz' });
+    const sid = body.serverId.trim();
+    if (!await Members.findOne(castAuthed(req).user.id, sid)) return res.status(403).json({ error: 'Üye değilsiniz' });
+    if (!await serverAllowsAi(sid)) {
+      return res.status(403).json({ error: AI_DISABLED_FOR_SERVER_MESSAGE, code: AI_DISABLED_FOR_SERVER });
+    }
   }
 
   // LibreTranslate (self-hosted, free)

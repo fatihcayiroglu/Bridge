@@ -33,6 +33,8 @@ function setup(o:Opts={}){
   jest.doMock('../db/repositories',()=>({
     Members:{findOne:memberFindOne,findByServer:memberFindByServer},
     Messages:{messagesFind,findWhere}, Users:{findByIds:usersFind}, Channels:{findWhere:channelFind},
+    // P6: the per-server AI gate reads the server row; a migrated row allows AI by default.
+    Servers:{findById:async()=>({_id:'s1',aiEnabled:true})},
   }));
   jest.doMock('../lib/permissions',()=>({viewableChannelIds}));
   jest.doMock('../lib/pgvector',()=>({generateEmbedding,vectorSearch,PGVECTOR_ENABLED:o.pg??false,EMBEDDING_PROVIDER:'test-embed'}));

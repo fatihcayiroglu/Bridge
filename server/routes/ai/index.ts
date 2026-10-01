@@ -9,6 +9,7 @@ import { authMiddleware } from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
 import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
 import { AI_ENABLED, PROVIDER, safeProvider } from '../../lib/aiProvider';
+import { serverAllowsAi, serversAllowingAi } from '../../lib/aiServerPolicy';
 
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 const router = express.Router();
@@ -281,6 +282,10 @@ router.get('/suggest-reply/:channelId', authMiddleware, limits.ai(), async (req,
     return res.status(403).json({ error: 'Bu kanalın geçmişini görüntüleyemezsiniz.' });
 
   if (!AI_ENABLED) return res.json({ suggestions: ['👍', 'Anladım!', 'Teşekkürler!', '🔥'], provider: safeProvider('rules') });
+  // P6: a server that turned AI off gets the same local suggestions, nothing is sent out.
+  if (!await serverAllowsAi(String(channel.serverId))) {
+    return res.json({ suggestions: ['👍', 'Anladım!', 'Teşekkürler!', '🔥'], provider: safeProvider('rules'), aiDisabledForServer: true });
+  }
 
   // P5 AI-02: never deleted, system or E2EE messages.
   const msgs = (await Messages.messagesFind({ channelId: String(req.params.channelId ?? ''), deletedAt: null, type: { $ne: 'system' } })
@@ -348,10 +353,19 @@ router.get('/discover-match', authMiddleware, async (req, res) => {
     return res.json({ recommendations: enriched.map(s => ({ ...s, reason: 'Popüler topluluk' })), provider: safeProvider('rules') });
   }
 
+  // P6: a server that turned AI off contributes nothing to the prompt — not
+  // its tags as the user's interests, not its name/tags as a candidate.
   const joinedSrvs = await Servers.find({ _id: { $in: joinedIds } });
-  const interests  = [...new Set(joinedSrvs.flatMap(s => normalizeTags(s.tags)))];
+  const aiAllowed  = await serversAllowingAi([...joinedSrvs, ...servers.slice(0, 15)].map(s => String(s._id)));
+  const interests  = [...new Set(joinedSrvs.filter(s => aiAllowed.has(String(s._id))).flatMap(s => normalizeTags(s.tags)))];
   const bio        = (await Users.findById(_u.id))?.bio || '';
-  const list       = servers.slice(0, 15).map(s => ({ id: s._id, name: s.name, tags: normalizeTags(s.tags).join(', ') }));
+  const list       = servers.slice(0, 15).filter(s => aiAllowed.has(String(s._id)))
+    .map(s => ({ id: s._id, name: s.name, tags: normalizeTags(s.tags).join(', ') }));
+  if (!list.length) {
+    const enriched = await enrich(servers.slice(0, 5));
+    enriched.sort((a, b) => b.memberCount - a.memberCount);
+    return res.json({ recommendations: enriched.map(s => ({ ...s, reason: 'Popüler topluluk' })), provider: safeProvider('rules') });
+  }
 
   const raw = await callAI(
     'Sunucu önerisi. Sadece JSON: [{"id":"...","reason":"Türkçe kısa neden"}]',
@@ -377,9 +391,19 @@ router.get('/discover-match', authMiddleware, async (req, res) => {
 });
 
 // Status endpoint
-router.get('/status', authMiddleware, (_req, res) => {
+router.get('/status', authMiddleware, async (req, res) => {
+  // P6: `?serverId=` reports whether THAT server allows AI — for members only,
+  // so a non-member learns nothing about another server's settings.
+  let server: { serverId: string; enabled: boolean } | undefined;
+  if (req.query.serverId !== undefined) {
+    const sid = typeof req.query.serverId === 'string' ? req.query.serverId.trim() : '';
+    if (!sid) return res.status(400).json({ error: 'serverId geçersiz' });
+    if (!await Members.findOne(castAuthed(req).user.id, sid)) return res.status(403).json({ error: 'Üye değilsiniz' });
+    server = { serverId: sid, enabled: AI_ENABLED && await serverAllowsAi(sid) };
+  }
   res.json({
     enabled:  AI_ENABLED,
+    ...(server ? { server } : {}),
     provider: safeProvider(PROVIDER),
     features: { summarize: true, translate: AI_ENABLED || !!process.env.LIBRETRANSLATE_URL, moderation: true, suggestReply: true, discoverMatch: true },
     setup: {

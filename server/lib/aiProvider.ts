@@ -28,16 +28,42 @@
 
 import logger from './logger';
 import { fetchT } from './fetch';
+import { aiOffByInstallation, KNOWN_AI_PROVIDERS } from './aiInstallation';
 
 const env = process.env;
 const SELECTED = (env.AI_PROVIDER || '').trim().toLowerCase();
-const KNOWN = new Set(['groq', 'gemini', 'openrouter', 'ollama', 'openai-compatible', 'none', 'off', 'rules']);
+const KNOWN = KNOWN_AI_PROVIDERS;
 if (SELECTED && !KNOWN.has(SELECTED)) {
   logger.error({ event: 'ai.provider.invalid', value: SELECTED.slice(0, 40) },
     'AI_PROVIDER is not one of groq|gemini|openrouter|ollama|openai-compatible|none; AI stays disabled.');
 }
 const allow = (name: string) => !SELECTED || SELECTED === name;
-const DISABLED = ['none', 'off', 'rules'].includes(SELECTED) || (!!SELECTED && !KNOWN.has(SELECTED));
+
+// P6 AI-09/AI-10: one master-switch rule for chat, transcription and embeddings.
+const DISABLED = aiOffByInstallation(env);
+
+/**
+ * P6 AI-09: where a voice message may be transcribed — or null.
+ *
+ * Transcription sends a member's audio to a third party. It used to read
+ * GROQ_API_KEY / OPENAI_API_KEY on its own, so AI_PROVIDER=none did not stop
+ * it, and an operator who chose one provider still had audio sent to another.
+ * Now: off when the installation turned AI off; with AI_PROVIDER=groq only
+ * Groq; with any other selected provider none (they have no transcription
+ * path here); unset keeps the historical order Groq → OpenAI.
+ */
+function transcriptionTarget(e: NodeJS.ProcessEnv = process.env):
+  { provider: 'groq' | 'openai'; url: string; key: string; model: string } | null {
+  if (aiOffByInstallation(e)) return null;
+  const sel = (e.AI_PROVIDER || '').trim().toLowerCase();
+  if (sel && sel !== 'groq') return null;
+  const groq = (e.GROQ_API_KEY || '').trim();
+  if (groq) return { provider: 'groq', url: 'https://api.groq.com/openai/v1/audio/transcriptions', key: groq, model: 'whisper-large-v3-turbo' };
+  if (sel === 'groq') return null;
+  const openai = (e.OPENAI_API_KEY || '').trim();
+  if (openai) return { provider: 'openai', url: 'https://api.openai.com/v1/audio/transcriptions', key: openai, model: 'whisper-1' };
+  return null;
+}
 
 const GROQ_KEY       = !DISABLED && allow('groq') ? env.GROQ_API_KEY : undefined;
 const GEMINI_KEY     = !DISABLED && allow('gemini') ? env.GEMINI_API_KEY : undefined;
@@ -249,6 +275,8 @@ function aiFailureForClient(err: unknown, context: string): string {
 }
 
 export { callAI,
+  aiOffByInstallation,
+  transcriptionTarget,
   aiFailureForClient,
   AiUnavailableError,
   AI_ENABLED,

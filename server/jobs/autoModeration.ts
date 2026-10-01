@@ -12,6 +12,7 @@ import { Channels, Servers, Messages, Users } from '../db/repositories';
 import { publishPersistedMessage } from '../lib/channelActivity';
 import { rulesMod } from '../lib/modRules';
 import { callAI, AI_ENABLED } from '../lib/aiProvider';
+import { rowAllowsAi } from '../lib/aiServerPolicy';
 // Sprint 122 FIX 7: atomik mod-log upsert için db loader
 import db from '../db/loader';
 
@@ -207,6 +208,8 @@ async function runScan(): Promise<void> {
     } catch { continue; }
 
     if (!server?.autoModerate) continue;
+    // P6: rules still apply; the AI second opinion only where the owner allows AI.
+    const serverAi = rowAllowsAi(server as { aiEnabled?: unknown });
 
     let modChannelId: string | null = null;
 
@@ -233,7 +236,7 @@ async function runScan(): Promise<void> {
 
       let finalResult: ModResult = ruleResult;
       if (!ruleResult.safe || ruleResult.score >= 70) {
-        if (AI_ENABLED) {
+        if (AI_ENABLED && serverAi) {
           const aiResult = await aiMod(msg.content || '');
           if (aiResult) {
             if (!aiResult.safe || aiResult.score > ruleResult.score) {

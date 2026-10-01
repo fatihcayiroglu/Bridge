@@ -60,7 +60,8 @@ function build(overrides: {
   jest.doMock('../middleware/auth', () => ({ authMiddleware:(req:any,_res:any,next:any)=>{ req.user={id:'u1'}; next(); } }));
   jest.doMock('../middleware/rateLimit', () => ({ limits: new Proxy({}, { get:()=>()=> (_req:any,_res:any,next:any)=>next() }) }));
   jest.doMock('../lib/authSafe', () => ({ safeCastAuthed:(req:any)=>req }));
-  jest.doMock('../db/repositories', () => ({ Channels:{ findById }, Messages:{ messagesFind } }));
+  // P6: the per-server AI gate reads the server row; a migrated row allows AI by default.
+  jest.doMock('../db/repositories', () => ({ Channels:{ findById }, Messages:{ messagesFind }, Servers:{ findById: async () => ({ _id:'s1', aiEnabled:true }) } }));
   jest.doMock('../lib/permissions', () => ({
     resolvePermissions,
     hasPermission:(mask:number,perm:number)=>(mask & perm) === perm,

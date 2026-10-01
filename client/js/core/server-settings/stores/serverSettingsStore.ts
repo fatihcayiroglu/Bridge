@@ -14,6 +14,8 @@ export interface ServerSettingsServer {
   vanityUrl?: string | null;
   discoverable?: boolean | number;
   category?: string | null;
+  /** P6: false = this server's content is never sent to an AI provider. */
+  aiEnabled?: boolean;
   [key: string]: unknown;
 }
 export interface ServerSettingsStore {
@@ -29,6 +31,8 @@ export interface ServerSettingsStore {
   discoverable: boolean;
   category: string;
   discoverySaving: boolean;
+  aiEnabled: boolean;
+  aiSaving: boolean;
   bannerUrl: string;
   iconUrl: string;
   saving: boolean;
@@ -39,6 +43,7 @@ export interface ServerSettingsStore {
   setSlug(value: string): void;
   setDiscoverable(value: boolean): void;
   setCategory(value: string): void;
+  setAiEnabled(value: boolean): void;
   setBannerUrl(value: string): void;
   setIconUrl(value: string): void;
   saveGeneral(): Promise<boolean>;
@@ -48,6 +53,8 @@ export interface ServerSettingsStore {
   isSlugDirty(): boolean;
   saveDiscovery(): Promise<boolean>;
   isDiscoveryDirty(): boolean;
+  saveAi(): Promise<boolean>;
+  isAiDirty(): boolean;
   reload(): Promise<void>;
   subscribe: ReturnType<typeof writable<Record<string, unknown>>>['subscribe'];
   [key: string]: unknown;
@@ -117,6 +124,9 @@ export function createServerSettingsStore(input: string | ServerSettingsServer =
     discoverable: server.discoverable === true || server.discoverable === 1,
     category: canonicalCategory(server.category),
     discoverySaving: false,
+    // P6: absent (a pre-078 row) or true = allowed; only an explicit false is "off".
+    aiEnabled: server.aiEnabled !== false,
+    aiSaving: false,
     bannerUrl: String(server.banner ?? ''),
     iconUrl: String(server.icon ?? ''),
     saving: false,
@@ -135,6 +145,7 @@ export function createServerSettingsStore(input: string | ServerSettingsServer =
     setSlug(value) { store.slug = value; store.slugPreview = value.trim().toLowerCase(); commit({ slug: value, slugPreview: store.slugPreview }); },
     setDiscoverable(value) { store.discoverable = value; commit({ discoverable: value }); },
     setCategory(value) { store.category = canonicalCategory(value); commit({ category: store.category }); },
+    setAiEnabled(value) { store.aiEnabled = value; commit({ aiEnabled: value }); },
     setBannerUrl(value) { store.bannerUrl = value; commit({ bannerUrl: value }); },
     setIconUrl(value) { store.iconUrl = value; commit({ iconUrl: value }); },
     // ── C1.5 — GERÇEK KALICILIK ────────────────────────────────────────────
@@ -303,6 +314,43 @@ export function createServerSettingsStore(input: string | ServerSettingsServer =
       const originalDiscoverable = server.discoverable === true || server.discoverable === 1;
       return store.discoverable !== originalDiscoverable || canonicalCategory(store.category) !== canonicalCategory(server.category);
     },
+    // ── P6 — per-server AI opt-out ─────────────────────────────────────────
+    // `PATCH /api/servers/:sid { aiEnabled }` — owner only (403 otherwise),
+    // strict boolean. The server is the authority: the UI only asks; every AI
+    // route re-reads the stored value on each request.
+    async saveAi() {
+      if (store.aiSaving || !serverId) return false;
+      if (!isStillCurrentServer(serverId)) {
+        store.setError(t('srv_changed', 'Sunucu değişti — ayarlar yeniden yüklenmeli.'));
+        return false;
+      }
+      store.aiSaving = true; commit({ aiSaving: true, error: null });
+      try {
+        const { apiFetch } = await import('../../api-fetch.js');
+        const { getAPI }   = await import('../../globals.js');
+        const res = await apiFetch(`${getAPI()}/api/servers/${serverId}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ aiEnabled: store.aiEnabled === true }),
+        });
+        if (!res.ok) {
+          store.setError(safeApiErrorMessage(res, t('srv_ai_failed', 'Yapay zekâ ayarı kaydedilemedi.'), { report: true }));
+          return false;
+        }
+        const updated = await res.json().catch(() => null) as Record<string, unknown> | null;
+        server.aiEnabled = updated && typeof updated.aiEnabled === 'boolean' ? updated.aiEnabled : store.aiEnabled;
+        store.aiEnabled = server.aiEnabled !== false;
+        commit({ aiEnabled: store.aiEnabled });
+        return true;
+      } catch (err) {
+        store.setError(safeApiErrorMessage(err, t('srv_ai_failed', 'Yapay zekâ ayarı kaydedilemedi.'), { report: true }));
+        return false;
+      } finally {
+        store.aiSaving = false; commit({ aiSaving: false });
+      }
+    },
+    isAiDirty() {
+      return store.aiEnabled !== (server.aiEnabled !== false);
+    },
     async reload() {
       const current = getCurrentServerFromRegistry();
       if (!current) return;
@@ -313,7 +361,9 @@ export function createServerSettingsStore(input: string | ServerSettingsServer =
       store.name  = String(server.name); store.icon = String(server.icon);
       store.discoverable = current.discoverable === true || current.discoverable === 1;
       store.category = canonicalCategory(current.category);
-      commit({ name: store.name, icon: store.icon, discoverable: store.discoverable, category: store.category, error: null });
+      server.aiEnabled = current.aiEnabled === false ? false : current.aiEnabled === true ? true : undefined;
+      store.aiEnabled = server.aiEnabled !== false;
+      commit({ name: store.name, icon: store.icon, discoverable: store.discoverable, category: store.category, aiEnabled: store.aiEnabled, error: null });
     },
   };
   return store;

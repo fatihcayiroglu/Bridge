@@ -69,6 +69,7 @@ import { cache } from '../lib/redisAdapter';
 import { limits } from '../middleware/rateLimit';
 
 import { callAI, AI_ENABLED } from '../lib/aiProvider';
+import { serverAllowsAi } from '../lib/aiServerPolicy';
 import logger from '../lib/logger';
 import { generateEmbedding, vectorSearch, PGVECTOR_ENABLED, EMBEDDING_PROVIDER } from '../lib/pgvector';
 import { viewableChannelIds } from '../lib/permissions';
@@ -135,7 +136,11 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   //
   // Anahtara kullanici kimligi eklemek dogru olcektir: gorunurluk kullaniciya
   // gore hesaplanir, dolayisiyla onbellek de kullaniciya gore ayrilmalidir.
-  const cacheKey = `sem:${_u.id}:${serverId}:${channelId || ''}:${query.slice(0,50)}:${days}:${resultLimit}`;
+  // P6: a server with AI off is searched by keyword only — the query is not
+  // embedded and no message is handed to an AI. The flag is part of the cache
+  // key so turning AI off or on takes effect on the next request.
+  const serverAi = await serverAllowsAi(serverId);
+  const cacheKey = `sem:${_u.id}:${serverId}:${channelId || ''}:${query.slice(0,50)}:${days}:${resultLimit}:${serverAi ? 'ai' : 'noai'}`;
   const cached = await cache.get(cacheKey);
   if (cached) return res.json({ ...cached, cached: true });
 
@@ -161,7 +166,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   messages = messages.filter(m => viewable.has(String(m.channelId)));
 
   if (!messages.length) return res.json({
-    matches: [], query, provider: 'none', total: 0, days, limit: resultLimit, aiDisabled: !AI_ENABLED,
+    matches: [], query, provider: 'none', total: 0, days, limit: resultLimit, aiDisabled: !AI_ENABLED || !serverAi, ...(AI_ENABLED && !serverAi ? { aiDisabledForServer: true } : {}),
   });
 
   // Kullanıcı adlarını getir
@@ -180,7 +185,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   let provider = 'rules';
 
   // ── pgvector semantik arama (AI_ENABLED gerektirmez) ─────────────────────
-  if (PGVECTOR_ENABLED) {
+  if (PGVECTOR_ENABLED && serverAi) {
     try {
       const embedding = await generateEmbedding(query);
       if (embedding) {
@@ -228,7 +233,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   }
 
   // ── AI araması (pgvector sonuç vermediyse veya devre dışıysa) ────────────
-  if (!results && AI_ENABLED) {
+  if (!results && AI_ENABLED && serverAi) {
     try {
       // AI'ya mesajları ver ve ilgilileri bul
       const transcript = messages.slice(0, 100).map((m, i) =>
@@ -294,7 +299,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
     provider = 'rules';
   }
 
-  const out = { ...results, query, provider, total: results.matches.length, days, limit: resultLimit, aiDisabled: !AI_ENABLED };
+  const out = { ...results, query, provider, total: results.matches.length, days, limit: resultLimit, aiDisabled: !AI_ENABLED || !serverAi, ...(AI_ENABLED && !serverAi ? { aiDisabledForServer: true } : {}) };
   await cache.set(cacheKey, out, 180); // 3dk cache
   res.json(out);
 });
@@ -312,7 +317,10 @@ router.get('/digest/:serverId', authMiddleware, async (req, res) => {
   // Ayni sizinti bu ucta da vardi ve onbellek omru 30 DAKIKAYDI (yukaridaki
   // ayrintili nota bakiniz). Ozet, kanal etkinligini toparladigi icin
   // yetkisiz bir uyeye gizli kanallarin icerigini tasiyabilirdi.
-  const cacheKey = `digest:${_u.id}:${serverId}:${days}`;
+  // P6: the server's AI setting is part of the key (an AI summary written
+  // before the owner turned AI off is not served after).
+  const serverAi = await serverAllowsAi(serverId);
+  const cacheKey = `digest:${_u.id}:${serverId}:${days}:${serverAi ? 'ai' : 'noai'}`;
   const cached = await cache.get(cacheKey);
   if (cached) return res.json({ ...cached, cached: true });
 
@@ -380,7 +388,7 @@ router.get('/digest/:serverId', authMiddleware, async (req, res) => {
 
   // AI özet
   let aiSummary = null;
-  if (AI_ENABLED && allMsgs.length > 0) {
+  if (AI_ENABLED && serverAi && allMsgs.length > 0) {
     try {
       const topContent = allMsgs
         .sort((a, b) => b.createdAt - a.createdAt)

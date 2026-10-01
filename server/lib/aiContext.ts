@@ -10,6 +10,8 @@
 //     before, soft-deleted rows ("[Mesaj silindi]" plus author and time) went
 //     into the context (P5 AI-02);
 //   · E2EE payloads are never read (the server cannot and must not see them);
+//   · a server whose owner turned AI off is never read for AI (P6,
+//     lib/aiServerPolicy.ts) — checked after the requester's permissions;
 //   · size is bounded per message and in total.
 //
 // Prompt-injection posture (P5 AI-05): channel text is DATA written by other
@@ -22,12 +24,13 @@
 
 import { Channels, Messages } from '../db/repositories';
 import { resolvePermissions, hasPermission, PERMS } from './permissions';
+import { serverAllowsAi, AI_DISABLED_FOR_SERVER, AI_DISABLED_FOR_SERVER_MESSAGE } from './aiServerPolicy';
 
 export interface AiChannelMessage { id: string; userId: string; author: string; content: string; createdAt?: number }
 
 export type AiChannelRead =
   | { ok: true; messages: AiChannelMessage[] }
-  | { ok: false; status: 403 | 404 | 503; error: string };
+  | { ok: false; status: 403 | 404 | 503; error: string; code?: string };
 
 const BLOCK_OPEN = '<<<CHANNEL_MESSAGES>>>';
 const BLOCK_CLOSE = '<<<END_CHANNEL_MESSAGES>>>';
@@ -46,6 +49,11 @@ export async function readChannelForAi(
   const perms = await resolvePermissions(userId, String(channel.serverId), channelId).catch(() => 0);
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY)) {
     return { ok: false, status: 403, error: 'Bu kanalın geçmişini görüntüleme izniniz yok.' };
+  }
+  // P6: after the requester's own check — a non-member learns nothing about
+  // the server's settings — and before a single message is read.
+  if (!await serverAllowsAi(String(channel.serverId))) {
+    return { ok: false, status: 403, error: AI_DISABLED_FOR_SERVER_MESSAGE, code: AI_DISABLED_FOR_SERVER };
   }
   let rows: Row[];
   try {

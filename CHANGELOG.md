@@ -1,3 +1,32 @@
+## [Unreleased] — 2026-10-01 — P6: interop, AI and reliability
+
+P6 works through the gaps P5 carried forward. Evidence and the defect log are in
+`docs/P6_INTEROP_AI_RELIABILITY.md`.
+
+### Upgrade notes
+- **Migration 078** adds `servers."aiEnabled"` (BOOLEAN NOT NULL DEFAULT TRUE). Every existing
+  server keeps AI. Owners can now turn it off.
+- **`AI_PROVIDER` now governs voice-message transcription and embeddings too.**
+  - `AI_PROVIDER=none`/`off`/`rules` stops transcription and embeddings even when
+    `GROQ_API_KEY`, `OPENAI_API_KEY` or `EMBEDDING_PROVIDER` keys are set.
+  - `AI_PROVIDER` set to a provider other than `groq` stops transcription. It used to send audio
+    to Groq or OpenAI regardless.
+  - With `AI_PROVIDER` unset, nothing changes.
+
+### Added
+- **Per-server AI opt-out.** In Server Settings → General, a server owner can turn AI off for
+  their server (`PATCH /api/servers/:id { "aiEnabled": false }`).
+  - Nothing from that server is then sent to an AI provider: no channel context, message text,
+    voice audio, search embedding, or name and tags for recommendations.
+  - Routes with a local fallback still answer. Streams and translation answer 403
+    `AI_DISABLED_FOR_SERVER`.
+  - The setting is read on every request, so it takes effect immediately.
+
+### Security
+- **Voice-message transcription ignored `AI_PROVIDER`** (P6 AI-09). It read the provider keys
+  itself.
+- **The embedding path ignored `AI_PROVIDER=none`** (P6 AI-10).
+
 ## [Unreleased] — 2026-10-01 — P5: federation, AI and self-hosting
 
 Two independent Bridge installations now federate end to end over real HTTPS in a lab. The lab

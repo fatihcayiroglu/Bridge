@@ -26,6 +26,7 @@
 
 import logger from './logger';
 import { envSafeInt, envSafeNumber } from './envNumbers';
+import { aiOffByInstallation } from './aiInstallation';
 
 type LoggerLike = {
   warn?: (...args: unknown[]) => void;
@@ -79,6 +80,9 @@ export { PGVECTOR_ENABLED, EMBEDDING_DIMENSION, EMBEDDING_PROVIDER };
  */
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   if (!PGVECTOR_ENABLED) return null;
+  // P6 AI-10: AI_PROVIDER=none/off/rules is the installation's master switch —
+  // an embedding sends text to a provider, so it is off too.
+  if (aiOffByInstallation()) return null;
   if (!text?.trim()) return null;
 
   try {

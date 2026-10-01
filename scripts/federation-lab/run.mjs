@@ -28,7 +28,7 @@ import { FakeAiProvider } from './lib/fake-ai.mjs';
 
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(`--${n}`); return i >= 0 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : d; };
-const ALL = ['identity', 'follow', 'post', 'inbound-lifecycle', 'adversarial', 'ssrf', 'partition', 'restart', 'peers', 'revocation', 'ai', 'egress'];
+const ALL = ['identity', 'follow', 'post', 'inbound-lifecycle', 'adversarial', 'ssrf', 'partition', 'restart', 'peers', 'revocation', 'ai', 'aiserver', 'egress'];
 const selected = opt('scenarios', ALL.join(',')).split(',').map((s) => s.trim()).filter(Boolean);
 const workDir = opt('work', fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-fedlab-')));
 const outDir = opt('out', path.join(workDir, 'report'));
@@ -663,6 +663,87 @@ const S = {
     check('ai', 'F-AI-14', 'AI_PROVIDER=none: AI is off even with a key set — no provider contacted, local fallback only',
       bStatus.body?.enabled === false && bSum.status === 200 && bSum.body?.provider === 'rules' && lab.ai.requests.length === nb && bGroq.length === 0,
       `enabled ${bStatus.body?.enabled}, summary ${bSum.status}/${bSum.body?.provider}, egress to SaaS ${bGroq.length}`);
+  },
+
+  // ── P6: per-server AI opt-out, against real processes and the real provider ──
+  async aiserver() {
+    const A = lab.inst.a.base;
+    const owner = user('admina');
+    const tag = rnd();
+    const S1_SECRET = `S1-OPTOUT-${tag}`;
+    // One fresh member per round: the AI rate limit (10/min per user, a product
+    // setting the lab does not change) is not what is being measured here.
+    const members = [];
+    for (const n of ['ais1', 'ais2', 'ais3', 'ais4']) members.push(await register(A, n));
+    const carol = members[0];
+    const s1 = await makeServer(A, owner, members);
+    const s2 = await makeServer(A, owner, members);
+    const sock = await connectSocket(A, owner.token);
+    await sendMessage(sock, { channelId: s1.channelId, serverId: s1.serverId, content: `quarterly plan ${S1_SECRET}`, ackId: `ais-${rnd()}` });
+    await sendMessage(sock, { channelId: s2.channelId, serverId: s2.serverId, content: `open chat ${tag}`, ackId: `ais-${rnd()}` });
+    sock.close();
+    const sum = (u, cid) => request(A, 'GET', `/api/ai/summarize/${cid}`, { token: u.token });
+    const routesOn = (u, srv) => [
+      ['summarize', () => sum(u, srv.channelId)],
+      ['suggest-reply', () => request(A, 'GET', `/api/ai/suggest-reply/${srv.channelId}`, { token: u.token })],
+      ['ask/stream', () => request(A, 'GET', `/api/ai/ask/stream?q=hi&channelId=${srv.channelId}`, { token: u.token })],
+      ['translate', () => mutate(A, 'POST', '/api/ai/translate', u.token, { text: 'merhaba', targetLang: 'en', serverId: srv.serverId })],
+      ['semantic search', () => mutate(A, 'POST', '/api/semantic/search', u.token, { query: 'plan', serverId: srv.serverId })],
+      ['digest', () => request(A, 'GET', `/api/semantic/digest/${srv.serverId}`, { token: u.token })],
+    ];
+
+    const n0 = lab.ai.requests.length;
+    const on = await sum(carol, s1.channelId);
+    check('aiserver', 'F-AIS-01', 'control: with AI allowed, a member\'s summary of S1 reaches the provider with S1 content',
+      on.status === 200 && lab.ai.textSince(n0).includes(S1_SECRET), `status ${on.status}`);
+
+    const notOwner = await mutate(A, 'PATCH', `/api/servers/${s1.serverId}`, carol.token, { aiEnabled: false });
+    const stillOn = await request(A, 'GET', `/api/ai/status?serverId=${s1.serverId}`, { token: carol.token });
+    check('aiserver', 'F-AIS-02', 'a member who is not the owner cannot turn AI off', notOwner.status === 403 && stillOn.body?.server?.enabled === true,
+      `PATCH ${notOwner.status}, status ${JSON.stringify(stillOn.body?.server)}`);
+
+    const off = await mutate(A, 'PATCH', `/api/servers/${s1.serverId}`, owner.token, { aiEnabled: false });
+    check('aiserver', 'F-AIS-03', 'the owner turns AI off for S1', off.status === 200 && off.body?.aiEnabled === false, `PATCH ${off.status}, aiEnabled ${off.body?.aiEnabled}`);
+
+    const runAll = async (u, srv) => { const out = []; for (const [n, fn] of routesOn(u, srv)) { const r = await fn(); out.push([n, r.status, r.body?.code]); } return out; };
+    const n1 = lab.ai.requests.length;
+    const offResults = await runAll(carol, s1);
+    const sentOff = lab.ai.textSince(n1);
+    check('aiserver', 'F-AIS-04', 'S1 with AI off: zero provider requests from every route (local answers or 403 AI_DISABLED_FOR_SERVER)',
+      lab.ai.requests.length === n1 && !sentOff.includes(S1_SECRET)
+        && offResults.every(([, st, code]) => st === 200 || (st === 403 && code === 'AI_DISABLED_FOR_SERVER')),
+      `${lab.ai.requests.length - n1} provider request(s); ${offResults.map(([n, st, c]) => `${n}: ${st}${c ? `/${c}` : ''}`).join(', ')}`);
+
+    const n2 = lab.ai.requests.length;
+    const s2Results = await runAll(members[1], s2);
+    check('aiserver', 'F-AIS-05', 'S2 on the same installation still uses AI, and no S1 content goes out with it',
+      lab.ai.requests.length > n2 && !lab.ai.textSince(n2).includes(S1_SECRET),
+      `${lab.ai.requests.length - n2} provider request(s); ${s2Results.map(([n, st]) => `${n}: ${st}`).join(', ')}`);
+
+    // Restart A: the setting is stored state, not process memory.
+    await lab.inst.a.stop();
+    await lab.inst.a.start({ tag: 'aiserver' });
+    const carol2 = { ...members[2], ...(await login(A, members[2])) };
+    const owner2 = { ...owner, ...(await login(A, owner)) };
+    const n3 = lab.ai.requests.length;
+    const afterRestart = await runAll(carol2, s1);
+    check('aiserver', 'F-AIS-06', 'after A restarts, S1 still sends nothing to the provider',
+      lab.ai.requests.length === n3 && afterRestart.every(([, st, code]) => st === 200 || (st === 403 && code === 'AI_DISABLED_FOR_SERVER')),
+      `${lab.ai.requests.length - n3} provider request(s); ${afterRestart.map(([n, st]) => `${n}: ${st}`).join(', ')}`);
+
+    const back = await mutate(A, 'PATCH', `/api/servers/${s1.serverId}`, owner2.token, { aiEnabled: true });
+    // A new message changes what would be summarised, so the next summary
+    // cannot be any earlier answer: it must be computed now, by the provider.
+    const NEW_TEXT = `after-reenable-${tag}`;
+    const sock2 = await connectSocket(A, owner2.token);
+    await sendMessage(sock2, { channelId: s1.channelId, serverId: s1.serverId, content: NEW_TEXT, ackId: `ais-${rnd()}` });
+    sock2.close();
+    const n4 = lab.ai.requests.length;
+    const fresh = { ...members[3], ...(await login(A, members[3])) };
+    const reOn = await sum(fresh, s1.channelId);
+    check('aiserver', 'F-AIS-07', 're-enabled: the next S1 summary is computed by the provider again',
+      back.status === 200 && reOn.status === 200 && reOn.body?.provider !== 'rules' && lab.ai.textSince(n4).includes(NEW_TEXT),
+      `PATCH ${back.status}, summary ${reOn.status}/${reOn.body?.provider}, provider requests ${lab.ai.requests.length - n4}`);
   },
 
   async egress() {

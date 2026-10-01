@@ -22,7 +22,7 @@ one configured, in this order: Groq → Gemini → OpenRouter → Ollama → Ope
 | `groq` | `GROQ_API_KEY` | Groq (third party) |
 | `gemini` | `GEMINI_API_KEY` | Google (third party) |
 | `openrouter` | `OPENROUTER_API_KEY` | OpenRouter (third party) |
-| `none` | — | nowhere: AI is off **even if keys are set** |
+| `none` | — | nowhere: AI is off **even if keys are set** — chat, voice transcription and embeddings alike |
 
 Notes:
 
@@ -34,6 +34,41 @@ Notes:
   provider and is logged at error level.
 - **Time limit.** `AI_TIMEOUT_MS` (default 30000) is the total time one AI call
   may take, retries included. Streams end after 45 s.
+- **Voice-message transcription** follows `AI_PROVIDER` too (P6). It runs only
+  when `AI_PROVIDER` is unset (Groq key, else OpenAI key) or `groq`. Any other
+  selected provider, or `none`, means no audio is sent anywhere.
+- **Embeddings** (`PGVECTOR_ENABLED`, `EMBEDDING_PROVIDER`) are a separate
+  operator opt-in, but `AI_PROVIDER=none` turns them off as well (P6).
+
+## Per-server opt-out (P6)
+
+The installation decides whether AI exists. A **server owner** decides whether
+their server's content may reach it: Server Settings → General → "Allow AI
+features on this server" (`PATCH /api/servers/:id { "aiEnabled": false }`,
+owner only, a real boolean).
+
+With AI off for a server, nothing from it is sent to an AI provider: no channel
+context, no message text, no voice audio, no search query embedding, no tags or
+name for server recommendations.
+
+- **Routes with a local fallback still answer.** Summary, reply suggestions,
+  moderation, search and digest answer from rules, marked
+  `aiDisabledForServer: true`.
+- **Routes without one refuse.** Streams and translation answer 403
+  `AI_DISABLED_FOR_SERVER`.
+
+How the setting behaves:
+
+- **Read on every request, from the database.** Turning it off or on takes effect
+  on the next request. An AI answer cached before the opt-out is not served
+  after it, and a local answer is not cached.
+- **Permission first.** The requester's own permission check runs first, so a
+  non-member learns nothing about another server's setting.
+- **Default.** Existing and new servers allow AI (migration 078), which
+  preserves behaviour. An unreadable setting counts as "off".
+- **Translation needs the server id.** Text sent to `/api/ai/translate` is
+  attributed to a server only when the client passes `serverId`; the server
+  cannot attribute free text sent without it.
 
 ## What is sent to a provider
 
@@ -73,9 +108,6 @@ to read, because nothing else is ever in the context.
 
 ## Known limits
 
-- **No per-server opt-out.** Control is per installation (`AI_PROVIDER`). A
-  server owner cannot opt their server out of AI features while the
-  installation has a provider.
 - **Embeddings.** pgvector semantic search (`PGVECTOR_ENABLED`) has an
   embedding writer, `saveMessageEmbedding`, that nothing calls, so semantic
   search uses its keyword/AI fallback. Vector search excludes deleted messages
