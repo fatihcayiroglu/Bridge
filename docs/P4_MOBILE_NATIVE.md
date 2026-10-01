@@ -156,7 +156,8 @@ on PR fatihcayiroglu/Bridge#112; CI run, merge SHA and the post-merge gate are r
   call buttons are not integrated; `voip` is deliberately not declared on iOS (App Review requires
   PushKit + CallKit for it).
 - **Long channels are not virtualised** (P3 decision, re-measured in P4): see "Long channel" above —
-  +13 MB and no extra stall up to 300 messages; ~1 s worst stall past 1,500 on the emulator.
+  +13–15 MB and no extra stall up to 300 messages; a 0.7–1 s worst stall past 1,500 on the emulator
+  (runs 9 and 10).
   Revisit only with real-device evidence.
 - **MEDIA-11** (audio-first admission experiment `f561254`) stays closed; nothing in P4 reproduced
   it on a device or network, and no safer fix was found.
@@ -183,9 +184,10 @@ Nothing below is claimed as passing anywhere in this document.
 
 ## Results on the final code — Android emulator
 
-AUTOMATED / EMULATOR, `Mobile Android` run 36824191529 (run 9, commit `727945b` — the Android code
-is unchanged after it), Android 14 API 34 `sdk_gphone64_x86_64`, WebView 113.0.5672.136:
-**30 PASS, 0 FAIL, 0 SKIPPED, 4 MEASURED** (run 8 on `ebe72ba`: the same 30 / 0 / 0 / 4).
+AUTOMATED / EMULATOR, `Mobile Android` run 36830001666 (run 10, the merged PR head `5e1ca23`),
+Android 14 API 34 `sdk_gphone64_x86_64`, WebView 113.0.5672.136:
+**30 PASS, 0 FAIL, 0 SKIPPED, 4 MEASURED** (run 8 on `ebe72ba` and run 9 on `727945b`: the same
+30 / 0 / 0 / 4).
 
 | Check | Result | What it proves |
 |---|---|---|
@@ -223,6 +225,23 @@ is unchanged after it), Android 14 API 34 `sdk_gphone64_x86_64`, WebView 113.0.5
 | PERF01 | MEASURED | memory footprint after the journeys (PSS) |
 | P05 | PASS | notification permission granted on a build without Firebase config → app launches, stays alive and says push is unavailable |
 | LO01 | PASS | sign out on a build without Firebase → sign-in screen, the app process stays alive |
+
+## Results on the final code — iOS simulator
+
+AUTOMATED / SIMULATOR, `Mobile iOS` run 36830001748 (the merged PR head `5e1ca23`), macOS 15
+runner, Xcode 16.4, iPhone SE (3rd generation) simulator, Debug build, version 1.125.0:
+**4 PASS, 0 FAIL, 1 UNVERIFIED, 2 MEASURED**. No Bridge server runs in this job, so the app's API
+calls fail with a network error after boot; the checks below do not depend on the server.
+
+| Check | Result | What it proves |
+|---|---|---|
+| I01 | PASS | the built app declares microphone/camera usage and its own `com.bridge.app://` scheme (`schemes=com.bridge.app,bridge`) |
+| I02 | PASS | cold launch: the app process is alive after launch (`launchctl`) |
+| I03 | PASS | the web app and the native bridge load inside WKWebView ("Capacitor entegrasyonu hazır — ios" 11 s after the launch command) |
+| I04 | PASS | iOS routes `com.bridge.app://channel/<id>` to Bridge: "Opening URL (com.bridge.app://channel/…) with com.bridge.app" (LaunchServices) |
+| I07 | **UNVERIFIED** | the link is dispatched inside the running app — iOS raised its "Open in 'Bridge'?" confirmation (`deactivationReasons = systemModalAlert`), which a headless run cannot accept (H-19). Not counted as PASS |
+| I05 | MEASURED | launch command → bridge ready: 11 s (launch completed after 2 s), on a simulator booted early in the job |
+| I06 | MEASURED | `bridge://` claimants: `com.apple.Bridge` and `com.bridge.app`; `openurl bridge://` → OSStatus −10814 — why the app uses `com.bridge.app://` (P4-20) |
 
 ## Evidence matrix by workstream
 
@@ -271,18 +290,18 @@ phone's Wi-Fi/data off; on a phone that is a real radio change, so those results
 Android 14 emulator on a CI runner (x86_64, KVM, no GPU); run-to-run variance is large, so the
 spread is shown. These are **not** real-device performance figures (EXTERNAL / UNVERIFIED).
 
-| Measure | run 2 (baseline) | run 4 | run 6 | run 7 | run 8 | run 9 |
-|---|---|---|---|---|---|---|
-| Cold launch → auth screen (`am start -W` TotalTime, A01) | 6214 ms | 7652 ms | 8709 ms | 6987 ms | 7010 ms | 7377 ms |
-| HOT resume after 20 s in background (L01) | 485 ms | 699 ms | 384 ms | 450 ms | 250 ms | 578 ms |
-| Relaunch after process death (L03) | 2767 ms | — | 3887 ms | 5097 ms | 2253 ms | 3632 ms |
-| Cold relaunch after force-stop (L04) | 2136 ms | 2647 ms | 2495 ms | 2237 ms | 1929 ms | 2028 ms |
-| Offline → reconnect: held message delivered (N01) | invalid (H-03) | 2915 ms | 4012 ms | 3544 ms | 1148 ms | 5200 ms |
-| Missed message visible after 30 s offline (N02) | invalid (H-03) | 5314 ms | 2171 ms | 1640 ms | 649 ms | 1135 ms |
-| Composer send → persisted at 400 ms one-way latency (N03), copies | — | 1595 ms, 1 | 1570 ms, 1 | 1675 ms, 1 | 1794 ms, 1 | 1957 ms, 1 |
-| Voice recovery after a 10 s network loss (V02) | — | — | invalid (H-11) | 6556 ms | 6529 ms | 6525 ms |
-| Background microphone capture after 20/60 s (P04) | not silenced (20 s) | not silenced (60 s) | not silenced (60 s) | not silenced (60 s) | not silenced (60 s) | not silenced (60 s) |
-| Memory after the journeys, total PSS (PERF01) | null (H-05) | 104780 KB | 112398 KB | 111622 KB | 113633 KB | 165132 KB (after PERF02's 2000 messages) |
+| Measure | run 2 (baseline) | run 4 | run 6 | run 7 | run 8 | run 9 | run 10 |
+|---|---|---|---|---|---|---|---|
+| Cold launch → auth screen (`am start -W` TotalTime, A01) | 6214 ms | 7652 ms | 8709 ms | 6987 ms | 7010 ms | 7377 ms | 6920 ms |
+| HOT resume after 20 s in background (L01) | 485 ms | 699 ms | 384 ms | 450 ms | 250 ms | 578 ms | 537 ms |
+| Relaunch after process death (L03) | 2767 ms | — | 3887 ms | 5097 ms | 2253 ms | 3632 ms | 1852 ms |
+| Cold relaunch after force-stop (L04) | 2136 ms | 2647 ms | 2495 ms | 2237 ms | 1929 ms | 2028 ms | 1859 ms |
+| Offline → reconnect: held message delivered (N01) | invalid (H-03) | 2915 ms | 4012 ms | 3544 ms | 1148 ms | 5200 ms | 1668 ms |
+| Missed message visible after 30 s offline (N02) | invalid (H-03) | 5314 ms | 2171 ms | 1640 ms | 649 ms | 1135 ms | 1097 ms |
+| Composer send → persisted at 400 ms one-way latency (N03), copies | — | 1595 ms, 1 | 1570 ms, 1 | 1675 ms, 1 | 1794 ms, 1 | 1957 ms, 1 | 1701 ms, 1 |
+| Voice recovery after a 10 s network loss (V02) | — | — | invalid (H-11) | 6556 ms | 6529 ms | 6525 ms | 4263 ms |
+| Background microphone capture after 20/60 s (P04) | not silenced (20 s) | not silenced (60 s) | not silenced (60 s) | not silenced (60 s) | not silenced (60 s) | not silenced (60 s) | not silenced (60 s) |
+| Memory after the journeys, total PSS (PERF01) | null (H-05) | 104780 KB | 112398 KB | 111622 KB | 113633 KB | 165132 KB (after PERF02's 2000 messages) | 180381 KB (after PERF02) |
 
 ### Long channel (PERF02, run 9 — AUTOMATED / EMULATOR)
 
@@ -301,13 +320,18 @@ until all history is loaded (50 per page).
 About 32 DOM nodes per message and one long task per 50-message page. Up to ~1,000 messages the
 worst stall equals the channel-open stall (588 ms); past ~1,500 the worst stall grows to ~1 s.
 (`performance.memory` stays at 11 MB in this WebView — not a usable signal; PSS is.)
+Run 10 (`5e1ca23`) repeats the shape: identical DOM counts; PSS 107.8 MB at open, 123.0 MB at 300,
+149.9 MB at 1,050, 180.6 MB at 2,000; worst stall 408 ms (= the open stall) up to 1,050 messages,
+718 ms from 1,800.
 **Decision (closure item 17): virtualisation is not added.** Reaching 1,500+ rendered messages
-takes ~30 deliberate "load older" pages; the everyday range (≤ 300) costs +13 MB and no stall worse
+takes ~30 deliberate "load older" pages; the everyday range (≤ 300) costs +13–15 MB and no stall worse
 than opening the channel. This is an emulator on a CI runner, not a phone; it is retained as a
 known limitation with this measured rationale, to be revisited only with real-device evidence.
 
 iOS simulator (separate workflow, AUTOMATED / SIMULATOR): launch command → WKWebView bridge ready
-(I05) took 157 s (`Mobile iOS` run 2) and 204 s (run 3). That time is dominated by the runner's
-first simulator boot; it is **not** an app launch time.
+(I05) took 157 s (`Mobile iOS` run 2) and 204 s (run 3), dominated by the runner's first
+simulator boot (H-18). With the simulator booted at the start of the job it took 11 s on the
+merged head `5e1ca23` (launch completed after 2 s). A CI simulator time; it is **not** a device
+launch time.
 
 <!-- P4-RESULTS -->
