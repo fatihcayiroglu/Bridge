@@ -113,7 +113,7 @@ launched_pid=$(printf '%s\n' "$launch_out" | sed -n "s/^${BUNDLE_ID}: \([0-9][0-
 step "launch completed=${launched} after ${launch_after:-?} s (${launch_out}); bridge ready=${ready} after ${ready_after:-?} s"
 sleep 3
 # The client asks App.getState() at boot; the answer is in the console ("TO JS {"isActive":…}").
-app_state=$(console | grep -o '{"isActive":[a-z]*}' | tail -1)
+app_state=$(console | grep -o '"isActive":[a-z]*' | tail -1)
 limit 60 xcrun simctl io "$UDID" screenshot "$OUT/cold-launch.png" >/dev/null 2>&1 || true
 # The OS's own view: launchctl lists `<pid> <status> UIKitApplication:<bundle>[…]` for a running app.
 os_pid=$(limit 60 xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | awk -v b="UIKitApplication:$BUNDLE_ID" 'index($3, b) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }')
@@ -132,12 +132,25 @@ fi
 
 # ── I04: a com.bridge.app:// link reaches the running app ────────────────────────────────────
 if [ -n "$launched_pid" ] && [ "$launched" = 1 ]; then
+  # The OS's own record of the hand-off (FrontBoard/SpringBoard and the app process), so a missing
+  # dispatch can be placed: URL never routed, routed but not delivered, or delivered but not to JS.
+  OSLOG="$(pwd)/$OUT/oslog.txt"
+  ( xcrun simctl spawn "$UDID" log stream --style compact --level debug \
+      --predicate 'process == "App" OR eventMessage CONTAINS[c] "com.bridge.app" OR eventMessage CONTAINS[c] "openURL"' > "$OSLOG" 2>&1 ) &
+  LOGGER=$!
+  sleep 3
   step "opening com.bridge.app://channel/p4-ios-smoke-channel"
   limit 120 xcrun simctl openurl "$UDID" "com.bridge.app://channel/p4-ios-smoke-channel" 2>&1 | tail -3 || true
-  for _ in $(seq 1 30); do
-    console | grep -q "Deep link dispatched: navigate:channel" && break
-    sleep 2
+  for attempt in 1 2; do
+    for _ in $(seq 1 15); do
+      console | grep -q "Deep link dispatched: navigate:channel" && break 2
+      sleep 2
+    done
+    [ "$attempt" = 1 ] && { step "second openurl"; limit 120 xcrun simctl openurl "$UDID" "com.bridge.app://channel/p4-ios-smoke-channel-2" 2>&1 | tail -3 || true; }
   done
+  kill "$LOGGER" 2>/dev/null || true
+  step "OS log lines about the URL hand-off"
+  grep -i -E "com\.bridge\.app:|openURL|open url|openApplication|application:open|scene|activat" "$OSLOG" | grep -v -i "keyboard" | tail -40 | cut -c1-260 || true
 fi
 if console | grep -q "Deep link dispatched: navigate:channel"; then
   record PASS I04 "com.bridge.app://channel/<id> reaches the running app (bridge dispatch)" "routing itself is covered by the Android emulator and unit tests"
