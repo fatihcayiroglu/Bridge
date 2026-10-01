@@ -34,17 +34,18 @@ type LoggerLike = {
   default?: LoggerLike;
 };
 
-function loggerWarn(...args: unknown[]): void {
+// P6 AI-12: the method is called ON its logger. A detached pino method loses
+// `this` and throws, which turned every log line here into an exception.
+function loggerCall(level: 'warn' | 'info', args: unknown[]): void {
   const l = logger as unknown as LoggerLike;
-  const fn = l.warn ?? l.default?.warn;
-  if (fn) fn(...args);
+  const target = typeof l[level] === 'function' ? l : l.default;
+  const fn = target?.[level];
+  if (typeof fn === 'function') fn.apply(target, args);
 }
 
-function loggerInfo(...args: unknown[]): void {
-  const l = logger as unknown as LoggerLike;
-  const fn = l.info ?? l.default?.info;
-  if (fn) fn(...args);
-}
+function loggerWarn(...args: unknown[]): void { loggerCall('warn', args); }
+
+function loggerInfo(...args: unknown[]): void { loggerCall('info', args); }
 
 export type EmbeddingProvider = 'openai' | 'ollama' | 'nomic';
 
@@ -221,6 +222,8 @@ export async function vectorSearch(params: {
   conditions.push(`m.type != 'system'`);
   // P5 AI-02: a deleted message's embedding must not rank results.
   conditions.push('m."deletedAt" IS NULL');
+  // P6: an E2EE row never ranks (it is never embedded; a pre-P6 vector is purged nightly).
+  conditions.push('m."encryptedContent" IS NULL');
 
   const where = conditions.join(' AND ');
 
@@ -257,24 +260,32 @@ function isE2eePayload(content: unknown): boolean {
   return typeof content === 'string' && content.startsWith('🔒e2e:');
 }
 
+/** What `saveMessageEmbedding` did — callers count these; nothing else depends on them. */
+export type SaveEmbeddingResult =
+  | 'disabled'         // pgvector or the installation's AI is off: nothing sent
+  | 'skipped_e2ee'     // E2EE payload: never sent
+  | 'ineligible'       // deleted, changed, E2EE in the row, system, server AI off: nothing sent
+  | 'provider_failed'  // the provider gave nothing usable: the row stays NULL and is retried later
+  | 'stale'            // the row changed while the provider worked: the vector was discarded
+  | 'saved'
+  | 'check_failed'     // the eligibility read failed: nothing sent (fail closed)
+  | 'save_failed';
+
 /**
- * Bir mesajın embedding'ini DB'ye kaydeder.
- * routes/messages veya socket handlers'dan çağrılır.
+ * The single guarded writer for `messages.embedding` (P6). Both the live sweep
+ * and the nightly history job go through it.
  *
- * ══════════════════════════════════════════════════════════════════════════
- * E2EE İÇERİK ASLA EMBED EDİLMEZ
- * ══════════════════════════════════════════════════════════════════════════
- * Embedding üretmek, içeriği bir sağlayıcıya METİN olarak göndermek ve
- * türetilmiş bir temsili veritabanında saklamak demektir. Uçtan uca şifreli
- * bir mesaj için bu, şifrelemenin TÜM AMACINI ortadan kaldırır.
+ *   1. E2EE content is never sent (flags or the `🔒e2e:` prefix).
+ *   2. Immediately before the provider call, the row is re-read: it must still
+ *      exist with exactly this content, not be deleted, carry no E2EE payload,
+ *      not be a system message, and belong to a server whose owner allows AI.
+ *      A batch may be minutes old; this check is per message.
+ *   3. The vector is written only if the row STILL holds the text that was
+ *      embedded (and is still eligible). An edit, delete or opt-out that lands
+ *      while the provider works wins: the vector is discarded, never stored
+ *      against text it does not describe.
  *
- * Denetimde bu yolda HİÇBİR E2EE kontrolü yoktu. Şu an üretimde
- * `saveMessageEmbedding` çağıran bir kod olmadığı için canlı bir sızıntı
- * YOKTU — ama ilk çağıran eklendiği anda E2EE düz metni embed edilecekti.
- *
- * Koruma ÇAĞIRANA bırakılmaz: her yeni çağıranın hatırlaması gereken bir
- * kural, er ya da geç unutulur. Kontrol fonksiyonun KENDİSİNDEDİR ve
- * FAIL-CLOSED çalışır: şüphe varsa embed edilmez.
+ * Message text never appears in a log line from here.
  */
 export async function saveMessageEmbedding(params: {
   db:        { query: (sql: string, values: unknown[]) => Promise<unknown> };
@@ -284,30 +295,130 @@ export async function saveMessageEmbedding(params: {
   isEncrypted?: boolean;
   /** Kanal/mesaj tipi; 'e2ee' ise embed EDİLMEZ. */
   type?: string;
-}): Promise<void> {
-  if (!PGVECTOR_ENABLED) return;
+}): Promise<SaveEmbeddingResult> {
+  if (!PGVECTOR_ENABLED) return 'disabled';
   const { db, messageId, content, isEncrypted, type } = params;
 
+  // E2EE İÇERİK ASLA EMBED EDİLMEZ — embedding üretmek içeriği sağlayıcıya
+  // METİN olarak göndermek demektir. Koruma çağırana bırakılmaz; FAIL-CLOSED.
   if (isEncrypted === true || type === 'e2ee' || isE2eePayload(content)) {
     loggerWarn(
       { event: 'pgvector.embed.skipped_e2ee', messageId },
       '[pgvector] E2EE mesaj embed EDİLMEDİ (şifreleme sözleşmesi).',
     );
-    return;
+    return 'skipped_e2ee';
+  }
+  if (aiOffByInstallation()) return 'disabled';
+  if (!content?.trim()) return 'ineligible';
+
+  try {
+    const eligible = await db.query(ELIGIBLE_MESSAGE_SQL, [messageId, content]) as { rows?: unknown[] } | undefined;
+    if (!eligible?.rows?.length) return 'ineligible';
+  } catch (err) {
+    loggerWarn({ err, messageId, event: 'pgvector.embed.check_failed' }, '[pgvector] Uygunluk okunamadı; embed edilmedi.');
+    return 'check_failed';
   }
 
   const embedding = await generateEmbedding(content);
-  if (!embedding) return;
+  if (!embedding) return 'provider_failed';
 
   const vectorLiteral = `[${embedding.join(',')}]`;
   try {
-    await db.query(
-      `UPDATE messages SET embedding = $1::vector WHERE _id = $2`,
-      [vectorLiteral, messageId],
-    );
+    const r = await db.query(GUARDED_EMBEDDING_UPDATE_SQL, [vectorLiteral, messageId, content]) as { rowCount?: number | null } | undefined;
+    if (r && typeof r.rowCount === 'number' && r.rowCount === 0) {
+      loggerInfo({ messageId, event: 'pgvector.embed.stale' }, '[pgvector] Mesaj embed sırasında değişti; vektör atıldı.');
+      return 'stale';
+    }
     loggerInfo({ messageId, event: 'pgvector.embed.saved' }, '[pgvector] Embedding kaydedildi.');
+    return 'saved';
   } catch (err) {
     loggerWarn({ err, messageId, event: 'pgvector.embed.save_failed' }, '[pgvector] Embedding kaydedilemedi.');
+    return 'save_failed';
+  }
+}
+
+/** The predicate every embeddable row satisfies (alias `m`). */
+export const EMBEDDABLE_ROW_PREDICATE = `m."deletedAt" IS NULL
+     AND m."encryptedContent" IS NULL
+     AND m.content NOT LIKE '🔒e2e:%'
+     AND m.type <> 'system'
+     AND EXISTS (SELECT 1 FROM servers s WHERE s._id = m."serverId" AND s."aiEnabled" = TRUE)`;
+
+const ELIGIBLE_MESSAGE_SQL = `SELECT 1 FROM messages m
+   WHERE m._id = $1 AND m.content = $2
+     AND ${EMBEDDABLE_ROW_PREDICATE}`;
+
+const GUARDED_EMBEDDING_UPDATE_SQL = `UPDATE messages m SET embedding = $1::vector
+   WHERE m._id = $2 AND m.content = $3
+     AND ${EMBEDDABLE_ROW_PREDICATE}`;
+
+// ── Invalidation (P6) ─────────────────────────────────────────────────────────
+//
+// A vector describes the text it was computed from. Every path that changes a
+// message — REST, socket, plugins, federation, admin tools, bulk deletes — goes
+// through UPDATE, so the invalidation lives in the database, not in each path:
+//   · content / deletedAt / encryptedContent changes → that row's vector is NULL
+//     (the sweep re-embeds the new text if the row is still eligible);
+//   · a server's owner turns AI off → every vector of that server is removed,
+//     in the same transaction as the setting.
+// Created once, with the optional pgvector schema, under the boot schema lock.
+const INVALIDATE_FN_SQL = `CREATE OR REPLACE FUNCTION bridge_message_embedding_invalidate() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+  NEW.embedding := NULL;
+  RETURN NEW;
+END
+$fn$`;
+
+const PURGE_FN_SQL = `CREATE OR REPLACE FUNCTION bridge_server_ai_off_purge_embeddings() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+  UPDATE messages SET embedding = NULL WHERE "serverId" = NEW._id AND embedding IS NOT NULL;
+  RETURN NULL;
+END
+$fn$`;
+
+export const EMBEDDING_TRIGGERS: ReadonlyArray<{ name: string; table: string; sql: string }> = [
+  {
+    name: 'messages_embedding_invalidate',
+    table: 'messages',
+    sql: `CREATE TRIGGER messages_embedding_invalidate
+  BEFORE UPDATE OF content, "deletedAt", "encryptedContent" ON messages
+  FOR EACH ROW
+  WHEN (NEW.embedding IS NOT NULL AND (
+        NEW.content IS DISTINCT FROM OLD.content
+     OR NEW."deletedAt" IS DISTINCT FROM OLD."deletedAt"
+     OR NEW."encryptedContent" IS DISTINCT FROM OLD."encryptedContent"))
+  EXECUTE FUNCTION bridge_message_embedding_invalidate()`,
+  },
+  {
+    name: 'servers_ai_off_purge_embeddings',
+    table: 'servers',
+    sql: `CREATE TRIGGER servers_ai_off_purge_embeddings
+  AFTER UPDATE OF "aiEnabled" ON servers
+  FOR EACH ROW
+  WHEN (OLD."aiEnabled" IS DISTINCT FROM NEW."aiEnabled" AND NEW."aiEnabled" = FALSE)
+  EXECUTE FUNCTION bridge_server_ai_off_purge_embeddings()`,
+  },
+];
+
+async function ensureEmbeddingTriggers(db: {
+  query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }>;
+}): Promise<void> {
+  await db.query(INVALIDATE_FN_SQL);
+  await db.query(PURGE_FN_SQL);
+  // Created only when missing: CREATE/DROP TRIGGER locks the table, and a boot
+  // must not queue behind (and in front of) live traffic every time.
+  const present = await db.query(
+    `SELECT t.tgname AS name FROM pg_trigger t
+      WHERE NOT t.tgisinternal
+        AND t.tgrelid IN ('messages'::regclass, 'servers'::regclass)
+        AND t.tgname = ANY($1::text[])`,
+    [EMBEDDING_TRIGGERS.map((t) => t.name)],
+  );
+  const have = new Set((present?.rows ?? []).map((r) => String(r.name)));
+  for (const t of EMBEDDING_TRIGGERS) {
+    if (!have.has(t.name)) await db.query(t.sql);
   }
 }
 
@@ -361,6 +472,9 @@ export async function ensurePgvectorSchema(db: {
          ON messages USING ivfflat (embedding vector_cosine_ops)
          WITH (lists = 100)`,
     );
+    // P6: without invalidation a vector could outlive the text it describes.
+    // If the triggers cannot be created the feature stays off (fail closed).
+    await ensureEmbeddingTriggers(db);
     PGVECTOR_ENABLED = true;
     return true;
   } catch (err) {

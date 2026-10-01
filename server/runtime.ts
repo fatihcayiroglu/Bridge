@@ -35,7 +35,7 @@ import { startEventReminderJob, stopEventReminderJob } from './jobs/eventReminde
 import { startSavedMessageReminderJob, stopSavedMessageReminderJob } from './jobs/savedMessageReminders';
 import { startOutgoingWebhookDeliveryJob, stopOutgoingWebhookDeliveryJob } from './routes/outgoingWebhooks';
 // Sprint 120: A4 — pgvector geçmiş mesaj batch embed job kayıt altına alındı
-import { scheduleEmbedHistoryJob, cancelEmbedHistoryJob } from './jobs/embedHistory';
+import { scheduleEmbedHistoryJob, cancelEmbedHistoryJob, scheduleEmbedSweep, cancelEmbedSweep } from './jobs/embedHistory';
 
 // ── App ──────────────────────────────────────────────────────────────────────
 import { authMiddleware, startAuthCleanup, stopAuthCleanup }     from './middleware/auth';
@@ -103,6 +103,8 @@ async function bootstrap(): Promise<void> {
   startOutgoingWebhookDeliveryJob();
   // Sprint 120: A4 — pgvector geçmiş mesaj embed job'u (her gün 03:00 UTC)
   scheduleEmbedHistoryJob(db._pool);
+  // P6: the live caller of the embedding writer (bounded, cluster-claimed).
+  scheduleEmbedSweep(db._pool);
 
   server.listen(PORT, HOST, () => {
     logger.info({ event: 'server.start', port: PORT, host: HOST }, `Bridge listening on ${HOST}:${PORT}`);
@@ -149,6 +151,7 @@ const gracefulShutdown = createGracefulShutdown({
     stopNodeLiveness();
     stopRegistryMaintenance();
     cancelEmbedHistoryJob();     // Sprint 120: A4
+    cancelEmbedSweep();          // P6
   },
   exit: (code) => process.exit(code),
   log: logger,

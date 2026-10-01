@@ -17,6 +17,11 @@ name: Bridge Federation + AI Evidence
 #   An egress observer (with a positive control) shows neither installation
 #   contacted anything outside the lab: no mandatory SaaS.
 #
+#   P6: per-server AI opt-out across a restart (`aiserver`), and the pgvector
+#   path end to end (`vector`): the live embedding sweep against a recording
+#   Ollama-shaped embedder, permission-filtered vector search, edit/delete
+#   invalidation, opt-out purge, provider outage, restart, operator off.
+#
 # Statuses: PASS / FAIL / BLOCKED / SKIPPED / MEASURED — only PASS passes.
 on:
   pull_request:
@@ -66,10 +71,13 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             server/package-lock.json
-      - name: Install infrastructure (PostgreSQL binaries, Redis, OpenSSL)
+      - name: Install infrastructure (PostgreSQL binaries + pgvector, Redis, OpenSSL)
+        # P6: the `vector` scenario needs the pgvector extension for the lab's
+        # own PostgreSQL major; without it the scenario reports BLOCKED.
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq redis-server openssl
+          MAJOR=$(basename "$(dirname "$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)")")
+          sudo apt-get install -y -qq redis-server openssl "postgresql-${MAJOR}-pgvector"
           sudo systemctl stop redis-server || true
           ls -d /usr/lib/postgresql/*/bin
       - name: Lab hostnames resolve to loopback

@@ -92,6 +92,44 @@ describe('semantic search provider and privacy branches',()=>{
   it('falls back to keyword matching when AI call itself fails',async()=>{const s=setup({ai:true,aiError:new Error('provider down')});const r=await request(s.app).post('/api/semantic/search').send({query:'important decision',serverId:'s1',limit:1});expect(r.status).toBe(200);expect(r.body.matches).toHaveLength(1);expect(r.body.matches[0]._id).toBe('m1');});
 });
 
+// P6: the vector index forgets a message on edit/delete; a 3-minute cached
+// answer must not keep serving it. Cached matches are re-checked against the
+// current rows (deleted → dropped, edited → current text) and the member's
+// current channel visibility.
+describe('P6: cached search answers are re-checked against current messages', () => {
+  afterEach(() => { jest.clearAllMocks(); });
+  const cached = { matches: [
+    { _id: 'live', content: 'old text', channelId: 'c1' },
+    { _id: 'gone', content: 'deleted secret', channelId: 'c1' },
+    { _id: 'hidden', content: 'now private', channelId: 'c2' },
+  ], query: 'q', provider: 'pgvector:x', total: 3, days: 7, limit: 10 };
+
+  it('drops deleted and no-longer-visible rows, shows the edited text', async () => {
+    const s = setup({
+      cacheValue: cached,
+      viewable: ['c1'],
+      findWhereMessages: (f: any) => {
+        expect(f).toEqual({ _id: { $in: ['live', 'gone', 'hidden'] }, serverId: 's1', deletedAt: null });
+        return [{ _id: 'live', channelId: 'c1', content: 'edited text' }, { _id: 'hidden', channelId: 'c2', content: 'now private' }];
+      },
+    });
+    const r = await request(s.app).post('/api/semantic/search').send({ query: 'q', serverId: 's1' });
+    expect(r.status).toBe(200);
+    expect(r.body.cached).toBe(true);
+    expect(r.body.matches).toEqual([{ _id: 'live', content: 'edited text', channelId: 'c1' }]);
+    expect(r.body.total).toBe(1);
+    expect(JSON.stringify(r.body)).not.toContain('deleted secret');
+    expect(s.messagesFind).not.toHaveBeenCalled(); // still a cache hit, not a recompute
+  });
+
+  it('an empty cached answer is served as is (no lookup)', async () => {
+    const s = setup({ cacheValue: { matches: [], total: 0 } });
+    const r = await request(s.app).post('/api/semantic/search').send({ query: 'q', serverId: 's1' });
+    expect(r.body).toMatchObject({ matches: [], cached: true });
+    expect(s.findWhere).not.toHaveBeenCalled();
+  });
+});
+
 describe('semantic digest and engagement behavior',()=>{
   afterEach(()=>{jest.restoreAllMocks();jest.clearAllMocks();});
 

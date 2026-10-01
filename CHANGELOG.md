@@ -12,8 +12,22 @@ P6 works through the gaps P5 carried forward. Evidence and the defect log are in
   - `AI_PROVIDER` set to a provider other than `groq` stops transcription. It used to send audio
     to Groq or OpenAI regardless.
   - With `AI_PROVIDER` unset, nothing changes.
+- **pgvector installs (`PGVECTOR_ENABLED=true`) now embed new messages continuously.**
+  - A live sweep runs every 60 s, using `EMBED_SWEEP_*` settings (see `server/.env.example`).
+    Before, only a nightly job embedded messages.
+  - At first boot two database triggers are created, on `messages` and `servers`. If they cannot
+    be created, pgvector stays off and search uses its fallback.
+  - The first nightly run removes vectors that an older version stored for deleted messages,
+    E2EE payloads and opted-out servers.
 
 ### Added
+- **Live semantic indexing (pgvector).** The embedding writer has a caller: a bounded,
+  cluster-claimed sweep.
+  - Each message is re-checked against the database immediately before it is sent to the
+    embedding provider.
+  - A vector is stored only if the row still holds the text that was embedded.
+  - Edits and deletes clear a message's vector in the same statement (database triggers). An
+    owner turning AI off removes the server's vectors in the same transaction.
 - **Per-server AI opt-out.** In Server Settings → General, a server owner can turn AI off for
   their server (`PATCH /api/servers/:id { "aiEnabled": false }`).
   - Nothing from that server is then sent to an AI provider: no channel context, message text,
@@ -26,6 +40,16 @@ P6 works through the gaps P5 carried forward. Evidence and the defect log are in
 - **Voice-message transcription ignored `AI_PROVIDER`** (P6 AI-09). It read the provider keys
   itself.
 - **The embedding path ignored `AI_PROVIDER=none`** (P6 AI-10).
+- **The embedding batch could send E2EE payloads and deleted-message placeholders to the provider,
+  and kept vectors after an edit** (P6 AI-11). Vector search also excludes E2EE rows now.
+- **A cached semantic-search answer (3 min) could return a message after it was deleted.** Cached
+  answers are now re-checked against current messages and channel visibility on every hit.
+
+### Fixed
+- **Every log line from `lib/pgvector.ts` threw in production** (P6 AI-12). Pino methods were
+  called detached from their logger.
+  - A provider error made `generateEmbedding` throw instead of returning null.
+  - A missing `vector` extension would have failed boot instead of falling back.
 
 ## [Unreleased] — 2026-10-01 — P5: federation, AI and self-hosting
 

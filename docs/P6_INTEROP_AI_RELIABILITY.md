@@ -153,6 +153,90 @@ Result: F-AIS-01..07 **7 PASS**. The P5 checks F-AI-00..14 in the same run were 
 - `autoModerate` (a pre-existing server flag) has no writer and no column, so auto-moderation never runs (found in the audit; not changed in P6).
 
 
+### W2 — Search: a real caller for the pgvector writer (carry-over 4; AI-11, AI-12)
+
+**Initial status.** Partially implemented (audit row 4). The writer `saveMessageEmbedding` had no caller. A nightly batch embedded history with its own unguarded `UPDATE`.
+
+**Contract.**
+
+| Property | Rule |
+|---|---|
+| Who embeds | A live sweep every `EMBED_SWEEP_INTERVAL_MS` (60 s). One node per interval (cluster claim), up to `EMBED_SWEEP_BATCH` newest un-embedded rows from the last `EMBED_SWEEP_WINDOW_HOURS`. The nightly job handles older history. Both call the one writer. |
+| What is never sent | Anything with `AI_PROVIDER=none`; anything from a server with AI off; deleted rows, E2EE payloads (`encryptedContent` or the `🔒e2e:` prefix) and system messages. The row is re-read **immediately before** the provider call. |
+| What is stored | The vector is written only if the row still holds exactly the embedded text and is still eligible (content-guarded `UPDATE`). A change during the provider call wins: the outcome is `stale` and the vector is discarded. |
+| Invalidation | Database triggers, so every write path is covered. A change to `content`, `deletedAt` or `encryptedContent` sets `embedding = NULL` in the same statement. `servers."aiEnabled"` going false removes that server's vectors in the same transaction. A no-op update keeps the vector. |
+| Retrieval | Vector candidates are restricted to the member's viewable channels before ranking (P5). Deleted and E2EE rows never rank. A cached answer (3 min) is re-checked on every hit: deleted messages and newly hidden channels drop out, and edited messages show their current text. |
+| Failure | Provider down: the row stays NULL and the pass stops after `EMBED_SWEEP_MAX_FAILURES`. Search falls back to AI or keyword answers. Extension or triggers missing: pgvector stays off (fail closed) and boot continues. |
+| Restart | "Pending" is `embedding IS NULL` in the database. No process state. |
+| Secrets / logs | The provider receives `{model, prompt}` only. Log lines carry message ids and outcomes, never text. |
+| Scope | Indexing is per server, so private channels of an AI-enabled server are embedded. Retrieval is per member. Recorded in `docs/AI.md`. |
+
+**Implementation.**
+- `server/lib/pgvector.ts`:
+  - `saveMessageEmbedding` is now the single guarded writer and returns an outcome.
+  - `EMBEDDABLE_ROW_PREDICATE` is the one definition of an embeddable row.
+  - Invalidation triggers are created only when missing (no table lock on every boot), under the boot schema lock.
+  - `vectorSearch` excludes E2EE rows.
+  - The bound logger fix (AI-12).
+- `server/jobs/embedHistory.ts`: `runEmbedSweep`, `embedSweepTick`, `scheduleEmbedSweep`, `purgeIneligibleEmbeddings`. The nightly job goes through the writer and purges first.
+- `server/runtime.ts`: schedules and cancels the sweep.
+- `server/routes/semantic.ts`: `revalidateCachedSearch`.
+
+**Defects.**
+- **AI-11 (product defect, confirmed on the code; fixed).** The nightly batch had no E2EE guard and embedded deleted placeholders. An edit left the old vector in place.
+- **AI-12 (product defect, found by the real-PostgreSQL suite; fixed).** `lib/pgvector.ts` called pino's `warn`/`info` detached from the logger (`const fn = l.warn; fn(...)`), and pino reads `this`.
+  - Every log line from the module threw. A provider error made `generateEmbedding` reject instead of returning null; a missing extension failed boot instead of falling back.
+  - The unit tests' plain-function logger mocks hid it.
+  - Reproduced red with a `this`-checking logger double (2 tests), then fixed.
+- **AI-13 (product defect, found while designing the delete path; fixed).** A semantic-search answer cached for 3 minutes was served as-is after one of its messages was deleted. The deleted text came back.
+  - Negative control: with the re-check removed, the new test fails.
+
+**Regression evidence.**
+- **Unit tests:**
+  - `pgvector.test.ts`: 53 tests. The writer contract (eligibility before the provider, guarded write, stale, check failure, AI off, request body), triggers created or kept or fail-closed, E2EE excluded from search, AI-12.
+  - `embedHistory.test.ts`: 38 tests. Writer outcomes → statistics, purge order and bounds, sweep window/batch/order, failure cap, budget, abort, claim per interval, claim error, scheduling.
+  - `semantic-provider-digest-deep.test.ts`: +2 (cache re-check).
+- **Real PostgreSQL 16 + pgvector 0.6** (`tests/pg-integration/pgvector-embedding.pgtest.ts`, 12 tests). The embedder is deterministic and recording; everything else is production code.
+  - Boot creates the extension, the column and both triggers; a second boot is idempotent.
+  - Exact provider vector stored.
+  - Five ineligible kinds are never sent and never stored.
+  - Edit clears the vector in the same statement and the sweep re-embeds the new text.
+  - **CONTROL**: without the trigger, the stale vector stays (rolled back).
+  - Soft delete clears the vector and never re-embeds; a no-op update keeps the vector.
+  - Opt-out purge (neighbour untouched) and re-enable.
+  - Edit-during-provider race → `stale`.
+  - Outage: bounded requests, then a fresh module instance (a restart) finishes the rows.
+  - Vector search: visible, live rows only.
+  - Legacy purge.
+- **Negative control for the suite itself:** with the extension's control file hidden, all 12 fail; nothing is skipped.
+- **CI:** a dedicated step in the quality gate runs this suite on a throwaway cluster with the distribution's `postgresql-<major>-pgvector`. The federation lab installs the same package.
+
+**Integration evidence.** Federation lab scenario `vector`, F-VEC-01..13 (+M1). Installation A is restarted with `PGVECTOR_ENABLED` and a recording Ollama-shaped embedder; the production sweep at a 1.5 s interval is the only caller.
+
+| Check | Result (local full run) |
+|---|---|
+| F-VEC-01 | Boot with pgvector: extension, `vector(768)` column, both triggers |
+| F-VEC-02 | The sweep embeds new public and private-channel messages with no request from anyone |
+| F-VEC-M1 | MEASURED: message sent → vector stored, 1410 ms for 4 messages (1.5 s interval) |
+| F-VEC-03 | A server with AI off and an E2EE payload (stored by the server) are never sent and never get a vector |
+| F-VEC-04 | Semantic search answered by `pgvector:ollama`, finds the message |
+| F-VEC-05 | The private-channel vector ranks for the owner, never for a member who cannot see the channel |
+| F-VEC-06 | Edit: the new text is embedded; the old wording finds nothing (0 matches) |
+| F-VEC-07 | Delete: vector cleared at once, never re-embedded; the **cached** search (`cached: true`) no longer returns it |
+| F-VEC-08 | Owner turns AI off: vectors 3 → 0 at once, nothing new sent, search keyword-only |
+| F-VEC-09 | Re-enabled: the server is indexed again, including what was posted while off |
+| F-VEC-10 | Embedder returns 500: the message stays pending, 4 requests in about 6 ticks (bounded), search 200 via fallback |
+| F-VEC-11 | Restart of A with the embedder back: the outage-time message is embedded (state is in the database) |
+| F-VEC-12 | No message text in A's logs; 21 embedding requests carried only `{model, prompt}`, no credentials |
+| F-VEC-13 | Operator turns pgvector off (restart): 0 embedding requests, search falls back |
+
+Local full lab run (all 14 scenarios, this branch): **101 PASS, 7 MEASURED, 0 FAIL**. This includes `aiserver` 7/7 in the full sequence (H-13 fix) and every P5 check. CI run IDs are recorded with the PR.
+
+**Known limitations.**
+- An edit to a message older than the sweep window is re-indexed by the nightly job. Until then the message has no vector and is found by keyword only.
+- The opt-out purge runs inside the owner's settings transaction. Its cost grows with the server's number of embedded messages.
+- The deterministic embedder demonstrates the plumbing, not search quality. Hosted embedding providers: see "External / unverified".
+
 ## External / unverified
 
 _(filled in at closure)_

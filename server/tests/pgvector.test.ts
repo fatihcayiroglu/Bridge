@@ -232,15 +232,22 @@ describe('vectorSearch', () => {
 // ════════════════════════════════════════════════════════════════════════════
 
 describe('saveMessageEmbedding', () => {
+  // P6: the writer re-reads the row (eligibility) before the provider call,
+  // then writes only if the row still holds the embedded text.
+  const eligibleThen = (update: unknown = { rowCount: 1 }) => {
+    const db = { query: jest.fn(async (sql: string) => (sql.startsWith('SELECT 1') ? { rows: [{ '?column?': 1 }] } : update)) };
+    return db;
+  };
+
   it('PGVECTOR_ENABLED=false → DB sorgusu çağrılmaz', async () => {
     setEnv({ PGVECTOR_ENABLED: 'false' });
     const { saveMessageEmbedding } = require('../lib/pgvector');
     const db = { query: jest.fn() };
-    await saveMessageEmbedding({ db, messageId: 'msg-1', content: 'test' });
+    expect(await saveMessageEmbedding({ db, messageId: 'msg-1', content: 'test' })).toBe('disabled');
     expect(db.query).not.toHaveBeenCalled();
   });
 
-  it('embedding üretilir ve UPDATE çağrılır', async () => {
+  it('embedding üretilir ve içerik-korumalı UPDATE çağrılır', async () => {
     setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'nomic' });
     const fakeEmbedding = Array.from({ length: 768 }, () => 0.01);
     mockFetch.mockResolvedValueOnce({
@@ -250,22 +257,30 @@ describe('saveMessageEmbedding', () => {
     });
 
     const { saveMessageEmbedding } = require('../lib/pgvector');
-    const db = { query: jest.fn().mockResolvedValue({}) };
-    await saveMessageEmbedding({ db, messageId: 'msg-abc', content: 'Merhaba dünya' });
+    const db = eligibleThen();
+    expect(await saveMessageEmbedding({ db, messageId: 'msg-abc', content: 'Merhaba dünya' })).toBe('saved');
 
-    expect(db.query).toHaveBeenCalledTimes(1);
-    const [sql, values] = db.query.mock.calls[0];
+    expect(db.query).toHaveBeenCalledTimes(2);
+    const [checkSql, checkValues] = db.query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(checkSql).toMatch(/^SELECT 1 FROM messages m/);
+    expect(checkValues).toEqual(['msg-abc', 'Merhaba dünya']);
+    const [sql, values] = db.query.mock.calls[1] as unknown as [string, unknown[]];
     expect(sql).toContain('UPDATE messages');
     expect(sql).toContain('embedding');
-    expect(values).toContain('msg-abc');
+    // Written only against the text that was embedded, and only if still eligible.
+    expect(sql).toMatch(/m\._id = \$2 AND m\.content = \$3/);
+    expect(sql).toMatch(/s\."aiEnabled" = TRUE/);
+    expect(sql).toMatch(/m\."deletedAt" IS NULL/);
+    expect(values[0]).toBe(`[${fakeEmbedding.join(',')}]`);
+    expect(values.slice(1)).toEqual(['msg-abc', 'Merhaba dünya']);
   });
 
-  it('generateEmbedding null döndürürse UPDATE çağrılmaz', async () => {
+  it('generateEmbedding null döndürürse UPDATE çağrılmaz (provider_failed)', async () => {
     setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'openai', OPENAI_API_KEY: undefined });
     const { saveMessageEmbedding } = require('../lib/pgvector');
-    const db = { query: jest.fn() };
-    await saveMessageEmbedding({ db, messageId: 'msg-xyz', content: 'test' });
-    expect(db.query).not.toHaveBeenCalled();
+    const db = eligibleThen();
+    expect(await saveMessageEmbedding({ db, messageId: 'msg-xyz', content: 'test' })).toBe('provider_failed');
+    expect((db.query.mock.calls as unknown as [string][]).some(([sql]) => sql.includes('UPDATE'))).toBe(false);
   });
 
   it('DB hatası → uyarı loglanır, hata fırlatılmaz', async () => {
@@ -277,14 +292,91 @@ describe('saveMessageEmbedding', () => {
     });
 
     const { saveMessageEmbedding } = require('../lib/pgvector');
-    const db = { query: jest.fn().mockRejectedValue(new Error('constraint violation')) };
-    await expect(saveMessageEmbedding({ db, messageId: 'msg-fail', content: 'test' })).resolves.toBeUndefined();
+    const db = { query: jest.fn()
+      .mockResolvedValueOnce({ rows: [{}] })
+      .mockRejectedValueOnce(new Error('constraint violation')) };
+    await expect(saveMessageEmbedding({ db, messageId: 'msg-fail', content: 'test' })).resolves.toBe('save_failed');
 
     const logger = require('../lib/logger').default;
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ messageId: 'msg-fail', event: 'pgvector.embed.save_failed' }),
       expect.any(String),
     );
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// P6 — the guarded writer: nothing reaches the provider for a row that may not
+// be embedded, and a vector is never stored against text it does not describe.
+// ════════════════════════════════════════════════════════════════════════════
+describe('P6: saveMessageEmbedding guards', () => {
+  const vec = Array.from({ length: 768 }, () => 0.02);
+  beforeEach(() => setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'nomic', AI_PROVIDER: undefined, EMBEDDING_DIMENSION: undefined }));
+
+  it('a row that is no longer eligible (deleted, edited, E2EE, opted out) → no provider request', async () => {
+    const { saveMessageEmbedding } = require('../lib/pgvector');
+    const db = { query: jest.fn(async () => ({ rows: [] })) };
+    expect(await saveMessageEmbedding({ db, messageId: 'm', content: 'old text' })).toBe('ineligible');
+    expect(mockFetch).not.toHaveBeenCalled();
+    const [sql] = db.query.mock.calls[0] as unknown as [string];
+    for (const clause of ['m."deletedAt" IS NULL', 'm."encryptedContent" IS NULL', "m.content NOT LIKE '🔒e2e:%'", "m.type <> 'system'", 's."aiEnabled" = TRUE', 'm.content = $2']) {
+      expect(sql).toContain(clause);
+    }
+  });
+
+  it('an eligibility read that fails → no provider request (fail closed)', async () => {
+    const { saveMessageEmbedding } = require('../lib/pgvector');
+    const db = { query: jest.fn(async () => { throw new Error('db down'); }) };
+    expect(await saveMessageEmbedding({ db, messageId: 'm', content: 'text' })).toBe('check_failed');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('the row changed while the provider worked → the vector is discarded (stale)', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ embedding: vec }) });
+    const { saveMessageEmbedding } = require('../lib/pgvector');
+    const db = { query: jest.fn(async (sql: string) => (sql.startsWith('SELECT 1') ? { rows: [{}] } : { rowCount: 0 })) };
+    expect(await saveMessageEmbedding({ db, messageId: 'm', content: 'text at read time' })).toBe('stale');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('AI_PROVIDER=none → not even the eligibility read', async () => {
+    setEnv({ AI_PROVIDER: 'none' });
+    const { saveMessageEmbedding } = require('../lib/pgvector');
+    const db = { query: jest.fn() };
+    expect(await saveMessageEmbedding({ db, messageId: 'm', content: 'text' })).toBe('disabled');
+    expect(db.query).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+    setEnv({ AI_PROVIDER: undefined });
+  });
+
+  it('whitespace-only content → nothing sent', async () => {
+    const { saveMessageEmbedding } = require('../lib/pgvector');
+    const db = { query: jest.fn() };
+    expect(await saveMessageEmbedding({ db, messageId: 'm', content: '   ' })).toBe('ineligible');
+    expect(db.query).not.toHaveBeenCalled();
+  });
+
+  it('the provider request carries only the text and the model — no ids, no keys', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ embedding: vec }) });
+    const { saveMessageEmbedding } = require('../lib/pgvector');
+    const db = { query: jest.fn(async (sql: string) => (sql.startsWith('SELECT 1') ? { rows: [{}] } : { rowCount: 1 })) };
+    await saveMessageEmbedding({ db, messageId: 'msg-secret-id', content: 'hello there' });
+    const [, init] = mockFetch.mock.calls[0] as [string, { body: string; headers: Record<string, string> }];
+    expect(JSON.parse(init.body)).toEqual({ model: 'nomic-embed-text', prompt: 'hello there' });
+    expect(init.body).not.toContain('msg-secret-id');
+    expect(Object.keys(init.headers)).toEqual(['Content-Type']);
+  });
+});
+
+describe('P6: vectorSearch never ranks an E2EE row', () => {
+  it('the candidate set excludes encryptedContent rows', async () => {
+    setEnv({ PGVECTOR_ENABLED: 'true' });
+    const { vectorSearch } = require('../lib/pgvector');
+    const db = { query: jest.fn(async () => ({ rows: [] })) };
+    await vectorSearch({ db, embedding: [0.1, 0.2], serverId: 's', channelIds: ['c'] });
+    const [sql] = db.query.mock.calls[0] as unknown as [string];
+    expect(sql).toContain('m."encryptedContent" IS NULL');
+    expect(sql).toContain('m."deletedAt" IS NULL');
   });
 });
 
@@ -524,6 +616,49 @@ describe('ensurePgvectorSchema', () => {
     expect(calls.some(sql => sql.includes('messages_embedding_idx'))).toBe(true);
   });
 
+  it('P6: creates the invalidation and opt-out purge triggers when missing', async () => {
+    setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'nomic', EMBEDDING_DIMENSION: '768' });
+    const pgvector = require('../lib/pgvector');
+    const calls: string[] = [];
+    const db = { query: jest.fn(async (sql: string) => {
+      calls.push(sql);
+      if (sql.includes('pg_available_extensions')) return { rows: [{ available: true }] };
+      return { rows: [] };
+    }) };
+    await expect(pgvector.ensurePgvectorSchema(db)).resolves.toBe(true);
+    expect(calls.some(sql => sql.includes('FUNCTION bridge_message_embedding_invalidate()'))).toBe(true);
+    expect(calls.some(sql => sql.includes('FUNCTION bridge_server_ai_off_purge_embeddings()'))).toBe(true);
+    const msgTrigger = calls.find(sql => sql.startsWith('CREATE TRIGGER messages_embedding_invalidate'));
+    expect(msgTrigger).toMatch(/BEFORE UPDATE OF content, "deletedAt", "encryptedContent" ON messages/);
+    expect(calls.find(sql => sql.startsWith('CREATE TRIGGER servers_ai_off_purge_embeddings'))).toMatch(/NEW\."aiEnabled" = FALSE/);
+  });
+
+  it('P6: an existing trigger is not re-created (no table lock on every boot)', async () => {
+    setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'nomic', EMBEDDING_DIMENSION: '768' });
+    const pgvector = require('../lib/pgvector');
+    const calls: string[] = [];
+    const db = { query: jest.fn(async (sql: string) => {
+      calls.push(sql);
+      if (sql.includes('pg_available_extensions')) return { rows: [{ available: true }] };
+      if (sql.includes('FROM pg_trigger')) return { rows: [{ name: 'messages_embedding_invalidate' }, { name: 'servers_ai_off_purge_embeddings' }] };
+      return { rows: [] };
+    }) };
+    await expect(pgvector.ensurePgvectorSchema(db)).resolves.toBe(true);
+    expect(calls.some(sql => sql.startsWith('CREATE TRIGGER'))).toBe(false);
+  });
+
+  it('P6: if the triggers cannot be created the feature stays off (fail closed)', async () => {
+    setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'nomic', EMBEDDING_DIMENSION: '768' });
+    const pgvector = require('../lib/pgvector');
+    const db = { query: jest.fn(async (sql: string) => {
+      if (sql.includes('pg_available_extensions')) return { rows: [{ available: true }] };
+      if (sql.startsWith('CREATE TRIGGER')) throw new Error('lock timeout');
+      return { rows: [] };
+    }) };
+    await expect(pgvector.ensurePgvectorSchema(db)).resolves.toBe(false);
+    expect(pgvector.PGVECTOR_ENABLED).toBe(false);
+  });
+
   it('refuses destructive dimension changes when an existing column differs', async () => {
     setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'openai', EMBEDDING_DIMENSION: '1536' });
     const pgvector = require('../lib/pgvector');
@@ -570,5 +705,49 @@ describe('P6 AI-10: the installation master switch covers embeddings', () => {
     const { generateEmbedding } = require('../lib/pgvector');
     expect(await generateEmbedding('text')).toHaveLength(1536);
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// P6 AI-12 — pgvector logged through DETACHED pino methods
+// ════════════════════════════════════════════════════════════════════════════
+// `const fn = logger.warn; fn(...)` loses `this`; pino's methods read
+// `this[msgPrefixSym]` and throw. Every log line from lib/pgvector.ts threw
+// in production: a provider error made generateEmbedding REJECT instead of
+// returning null, and a missing extension took down boot instead of falling
+// back. The logger mocks above are plain functions, which is why no unit test
+// saw it; the real-PostgreSQL suite did. This double behaves like pino.
+describe('P6 AI-12: pgvector logs through a `this`-bound logger', () => {
+  function thisBoundLogger() {
+    const calls: unknown[][] = [];
+    class StrictLogger {
+      private readonly prefix = 'pino-like';
+      warn(...a: unknown[]) { if (this?.prefix !== 'pino-like') throw new TypeError('unbound logger call'); calls.push(['warn', ...a]); }
+      info(...a: unknown[]) { if (this?.prefix !== 'pino-like') throw new TypeError('unbound logger call'); calls.push(['info', ...a]); }
+      fatal() { /* unused */ }
+    }
+    return { calls, logger: new StrictLogger() };
+  }
+
+  it('a provider error resolves to null (and is logged), it does not throw', async () => {
+    const { calls, logger } = thisBoundLogger();
+    jest.doMock('../lib/logger', () => ({ __esModule: true, default: logger }));
+    setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'nomic', AI_PROVIDER: undefined });
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 503, text: async () => 'down' });
+    const { generateEmbedding } = require('../lib/pgvector');
+    await expect(generateEmbedding('hello')).resolves.toBeNull();
+    expect(calls.some(([lvl, o]) => lvl === 'warn' && (o as { event?: string }).event === 'pgvector.embed.failed')).toBe(true);
+    jest.dontMock('../lib/logger');
+  });
+
+  it('a missing extension falls back (false), it does not reject boot', async () => {
+    const { calls, logger } = thisBoundLogger();
+    jest.doMock('../lib/logger', () => ({ __esModule: true, default: logger }));
+    setEnv({ PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'nomic', EMBEDDING_DIMENSION: '768' });
+    const pgvector = require('../lib/pgvector');
+    const db = { query: jest.fn(async () => ({ rows: [{ available: false }] })) };
+    await expect(pgvector.ensurePgvectorSchema(db)).resolves.toBe(false);
+    expect(calls.some(([lvl, o]) => lvl === 'warn' && (o as { event?: string }).event === 'pgvector.extension_unavailable')).toBe(true);
+    jest.dontMock('../lib/logger');
   });
 });

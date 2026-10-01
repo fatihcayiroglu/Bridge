@@ -24,11 +24,11 @@ import { Instance, sleep, waitFor, REPO } from '../selfhost/lib/instance.mjs';
 import { register, mutate, request, rnd, login, makeServer, connectSocket, sendMessage, nextEvent } from '../multinode/lib/client.mjs';
 import { makeLabPki, TlsFront } from './lib/tls.mjs';
 import { rsaKeyPair, signAp, postTls, getTls, actorDoc } from './lib/apsign.mjs';
-import { FakeAiProvider } from './lib/fake-ai.mjs';
+import { FakeAiProvider, hashEmbed } from './lib/fake-ai.mjs';
 
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(`--${n}`); return i >= 0 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : d; };
-const ALL = ['identity', 'follow', 'post', 'inbound-lifecycle', 'adversarial', 'ssrf', 'partition', 'restart', 'peers', 'revocation', 'ai', 'aiserver', 'egress'];
+const ALL = ['identity', 'follow', 'post', 'inbound-lifecycle', 'adversarial', 'ssrf', 'partition', 'restart', 'peers', 'revocation', 'ai', 'aiserver', 'vector', 'egress'];
 const selected = opt('scenarios', ALL.join(',')).split(',').map((s) => s.trim()).filter(Boolean);
 const workDir = opt('work', fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-fedlab-')));
 const outDir = opt('out', path.join(workDir, 'report'));
@@ -57,6 +57,9 @@ const lab = { inst: {}, front: {}, users: {}, mallory: null, pki: null, evilInbo
 // AI_PROVIDER=none AND a Groq key set: the off switch must win, and any attempt
 // to reach Groq would show up in B's egress log.
 const AI = { port: 57470, key: `lab-ai-key-${rnd()}${rnd()}` };
+// P6: a separate, Ollama-shaped embedding provider for A's pgvector path, so
+// the P5 chat-provider checks above keep their meaning. Started by `vector`.
+const EMBED = { port: 57471, dim: 768 };
 
 function sqlA(sql) { return lab.inst.a.psql('bridge', sql); }
 function sqlB(sql) { return lab.inst.b.psql('bridge', sql); }
@@ -749,6 +752,174 @@ const S = {
       `PATCH ${back.status}, summary ${reOn.status}/${reOn.body?.provider}, provider requests ${lab.ai.requests.length - n4}`);
   },
 
+  // P6 — the pgvector path end to end: A restarted with PGVECTOR_ENABLED and
+  // an embedding provider; the live sweep (production scheduler, 1.5 s
+  // interval) is the only caller. Everything A sends to the embedder is
+  // recorded. Ends by restarting A without pgvector (operator switch).
+  async vector() {
+    const A = lab.inst.a.base;
+    const tag = rnd();
+    const W = (w) => `${w}${tag}`;
+    if (!lab.embedder) { lab.embedder = new FakeAiProvider({ port: EMBED.port, dim: EMBED.dim }); await lab.embedder.start(); }
+    const E = lab.embedder;
+    const SWEEP_MS = 1500;
+    const vecEnv = {
+      PGVECTOR_ENABLED: 'true', EMBEDDING_PROVIDER: 'ollama', OLLAMA_BASE_URL: E.origin, EMBEDDING_MODEL: 'lab-embed',
+      EMBEDDING_DIMENSION: String(EMBED.dim), EMBED_SWEEP_INTERVAL_MS: String(SWEEP_MS), EMBED_SWEEP_MAX_FAILURES: '2',
+    };
+    await lab.inst.a.stop();
+    await lab.inst.a.start({ tag: 'vector', env: vecEnv });
+    const restoreA = async () => { E.mode = 'ok'; await lab.inst.a.stop(); await lab.inst.a.start({ tag: 'vector-off' }); };
+    let ext = '0'; let trg = '0';
+    try {
+      ext = sqlA(`SELECT count(*) FROM pg_extension WHERE extname = 'vector'`);
+      trg = sqlA(`SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('messages_embedding_invalidate','servers_ai_off_purge_embeddings')`);
+    } catch { /* reported below */ }
+    if (ext !== '1') {
+      record('vector', 'F-VEC-00', 'pgvector available to the lab PostgreSQL', 'BLOCKED', 'the vector extension is not installed for the lab PostgreSQL (install postgresql-<major>-pgvector); A fell back to keyword search');
+      await restoreA();
+      return;
+    }
+    check('vector', 'F-VEC-01', 'A boots with pgvector: extension, vector(768) column and both invalidation triggers',
+      trg === '2' && sqlA(`SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'messages'::regclass AND attname = 'embedding'`) === 'vector(768)', `triggers ${trg}`);
+
+    const owner = await register(A, 'vecowner'); // its own CSRF budget (H-13)
+    const members = [];
+    for (const n of ['vec1', 'vec2', 'vec3', 'vec4', 'vec5', 'vec6']) members.push(await register(A, n));
+    const s1 = await makeServer(A, owner, members);
+    const s2 = await makeServer(A, owner, members);
+    const vault = (await mutate(A, 'POST', `/api/servers/${s1.serverId}/channels`, owner.token, { name: `vault-${tag}`, type: 'text' })).body;
+    const vaultId = vault?._id || vault?.id;
+    const deny = await mutate(A, 'PUT', `/api/servers/${s1.serverId}/channels/${vaultId}/permissions/__everyone__`, owner.token, { allow: 0, deny: 1 });
+    const s2off = await mutate(A, 'PATCH', `/api/servers/${s2.serverId}`, owner.token, { aiEnabled: false });
+    const sock = await connectSocket(A, owner.token);
+    const say = async (cid, sid, content) => (await sendMessage(sock, { channelId: cid, serverId: sid, content, ackId: `vec-${rnd()}` }).catch(() => null))?.messageId ?? null;
+    const T = {
+      pub: `wombat ${W('budget')} review`, priv: `wombat ${W('vault')} secret`, off: `wombat ${W('offsrv')} chat`,
+      e2e: `🔒e2e:${W('cipher')}`, edit0: `kangaroo ${W('draft')} plan`, edit1: `kangaroo ${W('final')} plan`, del: `platypus ${W('gone')} note`,
+    };
+    const e0 = E.requests.length;
+    const t0 = Date.now();
+    const id = {
+      pub: await say(s1.channelId, s1.serverId, T.pub), priv: await say(vaultId, s1.serverId, T.priv), off: await say(s2.channelId, s2.serverId, T.off),
+      e2e: await say(s1.channelId, s1.serverId, T.e2e), edit: await say(s1.channelId, s1.serverId, T.edit0), del: await say(s1.channelId, s1.serverId, T.del),
+    };
+    const hasVec = (mid) => { try { return sqlA(`SELECT embedding IS NOT NULL FROM messages WHERE _id = '${mid}'`) === 't'; } catch { return false; } };
+    const indexed = await eventually(() => ['pub', 'priv', 'edit', 'del'].every((k) => id[k] && hasVec(id[k])), 30_000, 300);
+    const tIndexed = Date.now();
+    check('vector', 'F-VEC-02', 'the live sweep embeds new messages of an AI-enabled server (public and private channel) with no request from anyone',
+      indexed && deny.status === 200 && s2off.status === 200 && E.embedPromptsSince(e0).includes(T.pub) && E.embedPromptsSince(e0).includes(T.priv),
+      `vault deny ${deny.status}, S2 off ${s2off.status}, embedder prompts ${E.embedPromptsSince(e0).length}`);
+    if (indexed) record('vector', 'F-VEC-M1', 'message sent → vector stored (sweep interval 1.5 s)', 'MEASURED', `${tIndexed - t0} ms for 4 messages`);
+
+    await sleep(SWEEP_MS * 3);
+    const prompts = E.embedPromptsSince(e0);
+    const e2eSent = id.e2e !== null;
+    check('vector', 'F-VEC-03', 'never sent and never stored: a server with AI off, and an E2EE payload',
+      !prompts.some((p) => p.includes(W('offsrv')) || p.includes(W('cipher'))) && !hasVec(id.off) && (!e2eSent || !hasVec(id.e2e)),
+      `e2e message ${e2eSent ? 'stored by the server' : 'refused by the server'}; prompts ${prompts.length}`);
+
+    const search = (u, query, sid = s1.serverId) => mutate(A, 'POST', '/api/semantic/search', u.token, { query, serverId: sid, days: 1, limit: 10 });
+    const ids = (r) => (r.body?.matches || []).map((m) => m._id);
+    const r4 = await search(members[0], `wombat ${W('budget')}`);
+    check('vector', 'F-VEC-04', 'semantic search is answered by the vector index (provider pgvector:ollama) and finds the message',
+      r4.status === 200 && String(r4.body?.provider).startsWith('pgvector:') && ids(r4).includes(id.pub), `status ${r4.status}, provider ${r4.body?.provider}, matches ${ids(r4).length}`);
+
+    const r5m = await search(members[1], `wombat ${W('vault')} secret`);
+    const r5o = await search(owner, `wombat ${W('vault')} secret`);
+    check('vector', 'F-VEC-05', 'the private-channel vector exists but ranks only for a member who can see the channel',
+      r5m.status === 200 && !ids(r5m).includes(id.priv) && !JSON.stringify(r5m.body?.matches || []).includes(W('vault'))
+        && r5o.status === 200 && ids(r5o).includes(id.priv) && String(r5o.body?.provider).startsWith('pgvector:'),
+      `member ${r5m.status}/${r5m.body?.provider}/${ids(r5m).length}, owner ${r5o.status}/${r5o.body?.provider}/${ids(r5o).length}`);
+
+    // Edit: the old vector goes in the same statement; the sweep embeds the new text.
+    const before = sqlA(`SELECT embedding::text FROM messages WHERE _id = '${id.edit}'`);
+    const ed = await mutate(A, 'PATCH', `/api/channels/${id.edit}`, owner.token, { content: T.edit1 });
+    const want = `[${hashEmbed(T.edit1, EMBED.dim).join(',')}]`;
+    const reEmbedded = await eventually(() => {
+      try { return Number(sqlA(`SELECT 1 - (embedding <=> '${want}'::vector) FROM messages WHERE _id = '${id.edit}' AND embedding IS NOT NULL`)) > 0.9999; } catch { return false; }
+    }, 20_000, 300);
+    // Single-word queries: the old and new wording share no word with each other.
+    const rOld = await search(members[2], W('draft'));
+    const rNew = await search(members[2], W('final'));
+    check('vector', 'F-VEC-06', 'an edit replaces the vector: the new text is embedded, the old wording no longer finds the message',
+      ed.status === 200 && reEmbedded && before !== sqlA(`SELECT embedding::text FROM messages WHERE _id = '${id.edit}'`)
+        && E.embedPromptsSince(e0).includes(T.edit1) && !ids(rOld).includes(id.edit) && ids(rNew).includes(id.edit),
+      `PATCH ${ed.status}, old-word search ${ids(rOld).length} match(es) via ${rOld.body?.provider}, new-word search via ${rNew.body?.provider}`);
+
+    // Delete: warm the search cache first, so the post-delete search is a cache hit.
+    const q7 = `platypus ${W('gone')}`;
+    const r7a = await search(members[3], q7);
+    const dl = await mutate(A, 'DELETE', `/api/channels/${id.del}`, owner.token);
+    const clearedNow = !hasVec(id.del);
+    const r7b = await search(members[3], q7);
+    await sleep(SWEEP_MS * 3);
+    check('vector', 'F-VEC-07', 'a delete removes the vector at once, it is never re-embedded, and a cached search no longer returns it',
+      ids(r7a).includes(id.del) && dl.status === 200 && clearedNow && !hasVec(id.del) && r7b.body?.cached === true && !ids(r7b).includes(id.del)
+        && !JSON.stringify(r7b.body?.matches || []).includes(W('gone')) && !E.embedPromptsSince(e0).some((p) => p.includes('[Mesaj silindi]')),
+      `before ${ids(r7a).length}, DELETE ${dl.status}, cleared ${clearedNow}, after cached=${r7b.body?.cached} matches ${ids(r7b).length}`);
+
+    // Owner opt-out: vectors of S1 are gone in the same transaction; new text is not sent.
+    const vecCount = (sid) => Number(sqlA(`SELECT count(*) FROM messages WHERE "serverId" = '${sid}' AND embedding IS NOT NULL`));
+    const had = vecCount(s1.serverId);
+    const off = await mutate(A, 'PATCH', `/api/servers/${s1.serverId}`, owner.token, { aiEnabled: false });
+    const afterOff = vecCount(s1.serverId);
+    const e8 = E.requests.length;
+    const late = await say(s1.channelId, s1.serverId, `echidna ${W('afteroff')} memo`);
+    await sleep(SWEEP_MS * 3);
+    const r8 = await search(members[4], `wombat ${W('budget')}`);
+    check('vector', 'F-VEC-08', 'the owner turns AI off: the server\'s vectors are removed at once, nothing new is sent, search is keyword-only',
+      off.status === 200 && had > 0 && afterOff === 0 && !E.embedPromptsSince(e8).some((p) => p.includes(W('afteroff'))) && !hasVec(late)
+        && r8.status === 200 && !String(r8.body?.provider).startsWith('pgvector:'),
+      `vectors ${had} → ${afterOff}, provider ${r8.body?.provider}`);
+    const on = await mutate(A, 'PATCH', `/api/servers/${s1.serverId}`, owner.token, { aiEnabled: true });
+    const backOn = await eventually(() => hasVec(late) && hasVec(id.pub), 20_000, 300);
+    check('vector', 'F-VEC-09', 're-enabled: the sweep indexes the server again (including what was posted while off)', on.status === 200 && backOn, `PATCH ${on.status}`);
+
+    // Provider outage: rows stay pending, requests stay bounded, search still answers.
+    E.mode = 'fail500';
+    const e10 = E.requests.length;
+    const tOut = Date.now();
+    const pending = await say(s1.channelId, s1.serverId, `numbat ${W('outage')} log`);
+    await sleep(SWEEP_MS * 4);
+    const outReqs = E.requests.length - e10;
+    const ticks = Math.ceil((Date.now() - tOut) / SWEEP_MS) + 1;
+    const r10 = await search(members[5], `numbat ${W('outage')}`);
+    check('vector', 'F-VEC-10', 'embedding provider down: the message stays pending, retries are bounded per tick, search still answers',
+      !hasVec(pending) && outReqs > 0 && outReqs <= ticks * 2 + 2 && r10.status === 200,
+      `${outReqs} request(s) in ~${ticks} tick(s) (cap 2/tick, + query embeds), search ${r10.status} via ${r10.body?.provider}`);
+
+    // Restart while pending, provider back: the row is embedded by the new process.
+    await lab.inst.a.stop();
+    E.mode = 'ok';
+    await lab.inst.a.start({ tag: 'vector-restart', env: vecEnv });
+    const afterRestart = await eventually(() => hasVec(pending), 30_000, 300);
+    check('vector', 'F-VEC-11', 'pending work survives a restart: after A restarts the outage-time message is embedded (state is in the database)',
+      afterRestart && E.embedPromptsSince(e10).includes(`numbat ${W('outage')} log`), '');
+
+    // No message text in A's logs; the embedder saw only {model, prompt}, no credentials.
+    const logs = ['vector', 'vector-restart'].map((t) => { try { return fs.readFileSync(lab.inst.a.logPath(t), 'utf8'); } catch { return ''; } }).join('\n');
+    const words = ['budget', 'vault', 'offsrv', 'cipher', 'draft', 'final', 'gone', 'afteroff', 'outage'].map(W);
+    const embedReqs = E.requests.slice(e0).filter((r) => r.path === '/api/embeddings');
+    check('vector', 'F-VEC-12', 'no message text in A\'s logs; embedding requests carry only {model, prompt} and no credentials',
+      logs.length > 0 && !words.some((w) => logs.includes(w)) && embedReqs.every((r) => !r.auth && Object.keys(r.body || {}).sort().join() === 'model,prompt'),
+      `${embedReqs.length} embedding request(s) inspected`);
+
+    // Operator switch: without PGVECTOR_ENABLED nothing goes to the embedder.
+    await restoreA();
+    const owner2 = { ...owner, ...(await login(A, owner)) };
+    const e13 = E.requests.length;
+    const sock2 = await connectSocket(A, owner2.token);
+    await sendMessage(sock2, { channelId: s1.channelId, serverId: s1.serverId, content: `dingo ${W('pgvoff')} idea`, ackId: `vec-${rnd()}` }).catch(() => null);
+    sock2.close();
+    await sleep(SWEEP_MS * 3);
+    const m13 = { ...members[0], ...(await login(A, members[0])) };
+    const r13 = await search(m13, `dingo ${W('pgvoff')}`);
+    check('vector', 'F-VEC-13', 'operator turns pgvector off: no embedding traffic at all, search falls back',
+      E.requests.length === e13 && r13.status === 200 && !String(r13.body?.provider).startsWith('pgvector:'), `${E.requests.length - e13} request(s), provider ${r13.body?.provider}`);
+    sock.close();
+  },
+
   async egress() {
     const local = new Set(Object.values(HOSTS));
     const all = ['a', 'b'].flatMap((k) => lab.inst[k].egress().map((e) => ({ k, ...e })));
@@ -778,6 +949,7 @@ try {
   for (const f of Object.values(lab.front)) await f.stop().catch(() => undefined);
   if (lab.canary?.server) await new Promise((resolve) => lab.canary.server.close(() => resolve()));
   if (lab.ai) await lab.ai.stop().catch(() => undefined);
+  if (lab.embedder) await lab.embedder.stop().catch(() => undefined);
   if (!args.includes('--keep')) for (const i of Object.values(lab.inst)) await i.destroy().catch(() => undefined);
   const counts = results.reduce((m, r) => { m[r.status] = (m[r.status] || 0) + 1; return m; }, {});
   const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: REPO, encoding: 'utf8' }).stdout.trim();

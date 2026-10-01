@@ -90,6 +90,26 @@ function keywordSearch<T extends { content?: string }>(query: string, messages: 
     .slice(0, limit);
 }
 
+// P6: a cached answer is checked against the messages as they are NOW. A
+// message deleted after the answer was cached (or in a channel this member can
+// no longer see) is not served from the cache, and an edited message shows its
+// current text — the vector index forgets on edit/delete, so must the cache.
+async function revalidateCachedSearch(userId: string, serverId: string, cached: object): Promise<object> {
+  if (typeof cached !== 'object' || Array.isArray(cached)) return cached;
+  const entry = cached as Record<string, unknown>;
+  const matches = Array.isArray(entry.matches) ? entry.matches as Array<Record<string, unknown>> : [];
+  if (!matches.length) return cached;
+  const ids = matches.map((m) => String(m._id));
+  const live = await Messages.findWhere({ _id: { $in: ids }, serverId, deletedAt: null }) as Array<{ _id: unknown; channelId: unknown; content?: unknown }>;
+  const byId = new Map(live.map((m) => [String(m._id), m]));
+  const viewable = await viewableChannelIds(userId, serverId, live.map((m) => String(m.channelId)));
+  const kept = matches.flatMap((m) => {
+    const row = byId.get(String(m._id));
+    return row && viewable.has(String(row.channelId)) ? [{ ...m, content: row.content }] : [];
+  });
+  return { ...entry, matches: kept, total: kept.length };
+}
+
 // ── POST /api/semantic/search — Doğal dil mesaj araması ─────────
 router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   const _u = castAuthed(req).user;
@@ -142,7 +162,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   const serverAi = await serverAllowsAi(serverId);
   const cacheKey = `sem:${_u.id}:${serverId}:${channelId || ''}:${query.slice(0,50)}:${days}:${resultLimit}:${serverAi ? 'ai' : 'noai'}`;
   const cached = await cache.get(cacheKey);
-  if (cached) return res.json({ ...cached, cached: true });
+  if (cached) return res.json({ ...(await revalidateCachedSearch(_u.id, serverId, cached)), cached: true });
 
   // Mesajları getir
   const since = Date.now() - (days * 24 * 60 * 60 * 1000);
