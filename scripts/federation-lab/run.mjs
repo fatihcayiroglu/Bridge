@@ -668,7 +668,10 @@ const S = {
   // ── P6: per-server AI opt-out, against real processes and the real provider ──
   async aiserver() {
     const A = lab.inst.a.base;
-    const owner = user('admina');
+    // Its own owner: the instance admin's CSRF budget (20 tokens / 5 min per
+    // user, a product setting the lab does not change) is spent by the
+    // scenarios before this one (H-13).
+    const owner = await register(A, 'aisowner');
     const tag = rnd();
     const S1_SECRET = `S1-OPTOUT-${tag}`;
     // One fresh member per round: the AI rate limit (10/min per user, a product

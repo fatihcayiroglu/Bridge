@@ -138,6 +138,15 @@ Result: F-AIS-01..07 **7 PASS**. The P5 checks F-AI-00..14 in the same run were 
 **Harness notes.**
 - **H-11 (test/harness).** The first lab run hit 429 from the AI rate limiter (10/min per user, a product setting). It sent every round as the same member that the P5 `ai` scenario had already used. Each round now uses its own fresh member; the product limit is unchanged.
 - **H-12 (test/harness).** The re-enable check assumed a provider call. The cached AI summary of an unchanged message set, computed while AI was allowed, was served instead. That is correct behaviour. The check now posts a new message first, so the summary must be computed again by the provider.
+- **H-13 (test/harness, first CI run of PR #118).** In the full lab, `aiserver` aborted with 429 from `/api/csrf-token`.
+  - The scenario used the instance admin as server owner. The scenarios before it had already spent that user's CSRF budget (20 tokens per 5 minutes per user, a product setting).
+  - Local runs used only `ai,aiserver`, so they never got there.
+  - P6 scenarios now register their own owner. The product limit is unchanged.
+- **H-20 (test/harness, iOS simulator, first CI run of PR #118).** I07 reported FAIL ("no dispatch and no confirmation alert") on a runner where the app launch took 192 s.
+  - The simulator OS log was streamed starting only 3 s before the first `openurl`. Only the *second* link's routing line was recorded, and with the first link's confirmation alert still on screen there was no second alert to see.
+  - On `main`, the same check reports UNVERIFIED (alert seen). This PR's diff does not touch deep links.
+  - The stream now starts before the app launch, and the link is opened only after the stream reports that it is filtering.
+  - The I07 rule is unchanged: PASS needs the dispatch line, UNVERIFIED needs the alert, anything else is FAIL.
 
 **Known limitations.**
 - Free text sent to translate without `serverId` cannot be attributed.

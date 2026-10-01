@@ -77,6 +77,20 @@ if ! limit 600 xcrun simctl install "$UDID" "$APP"; then
   exit 1
 fi
 
+# The OS's own record of the deep-link hand-off (FrontBoard/SpringBoard and the app process) is
+# captured from BEFORE the launch. A stream started 3 s before `openurl` was not yet capturing on a
+# slow runner (PR #118: launch took 192 s; only the second link's routing line was recorded, and with
+# the first link's confirmation alert still on screen there was no second alert to see), so I07
+# reported "no alert" instead of UNVERIFIED. The stream now runs for the whole launch, and the link
+# is opened only after the stream reports that it is filtering.
+OSLOG="$(pwd)/$OUT/oslog.txt"
+( xcrun simctl spawn "$UDID" log stream --style compact --level debug \
+    --predicate 'process == "App" OR eventMessage CONTAINS[c] "com.bridge.app" OR eventMessage CONTAINS[c] "openURL"' > "$OSLOG" 2>&1 ) &
+LOGGER=$!
+trap 'kill "$LOGGER" 2>/dev/null || true' EXIT
+for _ in $(seq 1 60); do grep -q "Filtering the log data" "$OSLOG" 2>/dev/null && break; sleep 1; done
+step "OS log stream: $(head -1 "$OSLOG" 2>/dev/null | cut -c1-80)"
+
 # ── I02 / I03: cold launch survives and the native bridge comes up in the WebView ────────────
 # The container path proves the install registered with the simulator (LaunchServices).
 container=$(limit 60 xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" 2>&1 || true)
@@ -98,7 +112,7 @@ LAUNCH_OUT="$(pwd)/$OUT/launch.out"
     --stdout="$CONSOLE" --stderr="$CONSOLE_ERR" "$UDID" "$BUNDLE_ID" > "$LAUNCH_OUT" 2>&1 ) &
 LAUNCHER=$!
 console() { cat "$CONSOLE" "$CONSOLE_ERR" 2>/dev/null; }
-ready=0; launched=0; ready_after=""; launch_after=""; OSLOG=""
+ready=0; launched=0; ready_after=""; launch_after=""
 for _ in $(seq 1 450); do
   if [ "$ready" = 0 ] && console | grep -q "Capacitor entegrasyonu hazır — ios"; then ready=1; ready_after=$(( $(date +%s) - start )); fi
   if [ "$launched" = 0 ] && ! kill -0 "$LAUNCHER" 2>/dev/null; then launched=1; launch_after=$(( $(date +%s) - start )); fi
@@ -129,13 +143,8 @@ fi
 
 # ── I04: a com.bridge.app:// link reaches the running app ────────────────────────────────────
 if [ -n "$launched_pid" ] && [ "$launched" = 1 ]; then
-  # The OS's own record of the hand-off (FrontBoard/SpringBoard and the app process), so a missing
-  # dispatch can be placed: URL never routed, routed but not delivered, or delivered but not to JS.
-  OSLOG="$(pwd)/$OUT/oslog.txt"
-  ( xcrun simctl spawn "$UDID" log stream --style compact --level debug \
-      --predicate 'process == "App" OR eventMessage CONTAINS[c] "com.bridge.app" OR eventMessage CONTAINS[c] "openURL"' > "$OSLOG" 2>&1 ) &
-  LOGGER=$!
-  sleep 3
+  # The OS log (started before the launch, above) places a missing dispatch: URL never routed,
+  # routed but not delivered, or delivered but not to JS.
   step "opening com.bridge.app://channel/p4-ios-smoke-channel"
   limit 120 xcrun simctl openurl "$UDID" "com.bridge.app://channel/p4-ios-smoke-channel" 2>&1 | tail -3 || true
   for attempt in 1 2; do
