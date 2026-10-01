@@ -199,35 +199,79 @@ describe('POST /peers — eş ekleme', () => {
   });
 
   it('ZATEN kayıtlı eş yeniden eklenmez', async () => {
+    fetchT.mockResolvedValue(remote({ software: 'bridge', url: 'https://peer.test', publicKey: { publicKeyPem: PEM } }));
     repos.Federation.findPeerByUrl.mockResolvedValue({ _id: 'p1' });
 
     expect((await addPeer()).status).toBe(409);
     expect(repos.Federation.insertPeer).not.toHaveBeenCalled();
   });
 
-  it('uzak bilgideki eksik alanlar İSTENEN adrese düşer', async () => {
-    fetchT.mockResolvedValue(remote({ software: 'bridge' }));
+  it('uzak bilgideki eksik alanlar İSTENEN (kanonik) adrese düşer', async () => {
+    fetchT.mockResolvedValue(remote({ software: 'bridge', publicKey: { publicKeyPem: PEM } }));
 
     const res = await addPeer({ url: 'https://peer.test/' });
 
     expect(res.status).toBe(200);
+    expect(fetchT).toHaveBeenCalledWith('https://peer.test/api/federation/info', expect.anything());
     expect(repos.Federation.insertPeer).toHaveBeenCalledWith(expect.objectContaining({
-      url: 'https://peer.test/', name: 'https://peer.test/', desc: '', verified: true, publicKey: null,
+      url: 'https://peer.test', name: 'https://peer.test', desc: '', verified: true, publicKey: PEM,
     }));
   });
 
-  it('uzak bilgideki kanonik adres ve anahtar KORUNUR', async () => {
+  // P5 FED-04: this used to be the CONTRACT ("the remote's canonical url is
+  // kept") — and it was the spoofing hole. An installation contacted as
+  // peer.test could declare itself kanonik.test and have ITS key stored under
+  // kanonik.test's name. The declared url must be the contacted one.
+  it('FED-04: a remote declaring ANOTHER url than the one contacted is refused', async () => {
     fetchT.mockResolvedValue(remote({
       software: 'bridge', url: 'https://kanonik.test', name: 'Kanonik',
       description: 'açıklama', publicKey: { publicKeyPem: PEM },
     }));
 
-    await addPeer({ url: 'https://peer.test' });
+    const res = await addPeer({ url: 'https://peer.test' });
 
-    expect(repos.Federation.findPeerByUrl).toHaveBeenCalledWith('https://kanonik.test');
-    expect(repos.Federation.insertPeer).toHaveBeenCalledWith(expect.objectContaining({
-      url: 'https://kanonik.test', name: 'Kanonik', desc: 'açıklama', publicKey: PEM,
-    }));
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ requested: 'https://peer.test', declared: 'https://kanonik.test' });
+    expect(repos.Federation.insertPeer).not.toHaveBeenCalled();
+  });
+
+  it('FED-04: the same url with a trailing slash is the same identity', async () => {
+    fetchT.mockResolvedValue(remote({ software: 'bridge', url: 'https://peer.test/', name: 'Eş', publicKey: { publicKeyPem: PEM } }));
+
+    const res = await addPeer({ url: 'https://peer.test' });
+
+    expect(res.status).toBe(200);
+    expect(repos.Federation.findPeerByUrl).toHaveBeenCalledWith('https://peer.test');
+    expect(repos.Federation.insertPeer).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://peer.test', publicKey: PEM }));
+  });
+
+  it('a peer without an RSA key is refused (it could never authenticate)', async () => {
+    fetchT.mockResolvedValue(remote({ software: 'bridge', url: 'https://peer.test' }));
+
+    const res = await addPeer();
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('RSA public key');
+    expect(repos.Federation.insertPeer).not.toHaveBeenCalled();
+  });
+
+  it.each([['ftp://peer.test'], ['https://user:pw@peer.test'], ['not a url']])('an invalid peer url (%s) is refused before any fetch', async (url) => {
+    const res = await addPeer({ url });
+    expect(res.status).toBe(400);
+    expect(fetchT).not.toHaveBeenCalled();
+  });
+
+  it('production peers must be https', async () => {
+    const prev = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const res = await addPeer({ url: 'http://peer.test' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('https');
+      expect(fetchT).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
   });
 });
 

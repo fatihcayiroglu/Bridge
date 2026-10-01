@@ -7,6 +7,7 @@ import { fetchT } from '../../lib/fetch';
 import { Federation, Users } from '../../db/repositories';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
+import { checkFederationACL } from '../admin/federation-acl';
 
 interface ApActor { _id: string; username: string; apPublicKey?: string | null; apPrivateKey?: string | null; }
 interface DeliveryPayload { inboxUrl: string; activity: Record<string, unknown>; fromUser: ApActor | null; }
@@ -33,19 +34,53 @@ const actorUrl    = (u: string): string => `${instanceUrl()}/api/federation/user
 // ── Persistent retry queue ─────────────────────────────────────
 // ap_delivery_queue koleksiyonu: { _id, payload, attempts, nextAt, createdAt }
 // Server restart'ta pending delivery'ler otomatik kurtarılır.
-const MAX_ATTEMPTS = 3;
-const RETRY_DELAYS = [30_000, 120_000, 600_000]; // 30s, 2m, 10m
+//
+// P5 FED-06: the schedule used to be 30 s, 2 min, 10 min — after ~12.5 minutes
+// a delivery was dropped for good. Measured in the two-instance lab: a peer
+// that was down for 15 minutes (an upgrade, a reboot) silently never received
+// what was posted meanwhile. The default now spans ~3.5 days with backoff;
+// operators can set FEDERATION_DELIVERY_RETRY_DELAYS_MS (comma-separated ms).
+export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [
+  30_000, 120_000, 600_000, 1_800_000, 3_600_000, 7_200_000,          // 30s … 2h
+  14_400_000, 28_800_000, 43_200_000, 86_400_000, 86_400_000, 86_400_000, // 4h … 24h
+];
+const RETRY_DELAY_MIN_MS = 1_000;
+const RETRY_DELAY_MAX_MS = 7 * 86_400_000;
+
+/** Parses FEDERATION_DELIVERY_RETRY_DELAYS_MS; an invalid value is refused loudly, never half-applied. */
+export function parseRetrySchedule(raw: string | undefined): number[] {
+  if (raw === undefined || raw.trim() === '') return [...DEFAULT_RETRY_DELAYS_MS];
+  const parts = raw.split(',').map((p) => p.trim());
+  const delays = parts.map((p) => (/^\d+$/.test(p) ? Number(p) : NaN));
+  const valid = delays.length > 0 && delays.length <= 50
+    && delays.every((d) => Number.isSafeInteger(d) && d >= RETRY_DELAY_MIN_MS && d <= RETRY_DELAY_MAX_MS);
+  if (!valid) {
+    logger.error({ event: 'federation.delivery.invalid_retry_schedule', value: raw.slice(0, 200) },
+      'FEDERATION_DELIVERY_RETRY_DELAYS_MS is invalid (1..50 integers, each 1000..604800000 ms); using the default schedule.');
+    return [...DEFAULT_RETRY_DELAYS_MS];
+  }
+  return delays;
+}
+
+const RETRY_DELAYS = parseRetrySchedule(process.env.FEDERATION_DELIVERY_RETRY_DELAYS_MS);
+const INLINE_DELIVERY_WAIT_MS = 1_500;
+const MAX_ATTEMPTS = RETRY_DELAYS.length;
 const RETRY_WORKER_ID = `federation:${process.pid}:${uuidv4()}`;
 const RETRY_LEASE_MS = 120_000;
 const RETRY_BATCH = 50;
 
 async function _persistRetry(id: string, payload: DeliveryPayload, attempt: number, claimOwner?: string): Promise<void> {
   if (attempt >= MAX_ATTEMPTS) {
-    logger.warn({ id, event: 'federation.delivery.max_retries' }, 'Max retries reached; giving up.');
+    // Dead letter: the one place a federated activity is knowingly lost —
+    // logged at error level with enough to find it, never its content.
+    logger.error({
+      id, event: 'federation.delivery.max_retries', attempts: attempt,
+      inboxHost: _hostOf(payload.inboxUrl), activityType: payload.activity?.type, activityId: payload.activity?.id,
+    }, 'Federation delivery dead-lettered: retry schedule exhausted; giving up.');
     await Federation.removeDeliveryEntry(id, claimOwner);
     return;
   }
-  const delay = RETRY_DELAYS[attempt] || 600_000;
+  const delay = RETRY_DELAYS[attempt] ?? RETRY_DELAYS[RETRY_DELAYS.length - 1]!;
   const entry = {
     payload,
     attempts: attempt,
@@ -220,8 +255,46 @@ async function resolveInbox(actorOrInboxUrl: string, depth = 0): Promise<string 
 }
 
 // ── Core delivery function ─────────────────────────────────────
+function _hostOf(url: unknown): string {
+  try { return new URL(String(url)).hostname.toLowerCase(); } catch { return ''; }
+}
+
+/**
+ * P5 FED-05: the domain ACL used to apply to INBOUND traffic only — a domain an
+ * admin had blocked still received every post, follow and like this instance
+ * sent (and its actor documents were still fetched). 'blocked' drops the
+ * delivery; 'unknown' (ACL store unavailable) keeps it queued: never deliver on
+ * an unanswered ACL question.
+ */
+async function _outboundAcl(url: string): Promise<'allowed' | 'blocked' | 'unknown'> {
+  const host = _hostOf(url);
+  if (!host) return 'allowed';
+  try {
+    return (await checkFederationACL(host)).allowed ? 'allowed' : 'blocked';
+  } catch (err) {
+    logger.warn({ err, host, event: 'federation.delivery.acl_unavailable' }, 'Federation ACL unavailable; delivery stays queued.');
+    return 'unknown';
+  }
+}
+
+async function _aclStops(url: string, payload: DeliveryPayload, attempt: number, retryId: string | null, claimOwner?: string): Promise<boolean> {
+  const verdict = await _outboundAcl(url);
+  if (verdict === 'allowed') return false;
+  if (verdict === 'blocked') {
+    logger.info({ host: _hostOf(url), activityType: payload.activity?.type, event: 'federation.delivery.blocked_by_acl' },
+      'Delivery to a blocked federation domain dropped.');
+    if (retryId) await Federation.removeDeliveryEntry(retryId, claimOwner);
+  } else if (retryId) {
+    await _persistRetry(retryId, payload, attempt, claimOwner);
+  }
+  return true;
+}
+
 async function _doDeliver(payload: DeliveryPayload, attempt: number, retryId: string | null, claimOwner?: string): Promise<void> {
   const { inboxUrl, activity, fromUser } = payload;
+
+  // Before resolving: resolving fetches the remote actor document.
+  if (await _aclStops(inboxUrl, payload, attempt, retryId, claimOwner)) return;
 
   const targetInbox = await resolveInbox(inboxUrl);
   if (!targetInbox) {
@@ -229,6 +302,9 @@ async function _doDeliver(payload: DeliveryPayload, attempt: number, retryId: st
     if (retryId) await _persistRetry(retryId, payload, attempt, claimOwner);
     return;
   }
+  // The resolved inbox may live on another (blocked) domain than the actor.
+  if (_hostOf(targetInbox) !== _hostOf(inboxUrl)
+    && await _aclStops(targetInbox, payload, attempt, retryId, claimOwner)) return;
 
   const body       = JSON.stringify(activity);
   // SECURITY: özel anahtar user_ap_keys tablosundan ayrı sorguyla alınır
@@ -277,6 +353,45 @@ async function _doDeliver(payload: DeliveryPayload, attempt: number, retryId: st
   if (retryId) await Federation.removeDeliveryEntry(retryId, claimOwner);
 }
 
+// ── Public: can this actor be followed at all? ──────────────────
+/**
+ * P5 FED-08 — measured in the two-instance lab: a follow of an actor on a
+ * private address (or a blocked domain, or a URL that is not an actor at all)
+ * answered 200, stored an outgoing follow and queued a delivery that could
+ * never succeed — retried for days under the FED-06 schedule. The SSRF guard
+ * did hold (no connection was made); the follow just lied about success.
+ * The actor document is now fetched first, through the same SSRF-guarded
+ * client and the outbound domain ACL, and must name an inbox.
+ */
+export type FollowTargetVerdict =
+  | { ok: true }
+  | { ok: false; status: 403 | 422 | 503; error: string };
+
+export async function resolveFollowTarget(actorUrl: string): Promise<FollowTargetVerdict> {
+  const blocked: FollowTargetVerdict = { ok: false, status: 403, error: 'This instance does not federate with that domain' };
+  const unresolvable: FollowTargetVerdict = { ok: false, status: 422, error: 'Remote actor could not be resolved' };
+  const unknown: FollowTargetVerdict = { ok: false, status: 503, error: 'Federation policy could not be evaluated; try again' };
+
+  const acl = await _outboundAcl(actorUrl);
+  if (acl === 'blocked') return blocked;
+  if (acl === 'unknown') return unknown;
+  try {
+    const r = await fetchT(actorUrl, { headers: { Accept: 'application/activity+json' }, timeoutMs: 8000 });
+    if (!r.ok) return unresolvable;
+    const doc = await r.json() as { inbox?: unknown; id?: unknown };
+    const inbox = typeof doc?.inbox === 'string' ? doc.inbox : '';
+    if (!/^https?:\/\//i.test(inbox)) return unresolvable;
+    const inboxAcl = await _outboundAcl(inbox);
+    if (inboxAcl === 'blocked') return blocked;
+    if (inboxAcl === 'unknown') return unknown;
+    return { ok: true };
+  } catch {
+    // SSRF refusal, DNS failure, timeout, invalid JSON: never echo the reason
+    // (it would describe this instance's network to the requester).
+    return unresolvable;
+  }
+}
+
 // ── Public: deliver one activity to one inbox ──────────────────
 async function deliverApActivity(inboxUrl: string, activity: Record<string, unknown>, fromUser: ApActor | null): Promise<void> {
   const id = uuidv4();
@@ -285,7 +400,25 @@ async function deliverApActivity(inboxUrl: string, activity: Record<string, unkn
   // entering fetchT() but before its promise settles can lose the delivery
   // without ever creating a retry row. Success removes this durable intent.
   await _persistRetry(id, payload, 0);
-  await _doDeliver(payload, 0, id);
+  // P5 FED-09 — measured in the two-instance lab: with one follower's server
+  // hanging, publishing took ~8 s (and an inbound Follow held the remote's
+  // request open while its Accept was delivered back), because the request
+  // awaited the first network attempt. The durable row above is the
+  // guarantee; the request now waits at most INLINE_DELIVERY_WAIT_MS for the
+  // first attempt, which carries on in the background (its outcome lands in
+  // the queue row exactly as before). Fast peers are unaffected.
+  const attempt = _doDeliver(payload, 0, id);
+  attempt.catch((err) => logger.warn({ err, id, event: 'federation.delivery.background_attempt_failed' },
+    'Background delivery attempt failed; the durable queue row remains for the retry worker.'));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([attempt, new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, INLINE_DELIVERY_WAIT_MS);
+      timer.unref?.();
+    })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // ── Public: fan-out an already-persisted activity exactly as authored ─────

@@ -2,7 +2,8 @@
 // Kayıtlı federation peer'larını periyodik olarak pingler, lastSeen günceller
 import logger from '../lib/logger';
 import { fetchT } from '../lib/fetch';
-import { buildFederationAuthHeaders } from '../lib/httpSignature';
+import { signPeerRequest } from '../lib/httpSignatureV3';
+import { getInstanceUrl } from '../lib/federationKeys';
 import { envSafeInt } from '../lib/envNumbers';
 import { cache } from '../lib/redisAdapter';
 
@@ -30,36 +31,49 @@ const TIMEOUT_MS  = 8000;
 const HEARTBEAT_CONCURRENCY = envSafeInt('FEDERATION_HEARTBEAT_CONCURRENCY', 20, { min: 1, max: 100 });
 const HEARTBEAT_CLAIM_TTL_S = Math.ceil(INTERVAL_MS / 1000);
 
-function _sign(body: object): Promise<Record<string, string>> {
-  return buildFederationAuthHeaders(body);
-}
+const PING_PATH = '/api/federation/ping';
 
 export async function pingPeer(peer: FederationPeer): Promise<boolean> {
   const db = _db;
-  const body = { url: process.env.INSTANCE_URL || 'http://localhost:3001' };
-  const authHeaders = await _sign(body);
+  const body = { url: getInstanceUrl() };
+  const payload = JSON.stringify(body);
+  // P5 FED-03: signed in the one form the receiver verifies (method, path,
+  // both installations, body); before this every ping was answered 401.
+  // Outside the try: a local signing fault is not the peer being offline.
+  const authHeaders = await signPeerRequest(
+    { method: 'POST', path: PING_PATH, target: peer.url }, payload,
+  );
 
   try {
-    const resp = await fetchT(`${peer.url.replace(/\/$/, '')}/api/federation/ping`, {
+    const resp = await fetchT(`${peer.url.replace(/\/$/, '')}${PING_PATH}`, {
       method:  'POST',
       headers: {
         'Content-Type': 'application/json',
         ...authHeaders,
       },
-      body:      JSON.stringify(body),
+      body:      payload,
       timeoutMs: TIMEOUT_MS,
     });
 
     const online = resp.ok;
-    if (db) {
-      await db.federation_peers.update(
-        { _id: peer._id },
-        { $set: { lastSeen: Date.now(), verified: online } },
+    if (!online) {
+      // Operator diagnostics: a peer that ANSWERS but refuses us (401/403 — we
+      // were removed there, or it still holds our pre-rotation key) is a
+      // different fault from one that is down.
+      logger.warn(
+        { event: 'federation.heartbeat.peer_refused', peerId: peer._id, peer: peer.url, status: resp.status },
+        '[Federation] Peer answered the heartbeat with an error status.',
       );
+    }
+    // lastSeen means "last AUTHENTICATED answer": a refusal is not a sighting,
+    // otherwise /federation/health would report a peer that rejects us as online.
+    const set = online ? { lastSeen: Date.now(), verified: true } : { verified: false };
+    if (db) {
+      await db.federation_peers.update({ _id: peer._id }, { $set: set });
     } else {
       // Production path — FederationRepository kullan
       const { Federation } = await import('../db/repositories');
-      await Federation.updatePeer(peer._id, { $set: { lastSeen: Date.now(), verified: online } });
+      await Federation.updatePeer(peer._id, { $set: set });
     }
     return online;
   } catch {

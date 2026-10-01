@@ -356,3 +356,59 @@ describe('federationAuth middleware — RSA-only V3', () => {
     expect(next).not.toHaveBeenCalled();
   });
 });
+
+// P5 FED-03: positive control at the middleware — a request signed the way
+// Bridge's own heartbeat signs it passes; the same bytes at another endpoint
+// or a second time do not. (Before P5 nothing Bridge sent could pass here.)
+describe('federationAuth middleware — P5 bound peer signature', () => {
+  const peerUrl = 'https://peer-mw.bridge.example.com';
+  const { privateKey, publicKey } = require('crypto').generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding:  { type: 'spki',  format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
+
+  beforeEach(async () => {
+    _resetFederationKeyCache();
+    mockDb._reset();
+    await mockDb.federationPeers.insert({ _id: 'mw-bound', url: peerUrl, publicKey, verified: true, lastSeen: 0 });
+  });
+
+  function signedReq(path: string, signedFor = path) {
+    const { buildFederationHeadersV3 } = require('../lib/httpSignatureV3');
+    const body = { url: peerUrl };
+    const rawBody = JSON.stringify(body);
+    const headers = buildFederationHeadersV3(rawBody, privateKey, `${peerUrl}/api/federation/key`, {
+      method: 'POST', path: signedFor, target: process.env.INSTANCE_URL, sender: peerUrl,
+    });
+    return { method: 'POST', originalUrl: path, url: path, headers, body, rawBody } as unknown as Request;
+  }
+
+  it('accepts a correctly bound ping and records the authenticated peer', async () => {
+    const req = signedReq('/api/federation/ping');
+    const next = makeNext();
+    await federationAuth(req, makeRes(), next);
+    expect(next).toHaveBeenCalled();
+    expect(req.federationPeerId).toBe('mw-bound');
+    expect(req.federationPeerUrl).toBe(peerUrl);
+  });
+
+  it('refuses a ping signature presented at key-update (401)', async () => {
+    const req = signedReq('/api/federation/key-update', '/api/federation/ping');
+    const res = makeRes();
+    const next = makeNext();
+    await federationAuthRsaRequired(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('refuses the same signed request a second time (401)', async () => {
+    const req = signedReq('/api/federation/ping');
+    await federationAuth(req, makeRes(), makeNext());
+    const res = makeRes();
+    const next = makeNext();
+    await federationAuth({ ...req, headers: { ...req.headers } } as Request, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+});

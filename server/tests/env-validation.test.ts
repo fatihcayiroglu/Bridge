@@ -12,7 +12,7 @@ const ENV_KEYS = [
   'AP_ENCRYPTION_KEY', 'FEDERATION_SECRET', 'METRICS_SECRET',
   'MAX_WS_PER_IP', 'MAX_UNAUTH_WS_PER_IP', 'MAX_WS_PER_USER',
   'AP_INBOX_GLOBAL_MAX', 'AP_INBOX_PEER_MAX', 'AP_INBOX_BURST_MAX',
-  'TRUSTED_PROXY_COUNT',
+  'TRUSTED_PROXY_COUNT', 'INSTANCE_URL',
   'BASE_URL', 'OIDC_ENABLED', 'OIDC_ISSUER', 'OIDC_CLIENT_ID',
   'SAML_ENABLED', 'SAML_ENTRY_POINT', 'SAML_IDP_CERT', 'SAML_IDP_ENTITY_ID',
 ] as const;
@@ -92,6 +92,48 @@ describe('lib/env fail-closed validation', () => {
     expect(result.validated).toBe(true);
     expect(exitSpy).not.toHaveBeenCalled();
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  // P5 FED-07: INSTANCE_URL is the federated identity; it was never validated.
+  it.each([
+    ['http://bridge.example.com', 'must be https in production'],
+    ['https://admin:pw@bridge.example.com', 'must not contain credentials'],
+    ['https://bridge.example.com/chat', 'must be an origin without a path'],
+    ['https://bridge.example.com/?x=1', 'must not contain a query or fragment'],
+    ['bridge.example.com', 'not a valid absolute URL'],
+  ])('production refuses INSTANCE_URL=%s', (value, why) => {
+    expect(() => loadEnv({ ...validProductionEnv(), INSTANCE_URL: value })).toThrow('process.exit called');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy.mock.calls.flat().join('\n')).toContain(why);
+  });
+
+  it('production accepts an https origin INSTANCE_URL (trailing slash included)', () => {
+    for (const value of ['https://bridge.example.com', 'https://bridge.example.com:8443/']) {
+      const result = loadEnv({ ...validProductionEnv(), INSTANCE_URL: value, WEBAUTHN_RP_ID: 'bridge.example.com' });
+      expect(result.validated).toBe(true);
+    }
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('production keeps loopback http (local labs; unreachable from other installations)', () => {
+    const result = loadEnv({ ...validProductionEnv(), INSTANCE_URL: 'http://127.0.0.1:3000', WEBAUTHN_RP_ID: '127.0.0.1' });
+    expect(result.validated).toBe(true);
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('production without INSTANCE_URL boots, but says federation cannot work', () => {
+    warnSpy.mockClear();
+    const result = loadEnv({ ...validProductionEnv(), INSTANCE_URL: undefined });
+    expect(result.validated).toBe(true);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(warnSpy.mock.calls.flat().join('\n')).toContain('INSTANCE_URL is not set');
+  });
+
+  it('development keeps http INSTANCE_URL (local federation labs)', () => {
+    warnSpy.mockClear(); // only this boot's output
+    const result = loadEnv({ NODE_ENV: 'development', INSTANCE_URL: 'http://localhost:3001' });
+    expect(result.validated).toBe(true);
+    expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('INSTANCE_URL');
   });
 
   it('fails closed in production when mandatory security/infra settings are absent', () => {

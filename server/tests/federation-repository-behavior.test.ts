@@ -13,6 +13,8 @@ function resetDb() {
 resetDb();
 jest.mock('../db/loader', () => mockDb);
 
+import fs from 'fs';
+import path from 'path';
 import Federation from '../db/repositories/FederationRepository';
 
 const delivery = { payload: { inboxUrl: 'https://remote.test/inbox', activity: { type: 'Create' } }, attempts: 1, nextAt: 2000, createdAt: 1000 };
@@ -50,6 +52,30 @@ describe('FederationRepository canonical storage and lease contracts', () => {
     await Federation.insertBlacklist({ domain: 'b.test' });
     await Federation.removeBlacklistByDomain('b.test');
     expect(mockDb.federationBlacklist.remove).toHaveBeenCalledWith({ domain: 'b.test' });
+  });
+
+  it('FED-02: ACL inserts write only the real columns of federation_whitelist / federation_blacklist', async () => {
+    // Route-shaped entry: addedAt / addedBy are API fields, not PostgreSQL columns.
+    const entry = { _id: 'acl-1', domain: 'evil.test', reason: 'spam', addedAt: 1700000000000, addedBy: 'admin-1' };
+    await Federation.insertBlacklist({ ...entry });
+    await Federation.insertWhitelist({ ...entry, _id: 'acl-2', domain: 'good.test' });
+    const blackRow = mockDb.federationBlacklist.insert.mock.calls[0][0];
+    const whiteRow = mockDb.federationWhitelist.insert.mock.calls[0][0];
+    expect(blackRow).toEqual({ _id: 'acl-1', domain: 'evil.test', reason: 'spam', createdAt: 1700000000000 });
+    expect(whiteRow).toEqual({ _id: 'acl-2', domain: 'good.test', reason: 'spam', createdAt: 1700000000000 });
+
+    // Every key must be a column of the DDL the server actually runs.
+    const ddl = fs.readFileSync(path.join(__dirname, '..', 'db', 'postgres', 'migrations.ts'), 'utf8');
+    for (const table of ['federation_whitelist', 'federation_blacklist']) {
+      const m = ddl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\(([\\s\\S]*?)\\n  \\)`));
+      expect(m).not.toBeNull();
+      const columns = new Set(m![1].split('\n').map((l) => l.trim().split(/\s+/)[0]?.replace(/"/g, '')).filter(Boolean));
+      for (const key of Object.keys(blackRow)) expect(columns).toContain(key);
+    }
+
+    // A row with no timestamp still satisfies the NOT NULL "createdAt".
+    await Federation.insertBlacklist({ domain: 'x.test' });
+    expect(mockDb.federationBlacklist.insert.mock.calls[1][0]).toEqual({ domain: 'x.test', createdAt: expect.any(Number) });
   });
 
   it('forwards ActivityPub collection operations and normalizes async list fallbacks', async () => {

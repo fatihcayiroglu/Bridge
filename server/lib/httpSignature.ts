@@ -111,6 +111,15 @@ async function _claimReplay(raw: string): Promise<boolean> {
   }
 }
 
+/**
+ * Shared, fail-closed single-use claim for a verified signature. Exported for
+ * the Bridge instance-peer verifier (httpSignatureV3) so both protocols use one
+ * cluster-wide replay store.
+ */
+export async function claimSignatureReplay(raw: string): Promise<boolean> {
+  return _claimReplay(raw);
+}
+
 const FEDERATION_TS_WINDOW_MS = 5 * 60 * 1000;
 
 /**
@@ -257,6 +266,26 @@ async function _resolvePublicKey(keyId: string): Promise<ResolvedHttpSignatureKe
   return { pem, owner };
 }
 
+// Host comparison without the scheme's default port ("a.test:443" == "a.test").
+function _normalizeHost(value: string | undefined, protocol?: string): string {
+  const v = (value || '').trim().toLowerCase();
+  if (!v) return '';
+  if (protocol === 'http:' && v.endsWith(':80')) return v.slice(0, -3);
+  if (v.endsWith(':443')) return v.slice(0, -4);
+  return v;
+}
+
+function _instanceHost(): string {
+  const raw = process.env.INSTANCE_URL;
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    return _normalizeHost(u.host, u.protocol);
+  } catch {
+    return '';
+  }
+}
+
 // ── Ana Doğrulama Fonksiyonu ──────────────────────────────────────────────────
 async function verifyHttpSignature(req: IncomingReq): Promise<SigVerifyResult> {
   try {
@@ -282,6 +311,28 @@ async function verifyHttpSignature(req: IncomingReq): Promise<SigVerifyResult> {
     const headerList = signedHeaders.split(' ');
     if (!headerList.includes('(request-target)')) {
       return { ok: false, reason: '(request-target) imzalanmış header listesinde zorunludur' };
+    }
+
+    // ── 2. host / date / digest must be SIGNED, not merely present ───────────
+    // P5 F-ADV-06: these headers were checked for presence and value but not
+    // required in the signed list. A signature over "(request-target)" alone
+    // binds neither the body (Digest), nor freshness (Date), nor the receiving
+    // installation (Host): whoever held one such request could swap the body,
+    // re-date it after the replay entry expired, or replay it to another
+    // installation's identical inbox path. Mastodon, Pleroma, Misskey,
+    // GoToSocial and Bridge's own delivery all sign these four.
+    const signedLower = new Set(headerList.map((h) => h.toLowerCase()));
+    for (const required of ['host', 'date', 'digest']) {
+      if (!signedLower.has(required)) {
+        return { ok: false, reason: `"${required}" must be in the signed header list` };
+      }
+    }
+    // A signed Host only helps if it is OUR host: a request signed for another
+    // installation must not verify here. Enforced when INSTANCE_URL is set.
+    const expectedHost = _instanceHost();
+    const hostHeader = _reqHeader(req, 'host');
+    if (expectedHost && _normalizeHost(hostHeader) !== expectedHost) {
+      return { ok: false, reason: 'Signed Host does not match this instance' };
     }
 
     // Replay claim is taken only after cryptographic verification, atomically

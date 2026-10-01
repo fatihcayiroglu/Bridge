@@ -9,6 +9,11 @@ data:
   INSTANCE_NAME: "Bridge"
   MAX_FILE_SIZE_MB: "2048"
   TRUSTED_PROXY_COUNT: "1"
+  # Public identity (P5 FED-07): must be the https origin the ingress serves
+  # (k8s/ingress.yaml host). Federation actor/key ids and passkeys are bound to
+  # it; production refuses a non-https value or one with a path/credentials.
+  INSTANCE_URL: "https://bridge.senindomain.com"
+  WEBAUTHN_RP_ID: "bridge.senindomain.com"
   # Override in Secret: JWT_SECRET, REFRESH_SECRET, DATABASE_URL, REDIS_URL
   #
   # ── Final21 Faz 10 — F21-10-02: PAYLAŞILAN YÜKLEME DEPOSU ZORUNLU ───────────

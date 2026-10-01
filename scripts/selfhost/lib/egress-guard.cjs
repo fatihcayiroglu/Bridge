@@ -13,12 +13,17 @@
 // Local destinations are not recorded: loopback addresses, `localhost`, Unix
 // sockets, and any host named in $BRIDGE_EGRESS_LOCAL_HOSTS (the lab's own
 // instance hostnames). Everything else is.
+//
+// With BRIDGE_EGRESS_RECORD_LAB=1 the lab hostnames ARE recorded, tagged
+// `lab: true`: a run that federated must show lab traffic, which proves the
+// observer was live — "nothing left the lab" is then not a vacuous empty log.
 'use strict';
 
 const fs = require('fs');
 const net = require('net');
 
 const LOG = process.env.BRIDGE_EGRESS_LOG;
+const RECORD_LAB = process.env.BRIDGE_EGRESS_RECORD_LAB === '1';
 if (LOG) {
   const extra = new Set((process.env.BRIDGE_EGRESS_LOCAL_HOSTS || '')
     .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
@@ -54,8 +59,9 @@ if (LOG) {
       } else if (typeof opts === 'string') {
         unixPath = opts;
       }
-      if (!unixPath && !isLocal(host)) {
-        record({ host: String(host), port: port === undefined ? null : Number(port), stack: new Error().stack.split('\n').slice(2, 7).map((l) => l.trim()) });
+      const lab = !!host && extra.has(String(host).toLowerCase());
+      if (!unixPath && (!isLocal(host) || (lab && RECORD_LAB))) {
+        record({ host: String(host), port: port === undefined ? null : Number(port), ...(lab ? { lab: true } : {}), stack: new Error().stack.split('\n').slice(2, 7).map((l) => l.trim()) });
       }
     } catch { /* never interfere */ }
     return original.apply(this, args);

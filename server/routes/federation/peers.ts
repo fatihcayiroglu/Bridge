@@ -2,6 +2,7 @@
 // Bridge sunucu keşfi, peer yönetimi ve federation sağlık kontrolü
 
 import express from 'express';
+import logger from '../../lib/logger';
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 const router       = express.Router();
 import { v4 as uuidv4 } from 'uuid';
@@ -12,24 +13,11 @@ import { fetchT } from '../../lib/fetch';
 // Sprint 109: verifyFederationRequest (httpSignature) tamamen kaldırıldı; tüm rotalar federationAuth middleware'ini kullanıyor.
 import { federationAuth, federationAuthRsaRequired } from '../../middleware/federationAuth';
 import { getOrCreateFederationKeys, getFederationPublicKeyDoc } from '../../lib/federationKeys';
+import { normalizePeerBaseUrl } from '../../lib/httpSignatureV3';
 import pkg from '../../../package.json';
 const PKG_VERSION: string = (pkg as { version: string }).version;
 const USER_AGENT  = `Bridge/${PKG_VERSION}`;
 
-
-function normalizePeerBaseUrl(value: unknown): string | null {
-  if (typeof value !== 'string' || value.trim().length === 0) return null;
-  try {
-    const url = new URL(value.trim());
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-    url.hash = '';
-    url.search = '';
-    url.pathname = url.pathname.replace(/\/+$/, '') || '/';
-    return url.toString().replace(/\/$/, '');
-  } catch {
-    return null;
-  }
-}
 
 function signedPeerMatches(req: import('express').Request, candidate: unknown): boolean {
   const signed = normalizePeerBaseUrl(req.federationPeerUrl);
@@ -269,9 +257,17 @@ router.post('/peers', authMiddleware, limits.federation(), async (req: import("e
     publicKey?: { publicKeyPem?: string };
   };
 
+  // P5 FED-04: the URL the admin typed is the identity. Production peers are
+  // HTTPS-only (the key below is fetched over this channel).
+  const requested = normalizePeerBaseUrl(url);
+  if (!requested) return res.status(400).json({ error: 'Invalid peer url' });
+  if (process.env.NODE_ENV === 'production' && !requested.startsWith('https://')) {
+    return res.status(400).json({ error: 'Peer url must be https' });
+  }
+
   let remoteInfo: RemoteFederationInfo;
   try {
-    const resp = await fetchT(`${url.replace(/\/$/, '')}/api/federation/info`, {
+    const resp = await fetchT(`${requested}/api/federation/info`, {
       timeoutMs: 8000,
       headers: { 'User-Agent': USER_AGENT },
     });
@@ -282,18 +278,35 @@ router.post('/peers', authMiddleware, limits.federation(), async (req: import("e
     return res.status(400).json({ error: `Could not reach remote server: ${e.message}` });
   }
 
-  const existing = await Federation.findPeerByUrl(remoteInfo.url || url);
+  // P5 FED-04: the remote's self-declared url used to be stored as the peer's
+  // identity. Registering https://evil.example whose /info said
+  // "url": "https://trusted.example" stored evil's key under trusted's name —
+  // and evil could then sign instance-peer requests AS trusted. The declared
+  // url must be the one that was contacted.
+  const declared = normalizePeerBaseUrl(remoteInfo.url ?? requested);
+  if (declared !== requested) {
+    return res.status(400).json({
+      error: 'Remote instance declares a different url than the one contacted',
+      requested, declared: remoteInfo.url ?? null,
+    });
+  }
+  const publicKeyPem = remoteInfo.publicKey?.publicKeyPem;
+  if (typeof publicKeyPem !== 'string' || !publicKeyPem.includes('BEGIN PUBLIC KEY')) {
+    return res.status(400).json({ error: 'Remote instance did not publish an RSA public key' });
+  }
+
+  const existing = await Federation.findPeerByUrl(requested);
   if (existing) return res.status(409).json({ error: 'Peer already added' });
 
   const peer = {
     _id:      uuidv4(),
-    url:      remoteInfo.url || url,
-    name:     remoteInfo.name || url,
+    url:      requested,
+    name:     remoteInfo.name || requested,
     desc:     remoteInfo.description || '',
     addedAt:  Date.now(),
     lastSeen: Date.now(),
     verified: true,
-    publicKey: remoteInfo.publicKey?.publicKeyPem ?? null,
+    publicKey: publicKeyPem,
   };
   await Federation.insertPeer(peer);
   res.json({ ok: true, peer });
@@ -359,7 +372,7 @@ router.get('/discover', authMiddleware, async (req: import("express").Request, r
 });
 
 // ── POST /api/federation/key-update — Peer yeni public key duyurusu (ADR-0006 Faz 2) ──
-router.post('/key-update', federationAuthRsaRequired, async (req: import("express").Request, res: import("express").Response) => {
+router.post('/key-update', limits.federation(), federationAuthRsaRequired, async (req: import("express").Request, res: import("express").Response) => {
 
   const { instanceUrl, url, publicKey } = req.body as {
     instanceUrl?: string;
@@ -384,20 +397,25 @@ router.post('/key-update', federationAuthRsaRequired, async (req: import("expres
     return res.status(401).json({ error: 'Authenticated federation peer identity missing' });
   }
 
+  // P5 FED-10 — measured in the two-instance lab: this also wrote a
+  // "keyUpdated" column that federation_peers does not have, so every key
+  // announcement answered 500 and no peer could ever learn a rotated key.
+  // The rotation is recorded in the log instead (no schema change needed).
   await Federation.updatePeer(String(authenticatedPeerId), {
     $set: {
       publicKey:  publicKey.publicKeyPem,
       lastSeen:   Date.now(),
       verified:   true,
-      keyUpdated: Date.now(),
     },
   });
+  logger.info({ event: 'federation.peer.key_updated', peerId: String(authenticatedPeerId), peer: normalized },
+    '[Federation] Peer announced a rotated key; stored.');
 
   res.json({ ok: true, peerId: String(authenticatedPeerId), instanceUrl: normalized });
 });
 
 // ── POST /api/federation/ping ──────────────────────────────────
-router.post('/ping', federationAuth, async (req: import("express").Request, res: import("express").Response) => {
+router.post('/ping', limits.federation(), federationAuth, async (req: import("express").Request, res: import("express").Response) => {
   const { url } = req.body as Record<string, string>;
   const signedPeerUrl = normalizePeerBaseUrl(req.federationPeerUrl);
   if (!url || !signedPeerUrl) return res.status(400).json({ error: 'url required' });

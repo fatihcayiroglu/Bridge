@@ -101,6 +101,14 @@ services:
       # CORS
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:3001}"
 
+      # Public identity (P5 FED-07). Federation actor/key ids and passkeys are
+      # bound to it. The default equals the server's own fallback; a real
+      # deployment sets INSTANCE_URL=https://chat.example.com and
+      # WEBAUTHN_RP_ID=chat.example.com in .env. Production refuses to boot on
+      # a non-https (non-loopback) INSTANCE_URL, or one with a path/credentials.
+      INSTANCE_URL: "${INSTANCE_URL:-http://localhost:3001}"
+      WEBAUTHN_RP_ID: "${WEBAUTHN_RP_ID:-}"
+
       # AI (opsiyonel)
       GROQ_API_KEY: "${GROQ_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"

@@ -31,6 +31,8 @@ jest.mock('../middleware/auth', () => ({
 
 // delivery fonksiyonlarını mock'la — ağa çıkmasın
 jest.mock('../routes/federation/delivery', () => ({
+  // P5 FED-08: the follow route resolves the target first; resolvable here.
+  resolveFollowTarget: jest.fn(async () => ({ ok: true })),
   sendFollowRequest:  jest.fn(),
   sendUnfollow:       jest.fn(),
   sendLike:           jest.fn(),
@@ -140,6 +142,21 @@ describe('POST /api/federation/follow', () => {
       expect.objectContaining({ _id: USER_ID }),
       REMOTE_ACTOR
     );
+  });
+
+  it('P5 FED-08: an unresolvable target is refused and nothing is stored or sent', async () => {
+    const { resolveFollowTarget } = require('../routes/federation/delivery');
+    (resolveFollowTarget as jest.Mock).mockResolvedValueOnce({ ok: false, status: 422, error: 'Remote actor could not be resolved' });
+    (sendFollowRequest as jest.Mock).mockClear();
+
+    const res = await request(app)
+      .post('/api/federation/follow')
+      .set('Authorization', `Bearer ${token(USER_ID)}`)
+      .send({ actorUrl: 'https://127.0.0.1:9/users/x' });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe('Remote actor could not be resolved');
+    expect(sendFollowRequest).not.toHaveBeenCalled();
   });
 
   it('409 — aynı aktörü zaten takip ediyorsa çakışma döner', async () => {

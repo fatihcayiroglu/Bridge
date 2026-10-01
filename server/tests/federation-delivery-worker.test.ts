@@ -1,21 +1,28 @@
 'use strict';
 process.env.NODE_ENV = 'test';
+// These suites exercise the retry CEILING mechanics on a 3-step schedule; the
+// default (P5 FED-06) schedule is asserted in federation-delivery-schedule-acl.test.ts.
+process.env.FEDERATION_DELIVERY_RETRY_DELAYS_MS = '30000,120000,600000';
 
 jest.useFakeTimers();
 
 const fetchT = jest.fn();
 const warn = jest.fn();
+const error = jest.fn(); // P5 FED-06: dead letters are logged at error level
 const info = jest.fn();
 const federation = {
   claimPendingDeliveries: jest.fn(),
   removeDeliveryEntry: jest.fn(async () => undefined),
+  // P5 FED-05: outbound delivery consults the domain ACL; empty lists allow all.
+  findBlacklist: jest.fn(async (): Promise<unknown[]> => []),
+  findWhitelist: jest.fn(async (): Promise<unknown[]> => []),
   releaseDeliveryClaim: jest.fn(async () => undefined),
   upsertDeliveryEntry: jest.fn(async () => undefined),
 };
 const users = { getApPrivateKey: jest.fn(async () => null) };
 
 jest.mock('../lib/fetch', () => ({ fetchT: (...args: unknown[]) => fetchT(...args) }));
-jest.mock('../lib/logger', () => ({ __esModule: true, default: { warn, info } }));
+jest.mock('../lib/logger', () => ({ __esModule: true, default: { warn, info, error } }));
 jest.mock('../db/repositories', () => ({ Federation: federation, Users: users }));
 jest.mock('uuid', () => ({ v4: jest.fn(() => 'worker-uuid') }));
 
@@ -85,7 +92,7 @@ describe('federation durable retry worker', () => {
     await jest.advanceTimersByTimeAsync(30_000);
 
     expect(federation.removeDeliveryEntry).toHaveBeenCalledWith('retry-max', 'federation:' + process.pid + ':worker-uuid');
-    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ event: 'federation.delivery.max_retries' }), expect.any(String));
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({ event: 'federation.delivery.max_retries' }), expect.any(String));
   });
 
   it('acknowledges a successful claimed delivery instead of requeueing it', async () => {

@@ -13,23 +13,42 @@ jest.mock('../lib/logger', () => ({
   default: { info: jest.fn(), warn: (...args: unknown[]) => mockLoggerWarn(...args), error: (...args: unknown[]) => mockLoggerError(...args), fatal: jest.fn() },
 }));
 
-jest.mock('../lib/httpSignature', () => {
+// P5 FED-03: the heartbeat now signs with the instance-peer (V3) signer for
+// real; only the key store, replay store and peer lookup are doubles, so the
+// round-trip test below exercises the SAME verifier the receiving node runs.
+jest.mock('../lib/federationKeys', () => {
   const crypto = require('crypto');
+  const pair = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding:  { type: 'spki',  format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
   return {
-    buildFederationAuthHeaders: jest.fn(async (body: object) => {
-      const ts = String(Date.now());
-      const payload = ts + JSON.stringify(body);
-      const sig = crypto.createHmac('sha256', process.env.FEDERATION_SECRET)
-        .update(payload).digest('hex');
-      return {
-        'x-bridge-ts':        ts,
-        'x-bridge-sig':       sig,
-        'X-Bridge-Signature': 'RSA-SHA256 keyId="http://localhost:3001/api/federation/key",signature="mock"',
-      };
-    }),
-    verifyFederationRequest: jest.fn(),
+    __keys: pair,
+    getOrCreateFederationKeys: jest.fn(async () => ({ publicKeyPem: pair.publicKey, privateKeyPem: pair.privateKey, keyVersion: 1 })),
+    getFederationKeyId: () => 'http://localhost:3001/api/federation/key',
+    getInstanceUrl: () => 'http://localhost:3001',
   };
 });
+
+const mockReplay = new Set<string>();
+jest.mock('../lib/httpSignature', () => ({
+  claimSignatureReplay: jest.fn(async (raw: string) => {
+    if (mockReplay.has(raw)) return false;
+    mockReplay.add(raw);
+    return true;
+  }),
+}));
+
+// What the RECEIVING installation has registered for us.
+const mockReceiverPeers = new Map<string, Record<string, unknown>>();
+jest.mock('../db/loader', () => ({
+  __esModule: true,
+  default: { federationPeers: { findOne: jest.fn(async ({ url }: { url: string }) => mockReceiverPeers.get(url) ?? null) } },
+}));
+jest.mock('../db/repositories', () => ({
+  Federation: { getPeerByUrl: jest.fn(async () => null) },
+}));
 
 jest.mock('../lib/fetch', () => ({
   fetchT: jest.fn((...args: Parameters<typeof fetch>) => global.fetch(...args)),
@@ -173,7 +192,7 @@ describe('pingPeer — successful response', () => {
     expect(updated.lastSeen).toBeGreaterThan(0);
   });
 
-  it('includes x-bridge-sig and x-bridge-ts headers', async () => {
+  it('includes the instance-peer signature headers', async () => {
     const peer = makePeer();
     await db.federation_peers.insert(peer);
     startFederationHeartbeat(db);
@@ -182,8 +201,9 @@ describe('pingPeer — successful response', () => {
     await pingPeer(peer);
 
     const [, opts] = jest.mocked(_fetchImpl).mock.calls[0];
-    expect(headerFrom(opts, 'x-bridge-sig')).toBeDefined();
-    expect(headerFrom(opts, 'x-bridge-ts')).toBeDefined();
+    expect(headerFrom(opts, 'x-bridge-rsa-sig')).toBeDefined();
+    expect(headerFrom(opts, 'x-bridge-ts')).toMatch(/^\d+$/);
+    expect(headerFrom(opts, 'x-bridge-instance-url')).toBe('http://localhost:3001');
   });
 });
 
@@ -360,19 +380,81 @@ describe('cluster heartbeat ownership', () => {
   });
 });
 
-describe('HMAC signature', () => {
-  afterEach(() => stopFederationHeartbeat());
+// P5 FED-03 — measured in the two-instance lab: the heartbeat signed a form
+// the receiving node never verified, so EVERY ping was answered 401 and peers
+// were marked unverified. This is the contract that was missing: what the
+// heartbeat sends verifies under the receiver's own verifier.
+describe('heartbeat signature verifies at the receiving installation', () => {
+  afterEach(() => { stopFederationHeartbeat(); mockReceiverPeers.clear(); mockReplay.clear(); });
 
-  it('generates a non-empty signature', async () => {
+  async function sentPing(peerUrl = 'https://receiver.example') {
+    const db = buildDb();
+    _fetchImpl = jest.fn(okResponse);
+    const peer = makePeer({ url: peerUrl });
+    await db.federation_peers.insert(peer);
+    startFederationHeartbeat(db);
+    await pingPeer(peer);
+    const [url, opts] = jest.mocked(_fetchImpl).mock.calls[0];
+    const headers = {
+      'x-bridge-rsa-sig': headerFrom(opts, 'x-bridge-rsa-sig'),
+      'x-bridge-ts':      headerFrom(opts, 'x-bridge-ts'),
+      'x-bridge-keyid':   headerFrom(opts, 'x-bridge-keyid'),
+    };
+    return { url: String(url), body: String(opts?.body), headers, sender: headerFrom(opts, 'x-bridge-instance-url') };
+  }
+
+  it('round trip: the receiver accepts it once, and only as a ping to itself', async () => {
+    const { verifyFederationRequestV3 } = jest.requireActual('../lib/httpSignatureV3');
+    const { __keys } = jest.requireMock('../lib/federationKeys');
+    mockReceiverPeers.set('http://localhost:3001', { _id: 'us', url: 'http://localhost:3001', publicKey: __keys.publicKey });
+
+    const sent = await sentPing();
+    expect(sent.url).toBe('https://receiver.example/api/federation/ping');
+    expect(JSON.parse(sent.body)).toEqual({ url: 'http://localhost:3001' });
+    const ctx = { method: 'POST', path: '/api/federation/ping', target: 'https://receiver.example' };
+
+    await expect(verifyFederationRequestV3(sent.sender, sent.body, sent.headers, ctx)).resolves.toMatchObject({ ok: true, peerId: 'us' });
+    // Replayed: refused.
+    await expect(verifyFederationRequestV3(sent.sender, sent.body, sent.headers, ctx)).resolves.toMatchObject({ ok: false, reason: 'Replay: signature already used' });
+  });
+
+  it('negative control: a receiver at another url refuses it', async () => {
+    const { verifyFederationRequestV3 } = jest.requireActual('../lib/httpSignatureV3');
+    const { __keys } = jest.requireMock('../lib/federationKeys');
+    mockReceiverPeers.set('http://localhost:3001', { _id: 'us', url: 'http://localhost:3001', publicKey: __keys.publicKey });
+
+    const sent = await sentPing();
+    const ctx = { method: 'POST', path: '/api/federation/ping', target: 'https://somewhere-else.example' };
+    await expect(verifyFederationRequestV3(sent.sender, sent.body, sent.headers, ctx)).resolves.toMatchObject({ ok: false, reason: 'RSA signature invalid' });
+  });
+
+  it('no HMAC header is sent (ADR-0006 Faz 3: receivers ignore it)', async () => {
     const db = buildDb();
     _fetchImpl = jest.fn(okResponse);
     const peer = makePeer();
     await db.federation_peers.insert(peer);
     startFederationHeartbeat(db);
-
     await pingPeer(peer);
-
     const [, opts] = jest.mocked(_fetchImpl).mock.calls[0];
-    expect(headerFrom(opts, 'x-bridge-sig') ?? '').toHaveLength(64);
+    expect(headerFrom(opts, 'x-bridge-sig')).toBeUndefined();
   });
+
+  it('a peer that ANSWERS with a refusal is not "seen": lastSeen is kept, verified drops', async () => {
+    const db = buildDb();
+    _fetchImpl = jest.fn(() => notOkResponse(401));
+    const peer = makePeer({ verified: true, lastSeen: 1234 });
+    await db.federation_peers.insert(peer);
+    startFederationHeartbeat(db);
+
+    await expect(pingPeer(peer)).resolves.toBe(false);
+
+    const updated = await requireDoc(db.federation_peers, { _id: peer._id });
+    expect(updated.verified).toBe(false);
+    expect(updated.lastSeen).toBe(1234);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'federation.heartbeat.peer_refused', status: 401 }),
+      expect.any(String),
+    );
+  });
+});
 });

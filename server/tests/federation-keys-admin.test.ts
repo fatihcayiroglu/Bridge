@@ -185,3 +185,46 @@ describe('POST /api/federation/key-update', () => {
     expect(victim!.publicKey).toBe('old-b');
   });
 });
+
+// P5 FED-10 — measured in the two-instance lab: the route also wrote a
+// "keyUpdated" column federation_peers does not have. This mock DB accepts any
+// column, so the suite above stayed green while every real announcement was 500.
+// The written columns are checked against the DDL the server actually runs.
+describe('POST /api/federation/key-update — writes only real columns', () => {
+  function federationPeerColumns(): Set<string> {
+    const fs = require('fs');
+    const path = require('path');
+    const root = path.join(__dirname, '..', 'db');
+    const schema = fs.readFileSync(path.join(root, 'postgres', 'schema.ts'), 'utf8');
+    const table = schema.match(/CREATE TABLE IF NOT EXISTS federation_peers \(([\s\S]*?)\n\);/);
+    const cols = new Set<string>((table ? table[1] : '').split('\n')
+      .map((l: string) => l.trim().split(/\s+/)[0]?.replace(/"/g, '')).filter(Boolean));
+    const migrations = fs.readdirSync(path.join(root, 'migrations_pg')).filter((f: string) => f.endsWith('.sql'))
+      .map((f: string) => fs.readFileSync(path.join(root, 'migrations_pg', f), 'utf8')).join('\n')
+      + fs.readFileSync(path.join(root, 'postgres', 'migrations.ts'), 'utf8');
+    for (const m of migrations.matchAll(/ALTER TABLE federation_peers\s+ADD COLUMN IF NOT EXISTS\s+"?(\w+)"?/gi)) cols.add(m[1]);
+    return cols;
+  }
+
+  it('every column the route sets exists in federation_peers', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use('/api/federation', peersRouter);
+    mockDb._reset();
+    await mockDb.federationPeers.insert({ _id: 'peer-1', url: 'http://peer.example.com', name: 'Peer', publicKey: 'old', verified: true });
+    const update = jest.spyOn(mockDb.federationPeers, 'update');
+
+    const res = await request(app)
+      .post('/api/federation/key-update')
+      .set('x-bridge-ts', String(Date.now()))
+      .set('x-bridge-rsa-sig', 'authenticated-by-middleware')
+      .set('x-bridge-instance-url', 'http://peer.example.com')
+      .send({ url: 'http://peer.example.com', publicKey: { publicKeyPem: '-----BEGIN PUBLIC KEY-----\nNEW\n-----END PUBLIC KEY-----' } });
+
+    expect(res.status).toBe(200);
+    const columns = federationPeerColumns();
+    expect(columns).toContain('publicKey'); // the DDL parse itself works
+    const written = Object.keys((update.mock.calls.at(-1)![1] as { $set: Record<string, unknown> }).$set);
+    expect(written.filter((c) => !columns.has(c))).toEqual([]);
+  });
+});

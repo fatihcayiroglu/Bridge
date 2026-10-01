@@ -463,3 +463,45 @@ describe('HMAC fallback', () => {
     } finally { process.env.NODE_ENV = 'test'; }
   });
 });
+
+// P5 F-ADV-06 — measured in the two-instance federation lab: a signature over
+// "(request-target)" alone was ACCEPTED, so neither the body, nor the Date, nor
+// the receiving installation was bound to it. These cases fix the contract.
+describe('host, date and digest must be inside the signature, not just present', () => {
+  const keyId = 'https://bridge.test/api/federation/users/alice#main-key';
+  beforeEach(() => { users.findOne.mockResolvedValue({ username: 'alice', apPublicKey: publicKeyPem }); });
+
+  it.each([
+    [['(request-target)'], 'host'],
+    [['(request-target)', 'host', 'date'], 'digest'],
+    [['(request-target)', 'host', 'digest'], 'date'],
+    [['(request-target)', 'date', 'digest'], 'host'],
+  ])('rejects a valid signature over %j (missing %s)', async (headerList, missing) => {
+    const result = await verifyHttpSignature(signRequest({ keyId, headerList }));
+    expect(result).toEqual({ ok: false, reason: `"${missing}" must be in the signed header list` });
+    // Rejected before any key was resolved or replay entry spent.
+    expect(users.findOne).not.toHaveBeenCalled();
+    expect(setIfAbsentAuthoritative).not.toHaveBeenCalled();
+  });
+
+  it('header names in the list are matched case-insensitively', async () => {
+    const req = signRequest({ keyId, headerList: ['(request-target)', 'Host', 'Date', 'Digest'] });
+    const result = await verifyHttpSignature(req);
+    expect(result.reason).not.toMatch(/must be in the signed header list/);
+  });
+
+  it('a request signed for ANOTHER installation does not verify here', async () => {
+    process.env.INSTANCE_URL = 'https://other.test';
+    const result = await verifyHttpSignature(signRequest({ keyId }));
+    expect(result).toEqual({ ok: false, reason: 'Signed Host does not match this instance' });
+  });
+
+  it('the default port is not a different host', async () => {
+    process.env.INSTANCE_URL = 'https://bridge.test:443/';
+    await expect(verifyHttpSignature(signRequest({ keyId }))).resolves.toMatchObject({ ok: true });
+  });
+
+  it('positive control: the full Mastodon-shaped list verifies', async () => {
+    await expect(verifyHttpSignature(signRequest({ keyId }))).resolves.toMatchObject({ ok: true });
+  });
+});

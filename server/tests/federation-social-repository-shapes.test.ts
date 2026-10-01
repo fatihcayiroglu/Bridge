@@ -38,6 +38,8 @@ jest.mock('../middleware/auth', () => ({
   },
 }));
 jest.mock('../routes/federation/delivery', () => ({
+  // P5 FED-08: the follow route resolves the target first; resolvable here.
+  resolveFollowTarget: jest.fn(async () => ({ ok: true })),
   sendFollowRequest: jest.fn(), sendUnfollow: jest.fn(), sendLike: jest.fn(),
   sendAnnounce: jest.fn(), deliverApActivity: jest.fn(), deliverToFollowers: jest.fn(),
   signRequest: jest.fn(),
