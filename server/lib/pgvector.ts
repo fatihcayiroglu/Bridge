@@ -215,6 +215,8 @@ export async function vectorSearch(params: {
   conditions.push('m.embedding IS NOT NULL');
   // Sistem mesajlarını atla
   conditions.push(`m.type != 'system'`);
+  // P5 AI-02: a deleted message's embedding must not rank results.
+  conditions.push('m."deletedAt" IS NULL');
 
   const where = conditions.join(' AND ');
 

@@ -83,7 +83,8 @@ import { rulesMod } from '../../lib/modRules';
 import { callAI, AI_ENABLED, PROVIDER, safeProvider } from '../../lib/aiProvider';
 
 // POST /api/ai/moderate
-router.post('/moderate', authMiddleware, async (req, res) => {
+// P5 AI-08: this calls the provider; it had no AI rate limit.
+router.post('/moderate', authMiddleware, limits.ai(), async (req, res) => {
   const _u = castAuthed(req).user;
   const { messageId } = req.body as Record<string, string>;
   if (!messageId) return res.status(400).json({ error: 'messageId gerekli' });

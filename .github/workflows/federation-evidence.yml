@@ -1,0 +1,100 @@
+name: Bridge Federation + AI Evidence
+
+# P5 — scripts/federation-lab/run.mjs, the capstone:
+#
+#   Two independent Bridge installations (each with its own PostgreSQL,
+#   Redis and uploads) federating over real HTTPS behind TLS fronts signed
+#   by a lab CA, plus a hostile-but-real remote ActivityPub actor and an SSRF
+#   canary. Identity, follow/post, inbound lifecycle, adversarial signatures,
+#   SSRF, partition/reconnect, restart, instance peers (heartbeat, spoofing,
+#   key rotation), revocation and domain blocks.
+#
+#   AI over a self-hosted OpenAI-compatible provider (a real HTTP server the
+#   lab inspects): permission-aware context, a negative leak test against
+#   private channels / other servers / DMs / deleted messages, prompt-
+#   controlled access, outage behaviour, key handling, AI_PROVIDER=none.
+#
+#   An egress observer (with a positive control) shows neither installation
+#   contacted anything outside the lab: no mandatory SaaS.
+#
+# Statuses: PASS / FAIL / BLOCKED / SKIPPED / MEASURED — only PASS passes.
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'server/**'
+      - 'scripts/federation-lab/**'
+      - 'scripts/selfhost/lib/**'
+      - 'scripts/multinode/lib/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/federation-evidence.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'scripts/federation-lab/**'
+      - 'scripts/selfhost/lib/**'
+      - 'scripts/multinode/lib/**'
+      - '.github/workflows/federation-evidence.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 3'
+
+concurrency:
+  group: federation-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: '24.20.0'
+
+jobs:
+  lab:
+    name: Federation + AI lab — two installations, hostile remote, self-hosted AI provider
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - name: Install infrastructure (PostgreSQL binaries, Redis, OpenSSL)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server openssl
+          sudo systemctl stop redis-server || true
+          ls -d /usr/lib/postgresql/*/bin
+      - name: Lab hostnames resolve to loopback
+        # canary.bridge.test is deliberately NOT in the lab's SSRF allowlist:
+        # a private address reached through DNS.
+        run: |
+          echo "127.0.0.1 a.bridge.test b.bridge.test evil.bridge.test canary.bridge.test" | sudo tee -a /etc/hosts
+          getent hosts canary.bridge.test
+      - name: Build this checkout
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund && npm run build && cd ..
+          npm run build
+      - name: Run the lab (all scenarios)
+        run: |
+          node scripts/federation-lab/run.mjs \
+            --work "$RUNNER_TEMP/bridge-fedlab" \
+            --out "$RUNNER_TEMP/bridge-fedlab-report"
+      - name: Upload report and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: federation-ai-lab
+          path: |
+            ${{ runner.temp }}/bridge-fedlab-report/
+            ${{ runner.temp }}/bridge-fedlab/logs/
+            ${{ runner.temp }}/bridge-fedlab/egress-*.jsonl
+          retention-days: 30

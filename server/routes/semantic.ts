@@ -141,7 +141,8 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
 
   // Mesajları getir
   const since = Date.now() - (days * 24 * 60 * 60 * 1000);
-  const filter: Record<string, unknown> = { serverId, createdAt: { $gt: since }, type: { $ne: 'system' } };
+  // P5 AI-02: deleted messages never feed search ranking or an AI prompt.
+  const filter: Record<string, unknown> = { serverId, createdAt: { $gt: since }, type: { $ne: 'system' }, deletedAt: null };
   if (channelId) filter.channelId = channelId;
 
   let messages = await Messages.messagesFind(filter).sort({ createdAt: -1 }).limit(200);
@@ -357,7 +358,9 @@ router.get('/digest/:serverId', authMiddleware, async (req, res) => {
   // metin donmese de bu, gorunmeyen ozel kanallarin varligini ve icindeki
   // kullanici etkinligini SIZDIRIR: bir kullanici hic "acik" kanala yazmadigi
   // halde siralamada gorunebiliyordu. Bu, gizli kanal katilimini ifsa eder.
-  const allMsgsRaw = await Messages.findWhere({ serverId, createdAt: { $gt: since } });
+  // P5 AI-02: the digest (and its AI prompt) never reads deleted, system or E2EE messages.
+  const allMsgsRaw = (await Messages.findWhere({ serverId, createdAt: { $gt: since }, deletedAt: null, type: { $ne: 'system' } }))
+    .filter((m: { content?: string }) => !(typeof m.content === 'string' && m.content.startsWith('🔒e2e:')));
   const digestMsgViewable = await viewableChannelIds(
     _u.id, serverId, allMsgsRaw.map((m: { channelId: string }) => String(m.channelId)),
   );

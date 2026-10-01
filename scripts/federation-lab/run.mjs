@@ -528,6 +528,8 @@ const S = {
     const leaked = (text, allowed = []) => secrets.filter((x) => !allowed.includes(x) && text.includes(x));
 
     // Data: server S (owner + carol), public #general, private #staff
+    // (messages are deleted through DELETE /api/channels/:messageId — the
+    // messages router is mounted under /channels)
     // (@everyone denied VIEW_CHANNELS), a second server carol is not in, a DM.
     const { serverId, channelId: general } = await makeServer(A, owner, [carol]);
     const st = await mutate(A, 'POST', `/api/servers/${serverId}/channels`, owner.token, { name: `staff-${tag}`, type: 'text' });
@@ -544,7 +546,7 @@ const S = {
     sock.emit('dm:send', { toUserId: user('alice').id, content: `between us ${T.dm}` });
     const dm = await dmAck.catch(() => null);
     const deletedId = delAck?.message?._id || delAck?.messageId || delAck?._id || delAck?.id;
-    const delR = await mutate(A, 'DELETE', `/api/messages/${deletedId}`, owner.token);
+    const delR = await mutate(A, 'DELETE', `/api/channels/${deletedId}`, owner.token);
     sock.close();
     check('ai', 'F-AI-00', 'setup: public + private channel, other server, DM and a deleted message exist', staff && deny.status === 200 && delR.status === 200 && dm,
       `staff ${st.status}, deny ${deny.status}, delete ${delR.status} (${deletedId}), dm ${dm ? 'sent' : 'missing'}`);
@@ -598,20 +600,26 @@ const S = {
     const r5 = await sum(owner, staff);
     check('ai', 'F-AI-08', 'control: the owner\'s #staff summary does send #staff to the provider', r5.status === 200 && lab.ai.textSince(n4).includes(T.staff), `status ${r5.status}`);
 
-    // 6. Deleting after a summary was cached: the next summary must not reuse it.
+    // 6. Deleting after a summary was cached. The cache key is a fingerprint of
+    // the exact non-deleted message set, so after the deletion the summary served
+    // is one computed WITHOUT the deleted message — fresh, or the cached entry
+    // for that very set (which never contained it). messageCount/to show which
+    // set it was computed from.
     const n5 = lab.ai.requests.length;
     const sock2 = await connectSocket(A, owner.token);
     const late = await sendMessage(sock2, { channelId: general, serverId, content: `late ${T.del}-2`, ackId: `ai-${rnd()}` });
     sock2.close();
     const beforeDel = await sum(owner, general);
     const lateId = late?.message?._id || late?.messageId || late?._id || late?.id;
-    await mutate(A, 'DELETE', `/api/messages/${lateId}`, owner.token);
+    const lateDel = await mutate(A, 'DELETE', `/api/channels/${lateId}`, owner.token);
     const n6 = lab.ai.requests.length;
     const afterDel = await sum(owner, general);
-    check('ai', 'F-AI-09', 'a message deleted after a summary was cached is not served from that cache, nor sent again',
-      beforeDel.status === 200 && lab.ai.textSince(n5).includes(`${T.del}-2`) && afterDel.status === 200 && afterDel.body?.cached !== true
-        && lab.ai.requests.length > n6 && !lab.ai.textSince(n6).includes(`${T.del}-2`),
-      `cached=${afterDel.body?.cached}, provider calls after delete ${lab.ai.requests.length - n6}`);
+    check('ai', 'F-AI-09', 'after a deletion, the summary served was computed without the deleted message (never the pre-deletion cache entry)',
+      beforeDel.status === 200 && beforeDel.body?.cached !== true && lab.ai.textSince(n5).includes(`${T.del}-2`)
+        && lateDel.status === 200 && afterDel.status === 200
+        && afterDel.body?.messageCount === beforeDel.body?.messageCount - 1 && afterDel.body?.to !== beforeDel.body?.to
+        && !lab.ai.textSince(n6).includes(`${T.del}-2`),
+      `delete ${lateDel.status}; before: ${beforeDel.body?.messageCount} msgs (cached ${beforeDel.body?.cached === true}); after: ${afterDel.body?.messageCount} msgs (cached ${afterDel.body?.cached === true}), provider calls after delete ${lab.ai.requests.length - n6}`);
 
     // 7. Secrets: the key is used server-side and appears nowhere a client or log can see.
     const usedKey = lab.ai.requests.some((r) => r.auth === `Bearer ${AI.key}`);
@@ -623,12 +631,19 @@ const S = {
       `used ${usedKey}, in responses ${responses.includes(AI.key)}, in logs ${logs.includes(AI.key)}`);
 
     // 8. Outage: a failing and a hanging provider — bounded, graceful, no upstream detail.
+    // A fresh message first: the summary must MISS the cache and reach the
+    // provider, or the probe would only measure the cache.
+    const sock3 = await connectSocket(A, owner.token);
+    await sendMessage(sock3, { channelId: general, serverId, content: `before outage ${tag}`, ackId: `ai-${rnd()}` });
+    sock3.close();
     lab.ai.mode = 'fail500';
+    const nOut = lab.ai.requests.length;
     const t0 = Date.now();
     const o1 = await sum(carol, general);
     const o1ms = Date.now() - t0;
     check('ai', 'F-AI-11', 'provider failing (500): the summary degrades to the local fallback — no 500, no upstream detail',
-      o1.status === 200 && o1.body?.degraded === true && !JSON.stringify(o1.body).includes('10.9.8.7'), `status ${o1.status}, degraded ${o1.body?.degraded}, ${o1ms} ms`);
+      o1.status === 200 && o1.body?.degraded === true && lab.ai.requests.length > nOut && !JSON.stringify(o1.body).includes('10.9.8.7'),
+      `status ${o1.status}, degraded ${o1.body?.degraded}, provider attempts ${lab.ai.requests.length - nOut}, ${o1ms} ms`);
     const s1 = await request(A, 'GET', `/api/ai/ask/stream?q=hi&channelId=${general}`, { token: carol.token });
     check('ai', 'F-AI-12', 'provider failing: the stream ends with a generic error event', s1.status === 200 && /ulaşılamıyor|bulunamadı/.test(String(s1.body)) && !String(s1.body).includes('10.9.8.7'), String(s1.body).slice(0, 120));
     lab.ai.mode = 'hang';

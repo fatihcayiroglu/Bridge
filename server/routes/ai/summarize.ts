@@ -44,12 +44,17 @@ import { Channels, Members, Messages, Users } from '../../db/repositories';
 import { authMiddleware} from '../../middleware/auth';
 import { cache } from '../../lib/redisAdapter';
 import { rulesSummary, MessageLike } from '../../lib/modRules';
+import { channelDataBlock, CHANNEL_DATA_RULE } from '../../lib/aiContext';
 import { callAI, AI_ENABLED, PROVIDER } from '../../lib/aiProvider';
+import { limits } from '../../middleware/rateLimit';
+import { createHash } from 'crypto';
+import logger from '../../lib/logger';
 import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
 import { parseBoundedPositiveIntQuery } from '../../lib/queryNumbers';
 
 // GET /api/ai/summarize/:channelId
-router.get('/:channelId', authMiddleware, async (req, res) => {
+// P5 AI-08: this sends channel history to the provider; it had no AI rate limit.
+router.get('/:channelId', authMiddleware, limits.ai(), async (req, res) => {
   const _u = castAuthed(req).user;
   const channelId = String(req.params.channelId ?? '');
   const limit = parseBoundedPositiveIntQuery(req.query.limit, 50, 100);
@@ -74,12 +79,17 @@ router.get('/:channelId', authMiddleware, async (req, res) => {
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY))
     return res.status(403).json({ error: 'Bu kanalın geçmişini görüntüleyemezsiniz.' });
 
-  const cacheKey = `ai:sum:${channelId}:${limit}`;
+  // P5 AI-02: deleted messages are excluded in the QUERY, and the cache key
+  // carries a fingerprint of exactly what would be summarised — a summary
+  // made before a message was deleted (or edited) is never served after it.
+  const msgs = ((await Messages.messagesFind({ channelId, deletedAt: null, type: { $ne: 'system' } })
+    .sort({ createdAt: -1 }).limit(limit)) as Array<MessageLike & { _id?: string }>).reverse()
+    .filter((m) => !(typeof m.content === 'string' && m.content.startsWith('🔒e2e:')));
+  const fingerprint = createHash('sha256')
+    .update(msgs.map((m) => `${m._id ?? ''}\u0000${m.content ?? ''}`).join('\u0001')).digest('hex').slice(0, 16);
+  const cacheKey = `ai:sum:${channelId}:${limit}:${fingerprint}`;
   const cached = await cache.get(cacheKey);
   if (cached) return res.json({ ...cached, cached: true });
-
-  const msgs = (await Messages.messagesFind({ channelId, type: { $ne: 'system' } })
-    .sort({ createdAt: -1 }).limit(limit)).reverse();
 
   const userIds = [...new Set(msgs.map((m: { userId: string }) => m.userId))];
   const users   = await Users.findByIds(userIds);
@@ -90,16 +100,24 @@ router.get('/:channelId', authMiddleware, async (req, res) => {
 
   let summary: string;
   let provider = PROVIDER;
+  let degraded = false;
 
   if (AI_ENABLED) {
-    const transcript = msgs
-      .map((m: MessageLike) =>
-        `${userMap[m.userId] || '?'}: ${(m.content || '').slice(0, 150)}`)
-      .join('\n');
-    summary = await callAI(
-      'Bridge chat asistanı. Türkçe, kısa özetle. 2-3 cümle + ana konular (maddeli).',
-      `Son ${msgs.length} mesaj:\n${transcript.slice(0, 5000)}`,
-    );
+    const block = channelDataBlock(msgs.map((m: MessageLike) =>
+      ({ author: userMap[m.userId] || '?', content: (m.content || '').slice(0, 150) })), 5000);
+    try {
+      summary = await callAI(
+        `Bridge chat asistanı. Türkçe, kısa özetle. 2-3 cümle + ana konular (maddeli). ${CHANNEL_DATA_RULE}`,
+        `Son ${msgs.length} mesaj:\n${block}`,
+      );
+    } catch (err) {
+      // P5 AI-07: a provider outage degrades to the local summary — never a 500.
+      logger.warn({ event: 'ai.summarize.degraded', err: err instanceof Error ? err.message.slice(0, 200) : 'non-error' },
+        'AI provider unavailable; local summary served.');
+      summary  = rulesSummary(msgs, userMap);
+      provider = 'rules';
+      degraded = true;
+    }
   } else {
     summary  = rulesSummary(msgs, userMap);
     provider = 'rules';
@@ -112,8 +130,9 @@ router.get('/:channelId', authMiddleware, async (req, res) => {
     participants:  userIds.length,
     from:          msgs[0]?.createdAt,
     to:            msgs[msgs.length - 1]?.createdAt,
+    ...(degraded ? { degraded: true } : {}),
   };
-  await cache.set(cacheKey, result, 300);
+  if (!degraded) await cache.set(cacheKey, result, 300); // an outage answer is not cached
   res.json(result);
 });
 
