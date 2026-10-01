@@ -133,6 +133,8 @@ on PR fatihcayiroglu/Bridge#112; CI run, merge SHA and the post-merge gate are r
 | H-13 | test/harness | iOS I02 "pid=''" although the app ran (launchctl listed it) | `--console-pty` printed the `<bundle>: <pid>` line late | pid from `launchctl list` (`579ac5d`) |
 | H-14 | test/harness (latent) | — (no wrong result yet) | the runner labelled every run AUTOMATED / EMULATOR; a phone's run would have been mislabelled | category derived from `ro.kernel.qemu` / `ro.boot.qemu`; `ANDROID_SERIAL` (`85afecb`) |
 | H-15 | test/harness | PERF02 (second run): channel created via the API still not in the open list | by design the server does not broadcast channel metadata (limitation below) | reload the app after seeding (`85afecb`) |
+| H-16 | test/harness | PERF02 (run 8): 2000 seeded, only 50 ever rendered | scrolled `.msg-list`; the list scrolls inside `#messages-area`, where the client listens (reproduced in Chromium: `.msg-list` 50→50, `#messages-area` 50→100→150…) | scroll `#messages-area` |
+| H-17 | test/harness | iOS I04 (run on `ebe72ba`): `openurl com.bridge.app://…` succeeded, no dispatch line | the console was relayed through `--console-pty`; Swift `print` is block-buffered off a terminal (the pid line and the ready line also arrived minutes late) | app stdout/stderr straight to files with `NSUnbufferedIO=YES`; terminate with `simctl terminate` |
 
 ## Known documented limitations
 
@@ -223,18 +225,18 @@ phone's Wi-Fi/data off; on a phone that is a real radio change, so those results
 Android 14 emulator on a CI runner (x86_64, KVM, no GPU); run-to-run variance is large, so the
 spread is shown. These are **not** real-device performance figures (EXTERNAL / UNVERIFIED).
 
-| Measure | run 2 (baseline) | run 4 | run 6 | run 7 |
-|---|---|---|---|---|
-| Cold launch → auth screen (`am start -W` TotalTime, A01) | 6214 ms | 7652 ms | 8709 ms | 6987 ms |
-| HOT resume after 20 s in background (L01) | 485 ms | 699 ms | 384 ms | 450 ms |
-| Relaunch after process death (L03) | 2767 ms | — | 3887 ms | 5097 ms |
-| Cold relaunch after force-stop (L04) | 2136 ms | 2647 ms | 2495 ms | 2237 ms |
-| Offline → reconnect: held message delivered (N01) | invalid (H-03) | 2915 ms | 4012 ms | 3544 ms |
-| Missed message visible after 30 s offline (N02) | invalid (H-03) | 5314 ms | 2171 ms | 1640 ms |
-| Composer send → persisted at 400 ms one-way latency (N03), copies | — | 1595 ms, 1 | 1570 ms, 1 | 1675 ms, 1 |
-| Voice recovery after a 10 s network loss (V02) | — | — | invalid (H-11) | 6556 ms |
-| Background microphone capture after 20/60 s (P04) | not silenced (20 s) | not silenced (60 s) | not silenced (60 s) | not silenced (60 s) |
-| Memory after the journeys, total PSS (PERF01) | null (H-05) | 104780 KB | 112398 KB | 111622 KB |
+| Measure | run 2 (baseline) | run 4 | run 6 | run 7 | run 8 |
+|---|---|---|---|---|---|
+| Cold launch → auth screen (`am start -W` TotalTime, A01) | 6214 ms | 7652 ms | 8709 ms | 6987 ms | 7010 ms |
+| HOT resume after 20 s in background (L01) | 485 ms | 699 ms | 384 ms | 450 ms | 250 ms |
+| Relaunch after process death (L03) | 2767 ms | — | 3887 ms | 5097 ms | 2253 ms |
+| Cold relaunch after force-stop (L04) | 2136 ms | 2647 ms | 2495 ms | 2237 ms | 1929 ms |
+| Offline → reconnect: held message delivered (N01) | invalid (H-03) | 2915 ms | 4012 ms | 3544 ms | 1148 ms |
+| Missed message visible after 30 s offline (N02) | invalid (H-03) | 5314 ms | 2171 ms | 1640 ms | 649 ms |
+| Composer send → persisted at 400 ms one-way latency (N03), copies | — | 1595 ms, 1 | 1570 ms, 1 | 1675 ms, 1 | 1794 ms, 1 |
+| Voice recovery after a 10 s network loss (V02) | — | — | invalid (H-11) | 6556 ms | 6529 ms |
+| Background microphone capture after 20/60 s (P04) | not silenced (20 s) | not silenced (60 s) | not silenced (60 s) | not silenced (60 s) | not silenced (60 s) |
+| Memory after the journeys, total PSS (PERF01) | null (H-05) | 104780 KB | 112398 KB | 111622 KB | 113633 KB |
 iOS simulator (separate workflow, AUTOMATED / SIMULATOR): launch command → WKWebView bridge ready
 (I05) took 157 s (`Mobile iOS` run 2) and 204 s (run 3). That time is dominated by the runner's
 first simulator boot; it is **not** an app launch time.

@@ -935,7 +935,9 @@ async function main() {
     const rows = [await sample('open')];
     let prev = rows[0].msgs;
     for (let i = 1; i <= 40; i++) {
-      await page.evaluate(() => { const el = document.querySelector('.msg-list'); if (el) { el.scrollTop = 0; el.dispatchEvent(new Event('scroll')); } });
+      // The message list scrolls inside #messages-area (MessageListPanel listens there); scrolling
+      // `.msg-list` loaded nothing — harness defect in the first complete PERF02 run.
+      await page.evaluate(() => { const el = document.getElementById('messages-area'); if (el) { el.scrollTop = 0; el.dispatchEvent(new Event('scroll')); } });
       const grew = await until(() => page.evaluate((p) => document.querySelectorAll('.msg').length > p, prev), { timeout: 6_000, message: 'history page' }).then(() => true).catch(() => false);
       if (!grew) break;
       prev = await page.evaluate(() => document.querySelectorAll('.msg').length);
