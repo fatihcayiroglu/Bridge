@@ -167,12 +167,40 @@ that produces orphaned storage that nothing will ever clean up.
 
 ---
 
+## 5a. Restore commands (P5)
+
+P5 made the restore path executable from the shipped artifacts and runs it in CI
+(`.github/workflows/selfhost-evidence.yml`: `scripts/selfhost/run.mjs` against real
+PostgreSQL processes, `scripts/selfhost/compose.mjs` against `docker compose`).
+Two defects stopped it before: `restore.sh` exec'd `verify-backup.sh`, stored without
+the exec bit (SH-02), and `verify-backup.sh` refused every dump larger than a pipe
+buffer (SIGPIPE under `pipefail`, SH-03). The backup image now ships both scripts.
+
+Docker Compose:
+
+```bash
+docker compose stop bridge
+docker compose exec -e BRIDGE_RESTORE_CONFIRM=RESTORE backup \
+  restore.sh /backups/postgres/bridge_<timestamp>.sql.gz        # into an EMPTY database
+# uploads after the database (§5), owned by the app's unprivileged user:
+docker run --rm -v <project>_backup_data:/backups:ro -v <project>_uploads_data:/uploads \
+  <project>-backup rsync -a --chown="$(docker compose run --rm --no-deps --entrypoint id bridge -u):$(docker compose run --rm --no-deps --entrypoint id bridge -g)" \
+  /backups/uploads/ /uploads/
+docker compose start bridge
+```
+
+Host install (`backup.sh` takes the same variables as `restore.sh`; defaults are the
+container's): `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_DB`,
+`POSTGRES_PASSWORD`, plus `BACKUP_ROOT` and `UPLOADS_DIR` for `backup.sh`.
+
+---
+
 ## 6. Known gaps
 
 - **Object storage (S3/R2) backup was not executed.** No provider is configured
   locally; only the filesystem path was verified.
 - **PITR / WAL archiving is not configured.** RPO is bounded by dump frequency.
 - **Restore has not been timed at production data volume.**
-- **No automated restore verification job.** The drill was manual; a scheduled
-  "restore into a scratch database and run the smoke script" job is the obvious
-  next step and would keep this document honest over time.
+- ~~No automated restore verification job.~~ Since P5 the drill (backup → empty
+  database → restore → app on restored data → login and read back) runs in
+  `selfhost-evidence.yml` on every relevant PR, weekly and on demand.

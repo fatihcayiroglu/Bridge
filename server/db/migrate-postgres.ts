@@ -12,6 +12,14 @@
 import fs   from 'fs';
 import path from 'path';
 import { Client } from 'pg';
+import {
+  appliedMigrations,
+  applyPendingMigrations,
+  ensureMigrationsTable,
+  listMigrationFiles,
+  MigrationFailedError,
+  type MigrationQueryable,
+} from './postgres/versionedMigrations';
 
 const COMMANDS = ['up', 'status', 'down', 'rollback'] as const;
 type Command = (typeof COMMANDS)[number];
@@ -31,33 +39,17 @@ async function main(): Promise<void> {
   const migrationsDir = path.join(__dirname, 'migrations_pg');
   const rollbackDir   = path.join(migrationsDir, 'rollback');
 
-  const upFiles = fs
-    .readdirSync(migrationsDir)
-    .filter((name) => name.endsWith('.sql'))
-    .sort();
+  // P5: one implementation of "which files, which are applied, apply them" —
+  // shared with the boot path (db/postgres/versionedMigrations.ts).
+  const upFiles = listMigrationFiles(migrationsDir);
 
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
 
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      id          TEXT    PRIMARY KEY,
-      applied_at  BIGINT  NOT NULL,
-      rolled_back BOOLEAN NOT NULL DEFAULT FALSE
-    );
-  `);
+  await ensureMigrationsTable(client as unknown as MigrationQueryable);
 
-  // Eski tablo uyumu: rolled_back kolonu yoksa ekle
-  await client.query(`
-    ALTER TABLE schema_migrations
-      ADD COLUMN IF NOT EXISTS rolled_back BOOLEAN NOT NULL DEFAULT FALSE;
-  `);
-
-  const appliedRes = await client.query<{ id: string }>(
-    'SELECT id FROM schema_migrations WHERE rolled_back = FALSE ORDER BY applied_at ASC, id ASC',
-  );
-  const applied     = new Set(appliedRes.rows.map((r) => r.id));
-  const appliedList = appliedRes.rows.map((r) => r.id);
+  const appliedList = await appliedMigrations(client as unknown as MigrationQueryable);
+  const applied     = new Set(appliedList);
 
   // ── STATUS ──────────────────────────────────────────────────────────────────
   if (command === 'status') {
@@ -74,26 +66,16 @@ async function main(): Promise<void> {
 
   // ── UP ──────────────────────────────────────────────────────────────────────
   if (command === 'up') {
-    let count = 0;
-    for (const file of upFiles) {
-      if (applied.has(file)) continue;
-      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
-      await client.query('BEGIN');
-      try {
-        await client.query(sql);
-        await client.query(
-          'INSERT INTO schema_migrations (id, applied_at, rolled_back) VALUES ($1, $2, FALSE) ' +
-          'ON CONFLICT (id) DO UPDATE SET rolled_back = FALSE, applied_at = $2',
-          [file, Date.now()],
-        );
-        await client.query('COMMIT');
-        process.stdout.write(`✅ Applied: ${file}\n`);
-        count++;
-      } catch (err) {
-        await client.query('ROLLBACK');
-        process.stderr.write(`❌ Failed: ${file}\n`);
-        throw err;
-      }
+    let count: number;
+    try {
+      count = (await applyPendingMigrations(client as unknown as MigrationQueryable, {
+        dir: migrationsDir,
+        onApplied: (file) => process.stdout.write(`✅ Applied: ${file}\n`),
+      })).length;
+    } catch (err) {
+      if (err instanceof MigrationFailedError) process.stderr.write(`❌ Failed: ${err.migration}\n`);
+      await client.end().catch(() => undefined);
+      throw err;
     }
     if (count === 0) process.stdout.write('Uygulanacak migration yok.\n');
     await client.end();

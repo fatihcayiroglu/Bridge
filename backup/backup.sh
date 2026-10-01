@@ -2,8 +2,17 @@
 set -euo pipefail
 
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-BACKUP_DIR="/backups/postgres"
-UPLOADS_BACKUP="/backups/uploads"
+# Defaults are the backup container's (docker-compose.yml). A host install sets these
+# instead of editing the script (same names as restore.sh); P5's self-host harness runs
+# this exact script against a real PostgreSQL that way (scripts/selfhost/run.mjs).
+BACKUP_ROOT="${BACKUP_ROOT:-/backups}"
+UPLOADS_DIR="${UPLOADS_DIR:-/app/server/uploads/}"
+POSTGRES_HOST="${POSTGRES_HOST:-postgres}"
+POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+POSTGRES_USER="${POSTGRES_USER:-bridge}"
+POSTGRES_DB="${POSTGRES_DB:-bridge}"
+BACKUP_DIR="$BACKUP_ROOT/postgres"
+UPLOADS_BACKUP="$BACKUP_ROOT/uploads"
 KEEP_DAYS="${BACKUP_KEEP_DAYS:-7}"
 
 mkdir -p "$BACKUP_DIR" "$UPLOADS_BACKUP"
@@ -13,7 +22,7 @@ echo "[$(date)] Backup başlıyor..."
 # pg_dump
 DUMP_FILE="$BACKUP_DIR/bridge_${TIMESTAMP}.sql.gz"
 PGPASSWORD="$POSTGRES_PASSWORD" pg_dump \
-  -h postgres -U bridge -d bridge \
+  -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   | gzip > "$DUMP_FILE"
 gzip -t "$DUMP_FILE"
 # Sağlama dosyası YALNIZCA dosya adını taşır (Final21 Faz 19). Mutlak yol yazılıyordu; oysa
@@ -26,7 +35,7 @@ echo "[$(date)] DB dump doğrulandı: $DUMP_FILE"
 # Sahiplik KOPYALANMAZ (Final21 Faz 19): üretim sertleştirmesi CAP_CHOWN'u düşürür; `rsync -a`
 # chown denemesiyle kod 23 veriyor, `set -e` betiği orada kesiyordu (eski dökümler silinmiyor,
 # S3 yüklemesi hiç yapılmıyordu). Geri yükleme sahipliği hedefte yeniden kurar.
-rsync -a --no-owner --no-group --delete /app/server/uploads/ "$UPLOADS_BACKUP/"
+rsync -a --no-owner --no-group --delete "$UPLOADS_DIR" "$UPLOADS_BACKUP/"
 echo "[$(date)] Uploads rsync tamamlandı"
 
 # Eski dump'ları temizle

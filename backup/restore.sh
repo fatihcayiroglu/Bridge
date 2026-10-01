@@ -8,7 +8,9 @@ if [ -z "$DUMP_FILE" ]; then
   echo "Usage: BRIDGE_RESTORE_CONFIRM=RESTORE $0 /path/to/bridge_*.sql.gz" >&2
   exit 64
 fi
-"$SCRIPT_DIR/verify-backup.sh" "$DUMP_FILE"
+# P5 SH-02: run through bash — a fresh checkout or a copied script need not carry
+# the exec bit (git stored 100644; restore.sh failed with "Permission denied").
+bash "$SCRIPT_DIR/verify-backup.sh" "$DUMP_FILE"
 
 if [ "${BRIDGE_RESTORE_DRY_RUN:-false}" = "true" ]; then
   echo "RESTORE_DRY_RUN=PASS"

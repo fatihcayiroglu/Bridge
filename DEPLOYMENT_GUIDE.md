@@ -421,9 +421,13 @@ git pull
 docker compose build bridge
 docker compose up -d bridge
 
-# Migration gerekiyorsa (otomatik çalışır index.ts başlangıcında)
-# Manuel migration:
-docker compose exec bridge node server/dist/db/migrate-postgres.js
+# Migration'lar açılışta otomatik uygulanır (P5 SH-01): temel şema + inline
+# migration'lar + server/db/migrations_pg zinciri, tek bir PostgreSQL danışma
+# kilidi altında (aynı anda açılan düğümler sıraya girer). Bekleyen migration
+# varken /api/health/ready 503 döner.
+# Ayrı (yetkili) bir rolle elle çalıştırmak isteyen operatör:
+#   BRIDGE_AUTO_MIGRATE=false  (bridge servisine) ve yükseltmeden önce:
+docker compose exec bridge node server/dist/db/migrate-postgres.js up
 ```
 
 > ⚠️ `docker compose up -d --build` yaklaşımı production'da **kısa kesintiye** (1-3 sn) neden olur.
@@ -460,8 +464,9 @@ npm run build --workspace=server
 # 3. Sıfır-kesintili reload
 pm2 reload ecosystem.config.js --only bridge
 
-# 4. Migration gerekiyorsa (build sonrası, reload öncesi çalıştır)
-node server/dist/db/migrate-postgres.js
+# 4. Migration'lar açılışta otomatik uygulanır. BRIDGE_AUTO_MIGRATE=false ise
+#    (build sonrası, reload öncesi) elle çalıştır:
+node server/dist/db/migrate-postgres.js up
 
 # 5. Durumu doğrula
 pm2 status

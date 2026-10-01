@@ -30,6 +30,7 @@ import { startRegistryMaintenance, stopRegistryMaintenance } from './lib/sfuRegi
 import { startScheduledJob, stopScheduledJob }      from './jobs/scheduledMessages';
 import { startAutoModerationJob, stopAutoModerationJob } from './jobs/autoModeration';
 import { startFederationHeartbeat, stopFederationHeartbeat } from './jobs/federationHeartbeat';
+import { startFederationDeliveryWorker, stopFederationDeliveryWorker } from './routes/federation/delivery';
 import { startEventReminderJob, stopEventReminderJob } from './jobs/eventReminders';
 import { startSavedMessageReminderJob, stopSavedMessageReminderJob } from './jobs/savedMessageReminders';
 import { startOutgoingWebhookDeliveryJob, stopOutgoingWebhookDeliveryJob } from './routes/outgoingWebhooks';
@@ -97,6 +98,8 @@ async function bootstrap(): Promise<void> {
   startEventReminderJob();
   startSavedMessageReminderJob();
   startFederationHeartbeat();
+  // P5 SH-01b: after initSchema — the queue table is created by the migration chain.
+  startFederationDeliveryWorker();
   startOutgoingWebhookDeliveryJob();
   // Sprint 120: A4 — pgvector geçmiş mesaj embed job'u (her gün 03:00 UTC)
   scheduleEmbedHistoryJob(db._pool);
@@ -137,6 +140,7 @@ const gracefulShutdown = createGracefulShutdown({
     stopEventReminderJob();
     stopSavedMessageReminderJob();
     stopFederationHeartbeat();   // Sprint 97: zaten vardı
+    stopFederationDeliveryWorker();   // P5 SH-01b
     stopOutgoingWebhookDeliveryJob();
     stopAutoModerationJob();     // Sprint 98
     stopScheduledJob();          // Sprint 98

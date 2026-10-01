@@ -28,7 +28,11 @@ fi
 
 # A PostgreSQL custom/plain dump that cannot expose recognizable SQL through
 # gzip is not accepted by this current backup format. Never restore opaque data.
-if ! gzip -cd "$DUMP_FILE" | head -c 262144 | grep -Eq '(PostgreSQL database dump|CREATE TABLE|COPY |INSERT INTO|SET statement_timeout)'; then
+# P5 SH-03: read the sample FIRST, then match. As one pipeline under `set -o pipefail`,
+# `grep -q` exits at the first match, `head` dies of SIGPIPE (141) and the whole check
+# reported failure — every real dump larger than a pipe buffer was refused.
+SQL_SAMPLE="$(gzip -cd "$DUMP_FILE" | head -c 262144 || true)"
+if ! grep -Eq '(PostgreSQL database dump|CREATE TABLE|COPY |INSERT INTO|SET statement_timeout)' <<<"$SQL_SAMPLE"; then
   echo "Dump PostgreSQL SQL içeriği gibi görünmüyor; restore reddedildi." >&2
   exit 65
 fi

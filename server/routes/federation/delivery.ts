@@ -61,62 +61,38 @@ async function _persistRetry(id: string, payload: DeliveryPayload, attempt: numb
   }
 }
 
-// Retry worker — her 30 saniyede bir çalışır; DB'den pending delivery'leri alır
-const _retryWorker = setInterval(async () => {
-  try {
-    const pending = await Federation.claimPendingDeliveries(Date.now(), RETRY_WORKER_ID, RETRY_LEASE_MS, RETRY_BATCH);
-    for (const entry of pending) {
-      if (!isDeliveryPayload(entry.payload)) {
-        logger.warn({ id: entry._id, event: 'federation.delivery.invalid_queue_payload' }, 'Invalid delivery payload; removing poison entry.');
-        await Federation.removeDeliveryEntry(String(entry._id), RETRY_WORKER_ID);
-        continue;
-      }
-      // Do NOT delete before the network attempt. A process crash between
-      // delete and POST would permanently lose the delivery. Persisted attempt
-      // state is security/durability metadata: malformed values are poison, not
-      // "zero retries". Drop such rows instead of creating an endless loop.
-      let attempts: number;
-      try { attempts = parseDeliveryAttempts(entry.attempts); }
-      catch {
-        logger.warn({ id: entry._id, event: 'federation.delivery.invalid_attempts' }, 'Invalid delivery attempts; removing poison entry.');
-        await Federation.removeDeliveryEntry(String(entry._id), RETRY_WORKER_ID);
-        continue;
-      }
-      if (attempts >= MAX_ATTEMPTS) {
-        await Federation.removeDeliveryEntry(String(entry._id), RETRY_WORKER_ID);
-        continue;
-      }
-      await _doDeliver(entry.payload, attempts + 1, String(entry._id), RETRY_WORKER_ID);
-    }
-  } catch (err) {
-    logger.warn({ err, event: 'federation.delivery.retry_worker_failed' }, 'Retry worker failed; durable entries remain queued.');
-  }
-}, 30_000);
+let _retryWorker: ReturnType<typeof setInterval> | null = null;
 
-// Node.js process exit'te timer'ı temizle
-if (_retryWorker.unref) _retryWorker.unref();
-
-// ── Startup recovery ──────────────────────────────────────────
-// Server başladığında kalmış pending delivery'leri hemen kuyruğa al.
-// setImmediate ile event loop'un başlamasını bekle.
-setImmediate(async () => {
-  try {
-    const pending = await Federation.claimPendingDeliveries(Date.now(), RETRY_WORKER_ID, RETRY_LEASE_MS, RETRY_BATCH);
-    if (pending.length > 0) {
-      logger.info(
-        { count: pending.length, event: 'federation.delivery.startup_recovery' },
-        'Recovering pending AP deliveries from previous run.'
-      );
+/**
+ * Starts the durable delivery retry worker and the startup recovery pass.
+ *
+ * P5 SH-01b: both used to start as a side effect of IMPORTING this module —
+ * before `initSchema` had applied the migration chain. On a fresh install the
+ * recovery pass queried `ap_delivery_queue` before it existed (a warn line on
+ * every first boot); on an upgrade it failed and left queued deliveries to the
+ * next 30 s tick. `runtime.ts` now calls this after the schema is ready.
+ * Idempotent: a second call does nothing.
+ */
+export function startFederationDeliveryWorker(): void {
+  if (_retryWorker) return;
+  // Retry worker — her 30 saniyede bir çalışır; DB'den pending delivery'leri alır
+  _retryWorker = setInterval(async () => {
+    try {
+      const pending = await Federation.claimPendingDeliveries(Date.now(), RETRY_WORKER_ID, RETRY_LEASE_MS, RETRY_BATCH);
       for (const entry of pending) {
         if (!isDeliveryPayload(entry.payload)) {
-          logger.warn({ id: entry._id, event: 'federation.delivery.invalid_startup_payload' }, 'Invalid startup delivery payload; removing poison entry.');
+          logger.warn({ id: entry._id, event: 'federation.delivery.invalid_queue_payload' }, 'Invalid delivery payload; removing poison entry.');
           await Federation.removeDeliveryEntry(String(entry._id), RETRY_WORKER_ID);
           continue;
         }
+        // Do NOT delete before the network attempt. A process crash between
+        // delete and POST would permanently lose the delivery. Persisted attempt
+        // state is security/durability metadata: malformed values are poison, not
+        // "zero retries". Drop such rows instead of creating an endless loop.
         let attempts: number;
         try { attempts = parseDeliveryAttempts(entry.attempts); }
         catch {
-          logger.warn({ id: entry._id, event: 'federation.delivery.invalid_startup_attempts' }, 'Invalid startup delivery attempts; removing poison entry.');
+          logger.warn({ id: entry._id, event: 'federation.delivery.invalid_attempts' }, 'Invalid delivery attempts; removing poison entry.');
           await Federation.removeDeliveryEntry(String(entry._id), RETRY_WORKER_ID);
           continue;
         }
@@ -124,16 +100,61 @@ setImmediate(async () => {
           await Federation.removeDeliveryEntry(String(entry._id), RETRY_WORKER_ID);
           continue;
         }
-        // Startup recovery is a real retry too. The old path reused the stored
-        // attempt number, so repeated restarts could keep the same delivery at
-        // the same retry generation forever.
         await _doDeliver(entry.payload, attempts + 1, String(entry._id), RETRY_WORKER_ID);
       }
+    } catch (err) {
+      logger.warn({ err, event: 'federation.delivery.retry_worker_failed' }, 'Retry worker failed; durable entries remain queued.');
     }
-  } catch (err) {
-    logger.warn({ err, event: 'federation.delivery.startup_recovery_failed' }, 'Startup delivery recovery failed; durable entries remain for the retry worker.');
-  }
-});
+  }, 30_000);
+
+  // Node.js process exit'te timer'ı temizle
+  if (_retryWorker.unref) _retryWorker.unref();
+
+  // ── Startup recovery ──────────────────────────────────────────
+  // Server başladığında kalmış pending delivery'leri hemen kuyruğa al.
+  // setImmediate ile event loop'un başlamasını bekle.
+  setImmediate(async () => {
+    try {
+      const pending = await Federation.claimPendingDeliveries(Date.now(), RETRY_WORKER_ID, RETRY_LEASE_MS, RETRY_BATCH);
+      if (pending.length > 0) {
+        logger.info(
+          { count: pending.length, event: 'federation.delivery.startup_recovery' },
+          'Recovering pending AP deliveries from previous run.'
+        );
+        for (const entry of pending) {
+          if (!isDeliveryPayload(entry.payload)) {
+            logger.warn({ id: entry._id, event: 'federation.delivery.invalid_startup_payload' }, 'Invalid startup delivery payload; removing poison entry.');
+            await Federation.removeDeliveryEntry(String(entry._id), RETRY_WORKER_ID);
+            continue;
+          }
+          let attempts: number;
+          try { attempts = parseDeliveryAttempts(entry.attempts); }
+          catch {
+            logger.warn({ id: entry._id, event: 'federation.delivery.invalid_startup_attempts' }, 'Invalid startup delivery attempts; removing poison entry.');
+            await Federation.removeDeliveryEntry(String(entry._id), RETRY_WORKER_ID);
+            continue;
+          }
+          if (attempts >= MAX_ATTEMPTS) {
+            await Federation.removeDeliveryEntry(String(entry._id), RETRY_WORKER_ID);
+            continue;
+          }
+          // Startup recovery is a real retry too. The old path reused the stored
+          // attempt number, so repeated restarts could keep the same delivery at
+          // the same retry generation forever.
+          await _doDeliver(entry.payload, attempts + 1, String(entry._id), RETRY_WORKER_ID);
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, event: 'federation.delivery.startup_recovery_failed' }, 'Startup delivery recovery failed; durable entries remain for the retry worker.');
+    }
+  });
+}
+
+/** Graceful shutdown / tests. */
+export function stopFederationDeliveryWorker(): void {
+  if (_retryWorker) clearInterval(_retryWorker);
+  _retryWorker = null;
+}
 
 // ── HTTP Signature ─────────────────────────────────────────────
 async function signRequest(method: string, url: string, body: unknown, privateKeyPem: string, actorUsername: string): Promise<{ date: string; digest: string; signature: string } | null> {

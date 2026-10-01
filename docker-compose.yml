@@ -71,6 +71,10 @@ services:
     environment:
       NODE_ENV:       production
       PORT:           3001
+      # P5 SH-01: the versioned migration chain runs at boot (advisory lock;
+      # readiness stays 503 while anything is pending). Set to false only if
+      # migrations are run separately: `node server/dist/db/migrate-postgres.js up`.
+      BRIDGE_AUTO_MIGRATE: "${BRIDGE_AUTO_MIGRATE:-true}"
 
       # Veritabanı
       DATABASE_URL: "postgresql://bridge:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD zorunlu}@postgres:5432/bridge"
