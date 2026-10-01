@@ -62,9 +62,19 @@ describe('GET /api/health/ready — the migration chain is part of readiness (P5
     const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
     try {
       pending.mockResolvedValue(75);
+      // A clock whose digits contain "75": the body's `ts` is a timestamp, so
+      // the disclosure check below must never be satisfied or broken by it
+      // (it once matched /75/ through `ts` and failed intermittently).
+      jest.spyOn(Date, 'now').mockReturnValue(1790873756193);
       const res = await request(app()).get('/api/health/ready');
       expect(res.status).toBe(503);
-      expect(JSON.stringify(res.body)).not.toMatch(/migration|schema|75/i);
+      // Nothing about the cause is disclosed: exactly the generic fields, and
+      // none of them (the clock aside) names the schema or the pending count.
+      expect(Object.keys(res.body).sort()).toEqual(['check', 'db', 'status', 'ts', 'version']);
+      expect(res.body).toMatchObject({ status: 'error', check: 'readiness' });
+      const { ts: _clock, ...disclosed } = res.body as Record<string, unknown>;
+      expect(JSON.stringify(disclosed)).not.toMatch(/migration|schema|75/i);
+      (Date.now as jest.Mock).mockRestore();
       const failed = warn.mock.calls.filter(c => (c[0] as { event?: string })?.event === 'health.readiness_failed');
       expect(failed).toHaveLength(1);
       expect(failed[0][0]).toMatchObject({ dependency: 'schema', reason: '75 versioned migrations pending' });
