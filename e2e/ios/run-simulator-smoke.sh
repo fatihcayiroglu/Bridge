@@ -29,12 +29,13 @@ record() { # status id title detail
 info="$APP/Info.plist"
 mic=$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$info" 2>/dev/null || true)
 cam=$(/usr/libexec/PlistBuddy -c 'Print :NSCameraUsageDescription' "$info" 2>/dev/null || true)
+schemes=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes' "$info" 2>/dev/null | tr -d ' ' | grep -v -E '^(Array\{|\})$' | tr '\n' ',' || true)
 scheme=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$info" 2>/dev/null || true)
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info" 2>/dev/null || true)
-if [ -n "$mic" ] && [ -n "$cam" ] && [ "$scheme" = "bridge" ]; then
-  record PASS I01 "built app declares microphone/camera usage and the bridge:// scheme" "version=$version scheme=$scheme"
+if [ -n "$mic" ] && [ -n "$cam" ] && [ "$scheme" = "com.bridge.app" ]; then
+  record PASS I01 "built app declares microphone/camera usage and its own com.bridge.app:// scheme" "version=$version schemes=$schemes"
 else
-  record FAIL I01 "built app declares microphone/camera usage and the bridge:// scheme" "mic='${mic}' cam='${cam}' scheme='${scheme}' version='${version}'"
+  record FAIL I01 "built app declares microphone/camera usage and its own com.bridge.app:// scheme" "mic='${mic}' cam='${cam}' schemes='${schemes}' version='${version}'"
 fi
 
 # ── Simulator ───────────────────────────────────────────────────────────────────────────────
@@ -83,11 +84,14 @@ for _ in $(seq 1 45); do
   sleep 2
 done
 limit 60 xcrun simctl io "$UDID" screenshot "$OUT/cold-launch.png" >/dev/null 2>&1 || true
-alive=$(limit 60 xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -c "$BUNDLE_ID" || true)
-if [ -n "$launched_pid" ] && [ "$alive" -ge 1 ]; then
-  record PASS I02 "cold launch: the app process is alive after launch" "device=$DEVICE pid=$launched_pid"
+# The OS's own view: launchctl lists `<pid> <status> UIKitApplication:<bundle>[…]` for a running app.
+os_pid=$(limit 60 xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | awk -v b="UIKitApplication:$BUNDLE_ID" 'index($3, b) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }')
+alive=$([ -n "$os_pid" ] && echo 1 || echo 0)
+[ -z "$launched_pid" ] && launched_pid="$os_pid"
+if [ "$alive" -ge 1 ]; then
+  record PASS I02 "cold launch: the app process is alive after launch" "device=$DEVICE pid=$os_pid (launchctl)"
 else
-  record FAIL I02 "cold launch: the app process is alive after launch" "pid='${launched_pid}' launchctl=${alive} console: $(tail -5 "$OUT/console.log" | tr '\n' ' ' | cut -c1-400)"
+  record FAIL I02 "cold launch: the app process is alive after launch" "launchctl has no running $BUNDLE_ID; console: $(tail -5 "$OUT/console.log" | tr '\n' ' ' | cut -c1-400)"
 fi
 if [ "$ready" = 1 ]; then
   record PASS I03 "the web app and native bridge load inside WKWebView" "ready log after $(( $(date +%s) - start )) s"
@@ -95,19 +99,19 @@ else
   record FAIL I03 "the web app and native bridge load inside WKWebView" "$(grep -E '\[(log|error|warn)\]|⚡️' "$OUT/console.log" | tail -8 | tr '\n' ' ' | cut -c1-600)"
 fi
 
-# ── I04: a bridge:// link reaches the running app ────────────────────────────────────────────
+# ── I04: a com.bridge.app:// link reaches the running app ────────────────────────────────────
 if [ -n "$launched_pid" ]; then
-  step "opening bridge://channel/p4-ios-smoke-channel"
-  limit 120 xcrun simctl openurl "$UDID" "bridge://channel/p4-ios-smoke-channel" 2>&1 | tail -3 || true
+  step "opening com.bridge.app://channel/p4-ios-smoke-channel"
+  limit 120 xcrun simctl openurl "$UDID" "com.bridge.app://channel/p4-ios-smoke-channel" 2>&1 | tail -3 || true
   for _ in $(seq 1 15); do
     grep -q "Deep link dispatched: navigate:channel" "$OUT/console.log" && break
     sleep 2
   done
 fi
 if grep -q "Deep link dispatched: navigate:channel" "$OUT/console.log"; then
-  record PASS I04 "bridge://channel/<id> reaches the running app (bridge dispatch)" "routing itself is covered by the Android emulator and unit tests"
+  record PASS I04 "com.bridge.app://channel/<id> reaches the running app (bridge dispatch)" "routing itself is covered by the Android emulator and unit tests"
 else
-  record FAIL I04 "bridge://channel/<id> reaches the running app (bridge dispatch)" "$(grep -i 'deep' "$OUT/console.log" | tail -5 | tr '\n' ' ' | cut -c1-400)"
+  record FAIL I04 "com.bridge.app://channel/<id> reaches the running app (bridge dispatch)" "$(grep -i 'deep' "$OUT/console.log" | tail -5 | tr '\n' ' ' | cut -c1-400)"
 fi
 limit 60 xcrun simctl io "$UDID" screenshot "$OUT/after-deeplink.png" >/dev/null 2>&1 || true
 record MEASURED I05 "time from launch command to evidence capture" "$(( $(date +%s) - start )) s (polling, no fixed waits)"
@@ -126,9 +130,9 @@ kill "$LAUNCH_PID" 2>/dev/null || true
 
 # ── I06 (diagnostic, MEASURED): who may own `bridge://` on iOS? ──────────────────────────────
 # Run AFTER the evidence above, on a separate install, so I01-I05 describe the real build.
-# (1) every installed app — system apps included — whose Info.plist claims the scheme;
-# (2) the same build with one extra, unique control scheme: if the control link reaches the app
-#     while `bridge://` does not, the registration works and the `bridge` scheme itself is refused.
+# Every installed app — system apps included — whose Info.plist claims the scheme, and what the OS
+# does with a bridge:// link. (Run 36821042911: com.apple.Bridge claims it; openurl → -10814 while a
+# unique control scheme on the same build opened — the reason for com.bridge.app://.)
 step "apps claiming the bridge scheme"
 claimants=$(limit 60 xcrun simctl listapps "$UDID" 2>/dev/null | plutil -convert json -o - - 2>/dev/null | python3 -c '
 import json, os, plistlib, sys
@@ -148,21 +152,9 @@ for bid, app in apps.items():
         hits.append("%s %s" % (bid, schemes))
 print("; ".join(hits) if hits else "none")' 2>&1 | tail -1)
 step "claimants: ${claimants}"
-CONTROL_APP="$OUT/control/App.app"
-rm -rf "$OUT/control" && mkdir -p "$OUT/control" && cp -R "$APP" "$CONTROL_APP"
-/usr/libexec/PlistBuddy -c 'Add :CFBundleURLTypes:0:CFBundleURLSchemes:1 string bridgep4control' "$CONTROL_APP/Info.plist" >/dev/null 2>&1 || true
-limit 240 xcrun simctl install "$UDID" "$CONTROL_APP" >/dev/null 2>&1 || true
-: > "$OUT/control-console.log"
-limit 300 xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" > "$OUT/control-console.log" 2>&1 < /dev/null &
-CONTROL_PID=$!
-for _ in $(seq 1 60); do grep -q "Capacitor entegrasyonu hazır — ios" "$OUT/control-console.log" && break; sleep 2; done
-control_open=$(limit 120 xcrun simctl openurl "$UDID" "bridgep4control://channel/p4-ios-control" 2>&1 | tail -1)
-for _ in $(seq 1 15); do grep -q "Deep link dispatched: navigate:channel" "$OUT/control-console.log" && break; sleep 2; done
-bridge_open=$(limit 120 xcrun simctl openurl "$UDID" "bridge://channel/p4-ios-control" 2>&1 | tail -1)
-control_reached=$(grep -c "Deep link dispatched: navigate:channel" "$OUT/control-console.log" || true)
-record MEASURED I06 "scheme ownership: apps claiming bridge://, and a unique control scheme on the same build" \
-  "claimants=[${claimants}] control_openurl='${control_open:-ok}' control_dispatches=${control_reached} bridge_openurl='${bridge_open:-ok}'"
-kill "$CONTROL_PID" 2>/dev/null || true
+bridge_open=$(limit 120 xcrun simctl openurl "$UDID" "bridge://channel/p4-ios-bridge-scheme" 2>&1 | tail -1)
+record MEASURED I06 "who owns bridge:// on iOS (why the app uses com.bridge.app://)" \
+  "claimants=[${claimants}] bridge_openurl='${bridge_open:-ok}'"
 
 limit 120 xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
 step "done"

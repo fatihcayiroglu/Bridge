@@ -30,7 +30,7 @@
       } catch (_) {
         return;
       }
-      const isCustomScheme = parsed.protocol === "bridge:";
+      const isCustomScheme = parsed.protocol === "com.bridge.app:" || parsed.protocol === "bridge:";
       const rawPath = isCustomScheme ? (parsed.hostname + parsed.pathname).replace(/^\/+/, "") : parsed.pathname.replace(/^\/+/, "");
       const parts = rawPath.split("/").filter(Boolean);
       const section = parts[0];

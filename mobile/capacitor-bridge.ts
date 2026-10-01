@@ -495,7 +495,10 @@ if (typeof Capacitor === 'undefined') {
     let parsed: URL;
     try { parsed = new URL(url); } catch (_) { return; }
 
-    const isCustomScheme = parsed.protocol === 'bridge:';
+    // P4 (MEASURED, iOS simulator I06): `bridge` is declared by Apple's Watch app (com.apple.Bridge);
+    // iOS resolves bridge:// to it and the link never reaches Bridge. `com.bridge.app://` is the
+    // app's own scheme on iOS and Android; `bridge://` keeps working where the OS lets it.
+    const isCustomScheme = parsed.protocol === 'com.bridge.app:' || parsed.protocol === 'bridge:';
     const rawPath = isCustomScheme
       ? (parsed.hostname + parsed.pathname).replace(/^\/+/, '')
       : parsed.pathname.replace(/^\/+/, '');

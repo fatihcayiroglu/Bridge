@@ -53,7 +53,7 @@ describeIfTemplate('apply-ios-overlay', () => {
     expect(info.NSMicrophoneUsageDescription).toMatch(/\S/);
     expect(info.NSCameraUsageDescription).toMatch(/\S/);
     expect(info.NSPhotoLibraryUsageDescription).toMatch(/\S/);
-    expect(info.CFBundleURLTypes.flatMap((t) => t.CFBundleURLSchemes)).toContain('bridge');
+    expect(info.CFBundleURLTypes.flatMap((t) => t.CFBundleURLSchemes)).toEqual(['com.bridge.app', 'bridge']);
     expect(info.CFBundleDisplayName).toBe('Bridge');
     expect(info.CAPACITOR_DEBUG).toBe('$(CAPACITOR_DEBUG)');
     expect(info.UIViewControllerBasedStatusBarAppearance).toBe(true);
