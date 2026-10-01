@@ -608,7 +608,6 @@ const translations: Record<string, string> = {
   "pl_pick_channel": "请先选择频道",
   "dsc_remove_failed": "无法移除",
   "tfa_mail_sent": "验证邮件已发送",
-  "rtc_no_mic": "未找到麦克风 — 已静音加入",
   "rtc_session_lost": "无法恢复语音连接 — 已离开频道。",
   "rtc_voice_evicted": "你对此语音频道的访问权限已被移除。",
   "rtc_mic_lost": "麦克风已断开 — 你的声音没有被传送。",

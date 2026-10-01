@@ -15,6 +15,7 @@ import { apiFetch } from './core/api-fetch.ts';
 import { P2P_SCREEN_PRESETS as SCREEN_PRESETS, SCREEN_BITRATES, SCREEN_FPS, type ScreenQuality } from './core/rtc-screen-quality.ts';
 
 import { createLogger } from './core/logger.ts';
+import { micErrorMessage } from './core/mic-error.ts';
 const log = createLogger('WebRTC');
 
 
@@ -100,24 +101,8 @@ function reg<T>(name: string): T | null {
 
 function app(): BridgeAppModule { return voicePanelAdapter; }
 
-/**
- * getUserMedia hatasını kullanıcıya gösterilebilir güvenli metne çevirir.
- * Ham `DOMException` mesajı (cihaz adı, iç hata dizesi) dışarı sızmaz.
- */
-export function micErrorMessage(err: unknown): string {
-  switch ((err as { name?: string } | null)?.name) {
-    case 'NotAllowedError':
-    case 'SecurityError':
-      return t('mic_permission_denied', 'Mikrofon izni verilmedi — sesli kanala sessiz olarak katıldın.');
-    case 'NotFoundError':
-    case 'OverconstrainedError':
-      return t('mic_not_found', 'Kullanılabilir mikrofon bulunamadı — sessiz katıldın.');
-    case 'NotReadableError':
-      return t('mic_in_use', 'Mikrofona erişilemiyor. Başka bir uygulama kullanıyor olabilir.');
-    default:
-      return t('mic_open_failed', 'Mikrofon açılamadı — sesli kanala sessiz olarak katıldın.');
-  }
-}
+// Shared with the SFU path (core/mic-error.ts); re-exported for existing importers.
+export { micErrorMessage };
 function ns(): BridgeNSModule | null         { return reg<BridgeNSModule>('BridgeNS'); }
 function voiceE2E(): BridgeVoiceE2EModule | null  { return reg<BridgeVoiceE2EModule>('BridgeVoiceE2E'); }
 function videoQuality(): BridgeVideoQualityModule | null { return reg<BridgeVideoQualityModule>('BridgeVideoQuality'); }

@@ -573,7 +573,6 @@ const translations: Record<string, string> = {
   'pl_pick_channel': 'Önce bir kanal seç',
   'dsc_remove_failed': 'Kaldırılamadı',
   'tfa_mail_sent': 'Doğrulama e-postası gönderildi',
-  'rtc_no_mic': 'Mikrofon bulunamadı — sessiz katılındı',
   'rtc_session_lost': 'Ses bağlantısı kurtarılamadı — kanaldan çıkıldı.',
   'rtc_voice_evicted': 'Bu ses kanalına erişimin kaldırıldı.',
   'rtc_mic_lost': 'Mikrofon bağlantısı kesildi — sesin iletilmiyor.',

@@ -608,7 +608,6 @@ const translations: Record<string, string> = {
   "pl_pick_channel": "먼저 채널을 선택하세요",
   "dsc_remove_failed": "제거하지 못했습니다",
   "tfa_mail_sent": "인증 이메일이 전송되었습니다",
-  "rtc_no_mic": "마이크를 찾을 수 없습니다 — 음소거 상태로 참여했습니다",
   "rtc_session_lost": "음성 연결을 복구하지 못했습니다 — 채널에서 나갔습니다.",
   "rtc_voice_evicted": "이 음성 채널에 대한 접근 권한이 제거되었습니다.",
   "rtc_mic_lost": "마이크 연결이 끊겼습니다 — 음성이 전달되지 않습니다.",

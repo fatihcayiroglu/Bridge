@@ -16,6 +16,7 @@ import { BridgeRegistry } from './core/bridge-registry.ts';
 import { getAPI } from './core/globals.ts';
 import { readToken } from './core/auth-compat.ts';
 import { t } from './core/i18n/index';
+import { micErrorMessage } from './core/mic-error.ts';
 import { SFU_SCREEN_PRESETS as SCREEN_PRESETS, SCREEN_BITRATES, normalizeScreenQuality, type ScreenQuality } from './core/rtc-screen-quality.ts';
 
 import { createLogger } from './core/logger.ts';
@@ -567,11 +568,12 @@ class BridgeRTC {
         return;
       }
       this.localStream = stream;
-    } catch {
+    } catch (err) {
       rawStream?.getTracks().forEach(track => track.stop());
       if (generation !== this._sessionGeneration) return;
       this.localStream = new MediaStream();
-      _app()?.toast(t('rtc_no_mic', 'Mikrofon bulunamadı — sessiz katılındı'), 'error');
+      // Denied, missing and busy microphones are different problems with different fixes.
+      _app()?.toast(micErrorMessage(err), 'error');
     }
 
     if (this._sfuAvailable) {

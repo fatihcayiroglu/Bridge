@@ -302,6 +302,39 @@ describe('SFU owner redirect signaling', () => {
 // ════════════════════════════════════════════════════════════════════════════
 // isInVoice — webrtc-sfu.ts:165
 // ════════════════════════════════════════════════════════════════════════════
+describe('P4 — the SFU join explains WHY the microphone could not be opened', () => {
+  // MEASURED (Android 14 emulator, permission denied in the real OS sheet): the SFU path showed
+  // "No microphone found — joined muted" for every getUserMedia failure. Someone who denied the
+  // permission was told their phone had no microphone. Negative control: on the previous code
+  // both cases below produced the same rtc_no_mic text.
+  async function joinWithMicError(name: string): Promise<string> {
+    const { rtc } = await makeRTC({ sfu: true });
+    const previous = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockRejectedValue(new DOMException('mic', name)) },
+    });
+    (rtc as any)._sfuJoin = vi.fn().mockResolvedValue(undefined);
+    uiToast.mockClear();
+    try {
+      await rtc.joinVoice('voice-1', 'server-1');
+      return String(uiToast.mock.calls.at(-1)?.[0] ?? '');
+    } finally {
+      if (previous) Object.defineProperty(navigator, 'mediaDevices', previous);
+      else delete (navigator as { mediaDevices?: unknown }).mediaDevices;
+    }
+  }
+
+  it('a denied permission is reported as denied, a missing device as missing', async () => {
+    const { micErrorMessage } = await import('../js/core/mic-error.ts');
+    const denied = await joinWithMicError('NotAllowedError');
+    const missing = await joinWithMicError('NotFoundError');
+    expect(denied).toBe(micErrorMessage({ name: 'NotAllowedError' }));
+    expect(missing).toBe(micErrorMessage({ name: 'NotFoundError' }));
+    expect(denied).not.toBe(missing);
+  });
+});
+
 describe('isInVoice()', () => {
   it('başlangıçta false döner', async () => {
     const { rtc } = await makeRTC();

@@ -568,7 +568,6 @@ const translations: Record<string, string> = {
   'pl_pick_channel': 'Pick a channel first',
   'dsc_remove_failed': 'Could not remove',
   'tfa_mail_sent': 'Verification email sent',
-  'rtc_no_mic': 'No microphone found — joined muted',
   'rtc_session_lost': 'Voice connection could not be restored — you left the channel.',
   'rtc_voice_evicted': 'Your access to this voice channel was removed.',
   'rtc_mic_lost': 'Microphone disconnected — you are not being heard.',

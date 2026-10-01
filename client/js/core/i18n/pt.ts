@@ -608,7 +608,6 @@ const translations: Record<string, string> = {
   "pl_pick_channel": "Escolha um canal primeiro",
   "dsc_remove_failed": "Não foi possível remover",
   "tfa_mail_sent": "E-mail de verificação enviado",
-  "rtc_no_mic": "Nenhum microfone encontrado — entrou no mudo",
   "rtc_session_lost": "Não foi possível restaurar a conexão de voz — você saiu do canal.",
   "rtc_voice_evicted": "Seu acesso a este canal de voz foi removido.",
   "rtc_mic_lost": "Microfone desconectado — você não está sendo ouvido.",
