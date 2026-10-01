@@ -80,8 +80,19 @@ POSTGRES_PASSWORD=buraya_en_az_32_karakter_rastgele_hex
 
 # Opsiyonel ama önerilir
 INSTANCE_URL=https://bridge.senindomain.com
+WEBAUTHN_RP_ID=bridge.senindomain.com
 ALLOWED_ORIGINS=https://bridge.senindomain.com
 ```
+
+`INSTANCE_URL` bu kurulumun genel kimliğidir: ActivityPub aktör/anahtar
+kimlikleri, passkey origin'i ve imzalı `Host` doğrulaması ondan türetilir.
+Production'da `https://` olmalı (yalnız loopback için `http` kabul edilir),
+yol, kullanıcı:parola, sorgu içeremez; aksi hâlde sunucu açılmaz. Boş
+bırakılırsa sunucu açılır ama federasyon yapamaz (açılışta uyarı yazılır).
+Federasyon ve AI ayarları: `docs/P5_FEDERATION_AI_SELFHOSTING.md`, `docs/AI.md`.
+AI hiçbir yapılandırmada zorunlu değildir; kendi sunucunuzda çalışan bir
+model için `OLLAMA_URL` ya da `AI_PROVIDER=openai-compatible` +
+`AI_BASE_URL` + `AI_MODEL` kullanın.
 
 ```bash
 # .env dosyasını yalnızca sahibi okuyabilsin
@@ -520,7 +531,9 @@ Canlıya almadan önce aşağıdakileri kontrol et:
 - [ ] Reverse proxy arkasında HTTPS aktif
 - [ ] `TRUSTED_PROXY_COUNT` doğru set edilmiş (nginx arkasında: `1`)
 - [ ] Egress firewall aktif (bkz. [Egress Firewall](#egress-firewall-iptables--nftables))
-- [ ] `INSTANCE_URL` production URL'sine ayarlı (federasyon için)
+- [ ] `INSTANCE_URL` production URL'sine ayarlı (`https://`, yolsuz — federasyon ve passkey için)
+- [ ] Reverse proxy `Host` başlığını koruyor (HTTP Signatures onu imzalar; varsayılan dışı bir portta nginx için `$http_host`)
+- [ ] Federasyon teslimatı: varsayılan yeniden deneme takvimi ~3,5 gün (`FEDERATION_DELIVERY_RETRY_DELAYS_MS` ile değiştirilebilir); vazgeçilen teslimatlar `federation.delivery.max_retries` olarak error seviyesinde loglanır
 - [ ] `FEDERATION_SECRET` güçlü rastgele değer (federasyon kullanılıyorsa)
 - [ ] Backup servisi çalışıyor: `docker compose ps backup`
 - [ ] Health endpoint erişilebilir: `curl https://bridge.senindomain.com/api/health`
