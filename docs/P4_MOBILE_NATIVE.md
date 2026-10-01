@@ -84,7 +84,7 @@ Totals: 14 PASS, 7 FAIL, 0 SKIPPED, 2 MEASURED.
 Common fields unless a row says otherwise — **environment** AUTOMATED / EMULATOR (CI `Mobile
 Android`, Android 14 API 34 `sdk_gphone64_x86_64`, WebView 113.0.5672.136, debug APK of the
 commit named); **network** runner-owned proxy in front of the server (no real radio). Every fix is
-on PR fatihcayiroglu/Bridge#112; CI run, merge SHA and the post-merge gate are recorded in
+on PR fatihcayiroglu/Bridge#112 (P4-23 on the follow-up PR); CI run, merge SHA and the post-merge gate are recorded in
 [Closure](#closure). Unit/integration evidence is listed as such and never as device evidence.
 
 ### Product defects
@@ -113,6 +113,7 @@ on PR fatihcayiroglu/Bridge#112; CI run, merge SHA and the post-merge gate are r
 | P4-20 | iOS deep links | **AUTOMATED / SIMULATOR**: `simctl openurl bridge://channel/<id>` → OSStatus −10814 while a unique control scheme on the same build opened; `com.apple.Bridge` (Apple's Watch app) declares `bridge` | a link reaches Bridge on an iPhone | iOS gives a scheme claimed by a system app to that app | `com.bridge.app://` (reverse-DNS) on iOS and Android, parsed like `bridge://` (kept for existing links) (`579ac5d`) | contract test 3/3 fail on the previous manifest/plist/bridge | `mobile/tests/deep-link-scheme.test.js`; iOS **I04** (OS routing; in-app dispatch I07 is UNVERIFIED on the simulator), Android **DL04** |
 | P4-21 | layout | **AUTOMATED / BROWSER, emulated insets** (the page declares `viewport-fit=cover`): 390×844 with a 47 px top inset — header search/"more" at y 7–39, first server/member entries at y 34–38; 844×390 — composer and user panel in the 21 px home-indicator band, server rail under a 47 px cutout | nothing interactive under the system bars | the shell padded only the bottom inset | shell padding for every inset, drawers start below the top inset, the wide layout keeps the bottom band clear (`23d0257`) | `e2e/tests/safe-area.spec.ts` 3/3 fail on the previous CSS | the same spec, in the PR gate |
 | P4-22 | layout | 844×390 landscape, no insets: Settings (min-height 480 px, centred) sat above the screen — close button at y −28 | the dialog fits; close is tappable | fixed minimum height | short viewports get a full-safe-area dialog with a scrolling tab list (`23d0257`) | as P4-21 | as P4-21 |
+| P4-23 | accessibility | (introduced by P4-02, caught **after merge** by the scheduled nightly on `edcb0ac` — `Bridge Quality Gate` run 36832837271, `a11y` project; reproduced locally with the same test) light theme: the Settings sidebar "Log out" label `#d92638` on `#f0f2f9` = **4.38:1** (axe `color-contrast`, serious) | ≥ 4.5:1 (WCAG AA) | the button used `--danger`, which the light theme tunes for white surfaces (4.90:1), not for the sidebar's `--bg-1` | light theme uses its danger ink `--danger-text` (7.62:1); the dark themes keep `--danger` (4.79–5.20:1 on their `--bg-1`) (`f400f7c`) | the nightly a11y test fails on `edcb0ac` and locally before the change | `e2e/tests/a11y.smoke.spec.ts` (`a11y`, `a11y-mobile`, `a11y-keyboard`: 10/10, 10/10, 8/8 locally after it) |
 
 ### Test / harness and environment defects
 
@@ -334,4 +335,65 @@ simulator boot (H-18). With the simulator booted at the start of the job it took
 merged head `5e1ca23` (launch completed after 2 s). A CI simulator time; it is **not** a device
 launch time.
 
-<!-- P4-RESULTS -->
+## Closure
+
+**Merge.** PR fatihcayiroglu/Bridge#112 merged into `main` as `edcb0ac` (merge commit; parents
+`d218705` — the P4 starting point — and `5e1ca23`, the PR head every result above was produced on).
+
+**Required gates on the PR head `5e1ca23`.** `Bridge Quality Gate` run 36830001818 — success (audit,
+Node 22.19 compatibility, typecheck & build, unit + integration with real PostgreSQL/Redis/MinIO,
+E2E security suites including `session-logout` and `safe-area`, Playwright smoke, Docker build).
+`E2E full + media (nightly)` runs only on the schedule or a manual dispatch and was skipped on the
+PR; it is not counted.
+`Mobile Android` run 36830001666 — success (30 / 0 / 0 / 4). `Mobile iOS` run 36830001748 —
+success (4 PASS, 0 FAIL, 1 UNVERIFIED, 2 MEASURED).
+
+**Post-merge on `main` `edcb0ac`.** `Mobile Android` push run 36832147401 — success (30 / 0 / 0 / 4). `Mobile iOS` run 36832225038
+(dispatched on `main`; the workflow has no push trigger) — success (0 FAIL, 1 UNVERIFIED: I07).
+`Bridge Quality Gate` push run 36832147506 was cancelled by the scheduled nightly on the same
+commit (shared concurrency group) after audit, Node 22.19 and typecheck & build had passed. The
+nightly, run 36832837271, passed every PR-gate job and the Chromium, Firefox, WebKit, media and
+mobile suites, and **failed** the desktop accessibility suite: P4-23, a contrast regression from
+P4-02 that the PR gate does not run. **The post-merge gate on `edcb0ac` is therefore not green.**
+P4-23 is fixed in the follow-up PR (`f400f7c`); its full gate, including the nightly suites, runs
+on that PR and again on `main` after it merges.
+
+### Closure bar
+
+Status words: **MET** — proved in the category named; **MET (limitation)** — retained as a
+documented limitation with measured rationale, as the bar allows; **BLOCKED** — needs hardware,
+credentials or networks this project does not have (EXTERNAL / UNVERIFIED). Nothing BLOCKED is
+claimed anywhere as passing.
+
+| # | Item | Status | Evidence (category) |
+|---|---|---|---|
+| 1 | Architecture documented | MET | "Architecture (as measured)" above |
+| 2 | Android / iOS status explicit | MET | results tables per platform; evidence matrix |
+| 3 | Real-device evidence where hardware exists | BLOCKED | no physical device existed; the harness labels a phone's run REAL DEVICE ("Producing REAL DEVICE evidence") |
+| 4 | Unavailable physical platforms marked EXTERNAL / UNVERIFIED | MET | "EXTERNAL / UNVERIFIED" |
+| 5 | Cold / warm launch, session restore | MET (emulator; iOS launch only) | A01, L01, L03, L04, DL02 (EMULATOR); I02, I03 (SIMULATOR) |
+| 6 | Background / foreground lifecycle | MET (emulator) | L01, L02 past the ping timeout, L03 process death (EMULATOR); iOS UNVERIFIED |
+| 7 | Messaging, reconnect / resync | MET (emulator, injected faults) | M01, M02, N01 single delivery, N02 resync (EMULATOR) |
+| 8 | DM daily use | MET (emulator + unit) | D01 (EMULATOR); DM push P4-09 (UNIT) |
+| 9 | Notifications where supported | MET up to delivery; delivery BLOCKED | PN01 channel, P02, P05, LO01 (EMULATOR); payload contract, token lifecycle, revocation (UNIT, real PG); FCM / APNs delivery EXTERNAL |
+| 10 | Deep links where supported | MET Android; iOS routing MET, in-app dispatch BLOCKED | DL01–DL04 (EMULATOR); I04 PASS, I07 UNVERIFIED (SIMULATOR) |
+| 11 | Microphone / camera permissions | MET (emulator) | P01, P03, P06, P07 through the real Android sheets (EMULATOR); I01 usage strings (SIMULATOR) |
+| 12 | Voice join / leave / recovery | MET (emulator, emulated audio) | P03, V02, V03 (EMULATOR); voice quality EXTERNAL |
+| 13 | Network transitions measured | MET for injected faults; real networks BLOCKED | N01, N02, N03, V02 (EMULATOR, runner proxy); handover / captive portal / carrier NAT EXTERNAL |
+| 14 | Audio routing where hardware exists | BLOCKED | no routing hardware on emulator / simulator |
+| 15 | Layout / keyboard / safe area | MET | P4-21, P4-22 fixed (BROWSER, emulated insets, PR gate); UI01, UI02, K01 (EMULATOR) |
+| 16 | Real mobile performance measured | BLOCKED (emulator measured) | Measurements, PERF01, PERF02 (EMULATOR); no device numbers |
+| 17 | Long-channel virtualisation or measured limitation | MET (limitation) | PERF02 runs 9 and 10; decision above |
+| 18 | MEDIA-11 fixed after real repro or retained | MET (limitation) | not reproduced on any device or network in P4; retained |
+| 19 | Security / session invariants intact | MET | P4-01–P4-04, P4-12, P4-15, P4-16 with negative controls; E2E security suites green |
+| 20 | Required gates pass | MET on the PR head; see 23 for `main` | PR head runs above |
+| 21 | No SKIPPED counted as PASS | MET | every table counts SKIPPED / MEASURED / UNVERIFIED separately |
+| 22 | All P4 code merged | MET | `edcb0ac` |
+| 23 | Final main post-merge QG green | not on `edcb0ac` (P4-23); required on the follow-up merge | `edcb0ac`: nightly a11y red → fixed in `f400f7c` |
+| 24 | Final report separates REAL DEVICE / SIMULATOR / UNVERIFIED | MET | evidence matrix columns; results per category |
+
+**Verdict: P4 IMPLEMENTATION COMPLETE / P4 HARDWARE VALIDATION BLOCKED.** Not **P4 = CLOSED**:
+items 3, 14 and 16, notification delivery (9), in-app iOS deep-link dispatch (10) and real-network
+transitions (13) need physical devices, an FCM project / APNs key and real networks. They are listed
+under EXTERNAL / UNVERIFIED with what would verify each.
+
