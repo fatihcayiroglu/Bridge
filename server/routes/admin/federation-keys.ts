@@ -28,12 +28,13 @@ router.post('/federation/rotate-key', authMiddleware, adminOnly, async (req, res
   const previous = await getOrCreateFederationKeys();
   const result  = await rotateFederationKeys();
   const doc     = getFederationPublicKeyDoc();
-  const announced = doc
-    ? await announceKeyRotation(previous.privateKeyPem, doc).catch((err: Error) => {
+  // The rotation result always carries the new key; announcing never depends
+  // on the cached document. A failed announcement never fails the rotation.
+  const announced = await announceKeyRotation(previous.privateKeyPem, { id: result.keyId, publicKeyPem: result.publicKeyPem })
+    .catch((err: Error) => {
       logger.warn({ event: 'federation.key_rotation.announce_error', err: err.message }, '[Federation] Key rotation announcement failed.');
       return [];
-    })
-    : [];
+    });
 
   await logAction(adminId, 'federation_rotate_key', null, {
     keyVersion: result.keyVersion,

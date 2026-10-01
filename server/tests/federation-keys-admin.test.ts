@@ -17,6 +17,11 @@ import express from 'express';
 const jwt = require('jsonwebtoken');
 
 import crypto from 'crypto';
+// P5 FED-03: the announcement itself is covered by federation-peer-announce.test.ts;
+// here only the route's handling of its outcome is under test.
+const mockAnnounce = jest.fn(async (..._args: unknown[]) => [] as Array<Record<string, unknown>>);
+jest.mock('../lib/federationPeerAnnounce', () => ({ announceKeyRotation: (...a: unknown[]) => mockAnnounce(...a) }));
+
 import federationKeysRouter from '../routes/admin/federation-keys';
 import peersRouter from '../routes/federation/peers';
 import {
@@ -56,6 +61,7 @@ describe('POST /api/admin/federation/rotate-key', () => {
   beforeEach(() => {
     mockDb._reset();
     _resetFederationKeyCache();
+    mockAnnounce.mockClear();
     app = express();
     app.use(express.json());
     app.use('/api/admin', federationKeysRouter);
@@ -76,6 +82,46 @@ describe('POST /api/admin/federation/rotate-key', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.keyVersion).toBeGreaterThanOrEqual(1);
     expect(res.body.publicKey?.publicKeyPem).toMatch(/BEGIN PUBLIC KEY/);
+  });
+
+  async function rotateAsAdmin() {
+    await mockDb.users.insert({
+      _id: 'admin-1', username: 'admin', displayName: 'Admin',
+      password: 'x', avatarColor: '#000', isAdmin: 1, tokenVersion: 0, createdAt: Date.now(),
+    });
+    return request(app).post('/api/admin/federation/rotate-key').set('Authorization', `Bearer ${adminToken('admin-1')}`);
+  }
+
+  it('P5 FED-03: the new key is announced, signed with the PREVIOUS key, and each peer outcome is reported', async () => {
+    mockAnnounce.mockResolvedValueOnce([
+      { peerId: 'p1', url: 'https://b.test', ok: true, status: 200 },
+      { peerId: 'p2', url: 'https://c.test', ok: false, error: 'ECONNREFUSED' },
+    ]);
+    // Keys exist before the rotation (as on any running instance).
+    const { getOrCreateFederationKeys } = require('../lib/federationKeys');
+    const before = await getOrCreateFederationKeys();
+
+    const res = await rotateAsAdmin();
+
+    expect(res.status).toBe(200);
+    expect(res.body.announced).toEqual([
+      { url: 'https://b.test', ok: true, status: 200 },
+      { url: 'https://c.test', ok: false, status: null },
+    ]);
+    expect(mockAnnounce).toHaveBeenCalledTimes(1);
+    const [signingKey, announcedKey] = mockAnnounce.mock.calls[0] as [string, { id: string; publicKeyPem: string }];
+    expect(signingKey).toBe(before.privateKeyPem);                       // the OLD key signs
+    expect(announcedKey.publicKeyPem).toBe(res.body.publicKey.publicKeyPem); // the NEW key is announced
+    expect(announcedKey.publicKeyPem).not.toBe(before.publicKeyPem);
+    expect(announcedKey.id).toBe(res.body.keyId);
+  });
+
+  it('P5 FED-03: a failed announcement does not fail the rotation', async () => {
+    mockAnnounce.mockRejectedValueOnce(new Error('peer store down'));
+    const res = await rotateAsAdmin();
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.announced).toEqual([]);
   });
 
   it('admin olmayan → 403', async () => {
