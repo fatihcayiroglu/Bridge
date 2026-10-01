@@ -34,9 +34,13 @@ jobs:
   simulator:
     name: iOS simulator build + launch (AUTOMATED / SIMULATOR)
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
+      - name: Boot the simulator early (it warms up while the app builds)
+        run: |
+          mkdir -p e2e/ios/results
+          nohup bash e2e/ios/run-simulator-smoke.sh --boot-only > e2e/ios/results/early-boot.log 2>&1 &
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -61,10 +65,11 @@ jobs:
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 40
       - name: Simulator smoke
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: |
           APP=$(find build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' | head -1)
           echo "app: $APP"
+          cat e2e/ios/results/early-boot.log 2>/dev/null || true
           IOS_APP_PATH="$APP" bash e2e/ios/run-simulator-smoke.sh
       - uses: actions/upload-artifact@v7
         if: always()

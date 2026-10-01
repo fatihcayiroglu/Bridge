@@ -9,6 +9,27 @@
 set -uo pipefail
 
 OUT="${IOS_EVIDENCE_DIR:-e2e/ios/results}"
+limit() { local secs=$1; shift; perl -e 'alarm shift; exec @ARGV' "$secs" "$@"; }
+step() { echo "[ios-smoke $(date -u +%H:%M:%S)] $*"; }
+pick_simulator() {
+  limit 120 xcrun simctl list devices available -j | python3 -c '
+import json,sys
+d=json.load(sys.stdin)["devices"]
+cands=[(rt,x) for rt,xs in d.items() if "iOS" in rt for x in xs if x["name"].startswith("iPhone")]
+cands.sort(key=lambda c: c[0])
+print(cands[-1][1]["udid"] if cands else "")'
+}
+# A fresh simulator on the CI runner needs minutes after boot before an app launches promptly
+# (measured: the app process started ~7 min after `simctl launch`). The workflow boots it at the
+# start of the job with --boot-only, so it warms up while dependencies install and Xcode builds.
+if [ "${1:-}" = "--boot-only" ]; then
+  udid=$(pick_simulator)
+  step "early boot: $udid"
+  xcrun simctl boot "$udid" 2>/dev/null || true
+  xcrun simctl bootstatus "$udid" -b >/dev/null 2>&1 || true
+  step "early boot finished"
+  exit 0
+fi
 APP="${IOS_APP_PATH:?IOS_APP_PATH is required}"
 BUNDLE_ID="${IOS_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" 2>/dev/null || echo com.bridge.app)}"
 mkdir -p "$OUT"
@@ -16,9 +37,7 @@ RESULTS="$OUT/ios-evidence.txt"
 : > "$RESULTS"
 fails=0
 # Every simulator command gets a hard time limit (macOS has no coreutils `timeout`), and progress is
-# timestamped, so a hang shows WHERE it happened instead of eating the job's whole timeout.
-limit() { local secs=$1; shift; perl -e 'alarm shift; exec @ARGV' "$secs" "$@"; }
-step() { echo "[ios-smoke $(date -u +%H:%M:%S)] $*"; }
+# timestamped (limit/step above), so a hang shows WHERE it happened instead of eating the timeout.
 record() { # status id title detail
   printf '%-8s %-5s %s\n          ↳ %s\n' "$1" "$2" "$3" "$4" | tee -a "$RESULTS"
   [ "$1" = "FAIL" ] && fails=$((fails + 1))
@@ -40,12 +59,7 @@ fi
 
 # ── Simulator ───────────────────────────────────────────────────────────────────────────────
 step "selecting a simulator"
-UDID=$(limit 120 xcrun simctl list devices available -j | python3 -c '
-import json,sys
-d=json.load(sys.stdin)["devices"]
-cands=[(rt,x) for rt,xs in d.items() if "iOS" in rt for x in xs if x["name"].startswith("iPhone")]
-cands.sort(key=lambda c: c[0])
-print(cands[-1][1]["udid"] if cands else "")')
+UDID=$(pick_simulator)
 if [ -z "$UDID" ]; then record FAIL I00 "an iPhone simulator is available" "none found"; exit 1; fi
 DEVICE=$(limit 60 xcrun simctl list devices | grep "$UDID" | head -1 | sed 's/^ *//')
 step "simulator: $DEVICE"
@@ -74,17 +88,24 @@ CONSOLE="$(pwd)/$OUT/console.log"
 CONSOLE_ERR="$(pwd)/$OUT/console.err.log"
 : > "$CONSOLE"; : > "$CONSOLE_ERR"
 step "launching $BUNDLE_ID (stdout/stderr → files, NSUnbufferedIO)"
-launch_out=$(SIMCTL_CHILD_NSUnbufferedIO=YES limit 300 xcrun simctl launch --terminate-running-process \
-  --stdout="$CONSOLE" --stderr="$CONSOLE_ERR" "$UDID" "$BUNDLE_ID" 2>&1 || true)
-launched_pid=$(printf '%s\n' "$launch_out" | sed -n "s/^${BUNDLE_ID}: \([0-9][0-9]*\).*/\1/p" | head -1)
-step "launch returned after $(( $(date +%s) - start )) s: ${launch_out}"
+# `simctl launch` returns once the launch has COMPLETED; killing it early (a 300 s limit, run on
+# e152d8f) left the app half-launched (`isActive:false`) and a later URL undelivered. It runs in
+# the background, bounded only by the step timeout, and the link is opened after it returns.
+LAUNCH_OUT="$(pwd)/$OUT/launch.out"
+( SIMCTL_CHILD_NSUnbufferedIO=YES xcrun simctl launch --terminate-running-process \
+    --stdout="$CONSOLE" --stderr="$CONSOLE_ERR" "$UDID" "$BUNDLE_ID" > "$LAUNCH_OUT" 2>&1 ) &
+LAUNCHER=$!
 console() { cat "$CONSOLE" "$CONSOLE_ERR" 2>/dev/null; }
-ready=0
-for _ in $(seq 1 90); do
-  if console | grep -q "Capacitor entegrasyonu hazır — ios"; then ready=1; break; fi
+ready=0; launched=0; ready_after=""; launch_after=""
+for _ in $(seq 1 450); do
+  if [ "$ready" = 0 ] && console | grep -q "Capacitor entegrasyonu hazır — ios"; then ready=1; ready_after=$(( $(date +%s) - start )); fi
+  if [ "$launched" = 0 ] && ! kill -0 "$LAUNCHER" 2>/dev/null; then launched=1; launch_after=$(( $(date +%s) - start )); fi
+  [ "$ready" = 1 ] && [ "$launched" = 1 ] && break
   sleep 2
 done
-ready_after=$(( $(date +%s) - start ))
+launch_out=$(cat "$LAUNCH_OUT" 2>/dev/null)
+launched_pid=$(printf '%s\n' "$launch_out" | sed -n "s/^${BUNDLE_ID}: \([0-9][0-9]*\).*/\1/p" | head -1)
+step "launch completed=${launched} after ${launch_after:-?} s (${launch_out}); bridge ready=${ready} after ${ready_after:-?} s"
 limit 60 xcrun simctl io "$UDID" screenshot "$OUT/cold-launch.png" >/dev/null 2>&1 || true
 # The OS's own view: launchctl lists `<pid> <status> UIKitApplication:<bundle>[…]` for a running app.
 os_pid=$(limit 60 xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | awk -v b="UIKitApplication:$BUNDLE_ID" 'index($3, b) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }')
@@ -96,13 +117,13 @@ else
   record FAIL I02 "cold launch: the app process is alive after launch" "launchctl has no running $BUNDLE_ID; launch: ${launch_out}; console: $(console | tail -5 | tr '\n' ' ' | cut -c1-400)"
 fi
 if [ "$ready" = 1 ]; then
-  record PASS I03 "the web app and native bridge load inside WKWebView" "ready log ${ready_after} s after the launch command"
+  record PASS I03 "the web app and native bridge load inside WKWebView" "ready log ${ready_after} s after the launch command (launch completed after ${launch_after:-?} s)"
 else
   record FAIL I03 "the web app and native bridge load inside WKWebView" "$(console | grep -E '\[(log|error|warn)\]|⚡️' | tail -8 | tr '\n' ' ' | cut -c1-600)"
 fi
 
 # ── I04: a com.bridge.app:// link reaches the running app ────────────────────────────────────
-if [ -n "$launched_pid" ]; then
+if [ -n "$launched_pid" ] && [ "$launched" = 1 ]; then
   step "opening com.bridge.app://channel/p4-ios-smoke-channel"
   limit 120 xcrun simctl openurl "$UDID" "com.bridge.app://channel/p4-ios-smoke-channel" 2>&1 | tail -3 || true
   for _ in $(seq 1 30); do
@@ -116,7 +137,7 @@ else
   record FAIL I04 "com.bridge.app://channel/<id> reaches the running app (bridge dispatch)" "$(console | grep -i -E 'deep|appUrlOpen|url' | tail -5 | tr '\n' ' ' | cut -c1-400)"
 fi
 limit 60 xcrun simctl io "$UDID" screenshot "$OUT/after-deeplink.png" >/dev/null 2>&1 || true
-record MEASURED I05 "launch command → WKWebView bridge ready (simulator on a CI runner)" "${ready_after} s"
+record MEASURED I05 "launch command → WKWebView bridge ready (simulator on a CI runner)" "${ready_after:-not ready} s; launch completed after ${launch_after:-—} s"
 
 # Diagnostics in the job log itself (artifacts are not always reachable from where evidence is read).
 step "console tail"
