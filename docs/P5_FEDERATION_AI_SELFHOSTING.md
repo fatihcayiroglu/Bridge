@@ -351,7 +351,7 @@ on pull requests by design and is evidenced by the dispatched run below, not by 
 | Self-host Evidence | 36901117883 | processes 67 PASS / 2 MEASURED; Compose 32 PASS |
 | Federation + AI Evidence | 36901117809 | 81 PASS / 6 MEASURED / 0 FAIL / 0 BLOCKED |
 | Mobile Android | 36901117864 | attempt 1: APK success; emulator journeys failed before any journey ran (E-04, environment). Attempt 2, the one re-run (job 110516107617): emulator journeys **30 pass, 0 fail, 0 skipped**, 4 measured |
-| Mobile iOS (dispatched) | 36906166341 | PENDING (running) |
+| Mobile iOS (dispatched) | 36906166341 | success: I01–I04 **PASS**, I07 **UNVERIFIED** (the in-app dispatch needs a tap on iOS's "Open in 'Bridge'?" prompt, as at the P4 closure), I05/I06 MEASURED, 0 FAIL. This is simulator evidence, not device evidence |
 | Multi-node Evidence, P1 (dispatched) | 36906379443 | PENDING (running) |
 | Media Evidence, P2 (dispatched) | 36906383110 | PENDING (running) |
 
