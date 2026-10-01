@@ -30,10 +30,8 @@ if [ "${1:-}" = "--boot-only" ]; then
   step "early boot finished"
   exit 0
 fi
-# Without Simulator.app the booted device has no display: an app launched by simctl never becomes
-# ACTIVE (measured: the app's own `App.getState()` → isActive:false), and iOS hands a URL to an app
-# when it brings it to the foreground. The GUI is opened on the booted device, as on a desk.
-show_simulator() { open -a Simulator --args -CurrentDeviceUDID "$1" >/dev/null 2>&1 || true; }
+# (Opening Simulator.app was tried — run on a1ca547: the app still reported isActive:false, and on
+# the next run `simctl install` took > 240 s on the GPU-less runner. It is not opened.)
 APP="${IOS_APP_PATH:?IOS_APP_PATH is required}"
 BUNDLE_ID="${IOS_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" 2>/dev/null || echo com.bridge.app)}"
 mkdir -p "$OUT"
@@ -73,10 +71,9 @@ if ! limit 480 xcrun simctl bootstatus "$UDID" -b >/dev/null; then
   record FAIL I00 "the simulator boots" "bootstatus did not finish within 480 s ($DEVICE)"
   exit 1
 fi
-show_simulator "$UDID"
 step "installing the app"
-if ! limit 240 xcrun simctl install "$UDID" "$APP"; then
-  record FAIL I00 "the app installs on the simulator" "simctl install did not finish within 240 s"
+if ! limit 600 xcrun simctl install "$UDID" "$APP"; then
+  record FAIL I00 "the app installs on the simulator" "simctl install did not finish within 600 s"
   exit 1
 fi
 
