@@ -480,13 +480,16 @@ async function main() {
   if (MODE === 'android') {
     const list = await android.devices();
     assert(list.length > 0, 'no adb device');
-    device = list[0];
+    // ANDROID_SERIAL picks one device when several are attached (e.g. a USB phone).
+    device = list.find((d) => d.serial() === process.env.ANDROID_SERIAL) ?? list[0];
+    const qemu = (await sh('getprop ro.kernel.qemu')) || (await sh('getprop ro.boot.qemu'));
     facts.device = {
+      serial: device.serial(),
       model: await sh('getprop ro.product.model'),
       release: await sh('getprop ro.build.version.release'),
       sdk: await sh('getprop ro.build.version.sdk'),
       abi: await sh('getprop ro.product.cpu.abi'),
-      qemu: await sh('getprop ro.kernel.qemu'),
+      qemu,
       webview: ((await sh('dumpsys webviewupdate')).match(/Current WebView package \(name, version\): \(([^)]+)\)/) || [])[1] ?? null,
     };
     facts.apkInstalled = (await sh(`pm list packages ${PKG}`)).includes(PKG);
@@ -673,6 +676,14 @@ async function main() {
     const raw = await platform.deepLink(`bridge://channel/${channelId}`);
     await attachPage();
     await until(() => activeChannel().then((c) => c === channelId), { timeout: 20_000, message: 'deep-linked channel active' });
+    return { am: raw.split('\n').slice(-2).join(' | ') };
+  });
+
+  await check('DL04', 'the app-owned scheme com.bridge.app://channel/<id> opens that channel (the link format that also works on iOS)', async () => {
+    await openChannel(otherId).catch(() => {});
+    const raw = await platform.deepLink(`com.bridge.app://channel/${channelId}`);
+    await attachPage();
+    await until(() => activeChannel().then((c) => c === channelId), { timeout: 20_000, message: 'com.bridge.app link opened the channel' });
     return { am: raw.split('\n').slice(-2).join(' | ') };
   });
 
@@ -899,6 +910,12 @@ async function main() {
     if (MODE !== 'android') throw new Skip('the long-channel measurement is for the device WebView');
     const seeded = await seedLongChannel(serverId, me.id, me.token, LONG_CHANNEL_MESSAGES);
     if (!seeded) throw new Skip('DATABASE_URL not available to seed the channel');
+    // A channel created elsewhere is not pushed to open clients (by design: channel metadata is not
+    // broadcast; each client loads its authorized list). The app is reloaded — as after a restart —
+    // which also gives the measurement a clean baseline.
+    await page.reload();
+    await attachPage();
+    await until(() => appVisible(), { timeout: 45_000, message: 'app after reload' });
     await page.evaluate(() => {
       window.__longTasks = [];
       try { new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__longTasks.push(e.duration); }).observe({ entryTypes: ['longtask'] }); } catch {}
@@ -979,7 +996,10 @@ main()
   })
   .finally(async () => {
     const summary = {
-      evidenceCategory: MODE === 'android' ? 'AUTOMATED / EMULATOR' : 'DRYRUN (harness debugging only — NOT evidence)',
+      // Derived from the device itself, never assumed: an emulator reports ro.kernel.qemu / ro.boot.qemu = 1.
+      evidenceCategory: MODE !== 'android' ? 'DRYRUN (harness debugging only — NOT evidence)'
+        : facts.device?.qemu === '1' ? 'AUTOMATED / EMULATOR'
+        : facts.device?.serial ? 'AUTOMATED / REAL DEVICE' : 'UNKNOWN (device not identified — NOT evidence)',
       runId: RUN_ID,
       commit: process.env.GITHUB_SHA ?? null,
       facts,
