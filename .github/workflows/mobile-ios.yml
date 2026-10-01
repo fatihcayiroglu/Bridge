@@ -1,0 +1,79 @@
+name: Mobile iOS
+
+# P4 — the Capacitor iOS app built the documented way (setup.js → cap add ios → curated overlay →
+# cap sync → xcodebuild) and launched on an iOS simulator. Evidence category: AUTOMATED /
+# SIMULATOR — not device evidence (no APNs delivery, no microphone/camera hardware, no radio).
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'mobile/**'
+      - 'client/**'
+      - 'e2e/ios/**'
+      - 'capacitor.config.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/mobile-ios.yml'
+  schedule:
+    - cron: '50 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: mobile-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: '24.20.0'
+
+permissions:
+  contents: read
+
+jobs:
+  simulator:
+    name: iOS simulator build + launch (AUTOMATED / SIMULATOR)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - name: Boot the simulator early (it warms up while the app builds)
+        run: |
+          mkdir -p e2e/ios/results
+          nohup bash e2e/ios/run-simulator-smoke.sh --boot-only > e2e/ios/results/early-boot.log 2>&1 &
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Client bundle
+        run: npm run build
+      - name: Packaged web root (www/)
+        env:
+          BRIDGE_API_URL: http://localhost:3000
+        run: node mobile/scripts/setup.js
+      - name: Generate the iOS project and apply the curated native layer
+        run: |
+          npx cap add ios
+          node mobile/scripts/apply-ios-overlay.js
+          npx cap sync ios
+      - name: xcodebuild (Debug, iphonesimulator)
+        run: |
+          xcodebuild -version
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 40
+      - name: Simulator smoke
+        timeout-minutes: 30
+        run: |
+          APP=$(find build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' | head -1)
+          echo "app: $APP"
+          cat e2e/ios/results/early-boot.log 2>/dev/null || true
+          IOS_APP_PATH="$APP" bash e2e/ios/run-simulator-smoke.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ios-simulator-evidence
+          path: e2e/ios/results/
+          retention-days: 30

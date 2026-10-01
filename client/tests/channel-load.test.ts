@@ -520,6 +520,43 @@ describe('ChannelListManager — malformed data and lifecycle isolation', () => 
     expect(jump).toHaveBeenCalledWith('m2');
   });
 
+  // P4 (MEASURED, Android 14 emulator): a cold `bridge://channel/<id>` found the target server
+  // already selected and its channel list in flight; the empty list was read as "no such
+  // channel", a "not available" toast was shown and the first text channel won.
+  it('P4: a target on the current server waits for its in-flight list instead of failing', async () => {
+    const pending = deferredResponse();
+    mockApiFetch.mockImplementation(() => pending.promise);
+    const toast = vi.fn();
+    const setChannel = vi.fn();
+    BridgeRegistry.register('toast', toast);
+    BridgeRegistry.register('setCurrentChannel', setChannel);
+    await requestLoad('srv-1');
+
+    const navigation = BridgeRegistry.call<Promise<boolean>>('navigateToChannel', 'c2', undefined, { _id: 'srv-1' })!;
+    pending.resolve([{ _id: 'c1', name: 'genel', type: 'text' }, { _id: 'c2', name: 'hedef', type: 'text' }]);
+    await drainPending();
+
+    expect(await navigation).toBe(true);
+    expect(toast).not.toHaveBeenCalled();
+    const selected = setChannel.mock.calls.map(([c]) => (c as Channel | null)?._id ?? null).filter(Boolean);
+    expect(selected).toEqual(['c2']);
+  });
+
+  it('P4: a channel missing from the arrived list is still refused (no permission bypass)', async () => {
+    const pending = deferredResponse();
+    mockApiFetch.mockImplementation(() => pending.promise);
+    const toast = vi.fn();
+    BridgeRegistry.register('toast', toast);
+    await requestLoad('srv-1');
+
+    const navigation = BridgeRegistry.call<Promise<boolean>>('navigateToChannel', 'hidden', undefined, { _id: 'srv-1' })!;
+    pending.resolve([{ _id: 'c1', name: 'genel', type: 'text' }]);
+    await drainPending();
+
+    expect(await navigation).toBe(false);
+    expect(toast).toHaveBeenCalledTimes(1);
+  });
+
   it('kategori collapse tercihini güvenli ve yinelenmesiz olarak kalıcılaştırır', async () => {
     mockApiFetch.mockResolvedValue(okResponse([{ _id: 'c1', name: 'genel', type: 'text' }]));
     await requestLoad('srv-1');

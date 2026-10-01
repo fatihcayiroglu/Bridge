@@ -31,7 +31,10 @@ interface IPushNotifications extends CapacitorPlugin {
   checkPermissions(): Promise<{ receive: string }>;
   requestPermissions(): Promise<PushPermissionResult>;
   register(): Promise<void>;
+  unregister?(): Promise<void>;
+  createChannel?(channel: { id: string; name: string; description?: string; importance?: number; visibility?: number; vibration?: boolean }): Promise<void>;
   addListener(event: 'registration',                    cb: (t: PushToken) => void): void;
+  addListener(event: 'registrationError',               cb: (e: { error?: string }) => void): void;
   addListener(event: 'pushNotificationReceived',        cb: (n: PushNotification) => void): void;
   addListener(event: 'pushNotificationActionPerformed', cb: (a: PushActionPerformed) => void): void;
 }
@@ -78,6 +81,11 @@ interface ICamera extends CapacitorPlugin {
   requestPermissions(opts: { permissions: string[] }): Promise<{ camera: string; photos: string }>;
 }
 interface IBadge extends CapacitorPlugin { set(opts: { count: number }): Promise<void> }
+/** P4: native guard (mobile/android/.../BridgePushSupportPlugin.java) — is FCM configured in this APK? */
+/** Android notification channel named by the server's FCM payloads (server/lib/pushSender.ts). */
+const NATIVE_PUSH_CHANNEL_ID = 'bridge_default';
+
+interface IBridgePushSupport extends CapacitorPlugin { status(): Promise<{ available: boolean; reason?: string }> }
 interface IShare extends CapacitorPlugin {
   share(opts: { title?: string; text?: string; url?: string; dialogTitle?: string }): Promise<void>;
 }
@@ -96,6 +104,7 @@ interface CapacitorGlobal {
     Camera?: ICamera;
     Badge?: IBadge;
     Share?: IShare;
+    BridgePushSupport?: IBridgePushSupport;
   };
   getPlatform(): string;
 }
@@ -158,8 +167,11 @@ export interface BridgeBiometricAPI {
 export interface BridgePushAPI {
   /** Kullanıcı eylemiyle izin ister; verildiyse `true`. */
   enable(): Promise<boolean>;
-  /** Sormadan mevcut izin durumunu okur. */
-  status(): Promise<'granted' | 'denied' | 'prompt' | 'unknown'>;
+  /**
+   * Sormadan mevcut izin durumunu okur. `unavailable`: bu derlemede push yapılandırılmamış
+   * (Android'de FCM yok) — izin verilse bile bildirim gelmez; kullanıcıya bu söylenmelidir.
+   */
+  status(): Promise<'granted' | 'denied' | 'prompt' | 'unknown' | 'unavailable'>;
 }
 
 // Genişletilmiş Window tipi
@@ -188,7 +200,32 @@ if (typeof Capacitor === 'undefined') {
     StatusBar, SplashScreen, Keyboard,
     Haptics, Network, App,
     BiometricAuth, Camera, Badge, Share,
+    BridgePushSupport,
   } = Capacitor.Plugins;
+
+  // ── P4: PUSH KAYDI YALNIZCA ÇALIŞABİLECEĞİ YERDE ─────────────────────────
+  // ÖLÇÜLDÜ (Android 14 emülatörü, belgelenen yolla derlenen APK, google-services.json YOK —
+  // kendi sunucusunu barındıranların varsayılanı): bildirim izni verildiği anda açılışta
+  // `register()` → FirebaseMessaging.getInstance() → IllegalStateException ve süreç ÖLDÜ.
+  // Android 12 ve öncesinde bildirim izni varsayılan olarak verilidir: her açılış çökerdi.
+  // iOS'ta APNs kaydı Firebase gerektirmez. Android'de yerel koruma yoksa (eski kabuk) kayıt
+  // YAPILMAZ: çökme riskine karşı sessiz ama güvenli taraf.
+  let pushAvailability: Promise<boolean> | null = null;
+  function nativePushAvailable(): Promise<boolean> {
+    if (!pushAvailability) {
+      pushAvailability = (async () => {
+        if (Capacitor!.getPlatform() !== 'android') return true;
+        if (!BridgePushSupport) return false;
+        try { return (await BridgePushSupport.status()).available === true; } catch { return false; }
+      })();
+    }
+    return pushAvailability;
+  }
+  async function registerIfAvailable(): Promise<boolean> {
+    if (!PushNotifications || !(await nativePushAvailable())) return false;
+    await PushNotifications.register();
+    return true;
+  }
 
   // ── SPLASH SCREEN ─────────────────────────────────────────────────────────
   // Final21 Faz 19 (19-28): yalnızca YEREL açılış ekranı gizleniyordu; şablondaki HTML katmanı
@@ -251,13 +288,10 @@ if (typeof Capacitor === 'undefined') {
     },
     async clear(): Promise<void> {
       await this.set(0);
-      const jwt = localStorage.getItem('bridge_token');
-      if (jwt) {
-        fetch('/api/mobile/push/badge/clear', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${jwt}` },
-        }).catch(() => {});
-      }
+      // P4: the server-side count is cleared by the app (client/js/core/native-push.ts) through
+      // its authenticated client. This used to be a RELATIVE fetch without the CSRF header: in
+      // the packaged app it reached https://localhost (the app itself), never the server.
+      window.dispatchEvent(new CustomEvent('bridge:badge-cleared'));
     },
   } as unknown as BridgeBadgeAPI;
   window.bridgeBadge = bridgeBadge;
@@ -291,32 +325,73 @@ if (typeof Capacitor === 'undefined') {
   async function attachPushListeners(): Promise<void> {
     if (!PushNotifications) return;
 
-    PushNotifications.addListener('registration', async (token: PushToken) => {
-      try {
-        const jwt = localStorage.getItem('bridge_token');
-        if (!jwt) return;
-        await fetch('/api/mobile/push/register-native', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${jwt}` },
-          body: JSON.stringify({ token: token.value, platform: Capacitor!.getPlatform() }),
-        });
-      } catch (err) {
-        console.error('[Bridge Mobile] Token kaydı başarısız:', err);
-      }
+    // P4: server FCM payloads name the `bridge_default` channel, which the app never created —
+    // Android filed every Bridge push under the generic "Miscellaneous" channel, so it could not
+    // be tuned or silenced separately. Creating a channel needs no Firebase; it is idempotent.
+    if (Capacitor!.getPlatform() === 'android') {
+      void PushNotifications.createChannel?.({
+        id: NATIVE_PUSH_CHANNEL_ID, name: 'Bridge', description: 'Messages, mentions and calls',
+        importance: 4, visibility: 0, vibration: true,
+      }).catch(() => {});
+    }
+
+    // ── P4: TOKEN KAYDI UYGULAMAYA DEVREDİLDİ ──────────────────────────────
+    // Burada eskiden `fetch('/api/mobile/push/register-native')` vardı: GÖRELİ
+    // adres (paketlenmiş uygulamanın kökeni https://localhost → istek uygulamanın
+    // KENDİSİNE gidiyordu) ve CSRF başlığı yoktu (Bearer istek 403). Yerel cihaz
+    // push için HİÇ kaydolamıyordu. Köprü artık yalnızca jetonu bildirir; sunucu
+    // konuşması uygulamanındır (client/js/core/native-push.ts → apiFetch).
+    PushNotifications.addListener('registration', (token: PushToken) => {
+      if (!token?.value) return;
+      window.dispatchEvent(new CustomEvent('bridge:native-push-token', {
+        detail: { token: token.value, platform: Capacitor!.getPlatform() },
+      }));
     });
 
+    PushNotifications.addListener('registrationError', (error) => {
+      console.warn('[Bridge Mobile] Push kaydı başarısız:', error?.error ?? error);
+      window.dispatchEvent(new CustomEvent('bridge:native-push-error', { detail: { error: String(error?.error ?? 'unknown') } }));
+    });
+
+    // ── P4: PUSH OTURUMLA BİRLİKTE BİTER ───────────────────────────────────
+    // Çıkış: sunucu satırı çıkış isteğiyle silinir; burada cihaz jetonu da
+    // bırakılır ki kaçırılmış bir çıkış isteği teslimatı canlı tutamasın.
+    // Giriş: izin zaten verilmişse yeniden kaydolunur (yeni jeton → yeni hesap).
+    // `unregister()` also calls FirebaseMessaging.getInstance(): on an Android build without
+    // Firebase config that throws on the plugin thread and kills the process — signing out would
+    // crash the app. There is no device token to release there, so nothing is called.
+    document.addEventListener('bridge:auth-logout', () => {
+      void nativePushAvailable()
+        .then((available) => (available ? PushNotifications.unregister?.() : undefined))
+        .catch(() => {});
+    });
+    document.addEventListener('bridge:auth-success', () => {
+      void PushNotifications.checkPermissions()
+        .then((current) => (current.receive === 'granted' ? registerIfAvailable() : undefined))
+        .catch(() => {});
+    });
+
+    // P4: uygulama ÖNDEYKEN gelen push, uygulama içi bildirimle (soket) AYNI olayı ikinci kez
+    // gösteriyordu. Görünür uygulamada sistem bildirimi planlanmaz; arka planda/kilitliyken
+    // davranış değişmez.
     PushNotifications.addListener('pushNotificationReceived', (notification: PushNotification) => {
+      if (document.visibilityState === 'visible') return;
       void showLocalNotification(notification.title ?? '', notification.body ?? '', notification.data ?? {});
       void bridgeBadge.increment();
     });
 
+    // P4: bildirime dokunmak hiçbir yere gitmiyordu — `bridge:navigate`in tek dinleyicisi (mobil
+    // şablon) var olmayan `selectServer`/`selectChannel` global'lerini çağırıyordu. Dokunuş artık
+    // derin bağlantıyla AYNI, izin denetimli yoldan geçer (client/js/core/native-deeplink.ts).
     PushNotifications.addListener('pushNotificationActionPerformed', (action: PushActionPerformed) => {
-      const data = action.notification.data;
+      const data = action.notification.data ?? {};
       void bridgeBadge.clear();
-      if (data?.channelId) {
-        window.dispatchEvent(new CustomEvent('bridge:navigate', {
-          detail: { channelId: data.channelId, serverId: data.serverId },
-        }));
+      if (data.type === 'dm' && data.fromUserId) {
+        emitDeepLink({ type: 'navigate:dm', userId: data.fromUserId });
+      } else if (data.type === 'gdm' && data.groupId) {
+        emitDeepLink({ type: 'navigate:gdm', groupId: data.groupId });
+      } else if (data.channelId) {
+        emitDeepLink({ type: 'navigate:channel', channelId: data.channelId, serverId: data.serverId });
       }
     });
   }
@@ -328,7 +403,7 @@ if (typeof Capacitor === 'undefined') {
     try {
       const current = await PushNotifications.checkPermissions();
       if (current.receive === 'granted') {
-        await PushNotifications.register();
+        if (!(await registerIfAvailable())) console.warn('[Bridge Mobile] Push bu derlemede yapılandırılmamış — kayıt atlandı.');
       } else {
         console.debug('[Bridge Mobile] Push izni yok — SORULMADI (baglam icinde istenecek).');
       }
@@ -344,21 +419,23 @@ if (typeof Capacitor === 'undefined') {
   const bridgePush: BridgePushAPI = {
     async enable(): Promise<boolean> {
       if (!PushNotifications) return false;
+      // Yapılandırılmamış bir derlemede izin İSTENMEZ: işe yaramayacak bir izin penceresi açılmaz.
+      if (!(await nativePushAvailable())) return false;
       try {
         const permission = await PushNotifications.requestPermissions();
         if (permission.receive !== 'granted') {
           console.warn('[Bridge Mobile] Push izni verilmedi');
           return false;
         }
-        await PushNotifications.register();
-        return true;
+        return await registerIfAvailable();
       } catch (err) {
         console.error('[Bridge Mobile] Push etkinlestirilemedi:', err);
         return false;
       }
     },
-    async status(): Promise<'granted' | 'denied' | 'prompt' | 'unknown'> {
+    async status(): Promise<'granted' | 'denied' | 'prompt' | 'unknown' | 'unavailable'> {
       if (!PushNotifications) return 'unknown';
+      if (!(await nativePushAvailable())) return 'unavailable';
       try {
         const current = await PushNotifications.checkPermissions();
         const value = current.receive;
@@ -391,22 +468,37 @@ if (typeof Capacitor === 'undefined') {
   }
 
   // ── DEEP LINK ─────────────────────────────────────────────────────────────
+  // P4: `auth:callback` (bridge://auth/callback?token=…) KALDIRILDI. Herhangi bir uygulama veya
+  // sayfa `bridge://` açabilir; bağlantıdan jeton kabul etmek, kurbanı saldırganın hesabına
+  // sokmanın (oturum sabitleme) kapısıydı. Tüketen kod yoktu; kapı açık bırakılmaz.
   type DeepLinkPayload =
     | { type: 'navigate:channel';  channelId: string; serverId?: string }
     | { type: 'navigate:dm';       userId: string }
+    | { type: 'navigate:gdm';      groupId: string }
     | { type: 'navigate:profile';  userId: string }
     | { type: 'navigate:server';   serverId: string }
     | { type: 'navigate:invite';   code: string }
     | { type: 'navigate:activity'; channelId: string; activityId: string }
-    | { type: 'navigate:settings'; tab: string }
-    | { type: 'auth:callback';     token: string | null };
+    | { type: 'navigate:settings'; tab: string };
+
+  // Soğuk açılışta (ve bildirim dokunuşunda) bağlantı, uygulama paketi yüklenmeden ÖNCE gelebilir.
+  // Her bağlantı `window.__bridgePendingDeepLinks` kuyruğuna da bırakılır; uygulama hazır olunca
+  // kuyruğu boşaltır (native-deeplink.ts). Olay yalnızca "kuyruğa bak" sinyalidir.
+  function emitDeepLink(payload: DeepLinkPayload): void {
+    const w = window as Window & { __bridgePendingDeepLinks?: DeepLinkPayload[] };
+    (w.__bridgePendingDeepLinks ??= []).push(payload);
+    window.dispatchEvent(new CustomEvent('bridge:deeplink', { detail: payload }));
+  }
 
   function handleDeepLink(url: string): void {
     if (!url) return;
     let parsed: URL;
     try { parsed = new URL(url); } catch (_) { return; }
 
-    const isCustomScheme = parsed.protocol === 'bridge:';
+    // P4 (MEASURED, iOS simulator I06): `bridge` is declared by Apple's Watch app (com.apple.Bridge);
+    // iOS resolves bridge:// to it and the link never reaches Bridge. `com.bridge.app://` is the
+    // app's own scheme on iOS and Android; `bridge://` keeps working where the OS lets it.
+    const isCustomScheme = parsed.protocol === 'com.bridge.app:' || parsed.protocol === 'bridge:';
     const rawPath = isCustomScheme
       ? (parsed.hostname + parsed.pathname).replace(/^\/+/, '')
       : parsed.pathname.replace(/^\/+/, '');
@@ -426,13 +518,6 @@ if (typeof Capacitor === 'undefined') {
         case 'invite':   return { type: 'navigate:invite',   code: rest[0] };
         case 'activity': return { type: 'navigate:activity', channelId: rest[0], activityId: rest[1] };
         case 'settings': return { type: 'navigate:settings', tab: rest[0] ?? 'account' };
-        case 'auth':
-          if (rest[0] === 'callback') {
-            const idx = url.indexOf('?');
-            const qs  = idx !== -1 ? url.slice(idx + 1) : '';
-            return { type: 'auth:callback', token: new URLSearchParams(qs).get('token') };
-          }
-          return null;
         default:
           console.warn('[Bridge Mobile] Bilinmeyen deep link:', section, '| URL:', url);
           return null;
@@ -441,8 +526,8 @@ if (typeof Capacitor === 'undefined') {
 
     if (navPayload) {
       void bridgeHaptic.light();
-      window.dispatchEvent(new CustomEvent('bridge:deeplink', { detail: navPayload }));
-      console.debug('[Bridge Mobile] Deep link dispatched:', navPayload);
+      emitDeepLink(navPayload);
+      console.debug('[Bridge Mobile] Deep link dispatched:', navPayload.type);
     }
   }
 

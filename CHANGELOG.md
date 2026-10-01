@@ -1,3 +1,55 @@
+## [Unreleased] — 2026-10-01 — P4: mobile / native maturity
+
+The Android app is now built the documented way in CI and driven on an Android 14 emulator through
+its real WebView, lifecycle, permission sheets, input and a controllable network path; the iOS app
+is built and launched on a simulator. Every result carries its evidence category (AUTOMATED /
+EMULATOR, AUTOMATED / SIMULATOR, unit/integration); **no physical device, real mobile network,
+Firebase project or APNs key was available**, so device push delivery, audio routing and radio
+handover are listed as EXTERNAL / UNVERIFIED, never as passing. Evidence and the defect log:
+`docs/P4_MOBILE_NATIVE.md`.
+
+### Security
+- **Logging out did not end the session.** The refresh cookie is scoped to `/api/refresh`; the
+  client posted to `/api/logout`, whose redirect was never followed, so the refresh token kept
+  working (real Chromium: `/api/refresh` 200 after logout). Logout now revokes it; Settings has a
+  visible Log out and a two-step Log out on all devices.
+- **Push delivery outlived the session.** Logout, logout-all and password change now remove this
+  installation's (or all) native device tokens and Web Push subscriptions; a token registered by a
+  second account on the same phone moves to that account instead of failing on the database's
+  unique constraint.
+- **`bridge://auth/callback?token=…` could hand the app a session from any link.** Removed.
+
+### Fixed
+- **Deep links and notification taps did nothing** in the native app (warm and cold). They now open
+  the channel, server, invite, DM or group DM — only through the server's permission-checked
+  lookups; a cold-start link waits for the server and channel lists instead of reading them empty.
+- **Granting notifications crashed an Android build without Firebase config** (the self-hosted
+  default) at launch, and signing out would have crashed it too; push now reports "unavailable"
+  there.
+- **Native push registration could never succeed** (relative URL, no CSRF header); the native app
+  can now turn push on from Settings, and DMs and group DMs reach phones whose app is not connected.
+- **Pushes used an icon and a notification channel the app did not have**; they now use the app's
+  icon and a "Bridge" channel.
+- **An iOS app built the documented way had no microphone usage description** (iOS terminates such
+  an app on first microphone use), no `bridge://` scheme and version 1.0; the curated iOS layer is
+  now applied.
+- **Denying the microphone was reported as "No microphone found"** on the SFU voice path.
+- **`bridge://` links could never open Bridge on an iPhone**: Apple's Watch app declares the
+  `bridge` scheme and iOS hands such links to it (measured on the simulator). The apps now own
+  `com.bridge.app://` on iOS and Android; `bridge://` keeps working where the OS allows it.
+- **On notched and edge-to-edge phones the app drew under the system bars**: the channel header's
+  search and menu buttons sat under the status bar, and in landscape the composer sat in the
+  home-indicator band. In landscape, Settings opened above the screen with its close button out
+  of reach, even without a notch.
+- A push received while the app was visible no longer shows a second, system notification.
+
+### CI
+- `Mobile Android`: debug APK through `setup.js → cap add android → overlay → cap sync → Gradle`,
+  then emulator journeys (launch, background, process death, offline/online, DM, back key, deep
+  links, microphone/camera permission sheets, voice, push channel, file picker upload, keyboard,
+  rotation, memory, long channel). `Mobile iOS`: `xcodebuild` for the simulator, cold launch,
+  WKWebView bridge readiness, deep-link dispatch.
+
 ## [Unreleased] — 2026-09-30 — P3: daily-use, DM, search and media UX
 
 Baseline on `main 822150d` with every locally runnable Playwright project (chromium 495 passed /

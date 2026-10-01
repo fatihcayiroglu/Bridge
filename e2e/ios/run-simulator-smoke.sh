@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# e2e/ios/run-simulator-smoke.sh — P4 iOS SIMULATOR SMOKE (AUTOMATED / SIMULATOR evidence)
+#
+# Runs on a macOS runner after `xcodebuild` produced the Debug simulator .app. It installs and
+# cold-launches the real app on an iOS simulator and records PASS / FAIL / MEASURED results.
+# It is NOT device evidence: no real radio, no APNs delivery, no microphone/camera hardware. The
+# WKWebView content is not driven (no WebDriver for it here); what is asserted is what the OS and
+# the app's own console can prove.
+set -uo pipefail
+
+OUT="${IOS_EVIDENCE_DIR:-e2e/ios/results}"
+limit() { local secs=$1; shift; perl -e 'alarm shift; exec @ARGV' "$secs" "$@"; }
+step() { echo "[ios-smoke $(date -u +%H:%M:%S)] $*"; }
+pick_simulator() {
+  limit 120 xcrun simctl list devices available -j | python3 -c '
+import json,sys
+d=json.load(sys.stdin)["devices"]
+cands=[(rt,x) for rt,xs in d.items() if "iOS" in rt for x in xs if x["name"].startswith("iPhone")]
+cands.sort(key=lambda c: c[0])
+print(cands[-1][1]["udid"] if cands else "")'
+}
+# A fresh simulator on the CI runner needs minutes after boot before an app launches promptly
+# (measured: the app process started ~7 min after `simctl launch`). The workflow boots it at the
+# start of the job with --boot-only, so it warms up while dependencies install and Xcode builds.
+if [ "${1:-}" = "--boot-only" ]; then
+  udid=$(pick_simulator)
+  step "early boot: $udid"
+  xcrun simctl boot "$udid" 2>/dev/null || true
+  xcrun simctl bootstatus "$udid" -b >/dev/null 2>&1 || true
+  step "early boot finished"
+  exit 0
+fi
+# (Opening Simulator.app was tried — run on a1ca547: the app still reported isActive:false, and on
+# the next run `simctl install` took > 240 s on the GPU-less runner. It is not opened.)
+APP="${IOS_APP_PATH:?IOS_APP_PATH is required}"
+BUNDLE_ID="${IOS_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" 2>/dev/null || echo com.bridge.app)}"
+mkdir -p "$OUT"
+RESULTS="$OUT/ios-evidence.txt"
+: > "$RESULTS"
+fails=0
+# Every simulator command gets a hard time limit (macOS has no coreutils `timeout`), and progress is
+# timestamped (limit/step above), so a hang shows WHERE it happened instead of eating the timeout.
+record() { # status id title detail
+  printf '%-8s %-5s %s\n          ↳ %s\n' "$1" "$2" "$3" "$4" | tee -a "$RESULTS"
+  [ "$1" = "FAIL" ] && fails=$((fails + 1))
+  return 0
+}
+
+# ── I01: the BUILT bundle carries the privacy strings, scheme and version ────────────────────
+info="$APP/Info.plist"
+mic=$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$info" 2>/dev/null || true)
+cam=$(/usr/libexec/PlistBuddy -c 'Print :NSCameraUsageDescription' "$info" 2>/dev/null || true)
+schemes=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes' "$info" 2>/dev/null | tr -d ' ' | grep -v -E '^(Array\{|\})$' | tr '\n' ',' || true)
+scheme=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$info" 2>/dev/null || true)
+version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info" 2>/dev/null || true)
+if [ -n "$mic" ] && [ -n "$cam" ] && [ "$scheme" = "com.bridge.app" ]; then
+  record PASS I01 "built app declares microphone/camera usage and its own com.bridge.app:// scheme" "version=$version schemes=$schemes"
+else
+  record FAIL I01 "built app declares microphone/camera usage and its own com.bridge.app:// scheme" "mic='${mic}' cam='${cam}' schemes='${schemes}' version='${version}'"
+fi
+
+# ── Simulator ───────────────────────────────────────────────────────────────────────────────
+step "selecting a simulator"
+UDID=$(pick_simulator)
+if [ -z "$UDID" ]; then record FAIL I00 "an iPhone simulator is available" "none found"; exit 1; fi
+DEVICE=$(limit 60 xcrun simctl list devices | grep "$UDID" | head -1 | sed 's/^ *//')
+step "simulator: $DEVICE"
+limit 240 xcrun simctl boot "$UDID" 2>/dev/null || true
+step "waiting for boot"
+if ! limit 480 xcrun simctl bootstatus "$UDID" -b >/dev/null; then
+  record FAIL I00 "the simulator boots" "bootstatus did not finish within 480 s ($DEVICE)"
+  exit 1
+fi
+step "installing the app"
+if ! limit 600 xcrun simctl install "$UDID" "$APP"; then
+  record FAIL I00 "the app installs on the simulator" "simctl install did not finish within 600 s"
+  exit 1
+fi
+
+# ── I02 / I03: cold launch survives and the native bridge comes up in the WebView ────────────
+# The container path proves the install registered with the simulator (LaunchServices).
+container=$(limit 60 xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" 2>&1 || true)
+step "app container: ${container}"
+start=$(date +%s)
+# The app's stdout/stderr go straight to files, unbuffered. (Relayed through `--console-pty`,
+# Capacitor's console lines arrived minutes late or not at all before the relay was stopped —
+# Swift `print` is block-buffered when stdout is not a terminal; Xcode sets NSUnbufferedIO=YES for
+# the same reason. SIMCTL_CHILD_* is passed into the app's environment.)
+CONSOLE="$(pwd)/$OUT/console.log"
+CONSOLE_ERR="$(pwd)/$OUT/console.err.log"
+: > "$CONSOLE"; : > "$CONSOLE_ERR"
+step "launching $BUNDLE_ID (stdout/stderr → files, NSUnbufferedIO)"
+# `simctl launch` returns once the launch has COMPLETED; killing it early (a 300 s limit, run on
+# e152d8f) left the app half-launched (`isActive:false`) and a later URL undelivered. It runs in
+# the background, bounded only by the step timeout, and the link is opened after it returns.
+LAUNCH_OUT="$(pwd)/$OUT/launch.out"
+( SIMCTL_CHILD_NSUnbufferedIO=YES xcrun simctl launch --terminate-running-process \
+    --stdout="$CONSOLE" --stderr="$CONSOLE_ERR" "$UDID" "$BUNDLE_ID" > "$LAUNCH_OUT" 2>&1 ) &
+LAUNCHER=$!
+console() { cat "$CONSOLE" "$CONSOLE_ERR" 2>/dev/null; }
+ready=0; launched=0; ready_after=""; launch_after=""; OSLOG=""
+for _ in $(seq 1 450); do
+  if [ "$ready" = 0 ] && console | grep -q "Capacitor entegrasyonu hazır — ios"; then ready=1; ready_after=$(( $(date +%s) - start )); fi
+  if [ "$launched" = 0 ] && ! kill -0 "$LAUNCHER" 2>/dev/null; then launched=1; launch_after=$(( $(date +%s) - start )); fi
+  [ "$ready" = 1 ] && [ "$launched" = 1 ] && break
+  sleep 2
+done
+launch_out=$(cat "$LAUNCH_OUT" 2>/dev/null)
+launched_pid=$(printf '%s\n' "$launch_out" | sed -n "s/^${BUNDLE_ID}: \([0-9][0-9]*\).*/\1/p" | head -1)
+step "launch completed=${launched} after ${launch_after:-?} s (${launch_out}); bridge ready=${ready} after ${ready_after:-?} s"
+sleep 3
+# The client asks App.getState() at boot; the answer is in the console ("TO JS {"isActive":…}").
+app_state=$(console | grep -o '"isActive":[a-z]*' | tail -1)
+limit 60 xcrun simctl io "$UDID" screenshot "$OUT/cold-launch.png" >/dev/null 2>&1 || true
+# The OS's own view: launchctl lists `<pid> <status> UIKitApplication:<bundle>[…]` for a running app.
+os_pid=$(limit 60 xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | awk -v b="UIKitApplication:$BUNDLE_ID" 'index($3, b) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }')
+alive=$([ -n "$os_pid" ] && echo 1 || echo 0)
+[ -z "$launched_pid" ] && launched_pid="$os_pid"
+if [ "$alive" -ge 1 ]; then
+  record PASS I02 "cold launch: the app process is alive after launch" "device=$DEVICE pid=$os_pid (launchctl)"
+else
+  record FAIL I02 "cold launch: the app process is alive after launch" "launchctl has no running $BUNDLE_ID; launch: ${launch_out}; console: $(console | tail -5 | tr '\n' ' ' | cut -c1-400)"
+fi
+if [ "$ready" = 1 ]; then
+  record PASS I03 "the web app and native bridge load inside WKWebView" "ready log ${ready_after} s after the launch command (launch completed after ${launch_after:-?} s; app state ${app_state:-unknown})"
+else
+  record FAIL I03 "the web app and native bridge load inside WKWebView" "$(console | grep -E '\[(log|error|warn)\]|⚡️' | tail -8 | tr '\n' ' ' | cut -c1-600)"
+fi
+
+# ── I04: a com.bridge.app:// link reaches the running app ────────────────────────────────────
+if [ -n "$launched_pid" ] && [ "$launched" = 1 ]; then
+  # The OS's own record of the hand-off (FrontBoard/SpringBoard and the app process), so a missing
+  # dispatch can be placed: URL never routed, routed but not delivered, or delivered but not to JS.
+  OSLOG="$(pwd)/$OUT/oslog.txt"
+  ( xcrun simctl spawn "$UDID" log stream --style compact --level debug \
+      --predicate 'process == "App" OR eventMessage CONTAINS[c] "com.bridge.app" OR eventMessage CONTAINS[c] "openURL"' > "$OSLOG" 2>&1 ) &
+  LOGGER=$!
+  sleep 3
+  step "opening com.bridge.app://channel/p4-ios-smoke-channel"
+  limit 120 xcrun simctl openurl "$UDID" "com.bridge.app://channel/p4-ios-smoke-channel" 2>&1 | tail -3 || true
+  for attempt in 1 2; do
+    for _ in $(seq 1 15); do
+      console | grep -q "Deep link dispatched: navigate:channel" && break 2
+      sleep 2
+    done
+    [ "$attempt" = 1 ] && { step "second openurl"; limit 120 xcrun simctl openurl "$UDID" "com.bridge.app://channel/p4-ios-smoke-channel-2" 2>&1 | tail -3 || true; }
+  done
+  kill "$LOGGER" 2>/dev/null || true
+  step "OS log lines about the URL hand-off"
+  grep -i -E "Opening URL|open URL with scheme|systemModalAlert|Deactivation reason|application:open" "$OSLOG" | tail -30 | cut -c1-260 || true
+fi
+# I04 — what iOS itself decides: LaunchServices routes the scheme to Bridge (not to another app).
+routed=$(grep -E "Opening URL \(com\.bridge\.app://[^)]*\) with com\.bridge\.app|requests to open URL with scheme com\.bridge\.app" "${OSLOG:-/dev/null}" 2>/dev/null | head -1 | cut -c1-200)
+if [ -n "$routed" ]; then
+  record PASS I04 "iOS routes com.bridge.app:// links to Bridge (LaunchServices)" "$routed"
+else
+  record FAIL I04 "iOS routes com.bridge.app:// links to Bridge (LaunchServices)" "no LaunchServices routing line for com.bridge.app in the OS log"
+fi
+# I07 — the link inside the running app. iOS asks the user to confirm ("Open in “Bridge”?") before
+# handing a custom-scheme URL from another process to an app; measured on f829c17/52a59db as the
+# app's `deactivationReasons = systemModalAlert` right after openurl. A headless simctl run cannot
+# tap that alert, so without the dispatch line this is UNVERIFIED (never PASS) — and a FAIL if no
+# such alert was shown. The bridge's handling of the URL is covered by mobile/tests/deep-link-scheme
+# and the same JS path on the Android emulator (DL04).
+if console | grep -q "Deep link dispatched: navigate:channel"; then
+  record PASS I07 "com.bridge.app://channel/<id> is dispatched inside the running app" "bridge dispatch line in the app console"
+elif grep -q "systemModalAlert" "${OSLOG:-/dev/null}" 2>/dev/null; then
+  record UNVERIFIED I07 "com.bridge.app://channel/<id> is dispatched inside the running app" "iOS showed its open-confirmation alert (systemModalAlert); a headless run cannot accept it — needs a device or UI automation"
+else
+  record FAIL I07 "com.bridge.app://channel/<id> is dispatched inside the running app" "no dispatch and no confirmation alert; $(console | grep -i -E 'deep|appUrlOpen' | tail -3 | tr '\n' ' ' | cut -c1-300)"
+fi
+limit 60 xcrun simctl io "$UDID" screenshot "$OUT/after-deeplink.png" >/dev/null 2>&1 || true
+record MEASURED I05 "launch command → WKWebView bridge ready (simulator on a CI runner)" "${ready_after:-not ready} s; launch completed after ${launch_after:-—} s"
+
+# Diagnostics in the job log itself (artifacts are not always reachable from where evidence is read).
+step "console tail"
+console | tail -n 60 | cut -c1-300 || true
+crash=$(ls -t "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep -E '^App[-_.]' | head -1)
+if [ -n "$crash" ]; then
+  step "crash report: $crash"
+  head -c 4000 "$HOME/Library/Logs/DiagnosticReports/$crash" || true
+  echo
+fi
+
+limit 60 xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+
+# ── I06 (diagnostic, MEASURED): who may own `bridge://` on iOS? ──────────────────────────────
+# Run AFTER the evidence above, on a separate install, so I01-I05 describe the real build.
+# Every installed app — system apps included — whose Info.plist claims the scheme, and what the OS
+# does with a bridge:// link. (Run 36821042911: com.apple.Bridge claims it; openurl → -10814 while a
+# unique control scheme on the same build opened — the reason for com.bridge.app://.)
+step "apps claiming the bridge scheme"
+claimants=$(limit 60 xcrun simctl listapps "$UDID" 2>/dev/null | plutil -convert json -o - - 2>/dev/null | python3 -c '
+import json, os, plistlib, sys
+try:
+    apps = json.load(sys.stdin)
+except Exception as e:
+    print("listapps unreadable: %s" % e); sys.exit(0)
+hits = []
+for bid, app in apps.items():
+    path = app.get("Path") or ""
+    try:
+        info = plistlib.load(open(os.path.join(path, "Info.plist"), "rb"))
+    except Exception:
+        continue
+    schemes = [s for t in info.get("CFBundleURLTypes", []) for s in t.get("CFBundleURLSchemes", [])]
+    if any(str(s).lower() == "bridge" for s in schemes):
+        hits.append("%s %s" % (bid, schemes))
+print("; ".join(hits) if hits else "none")' 2>&1 | tail -1)
+step "claimants: ${claimants}"
+bridge_open=$(limit 120 xcrun simctl openurl "$UDID" "bridge://channel/p4-ios-bridge-scheme" 2>&1 | tail -1)
+record MEASURED I06 "who owns bridge:// on iOS (why the app uses com.bridge.app://)" \
+  "claimants=[${claimants}] bridge_openurl='${bridge_open:-ok}'"
+
+limit 120 xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
+step "done"
+echo "TOTAL fail=$fails unverified=$(grep -c '^UNVERIFIED' "$RESULTS") (UNVERIFIED and MEASURED are never counted as pass; evidence category: AUTOMATED / SIMULATOR — not device evidence)" | tee -a "$RESULTS"
+exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)

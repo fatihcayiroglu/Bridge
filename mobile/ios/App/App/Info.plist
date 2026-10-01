@@ -47,8 +47,11 @@
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
+      <key>CFBundleURLName</key>
+      <string>com.bridge.app</string>
       <key>CFBundleURLSchemes</key>
       <array>
+        <string>com.bridge.app</string>
         <string>bridge</string>
       </array>
     </dict>

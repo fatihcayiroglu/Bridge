@@ -15,6 +15,7 @@
   import PrivacyTab       from './tabs/PrivacyTab.svelte';
   import DevicesTab       from './tabs/DevicesTab.svelte';
   import SecurityTab      from './tabs/SecurityTab.svelte';
+  import { logout }       from '../auth-compat.ts';
 
   // ── Props ─────────────────────────────────────────────────────────────────
   interface Props {
@@ -183,6 +184,17 @@
           </li>
         {/each}
       </ul>
+      <!-- P4: üründe görünür bir çıkış denetimi YOKTU. Geniş düzende kenar
+           çubuğunun altında durur; dar düzende (telefon) Güvenlik sekmesinin
+           "Oturumlar" bölümündedir (sekme şeridine ikinci satır eklenmez). -->
+      <div class="settings-sidebar-footer">
+        <button type="button" class="settings-logout-btn" onclick={() => logout()} data-testid="settings-logout">
+          <span class="tab-icon" aria-hidden="true">
+            <svg viewBox="0 0 20 20"><path d="M8 4.5H5.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1H8M12 13.5 15.5 10 12 6.5M15.5 10H8"/></svg>
+          </span>
+          <span>{t('settings_logout', 'Çıkış yap')}</span>
+        </button>
+      </div>
     </nav>
 
     <!-- ── İçerik paneli ────────────────────────────────────────────────── -->
@@ -292,6 +304,16 @@
     color: var(--brand-ink, var(--brand));
   }
 
+  .settings-sidebar-footer { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+  .settings-logout-btn {
+    width: 100%; display: flex; align-items: center; gap: var(--space-2); min-height: 40px;
+    padding: var(--space-2) var(--space-3); border: none; border-radius: var(--radius-control);
+    background: transparent; color: var(--danger); font-size: var(--type-body);
+    cursor: pointer; text-align: left;
+  }
+  .settings-logout-btn:hover { background: var(--bg-4); }
+  .settings-logout-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
   .tab-icon { display: grid; width: 20px; height: 20px; flex: none; place-items: center; }
   .tab-icon svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
 
@@ -354,6 +376,7 @@
     .settings-brand, .settings-sidebar-title { display: none; }
     .settings-sidebar ul { display: flex; gap: var(--space-1); overflow-x: auto; }
     .settings-sidebar li { flex: none; }
+    .settings-sidebar-footer { display: none; }
     .settings-tab-btn { width: auto; min-height: 38px; white-space: nowrap; }
     .settings-content { padding: var(--space-5); }
     .settings-close { top: max(var(--space-3), env(safe-area-inset-top)); right: max(var(--space-3), env(safe-area-inset-right)); }
@@ -363,6 +386,19 @@
     .settings-overlay { padding: 0; }
     .settings-modal { height: var(--bridge-visual-viewport-height, 100dvh); border: 0; border-radius: 0; }
     .settings-content { padding: var(--space-4) var(--space-4) max(var(--space-4), env(safe-area-inset-bottom)); }
+  }
+
+  /* P4: a landscape phone is wide (this desktop layout) but short (≈390 px). The 480 px minimum
+     height centred the dialog ABOVE the screen: title and close button at y −28, not tappable.
+     Short viewports get the whole safe area instead. */
+  @media (max-height: 560px) {
+    .settings-overlay {
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+      align-items: stretch;
+    }
+    .settings-modal { width: 100%; height: 100%; min-height: 0; border-radius: 0; }
+    /* Seven tabs and the Log out footer are taller than a landscape phone: the list scrolls. */
+    .settings-sidebar { overflow-y: auto; padding-top: var(--space-4); padding-bottom: var(--space-3); }
   }
 
   @media (prefers-reduced-motion: reduce) {

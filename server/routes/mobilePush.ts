@@ -37,7 +37,7 @@ router.post('/push/register', authMiddleware, limits.write(), async (req, res) =
   // bunu gizliyordu; `| undefined` gercegi soyler ve dogrulamayi ZORUNLU kilar.
   const { token, platform } = req.body as Record<string, string | undefined>;
   const userId = req.user.id;
-  if (!token || typeof token !== 'string')
+  if (!token || typeof token !== 'string' || token.length > 4096)
     return res.status(400).json({ error: 'token is required' });
   // `includes` daraltma YAPMAZ; acik karsilastirma hem daraltir hem de
   // "platform hic gonderilmedi" durumunu ayni kapiya sokar.
@@ -70,7 +70,16 @@ router.post('/push/register', authMiddleware, limits.write(), async (req, res) =
  *       404: { description: Token bulunamadı }
  */
 router.delete('/push/unregister', authMiddleware, limits.write(), async (req, res) => {
-  const { platform } = req.body as Record<string, string | undefined>;
+  const { platform, token } = req.body as Record<string, unknown>;
+  // P4: a user can have several installations. The device names its OWN token
+  // and only that row (and only if it is the caller's) is removed.
+  if (token !== undefined) {
+    if (typeof token !== 'string' || !token || token.length > 4096)
+      return res.status(400).json({ error: 'token must be a non-empty string' });
+    await Notifications.removeNativeTokenForUser(req.user.id, token);
+    return res.json({ ok: true });
+  }
+  // Legacy form: every installation of the caller on that platform.
   // Platform gonderilmediginde `removeNativeToken` daha once `undefined` ile
   // cagriliyordu; bu, silme sorgusunu belirsiz birakiyordu. Artik acikca
   // reddedilir.
@@ -156,7 +165,7 @@ router.get('/info', (req, res) => {
 router.post('/push/register-native', authMiddleware, limits.write(), async (req, res) => {
   const { token, platform } = req.body as Record<string, string | undefined>;
   const userId = req.user.id;
-  if (!token || typeof token !== 'string')
+  if (!token || typeof token !== 'string' || token.length > 4096)
     return res.status(400).json({ error: 'token is required' });
   const plat: 'ios' | 'android' | 'unknown' =
     platform === 'ios' || platform === 'android' ? platform : 'unknown';

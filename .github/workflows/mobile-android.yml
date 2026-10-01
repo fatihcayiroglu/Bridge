@@ -1,0 +1,185 @@
+name: Mobile Android
+
+# P4 — the Capacitor Android app built the documented way (setup.js → cap add android →
+# curated overlay → cap sync → Gradle) and exercised on an Android emulator through the real
+# WebView, lifecycle and permission model. Evidence category: AUTOMATED / EMULATOR — it is not
+# physical-device evidence (no real radio, Bluetooth, microphone/camera hardware or FCM delivery).
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'mobile/**'
+      - 'client/**'
+      - 'server/**'
+      - 'e2e/android/**'
+      - 'capacitor.config.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/build.js'
+      - 'scripts/e2e-server.js'
+      - '.github/workflows/mobile-android.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/**'
+      - 'client/**'
+      - 'server/**'
+      - 'e2e/android/**'
+      - 'capacitor.config.js'
+      - '.github/workflows/mobile-android.yml'
+  schedule:
+    - cron: '40 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: mobile-android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: '24.20.0'
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: Android debug APK (documented build path)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Mobile native bridge tests
+        run: npx jest --config jest.mobile.config.js --runInBand
+      - name: Client bundle
+        run: npm run build
+      - name: Packaged web root (www/) for the emulator server address
+        env:
+          # The emulator reaches the host server through `adb reverse tcp:3000 tcp:3000`.
+          BRIDGE_API_URL: http://localhost:3000
+        run: node mobile/scripts/setup.js
+      - name: Generate the Android project and apply the curated native layer
+        run: |
+          npx cap add android
+          node mobile/scripts/apply-android-overlay.js
+          npx cap sync android
+      - name: Gradle assembleDebug
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Merged manifest facts
+        run: |
+          merged=$(find android/app/build/intermediates -name AndroidManifest.xml -path '*merged_manifests*debug*' | head -1)
+          echo "merged manifest: $merged"
+          grep -E 'package=|uses-permission|android:scheme|allowBackup|networkSecurityConfig' "$merged" | sed 's/^ *//' | sort -u
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bridge-android-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
+  emulator:
+    name: Android emulator journeys (AUTOMATED / EMULATOR)
+    runs-on: ubuntu-latest
+    needs: [apk]
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+      JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
+      REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
+      BASE_URL: http://127.0.0.1:3000
+      # Capacitor serves the Android app from https://localhost; Socket.IO's polling fallback
+      # and WebView-originated requests carry that origin. Exact list, no wildcard.
+      E2E_ALLOWED_ORIGINS: http://127.0.0.1:3000,http://localhost:3000,https://localhost
+      # 10.0.2.2 is the emulator's alias for the host loopback, so SFU ICE candidates are
+      # reachable from inside the emulator.
+      MEDIASOUP_LISTEN_IP: 127.0.0.1
+      MEDIASOUP_ANNOUNCED_IP: 10.0.2.2
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: bridge_test
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: test_password
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - uses: actions/download-artifact@v8
+        with:
+          name: bridge-android-debug-apk
+          path: apk
+      - name: Install server and harness dependencies
+        # The server build compiles the bundled plugins with the ROOT toolchain (TypeScript).
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund
+          cd ../e2e && npm ci --no-audit --no-fund
+      - name: Build server
+        run: cd server && npm run build
+      # The server's boot creates only the base schema; migration-added columns (e.g.
+      # dm_conversations."readAt") exist only after the chain has run. Without this step the
+      # first emulator run failed every DM open with a 500 — an environment defect of the job,
+      # not of the product. Same commands as the Quality Gate nightly job.
+      - name: Database schema and migrations
+        run: |
+          cd server
+          npx ts-node --project tsconfig.json db/postgres/index.ts
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts up
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts status
+      - name: Start Bridge server
+        run: |
+          nohup node scripts/e2e-server.js > server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:3000/api/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:3000/api/health
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Emulator journeys
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          APK_PATH: ${{ github.workspace }}/apk/app-debug.apk
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -no-snapshot -camera-back emulated -camera-front emulated
+          script: bash e2e/android/run-emulator-journeys.sh
+      - name: Server log tail
+        if: always()
+        run: tail -n 200 server.log || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: android-emulator-evidence
+          path: |
+            e2e/android/results/
+            server.log
+          retention-days: 30

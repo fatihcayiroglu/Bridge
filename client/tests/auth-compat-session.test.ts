@@ -279,9 +279,12 @@ describe('logout', () => {
   it('sunucuya çıkış isteği GÖNDERİLİR (kimlik bilgisiyle)', () => {
     // Sunucu tarafinda refresh cookie'si iptal edilmezse oturum yasamaya
     // devam ederdi.
+    // P4: cerez `/api/refresh` yoluna kapsamlidir; istek DOGRUDAN kapsamli uca gider.
+    // Eskiden `/api/logout` → 307 idi ve `redirect: 'error'` yuzunden hic izlenmiyordu
+    // (olculdu: cikistan sonra /api/refresh → 200). Bkz. p4-session-logout.test.ts.
     logout();
     const cagri = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
-    expect(String(cagri[0])).toContain('/api/logout');
+    expect(String(cagri[0])).toMatch(/\/api\/refresh\/logout$/);
     expect((cagri[1] as { credentials?: string }).credentials).toBe('include');
     expect((cagri[1] as { redirect?: string }).redirect).toBe('error');
   });

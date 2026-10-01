@@ -436,13 +436,11 @@
   window.nativeAllowPush = function () {
     localStorage.setItem(PUSH_ASKED_KEY, '1');
     nativeDismissPushBanner();
-    // Gerçek izin isteği capacitor-bridge.js → setupPushNotifications() içinde
-    if (typeof Capacitor !== 'undefined' && Capacitor.Plugins?.PushNotifications) {
-      Capacitor.Plugins.PushNotifications.requestPermissions().then(result => {
-        if (result.receive === 'granted') {
-          Capacitor.Plugins.PushNotifications.register();
-        }
-      });
+    // P4: izin ve kayıt YALNIZCA köprünün korumalı yolundan geçer (window.bridgePush.enable):
+    // doğrudan `register()` çağrısı FCM yapılandırılmamış bir Android derlemesinde süreci
+    // öldürüyordu (emülatörde ölçüldü, IllegalStateException: Default FirebaseApp ...).
+    if (window.bridgePush && typeof window.bridgePush.enable === 'function') {
+      void window.bridgePush.enable();
     }
   };
 
@@ -498,22 +496,11 @@
     document.getElementById('native-voice-badge')?.classList.remove('visible');
   });
 
-  // ── CAPACITOR NAVİGASYON YÖNLENDİRMESİ ────────────────────────────
-  // Push bildirim tıklamasından gelen navigasyon olayı
-  window.addEventListener('bridge:navigate', e => {
-    const { channelId, serverId } = e.detail || {};
-    if (!channelId) return;
-    // Bridge'in global selectChannel fonksiyonunu çağır
-    if (typeof selectServer  === 'function' && serverId)  selectServer(serverId);
-    if (typeof selectChannel === 'function' && channelId) selectChannel(channelId);
-  });
-
-  // ── AĞ DURUMU TOAST ENTEGRASYONu ───────────────────────────────────
-  window.addEventListener('bridge:network', e => {
-    if (e.detail.connected && typeof toast === 'function') {
-      toast('Bağlantı yeniden sağlandı ✅', 'success');
-    }
-  });
+  // ── P4: ÖLÜ İŞLEYİCİLER KALDIRILDI ──────────────────────────────────
+  // Burada `bridge:navigate` (bildirim dokunuşu) ve `bridge:network` dinleyicileri vardı; ikisi de
+  // var OLMAYAN global'leri (`selectServer`, `selectChannel`, `toast`) çağırıyordu: bildirime
+  // dokunmak hiçbir yere gitmiyordu (emülatörde ölçüldü). Gezinme artık uygulamanın izin denetimli
+  // yönlendiricisindedir (client/js/core/native-deeplink.ts); bağlantı durumu OfflineBanner'dadır.
 
   // ── iOS SAFE AREA CSS DEĞİŞKENİ GÜNCELLE ───────────────────────────
   // orientationchange sonrası env() değerlerini güncelle
@@ -568,18 +555,9 @@
     _installPrompt = null;
   };
 
-  // ── data-bridge-action dispatch — Sprint 57 ───────────────────────────────
-  // index.html ile tutarlı: onclick yerine data-bridge-action attribute kullanılır
-  document.addEventListener('click', function (e) {
-    const el = e.target.closest('[data-bridge-action]');
-    if (!el) return;
-    const action = el.getAttribute('data-bridge-action');
-    if (!action) return;
-    e.stopPropagation();
-    if (typeof BridgeRegistry !== 'undefined' && BridgeRegistry.has(action)) {
-      BridgeRegistry.call(action, el);
-    }
-  });
+  // P4: `data-bridge-action` için ikinci bir dağıtıcı burada duruyordu ve var OLMAYAN global
+  // `BridgeRegistry`yi çağırıyordu (hiçbir şey yapmıyordu). Kanonik dağıtıcı uygulama paketindedir
+  // (client/js/core/shell-actions.ts).
 
 })();
 </script>

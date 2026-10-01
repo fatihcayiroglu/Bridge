@@ -15,6 +15,7 @@ import { cache } from '../../lib/redisAdapter';
 // soket baglanisinda tum node'u indirebilirdi.
 import logger from '../../lib/logger';
 import { evaluateDmAccess, isDmBlocked } from '../../lib/dmAccessPolicy';
+import { deliverDmPushBatched } from '../../lib/dmPush';
 import { isolateSocketHandler } from '../handlerIsolation';
 import { envSafeInt } from '../../lib/envNumbers';
 import { dmCallStore, type ActiveDmCall } from './dm-call-store';
@@ -426,6 +427,12 @@ function registerDmHandlers(socket: HandlerSocket, io: HandlerServer, user: { _i
     const { clientNonce: _privateNonce, ...publicMsg } = msg;
     emitToUser(io, toUserId, 'dm:message', publicMsg);
     io.to(`user:${toUserId}`).emit('inbox:changed', { reason: 'dm' });
+    // P4: a phone that is not connected learns about the DM through push (lib/dmPush.ts).
+    // Access was decided above (evaluateDmAccess); this never fails the delivered message.
+    deliverDmPushBatched(toUserId, {
+      userId: user._id, displayName: user.displayName, username: user.username,
+      content: String(msg.content ?? ''), e2e: isE2E,
+    }, { kind: 'dm', dmId, fromUserId: user._id });
   }));
 
   // Faz 10 — OKUNDU BİLDİRİMİ. İstemci bunu zaten yayıyordu; sunucu tarafı
@@ -589,6 +596,21 @@ function registerGroupDmHandlers(socket: HandlerSocket, io: HandlerServer, user:
     const { clientNonce: _privateNonce, ...publicMsg } = msg;
     socket.to(`gdm:${groupId}`).emit('gdm:message', publicMsg);
     socket.to(`gdm:${groupId}`).emit('inbox:changed', { reason: 'gdm' });
+    // P4: members who are not connected learn about it through push. Recipients are the
+    // CURRENT members at send time (a removed member receives nothing).
+    try {
+      const [members, group] = await Promise.all([GroupDms.findMembers(groupId), GroupDms.findById(groupId)]);
+      const groupName = typeof (group as { name?: unknown } | null)?.name === 'string' ? (group as { name: string }).name : undefined;
+      for (const member of (members ?? []) as Array<{ userId?: unknown }>) {
+        const recipient = typeof member.userId === 'string' ? member.userId : '';
+        if (!recipient || recipient === user._id) continue;
+        deliverDmPushBatched(recipient, {
+          userId: user._id, displayName: user.displayName, username: user.username, content: String(msg.content ?? ''),
+        }, { kind: 'gdm', groupId, ...(groupName ? { groupName } : {}) });
+      }
+    } catch (err) {
+      logger.warn({ err: (err as Error)?.message, groupId, event: 'push.gdm.recipients_failed' }, 'Group DM push recipients could not be read');
+    }
   }));
 
   socket.on('gdm:read', isolateSocketHandler(socket, 'gdm:read', async (payload) => {

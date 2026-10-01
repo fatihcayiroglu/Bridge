@@ -197,6 +197,9 @@
     const seq = ++requestSeq;
     const switching = targetServerId !== serverId;
     serverId = targetServerId;
+    // Set before the first await: a navigation arriving while the list is in flight waits for it.
+    isLoading = true;
+    loadError = '';
 
     if (switching) {
       // Sunucu değişti: önceki sunucunun listesi bir an bile görünmemeli.
@@ -207,9 +210,6 @@
       await renderView();
 
     }
-
-    isLoading = true;
-    loadError = '';
 
     try {
       // Faz 4: apiFetch → 401'de access token'ı yeniler ve isteği bir kez tekrarlar.
@@ -468,6 +468,27 @@
     const target = channels.find(c => c._id === channelId);
     if (!target) {
       const targetServerId = nonEmptyString(targetServer?._id) ? targetServer._id : null;
+      // P4 (MEASURED, Android 14 emulator, cold `bridge://channel/<id>`): the app had already
+      // selected the target server and its channel list was still in flight. The empty list
+      // was read as "no such channel" → "not available" toast, then the first text channel was
+      // auto-selected. The intent now waits for that authorized list and is decided there.
+      if (isLoading && serverId && (targetServerId ?? serverId) === serverId) {
+        if (pendingNavigation) finishPendingNavigation(pendingNavigation, false);
+        return new Promise<boolean>(resolve => {
+          const intent: PendingNavigation = {
+            serverId: serverId as string,
+            channelId,
+            messageId,
+            resolve,
+            timeoutId: setTimeout(() => {
+              if (pendingNavigation !== intent) return;
+              finishPendingNavigation(intent, false);
+              BridgeRegistry.call('toast', t("gdm_gone", "Bu konuşma artık kullanılamıyor."), 'warning');
+            }, 10_000),
+          };
+          pendingNavigation = intent;
+        });
+      }
       if (targetServerId && targetServerId !== serverId) {
         if (!BridgeRegistry.has('selectServer')) return false;
         if (pendingNavigation) finishPendingNavigation(pendingNavigation, false);

@@ -23,11 +23,14 @@
         <category android:name="android.intent.category.LAUNCHER" />
       </intent-filter>
 
-      <!-- Bridge deep link -->
-      <intent-filter android:autoVerify="true">
+      <!-- Bridge deep link. `com.bridge.app://` is the scheme the app can own on every platform
+           (on iOS `bridge://` belongs to Apple's Watch app — P4 I06); `bridge://` is kept for
+           existing links. -->
+      <intent-filter>
         <action android:name="android.intent.action.VIEW" />
         <category android:name="android.intent.category.DEFAULT" />
         <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="com.bridge.app" />
         <data android:scheme="bridge" />
       </intent-filter>
 
@@ -52,6 +55,9 @@
       android:resource="@drawable/ic_notification" />
     <meta-data android:name="com.google.firebase.messaging.default_notification_color"
       android:resource="@color/bridge_blue" />
+    <!-- P4: the channel the bridge creates at launch (mobile/capacitor-bridge.ts) -->
+    <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id"
+      android:value="bridge_default" />
   </application>
 
   <uses-permission android:name="android.permission.INTERNET" />

@@ -33,8 +33,8 @@ function generateApKeyPair() {
   }
 }
 
-import { Users, Members } from '../db/repositories';
-import { makeToken, makeRefreshToken, rotateRefreshToken, revokeRefreshToken, revokeAllRefreshTokens, authMiddleware, _invalidateTokenCache, } from '../middleware/auth';
+import { Users, Members, Notifications } from '../db/repositories';
+import { makeToken, makeRefreshToken, rotateRefreshToken, revokeRefreshSession, revokeAllRefreshTokens, authMiddleware, _invalidateTokenCache, } from '../middleware/auth';
 import type { RotateResultOrError } from '../middleware/auth';
 import { limits } from '../middleware/rateLimit';
 import captcha from '../lib/captcha';
@@ -385,13 +385,57 @@ router.post('/refresh', limits.refresh(), async (req: import("express").Request,
  *     responses:
  *       200: { description: Çıkış başarılı }
  */
+// ════════════════════════════════════════════════════════════════════════════
+// P4 — PUSH DELIVERY ENDS WITH THE SESSION
+// ════════════════════════════════════════════════════════════════════════════
+// Push targets (native device tokens, Web Push subscriptions) are not tied to a
+// session. Before P4 nothing removed them on logout, logout-all or a password
+// change: a signed-out phone — or one that was lost and "logged out
+// everywhere" — kept showing the account's DM and mention previews.
+//
+// Logout: the client names the installation it is leaving (`push.nativeToken`,
+// `push.webEndpoint`). Removal is scoped to the refresh session's OWN user, so
+// a request cannot delete another account's targets. Logout-all and password
+// change remove every target of the account; devices that stay signed in
+// re-register on their next start.
+const PUSH_ID_MAX = 4096;
+
+function logoutPushTargets(body: unknown): { nativeToken?: string; webEndpoint?: string } {
+  const push = (body as { push?: unknown } | undefined)?.push;
+  if (!push || typeof push !== 'object') return {};
+  const { nativeToken, webEndpoint } = push as { nativeToken?: unknown; webEndpoint?: unknown };
+  return {
+    ...(typeof nativeToken === 'string' && nativeToken && nativeToken.length <= PUSH_ID_MAX ? { nativeToken } : {}),
+    ...(typeof webEndpoint === 'string' && webEndpoint && webEndpoint.length <= PUSH_ID_MAX ? { webEndpoint } : {}),
+  };
+}
+
+async function endPushForInstallation(userId: string, targets: { nativeToken?: string; webEndpoint?: string }): Promise<void> {
+  try {
+    if (targets.nativeToken) await Notifications.removeNativeTokenForUser(userId, targets.nativeToken);
+    if (targets.webEndpoint) await Notifications.removePushSubscriptionWhere({ userId, endpoint: targets.webEndpoint });
+  } catch (err) {
+    logger.error({ err, userId, event: 'auth.logout.push_cleanup_failed' }, 'Logout could not remove this installation\'s push target');
+  }
+}
+
+async function endPushForAccount(userId: string, reason: string): Promise<void> {
+  try {
+    const removed = await Notifications.removeAllPushTargetsForUser(userId);
+    logger.info({ userId, reason, removed, event: 'auth.push_targets.revoked' }, 'Push targets revoked with the sessions');
+  } catch (err) {
+    logger.error({ err, userId, reason, event: 'auth.push_targets.revoke_failed' }, 'Push targets could not be revoked with the sessions');
+  }
+}
+
 async function finishLogout(req: import("express").Request, res: import("express").Response) {
   const refreshToken = req.cookies?.bridge_refresh ?? req.body?.refreshToken;
   if (refreshToken !== undefined && refreshToken !== null && refreshToken !== '') {
     if (typeof refreshToken !== 'string' || refreshToken.length > 512) {
       return res.status(400).json({ error: 'refreshToken invalid' });
     }
-    await revokeRefreshToken(refreshToken);
+    const owner = await revokeRefreshSession(refreshToken);
+    if (owner) await endPushForInstallation(owner, logoutPushTargets(req.body));
   }
   clearRefreshCookie(res);
   clearMediaCookie(res);
@@ -452,6 +496,7 @@ router.post('/change-password', authMiddleware, limits.changePassword(), validat
   await revokeAllRefreshTokens(_u.id);
   _invalidateTokenCache(_u.id);
   await disconnectLiveUserSessions(_u.id, 'password_changed');
+  await endPushForAccount(_u.id, 'password_changed');
 
   const updated = await Users.findById(_u.id);
   if (!updated) return res.status(404).json({ error: 'User not found after update' });
@@ -484,6 +529,7 @@ router.post('/logout-all', authMiddleware, async (req: import("express").Request
   await revokeAllRefreshTokens(_u.id);
   _invalidateTokenCache(_u.id);
   await disconnectLiveUserSessions(_u.id, 'logout_all');
+  await endPushForAccount(_u.id, 'logout_all');
   res.json({ message: 'All sessions logged out.' });
 });
 

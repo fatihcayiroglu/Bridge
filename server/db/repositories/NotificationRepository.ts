@@ -6,6 +6,9 @@ import db from '../loader';
 import { postgresPoolOrTestFallback } from './postgresInvariant';
 import { queryActivityUnreadChannels } from '../queries/activityUnread';
 
+/** Upper bound of push installations per user (phones, tablets, reinstalls). */
+export const NATIVE_TOKENS_PER_USER = 10;
+
 class NotificationRepository {
   private prefStore() {
     if (!db.notificationPrefs) throw new Error('notificationPrefs store unavailable');
@@ -301,17 +304,61 @@ class NotificationRepository {
     return this.nativePushStore().findOne({ userId, platform });
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // P4 — A DEVICE TOKEN IDENTIFIES ONE APP INSTALLATION, NOT A USER
+  // ════════════════════════════════════════════════════════════════════════
+  // Before P4 the row was keyed `npt_<userId>_<platform>` while `token` is
+  // UNIQUE across all users. When a second account signed in on the same phone,
+  // its registration hit the UNIQUE constraint and failed, and the FIRST
+  // account's row stayed: that account's DMs and mentions kept arriving on a
+  // phone now used by someone else (tests/pg-integration/native-push-token-
+  // ownership.pgtest.ts). It also meant one device per platform per user.
+  //
+  // Now: the token belongs to whoever registered it last (the previous owner's
+  // row is removed first), a user may have several devices, and each user keeps
+  // at most NATIVE_TOKENS_PER_USER rows (oldest first out) so abandoned
+  // installations cannot grow the fan-out without bound.
   async upsertNativeToken(userId: string, platform: string, token: string) {
-    const id       = `npt_${userId}_${platform}`;
-    const existing = await this.findNativeToken(userId, platform);
+    const now = Date.now();
+    await this.nativePushStore().remove({ token, userId: { $ne: userId } });
+    const existing = await this.nativePushStore().findOne({ userId, token });
     if (existing) {
-      return this.nativePushStore().update({ _id: existing._id }, { $set: { token, updatedAt: Date.now() } });
+      return this.nativePushStore().update({ _id: existing._id }, { $set: { platform, updatedAt: now } });
     }
-    return this.nativePushStore().insert({ _id: id, userId, platform, token, createdAt: Date.now(), updatedAt: Date.now() });
+    const inserted = await this.nativePushStore().insert({ _id: `npt_${uuidv4()}`, userId, platform, token, createdAt: now, updatedAt: now });
+    const rows = (await this.nativePushStore().find({ userId }) ?? []) as Array<{ _id: string; updatedAt?: number; createdAt?: number }>;
+    if (rows.length > NATIVE_TOKENS_PER_USER) {
+      const stale = rows
+        .sort((a, b) => Number(b.updatedAt ?? b.createdAt ?? 0) - Number(a.updatedAt ?? a.createdAt ?? 0))
+        .slice(NATIVE_TOKENS_PER_USER)
+        .map((row) => row._id);
+      await this.nativePushStore().remove({ _id: { $in: stale } });
+    }
+    return inserted;
   }
 
+  /** Legacy platform-wide removal (every device of that platform). */
   async removeNativeToken(userId: string, platform: string) {
     return this.nativePushStore().remove({ userId, platform });
+  }
+
+  /** Removes one installation's token, only if it belongs to `userId`. */
+  async removeNativeTokenForUser(userId: string, token: string) {
+    return this.nativePushStore().remove({ userId, token });
+  }
+
+  /** Session end for every device (logout-all, password change): no installation keeps receiving. */
+  async removeAllPushTargetsForUser(userId: string) {
+    const native = await this.nativePushStore().remove({ userId });
+    const web = await this.pushStore().remove({ userId });
+    // Legacy FCM rows predate native_push_tokens; the store may be absent in
+    // older deployments and must not block the two canonical removals above.
+    const legacy = db.fcmTokens ? await this.fcmStore().remove({ userId }) : null;
+    return {
+      native: native?.deleted ?? null,
+      web: web?.deleted ?? null,
+      legacy: legacy?.deleted ?? null,
+    };
   }
 
   // ── Federation / ActivityPub gelen kutusu ──────────────────

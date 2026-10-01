@@ -199,3 +199,26 @@
   html.bridge-keyboard-open .mobile-nav { display: none; }
   html.bridge-keyboard-open .app { padding-bottom: env(safe-area-inset-bottom); }
 }
+
+/* P4 — safe areas on edge-to-edge phones. The packaged app declares viewport-fit=cover; iOS
+   (status bar, notch, Dynamic Island) and Android 15+ edge-to-edge (Capacitor passes the system
+   bar insets through to WebView 140+) therefore draw the page under the system bars. Measured with
+   emulated insets (top 47 px, 390×844): the channel header's search and "more" buttons sat at
+   y 7–39, the first server and member entries at y 34–38 — under the status bar, hidden and not
+   tappable. The bottom was already handled. env() is 0 on desktop and on screens without insets. */
+.app {
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+@media (max-width: 720px) {
+  .server-list,
+  .channel-sidebar,
+  #member-list,
+  .member-list { top: env(safe-area-inset-top); }
+}
+/* A landscape phone gets the wide layout (no bottom navigation): the composer and the user panel
+   sat in the home-indicator band (measured: y 334–345 of 390 with a 21 px bottom inset). */
+@media (min-width: 601px) {
+  .app { padding-bottom: env(safe-area-inset-bottom); }
+}

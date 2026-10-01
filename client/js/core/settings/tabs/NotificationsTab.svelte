@@ -25,6 +25,40 @@
   let pushError = $state('');
   let policy = $state<NotificationDevicePolicy>(loadNotificationDevicePolicy());
 
+  // ── P4 — NATIVE (CAPACITOR) PUSH ──────────────────────────────────────────
+  // In the Android/iOS app the WebView has no Web Push, so this tab showed "unsupported" and
+  // offered NO way to turn notifications on; the only other entry point (a template banner) was
+  // never shown. The native bridge exposes `window.bridgePush`; the OS permission is the source
+  // of truth and is re-read when the user comes back from the phone's Settings.
+  type NativePushState = 'granted' | 'denied' | 'prompt' | 'unknown' | 'unavailable';
+  interface NativePushApi { status(): Promise<NativePushState>; enable(): Promise<boolean> }
+  const nativePush = (globalThis as { bridgePush?: NativePushApi }).bridgePush ?? null;
+  let nativeState = $state<NativePushState | null>(null);
+
+  async function refreshNativePush(): Promise<void> {
+    if (!nativePush) return;
+    try { nativeState = await nativePush.status(); } catch { nativeState = 'unknown'; }
+  }
+
+  async function enableNativePush(): Promise<void> {
+    if (!nativePush || pushBusy) return;
+    pushBusy = true;
+    pushError = '';
+    pushStatus = '';
+    let ok = false;
+    try { ok = await nativePush.enable(); } catch { ok = false; }
+    await refreshNativePush();
+    if (ok) pushStatus = t('ntf_native_on', 'Bu cihazda bildirimler açık.');
+    else if (nativeState === 'denied') pushError = t('ntf_native_denied', 'Bildirimlere izin verilmedi.');
+    else if (nativeState === 'unavailable') pushError = t('ntf_native_unavailable', 'Bu derlemede anlık bildirim yok.');
+    else pushError = t('ntf_native_failed', 'Bildirimler açılamadı. Tekrar dene.');
+    pushBusy = false;
+  }
+
+  function onAppState(event: Event): void {
+    if ((event as CustomEvent<{ active?: boolean }>).detail?.active) void refreshNativePush();
+  }
+
   function api(): ApiFetch | null {
     return BridgeRegistry.get<ApiFetch>('apiFetch') ?? null;
   }
@@ -111,14 +145,39 @@
   }
 
   onMount(() => {
-    void refreshPushState();
+    if (nativePush) void refreshNativePush();
+    else void refreshPushState();
     void syncNotificationDevicePolicy().then(value => { policy = value; });
+    window.addEventListener('bridge:appstate', onAppState);
+    return () => window.removeEventListener('bridge:appstate', onAppState);
   });
 </script>
 
 <section aria-labelledby="notifications-heading">
   <h2 id="notifications-heading" class="section-title">{t('notifications')}</h2>
 
+  {#if nativePush}
+  <div class="settings-card" aria-labelledby="native-push-title" data-testid="native-push-card">
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <span id="native-push-title" class="toggle-title">{t('ntf_native_title', 'Anlık bildirimler (bu cihaz)')}</span>
+        <span class="toggle-desc">{t('ntf_native_desc', 'Bridge kapalıyken veya arka plandayken bu telefona bildirim gönder')}</span>
+      </div>
+      {#if nativeState === 'prompt' || nativeState === 'unknown'}
+        <button class="secondary-btn" type="button" disabled={pushBusy} onclick={() => void enableNativePush()} data-testid="native-push-enable">
+          {t('ntf_native_enable', 'Bildirimleri aç')}
+        </button>
+      {/if}
+    </div>
+    {#if nativeState === 'granted'}
+      <p class="field-note" data-testid="native-push-state">{t('ntf_native_on', 'Bu cihazda bildirimler açık.')}</p>
+    {:else if nativeState === 'denied'}
+      <p class="field-note warning" data-testid="native-push-state">{t('ntf_native_denied', 'Bildirimlere izin verilmedi.')}</p>
+    {:else if nativeState === 'unavailable'}
+      <p class="field-note warning" data-testid="native-push-state">{t('ntf_native_unavailable', 'Bu derlemede anlık bildirim yok.')}</p>
+    {/if}
+  </div>
+  {:else}
   <div class="settings-card" aria-labelledby="web-push-title">
     <div class="toggle-row">
       <div class="toggle-info">
@@ -152,6 +211,7 @@
       </div>
     {/if}
   </div>
+  {/if}
 
   <div class="settings-card" aria-labelledby="device-attention-title">
     <h3 id="device-attention-title">{t("attention_management_device")}</h3>

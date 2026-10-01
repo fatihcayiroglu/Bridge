@@ -2,6 +2,7 @@
 // Server authority: /api/webpush/* (VAPID + caller-scoped subscription storage).
 
 import { t } from '../i18n/index.ts';
+import { rememberWebEndpoint } from '../push-installation.ts';
 export type ApiFetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 export type WebPushReason =
@@ -128,6 +129,7 @@ export async function enableWebPush(api: ApiFetch): Promise<WebPushResult> {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     setServerSyncEnabled(true);
+    rememberWebEndpoint(body.endpoint ?? null);
     return { ok: true };
   } catch {
     if (created) {
@@ -146,7 +148,7 @@ export async function disableWebPush(api: ApiFetch): Promise<WebPushResult> {
   let subscription: PushSubscription | null = null;
   try { subscription = await reg.pushManager.getSubscription(); }
   catch { return { ok: false, reason: 'unsubscribe_failed' }; }
-  if (!subscription) { setServerSyncEnabled(false); return { ok: true }; }
+  if (!subscription) { setServerSyncEnabled(false); rememberWebEndpoint(null); return { ok: true }; }
 
   try {
     const res = await api('/api/webpush/unsubscribe', {
@@ -156,6 +158,7 @@ export async function disableWebPush(api: ApiFetch): Promise<WebPushResult> {
     });
     if (!res.ok) return { ok: false, reason: 'server_unavailable' };
     setServerSyncEnabled(false);
+    rememberWebEndpoint(null);
   } catch {
     return { ok: false, reason: 'server_unavailable' };
   }
@@ -181,3 +184,30 @@ export async function sendTestWebPush(api: ApiFetch): Promise<WebPushResult> {
     return { ok: false, reason: 'server_unavailable' };
   }
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// P4 — A SIGNED-OUT BROWSER STOPS RECEIVING THE ACCOUNT'S PUSHES
+// ════════════════════════════════════════════════════════════════════════════
+// The subscription is browser-scoped, not session-scoped. Before P4 logout left
+// it in place: on a shared computer the next person saw the previous account's
+// DM/mention previews. The server row is removed by the logout request itself
+// (auth-compat sends this endpoint); here the browser subscription is retired so
+// even a missed logout request cannot keep delivery alive.
+let sessionBound = false;
+
+export function bindWebPushToSession(): void {
+  if (sessionBound || typeof document === 'undefined') return;
+  sessionBound = true;
+  document.addEventListener('bridge:auth-logout', () => {
+    setServerSyncEnabled(false);
+    rememberWebEndpoint(null);
+    if (!supported()) return;
+    void registration()
+      .then((reg) => reg?.pushManager.getSubscription() ?? null)
+      .then((subscription) => subscription?.unsubscribe())
+      .catch(() => { /* best effort: the server row is already gone with the logout request */ });
+  });
+}
+
+/** Test hook. */
+export function _resetWebPushSessionBindingForTest(): void { sessionBound = false; }

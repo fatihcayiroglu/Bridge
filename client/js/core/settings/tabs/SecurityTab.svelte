@@ -34,7 +34,7 @@
   import { t } from '../../i18n/reactive.svelte.ts';
   import type { SettingsStore } from '../stores/settingsStore';
   import { apiFetch } from '../../api-fetch.ts';
-import { saveToken } from '../../auth-compat.ts';
+import { logout, saveToken } from '../../auth-compat.ts';
   import { getAPI } from '../../globals.ts';
 
   // `store` kanonik tab sozlesmesidir; bu tab sunucuyla dogrudan konusur.
@@ -247,6 +247,29 @@ import { saveToken } from '../../auth-compat.ts';
     }
   }
 
+  // ── P4 — OTURUMLAR ───────────────────────────────────────────────────────
+  // Üründe HİÇBİR görünür çıkış denetimi yoktu (ölçüldü: kabukta ve altı ayar
+  // sekmesinde sıfır). Telefonda kullanıcı oturumunu kapatamıyordu; sunucu
+  // `logout-all` ucunu destekliyordu ama istemciden erişilemiyordu. Kayıp bir
+  // telefon için "tüm cihazlarda çıkış" iki adımlıdır (yanlışlıkla dokunma).
+  let herYerdeAsama = $state<'kapali' | 'onay' | 'calisiyor'>('kapali');
+  let herYerdeHata  = $state<string | null>(null);
+
+  async function herYerdeCikis(): Promise<void> {
+    if (herYerdeAsama !== 'onay') { herYerdeAsama = 'onay'; herYerdeHata = null; return; }
+    herYerdeAsama = 'calisiyor';
+    try {
+      const res = await apiFetch(`${API}/api/logout-all`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      logout();
+    } catch {
+      herYerdeHata = t('sec_logout_all_failed', 'Diğer cihazlardaki oturumlar kapatılamadı. Tekrar dene.');
+      herYerdeAsama = 'kapali';
+    }
+  }
+
   // ── Yasam dongusu ────────────────────────────────────────────────────────
   const cikisDinleyici = () => { hassasiTemizle(); enabled = false; asama = 'kapali'; };
 
@@ -262,6 +285,25 @@ import { saveToken } from '../../auth-compat.ts';
 </script>
 
 <div class="sec-tab" data-testid="security-tab">
+  <section class="sec-section" data-testid="sec-sessions">
+    <h3>{t('sec_sessions_title', 'Oturumlar')}</h3>
+    <p class="sec-desc">{t('sec_sessions_desc', 'Tüm cihazlarda çıkış, bu hesabın diğer telefon ve tarayıcılardaki oturumlarını da sonlandırır ve oradaki bildirimleri durdurur.')}</p>
+    <div class="sec-row sec-wrap">
+      <button class="sec-btn" onclick={() => logout()} data-testid="sec-logout">
+        {t('settings_logout', 'Çıkış yap')}
+      </button>
+      <button class="sec-btn danger" onclick={herYerdeCikis} disabled={herYerdeAsama === 'calisiyor'} data-testid="sec-logout-all">
+        {herYerdeAsama === 'kapali' ? t('sec_logout_all', 'Tüm cihazlarda çıkış yap') : t('sec_logout_all_confirm', 'Onayla: tüm cihazlarda çıkış yap')}
+      </button>
+      {#if herYerdeAsama === 'onay'}
+        <button class="sec-btn" onclick={() => { herYerdeAsama = 'kapali'; }} data-testid="sec-logout-all-cancel">
+          {t('sec_cancel', 'Vazgeç')}
+        </button>
+      {/if}
+    </div>
+    {#if herYerdeHata}<p class="sec-error" role="alert" data-testid="sec-logout-all-error">{herYerdeHata}</p>{/if}
+  </section>
+
   <section class="sec-section" data-testid="sec-recovery">
     <h3>{t('sec_recovery_title', 'Kurtarma e-postası')}</h3>
     <p class="sec-desc">{t('sec_recovery_desc', 'Şifreni unutursan sıfırlama bağlantısı yalnızca bu adrese, adres doğrulandıktan sonra gönderilir.')}</p>
@@ -420,6 +462,7 @@ import { saveToken } from '../../auth-compat.ts';
     list-style: none; padding: 10px; margin: 0; background: var(--bridge-surface2);
     border-radius: 6px; font-family: monospace; }
   .sec-row { display: flex; gap: 8px; }
+  .sec-wrap { flex-wrap: wrap; }
   .sec-section { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; margin-bottom: 4px;
     border-bottom: 1px solid var(--bridge-surface4); }
   .sec-grow { flex: 1; min-width: 0; }

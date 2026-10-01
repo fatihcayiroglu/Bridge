@@ -8,6 +8,7 @@ import { BridgeRegistry } from './bridge-registry.ts';
 import { t } from './i18n/index.ts';
 import { ApiResponseError, safeApiErrorMessage } from './api-error.ts';
 import { registrationProblem, type RegistrationProblem } from './registration-rules.ts';
+import { pushTargetsForLogout } from './push-installation.ts';
 
 type AuthTab = 'login' | 'register';
 
@@ -470,8 +471,21 @@ export function logout(): void {
   panelSocketLive = null;
 
   beginAuthTransition();
-  void fetch(`${getAPI()}/api/logout`, {
+  // ══════════════════════════════════════════════════════════════════════
+  // P4 — ÇIKIŞ OTURUMU GERÇEKTEN BİTİRİR
+  // ══════════════════════════════════════════════════════════════════════
+  // Yenileme çerezi `/api/refresh` yoluna kapsamlıdır; tarayıcı onu
+  // `/api/logout`a HİÇ göndermez. O uç 307 ile `/api/refresh/logout`a
+  // yönlendirir; ama bu istek `redirect: 'error'` taşıdığı için yönlendirme
+  // izlenmiyordu (servis çalışanı altında 503 "çevrimdışı" dönüyordu).
+  // ÖLÇÜLDÜ (gerçek Chromium): çıkıştan sonra `/api/refresh` → 200 — oturum
+  // yaşıyordu. İstek artık doğrudan kapsamlı uca gider. Gövde, bu kurulumun
+  // push hedeflerini adlandırır; sunucu yalnızca oturumun KENDİ kullanıcısına
+  // ait olanları siler (bkz. server/routes/auth.ts endPushForInstallation).
+  void fetch(`${getAPI()}/api/refresh/logout`, {
     method: 'POST', credentials: 'include', redirect: 'error',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ push: pushTargetsForLogout() }),
   }).catch(() => {});
   clearToken();
 

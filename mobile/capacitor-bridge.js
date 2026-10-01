@@ -1,10 +1,28 @@
 "use strict";
 (() => {
   // mobile/capacitor-bridge.ts
+  var NATIVE_PUSH_CHANNEL_ID = "bridge_default";
   if (typeof Capacitor === "undefined") {
     console.debug("[Bridge Mobile] Capacitor bulunamad\u0131, native mod\xFCl devre d\u0131\u015F\u0131.");
   } else {
-    let handleDeepLink = function(url) {
+    let nativePushAvailable = function() {
+      if (!pushAvailability) {
+        pushAvailability = (async () => {
+          if (Capacitor.getPlatform() !== "android") return true;
+          if (!BridgePushSupport) return false;
+          try {
+            return (await BridgePushSupport.status()).available === true;
+          } catch {
+            return false;
+          }
+        })();
+      }
+      return pushAvailability;
+    }, emitDeepLink = function(payload) {
+      const w = window;
+      (w.__bridgePendingDeepLinks ?? (w.__bridgePendingDeepLinks = [])).push(payload);
+      window.dispatchEvent(new CustomEvent("bridge:deeplink", { detail: payload }));
+    }, handleDeepLink = function(url) {
       if (!url) return;
       let parsed;
       try {
@@ -12,7 +30,7 @@
       } catch (_) {
         return;
       }
-      const isCustomScheme = parsed.protocol === "bridge:";
+      const isCustomScheme = parsed.protocol === "com.bridge.app:" || parsed.protocol === "bridge:";
       const rawPath = isCustomScheme ? (parsed.hostname + parsed.pathname).replace(/^\/+/, "") : parsed.pathname.replace(/^\/+/, "");
       const parts = rawPath.split("/").filter(Boolean);
       const section = parts[0];
@@ -33,13 +51,6 @@
             return { type: "navigate:activity", channelId: rest[0], activityId: rest[1] };
           case "settings":
             return { type: "navigate:settings", tab: rest[0] ?? "account" };
-          case "auth":
-            if (rest[0] === "callback") {
-              const idx = url.indexOf("?");
-              const qs = idx !== -1 ? url.slice(idx + 1) : "";
-              return { type: "auth:callback", token: new URLSearchParams(qs).get("token") };
-            }
-            return null;
           default:
             console.warn("[Bridge Mobile] Bilinmeyen deep link:", section, "| URL:", url);
             return null;
@@ -47,8 +58,8 @@
       })();
       if (navPayload) {
         void bridgeHaptic.light();
-        window.dispatchEvent(new CustomEvent("bridge:deeplink", { detail: navPayload }));
-        console.debug("[Bridge Mobile] Deep link dispatched:", navPayload);
+        emitDeepLink(navPayload);
+        console.debug("[Bridge Mobile] Deep link dispatched:", navPayload.type);
       }
     }, formatPhoto = function(photo) {
       const ext = (photo.format ?? "jpeg").toLowerCase();
@@ -100,8 +111,15 @@
       BiometricAuth,
       Camera,
       Badge,
-      Share
+      Share,
+      BridgePushSupport
     } = Capacitor.Plugins;
+    let pushAvailability = null;
+    async function registerIfAvailable() {
+      if (!PushNotifications || !await nativePushAvailable()) return false;
+      await PushNotifications.register();
+      return true;
+    }
     window.addEventListener("DOMContentLoaded", async () => {
       try {
         await SplashScreen?.hide({ fadeOutDuration: 300 });
@@ -162,43 +180,55 @@
       },
       async clear() {
         await this.set(0);
-        const jwt = localStorage.getItem("bridge_token");
-        if (jwt) {
-          fetch("/api/mobile/push/badge/clear", {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${jwt}` }
-          }).catch(() => {
-          });
-        }
+        window.dispatchEvent(new CustomEvent("bridge:badge-cleared"));
       }
     };
     window.bridgeBadge = bridgeBadge;
     async function attachPushListeners() {
       if (!PushNotifications) return;
-      PushNotifications.addListener("registration", async (token) => {
-        try {
-          const jwt = localStorage.getItem("bridge_token");
-          if (!jwt) return;
-          await fetch("/api/mobile/push/register-native", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${jwt}` },
-            body: JSON.stringify({ token: token.value, platform: Capacitor.getPlatform() })
-          });
-        } catch (err) {
-          console.error("[Bridge Mobile] Token kayd\u0131 ba\u015Far\u0131s\u0131z:", err);
-        }
+      if (Capacitor.getPlatform() === "android") {
+        void PushNotifications.createChannel?.({
+          id: NATIVE_PUSH_CHANNEL_ID,
+          name: "Bridge",
+          description: "Messages, mentions and calls",
+          importance: 4,
+          visibility: 0,
+          vibration: true
+        }).catch(() => {
+        });
+      }
+      PushNotifications.addListener("registration", (token) => {
+        if (!token?.value) return;
+        window.dispatchEvent(new CustomEvent("bridge:native-push-token", {
+          detail: { token: token.value, platform: Capacitor.getPlatform() }
+        }));
+      });
+      PushNotifications.addListener("registrationError", (error) => {
+        console.warn("[Bridge Mobile] Push kayd\u0131 ba\u015Far\u0131s\u0131z:", error?.error ?? error);
+        window.dispatchEvent(new CustomEvent("bridge:native-push-error", { detail: { error: String(error?.error ?? "unknown") } }));
+      });
+      document.addEventListener("bridge:auth-logout", () => {
+        void nativePushAvailable().then((available) => available ? PushNotifications.unregister?.() : void 0).catch(() => {
+        });
+      });
+      document.addEventListener("bridge:auth-success", () => {
+        void PushNotifications.checkPermissions().then((current) => current.receive === "granted" ? registerIfAvailable() : void 0).catch(() => {
+        });
       });
       PushNotifications.addListener("pushNotificationReceived", (notification) => {
+        if (document.visibilityState === "visible") return;
         void showLocalNotification(notification.title ?? "", notification.body ?? "", notification.data ?? {});
         void bridgeBadge.increment();
       });
       PushNotifications.addListener("pushNotificationActionPerformed", (action) => {
-        const data = action.notification.data;
+        const data = action.notification.data ?? {};
         void bridgeBadge.clear();
-        if (data?.channelId) {
-          window.dispatchEvent(new CustomEvent("bridge:navigate", {
-            detail: { channelId: data.channelId, serverId: data.serverId }
-          }));
+        if (data.type === "dm" && data.fromUserId) {
+          emitDeepLink({ type: "navigate:dm", userId: data.fromUserId });
+        } else if (data.type === "gdm" && data.groupId) {
+          emitDeepLink({ type: "navigate:gdm", groupId: data.groupId });
+        } else if (data.channelId) {
+          emitDeepLink({ type: "navigate:channel", channelId: data.channelId, serverId: data.serverId });
         }
       });
     }
@@ -208,7 +238,7 @@
       try {
         const current = await PushNotifications.checkPermissions();
         if (current.receive === "granted") {
-          await PushNotifications.register();
+          if (!await registerIfAvailable()) console.warn("[Bridge Mobile] Push bu derlemede yap\u0131land\u0131r\u0131lmam\u0131\u015F \u2014 kay\u0131t atland\u0131.");
         } else {
           console.debug("[Bridge Mobile] Push izni yok \u2014 SORULMADI (baglam icinde istenecek).");
         }
@@ -219,14 +249,14 @@
     const bridgePush = {
       async enable() {
         if (!PushNotifications) return false;
+        if (!await nativePushAvailable()) return false;
         try {
           const permission = await PushNotifications.requestPermissions();
           if (permission.receive !== "granted") {
             console.warn("[Bridge Mobile] Push izni verilmedi");
             return false;
           }
-          await PushNotifications.register();
-          return true;
+          return await registerIfAvailable();
         } catch (err) {
           console.error("[Bridge Mobile] Push etkinlestirilemedi:", err);
           return false;
@@ -234,6 +264,7 @@
       },
       async status() {
         if (!PushNotifications) return "unknown";
+        if (!await nativePushAvailable()) return "unavailable";
         try {
           const current = await PushNotifications.checkPermissions();
           const value = current.receive;

@@ -47,12 +47,20 @@
   // yenilemeden yalnızca `loadServers` çağırır; istek düşürülürse yeni
   // katılınan sunucu rail'e hiç gelmez (sessiz no-op).
   let pendingReload = false;
+  // P4 (MEASURED, Android 14 emulator + Chromium): a cold-start deep link asked for the list
+  // while the boot load was in flight. The queued request returned at once, the caller read an
+  // EMPTY list and reported the channel as unavailable. A queued caller now waits for the reload
+  // it queued, so `await loadServers()` means "the list reflects the server after my request".
+  let reloadWaiters: Array<() => void> = [];
 
   // ── Sunucu listesi ─────────────────────────────────────────────────────────
   async function loadServers(): Promise<void> {
     const token = readToken();
     if (!token) return; // Oturum yok — bridge:auth-success beklenir.
-    if (isLoading) { pendingReload = true; return; }
+    if (isLoading) {
+      pendingReload = true;
+      return new Promise<void>(resolve => { reloadWaiters.push(resolve); });
+    }
 
     isLoading = true;
     loadError = '';
@@ -79,9 +87,14 @@
       loadError = t('error_generic', 'Bir hata oluştu. Lütfen tekrar dene.');
     } finally {
       isLoading = false;
+      const waiting = reloadWaiters;
+      reloadWaiters = [];
       if (pendingReload) {
         pendingReload = false;
-        void loadServers();   // sıradaki yenileme — sunucu gerçeğine yakınsa
+        // sıradaki yenileme — sunucu gerçeğine yakınsa; sıradakiler onun sonucunu bekler
+        void loadServers().finally(() => { for (const resolve of waiting) resolve(); });
+      } else {
+        for (const resolve of waiting) resolve();
       }
     }
   }
@@ -188,7 +201,8 @@
   document.addEventListener('bridge:auth-logout', onLogout);
 
   // DiscoverPanel.svelte:224 ve discover-svelte.ts:74 zaten bu adı çağırıyor.
-  BridgeRegistry.register('loadServers', () => { void loadServers(); });
+  // Awaitable: deep-link routers wait for the list instead of reading it mid-load.
+  BridgeRegistry.register('loadServers', () => loadServers());
   // Universal Command Palette yalnız salt-okunur bir görünüm alır; seçim
   // hâlâ bu bileşenin `selectServer` kanonik eyleminden geçer.
   BridgeRegistry.register('getAvailableServers', () => servers);
