@@ -54,6 +54,15 @@
     ],
     "rationale": "016 builds a partial index whose predicate references refresh_tokens.used. Dropping that column cascades the index away; re-applying 002 alone cannot recreate an object that belongs to 016. Ordered rollback unwinds 016 first, and 016's own isolated cycle is lossless. (The SMALLINT/BOOLEAN type conflict that previously also appeared here was a real defect and has been FIXED in 002.)"
   },
+  "011_sprint93_boost_vanity_oauth": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "oauth_tokens.fk_oauth_tokens_user and server_boosts.fk_server_boosts_user (user foreign keys added by 077) are lost when 011 drops and recreates the two tables",
+    "dependsOn": [
+      "077_chain_table_user_fks"
+    ],
+    "rationale": "011 CREATES oauth_tokens and server_boosts. 077_chain_table_user_fks later adds their user foreign keys (ON DELETE CASCADE). Rolling 011 back in isolation drops both tables, and 011's own re-up recreates them in their 011 shape - it cannot recreate constraints owned by 077. An ORDERED rollback unwinds 077 first, so the chain converges; 077's own isolated cycle is lossless."
+  },
   "013_sprint95_server_events": {
     "classification": "EXPECTED_DEPENDENCY",
     "kind": "ordered-rollback-dependency",
