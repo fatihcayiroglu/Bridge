@@ -135,6 +135,7 @@ appear in `GET /api/federation/timeline`; direct notes, edits (`Update`) and del
 | H-08 | test/harness | the federation lab's egress check could pass on an empty log | lab hostnames are recorded (tagged) in the lab; `F-EGR-00` requires that traffic as a positive control |
 | H-09 | test/harness | full-suite runs with coverage: 1 failure in 6 runs, `health-schema-readiness` (a P5 batch-1 test, already on `main`) — `not.toMatch(/migration\|schema\|75/i)` matched the body's millisecond `ts` whenever its digits contained "75" | reproduced deterministically by pinning `Date.now()` to `1790873756193`; the check now asserts the exact generic key set and excludes only the clock value; negative control: a body naming `dependency: 'schema'` fails it |
 | E-03 | environment | mid-session the sandbox's `/etc/hosts` was reset; the next lab run reported `F-SETUP` **BLOCKED** (not PASS/FAIL) | entries restored, run repeated; CI adds them in the workflow |
+| H-10 | test/harness | dispatched P2 media lab on `3cc4d65` (run 36906383110): node A exited at boot, `✗ INSTANCE_URL must be https in production`, 66 s into the scenario step; 0 media checks ran (reproduced locally, same message) | the lab runs a production build on a non-loopback plain-http lab address and set `INSTANCE_URL` to it. FED-07 refuses that, as designed: such an address can carry no federated identity, and browsers give it neither the `Secure` session cookie nor microphone/camera without lab-only flags. The lab neither federates nor builds links from `INSTANCE_URL` (invites go through their code), so it no longer sets it; the cluster's loopback default applies. Local `e2e` scenario after the fix: 15 PASS, 0 FAIL. The upgrade consequence for real installs is in `CHANGELOG.md` (upgrade notes) |
 | E-04 | environment/infra | post-merge `Mobile Android` on `3cc4d65` (run 36901117864, attempt 1): the emulator action's `sdkmanager --install emulator` failed with `Error on ZipFile unknown archive` (a bad SDK download), 21 s into the step; the emulator never started and no journey ran | the same tree passed the emulator journeys on the PR head (run 36898708135). One re-run of the failed job (attempt 2); its result is recorded in § Closure record |
 
 ## Self-hosting evidence
@@ -316,7 +317,7 @@ The full lab run is the capstone. In one run it has:
 | 22 | config fail-fast | PASS | SH-CONFIG-*, FED-07 env tests |
 | 23 | upgrade | PASS | SH-UPGRADE-* (20/20) |
 | 24 | backup / restore | PASS | SH-BACKUP-*, SH-COMPOSE-06..11 |
-| 25 | dependencies documented | PASS | `DEPLOYMENT_GUIDE.md`, `docs/AI.md`, `.env.example` |
+| 25 | dependencies documented | PASS | `DEPLOYMENT_GUIDE.md`, `docs/AI.md`, `.env.example`; upgrade notes in `CHANGELOG.md` (P5) |
 | 26 | no Bridge/SaaS infrastructure dependency | PASS | SH-EGRESS-*, F-EGR-00/01, F-AI-14 |
 | 27 | P0–P4 gates green | PENDING | every check on both P5 PR heads green; the dispatch-only P1 (multi-node), P2 (media) and P4 iOS gates and the Android re-run on `main` are still running (§ Closure record) |
 | 28 | final post-merge QG | PASS | `3cc4d65`: Quality Gate 36901138391, 8/8 jobs (§ Closure record) |
@@ -352,8 +353,8 @@ on pull requests by design and is evidenced by the dispatched run below, not by 
 | Federation + AI Evidence | 36901117809 | 81 PASS / 6 MEASURED / 0 FAIL / 0 BLOCKED |
 | Mobile Android | 36901117864 | attempt 1: APK success; emulator journeys failed before any journey ran (E-04, environment). Attempt 2, the one re-run (job 110516107617): emulator journeys **30 pass, 0 fail, 0 skipped**, 4 measured |
 | Mobile iOS (dispatched) | 36906166341 | success: I01–I04 **PASS**, I07 **UNVERIFIED** (the in-app dispatch needs a tap on iOS's "Open in 'Bridge'?" prompt, as at the P4 closure), I05/I06 MEASURED, 0 FAIL. This is simulator evidence, not device evidence |
-| Multi-node Evidence, P1 (dispatched) | 36906379443 | PENDING (running) |
-| Media Evidence, P2 (dispatched) | 36906383110 | PENDING (running) |
+| Multi-node Evidence, P1 (dispatched) | 36906379443 | success. Shared staging: 7 PASS, 1 INFO. Per-node staging: 93 PASS, 14 INFO, 2 FAIL\*. The FAIL\* rows, UP-02 and UP-06 (per-node staging without load-balancer affinity), are the P1 known limitations in the harness's `known-limitations.json`; they are not counted as PASS |
+| Media Evidence, P2 (dispatched) | 36906383110 | **failure**: no media check ran; node A refused to boot (H-10, caused by P5's FED-07 rule meeting the lab's config). Re-run after the harness fix: PENDING |
 
 P5 changes how a node boots: the readiness gate (SH-01), the schema order (SH-04) and the
 `INSTANCE_URL` rule. The P1 and P2 labs run on dispatch or schedule only, and both boot real

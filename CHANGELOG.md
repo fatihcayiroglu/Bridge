@@ -1,3 +1,94 @@
+## [Unreleased] — 2026-10-01 — P5: federation, AI and self-hosting
+
+Two independent Bridge installations now federate end to end over real HTTPS in a lab. The lab
+also includes a hostile remote ActivityPub actor and an SSRF canary, and it injects partitions,
+restarts, revocation and key rotation. AI features run against a self-hosted, OpenAI-compatible
+provider whose received traffic the lab inspects. A fresh checkout installs, restarts, upgrades
+and restores as documented. Evidence, defect log and closure bar:
+`docs/P5_FEDERATION_AI_SELFHOSTING.md`; AI data boundary: `docs/AI.md`.
+
+### Upgrade notes
+- **`INSTANCE_URL` is validated at boot in production.**
+  - It must be an `https://` origin. Plain `http` is accepted only for `localhost`, `127.0.0.1`
+    or `[::1]`.
+  - It must have no path, no credentials and no query.
+  - An install whose `INSTANCE_URL` breaks a rule **refuses to start** and names the variable.
+    Set it to the public `https://` URL, or unset it on an install that does not federate
+    (unset only logs a warning).
+  - A production install served over plain `http` from a non-loopback address was already
+    broken for browsers: the session cookie is `Secure`, and microphone and camera need a
+    secure context.
+- **The versioned migration chain now runs at boot**, inside the existing schema lock.
+  - Readiness answers 503 while migrations are pending.
+  - `BRIDGE_AUTO_MIGRATE=false` leaves migrations to `migrate-postgres up`.
+  - An upgraded install applies `076` (drops a superseded FTS index) and `077`.
+  - `077` deletes `oauth_tokens` and `server_boosts` rows whose user no longer exists (what
+    `ON DELETE CASCADE` would have done), then adds those foreign keys.
+- **Instance-peer heartbeats use a new signed form (`bridge-peer-sig/1`).**
+  - Peers need this version on both sides.
+  - Heartbeats from an older peer are refused with 401, logged as
+    `federation.heartbeat.peer_refused`. They never verified between older versions either:
+    no released version produced the signature it checked.
+  - ActivityPub delivery between versions is unaffected. Bridge already signed
+    `(request-target) host date digest`, which inbound verification now requires.
+- **Outbound federation deliveries retry for about 3.5 days** (12 steps with backoff) instead of
+  about 12 minutes. The schedule can be set with `FEDERATION_DELIVERY_RETRY_DELAYS_MS`.
+- **AI.**
+  - `AI_PROVIDER` selects exactly one provider; `none` turns AI off even when keys are set.
+  - `openai-compatible` (`AI_BASE_URL`, `AI_MODEL`, optional `AI_API_KEY`) covers vLLM,
+    llama.cpp, LM Studio and LocalAI.
+  - `AI_TIMEOUT_MS` (default 30 s) bounds each call, retries included.
+  - AI is never required.
+
+### Security
+- **Signatures.**
+  - An ActivityPub signature that did not cover `host`, `date` and `digest` was accepted; it is
+    now refused.
+  - The signed Host must be this instance.
+  - Instance-peer requests are bound to time, method, path, sender and receiver, and each
+    signature works only once.
+- **Peer registration.** Registering a server whose `/info` claimed another instance's URL stored
+  its key *as that instance*. The contacted URL is now the identity.
+- **Domain blocks and follows.**
+  - A domain block now also stops outbound delivery.
+  - Following an actor on a private address is refused before anything is stored. The SSRF guard
+    had already blocked the connection.
+- **AI context.**
+  - AI context is read through one permission-checked function and never contains deleted
+    messages, system messages or end-to-end-encrypted payloads.
+  - A summary cached before a deletion is no longer served after it.
+  - Channel text goes to the model as delimited data in a user turn, not in the system prompt.
+  - Clients can no longer send `system` turns.
+- **AI secrets and limits.**
+  - Provider error text (which can name internal hosts) no longer reaches clients.
+  - The Gemini key is sent in a header, not the URL.
+  - `/api/ai/summarize` and `/api/ai/moderate` are rate-limited.
+
+### Fixed
+- **A fresh install never applied its 75 versioned migrations** but still reported ready.
+- **On a fresh install, inbound follows failed** with `column "accepted" does not exist` until the
+  second boot.
+- **The admin domain allow/block list and peer key updates answered 500.** They wrote columns
+  that do not exist.
+- **Instance-peer heartbeats could never verify**, because no Bridge code produced what the
+  verifier checked, so a rotated key never reached peers.
+- **Publishing waited for a hanging follower** (8 s measured). It now waits at most 1.5 s after
+  the delivery is durably queued.
+- **Backup and restore failed as shipped.**
+  - `restore.sh` could not run `verify-backup.sh`.
+  - The backup image lacked both scripts.
+  - The dump check refused every dump larger than a pipe buffer.
+- **A fresh install's schema changed between the first and second boot.**
+- **AI requests could take over a minute.** Summaries, suggestions and translations failed with
+  500 when the provider was down. They now degrade to the local summary or canned suggestions,
+  or answer 503.
+
+### CI
+- **`Bridge Self-host Evidence`:** a process clean room covering install, restart, configuration
+  fail-fast, upgrade from the previous build, backup/restore and an egress observer, plus the
+  documented Docker Compose path.
+- **`Bridge Federation + AI Evidence`:** the two-installation lab, all scenarios.
+
 ## [Unreleased] — 2026-10-01 — P4: mobile / native maturity
 
 The Android app is now built the documented way in CI and driven on an Android 14 emulator through

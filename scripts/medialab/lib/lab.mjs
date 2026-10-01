@@ -46,7 +46,10 @@ export class Lab {
   #nodeEnv(extra) {
     return {
       BASE_URL: this.baseUrl,
-      INSTANCE_URL: this.baseUrl,
+      // INSTANCE_URL (the federated identity) is deliberately NOT the lab
+      // address: production refuses a non-loopback http INSTANCE_URL (P5
+      // FED-07), and this lab neither federates nor builds links from it —
+      // invites go through their code. The cluster's loopback default applies.
       ALLOWED_ORIGINS: this.baseUrl,
       MEDIASOUP_LISTEN_IP: SFU_IP,
       MEDIASOUP_ANNOUNCED_IP: SFU_IP,
