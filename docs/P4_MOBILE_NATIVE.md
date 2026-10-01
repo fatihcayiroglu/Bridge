@@ -110,7 +110,7 @@ on PR fatihcayiroglu/Bridge#112; CI run, merge SHA and the post-merge gate are r
 | P4-17 | deep links | (after P4-14) cold link still landed on `#general`: the router asked for the server list during the boot load; `loadServers` returned at once and the list was **empty** | the linked channel | the registry's `loadServers` was not awaitable | a queued load resolves after the reload it queued; the router bounds its wait (`aa23336`) | ServerSwitcher tests 2/2 fail on old code; Chromium cold-start probe: `#general` before, target after | `client/tests/server-rail.test.ts`; emulator **DL02** |
 | P4-18 | push | build without `google-services.json` (the self-hosted default): granting notifications killed the app at launch (`IllegalStateException: Default FirebaseApp is not initialized`) | the app runs; push says "unavailable" | `register()` without Firebase | native `BridgePushSupport.status()`; `register()` only where FCM is configured (`5dd1d1e`) | emulator **P05** FAIL (baseline) → PASS | `mobile/tests/push-session.test.js`; emulator P05 |
 | P4-19 | voice | denying the microphone in the real OS sheet showed "No microphone found — joined muted" | "permission denied" — a different fix for the user | the SFU path mapped every `getUserMedia` error to one text | shared `core/mic-error.ts` for P2P and SFU (`fb60280`) | unit test fails on old code | `client/tests/webrtc-sfu.test.ts`; emulator **P01** text |
-| P4-20 | iOS deep links | **AUTOMATED / SIMULATOR**: `simctl openurl bridge://channel/<id>` → OSStatus −10814 while a unique control scheme on the same build opened; `com.apple.Bridge` (Apple's Watch app) declares `bridge` | a link reaches Bridge on an iPhone | iOS gives a scheme claimed by a system app to that app | `com.bridge.app://` (reverse-DNS) on iOS and Android, parsed like `bridge://` (kept for existing links) (`579ac5d`) | contract test 3/3 fail on the previous manifest/plist/bridge | `mobile/tests/deep-link-scheme.test.js`; iOS **I04**, Android **DL04** |
+| P4-20 | iOS deep links | **AUTOMATED / SIMULATOR**: `simctl openurl bridge://channel/<id>` → OSStatus −10814 while a unique control scheme on the same build opened; `com.apple.Bridge` (Apple's Watch app) declares `bridge` | a link reaches Bridge on an iPhone | iOS gives a scheme claimed by a system app to that app | `com.bridge.app://` (reverse-DNS) on iOS and Android, parsed like `bridge://` (kept for existing links) (`579ac5d`) | contract test 3/3 fail on the previous manifest/plist/bridge | `mobile/tests/deep-link-scheme.test.js`; iOS **I04** (OS routing; in-app dispatch I07 is UNVERIFIED on the simulator), Android **DL04** |
 | P4-21 | layout | **AUTOMATED / BROWSER, emulated insets** (the page declares `viewport-fit=cover`): 390×844 with a 47 px top inset — header search/"more" at y 7–39, first server/member entries at y 34–38; 844×390 — composer and user panel in the 21 px home-indicator band, server rail under a 47 px cutout | nothing interactive under the system bars | the shell padded only the bottom inset | shell padding for every inset, drawers start below the top inset, the wide layout keeps the bottom band clear (`23d0257`) | `e2e/tests/safe-area.spec.ts` 3/3 fail on the previous CSS | the same spec, in the PR gate |
 | P4-22 | layout | 844×390 landscape, no insets: Settings (min-height 480 px, centred) sat above the screen — close button at y −28 | the dialog fits; close is tappable | fixed minimum height | short viewports get a full-safe-area dialog with a scrolling tab list (`23d0257`) | as P4-21 | as P4-21 |
 
@@ -135,6 +135,8 @@ on PR fatihcayiroglu/Bridge#112; CI run, merge SHA and the post-merge gate are r
 | H-15 | test/harness | PERF02 (second run): channel created via the API still not in the open list | by design the server does not broadcast channel metadata (limitation below) | reload the app after seeding (`85afecb`) |
 | H-16 | test/harness | PERF02 (run 8): 2000 seeded, only 50 ever rendered | scrolled `.msg-list`; the list scrolls inside `#messages-area`, where the client listens (reproduced in Chromium: `.msg-list` 50→50, `#messages-area` 50→100→150…) | scroll `#messages-area` |
 | H-17 | test/harness | iOS I04 (run on `ebe72ba`): `openurl com.bridge.app://…` succeeded, no dispatch line | the console was relayed through `--console-pty`; Swift `print` is block-buffered off a terminal (the pid line and the ready line also arrived minutes late) | app stdout/stderr straight to files with `NSUnbufferedIO=YES`; terminate with `simctl terminate` |
+| H-18 | environment/infra | iOS (run on `e152d8f`): the app process started ~7 min after `simctl launch`; the openurl ran before the launch completed | a freshly booted simulator on the GPU-less runner needs minutes before launches are prompt | boot the simulator at the start of the job (`--boot-only`) while Xcode builds; wait for readiness **and** launch completion (`b364b42`). Opening Simulator.app was tried (`a1ca547`) and reverted: no change in activity, and `simctl install` then exceeded 240 s (`52a59db`, install limit 600 s) |
+| H-19 | test/harness | iOS I04 (runs on `f829c17`, `52a59db`): `openurl com.bridge.app://…` returned 0, no dispatch line in the app | the OS log shows LaunchServices routing the URL to `com.bridge.app` ("Opening URL (com.bridge.app://…) with com.bridge.app") and, immediately after, the app deactivated with `deactivationReasons = systemModalAlert` — iOS's "Open in 'Bridge'?" confirmation, which a headless run cannot accept. The check asserted a step iOS gates behind a user tap | split: **I04** asserts the OS routing from the log (PASS/FAIL); **I07** asserts the in-app dispatch and is UNVERIFIED — never PASS — when the confirmation alert is what stopped it, FAIL otherwise |
 
 ## Known documented limitations
 
@@ -175,8 +177,52 @@ Nothing below is claimed as passing anywhere in this document.
 | Audio routing: earpiece / speaker / Bluetooth / wired, interruptions (phone call, alarm) | emulator/simulator have no audio hardware routing | a device |
 | Background voice survival under OEM power management | emulator is permissive | a range of devices |
 | Real camera quality, rotation of a real sensor | emulated camera | a device |
-| iOS WKWebView journeys beyond launch and deep-link dispatch | no WebDriver for the iOS WebView here | XCUITest or Appium on macOS |
+| iOS: a `com.bridge.app://` link dispatched inside the running app (I07) | iOS asks "Open in 'Bridge'?" before handing a custom-scheme URL from another process to the app (`systemModalAlert`); a headless simulator run cannot tap it. OS routing to Bridge **is** proven (I04); the bridge's URL handling is unit-tested and runs on Android (DL04) | tap the link on a device, or accept the alert with XCUITest |
+| iOS WKWebView journeys beyond launch (sign-in, messaging, voice inside the app) | no WebDriver for the iOS WebView here | XCUITest or Appium on macOS |
 | App-store builds (signing, release minification) | out of P4 scope | release pipeline |
+
+## Results on the final code — Android emulator
+
+AUTOMATED / EMULATOR, `Mobile Android` run 36824191529 (run 9, commit `727945b` — the Android code
+is unchanged after it), Android 14 API 34 `sdk_gphone64_x86_64`, WebView 113.0.5672.136:
+**30 PASS, 0 FAIL, 0 SKIPPED, 4 MEASURED** (run 8 on `ebe72ba`: the same 30 / 0 / 0 / 4).
+
+| Check | Result | What it proves |
+|---|---|---|
+| A01 | PASS | cold launch reaches the auth screen (no stuck splash) |
+| A02 | PASS | login through the WebView reaches the app shell |
+| PN01 | PASS | the notification channel named by server pushes (bridge_default) exists on the device |
+| A03 | PASS | server + channel list render and a channel opens |
+| M01 | PASS | send a channel message from the composer; it persists server-side |
+| M02 | PASS | live message from another user renders while foregrounded |
+| L01 | PASS | background 20 s → message arrives meanwhile → foreground shows it |
+| L02 | PASS | background 75 s (past socket ping timeout) → foreground resyncs without stale UI |
+| L03 | PASS | process killed while backgrounded → relaunch restores session, channel and missed messages |
+| L04 | PASS | force-stop (user kill) → cold relaunch restores the session |
+| N01 | PASS | offline: banner shows, composed message is held, delivered exactly once on reconnect |
+| N02 | PASS | offline 30 s while another user posts → reconnect resync shows the missed message |
+| D01 | PASS | DM from another user reaches the DM list and opens |
+| K01 | PASS | Android back closes an open dialog instead of leaving the app |
+| DL01 | PASS | warm deep link bridge://channel/<id> opens that channel |
+| DL04 | PASS | the app-owned scheme com.bridge.app://channel/<id> opens that channel (the link format that also works on iOS) |
+| DL02 | PASS | cold deep link bridge://channel/<id> opens that channel after session restore |
+| DL03 | PASS | deep link to a channel the user cannot access does not reveal it |
+| P01 | PASS | microphone permission denied in the real Android sheet → voice join tells the user |
+| P03 | PASS | microphone permission granted → voice join sends audio (SFU outbound RTP) |
+| P04 | MEASURED | voice while backgrounded 60 s: does the OS keep the microphone capture alive? |
+| V02 | PASS | voice survives a 10 s network loss: the connection recovers and audio flows again |
+| P06 | PASS | camera permission denied in the real Android sheet → the camera toggle tells the user |
+| P07 | PASS | camera permission granted → video is sent (emulated camera, outbound video RTP) |
+| V03 | PASS | leaving voice closes the media connections |
+| P02 | PASS | notification permission state is readable without prompting |
+| UI01 | PASS | landscape: no horizontal overflow and the composer stays visible |
+| UI02 | PASS | software keyboard: the composer stays above the keyboard |
+| F01 | PASS | attach a photo through the Android system picker → uploaded and sent as a file message |
+| N03 | MEASURED | high latency (≈400 ms one way on every packet): composer send → persisted and rendered |
+| PERF02 | MEASURED | long channel: memory, DOM and main-thread stalls while loading history (Android WebView) |
+| PERF01 | MEASURED | memory footprint after the journeys (PSS) |
+| P05 | PASS | notification permission granted on a build without Firebase config → app launches, stays alive and says push is unavailable |
+| LO01 | PASS | sign out on a build without Firebase → sign-in screen, the app process stays alive |
 
 ## Evidence matrix by workstream
 
@@ -193,7 +239,7 @@ kind exists. Android physical and iOS physical are empty because no device was a
 | 6 | Camera | P06 deny via the real sheet, P07 outbound video RTP | — | — | — | — |
 | 7 | Permissions | P01 mic deny, P03 grant, P06/P07 camera, P02 notification state without prompt | I01 usage strings | — | — | — |
 | 8 | Push | PN01 channel on the device, P05 FCM-less launch, LO01 FCM-less sign-out | — | token lifecycle, DM push, payload contract, revocation (server + real PG) | delivery EXTERNAL | delivery EXTERNAL |
-| 9 | Deep links | DL01 warm, DL02 cold, DL03 inaccessible channel hidden, DL04 `com.bridge.app://` | I04 `com.bridge.app://` dispatch, I06 `bridge://` owned by `com.apple.Bridge` | router tests (14), parser rejects tokens | — | — |
+| 9 | Deep links | DL01 warm, DL02 cold, DL03 inaccessible channel hidden, DL04 `com.bridge.app://` | I04 iOS routes `com.bridge.app://` to Bridge; I07 in-app dispatch UNVERIFIED (system confirmation alert); I06 `bridge://` owned by `com.apple.Bridge` | router tests (14), parser rejects tokens | — | — |
 | 10 | File / photo | F01 system picker → upload → file message | — | composer/upload suites | — | — |
 | 11 | Layout / input | UI01 landscape, UI02 software keyboard, K01 back key | — | safe-area e2e (Chromium, emulated insets; PR gate) | — | — |
 | 12 | Performance | A01/L-series timings, PERF01 PSS, PERF02 long channel (MEASURED) | I05 (MEASURED) | — | — | — |

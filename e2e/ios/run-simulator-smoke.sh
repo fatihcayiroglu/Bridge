@@ -98,7 +98,7 @@ LAUNCH_OUT="$(pwd)/$OUT/launch.out"
     --stdout="$CONSOLE" --stderr="$CONSOLE_ERR" "$UDID" "$BUNDLE_ID" > "$LAUNCH_OUT" 2>&1 ) &
 LAUNCHER=$!
 console() { cat "$CONSOLE" "$CONSOLE_ERR" 2>/dev/null; }
-ready=0; launched=0; ready_after=""; launch_after=""
+ready=0; launched=0; ready_after=""; launch_after=""; OSLOG=""
 for _ in $(seq 1 450); do
   if [ "$ready" = 0 ] && console | grep -q "Capacitor entegrasyonu hazır — ios"; then ready=1; ready_after=$(( $(date +%s) - start )); fi
   if [ "$launched" = 0 ] && ! kill -0 "$LAUNCHER" 2>/dev/null; then launched=1; launch_after=$(( $(date +%s) - start )); fi
@@ -147,12 +147,27 @@ if [ -n "$launched_pid" ] && [ "$launched" = 1 ]; then
   done
   kill "$LOGGER" 2>/dev/null || true
   step "OS log lines about the URL hand-off"
-  grep -i -E "com\.bridge\.app:|openURL|open url|openApplication|application:open|scene|activat" "$OSLOG" | grep -v -i "keyboard" | tail -40 | cut -c1-260 || true
+  grep -i -E "Opening URL|open URL with scheme|systemModalAlert|Deactivation reason|application:open" "$OSLOG" | tail -30 | cut -c1-260 || true
 fi
-if console | grep -q "Deep link dispatched: navigate:channel"; then
-  record PASS I04 "com.bridge.app://channel/<id> reaches the running app (bridge dispatch)" "routing itself is covered by the Android emulator and unit tests"
+# I04 — what iOS itself decides: LaunchServices routes the scheme to Bridge (not to another app).
+routed=$(grep -E "Opening URL \(com\.bridge\.app://[^)]*\) with com\.bridge\.app|requests to open URL with scheme com\.bridge\.app" "${OSLOG:-/dev/null}" 2>/dev/null | head -1 | cut -c1-200)
+if [ -n "$routed" ]; then
+  record PASS I04 "iOS routes com.bridge.app:// links to Bridge (LaunchServices)" "$routed"
 else
-  record FAIL I04 "com.bridge.app://channel/<id> reaches the running app (bridge dispatch)" "app state ${app_state:-unknown}; $(console | grep -i -E 'deep|appUrlOpen|url' | tail -5 | tr '\n' ' ' | cut -c1-400)"
+  record FAIL I04 "iOS routes com.bridge.app:// links to Bridge (LaunchServices)" "no LaunchServices routing line for com.bridge.app in the OS log"
+fi
+# I07 — the link inside the running app. iOS asks the user to confirm ("Open in “Bridge”?") before
+# handing a custom-scheme URL from another process to an app; measured on f829c17/52a59db as the
+# app's `deactivationReasons = systemModalAlert` right after openurl. A headless simctl run cannot
+# tap that alert, so without the dispatch line this is UNVERIFIED (never PASS) — and a FAIL if no
+# such alert was shown. The bridge's handling of the URL is covered by mobile/tests/deep-link-scheme
+# and the same JS path on the Android emulator (DL04).
+if console | grep -q "Deep link dispatched: navigate:channel"; then
+  record PASS I07 "com.bridge.app://channel/<id> is dispatched inside the running app" "bridge dispatch line in the app console"
+elif grep -q "systemModalAlert" "${OSLOG:-/dev/null}" 2>/dev/null; then
+  record UNVERIFIED I07 "com.bridge.app://channel/<id> is dispatched inside the running app" "iOS showed its open-confirmation alert (systemModalAlert); a headless run cannot accept it — needs a device or UI automation"
+else
+  record FAIL I07 "com.bridge.app://channel/<id> is dispatched inside the running app" "no dispatch and no confirmation alert; $(console | grep -i -E 'deep|appUrlOpen' | tail -3 | tr '\n' ' ' | cut -c1-300)"
 fi
 limit 60 xcrun simctl io "$UDID" screenshot "$OUT/after-deeplink.png" >/dev/null 2>&1 || true
 record MEASURED I05 "launch command → WKWebView bridge ready (simulator on a CI runner)" "${ready_after:-not ready} s; launch completed after ${launch_after:-—} s"
@@ -199,5 +214,5 @@ record MEASURED I06 "who owns bridge:// on iOS (why the app uses com.bridge.app:
 
 limit 120 xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
 step "done"
-echo "TOTAL fail=$fails (evidence category: AUTOMATED / SIMULATOR — not device evidence)" | tee -a "$RESULTS"
+echo "TOTAL fail=$fails unverified=$(grep -c '^UNVERIFIED' "$RESULTS") (UNVERIFIED and MEASURED are never counted as pass; evidence category: AUTOMATED / SIMULATOR — not device evidence)" | tee -a "$RESULTS"
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)
