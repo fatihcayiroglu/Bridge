@@ -350,7 +350,7 @@ on pull requests by design and is evidenced by the dispatched run below, not by 
 | Quality Gate (`push`) | 36901117793 | cancelled by the workflow's concurrency group when the dispatch above started on the same SHA (not a failure, not a pass) |
 | Self-host Evidence | 36901117883 | processes 67 PASS / 2 MEASURED; Compose 32 PASS |
 | Federation + AI Evidence | 36901117809 | 81 PASS / 6 MEASURED / 0 FAIL / 0 BLOCKED |
-| Mobile Android | 36901117864 | attempt 1: APK success, emulator journeys failed before any journey ran (E-04, environment); attempt 2 (re-run): PENDING |
+| Mobile Android | 36901117864 | attempt 1: APK success; emulator journeys failed before any journey ran (E-04, environment). Attempt 2, the one re-run (job 110516107617): emulator journeys **30 pass, 0 fail, 0 skipped**, 4 measured |
 | Mobile iOS (dispatched) | 36906166341 | PENDING (running) |
 | Multi-node Evidence, P1 (dispatched) | 36906379443 | PENDING (running) |
 | Media Evidence, P2 (dispatched) | 36906383110 | PENDING (running) |
