@@ -66,23 +66,25 @@ fi
 container=$(limit 60 xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" 2>&1 || true)
 step "app container: ${container}"
 start=$(date +%s)
-step "launching $BUNDLE_ID (JS console via --console-pty)"
-limit 600 xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" > "$OUT/console.log" 2>&1 < /dev/null &
-LAUNCH_PID=$!
-# Poll instead of a fixed wait: the first line is "<bundle>: <pid>", then Capacitor's console lines.
-launched_pid=""
-for _ in $(seq 1 90); do
-  launched_pid=$(sed -n "s/^${BUNDLE_ID}: \([0-9][0-9]*\).*/\1/p" "$OUT/console.log" | head -1)
-  [ -n "$launched_pid" ] && break
-  kill -0 "$LAUNCH_PID" 2>/dev/null || break
-  sleep 2
-done
-step "launch reported pid='${launched_pid}' after $(( $(date +%s) - start )) s"
+# The app's stdout/stderr go straight to files, unbuffered. (Relayed through `--console-pty`,
+# Capacitor's console lines arrived minutes late or not at all before the relay was stopped —
+# Swift `print` is block-buffered when stdout is not a terminal; Xcode sets NSUnbufferedIO=YES for
+# the same reason. SIMCTL_CHILD_* is passed into the app's environment.)
+CONSOLE="$(pwd)/$OUT/console.log"
+CONSOLE_ERR="$(pwd)/$OUT/console.err.log"
+: > "$CONSOLE"; : > "$CONSOLE_ERR"
+step "launching $BUNDLE_ID (stdout/stderr → files, NSUnbufferedIO)"
+launch_out=$(SIMCTL_CHILD_NSUnbufferedIO=YES limit 300 xcrun simctl launch --terminate-running-process \
+  --stdout="$CONSOLE" --stderr="$CONSOLE_ERR" "$UDID" "$BUNDLE_ID" 2>&1 || true)
+launched_pid=$(printf '%s\n' "$launch_out" | sed -n "s/^${BUNDLE_ID}: \([0-9][0-9]*\).*/\1/p" | head -1)
+step "launch returned after $(( $(date +%s) - start )) s: ${launch_out}"
+console() { cat "$CONSOLE" "$CONSOLE_ERR" 2>/dev/null; }
 ready=0
-for _ in $(seq 1 45); do
-  if grep -q "Capacitor entegrasyonu hazır — ios" "$OUT/console.log"; then ready=1; break; fi
+for _ in $(seq 1 90); do
+  if console | grep -q "Capacitor entegrasyonu hazır — ios"; then ready=1; break; fi
   sleep 2
 done
+ready_after=$(( $(date +%s) - start ))
 limit 60 xcrun simctl io "$UDID" screenshot "$OUT/cold-launch.png" >/dev/null 2>&1 || true
 # The OS's own view: launchctl lists `<pid> <status> UIKitApplication:<bundle>[…]` for a running app.
 os_pid=$(limit 60 xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | awk -v b="UIKitApplication:$BUNDLE_ID" 'index($3, b) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }')
@@ -91,34 +93,34 @@ alive=$([ -n "$os_pid" ] && echo 1 || echo 0)
 if [ "$alive" -ge 1 ]; then
   record PASS I02 "cold launch: the app process is alive after launch" "device=$DEVICE pid=$os_pid (launchctl)"
 else
-  record FAIL I02 "cold launch: the app process is alive after launch" "launchctl has no running $BUNDLE_ID; console: $(tail -5 "$OUT/console.log" | tr '\n' ' ' | cut -c1-400)"
+  record FAIL I02 "cold launch: the app process is alive after launch" "launchctl has no running $BUNDLE_ID; launch: ${launch_out}; console: $(console | tail -5 | tr '\n' ' ' | cut -c1-400)"
 fi
 if [ "$ready" = 1 ]; then
-  record PASS I03 "the web app and native bridge load inside WKWebView" "ready log after $(( $(date +%s) - start )) s"
+  record PASS I03 "the web app and native bridge load inside WKWebView" "ready log ${ready_after} s after the launch command"
 else
-  record FAIL I03 "the web app and native bridge load inside WKWebView" "$(grep -E '\[(log|error|warn)\]|⚡️' "$OUT/console.log" | tail -8 | tr '\n' ' ' | cut -c1-600)"
+  record FAIL I03 "the web app and native bridge load inside WKWebView" "$(console | grep -E '\[(log|error|warn)\]|⚡️' | tail -8 | tr '\n' ' ' | cut -c1-600)"
 fi
 
 # ── I04: a com.bridge.app:// link reaches the running app ────────────────────────────────────
 if [ -n "$launched_pid" ]; then
   step "opening com.bridge.app://channel/p4-ios-smoke-channel"
   limit 120 xcrun simctl openurl "$UDID" "com.bridge.app://channel/p4-ios-smoke-channel" 2>&1 | tail -3 || true
-  for _ in $(seq 1 15); do
-    grep -q "Deep link dispatched: navigate:channel" "$OUT/console.log" && break
+  for _ in $(seq 1 30); do
+    console | grep -q "Deep link dispatched: navigate:channel" && break
     sleep 2
   done
 fi
-if grep -q "Deep link dispatched: navigate:channel" "$OUT/console.log"; then
+if console | grep -q "Deep link dispatched: navigate:channel"; then
   record PASS I04 "com.bridge.app://channel/<id> reaches the running app (bridge dispatch)" "routing itself is covered by the Android emulator and unit tests"
 else
-  record FAIL I04 "com.bridge.app://channel/<id> reaches the running app (bridge dispatch)" "$(grep -i 'deep' "$OUT/console.log" | tail -5 | tr '\n' ' ' | cut -c1-400)"
+  record FAIL I04 "com.bridge.app://channel/<id> reaches the running app (bridge dispatch)" "$(console | grep -i -E 'deep|appUrlOpen|url' | tail -5 | tr '\n' ' ' | cut -c1-400)"
 fi
 limit 60 xcrun simctl io "$UDID" screenshot "$OUT/after-deeplink.png" >/dev/null 2>&1 || true
-record MEASURED I05 "time from launch command to evidence capture" "$(( $(date +%s) - start )) s (polling, no fixed waits)"
+record MEASURED I05 "launch command → WKWebView bridge ready (simulator on a CI runner)" "${ready_after} s"
 
 # Diagnostics in the job log itself (artifacts are not always reachable from where evidence is read).
 step "console tail"
-tail -n 60 "$OUT/console.log" | cut -c1-300 || true
+console | tail -n 60 | cut -c1-300 || true
 crash=$(ls -t "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep -E '^App[-_.]' | head -1)
 if [ -n "$crash" ]; then
   step "crash report: $crash"
@@ -126,7 +128,7 @@ if [ -n "$crash" ]; then
   echo
 fi
 
-kill "$LAUNCH_PID" 2>/dev/null || true
+limit 60 xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
 
 # ── I06 (diagnostic, MEASURED): who may own `bridge://` on iOS? ──────────────────────────────
 # Run AFTER the evidence above, on a separate install, so I01-I05 describe the real build.
