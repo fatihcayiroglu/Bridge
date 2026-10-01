@@ -211,7 +211,7 @@ async function channelHas(token, channelId, needle) {
 
 // ── Long-channel seeding (direct SQL, the same shape the P3 measurement used) ─────────────
 const LONG_CHANNEL_MESSAGES = Number(process.env.ANDROID_LONG_CHANNEL_MESSAGES || 2000);
-async function seedLongChannel(serverId, userId, count) {
+async function seedLongChannel(serverId, userId, token, count) {
   if (!process.env.DATABASE_URL) return null;
   const { createRequire } = await import('node:module');
   const require = createRequire(import.meta.url);
@@ -220,10 +220,11 @@ async function seedLongChannel(serverId, userId, count) {
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
   try {
-    const channelId = `p4long-${Date.now().toString(36)}`;
-    const pos = await client.query('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM channels WHERE "serverId" = $1', [serverId]).catch(() => ({ rows: [{ p: 99 }] }));
-    await client.query('INSERT INTO channels (_id, "serverId", name, type, position, "createdAt") VALUES ($1, $2, $3, $4, $5, $6)',
-      [channelId, serverId, 'android-uzun', 'text', pos.rows[0].p, Date.now()]);
+    // The channel is created through the API, so the running app learns of it the normal way
+    // (channel:created). Only the history is bulk-inserted. (A channel inserted by SQL never
+    // reached the already-loaded channel list: harness defect in the first PERF02 run.)
+    const created = await write('POST', `/api/servers/${serverId}/channels`, token, { name: 'android-uzun', type: 'text' });
+    const channelId = created._id || created.id || created.channel?._id;
     const base = Date.now() - count * 60_000;
     await client.query(`INSERT INTO messages (_id, "channelId", "serverId", "userId", username, "displayName", content, "createdAt")
       SELECT $1::text || '-' || g, $1::text, $2::text, $3::text, 'seed', 'Seed', 'Uzun kanal ölçüm mesajı #' || g || ' — gerçekçi uzunlukta bir satır.', $4::bigint + g * 60000
@@ -322,18 +323,31 @@ const INSTRUMENT_PCS = () => {
 };
 async function outboundAudio() {
   return page.evaluate(async () => {
-    const out = { pcs: 0, packetsSent: 0, videoPacketsSent: 0, audioLevel: null, states: [] };
+    // `send` describes only peer connections that carry outbound audio (the receive transport
+    // stays 'new' while nobody else is in the call). `pathBytesReceived` counts bytes the SFU
+    // sent back on the selected ICE pair (RTCP, consent responses): it only grows over a live path.
+    const out = { pcs: 0, packetsSent: 0, videoPacketsSent: 0, audioLevel: null, states: [], send: { states: [], packets: 0, pathBytesReceived: 0 } };
     for (const pc of (window.__pcs || []).filter((p) => p.connectionState !== 'closed')) {
       out.pcs += 1;
       out.states.push(pc.connectionState);
-      (await pc.getStats()).forEach((r) => {
-        if (r.type === 'outbound-rtp' && r.kind === 'audio') out.packetsSent += Number(r.packetsSent || 0);
+      const stats = await pc.getStats();
+      let audioOut = 0; let pairId = null;
+      stats.forEach((r) => {
+        if (r.type === 'outbound-rtp' && r.kind === 'audio') audioOut += Number(r.packetsSent || 0);
         if (r.type === 'outbound-rtp' && r.kind === 'video') out.videoPacketsSent += Number(r.packetsSent || 0);
         if (r.type === 'media-source' && r.kind === 'audio' && typeof r.audioLevel === 'number') out.audioLevel = r.audioLevel;
+        if (r.type === 'transport' && r.selectedCandidatePairId) pairId = r.selectedCandidatePairId;
       });
+      out.packetsSent += audioOut;
+      if (audioOut > 0) {
+        out.send.states.push(pc.connectionState);
+        out.send.packets += audioOut;
+        const pair = pairId ? stats.get(pairId) : null;
+        out.send.pathBytesReceived += Number(pair?.bytesReceived || 0);
+      }
     }
     return out;
-  }).catch(() => ({ pcs: 0, packetsSent: 0, videoPacketsSent: 0, audioLevel: null, states: [] }));
+  }).catch(() => ({ pcs: 0, packetsSent: 0, videoPacketsSent: 0, audioLevel: null, states: [], send: { states: [], packets: 0, pathBytesReceived: 0 } }));
 }
 async function alertText(pattern) {
   return page.evaluate((src) => {
@@ -739,12 +753,19 @@ async function main() {
       await platform.network(true);
     }
     const t0 = Date.now();
-    const base = (await outboundAudio()).packetsSent;
+    // Recovered = the send transport is connected AND, over the same 2 s window, audio packets
+    // leave AND the SFU's bytes come back on the selected ICE pair (a live path, not packets
+    // sent into the void). P2 measured recovery at 3-30 s, up to 90 s.
+    let last = null;
     const after = await until(async () => {
       const a = await outboundAudio();
-      return a.pcs > 0 && a.states.every((st) => st === 'connected') && a.packetsSent > base + 50 ? a : null;
-    }, { timeout: 60_000, message: 'voice connection recovered with flowing audio' });
-    return { recoveredAfterMs: Date.now() - t0, statesDuringLoss: during?.states ?? null, statesAfter: after.states };
+      await sleep(2_000);
+      const b = await outboundAudio();
+      last = { sendStates: b.send.states, packetsDelta: b.send.packets - a.send.packets, pathBytesDelta: b.send.pathBytesReceived - a.send.pathBytesReceived };
+      return b.send.states.includes('connected') && last.packetsDelta > 40 && last.pathBytesDelta > 0 ? { ...last } : null;
+    }, { timeout: 90_000, message: 'voice send path recovered (connected, audio leaving, SFU bytes returning)' })
+      .catch((err) => { throw new Error(`${err.message}; last window ${JSON.stringify(last)}; during loss ${JSON.stringify(during?.send ?? null)}`); });
+    return { recoveredAfterMs: Date.now() - t0, sendStatesDuringLoss: during?.send?.states ?? null, ...after };
   });
 
   await check('P06', 'camera permission denied in the real Android sheet → the camera toggle tells the user', async () => {
@@ -818,6 +839,48 @@ async function main() {
     return { ...m, tap };
   });
 
+  await check('F01', 'attach a photo through the Android system picker → uploaded and sent as a file message', async () => {
+    if (MODE === 'dryrun') throw new Skip('the system file picker needs a device');
+    // A real PNG in the shared Downloads folder, indexed like any downloaded file.
+    const name = `p4-photo-${Date.now().toString(36)}.png`;
+    const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    await sh(`echo ${PNG} | base64 -d > /sdcard/Download/${name}`);
+    await sh(`am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Download/${name} >/dev/null 2>&1`).catch(() => {});
+    await sleep(1_500);
+    await openServer(serverId);
+    await openChannel(channelId);
+    // A real touch: the page may open a file chooser only from a user gesture.
+    await tapWebElement('#btn-attach');
+    const pickerPkg = await until(async () => {
+      const xml = await sh('uiautomator dump /sdcard/p4-ui.xml >/dev/null 2>&1; cat /sdcard/p4-ui.xml').catch(() => '');
+      return (/package="([^"]*(documentsui|providers\.media)[^"]*)"/.exec(xml) || [])[1] ?? null;
+    }, { timeout: 15_000, message: 'system file picker in front' });
+    const route = [];
+    const tapName = () => tapUiNode((n) => n.includes(`text="${name}"`), name).then(() => true).catch(() => false);
+    if (await tapName()) route.push('recent');
+    else {
+      await tapUiNode((n) => /content-desc="Show roots"/i.test(n), 'roots drawer').then(() => route.push('roots')).catch(() => {});
+      await sleep(1_000);
+      await tapUiNode((n) => /text="Downloads?"/i.test(n), 'Downloads root').then(() => route.push('downloads')).catch(() => {});
+      await sleep(1_500);
+      assert(await tapName(), `picked file not found in the picker (${pickerPkg}, route ${route.join('>')})`);
+      route.push('file');
+    }
+    await attachPage();
+    const staged = (await until(() => page.evaluate(() => (document.getElementById('msg-input') ? { text: document.querySelector('.msg-input-wrap')?.textContent ?? '' } : null)),
+      { timeout: 10_000, message: 'composer back' })).text;
+    await page.press('#msg-input', 'Enter');
+    const sent = await until(async () => {
+      const r = await http('GET', `/api/channels/${channelId}/messages?limit=20`, { token: me.token });
+      const list = Array.isArray(r.json) ? r.json : r.json?.messages ?? [];
+      return list.find((m) => m.fileName === name) ?? null;
+    }, { timeout: 30_000, message: 'file message persisted server-side' }).catch(async (err) => {
+      const shown = await page.evaluate(() => [...document.querySelectorAll('[role="alert"], .attach-error, .msg-attach-error')].map((e) => e.textContent).join(' | ')).catch(() => '');
+      throw new Error(`${err.message}; composer said: ${shown.slice(0, 300)}; staged: ${staged.includes(name)}`);
+    });
+    return { picker: pickerPkg, route: route.join('>'), type: sent.type ?? null, fileType: sent.fileType ?? null };
+  });
+
   await measure('N03', 'high latency (≈400 ms one way on every packet): composer send → persisted and rendered', async () => {
     if (!netPath) throw new Skip('needs the controllable network path');
     netPath.delay(400);
@@ -834,7 +897,7 @@ async function main() {
 
   await measure('PERF02', 'long channel: memory, DOM and main-thread stalls while loading history (Android WebView)', async () => {
     if (MODE !== 'android') throw new Skip('the long-channel measurement is for the device WebView');
-    const seeded = await seedLongChannel(serverId, me.id, LONG_CHANNEL_MESSAGES);
+    const seeded = await seedLongChannel(serverId, me.id, me.token, LONG_CHANNEL_MESSAGES);
     if (!seeded) throw new Skip('DATABASE_URL not available to seed the channel');
     await page.evaluate(() => {
       window.__longTasks = [];
