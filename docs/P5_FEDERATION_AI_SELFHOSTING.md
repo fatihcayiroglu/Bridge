@@ -135,6 +135,7 @@ appear in `GET /api/federation/timeline`; direct notes, edits (`Update`) and del
 | H-08 | test/harness | the federation lab's egress check could pass on an empty log | lab hostnames are recorded (tagged) in the lab; `F-EGR-00` requires that traffic as a positive control |
 | H-09 | test/harness | full-suite runs with coverage: 1 failure in 6 runs, `health-schema-readiness` (a P5 batch-1 test, already on `main`) — `not.toMatch(/migration\|schema\|75/i)` matched the body's millisecond `ts` whenever its digits contained "75" | reproduced deterministically by pinning `Date.now()` to `1790873756193`; the check now asserts the exact generic key set and excludes only the clock value; negative control: a body naming `dependency: 'schema'` fails it |
 | E-03 | environment | mid-session the sandbox's `/etc/hosts` was reset; the next lab run reported `F-SETUP` **BLOCKED** (not PASS/FAIL) | entries restored, run repeated; CI adds them in the workflow |
+| E-04 | environment/infra | post-merge `Mobile Android` on `3cc4d65` (run 36901117864, attempt 1): the emulator action's `sdkmanager --install emulator` failed with `Error on ZipFile unknown archive` (a bad SDK download), 21 s into the step; the emulator never started and no journey ran | the same tree passed the emulator journeys on the PR head (run 36898708135). One re-run of the failed job (attempt 2); its result is recorded in § Closure record |
 
 ## Self-hosting evidence
 
@@ -144,7 +145,11 @@ Local run (process platform, this sandbox: Ubuntu 24.04, PostgreSQL 16.13, Redis
 Node 22.22, upgrade source = `956a96e` built): **all PASS** after the fixes above —
 `fresh` 4/4 (+1 MEASURED: boot → ready on an empty database ≈ 1.5 s), `smoke` 9/9,
 `restart` 9/9 (+1 MEASURED: SIGTERM → exit ≈ 50 ms), `config` 9/9, `upgrade` 20/20 (documented
-and boot-only histories), `backup` 13/13, `egress` 2/2. CI run IDs are recorded with the PR.
+and boot-only histories), `backup` 13/13, `egress` 2/2.
+
+CI on `main` after the last P5 merge (`3cc4d65`, run 36901117883): processes **67 PASS,
+2 MEASURED** (upgrade source = the previous `main`, `f6c6ec0`; chain 77/77 applied), Docker
+Compose **32 PASS**. PR-head runs are listed in § Closure record.
 
 | Closure item | Evidence |
 |---|---|
@@ -192,7 +197,7 @@ Harness: `scripts/federation-lab/run.mjs`; CI: `.github/workflows/federation-evi
 - **Federation scenarios:** 65 PASS, 5 MEASURED, 0 FAIL (`fed-run6`).
 - **AI scenarios:** 26 PASS, 2 MEASURED, 0 FAIL (`fed-ai2`).
 - **Final full run, all twelve scenarios on one build (`fed-run8`, branch head `0ffd173` + lab fixes):** **81 PASS, 6 MEASURED, 0 FAIL, 0 BLOCKED**.
-- **CI run IDs:** recorded with the PR.
+- **CI on `main` after the last P5 merge (`3cc4d65`, run 36901117809):** **81 PASS, 6 MEASURED, 0 FAIL, 0 BLOCKED**, the same twelve scenarios. PR-head runs are listed in § Closure record.
 
 ## AI evidence
 
@@ -313,7 +318,77 @@ The full lab run is the capstone. In one run it has:
 | 24 | backup / restore | PASS | SH-BACKUP-*, SH-COMPOSE-06..11 |
 | 25 | dependencies documented | PASS | `DEPLOYMENT_GUIDE.md`, `docs/AI.md`, `.env.example` |
 | 26 | no Bridge/SaaS infrastructure dependency | PASS | SH-EGRESS-*, F-EGR-00/01, F-AI-14 |
-| 27 | P0–P4 gates green | PENDING | final PR checks |
-| 28 | final post-merge QG | PENDING | |
-| 29 | final dispatched nightly ran | PENDING | |
-| 30 | evidence doc complete | PENDING | updated with run IDs at closure |
+| 27 | P0–P4 gates green | PENDING | every check on both P5 PR heads green; the dispatch-only P1 (multi-node), P2 (media) and P4 iOS gates and the Android re-run on `main` are still running (§ Closure record) |
+| 28 | final post-merge QG | PASS | `3cc4d65`: Quality Gate 36901138391, 8/8 jobs (§ Closure record) |
+| 29 | final dispatched nightly ran | PASS | 36901138391 (`workflow_dispatch`): `E2E full + media (nightly)` **ran** (job 110505513196), not skipped |
+| 30 | evidence doc complete | PENDING | run IDs in § Closure record; results still running are marked PENDING |
+
+## Closure record
+
+**Commits.**
+- Baseline: `956a96e` (P4 closure, PR #114).
+- PR #115, self-hosting (SH-01..03): merged as `f6c6ec0`.
+- PR #116, federation + AI (FED-00..10, AI-01..08, SH-04, SH-04b): merged as `3cc4d65`.
+- This record: a docs-only follow-up PR.
+
+**PR-head checks (all green).**
+
+| PR (head) | Quality Gate | Self-host | Federation + AI | Android (APK + emulator) | iOS simulator |
+|---|---|---|---|---|---|
+| #115 | 36853237967 | 36853238143 | — (workflow added in #116) | 36853238015 | 36853237969 |
+| #116 (`0e0bb04`) | 36898708157 | 36898708224 | 36898708178 | 36898708135 | not triggered (no iOS paths changed) |
+
+On a PR the Quality Gate runs typecheck/build, Node 22.19, unit + integration, security audit,
+Playwright smoke, E2E security and Docker build smoke. `E2E full + media (nightly)` is skipped
+on pull requests by design and is evidenced by the dispatched run below, not by a PR skip.
+
+**Post-merge on `main` (`3cc4d65`).**
+
+| Workflow | Run | Result |
+|---|---|---|
+| Quality Gate (`workflow_dispatch`) | 36901138391 | 8/8 jobs success, nightly included |
+| Quality Gate (`push`) | 36901117793 | cancelled by the workflow's concurrency group when the dispatch above started on the same SHA (not a failure, not a pass) |
+| Self-host Evidence | 36901117883 | processes 67 PASS / 2 MEASURED; Compose 32 PASS |
+| Federation + AI Evidence | 36901117809 | 81 PASS / 6 MEASURED / 0 FAIL / 0 BLOCKED |
+| Mobile Android | 36901117864 | attempt 1: APK success, emulator journeys failed before any journey ran (E-04, environment); attempt 2 (re-run): PENDING |
+| Mobile iOS (dispatched) | 36906166341 | PENDING (running) |
+| Multi-node Evidence, P1 (dispatched) | 36906379443 | PENDING (running) |
+| Media Evidence, P2 (dispatched) | 36906383110 | PENDING (running) |
+
+P5 changes how a node boots: the readiness gate (SH-01), the schema order (SH-04) and the
+`INSTANCE_URL` rule. The P1 and P2 labs run on dispatch or schedule only, and both boot real
+nodes, so they were dispatched on `3cc4d65` rather than assumed green.
+
+**Test totals.**
+- **Nightly (36901138391):**
+  - Chromium: 511 passed, 26 skipped, 0 failed. The 26 skipped tests are the same set as the
+    P4-closure nightly (36843584870); P5 added no skip.
+  - Firefox: 27 passed. WebKit: 27 passed. Media: 33 passed. Mobile: 6 passed.
+  - Accessibility: 10 + 10 + 8 passed.
+- **Quality Gate unit job (36901138391):**
+  - client coverage: 95.24 % statements, 90.07 % branches;
+  - real PostgreSQL/Redis/MinIO: 149/149;
+  - unified search: 16/16;
+  - bot SDK: 55/55;
+  - Electron: 50 passed, 1 skipped;
+  - mobile bridge: 105 passed, 22 skipped;
+  - production SQL: 177 accepted, 0 failed;
+  - migration rollback gate: every migration lossless or individually classified.
+- **Server suite totals.** CI logs are only reachable through a 5,000-line tail here, and the
+  log archive download is blocked by this sandbox's egress policy. The server totals therefore
+  come from a local run on `3cc4d65`: PENDING (running).
+
+**Skipped is not passed.** The skips above are reported as skips. None is counted toward a PASS
+item in the closure bar.
+
+**Unverified / external (not reopened by P5).**
+- **P4 physical-device items** (real Android/iOS hardware, APNs/FCM delivery to a device) stay
+  EXTERNAL/UNVERIFIED.
+- **MEDIA-11 and long-channel virtualization** stay documented limitations.
+
+**Carried to P6.**
+- per-server AI opt-out;
+- outbound `Update`/`Delete` for Bridge's own notes;
+- remote DMs in the DM UI;
+- a caller for the pgvector embedding writer;
+- retry-schedule evidence beyond unit tests (a real multi-hour outage).
