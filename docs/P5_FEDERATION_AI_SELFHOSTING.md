@@ -376,7 +376,10 @@ nodes, so they were dispatched on `3cc4d65` rather than assumed green.
   - migration rollback gate: every migration lossless or individually classified.
 - **Server suite totals.** CI logs are only reachable through a 5,000-line tail here, and the
   log archive download is blocked by this sandbox's egress policy. The server totals therefore
-  come from a local run on `3cc4d65`: PENDING (running).
+  come from a local run on `3cc4d65` (`npx jest --runInBand`): 600 suites, **11,531 passed, 0 failed,
+  16 skipped**. All 16 skips are `unified-search.integration`, which needs a live database and
+  is skipped by the plain runner. CI runs it separately (`test:search-it`), where it passed 16/16
+  above.
 
 **Skipped is not passed.** The skips above are reported as skips. None is counted toward a PASS
 item in the closure bar.
