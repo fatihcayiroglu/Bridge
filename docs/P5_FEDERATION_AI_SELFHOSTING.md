@@ -319,10 +319,10 @@ The full lab run is the capstone. In one run it has:
 | 24 | backup / restore | PASS | SH-BACKUP-*, SH-COMPOSE-06..11 |
 | 25 | dependencies documented | PASS | `DEPLOYMENT_GUIDE.md`, `docs/AI.md`, `.env.example`; upgrade notes in `CHANGELOG.md` (P5) |
 | 26 | no Bridge/SaaS infrastructure dependency | PASS | SH-EGRESS-*, F-EGR-00/01, F-AI-14 |
-| 27 | P0–P4 gates green | PENDING | every check on both P5 PR heads green; the dispatch-only P1 (multi-node), P2 (media) and P4 iOS gates and the Android re-run on `main` are still running (§ Closure record) |
+| 27 | P0–P4 gates green | PASS | every check on both P5 PR heads green. On `main`: Android (after one re-run for E-04), iOS, P1 multi-node (only its two known limitations fail) and P2 media (after the H-10 harness fix). § Closure record |
 | 28 | final post-merge QG | PASS | `3cc4d65`: Quality Gate 36901138391, 8/8 jobs (§ Closure record) |
 | 29 | final dispatched nightly ran | PASS | 36901138391 (`workflow_dispatch`): `E2E full + media (nightly)` **ran** (job 110505513196), not skipped |
-| 30 | evidence doc complete | PENDING | run IDs in § Closure record; results still running are marked PENDING |
+| 30 | evidence doc complete | PASS | this document; run IDs in § Closure record. The closure merge's own post-merge runs are reported with the P5 closure report |
 
 ## Closure record
 
@@ -330,7 +330,7 @@ The full lab run is the capstone. In one run it has:
 - Baseline: `956a96e` (P4 closure, PR #114).
 - PR #115, self-hosting (SH-01..03): merged as `f6c6ec0`.
 - PR #116, federation + AI (FED-00..10, AI-01..08, SH-04, SH-04b): merged as `3cc4d65`.
-- This record: a docs-only follow-up PR.
+- PR #117: this record, the P5 `CHANGELOG.md` entry with upgrade notes, and the media-lab harness fix (H-10). No product code.
 
 **PR-head checks (all green).**
 
@@ -338,6 +338,7 @@ The full lab run is the capstone. In one run it has:
 |---|---|---|---|---|---|
 | #115 | 36853237967 | 36853238143 | — (workflow added in #116) | 36853238015 | 36853237969 |
 | #116 (`0e0bb04`) | 36898708157 | 36898708224 | 36898708178 | 36898708135 | not triggered (no iOS paths changed) |
+| #117 (`22a6794`) | 36909114634 | not triggered (no paths changed) | not triggered | not triggered | not triggered |
 
 On a PR the Quality Gate runs typecheck/build, Node 22.19, unit + integration, security audit,
 Playwright smoke, E2E security and Docker build smoke. `E2E full + media (nightly)` is skipped
@@ -354,7 +355,8 @@ on pull requests by design and is evidenced by the dispatched run below, not by 
 | Mobile Android | 36901117864 | attempt 1: APK success; emulator journeys failed before any journey ran (E-04, environment). Attempt 2, the one re-run (job 110516107617): emulator journeys **30 pass, 0 fail, 0 skipped**, 4 measured |
 | Mobile iOS (dispatched) | 36906166341 | success: I01–I04 **PASS**, I07 **UNVERIFIED** (the in-app dispatch needs a tap on iOS's "Open in 'Bridge'?" prompt, as at the P4 closure), I05/I06 MEASURED, 0 FAIL. This is simulator evidence, not device evidence |
 | Multi-node Evidence, P1 (dispatched) | 36906379443 | success. Shared staging: 7 PASS, 1 INFO. Per-node staging: 93 PASS, 14 INFO, 2 FAIL\*. The FAIL\* rows, UP-02 and UP-06 (per-node staging without load-balancer affinity), are the P1 known limitations in the harness's `known-limitations.json`; they are not counted as PASS |
-| Media Evidence, P2 (dispatched) | 36906383110 | **failure**: no media check ran; node A refused to boot (H-10, caused by P5's FED-07 rule meeting the lab's config). Re-run after the harness fix: PENDING |
+| Media Evidence, P2 (dispatched) | 36906383110 | **failure**: no media check ran; node A refused to boot (H-10, caused by P5's FED-07 rule meeting the lab's config) |
+| Media Evidence, P2, after the H-10 fix (branch head `22a6794`: the same server code as `3cc4d65`, only the lab harness and docs differ) | 36909026969 | success: all nine scenarios, **77 PASS, 0 FAIL, 0 BLOCKED, 0 SKIPPED**, 18 INFO. IMP-04 (MEDIA-11) passed in this run: video resumed both ways 8.5 s after the squeeze cleared. MEDIA-11 stays a documented, intermittent limitation |
 
 P5 changes how a node boots: the readiness gate (SH-01), the schema order (SH-04) and the
 `INSTANCE_URL` rule. The P1 and P2 labs run on dispatch or schedule only, and both boot real
