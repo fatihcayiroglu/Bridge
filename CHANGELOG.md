@@ -20,6 +20,9 @@ handover are listed as EXTERNAL / UNVERIFIED, never as passing. Evidence and the
 - **`bridge://auth/callback?token=…` could hand the app a session from any link.** Removed.
 
 ### Fixed
+- **The Settings "Log out" label was below AA contrast in the light theme** (4.38:1 on the
+  sidebar; caught by the nightly accessibility suite after the P4 merge). It now uses the theme's
+  danger ink (7.62:1).
 - **Deep links and notification taps did nothing** in the native app (warm and cold). They now open
   the channel, server, invite, DM or group DM — only through the server's permission-checked
   lookups; a cold-start link waits for the server and channel lists instead of reading them empty.

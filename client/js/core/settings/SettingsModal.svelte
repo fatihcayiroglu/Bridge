@@ -313,6 +313,9 @@
   }
   .settings-logout-btn:hover { background: var(--bg-4); }
   .settings-logout-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+  /* Light theme: --danger is 4.39:1 on the sidebar (--bg-1 #f0f2f9), below AA (axe, nightly a11y);
+     the theme's danger ink is 7.62:1. The dark themes' --danger is 4.79–5.20:1 on their --bg-1. */
+  :global([data-theme="light"]) .settings-logout-btn { color: var(--danger-text); }
 
   .tab-icon { display: grid; width: 20px; height: 20px; flex: none; place-items: center; }
   .tab-icon svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
