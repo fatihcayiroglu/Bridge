@@ -100,7 +100,16 @@ async function serverChannels(deps: DeepLinkDeps, serverId: string): Promise<Arr
 
 export async function routeNativeDeepLink(link: NativeDeepLink, deps: NativeDeepLinkDeps, timeoutMs = SHELL_READY_WAIT_MS): Promise<boolean> {
   if (!(await waitFor(() => deps.ready(), timeoutMs))) return false;
-  if (deps.servers().length === 0) await deps.loadServers();
+  // Cold start: the boot load may still be in flight. `loadServers()` resolves once the list
+  // reflects the server (ServerSwitcher queues behind an in-flight load); bounded, never forever.
+  if (deps.servers().length === 0) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.resolve(deps.loadServers()).catch(() => undefined),
+      new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+    ]);
+    clearTimeout(timer);
+  }
   const unavailable = () => { deps.toast(t('gdm_gone', 'Bu konuşma artık kullanılamıyor.'), 'warning'); return false; };
 
   switch (link.kind) {

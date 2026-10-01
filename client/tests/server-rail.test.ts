@@ -228,6 +228,39 @@ describe('katılım sonrası yakınsama (Discover yolu — sayfa yenilemesi YOK)
   });
 });
 
+describe('P4 — a queued load is awaitable (cold-start deep links)', () => {
+  // MEASURED (Android 14 emulator, then reproduced in Chromium): a cold `bridge://channel/<id>`
+  // called `loadServers` while the boot load was in flight; the call returned at once, the router
+  // read an EMPTY list and showed "not available". Negative control: on the previous code the
+  // registry call returned undefined and the list was empty when it settled.
+  it('the registry loadServers resolves only after the list reflects the server', async () => {
+    inFlightGate = () => {};
+    instance = mount(ServerSwitcher, { target: host });
+    flushSync();
+    await settle();
+
+    const servers = () => BridgeRegistry.call<Array<{ _id?: string }>>('getAvailableServers') ?? [];
+    expect(servers()).toEqual([]);
+    let settled = false;
+    const queued = Promise.resolve(BridgeRegistry.call<Promise<void>>('loadServers')).then(() => { settled = true; });
+    await settle();
+    expect(settled).toBe(false);
+
+    const release = inFlightGate;
+    inFlightGate = null;
+    release?.();
+    await queued;
+    expect(servers().map((s) => s._id)).toEqual(['srv-a']);
+  });
+
+  it('an idle load is awaitable too', async () => {
+    await mountRail();
+    serverTruth = [...serverTruth, { _id: 'srv-b', name: 'ZZB', icon: '🅱' }];
+    await BridgeRegistry.call<Promise<void>>('loadServers');
+    expect((BridgeRegistry.call<Array<{ _id?: string }>>('getAvailableServers') ?? []).map((s) => s._id)).toEqual(['srv-a', 'srv-b']);
+  });
+});
+
 describe('kullanıcı izolasyonu — A → çıkış → B', () => {
   it('çıkış A\'nın sunucu listesini rail\'den KALDIRIR', async () => {
     await mountRail();
