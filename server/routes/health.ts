@@ -12,6 +12,7 @@ import { getPrivateStorageAdapter, getPrivateStorageProvider, getStorageAdapter,
 import { getRtcIceConfig, getTurnStatus } from '../lib/turnConfig';
 import { healthCheck as redisHealthCheck } from '../lib/redisAdapter';
 import logger from '../lib/logger';
+import { countPendingMigrations, type MigrationQueryable } from '../db/postgres/versionedMigrations';
 
 
 import pkg from '../../package.json';
@@ -115,6 +116,14 @@ router.get('/ready', async (_req: Request, res: Response) => {
   let dependency = 'database';
   try {
     await pingDb();
+    // P5 SH-01: a node whose schema is behind the release's migration chain
+    // (BRIDGE_AUTO_MIGRATE=false and nobody ran `migrate-postgres up`) serves
+    // requests against missing tables. It is not ready.
+    dependency = 'schema';
+    if (loader._pool?.query) {
+      const pending = await countPendingMigrations(loader._pool as unknown as MigrationQueryable);
+      if (pending > 0) throw new Error(`${pending} versioned migrations pending`);
+    }
     // Redis is optional for a deliberately single-node deployment, but once
     // REDIS_URL is configured it becomes authoritative for cluster-sensitive
     // state (rate limits, voice/stage locks, SFU ownership, etc.). Advertising

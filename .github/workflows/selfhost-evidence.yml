@@ -1,0 +1,131 @@
+name: Bridge Self-host Evidence
+
+# P5 — a self-hosted Bridge, installed and operated the documented way:
+#
+#   process  scripts/selfhost/run.mjs — the production build against its own
+#            PostgreSQL + Redis processes: fresh install (complete migration
+#            chain), functional smoke, graceful restart, configuration
+#            fail-fast, upgrade from the previous build WITH data (both the
+#            documented and the boot-only history), backup.sh → empty database
+#            → restore.sh → app on restored data, and an egress observer
+#            proving no connection leaves the machine.
+#   compose  scripts/selfhost/compose.mjs — the real images and
+#            docker-compose.yml: `up`, migration chain, smoke through the
+#            published port, `restart`, backup/restore inside the backup
+#            container.
+#
+# Statuses: PASS / FAIL / BLOCKED / SKIPPED / MEASURED — only PASS passes.
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'server/**'
+      - 'backup/**'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'scripts/selfhost/**'
+      - 'scripts/multinode/lib/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/selfhost-evidence.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'backup/**'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'scripts/selfhost/**'
+      - 'scripts/multinode/lib/**'
+      - '.github/workflows/selfhost-evidence.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '41 3 * * 2'
+
+concurrency:
+  group: selfhost-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: '24.20.0'
+
+jobs:
+  process:
+    name: Self-host (processes) — install, restart, config, upgrade, backup/restore, egress
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - name: Install infrastructure (PostgreSQL binaries, Redis, rsync)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server rsync
+          sudo systemctl stop redis-server || true
+          ls -d /usr/lib/postgresql/*/bin
+      - name: Build this checkout
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund && npm run build && cd ..
+          npm run build
+      - name: Build the previous build (upgrade source)
+        # PR: the base it merges into. Push: the commit main was at before. Otherwise: first parent.
+        run: |
+          PREV="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$PREV" ] || ! git cat-file -e "$PREV^{commit}" 2>/dev/null || [ "$PREV" = "0000000000000000000000000000000000000000" ]; then PREV=$(git rev-parse HEAD^1); fi
+          echo "previous build: $PREV"
+          git worktree add "$RUNNER_TEMP/prev" "$PREV"
+          cd "$RUNNER_TEMP/prev"
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund && npm run build
+      - name: Run self-host scenarios
+        run: |
+          node scripts/selfhost/run.mjs \
+            --previous "$RUNNER_TEMP/prev" \
+            --work "$RUNNER_TEMP/bridge-selfhost" \
+            --out "$RUNNER_TEMP/bridge-selfhost-report"
+      - name: Upload report and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: selfhost-process
+          path: |
+            ${{ runner.temp }}/bridge-selfhost-report/
+            ${{ runner.temp }}/bridge-selfhost/logs/
+            ${{ runner.temp }}/bridge-selfhost/egress-*.jsonl
+          retention-days: 30
+
+  compose:
+    name: Self-host (Docker Compose) — images, up, restart, backup/restore
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Harness dependencies (Socket.IO client)
+        run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Run the documented compose install
+        run: node scripts/selfhost/compose.mjs --out "$RUNNER_TEMP/bridge-compose-report"
+      - name: Upload report and compose log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: selfhost-compose
+          path: ${{ runner.temp }}/bridge-compose-report/
+          retention-days: 30

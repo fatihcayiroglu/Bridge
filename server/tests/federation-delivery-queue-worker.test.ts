@@ -42,8 +42,8 @@ jest.mock('../lib/fetch', () => ({ fetchT: (...args: unknown[]) => fetchT(...arg
 jest.mock('../lib/logger', () => ({ __esModule: true, default: { warn, info } }));
 jest.mock('../db/repositories', () => ({ Federation: federation, Users: users }));
 
-// The module registers a 30s interval and a setImmediate recovery pass at load
-// time. Capture both so they can be driven deliberately instead of by wall
+// startFederationDeliveryWorker() registers a 30s interval and a setImmediate
+// recovery pass. Capture both so they can be driven deliberately instead of by wall
 // clock, and so nothing keeps running between cases.
 const realSetInterval = global.setInterval;
 const realSetImmediate = global.setImmediate;
@@ -61,6 +61,8 @@ jest.spyOn(global, 'setImmediate').mockImplementation(((fn: any) => {
 }) as never);
 
 const delivery = require('../routes/federation/delivery');
+// P5 SH-01b: the worker starts explicitly (runtime.ts, after initSchema), not on import.
+delivery.startFederationDeliveryWorker();
 
 const ok = () => ({ ok: true, status: 200, json: async () => ({}) });
 const fail = (status: number) => ({ ok: false, status, json: async () => ({}) });

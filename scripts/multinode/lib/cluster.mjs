@@ -41,7 +41,7 @@ export async function waitFor(fn, { timeoutMs = 30_000, intervalMs = 100, label 
   throw new Error(`timeout waiting for ${label}${last ? `: ${last.message}` : ''}`);
 }
 
-function portOpen(port, host = '127.0.0.1') {
+export function portOpen(port, host = '127.0.0.1') {
   return new Promise((resolve) => {
     const s = net.connect({ port, host });
     s.once('connect', () => { s.destroy(); resolve(true); });
@@ -49,7 +49,7 @@ function portOpen(port, host = '127.0.0.1') {
   });
 }
 
-function findPgBin() {
+export function findPgBin() {
   if (process.env.MN_PG_BIN) return process.env.MN_PG_BIN;
   const root = '/usr/lib/postgresql';
   if (!fs.existsSync(root)) return null;
@@ -61,7 +61,7 @@ function findPgBin() {
   return null;
 }
 
-function run(cmd, args, opts = {}) {
+export function run(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', ...opts });
   if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} failed: ${r.stderr || r.stdout}`);
   return r.stdout;
@@ -85,7 +85,7 @@ function pgUserHome() {
   return home || '/var/lib/postgresql';
 }
 
-function runPg(cmd, args, opts = {}) {
+export function runPg(cmd, args, opts = {}) {
   if (!PG_USER) return run(cmd, args, opts);
   const dIdx = args.indexOf('-D');
   if (dIdx >= 0) ensureTraversable(path.dirname(args[dIdx + 1]));

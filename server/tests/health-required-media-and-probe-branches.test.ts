@@ -26,6 +26,10 @@ const jwt = require('jsonwebtoken');
 import { createMockDb, makeUser, makeServer } from './helpers/mockDb';
 
 let db: ReturnType<typeof createMockDb>;
+// P5 SH-01: readiness also requires the versioned migration chain to be
+// complete. This suite is about other dependencies, so the chain is reported
+// complete here; tests/health-schema-readiness.test.ts covers the schema gate.
+jest.mock('../db/postgres/versionedMigrations', () => ({ countPendingMigrations: async () => 0 }));
 jest.mock('../db/loader', () => require('../db/index'));
 jest.mock('../db/index', () => {
   const { createMockDb } = require('./helpers/mockDb');

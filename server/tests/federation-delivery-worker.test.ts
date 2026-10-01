@@ -19,9 +19,10 @@ jest.mock('../lib/logger', () => ({ __esModule: true, default: { warn, info } })
 jest.mock('../db/repositories', () => ({ Federation: federation, Users: users }));
 jest.mock('uuid', () => ({ v4: jest.fn(() => 'worker-uuid') }));
 
-// Exercise the startup error arm as part of module lifecycle.
+// Exercise the startup error arm as part of the worker lifecycle. P5 SH-01b: the
+// worker starts explicitly (runtime.ts, after initSchema), not on import.
 federation.claimPendingDeliveries.mockRejectedValueOnce(new Error('startup db unavailable'));
-require('../routes/federation/delivery');
+require('../routes/federation/delivery').startFederationDeliveryWorker();
 
 const validPayload = {
   inboxUrl: 'https://remote.example/inbox',

@@ -78,7 +78,7 @@ const RUNNERS = [
 const CONFIG_OWNERS = [
   // package.json:33 test:release-integrity; quality-gate.yml ve quality-gate.sh
   // bu komutu ayrıca doğrudan çağırır.
-  { owner: 'release integrity (node:test)', prefix: 'scripts/', suffixes: ['release-integrity.test.js', 'product-surface-contract.test.js', 'final23-adversarial-contract.test.js'] },
+  { owner: 'release integrity (node:test)', prefix: 'scripts/', suffixes: ['release-integrity.test.js', 'product-surface-contract.test.js', 'final23-adversarial-contract.test.js', 'backup-tools.test.js'] },
   // e2e/playwright.config.ts:18  testDir: './tests'
   // e2e/playwright.config.ts:23  testIgnore: ['**/tests-legacy/**']
   { owner: 'e2e (playwright)', prefix: 'e2e/tests/',      suffixes: ['.spec.ts', '.test.ts'] },

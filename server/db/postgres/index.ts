@@ -18,6 +18,7 @@ import { ftsSearch, unifiedFtsSearch } from './fts';
 import { searchContext } from './search-context';
 import { withTransaction } from './transaction';
 import { runInlineMigrations } from './migrations';
+import { applyPendingMigrations, autoMigrateEnabled, pendingMigrations } from './versionedMigrations';
 import { PGVECTOR_ENABLED, ensurePgvectorSchema } from '../../lib/pgvector';
 
 // ── SCHEMA BAŞLAT ─────────────────────────────────────────────
@@ -61,6 +62,24 @@ async function initSchema(): Promise<void> {
     try {
       await pool.query(SCHEMA);
       await runInlineMigrations(pool);
+      // P5 SH-01: the versioned chain belongs to boot too — before this, a fresh
+      // install ran without it and still reported ready. Same lock, same session.
+      if (autoMigrateEnabled()) {
+        const applied = await applyPendingMigrations(client, {
+          onApplied: (file) => logger.info({ event: 'db.migration.applied', migration: file }, `[DB] Migration uygulandı: ${file}`),
+        });
+        if (applied.length) {
+          logger.info({ event: 'db.migrations.applied', count: applied.length }, `[DB] ${applied.length} versioned migration uygulandı.`);
+        }
+      } else {
+        const pending = await pendingMigrations(client);
+        if (pending.length) {
+          logger.error(
+            { event: 'db.migrations.pending', count: pending.length, first: pending[0] },
+            '[DB] BRIDGE_AUTO_MIGRATE=false and versioned migrations are pending: run `node server/dist/db/migrate-postgres.js up`. The node stays NOT READY until they are applied.',
+          );
+        }
+      }
       if (PGVECTOR_ENABLED) {
         const pgvectorReady = await ensurePgvectorSchema(pool);
         logger.info({ event: 'db.pgvector.schema', ready: pgvectorReady }, pgvectorReady ? '[DB] pgvector şeması hazır.' : '[DB] pgvector opsiyonel şeması kullanılamıyor; fallback aktif.');

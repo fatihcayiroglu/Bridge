@@ -16,7 +16,11 @@ ENV TZ=Europe/Istanbul
 
 COPY backup.sh /usr/local/bin/backup.sh
 COPY scheduler.sh /usr/local/bin/scheduler.sh
-RUN chmod +x /usr/local/bin/backup.sh /usr/local/bin/scheduler.sh
+# P5 SH-02: the restore half ships too, next to the tools it needs (psql, gzip):
+#   docker compose exec backup restore.sh /backups/postgres/bridge_<ts>.sql.gz
+COPY restore.sh /usr/local/bin/restore.sh
+COPY verify-backup.sh /usr/local/bin/verify-backup.sh
+RUN chmod +x /usr/local/bin/backup.sh /usr/local/bin/scheduler.sh /usr/local/bin/restore.sh /usr/local/bin/verify-backup.sh
 
 # Her gece BACKUP_AT'te (varsayılan 02:30). Cron daemon'u KULLANILMAZ: üretim sertleştirmesinde
 # dcron "setpgid: Operation not permitted" döngüsüne girip hiçbir işi çalıştırmıyordu
