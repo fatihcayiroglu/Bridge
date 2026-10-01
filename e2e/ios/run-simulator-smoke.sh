@@ -30,6 +30,10 @@ if [ "${1:-}" = "--boot-only" ]; then
   step "early boot finished"
   exit 0
 fi
+# Without Simulator.app the booted device has no display: an app launched by simctl never becomes
+# ACTIVE (measured: the app's own `App.getState()` → isActive:false), and iOS hands a URL to an app
+# when it brings it to the foreground. The GUI is opened on the booted device, as on a desk.
+show_simulator() { open -a Simulator --args -CurrentDeviceUDID "$1" >/dev/null 2>&1 || true; }
 APP="${IOS_APP_PATH:?IOS_APP_PATH is required}"
 BUNDLE_ID="${IOS_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" 2>/dev/null || echo com.bridge.app)}"
 mkdir -p "$OUT"
@@ -69,6 +73,7 @@ if ! limit 480 xcrun simctl bootstatus "$UDID" -b >/dev/null; then
   record FAIL I00 "the simulator boots" "bootstatus did not finish within 480 s ($DEVICE)"
   exit 1
 fi
+show_simulator "$UDID"
 step "installing the app"
 if ! limit 240 xcrun simctl install "$UDID" "$APP"; then
   record FAIL I00 "the app installs on the simulator" "simctl install did not finish within 240 s"
@@ -106,6 +111,9 @@ done
 launch_out=$(cat "$LAUNCH_OUT" 2>/dev/null)
 launched_pid=$(printf '%s\n' "$launch_out" | sed -n "s/^${BUNDLE_ID}: \([0-9][0-9]*\).*/\1/p" | head -1)
 step "launch completed=${launched} after ${launch_after:-?} s (${launch_out}); bridge ready=${ready} after ${ready_after:-?} s"
+sleep 3
+# The client asks App.getState() at boot; the answer is in the console ("TO JS {"isActive":…}").
+app_state=$(console | grep -o '{"isActive":[a-z]*}' | tail -1)
 limit 60 xcrun simctl io "$UDID" screenshot "$OUT/cold-launch.png" >/dev/null 2>&1 || true
 # The OS's own view: launchctl lists `<pid> <status> UIKitApplication:<bundle>[…]` for a running app.
 os_pid=$(limit 60 xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | awk -v b="UIKitApplication:$BUNDLE_ID" 'index($3, b) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }')
@@ -117,7 +125,7 @@ else
   record FAIL I02 "cold launch: the app process is alive after launch" "launchctl has no running $BUNDLE_ID; launch: ${launch_out}; console: $(console | tail -5 | tr '\n' ' ' | cut -c1-400)"
 fi
 if [ "$ready" = 1 ]; then
-  record PASS I03 "the web app and native bridge load inside WKWebView" "ready log ${ready_after} s after the launch command (launch completed after ${launch_after:-?} s)"
+  record PASS I03 "the web app and native bridge load inside WKWebView" "ready log ${ready_after} s after the launch command (launch completed after ${launch_after:-?} s; app state ${app_state:-unknown})"
 else
   record FAIL I03 "the web app and native bridge load inside WKWebView" "$(console | grep -E '\[(log|error|warn)\]|⚡️' | tail -8 | tr '\n' ' ' | cut -c1-600)"
 fi
@@ -134,7 +142,7 @@ fi
 if console | grep -q "Deep link dispatched: navigate:channel"; then
   record PASS I04 "com.bridge.app://channel/<id> reaches the running app (bridge dispatch)" "routing itself is covered by the Android emulator and unit tests"
 else
-  record FAIL I04 "com.bridge.app://channel/<id> reaches the running app (bridge dispatch)" "$(console | grep -i -E 'deep|appUrlOpen|url' | tail -5 | tr '\n' ' ' | cut -c1-400)"
+  record FAIL I04 "com.bridge.app://channel/<id> reaches the running app (bridge dispatch)" "app state ${app_state:-unknown}; $(console | grep -i -E 'deep|appUrlOpen|url' | tail -5 | tr '\n' ' ' | cut -c1-400)"
 fi
 limit 60 xcrun simctl io "$UDID" screenshot "$OUT/after-deeplink.png" >/dev/null 2>&1 || true
 record MEASURED I05 "launch command → WKWebView bridge ready (simulator on a CI runner)" "${ready_after:-not ready} s; launch completed after ${launch_after:-—} s"
