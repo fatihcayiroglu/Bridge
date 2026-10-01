@@ -34,7 +34,8 @@ Bu script:
 npm run mobile:init
 # Yukarıdaki şununla eşdeğer:
 #   node mobile/scripts/setup.js && npx cap add ios && npx cap add android \
-#     && node mobile/scripts/apply-android-overlay.js && npx cap sync
+#     && node mobile/scripts/apply-android-overlay.js && node mobile/scripts/apply-ios-overlay.js \
+#     && npx cap sync
 
 # Her kod güncellemesinde
 npm run mobile:sync
@@ -55,8 +56,19 @@ kullanılır. Final21 Faz 19'a kadar bu katman hiçbir adımda uygulanmıyordu: 
 APK yerel projelerden FARKLI bir uygulama kimliği, "1.0" sürümü, `allowBackup="true"` ve yalnızca INTERNET izniyle
 çıkıyordu.
 
-`mobile/ios/` iOS için BAŞVURU dosyalarıdır (sürüm/kimlik ayarları, `Info.plist` izin metinleri);
-`project.pbxproj` tam bir Xcode projesi değildir ve otomatik uygulanmaz. iOS derlemesi macOS gerektirir.
+### Küratörlü iOS katmanı (`mobile/ios/`)
+
+P4'e kadar `mobile/ios/` hiçbir adımda uygulanmıyordu: belgelenen yolla üretilen iOS uygulamasında
+`NSMicrophoneUsageDescription` YOKTU (iOS, mikrofona dokunan ve bu metni taşımayan uygulamayı
+sonlandırır — ilk sesli katılım çökerdi), `bridge://` şeması yoktu ve sürüm "1.0 (1)" idi.
+`node mobile/scripts/apply-ios-overlay.js` artık küratörlü anahtarları üretilen `Info.plist`e
+BİRLEŞTİRİR (şablonun kendi anahtarları korunur): mikrofon/kamera/fotoğraf izin metinleri,
+`CFBundleDisplayName`, `ITSAppUsesNonExemptEncryption`, `bridge://` şeması, arka plan kipleri
+(`audio`, `remote-notification` — PushKit/CallKit olmadan `voip` TAŞINMAZ) ve sürüm. Kimlik
+uyuşmazsa hiçbir şey yazılmaz. `mobile:init`, `mobile:add`, `mobile:ios` ve `mobile:sync` bunu
+kendileri yapar. `mobile/ios/App/App.xcodeproj/project.pbxproj` tam bir Xcode projesi değildir;
+yalnızca sürüm değerleri oradan okunur. iOS derlemesi macOS gerektirir; CI'da `Mobile iOS`
+iş akışı uygulamayı simülatör için derler ve açar (AUTOMATED / SIMULATOR kanıtı — cihaz kanıtı değildir).
 
 ## 4. iOS Build (macOS gerektirir)
 
@@ -190,9 +202,16 @@ npx cap run ios --livereload --external
   <action android:name="android.intent.action.VIEW" />
   <category android:name="android.intent.category.DEFAULT" />
   <category android:name="android.intent.category.BROWSABLE" />
+  <data android:scheme="com.bridge.app" />
   <data android:scheme="bridge" />
 </intent-filter>
 ```
+
+> **Özel şema: `com.bridge.app://` kullanın.** iOS'ta `bridge` şemasını Apple'ın Watch uygulaması
+> (`com.apple.Bridge`) bildirir; iOS bağlantıyı ona verir ve `bridge://…` Bridge'e hiç ulaşmaz
+> (P4, iOS simülatörü I06: `simctl openurl bridge://…` → OSStatus -10814). `com.bridge.app://`
+> Android'de ve iOS'ta uygulamanındır; `bridge://` mevcut bağlantılar için korunur.
+> Örnek: `com.bridge.app://channel/<kanalId>`, `com.bridge.app://invite/<kod>`.
 
 ---
 
