@@ -388,6 +388,19 @@
     .settings-content { padding: var(--space-4) var(--space-4) max(var(--space-4), env(safe-area-inset-bottom)); }
   }
 
+  /* P4: a landscape phone is wide (this desktop layout) but short (≈390 px). The 480 px minimum
+     height centred the dialog ABOVE the screen: title and close button at y −28, not tappable.
+     Short viewports get the whole safe area instead. */
+  @media (max-height: 560px) {
+    .settings-overlay {
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+      align-items: stretch;
+    }
+    .settings-modal { width: 100%; height: 100%; min-height: 0; border-radius: 0; }
+    /* Seven tabs and the Log out footer are taller than a landscape phone: the list scrolls. */
+    .settings-sidebar { overflow-y: auto; padding-top: var(--space-4); padding-bottom: var(--space-3); }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .settings-overlay, .settings-modal { animation: none; }
   }
