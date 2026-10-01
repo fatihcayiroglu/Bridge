@@ -41,7 +41,7 @@ const router = express.Router();
 
 import { authMiddleware } from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
-import { callAI, AI_ENABLED, PROVIDER, safeProvider } from '../../lib/aiProvider';
+import { callAI, AI_ENABLED, PROVIDER, safeProvider, aiFailureForClient } from '../../lib/aiProvider';
 import { fetchT } from '../../lib/fetch';
 
 const TRANSLATE_URL = process.env.LIBRETRANSLATE_URL;
@@ -83,11 +83,16 @@ router.post('/', authMiddleware, limits.ai(), async (req, res) => {
   }
 
   if (AI_ENABLED) {
-    const translated = await callAI(
-      'Çeviri asistanı. Sadece çeviriyi ver.',
-      `"${text}" → ${LANG_NAMES[targetLang] || targetLang}`,
-    );
-    return res.json({ translated, provider: safeProvider(PROVIDER), targetLang });
+    try {
+      const translated = await callAI(
+        'Çeviri asistanı. Sadece çeviriyi ver.',
+        `"${text}" → ${LANG_NAMES[targetLang] || targetLang}`,
+      );
+      return res.json({ translated, provider: safeProvider(PROVIDER), targetLang });
+    } catch (err) {
+      // P5 AI-07: an outage is a 503 with a generic reason, not a 500.
+      return res.status(503).json({ error: aiFailureForClient(err, 'ai.translate') });
+    }
   }
 
   res.status(503).json({

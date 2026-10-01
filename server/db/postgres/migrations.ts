@@ -136,10 +136,10 @@ const COLUMN_MIGRATIONS: string[] = [
   `CREATE EXTENSION IF NOT EXISTS unaccent`,
   `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 
-  // FTS index'leri (unaccent ile)
-  `CREATE INDEX IF NOT EXISTS idx_messages_fts ON messages USING GIN(
-    to_tsvector('simple', coalesce(content,'') || ' ' || coalesce("displayName",''))
-  )`,
+  // FTS: idx_messages_fts was superseded by migration 027's
+  // idx_messages_fts_unaccent (the only expression fts.ts can use). Recreating
+  // it here on every boot re-added an unreachable GIN index that 027 dropped
+  // (P5 SH-04; migration 076 removes it where earlier boots recreated it).
   `CREATE INDEX IF NOT EXISTS idx_messages_trgm ON messages USING GIN(content gin_trgm_ops)`,
 
   // dm_messages — reactions, e2e alanları
@@ -1413,6 +1413,14 @@ async function runMigrationList(pool: Pool, sqls: string[], label: string): Prom
 export async function runInlineMigrations(pool: Pool): Promise<void> {
   await runMigrationList(pool, COLUMN_MIGRATIONS, 'column-migration');
   await runMigrationList(pool, EXTRA_TABLES, 'extra-table');
+  // P5 FED-01: COLUMN_MIGRATIONS also alters tables that EXTRA_TABLES creates
+  // (ap_follows "accepted"/"actorInbox", the messages FTS index). On a fresh
+  // database those statements ran before the tables existed, were skipped as
+  // "legacy", and the first boot served without them: every inbound
+  // ActivityPub Follow failed with 500 until the process happened to restart.
+  // The list is idempotent (IF NOT EXISTS), so a second pass makes the first
+  // boot's schema identical to every later boot's.
+  await runMigrationList(pool, COLUMN_MIGRATIONS, 'column-migration');
   // FK'ler EN SON: hedef tablolarin var oldugundan emin olunur.
   await runMigrationList(pool, USER_FK_MIGRATIONS, 'user-fk');
 }

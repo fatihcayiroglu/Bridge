@@ -30,6 +30,9 @@ type OutgoingFollowRow = { activityId?: string; [key: string]: unknown } | null;
 const federation = {
   claimPendingDeliveries:  jest.fn<Promise<DeliveryDoc[]>, [beforeTs: number, claimOwner: string, leaseMs?: number, limit?: number]>(async () => []),
   removeDeliveryEntry:     jest.fn<Promise<void>, [id: string]>(async () => undefined),
+  // P5 FED-05: outbound delivery consults the domain ACL; empty lists allow all.
+  findBlacklist: jest.fn(async (): Promise<unknown[]> => []),
+  findWhitelist: jest.fn(async (): Promise<unknown[]> => []),
   releaseDeliveryClaim:    jest.fn<Promise<unknown>, [id: string, claimOwner: string, doc: DeliveryDoc]>(async () => undefined),
   upsertDeliveryEntry:     jest.fn<Promise<unknown>, [id: string, doc: DeliveryDoc]>(async () => undefined),
   insertActivity:          jest.fn<Promise<unknown>, [doc: Record<string, unknown>]>(async () => undefined),

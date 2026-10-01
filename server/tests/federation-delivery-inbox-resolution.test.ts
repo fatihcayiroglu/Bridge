@@ -29,6 +29,9 @@ const info = jest.fn();
 const federation = {
   claimPendingDeliveries: jest.fn(async () => []),
   removeDeliveryEntry: jest.fn(async () => undefined),
+  // P5 FED-05: outbound delivery consults the domain ACL; empty lists allow all.
+  findBlacklist: jest.fn(async (): Promise<unknown[]> => []),
+  findWhitelist: jest.fn(async (): Promise<unknown[]> => []),
   releaseDeliveryClaim: jest.fn(async () => undefined),
   upsertDeliveryEntry: jest.fn(async () => undefined),
   findApFollows: jest.fn(async (): Promise<Array<Record<string, unknown>>> => []),

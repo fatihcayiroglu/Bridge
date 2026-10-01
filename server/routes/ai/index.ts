@@ -16,7 +16,7 @@ const router = express.Router();
 // Suggest-reply (small, lives here)
 import { Channels, Members, Messages, Users, Servers } from '../../db/repositories';
 
-import { callAI } from '../../lib/aiProvider';
+import { callAI, aiFailureForClient } from '../../lib/aiProvider';
 
 /**
  * @openapi
@@ -282,7 +282,10 @@ router.get('/suggest-reply/:channelId', authMiddleware, limits.ai(), async (req,
 
   if (!AI_ENABLED) return res.json({ suggestions: ['👍', 'Anladım!', 'Teşekkürler!', '🔥'], provider: safeProvider('rules') });
 
-  const msgs = (await Messages.messagesFind({ channelId: String(req.params.channelId ?? '') }).sort({ createdAt: -1 }).limit(6)).reverse();
+  // P5 AI-02: never deleted, system or E2EE messages.
+  const msgs = (await Messages.messagesFind({ channelId: String(req.params.channelId ?? ''), deletedAt: null, type: { $ne: 'system' } })
+    .sort({ createdAt: -1 }).limit(6)).reverse()
+    .filter((m: { content?: string }) => !(typeof m.content === 'string' && m.content.startsWith('🔒e2e:')));
   const uids  = [...new Set(msgs.map((m: { userId: string }) => m.userId))];
   const users = await Users.findByIds(uids);
   const um: Record<string, string> = {};
@@ -301,7 +304,14 @@ router.get('/suggest-reply/:channelId', authMiddleware, limits.ai(), async (req,
     .join('\n');
 
   const _aiSystemPrompt = 'Sen bir sohbet asistanısın. [MSG] etiketli mesajlara bakarak 3 kısa Türkçe yanıt öner. SADECE JSON: ["öneri1","öneri2","öneri3"]';
-  const raw = await callAI(_aiSystemPrompt, transcript, 120);
+  let raw: string;
+  try {
+    raw = await callAI(_aiSystemPrompt, transcript, 120);
+  } catch (err) {
+    // P5 AI-07: provider outage → canned suggestions, flagged; never a 500.
+    aiFailureForClient(err, 'ai.suggest_reply');
+    return res.json({ suggestions: ['👍', 'Anladım!', 'Teşekkürler!'], provider: safeProvider('rules'), degraded: true });
+  }
   let parsed: string[];
   try {
     parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());

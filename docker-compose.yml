@@ -101,7 +101,27 @@ services:
       # CORS
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:3001}"
 
-      # AI (opsiyonel)
+      # Public identity (P5 FED-07). Federation actor/key ids and passkeys are
+      # bound to it. The default equals the server's own fallback; a real
+      # deployment sets INSTANCE_URL=https://chat.example.com and
+      # WEBAUTHN_RP_ID=chat.example.com in .env. Production refuses to boot on
+      # a non-https (non-loopback) INSTANCE_URL, or one with a path/credentials.
+      INSTANCE_URL: "${INSTANCE_URL:-http://localhost:3001}"
+      WEBAUTHN_RP_ID: "${WEBAUTHN_RP_ID:-}"
+
+      # AI (opsiyonel). Nothing is required: with no provider set, AI features
+      # fall back to local rules. Self-hosted options (no third-party service):
+      #   OLLAMA_URL=http://ollama:11434  or
+      #   AI_PROVIDER=openai-compatible AI_BASE_URL=http://llm:8000/v1 AI_MODEL=<model>
+      # (vLLM, llama.cpp server, LM Studio, LocalAI). AI_PROVIDER=none turns AI
+      # off even when keys are set. See docs/AI.md.
+      AI_PROVIDER: "${AI_PROVIDER:-}"
+      AI_BASE_URL: "${AI_BASE_URL:-}"
+      AI_MODEL: "${AI_MODEL:-}"
+      AI_API_KEY: "${AI_API_KEY:-}"
+      AI_TIMEOUT_MS: "${AI_TIMEOUT_MS:-30000}"
+      OLLAMA_URL: "${OLLAMA_URL:-}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-llama3.2}"
       GROQ_API_KEY: "${GROQ_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"

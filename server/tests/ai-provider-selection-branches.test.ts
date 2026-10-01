@@ -179,7 +179,10 @@ describe('Gemini', () => {
     await expect(ai.callAI('sys', 'user', 64)).resolves.toBe('answer');
 
     const [url, init] = fetchT.mock.calls[0] as [string, any];
-    expect(url).toContain('key=gm');
+    // P5 AI-04: the key used to ride in the URL (`?key=gm`), where every proxy,
+    // APM agent and error log records it. It is a header now.
+    expect(url).not.toContain('gm');
+    expect(init.headers['x-goog-api-key']).toBe('gm');
     const body = JSON.parse(init.body);
     expect(body.contents[0].parts[0].text).toBe('sys\n\nuser');
     expect(body.generationConfig.maxOutputTokens).toBe(64);

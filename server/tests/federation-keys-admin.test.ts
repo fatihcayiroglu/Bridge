@@ -17,6 +17,11 @@ import express from 'express';
 const jwt = require('jsonwebtoken');
 
 import crypto from 'crypto';
+// P5 FED-03: the announcement itself is covered by federation-peer-announce.test.ts;
+// here only the route's handling of its outcome is under test.
+const mockAnnounce = jest.fn(async (..._args: unknown[]) => [] as Array<Record<string, unknown>>);
+jest.mock('../lib/federationPeerAnnounce', () => ({ announceKeyRotation: (...a: unknown[]) => mockAnnounce(...a) }));
+
 import federationKeysRouter from '../routes/admin/federation-keys';
 import peersRouter from '../routes/federation/peers';
 import {
@@ -56,6 +61,7 @@ describe('POST /api/admin/federation/rotate-key', () => {
   beforeEach(() => {
     mockDb._reset();
     _resetFederationKeyCache();
+    mockAnnounce.mockClear();
     app = express();
     app.use(express.json());
     app.use('/api/admin', federationKeysRouter);
@@ -76,6 +82,46 @@ describe('POST /api/admin/federation/rotate-key', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.keyVersion).toBeGreaterThanOrEqual(1);
     expect(res.body.publicKey?.publicKeyPem).toMatch(/BEGIN PUBLIC KEY/);
+  });
+
+  async function rotateAsAdmin() {
+    await mockDb.users.insert({
+      _id: 'admin-1', username: 'admin', displayName: 'Admin',
+      password: 'x', avatarColor: '#000', isAdmin: 1, tokenVersion: 0, createdAt: Date.now(),
+    });
+    return request(app).post('/api/admin/federation/rotate-key').set('Authorization', `Bearer ${adminToken('admin-1')}`);
+  }
+
+  it('P5 FED-03: the new key is announced, signed with the PREVIOUS key, and each peer outcome is reported', async () => {
+    mockAnnounce.mockResolvedValueOnce([
+      { peerId: 'p1', url: 'https://b.test', ok: true, status: 200 },
+      { peerId: 'p2', url: 'https://c.test', ok: false, error: 'ECONNREFUSED' },
+    ]);
+    // Keys exist before the rotation (as on any running instance).
+    const { getOrCreateFederationKeys } = require('../lib/federationKeys');
+    const before = await getOrCreateFederationKeys();
+
+    const res = await rotateAsAdmin();
+
+    expect(res.status).toBe(200);
+    expect(res.body.announced).toEqual([
+      { url: 'https://b.test', ok: true, status: 200 },
+      { url: 'https://c.test', ok: false, status: null },
+    ]);
+    expect(mockAnnounce).toHaveBeenCalledTimes(1);
+    const [signingKey, announcedKey] = mockAnnounce.mock.calls[0] as [string, { id: string; publicKeyPem: string }];
+    expect(signingKey).toBe(before.privateKeyPem);                       // the OLD key signs
+    expect(announcedKey.publicKeyPem).toBe(res.body.publicKey.publicKeyPem); // the NEW key is announced
+    expect(announcedKey.publicKeyPem).not.toBe(before.publicKeyPem);
+    expect(announcedKey.id).toBe(res.body.keyId);
+  });
+
+  it('P5 FED-03: a failed announcement does not fail the rotation', async () => {
+    mockAnnounce.mockRejectedValueOnce(new Error('peer store down'));
+    const res = await rotateAsAdmin();
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.announced).toEqual([]);
   });
 
   it('admin olmayan → 403', async () => {
@@ -183,5 +229,48 @@ describe('POST /api/federation/key-update', () => {
     expect(res.status).toBe(403);
     const victim = await mockDb.federationPeers.findOne({ _id: 'peer-2' });
     expect(victim!.publicKey).toBe('old-b');
+  });
+});
+
+// P5 FED-10 — measured in the two-instance lab: the route also wrote a
+// "keyUpdated" column federation_peers does not have. This mock DB accepts any
+// column, so the suite above stayed green while every real announcement was 500.
+// The written columns are checked against the DDL the server actually runs.
+describe('POST /api/federation/key-update — writes only real columns', () => {
+  function federationPeerColumns(): Set<string> {
+    const fs = require('fs');
+    const path = require('path');
+    const root = path.join(__dirname, '..', 'db');
+    const schema = fs.readFileSync(path.join(root, 'postgres', 'schema.ts'), 'utf8');
+    const table = schema.match(/CREATE TABLE IF NOT EXISTS federation_peers \(([\s\S]*?)\n\);/);
+    const cols = new Set<string>((table ? table[1] : '').split('\n')
+      .map((l: string) => l.trim().split(/\s+/)[0]?.replace(/"/g, '')).filter(Boolean));
+    const migrations = fs.readdirSync(path.join(root, 'migrations_pg')).filter((f: string) => f.endsWith('.sql'))
+      .map((f: string) => fs.readFileSync(path.join(root, 'migrations_pg', f), 'utf8')).join('\n')
+      + fs.readFileSync(path.join(root, 'postgres', 'migrations.ts'), 'utf8');
+    for (const m of migrations.matchAll(/ALTER TABLE federation_peers\s+ADD COLUMN IF NOT EXISTS\s+"?(\w+)"?/gi)) cols.add(m[1]);
+    return cols;
+  }
+
+  it('every column the route sets exists in federation_peers', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use('/api/federation', peersRouter);
+    mockDb._reset();
+    await mockDb.federationPeers.insert({ _id: 'peer-1', url: 'http://peer.example.com', name: 'Peer', publicKey: 'old', verified: true });
+    const update = jest.spyOn(mockDb.federationPeers, 'update');
+
+    const res = await request(app)
+      .post('/api/federation/key-update')
+      .set('x-bridge-ts', String(Date.now()))
+      .set('x-bridge-rsa-sig', 'authenticated-by-middleware')
+      .set('x-bridge-instance-url', 'http://peer.example.com')
+      .send({ url: 'http://peer.example.com', publicKey: { publicKeyPem: '-----BEGIN PUBLIC KEY-----\nNEW\n-----END PUBLIC KEY-----' } });
+
+    expect(res.status).toBe(200);
+    const columns = federationPeerColumns();
+    expect(columns).toContain('publicKey'); // the DDL parse itself works
+    const written = Object.keys((update.mock.calls.at(-1)![1] as { $set: Record<string, unknown> }).$set);
+    expect(written.filter((c) => !columns.has(c))).toEqual([]);
   });
 });

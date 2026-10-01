@@ -644,9 +644,8 @@ CREATE INDEX IF NOT EXISTS idx_adminlogs_admin ON admin_logs("adminId");
 -- Full-Text Search (PostgreSQL native)
 CREATE EXTENSION IF NOT EXISTS unaccent;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
-CREATE INDEX IF NOT EXISTS idx_messages_fts ON messages USING GIN(
-  to_tsvector('simple', coalesce(content,'') || ' ' || coalesce("displayName",''))
-);
+-- idx_messages_fts: superseded by migrations_pg/027 (idx_messages_fts_unaccent);
+-- not created here any more (P5 SH-04, see migration 076).
 CREATE INDEX IF NOT EXISTS idx_messages_trgm ON messages USING GIN(content gin_trgm_ops);
 CREATE TABLE IF NOT EXISTS uploads (
   _id TEXT PRIMARY KEY,

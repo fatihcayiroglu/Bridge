@@ -2,9 +2,27 @@
 // Federation peers, ActivityPub koleksiyonları ve ACL listeleri.
 
 import db from '../loader';
+
 import { postgresPoolOrTestFallback } from './postgresInvariant';
 import { parsePersistedEpochMillis } from '../../lib/persistedEpoch';
 import { parsePersistedNonNegativeInteger } from '../../lib/persistedInteger';
+
+/**
+ * P5 FED-02: federation_whitelist / federation_blacklist are
+ * (_id, domain, reason, "createdAt"). The admin routes build entries with
+ * `addedAt` / `addedBy`, columns that do not exist in PostgreSQL — every
+ * domain block or allow answered 500, so the federation ACL could not be
+ * administered at all. Entries are mapped onto the real columns here; who added
+ * an entry is recorded by the admin audit log (`logAction`).
+ */
+function toAclRow(entry: Record<string, unknown>): Record<string, unknown> {
+  const createdAt = typeof entry.createdAt === 'number' ? entry.createdAt
+    : typeof entry.addedAt === 'number' ? entry.addedAt : Date.now();
+  const row: Record<string, unknown> = { domain: entry.domain, createdAt };
+  if (entry._id !== undefined) row._id = entry._id;
+  if (entry.reason !== undefined) row.reason = entry.reason;
+  return row;
+}
 
 let deliveryClaimSerial: Promise<void> = Promise.resolve();
 
@@ -74,7 +92,7 @@ class FederationRepository {
   }
 
   async insertWhitelist(entry: Record<string, unknown>) {
-    return db.federationWhitelist.insert(entry);
+    return db.federationWhitelist.insert(toAclRow(entry));
   }
 
   async removeWhitelistByDomain(domain: string) {
@@ -90,7 +108,7 @@ class FederationRepository {
   }
 
   async insertBlacklist(entry: Record<string, unknown>) {
-    return db.federationBlacklist.insert(entry);
+    return db.federationBlacklist.insert(toAclRow(entry));
   }
 
   async removeBlacklistByDomain(domain: string) {

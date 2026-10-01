@@ -77,6 +77,21 @@ const scenarios = {
     record('fresh', 'SH-FRESH-03', 'tables created only by the chain exist', missing.length === 0 ? 'PASS' : 'FAIL', missing.length ? `missing: ${missing.join(', ')}` : CHAIN_TABLES.join(', '));
     const bad = errorLinesMentioningMissingSchema(boot.log);
     record('fresh', 'SH-FRESH-04', 'no warn/error log line about a missing table or column', bad.length === 0 ? 'PASS' : 'FAIL', bad.length ? bad[0].slice(0, 300) : '');
+    // FED-01 / SH-04: the first boot's schema must already be the final one. A
+    // difference means some statement only succeeds once a later step has run.
+    const snapshot = () => inst.psql('bridge', `
+      SELECT 'col ' || table_name || '.' || column_name || ' ' || data_type FROM information_schema.columns WHERE table_schema = 'public'
+      UNION ALL SELECT 'idx ' || indexname FROM pg_indexes WHERE schemaname = 'public'
+      UNION ALL SELECT 'con ' || conname FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace WHERE n.nspname = 'public'
+      ORDER BY 1`).split('\n');
+    const first = snapshot();
+    await inst.stop();
+    await inst.start({ tag: 'second-boot' });
+    const second = snapshot();
+    const added = second.filter((x) => !first.includes(x));
+    const removed = first.filter((x) => !second.includes(x));
+    record('fresh', 'SH-FRESH-05', 'a second boot changes nothing in the schema (columns, indexes, constraints)', added.length === 0 && removed.length === 0 ? 'PASS' : 'FAIL',
+      added.length || removed.length ? `second boot added ${JSON.stringify(added.slice(0, 5))} removed ${JSON.stringify(removed.slice(0, 5))}` : `${first.length} objects identical`);
   },
 
   async smoke() {

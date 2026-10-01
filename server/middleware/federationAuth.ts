@@ -20,6 +20,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { verifyFederationRequestV3 } from '../lib/httpSignatureV3';
+import { getInstanceUrl } from '../lib/federationKeys';
 import logger from '../lib/logger';
 
 declare global {
@@ -81,6 +82,12 @@ export async function federationAuth(
     'x-bridge-ts':      req.headers['x-bridge-ts']      as string | undefined,
     'x-bridge-keyid':   req.headers['x-bridge-keyid']   as string | undefined,
     // x-bridge-sig (HMAC) kasıtlı olarak okunmuyor
+  }, {
+    // P5 FED-03: the signature binds what this request IS — a ping cannot be
+    // replayed as a key-update, nor a request for another installation here.
+    method: req.method,
+    path:   req.originalUrl || req.url,
+    target: getInstanceUrl(),
   });
 
   if (!result.ok) {

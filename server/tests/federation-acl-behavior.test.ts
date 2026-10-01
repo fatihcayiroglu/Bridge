@@ -87,6 +87,12 @@ describe('checkFederationACL',()=>{
     expect(mockFed.findWhitelist).not.toHaveBeenCalled();
   });
 
+  test('FED-02: a stored row (createdAt, BIGINT as string) still blocks and reports when it was added',async()=>{
+    mockFed.findBlacklist.mockResolvedValueOnce([{_id:'b1',domain:'evil.example',reason:'spam',createdAt:'1700000000000'}]);
+    const r=await checkFederationACL('evil.example');
+    expect(r).toEqual({allowed:false,reason:'blacklisted',entry:{_id:'b1',domain:'evil.example',reason:'spam',addedAt:1700000000000,addedBy:'system'}});
+  });
+
   test('wildcard blacklist denies subdomain and apex',async()=>{
     mockFed.findBlacklist.mockResolvedValue([{_id:'b',domain:'*.evil.example',reason:'x',addedAt:1,addedBy:'a'}]);
     expect((await checkFederationACL('x.evil.example')).allowed).toBe(false);

@@ -22,14 +22,21 @@ import { present, recordOf } from './helpers/narrow';
 
 'use strict';
 process.env.NODE_ENV = 'test';
+// These suites exercise the retry CEILING mechanics on a 3-step schedule; the
+// default (P5 FED-06) schedule is asserted in federation-delivery-schedule-acl.test.ts.
+process.env.FEDERATION_DELIVERY_RETRY_DELAYS_MS = '30000,120000,600000';
 process.env.INSTANCE_URL = 'https://bridge.test';
 
 const fetchT = jest.fn();
 const warn = jest.fn();
+const error = jest.fn(); // P5 FED-06: dead letters are logged at error level
 const info = jest.fn();
 const federation = {
   claimPendingDeliveries: jest.fn(async () => [] as Array<Record<string, unknown>>),
   removeDeliveryEntry: jest.fn(async () => undefined),
+  // P5 FED-05: outbound delivery consults the domain ACL; empty lists allow all.
+  findBlacklist: jest.fn(async (): Promise<unknown[]> => []),
+  findWhitelist: jest.fn(async (): Promise<unknown[]> => []),
   // Urun `releaseDeliveryClaim(id, owner, doc)` cagirir; imza eksikti ve
   // cagri kaydindan `doc` OKUNAMIYORDU.
   releaseDeliveryClaim: jest.fn<Promise<unknown>, [id: string, claimOwner: string, doc: Record<string, unknown>]>(async () => undefined),
@@ -39,7 +46,7 @@ const federation = {
 const users = { getApPrivateKey: jest.fn(async () => null) };
 
 jest.mock('../lib/fetch', () => ({ fetchT: (...args: unknown[]) => fetchT(...args) }));
-jest.mock('../lib/logger', () => ({ __esModule: true, default: { warn, info } }));
+jest.mock('../lib/logger', () => ({ __esModule: true, default: { warn, info, error } }));
 jest.mock('../db/repositories', () => ({ Federation: federation, Users: users }));
 
 // startFederationDeliveryWorker() registers a 30s interval and a setImmediate
@@ -259,7 +266,7 @@ describe('retry scheduling', () => {
 
     expect(federation.releaseDeliveryClaim).not.toHaveBeenCalled();
     expect(federation.removeDeliveryEntry).toHaveBeenCalledWith('q1', expect.any(String));
-    expect(warn).toHaveBeenCalledWith(
+    expect(error).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'federation.delivery.max_retries' }), expect.any(String));
   });
 

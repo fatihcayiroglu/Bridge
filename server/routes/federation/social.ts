@@ -23,7 +23,7 @@ import { generateKeyPairSync } from 'crypto';
 import { Users, Federation, Notifications } from '../../db/repositories';
 import { authMiddleware} from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
-import { sendFollowRequest, sendUnfollow, sendLike, sendAnnounce, deliverApActivity } from './delivery';
+import { sendFollowRequest, sendUnfollow, sendLike, sendAnnounce, deliverApActivity, resolveFollowTarget } from './delivery';
 import { fetchT } from '../../lib/fetch';
 import { parseBoundedPositiveIntQuery } from '../../lib/queryNumbers';
 
@@ -367,6 +367,10 @@ router.post('/follow', authMiddleware, limits.federation(), async (req: import("
     fromUserId: user._id, targetActorUrl: actorUrl,
   });
   if (existing) return res.status(409).json({ error: 'Already following' });
+
+  // P5 FED-08: nothing is stored or queued for a target that cannot be followed.
+  const target = await resolveFollowTarget(actorUrl);
+  if (!target.ok) return res.status(target.status).json({ error: target.error });
 
   const followActivity = await sendFollowRequest(user, actorUrl);
   res.json({ ok: true, activity: followActivity });

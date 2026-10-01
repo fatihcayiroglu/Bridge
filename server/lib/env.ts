@@ -45,6 +45,8 @@ interface EnvResult {
   ok: boolean;
   value?: string | number | null;
   message?: string;
+  /** Advisory shown at boot even when ok (P5 FED-07). */
+  warn?: string;
 }
 
 function int(
@@ -258,6 +260,37 @@ const rules = [
     return { name: 'FEDERATION_SECRET', ok: true };
   })(),
 
+  // P5 FED-07: INSTANCE_URL is this installation's federated identity — every
+  // actor id, key id and signed Host is derived from it. It was never
+  // validated: "http://…", a path, or user:pass@ was accepted silently and
+  // produced identities remote servers refuse (or that leak credentials into
+  // every activity). Set-but-invalid now refuses to boot in production;
+  // unset only warns, because a non-federating install does not need it.
+  (() => {
+    const raw = process.env.INSTANCE_URL?.trim();
+    if (!raw) {
+      return IS_PROD
+        ? { name: 'INSTANCE_URL', ok: true, warn: 'INSTANCE_URL is not set: federation identities fall back to http://localhost and no remote server can reach this instance. Set INSTANCE_URL=https://your.domain to federate.' }
+        : { name: 'INSTANCE_URL', ok: true };
+    }
+    let u: URL;
+    try { u = new URL(raw); } catch {
+      return { name: 'INSTANCE_URL', ok: false, message: `INSTANCE_URL is not a valid absolute URL: ${raw.slice(0, 120)}` };
+    }
+    const problems: string[] = [];
+    // Loopback http stays allowed (local labs, the multi-node harness): it is
+    // unreachable from other installations anyway, like localhost for WebAuthn.
+    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+    if (IS_PROD && u.protocol === 'http:' && !loopback) problems.push('must be https in production (ActivityPub keys are fetched over HTTPS only)');
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') problems.push('must be http(s)');
+    if (u.username || u.password) problems.push('must not contain credentials');
+    if (u.search || u.hash) problems.push('must not contain a query or fragment');
+    if (u.pathname !== '/' && u.pathname !== '') problems.push('must be an origin without a path (Bridge serves federation at /api/federation)');
+    return problems.length
+      ? { name: 'INSTANCE_URL', ok: false, message: `INSTANCE_URL ${problems.join('; ')}` }
+      : { name: 'INSTANCE_URL', ok: true };
+  })(),
+
   // ── Sprint 120: WebSocket bağlantı limiti (D5) ────────────────
   int('MAX_WS_PER_IP',        { min: 1, max: 1000 }),
   int('MAX_UNAUTH_WS_PER_IP', { min: 1, max: 100  }),
@@ -289,6 +322,8 @@ const errors:   string[] = [];
 const warnings: string[] = [];
 
 for (const result of rules) {
+  const advisory = (result as EnvResult).warn;
+  if (advisory) warnings.push(`  ⚠  ${advisory}`);
   if (!result.ok) {
     if (IS_PROD) {
       errors.push(`  ✗ ${result.message}`);

@@ -137,7 +137,10 @@ function toAclEntry(row: unknown): AclEntry | null {
     _id: typeof r._id === 'string' ? r._id : '',
     domain: r.domain,
     reason: typeof r.reason === 'string' ? r.reason : '',
-    addedAt: typeof r.addedAt === 'number' ? r.addedAt : 0,
+    // Stored as "createdAt" (FED-02); BIGINT may arrive as a numeric string.
+    addedAt: typeof r.addedAt === 'number' ? r.addedAt
+      : typeof r.createdAt === 'number' ? r.createdAt
+        : typeof r.createdAt === 'string' && /^\d+$/.test(r.createdAt) ? Number(r.createdAt) : 0,
     addedBy: typeof r.addedBy === 'string' ? r.addedBy : 'system',
   };
 }

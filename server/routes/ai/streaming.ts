@@ -89,12 +89,11 @@
 import express from 'express';
 const router = express.Router();
 
-import { Messages, Channels } from '../../db/repositories';
 import { authMiddleware } from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
-import { callAI, AI_ENABLED, GROQ_KEY, GEMINI_KEY, OPENROUTER_KEY, OLLAMA_URL, OLLAMA_MODEL } from '../../lib/aiProvider';
+import { callAI, AI_ENABLED, GROQ_KEY, GEMINI_KEY, OPENROUTER_KEY, OLLAMA_URL, OLLAMA_MODEL, AI_BASE_URL, AI_MODEL, AI_API_KEY, aiFailureForClient } from '../../lib/aiProvider';
 import { fetchT } from '../../lib/fetch';
-import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
+import { readChannelForAi, channelDataBlock, CHANNEL_DATA_RULE, sanitizeHistory } from '../../lib/aiContext';
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -124,30 +123,20 @@ function calculateMaxTokens(modelName: string, contextLen: number): number {
   return Math.min(2048, availableTokens); // Cap at 2048 for safety
 }
 
+/**
+ * P5: channel context comes only from lib/aiContext (permission check, no
+ * deleted/system/E2EE rows, bounded) and is returned as a delimited DATA block
+ * for a user turn — never pasted into the system prompt.
+ */
 async function getAuthorizedChannelContext(
   userId: string,
   channelId: string,
   maxMessages: number = 20,
 ): Promise<{ ok: true; context: string } | { ok: false; status: 403 | 404 | 503; error: string }> {
   if (!channelId) return { ok: true, context: '' };
-  const channel = await Channels.findById(channelId).catch(() => null) as { _id: string; serverId: string } | null;
-  if (!channel) return { ok: false, status: 404, error: 'Kanal bulunamadı' };
-  const perms = await resolvePermissions(userId, String(channel.serverId), channelId).catch(() => 0);
-  if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY)) {
-    return { ok: false, status: 403, error: 'Bu kanalın geçmişini görüntüleme izniniz yok.' };
-  }
-  try {
-    const msgs = await Messages.messagesFind({ channelId }).sort({ createdAt: -1 }).limit(maxMessages);
-    return {
-      ok: true,
-      context: msgs.reverse()
-        .map((m: { displayName?: string; username?: string; content?: string }) =>
-          `${m.displayName || m.username}: ${m.content}`)
-        .join('\n'),
-    };
-  } catch {
-    return { ok: false, status: 503, error: 'Kanal bağlamı okunamadı' };
-  }
+  const read = await readChannelForAi(userId, channelId, { limit: maxMessages });
+  if (!read.ok) return read;
+  return { ok: true, context: channelDataBlock(read.messages) };
 }
 
 interface StreamMessage { role: string; content: string }
@@ -158,17 +147,48 @@ async function streamGroq(
   res: express.Response,
   temperature = 0.3,
 ): Promise<boolean> {
-  if (!GROQ_KEY) return false;
-  
+  if (!GROQ_KEY) return streamCompatible(messages, send, res, temperature);
+  return streamOpenAiSse('https://api.groq.com/openai/v1/chat/completions',
+    { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_KEY}` },
+    'llama-3.3-70b-versatile', messages, send, res, temperature, false);
+}
+
+/**
+ * P5 AI-06: a self-hosted OpenAI-compatible server (AI_BASE_URL + AI_MODEL)
+ * streams through the same SSE parser. Used only when Groq is not configured.
+ */
+async function streamCompatible(
+  messages: StreamMessage[],
+  send: (data: unknown) => void,
+  res: express.Response,
+  temperature = 0.3,
+): Promise<boolean> {
+  if (!AI_BASE_URL) return false;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (AI_API_KEY) headers.Authorization = `Bearer ${AI_API_KEY}`;
+  return streamOpenAiSse(`${AI_BASE_URL}/chat/completions`, headers, AI_MODEL, messages, send, res, temperature, true);
+}
+
+async function streamOpenAiSse(
+  url: string,
+  headers: Record<string, string>,
+  model: string,
+  messages: StreamMessage[],
+  send: (data: unknown) => void,
+  res: express.Response,
+  temperature: number,
+  skipSsrfCheck: boolean,
+): Promise<boolean> {
   // Calculate safe max_tokens based on message context
   const contextLength = JSON.stringify(messages).length;
-  const maxTokens = calculateMaxTokens('llama-3.3-70b-versatile', contextLength);
-  
-  const r = await fetchT('https://api.groq.com/openai/v1/chat/completions', {
+  const maxTokens = calculateMaxTokens(model, contextLength);
+
+  const r = await fetchT(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_KEY}` },
-    body: JSON.stringify({ model: 'llama-3.3-70b-versatile', max_tokens: maxTokens, temperature, stream: true, messages }),
+    headers,
+    body: JSON.stringify({ model, max_tokens: maxTokens, temperature, stream: true, messages }),
     timeoutMs: 60_000, // 60s — SSE stream için uzun timeout
+    ...(skipSsrfCheck ? { skipSsrfCheck: true } : {}), // operator-configured internal host
   });
   if (!r.ok || !r.body) return false;
 
@@ -258,10 +278,11 @@ router.get('/ask/stream', authMiddleware, limits['ai.stream'](), async (req, res
     try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* client gone */ }
   };
 
+  // P5 AI-05: channel text is data in the user turn, not system authority.
   const channelContext = ctx.context;
   const messages: StreamMessage[] = [
-    { role: 'system', content: `Bağlam:\n${channelContext}` },
-    { role: 'user', content: q },
+    { role: 'system', content: channelContext ? `Bridge sohbet asistanısın. ${CHANNEL_DATA_RULE}` : 'Bridge sohbet asistanısın.' },
+    { role: 'user', content: channelContext ? `${channelContext}\n\n${q}` : q },
   ];
 
   try {
@@ -271,7 +292,7 @@ router.get('/ask/stream', authMiddleware, limits['ai.stream'](), async (req, res
     send({ error: 'AI sağlayıcı bulunamadı' });
     res.end();
   } catch (err) {
-    send({ error: err instanceof Error ? err.message : 'AI hatası' });
+    send({ error: aiFailureForClient(err, 'ai.ask.stream') });
     res.end();
   } finally {
     clearTimeout(streamTimeout);
@@ -295,7 +316,8 @@ router.get('/stream', authMiddleware, limits['ai.stream'](), async (req, res) =>
   };
 
   const context  = ctx.context;
-  const system   = 'Bridge chat uygulamasının yardımcı asistanısın. Türkçe yanıt ver. Kısa ve öz ol.';
+  const system   = 'Bridge chat uygulamasının yardımcı asistanısın. Türkçe yanıt ver. Kısa ve öz ol.'
+    + (context ? ` ${CHANNEL_DATA_RULE}` : '');
   const userMsg  = context ? `Son mesajlar:\n${context}\n\nSoru: ${q}` : q;
   const messages = [
     { role: 'system', content: system },
@@ -321,7 +343,7 @@ router.get('/stream', authMiddleware, limits['ai.stream'](), async (req, res) =>
     sendEvent('error', { message: 'AI sağlayıcı bulunamadı' });
     res.end();
   } catch (err) {
-    sendEvent('error', { message: err instanceof Error ? err.message : 'AI hatası' });
+    sendEvent('error', { message: aiFailureForClient(err, 'ai.stream') });
     res.end();
   }
 });
@@ -336,15 +358,12 @@ router.get('/clyde/stream', authMiddleware, limits['ai.stream'](), async (req, r
   const ctx = await getAuthorizedChannelContext(castAuthed(req).user.id, channelId);
   if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
 
+  // P5 AI-01: client history used to accept ANY role — a request could carry
+  // its own "system" turns. Only user/assistant turns, bounded, are kept.
   let history: StreamMessage[] = [];
   try {
     if (req.query.history as string) {
-      const parsed = JSON.parse(String(req.query.history as string));
-      if (Array.isArray(parsed)) {
-        history = parsed
-          .filter(m => m && typeof m.role === 'string' && typeof m.content === 'string')
-          .slice(-20);
-      }
+      history = sanitizeHistory(JSON.parse(String(req.query.history as string)));
     }
   } catch { /* invalid history — ignore */ }
 
@@ -374,11 +393,15 @@ router.get('/clyde/stream', authMiddleware, limits['ai.stream'](), async (req, r
     'Kişiliğin: Samimi, yardımsever, zeki ve esprili.',
     'Yanıtlarında markdown kullanabilirsin: **kalın**, `kod`, ```kod blokları```.',
     'Kısa ve öz ol. Kullanıcının dilinde yanıt ver.',
-    channelContext ? `\nMevcut kanal bağlamı:\n${channelContext}` : '',
+    channelContext ? CHANNEL_DATA_RULE : '',
   ].join('\n');
 
+  // P5 AI-05: the channel block is a user turn, not part of the system prompt.
+  const contextTurn: StreamMessage[] = channelContext
+    ? [{ role: 'user', content: `Mevcut kanal bağlamı:\n${channelContext}` }] : [];
   const messages: StreamMessage[] = [
     { role: 'system', content: systemPrompt },
+    ...contextTurn,
     ...history,
     { role: 'user', content: q },
   ];
@@ -389,6 +412,7 @@ router.get('/clyde/stream', authMiddleware, limits['ai.stream'](), async (req, r
     // Gemini multi-turn
     if (GEMINI_KEY) {
       const geminiMsgs = [
+        ...contextTurn.map(m => ({ role: 'user', parts: [{ text: m.content }] })),
         ...history.map(m => ({
           role:  m.role === 'assistant' ? 'model' : 'user',
           parts: [{ text: m.content }],
@@ -399,10 +423,11 @@ router.get('/clyde/stream', authMiddleware, limits['ai.stream'](), async (req, r
       const maxTokens = calculateMaxTokens('gemini-1.5-pro', contextLen);
       
       const r = await fetchT(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          // P5 AI-04: the key is a header, never part of the URL.
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': String(GEMINI_KEY) },
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: systemPrompt }] },
             contents:          geminiMsgs,
@@ -469,7 +494,7 @@ router.get('/clyde/stream', authMiddleware, limits['ai.stream'](), async (req, r
     send({ error: 'AI sağlayıcı yapılandırılmamış' });
     res.end();
   } catch (err) {
-    send({ error: err instanceof Error ? err.message : 'Sunucu hatası' });
+    send({ error: aiFailureForClient(err, 'ai.clyde.stream') });
     res.end();
   } finally {
     clearTimeout(streamTimeout);

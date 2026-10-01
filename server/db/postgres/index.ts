@@ -70,6 +70,11 @@ async function initSchema(): Promise<void> {
         });
         if (applied.length) {
           logger.info({ event: 'db.migrations.applied', count: applied.length }, `[DB] ${applied.length} versioned migration uygulandı.`);
+          // P5 SH-04: inline steps that target chain-created tables (user FKs on
+          // oauth_tokens / server_boosts) were skipped before the chain existed
+          // and only appeared on a SECOND boot. Every inline statement is
+          // idempotent; one more pass makes this boot's schema the final one.
+          await runInlineMigrations(pool);
         }
       } else {
         const pending = await pendingMigrations(client);

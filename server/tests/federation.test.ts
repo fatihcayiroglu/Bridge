@@ -141,6 +141,8 @@ describe('POST /api/federation/peers', () => {
         url: 'https://remote.bridge.example.com',
         version: 24,
         federation: true,
+        // P5 FED-04: a peer must publish its RSA key (ADR-0006 Faz 3 accepts nothing else).
+        publicKey: { publicKeyPem: '-----BEGIN PUBLIC KEY-----\nMIIB\n-----END PUBLIC KEY-----' },
       }),
     });
 
@@ -164,6 +166,8 @@ describe('POST /api/federation/peers', () => {
         url: 'https://remote.bridge.example.com',
         version: 24,
         federation: true,
+        // P5 FED-04: a peer must publish its RSA key (ADR-0006 Faz 3 accepts nothing else).
+        publicKey: { publicKeyPem: '-----BEGIN PUBLIC KEY-----\nMIIB\n-----END PUBLIC KEY-----' },
       }),
     });
 
