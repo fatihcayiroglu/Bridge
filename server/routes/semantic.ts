@@ -69,6 +69,7 @@ import { cache } from '../lib/redisAdapter';
 import { limits } from '../middleware/rateLimit';
 
 import { callAI, AI_ENABLED } from '../lib/aiProvider';
+import { serverAllowsAi } from '../lib/aiServerPolicy';
 import logger from '../lib/logger';
 import { generateEmbedding, vectorSearch, PGVECTOR_ENABLED, EMBEDDING_PROVIDER } from '../lib/pgvector';
 import { viewableChannelIds } from '../lib/permissions';
@@ -87,6 +88,26 @@ function keywordSearch<T extends { content?: string }>(query: string, messages: 
     .filter(m => m._score > 0)
     .sort((a, b) => b._score - a._score)
     .slice(0, limit);
+}
+
+// P6: a cached answer is checked against the messages as they are NOW. A
+// message deleted after the answer was cached (or in a channel this member can
+// no longer see) is not served from the cache, and an edited message shows its
+// current text — the vector index forgets on edit/delete, so must the cache.
+async function revalidateCachedSearch(userId: string, serverId: string, cached: object): Promise<object> {
+  if (typeof cached !== 'object' || Array.isArray(cached)) return cached;
+  const entry = cached as Record<string, unknown>;
+  const matches = Array.isArray(entry.matches) ? entry.matches as Array<Record<string, unknown>> : [];
+  if (!matches.length) return cached;
+  const ids = matches.map((m) => String(m._id));
+  const live = await Messages.findWhere({ _id: { $in: ids }, serverId, deletedAt: null }) as Array<{ _id: unknown; channelId: unknown; content?: unknown }>;
+  const byId = new Map(live.map((m) => [String(m._id), m]));
+  const viewable = await viewableChannelIds(userId, serverId, live.map((m) => String(m.channelId)));
+  const kept = matches.flatMap((m) => {
+    const row = byId.get(String(m._id));
+    return row && viewable.has(String(row.channelId)) ? [{ ...m, content: row.content }] : [];
+  });
+  return { ...entry, matches: kept, total: kept.length };
 }
 
 // ── POST /api/semantic/search — Doğal dil mesaj araması ─────────
@@ -135,9 +156,13 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   //
   // Anahtara kullanici kimligi eklemek dogru olcektir: gorunurluk kullaniciya
   // gore hesaplanir, dolayisiyla onbellek de kullaniciya gore ayrilmalidir.
-  const cacheKey = `sem:${_u.id}:${serverId}:${channelId || ''}:${query.slice(0,50)}:${days}:${resultLimit}`;
+  // P6: a server with AI off is searched by keyword only — the query is not
+  // embedded and no message is handed to an AI. The flag is part of the cache
+  // key so turning AI off or on takes effect on the next request.
+  const serverAi = await serverAllowsAi(serverId);
+  const cacheKey = `sem:${_u.id}:${serverId}:${channelId || ''}:${query.slice(0,50)}:${days}:${resultLimit}:${serverAi ? 'ai' : 'noai'}`;
   const cached = await cache.get(cacheKey);
-  if (cached) return res.json({ ...cached, cached: true });
+  if (cached) return res.json({ ...(await revalidateCachedSearch(_u.id, serverId, cached)), cached: true });
 
   // Mesajları getir
   const since = Date.now() - (days * 24 * 60 * 60 * 1000);
@@ -161,7 +186,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   messages = messages.filter(m => viewable.has(String(m.channelId)));
 
   if (!messages.length) return res.json({
-    matches: [], query, provider: 'none', total: 0, days, limit: resultLimit, aiDisabled: !AI_ENABLED,
+    matches: [], query, provider: 'none', total: 0, days, limit: resultLimit, aiDisabled: !AI_ENABLED || !serverAi, ...(AI_ENABLED && !serverAi ? { aiDisabledForServer: true } : {}),
   });
 
   // Kullanıcı adlarını getir
@@ -180,7 +205,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   let provider = 'rules';
 
   // ── pgvector semantik arama (AI_ENABLED gerektirmez) ─────────────────────
-  if (PGVECTOR_ENABLED) {
+  if (PGVECTOR_ENABLED && serverAi) {
     try {
       const embedding = await generateEmbedding(query);
       if (embedding) {
@@ -228,7 +253,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   }
 
   // ── AI araması (pgvector sonuç vermediyse veya devre dışıysa) ────────────
-  if (!results && AI_ENABLED) {
+  if (!results && AI_ENABLED && serverAi) {
     try {
       // AI'ya mesajları ver ve ilgilileri bul
       const transcript = messages.slice(0, 100).map((m, i) =>
@@ -294,7 +319,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
     provider = 'rules';
   }
 
-  const out = { ...results, query, provider, total: results.matches.length, days, limit: resultLimit, aiDisabled: !AI_ENABLED };
+  const out = { ...results, query, provider, total: results.matches.length, days, limit: resultLimit, aiDisabled: !AI_ENABLED || !serverAi, ...(AI_ENABLED && !serverAi ? { aiDisabledForServer: true } : {}) };
   await cache.set(cacheKey, out, 180); // 3dk cache
   res.json(out);
 });
@@ -312,7 +337,10 @@ router.get('/digest/:serverId', authMiddleware, async (req, res) => {
   // Ayni sizinti bu ucta da vardi ve onbellek omru 30 DAKIKAYDI (yukaridaki
   // ayrintili nota bakiniz). Ozet, kanal etkinligini toparladigi icin
   // yetkisiz bir uyeye gizli kanallarin icerigini tasiyabilirdi.
-  const cacheKey = `digest:${_u.id}:${serverId}:${days}`;
+  // P6: the server's AI setting is part of the key (an AI summary written
+  // before the owner turned AI off is not served after).
+  const serverAi = await serverAllowsAi(serverId);
+  const cacheKey = `digest:${_u.id}:${serverId}:${days}:${serverAi ? 'ai' : 'noai'}`;
   const cached = await cache.get(cacheKey);
   if (cached) return res.json({ ...cached, cached: true });
 
@@ -380,7 +408,7 @@ router.get('/digest/:serverId', authMiddleware, async (req, res) => {
 
   // AI özet
   let aiSummary = null;
-  if (AI_ENABLED && allMsgs.length > 0) {
+  if (AI_ENABLED && serverAi && allMsgs.length > 0) {
     try {
       const topContent = allMsgs
         .sort((a, b) => b.createdAt - a.createdAt)

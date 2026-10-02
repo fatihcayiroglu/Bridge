@@ -419,6 +419,26 @@ jobs:
           PG_TEST_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
           REDIS_TEST_URL: redis://localhost:6379
           MINIO_TEST_ENDPOINT: http://127.0.0.1:9000
+      # P6: the pgvector embedding writer, its invalidation triggers, the live
+      # sweep and vector search against a REAL `vector` extension. The service
+      # PostgreSQL above has none, so a throwaway cluster from the runner's own
+      # PostgreSQL gets the distribution's pgvector package. The suite FAILS
+      # (it does not skip) when PGVECTOR_TEST_URL is set and the extension is
+      # missing; in the step above it is skipped because the URL is not set.
+      - name: pgvector integration suite (real extension)
+        run: |
+          set -euo pipefail
+          PGBIN=$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)
+          MAJOR=$(basename "$(dirname "$PGBIN")")
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "postgresql-${MAJOR}-pgvector"
+          D="$RUNNER_TEMP/pgvector-data"
+          "$PGBIN/initdb" -D "$D" -U bridge --auth=trust >/dev/null
+          "$PGBIN/pg_ctl" -D "$D" -o "-p 55432 -k $RUNNER_TEMP -c listen_addresses=127.0.0.1" -l "$RUNNER_TEMP/pgvector.log" -w start
+          "$PGBIN/createdb" -h 127.0.0.1 -p 55432 -U bridge bridge_vector
+          URL=postgresql://bridge@127.0.0.1:55432/bridge_vector
+          cd server && PG_TEST_URL="$URL" PGVECTOR_TEST_URL="$URL" \
+            npx jest --config jest.pg.config.js --runInBand --forceExit tests/pg-integration/pgvector-embedding.pgtest.ts
       # Birlesik aramanin CANLI planlayici paketi (FTS indeks hizasi, aksan duyarsizlastirma,
       # yetki kapsami). CI'da hic kosmuyordu: Faz 16'da kendi fiksturunde kirikti ve kimse
       # gormedi. Sema bir onceki adimda (test:pg) kurulur. Komut adres olmadan calismayi

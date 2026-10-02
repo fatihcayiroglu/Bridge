@@ -36,7 +36,8 @@ jest.mock('../db/repositories', () => ({
   Members: { findOne: memberFindOne, findByUser: memberFindByUser, findByServer: memberFindByServer },
   Messages: { messagesFind },
   Users: { findById: userFindById, findByIds: userFindByIds },
-  Servers: { find: serverFind },
+  // P6: the per-server AI gate reads server rows; migrated rows allow AI by default.
+  Servers: { find: serverFind, findById: async (id: string) => ({ _id: id, aiEnabled: true }), findByIds: async (ids: string[]) => ids.map((id) => ({ _id: id, aiEnabled: true })) },
 }));
 
 import express from 'express';

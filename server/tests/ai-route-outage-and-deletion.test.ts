@@ -23,7 +23,8 @@ jest.mock('../db/repositories', () => ({
   Members: { findOne: async () => ({ userId: 'u1' }) },
   Messages: { messagesFind: (...a: unknown[]) => (messagesFind as any)(...a) },
   Users: { findByIds: async () => [{ _id: 'u2', username: 'bob' }] },
-  Servers: {},
+  // P6: the per-server AI gate reads the server row; a migrated row allows AI by default.
+  Servers: { findById: async () => ({ _id: 's1', aiEnabled: true }) },
 }));
 jest.mock('../lib/permissions', () => ({
   resolvePermissions: async () => (1 << 0) | (1 << 15),

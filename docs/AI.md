@@ -22,7 +22,7 @@ one configured, in this order: Groq → Gemini → OpenRouter → Ollama → Ope
 | `groq` | `GROQ_API_KEY` | Groq (third party) |
 | `gemini` | `GEMINI_API_KEY` | Google (third party) |
 | `openrouter` | `OPENROUTER_API_KEY` | OpenRouter (third party) |
-| `none` | — | nowhere: AI is off **even if keys are set** |
+| `none` | — | nowhere: AI is off **even if keys are set** — chat, voice transcription and embeddings alike |
 
 Notes:
 
@@ -34,6 +34,41 @@ Notes:
   provider and is logged at error level.
 - **Time limit.** `AI_TIMEOUT_MS` (default 30000) is the total time one AI call
   may take, retries included. Streams end after 45 s.
+- **Voice-message transcription** follows `AI_PROVIDER` too (P6). It runs only
+  when `AI_PROVIDER` is unset (Groq key, else OpenAI key) or `groq`. Any other
+  selected provider, or `none`, means no audio is sent anywhere.
+- **Embeddings** (`PGVECTOR_ENABLED`, `EMBEDDING_PROVIDER`) are a separate
+  operator opt-in, but `AI_PROVIDER=none` turns them off as well (P6).
+
+## Per-server opt-out (P6)
+
+The installation decides whether AI exists. A **server owner** decides whether
+their server's content may reach it: Server Settings → General → "Allow AI
+features on this server" (`PATCH /api/servers/:id { "aiEnabled": false }`,
+owner only, a real boolean).
+
+With AI off for a server, nothing from it is sent to an AI provider: no channel
+context, no message text, no voice audio, no search query embedding, no tags or
+name for server recommendations.
+
+- **Routes with a local fallback still answer.** Summary, reply suggestions,
+  moderation, search and digest answer from rules, marked
+  `aiDisabledForServer: true`.
+- **Routes without one refuse.** Streams and translation answer 403
+  `AI_DISABLED_FOR_SERVER`.
+
+How the setting behaves:
+
+- **Read on every request, from the database.** Turning it off or on takes effect
+  on the next request. An AI answer cached before the opt-out is not served
+  after it, and a local answer is not cached.
+- **Permission first.** The requester's own permission check runs first, so a
+  non-member learns nothing about another server's setting.
+- **Default.** Existing and new servers allow AI (migration 078), which
+  preserves behaviour. An unreadable setting counts as "off".
+- **Translation needs the server id.** Text sent to `/api/ai/translate` is
+  attributed to a server only when the client passes `serverId`; the server
+  cannot attribute free text sent without it.
 
 ## What is sent to a provider
 
@@ -71,14 +106,49 @@ to read, because nothing else is ever in the context.
   reports whether AI is enabled; in production it reports the provider only
   as `ai`.
 
+## Embeddings and vector search (P6)
+
+pgvector semantic search is an operator opt-in (`PGVECTOR_ENABLED=true` plus
+an embedding provider). How it behaves:
+
+- **When messages are embedded.** A live sweep runs every
+  `EMBED_SWEEP_INTERVAL_MS` (60 s by default). One node per interval, chosen by a
+  cluster-wide claim, embeds up to `EMBED_SWEEP_BATCH` of the newest messages
+  without a vector. A nightly job (03:00 UTC) handles older history. "Pending"
+  is `embedding IS NULL` in the database, so a restart loses nothing.
+- **What is never sent to the embedding provider:**
+  - anything when `AI_PROVIDER=none`;
+  - anything from a server whose owner turned AI off;
+  - deleted messages, E2EE payloads and system messages.
+
+  Each message is re-checked against the database immediately before the
+  provider call.
+- **Edits and deletes.** Database triggers handle them, so every write path is
+  covered:
+  - An edit or delete clears the message's vector in the same statement, and
+    the sweep then embeds the new text.
+  - A vector is stored only if the row still holds the text that was embedded.
+    An edit that lands during the provider call wins, and the vector is
+    discarded.
+- **Opt-out.** When an owner turns AI off, that server's vectors are removed in
+  the same transaction. Turning it back on re-indexes the server.
+- **Search.** Vector search ranks only messages in channels the member can see,
+  and never deleted or E2EE rows.
+  - A cached search answer (3 min) is re-checked on every hit: deleted messages
+    and newly hidden channels drop out, and edited messages show their current
+    text.
+  - If the provider is down, search falls back to AI or keyword answers, and
+    the sweep stops a pass after `EMBED_SWEEP_MAX_FAILURES` failures.
+- **Logs** record message ids and outcomes, never message text.
+
 ## Known limits
 
-- **No per-server opt-out.** Control is per installation (`AI_PROVIDER`). A
-  server owner cannot opt their server out of AI features while the
-  installation has a provider.
-- **Embeddings.** pgvector semantic search (`PGVECTOR_ENABLED`) has an
-  embedding writer, `saveMessageEmbedding`, that nothing calls, so semantic
-  search uses its keyword/AI fallback. Vector search excludes deleted messages
-  if embeddings are ever written.
+- **Embeddings.** Indexing is per server, not per channel: with AI allowed on
+  a server, messages in its private channels are embedded too, and so reach the
+  embedding provider. Only members who can see a channel ever get its messages
+  back from search. An edit to a message older than the sweep window (48 h by
+  default) is re-indexed by the nightly job; until then the message has no
+  vector and is found by keyword only. The deterministic embedder used in the
+  lab and the tests demonstrates the plumbing, not search quality.
 - **Auto-moderation.** It is opt-in per server (`autoModerate`). When enabled,
   message content is sent to the configured provider by design.

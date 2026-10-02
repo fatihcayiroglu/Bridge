@@ -18,6 +18,10 @@ function makeStore(overrides: Record<string, unknown> = {}) {
     serverId: 's1', server: { _id: 's1', name: 'Bridge', icon: '🌉' }, activeTab: 'general',
     error: null, name: 'Bridge', icon: '🌉', slug: '', slugPreview: '', slugSaving: false,
     discoverable: false, category: 'other', discoverySaving: false, bannerUrl: '', iconUrl: '', saving: false,
+    // P6 — per-server AI opt-out (the store interface gained these members).
+    aiEnabled: true, aiSaving: false,
+    setAiEnabled: vi.fn((value: boolean) => { store.aiEnabled = value; }),
+    saveAi: vi.fn().mockResolvedValue(true), isAiDirty: vi.fn(() => false),
     setTab: vi.fn(), setError: vi.fn(),
     setName: vi.fn((value: string) => { store.name = value; }),
     setIcon: vi.fn((value: string) => { store.icon = value; }),
@@ -105,6 +109,33 @@ describe('GeneralTab behavior', () => {
     const section = category.closest('fieldset')!;
     await fireEvent.click(section.querySelector<HTMLButtonElement>('button')!);
     await waitFor(() => expect(store.saveDiscovery).toHaveBeenCalledTimes(1));
+  });
+
+  it('P6: exposes the AI opt-out as a labelled toggle with its own save', async () => {
+    const store = makeStore({ isAiDirty: () => true });
+    render(GeneralTab, { props: { store } });
+    const toggle = document.querySelector<HTMLInputElement>('#srv-ai-enabled-input')!;
+    expect(toggle.checked).toBe(true);
+    // The label names the control for assistive technology.
+    expect(toggle.closest('label')!.textContent).toMatch(/yapay zekâ/i);
+    await fireEvent.click(toggle);
+    expect(store.setAiEnabled).toHaveBeenCalledWith(false);
+    await fireEvent.click(toggle.closest('fieldset')!.querySelector<HTMLButtonElement>('button')!);
+    await waitFor(() => expect(store.saveAi).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith('Yapay zekâ ayarı kaydedildi', 'success'));
+  });
+
+  it('P6: the AI save stays disabled while clean and reports no fake success on failure', async () => {
+    const clean = makeStore();
+    render(GeneralTab, { props: { store: clean } });
+    const btn = document.querySelector<HTMLInputElement>('#srv-ai-enabled-input')!.closest('fieldset')!.querySelector<HTMLButtonElement>('button')!;
+    expect(btn.disabled).toBe(true);
+    cleanup();
+    const failing = makeStore({ isAiDirty: () => true, saveAi: vi.fn().mockResolvedValue(false) });
+    render(GeneralTab, { props: { store: failing } });
+    await fireEvent.click(document.querySelector<HTMLInputElement>('#srv-ai-enabled-input')!.closest('fieldset')!.querySelector<HTMLButtonElement>('button')!);
+    await waitFor(() => expect(failing.saveAi).toHaveBeenCalledTimes(1));
+    expect(toastMock).not.toHaveBeenCalled();
   });
 
   it('disables save while a request is in flight and renders progress copy', () => {

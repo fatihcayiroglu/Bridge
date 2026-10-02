@@ -207,3 +207,80 @@ describe('a provider outage never costs the user their message', () => {
     expect(logged).not.toContain('cok-gizli-anahtar');
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// P6 AI-09 — transcription obeys the installation's AI_PROVIDER
+// ════════════════════════════════════════════════════════════════════════════
+// Transcription sends a member's audio to a third party. It used to read
+// GROQ_API_KEY / OPENAI_API_KEY itself, so AI_PROVIDER=none ("AI is off even if
+// keys are set", docs/AI.md) did not stop it, and an operator who picked one
+// provider still had audio sent to another.
+describe('P6 AI-09: AI_PROVIDER governs transcription', () => {
+  afterEach(() => { delete process.env.AI_PROVIDER; });
+
+  it.each(['none', 'off', 'rules'])('AI_PROVIDER=%s: no audio leaves the server even with both keys set', async (sel) => {
+    process.env.AI_PROVIDER = sel;
+    process.env.GROQ_API_KEY = 'groq-secret';
+    process.env.OPENAI_API_KEY = 'openai-secret';
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => 'metin' });
+
+    const res = await post();
+    expect(res.status).toBe(200);
+    await settle();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('AI_PROVIDER names another provider: audio is not sent to Groq or OpenAI', async () => {
+    process.env.AI_PROVIDER = 'gemini';
+    process.env.GROQ_API_KEY = 'groq-secret';
+    process.env.OPENAI_API_KEY = 'openai-secret';
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => 'metin' });
+
+    await post();
+    await settle();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('AI_PROVIDER=groq: Groq is used, OpenAI never', async () => {
+    process.env.AI_PROVIDER = 'groq';
+    process.env.GROQ_API_KEY = 'groq-secret';
+    process.env.OPENAI_API_KEY = 'openai-secret';
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => 'metin' });
+
+    await post();
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('api.groq.com');
+  });
+
+  it('AI_PROVIDER=groq without a Groq key: no fallback to OpenAI', async () => {
+    process.env.AI_PROVIDER = 'groq';
+    process.env.OPENAI_API_KEY = 'openai-secret';
+    await post();
+    await settle();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// P6 — per-server AI opt-out: a server whose owner turned AI off never has its
+// members' audio sent out, even with a provider configured.
+describe('P6: the server AI setting governs transcription', () => {
+  it('aiEnabled=false: the voice message is sent, no audio leaves the server', async () => {
+    process.env.GROQ_API_KEY = 'groq-secret';
+    await db.servers.update({ _id: 's1' }, { $set: { aiEnabled: false } });
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => 'metin' });
+    const res = await post();
+    expect(res.status).toBe(200);
+    await settle();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('control: aiEnabled=true transcribes', async () => {
+    process.env.GROQ_API_KEY = 'groq-secret';
+    await db.servers.update({ _id: 's1' }, { $set: { aiEnabled: true } });
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => 'metin' });
+    await post();
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

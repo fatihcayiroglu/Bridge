@@ -778,6 +778,8 @@ const EXTRA_TABLES: string[] = [
   // Migration 074 — storage format of channel message text (0 legacy sanitized, 1 raw).
   // Mirrored here so a booting instance never writes `contentFormat` into a table without it.
   `ALTER TABLE messages ADD COLUMN IF NOT EXISTS "contentFormat" SMALLINT NOT NULL DEFAULT 0`,
+  // Migration 078 (P6) — per-server AI opt-out; TRUE preserves behaviour, the owner opts out.
+  `ALTER TABLE servers ADD COLUMN IF NOT EXISTS "aiEnabled" BOOLEAN NOT NULL DEFAULT TRUE`,
 
   `CREATE TABLE IF NOT EXISTS outgoing_webhooks (
     _id TEXT PRIMARY KEY,

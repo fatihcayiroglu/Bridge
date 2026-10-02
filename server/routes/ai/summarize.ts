@@ -46,6 +46,7 @@ import { cache } from '../../lib/redisAdapter';
 import { rulesSummary, MessageLike } from '../../lib/modRules';
 import { channelDataBlock, CHANNEL_DATA_RULE } from '../../lib/aiContext';
 import { callAI, AI_ENABLED, PROVIDER } from '../../lib/aiProvider';
+import { serverAllowsAi } from '../../lib/aiServerPolicy';
 import { limits } from '../../middleware/rateLimit';
 import { createHash } from 'crypto';
 import logger from '../../lib/logger';
@@ -87,8 +88,11 @@ router.get('/:channelId', authMiddleware, limits.ai(), async (req, res) => {
     .filter((m) => !(typeof m.content === 'string' && m.content.startsWith('🔒e2e:')));
   const fingerprint = createHash('sha256')
     .update(msgs.map((m) => `${m._id ?? ''}\u0000${m.content ?? ''}`).join('\u0001')).digest('hex').slice(0, 16);
+  // P6: the server's AI setting is read on every request, BEFORE the cache —
+  // a summary an AI wrote before the owner turned AI off is not served after.
+  const serverAi = await serverAllowsAi(String(channel.serverId));
   const cacheKey = `ai:sum:${channelId}:${limit}:${fingerprint}`;
-  const cached = await cache.get(cacheKey);
+  const cached = serverAi ? await cache.get(cacheKey) : null;
   if (cached) return res.json({ ...cached, cached: true });
 
   const userIds = [...new Set(msgs.map((m: { userId: string }) => m.userId))];
@@ -102,7 +106,7 @@ router.get('/:channelId', authMiddleware, limits.ai(), async (req, res) => {
   let provider = PROVIDER;
   let degraded = false;
 
-  if (AI_ENABLED) {
+  if (AI_ENABLED && serverAi) {
     const block = channelDataBlock(msgs.map((m: MessageLike) =>
       ({ author: userMap[m.userId] || '?', content: (m.content || '').slice(0, 150) })), 5000);
     try {
@@ -131,8 +135,11 @@ router.get('/:channelId', authMiddleware, limits.ai(), async (req, res) => {
     from:          msgs[0]?.createdAt,
     to:            msgs[msgs.length - 1]?.createdAt,
     ...(degraded ? { degraded: true } : {}),
+    ...(AI_ENABLED && !serverAi ? { aiDisabledForServer: true } : {}),
   };
-  if (!degraded) await cache.set(cacheKey, result, 300); // an outage answer is not cached
+  // An outage answer is not cached; neither is the local answer of a server
+  // with AI off (turning AI back on must take effect on the next request).
+  if (!degraded && serverAi) await cache.set(cacheKey, result, 300);
   res.json(result);
 });
 

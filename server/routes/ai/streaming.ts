@@ -132,7 +132,7 @@ async function getAuthorizedChannelContext(
   userId: string,
   channelId: string,
   maxMessages: number = 20,
-): Promise<{ ok: true; context: string } | { ok: false; status: 403 | 404 | 503; error: string }> {
+): Promise<{ ok: true; context: string } | { ok: false; status: 403 | 404 | 503; error: string; code?: string }> {
   if (!channelId) return { ok: true, context: '' };
   const read = await readChannelForAi(userId, channelId, { limit: maxMessages });
   if (!read.ok) return read;
@@ -256,7 +256,7 @@ router.get('/ask/stream', authMiddleware, limits['ai.stream'](), async (req, res
   if (!q) return res.status(400).json({ error: 'q parametresi gerekli' });
   if (!AI_ENABLED) return res.status(503).json({ error: 'AI devre dışı' });
   const ctx = await getAuthorizedChannelContext(castAuthed(req).user.id, channelId);
-  if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
+  if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error, ...(ctx.code ? { code: ctx.code } : {}) });
 
   sseHeaders(res);
   
@@ -307,7 +307,7 @@ router.get('/stream', authMiddleware, limits['ai.stream'](), async (req, res) =>
   if (!q)          return res.status(400).json({ error: 'q parametresi gerekli' });
   if (!AI_ENABLED) return res.status(503).json({ error: 'AI devre dışı' });
   const ctx = await getAuthorizedChannelContext(castAuthed(req).user.id, channelId);
-  if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
+  if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error, ...(ctx.code ? { code: ctx.code } : {}) });
 
   sseHeaders(res);
 
@@ -356,7 +356,7 @@ router.get('/clyde/stream', authMiddleware, limits['ai.stream'](), async (req, r
   if (!q)          return res.status(400).json({ error: 'q parametresi gerekli' });
   if (!AI_ENABLED) return res.status(503).json({ error: 'AI devre dışı — GROQ_API_KEY veya GEMINI_API_KEY gerekli' });
   const ctx = await getAuthorizedChannelContext(castAuthed(req).user.id, channelId);
-  if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
+  if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error, ...(ctx.code ? { code: ctx.code } : {}) });
 
   // P5 AI-01: client history used to accept ANY role — a request could carry
   // its own "system" turns. Only user/assistant turns, bounded, are kept.

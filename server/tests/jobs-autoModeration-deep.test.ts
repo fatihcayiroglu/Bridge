@@ -197,3 +197,22 @@ describe('AutoModeration production failure/AI/PG branches', () => {
     expect(repo.Messages.create.mock.calls[1][0].content).toContain('Display');
   });
 });
+
+// P6 — per-server AI opt-out: the background scan keeps its rules, but the AI
+// second opinion never runs for a server whose owner turned AI off.
+describe('P6: the server AI setting governs the auto-moderation AI pass', () => {
+  it('aiEnabled=false: rules still flag, the provider is never called', async () => {
+    baseFlagged();
+    repo.Servers.findById.mockResolvedValue({ _id: 's1', autoModerate: true, aiEnabled: false });
+    await runScan();
+    expect(callAI).not.toHaveBeenCalled();
+    expect(repo.Messages.create.mock.calls[0][0].content).toContain('Kural tabanlı');
+  });
+
+  it('control: aiEnabled=true asks the provider', async () => {
+    baseFlagged();
+    repo.Servers.findById.mockResolvedValue({ _id: 's1', autoModerate: true, aiEnabled: true });
+    await runScan();
+    expect(callAI).toHaveBeenCalledTimes(1);
+  });
+});

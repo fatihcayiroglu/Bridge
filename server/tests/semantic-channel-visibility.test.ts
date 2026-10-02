@@ -256,7 +256,8 @@ describe('SEMANTİK — vektör sonuçları OKUMA ANINDA yeniden yetkilendirilir
     const src  = fs.readFileSync(path.join(__dirname, '../routes/semantic.ts'), 'utf8');
 
     const filterIdx  = src.indexOf('messages = messages.filter(m => viewable.has');
-    const vectorIdx  = src.indexOf('if (PGVECTOR_ENABLED)');
+    // P6: the branch also requires the server's AI setting; the ORDER is what is locked.
+    const vectorIdx  = src.indexOf('if (PGVECTOR_ENABLED && serverAi)');
     const lookupIdx  = src.indexOf('messages.find(m => m._id === vm.message_id)');
 
     expect(filterIdx).toBeGreaterThan(-1);
