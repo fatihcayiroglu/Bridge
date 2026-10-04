@@ -57,6 +57,7 @@ jobs:
           (cd server && npm install --package-lock-only --ignore-scripts --no-audit --no-fund)
           npm audit --audit-level=high
           (cd server && npm audit --audit-level=high)
+          (cd server && npm ci --ignore-scripts --no-audit --no-fund)
           (cd server && node --import tsx -e "import('./lib/persistedInteger.ts').then(() => console.log('tsx-loader-ok'))")
           git diff --check
 
