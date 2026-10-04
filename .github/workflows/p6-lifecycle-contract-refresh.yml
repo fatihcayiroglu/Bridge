@@ -1,0 +1,107 @@
+name: P6 one-shot lifecycle contract refresh
+
+on:
+  push:
+    branches: [p6/closure-openai]
+    paths:
+      - .github/workflows/p6-lifecycle-contract-refresh.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: p6/closure-openai
+      - name: Align tombstone read paths and legacy tests
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('server/routes/federation/social.ts')
+          s = p.read_text()
+          old = """  const q = {\n    actorUrl: { $in: actorUrls },\n    visibility: 'public',\n  };"""
+          new = """  const q = {\n    actorUrl: { $in: actorUrls },\n    visibility: 'public',\n    // P6: Delete is a durable tombstone. It must never reappear in a reader\n    // merely because the row remains for ordering/resurrection protection.\n    deletedAt: null,\n  };"""
+          if old not in s: raise SystemExit('social timeline block not found')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('scripts/federation-lab/run.mjs')
+          s = p.read_text()
+          old = """    const gone = await eventually(async () => !(await timeline('alice')).some((m) => m.apId === noteId));\n    check('inbound-lifecycle', 'F-LIFE-04', 'remote Delete removes the stored copy', del.status === 202 && gone, `status ${del.status}`);"""
+          new = """    const gone = await eventually(async () => !(await timeline('alice')).some((m) => m.apId === noteId));\n    const tombstoned = Number(sqlA(`SELECT count(*) FROM ap_messages WHERE \"apId\" = '${noteId}' AND \"deletedAt\" IS NOT NULL AND content = ''`)) === 1;\n    check('inbound-lifecycle', 'F-LIFE-04', 'remote Delete hides the note and preserves a durable tombstone',\n      del.status === 202 && gone && tombstoned, `status ${del.status}, tombstone ${tombstoned}`);"""
+          if old not in s: raise SystemExit('F-LIFE-04 block not found')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('server/tests/federation-inbox-handler-shapes.test.ts')
+          s = p.read_text()
+          start = s.index("describe('Update and Delete are scoped to the owning actor', () => {")
+          end = s.index("describe('Like and Announce', () => {", start)
+          repl = r'''describe('Update and Delete are scoped to the owning actor', () => {
+  it('Update rewrites only rows owned by the same actor', async () => {
+    Federation.findApMessageOne.mockResolvedValue({
+      apId: 'https://remote.test/notes/1', actorUrl: REMOTE, updatedAt: 1, deletedAt: null,
+    });
+    await handleApUpdate(null, {
+      id: 'up1', type: 'Update', actor: REMOTE,
+      object: { id: 'https://remote.test/notes/1', type: 'Note', content: 'edited', updated: '2026-10-04T11:00:00.000Z' },
+    } as never);
+    expect(Federation.updateApMessage).toHaveBeenCalledWith(
+      { apId: 'https://remote.test/notes/1', actorUrl: REMOTE },
+      { $set: { content: 'edited', updatedAt: Date.parse('2026-10-04T11:00:00.000Z') } });
+  });
+
+  it('an Update that clears the content stores an empty string', async () => {
+    Federation.findApMessageOne.mockResolvedValue({
+      apId: 'https://remote.test/notes/1', actorUrl: REMOTE, updatedAt: 1, deletedAt: null,
+    });
+    await handleApUpdate(null, {
+      id: 'up2', type: 'Update', actor: REMOTE,
+      object: { id: 'https://remote.test/notes/1', type: 'Note', updated: '2026-10-04T11:00:00.000Z' },
+    } as never);
+    expect(Federation.updateApMessage).toHaveBeenCalledWith(
+      expect.anything(), { $set: { content: '', updatedAt: Date.parse('2026-10-04T11:00:00.000Z') } });
+  });
+
+  it('an Update without an object id is ignored', async () => {
+    await handleApUpdate(null, { id: 'up3', type: 'Update', actor: REMOTE, object: { content: 'x' } } as never);
+    await handleApUpdate(null, { id: 'up4', type: 'Update', actor: REMOTE, object: 'https://remote.test/notes/1' } as never);
+    expect(Federation.updateApMessage).not.toHaveBeenCalled();
+  });
+
+  it('Delete resolves both object shapes, stays scoped to the actor, and tombstones instead of removing', async () => {
+    Federation.findApMessageOne
+      .mockResolvedValueOnce({ apId: 'https://remote.test/notes/1', actorUrl: REMOTE, updatedAt: 1, deletedAt: null })
+      .mockResolvedValueOnce({ apId: 'https://remote.test/notes/2', actorUrl: REMOTE, updatedAt: 1, deletedAt: null });
+    await handleApDelete(null, { id: 'd1', type: 'Delete', actor: REMOTE, updated: '2026-10-04T12:00:00.000Z', object: 'https://remote.test/notes/1' } as never);
+    await handleApDelete(null, { id: 'd2', type: 'Delete', actor: REMOTE, updated: '2026-10-04T12:00:01.000Z', object: { id: 'https://remote.test/notes/2' } } as never);
+    expect(Federation.removeApMessage).not.toHaveBeenCalled();
+    expect(Federation.updateApMessage).toHaveBeenNthCalledWith(1,
+      { apId: 'https://remote.test/notes/1', actorUrl: REMOTE },
+      { $set: { content: '', deletedAt: Date.parse('2026-10-04T12:00:00.000Z'), updatedAt: Date.parse('2026-10-04T12:00:00.000Z') } });
+    expect(Federation.updateApMessage).toHaveBeenNthCalledWith(2,
+      { apId: 'https://remote.test/notes/2', actorUrl: REMOTE },
+      { $set: { content: '', deletedAt: Date.parse('2026-10-04T12:00:01.000Z'), updatedAt: Date.parse('2026-10-04T12:00:01.000Z') } });
+  });
+
+  it('a Delete with no resolvable object touches nothing', async () => {
+    await handleApDelete(null, { id: 'd3', type: 'Delete', actor: REMOTE, object: {} } as never);
+    await handleApDelete(null, { id: 'd4', type: 'Delete', actor: REMOTE } as never);
+    expect(Federation.updateApMessage).not.toHaveBeenCalled();
+    expect(Federation.insertApMessage).not.toHaveBeenCalled();
+    expect(Federation.removeApMessage).not.toHaveBeenCalled();
+  });
+});
+
+'''
+          p.write_text(s[:start] + repl + s[end:])
+          PY
+      - name: Commit
+        run: |
+          git config user.name "bridge-ci"
+          git config user.email "bridge-ci@users.noreply.github.com"
+          git add server/routes/federation/social.ts scripts/federation-lab/run.mjs server/tests/federation-inbox-handler-shapes.test.ts
+          git commit -m "fix(federation): hide tombstones and align lifecycle evidence"
+          git push origin HEAD:p6/closure-openai
