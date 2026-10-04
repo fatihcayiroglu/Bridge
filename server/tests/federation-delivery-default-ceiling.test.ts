@@ -57,10 +57,10 @@ beforeEach(() => {
 });
 
 describe('P6 default retry ceiling — exact attempt accounting', () => {
-  it('uses 12 shipped delay slots and spans roughly 3.5 days', () => {
+  it('uses 12 shipped delay slots and spans about 4.15 days', () => {
     const delays: number[] = delivery.DEFAULT_RETRY_DELAYS_MS;
     expect(delays).toHaveLength(12);
-    expect(delays.reduce((sum, n) => sum + n, 0)).toBe(314_550_000);
+    expect(delays.reduce((sum, n) => sum + n, 0)).toBe(358_950_000);
     expect(delays[0]).toBe(30_000);
     expect(delays.at(-1)).toBe(86_400_000);
   });
