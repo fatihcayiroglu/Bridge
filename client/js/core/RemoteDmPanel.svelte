@@ -50,7 +50,8 @@
   function actorLabel(value: string): string {
     try {
       const u = new URL(value);
-      const tail = u.pathname.split('/').filter(Boolean).at(-1) || u.hostname;
+      const parts = u.pathname.split('/').filter(Boolean);
+      const tail = parts.length > 0 ? parts[parts.length - 1] : u.hostname;
       return `${tail}@${u.hostname}`;
     } catch {
       return value;
