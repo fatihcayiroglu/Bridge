@@ -6,6 +6,7 @@ import DmPanel from './DmPanel.svelte';
 import { createLogger } from './logger.ts';
 import { BridgeRegistry } from './bridge-registry.ts';
 import { mountRemoteDmPanel, unmountRemoteDmPanel } from './remote-dm-svelte.ts';
+import { t } from './i18n/index.ts';
 const log = createLogger('DmPanelShim');
 
 let _instance: ReturnType<typeof mount> | null = null;
@@ -18,8 +19,8 @@ function ensureRemoteDmEntry(root: HTMLElement): void {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'dm-remote-entry';
-  button.textContent = 'Federated';
-  button.setAttribute('aria-label', 'Federated direkt mesajları aç');
+  button.textContent = t('remote_dm_entry', 'Federated');
+  button.setAttribute('aria-label', t('remote_dm_open', 'Federated direkt mesajları aç'));
   // `.dm-heading button` existing close style is intentionally large. Keep the
   // P6 entry compact without changing the canonical DmPanel stylesheet.
   button.style.fontSize = '12px';
