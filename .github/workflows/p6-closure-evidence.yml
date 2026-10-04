@@ -66,6 +66,7 @@ jobs:
           cd server
           npx jest --runInBand --forceExit \
             tests/federation-lifecycle-ordering.test.ts \
+            tests/federation-lifecycle-create-ordering.test.ts \
             tests/federation-note-lifecycle.test.ts \
             tests/remote-dms.test.ts \
             tests/federation-helpers-facade.test.ts \
