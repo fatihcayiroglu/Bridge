@@ -2306,6 +2306,20 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "Wenn deaktiviert, kann der Server nur über einen gültigen Einladungslink gefunden und betreten werden.",
   "srv_category_label": "Kategorie",
   "srv_category_other": "Andere",
+
+  // P6 — Remote ActivityPub direct messages.
+  "remote_dm_load_failed": "Föderierte Nachrichten konnten nicht geladen werden.",
+  "remote_dm_target_content_required": "Adresse des entfernten Akteurs und Nachricht sind erforderlich.",
+  "remote_dm_sent": "Föderierte Nachricht wurde zur Zustellung eingereiht.",
+  "remote_dm_send_failed": "Föderierte Nachricht konnte nicht gesendet werden.",
+  "remote_dm_title": "Föderierte Direktnachrichten",
+  "remote_dm_hint": "Private Nachrichten von anderen ActivityPub-Servern.",
+  "remote_dm_empty": "Noch keine föderierten privaten Nachrichten.",
+  "remote_dm_compose": "Föderierte Nachricht senden",
+  "remote_dm_actor_url": "Adresse des entfernten Akteurs",
+  "remote_dm_message_placeholder": "Nachricht schreiben…",
+  "remote_dm_entry": "Föderiert",
+  "remote_dm_open": "Föderierte Direktnachrichten öffnen",
 };
 
 export default translations;

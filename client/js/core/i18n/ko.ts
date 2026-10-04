@@ -2306,6 +2306,20 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "끄면 유효한 초대 링크를 통해서만 서버를 찾고 참여할 수 있습니다.",
   "srv_category_label": "카테고리",
   "srv_category_other": "기타",
+
+  // P6 — Remote ActivityPub direct messages.
+  "remote_dm_load_failed": "페더레이션 메시지를 불러오지 못했습니다.",
+  "remote_dm_target_content_required": "원격 액터 주소와 메시지가 필요합니다.",
+  "remote_dm_sent": "페더레이션 메시지를 전송 대기열에 추가했습니다.",
+  "remote_dm_send_failed": "페더레이션 메시지를 보내지 못했습니다.",
+  "remote_dm_title": "페더레이션 다이렉트 메시지",
+  "remote_dm_hint": "다른 ActivityPub 서버에서 받은 비공개 메시지입니다.",
+  "remote_dm_empty": "아직 페더레이션 비공개 메시지가 없습니다.",
+  "remote_dm_compose": "페더레이션 메시지 보내기",
+  "remote_dm_actor_url": "원격 액터 주소",
+  "remote_dm_message_placeholder": "메시지 작성…",
+  "remote_dm_entry": "페더레이션",
+  "remote_dm_open": "페더레이션 다이렉트 메시지 열기",
 };
 
 export default translations;

@@ -2272,5 +2272,19 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "When off, the server can only be found and joined through a valid invite link.",
   "srv_category_label": "Category",
   "srv_category_other": "Other",
+
+  // P6 — Remote ActivityPub direct messages.
+  "remote_dm_load_failed": "Federated messages could not be loaded.",
+  "remote_dm_target_content_required": "Remote actor address and message are required.",
+  "remote_dm_sent": "Federated message queued for delivery.",
+  "remote_dm_send_failed": "Federated message could not be sent.",
+  "remote_dm_title": "Federated direct messages",
+  "remote_dm_hint": "Private messages sent to you from other ActivityPub servers.",
+  "remote_dm_empty": "No federated private messages yet.",
+  "remote_dm_compose": "Send federated message",
+  "remote_dm_actor_url": "Remote actor address",
+  "remote_dm_message_placeholder": "Write your message…",
+  "remote_dm_entry": "Federated",
+  "remote_dm_open": "Open federated direct messages",
 };
 export default translations;

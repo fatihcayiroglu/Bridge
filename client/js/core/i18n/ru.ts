@@ -2306,6 +2306,20 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "Если выключено, сервер можно найти и присоединиться к нему только по действительной ссылке-приглашению.",
   "srv_category_label": "Категория",
   "srv_category_other": "Другое",
+
+  // P6 — Remote ActivityPub direct messages.
+  "remote_dm_load_failed": "Не удалось загрузить федеративные сообщения.",
+  "remote_dm_target_content_required": "Нужны адрес удалённого актора и текст сообщения.",
+  "remote_dm_sent": "Федеративное сообщение поставлено в очередь доставки.",
+  "remote_dm_send_failed": "Не удалось отправить федеративное сообщение.",
+  "remote_dm_title": "Федеративные личные сообщения",
+  "remote_dm_hint": "Личные сообщения с других серверов ActivityPub.",
+  "remote_dm_empty": "Федеративных личных сообщений пока нет.",
+  "remote_dm_compose": "Отправить федеративное сообщение",
+  "remote_dm_actor_url": "Адрес удалённого актора",
+  "remote_dm_message_placeholder": "Введите сообщение…",
+  "remote_dm_entry": "Федерация",
+  "remote_dm_open": "Открыть федеративные личные сообщения",
 };
 
 export default translations;

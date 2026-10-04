@@ -2306,6 +2306,20 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "关闭后，只能通过有效邀请链接找到并加入该服务器。",
   "srv_category_label": "类别",
   "srv_category_other": "其他",
+
+  // P6 — Remote ActivityPub direct messages.
+  "remote_dm_load_failed": "无法加载联邦消息。",
+  "remote_dm_target_content_required": "需要远程参与者地址和消息内容。",
+  "remote_dm_sent": "联邦消息已加入投递队列。",
+  "remote_dm_send_failed": "无法发送联邦消息。",
+  "remote_dm_title": "联邦私信",
+  "remote_dm_hint": "来自其他 ActivityPub 服务器的私密消息。",
+  "remote_dm_empty": "还没有联邦私信。",
+  "remote_dm_compose": "发送联邦消息",
+  "remote_dm_actor_url": "远程参与者地址",
+  "remote_dm_message_placeholder": "输入消息…",
+  "remote_dm_entry": "联邦",
+  "remote_dm_open": "打开联邦私信",
 };
 
 export default translations;

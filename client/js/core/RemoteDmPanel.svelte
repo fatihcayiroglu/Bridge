@@ -140,11 +140,11 @@
     <aside class="remote-dm-sidebar">
       <div class="remote-dm-heading">
         <h2>{t('remote_dm_title', 'Federated direkt mesajlar')}</h2>
-        <button type="button" class="remote-dm-close" aria-label={t('ui_kapat', 'Kapat')} onclick={hide}>×</button>
+        <button type="button" class="remote-dm-close" aria-label={t('close', 'Kapat')} onclick={hide}>×</button>
       </div>
       <p class="remote-dm-hint">{t('remote_dm_hint', 'Diğer ActivityPub sunucularından sana gelen özel mesajlar.')}</p>
       {#if isLoading}
-        <p role="status">{t('ui_yukleniyor', 'Yükleniyor…')}</p>
+        <p role="status">{t('loading', 'Yükleniyor…')}</p>
       {:else if items.length === 0}
         <p class="remote-dm-empty">{t('remote_dm_empty', 'Henüz federated özel mesaj yok.')}</p>
       {:else}
@@ -170,15 +170,15 @@
         <input bind:value={actorUrl} placeholder="https://example.social/users/alice" autocomplete="off" />
       </label>
       <label>
-        <span>{t('remote_dm_message', 'Mesaj')}</span>
+        <span>{t('dm_message', 'Mesaj')}</span>
         <textarea bind:value={draft} maxlength="5000" rows="7" placeholder={t('remote_dm_message_placeholder', 'Mesajını yaz…')}></textarea>
       </label>
       {#if errorMsg}<p class="remote-dm-error" role="alert">{errorMsg}</p>{/if}
       {#if successMsg}<p class="remote-dm-success" role="status">{successMsg}</p>{/if}
       <div class="remote-dm-actions">
-        <button type="button" onclick={hide}>{t('ui_iptal', 'İptal')}</button>
+        <button type="button" onclick={hide}>{t('cancel', 'İptal')}</button>
         <button type="button" class="primary" disabled={isSending} onclick={() => void send()}>
-          {isSending ? t('ui_gonderiliyor', 'Gönderiliyor…') : t('ui_gonder', 'Gönder')}
+          {isSending ? t('dm_sending', 'Gönderiliyor…') : t('dm_send', 'Gönder')}
         </button>
       </div>
     </section>

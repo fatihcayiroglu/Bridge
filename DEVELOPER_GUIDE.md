@@ -66,7 +66,7 @@ Server: `http://localhost:3001`
 
 ### Geliştirme
 ```bash
-# Sunucuyu nodemon ile başlat (otomatik reload)
+# Sunucuyu otomatik yeniden yüklemeli geliştirme modunda başlat
 npm run dev
 
 # Client watch mode'ı
