@@ -42,7 +42,53 @@ async function ensureApKeys(user: Record<string, unknown>): Promise<void> {
   user.apPublicKey = publicKey;
 }
 
-/** GET /api/federation/remote-dms — only the authenticated recipient's live rows. */
+/**
+ * @openapi
+ * /federation/remote-dms:
+ *   get:
+ *     tags: [Federation]
+ *     summary: List the authenticated user's live remote ActivityPub direct messages
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+ *     responses:
+ *       200:
+ *         description: Recipient-scoped direct-message page
+ *       400:
+ *         description: Invalid pagination
+ *       401:
+ *         description: Authentication required
+ *   post:
+ *     tags: [Federation]
+ *     summary: Send a durable ActivityPub direct Note to a remote actor
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [actorUrl, content]
+ *             properties:
+ *               actorUrl: { type: string, format: uri, maxLength: 2048 }
+ *               content: { type: string, minLength: 1, maxLength: 5000 }
+ *     responses:
+ *       202:
+ *         description: Activity persisted and handed to durable federation delivery
+ *       400:
+ *         description: Invalid target or content
+ *       401:
+ *         description: Authentication required
+ *       403:
+ *         description: Federation target blocked by policy
+ *       409:
+ *         description: Local federated identity unavailable
+ */
 router.get('/remote-dms', authMiddleware, async (req, res) => {
   const userId = String(castAuthed(req).user.id);
   const page = parseBoundedPositiveIntQuery(req.query.page, 1, 1_000_000);
@@ -85,7 +131,6 @@ router.get('/remote-dms', authMiddleware, async (req, res) => {
   });
 });
 
-/** POST /api/federation/remote-dms — durable signed direct Note delivery. */
 router.post('/remote-dms', authMiddleware, limits.federation(), async (req, res) => {
   const userId = String(castAuthed(req).user.id);
   const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
