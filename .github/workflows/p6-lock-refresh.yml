@@ -1,0 +1,38 @@
+name: P6 one-shot lock refresh
+
+on:
+  push:
+    branches: [p6/closure-openai]
+    paths:
+      - .github/workflows/p6-lock-refresh.yml
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: p6/closure-openai
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.20.0
+      - name: Remove unused nodemon and refresh lockfiles
+        run: |
+          set -euo pipefail
+          npm uninstall nodemon --package-lock-only --ignore-scripts --no-audit --no-fund
+          npm --prefix server uninstall nodemon --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Commit generated package metadata
+        run: |
+          set -euo pipefail
+          git config user.name "bridge-ci"
+          git config user.email "bridge-ci@users.noreply.github.com"
+          git add package.json package-lock.json server/package.json server/package-lock.json
+          if git diff --cached --quiet; then
+            echo "No package metadata changes"
+            exit 0
+          fi
+          git commit -m "chore(deps): remove unused nodemon vulnerable chain"
+          git push origin HEAD:p6/closure-openai
