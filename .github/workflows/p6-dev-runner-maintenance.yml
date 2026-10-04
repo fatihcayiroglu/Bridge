@@ -1,0 +1,72 @@
+name: P6 Dev Runner Maintenance
+
+on:
+  push:
+    branches: [gpt/p6-closure]
+    paths:
+      - .github/workflows/p6-dev-runner-maintenance.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.repository == 'fatihcayiroglu/Bridge'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: gpt/p6-closure
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.20.0
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - name: Replace vulnerable ts-node-dev watcher chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('server/package.json')
+          data = json.loads(path.read_text())
+          old = data['scripts'].get('dev')
+          expected = 'ts-node-dev --project tsconfig.json --respawn --transpile-only index.ts'
+          if old != expected:
+              raise SystemExit(f'unexpected dev script: {old!r}')
+          data['scripts']['dev'] = 'node --watch --import tsx index.ts'
+          removed = data.get('devDependencies', {}).pop('ts-node-dev', None)
+          if removed is None:
+              raise SystemExit('ts-node-dev was not present')
+          data['devDependencies']['tsx'] = '^4.23.15'
+          data['devDependencies'] = dict(sorted(data['devDependencies'].items()))
+          path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
+
+          guide = Path('server/MIGRATION_GUIDE.md')
+          text = guide.read_text()
+          if 'ts-node ts-node-dev' not in text:
+              raise SystemExit('MIGRATION_GUIDE ts-node-dev reference not found')
+          guide.write_text(text.replace('ts-node ts-node-dev', 'ts-node tsx', 1))
+          PY
+
+          (cd server && npm install --package-lock-only --ignore-scripts --no-audit --no-fund)
+          npm audit --audit-level=high
+          (cd server && npm audit --audit-level=high)
+          (cd server && node --import tsx -e "import('./lib/persistedInteger.ts').then(() => console.log('tsx-loader-ok'))")
+          git diff --check
+
+      - name: Commit repaired dev runner and generated lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/p6-dev-runner-maintenance.yml
+          git config user.name 'Bridge CI Maintenance'
+          git config user.email 'actions@users.noreply.github.com'
+          git add server/package.json server/package-lock.json server/MIGRATION_GUIDE.md .github/workflows/p6-dev-runner-maintenance.yml
+          git commit -m 'fix(dev): replace vulnerable ts-node-dev watcher chain'
+          git push origin HEAD:gpt/p6-closure
