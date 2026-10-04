@@ -68,7 +68,8 @@ jobs:
             tests/federation-lifecycle-ordering.test.ts \
             tests/federation-note-lifecycle.test.ts \
             tests/remote-dms.test.ts \
-            tests/federation-helpers-facade.test.ts
+            tests/federation-helpers-facade.test.ts \
+            tests/federation-delivery-default-ceiling.test.ts
       - name: Focused client regression suite
         run: cd client && npx vitest run --config vitest.config.mts tests/remote-dm-panel.test.ts
       - name: Build server
