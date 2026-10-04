@@ -19,6 +19,7 @@ export interface ApObject extends Record<string, unknown> {
   sensitive?: boolean;
   inReplyTo?: string | null;
   published?: string | number;
+  updated?: string | number;
   attachment?: Array<Record<string, string>>;
   tag?: Array<Record<string, string>>;
   to?: string | string[];
@@ -28,7 +29,14 @@ export interface ApObject extends Record<string, unknown> {
 // ikizler ya eksik kalir ya da `as any` ile denetimden kacardi.
 // `object` AGDAN gelir: uzak sunucu `null` yollayabilir ve fiilen yolluyor.
 // Tip bu gercegi yazar; `objectId()` zaten bos dizgeye dusuyordu.
-export interface ApActivity { id: string; type: string; actor: string | { id: string }; object?: string | ApObject | null; }
+export interface ApActivity {
+  id: string;
+  type: string;
+  actor: string | { id: string };
+  object?: string | ApObject | null;
+  published?: string | number;
+  updated?: string | number;
+}
 function isApObject(value: unknown): value is ApObject {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -49,6 +57,30 @@ function actorId(actor: string | { id: string } | undefined): string {
 }
 function objectId(obj: string | { id?: string } | null | undefined): string {
   return typeof obj === 'string' ? obj : obj?.id || '';
+}
+function parseApTimestamp(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return Math.trunc(value);
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+function lifecycleTimestamp(activity: ApActivity, obj?: ApObject | null): number {
+  return parseApTimestamp(obj?.updated)
+    ?? parseApTimestamp(activity.updated)
+    ?? parseApTimestamp(obj?.published)
+    ?? parseApTimestamp(activity.published)
+    ?? Date.now();
+}
+function persistedLifecycleTimestamp(row: Record<string, unknown>): number {
+  const candidates = [row.updatedAt, row.published, row.createdAt];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= 0) return candidate;
+    if (typeof candidate === 'string' && /^\d+$/.test(candidate)) {
+      const parsed = Number(candidate);
+      if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
+    }
+  }
+  return 0;
 }
 
 // ── Follow ─────────────────────────────────────────────────────
@@ -235,6 +267,7 @@ async function handleApCreate(targetUser: ApActor | null, activity: ApActivity):
     }
     // ── Genel federated note ───────────────────────────────────
 
+    const versionTs = lifecycleTimestamp(activity, obj);
     const fedMsg = {
       _id:          stableApRowId('apmsg', aUrl, obj.id || activity.id, targetUser?._id || ''),
       apId:         obj.id,
@@ -247,7 +280,9 @@ async function handleApCreate(targetUser: ApActor | null, activity: ApActivity):
       inReplyTo:    obj.inReplyTo || null,
       attachments:  (obj.attachment || []).map((a: Record<string,string>) => ({ type: a.mediaType, url: a.url })),
       tags:         (obj.tag || []),
-      published:    obj.published ? new Date(obj.published).getTime() : Date.now(),
+      published:    obj.published ? new Date(obj.published).getTime() : versionTs,
+      updatedAt:    versionTs,
+      deletedAt:    null,
       createdAt:    Date.now(),
     };
     const existingMessage = obj.id ? await Federation.findApMessageOne({ apId: obj.id }) : null;
@@ -257,6 +292,11 @@ async function handleApCreate(targetUser: ApActor | null, activity: ApActivity):
       logger.warn({ apId: obj.id, actorUrl: aUrl, existingActor: existingMessage.actorUrl,
         event: 'federation.note.ap_id_actor_conflict' },
       'ActivityPub object id is already owned by a different actor; refusing overwrite.');
+      return;
+    } else if (existingMessage.deletedAt !== null && existingMessage.deletedAt !== undefined) {
+      // A tombstone owns the object id permanently. A late/replayed Create must
+      // not resurrect content that the remote actor already deleted.
+      logger.info({ noteId: obj.id, event: 'federation.note.create_after_delete_ignored' });
       return;
     }
 
@@ -287,9 +327,25 @@ async function handleApUpdate(targetUser: ApActor | null, activity: ApActivity):
     const obj  = activity.object;
     if (!isApObject(obj) || typeof obj.id !== 'string') return;
     const aUrl = actorId(activity.actor);
+    const existing = await Federation.findApMessageOne({ apId: obj.id });
+    if (!existing) return;
+    if (existing.actorUrl !== aUrl) {
+      logger.warn({ apId: obj.id, actorUrl: aUrl, existingActor: existing.actorUrl,
+        event: 'federation.note.update_actor_conflict' }, 'Actor cannot update an ActivityPub object owned by another actor.');
+      return;
+    }
+    if (existing.deletedAt !== null && existing.deletedAt !== undefined) return;
+
+    const incomingTs = lifecycleTimestamp(activity, obj);
+    const currentTs = persistedLifecycleTimestamp(existing as Record<string, unknown>);
+    if (incomingTs <= currentTs) {
+      logger.info({ noteId: obj.id, incomingTs, currentTs, event: 'federation.note.stale_update_ignored' });
+      return;
+    }
+
     await Federation.updateApMessage(
       { apId: obj.id, actorUrl: aUrl },
-      { $set: { content: obj.content || '', updatedAt: Date.now() } }
+      { $set: { content: obj.content || '', updatedAt: incomingTs } }
     );
     logger.info({ noteId: obj.id, event: 'federation.note.updated' });
   } catch (err) {
@@ -304,7 +360,46 @@ async function handleApDelete(targetUser: ApActor | null, activity: ApActivity):
     const oId  = objectId(activity.object);
     if (!oId) return;
     const aUrl = actorId(activity.actor);
-    await Federation.removeApMessage({ apId: oId, actorUrl: aUrl }, {});
+    const obj = isApObject(activity.object) ? activity.object : null;
+    const incomingTs = lifecycleTimestamp(activity, obj);
+    const existing = await Federation.findApMessageOne({ apId: oId });
+
+    if (existing) {
+      if (existing.actorUrl !== aUrl) {
+        logger.warn({ apId: oId, actorUrl: aUrl, existingActor: existing.actorUrl,
+          event: 'federation.note.delete_actor_conflict' }, 'Actor cannot delete an ActivityPub object owned by another actor.');
+        return;
+      }
+      const currentTs = persistedLifecycleTimestamp(existing as Record<string, unknown>);
+      if (incomingTs < currentTs) {
+        logger.info({ noteId: oId, incomingTs, currentTs, event: 'federation.note.stale_delete_ignored' });
+        return;
+      }
+      await Federation.updateApMessage(
+        { apId: oId, actorUrl: aUrl },
+        { $set: { content: '', deletedAt: incomingTs, updatedAt: incomingTs } },
+      );
+    } else {
+      // Delete can arrive before Create. Persist a minimal tombstone so a late
+      // Create for this object id cannot resurrect it.
+      await Federation.insertApMessage({
+        _id: stableApRowId('apmsg', aUrl, oId, targetUser?._id || ''),
+        apId: oId,
+        actorUrl: aUrl,
+        targetUserId: targetUser?._id || null,
+        visibility: 'public',
+        content: '',
+        summary: null,
+        sensitive: false,
+        inReplyTo: null,
+        attachments: [],
+        tags: [],
+        published: incomingTs,
+        updatedAt: incomingTs,
+        deletedAt: incomingTs,
+        createdAt: Date.now(),
+      });
+    }
     logger.info({ objectId: oId, event: 'federation.note.deleted' });
   } catch (err) {
     logger.warn({ err, event: 'federation.note.delete_handle_failed' });
@@ -325,7 +420,7 @@ async function handleApLike(targetUser: ApActor | null, activity: ApActivity): P
       activityId: activity.id,
       objectUrl: oUrl,
       targetUserId: targetUser?._id || null,
-      createdAt: Date.now(),
+      createdAt:    Date.now(),
     });
 
     // Bildirim — bu instance'daki bir nota beğenildiyse
