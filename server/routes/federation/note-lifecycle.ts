@@ -37,6 +37,60 @@ function audiences(note: Record<string, unknown>): { to: string[]; cc: string[] 
   return { to, cc };
 }
 
+/**
+ * @openapi
+ * /federation/users/{username}/notes/{noteId}:
+ *   patch:
+ *     tags: [Federation]
+ *     summary: Edit a Bridge-authored federated Note and fan out ActivityPub Update
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: username
+ *         required: true
+ *         schema: { type: string }
+ *       - in: path
+ *         name: noteId
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [content]
+ *             properties:
+ *               content: { type: string, minLength: 1, maxLength: 5000 }
+ *     responses:
+ *       200: { description: Stored Create rewritten and Update queued for followers }
+ *       400: { description: Invalid content }
+ *       401: { description: Authentication required }
+ *       403: { description: Caller does not own this actor }
+ *       404: { description: User or Note not found }
+ *       409: { description: Stored ActivityPub ownership/state is invalid }
+ *       410: { description: Note is already tombstoned }
+ *   delete:
+ *     tags: [Federation]
+ *     summary: Tombstone a Bridge-authored federated Note and fan out ActivityPub Delete
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: username
+ *         required: true
+ *         schema: { type: string }
+ *       - in: path
+ *         name: noteId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Note tombstoned and Delete queued for followers }
+ *       204: { description: Note was already tombstoned }
+ *       401: { description: Authentication required }
+ *       403: { description: Caller does not own this actor }
+ *       404: { description: User or Note not found }
+ *       409: { description: Stored ActivityPub ownership/state is invalid }
+ */
 router.patch('/users/:username/notes/:noteId', authMiddleware, limits.federation(), async (req, res) => {
   const callerId = String(castAuthed(req).user.id);
   const user = await Users.findByUsername(String(req.params.username || ''));
