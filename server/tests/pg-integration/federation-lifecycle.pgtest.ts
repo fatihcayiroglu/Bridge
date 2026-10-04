@@ -44,14 +44,14 @@ RUN('real PostgreSQL — ActivityPub message lifecycle (P6)', () => {
       { $set: { content: 'STALE', updatedAt: 1500 } },
     );
     let [row] = await q(`SELECT content,"updatedAt" FROM ap_messages WHERE _id=$1`, [id]);
-    expect(row).toEqual({ content: 'newest', updatedAt: '2000' });
+    expect(row).toEqual({ content: 'newest', updatedAt: 2000 });
 
     await Federation.updateApMessage(
       { apId, actorUrl: `https://${P}.test/users/bob`, deletedAt: null, updatedAt: { $lt: 2500 } },
       { $set: { content: 'newer', updatedAt: 2500 } },
     );
     [row] = await q(`SELECT content,"updatedAt" FROM ap_messages WHERE _id=$1`, [id]);
-    expect(row).toEqual({ content: 'newer', updatedAt: '2500' });
+    expect(row).toEqual({ content: 'newer', updatedAt: 2500 });
   });
 
   it('a tombstone keeps the AP object id occupied across restart-era redelivery', async () => {
@@ -76,7 +76,7 @@ RUN('real PostgreSQL — ActivityPub message lifecycle (P6)', () => {
     });
 
     const [tomb] = await q(`SELECT "apId",content,"deletedAt","updatedAt" FROM ap_messages WHERE _id=$1`, [`${P}-tomb`]);
-    expect(tomb).toEqual({ apId, content: '', deletedAt: '3000', updatedAt: '3000' });
+    expect(tomb).toEqual({ apId, content: '', deletedAt: 3000, updatedAt: 3000 });
 
     // CONTROL: physically deleting the tombstone would make this insert pass.
     // While it is retained, PostgreSQL's existing UNIQUE(apId) rejects the
