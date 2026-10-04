@@ -27,10 +27,11 @@ The final P6 verdict requires all of the following on the same head (or an expli
 - Mobile Android — PASS.
 - Mobile iOS — PASS or a pre-existing documented external/unverified device-only item; no new FAIL.
 - Security audit — no high/critical advisory left in the installed dependency graph.
-  - On 2026-10-04 GHSA-vfj7-8cjw-p6xm made the old dev watcher chains fail the high-severity audit with no patched `braces` release available.
+  - On 2026-10-04 GHSA-vfj7-8cjw-p6xm made the old dev watcher chains fail the high-severity audit.
   - The unused root/server `nodemon` dependencies were removed rather than weakening the audit.
   - The remaining server `ts-node-dev -> chokidar -> braces` chain was removed by replacing the dev command with Node's stable watch mode plus `tsx`: `node --watch --import tsx index.ts`.
-  - The one-shot maintenance proof regenerated the server lockfile, ran the full root and server high-severity audits (both 0 vulnerabilities), installed the resulting server tree with `npm ci`, and loaded a TypeScript server module through `node --import tsx` successfully. The temporary maintenance workflow deleted itself after committing the generated lockfile.
+  - The server maintenance proof regenerated the lockfile, ran the full root and server high-severity audits (both 0 vulnerabilities), installed the resulting server tree with `npm ci`, and loaded a TypeScript server module through `node --import tsx` successfully.
+  - A later Electron audit exposed GHSA-ch52-4w7c-c8xp through the locked `http-cache-semantics@4.2.0`. A no-force `npm audit fix --package-lock-only` changed only `electron/package-lock.json`, resolving it to `http-cache-semantics@4.3.0`; the Electron high-severity audit then reported 0 vulnerabilities, a clean `npm ci` succeeded, and `npm run compile` passed. The temporary maintenance workflows deleted themselves after committing their generated lockfiles.
 - i18n parity/usage — PASS for all ten locales; Remote DM strings are part of the locale tables rather than relying on untranslated fallbacks.
 - No product rate limit, permission check, signature rule, SSRF guard, or other security boundary may be relaxed to make a harness pass.
 
