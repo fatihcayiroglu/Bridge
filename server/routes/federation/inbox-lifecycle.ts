@@ -54,6 +54,7 @@ function lifecycleTime(activity: ApActivity, obj?: ApObject | null): number {
   const candidates = [
     obj?.updated,
     obj?.published,
+    obj?.deleted,
     activityRecord.updated,
     activityRecord.published,
   ];
@@ -82,7 +83,7 @@ function stableTombstoneId(actorUrl: string, apId: string): string {
  * Create keeps all canonical audience/DM/notification behavior but refuses a
  * redelivery whose object id already belongs to a tombstone. A normal duplicate
  * still goes through the legacy handler so its idempotent notification path is
- * preserved.
+ * preserved, but it can never move the lifecycle clock backwards.
  */
 export async function handleApCreate(targetUser: ApActor | null, activity: ApActivity): Promise<void> {
   const obj = isRecord(activity.object) ? activity.object as ApObject : null;
@@ -106,16 +107,27 @@ export async function handleApCreate(targetUser: ApActor | null, activity: ApAct
     return;
   }
 
+  const ts = lifecycleTime(activity, obj);
   await handleLegacyCreate(targetUser, activity);
 
   // Direct local→local AP DMs are intentionally written to dm_messages by the
   // legacy handler and have no ap_messages row. Updating a non-existent row is
-  // therefore a harmless no-op.
-  const ts = lifecycleTime(activity, obj);
-  await Federation.updateApMessage(
-    { apId, actorUrl, deletedAt: null },
-    { $set: { updatedAt: ts } },
-  );
+  // therefore a harmless no-op. For a duplicate live Create, advance the clock
+  // only if this generation is newer; never lower it after a later Update.
+  if (!existing) {
+    await Federation.updateApMessage(
+      { apId, actorUrl, deletedAt: null },
+      { $set: { updatedAt: ts } },
+    );
+  } else if (ts > rowLifecycleTime(existing)) {
+    await Federation.updateApMessage(
+      { apId, actorUrl, deletedAt: null, updatedAt: { $lt: ts } },
+      { $set: { updatedAt: ts } },
+    );
+  } else {
+    logger.info({ apId, actorUrl, event: 'federation.note.stale_create_ignored' },
+      'Ignoring stale ActivityPub Create lifecycle generation.');
+  }
 }
 
 /** Apply only an Update newer than the stored object lifecycle. */
