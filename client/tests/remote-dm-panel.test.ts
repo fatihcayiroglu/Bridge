@@ -63,7 +63,7 @@ describe('RemoteDmPanel', () => {
     await waitFor(() => expect(getByRole('dialog')).toBeTruthy());
 
     const actor = getByLabelText('Uzak aktör adresi') as HTMLInputElement;
-    const message = getByLabelText('Mesaj') as HTMLTextAreaElement;
+    const message = getByLabelText('DM mesajı') as HTMLTextAreaElement;
     await fireEvent.input(actor, { target: { value: 'https://remote.test/users/bob' } });
     await fireEvent.input(message, { target: { value: 'private hello' } });
     await fireEvent.click(getByRole('button', { name: 'Gönder' }));
