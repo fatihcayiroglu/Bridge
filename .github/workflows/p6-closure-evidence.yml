@@ -1,0 +1,93 @@
+name: P6 Closure Evidence
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: p6-closure-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle-and-remote-dm:
+    name: Lifecycle + remote DM evidence
+    runs-on: ubuntu-latest
+    env:
+      NODE_VERSION: '24.20.0'
+      JWT_SECRET: p6_ci_jwt_secret_minimum_32_chars_value
+      REFRESH_SECRET: p6_ci_refresh_secret_minimum_32_chars
+      NODE_ENV: test
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: bridge_test
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: test_password
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - name: Install dependencies without hiding the separate security-audit result
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund
+      - name: Typecheck changed server and client surfaces
+        run: |
+          npm run typecheck:server
+          npm run typecheck:client
+      - name: Focused server regression suites
+        run: |
+          cd server
+          npx jest --runInBand --forceExit \
+            tests/federation-lifecycle-ordering.test.ts \
+            tests/federation-note-lifecycle.test.ts \
+            tests/remote-dms.test.ts \
+            tests/federation-helpers-facade.test.ts
+      - name: Focused client regression suite
+        run: cd client && npx vitest run --config vitest.config.mts tests/remote-dm-panel.test.ts
+      - name: Build server
+        run: cd server && npm run build
+      - name: Migration 079 on a clean real PostgreSQL
+        run: |
+          cd server
+          npx ts-node --project tsconfig.json db/postgres/index.ts
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts up
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts status
+        env:
+          DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+      - name: Real PostgreSQL lifecycle proof
+        run: |
+          cd server
+          PG_TEST_URL=postgresql://bridge:test_password@localhost:5432/bridge_test \
+            npx jest --config jest.pg.config.js --runInBand --forceExit \
+              tests/pg-integration/federation-lifecycle.pgtest.ts
+        env:
+          REDIS_TEST_URL: redis://localhost:6379
+      - name: Release/product contracts touched by new routes and files
+        run: npm run test:release-integrity
