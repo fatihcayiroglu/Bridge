@@ -22,11 +22,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function findStoredCreate(userId: string, noteApId: string): Promise<Record<string, unknown> | null> {
   const found = await Federation.apActivitiesFind({ actorUserId: userId, type: 'Create' }) || [];
   const rows = Array.isArray(found) ? found : await found;
-  return rows.find((row: Record<string, unknown>) => {
+  const match = rows.find((candidate) => {
+    const row = candidate as unknown as Record<string, unknown>;
     const activity = isRecord(row.activity) ? row.activity : null;
     const object = activity && isRecord(activity.object) ? activity.object : null;
     return object?.id === noteApId;
-  }) ?? null;
+  });
+  return match ? match as unknown as Record<string, unknown> : null;
 }
 
 function audiences(note: Record<string, unknown>): { to: string[]; cc: string[] } {
