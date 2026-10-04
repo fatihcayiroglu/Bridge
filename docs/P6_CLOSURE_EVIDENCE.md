@@ -26,7 +26,11 @@ The final P6 verdict requires all of the following on the same head (or an expli
 - P6 Closure Evidence — PASS.
 - Mobile Android — PASS.
 - Mobile iOS — PASS or a pre-existing documented external/unverified device-only item; no new FAIL.
-- Security audit — no high/critical advisory left in the installed dependency graph. The unused `nodemon` dev dependency was removed instead of weakening the audit after GHSA-vfj7-8cjw-p6xm appeared with no patched `braces` release.
+- Security audit — no high/critical advisory left in the installed dependency graph.
+  - On 2026-10-04 GHSA-vfj7-8cjw-p6xm made the old dev watcher chains fail the high-severity audit with no patched `braces` release available.
+  - The unused root/server `nodemon` dependencies were removed rather than weakening the audit.
+  - The remaining server `ts-node-dev -> chokidar -> braces` chain was removed by replacing the dev command with Node's stable watch mode plus `tsx`: `node --watch --import tsx index.ts`.
+  - The one-shot maintenance proof regenerated the server lockfile, ran the full root and server high-severity audits (both 0 vulnerabilities), installed the resulting server tree with `npm ci`, and loaded a TypeScript server module through `node --import tsx` successfully. The temporary maintenance workflow deleted itself after committing the generated lockfile.
 - i18n parity/usage — PASS for all ten locales; Remote DM strings are part of the locale tables rather than relying on untranslated fallbacks.
 - No product rate limit, permission check, signature rule, SSRF guard, or other security boundary may be relaxed to make a harness pass.
 
