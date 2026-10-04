@@ -65,7 +65,7 @@ npm run dev
 @types/express @types/node @types/bcryptjs @types/jsonwebtoken
 @types/multer @types/uuid @types/cors @types/pg @types/jest
 @types/nodemailer @types/web-push @types/swagger-ui-express
-ts-node ts-node-dev
+ts-node tsx
 ```
 
 ## Sıradaki Adımlar (Sprint 14 önerisi)

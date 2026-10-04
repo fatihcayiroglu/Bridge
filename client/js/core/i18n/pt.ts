@@ -2306,6 +2306,20 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "Quando desativado, o servidor só pode ser encontrado e acessado por um link de convite válido.",
   "srv_category_label": "Categoria",
   "srv_category_other": "Outro",
+
+  // P6 — Remote ActivityPub direct messages.
+  "remote_dm_load_failed": "Não foi possível carregar as mensagens federadas.",
+  "remote_dm_target_content_required": "O endereço do ator remoto e a mensagem são obrigatórios.",
+  "remote_dm_sent": "Mensagem federada adicionada à fila de entrega.",
+  "remote_dm_send_failed": "Não foi possível enviar a mensagem federada.",
+  "remote_dm_title": "Mensagens diretas federadas",
+  "remote_dm_hint": "Mensagens privadas recebidas de outros servidores ActivityPub.",
+  "remote_dm_empty": "Ainda não há mensagens privadas federadas.",
+  "remote_dm_compose": "Enviar mensagem federada",
+  "remote_dm_actor_url": "Endereço do ator remoto",
+  "remote_dm_message_placeholder": "Escreva sua mensagem…",
+  "remote_dm_entry": "Federado",
+  "remote_dm_open": "Abrir mensagens diretas federadas",
 };
 
 export default translations;

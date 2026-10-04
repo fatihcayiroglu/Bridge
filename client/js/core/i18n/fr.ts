@@ -2306,6 +2306,20 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "Si cette option est désactivée, le serveur ne peut être trouvé et rejoint qu’avec un lien d’invitation valide.",
   "srv_category_label": "Catégorie",
   "srv_category_other": "Autre",
+
+  // P6 — Remote ActivityPub direct messages.
+  "remote_dm_load_failed": "Impossible de charger les messages fédérés.",
+  "remote_dm_target_content_required": "L’adresse de l’acteur distant et le message sont requis.",
+  "remote_dm_sent": "Message fédéré ajouté à la file de livraison.",
+  "remote_dm_send_failed": "Impossible d’envoyer le message fédéré.",
+  "remote_dm_title": "Messages directs fédérés",
+  "remote_dm_hint": "Messages privés reçus depuis d’autres serveurs ActivityPub.",
+  "remote_dm_empty": "Aucun message privé fédéré pour le moment.",
+  "remote_dm_compose": "Envoyer un message fédéré",
+  "remote_dm_actor_url": "Adresse de l’acteur distant",
+  "remote_dm_message_placeholder": "Écrivez votre message…",
+  "remote_dm_entry": "Fédéré",
+  "remote_dm_open": "Ouvrir les messages directs fédérés",
 };
 
 export default translations;

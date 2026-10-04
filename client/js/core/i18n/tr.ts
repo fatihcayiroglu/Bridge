@@ -2277,5 +2277,19 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "Kapalıysa sunucu yalnız geçerli davet bağlantılarıyla bulunabilir ve katılınabilir.",
   "srv_category_label": "Kategori",
   "srv_category_other": "Diğer",
+
+  // P6 — Remote ActivityPub direct messages.
+  "remote_dm_load_failed": "Federated mesajlar yüklenemedi.",
+  "remote_dm_target_content_required": "Uzak aktör adresi ve mesaj gerekli.",
+  "remote_dm_sent": "Federated mesaj teslimat kuyruğuna alındı.",
+  "remote_dm_send_failed": "Federated mesaj gönderilemedi.",
+  "remote_dm_title": "Federated direkt mesajlar",
+  "remote_dm_hint": "Diğer ActivityPub sunucularından sana gelen özel mesajlar.",
+  "remote_dm_empty": "Henüz federated özel mesaj yok.",
+  "remote_dm_compose": "Federated mesaj gönder",
+  "remote_dm_actor_url": "Uzak aktör adresi",
+  "remote_dm_message_placeholder": "Mesajını yaz…",
+  "remote_dm_entry": "Federated",
+  "remote_dm_open": "Federated direkt mesajları aç",
 };
 export default translations;

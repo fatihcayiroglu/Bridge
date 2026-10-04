@@ -2306,6 +2306,20 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "オフの場合、有効な招待リンクからのみサーバーを見つけて参加できます。",
   "srv_category_label": "カテゴリ",
   "srv_category_other": "その他",
+
+  // P6 — Remote ActivityPub direct messages.
+  "remote_dm_load_failed": "フェデレーションメッセージを読み込めませんでした。",
+  "remote_dm_target_content_required": "リモートアクターのアドレスとメッセージが必要です。",
+  "remote_dm_sent": "フェデレーションメッセージを配信キューに追加しました。",
+  "remote_dm_send_failed": "フェデレーションメッセージを送信できませんでした。",
+  "remote_dm_title": "フェデレーションDM",
+  "remote_dm_hint": "他の ActivityPub サーバーから届いた非公開メッセージです。",
+  "remote_dm_empty": "フェデレーションDMはまだありません。",
+  "remote_dm_compose": "フェデレーションメッセージを送信",
+  "remote_dm_actor_url": "リモートアクターのアドレス",
+  "remote_dm_message_placeholder": "メッセージを入力…",
+  "remote_dm_entry": "フェデレーション",
+  "remote_dm_open": "フェデレーションDMを開く",
 };
 
 export default translations;
