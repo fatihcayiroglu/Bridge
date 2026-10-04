@@ -489,6 +489,9 @@ router.get('/timeline', authMiddleware, async (req: import("express").Request, r
   const q = {
     actorUrl: { $in: actorUrls },
     visibility: 'public',
+    // P6: Delete is a durable tombstone. It must never reappear in a reader
+    // merely because the row remains for ordering/resurrection protection.
+    deletedAt: null,
   };
   let items = await Federation.apMessagesFind(q).sort({ published: -1 }).skip(skip).limit(limit) || [];
   if (!Array.isArray(items)) items = await items || [];

@@ -234,7 +234,9 @@ const S = {
     check('inbound-lifecycle', 'F-LIFE-03', 'remote Update edits the stored copy', upd.status === 202 && edited, `status ${upd.status}`);
     const del = await send({ '@context': 'https://www.w3.org/ns/activitystreams', id: `${noteId}#delete-${rnd()}`, type: 'Delete', actor: lab.mallory.id, object: noteId });
     const gone = await eventually(async () => !(await timeline('alice')).some((m) => m.apId === noteId));
-    check('inbound-lifecycle', 'F-LIFE-04', 'remote Delete removes the stored copy', del.status === 202 && gone, `status ${del.status}`);
+    const tombstoned = Number(sqlA(`SELECT count(*) FROM ap_messages WHERE "apId" = '${noteId}' AND "deletedAt" IS NOT NULL AND content = ''`)) === 1;
+    check('inbound-lifecycle', 'F-LIFE-04', 'remote Delete hides the note and preserves a durable tombstone',
+      del.status === 202 && gone && tombstoned, `status ${del.status}, tombstone ${tombstoned}`);
     // Ownership: a different actor cannot edit or delete someone else's note.
     const bobNote = sqlA(`SELECT "apId" FROM ap_messages WHERE "actorUrl" = '${actorOf('bob')}' LIMIT 1`);
     if (bobNote) {
