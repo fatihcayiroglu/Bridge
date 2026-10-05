@@ -249,7 +249,7 @@ router.patch('/users/:username/notes/:noteId', activityPubJsonParser, authMiddle
     createdAt: now,
   });
 
-  let delivery = { followers: 0, failed: 0 };
+  let delivery: { followers: number; failed: number };
   try {
     delivery = await fanOutActivityToFollowers(user, updateActivity);
   } catch (err) {
