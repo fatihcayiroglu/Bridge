@@ -28,7 +28,7 @@ import { FakeAiProvider, hashEmbed } from './lib/fake-ai.mjs';
 
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(`--${n}`); return i >= 0 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : d; };
-const ALL = ['identity', 'follow', 'post', 'inbound-lifecycle', 'adversarial', 'ssrf', 'partition', 'restart', 'peers', 'revocation', 'ai', 'aiserver', 'vector', 'egress'];
+const ALL = ['identity', 'follow', 'post', 'outbound-lifecycle', 'remote-dm', 'inbound-lifecycle', 'adversarial', 'ssrf', 'partition', 'restart', 'peers', 'revocation', 'ai', 'aiserver', 'vector', 'egress'];
 const selected = opt('scenarios', ALL.join(',')).split(',').map((s) => s.trim()).filter(Boolean);
 const workDir = opt('work', fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-fedlab-')));
 const outDir = opt('out', path.join(workDir, 'report'));
@@ -211,8 +211,116 @@ const S = {
     check('post', 'F-POST-06', 'exactly one stored copy on A (no duplicate rows)', rows === 1, `${rows} rows`);
   },
 
-  // Inbound edit/delete semantics, driven by the lab's remote actor (a Bridge
-  // instance never sends Update/Delete for notes — see the evidence log).
+  // P6 outbound lifecycle: Bridge-authored Update/Delete must travel through
+  // the same signed, durable follower fanout and change the remote copy.
+  async 'outbound-lifecycle'() {
+    const original = `outbound lifecycle original ${rnd()}`;
+    const editedContent = `outbound lifecycle edited ${rnd()}`;
+    const created = await outbox('bob', original, 'public');
+    const noteId = String(created.body?.noteId || '');
+    const noteLeaf = (() => { try { return new URL(noteId).pathname.split('/').filter(Boolean).at(-1) || ''; } catch { return ''; } })();
+    const notePath = `/api/federation/users/${user('bob').username}/notes/${encodeURIComponent(noteLeaf)}`;
+    const originalSeen = await eventually(async () => (await timeline('alice')).some((m) => m.apId === noteId && m.content === original));
+    check('outbound-lifecycle', 'F-OUTL-01', 'control: Bob\'s authored Note reaches Alice before lifecycle mutations',
+      created.status === 201 && !!noteId && !!noteLeaf && originalSeen, `create ${created.status}, note ${noteId}`);
+
+    const patch = await mutate(apiOf('bob'), 'PATCH', notePath, user('bob').token, { content: editedContent });
+    const editedSeen = await eventually(async () => (await timeline('alice')).some((m) => m.apId === noteId && m.content === editedContent));
+    const updateRows = Number(sqlB(`SELECT count(*) FROM ap_activities WHERE "actorUserId" = '${user('bob').id}' AND "noteId" = '${noteId}' AND type = 'Update'`));
+    const latest = await request(apiOf('bob'), 'GET', notePath);
+    check('outbound-lifecycle', 'F-OUTL-02', 'PATCH persists one Update and the signed fanout edits Alice\'s stored copy',
+      patch.status === 200 && editedSeen && updateRows === 1 && latest.status === 200 && latest.body?.content === editedContent,
+      `PATCH ${patch.status}, remoteEdited ${!!editedSeen}, updates ${updateRows}, GET ${latest.status}`);
+
+    const del = await mutate(apiOf('bob'), 'DELETE', notePath, user('bob').token);
+    const hidden = await eventually(async () => !(await timeline('alice')).some((m) => m.apId === noteId));
+    const remoteTombstone = Number(sqlA(`SELECT count(*) FROM ap_messages WHERE "apId" = '${noteId}' AND "deletedAt" IS NOT NULL AND content = ''`)) === 1;
+    const deleteRows = Number(sqlB(`SELECT count(*) FROM ap_activities WHERE "actorUserId" = '${user('bob').id}' AND "noteId" = '${noteId}' AND type = 'Delete'`));
+    const tombstone = await request(apiOf('bob'), 'GET', notePath);
+    check('outbound-lifecycle', 'F-OUTL-03', 'DELETE persists one Delete, hides the remote copy, and leaves tombstones on both sides',
+      del.status === 204 && hidden && remoteTombstone && deleteRows === 1 && tombstone.status === 410 && tombstone.body?.type === 'Tombstone',
+      `DELETE ${del.status}, hidden ${!!hidden}, remoteTombstone ${remoteTombstone}, deletes ${deleteRows}, GET ${tombstone.status}`);
+
+    const resurrect = await mutate(apiOf('bob'), 'PATCH', notePath, user('bob').token, { content: 'must not resurrect' });
+    const stillGone = !(await timeline('alice')).some((m) => m.apId === noteId);
+    const updateRowsAfter = Number(sqlB(`SELECT count(*) FROM ap_activities WHERE "actorUserId" = '${user('bob').id}' AND "noteId" = '${noteId}' AND type = 'Update'`));
+    check('outbound-lifecycle', 'F-OUTL-04', 'a deleted local Note cannot be resurrected by PATCH',
+      resurrect.status === 410 && stillGone && updateRowsAfter === 1,
+      `PATCH ${resurrect.status}, remoteStillGone ${stillGone}, updates ${updateRowsAfter}`);
+  },
+
+  // P6 remote DM: a real signed remote direct Note is recipient-scoped, then
+  // the local API replies through the signed durable delivery path.
+  async 'remote-dm'() {
+    const inbox = `${actorOf('alice')}/inbox`;
+    const directContent = `remote direct ${rnd()}`;
+    const remoteNoteId = `${lab.mallory.id}/notes/dm-${rnd()}`;
+    const directActivity = {
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: `${lab.mallory.id}/activities/dm-${rnd()}`,
+      type: 'Create', actor: lab.mallory.id,
+      to: [actorOf('alice')], cc: [],
+      object: {
+        id: remoteNoteId, type: 'Note', attributedTo: lab.mallory.id,
+        content: directContent, published: new Date().toISOString(),
+        to: [actorOf('alice')], cc: [],
+      },
+    };
+    const directBody = JSON.stringify(directActivity);
+    const received = await postTls(inbox, signAp({ url: inbox, body: directBody, privateKey: lab.mallory.privateKey, keyId: lab.mallory.keyId }), directBody, lab.pki.ca);
+    const threadId = Buffer.from(lab.mallory.id, 'utf8').toString('base64url');
+    const listed = await eventually(async () => {
+      const r = await request(apiOf('alice'), 'GET', '/api/federation/remote-dms', { token: user('alice').token });
+      return r.status === 200 && (r.body || []).some((x) => x.actorUrl === lab.mallory.id && x.lastMessage?.content === directContent);
+    });
+    const directRows = Number(sqlA(`SELECT count(*) FROM ap_messages WHERE "apId" = '${remoteNoteId}' AND "targetUserId" = '${user('alice').id}' AND visibility = 'direct' AND "deletedAt" IS NULL`));
+    const history = await request(apiOf('alice'), 'GET', `/api/federation/remote-dms/${threadId}/messages?limit=50`, { token: user('alice').token });
+    check('remote-dm', 'F-RDM-01', 'signed remote direct Note is stored as recipient-scoped direct state and exposed only through the DM API',
+      received.status === 202 && listed && directRows === 1 && history.status === 200 && (history.body || []).some((m) => m.content === directContent && m.direction === 'in'),
+      `inbox ${received.status}, listed ${!!listed}, rows ${directRows}, history ${history.status}`);
+
+    const replyContent = `alice direct reply ${rnd()}`;
+    const nonce = `lab-${rnd()}`;
+    const beforeInbox = lab.evilInbox.length;
+    const reply = await mutate(apiOf('alice'), 'POST', `/api/federation/remote-dms/${threadId}/messages`, user('alice').token,
+      { content: replyContent, clientNonce: nonce });
+    const delivered = await eventually(() => lab.evilInbox.length === beforeInbox + 1);
+    const envelope = delivered ? lab.evilInbox.at(-1) : null;
+    let activity = null;
+    try { activity = envelope ? JSON.parse(envelope.body) : null; } catch { activity = null; }
+    const signed = typeof envelope?.headers?.signature === 'string' && envelope.headers.signature.includes('rsa-sha256');
+    const directAudience = activity?.type === 'Create' && activity?.actor === actorOf('alice')
+      && Array.isArray(activity?.to) && activity.to.length === 1 && activity.to[0] === lab.mallory.id
+      && Array.isArray(activity?.cc) && activity.cc.length === 0
+      && activity?.object?.content === replyContent
+      && Array.isArray(activity?.object?.to) && activity.object.to[0] === lab.mallory.id
+      && Array.isArray(activity?.object?.cc) && activity.object.cc.length === 0;
+    check('remote-dm', 'F-RDM-02', 'Alice reply is journaled and delivered to Mallory over real HTTPS with an HTTP Signature and direct-only audience',
+      reply.status === 201 && delivered && signed && directAudience,
+      `POST ${reply.status}, delivered ${!!delivered}, signed ${signed}, directAudience ${directAudience}`);
+
+    const afterFirst = lab.evilInbox.length;
+    const duplicate = await mutate(apiOf('alice'), 'POST', `/api/federation/remote-dms/${threadId}/messages`, user('alice').token,
+      { content: replyContent, clientNonce: nonce });
+    await sleep(250);
+    const activityId = `${actorOf('alice')}/activities/dm-${nonce}`;
+    const journalRows = Number(sqlA(`SELECT count(*) FROM ap_activities WHERE "actorUserId" = '${user('alice').id}' AND "activityId" = '${activityId}'`));
+    check('remote-dm', 'F-RDM-03', 'repeating the same client nonce reuses the durable journal entry and does not redeliver',
+      duplicate.status === 200 && lab.evilInbox.length === afterFirst && journalRows === 1,
+      `POST ${duplicate.status}, inboxDelta ${lab.evilInbox.length - afterFirst}, journal ${journalRows}`);
+
+    const carolHistory = await request(apiOf('carol'), 'GET', `/api/federation/remote-dms/${threadId}/messages?limit=50`, { token: user('carol').token });
+    const beforeCarol = lab.evilInbox.length;
+    const carolReply = await mutate(apiOf('carol'), 'POST', `/api/federation/remote-dms/${threadId}/messages`, user('carol').token,
+      { content: 'cross-recipient probe', clientNonce: `carol-${rnd()}` });
+    await sleep(150);
+    check('remote-dm', 'F-RDM-04', 'another local user cannot read or reply to Alice\'s remote DM thread',
+      carolHistory.status === 200 && Array.isArray(carolHistory.body) && carolHistory.body.length === 0
+        && carolReply.status === 404 && lab.evilInbox.length === beforeCarol,
+      `history ${carolHistory.status}/${Array.isArray(carolHistory.body) ? carolHistory.body.length : 'non-array'}, reply ${carolReply.status}`);
+  },
+
+  // Inbound edit/delete semantics, driven by the lab's hostile remote actor.
   async 'inbound-lifecycle'() {
     const inbox = `${actorOf('alice')}/inbox`;
     const send = async (activity, opts = {}) => {

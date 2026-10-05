@@ -39,6 +39,7 @@ const opt = (name, fallback) => {
 };
 const workDir = opt('work', fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-retrylab-')));
 const outDir = opt('out', path.join(workDir, 'report'));
+fs.mkdirSync(workDir, { recursive: true });
 fs.mkdirSync(outDir, { recursive: true });
 
 const HOSTS = { a: 'retry-a.bridge.test', b: 'retry-b.bridge.test' };

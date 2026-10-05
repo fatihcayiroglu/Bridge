@@ -148,7 +148,7 @@
     const content = draft.trim();
     if (!conversation || !content || isSending) return;
     if (content.length > 2000) {
-      errorMsg = 'Mesajlar en fazla 2000 karakter olabilir.';
+      errorMsg = t('message_too_long_max', 'Mesaj çok uzun (en fazla {max} karakter)', { max: 2000 });
       return;
     }
     isSending = true;
