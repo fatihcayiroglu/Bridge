@@ -223,8 +223,10 @@ describe('P6 federation coverage closure', () => {
       const stored = Federation.insertActivity.mock.calls.at(-1)?.[0];
       expect(stored.activity.object).toEqual(expect.objectContaining({
         '@context': 'https://www.w3.org/ns/activitystreams',
-        content: 'trimmed', to: [], cc: [],
+        content: 'trimmed',
       }));
+      expect(stored.activity.to).toEqual([]);
+      expect(stored.activity.cc).toEqual([]);
       expect(stored.activity.object.summary).toBeUndefined();
       expect(stored.activity.object.sensitive).toBeUndefined();
     });
