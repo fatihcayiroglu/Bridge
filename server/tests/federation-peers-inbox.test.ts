@@ -537,13 +537,14 @@ describe('handleApAnnounce', () => {
 // INBOX-HANDLERS — handleApUpdate
 // ════════════════════════════════════════════════════════════════
 describe('handleApUpdate', () => {
-  it('mevcut apMessage içeriğini günceller', async () => {
+  it('timestamp içermeyen legacy Update arrival order ile içeriği günceller', async () => {
+    const createdAt = Date.now();
     await mockDb.apMessages.insert({
       _id:      'ap-msg-upd-1',
       apId:     REMOTE_NOTE,
       actorUrl: REMOTE_ACTOR,
       content:  'Eski içerik',
-      createdAt: Date.now(),
+      createdAt,
     });
 
     const activity = makeActivity({
@@ -560,6 +561,7 @@ describe('handleApUpdate', () => {
 
     const updated = await mockDb.apMessages.findOne({ apId: REMOTE_NOTE, actorUrl: REMOTE_ACTOR });
     expect(updated?.content).toBe('Yeni içerik');
+    expect(Number(updated?.updatedAt)).toBeGreaterThan(createdAt);
 
     await mockDb.apMessages.remove({ _id: 'ap-msg-upd-1' });
   });

@@ -64,12 +64,14 @@ function parseApTimestamp(value: unknown): number | null {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
-function lifecycleTimestamp(activity: ApActivity, obj?: ApObject | null): number {
+function suppliedLifecycleTimestamp(activity: ApActivity, obj?: ApObject | null): number | null {
   return parseApTimestamp(obj?.updated)
     ?? parseApTimestamp(activity.updated)
     ?? parseApTimestamp(obj?.published)
-    ?? parseApTimestamp(activity.published)
-    ?? Date.now();
+    ?? parseApTimestamp(activity.published);
+}
+function lifecycleTimestamp(activity: ApActivity, obj?: ApObject | null): number {
+  return suppliedLifecycleTimestamp(activity, obj) ?? Date.now();
 }
 function persistedLifecycleTimestamp(row: Record<string, unknown>): number {
   const candidates = [row.updatedAt, row.published, row.createdAt];
@@ -336,12 +338,20 @@ async function handleApUpdate(targetUser: ApActor | null, activity: ApActivity):
     }
     if (existing.deletedAt !== null && existing.deletedAt !== undefined) return;
 
-    const incomingTs = lifecycleTimestamp(activity, obj);
+    const suppliedTs = suppliedLifecycleTimestamp(activity, obj);
     const currentTs = persistedLifecycleTimestamp(existing as Record<string, unknown>);
-    if (incomingTs <= currentTs) {
-      logger.info({ noteId: obj.id, incomingTs, currentTs, event: 'federation.note.stale_update_ignored' });
+    if (suppliedTs !== null && suppliedTs <= currentTs) {
+      logger.info({ noteId: obj.id, incomingTs: suppliedTs, currentTs, event: 'federation.note.stale_update_ignored' });
       return;
     }
+
+    // Some ActivityPub implementations omit `updated`/`published` on Update.
+    // In that legacy shape there is no remote ordering clock to compare, so
+    // arrival order is the only honest signal. Advance the stored version
+    // monotonically rather than randomly rejecting an Update that lands in the
+    // same millisecond as the original Create/test fixture. Explicit remote
+    // timestamps still obey the strict stale/equal rejection above.
+    const incomingTs = suppliedTs ?? Math.max(Date.now(), currentTs + 1);
 
     await Federation.updateApMessage(
       { apId: obj.id, actorUrl: aUrl },

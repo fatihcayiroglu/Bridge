@@ -60,6 +60,21 @@ it('ignores an older Update instead of overwriting newer content', async () => {
   expect(log.info).toHaveBeenCalledWith(expect.objectContaining({ event: 'federation.note.stale_update_ignored' }));
 });
 
+it('ignores an equal-timestamp Update so a replay cannot replace the current version', async () => {
+  const ts = Date.parse('2026-10-04T11:00:00.000Z');
+  Federation.findApMessageOne.mockResolvedValue({
+    apId: NOTE, actorUrl: REMOTE, content: 'current', updatedAt: ts, deletedAt: null,
+  });
+  await handleApUpdate(ALICE, {
+    id: 'up-equal', type: 'Update', actor: REMOTE,
+    object: { id: NOTE, type: 'Note', content: 'REPLAY', updated: '2026-10-04T11:00:00.000Z' },
+  } as never);
+  expect(Federation.updateApMessage).not.toHaveBeenCalled();
+  expect(log.info).toHaveBeenCalledWith(expect.objectContaining({
+    event: 'federation.note.stale_update_ignored', incomingTs: ts, currentTs: ts,
+  }));
+});
+
 it('applies a strictly newer Update using the remote lifecycle timestamp', async () => {
   Federation.findApMessageOne.mockResolvedValue({
     apId: NOTE, actorUrl: REMOTE, content: 'old', updatedAt: Date.parse('2026-10-04T10:00:00.000Z'), deletedAt: null,
