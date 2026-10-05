@@ -208,7 +208,6 @@ describe('P6 federation coverage closure', () => {
       const noNote = await request(app).patch('/lifecycle/users/alice/notes/note-1').set('Authorization', aliceAuth).send({ content: 'x' });
       expect(noNote.status).toBe(404);
 
-      Federation.findActivities.mockResolvedValueOnce([createRow()]);
       const wrongOwner = await request(app).patch('/lifecycle/users/alice/notes/note-1').set('Authorization', bobAuth).send({ content: 'x' });
       expect(wrongOwner.status).toBe(403);
 
@@ -252,7 +251,6 @@ describe('P6 federation coverage closure', () => {
       const noUser = await request(app).delete('/lifecycle/users/nobody/notes/note-1').set('Authorization', aliceAuth);
       expect(noUser.status).toBe(404);
 
-      Federation.findActivities.mockResolvedValueOnce([createRow()]);
       const wrongOwner = await request(app).delete('/lifecycle/users/alice/notes/note-1').set('Authorization', bobAuth);
       expect(wrongOwner.status).toBe(403);
 
