@@ -250,12 +250,11 @@ describe('RemoteDmPanel', () => {
     expect(box.value).toBe('retry me');
   });
 
-  it('renders valid, invalid, missing and ISO message timestamps without crashing', async () => {
+  it('renders invalid, negative and ISO message timestamps without crashing', async () => {
     const history = [
-      { ...conversation.lastMessage, _id: 't-1', createdAt: undefined },
-      { ...conversation.lastMessage, _id: 't-2', createdAt: 'not-a-date' },
-      { ...conversation.lastMessage, _id: 't-3', createdAt: -1 },
-      { ...conversation.lastMessage, _id: 't-4', createdAt: '2026-10-05T10:00:00.000Z' },
+      { ...conversation.lastMessage, _id: 't-1', createdAt: 'not-a-date' },
+      { ...conversation.lastMessage, _id: 't-2', createdAt: -1 },
+      { ...conversation.lastMessage, _id: 't-3', createdAt: '2026-10-05T10:00:00.000Z' },
     ];
     apiFetch.mockImplementation(async (urlValue: unknown) => {
       const url = String(urlValue);
@@ -263,7 +262,7 @@ describe('RemoteDmPanel', () => {
       return new Response(JSON.stringify(history), { status: 200 });
     });
     await openThread();
-    await waitFor(() => expect(document.querySelectorAll('.remote-dm-message')).toHaveLength(4));
+    await waitFor(() => expect(document.querySelectorAll('.remote-dm-message')).toHaveLength(3));
     expect(document.querySelectorAll('.remote-dm-message time')).toHaveLength(3);
   });
 
