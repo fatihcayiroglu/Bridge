@@ -45,12 +45,14 @@ const log = createLogger('ShellActions');
  *   openSettingsModal → settings-modal-svelte.ts (delege dinleyici)
  *   toggleMemberList  → MemberListPanel.svelte   (#btn-members)
  *   openServerMenu    → ServerMenu.svelte        (#server-header-btn)
+ *   showRemoteDmPanel → RemoteDmPanel.svelte     (dinamik kabuk düğmesi)
  */
 const COMPONENT_BOUND = new Set([
   'sendMessage',
   'openSettingsModal',
   'toggleMemberList',
   'openServerMenu',
+  'showRemoteDmPanel',
 ]);
 
 // ── Final21 UX (U-14): telefonda kanal başlığı taşma menüsü ─────────────────
