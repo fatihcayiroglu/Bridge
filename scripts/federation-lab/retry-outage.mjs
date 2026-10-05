@@ -114,6 +114,7 @@ async function main() {
     LD_PRELOAD: libfaketime,
     FAKETIME_TIMESTAMP_FILE: fakeFile,
     FAKETIME_NO_CACHE: '1',
+    FAKETIME_DONT_FAKE_MONOTONIC: '1',
     NODE_EXTRA_CA_CERTS: lab.pki.caFile,
     SSRF_ALLOWLIST: Object.values(HOSTS).join(','),
     BRIDGE_EGRESS_LOCAL_HOSTS: Object.values(HOSTS).join(','),
