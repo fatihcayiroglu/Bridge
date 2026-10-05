@@ -43,7 +43,7 @@ fs.mkdirSync(workDir, { recursive: true });
 fs.mkdirSync(outDir, { recursive: true });
 
 const HOSTS = { a: 'retry-a.bridge.test', b: 'retry-b.bridge.test' };
-const PORTS = { a: 57543, b: 57544 };
+const PORTS = { a: 18543, b: 18544 };
 const ORIGIN = { a: `https://${HOSTS.a}:${PORTS.a}`, b: `https://${HOSTS.b}:${PORTS.b}` };
 const actorUrl = (k, username) => `${ORIGIN[k]}/api/federation/users/${username}`;
 const fakeFile = path.join(workDir, 'faketime.rc');
@@ -122,7 +122,7 @@ async function main() {
     AI_PROVIDER: 'none',
   };
 
-  let basePort = 57500;
+  let basePort = 18500;
   for (const k of ['a', 'b']) {
     const inst = new Instance({
       name: `retry-${k}`,
