@@ -105,6 +105,58 @@ async function ownUser(req: import('express').Request, res: import('express').Re
   return user;
 }
 
+/**
+ * @openapi
+ * /federation/users/{username}/notes/{noteId}:
+ *   get:
+ *     tags: [Federation]
+ *     summary: Read the latest durable state of a local ActivityPub Note
+ *     parameters:
+ *       - { in: path, name: username, required: true, schema: { type: string } }
+ *       - { in: path, name: noteId, required: true, schema: { type: string } }
+ *     responses:
+ *       200: { description: Latest Note object }
+ *       404: { description: Note not found }
+ *       410: { description: Note was deleted and is represented by a Tombstone }
+ *   patch:
+ *     tags: [Federation]
+ *     summary: Edit a local ActivityPub Note and emit Update
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: path, name: username, required: true, schema: { type: string } }
+ *       - { in: path, name: noteId, required: true, schema: { type: string } }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [content]
+ *             properties:
+ *               content: { type: string, maxLength: 5000 }
+ *               sensitive: { type: boolean }
+ *               summary: { type: string, nullable: true }
+ *     responses:
+ *       200: { description: Update persisted and queued for delivery }
+ *       400: { description: Invalid content }
+ *       401: { description: Authentication required }
+ *       403: { description: Cannot edit another user's Note }
+ *       404: { description: Note not found }
+ *       410: { description: Deleted Notes cannot be resurrected }
+ *   delete:
+ *     tags: [Federation]
+ *     summary: Delete a local ActivityPub Note and emit Delete
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: path, name: username, required: true, schema: { type: string } }
+ *       - { in: path, name: noteId, required: true, schema: { type: string } }
+ *     responses:
+ *       204: { description: Delete persisted and queued, or Note already deleted }
+ *       401: { description: Authentication required }
+ *       403: { description: Cannot delete another user's Note }
+ *       404: { description: Note not found }
+ */
+
 // Canonical read path for authored notes. Mounted before activitypub.ts so the
 // lifecycle-aware state wins over the historical Create-only reader there.
 router.get('/users/:username/notes/:noteId', async (req, res) => {
