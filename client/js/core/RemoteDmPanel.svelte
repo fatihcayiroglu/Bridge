@@ -12,7 +12,6 @@
     _id: string;
     username?: string;
     displayName?: string;
-    avatarUrl?: string | null;
   }
 
   interface RemoteMessage {
@@ -23,8 +22,6 @@
     content: string;
     createdAt?: number | string;
     direction?: 'in' | 'out';
-    federated?: boolean;
-    actorUrl?: string;
   }
 
   interface RemoteConversation {
@@ -35,7 +32,6 @@
     actorUrl: string;
     other: RemoteUser;
     lastMessage?: RemoteMessage | null;
-    unreadCount?: number;
   }
 
   let isVisible = $state(false);
@@ -92,9 +88,7 @@
       if (!Array.isArray(data)) throw new Error('Invalid remote DM list');
       conversations = data as RemoteConversation[];
     } catch (error) {
-      if (seq === requestSeq) {
-        errorMsg = safeApiErrorMessage(error, t('remote_dm_list_failed', 'Federasyon mesajları yüklenemedi.'), { report: true });
-      }
+      if (seq === requestSeq) errorMsg = safeApiErrorMessage(error, t('dm_history_load_failed', 'Daha eski mesajlar yüklenemedi.'), { report: true });
     } finally {
       if (seq === requestSeq) isLoading = false;
     }
@@ -119,9 +113,7 @@
       await tick();
       if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
     } catch (error) {
-      if (seq === requestSeq) {
-        errorMsg = safeApiErrorMessage(error, t('remote_dm_history_failed', 'Federasyon mesaj geçmişi yüklenemedi.'), { report: true });
-      }
+      if (seq === requestSeq) errorMsg = safeApiErrorMessage(error, t('dm_history_load_failed', 'Daha eski mesajlar yüklenemedi.'), { report: true });
     }
   }
 
@@ -145,9 +137,7 @@
       messages = [...older, ...messages];
       hasOlder = data.length >= PAGE_SIZE;
     } catch (error) {
-      if (seq === requestSeq) {
-        errorMsg = safeApiErrorMessage(error, t('remote_dm_history_failed', 'Federasyon mesaj geçmişi yüklenemedi.'), { report: true });
-      }
+      if (seq === requestSeq) errorMsg = safeApiErrorMessage(error, t('dm_history_load_failed', 'Daha eski mesajlar yüklenemedi.'), { report: true });
     } finally {
       if (seq === requestSeq) loadingOlder = false;
     }
@@ -158,7 +148,7 @@
     const content = draft.trim();
     if (!conversation || !content || isSending) return;
     if (content.length > 2000) {
-      errorMsg = t('remote_dm_too_long', 'Mesajlar en fazla 2000 karakter olabilir.');
+      errorMsg = 'Mesajlar en fazla 2000 karakter olabilir.';
       return;
     }
     isSending = true;
@@ -172,17 +162,14 @@
       });
       if (!response.ok) throw new ApiResponseError(response);
       const message = await response.json() as RemoteMessage;
-      if (!message || typeof message._id !== 'string' || typeof message.content !== 'string') {
-        throw new Error('Invalid remote DM send response');
-      }
+      if (!message || typeof message._id !== 'string' || typeof message.content !== 'string') throw new Error('Invalid remote DM send response');
       if (!messages.some(item => item._id === message._id)) messages = [...messages, message];
       draft = '';
-      conversations = conversations.map(item => item.threadId === conversation.threadId
-        ? { ...item, lastMessage: message } : item);
+      conversations = conversations.map(item => item.threadId === conversation.threadId ? { ...item, lastMessage: message } : item);
       await tick();
       if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
     } catch (error) {
-      errorMsg = safeApiErrorMessage(error, t('remote_dm_send_failed', 'Federasyon mesajı gönderilemedi.'), { report: true });
+      errorMsg = safeApiErrorMessage(error, t('dm_send_failed', 'Gönderilemedi.'), { report: true });
     } finally {
       isSending = false;
     }
@@ -224,13 +211,13 @@
     if (!dmButton?.parentElement) return;
     const existing = document.querySelector<HTMLButtonElement>('[data-bridge-action="showRemoteDmPanel"]');
     if (existing) { shellButton = existing; return; }
-
     const button = document.createElement('button');
     button.type = 'button';
     button.className = dmButton.className;
     button.dataset.bridgeAction = 'showRemoteDmPanel';
-    button.setAttribute('aria-label', t('remote_dm_open', 'Federasyon mesajları'));
-    button.setAttribute('data-tip', t('remote_dm_open', 'Federasyon mesajları'));
+    const label = `${t('ui_open_direct_messages', 'Direkt mesajları aç')} · ActivityPub`;
+    button.setAttribute('aria-label', label);
+    button.setAttribute('data-tip', label);
     button.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3.5 9h17M3.5 15h17M12 3c2.3 2.5 3.5 5.5 3.5 9S14.3 18.5 12 21M12 3C9.7 5.5 8.5 8.5 8.5 12S9.7 18.5 12 21"/></svg>';
     button.addEventListener('click', openPanel);
     dmButton.insertAdjacentElement('afterend', button);
@@ -261,31 +248,26 @@
 </script>
 
 {#if isVisible}
-<div class="remote-dm-panel" class:conversation-open={Boolean(active)} role="dialog" aria-modal="true" aria-label={t('remote_dm_title', 'Federasyon mesajları')} use:focusTrap>
+<div class="remote-dm-panel" class:conversation-open={Boolean(active)} role="dialog" aria-modal="true" aria-label={t('attr_direkt_mesajlar_676de62', 'Direkt mesajlar')} use:focusTrap>
   <aside class="remote-dm-sidebar">
     <div class="remote-dm-heading">
-      <h2>{t('remote_dm_title', 'Federasyon mesajları')}</h2>
-      <button type="button" aria-label={t('remote_dm_close', 'Federasyon mesajlarını kapat')} onclick={close}>×</button>
+      <div><h2>{t('attr_direkt_mesajlar_676de62', 'Direkt mesajlar')}</h2><small>ActivityPub</small></div>
+      <button type="button" aria-label={t('attr_dm_panelini_kapat_3725cce', 'DM panelini kapat')} onclick={close}>×</button>
     </div>
-    <p class="remote-dm-hint">{t('remote_dm_hint', 'Diğer ActivityPub sunucularından gelen doğrudan mesajlar.')}</p>
     {#if errorMsg}<p class="remote-dm-error" role="alert">{errorMsg}</p>{/if}
     {#if isLoading}
       <p class="remote-dm-muted">{t('sso_loading', 'Yükleniyor…')}</p>
     {:else if !conversations.length}
-      <p class="remote-dm-muted">{t('remote_dm_none', 'Henüz federasyon mesajınız yok.')}</p>
+      <p class="remote-dm-muted">{t('dm_none', 'Henüz bir DM konuşmanız yok.')}</p>
     {/if}
     {#each conversations as conversation (conversation.threadId)}
       <button type="button" class="remote-dm-conversation" class:active={active?.threadId === conversation.threadId} onclick={() => void openConversation(conversation)}>
         <span class="remote-dm-avatar">{initials(conversation)}</span>
-        <span class="remote-dm-person">
-          <strong>{name(conversation)}</strong>
-          <small>{conversation.lastMessage?.content || conversation.actorUrl}</small>
-        </span>
+        <span class="remote-dm-person"><strong>{name(conversation)}</strong><small>{conversation.lastMessage?.content || conversation.actorUrl}</small></span>
       </button>
     {/each}
   </aside>
-
-  <section class="remote-dm-chat" aria-label={t('remote_dm_conversation', 'Federasyon DM konuşması')}>
+  <section class="remote-dm-chat" aria-label={t('dm_conversation', 'DM konuşması')}>
     {#if active}
       <header class="remote-dm-chat-header">
         <button type="button" class="remote-dm-back" aria-label={t('nav_back_dm_list')} onclick={back}>←</button>
@@ -293,39 +275,28 @@
         <span class="remote-dm-peer"><strong>{name(active)}</strong><small>{active.actorUrl}</small></span>
       </header>
       <div class="remote-dm-messages" bind:this={messagesEl} aria-live="polite">
-        {#if hasOlder}
-          <button type="button" class="remote-dm-older" disabled={loadingOlder} onclick={() => void loadOlder()}>{loadingOlder ? t('sso_loading', 'Yükleniyor…') : t('dm_load_older', 'Daha eski mesajları yükle')}</button>
-        {/if}
+        {#if hasOlder}<button type="button" class="remote-dm-older" disabled={loadingOlder} onclick={() => void loadOlder()}>{loadingOlder ? t('sso_loading', 'Yükleniyor…') : t('dm_load_older', 'Daha eski mesajları yükle')}</button>{/if}
         {#each messages as message (message._id)}
-          <article class="remote-dm-message" class:outgoing={message.direction === 'out'}>
-            <div>
-              <strong>{message.displayName || (message.direction === 'out' ? t('remote_dm_you', 'Sen') : name(active))}</strong>
-              {#if message.createdAt}<time>{messageTime(message.createdAt)}</time>{/if}
-              <p>{message.content}</p>
-            </div>
-          </article>
+          <article class="remote-dm-message" class:outgoing={message.direction === 'out'}><div>
+            <strong>{message.displayName || (message.direction === 'out' ? t('ui_bridge_user') : name(active))}</strong>
+            {#if message.createdAt}<time>{messageTime(message.createdAt)}</time>{/if}
+            <p>{message.content}</p>
+          </div></article>
         {/each}
       </div>
       <form class="remote-dm-composer" onsubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
-        <textarea bind:value={draft} maxlength="2000" rows="1" placeholder={t('attr_mesaj_yaz_410bf7e', 'Mesaj yaz…')} aria-label={t('remote_dm_message', 'Federasyon DM mesajı')}></textarea>
+        <textarea bind:value={draft} maxlength="2000" rows="1" placeholder={t('attr_mesaj_yaz_410bf7e', 'Mesaj yaz…')} aria-label={t('dm_message', 'DM mesajı')}></textarea>
         <button class="btn btn-primary" type="submit" disabled={!draft.trim() || isSending}>{isSending ? t('dm_sending', 'Gönderiliyor…') : t('dm_send', 'Gönder')}</button>
       </form>
-    {:else}
-      <div class="remote-dm-empty"><h3>{t('remote_dm_select', 'Bir federasyon konuşması seçin')}</h3></div>
-    {/if}
+    {:else}<div class="remote-dm-empty"><h3>{t('dm_private_convos', 'Özel konuşmalarınız')}</h3></div>{/if}
   </section>
 </div>
 {/if}
 
 <style>
-  .remote-dm-panel{position:fixed;inset:0;z-index:1210;display:grid;grid-template-columns:300px minmax(0,1fr);grid-template-rows:minmax(0,1fr);background:var(--surface-1);color:var(--text-primary)}
-  .remote-dm-sidebar{display:flex;flex-direction:column;min-width:0;padding:16px;background:var(--surface-2);border-right:1px solid var(--border-subtle);overflow:auto}
-  .remote-dm-heading,.remote-dm-chat-header{display:flex;align-items:center;gap:10px}.remote-dm-heading h2{font-size:18px;margin:0;flex:1}.remote-dm-heading button{border:0;background:transparent;color:inherit;font-size:24px;cursor:pointer}
-  .remote-dm-hint,.remote-dm-muted,.remote-dm-person small,.remote-dm-peer small{color:var(--text-muted);font-size:12px}.remote-dm-hint{margin:4px 0 12px}.remote-dm-error{color:var(--danger);font-size:12px}
-  .remote-dm-conversation{display:flex;align-items:center;gap:10px;border:0;background:transparent;color:inherit;padding:9px 6px;text-align:left;border-radius:var(--radius-control);cursor:pointer}.remote-dm-conversation:hover,.remote-dm-conversation.active{background:var(--surface-selected)}
-  .remote-dm-avatar{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:var(--brand);color:var(--text-on-solid);font-size:11px;font-weight:700;flex:none}.remote-dm-person,.remote-dm-peer{display:grid;min-width:0;flex:1}.remote-dm-person strong,.remote-dm-person small,.remote-dm-peer small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .remote-dm-chat{display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0;min-height:0}.remote-dm-chat-header{padding:14px 16px;border-bottom:1px solid var(--border-subtle)}.remote-dm-back{display:none;border:0;background:transparent;color:inherit;font-size:20px;cursor:pointer}
-  .remote-dm-messages{overflow:auto;padding:18px}.remote-dm-message{display:flex;margin:0 0 14px;max-width:78%}.remote-dm-message.outgoing{margin-inline-start:auto}.remote-dm-message>div{padding:9px 11px;border-radius:12px;background:var(--surface-2);min-width:0}.remote-dm-message.outgoing>div{background:var(--brand-subtle)}.remote-dm-message strong{font-size:12px}.remote-dm-message time{margin-inline-start:8px;color:var(--text-muted);font-size:11px}.remote-dm-message p{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.remote-dm-older{display:block;margin:0 auto 14px;border:1px solid var(--border-subtle);border-radius:var(--radius-control);background:var(--surface-2);color:inherit;padding:6px 12px;cursor:pointer}
-  .remote-dm-composer{display:flex;gap:8px;padding:14px;border-top:1px solid var(--border-subtle)}.remote-dm-composer textarea{flex:1;resize:none;min-height:38px;padding:10px;border:1px solid var(--border-subtle);border-radius:var(--radius-control);background:var(--surface-2);color:inherit;font:inherit}.remote-dm-composer .btn{flex:none;width:auto}.remote-dm-empty{display:grid;place-content:center;color:var(--text-muted)}
-  @media(max-width:700px){.remote-dm-panel{grid-template-columns:1fr;height:var(--bridge-visual-viewport-height,100dvh)}.remote-dm-chat{display:none}.remote-dm-panel.conversation-open .remote-dm-sidebar{display:none}.remote-dm-panel.conversation-open .remote-dm-chat{display:grid}.remote-dm-back{display:grid;place-items:center;width:40px;height:40px}.remote-dm-composer{padding-bottom:calc(10px + env(safe-area-inset-bottom))}.remote-dm-composer textarea,.remote-dm-composer button{min-height:44px}}
+.remote-dm-panel{position:fixed;inset:0;z-index:1210;display:grid;grid-template-columns:300px minmax(0,1fr);grid-template-rows:minmax(0,1fr);background:var(--surface-1);color:var(--text-primary)}
+.remote-dm-sidebar{display:flex;flex-direction:column;min-width:0;padding:16px;background:var(--surface-2);border-right:1px solid var(--border-subtle);overflow:auto}.remote-dm-heading,.remote-dm-chat-header{display:flex;align-items:center;gap:10px}.remote-dm-heading>div{display:grid;gap:1px;flex:1}.remote-dm-heading h2{font-size:18px;margin:0}.remote-dm-heading small{color:var(--text-muted);font-size:11px}.remote-dm-heading button{border:0;background:transparent;color:inherit;font-size:24px;cursor:pointer}.remote-dm-muted,.remote-dm-person small,.remote-dm-peer small{color:var(--text-muted);font-size:12px}.remote-dm-error{color:var(--danger);font-size:12px}
+.remote-dm-conversation{display:flex;align-items:center;gap:10px;border:0;background:transparent;color:inherit;padding:9px 6px;text-align:left;border-radius:var(--radius-control);cursor:pointer}.remote-dm-conversation:hover,.remote-dm-conversation.active{background:var(--surface-selected)}.remote-dm-avatar{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:var(--brand);color:var(--text-on-solid);font-size:11px;font-weight:700;flex:none}.remote-dm-person,.remote-dm-peer{display:grid;min-width:0;flex:1}.remote-dm-person strong,.remote-dm-person small,.remote-dm-peer small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-dm-chat{display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0;min-height:0}.remote-dm-chat-header{padding:14px 16px;border-bottom:1px solid var(--border-subtle)}.remote-dm-back{display:none;border:0;background:transparent;color:inherit;font-size:20px;cursor:pointer}.remote-dm-messages{overflow:auto;padding:18px}.remote-dm-message{display:flex;margin:0 0 14px;max-width:78%}.remote-dm-message.outgoing{margin-inline-start:auto}.remote-dm-message>div{padding:9px 11px;border-radius:12px;background:var(--surface-2);min-width:0}.remote-dm-message.outgoing>div{background:var(--brand-subtle)}.remote-dm-message strong{font-size:12px}.remote-dm-message time{margin-inline-start:8px;color:var(--text-muted);font-size:11px}.remote-dm-message p{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.remote-dm-older{display:block;margin:0 auto 14px;border:1px solid var(--border-subtle);border-radius:var(--radius-control);background:var(--surface-2);color:inherit;padding:6px 12px;cursor:pointer}.remote-dm-composer{display:flex;gap:8px;padding:14px;border-top:1px solid var(--border-subtle)}.remote-dm-composer textarea{flex:1;resize:none;min-height:38px;padding:10px;border:1px solid var(--border-subtle);border-radius:var(--radius-control);background:var(--surface-2);color:inherit;font:inherit}.remote-dm-composer .btn{flex:none;width:auto}.remote-dm-empty{display:grid;place-content:center;color:var(--text-muted)}
+@media(max-width:700px){.remote-dm-panel{grid-template-columns:1fr;height:var(--bridge-visual-viewport-height,100dvh)}.remote-dm-chat{display:none}.remote-dm-panel.conversation-open .remote-dm-sidebar{display:none}.remote-dm-panel.conversation-open .remote-dm-chat{display:grid}.remote-dm-back{display:grid;place-items:center;width:40px;height:40px}.remote-dm-composer{padding-bottom:calc(10px + env(safe-area-inset-bottom))}.remote-dm-composer textarea,.remote-dm-composer button{min-height:44px}}
 </style>
