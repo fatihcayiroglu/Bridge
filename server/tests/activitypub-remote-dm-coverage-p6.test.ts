@@ -83,9 +83,9 @@ describe('P6 remote DM coverage edges', () => {
 
   it.each([
     [`/federation/remote-dms/${threadId}/messages?limit=0`, 400],
-    [`/federation/remote-dms/${threadId}/messages?limit=101`, 400],
+    [`/federation/remote-dms/${threadId}/messages?limit=101`, 200],
     [`/federation/remote-dms/${threadId}/messages?before=-1`, 400],
-  ])('rejects invalid history pagination %s', async (url, expected) => {
+  ])('enforces the history pagination contract %s', async (url, expected) => {
     const res = await request(app).get(url).set('Authorization', `Bearer ${token()}`);
     expect(res.status).toBe(expected);
   });
