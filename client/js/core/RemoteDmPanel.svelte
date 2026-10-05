@@ -145,12 +145,14 @@
 
   async function sendMessage(): Promise<void> {
     const conversation = active;
-    const content = draft.trim();
+    const draftAtSubmit = draft;
+    const content = draftAtSubmit.trim();
     if (!conversation || !content || isSending) return;
     if (content.length > 2000) {
       errorMsg = t('message_too_long_max', 'Mesaj çok uzun (en fazla {max} karakter)', { max: 2000 });
       return;
     }
+    const seq = requestSeq;
     isSending = true;
     errorMsg = '';
     const clientNonce = globalThis.crypto?.randomUUID?.() ?? `apdm-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -163,13 +165,16 @@
       if (!response.ok) throw new ApiResponseError(response);
       const message = await response.json() as RemoteMessage;
       if (!message || typeof message._id !== 'string' || typeof message.content !== 'string') throw new Error('Invalid remote DM send response');
-      if (!messages.some(item => item._id === message._id)) messages = [...messages, message];
-      draft = '';
       conversations = conversations.map(item => item.threadId === conversation.threadId ? { ...item, lastMessage: message } : item);
+      if (seq !== requestSeq || active?.threadId !== conversation.threadId) return;
+      if (!messages.some(item => item._id === message._id)) messages = [...messages, message];
+      if (draft === draftAtSubmit) draft = '';
       await tick();
       if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
     } catch (error) {
-      errorMsg = safeApiErrorMessage(error, t('dm_send_failed', 'Gönderilemedi.'), { report: true });
+      if (seq === requestSeq && active?.threadId === conversation.threadId) {
+        errorMsg = safeApiErrorMessage(error, t('dm_send_failed', 'Gönderilemedi.'), { report: true });
+      }
     } finally {
       isSending = false;
     }
