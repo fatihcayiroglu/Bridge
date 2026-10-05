@@ -436,9 +436,17 @@ const S = {
     const r14 = await postTls(inbox, afterBlock.headers, afterBlock.body, lab.pki.ca);
     check('adversarial', 'F-ADV-14', 'after the admin blocks the domain, its signed activity is refused', blk.status < 300 && r14.status === 403, `block ${blk.status}, inbox ${r14.status}`);
     await mutate(lab.inst.a.base, 'DELETE', `/api/admin/federation/blacklist/${HOSTS.x}`, user('admina').token);
-    const afterUnblock = signed(act());
-    const r15 = await postTls(inbox, afterUnblock.headers, afterUnblock.body, lab.pki.ca);
-    check('adversarial', 'F-ADV-15', 'after unblocking, the domain is accepted again', r15.status === 202, `status ${r15.status}`);
+    let afterUnblock = signed(act());
+    let r15 = await postTls(inbox, afterUnblock.headers, afterUnblock.body, lab.pki.ca);
+    let rateLimitRetry = false;
+    if (r15.status === 429 && Number(r15.body?.retryAfter) > 0) {
+      rateLimitRetry = true;
+      await sleep(Number(r15.body.retryAfter) * 1000 + 250);
+      afterUnblock = signed(act());
+      r15 = await postTls(inbox, afterUnblock.headers, afterUnblock.body, lab.pki.ca);
+    }
+    check('adversarial', 'F-ADV-15', 'after unblocking, the domain is accepted again once any independent inbox burst window clears',
+      r15.status === 202, `status ${r15.status}, rateLimitRetry ${rateLimitRetry}`);
   },
 
   async ssrf() {
