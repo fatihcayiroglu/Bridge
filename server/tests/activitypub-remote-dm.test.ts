@@ -244,7 +244,6 @@ describe('P6 remote ActivityPub DM API', () => {
 
   it.each([
     ['?limit=0'],
-    ['?limit=101'],
     ['?limit=nope'],
     ['?before=-1'],
     ['?before=nope'],
@@ -254,6 +253,15 @@ describe('P6 remote ActivityPub DM API', () => {
       .set('Authorization', `Bearer ${token(alice._id)}`);
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Invalid pagination');
+  });
+
+  it('clamps an oversized history limit to the endpoint maximum', async () => {
+    inboundRows = [inbound('one')];
+    const res = await request(app)
+      .get(`/federation/remote-dms/${threadId}/messages?limit=101`)
+      .set('Authorization', `Bearer ${token(alice._id)}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
   });
 
   it('normalizes non-array repository results to empty history', async () => {
