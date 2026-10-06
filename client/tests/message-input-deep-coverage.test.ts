@@ -1,4 +1,4 @@
-import { cleanup, fireEvent } from '@testing-library/svelte';
+import { cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import { t } from '../js/core/i18n/index.ts';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -168,43 +168,62 @@ describe('MessageInputPanel — identity, destination, and editing failures', ()
     expect(readOutbox('fallback-id')).toEqual([]);
   });
 
-  it('blocks offline edits, emits connected edits/deletes, and restores the pre-edit draft', () => {
+  it('queues offline edits, replays them on reconnect, emits deletes, and restores the pre-edit draft', async () => {
+    // Durable local-first crypto/replay is asynchronous; this test measures the
+    // eventual persisted/emit contract rather than a synchronous socket side effect.
+    vi.useRealTimers();
+
     draft = 'korunan taslak';
     type('korunan taslak');
-    BridgeRegistry.call('startEditMessage', { _id: 'message-edit', content: 'eski içerik' });
+    BridgeRegistry.call('startEditMessage', {
+      _id: 'message-edit',
+      content: 'eski içerik',
+      createdAt: 100,
+    });
     flushSync();
+
     connected = false;
     type('yeni içerik');
     send();
-    expect(alertText()).toMatch(/düzenleme gönderilemedi/);
+
+    // Offline edit is accepted into the encrypted operation log, but no socket
+    // emit occurs until the connection is authoritative again.
+    await waitFor(() => expect(alertText()).toContain(t('ui_offline_waiting')));
     expect(socket?.emit).not.toHaveBeenCalledWith('message:edit', expect.anything());
+    expect(input()).toHaveValue('yeni içerik');
 
     connected = true;
-    send();
-    // Uretim duzenlemeye bir `clientNonce` ekler (idempotent tekrar/eslestirme
-    // icin); degeri uretim tarafinda uretildigi icin SEKLI dogrulanir.
-    expect(socket?.emit).toHaveBeenCalledWith('message:edit', expect.objectContaining({
-      messageId: 'message-edit', channelId: 'channel-a', content: 'yeni içerik',
-    }));
+    document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
+    await waitFor(() => expect(socket?.emit).toHaveBeenCalledWith(
+      'message:edit',
+      expect.objectContaining({
+        messageId: 'message-edit',
+        channelId: 'channel-a',
+        content: 'yeni içerik',
+        baseVersion: 100,
+      }),
+    ));
+
     const editCall = socket!.emit.mock.calls.find(([event]) => event === 'message:edit');
     const nonce = (editCall?.[1] as { clientNonce?: string }).clientNonce;
     expect(typeof nonce).toBe('string');
 
-    // Duzenleme artik SUNUCU ONAYINA kadar bekler: metin kutuda kalir ki
-    // onay gelmezse kullanicinin yazdigi kaybolmasin. Taslak, ancak onay
-    // geldiginde geri yuklenir. (Eskiden emit ile birlikte hemen geri
-    // yukleniyordu; bu, onaylanmamis bir duzenlemeyi sessizce kaybediyordu.)
-    expect(input()).toHaveValue('yeni içerik');
+    // The visible edit remains until the authoritative server event resolves
+    // the exact durable operation id.
     BridgeRegistry.call('resolveEditMutation', nonce, 'message-edit');
     flushSync();
     expect(input()).toHaveValue('korunan taslak');
 
     BridgeRegistry.call('deleteMessage', '');
     BridgeRegistry.call('deleteMessage', 'message-delete');
-    // Silme de idempotent eslestirme icin bir `clientNonce` tasir.
-    expect(socket?.emit).toHaveBeenCalledWith('message:delete', expect.objectContaining({
-      messageId: 'message-delete', channelId: 'channel-a',
-    }));
+    await waitFor(() => expect(socket?.emit).toHaveBeenCalledWith(
+      'message:delete',
+      expect.objectContaining({
+        messageId: 'message-delete',
+        channelId: 'channel-a',
+        clientNonce: expect.any(String),
+      }),
+    ));
   });
 
   it('preserves reply metadata, truncates its snapshot, and separates Shift+Enter from send', () => {
@@ -545,13 +564,17 @@ describe('MessageInputPanel — defensive branch contracts', () => {
     expect(shell.querySelector<HTMLElement>('#msg-input-wrap')!.style.display).toBe('none');
   });
 
-  it('exercises connected-state fallback, reply fallbacks, retry timer replacement, and timerless failure', () => {
+  it('exercises connected-state fallback, reply fallbacks, retry timer replacement, and timerless failure', async () => {
+    vi.useRealTimers();
     BridgeRegistry.unregister('getSocketConnected');
     type('draft');
-    BridgeRegistry.call('startEditMessage', { _id: 'edit', content: 'before' });
+    BridgeRegistry.call('startEditMessage', { _id: 'edit', content: 'before', createdAt: 200 });
     type('after');
     send();
-    expect(socket?.emit).toHaveBeenCalledWith('message:edit', expect.objectContaining({ messageId: 'edit' }));
+    await waitFor(() => expect(socket?.emit).toHaveBeenCalledWith(
+      'message:edit',
+      expect.objectContaining({ messageId: 'edit', baseVersion: 200 }),
+    ));
 
     BridgeRegistry.call('setReplyTarget', { _id: 'reply-empty' });
     type('reply body');
