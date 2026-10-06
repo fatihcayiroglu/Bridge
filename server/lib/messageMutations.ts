@@ -25,7 +25,7 @@ import logger from './logger';
 import { invalidateChannelMessages } from './messageCache';
 import { canViewChannel, hasPermission, PERMS, resolvePermissions } from './permissions';
 import { cache } from './redisAdapter';
-import { normalizeMessageText, RAW_TEXT_FORMAT } from './storedText';
+import { normalizeMessageText, RAW_TEXT_FORMAT, storedMessageText } from './storedText';
 import type { HandlerServer } from '../socket/handler-contracts';
 
 /** Same bound the socket edit has always enforced. */
@@ -38,6 +38,7 @@ export type MutationFailureCode =
   | 'FORBIDDEN'            // visible, but not allowed to change THIS message
   | 'AUTOMOD_BLOCKED'
   | 'AUTOMOD_UNAVAILABLE'  // rules could not be evaluated: fail closed
+  | 'CONFLICT'             // a newer authoritative edit exists
   | 'FAILED';              // storage refused the change
 
 export type MutationResult =
@@ -51,6 +52,12 @@ interface EditInput {
   channelId?: string;
   content: unknown;
   clientNonce?: string;
+  /**
+   * Version the editor originally saw: editedAt when present, otherwise
+   * createdAt. Offline/retried edits use this to avoid overwriting a newer
+   * authoritative server edit.
+   */
+  baseVersion?: number;
   /** HTTP has always refused edits of non-`normal` messages; the socket never did. */
   requireNormalType?: boolean;
 }
@@ -84,7 +91,28 @@ export async function editChannelMessage(io: HandlerServer | null | undefined, i
   if (!loaded.ok) return loaded;
   const { msg, membership } = loaded;
   if (msg.userId !== input.actorId) return { ok: false, code: 'FORBIDDEN' };
+  if (msg.deletedAt) return { ok: false, code: 'NOT_FOUND' };
   if (input.requireNormalType && msg.type !== undefined && msg.type !== 'normal') return { ok: false, code: 'INVALID', reason: 'type' };
+
+  const desiredContent = normalizeMessageText(raw.trim());
+  const currentContent = storedMessageText(msg);
+  const currentVersion = Number(msg.editedAt ?? msg.createdAt ?? 0);
+
+  // Lost confirmation / reconnect replay: if the authoritative row already has
+  // the desired content, the mutation is satisfied. Do not append editHistory
+  // again and do not re-run policy side effects; just repeat confirmation.
+  if (currentContent === desiredContent) {
+    const channelId = String(msg.channelId);
+    io?.to(`channel:${channelId}`).emit('message:edited', { ...msg, clientNonce: input.clientNonce });
+    return { ok: true, message: msg as unknown as Record<string, unknown> };
+  }
+
+  if (
+    input.baseVersion !== undefined
+    && (!Number.isFinite(input.baseVersion) || input.baseVersion < 0 || input.baseVersion !== currentVersion)
+  ) {
+    return { ok: false, code: 'CONFLICT' };
+  }
 
   // Persisted AutoMod protects edits too; otherwise a benign send can be edited into content
   // that would have been refused. Spam-frequency rules count new sends only.
@@ -133,7 +161,7 @@ export async function editChannelMessage(io: HandlerServer | null | undefined, i
   // Each version keeps the format it was stored in (legacy decodes, raw does not).
   history.push({ content: msg.content ?? '', editedAt: msg.editedAt || msg.createdAt, contentFormat: msg.contentFormat ?? 0 });
   await Messages.update(input.messageId, {
-    content: normalizeMessageText(raw.trim()),
+    content: desiredContent,
     contentFormat: RAW_TEXT_FORMAT,
     editedAt: Date.now(),
     editHistory: history.slice(-10),
@@ -154,6 +182,17 @@ export async function deleteChannelMessage(io: HandlerServer | null | undefined,
 
   const perms = await resolvePermissions(input.actorId, String(msg.serverId), channelId).catch(() => 0);
   if (msg.userId !== input.actorId && !hasPermission(perms, PERMS.MANAGE_MESSAGES)) return { ok: false, code: 'FORBIDDEN' };
+
+  // Delete is desired-state idempotent. A retry after a lost confirmation does
+  // not run the destructive cascade again; current authorization is still
+  // checked above so a revoked user cannot use stale local state as an oracle.
+  if (msg.deletedAt) {
+    io?.to(`channel:${channelId}`).emit('message:deleted', {
+      id: input.messageId,
+      clientNonce: input.clientNonce,
+    });
+    return { ok: true, message: null };
+  }
 
   const deleted = await deleteMessageWithCascade(input.messageId, channelId, {
     _id: msg._id, channelId: msg.channelId, serverId: msg.serverId ?? '', threadId: msg.threadId ?? undefined,
