@@ -13,7 +13,13 @@ import { mount, unmount, flushSync } from 'svelte';
 import DraftManager from '../js/core/DraftManager.svelte';
 import MessageInputPanel from '../js/core/MessageInputPanel.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
-import { draftKey, readDraft } from '../js/core/draft-store.ts';
+import { draftKey } from '../js/core/draft-store.ts';
+import {
+  hydrateLocalFirstDraft,
+  localFirstDraftStorageStatus,
+  peekLocalFirstDraft,
+  resetLocalFirstDraftRuntimeForTests,
+} from '../js/core/local-first/draft-runtime.ts';
 import { resetOutboxMemory } from '../js/core/outbox-store.ts';
 
 const DEBOUNCE_MS = 400;
@@ -70,6 +76,7 @@ function ackLastSend(): void {
 beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
+  resetLocalFirstDraftRuntimeForTests();
   resetOutboxMemory();
   emitted = [];
   me = { _id: 'user-a' };
@@ -102,6 +109,7 @@ afterEach(() => {
   for (const name of ['getMe', 'getCurrentChannel', 'getCurrentServer', 'appendMessage', 'updateMessage', 'socket']) {
     BridgeRegistry.unregister(name);
   }
+  resetLocalFirstDraftRuntimeForTests();
   localStorage.clear();
   resetOutboxMemory();
   vi.useRealTimers();
@@ -113,7 +121,7 @@ describe('kaydetme', () => {
     type('yarım mesaj');
     settle();
 
-    expect(readDraft(channelDraft('ch-1'))).toBe('yarım mesaj');
+    expect((peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '')).toBe('yarım mesaj');
   });
 
   it('boş input taslak üretmez', () => {
@@ -127,7 +135,7 @@ describe('kaydetme', () => {
     type('bir şeyler'); settle();
     type('');           settle();
 
-    expect(readDraft(channelDraft('ch-1'))).toBe('');
+    expect((peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '')).toBe('');
   });
 });
 
@@ -200,7 +208,7 @@ describe('gönderim semantiği', () => {
 
     expect(lastSend()).toBeDefined();
     // ACK gelmeden taslak durur — teslim onaylanmadı.
-    expect(readDraft(channelDraft('ch-1'))).toBe('hello');
+    expect((peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '')).toBe('hello');
   });
 
   it('BAŞARILI ACK sonrası taslak temizlenir', () => {
@@ -209,7 +217,7 @@ describe('gönderim semantiği', () => {
 
     ackLastSend();
 
-    expect(readDraft(channelDraft('ch-1'))).toBe('');
+    expect((peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '')).toBe('');
   });
 
   it('gönderilen metin kanal dönüşünde taslak olarak GERİ GELMEZ', () => {
@@ -236,7 +244,7 @@ describe('gönderim semantiği', () => {
     flushSync();
 
     // Taslak güvence olarak depoda kalır; metin başarısız satırda (giden kutusu) görünür.
-    expect(readDraft(channelDraft('ch-1'))).toBe('gitmeyen mesaj');
+    expect((peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '')).toBe('gitmeyen mesaj');
     const outbox = JSON.parse(localStorage.getItem(Object.keys(localStorage).find((k) => k.includes('outbox'))!) ?? '[]');
     expect(outbox.map((e: { content: string; state: string }) => [e.content, e.state])).toEqual([['gitmeyen mesaj', 'failed']]);
     selectChannel({ _id: 'ch-2', type: 'text' });
@@ -266,7 +274,7 @@ describe('gönderim semantiği', () => {
     BridgeRegistry.register('removeMessage', () => {});
     BridgeRegistry.call('discardSend', ackId);
     BridgeRegistry.unregister('removeMessage');
-    expect(readDraft(channelDraft('ch-1'))).toBe('');
+    expect((peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '')).toBe('');
     const key = Object.keys(localStorage).find((k) => k.includes('outbox'));
     expect(key ? JSON.parse(localStorage.getItem(key) ?? '[]') : []).toEqual([]);
   });
@@ -280,8 +288,8 @@ describe('gönderim semantiği', () => {
 
     ackLastSend(); // ch-1'in ACK'i geç geldi
 
-    expect(readDraft(channelDraft('ch-1'))).toBe('');
-    expect(readDraft(channelDraft('ch-2'))).toBe('ch-2 taslağı');
+    expect((peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '')).toBe('');
+    expect((peekLocalFirstDraft(channelDraft('ch-2'))?.text ?? '')).toBe('ch-2 taslağı');
   });
 
   it('bağlantı yokken gönderim taslağı silmez', () => {
@@ -291,7 +299,7 @@ describe('gönderim semantiği', () => {
     pressEnter();
 
     expect(lastSend()).toBeUndefined();
-    expect(readDraft(channelDraft('ch-1'))).toBe('bağlantısız');
+    expect((peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '')).toBe('bağlantısız');
   });
 
   it('yeniden bağlanma temizlenmiş taslağı DİRİLTMEZ', () => {
@@ -328,15 +336,22 @@ describe('oturum', () => {
     expect(input().value).toBe('');
   });
 
-  it('kullanıcı geri girince KENDİ taslağını bulur', () => {
+  it('kullanıcı geri girince durable backend varsa KENDİ şifreli taslağını bulur', async () => {
     type('A metni'); settle();
+    const status = await localFirstDraftStorageStatus('user-a');
     document.dispatchEvent(new CustomEvent('bridge:auth-logout'));
     flushSync();
 
     me = { _id: 'user-a' };
-    selectChannel({ _id: 'ch-1', type: 'text' });
-
-    expect(input().value).toBe('A metni');
+    if (status.durable) {
+      await hydrateLocalFirstDraft(channelDraft('ch-1'));
+      selectChannel({ _id: 'ch-1', type: 'text' });
+      expect(input().value).toBe('A metni');
+    } else {
+      // Memory fallback explicitly promises no reload/logout durability.
+      selectChannel({ _id: 'ch-1', type: 'text' });
+      expect(input().value).toBe('');
+    }
   });
 });
 
@@ -383,7 +398,7 @@ describe('sağlamlık', () => {
     input().dispatchEvent(new Event('input', { bubbles: true }));
     settle();
 
-    expect(readDraft(channelDraft('ch-1'))).toBe('');
+    expect((peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '')).toBe('');
   });
 
   it('taslak yöneticisi yokken composer çalışmaya devam eder', () => {
