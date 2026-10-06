@@ -1116,6 +1116,45 @@
 
   function onSendClick(event: Event): void { event.preventDefault(); sendMessage(); }
 
+  function onDraftHydrated(event: Event): void {
+    const detail = (event as CustomEvent<{
+      userId?: string;
+      kind?: string;
+      conversationId?: string;
+      serverId?: string;
+      attachmentPending?: boolean;
+    }>).detail;
+    const channel = currentChannel();
+    const userId = currentUserId();
+    if (!detail || !channel?._id || !userId) return;
+
+    const kind = draftKindOf(channel);
+    const serverId = kind === 'channel'
+      ? channel.serverId ?? BridgeRegistry.call<{ _id?: string } | null>('getCurrentServer')?._id ?? ''
+      : undefined;
+
+    if (
+      detail.userId !== userId
+      || detail.conversationId !== String(channel._id)
+      || detail.kind !== kind
+      || (kind === 'channel' && detail.serverId !== serverId)
+    ) return;
+
+    // Hydration is asynchronous. Never overwrite characters typed while the
+    // encrypted database was opening.
+    if (input && !editTarget && input.value.length === 0) {
+      input.value = restorableDraft(String(channel._id));
+      autoGrow();
+      syncComposerState();
+    }
+
+    if (!attachment && !uploading) {
+      attachError = detail.attachmentPending
+        ? t("ui_ek_dosya_yeniden_secilmeli", "Ek dosya yeniden seçilmeli.")
+        : '';
+    }
+  }
+
   onMount(() => {
     input = document.getElementById('msg-input') as HTMLTextAreaElement | null;
     wrap  = document.getElementById('msg-input-wrap');
@@ -1142,6 +1181,7 @@
     wrap?.addEventListener('dragover', onDragOver);
     wrap?.addEventListener('drop', onDrop);
     document.addEventListener('bridge:channel-selected', onChannelSelected);
+    document.addEventListener('bridge:draft-hydrated', onDraftHydrated);
     // Faz 8.2: çıkışta görünür taslak metni ekranda kalmamalı — bir sonraki
     // kullanıcı giriş yaptığında composer'da eski metni görmesin.
     document.addEventListener('bridge:auth-logout', onLogout);
@@ -1209,6 +1249,7 @@
     wrap?.removeEventListener('dragover', onDragOver);
     wrap?.removeEventListener('drop', onDrop);
     document.removeEventListener('bridge:channel-selected', onChannelSelected);
+    document.removeEventListener('bridge:draft-hydrated', onDraftHydrated);
     document.removeEventListener('bridge:auth-logout', onLogout);
     document.removeEventListener('bridge:auth-success', onAuthSuccess);
     document.removeEventListener('bridge:socket-ready', replayOutbox);
