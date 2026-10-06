@@ -3,12 +3,17 @@ import { flushSync, mount, unmount } from 'svelte';
 import MessageInputPanel from '../js/core/MessageInputPanel.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 import {
-  MAX_OUTBOX_ENTRIES,
-  putOutboxEntry,
-  readOutbox,
+  putOutboxEntry as putLegacyOutboxEntry,
   resetOutboxMemory,
   type OutboxEntry,
 } from '../js/core/outbox-store.ts';
+import { LOCAL_OUTBOX_MAX_ENTRIES as MAX_OUTBOX_ENTRIES } from '../js/core/local-first/outbox.ts';
+import {
+  hydrateLocalFirstOutbox,
+  putLocalFirstOutboxEntry as putOutboxEntry,
+  readLocalFirstOutbox as readOutbox,
+  resetLocalFirstOutboxRuntimeForTests,
+} from '../js/core/local-first/outbox-runtime.ts';
 
 const USER_ID = 'outbox-user-a';
 const CHANNEL_ID = 'outbox-channel';
@@ -85,6 +90,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   connected = false;
   activeUserId = USER_ID;
   emitted = [];
@@ -100,6 +106,7 @@ afterEach(() => {
     'getMe', 'getCurrentChannel', 'getCurrentServer', 'getSocketConnected',
     'appendMessage', 'updateMessage', 'socket',
   ]) BridgeRegistry.unregister(name);
+  resetLocalFirstOutboxRuntimeForTests();
   localStorage.clear();
   resetOutboxMemory();
   vi.useRealTimers();
@@ -107,7 +114,7 @@ afterEach(() => {
 });
 
 describe('Reliable Outbox — composer integration', () => {
-  it('offline send is queued, reconnect replay is single-flight, ACK removes it', () => {
+  it('offline send is queued, reconnect replay is single-flight, ACK removes it', async () => {
     typeAndSend('offline message');
 
     const queued = readOutbox(USER_ID)[0];
@@ -120,6 +127,8 @@ describe('Reliable Outbox — composer integration', () => {
     connected = true;
     document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
     document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    await hydrateLocalFirstOutbox(USER_ID);
+    await Promise.resolve();
     flushSync();
 
     expect(messageEmits()).toHaveLength(1);
@@ -138,12 +147,15 @@ describe('Reliable Outbox — composer integration', () => {
     expect(readOutbox(USER_ID)).toEqual([]);
   });
 
-  it('permission denial after reconnect is persisted honestly as retryable failure', () => {
+  it('permission denial after reconnect is persisted honestly as retryable failure', async () => {
     typeAndSend('permission can change');
     const entry = readOutbox(USER_ID)[0];
 
     connected = true;
     document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
+    await hydrateLocalFirstOutbox(USER_ID);
+    await Promise.resolve();
+    flushSync();
     BridgeRegistry.call('failPendingSend', entry.ackId, 'Bu kanalda mesaj gönderme izniniz yok.');
     flushSync();
 
@@ -159,7 +171,7 @@ describe('Reliable Outbox — composer integration', () => {
     });
   });
 
-  it('browser restart restores interrupted sending as queued and replays once', () => {
+  it('browser restart migrates interrupted legacy sending as queued and replays once', async () => {
     unmount(instance!);
     instance = null;
     host.remove();
@@ -168,13 +180,21 @@ describe('Reliable Outbox — composer integration', () => {
       'appendMessage', 'updateMessage', 'socket',
     ]) BridgeRegistry.unregister(name);
 
-    expect(putOutboxEntry(makeEntry(7, { state: 'sending', attempts: 1 }))).toBe(true);
+    resetLocalFirstOutboxRuntimeForTests();
+    resetOutboxMemory();
+    localStorage.clear();
+    expect(putLegacyOutboxEntry(makeEntry(7, { state: 'sending', attempts: 1 }))).toBe(true);
     connected = true;
     mountComposer();
 
+    await hydrateLocalFirstOutbox(USER_ID);
+    await Promise.resolve();
+    flushSync();
     expect(readOutbox(USER_ID)[0].state).toBe('queued');
+
     document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
     document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    await Promise.resolve();
     flushSync();
 
     expect(messageEmits()).toHaveLength(1);
