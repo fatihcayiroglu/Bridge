@@ -204,6 +204,9 @@ export class EncryptedOutboxRepository {
     if (encrypted.length) {
       if (sameEntries(encrypted, legacyEntries)) {
         legacy.clear(this.userId);
+        if (legacy.read(this.userId).length !== 0) {
+          throw new Error('Legacy outbox cleanup verification failed');
+        }
         return { status: 'already-encrypted', entries: encrypted };
       }
       return { status: 'conflict', entries: encrypted };
@@ -216,6 +219,9 @@ export class EncryptedOutboxRepository {
     }
 
     legacy.clear(this.userId);
+    if (legacy.read(this.userId).length !== 0) {
+      throw new Error('Legacy outbox cleanup verification failed');
+    }
     return { status: 'migrated', entries: verified };
   }
 }
