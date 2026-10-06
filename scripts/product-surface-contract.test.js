@@ -443,8 +443,10 @@ test('unified search honors URL date filters and exposes bounded permission-safe
   assert.match(client, /params\.set\('offset', String\(options\.offset\)\)/);
   assert.match(panel, /offset: append \? hits\.length : 0/);
   assert.match(panel, /Daha fazla sonuç yükle/);
-  assert.match(panel, /res\.hits\.filter\(hit => !seen\.has\(hitKey\(hit\)\)\)/,
+  assert.match(panel, /function applySearchResponse\([\s\S]{0,520}response\.hits\.filter\(hit => !seen\.has\(hitKey\(hit\)\)\)/,
     'append path must deduplicate a boundary replay');
+  assert.match(panel, /applySearchResponse\(res, append\)/,
+    'server search must use the canonical deduplicating result applier');
 
   assert.match(server, /router\.get\('\/unified'[\s\S]{0,700}parseNonNegativeSafeIntQuery\(req\.query\.offset, 0\)/);
   assert.match(server, /offset > 199/);
