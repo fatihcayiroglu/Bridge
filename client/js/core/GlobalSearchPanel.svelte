@@ -39,6 +39,10 @@
   } from './search/recent-searches.ts';
   import { loadSaved, saveSaved, addSaved, removeSaved } from './search/saved-searches.ts';
   import { navigateToHit, FAILURE_MESSAGE } from './search/search-navigation.ts';
+  import {
+    localFirstSearchContext,
+    searchLocalFirstHistory,
+  } from './local-first/local-search.ts';
 
   const log = createLogger('GlobalSearch');
 
@@ -55,6 +59,7 @@
   let saved      = $state<string[]>([]);
   let savedUserId = $state('anonymous');
   let statusText = $state('');
+  let searchMode = $state<'server' | 'local'>('server');
   /** Kullanici tarafindan degistirilebilen `from:` / `in:` / `has:` / tarih filtreleri. */
   let filters    = $state<SearchFilters>({});
   /**
@@ -127,6 +132,72 @@
     return BridgeRegistry.get<ApiFetch>('apiFetch') ?? null;
   }
 
+  function currentUserId(): string | null {
+    const me = BridgeRegistry.call<{ _id?: string; id?: string } | null>('getMe');
+    const userId = String(me?._id ?? me?.id ?? '').trim();
+    return userId || null;
+  }
+
+  function definitelyOffline(): boolean {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
+    return BridgeRegistry.call<boolean>('getSocketConnected') === false;
+  }
+
+  function setSearchMode(next: 'server' | 'local'): void {
+    if (searchMode === next) return;
+    searchMode = next;
+    contextInFlight?.abort();
+    contextSeq += 1;
+    contextCache = {};
+    contextLoading = null;
+  }
+
+  function applySearchResponse(
+    response: { hits: SearchHit[]; hasMore: boolean },
+    append: boolean,
+  ): void {
+    if (append) {
+      const seen = new Set(hits.map(hitKey));
+      hits = [...hits, ...response.hits.filter(hit => !seen.has(hitKey(hit)))];
+    } else {
+      hits = response.hits;
+      selectedIdx = 0;
+    }
+    hasMore = response.hasMore;
+    statusText = hits.length
+      ? hasMore
+        ? t('search_results_more', '{count} sonuç gösteriliyor, daha fazlası var', { count: hits.length })
+        : t('search_result_count', '{count} sonuç', { count: hits.length })
+      : t("bmp_no_results", "Sonuç bulunamadı");
+  }
+
+  async function runLocalSearch(
+    userId: string,
+    q: string,
+    append: boolean,
+    seq: number,
+  ): Promise<boolean> {
+    try {
+      const response = await searchLocalFirstHistory(userId, q, {
+        limit: 40,
+        offset: append ? hits.length : 0,
+        filters: activeFilters,
+      });
+      if (seq !== requestSeq) return false;
+      setSearchMode('local');
+      applySearchResponse(response, append);
+      error = null;
+      return true;
+    } catch (localError) {
+      if (seq !== requestSeq) return false;
+      log.warn('local.search.failed', localError);
+      if (!append) hits = [];
+      error = t("ui_arama_su_anda_kullanilamiyor", "Arama şu anda kullanılamıyor.");
+      statusText = error;
+      return false;
+    }
+  }
+
   async function runSearch(q: string, append = false): Promise<void> {
     if (append && (!hasMore || isLoading || isLoadingMore)) return;
     const seq = ++requestSeq;
@@ -135,18 +206,32 @@
     inFlight = controller;
 
     const fetcher = apiFetch();
-    if (!fetcher) {
-      // Sessizce bos donmek "sonuc yok" gibi gorunurdu; bu bir ARIZA.
-      error = t("ui_arama_su_anda_kullanilamiyor", "Arama şu anda kullanılamıyor.");
-      isLoading = false;
-      isLoadingMore = false;
-      return;
-    }
+    const userId = currentUserId();
 
     if (append) isLoadingMore = true;
     else isLoading = true;
     error = null;
     try {
+      // Once an offline result page is open, pagination remains against the
+      // same bounded local dataset. A fresh query may return to the server.
+      if ((append && searchMode === 'local') || definitelyOffline()) {
+        if (!userId) {
+          error = t("ui_arama_su_anda_kullanilamiyor", "Arama şu anda kullanılamıyor.");
+          statusText = error;
+          return;
+        }
+        await runLocalSearch(userId, q, append, seq);
+        return;
+      }
+
+      if (!fetcher) {
+        // Online + missing canonical HTTP owner is an application fault, not an
+        // excuse to silently downgrade an authoritative global query.
+        error = t("ui_arama_su_anda_kullanilamiyor", "Arama şu anda kullanılamıyor.");
+        statusText = error;
+        return;
+      }
+
       const res = await fetchUnifiedSearch(fetcher, q, {
         limit: 40,
         offset: append ? hits.length : 0,
@@ -154,22 +239,21 @@
         filters: activeFilters,
       });
       if (seq !== requestSeq) return;          // eskimis yanit — yoksayilir
-      if (append) {
-        const seen = new Set(hits.map(hitKey));
-        hits = [...hits, ...res.hits.filter(hit => !seen.has(hitKey(hit)))];
-      } else {
-        hits = res.hits;
-        selectedIdx = 0;
-      }
-      hasMore = res.hasMore;
-      statusText = hits.length
-        ? hasMore ? t('search_results_more', '{count} sonuç gösteriliyor, daha fazlası var', { count: hits.length }) : t('search_result_count', '{count} sonuç', { count: hits.length })
-        : t("bmp_no_results", "Sonuç bulunamadı");
+      setSearchMode('server');
+      applySearchResponse(res, append);
     } catch (err) {
       if (controller.signal.aborted || seq !== requestSeq) return;
+      const status = (err as { status?: number }).status;
+
+      // A status-bearing response came from the authoritative server and must
+      // stay visible as such. Only a transport failure while the app is also
+      // offline/disconnected may fall back to the encrypted local cache.
+      if (status === undefined && userId && definitelyOffline()) {
+        if (await runLocalSearch(userId, q, append, seq)) return;
+      }
+
       log.error('Kuresel arama basarisiz', err);
       if (!append) hits = [];
-      const status = (err as { status?: number }).status;
       error = status === 503
         ? t("ui_arama_servisi_su_anda_kullanilamiyor", "Arama servisi şu anda kullanılamıyor.")
         : append ? t("ui_daha_fazla_sonuc_yuklenemedi", "Daha fazla sonuç yüklenemedi.") : t("ui_arama_sirasinda_bir_hata_olustu", "Arama sırasında bir hata oluştu.");
@@ -195,7 +279,7 @@
     if (contextCache[key]) return;             // onbellekte — istek YOK
 
     const fetcher = apiFetch();
-    if (!fetcher) return;
+    const userId = currentUserId();
 
     const seq = ++contextSeq;
     contextInFlight?.abort();
@@ -204,6 +288,16 @@
     contextLoading = key;
 
     try {
+      if (searchMode === 'local') {
+        const messages = userId && hit.source === 'channel' && hit.channelId
+          ? await localFirstSearchContext(userId, hit.channelId, hit.id, 2)
+          : [];
+        if (seq !== contextSeq) return;
+        contextCache = { ...contextCache, [key]: messages };
+        return;
+      }
+
+      if (!fetcher) return;
       const res = await fetchSearchContext(fetcher, hit.id, hit.source, {
         radius: 2, signal: controller.signal,
       });
@@ -291,6 +385,8 @@
     lockedChannelName = '';
     statusText = '';
     isLoadingMore = false;
+    setSearchMode('server');
+    contextCache = {};
     // Odak, aramayi acan kontrole geri verilir — klavye kullanicisi
     // belgenin basina firlatilmamalidir.
     const target = returnFocusEl;
