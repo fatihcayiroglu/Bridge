@@ -18,7 +18,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import DraftManager from '../js/core/DraftManager.svelte';
 import { BridgeRegistry } from '../js/core/bridge-registry.ts';
-import { readDraft } from '../js/core/draft-store.ts';
+import {
+  peekLocalFirstDraft,
+  resetLocalFirstDraftRuntimeForTests,
+} from '../js/core/local-first/draft-runtime.ts';
 
 const DEBOUNCE_MS = 400;
 
@@ -36,6 +39,7 @@ const settle = () => { vi.advanceTimersByTime(DEBOUNCE_MS + 50); flushSync(); };
 beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
+  resetLocalFirstDraftRuntimeForTests();
   me = { _id: 'user-a' };
   channel = { _id: 'ch-1', type: 'text', serverId: 'srv-1' };
   server = { _id: 'srv-1' };
@@ -55,6 +59,7 @@ afterEach(() => {
   BridgeRegistry.unregister('getMe');
   BridgeRegistry.unregister('getCurrentChannel');
   BridgeRegistry.unregister('getCurrentServer');
+  resetLocalFirstDraftRuntimeForTests();
   localStorage.clear();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -65,7 +70,7 @@ describe('identity resolution', () => {
     me = { id: 'legacy-user' };
     setDraft('merhaba');
     settle();
-    expect(readDraft({ userId: 'legacy-user', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' }))
+    expect(peekLocalFirstDraft({ userId: 'legacy-user', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' } as never)?.text ?? '')
       .toBe('merhaba');
   });
 
@@ -106,7 +111,7 @@ describe('identity resolution', () => {
     server = null;
     setDraft('kanaldan');
     settle();
-    expect(readDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-9', conversationId: 'ch-2' }))
+    expect(peekLocalFirstDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-9', conversationId: 'ch-2' } as never)?.text ?? '')
       .toBe('kanaldan');
   });
 
@@ -120,14 +125,14 @@ describe('identity resolution', () => {
     server = null;
     setDraft('özel');
     settle();
-    expect(readDraft({ userId: 'user-a', kind: kind as never, conversationId: 'conv-1' })).toBe('özel');
+    expect(peekLocalFirstDraft({ userId: 'user-a', kind: kind as never, conversationId: 'conv-1' } as never)?.text ?? '').toBe('özel');
   });
 
   it('treats a conversation with no declared type as a server channel', () => {
     channel = { _id: 'ch-3', serverId: 'srv-1' };
     setDraft('varsayılan');
     settle();
-    expect(readDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-3' }))
+    expect(peekLocalFirstDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-3' } as never)?.text ?? '')
       .toBe('varsayılan');
   });
 
@@ -149,8 +154,8 @@ describe('clearDraft target resolution', () => {
     settle();
 
     clearDraft('ch-1', 'channel', 'srv-1');
-    expect(readDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' })).toBe('');
-    expect(readDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-2' }))
+    expect(peekLocalFirstDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' } as never)?.text ?? '').toBe('');
+    expect(peekLocalFirstDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-2' } as never)?.text ?? '')
       .toBe('ch-2 taslağı');
   });
 
@@ -160,7 +165,7 @@ describe('clearDraft target resolution', () => {
     settle();
     // Tür verilmez: çağrılan kimlik MEVCUT konuşmayla aynıysa türü ondan alınır.
     clearDraft('dm-1');
-    expect(readDraft({ userId: 'user-a', kind: 'dm', conversationId: 'dm-1' })).toBe('');
+    expect(peekLocalFirstDraft({ userId: 'user-a', kind: 'dm', conversationId: 'dm-1' } as never)?.text ?? '').toBe('');
   });
 
   it('defaults an unknown named conversation to a server channel keyed by the current server', () => {
@@ -172,11 +177,11 @@ describe('clearDraft target resolution', () => {
     // Çağıran BAŞKA bir konuşmayı adlandırdı ve tür vermedi: kanal varsayılır
     // ve sunucu segmenti mevcut kimlikten türetilemediği için düşer.
     clearDraft('ch-1');
-    expect(readDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' }))
+    expect(peekLocalFirstDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' } as never)?.text ?? '')
       .toBe('ch-1 taslağı');
 
     clearDraft('ch-1', 'channel', 'srv-1');
-    expect(readDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' })).toBe('');
+    expect(peekLocalFirstDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' } as never)?.text ?? '').toBe('');
   });
 
   it('drops a pending write for the cleared conversation instead of resurrecting it', () => {
@@ -185,7 +190,7 @@ describe('clearDraft target resolution', () => {
     settle();
     // Bekleyen yazma iptal edilmezse debounce dolduğunda silinen taslak GERİ
     // GELİRDİ.
-    expect(readDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' })).toBe('');
+    expect(peekLocalFirstDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' } as never)?.text ?? '').toBe('');
     expect(getDraft()).toBe('');
   });
 
@@ -193,7 +198,7 @@ describe('clearDraft target resolution', () => {
     setDraft('ch-1 bekliyor');
     clearDraft('ch-other', 'channel', 'srv-1');
     settle();
-    expect(readDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' }))
+    expect(peekLocalFirstDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' } as never)?.text ?? '')
       .toBe('ch-1 bekliyor');
   });
 
@@ -201,6 +206,6 @@ describe('clearDraft target resolution', () => {
     setDraft('şimdiki');
     settle();
     clearDraft();
-    expect(readDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' })).toBe('');
+    expect(peekLocalFirstDraft({ userId: 'user-a', kind: 'channel', serverId: 'srv-1', conversationId: 'ch-1' } as never)?.text ?? '').toBe('');
   });
 });
