@@ -25,6 +25,9 @@ let connected = false;
 let activeUserId = USER_ID;
 let emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
 let rendered: Array<Record<string, unknown>> = [];
+let serviceWorkerEvents: EventTarget;
+let syncRegister: ReturnType<typeof vi.fn>;
+let serviceWorkerDescriptor: PropertyDescriptor | undefined;
 
 const input = () => document.getElementById('msg-input') as HTMLTextAreaElement;
 const messageEmits = () => emitted.filter(item => item.event === 'message:send');
@@ -95,6 +98,17 @@ beforeEach(() => {
   activeUserId = USER_ID;
   emitted = [];
   rendered = [];
+  serviceWorkerDescriptor = Object.getOwnPropertyDescriptor(navigator, 'serviceWorker');
+  serviceWorkerEvents = new EventTarget();
+  syncRegister = vi.fn(async () => undefined);
+  Object.defineProperty(serviceWorkerEvents, 'ready', {
+    configurable: true,
+    value: Promise.resolve({ sync: { register: syncRegister } }),
+  });
+  Object.defineProperty(navigator, 'serviceWorker', {
+    configurable: true,
+    value: serviceWorkerEvents,
+  });
   mountComposer();
 });
 
@@ -109,6 +123,8 @@ afterEach(() => {
   resetLocalFirstOutboxRuntimeForTests();
   localStorage.clear();
   resetOutboxMemory();
+  if (serviceWorkerDescriptor) Object.defineProperty(navigator, 'serviceWorker', serviceWorkerDescriptor);
+  else Reflect.deleteProperty(navigator, 'serviceWorker');
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -145,6 +161,41 @@ describe('Reliable Outbox — composer integration', () => {
 
     BridgeRegistry.call('resolvePendingSend', queued.ackId);
     expect(readOutbox(USER_ID)).toEqual([]);
+  });
+
+  it('browser online, mobile foreground and SW wake converge through the same single-flight replay owner', async () => {
+    typeAndSend('lifecycle replay');
+    const queued = readOutbox(USER_ID)[0];
+    expect(messageEmits()).toHaveLength(0);
+
+    // Offline/disconnect schedules only a background WAKE; the worker never
+    // receives message content or an auth token.
+    window.dispatchEvent(new Event('offline'));
+    await Promise.resolve();
+    expect(syncRegister).toHaveBeenCalledWith('bridge-local-first-replay');
+
+    connected = true;
+    window.dispatchEvent(new Event('online'));
+    await hydrateLocalFirstOutbox(USER_ID);
+    await Promise.resolve();
+    flushSync();
+    expect(messageEmits()).toHaveLength(1);
+    expect(messageEmits()[0].payload.ackId).toBe(queued.ackId);
+
+    // Extra lifecycle signals while the same ackId is in-flight must not create
+    // a second replay.
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    serviceWorkerEvents.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'SW_LOCAL_FIRST_REPLAY', reason: 'background-sync' },
+    }));
+    serviceWorkerEvents.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'SW_NETWORK_STATUS', online: true },
+    }));
+    await Promise.resolve();
+    flushSync();
+
+    expect(messageEmits()).toHaveLength(1);
+    expect(new Set(messageEmits().map(item => item.payload.ackId))).toEqual(new Set([queued.ackId]));
   });
 
   it('permission denial after reconnect is persisted honestly as retryable failure', async () => {
