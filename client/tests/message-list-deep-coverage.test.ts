@@ -5,6 +5,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import MessageListPanel from '../js/core/MessageListPanel.svelte';
 import type { MessageData } from '../js/core/MessageRenderer.svelte';
 import { BridgeRegistry } from '../js/core/bridge-registry.js';
+import { resetMessageOperationSyncForTests } from '../js/core/local-first/message-operation-sync.ts';
 
 const registryKeys = [
   'getMessages', 'getMessagesLoading', 'getMessagesError', 'getMessagesHasMore',
@@ -79,11 +80,13 @@ describe('MessageListPanel deep state and lifecycle behavior', () => {
       configurable: true,
       value: vi.fn(),
     });
+    resetMessageOperationSyncForTests();
     registerBase();
   });
 
   afterEach(async () => {
     if (instance) await unmount(instance);
+    resetMessageOperationSyncForTests();
     for (const key of registryKeys) BridgeRegistry.unregister(key);
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -124,7 +127,15 @@ describe('MessageListPanel deep state and lifecycle behavior', () => {
     expect(edit).toHaveBeenCalledWith(expect.objectContaining({ _id: 'owned' }));
     expect(remove).toHaveBeenCalledWith('owned');
     expect(save).toHaveBeenCalledWith({ destinationType: 'channel', destinationId: 'ch-1', messageId: 'owned' });
-    expect(emit).toHaveBeenCalledWith('message:react', expect.objectContaining({ messageId: 'owned', channelId: 'ch-1' }));
+    await vi.waitFor(() => expect(emit).toHaveBeenCalledWith(
+      'message:react',
+      expect.objectContaining({
+        messageId: 'owned',
+        channelId: 'ch-1',
+        active: true,
+        clientNonce: expect.any(String),
+      }),
+    ));
     expect(retry).toHaveBeenCalledWith('ack-1');
   });
 
