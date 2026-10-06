@@ -171,7 +171,9 @@ function sameIdentityAndPayload(a: LocalOperation, b: LocalOperation): boolean {
 
 function transitionAllowed(from: LocalOperationState, to: LocalOperationState): boolean {
   if (from === to) return true;
-  if (from === 'queued') return to === 'sending' || to === 'rejected' || to === 'superseded';
+  // queued -> applied covers a late authoritative confirmation racing with a
+  // local disconnect that already re-queued the operation.
+  if (from === 'queued') return to === 'sending' || to === 'applied' || to === 'rejected' || to === 'superseded';
   if (from === 'sending') return to === 'queued' || to === 'applied' || to === 'rejected' || to === 'superseded';
   return false;
 }
