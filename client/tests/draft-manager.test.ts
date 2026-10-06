@@ -9,7 +9,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import DraftManager from '../js/core/DraftManager.svelte';
 import { BridgeRegistry } from '../js/core/bridge-registry.ts';
-import { draftKey, readDraft } from '../js/core/draft-store.ts';
+import { draftKey } from '../js/core/draft-store.ts';
+import {
+  peekLocalFirstDraft,
+  resetLocalFirstDraftRuntimeForTests,
+} from '../js/core/local-first/draft-runtime.ts';
 
 const DEBOUNCE_MS = 400;
 
@@ -47,6 +51,7 @@ function unmountManager(): void {
 beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
+  resetLocalFirstDraftRuntimeForTests();
   me = { _id: 'user-a' };
   channel = { _id: 'ch-1', type: 'text', serverId: 'srv-1' };
   BridgeRegistry.register('getMe', () => me);
@@ -60,6 +65,7 @@ afterEach(() => {
   BridgeRegistry.unregister('getMe');
   BridgeRegistry.unregister('getCurrentChannel');
   BridgeRegistry.unregister('getCurrentServer');
+  resetLocalFirstDraftRuntimeForTests();
   localStorage.clear();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -104,7 +110,7 @@ describe('debounce', () => {
     setDraft('yarım mesaj');
     settle();
 
-    expect(readDraft(channelDraft('ch-1'))).toBe('yarım mesaj');
+    expect(peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '').toBe('yarım mesaj');
   });
 
   it('hızlı ardışık yazmalar TEK yazma üretir (son değer kazanır)', () => {
@@ -115,7 +121,7 @@ describe('debounce', () => {
     setDraft('abc');
     settle();
 
-    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).not.toHaveBeenCalled();
     expect(getDraft()).toBe('abc');
   });
 
@@ -130,7 +136,7 @@ describe('debounce', () => {
     setDraft('hemen yaz');
     flushDraft();
 
-    expect(readDraft(channelDraft('ch-1'))).toBe('hemen yaz');
+    expect(peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '').toBe('hemen yaz');
   });
 });
 
@@ -157,8 +163,8 @@ describe('kanal geçişi — A → B → A', () => {
     channel = { _id: 'ch-2', type: 'text', serverId: 'srv-1' };
     flushDraft();                    // composer kanal geçişinde bunu çağırır
 
-    expect(readDraft(channelDraft('ch-1'))).toBe('A için yazılıyor');
-    expect(readDraft(channelDraft('ch-2'))).toBe('');
+    expect(peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '').toBe('A için yazılıyor');
+    expect(peekLocalFirstDraft(channelDraft('ch-2'))?.text ?? '').toBe('');
   });
 
   it('bayat bekleyen yazma YENİ kanalın taslağını ezmez', () => {
@@ -168,8 +174,8 @@ describe('kanal geçişi — A → B → A', () => {
     setDraft('B metni');             // ch-2 için — önceki otomatik flush olmalı
     settle();
 
-    expect(readDraft(channelDraft('ch-1'))).toBe('A metni');
-    expect(readDraft(channelDraft('ch-2'))).toBe('B metni');
+    expect(peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '').toBe('A metni');
+    expect(peekLocalFirstDraft(channelDraft('ch-2'))?.text ?? '').toBe('B metni');
   });
 });
 
@@ -313,8 +319,8 @@ describe('temizleme', () => {
     // ACK ch-1 için geldi (kullanıcı bu arada ch-2'ye geçti)
     clearDraft('ch-1', 'channel', 'srv-1');
 
-    expect(readDraft(channelDraft('ch-1'))).toBe('');
-    expect(readDraft(channelDraft('ch-2'))).toBe('ch-2 metni');
+    expect(peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '').toBe('');
+    expect(peekLocalFirstDraft(channelDraft('ch-2'))?.text ?? '').toBe('ch-2 metni');
   });
 
   it('yanlış kanalın ACK\'i mevcut kanalın taslağını SİLMEZ', () => {
@@ -332,7 +338,7 @@ describe('yaşam döngüsü', () => {
 
     unmountManager();
 
-    expect(readDraft(channelDraft('ch-1'))).toBe('unmount öncesi metin');
+    expect(peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '').toBe('unmount öncesi metin');
   });
 
   it('unmount sonrası bekleyen zamanlayıcı ateşlenmez', () => {
@@ -363,7 +369,7 @@ describe('çift yönetici', () => {
     setDraft('tek metin');
     settle();
 
-    expect(readDraft(channelDraft('ch-1'))).toBe('tek metin');
+    expect(peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '').toBe('tek metin');
 
     unmount(second);
     host2.remove();
