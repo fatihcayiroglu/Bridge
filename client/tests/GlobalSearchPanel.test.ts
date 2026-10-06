@@ -40,6 +40,10 @@ vi.mock('../js/core/logger.js', () => ({
 vi.mock('../js/core/a11y/focusTrap.ts', () => ({ focusTrap: () => ({ destroy() {} }) }));
 
 import GlobalSearchPanel from '../js/core/GlobalSearchPanel.svelte';
+import {
+  replaceLocalFirstHistory,
+  resetLocalFirstHistoryRuntimeForTests,
+} from '../js/core/local-first/history-runtime.ts';
 
 // ── Yardimcilar ────────────────────────────────────────────────────────────
 
@@ -80,9 +84,13 @@ beforeEach(() => {
   for (const key of Object.keys(registryMap)) delete registryMap[key];
   vi.clearAllMocks();
   localStorage.clear();
+  resetLocalFirstHistoryRuntimeForTests();
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  resetLocalFirstHistoryRuntimeForTests();
+  cleanup();
+});
 
 // ════════════════════════════════════════════════════════════════════════════
 describe('acilis / kapanis', () => {
@@ -190,6 +198,67 @@ describe('durumlar', () => {
     render(GlobalSearchPanel);
     await openWith('merhaba');
     await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+describe('P7 A6 offline local-first arama', () => {
+  it('socket offline iken servera gitmeden hesap-bazli sifreli cache sonucunu gosterir', async () => {
+    const userId = 'global-search-offline-user';
+    await replaceLocalFirstHistory(userId, 'c-local', [{
+      _id: 'local-1',
+      channelId: 'c-local',
+      channelName: 'yerel',
+      serverId: 's-local',
+      userId: 'author-local',
+      displayName: 'Yerel Yazar',
+      content: 'offline bridge needle',
+      contentFormat: 1,
+      createdAt: Date.now(),
+    }]);
+
+    const api = mockApi({
+      results: [channelRow({ _id: 'server-should-not-run', content: 'offline bridge needle' })],
+    });
+    registryMap.apiFetch = api;
+    registryMap.getMe = () => ({ _id: userId });
+    registryMap.getSocketConnected = () => false;
+
+    render(GlobalSearchPanel);
+    await openWith('bridge needle');
+
+    await waitFor(() => expect(optionIds()).toHaveLength(1), { timeout: 1500 });
+    expect(api).not.toHaveBeenCalled();
+    expect(document.body).toHaveTextContent('offline bridge needle');
+    expect(document.body).toHaveTextContent('#yerel');
+
+    // Context preview must come from the same local cache, not HTTP.
+    await waitFor(() => expect(document.querySelector('.gs-ctx')).toBeTruthy(), { timeout: 1500 });
+    expect(api).not.toHaveBeenCalled();
+  });
+
+  it('online server hatasini local cache ile maskelemez', async () => {
+    const userId = 'global-search-authoritative-user';
+    await replaceLocalFirstHistory(userId, 'c-local', [{
+      _id: 'local-hidden',
+      channelId: 'c-local',
+      content: 'authoritative needle',
+      contentFormat: 1,
+      createdAt: Date.now(),
+    }]);
+
+    const api = mockApi({}, false, 503);
+    registryMap.apiFetch = api;
+    registryMap.getMe = () => ({ _id: userId });
+    registryMap.getSocketConnected = () => true;
+
+    render(GlobalSearchPanel);
+    await openWith('authoritative needle');
+
+    await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
+    expect(api).toHaveBeenCalled();
+    expect(optionIds()).toEqual([]);
+    expect(document.body).not.toHaveTextContent('local-hidden');
   });
 });
 
