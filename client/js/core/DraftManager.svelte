@@ -32,7 +32,6 @@
     hydrateLocalFirstDraft,
     peekLocalFirstDraft,
     persistLocalFirstDraft,
-    persistLocalFirstDraftText,
   } from './local-first/draft-runtime.ts';
 
   const log = createLogger('DraftManager');
