@@ -107,6 +107,24 @@ describe('P7 encrypted non-send operation log', () => {
     await expect(log.transition('reject-me', 'queued', {}, 4)).rejects.toThrow('Invalid');
   });
 
+  it('accepts a late authoritative confirmation after disconnect re-queued an in-flight op', async () => {
+    const { log } = log();
+    await log.enqueue({
+      opId: 'late-ack',
+      userId: 'u1',
+      channelId: 'c1',
+      targetId: 'm1',
+      kind: 'delete-message',
+      payload: {},
+      createdAt: 1,
+    }, 1);
+    await log.transition('late-ack', 'sending', { incrementAttempts: true }, 2);
+    await log.transition('late-ack', 'queued', { lastError: 'disconnected' }, 3);
+
+    await expect(log.transition('late-ack', 'applied', {}, 4))
+      .resolves.toMatchObject({ state: 'applied', attempts: 1 });
+  });
+
   it('rejects unsafe state transitions', async () => {
     const { log } = log();
     await log.enqueue({
