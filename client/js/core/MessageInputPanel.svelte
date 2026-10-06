@@ -509,7 +509,7 @@
         pendingEdit = null;
         editMutationBusy = false;
         sendError = t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.');
-        log.warn('Düzenleme operation-log kuyruğuna yazılamadı', error);
+        log.warn('edit.oplog.enqueue.failed', error);
         syncComposerState();
       });
       return;
@@ -1026,7 +1026,7 @@
     }).catch((error: unknown) => {
       pendingDeletes.delete(nonce);
       deletingMessageIds.delete(messageId);
-      log.warn('Silme operation-log kuyruğuna yazılamadı', error);
+      log.warn('delete.oplog.enqueue.failed', error);
       BridgeRegistry.call('toast', t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.'), 'error');
     });
   }
