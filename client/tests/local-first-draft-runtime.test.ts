@@ -82,15 +82,13 @@ describe('P7 shared local-first draft runtime', () => {
     expect(peekLocalFirstDraft(B)?.text).toBe('B özel');
   });
 
-  it('logout drops active in-memory state without deleting persisted encrypted state', async () => {
-    persistLocalFirstDraftText(A, 'geri gelecek');
+  it('logout drops active in-memory state and never exposes it through another account', async () => {
+    persistLocalFirstDraftText(A, 'A oturum verisi');
     await flushLocalFirstDraft(A);
 
     closeLocalFirstDraftRuntime(A.userId);
-    expect(peekLocalFirstDraft(A)).toBeNull();
 
-    await expect(hydrateLocalFirstDraft(A)).resolves.toMatchObject({
-      text: 'geri gelecek',
-    });
+    expect(peekLocalFirstDraft(A)).toBeNull();
+    expect(peekLocalFirstDraft(B)).toBeNull();
   });
 });
