@@ -795,8 +795,8 @@
         hydratingOutboxUserId = '';
         log.error('Şifreli giden kutusu yüklenemedi', error);
         sendError = t(
-          'ui_gonderim_kuyrugu_guvenli_yuklenemedi',
-          'Gönderim kuyruğu güvenli şekilde yüklenemedi. Yeniden bağlanmayı deneyin.',
+          'ui_gonderim_kuyrugu_dolu_veya_depolama_kullanilamiyor_b',
+          'Gönderim kuyruğu dolu veya depolama kullanılamıyor. Bekleyen mesajları yeniden deneyin.',
         );
         syncComposerState();
       });
