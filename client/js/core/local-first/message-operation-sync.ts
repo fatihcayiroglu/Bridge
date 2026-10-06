@@ -35,6 +35,7 @@ export interface QueuedMessageOperation {
 }
 
 interface QueueEditInput {
+  opId?: string;
   channelId: string;
   messageId: string;
   content: string;
@@ -42,11 +43,13 @@ interface QueueEditInput {
 }
 
 interface QueueDeleteInput {
+  opId?: string;
   channelId: string;
   messageId: string;
 }
 
 interface QueueReactionInput {
+  opId?: string;
   channelId: string;
   messageId: string;
   emoji: string;
@@ -278,11 +281,14 @@ export function replayMessageOperations(recoverSending = false): Promise<void> {
   return replayPromise;
 }
 
-async function queueOperation(input: Omit<NewLocalOperation, 'userId' | 'opId'>): Promise<QueuedMessageOperation> {
+async function queueOperation(
+  input: Omit<NewLocalOperation, 'userId' | 'opId'>,
+  opIdInput?: string,
+): Promise<QueuedMessageOperation> {
   const userId = currentUserId();
   if (!userId) throw new Error('Operation userId is unavailable');
 
-  const opId = newOperationId();
+  const opId = opIdInput ? required(opIdInput, 'opId') : newOperationId();
   const operation = await enqueueLocalFirstOperation({
     ...input,
     opId,
@@ -315,7 +321,7 @@ export function queueEditMessageOperation(input: QueueEditInput): Promise<Queued
       content: String(input.content ?? ''),
       baseVersion,
     },
-  });
+  }, input.opId);
 }
 
 export function queueDeleteMessageOperation(input: QueueDeleteInput): Promise<QueuedMessageOperation> {
@@ -324,7 +330,7 @@ export function queueDeleteMessageOperation(input: QueueDeleteInput): Promise<Qu
     targetId: required(input.messageId, 'messageId'),
     kind: 'delete-message',
     payload: {},
-  });
+  }, input.opId);
 }
 
 export function queueReactionMessageOperation(input: QueueReactionInput): Promise<QueuedMessageOperation> {
@@ -336,7 +342,7 @@ export function queueReactionMessageOperation(input: QueueReactionInput): Promis
       emoji: String(input.emoji ?? ''),
       desired: input.desired,
     },
-  });
+  }, input.opId);
 }
 
 function operationUser(opId: string): string | null {
