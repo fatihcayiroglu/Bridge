@@ -3,6 +3,7 @@
   import { BridgeRegistry } from './bridge-registry.js';
   import { focusTrap } from './a11y/focusTrap.ts';
   import { t } from './i18n/reactive.svelte.ts';
+  import { locale } from './i18n/index.ts';
   import { createLogger } from './logger.js';
   import { ApiResponseError, safeApiErrorMessage } from './api-error.ts';
 
@@ -48,6 +49,7 @@
   let requestSeq = 0;
   let shellButton: HTMLButtonElement | null = null;
   let shellObserver: MutationObserver | null = null;
+  let localeUnsubscribe: (() => void) | null = null;
   const PAGE_SIZE = 50;
 
   const apiFetch = (url: string, options?: RequestInit): Promise<Response> => {
@@ -210,28 +212,36 @@
     if (event.key === 'Escape' && isVisible) close();
   }
 
+  function syncShellButtonLabel(): void {
+    if (!shellButton?.isConnected) return;
+    const label = `${t('ui_open_direct_messages', 'Direkt mesajları aç')} · ActivityPub`;
+    shellButton.setAttribute('aria-label', label);
+    shellButton.setAttribute('data-tip', label);
+  }
+
   function installShellButton(): void {
     if (shellButton?.isConnected) return;
     const dmButton = document.querySelector<HTMLButtonElement>('[data-bridge-action="showDmPanel"]');
     if (!dmButton?.parentElement) return;
     const existing = document.querySelector<HTMLButtonElement>('[data-bridge-action="showRemoteDmPanel"]');
-    if (existing) { shellButton = existing; return; }
+    if (existing) { shellButton = existing; syncShellButtonLabel(); return; }
     const button = document.createElement('button');
     button.type = 'button';
     button.className = dmButton.className;
     button.dataset.bridgeAction = 'showRemoteDmPanel';
-    const label = `${t('ui_open_direct_messages', 'Direkt mesajları aç')} · ActivityPub`;
-    button.setAttribute('aria-label', label);
-    button.setAttribute('data-tip', label);
     button.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3.5 9h17M3.5 15h17M12 3c2.3 2.5 3.5 5.5 3.5 9S14.3 18.5 12 21M12 3C9.7 5.5 8.5 8.5 8.5 12S9.7 18.5 12 21"/></svg>';
     button.addEventListener('click', openPanel);
     dmButton.insertAdjacentElement('afterend', button);
     shellButton = button;
+    syncShellButtonLabel();
   }
 
   onMount(() => {
     BridgeRegistry.register('showRemoteDmPanel', openPanel);
     installShellButton();
+    // The locale table is lazy-loaded. This manual DOM button must be refreshed
+    // both when that first table arrives and on later live locale changes.
+    localeUnsubscribe = locale.subscribe(syncShellButtonLabel);
     shellObserver = new MutationObserver(installShellButton);
     shellObserver.observe(document.body, { childList: true, subtree: true });
     window.addEventListener('keydown', onEscape);
@@ -241,6 +251,8 @@
     BridgeRegistry.unregister('showRemoteDmPanel');
     shellObserver?.disconnect();
     shellObserver = null;
+    localeUnsubscribe?.();
+    localeUnsubscribe = null;
     window.removeEventListener('keydown', onEscape);
     if (shellButton) {
       shellButton.removeEventListener('click', openPanel);
