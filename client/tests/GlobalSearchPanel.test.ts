@@ -203,7 +203,7 @@ describe('durumlar', () => {
 
 // ════════════════════════════════════════════════════════════════════════════
 describe('P7 A6 offline local-first arama', () => {
-  it('socket offline iken servera gitmeden hesap-bazli sifreli cache sonucunu gosterir', async () => {
+  it('browser offline iken servera gitmeden hesap-bazli sifreli cache sonucunu gosterir', async () => {
     const userId = 'global-search-offline-user';
     await replaceLocalFirstHistory(userId, 'c-local', [{
       _id: 'local-1',
@@ -223,18 +223,51 @@ describe('P7 A6 offline local-first arama', () => {
     registryMap.apiFetch = api;
     registryMap.getMe = () => ({ _id: userId });
     registryMap.getSocketConnected = () => false;
+    const online = Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine');
+    Object.defineProperty(Navigator.prototype, 'onLine', { configurable: true, get: () => false });
 
-    render(GlobalSearchPanel);
-    await openWith('bridge needle');
+    try {
+      render(GlobalSearchPanel);
+      await openWith('bridge needle');
 
-    await waitFor(() => expect(optionIds()).toHaveLength(1), { timeout: 1500 });
-    expect(api).not.toHaveBeenCalled();
+      await waitFor(() => expect(optionIds()).toHaveLength(1), { timeout: 1500 });
+      expect(api).not.toHaveBeenCalled();
     expect(document.body).toHaveTextContent('offline bridge needle');
     expect(document.body).toHaveTextContent('#yerel');
 
     // Context preview must come from the same local cache, not HTTP.
-    await waitFor(() => expect(document.querySelector('.gs-ctx')).toBeTruthy(), { timeout: 1500 });
-    expect(api).not.toHaveBeenCalled();
+      await waitFor(() => expect(document.querySelector('.gs-ctx')).toBeTruthy(), { timeout: 1500 });
+      expect(api).not.toHaveBeenCalled();
+    } finally {
+      if (online) Object.defineProperty(Navigator.prototype, 'onLine', online);
+      else Reflect.deleteProperty(Navigator.prototype, 'onLine');
+    }
+  });
+
+  it('socket kopuk olsa bile HTTP calisiyorsa online global search server-authoritative kalir', async () => {
+    const userId = 'global-search-socket-only-user';
+    await replaceLocalFirstHistory(userId, 'c-local', [{
+      _id: 'local-shadow',
+      channelId: 'c-local',
+      content: 'server authority needle',
+      contentFormat: 1,
+      createdAt: Date.now(),
+    }]);
+
+    const api = mockApi({
+      results: [channelRow({ _id: 'server-wins', content: 'server authority needle' })],
+      hasMore: false,
+    });
+    registryMap.apiFetch = api;
+    registryMap.getMe = () => ({ _id: userId });
+    registryMap.getSocketConnected = () => false;
+
+    render(GlobalSearchPanel);
+    await openWith('authority needle');
+
+    await waitFor(() => expect(optionIds()).toHaveLength(1));
+    expect(api).toHaveBeenCalled();
+    expect(optionIds()[0]).toContain('server-wins');
   });
 
   it('online server hatasini local cache ile maskelemez', async () => {
