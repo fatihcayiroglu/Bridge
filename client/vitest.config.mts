@@ -72,10 +72,12 @@ export default defineConfig({
       // yalniz gercek davranis testleriyle yukseltilir.
       thresholds: {
         // RELEASE GATE: bu sayilar dusurulmez.
-        statements: 90,
+        // S/F/L esiklerinde olculen kapsama en az bir puan pay birakilir.
+        // Branch kapsami henuz ek pay sunmadigi icin minimum %90 korunur.
+        statements: 94,
         branches:   90,
-        functions:  90,
-        lines:      90,
+        functions:  93,
+        lines:      95,
       },
     },
   },
