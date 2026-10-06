@@ -1179,6 +1179,27 @@ test('message history, protected media and global search obey the shared visual 
 });
 
 
+test('P7 local-first lifecycle keeps exactly one page replay owner and service worker only wakes it', () => {
+  const composer = read('client/js/core/MessageInputPanel.svelte');
+  const sw = read('client/sw.ts');
+
+  assert.match(composer, /function replayDurableMessageQueues\(\)[\s\S]{0,140}replayOutbox\(\)[\s\S]{0,140}replayMessageOperations\(true\)/);
+  assert.match(composer, /window\.addEventListener\('online', onBrowserOnline\)/);
+  assert.match(composer, /window\.addEventListener\('offline', onBrowserOffline\)/);
+  assert.match(composer, /window\.addEventListener\('bridge:appstate', onAppState\)/);
+  assert.match(composer, /SW_LOCAL_FIRST_REPLAY/);
+  assert.match(composer, /sync\?\.register\(LOCAL_FIRST_SYNC_TAG\)/);
+  assert.match(composer, /LOCAL_FIRST_SYNC_TAG = 'bridge-local-first-replay'/);
+
+  assert.match(sw, /LOCAL_FIRST_SYNC_TAG = 'bridge-local-first-replay'/);
+  assert.match(sw, /async function notifyLocalFirstReplay\([\s\S]{0,420}client\.postMessage\(\{ type: 'SW_LOCAL_FIRST_REPLAY', reason \}\)/);
+  assert.match(sw, /syncEvent\.tag === LOCAL_FIRST_SYNC_TAG[\s\S]{0,120}notifyLocalFirstReplay\('background-sync'\)/);
+  assert.doesNotMatch(sw, /OUTBOX_ADD|OUTBOX_AUTH_EXPIRED|bridge-outbox|OUTBOX_DB|OUTBOX_STORE/,
+    'service worker must not own a second message replay database');
+  assert.doesNotMatch(sw, /Authorization:\s*`Bearer/,
+    'service worker background lifecycle must not persist or replay bearer credentials');
+});
+
 test('offline/reconnect banner follows real socket lifecycle and owns its timers', () => {
   const banner = read('client/js/core/OfflineBanner.svelte');
 
