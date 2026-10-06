@@ -7,10 +7,10 @@
 import type { DraftIdentity } from '../draft-store.ts';
 import {
   EncryptedDraftRepository,
+  localDraftRecordId,
   type LegacyDraftSource,
   type LocalDraftSnapshot,
 } from './drafts.ts';
-import { localDraftRecordId } from './drafts.ts';
 
 export interface DraftSessionEvents {
   onHydrated?(identity: DraftIdentity, snapshot: LocalDraftSnapshot | null): void;
