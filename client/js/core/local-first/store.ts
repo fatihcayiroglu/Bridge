@@ -50,9 +50,12 @@ export interface LocalFirstKeyProvider {
 }
 
 export class LocalFirstCorruptionError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
+  readonly cause: unknown;
+
+  constructor(message: string, cause?: unknown) {
+    super(message);
     this.name = 'LocalFirstCorruptionError';
+    this.cause = cause;
   }
 }
 
@@ -163,7 +166,7 @@ export class EncryptedLocalStore {
         localRecordScope(this.userId, namespace, recordId),
       );
     } catch (cause) {
-      throw new LocalFirstCorruptionError('Local-first record authentication failed', { cause });
+      throw new LocalFirstCorruptionError('Local-first record authentication failed', cause);
     }
   }
 
@@ -198,7 +201,7 @@ export class EncryptedLocalStore {
           updatedAt: row.updatedAt,
         });
       } catch (cause) {
-        throw new LocalFirstCorruptionError('Local-first namespace authentication failed', { cause });
+        throw new LocalFirstCorruptionError('Local-first namespace authentication failed', cause);
       }
     }
 
