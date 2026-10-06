@@ -249,13 +249,13 @@ describe('P7 A6 offline local-first arama', () => {
     await replaceLocalFirstHistory(userId, 'c-local', [{
       _id: 'local-shadow',
       channelId: 'c-local',
-      content: 'server authority needle',
+      content: 'local authority shadow',
       contentFormat: 1,
       createdAt: Date.now(),
     }]);
 
     const api = mockApi({
-      results: [channelRow({ _id: 'server-wins', content: 'server authority needle' })],
+      results: [channelRow({ _id: 'server-wins', content: 'server authority result' })],
       hasMore: false,
     });
     registryMap.apiFetch = api;
@@ -263,11 +263,12 @@ describe('P7 A6 offline local-first arama', () => {
     registryMap.getSocketConnected = () => false;
 
     render(GlobalSearchPanel);
-    await openWith('authority needle');
+    await openWith('authority');
 
     await waitFor(() => expect(optionIds()).toHaveLength(1));
     expect(api).toHaveBeenCalled();
-    expect(optionIds()[0]).toContain('server-wins');
+    expect(document.body).toHaveTextContent('server authority result');
+    expect(document.body).not.toHaveTextContent('local authority shadow');
   });
 
   it('online server hatasini local cache ile maskelemez', async () => {
