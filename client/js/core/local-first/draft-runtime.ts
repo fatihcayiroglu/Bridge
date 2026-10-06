@@ -129,7 +129,7 @@ function nextSnapshot(
   attachmentPending: boolean,
   savedAt = Date.now(),
 ): LocalDraftSnapshot | null {
-  const stable = stableIdentity(identity);
+  stableIdentity(identity);
   const normalizedText = typeof text === 'string' ? text.slice(0, 2000) : '';
   if (!normalizedText.trim() && attachmentPending !== true) return null;
   return {
