@@ -84,6 +84,7 @@
   const COUNTER_THRESHOLD = 1800;
   /** ACK bu süre içinde gelmezse mesaj "failed" işaretlenir (kaybolmaz, retry edilebilir). */
   const ACK_TIMEOUT_MS = 10_000;
+  const LOCAL_FIRST_SYNC_TAG = 'bridge-local-first-replay';
 
   /** Uçuştaki gönderimler — retry aynı ackId ile yapılır (sunucu tarafında dedup). */
   const pendingSends = new Map<string, PendingSend>();
@@ -876,6 +877,39 @@
     renderCurrentOutbox();
   }
 
+  function requestBackgroundReplayWake(): void {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    void navigator.serviceWorker.ready.then(registration => {
+      const withSync = registration as ServiceWorkerRegistration & {
+        sync?: { register(tag: string): Promise<void> };
+      };
+      return withSync.sync?.register(LOCAL_FIRST_SYNC_TAG);
+    }).catch(error => log.warn('localfirst.sync.register.failed', error));
+  }
+
+  function onBrowserOnline(): void {
+    replayDurableMessageQueues();
+  }
+
+  function onBrowserOffline(): void {
+    onSocketDisconnected();
+  }
+
+  function onAppState(event: Event): void {
+    const active = (event as CustomEvent<{ active?: boolean }>).detail?.active;
+    if (active === true) replayDurableMessageQueues();
+  }
+
+  function onServiceWorkerMessage(event: MessageEvent): void {
+    const data = event.data as { type?: string; online?: boolean } | null;
+    if (
+      data?.type === 'SW_LOCAL_FIRST_REPLAY'
+      || (data?.type === 'SW_NETWORK_STATUS' && data.online === true)
+    ) {
+      replayDurableMessageQueues();
+    }
+  }
+
   /** ACK may have been lost; durable queues become replayable on reconnect. */
   function onSocketDisconnected(): void {
     void handleMessageOperationSocketDisconnected();
@@ -893,6 +927,7 @@
       BridgeRegistry.call('updateMessage', { _id: `pending:${ackId}`, pending: true, queued: true, failed: false, lastError: '' });
     }
     document.dispatchEvent(new CustomEvent('bridge:messages-updated'));
+    requestBackgroundReplayWake();
   }
 
   function replayDurableMessageQueues(): void {
@@ -1323,11 +1358,17 @@
     document.addEventListener('bridge:socket-ready', replayDurableMessageQueues);
     document.addEventListener('bridge:socket-reconnected', replayDurableMessageQueues);
     document.addEventListener('bridge:socket-disconnected', onSocketDisconnected);
+    window.addEventListener('online', onBrowserOnline);
+    window.addEventListener('offline', onBrowserOffline);
+    window.addEventListener('bridge:appstate', onAppState);
+    navigator.serviceWorker?.addEventListener('message', onServiceWorkerMessage);
     document.addEventListener('bridge:message-operation-dispatched', onMessageOperationDispatched);
     document.addEventListener('bridge:message-operation-queued', onMessageOperationQueued);
     document.addEventListener('bridge:message-operation-timeout', onMessageOperationTimeout);
 
     onChannelSelected();
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) onBrowserOffline();
+    else replayDurableMessageQueues();
     log.info('Mesaj girişi hazır');
   });
 
@@ -1398,6 +1439,10 @@
     document.removeEventListener('bridge:socket-ready', replayDurableMessageQueues);
     document.removeEventListener('bridge:socket-reconnected', replayDurableMessageQueues);
     document.removeEventListener('bridge:socket-disconnected', onSocketDisconnected);
+    window.removeEventListener('online', onBrowserOnline);
+    window.removeEventListener('offline', onBrowserOffline);
+    window.removeEventListener('bridge:appstate', onAppState);
+    navigator.serviceWorker?.removeEventListener('message', onServiceWorkerMessage);
     document.removeEventListener('bridge:message-operation-dispatched', onMessageOperationDispatched);
     document.removeEventListener('bridge:message-operation-queued', onMessageOperationQueued);
     document.removeEventListener('bridge:message-operation-timeout', onMessageOperationTimeout);
