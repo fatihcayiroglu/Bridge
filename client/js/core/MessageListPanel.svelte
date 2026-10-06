@@ -20,6 +20,7 @@
   import { createLogger } from './logger.js';
   import { canManageMessages } from './permissions/myPermissions.ts';
   import { safeApiErrorMessage } from './api-error.ts';
+  import { queueReactionMessageOperation } from './local-first/message-operation-sync.ts';
   import { toast } from './utils.js';
   import MessageRenderer, { type MessageData } from './MessageRenderer.svelte';
   const log = createLogger('MessageListPanel');
@@ -461,15 +462,26 @@
           });
         }}
         onReact={(m, emoji) => {
-          // Retry-safe desired state. The server still accepts legacy toggle
-          // payloads, but production Bridge never relies on toggle semantics.
-          const sock = BridgeRegistry.get<{ emit(ev: string, p: unknown): void }>('socket');
+          // P7 A5: reaction is a durable desired-state operation. The encrypted
+          // operation log is written before the single replay owner emits it;
+          // no toggle semantics are used during reconnect replay.
           const raw = m.reactions && typeof m.reactions === 'object'
             ? (m.reactions as Record<string, unknown>)[emoji] : undefined;
           const users = Array.isArray(raw) ? raw.map(String) : [];
-          sock?.emit('message:react', {
-            messageId: m._id, channelId: m.channelId, emoji,
-            active: !users.includes(currentUserId ?? ''),
+          const channel = BridgeRegistry.call<{ _id?: string } | null>('getCurrentChannel');
+          const destinationId = m.channelId || channel?._id;
+          if (!destinationId) return;
+
+          void queueReactionMessageOperation({
+            messageId: m._id,
+            channelId: destinationId,
+            emoji,
+            desired: !users.includes(currentUserId ?? ''),
+          }).then(({ dispatched }) => {
+            if (!dispatched) toast(t('ui_offline_waiting'), 'info');
+          }).catch((error: unknown) => {
+            log.warn('Reaction operation kuyruğa alınamadı', error);
+            toast(t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.'), 'error');
           });
         }}
       />
