@@ -258,6 +258,7 @@ export const socketSchemas = {
     channelId: { type: 'string' as const, required: true, min: 1, max: 64 },
     emoji:     { type: 'string' as const, required: true, min: 1, max: 10 },
     active:    { type: 'boolean' as const },
+    clientNonce: { type: 'string' as const, min: 1, max: 64 },
   } satisfies Schema,
 
   deleteMessage: {
