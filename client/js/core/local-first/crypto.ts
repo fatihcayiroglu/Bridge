@@ -66,11 +66,20 @@ function decodeBase64(value: string, maxBytes = LOCAL_FIRST_MAX_CIPHERTEXT_BYTES
   return result;
 }
 
-function encodeAad(scope: string): Uint8Array {
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  // TS 6 models Uint8Array as potentially SharedArrayBuffer-backed. WebCrypto's
+  // BufferSource contract is stricter, so cross the boundary with an owned
+  // ArrayBuffer instead of a type assertion.
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
+}
+
+function encodeAad(scope: string): ArrayBuffer {
   if (typeof scope !== 'string' || scope.length === 0) throw new Error('Local-first scope is required');
   const encoded = new TextEncoder().encode(`bridge-local-first:v${LOCAL_FIRST_CRYPTO_VERSION}:${scope}`);
   if (encoded.byteLength > MAX_AAD_BYTES) throw new Error('Local-first scope is too large');
-  return encoded;
+  return toArrayBuffer(encoded);
 }
 
 function validateEnvelope(value: unknown): asserts value is LocalFirstEnvelope {
@@ -118,12 +127,12 @@ export async function encryptLocalBytes(
   const ciphertext = await crypto.subtle.encrypt(
     {
       name: LOCAL_FIRST_ALGORITHM,
-      iv,
+      iv: toArrayBuffer(iv),
       additionalData: encodeAad(scope),
       tagLength: TAG_LENGTH,
     },
     key,
-    plaintext,
+    toArrayBuffer(plaintext),
   );
 
   return {
@@ -148,12 +157,12 @@ export async function decryptLocalBytes(
   const plaintext = await webCrypto().subtle.decrypt(
     {
       name: LOCAL_FIRST_ALGORITHM,
-      iv,
+      iv: toArrayBuffer(iv),
       additionalData: encodeAad(scope),
       tagLength: TAG_LENGTH,
     },
     key,
-    ciphertext,
+    toArrayBuffer(ciphertext),
   );
   return new Uint8Array(plaintext);
 }
