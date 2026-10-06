@@ -138,9 +138,12 @@
     return userId || null;
   }
 
-  function definitelyOffline(): boolean {
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
-    return BridgeRegistry.call<boolean>('getSocketConnected') === false;
+  function browserOffline(): boolean {
+    return typeof navigator !== 'undefined' && navigator.onLine === false;
+  }
+
+  function transportFallbackAllowed(): boolean {
+    return browserOffline() || BridgeRegistry.call<boolean>('getSocketConnected') === false;
   }
 
   function setSearchMode(next: 'server' | 'local'): void {
@@ -214,7 +217,7 @@
     try {
       // Once an offline result page is open, pagination remains against the
       // same bounded local dataset. A fresh query may return to the server.
-      if ((append && searchMode === 'local') || definitelyOffline()) {
+      if ((append && searchMode === 'local') || browserOffline()) {
         if (!userId) {
           error = t("ui_arama_su_anda_kullanilamiyor", "Arama şu anda kullanılamıyor.");
           statusText = error;
@@ -248,7 +251,7 @@
       // A status-bearing response came from the authoritative server and must
       // stay visible as such. Only a transport failure while the app is also
       // offline/disconnected may fall back to the encrypted local cache.
-      if (status === undefined && userId && definitelyOffline()) {
+      if (status === undefined && userId && transportFallbackAllowed()) {
         if (await runLocalSearch(userId, q, append, seq)) return;
       }
 
