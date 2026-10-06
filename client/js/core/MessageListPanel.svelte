@@ -29,6 +29,7 @@
   let messages     = $state<MessageData[]>([]);
   let isLoading    = $state(false);
   let loadError    = $state('');
+  let isOffline    = $state(false);
   let hasMore      = $state(false);
   let hasChannel   = $state(false);
   /** Sunucuda kullanıcıdan başka üye yok (U-06): boş kanal davete yönlendirir. */
@@ -63,6 +64,7 @@
     messages      = (BridgeRegistry.call<MessageData[]>('getMessages') ?? []).slice();
     isLoading     = BridgeRegistry.call<boolean>('getMessagesLoading') ?? false;
     loadError     = BridgeRegistry.call<string>('getMessagesError') ?? '';
+    isOffline     = BridgeRegistry.call<boolean>('getMessagesOffline') ?? false;
     hasMore       = BridgeRegistry.call<boolean>('getMessagesHasMore') ?? false;
     firstUnreadMessageId = BridgeRegistry.call<string | null>('getFirstUnreadMessageId') ?? null;
     const currentChannel = BridgeRegistry.call<{ _id?: string; type?: string } | null>('getCurrentChannel');
@@ -407,6 +409,11 @@
   onkeydown={onListKeydown}
 >
   {#if hasChannel}
+    {#if isOffline && messages.length > 0}
+      <div class="msg-note" role="status" data-message-cache-state="offline">
+        {t('ui_offline_waiting')}
+      </div>
+    {/if}
     {#if hasMore && messages.length > 0}
       <div class="msg-note">{t('mlp_scroll_up', 'Daha eski mesajlar için yukarı kaydır')}</div>
     {/if}
