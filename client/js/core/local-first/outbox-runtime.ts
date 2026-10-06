@@ -76,9 +76,11 @@ function legacySource(): LegacyOutboxSource {
 function notePersistenceError(userId: string, error: unknown): void {
   const message = error instanceof Error ? error.message : 'Encrypted outbox persistence failed';
   persistenceErrors.set(userId, message);
-  document.dispatchEvent(new CustomEvent('bridge:outbox-persistence-error', {
-    detail: { userId, message },
-  }));
+  if (typeof document !== 'undefined') {
+    document.dispatchEvent(new CustomEvent('bridge:outbox-persistence-error', {
+      detail: { userId, message },
+    }));
+  }
 }
 
 function createRuntime(userIdInput: string): Promise<UserOutboxRuntime> {
