@@ -48,35 +48,44 @@ export function registerEditHandlers(
     if (!validateSocketPayload({ messageId, channelId, clientNonce }, socketSchemas.deleteMessage).valid) return;
     // Single owner shared with HTTP DELETE (Final21 Phase 16): visibility, author/MANAGE_MESSAGES,
     // cascade soft delete, cache invalidation BEFORE the announcement.
-    await deleteChannelMessage(io, { actorId: user._id, messageId, channelId, clientNonce });
-  }));
-
-  // ── message:edit ──────────────────────────────────────────
-  socket.on('message:edit', isolateSocketHandler(socket, 'message:edit', async ({ messageId, channelId, content, clientNonce }: {
-    messageId: string; channelId: string; content: string; clientNonce?: string;
-  }) => {
-    if (!validateSocketPayload({ messageId, channelId, content, clientNonce }, socketSchemas.editMessage).valid) return;
-    // Single owner shared with HTTP PATCH (Final21 Phase 16). The HTTP copy had drifted and
-    // skipped AutoMod entirely (measured: a refused word was stored through PATCH).
-    const result = await editChannelMessage(io, { actorId: user._id, messageId, channelId, content, clientNonce });
-    if (result.ok) return;
-    if (result.code === 'AUTOMOD_BLOCKED') {
+    const result = await deleteChannelMessage(io, { actorId: user._id, messageId, channelId, clientNonce });
+    if (!result.ok && clientNonce) {
       socket.emit('error:message', {
-        event: 'message:edit',
-        code: 'AUTOMOD_BLOCKED',
-        message: result.reason || 'Düzenleme AutoMod tarafından engellendi.',
-        clientNonce,
-      });
-    } else if (result.code === 'AUTOMOD_UNAVAILABLE') {
-      // Rule lookup/evaluation/timeout persistence failed: fail closed, say so.
-      socket.emit('error:message', {
-        event: 'message:edit',
-        code: 'AUTOMOD_UNAVAILABLE',
-        message: 'AutoMod doğrulanamadığı için düzenleme uygulanmadı.',
+        event: 'message:delete',
+        code: 'MUTATION_REJECTED',
         clientNonce,
       });
     }
-    // Other refusals stay silent, exactly as before this consolidation.
+  }));
+
+  // ── message:edit ──────────────────────────────────────────
+  socket.on('message:edit', isolateSocketHandler(socket, 'message:edit', async ({ messageId, channelId, content, clientNonce, baseVersion }: {
+    messageId: string; channelId: string; content: string; clientNonce?: string; baseVersion?: number;
+  }) => {
+    if (!validateSocketPayload({ messageId, channelId, content, clientNonce, baseVersion }, socketSchemas.editMessage).valid) return;
+    // Single owner shared with HTTP PATCH (Final21 Phase 16). The HTTP copy had drifted and
+    // skipped AutoMod entirely (measured: a refused word was stored through PATCH).
+    const result = await editChannelMessage(io, {
+      actorId: user._id, messageId, channelId, content, clientNonce, baseVersion,
+    });
+    if (result.ok) return;
+    if (!clientNonce) return;
+
+    // The client needs a deterministic terminal result for durable P7
+    // operations. Preserve useful, authorized conflict/moderation codes; group
+    // existence/permission refusals into one bounded code to avoid turning the
+    // socket into a message-existence oracle.
+    const publicCode = result.code === 'AUTOMOD_BLOCKED'
+      || result.code === 'AUTOMOD_UNAVAILABLE'
+      || result.code === 'CONFLICT'
+      ? result.code
+      : 'MUTATION_REJECTED';
+    socket.emit('error:message', {
+      event: 'message:edit',
+      code: publicCode,
+      ...(result.reason ? { message: result.reason } : {}),
+      clientNonce,
+    });
   }));
 
   // ── message:react ─────────────────────────────────────────
