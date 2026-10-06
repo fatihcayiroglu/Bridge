@@ -275,6 +275,33 @@ export class EncryptedHistoryRepository {
     return snapshot;
   }
 
+  async listAll(now = Date.now()): Promise<LocalHistorySnapshot[]> {
+    const rows = await this.store.list<unknown>('history');
+    const snapshots: LocalHistorySnapshot[] = [];
+
+    for (const row of rows) {
+      if (!row.value || typeof row.value !== 'object' || Array.isArray(row.value)) {
+        throw new Error('Invalid local-first history snapshot');
+      }
+      const rawChannelId = (row.value as { channelId?: unknown }).channelId;
+      if (typeof rawChannelId !== 'string' || !rawChannelId) {
+        throw new Error('Invalid local-first history channel');
+      }
+      if (row.recordId !== historyRecordId(rawChannelId)) {
+        throw new Error('Local-first history record id mismatch');
+      }
+
+      const snapshot = validateSnapshot(row.value, rawChannelId, now);
+      if (!snapshot) {
+        await this.store.delete('history', row.recordId);
+        continue;
+      }
+      snapshots.push(snapshot);
+    }
+
+    return snapshots.sort((a, b) => b.savedAt - a.savedAt || a.channelId.localeCompare(b.channelId));
+  }
+
   async clearChannel(channelId: string): Promise<void> {
     await this.store.delete('history', historyRecordId(channelId));
   }
