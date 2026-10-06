@@ -42,6 +42,13 @@
     readLocalFirstOutbox as readOutbox,
     removeLocalFirstOutboxEntry as removeOutboxEntry,
   } from './local-first/outbox-runtime.ts';
+  import {
+    closeMessageOperationSync,
+    handleMessageOperationSocketDisconnected,
+    queueDeleteMessageOperation,
+    queueEditMessageOperation,
+    replayMessageOperations,
+  } from './local-first/message-operation-sync.ts';
   import { isProtectedMediaUrl } from './media-auth.ts';
   import {
     draftKindOf, isTextChannel, optimisticOutboxMessage, outboxPayload,
@@ -61,7 +68,16 @@
 
   let { children }: { children?: Snippet } = $props();
 
-  interface Message { _id: string; content?: string; displayName?: string; username?: string; [key: string]: unknown }
+  interface Message {
+    _id: string;
+    channelId?: string;
+    content?: string;
+    createdAt?: number | string;
+    editedAt?: number | string;
+    displayName?: string;
+    username?: string;
+    [key: string]: unknown;
+  }
 
   const TYPING_STOP_MS = 2000;
   const MAX_LENGTH = 2000;
@@ -375,12 +391,13 @@
     const hasContent = input.value.trim().length > 0;
     // Ek varken METIN ZORUNLU DEGILDIR; yukleme surerken tekrar gonderim kilitlenir.
     const hasAttachment = Boolean(attachment);
-    // New text messages may be queued while offline. Edits and byte uploads
-    // still require a live socket/network because they have no outbox contract.
-    const queueableText = hasContent && !editTarget;
-    const liveOnlyAction = (hasAttachment || Boolean(editTarget)) && Boolean(sock && connected);
+    // Text sends use the canonical outbox; edits use the encrypted P7 operation
+    // log. Both can be accepted while offline. Raw attachment bytes still need
+    // a live upload path.
+    const queueableTextOrEdit = hasContent;
+    const liveOnlyAttachment = hasAttachment && !editTarget && Boolean(sock && connected);
     canSend = Boolean(channel?._id && isTextChannel(channel)
-      && (queueableText || liveOnlyAction) && charCount <= MAX_LENGTH && !uploading && !editMutationBusy);
+      && (queueableTextOrEdit || liveOnlyAttachment) && charCount <= MAX_LENGTH && !uploading && !editMutationBusy);
 
     input.setAttribute('maxlength', String(MAX_LENGTH));
     if (charCount >= COUNTER_THRESHOLD || sendError) input.setAttribute('aria-describedby', 'composer-status');
@@ -459,23 +476,42 @@
     sendError = '';
 
     if (editTarget) {
-      const connected = BridgeRegistry.call<boolean>('getSocketConnected') ?? Boolean(sock);
-      if (!sock || !connected) { sendError = t("ui_baglanti_yok_duzenleme_gonderilemedi", "Bağlantı yok — düzenleme gönderilemedi"); syncComposerState(); return; }
-      if (pendingEdit) return;
+      if (pendingEdit || editMutationBusy) return;
       const nonce = newAckId();
       const messageId = editTarget._id;
+      const baseVersion = Number(editTarget.editedAt ?? editTarget.createdAt);
+      if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
+        sendError = t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.');
+        syncComposerState();
+        return;
+      }
+
+      // Persist BEFORE socket emit. If durable storage fails the user's edit
+      // stays in the composer and the server is never told it succeeded.
+      pendingEdit = { nonce, messageId, content, timer: null };
       editMutationBusy = true;
       sendError = '';
-      const timer = setTimeout(() => {
+      syncComposerState();
+
+      void queueEditMessageOperation({
+        opId: nonce,
+        messageId,
+        channelId: channel._id,
+        content,
+        baseVersion,
+      }).then(({ dispatched }) => {
+        if (pendingEdit?.nonce !== nonce) return;
+        editMutationBusy = dispatched;
+        if (!dispatched) sendError = t('ui_offline_waiting');
+        syncComposerState();
+      }).catch((error: unknown) => {
         if (pendingEdit?.nonce !== nonce) return;
         pendingEdit = null;
         editMutationBusy = false;
-        sendError = t("ui_duzenleme_icin_sunucu_onayi_alinamadi_metnin_korunuy", "Düzenleme için sunucu onayı alınamadı. Metnin korunuyor; tekrar deneyebilirsin.");
+        sendError = t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.');
+        log.warn('Düzenleme operation-log kuyruğuna yazılamadı', error);
         syncComposerState();
-      }, ACK_TIMEOUT_MS);
-      pendingEdit = { nonce, messageId, content, timer };
-      sock.emit('message:edit', { messageId, channelId: channel._id, content, clientNonce: nonce });
-      syncComposerState();
+      });
       return;
     }
 
@@ -840,17 +876,13 @@
     renderCurrentOutbox();
   }
 
-  /** ACK may have been lost; mark in-flight items queued for the next replay. */
+  /** ACK may have been lost; durable queues become replayable on reconnect. */
   function onSocketDisconnected(): void {
+    void handleMessageOperationSocketDisconnected();
     if (pendingEdit) {
-      if (pendingEdit.timer) clearTimeout(pendingEdit.timer);
-      pendingEdit = null;
       editMutationBusy = false;
-      sendError = t("ui_baglanti_kesildi_duzenleme_uygulanmis_sayilmadi_metn", "Bağlantı kesildi. Düzenleme uygulanmış sayılmadı; metnin korunuyor.");
+      sendError = t('ui_offline_waiting');
     }
-    for (const pending of pendingDeletes.values()) if (pending.timer) clearTimeout(pending.timer);
-    pendingDeletes.clear();
-    deletingMessageIds.clear();
     syncComposerState();
     for (const [ackId, item] of pendingSends) {
       if (item.entry.state !== 'sending') continue;
@@ -863,11 +895,55 @@
     document.dispatchEvent(new CustomEvent('bridge:messages-updated'));
   }
 
+  function replayDurableMessageQueues(): void {
+    replayOutbox();
+    void replayMessageOperations(true);
+  }
+
   function onAuthSuccess(): void {
     hydratedUserId = '';
     hydrateOutbox();
     renderCurrentOutbox();
-    replayOutbox();
+    replayDurableMessageQueues();
+  }
+
+  function onMessageOperationDispatched(event: Event): void {
+    const detail = (event as CustomEvent<{ opId?: string; kind?: string }>).detail;
+    if (detail?.kind === 'edit-message' && pendingEdit?.nonce === detail.opId) {
+      editMutationBusy = true;
+      sendError = '';
+      syncComposerState();
+    }
+  }
+
+  function onMessageOperationQueued(event: Event): void {
+    const detail = (event as CustomEvent<{ opId?: string; kind?: string }>).detail;
+    if (detail?.kind === 'edit-message' && pendingEdit?.nonce === detail.opId) {
+      editMutationBusy = false;
+      sendError = t('ui_offline_waiting');
+      syncComposerState();
+    }
+  }
+
+  function onMessageOperationTimeout(event: Event): void {
+    const detail = (event as CustomEvent<{ opId?: string; kind?: string; targetId?: string }>).detail;
+    if (!detail?.opId) return;
+
+    if (detail.kind === 'edit-message' && pendingEdit?.nonce === detail.opId) {
+      pendingEdit = null;
+      editMutationBusy = false;
+      sendError = t("ui_duzenleme_icin_sunucu_onayi_alinamadi_metnin_korunuy", "Düzenleme için sunucu onayı alınamadı. Metnin korunuyor; tekrar deneyebilirsin.");
+      syncComposerState();
+      return;
+    }
+
+    if (detail.kind === 'delete-message') {
+      const pending = pendingDeletes.get(detail.opId);
+      if (!pending) return;
+      pendingDeletes.delete(detail.opId);
+      deletingMessageIds.delete(pending.messageId);
+      BridgeRegistry.call('toast', t("ui_silme_islemi_icin_sunucu_onayi_alinamadi_tekrar_dene", "Silme işlemi için sunucu onayı alınamadı. Tekrar deneyebilirsin."), 'error');
+    }
   }
 
   // ── Typing ─────────────────────────────────────────────────────────────────
@@ -934,23 +1010,25 @@
 
   function deleteMessage(messageId: string): void {
     const channel = currentChannel();
-    const sock = socket();
-    const connected = BridgeRegistry.call<boolean>('getSocketConnected') ?? Boolean(sock);
-    if (!messageId || !channel?._id || !sock || !connected || deletingMessageIds.has(messageId)) {
-      if (!connected) BridgeRegistry.call('toast', t("ui_baglanti_yok_mesaj_silinemedi", "Bağlantı yok — mesaj silinemedi."), 'error');
-      return;
-    }
+    if (!messageId || !channel?._id || deletingMessageIds.has(messageId)) return;
+
     const nonce = newAckId();
     deletingMessageIds.add(messageId);
-    const timer = setTimeout(() => {
-      const pending = pendingDeletes.get(nonce);
-      if (!pending) return;
+    pendingDeletes.set(nonce, { nonce, messageId, timer: null });
+
+    void queueDeleteMessageOperation({
+      opId: nonce,
+      messageId,
+      channelId: channel._id,
+    }).then(({ dispatched }) => {
+      if (!pendingDeletes.has(nonce)) return;
+      if (!dispatched) BridgeRegistry.call('toast', t('ui_offline_waiting'), 'info');
+    }).catch((error: unknown) => {
       pendingDeletes.delete(nonce);
       deletingMessageIds.delete(messageId);
-      BridgeRegistry.call('toast', t("ui_silme_islemi_icin_sunucu_onayi_alinamadi_tekrar_dene", "Silme işlemi için sunucu onayı alınamadı. Tekrar deneyebilirsin."), 'error');
-    }, ACK_TIMEOUT_MS);
-    pendingDeletes.set(nonce, { nonce, messageId, timer });
-    sock.emit('message:delete', { messageId, channelId: channel._id, clientNonce: nonce });
+      log.warn('Silme operation-log kuyruğuna yazılamadı', error);
+      BridgeRegistry.call('toast', t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.'), 'error');
+    });
   }
 
   function resolveEditMutation(clientNonce: string, messageId: string): void {
@@ -982,6 +1060,15 @@
     deletingMessageIds.delete(messageId);
     log.info(`Mesaj silme sunucu tarafından onaylandı: ${messageId.slice(0, 8)}`);
     BridgeRegistry.call('toast', t("ui_mesaj_silindi", "Mesaj silindi."), 'success');
+  }
+
+  function failDeleteMutation(clientNonce: string, code?: string): void {
+    const pending = pendingDeletes.get(clientNonce);
+    if (!pending) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    pendingDeletes.delete(clientNonce);
+    deletingMessageIds.delete(pending.messageId);
+    BridgeRegistry.call('toast', safeMutationError(code), 'error');
   }
 
   // ── Girdi olayları ─────────────────────────────────────────────────────────
@@ -1233,9 +1320,12 @@
     // kullanıcı giriş yaptığında composer'da eski metni görmesin.
     document.addEventListener('bridge:auth-logout', onLogout);
     document.addEventListener('bridge:auth-success', onAuthSuccess);
-    document.addEventListener('bridge:socket-ready', replayOutbox);
-    document.addEventListener('bridge:socket-reconnected', replayOutbox);
+    document.addEventListener('bridge:socket-ready', replayDurableMessageQueues);
+    document.addEventListener('bridge:socket-reconnected', replayDurableMessageQueues);
     document.addEventListener('bridge:socket-disconnected', onSocketDisconnected);
+    document.addEventListener('bridge:message-operation-dispatched', onMessageOperationDispatched);
+    document.addEventListener('bridge:message-operation-queued', onMessageOperationQueued);
+    document.addEventListener('bridge:message-operation-timeout', onMessageOperationTimeout);
 
     onChannelSelected();
     log.info('Mesaj girişi hazır');
@@ -1263,6 +1353,7 @@
     outboxHydrationSeq += 1;
     if (lastOutboxUserId) closeLocalFirstOutboxRuntime(lastOutboxUserId);
     lastOutboxUserId = '';
+    closeMessageOperationSync();
     syncComposerState();
   }
 
@@ -1282,6 +1373,7 @@
   BridgeRegistry.register('resolveEditMutation', (clientNonce: string, messageId: string) => resolveEditMutation(clientNonce, messageId));
   BridgeRegistry.register('failEditMutation', (clientNonce: string, code?: string) => failEditMutation(clientNonce, code));
   BridgeRegistry.register('resolveDeleteMutation', (clientNonce: string, messageId: string) => resolveDeleteMutation(clientNonce, messageId));
+  BridgeRegistry.register('failDeleteMutation', (clientNonce: string, code?: string) => failDeleteMutation(clientNonce, code));
 
   onDestroy(() => {
     attachmentLifecycleSeq += 1;
@@ -1303,9 +1395,12 @@
     document.removeEventListener('bridge:draft-hydrated', onDraftHydrated);
     document.removeEventListener('bridge:auth-logout', onLogout);
     document.removeEventListener('bridge:auth-success', onAuthSuccess);
-    document.removeEventListener('bridge:socket-ready', replayOutbox);
-    document.removeEventListener('bridge:socket-reconnected', replayOutbox);
+    document.removeEventListener('bridge:socket-ready', replayDurableMessageQueues);
+    document.removeEventListener('bridge:socket-reconnected', replayDurableMessageQueues);
     document.removeEventListener('bridge:socket-disconnected', onSocketDisconnected);
+    document.removeEventListener('bridge:message-operation-dispatched', onMessageOperationDispatched);
+    document.removeEventListener('bridge:message-operation-queued', onMessageOperationQueued);
+    document.removeEventListener('bridge:message-operation-timeout', onMessageOperationTimeout);
     stopTyping();
     // Uçuştaki ACK zamanlayıcıları da bırakılmalı (leak yok).
     clearPendingMemory();
@@ -1325,6 +1420,8 @@
     BridgeRegistry.unregister('resolveEditMutation');
     BridgeRegistry.unregister('failEditMutation');
     BridgeRegistry.unregister('resolveDeleteMutation');
+    BridgeRegistry.unregister('failDeleteMutation');
+    closeMessageOperationSync();
   });
 </script>
 
