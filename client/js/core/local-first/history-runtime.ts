@@ -62,6 +62,17 @@ export async function readLocalFirstHistory(
   return (await createRuntime(userId)).repository.read(channelId);
 }
 
+export async function listLocalFirstHistory(
+  userIdInput: string,
+): Promise<LocalHistorySnapshot[]> {
+  const userId = requireUserId(userIdInput);
+  const pending = [...chains.entries()]
+    .filter(([key]) => key.startsWith(`${userId}|`))
+    .map(([, promise]) => promise.catch(() => undefined));
+  if (pending.length) await Promise.all(pending);
+  return (await createRuntime(userId)).repository.listAll();
+}
+
 export function replaceLocalFirstHistory(
   userId: string,
   channelId: string,
