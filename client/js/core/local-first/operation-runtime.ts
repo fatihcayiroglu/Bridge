@@ -70,6 +70,15 @@ export function transitionLocalFirstOperation(
   return serialize(userId, runtime => runtime.log.transition(opId, state, patch));
 }
 
+export async function getLocalFirstOperation(
+  userIdInput: string,
+  opId: string,
+): Promise<LocalOperation | null> {
+  const userId = userIdOf(userIdInput);
+  await (chains.get(userId) ?? Promise.resolve());
+  return (await runtimeFor(userId)).log.get(opId);
+}
+
 export async function listActiveLocalFirstOperations(userIdInput: string): Promise<LocalOperation[]> {
   const userId = userIdOf(userIdInput);
   await (chains.get(userId) ?? Promise.resolve());
