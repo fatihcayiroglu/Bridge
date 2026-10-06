@@ -480,7 +480,7 @@
           }).then(({ dispatched }) => {
             if (!dispatched) toast(t('ui_offline_waiting'), 'info');
           }).catch((error: unknown) => {
-            log.warn('Reaction operation kuyruğa alınamadı', error);
+            log.warn('reaction.oplog.enqueue.failed', error);
             toast(t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.'), 'error');
           });
         }}
