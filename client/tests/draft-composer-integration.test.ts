@@ -21,6 +21,11 @@ import {
   resetLocalFirstDraftRuntimeForTests,
 } from '../js/core/local-first/draft-runtime.ts';
 import { resetOutboxMemory } from '../js/core/outbox-store.ts';
+import {
+  readLocalFirstOutbox as readOutbox,
+  removeLocalFirstOutboxEntry,
+  resetLocalFirstOutboxRuntimeForTests,
+} from '../js/core/local-first/outbox-runtime.ts';
 
 const DEBOUNCE_MS = 400;
 const ACK_TIMEOUT_MS = 10_000;
@@ -78,6 +83,7 @@ beforeEach(() => {
   localStorage.clear();
   resetLocalFirstDraftRuntimeForTests();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   emitted = [];
   me = { _id: 'user-a' };
   channel = { _id: 'ch-1', type: 'text', name: 'genel', serverId: 'srv-1' };
@@ -110,6 +116,7 @@ afterEach(() => {
     BridgeRegistry.unregister(name);
   }
   resetLocalFirstDraftRuntimeForTests();
+  resetLocalFirstOutboxRuntimeForTests();
   localStorage.clear();
   resetOutboxMemory();
   vi.useRealTimers();
@@ -245,7 +252,7 @@ describe('gönderim semantiği', () => {
 
     // Taslak güvence olarak depoda kalır; metin başarısız satırda (giden kutusu) görünür.
     expect((peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '')).toBe('gitmeyen mesaj');
-    const outbox = JSON.parse(localStorage.getItem(Object.keys(localStorage).find((k) => k.includes('outbox'))!) ?? '[]');
+    const outbox = readOutbox('user-a');
     expect(outbox.map((e: { content: string; state: string }) => [e.content, e.state])).toEqual([['gitmeyen mesaj', 'failed']]);
     selectChannel({ _id: 'ch-2', type: 'text' });
     selectChannel({ _id: 'ch-1', type: 'text' });
@@ -257,9 +264,9 @@ describe('gönderim semantiği', () => {
     pressEnter();
     vi.advanceTimersByTime(ACK_TIMEOUT_MS + 100);
     flushSync();
-    // Depolama giden kutusunu tutamadıysa yeniden yüklemeden sonra tek kopya taslaktır.
-    resetOutboxMemory();
-    for (const key of Object.keys(localStorage)) if (key.includes('outbox')) localStorage.removeItem(key);
+    // Giden kutusu kaydı yoksa yeniden yüklemede tek kopya taslaktır.
+    const ackId = String(lastSend()?.payload.ackId);
+    removeLocalFirstOutboxEntry('user-a', ackId);
     selectChannel({ _id: 'ch-2', type: 'text' });
     selectChannel({ _id: 'ch-1', type: 'text' });
     expect(input().value).toBe('gitmeyen mesaj');
@@ -275,8 +282,7 @@ describe('gönderim semantiği', () => {
     BridgeRegistry.call('discardSend', ackId);
     BridgeRegistry.unregister('removeMessage');
     expect((peekLocalFirstDraft(channelDraft('ch-1'))?.text ?? '')).toBe('');
-    const key = Object.keys(localStorage).find((k) => k.includes('outbox'));
-    expect(key ? JSON.parse(localStorage.getItem(key) ?? '[]') : []).toEqual([]);
+    expect(readOutbox('user-a')).toEqual([]);
   });
 
   it('ACK gecikirken kanal değişse bile DOĞRU kanalın taslağı temizlenir', () => {
