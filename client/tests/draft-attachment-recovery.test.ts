@@ -9,6 +9,7 @@ import {
   resetLocalFirstDraftRuntimeForTests,
 } from '../js/core/local-first/draft-runtime.ts';
 import { resetOutboxMemory } from '../js/core/outbox-store.ts';
+import { resetLocalFirstOutboxRuntimeForTests } from '../js/core/local-first/outbox-runtime.ts';
 
 const DEBOUNCE_MS = 400;
 const identity = (channelId: string) => ({
@@ -74,6 +75,7 @@ beforeEach(() => {
   localStorage.clear();
   resetLocalFirstDraftRuntimeForTests();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   channel = { _id: 'channel-a', serverId: 'draft-server', type: 'text', name: 'alpha' };
   BridgeRegistry.register('getMe', () => ({ _id: 'draft-user', username: 'draft-user' }));
   BridgeRegistry.register('getCurrentChannel', () => channel);
@@ -93,6 +95,7 @@ afterEach(() => {
   resetLocalFirstDraftRuntimeForTests();
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });

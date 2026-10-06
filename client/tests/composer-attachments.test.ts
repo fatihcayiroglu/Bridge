@@ -28,7 +28,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import MessageInputPanel from '../js/core/MessageInputPanel.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
-import { readOutbox, resetOutboxMemory } from '../js/core/outbox-store.ts';
+import { resetOutboxMemory } from '../js/core/outbox-store.ts';
+import {
+  readLocalFirstOutbox as readOutbox,
+  resetLocalFirstOutboxRuntimeForTests,
+} from '../js/core/local-first/outbox-runtime.ts';
 
 let instance: ReturnType<typeof mount> | null = null;
 let host: HTMLDivElement;
@@ -66,6 +70,7 @@ beforeEach(() => {
   renderedMessages = [];
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   uploadResponse = () => ok({ url: '/uploads/abc123.txt', fileName: 'not.txt', fileType: 'text/plain', size: 12 });
 
   host = document.createElement('div');
@@ -110,6 +115,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
 });
 
 // ════════════════════════════════════════════════════════════════════════════

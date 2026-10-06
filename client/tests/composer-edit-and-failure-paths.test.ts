@@ -19,7 +19,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import MessageInputPanel from '../js/core/MessageInputPanel.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
-import { readOutbox, resetOutboxMemory } from '../js/core/outbox-store.ts';
+import { resetOutboxMemory } from '../js/core/outbox-store.ts';
+import {
+  readLocalFirstOutbox as readOutbox,
+  resetLocalFirstOutboxRuntimeForTests,
+} from '../js/core/local-first/outbox-runtime.ts';
 
 const USER_ID = 'composer-user';
 const CHANNEL_ID = 'composer-channel';
@@ -78,6 +82,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   connected = true;
   emitted = [];
   rendered = [];
@@ -96,6 +101,7 @@ afterEach(() => {
   ]) BridgeRegistry.unregister(name);
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });

@@ -4,9 +4,13 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import MessageInputPanel from '../js/core/MessageInputPanel.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
+import { resetOutboxMemory, type OutboxEntry } from '../js/core/outbox-store.ts';
+import { LOCAL_OUTBOX_MAX_ENTRIES as MAX_OUTBOX_ENTRIES } from '../js/core/local-first/outbox.ts';
 import {
-  MAX_OUTBOX_ENTRIES, putOutboxEntry, readOutbox, resetOutboxMemory, type OutboxEntry,
-} from '../js/core/outbox-store.ts';
+  putLocalFirstOutboxEntry as putOutboxEntry,
+  readLocalFirstOutbox as readOutbox,
+  resetLocalFirstOutboxRuntimeForTests,
+} from '../js/core/local-first/outbox-runtime.ts';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -89,6 +93,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   channel = { _id: 'channel-a', serverId: 'server-a', name: 'genel', type: 'text' };
   currentServer = { _id: 'server-a' };
   user = { _id: 'user-a', username: 'ada', displayName: 'Ada' };
@@ -137,6 +142,7 @@ afterEach(() => {
   for (const key of keys) BridgeRegistry.unregister(key);
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -535,7 +541,7 @@ describe('MessageInputPanel — defensive branch contracts', () => {
     document.dispatchEvent(new CustomEvent('bridge:channel-selected'));
     document.dispatchEvent(new CustomEvent('bridge:auth-success'));
     document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
-    expect(readOutbox('')).toEqual([]);
+    expect(readOutbox('user-a')).toEqual([]);
     expect(shell.querySelector<HTMLElement>('#msg-input-wrap')!.style.display).toBe('none');
   });
 

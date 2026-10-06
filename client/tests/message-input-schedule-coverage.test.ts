@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import MessageInputPanel from '../js/core/MessageInputPanel.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 import { resetOutboxMemory } from '../js/core/outbox-store.ts';
+import { resetLocalFirstOutboxRuntimeForTests } from '../js/core/local-first/outbox-runtime.ts';
 import { t } from '../js/core/i18n/index.ts';
 
 function response(body: unknown, status = 200): Response {
@@ -92,6 +93,7 @@ const scheduledRow = (over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   channel = { _id: 'channel-a', serverId: 'server-a', name: 'genel', type: 'text' };
   currentServer = { _id: 'server-a' };
   draft = '';
@@ -140,6 +142,7 @@ afterEach(() => {
   for (const key of keys) BridgeRegistry.unregister(key);
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   vi.restoreAllMocks();
 });
 

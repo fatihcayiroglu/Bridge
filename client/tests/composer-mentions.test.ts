@@ -9,6 +9,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import MessageInputPanel from '../js/core/MessageInputPanel.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 import { resetOutboxMemory } from '../js/core/outbox-store.ts';
+import { resetLocalFirstOutboxRuntimeForTests } from '../js/core/local-first/outbox-runtime.ts';
 
 let instance: ReturnType<typeof mount> | null = null;
 let host: HTMLDivElement;
@@ -35,6 +36,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   emitted = [];
   host = document.createElement('div');
   host.innerHTML = `<div id="msg-input-wrap"><textarea id="msg-input"></textarea><button type="button" data-bridge-action="sendMessage"></button></div>`;
@@ -68,6 +70,7 @@ afterEach(() => {
   }
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   vi.useRealTimers();
 });
 
