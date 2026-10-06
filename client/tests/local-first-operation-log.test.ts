@@ -24,7 +24,7 @@ describe('P7 encrypted non-send operation log', () => {
       channelId: 'c1',
       targetId: 'm1',
       kind: 'edit-message',
-      payload: { content: 'edited' },
+      payload: { content: 'edited', baseVersion: 1 },
       createdAt: 1,
     }, 1);
 
@@ -76,17 +76,35 @@ describe('P7 encrypted non-send operation log', () => {
     const { log } = log();
     await log.enqueue({
       opId: 'edit-1', userId: 'u1', channelId: 'c1', targetId: 'm1',
-      kind: 'edit-message', payload: { content: 'first' }, createdAt: 1,
+      kind: 'edit-message', payload: { content: 'first', baseVersion: 1 }, createdAt: 1,
     }, 1);
     await log.transition('edit-1', 'sending', { incrementAttempts: true }, 2);
 
     await log.enqueue({
       opId: 'edit-2', userId: 'u1', channelId: 'c1', targetId: 'm1',
-      kind: 'edit-message', payload: { content: 'second' }, createdAt: 3,
+      kind: 'edit-message', payload: { content: 'second', baseVersion: 1 }, createdAt: 3,
     }, 3);
 
     expect(await log.get('edit-1')).toMatchObject({ state: 'sending' });
     expect(await log.get('edit-2')).toMatchObject({ state: 'queued' });
+  });
+
+  it('treats server rejection as terminal evidence instead of auto-replaying it', async () => {
+    const { log } = log();
+    await log.enqueue({
+      opId: 'reject-me',
+      userId: 'u1',
+      channelId: 'c1',
+      targetId: 'm1',
+      kind: 'delete-message',
+      payload: {},
+      createdAt: 1,
+    }, 1);
+    await log.transition('reject-me', 'sending', { incrementAttempts: true }, 2);
+    await log.transition('reject-me', 'rejected', { lastError: 'forbidden' }, 3);
+
+    expect(await log.listActive()).toEqual([]);
+    await expect(log.transition('reject-me', 'queued', {}, 4)).rejects.toThrow('Invalid');
   });
 
   it('rejects unsafe state transitions', async () => {
@@ -137,7 +155,7 @@ describe('P7 encrypted non-send operation log', () => {
       channelId: 'c1',
       targetId: 'm1',
       kind: 'edit-message',
-      payload: { content: 'private edit text' },
+      payload: { content: 'private edit text', baseVersion: 1 },
       createdAt: 1,
     }, 1);
 
