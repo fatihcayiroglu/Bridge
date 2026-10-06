@@ -32,10 +32,16 @@
   } from './composer/mention-query.ts';
   import { BridgeRegistry } from './bridge-registry.js';
   import { createLogger } from './logger.js';
+  import { type OutboxEntry } from './outbox-store.js';
   import {
-    outboxForChannel, patchOutboxEntry, putOutboxEntry, readOutbox,
-    removeOutboxEntry, restoreOutbox, type OutboxEntry,
-  } from './outbox-store.js';
+    closeLocalFirstOutboxRuntime,
+    hydrateLocalFirstOutbox,
+    localFirstOutboxForChannel as outboxForChannel,
+    patchLocalFirstOutboxEntry as patchOutboxEntry,
+    putLocalFirstOutboxEntry as putOutboxEntry,
+    readLocalFirstOutbox as readOutbox,
+    removeLocalFirstOutboxEntry as removeOutboxEntry,
+  } from './local-first/outbox-runtime.ts';
   import { isProtectedMediaUrl } from './media-auth.ts';
   import {
     draftKindOf, isTextChannel, optimisticOutboxMessage, outboxPayload,
@@ -390,6 +396,7 @@
   function queueOutboxEntry(inputEntry: NewOutboxEntry, sock: SocketLike | null): OutboxEntry | null {
     const userId = currentUserId();
     if (!userId) { sendError = t("ui_oturum_kimligi_bulunamadi", "Oturum kimliği bulunamadı."); return null; }
+    lastOutboxUserId = userId;
 
     const connectedState = BridgeRegistry.call<boolean>('getSocketConnected');
     const connected = connectedState ?? Boolean(sock);
@@ -746,23 +753,56 @@
   }
 
   let hydratedUserId = '';
+  let hydratingOutboxUserId = '';
+  let outboxHydrationSeq = 0;
+  let lastOutboxUserId = '';
 
   function clearPendingMemory(): void {
     pendingSends.forEach(item => { if (item.timer) clearTimeout(item.timer); });
     pendingSends.clear();
   }
 
-  /** Restore once per authenticated user; an interrupted send becomes queued. */
+  function installHydratedOutbox(userId: string, entries: OutboxEntry[]): void {
+    clearPendingMemory();
+    hydratedUserId = userId;
+    hydratingOutboxUserId = '';
+    lastOutboxUserId = userId;
+    for (const entry of entries) pendingSends.set(entry.ackId, { entry, timer: null });
+  }
+
+  /**
+   * Start encrypted migration/hydration once per authenticated user.
+   *
+   * The synchronous return is only for optimistic rendering. Replay is blocked
+   * until hydratedUserId is set by authenticated encrypted read-back.
+   */
   function hydrateOutbox(): OutboxEntry[] {
     const userId = currentUserId();
     if (!userId) return [];
+    lastOutboxUserId = userId;
     if (hydratedUserId === userId) return readOutbox(userId);
 
-    clearPendingMemory();
-    hydratedUserId = userId;
-    const entries = restoreOutbox(userId);
-    for (const entry of entries) pendingSends.set(entry.ackId, { entry, timer: null });
-    return entries;
+    if (hydratingOutboxUserId !== userId) {
+      hydratingOutboxUserId = userId;
+      const seq = ++outboxHydrationSeq;
+      void hydrateLocalFirstOutbox(userId).then(entries => {
+        if (seq !== outboxHydrationSeq || currentUserId() !== userId) return;
+        installHydratedOutbox(userId, entries);
+        renderCurrentOutbox();
+        replayOutbox();
+      }).catch(error => {
+        if (seq !== outboxHydrationSeq) return;
+        hydratingOutboxUserId = '';
+        log.error('Şifreli giden kutusu yüklenemedi', error);
+        sendError = t(
+          'ui_gonderim_kuyrugu_guvenli_yuklenemedi',
+          'Gönderim kuyruğu güvenli şekilde yüklenemedi. Yeniden bağlanmayı deneyin.',
+        );
+        syncComposerState();
+      });
+    }
+
+    return readOutbox(userId);
   }
 
   function renderCurrentOutbox(): void {
@@ -783,7 +823,14 @@
     const connected = BridgeRegistry.call<boolean>('getSocketConnected') ?? Boolean(sock);
     if (!sock || !connected) return;
 
-    for (const stored of hydrateOutbox()) {
+    const userId = currentUserId();
+    if (!userId) return;
+    hydrateOutbox();
+    // Never replay from an unverified legacy/immediate view. Migration first,
+    // then the same ackIds are safe to replay from encrypted canonical state.
+    if (hydratedUserId !== userId) return;
+
+    for (const stored of readOutbox(userId)) {
       const current = pendingSends.get(stored.ackId);
       if (current?.timer || current?.entry.state === 'sending' || stored.state === 'failed') continue;
       const entry = current?.entry ?? stored;
@@ -1212,6 +1259,10 @@
     clearPendingMemory();
     clearPendingMutationTimers();
     hydratedUserId = '';
+    hydratingOutboxUserId = '';
+    outboxHydrationSeq += 1;
+    if (lastOutboxUserId) closeLocalFirstOutboxRuntime(lastOutboxUserId);
+    lastOutboxUserId = '';
     syncComposerState();
   }
 
