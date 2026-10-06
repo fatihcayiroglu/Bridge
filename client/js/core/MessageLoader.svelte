@@ -27,6 +27,10 @@
   import { apiFetch } from './api-fetch.js';
   import { handleApiError, ApiResponseError, unwrapApiError } from './api-error.js';
   import {
+    rejectMessageOperation,
+    resolveMessageOperation,
+  } from './local-first/message-operation-sync.ts';
+  import {
     appendLocalFirstHistory,
     clearLocalFirstHistoryChannel,
     closeLocalFirstHistoryRuntime,
@@ -358,8 +362,18 @@
       const payload = args[0] as { ackId?: string; tmpId?: string; clientNonce?: string; code?: string; event?: string };
       const key = payload?.ackId ?? payload?.tmpId;
       if (isNonEmptyString(key)) BridgeRegistry.call('failPendingSend', key, messageDeliveryError(payload.code, 'channel'));
-      if (payload?.event === 'message:edit' && isNonEmptyString(payload.clientNonce)) {
-        BridgeRegistry.call('failEditMutation', payload.clientNonce, payload.code);
+
+      if (isNonEmptyString(payload.clientNonce)) {
+        if (payload.event === 'message:edit' || payload.event === 'message:delete' || payload.event === 'message:react') {
+          void rejectMessageOperation(payload.clientNonce, payload.code);
+        }
+        if (payload.event === 'message:edit') {
+          BridgeRegistry.call('failEditMutation', payload.clientNonce, payload.code);
+        } else if (payload.event === 'message:delete') {
+          BridgeRegistry.call('failDeleteMutation', payload.clientNonce, payload.code);
+        } else if (payload.event === 'message:react') {
+          BridgeRegistry.call('toast', t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.'), 'error');
+        }
       }
     });
 
@@ -389,7 +403,10 @@
       const clientNonce = isNonEmptyString(msg.clientNonce) ? msg.clientNonce : '';
       const { clientNonce: _mutationNonce, ...canonical } = msg;
       if (BridgeRegistry.call<boolean>('updateMessage', canonical)) notifyUpdated();
-      if (clientNonce) BridgeRegistry.call('resolveEditMutation', clientNonce, msg._id);
+      if (clientNonce) {
+        void resolveMessageOperation(clientNonce);
+        BridgeRegistry.call('resolveEditMutation', clientNonce, msg._id);
+      }
       liveSinceLoad?.edited.set(msg._id, canonical as Message);
       const userId = currentHistoryUserId();
       if (userId && channelId) {
@@ -427,16 +444,20 @@
         void tombstoneLocalFirstHistory(userId, channelId, payload.id)
           .catch(error => log.warn('Silinen mesaj tombstone yazılamadı', error));
       }
-      if (isNonEmptyString(payload.clientNonce)) BridgeRegistry.call('resolveDeleteMutation', payload.clientNonce, payload.id);
+      if (isNonEmptyString(payload.clientNonce)) {
+        void resolveMessageOperation(payload.clientNonce);
+        BridgeRegistry.call('resolveDeleteMutation', payload.clientNonce, payload.id);
+      }
     });
 
     bindOne(socket, 'message:reaction', (...args: unknown[]) => {
-      const payload = args[0] as { messageId?: string; reactions?: Record<string, unknown> };
+      const payload = args[0] as { messageId?: string; reactions?: Record<string, unknown>; clientNonce?: string };
       if (!isNonEmptyString(payload?.messageId)) return;
       const patch = { _id: payload.messageId, ...(channelId ? { channelId } : {}), reactions: payload.reactions ?? {} };
       if (BridgeRegistry.call<boolean>('updateMessage', patch)) notifyUpdated();
       const userId = currentHistoryUserId();
       if (userId && channelId) void updateLocalFirstHistory(userId, channelId, patch).catch(error => log.warn('Reaction yerel geçmişe yazılamadı', error));
+      if (isNonEmptyString(payload.clientNonce)) void resolveMessageOperation(payload.clientNonce);
     });
 
     bindOne(socket, 'message:pinned', (...args: unknown[]) => {
