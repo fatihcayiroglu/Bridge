@@ -364,36 +364,45 @@ test('operator, permissions and desktop diagnostics have discoverable canonical 
   assert.match(preload, /tray:open-surface/);
 });
 
-test('channel edit/delete mutations require authoritative nonce-correlated server confirmation', () => {
+test('channel edit/delete mutations use one durable nonce-correlated replay owner', () => {
   const composer = read('client/js/core/MessageInputPanel.svelte');
+  const sync = read('client/js/core/local-first/message-operation-sync.ts');
+  const oplog = read('client/js/core/local-first/operation-log.ts');
   const loader = read('client/js/core/MessageLoader.svelte');
   const handler = read('server/socket/handlers/messages-edit.ts');
   const owner = read('server/lib/messageMutations.ts');
   const validate = read('server/middleware/validate.ts');
 
-  assert.match(composer, /message:edit'[\s\S]{0,220}clientNonce: nonce/);
-  assert.match(composer, /pendingEdit[\s\S]{0,700}ACK_TIMEOUT_MS/);
+  assert.match(composer, /queueEditMessageOperation\([\s\S]{0,280}opId: nonce/);
+  assert.match(composer, /queueDeleteMessageOperation\([\s\S]{0,220}opId: nonce/);
+  assert.match(composer, /pendingEdit/);
+  assert.match(composer, /pendingDeletes/);
   assert.match(composer, /resolveEditMutation/);
   assert.match(composer, /failEditMutation/);
-  assert.match(composer, /message:delete'[\s\S]{0,220}clientNonce: nonce/);
-  assert.match(composer, /pendingDeletes/);
   assert.match(composer, /resolveDeleteMutation/);
-  assert.doesNotMatch(composer, /sock\.emit\('message:edit'[\s\S]{0,180}cancelEdit\(true\)/,
-    'edit must not leave edit mode before the authoritative event');
+  assert.match(composer, /failDeleteMutation/);
+  assert.doesNotMatch(composer, /sock\.emit\('message:edit'/,
+    'composer must persist edit operations before the single replay owner emits them');
+  assert.doesNotMatch(composer, /sock\.emit\('message:delete'/,
+    'composer must persist delete operations before the single replay owner emits them');
 
-  assert.match(loader, /message:edited'[\s\S]{0,450}resolveEditMutation/);
-  assert.match(loader, /message:deleted'[\s\S]{0,1600}resolveDeleteMutation/);
-  assert.match(loader, /error:message'[\s\S]{0,450}failEditMutation/);
+  assert.match(sync, /socket\.emit\('message:edit'[\s\S]{0,260}clientNonce: operation\.opId[\s\S]{0,120}baseVersion/);
+  assert.match(sync, /socket\.emit\('message:delete'[\s\S]{0,220}clientNonce: operation\.opId/);
+  assert.match(sync, /replayMessageOperations/);
+  assert.match(sync, /handleMessageOperationSocketDisconnected/);
+  assert.match(oplog, /'queued'[\s\S]{0,120}'sending'[\s\S]{0,120}'applied'[\s\S]{0,120}'rejected'[\s\S]{0,120}'superseded'/);
 
-  assert.match(validate, /editMessage[\s\S]{0,400}clientNonce/);
+  assert.match(loader, /message:edited'[\s\S]{0,600}resolveMessageOperation/);
+  assert.match(loader, /message:deleted'[\s\S]{0,1800}resolveMessageOperation/);
+  assert.match(loader, /error:message'[\s\S]{0,900}rejectMessageOperation/);
+
+  assert.match(validate, /editMessage[\s\S]{0,500}clientNonce[\s\S]{0,180}baseVersion/);
   assert.match(validate, /deleteMessage[\s\S]{0,300}clientNonce/);
-  // Final21 Phase 16: the broadcasts moved into the shared owner; the socket handler must
-  // still hand the client's nonce to it, and the owner must echo it.
   assert.match(handler, /deleteChannelMessage\(io, \{[^}]*clientNonce/);
-  assert.match(handler, /editChannelMessage\(io, \{[^}]*clientNonce/);
-  assert.match(owner, /message:deleted', \{ id: input\.messageId, clientNonce: input\.clientNonce \}/);
-  assert.match(owner, /message:edited', \{ \.\.\.updated, clientNonce: input\.clientNonce \}/);
-  assert.match(handler, /AUTOMOD_BLOCKED[\s\S]{0,220}clientNonce/);
+  assert.match(handler, /editChannelMessage\(io, \{[^}]*clientNonce[^}]*baseVersion/);
+  assert.match(owner, /currentContent === desiredContent/);
+  assert.match(owner, /input\.baseVersion[\s\S]{0,260}'CONFLICT'/);
+  assert.match(owner, /if \(msg\.deletedAt\)[\s\S]{0,260}message:deleted/);
 });
 
 test('pin and reaction production clients send retry-safe target state while server preserves legacy toggle compatibility', () => {
@@ -405,18 +414,22 @@ test('pin and reaction production clients send retry-safe target state while ser
   const validate = read('server/middleware/validate.ts');
 
   assert.match(list, /message:pin'[\s\S]{0,220}pinned: !Boolean\(m\.pinned\)/);
-  // `currentUserId` is `string | null` in the panel; the desired-state payload
-  // stays retry-safe with the null-safe form (an absent viewer can never be in
-  // `users`, so `active` correctly reads as "add my reaction").
-  assert.match(list, /message:react'[\s\S]{0,260}active: !users\.includes\(currentUserId \?\? ''\)/);
+  // Reaction clicks are durable desired-state operations; the list never owns a
+  // second socket replay path.
+  const sync = read('client/js/core/local-first/message-operation-sync.ts');
+  assert.match(list, /queueReactionMessageOperation\([\s\S]{0,300}desired: !users\.includes\(currentUserId \?\? ''\)/);
+  assert.doesNotMatch(list, /sock\?\.emit\('message:react'/);
+  assert.match(sync, /socket\.emit\('message:react'[\s\S]{0,260}active: payload\.desired[\s\S]{0,120}clientNonce: operation\.opId/);
   assert.match(pins, /message:pin'[\s\S]{0,180}pinned: false/);
   assert.doesNotMatch(pins, /pins\s*=\s*pins\.filter/, 'pinned viewer must wait for server confirmation');
   assert.match(voice, /message:pin'[\s\S]{0,180}pinned: true/);
 
   assert.match(validate, /pinMessage[\s\S]{0,350}pinned/);
-  assert.match(validate, /reactMessage[\s\S]{0,350}active/);
+  assert.match(validate, /reactMessage[\s\S]{0,420}active[\s\S]{0,160}clientNonce/);
   assert.match(handler, /typeof desiredPinned === 'boolean' \? desiredPinned : !msg\.pinned/);
   assert.match(handler, /typeof desiredActive === 'boolean'[\s\S]{0,220}setReactionStateAtomic/);
+  assert.match(handler, /message:reaction'[\s\S]{0,220}clientNonce/);
+  assert.match(handler, /event: 'message:react'[\s\S]{0,160}MUTATION_REJECTED/);
   assert.match(repo, /async setReactionStateAtomic\(/);
   assert.match(repo, /WHEN \$4::boolean/);
 });
