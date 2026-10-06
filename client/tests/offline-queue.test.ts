@@ -47,7 +47,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import MessageInputPanel from '../js/core/MessageInputPanel.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
-import { readOutbox, resetOutboxMemory } from '../js/core/outbox-store.ts';
+import { resetOutboxMemory } from '../js/core/outbox-store.ts';
+import {
+  hydrateLocalFirstOutbox,
+  readLocalFirstOutbox as readOutbox,
+  resetLocalFirstOutboxRuntimeForTests,
+} from '../js/core/local-first/outbox-runtime.ts';
 
 type Emitted = { event: string; payload: Record<string, unknown> };
 
@@ -81,6 +86,7 @@ function disconnectSocket(): void {
 beforeEach(() => {
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   emitted = [];
   rendered = [];
   channel = { _id: 'ch-1', type: 'text', serverId: 'srv-1', name: 'genel' };
@@ -116,6 +122,7 @@ afterEach(() => {
   instance = null;
   host.remove();
   for (const key of REGISTRY_KEYS) BridgeRegistry.unregister(key);
+  resetLocalFirstOutboxRuntimeForTests();
   localStorage.clear();
   resetOutboxMemory();
   document.body.innerHTML = '';
@@ -139,7 +146,7 @@ describe('socket yokken gönderim (canonical reliable outbox)', () => {
     });
   });
 
-  it('socket geri gelince kullanıcı yeniden basmadan aynı ackId otomatik oynatılır', () => {
+  it('socket geri gelince kullanıcı yeniden basmadan aynı ackId otomatik oynatılır', async () => {
     disconnectSocket();
     input().value = 'daha sonra';
     send();
@@ -151,6 +158,8 @@ describe('socket yokken gönderim (canonical reliable outbox)', () => {
     } as unknown as AnyFn);
     BridgeRegistry.register('getSocketConnected', (() => true) as AnyFn);
     document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
+    await hydrateLocalFirstOutbox('user-a');
+    await Promise.resolve();
     flushSync();
 
     expect(lastSend()?.payload.content).toBe('daha sonra');
