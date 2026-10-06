@@ -406,6 +406,60 @@ describe('registerEditHandlers', () => {
       expect((evt!.data as { reactions: Record<string, string[]> }).reactions['👍']).toContain(owner._id);
     });
 
+    it('desired-state replay aynı nonce ile idempotent kalır ve nonce başarı eventinde echo edilir', async () => {
+      const msg = makeMessage(channel._id, server._id, owner._id, { reactions: {} });
+      await mockDb.messages.insert(msg);
+
+      const payload = {
+        messageId: msg._id,
+        channelId: channel._id,
+        emoji: '👍',
+        active: true,
+        clientNonce: 'reaction-op-1',
+      };
+      await socket._trigger('message:react', payload);
+      await socket._trigger('message:react', payload);
+
+      const current = await mockDb.messages.findOne({ _id: msg._id });
+      expect((current!.reactions as Record<string, string[]>)['👍']).toEqual([owner._id]);
+
+      const broadcasts = io._emitted.filter(entry => entry.ev === 'message:reaction');
+      expect(broadcasts).toHaveLength(2);
+      expect(broadcasts).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          data: expect.objectContaining({
+            messageId: msg._id,
+            clientNonce: 'reaction-op-1',
+          }),
+        }),
+      ]));
+    });
+
+    it('nonce-correlated desired reaction yetki reddinde terminal mutation reject döndürür', async () => {
+      mockHasPermission.mockImplementation((_perms: number, flag: number) => flag !== 0x1000);
+      const msg = makeMessage(channel._id, server._id, owner._id, { reactions: {} });
+      await mockDb.messages.insert(msg);
+
+      await socket._trigger('message:react', {
+        messageId: msg._id,
+        channelId: channel._id,
+        emoji: '👍',
+        active: true,
+        clientNonce: 'reaction-op-denied',
+      });
+
+      expect(findEmitted(io._emitted, 'message:reaction')).toBeUndefined();
+      expect(findEmitted(socket._emitted, 'error:message')).toMatchObject({
+        data: {
+          event: 'message:react',
+          code: 'MUTATION_REJECTED',
+          clientNonce: 'reaction-op-denied',
+        },
+      });
+      const current = await mockDb.messages.findOne({ _id: msg._id });
+      expect(current!.reactions ?? {}).toEqual({});
+    });
+
     it('aynı emoji tekrar → toggle (kaldırır)', async () => {
       const msg = makeMessage(channel._id, server._id, owner._id, {
         reactions: { '👍': [owner._id] },
