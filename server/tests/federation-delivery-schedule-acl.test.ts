@@ -11,6 +11,8 @@
 //           still fetched to resolve inboxes.
 
 'use strict';
+export {};
+
 process.env.NODE_ENV = 'test';
 delete process.env.FEDERATION_DELIVERY_RETRY_DELAYS_MS; // the shipped default
 process.env.INSTANCE_URL = 'https://bridge.test';

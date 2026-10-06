@@ -176,6 +176,15 @@
     ],
     "rationale": "071 adds the referencing-column index for the message_reports.messageId ON DELETE CASCADE foreign key. 063's down drops the whole table, taking 071's index with it; re-applying 063 alone cannot recreate an object owned by 071. Ordered rollback unwinds 071 first (its isolated cycle is lossless) and the full ordered chain measures 0 lost / 0 extra (Final21 Phase 19 run). Unclassified since 071 was added in Phase 11; the gate had not completed a full run since."
   },
+  "046_activitypub_message_visibility": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "cross-migration-dependency",
+    "expectedDifference": "idx_ap_messages_live_visibility_actor (created by 079) is lost when ap_messages.visibility is dropped and is not recreated by 046's re-up",
+    "dependsOn": [
+      "079_activitypub_message_tombstone"
+    ],
+    "rationale": "079 adds a live-message partial index on visibility, a column owned by 046. Rolling 046 back in isolation drops that column and its dependent index; re-applying 046 cannot recreate an index owned by 079. Ordered rollback unwinds 079 first, and 079's own isolated cycle is lossless. The full ordered rollback and re-up on PostgreSQL 18 measure 0 lost / 0 extra."
+  },
   "065_channel_read_positions": {
     "classification": "EXPECTED_DEPENDENCY",
     "kind": "cross-migration-dependency",

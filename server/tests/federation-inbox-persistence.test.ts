@@ -4,14 +4,15 @@
 'use strict';
 process.env.NODE_ENV = 'test';
 
+const mockFindApMessageOne = jest.fn();
 const mockInsertApMessage = jest.fn();
-const mockRemoveApMessage = jest.fn();
+const mockUpdateApMessage = jest.fn();
 
 jest.mock('../db/repositories', () => ({
   Federation: {
-    findApMessageOne: jest.fn(async () => null),
+    findApMessageOne: (...args: unknown[]) => mockFindApMessageOne(...args),
     insertApMessage: (...args: unknown[]) => mockInsertApMessage(...args),
-    removeApMessage: (...args: unknown[]) => mockRemoveApMessage(...args),
+    updateApMessage: (...args: unknown[]) => mockUpdateApMessage(...args),
   },
   Notifications: { insertInbox: jest.fn() },
   Dms: {},
@@ -24,7 +25,10 @@ jest.mock('../lib/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jes
 import { handleApCreate, handleApDelete } from '../routes/federation/inbox-handlers';
 
 describe('ActivityPub inbox persistence boundary', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockFindApMessageOne.mockResolvedValue(null);
+  });
 
   it('Create propagates AP message persistence failure', async () => {
     mockInsertApMessage.mockRejectedValueOnce(new Error('db write failed'));
@@ -41,13 +45,23 @@ describe('ActivityPub inbox persistence boundary', () => {
     })).rejects.toThrow('db write failed');
   });
 
-  it('Delete propagates AP message persistence failure', async () => {
-    mockRemoveApMessage.mockRejectedValueOnce(new Error('db delete failed'));
+  it('Delete propagates AP tombstone persistence failure', async () => {
+    mockFindApMessageOne.mockResolvedValueOnce({
+      _id: 'apmsg-1',
+      apId: 'https://remote/notes/1',
+      actorUrl: 'https://remote/users/alice',
+      content: 'hello',
+      createdAt: 0,
+      updatedAt: 0,
+      deletedAt: null,
+    });
+    mockUpdateApMessage.mockRejectedValueOnce(new Error('db tombstone failed'));
+
     await expect(handleApDelete(null, {
       id: 'https://remote/activities/2',
       type: 'Delete',
       actor: 'https://remote/users/alice',
       object: 'https://remote/notes/1',
-    })).rejects.toThrow('db delete failed');
+    })).rejects.toThrow('db tombstone failed');
   });
 });

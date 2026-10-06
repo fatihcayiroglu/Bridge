@@ -183,6 +183,19 @@
   .user-panel { min-height: var(--shell-user-height); }
 }
 
+/* Phone landscape can be wider than the 600px portrait breakpoint while still being
+   extremely short. Keep the same compact header contract there: only Search + More stay
+   in the bar; every other real button remains reachable through shell-actions' More menu.
+   This also keeps dynamically-mounted tools inside left/right safe-area cutouts. */
+@media (max-width: 960px) and (max-height: 500px) {
+  .channel-header { padding-inline: 10px; }
+  .channel-header .ch-h-topic,
+  .channel-header .ch-h-divider { display: none; }
+  .channel-header-actions { margin-left: auto; }
+  .channel-header-actions > .h-btn:not(#btn-search):not(#btn-header-more) { display: none; }
+  #btn-header-more { display: grid; }
+}
+
 /* Horizontal overflow safety net for user content. */
 .msg-content a,
 .msg-content code {

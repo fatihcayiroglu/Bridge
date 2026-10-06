@@ -457,4 +457,3 @@ describe('heartbeat signature verifies at the receiving installation', () => {
     );
   });
 });
-});

@@ -400,22 +400,28 @@ describe('Create — content fallbacks and ownership of an AP object id', () => 
 
 describe('Update and Delete are scoped to the owning actor', () => {
   it('Update rewrites only rows owned by the same actor', async () => {
+    Federation.findApMessageOne.mockResolvedValue({
+      apId: 'https://remote.test/notes/1', actorUrl: REMOTE, updatedAt: 1, deletedAt: null,
+    });
     await handleApUpdate(null, {
       id: 'up1', type: 'Update', actor: REMOTE,
-      object: { id: 'https://remote.test/notes/1', type: 'Note', content: 'edited' },
+      object: { id: 'https://remote.test/notes/1', type: 'Note', content: 'edited', updated: '2026-10-04T11:00:00.000Z' },
     } as never);
     expect(Federation.updateApMessage).toHaveBeenCalledWith(
       { apId: 'https://remote.test/notes/1', actorUrl: REMOTE },
-      { $set: { content: 'edited', updatedAt: expect.any(Number) } });
+      { $set: { content: 'edited', updatedAt: Date.parse('2026-10-04T11:00:00.000Z') } });
   });
 
   it('an Update that clears the content stores an empty string', async () => {
+    Federation.findApMessageOne.mockResolvedValue({
+      apId: 'https://remote.test/notes/1', actorUrl: REMOTE, updatedAt: 1, deletedAt: null,
+    });
     await handleApUpdate(null, {
       id: 'up2', type: 'Update', actor: REMOTE,
-      object: { id: 'https://remote.test/notes/1', type: 'Note' },
+      object: { id: 'https://remote.test/notes/1', type: 'Note', updated: '2026-10-04T11:00:00.000Z' },
     } as never);
     expect(Federation.updateApMessage).toHaveBeenCalledWith(
-      expect.anything(), { $set: { content: '', updatedAt: expect.any(Number) } });
+      expect.anything(), { $set: { content: '', updatedAt: Date.parse('2026-10-04T11:00:00.000Z') } });
   });
 
   it('an Update without an object id is ignored', async () => {
@@ -424,18 +430,26 @@ describe('Update and Delete are scoped to the owning actor', () => {
     expect(Federation.updateApMessage).not.toHaveBeenCalled();
   });
 
-  it('Delete resolves both object shapes and stays scoped to the actor', async () => {
-    await handleApDelete(null, { id: 'd1', type: 'Delete', actor: REMOTE, object: 'https://remote.test/notes/1' } as never);
-    await handleApDelete(null, { id: 'd2', type: 'Delete', actor: REMOTE, object: { id: 'https://remote.test/notes/2' } } as never);
-    expect(Federation.removeApMessage).toHaveBeenNthCalledWith(1,
-      { apId: 'https://remote.test/notes/1', actorUrl: REMOTE }, {});
-    expect(Federation.removeApMessage).toHaveBeenNthCalledWith(2,
-      { apId: 'https://remote.test/notes/2', actorUrl: REMOTE }, {});
+  it('Delete resolves both object shapes, stays scoped to the actor, and tombstones instead of removing', async () => {
+    Federation.findApMessageOne
+      .mockResolvedValueOnce({ apId: 'https://remote.test/notes/1', actorUrl: REMOTE, updatedAt: 1, deletedAt: null })
+      .mockResolvedValueOnce({ apId: 'https://remote.test/notes/2', actorUrl: REMOTE, updatedAt: 1, deletedAt: null });
+    await handleApDelete(null, { id: 'd1', type: 'Delete', actor: REMOTE, updated: '2026-10-04T12:00:00.000Z', object: 'https://remote.test/notes/1' } as never);
+    await handleApDelete(null, { id: 'd2', type: 'Delete', actor: REMOTE, updated: '2026-10-04T12:00:01.000Z', object: { id: 'https://remote.test/notes/2' } } as never);
+    expect(Federation.removeApMessage).not.toHaveBeenCalled();
+    expect(Federation.updateApMessage).toHaveBeenNthCalledWith(1,
+      { apId: 'https://remote.test/notes/1', actorUrl: REMOTE },
+      { $set: { content: '', deletedAt: Date.parse('2026-10-04T12:00:00.000Z'), updatedAt: Date.parse('2026-10-04T12:00:00.000Z') } });
+    expect(Federation.updateApMessage).toHaveBeenNthCalledWith(2,
+      { apId: 'https://remote.test/notes/2', actorUrl: REMOTE },
+      { $set: { content: '', deletedAt: Date.parse('2026-10-04T12:00:01.000Z'), updatedAt: Date.parse('2026-10-04T12:00:01.000Z') } });
   });
 
-  it('a Delete with no resolvable object deletes nothing', async () => {
+  it('a Delete with no resolvable object touches nothing', async () => {
     await handleApDelete(null, { id: 'd3', type: 'Delete', actor: REMOTE, object: {} } as never);
     await handleApDelete(null, { id: 'd4', type: 'Delete', actor: REMOTE } as never);
+    expect(Federation.updateApMessage).not.toHaveBeenCalled();
+    expect(Federation.insertApMessage).not.toHaveBeenCalled();
     expect(Federation.removeApMessage).not.toHaveBeenCalled();
   });
 });

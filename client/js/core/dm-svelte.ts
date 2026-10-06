@@ -1,23 +1,26 @@
 // client/js/core/dm-svelte.ts
 // Sprint 116 — DmPanel mount shim (ADR-0008 Faz 3)
-// Direkt mesaj paneli
+// Direkt mesaj paneli + P6 ActivityPub remote DM surface.
 import { mount, unmount } from 'svelte';
 import DmPanel from './DmPanel.svelte';
+import RemoteDmPanel from './RemoteDmPanel.svelte';
 import { createLogger } from './logger.ts';
 const log = createLogger('DmPanelShim');
 
 let _instance: ReturnType<typeof mount> | null = null;
+let _remoteInstance: ReturnType<typeof mount> | null = null;
 
 export function mountDmPanel(target?: HTMLElement): void {
-  if (_instance) return;
+  if (_instance && _remoteInstance) return;
   const el = target ?? document.getElementById('dm-root') ?? (() => {
     const div = document.createElement('div');
     div.id = 'dm-root';
     document.body.appendChild(div);
     return div;
   })();
-  _instance = mount(DmPanel, { target: el, props: {} });
-  log.info('DmPanel mounted via shim');
+  if (!_instance) _instance = mount(DmPanel, { target: el, props: {} });
+  if (!_remoteInstance) _remoteInstance = mount(RemoteDmPanel, { target: el, props: {} });
+  log.info('DM surfaces mounted via shim');
 }
 
 /**
@@ -34,9 +37,14 @@ export function mountDmPanel(target?: HTMLElement): void {
  * icinde zaten mevcuttu; bu dosya onlarla hizalandi.
  */
 export function unmountDmPanel(): void {
-  if (!_instance) return;
-  void unmount(_instance);
-  _instance = null;
+  if (_remoteInstance) {
+    void unmount(_remoteInstance);
+    _remoteInstance = null;
+  }
+  if (_instance) {
+    void unmount(_instance);
+    _instance = null;
+  }
 }
 
 if (document.readyState === 'loading') {

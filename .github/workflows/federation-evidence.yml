@@ -17,10 +17,11 @@ name: Bridge Federation + AI Evidence
 #   An egress observer (with a positive control) shows neither installation
 #   contacted anything outside the lab: no mandatory SaaS.
 #
-#   P6: per-server AI opt-out across a restart (`aiserver`), and the pgvector
-#   path end to end (`vector`): the live embedding sweep against a recording
-#   Ollama-shaped embedder, permission-filtered vector search, edit/delete
-#   invalidation, opt-out purge, provider outage, restart, operator off.
+#   P6: per-server AI opt-out across a restart (`aiserver`), the pgvector path
+#   end to end (`vector`), and `retry-outage.mjs`: two real production Bridge
+#   processes sharing an accelerated libfaketime clock prove recovery plus the
+#   entire default federation retry horizon (12 retries, 13 network attempts,
+#   then durable dead-letter) without shortening the product backoff schedule.
 #
 # Statuses: PASS / FAIL / BLOCKED / SKIPPED / MEASURED — only PASS passes.
 on:
@@ -71,21 +72,27 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             server/package-lock.json
-      - name: Install infrastructure (PostgreSQL binaries + pgvector, Redis, OpenSSL)
-        # P6: the `vector` scenario needs the pgvector extension for the lab's
-        # own PostgreSQL major; without it the scenario reports BLOCKED.
+      - name: Install infrastructure (PostgreSQL binaries + pgvector, Redis, OpenSSL, libfaketime)
+        # P6: vector needs pgvector; retry-outage uses libfaketime only for the
+        # Bridge app processes. PostgreSQL/Redis/the harness keep real time.
         run: |
           sudo apt-get update -qq
           MAJOR=$(basename "$(dirname "$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)")")
-          sudo apt-get install -y -qq redis-server openssl "postgresql-${MAJOR}-pgvector"
+          sudo apt-get install -y -qq redis-server openssl libfaketime "postgresql-${MAJOR}-pgvector"
           sudo systemctl stop redis-server || true
+          LIBFAKETIME_PATH=$(dpkg -L libfaketime | grep '/libfaketime.so.1$' | head -1)
+          test -n "$LIBFAKETIME_PATH" && test -f "$LIBFAKETIME_PATH"
+          echo "LIBFAKETIME_PATH=$LIBFAKETIME_PATH" >> "$GITHUB_ENV"
           ls -d /usr/lib/postgresql/*/bin
+          echo "libfaketime: $LIBFAKETIME_PATH"
       - name: Lab hostnames resolve to loopback
-        # canary.bridge.test is deliberately NOT in the lab's SSRF allowlist:
-        # a private address reached through DNS.
+        # canary.bridge.test is deliberately NOT in the main lab's SSRF
+        # allowlist. retry-a/b are used only by the isolated retry lab.
         run: |
-          echo "127.0.0.1 a.bridge.test b.bridge.test evil.bridge.test canary.bridge.test" | sudo tee -a /etc/hosts
+          echo "127.0.0.1 a.bridge.test b.bridge.test evil.bridge.test canary.bridge.test retry-a.bridge.test retry-b.bridge.test" | sudo tee -a /etc/hosts
           getent hosts canary.bridge.test
+          getent hosts retry-a.bridge.test
+          getent hosts retry-b.bridge.test
       - name: Build this checkout
         run: |
           npm ci --no-audit --no-fund
@@ -96,6 +103,11 @@ jobs:
           node scripts/federation-lab/run.mjs \
             --work "$RUNNER_TEMP/bridge-fedlab" \
             --out "$RUNNER_TEMP/bridge-fedlab-report"
+      - name: Run accelerated full retry/outage evidence
+        run: |
+          node scripts/federation-lab/retry-outage.mjs \
+            --work "$RUNNER_TEMP/bridge-retrylab" \
+            --out "$RUNNER_TEMP/bridge-retrylab-report"
       - name: Upload report and logs
         if: always()
         uses: actions/upload-artifact@v7
@@ -105,4 +117,7 @@ jobs:
             ${{ runner.temp }}/bridge-fedlab-report/
             ${{ runner.temp }}/bridge-fedlab/logs/
             ${{ runner.temp }}/bridge-fedlab/egress-*.jsonl
+            ${{ runner.temp }}/bridge-retrylab-report/
+            ${{ runner.temp }}/bridge-retrylab/logs/
+            ${{ runner.temp }}/bridge-retrylab/egress-*.jsonl
           retention-days: 30

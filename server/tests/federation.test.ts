@@ -347,8 +347,9 @@ describe('POST /api/federation/users/:username/inbox', () => {
     expect(res.status).toBe(202);
   });
 
-  it('accepts a Delete activity and removes the stored message', async () => {
-    // Önce silinecek bir mesaj ekle
+  it('accepts a Delete activity and leaves a tombstone', async () => {
+    // A tombstone is durable ordering state: it prevents a delayed Create from
+    // resurrecting a remotely deleted object, while read surfaces hide it.
     const apId = 'https://mastodon.social/users/remote_actor/statuses/to-delete';
     await mockDb.apMessages.insert({
       _id: 'del-msg-1', apId, actorUrl: ACTOR_URL,
@@ -365,8 +366,11 @@ describe('POST /api/federation/users/:username/inbox', () => {
 
     expect(res.status).toBe(202);
 
-    const stillExists = await mockDb.apMessages.findOne({ apId });
-    expect(stillExists).toBeFalsy();
+    const tombstone = await mockDb.apMessages.findOne({ apId });
+    expect(tombstone).toBeTruthy();
+    expect(tombstone?.content).toBe('');
+    expect(typeof tombstone?.deletedAt).toBe('number');
+    expect(typeof tombstone?.updatedAt).toBe('number');
   });
 
   it('accepts Undo(Follow) and removes the follow record', async () => {
@@ -390,4 +394,3 @@ describe('POST /api/federation/users/:username/inbox', () => {
     expect(stillExists).toBeFalsy();
   });
 });
-

@@ -7,7 +7,7 @@
     "preinstall": "node ../scripts/check-node-version.js",
     "start": "node dist/index.js",
     "start:ts": "ts-node --project tsconfig.json index.ts",
-    "dev": "ts-node-dev --project tsconfig.json --respawn --transpile-only index.ts",
+    "dev": "node --watch --require ts-node/register/transpile-only index.ts",
     "build": "npm run build:plugins && tsc -p tsconfig.build.json && node scripts/copy-runtime-assets.cjs",
     "build:plugins": "node scripts/build-plugins.js",
     "build:watch": "tsc -p tsconfig.build.json --watch",
@@ -102,11 +102,9 @@
     "babel-jest": "^30.4.1",
     "eslint": "^10.5.0",
     "jest": "^30.4.2",
-    "nodemon": "^3.1.14",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.11",
     "ts-node": "^10.9.2",
-    "ts-node-dev": "^2.0.0",
     "typescript": "^6.0.3"
   },
   "jest": {
