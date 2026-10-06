@@ -510,6 +510,7 @@ function sendMutationRefusal(res: Response, code: MutationFailureCode, reason?: 
     case 'INVALID':             res.status(400).json({ error: reason === 'type' ? 'Cannot edit this message type' : 'Invalid message content' }); return;
     case 'AUTOMOD_BLOCKED':     res.status(422).json({ error: reason || 'Blocked by AutoMod', code }); return;
     case 'AUTOMOD_UNAVAILABLE': res.status(503).json({ error: 'AutoMod could not be evaluated; nothing was changed', code }); return;
+    case 'CONFLICT':            res.status(409).json({ error: 'Message changed since editing began', code }); return;
     default:                    res.status(500).json({ error: 'Message could not be changed' });
   }
 }
