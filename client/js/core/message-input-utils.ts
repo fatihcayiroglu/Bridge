@@ -13,6 +13,9 @@ export interface ScheduledMessageRow {
 export function safeMutationError(code?: string): string {
   if (code === 'AUTOMOD_BLOCKED') return t('mutation_moderation_blocked', 'Bu düzenleme sunucu moderasyon kuralları tarafından engellendi.');
   if (code === 'AUTOMOD_UNAVAILABLE') return t('mutation_moderation_unavailable', 'Moderasyon denetimi şu anda tamamlanamadı. Düzenleme uygulanmadı.');
+  if (code === 'CONFLICT') return t('error_conflict', 'Bu içerik başka bir yerde değişmiş. Sayfayı yenile.');
+  if (code === 'FORBIDDEN' || code === 'NOT_VISIBLE') return t('error_forbidden', 'Bu işlem için yetkiniz yok.');
+  if (code === 'NOT_FOUND') return t('error_not_found', 'İstenen içerik bulunamadı.');
   return t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.');
 }
 
