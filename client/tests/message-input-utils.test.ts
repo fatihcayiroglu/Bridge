@@ -16,6 +16,7 @@ describe('message input pure helpers', () => {
 
   it('keeps mutation and upload copy bounded by product-owned mappings', () => {
     expect(safeMutationError('AUTOMOD_BLOCKED')).toContain('moderasyon');
+    expect(safeMutationError('CONFLICT')).toBe('Bu içerik başka bir yerde değişmiş. Sayfayı yenile.');
     expect(safeMutationError('INTERNAL_STACK_TRACE')).not.toContain('INTERNAL_STACK_TRACE');
     expect(uploadErrorText(413)).toBe('Dosya çok büyük.');
     expect(uploadErrorText(599)).toBe('Yükleme başarısız. Lütfen tekrar dene.');
