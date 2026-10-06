@@ -16,7 +16,12 @@
   import { confirmProductAction } from './product-dialog.ts';
   import { safeApiErrorMessage } from './api-error.ts';
   import { connectionLostDeliveryError, messageDeliveryError } from './message-delivery-error.ts';
-  import { readDraft, writeDraft, clearDraft, type DraftIdentity } from './draft-store.ts';
+  import { type DraftIdentity } from './draft-store.ts';
+  import {
+    clearLocalFirstDraft,
+    hydrateLocalFirstDraft,
+    persistLocalFirstDraftText,
+  } from './local-first/draft-runtime.ts';
   import {
     normalizeGdmGroup, normalizeGdmGroups, normalizeGdmMessages,
     type GdmGroup, type GdmMessage,
@@ -107,11 +112,18 @@
 
   function persistGdmDraft(text = inputValue, group: GdmGroup | null = currentGroup): void {
     const identity = gdmDraftIdentity(group);
-    if (identity) writeDraft(identity, text);
+    if (identity) persistLocalFirstDraftText(identity, text);
   }
 
-  function restoreGdmDraft(group: GdmGroup): string {
-    return readDraft(gdmDraftIdentity(group));
+  async function restoreGdmDraft(group: GdmGroup): Promise<string> {
+    const identity = gdmDraftIdentity(group);
+    if (!identity) return '';
+    return (await hydrateLocalFirstDraft(identity))?.text ?? '';
+  }
+
+  function clearGdmDraft(group: GdmGroup | null = currentGroup): void {
+    const identity = gdmDraftIdentity(group);
+    if (identity) clearLocalFirstDraft(identity);
   }
 
   interface GdmSocket {
@@ -219,7 +231,14 @@
       return false;
     }
     currentGroup = normalizedGroup;
-    inputValue = restoreGdmDraft(normalizedGroup);
+    inputValue = '';
+    const draftGroupId = normalizedGroup._id;
+    void restoreGdmDraft(normalizedGroup).then(value => {
+      // Opening the local database is asynchronous; never replace characters
+      // typed while hydration was in flight.
+      if (currentGroup?._id !== draftGroupId || inputValue.length > 0) return;
+      inputValue = value;
+    });
     const loaded = await loadGroupDmMessages(normalizedGroup._id, messageId);
     if (!loaded || currentGroup?._id !== normalizedGroup._id) {
       // Üyelik kaldırılmış veya hedef silinmiş olabilir. Stale history/list
@@ -414,7 +433,7 @@
     void tick().then(() => { const area = messagesArea(); if (area) area.scrollTop = area.scrollHeight; });
     socket()?.emit('gdm:send', { groupId: currentGroup._id, content, clientNonce });
     scheduleSendTimeout(clientNonce);
-    clearDraft(gdmDraftIdentity(currentGroup));
+    clearGdmDraft(currentGroup);
     inputValue = '';
   }
 
@@ -569,7 +588,7 @@
     groups = groups.filter(g => g._id !== gid);
 
     if (currentGroup?._id === gid) {
-      clearDraft(gdmDraftIdentity(currentGroup));
+      clearGdmDraft(currentGroup);
       msgLoadSeq += 1;          // uçuştaki geçmiş yanıtını geçersiz kıl
       clearAllPendingTimers();
       currentGroup = null;
