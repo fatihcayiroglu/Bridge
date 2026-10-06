@@ -25,6 +25,11 @@ export type LocalOperationState =
 
 export interface EditMessagePayload {
   content: string;
+  /**
+   * Authoritative version the editor saw before changing the message:
+   * editedAt when present, otherwise createdAt.
+   */
+  baseVersion: number;
 }
 
 export interface DeleteMessagePayload {
@@ -67,8 +72,8 @@ export interface NewLocalOperation {
   createdAt?: number;
 }
 
-const ACTIVE_STATES = new Set<LocalOperationState>(['queued', 'sending', 'rejected']);
-const TERMINAL_STATES = new Set<LocalOperationState>(['applied', 'superseded']);
+const ACTIVE_STATES = new Set<LocalOperationState>(['queued', 'sending']);
+const TERMINAL_STATES = new Set<LocalOperationState>(['applied', 'rejected', 'superseded']);
 
 function required(value: string, label: string, max = 512): string {
   const normalized = String(value ?? '').trim();
@@ -95,8 +100,14 @@ function normalizePayload(
 
   if (kind === 'edit-message') {
     const content = String((payload as EditMessagePayload).content ?? '');
-    if (!content.trim() || content.length > 2000) throw new Error('Edit payload is invalid');
-    return { content };
+    const baseVersion = Number((payload as EditMessagePayload).baseVersion);
+    if (
+      !content.trim()
+      || content.length > 2000
+      || !Number.isSafeInteger(baseVersion)
+      || baseVersion < 0
+    ) throw new Error('Edit payload is invalid');
+    return { content, baseVersion };
   }
 
   if (kind === 'delete-message') {
@@ -109,7 +120,7 @@ function normalizePayload(
 
   const emoji = String((payload as ReactionStatePayload).emoji ?? '').trim();
   const desired = (payload as ReactionStatePayload).desired;
-  if (!emoji || emoji.length > 64 || typeof desired !== 'boolean') {
+  if (!emoji || emoji.length > 10 || typeof desired !== 'boolean') {
     throw new Error('Reaction payload is invalid');
   }
   return { emoji, desired };
@@ -162,7 +173,6 @@ function transitionAllowed(from: LocalOperationState, to: LocalOperationState): 
   if (from === to) return true;
   if (from === 'queued') return to === 'sending' || to === 'rejected' || to === 'superseded';
   if (from === 'sending') return to === 'queued' || to === 'applied' || to === 'rejected' || to === 'superseded';
-  if (from === 'rejected') return to === 'queued' || to === 'superseded';
   return false;
 }
 
@@ -254,14 +264,15 @@ export class EncryptedOperationLog {
       throw new Error('Local-first operation log is full');
     }
 
-    // Desired-state operations collapse only queued/rejected predecessors.
-    // A sending mutation stays visible until the server resolves it.
+    // Desired-state operations collapse only queued predecessors. Rejected is
+    // terminal evidence; a user retry gets a fresh operation id. A sending
+    // mutation stays visible until the server resolves it.
     const key = desiredKey(candidate);
     for (const previous of active) {
       if (
         previous.opId !== candidate.opId
         && desiredKey(previous) === key
-        && (previous.state === 'queued' || previous.state === 'rejected')
+        && previous.state === 'queued'
       ) {
         await this.transition(previous.opId, 'superseded', {
           supersededBy: candidate.opId,
