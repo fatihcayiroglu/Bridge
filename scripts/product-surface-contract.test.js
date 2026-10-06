@@ -714,29 +714,42 @@ test('saved-message reminders are durable, authorization-aware and inbox-first',
   assert.match(inboxPanel, /showSaved/);
 });
 
-test('channel, DM and GDM composers share the bounded user-scoped durable draft owner', () => {
-  const store = read('client/js/core/draft-store.ts');
+test('channel, DM and GDM composers share the encrypted local-first draft owner', () => {
+  const legacy = read('client/js/core/draft-store.ts');
+  const runtime = read('client/js/core/local-first/draft-runtime.ts');
+  const manager = read('client/js/core/DraftManager.svelte');
   const channel = read('client/js/core/MessageInputPanel.svelte');
   const dm = read('client/js/core/DmPanel.svelte');
   const gdm = read('client/js/core/GroupDmPanel.svelte');
 
-  assert.match(store, /DRAFT_KEY_PREFIX = 'bridge:draft:v2'/);
-  assert.match(store, /MAX_DRAFTS_PER_USER = 50/);
-  assert.match(store, /MAX_DRAFT_AGE_MS = 7 \* 24 \* 60 \* 60 \* 1000/);
-  assert.match(store, /kind: ConversationKind/);
-  assert.match(channel, /DraftManager/);
+  // Legacy localStorage remains migration input only; the production owners
+  // route new writes through one encrypted async runtime.
+  assert.match(legacy, /DRAFT_KEY_PREFIX = 'bridge:draft:v2'/);
+  assert.match(legacy, /readDraftSnapshot/);
+  assert.match(runtime, /createBrowserLocalFirstStore/);
+  assert.match(runtime, /hydrateLocalFirstDraft/);
+  assert.match(runtime, /persistLocalFirstDraftText/);
+  assert.match(runtime, /clearLocalFirstDraft/);
+  assert.match(runtime, /closeLocalFirstDraftRuntime/);
 
-  assert.match(dm, /readDraft, writeDraft, clearDraft/);
+  assert.match(manager, /persistLocalFirstDraft/);
+  assert.match(manager, /hydrateLocalFirstDraft/);
+  assert.doesNotMatch(manager, /\bwriteDraft\(/);
+  assert.match(channel, /bridge:draft-hydrated/);
+
+  assert.match(dm, /persistLocalFirstDraftText/);
+  assert.match(dm, /hydrateLocalFirstDraft/);
+  assert.match(dm, /clearLocalFirstDraft/);
   assert.match(dm, /kind: 'dm'/);
   assert.match(dm, /persistDmDraft\(e\.currentTarget\.value\)/);
-  assert.match(dm, /draft = restoreDmDraft\(conversation\)/);
-  assert.match(dm, /clearDraft\(dmDraftIdentity\(active\)\)/);
+  assert.doesNotMatch(dm, /\bwriteDraft\(/);
 
-  assert.match(gdm, /readDraft, writeDraft, clearDraft/);
+  assert.match(gdm, /persistLocalFirstDraftText/);
+  assert.match(gdm, /hydrateLocalFirstDraft/);
+  assert.match(gdm, /clearLocalFirstDraft/);
   assert.match(gdm, /kind: 'gdm'/);
   assert.match(gdm, /persistGdmDraft\(e\.currentTarget\.value\)/);
-  assert.match(gdm, /inputValue = restoreGdmDraft\(normalizedGroup\)/);
-  assert.match(gdm, /clearDraft\(gdmDraftIdentity\(currentGroup\)\)/);
+  assert.doesNotMatch(gdm, /\bwriteDraft\(/);
 });
 
 test('server link previews are production-visible as privacy-safe text cards', () => {
