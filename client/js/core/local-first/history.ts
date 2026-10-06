@@ -14,6 +14,8 @@ export const LOCAL_HISTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 export interface CachedMessage {
   _id: string;
   channelId?: string;
+  content?: unknown;
+  contentFormat?: unknown;
   createdAt?: number | string;
   deletedAt?: unknown;
   pending?: unknown;
