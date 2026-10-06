@@ -16,8 +16,13 @@ let outboundRows: Record<string, unknown>[] = [];
 const lastMessageQuery: Record<string, unknown>[] = [];
 const lastActivityQuery: Record<string, unknown>[] = [];
 
-function chain(rows: () => unknown) {
-  const api = {
+interface QueryChain {
+  sort(): QueryChain;
+  limit(): Promise<unknown>;
+}
+
+function chain(rows: () => unknown): QueryChain {
+  const api: QueryChain = {
     sort: jest.fn(() => api),
     limit: jest.fn(async () => rows()),
   };

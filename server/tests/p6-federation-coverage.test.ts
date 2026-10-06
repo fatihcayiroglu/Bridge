@@ -13,8 +13,13 @@ const remoteActor = 'https://remote.example/users/bob';
 let inboundResult: unknown = [];
 let outboundResult: unknown = [];
 
-function queryChain(value: () => unknown) {
-  const api = {
+interface QueryChain {
+  sort(): QueryChain;
+  limit(): Promise<unknown>;
+}
+
+function queryChain(value: () => unknown): QueryChain {
+  const api: QueryChain = {
     sort: jest.fn(() => api),
     limit: jest.fn(async () => value()),
   };

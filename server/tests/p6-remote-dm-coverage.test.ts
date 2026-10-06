@@ -25,8 +25,7 @@ const mockDeliver = jest.fn();
 jest.mock('../db/repositories', () => ({ Federation: mockFederation, Users: mockUsers }));
 jest.mock('../middleware/auth', () => ({
   authMiddleware: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
-    const typed = req as express.Request & { user?: { id: string } };
-    typed.user = { id: req.get('x-user-id') || 'user-001' };
+    req.user = { id: req.get('x-user-id') || mockAlice._id, username: mockAlice.username, v: 0 };
     next();
   },
   castAuthed: (req: express.Request) => req as express.Request & { user: { id: string } },

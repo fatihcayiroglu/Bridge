@@ -12,8 +12,13 @@ const threadId = Buffer.from(remoteActor).toString('base64url');
 let inboundRows: Record<string, unknown>[] = [];
 let outboundRows: Record<string, unknown>[] = [];
 
-function chain(rows: () => Record<string, unknown>[] | unknown) {
-  const api = {
+interface QueryChain {
+  sort(): QueryChain;
+  limit(): Promise<unknown>;
+}
+
+function chain(rows: () => unknown): QueryChain {
+  const api: QueryChain = {
     sort: jest.fn(() => api),
     limit: jest.fn(async () => rows()),
   };
