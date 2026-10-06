@@ -12,9 +12,10 @@ import {
 import { createBrowserLocalFirstStore, type BrowserLocalFirstStore } from './indexeddb.ts';
 import { LocalFirstDraftSession } from './draft-session.ts';
 import {
+  EncryptedDraftRepository,
+  localDraftRecordId,
   type LegacyDraftSource,
   type LocalDraftSnapshot,
-  localDraftRecordId,
 } from './drafts.ts';
 
 interface UserDraftRuntime {
@@ -81,7 +82,7 @@ function createRuntime(userId: string): Promise<UserDraftRuntime> {
     session: new LocalFirstDraftSession(
       // Avoid a second storage owner: the repository uses the exact store
       // instance whose durability/capability result we report.
-      new (requireRepository())(storage.store),
+      new EncryptedDraftRepository(storage.store),
       legacySource(),
     ),
   }));
@@ -89,15 +90,6 @@ function createRuntime(userId: string): Promise<UserDraftRuntime> {
   return operation;
 }
 
-// Kept as a tiny function to make the construction site explicit without
-// exposing physical storage details to callers.
-function requireRepository(): typeof import('./drafts.ts').EncryptedDraftRepository {
-  // Static import semantics without a top-level circular-looking constructor
-  // alias in generated docs/bundles.
-  return EncryptedDraftRepositoryRef;
-}
-
-import { EncryptedDraftRepository as EncryptedDraftRepositoryRef } from './drafts.ts';
 
 /**
  * Synchronous best-effort view for render paths.
