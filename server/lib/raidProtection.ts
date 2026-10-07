@@ -158,10 +158,10 @@ export async function checkServerJoinRaid(input: {
   if (!Number.isSafeInteger(now) || now < 0) throw new RangeError('now must be a non-negative safe integer');
 
   const level = parseRaidMitigationLevel(input.server.raidMitigationLevel);
-  const policy = raidPolicyFor(level);
-  if (!policy) {
+  if (level === 'off') {
     return { allowed: true, level, counted: false, uniqueAccounts: null };
   }
+  const policy = RAID_POLICIES[level];
 
   const currentLockdownUntil = lockdownUntilOf(input.server);
   if (currentLockdownUntil !== null && currentLockdownUntil > now) {

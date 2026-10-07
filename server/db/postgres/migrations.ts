@@ -789,7 +789,7 @@ const EXTRA_TABLES: string[] = [
   `ALTER TABLE servers ALTER COLUMN "raidMitigationLevel" SET DEFAULT 'balanced'`,
   `ALTER TABLE servers ALTER COLUMN "raidMitigationLevel" SET NOT NULL`,
   `ALTER TABLE servers ADD COLUMN IF NOT EXISTS "raidLockdownUntil" BIGINT`,
-  `DO $ BEGIN
+  `DO $$ BEGIN
      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'servers_raid_mitigation_level_check') THEN
        ALTER TABLE servers ADD CONSTRAINT servers_raid_mitigation_level_check
          CHECK ("raidMitigationLevel" IN ('off', 'balanced', 'strict'));
@@ -798,7 +798,7 @@ const EXTRA_TABLES: string[] = [
        ALTER TABLE servers ADD CONSTRAINT servers_raid_lockdown_until_nonnegative
          CHECK ("raidLockdownUntil" IS NULL OR "raidLockdownUntil" >= 0);
      END IF;
-   END $`,
+   END $$`,
 
   `CREATE TABLE IF NOT EXISTS outgoing_webhooks (
     _id TEXT PRIMARY KEY,
