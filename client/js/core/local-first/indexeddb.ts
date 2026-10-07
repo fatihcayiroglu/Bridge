@@ -239,11 +239,20 @@ export async function createBrowserLocalFirstStore(userId: string): Promise<Brow
     records.close();
     keys.close();
     const store = new EncryptedLocalStore(userId, new MemoryRecordBackend(), new MemoryKeyProvider());
+    // DOMException is the normal IndexedDB failure type, but in jsdom/WebView
+    // or cross-realm browser contexts it is not guaranteed to satisfy
+    // `instanceof Error`. Preserve its bounded message without accepting
+    // arbitrary thrown strings/objects as trusted diagnostics.
+    const reason = cause instanceof Error
+      ? cause.message
+      : typeof DOMException !== 'undefined' && cause instanceof DOMException
+        ? cause.message
+        : 'IndexedDB initialization failed';
     return {
       store,
       durable: false,
       backend: 'memory',
-      reason: cause instanceof Error ? cause.message : 'IndexedDB initialization failed',
+      reason,
     };
   }
 }
