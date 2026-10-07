@@ -112,12 +112,20 @@ export async function generateLocalFirstKey(): Promise<CryptoKey> {
  * `scope` should include stable account + record identity, for example:
  * `user:<uid>:draft:channel:<channelId>`.
  */
+function isUint8Array(value: unknown): value is Uint8Array {
+  // `instanceof` is realm-sensitive: bytes created by an iframe/JSDOM realm
+  // are valid Uint8Array values but fail against this realm's constructor.
+  // The intrinsic tag is stable across realms while still rejecting
+  // Uint8ClampedArray/DataView/other BufferSource shapes.
+  return Object.prototype.toString.call(value) === '[object Uint8Array]';
+}
+
 export async function encryptLocalBytes(
   key: CryptoKey,
   plaintext: Uint8Array,
   scope: string,
 ): Promise<LocalFirstEnvelope> {
-  if (!(plaintext instanceof Uint8Array)) throw new Error('Local-first plaintext must be bytes');
+  if (!isUint8Array(plaintext)) throw new Error('Local-first plaintext must be bytes');
   if (plaintext.byteLength > LOCAL_FIRST_MAX_CIPHERTEXT_BYTES) {
     throw new Error('Local-first plaintext is too large');
   }
