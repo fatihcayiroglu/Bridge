@@ -32,6 +32,15 @@ describe('P7 B1 content fingerprint', () => {
     expect(contentFingerprint('see you at 5')).not.toBe(contentFingerprint('see you later'));
   });
 
+  it('a malformed link counts as "a link" without a host, and non-text content is never counted', async () => {
+    expect(linkHostsOf('see http://[broken here')).toEqual([]);
+    expect(contentFingerprint('see http://[broken here')).toBe('see link here');
+    const u = user();
+    for (let i = 0; i < ABUSE_POLICY.repeat.max + 2; i++) {
+      await expect(checkContentAbuse(u, { text: 'not a string' } as unknown as string, T0 + i)).resolves.toEqual({ allowed: true });
+    }
+  });
+
   it('an offline backlog of messages that differ only by a number is never a repeat', async () => {
     const u = user();
     for (let i = 0; i < 10; i++) {
