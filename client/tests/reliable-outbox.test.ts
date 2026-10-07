@@ -235,7 +235,7 @@ describe('Reliable Outbox — composer integration', () => {
     resetOutboxMemory();
     localStorage.clear();
     expect(putLegacyOutboxEntry(makeEntry(7, { state: 'sending', attempts: 1 }))).toBe(true);
-    connected = true;
+    connected = false;
     mountComposer();
 
     await hydrateLocalFirstOutbox(USER_ID);
@@ -243,6 +243,7 @@ describe('Reliable Outbox — composer integration', () => {
     flushSync();
     expect(readOutbox(USER_ID)[0].state).toBe('queued');
 
+    connected = true;
     document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
     document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
     await Promise.resolve();
