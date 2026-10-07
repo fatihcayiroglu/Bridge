@@ -47,10 +47,21 @@ afterAll(() => { jest.useRealTimers(); });
 describe('spam state is swept once it stops mattering', () => {
   it('keeps a user muted until the mute actually expires', () => {
     // Ard arda FARKLI mesajlar hiz sinirini tetikler (ayni metin ayri bir
-    // "yineleme" kuralina takilir; olculen sey HIZ kuralidir).
-    let result = checkSpam('u-spam', 'merhaba');
-    for (let i = 0; i < 12 && !result.blocked; i += 1) result = checkSpam('u-spam', `mesaj ${i}`);
-    expect(result.blocked).toBe(true);
+    // "yineleme" kuralina takilir; olculen sey HIZ kuralidir). P7 B1
+    // contract'inda ilk tasma uyari, sonraki iki tasma kisa retry reddi,
+    // ucuncu strike ise 30 sn mute uygular. Bu test sweeper'i olctugu icin
+    // fixture gercekten terminal mute durumuna kadar ilerlemelidir.
+    for (let i = 0; i < 5; i += 1) {
+      expect(checkSpam('u-spam', `mesaj ${i}`).blocked).toBe(false);
+    }
+    expect(checkSpam('u-spam', 'uyari')).toMatchObject({
+      blocked: false, warning: true, reason: 'spam_warning',
+    });
+    expect(checkSpam('u-spam', 'strike-1')).toMatchObject({ blocked: true, reason: 'spam_rate' });
+    expect(checkSpam('u-spam', 'strike-2')).toMatchObject({ blocked: true, reason: 'spam_rate' });
+    expect(checkSpam('u-spam', 'strike-3')).toMatchObject({
+      blocked: true, reason: 'spam_rate', remainingMs: 30_000,
+    });
 
     // Supurme dongusu calisir ama susturma HALA surmektedir (30 sn).
     jest.advanceTimersByTime(10_000);
