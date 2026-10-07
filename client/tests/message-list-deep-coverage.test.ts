@@ -93,6 +93,35 @@ describe('MessageListPanel deep state and lifecycle behavior', () => {
     document.body.innerHTML = '';
   });
 
+  it('P7 A5: clicking my existing reaction queues desired-state OFF (never a blind toggle)', async () => {
+    messages = [makeMessage({ _id: 'reacted', reactions: { '👍': ['u-me', 'u-2'] } as never })];
+    const emit = vi.fn();
+    BridgeRegistry.register('socket', { emit } as never);
+    mountList();
+    await fireEvent.click(host.querySelector<HTMLElement>('[data-id="reacted"] .msg-reaction')!);
+    await vi.waitFor(() => expect(emit).toHaveBeenCalledWith('message:react', expect.objectContaining({
+      messageId: 'reacted', channelId: 'ch-1', emoji: '👍', active: false,
+    })));
+  });
+
+  it('P7 A5: a reaction made while disconnected is kept durable and the user is told it is waiting', async () => {
+    messages = [makeMessage({ _id: 'offline-react', channelId: undefined as never, reactions: { '🔥': ['u-2'] } as never })];
+    const emit = vi.fn();
+    const toastFn = vi.fn();
+    BridgeRegistry.register('socket', { emit } as never);
+    BridgeRegistry.register('getSocketConnected', () => false);
+    BridgeRegistry.register('toast', toastFn);
+    try {
+      mountList();
+      await fireEvent.click(host.querySelector<HTMLElement>('[data-id="offline-react"] .msg-reaction')!);
+      await vi.waitFor(() => expect(toastFn).toHaveBeenCalledWith(t('ui_offline_waiting'), 'info', undefined));
+      expect(emit).not.toHaveBeenCalled();
+    } finally {
+      BridgeRegistry.unregister('getSocketConnected');
+      BridgeRegistry.unregister('toast');
+    }
+  });
+
   it('recognizes the supported id-only user shape and delegates owned-message actions', async () => {
     me = { id: 'u-me' };
     messages = [

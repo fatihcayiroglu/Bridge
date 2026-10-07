@@ -178,3 +178,45 @@ describe('P7 encrypted local-first store', () => {
     expect(store.keyProviderKind).toBe('memory');
   });
 });
+
+describe('P7 encrypted store integrity boundaries', () => {
+  async function seeded() {
+    const backend = new MemoryRecordBackend();
+    const keys = new MemoryKeyProvider();
+    const store = new EncryptedLocalStore('alice', backend, keys);
+    await store.putJson('history', 'm1', { content: 'one' }, 5);
+    const id = localRecordId('alice', 'history', 'm1');
+    return { backend, keys, store, id, raw: (await backend.get(id))! };
+  }
+
+  it.each([
+    ['a non-finite updatedAt', { updatedAt: Number.NaN }],
+    ['a moved record id', { recordId: 'm2' }],
+    ['an unknown record version', { v: 99 }],
+  ])('a single read of a record with %s fails closed', async (_name, patch) => {
+    const { backend, store, raw } = await seeded();
+    await backend.put({ ...raw, ...patch });
+    await expect(store.getJson('history', 'm1')).rejects.toThrow('metadata is invalid');
+  });
+
+  it.each([
+    ['another account', { userId: 'mallory' }],
+    ['another namespace', { namespace: 'draft' }],
+    ['an unknown version', { v: 99 }],
+  ])('a namespace listing containing a row from %s fails closed', async (_name, patch) => {
+    const { backend, store, raw } = await seeded();
+    await backend.put({ ...raw, ...patch } as typeof raw);
+    await expect(store.list('history')).rejects.toBeInstanceOf(LocalFirstCorruptionError);
+  });
+
+  it('a tampered envelope inside a listing is an authentication failure, not data', async () => {
+    const { backend, store, raw } = await seeded();
+    // Flip one ciphertext character: AES-GCM authentication must reject it.
+    const ct = raw.envelope.ct;
+    const flipped = ct.slice(0, 8) + (ct[8] === 'A' ? 'B' : 'A') + ct.slice(9);
+    const envelope = { ...raw.envelope, ct: flipped };
+    await backend.put({ ...raw, envelope });
+    await expect(store.list('history')).rejects.toThrow('namespace authentication failed');
+  });
+
+});

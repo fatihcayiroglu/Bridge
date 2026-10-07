@@ -257,3 +257,45 @@ describe('P7 encrypted message history', () => {
     await expect(repository.tombstone('c1', 'x'.repeat(513))).rejects.toThrow('messageId is too large');
   });
 });
+
+describe('P7 encrypted history — authority and resurrection boundaries', () => {
+  it('never caches optimistic, failed, deleted or foreign-channel messages', async () => {
+    const { repository } = repo();
+    for (const bad of [
+      message('pending:a1', 1),
+      message('m-pending', 1, { pending: true }),
+      message('m-failed', 1, { failed: true }),
+      message('m-deleted', 1, { deletedAt: 5 }),
+      message('m-other', 1, { channelId: 'c2' }),
+      { channelId: 'c1', content: 'no id', createdAt: 1 },
+    ]) {
+      await expect(repository.append('c1', bad as never, 10)).resolves.toBeNull();
+    }
+    await expect(repository.read('c1', 10)).resolves.toBeNull();
+  });
+
+  it('a delete learned before any history exists still blocks the deleted message later', async () => {
+    const { repository } = repo();
+    await repository.tombstone('c1', 'gone', 10);
+    await repository.mergeOlder('c1', [message('gone', 1), message('kept', 2)], 11);
+    const snapshot = await repository.read('c1', 12);
+    expect(snapshot?.messages.map(m => m._id)).toEqual(['kept']);
+    expect(snapshot?.tombstones.map(t => t.id)).toContain('gone');
+  });
+
+  it('older pages merge into an empty channel in chronological order, ties broken by id', async () => {
+    const { repository } = repo();
+    await repository.mergeOlder('c1', [message('b', 5), message('a', 5), message('z', 1)], 10);
+    await expect(repository.read('c1', 10)).resolves.toMatchObject({
+      messages: [{ _id: 'z' }, { _id: 'a' }, { _id: 'b' }],
+    });
+  });
+
+  it('lists snapshots newest first and refuses a blank channel id', async () => {
+    const { repository } = repo();
+    await repository.replaceFromServer('c1', [message('x', 1)], 10);
+    await repository.replaceFromServer('c2', [message('y', 1, { channelId: 'c2' })], 20);
+    await expect(repository.listAll(30)).resolves.toMatchObject([{ channelId: 'c2' }, { channelId: 'c1' }]);
+    await expect(repository.read('  ', 30)).rejects.toThrow('channelId');
+  });
+});

@@ -296,6 +296,67 @@ describe('P7 A6 offline local-first arama', () => {
   });
 });
 
+describe('P7 A6 local fallback is only for real transport loss', () => {
+  async function withOffline<T>(fn: () => Promise<T>): Promise<T> {
+    const online = Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine');
+    Object.defineProperty(Navigator.prototype, 'onLine', { configurable: true, get: () => false });
+    try { return await fn(); } finally {
+      if (online) Object.defineProperty(Navigator.prototype, 'onLine', online);
+      else Reflect.deleteProperty(Navigator.prototype, 'onLine');
+    }
+  }
+
+  it('a transport failure while the socket is also down falls back to the encrypted cache', async () => {
+    const userId = 'gs-transport-loss';
+    await replaceLocalFirstHistory(userId, 'c-local', [{
+      _id: 'local-hit', channelId: 'c-local', content: 'transport needle', contentFormat: 1, createdAt: Date.now(),
+    }]);
+    const api = vi.fn(async () => { throw new TypeError('Failed to fetch'); });
+    registryMap.apiFetch = api;
+    registryMap.getMe = () => ({ _id: userId });
+    registryMap.getSocketConnected = () => false;
+
+    render(GlobalSearchPanel);
+    await openWith('transport needle');
+
+    await waitFor(() => expect(optionIds()).toHaveLength(1));
+    expect(api).toHaveBeenCalled();
+    expect(document.body).toHaveTextContent('transport needle');
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('a transport failure while the socket is connected is shown as an error, not masked by cache', async () => {
+    const userId = 'gs-flaky-http';
+    await replaceLocalFirstHistory(userId, 'c-local', [{
+      _id: 'local-hidden-2', channelId: 'c-local', content: 'flaky needle', contentFormat: 1, createdAt: Date.now(),
+    }]);
+    registryMap.apiFetch = vi.fn(async () => { throw new TypeError('Failed to fetch'); });
+    registryMap.getMe = () => ({ _id: userId });
+    registryMap.getSocketConnected = () => true;
+
+    render(GlobalSearchPanel);
+    await openWith('flaky needle');
+
+    await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
+    expect(optionIds()).toEqual([]);
+  });
+
+  it('offline without a signed-in account searches nothing and says so', async () => {
+    const api = mockApi({ results: [channelRow()], hasMore: false });
+    registryMap.apiFetch = api;
+    registryMap.getMe = () => null;
+    registryMap.getSocketConnected = () => false;
+
+    await withOffline(async () => {
+      render(GlobalSearchPanel);
+      await openWith('anything');
+      await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
+    });
+    expect(api).not.toHaveBeenCalled();
+    expect(optionIds()).toEqual([]);
+  });
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 describe('sonuclar', () => {
   beforeEach(() => {

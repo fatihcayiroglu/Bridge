@@ -266,6 +266,17 @@ describe('P7 IndexedDB local-first adapter', () => {
     await Promise.resolve();
   });
 
+  it('two tabs creating the account key at the same time converge on ONE key', async () => {
+    const tabA = new IndexedDbKeyProvider();
+    const tabB = new IndexedDbKeyProvider();
+    const [a, b] = await Promise.all([tabA.getOrCreate('race-user'), tabB.getOrCreate('race-user')]);
+    expect(a).toBe(b);
+    expect(await new IndexedDbKeyProvider().getOrCreate('race-user')).toBe(a);
+    tabA.close();
+    tabB.close();
+    await Promise.resolve();
+  });
+
   it('composition root reports durable IndexedDB and performs an encrypted JSON round trip', async () => {
     const runtime = await createBrowserLocalFirstStore('browser-user');
     expect(runtime).toMatchObject({ durable: true, backend: 'indexeddb' });

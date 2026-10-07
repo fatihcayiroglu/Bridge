@@ -349,3 +349,32 @@ describe('P7 A6 local search boundary coverage', () => {
     expect(wide.find(row => row._id === 'plain')?.isAnchor).toBe(true);
   });
 });
+
+describe('P7 local search ranking and sparse fields', () => {
+  const snap = (messages: LocalHistorySnapshot['messages']): LocalHistorySnapshot[] =>
+    [{ v: 1, channelId: 'ch', savedAt: 1, tombstones: [], messages }];
+
+  it('ranks an exact phrase above scattered terms, then newer first, then by id', () => {
+    const hits = searchHistorySnapshots(snap([
+      { _id: 'scattered', content: 'release the notes later', createdAt: 9 },
+      { _id: 'phrase-b', content: 'release notes', createdAt: 5 },
+      { _id: 'phrase-a', content: 'release notes', createdAt: 5 },
+      { _id: 'phrase-new', content: 'release notes', createdAt: 7 },
+    ]), 'release notes').hits.map(hit => hit.id);
+    expect(hits).toEqual(['phrase-new', 'phrase-a', 'phrase-b', 'scattered']);
+  });
+
+  it('tolerates sparse cached rows: no channel/author fields, numeric ids, empty content', () => {
+    const [hit] = searchHistorySnapshots(snap([
+      { _id: 'sparse', content: 'quiet hello', createdAt: 'not-a-date' as unknown as number, userId: 42 as unknown as string },
+      { _id: 'empty', content: '', createdAt: 1 },
+    ]), 'hello').hits;
+    expect(hit).toMatchObject({ id: 'sparse', authorId: '42', authorName: '', createdAt: 0 });
+    expect(hit.channelId).toBeUndefined();
+    expect(hit.serverId).toBeUndefined();
+  });
+
+  it('a query shorter than two characters returns nothing instead of the whole cache', () => {
+    expect(searchHistorySnapshots(snap([{ _id: 'x', content: 'a', createdAt: 1 }]), ' a ').hits).toEqual([]);
+  });
+});

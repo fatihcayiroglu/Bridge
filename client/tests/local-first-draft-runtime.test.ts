@@ -92,3 +92,42 @@ describe('P7 shared local-first draft runtime', () => {
     expect(peekLocalFirstDraft(B)).toBeNull();
   });
 });
+
+describe('P7 draft runtime account isolation and boundaries', () => {
+  it('logout of one account purges only that account\'s in-memory drafts', async () => {
+    persistLocalFirstDraftText(A, 'alice private draft', Date.now());
+    persistLocalFirstDraftText(B, 'bob private draft', Date.now());
+    await flushLocalFirstDraft(A);
+    await flushLocalFirstDraft(B);
+
+    closeLocalFirstDraftRuntime(A.userId);
+
+    // Nothing of A survives in memory (no plaintext fallback exists either).
+    expect(peekLocalFirstDraft(A)).toBeNull();
+    // B's session is untouched by A's logout.
+    expect(peekLocalFirstDraft(B)?.text).toBe('bob private draft');
+    expect(() => closeLocalFirstDraftRuntime('')).not.toThrow();
+  });
+
+  it('refuses incomplete identities at every public entry point', async () => {
+    const noConversation = { ...A, conversationId: '' };
+    const channelWithoutServer = { userId: 'user-a', kind: 'channel', conversationId: 'c' } as DraftIdentity;
+    expect(() => peekLocalFirstDraft(noConversation)).toThrow('incomplete');
+    expect(() => peekLocalFirstDraft(channelWithoutServer)).toThrow('requires serverId');
+    expect(() => persistLocalFirstDraftText(noConversation, 'x')).toThrow('incomplete');
+    await expect(hydrateLocalFirstDraft(channelWithoutServer)).rejects.toThrow('requires serverId');
+  });
+
+  it('a whitespace-only draft without an attachment is an empty draft; text is bounded', () => {
+    expect(persistLocalFirstDraftText(A, '   ', Date.now())).toBeNull();
+    expect(peekLocalFirstDraft(A)).toBeNull();
+    const long = persistLocalFirstDraftText(A, 'z'.repeat(2_500), Date.now());
+    expect(long?.text).toHaveLength(2_000);
+  });
+
+  it('hydration that loses a race to newer typing returns the newer in-session text', async () => {
+    const hydrating = hydrateLocalFirstDraft(A);
+    persistLocalFirstDraftText(A, 'typed while loading', Date.now());
+    await expect(hydrating).resolves.toMatchObject({ text: 'typed while loading' });
+  });
+});
