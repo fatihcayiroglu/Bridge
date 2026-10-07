@@ -432,23 +432,38 @@ function of four inputs, each documented and bounded:
 
 No score, no reputation, no IP/geo/device input, no inference about the person.
 
-**Step-up levels.** L1 = a recent password proof or a fresh sign-in. L2 = a recent second factor
-(TOTP or a backup code) or a sign-in that included one (2FA or passkey). *Required level* = L2 if
-the account has 2FA enabled, otherwise L1 — so step-up is never weaker than the account's own
-sign-in.
+**Step-up levels.** L1 = a recent password proof or a fresh password sign-in. L2 = a recent second
+factor (TOTP or a backup code) or a sign-in that *demonstrably* used one (2FA check, or a passkey
+assertion). A plain SSO return satisfies **L1 only**: arbitrary SSO is not treated as L2 unless the
+IdP response actually demonstrates second-factor assurance (e.g. an AMR/ACR claim), which this
+first implementation does not assume. *Required level* = L2 if the account has 2FA enabled,
+otherwise L1 — so step-up is never weaker than the account's own sign-in.
 
-**Grant.** Short-lived proof `{sub, v (tokenVersion), lvl, amr, exp}` signed with a key *derived*
-from `JWT_SECRET` and its own audience, so it never verifies as an access token and vice versa.
+**Grant — scoped, not just levelled.** A proof for one kind of action must not authorise an
+unrelated sensitive action, so a grant carries a `scope` (an action *group*) and is accepted only
+for actions in that group. Groups:
+
+- `account-security` — e-mail change, passkey add/remove, 2FA enable/disable, backup-code regeneration
+- `sensitive-export` — account export
+- `destructive-admin` — account deletion, owned-server deletion, instance-admin user/server deletion
+- `moderation-burst` — bans, kicks, bulk message delete, invite creation once over the measured burst
+
+Grant shape: `{ sub, v (tokenVersion), level, method, scope, iat, exp, typ: 'stepup' }`. Signed
+with a **domain-separated** key: `STEP_UP_SECRET` when set, otherwise an HMAC derivation from
+`JWT_SECRET` with a fixed `bridge-step-up-grant-v1` label, plus its own `typ`/audience — so a
+step-up token never validates as an access token and an access token never validates as a grant.
 `tokenVersion++` (sign-out everywhere, password change/reset, 2FA change) revokes all grants. The
-client keeps it in memory only (P7 rule D), sends it as `X-Bridge-Step-Up`.
+client keeps it in memory only (P7 rule D), never in persistent browser storage, and sends it in
+the explicit `X-Bridge-Step-Up` header (one grant per request; the owner holds the newest grant
+per scope).
 
 **Obtaining a grant (reusing each credential's existing verifier).** `POST /api/step-up/password`
 (new, L1; refused for 2FA accounts), `POST /api/2fa/step-up` (TOTP/backup code with the existing
-replay protection, L2), and every sign-in response (password, 2FA, passkey, SSO) carries one —
-"sign in again" is the escape path that always exists. Proof attempts use the existing
-`limits.twoFactor()` budget plus a per-account `failed_proofs` lock (5 in 15 min → step-up locked
-for that account for the window; sign-in and existing sessions are unaffected; structured
-`step_up.locked` event).
+replay protection, L2), and every sign-in response carries one. Each proof endpoint names the
+`scope` it is for and keeps the normal CSRF middleware and its existing rate limiter
+(`limits.twoFactor()`); the per-account `failed_proofs` lock (5 in 15 min → step-up proofs refused
+for that account for the window) is **additional** and deliberately does **not** touch the sign-in
+or account-recovery paths, so a locked-out attacker cannot lock the owner out of signing back in.
 
 **Protected actions (first implementation).**
 
@@ -457,17 +472,29 @@ for that account for the window; sign-in and existing sessions are unaffected; s
 | Account recovery / security | e-mail change; passkey add (begin + complete) and remove; 2FA enable (setup + verify), disable, backup-code regeneration | always |
 | Sensitive export | account export | always |
 | Irreversible | account deletion (grant **or** existing password; SSO-only accounts use a grant), owned-server deletion, instance-admin user/server deletion | always |
-| Destructive moderation | bans, kicks (both routes), bulk message delete | after a burst: more than 10 per actor per 60 s |
-| Mass invite | invite creation | after a burst: more than 10 per actor per 60 s |
+| Destructive moderation | bans, kicks (both routes), bulk message delete | after a burst, per-action threshold **measured, not assumed** (see below) |
+| Mass invite | invite creation | after a burst, per-action threshold **measured** — and the step-up window must sit **below** the existing `limits.servers()` 10/min limiter, or that limiter rejects first and step-up never fires |
 | Suspicious new session | any of the above from a session without a recent proof; repeated failed proofs | covered by the grant + `failed_proofs` lock |
 
+**Burst thresholds are measured, not hard-coded.** The B2 baseline lab (below) records, per action,
+both a legitimate operator's cadence (a moderator cleaning up a raid; an organiser creating
+invites) and an abusive burst, and the thresholds are then chosen from that evidence — separately
+per action, not one shared `>10/min`. Two reachability rules constrain the choice: (1) the step-up
+check must run **before** the action's existing route limiter, so the person gets an explainable
+`STEP_UP_REQUIRED` rather than a bare 429; (2) for invite creation specifically, the generic
+`limits.servers()` budget is already 10/min, so a step-up threshold at or above 10 would be dead —
+the threshold is set below it (and the limiter left as the outer bound). Chosen thresholds are
+reported for approval before they are written into production code.
+
 Existing inline checks stay (password on 2FA disable / regenerate / account deletion; TOTP on
-`DELETE /api/2fa`) — the guard adds to them and never replaces a stronger one.
+`DELETE /api/2fa`) — the guard adds to them and never replaces a stronger one. Step-up is
+additional protection layered on top of the credential checks already present, never a substitute.
 
 **User-facing contract.** Refusal is `403 { error: 'STEP_UP_REQUIRED', action, reasons[], why,
 level, methods[], ttlMs }` — never 401 (the client treats 401 as an expired session). `reasons`
 is a closed set (`step_up_missing | _expired | _invalid | _revoked | _other_account | _level |
-moderation_burst | invite_burst | step_up_locked`); `why` is the action's plain-language reason.
+_scope_mismatch | moderation_burst | invite_burst | step_up_locked`); `why` is the action's
+plain-language reason. The refusal also names the `scope` the client must obtain a proof for.
 `apiFetch` hands the refusal to one client owner, which asks for **one** proof through the
 existing product dialog (password or one-time-code input, labelled, keyboard-only operable),
 keeps the grant in memory and retries the request once. Concurrent refusals share one prompt.
