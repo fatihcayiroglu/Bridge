@@ -9,7 +9,7 @@ import {
   MemoryRecordBackend,
 } from '../js/core/local-first/store.ts';
 
-function log() {
+function makeLog() {
   const backend = new MemoryRecordBackend();
   const store = new EncryptedLocalStore('u1', backend, new MemoryKeyProvider());
   return { log: new EncryptedOperationLog('u1', store), backend };
@@ -17,7 +17,7 @@ function log() {
 
 describe('P7 encrypted non-send operation log', () => {
   it('tracks queued -> sending -> applied with stable op id', async () => {
-    const { log } = log();
+    const { log } = makeLog();
     await log.enqueue({
       opId: 'nonce-1',
       userId: 'u1',
@@ -35,7 +35,7 @@ describe('P7 encrypted non-send operation log', () => {
   });
 
   it('same op id is idempotent only when identity and payload match', async () => {
-    const { log } = log();
+    const { log } = makeLog();
     const input = {
       opId: 'same',
       userId: 'u1',
@@ -57,7 +57,7 @@ describe('P7 encrypted non-send operation log', () => {
   });
 
   it('new reaction desired-state supersedes older queued state for the same emoji', async () => {
-    const { log } = log();
+    const { log } = makeLog();
 
     await log.enqueue({
       opId: 'r1', userId: 'u1', channelId: 'c1', targetId: 'm1',
@@ -73,7 +73,7 @@ describe('P7 encrypted non-send operation log', () => {
   });
 
   it('does not supersede an in-flight operation until the server resolves it', async () => {
-    const { log } = log();
+    const { log } = makeLog();
     await log.enqueue({
       opId: 'edit-1', userId: 'u1', channelId: 'c1', targetId: 'm1',
       kind: 'edit-message', payload: { content: 'first', baseVersion: 1 }, createdAt: 1,
@@ -90,7 +90,7 @@ describe('P7 encrypted non-send operation log', () => {
   });
 
   it('treats server rejection as terminal evidence instead of auto-replaying it', async () => {
-    const { log } = log();
+    const { log } = makeLog();
     await log.enqueue({
       opId: 'reject-me',
       userId: 'u1',
@@ -108,7 +108,7 @@ describe('P7 encrypted non-send operation log', () => {
   });
 
   it('accepts a late authoritative confirmation after disconnect re-queued an in-flight op', async () => {
-    const { log } = log();
+    const { log } = makeLog();
     await log.enqueue({
       opId: 'late-ack',
       userId: 'u1',
@@ -126,7 +126,7 @@ describe('P7 encrypted non-send operation log', () => {
   });
 
   it('rejects unsafe state transitions', async () => {
-    const { log } = log();
+    const { log } = makeLog();
     await log.enqueue({
       opId: 'x', userId: 'u1', channelId: 'c1', targetId: 'm1',
       kind: 'delete-message', payload: {}, createdAt: 1,
@@ -138,7 +138,7 @@ describe('P7 encrypted non-send operation log', () => {
   });
 
   it('bounds active operations without evicting user mutations', async () => {
-    const { log } = log();
+    const { log } = makeLog();
 
     for (let index = 0; index < LOCAL_OPLOG_MAX_ACTIVE; index += 1) {
       await log.enqueue({
@@ -166,7 +166,7 @@ describe('P7 encrypted non-send operation log', () => {
   });
 
   it('keeps operation payload encrypted at the physical backend', async () => {
-    const { log, backend } = log();
+    const { log, backend } = makeLog();
     await log.enqueue({
       opId: 'secret-op',
       userId: 'u1',
