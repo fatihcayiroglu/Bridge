@@ -63,6 +63,11 @@ function legacySource(): LegacyDraftSource {
   };
 }
 
+function runtimeDraftKey(identity: DraftIdentity): string {
+  const stable = stableIdentity(identity);
+  return `u:${encodeURIComponent(stable.userId)}|${localDraftRecordId(stable)}`;
+}
+
 function generation(key: string): number {
   return generations.get(key) ?? 0;
 }
@@ -100,7 +105,7 @@ function createRuntime(userId: string): Promise<UserDraftRuntime> {
  */
 export function peekLocalFirstDraft(identity: DraftIdentity): LocalDraftSnapshot | null {
   const stable = stableIdentity(identity);
-  const key = localDraftRecordId(stable);
+  const key = runtimeDraftKey(stable);
   if (volatile.has(key)) return volatile.get(key) ?? null;
 
   const legacy = legacySource().read(stable);
@@ -114,7 +119,7 @@ export function peekLocalFirstDraft(identity: DraftIdentity): LocalDraftSnapshot
  */
 export async function hydrateLocalFirstDraft(identity: DraftIdentity): Promise<LocalDraftSnapshot | null> {
   const stable = stableIdentity(identity);
-  const key = localDraftRecordId(stable);
+  const key = runtimeDraftKey(stable);
   const startedGeneration = generation(key);
   const runtime = await createRuntime(stable.userId);
   const snapshot = await runtime.session.hydrate(stable);
@@ -151,7 +156,7 @@ export function persistLocalFirstDraft(
   savedAt = Date.now(),
 ): LocalDraftSnapshot | null {
   const stable = stableIdentity(identity);
-  const key = localDraftRecordId(stable);
+  const key = runtimeDraftKey(stable);
   const snapshot = nextSnapshot(stable, text, attachmentPending, savedAt);
   bump(key);
   volatile.set(key, snapshot);
@@ -183,7 +188,7 @@ export function persistLocalFirstDraftAttachment(
 
 export function clearLocalFirstDraft(identity: DraftIdentity): void {
   const stable = stableIdentity(identity);
-  const key = localDraftRecordId(stable);
+  const key = runtimeDraftKey(stable);
   bump(key);
   volatile.set(key, null);
   void createRuntime(stable.userId).then(runtime => runtime.session.clear(stable));
