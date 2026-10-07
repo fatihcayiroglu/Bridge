@@ -8,6 +8,7 @@ import {
 } from '../js/core/local-first/history-runtime.ts';
 import {
   localFirstSearchContext,
+  localContextFromSnapshots,
   searchHistorySnapshots,
   searchLocalFirstHistory,
 } from '../js/core/local-first/local-search.ts';
@@ -252,5 +253,99 @@ describe('P7 A6 local-first search', () => {
     expect(context.map(item => item._id)).toEqual(['m1', 'm2', 'm3']);
     expect(context.filter(item => item.isAnchor).map(item => item._id)).toEqual(['m2']);
     expect(context.some(item => item._id === 'b1')).toBe(false);
+  });
+});
+
+
+describe('P7 A6 local search boundary coverage', () => {
+  const snapshot: LocalHistorySnapshot = {
+    v: 1,
+    channelId: 'c1',
+    savedAt: 100,
+    tombstones: [],
+    messages: [
+      {
+        _id: 'rich',
+        channelId: 'c1',
+        channelName: 'General',
+        serverId: 's1',
+        threadId: 't1',
+        userId: 'alice-id',
+        username: 'alice',
+        displayName: 'Alice A',
+        content: 'needle needle https://example.com',
+        contentFormat: 1,
+        fileUrl: '/uploads/photo.PNG?x=1',
+        fileType: 'application/octet-stream',
+        createdAt: 20,
+      },
+      {
+        _id: 'plain',
+        channelId: 'c1',
+        userId: 'bob-id',
+        username: 'bob',
+        content: 'needle other',
+        contentFormat: 1,
+        createdAt: 10,
+      },
+      {
+        _id: 'empty',
+        channelId: 'c1',
+        content: '',
+        contentFormat: 1,
+        createdAt: 30,
+      },
+    ],
+  };
+
+  it('fails closed for short queries, invalid filters and channel mismatches', () => {
+    expect(searchHistorySnapshots([snapshot], '')).toEqual({ hits: [], hasMore: false });
+    expect(searchHistorySnapshots([snapshot], 'x')).toEqual({ hits: [], hasMore: false });
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { channelId: 'other' } }).hits).toEqual([]);
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { from: '   ' } }).hits).toEqual([]);
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { from: 'nobody' } }).hits).toEqual([]);
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { in: 'missing' } }).hits).toEqual([]);
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { after: 'not-a-date' } }).hits).toEqual([]);
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { before: 'not-a-date' } }).hits).toEqual([]);
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { before: '1970-01-01T00:00:00.005Z' } }).hits).toEqual([]);
+    expect(searchHistorySnapshots([snapshot], 'needle absent-term').hits).toEqual([]);
+  });
+
+  it('covers username/channel/attachment branches and bounded page inputs', () => {
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { from: 'ali' } }).hits.map(h => h.id)).toEqual(['rich']);
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { in: '#gen' } }).hits.map(h => h.id)).toEqual(['rich']);
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { has: 'file' } }).hits.map(h => h.id)).toEqual(['rich']);
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { has: 'image' } }).hits.map(h => h.id)).toEqual(['rich']);
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { has: 'link' } }).hits.map(h => h.id)).toEqual(['rich']);
+    expect(searchHistorySnapshots([snapshot], 'needle', { filters: { has: 'unknown' } }).hits).toEqual([]);
+
+    const clamped = searchHistorySnapshots([snapshot], 'needle', {
+      limit: 999,
+      offset: -5,
+    });
+    expect(clamped.hits.map(h => h.id)).toEqual(['rich', 'plain']);
+    expect(clamped.hits[0]).toMatchObject({
+      channelId: 'c1',
+      channelName: 'General',
+      serverId: 's1',
+      threadId: 't1',
+      authorName: 'Alice A',
+    });
+
+    const minimum = searchHistorySnapshots([snapshot], 'needle', { limit: 0, offset: Number.NaN });
+    expect(minimum.hits).toHaveLength(2);
+  });
+
+  it('covers context cache misses and radius clamps without crossing channels', () => {
+    expect(localContextFromSnapshots([snapshot], 'missing', 'rich', 2)).toEqual([]);
+    expect(localContextFromSnapshots([snapshot], 'c1', 'missing', 2)).toEqual([]);
+
+    const zero = localContextFromSnapshots([snapshot], 'c1', 'plain', -10);
+    expect(zero.map(row => row._id)).toEqual(['plain']);
+    expect(zero[0]?.displayName).toBe('bob');
+
+    const wide = localContextFromSnapshots([snapshot], 'c1', 'plain', 99);
+    expect(wide.map(row => row._id)).toEqual(['rich', 'plain', 'empty']);
+    expect(wide.find(row => row._id === 'plain')?.isAnchor).toBe(true);
   });
 });

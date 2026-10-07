@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 import {
+  closeMessageOperationSync,
   handleMessageOperationSocketDisconnected,
   queueDeleteMessageOperation,
   queueEditMessageOperation,
@@ -286,5 +287,84 @@ describe('P7 durable message operation replay owner', () => {
     await handleMessageOperationSocketDisconnected();
     await replayMessageOperations(true);
     expect(socket.emit).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('P7 durable operation replay boundary coverage', () => {
+  it('rejects edits without a replay-safe base version and operations without an account', async () => {
+    await expect(queueEditMessageOperation({
+      channelId: 'c1',
+      messageId: 'm1',
+      content: 'edit',
+      baseVersion: Number.NaN,
+    })).rejects.toThrow('baseVersion');
+
+    BridgeRegistry.unregister('getMe');
+    await expect(queueDeleteMessageOperation({
+      channelId: 'c1',
+      messageId: 'm1',
+    })).rejects.toThrow('userId');
+    await expect(replayMessageOperations()).resolves.toBeUndefined();
+    await expect(handleMessageOperationSocketDisconnected()).resolves.toBeUndefined();
+  });
+
+  it('generates an op id when absent and leaves the row queued if socket emit throws', async () => {
+    const generated = await queueDeleteMessageOperation({
+      channelId: 'c1',
+      messageId: 'generated',
+    });
+    expect(generated.opId).toMatch(/^op-|^[0-9a-f-]{20,}$/i);
+
+    await resolveMessageOperation(generated.opId);
+    socket.emit.mockImplementationOnce(() => { throw new Error('socket exploded'); });
+
+    const failed = await queueDeleteMessageOperation({
+      opId: 'emit-failure',
+      channelId: 'c1',
+      messageId: 'm2',
+    });
+    expect(failed.dispatched).toBe(false);
+    await expect(getLocalFirstOperation('u1', 'emit-failure')).resolves.toMatchObject({
+      state: 'queued',
+      lastError: 'socket-emit-failed',
+    });
+  });
+
+  it('records ACK timeout without replaying or losing the stable id', async () => {
+    vi.useFakeTimers();
+    const queued = await queueDeleteMessageOperation({
+      opId: 'timeout-op',
+      channelId: 'c1',
+      messageId: 'm-timeout',
+    });
+    expect(queued.dispatched).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(10_001);
+    await expect(getLocalFirstOperation('u1', 'timeout-op')).resolves.toMatchObject({
+      opId: 'timeout-op',
+      state: 'sending',
+      lastError: 'ack-timeout',
+      attempts: 1,
+    });
+    vi.useRealTimers();
+  });
+
+  it('treats empty/missing/terminal acknowledgements as harmless no-ops', async () => {
+    await expect(resolveMessageOperation('')).resolves.toBeUndefined();
+    await expect(rejectMessageOperation('', 'X')).resolves.toBeUndefined();
+    await expect(resolveMessageOperation('missing-op')).resolves.toBeUndefined();
+    await expect(rejectMessageOperation('missing-op', 'X')).resolves.toBeUndefined();
+
+    await queueDeleteMessageOperation({
+      opId: 'terminal-op',
+      channelId: 'c1',
+      messageId: 'm3',
+    });
+    await resolveMessageOperation('terminal-op');
+    await expect(resolveMessageOperation('terminal-op')).resolves.toBeUndefined();
+    await expect(rejectMessageOperation('terminal-op', 'LATE')).resolves.toBeUndefined();
+
+    expect(() => closeMessageOperationSync()).not.toThrow();
   });
 });

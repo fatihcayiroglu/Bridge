@@ -145,3 +145,88 @@ describe('P7 local-first draft session', () => {
     expect(legacy.current).toBeNull();
   });
 });
+
+
+describe('P7 draft session boundary coverage', () => {
+  it('returns cached hydration immediately and coalesces concurrent first hydration', async () => {
+    const legacy = makeLegacy();
+    const { session, repository } = makeSession(legacy);
+
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const migrate = vi.spyOn(repository, 'migrateLegacy').mockImplementationOnce(async () => {
+      await gate;
+      return { status: 'nothing-to-migrate', snapshot: null };
+    });
+
+    expect(session.peek(A)).toBeUndefined();
+    const first = session.hydrate(A);
+    const second = session.hydrate(A);
+    expect(second).toBe(first);
+    release();
+    await expect(first).resolves.toBeNull();
+    expect(migrate).toHaveBeenCalledOnce();
+
+    await expect(session.hydrate(A)).resolves.toBeNull();
+    expect(migrate).toHaveBeenCalledOnce();
+  });
+
+  it('surfaces migration failures from legacy when available, otherwise null', async () => {
+    const savedAt = Date.now();
+    const legacy = makeLegacy({
+      v: 1,
+      text: 'legacy fallback',
+      savedAt,
+      attachmentPending: true,
+    });
+    const onPersistenceError = vi.fn();
+    const onHydrated = vi.fn();
+    const { session, repository } = makeSession(legacy, { onPersistenceError, onHydrated });
+    vi.spyOn(repository, 'migrateLegacy').mockRejectedValueOnce(new Error('decrypt failed'));
+
+    await expect(session.hydrate(A)).resolves.toMatchObject({
+      text: 'legacy fallback',
+      attachmentPending: true,
+    });
+    expect(onPersistenceError).toHaveBeenCalledOnce();
+    expect(onHydrated).toHaveBeenCalledOnce();
+
+    const emptyLegacy = makeLegacy();
+    const other = makeSession(emptyLegacy, { onPersistenceError });
+    vi.spyOn(other.repository, 'migrateLegacy').mockRejectedValueOnce(new Error('disk failed'));
+    await expect(other.session.hydrate({ ...A, conversationId: 'c2' })).resolves.toBeNull();
+  });
+
+  it('keeps attachment-only state and reports authenticated write verification mismatch', async () => {
+    const legacy = makeLegacy();
+    const onPersistenceError = vi.fn();
+    const { session, repository } = makeSession(legacy, { onPersistenceError });
+
+    const snapshot = session.set(A, null as unknown as string, true, 5);
+    expect(snapshot).toMatchObject({ text: '', attachmentPending: true });
+
+    vi.spyOn(repository, 'read').mockResolvedValueOnce({
+      v: 1,
+      text: 'different',
+      savedAt: 6,
+      attachmentPending: true,
+    });
+    session.set({ ...A, conversationId: 'verify' }, 'expected', true, 6);
+    await session.flush();
+
+    expect(onPersistenceError).toHaveBeenCalled();
+  });
+
+  it('flushes all queued conversations when no identity is supplied', async () => {
+    const legacy = makeLegacy();
+    const { session, repository } = makeSession(legacy);
+    const B: DraftIdentity = { ...A, conversationId: 'c2' };
+
+    session.set(A, 'one', false, 10);
+    session.set(B, 'two', false, 11);
+    await session.flush();
+
+    await expect(repository.read(A, 10)).resolves.toMatchObject({ text: 'one' });
+    await expect(repository.read(B, 11)).resolves.toMatchObject({ text: 'two' });
+  });
+});

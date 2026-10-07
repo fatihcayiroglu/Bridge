@@ -6,6 +6,7 @@ import {
   encryptLocalBytes,
   encryptLocalJson,
   generateLocalFirstKey,
+  LOCAL_FIRST_MAX_CIPHERTEXT_BYTES,
   type LocalFirstEnvelope,
 } from '../js/core/local-first/crypto.ts';
 
@@ -100,5 +101,62 @@ describe('P7 local-first crypto envelope', () => {
     const envelope = await encryptLocalBytes(key, new TextEncoder().encode('{not json'), scope);
 
     await expect(decryptLocalJson(key, envelope, scope)).rejects.toThrow();
+  });
+});
+
+
+describe('P7 local-first crypto boundary coverage', () => {
+  it('rejects non-byte and oversized plaintext before WebCrypto', async () => {
+    const key = await generateLocalFirstKey();
+    await expect(encryptLocalBytes(
+      key,
+      'not-bytes' as unknown as Uint8Array,
+      'user:u1:test',
+    )).rejects.toThrow('plaintext must be bytes');
+
+    await expect(encryptLocalBytes(
+      key,
+      new Uint8Array(LOCAL_FIRST_MAX_CIPHERTEXT_BYTES + 1),
+      'user:u1:test',
+    )).rejects.toThrow('plaintext is too large');
+  });
+
+  it('rejects empty/oversized AAD scope and malformed base64/IV shapes', async () => {
+    const key = await generateLocalFirstKey();
+    const bytes = new Uint8Array([1, 2, 3]);
+
+    await expect(encryptLocalBytes(key, bytes, '')).rejects.toThrow('scope is required');
+    await expect(encryptLocalBytes(key, bytes, 'x'.repeat(2_000))).rejects.toThrow('scope is too large');
+
+    const malformed: unknown[] = [
+      null,
+      [],
+      { v: 1, alg: 'AES-GCM', iv: '', ct: 'AAAA' },
+      { v: 1, alg: 'AES-GCM', iv: '***=', ct: 'AAAA' },
+      { v: 1, alg: 'AES-GCM', iv: 'AAAA', ct: 'AAAA' },
+      { v: 2, alg: 'AES-GCM', iv: 'AAAAAAAAAAAAAAAA', ct: 'AAAA' },
+      { v: 1, alg: 'OTHER', iv: 'AAAAAAAAAAAAAAAA', ct: 'AAAA' },
+    ];
+
+    await expect(decryptLocalBytes(key, malformed[0], 'scope')).rejects.toThrow('Invalid local-first envelope');
+    await expect(decryptLocalBytes(key, malformed[1], 'scope')).rejects.toThrow('Invalid local-first envelope');
+    await expect(decryptLocalBytes(key, malformed[2], 'scope')).rejects.toThrow('Invalid local-first base64');
+    await expect(decryptLocalBytes(key, malformed[3], 'scope')).rejects.toThrow('Invalid local-first base64');
+    await expect(decryptLocalBytes(key, malformed[4], 'scope')).rejects.toThrow('Invalid local-first IV');
+    await expect(decryptLocalBytes(key, malformed[5], 'scope')).rejects.toThrow('Invalid local-first envelope');
+    await expect(decryptLocalBytes(key, malformed[6], 'scope')).rejects.toThrow('Invalid local-first envelope');
+  });
+
+  it('round-trips a payload larger than the base64 chunk boundary', async () => {
+    const key = await generateLocalFirstKey();
+    const bytes = new Uint8Array(0x8001);
+    bytes[0] = 7;
+    bytes[bytes.length - 1] = 9;
+
+    const envelope = await encryptLocalBytes(key, bytes, 'user:u1:chunked');
+    const decoded = await decryptLocalBytes(key, envelope, 'user:u1:chunked');
+    expect(decoded.byteLength).toBe(bytes.byteLength);
+    expect(decoded[0]).toBe(7);
+    expect(decoded.at(-1)).toBe(9);
   });
 });
