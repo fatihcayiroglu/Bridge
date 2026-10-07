@@ -362,12 +362,12 @@ describe('nicknames', () => {
 
 describe('P7 B1 raid-protection routes', () => {
   const getRaid = (actor = owner) => request(buildApp().app)
-    .get(\`/api/servers/\${server._id}/raid-protection\`)
-    .set('Authorization', \`Bearer \${token(actor._id)}\`);
+    .get(`/api/servers/${server._id}/raid-protection`)
+    .set('Authorization', `Bearer ${token(actor._id)}`);
 
-  const patchRaid = (body: unknown, actor = owner) => request(buildApp().app)
-    .patch(\`/api/servers/\${server._id}/raid-protection\`)
-    .set('Authorization', \`Bearer \${token(actor._id)}\`)
+  const patchRaid = (body: string | object, actor = owner) => request(buildApp().app)
+    .patch(`/api/servers/${server._id}/raid-protection`)
+    .set('Authorization', `Bearer ${token(actor._id)}`)
     .send(body);
 
   beforeEach(async () => {
@@ -381,7 +381,7 @@ describe('P7 B1 raid-protection routes', () => {
   it('GET distinguishes missing server, missing permission and explainable policy', async () => {
     const missing = await request(buildApp().app)
       .get('/api/servers/missing/raid-protection')
-      .set('Authorization', \`Bearer \${token(owner._id)}\`);
+      .set('Authorization', `Bearer ${token(owner._id)}`);
     expect(missing.status).toBe(404);
 
     memberPerms.mockResolvedValueOnce(0);
@@ -413,7 +413,7 @@ describe('P7 B1 raid-protection routes', () => {
   it('PATCH rejects a missing server and an actor without MANAGE_SERVER', async () => {
     const missing = await request(buildApp().app)
       .patch('/api/servers/missing/raid-protection')
-      .set('Authorization', \`Bearer \${token(owner._id)}\`)
+      .set('Authorization', `Bearer ${token(owner._id)}`)
       .send({ level: 'strict' });
     expect(missing.status).toBe(404);
 
@@ -507,7 +507,7 @@ describe('P7 B1 raid-protection routes', () => {
     const repos = require('../db/repositories');
     const originalFind = repos.Servers.findById.bind(repos.Servers);
     const find = jest.spyOn(repos.Servers, 'findById')
-      .mockImplementationOnce((id: string) => originalFind(id))
+      .mockImplementationOnce((id: unknown) => originalFind(id))
       .mockResolvedValueOnce(null);
     try {
       const res = await patchRaid({ level: 'strict' });
