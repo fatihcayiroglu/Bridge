@@ -17,12 +17,14 @@ describe('cross-context security boundaries', () => {
     },
   );
 
-  it('service worker constrains notification navigation and credential-bearing outbox URLs', () => {
+  it('service worker constrains notification navigation and never owns credential-bearing outbox replay', () => {
     const src = read('sw.ts');
     expect(src).toContain('url.origin !== worker.location.origin');
     expect(src).toContain("url.protocol !== 'http:' && url.protocol !== 'https:'");
-    expect(src).toContain("apiOnly && !url.pathname.startsWith('/api/')");
-    expect(src).toContain('safeSameOriginUrl(data.url, { apiOnly: true })');
+    expect(src).not.toContain('safeSameOriginUrl(data.url, { apiOnly: true })');
+    expect(src).not.toContain('bridge-outbox');
+    expect(src).toContain("syncEvent.tag === LOCAL_FIRST_SYNC_TAG");
+    expect(src).toContain("client.postMessage({ type: 'SW_LOCAL_FIRST_REPLAY', reason })");
     expect(src).not.toMatch(/url:\s*data\.url\b/);
   });
 
