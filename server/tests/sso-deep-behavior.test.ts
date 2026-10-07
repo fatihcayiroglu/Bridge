@@ -384,7 +384,13 @@ describe('OIDC callback — state/token/JWKS/user lifecycle', () => {
       expect(verifySpy).toHaveBeenCalledWith(expect.any(String), 'PUBLIC KEY', expect.objectContaining({ issuer: process.env.OIDC_ISSUER, audience: 'client-1' }));
       const handoff = await flow.agent.post('/api/sso/session').expect(200);
       expect(handoff.headers['cache-control']).toBe('no-store');
-      expect(handoff.body).toEqual({ token: mockMakeToken() });
+      // P7 B2: the handoff also carries level-1 step-up grants (plain SSO is never level 2).
+      expect(handoff.body).toEqual({
+        token: mockMakeToken(),
+        stepUp: expect.objectContaining({ level: 1, method: 'sso', ttlMs: 600_000 }),
+      });
+      expect(Object.keys(handoff.body.stepUp.grants).sort())
+        .toEqual(['account-security', 'destructive-admin', 'moderation-burst', 'sensitive-export']);
       await flow.agent.post('/api/sso/session').expect(401);
     } finally { keySpy.mockRestore(); verifySpy.mockRestore(); }
   });
@@ -779,6 +785,13 @@ describe('OIDC callback — state/token/JWKS/user lifecycle', () => {
       cache.takeAuthoritative.mockResolvedValueOnce(claimed);
       await request(app()).post('/api/sso/session')
         .set('Cookie', `bridge_sso_handoff=${'h'.repeat(43)}`).expect(401);
+    }
+    // A handoff stored before step-up grants existed (or with a malformed one) still yields the session.
+    for (const stepUp of [undefined, 'not-an-object', null]) {
+      cache.takeAuthoritative.mockResolvedValueOnce({ accessToken: 'a'.repeat(40), stepUp });
+      const legacy = await request(app()).post('/api/sso/session')
+        .set('Cookie', `bridge_sso_handoff=${'h'.repeat(43)}`).expect(200);
+      expect(legacy.body).toEqual({ token: 'a'.repeat(40) });
     }
     cache.takeAuthoritative.mockRejectedValueOnce('handoff backend offline');
     await request(app()).post('/api/sso/session')

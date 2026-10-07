@@ -6666,6 +6666,95 @@ paths:
         400:
           description: Parola gerekli / gecersiz / 2FA kapali
       operationId: post_2fa_backup_codes_regenerate
+  /2fa/step-up:
+    post:
+      tags:
+      - TwoFactor
+      summary: Step-up proof with a TOTP or backup code (level 2) for one action scope
+      description: P7 B2. Same verifier and replay protection as /2fa/check. Wrong codes count toward the per-account failed-proof lock (5 in 15 min), which never applies to sign-in or password reset.
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - code
+              - scope
+              properties:
+                code:
+                  type: string
+                scope:
+                  $ref: '#/components/schemas/StepUpScope'
+      responses:
+        '200':
+          description: Step-up grant for the scope (keep in memory only)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  stepUp:
+                    $ref: '#/components/schemas/StepUpGrant'
+                  usedBackup:
+                    type: boolean
+                  remaining:
+                    type: integer
+        '400':
+          description: Invalid code or scope, or 2FA not enabled
+        '429':
+          description: Too many failed step-up proofs; sign in again or wait
+        '503':
+          description: Failed-proof counter unavailable
+      operationId: post_2fa_step_up
+  /step-up/password:
+    post:
+      tags:
+      - Auth
+      summary: Step-up proof with the account password (level 1) for one action scope
+      description: P7 B2. Accounts with two-factor sign-in must use /2fa/step-up. Wrong passwords count toward the per-account failed-proof lock (5 in 15 min), which never applies to sign-in or password reset.
+      security:
+      - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - password
+              - scope
+              properties:
+                password:
+                  type: string
+                  format: password
+                scope:
+                  $ref: '#/components/schemas/StepUpScope'
+      responses:
+        '200':
+          description: Step-up grant for the scope (keep in memory only)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  stepUp:
+                    $ref: '#/components/schemas/StepUpGrant'
+        '400':
+          description: Wrong password, missing scope, or a second factor is required
+        '404':
+          description: User not found
+        '429':
+          description: Too many failed step-up proofs; sign in again or wait
+        '503':
+          description: Failed-proof counter unavailable
+      operationId: post_step_up_password
   /2fa:
     delete:
       tags:
@@ -10915,6 +11004,106 @@ components:
           description: JWT access token (15 dk geçerli)
         user:
           $ref: '#/components/schemas/User'
+        stepUp:
+          $ref: '#/components/schemas/StepUpSignIn'
+    StepUpScope:
+      type: string
+      description: P7 B2 action group a step-up grant is valid for; a grant for one scope never authorises another.
+      enum:
+      - account-security
+      - sensitive-export
+      - destructive-admin
+      - moderation-burst
+    StepUpGrant:
+      type: object
+      description: A short-lived signed proof for one scope. Clients keep it in memory only and send it in the X-Bridge-Step-Up header.
+      properties:
+        scope:
+          $ref: '#/components/schemas/StepUpScope'
+        token:
+          type: string
+        level:
+          type: integer
+          enum:
+          - 1
+          - 2
+        method:
+          type: string
+          enum:
+          - password
+          - totp
+          - backup_code
+          - passkey
+          - sso
+        expiresAt:
+          type: integer
+        ttlMs:
+          type: integer
+    StepUpSignIn:
+      type: object
+      description: One step-up grant per scope, returned by every sign-in (password, 2FA, passkey, SSO).
+      properties:
+        level:
+          type: integer
+        method:
+          type: string
+        expiresAt:
+          type: integer
+        ttlMs:
+          type: integer
+        grants:
+          type: object
+          additionalProperties:
+            type: string
+    StepUpRequired:
+      type: object
+      description: 403 refusal of a protected action until a step-up proof for its scope is presented.
+      required:
+      - error
+      - action
+      - scope
+      - reasons
+      - level
+      - methods
+      properties:
+        error:
+          type: string
+          enum:
+          - STEP_UP_REQUIRED
+        action:
+          type: string
+        scope:
+          $ref: '#/components/schemas/StepUpScope'
+        reasons:
+          type: array
+          items:
+            type: string
+            enum:
+            - step_up_missing
+            - step_up_expired
+            - step_up_invalid
+            - step_up_revoked
+            - step_up_other_account
+            - step_up_level
+            - step_up_scope_mismatch
+            - moderation_burst
+            - invite_burst
+            - step_up_locked
+        why:
+          type: string
+        level:
+          type: integer
+        methods:
+          type: array
+          items:
+            type: string
+            enum:
+            - password
+            - totp
+            - backup_code
+            - sign_in
+        ttlMs:
+          type: integer
     User:
       type: object
       properties:

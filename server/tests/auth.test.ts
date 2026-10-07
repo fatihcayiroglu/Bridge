@@ -73,6 +73,9 @@ describe('POST /api/register', () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('token');
     expect(res.body.user.username).toBe('testuser');
+    // P7 B2: the password was just set — level-1 step-up grants, one per scope.
+    expect(res.body.stepUp).toEqual(expect.objectContaining({ level: 1, method: 'password' }));
+    expect(Object.keys(res.body.stepUp.grants)).toHaveLength(4);
   });
 
   it('rejects duplicate username', async () => {
@@ -118,6 +121,10 @@ describe('POST /api/login', () => {
     const res = await request(app).post('/api/login').send({ username: 'testuser', password: 'securepass123' });
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('token');
+    // P7 B2: a fresh password sign-in carries level-1 grants, each valid for one scope only.
+    expect(res.body.stepUp).toEqual(expect.objectContaining({ level: 1, method: 'password', ttlMs: 600_000 }));
+    expect(Object.keys(res.body.stepUp.grants).sort())
+      .toEqual(['account-security', 'destructive-admin', 'moderation-burst', 'sensitive-export']);
   });
 
   it('[SECURITY] 2FA-enabled password login cannot mint a session before second factor', async () => {
@@ -134,6 +141,8 @@ describe('POST /api/login', () => {
     expect(typeof res.body.tempToken).toBe('string');
     expect(res.body).not.toHaveProperty('token');
     expect(res.body).not.toHaveProperty('refreshToken');
+    // Nor a step-up grant: the password alone is not this account's sign-in strength.
+    expect(res.body).not.toHaveProperty('stepUp');
     const cookies = setCookiesOf(res.headers);
     expect(cookies.some((value) => value.startsWith('bridge_refresh='))).toBe(false);
     expect(cookies.some((value) => value.startsWith('bridge_media='))).toBe(false);

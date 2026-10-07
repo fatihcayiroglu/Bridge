@@ -425,6 +425,10 @@ describe('login/complete — parolasız kimlik sınırı', () => {
     expect(r.status).toBe(200);
     expect(r.body.token).toBeTruthy();
     expect(r.body.user.username).toBe('ayse');
+    // P7 B2: a verified passkey assertion is a level-2 proof; one grant per scope.
+    expect(r.body.stepUp).toEqual(expect.objectContaining({ level: 2, method: 'passkey', ttlMs: 600_000 }));
+    expect(Object.keys(r.body.stepUp.grants).sort())
+      .toEqual(['account-security', 'destructive-admin', 'moderation-burst', 'sensitive-export']);
 
     // Cerez sozlesmesi: yenileme cerezi httpOnly olmali, medya cerezi
     // `/uploads` ile SINIRLI olmali (bkz. middleware/uploadAuthz.ts).

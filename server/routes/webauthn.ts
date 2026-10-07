@@ -23,6 +23,7 @@ import { cache } from '../lib/redisAdapter';
 import logger from '../lib/logger';
 import { setRefreshCookie } from '../lib/authCookies';
 import { setMediaCookie } from '../lib/mediaCookie';
+import { mintSignInGrants } from '../lib/stepUp';
 
 // Crypto & PEM helpers
 import {
@@ -713,6 +714,8 @@ router.post('/login/complete', limits.webauthn(), async (req: import("express").
       avatarUrl:   user.avatarUrl,
       avatarColor: user.avatarColor,
     },
+    // A verified passkey assertion is a level-2 proof: step-up grants (P7 B2).
+    stepUp: mintSignInGrants(user, 'passkey'),
   });
 });
 
