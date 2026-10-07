@@ -300,7 +300,15 @@ async function queueOperation(
   // row, then run again if necessary so a just-enqueued row is not stranded.
   await replayMessageOperations(false);
   let current = await getLocalFirstOperation(userId, opId);
-  if (current?.state === 'queued' && socketConnected(currentSocket())) {
+  if (
+    current?.state === 'queued'
+    && current.attempts === 0
+    && socketConnected(currentSocket())
+  ) {
+    // A replay already in progress may have walked a snapshot taken just before
+    // this enqueue. A second pass is only for that zero-attempt race. Once an
+    // emit was attempted and failed, do NOT immediately retry in the same call:
+    // reconnect/backoff lifecycle owns the next attempt.
     await replayMessageOperations(false);
     current = await getLocalFirstOperation(userId, opId);
   }
@@ -308,7 +316,7 @@ async function queueOperation(
   return { opId, dispatched: current?.state === 'sending' };
 }
 
-export function queueEditMessageOperation(input: QueueEditInput): Promise<QueuedMessageOperation> {
+export async function queueEditMessageOperation(input: QueueEditInput): Promise<QueuedMessageOperation> {
   const baseVersion = Number(input.baseVersion);
   if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
     return Promise.reject(new Error('Edit baseVersion is required for durable replay'));
@@ -324,7 +332,7 @@ export function queueEditMessageOperation(input: QueueEditInput): Promise<Queued
   }, input.opId);
 }
 
-export function queueDeleteMessageOperation(input: QueueDeleteInput): Promise<QueuedMessageOperation> {
+export async function queueDeleteMessageOperation(input: QueueDeleteInput): Promise<QueuedMessageOperation> {
   return queueOperation({
     channelId: required(input.channelId, 'channelId'),
     targetId: required(input.messageId, 'messageId'),
@@ -333,7 +341,7 @@ export function queueDeleteMessageOperation(input: QueueDeleteInput): Promise<Qu
   }, input.opId);
 }
 
-export function queueReactionMessageOperation(input: QueueReactionInput): Promise<QueuedMessageOperation> {
+export async function queueReactionMessageOperation(input: QueueReactionInput): Promise<QueuedMessageOperation> {
   return queueOperation({
     channelId: required(input.channelId, 'channelId'),
     targetId: required(input.messageId, 'messageId'),
