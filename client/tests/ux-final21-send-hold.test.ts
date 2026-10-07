@@ -16,6 +16,8 @@ import MessageInputPanel from '../js/core/MessageInputPanel.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 import { resetOutboxMemory } from '../js/core/outbox-store.ts';
 import {
+  flushLocalFirstOutbox,
+  hydrateLocalFirstOutbox,
   putLocalFirstOutboxEntry as putOutboxEntry,
   readLocalFirstOutbox as readOutbox,
   resetLocalFirstOutboxRuntimeForTests,
@@ -243,16 +245,22 @@ describe('"Sil" yalnız başarısız mesajı kaldırır', () => {
     BridgeRegistry.unregister('removeMessage');
   });
 
-  it('composer yeniden mount edilince aynı oturumdaki encrypted queue kaydı başka kanal açıkken de kaldırılır', () => {
+  it('composer yeniden mount edilince aynı oturumdaki encrypted queue kaydı başka kanal açıkken de kaldırılır', async () => {
     const removed: string[] = [];
     const a = send('aynı');
     reject(a, 'duplicate', 30_000);
-    // Yeniden yükleme: bileşen ve bellek sıfırlanır; başarısız kayıt kalıcı depodadır ve
-    // yeni örnek açılışta onu belleğe geri yükler.
+
+    // Gerçek restart sözleşmesi: önce kabul edilmiş async encrypted write'ın
+    // diske indiğini kanıtla; sonra yalnız runtime belleğini kapat ve yeni
+    // runtime'ın encrypted depodan hydrate etmesini bekle. Sadece reset edip
+    // senkron volatile view okumak bir restart değildir.
+    await flushLocalFirstOutbox('user-a');
     unmount(inputInstance!);
     inputInstance = null;
     resetOutboxMemory();
-  resetLocalFirstOutboxRuntimeForTests();
+    resetLocalFirstOutboxRuntimeForTests();
+    await hydrateLocalFirstOutbox('user-a');
+
     expect(readOutbox('user-a').find((e) => e.ackId === a)?.state).toBe('failed');
     BridgeRegistry.unregister('getCurrentChannel');
     BridgeRegistry.register('getCurrentChannel', () => ({ _id: 'ch-2', type: 'text', name: 'diğer', serverId: 'srv-1' }));
