@@ -289,7 +289,7 @@ async function queueOperation(
   if (!userId) throw new Error('Operation userId is unavailable');
 
   const opId = opIdInput ? required(opIdInput, 'opId') : newOperationId();
-  const operation = await enqueueLocalFirstOperation({
+  await enqueueLocalFirstOperation({
     ...input,
     opId,
     userId,

@@ -280,8 +280,7 @@ export class MemoryKeyProvider implements LocalFirstKeyProvider {
     // They MUST share one account key; generating one key per concurrent caller
     // makes earlier ciphertext permanently undecryptable after the last caller
     // wins the map assignment.
-    let generation!: Promise<CryptoKey>;
-    generation = generateLocalFirstKey()
+    const generation: Promise<CryptoKey> = generateLocalFirstKey()
       .then(key => {
         const winner = this.keys.get(userId);
         if (winner) return winner;
