@@ -5,6 +5,7 @@ import {
   MemoryKeyProvider,
   MemoryRecordBackend,
   localRecordId,
+  localRecordScope,
 } from '../js/core/local-first/store.ts';
 
 describe('P7 encrypted local-first store', () => {
@@ -82,6 +83,92 @@ describe('P7 encrypted local-first store', () => {
     await expect(alice.getJson('draft', 'c1')).resolves.toBeNull();
     await expect(alice.getJson('outbox', 'ack-1')).resolves.toBeNull();
     await expect(bob.getJson('draft', 'c1')).resolves.toEqual({ text: 'b' });
+  });
+
+  it('coalesces concurrent account key generation so parallel writes stay decryptable', async () => {
+    const backend = new MemoryRecordBackend();
+    const keys = new MemoryKeyProvider();
+    const store = new EncryptedLocalStore('alice', backend, keys);
+
+    const generated = await Promise.all(
+      Array.from({ length: 20 }, () => keys.getOrCreate('alice')),
+    );
+    expect(new Set(generated).size).toBe(1);
+
+    await Promise.all([
+      store.putJson('draft', 'a', { text: 'one' }, 1),
+      store.putJson('draft', 'b', { text: 'two' }, 2),
+      store.putJson('history', 'c', { text: 'three' }, 3),
+    ]);
+
+    await expect(store.getJson('draft', 'a')).resolves.toEqual({ text: 'one' });
+    await expect(store.getJson('draft', 'b')).resolves.toEqual({ text: 'two' });
+    await expect(store.getJson('history', 'c')).resolves.toEqual({ text: 'three' });
+  });
+
+  it('validates identifiers and timestamps before persistence', async () => {
+    expect(() => new EncryptedLocalStore('', new MemoryRecordBackend(), new MemoryKeyProvider()))
+      .toThrow('userId is required');
+    expect(() => localRecordId('alice', 'draft', '')).toThrow('recordId is required');
+    expect(() => localRecordId('x'.repeat(513), 'draft', 'r')).toThrow('userId is too large');
+    expect(() => localRecordScope('alice', 'draft', 'x'.repeat(513))).toThrow('recordId is too large');
+
+    const store = new EncryptedLocalStore('alice', new MemoryRecordBackend(), new MemoryKeyProvider());
+    await expect(store.putJson('draft', 'a', {}, -1)).rejects.toThrow('updatedAt is invalid');
+    await expect(store.putJson('draft', 'a', {}, Number.NaN)).rejects.toThrow('updatedAt is invalid');
+  });
+
+  it('fails closed on forged namespace metadata and ciphertext corruption', async () => {
+    const backend = new MemoryRecordBackend();
+    const store = new EncryptedLocalStore('alice', backend, new MemoryKeyProvider());
+
+    await store.putJson('draft', 'meta', { text: 'secret' }, 1);
+    const metaId = localRecordId('alice', 'draft', 'meta');
+    const meta = await backend.get(metaId);
+    backend.corrupt(metaId, { ...meta!, namespace: 'history' });
+    await expect(store.getJson('draft', 'meta')).rejects.toThrow('metadata is invalid');
+
+    await store.putJson('draft', 'cipher', { text: 'secret' }, 2);
+    const cipherId = localRecordId('alice', 'draft', 'cipher');
+    const cipher = await backend.get(cipherId);
+    backend.corrupt(cipherId, {
+      ...cipher!,
+      envelope: { ...cipher!.envelope, ct: 'AAAAAAAAAAAAAAAAAAAAAA==' },
+    });
+    await expect(store.getJson('draft', 'cipher')).rejects.toMatchObject({
+      name: 'LocalFirstCorruptionError',
+      message: 'Local-first record authentication failed',
+    });
+  });
+
+  it('rejects a forged row while listing a namespace', async () => {
+    const backend = new MemoryRecordBackend();
+    const store = new EncryptedLocalStore('alice', backend, new MemoryKeyProvider());
+    await store.putJson('history', 'good', { ok: true }, 1);
+
+    const source = await backend.get(localRecordId('alice', 'history', 'good'));
+    const forgedId = localRecordId('alice', 'history', 'forged');
+    backend.corrupt(forgedId, {
+      ...source!,
+      id: forgedId,
+      recordId: 'forged',
+      userId: 'mallory',
+    });
+
+    await expect(store.list('history')).rejects.toThrow('namespace contains an invalid record');
+  });
+
+  it('invalidates the old key on wipe and creates a fresh one for later writes', async () => {
+    const backend = new MemoryRecordBackend();
+    const keys = new MemoryKeyProvider();
+    const store = new EncryptedLocalStore('alice', backend, keys);
+    const first = await keys.getOrCreate('alice');
+
+    await store.putJson('outbox', 'queue', { items: [1] }, 1);
+    await store.wipeAccount();
+
+    await expect(store.getJson('outbox', 'queue')).resolves.toBeNull();
+    expect(await keys.getOrCreate('alice')).not.toBe(first);
   });
 
   it('reports memory composition as non-durable instead of pretending persistence', () => {
