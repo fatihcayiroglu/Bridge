@@ -1,0 +1,19 @@
+{
+  "_comment": "Gate for `run.mjs --gate`. atLeast: the weakest acceptable attack outcome (OPEN < LIMITED < BLOCKED). knownFalsePositive: a control that is a FALSE_POSITIVE by design or deferred, with the reason; any OTHER false positive fails the gate. Measured values and the reasoning live in docs/P7_TRUST_SOCIAL_FOUNDATION.md (B1 evidence).",
+  "ATK-01": { "atLeast": "BLOCKED" },
+  "ATK-02": { "atLeast": "BLOCKED" },
+  "ATK-03": { "atLeast": "BLOCKED" },
+  "ATK-04a": { "atLeast": "BLOCKED" },
+  "ATK-04b": { "atLeast": "BLOCKED" },
+  "ATK-05": { "atLeast": "BLOCKED" },
+  "ATK-06": { "atLeast": "LIMITED" },
+  "ATK-07": { "atLeast": "LIMITED" },
+  "ATK-08": { "atLeast": "BLOCKED" },
+  "ATK-09": { "atLeast": "BLOCKED" },
+  "LEG-09": {
+    "knownFalsePositive": "Bulk bans are capped by the moderation limiter (30/min per moderator+address), which also bounds a compromised moderator account. Raid mode already stops a raid's posting, so cleanup at that rate is harmless; a single audited bulk raid-cleanup action is P7 B5 (moderation tooling)."
+  },
+  "LEG-11": {
+    "knownFalsePositive": "Deliberate trade-off: brand-new accounts (< 24 h) that join inside a detected join surge are indistinguishable from raiders by join rate, so they can join and read but not post until raid mode ends (10 min) or a moderator ends it, which the lab shows releasing every hold. Established accounts in the same surge (LEG-10) are unaffected."
+  }
+}
