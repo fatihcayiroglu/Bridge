@@ -111,6 +111,7 @@ import { authMiddleware} from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
 import { afterMemberJoined } from '../../lib/serverMembership';
 import { checkServerJoinMfa } from '../../lib/serverMfaPolicy';
+import { applyRaidJoinHold, checkServerJoinRaid } from '../../lib/raidProtection';
 
 
 function assertInvite(invite: Awaited<ReturnType<typeof Invites.findByCode>>, res: express.Response): asserts invite is NonNullable<Awaited<ReturnType<typeof Invites.findByCode>>> {
@@ -198,6 +199,27 @@ router.post('/:code/use', authMiddleware, limits.servers(), async (req, res) => 
     });
   }
 
+  // Invite joins share the exact same server-wide aggregate as discoverable
+  // joins. A raid cannot evade the window by alternating entry routes.
+  const raid = await checkServerJoinRaid({
+    serverId: invite.serverId,
+    actorId: _u.id,
+    server: server as unknown as Record<string, unknown>,
+    source: 'invite',
+  });
+  if (!raid.allowed) {
+    const retryAfterMs = Math.max(1, raid.retryAfterMs);
+    res.set('Retry-After', String(Math.ceil(retryAfterMs / 1_000)));
+    if (raid.code === 'RAID_AUTHORITY_UNAVAILABLE') {
+      return res.status(503).json({ error: 'RAID_PROTECTION_UNAVAILABLE', retryAfterMs });
+    }
+    return res.status(429).json({
+      error: 'RAID_LOCKDOWN',
+      retryAfterMs,
+      lockdownUntil: raid.lockdownUntil,
+      level: raid.level,
+    });
+  }
 
   const atomicConsume = await Invites.consumeForMemberAtomic(invite._id, _u.id, invite.serverId);
   if (atomicConsume) {
@@ -227,6 +249,8 @@ router.post('/:code/use', authMiddleware, limits.servers(), async (req, res) => 
   //
   // Dogrudan katilma rotasi (routes/servers/core.ts) bunu ZATEN yapiyordu;
   // kardes yol olan davet akisi atlanmisti.
+  // P7 B1: same surge hold as the discoverable join path.
+  await applyRaidJoinHold(invite.serverId, _u.id, raid.hold);
   await afterMemberJoined(
     { id: _u.id, username: _u.username, displayName: _u.displayName },
     invite.serverId,
