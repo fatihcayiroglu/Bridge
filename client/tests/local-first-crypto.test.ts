@@ -6,7 +6,6 @@ import {
   encryptLocalBytes,
   encryptLocalJson,
   generateLocalFirstKey,
-  LOCAL_FIRST_MAX_CIPHERTEXT_BYTES,
   type LocalFirstEnvelope,
 } from '../js/core/local-first/crypto.ts';
 
