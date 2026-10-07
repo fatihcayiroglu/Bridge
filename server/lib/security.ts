@@ -56,6 +56,7 @@ export function isSafeUrl(url: string): boolean {
 // Sprint 121 FIX 24: Bağımsız Redis client oluşturmak yerine redisAdapter'daki
 // paylaşımlı client kullanılıyor — üç ayrı bağlantı havuzu → tek havuz.
 import { cache, redisAuthoritativeCommand } from './redisAdapter';
+import { envSafeInt } from './envNumbers';
 
 function sharedRedisConfigured(): boolean {
   return typeof process.env.REDIS_URL === 'string' && process.env.REDIS_URL.trim().length > 0;
@@ -94,10 +95,29 @@ async function redisSet(key: string, value: unknown, ttlSeconds: number): Promis
 // Fallback: in-memory spamMap
 
 const MAX_SPAM_ENTRIES = 10_000;
-interface SpamState { messages: Array<{ content: string; ts: number }>; warned: boolean; muteUntil: number; }
+interface SpamState { messages: Array<{ content: string; ts: number }>; warned: boolean; muteUntil: number; strikes?: number[]; }
 const spamMap = new Map<string, SpamState>();
 
-const SPAM_CONFIG = { maxMessages: 5, windowMs: 4000, duplicateMax: 3, warnBeforeMute: true };
+// P7 B1 — measured by scripts/abuse-lab. Every threshold is an explicit
+// setting; the defaults keep the pre-P7 burst window (5 messages / 4 s).
+//
+// Before P7 the second window overflow muted the account for 30 s. The lab
+// measured that as a false positive for a fast typist (8 short lines at 700 ms)
+// and for a reconnect replay. Now an overflow beyond the one-time warning only
+// REJECTS the excess message with the time until a slot frees (the client holds
+// and resends it automatically), and a rejected attempt does not occupy the
+// window. The 30 s mute is kept for a sustained flood: `strikesToMute`
+// rejections within `strikeWindowMs`. A script firing 40 messages at once is
+// still cut to the same 6 (lab ATK-01).
+export const SPAM_CONFIG = Object.freeze({
+  maxMessages:    envSafeInt('ABUSE_BURST_MAX', 5, { min: 2, max: 100 }),
+  windowMs:       envSafeInt('ABUSE_BURST_WINDOW_MS', 4_000, { min: 1_000, max: 60_000 }),
+  duplicateMax:   3,
+  warnBeforeMute: true,
+  strikesToMute:  envSafeInt('ABUSE_BURST_STRIKES_TO_MUTE', 3, { min: 1, max: 50 }),
+  strikeWindowMs: envSafeInt('ABUSE_BURST_STRIKE_WINDOW_MS', 60_000, { min: 1_000, max: 10 * 60_000 }),
+  muteMs:         envSafeInt('ABUSE_BURST_MUTE_MS', 30_000, { min: 1_000, max: 60 * 60_000 }),
+});
 
 export type SpamResult =
   | { blocked: false; warning?: boolean; reason?: string }
@@ -107,23 +127,34 @@ function _checkSpamSync(userId: string, content: string, state: SpamState): { re
   const now = Date.now();
   if (state.muteUntil > now) return { result: { blocked: true, reason: 'spam_muted', remainingMs: state.muteUntil - now }, state };
   state.messages = state.messages.filter(m => now - m.ts < SPAM_CONFIG.windowMs);
-  state.messages.push({ content: content?.trim(), ts: now });
+  state.strikes = (state.strikes ?? []).filter(ts => now - ts < SPAM_CONFIG.strikeWindowMs);
+
+  const trimmed = content?.trim().toLowerCase();
+  if (trimmed) {
+    const dupCount = state.messages.filter(m => m.content?.toLowerCase() === trimmed).length + 1;
+    if (dupCount > SPAM_CONFIG.duplicateMax) return { result: { blocked: true, reason: 'spam_duplicate' }, state };
+  }
+
   let result: SpamResult = { blocked: false };
-  if (state.messages.length > SPAM_CONFIG.maxMessages) {
+  if (state.messages.length + 1 > SPAM_CONFIG.maxMessages) {
     if (!state.warned && SPAM_CONFIG.warnBeforeMute) {
       state.warned = true;
       result = { blocked: false, warning: true, reason: 'spam_warning' };
     } else {
-      state.muteUntil = now + 30_000;
-      state.warned = false;
-      result = { blocked: true, reason: 'spam_rate', remainingMs: 30_000 };
+      state.strikes.push(now);
+      if (state.strikes.length >= SPAM_CONFIG.strikesToMute) {
+        state.muteUntil = now + SPAM_CONFIG.muteMs;
+        state.warned = false;
+        state.strikes = [];
+        return { result: { blocked: true, reason: 'spam_rate', remainingMs: SPAM_CONFIG.muteMs }, state };
+      }
+      // Time until the oldest message in the window frees a slot.
+      const oldest = Math.min(...state.messages.map(m => m.ts));
+      const remainingMs = Math.max(250, oldest + SPAM_CONFIG.windowMs - now);
+      return { result: { blocked: true, reason: 'spam_rate', remainingMs }, state };
     }
   }
-  const trimmed = content?.trim().toLowerCase();
-  if (trimmed) {
-    const dupCount = state.messages.filter(m => m.content?.toLowerCase() === trimmed).length;
-    if (dupCount > SPAM_CONFIG.duplicateMax) result = { blocked: true, reason: 'spam_duplicate' };
-  }
+  state.messages.push({ content: content?.trim(), ts: now });
   return { result, state };
 }
 
@@ -134,11 +165,14 @@ export async function checkSpamAsync(userId: string, content: string): Promise<S
     const state: SpamState = stored ?? spamMap.get(userId) ?? { messages: [], warned: false, muteUntil: 0 };
     if (!Array.isArray(state.messages) || typeof state.warned !== 'boolean' ||
         !Number.isFinite(state.muteUntil) ||
+        (state.strikes !== undefined && (!Array.isArray(state.strikes) || state.strikes.some(ts => !Number.isFinite(ts)))) ||
         state.messages.some(m => !m || typeof m !== 'object' || typeof m.content !== 'string' || !Number.isFinite(m.ts))) {
       throw new Error(`Corrupt spam security state: ${userId}`);
     }
     const { result, state: newState } = _checkSpamSync(userId, content, state);
-    const ttl = Math.ceil(Math.max(SPAM_CONFIG.windowMs, newState.muteUntil - Date.now(), 0) / 1000) + 5;
+    // Strikes must outlive the short burst window, or a paused flood resets.
+    const strikeTtl = newState.strikes?.length ? SPAM_CONFIG.strikeWindowMs : 0;
+    const ttl = Math.ceil(Math.max(SPAM_CONFIG.windowMs, strikeTtl, newState.muteUntil - Date.now(), 0) / 1000) + 5;
     const saved = await redisSet(redisKey, newState, ttl || 120);
     if (!saved) {
       // Deliberate single-node deployment only: keep the fallback bounded.
@@ -162,7 +196,8 @@ export function checkSpam(userId: string, content: string): SpamResult {
 setInterval(() => {
   const now = Date.now();
   for (const [uid, state] of spamMap) {
-    const messagesStale = state.messages.every(m => now - m.ts > 60_000);
+    const messagesStale = state.messages.every(m => now - m.ts > 60_000)
+      && (state.strikes ?? []).every(ts => now - ts > SPAM_CONFIG.strikeWindowMs);
     const muteExpired   = state.muteUntil < now;
     if (muteExpired && messagesStale) { spamMap.delete(uid); continue; }
     if (muteExpired && !state.messages.length) spamMap.delete(uid);

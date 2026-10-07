@@ -76,7 +76,10 @@ describe('single-node spam state', () => {
     const uid = user();
     for (let i = 0; i < 5; i += 1) expect(checkSpam(uid, `m${i}`).blocked).toBe(false);
     expect(checkSpam(uid, 'm5')).toMatchObject({ blocked: false, warning: true, reason: 'spam_warning' });
+    // P7 B1: two short-retry rejections, then the third strike mutes.
     expect(checkSpam(uid, 'm6')).toMatchObject({ blocked: true, reason: 'spam_rate' });
+    expect(checkSpam(uid, 'm6b')).toMatchObject({ blocked: true, reason: 'spam_rate' });
+    expect(checkSpam(uid, 'm6c')).toMatchObject({ blocked: true, reason: 'spam_rate', remainingMs: 30_000 });
     // Once muted, further messages report the remaining time rather than
     // restarting the window.
     const muted = checkSpam(uid, 'm7');

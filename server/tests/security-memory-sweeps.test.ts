@@ -48,9 +48,11 @@ describe('spam state is swept once it stops mattering', () => {
   it('keeps a user muted until the mute actually expires', () => {
     // Ard arda FARKLI mesajlar hiz sinirini tetikler (ayni metin ayri bir
     // "yineleme" kuralina takilir; olculen sey HIZ kuralidir).
+    // P7 B1: excess is first rejected with a short retry; a sustained flood
+    // (3 strikes) is what mutes. Twelve rapid messages are a sustained flood.
     let result = checkSpam('u-spam', 'merhaba');
-    for (let i = 0; i < 12 && !result.blocked; i += 1) result = checkSpam('u-spam', `mesaj ${i}`);
-    expect(result.blocked).toBe(true);
+    for (let i = 0; i < 12; i += 1) result = checkSpam('u-spam', `mesaj ${i}`);
+    expect(result).toMatchObject({ blocked: true, reason: 'spam_muted' });
 
     // Supurme dongusu calisir ama susturma HALA surmektedir (30 sn).
     jest.advanceTimersByTime(10_000);
