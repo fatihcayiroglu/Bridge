@@ -9,6 +9,14 @@ import { cache as _rateCache, isRedisAvailable } from '../lib/redisAdapter';
 import { envSafeInt } from '../lib/envNumbers';
 const REDIS_CONFIGURED = Boolean(process.env.REDIS_URL);
 
+function redisAvailable(): boolean {
+  // Runtime builds always export this function. The guard keeps long-lived
+  // maintenance timers safe in isolated test/embedding environments that
+  // replace redisAdapter with a partial module shape. Configured Redis still
+  // fails closed because a missing authority is reported as unavailable.
+  return typeof isRedisAvailable === 'function' && isRedisAvailable();
+}
+
 // ── KULLANICI BAZLI SOCKET RATE LIMITER ────────────────────────
 // Redis varsa: tüm instance'lar aynı sayacı görür (cluster-safe)
 // Redis yoksa: in-memory fallback (tek-instance için yeterli)
@@ -75,7 +83,7 @@ export async function countInWindow(key: string, windowMs: number, now = Date.no
 let _sweepHorizonMs = 120_000;
 
 async function _windowCount(key: string, windowMs: number, now: number): Promise<number> {
-  if (REDIS_CONFIGURED && !isRedisAvailable()) {
+  if (REDIS_CONFIGURED && !redisAvailable()) {
     logger.warn({ event: 'socket_ratelimit.redis.unavailable' },
       '[RateLimit] Socket Redis authority unavailable; rejecting event.');
     return Number.MAX_SAFE_INTEGER;
@@ -97,7 +105,7 @@ async function _windowCount(key: string, windowMs: number, now: number): Promise
 
 // ── In-memory fallback temizleyici (Redis TTL'i otomatik yönetir) ──
 setInterval(() => {
-  if (isRedisAvailable()) return; // Redis aktifse in-memory store kullanılmaz
+  if (redisAvailable()) return; // Redis aktifse in-memory store kullanılmaz
   const now = Date.now();
   for (const [k, hits] of _socketRateStore) {
     const fresh = hits.filter(t => now - t < _sweepHorizonMs);
