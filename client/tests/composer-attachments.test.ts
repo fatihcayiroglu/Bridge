@@ -321,7 +321,8 @@ describe('GÖNDERİM HATASI YAYILIMI — sessiz kayıp yok', () => {
     chooseFile(mkFile());
     document.querySelector<HTMLButtonElement>('[data-bridge-action="sendMessage"]')!.click();
 
-    await vi.advanceTimersByTimeAsync(11_000);
+    await vi.waitFor(() => expect(fileSends()).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(10_001);
     flushSync();
 
     expect(readOutbox('user-a')[0]?.state).toBe('failed');
