@@ -225,6 +225,24 @@ router.post('/:serverId/join', authMiddleware, limits.write(), async (req: Reque
     return res.status(404).json({ error: 'Discoverable server not found' });
   }
   if (result.status === 'banned') return res.status(403).json({ error: 'BANNED' });
+  if (result.status === 'raid_lockdown') {
+    const retryAfterMs = Math.max(1, result.retryAfterMs ?? 1_000);
+    res.set('Retry-After', String(Math.ceil(retryAfterMs / 1_000)));
+    return res.status(429).json({
+      error: 'RAID_LOCKDOWN',
+      retryAfterMs,
+      lockdownUntil: result.lockdownUntil ?? null,
+      level: result.raidLevel,
+    });
+  }
+  if (result.status === 'raid_authority_unavailable') {
+    const retryAfterMs = Math.max(1, result.retryAfterMs ?? 1_000);
+    res.set('Retry-After', String(Math.ceil(retryAfterMs / 1_000)));
+    return res.status(503).json({
+      error: 'RAID_PROTECTION_UNAVAILABLE',
+      retryAfterMs,
+    });
+  }
   if (result.status === 'already_member') return res.status(400).json({ error: 'Already a member' });
   if (result.status === 'mfa_required') {
     return res.status(403).json({
