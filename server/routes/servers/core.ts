@@ -17,10 +17,10 @@ import { envSafeInt } from '../../lib/envNumbers';
 import { joinDiscoverableServer, afterMemberJoined } from '../../lib/serverMembership';
 import { parseServerMfaLevelWrite } from '../../lib/serverMfaPolicy';
 import {
-  parseRaidMitigationLevel,
   raidProtectionStatus,
   type RaidMitigationLevel,
 } from '../../lib/raidProtection';
+import logger from '../../lib/logger';
 
 // GET /api/servers
 /**
@@ -474,9 +474,15 @@ router.patch('/:sid/raid-protection', authMiddleware, limits.moderation(), async
         },
       },
     });
-  } catch {
-    // The policy update is already durable. Audit degradation must be visible
-    // in server logs elsewhere, but must not falsely report the update failed.
+  } catch (auditError) {
+    // The policy update is already durable; do not falsely report it failed.
+    // Audit degradation is still operationally visible.
+    logger.warn({
+      event: 'raid.config.audit_failed',
+      serverId: sid,
+      actorId: _u.id,
+      err: auditError instanceof Error ? auditError.message : String(auditError),
+    }, 'Raid protection update committed but audit logging failed.');
   }
 
   return res.json(next);
