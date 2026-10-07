@@ -189,6 +189,44 @@ describe('Reliable Outbox — composer integration', () => {
     expect(messageEmits().map(item => item.payload.ackId)).toEqual(queued);
   });
 
+  // Ported from PR #127 (9dc4892): the duplicate lifecycle signals arrive AFTER
+  // the outbox is hydrated and the paced replay is already running, so they
+  // exercise the in-flight case the test above cannot reach.
+  it('P7 B1: lifecycle signals during an active paced replay never punch through the hold FIFO', async () => {
+    for (const content of ['queued-1', 'queued-2', 'queued-3', 'queued-4']) {
+      typeAndSend(content);
+    }
+    expect(readOutbox(USER_ID)).toHaveLength(4);
+    expect(messageEmits()).toHaveLength(0);
+
+    connected = true;
+    document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
+    await hydrateLocalFirstOutbox(USER_ID);
+    await Promise.resolve();
+    flushSync();
+
+    // One queued send is allowed through immediately.
+    expect(messageEmits()).toHaveLength(1);
+
+    // Duplicate lifecycle signals must not punch through the replay FIFO.
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    window.dispatchEvent(new Event('online'));
+    await Promise.resolve();
+    flushSync();
+    expect(messageEmits()).toHaveLength(1);
+
+    vi.advanceTimersByTime(999);
+    expect(messageEmits()).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(messageEmits()).toHaveLength(2);
+    vi.advanceTimersByTime(1_000);
+    expect(messageEmits()).toHaveLength(3);
+    vi.advanceTimersByTime(1_000);
+    expect(messageEmits()).toHaveLength(4);
+
+    expect(new Set(messageEmits().map(item => item.payload.ackId)).size).toBe(4);
+  });
+
   it('browser online, mobile foreground and SW wake converge through the same single-flight replay owner', async () => {
     typeAndSend('lifecycle replay');
     const queued = readOutbox(USER_ID)[0];
