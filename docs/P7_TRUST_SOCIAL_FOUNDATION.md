@@ -373,6 +373,129 @@ Rules:
 - step-up decisions are explainable to the user/operator;
 - accessibility and account-recovery escape paths are tested.
 
+### B2 audit (read-only, `main` at `ffc2a9d`)
+
+**Threat this answers.** An attacker who holds only an access token or refresh cookie (XSS, a
+shared or unlocked computer, a leaked token) — but not the person's credentials — can today:
+
+| Action | Route | Current check | Effect for the attacker |
+|---|---|---|---|
+| change recovery e-mail | `POST /api/email/add` | session only | add own address → verify → `/email/forgot` → password reset → **account takeover** |
+| register a passkey | `POST /api/webauthn/register/begin`, `/complete` | session only | **permanent** way back in |
+| remove a passkey | `DELETE /api/webauthn/credentials/:id` | session only | owner lock-out |
+| enable 2FA | `POST /api/2fa/setup`, `/verify` | session only | own authenticator; `rotateSecuritySession` signs the owner out → **lock-out** |
+| export the account | `GET /api/account/export` | session only | whole history exfiltrated |
+| delete an owned server | `DELETE /api/servers/:sid` | session + owner | **irreversible** for every member |
+| instance-admin deletes | `DELETE /api/admin/users/:id`, `/admin/servers/:id` | session + admin | irreversible, instance-wide |
+| disable 2FA / regenerate backup codes | `POST /api/2fa/disable`, `/backup-codes/regenerate` | password only | a phished password + stolen session removes the second factor |
+| destructive moderation | bans, kicks (two routes), `DELETE /api/messages/bulk` | permission + 30/min limiter | a stolen moderator session bans ~30 members/min indefinitely |
+| mass invites | `POST /api/servers/invites` | generic `limits.servers()` (10/min, shared with other server actions) | bounded per minute, unbounded over time (lab ATK-07: 9/25 in a burst) |
+
+Already protected and left as they are: password change (`currentPassword`), `DELETE /api/2fa`
+(a TOTP code inline), account deletion (password + typed confirmation), password reset (verified
+address only; revokes every session). **Gap in the other direction:** SSO-only accounts store no
+password, so they cannot delete their account at all today.
+
+**Existing owners to reuse (no parallel auth flow):**
+- *Credentials* — `routes/twoFactor.ts` (TOTP with per-step replay protection
+  `Users.consumeTotpStep`, backup codes `Users.consumeBackupCode`), bcrypt checks inline in
+  `routes/auth.ts` / `account.ts` / `twoFactor.ts`, WebAuthn assertion in `routes/webauthn.ts`
+  `login/complete`, SSO handoff in `routes/sso.ts`.
+- *Sessions* — `middleware/auth.ts` (access JWT carries `tokenVersion`; refresh rows store only
+  `userId, family, createdAt, expiresAt, used, tokenVersion` — **no IP or device**),
+  `lib/securitySession.ts`, `lib/sessionRevocation.ts`; revocation = `tokenVersion++`.
+- *Counters* — `socket/socketRateLimit.ts` `countInWindow` (cluster-wide in Redis, fail-closed).
+- *Audit* — `audit_logs` is server-scoped (`logAudit` in `lib/permissions.ts`); there is no
+  account-level security log, only structured `logger` events.
+- *Client* — `core/api-fetch.ts` is the single HTTP owner (CSRF and refresh already handled
+  there); `core/product-dialog.ts` (`promptProductText` / `confirmProductAction`) is the
+  accessible modal (focus trap, Escape, labelled); `auth-compat.ts` `startApp()` is where every
+  sign-in path converges; Security/Privacy settings tabs call the protected routes via `apiFetch`.
+  The web client has no owner-side "delete server" UI (only the API and the admin panel).
+- *Device metadata* — the only device signal is `lib/captcha.ts` `checkSuspiciousLogin`
+  (SHA-256 of IP + user-agent, 30-day Redis TTL) used for an advisory e-mail. B2 does **not** use
+  it: it is fingerprint-like and B3 owns its review.
+
+### B2 design (proposed — no production code until approved)
+
+**Principle.** Risk-adaptive here means *the bar rises with the action and with what the account
+itself has configured* — never with a hidden judgement of the person. Every decision is a pure
+function of four inputs, each documented and bounded:
+
+| Signal | Source | Retention |
+|---|---|---|
+| `proof_age` — when this account last proved a credential | a signed **step-up grant** carried by the client | never stored server-side; grant lifetime 10 min (`STEP_UP_TTL_MS`) |
+| `action` — which protected action | static catalog in code | n/a |
+| `account_factors` — password present? 2FA enabled? | the account's own settings (read, never inferred) | the account itself |
+| `burst` — this actor's destructive-moderation or invite count | `countInWindow` (Redis, cluster-wide) | the window (60 s default) |
+| `failed_proofs` — failed step-up attempts on this account | `countInWindow` | 15 min |
+
+No score, no reputation, no IP/geo/device input, no inference about the person.
+
+**Step-up levels.** L1 = a recent password proof or a fresh sign-in. L2 = a recent second factor
+(TOTP or a backup code) or a sign-in that included one (2FA or passkey). *Required level* = L2 if
+the account has 2FA enabled, otherwise L1 — so step-up is never weaker than the account's own
+sign-in.
+
+**Grant.** Short-lived proof `{sub, v (tokenVersion), lvl, amr, exp}` signed with a key *derived*
+from `JWT_SECRET` and its own audience, so it never verifies as an access token and vice versa.
+`tokenVersion++` (sign-out everywhere, password change/reset, 2FA change) revokes all grants. The
+client keeps it in memory only (P7 rule D), sends it as `X-Bridge-Step-Up`.
+
+**Obtaining a grant (reusing each credential's existing verifier).** `POST /api/step-up/password`
+(new, L1; refused for 2FA accounts), `POST /api/2fa/step-up` (TOTP/backup code with the existing
+replay protection, L2), and every sign-in response (password, 2FA, passkey, SSO) carries one —
+"sign in again" is the escape path that always exists. Proof attempts use the existing
+`limits.twoFactor()` budget plus a per-account `failed_proofs` lock (5 in 15 min → step-up locked
+for that account for the window; sign-in and existing sessions are unaffected; structured
+`step_up.locked` event).
+
+**Protected actions (first implementation).**
+
+| Category | Actions | When |
+|---|---|---|
+| Account recovery / security | e-mail change; passkey add (begin + complete) and remove; 2FA enable (setup + verify), disable, backup-code regeneration | always |
+| Sensitive export | account export | always |
+| Irreversible | account deletion (grant **or** existing password; SSO-only accounts use a grant), owned-server deletion, instance-admin user/server deletion | always |
+| Destructive moderation | bans, kicks (both routes), bulk message delete | after a burst: more than 10 per actor per 60 s |
+| Mass invite | invite creation | after a burst: more than 10 per actor per 60 s |
+| Suspicious new session | any of the above from a session without a recent proof; repeated failed proofs | covered by the grant + `failed_proofs` lock |
+
+Existing inline checks stay (password on 2FA disable / regenerate / account deletion; TOTP on
+`DELETE /api/2fa`) — the guard adds to them and never replaces a stronger one.
+
+**User-facing contract.** Refusal is `403 { error: 'STEP_UP_REQUIRED', action, reasons[], why,
+level, methods[], ttlMs }` — never 401 (the client treats 401 as an expired session). `reasons`
+is a closed set (`step_up_missing | _expired | _invalid | _revoked | _other_account | _level |
+moderation_burst | invite_burst | step_up_locked`); `why` is the action's plain-language reason.
+`apiFetch` hands the refusal to one client owner, which asks for **one** proof through the
+existing product dialog (password or one-time-code input, labelled, keyboard-only operable),
+keeps the grant in memory and retries the request once. Concurrent refusals share one prompt.
+Cancel returns the original 403 to the caller.
+
+**Fallbacks.** No password (SSO): sign in again. Lost authenticator: backup code (L2). Lost
+everything: the existing verified-e-mail password reset (unchanged; it never grants L2). A
+failed-proof lock expires on its own and never blocks sign-in.
+
+**Multi-node.** Grants are stateless and verify on any node; revocation rides the existing
+shared `tokenVersion`; counters are the existing cluster-wide window (fail-closed without Redis
+in production); TOTP-step and backup-code consumption are already atomic in the database.
+
+**Evidence required for B2 closure.**
+1. Baseline *before* implementation in the abuse lab (two nodes): stolen-session attacks on each
+   row of the audit table, the compromised-moderator burst, distributed proof guessing.
+2. The same lab after implementation: every stolen-session attack BLOCKED; legitimate controls —
+   fresh sign-in acts without a prompt (OK), an older session acts after one proof (FRICTION),
+   a 2FA account proves with TOTP and with a backup code, ordinary moderation is never asked,
+   a moderator's cleanup continues after one proof — gated in `expectations.json`.
+3. Unit + route matrix: every protected route refuses without a grant and passes with one;
+   level enforcement; revocation after sign-out-everywhere; cross-account grant refused; grant
+   minted on node A accepted on node B; SSO-only account deletion via a sign-in grant.
+4. Client: interception, one prompt for concurrent refusals, cancel path, memory-only grant,
+   cleared on identity change; i18n in all locales; dialog accessibility.
+5. Full server/client typecheck, coverage gates, CI green; design-decision contract (problem,
+   architecture, security, UX, rollback = per-action env switch + revert commits).
+
 ## B3. Metadata minimization
 
 Audit what Bridge stores/emits beyond message content.
