@@ -10,11 +10,17 @@ It is deliberately benchmark-first. Baseline mode records attack acceptance/bloc
 - `ATK-02` — exact duplicate-message flood
 - `ATK-03` — single-message mass mention fan-out
 - `ATK-04` — new-recipient DM spray paced below the outer socket gate
-- `ATK-05` — multi-account join raid against one community
+- `ATK-05` — multi-account join raid against one community, measured by post-join message delivery
 - `LEG-01` — normal active conversation
 - `LEG-02` — paced reconnect-like backlog
 - `LEG-03` — one ordinary mention
-- `LEG-04` — small legitimate join cohort
+- `LEG-04` — normal burst inside an existing DM conversation
+- `LEG-05` — a few new DM recipients
+- `LEG-06` — small legitimate join cohort + posting
+- `LEG-07` — 40 established (>24h) accounts joining and posting during an organic launch surge
+
+Channel/mention scenarios use separate authenticated senders so per-account spam and
+socket windows cannot leak from an attack case into the next legitimate control.
 
 The report contains accepted/blocked counts, false-positive flags, scenario durations, DM accepted/hour projection and before/after Bridge-node RSS.
 
