@@ -800,11 +800,48 @@
   }
 
   function installHydratedOutbox(userId: string, entries: OutboxEntry[]): void {
+    // Hydration can finish AFTER the user has already sent a message. Clearing
+    // pendingSends here used to cancel that live ACK timer and then reinstall
+    // the row as `sending` with timer=null, leaving it stuck forever if the
+    // server never replied. Preserve in-flight timers for this same account;
+    // encrypted hydration still owns every non-live/restored row.
+    const live = new Map(
+      [...pendingSends.entries()].filter(([, pending]) =>
+        pending.entry.userId === userId && pending.timer !== null),
+    );
+
     clearPendingMemory();
     hydratedUserId = userId;
     hydratingOutboxUserId = '';
     lastOutboxUserId = userId;
-    for (const entry of entries) pendingSends.set(entry.ackId, { entry, timer: null });
+
+    const installed = new Set<string>();
+    for (const entry of entries) {
+      const inFlight = live.get(entry.ackId);
+      if (inFlight) {
+        // clearPendingMemory() cleared the timer; the handle itself is no
+        // longer scheduled, so re-arm from the canonical remaining contract.
+        // dispatchSend preserves the same ackId and creates exactly one timer.
+        pendingSends.set(entry.ackId, { entry: inFlight.entry, timer: null });
+      } else {
+        pendingSends.set(entry.ackId, { entry, timer: null });
+      }
+      installed.add(entry.ackId);
+    }
+
+    // A generation-guarded optimistic mutation should already be present in
+    // `entries`; keep this fail-safe so a live send is never silently lost if
+    // storage initialization returns an older snapshot under a browser quirk.
+    for (const [ackId, pending] of live) {
+      if (!installed.has(ackId)) pendingSends.set(ackId, { entry: pending.entry, timer: null });
+    }
+
+    // Re-arm only the rows that were genuinely in flight before hydration.
+    const sock = socket();
+    for (const [ackId] of live) {
+      const pending = pendingSends.get(ackId);
+      if (pending && pending.entry.state === 'sending') dispatchSend(pending.entry, sock);
+    }
   }
 
   /**
