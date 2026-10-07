@@ -1,6 +1,7 @@
 'use strict';
 
 const mockServerUpdate = jest.fn();
+const mockServerFindById = jest.fn();
 const mockAuditInsert = jest.fn();
 const mockClaimCooldown = jest.fn();
 const mockSlidingWindowCount = jest.fn();
@@ -16,7 +17,10 @@ const mockLogger = {
 };
 
 jest.mock('../db/repositories', () => ({
-  Servers: { update: (...args: unknown[]) => mockServerUpdate(...args) },
+  Servers: {
+    update: (...args: unknown[]) => mockServerUpdate(...args),
+    findById: (...args: unknown[]) => mockServerFindById(...args),
+  },
   Auth: { insertAuditLog: (...args: unknown[]) => mockAuditInsert(...args) },
   Members: {
     holdRecentYoungJoiners: (...args: unknown[]) => mockHoldCohort(...args),
@@ -49,6 +53,7 @@ describe('P7 B1 bounded join-raid policy', () => {
     mockServerUpdate.mockResolvedValue(undefined);
     mockAuditInsert.mockResolvedValue(undefined);
     mockHoldCohort.mockResolvedValue(0);
+    mockServerFindById.mockResolvedValue({ raidMitigationLevel: 'balanced', raidLockdownUntil: null });
   });
 
   it('off disables only raid aggregation and creates no hidden user score', async () => {
@@ -214,9 +219,24 @@ describe('P7 B1 bounded join-raid policy', () => {
     mockMemberFindOne.mockResolvedValueOnce({ timeoutUntil: now + 9_999_999 });    // moderator timeout is longer
     await expect(applyRaidJoinHold('s', 'timed-out', { ...hold, until: now + 600_000 }, now)).resolves.toBe(false);
 
-    await expect(applyRaidJoinHold('s', 'any', null, now)).resolves.toBe(false);
+    await expect(applyRaidJoinHold('s', 'any', null, now)).resolves.toBe(false);   // no raid mode right now
     await expect(applyRaidJoinHold('s', 'any', { ...hold, until: now - 1 }, now)).resolves.toBe(false);
     expect(mockMemberSetTimeout).not.toHaveBeenCalled();
+  });
+
+  it('a join counted below the threshold but inserted after raid mode began is still held', async () => {
+    const now = 100_000_000;
+    // The decision carried no hold, but by the time the insert landed the
+    // crossing join had persisted raid mode.
+    mockServerFindById.mockResolvedValueOnce({ raidMitigationLevel: 'balanced', raidLockdownUntil: now + 600_000 });
+    mockUserFindById.mockResolvedValueOnce({ createdAt: now - 5_000 });
+    mockMemberFindOne.mockResolvedValueOnce({ timeoutUntil: null });
+    await expect(applyRaidJoinHold('s', 'late-insert', null, now)).resolves.toBe(true);
+    expect(mockMemberSetTimeout).toHaveBeenCalledWith('s', 'late-insert', now + 600_000);
+
+    // Level off: never held, whatever the stored deadline.
+    mockServerFindById.mockResolvedValueOnce({ raidMitigationLevel: 'off', raidLockdownUntil: now + 600_000 });
+    await expect(applyRaidJoinHold('s', 'off-server', null, now)).resolves.toBe(false);
   });
 
   it('an existing bounded lockdown blocks before touching any aggregate counter', async () => {

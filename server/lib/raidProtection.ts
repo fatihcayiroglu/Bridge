@@ -287,9 +287,23 @@ export async function checkServerJoinRaid(input: {
 /**
  * Applies a raid hold to an account that has just joined, if the account is
  * young. Never shortens a longer timeout. Returns whether a hold was placed.
+ *
+ * Call AFTER the membership insert. When the decision carried no hold, raid
+ * mode is re-read: a join counted below the threshold whose insert landed after
+ * the threshold-crossing cohort update would otherwise slip through (lab: 7 of
+ * 60 raid messages). The crossing persists raid mode BEFORE holding the cohort,
+ * so every insert is covered by one of the two.
  */
-export async function applyRaidJoinHold(serverId: string, userId: string, hold: RaidJoinHold | null, now = Date.now()): Promise<boolean> {
-  if (!hold || hold.until <= now) return false;
+export async function applyRaidJoinHold(serverId: string, userId: string, holdInput: RaidJoinHold | null | undefined, now = Date.now()): Promise<boolean> {
+  let hold = holdInput ?? null;
+  if (!hold) {
+    const server = await Servers.findById(serverId) as Record<string, unknown> | null;
+    const level = parseRaidMitigationLevel(server?.raidMitigationLevel);
+    const until = server ? lockdownUntilOf(server) : null;
+    if (level === 'off' || until === null || until <= now) return false;
+    hold = { until, youngAccountMs: RAID_POLICIES[level].youngAccountMs };
+  }
+  if (hold.until <= now) return false;
   const user = await Users.findById(userId) as { createdAt?: unknown } | null;
   const createdAt = Number(user?.createdAt);
   if (!Number.isFinite(createdAt) || createdAt < now - hold.youngAccountMs) return false;
