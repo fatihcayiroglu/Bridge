@@ -177,6 +177,66 @@ describe('P7 A6 local-first search', () => {
     }).hits.map(hit => hit.id)).toEqual(['other']);
   });
 
+  it('covers empty-query, invalid-date and strict local-filter boundaries', () => {
+    const snapshots: LocalHistorySnapshot[] = [{
+      v: 1,
+      channelId: 'channel-a',
+      savedAt: 100,
+      tombstones: [],
+      messages: [
+        {
+          _id: 'm1',
+          channelId: 'channel-a',
+          channelName: 'general',
+          userId: 'u1',
+          username: 'alice',
+          displayName: 'Alice Example',
+          content: 'needle text',
+          contentFormat: 1,
+          createdAt: 50,
+        },
+      ],
+    }];
+
+    expect(searchHistorySnapshots(snapshots, ' ')).toEqual({ hits: [], hasMore: false });
+    expect(searchHistorySnapshots(snapshots, 'n')).toEqual({ hits: [], hasMore: false });
+    expect(searchHistorySnapshots(snapshots, 'needle', {
+      filters: { channelId: 'other' },
+    }).hits).toEqual([]);
+    expect(searchHistorySnapshots(snapshots, 'needle', {
+      filters: { from: 'nobody' },
+    }).hits).toEqual([]);
+    expect(searchHistorySnapshots(snapshots, 'needle', {
+      filters: { in: 'missing-name' },
+    }).hits).toEqual([]);
+    expect(searchHistorySnapshots(snapshots, 'needle', {
+      filters: { has: 'file' },
+    }).hits).toEqual([]);
+    expect(searchHistorySnapshots(snapshots, 'needle', {
+      filters: { after: 'not-a-date' },
+    }).hits).toEqual([]);
+    expect(searchHistorySnapshots(snapshots, 'needle', {
+      filters: { before: '1970-01-01T00:00:00.001Z' },
+    }).hits).toEqual([]);
+  });
+
+  it('clamps pagination and context radius without leaking another channel', () => {
+    const snapshots: LocalHistorySnapshot[] = [{
+      v: 1,
+      channelId: 'channel-a',
+      savedAt: 100,
+      tombstones: [],
+      messages: [
+        { _id: 'm1', channelId: 'channel-a', content: 'needle one', contentFormat: 1, createdAt: 1 },
+        { _id: 'm2', channelId: 'channel-a', content: 'needle two', contentFormat: 1, createdAt: 2 },
+      ],
+    }];
+
+    expect(searchHistorySnapshots(snapshots, 'needle', { limit: 0, offset: -10 }).hits).toHaveLength(2);
+    expect(searchHistorySnapshots(snapshots, 'needle', { limit: 999 }).hits).toHaveLength(2);
+    expect(searchHistorySnapshots(snapshots, 'needle', { offset: 999 }).hits).toEqual([]);
+  });
+
   it('builds context only from the same cached channel window', async () => {
     const userId = 'search-context-user';
     await replaceLocalFirstHistory(userId, 'channel-a', [
