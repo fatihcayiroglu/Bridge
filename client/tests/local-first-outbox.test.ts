@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { OutboxEntry } from '../js/core/outbox-store.ts';
 import {
   EncryptedOutboxRepository,
+  validLocalOutboxEntry,
   type LegacyOutboxSource,
 } from '../js/core/local-first/outbox.ts';
 import {
@@ -129,6 +130,164 @@ describe('P7 encrypted outbox repository', () => {
 
     await expect(repository.write([entry('dup'), entry('dup')])).rejects.toThrow('Duplicate');
     await expect(repository.write([{ ...entry('x'), userId: 'u2' }])).rejects.toThrow('Invalid');
+  });
+
+  it('fails closed on malformed queue fields while accepting complete reply/file/sticker shapes', () => {
+    const base = entry('valid');
+    const invalid: unknown[] = [
+      null,
+      [],
+      { ...base, userId: 'other' },
+      { ...base, ackId: '' },
+      { ...base, ackId: 'x'.repeat(65) },
+      { ...base, channelId: '' },
+      { ...base, serverId: '' },
+      { ...base, state: 'unknown' },
+      { ...base, messageType: 'unknown' },
+      { ...base, draftKind: 'unknown' },
+      { ...base, content: 1 },
+      { ...base, content: 'x'.repeat(2001) },
+      { ...base, createdAt: Number.NaN },
+      { ...base, createdAt: -1 },
+      { ...base, attempts: Number.NaN },
+      { ...base, attempts: -1 },
+      { ...base, lastAttemptAt: Number.NaN },
+      { ...base, lastError: 1 },
+      { ...base, replyToId: 1 },
+      { ...base, replyPreview: null },
+      { ...base, replyPreview: { _id: '' } },
+      { ...base, replyPreview: { _id: 'm1', displayName: 1 } },
+      { ...base, replyPreview: { _id: 'm1', content: 1 } },
+      { ...base, messageType: 'file', fileName: 'x.txt' },
+      { ...base, messageType: 'file', fileUrl: '/uploads/x.txt' },
+      { ...base, messageType: 'file', fileUrl: '/uploads/x.txt', fileName: 'x.txt', fileType: 1 },
+      { ...base, messageType: 'sticker', stickerId: 'st1' },
+      { ...base, messageType: 'sticker', stickerPackId: 'p1' },
+      { ...base, messageType: 'sticker', stickerPackId: 'p1', stickerId: 'st1', stickerSnapshot: null },
+      {
+        ...base,
+        messageType: 'sticker',
+        stickerPackId: 'p1',
+        stickerId: 'st1',
+        stickerSnapshot: { id: 1, packId: 'p1', name: 'n', url: '/u', width: 1, height: 1 },
+      },
+      {
+        ...base,
+        messageType: 'sticker',
+        stickerPackId: 'p1',
+        stickerId: 'st1',
+        stickerSnapshot: { id: 'st1', packId: 1, name: 'n', url: '/u', width: 1, height: 1 },
+      },
+      {
+        ...base,
+        messageType: 'sticker',
+        stickerPackId: 'p1',
+        stickerId: 'st1',
+        stickerSnapshot: { id: 'st1', packId: 'p1', name: 1, url: '/u', width: 1, height: 1 },
+      },
+      {
+        ...base,
+        messageType: 'sticker',
+        stickerPackId: 'p1',
+        stickerId: 'st1',
+        stickerSnapshot: { id: 'st1', packId: 'p1', name: 'n', url: 1, width: 1, height: 1 },
+      },
+      {
+        ...base,
+        messageType: 'sticker',
+        stickerPackId: 'p1',
+        stickerId: 'st1',
+        stickerSnapshot: { id: 'st1', packId: 'p1', name: 'n', url: '/u', width: Number.NaN, height: 1 },
+      },
+      {
+        ...base,
+        messageType: 'sticker',
+        stickerPackId: 'p1',
+        stickerId: 'st1',
+        stickerSnapshot: { id: 'st1', packId: 'p1', name: 'n', url: '/u', width: 1, height: Number.NaN },
+      },
+    ];
+
+    for (const value of invalid) expect(validLocalOutboxEntry(value, 'u1')).toBe(false);
+
+    expect(validLocalOutboxEntry({
+      ...base,
+      replyToId: 'm0',
+      replyPreview: { _id: 'm0', displayName: 'Alice', content: 'preview' },
+      lastAttemptAt: 5,
+      lastError: 'retry',
+    }, 'u1')).toBe(true);
+
+    expect(validLocalOutboxEntry({
+      ...base,
+      messageType: 'file',
+      fileUrl: '/uploads/x.txt',
+      fileName: 'x.txt',
+      fileType: 'text/plain',
+    }, 'u1')).toBe(true);
+
+    expect(validLocalOutboxEntry({
+      ...base,
+      messageType: 'sticker',
+      stickerPackId: 'p1',
+      stickerId: 'st1',
+      stickerSnapshot: {
+        id: 'st1', packId: 'p1', name: 'wave', url: '/uploads/stickers/wave.webp',
+        width: 160, height: 160,
+      },
+    }, 'u1')).toBe(true);
+  });
+
+  it('covers empty, missing, update, remove and migration cleanup boundaries', async () => {
+    const { repository } = repo();
+
+    await expect(repository.read()).resolves.toEqual([]);
+    await expect(repository.write([])).resolves.toEqual([]);
+    await expect(repository.patch('missing', { state: 'failed' })).resolves.toBeNull();
+
+    await repository.put(entry('same', 'queued', 2));
+    await repository.put(entry('same', 'failed', 2));
+    await expect(repository.read()).resolves.toMatchObject([{ ackId: 'same', state: 'failed' }]);
+
+    await expect(repository.patch('same', { attempts: -1 })).rejects.toThrow('Invalid local-first outbox patch');
+
+    await repository.remove('same');
+    await expect(repository.read()).resolves.toEqual([]);
+
+    const empty = legacy([]);
+    await expect(repository.migrateLegacy(empty)).resolves.toEqual({
+      status: 'nothing-to-migrate',
+      entries: [],
+    });
+
+    await repository.write([entry('encrypted')]);
+    await expect(repository.migrateLegacy(legacy([]))).resolves.toMatchObject({
+      status: 'already-encrypted',
+      entries: [{ ackId: 'encrypted' }],
+    });
+  });
+
+  it('verifies plaintext cleanup when encrypted and legacy queues already match', async () => {
+    const { repository } = repo();
+    const same = [entry('same')];
+    await repository.write(same);
+    const old = legacy(same);
+
+    await expect(repository.migrateLegacy(old)).resolves.toMatchObject({
+      status: 'already-encrypted',
+      entries: [{ ackId: 'same' }],
+    });
+    expect(old.clear).toHaveBeenCalledOnce();
+    expect(old.current).toEqual([]);
+  });
+
+  it('refuses to claim migration success when legacy plaintext cannot be cleared', async () => {
+    const { repository } = repo();
+    const old = legacy([entry('legacy-stuck')]);
+    old.clear.mockImplementation(() => undefined);
+
+    await expect(repository.migrateLegacy(old)).rejects.toThrow('cleanup verification failed');
+    expect(old.current).toHaveLength(1);
   });
 
   it('enforces the bounded queue rather than evicting unsent messages', async () => {
