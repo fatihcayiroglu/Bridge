@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// scripts/abuse-lab/run.mjs — P7 B1 abuse attack lab.
+// scripts/abuse-lab/run.mjs — P7 B1 abuse attack lab (+ B2 stolen-session
+// and step-up scenarios).
 //
 // Measures how a REAL Bridge cluster (two `node server/dist/index.js`
 // processes, NODE_ENV=production, shared PostgreSQL + Redis — the multinode
@@ -25,6 +26,7 @@
 // the run fails when a control is FALSE_POSITIVE or an attack is weaker than
 // the floor recorded in expectations.json (so mitigations cannot regress).
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -42,6 +44,8 @@ const ALL = [
   'msgburst', 'dupslow', 'nearslow', 'mentions', 'dmspray', 'joinchurn', 'invites', 'raid', 'replaystorm',
   'legit_burst', 'legit_fast', 'legit_chat', 'legit_reconnect', 'legit_acklost', 'legit_retry',
   'legit_joins', 'legit_event', 'legit_surge', 'legit_newcomers', 'legit_modops',
+  // P7 B2 — high-risk actions from a stolen session, and the people who make them legitimately.
+  'takeover', 'modburst', 'legit_stepup', 'legit_stepup_mfa', 'legit_modroutine',
 ];
 const selected = opt('scenarios', ALL.join(',')).split(',').map((s) => s.trim()).filter(Boolean);
 const LABEL = opt('label', 'baseline');
@@ -80,14 +84,16 @@ const anyNode = () => nodeUrls()[rr++ % cluster.nodeNames.length];
 class Person {
   constructor(base, username, password, ip) { Object.assign(this, { base, username, password, ip, csrf: null, sockets: [] }); }
   headers() { return { 'X-Forwarded-For': this.ip }; }
-  async api(method, urlPath, body, { base = this.base } = {}) {
+  async api(method, urlPath, body, { base = this.base, headers = {} } = {}) {
     if (method !== 'GET' && !this.csrf) {
       const r = await request(base, 'GET', '/api/csrf-token', { token: this.token, headers: this.headers() });
       if (r.status !== 200) return r;
       this.csrf = r.body.token;
     }
-    return request(base, method, urlPath, { token: this.token, body, csrf: method === 'GET' ? undefined : this.csrf, headers: this.headers() });
+    return request(base, method, urlPath, { token: this.token, body, csrf: method === 'GET' ? undefined : this.csrf, headers: { ...this.headers(), ...headers } });
   }
+  /** A security change rotated this person's session: adopt the new access token. */
+  adopt(token) { if (typeof token === 'string' && token) { this.token = token; this.csrf = null; } }
   socket(base = this.base) {
     return new Promise((resolve, reject) => {
       const s = io(base, {
