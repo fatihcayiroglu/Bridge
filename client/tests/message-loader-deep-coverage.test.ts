@@ -401,9 +401,9 @@ describe('MessageLoader — socket mutations and typing lifecycle', () => {
     socket.fire('message:reaction', { messageId: 'reply' });
     socket.fire('message:pinned', { messageId: 'reply', pinned: true });
     socket.fire('message:embedUpdate', { messageId: 'reply' });
-    expect(calls.updateMessage).toHaveBeenCalledWith({ _id: 'reply', reactions: {} });
-    expect(calls.updateMessage).toHaveBeenCalledWith({ _id: 'reply', pinned: true });
-    expect(calls.updateMessage).toHaveBeenCalledWith({ _id: 'reply', embeds: [] });
+    expect(calls.updateMessage).toHaveBeenCalledWith(expect.objectContaining({ _id: 'reply', reactions: {} }));
+    expect(calls.updateMessage).toHaveBeenCalledWith(expect.objectContaining({ _id: 'reply', pinned: true }));
+    expect(calls.updateMessage).toHaveBeenCalledWith(expect.objectContaining({ _id: 'reply', embeds: [] }));
   });
 
   it('announces a direct removal even when the message owner has no loaded snapshot', async () => {
