@@ -1,6 +1,7 @@
 // server/lib/security.ts
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
+import { envSafeInt } from './envNumbers';
 
 const HTML_ENTITIES: Record<string, string> = {
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
@@ -94,31 +95,87 @@ async function redisSet(key: string, value: unknown, ttlSeconds: number): Promis
 // Fallback: in-memory spamMap
 
 const MAX_SPAM_ENTRIES = 10_000;
-interface SpamState { messages: Array<{ content: string; ts: number }>; warned: boolean; muteUntil: number; }
+interface SpamState {
+  messages: Array<{ content: string; ts: number }>;
+  warned: boolean;
+  muteUntil: number;
+  strikes: number;
+  strikeWindowStartedAt: number;
+}
 const spamMap = new Map<string, SpamState>();
 
-const SPAM_CONFIG = { maxMessages: 5, windowMs: 4000, duplicateMax: 3, warnBeforeMute: true };
+const SPAM_CONFIG = Object.freeze({
+  maxMessages: envSafeInt('SPAM_MAX_MESSAGES', 5, { min: 1, max: 1_000 }),
+  windowMs: envSafeInt('SPAM_WINDOW_MS', 4_000, { min: 100, max: 60_000 }),
+  duplicateMax: envSafeInt('SPAM_DUPLICATE_MAX', 3, { min: 1, max: 100 }),
+  warnBeforeMute: true,
+  strikeWindowMs: envSafeInt('SPAM_STRIKE_WINDOW_MS', 60_000, { min: 1_000, max: 10 * 60_000 }),
+  muteAfterStrikes: envSafeInt('SPAM_MUTE_AFTER_STRIKES', 3, { min: 1, max: 100 }),
+  muteMs: envSafeInt('SPAM_MUTE_MS', 30_000, { min: 1_000, max: 60 * 60_000 }),
+  minRetryMs: envSafeInt('SPAM_MIN_RETRY_MS', 1_000, { min: 100, max: 60_000 }),
+});
 
 export type SpamResult =
   | { blocked: false; warning?: boolean; reason?: string }
   | { blocked: true; reason: string; remainingMs?: number };
 
 function _checkSpamSync(userId: string, content: string, state: SpamState): { result: SpamResult; state: SpamState } {
+  void userId;
   const now = Date.now();
-  if (state.muteUntil > now) return { result: { blocked: true, reason: 'spam_muted', remainingMs: state.muteUntil - now }, state };
+  if (state.muteUntil > now) {
+    return { result: { blocked: true, reason: 'spam_muted', remainingMs: state.muteUntil - now }, state };
+  }
+
   state.messages = state.messages.filter(m => now - m.ts < SPAM_CONFIG.windowMs);
+  if (state.messages.length === 0) state.warned = false;
+  if (
+    state.strikeWindowStartedAt > 0
+    && now - state.strikeWindowStartedAt >= SPAM_CONFIG.strikeWindowMs
+  ) {
+    state.strikes = 0;
+    state.strikeWindowStartedAt = 0;
+  }
+
   state.messages.push({ content: content?.trim(), ts: now });
   let result: SpamResult = { blocked: false };
+
   if (state.messages.length > SPAM_CONFIG.maxMessages) {
     if (!state.warned && SPAM_CONFIG.warnBeforeMute) {
       state.warned = true;
       result = { blocked: false, warning: true, reason: 'spam_warning' };
     } else {
-      state.muteUntil = now + 30_000;
-      state.warned = false;
-      result = { blocked: true, reason: 'spam_rate', remainingMs: 30_000 };
+      // Rejected overflow attempts must not make the active message window
+      // denser; otherwise an automatic retry is punished for the same burst.
+      state.messages.pop();
+
+      if (state.strikeWindowStartedAt === 0) {
+        state.strikeWindowStartedAt = now;
+        state.strikes = 0;
+      }
+      state.strikes += 1;
+
+      if (state.strikes >= SPAM_CONFIG.muteAfterStrikes) {
+        state.muteUntil = now + SPAM_CONFIG.muteMs;
+        state.warned = false;
+        state.strikes = 0;
+        state.strikeWindowStartedAt = 0;
+        result = {
+          blocked: true,
+          reason: 'spam_rate',
+          remainingMs: SPAM_CONFIG.muteMs,
+        };
+      } else {
+        const oldestTs = state.messages[0]?.ts ?? now;
+        const untilSlot = Math.max(0, SPAM_CONFIG.windowMs - (now - oldestTs));
+        result = {
+          blocked: true,
+          reason: 'spam_rate',
+          remainingMs: Math.max(SPAM_CONFIG.minRetryMs, untilSlot),
+        };
+      }
     }
   }
+
   const trimmed = content?.trim().toLowerCase();
   if (trimmed) {
     const dupCount = state.messages.filter(m => m.content?.toLowerCase() === trimmed).length;
@@ -131,14 +188,31 @@ export async function checkSpamAsync(userId: string, content: string): Promise<S
   return cache.withKeyLock(`security:spam:${userId}`, async () => {
     const redisKey = `security:spam:${userId}`;
     const stored = await redisGet<SpamState>(redisKey);
-    const state: SpamState = stored ?? spamMap.get(userId) ?? { messages: [], warned: false, muteUntil: 0 };
+    const rawState = stored ?? spamMap.get(userId);
+    const state: SpamState = rawState
+      ? {
+          ...rawState,
+          strikes: rawState.strikes ?? 0,
+          strikeWindowStartedAt: rawState.strikeWindowStartedAt ?? 0,
+        }
+      : { messages: [], warned: false, muteUntil: 0, strikes: 0, strikeWindowStartedAt: 0 };
     if (!Array.isArray(state.messages) || typeof state.warned !== 'boolean' ||
         !Number.isFinite(state.muteUntil) ||
+        !Number.isSafeInteger(state.strikes) || state.strikes < 0 ||
+        !Number.isFinite(state.strikeWindowStartedAt) || state.strikeWindowStartedAt < 0 ||
         state.messages.some(m => !m || typeof m !== 'object' || typeof m.content !== 'string' || !Number.isFinite(m.ts))) {
       throw new Error(`Corrupt spam security state: ${userId}`);
     }
     const { result, state: newState } = _checkSpamSync(userId, content, state);
-    const ttl = Math.ceil(Math.max(SPAM_CONFIG.windowMs, newState.muteUntil - Date.now(), 0) / 1000) + 5;
+    const strikeRemaining = newState.strikeWindowStartedAt > 0
+      ? Math.max(0, SPAM_CONFIG.strikeWindowMs - (Date.now() - newState.strikeWindowStartedAt))
+      : 0;
+    const ttl = Math.ceil(Math.max(
+      SPAM_CONFIG.windowMs,
+      newState.muteUntil - Date.now(),
+      strikeRemaining,
+      0,
+    ) / 1000) + 5;
     const saved = await redisSet(redisKey, newState, ttl || 120);
     if (!saved) {
       // Deliberate single-node deployment only: keep the fallback bounded.
@@ -152,7 +226,9 @@ export async function checkSpamAsync(userId: string, content: string): Promise<S
 // Geriye dönük uyumluluk: sync API (in-memory only — Redis'e yazmaz)
 // Yeni kod checkSpamAsync kullanmalı.
 export function checkSpam(userId: string, content: string): SpamResult {
-  const state = spamMap.get(userId) ?? { messages: [], warned: false, muteUntil: 0 };
+  const state = spamMap.get(userId) ?? {
+    messages: [], warned: false, muteUntil: 0, strikes: 0, strikeWindowStartedAt: 0,
+  };
   const { result, state: newState } = _checkSpamSync(userId, content, state);
   if (!spamMap.has(userId) && spamMap.size >= MAX_SPAM_ENTRIES) spamMap.delete(spamMap.keys().next().value!);
   spamMap.set(userId, newState);
