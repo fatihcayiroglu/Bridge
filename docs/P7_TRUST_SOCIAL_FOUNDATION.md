@@ -3,9 +3,10 @@
 P7 starts from the verified P6 closure and is the required foundation before P8.
 
 - P6 closure merge: `972f30cde9719d9285e2da9a448ccd7dbae97679`
-- working `main` baseline: `36e9f9c35e45bff9991833e50588c0c57551b1af`
+- P7 A1–A7 foundation merge: `4eee3cf9496c13a1a72427b6ba18ddf0e840d468` (PR #124)
 - P7 branch: `p7/local-first-openai`
-- P7 PR: #124
+- active P7 PR (canonical B1 closure candidate): #129
+- PR #124 is **not** the P7 closure record; it merged the verified local-first foundation only.
 
 ## Goal
 
@@ -19,6 +20,17 @@ P7 is complete only when all four pillars below are measured and closed:
 2. Trust, Safety & Privacy
 3. Portable Identity & Community
 4. Database Scaling
+
+### Current closure status
+
+- Pillar A (A1–A7 local-first foundation) reached exact-head green at
+  `ac021863b464bf9f9ada945ef18f1a86d77e0100`; PR #124 merged it to `main` as
+  `4eee3cf9496c13a1a72427b6ba18ddf0e840d468`.
+- B1 (anti-spam / anti-raid, § B1 evidence below) is the closure candidate in PR #129.
+  PR #127 (`p7/trust-safety-openai`) is a parallel B1 line that #129 is expected to
+  supersede; its unique evidence items were audited and ported into #129.
+- B2–B5, C1–C4 and D1–D3 remain open.
+- Therefore **P7 is not closed** and P8 remains blocked.
 
 P7 must close before P8 work begins.
 
