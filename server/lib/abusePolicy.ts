@@ -83,16 +83,18 @@ export function linkHostsOf(content: string): string[] {
 }
 
 /**
- * Text normalized so trivially varied copies compare equal: case, digits,
- * punctuation and whitespace are folded; a link becomes its host.
+ * Text normalized so trivially varied copies compare equal: case, punctuation
+ * and whitespace are folded; a link becomes its host. Numbers are NOT folded:
+ * the lab measured ordinary messages that differ only by a number ("room 101
+ * is free", "room 102 is free"; an offline backlog) being refused as repeats.
+ * Number-varied spam carrying a link is caught by the link-host rule instead.
  */
 export function contentFingerprint(content: string): string {
   return content
     .normalize('NFKC')
     .replace(URL_PATTERN, (raw) => ` ${linkHostsOf(raw)[0] ?? 'link'} `)
     .toLowerCase()
-    .replace(/\d+/g, '#')
-    .replace(/[^\p{L}\p{N}#.]+/gu, ' ')
+    .replace(/[^\p{L}\p{N}.]+/gu, ' ')
     .trim()
     .replace(/\s+/g, ' ');
 }

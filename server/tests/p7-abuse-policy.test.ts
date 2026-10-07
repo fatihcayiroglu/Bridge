@@ -24,11 +24,19 @@ const user = () => `abuse-user-${++seq}`;
 beforeAll(() => { delete process.env.REDIS_URL; });
 
 describe('P7 B1 content fingerprint', () => {
-  it('folds case, digits, punctuation and links to their host', () => {
+  it('folds case, punctuation and links to their host — but never numbers', () => {
     expect(contentFingerprint('FREE Nitro!!  at https://www.Spam.example/claim?id=991'))
-      .toBe(contentFingerprint('free nitro at http://spam.example/other/path 12'.replace(' 12', '')));
-    expect(contentFingerprint('Win 500 coins now')).toBe(contentFingerprint('win 7 coins now'));
+      .toBe(contentFingerprint('free nitro at http://spam.example/other/path'));
+    // Messages that differ only by a number are different messages (lab LEG-04).
+    expect(contentFingerprint('Room 101 is free now')).not.toBe(contentFingerprint('Room 102 is free now'));
     expect(contentFingerprint('see you at 5')).not.toBe(contentFingerprint('see you later'));
+  });
+
+  it('an offline backlog of messages that differ only by a number is never a repeat', async () => {
+    const u = user();
+    for (let i = 0; i < 10; i++) {
+      await expect(checkContentAbuse(u, `typed offline message ${i}`, T0 + i * 1_000)).resolves.toEqual({ allowed: true });
+    }
   });
 
   it('extracts at most five distinct, normalized link hosts', () => {
