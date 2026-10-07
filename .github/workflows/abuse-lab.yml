@@ -1,0 +1,74 @@
+name: P7 Abuse Lab Evidence
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/abuse-lab/**'
+      - 'server/lib/security.ts'
+      - 'server/lib/abusePolicy.ts'
+      - 'server/lib/raidProtection.ts'
+      - 'server/socket/handlers/messages-send.ts'
+      - 'server/socket/handlers/dm.ts'
+      - 'server/socket/socketRateLimit.ts'
+      - 'server/routes/dm.ts'
+      - 'server/routes/servers/**'
+      - 'server/routes/discover.ts'
+      - '.github/workflows/abuse-lab.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '41 4 * * 2'
+
+concurrency:
+  group: p7-abuse-lab-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  baseline:
+    name: Two-node abuse baseline/evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      NODE_VERSION: '24.20.0'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install infrastructure
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server lsof
+          sudo systemctl stop redis-server || true
+          python -m pip install --quiet 'moto[server]==5.2.3'
+          ls -d /usr/lib/postgresql/*/bin
+      - name: Install and build Bridge
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund && npm run build
+      - name: Run P7 abuse baseline
+        run: |
+          node scripts/abuse-lab/run.mjs             --work "$RUNNER_TEMP/bridge-abuse"             --out "$RUNNER_TEMP/bridge-abuse-report"
+        env:
+          MN_MOTO_SERVER: moto_server
+      - name: Upload abuse report and node logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: p7-abuse-lab
+          path: |
+            ${{ runner.temp }}/bridge-abuse-report/
+            ${{ runner.temp }}/bridge-abuse/logs/
+          retention-days: 30
