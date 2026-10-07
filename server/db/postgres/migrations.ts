@@ -781,6 +781,25 @@ const EXTRA_TABLES: string[] = [
   // Migration 078 (P6) — per-server AI opt-out; TRUE preserves behaviour, the owner opts out.
   `ALTER TABLE servers ADD COLUMN IF NOT EXISTS "aiEnabled" BOOLEAN NOT NULL DEFAULT TRUE`,
 
+  // Migration 080 (P7 B1) — bounded, explainable anti-raid configuration.
+  `ALTER TABLE servers ADD COLUMN IF NOT EXISTS "raidMitigationLevel" TEXT NOT NULL DEFAULT 'balanced'`,
+  `UPDATE servers SET "raidMitigationLevel" = 'strict'
+      WHERE "raidMitigationLevel" IS NULL
+         OR "raidMitigationLevel" NOT IN ('off', 'balanced', 'strict')`,
+  `ALTER TABLE servers ALTER COLUMN "raidMitigationLevel" SET DEFAULT 'balanced'`,
+  `ALTER TABLE servers ALTER COLUMN "raidMitigationLevel" SET NOT NULL`,
+  `ALTER TABLE servers ADD COLUMN IF NOT EXISTS "raidLockdownUntil" BIGINT`,
+  `DO $$ BEGIN
+     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'servers_raid_mitigation_level_check') THEN
+       ALTER TABLE servers ADD CONSTRAINT servers_raid_mitigation_level_check
+         CHECK ("raidMitigationLevel" IN ('off', 'balanced', 'strict'));
+     END IF;
+     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'servers_raid_lockdown_until_nonnegative') THEN
+       ALTER TABLE servers ADD CONSTRAINT servers_raid_lockdown_until_nonnegative
+         CHECK ("raidLockdownUntil" IS NULL OR "raidLockdownUntil" >= 0);
+     END IF;
+   END $$`,
+
   `CREATE TABLE IF NOT EXISTS outgoing_webhooks (
     _id TEXT PRIMARY KEY,
     "serverId" TEXT NOT NULL,
