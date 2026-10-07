@@ -285,6 +285,140 @@ describe('P7 B1 bounded join-raid policy', () => {
     expect(mockLogger.error).toHaveBeenCalled();
   });
 
+  it('keeps durable lockdown active even when audit logging fails', async () => {
+    const policy = RAID_POLICIES.balanced;
+    mockSlidingWindowCount.mockResolvedValueOnce(policy.maxUniqueAccounts + 1);
+    mockHoldCohort.mockResolvedValueOnce(4);
+    mockAuditInsert.mockRejectedValueOnce(new Error('audit store unavailable'));
+
+    const result = await checkServerJoinRaid({
+      serverId: 'server-audit-down',
+      actorId: 'surge-user',
+      server: { raidMitigationLevel: 'balanced' },
+      source: 'discoverable',
+      now: 200_000,
+    });
+
+    expect(result).toMatchObject({
+      allowed: true,
+      level: 'balanced',
+      uniqueAccounts: policy.maxUniqueAccounts + 1,
+    });
+    expect(mockServerUpdate).toHaveBeenCalled();
+    expect(mockHoldCohort).toHaveBeenCalled();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'raid.audit.failed', serverId: 'server-audit-down' }),
+      expect.any(String),
+    );
+  });
+
+  it('fails closed when the threshold crossing cannot persist durable raid mode', async () => {
+    const policy = RAID_POLICIES.strict;
+    mockSlidingWindowCount.mockResolvedValueOnce(policy.maxUniqueAccounts + 1);
+    mockServerUpdate.mockRejectedValueOnce(new Error('db unavailable'));
+
+    await expect(checkServerJoinRaid({
+      serverId: 'server-persist-down',
+      actorId: 'surge-user',
+      server: { raidMitigationLevel: 'strict' },
+      source: 'invite',
+      now: 300_000,
+    })).resolves.toEqual({
+      allowed: false,
+      level: 'strict',
+      code: 'RAID_LOCKDOWN',
+      retryAfterMs: policy.windowMs,
+      lockdownUntil: null,
+      uniqueAccounts: policy.maxUniqueAccounts + 1,
+    });
+
+    expect(mockHoldCohort).not.toHaveBeenCalled();
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'raid.lockdown.persist_failed', serverId: 'server-persist-down' }),
+      expect.any(String),
+    );
+  });
+
+  it('uses the bounded single-node counter fallback when shared sliding windows are unavailable by design', async () => {
+    mockSlidingWindowCount.mockResolvedValue(null);
+    const server = { raidMitigationLevel: 'balanced' };
+
+    const first = await checkServerJoinRaid({
+      serverId: 'single-node',
+      actorId: 'one',
+      server,
+      source: 'discoverable',
+      now: 1_000,
+    });
+    const second = await checkServerJoinRaid({
+      serverId: 'single-node',
+      actorId: 'two',
+      server,
+      source: 'discoverable',
+      now: 1_001,
+    });
+
+    expect(first).toMatchObject({ allowed: true, counted: true, uniqueAccounts: 1 });
+    expect(second).toMatchObject({ allowed: true, counted: true, uniqueAccounts: 2 });
+  });
+
+  it('rejects malformed identities/time and treats invalid persisted lockdown data as inactive', async () => {
+    await expect(checkServerJoinRaid({
+      serverId: '',
+      actorId: 'u',
+      server: { raidMitigationLevel: 'balanced' },
+      source: 'discoverable',
+      now: 1,
+    })).rejects.toThrow('serverId');
+
+    await expect(checkServerJoinRaid({
+      serverId: 's',
+      actorId: '',
+      server: { raidMitigationLevel: 'balanced' },
+      source: 'discoverable',
+      now: 1,
+    })).rejects.toThrow('actorId');
+
+    await expect(checkServerJoinRaid({
+      serverId: 's',
+      actorId: 'u',
+      server: { raidMitigationLevel: 'balanced' },
+      source: 'discoverable',
+      now: -1,
+    })).rejects.toThrow('now');
+
+    mockSlidingWindowCount.mockResolvedValueOnce(1);
+    await expect(checkServerJoinRaid({
+      serverId: 's',
+      actorId: 'u',
+      server: { raidMitigationLevel: 'balanced', raidLockdownUntil: 'corrupt' },
+      source: 'discoverable',
+      now: 10,
+    })).resolves.toMatchObject({ allowed: true, counted: true, uniqueAccounts: 1 });
+  });
+
+  it('does not hold when raid state/user metadata is missing or already expired', async () => {
+    const now = 1_000_000;
+    mockServerFindById.mockResolvedValueOnce(null);
+    await expect(applyRaidJoinHold('s', 'u', null, now)).resolves.toBe(false);
+
+    mockUserFindById.mockResolvedValueOnce(null);
+    await expect(applyRaidJoinHold('s', 'u', {
+      until: now + 10_000,
+      youngAccountMs: 86_400_000,
+    }, now)).resolves.toBe(false);
+
+    expect(raidProtectionStatus({
+      raidMitigationLevel: 'off',
+      raidLockdownUntil: now + 10_000,
+    }, now)).toEqual({
+      level: 'off',
+      active: false,
+      lockdownUntil: now + 10_000,
+      policy: null,
+    });
+  });
+
   it('status is explainable and an expired lockdown is inactive', () => {
     expect(raidProtectionStatus({
       raidMitigationLevel: 'strict',
