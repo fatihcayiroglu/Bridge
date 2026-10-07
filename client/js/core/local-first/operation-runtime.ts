@@ -35,7 +35,14 @@ function runtimeFor(userIdInput: string): Promise<UserOperationRuntime> {
 }
 
 function serialize<T>(userIdInput: string, task: (runtime: UserOperationRuntime) => Promise<T>): Promise<T> {
-  const userId = userIdOf(userIdInput);
+  // Promise-returning API: a bad account id is a rejection the caller's
+  // `.catch()` sees, never a synchronous throw that bypasses it.
+  let userId: string;
+  try {
+    userId = userIdOf(userIdInput);
+  } catch (error) {
+    return Promise.reject(error);
+  }
   const previous = chains.get(userId) ?? Promise.resolve();
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
