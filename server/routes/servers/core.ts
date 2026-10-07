@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 const router = express.Router();
 
-import { Users, Servers, Members } from '../../db/repositories';
+import { Users, Servers, Members, Auth } from '../../db/repositories';
 import { authMiddleware} from '../../middleware/auth';
 import { sanitizeUser } from '../../lib/userUtils';
 import { getMemberPerms, hasPermission, PERMS } from '../roles';
@@ -16,6 +16,11 @@ import { evictUserFromServerRooms } from '../../lib/liveMembership';
 import { envSafeInt } from '../../lib/envNumbers';
 import { joinDiscoverableServer, afterMemberJoined } from '../../lib/serverMembership';
 import { parseServerMfaLevelWrite } from '../../lib/serverMfaPolicy';
+import {
+  parseRaidMitigationLevel,
+  raidProtectionStatus,
+  type RaidMitigationLevel,
+} from '../../lib/raidProtection';
 
 // GET /api/servers
 /**
@@ -381,6 +386,100 @@ router.patch('/:sid', authMiddleware, limits.servers(), async (req, res) => {
   await Servers.update(String(req.params.sid ?? ''), updates);
   const updated = await Servers.findById(String(req.params.sid ?? ''));
   res.json(updated);
+});
+
+// GET/PATCH /api/servers/:sid/raid-protection
+//
+// P7 B1 — moderator-visible and reversible anti-raid controls. The configured
+// level and exact thresholds are returned so enforcement is explainable.
+// MANAGE_SERVER is the authorization boundary; UI visibility is not.
+router.get('/:sid/raid-protection', authMiddleware, async (req, res) => {
+  const _u = castAuthed(req).user;
+  const sid = String(req.params.sid ?? '');
+  const server = await Servers.findById(sid) as Record<string, unknown> | null;
+  if (!server) return res.status(404).json({ error: 'Server not found' });
+
+  const perms = await getMemberPerms(_u.id, sid);
+  if (!hasPermission(perms, PERMS.MANAGE_SERVER)) {
+    return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
+  }
+
+  return res.json(raidProtectionStatus(server));
+});
+
+router.patch('/:sid/raid-protection', authMiddleware, limits.moderation(), async (req, res) => {
+  const _u = castAuthed(req).user;
+  const sid = String(req.params.sid ?? '');
+  const server = await Servers.findById(sid) as Record<string, unknown> | null;
+  if (!server) return res.status(404).json({ error: 'Server not found' });
+
+  const perms = await getMemberPerms(_u.id, sid);
+  if (!hasPermission(perms, PERMS.MANAGE_SERVER)) {
+    return res.status(403).json({ error: 'Missing permission: MANAGE_SERVER' });
+  }
+
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+    ? req.body as Record<string, unknown>
+    : {};
+  const hasLevel = Object.prototype.hasOwnProperty.call(body, 'level');
+  const hasClear = Object.prototype.hasOwnProperty.call(body, 'clearLockdown');
+
+  let level: RaidMitigationLevel | undefined;
+  if (hasLevel) {
+    if (body.level !== 'off' && body.level !== 'balanced' && body.level !== 'strict') {
+      return res.status(400).json({ error: 'level must be off, balanced, or strict' });
+    }
+    level = body.level;
+  }
+
+  let clearLockdown = false;
+  if (hasClear) {
+    if (typeof body.clearLockdown !== 'boolean') {
+      return res.status(400).json({ error: 'clearLockdown must be a boolean' });
+    }
+    clearLockdown = body.clearLockdown;
+  }
+
+  if (!hasLevel && !clearLockdown) {
+    return res.status(400).json({ error: 'Nothing to update' });
+  }
+
+  const previous = raidProtectionStatus(server);
+  const updates: Record<string, unknown> = {};
+  if (level !== undefined) updates.raidMitigationLevel = level;
+  if (clearLockdown || level === 'off') updates.raidLockdownUntil = null;
+
+  await Servers.update(sid, updates);
+  const updated = await Servers.findById(sid) as Record<string, unknown> | null;
+  if (!updated) return res.status(404).json({ error: 'Server not found' });
+  const next = raidProtectionStatus(updated);
+
+  try {
+    await Auth.insertAuditLog({
+      serverId: sid,
+      actorId: _u.id,
+      actorName: _u.displayName || _u.username || _u.id,
+      action: clearLockdown || level === 'off'
+        ? 'raid_protection_reversed'
+        : 'raid_protection_updated',
+      target: sid,
+      extra: {
+        previous: {
+          level: previous.level,
+          lockdownUntil: previous.lockdownUntil,
+        },
+        next: {
+          level: next.level,
+          lockdownUntil: next.lockdownUntil,
+        },
+      },
+    });
+  } catch {
+    // The policy update is already durable. Audit degradation must be visible
+    // in server logs elsewhere, but must not falsely report the update failed.
+  }
+
+  return res.json(next);
 });
 
 // POST /api/servers/:sid/leave
