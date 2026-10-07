@@ -72,16 +72,42 @@ describe('single-node spam state', () => {
   let seq = 0;
   const user = () => `spam-user-${++seq}`;
 
-  it('warns before muting and then mutes a flood', () => {
+  it('warns, applies short retry holds, and mutes only a repeated flood', () => {
     const uid = user();
     for (let i = 0; i < 5; i += 1) expect(checkSpam(uid, `m${i}`).blocked).toBe(false);
     expect(checkSpam(uid, 'm5')).toMatchObject({ blocked: false, warning: true, reason: 'spam_warning' });
-    expect(checkSpam(uid, 'm6')).toMatchObject({ blocked: true, reason: 'spam_rate' });
+
+    const first = checkSpam(uid, 'm6') as { blocked: true; reason: string; remainingMs: number };
+    const second = checkSpam(uid, 'm7') as { blocked: true; reason: string; remainingMs: number };
+    expect(first).toMatchObject({ blocked: true, reason: 'spam_rate' });
+    expect(second).toMatchObject({ blocked: true, reason: 'spam_rate' });
+    expect(first.remainingMs).toBeLessThan(30_000);
+    expect(second.remainingMs).toBeLessThan(30_000);
+
+    const third = checkSpam(uid, 'm8');
+    expect(third).toMatchObject({ blocked: true, reason: 'spam_rate', remainingMs: 30_000 });
+
     // Once muted, further messages report the remaining time rather than
     // restarting the window.
-    const muted = checkSpam(uid, 'm7');
+    const muted = checkSpam(uid, 'm9');
     expect(muted).toMatchObject({ blocked: true, reason: 'spam_muted' });
     expect((muted as { remainingMs: number }).remainingMs).toBeGreaterThan(0);
+  });
+
+  it('accepts a held resend once the active burst window has freed a slot', () => {
+    const uid = user();
+    let now = 10_000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      for (let i = 0; i < 5; i += 1) expect(checkSpam(uid, `normal-${i}`).blocked).toBe(false);
+      expect(checkSpam(uid, 'warning-row')).toMatchObject({ blocked: false, warning: true });
+      expect(checkSpam(uid, 'held-row')).toMatchObject({ blocked: true, reason: 'spam_rate' });
+
+      now += 4_001;
+      expect(checkSpam(uid, 'held-row')).toEqual({ blocked: false });
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('blocks repeated identical content even below the rate limit', () => {
