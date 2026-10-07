@@ -164,8 +164,15 @@ describe('P7 encrypted message history', () => {
   });
 
   it('rejects malformed encrypted snapshots instead of treating them as authorized cache', async () => {
+    // JSON null carries no message data and is deliberately fail-closed as a
+    // cache miss; it must never become an authorized snapshot.
+    {
+      const { repository, store } = repo();
+      await store.putJson('history', 'channel:c1', null, 10);
+      await expect(repository.read('c1', 10)).resolves.toBeNull();
+    }
+
     const malformed: unknown[] = [
-      null,
       [],
       { v: 2, channelId: 'c1', savedAt: 10, messages: [], tombstones: [] },
       { v: 1, channelId: 'other', savedAt: 10, messages: [], tombstones: [] },
