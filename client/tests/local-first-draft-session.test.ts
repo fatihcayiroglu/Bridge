@@ -54,10 +54,11 @@ describe('P7 local-first draft session', () => {
   });
 
   it('hydrates and removes legacy plaintext only after verified encrypted migration', async () => {
+    const savedAt = Date.now();
     const legacy = makeLegacy({
       v: 1,
       text: 'eski taslak',
-      savedAt: 10,
+      savedAt,
       attachmentPending: false,
     });
     const onHydrated = vi.fn();
@@ -67,7 +68,7 @@ describe('P7 local-first draft session', () => {
 
     expect(legacy.clear).toHaveBeenCalledOnce();
     expect(onHydrated).toHaveBeenCalledOnce();
-    await expect(repository.read(A, 10)).resolves.toMatchObject({ text: 'eski taslak' });
+    await expect(repository.read(A, savedAt)).resolves.toMatchObject({ text: 'eski taslak' });
   });
 
   it('a slow hydration cannot overwrite newer user input', async () => {
