@@ -19,6 +19,7 @@ import { sanitizeUser } from '../../lib/userUtils';
 import { getCachedPerms } from '../../lib/permCache';
 import { extractUrls, fetchLinkPreview } from '../../lib/linkPreview';
 import { checkSpamAsync } from '../../lib/security';
+import { ABUSE_POLICY, checkContentAbuse, mentionNotificationAllowed, mentionsWithinLimit } from '../../lib/abusePolicy';
 import { evaluateAutomodRules } from '../../lib/automodPolicy';
 import { normalizeAutomodMemberRoleIds, writeAutomodLogs } from '../../lib/automodRuntime';
 // Sprint 120: T5 — Server-side DOMPurify sanitization eklendi
@@ -383,6 +384,22 @@ export async function sendChannelMessage(
     }
   }
 
+  // P7 B1 shared abuse policy (lib/abusePolicy.ts): measured low-and-slow
+  // repeats, link floods and mass mentions. Placed after ACK de-duplication so
+  // a replayed ackId never counts twice. Encrypted content is not inspected.
+  if (type !== 'file' && type !== 'e2ee' && content?.trim()) {
+    const verdict = await checkContentAbuse(user._id, content);
+    if (!verdict.allowed) {
+      socket.emit('error:spam', { reason: verdict.reason, remainingMs: verdict.retryAfterMs, ...(validAckId ? { ackId } : {}), ...(validTmpId ? { tmpId: _tmpId } : {}) });
+      return;
+    }
+    const mayMentionEveryone = hasPermission(sendPerms, PERMS.MENTION_EVERYONE) || hasPermission(sendPerms, PERMS.ADMINISTRATOR);
+    if (!mentionsWithinLimit(content, mayMentionEveryone)) {
+      reject('TOO_MANY_MENTIONS', `En fazla ${ABUSE_POLICY.mentions.perMessage} kişi etiketlenebilir.`);
+      return;
+    }
+  }
+
   // Persisted realtime AutoMod rules. Rule lookup failure propagates to `isolate` so
   // a storage outage cannot silently disable configured moderation (fail-closed).
   if (type !== 'file' && type !== 'e2ee' && content?.trim()) {
@@ -671,6 +688,9 @@ export async function sendChannelMessage(
 
   for (const uid of [...new Set(mentionIds)]) {
     if (uid === user._id) continue;
+    // P7 B1: a sender can ping one person at most N times per window; the
+    // message itself is delivered regardless (lab ATK-04b).
+    if (!await mentionNotificationAllowed(user._id, uid)) continue;
     if (!await canViewChannel(uid, serverId, channelId)) continue;
     const [channelPref, serverPref] = await Promise.all([
       Notifications.findPref(uid, channelId),
