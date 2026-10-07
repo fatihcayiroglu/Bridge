@@ -111,7 +111,7 @@ import { authMiddleware} from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
 import { afterMemberJoined } from '../../lib/serverMembership';
 import { checkServerJoinMfa } from '../../lib/serverMfaPolicy';
-import { checkServerJoinRaid } from '../../lib/raidProtection';
+import { applyRaidJoinHold, checkServerJoinRaid } from '../../lib/raidProtection';
 
 
 function assertInvite(invite: Awaited<ReturnType<typeof Invites.findByCode>>, res: express.Response): asserts invite is NonNullable<Awaited<ReturnType<typeof Invites.findByCode>>> {
@@ -249,6 +249,8 @@ router.post('/:code/use', authMiddleware, limits.servers(), async (req, res) => 
   //
   // Dogrudan katilma rotasi (routes/servers/core.ts) bunu ZATEN yapiyordu;
   // kardes yol olan davet akisi atlanmisti.
+  // P7 B1: same surge hold as the discoverable join path.
+  await applyRaidJoinHold(invite.serverId, _u.id, raid.hold);
   await afterMemberJoined(
     { id: _u.id, username: _u.username, displayName: _u.displayName },
     invite.serverId,

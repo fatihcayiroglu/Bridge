@@ -7,6 +7,7 @@ const mockCacheDel = jest.fn();
 const mockInvalidateMemberships = jest.fn();
 const mockCheckMfa = jest.fn();
 const mockCheckRaid = jest.fn();
+const mockApplyHold = jest.fn(async () => false);
 
 jest.mock('../db/repositories', () => ({
   Servers: {
@@ -30,6 +31,7 @@ jest.mock('../lib/serverMfaPolicy', () => ({
 }));
 jest.mock('../lib/raidProtection', () => ({
   checkServerJoinRaid: (...args: unknown[]) => mockCheckRaid(...args),
+  applyRaidJoinHold: (...args: unknown[]) => mockApplyHold(...(args as [])),
 }));
 jest.mock('../lib/_optional-require', () => ({
   tryRequire: () => null,
@@ -110,6 +112,17 @@ describe('P7 B1 discoverable join ordering', () => {
 
     expect(mockCheckRaid).not.toHaveBeenCalled();
     expect(mockMemberInsertIfAbsent).not.toHaveBeenCalled();
+  });
+
+  it('during balanced raid mode the join commits and THEN the surge hold is applied to the new member', async () => {
+    const hold = { until: 999_000, youngAccountMs: 86_400_000 };
+    mockCheckRaid.mockResolvedValueOnce({ allowed: true, level: 'balanced', counted: false, uniqueAccounts: null, hold });
+
+    await expect(joinDiscoverableServer(ACTOR, 'server-a')).resolves.toMatchObject({ status: 'joined' });
+
+    expect(mockMemberInsertIfAbsent).toHaveBeenCalledTimes(1);
+    expect(mockApplyHold).toHaveBeenCalledWith('server-a', 'user-a', hold);
+    expect(mockMemberInsertIfAbsent.mock.invocationCallOrder[0]).toBeLessThan(mockApplyHold.mock.invocationCallOrder[0]);
   });
 
   it('an eligible actor is blocked before membership mutation when raid lockdown is active', async () => {

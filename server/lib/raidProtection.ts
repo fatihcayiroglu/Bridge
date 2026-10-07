@@ -8,7 +8,8 @@
 // primitives. Deliberate single-node/no-Redis deployments use process memory.
 
 import { createHash } from 'crypto';
-import { Auth, Servers } from '../db/repositories';
+import { Auth, Members, Servers, Users } from '../db/repositories';
+import { envSafeInt } from './envNumbers';
 import { cache } from './redisAdapter';
 import logger from './logger';
 
@@ -18,21 +19,47 @@ export type RaidJoinSource = 'discoverable' | 'invite';
 export interface RaidPolicy {
   windowMs: number;
   maxUniqueAccounts: number;
+  /** How long raid mode lasts once the join surge crossed the threshold. */
   lockdownMs: number;
+  /** strict refuses joins during raid mode; balanced admits them. */
+  refuseJoins: boolean;
+  /** Accounts younger than this that join in a surge are held from posting. */
+  youngAccountMs: number;
 }
+
+// P7 B1 — measured by scripts/abuse-lab (ATK-08, LEG-08, LEG-10, LEG-11).
+// The first version refused every join for 2 min once 31 accounts joined in
+// 10 s: the lab measured 30 of 60 raiders admitted and posting, a 40-person
+// launch losing 10 joins, and a real person arriving after a raid refused.
+// Raid harm is posting, not joining. Balanced (the default) therefore never
+// refuses a join: it holds accounts created in the last 24 h that joined in
+// the surge — including the cohort that triggered it — from posting until raid
+// mode ends (the ordinary member-timeout enforcement; moderators can lift it).
+// Strict additionally refuses joins during raid mode.
+const YOUNG_ACCOUNT_MS = envSafeInt('RAID_YOUNG_ACCOUNT_MS', 24 * 60 * 60_000, { min: 0, max: 365 * 24 * 60 * 60_000 });
 
 export const RAID_POLICIES: Readonly<Record<Exclude<RaidMitigationLevel, 'off'>, RaidPolicy>> = Object.freeze({
   balanced: Object.freeze({
-    windowMs: 10_000,
-    maxUniqueAccounts: 30,
-    lockdownMs: 2 * 60_000,
+    windowMs: envSafeInt('RAID_BALANCED_WINDOW_MS', 10_000, { min: 1_000, max: 10 * 60_000 }),
+    maxUniqueAccounts: envSafeInt('RAID_BALANCED_MAX_JOINS', 30, { min: 2, max: 100_000 }),
+    lockdownMs: envSafeInt('RAID_BALANCED_MODE_MS', 10 * 60_000, { min: 10_000, max: 24 * 60 * 60_000 }),
+    refuseJoins: false,
+    youngAccountMs: YOUNG_ACCOUNT_MS,
   }),
   strict: Object.freeze({
-    windowMs: 10_000,
-    maxUniqueAccounts: 10,
-    lockdownMs: 5 * 60_000,
+    windowMs: envSafeInt('RAID_STRICT_WINDOW_MS', 10_000, { min: 1_000, max: 10 * 60_000 }),
+    maxUniqueAccounts: envSafeInt('RAID_STRICT_MAX_JOINS', 10, { min: 2, max: 100_000 }),
+    lockdownMs: envSafeInt('RAID_STRICT_MODE_MS', 5 * 60_000, { min: 10_000, max: 24 * 60 * 60_000 }),
+    refuseJoins: true,
+    youngAccountMs: YOUNG_ACCOUNT_MS,
   }),
 });
+
+/** A posting hold to apply to the joining account if it is young. */
+export interface RaidJoinHold {
+  until: number;
+  youngAccountMs: number;
+}
 
 export type RaidJoinDecision =
   | {
@@ -40,6 +67,7 @@ export type RaidJoinDecision =
       level: RaidMitigationLevel;
       counted: boolean;
       uniqueAccounts: number | null;
+      hold: RaidJoinHold | null;
     }
   | {
       allowed: false;
@@ -118,6 +146,7 @@ async function auditAutoLockdown(
   uniqueAccounts: number,
   policy: RaidPolicy,
   lockdownUntil: number,
+  heldMembers: number,
 ): Promise<void> {
   try {
     await Auth.insertAuditLog({
@@ -134,6 +163,9 @@ async function auditAutoLockdown(
         maxUniqueAccounts: policy.maxUniqueAccounts,
         lockdownMs: policy.lockdownMs,
         lockdownUntil,
+        refuseJoins: policy.refuseJoins,
+        // A count, not identities: moderators see who is held in the member list.
+        heldMembers,
       },
     });
   } catch (error) {
@@ -159,12 +191,16 @@ export async function checkServerJoinRaid(input: {
 
   const level = parseRaidMitigationLevel(input.server.raidMitigationLevel);
   if (level === 'off') {
-    return { allowed: true, level, counted: false, uniqueAccounts: null };
+    return { allowed: true, level, counted: false, uniqueAccounts: null, hold: null };
   }
   const policy = RAID_POLICIES[level];
+  const holdFor = (until: number): RaidJoinHold => ({ until, youngAccountMs: policy.youngAccountMs });
 
   const currentLockdownUntil = lockdownUntilOf(input.server);
   if (currentLockdownUntil !== null && currentLockdownUntil > now) {
+    if (!policy.refuseJoins) {
+      return { allowed: true, level, counted: false, uniqueAccounts: null, hold: holdFor(currentLockdownUntil) };
+    }
     return {
       allowed: false,
       level,
@@ -196,12 +232,12 @@ export async function checkServerJoinRaid(input: {
   }
 
   if (!observed.counted) {
-    return { allowed: true, level, counted: false, uniqueAccounts: null };
+    return { allowed: true, level, counted: false, uniqueAccounts: null, hold: null };
   }
 
   const count = observed.count ?? 0;
   if (count <= policy.maxUniqueAccounts) {
-    return { allowed: true, level, counted: true, uniqueAccounts: count };
+    return { allowed: true, level, counted: true, uniqueAccounts: count, hold: null };
   }
 
   const lockdownUntil = now + policy.lockdownMs;
@@ -209,14 +245,21 @@ export async function checkServerJoinRaid(input: {
   if (count === policy.maxUniqueAccounts + 1) {
     try {
       await Servers.update(serverId, { raidLockdownUntil: lockdownUntil });
-      await auditAutoLockdown(serverId, level, input.source, count, policy, lockdownUntil);
+      // The surge cohort that is ALREADY in (joined within the window, young
+      // accounts) is held too: otherwise the first wave of a raid posts freely.
+      const heldMembers = await Members.holdRecentYoungJoiners(serverId, {
+        joinedSince: now - policy.windowMs,
+        accountCreatedSince: Math.max(0, now - policy.youngAccountMs),
+        holdUntil: lockdownUntil,
+      });
+      await auditAutoLockdown(serverId, level, input.source, count, policy, lockdownUntil, heldMembers);
     } catch (error) {
       logger.error({
         event: 'raid.lockdown.persist_failed',
         serverId,
         level,
         err: error instanceof Error ? error.message : String(error),
-      }, 'Raid burst detected but durable lockdown persistence failed.');
+      }, 'Raid burst detected but durable raid mode persistence failed.');
       return {
         allowed: false,
         level,
@@ -228,6 +271,9 @@ export async function checkServerJoinRaid(input: {
     }
   }
 
+  if (!policy.refuseJoins) {
+    return { allowed: true, level, counted: true, uniqueAccounts: count, hold: holdFor(lockdownUntil) };
+  }
   return {
     allowed: false,
     level,
@@ -236,6 +282,22 @@ export async function checkServerJoinRaid(input: {
     lockdownUntil,
     uniqueAccounts: count,
   };
+}
+
+/**
+ * Applies a raid hold to an account that has just joined, if the account is
+ * young. Never shortens a longer timeout. Returns whether a hold was placed.
+ */
+export async function applyRaidJoinHold(serverId: string, userId: string, hold: RaidJoinHold | null, now = Date.now()): Promise<boolean> {
+  if (!hold || hold.until <= now) return false;
+  const user = await Users.findById(userId) as { createdAt?: unknown } | null;
+  const createdAt = Number(user?.createdAt);
+  if (!Number.isFinite(createdAt) || createdAt < now - hold.youngAccountMs) return false;
+  const member = await Members.findOne(userId, serverId) as { timeoutUntil?: unknown } | null;
+  const current = Number(member?.timeoutUntil);
+  if (Number.isFinite(current) && current >= hold.until) return false;
+  await Members.setTimeout(serverId, userId, hold.until);
+  return true;
 }
 
 export function raidProtectionStatus(server: Record<string, unknown>, now = Date.now()): {

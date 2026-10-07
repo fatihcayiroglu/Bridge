@@ -450,6 +450,10 @@ router.patch('/:sid/raid-protection', authMiddleware, limits.moderation(), async
   if (clearLockdown || level === 'off') updates.raidLockdownUntil = null;
 
   await Servers.update(sid, updates);
+  // Ending raid mode also lifts the posting holds it placed (and only those).
+  const releasedHolds = (clearLockdown || level === 'off') && previous.lockdownUntil !== null
+    ? await Members.releaseRaidHold(sid, previous.lockdownUntil)
+    : 0;
   const updated = await Servers.findById(sid) as Record<string, unknown> | null;
   if (!updated) return res.status(404).json({ error: 'Server not found' });
   const next = raidProtectionStatus(updated);
@@ -472,6 +476,7 @@ router.patch('/:sid/raid-protection', authMiddleware, limits.moderation(), async
           level: next.level,
           lockdownUntil: next.lockdownUntil,
         },
+        releasedHolds,
       },
     });
   } catch (auditError) {
@@ -485,7 +490,7 @@ router.patch('/:sid/raid-protection', authMiddleware, limits.moderation(), async
     }, 'Raid protection update committed but audit logging failed.');
   }
 
-  return res.json(next);
+  return res.json({ ...next, releasedHolds });
 });
 
 // POST /api/servers/:sid/leave

@@ -11,7 +11,7 @@ import { Members, Servers } from '../db/repositories';
 import { cache } from './redisAdapter';
 import { invalidateMemberships } from './presenceCache';
 import { checkServerJoinMfa, type ServerMfaLevel } from './serverMfaPolicy';
-import { checkServerJoinRaid, type RaidMitigationLevel } from './raidProtection';
+import { applyRaidJoinHold, checkServerJoinRaid, type RaidMitigationLevel } from './raidProtection';
 import { tryRequire } from './_optional-require';
 import logger from './logger';
 
@@ -164,6 +164,9 @@ export async function joinDiscoverableServer(
     return { status: 'already_member', server };
   }
 
+  // P7 B1: during a detected join surge a young account can read but not post
+  // until raid mode ends (lib/raidProtection.ts).
+  await applyRaidJoinHold(serverId, actor.id, raid.hold);
   await afterMemberJoined(actor, serverId);
   return { status: 'joined', server };
 }

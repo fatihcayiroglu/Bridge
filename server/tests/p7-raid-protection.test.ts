@@ -4,6 +4,10 @@ const mockServerUpdate = jest.fn();
 const mockAuditInsert = jest.fn();
 const mockClaimCooldown = jest.fn();
 const mockSlidingWindowCount = jest.fn();
+const mockHoldCohort = jest.fn();
+const mockUserFindById = jest.fn();
+const mockMemberFindOne = jest.fn();
+const mockMemberSetTimeout = jest.fn();
 const mockLogger = {
   info: jest.fn(),
   warn: jest.fn(),
@@ -14,6 +18,12 @@ const mockLogger = {
 jest.mock('../db/repositories', () => ({
   Servers: { update: (...args: unknown[]) => mockServerUpdate(...args) },
   Auth: { insertAuditLog: (...args: unknown[]) => mockAuditInsert(...args) },
+  Members: {
+    holdRecentYoungJoiners: (...args: unknown[]) => mockHoldCohort(...args),
+    findOne: (...args: unknown[]) => mockMemberFindOne(...args),
+    setTimeout: (...args: unknown[]) => mockMemberSetTimeout(...args),
+  },
+  Users: { findById: (...args: unknown[]) => mockUserFindById(...args) },
 }));
 jest.mock('../lib/redisAdapter', () => ({
   cache: {
@@ -25,6 +35,7 @@ jest.mock('../lib/logger', () => ({ __esModule: true, default: mockLogger }));
 
 import {
   RAID_POLICIES,
+  applyRaidJoinHold,
   checkServerJoinRaid,
   parseRaidMitigationLevel,
   raidProtectionStatus,
@@ -37,6 +48,7 @@ describe('P7 B1 bounded join-raid policy', () => {
     mockSlidingWindowCount.mockResolvedValue(1);
     mockServerUpdate.mockResolvedValue(undefined);
     mockAuditInsert.mockResolvedValue(undefined);
+    mockHoldCohort.mockResolvedValue(0);
   });
 
   it('off disables only raid aggregation and creates no hidden user score', async () => {
@@ -53,6 +65,7 @@ describe('P7 B1 bounded join-raid policy', () => {
       level: 'off',
       counted: false,
       uniqueAccounts: null,
+      hold: null,
     });
     expect(mockClaimCooldown).not.toHaveBeenCalled();
     expect(mockSlidingWindowCount).not.toHaveBeenCalled();
@@ -87,6 +100,7 @@ describe('P7 B1 bounded join-raid policy', () => {
       level: 'balanced',
       counted: false,
       uniqueAccounts: null,
+      hold: null,
     });
     expect(mockSlidingWindowCount).toHaveBeenCalledTimes(1);
     const coordinationKey = String(mockClaimCooldown.mock.calls[0]?.[0] ?? '');
@@ -94,7 +108,7 @@ describe('P7 B1 bounded join-raid policy', () => {
     expect(coordinationKey).not.toContain('sensitive-user-id');
   });
 
-  it('balanced permits the measured legitimate control and locks on the first account beyond the aggregate threshold', async () => {
+  it('balanced admits every join and, on crossing the threshold, holds the young surge cohort from posting', async () => {
     const policy = RAID_POLICIES.balanced;
     const server = { raidMitigationLevel: 'balanced' };
 
@@ -111,11 +125,13 @@ describe('P7 B1 bounded join-raid policy', () => {
         level: 'balanced',
         counted: true,
         uniqueAccounts: index,
+        hold: null,
       });
     }
 
     mockSlidingWindowCount.mockResolvedValueOnce(policy.maxUniqueAccounts + 1);
-    const blocked = await checkServerJoinRaid({
+    mockHoldCohort.mockResolvedValueOnce(30);
+    const crossing = await checkServerJoinRaid({
       serverId: 'server-balanced',
       actorId: 'attack-31',
       server,
@@ -123,18 +139,22 @@ describe('P7 B1 bounded join-raid policy', () => {
       now: 60_000,
     });
 
-    expect(blocked).toMatchObject({
-      allowed: false,
-      code: 'RAID_LOCKDOWN',
+    // The join itself is NOT refused (measured: refusing cost a 40-person launch
+    // 10 joins and still let the first 30 raiders post).
+    expect(crossing).toEqual({
+      allowed: true,
       level: 'balanced',
+      counted: true,
       uniqueAccounts: policy.maxUniqueAccounts + 1,
-      retryAfterMs: policy.lockdownMs,
+      hold: { until: 60_000 + policy.lockdownMs, youngAccountMs: policy.youngAccountMs },
     });
-    expect(mockServerUpdate).toHaveBeenCalledTimes(1);
-    expect(mockServerUpdate).toHaveBeenCalledWith(
-      'server-balanced',
-      { raidLockdownUntil: 60_000 + policy.lockdownMs },
-    );
+    expect(mockServerUpdate).toHaveBeenCalledWith('server-balanced', { raidLockdownUntil: 60_000 + policy.lockdownMs });
+    // Retroactive: the cohort that triggered the surge is held too.
+    expect(mockHoldCohort).toHaveBeenCalledWith('server-balanced', {
+      joinedSince: 60_000 - policy.windowMs,
+      accountCreatedSince: 0,
+      holdUntil: 60_000 + policy.lockdownMs,
+    });
     expect(mockAuditInsert).toHaveBeenCalledTimes(1);
     expect(mockAuditInsert).toHaveBeenCalledWith(expect.objectContaining({
       serverId: 'server-balanced',
@@ -144,8 +164,59 @@ describe('P7 B1 bounded join-raid policy', () => {
         level: 'balanced',
         uniqueAccounts: policy.maxUniqueAccounts + 1,
         maxUniqueAccounts: policy.maxUniqueAccounts,
+        refuseJoins: false,
+        heldMembers: 30,
       }),
     }));
+    // The audit names how many were held, never who.
+    expect(JSON.stringify(mockAuditInsert.mock.calls[0][0].extra)).not.toContain('attack-31');
+  });
+
+  it('balanced raid mode admits later joins with the same hold and does not count them', async () => {
+    const result = await checkServerJoinRaid({
+      serverId: 'server-raid-mode',
+      actorId: 'late-joiner',
+      server: { raidMitigationLevel: 'balanced', raidLockdownUntil: 500_000 },
+      source: 'discoverable',
+      now: 400_000,
+    });
+    expect(result).toEqual({
+      allowed: true, level: 'balanced', counted: false, uniqueAccounts: null,
+      hold: { until: 500_000, youngAccountMs: RAID_POLICIES.balanced.youngAccountMs },
+    });
+    expect(mockSlidingWindowCount).not.toHaveBeenCalled();
+  });
+
+  it('strict refuses the join that crosses its threshold and still holds the cohort already in', async () => {
+    const policy = RAID_POLICIES.strict;
+    mockSlidingWindowCount.mockResolvedValueOnce(policy.maxUniqueAccounts + 1);
+    const crossing = await checkServerJoinRaid({
+      serverId: 'server-strict', actorId: 'attack-11', server: { raidMitigationLevel: 'strict' }, source: 'invite', now: 70_000,
+    });
+    expect(crossing).toMatchObject({ allowed: false, code: 'RAID_LOCKDOWN', retryAfterMs: policy.lockdownMs });
+    expect(mockHoldCohort).toHaveBeenCalledWith('server-strict', expect.objectContaining({ holdUntil: 70_000 + policy.lockdownMs }));
+  });
+
+  it('applyRaidJoinHold holds only young accounts and never shortens a longer timeout', async () => {
+    const hold = { until: 900_000, youngAccountMs: 86_400_000 };
+    const now = 100_000_000;
+    mockMemberFindOne.mockResolvedValue({ timeoutUntil: null });
+
+    mockUserFindById.mockResolvedValueOnce({ createdAt: now - 60_000 });          // 1 minute old
+    await expect(applyRaidJoinHold('s', 'young', { ...hold, until: now + 600_000 }, now)).resolves.toBe(true);
+    expect(mockMemberSetTimeout).toHaveBeenCalledWith('s', 'young', now + 600_000);
+
+    mockMemberSetTimeout.mockClear();
+    mockUserFindById.mockResolvedValueOnce({ createdAt: now - 30 * 86_400_000 }); // 30 days old
+    await expect(applyRaidJoinHold('s', 'established', { ...hold, until: now + 600_000 }, now)).resolves.toBe(false);
+
+    mockUserFindById.mockResolvedValueOnce({ createdAt: now - 60_000 });
+    mockMemberFindOne.mockResolvedValueOnce({ timeoutUntil: now + 9_999_999 });    // moderator timeout is longer
+    await expect(applyRaidJoinHold('s', 'timed-out', { ...hold, until: now + 600_000 }, now)).resolves.toBe(false);
+
+    await expect(applyRaidJoinHold('s', 'any', null, now)).resolves.toBe(false);
+    await expect(applyRaidJoinHold('s', 'any', { ...hold, until: now - 1 }, now)).resolves.toBe(false);
+    expect(mockMemberSetTimeout).not.toHaveBeenCalled();
   });
 
   it('an existing bounded lockdown blocks before touching any aggregate counter', async () => {
