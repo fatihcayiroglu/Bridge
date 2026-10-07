@@ -78,6 +78,11 @@ CREATE TABLE IF NOT EXISTS servers (
   tags         JSONB NOT NULL DEFAULT '[]',
   -- Sprint 121 FIX 15: Sunucu bazında 2FA zorunluluğu (0=kapalı, 1=moderatörler, 2=herkes)
   "mfaLevel"   INTEGER NOT NULL DEFAULT 0,
+  -- P7 B1: server-wide anti-raid configuration + bounded automatic lockdown.
+  "raidMitigationLevel" TEXT NOT NULL DEFAULT 'balanced'
+    CONSTRAINT servers_raid_mitigation_level_check CHECK ("raidMitigationLevel" IN ('off', 'balanced', 'strict')),
+  "raidLockdownUntil" BIGINT
+    CONSTRAINT servers_raid_lockdown_until_nonnegative CHECK ("raidLockdownUntil" IS NULL OR "raidLockdownUntil" >= 0),
   "createdAt"  BIGINT NOT NULL
 );
 
