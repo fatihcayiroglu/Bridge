@@ -63,6 +63,13 @@ function clusterRssKb() {
   return seen ? total : null;
 }
 
+
+function connectActorSocket(base, actor) {
+  return connectSocket(base, actor.token, {
+    extraHeaders: { 'X-Forwarded-For': fakeIp() },
+  });
+}
+
 function captureSocket(socket, names) {
   const events = [];
   const handlers = [];
@@ -196,7 +203,7 @@ async function postJoinedUsers(base, users, ctx, { concurrency = 8 } = {}) {
     const rows = await Promise.all(batch.map(async (u, index) => {
       let socket;
       try {
-        socket = await connectSocket(base, u.token);
+        socket = await connectActorSocket(base, u);
         const cap = captureSocket(socket, ['message:ack', 'error:timeout', 'error:message', 'error:ratelimit', 'error:spam']);
         const ackId = `join-post-${offset + index}-${rnd()}`;
         socket.emit('message:send', {
@@ -281,7 +288,7 @@ try {
   const community = await makeServer(lb, owner, [...channelActors, ...mentionTargets]);
   const actorSockets = [];
   for (const actor of channelActors) {
-    const socket = await connectSocket(lb, actor.token);
+    const socket = await connectActorSocket(lb, actor);
     sockets.push(socket);
     actorSockets.push(socket);
   }
@@ -319,7 +326,7 @@ try {
 
   const mentionSockets = [];
   for (const u of mentionTargets) {
-    const s = await connectSocket(lb, u.token);
+    const s = await connectActorSocket(lb, u);
     sockets.push(s);
     mentionSockets.push(s);
   }
@@ -350,21 +357,21 @@ try {
   // recipient-spray budget must not throttle ordinary conversation messages.
   const dmOpen = await mutate(lb, 'POST', `/api/dm/${dmLegitTarget.id}`, dmLegitActor.token, { content: 'bootstrap' });
   if (dmOpen.status >= 300) throw new Error(`dm bootstrap ${dmOpen.status} ${JSON.stringify(dmOpen.body)}`);
-  const dmLegitSocket = await connectSocket(lb, dmLegitActor.token);
+  const dmLegitSocket = await connectActorSocket(lb, dmLegitActor);
   sockets.push(dmLegitSocket);
   row = await dmBatch(dmLegitSocket, Array.from({ length: 5 }, () => dmLegitTarget), { spacingMs: 1_100 });
   record('LEG-04', 'LEGIT', 'existing-conversation DM burst', {
     ...row, falsePositive: row.accepted !== row.attempted,
   });
 
-  const dmFewSocket = await connectSocket(lb, dmFewActor.token);
+  const dmFewSocket = await connectActorSocket(lb, dmFewActor);
   sockets.push(dmFewSocket);
   row = await dmBatch(dmFewSocket, dmFewTargets, { spacingMs: 1_500 });
   record('LEG-05', 'LEGIT', 'a few new DM recipients', {
     ...row, falsePositive: row.accepted !== row.attempted,
   });
 
-  const dmAttackSocket = await connectSocket(lb, dmAttackActor.token);
+  const dmAttackSocket = await connectActorSocket(lb, dmAttackActor);
   sockets.push(dmAttackSocket);
   row = await dmBatch(dmAttackSocket, dmTargets, { spacingMs: 1_100 });
   record('ATK-04', 'ATTACK', 'new-recipient DM spray', {
