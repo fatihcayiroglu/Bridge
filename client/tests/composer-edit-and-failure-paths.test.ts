@@ -197,7 +197,7 @@ describe('server-side send failures', () => {
 });
 
 describe('disconnect while a message is in flight', () => {
-  it('returns in-flight entries to queued so the next connection replays them', () => {
+  it('returns in-flight entries to queued so the next connection replays them', async () => {
     typeAndSend('uçuşta');
     expect(readOutbox(USER_ID)[0]).toMatchObject({ state: 'sending' });
 
@@ -209,8 +209,10 @@ describe('disconnect while a message is in flight', () => {
     connected = true;
     emitted = [];
     document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
-    flushSync();
-    expect(messageEmits()).toHaveLength(1);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(messageEmits()).toHaveLength(1);
+    });
   });
 
   it('never replays an entry the user has already been told failed', () => {
