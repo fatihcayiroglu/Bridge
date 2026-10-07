@@ -267,16 +267,42 @@ export class MemoryKeyProvider implements LocalFirstKeyProvider {
   readonly kind = 'memory';
   readonly durable = false;
   private readonly keys = new Map<string, CryptoKey>();
+  private readonly pending = new Map<string, Promise<CryptoKey>>();
 
   async getOrCreate(userId: string): Promise<CryptoKey> {
     const existing = this.keys.get(userId);
     if (existing) return existing;
-    const key = await generateLocalFirstKey();
-    this.keys.set(userId, key);
-    return key;
+
+    const inFlight = this.pending.get(userId);
+    if (inFlight) return inFlight;
+
+    // Multiple drafts/outbox/history writes can start in the same microtask.
+    // They MUST share one account key; generating one key per concurrent caller
+    // makes earlier ciphertext permanently undecryptable after the last caller
+    // wins the map assignment.
+    let generation!: Promise<CryptoKey>;
+    generation = generateLocalFirstKey()
+      .then(key => {
+        const winner = this.keys.get(userId);
+        if (winner) return winner;
+        if (this.pending.get(userId) !== generation) {
+          throw new Error('Local-first key generation was invalidated');
+        }
+        this.keys.set(userId, key);
+        return key;
+      })
+      .finally(() => {
+        if (this.pending.get(userId) === generation) this.pending.delete(userId);
+      });
+
+    this.pending.set(userId, generation);
+    return generation;
   }
 
   async delete(userId: string): Promise<void> {
+    // Invalidate an unfinished generation so an account wipe cannot be followed
+    // by a late key insertion from an older task.
+    this.pending.delete(userId);
     this.keys.delete(userId);
   }
 }
