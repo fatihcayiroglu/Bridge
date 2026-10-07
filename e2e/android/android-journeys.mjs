@@ -285,7 +285,17 @@ const platform = {
   async forceStop() { if (MODE === 'dryrun') throw new Skip('force-stop needs a device'); await sh(`am force-stop ${PKG}`); },
   async deepLink(url, { cold = false } = {}) {
     if (MODE === 'dryrun') throw new Skip('deep links need the native shell');
-    if (cold) await sh(`am force-stop ${PKG}`);
+    if (cold) {
+      // After force-stop Android marks the package stopped. Starting only by
+      // package name has proved flaky on API 34 CI: ActivityManager reports
+      // completion but no debuggable WebView appears, so every later journey
+      // inherits a closed Playwright page. An explicit component still delivers
+      // the VIEW intent data, while guaranteeing MainActivity is actually
+      // created for the cold-start contract we are measuring.
+      await sh(`am force-stop ${PKG}`);
+      await sleep(500);
+      return sh(`am start -W -a android.intent.action.VIEW -d '${url}' -n ${ACTIVITY}`);
+    }
     return sh(`am start -W -a android.intent.action.VIEW -d '${url}' ${PKG}`);
   },
   async network(on) {
