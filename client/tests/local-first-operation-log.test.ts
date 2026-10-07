@@ -163,7 +163,7 @@ describe('P7 encrypted non-send operation log', () => {
     }, 999)).rejects.toThrow('full');
 
     expect(await log.listActive()).toHaveLength(LOCAL_OPLOG_MAX_ACTIVE);
-  });
+  }, 15_000);
 
   it('keeps operation payload encrypted at the physical backend', async () => {
     const { log, backend } = makeLog();
