@@ -291,11 +291,18 @@ DM recipients, and the client replayed its whole outbox at once on reconnect.
 | LEG-10 | 40 established people in 10 s (crosses the raid threshold), then post | — | OK — 40/40 joined, 40/40 posted |
 | LEG-11 | 40 **brand-new** accounts in 10 s, post, moderator ends raid mode | — | FALSE_POSITIVE *(accepted trade-off)* — 0/40 posted while held; lift released 40 holds; then 40/40 posted |
 | LEG-09 | owner bans 40 raid accounts back-to-back | **FALSE_POSITIVE** — 30/40 | FALSE_POSITIVE *(deferred to B5)* — 30/40 |
+| LEG-12 | one explicit mention of one member *(ported from #127 LEG-03)* | — | OK — message acked, exactly 1 notification |
+| LEG-13 | 5 DMs in an existing conversation, 1.1 s apart *(#127 LEG-04)* | — | OK — 5/5 delivered, no refusals |
+| LEG-14 | DMs to 3 new recipients, 1.5 s apart *(#127 LEG-05)* | — | OK — 3/3 delivered, no refusals |
 
 Totals: baseline attacks 2 BLOCKED / 3 LIMITED / 5 OPEN, controls 8 OK / 5 FALSE_POSITIVE;
 after B1 attacks 8 BLOCKED / 2 LIMITED / 0 OPEN, controls 12 OK / 1 FRICTION / 2 FALSE_POSITIVE
 (both documented in `expectations.json`). ATK-08 and the join controls are from the final
 join-scenario run after the raid-race fix; the rest from the final full run.
+LEG-12–14 were added when PR #127's unique evidence was ported into #129: B1 changed the
+mention-notification and new-DM paths, and before them the lab measured only the attacks on
+those paths. Clean full gated run with them (local, two nodes): attacks 8 BLOCKED / 2 LIMITED /
+0 OPEN; controls 15 OK / 1 FRICTION / 2 FALSE_POSITIVE (LEG-09, LEG-11, as above); gate pass.
 
 Resources (node CPU time and RSS per scenario, two nodes; fixture registration dominates):
 no change distinguishable from run-to-run noise — e.g. 12-person chat 3.7 + 4.0 s CPU before,
