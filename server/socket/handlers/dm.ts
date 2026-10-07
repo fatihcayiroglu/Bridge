@@ -15,6 +15,7 @@ import { cache } from '../../lib/redisAdapter';
 // soket baglanisinda tum node'u indirebilirdi.
 import logger from '../../lib/logger';
 import { evaluateDmAccess, isDmBlocked } from '../../lib/dmAccessPolicy';
+import { claimNewDmConversation } from '../../lib/abusePolicy';
 import { deliverDmPushBatched } from '../../lib/dmPush';
 import { isolateSocketHandler } from '../handlerIsolation';
 import { envSafeInt } from '../../lib/envNumbers';
@@ -391,6 +392,16 @@ function registerDmHandlers(socket: HandlerSocket, io: HandlerServer, user: { _i
     if (!await _checkDmRate(user._id)) {
       reject('RATE_LIMITED', 'Çok fazla mesaj gönderiyorsunuz. Yavaşlayın.', 'error:dm_rate');
       return;
+    }
+
+    // P7 B1: opening NEW conversations has its own budget (lab ATK-05: one
+    // account reached ~2,400 new recipients/hour). Existing ones never pay.
+    if (!access.existingConversation) {
+      const budget = await claimNewDmConversation(user._id);
+      if (!budget.allowed) {
+        reject('DM_NEW_CONVERSATION_LIMIT', 'Kısa sürede çok fazla yeni konuşma başlattınız. Biraz sonra yeniden deneyin.');
+        return;
+      }
     }
 
     // Only a genuinely new, rate-approved mutation may create/touch state.
