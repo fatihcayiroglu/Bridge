@@ -67,6 +67,9 @@ regress.
 | LEG-09 | an owner bans 40 raid accounts back-to-back | control |
 | LEG-10 | 40 established accounts join within 10 s (crosses the raid threshold) and post | control |
 | LEG-11 | 40 brand-new accounts join within 10 s and post; a moderator ends raid mode; they post again | control |
+| LEG-12 | one explicit mention of one member: the message lands and exactly one mention notification arrives (ported from #127 LEG-03) | control |
+| LEG-13 | 5 DMs in an existing conversation, 1.1 s apart (ported from #127 LEG-04) | control |
+| LEG-14 | DMs to 3 new recipients, 1.5 s apart (ported from #127 LEG-05) | control |
 
 The client model mirrors `MessageInputPanel`: a burst/link refusal holds the
 message and everything typed after it until the server's retry time, then

@@ -42,6 +42,7 @@ const ALL = [
   'msgburst', 'dupslow', 'nearslow', 'mentions', 'dmspray', 'joinchurn', 'invites', 'raid', 'replaystorm',
   'legit_burst', 'legit_fast', 'legit_chat', 'legit_reconnect', 'legit_acklost', 'legit_retry',
   'legit_joins', 'legit_event', 'legit_surge', 'legit_newcomers', 'legit_modops',
+  'legit_mention', 'legit_dmchat', 'legit_dmfew',
 ];
 const selected = opt('scenarios', ALL.join(',')).split(',').map((s) => s.trim()).filter(Boolean);
 const LABEL = opt('label', 'baseline');
@@ -215,6 +216,32 @@ function sendWatcher(socket) {
   return w;
 }
 const ack = () => `lab-${rnd()}${rnd()}`;
+
+/** Sends one DM per target over `socket`, `spacingMs` apart; counts deliveries by clientNonce. */
+async function dmBatch(socket, targets, spacingMs) {
+  const delivered = new Set();
+  const refusals = {};
+  let socketGateDropped = 0;
+  const onMessage = (m) => { if (m?.clientNonce) delivered.add(m.clientNonce); };
+  const onRefusal = (ev) => (e) => { const k = e?.code ?? ev; refusals[k] = (refusals[k] || 0) + 1; };
+  const onGate = () => { socketGateDropped += 1; };
+  socket.on('dm:message', onMessage);
+  const refusalHandlers = ['error:dm_rate', 'error:dm_privacy', 'error:message'].map((ev) => [ev, onRefusal(ev)]);
+  for (const [ev, h] of refusalHandlers) socket.on(ev, h);
+  socket.on('error:ratelimit', onGate);
+  const nonces = [];
+  for (const [i, t] of targets.entries()) {
+    const clientNonce = `ldm-${rnd()}-${i}`;
+    nonces.push(clientNonce);
+    socket.emit('dm:send', { toUserId: t.id, content: `hello ${i} ${rnd()}`, clientNonce });
+    if (i < targets.length - 1) await sleep(spacingMs);
+  }
+  await waitFor(() => nonces.every((n) => delivered.has(n)), { timeoutMs: 6_000, label: 'dm deliveries' }).catch(() => false);
+  socket.off('dm:message', onMessage);
+  for (const [ev, h] of refusalHandlers) socket.off(ev, h);
+  socket.off('error:ratelimit', onGate);
+  return { attempted: targets.length, delivered: nonces.filter((n) => delivered.has(n)).length, refusals, socketGateDropped };
+}
 // The production client's send behaviour (MessageInputPanel): typed messages
 // are emitted at the person's own pace; a burst/link refusal (`error:spam`,
 // not a duplicate) HOLDS that message and everything typed after it until the
@@ -752,6 +779,62 @@ const S = {
     record('legit_modops', 'LEG-09', 'owner bans 40 raid accounts back-to-back', 'control',
       ok === 40 ? 'OK' : 'FALSE_POSITIVE', `${ok}/40 bans applied in ${Math.round((Date.now() - t0) / 1000)} s`,
       { applied: ok, refused: 40 - ok, statuses: tallyStatuses(statuses.map((status) => ({ status }))) });
+  },
+
+  // ── Legitimate neighbours of the mention and DM controls (ported from #127's
+  // lab, where they were LEG-03/04/05; renumbered because #129 already uses
+  // those ids). B1 changed both paths — mention notifications are capped per
+  // sender→target and new DM conversations are budgeted — so ordinary use of
+  // each must be shown to pass untouched, not only the attack to be stopped.
+
+  // One person mentions one member once: the message lands and the member gets
+  // exactly one mention notification.
+  async legit_mention() {
+    const [owner, speaker, friend] = await people('lmen', 3);
+    const c = await community(owner);
+    await admit(c, [speaker, friend]);
+    const fs = await friend.socket();
+    const pings = [];
+    fs.on('mention:received', (m) => pings.push(m));
+    const w = sendWatcher(await speaker.socket());
+    const id = ack();
+    w.send({ channelId: c.channelId, serverId: c.serverId, content: `hi <@${friend.id}>, see you at the event ${rnd()}`, ackId: id });
+    await w.wait([id], 8_000);
+    await sleep(1_500);
+    const kind = w.outcomes.get(id)?.kind ?? 'none';
+    record('legit_mention', 'LEG-12', 'one explicit mention of one member (#127 LEG-03)', 'control',
+      kind === 'ack' && pings.length === 1 ? (w.warnings ? 'FRICTION' : 'OK') : 'FALSE_POSITIVE',
+      `message ${kind}; mentioned member received ${pings.length} notification(s)`,
+      { accepted: kind === 'ack' ? 1 : 0, notifications: pings.length, warnings: w.warnings });
+    for (const p of [speaker, friend]) p.close();
+  },
+
+  // Two friends with an open conversation: 5 DMs, one every 1.1 s. An existing
+  // conversation never spends the new-conversation budget.
+  async legit_dmchat() {
+    const [owner, alice, bob] = await people('ldmc', 3);
+    const c = await community(owner);
+    await admit(c, [alice, bob]);
+    const open = await alice.api('POST', `/api/dm/${bob.id}`, {});
+    if (open.status >= 300) throw new Error(`dm open ${open.status} ${JSON.stringify(open.body)}`);
+    const r = await dmBatch(await alice.socket(), Array.from({ length: 5 }, () => bob), 1_100);
+    record('legit_dmchat', 'LEG-13', '5 DMs in an existing conversation, 1.1 s apart (#127 LEG-04)', 'control',
+      r.delivered === 5 ? 'OK' : 'FALSE_POSITIVE',
+      `${r.delivered}/5 delivered; refusals ${JSON.stringify(r.refusals)}; ${r.socketGateDropped} dropped by the socket gate`, r);
+    for (const p of [alice, bob]) p.close();
+  },
+
+  // Someone new to a community messages three members they just met, 1.5 s
+  // apart: three NEW conversations, well inside the budget.
+  async legit_dmfew() {
+    const [owner, newcomer, ...members] = await people('ldmf', 5);
+    const c = await community(owner);
+    await admit(c, [newcomer, ...members]);
+    const r = await dmBatch(await newcomer.socket(), members, 1_500);
+    record('legit_dmfew', 'LEG-14', 'DMs to 3 new recipients, 1.5 s apart (#127 LEG-05)', 'control',
+      r.delivered === 3 ? 'OK' : 'FALSE_POSITIVE',
+      `${r.delivered}/3 new conversations delivered; refusals ${JSON.stringify(r.refusals)}; ${r.socketGateDropped} dropped by the socket gate`, r);
+    for (const p of [newcomer, ...members]) p.close();
   },
 };
 
