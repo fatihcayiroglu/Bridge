@@ -23,6 +23,7 @@ import {
   escapeHtml, sanitizeMessage, sanitizeUsername, sanitizeDisplayName, isSafeUrl,
   validateInput, checkSpam, checkSpamAsync, generateCsrfToken, verifyCsrfToken,
   progressiveRateLimit, progressiveRateLimitAsync, securityHeaders,
+  SPAM_CONFIG,
 } from '../lib/security';
 
 beforeEach(() => {
@@ -92,15 +93,37 @@ describe('spam state machine', () => {
     expect(checkSpam(k,'same')).toEqual({ blocked:true, reason:'spam_duplicate' });
   });
 
-  it('rate path warns once, then mutes and reports remaining mute', () => {
+  it('rate path warns once, rejects excess with a short retry, mutes only a sustained flood', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const k='rate-'+Math.random();
     for (let i=0;i<5;i++) expect(checkSpam(k,'m'+i).blocked).toBe(false);
     expect(checkSpam(k,'m5')).toEqual({ blocked:false, warning:true, reason:'spam_warning' });
-    const blocked=checkSpam(k,'m6');
-    expect(blocked.blocked).toBe(true); expect((blocked as any).reason).toBe('spam_rate');
+    // Strikes 1 and 2: the excess message is refused with the time until a slot
+    // frees (well under the 4 s window) — not a 30 s mute.
+    for (const text of ['m6', 'm7']) {
+      const rejected = checkSpam(k, text) as { blocked: boolean; reason: string; remainingMs: number };
+      expect(rejected).toMatchObject({ blocked: true, reason: 'spam_rate' });
+      expect(rejected.remainingMs).toBeGreaterThan(0);
+      expect(rejected.remainingMs).toBeLessThanOrEqual(SPAM_CONFIG.windowMs);
+    }
+    // Strike 3 within the strike window: the flood is muted.
+    expect(checkSpam(k,'m8')).toEqual({ blocked:true, reason:'spam_rate', remainingMs: SPAM_CONFIG.muteMs });
     const muted=checkSpam(k,'new');
     expect(muted.blocked).toBe(true); expect((muted as any).reason).toBe('spam_muted');
+  });
+
+  it('a rejected attempt does not occupy the window: the held resend goes through once a slot frees', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const k='hold-'+Math.random();
+    for (let i=0;i<5;i++) { checkSpam(k,'line'+i); jest.advanceTimersByTime(700); }
+    expect(checkSpam(k,'line5')).toMatchObject({ warning: true });           // 6th in the window: warning only
+    jest.advanceTimersByTime(700);
+    const held = checkSpam(k,'line6') as { blocked: boolean; remainingMs: number };
+    expect(held.blocked).toBe(true);                                          // strike 1, short retry
+    jest.advanceTimersByTime(held.remainingMs);
+    expect(checkSpam(k,'line6').blocked).toBe(false);                         // resend after the hint: accepted
+    jest.advanceTimersByTime(60_000);
+    expect(checkSpam(k,'later').blocked).toBe(false);                         // never muted
   });
 
   it('async Redis state is read/written atomically when configured and available', async () => {

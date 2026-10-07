@@ -902,12 +902,27 @@
     // then the same ackIds are safe to replay from encrypted canonical state.
     if (hydratedUserId !== userId) return;
 
+    // P7 B1 (abuse lab LEG-04/LEG-05): replaying every queued send at once
+    // tripped the server spam window (5 per 4 s → 30 s mute after 7) and the
+    // socket event gate (20 per 10 s, dropped without an ACK, so delivered
+    // messages showed "failed"). Replay is paced through the same held FIFO and
+    // spacing the rate-limit hold already uses: one send now, then one per
+    // HOLD_RELEASE_SPACING_MS. Same ackIds; still exactly one replay owner.
+    let dispatchedNow = Date.now() < holdUntil || heldAckIds.length > 0;
     for (const stored of readOutbox(userId)) {
       const current = pendingSends.get(stored.ackId);
       if (current?.timer || current?.entry.state === 'sending' || stored.state === 'failed') continue;
       const entry = current?.entry ?? stored;
       pendingSends.set(entry.ackId, { entry, timer: null });
-      dispatchSend(entry, sock);
+      if (!dispatchedNow) {
+        dispatchedNow = true;
+        dispatchSend(entry, sock);
+      } else if (!heldAckIds.includes(entry.ackId)) {
+        heldAckIds.push(entry.ackId);
+      }
+    }
+    if (heldAckIds.length && !holdTimer) {
+      holdTimer = setTimeout(releaseHeld, Math.max(HOLD_RELEASE_SPACING_MS, holdUntil - Date.now()));
     }
     renderCurrentOutbox();
   }

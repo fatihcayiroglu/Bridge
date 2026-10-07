@@ -3,9 +3,10 @@
 P7 starts from the verified P6 closure and is the required foundation before P8.
 
 - P6 closure merge: `972f30cde9719d9285e2da9a448ccd7dbae97679`
-- working `main` baseline: `36e9f9c35e45bff9991833e50588c0c57551b1af`
+- P7 A1–A7 foundation merge: `4eee3cf9496c13a1a72427b6ba18ddf0e840d468` (PR #124)
 - P7 branch: `p7/local-first-openai`
-- P7 PR: #124
+- active P7 PR (canonical B1 closure candidate): #129
+- PR #124 is **not** the P7 closure record; it merged the verified local-first foundation only.
 
 ## Goal
 
@@ -19,6 +20,17 @@ P7 is complete only when all four pillars below are measured and closed:
 2. Trust, Safety & Privacy
 3. Portable Identity & Community
 4. Database Scaling
+
+### Current closure status
+
+- Pillar A (A1–A7 local-first foundation) reached exact-head green at
+  `ac021863b464bf9f9ada945ef18f1a86d77e0100`; PR #124 merged it to `main` as
+  `4eee3cf9496c13a1a72427b6ba18ddf0e840d468`.
+- B1 (anti-spam / anti-raid, § B1 evidence below) is the closure candidate in PR #129.
+  PR #127 (`p7/trust-safety-openai`) is a parallel B1 line that #129 is expected to
+  supersede; its unique evidence items were audited and ported into #129.
+- B2–B5, C1–C4 and D1–D3 remain open.
+- Therefore **P7 is not closed** and P8 remains blocked.
 
 P7 must close before P8 work begins.
 
@@ -227,6 +239,117 @@ Scope includes:
 
 Required evidence includes controlled attack simulations and legitimate-user
 controls so false positives are measured.
+
+### B1 evidence (measured)
+
+**Precondition — A1–A7 exact-HEAD green.** P7 head `ac021863b464bf9f9ada945ef18f1a86d77e0100`:
+Quality Gate #572 (`37587480936`), Self-host #207 (`37587480954`), Federation + AI #202
+(`37587480948`), Mobile Android #265 (`37587480933`), Mobile iOS #246 (`37587480909`) — all
+success. Reaching it fixed, on the P7 head: a memory-key race that orphaned concurrently
+written records, a hot retry after a failed socket emit, promise APIs that threw instead of
+rejecting (stuck composer state), a cached history window shown unlabelled after a server
+error, a crypto test file that never ran, and client branch coverage 89.61% → 90.07%.
+
+**Lab.** `scripts/abuse-lab` (README there): two Bridge processes (`NODE_ENV=production`,
+`BRIDGE_MULTI_NODE=true`) sharing PostgreSQL and Redis; every simulated person has its own
+client address and alternates nodes. Attacks *and* the legitimate behaviour that resembles
+them; legitimate controls use a model of the production client (automatic hold/resend, paced
+replay). `node scripts/abuse-lab/run.mjs [--gate]`; CI: `.github/workflows/abuse-lab.yml`
+(pull requests touching abuse owners, weekly, manual) runs it gated by
+`scripts/abuse-lab/expectations.json`.
+
+**Audit of existing owners (before any change).** HTTP per-route budgets
+(`middleware/rateLimit.ts`), the per-event socket gate (`socket/socketRateLimit.ts`, 20
+`message:send` / 10 s, drops *without* an ACK), the burst/duplicate detector
+(`lib/security.ts` `checkSpamAsync`, 5 messages / 4 s), DM send rate (20/min), opt-in AutoMod
+rules (`lib/automodPolicy.ts`, nothing by default), per-actor join/invite budgets (10/min).
+Nothing was server-scoped for joins, nothing bounded repetition beyond 4 s, mentions, or new
+DM recipients, and the client replayed its whole outbox at once on reconnect.
+
+| Id | Scenario | Baseline (`ac02186`, before B1) | After B1 |
+|---|---|---|---|
+| ATK-01 | 40 messages at once | BLOCKED — 6 persisted, muted | BLOCKED — 6 persisted, muted |
+| ATK-02 | identical text every 1.4 s | **OPEN** — 15/15 (~2,569/h) | BLOCKED — 3/15 (`spam_repeat`) |
+| ATK-03 | varied spam to one site every 900 ms | **OPEN** — 20/20 (~3,996/h) | BLOCKED — 4/20 (`spam_links`) |
+| ATK-04a | 26 people in one message (no AutoMod rule) | **OPEN** — delivered | BLOCKED — `TOO_MANY_MENTIONS` |
+| ATK-04b | one victim pinged every 900 ms | **OPEN** — 15 notifications / 15 s | BLOCKED — 5 notifications (messages still delivered) |
+| ATK-05 | 40 new DM conversations | LIMITED — socket gate only (~2,400 recipients/h) | BLOCKED — 10/40, then `DM_NEW_CONVERSATION_LIMIT` (10 per 10 min) |
+| ATK-06 | join/leave one community ×15 | LIMITED — 5/15 | LIMITED — 5/15 |
+| ATK-07 | 25 invites by one member | LIMITED — 9/25 | LIMITED — 9/25 |
+| ATK-08 | 60 fresh accounts / 60 addresses raid one community and post | **OPEN** — 60 joined, 60 raid messages | BLOCKED — 60 joined, **0** raid messages; an established person right after joins and posts |
+| ATK-09 | 20 ackIds replayed ×5 | BLOCKED — no duplicates | BLOCKED — no duplicates |
+| LEG-01 | 4 lines in 3 s | OK | OK |
+| LEG-02.700 | fast typist, 8 lines / 700 ms | **FALSE_POSITIVE** — 2 lost, muted 30 s | FRICTION — 8/8, one automatic 2 s hold |
+| LEG-02.1000 / .1500 | fast typist, 1 s / 1.5 s | OK | OK |
+| LEG-03 | 12-person chat, 45 s (152 messages) | OK | OK — 0 rejected, slowest 418 ms |
+| LEG-04.5 | reconnect replays 5 queued | OK | OK — 4 s |
+| LEG-04.10 | reconnect replays 10 queued | **FALSE_POSITIVE** — muted 30 s, 35 s to converge | OK — 10/10 in 9 s, no hold |
+| LEG-04.25 | reconnect replays 25 queued | **FALSE_POSITIVE** — muted, 5 dropped with no ACK | OK — 25/25 in 24 s |
+| LEG-05 | 25 ACK-lost (already delivered) replays | **FALSE_POSITIVE** — 13 shown "failed" | OK — 25/25 re-acknowledged, 25 rows |
+| LEG-06 | slow client resends one message ×4 | OK | OK |
+| LEG-07 / 08 | 3 joins / 25 established people in 15 s | OK | OK |
+| LEG-10 | 40 established people in 10 s (crosses the raid threshold), then post | — | OK — 40/40 joined, 40/40 posted |
+| LEG-11 | 40 **brand-new** accounts in 10 s, post, moderator ends raid mode | — | FALSE_POSITIVE *(accepted trade-off)* — 0/40 posted while held; lift released 40 holds; then 40/40 posted |
+| LEG-09 | owner bans 40 raid accounts back-to-back | **FALSE_POSITIVE** — 30/40 | FALSE_POSITIVE *(deferred to B5)* — 30/40 |
+| LEG-12 | one explicit mention of one member *(ported from #127 LEG-03)* | — | OK — message acked, exactly 1 notification |
+| LEG-13 | 5 DMs in an existing conversation, 1.1 s apart *(#127 LEG-04)* | — | OK — 5/5 delivered, no refusals |
+| LEG-14 | DMs to 3 new recipients, 1.5 s apart *(#127 LEG-05)* | — | OK — 3/3 delivered, no refusals |
+
+Totals: baseline attacks 2 BLOCKED / 3 LIMITED / 5 OPEN, controls 8 OK / 5 FALSE_POSITIVE;
+after B1 attacks 8 BLOCKED / 2 LIMITED / 0 OPEN, controls 12 OK / 1 FRICTION / 2 FALSE_POSITIVE
+(both documented in `expectations.json`). ATK-08 and the join controls are from the final
+join-scenario run after the raid-race fix; the rest from the final full run.
+LEG-12–14 were added when PR #127's unique evidence was ported into #129: B1 changed the
+mention-notification and new-DM paths, and before them the lab measured only the attacks on
+those paths. Clean full gated run with them (local, two nodes): attacks 8 BLOCKED / 2 LIMITED /
+0 OPEN; controls 15 OK / 1 FRICTION / 2 FALSE_POSITIVE (LEG-09, LEG-11, as above); gate pass.
+
+Resources (node CPU time and RSS per scenario, two nodes; fixture registration dominates):
+no change distinguishable from run-to-run noise — e.g. 12-person chat 3.7 + 4.0 s CPU before,
+4.1 + 3.8 s after; 40-message burst 0.7 + 1.2 s before, 0.9 + 1.1 s after; RSS 120–160 MB per
+node throughout. Redis: every new counter is a short-TTL sorted set (≤ 60 s, DM budget 10 min).
+
+**What changed and why (design-decision contract).**
+
+1. *Real problem* — the measured OPEN rows and false positives above.
+2. *Architecture* — one owner per concern, no new generic limiter:
+   `lib/abusePolicy.ts` (repeats, link hosts, mentions, new DM conversations) counts through
+   the existing cluster-wide window (`socketRateLimit.countInWindow`, now exported);
+   `lib/security.ts` keeps the burst window but rejects excess with a short retry and mutes only
+   a sustained flood (3 strikes / 60 s); `lib/raidProtection.ts` (from the merged
+   `p7/b1-antiraid-openai` branch) owns join surges; the client's single replay owner paces
+   reconnect replay through its existing held FIFO. Every threshold is an explicit
+   `ABUSE_*` / `RAID_*` setting.
+3. *Security/abuse impact* — the table. Fail-closed when the Redis authority is unavailable
+   (as every existing limiter). Counters hold account ids and truncated SHA-256 digests only:
+   no message text or visited host reaches Redis. Encrypted content is not inspected (cannot
+   be); burst and DM limits still apply to it. Raid audit records counts, never identities.
+4. *UX impact* — fast typists and reconnecting users now see at most a short automatic hold
+   instead of a 30 s mute or "failed" messages; refusals carry explained, localized reasons
+   (10 locales); repeated text is a terminal "same message" failure; mass-mention and DM limits
+   explain themselves. Brand-new accounts that join during a detected surge wait (LEG-11).
+5. *Rollback* — thresholds relax by environment without a deploy of code; a server owner can
+   set raid protection to `off`; ending raid mode lifts its holds; migration 080 has a
+   rollback (`rollback/080_server_raid_protection.down.sql`); every change is a separate
+   commit.
+
+**Defects found in the merged raid branch** (it had no CI run): the inline mirror of
+migration 080 used `DO $ … END $` (fresh installs could not initialize; guard test added);
+a TypeScript narrowing error failed the build; the new columns were missing from the server
+column whitelist, so raid mode never persisted (its refusals came from the failure path); three
+route suites mocked the limiter without `moderation`. Its lockdown semantics were then
+measured (30 of 60 raiders admitted and posting; 10 of a 40-person launch refused; a real
+person after the raid refused) and replaced: balanced never refuses a join and holds young
+surge accounts — including the cohort that triggered it, and inserts that race the crossing —
+from posting until raid mode ends; strict still refuses joins.
+
+**Known limitations.** LEG-11 (new accounts in a surge are held until raid mode ends or a
+moderator ends it — the account-age signal cannot tell a brand-new fan from a raider);
+LEG-09 (bulk raid cleanup is capped at 30 bans/min per moderator; an audited bulk action is
+B5); a raid below the threshold (30 joins / 10 s balanced, 10 strict) is not detected; DM
+content is not inspected for repetition or links (DMs are bounded by the new-conversation
+budget and the DM send rate); thresholds were measured against scripted patterns on one host,
+not an adaptive adversary or production traffic.
 
 ## B2. Risk-adaptive security
 

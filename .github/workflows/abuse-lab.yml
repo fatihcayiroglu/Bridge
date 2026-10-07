@@ -1,0 +1,94 @@
+name: Bridge Abuse Lab Evidence
+
+# P7 B1: controlled abuse AND the legitimate behaviour that looks like it,
+# against a disposable two-node cluster of real processes (scripts/abuse-lab).
+# `--gate` fails the run when a legitimate control becomes a false positive
+# (other than the documented trade-offs in scripts/abuse-lab/expectations.json)
+# or an attack weakens below its recorded floor. Runs on changes to the
+# abuse-control owners, weekly, and on demand. The fast unit tests for every
+# rule run in the normal Quality Gate.
+on:
+  pull_request:
+    paths:
+      - 'server/lib/abusePolicy.ts'
+      - 'server/lib/security.ts'
+      - 'server/lib/raidProtection.ts'
+      - 'server/lib/serverMembership.ts'
+      - 'server/socket/socketRateLimit.ts'
+      - 'server/socket/handlers/messages-send.ts'
+      - 'server/socket/handlers/dm.ts'
+      - 'server/routes/dm.ts'
+      - 'server/routes/servers/**'
+      - 'server/routes/discover.ts'
+      - 'server/middleware/rateLimit.ts'
+      - 'client/js/core/MessageInputPanel.svelte'
+      - 'scripts/abuse-lab/**'
+      - '.github/workflows/abuse-lab.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '41 4 * * 2'
+
+concurrency:
+  group: abuse-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  lab:
+    name: Attack lab + legitimate controls (2 nodes, PostgreSQL, Redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      NODE_VERSION: '24.20.0'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install infrastructure (PostgreSQL binaries, Redis, S3 emulator)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server lsof
+          sudo systemctl stop redis-server || true
+          python -m pip install --quiet 'moto[server]==5.2.3'
+          ls -d /usr/lib/postgresql/*/bin
+      - name: Install and build Bridge
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund && npm run build
+      - name: Run the lab (gated)
+        run: |
+          node scripts/abuse-lab/run.mjs --gate \
+            --label "ci-${GITHUB_SHA::7}" \
+            --work "$RUNNER_TEMP/bridge-abuse" \
+            --out "$RUNNER_TEMP/bridge-abuse-report"
+        env:
+          MN_MOTO_SERVER: moto_server
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/bridge-abuse-report/report.md" ]; then
+            cat "$RUNNER_TEMP/bridge-abuse-report/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload report and node logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: abuse-lab-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/bridge-abuse-report
+            ${{ runner.temp }}/bridge-abuse/logs
+          retention-days: 30
+          if-no-files-found: warn

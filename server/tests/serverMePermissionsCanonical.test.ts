@@ -42,6 +42,7 @@ jest.mock('../middleware/rateLimit', () => ({
     // `../routes/roles` BİLEREK mock'lanmadığı için gerçek modül yüklenir ve
     // kendi limiter'ını ister.
     roles:    () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    moderation: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   },
   rateLimit: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));

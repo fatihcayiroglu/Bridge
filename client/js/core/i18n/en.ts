@@ -1760,6 +1760,8 @@ const translations: Record<string, string> = {
   "delivery_dm_blocked": "You cannot message this user right now.",
   "delivery_group_forbidden": "You no longer have access to this group conversation.",
   "delivery_rate_limit": "You are sending messages too quickly. Try again shortly.",
+  "delivery_too_many_mentions": "You mentioned too many people in one message. Mention fewer people and send it again.",
+  "delivery_dm_new_limit": "You started too many new conversations in a short time. Try again in a few minutes.",
   "delivery_idempotency_failed": "This send could not be safely reused. Send the message again.",
   "delivery_invalid_request": "The message send request was invalid. Try again.",
   "mutation_moderation_blocked": "This edit was blocked by server moderation rules.",

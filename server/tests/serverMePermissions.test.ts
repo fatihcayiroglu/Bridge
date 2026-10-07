@@ -43,6 +43,7 @@ jest.mock('../middleware/rateLimit', () => ({
     channels: () => (_req: unknown, _res: unknown, next: () => void) => next(),
     invite:   () => (_req: unknown, _res: unknown, next: () => void) => next(),
     write:    () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    moderation: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   },
   rateLimit: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));

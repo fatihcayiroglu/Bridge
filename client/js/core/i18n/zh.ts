@@ -1794,6 +1794,8 @@ const translations: Record<string, string> = {
   "delivery_dm_blocked": "目前无法向此用户发送消息。",
   "delivery_group_forbidden": "你已无法访问此群组对话。",
   "delivery_rate_limit": "发送消息过快。请稍后重试。",
+  "delivery_too_many_mentions": "一条消息中提及的人过多。请减少提及人数后重新发送。",
+  "delivery_dm_new_limit": "短时间内发起的新对话过多。请几分钟后重试。",
   "delivery_idempotency_failed": "无法安全复用此次发送。请重新发送消息。",
   "delivery_invalid_request": "消息发送请求无效。请重试。",
   "mutation_moderation_blocked": "此编辑被服务器管理规则阻止。",

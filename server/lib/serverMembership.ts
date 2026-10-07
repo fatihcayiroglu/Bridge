@@ -11,6 +11,7 @@ import { Members, Servers } from '../db/repositories';
 import { cache } from './redisAdapter';
 import { invalidateMemberships } from './presenceCache';
 import { checkServerJoinMfa, type ServerMfaLevel } from './serverMfaPolicy';
+import { applyRaidJoinHold, checkServerJoinRaid, type RaidMitigationLevel } from './raidProtection';
 import { tryRequire } from './_optional-require';
 import logger from './logger';
 
@@ -20,13 +21,18 @@ export type DiscoverableJoinStatus =
   | 'invite_required'
   | 'banned'
   | 'already_member'
-  | 'mfa_required';
+  | 'mfa_required'
+  | 'raid_lockdown'
+  | 'raid_authority_unavailable';
 
 export interface DiscoverableJoinResult {
   status: DiscoverableJoinStatus;
   server?: Record<string, unknown>;
   mfaLevel?: ServerMfaLevel;
   mfaUnavailable?: boolean;
+  retryAfterMs?: number;
+  lockdownUntil?: number | null;
+  raidLevel?: RaidMitigationLevel;
 }
 
 export interface JoinActor {
@@ -127,6 +133,26 @@ export async function joinDiscoverableServer(
     };
   }
 
+  // Count only a join that is otherwise eligible. Bans/private servers/MFA
+  // failures must not consume the aggregate raid window.
+  const raid = await checkServerJoinRaid({
+    serverId,
+    actorId: actor.id,
+    server,
+    source: 'discoverable',
+  });
+  if (!raid.allowed) {
+    return {
+      status: raid.code === 'RAID_AUTHORITY_UNAVAILABLE'
+        ? 'raid_authority_unavailable'
+        : 'raid_lockdown',
+      server,
+      retryAfterMs: raid.retryAfterMs,
+      lockdownUntil: raid.lockdownUntil,
+      raidLevel: raid.level,
+    };
+  }
+
   const inserted = await Members.insertIfAbsent(actor.id, serverId, []);
   if (!inserted) {
     // A concurrent join/ban won after the optimistic read. Re-read canonical
@@ -138,6 +164,9 @@ export async function joinDiscoverableServer(
     return { status: 'already_member', server };
   }
 
+  // P7 B1: during a detected join surge a young account can read but not post
+  // until raid mode ends (lib/raidProtection.ts).
+  await applyRaidJoinHold(serverId, actor.id, raid.hold);
   await afterMemberJoined(actor, serverId);
   return { status: 'joined', server };
 }

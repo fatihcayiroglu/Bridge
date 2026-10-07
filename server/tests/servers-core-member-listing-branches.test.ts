@@ -39,7 +39,7 @@ jest.mock('../routes/roles', () => ({
   hasPermission: (perms: number, flag: number) => (perms & flag) !== 0,
   PERMS: {
     MANAGE_CHANNELS: 32, ADMINISTRATOR: 64, SEND_MESSAGES: 2,
-    KICK_MEMBERS: 8, BAN_MEMBERS: 16, MANAGE_MEMBERS: 128,
+    KICK_MEMBERS: 8, BAN_MEMBERS: 16, MANAGE_MEMBERS: 128, MANAGE_SERVER: 256,
   },
 }));
 jest.mock('../middleware/rateLimit', () => ({
@@ -356,6 +356,166 @@ describe('nicknames', () => {
     expect(res.status).toBe(200);
     const row = await requireDoc(db.members, { userId: member._id, serverId: server._id });
     expect(row.nickname).toBe('Sessiz');
+  });
+});
+
+
+describe('P7 B1 raid-protection routes', () => {
+  const getRaid = (actor = owner) => request(buildApp().app)
+    .get(`/api/servers/${server._id}/raid-protection`)
+    .set('Authorization', `Bearer ${token(actor._id)}`);
+
+  const patchRaid = (body: string | object, actor = owner) => request(buildApp().app)
+    .patch(`/api/servers/${server._id}/raid-protection`)
+    .set('Authorization', `Bearer ${token(actor._id)}`)
+    .send(body);
+
+  beforeEach(async () => {
+    memberPerms.mockResolvedValue(0xFFFFFFFF);
+    await db.servers.update(
+      { _id: server._id },
+      { $set: { raidMitigationLevel: 'balanced', raidLockdownUntil: null } },
+    );
+  });
+
+  it('GET distinguishes missing server, missing permission and explainable policy', async () => {
+    const missing = await request(buildApp().app)
+      .get('/api/servers/missing/raid-protection')
+      .set('Authorization', `Bearer ${token(owner._id)}`);
+    expect(missing.status).toBe(404);
+
+    memberPerms.mockResolvedValueOnce(0);
+    const denied = await getRaid(member);
+    expect(denied.status).toBe(403);
+    expect(denied.body.error).toMatch(/MANAGE_SERVER/);
+
+    const ok = await getRaid();
+    expect(ok.status).toBe(200);
+    expect(ok.body).toEqual(expect.objectContaining({
+      level: 'balanced',
+      active: false,
+      lockdownUntil: null,
+      policy: expect.objectContaining({ refuseJoins: false }),
+    }));
+  });
+
+  it.each([
+    [{ level: 'turbo' }, /level must be off, balanced, or strict/],
+    [{ clearLockdown: 'yes' }, /clearLockdown must be a boolean/],
+    [{ clearLockdown: false }, /Nothing to update/],
+    [[], /Nothing to update/],
+  ])('PATCH rejects malformed/no-op body %#', async (body, message) => {
+    const res = await patchRaid(body);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(message);
+  });
+
+  it('PATCH rejects a missing server and an actor without MANAGE_SERVER', async () => {
+    const missing = await request(buildApp().app)
+      .patch('/api/servers/missing/raid-protection')
+      .set('Authorization', `Bearer ${token(owner._id)}`)
+      .send({ level: 'strict' });
+    expect(missing.status).toBe(404);
+
+    memberPerms.mockResolvedValueOnce(0);
+    const denied = await patchRaid({ level: 'strict' }, member);
+    expect(denied.status).toBe(403);
+  });
+
+  it('changes level without releasing holds when there is no active lockdown', async () => {
+    const repos = require('../db/repositories');
+    const release = jest.spyOn(repos.Members, 'releaseRaidHold').mockResolvedValue(0);
+    const audit = jest.spyOn(repos.Auth, 'insertAuditLog').mockResolvedValue(undefined);
+    try {
+      const res = await patchRaid({ level: 'strict' });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(expect.objectContaining({
+        level: 'strict',
+        active: false,
+        releasedHolds: 0,
+      }));
+      expect(release).not.toHaveBeenCalled();
+      expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'raid_protection_updated',
+        actorId: owner._id,
+      }));
+      expect((await requireDoc(db.servers, { _id: server._id })).raidMitigationLevel).toBe('strict');
+    } finally {
+      release.mockRestore();
+      audit.mockRestore();
+    }
+  });
+
+  it('clearLockdown releases only the exact raid hold and records a reversible audit', async () => {
+    const until = Date.now() + 60_000;
+    await db.servers.update(
+      { _id: server._id },
+      { $set: { raidMitigationLevel: 'balanced', raidLockdownUntil: until } },
+    );
+    const repos = require('../db/repositories');
+    const release = jest.spyOn(repos.Members, 'releaseRaidHold').mockResolvedValue(7);
+    const audit = jest.spyOn(repos.Auth, 'insertAuditLog').mockResolvedValue(undefined);
+    try {
+      const res = await patchRaid({ clearLockdown: true });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(expect.objectContaining({
+        level: 'balanced',
+        active: false,
+        lockdownUntil: null,
+        releasedHolds: 7,
+      }));
+      expect(release).toHaveBeenCalledWith(server._id, until);
+      expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'raid_protection_reversed',
+        extra: expect.objectContaining({ releasedHolds: 7 }),
+      }));
+    } finally {
+      release.mockRestore();
+      audit.mockRestore();
+    }
+  });
+
+  it('turning protection off also clears lockdown and an audit outage never rolls back the update', async () => {
+    const until = Date.now() + 60_000;
+    await db.servers.update(
+      { _id: server._id },
+      { $set: { raidMitigationLevel: 'strict', raidLockdownUntil: until } },
+    );
+    const repos = require('../db/repositories');
+    const release = jest.spyOn(repos.Members, 'releaseRaidHold').mockResolvedValue(2);
+    // Reject with a non-Error too: logger's bounded fallback branch is part of
+    // the observable degradation contract.
+    const audit = jest.spyOn(repos.Auth, 'insertAuditLog').mockRejectedValue('audit unavailable');
+    try {
+      const res = await patchRaid({ level: 'off' });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(expect.objectContaining({
+        level: 'off',
+        active: false,
+        lockdownUntil: null,
+        releasedHolds: 2,
+      }));
+      expect(release).toHaveBeenCalledWith(server._id, until);
+      expect((await requireDoc(db.servers, { _id: server._id })).raidMitigationLevel).toBe('off');
+    } finally {
+      release.mockRestore();
+      audit.mockRestore();
+    }
+  });
+
+  it('reports 404 when the server disappears after the durable update', async () => {
+    const repos = require('../db/repositories');
+    const originalFind = repos.Servers.findById.bind(repos.Servers);
+    const find = jest.spyOn(repos.Servers, 'findById')
+      .mockImplementationOnce((id: unknown) => originalFind(id))
+      .mockResolvedValueOnce(null);
+    try {
+      const res = await patchRaid({ level: 'strict' });
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe('Server not found');
+    } finally {
+      find.mockRestore();
+    }
   });
 });
 

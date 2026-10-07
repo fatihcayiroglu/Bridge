@@ -1794,6 +1794,8 @@ const translations: Record<string, string> = {
   "delivery_dm_blocked": "Vous ne pouvez pas envoyer de message à cet utilisateur pour le moment.",
   "delivery_group_forbidden": "Vous n’avez plus accès à cette conversation de groupe.",
   "delivery_rate_limit": "Vous envoyez des messages trop rapidement. Réessayez dans un instant.",
+  "delivery_too_many_mentions": "Vous avez mentionné trop de personnes dans un message. Mentionnez-en moins et renvoyez-le.",
+  "delivery_dm_new_limit": "Vous avez démarré trop de nouvelles conversations en peu de temps. Réessayez dans quelques minutes.",
   "delivery_idempotency_failed": "Cet envoi n’a pas pu être réutilisé en toute sécurité. Envoyez à nouveau le message.",
   "delivery_invalid_request": "La demande d’envoi du message était invalide. Réessayez.",
   "mutation_moderation_blocked": "Cette modification a été bloquée par les règles de modération du serveur.",
