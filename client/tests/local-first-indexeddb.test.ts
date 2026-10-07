@@ -328,4 +328,48 @@ describe('P7 IndexedDB local-first adapter', () => {
     const provider = new IndexedDbKeyProvider();
     await expect(provider.getOrCreate('')).rejects.toThrow('userId is required');
   });
+
+  it('ignores malformed persisted key rows and replaces them with a valid AES key', async () => {
+    const provider = new IndexedDbKeyProvider();
+    const first = await provider.getOrCreate('u1');
+
+    const keyDb = factory.dbs.get('bridge-local-first-keys-v1')!;
+    const keys = keyDb.stores.get('keys')!;
+    keys.rows.set('u2', { userId: 'u2', v: 1, key: { type: 'public' } });
+    keys.rows.set('u3', { userId: 'wrong', v: 1, key: first });
+
+    const second = await provider.getOrCreate('u2');
+    const third = await provider.getOrCreate('u3');
+    expect(second.type).toBe('secret');
+    expect(third.type).toBe('secret');
+    expect(second).not.toBe(first);
+    expect(third).not.toBe(first);
+  });
+
+  it('surfaces request and transaction failures from the physical backend', async () => {
+    const backend = new IndexedDbRecordBackend();
+    await backend.put(record('u:u1|n:history|r:a'));
+
+    const db = factory.dbs.get('bridge-local-first-records-v1')!;
+    const original = db.transaction.bind(db);
+    db.transaction = (() => {
+      const tx = original('records') as unknown as FakeTransaction;
+      const store = tx.objectStore() as unknown as {
+        get(id: string): RequestStub<unknown>;
+      };
+      const request = store.get('x');
+      queueMicrotask(() => {
+        request.error = new DOMException('request failed', 'UnknownError');
+        request.onerror?.call(request, new Event('error'));
+      });
+      return {
+        ...tx,
+        objectStore: () => ({
+          get: () => request,
+        }),
+      } as unknown as IDBTransaction;
+    }) as typeof db.transaction;
+
+    await expect(backend.get('x')).rejects.toThrow('request failed');
+  });
 });
