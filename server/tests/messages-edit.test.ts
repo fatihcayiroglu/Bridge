@@ -288,13 +288,21 @@ describe('registerEditHandlers', () => {
       });
 
       await socket._trigger('message:edit', {
-        messageId: msg._id, channelId: channel._id, content: 'now FORBIDDEN',
+        messageId: msg._id,
+        channelId: channel._id,
+        content: 'now FORBIDDEN',
+        clientNonce: 'edit-automod-blocked',
+        baseVersion: Number(msg.createdAt ?? 0),
       });
 
       expect(await mockDb.messages.findOne({ _id: msg._id })).toMatchObject({ content: 'temiz içerik' });
       expect(findEmitted(io._emitted, 'message:edited')).toBeUndefined();
       expect(findEmitted(socket._emitted, 'error:message')).toMatchObject({
-        data: { event: 'message:edit', code: 'AUTOMOD_BLOCKED' },
+        data: {
+          event: 'message:edit',
+          code: 'AUTOMOD_BLOCKED',
+          clientNonce: 'edit-automod-blocked',
+        },
       });
     });
 
@@ -346,12 +354,20 @@ describe('registerEditHandlers', () => {
       });
 
       await socket._trigger('message:edit', {
-        messageId: msg._id, channelId: channel._id, content: 'should not persist',
+        messageId: msg._id,
+        channelId: channel._id,
+        content: 'should not persist',
+        clientNonce: 'edit-automod-unavailable',
+        baseVersion: Number(msg.createdAt ?? 0),
       });
 
       expect((await mockDb.messages.findOne({ _id: msg._id }))!.content).toBe('stable');
       expect(findEmitted(socket._emitted, 'error:message')).toMatchObject({
-        data: { event: 'message:edit', code: 'AUTOMOD_UNAVAILABLE' },
+        data: {
+          event: 'message:edit',
+          code: 'AUTOMOD_UNAVAILABLE',
+          clientNonce: 'edit-automod-unavailable',
+        },
       });
       findSpy.mockRestore();
     });
