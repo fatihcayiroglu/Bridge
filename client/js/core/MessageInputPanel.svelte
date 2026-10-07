@@ -902,12 +902,40 @@
     // then the same ackIds are safe to replay from encrypted canonical state.
     if (hydratedUserId !== userId) return;
 
+    // A reconnect can restore many legitimate queued sends at once. Emitting the
+    // whole backlog in one tick makes the canonical outbox trip the server's
+    // burst limiter even though no new user action occurred. Reuse the existing
+    // hold FIFO instead of creating a second replay queue: send one immediately,
+    // then release the remainder at the same bounded cadence used after a
+    // server-requested hold. If another lifecycle signal arrives while pacing is
+    // active it must not bypass the FIFO with another immediate send.
+    let immediateSlotUsed = Boolean(holdTimer) || heldAckIds.length > 0 || Date.now() < holdUntil;
+
     for (const stored of readOutbox(userId)) {
       const current = pendingSends.get(stored.ackId);
       if (current?.timer || current?.entry.state === 'sending' || stored.state === 'failed') continue;
+      if (heldAckIds.includes(stored.ackId)) continue;
+
       const entry = current?.entry ?? stored;
       pendingSends.set(entry.ackId, { entry, timer: null });
-      dispatchSend(entry, sock);
+
+      if (!immediateSlotUsed && Date.now() >= holdUntil) {
+        immediateSlotUsed = true;
+        dispatchSend(entry, sock);
+        continue;
+      }
+
+      holdEntry(
+        entry,
+        Date.now() < holdUntil
+          ? (holdReason || t('send_hold_rate_row', 'Sırada — hız sınırı'))
+          : '',
+      );
+    }
+
+    if (heldAckIds.length && !holdTimer) {
+      if (Date.now() < holdUntil) scheduleRelease();
+      else holdTimer = setTimeout(releaseHeld, HOLD_RELEASE_SPACING_MS);
     }
     renderCurrentOutbox();
   }
