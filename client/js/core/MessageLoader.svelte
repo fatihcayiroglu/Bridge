@@ -215,7 +215,9 @@
           BridgeRegistry.call('setMessagesError', info.message);
         }
       } else {
-        BridgeRegistry.call('setMessagesOffline', false);
+        // A server error does not make content already on screen current: a
+        // cached window applied while waiting stays labelled stale.
+        BridgeRegistry.call('setMessagesOffline', cacheApplied);
         BridgeRegistry.call('setMessagesError', info.message);
       }
     } finally {

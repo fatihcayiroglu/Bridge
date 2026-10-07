@@ -211,3 +211,59 @@ describe('P7 MessageLoader encrypted offline history', () => {
     expect(final?.messages).toEqual([]);
   });
 });
+
+describe('P7 MessageLoader offline history — honest failure states', () => {
+  it('a network failure with nothing cached shows the error, not an empty "offline" channel', async () => {
+    registerState('empty-cache-user');
+    apiFetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    render(MessageLoader);
+    select('never-cached');
+
+    await waitFor(() => expect(loading).toBe(false));
+    expect(messages).toEqual([]);
+    expect(offline).toBe(false);
+    expect(errorText).not.toBe('');
+  });
+
+  it('a server error after the cached window is shown keeps that window labelled stale', async () => {
+    const userId = 'server-error-user';
+    const channelId = 'server-error-channel';
+    registerState(userId);
+    await replaceLocalFirstHistory(userId, channelId, [{ _id: 'cached-1', channelId, content: 'cached', createdAt: 1 }]);
+    let fail!: () => void;
+    apiFetchMock.mockImplementation(() => new Promise((resolve) => { fail = () => resolve(response({}, 500)); }));
+
+    render(MessageLoader);
+    select(channelId);
+    await waitFor(() => expect(messages.map(row => row._id)).toEqual(['cached-1']));
+    expect(offline).toBe(true);
+
+    fail();
+    await waitFor(() => expect(loading).toBe(false));
+    expect(errorText).not.toBe('');
+    // Content still on screen must never be presented as current server truth.
+    expect(messages.map(row => row._id)).toEqual(['cached-1']);
+    expect(offline).toBe(true);
+  });
+
+  it('older pages loaded from the server are merged into the encrypted cache', async () => {
+    const userId = 'older-user';
+    const channelId = 'older-channel';
+    registerState(userId);
+    BridgeRegistry.register('getMessageCursor', () => 'cursor-1');
+    apiFetchMock
+      .mockResolvedValueOnce(response({ messages: [{ _id: 'new', channelId, content: 'new', createdAt: 10 }], hasMore: true, prevCursor: 'cursor-1' }))
+      .mockResolvedValueOnce(response({ messages: [{ _id: 'old', channelId, content: 'old', createdAt: 1 }], hasMore: false }));
+
+    render(MessageLoader);
+    select(channelId);
+    await waitFor(() => expect(messages.map(row => row._id)).toEqual(['new']));
+    await BridgeRegistry.call<Promise<void>>('loadOlderMessages');
+
+    await waitFor(async () => {
+      const cached = await readLocalFirstHistory(userId, channelId);
+      expect(cached?.messages.map(row => row._id)).toEqual(['old', 'new']);
+    });
+  });
+});
