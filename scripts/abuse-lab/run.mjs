@@ -166,6 +166,78 @@ async function registerMany(base, count, prefix) {
   return out;
 }
 
+function sqlText(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function backdateUsers(users, ageMs) {
+  if (!users.length) return;
+  const createdAt = Date.now() - ageMs;
+  cluster.psql(
+    `UPDATE users SET "createdAt" = ${createdAt} WHERE _id IN (${users.map(u => sqlText(u.id)).join(',')})`,
+  );
+}
+
+async function makeInvite(base, owner, serverId) {
+  const invite = await mutate(base, 'POST', '/api/servers/invites', owner.token, { serverId });
+  if (invite.status >= 300) throw new Error(`invite create ${invite.status} ${JSON.stringify(invite.body)}`);
+  return invite.body.code;
+}
+
+async function postJoinedUsers(base, users, ctx, { concurrency = 8 } = {}) {
+  let accepted = 0;
+  let timeoutRejected = 0;
+  let notMemberRejected = 0;
+  let otherRejected = 0;
+  const startedAt = Date.now();
+
+  for (let offset = 0; offset < users.length; offset += concurrency) {
+    const batch = users.slice(offset, offset + concurrency);
+    const rows = await Promise.all(batch.map(async (u, index) => {
+      let socket;
+      try {
+        socket = await connectSocket(base, u.token);
+        const cap = captureSocket(socket, ['message:ack', 'error:timeout', 'error:message', 'error:ratelimit', 'error:spam']);
+        const ackId = `join-post-${offset + index}-${rnd()}`;
+        socket.emit('message:send', {
+          channelId: ctx.channelId,
+          serverId: ctx.serverId,
+          content: `join-post-${offset + index}-${rnd()}`,
+          ackId,
+        });
+        await sleep(1_200);
+        cap.stop();
+        const acked = cap.events.some(e => e.name === 'message:ack' && e.payload?.ackId === ackId);
+        const timedOut = cap.events.some(e => e.name === 'error:timeout');
+        const notMember = cap.events.some(e => e.name === 'error:message'
+          && ['NOT_A_MEMBER', 'MISSING_PERMISSION'].includes(String(e.payload?.code ?? '')));
+        return { acked, timedOut, notMember, rejected: cap.events.length > 0 && !acked };
+      } catch {
+        return { acked: false, timedOut: false, notMember: false, rejected: true };
+      } finally {
+        try { socket?.close(); } catch { /* ignore */ }
+      }
+    }));
+
+    for (const row of rows) {
+      if (row.acked) accepted += 1;
+      else if (row.timedOut) timeoutRejected += 1;
+      else if (row.notMember) notMemberRejected += 1;
+      else otherRejected += 1;
+    }
+    await sleep(150);
+  }
+
+  return {
+    attempted: users.length,
+    accepted,
+    timeoutRejected,
+    notMemberRejected,
+    otherRejected,
+    durationMs: Date.now() - startedAt,
+  };
+}
+
 try {
   console.log(`work dir: ${cluster.workDir}`);
   await cluster.up();
@@ -177,38 +249,69 @@ try {
   const lb = `http://127.0.0.1:${cluster.basePort}`;
 
   const rssStart = clusterRssKb();
+
+  // Every channel scenario gets its own authenticated sender. This is a test
+  // invariant, not product behavior: spam/socket windows are intentionally
+  // per-account, so sharing one sender would make an earlier attack contaminate
+  // later legitimate controls and create fake false positives.
   const owner = await register(lb, 'abuse_owner');
-  const legitPeer = await register(lb, 'abuse_legit');
+  const channelActors = await registerMany(lb, 6, 'abuse_channel');
+  const [
+    legitActor,
+    burstActor,
+    duplicateActor,
+    reconnectActor,
+    mentionActor,
+    massMentionActor,
+  ] = channelActors;
   const mentionTargets = await registerMany(lb, 8, 'abuse_mention');
-  const dmTargets = await registerMany(lb, 16, 'abuse_dm');
+
+  const dmLegitActor = await register(lb, 'abuse_dm_legit');
+  const dmLegitTarget = await register(lb, 'abuse_dm_peer');
+  const dmFewActor = await register(lb, 'abuse_dm_few');
+  const dmFewTargets = await registerMany(lb, 3, 'abuse_dm_few_target');
+  const dmAttackActor = await register(lb, 'abuse_dm_attack');
+  const dmTargets = await registerMany(lb, 16, 'abuse_dm_attack_target');
+
+  const smallJoinUsers = await registerMany(lb, 4, 'abuse_join_small');
+  const organicJoinUsers = await registerMany(lb, 40, 'abuse_join_organic');
+  backdateUsers(organicJoinUsers, 48 * 60 * 60_000);
   const raidUsers = await registerMany(lb, 36, 'abuse_raid');
 
-  const community = await makeServer(lb, owner, [legitPeer, ...mentionTargets]);
-  const ownerSocket = await connectSocket(lb, owner.token);
-  sockets.push(ownerSocket);
+  const community = await makeServer(lb, owner, [...channelActors, ...mentionTargets]);
+  const actorSockets = [];
+  for (const actor of channelActors) {
+    const socket = await connectSocket(lb, actor.token);
+    sockets.push(socket);
+    actorSockets.push(socket);
+  }
+  const [
+    legitSocket,
+    burstSocket,
+    duplicateSocket,
+    reconnectSocket,
+    mentionSocket,
+    massMentionSocket,
+  ] = actorSockets;
 
-  let row = await channelBatch(ownerSocket, community,
+  let row = await channelBatch(legitSocket, community,
     ['normal one', 'normal two', 'normal three', 'normal four', 'normal five'], { spacingMs: 550 });
   record('LEG-01', 'LEGIT', 'normal conversation burst', {
     ...row, falsePositive: row.accepted !== row.attempted,
   });
 
-  row = await channelBatch(ownerSocket, community,
+  row = await channelBatch(burstSocket, community,
     Array.from({ length: 40 }, (_, i) => `burst-${i}-${rnd()}`));
   record('ATK-01', 'ATTACK', 'single-account channel burst', {
     ...row, outcome: classifyAttack(row.accepted, row.attempted),
   });
 
-  await sleep(5_000);
-
-  row = await channelBatch(ownerSocket, community, Array.from({ length: 12 }, () => 'duplicate-payload'));
-  record('ATK-02', 'ATTACK', 'repeated identical content', {
+  row = await channelBatch(duplicateSocket, community, Array.from({ length: 12 }, () => 'duplicate-payload'));
+  record('ATK-02', 'ATTACK', 'repeated identical content below outer socket cap', {
     ...row, outcome: classifyAttack(row.accepted, row.attempted),
   });
 
-  await sleep(5_000);
-
-  row = await channelBatch(ownerSocket, community,
+  row = await channelBatch(reconnectSocket, community,
     ['offline-1', 'offline-2', 'offline-3', 'offline-4'], { spacingMs: 1_000 });
   record('LEG-02', 'LEGIT', 'paced reconnect backlog', {
     ...row, falsePositive: row.accepted !== row.attempted,
@@ -217,57 +320,103 @@ try {
   const mentionSockets = [];
   for (const u of mentionTargets) {
     const s = await connectSocket(lb, u.token);
-    sockets.push(s); mentionSockets.push(s);
+    sockets.push(s);
+    mentionSockets.push(s);
   }
   const mentionCaps = mentionSockets.map(s => captureSocket(s, ['mention:received']));
-  row = await channelBatch(ownerSocket, community, [`hi <@${mentionTargets[0].id}>`]);
+  row = await channelBatch(mentionSocket, community, [`hi <@${mentionTargets[0].id}>`]);
   await sleep(500);
   const legitMentions = mentionCaps.reduce((n, c) => n + c.events.length, 0);
   record('LEG-03', 'LEGIT', 'single explicit mention', {
-    accepted: row.accepted, mentionDeliveries: legitMentions,
+    accepted: row.accepted,
+    mentionDeliveries: legitMentions,
     falsePositive: row.accepted !== 1 || legitMentions !== 1,
   });
+
   for (const cap of mentionCaps) cap.events.length = 0;
   const massBody = mentionTargets.map(u => `<@${u.id}>`).join(' ');
-  row = await channelBatch(ownerSocket, community, [massBody]);
+  row = await channelBatch(massMentionSocket, community, [massBody]);
   await sleep(750);
   const massMentions = mentionCaps.reduce((n, c) => n + c.events.length, 0);
   for (const cap of mentionCaps) cap.stop();
   record('ATK-03', 'ATTACK', 'single-message mass mention fan-out', {
-    accepted: row.accepted, attemptedMentions: mentionTargets.length,
+    accepted: row.accepted,
+    attemptedMentions: mentionTargets.length,
     deliveredMentions: massMentions,
     outcome: massMentions >= mentionTargets.length ? 'OPEN' : (massMentions > 0 ? 'LIMITED' : 'BLOCKED'),
   });
 
-  await sleep(5_000);
+  // Existing-conversation DM traffic is a legitimate control. A future
+  // recipient-spray budget must not throttle ordinary conversation messages.
+  const dmOpen = await mutate(lb, 'POST', `/api/dm/${dmLegitTarget.id}`, dmLegitActor.token, { content: 'bootstrap' });
+  if (dmOpen.status >= 300) throw new Error(`dm bootstrap ${dmOpen.status} ${JSON.stringify(dmOpen.body)}`);
+  const dmLegitSocket = await connectSocket(lb, dmLegitActor.token);
+  sockets.push(dmLegitSocket);
+  row = await dmBatch(dmLegitSocket, Array.from({ length: 5 }, () => dmLegitTarget), { spacingMs: 1_100 });
+  record('LEG-04', 'LEGIT', 'existing-conversation DM burst', {
+    ...row, falsePositive: row.accepted !== row.attempted,
+  });
 
-  row = await dmBatch(ownerSocket, dmTargets, { spacingMs: 1_100 });
+  const dmFewSocket = await connectSocket(lb, dmFewActor.token);
+  sockets.push(dmFewSocket);
+  row = await dmBatch(dmFewSocket, dmFewTargets, { spacingMs: 1_500 });
+  record('LEG-05', 'LEGIT', 'a few new DM recipients', {
+    ...row, falsePositive: row.accepted !== row.attempted,
+  });
+
+  const dmAttackSocket = await connectSocket(lb, dmAttackActor.token);
+  sockets.push(dmAttackSocket);
+  row = await dmBatch(dmAttackSocket, dmTargets, { spacingMs: 1_100 });
   record('ATK-04', 'ATTACK', 'new-recipient DM spray', {
-    ...row, outcome: classifyAttack(row.accepted, row.attempted),
-    projectedAcceptedPerHour: row.durationMs > 0 ? Math.round(row.accepted * 3_600_000 / row.durationMs) : null,
+    ...row,
+    outcome: classifyAttack(row.accepted, row.attempted),
+    projectedAcceptedPerHour: row.durationMs > 0
+      ? Math.round(row.accepted * 3_600_000 / row.durationMs)
+      : null,
   });
 
   const joinOwner = await register(lb, 'abuse_join_owner');
-  const serverResp = await mutate(lb, 'POST', '/api/servers', joinOwner.token, { name: `abuse-${rnd()}` });
-  if (serverResp.status >= 300) throw new Error(`join server create ${serverResp.status}`);
-  const joinServerId = serverResp.body._id || serverResp.body.id;
-  const inviteResp = await mutate(lb, 'POST', '/api/servers/invites', joinOwner.token, { serverId: joinServerId });
-  if (inviteResp.status >= 300) throw new Error(`join invite create ${inviteResp.status}`);
-  const joinCode = inviteResp.body.code;
-  const legitJoin = await joinUsers(lb, joinCode, raidUsers.slice(0, 4), { concurrency: 2 });
-  record('LEG-04', 'LEGIT', 'small legitimate join cohort', {
-    ...legitJoin, falsePositive: legitJoin.accepted !== legitJoin.attempted,
+  const smallCommunity = await makeServer(lb, joinOwner);
+  const smallInvite = await makeInvite(lb, joinOwner, smallCommunity.serverId);
+  const legitJoin = await joinUsers(lb, smallInvite, smallJoinUsers, { concurrency: 2 });
+  const legitJoinPosts = await postJoinedUsers(lb, smallJoinUsers, smallCommunity, { concurrency: 2 });
+  record('LEG-06', 'LEGIT', 'small legitimate join cohort', {
+    ...legitJoin,
+    postAccepted: legitJoinPosts.accepted,
+    postAttempted: legitJoinPosts.attempted,
+    falsePositive: legitJoin.accepted !== legitJoin.attempted
+      || legitJoinPosts.accepted !== legitJoinPosts.attempted,
+  });
+
+  // Large launch/community migration control: the join shape can look like a
+  // raid, but the accounts are older than 24h and should not be blanket-muted
+  // by balanced protection merely because many arrive together.
+  const organicOwner = await register(lb, 'abuse_organic_owner');
+  const organicCommunity = await makeServer(lb, organicOwner);
+  const organicInvite = await makeInvite(lb, organicOwner, organicCommunity.serverId);
+  const organicJoin = await joinUsers(lb, organicInvite, organicJoinUsers, { concurrency: 10 });
+  const organicPosts = await postJoinedUsers(lb, organicJoinUsers, organicCommunity, { concurrency: 8 });
+  record('LEG-07', 'LEGIT', '40-account established organic join surge', {
+    ...organicJoin,
+    postAccepted: organicPosts.accepted,
+    postAttempted: organicPosts.attempted,
+    falsePositive: organicJoin.accepted !== organicJoin.attempted
+      || organicPosts.accepted !== organicPosts.attempted,
   });
 
   const raidOwner = await register(lb, 'abuse_raid_owner');
-  const raidServerResp = await mutate(lb, 'POST', '/api/servers', raidOwner.token, { name: `raid-${rnd()}` });
-  if (raidServerResp.status >= 300) throw new Error(`raid server create ${raidServerResp.status}`);
-  const raidServerId = raidServerResp.body._id || raidServerResp.body.id;
-  const raidInvite = await mutate(lb, 'POST', '/api/servers/invites', raidOwner.token, { serverId: raidServerId });
-  if (raidInvite.status >= 300) throw new Error(`raid invite create ${raidInvite.status}`);
-  const raid = await joinUsers(lb, raidInvite.body.code, raidUsers, { concurrency: 12 });
+  const raidCommunity = await makeServer(lb, raidOwner);
+  const raidInvite = await makeInvite(lb, raidOwner, raidCommunity.serverId);
+  const raid = await joinUsers(lb, raidInvite, raidUsers, { concurrency: 12 });
+  const raidPosts = await postJoinedUsers(lb, raidUsers, raidCommunity, { concurrency: 8 });
   record('ATK-05', 'ATTACK', 'multi-account single-community join raid', {
-    ...raid, outcome: classifyAttack(raid.accepted, raid.attempted),
+    ...raid,
+    postAttempted: raidPosts.attempted,
+    postAccepted: raidPosts.accepted,
+    postTimeoutRejected: raidPosts.timeoutRejected,
+    postNotMemberRejected: raidPosts.notMemberRejected,
+    postOtherRejected: raidPosts.otherRejected,
+    outcome: classifyAttack(raidPosts.accepted, raidPosts.attempted),
   });
 
   const rssEnd = clusterRssKb();
