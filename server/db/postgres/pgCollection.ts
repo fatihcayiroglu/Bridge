@@ -212,6 +212,8 @@ const ALLOWED_COLUMNS = new Set([
 
   // P6 — servers."aiEnabled" (migration 078): per-server AI opt-out.
   'aiEnabled',
+  // P7 B1 (080): server join-raid policy and raid-mode deadline.
+  'raidMitigationLevel', 'raidLockdownUntil',
 ]);
 
 /**
