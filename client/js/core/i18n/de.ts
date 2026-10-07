@@ -1794,6 +1794,8 @@ const translations: Record<string, string> = {
   "delivery_dm_blocked": "Du kannst diesem Benutzer derzeit keine Nachricht senden.",
   "delivery_group_forbidden": "Du hast keinen Zugriff mehr auf diese Gruppenunterhaltung.",
   "delivery_rate_limit": "Du sendest Nachrichten zu schnell. Versuche es gleich noch einmal.",
+  "delivery_too_many_mentions": "Du hast zu viele Personen in einer Nachricht erwähnt. Erwähne weniger Personen und sende sie erneut.",
+  "delivery_dm_new_limit": "Du hast in kurzer Zeit zu viele neue Unterhaltungen begonnen. Versuche es in ein paar Minuten erneut.",
   "delivery_idempotency_failed": "Dieser Sendevorgang konnte nicht sicher wiederverwendet werden. Sende die Nachricht erneut.",
   "delivery_invalid_request": "Die Anfrage zum Senden der Nachricht war ungültig. Versuche es erneut.",
   "mutation_moderation_blocked": "Diese Bearbeitung wurde durch die Moderationsregeln des Servers blockiert.",

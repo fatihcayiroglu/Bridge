@@ -8,6 +8,7 @@ import { sanitizeUser } from '../lib/userUtils';
 import { limits } from '../middleware/rateLimit';
 import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery } from '../lib/queryNumbers';
 import { evaluateDmAccess } from '../lib/dmAccessPolicy';
+import { claimNewDmConversation } from '../lib/abusePolicy';
 import logger from '../lib/logger';
 
 function getDmId(a: string, b: string): string { return [a, b].sort().join(':'); }
@@ -159,6 +160,15 @@ router.post('/:userId', authMiddleware, limits.dm(), async (req, res) => {
     if (access.reason === 'blocked') return res.status(403).json({ error: 'Bu kullanıcıyla mesajlaşamazsınız.' });
     if (access.reason === 'privacy_none') return res.status(403).json({ error: 'Bu kullanıcı DM almıyor.' });
     return res.status(403).json({ error: 'Bu kullanıcı yalnızca arkadaşlarından DM kabul ediyor.' });
+  }
+
+  // P7 B1: a NEW conversation consumes the same budget as the socket path.
+  if (!access.existingConversation) {
+    const budget = await claimNewDmConversation(_u.id);
+    if (!budget.allowed) {
+      res.set('Retry-After', String(Math.ceil(budget.retryAfterMs / 1000)));
+      return res.status(429).json({ error: 'DM_NEW_CONVERSATION_LIMIT', retryAfterMs: budget.retryAfterMs });
+    }
   }
 
   const { conv, dmId } = await Dms.findOrCreateConversation(_u.id, other._id);

@@ -1765,6 +1765,8 @@ const translations: Record<string, string> = {
   "delivery_dm_blocked": "Bu kullanıcıyla şu anda mesajlaşamazsınız.",
   "delivery_group_forbidden": "Bu grup konuşmasına artık erişiminiz yok.",
   "delivery_rate_limit": "Çok hızlı mesaj gönderiyorsunuz. Biraz sonra yeniden deneyin.",
+  "delivery_too_many_mentions": "Bir mesajda çok fazla kişiyi etiketledin. Daha az kişi etiketleyip yeniden gönder.",
+  "delivery_dm_new_limit": "Kısa sürede çok fazla yeni konuşma başlattın. Birkaç dakika sonra yeniden dene.",
   "delivery_idempotency_failed": "Bu gönderim güvenli biçimde yeniden kullanılamadı. Mesajı yeniden gönderin.",
   "delivery_invalid_request": "Mesaj gönderme isteği geçersizdi. Yeniden deneyin.",
   "mutation_moderation_blocked": "Bu düzenleme sunucu moderasyon kuralları tarafından engellendi.",

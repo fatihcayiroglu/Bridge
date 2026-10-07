@@ -385,7 +385,10 @@
       const payload = args[0] as { reason?: string; remainingMs?: number; ackId?: string; tmpId?: string };
       const key = payload?.ackId ?? payload?.tmpId;
       if (!isNonEmptyString(key)) return;
-      BridgeRegistry.call('rejectPendingSend', key, payload.reason === 'spam_duplicate' ? 'duplicate' : 'rate', Number(payload.remainingMs));
+      // P7 B1: a repeated-content refusal is terminal like a duplicate (the same
+      // text would be refused again); burst and link limits are held and resent.
+      const duplicate = payload.reason === 'spam_duplicate' || payload.reason === 'spam_repeat';
+      BridgeRegistry.call('rejectPendingSend', key, duplicate ? 'duplicate' : 'rate', Number(payload.remainingMs));
     });
     bindOne(socket, 'error:slowmode', (...args: unknown[]) => {
       const payload = args[0] as { remaining?: number; ackId?: string; tmpId?: string };

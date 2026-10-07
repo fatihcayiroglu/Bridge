@@ -29,6 +29,10 @@ export function messageDeliveryError(code: unknown, kind: 'channel' | 'dm' | 'gd
       return t('delivery_group_forbidden', 'Bu grup konuşmasına artık erişiminiz yok.');
     case 'RATE_LIMITED':
       return t('delivery_rate_limit', 'Çok hızlı mesaj gönderiyorsunuz. Biraz sonra yeniden deneyin.');
+    case 'TOO_MANY_MENTIONS':
+      return t('delivery_too_many_mentions', 'Bir mesajda çok fazla kişiyi etiketledin. Daha az kişi etiketleyip yeniden gönder.');
+    case 'DM_NEW_CONVERSATION_LIMIT':
+      return t('delivery_dm_new_limit', 'Kısa sürede çok fazla yeni konuşma başlattın. Birkaç dakika sonra yeniden dene.');
     case 'NONCE_CONFLICT':
       return t('delivery_idempotency_failed', 'Bu gönderim güvenli biçimde yeniden kullanılamadı. Mesajı yeniden gönderin.');
     case 'INVALID_PAYLOAD':
