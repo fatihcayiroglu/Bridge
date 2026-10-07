@@ -320,6 +320,67 @@ class MemberRepository {
     return this.update(userId, serverId, { timeoutUntil });
   }
 
+  /**
+   * P7 B1 raid hold. Members of `serverId` who joined at/after `joinedSince`
+   * from an account created at/after `accountCreatedSince` may read but not
+   * post until `holdUntil` (the ordinary member-timeout enforcement). A longer
+   * existing timeout is never shortened; bans are untouched. Returns the count.
+   */
+  async holdRecentYoungJoiners(
+    serverId: string,
+    { joinedSince, accountCreatedSince, holdUntil }: { joinedSince: number; accountCreatedSince: number; holdUntil: number },
+  ): Promise<number> {
+    for (const value of [joinedSince, accountCreatedSince, holdUntil]) {
+      if (!Number.isSafeInteger(value) || value < 0) throw new RangeError('raid hold bounds must be non-negative safe integers');
+    }
+    const rawPool = (db as unknown as { _pool?: import('pg').Pool })._pool;
+    const pool = postgresPoolOrTestFallback(rawPool?.query ? rawPool : null, 'MemberRepository holdRecentYoungJoiners');
+    if (pool) {
+      const result = await pool.query(
+        `UPDATE members m SET "timeoutUntil" = $4
+           FROM users u
+          WHERE m."serverId" = $1 AND m."userId" = u._id
+            AND m."joinedAt" >= $2 AND u."createdAt" >= $3
+            AND m.banned = FALSE
+            AND (m."timeoutUntil" IS NULL OR m."timeoutUntil" < $4)`,
+        [serverId, joinedSince, accountCreatedSince, holdUntil],
+      );
+      return result.rowCount ?? 0;
+    }
+    let held = 0;
+    for (const m of await db.members.find({ serverId }) as unknown as Array<Record<string, unknown>>) {
+      if (m.banned === true || Number(m.joinedAt) < joinedSince) continue;
+      const user = await db.users.findOne({ _id: m.userId }) as Record<string, unknown> | null;
+      if (!user || Number(user.createdAt) < accountCreatedSince) continue;
+      const current = m.timeoutUntil === null || m.timeoutUntil === undefined ? null : Number(m.timeoutUntil);
+      if (current !== null && current >= holdUntil) continue;
+      await db.members.update({ userId: m.userId, serverId }, { $set: { timeoutUntil: holdUntil } });
+      held += 1;
+    }
+    return held;
+  }
+
+  /** Lifts exactly the holds a raid placed (`timeoutUntil === holdUntil`); moderator timeouts stay. */
+  async releaseRaidHold(serverId: string, holdUntil: number): Promise<number> {
+    if (!Number.isSafeInteger(holdUntil) || holdUntil < 0) throw new RangeError('raid hold must be a non-negative safe integer');
+    const rawPool = (db as unknown as { _pool?: import('pg').Pool })._pool;
+    const pool = postgresPoolOrTestFallback(rawPool?.query ? rawPool : null, 'MemberRepository releaseRaidHold');
+    if (pool) {
+      const result = await pool.query(
+        `UPDATE members SET "timeoutUntil" = NULL WHERE "serverId" = $1 AND "timeoutUntil" = $2`,
+        [serverId, holdUntil],
+      );
+      return result.rowCount ?? 0;
+    }
+    let released = 0;
+    for (const m of await db.members.find({ serverId }) as unknown as Array<Record<string, unknown>>) {
+      if (Number(m.timeoutUntil) !== holdUntil) continue;
+      await db.members.update({ userId: m.userId, serverId }, { $set: { timeoutUntil: null } });
+      released += 1;
+    }
+    return released;
+  }
+
   async isTimedOut(userId: string, serverId: string): Promise<boolean> {
     const m = await this.findOne(userId, serverId);
     return !!m && isMemberTimedOut((m as { timeoutUntil?: unknown }).timeoutUntil);
