@@ -92,13 +92,24 @@ describe('spam state machine', () => {
     expect(checkSpam(k,'same')).toEqual({ blocked:true, reason:'spam_duplicate' });
   });
 
-  it('rate path warns once, then mutes and reports remaining mute', () => {
+  it('rate path warns once, short-rejects excess, then mutes only after three strikes', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-01-01T00:00:00Z'));
     const k='rate-'+Math.random();
     for (let i=0;i<5;i++) expect(checkSpam(k,'m'+i).blocked).toBe(false);
     expect(checkSpam(k,'m5')).toEqual({ blocked:false, warning:true, reason:'spam_warning' });
-    const blocked=checkSpam(k,'m6');
-    expect(blocked.blocked).toBe(true); expect((blocked as any).reason).toBe('spam_rate');
+
+    const first=checkSpam(k,'m6') as { blocked: boolean; reason: string; remainingMs?: number };
+    expect(first).toMatchObject({ blocked:true, reason:'spam_rate' });
+    expect(first.remainingMs).toBeGreaterThanOrEqual(1_000);
+    expect(first.remainingMs).toBeLessThan(30_000);
+
+    const second=checkSpam(k,'m7') as { blocked: boolean; reason: string; remainingMs?: number };
+    expect(second).toMatchObject({ blocked:true, reason:'spam_rate' });
+    expect(second.remainingMs).toBeLessThan(30_000);
+
+    const third=checkSpam(k,'m8') as { blocked: boolean; reason: string; remainingMs?: number };
+    expect(third).toMatchObject({ blocked:true, reason:'spam_rate', remainingMs:30_000 });
+
     const muted=checkSpam(k,'new');
     expect(muted.blocked).toBe(true); expect((muted as any).reason).toBe('spam_muted');
   });
