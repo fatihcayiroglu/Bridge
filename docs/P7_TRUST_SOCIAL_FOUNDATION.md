@@ -523,6 +523,58 @@ in production); TOTP-step and backup-code consumption are already atomic in the 
 5. Full server/client typecheck, coverage gates, CI green; design-decision contract (problem,
    architecture, security, UX, rollback = per-action env switch + revert commits).
 
+### B2 baseline (measured, before any step-up)
+
+**Lab.** `scripts/stepup-lab` (README there): the same two-node harness as B1 (two
+`NODE_ENV=production` processes, shared PostgreSQL + Redis, clients alternating nodes). A *stolen
+session* is the victim's own access token replayed from the attacker's address with no
+credentials. Baseline run on `main` (ungated); every attack is expected OPEN.
+
+| Id | Attack (stolen session) | Baseline | After B2 (target) |
+|---|---|---|---|
+| SU-ATK-01 | change recovery e-mail (`POST /api/email/add`) | **OPEN** — 200 | STEP_UP_REQUIRED (`account-security`) |
+| SU-ATK-02 | begin passkey registration | **OPEN** — begin 200, list 200 | STEP_UP_REQUIRED (`account-security`) |
+| SU-ATK-03 | begin 2FA enrolment | **OPEN** — 200, secret issued | STEP_UP_REQUIRED (`account-security`) |
+| SU-ATK-04 | disable 2FA with a phished password | **OPEN** — password-only guard, no L2 | STEP_UP_REQUIRED L2 (`account-security`) |
+| SU-ATK-05 | export the whole account | **OPEN** — 200 | STEP_UP_REQUIRED (`sensitive-export`) |
+| SU-ATK-06 | delete an owned server | **OPEN** — 200 | STEP_UP_REQUIRED (`destructive-admin`) |
+| SU-ATK-07 | instance-admin delete a user and a server | **OPEN** — 200 / 200 | STEP_UP_REQUIRED (`destructive-admin`) |
+| SU-ATK-08 | compromised moderator bans 40 as fast as possible | **OPEN** — 30/40 in 12.8 s (only the 30/min limiter) | STEP_UP_REQUIRED after the burst threshold (`moderation-burst`) |
+| SU-ATK-09 | create 25 invites back-to-back | **OPEN** — 8/25 in 2.4 s (only the 10/min servers limiter) | see invite note below |
+| SU-ATK-10 | distributed step-up proof guessing | **OPEN** — no endpoint yet | failed-proof lock (5 / 15 min per account) |
+
+| Id | Legitimate operator | Baseline |
+|---|---|---|
+| SU-LEG-01 | ordinary moderation: 3 bans handling reports | OK — 3/3; the common case |
+| SU-LEG-02 | raid cleanup: 40 bans back-to-back | OK — 30/40 (30/min limiter); the only legit case far above the ordinary volume |
+| SU-LEG-03 | organiser creates 6 invites over ~12 s | OK — 6/6 |
+| SU-LEG-04 | fresh sign-in then account export | OK — 200/200; no sign-in grant at baseline |
+
+Baseline totals: attacks 10 OPEN / 0 STEPUP / 0 BLOCKED; controls 4 OK. Run label
+`baseline-5e84283`.
+
+**Proposed per-action burst thresholds (measured, for approval before production code).**
+
+- *Account-security, sensitive-export, destructive-admin, owned-server/account deletion
+  (SU-ATK-01..07):* **always** require a scoped proof — no threshold. Nothing legitimate here is
+  high-volume, so there is no cadence to measure.
+- *Destructive moderation — bans, kicks, bulk message delete (SU-ATK-08):* **step up after 5
+  destructive actions per 60 s per actor**, then one `moderation-burst` proof (10-min grant)
+  lets the rest proceed. Evidence: ordinary moderation is 3 actions (SU-LEG-01, under the
+  threshold → no prompt); a raid cleanup is the one legitimate case above it (SU-LEG-02, 30+
+  actions → one proof, then continues); a compromised session (SU-ATK-08) is stopped at 5
+  instead of the 30 the limiter alone allows. 5 sits far below the existing 30/min moderation
+  limiter, so the step-up fires first (an explainable 403, not a bare 429).
+- *Invite creation (SU-ATK-09):* **not in the first B2 set — decision requested.** The measured
+  legitimate organiser does ~6 invites in a sitting (SU-LEG-03) while the existing generic
+  `limits.servers()` limiter already caps invites at ~10/min (the burst got 8/25). A step-up
+  threshold below 6 would prompt ordinary organisers; one at 8–9 leaves only a one-to-two-invite
+  band before the limiter rejects anyway — i.e. ineffective, exactly the case the review flagged.
+  Options: (a) leave the 10/min limiter as the bound and defer invite step-up to a documented
+  follow-up; (b) add a dedicated invite limiter with more headroom so a `moderation-burst`-style
+  threshold (e.g. 8/60 s) becomes reachable with a real band. Recommended: (a). Mass-member risk
+  in B2 is otherwise covered by the moderation-burst group (mass kicks/bans).
+
 ## B3. Metadata minimization
 
 Audit what Bridge stores/emits beyond message content.

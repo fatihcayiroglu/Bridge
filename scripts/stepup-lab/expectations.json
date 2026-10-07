@@ -1,0 +1,12 @@
+{
+  "_comment": "Gate for `run.mjs --gate` (used only AFTER B2 lands). atLeast: the weakest acceptable attack outcome (OPEN < STEPUP < BLOCKED). knownFalsePositive: a legitimate control that is a FALSE_POSITIVE by design/deferral, with the reason; any OTHER false positive fails the gate. The baseline run is ungated: every attack is OPEN there by definition. Measured values and the reasoning live in docs/P7_TRUST_SOCIAL_FOUNDATION.md (B2 evidence).",
+  "SU-ATK-01": { "atLeast": "STEPUP" },
+  "SU-ATK-02": { "atLeast": "STEPUP" },
+  "SU-ATK-03": { "atLeast": "STEPUP" },
+  "SU-ATK-04": { "atLeast": "STEPUP" },
+  "SU-ATK-05": { "atLeast": "STEPUP" },
+  "SU-ATK-06": { "atLeast": "STEPUP" },
+  "SU-ATK-07": { "atLeast": "STEPUP" },
+  "SU-ATK-08": { "atLeast": "STEPUP" },
+  "SU-ATK-10": { "atLeast": "STEPUP" }
+}
