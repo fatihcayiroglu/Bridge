@@ -346,26 +346,25 @@ describe('P7 IndexedDB local-first adapter', () => {
     expect(third).not.toBe(first);
   });
 
-  it('surfaces request and transaction failures from the physical backend', async () => {
+  it('surfaces request failures from the physical backend', async () => {
     const backend = new IndexedDbRecordBackend();
     await backend.put(record('u:u1|n:history|r:a'));
 
     const db = factory.dbs.get('bridge-local-first-records-v1')!;
-    const original = db.transaction.bind(db);
     db.transaction = (() => {
-      const tx = original('records') as unknown as FakeTransaction;
-      const store = tx.objectStore() as unknown as {
-        get(id: string): RequestStub<unknown>;
-      };
-      const request = store.get('x');
+      const request = makeRequest<unknown>(undefined);
       queueMicrotask(() => {
         request.error = new DOMException('request failed', 'UnknownError');
         request.onerror?.call(request, new Event('error'));
       });
+
       return {
-        ...tx,
+        error: null,
+        oncomplete: null,
+        onabort: null,
+        onerror: null,
         objectStore: () => ({
-          get: () => request,
+          get: () => request as unknown as IDBRequest<unknown>,
         }),
       } as unknown as IDBTransaction;
     }) as typeof db.transaction;
