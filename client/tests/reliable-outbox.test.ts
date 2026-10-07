@@ -163,6 +163,41 @@ describe('Reliable Outbox — composer integration', () => {
     expect(readOutbox(USER_ID)).toEqual([]);
   });
 
+  it('paces a reconnect backlog through the existing hold FIFO without lifecycle bursts', async () => {
+    for (const content of ['queued-1', 'queued-2', 'queued-3', 'queued-4']) {
+      typeAndSend(content);
+    }
+    expect(readOutbox(USER_ID)).toHaveLength(4);
+    expect(messageEmits()).toHaveLength(0);
+
+    connected = true;
+    document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
+    await hydrateLocalFirstOutbox(USER_ID);
+    await Promise.resolve();
+    flushSync();
+
+    // One queued send is allowed through immediately.
+    expect(messageEmits()).toHaveLength(1);
+
+    // Duplicate lifecycle signals must not punch through the replay FIFO.
+    document.dispatchEvent(new CustomEvent('bridge:socket-ready'));
+    window.dispatchEvent(new Event('online'));
+    await Promise.resolve();
+    flushSync();
+    expect(messageEmits()).toHaveLength(1);
+
+    vi.advanceTimersByTime(999);
+    expect(messageEmits()).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(messageEmits()).toHaveLength(2);
+    vi.advanceTimersByTime(1_000);
+    expect(messageEmits()).toHaveLength(3);
+    vi.advanceTimersByTime(1_000);
+    expect(messageEmits()).toHaveLength(4);
+
+    expect(new Set(messageEmits().map(item => item.payload.ackId)).size).toBe(4);
+  });
+
   it('browser online, mobile foreground and SW wake converge through the same single-flight replay owner', async () => {
     typeAndSend('lifecycle replay');
     const queued = readOutbox(USER_ID)[0];
