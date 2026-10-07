@@ -8,6 +8,13 @@ const mockInvalidateMemberships = jest.fn();
 const mockCheckMfa = jest.fn();
 const mockCheckRaid = jest.fn();
 const mockApplyHold = jest.fn(async () => false);
+const mockTryRequire = jest.fn();
+const mockLogger = {
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+};
 
 jest.mock('../db/repositories', () => ({
   Servers: {
@@ -34,14 +41,14 @@ jest.mock('../lib/raidProtection', () => ({
   applyRaidJoinHold: (...args: unknown[]) => mockApplyHold(...(args as [])),
 }));
 jest.mock('../lib/_optional-require', () => ({
-  tryRequire: () => null,
+  tryRequire: (...args: unknown[]) => mockTryRequire(...args),
 }));
 jest.mock('../lib/logger', () => ({
   __esModule: true,
-  default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+  default: mockLogger,
 }));
 
-import { joinDiscoverableServer } from '../lib/serverMembership';
+import { afterMemberJoined, joinDiscoverableServer } from '../lib/serverMembership';
 
 const ACTOR = { id: 'user-a', username: 'alice', displayName: 'Alice' };
 
@@ -64,6 +71,7 @@ beforeEach(() => {
     level: 0,
     unavailable: false,
   });
+  mockTryRequire.mockReturnValue(null);
   mockCheckRaid.mockResolvedValue({
     allowed: true,
     level: 'balanced',
@@ -73,6 +81,109 @@ beforeEach(() => {
 });
 
 describe('P7 B1 discoverable join ordering', () => {
+  it('returns not_found/already_member before MFA or raid accounting', async () => {
+    mockServerFindById.mockResolvedValueOnce(null);
+    await expect(joinDiscoverableServer(ACTOR, 'missing'))
+      .resolves.toEqual({ status: 'not_found' });
+    expect(mockMemberFindIncludingBanned).not.toHaveBeenCalled();
+
+    mockMemberFindIncludingBanned.mockResolvedValueOnce({ banned: false });
+    await expect(joinDiscoverableServer(ACTOR, 'server-a'))
+      .resolves.toMatchObject({ status: 'already_member' });
+    expect(mockCheckMfa).not.toHaveBeenCalled();
+    expect(mockCheckRaid).not.toHaveBeenCalled();
+  });
+
+  it('reports MFA authority outage without consuming raid capacity', async () => {
+    mockCheckMfa.mockResolvedValueOnce({
+      required: true,
+      satisfied: false,
+      level: 2,
+      unavailable: true,
+    });
+
+    await expect(joinDiscoverableServer(ACTOR, 'server-a'))
+      .resolves.toMatchObject({
+        status: 'mfa_required',
+        mfaLevel: 2,
+        mfaUnavailable: true,
+      });
+    expect(mockCheckRaid).not.toHaveBeenCalled();
+  });
+
+  it('re-reads the canonical winner when a concurrent membership insert loses', async () => {
+    mockMemberInsertIfAbsent.mockResolvedValueOnce(false);
+    mockMemberFindIncludingBanned
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ banned: true });
+
+    await expect(joinDiscoverableServer(ACTOR, 'server-a'))
+      .resolves.toMatchObject({ status: 'banned' });
+    expect(mockApplyHold).not.toHaveBeenCalled();
+
+    jest.clearAllMocks();
+    mockServerFindById.mockResolvedValue({
+      _id: 'server-a', ownerId: 'owner', discoverable: true, mfaLevel: 0,
+      raidMitigationLevel: 'balanced',
+    });
+    mockMemberFindIncludingBanned
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ banned: false });
+    mockMemberInsertIfAbsent.mockResolvedValueOnce(false);
+    mockCheckMfa.mockResolvedValue({
+      required: false, satisfied: true, level: 0, unavailable: false,
+    });
+    mockCheckRaid.mockResolvedValue({
+      allowed: true, level: 'balanced', counted: true, uniqueAccounts: 1, hold: null,
+    });
+
+    await expect(joinDiscoverableServer(ACTOR, 'server-a'))
+      .resolves.toMatchObject({ status: 'already_member' });
+    expect(mockApplyHold).not.toHaveBeenCalled();
+  });
+
+  it('post-commit cache/webhook/plugin failures never roll back a committed membership', async () => {
+    const webhook = { dispatchEvent: jest.fn().mockRejectedValue(new Error('webhook down')) };
+    const plugin = { hooks: { emit: jest.fn().mockRejectedValue(new Error('plugin down')) } };
+    mockTryRequire.mockImplementation((request: string) =>
+      request.includes('outgoingWebhooks') ? webhook : plugin);
+    mockCacheDel.mockRejectedValueOnce(new Error('cache down'));
+
+    await expect(afterMemberJoined(ACTOR, 'server-a')).resolves.toBeUndefined();
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(mockInvalidateMemberships).toHaveBeenCalledWith('user-a');
+    expect(webhook.dispatchEvent).toHaveBeenCalledWith('server-a', 'member:join', { userId: 'user-a' });
+    expect(plugin.hooks.emit).toHaveBeenCalledWith('member:joined', expect.objectContaining({
+      userId: 'user-a', serverId: 'server-a',
+    }));
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'server_join.member_count_cache_invalidate_failed' }),
+      expect.any(String),
+    );
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'server_join.webhook_enqueue_failed' }),
+      expect.any(String),
+    );
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'server_join.plugin_hook_failed' }),
+      expect.any(String),
+    );
+  });
+
+  it('synchronous plugin exceptions are isolated after membership commit', async () => {
+    mockTryRequire.mockImplementation((request: string) => {
+      if (request.includes('outgoingWebhooks')) return null;
+      return { hooks: { emit: () => { throw new Error('plugin sync throw'); } } };
+    });
+
+    await expect(afterMemberJoined(ACTOR, 'server-a')).resolves.toBeUndefined();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'server_join.plugin_hook_failed' }),
+      expect.any(String),
+    );
+  });
+
   it('banned actors are rejected before raid accounting', async () => {
     mockMemberFindIncludingBanned.mockResolvedValueOnce({ banned: true });
 
