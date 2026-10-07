@@ -217,7 +217,8 @@ export class EncryptedOperationLog {
     return this.all();
   }
 
-  async compact(now = Date.now()): Promise<void> {
+  /** Drops expired/overflowing terminal rows; returns the rows that remain. */
+  async compact(now = Date.now()): Promise<LocalOperation[]> {
     const rows = await this.all();
     const terminal = rows
       .filter(row => TERMINAL_STATES.has(row.state))
@@ -233,13 +234,13 @@ export class EncryptedOperationLog {
     for (const row of terminal) {
       if (!keepTerminal.has(row.opId)) await this.store.delete('oplog', row.opId);
     }
+    return rows.filter(row => !TERMINAL_STATES.has(row.state) || keepTerminal.has(row.opId));
   }
 
   async enqueue(input: NewLocalOperation, now = Date.now()): Promise<LocalOperation> {
     if (input.userId !== this.userId) throw new Error('Operation account mismatch');
-    await this.compact(now);
-
-    const active = await this.listActive();
+    // One decrypting scan per enqueue: compaction already read every row.
+    const active = (await this.compact(now)).filter(row => ACTIVE_STATES.has(row.state));
     const existing = await this.get(input.opId);
     const candidate: LocalOperation = normalizeOperation({
       v: LOCAL_OPLOG_VERSION,
