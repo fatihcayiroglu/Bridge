@@ -62,6 +62,18 @@ export const SOCKET_RL: Record<string, { max: number; windowMs: number }> = {
 };
 
 // ── Atomic Redis / in-memory sliding-window owner ───────────────────────────
+// Shared by the per-event socket gate and the P7 B1 abuse policy
+// (lib/abusePolicy.ts) so there is ONE cluster-wide counter implementation:
+// Redis when configured (fail-closed: an unavailable authority counts as over
+// the limit), a bounded process-local window only for deliberate single-node use.
+export async function countInWindow(key: string, windowMs: number, now = Date.now()): Promise<number> {
+  if (windowMs > _sweepHorizonMs) _sweepHorizonMs = windowMs;
+  return _windowCount(key, windowMs, now);
+}
+
+// The in-memory sweep must never drop hits a caller's window still needs.
+let _sweepHorizonMs = 120_000;
+
 async function _windowCount(key: string, windowMs: number, now: number): Promise<number> {
   if (REDIS_CONFIGURED && !isRedisAvailable()) {
     logger.warn({ event: 'socket_ratelimit.redis.unavailable' },
@@ -88,7 +100,7 @@ setInterval(() => {
   if (isRedisAvailable()) return; // Redis aktifse in-memory store kullanılmaz
   const now = Date.now();
   for (const [k, hits] of _socketRateStore) {
-    const fresh = hits.filter(t => now - t < 120_000);
+    const fresh = hits.filter(t => now - t < _sweepHorizonMs);
     if (!fresh.length) _socketRateStore.delete(k); else _socketRateStore.set(k, fresh);
   }
 }, 2 * 60_000).unref?.();
