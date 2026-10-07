@@ -322,12 +322,17 @@ describe('GÖNDERİM HATASI YAYILIMI — sessiz kayıp yok', () => {
     chooseFile(mkFile());
     document.querySelector<HTMLButtonElement>('[data-bridge-action="sendMessage"]')!.click();
 
-    await vi.waitFor(() => expect(fileSends()).toHaveLength(1));
-    // The ACK timer is created only after the canonical socket emit. Advancing
-    // to the next pending timer tests the no-ACK transition without coupling
-    // this regression to an arbitrary wall-clock offset from async upload work.
+    // Do NOT use vi.waitFor with fake timers here: waitFor advances virtual
+    // time and can consume the very 10s ACK timeout this test is proving.
+    // Upload + JSON parsing are promise work, so drain microtasks without moving
+    // the virtual clock until the canonical socket emit appears.
+    for (let turn = 0; turn < 20 && fileSends().length === 0; turn += 1) {
+      await Promise.resolve();
+      flushSync();
+    }
+    expect(fileSends()).toHaveLength(1);
     expect(vi.getTimerCount()).toBeGreaterThan(0);
-    await vi.advanceTimersToNextTimerAsync();
+    await vi.advanceTimersByTimeAsync(10_001);
     flushSync();
 
     expect(readOutbox('user-a')[0]?.state).toBe('failed');
