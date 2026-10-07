@@ -113,6 +113,7 @@ afterEach(() => {
     BridgeRegistry.unregister(k);
   }
   vi.restoreAllMocks();
+  vi.useRealTimers();
   localStorage.clear();
   resetOutboxMemory();
   resetLocalFirstOutboxRuntimeForTests();
@@ -322,12 +323,15 @@ describe('GÖNDERİM HATASI YAYILIMI — sessiz kayıp yok', () => {
     document.querySelector<HTMLButtonElement>('[data-bridge-action="sendMessage"]')!.click();
 
     await vi.waitFor(() => expect(fileSends()).toHaveLength(1));
-    await vi.advanceTimersByTimeAsync(10_001);
+    // The ACK timer is created only after the canonical socket emit. Advancing
+    // to the next pending timer tests the no-ACK transition without coupling
+    // this regression to an arbitrary wall-clock offset from async upload work.
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    await vi.advanceTimersToNextTimerAsync();
     flushSync();
 
     expect(readOutbox('user-a')[0]?.state).toBe('failed');
     expect(renderedMessages[0]).toMatchObject({ failed: true, pending: false });
-    vi.useRealTimers();
   });
 
   it('hata sonrası retry AYNI ackId/fileUrl ile gider ve dosya yeniden yüklenmez', async () => {
