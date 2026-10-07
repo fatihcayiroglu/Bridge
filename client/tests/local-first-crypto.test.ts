@@ -159,3 +159,24 @@ describe('P7 local-first crypto boundary coverage', () => {
     expect(decoded.at(-1)).toBe(9);
   });
 });
+
+describe('P7 local-first crypto resource and environment bounds', () => {
+  it('an oversized stored ciphertext is refused before any decryption work', async () => {
+    const key = await generateLocalFirstKey();
+    const envelope = await encryptLocalJson(key, { ok: true }, 'user:u1:big');
+    // Valid base64 that decodes past the bound (a hostile or corrupted record).
+    const huge = 'A'.repeat(Math.ceil(((LOCAL_FIRST_MAX_CIPHERTEXT_BYTES + 3) / 3)) * 4);
+    await expect(decryptLocalJson(key, { ...envelope, ct: huge } as LocalFirstEnvelope, 'user:u1:big'))
+      .rejects.toThrow('ciphertext is too large');
+  });
+
+  it('fails closed with a clear error when Web Crypto is unavailable', async () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+    Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {} });
+    try {
+      await expect(generateLocalFirstKey()).rejects.toThrow('Web Crypto is unavailable');
+    } finally {
+      if (original) Object.defineProperty(globalThis, 'crypto', original);
+    }
+  });
+});
