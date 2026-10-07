@@ -40,6 +40,10 @@ vi.mock('../js/core/logger.js', () => ({
 vi.mock('../js/core/a11y/focusTrap.ts', () => ({ focusTrap: () => ({ destroy() {} }) }));
 
 import GlobalSearchPanel from '../js/core/GlobalSearchPanel.svelte';
+import {
+  replaceLocalFirstHistory,
+  resetLocalFirstHistoryRuntimeForTests,
+} from '../js/core/local-first/history-runtime.ts';
 
 // ── Yardimcilar ────────────────────────────────────────────────────────────
 
@@ -80,9 +84,13 @@ beforeEach(() => {
   for (const key of Object.keys(registryMap)) delete registryMap[key];
   vi.clearAllMocks();
   localStorage.clear();
+  resetLocalFirstHistoryRuntimeForTests();
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  resetLocalFirstHistoryRuntimeForTests();
+  cleanup();
+});
 
 // ════════════════════════════════════════════════════════════════════════════
 describe('acilis / kapanis', () => {
@@ -190,6 +198,162 @@ describe('durumlar', () => {
     render(GlobalSearchPanel);
     await openWith('merhaba');
     await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+describe('P7 A6 offline local-first arama', () => {
+  it('browser offline iken servera gitmeden hesap-bazli sifreli cache sonucunu gosterir', async () => {
+    const userId = 'global-search-offline-user';
+    await replaceLocalFirstHistory(userId, 'c-local', [{
+      _id: 'local-1',
+      channelId: 'c-local',
+      channelName: 'yerel',
+      serverId: 's-local',
+      userId: 'author-local',
+      displayName: 'Yerel Yazar',
+      content: 'offline bridge needle',
+      contentFormat: 1,
+      createdAt: Date.now(),
+    }]);
+
+    const api = mockApi({
+      results: [channelRow({ _id: 'server-should-not-run', content: 'offline bridge needle' })],
+    });
+    registryMap.apiFetch = api;
+    registryMap.getMe = () => ({ _id: userId });
+    registryMap.getSocketConnected = () => false;
+    const online = Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine');
+    Object.defineProperty(Navigator.prototype, 'onLine', { configurable: true, get: () => false });
+
+    try {
+      render(GlobalSearchPanel);
+      await openWith('bridge needle');
+
+      await waitFor(() => expect(optionIds()).toHaveLength(1), { timeout: 1500 });
+      expect(api).not.toHaveBeenCalled();
+    expect(document.body).toHaveTextContent('offline bridge needle');
+    expect(document.body).toHaveTextContent('#yerel');
+
+    // Context preview must come from the same local cache, not HTTP.
+      await waitFor(() => expect(document.querySelector('.gs-ctx')).toBeTruthy(), { timeout: 1500 });
+      expect(api).not.toHaveBeenCalled();
+    } finally {
+      if (online) Object.defineProperty(Navigator.prototype, 'onLine', online);
+      else Reflect.deleteProperty(Navigator.prototype, 'onLine');
+    }
+  });
+
+  it('socket kopuk olsa bile HTTP calisiyorsa online global search server-authoritative kalir', async () => {
+    const userId = 'global-search-socket-only-user';
+    await replaceLocalFirstHistory(userId, 'c-local', [{
+      _id: 'local-shadow',
+      channelId: 'c-local',
+      content: 'local authority shadow',
+      contentFormat: 1,
+      createdAt: Date.now(),
+    }]);
+
+    const api = mockApi({
+      results: [channelRow({ _id: 'server-wins', content: 'server authority result' })],
+      hasMore: false,
+    });
+    registryMap.apiFetch = api;
+    registryMap.getMe = () => ({ _id: userId });
+    registryMap.getSocketConnected = () => false;
+
+    render(GlobalSearchPanel);
+    await openWith('authority');
+
+    await waitFor(() => expect(optionIds()).toHaveLength(1));
+    expect(api).toHaveBeenCalled();
+    expect(document.body).toHaveTextContent('server authority result');
+    expect(document.body).not.toHaveTextContent('local authority shadow');
+  });
+
+  it('online server hatasini local cache ile maskelemez', async () => {
+    const userId = 'global-search-authoritative-user';
+    await replaceLocalFirstHistory(userId, 'c-local', [{
+      _id: 'local-hidden',
+      channelId: 'c-local',
+      content: 'authoritative needle',
+      contentFormat: 1,
+      createdAt: Date.now(),
+    }]);
+
+    const api = mockApi({}, false, 503);
+    registryMap.apiFetch = api;
+    registryMap.getMe = () => ({ _id: userId });
+    registryMap.getSocketConnected = () => true;
+
+    render(GlobalSearchPanel);
+    await openWith('authoritative needle');
+
+    await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
+    expect(api).toHaveBeenCalled();
+    expect(optionIds()).toEqual([]);
+    expect(document.body).not.toHaveTextContent('local-hidden');
+  });
+});
+
+describe('P7 A6 local fallback is only for real transport loss', () => {
+  async function withOffline<T>(fn: () => Promise<T>): Promise<T> {
+    const online = Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine');
+    Object.defineProperty(Navigator.prototype, 'onLine', { configurable: true, get: () => false });
+    try { return await fn(); } finally {
+      if (online) Object.defineProperty(Navigator.prototype, 'onLine', online);
+      else Reflect.deleteProperty(Navigator.prototype, 'onLine');
+    }
+  }
+
+  it('a transport failure while the socket is also down falls back to the encrypted cache', async () => {
+    const userId = 'gs-transport-loss';
+    await replaceLocalFirstHistory(userId, 'c-local', [{
+      _id: 'local-hit', channelId: 'c-local', content: 'transport needle', contentFormat: 1, createdAt: Date.now(),
+    }]);
+    const api = vi.fn(async () => { throw new TypeError('Failed to fetch'); });
+    registryMap.apiFetch = api;
+    registryMap.getMe = () => ({ _id: userId });
+    registryMap.getSocketConnected = () => false;
+
+    render(GlobalSearchPanel);
+    await openWith('transport needle');
+
+    await waitFor(() => expect(optionIds()).toHaveLength(1));
+    expect(api).toHaveBeenCalled();
+    expect(document.body).toHaveTextContent('transport needle');
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('a transport failure while the socket is connected is shown as an error, not masked by cache', async () => {
+    const userId = 'gs-flaky-http';
+    await replaceLocalFirstHistory(userId, 'c-local', [{
+      _id: 'local-hidden-2', channelId: 'c-local', content: 'flaky needle', contentFormat: 1, createdAt: Date.now(),
+    }]);
+    registryMap.apiFetch = vi.fn(async () => { throw new TypeError('Failed to fetch'); });
+    registryMap.getMe = () => ({ _id: userId });
+    registryMap.getSocketConnected = () => true;
+
+    render(GlobalSearchPanel);
+    await openWith('flaky needle');
+
+    await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
+    expect(optionIds()).toEqual([]);
+  });
+
+  it('offline without a signed-in account searches nothing and says so', async () => {
+    const api = mockApi({ results: [channelRow()], hasMore: false });
+    registryMap.apiFetch = api;
+    registryMap.getMe = () => null;
+    registryMap.getSocketConnected = () => false;
+
+    await withOffline(async () => {
+      render(GlobalSearchPanel);
+      await openWith('anything');
+      await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
+    });
+    expect(api).not.toHaveBeenCalled();
+    expect(optionIds()).toEqual([]);
   });
 });
 

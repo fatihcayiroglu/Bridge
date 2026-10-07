@@ -250,6 +250,7 @@ export const socketSchemas = {
     channelId: { type: 'string' as const, required: true, min: 1, max: 64 },
     content:   { type: 'string' as const, required: true, min: 1, max: 2000 },
     clientNonce: { type: 'string' as const, min: 1, max: 64 },
+    baseVersion: { type: 'number' as const, min: 0 },
   } satisfies Schema,
 
   reactMessage: {
@@ -257,6 +258,7 @@ export const socketSchemas = {
     channelId: { type: 'string' as const, required: true, min: 1, max: 64 },
     emoji:     { type: 'string' as const, required: true, min: 1, max: 10 },
     active:    { type: 'boolean' as const },
+    clientNonce: { type: 'string' as const, min: 1, max: 64 },
   } satisfies Schema,
 
   deleteMessage: {

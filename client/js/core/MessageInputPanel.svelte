@@ -32,10 +32,23 @@
   } from './composer/mention-query.ts';
   import { BridgeRegistry } from './bridge-registry.js';
   import { createLogger } from './logger.js';
+  import { type OutboxEntry } from './outbox-store.js';
   import {
-    outboxForChannel, patchOutboxEntry, putOutboxEntry, readOutbox,
-    removeOutboxEntry, restoreOutbox, type OutboxEntry,
-  } from './outbox-store.js';
+    closeLocalFirstOutboxRuntime,
+    hydrateLocalFirstOutbox,
+    localFirstOutboxForChannel as outboxForChannel,
+    patchLocalFirstOutboxEntry as patchOutboxEntry,
+    putLocalFirstOutboxEntry as putOutboxEntry,
+    readLocalFirstOutbox as readOutbox,
+    removeLocalFirstOutboxEntry as removeOutboxEntry,
+  } from './local-first/outbox-runtime.ts';
+  import {
+    closeMessageOperationSync,
+    handleMessageOperationSocketDisconnected,
+    queueDeleteMessageOperation,
+    queueEditMessageOperation,
+    replayMessageOperations,
+  } from './local-first/message-operation-sync.ts';
   import { isProtectedMediaUrl } from './media-auth.ts';
   import {
     draftKindOf, isTextChannel, optimisticOutboxMessage, outboxPayload,
@@ -55,13 +68,23 @@
 
   let { children }: { children?: Snippet } = $props();
 
-  interface Message { _id: string; content?: string; displayName?: string; username?: string; [key: string]: unknown }
+  interface Message {
+    _id: string;
+    channelId?: string;
+    content?: string;
+    createdAt?: number | string;
+    editedAt?: number | string;
+    displayName?: string;
+    username?: string;
+    [key: string]: unknown;
+  }
 
   const TYPING_STOP_MS = 2000;
   const MAX_LENGTH = 2000;
   const COUNTER_THRESHOLD = 1800;
   /** ACK bu süre içinde gelmezse mesaj "failed" işaretlenir (kaybolmaz, retry edilebilir). */
   const ACK_TIMEOUT_MS = 10_000;
+  const LOCAL_FIRST_SYNC_TAG = 'bridge-local-first-replay';
 
   /** Uçuştaki gönderimler — retry aynı ackId ile yapılır (sunucu tarafında dedup). */
   const pendingSends = new Map<string, PendingSend>();
@@ -369,12 +392,13 @@
     const hasContent = input.value.trim().length > 0;
     // Ek varken METIN ZORUNLU DEGILDIR; yukleme surerken tekrar gonderim kilitlenir.
     const hasAttachment = Boolean(attachment);
-    // New text messages may be queued while offline. Edits and byte uploads
-    // still require a live socket/network because they have no outbox contract.
-    const queueableText = hasContent && !editTarget;
-    const liveOnlyAction = (hasAttachment || Boolean(editTarget)) && Boolean(sock && connected);
+    // Text sends use the canonical outbox; edits use the encrypted P7 operation
+    // log. Both can be accepted while offline. Raw attachment bytes still need
+    // a live upload path.
+    const queueableTextOrEdit = hasContent;
+    const liveOnlyAttachment = hasAttachment && !editTarget && Boolean(sock && connected);
     canSend = Boolean(channel?._id && isTextChannel(channel)
-      && (queueableText || liveOnlyAction) && charCount <= MAX_LENGTH && !uploading && !editMutationBusy);
+      && (queueableTextOrEdit || liveOnlyAttachment) && charCount <= MAX_LENGTH && !uploading && !editMutationBusy);
 
     input.setAttribute('maxlength', String(MAX_LENGTH));
     if (charCount >= COUNTER_THRESHOLD || sendError) input.setAttribute('aria-describedby', 'composer-status');
@@ -390,6 +414,7 @@
   function queueOutboxEntry(inputEntry: NewOutboxEntry, sock: SocketLike | null): OutboxEntry | null {
     const userId = currentUserId();
     if (!userId) { sendError = t("ui_oturum_kimligi_bulunamadi", "Oturum kimliği bulunamadı."); return null; }
+    lastOutboxUserId = userId;
 
     const connectedState = BridgeRegistry.call<boolean>('getSocketConnected');
     const connected = connectedState ?? Boolean(sock);
@@ -452,23 +477,42 @@
     sendError = '';
 
     if (editTarget) {
-      const connected = BridgeRegistry.call<boolean>('getSocketConnected') ?? Boolean(sock);
-      if (!sock || !connected) { sendError = t("ui_baglanti_yok_duzenleme_gonderilemedi", "Bağlantı yok — düzenleme gönderilemedi"); syncComposerState(); return; }
-      if (pendingEdit) return;
+      if (pendingEdit || editMutationBusy) return;
       const nonce = newAckId();
       const messageId = editTarget._id;
+      const baseVersion = Number(editTarget.editedAt ?? editTarget.createdAt);
+      if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
+        sendError = t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.');
+        syncComposerState();
+        return;
+      }
+
+      // Persist BEFORE socket emit. If durable storage fails the user's edit
+      // stays in the composer and the server is never told it succeeded.
+      pendingEdit = { nonce, messageId, content, timer: null };
       editMutationBusy = true;
       sendError = '';
-      const timer = setTimeout(() => {
+      syncComposerState();
+
+      void queueEditMessageOperation({
+        opId: nonce,
+        messageId,
+        channelId: channel._id,
+        content,
+        baseVersion,
+      }).then(({ dispatched }) => {
+        if (pendingEdit?.nonce !== nonce) return;
+        editMutationBusy = dispatched;
+        if (!dispatched) sendError = t('ui_offline_waiting');
+        syncComposerState();
+      }).catch((error: unknown) => {
         if (pendingEdit?.nonce !== nonce) return;
         pendingEdit = null;
         editMutationBusy = false;
-        sendError = t("ui_duzenleme_icin_sunucu_onayi_alinamadi_metnin_korunuy", "Düzenleme için sunucu onayı alınamadı. Metnin korunuyor; tekrar deneyebilirsin.");
+        sendError = t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.');
+        log.warn('edit.oplog.enqueue.failed', error);
         syncComposerState();
-      }, ACK_TIMEOUT_MS);
-      pendingEdit = { nonce, messageId, content, timer };
-      sock.emit('message:edit', { messageId, channelId: channel._id, content, clientNonce: nonce });
-      syncComposerState();
+      });
       return;
     }
 
@@ -746,23 +790,91 @@
   }
 
   let hydratedUserId = '';
+  let hydratingOutboxUserId = '';
+  let outboxHydrationSeq = 0;
+  let lastOutboxUserId = '';
 
   function clearPendingMemory(): void {
     pendingSends.forEach(item => { if (item.timer) clearTimeout(item.timer); });
     pendingSends.clear();
   }
 
-  /** Restore once per authenticated user; an interrupted send becomes queued. */
+  function installHydratedOutbox(userId: string, entries: OutboxEntry[]): void {
+    // Hydration can finish AFTER the user has already sent a message. The old
+    // implementation called clearPendingMemory(), which cancelled that live
+    // ACK timer and reinstalled the row as `sending` with timer=null. Keep the
+    // existing same-account timer handle instead; hydration must never create a
+    // second network send or reset its delivery deadline.
+    const previous = new Map(pendingSends);
+    pendingSends.clear();
+
+    // A different account must never inherit timers. Same-account in-flight
+    // timers stay scheduled and are attached to the hydrated row below.
+    for (const pending of previous.values()) {
+      if (pending.entry.userId !== userId && pending.timer) clearTimeout(pending.timer);
+    }
+
+    hydratedUserId = userId;
+    hydratingOutboxUserId = '';
+    lastOutboxUserId = userId;
+
+    const installed = new Set<string>();
+    for (const entry of entries) {
+      const current = previous.get(entry.ackId);
+      const inFlight = current?.entry.userId === userId && current.timer
+        ? current
+        : null;
+      pendingSends.set(entry.ackId, inFlight ?? { entry, timer: null });
+      installed.add(entry.ackId);
+    }
+
+    // Generation guards should make this unnecessary, but fail safe: a
+    // same-account live send must not disappear if a browser returns a stale
+    // initialization snapshot.
+    for (const [ackId, pending] of previous) {
+      if (
+        !installed.has(ackId)
+        && pending.entry.userId === userId
+        && pending.timer
+      ) {
+        pendingSends.set(ackId, pending);
+      }
+    }
+  }
+
+  /**
+   * Start encrypted migration/hydration once per authenticated user.
+   *
+   * The synchronous return is only for optimistic rendering. Replay is blocked
+   * until hydratedUserId is set by authenticated encrypted read-back.
+   */
   function hydrateOutbox(): OutboxEntry[] {
     const userId = currentUserId();
     if (!userId) return [];
+    lastOutboxUserId = userId;
     if (hydratedUserId === userId) return readOutbox(userId);
 
-    clearPendingMemory();
-    hydratedUserId = userId;
-    const entries = restoreOutbox(userId);
-    for (const entry of entries) pendingSends.set(entry.ackId, { entry, timer: null });
-    return entries;
+    if (hydratingOutboxUserId !== userId) {
+      hydratingOutboxUserId = userId;
+      const seq = ++outboxHydrationSeq;
+      void hydrateLocalFirstOutbox(userId).then(entries => {
+        if (seq !== outboxHydrationSeq || currentUserId() !== userId) return;
+        installHydratedOutbox(userId, entries);
+        renderCurrentOutbox();
+        replayOutbox();
+      }).catch(error => {
+        if (seq !== outboxHydrationSeq) return;
+        hydratingOutboxUserId = '';
+        log.error('Şifreli giden kutusu yüklenemedi', error);
+        sendError = t(
+          'ui_gonderim_kuyrugu_dolu_veya_depolama_kullanilamiyor_b',
+          'Gönderim kuyruğu dolu veya depolama kullanılamıyor. Bekleyen mesajları yeniden deneyin.',
+        );
+        syncComposerState();
+      });
+    }
+
+    return readOutbox(userId);
   }
 
   function renderCurrentOutbox(): void {
@@ -783,7 +895,14 @@
     const connected = BridgeRegistry.call<boolean>('getSocketConnected') ?? Boolean(sock);
     if (!sock || !connected) return;
 
-    for (const stored of hydrateOutbox()) {
+    const userId = currentUserId();
+    if (!userId) return;
+    hydrateOutbox();
+    // Never replay from an unverified legacy/immediate view. Migration first,
+    // then the same ackIds are safe to replay from encrypted canonical state.
+    if (hydratedUserId !== userId) return;
+
+    for (const stored of readOutbox(userId)) {
       const current = pendingSends.get(stored.ackId);
       if (current?.timer || current?.entry.state === 'sending' || stored.state === 'failed') continue;
       const entry = current?.entry ?? stored;
@@ -793,17 +912,46 @@
     renderCurrentOutbox();
   }
 
-  /** ACK may have been lost; mark in-flight items queued for the next replay. */
-  function onSocketDisconnected(): void {
-    if (pendingEdit) {
-      if (pendingEdit.timer) clearTimeout(pendingEdit.timer);
-      pendingEdit = null;
-      editMutationBusy = false;
-      sendError = t("ui_baglanti_kesildi_duzenleme_uygulanmis_sayilmadi_metn", "Bağlantı kesildi. Düzenleme uygulanmış sayılmadı; metnin korunuyor.");
+  function requestBackgroundReplayWake(): void {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    void navigator.serviceWorker.ready.then(registration => {
+      const withSync = registration as ServiceWorkerRegistration & {
+        sync?: { register(tag: string): Promise<void> };
+      };
+      return withSync.sync?.register(LOCAL_FIRST_SYNC_TAG);
+    }).catch(error => log.warn('localfirst.sync.register.failed', error));
+  }
+
+  function onBrowserOnline(): void {
+    replayDurableMessageQueues();
+  }
+
+  function onBrowserOffline(): void {
+    onSocketDisconnected();
+  }
+
+  function onAppState(event: Event): void {
+    const active = (event as CustomEvent<{ active?: boolean }>).detail?.active;
+    if (active === true) replayDurableMessageQueues();
+  }
+
+  function onServiceWorkerMessage(event: MessageEvent): void {
+    const data = event.data as { type?: string; online?: boolean } | null;
+    if (
+      data?.type === 'SW_LOCAL_FIRST_REPLAY'
+      || (data?.type === 'SW_NETWORK_STATUS' && data.online === true)
+    ) {
+      replayDurableMessageQueues();
     }
-    for (const pending of pendingDeletes.values()) if (pending.timer) clearTimeout(pending.timer);
-    pendingDeletes.clear();
-    deletingMessageIds.clear();
+  }
+
+  /** ACK may have been lost; durable queues become replayable on reconnect. */
+  function onSocketDisconnected(): void {
+    void handleMessageOperationSocketDisconnected();
+    if (pendingEdit) {
+      editMutationBusy = false;
+      sendError = t('ui_offline_waiting');
+    }
     syncComposerState();
     for (const [ackId, item] of pendingSends) {
       if (item.entry.state !== 'sending') continue;
@@ -814,13 +962,58 @@
       BridgeRegistry.call('updateMessage', { _id: `pending:${ackId}`, pending: true, queued: true, failed: false, lastError: '' });
     }
     document.dispatchEvent(new CustomEvent('bridge:messages-updated'));
+    requestBackgroundReplayWake();
+  }
+
+  function replayDurableMessageQueues(): void {
+    replayOutbox();
+    void replayMessageOperations(true);
   }
 
   function onAuthSuccess(): void {
     hydratedUserId = '';
     hydrateOutbox();
     renderCurrentOutbox();
-    replayOutbox();
+    replayDurableMessageQueues();
+  }
+
+  function onMessageOperationDispatched(event: Event): void {
+    const detail = (event as CustomEvent<{ opId?: string; kind?: string }>).detail;
+    if (detail?.kind === 'edit-message' && pendingEdit?.nonce === detail.opId) {
+      editMutationBusy = true;
+      sendError = '';
+      syncComposerState();
+    }
+  }
+
+  function onMessageOperationQueued(event: Event): void {
+    const detail = (event as CustomEvent<{ opId?: string; kind?: string }>).detail;
+    if (detail?.kind === 'edit-message' && pendingEdit?.nonce === detail.opId) {
+      editMutationBusy = false;
+      sendError = t('ui_offline_waiting');
+      syncComposerState();
+    }
+  }
+
+  function onMessageOperationTimeout(event: Event): void {
+    const detail = (event as CustomEvent<{ opId?: string; kind?: string; targetId?: string }>).detail;
+    if (!detail?.opId) return;
+
+    if (detail.kind === 'edit-message' && pendingEdit?.nonce === detail.opId) {
+      pendingEdit = null;
+      editMutationBusy = false;
+      sendError = t("ui_duzenleme_icin_sunucu_onayi_alinamadi_metnin_korunuy", "Düzenleme için sunucu onayı alınamadı. Metnin korunuyor; tekrar deneyebilirsin.");
+      syncComposerState();
+      return;
+    }
+
+    if (detail.kind === 'delete-message') {
+      const pending = pendingDeletes.get(detail.opId);
+      if (!pending) return;
+      pendingDeletes.delete(detail.opId);
+      deletingMessageIds.delete(pending.messageId);
+      BridgeRegistry.call('toast', t("ui_silme_islemi_icin_sunucu_onayi_alinamadi_tekrar_dene", "Silme işlemi için sunucu onayı alınamadı. Tekrar deneyebilirsin."), 'error');
+    }
   }
 
   // ── Typing ─────────────────────────────────────────────────────────────────
@@ -887,23 +1080,25 @@
 
   function deleteMessage(messageId: string): void {
     const channel = currentChannel();
-    const sock = socket();
-    const connected = BridgeRegistry.call<boolean>('getSocketConnected') ?? Boolean(sock);
-    if (!messageId || !channel?._id || !sock || !connected || deletingMessageIds.has(messageId)) {
-      if (!connected) BridgeRegistry.call('toast', t("ui_baglanti_yok_mesaj_silinemedi", "Bağlantı yok — mesaj silinemedi."), 'error');
-      return;
-    }
+    if (!messageId || !channel?._id || deletingMessageIds.has(messageId)) return;
+
     const nonce = newAckId();
     deletingMessageIds.add(messageId);
-    const timer = setTimeout(() => {
-      const pending = pendingDeletes.get(nonce);
-      if (!pending) return;
+    pendingDeletes.set(nonce, { nonce, messageId, timer: null });
+
+    void queueDeleteMessageOperation({
+      opId: nonce,
+      messageId,
+      channelId: channel._id,
+    }).then(({ dispatched }) => {
+      if (!pendingDeletes.has(nonce)) return;
+      if (!dispatched) BridgeRegistry.call('toast', t('ui_offline_waiting'), 'info');
+    }).catch((error: unknown) => {
       pendingDeletes.delete(nonce);
       deletingMessageIds.delete(messageId);
-      BridgeRegistry.call('toast', t("ui_silme_islemi_icin_sunucu_onayi_alinamadi_tekrar_dene", "Silme işlemi için sunucu onayı alınamadı. Tekrar deneyebilirsin."), 'error');
-    }, ACK_TIMEOUT_MS);
-    pendingDeletes.set(nonce, { nonce, messageId, timer });
-    sock.emit('message:delete', { messageId, channelId: channel._id, clientNonce: nonce });
+      log.warn('delete.oplog.enqueue.failed', error);
+      BridgeRegistry.call('toast', t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.'), 'error');
+    });
   }
 
   function resolveEditMutation(clientNonce: string, messageId: string): void {
@@ -935,6 +1130,15 @@
     deletingMessageIds.delete(messageId);
     log.info(`Mesaj silme sunucu tarafından onaylandı: ${messageId.slice(0, 8)}`);
     BridgeRegistry.call('toast', t("ui_mesaj_silindi", "Mesaj silindi."), 'success');
+  }
+
+  function failDeleteMutation(clientNonce: string, code?: string): void {
+    const pending = pendingDeletes.get(clientNonce);
+    if (!pending) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    pendingDeletes.delete(clientNonce);
+    deletingMessageIds.delete(pending.messageId);
+    BridgeRegistry.call('toast', safeMutationError(code), 'error');
   }
 
   // ── Girdi olayları ─────────────────────────────────────────────────────────
@@ -1116,6 +1320,45 @@
 
   function onSendClick(event: Event): void { event.preventDefault(); sendMessage(); }
 
+  function onDraftHydrated(event: Event): void {
+    const detail = (event as CustomEvent<{
+      userId?: string;
+      kind?: string;
+      conversationId?: string;
+      serverId?: string;
+      attachmentPending?: boolean;
+    }>).detail;
+    const channel = currentChannel();
+    const userId = currentUserId();
+    if (!detail || !channel?._id || !userId) return;
+
+    const kind = draftKindOf(channel);
+    const serverId = kind === 'channel'
+      ? channel.serverId ?? BridgeRegistry.call<{ _id?: string } | null>('getCurrentServer')?._id ?? ''
+      : undefined;
+
+    if (
+      detail.userId !== userId
+      || detail.conversationId !== String(channel._id)
+      || detail.kind !== kind
+      || (kind === 'channel' && detail.serverId !== serverId)
+    ) return;
+
+    // Hydration is asynchronous. Never overwrite characters typed while the
+    // encrypted database was opening.
+    if (input && !editTarget && input.value.length === 0) {
+      input.value = restorableDraft(String(channel._id));
+      autoGrow();
+      syncComposerState();
+    }
+
+    if (!attachment && !uploading) {
+      attachError = detail.attachmentPending
+        ? t("ui_ek_dosya_yeniden_secilmeli", "Ek dosya yeniden seçilmeli.")
+        : '';
+    }
+  }
+
   onMount(() => {
     input = document.getElementById('msg-input') as HTMLTextAreaElement | null;
     wrap  = document.getElementById('msg-input-wrap');
@@ -1142,15 +1385,25 @@
     wrap?.addEventListener('dragover', onDragOver);
     wrap?.addEventListener('drop', onDrop);
     document.addEventListener('bridge:channel-selected', onChannelSelected);
+    document.addEventListener('bridge:draft-hydrated', onDraftHydrated);
     // Faz 8.2: çıkışta görünür taslak metni ekranda kalmamalı — bir sonraki
     // kullanıcı giriş yaptığında composer'da eski metni görmesin.
     document.addEventListener('bridge:auth-logout', onLogout);
     document.addEventListener('bridge:auth-success', onAuthSuccess);
-    document.addEventListener('bridge:socket-ready', replayOutbox);
-    document.addEventListener('bridge:socket-reconnected', replayOutbox);
+    document.addEventListener('bridge:socket-ready', replayDurableMessageQueues);
+    document.addEventListener('bridge:socket-reconnected', replayDurableMessageQueues);
     document.addEventListener('bridge:socket-disconnected', onSocketDisconnected);
+    window.addEventListener('online', onBrowserOnline);
+    window.addEventListener('offline', onBrowserOffline);
+    window.addEventListener('bridge:appstate', onAppState);
+    navigator.serviceWorker?.addEventListener('message', onServiceWorkerMessage);
+    document.addEventListener('bridge:message-operation-dispatched', onMessageOperationDispatched);
+    document.addEventListener('bridge:message-operation-queued', onMessageOperationQueued);
+    document.addEventListener('bridge:message-operation-timeout', onMessageOperationTimeout);
 
     onChannelSelected();
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) onBrowserOffline();
+    else replayDurableMessageQueues();
     log.info('Mesaj girişi hazır');
   });
 
@@ -1172,6 +1425,11 @@
     clearPendingMemory();
     clearPendingMutationTimers();
     hydratedUserId = '';
+    hydratingOutboxUserId = '';
+    outboxHydrationSeq += 1;
+    if (lastOutboxUserId) closeLocalFirstOutboxRuntime(lastOutboxUserId);
+    lastOutboxUserId = '';
+    closeMessageOperationSync();
     syncComposerState();
   }
 
@@ -1191,6 +1449,7 @@
   BridgeRegistry.register('resolveEditMutation', (clientNonce: string, messageId: string) => resolveEditMutation(clientNonce, messageId));
   BridgeRegistry.register('failEditMutation', (clientNonce: string, code?: string) => failEditMutation(clientNonce, code));
   BridgeRegistry.register('resolveDeleteMutation', (clientNonce: string, messageId: string) => resolveDeleteMutation(clientNonce, messageId));
+  BridgeRegistry.register('failDeleteMutation', (clientNonce: string, code?: string) => failDeleteMutation(clientNonce, code));
 
   onDestroy(() => {
     attachmentLifecycleSeq += 1;
@@ -1209,11 +1468,19 @@
     wrap?.removeEventListener('dragover', onDragOver);
     wrap?.removeEventListener('drop', onDrop);
     document.removeEventListener('bridge:channel-selected', onChannelSelected);
+    document.removeEventListener('bridge:draft-hydrated', onDraftHydrated);
     document.removeEventListener('bridge:auth-logout', onLogout);
     document.removeEventListener('bridge:auth-success', onAuthSuccess);
-    document.removeEventListener('bridge:socket-ready', replayOutbox);
-    document.removeEventListener('bridge:socket-reconnected', replayOutbox);
+    document.removeEventListener('bridge:socket-ready', replayDurableMessageQueues);
+    document.removeEventListener('bridge:socket-reconnected', replayDurableMessageQueues);
     document.removeEventListener('bridge:socket-disconnected', onSocketDisconnected);
+    window.removeEventListener('online', onBrowserOnline);
+    window.removeEventListener('offline', onBrowserOffline);
+    window.removeEventListener('bridge:appstate', onAppState);
+    navigator.serviceWorker?.removeEventListener('message', onServiceWorkerMessage);
+    document.removeEventListener('bridge:message-operation-dispatched', onMessageOperationDispatched);
+    document.removeEventListener('bridge:message-operation-queued', onMessageOperationQueued);
+    document.removeEventListener('bridge:message-operation-timeout', onMessageOperationTimeout);
     stopTyping();
     // Uçuştaki ACK zamanlayıcıları da bırakılmalı (leak yok).
     clearPendingMemory();
@@ -1233,6 +1500,8 @@
     BridgeRegistry.unregister('resolveEditMutation');
     BridgeRegistry.unregister('failEditMutation');
     BridgeRegistry.unregister('resolveDeleteMutation');
+    BridgeRegistry.unregister('failDeleteMutation');
+    closeMessageOperationSync();
   });
 </script>
 

@@ -20,6 +20,7 @@
   import { createLogger } from './logger.js';
   import { canManageMessages } from './permissions/myPermissions.ts';
   import { safeApiErrorMessage } from './api-error.ts';
+  import { queueReactionMessageOperation } from './local-first/message-operation-sync.ts';
   import { toast } from './utils.js';
   import MessageRenderer, { type MessageData } from './MessageRenderer.svelte';
   const log = createLogger('MessageListPanel');
@@ -29,6 +30,7 @@
   let messages     = $state<MessageData[]>([]);
   let isLoading    = $state(false);
   let loadError    = $state('');
+  let isOffline    = $state(false);
   let hasMore      = $state(false);
   let hasChannel   = $state(false);
   /** Sunucuda kullanıcıdan başka üye yok (U-06): boş kanal davete yönlendirir. */
@@ -63,6 +65,7 @@
     messages      = (BridgeRegistry.call<MessageData[]>('getMessages') ?? []).slice();
     isLoading     = BridgeRegistry.call<boolean>('getMessagesLoading') ?? false;
     loadError     = BridgeRegistry.call<string>('getMessagesError') ?? '';
+    isOffline     = BridgeRegistry.call<boolean>('getMessagesOffline') ?? false;
     hasMore       = BridgeRegistry.call<boolean>('getMessagesHasMore') ?? false;
     firstUnreadMessageId = BridgeRegistry.call<string | null>('getFirstUnreadMessageId') ?? null;
     const currentChannel = BridgeRegistry.call<{ _id?: string; type?: string } | null>('getCurrentChannel');
@@ -407,6 +410,11 @@
   onkeydown={onListKeydown}
 >
   {#if hasChannel}
+    {#if isOffline && messages.length > 0}
+      <div class="msg-note" role="status" data-message-cache-state="offline">
+        {t('ui_offline_waiting')}
+      </div>
+    {/if}
     {#if hasMore && messages.length > 0}
       <div class="msg-note">{t('mlp_scroll_up', 'Daha eski mesajlar için yukarı kaydır')}</div>
     {/if}
@@ -454,15 +462,26 @@
           });
         }}
         onReact={(m, emoji) => {
-          // Retry-safe desired state. The server still accepts legacy toggle
-          // payloads, but production Bridge never relies on toggle semantics.
-          const sock = BridgeRegistry.get<{ emit(ev: string, p: unknown): void }>('socket');
+          // P7 A5: reaction is a durable desired-state operation. The encrypted
+          // operation log is written before the single replay owner emits it;
+          // no toggle semantics are used during reconnect replay.
           const raw = m.reactions && typeof m.reactions === 'object'
             ? (m.reactions as Record<string, unknown>)[emoji] : undefined;
           const users = Array.isArray(raw) ? raw.map(String) : [];
-          sock?.emit('message:react', {
-            messageId: m._id, channelId: m.channelId, emoji,
-            active: !users.includes(currentUserId ?? ''),
+          const channel = BridgeRegistry.call<{ _id?: string } | null>('getCurrentChannel');
+          const destinationId = m.channelId || channel?._id;
+          if (!destinationId) return;
+
+          void queueReactionMessageOperation({
+            messageId: m._id,
+            channelId: destinationId,
+            emoji,
+            desired: !users.includes(currentUserId ?? ''),
+          }).then(({ dispatched }) => {
+            if (!dispatched) toast(t('ui_offline_waiting'), 'info');
+          }).catch((error: unknown) => {
+            log.warn('reaction.oplog.enqueue.failed', error);
+            toast(t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.'), 'error');
           });
         }}
       />

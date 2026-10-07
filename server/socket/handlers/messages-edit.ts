@@ -48,52 +48,93 @@ export function registerEditHandlers(
     if (!validateSocketPayload({ messageId, channelId, clientNonce }, socketSchemas.deleteMessage).valid) return;
     // Single owner shared with HTTP DELETE (Final21 Phase 16): visibility, author/MANAGE_MESSAGES,
     // cascade soft delete, cache invalidation BEFORE the announcement.
-    await deleteChannelMessage(io, { actorId: user._id, messageId, channelId, clientNonce });
-  }));
-
-  // ── message:edit ──────────────────────────────────────────
-  socket.on('message:edit', isolateSocketHandler(socket, 'message:edit', async ({ messageId, channelId, content, clientNonce }: {
-    messageId: string; channelId: string; content: string; clientNonce?: string;
-  }) => {
-    if (!validateSocketPayload({ messageId, channelId, content, clientNonce }, socketSchemas.editMessage).valid) return;
-    // Single owner shared with HTTP PATCH (Final21 Phase 16). The HTTP copy had drifted and
-    // skipped AutoMod entirely (measured: a refused word was stored through PATCH).
-    const result = await editChannelMessage(io, { actorId: user._id, messageId, channelId, content, clientNonce });
-    if (result.ok) return;
-    if (result.code === 'AUTOMOD_BLOCKED') {
+    const result = await deleteChannelMessage(io, { actorId: user._id, messageId, channelId, clientNonce });
+    if (!result.ok && clientNonce) {
       socket.emit('error:message', {
-        event: 'message:edit',
-        code: 'AUTOMOD_BLOCKED',
-        message: result.reason || 'Düzenleme AutoMod tarafından engellendi.',
-        clientNonce,
-      });
-    } else if (result.code === 'AUTOMOD_UNAVAILABLE') {
-      // Rule lookup/evaluation/timeout persistence failed: fail closed, say so.
-      socket.emit('error:message', {
-        event: 'message:edit',
-        code: 'AUTOMOD_UNAVAILABLE',
-        message: 'AutoMod doğrulanamadığı için düzenleme uygulanmadı.',
+        event: 'message:delete',
+        code: 'MUTATION_REJECTED',
         clientNonce,
       });
     }
-    // Other refusals stay silent, exactly as before this consolidation.
+  }));
+
+  // ── message:edit ──────────────────────────────────────────
+  socket.on('message:edit', isolateSocketHandler(socket, 'message:edit', async ({ messageId, channelId, content, clientNonce, baseVersion }: {
+    messageId: string; channelId: string; content: string; clientNonce?: string; baseVersion?: number;
+  }) => {
+    if (!validateSocketPayload({ messageId, channelId, content, clientNonce, baseVersion }, socketSchemas.editMessage).valid) return;
+    // Single owner shared with HTTP PATCH (Final21 Phase 16). The HTTP copy had drifted and
+    // skipped AutoMod entirely (measured: a refused word was stored through PATCH).
+    const result = await editChannelMessage(io, {
+      actorId: user._id, messageId, channelId, content, clientNonce, baseVersion,
+    });
+    if (result.ok) return;
+    if (!clientNonce) return;
+
+    // The client needs a deterministic terminal result for durable P7
+    // operations. Preserve useful, authorized conflict/moderation codes; group
+    // existence/permission refusals into one bounded code to avoid turning the
+    // socket into a message-existence oracle.
+    const publicCode = result.code === 'AUTOMOD_BLOCKED'
+      || result.code === 'AUTOMOD_UNAVAILABLE'
+      || result.code === 'CONFLICT'
+      ? result.code
+      : 'MUTATION_REJECTED';
+    socket.emit('error:message', {
+      event: 'message:edit',
+      code: publicCode,
+      ...(result.reason ? { message: result.reason } : {}),
+      clientNonce,
+    });
   }));
 
   // ── message:react ─────────────────────────────────────────
-  socket.on('message:react', isolateSocketHandler(socket, 'message:react', async ({ messageId, channelId, emoji, active: desiredActive }: {
-    messageId: string; channelId: string; emoji: string; active?: boolean;
+  socket.on('message:react', isolateSocketHandler(socket, 'message:react', async ({
+    messageId, channelId, emoji, active: desiredActive, clientNonce,
+  }: {
+    messageId: string; channelId: string; emoji: string; active?: boolean; clientNonce?: string;
   }) => {
-    if (!validateSocketPayload({ messageId, channelId, emoji, active: desiredActive }, socketSchemas.reactMessage).valid) return;
-    if (!emoji || typeof emoji !== 'string' || emoji.length > 10) return;
+    if (!validateSocketPayload({
+      messageId, channelId, emoji, active: desiredActive, clientNonce,
+    }, socketSchemas.reactMessage).valid) return;
+
+    // P7 A5: production clients send desired state + clientNonce. Every
+    // authoritative refusal for such a request returns one bounded terminal
+    // result, without revealing whether an inaccessible message exists.
+    const rejectMutation = (): void => {
+      if (!clientNonce) return;
+      socket.emit('error:message', {
+        event: 'message:react',
+        code: 'MUTATION_REJECTED',
+        clientNonce,
+      });
+    };
+
+    if (!emoji || typeof emoji !== 'string' || emoji.length > 10) {
+      rejectMutation();
+      return;
+    }
     const msg = await Messages.findById(messageId);
-    if (!msg || String(msg.channelId) !== channelId) return;
+    if (!msg || String(msg.channelId) !== channelId) {
+      rejectMutation();
+      return;
+    }
     const membership = await Members.findOne(user._id, msg.serverId);
-    if (!membership) return;
+    if (!membership) {
+      rejectMutation();
+      return;
+    }
     // SUNUCU UYELIGI KANAL GORUNURLUGU DEGILDIR (ayni kusur ailesi: pins/files,
     // search, ai/semantic). Goremedigi bir kanaldaki mesaja tepki verilemez.
-    if (!(await canViewChannel(user._id, String(msg.serverId), String(msg.channelId)))) return;
+    if (!(await canViewChannel(user._id, String(msg.serverId), String(msg.channelId)))) {
+      rejectMutation();
+      return;
+    }
     const reactionPerms = await resolvePermissions(user._id, String(msg.serverId), String(msg.channelId));
-    if (!hasPermission(reactionPerms, PERMS.ADD_REACTIONS)) return;
+    if (!hasPermission(reactionPerms, PERMS.ADD_REACTIONS)) {
+      rejectMutation();
+      return;
+    }
 
     const before: Record<string, string[]> = typeof msg.reactions === 'string'
       ? (() => { try { return JSON.parse(msg.reactions) as Record<string, string[]>; } catch { return {}; } })()
@@ -103,7 +144,11 @@ export function registerEditHandlers(
     const atomic = typeof desiredActive === 'boolean'
       ? await Messages.setReactionStateAtomic(messageId, emoji, user._id, targetActive)
       : await Messages.toggleReactionAtomic(messageId, emoji, user._id);
-    if (atomic === false) return;
+    if (atomic === false) {
+      rejectMutation();
+      return;
+    }
+
     let reactions: Record<string, string[]>;
     if (atomic === null) {
       // Test/in-memory adapter fallback. Desired-state requests are idempotent:
@@ -111,7 +156,10 @@ export function registerEditHandlers(
       if (targetActive === wasPresent) {
         reactions = structuredClone(before);
       } else {
-        if (targetActive && !before[emoji] && Object.keys(before).length >= 20) return;
+        if (targetActive && !before[emoji] && Object.keys(before).length >= 20) {
+          rejectMutation();
+          return;
+        }
         reactions = structuredClone(before);
         const users = reactions[emoji] ?? [];
         if (!targetActive) {
@@ -125,9 +173,14 @@ export function registerEditHandlers(
     } else {
       reactions = atomic;
     }
+
     const added = (reactions[emoji] ?? []).includes(user._id);
     await invalidateChannelMessages(String(msg.channelId));
-    io.to(`channel:${String(msg.channelId)}`).emit('message:reaction', { messageId, reactions });
+    io.to(`channel:${String(msg.channelId)}`).emit('message:reaction', {
+      messageId,
+      reactions,
+      ...(clientNonce ? { clientNonce } : {}),
+    });
 
     // Reaction Role
     try {

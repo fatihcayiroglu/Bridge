@@ -8,7 +8,12 @@
   import { closeExclusivePeers } from './exclusive-surface.ts';
   import { connectionLostDeliveryError, messageDeliveryError } from './message-delivery-error.ts';
   import { ApiResponseError, safeApiErrorMessage } from './api-error.ts';
-  import { readDraft, writeDraft, clearDraft, type DraftIdentity } from './draft-store.ts';
+  import { type DraftIdentity } from './draft-store.ts';
+  import {
+    clearLocalFirstDraft,
+    hydrateLocalFirstDraft,
+    persistLocalFirstDraftText,
+  } from './local-first/draft-runtime.ts';
   const log = createLogger('DmPanel');
 
   interface User { _id: string; username?: string; displayName?: string; avatarColor?: string; avatarUrl?: string | null; status?: string }
@@ -203,7 +208,14 @@
         conversations = [conversation, ...conversations.filter(item => item._id !== conversation?._id)];
       }
       active = conversation;
-      draft = restoreDmDraft(conversation);
+      draft = '';
+      const draftConversationId = convId(conversation);
+      void restoreDmDraft(conversation).then(value => {
+        // Local database open/decrypt must never block the panel, but a late
+        // hydrate must also never overwrite text typed after opening.
+        if (seq !== openSeq || !active || convId(active) !== draftConversationId || draft.length > 0) return;
+        draft = value;
+      });
       messages = [];
       const dmId = convId(conversation);
       currentSocket()?.emit?.('dm:join', dmId);
@@ -328,11 +340,18 @@
 
   function persistDmDraft(text = draft, conversation: Conversation | null = active): void {
     const identity = dmDraftIdentity(conversation);
-    if (identity) writeDraft(identity, text);
+    if (identity) persistLocalFirstDraftText(identity, text);
   }
 
-  function restoreDmDraft(conversation: Conversation): string {
-    return readDraft(dmDraftIdentity(conversation));
+  async function restoreDmDraft(conversation: Conversation): Promise<string> {
+    const identity = dmDraftIdentity(conversation);
+    if (!identity) return '';
+    return (await hydrateLocalFirstDraft(identity))?.text ?? '';
+  }
+
+  function clearDmDraft(conversation: Conversation | null = active): void {
+    const identity = dmDraftIdentity(conversation);
+    if (identity) clearLocalFirstDraft(identity);
   }
 
   /**
@@ -456,7 +475,7 @@
     };
     messages = messages.concat(pending);
     void scrollToLatest();
-    clearDraft(dmDraftIdentity(active));
+    clearDmDraft(active);
     draft = ''; isSending = true;
     currentSocket()?.emit?.('dm:send', { toUserId: active.other._id, content, clientNonce });
     scheduleSendTimeout(clientNonce);

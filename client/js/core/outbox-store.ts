@@ -93,6 +93,14 @@ function writeAll(userId: string, entries: OutboxEntry[]): boolean {
   }
 }
 
+export function clearLegacyOutbox(userId: string): void {
+  const key = outboxKey(userId);
+  if (!key) return;
+  try { storage()?.removeItem(key); } catch { /* migration verifies by re-read */ }
+  memoryFallback.delete(key);
+  fallbackOnly.delete(key);
+}
+
 export function readOutbox(userId: string): OutboxEntry[] {
   const key = outboxKey(userId);
   if (!key) return [];

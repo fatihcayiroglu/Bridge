@@ -364,36 +364,45 @@ test('operator, permissions and desktop diagnostics have discoverable canonical 
   assert.match(preload, /tray:open-surface/);
 });
 
-test('channel edit/delete mutations require authoritative nonce-correlated server confirmation', () => {
+test('channel edit/delete mutations use one durable nonce-correlated replay owner', () => {
   const composer = read('client/js/core/MessageInputPanel.svelte');
+  const sync = read('client/js/core/local-first/message-operation-sync.ts');
+  const oplog = read('client/js/core/local-first/operation-log.ts');
   const loader = read('client/js/core/MessageLoader.svelte');
   const handler = read('server/socket/handlers/messages-edit.ts');
   const owner = read('server/lib/messageMutations.ts');
   const validate = read('server/middleware/validate.ts');
 
-  assert.match(composer, /message:edit'[\s\S]{0,220}clientNonce: nonce/);
-  assert.match(composer, /pendingEdit[\s\S]{0,700}ACK_TIMEOUT_MS/);
+  assert.match(composer, /queueEditMessageOperation\([\s\S]{0,280}opId: nonce/);
+  assert.match(composer, /queueDeleteMessageOperation\([\s\S]{0,220}opId: nonce/);
+  assert.match(composer, /pendingEdit/);
+  assert.match(composer, /pendingDeletes/);
   assert.match(composer, /resolveEditMutation/);
   assert.match(composer, /failEditMutation/);
-  assert.match(composer, /message:delete'[\s\S]{0,220}clientNonce: nonce/);
-  assert.match(composer, /pendingDeletes/);
   assert.match(composer, /resolveDeleteMutation/);
-  assert.doesNotMatch(composer, /sock\.emit\('message:edit'[\s\S]{0,180}cancelEdit\(true\)/,
-    'edit must not leave edit mode before the authoritative event');
+  assert.match(composer, /failDeleteMutation/);
+  assert.doesNotMatch(composer, /sock\.emit\('message:edit'/,
+    'composer must persist edit operations before the single replay owner emits them');
+  assert.doesNotMatch(composer, /sock\.emit\('message:delete'/,
+    'composer must persist delete operations before the single replay owner emits them');
 
-  assert.match(loader, /message:edited'[\s\S]{0,450}resolveEditMutation/);
-  assert.match(loader, /message:deleted'[\s\S]{0,1600}resolveDeleteMutation/);
-  assert.match(loader, /error:message'[\s\S]{0,450}failEditMutation/);
+  assert.match(sync, /socket\.emit\('message:edit'[\s\S]{0,260}clientNonce: operation\.opId[\s\S]{0,120}baseVersion/);
+  assert.match(sync, /socket\.emit\('message:delete'[\s\S]{0,220}clientNonce: operation\.opId/);
+  assert.match(sync, /replayMessageOperations/);
+  assert.match(sync, /handleMessageOperationSocketDisconnected/);
+  assert.match(oplog, /'queued'[\s\S]{0,120}'sending'[\s\S]{0,120}'applied'[\s\S]{0,120}'rejected'[\s\S]{0,120}'superseded'/);
 
-  assert.match(validate, /editMessage[\s\S]{0,400}clientNonce/);
+  assert.match(loader, /message:edited'[\s\S]{0,600}resolveMessageOperation/);
+  assert.match(loader, /message:deleted'[\s\S]{0,1800}resolveMessageOperation/);
+  assert.match(loader, /error:message'[\s\S]{0,900}rejectMessageOperation/);
+
+  assert.match(validate, /editMessage[\s\S]{0,500}clientNonce[\s\S]{0,180}baseVersion/);
   assert.match(validate, /deleteMessage[\s\S]{0,300}clientNonce/);
-  // Final21 Phase 16: the broadcasts moved into the shared owner; the socket handler must
-  // still hand the client's nonce to it, and the owner must echo it.
   assert.match(handler, /deleteChannelMessage\(io, \{[^}]*clientNonce/);
-  assert.match(handler, /editChannelMessage\(io, \{[^}]*clientNonce/);
-  assert.match(owner, /message:deleted', \{ id: input\.messageId, clientNonce: input\.clientNonce \}/);
-  assert.match(owner, /message:edited', \{ \.\.\.updated, clientNonce: input\.clientNonce \}/);
-  assert.match(handler, /AUTOMOD_BLOCKED[\s\S]{0,220}clientNonce/);
+  assert.match(handler, /editChannelMessage\(io, \{[^}]*clientNonce[^}]*baseVersion/);
+  assert.match(owner, /currentContent === desiredContent/);
+  assert.match(owner, /input\.baseVersion[\s\S]{0,260}'CONFLICT'/);
+  assert.match(owner, /if \(msg\.deletedAt\)[\s\S]{0,260}message:deleted/);
 });
 
 test('pin and reaction production clients send retry-safe target state while server preserves legacy toggle compatibility', () => {
@@ -405,18 +414,22 @@ test('pin and reaction production clients send retry-safe target state while ser
   const validate = read('server/middleware/validate.ts');
 
   assert.match(list, /message:pin'[\s\S]{0,220}pinned: !Boolean\(m\.pinned\)/);
-  // `currentUserId` is `string | null` in the panel; the desired-state payload
-  // stays retry-safe with the null-safe form (an absent viewer can never be in
-  // `users`, so `active` correctly reads as "add my reaction").
-  assert.match(list, /message:react'[\s\S]{0,260}active: !users\.includes\(currentUserId \?\? ''\)/);
+  // Reaction clicks are durable desired-state operations; the list never owns a
+  // second socket replay path.
+  const sync = read('client/js/core/local-first/message-operation-sync.ts');
+  assert.match(list, /queueReactionMessageOperation\([\s\S]{0,300}desired: !users\.includes\(currentUserId \?\? ''\)/);
+  assert.doesNotMatch(list, /sock\?\.emit\('message:react'/);
+  assert.match(sync, /socket\.emit\('message:react'[\s\S]{0,260}active: payload\.desired[\s\S]{0,120}clientNonce: operation\.opId/);
   assert.match(pins, /message:pin'[\s\S]{0,180}pinned: false/);
   assert.doesNotMatch(pins, /pins\s*=\s*pins\.filter/, 'pinned viewer must wait for server confirmation');
   assert.match(voice, /message:pin'[\s\S]{0,180}pinned: true/);
 
   assert.match(validate, /pinMessage[\s\S]{0,350}pinned/);
-  assert.match(validate, /reactMessage[\s\S]{0,350}active/);
+  assert.match(validate, /reactMessage[\s\S]{0,420}active[\s\S]{0,160}clientNonce/);
   assert.match(handler, /typeof desiredPinned === 'boolean' \? desiredPinned : !msg\.pinned/);
   assert.match(handler, /typeof desiredActive === 'boolean'[\s\S]{0,220}setReactionStateAtomic/);
+  assert.match(handler, /message:reaction'[\s\S]{0,220}clientNonce/);
+  assert.match(handler, /event: 'message:react'[\s\S]{0,160}MUTATION_REJECTED/);
   assert.match(repo, /async setReactionStateAtomic\(/);
   assert.match(repo, /WHEN \$4::boolean/);
 });
@@ -430,8 +443,10 @@ test('unified search honors URL date filters and exposes bounded permission-safe
   assert.match(client, /params\.set\('offset', String\(options\.offset\)\)/);
   assert.match(panel, /offset: append \? hits\.length : 0/);
   assert.match(panel, /Daha fazla sonuç yükle/);
-  assert.match(panel, /res\.hits\.filter\(hit => !seen\.has\(hitKey\(hit\)\)\)/,
+  assert.match(panel, /function applySearchResponse\([\s\S]{0,520}response\.hits\.filter\(hit => !seen\.has\(hitKey\(hit\)\)\)/,
     'append path must deduplicate a boundary replay');
+  assert.match(panel, /applySearchResponse\(res, append\)/,
+    'server search must use the canonical deduplicating result applier');
 
   assert.match(server, /router\.get\('\/unified'[\s\S]{0,700}parseNonNegativeSafeIntQuery\(req\.query\.offset, 0\)/);
   assert.match(server, /offset > 199/);
@@ -714,29 +729,42 @@ test('saved-message reminders are durable, authorization-aware and inbox-first',
   assert.match(inboxPanel, /showSaved/);
 });
 
-test('channel, DM and GDM composers share the bounded user-scoped durable draft owner', () => {
-  const store = read('client/js/core/draft-store.ts');
+test('channel, DM and GDM composers share the encrypted local-first draft owner', () => {
+  const legacy = read('client/js/core/draft-store.ts');
+  const runtime = read('client/js/core/local-first/draft-runtime.ts');
+  const manager = read('client/js/core/DraftManager.svelte');
   const channel = read('client/js/core/MessageInputPanel.svelte');
   const dm = read('client/js/core/DmPanel.svelte');
   const gdm = read('client/js/core/GroupDmPanel.svelte');
 
-  assert.match(store, /DRAFT_KEY_PREFIX = 'bridge:draft:v2'/);
-  assert.match(store, /MAX_DRAFTS_PER_USER = 50/);
-  assert.match(store, /MAX_DRAFT_AGE_MS = 7 \* 24 \* 60 \* 60 \* 1000/);
-  assert.match(store, /kind: ConversationKind/);
-  assert.match(channel, /DraftManager/);
+  // Legacy localStorage remains migration input only; the production owners
+  // route new writes through one encrypted async runtime.
+  assert.match(legacy, /DRAFT_KEY_PREFIX = 'bridge:draft:v2'/);
+  assert.match(legacy, /readDraftSnapshot/);
+  assert.match(runtime, /createBrowserLocalFirstStore/);
+  assert.match(runtime, /hydrateLocalFirstDraft/);
+  assert.match(runtime, /persistLocalFirstDraftText/);
+  assert.match(runtime, /clearLocalFirstDraft/);
+  assert.match(runtime, /closeLocalFirstDraftRuntime/);
 
-  assert.match(dm, /readDraft, writeDraft, clearDraft/);
+  assert.match(manager, /persistLocalFirstDraft/);
+  assert.match(manager, /hydrateLocalFirstDraft/);
+  assert.doesNotMatch(manager, /\bwriteDraft\(/);
+  assert.match(channel, /bridge:draft-hydrated/);
+
+  assert.match(dm, /persistLocalFirstDraftText/);
+  assert.match(dm, /hydrateLocalFirstDraft/);
+  assert.match(dm, /clearLocalFirstDraft/);
   assert.match(dm, /kind: 'dm'/);
   assert.match(dm, /persistDmDraft\(e\.currentTarget\.value\)/);
-  assert.match(dm, /draft = restoreDmDraft\(conversation\)/);
-  assert.match(dm, /clearDraft\(dmDraftIdentity\(active\)\)/);
+  assert.doesNotMatch(dm, /\bwriteDraft\(/);
 
-  assert.match(gdm, /readDraft, writeDraft, clearDraft/);
+  assert.match(gdm, /persistLocalFirstDraftText/);
+  assert.match(gdm, /hydrateLocalFirstDraft/);
+  assert.match(gdm, /clearLocalFirstDraft/);
   assert.match(gdm, /kind: 'gdm'/);
   assert.match(gdm, /persistGdmDraft\(e\.currentTarget\.value\)/);
-  assert.match(gdm, /inputValue = restoreGdmDraft\(normalizedGroup\)/);
-  assert.match(gdm, /clearDraft\(gdmDraftIdentity\(currentGroup\)\)/);
+  assert.doesNotMatch(gdm, /\bwriteDraft\(/);
 });
 
 test('server link previews are production-visible as privacy-safe text cards', () => {
@@ -1150,6 +1178,27 @@ test('message history, protected media and global search obey the shared visual 
     'global search overlay must keep its bottom edge clear of device safe areas');
 });
 
+
+test('P7 local-first lifecycle keeps exactly one page replay owner and service worker only wakes it', () => {
+  const composer = read('client/js/core/MessageInputPanel.svelte');
+  const sw = read('client/sw.ts');
+
+  assert.match(composer, /function replayDurableMessageQueues\(\)[\s\S]{0,140}replayOutbox\(\)[\s\S]{0,140}replayMessageOperations\(true\)/);
+  assert.match(composer, /window\.addEventListener\('online', onBrowserOnline\)/);
+  assert.match(composer, /window\.addEventListener\('offline', onBrowserOffline\)/);
+  assert.match(composer, /window\.addEventListener\('bridge:appstate', onAppState\)/);
+  assert.match(composer, /SW_LOCAL_FIRST_REPLAY/);
+  assert.match(composer, /sync\?\.register\(LOCAL_FIRST_SYNC_TAG\)/);
+  assert.match(composer, /LOCAL_FIRST_SYNC_TAG = 'bridge-local-first-replay'/);
+
+  assert.match(sw, /LOCAL_FIRST_SYNC_TAG = 'bridge-local-first-replay'/);
+  assert.match(sw, /async function notifyLocalFirstReplay\([\s\S]{0,420}client\.postMessage\(\{ type: 'SW_LOCAL_FIRST_REPLAY', reason \}\)/);
+  assert.match(sw, /syncEvent\.tag === LOCAL_FIRST_SYNC_TAG[\s\S]{0,120}notifyLocalFirstReplay\('background-sync'\)/);
+  assert.doesNotMatch(sw, /OUTBOX_ADD|OUTBOX_AUTH_EXPIRED|bridge-outbox|OUTBOX_DB|OUTBOX_STORE/,
+    'service worker must not own a second message replay database');
+  assert.doesNotMatch(sw, /Authorization:\s*`Bearer/,
+    'service worker background lifecycle must not persist or replay bearer credentials');
+});
 
 test('offline/reconnect banner follows real socket lifecycle and owns its timers', () => {
   const banner = read('client/js/core/OfflineBanner.svelte');

@@ -14,7 +14,12 @@ import { mount, unmount, flushSync } from 'svelte';
 import DraftManager from '../js/core/DraftManager.svelte';
 import MessageInputPanel from '../js/core/MessageInputPanel.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
-import { putOutboxEntry, readOutbox, resetOutboxMemory } from '../js/core/outbox-store.ts';
+import { resetOutboxMemory } from '../js/core/outbox-store.ts';
+import {
+  putLocalFirstOutboxEntry as putOutboxEntry,
+  readLocalFirstOutbox as readOutbox,
+  resetLocalFirstOutboxRuntimeForTests,
+} from '../js/core/local-first/outbox-runtime.ts';
 
 const ACK_TIMEOUT_MS = 10_000;
 let draftInstance: ReturnType<typeof mount> | null = null;
@@ -41,6 +46,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   emitted = []; updates = []; toasts = [];
   host = document.createElement('div');
   host.innerHTML = '<div id="msg-input-wrap"><textarea id="msg-input"></textarea></div>';
@@ -65,6 +71,7 @@ afterEach(() => {
   for (const name of ['getMe', 'getCurrentChannel', 'getCurrentServer', 'appendMessage', 'updateMessage', 'toast', 'socket']) BridgeRegistry.unregister(name);
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   vi.useRealTimers();
 });
 
@@ -216,8 +223,8 @@ describe('"Sil" yalnız başarısız mesajı kaldırır', () => {
     reject(a, 'duplicate', 30_000);
     BridgeRegistry.call('discardSend', a);
     expect(removed).toEqual([`pending:${a}`]);
-    const key = Object.keys(localStorage).find((k) => k.includes('outbox'));
-    expect(key ? JSON.parse(localStorage.getItem(key) ?? '[]') : []).toEqual([]);
+    expect(readOutbox('user-a')).toEqual([]);
+    expect(Object.keys(localStorage).some((key) => key.includes('outbox'))).toBe(false);
     BridgeRegistry.unregister('removeMessage');
   });
 
@@ -236,15 +243,18 @@ describe('"Sil" yalnız başarısız mesajı kaldırır', () => {
     BridgeRegistry.unregister('removeMessage');
   });
 
-  it('yeniden yüklemeden sonra (yeni örnek kalıcı depodan yükler) başka kanal açıkken de kaldırılır', () => {
+  it('composer yeniden mount edilince aynı oturumdaki encrypted queue kaydı başka kanal açıkken de kaldırılır', async () => {
     const removed: string[] = [];
     const a = send('aynı');
     reject(a, 'duplicate', 30_000);
-    // Yeniden yükleme: bileşen ve bellek sıfırlanır; başarısız kayıt kalıcı depodadır ve
-    // yeni örnek açılışta onu belleğe geri yükler.
+
+    // Aynı oturumda yalnız composer yeniden mount edilir. Canonical encrypted
+    // runtime component ömründen bağımsızdır; UI sahibini sökmek failed kaydı
+    // kaybetmemelidir. Process-restart sending→queued dönüşümü repository
+    // testinde ayrı olarak kanıtlanır.
     unmount(inputInstance!);
     inputInstance = null;
-    resetOutboxMemory();
+
     expect(readOutbox('user-a').find((e) => e.ackId === a)?.state).toBe('failed');
     BridgeRegistry.unregister('getCurrentChannel');
     BridgeRegistry.register('getCurrentChannel', () => ({ _id: 'ch-2', type: 'text', name: 'diğer', serverId: 'srv-1' }));
@@ -257,7 +267,7 @@ describe('"Sil" yalnız başarısız mesajı kaldırır', () => {
     BridgeRegistry.unregister('removeMessage');
   });
 
-  it('bu sekme yükledikten SONRA depoya düşen (ör. aynı kullanıcının başka sekmesi) başarısız kayıt da kaldırılır', () => {
+  it('composer yüklendikten SONRA canonical queueya eklenen başarısız kayıt da kaldırılır', () => {
     const removed: string[] = [];
     BridgeRegistry.register('removeMessage', (id: string) => { removed.push(id); });
     putOutboxEntry({

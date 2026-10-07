@@ -2,8 +2,9 @@
 // client/sw.ts
 // Sprint 106: sw.js → TypeScript migrasyonu (client JS→TS göçünün son dosyası)
 //
-// Offline cache + push notification desteği + offline mesaj outbox
-// + online/offline durum broadcast'i
+// Offline cache + push notification desteği + online/offline durum broadcast'i.
+// P7 A7: background sync yalnızca açık Bridge istemcilerini UYANDIRIR;
+// mesaj/mutation gönderiminin tek sahibi sayfadaki şifreli local-first runtime'dır.
 //
 // Derleme: build.js tarafından TypeScript'ten sw.js üretilir.
 // tsconfig.sw.json bu dosyayı ayrı olarak derler.
@@ -25,8 +26,7 @@ const worker = self as unknown as BridgeServiceWorkerScope;
 const STATIC_CACHE_PREFIX = 'bridge-static';
 const ALL_CACHES_PREFIX   = STATIC_CACHE_PREFIX;
 
-const OUTBOX_DB    = 'bridge-outbox';
-const OUTBOX_STORE = 'pending';
+const LOCAL_FIRST_SYNC_TAG = 'bridge-local-first-replay';
 const NOTIFICATION_POLICY_DB = 'bridge-notification-policy';
 const NOTIFICATION_POLICY_STORE = 'settings';
 const NOTIFICATION_POLICY_KEY = 'policy';
@@ -37,14 +37,6 @@ const NOTIFICATION_LOCALE_KEY = 'locale';
 interface AssetManifest {
   version?: string | number;
   assets?:  string[];
-}
-
-interface OutboxItem {
-  id?:   number;
-  url:   string;
-  body:  Record<string, unknown>;
-  token: string;
-  ts:    number;
 }
 
 interface PushPayload {
@@ -72,8 +64,6 @@ interface SWMessage {
   callerName?: string;
   callType?:   'video' | 'audio';
   url?:        string;
-  body?:       Record<string, unknown>;
-  token?:      string;
   notificationPolicy?: NotificationDevicePolicy;
   locale?: WorkerLocale;
 }
@@ -279,86 +269,25 @@ async function broadcastNetworkStatus(isOnline: boolean): Promise<void> {
   }
 }
 
-// ── Offline Outbox — IndexedDB helpers ───────────────────────
-
-function openOutbox(): Promise<IDBDatabase> {
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    const req = indexedDB.open(OUTBOX_DB, 1);
-    req.onupgradeneeded = (): void => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(OUTBOX_STORE)) {
-        const store = db.createObjectStore(OUTBOX_STORE, { keyPath: 'id', autoIncrement: true });
-        store.createIndex('by_ts', 'ts');
-      }
-    };
-    req.onsuccess = (): void => resolve(req.result);
-    req.onerror   = (): void => reject(req.error);
+// ── P7 A7: background sync wake signal ───────────────────────
+//
+// The worker deliberately does NOT own message content, auth tokens or retry
+// state. It can only wake already-open window clients. Those clients then call
+// the same encrypted outbox/operation replay owner used by socket reconnect.
+async function notifyLocalFirstReplay(reason: 'background-sync'): Promise<void> {
+  const allClients = await worker.clients.matchAll({
+    type: 'window',
+    includeUncontrolled: true,
   });
-}
-
-async function getPendingMessages(): Promise<OutboxItem[]> {
-  const db = await openOutbox();
-  return new Promise<OutboxItem[]>((resolve, reject) => {
-    const tx  = db.transaction(OUTBOX_STORE, 'readonly');
-    const req = tx.objectStore(OUTBOX_STORE).getAll();
-    req.onsuccess = (): void => resolve((req.result as OutboxItem[]) ?? []);
-    req.onerror   = (): void => reject(req.error);
-  });
-}
-
-async function removeOutboxItem(id: number): Promise<void> {
-  const db = await openOutbox();
-  return new Promise<void>((resolve, reject) => {
-    const tx  = db.transaction(OUTBOX_STORE, 'readwrite');
-    const req = tx.objectStore(OUTBOX_STORE).delete(id);
-    req.onsuccess = (): void => resolve();
-    req.onerror   = (): void => reject(req.error);
-  });
-}
-
-async function flushOutbox(): Promise<void> {
-  let pending: OutboxItem[];
-  try { pending = await getPendingMessages(); } catch { return; }
-
-  for (const item of pending) {
-    try {
-      const res = await fetch(item.url, {
-        method:  'POST',
-        headers: {
-          'Content-Type':  'application/json',
-          'Authorization': `Bearer ${item.token}`,
-        },
-        body: JSON.stringify(item.body),
-      });
-
-      if (res.ok || res.status === 409) {
-        await removeOutboxItem(item.id!);
-      } else if (res.status === 401) {
-        await removeOutboxItem(item.id!);
-        const authClients = await worker.clients.matchAll({ type: 'window' });
-        for (const c of authClients) {
-          c.postMessage({ type: 'OUTBOX_AUTH_EXPIRED', itemId: item.id });
-        }
-      } else if (res.status >= 400 && res.status < 500) {
-        await removeOutboxItem(item.id!);
-      }
-    } catch { /* 5xx / network hatası — bir sonraki sync'te tekrar dene */ }
-  }
-
-  const remaining  = await getPendingMessages();
-  const allClients = await worker.clients.matchAll({ type: 'window' });
   for (const client of allClients) {
-    client.postMessage({ type: 'OUTBOX_FLUSHED', remaining: remaining.length });
+    client.postMessage({ type: 'SW_LOCAL_FIRST_REPLAY', reason });
   }
-  if (remaining.length === 0) await broadcastNetworkStatus(true);
 }
-
-// ── Background Sync ───────────────────────────────────────────
 
 worker.addEventListener('sync', (event: Event) => {
   const syncEvent = event as SyncEvent;
-  if (syncEvent.tag === 'bridge-outbox') {
-    syncEvent.waitUntil(flushOutbox());
+  if (syncEvent.tag === LOCAL_FIRST_SYNC_TAG) {
+    syncEvent.waitUntil(notifyLocalFirstReplay('background-sync'));
   }
 });
 
@@ -505,30 +434,6 @@ worker.addEventListener('message', (event: ExtendableMessageEvent) => {
         } as NotificationOptions & { renotify: boolean },
       );
     })());
-  }
-
-  if (data.type === 'OUTBOX_ADD' && data.url && data.body && data.token) {
-    const safeUrl = safeSameOriginUrl(data.url, { apiOnly: true });
-    if (!safeUrl) return;
-    void openOutbox().then(db => {
-      const tx    = db.transaction(OUTBOX_STORE, 'readwrite');
-      const item: Omit<OutboxItem, 'id'> = {
-        url:   safeUrl,
-        body:  data.body!,
-        token: data.token!,
-        ts:    Date.now(),
-      };
-      tx.objectStore(OUTBOX_STORE).add(item);
-      return new Promise<void>((res, rej) => {
-        tx.oncomplete = (): void => res();
-        tx.onerror    = (): void => rej(tx.error);
-      });
-    }).catch(() => { /* IndexedDB hatası — mesaj kaybolur */ });
-
-    const registrationWithSync = worker.registration as ServiceWorkerRegistration & {
-      sync?: { register(tag: string): Promise<void> };
-    };
-    void registrationWithSync.sync?.register('bridge-outbox').catch(() => {});
   }
 
   if (data.type === 'SET_NOTIFICATION_POLICY' && data.notificationPolicy) {

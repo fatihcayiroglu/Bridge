@@ -26,6 +26,20 @@
   import { getAPI } from './globals.js';
   import { apiFetch } from './api-fetch.js';
   import { handleApiError, ApiResponseError, unwrapApiError } from './api-error.js';
+  import {
+    rejectMessageOperation,
+    resolveMessageOperation,
+  } from './local-first/message-operation-sync.ts';
+  import {
+    appendLocalFirstHistory,
+    clearLocalFirstHistoryChannel,
+    closeLocalFirstHistoryRuntime,
+    mergeOlderLocalFirstHistory,
+    readLocalFirstHistory,
+    replaceLocalFirstHistory,
+    tombstoneLocalFirstHistory,
+    updateLocalFirstHistory,
+  } from './local-first/history-runtime.ts';
   const log = createLogger('MessageLoader');
 
   let { children }: { children?: Snippet } = $props();
@@ -38,6 +52,7 @@
 
   let channelId: string | null = null;
   let requestSeq = 0;
+  let lastHistoryUserId = '';
   /**
    * P3 — BAYAT ANLIK GÖRÜNTÜ. Geçmiş isteği uçuştayken soketten gelen olaylar
    * yanıttan YENİ olabilir. Ölçüldü (yeniden bağlanma): kuyruktaki mesaj
@@ -70,6 +85,33 @@
     return BridgeRegistry.get('socket');
   }
 
+  function currentHistoryUserId(): string | null {
+    const me = BridgeRegistry.call<{ _id?: string; id?: string } | null>('getMe');
+    const userId = me?._id ?? me?.id ?? null;
+    if (userId) lastHistoryUserId = userId;
+    return userId;
+  }
+
+  function applyCachedHistory(
+    target: string,
+    seq: number,
+    live: LiveSinceLoad,
+    messages: unknown[],
+  ): boolean {
+    if (seq !== requestSeq || target !== channelId) return false;
+    BridgeRegistry.call('setMessages', messages, live.added);
+    for (const edited of live.edited.values()) BridgeRegistry.call('updateMessage', edited);
+    BridgeRegistry.call('setFirstUnreadAnchor', null);
+    // Cursor paging is network-authoritative. An offline cached window must not
+    // expose a "load older" affordance that can only fail.
+    BridgeRegistry.call('setMessageCursor', null);
+    BridgeRegistry.call('setMessagesHasMore', false);
+    BridgeRegistry.call('setMessagesError', '');
+    BridgeRegistry.call('setMessagesOffline', true);
+    notifyUpdated();
+    return true;
+  }
+
   // ── İlk yükleme ────────────────────────────────────────────────────────────
   /**
    * A deleted message is audit state, not content: the server scrubs the payload and keeps the
@@ -88,8 +130,23 @@
 
     const seq = ++requestSeq;
     channelId = target;
+    const userId = currentHistoryUserId();
     const live: LiveSinceLoad = { added: new Set(), removed: new Set(), edited: new Map() };
     liveSinceLoad = live;
+    let networkSettled = false;
+    let cacheApplied = false;
+
+    const cachedPromise = userId
+      ? readLocalFirstHistory(userId, target).catch(error => {
+          log.warn('Şifreli mesaj geçmişi okunamadı', error);
+          return null;
+        })
+      : Promise.resolve(null);
+
+    void cachedPromise.then(snapshot => {
+      if (!snapshot || networkSettled) return;
+      cacheApplied = applyCachedHistory(target, seq, live, snapshot.messages);
+    });
 
     BridgeRegistry.call('setMessagesLoading', true);
     BridgeRegistry.call('setMessagesError', '');
@@ -103,6 +160,7 @@
       const data = await response.typed();
       if (data.messages !== undefined && !Array.isArray(data.messages)) throw new Error('Invalid messages response');
       const firstUnreadId = response.headers.get('X-Bridge-First-Unread-Id');
+      networkSettled = true;
 
       // Race guard: geç dönen eski kanalın yanıtı yeni kanalı ezemez.
       if (seq !== requestSeq || target !== channelId) {
@@ -117,14 +175,51 @@
       BridgeRegistry.call('setFirstUnreadAnchor', firstUnreadId);
       BridgeRegistry.call('setMessageCursor', data.prevCursor ?? null);
       BridgeRegistry.call('setMessagesHasMore', Boolean(data.hasMore));
+      BridgeRegistry.call('setMessagesOffline', false);
+
+      if (userId) {
+        const canonical = BridgeRegistry.call<Message[]>('getMessages') ?? [];
+        void replaceLocalFirstHistory(userId, target, canonical)
+          .catch(error => log.warn('Şifreli mesaj geçmişi yazılamadı', error));
+      }
       log.info(`${(data.messages ?? []).length} mesaj yüklendi`);
     } catch (error) {
       if (seq !== requestSeq) return;
+      networkSettled = true;
+
       // Faz 8.1: kullanıcıya "HTTP 403" gibi ham teknik metin gösterilmez.
       // silent → mesaj listesinde zaten satır içi gösteriliyor, ayrıca toast
       // açmak aynı hatayı iki kez bildirmek olurdu.
       const info = handleApiError(unwrapApiError(error), { silent: true, report: true });
-      BridgeRegistry.call('setMessagesError', info.message);
+
+      if (info.status === 401 || info.status === 403 || info.status === 404) {
+        // Server-authoritative denial beats past authorization. Purge cached
+        // content and never use it as a permission bypass.
+        if (userId) {
+          await clearLocalFirstHistoryChannel(userId, target)
+            .catch(cause => log.warn('Yetki sonrası yerel geçmiş temizlenemedi', cause));
+        }
+        if (seq !== requestSeq || target !== channelId) return;
+        BridgeRegistry.call('setMessages', [], live.added);
+        BridgeRegistry.call('setMessagesOffline', false);
+        BridgeRegistry.call('setMessagesError', info.message);
+      } else if (info.network) {
+        const cached = await cachedPromise;
+        if (seq !== requestSeq || target !== channelId) return;
+        if (cached) {
+          if (!cacheApplied) applyCachedHistory(target, seq, live, cached.messages);
+          BridgeRegistry.call('setMessagesError', '');
+          BridgeRegistry.call('setMessagesOffline', true);
+        } else {
+          BridgeRegistry.call('setMessagesOffline', false);
+          BridgeRegistry.call('setMessagesError', info.message);
+        }
+      } else {
+        // A server error does not make content already on screen current: a
+        // cached window applied while waiting stays labelled stale.
+        BridgeRegistry.call('setMessagesOffline', cacheApplied);
+        BridgeRegistry.call('setMessagesError', info.message);
+      }
     } finally {
       if (liveSinceLoad === live) liveSinceLoad = null;
       if (seq === requestSeq) BridgeRegistry.call('setMessagesLoading', false);
@@ -148,7 +243,13 @@
       if (data.messages !== undefined && !Array.isArray(data.messages)) throw new Error('Invalid messages response');
       if (seq !== requestSeq || target !== channelId) return;
 
-      const added = BridgeRegistry.call<number>('prependMessages', withoutDeleted(data.messages)) ?? 0;
+      const olderRows = withoutDeleted(data.messages);
+      const added = BridgeRegistry.call<number>('prependMessages', olderRows) ?? 0;
+      const userId = currentHistoryUserId();
+      if (userId) {
+        void mergeOlderLocalFirstHistory(userId, target, olderRows)
+          .catch(error => log.warn('Eski mesajlar yerel geçmişe yazılamadı', error));
+      }
       BridgeRegistry.call('setMessageCursor', data.prevCursor ?? null);
       BridgeRegistry.call('setMessagesHasMore', Boolean(data.hasMore));
       log.info(`${added} eski mesaj eklendi`);
@@ -231,6 +332,11 @@
       if (!isNonEmptyString(msg?._id) || !isNonEmptyString(msg.channelId) || msg.channelId !== channelId) return;
       liveSinceLoad?.added.add(msg._id);
       if (BridgeRegistry.call<boolean>('appendMessage', msg)) notifyUpdated();
+      const userId = currentHistoryUserId();
+      if (userId) {
+        void appendLocalFirstHistory(userId, msg.channelId, msg)
+          .catch(error => log.warn('Canlı mesaj yerel geçmişe yazılamadı', error));
+      }
     });
 
     // Faz 7 — teslim ACK'i: optimistic pending kaydı gerçek mesajla uzlaştır.
@@ -258,8 +364,18 @@
       const payload = args[0] as { ackId?: string; tmpId?: string; clientNonce?: string; code?: string; event?: string };
       const key = payload?.ackId ?? payload?.tmpId;
       if (isNonEmptyString(key)) BridgeRegistry.call('failPendingSend', key, messageDeliveryError(payload.code, 'channel'));
-      if (payload?.event === 'message:edit' && isNonEmptyString(payload.clientNonce)) {
-        BridgeRegistry.call('failEditMutation', payload.clientNonce, payload.code);
+
+      if (isNonEmptyString(payload.clientNonce)) {
+        if (payload.event === 'message:edit' || payload.event === 'message:delete' || payload.event === 'message:react') {
+          void rejectMessageOperation(payload.clientNonce, payload.code);
+        }
+        if (payload.event === 'message:edit') {
+          BridgeRegistry.call('failEditMutation', payload.clientNonce, payload.code);
+        } else if (payload.event === 'message:delete') {
+          BridgeRegistry.call('failDeleteMutation', payload.clientNonce, payload.code);
+        } else if (payload.event === 'message:react') {
+          BridgeRegistry.call('toast', t('mutation_connection_failed', 'İşlem tamamlanamadı. Bağlantını kontrol edip tekrar dene.'), 'error');
+        }
       }
     });
 
@@ -289,8 +405,16 @@
       const clientNonce = isNonEmptyString(msg.clientNonce) ? msg.clientNonce : '';
       const { clientNonce: _mutationNonce, ...canonical } = msg;
       if (BridgeRegistry.call<boolean>('updateMessage', canonical)) notifyUpdated();
-      if (clientNonce) BridgeRegistry.call('resolveEditMutation', clientNonce, msg._id);
+      if (clientNonce) {
+        void resolveMessageOperation(clientNonce);
+        BridgeRegistry.call('resolveEditMutation', clientNonce, msg._id);
+      }
       liveSinceLoad?.edited.set(msg._id, canonical as Message);
+      const userId = currentHistoryUserId();
+      if (userId && channelId) {
+        void updateLocalFirstHistory(userId, channelId, canonical)
+          .catch(error => log.warn('Düzenlenen mesaj yerel geçmişe yazılamadı', error));
+      }
     });
 
     bindOne(socket, 'message:deleted', (...args: unknown[]) => {
@@ -317,19 +441,34 @@
 
       const removed = BridgeRegistry.call<boolean>('removeMessage', payload.id);
       if (removed || markedAny) notifyUpdated();
-      if (isNonEmptyString(payload.clientNonce)) BridgeRegistry.call('resolveDeleteMutation', payload.clientNonce, payload.id);
+      const userId = currentHistoryUserId();
+      if (userId && channelId) {
+        void tombstoneLocalFirstHistory(userId, channelId, payload.id)
+          .catch(error => log.warn('Silinen mesaj tombstone yazılamadı', error));
+      }
+      if (isNonEmptyString(payload.clientNonce)) {
+        void resolveMessageOperation(payload.clientNonce);
+        BridgeRegistry.call('resolveDeleteMutation', payload.clientNonce, payload.id);
+      }
     });
 
     bindOne(socket, 'message:reaction', (...args: unknown[]) => {
-      const payload = args[0] as { messageId?: string; reactions?: Record<string, unknown> };
+      const payload = args[0] as { messageId?: string; reactions?: Record<string, unknown>; clientNonce?: string };
       if (!isNonEmptyString(payload?.messageId)) return;
-      if (BridgeRegistry.call<boolean>('updateMessage', { _id: payload.messageId, reactions: payload.reactions ?? {} })) notifyUpdated();
+      const patch = { _id: payload.messageId, ...(channelId ? { channelId } : {}), reactions: payload.reactions ?? {} };
+      if (BridgeRegistry.call<boolean>('updateMessage', patch)) notifyUpdated();
+      const userId = currentHistoryUserId();
+      if (userId && channelId) void updateLocalFirstHistory(userId, channelId, patch).catch(error => log.warn('Reaction yerel geçmişe yazılamadı', error));
+      if (isNonEmptyString(payload.clientNonce)) void resolveMessageOperation(payload.clientNonce);
     });
 
     bindOne(socket, 'message:pinned', (...args: unknown[]) => {
       const payload = args[0] as { messageId?: string; pinned?: boolean };
       if (!isNonEmptyString(payload?.messageId)) return;
-      if (BridgeRegistry.call<boolean>('updateMessage', { _id: payload.messageId, pinned: payload.pinned })) notifyUpdated();
+      const patch = { _id: payload.messageId, ...(channelId ? { channelId } : {}), pinned: payload.pinned };
+      if (BridgeRegistry.call<boolean>('updateMessage', patch)) notifyUpdated();
+      const userId = currentHistoryUserId();
+      if (userId && channelId) void updateLocalFirstHistory(userId, channelId, patch).catch(error => log.warn('Pin yerel geçmişe yazılamadı', error));
       // Açık sabitlenmiş-mesaj paneli gerçek zamanlı tazelensin (başka bir
       // kullanıcı sabitlese/kaldırsa da). Panel yalnızca açıkken tepki verir.
       document.dispatchEvent(new CustomEvent('bridge:pin-changed', { detail: { messageId: payload.messageId, pinned: payload.pinned } }));
@@ -338,7 +477,10 @@
     bindOne(socket, 'message:embedUpdate', (...args: unknown[]) => {
       const payload = args[0] as { messageId?: string; embeds?: unknown[] };
       if (!isNonEmptyString(payload?.messageId)) return;
-      if (BridgeRegistry.call<boolean>('updateMessage', { _id: payload.messageId, embeds: payload.embeds ?? [] })) notifyUpdated();
+      const patch = { _id: payload.messageId, ...(channelId ? { channelId } : {}), embeds: payload.embeds ?? [] };
+      if (BridgeRegistry.call<boolean>('updateMessage', patch)) notifyUpdated();
+      const userId = currentHistoryUserId();
+      if (userId && channelId) void updateLocalFirstHistory(userId, channelId, patch).catch(error => log.warn('Embed yerel geçmişe yazılamadı', error));
     });
 
     bindOne(socket, 'typing:update', (...args: unknown[]) => {
@@ -409,6 +551,14 @@
    * olayları kaçar. Yeniden bağlanınca kanala tekrar katılıp mesajları
    * yeniden yüklüyoruz; `setMessages` _id bazlı olduğu için duplicate oluşmaz.
    */
+  function onAuthLogout(): void {
+    requestSeq += 1;
+    liveSinceLoad = null;
+    BridgeRegistry.call('setMessagesOffline', false);
+    if (lastHistoryUserId) closeLocalFirstHistoryRuntime(lastHistoryUserId);
+    lastHistoryUserId = '';
+  }
+
   function onSocketReconnected(): void {
     const socket = getSocket();
     if (!socket || !channelId) return;
@@ -422,6 +572,7 @@
     document.addEventListener('bridge:channel-selected', onChannelSelected);
     document.addEventListener('bridge:socket-ready', onSocketReady);
     document.addEventListener('bridge:socket-reconnected', onSocketReconnected);
+    document.addEventListener('bridge:auth-logout', onAuthLogout);
     bindSocketEvents(); // socket zaten hazırsa
 
     // Bu bileşen kanal seçiminden sonra mount olduysa mevcut kanalı yakala.
@@ -447,6 +598,9 @@
     document.removeEventListener('bridge:channel-selected', onChannelSelected);
     document.removeEventListener('bridge:socket-ready', onSocketReady);
     document.removeEventListener('bridge:socket-reconnected', onSocketReconnected);
+    document.removeEventListener('bridge:auth-logout', onAuthLogout);
+    if (lastHistoryUserId) closeLocalFirstHistoryRuntime(lastHistoryUserId);
+    lastHistoryUserId = '';
     // Faz 10.4: bağlı olduğumuz sockete ait dinleyicileri bırak.
     unbindSocketEvents();
     clearTypingTimers();

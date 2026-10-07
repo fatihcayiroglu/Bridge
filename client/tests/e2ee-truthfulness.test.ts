@@ -136,9 +136,11 @@ describe('D0 — E2EE iddiası ürün yüzeyine bağlı DEĞİLDİR', () => {
     expect(app).not.toMatch(/mountE2EEToggle/);
   });
 
-  it('GÜVENLİK: istemcide GERÇEK şifreleme olmadığı için iddia edilemez', () => {
-    // Bu test, iddianın neden yasak olduğunu SABİTLER: bir gün istemciye
-    // gerçek kripto eklenirse bu test kırılır ve iddia yeniden değerlendirilir.
+  it('GÜVENLİK: local-at-rest crypto E2EE uygulaması gibi sunulamaz', () => {
+    // P7 local-first artık gerçek AES-GCM kullanır; bu yalnız cihazdaki yerel
+    // kayıtları korur ve uçtan uca mesaj anahtar yönetimi anlamına GELMEZ.
+    // Kripto yüzeyi beklenmedik biçimde başka client katmanlarına yayılırsa bu
+    // test kırılır ve E2EE iddiaları yeniden değerlendirilmek zorunda kalır.
     const files: string[] = [];
     const walk = (dir: string) => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -149,9 +151,13 @@ describe('D0 — E2EE iddiası ürün yüzeyine bağlı DEĞİLDİR', () => {
     };
     walk(path.join(CLIENT, 'js'));
 
-    const crypto = files.filter(f =>
-      /crypto\.subtle|generateKey\(|deriveKey\(|subtle\.encrypt/.test(fs.readFileSync(f, 'utf8')));
+    const crypto = files
+      .filter(f => /crypto\.subtle|generateKey\(|deriveKey\(|subtle\.encrypt/.test(fs.readFileSync(f, 'utf8')))
+      .map(f => path.relative(CLIENT, f).split(path.sep).join('/'));
 
-    expect(crypto).toEqual([]);
+    expect(crypto).toEqual(['js/core/local-first/crypto.ts']);
+    const localFirstCrypto = read('js/core/local-first/crypto.ts');
+    expect(localFirstCrypto).toContain('local-first encryption envelope');
+    expect(localFirstCrypto).not.toMatch(/dm:send|gdm:send|message:send/);
   });
 });

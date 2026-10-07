@@ -40,6 +40,9 @@
   let messages        = $state<AppMessage[]>([]);
   let messagesLoading = $state(false);
   let messagesError   = $state('');
+  // P7: true only while the visible list comes from the encrypted local cache
+  // and has not yet been revalidated by the authoritative server.
+  let messagesOffline = $state(false);
   /** REST prevCursor — daha eski sayfa için (server/routes/messages.ts:199). */
   let messageCursor   = $state<string | null>(null);
   let messagesHasMore = $state(false);
@@ -53,6 +56,7 @@
     messageCursor = null;
     messagesHasMore = false;
     messagesError = '';
+    messagesOffline = false;
     firstUnreadMessageId = null;
     typingUsers = new Map();
   }
@@ -102,6 +106,7 @@
   registerOwned('messages',           () => messages);
   registerOwned('getMessagesLoading', () => messagesLoading);
   registerOwned('getMessagesError',   () => messagesError);
+  registerOwned('getMessagesOffline', () => messagesOffline);
   registerOwned('getMessageCursor',   () => messageCursor);
   registerOwned('getMessagesHasMore', () => messagesHasMore);
   registerOwned('getFirstUnreadMessageId', () => firstUnreadMessageId);
@@ -133,6 +138,7 @@
   });
   registerOwned('setMessagesLoading', (value: boolean) => { messagesLoading = Boolean(value); });
   registerOwned('setMessagesError',   (value: string) => { messagesError = value ?? ''; });
+  registerOwned('setMessagesOffline', (value: boolean) => { messagesOffline = Boolean(value); });
   registerOwned('setMessageCursor',   (cursor: string | null) => { messageCursor = cursor ?? null; });
   registerOwned('setMessagesHasMore', (value: boolean) => { messagesHasMore = Boolean(value); });
   registerOwned('setFirstUnreadAnchor', (messageId: string | null) => {

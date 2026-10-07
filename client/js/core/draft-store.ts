@@ -62,6 +62,12 @@ interface StoredDraft {
   a?: boolean;
 }
 
+export interface LegacyDraftSnapshot {
+  text: string;
+  savedAt: number;
+  attachmentPending: boolean;
+}
+
 /** Bu süreden eski taslaklar okunmaz ve okundukları anda silinir. */
 export const MAX_DRAFT_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 gün
 
@@ -179,11 +185,22 @@ function pruneUserDrafts(userId: string): void {
  *          ASLA `null`/`undefined` dönmez — çağıran yerde ekstra kontrol
  *          gerekmesin diye.
  */
-export function readDraft(identity: Partial<DraftIdentity> | null | undefined): string {
+export function readDraftSnapshot(
+  identity: Partial<DraftIdentity> | null | undefined,
+): LegacyDraftSnapshot | null {
   const key = draftKey(identity);
-  if (!key) return '';
+  if (!key) return null;
+  const stored = parseStored(key);
+  if (!stored) return null;
+  return {
+    text: stored.t,
+    savedAt: stored.s,
+    attachmentPending: stored.a === true,
+  };
+}
 
-  return parseStored(key)?.t ?? '';
+export function readDraft(identity: Partial<DraftIdentity> | null | undefined): string {
+  return readDraftSnapshot(identity)?.text ?? '';
 }
 
 /**
@@ -236,8 +253,7 @@ export function writeDraftAttachmentPending(
 export function readDraftAttachmentPending(
   identity: Partial<DraftIdentity> | null | undefined,
 ): boolean {
-  const key = draftKey(identity);
-  return key ? parseStored(key)?.a === true : false;
+  return readDraftSnapshot(identity)?.attachmentPending === true;
 }
 
 /** Taslağı siler (başarılı gönderim, elle temizleme). */

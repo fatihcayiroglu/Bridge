@@ -73,6 +73,66 @@ describe('editChannelMessage', () => {
     expect(stored?.editHistory).toEqual([expect.objectContaining({ content: 'a &lt; b', contentFormat: 0 })]);
   });
 
+  it('rejects a stale offline edit instead of overwriting a newer authoritative version', async () => {
+    const msg = makeMessage(channel._id, server._id, other._id, {
+      content: 'original',
+      createdAt: 100,
+      editedAt: 200,
+    });
+    await mockDb.messages.insert(msg);
+    const { io, emitted } = ioDouble();
+
+    const result = await editChannelMessage(io, {
+      actorId: other._id,
+      messageId: msg._id,
+      content: 'offline stale edit',
+      clientNonce: 'offline-edit-1',
+      baseVersion: 100,
+    });
+
+    expect(result).toMatchObject({ ok: false, code: 'CONFLICT' });
+    expect(await mockDb.messages.findOne({ _id: msg._id })).toMatchObject({
+      content: 'original',
+      editedAt: 200,
+    });
+    expect(emitted).toEqual([]);
+  });
+
+  it('treats replay of an already-applied desired edit as success without duplicating edit history', async () => {
+    const msg = makeMessage(channel._id, server._id, other._id, {
+      content: 'before',
+      createdAt: 100,
+    });
+    await mockDb.messages.insert(msg);
+    const { io, emitted } = ioDouble();
+
+    const first = await editChannelMessage(io, {
+      actorId: other._id,
+      messageId: msg._id,
+      content: 'desired',
+      clientNonce: 'edit-replay',
+      baseVersion: 100,
+    });
+    expect(first.ok).toBe(true);
+    const once = await mockDb.messages.findOne({ _id: msg._id });
+    expect(once?.editHistory).toHaveLength(1);
+
+    // ACK/event loss: replay carries the original baseVersion. Desired state is
+    // already present, so this is a confirmation-only no-op.
+    const second = await editChannelMessage(io, {
+      actorId: other._id,
+      messageId: msg._id,
+      content: 'desired',
+      clientNonce: 'edit-replay',
+      baseVersion: 100,
+    });
+    expect(second.ok).toBe(true);
+    const twice = await mockDb.messages.findOne({ _id: msg._id });
+    expect(twice?.editHistory).toHaveLength(1);
+    expect(emitted.filter(event => event.event === 'message:edited')).toHaveLength(2);
+    expect(emitted.at(-1)?.data).toMatchObject({ clientNonce: 'edit-replay' });
+  });
+
   it('refuses an edit AutoMod blocks and leaves the accepted text untouched', async () => {
     const msg = makeMessage(channel._id, server._id, other._id, { content: 'clean' });
     await mockDb.messages.insert(msg);
@@ -151,6 +211,56 @@ describe('deleteChannelMessage', () => {
     const firstInvalidate = order.findIndex((o) => o.startsWith('invalidate:'));
     expect(order.indexOf('emit:message:deleted')).toBeGreaterThan(firstInvalidate);
     expect(firstInvalidate).toBeGreaterThanOrEqual(0);
+  });
+
+  it('treats a repeated authorized delete as desired-state success without a second cascade', async () => {
+    const msg = makeMessage(channel._id, server._id, other._id, { content: 'bye' });
+    await mockDb.messages.insert(msg);
+    const { io, emitted } = ioDouble();
+
+    const first = await deleteChannelMessage(io, {
+      actorId: other._id,
+      messageId: msg._id,
+      clientNonce: 'delete-replay',
+    });
+    expect(first.ok).toBe(true);
+    const deleted = await mockDb.messages.findOne({ _id: msg._id });
+    expect(deleted?.deletedAt).toBeTruthy();
+
+    const historyAfterFirst = structuredClone(deleted?.editHistory ?? []);
+    const second = await deleteChannelMessage(io, {
+      actorId: other._id,
+      messageId: msg._id,
+      clientNonce: 'delete-replay',
+    });
+
+    expect(second.ok).toBe(true);
+    expect(await mockDb.messages.findOne({ _id: msg._id })).toMatchObject({
+      deletedAt: deleted?.deletedAt,
+      editHistory: historyAfterFirst,
+    });
+    expect(emitted.filter(event => event.event === 'message:deleted')).toHaveLength(2);
+    expect(emitted.at(-1)?.data).toMatchObject({ id: msg._id, clientNonce: 'delete-replay' });
+  });
+
+  it('does not let a revoked user use repeated delete as an authorization bypass', async () => {
+    const msg = makeMessage(channel._id, server._id, other._id, { content: 'bye' });
+    await mockDb.messages.insert(msg);
+    const { io } = ioDouble();
+
+    expect((await deleteChannelMessage(io, {
+      actorId: other._id,
+      messageId: msg._id,
+      clientNonce: 'delete-once',
+    })).ok).toBe(true);
+
+    await mockDb.members.remove({ userId: other._id, serverId: server._id });
+    const replay = await deleteChannelMessage(io, {
+      actorId: other._id,
+      messageId: msg._id,
+      clientNonce: 'delete-once',
+    });
+    expect(replay).toMatchObject({ ok: false, code: 'NOT_VISIBLE' });
   });
 
   it('a member without MANAGE_MESSAGES cannot delete someone else\'s message', async () => {

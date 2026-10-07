@@ -23,10 +23,16 @@
   import { BridgeRegistry } from './bridge-registry.js';
   import { createLogger } from './logger.js';
   import {
-    readDraft, writeDraft, clearDraft as clearStoredDraft,
-    draftKey, readDraftAttachmentPending, writeDraftAttachmentPending,
+    draftKey,
     type ConversationKind, type DraftIdentity,
   } from './draft-store.js';
+  import {
+    clearLocalFirstDraft,
+    closeLocalFirstDraftRuntime,
+    hydrateLocalFirstDraft,
+    peekLocalFirstDraft,
+    persistLocalFirstDraft,
+  } from './local-first/draft-runtime.ts';
 
   const log = createLogger('DraftManager');
 
@@ -42,12 +48,16 @@
   /** Bekleyen yazma — anahtar KURULUM anında dondurulur (bkz. scheduleWrite). */
   let pending: { identity: DraftIdentity; text: string } | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  const hydrationStarted = new Set<string>();
+  let lastAuthenticatedUserId = '';
 
   // ── Kimlik çözümleme ───────────────────────────────────────────────────────
 
   function currentUserId(): string | null {
     const me = BridgeRegistry.get<() => { _id?: string; id?: string } | null>('getMe')?.();
-    return me?._id ?? me?.id ?? null;
+    const userId = me?._id ?? me?.id ?? null;
+    if (userId) lastAuthenticatedUserId = userId;
+    return userId;
   }
 
   /** Kanal tipinden konuşma türü. DM'ler ayrı anahtar alanına düşer. */
@@ -75,6 +85,28 @@
     return draftKey(a) === draftKey(b);
   }
 
+  function ensureHydrated(identity: DraftIdentity): void {
+    const key = draftKey(identity);
+    if (!key || hydrationStarted.has(key)) return;
+    hydrationStarted.add(key);
+
+    void hydrateLocalFirstDraft(identity).then(snapshot => {
+      document.dispatchEvent(new CustomEvent('bridge:draft-hydrated', {
+        detail: {
+          userId: identity.userId,
+          kind: identity.kind,
+          conversationId: identity.conversationId,
+          serverId: identity.serverId,
+          text: snapshot?.text ?? '',
+          attachmentPending: snapshot?.attachmentPending === true,
+        },
+      }));
+    }).catch(error => {
+      hydrationStarted.delete(key);
+      log.warn('Şifreli taslak hydrate edilemedi', error);
+    });
+  }
+
   // ── Yazma zamanlaması ──────────────────────────────────────────────────────
 
   /** Bekleyen yazmayı ŞİMDİ diske indirir. */
@@ -83,7 +115,8 @@
     if (!pending) return;
     const { identity, text } = pending;
     pending = null;
-    writeDraft(identity, text);
+    const attachmentPending = peekLocalFirstDraft(identity)?.attachmentPending === true;
+    persistLocalFirstDraft(identity, text, attachmentPending);
   }
 
   /**
@@ -112,7 +145,8 @@
     // Bekleyen yazma varsa depodan değil ondan oku — yeni yazılan metin
     // debounce penceresi içinde kanal değişse bile kaybolmasın.
     if (pending && sameIdentity(pending.identity, identity)) return pending.text;
-    return readDraft(identity);
+    ensureHydrated(identity);
+    return peekLocalFirstDraft(identity)?.text ?? '';
   }
 
   /** Taslağı günceller (debounce'lu). Boş metin taslağı siler. */
@@ -150,17 +184,24 @@
       pending = null;
       if (timer) { clearTimeout(timer); timer = null; }
     }
-    clearStoredDraft(target);
+    clearLocalFirstDraft(target);
   }
 
   function getDraftAttachmentPending(): boolean {
     const identity = currentIdentity();
-    return identity ? readDraftAttachmentPending(identity) : false;
+    if (!identity) return false;
+    ensureHydrated(identity);
+    return peekLocalFirstDraft(identity)?.attachmentPending === true;
   }
 
   function setDraftAttachmentPending(value: boolean): void {
     const identity = currentIdentity();
-    if (identity) writeDraftAttachmentPending(identity, value === true);
+    if (!identity) return;
+
+    const text = pending && sameIdentity(pending.identity, identity)
+      ? pending.text
+      : (peekLocalFirstDraft(identity)?.text ?? '');
+    persistLocalFirstDraft(identity, text, value === true);
   }
 
   // ── Oturum değişimi ────────────────────────────────────────────────────────
@@ -174,7 +215,10 @@
   function onLogout(): void {
     pending = null;
     if (timer) { clearTimeout(timer); timer = null; }
-    log.info('Oturum kapandı — bekleyen taslak yazması iptal edildi');
+    hydrationStarted.clear();
+    if (lastAuthenticatedUserId) closeLocalFirstDraftRuntime(lastAuthenticatedUserId);
+    lastAuthenticatedUserId = '';
+    log.info('Oturum kapandı — bekleyen taslak yazması iptal edildi ve local-first runtime kapatıldı');
   }
 
   onMount(() => {

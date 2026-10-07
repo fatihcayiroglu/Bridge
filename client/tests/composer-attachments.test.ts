@@ -28,7 +28,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import MessageInputPanel from '../js/core/MessageInputPanel.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
-import { readOutbox, resetOutboxMemory } from '../js/core/outbox-store.ts';
+import { resetOutboxMemory } from '../js/core/outbox-store.ts';
+import {
+  readLocalFirstOutbox as readOutbox,
+  resetLocalFirstOutboxRuntimeForTests,
+} from '../js/core/local-first/outbox-runtime.ts';
 
 let instance: ReturnType<typeof mount> | null = null;
 let host: HTMLDivElement;
@@ -66,6 +70,7 @@ beforeEach(() => {
   renderedMessages = [];
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
   uploadResponse = () => ok({ url: '/uploads/abc123.txt', fileName: 'not.txt', fileType: 'text/plain', size: 12 });
 
   host = document.createElement('div');
@@ -108,8 +113,10 @@ afterEach(() => {
     BridgeRegistry.unregister(k);
   }
   vi.restoreAllMocks();
+  vi.useRealTimers();
   localStorage.clear();
   resetOutboxMemory();
+  resetLocalFirstOutboxRuntimeForTests();
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -315,12 +322,21 @@ describe('GÖNDERİM HATASI YAYILIMI — sessiz kayıp yok', () => {
     chooseFile(mkFile());
     document.querySelector<HTMLButtonElement>('[data-bridge-action="sendMessage"]')!.click();
 
-    await vi.advanceTimersByTimeAsync(11_000);
+    // Do NOT use vi.waitFor with fake timers here: waitFor advances virtual
+    // time and can consume the very 10s ACK timeout this test is proving.
+    // Upload + JSON parsing are promise work, so drain microtasks without moving
+    // the virtual clock until the canonical socket emit appears.
+    for (let turn = 0; turn < 20 && fileSends().length === 0; turn += 1) {
+      await Promise.resolve();
+      flushSync();
+    }
+    expect(fileSends()).toHaveLength(1);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(10_001);
     flushSync();
 
     expect(readOutbox('user-a')[0]?.state).toBe('failed');
     expect(renderedMessages[0]).toMatchObject({ failed: true, pending: false });
-    vi.useRealTimers();
   });
 
   it('hata sonrası retry AYNI ackId/fileUrl ile gider ve dosya yeniden yüklenmez', async () => {

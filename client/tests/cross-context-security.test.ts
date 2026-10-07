@@ -17,42 +17,30 @@ describe('cross-context security boundaries', () => {
     },
   );
 
-  it('service worker constrains notification navigation and credential-bearing outbox URLs', () => {
+  it('service worker constrains notification navigation and never owns credential-bearing outbox replay', () => {
     const src = read('sw.ts');
     expect(src).toContain('url.origin !== worker.location.origin');
     expect(src).toContain("url.protocol !== 'http:' && url.protocol !== 'https:'");
-    expect(src).toContain("apiOnly && !url.pathname.startsWith('/api/')");
-    expect(src).toContain('safeSameOriginUrl(data.url, { apiOnly: true })');
+    expect(src).not.toContain('safeSameOriginUrl(data.url, { apiOnly: true })');
+    expect(src).not.toContain('bridge-outbox');
+    expect(src).toContain("syncEvent.tag === LOCAL_FIRST_SYNC_TAG");
+    expect(src).toContain("client.postMessage({ type: 'SW_LOCAL_FIRST_REPLAY', reason })");
     expect(src).not.toMatch(/url:\s*data\.url\b/);
   });
 
-  it('built service-worker runtime enforces notification and credential-bearing URL authority', async () => {
+  it('built service-worker runtime ignores legacy outbox injection and wakes only page replay owners', async () => {
     const runtime = read('sw.js');
     const handlers = new Map<string, (event: any) => void>();
     const opened: string[] = [];
-    const queued: Array<{ url: string }> = [];
+    const clientMessages: unknown[] = [];
     let databaseOpens = 0;
+    let windowClients: Array<{ postMessage(message: unknown): void }> = [];
 
-    const database = {
-      transaction: () => {
-        const transaction: any = {};
-        transaction.objectStore = () => ({
-          add: (item: { url: string }) => {
-            queued.push(item);
-            queueMicrotask(() => transaction.oncomplete?.());
-          },
-        });
-        return transaction;
-      },
-    };
     const indexedDB = {
       open: () => {
         databaseOpens++;
         const request: any = {};
-        queueMicrotask(() => {
-          request.result = database;
-          request.onsuccess?.();
-        });
+        queueMicrotask(() => request.onerror?.());
         return request;
       },
     };
@@ -60,11 +48,11 @@ describe('cross-context security boundaries', () => {
       location: { origin: 'https://bridge.test' },
       addEventListener: (type: string, handler: (event: any) => void) => handlers.set(type, handler),
       clients: {
-        matchAll: async () => [],
+        matchAll: async () => windowClients,
         openWindow: async (url: string) => { opened.push(url); return null; },
+        claim: async () => undefined,
       },
       registration: {
-        sync: { register: async () => undefined },
         getNotifications: async () => [],
         showNotification: async () => undefined,
       },
@@ -82,38 +70,42 @@ describe('cross-context security boundaries', () => {
 
     const message = handlers.get('message');
     expect(message).toBeTypeOf('function');
-    const outboxBody = { content: 'hello' };
-    for (const url of [
-      'https://evil.example/api/messages',
-      'javascript:alert(1)',
-      '/not-api/messages',
-    ]) {
-      message?.({ data: { type: 'OUTBOX_ADD', url, body: outboxBody, token: 'secret' } });
-    }
-    expect(databaseOpens).toBe(0);
-
     message?.({
       data: {
         type: 'OUTBOX_ADD',
-        url: 'https://bridge.test/api/messages?channel=1#fragment',
-        body: outboxBody,
+        url: 'https://bridge.test/api/messages',
+        body: { content: 'must not be queued' },
         token: 'secret',
       },
     });
-    for (let i = 0; i < 5; i++) await Promise.resolve();
-    expect(databaseOpens).toBe(1);
-    expect(queued).toEqual([expect.objectContaining({ url: '/api/messages?channel=1#fragment' })]);
+    for (let i = 0; i < 3; i++) await Promise.resolve();
+    expect(databaseOpens).toBe(0);
 
+    const sync = handlers.get('sync');
+    expect(sync).toBeTypeOf('function');
+    windowClients = [{ postMessage: (value: unknown) => { clientMessages.push(value); } }];
+    let completion: Promise<unknown> = Promise.resolve();
+    sync?.({
+      tag: 'bridge-local-first-replay',
+      waitUntil: (value: Promise<unknown>) => { completion = value; },
+    });
+    await completion;
+    expect(clientMessages).toContainEqual({
+      type: 'SW_LOCAL_FIRST_REPLAY',
+      reason: 'background-sync',
+    });
+
+    windowClients = [];
     const notificationClick = handlers.get('notificationclick');
     expect(notificationClick).toBeTypeOf('function');
     const click = async (url: string): Promise<void> => {
-      let completion: Promise<unknown> = Promise.resolve();
+      let clickCompletion: Promise<unknown> = Promise.resolve();
       notificationClick?.({
         action: '',
         notification: { data: { url }, close: () => undefined },
-        waitUntil: (value: Promise<unknown>) => { completion = value; },
+        waitUntil: (value: Promise<unknown>) => { clickCompletion = value; },
       });
-      await completion;
+      await clickCompletion;
     };
     await click('https://evil.example/phish');
     await click('https://bridge.test/channels/one?focus=2#message');
