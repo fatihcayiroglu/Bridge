@@ -11,6 +11,7 @@ import { Members, Servers } from '../db/repositories';
 import { cache } from './redisAdapter';
 import { invalidateMemberships } from './presenceCache';
 import { checkServerJoinMfa, type ServerMfaLevel } from './serverMfaPolicy';
+import { checkServerJoinRaid, type RaidMitigationLevel } from './raidProtection';
 import { tryRequire } from './_optional-require';
 import logger from './logger';
 
@@ -20,13 +21,18 @@ export type DiscoverableJoinStatus =
   | 'invite_required'
   | 'banned'
   | 'already_member'
-  | 'mfa_required';
+  | 'mfa_required'
+  | 'raid_lockdown'
+  | 'raid_authority_unavailable';
 
 export interface DiscoverableJoinResult {
   status: DiscoverableJoinStatus;
   server?: Record<string, unknown>;
   mfaLevel?: ServerMfaLevel;
   mfaUnavailable?: boolean;
+  retryAfterMs?: number;
+  lockdownUntil?: number | null;
+  raidLevel?: RaidMitigationLevel;
 }
 
 export interface JoinActor {
@@ -124,6 +130,26 @@ export async function joinDiscoverableServer(
       server,
       mfaLevel: mfa.level,
       mfaUnavailable: mfa.unavailable,
+    };
+  }
+
+  // Count only a join that is otherwise eligible. Bans/private servers/MFA
+  // failures must not consume the aggregate raid window.
+  const raid = await checkServerJoinRaid({
+    serverId,
+    actorId: actor.id,
+    server,
+    source: 'discoverable',
+  });
+  if (!raid.allowed) {
+    return {
+      status: raid.code === 'RAID_AUTHORITY_UNAVAILABLE'
+        ? 'raid_authority_unavailable'
+        : 'raid_lockdown',
+      server,
+      retryAfterMs: raid.retryAfterMs,
+      lockdownUntil: raid.lockdownUntil,
+      raidLevel: raid.level,
     };
   }
 

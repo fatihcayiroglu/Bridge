@@ -131,6 +131,10 @@ export interface Server {
   isPublic?: boolean;
   color?: string;
   mfaLevel?: number;
+  /** P7 B1: server-configurable bounded join-raid mitigation (migration 080). */
+  raidMitigationLevel?: 'off' | 'balanced' | 'strict';
+  /** P7 B1: absolute epoch-ms expiry for automatic/manual raid lockdown. */
+  raidLockdownUntil?: Timestamp | null;
   /** P6: false = this server's content is never sent to an AI provider (migration 078). */
   aiEnabled?: boolean;
   discoverable?: boolean | 0 | 1;

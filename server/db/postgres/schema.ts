@@ -152,6 +152,11 @@ CREATE TABLE IF NOT EXISTS servers (
   "logChannelId" TEXT,
   -- migrations_pg/016 ile aynı
   "mfaLevel" INTEGER NOT NULL DEFAULT 0 CONSTRAINT servers_mfa_level_check CHECK ("mfaLevel" IN (0, 1, 2)),
+  -- P7 B1: bounded, reversible anti-raid policy. No per-user trust score.
+  "raidMitigationLevel" TEXT NOT NULL DEFAULT 'balanced'
+    CONSTRAINT servers_raid_mitigation_level_check CHECK ("raidMitigationLevel" IN ('off', 'balanced', 'strict')),
+  "raidLockdownUntil" BIGINT
+    CONSTRAINT servers_raid_lockdown_until_nonnegative CHECK ("raidLockdownUntil" IS NULL OR "raidLockdownUntil" >= 0),
   featured BOOLEAN NOT NULL DEFAULT FALSE,
   "featuredAt" BIGINT,
   "vanityUrl" TEXT,
