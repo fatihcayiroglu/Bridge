@@ -316,8 +316,13 @@ jobs:
         run: cd bot-sdk && npx jest --ci
       - name: Run Electron tests
         run: cd electron && npm test -- --runInBand --forceExit
-      - name: Run mobile bridge tests
-        run: npx jest --config jest.mobile.config.js --passWithNoTests --runInBand --forceExit
+      # This is a separate CI job from Typecheck & build; without a local
+      # bundle, shell-composition.test.js silently skips its 22 packaged-web
+      # assertions. Build the actual client in this job before collecting them.
+      - name: Build client bundle for packaged mobile shell tests
+        run: npm run build:ci
+      - name: Run mobile bridge and packaged shell tests (no zero-test pass)
+        run: npx jest --config jest.mobile.config.js --runInBand --forceExit
       # ══════════════════════════════════════════════════════════════════
       # GERCEK PostgreSQL KAPILARI
       # ══════════════════════════════════════════════════════════════════
