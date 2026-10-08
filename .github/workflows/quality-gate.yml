@@ -560,7 +560,7 @@ jobs:
           cd server && npm run build
       - name: Run security-critical E2E
         run: |
-          cd e2e && npx playwright test             tests/webhook-security.spec.ts             tests/permission-matrix.spec.ts             tests/permission-matrix-actions.spec.ts             tests/role-escalation.spec.ts             tests/search-security.spec.ts             tests/search-security-extended.spec.ts             tests/file-security.spec.ts             tests/privacy-lifecycle.spec.ts             tests/session-logout.spec.ts             tests/safe-area.spec.ts             tests/channel-permissions.spec.ts             tests/attachments.spec.ts             tests/locale-journey.spec.ts             --project=chromium --reporter=list
+          cd e2e && npx playwright test             tests/webhook-security.spec.ts             tests/permission-matrix.spec.ts             tests/permission-matrix-actions.spec.ts             tests/role-escalation.spec.ts             tests/search-security.spec.ts             tests/search-security-extended.spec.ts             tests/file-security.spec.ts             tests/privacy-lifecycle.spec.ts             tests/session-logout.spec.ts             tests/safe-area.spec.ts             tests/channel-permissions.spec.ts             tests/attachments.spec.ts             tests/locale-journey.spec.ts             --project=chromium --retries=0 --reporter=list
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v7
@@ -635,7 +635,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: cd e2e && npx playwright test --project=chromium --retries=0 --output=test-results/chromium --reporter=list
       # The baseline Chromium job runs in normal local-storage mode and must
-      # keep its intentional WEBP_CONVERT=false skip. Execute the optional
+      # explicitly assert its WEBP_CONVERT=false output. Execute the optional
       # conversion contract again with the feature ENABLED on its own server.
       # scripts/e2e-server.js forwards WEBP_CONVERT to the spawned server.
       # Missing sharp/conversion now fails this evidence step instead of
@@ -739,7 +739,7 @@ jobs:
           cat ../bridge-e2e.log
           exit 1
       - name: Run smoke tests
-        run: cd e2e && npx playwright test tests/smoke-health.spec.ts --project=api-smoke --reporter=list
+        run: cd e2e && npx playwright test tests/smoke-health.spec.ts --project=api-smoke --retries=0 --reporter=list
       - name: Upload Playwright artifacts
         if: always()
         uses: actions/upload-artifact@v7

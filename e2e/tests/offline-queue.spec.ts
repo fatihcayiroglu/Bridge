@@ -183,7 +183,7 @@ test.describe('Service Worker Outbox', () => {
 test.describe('Reconnect Mesaj Sync', () => {
 
   test('kanal yükleme endpoint limit parametresi kabul etmeli', async ({ request }) => {
-    test.skip(!_sharedChannel, 'Test fixture hazır değil'  );
+    expect(_sharedChannel, 'offline-queue kanal fikstürü hazırlanamadı').toBeTruthy();
     const chId = _sharedChannel._id || _sharedChannel.id;
 
     const res = await request.get(`${BASE_URL}/api/channels/${chId}/messages?limit=10`, {
