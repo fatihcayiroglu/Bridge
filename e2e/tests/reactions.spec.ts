@@ -49,7 +49,7 @@ test.describe('Reaksiyon Akışları', () => {
   //     → 404 {"error":"Not found: POST /api/channels/<id>/messages"}
   //
   // Sonuc: `msgId` hic atanmiyor ve 8 testin 7'si
-  // `test.skip(!msgId, ...)` ile SESSIZCE atlaniyordu. Paket "yesil"
+  // `test.skip` ile SESSIZCE atlaniyordu. Paket "yesil"
   // gorunuyor ama reaksiyon ozelliginin neredeyse TAMAMI dogrulanmiyordu
   // (olculdu: 7 atlandi / 1 gecti).
   //
@@ -72,7 +72,7 @@ test.describe('Reaksiyon Akışları', () => {
     await paceSends('alice');
 
     const ackId = `react-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const ack = waitForEvent<{ ackId: string; messageId: string }>(alice, 'message:ack', 15_000);
+    const ack = waitForEvent<{ ackId: string; messageId: string }>(alice, 'message:ack', 15_000, value => value?.ackId === ackId);
     alice.emit('message:send', { channelId, serverId, content: 'Reaksiyon test mesajı 🎯', ackId });
     const received = await ack;
     msgId = received.messageId;
@@ -84,7 +84,7 @@ test.describe('Reaksiyon Akışları', () => {
   // ── 1. Reaksiyon ekleme ───────────────────────────────────
 
   test('API: reaksiyon ekleme başarılı', async ({ request }) => {
-    expect(msgId, 'reaksiyon mesaj fikstürü oluşturulamadı').toBeTruthy();
+    expect(msgId, 'a broken message fixture must fail rather than skip').toBeTruthy();
 
     const res = await request.post(
       `${BASE}/api/channels/${msgId}/react`,
@@ -97,42 +97,30 @@ test.describe('Reaksiyon Akışları', () => {
     expect(res.status()).toBeLessThan(300);
   });
 
-  test('API: reaksiyon sonrası mesajda görünmeli', async ({ request }) => {
-    expect(msgId, 'reaksiyon mesaj fikstürü oluşturulamadı').toBeTruthy();
-
-    // Reaksiyon ekle
-    await request.post(
-      `${BASE}/api/channels/${msgId}/react`,
-      {
-        headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-        data: JSON.stringify({ emoji: '❤️' }),
-      }
-    );
-
-    // Mesajı getir ve reaksiyonu kontrol et
+  test('API: exact reacted emoji is persisted in REST history', async ({ request }) => {
+    expect(msgId).toBeTruthy();
+    const added = await request.post(`${BASE}/api/channels/${msgId}/react`, {
+      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
+      data: JSON.stringify({ emoji: '❤️' }),
+    });
+    expect(added.status()).toBe(200);
     const msgsRes = await request.get(`${BASE}/api/channels/${channelId}/messages`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
-    expect(msgsRes.ok()).toBe(true);
+    expect(msgsRes.status()).toBe(200);
     const data = await msgsRes.json();
-    const messages = data.messages || data;
-    const msg = messages.find((m) => (m._id || m.id) === msgId);
-
-    // Mesaj varsa reactions alanı kontrolü
-    if (msg) {
-      const reactions = msg.reactions || {};
-      // reactions obje veya array olabilir — Bridge implementasyonuna göre
-      const hasReaction =
-        (Array.isArray(reactions) && reactions.some((r) => r.emoji === '❤️' || r.count > 0)) ||
-        (typeof reactions === 'object' && Object.keys(reactions).length > 0);
-      expect(hasReaction).toBe(true);
-    }
+    const messages = Array.isArray(data) ? data : data.messages || [];
+    const msg = messages.find((m: { _id?: string; id?: string }) => (m._id || m.id) === msgId);
+    expect(msg, 'reacted message must exist in the persisted history').toBeDefined();
+    expect(msg.reactions).toHaveProperty('❤️');
+    expect(Array.isArray(msg.reactions['❤️'])).toBe(true);
+    expect(msg.reactions['❤️'].length).toBeGreaterThan(0);
   });
 
   // ── 2. Reaksiyon kaldırma (toggle) ───────────────────────
 
   test('API: reaksiyon toggle — aynı emoji tekrar kaldırılır', async ({ request }) => {
-    expect(msgId, 'reaksiyon mesaj fikstürü oluşturulamadı').toBeTruthy();
+    expect(msgId, 'a broken message fixture must fail rather than skip').toBeTruthy();
 
     const emoji = '🔥';
 
@@ -154,14 +142,15 @@ test.describe('Reaksiyon Akışları', () => {
         data: JSON.stringify({ emoji }),
       }
     );
-    // Kaldırma da başarılı olmalı (200 veya 204)
-    expect(remove.status()).toBeLessThan(300);
+    expect(remove.status()).toBe(200);
+    const toggled = await remove.json();
+    expect(toggled.reactions ?? {}).not.toHaveProperty(emoji);
   });
 
   // ── 3. Farklı kullanıcılar ────────────────────────────────
 
   test('API: Bob reaksiyon ekleyebilmeli (üye değilse skip)', async ({ request }) => {
-    expect(msgId, 'reaksiyon mesaj fikstürü oluşturulamadı').toBeTruthy();
+    expect(msgId, 'a broken message fixture must fail rather than skip').toBeTruthy();
 
     // Bob'u sunucuya üye et — davet linki veya direkt join
     // Bob üye olmayabilir, bu durumda 403 beklenir — her iki durum geçerli
@@ -181,7 +170,7 @@ test.describe('Reaksiyon Akışları', () => {
   // ── 4. Geçersiz emoji ─────────────────────────────────────
 
   test('API: boş emoji reddedilmeli', async ({ request }) => {
-    expect(msgId, 'reaksiyon mesaj fikstürü oluşturulamadı').toBeTruthy();
+    expect(msgId, 'a broken message fixture must fail rather than skip').toBeTruthy();
 
     const res = await request.post(
       `${BASE}/api/channels/${msgId}/react`,
@@ -190,11 +179,11 @@ test.describe('Reaksiyon Akışları', () => {
         data: JSON.stringify({ emoji: '' }),
       }
     );
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status()).toBe(400);
   });
 
   test('API: çok uzun emoji string reddedilmeli', async ({ request }) => {
-    expect(msgId, 'reaksiyon mesaj fikstürü oluşturulamadı').toBeTruthy();
+    expect(msgId, 'a broken message fixture must fail rather than skip').toBeTruthy();
 
     const res = await request.post(
       `${BASE}/api/channels/${msgId}/react`,
@@ -203,13 +192,13 @@ test.describe('Reaksiyon Akışları', () => {
         data: JSON.stringify({ emoji: 'a'.repeat(200) }),
       }
     );
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status()).toBe(400);
   });
 
   // ── 5. Auth kontrolü ─────────────────────────────────────
 
   test('API: token olmadan reaksiyon reddedilmeli (401)', async ({ request }) => {
-    expect(msgId, 'reaksiyon mesaj fikstürü oluşturulamadı').toBeTruthy();
+    expect(msgId, 'a broken message fixture must fail rather than skip').toBeTruthy();
 
     const res = await request.post(
       `${BASE}/api/channels/${msgId}/react`,
@@ -229,6 +218,6 @@ test.describe('Reaksiyon Akışları', () => {
         data: JSON.stringify({ emoji: '👍' }),
       }
     );
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status()).toBe(404);
   });
 });
