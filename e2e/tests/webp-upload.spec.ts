@@ -6,17 +6,44 @@ import { test, expect } from '../helpers/apiTest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { deflateSync } from 'zlib';
 import { getTokens } from '../helpers/bridge';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 // Test için küçük bir PNG oluştur (1x1 kırmızı piksel — base64)
 // Bu fixture herhangi bir gerçek görsel kaynağı gerektirmez.
-const MINIMAL_PNG_B64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI6QAAAABJRU5ErkJggg==';
+function pngChunk(type: string, data: Buffer): Buffer {
+  const name = Buffer.from(type, 'ascii');
+  const payload = Buffer.concat([name, data]);
+  let crc = 0xffffffff;
+  for (const byte of payload) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  const size = Buffer.alloc(4);
+  size.writeUInt32BE(data.length);
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+  return Buffer.concat([size, payload, checksum]);
+}
+
+function minimalPng(): Buffer {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(1, 0);
+  header.writeUInt32BE(1, 4);
+  header[8] = 8; // bit depth
+  header[9] = 6; // RGBA
+  return Buffer.concat([
+    Buffer.from('89504e470d0a1a0a', 'hex'),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(Buffer.from([0, 255, 0, 0, 255]))),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
 
 function createTestPng(filePath: string): void {
-  fs.writeFileSync(filePath, Buffer.from(MINIMAL_PNG_B64, 'base64'));
+  fs.writeFileSync(filePath, minimalPng());
 }
 
 test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
