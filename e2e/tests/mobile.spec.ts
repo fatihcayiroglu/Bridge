@@ -204,8 +204,7 @@ test.describe('mobil — arama paneli', () => {
     await page.keyboard.press('Control+f');
 
     const panel = page.locator('.gs-panel, [role="dialog"]').first();
-    if (await panel.count() === 0) test.skip(true, 'arama paneli açılmadı');
-    await panel.waitFor({ state: 'visible', timeout: 10_000 });
+    await expect(panel, 'Mobil arama paneli açılmadı').toBeVisible({ timeout: 10_000 });
 
     const overflow = await horizontalOverflow(page);
     const culprits = overflow > 0 ? await overflowingElements(page) : [];

@@ -34,10 +34,10 @@ test.beforeAll(async ({ request }) => {
   token = getTokens().alice;
   const srv = await createTestServer(request, token, `XB ${Date.now()}`);
   serverId = srv?._id || srv?.id;
-  if (serverId) {
-    const ch = await createTestChannel(request, token, serverId, 'genel', 'text');
-    channelId = ch?._id || ch?.id;
-  }
+  expect(serverId, 'Cross-browser journey: sunucu fixture oluşturulamadı').toBeTruthy();
+  const ch = await createTestChannel(request, token, serverId, 'genel', 'text');
+  channelId = ch?._id || ch?.id;
+  expect(channelId, 'Cross-browser journey: kanal fixture oluşturulamadı').toBeTruthy();
 });
 
 test.describe('çapraz tarayıcı — yolculuklar', () => {
@@ -104,7 +104,7 @@ test.describe('çapraz tarayıcı — yolculuklar', () => {
 
   // ── REST yolculuğu: oluştur → oku → düzenle → sil ─────────────────────────
   test('kanal yaşam döngüsü REST üzerinden ÇALIŞIR', async ({ request }) => {
-    test.skip(!serverId, 'Sunucu fixture gerekli');
+    expect(serverId, 'Sunucu fixture gerekli').toBeTruthy();
 
     const created = await request.post(`/api/servers/${serverId}/channels`, {
       headers: { Authorization: `Bearer ${token}` },
