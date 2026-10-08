@@ -11,8 +11,17 @@
 import { test as base } from '@playwright/test';
 import type { APIRequestContext } from '@playwright/test';
 import { getCsrf, refreshCsrf, invalidateCsrf, cachedCsrf, isCsrfRejection } from './csrf';
+import { NO_STEP_UP_HEADER, STEP_UP_HEADER, forgetStepUpGrants, heldStepUpGrant, stepUpGrant, stepUpScopeOf } from './stepUp';
 
 const MUTATING = new Set(['post', 'put', 'patch', 'delete', 'fetch']);
+// P7 B2: protected reads (GET /api/account/export) can be step-up refused too.
+const STEP_UP_AWARE = new Set([...MUTATING, 'get', 'head']);
+// Like the client's route table: once a route has been refused for a scope, a
+// held grant for that scope rides along up front (no refused round trip first).
+const learnedScope = new Map<string, string>();
+function routeKey(method: string, url: string): string {
+  try { return `${method.toUpperCase()} ${new URL(url, 'http://e2e.invalid').pathname}`; } catch { return `${method} ${url}`; }
+}
 const BASE = () => process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 type HeaderBag = Record<string, string>;
@@ -34,55 +43,93 @@ function withCsrf(ctx: APIRequestContext): APIRequestContext {
     get(target, prop, receiver) {
       const key = String(prop);
       const original = Reflect.get(target, prop, receiver);
-      if (typeof original !== 'function' || !MUTATING.has(key)) {
+      if (typeof original !== 'function' || !STEP_UP_AWARE.has(key)) {
         return typeof original === 'function' ? original.bind(target) : original;
       }
       return async (url: string, options: { headers?: HeaderBag } = {}) => {
         const headers: HeaderBag = { ...(options.headers ?? {}) };
+        // P7 B2 — like the product client (client/js/core/step-up.ts): a
+        // `403 STEP_UP_REQUIRED` gets ONE fresh proof (the fixture person signs
+        // in again; helpers/stepUp.ts) and the request is retried with the grant.
+        // Specs that assert the refusal itself opt out with `x-e2e-no-step-up`.
+        const noStepUp = Object.keys(headers).find((h) => h.toLowerCase() === NO_STEP_UP_HEADER);
+        if (noStepUp) delete headers[noStepUp];
+        const dispatch = (h: HeaderBag) => sendWithCsrf(target, original, key, url, options, h);
         const bearer = bearerOf(headers);
-        // GÜVENLİK TESTİ KAÇIŞI: CSRF'siz isteğin reddedildiğini kanıtlayan
-        // testler otomatik enjeksiyonu DEVRE DIŞI bırakabilmelidir; aksi halde
-        // bu fixture o testin anlamını yok eder (yanlış yeşil).
-        const optOut = Object.keys(headers).find((h) => h.toLowerCase() === 'x-e2e-no-csrf');
-        if (optOut) {
-          delete headers[optOut];
-          return (original as (u: string, o: unknown) => unknown).call(target, url, { ...options, headers });
-        }
-        const manualKey = Object.keys(headers).find((h) => h.toLowerCase() === 'x-csrf-token');
-        if (!bearer || manualKey) {
-          type Res = { status(): number; text(): Promise<string> };
-          const call = (h: HeaderBag) => (original as (u: string, o: unknown) => Promise<Res>)
-            .call(target, url, { ...options, headers: h });
-          const res = await call(headers);
-          // `'X-CSRF-Token': await getCsrf(...)` elle yazilmis olsa da PAYLASILAN
-          // onbellegin kopyasidir. Ayni kullanicinin tarayici sayfasi token
-          // alinca o kopya bayatlar (sunucu kullanici basina TEK token tutar) —
-          // olculdu: tam paketde avatar yuklemesi 403 aldi. Yalnizca gonderilen
-          // deger onbellekteki token IKEN ve sunucu gercekten CSRF reddi
-          // dondugunde bir kez tazelenir; kasitli yanlis/eksik token gonderen
-          // guvenlik testleri oldugu gibi kalir.
-          if (bearer && manualKey && headers[manualKey] === cachedCsrf(bearer) && await isCsrfRejection(res)) {
-            invalidateCsrf(bearer);
-            return call({ ...headers, [manualKey]: await refreshCsrf(target, bearer) });
-          }
-          return res;
-        }
-        const send = async (token: string) => {
-          const h = token ? { ...headers, 'X-CSRF-Token': token } : headers;
-          return (original as (u: string, o: unknown) => Promise<{ status(): number }>)
-            .call(target, url, { ...options, headers: h });
-        };
-        let res = await send(await getCsrf(target, bearer));
-        // Token başka bir istemci tarafından döndürülmüş olabilir (sunucu
-        // kullanıcı başına TEK token tutar). 403'te bir kez tazeleyip yeniden dene.
-        if (res.status() === 403) {
-          invalidateCsrf(bearer);
-          res = await send(await refreshCsrf(target, bearer));
+        const route = routeKey(key === 'fetch' ? String((options as { method?: string }).method ?? 'GET') : key, url);
+        const known = !noStepUp && bearer ? learnedScope.get(route) : undefined;
+        const upFront = known && bearer ? heldStepUpGrant(bearer, known) : null;
+        let res = await dispatch(upFront ? { ...headers, [STEP_UP_HEADER]: upFront } : headers);
+        if (noStepUp || !bearer) return res;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const scope = await stepUpScopeOf(res as { status(): number; text(): Promise<string> });
+          if (!scope) break;
+          learnedScope.set(route, scope);
+          if (attempt === 1) forgetStepUpGrants(); // a held grant went stale (e.g. sign-out everywhere)
+          const grant = await stepUpGrant(target, bearer, scope);
+          if (!grant) break;
+          res = await dispatch({ ...headers, [STEP_UP_HEADER]: grant });
         }
         return res;
       };
     },
   }) as APIRequestContext;
+}
+
+async function sendWithCsrf(
+  target: APIRequestContext,
+  original: unknown,
+  key: string,
+  url: string,
+  options: { headers?: HeaderBag },
+  headers: HeaderBag,
+): Promise<unknown> {
+  if (!MUTATING.has(key)) {
+    return (original as (u: string, o: unknown) => Promise<unknown>).call(target, url, { ...options, headers });
+  }
+  const bearer = bearerOf(headers);
+  // GÜVENLİK TESTİ KAÇIŞI: CSRF'siz isteğin reddedildiğini kanıtlayan
+  // testler otomatik enjeksiyonu DEVRE DIŞI bırakabilmelidir; aksi halde
+  // bu fixture o testin anlamını yok eder (yanlış yeşil).
+  const optOut = Object.keys(headers).find((h) => h.toLowerCase() === 'x-e2e-no-csrf');
+  if (optOut) {
+    delete headers[optOut];
+    return (original as (u: string, o: unknown) => unknown).call(target, url, { ...options, headers });
+  }
+  const manualKey = Object.keys(headers).find((h) => h.toLowerCase() === 'x-csrf-token');
+  if (!bearer || manualKey) {
+    type Res = { status(): number; text(): Promise<string> };
+    const call = (h: HeaderBag) => (original as (u: string, o: unknown) => Promise<Res>)
+      .call(target, url, { ...options, headers: h });
+    const res = await call(headers);
+    // `'X-CSRF-Token': await getCsrf(...)` elle yazilmis olsa da PAYLASILAN
+    // onbellegin kopyasidir. Ayni kullanicinin tarayici sayfasi token
+    // alinca o kopya bayatlar (sunucu kullanici basina TEK token tutar) —
+    // olculdu: tam paketde avatar yuklemesi 403 aldi. Yalnizca gonderilen
+    // deger onbellekteki token IKEN ve sunucu gercekten CSRF reddi
+    // dondugunde bir kez tazelenir; kasitli yanlis/eksik token gonderen
+    // guvenlik testleri oldugu gibi kalir.
+    if (bearer && manualKey && headers[manualKey] === cachedCsrf(bearer) && await isCsrfRejection(res)) {
+      invalidateCsrf(bearer);
+      return call({ ...headers, [manualKey]: await refreshCsrf(target, bearer) });
+    }
+    return res;
+  }
+  const send = async (token: string) => {
+    const h = token ? { ...headers, 'X-CSRF-Token': token } : headers;
+    return (original as (u: string, o: unknown) => Promise<{ status(): number }>)
+      .call(target, url, { ...options, headers: h });
+  };
+  let res = await send(await getCsrf(target, bearer));
+  // Token başka bir istemci tarafından döndürülmüş olabilir (sunucu
+  // kullanıcı başına TEK token tutar). 403'te bir kez tazeleyip yeniden dene.
+  // P7 B2: a step-up refusal is also a 403 but is answered by the caller
+  // with a proof — re-sending it here would only count twice (burst).
+  if (res.status() === 403 && !(await stepUpScopeOf(res as { status(): number; text(): Promise<string> }))) {
+    invalidateCsrf(bearer);
+    res = await send(await refreshCsrf(target, bearer));
+  }
+  return res;
 }
 
 // Playwright'ın geri kalan API'sini aynen yeniden dışa aktar ki spec'ler tek

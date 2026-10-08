@@ -90,6 +90,25 @@ test.describe('gizlilik ve oturum yaşam döngüsü', () => {
   // 1. OTURUM İPTALİ
   // ══════════════════════════════════════════════════════════════════════════
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // P7 B2 — DIŞA AKTARMA ADIM-YUKARI KANIT İSTER
+  // ══════════════════════════════════════════════════════════════════════════
+  // Bir oturum jetonu TEK BAŞINA hesabın tüm geçmişini dışa aktarmaya yetmez
+  // (çalınmış oturum senaryosu, laboratuvar SU-ATK-05). Ret açıklanabilirdir;
+  // tek bir taze kanıttan (yeniden giriş) sonra aynı istek geçer.
+  test('P7 B2: export — a session alone is refused (explainably); one fresh proof unlocks it', async ({ request }) => {
+    const refused = await request.get(`${BASE}/api/account/export`, {
+      headers: { Authorization: `Bearer ${tokens.alice}`, 'x-e2e-no-step-up': '1' },
+    });
+    expect(refused.status()).toBe(403);
+    expect(await refused.json()).toMatchObject({
+      error: 'STEP_UP_REQUIRED', action: 'account.export', scope: 'sensitive-export', reasons: ['step_up_missing'],
+    });
+    const allowed = await request.get(`${BASE}/api/account/export`, { headers: { Authorization: `Bearer ${tokens.alice}` } });
+    expect(allowed.status(), 'one fresh proof should unlock the export').toBe(200);
+    expect((await allowed.json() as { format?: string }).format).toBe('bridge-personal-export');
+  });
+
   test('logout-all TÜM oturumları ve MEDYA yolunu birlikte iptal eder', async ({ request }) => {
     // ════════════════════════════════════════════════════════════════════
     // ÜÇ İPTAL YOLU TEK TESTTE

@@ -4,6 +4,7 @@
 
 import { chromium, expect, request as pwRequest } from '@playwright/test';
 import { pruneOwnedServers, userIdOf } from './helpers/prune-fixtures';
+import { rememberCredentials, stepUpGrant } from './helpers/stepUp';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -526,7 +527,9 @@ async function setup() {
       ['alice', aliceToken], ['bob', bobToken],
       ['media1', media1Token], ['media2', media2Token],
     ] as const) {
-      const r = await pruneOwnedServers(pruneCtx, token, userIdOf(token), 5);
+      rememberCredentials(TEST_USERS[name].username, TEST_USERS[name].password);
+      const r = await pruneOwnedServers(pruneCtx, token, userIdOf(token), 5,
+        scope => stepUpGrant(pruneCtx, token, scope));
       if (r.before > 20) {
         console.log(`🧹 ${name}: ${r.before} sunucu → ${r.after} (silinen: ${r.deleted})`);
       }

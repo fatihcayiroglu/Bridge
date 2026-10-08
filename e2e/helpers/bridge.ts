@@ -4,6 +4,7 @@
 
 import path from 'path';
 import { getCsrf, invalidateCsrf, refreshCsrf } from './csrf';
+import { rememberCredentials } from './stepUp';
 import fs from 'fs';
 
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
@@ -445,6 +446,8 @@ async function registerFreshUser(
     runId = fs.readFileSync(path.join(FIXTURES_DIR, 'run-id.txt'), 'utf8').trim();
   } catch { runId = 'local'; }
   const username = `e2e_${label}_${runId}`.slice(0, 30);
+  // P7 B2: the request fixture can prove step-up for this person by signing in again.
+  rememberCredentials(username, password);
 
   const headers = {
     'Content-Type': 'application/json',

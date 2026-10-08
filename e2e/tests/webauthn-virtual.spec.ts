@@ -27,6 +27,7 @@
 
 import { test, expect } from '@playwright/test';
 import type { CDPSession, Page } from '@playwright/test';
+import { getTokens } from '../helpers/bridge';
 
 const PORT = process.env.E2E_PORT || '3000';
 // E2E_HOST belongs to the server BIND address (normally 127.0.0.1). It must
@@ -72,11 +73,22 @@ test.describe('passkey — sanal dogrulayici ile gercek yasam dongusu', () => {
     expect(destekli, 'sanal dogrulayici takiliyken WebAuthn destekli olmali').toBe(true);
 
     // ── KAYIT ──────────────────────────────────────────────────────────────
-    const kayitSonuc = await page.evaluate(async () => {
+    const kayitBekleyen = page.evaluate(async () => {
       const w = window as unknown as { BridgeWebAuthn: { registerPasskey(n?: string): Promise<boolean> } };
       try { return { ok: await w.BridgeWebAuthn.registerPasskey('E2E Sanal Anahtar') }; }
       catch (e) { return { ok: false, err: String(e) }; }
     });
+    // P7 B2: this browser session is RESTORED from storage — it holds no
+    // in-memory sign-in grant — so adding a passkey asks for ONE proof through
+    // the product dialog. It is answered here as a person would: keyboard only,
+    // with alice's password; the registration then continues by itself.
+    const kanitAlani = page.locator('.bridge-product-dialog-input');
+    await expect(kanitAlani, 'a restored session is asked for one proof').toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('.bridge-product-dialog-label')).toBeVisible();
+    await expect(kanitAlani).toHaveAttribute('type', 'password');
+    await kanitAlani.fill(getTokens().users.alice.password);
+    await kanitAlani.press('Enter');
+    const kayitSonuc = await kayitBekleyen;
 
     // Sunucu gercekten sakladi mi?
     // NOT: Bridge kimligi BEARER JETONU ile tasir (cerez degil). Ilk yazimda
