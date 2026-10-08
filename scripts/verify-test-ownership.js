@@ -53,6 +53,26 @@ const RUNNERS = [
     parse: (out) => out.split('\n').map(l => l.trim()).filter(l => l && path.isAbsolute(l)),
   },
   {
+    // quality-gate.yml: "pgvector integration suite (real extension)".
+    // The base PG runner deliberately excludes this file without PGVECTOR_TEST_URL.
+    // listTests does NOT connect to the placeholder DB; the CI step executes
+    // this exact spec later with a real pgvector-enabled PostgreSQL cluster.
+    name: 'server (jest:pgvector)', cwd: 'server', required: true,
+    cmd: [process.execPath, JEST_BIN, '--config', 'jest.pg.config.js', '--listTests',
+      'tests/pg-integration/pgvector-embedding.pgtest.ts'],
+    env: { PGVECTOR_TEST_URL: 'postgresql://list-only.invalid/unused' },
+    parse: (out) => out.split('\n').map(l => l.trim()).filter(l => l && path.isAbsolute(l)),
+  },
+  {
+    // server/package.json "test:search-it", run in quality-gate.yml against
+    // live PostgreSQL. Its CLI override is essential: regular Jest excludes it.
+    // Mirror the REAL runner flags instead of marking this file as known debt.
+    name: 'server (jest:search-it)', cwd: 'server', required: true,
+    cmd: [process.execPath, JEST_BIN, '--listTests',
+      '--testPathPatterns', 'unified-search.integration', '--testPathIgnorePatterns=/node_modules/'],
+    parse: (out) => out.split('\n').map(l => l.trim()).filter(l => l && path.isAbsolute(l)),
+  },
+  {
     name: 'client (vitest)', cwd: 'client', required: true,
     cmd: [process.execPath, VITEST_BIN, 'list', '--config', 'vitest.config.mts', '--filesOnly'],
     parse: (out) => out.split('\n').map(l => l.trim())
@@ -124,6 +144,9 @@ for (const r of RUNNERS) {
   try {
     out = execFileSync(r.cmd[0], r.cmd.slice(1), {
       cwd: path.join(ROOT, r.cwd),
+      // Environment overrides are for runner discovery only; never run tests
+      // against this placeholder. The CI integration jobs provide real DB URLs.
+      env: { ...process.env, ...(r.env || {}) },
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 300000,
     });
