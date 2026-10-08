@@ -2332,6 +2332,8 @@ const translations: Record<string, string> = {
   "stepup_why_admin_user_delete": "이 인스턴스의 계정 삭제는 되돌릴 수 없습니다.",
   "stepup_why_admin_server_delete": "이 인스턴스의 서버 삭제는 되돌릴 수 없습니다.",
   "stepup_why_moderation_burst": "짧은 시간에 많은 차단, 추방 또는 일괄 삭제를 했습니다. 다음 10분 동안 계속하려면 한 번 본인 확인을 해 주세요.",
+  "privacy_delete_sso_note": "싱글 사인온(SSO)으로 로그인하므로 입력할 비밀번호가 없습니다. 삭제하려면 최근에 로그인했어야 합니다. 10분이 넘었다면 다시 로그인하라는 요청을 받게 됩니다.",
+  "privacy_delete_needs_proof": "삭제하려면 본인임을 다시 확인해야 합니다. 다시 로그인한 후 10분 안에 다시 시도하세요.",
 };
 
 export default translations;

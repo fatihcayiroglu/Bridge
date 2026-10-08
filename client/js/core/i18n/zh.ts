@@ -2332,6 +2332,8 @@ const translations: Record<string, string> = {
   "stepup_why_admin_user_delete": "删除此实例上的账户后无法撤销。",
   "stepup_why_admin_server_delete": "删除此实例上的服务器后无法撤销。",
   "stepup_why_moderation_burst": "你在短时间内进行了大量封禁、踢出或批量删除。请确认一次是你本人，以便在接下来的 10 分钟内继续操作。",
+  "privacy_delete_sso_note": "你通过单点登录（SSO）登录，因此无需输入密码。删除需要最近登录过：如果已超过 10 分钟，系统会要求你重新登录。",
+  "privacy_delete_needs_proof": "删除需要重新确认是你本人。请重新登录，然后在 10 分钟内重试。",
 };
 
 export default translations;

@@ -2332,6 +2332,8 @@ const translations: Record<string, string> = {
   "stepup_why_admin_user_delete": "Eliminar una cuenta en esta instancia no se puede deshacer.",
   "stepup_why_admin_server_delete": "Eliminar un servidor en esta instancia no se puede deshacer.",
   "stepup_why_moderation_burst": "Has hecho muchos baneos, expulsiones o eliminaciones masivas en poco tiempo. Confirma que eres tú una vez para seguir durante los próximos 10 minutos.",
+  "privacy_delete_sso_note": "Inicias sesión con inicio de sesión único (SSO), así que no hay contraseña que escribir. Eliminar requiere un inicio de sesión reciente: si han pasado más de 10 minutos, se te pedirá que vuelvas a iniciar sesión.",
+  "privacy_delete_needs_proof": "La eliminación necesita una nueva confirmación de que eres tú. Vuelve a iniciar sesión y reintenta en los próximos 10 minutos.",
 };
 
 export default translations;

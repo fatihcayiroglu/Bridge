@@ -2332,6 +2332,8 @@ const translations: Record<string, string> = {
   "stepup_why_admin_user_delete": "Das Löschen eines Kontos auf dieser Instanz kann nicht rückgängig gemacht werden.",
   "stepup_why_admin_server_delete": "Das Löschen eines Servers auf dieser Instanz kann nicht rückgängig gemacht werden.",
   "stepup_why_moderation_burst": "Sie haben in kurzer Zeit viele Sperren, Rauswürfe oder Massenlöschungen vorgenommen. Bestätigen Sie einmal, dass Sie es sind, um in den nächsten 10 Minuten weiterzumachen.",
+  "privacy_delete_sso_note": "Sie melden sich per Single Sign-on (SSO) an, daher gibt es kein Passwort einzugeben. Das Löschen erfordert eine kürzliche Anmeldung: Liegt sie mehr als 10 Minuten zurück, werden Sie gebeten, sich erneut anzumelden.",
+  "privacy_delete_needs_proof": "Das Löschen erfordert eine neue Bestätigung, dass Sie es sind. Melden Sie sich erneut an und versuchen Sie es innerhalb von 10 Minuten noch einmal.",
 };
 
 export default translations;

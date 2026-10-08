@@ -2298,5 +2298,7 @@ const translations: Record<string, string> = {
   "stepup_why_admin_user_delete": "Deleting an account on this instance cannot be undone.",
   "stepup_why_admin_server_delete": "Deleting a server on this instance cannot be undone.",
   "stepup_why_moderation_burst": "You've taken many bans, kicks or bulk deletions in a short time. Confirm it's you once to keep going for the next 10 minutes.",
+  "privacy_delete_sso_note": "You sign in with single sign-on, so there is no password to type. Deleting needs a recent sign-in: if it has been more than 10 minutes, you'll be asked to sign in again.",
+  "privacy_delete_needs_proof": "Deletion needs a fresh confirmation that it's you. Sign in again, then retry within 10 minutes.",
 };
 export default translations;

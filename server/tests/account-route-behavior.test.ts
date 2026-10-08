@@ -345,7 +345,8 @@ describe('account export/delete production behavior', () => {
     const res = await request(app()).delete('/api/account').send({ confirm: 'DELETE', password: 'correct' });
     expect(res.status).toBe(403);
     expect(res.body).toMatchObject({ error: 'STEP_UP_REQUIRED', level: 2, methods: ['totp', 'backup_code', 'sign_in'] });
-    expect(compare).not.toHaveBeenCalled();
+    // The supplied password is still verified (it was right), but it is not this account's full strength.
+    expect(compare).toHaveBeenCalledWith('correct', 'hash');
     expect(db._transaction).not.toHaveBeenCalled();
     const l1 = await request(app()).delete('/api/account')
       .set(stepUpHeader('me', 'destructive-admin', { method: 'password' }))
@@ -369,5 +370,36 @@ describe('account export/delete production behavior', () => {
     const gone = await request(app()).delete('/api/account').send({ confirm: 'DELETE', password: 'correct' });
     expect(gone.status).toBe(401);
     expect(db._transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe('P7 B2 — a supplied deletion password is always verified', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    db._pool = { query: (...args: unknown[]) => query(...args) };
+    users.findById.mockResolvedValue({ _id: 'me', username: 'alice', password: 'hash' });
+    installSqlModel();
+  });
+
+  it('a wrong password is refused even beside a valid destructive-admin grant', async () => {
+    compare.mockResolvedValueOnce(false);
+    const res = await request(app()).delete('/api/account')
+      .set(stepUpHeader('me', 'destructive-admin', { method: 'password' }))
+      .send({ confirm: 'DELETE', password: 'wrong' });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'Password incorrect' });
+    expect(db._transaction).not.toHaveBeenCalled();
+  });
+
+  it('the right password beside a grant deletes; a grant alone (no password sent) also deletes', async () => {
+    compare.mockResolvedValueOnce(true);
+    const withPassword = await request(app()).delete('/api/account')
+      .set(stepUpHeader('me', 'destructive-admin', { method: 'password' }))
+      .send({ confirm: 'DELETE', password: 'correct' });
+    expect(withPassword.status).toBe(200);
+    const grantOnly = await request(app()).delete('/api/account')
+      .set(stepUpHeader('me', 'destructive-admin', { method: 'password' }))
+      .send({ confirm: 'DELETE' });
+    expect(grantOnly.status).toBe(200);
   });
 });

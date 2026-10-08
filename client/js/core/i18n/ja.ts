@@ -2332,6 +2332,8 @@ const translations: Record<string, string> = {
   "stepup_why_admin_user_delete": "このインスタンス上のアカウントの削除は元に戻せません。",
   "stepup_why_admin_server_delete": "このインスタンス上のサーバーの削除は元に戻せません。",
   "stepup_why_moderation_burst": "短時間に多くのBAN、キック、一括削除を行いました。続く10分間操作を続けるには、一度本人確認をしてください。",
+  "privacy_delete_sso_note": "シングルサインオン（SSO）でサインインしているため、入力するパスワードはありません。削除には最近のサインインが必要です。10分以上経過している場合は、もう一度サインインを求められます。",
+  "privacy_delete_needs_proof": "削除には本人の再確認が必要です。もう一度サインインし、10分以内にやり直してください。",
 };
 
 export default translations;

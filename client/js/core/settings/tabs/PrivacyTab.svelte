@@ -14,6 +14,8 @@
   interface Me {
     dmPrivacy?: 'everyone' | 'friends' | 'none';
     presenceVisibility?: 'visible' | 'hidden';
+    /** P7 B2: false for an SSO-only account (no password to type). */
+    hasPassword?: boolean;
     [key: string]: unknown;
   }
   const me = BridgeRegistry.get<() => Me | null>('getMe')?.() ?? null;
@@ -78,7 +80,11 @@
   let deletePassword = $state('');
   let deleteAck      = $state(false);
   let deleteError    = $state<string | null>(null);
-  const canConfirmDelete = $derived(deleteStage === 'ready' && deleteAck && deletePassword.length > 0);
+  // P7 B2: an SSO-only account has no password to type. Its deletion is proven by
+  // a recent sign-in (the step-up grant its SSO sign-in returned); otherwise the
+  // step-up owner explains that signing in again is needed.
+  const passwordless = me?.hasPassword === false;
+  const canConfirmDelete = $derived(deleteStage === 'ready' && deleteAck && (passwordless || deletePassword.length > 0));
 
   function blockerText(b: DeletionBlocker): string {
     return b.kind === 'server'
@@ -129,7 +135,7 @@
       const response = await apiFetch('/api/account', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirm: 'DELETE', password: deletePassword }),
+        body: JSON.stringify(passwordless ? { confirm: 'DELETE' } : { confirm: 'DELETE', password: deletePassword }),
       });
       if (response.ok) {
         deletePassword = '';
@@ -149,6 +155,7 @@
       }
       deleteStage = 'ready';
       deleteError = response.status === 400 ? t('privacy_delete_wrong_password')
+        : response.status === 403 ? t('privacy_delete_needs_proof')
         : response.status === 503 ? t('privacy_delete_unavailable')
         : t('privacy_delete_failed');
     } catch {
@@ -334,9 +341,13 @@
       <button type="button" class="btn btn--secondary" data-testid="delete-account-cancel" onclick={cancelDeletion}>{t('cancel')}</button>
     {:else}
       <form class="delete-form" onsubmit={(e) => { e.preventDefault(); void confirmDeletion(); }}>
-        <label class="field-label" for="delete-account-password">{t('privacy_delete_password')}</label>
-        <input id="delete-account-password" class="field-input" type="password" autocomplete="current-password"
-               bind:value={deletePassword} disabled={deleteStage === 'deleting'} data-testid="delete-account-password" />
+        {#if passwordless}
+          <p class="field-note" data-testid="delete-account-sso-note">{t('privacy_delete_sso_note')}</p>
+        {:else}
+          <label class="field-label" for="delete-account-password">{t('privacy_delete_password')}</label>
+          <input id="delete-account-password" class="field-input" type="password" autocomplete="current-password"
+                 bind:value={deletePassword} disabled={deleteStage === 'deleting'} data-testid="delete-account-password" />
+        {/if}
         <label class="delete-ack">
           <input type="checkbox" bind:checked={deleteAck} disabled={deleteStage === 'deleting'} data-testid="delete-account-ack" />
           <span>{t('privacy_delete_ack')}</span>

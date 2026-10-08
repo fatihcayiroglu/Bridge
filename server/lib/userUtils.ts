@@ -122,6 +122,8 @@ export type OwnUser = SafeUser & {
   /** Own recovery address (Settings > Security) — returned ONLY on self-auth surfaces. */
   email: string | null;
   emailVerified: boolean;
+  /** P7 B2: the account has a password (SSO-only accounts do not). The hash is never returned. */
+  hasPassword: boolean;
 };
 
 /** Private preferences are returned only on self-auth surfaces. */
@@ -137,5 +139,9 @@ export function sanitizeOwnUser(u: object): OwnUser {
     // Final21 UX: account recovery needs the owner to see which address resets reach.
     email: typeof row.email === 'string' && row.email ? row.email : null,
     emailVerified: row.emailVerified === true || row.emailVerified === 1 || row.emailVerified === '1' || row.emailVerified === 't',
+    // P7 B2: whether the account has a password at all (SSO-only accounts do not), so
+    // the owner's settings can offer deletion through a sign-in proof instead. Only the
+    // fact is returned — never the hash.
+    hasPassword: typeof row.password === 'string' && row.password.length > 0,
   };
 }

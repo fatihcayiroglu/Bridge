@@ -92,7 +92,7 @@ const EXPORT_SOURCES: Array<{ key: string; table: string; column: string; column
 // GET /api/account/export
 // P7 B2: the export is the whole account history — a `sensitive-export` step-up
 // proof is required, so a stolen session cannot exfiltrate it.
-router.get('/export', authMiddleware, requireStepUp('account.export'), limits.write(), async (req: Request, res: Response) => {
+router.get('/export', authMiddleware, limits.write(), requireStepUp('account.export'), async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
   const p = pool();
   if (!p) return res.status(503).json({ error: 'Export requires PostgreSQL' });
@@ -201,14 +201,26 @@ router.delete('/', authMiddleware, limits.write(), async (req: Request, res: Res
 
   // ── Yakın kimlik doğrulama ───────────────────────────────────────────────
   // Çalınmış/ödünç alınmış bir oturum, hesabı silmeye YETMEMELİDİR.
-  // P7 B2: a `destructive-admin` step-up grant at the account's level is a
-  // fresh proof; without one, the existing inline password still works where a
-  // password IS the account's sign-in strength (no 2FA). An account with 2FA
-  // needs a level-2 grant (a password alone never was its full strength), and an
-  // SSO-only account — which has no password and could not delete itself before
-  // — uses the grant its sign-in returned.
+  // P7 B2: a password that is SUPPLIED is always verified, exactly as before —
+  // a step-up grant never makes a wrong one acceptable. Then:
+  //   · a `destructive-admin` grant at the account's level is a fresh proof;
+  //   · without one, the correct inline password suffices where a password IS
+  //     the account's sign-in strength (no 2FA);
+  //   · an account with 2FA needs a level-2 grant (its password alone never was
+  //     its full strength);
+  //   · an SSO-only account — no password, unable to delete itself before B2 —
+  //     sends no password and uses the grant its sign-in returned.
   const user = await Users.findById(_u.id) as { password?: string; twoFactorEnabled?: unknown; tokenVersion?: unknown } | null;
   if (!user) return res.status(404).json({ error: 'User not found' });
+  const suppliedPassword = typeof password === 'string' && password.length > 0;
+  if (suppliedPassword && !(await bcrypt.compare(password, String(user.password ?? '')))) {
+    logger.warn({ userId: _u.id, event: 'account.delete.bad_password' }, 'Silme reddedildi: parola hatalı.');
+    // 400, 401 DEĞİL (Final21 Faz 19): 401 "oturum geçersiz" demektir. İstemcinin apiFetch'i
+    // 401'de jetonu yeniler, isteği (parolayla birlikte) TEKRAR gönderir, yine 401 alınca
+    // yenilemeyi kapatıp OTURUMU KAPATIR — yanlış yazılan bir parola kişiyi dışarı atardı.
+    // Parola değişimi ve 2FA uçları da yanlış parolayı 400 ile bildirir.
+    return res.status(400).json({ error: 'Password incorrect' });
+  }
   let decision: Awaited<ReturnType<typeof evaluateStepUp>>;
   try {
     decision = await evaluateStepUp(req, _u.id, 'account.delete');
@@ -220,18 +232,7 @@ router.delete('/', authMiddleware, limits.write(), async (req: Request, res: Res
     if (decision.status === 401) return res.status(401).json(decision.body);
     const factors = factorsOf(user);
     if (!factors.password || requiredLevel(factors) > 1) return res.status(403).json(decision.body);
-    if (!password || typeof password !== 'string') {
-      return res.status(400).json({ error: 'Password confirmation required' });
-    }
-    const ok = await bcrypt.compare(password, String(user.password ?? ''));
-    if (!ok) {
-      logger.warn({ userId: _u.id, event: 'account.delete.bad_password' }, 'Silme reddedildi: parola hatalı.');
-      // 400, 401 DEĞİL (Final21 Faz 19): 401 "oturum geçersiz" demektir. İstemcinin apiFetch'i
-      // 401'de jetonu yeniler, isteği (parolayla birlikte) TEKRAR gönderir, yine 401 alınca
-      // yenilemeyi kapatıp OTURUMU KAPATIR — yanlış yazılan bir parola kişiyi dışarı atardı.
-      // Parola değişimi ve 2FA uçları da yanlış parolayı 400 ile bildirir.
-      return res.status(400).json({ error: 'Password incorrect' });
-    }
+    if (!suppliedPassword) return res.status(400).json({ error: 'Password confirmation required' });
   }
 
   try {

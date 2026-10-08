@@ -2303,5 +2303,7 @@ const translations: Record<string, string> = {
   "stepup_why_admin_user_delete": "Bu Bridge kurulumundaki bir hesabı silmek geri alınamaz.",
   "stepup_why_admin_server_delete": "Bu Bridge kurulumundaki bir sunucuyu silmek geri alınamaz.",
   "stepup_why_moderation_burst": "Kısa sürede çok sayıda yasaklama, atma veya toplu silme yaptınız. Sonraki 10 dakika devam etmek için bir kez siz olduğunuzu doğrulayın.",
+  "privacy_delete_sso_note": "Tek oturum açma (SSO) ile giriş yapıyorsunuz, bu yüzden yazılacak bir parola yok. Silme için yakın zamanda giriş yapmış olmanız gerekir: 10 dakikadan uzun süre geçtiyse yeniden giriş yapmanız istenir.",
+  "privacy_delete_needs_proof": "Silme için siz olduğunuzun yeniden doğrulanması gerekiyor. Yeniden giriş yapın, ardından 10 dakika içinde tekrar deneyin.",
 };
 export default translations;

@@ -2332,6 +2332,8 @@ const translations: Record<string, string> = {
   "stepup_why_admin_user_delete": "Excluir uma conta nesta instância não pode ser desfeito.",
   "stepup_why_admin_server_delete": "Excluir um servidor nesta instância não pode ser desfeito.",
   "stepup_why_moderation_burst": "Você fez muitos banimentos, expulsões ou exclusões em massa em pouco tempo. Confirme uma vez que é você para continuar pelos próximos 10 minutos.",
+  "privacy_delete_sso_note": "Você entra com login único (SSO), então não há senha para digitar. Excluir exige um login recente: se já passaram mais de 10 minutos, você precisará entrar novamente.",
+  "privacy_delete_needs_proof": "A exclusão precisa de uma nova confirmação de que é você. Entre novamente e tente outra vez em até 10 minutos.",
 };
 
 export default translations;

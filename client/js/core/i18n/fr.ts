@@ -2332,6 +2332,8 @@ const translations: Record<string, string> = {
   "stepup_why_admin_user_delete": "La suppression d’un compte sur cette instance est irréversible.",
   "stepup_why_admin_server_delete": "La suppression d’un serveur sur cette instance est irréversible.",
   "stepup_why_moderation_burst": "Vous avez effectué de nombreux bannissements, expulsions ou suppressions en masse en peu de temps. Confirmez une fois que c’est bien vous pour continuer pendant les 10 prochaines minutes.",
+  "privacy_delete_sso_note": "Vous vous connectez par authentification unique (SSO) : il n’y a donc pas de mot de passe à saisir. La suppression nécessite une connexion récente : si elle date de plus de 10 minutes, il vous sera demandé de vous reconnecter.",
+  "privacy_delete_needs_proof": "La suppression nécessite une nouvelle confirmation que c’est bien vous. Reconnectez-vous puis réessayez dans les 10 minutes.",
 };
 
 export default translations;
