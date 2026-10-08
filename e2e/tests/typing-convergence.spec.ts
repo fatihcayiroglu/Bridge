@@ -63,7 +63,7 @@ test.beforeAll(async ({ request }) => {
 });
 
 test('yaziyor gostergesi SINIRLI surede temizlenir (stop olayi hic gelmese bile)', async ({ page }) => {
-  test.skip(Boolean(fixtureError), `fikstur kurulamadi: ${fixtureError}`);
+  expect(fixtureError, `fikstür kurulamadı: ${fixtureError}`).toBe('');
   test.setTimeout(3 * 60_000);
 
   const sockets: Socket[] = [];
