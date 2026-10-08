@@ -42,7 +42,7 @@
     "typecheck:hardening": "node scripts/check-typescript-debt.cjs --project tsconfig.hardening.json --bucket hardening",
     "typecheck:hardening:raw": "tsc -p tsconfig.hardening.json --noEmit",
     "test:mutation": "node scripts/mutation-campaign.cjs",
-    "test:search-it": "node scripts/require-env.cjs SEARCH_IT_DATABASE_URL && jest --runInBand --forceExit --testPathPatterns unified-search.integration"
+    "test:search-it": "node scripts/require-env.cjs SEARCH_IT_DATABASE_URL && jest --runInBand --forceExit --testPathPatterns unified-search.integration --testPathIgnorePatterns=/node_modules/"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1068.0",
@@ -344,7 +344,8 @@
       "json"
     ],
     "testPathIgnorePatterns": [
-      "/node_modules/"
+      "/node_modules/",
+      "/tests/unified-search.integration.test.ts"
     ],
     "transformIgnorePatterns": [
       "node_modules[/\\\\](?!.*(?:htmlparser2|domhandler|domutils|dom-serializer|domelementtype|entities|parse-srcset|picocolors|is-plain-object|deepmerge|escape-string-regexp)[/\\\\])"
