@@ -561,6 +561,11 @@ jobs:
       - name: Run security-critical E2E
         run: |
           cd e2e && npx playwright test             tests/webhook-security.spec.ts             tests/permission-matrix.spec.ts             tests/permission-matrix-actions.spec.ts             tests/role-escalation.spec.ts             tests/search-security.spec.ts             tests/search-security-extended.spec.ts             tests/file-security.spec.ts             tests/privacy-lifecycle.spec.ts             tests/session-logout.spec.ts             tests/safe-area.spec.ts             tests/channel-permissions.spec.ts             tests/attachments.spec.ts             tests/locale-journey.spec.ts             --project=chromium --retries=0 --reporter=list
+      # The shipped plugin runtime (bundled plugins, authenticated plugin routes,
+      # a real hook acting on a message) and the absence of any HTTP API that
+      # loads plugin code. Runs on every PR; the full matrix is nightly only.
+      - name: Verify shipped plugin runtime (no runtime code-loading API)
+        run: cd e2e && npx playwright test tests/plugins.spec.ts --project=chromium --retries=0 --reporter=list
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v7
