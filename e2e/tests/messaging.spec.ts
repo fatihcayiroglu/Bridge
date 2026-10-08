@@ -109,6 +109,17 @@ test.describe('Mesajlaşma Akışları', () => {
       closeSockets(outsider);
     }
   });
+  /** Canonical REST read: the channel's first page. */
+  async function listIds(request: import('@playwright/test').APIRequestContext): Promise<Map<string, { content?: string; editedAt?: unknown }>> {
+    const res = await request.get(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
+      headers: { Authorization: `Bearer ${tokens.alice}` },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    const rows = (Array.isArray(body) ? body : body.messages ?? []) as Array<{ _id?: string; id?: string; content?: string; editedAt?: unknown }>;
+    return new Map(rows.map((m) => [String(m._id ?? m.id), m]));
+  }
+
   test('API: mesaj silme (REST mutasyon yolu, DELETE /api/channels/:messageId)', async ({ request }) => {
     expect(testChannelId, 'test kanalı oluşturulamadı').toBeTruthy();
     const msgId = await sendViaSocket(tokens.alice, testServerId, testChannelId, `Silinecek mesaj ${Date.now()}`);
