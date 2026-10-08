@@ -76,22 +76,23 @@ test.beforeAll(async ({ request }) => {
   const token = getTokens().alice;
   const stamp = Date.now().toString(36);
   const server = await createTestServer(request, token, `A11Y KB ${stamp}`);
-  seededServerId = server?._id || server?.id || '';
-  if (!seededServerId) return;
+  expect(server, 'klavye erişilebilirliği sunucusu kurulamadı').toBeTruthy();
+  seededServerId = server._id || server.id;
+  expect(seededServerId).toBeTruthy();
   seededChannelName = `kb-${stamp}`;
   const channel = await createTestChannel(request, token, seededServerId, seededChannelName, 'text');
-  if (!(channel?._id || channel?.id)) seededChannelName = '';
+  expect(channel, 'klavye erişilebilirliği kanalı kurulamadı').toBeTruthy();
+  expect(channel._id || channel.id, 'klavye erişilebilirliği kanal kimliği eksik').toBeTruthy();
 });
 
 /** Tohumlanan sunucuya girer; kanal listesi gorunur hale gelir. */
 async function openSeededServer(page: Page): Promise<void> {
-  if (!seededServerId) return;
+  expect(seededServerId, 'klavye erişilebilirliği sunucusu yok').toBeTruthy();
   const icon = page.locator(`.server-icon[data-id="${seededServerId}"]`).first();
-  if (await icon.count()) {
-    await icon.click({ timeout: 20_000 }).catch(() => undefined);
-    await page.locator('[aria-label^="Kanal:"]').first()
-      .waitFor({ state: 'visible', timeout: 15_000 }).catch(() => undefined);
-  }
+  await expect(icon, 'tohumlanan sunucu görünmedi').toBeVisible({ timeout: 20_000 });
+  await icon.click();
+  await expect(page.locator('[aria-label^="Kanal:"]').first(), 'kanal görünmedi')
+    .toBeVisible({ timeout: 15_000 });
 }
 
 test.describe('keyboard-only journeys', () => {
@@ -152,7 +153,7 @@ test.describe('keyboard-only journeys', () => {
     const channel = page.locator('[aria-label^="Kanal:"]').first();
     // Fikstur kuruldugu icin bu yola normalde DUSULMEZ; yalnizca tohumlama
     // basarisiz olursa atlanir ve gerekce acikca yazilir.
-    if (!(await channel.count())) test.skip(true, 'kanal fikstürü kurulamadı — ölçülemiyor');
+    await expect(channel, 'klavye testi kanalı görünmüyor').toBeVisible({ timeout: 15_000 });
     await channel.click();
     const composer = page.locator('#msg-input');
     await composer.waitFor({ state: 'visible', timeout: 20_000 });
@@ -172,7 +173,7 @@ test.describe('keyboard-only journeys', () => {
   test('settings dialog is escapable and restores focus', async ({ page }) => {
     await openApp(page);
     const trigger = page.locator('#btn-settings');
-    if (!(await trigger.count())) test.skip(true, 'ayarlar dugmesi yok');
+    await expect(trigger, 'ayarlar düğmesi yok').toBeVisible({ timeout: 15_000 });
     await trigger.focus();
     const before = await focusSignature(page);
     await page.keyboard.press('Enter');

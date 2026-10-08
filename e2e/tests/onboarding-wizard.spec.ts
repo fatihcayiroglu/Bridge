@@ -194,7 +194,7 @@ test.describe('Onboarding Wizard — App Entegrasyonu', () => {
     expect(serversRes.status()).toBe(200);
     const body = await serversRes.json();
     const servers = Array.isArray(body) ? body : (body.servers ?? []);
-    test.skip(servers.length === 0, 'Kullanıcının sunucusu yok — onboarding ucu denenemez');
+    expect(servers.length, 'onboarding sunucusu hazırlanamadı').toBeGreaterThan(0);
 
     const sid = servers[0]._id || servers[0].id;
     const res = await request.get(`${BASE_URL}/api/servers/${sid}/onboarding`, {

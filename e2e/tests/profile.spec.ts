@@ -148,7 +148,7 @@ test.describe('Profil Yönetimi', () => {
     const bobMe = await request.get(`${BASE}/api/me`, {
       headers: { Authorization: `Bearer ${tokens.bob}` },
     });
-    test.skip(!bobMe.ok(), 'Test fixture hazır değil'); if (!bobMe.ok()) return;
+    expect(bobMe.status(), 'Bob kullanıcı profili doğrulanamadı').toBe(200);
     const bob = await bobMe.json();
     const bobId = bob._id || bob.id;
 

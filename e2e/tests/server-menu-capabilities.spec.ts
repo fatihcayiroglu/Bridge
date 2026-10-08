@@ -80,7 +80,7 @@ test.describe('sunucu menüsü — yetenek erişilebilirliği', () => {
   });
 
   test('sunucu menüsü BİLDİRİM AYARLARINI kullanıcıya açar', async ({ page }) => {
-    test.skip(!serverId || !channelName, 'sunucu/kanal fikstürü kurulamadı (hız sınırı)');
+    expect(serverId && channelName, 'sunucu/kanal fikstürü kurulamadı (hız sınırı)').toBeTruthy();
 
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#app')).toBeVisible({ timeout: 45_000 });

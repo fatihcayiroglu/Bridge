@@ -36,8 +36,9 @@ import { unifiedFtsSearch } from '../db/postgres/fts';
 
 const q = async (sql: string, params: unknown[] = []) => (await itPool!.query(sql, params)).rows;
 
-/** Canli veritabani yoksa paket tumuyle atlanir — yesil gorunmez, ATLANMIS gorunur. */
-const withDb = IT_URL ? describe : describe.skip;
+// This suite is collected only by the dedicated live-planner Jest invocation.
+// Missing credentials are an execution error, not a passing or skipped test.
+const withDb = describe;
 
 const A = 'it-search-user-a';
 const B = 'it-search-user-b';
@@ -51,6 +52,7 @@ const TERM = 'zxqvmarker';
 
 withDb('Birlesik arama — canli PostgreSQL', () => {
   beforeAll(async () => {
+    if (!IT_URL) throw new Error('SEARCH_IT_DATABASE_URL required for live planner E2E');
     await q('BEGIN');
 
     // Final21 Phase 16: rows below reference users, a server and a channel through foreign keys

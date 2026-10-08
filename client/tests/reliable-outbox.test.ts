@@ -130,6 +130,17 @@ afterEach(() => {
 });
 
 describe('Reliable Outbox — composer integration', () => {
+  it('accepts a reactive optimistic entry without throwing DataCloneError', () => {
+    const nested = new Proxy({ _id: 'reply-2', displayName: 'Alice', content: 'reply' }, {});
+    const reactive = new Proxy(makeEntry(701, { replyPreview: nested }), {});
+    expect(() => structuredClone(reactive)).toThrow();
+    expect(putOutboxEntry(reactive)).toBe(true);
+    expect(readOutbox(USER_ID)).toMatchObject([{
+      ackId: 'ack-701',
+      replyPreview: { _id: 'reply-2', content: 'reply' },
+    }]);
+  });
+
   it('offline send is queued, reconnect replay is single-flight, ACK removes it', async () => {
     typeAndSend('offline message');
 

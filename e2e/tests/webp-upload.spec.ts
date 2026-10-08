@@ -6,17 +6,44 @@ import { test, expect } from '../helpers/apiTest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { deflateSync } from 'zlib';
 import { getTokens } from '../helpers/bridge';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 // Test için küçük bir PNG oluştur (1x1 kırmızı piksel — base64)
 // Bu fixture herhangi bir gerçek görsel kaynağı gerektirmez.
-const MINIMAL_PNG_B64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI6QAAAABJRU5ErkJggg==';
+function pngChunk(type: string, data: Buffer): Buffer {
+  const name = Buffer.from(type, 'ascii');
+  const payload = Buffer.concat([name, data]);
+  let crc = 0xffffffff;
+  for (const byte of payload) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  const size = Buffer.alloc(4);
+  size.writeUInt32BE(data.length);
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+  return Buffer.concat([size, payload, checksum]);
+}
+
+function minimalPng(): Buffer {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(1, 0);
+  header.writeUInt32BE(1, 4);
+  header[8] = 8; // bit depth
+  header[9] = 6; // RGBA
+  return Buffer.concat([
+    Buffer.from('89504e470d0a1a0a', 'hex'),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(Buffer.from([0, 255, 0, 0, 255]))),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
 
 function createTestPng(filePath: string): void {
-  fs.writeFileSync(filePath, Buffer.from(MINIMAL_PNG_B64, 'base64'));
+  fs.writeFileSync(filePath, minimalPng());
 }
 
 test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
@@ -57,10 +84,9 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
     expect(typeof url).toBe('string');
   });
 
-  test('WEBP_CONVERT=true ise dönen URL .webp uzantılı olmalı', async ({ request }) => {
-    // Bu test sadece sunucu WEBP_CONVERT=true ile çalışıyorsa anlamlı.
-    // CI ortamında WEBP_CONVERT env'e bakılır.
-    test.skip(process.env.WEBP_CONVERT !== 'true', 'WEBP_CONVERT=true değil — WebP dönüştürme devre dışı');
+  test('PNG dönüşümü yapılandırılan WEBP_CONVERT moduyla eşleşir', async ({ request }) => {
+    // Both modes are asserted. CI also runs a dedicated WEBP_CONVERT=true server,
+    // so the conversion branch cannot pass merely because it is disabled locally.
 
     const pngBuffer = fs.readFileSync(tmpPng);
 
@@ -78,7 +104,11 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
     expect(res.status()).toBe(200);
     const body = await res.json() as { url?: string; fileUrl?: string };
     const url = body.url ?? body.fileUrl ?? '';
-    expect(url.endsWith('.webp'), `URL .webp ile bitmeli, alınan: ${url}`).toBeTruthy();
+    if (process.env.WEBP_CONVERT === 'true') {
+      expect(url.endsWith('.webp'), `WEBP_CONVERT=true: .webp URL bekleniyor, alınan: ${url}`).toBe(true);
+    } else {
+      expect(url.endsWith('.webp'), `WEBP_CONVERT kapalıyken beklenmeyen dönüşüm: ${url}`).toBe(false);
+    }
   });
 
   test('GIF yüklenince WebP\'ye dönüştürülmemeli (animasyon korunur)', async ({ request }) => {
@@ -164,33 +194,10 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
 
   // ── CDN entegrasyonu ──────────────────────────────────────────────────────
 
-  test('CDN_PROVIDER=r2 olsa da özel mesaj eki Bridge yetki URL\'sinden döner', async ({ request }) => {
-    const cdnProvider = process.env.CDN_PROVIDER ?? 'local';
-    test.skip(cdnProvider !== 'r2', 'R2 CDN ortamı yapılandırılmamış');
-
-    const pngBuffer = fs.readFileSync(tmpPng);
-    const res = await request.post(`${BASE_URL}/api/upload`, {
-      headers: { Authorization: `Bearer ${tokens.alice}` },
-      multipart: {
-        file: { name: 'cdn-test.png', mimeType: 'image/png', buffer: pngBuffer },
-      },
-    });
-
-    expect(res.status()).toBe(200);
-    const body = await res.json() as { url?: string; key?: string };
-    const url = body.url ?? '';
-    expect(url).toMatch(/^\/uploads\/[A-Za-z0-9._-]+$/);
-    expect(url.startsWith('http')).toBeFalsy();
-    expect(body.key).toBeUndefined();
-
-    // Remote byte teslimi de uygulama yetki sınırından geçmelidir.
-    const denied = await request.get(`${BASE_URL}${url}`);
-    expect(denied.status()).toBe(401);
-    const allowed = await request.get(`${BASE_URL}${url}`, {
-      headers: { Authorization: `Bearer ${tokens.alice}` },
-    });
-    expect(allowed.status()).toBe(200);
-  });
+  // The former R2-environment-only scenario was a permanent local-mode skip.
+  // S3-compatible protected upload is now proved against a real S3-compatible
+  // service (RustFS in CI) by remote-storage.spec.ts. This is neither Cloudflare
+  // R2 nor MinIO-vendor coverage.
 
   test('local provider\'da URL /uploads/ ile başlıyor', async ({ request }) => {
     test.skip((process.env.CDN_PROVIDER ?? 'local') !== 'local', 'Local storage CDN değil — test geçersiz');

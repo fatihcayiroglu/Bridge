@@ -27,13 +27,13 @@
 //
 // ── DÜRÜSTLÜK ─────────────────────────────────────────────────────────────
 // · Playwright WebKit GERÇEK Safari DEĞİLDİR; bilgilendirici bir sinyaldir.
-// · Fikstür kurulamazsa testler SESSİZCE geçmez; açık gerekçeyle atlanır ve
-//   atlama bir GEÇİŞ olarak raporlanmaz.
+// · Fikstür kurulamazsa testler açıkça BAŞARISIZ olur; skip ile gizlenmez.
 // · Medya/WebRTC iddiası BURADA yapılmaz (motorlar arası yetenek farkı);
 //   o yüzey `voice-media` projesine aittir.
 
 import { test, expect } from '../helpers/apiTest';
 import path from 'path';
+import { deflateSync } from 'zlib';
 import type { Page } from '@playwright/test';
 import { getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
 
@@ -48,12 +48,12 @@ test.beforeAll(async ({ request }) => {
   const stamp = Date.now().toString(36);
   const srv = await createTestServer(request, token, `XBP ${stamp}`);
   serverId = srv?._id || srv?.id || '';
-  if (!serverId) return;
+  expect(serverId, 'Cross-browser: sunucu fixture oluşturulamadı').toBeTruthy();
   // Kanal adı KOŞUMA ÖZGÜdür: `[aria-label="Kanal: ..."]` seçicisi böylece
   // önceki koşumların bıraktığı kanallarla çakışmaz.
   channelName = `urun-${stamp}`;
   const ch = await createTestChannel(request, token, serverId, channelName, 'text');
-  if (!(ch?._id || ch?.id)) channelName = '';
+  expect(ch?._id || ch?.id, 'Cross-browser: kanal fixture oluşturulamadı').toBeTruthy();
 });
 
 /**
@@ -64,7 +64,7 @@ test.beforeAll(async ({ request }) => {
  * `[aria-label="Kanal: <ad>"]`. Kanal öğeleri gerçek `<button>`dır.
  */
 async function enterChannel(page: Page): Promise<void> {
-  test.skip(!serverId || !channelName, 'sunucu/kanal fikstürü kurulamadı — ölçüm yapılamaz');
+  expect(serverId && channelName, 'Sunucu/kanal fixture kurulamadı').toBeTruthy();
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#app')).toBeVisible({ timeout: 30_000 });
   await page.locator(`.server-icon[data-id="${serverId}"]`).first().click({ timeout: 25_000 });
@@ -324,17 +324,39 @@ test.describe('çapraz tarayıcı — ürün yüzeyi', () => {
 //
 // Ağ yakalama (page.route) KULLANILMAZ: 404'ü ürünün kendi silme yolu üretir.
 test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
-  const PNG = Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
-    'base64',
-  );
+  // A valid 1x1 RGBA PNG with computed chunk CRCs; Firefox decodes it as well.
+  // Avoid opaque base64 fixtures whose CRC can be accepted by upload but rejected by browsers.
+  function pngChunk(type: string, data: Buffer): Buffer {
+    const payload = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    let crc = 0xffffffff;
+    for (const byte of payload) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+    const size = Buffer.alloc(4);
+    size.writeUInt32BE(data.length);
+    const checksum = Buffer.alloc(4);
+    checksum.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+    return Buffer.concat([size, payload, checksum]);
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(1, 0);
+  header.writeUInt32BE(1, 4);
+  header[8] = 8;
+  header[9] = 6;
+  const PNG = Buffer.concat([
+    Buffer.from('89504e470d0a1a0a', 'hex'),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(Buffer.from([0, 255, 0, 0, 255]))),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
 
   test('avatar dosyası silinince geçmiş mesaj kırık resim değil RENK AVATARI gösterir', async ({ page, request, browser }, testInfo) => {
-    test.skip(!serverId, 'sunucu fikstürü kurulamadı — ölçüm yapılamaz');
+    expect(serverId, 'Sunucu fixture kurulamadı').toBeTruthy();
     // Gruplanmış takip mesajı avatar ÇİZMEZ; bu yüzden mesaj KENDİ kanalında ilk mesajdır.
     const avatarChannel = `avatar-${Date.now().toString(36)}`;
     const ch = await createTestChannel(request, token, serverId, avatarChannel, 'text');
-    test.skip(!(ch?._id || ch?.id), 'avatar kanalı kurulamadı — ölçüm yapılamaz');
+    expect(ch?._id || ch?.id, 'Avatar kanalı fixture kurulamadı').toBeTruthy();
 
     const up = await request.post(`${BASE_URL}/api/me/avatar`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -357,8 +379,9 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
       // Pozitif kontrol: resim gerçekten çizildi.
       const liveImg = page.locator('.msg', { hasText: body }).first().locator('.msg-avatar img');
       await expect(liveImg).toHaveCount(1, { timeout: 15_000 });
-      await expect.poll(() => liveImg.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0),
-        { timeout: 15_000, message: 'pozitif kontrol: avatar resmi yüklenmedi' }).toBe(true);
+      await expect(liveImg, 'pozitif kontrol: avatar resmi yüklenmedi').toHaveJSProperty('complete', true, { timeout: 15_000 });
+      await expect.poll(() => liveImg.getAttribute('src'), { timeout: 15_000 }).toBe(avatarUrl);
+      await expect(liveImg, 'pozitif kontrol: avatar resmi boş veya kırık').not.toHaveJSProperty('naturalWidth', 0, { timeout: 15_000 });
 
       const del = await request.delete(`${BASE_URL}/api/me/avatar`, { headers: { Authorization: `Bearer ${token}` } });
       expect(del.status(), 'avatar kaldırılamadı').toBe(200);

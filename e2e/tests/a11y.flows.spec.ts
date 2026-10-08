@@ -31,8 +31,8 @@ async function noA11yViolations(page: Page, context: string, include?: string): 
   // Kapsam seçicisi sayfada YOKSA axe "No elements found for include" ile
   // PATLAR ve bu, erişilebilirlik ihlali gibi görünür. Oysa yüzey o an
   // render edilmemiştir: burada denetlenecek bir şey yoktur.
-  if (include && await page.locator(include).count() === 0) {
-    test.skip(true, `A11Y kapsamı bu kabukta render edilmedi: ${context}`);
+  if (include) {
+    await expect(page.locator(include).first(), `${context}: erişilebilirlik kapsamı görünür değil`).toBeVisible();
   }
   // ── HAREKET AZALTMA: ÖLÇÜMÜ KARARLI HÂLE GETİRİR ──────────────────────────
   // `color-contrast` açıldığında SÜREKLİ animasyonlu öğeler her koşuda BAŞKA

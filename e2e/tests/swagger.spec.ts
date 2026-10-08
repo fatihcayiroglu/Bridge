@@ -17,12 +17,26 @@ test.describe('Swagger /docs smoke testi', () => {
     await ctx.dispose();
   });
 
-  test('GET /api/v1/docs/swagger.json → 200 veya redirect', async () => {
-    test.skip(true, 'SEVK EDİLMEDİ: Swagger JSON ucu yok — /api/v1/docs/swagger.json 404.');
+  test('GET /api/v1/docs/spec.json serves the generated OpenAPI snapshot', async () => {
+    // The deployed Swagger router mounts spec.json; swagger.json was a
+    // nonexistent path and made this important runtime contract skip forever.
     const ctx = await pwRequest.newContext({ baseURL: BASE_URL });
-    const res = await ctx.get('/api/v1/docs/swagger.json');
-    // 200 veya 301/302 (bazı swagger kurulumları redirect yapar)
-    expect([200, 301, 302]).toContain(res.status());
-    await ctx.dispose();
+    try {
+      const res = await ctx.get('/api/v1/docs/spec.json');
+      expect(res.status()).toBe(200);
+      expect(res.headers()['content-type']).toContain('application/json');
+      const spec = await res.json() as {
+        openapi?: string;
+        info?: { title?: string; version?: string };
+        paths?: Record<string, unknown>;
+      };
+      expect(spec.openapi).toMatch(/^3\./);
+      expect(spec.info?.title).toBeTruthy();
+      expect(spec.info?.version).toBeTruthy();
+      expect(spec.paths).toBeDefined();
+      expect(Object.keys(spec.paths ?? {}).length).toBeGreaterThan(0);
+    } finally {
+      await ctx.dispose();
+    }
   });
 });

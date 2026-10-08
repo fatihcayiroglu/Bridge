@@ -21,6 +21,22 @@ function message(id: string, createdAt: number, extra: Record<string, unknown> =
 }
 
 describe('P7 encrypted message history', () => {
+  it('snapshots reactive Proxy rows and nested JSON without a DataCloneError', async () => {
+    const { repository } = repo();
+    const nested = new Proxy({ content: 'reactive nested' }, {});
+    const source = new Proxy(message('proxy', 10, { embeds: [nested] }), {});
+    expect(() => structuredClone(source)).toThrow();
+
+    await repository.replaceFromServer('c1', [source], 100);
+    const first = await repository.read('c1', 100);
+    expect(first?.messages[0]?.embeds).toEqual([{ content: 'reactive nested' }]);
+
+    await repository.update('c1', new Proxy(message('proxy', 10, { content: 'edited' }), {}), 110);
+    const updated = await repository.read('c1', 110);
+    expect(updated?.messages[0]?.content).toBe('edited');
+    expect(updated?.messages[0]?.embeds).toEqual([{ content: 'reactive nested' }]);
+  });
+
   it('stores confirmed history as ciphertext and restores chronological rows', async () => {
     const { repository, backend } = repo();
 

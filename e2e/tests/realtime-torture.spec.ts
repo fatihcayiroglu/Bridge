@@ -249,7 +249,7 @@ function socketScope(): { open: (tk: string) => Promise<Socket>; close: () => vo
 
 test('gercek zamanli iskence — nihai durum dogrulugu', async ({ request }) => {
   test.setTimeout(15 * 60_000);
-  test.skip(Boolean(fixtureError), `fikstur kurulamadi: ${fixtureError}`);
+  expect(fixtureError, `fikstür kurulamadı: ${fixtureError}`).toBe('');
 
   try {
     // ══════════════════════════════════════════════════════════════════════

@@ -41,19 +41,21 @@ test.describe('Sunucu Davet Sistemi', () => {
     tokens = getTokens();
     serverName = `Invite-Server-${Date.now()}`;
     const srv = await createTestServer(request, tokens.alice, serverName);
-    serverId = srv?._id || srv?.id;
+    expect(srv, 'davet sunucusu oluşturulamadı').toBeTruthy();
+    serverId = srv._id || srv.id;
+    expect(serverId, 'davet sunucusu kimliği yok').toBeTruthy();
 
     const me = await request.get(`${BASE}/api/me`, { headers: { Authorization: `Bearer ${tokens.bob}` } });
-    if (me.ok()) {
-      const body = await me.json();
-      bobId = String(body._id || body.id);
-    }
+    expect(me.status(), 'Bob kullanıcı fikstürü doğrulanamadı').toBe(200);
+    const body = await me.json();
+    bobId = String(body._id || body.id);
+    expect(bobId, 'Bob kullanıcı kimliği eksik').toBeTruthy();
   });
 
   // ── 1. Davet kodu oluşturma ───────────────────────────────
 
   test('POST /api/servers/invites — davet kodu oluşturulabilmeli', async ({ request }) => {
-    test.skip(!serverId, 'Test fixture hazır değil'); if (!serverId) return;
+    expect(Boolean(serverId), 'davet fikstürü hazır değil').toBe(true);
 
     const res = await request.post(`${BASE}/api/servers/invites`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
@@ -68,7 +70,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   });
 
   test('POST /api/servers/invites — maxUses ile oluşturulabilmeli', async ({ request }) => {
-    test.skip(!serverId, 'Test fixture hazır değil'); if (!serverId) return;
+    expect(Boolean(serverId), 'davet fikstürü hazır değil').toBe(true);
 
     const res = await request.post(`${BASE}/api/servers/invites`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
@@ -81,7 +83,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   });
 
   test('POST /api/servers/invites — auth olmadan 401', async ({ request }) => {
-    test.skip(!serverId, 'Test fixture hazır değil'); if (!serverId) return;
+    expect(Boolean(serverId), 'davet fikstürü hazır değil').toBe(true);
 
     const res = await request.post(`${BASE}/api/servers/invites`, {
       headers: { 'Content-Type': 'application/json' },
@@ -91,7 +93,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   });
 
   test('POST /api/servers/invites — üye olmayan başkasının sunucusuna davet üretemez', async ({ request }) => {
-    test.skip(!serverId, 'Test fixture hazır değil'); if (!serverId) return;
+    expect(Boolean(serverId), 'davet fikstürü hazır değil').toBe(true);
 
     // carol fikstürde YALNIZCA üye-olmayan taraf olarak vardır.
     const res = await request.post(`${BASE}/api/servers/invites`, {
@@ -107,8 +109,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   // ── 2. Davetle katılma ────────────────────────────────────
 
   test('POST /api/servers/invites/:code/use — Bob katılır VE üye listesinde görünür', async ({ request }) => {
-    test.skip(!inviteCode || !serverId || !bobId, 'Test fixture hazır değil');
-    if (!inviteCode || !serverId || !bobId) return;
+    expect(Boolean(inviteCode && serverId && bobId), 'davet fikstürü hazır değil').toBe(true);
 
     const join = await request.post(`${BASE}/api/servers/invites/${inviteCode}/use`, {
       headers: { Authorization: `Bearer ${tokens.bob}`, 'Content-Type': 'application/json' },
@@ -128,8 +129,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   });
 
   test('POST /api/servers/invites/:code/use — zaten üye olan reddedilir, üyelik bozulmaz', async ({ request }) => {
-    test.skip(!inviteCode || !serverId || !bobId, 'Test fixture hazır değil');
-    if (!inviteCode || !serverId || !bobId) return;
+    expect(Boolean(inviteCode && serverId && bobId), 'davet fikstürü hazır değil').toBe(true);
 
     const again = await request.post(`${BASE}/api/servers/invites/${inviteCode}/use`, {
       headers: { Authorization: `Bearer ${tokens.bob}`, 'Content-Type': 'application/json' },
@@ -159,7 +159,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   });
 
   test('POST /api/servers/invites/:code/use — auth olmadan 401', async ({ request }) => {
-    test.skip(!inviteCode, 'Test fixture hazır değil'); if (!inviteCode) return;
+    expect(Boolean(inviteCode), 'davet fikstürü hazır değil').toBe(true);
 
     const res = await request.post(`${BASE}/api/servers/invites/${inviteCode}/use`, {
       headers: { 'Content-Type': 'application/json' },
@@ -170,7 +170,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   // ── 4. Paylaşım yüzeyleri ─────────────────────────────────
 
   test('GET /api/servers/invites/:code/qr — kodu bilen için paylaşılabilir QR döner', async ({ request }) => {
-    test.skip(!inviteCode, 'Test fixture hazır değil'); if (!inviteCode) return;
+    expect(Boolean(inviteCode), 'davet fikstürü hazır değil').toBe(true);
 
     const svg = await request.get(`${BASE}/api/servers/invites/${inviteCode}/qr`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
@@ -188,8 +188,7 @@ test.describe('Sunucu Davet Sistemi', () => {
   });
 
   test('GET /invite/:code — herkese açık önizleme sunucu adını gösterir, üyeleri SIZDIRMAZ', async ({ request }) => {
-    test.skip(!inviteCode || !serverName, 'Test fixture hazır değil');
-    if (!inviteCode || !serverName) return;
+    expect(Boolean(inviteCode && serverName), 'davet fikstürü hazır değil').toBe(true);
 
     // Paylaşım bağlantısı OTURUMSUZ açılır: davet edilen kişinin hesabı yoktur.
     const res = await request.get(`${BASE}/invite/${inviteCode}`);

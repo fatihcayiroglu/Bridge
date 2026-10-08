@@ -8,13 +8,13 @@
 import { test, expect } from '../helpers/apiTest';
 import { request as pwRequest } from '@playwright/test';
 import * as path from 'path';
-import { BridgePage, getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
-import { openSocket, waitForEvent, closeSockets } from '../helpers/socket';
+import { BridgePage, getTokens, createTestServer, createTestChannel, joinServer } from '../helpers/bridge';
+import { openSocket, waitForEvent, closeSockets, paceSends, joinChannelConfirmed } from '../helpers/socket';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 const TINY_PNG_B64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 const TINY_TXT = 'Bridge E2E test dosyası';
 
 test.describe('Dosya Yükleme Akışları', () => {
@@ -26,17 +26,21 @@ test.describe('Dosya Yükleme Akışları', () => {
     tokens = getTokens();
 
     const server = await createTestServer(request, tokens.alice, `Upload E2E ${Date.now()}`);
-    testServerId = server?._id || server?.id;
-    if (!testServerId) return;
-
+    expect(server, 'yükleme sunucusu oluşturulamadı').toBeTruthy();
+    testServerId = server._id || server.id;
+    expect(testServerId, 'yükleme sunucu kimliği yok').toBeTruthy();
     const ch = await createTestChannel(request, tokens.alice, testServerId, 'upload-test');
-    testChannelId = ch?._id || ch?.id;
+    expect(ch, 'yükleme kanalı oluşturulamadı').toBeTruthy();
+    testChannelId = ch._id || ch.id;
+    expect(testChannelId, 'yükleme kanal kimliği yok').toBeTruthy();
+    expect(await joinServer(request, tokens.alice, tokens.bob, testServerId),
+      'Bob yükleme sunucusuna katılamadı').toBe(true);
   });
 
   // ── API Testleri ─────────────────────────────────────────
 
   test('API: küçük PNG yükleme başarılı', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+    expect(testChannelId, 'yükleme kanalı fikstürü eksik').toBeTruthy();
     const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
     const res = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
@@ -50,7 +54,7 @@ test.describe('Dosya Yükleme Akışları', () => {
   });
 
   test('API: metin dosyası yükleme', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+    expect(testChannelId, 'yükleme kanalı fikstürü eksik').toBeTruthy();
     const txtBuffer = Buffer.from(TINY_TXT, 'utf-8');
     const res = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
@@ -60,7 +64,7 @@ test.describe('Dosya Yükleme Akışları', () => {
   });
 
   test('API: yetkisiz yükleme reddedilir', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+    expect(testChannelId, 'yükleme kanalı fikstürü eksik').toBeTruthy();
     const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
     const res = await request.post(`${BASE_URL}/api/upload`, {
       multipart: { file: { name: 'hack.png', mimeType: 'image/png', buffer: imgBuffer }, channelId: testChannelId },
@@ -69,7 +73,7 @@ test.describe('Dosya Yükleme Akışları', () => {
   });
 
   test('API: çok büyük dosya reddedilir (413)', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+    expect(testChannelId, 'yükleme kanalı fikstürü eksik').toBeTruthy();
     const bigBuffer = Buffer.alloc(30 * 1024 * 1024, 0);
     const res = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
@@ -87,7 +91,7 @@ test.describe('Dosya Yükleme Akışları', () => {
   // ── YENİ: Gerçek akış testleri ──────────────────────────
 
   test('API: yükleme yanıtı geçerli URL döndürür ve URL yetkisiz erişime KAPALIDIR', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli');
+    expect(testChannelId, 'yükleme kanalı fikstürü eksik').toBeTruthy();
 
     const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
     const uploadRes = await request.post(`${BASE_URL}/api/upload`, {
@@ -140,41 +144,38 @@ test.describe('Dosya Yükleme Akışları', () => {
     } finally { await anonCtx.dispose(); }
   });
 
-  test('Socket: dosya mesajı gönderilince kanaldaki üyeye message:new gelir', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
-
-    const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
-    const bob = await openSocket(tokens.bob).catch(() => null);
-    test.skip(!bob, 'Test fixture hazır değil'  );
-
+  // Önceki test, kaldırılmış REST mesaj-gönderme yoluna istek atıyor
+  // ve başarısız isteği / alınmayan olayı da yeşil sayıyordu.
+  test('Socket: gerçek file:send bildirimi kanal üyesine message:new olarak ulaşır', async ({ request }) => {
+    expect(testChannelId && testServerId, 'yükleme fikstürü eksik').toBeTruthy();
+    const bob = await openSocket(tokens.bob);
+    const alice = await openSocket(tokens.alice);
     try {
-      bob.emit('channel:join', testChannelId);
-      await new Promise(r => setTimeout(r, 400));
-
+      await joinChannelConfirmed(bob, testChannelId, testServerId);
       const uploadRes = await request.post(`${BASE_URL}/api/upload`, {
         headers: { Authorization: `Bearer ${tokens.alice}` },
-        multipart: { file: { name: 'notify.png', mimeType: 'image/png', buffer: imgBuffer }, channelId: testChannelId },
+        multipart: {
+          file: { name: 'notify.png', mimeType: 'image/png', buffer: Buffer.from(TINY_PNG_B64, 'base64') },
+          channelId: testChannelId,
+        },
       });
-      if (!uploadRes.ok()) return;
+      expect(uploadRes.status(), 'PNG yüklemesi başarılı olmalı').toBe(200);
+      const { url, fileName, fileType } = await uploadRes.json() as {
+        url: string; fileName: string; fileType: string;
+      };
+      expect(url, 'yükleme URL döndürmedi').toBeTruthy();
 
-      const body    = await uploadRes.json();
-      const fileUrl = body.url ?? body.fileUrl;
-      if (!fileUrl) return;
-
-      const msgEventPromise = waitForEvent<{ attachments?: string[] }>(bob, 'message:new', 4_000).catch(() => null);
-
-      await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
-        headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-        data:    JSON.stringify({ content: 'socket notify test', attachments: [fileUrl] }),
+      const received = waitForEvent<{ type?: string; fileUrl?: string }>(
+        bob, 'message:new', 15_000, event => event?.fileUrl === url,
+      );
+      await paceSends('alice');
+      alice.emit('file:send', {
+        channelId: testChannelId, serverId: testServerId, fileName, fileUrl: url, fileType,
       });
-
-      const msgEvent = await msgEventPromise;
-      if (msgEvent) {
-        expect(Array.isArray(msgEvent.attachments)).toBe(true);
-      }
-    } finally {
-      closeSockets(bob);
-    }
+      const event = await received;
+      expect(event.type).toBe('file');
+      expect(event.fileUrl).toBe(url);
+    } finally { closeSockets(alice, bob); }
   });
 
   // ── UI Testleri ──────────────────────────────────────────

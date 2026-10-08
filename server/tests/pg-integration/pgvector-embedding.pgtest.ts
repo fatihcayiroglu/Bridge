@@ -14,7 +14,9 @@
 // suite is not evidence. Removes its own rows.
 
 const VECTOR_URL = process.env.PGVECTOR_TEST_URL;
-const RUN = VECTOR_URL ? describe : describe.skip;
+// Collected only in the dedicated PGVECTOR_TEST_URL run (real extension).
+// An incorrectly configured explicit run must fail instead of being skipped.
+const RUN = describe;
 const DIM = 64;
 const P = 'pgt-vec';
 
@@ -57,6 +59,7 @@ RUN('real PostgreSQL + pgvector — the embedding writer and its live caller (P6
   };
 
   beforeAll(async () => {
+    if (!VECTOR_URL) throw new Error('PGVECTOR_TEST_URL required for pgvector integration');
     process.env.DATABASE_URL = VECTOR_URL;
     process.env.PGVECTOR_ENABLED = 'true';
     process.env.EMBEDDING_PROVIDER = 'ollama';

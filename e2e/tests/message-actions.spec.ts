@@ -199,7 +199,7 @@ test.describe('Mesaj Aksiyonları — kanonik Socket.IO akışı', () => {
   // ölçülür (server/tests/deleteMessageCascade.test.ts,
   // tests/pg-integration/message-content-format.pgtest.ts).
   test('delete — message:delete yayınlanır ve mesaj yeniden yüklemede de GERİ GELMEZ', async ({ request }) => {
-    await joinChannelConfirmed(alice, channelId, serverId);
+    await joinChannelConfirmed(alice, channelId, serverId, 6, 'alice');
     const kept = await sendMessage(`E2E kalacak ${Date.now()}`);
     const { messageId } = await sendMessage(`E2E silinecek ${Date.now()}`);
     await waitFor(async () => {

@@ -17,8 +17,12 @@ const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 async function sendViaSocket(token: string, serverId: string, channelId: string, content: string): Promise<string> {
   const socket = await openSocket(token);
   try {
+    // Both the join probe and the actual send create persisted messages.
+    // The server anti-spam counter belongs to Alice, not to this spec. Reserve
+    // BOTH sends under the same cross-worker 'alice' key used by other specs.
+    await paceSends('alice');
     await joinChannelConfirmed(socket, channelId, serverId);
-    await paceSends('messaging-rest');
+    await paceSends('alice');
     const ackId = `e2e-rest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const ack = waitForEvent<{ ackId: string; messageId: string }>(socket, 'message:ack', 15_000, (a) => a?.ackId === ackId);
     socket.emit('message:send', { channelId, serverId, content, ackId });
@@ -40,57 +44,43 @@ test.describe('Mesajlaşma Akışları', () => {
 
     // Test sunucusu ve kanalı oluştur
     const server = await createTestServer(request, tokens.alice, `E2E Mesaj Server ${Date.now()}`);
+    expect(server, 'mesajlaşma sunucusu oluşturulamadı').toBeTruthy();
     testServerId = server._id || server.id;
-
-    if (testServerId) {
-      const ch = await createTestChannel(request, tokens.alice, testServerId, 'genel');
-      testChannelId = ch._id || ch.id;
-    }
+    expect(testServerId, 'mesajlaşma sunucu kimliği eksik').toBeTruthy();
+    const ch = await createTestChannel(request, tokens.alice, testServerId, 'genel');
+    expect(ch, 'mesajlaşma kanalı oluşturulamadı').toBeTruthy();
+    testChannelId = ch._id || ch.id;
+    expect(testChannelId, 'mesajlaşma kanal kimliği eksik').toBeTruthy();
   });
 
   // ── API Testleri ─────────────────────────────────────────
 
-  test('API: mesaj gönderme', async ({ request }) => {
-    test.skip(true, 'GEÇERSİZ MİMARİ: REST gönderim ucu yok; yerini alan kanonik kapsam → tests/message-actions.spec.ts (Socket.IO message:send)');
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
-
-    const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
-      headers: {
-        Authorization: `Bearer ${tokens.alice}`,
-        'Content-Type': 'application/json',
-      },
-      data: JSON.stringify({ content: 'Merhaba dünya! E2E testi.' }),
-    });
-
-    expect(res.status()).toBe(200);
-    const data = await res.json();
-    expect(data.content || data.message?.content).toContain('Merhaba');
-  });
-
-  test('API: mesajları listeleme', async ({ request }) => {
-    test.skip(true, 'GEÇERSİZ MİMARİ: REST gönderim ucu yok; yerini alan kanonik kapsam → tests/message-actions.spec.ts (gönderim + kanonik REST okuma)');
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
-
-    // Önce bir mesaj gönder
-    await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content: 'Listeleme test mesajı' }),
-    });
-
-    // Mesajları getir
-    const res = await request.get(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
+  test('Socket.IO: mesaj gönderme (kanonik yazma yolu)', async ({ request }) => {
+    expect(testServerId && testChannelId, 'sunucu/kanal fixture eksik').toBeTruthy();
+    const content = `Mesaj gönderme E2E ${Date.now()}`;
+    const messageId = await sendViaSocket(tokens.alice, testServerId, testChannelId, content);
+    const res = await request.get(`${BASE_URL}/api/channels/${testChannelId}/messages?limit=50`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
-
     expect(res.status()).toBe(200);
     const data = await res.json();
-    const messages = data.messages || data;
-    expect(Array.isArray(messages)).toBe(true);
-    expect(messages.length).toBeGreaterThan(0);
+    const messages = Array.isArray(data) ? data : data.messages || [];
+    expect(messages.find((m: { _id: string }) => m._id === messageId)).toMatchObject({ content });
   });
-
+  test('REST okuma: Socket.IO ile yazılan mesajları listeler', async ({ request }) => {
+    expect(testServerId && testChannelId, 'sunucu/kanal fixture eksik').toBeTruthy();
+    const content = `Listeleme E2E ${Date.now()}`;
+    const messageId = await sendViaSocket(tokens.alice, testServerId, testChannelId, content);
+    const res = await request.get(`${BASE_URL}/api/channels/${testChannelId}/messages?limit=50`, {
+      headers: { Authorization: `Bearer ${tokens.alice}` },
+    });
+    expect(res.status()).toBe(200);
+    const data = await res.json();
+    const messages = Array.isArray(data) ? data : data.messages || [];
+    expect(messages.some((m: { _id: string; content: string }) => m._id === messageId && m.content === content)).toBe(true);
+  });
   test('API: boş mesaj reddedilmeli', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+    expect(testChannelId, 'mesajlaşma kanalı fikstürü yok').toBeTruthy();
 
     const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
@@ -100,19 +90,30 @@ test.describe('Mesajlaşma Akışları', () => {
     expect(res.status()).toBeGreaterThanOrEqual(400);
   });
 
-  test('API: üye olmayan kullanıcı mesaj gönderememeli', async ({ request }) => {
-    test.skip(true, 'GEÇERSİZ MİMARİ: REST gönderim ucu yok; yerini alan kanonik kapsam → tests/message-actions.spec.ts (üye olmayan yayın/yazma reddi)');
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+  test('Socket.IO: üye olmayan kullanıcı gönderemez ve mesaj kalıcılaşmaz', async ({ request }) => {
+    expect(testServerId && testChannelId, 'sunucu/kanal fixture eksik').toBeTruthy();
+    const outsider = await openSocket(tokens.bob);
+    const ackId = `outsider-${Date.now()}`;
+    const content = `Yetkisiz mesaj ${ackId}`;
+    try {
+      const rejected = waitForEvent<{ event: string; code: string }>(
+        outsider, 'error:message', 10_000,
+        data => data?.event === 'message:send' && data?.code === 'NOT_A_MEMBER',
+      );
+      outsider.emit('message:send', { channelId: testChannelId, serverId: testServerId, content, ackId });
+      expect((await rejected).code).toBe('NOT_A_MEMBER');
 
-    const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.bob}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content: 'Yetkisiz mesaj' }),
-    });
-
-    // 403 Forbidden bekleniyor
-    expect(res.status()).toBe(403);
+      const res = await request.get(`${BASE_URL}/api/channels/${testChannelId}/messages?limit=50`, {
+        headers: { Authorization: `Bearer ${tokens.alice}` },
+      });
+      expect(res.status()).toBe(200);
+      const data = await res.json();
+      const messages = Array.isArray(data) ? data : data.messages || [];
+      expect(messages.some((m: { content: string }) => m.content === content)).toBe(false);
+    } finally {
+      closeSockets(outsider);
+    }
   });
-
   /** Canonical REST read: the channel's first page. */
   async function listIds(request: import('@playwright/test').APIRequestContext): Promise<Map<string, { content?: string; editedAt?: unknown }>> {
     const res = await request.get(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
@@ -167,7 +168,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('API: sayfalama cursor çalışmalı', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+    expect(testChannelId, 'mesajlaşma kanalı fikstürü yok').toBeTruthy();
 
     const res = await request.get(
       `${BASE_URL}/api/channels/${testChannelId}/messages?limit=5`,
@@ -201,7 +202,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('UI: uzun mesaj 2000 karakteri geçememeli', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+    expect(testChannelId, 'mesajlaşma kanalı fikstürü yok').toBeTruthy();
 
     const longMsg = 'A'.repeat(2001);
     const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
@@ -214,7 +215,7 @@ test.describe('Mesajlaşma Akışları', () => {
   });
 
   test('API: XSS içerikli mesaj sanitize edilmeli', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+    expect(testChannelId, 'mesajlaşma kanalı fikstürü yok').toBeTruthy();
 
     const xssPayload = '<script>alert("xss")</script>Merhaba';
     const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {

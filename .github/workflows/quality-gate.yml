@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, test-integrity/integrated-audit]
   workflow_dispatch:
   # Agir tarayici/medya paketleri her PR'da degil, gecelik kosar.
   schedule:
@@ -46,6 +46,27 @@ jobs:
         run: cd electron && npm audit --audit-level=high
       - name: Audit E2E harness
         run: cd e2e && npm audit --audit-level=high
+
+
+  # Native win32-only behavior must run on its actual supported OS.
+  electron-windows:
+    name: Electron Windows-specific startup behavior
+    runs-on: windows-latest
+    needs: [audit]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.20.0'
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+      - name: Install Electron test dependencies
+        working-directory: electron
+        run: npm ci --no-audit --no-fund
+      - name: Run Electron Jest suite on Windows
+        working-directory: electron
+        run: npm test -- --runInBand --forceExit
 
   node-minimum-compat:
     name: Node 22.19 minimum compatibility
@@ -133,6 +154,8 @@ jobs:
         run: bash scripts/check-svelte-boundary.sh
       - name: TypeScript all packages
         run: npm run typecheck
+      - name: Strict server indexed-access and catch-variable hardening
+        run: cd server && npm run typecheck:hardening
       - name: Strict client gates
         run: |
           npm run typecheck:strict-client
@@ -316,8 +339,10 @@ jobs:
         run: cd bot-sdk && npx jest --ci
       - name: Run Electron tests
         run: cd electron && npm test -- --runInBand --forceExit
-      - name: Run mobile bridge tests
-        run: npx jest --config jest.mobile.config.js --passWithNoTests --runInBand --forceExit
+      - name: Build client bundle for packaged mobile shell tests
+        run: npm run build:ci
+      - name: Run mobile bridge and packaged shell tests (no zero-test pass)
+        run: npx jest --config jest.mobile.config.js --runInBand --forceExit
       # ══════════════════════════════════════════════════════════════════
       # GERCEK PostgreSQL KAPILARI
       # ══════════════════════════════════════════════════════════════════
@@ -535,7 +560,7 @@ jobs:
           cd server && npm run build
       - name: Run security-critical E2E
         run: |
-          cd e2e && npx playwright test             tests/webhook-security.spec.ts             tests/permission-matrix.spec.ts             tests/permission-matrix-actions.spec.ts             tests/role-escalation.spec.ts             tests/search-security.spec.ts             tests/search-security-extended.spec.ts             tests/file-security.spec.ts             tests/privacy-lifecycle.spec.ts             tests/session-logout.spec.ts             tests/safe-area.spec.ts             tests/channel-permissions.spec.ts             tests/attachments.spec.ts             tests/locale-journey.spec.ts             --project=chromium --reporter=list
+          cd e2e && npx playwright test             tests/webhook-security.spec.ts             tests/permission-matrix.spec.ts             tests/permission-matrix-actions.spec.ts             tests/role-escalation.spec.ts             tests/search-security.spec.ts             tests/search-security-extended.spec.ts             tests/file-security.spec.ts             tests/privacy-lifecycle.spec.ts             tests/session-logout.spec.ts             tests/safe-area.spec.ts             tests/channel-permissions.spec.ts             tests/attachments.spec.ts             tests/locale-journey.spec.ts             --project=chromium --retries=0 --reporter=list
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v7
@@ -550,8 +575,10 @@ jobs:
   # 425 tarayici testi (~6 dk) + 33 medya testi (~4.5 dk) her PR icin
   # agirdir; gecelik kosar ve elle tetiklenebilir.
   e2e-full:
-    name: E2E full + media (nightly)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: E2E full + media (nightly / test-integrity remediation)
+    # Explicitly exercise the complete browser matrix on the cleanup PR itself.
+    # Other PRs keep the normal nightly/manual schedule.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (github.head_ref == 'p7/test-integrity-cleanup' || github.head_ref == 'test-integrity/integrated-audit' || github.head_ref == 'test-integrity/minio-cursor-evidence')) }}
     runs-on: ubuntu-latest
     needs: [tests]
     env:
@@ -607,6 +634,61 @@ jobs:
       - name: Full Chromium suite
         if: ${{ !cancelled() }}
         run: cd e2e && npx playwright test --project=chromium --retries=0 --output=test-results/chromium --reporter=list
+      # The baseline Chromium job runs in normal local-storage mode and must
+      # explicitly assert its WEBP_CONVERT=false output. Execute the optional
+      # conversion contract again with the feature ENABLED on its own server.
+      # scripts/e2e-server.js forwards WEBP_CONVERT to the spawned server.
+      # Missing sharp/conversion now fails this evidence step instead of
+      # silently treating optional functionality as verified.
+      - name: WebP enabled upload conversion (real runtime)
+        if: ${{ !cancelled() }}
+        env:
+          WEBP_CONVERT: 'true'
+        run: cd e2e && npx playwright test tests/webp-upload.spec.ts --project=chromium --retries=0 --output=test-results/webp-enabled --reporter=list
+      # MinIO's former public Quay/Docker Hub images are no longer anonymously
+      # pullable (confirmed by CI on #150). Use the same fixed RustFS image
+      # that our REAL S3 unit/integration job already proved on the runner.
+      # The MINIO_* env names below select Bridge's generic S3-compatible
+      # adapter; this proves the S3 contract, NOT MinIO-vendor-specific behavior.
+      - name: Start isolated S3-compatible RustFS
+        run: |
+          set -euo pipefail
+          IMAGE=rustfs/rustfs:1.0.0-rc.6
+          docker pull "$IMAGE"
+          docker image inspect --format='{{index .RepoDigests 0}}' "$IMAGE"
+          docker run -d --name bridge-ci-s3 -p 9000:9000 \
+            -e RUSTFS_ACCESS_KEY=bridgereview \
+            -e RUSTFS_SECRET_KEY=bridgereview123 \
+            -e RUSTFS_VOLUMES=/data "$IMAGE" /data
+          for i in $(seq 1 40); do
+            if curl -fsS --max-time 2 http://127.0.0.1:9000/health >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          docker logs bridge-ci-s3
+          exit 1
+      - name: Provision real S3 public/private buckets
+        env:
+          MINIO_ENDPOINT: http://127.0.0.1:9000
+          MINIO_ACCESS_KEY: bridgereview
+          MINIO_SECRET_KEY: bridgereview123
+          MINIO_BUCKET: bridge-public
+          PRIVATE_MINIO_BUCKET: bridge-private
+        run: node scripts/ci-provision-minio.mjs
+      - name: Real S3 protected upload E2E (zero retries)
+        env:
+          WEBP_CONVERT: 'false'
+          CDN_PROVIDER: minio
+          PRIVATE_STORAGE_PROVIDER: minio
+          MINIO_ENDPOINT: http://127.0.0.1:9000
+          MINIO_ACCESS_KEY: bridgereview
+          MINIO_SECRET_KEY: bridgereview123
+          MINIO_BUCKET: bridge-public
+          PRIVATE_MINIO_BUCKET: bridge-private
+          MINIO_PUBLIC_URL: http://127.0.0.1:9000/bridge-public
+        run: cd e2e && npx playwright test tests/remote-storage.spec.ts --project=s3-remote --retries=0 --output=test-results/s3-remote --reporter=list
+      - name: Tear down isolated S3 test service
+        if: ${{ always() }}
+        run: docker rm -f bridge-ci-s3 || true
       - name: Firefox compatibility suite
         if: ${{ !cancelled() }}
         run: cd e2e && npx playwright test --project=firefox --retries=0 --output=test-results/firefox --reporter=list
@@ -701,7 +783,7 @@ jobs:
           cat ../bridge-e2e.log
           exit 1
       - name: Run smoke tests
-        run: cd e2e && npx playwright test tests/smoke-health.spec.ts --project=api-smoke --reporter=list
+        run: cd e2e && npx playwright test tests/smoke-health.spec.ts --project=api-smoke --retries=0 --reporter=list
       - name: Upload Playwright artifacts
         if: always()
         uses: actions/upload-artifact@v7

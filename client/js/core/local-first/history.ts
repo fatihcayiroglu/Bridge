@@ -4,6 +4,7 @@
 // an authorization source. Pending/failed optimistic rows stay in the canonical
 // outbox and are intentionally not persisted here.
 
+import { cloneLocalFirstJson } from './json-snapshot.ts';
 import type { EncryptedLocalStore } from './store.ts';
 
 export const LOCAL_HISTORY_VERSION = 1;
@@ -90,7 +91,7 @@ function normalizeMessages(
 
   for (const value of values) {
     if (!cacheableMessage(value, channelId) || deleted.has(value._id)) continue;
-    byId.set(value._id, structuredClone(value));
+    byId.set(value._id, cloneLocalFirstJson(value));
   }
 
   return [...byId.values()]
@@ -237,7 +238,7 @@ export class EncryptedHistoryRepository {
     const index = current.messages.findIndex(item => item._id === message._id);
     if (index < 0) return current;
     const next = current.messages.slice();
-    next[index] = { ...next[index], ...structuredClone(message) };
+    next[index] = { ...next[index], ...cloneLocalFirstJson(message) };
 
     const snapshot: LocalHistorySnapshot = {
       ...current,

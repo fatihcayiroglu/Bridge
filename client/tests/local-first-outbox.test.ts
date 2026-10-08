@@ -49,6 +49,19 @@ function legacy(initial: OutboxEntry[]): LegacyOutboxSource & {
 }
 
 describe('P7 encrypted outbox repository', () => {
+  it('persists reactive Proxy outbox entries and reply previews as JSON snapshots', async () => {
+    const { repository } = repo();
+    const replyPreview = new Proxy({ _id: 'reply-1', displayName: 'Alice', content: 'hello' }, {});
+    const reactive = new Proxy({ ...entry('proxy'), replyPreview }, {});
+    expect(() => structuredClone(reactive)).toThrow();
+
+    await repository.put(reactive);
+    const stored = await repository.read();
+    expect(stored).toMatchObject([{ ackId: 'proxy', replyPreview: { _id: 'reply-1' } }]);
+    await repository.patch('proxy', { state: 'sending', attempts: 1 });
+    await expect(repository.read()).resolves.toMatchObject([{ state: 'sending', attempts: 1 }]);
+  });
+
   it('round-trips queue state and preserves ackId ordering', async () => {
     const { repository } = repo();
 

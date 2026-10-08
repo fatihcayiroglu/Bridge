@@ -60,10 +60,12 @@ jobs:
           java-version: '21'
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
-      - name: Mobile native bridge tests
-        run: npx jest --config jest.mobile.config.js --runInBand
+      # Packaged-shell Jest cases require client/dist/js/app-<hash>.js.
+      # Build before Jest so all 127 tests run instead of silently skipping 22.
       - name: Client bundle
         run: npm run build
+      - name: Mobile native bridge tests (no packaged-shell skips)
+        run: npx jest --config jest.mobile.config.js --runInBand
       - name: Packaged web root (www/) for the emulator server address
         env:
           # The emulator reaches the host server through `adb reverse tcp:3000 tcp:3000`.

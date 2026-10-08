@@ -137,9 +137,14 @@ export async function checkContentAbuse(userId: string, content: string, now = D
 /** Distinct people mentioned (`<@id>` and `@name`); `@everyone`/`@here` are not people. */
 export function distinctMentionCount(content: string): number {
   const ids = new Set<string>();
-  for (const m of content.matchAll(/<@([A-Za-z0-9_-]+)>/g)) ids.add(`id:${m[1]}`);
+  for (const m of content.matchAll(/<@([A-Za-z0-9_-]+)>/g)) {
+    const id = m[1];
+    if (id) ids.add(`id:${id}`);
+  }
   for (const m of content.replace(/<@[A-Za-z0-9_-]+>/g, ' ').matchAll(/(?:^|[^\w@])@([A-Za-z0-9_]{2,32})\b/g)) {
-    const name = m[1].toLowerCase();
+    const captured = m[1];
+    if (!captured) continue;
+    const name = captured.toLowerCase();
     if (name !== 'everyone' && name !== 'here') ids.add(`name:${name}`);
   }
   return ids.size;

@@ -12,8 +12,8 @@
     "run:android": "npx cap run android",
     "setup": "node scripts/setup.js",
     "mobile:build": "node scripts/setup.js",
-    "test": "npx jest --config ../jest.mobile.config.js --passWithNoTests",
-    "test:coverage": "npx jest --config ../jest.mobile.config.js --coverage --passWithNoTests"
+    "test": "npx jest --config ../jest.mobile.config.js",
+    "test:coverage": "npx jest --config ../jest.mobile.config.js --coverage"
   },
   "dependencies": {
     "@aparajita/capacitor-biometric-auth": "^10.0.0",
