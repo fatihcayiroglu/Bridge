@@ -142,7 +142,7 @@ test.describe('passkey — sanal dogrulayici ile gercek yasam dongusu', () => {
         type: 'not',
         description: 'Kayit adimi atlandi: sayfa oturumsuz (401). Giris adimi da atlanir.',
       });
-      test.skip(true, 'Oturum yok — kayit/giris dongusu bu kosuda dogrulanamaz.');
+      expect(kimlikler.durum, 'WebAuthn testi kimlikli oturum olmadan çalışamaz').not.toBe(401);
     }
 
     expect(kayitSonuc.ok, `registerPasskey basarisiz: ${kayitSonuc.err ?? ''}`).toBe(true);
