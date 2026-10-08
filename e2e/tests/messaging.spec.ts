@@ -17,8 +17,12 @@ const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 async function sendViaSocket(token: string, serverId: string, channelId: string, content: string): Promise<string> {
   const socket = await openSocket(token);
   try {
+    // Both the join probe and the actual send create persisted messages.
+    // The server anti-spam counter belongs to Alice, not to this spec. Reserve
+    // BOTH sends under the same cross-worker 'alice' key used by other specs.
+    await paceSends('alice');
     await joinChannelConfirmed(socket, channelId, serverId);
-    await paceSends('messaging-rest');
+    await paceSends('alice');
     const ackId = `e2e-rest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const ack = waitForEvent<{ ackId: string; messageId: string }>(socket, 'message:ack', 15_000, (a) => a?.ackId === ackId);
     socket.emit('message:send', { channelId, serverId, content, ackId });
