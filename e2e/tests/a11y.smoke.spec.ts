@@ -156,6 +156,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
       && await mobileTrigger.count() > 0
       && await mobileTrigger.isVisible();
 
+    expect(desktopUsable || mobileUsable, 'erişilebilir ayarlar açıcı düğmesi yok').toBe(true);
     const settingsBtn = desktopUsable ? desktopTrigger : mobileTrigger;
     if (desktopUsable || mobileUsable) {
       await settingsBtn.click();
@@ -167,8 +168,6 @@ test.use({ storageState: { cookies: [], origins: [] } });
         .analyze();
       const detail = results.violations.map((v: any) => `  [${v.impact}] ${v.id}`).join('\n');
       expect(results.violations, `Ayarlar modalı A11Y ihlalleri:\n${detail}`).toEqual([]);
-    } else {
-      test.skip(true, 'Ayarlar butonu bu kabukta bulunamadı');
     }
   });
   });

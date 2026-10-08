@@ -12,6 +12,12 @@ module.exports = {
   testEnvironment: 'node',
   rootDir: '.',
   testMatch: ['**/tests/pg-integration/**/*.pgtest.ts'],
+  // Real pgvector evidence runs separately with PGVECTOR_TEST_URL and an
+  // actual installed extension. Do not count that suite as skipped in the
+  // base PG/Redis/MinIO run; the dedicated job MUST still execute it.
+  testPathIgnorePatterns: process.env.PGVECTOR_TEST_URL
+    ? ['/node_modules/']
+    : ['/node_modules/', '/tests/pg-integration/pgvector-embedding.pgtest.ts'],
   transform: {
     '^.+\\.(ts|tsx)$': ['ts-jest', { tsconfig: 'tsconfig.jest.json', diagnostics: false }],
   },
