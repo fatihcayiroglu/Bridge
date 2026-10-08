@@ -14,7 +14,7 @@ import { openSocket, waitForEvent, closeSockets, paceSends, joinChannelConfirmed
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 const TINY_PNG_B64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 const TINY_TXT = 'Bridge E2E test dosyası';
 
 test.describe('Dosya Yükleme Akışları', () => {
@@ -26,45 +26,45 @@ test.describe('Dosya Yükleme Akışları', () => {
     tokens = getTokens();
 
     const server = await createTestServer(request, tokens.alice, `Upload E2E ${Date.now()}`);
-    expect(server, 'yükleme sunucusu oluşturulamadı').toBeTruthy();
-    testServerId = server._id || server.id;
-    expect(testServerId, 'yükleme sunucu kimliği yok').toBeTruthy();
+    testServerId = server?._id || server?.id;
+    expect(testServerId, 'upload fixture server creation failed').toBeTruthy();
+
     const ch = await createTestChannel(request, tokens.alice, testServerId, 'upload-test');
-    expect(ch, 'yükleme kanalı oluşturulamadı').toBeTruthy();
-    testChannelId = ch._id || ch.id;
-    expect(testChannelId, 'yükleme kanal kimliği yok').toBeTruthy();
+    testChannelId = ch?._id || ch?.id;
+    expect(testChannelId, 'upload fixture channel creation failed').toBeTruthy();
+    // Bob is a real second member: the file notification must reach another person.
     expect(await joinServer(request, tokens.alice, tokens.bob, testServerId),
-      'Bob yükleme sunucusuna katılamadı').toBe(true);
+      'Bob could not join the upload server').toBe(true);
   });
 
   // ── API Testleri ─────────────────────────────────────────
 
   test('API: küçük PNG yükleme başarılı', async ({ request }) => {
-    expect(testChannelId, 'yükleme kanalı fikstürü eksik').toBeTruthy();
+    expect(testChannelId, 'upload fixture failure must fail rather than skip').toBeTruthy();
     const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
     const res = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
       multipart: { file: { name: 'test.png', mimeType: 'image/png', buffer: imgBuffer }, channelId: testChannelId },
     });
-    expect(res.status()).toBeLessThan(500);
-    if (res.status() < 300) {
-      const data = await res.json();
-      expect(data.url || data.fileUrl || data.id || data._id).toBeTruthy();
-    }
+    expect(res.status(), `PNG upload rejected: ${await res.text()}`).toBe(200);
+    const data = await res.json();
+    expect(data.url || data.fileUrl).toBeTruthy();
   });
 
   test('API: metin dosyası yükleme', async ({ request }) => {
-    expect(testChannelId, 'yükleme kanalı fikstürü eksik').toBeTruthy();
+    expect(testChannelId, 'upload fixture failure must fail rather than skip').toBeTruthy();
     const txtBuffer = Buffer.from(TINY_TXT, 'utf-8');
     const res = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
       multipart: { file: { name: 'test.txt', mimeType: 'text/plain', buffer: txtBuffer }, channelId: testChannelId },
     });
-    expect(res.status()).toBeLessThan(500);
+    expect(res.status(), `text upload rejected: ${await res.text()}`).toBe(200);
+    const data = await res.json();
+    expect(data.url || data.fileUrl).toBeTruthy();
   });
 
   test('API: yetkisiz yükleme reddedilir', async ({ request }) => {
-    expect(testChannelId, 'yükleme kanalı fikstürü eksik').toBeTruthy();
+    expect(testChannelId, 'upload fixture failure must fail rather than skip').toBeTruthy();
     const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
     const res = await request.post(`${BASE_URL}/api/upload`, {
       multipart: { file: { name: 'hack.png', mimeType: 'image/png', buffer: imgBuffer }, channelId: testChannelId },
@@ -73,7 +73,7 @@ test.describe('Dosya Yükleme Akışları', () => {
   });
 
   test('API: çok büyük dosya reddedilir (413)', async ({ request }) => {
-    expect(testChannelId, 'yükleme kanalı fikstürü eksik').toBeTruthy();
+    expect(testChannelId, 'upload fixture failure must fail rather than skip').toBeTruthy();
     const bigBuffer = Buffer.alloc(30 * 1024 * 1024, 0);
     const res = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
@@ -91,7 +91,7 @@ test.describe('Dosya Yükleme Akışları', () => {
   // ── YENİ: Gerçek akış testleri ──────────────────────────
 
   test('API: yükleme yanıtı geçerli URL döndürür ve URL yetkisiz erişime KAPALIDIR', async ({ request }) => {
-    expect(testChannelId, 'yükleme kanalı fikstürü eksik').toBeTruthy();
+    expect(testChannelId, 'upload fixture failure must fail rather than skip').toBeTruthy();
 
     const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
     const uploadRes = await request.post(`${BASE_URL}/api/upload`, {
@@ -144,38 +144,52 @@ test.describe('Dosya Yükleme Akışları', () => {
     } finally { await anonCtx.dispose(); }
   });
 
-  // Önceki test, kaldırılmış REST mesaj-gönderme yoluna istek atıyor
-  // ve başarısız isteği / alınmayan olayı da yeşil sayıyordu.
-  test('Socket: gerçek file:send bildirimi kanal üyesine message:new olarak ulaşır', async ({ request }) => {
-    expect(testChannelId && testServerId, 'yükleme fikstürü eksik').toBeTruthy();
-    const bob = await openSocket(tokens.bob);
-    const alice = await openSocket(tokens.alice);
+  test('Socket: authenticated file:send reaches another member as message:new and persists', async ({ request }) => {
+    expect(testChannelId && testServerId, 'upload fixture failure must fail rather than skip').toBeTruthy();
+    const observer = await openSocket(tokens.bob);
+    const sender = await openSocket(tokens.alice);
     try {
-      await joinChannelConfirmed(bob, testChannelId, testServerId);
-      const uploadRes = await request.post(`${BASE_URL}/api/upload`, {
+      await paceSends('alice');
+      await joinChannelConfirmed(observer, testChannelId, testServerId);
+
+      const upload = await request.post(`${BASE_URL}/api/upload`, {
         headers: { Authorization: `Bearer ${tokens.alice}` },
         multipart: {
           file: { name: 'notify.png', mimeType: 'image/png', buffer: Buffer.from(TINY_PNG_B64, 'base64') },
           channelId: testChannelId,
         },
       });
-      expect(uploadRes.status(), 'PNG yüklemesi başarılı olmalı').toBe(200);
-      const { url, fileName, fileType } = await uploadRes.json() as {
-        url: string; fileName: string; fileType: string;
-      };
-      expect(url, 'yükleme URL döndürmedi').toBeTruthy();
+      expect(upload.status(), `upload rejected: ${await upload.text()}`).toBe(200);
+      const file = await upload.json() as { url: string; fileName: string; fileType: string };
+      expect(file.url).toBeTruthy();
 
-      const received = waitForEvent<{ type?: string; fileUrl?: string }>(
-        bob, 'message:new', 15_000, event => event?.fileUrl === url,
+      const seen = waitForEvent<{ type?: string; fileUrl?: string; fileName?: string }>(
+        observer, 'message:new', 15_000,
+        msg => msg?.type === 'file' && msg?.fileUrl === file.url,
       );
       await paceSends('alice');
-      alice.emit('file:send', {
-        channelId: testChannelId, serverId: testServerId, fileName, fileUrl: url, fileType,
+      sender.emit('file:send', {
+        channelId: testChannelId, serverId: testServerId,
+        fileName: file.fileName, fileType: file.fileType, fileUrl: file.url,
       });
-      const event = await received;
-      expect(event.type).toBe('file');
-      expect(event.fileUrl).toBe(url);
-    } finally { closeSockets(alice, bob); }
+      const notified = await seen; // event absence is a test failure
+      expect(notified.type).toBe('file');
+      expect(notified.fileUrl).toBe(file.url);
+      expect(notified.fileName).toBe(file.fileName);
+
+      await expect.poll(async () => {
+        const res = await request.get(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
+          headers: { Authorization: `Bearer ${tokens.alice}` },
+        });
+        expect(res.status()).toBe(200);
+        const body = await res.json();
+        const messages = Array.isArray(body) ? body : body.messages ?? [];
+        return messages.some((m: { type?: string; fileUrl?: string }) =>
+          m.type === 'file' && m.fileUrl === file.url);
+      }, { timeout: 20_000 }).toBe(true);
+    } finally {
+      closeSockets(sender, observer);
+    }
   });
 
   // ── UI Testleri ──────────────────────────────────────────
