@@ -133,6 +133,8 @@ jobs:
         run: bash scripts/check-svelte-boundary.sh
       - name: TypeScript all packages
         run: npm run typecheck
+      - name: Strict server indexed-access and catch-variable hardening
+        run: cd server && npm run typecheck:hardening
       - name: Strict client gates
         run: |
           npm run typecheck:strict-client
