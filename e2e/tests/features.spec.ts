@@ -527,34 +527,14 @@ test.describe('Zamanlanmış Mesajlar', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GO LIVE (Ekran Paylaşımı)
+// EKRAN PAYLAŞIMI (Go Live) — gerçek medya sözleşmesi
 // ══════════════════════════════════════════════════════════════════════════════
-
-test.describe('Go Live (Ekran Paylaşımı)', () => {
-  test('go-live oturumu başlatılabilir (API)', async ({ request }) => {
-    // v1.123 DOGRULANDI: ne /api/golive ne de /api/channels/:id/go-live
-    // mevcuttur (setupRoutes.ts'te hicbir baglama yok). Atlama gecerlidir.
-    test.skip(true, 'SEVK EDILMEDI (v1.123 dogrulandi): go-live REST ucu yok.');
-    expect(channelId, 'Kanal fixture gerekli').toBeTruthy();
-    const res = await request.post(`/api/channels/${channelId}/go-live`, {
-      headers: { Authorization: `Bearer ${token}` },
-      data:    { quality: '720p' },
-    });
-    // 200 başarı, 403 ses kanalı değil, 409 zaten aktif
-    expect([200, 201, 403, 409]).toContain(res.status());
-  });
-
-  test('go-live oturumu sonlandırılabilir', async ({ request }) => {
-    // Final21 Faz 22 (19-37): `[200, 204, 404]` kabul ederek VAR OLMAYAN rotaya karşı GEÇİYORDU —
-    // ölçüldü: 404 "Not found: DELETE /api/channels/…/go-live". Kardeşi (başlatma) aynı gerekçeyle
-    // zaten atlanıyordu; geçmiş sayılmaz.
-    test.skip(true, 'SEVK EDILMEDI (v1.123 dogrulandi, Faz 22 olculdu): go-live REST ucu yok.');
-    const res = await request.delete(`/api/channels/${channelId}/go-live`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(res.status()).toBe(204);
-  });
-});
+// Ekran paylaşımı REST ile başlatılmaz veya durdurulmaz. Kullanıcı davranışını
+// doğrulayan gerçek iki-tarayıcı E2E senaryoları media-automation.spec.ts içinde
+// S1/S2 (başlatma ve görüntü), S3/S4 (durdurma ve yeniden başlatma),
+// S5 (ayrılma) ve S7/S8 (ters yön ve izinler) olarak çalışır.
+// Var olmayan /api/channels/:id/go-live uçlarına yönelik iki koşulsuz skip
+// burada tutulmaz: olmayan bir REST sözleşmesini test etmek kapsam değildir.
 
 // ══════════════════════════════════════════════════════════════════════════════
 // KOMUT PALETİ (UI — sadece smoke)
