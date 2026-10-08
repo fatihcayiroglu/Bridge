@@ -11,6 +11,7 @@ import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
 import { deleteChannelMessage, editChannelMessage, type MutationFailureCode } from '../lib/messageMutations';
 import { clearUnread } from '../lib/notifications';
 import logger from '../lib/logger';
+import { enforceStepUp } from '../lib/stepUp';
 
 
 interface CursorData { ts: number; id: string; dir: 'before' | 'after' }
@@ -476,6 +477,8 @@ router.delete('/bulk', authMiddleware, async (req: Request, res: Response) => {
     }
   }
 
+  // P7 B2: past the moderation burst a `moderation-burst` proof is needed.
+  if (!(await enforceStepUp(req, res, _u.id, 'messages.bulk_delete'))) return;
   const count = await Messages.bulkSoftDelete(uniqueIds, _u.id);
   res.json({ deleted: count });
 });

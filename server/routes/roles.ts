@@ -12,6 +12,7 @@ import { evictUserFromServerRooms, evictSocketsWithoutChannelAccessBestEffort } 
 import { parsePermissionMask } from '../lib/permissionMaskInvariant';
 
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
+import { enforceStepUp } from '../lib/stepUp';
 interface RoleRow {
   _id: string;
   serverId: string;
@@ -634,6 +635,8 @@ router.post('/:sid/members/:uid/kick', authMiddleware, limits.roles(), async (re
   if (!targetMembership) return void res.status(404).json({ error: 'Member not found' });
   if (!await canActOn(_u.id, targetUserId, targetServerId))
     return void res.status(403).json({ error: 'Role hierarchy prevents kicking this member' });
+  // P7 B2: past the moderation burst a `moderation-burst` proof is needed.
+  if (!(await enforceStepUp(req, res, _u.id, 'moderation.kick'))) return;
 
   await Members.remove(targetUserId, targetServerId);
   invalidatePerms(targetServerId, targetUserId);

@@ -446,7 +446,8 @@ for actions in that group. Groups:
 - `account-security` — e-mail change, passkey add/remove, 2FA enable/disable, backup-code regeneration
 - `sensitive-export` — account export
 - `destructive-admin` — account deletion, owned-server deletion, instance-admin user/server deletion
-- `moderation-burst` — bans, kicks, bulk message delete, invite creation once over the measured burst
+- `moderation-burst` — bans, kicks, bulk message delete, once over the measured burst (invite creation
+  is **not** in this group: deferred, see the invite decision below)
 
 Grant shape: `{ sub, v (tokenVersion), level, method, scope, iat, exp, typ: 'stepup' }`. Signed
 with a **domain-separated** key: `STEP_UP_SECRET` when set, otherwise an HMAC derivation from
@@ -473,7 +474,7 @@ or account-recovery paths, so a locked-out attacker cannot lock the owner out of
 | Sensitive export | account export | always |
 | Irreversible | account deletion (grant **or** existing password; SSO-only accounts use a grant), owned-server deletion, instance-admin user/server deletion | always |
 | Destructive moderation | bans, kicks (both routes), bulk message delete | after a burst, per-action threshold **measured, not assumed** (see below) |
-| Mass invite | invite creation | after a burst, per-action threshold **measured** — and the step-up window must sit **below** the existing `limits.servers()` 10/min limiter, or that limiter rejects first and step-up never fires |
+| Mass invite | invite creation | **deferred** (approved decision below): the existing `limits.servers()` 10/min limiter stays the bound; no invite step-up in the first B2 implementation |
 | Suspicious new session | any of the above from a session without a recent proof; repeated failed proofs | covered by the grant + `failed_proofs` lock |
 
 **Burst thresholds are measured, not hard-coded.** The B2 baseline lab (below) records, per action,
@@ -565,15 +566,23 @@ Baseline totals: attacks 10 OPEN / 0 STEPUP / 0 BLOCKED; controls 4 OK. Run labe
   actions → one proof, then continues); a compromised session (SU-ATK-08) is stopped at 5
   instead of the 30 the limiter alone allows. 5 sits far below the existing 30/min moderation
   limiter, so the step-up fires first (an explainable 403, not a bare 429).
-- *Invite creation (SU-ATK-09):* **not in the first B2 set — decision requested.** The measured
-  legitimate organiser does ~6 invites in a sitting (SU-LEG-03) while the existing generic
-  `limits.servers()` limiter already caps invites at ~10/min (the burst got 8/25). A step-up
-  threshold below 6 would prompt ordinary organisers; one at 8–9 leaves only a one-to-two-invite
-  band before the limiter rejects anyway — i.e. ineffective, exactly the case the review flagged.
-  Options: (a) leave the 10/min limiter as the bound and defer invite step-up to a documented
-  follow-up; (b) add a dedicated invite limiter with more headroom so a `moderation-burst`-style
-  threshold (e.g. 8/60 s) becomes reachable with a real band. Recommended: (a). Mass-member risk
-  in B2 is otherwise covered by the moderation-burst group (mass kicks/bans).
+- *Invite creation (SU-ATK-09):* **deferred — approved decision.** The measured legitimate
+  organiser does ~6 invites in a sitting (SU-LEG-03) while the existing generic `limits.servers()`
+  limiter already caps invites at ~10/min (the burst got 8/25). A step-up threshold below 6 would
+  prompt ordinary organisers; one at 8–9 leaves only a one-to-two-invite band before the limiter
+  rejects anyway — i.e. ineffective. Decision: keep the existing 10/min limiter unchanged as the
+  bound, do **not** add an artificial invite threshold, and do **not** broaden `moderation-burst`
+  grants to invite creation. Follow-up (outside the first B2 implementation): a dedicated
+  invite-rate budget with real headroom, after which an invite step-up threshold can be measured
+  and made reachable. Mass-member risk in B2 is covered by the moderation-burst group (mass
+  kicks/bans).
+
+**Approved thresholds (in production code).** `moderation-burst`: 5 destructive moderation actions
+per 60 s per actor (`STEP_UP_MODERATION_BURST_MAX` / `_WINDOW_MS`); after one valid proof the
+cleanup continues for the grant's lifetime (10 min, `STEP_UP_TTL_MS`). The check runs inside each
+route after its own permission, ownership and hierarchy checks — so only actions the moderator may
+actually perform are counted or prompted — and long before the route limiters (moderation 30/min,
+roles 20/min), so the person gets an explainable `STEP_UP_REQUIRED`, not a bare 429.
 
 ## B3. Metadata minimization
 
