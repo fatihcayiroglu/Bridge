@@ -195,8 +195,9 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
   // ── CDN entegrasyonu ──────────────────────────────────────────────────────
 
   // The former R2-environment-only scenario was a permanent local-mode skip.
-  // S3-compatible protected upload is now proved against real MinIO by
-  // remote-storage.spec.ts. This does NOT imply real Cloudflare R2 coverage.
+  // S3-compatible protected upload is now proved against a real S3-compatible
+  // service (RustFS in CI) by remote-storage.spec.ts. This is neither Cloudflare
+  // R2 nor MinIO-vendor coverage.
 
   test('local provider\'da URL /uploads/ ile başlıyor', async ({ request }) => {
     test.skip((process.env.CDN_PROVIDER ?? 'local') !== 'local', 'Local storage CDN değil — test geçersiz');

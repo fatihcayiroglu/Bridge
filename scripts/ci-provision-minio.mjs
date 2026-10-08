@@ -19,5 +19,5 @@ try {
     Version: '2012-10-17', Statement: [{ Sid: 'BridgeCiPublicRead', Effect: 'Allow',
       Principal: '*', Action: ['s3:GetObject'], Resource: ['arn:aws:s3:::' + publicBucket + '/*'] }],
   }) }));
-  console.log('Real MinIO buckets ready: public anonymous read, private protected');
+  console.log('S3-compatible buckets ready: public anonymous read, private protected');
 } finally { s3.destroy(); }

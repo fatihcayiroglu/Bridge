@@ -1,4 +1,7 @@
 // Real S3-compatible object-store E2E; do not mock the S3 client or skip.
+// CI runs it against an isolated RustFS service; the MINIO_* names select
+// Bridge's generic S3-compatible adapter. This is S3-contract evidence, not
+// MinIO- or Cloudflare-R2-vendor-specific evidence.
 import { test, expect } from '../helpers/apiTest';
 import { request as pwRequest } from '@playwright/test';
 import { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
@@ -7,7 +10,7 @@ import { getTokens } from '../helpers/bridge';
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 
-test('MinIO protected upload: real bucket, exact bytes, Bridge authorization', async ({ request }) => {
+test('S3-compatible protected upload: real bucket, exact bytes, Bridge authorization', async ({ request }) => {
   for (const name of ['MINIO_ENDPOINT', 'MINIO_ACCESS_KEY', 'MINIO_SECRET_KEY', 'MINIO_BUCKET', 'PRIVATE_MINIO_BUCKET']) {
     expect(process.env[name], 'Missing CI fixture: ' + name).toBeTruthy();
   }
@@ -57,11 +60,17 @@ test('MinIO protected upload: real bucket, exact bytes, Bridge authorization', a
 
     const anonymous = await pwRequest.newContext({ storageState: { cookies: [], origins: [] } });
     try {
+      // Bridge's own boundary is exact: no identity → 401 (middleware/uploadAuthz.ts).
       const viaBridge = await anonymous.get(BASE + url);
-      expect([401, 403]).toContain(viaBridge.status());
+      expect(viaBridge.status()).toBe(401);
+      // The object store's anonymous denial code is the provider's (401 or 403).
       const direct = await anonymous.get(endpoint + '/' + bucket + '/' + key.split('/').map(encodeURIComponent).join('/'));
       expect([401, 403]).toContain(direct.status());
     } finally { await anonymous.dispose(); }
+    // A signed-in person who is not the uploader is refused too (403), and gets no bytes.
+    const stranger = await request.get(BASE + url, { headers: { Authorization: 'Bearer ' + getTokens().carol } });
+    expect(stranger.status()).toBe(403);
+    expect(await stranger.body()).not.toEqual(PNG);
     const owner = await request.get(BASE + url, { headers: { Authorization: 'Bearer ' + getTokens().alice } });
     expect(owner.status()).toBe(200);
     expect(await owner.body()).toEqual(PNG);
