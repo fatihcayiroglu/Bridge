@@ -293,7 +293,7 @@ type WebAuthnStoredCredential = {
 
 // POST /api/webauthn/register/begin
 // Kimlik doğrulanmış kullanıcı için kayıt challenge'ı oluştur
-router.post('/register/begin', authMiddleware, requireStepUp('passkey.add'), limits.webauthn(), async (req: import("express").Request, res: import("express").Response) => {
+router.post('/register/begin', authMiddleware, limits.webauthn(), requireStepUp('passkey.add'), async (req: import("express").Request, res: import("express").Response) => {
   const _u = getAuthedUser(req);
   const user = await Users.findById(_u.id) as WebAuthnUser | null;
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -333,7 +333,7 @@ router.post('/register/begin', authMiddleware, requireStepUp('passkey.add'), lim
 });
 
 // POST /api/webauthn/register/complete
-router.post('/register/complete', authMiddleware, requireStepUp('passkey.add'), limits.webauthn(), async (req: import("express").Request, res: import("express").Response) => {
+router.post('/register/complete', authMiddleware, limits.webauthn(), requireStepUp('passkey.add'), async (req: import("express").Request, res: import("express").Response) => {
   const _u = getAuthedUser(req);
   const user = await Users.findById(_u.id) as WebAuthnUser | null;
   if (!user) return res.status(404).json({ error: 'User not found' });

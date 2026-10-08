@@ -66,3 +66,21 @@ describe.each([
     expect(r.body).toEqual({ error: 'CSRF token missing' });
   });
 });
+
+describe('protected 2FA routes keep their existing limiter accounting', () => {
+  it('attempts without a proof are refused with STEP_UP_REQUIRED and still count toward limits.twoFactor()', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use('/api/2fa', twoFactorRouter);
+    const token = tok(await makeUser());
+    const results: string[] = [];
+    for (let i = 0; i < 7; i++) {
+      const r = await request(app).post('/api/2fa/verify').set('Authorization', `Bearer ${token}`).send({ code: String(111110 + i) });
+      results.push(r.status === 403 ? `403 ${r.body.error}` : String(r.status));
+    }
+    expect(results).toEqual([
+      ...Array(5).fill('403 STEP_UP_REQUIRED'),
+      '429', '429',
+    ]);
+  });
+});

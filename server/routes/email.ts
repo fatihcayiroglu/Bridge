@@ -56,7 +56,7 @@ function isVerifiedEmail(value: unknown): boolean { return value === true || val
 // POST /api/email/add — Kullanıcı e-posta ekler/değiştirir
 // P7 B2: the recovery address controls password reset, so changing it needs a
 // fresh `account-security` step-up proof (a stolen session alone is not enough).
-router.post('/add', authMiddleware, requireStepUp('email.change'), limits.email(), async (req, res) => {
+router.post('/add', authMiddleware, limits.email(), requireStepUp('email.change'), async (req, res) => {
   const _u = castAuthed(req).user;
   const emailValue = (req.body as Record<string, unknown> | null | undefined)?.email;
   if (typeof emailValue !== 'string')
