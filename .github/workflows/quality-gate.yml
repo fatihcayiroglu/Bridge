@@ -544,6 +544,10 @@ jobs:
           - 5432:5432
     steps:
       - uses: actions/checkout@v6
+        with:
+          # PR merge commit + its first parent (the base tip): enough to list the
+          # E2E specs this PR adds or changes.
+          fetch-depth: 2
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -561,6 +565,30 @@ jobs:
       - name: Run security-critical E2E
         run: |
           cd e2e && npx playwright test             tests/webhook-security.spec.ts             tests/permission-matrix.spec.ts             tests/permission-matrix-actions.spec.ts             tests/role-escalation.spec.ts             tests/search-security.spec.ts             tests/search-security-extended.spec.ts             tests/file-security.spec.ts             tests/privacy-lifecycle.spec.ts             tests/session-logout.spec.ts             tests/safe-area.spec.ts             tests/channel-permissions.spec.ts             tests/attachments.spec.ts             tests/locale-journey.spec.ts             --project=chromium --retries=0 --reporter=list
+      # Every E2E spec a PR adds or changes runs on that PR, not only in the
+      # nightly full matrix (measured: several integrity PRs changed specs that
+      # had never executed in CI). A changed spec outside the chromium project
+      # is named explicitly instead of being dropped silently.
+      - name: Run E2E specs added or changed by this PR (chromium, no retries)
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only --diff-filter=AMR HEAD^1 HEAD -- 'e2e/tests/*.spec.ts')
+          if [ ${#changed[@]} -eq 0 ]; then echo "This PR adds or changes no E2E spec."; exit 0; fi
+          cd e2e
+          run=()
+          for f in "${changed[@]}"; do
+            rel="${f#e2e/}"
+            listed="$(npx playwright test "$rel" --project=chromium --list 2>&1 || true)"
+            if grep -qE '^Total: [1-9]' <<<"$listed"; then
+              run+=("$rel")
+            else
+              echo "::warning file=$f::not in the chromium project — it runs in its own project in the nightly full matrix, not here"
+            fi
+          done
+          if [ ${#run[@]} -eq 0 ]; then echo "No changed spec belongs to the chromium project."; exit 0; fi
+          printf 'Running changed specs:\n'; printf '  %s\n' "${run[@]}"
+          npx playwright test "${run[@]}" --project=chromium --retries=0 --reporter=list
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v7
