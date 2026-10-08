@@ -38,6 +38,7 @@ test.describe('Forum kanalı', () => {
     test.skip(!serverId, 'Sunucu fixture gerekli');
     const ch = await createTestChannel(request, token, serverId, 'forum-kanal', 'forum');
     forumChannelId = ch?._id || ch?.id;
+    expect(forumChannelId, 'Forum testleri: forum kanalı fixture oluşturulamadı').toBeTruthy();
   });
 
   test('forum kanalı oluşturulabilir', async ({ request }) => {
