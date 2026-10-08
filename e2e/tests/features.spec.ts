@@ -19,12 +19,12 @@ test.beforeAll(async ({ request }) => {
   token     = tokens.alice;
 
   const srv = await createTestServer(request, token, `Feature Tests ${Date.now()}`);
-  serverId  = srv._id || srv.id;
+  serverId  = srv?._id || srv?.id;
+  expect(serverId, 'Ortak özellik testleri: sunucu fixture oluşturulamadı').toBeTruthy();
 
-  if (serverId) {
-    const ch  = await createTestChannel(request, token, serverId, 'genel', 'text');
-    channelId = ch?._id || ch?.id;
-  }
+  const ch = await createTestChannel(request, token, serverId, 'genel', 'text');
+  channelId = ch?._id || ch?.id;
+  expect(channelId, 'Ortak özellik testleri: kanal fixture oluşturulamadı').toBeTruthy();
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
