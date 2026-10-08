@@ -101,9 +101,12 @@ export async function joinChannelConfirmed(
   channelId: string,
   serverId: string,
   attempts = 6,
+  paceKey?: string,
 ): Promise<void> {
   for (let i = 0; i < attempts; i++) {
     socket.emit('channel:join', channelId);
+    // Join probes are real messages: pace each one with the sender's key.
+    if (paceKey) await paceSends(paceKey);
     const probe = `__e2e_join_probe__ ${Date.now()}-${i}`;
     const seen = await new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => { socket.off('message:new', onNew); resolve(false); }, 1_500);
