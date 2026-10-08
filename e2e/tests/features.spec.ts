@@ -35,14 +35,14 @@ test.describe('Forum kanalı', () => {
   let forumChannelId: string;
 
   test.beforeAll(async ({ request }) => {
-    test.skip(!serverId, 'Sunucu fixture gerekli');
+    expect(serverId, 'Sunucu fixture gerekli').toBeTruthy();
     const ch = await createTestChannel(request, token, serverId, 'forum-kanal', 'forum');
     forumChannelId = ch?._id || ch?.id;
     expect(forumChannelId, 'Forum testleri: forum kanalı fixture oluşturulamadı').toBeTruthy();
   });
 
   test('forum kanalı oluşturulabilir', async ({ request }) => {
-    test.skip(!serverId, 'Sunucu fixture gerekli');
+    expect(serverId, 'Sunucu fixture gerekli').toBeTruthy();
     const res = await request.post(`/api/servers/${serverId}/channels`, {
       headers: { Authorization: `Bearer ${token}` },
       data:    { name: 'forum-test', type: 'forum' },
@@ -58,7 +58,7 @@ test.describe('Forum kanalı', () => {
     // duzeltildi: (1) `locked` sutunu ALLOWED_COLUMNS'ta yoktu,
     // (2) threads."parentMessageId" NOT NULL idi - oysa forum konusu
     // KANAL koklidir ve ust mesaji yoktur. Ikisi de 500 uretiyordu.
-    test.skip(!forumChannelId, 'Forum kanali fixture gerekli');
+    expect(forumChannelId, 'Forum kanali fixture gerekli').toBeTruthy();
     const res = await request.post('/api/threads', {
       headers: { Authorization: `Bearer ${token}` },
       data:    { channelId: forumChannelId, name: 'Test Konusu', firstMessage: 'Ilk mesaj' },
@@ -74,7 +74,7 @@ test.describe('Forum kanalı', () => {
 
   test('thread listesi alınabilir', async ({ request }) => {
     // v1.123: yol duzeltildi - GET /api/threads/channel/:channelId
-    test.skip(!forumChannelId, 'Forum kanali fixture gerekli');
+    expect(forumChannelId, 'Forum kanali fixture gerekli').toBeTruthy();
     const res = await request.get(`/api/threads/channel/${forumChannelId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -92,7 +92,7 @@ test.describe('Anket (Polls)', () => {
   test('anket oluşturulabilir', async ({ request }) => {
     // v1.123: anket ucu SEVK EDILMISTIR; test yanlis yolu cagiriyordu.
     // Gercek yol kanal kaplidir: POST /api/channels/:channelId/polls
-    test.skip(!channelId, 'Kanal fixture gerekli');
+    expect(channelId, 'Kanal fixture gerekli').toBeTruthy();
     const res = await request.post(`/api/channels/${channelId}/polls`, {
       headers: { Authorization: `Bearer ${token}` },
       data: {
@@ -240,7 +240,7 @@ test.describe('Canvas (Ortak Çizim)', () => {
 
 test.describe('Soundboard', () => {
   test('soundboard sesleri listelenebilir', async ({ request }) => {
-    test.skip(!serverId, 'Sunucu fixture gerekli');
+    expect(serverId, 'Sunucu fixture gerekli').toBeTruthy();
     const res = await request.get(`/api/servers/${serverId}/soundboard`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -253,7 +253,7 @@ test.describe('Soundboard', () => {
   test('soundboard: dosyasız (yalnız URL) ekleme reddedilir — ses DOSYASI zorunlu', async ({ request }) => {
     // Eski başlık "URL ile eklenebilir" diyordu ve `[201, 200, 400, 403]` kabul ediyordu. Ürün
     // sözleşmesi (ölçüldü): uç yalnızca yüklenen dosyayı kabul eder; URL'li gövde 400 "No file uploaded".
-    test.skip(!serverId, 'Sunucu fixture gerekli');
+    expect(serverId, 'Sunucu fixture gerekli').toBeTruthy();
     const res = await request.post(`/api/servers/${serverId}/soundboard`, {
       headers: { Authorization: `Bearer ${token}` },
       data: {
@@ -364,7 +364,7 @@ test.describe('Clips — actual Socket.IO metadata contract', () => {
 
 test.describe('Semantik Arama', () => {
   test('POST /api/semantic/search çalışır', async ({ request }) => {
-    test.skip(!serverId, 'Sunucu fixture gerekli');
+    expect(serverId, 'Sunucu fixture gerekli').toBeTruthy();
     const res = await request.post('/api/semantic/search', {
       headers: { Authorization: `Bearer ${token}` },
       data:    { query: 'test mesajı', serverId, limit: 5 },
@@ -377,7 +377,7 @@ test.describe('Semantik Arama', () => {
 
   test('boş sorgu reddedilir (400)', async ({ request }) => {
     // Eski başlık "200 döner" diyordu ve `[200, 400]` kabul ediyordu; ölçülen sözleşme: 400 "query gerekli".
-    test.skip(!serverId, 'Sunucu fixture gerekli');
+    expect(serverId, 'Sunucu fixture gerekli').toBeTruthy();
     const res = await request.post('/api/semantic/search', {
       headers: { Authorization: `Bearer ${token}` },
       data:    { query: '', serverId },
@@ -387,7 +387,7 @@ test.describe('Semantik Arama', () => {
   });
 
   test('GET /api/semantic/digest/:serverId çalışır', async ({ request }) => {
-    test.skip(!serverId, 'Sunucu fixture gerekli');
+    expect(serverId, 'Sunucu fixture gerekli').toBeTruthy();
     const res = await request.get(`/api/semantic/digest/${serverId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -398,7 +398,7 @@ test.describe('Semantik Arama', () => {
   });
 
   test('GET /api/semantic/engagement/:serverId çalışır', async ({ request }) => {
-    test.skip(!serverId, 'Sunucu fixture gerekli');
+    expect(serverId, 'Sunucu fixture gerekli').toBeTruthy();
     const res = await request.get(`/api/semantic/engagement/${serverId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -416,7 +416,7 @@ test.describe('Boost', () => {
   test('boost bilgisi alınabilir', async ({ request }) => {
     // Final21 Faz 22 (19-37): test TEKİL `/boost`a gidiyordu (rota yok — ölçüldü 404) ve `[200, 404]`
     // kabul ettiği için GEÇİYORDU; `level` alanı da üründe yok. Gerçek uç `GET /servers/:sid/boosts`.
-    test.skip(!serverId, 'Sunucu fixture gerekli');
+    expect(serverId, 'Sunucu fixture gerekli').toBeTruthy();
     const res = await request.get(`/api/servers/${serverId}/boosts`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -430,7 +430,7 @@ test.describe('Boost', () => {
   test('boost isteği gönderilebilir', async ({ request }) => {
     // v1.123: yol TEKIL yazilmisti (`/boost`); gercek uc COGULDUR.
     // Her koşum YENİ bir sunucu kurar: ilk boost 200 (ölçüldü) ve sayaç artar.
-    test.skip(!serverId, 'Sunucu fixture gerekli');
+    expect(serverId, 'Sunucu fixture gerekli').toBeTruthy();
     const before = await (await request.get(`/api/servers/${serverId}/boosts`, { headers: { Authorization: `Bearer ${token}` } })).json();
     const res = await request.post(`/api/servers/${serverId}/boosts`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -448,7 +448,7 @@ test.describe('Boost', () => {
 
 test.describe('Badges (Rozetler)', () => {
   test('kullanıcı rozet listesi alınabilir', async ({ request }) => {
-    test.skip(!token, 'Auth token gerekli');
+    expect(token, 'Auth token gerekli').toBeTruthy();
     // Final21 Faz 22 (19-37): test `/api/users/@me`e gidiyordu — rota YOK (ölçüldü 404) — ve 200
     // olmayınca SESSİZCE `return` ediyordu: hiçbir iddia koşmadan GEÇİYORDU. Kanonik uç `/api/me`.
     const profileRes = await request.get('/api/me', {
@@ -490,7 +490,7 @@ test.describe('Zamanlanmış Mesajlar', () => {
   test('zamanlanmış mesaj oluşturulabilir', async ({ request }) => {
     // v1.123: uc `/api/scheduled` olarak SEVK EDILMISTIR (`-messages` eki
     // yok) ve `serverId` ZORUNLUDUR - eksikse 400 doner.
-    test.skip(!channelId || !serverId, 'Kanal fixture gerekli');
+    expect(channelId && serverId, 'Kanal ve sunucu fixture gerekli').toBeTruthy();
     // OLCULDU: rota `sendAt`i STRING bekler (typeof kontrolu); ham epoch
     // sayisi 'required' hatasina dusuyordu.
     const sendAt = new Date(Date.now() + 3600 * 1000).toISOString();
@@ -504,7 +504,7 @@ test.describe('Zamanlanmış Mesajlar', () => {
   });
 
   test('zamanlanmış mesaj listesi alınabilir', async ({ request }) => {
-    test.skip(!channelId, 'Kanal fixture gerekli');
+    expect(channelId, 'Kanal fixture gerekli').toBeTruthy();
     const res = await request.get(`/api/scheduled?channelId=${channelId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -516,7 +516,7 @@ test.describe('Zamanlanmış Mesajlar', () => {
   test('geçmişe ait sendAt reddedilir', async ({ request }) => {
     // v1.123: dogru uca gecirildi. Bu, testin ASIL amaci olan gecmis-tarih
     // reddini GERCEKTEN dogrular (once uc 404 aldigi icin hic calismamisti).
-    test.skip(!channelId || !serverId, 'Kanal fixture gerekli');
+    expect(channelId && serverId, 'Kanal ve sunucu fixture gerekli').toBeTruthy();
     const res = await request.post('/api/scheduled', {
       headers: { Authorization: `Bearer ${token}` },
       data:    { channelId, serverId, content: 'Gecmis zaman', sendAt: new Date(Date.now() - 3600 * 1000).toISOString() },
@@ -535,7 +535,7 @@ test.describe('Go Live (Ekran Paylaşımı)', () => {
     // v1.123 DOGRULANDI: ne /api/golive ne de /api/channels/:id/go-live
     // mevcuttur (setupRoutes.ts'te hicbir baglama yok). Atlama gecerlidir.
     test.skip(true, 'SEVK EDILMEDI (v1.123 dogrulandi): go-live REST ucu yok.');
-    test.skip(!channelId, 'Kanal fixture gerekli');
+    expect(channelId, 'Kanal fixture gerekli').toBeTruthy();
     const res = await request.post(`/api/channels/${channelId}/go-live`, {
       headers: { Authorization: `Bearer ${token}` },
       data:    { quality: '720p' },
