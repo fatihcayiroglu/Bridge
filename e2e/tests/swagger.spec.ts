@@ -30,7 +30,7 @@ test.describe('Swagger /docs smoke testi', () => {
         info?: { title?: string; version?: string };
         paths?: Record<string, unknown>;
       };
-      expect(spec.openapi).toMatch(/^3\\./);
+      expect(spec.openapi).toMatch(/^3\./);
       expect(spec.info?.title).toBeTruthy();
       expect(spec.info?.version).toBeTruthy();
       expect(spec.paths).toBeDefined();
