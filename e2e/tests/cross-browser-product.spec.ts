@@ -379,8 +379,9 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
       // Pozitif kontrol: resim gerçekten çizildi.
       const liveImg = page.locator('.msg', { hasText: body }).first().locator('.msg-avatar img');
       await expect(liveImg).toHaveCount(1, { timeout: 15_000 });
-      await expect.poll(() => liveImg.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0),
-        { timeout: 15_000, message: 'pozitif kontrol: avatar resmi yüklenmedi' }).toBe(true);
+      await expect(liveImg, 'pozitif kontrol: avatar resmi yüklenmedi').toHaveJSProperty('complete', true, { timeout: 15_000 });
+      await expect.poll(() => liveImg.getAttribute('src'), { timeout: 15_000 }).toBe(avatarUrl);
+      await expect(liveImg, 'pozitif kontrol: avatar resmi boş veya kırık').not.toHaveJSProperty('naturalWidth', 0, { timeout: 15_000 });
 
       const del = await request.delete(`${BASE_URL}/api/me/avatar`, { headers: { Authorization: `Bearer ${token}` } });
       expect(del.status(), 'avatar kaldırılamadı').toBe(200);
