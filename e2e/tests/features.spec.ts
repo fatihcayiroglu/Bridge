@@ -269,25 +269,86 @@ test.describe('Soundboard', () => {
 // CLIPS (Ses/Video Kayıt)
 // ══════════════════════════════════════════════════════════════════════════════
 
-test.describe('Clips', () => {
-  // Final21 Faz 22 (19-37): iki test de `[200, 404]` / `[403, 404]` ile VAR OLMAYAN rotalara karşı
-  // GEÇİYORDU — ölçüldü: `GET /api/clips` → 404 "Not found: GET /api/clips" (genel 404 işleyicisi;
-  // setupRoutes'ta klip yönlendiricisi YOK). Klip özelliği REST üzerinden sevk edilmiyor: açıkça atlanır.
-  test('clip listesi alınabilir', async ({ request }) => {
-    test.skip(true, 'SEVK EDİLMEDİ: /api/clips rotası yok (ölçüldü 404, genel not-found işleyicisi).');
-    const res = await request.get(`/api/clips?serverId=${serverId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(res.status()).toBe(200);
+test.describe('Clips — actual Socket.IO metadata contract', () => {
+  type ClipMeta = {
+    id: string;
+    channelId: string;
+    userId: string;
+    filename: string;
+    mimeType: string;
+    sizeBytes: number;
+    durationMs: number;
+  };
+
+  function payload(filename: string) {
+    return {
+      channelId, filename, mimeType: 'video/webm',
+      sizeBytes: 1024, durationMs: 2500,
+    };
+  }
+
+  test('clip:save and clip:list return the owner\'s clip metadata', async () => {
+    expect(channelId, 'clip channel fixture must exist').toBeTruthy();
+    const socket = await openSocket(token);
+    try {
+      const filename = `e2e-clip-${Date.now()}.webm`;
+      const savedPromise = waitForEvent<{ clipId: string; filename: string }>(
+        socket, 'clip:saved', 15_000, data => data?.filename === filename,
+      );
+      socket.emit('clip:save', payload(filename));
+      const saved = await savedPromise;
+      expect(saved.clipId).toBeTruthy();
+
+      const listPromise = waitForEvent<ClipMeta[]>(
+        socket, 'clip:list_result', 10_000,
+        list => Array.isArray(list) && list.some(c => c.id === saved.clipId),
+      );
+      socket.emit('clip:list', { channelId });
+      const clips = await listPromise;
+      expect(clips.find(c => c.id === saved.clipId)).toMatchObject({
+        channelId, filename, mimeType: 'video/webm', sizeBytes: 1024, durationMs: 2500,
+      });
+    } finally {
+      closeSockets(socket);
+    }
   });
 
-  test('clip silme yetkisiz kullanıcı 403 alır', async ({ request }) => {
-    test.skip(true, 'SEVK EDİLMEDİ: /api/clips rotası yok (ölçüldü 404, genel not-found işleyicisi).');
-    const fakeClipId = '00000000-0000-0000-0000-000000000000';
-    const res = await request.delete(`/api/clips/${fakeClipId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(res.status()).toBe(403);
+  test('a non-member cannot save a clip or see an owner\'s metadata', async () => {
+    expect(channelId, 'clip channel fixture must exist').toBeTruthy();
+    const alice = await openSocket(token);
+    const outsider = await openSocket(tokens.bob);
+    try {
+      const filename = `protected-clip-${Date.now()}.webm`;
+      const savedPromise = waitForEvent<{ clipId: string; filename: string }>(
+        alice, 'clip:saved', 15_000, data => data?.filename === filename,
+      );
+      alice.emit('clip:save', payload(filename));
+      const saved = await savedPromise;
+      expect(saved.clipId).toBeTruthy();
+
+      // Bob is not a member of the server, and clip:list must only expose
+      // the authenticated caller's own metadata (regardless of channel).
+      const outsiderList = waitForEvent<ClipMeta[]>(outsider, 'clip:list_result', 10_000);
+      outsider.emit('clip:list', { channelId });
+      expect((await outsiderList).some(c => c.id === saved.clipId)).toBe(false);
+
+      // There is no clip:delete event in the shipped product. Verify the
+      // security-relevant write boundary rather than asserting a fake HTTP
+      // DELETE 403. The server must NOT acknowledge an unauthorized save.
+      const forbiddenFilename = `forbidden-clip-${Date.now()}.webm`;
+      let unauthorizedSaved = false;
+      outsider.on('clip:saved', (event: { filename?: string }) => {
+        if (event?.filename === forbiddenFilename) unauthorizedSaved = true;
+      });
+      outsider.emit('clip:save', payload(forbiddenFilename));
+      await new Promise(resolve => setTimeout(resolve, 400));
+      const after = waitForEvent<ClipMeta[]>(outsider, 'clip:list_result', 10_000);
+      outsider.emit('clip:list', { channelId });
+      expect((await after).some(c => c.filename === forbiddenFilename)).toBe(false);
+      expect(unauthorizedSaved).toBe(false);
+    } finally {
+      closeSockets(alice, outsider);
+    }
   });
 });
 
