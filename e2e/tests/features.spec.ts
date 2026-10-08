@@ -127,7 +127,10 @@ test.describe('Anket (Polls)', () => {
     });
     expect(voteRes.status()).toBe(200);
     const voted = await voteRes.json();
-    expect(voted.options.find((option: { id: string }) => option.id === optionId)?.votes).toBeDefined();
+    expect(voted.options.find((option: { id: string }) => option.id === optionId)).toMatchObject({
+      votedByMe: true,
+      voteCount: 1,
+    });
   });
 
   test('anket sonuçları alınabilir', async ({ request }) => {
