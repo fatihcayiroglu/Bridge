@@ -7,7 +7,7 @@
 //   UI:  ses kanalı UI elementleri, mute/deafen butonları
 
 import { test, expect } from '../helpers/apiTest';
-import { BridgePage, getTokens, createTestServer } from '../helpers/bridge';
+import { BridgePage, getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
 import { openSocket, waitForEvent, closeSockets } from '../helpers/socket';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -24,17 +24,10 @@ test.describe('Ses Kanalı Akışları', () => {
     testServerName = `Voice E2E ${Date.now()}`;
     const server = await createTestServer(request, tokens.alice, testServerName);
     testServerId = server?._id || server?.id;
-    if (!testServerId) return;
-
-    // Ses kanalı oluştur
-    const res = await request.post(`${BASE_URL}/api/servers/${testServerId}/channels`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ name: 'genel-ses', type: 'voice' }),
-    });
-    if (res.ok()) {
-      const ch = await res.json();
-      voiceChannelId = ch._id || ch.id;
-    }
+    expect(testServerId, 'voice server fixture oluşturulmalı').toBeTruthy();
+    const channel = await createTestChannel(request, tokens.alice, testServerId, 'genel-ses', 'voice');
+    voiceChannelId = channel?._id || channel?.id;
+    expect(voiceChannelId, 'voice channel fixture oluşturulmalı').toBeTruthy();
   });
 
   // ── API Testleri ─────────────────────────────────────────
@@ -101,99 +94,89 @@ test.describe('Ses Kanalı Akışları', () => {
     expect(res.status()).toBeGreaterThanOrEqual(400);
   });
 
-  // ── YENİ: Socket sinyal katmanı testleri ─────────────────
+  // ── Socket.IO: gerçekten yayınlanan ses sinyalleri ───────────────────────
+  // Önceki üç test voice:join için zorunlu serverId'yi göndermiyordu.
+  // Ayrıca event zaman aşımını catch(() => null) ile yutup PASS dönüyordu.
+  // Bunlar gerçek sesli oda üyeliğini, bırakmayı ve disconnect temizliğini
+  // hiç doğrulamamıştı.
+  async function joinVoice(socket: Awaited<ReturnType<typeof openSocket>>) {
+    const admitted = waitForEvent<{ channelId: string }>(
+      socket, 'voice:joined', 15_000, value => value?.channelId === voiceChannelId,
+    );
+    socket.emit('voice:join', { channelId: voiceChannelId, serverId: testServerId });
+    expect((await admitted).channelId).toBe(voiceChannelId);
+  }
 
-  test('Socket: voice:join sonrası sunucu üyelerine voice:room-update gelir', async () => {
-    test.skip(!voiceChannelId || !testServerId, 'Ses kanalı ve sunucu fixture gerekli');
-
-    const alice = await openSocket(tokens.alice).catch(() => null);
-    const bob   = await openSocket(tokens.bob).catch(() => null);
-    test.skip(!alice || !bob, 'Çoklu kullanıcı fixture gerekli');
-
+  test('Socket: katılan ikinci peer gerçek voice:room-update üretir', async () => {
+    const watcher = await openSocket(tokens.alice);
+    const actor = await openSocket(tokens.alice);
     try {
-      // Bob sunucu odasına giriyor
-      bob.emit('server:join', testServerId);
-      await new Promise(r => setTimeout(r, 400));
-
-      const updatePromise = waitForEvent<{ channelId: string; peers: unknown[] }>(
-        bob, 'voice:room-update', 5_000,
+      await joinVoice(watcher);
+      const update = waitForEvent<{ channelId: string; peers: Array<{ socketId: string }> }>(
+        watcher, 'voice:room-update', 15_000,
+        value => value?.channelId === voiceChannelId && value?.peers?.some(p => p.socketId === actor.id),
       );
-
-      alice.emit('voice:join', { channelId: voiceChannelId });
-
-      const update = await updatePromise.catch(() => null);
-
-      if (update) {
-        expect(update.channelId).toBe(voiceChannelId);
-        expect(Array.isArray(update.peers)).toBe(true);
-        expect(update.peers.length).toBeGreaterThan(0);
-      }
-      // null dönerse event ismi farklıdır — sunucu loglarından kontrol edilmeli
+      await joinVoice(actor);
+      const state = await update;
+      expect(state.peers.map(p => p.socketId)).toEqual(expect.arrayContaining([watcher.id, actor.id]));
     } finally {
-      closeSockets(alice, bob);
+      closeSockets(actor, watcher);
     }
   });
 
-  test('Socket: voice:leave sonrası diğer üyeye voice:peer-left gelir', async () => {
-    test.skip(!voiceChannelId || !testServerId, 'Ses kanalı ve sunucu fixture gerekli');
-
-    const alice = await openSocket(tokens.alice).catch(() => null);
-    const bob   = await openSocket(tokens.bob).catch(() => null);
-    test.skip(!alice || !bob, 'Çoklu kullanıcı fixture gerekli');
-
+  test('Socket: voice:leave diğer voice peerine voice:peer-left gönderir', async () => {
+    const watcher = await openSocket(tokens.alice);
+    const actor = await openSocket(tokens.alice);
     try {
-      alice.emit('voice:join', { channelId: voiceChannelId });
-      await new Promise(r => setTimeout(r, 500));
-
-      bob.emit('server:join', testServerId);
-      await new Promise(r => setTimeout(r, 300));
-
-      const leftPromise = waitForEvent<{ socketId: string; userId?: string }>(
-        bob, 'voice:peer-left', 5_000,
+      await joinVoice(watcher);
+      await joinVoice(actor);
+      const left = waitForEvent<{ socketId: string }>(
+        watcher, 'voice:peer-left', 15_000, value => value?.socketId === actor.id,
       );
-
-      alice.emit('voice:leave', { channelId: voiceChannelId });
-
-      const leftEvent = await leftPromise.catch(() => null);
-
-      if (leftEvent) {
-        expect(typeof leftEvent.socketId).toBe('string');
-      }
+      const updated = waitForEvent<{ channelId: string; peers: Array<{ socketId: string }> }>(
+        watcher, 'voice:room-update', 15_000,
+        value => value?.channelId === voiceChannelId && !value?.peers?.some(p => p.socketId === actor.id),
+      );
+      actor.emit('voice:leave', { channelId: voiceChannelId, serverId: testServerId });
+      expect((await left).socketId).toBe(actor.id);
+      const state = await updated;
+      expect(state.peers.map(p => p.socketId)).toContain(watcher.id);
+      expect(state.peers.some(p => p.socketId === actor.id)).toBe(false);
     } finally {
-      closeSockets(alice, bob);
+      closeSockets(actor, watcher);
     }
   });
 
-  test('Socket: beklenmedik disconnect sonrası voice:room-update peers listesi azalır', async () => {
-    test.skip(!voiceChannelId || !testServerId, 'Ses kanalı ve sunucu fixture gerekli');
-
-    const alice   = await openSocket(tokens.alice).catch(() => null);
-    const watcher = await openSocket(tokens.bob).catch(() => null);
-    test.skip(!alice || !watcher, 'Alice kullanıcı fixture gerekli'  );
-
+  test('Socket: beklenmedik disconnect oda listesinden peer siler', async () => {
+    const watcher = await openSocket(tokens.alice);
+    const actor = await openSocket(tokens.alice);
     try {
-      watcher.emit('server:join', testServerId);
-      await new Promise(r => setTimeout(r, 300));
-
-      alice.emit('voice:join', { channelId: voiceChannelId });
-      await new Promise(r => setTimeout(r, 500));
-
-      // Disconnect sonrası oda güncellemesini bekle
-      const updateAfterDisconnect = waitForEvent<{ channelId: string; peers: unknown[] }>(
-        watcher, 'voice:room-update', 6_000,
+      await joinVoice(watcher);
+      await joinVoice(actor);
+      const update = waitForEvent<{ channelId: string; peers: Array<{ socketId: string }> }>(
+        watcher, 'voice:room-update', 15_000,
+        value => value?.channelId === voiceChannelId && !value?.peers?.some(p => p.socketId === actor.id),
       );
-
-      alice.disconnect(); // kasıtlı kopuş
-
-      const update = await updateAfterDisconnect.catch(() => null);
-
-      if (update) {
-        expect(update.channelId).toBe(voiceChannelId);
-        // Alice gittikten sonra peers azalmış olmalı
-        expect(Array.isArray(update.peers)).toBe(true);
-      }
+      actor.disconnect();
+      const state = await update;
+      expect(state.peers.map(p => p.socketId)).toContain(watcher.id);
+      expect(state.peers.some(p => p.socketId === actor.id)).toBe(false);
     } finally {
-      closeSockets(watcher);
+      closeSockets(actor, watcher);
+    }
+  });
+
+  test('Socket: sunucu üyesi olmayan kullanıcı voice:join-rejected alır', async () => {
+    const outsider = await openSocket(tokens.bob);
+    try {
+      const refused = waitForEvent<{ channelId: string; code: string }>(
+        outsider, 'voice:join-rejected', 15_000,
+        value => value?.channelId === voiceChannelId,
+      );
+      outsider.emit('voice:join', { channelId: voiceChannelId, serverId: testServerId });
+      expect((await refused).code).toBe('FORBIDDEN');
+    } finally {
+      closeSockets(outsider);
     }
   });
 
