@@ -153,7 +153,13 @@ export default defineConfig({
       // demekti — iki proje birbirinin varsayimini bozuyordu.
       // `media-automation.spec.ts` de sahte medya bayraklarina ihtiyac duyar;
       // yalnizca `voice-media` projesinde kosar.
-      testIgnore: [/global\.setup\.ts/, /a11y\.smoke\.spec\.ts/, /voice-media\.spec\.ts/, /media-automation\.spec\.ts/, /mobile\.spec\.ts/, /visual-review\.spec\.ts/, /overlay-family\.spec\.ts/, /perf-probe\.spec\.ts/, /perf-benchmark\.spec\.ts/, /a11y-keyboard-journeys\.spec\.ts/],
+      testIgnore: [/remote-storage\.spec\.ts/, /global\.setup\.ts/, /a11y\.smoke\.spec\.ts/, /voice-media\.spec\.ts/, /media-automation\.spec\.ts/, /mobile\.spec\.ts/, /visual-review\.spec\.ts/, /overlay-family\.spec\.ts/, /perf-probe\.spec\.ts/, /perf-benchmark\.spec\.ts/, /a11y-keyboard-journeys\.spec\.ts/],
+    },
+    // S3-remote project runs only against an isolated real MinIO service.
+    {
+      name: 's3-remote',
+      use: { ...devices['Desktop Chrome'], storageState: 'fixtures/auth-state.json' },
+      testMatch: /remote-storage\.spec\.ts/,
     },
     // Mobile viewport testleri
     {
