@@ -47,6 +47,29 @@ jobs:
       - name: Audit E2E harness
         run: cd e2e && npm audit --audit-level=high
 
+
+  # The Linux Electron Jest suite intentionally skips one Windows-only tray
+  # startup behavior. Exercise that branch on the real target OS instead of
+  # letting a perpetual skip count as product verification.
+  electron-windows:
+    name: Electron Windows-specific startup behavior
+    runs-on: windows-latest
+    needs: [audit]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.20.0'
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+      - name: Install Electron test dependencies
+        working-directory: electron
+        run: npm ci --no-audit --no-fund
+      - name: Run Electron Jest suite on Windows
+        working-directory: electron
+        run: npm test -- --runInBand --forceExit
+
   node-minimum-compat:
     name: Node 22.19 minimum compatibility
     runs-on: ubuntu-latest
