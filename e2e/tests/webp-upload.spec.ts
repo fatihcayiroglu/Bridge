@@ -84,10 +84,9 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
     expect(typeof url).toBe('string');
   });
 
-  test('WEBP_CONVERT=true ise dönen URL .webp uzantılı olmalı', async ({ request }) => {
-    // Bu test sadece sunucu WEBP_CONVERT=true ile çalışıyorsa anlamlı.
-    // CI ortamında WEBP_CONVERT env'e bakılır.
-    test.skip(process.env.WEBP_CONVERT !== 'true', 'WEBP_CONVERT=true değil — WebP dönüştürme devre dışı');
+  test('PNG dönüşümü yapılandırılan WEBP_CONVERT moduyla eşleşir', async ({ request }) => {
+    // Both modes are asserted. CI also runs a dedicated WEBP_CONVERT=true server,
+    // so the conversion branch cannot pass merely because it is disabled locally.
 
     const pngBuffer = fs.readFileSync(tmpPng);
 
@@ -105,7 +104,11 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
     expect(res.status()).toBe(200);
     const body = await res.json() as { url?: string; fileUrl?: string };
     const url = body.url ?? body.fileUrl ?? '';
-    expect(url.endsWith('.webp'), `URL .webp ile bitmeli, alınan: ${url}`).toBeTruthy();
+    if (process.env.WEBP_CONVERT === 'true') {
+      expect(url.endsWith('.webp'), `WEBP_CONVERT=true: .webp URL bekleniyor, alınan: ${url}`).toBe(true);
+    } else {
+      expect(url.endsWith('.webp'), `WEBP_CONVERT kapalıyken beklenmeyen dönüşüm: ${url}`).toBe(false);
+    }
   });
 
   test('GIF yüklenince WebP\'ye dönüştürülmemeli (animasyon korunur)', async ({ request }) => {
