@@ -97,6 +97,7 @@ jest.mock('../middleware/asyncHandler', () => (fn: AsyncRouteHandler) => async (
 // ── App setup ────────────────────────────────────────────────────────────────
 const express    = require('express');
 const webauthnModule = require('../routes/webauthn');
+import { stepUpHeader } from './helpers/stepUp';
 const webauthnRouter = webauthnModule.default || webauthnModule;
 
 function buildApp() {
@@ -249,7 +250,7 @@ describe('WebAuthn Routes', () => {
   describe('POST /api/webauthn/register/begin', () => {
     it('challenge döndürmeli', async () => {
       const res = await request(app)
-        .post('/api/webauthn/register/begin')
+        .post('/api/webauthn/register/begin').set(stepUpHeader('test-user-id', 'account-security'))
         .set('Authorization', 'Bearer test-token')
         .expect(200);
 
@@ -266,7 +267,7 @@ describe('WebAuthn Routes', () => {
 
     it('challenge 44+ karakter Base64URL olmalı', async () => {
       const res = await request(app)
-        .post('/api/webauthn/register/begin')
+        .post('/api/webauthn/register/begin').set(stepUpHeader('test-user-id', 'account-security'))
         .expect(200);
 
       const challenge = res.body.challenge;
@@ -278,7 +279,7 @@ describe('WebAuthn Routes', () => {
 
     it('challenge cache\'e kaydedilmeli', async () => {
       const res = await request(app)
-        .post('/api/webauthn/register/begin')
+        .post('/api/webauthn/register/begin').set(stepUpHeader('test-user-id', 'account-security'))
         .expect(200);
 
       expect(mockCacheStore.get('webauthn:reg:test-user-id')).toBe(res.body.challenge);
@@ -286,7 +287,7 @@ describe('WebAuthn Routes', () => {
 
     it('ES256 ve RS256 desteklenmeli', async () => {
       const res = await request(app)
-        .post('/api/webauthn/register/begin')
+        .post('/api/webauthn/register/begin').set(stepUpHeader('test-user-id', 'account-security'))
         .expect(200);
 
       const algs = res.body.pubKeyCredParams.map((p: Record<string, unknown>) => p.alg);
@@ -300,7 +301,7 @@ describe('WebAuthn Routes', () => {
   describe('POST /api/webauthn/register/complete', () => {
     it('geçersiz credential → 400', async () => {
       const res = await request(app)
-        .post('/api/webauthn/register/complete')
+        .post('/api/webauthn/register/complete').set(stepUpHeader('test-user-id', 'account-security'))
         .send({ credential: {} })
         .expect(400);
 
@@ -321,7 +322,7 @@ describe('WebAuthn Routes', () => {
       });
 
       const res = await request(app)
-        .post('/api/webauthn/register/complete')
+        .post('/api/webauthn/register/complete').set(stepUpHeader('test-user-id', 'account-security'))
         .send({
           credential: {
             id:   b64uEncode(credId),
@@ -354,7 +355,7 @@ describe('WebAuthn Routes', () => {
       });
 
       const res = await request(app)
-        .post('/api/webauthn/register/complete')
+        .post('/api/webauthn/register/complete').set(stepUpHeader('test-user-id', 'account-security'))
         .send({
           credential: {
             id:                     b64uEncode(credId),
@@ -550,7 +551,7 @@ describe('WebAuthn Routes', () => {
       db.webauthnCredentials.find.mockResolvedValueOnce([]); // son credential
 
       const res = await request(app)
-        .delete('/api/webauthn/credentials/cred-del')
+        .delete('/api/webauthn/credentials/cred-del').set(stepUpHeader('test-user-id', 'account-security'))
         .expect(200);
 
       expect(res.body).toHaveProperty('ok', true);
@@ -578,8 +579,24 @@ describe('WebAuthn Routes', () => {
       db.webauthnCredentials.findOne.mockResolvedValueOnce(null);
 
       await request(app)
-        .delete('/api/webauthn/credentials/nonexistent')
+        .delete('/api/webauthn/credentials/nonexistent').set(stepUpHeader('test-user-id', 'account-security'))
         .expect(404);
+    });
+  });
+
+  // ── P7 B2: SU-ATK-02 — a stolen session cannot add or remove a passkey ────
+  describe('P7 B2 — passkey add/remove need an account-security step-up proof', () => {
+    it.each([
+      ['post', '/api/webauthn/register/begin', 'passkey.add'],
+      ['post', '/api/webauthn/register/complete', 'passkey.add'],
+      ['delete', '/api/webauthn/credentials/cred-x', 'passkey.remove'],
+    ] as const)('%s %s without a proof → 403 STEP_UP_REQUIRED and no ceremony state', async (method, path, action) => {
+      const db = require('../db/loader');
+      const res = await request(app)[method](path).send({});
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ error: 'STEP_UP_REQUIRED', action, scope: 'account-security' });
+      expect(mockCacheStore.has('webauthn:reg:test-user-id')).toBe(false);
+      expect(db.webauthnCredentials.remove).not.toHaveBeenCalled();
     });
   });
 
@@ -589,7 +606,7 @@ describe('WebAuthn Routes', () => {
     it('register complete yanlış credential id/transports tipini 400 ile reddetmeli', async () => {
       mockCacheStore.set('webauthn:reg:test-user-id', b64uEncode(crypto.randomBytes(32)));
       await request(app)
-        .post('/api/webauthn/register/complete')
+        .post('/api/webauthn/register/complete').set(stepUpHeader('test-user-id', 'account-security'))
         .send({
           credential: {
             id: { not: 'base64url' },
@@ -615,7 +632,7 @@ describe('WebAuthn Routes', () => {
       const attObj   = makeFakeAttestationObject(authData);
 
       const res = await request(app)
-        .post('/api/webauthn/register/complete')
+        .post('/api/webauthn/register/complete').set(stepUpHeader('test-user-id', 'account-security'))
         .send({
           credential: {
             id: b64uEncode(credId),
@@ -647,7 +664,7 @@ describe('WebAuthn Routes', () => {
       const attObj   = makeFakeAttestationObject(authData);
 
       const res = await request(app)
-        .post('/api/webauthn/register/complete')
+        .post('/api/webauthn/register/complete').set(stepUpHeader('test-user-id', 'account-security'))
         .send({
           credential: {
             id: b64uEncode(credId),

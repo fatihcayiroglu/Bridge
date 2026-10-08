@@ -12,6 +12,7 @@ import logger from '../lib/logger';
 import { disconnectLiveUserSessions } from '../lib/sessionRevocation';
 import { parseTokenVersion } from '../lib/tokenVersion';
 import { isPersistedEpochExpired } from '../lib/persistedEpoch';
+import { requireStepUp } from '../lib/stepUp';
 
 /**
  * @openapi
@@ -34,6 +35,8 @@ import { isPersistedEpochExpired } from '../lib/persistedEpoch';
  *         description: Doğrulama e-postası gönderildi
  *       400:
  *         description: Geçersiz e-posta
+ *       403:
+ *         description: 'STEP_UP_REQUIRED — a fresh account-security proof is needed (X-Bridge-Step-Up)'
  */
 // ── Final21 UX: amaçlı jetonlar ─────────────────────────────────────────────
 // Tek `emailToken` sütunu İKİ amaçla yazılıyordu: e-posta doğrulama (24 sa, YENİ
@@ -51,7 +54,9 @@ function purposeToken(prefix: string): string { return prefix + crypto.randomByt
 function isVerifiedEmail(value: unknown): boolean { return value === true || value === 1 || value === '1' || value === 't'; }
 
 // POST /api/email/add — Kullanıcı e-posta ekler/değiştirir
-router.post('/add', authMiddleware, limits.email(), async (req, res) => {
+// P7 B2: the recovery address controls password reset, so changing it needs a
+// fresh `account-security` step-up proof (a stolen session alone is not enough).
+router.post('/add', authMiddleware, requireStepUp('email.change'), limits.email(), async (req, res) => {
   const _u = castAuthed(req).user;
   const emailValue = (req.body as Record<string, unknown> | null | undefined)?.email;
   if (typeof emailValue !== 'string')

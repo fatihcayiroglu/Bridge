@@ -203,9 +203,9 @@ export function mintSignInGrants(
   };
 }
 
-/** The bcrypt hash of a real password; SSO-only accounts store ''. */
+/** Whether the account has a password at all; SSO-only accounts store ''. */
 export function hasUsablePassword(hash: unknown): boolean {
-  return typeof hash === 'string' && /^\$2[aby]?\$\d{2}\$/.test(hash);
+  return typeof hash === 'string' && hash.length > 0;
 }
 
 function isTruthyFlag(value: unknown): boolean {
@@ -387,18 +387,29 @@ export async function evaluateStepUp(req: Request, userId: string, action: StepU
   return refusal(userId, action, factors, [check.reason]);
 }
 
+/**
+ * Inline form for handlers that must run their own authorisation first (owner,
+ * moderator permission) so only actions the person may perform are asked for a
+ * proof or counted toward a burst. Answers the request itself and returns false
+ * when the action may not proceed.
+ */
+export async function enforceStepUp(req: Request, res: Response, userId: string, action: StepUpAction): Promise<boolean> {
+  try {
+    const decision = await evaluateStepUp(req, userId, action);
+    if (decision.allowed) return true;
+    res.status(decision.status).json(decision.body);
+  } catch (err) {
+    // Fail closed: an unavailable counter or account store never waives the proof.
+    logger.warn({ err: err instanceof Error ? err.message : String(err), userId, action, event: 'step_up.check_failed' }, 'Step-up check unavailable');
+    res.status(503).json({ error: 'STEP_UP_UNAVAILABLE', action });
+  }
+  return false;
+}
+
 /** Express guard: the authenticated user needs a valid grant for `action`'s scope. */
 export function requireStepUp(action: StepUpAction) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const userId = String((req as Request & { user?: { id?: unknown } }).user?.id ?? '');
-    try {
-      const decision = await evaluateStepUp(req, userId, action);
-      if (decision.allowed) { next(); return; }
-      res.status(decision.status).json(decision.body);
-    } catch (err) {
-      // Fail closed: an unavailable counter or account store never waives the proof.
-      logger.warn({ err: err instanceof Error ? err.message : String(err), userId, action, event: 'step_up.check_failed' }, 'Step-up check unavailable');
-      res.status(503).json({ error: 'STEP_UP_UNAVAILABLE', action });
-    }
+    if (await enforceStepUp(req, res, userId, action)) next();
   };
 }

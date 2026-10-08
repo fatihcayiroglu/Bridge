@@ -57,6 +57,7 @@ import express from 'express';
 const jwt = require('jsonwebtoken');
 
 import adminRouter from '../routes/admin';
+import { stepUpHeader } from './helpers/stepUp';
 
 // ── isAdmin GERCEK BOOLEAN'DIR ─────────────────────────────────────────────
 // `users."isAdmin"` semada BOOLEAN'dir ve `pg` surucusu okurken HER ZAMAN
@@ -150,7 +151,7 @@ describe('ADMIN — kullanıcı mutasyonu sınırları', () => {
 
   it('GÜVENLİK: admin KENDİNİ silemez', async () => {
     const res = await request(app)
-      .delete(`/api/admin/users/${ADMIN}`)
+      .delete(`/api/admin/users/${ADMIN}`).set(stepUpHeader(ADMIN, 'destructive-admin'))
       .set('Authorization', `Bearer ${tok(ADMIN)}`);
 
     expect(res.status).toBe(400);

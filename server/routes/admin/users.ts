@@ -70,6 +70,7 @@ import {
 import { authMiddleware, _invalidateTokenCache } from '../../middleware/auth';
 import { limits } from '../../middleware/rateLimit';
 import { adminOnly, logAction } from './middleware';
+import { requireStepUp } from '../../lib/stepUp';
 import { disconnectLiveUserSessions } from '../../lib/sessionRevocation';
 import { parseBoundedPositiveIntQuery } from '../../lib/queryNumbers';
 
@@ -121,7 +122,7 @@ usersRouter.patch('/users/:id', authMiddleware, limits.moderation(), adminOnly, 
 });
 
 // ── DELETE /api/admin/users/:id ────────────────────────────────
-usersRouter.delete('/users/:id', authMiddleware, limits.moderation(), adminOnly, async (req: Request, res: Response) => {
+usersRouter.delete('/users/:id', authMiddleware, limits.moderation(), adminOnly, requireStepUp('admin.user.delete'), async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
   const target = await Users.findById(String(req.params.id ?? ''));
   if (!target) return res.status(404).json({ error: 'User not found' });
@@ -182,7 +183,7 @@ usersRouter.get('/servers', authMiddleware, adminOnly, async (req: Request, res:
 });
 
 // ── DELETE /api/admin/servers/:id ──────────────────────────────
-usersRouter.delete('/servers/:id', authMiddleware, limits.moderation(), adminOnly, async (req: Request, res: Response) => {
+usersRouter.delete('/servers/:id', authMiddleware, limits.moderation(), adminOnly, requireStepUp('admin.server.delete'), async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
   const server = await Servers.findById(String(req.params.id ?? ''));
   if (!server) return res.status(404).json({ error: 'Server not found' });

@@ -23,7 +23,7 @@ import { cache } from '../lib/redisAdapter';
 import logger from '../lib/logger';
 import { setRefreshCookie } from '../lib/authCookies';
 import { setMediaCookie } from '../lib/mediaCookie';
-import { mintSignInGrants } from '../lib/stepUp';
+import { mintSignInGrants, requireStepUp } from '../lib/stepUp';
 
 // Crypto & PEM helpers
 import {
@@ -293,7 +293,7 @@ type WebAuthnStoredCredential = {
 
 // POST /api/webauthn/register/begin
 // Kimlik doğrulanmış kullanıcı için kayıt challenge'ı oluştur
-router.post('/register/begin', authMiddleware, limits.webauthn(), async (req: import("express").Request, res: import("express").Response) => {
+router.post('/register/begin', authMiddleware, requireStepUp('passkey.add'), limits.webauthn(), async (req: import("express").Request, res: import("express").Response) => {
   const _u = getAuthedUser(req);
   const user = await Users.findById(_u.id) as WebAuthnUser | null;
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -333,7 +333,7 @@ router.post('/register/begin', authMiddleware, limits.webauthn(), async (req: im
 });
 
 // POST /api/webauthn/register/complete
-router.post('/register/complete', authMiddleware, limits.webauthn(), async (req: import("express").Request, res: import("express").Response) => {
+router.post('/register/complete', authMiddleware, requireStepUp('passkey.add'), limits.webauthn(), async (req: import("express").Request, res: import("express").Response) => {
   const _u = getAuthedUser(req);
   const user = await Users.findById(_u.id) as WebAuthnUser | null;
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -758,7 +758,7 @@ router.patch('/credentials/:id', authMiddleware, async (req: import("express").R
 });
 
 // DELETE /api/webauthn/credentials/:id
-router.delete('/credentials/:id', authMiddleware, async (req: import("express").Request, res: import("express").Response) => {
+router.delete('/credentials/:id', authMiddleware, requireStepUp('passkey.remove'), async (req: import("express").Request, res: import("express").Response) => {
   const _u = getAuthedUser(req);
   const user = await Users.findById(_u.id) as WebAuthnUser | null;
   if (!user) return res.status(404).json({ error: 'User not found' });

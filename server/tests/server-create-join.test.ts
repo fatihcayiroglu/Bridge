@@ -46,6 +46,7 @@ import serversRouter from '../routes/servers';
 import { Members } from '../db/repositories';
 import type { MockDb, UserFixture } from './helpers/mockDb';
 import { requireDoc } from './helpers/mockDb';
+import { stepUpFor } from './helpers/stepUp';
 
 let app: express.Express;
 let alice: UserFixture;
@@ -570,11 +571,11 @@ describe('server lifecycle authority and input safety', () => {
     await db.messages.insert({ _id: 'delete-msg', channelId: channels[0]._id, serverId: sid, userId: alice._id, content: 'gone', createdAt: Date.now() });
 
     let res = await request(app).delete(`/api/servers/${sid}`)
-      .set('Authorization', `Bearer ${tok(bob._id)}`);
+      .set('Authorization', `Bearer ${tok(bob._id)}`).set(stepUpFor(tok(bob._id), 'destructive-admin'));
     expect(res.status).toBe(403);
 
     res = await request(app).delete(`/api/servers/${sid}`)
-      .set('Authorization', `Bearer ${tok(alice._id)}`);
+      .set('Authorization', `Bearer ${tok(alice._id)}`).set(stepUpFor(tok(alice._id), 'destructive-admin'));
     expect(res.status).toBe(200);
     expect(await db.servers.findOne({ _id: sid })).toBeNull();
     expect(await db.channels.find({ serverId: sid })).toHaveLength(0);

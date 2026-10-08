@@ -42,6 +42,12 @@ afterAll(() => {
 });
 
 import accountRouter from '../routes/account';
+import { stepUpHeader } from './helpers/stepUp';
+import * as stepUp from '../lib/stepUp';
+
+// P7 B2: export needs a `sensitive-export` grant, deletion a `destructive-admin` grant or (for a
+// password account without 2FA) the existing inline password.
+const EXPORT_PROOF = () => stepUpHeader('me', 'sensitive-export');
 
 function app() {
   const a = express();
@@ -98,19 +104,20 @@ describe('account export/delete production behavior', () => {
     db._pool = null;
     const r = method === 'DELETE'
       ? await request(app()).delete(path).send({ confirm: 'DELETE', password: 'pw' })
-      : await request(app()).get(path);
+      : await request(app()).get(path).set(EXPORT_PROOF());
     expect(r.status).toBe(503);
   });
 
   it('export returns 404 when authenticated identity no longer exists', async () => {
-    users.findById.mockResolvedValueOnce(null);
-    const res = await request(app()).get('/api/account/export');
+    // The step-up guard reads the account first; it vanishes before the export reads it.
+    users.findById.mockResolvedValueOnce({ _id: 'me', password: 'hash' }).mockResolvedValueOnce(null);
+    const res = await request(app()).get('/api/account/export').set(EXPORT_PROOF());
     expect(res.status).toBe(404);
     expect(query).not.toHaveBeenCalled();
   });
 
   it('exports only positive-listed profile fields and requester-scoped data', async () => {
-    users.findById.mockResolvedValueOnce({
+    users.findById.mockResolvedValue({
       _id: 'me', username: 'alice', displayName: 'Alice', email: 'a@example.test',
       password: 'MUST-NOT-LEAK', twoFactorSecret: 'NOPE', dmPrivacy: 'friends',
     });
@@ -124,7 +131,7 @@ describe('account export/delete production behavior', () => {
       },
     });
 
-    const res = await request(app()).get('/api/account/export');
+    const res = await request(app()).get('/api/account/export').set(EXPORT_PROOF());
     expect(res.status).toBe(200);
     expect(res.headers['content-disposition']).toContain('bridge-export-me.json');
     expect(res.body.profile).toEqual(expect.objectContaining({ _id: 'me', username: 'alice', dmPrivacy: 'friends' }));
@@ -141,7 +148,7 @@ describe('account export/delete production behavior', () => {
 
   it('export fails visibly when PostgreSQL query fails', async () => {
     query.mockRejectedValueOnce(new Error('schema unavailable'));
-    const res = await request(app()).get('/api/account/export');
+    const res = await request(app()).get('/api/account/export').set(EXPORT_PROOF());
     expect(res.status).toBe(500);
     expect(error).toHaveBeenCalledWith(expect.objectContaining({ event: 'account.export.failed' }), expect.any(String));
   });
@@ -309,5 +316,58 @@ describe('account export/delete production behavior', () => {
     expect(res.status).toBe(500);
     expect(disconnect).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalledWith(expect.objectContaining({ event: 'account.delete.failed' }), expect.any(String));
+  });
+  it('P7 B2: export without a sensitive-export proof is refused before any data is read', async () => {
+    const res = await request(app()).get('/api/account/export');
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ error: 'STEP_UP_REQUIRED', action: 'account.export', scope: 'sensitive-export' });
+    expect(query).not.toHaveBeenCalled();
+    // A grant for another scope does not open the export.
+    const wrong = await request(app()).get('/api/account/export').set(stepUpHeader('me', 'destructive-admin'));
+    expect(wrong.status).toBe(403);
+    expect(wrong.body.reasons).toEqual(['step_up_scope_mismatch']);
+  });
+
+  it('P7 B2: a destructive-admin grant deletes without the password — the SSO-only account path', async () => {
+    users.findById.mockResolvedValue({ _id: 'me', username: 'alice', password: '' });
+    const refused = await request(app()).delete('/api/account').send({ confirm: 'DELETE' });
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject({ error: 'STEP_UP_REQUIRED', scope: 'destructive-admin', methods: ['sign_in'] });
+    const res = await request(app()).delete('/api/account')
+      .set(stepUpHeader('me', 'destructive-admin', { method: 'sso' }))
+      .send({ confirm: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(compare).not.toHaveBeenCalled();
+  });
+
+  it('P7 B2: an account with 2FA cannot be deleted with the password alone', async () => {
+    users.findById.mockResolvedValue({ _id: 'me', username: 'alice', password: 'hash', twoFactorEnabled: true });
+    const res = await request(app()).delete('/api/account').send({ confirm: 'DELETE', password: 'correct' });
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ error: 'STEP_UP_REQUIRED', level: 2, methods: ['totp', 'backup_code', 'sign_in'] });
+    expect(compare).not.toHaveBeenCalled();
+    expect(db._transaction).not.toHaveBeenCalled();
+    const l1 = await request(app()).delete('/api/account')
+      .set(stepUpHeader('me', 'destructive-admin', { method: 'password' }))
+      .send({ confirm: 'DELETE', password: 'correct' });
+    expect(l1.status).toBe(403);
+    expect(l1.body.reasons).toEqual(['step_up_level']);
+    const l2 = await request(app()).delete('/api/account')
+      .set(stepUpHeader('me', 'destructive-admin'))
+      .send({ confirm: 'DELETE' });
+    expect(l2.status).toBe(200);
+  });
+
+  it('P7 B2: deletion fails closed when the step-up check cannot run, and a vanished account is 401', async () => {
+    jest.spyOn(stepUp, 'evaluateStepUp').mockRejectedValueOnce(new Error('counter offline'));
+    const unavailable = await request(app()).delete('/api/account').send({ confirm: 'DELETE', password: 'correct' });
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.body).toEqual({ error: 'STEP_UP_UNAVAILABLE', action: 'account.delete' });
+    jest.spyOn(stepUp, 'evaluateStepUp').mockRejectedValueOnce('string failure');
+    expect((await request(app()).delete('/api/account').send({ confirm: 'DELETE', password: 'correct' })).status).toBe(503);
+    users.findById.mockResolvedValueOnce({ _id: 'me', password: 'hash' }).mockResolvedValueOnce(null);
+    const gone = await request(app()).delete('/api/account').send({ confirm: 'DELETE', password: 'correct' });
+    expect(gone.status).toBe(401);
+    expect(db._transaction).not.toHaveBeenCalled();
   });
 });

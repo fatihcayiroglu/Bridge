@@ -49,6 +49,7 @@ jest.mock('../middleware/rateLimit', () => ({
 
 import serversRouter from '../routes/servers';
 import { requireDoc } from './helpers/mockDb';
+import { stepUpFor } from './helpers/stepUp';
 
 const token = (userId: string, username = 'tester') =>
   jwt.sign({ id: userId, username, v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
@@ -525,7 +526,7 @@ describe('deleting a server', () => {
       .mockResolvedValue('not_found' as never);
     try {
       const res = await request(buildApp().app).delete(`/api/servers/${server._id}`)
-        .set('Authorization', `Bearer ${token(owner._id)}`);
+        .set('Authorization', `Bearer ${token(owner._id)}`).set(stepUpFor(token(owner._id), 'destructive-admin'));
       expect(res.status).toBe(404);
       expect(res.body.error).toBe('Server not found');
     } finally { spy.mockRestore(); }
@@ -536,14 +537,14 @@ describe('deleting a server', () => {
       .mockResolvedValue('owner_mismatch' as never);
     try {
       const res = await request(buildApp().app).delete(`/api/servers/${server._id}`)
-        .set('Authorization', `Bearer ${token(owner._id)}`);
+        .set('Authorization', `Bearer ${token(owner._id)}`).set(stepUpFor(token(owner._id), 'destructive-admin'));
       expect(res.status).toBe(403);
     } finally { spy.mockRestore(); }
   });
 
   it('a non-owner cannot delete', async () => {
     const res = await request(buildApp().app).delete(`/api/servers/${server._id}`)
-      .set('Authorization', `Bearer ${token(member._id)}`);
+      .set('Authorization', `Bearer ${token(member._id)}`).set(stepUpFor(token(member._id), 'destructive-admin'));
     expect(res.status).toBe(403);
   });
 });

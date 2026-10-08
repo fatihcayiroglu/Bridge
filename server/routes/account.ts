@@ -1,11 +1,11 @@
 /**
  * @openapi
  * /account/export:
- *   get: { tags: [Account], summary: Export caller account data, responses: { '200': { description: Account export } } }
+ *   get: { tags: [Account], summary: Export caller account data, responses: { '200': { description: Account export }, '403': { description: 'STEP_UP_REQUIRED (sensitive-export)' } } }
  * /account/deletion-preflight:
  *   get: { tags: [Account], summary: Check account deletion blockers, responses: { '200': { description: Deletion preflight } } }
  * /account:
- *   delete: { tags: [Account], summary: Delete caller account, responses: { '200': { description: Account deleted } } }
+ *   delete: { tags: [Account], summary: Delete caller account, responses: { '200': { description: Account deleted }, '403': { description: 'STEP_UP_REQUIRED (destructive-admin)' } } }
  */
 // server/routes/account.ts — Kişisel veri dışa aktarma + hesap silme
 //
@@ -38,6 +38,7 @@ import logger from '../lib/logger';
 import { disconnectLiveUserSessions } from '../lib/sessionRevocation';
 import bcrypt from 'bcryptjs';
 import { LIFECYCLE } from '../lib/accountLifecycle';
+import { evaluateStepUp, factorsOf, requiredLevel, requireStepUp } from '../lib/stepUp';
 import {
   eraseAccountData, existingTables, ownershipBlockers, releaseAfterErasure, tableColumns,
   type TransactionRunner,
@@ -89,7 +90,9 @@ const EXPORT_SOURCES: Array<{ key: string; table: string; column: string; column
 ];
 
 // GET /api/account/export
-router.get('/export', authMiddleware, limits.write(), async (req: Request, res: Response) => {
+// P7 B2: the export is the whole account history — a `sensitive-export` step-up
+// proof is required, so a stolen session cannot exfiltrate it.
+router.get('/export', authMiddleware, requireStepUp('account.export'), limits.write(), async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
   const p = pool();
   if (!p) return res.status(503).json({ error: 'Export requires PostgreSQL' });
@@ -197,21 +200,38 @@ router.delete('/', authMiddleware, limits.write(), async (req: Request, res: Res
   }
 
   // ── Yakın kimlik doğrulama ───────────────────────────────────────────────
-  // Çalınmış/ödünç alınmış bir oturum, hesabı silmeye YETMEMELİDİR. Mevcut
-  // mimari parola ile yeniden doğrulamayı destekliyor.
-  const user = await Users.findById(_u.id) as { password?: string } | null;
+  // Çalınmış/ödünç alınmış bir oturum, hesabı silmeye YETMEMELİDİR.
+  // P7 B2: a `destructive-admin` step-up grant at the account's level is a
+  // fresh proof; without one, the existing inline password still works where a
+  // password IS the account's sign-in strength (no 2FA). An account with 2FA
+  // needs a level-2 grant (a password alone never was its full strength), and an
+  // SSO-only account — which has no password and could not delete itself before
+  // — uses the grant its sign-in returned.
+  const user = await Users.findById(_u.id) as { password?: string; twoFactorEnabled?: unknown; tokenVersion?: unknown } | null;
   if (!user) return res.status(404).json({ error: 'User not found' });
-  if (!password || typeof password !== 'string') {
-    return res.status(400).json({ error: 'Password confirmation required' });
+  let decision: Awaited<ReturnType<typeof evaluateStepUp>>;
+  try {
+    decision = await evaluateStepUp(req, _u.id, 'account.delete');
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : String(err), userId: _u.id, event: 'step_up.check_failed' }, 'Step-up check unavailable');
+    return res.status(503).json({ error: 'STEP_UP_UNAVAILABLE', action: 'account.delete' });
   }
-  const ok = await bcrypt.compare(password, String(user.password ?? ''));
-  if (!ok) {
-    logger.warn({ userId: _u.id, event: 'account.delete.bad_password' }, 'Silme reddedildi: parola hatalı.');
-    // 400, 401 DEĞİL (Final21 Faz 19): 401 "oturum geçersiz" demektir. İstemcinin apiFetch'i
-    // 401'de jetonu yeniler, isteği (parolayla birlikte) TEKRAR gönderir, yine 401 alınca
-    // yenilemeyi kapatıp OTURUMU KAPATIR — yanlış yazılan bir parola kişiyi dışarı atardı.
-    // Parola değişimi ve 2FA uçları da yanlış parolayı 400 ile bildirir.
-    return res.status(400).json({ error: 'Password incorrect' });
+  if (!decision.allowed) {
+    if (decision.status === 401) return res.status(401).json(decision.body);
+    const factors = factorsOf(user);
+    if (!factors.password || requiredLevel(factors) > 1) return res.status(403).json(decision.body);
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json({ error: 'Password confirmation required' });
+    }
+    const ok = await bcrypt.compare(password, String(user.password ?? ''));
+    if (!ok) {
+      logger.warn({ userId: _u.id, event: 'account.delete.bad_password' }, 'Silme reddedildi: parola hatalı.');
+      // 400, 401 DEĞİL (Final21 Faz 19): 401 "oturum geçersiz" demektir. İstemcinin apiFetch'i
+      // 401'de jetonu yeniler, isteği (parolayla birlikte) TEKRAR gönderir, yine 401 alınca
+      // yenilemeyi kapatıp OTURUMU KAPATIR — yanlış yazılan bir parola kişiyi dışarı atardı.
+      // Parola değişimi ve 2FA uçları da yanlış parolayı 400 ile bildirir.
+      return res.status(400).json({ error: 'Password incorrect' });
+    }
   }
 
   try {

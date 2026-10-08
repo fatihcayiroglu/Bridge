@@ -62,6 +62,7 @@ import twoFactorRouter, {
   __totpNowForTest as totpNow,
   __matchingTotpStepForTest as matchingTotpStep,
 } from '../routes/twoFactor';
+import { stepUpFor } from './helpers/stepUp';
 
 // URETIMDEKI GIBI monte edilir: `setupRoutes.ts:156` -> mountApi('/2fa', router)
 // yani uygulama duzeyinde authMiddleware YOKTUR. Bu onemlidir: `/check`
@@ -391,7 +392,7 @@ describe('POST /api/2fa/verify — gerçek depolama yolu', () => {
     app.use('/api/2fa', authMiddleware, twoFactorRouter);
     const gecerli = totpNow(SECRET)[1];              // mevcut zaman penceresi
     const r = await request(app).post('/api/2fa/verify')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ code: gecerli });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ code: gecerli });
     return { id, r };
   }
 

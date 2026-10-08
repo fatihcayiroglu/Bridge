@@ -46,6 +46,7 @@ import twoFactorRouter, {
   __hashBackupCodeForTest as hashBackupCode,
   __readBackupCodesForTest as readBackupCodes,
 } from '../routes/twoFactor';
+import { stepUpFor } from './helpers/stepUp';
 
 function buildApp() {
   const app = express();
@@ -88,7 +89,7 @@ describe('yenileme — mutlu yol', () => {
   it('yeni kod seti DONER', async () => {
     const { id } = await kullaniciKur();
     const res = await request(buildApp())
-      .post(YOL).set('Authorization', `Bearer ${tok(id)}`)
+      .post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'))
       .send({ password: PAROLA }).expect(200);
 
     expect(res.body.ok).toBe(true);
@@ -99,7 +100,7 @@ describe('yenileme — mutlu yol', () => {
   it('donen kodlar 64 BIT entropili (mevcut politika korunur)', async () => {
     const { id } = await kullaniciKur();
     const res = await request(buildApp())
-      .post(YOL).set('Authorization', `Bearer ${tok(id)}`)
+      .post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'))
       .send({ password: PAROLA }).expect(200);
     for (const kod of res.body.backupCodes) {
       expect({ uzunluk: kod.length, onaltilik: /^[a-f0-9]+$/.test(kod) })
@@ -110,7 +111,7 @@ describe('yenileme — mutlu yol', () => {
   it('DISKE yalnizca OZET yazilir — duz metin ASLA', async () => {
     const { id } = await kullaniciKur();
     const res = await request(buildApp())
-      .post(YOL).set('Authorization', `Bearer ${tok(id)}`)
+      .post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'))
       .send({ password: PAROLA }).expect(200);
 
     const yazilan = JSON.stringify(await saklananOzetler(id));
@@ -124,7 +125,7 @@ describe('yenileme — mutlu yol', () => {
     // Yenilemenin tum anlami budur: sizdirilmis eski kod artik calismamali.
     const { id, eskiKodlar } = await kullaniciKur();
     await request(buildApp())
-      .post(YOL).set('Authorization', `Bearer ${tok(id)}`)
+      .post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'))
       .send({ password: PAROLA }).expect(200);
 
     const yazilan = await saklananOzetler(id);
@@ -136,7 +137,7 @@ describe('yenileme — mutlu yol', () => {
   it('yazilan set TAM OLARAK yeni kodlardan olusur (birlestirme YOK)', async () => {
     const { id } = await kullaniciKur();
     const res = await request(buildApp())
-      .post(YOL).set('Authorization', `Bearer ${tok(id)}`)
+      .post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'))
       .send({ password: PAROLA }).expect(200);
 
     const yazilan = await saklananOzetler(id);
@@ -147,7 +148,7 @@ describe('yenileme — mutlu yol', () => {
   it('2FA DURUMU degistirilmez (yalnizca kodlar yenilenir)', async () => {
     const { id } = await kullaniciKur();
     await request(buildApp())
-      .post(YOL).set('Authorization', `Bearer ${tok(id)}`)
+      .post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'))
       .send({ password: PAROLA }).expect(200);
     const u = await requireDoc(db.users, { _id: id });
     // Sema BOOLEAN; `pg` gercek boolean dondurur (1/0 OKUNAMAZ).
@@ -166,7 +167,7 @@ describe('yenileme — yetkilendirme', () => {
   it('PAROLA olmadan reddedilir ve HICBIR yazma yapilmaz', async () => {
     const { id, eskiKodlar } = await kullaniciKur();
     await request(buildApp())
-      .post(YOL).set('Authorization', `Bearer ${tok(id)}`)
+      .post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'))
       .send({}).expect(400);
     expect(await saklananOzetler(id)).toEqual(eskiKodlar.map(hashBackupCode));
   });
@@ -174,7 +175,7 @@ describe('yenileme — yetkilendirme', () => {
   it.each([123, {}, [], null])('STRING olmayan parola %p bcrypt katmanina ulasmadan reddedilir', async (password) => {
     const { id, eskiKodlar } = await kullaniciKur();
     await request(buildApp())
-      .post(YOL).set('Authorization', `Bearer ${tok(id)}`)
+      .post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'))
       .send({ password }).expect(400);
     expect(await saklananOzetler(id)).toEqual(eskiKodlar.map(hashBackupCode));
   });
@@ -184,7 +185,7 @@ describe('yenileme — yetkilendirme', () => {
     // uretememelidir.
     const { id, eskiKodlar } = await kullaniciKur();
     const res = await request(buildApp())
-      .post(YOL).set('Authorization', `Bearer ${tok(id)}`)
+      .post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'))
       .send({ password: 'yanlis-parola' }).expect(400);
 
     expect(res.body.error).toBe('Invalid credentials');
@@ -195,7 +196,7 @@ describe('yenileme — yetkilendirme', () => {
   it('2FA KAPALIYKEN reddedilir', async () => {
     const { id } = await kullaniciKur({ twoFactorEnabled: 0 });
     const res = await request(buildApp())
-      .post(YOL).set('Authorization', `Bearer ${tok(id)}`)
+      .post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'))
       .send({ password: PAROLA }).expect(400);
     expect(res.body.error).toBe('2FA not enabled');
   });
@@ -206,7 +207,7 @@ describe('yenileme — yetkilendirme', () => {
     // gerekce.
     const { id } = await kullaniciKur();
     const yanlisParola = await request(buildApp())
-      .post(YOL).set('Authorization', `Bearer ${tok(id)}`)
+      .post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'))
       .send({ password: 'yanlis' });
     expect(yanlisParola.body.error).toBe('Invalid credentials');
     expect(yanlisParola.body.error).not.toMatch(/2FA|enabled|secret/i);
@@ -222,8 +223,8 @@ describe('yenileme — es zamanlilik', () => {
     const app = buildApp();
 
     const [a, b] = await Promise.all([
-      request(app).post(YOL).set('Authorization', `Bearer ${tok(id)}`).send({ password: PAROLA }),
-      request(app).post(YOL).set('Authorization', `Bearer ${tok(id)}`).send({ password: PAROLA }),
+      request(app).post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ password: PAROLA }),
+      request(app).post(YOL).set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ password: PAROLA }),
     ]);
     expect([a.status, b.status]).toEqual([200, 200]);
 

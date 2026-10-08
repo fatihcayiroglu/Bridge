@@ -18,6 +18,7 @@ const jwt     = require('jsonwebtoken');
 const bcrypt  = require('bcryptjs');
 import { authMiddleware } from '../middleware/auth';
 import emailRouter from '../routes/email';
+import { stepUpHeader } from './helpers/stepUp';
 
 function buildApp() {
   const app = express();
@@ -56,6 +57,7 @@ describe('Email Routes', () => {
       const res = await request(app)
         .post('/api/email/add')
         .set('Authorization', `Bearer ${userToken}`)
+        .set(stepUpHeader(userId, 'account-security'))
         .send({ email: 'alice@example.com' });
       expect(res.status).toBe(200);
       expect(res.body.ok).toBe(true);
@@ -70,6 +72,7 @@ describe('Email Routes', () => {
       const res = await request(app)
         .post('/api/email/add')
         .set('Authorization', `Bearer ${userToken}`)
+        .set(stepUpHeader(userId, 'account-security'))
         .send({ email: 'not-an-email' });
       expect(res.status).toBe(400);
     });
@@ -78,6 +81,7 @@ describe('Email Routes', () => {
       const res = await request(app)
         .post('/api/email/add')
         .set('Authorization', `Bearer ${userToken}`)
+        .set(stepUpHeader(userId, 'account-security'))
         .send({ email: 'bob@example.com' });
       expect(res.status).toBe(400);
     });
@@ -87,6 +91,16 @@ describe('Email Routes', () => {
         .post('/api/email/add')
         .send({ email: 'x@x.com' });
       expect(res.status).toBe(401);
+    });
+
+    it('P7 B2: a session alone cannot change the recovery address (account-security step-up)', async () => {
+      const res = await request(app)
+        .post('/api/email/add')
+        .set('Authorization', `Bearer ${userToken}`)
+        .send({ email: 'attacker@example.com' });
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ error: 'STEP_UP_REQUIRED', action: 'email.change', scope: 'account-security', reasons: ['step_up_missing'] });
+      expect((await db.users.findOne({ _id: userId })).email).toBeNull();
     });
   });
 

@@ -40,6 +40,7 @@ jest.mock('../db/loader', () => ({ __esModule: true, default: fakeDb }));
 import express from 'express';
 import request from 'supertest';
 import { usersRouter } from '../routes/admin/users';
+import { stepUpHeader } from './helpers/stepUp';
 
 function app() {
   const a = express();
@@ -61,8 +62,8 @@ beforeEach(() => {
 
 describe('DELETE /api/admin/users/:id', () => {
   it('404 for an unknown user and 400 for self-deletion — nothing touched', async () => {
-    expect((await request(app()).delete('/api/admin/users/missing')).status).toBe(404);
-    const self = await request(app()).delete('/api/admin/users/admin1');
+    expect((await request(app()).delete('/api/admin/users/missing').set(stepUpHeader('admin1', 'destructive-admin'))).status).toBe(404);
+    const self = await request(app()).delete('/api/admin/users/admin1').set(stepUpHeader('admin1', 'destructive-admin'));
     expect(self.status).toBe(400);
     expect(self.body.error).toBe('Cannot delete yourself');
     expect(ownershipBlockers).not.toHaveBeenCalled();
@@ -71,7 +72,7 @@ describe('DELETE /api/admin/users/:id', () => {
   it('FAIL-CLOSED 503 without PostgreSQL (no pool, or a pool without query)', async () => {
     for (const p of [undefined, {}]) {
       fakeDb._pool = p;
-      const res = await request(app()).delete('/api/admin/users/u1');
+      const res = await request(app()).delete('/api/admin/users/u1').set(stepUpHeader('admin1', 'destructive-admin'));
       expect(res.status).toBe(503);
     }
     expect(eraseAccountData).not.toHaveBeenCalled();
@@ -81,7 +82,7 @@ describe('DELETE /api/admin/users/:id', () => {
   it('409 with blockers when the person still owns a shared server — no erasure, no revoke, no audit', async () => {
     const blockers = [{ kind: 'server', id: 's1', name: 'Team', memberCount: 4 }];
     ownershipBlockers.mockResolvedValue(blockers);
-    const res = await request(app()).delete('/api/admin/users/u1');
+    const res = await request(app()).delete('/api/admin/users/u1').set(stepUpHeader('admin1', 'destructive-admin'));
     expect(res.status).toBe(409);
     expect(res.body).toMatchObject({ error: 'Ownership transfer required before deletion', blockers });
     expect(res.body.remedy).toMatch(/DELETE \/api\/admin\/servers/);
@@ -98,7 +99,7 @@ describe('DELETE /api/admin/users/:id', () => {
       onError('/uploads/avatars/a.png', new Error('EACCES'));
       return { removed: 0, alreadyAbsent: 0, stillReferenced: 0, failed: 1 };
     });
-    const res = await request(app()).delete('/api/admin/users/u1');
+    const res = await request(app()).delete('/api/admin/users/u1').set(stepUpHeader('admin1', 'destructive-admin'));
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       ok: true,
@@ -120,7 +121,7 @@ describe('DELETE /api/admin/users/:id', () => {
 
   it('500 when the erasure transaction fails — no session cut, no file release, no audit entry', async () => {
     eraseAccountData.mockRejectedValue(new Error('deadlock'));
-    const res = await request(app()).delete('/api/admin/users/u1');
+    const res = await request(app()).delete('/api/admin/users/u1').set(stepUpHeader('admin1', 'destructive-admin'));
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: 'Deletion failed' });
     expect(logError).toHaveBeenCalledWith(expect.objectContaining({ event: 'admin.user_delete.failed', userId: 'u1' }), expect.any(String));
@@ -175,12 +176,32 @@ describe('the rest of the admin users router', () => {
     expect(list.body.map((s: { _id: string; memberCount: number }) => [s._id, s.memberCount])).toEqual([['s2', 2], ['s1', 0]]);
 
     repos.Servers.findById.mockImplementation(async (id: string) => (id === 'none' ? null : { _id: id, name: 'S' }));
-    expect((await request(app()).delete('/api/admin/servers/none')).status).toBe(404);
+    expect((await request(app()).delete('/api/admin/servers/none').set(stepUpHeader('admin1', 'destructive-admin'))).status).toBe(404);
     repos.Servers.deleteGraphAtomic.mockResolvedValueOnce('not_found');
-    expect((await request(app()).delete('/api/admin/servers/raced')).status).toBe(404);
+    expect((await request(app()).delete('/api/admin/servers/raced').set(stepUpHeader('admin1', 'destructive-admin'))).status).toBe(404);
     repos.Servers.deleteGraphAtomic.mockResolvedValueOnce('deleted');
-    const del = await request(app()).delete('/api/admin/servers/s1');
+    const del = await request(app()).delete('/api/admin/servers/s1').set(stepUpHeader('admin1', 'destructive-admin'));
     expect(del.status).toBe(200);
     expect(logAction).toHaveBeenCalledWith('admin1', 'delete_server', 's1', { name: 'S' });
+  });
+});
+
+describe('P7 B2 — instance-admin deletions need a destructive-admin step-up proof', () => {
+  it.each([
+    ['/api/admin/users/u1', 'admin.user.delete'],
+    ['/api/admin/servers/s1', 'admin.server.delete'],
+  ])('DELETE %s without a proof is refused before anything is read or erased', async (path, action) => {
+    const res = await request(app()).delete(path);
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ error: 'STEP_UP_REQUIRED', action, scope: 'destructive-admin', reasons: ['step_up_missing'] });
+    expect(ownershipBlockers).not.toHaveBeenCalled();
+    expect(eraseAccountData).not.toHaveBeenCalled();
+    expect(repos.Servers.deleteGraphAtomic).not.toHaveBeenCalled();
+    expect(logAction).not.toHaveBeenCalled();
+    // A proof for another scope, or one minted for another account, is not enough either.
+    const wrongScope = await request(app()).delete(path).set(stepUpHeader('admin1', 'account-security'));
+    expect(wrongScope.body.reasons).toEqual(['step_up_scope_mismatch']);
+    const otherAccount = await request(app()).delete(path).set(stepUpHeader('someone-else', 'destructive-admin'));
+    expect(otherAccount.body.reasons).toEqual(['step_up_other_account']);
   });
 });

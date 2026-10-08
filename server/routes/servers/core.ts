@@ -21,6 +21,7 @@ import {
   type RaidMitigationLevel,
 } from '../../lib/raidProtection';
 import logger from '../../lib/logger';
+import { enforceStepUp } from '../../lib/stepUp';
 
 // GET /api/servers
 /**
@@ -578,6 +579,9 @@ router.delete('/:sid', authMiddleware, limits.servers(), async (req, res) => {
   const server = await Servers.findById(String(req.params.sid ?? ''));
   if (!server)                  return res.status(404).json({ error: 'Server not found' });
   if (server.ownerId !== _u.id) return res.status(403).json({ error: 'Only the server owner can delete it' });
+  // P7 B2: irreversible for every member — the owner proves it is still them
+  // (`destructive-admin` step-up). Checked after ownership so only the owner is asked.
+  if (!(await enforceStepUp(req, res, _u.id, 'server.delete'))) return;
 
   const sid = String(req.params.sid ?? '');
   // Tek canonical owner: production PostgreSQL'de bütün server graph tek

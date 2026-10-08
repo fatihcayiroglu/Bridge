@@ -22,6 +22,7 @@ import {
   mintSignInGrants,
   mintStepUpGrant,
   recordFailedStepUpProof,
+  requireStepUp,
   stepUpProofsLocked,
 } from '../lib/stepUp';
 import logger from '../lib/logger';
@@ -232,7 +233,7 @@ function generateBackupCodes(n = 8): string[] {
  *                 secret: { type: string }
  *                 qrCode: { type: string, description: 'data URI' }
  */
-router.post('/setup', authMiddleware, limits.twoFactor(), async (req, res) => {
+router.post('/setup', authMiddleware, requireStepUp('two_factor.enable'), limits.twoFactor(), async (req, res) => {
   const _u = castAuthed(req).user;
   const user = await Users.findById(_u.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -270,7 +271,7 @@ router.post('/setup', authMiddleware, limits.twoFactor(), async (req, res) => {
  *       200: { description: 2FA aktifleştirildi }
  *       400: { description: Geçersiz kod }
  */
-router.post('/verify', authMiddleware, limits.twoFactor(), async (req, res) => {
+router.post('/verify', authMiddleware, requireStepUp('two_factor.enable'), limits.twoFactor(), async (req, res) => {
   const _u = castAuthed(req).user;
   const code = (req.body as Record<string, unknown> | null | undefined)?.code;
   if (typeof code !== 'string' || code.length < 1 || code.length > 128)
@@ -489,7 +490,7 @@ router.post('/step-up', authMiddleware, limits.twoFactor(), async (req, res) => 
 // KARDES YOL: `DELETE /api/2fa` GECERLI BIR TOTP KODU istiyordu. Ayni islem,
 // iki uc, iki farkli guvenlik seviyesi — bu projede tekrar tekrar gercek acik
 // ureten desen.
-router.post('/disable', authMiddleware, limits.twoFactor(), async (req, res) => {
+router.post('/disable', authMiddleware, requireStepUp('two_factor.disable'), limits.twoFactor(), async (req, res) => {
   const _u = castAuthed(req).user;
   const password = (req.body as Record<string, unknown> | null | undefined)?.password;
   if (typeof password !== 'string' || password.length < 1 || password.length > 128)
@@ -551,7 +552,7 @@ router.post('/disable', authMiddleware, limits.twoFactor(), async (req, res) => 
 // Iki es zamanli yenileme ayni satirin TEK kolonunu yazar; son yazan kazanir.
 // Bu nedenle sonucta TEK bir kanonik set kalir ve digerinin kodlari gecersiz
 // olur. "Iki bagimsiz gecerli set" durumu OLUSAMAZ — istenen degismez budur.
-router.post('/backup-codes/regenerate', authMiddleware, limits.twoFactor(), async (req, res) => {
+router.post('/backup-codes/regenerate', authMiddleware, requireStepUp('backup_codes.regenerate'), limits.twoFactor(), async (req, res) => {
   const _u = castAuthed(req).user;
   const password = (req.body as Record<string, unknown> | null | undefined)?.password;
   if (typeof password !== 'string' || password.length < 1 || password.length > 128)

@@ -40,6 +40,7 @@ import twoFactorRouter, {
   __readBackupCodesForTest as readBackupCodes,
   __totpNowForTest as totpNow,
 } from '../routes/twoFactor';
+import { stepUpFor } from './helpers/stepUp';
 
 function buildApp() {
   const app = express();
@@ -83,7 +84,7 @@ describe('kurulum', () => {
   it('gizli anahtar üretir, geçici olarak yazar ve otpauth bağlantısı verir', async () => {
     const id = await makeUser();
 
-    const res = await request(app).post('/api/2fa/setup').set('Authorization', `Bearer ${tok(id)}`);
+    const res = await request(app).post('/api/2fa/setup').set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'));
 
     expect(res.status).toBe(200);
     expect(res.body.secret).toMatch(/^[A-Z2-7]+=*$/);
@@ -97,7 +98,7 @@ describe('kurulum', () => {
   });
 
   it('silinmiş kullanıcı kurulum yapamaz', async () => {
-    const res = await request(app).post('/api/2fa/setup').set('Authorization', `Bearer ${tok(uuidv4())}`);
+    const res = await request(app).post('/api/2fa/setup').set('Authorization', `Bearer ${tok(uuidv4())}`).set(stepUpFor(tok(uuidv4()), 'account-security'));
 
     // Kimlik katmani silinmis kullaniciyi ZATEN reddeder; uc noktaya
     // ulasilamaz. Onemli olan kurulumun YAPILMAMASIDIR.
@@ -107,7 +108,7 @@ describe('kurulum', () => {
   it('2FA zaten açıkken yeni gizli anahtar yazılmaz', async () => {
     const id = await makeUser({ twoFactorEnabled: 1, twoFactorSecret: SECRET });
 
-    const res = await request(app).post('/api/2fa/setup').set('Authorization', `Bearer ${tok(id)}`);
+    const res = await request(app).post('/api/2fa/setup').set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security'));
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('2FA already enabled');
@@ -122,7 +123,7 @@ describe('aktifleştirme', () => {
 
     for (const code of [undefined, 42, '', 'x'.repeat(129)]) {
       const res = await request(app).post('/api/2fa/verify')
-        .set('Authorization', `Bearer ${tok(id)}`).send({ code });
+        .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ code });
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('code required');
     }
@@ -132,7 +133,7 @@ describe('aktifleştirme', () => {
     const id = await makeUser();
 
     const res = await request(app).post('/api/2fa/verify')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ code: '123456' });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ code: '123456' });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Run /setup first');
@@ -142,7 +143,7 @@ describe('aktifleştirme', () => {
     const id = await makeUser({ twoFactorEnabled: 1, twoFactorSecret: SECRET });
 
     const res = await request(app).post('/api/2fa/verify')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ code: currentCode() });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ code: currentCode() });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('2FA already active');
@@ -152,7 +153,7 @@ describe('aktifleştirme', () => {
     const id = await makeUser({ twoFactorSecret: SECRET });
 
     const res = await request(app).post('/api/2fa/verify')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ code: '000000' });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ code: '000000' });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Invalid code. Check your authenticator app.');
@@ -163,7 +164,7 @@ describe('aktifleştirme', () => {
     const id = await makeUser({ twoFactorSecret: SECRET });
 
     const res = await request(app).post('/api/2fa/verify')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ code: currentCode() });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ code: currentCode() });
 
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
@@ -182,12 +183,12 @@ describe('aktifleştirme', () => {
     const code = currentCode();
 
     const first = await request(app).post('/api/2fa/verify')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ code });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ code });
     expect(first.status).toBe(200);
 
     // Ayni gizli anahtarla ikinci kez: artik AKTIF oldugu icin reddedilir.
     const second = await request(app).post('/api/2fa/verify')
-      .set('Authorization', `Bearer ${await freshToken(id)}`).send({ code });
+      .set('Authorization', `Bearer ${await freshToken(id)}`).set(stepUpFor(await freshToken(id), 'account-security')).send({ code });
     expect(second.status).toBe(400);
     expect(second.body.error).toBe('2FA already active');
   });
@@ -249,7 +250,7 @@ describe('kod ile kapatma', () => {
 
     // Ayni TOTP adimi once AKTIFLESTIRMEDE tuketilir...
     const enabled = await request(app).post('/api/2fa/verify')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ code });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ code });
     expect(enabled.status).toBe(200);
 
     // ...ve ayni kodla KAPATMA denendiginde tekrar kabul EDILMEZ.
@@ -268,7 +269,7 @@ describe('parola ile kapatma ve yedek kod yenileme', () => {
 
     for (const password of [undefined, 5, '', 'x'.repeat(129)]) {
       const res = await request(app).post('/api/2fa/disable')
-        .set('Authorization', `Bearer ${tok(id)}`).send({ password });
+        .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ password });
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('password required');
     }
@@ -278,7 +279,7 @@ describe('parola ile kapatma ve yedek kod yenileme', () => {
     const id = await makeUser({ twoFactorEnabled: 1, twoFactorSecret: SECRET });
 
     const res = await request(app).post('/api/2fa/disable')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ password: 'yanlis-parola' });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ password: 'yanlis-parola' });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Invalid credentials');
@@ -289,7 +290,7 @@ describe('parola ile kapatma ve yedek kod yenileme', () => {
     const id = await makeUser({ twoFactorEnabled: 1, twoFactorSecret: SECRET, password: null });
 
     const res = await request(app).post('/api/2fa/disable')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ password: 'gizli-parola' });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ password: 'gizli-parola' });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Invalid credentials');
@@ -299,7 +300,7 @@ describe('parola ile kapatma ve yedek kod yenileme', () => {
     const id = await makeUser({ twoFactorEnabled: 1, twoFactorSecret: SECRET });
 
     const res = await request(app).post('/api/2fa/disable')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ password: 'gizli-parola' });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ password: 'gizli-parola' });
 
     expect(res.status).toBe(200);
     expect((await requireDoc(db.users, { _id: id })).twoFactorEnabled).toBeFalsy();
@@ -313,7 +314,7 @@ describe('parola ile kapatma ve yedek kod yenileme', () => {
     });
 
     const res = await request(app).post('/api/2fa/backup-codes/regenerate')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ password: 'gizli-parola' });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ password: 'gizli-parola' });
 
     expect(res.status).toBe(200);
     expect(res.body.backupCodes).toHaveLength(8);
@@ -327,7 +328,7 @@ describe('parola ile kapatma ve yedek kod yenileme', () => {
     const id = await makeUser({ twoFactorEnabled: 1, twoFactorSecret: SECRET });
 
     const res = await request(app).post('/api/2fa/backup-codes/regenerate')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ password: 'yanlis' });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ password: 'yanlis' });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Invalid credentials');
