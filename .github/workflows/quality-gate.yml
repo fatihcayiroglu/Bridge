@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, test-integrity/integrated-audit]
   workflow_dispatch:
   # Agir tarayici/medya paketleri her PR'da degil, gecelik kosar.
   schedule:
