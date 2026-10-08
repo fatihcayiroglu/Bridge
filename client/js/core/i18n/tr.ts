@@ -2279,5 +2279,17 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "Kapalıysa sunucu yalnız geçerli davet bağlantılarıyla bulunabilir ve katılınabilir.",
   "srv_category_label": "Kategori",
   "srv_category_other": "Diğer",
+  // P7 B2 — step-up ("prove it is still you")
+  "stepup_title": "Siz olduğunuzu doğrulayın",
+  "stepup_confirm": "Devam et",
+  "stepup_password_label": "Parolanız",
+  "stepup_code_label": "Doğrulama uygulaması kodu veya yedek kod",
+  "stepup_wrong": "Eşleşmedi. Lütfen tekrar deneyin.",
+  "stepup_empty": "Devam etmek için girin.",
+  "stepup_sign_in_again": "Yeniden giriş yap",
+  "stepup_sign_in_again_body": "Siz olduğunuzu doğrulamak için yeniden giriş yapın, ardından bu işlemi 10 dakika içinde tekrarlayın.",
+  "stepup_locked": "Çok fazla deneme. Devam etmek için yeniden giriş yapın — giriş bundan etkilenmez.",
+  "stepup_generic_why": "Bu işlem için siz olduğunuzun yeniden doğrulanması gerekiyor.",
+  "stepup_unavailable": "Doğrulama şu anda kullanılamıyor. Lütfen tekrar deneyin.",
 };
 export default translations;

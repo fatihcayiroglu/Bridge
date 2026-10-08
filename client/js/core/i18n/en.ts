@@ -2274,5 +2274,17 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "When off, the server can only be found and joined through a valid invite link.",
   "srv_category_label": "Category",
   "srv_category_other": "Other",
+  // P7 B2 — step-up ("prove it is still you")
+  "stepup_title": "Confirm it's you",
+  "stepup_confirm": "Continue",
+  "stepup_password_label": "Your password",
+  "stepup_code_label": "Authenticator code or backup code",
+  "stepup_wrong": "That didn't match. Please try again.",
+  "stepup_empty": "Enter it to continue.",
+  "stepup_sign_in_again": "Sign in again",
+  "stepup_sign_in_again_body": "Sign in again to confirm it's you, then repeat this action within 10 minutes.",
+  "stepup_locked": "Too many attempts. Sign in again to continue — signing in is not affected.",
+  "stepup_generic_why": "This action needs a fresh confirmation that it's you.",
+  "stepup_unavailable": "Confirmation is temporarily unavailable. Please try again.",
 };
 export default translations;

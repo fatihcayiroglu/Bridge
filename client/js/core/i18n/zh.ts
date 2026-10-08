@@ -2308,6 +2308,18 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "关闭后，只能通过有效邀请链接找到并加入该服务器。",
   "srv_category_label": "类别",
   "srv_category_other": "其他",
+  // P7 B2 — step-up ("prove it is still you")
+  "stepup_title": "确认是你本人",
+  "stepup_confirm": "继续",
+  "stepup_password_label": "你的密码",
+  "stepup_code_label": "验证器应用代码或备用代码",
+  "stepup_wrong": "不匹配，请重试。",
+  "stepup_empty": "请输入后继续。",
+  "stepup_sign_in_again": "重新登录",
+  "stepup_sign_in_again_body": "请重新登录以确认是你本人，然后在 10 分钟内重做此操作。",
+  "stepup_locked": "尝试次数过多。请重新登录以继续——登录本身不受影响。",
+  "stepup_generic_why": "此操作需要重新确认是你本人。",
+  "stepup_unavailable": "暂时无法确认，请重试。",
 };
 
 export default translations;

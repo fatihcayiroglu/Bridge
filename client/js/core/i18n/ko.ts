@@ -2308,6 +2308,18 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "끄면 유효한 초대 링크를 통해서만 서버를 찾고 참여할 수 있습니다.",
   "srv_category_label": "카테고리",
   "srv_category_other": "기타",
+  // P7 B2 — step-up ("prove it is still you")
+  "stepup_title": "본인 확인",
+  "stepup_confirm": "계속",
+  "stepup_password_label": "비밀번호",
+  "stepup_code_label": "인증 앱 코드 또는 백업 코드",
+  "stepup_wrong": "일치하지 않습니다. 다시 시도하세요.",
+  "stepup_empty": "계속하려면 입력하세요.",
+  "stepup_sign_in_again": "다시 로그인",
+  "stepup_sign_in_again_body": "본인 확인을 위해 다시 로그인한 후 10분 안에 이 작업을 다시 시도하세요.",
+  "stepup_locked": "시도 횟수가 너무 많습니다. 계속하려면 다시 로그인하세요. 로그인에는 영향이 없습니다.",
+  "stepup_generic_why": "이 작업을 하려면 본인임을 다시 확인해야 합니다.",
+  "stepup_unavailable": "지금은 확인을 할 수 없습니다. 다시 시도하세요.",
 };
 
 export default translations;

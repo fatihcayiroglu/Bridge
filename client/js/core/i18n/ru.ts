@@ -2308,6 +2308,18 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "Если выключено, сервер можно найти и присоединиться к нему только по действительной ссылке-приглашению.",
   "srv_category_label": "Категория",
   "srv_category_other": "Другое",
+  // P7 B2 — step-up ("prove it is still you")
+  "stepup_title": "Подтвердите, что это вы",
+  "stepup_confirm": "Продолжить",
+  "stepup_password_label": "Ваш пароль",
+  "stepup_code_label": "Код из приложения-аутентификатора или резервный код",
+  "stepup_wrong": "Не совпадает. Попробуйте ещё раз.",
+  "stepup_empty": "Введите, чтобы продолжить.",
+  "stepup_sign_in_again": "Войти снова",
+  "stepup_sign_in_again_body": "Войдите снова, чтобы подтвердить, что это вы, и повторите это действие в течение 10 минут.",
+  "stepup_locked": "Слишком много попыток. Войдите снова, чтобы продолжить — вход это не затрагивает.",
+  "stepup_generic_why": "Для этого действия нужно заново подтвердить, что это вы.",
+  "stepup_unavailable": "Подтверждение временно недоступно. Попробуйте ещё раз.",
 };
 
 export default translations;

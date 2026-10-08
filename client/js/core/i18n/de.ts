@@ -2308,6 +2308,18 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "Wenn deaktiviert, kann der Server nur über einen gültigen Einladungslink gefunden und betreten werden.",
   "srv_category_label": "Kategorie",
   "srv_category_other": "Andere",
+  // P7 B2 — step-up ("prove it is still you")
+  "stepup_title": "Bestätigen Sie, dass Sie es sind",
+  "stepup_confirm": "Weiter",
+  "stepup_password_label": "Ihr Passwort",
+  "stepup_code_label": "Code der Authenticator-App oder Backup-Code",
+  "stepup_wrong": "Das passt nicht. Bitte versuchen Sie es erneut.",
+  "stepup_empty": "Zum Fortfahren eingeben.",
+  "stepup_sign_in_again": "Erneut anmelden",
+  "stepup_sign_in_again_body": "Melden Sie sich erneut an, um zu bestätigen, dass Sie es sind, und wiederholen Sie diese Aktion innerhalb von 10 Minuten.",
+  "stepup_locked": "Zu viele Versuche. Melden Sie sich erneut an, um fortzufahren – die Anmeldung selbst ist nicht betroffen.",
+  "stepup_generic_why": "Diese Aktion erfordert eine neue Bestätigung, dass Sie es sind.",
+  "stepup_unavailable": "Die Bestätigung ist vorübergehend nicht verfügbar. Bitte versuchen Sie es erneut.",
 };
 
 export default translations;

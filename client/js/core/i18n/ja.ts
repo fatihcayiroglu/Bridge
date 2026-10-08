@@ -2308,6 +2308,18 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "オフの場合、有効な招待リンクからのみサーバーを見つけて参加できます。",
   "srv_category_label": "カテゴリ",
   "srv_category_other": "その他",
+  // P7 B2 — step-up ("prove it is still you")
+  "stepup_title": "本人確認",
+  "stepup_confirm": "続行",
+  "stepup_password_label": "パスワード",
+  "stepup_code_label": "認証アプリのコードまたはバックアップコード",
+  "stepup_wrong": "一致しませんでした。もう一度お試しください。",
+  "stepup_empty": "続行するには入力してください。",
+  "stepup_sign_in_again": "もう一度サインイン",
+  "stepup_sign_in_again_body": "本人確認のためにもう一度サインインし、10分以内にこの操作をやり直してください。",
+  "stepup_locked": "試行回数が多すぎます。続行するにはもう一度サインインしてください（サインイン自体には影響しません）。",
+  "stepup_generic_why": "この操作には、本人であることの再確認が必要です。",
+  "stepup_unavailable": "現在確認を行えません。もう一度お試しください。",
 };
 
 export default translations;

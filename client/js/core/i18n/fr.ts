@@ -2308,6 +2308,18 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "Si cette option est désactivée, le serveur ne peut être trouvé et rejoint qu’avec un lien d’invitation valide.",
   "srv_category_label": "Catégorie",
   "srv_category_other": "Autre",
+  // P7 B2 — step-up ("prove it is still you")
+  "stepup_title": "Confirmez que c’est bien vous",
+  "stepup_confirm": "Continuer",
+  "stepup_password_label": "Votre mot de passe",
+  "stepup_code_label": "Code de l’application d’authentification ou code de secours",
+  "stepup_wrong": "Cela ne correspond pas. Veuillez réessayer.",
+  "stepup_empty": "Saisissez-le pour continuer.",
+  "stepup_sign_in_again": "Se reconnecter",
+  "stepup_sign_in_again_body": "Reconnectez-vous pour confirmer que c’est bien vous, puis refaites cette action dans les 10 minutes.",
+  "stepup_locked": "Trop de tentatives. Reconnectez-vous pour continuer — la connexion n’est pas affectée.",
+  "stepup_generic_why": "Cette action nécessite une nouvelle confirmation que c’est bien vous.",
+  "stepup_unavailable": "La confirmation est temporairement indisponible. Veuillez réessayer.",
 };
 
 export default translations;

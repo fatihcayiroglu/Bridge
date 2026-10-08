@@ -2308,6 +2308,18 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "Quando desativado, o servidor só pode ser encontrado e acessado por um link de convite válido.",
   "srv_category_label": "Categoria",
   "srv_category_other": "Outro",
+  // P7 B2 — step-up ("prove it is still you")
+  "stepup_title": "Confirme que é você",
+  "stepup_confirm": "Continuar",
+  "stepup_password_label": "Sua senha",
+  "stepup_code_label": "Código do app autenticador ou código de backup",
+  "stepup_wrong": "Não corresponde. Tente novamente.",
+  "stepup_empty": "Digite para continuar.",
+  "stepup_sign_in_again": "Entrar novamente",
+  "stepup_sign_in_again_body": "Entre novamente para confirmar que é você e repita esta ação em até 10 minutos.",
+  "stepup_locked": "Muitas tentativas. Entre novamente para continuar — o login não é afetado.",
+  "stepup_generic_why": "Esta ação precisa de uma nova confirmação de que é você.",
+  "stepup_unavailable": "A confirmação está indisponível no momento. Tente novamente.",
 };
 
 export default translations;

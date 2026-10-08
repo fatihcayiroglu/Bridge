@@ -22,6 +22,11 @@ export interface ProductPromptOptions extends ProductConfirmOptions {
   initialValue?: string;
   placeholder?: string;
   maxLength?: number;
+  /**
+   * `password` masks the value and offers the saved password; `one-time-code`
+   * offers an authenticator code. Default `text`.
+   */
+  inputType?: 'text' | 'password' | 'one-time-code';
 }
 
 type ActiveDialog = { cancel: () => void };
@@ -73,12 +78,14 @@ function mountDialog<T>(
     if (inputOptions) {
       input = document.createElement('input');
       input.className = 'input bridge-product-dialog-input';
-      input.type = 'text';
+      input.type = inputOptions.inputType === 'password' ? 'password' : 'text';
       input.value = String(inputOptions.initialValue ?? '');
       input.placeholder = String(inputOptions.placeholder ?? '');
       input.maxLength = Math.max(1, Math.min(1024, Number(inputOptions.maxLength) || 256));
-      input.autocomplete = 'off';
+      input.autocomplete = inputOptions.inputType === 'password' ? 'current-password'
+        : inputOptions.inputType === 'one-time-code' ? 'one-time-code' : 'off';
       input.spellcheck = false;
+      if (inputOptions.inputType === 'one-time-code') input.setAttribute('autocapitalize', 'off');
     }
 
     const footer = document.createElement('div');

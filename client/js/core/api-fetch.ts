@@ -19,6 +19,9 @@ import {
 } from './refresh-coordinator.ts';
 import { createLogger } from './logger.ts';
 import { BridgeRegistry } from './bridge-registry.ts';
+import {
+  STEP_UP_HEADER, grantFor, obtainStepUp, readStepUpRefusal, scopeForRequest, type StepUpHooks,
+} from './step-up.ts';
 
 const log = createLogger('ApiFetch');
 
@@ -190,11 +193,13 @@ export async function refreshAccessToken(): Promise<boolean> {
   return _refreshPromise;
 }
 
-function withAuth(init: RequestInit, token: string | null, csrf?: string | null): RequestInit {
+function withAuth(init: RequestInit, token: string | null, csrf?: string | null, stepUp?: string | null): RequestInit {
   const headers = new Headers(init.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
   if (!headers.has('Accept')) headers.set('Accept', 'application/json');
   if (csrf) headers.set('X-CSRF-Token', csrf);
+  // P7 B2: a step-up grant travels ONLY in this explicit header, never in storage or a cookie.
+  if (stepUp) headers.set(STEP_UP_HEADER, stepUp);
   return { ...init, headers, credentials: init.credentials ?? 'include' };
 }
 
@@ -267,6 +272,10 @@ export interface TypedResponse<T> extends Response {
 /**
  * Auth'lu fetch. 401 alırsa bir kez token yeniler ve isteği BİR kez tekrarlar.
  * Yenileme başarısızsa oturum kapatılır ve 401 yanıtı çağırana döner.
+ *
+ * P7 B2: a `403 STEP_UP_REQUIRED` refusal is handed to the step-up owner
+ * (`step-up.ts`), which supplies a grant it holds or asks for ONE proof; the
+ * request is then sent once more with that grant. Cancel returns the original 403.
  */
 export async function apiFetch<T = unknown>(
   url: string,
@@ -296,6 +305,35 @@ export async function apiFetch<T = unknown>(
     }));
   }
 
+  // A grant this client already holds for the action's scope rides along up front.
+  const scope = scopeForRequest(method, target);
+  const held = scope ? grantFor(scope) : null;
+  let response = await sendAuthed(target, init, mutating, held);
+
+  const refusal = await readStepUpRefusal(response);
+  if (refusal) {
+    let grant: string | null = null;
+    try {
+      grant = await obtainStepUp(refusal, held, STEP_UP_HOOKS);
+    } catch (error) {
+      log.warn('Step-up proof could not be obtained', error);
+    }
+    if (grant) response = await sendAuthed(target, init, mutating, grant);
+  }
+  return attach(response);
+}
+
+/** Proofs go through this same client (CSRF, refresh) and are never step-up protected themselves. */
+const STEP_UP_HOOKS: StepUpHooks = {
+  send: (path, body) => apiFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }),
+  signInAgain: () => { logout(); },
+};
+
+async function sendAuthed(target: string, init: RequestInit, mutating: boolean, stepUp: string | null): Promise<Response> {
   // ── ILK MUTASYON: JETONU REDDİ BEKLEMEDEN AL ─────────────────────────────
   // Önbellekte jeton yokken istek göndermek, oturumun ilk mutasyonunda GARANTİLİ bir
   // 403 üretiyordu (ölçüldü: her girişte PATCH 403 → jeton → PATCH 200, konsolda kırmızı
@@ -303,17 +341,17 @@ export async function apiFetch<T = unknown>(
   // önbellekteki jetonu kullanır ve döndürme onarımı aşağıda aynen durur.
   if (mutating && !_csrfToken && readToken()) await fetchCsrfToken();
 
-  let response = await fetch(target, withAuth(init, readToken(), mutating ? _csrfToken : null));
+  let response = await fetch(target, withAuth(init, readToken(), mutating ? _csrfToken : null, stepUp));
 
   // CSRF reddi → jetonu tazele ve isteği BİR kez tekrarla (jeton döndürülmüş
   // olabilir). Yalnız mutasyonlarda ve yalnız sebep gerçekten CSRF ise.
   if (mutating && response.status === 403 && await isCsrfFailure(response)) {
     _csrfToken = null;
     const fresh = await fetchCsrfToken();
-    if (fresh) response = await fetch(target, withAuth(init, readToken(), fresh));
+    if (fresh) response = await fetch(target, withAuth(init, readToken(), fresh, stepUp));
   }
 
-  if (response.status !== 401) return attach(response);
+  if (response.status !== 401) return response;
 
   // Tek retry — ikinci 401'de tekrar refresh döngüsü başlatılmaz.
   const refreshed = await refreshAccessToken();
@@ -325,30 +363,29 @@ export async function apiFetch<T = unknown>(
       // reddedilmemiştir. Çağırana geçici bağımlılık hatası verilir; token ve
       // refresh cookie korunur, böylece UI yeniden deneyebilir.
       log.warn('Access token yenileme geçici olarak kullanılamıyor — oturum korunuyor');
-      const transient = new Response(JSON.stringify({ error: 'AUTH_REFRESH_TEMPORARILY_UNAVAILABLE' }), {
+      return new Response(JSON.stringify({ error: 'AUTH_REFRESH_TEMPORARILY_UNAVAILABLE' }), {
         status: 503,
         statusText: 'Service Unavailable',
         headers: { 'Content-Type': 'application/json', 'Retry-After': '1' },
       });
-      return attach(transient);
     }
     if (wasLastRefreshAnonymous()) {
       // Giriş yapılmamış: 401 doğru yanıttır ve çağıranın işidir. Burada çıkış
       // yapmak, hiç var olmayan bir oturumu kapatmaya çalışmaktır.
-      return attach(response);
+      return response;
     }
     log.warn('Oturum süresi doldu — çıkış yapılıyor');
     logout();
-    return attach(response);
+    return response;
   }
 
-  response = await fetch(target, withAuth(init, readToken(), mutating ? _csrfToken : null));
+  response = await fetch(target, withAuth(init, readToken(), mutating ? _csrfToken : null, stepUp));
   if (response.status === 401) {
     log.warn('Yenilemeden sonra da 401 — oturum kapatılıyor');
     _refreshDisabled = true;
     logout();
   }
-  return attach(response);
+  return response;
 }
 
 export default apiFetch;

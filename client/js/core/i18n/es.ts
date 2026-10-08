@@ -2308,6 +2308,18 @@ const translations: Record<string, string> = {
   "srv_discoverable_hint": "Si está desactivado, el servidor solo se puede encontrar y unir mediante un enlace de invitación válido.",
   "srv_category_label": "Categoría",
   "srv_category_other": "Otro",
+  // P7 B2 — step-up ("prove it is still you")
+  "stepup_title": "Confirma que eres tú",
+  "stepup_confirm": "Continuar",
+  "stepup_password_label": "Tu contraseña",
+  "stepup_code_label": "Código de la app de autenticación o código de respaldo",
+  "stepup_wrong": "No coincide. Inténtalo de nuevo.",
+  "stepup_empty": "Escríbelo para continuar.",
+  "stepup_sign_in_again": "Volver a iniciar sesión",
+  "stepup_sign_in_again_body": "Vuelve a iniciar sesión para confirmar que eres tú y repite esta acción en los próximos 10 minutos.",
+  "stepup_locked": "Demasiados intentos. Vuelve a iniciar sesión para continuar; el inicio de sesión no se ve afectado.",
+  "stepup_generic_why": "Esta acción necesita una nueva confirmación de que eres tú.",
+  "stepup_unavailable": "La confirmación no está disponible en este momento. Inténtalo de nuevo.",
 };
 
 export default translations;
