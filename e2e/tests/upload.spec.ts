@@ -9,7 +9,7 @@ import { test, expect } from '../helpers/apiTest';
 import { request as pwRequest } from '@playwright/test';
 import * as path from 'path';
 import { BridgePage, getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
-import { openSocket, waitForEvent, closeSockets } from '../helpers/socket';
+import { openSocket, waitForEvent, closeSockets, paceSends, joinChannelConfirmed } from '../helpers/socket';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
@@ -27,40 +27,41 @@ test.describe('Dosya Yükleme Akışları', () => {
 
     const server = await createTestServer(request, tokens.alice, `Upload E2E ${Date.now()}`);
     testServerId = server?._id || server?.id;
-    if (!testServerId) return;
+    expect(testServerId, 'upload fixture server creation failed').toBeTruthy();
 
     const ch = await createTestChannel(request, tokens.alice, testServerId, 'upload-test');
     testChannelId = ch?._id || ch?.id;
+    expect(testChannelId, 'upload fixture channel creation failed').toBeTruthy();
   });
 
   // ── API Testleri ─────────────────────────────────────────
 
   test('API: küçük PNG yükleme başarılı', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+    expect(testChannelId, 'upload fixture failure must fail rather than skip').toBeTruthy();
     const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
     const res = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
       multipart: { file: { name: 'test.png', mimeType: 'image/png', buffer: imgBuffer }, channelId: testChannelId },
     });
-    expect(res.status()).toBeLessThan(500);
-    if (res.status() < 300) {
-      const data = await res.json();
-      expect(data.url || data.fileUrl || data.id || data._id).toBeTruthy();
-    }
+    expect(res.status(), `PNG upload rejected: ${await res.text()}`).toBe(200);
+    const data = await res.json();
+    expect(data.url || data.fileUrl).toBeTruthy();
   });
 
   test('API: metin dosyası yükleme', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+    expect(testChannelId, 'upload fixture failure must fail rather than skip').toBeTruthy();
     const txtBuffer = Buffer.from(TINY_TXT, 'utf-8');
     const res = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
       multipart: { file: { name: 'test.txt', mimeType: 'text/plain', buffer: txtBuffer }, channelId: testChannelId },
     });
-    expect(res.status()).toBeLessThan(500);
+    expect(res.status(), `text upload rejected: ${await res.text()}`).toBe(200);
+    const data = await res.json();
+    expect(data.url || data.fileUrl).toBeTruthy();
   });
 
   test('API: yetkisiz yükleme reddedilir', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+    expect(testChannelId, 'upload fixture failure must fail rather than skip').toBeTruthy();
     const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
     const res = await request.post(`${BASE_URL}/api/upload`, {
       multipart: { file: { name: 'hack.png', mimeType: 'image/png', buffer: imgBuffer }, channelId: testChannelId },
@@ -69,7 +70,7 @@ test.describe('Dosya Yükleme Akışları', () => {
   });
 
   test('API: çok büyük dosya reddedilir (413)', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
+    expect(testChannelId, 'upload fixture failure must fail rather than skip').toBeTruthy();
     const bigBuffer = Buffer.alloc(30 * 1024 * 1024, 0);
     const res = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
@@ -87,7 +88,7 @@ test.describe('Dosya Yükleme Akışları', () => {
   // ── YENİ: Gerçek akış testleri ──────────────────────────
 
   test('API: yükleme yanıtı geçerli URL döndürür ve URL yetkisiz erişime KAPALIDIR', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli');
+    expect(testChannelId, 'upload fixture failure must fail rather than skip').toBeTruthy();
 
     const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
     const uploadRes = await request.post(`${BASE_URL}/api/upload`, {
@@ -140,40 +141,49 @@ test.describe('Dosya Yükleme Akışları', () => {
     } finally { await anonCtx.dispose(); }
   });
 
-  test('Socket: dosya mesajı gönderilince kanaldaki üyeye message:new gelir', async ({ request }) => {
-    test.skip(!testChannelId, 'Upload test kanalı fixture gerekli'  );
-
-    const imgBuffer = Buffer.from(TINY_PNG_B64, 'base64');
-    const bob = await openSocket(tokens.bob).catch(() => null);
-    test.skip(!bob, 'Test fixture hazır değil'  );
-
+  test('Socket: authenticated file:send emits matching message:new and persists attachment', async ({ request }) => {
+    const observer = await openSocket(tokens.alice);
+    const sender = await openSocket(tokens.alice);
     try {
-      bob.emit('channel:join', testChannelId);
-      await new Promise(r => setTimeout(r, 400));
+      await paceSends('alice');
+      await joinChannelConfirmed(observer, testChannelId, testServerId);
 
-      const uploadRes = await request.post(`${BASE_URL}/api/upload`, {
+      const upload = await request.post(`${BASE_URL}/api/upload`, {
         headers: { Authorization: `Bearer ${tokens.alice}` },
-        multipart: { file: { name: 'notify.png', mimeType: 'image/png', buffer: imgBuffer }, channelId: testChannelId },
+        multipart: {
+          file: { name: 'notify.png', mimeType: 'image/png', buffer: Buffer.from(TINY_PNG_B64, 'base64') },
+          channelId: testChannelId,
+        },
       });
-      if (!uploadRes.ok()) return;
+      expect(upload.status(), `upload rejected: ${await upload.text()}`).toBe(200);
+      const file = await upload.json() as { url: string; fileName: string; fileType: string };
+      expect(file.url).toBeTruthy();
 
-      const body    = await uploadRes.json();
-      const fileUrl = body.url ?? body.fileUrl;
-      if (!fileUrl) return;
-
-      const msgEventPromise = waitForEvent<{ attachments?: string[] }>(bob, 'message:new', 4_000).catch(() => null);
-
-      await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
-        headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-        data:    JSON.stringify({ content: 'socket notify test', attachments: [fileUrl] }),
+      const seen = waitForEvent<{ type?: string; fileUrl?: string; fileName?: string }>(
+        observer, 'message:new', 15_000,
+        msg => msg?.type === 'file' && msg?.fileUrl === file.url,
+      );
+      await paceSends('alice');
+      sender.emit('file:send', {
+        channelId: testChannelId, serverId: testServerId,
+        fileName: file.fileName, fileType: file.fileType, fileUrl: file.url,
       });
+      const notified = await seen; // event absence is a test failure
+      expect(notified.fileUrl).toBe(file.url);
+      expect(notified.fileName).toBe(file.fileName);
 
-      const msgEvent = await msgEventPromise;
-      if (msgEvent) {
-        expect(Array.isArray(msgEvent.attachments)).toBe(true);
-      }
+      await expect.poll(async () => {
+        const res = await request.get(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
+          headers: { Authorization: `Bearer ${tokens.alice}` },
+        });
+        expect(res.status()).toBe(200);
+        const body = await res.json();
+        const messages = Array.isArray(body) ? body : body.messages ?? [];
+        return messages.some((m: { type?: string; fileUrl?: string }) =>
+          m.type === 'file' && m.fileUrl === file.url);
+      }, { timeout: 20_000 }).toBe(true);
     } finally {
-      closeSockets(bob);
+      closeSockets(sender, observer);
     }
   });
 
