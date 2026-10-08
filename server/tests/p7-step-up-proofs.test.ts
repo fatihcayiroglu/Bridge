@@ -209,6 +209,26 @@ describe('POST /api/2fa/step-up (level 2)', () => {
   });
 });
 
+describe('post-revocation: a security change ends every earlier grant', () => {
+  it('enabling 2FA rotates the session — the grant used to enable it no longer works, even with the new token', async () => {
+    const u = await makeUser();
+    const proof = await request(app).post('/api/step-up/password').set('Authorization', `Bearer ${u.token}`)
+      .send({ password: 'correct horse', scope: 'account-security' }).expect(200);
+    const grant = { 'x-bridge-step-up': proof.body.stepUp.token as string };
+    const setup = await request(app).post('/api/2fa/setup').set('Authorization', `Bearer ${u.token}`).set(grant).expect(200);
+    const code = totpNow(setup.body.secret)[1]!;
+    const verify = await request(app).post('/api/2fa/verify').set('Authorization', `Bearer ${u.token}`).set(grant).send({ code }).expect(200);
+    const newToken = verify.body.token as string;
+    expect(newToken).toBeTruthy();
+    // The old access token is revoked…
+    await request(app).post('/api/2fa/backup-codes/regenerate').set('Authorization', `Bearer ${u.token}`).set(grant).send({ password: 'correct horse' }).expect(401);
+    // …and so is the old grant, even beside the new token (and it was only level 1 anyway).
+    const r = await request(app).post('/api/2fa/backup-codes/regenerate').set('Authorization', `Bearer ${newToken}`).set(grant).send({ password: 'correct horse' });
+    expect(r.status).toBe(403);
+    expect(r.body).toMatchObject({ error: 'STEP_UP_REQUIRED', reasons: ['step_up_revoked'], level: 2 });
+  });
+});
+
 describe('sign-in responses carry one grant per scope', () => {
   it('2FA sign-in with a backup code returns level-2 backup_code grants', async () => {
     const u = await makeUser(with2fa());
