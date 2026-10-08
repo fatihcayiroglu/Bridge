@@ -634,6 +634,17 @@ jobs:
       - name: Full Chromium suite
         if: ${{ !cancelled() }}
         run: cd e2e && npx playwright test --project=chromium --retries=0 --output=test-results/chromium --reporter=list
+      # The baseline Chromium job runs in normal local-storage mode and must
+      # keep its intentional WEBP_CONVERT=false skip. Execute the optional
+      # conversion contract again with the feature ENABLED on its own server.
+      # scripts/e2e-server.js forwards WEBP_CONVERT to the spawned server.
+      # Missing sharp/conversion now fails this evidence step instead of
+      # silently treating optional functionality as verified.
+      - name: WebP enabled upload conversion (real runtime)
+        if: ${{ !cancelled() }}
+        env:
+          WEBP_CONVERT: 'true'
+        run: cd e2e && npx playwright test tests/webp-upload.spec.ts --project=chromium --retries=0 --output=test-results/webp-enabled --reporter=list
       - name: Firefox compatibility suite
         if: ${{ !cancelled() }}
         run: cd e2e && npx playwright test --project=firefox --retries=0 --output=test-results/firefox --reporter=list
