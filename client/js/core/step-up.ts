@@ -151,8 +151,30 @@ export async function readStepUpRefusal(response: Response): Promise<StepUpRefus
   }
 }
 
+/**
+ * Why this action needs a proof, in the person's language. Keys stay literal
+ * (the i18n usage gate requires every key to appear in source). The server's
+ * English `why` is for API consumers; an action unknown to this client gets the
+ * generic explanation.
+ */
 function explanation(refusal: StepUpRefusal): string {
-  return refusal.why || t('stepup_generic_why');
+  switch (refusal.action) {
+    case 'email.change': return t('stepup_why_email_change');
+    case 'passkey.add': return t('stepup_why_passkey_add');
+    case 'passkey.remove': return t('stepup_why_passkey_remove');
+    case 'two_factor.enable': return t('stepup_why_two_factor_enable');
+    case 'two_factor.disable': return t('stepup_why_two_factor_disable');
+    case 'backup_codes.regenerate': return t('stepup_why_backup_codes');
+    case 'account.export': return t('stepup_why_account_export');
+    case 'account.delete': return t('stepup_why_account_delete');
+    case 'server.delete': return t('stepup_why_server_delete');
+    case 'admin.user.delete': return t('stepup_why_admin_user_delete');
+    case 'admin.server.delete': return t('stepup_why_admin_server_delete');
+    case 'moderation.ban':
+    case 'moderation.kick':
+    case 'messages.bulk_delete': return t('stepup_why_moderation_burst');
+    default: return t('stepup_generic_why');
+  }
 }
 
 async function offerSignInAgain(refusal: StepUpRefusal, hooks: StepUpHooks, locked: boolean): Promise<null> {
@@ -183,11 +205,12 @@ async function askForProof(refusal: StepUpRefusal, hooks: StepUpHooks): Promise<
   for (;;) {
     const value = await promptProductText({
       title: t('stepup_title'),
-      message: problem ? `${explanation(refusal)}\n\n${problem}` : explanation(refusal),
+      message: explanation(refusal),
       confirmLabel: t('stepup_confirm'),
-      placeholder: secondFactor ? t('stepup_code_label') : t('stepup_password_label'),
+      inputLabel: secondFactor ? t('stepup_code_label') : t('stepup_password_label'),
       inputType: secondFactor ? 'one-time-code' : 'password',
       maxLength: 128,
+      ...(problem ? { error: problem } : {}),
     });
     if (value === null) return null;
     if (!value.trim()) { problem = t('stepup_empty'); continue; }

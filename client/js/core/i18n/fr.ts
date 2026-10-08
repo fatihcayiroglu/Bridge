@@ -2320,6 +2320,18 @@ const translations: Record<string, string> = {
   "stepup_locked": "Trop de tentatives. Reconnectez-vous pour continuer — la connexion n’est pas affectée.",
   "stepup_generic_why": "Cette action nécessite une nouvelle confirmation que c’est bien vous.",
   "stepup_unavailable": "La confirmation est temporairement indisponible. Veuillez réessayer.",
+  "stepup_why_email_change": "Votre e-mail de récupération contrôle la réinitialisation du mot de passe ; le modifier nécessite donc une nouvelle confirmation.",
+  "stepup_why_passkey_add": "Une nouvelle clé d’accès est un moyen permanent de vous connecter à votre compte.",
+  "stepup_why_passkey_remove": "Supprimer une clé d’accès peut vous empêcher d’accéder à votre compte.",
+  "stepup_why_two_factor_enable": "Activer la connexion en deux étapes avec une application d’authentification que vous ne contrôlez pas vous bloquerait l’accès.",
+  "stepup_why_two_factor_disable": "Désactiver la connexion en deux étapes supprime votre second facteur.",
+  "stepup_why_backup_codes": "De nouveaux codes de secours peuvent remplacer votre second facteur.",
+  "stepup_why_account_export": "L’export contient tout l’historique de votre compte.",
+  "stepup_why_account_delete": "La suppression de votre compte est irréversible.",
+  "stepup_why_server_delete": "La suppression d’un serveur est irréversible pour tous ses membres.",
+  "stepup_why_admin_user_delete": "La suppression d’un compte sur cette instance est irréversible.",
+  "stepup_why_admin_server_delete": "La suppression d’un serveur sur cette instance est irréversible.",
+  "stepup_why_moderation_burst": "Vous avez effectué de nombreux bannissements, expulsions ou suppressions en masse en peu de temps. Confirmez une fois que c’est bien vous pour continuer pendant les 10 prochaines minutes.",
 };
 
 export default translations;

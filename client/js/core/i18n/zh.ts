@@ -2320,6 +2320,18 @@ const translations: Record<string, string> = {
   "stepup_locked": "尝试次数过多。请重新登录以继续——登录本身不受影响。",
   "stepup_generic_why": "此操作需要重新确认是你本人。",
   "stepup_unavailable": "暂时无法确认，请重试。",
+  "stepup_why_email_change": "恢复邮箱用于重置密码，因此更改它需要重新确认是你本人。",
+  "stepup_why_passkey_add": "新的通行密钥是登录你账户的永久方式。",
+  "stepup_why_passkey_remove": "移除通行密钥可能会让你无法访问账户。",
+  "stepup_why_two_factor_enable": "使用不受你控制的验证器开启两步登录会把你锁在账户之外。",
+  "stepup_why_two_factor_disable": "关闭两步登录会移除你的第二重验证。",
+  "stepup_why_backup_codes": "新的备用代码可以代替你的第二重验证使用。",
+  "stepup_why_account_export": "导出内容包含你账户的全部历史记录。",
+  "stepup_why_account_delete": "删除账户后无法撤销。",
+  "stepup_why_server_delete": "删除服务器后，对所有成员都无法撤销。",
+  "stepup_why_admin_user_delete": "删除此实例上的账户后无法撤销。",
+  "stepup_why_admin_server_delete": "删除此实例上的服务器后无法撤销。",
+  "stepup_why_moderation_burst": "你在短时间内进行了大量封禁、踢出或批量删除。请确认一次是你本人，以便在接下来的 10 分钟内继续操作。",
 };
 
 export default translations;

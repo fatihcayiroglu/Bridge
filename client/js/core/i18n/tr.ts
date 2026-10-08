@@ -2291,5 +2291,17 @@ const translations: Record<string, string> = {
   "stepup_locked": "Çok fazla deneme. Devam etmek için yeniden giriş yapın — giriş bundan etkilenmez.",
   "stepup_generic_why": "Bu işlem için siz olduğunuzun yeniden doğrulanması gerekiyor.",
   "stepup_unavailable": "Doğrulama şu anda kullanılamıyor. Lütfen tekrar deneyin.",
+  "stepup_why_email_change": "Kurtarma e-postanız parola sıfırlamayı kontrol eder; bu yüzden değiştirmek yeni bir doğrulama gerektirir.",
+  "stepup_why_passkey_add": "Yeni bir geçiş anahtarı, hesabınıza kalıcı bir giriş yoludur.",
+  "stepup_why_passkey_remove": "Bir geçiş anahtarını kaldırmak hesabınıza erişiminizi kaybettirebilir.",
+  "stepup_why_two_factor_enable": "Kontrol etmediğiniz bir doğrulama uygulamasıyla iki adımlı girişi açmak sizi hesabınızın dışında bırakır.",
+  "stepup_why_two_factor_disable": "İki adımlı girişi kapatmak ikinci doğrulama adımınızı kaldırır.",
+  "stepup_why_backup_codes": "Yeni yedek kodlar ikinci doğrulama adımınızın yerine kullanılabilir.",
+  "stepup_why_account_export": "Dışa aktarım, hesabınızın tüm geçmişini içerir.",
+  "stepup_why_account_delete": "Hesabınızı silmek geri alınamaz.",
+  "stepup_why_server_delete": "Bir sunucuyu silmek, üyelerinin hiçbiri için geri alınamaz.",
+  "stepup_why_admin_user_delete": "Bu Bridge kurulumundaki bir hesabı silmek geri alınamaz.",
+  "stepup_why_admin_server_delete": "Bu Bridge kurulumundaki bir sunucuyu silmek geri alınamaz.",
+  "stepup_why_moderation_burst": "Kısa sürede çok sayıda yasaklama, atma veya toplu silme yaptınız. Sonraki 10 dakika devam etmek için bir kez siz olduğunuzu doğrulayın.",
 };
 export default translations;

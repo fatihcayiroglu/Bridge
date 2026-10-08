@@ -2320,6 +2320,18 @@ const translations: Record<string, string> = {
   "stepup_locked": "Demasiados intentos. Vuelve a iniciar sesión para continuar; el inicio de sesión no se ve afectado.",
   "stepup_generic_why": "Esta acción necesita una nueva confirmación de que eres tú.",
   "stepup_unavailable": "La confirmación no está disponible en este momento. Inténtalo de nuevo.",
+  "stepup_why_email_change": "Tu correo de recuperación controla el restablecimiento de la contraseña, así que cambiarlo requiere una nueva confirmación.",
+  "stepup_why_passkey_add": "Una nueva llave de acceso es una forma permanente de iniciar sesión en tu cuenta.",
+  "stepup_why_passkey_remove": "Quitar una llave de acceso puede dejarte sin acceso a tu cuenta.",
+  "stepup_why_two_factor_enable": "Activar el inicio de sesión en dos pasos con un autenticador que no controlas te dejaría fuera.",
+  "stepup_why_two_factor_disable": "Desactivar el inicio de sesión en dos pasos elimina tu segundo factor.",
+  "stepup_why_backup_codes": "Los nuevos códigos de respaldo pueden usarse en lugar de tu segundo factor.",
+  "stepup_why_account_export": "La exportación contiene todo el historial de tu cuenta.",
+  "stepup_why_account_delete": "Eliminar tu cuenta no se puede deshacer.",
+  "stepup_why_server_delete": "Eliminar un servidor no se puede deshacer para ninguno de sus miembros.",
+  "stepup_why_admin_user_delete": "Eliminar una cuenta en esta instancia no se puede deshacer.",
+  "stepup_why_admin_server_delete": "Eliminar un servidor en esta instancia no se puede deshacer.",
+  "stepup_why_moderation_burst": "Has hecho muchos baneos, expulsiones o eliminaciones masivas en poco tiempo. Confirma que eres tú una vez para seguir durante los próximos 10 minutos.",
 };
 
 export default translations;

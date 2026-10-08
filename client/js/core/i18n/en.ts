@@ -2286,5 +2286,17 @@ const translations: Record<string, string> = {
   "stepup_locked": "Too many attempts. Sign in again to continue — signing in is not affected.",
   "stepup_generic_why": "This action needs a fresh confirmation that it's you.",
   "stepup_unavailable": "Confirmation is temporarily unavailable. Please try again.",
+  "stepup_why_email_change": "Your recovery e-mail controls password reset, so changing it needs a fresh confirmation.",
+  "stepup_why_passkey_add": "A new passkey is a permanent way to sign in to your account.",
+  "stepup_why_passkey_remove": "Removing a passkey can lock you out of your account.",
+  "stepup_why_two_factor_enable": "Turning on two-step sign-in with an authenticator you don't control would lock you out.",
+  "stepup_why_two_factor_disable": "Turning off two-step sign-in removes your second factor.",
+  "stepup_why_backup_codes": "New backup codes can be used instead of your second factor.",
+  "stepup_why_account_export": "The export contains your whole account history.",
+  "stepup_why_account_delete": "Deleting your account cannot be undone.",
+  "stepup_why_server_delete": "Deleting a server cannot be undone for any of its members.",
+  "stepup_why_admin_user_delete": "Deleting an account on this instance cannot be undone.",
+  "stepup_why_admin_server_delete": "Deleting a server on this instance cannot be undone.",
+  "stepup_why_moderation_burst": "You've taken many bans, kicks or bulk deletions in a short time. Confirm it's you once to keep going for the next 10 minutes.",
 };
 export default translations;

@@ -2320,6 +2320,18 @@ const translations: Record<string, string> = {
   "stepup_locked": "Muitas tentativas. Entre novamente para continuar — o login não é afetado.",
   "stepup_generic_why": "Esta ação precisa de uma nova confirmação de que é você.",
   "stepup_unavailable": "A confirmação está indisponível no momento. Tente novamente.",
+  "stepup_why_email_change": "Seu e-mail de recuperação controla a redefinição de senha, por isso alterá-lo exige uma nova confirmação.",
+  "stepup_why_passkey_add": "Uma nova chave de acesso é uma forma permanente de entrar na sua conta.",
+  "stepup_why_passkey_remove": "Remover uma chave de acesso pode deixar você sem acesso à sua conta.",
+  "stepup_why_two_factor_enable": "Ativar o login em duas etapas com um autenticador que você não controla deixaria você sem acesso.",
+  "stepup_why_two_factor_disable": "Desativar o login em duas etapas remove seu segundo fator.",
+  "stepup_why_backup_codes": "Novos códigos de backup podem ser usados no lugar do seu segundo fator.",
+  "stepup_why_account_export": "A exportação contém todo o histórico da sua conta.",
+  "stepup_why_account_delete": "Excluir sua conta não pode ser desfeito.",
+  "stepup_why_server_delete": "Excluir um servidor não pode ser desfeito para nenhum dos membros.",
+  "stepup_why_admin_user_delete": "Excluir uma conta nesta instância não pode ser desfeito.",
+  "stepup_why_admin_server_delete": "Excluir um servidor nesta instância não pode ser desfeito.",
+  "stepup_why_moderation_burst": "Você fez muitos banimentos, expulsões ou exclusões em massa em pouco tempo. Confirme uma vez que é você para continuar pelos próximos 10 minutos.",
 };
 
 export default translations;

@@ -2320,6 +2320,18 @@ const translations: Record<string, string> = {
   "stepup_locked": "Zu viele Versuche. Melden Sie sich erneut an, um fortzufahren – die Anmeldung selbst ist nicht betroffen.",
   "stepup_generic_why": "Diese Aktion erfordert eine neue Bestätigung, dass Sie es sind.",
   "stepup_unavailable": "Die Bestätigung ist vorübergehend nicht verfügbar. Bitte versuchen Sie es erneut.",
+  "stepup_why_email_change": "Ihre Wiederherstellungs-E-Mail steuert das Zurücksetzen des Passworts; eine Änderung erfordert daher eine neue Bestätigung.",
+  "stepup_why_passkey_add": "Ein neuer Passkey ist ein dauerhafter Weg, sich bei Ihrem Konto anzumelden.",
+  "stepup_why_passkey_remove": "Das Entfernen eines Passkeys kann Sie aus Ihrem Konto aussperren.",
+  "stepup_why_two_factor_enable": "Die Zwei-Schritt-Anmeldung mit einer Authenticator-App einzuschalten, die Sie nicht kontrollieren, würde Sie aussperren.",
+  "stepup_why_two_factor_disable": "Das Ausschalten der Zwei-Schritt-Anmeldung entfernt Ihren zweiten Faktor.",
+  "stepup_why_backup_codes": "Neue Backup-Codes können anstelle Ihres zweiten Faktors verwendet werden.",
+  "stepup_why_account_export": "Der Export enthält den gesamten Verlauf Ihres Kontos.",
+  "stepup_why_account_delete": "Das Löschen Ihres Kontos kann nicht rückgängig gemacht werden.",
+  "stepup_why_server_delete": "Das Löschen eines Servers kann für keines seiner Mitglieder rückgängig gemacht werden.",
+  "stepup_why_admin_user_delete": "Das Löschen eines Kontos auf dieser Instanz kann nicht rückgängig gemacht werden.",
+  "stepup_why_admin_server_delete": "Das Löschen eines Servers auf dieser Instanz kann nicht rückgängig gemacht werden.",
+  "stepup_why_moderation_burst": "Sie haben in kurzer Zeit viele Sperren, Rauswürfe oder Massenlöschungen vorgenommen. Bestätigen Sie einmal, dass Sie es sind, um in den nächsten 10 Minuten weiterzumachen.",
 };
 
 export default translations;

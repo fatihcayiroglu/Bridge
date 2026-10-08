@@ -2320,6 +2320,18 @@ const translations: Record<string, string> = {
   "stepup_locked": "시도 횟수가 너무 많습니다. 계속하려면 다시 로그인하세요. 로그인에는 영향이 없습니다.",
   "stepup_generic_why": "이 작업을 하려면 본인임을 다시 확인해야 합니다.",
   "stepup_unavailable": "지금은 확인을 할 수 없습니다. 다시 시도하세요.",
+  "stepup_why_email_change": "복구 이메일은 비밀번호 재설정에 사용되므로 변경하려면 본인 확인이 필요합니다.",
+  "stepup_why_passkey_add": "새 패스키는 계정에 영구적으로 로그인할 수 있는 방법입니다.",
+  "stepup_why_passkey_remove": "패스키를 제거하면 계정에 접근하지 못할 수 있습니다.",
+  "stepup_why_two_factor_enable": "직접 관리하지 않는 인증 앱으로 2단계 로그인을 켜면 계정에 접근할 수 없게 됩니다.",
+  "stepup_why_two_factor_disable": "2단계 로그인을 끄면 두 번째 인증 수단이 제거됩니다.",
+  "stepup_why_backup_codes": "새 백업 코드는 두 번째 인증 수단 대신 사용할 수 있습니다.",
+  "stepup_why_account_export": "내보내기에는 계정의 전체 기록이 포함됩니다.",
+  "stepup_why_account_delete": "계정 삭제는 되돌릴 수 없습니다.",
+  "stepup_why_server_delete": "서버 삭제는 어떤 멤버에게도 되돌릴 수 없습니다.",
+  "stepup_why_admin_user_delete": "이 인스턴스의 계정 삭제는 되돌릴 수 없습니다.",
+  "stepup_why_admin_server_delete": "이 인스턴스의 서버 삭제는 되돌릴 수 없습니다.",
+  "stepup_why_moderation_burst": "짧은 시간에 많은 차단, 추방 또는 일괄 삭제를 했습니다. 다음 10분 동안 계속하려면 한 번 본인 확인을 해 주세요.",
 };
 
 export default translations;

@@ -2320,6 +2320,18 @@ const translations: Record<string, string> = {
   "stepup_locked": "試行回数が多すぎます。続行するにはもう一度サインインしてください（サインイン自体には影響しません）。",
   "stepup_generic_why": "この操作には、本人であることの再確認が必要です。",
   "stepup_unavailable": "現在確認を行えません。もう一度お試しください。",
+  "stepup_why_email_change": "復旧用メールはパスワードのリセットに使われるため、変更するには本人確認が必要です。",
+  "stepup_why_passkey_add": "新しいパスキーは、アカウントに恒久的にサインインできる手段になります。",
+  "stepup_why_passkey_remove": "パスキーを削除すると、アカウントにアクセスできなくなる可能性があります。",
+  "stepup_why_two_factor_enable": "自分が管理していない認証アプリで2段階認証を有効にすると、アカウントにアクセスできなくなります。",
+  "stepup_why_two_factor_disable": "2段階認証を無効にすると、2つ目の認証要素がなくなります。",
+  "stepup_why_backup_codes": "新しいバックアップコードは、2つ目の認証要素の代わりに使えます。",
+  "stepup_why_account_export": "エクスポートにはアカウントの全履歴が含まれます。",
+  "stepup_why_account_delete": "アカウントの削除は元に戻せません。",
+  "stepup_why_server_delete": "サーバーの削除は、どのメンバーにとっても元に戻せません。",
+  "stepup_why_admin_user_delete": "このインスタンス上のアカウントの削除は元に戻せません。",
+  "stepup_why_admin_server_delete": "このインスタンス上のサーバーの削除は元に戻せません。",
+  "stepup_why_moderation_burst": "短時間に多くのBAN、キック、一括削除を行いました。続く10分間操作を続けるには、一度本人確認をしてください。",
 };
 
 export default translations;

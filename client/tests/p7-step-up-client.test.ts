@@ -152,6 +152,31 @@ describe('memory-only grants', () => {
   });
 });
 
+describe('localised explanations', () => {
+  it.each([
+    ['email.change', 'stepup_why_email_change'],
+    ['passkey.add', 'stepup_why_passkey_add'],
+    ['passkey.remove', 'stepup_why_passkey_remove'],
+    ['two_factor.enable', 'stepup_why_two_factor_enable'],
+    ['two_factor.disable', 'stepup_why_two_factor_disable'],
+    ['backup_codes.regenerate', 'stepup_why_backup_codes'],
+    ['account.export', 'stepup_why_account_export'],
+    ['account.delete', 'stepup_why_account_delete'],
+    ['server.delete', 'stepup_why_server_delete'],
+    ['admin.user.delete', 'stepup_why_admin_user_delete'],
+    ['admin.server.delete', 'stepup_why_admin_server_delete'],
+    ['moderation.ban', 'stepup_why_moderation_burst'],
+    ['moderation.kick', 'stepup_why_moderation_burst'],
+    ['messages.bulk_delete', 'stepup_why_moderation_burst'],
+    ['something.new', 'stepup_generic_why'],
+  ])('%s → %s', async (action, key) => {
+    mocks.prompt.mockResolvedValueOnce(null);
+    await obtainStepUp(refusalBody({ action }), null, { send: vi.fn(), signInAgain: vi.fn() });
+    expect(mocks.prompt.mock.calls[0]![0].message).toBe(t(key));
+    expect(t(key)).not.toBe(key);
+  });
+});
+
 describe('readStepUpRefusal', () => {
   it('recognises only a well-formed 403 STEP_UP_REQUIRED and sanitises it', async () => {
     expect(await readStepUpRefusal(response(refusalBody(), 400))).toBeNull();
@@ -197,9 +222,11 @@ describe('apiFetch + step-up', () => {
     expect(exportCalls).toBe(2);
     expect(mocks.prompt).toHaveBeenCalledTimes(1);
     expect(mocks.prompt.mock.calls[0]![0]).toMatchObject({
-      title: t('stepup_title'), inputType: 'password', placeholder: t('stepup_password_label'),
-      message: 'The export contains your whole account history.',
+      title: t('stepup_title'), inputType: 'password', inputLabel: t('stepup_password_label'),
+      // Localised on the client; the server's English `why` is not shown.
+      message: t('stepup_why_account_export'),
     });
+    expect(mocks.prompt.mock.calls[0]![0]).not.toHaveProperty('error');
     expect(grantFor('sensitive-export')).toBe('new-grant');
     // The proof itself went through apiFetch (CSRF attached).
     expect(new Headers((callsTo('/api/step-up/password')[0]![1] as RequestInit).headers).get('X-CSRF-Token')).toBe('csrf');
@@ -207,14 +234,14 @@ describe('apiFetch + step-up', () => {
 
   it('an account with 2FA is asked for an authenticator or backup code', async () => {
     route((url) => url.endsWith('/api/2fa/setup'), (_url, init) =>
-      new Headers(init.headers).get(STEP_UP_HEADER) === 'l2' ? response({ secret: 's' }) : response(refusalBody({ scope: 'account-security', level: 2, methods: ['totp', 'backup_code', 'sign_in'], why: undefined }), 403));
+      new Headers(init.headers).get(STEP_UP_HEADER) === 'l2' ? response({ secret: 's' }) : response(refusalBody({ scope: 'account-security', action: 'two_factor.enable', level: 2, methods: ['totp', 'backup_code', 'sign_in'], why: undefined }), 403));
     route((url) => url.endsWith('/api/2fa/step-up'), (_url, init) => {
       expect(JSON.parse(String(init.body))).toEqual({ code: '123456', scope: 'account-security' });
       return response({ ok: true, stepUp: { token: 'l2', expiresAt: Date.now() + 600_000 } });
     });
     mocks.prompt.mockResolvedValueOnce('123456');
     expect((await apiFetch('/api/2fa/setup', { method: 'POST' })).status).toBe(200);
-    expect(mocks.prompt.mock.calls[0]![0]).toMatchObject({ inputType: 'one-time-code', placeholder: t('stepup_code_label'), message: t('stepup_generic_why') });
+    expect(mocks.prompt.mock.calls[0]![0]).toMatchObject({ inputType: 'one-time-code', inputLabel: t('stepup_code_label'), message: t('stepup_why_two_factor_enable') });
   });
 
   it('cancel returns the original 403 and sends nothing more', async () => {
@@ -235,8 +262,8 @@ describe('apiFetch + step-up', () => {
     mocks.prompt.mockResolvedValueOnce('  ').mockResolvedValueOnce('wrong').mockResolvedValueOnce('right');
     expect((await apiFetch('/api/account/export')).status).toBe(200);
     expect(mocks.prompt).toHaveBeenCalledTimes(3);
-    expect(String(mocks.prompt.mock.calls[1]![0].message)).toContain(t('stepup_empty'));
-    expect(String(mocks.prompt.mock.calls[2]![0].message)).toContain(t('stepup_wrong'));
+    expect(mocks.prompt.mock.calls[1]![0]).toMatchObject({ error: t('stepup_empty'), message: t('stepup_why_account_export') });
+    expect(mocks.prompt.mock.calls[2]![0]).toMatchObject({ error: t('stepup_wrong') });
   });
 
   it('concurrent refusals for one scope share ONE prompt', async () => {
@@ -314,7 +341,7 @@ describe('apiFetch + step-up', () => {
       .mockResolvedValueOnce(response(['not', 'an', 'object'], 503));
     mocks.prompt.mockResolvedValueOnce('a').mockResolvedValueOnce('b').mockResolvedValueOnce('c').mockResolvedValueOnce(null);
     await expect(obtainStepUp(refusalBody(), null, { send, signInAgain: vi.fn() })).resolves.toBeNull();
-    for (const call of [1, 2, 3]) expect(String(mocks.prompt.mock.calls[call]![0].message)).toContain(t('stepup_unavailable'));
+    for (const call of [1, 2, 3]) expect(mocks.prompt.mock.calls[call]![0]).toMatchObject({ error: t('stepup_unavailable') });
   });
 
   it('if the prompt itself fails, apiFetch returns the original refusal', async () => {
