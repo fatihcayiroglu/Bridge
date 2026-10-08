@@ -264,7 +264,7 @@ export async function passkeyLogin(username?: string | null): Promise<boolean> {
     if (typeof sonuc.token !== 'string' || !sonuc.user) {
       throw new PasskeyFlowError(t('passkey_invalid_session', 'Sunucu geçerli bir oturum döndürmedi.'));
     }
-    await startApp(sonuc.token, sonuc.user as never);
+    await startApp(sonuc.token, sonuc.user as never, sonuc.stepUp);
     log.info('passkey ile giriş yapıldı');
     return true;
   } catch (err) {

@@ -16,6 +16,16 @@ import { sanitizeOwnUser } from '../lib/userUtils';
 import { peekTwoFactorLoginChallenge, claimTwoFactorLoginChallenge } from '../lib/twoFactorLoginChallenge';
 import { rotateSecuritySession } from '../lib/securitySession';
 import { parseTokenVersion } from '../lib/tokenVersion';
+import {
+  STEP_UP_POLICY,
+  isStepUpScope,
+  mintSignInGrants,
+  mintStepUpGrant,
+  recordFailedStepUpProof,
+  requireStepUp,
+  stepUpProofsLocked,
+} from '../lib/stepUp';
+import logger from '../lib/logger';
 
 // ── TOTP Implementasyonu (bağımlılıksız) ────────────────────
 function base32Decode(str: string): Buffer {
@@ -223,7 +233,7 @@ function generateBackupCodes(n = 8): string[] {
  *                 secret: { type: string }
  *                 qrCode: { type: string, description: 'data URI' }
  */
-router.post('/setup', authMiddleware, limits.twoFactor(), async (req, res) => {
+router.post('/setup', authMiddleware, limits.twoFactor(), requireStepUp('two_factor.enable'), async (req, res) => {
   const _u = castAuthed(req).user;
   const user = await Users.findById(_u.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -261,7 +271,7 @@ router.post('/setup', authMiddleware, limits.twoFactor(), async (req, res) => {
  *       200: { description: 2FA aktifleştirildi }
  *       400: { description: Geçersiz kod }
  */
-router.post('/verify', authMiddleware, limits.twoFactor(), async (req, res) => {
+router.post('/verify', authMiddleware, limits.twoFactor(), requireStepUp('two_factor.enable'), async (req, res) => {
   const _u = castAuthed(req).user;
   const code = (req.body as Record<string, unknown> | null | undefined)?.code;
   if (typeof code !== 'string' || code.length < 1 || code.length > 128)
@@ -380,8 +390,82 @@ router.post('/check', limits.twoFactor(), async (req, res) => {
     ok: true,
     token,
     user: sanitizeOwnUser({ ...user, status: 'online' }),
+    // The second factor was just demonstrated: level-2 step-up grants (P7 B2).
+    stepUp: mintSignInGrants(user, usedBackup ? 'backup_code' : 'totp'),
     ...(usedBackup ? { usedBackup: true, remaining } : {}),
   });
+});
+
+// POST /api/2fa/step-up — P7 B2: prove the second factor again for one scope
+/**
+ * @openapi
+ * /2fa/step-up:
+ *   post:
+ *     tags: [TwoFactor]
+ *     summary: Step-up proof with a TOTP or backup code (level 2) for one action scope
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [code, scope]
+ *             properties:
+ *               code: { type: string }
+ *               scope: { type: string, enum: [account-security, sensitive-export, destructive-admin, moderation-burst] }
+ *     responses:
+ *       200: { description: 'Step-up grant for the scope (keep in memory only)' }
+ *       400: { description: 'Invalid code, scope, or 2FA not enabled' }
+ *       429: { description: 'Too many failed step-up proofs; sign in again or wait' }
+ *       503: { description: 'Failed-proof counter unavailable' }
+ */
+// ════════════════════════════════════════════════════════════════════════════
+// The same verifier and replay protection as `/check`: a TOTP step is consumed
+// atomically (`consumeTotpStep`), a backup code is burned (`consumeBackupCode`).
+// A wrong, replayed or already-used code counts toward the account's
+// failed-proof lock; the lock never applies to `/check` (sign-in) or password
+// reset, so it cannot be used to keep the owner out.
+router.post('/step-up', authMiddleware, limits.twoFactor(), async (req, res) => {
+  const _u = castAuthed(req).user;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const { code, scope } = body;
+  if (!isStepUpScope(scope)) return res.status(400).json({ error: 'scope required' });
+  if (typeof code !== 'string' || code.length < 1 || code.length > 128)
+    return res.status(400).json({ error: 'code required' });
+
+  const user = await Users.findById(_u.id);
+  if (!user?.twoFactorEnabled) return res.status(400).json({ error: '2FA not enabled' });
+
+  const refuse = async (): Promise<void> => {
+    const locked = await recordFailedStepUpProof(user._id);
+    res.status(400).json({ error: 'STEP_UP_PROOF_INVALID', locked });
+  };
+
+  try {
+    if (await stepUpProofsLocked(user._id)) {
+      return res.status(429).json({ error: 'STEP_UP_LOCKED', retryAfterMs: STEP_UP_POLICY.failedProof.windowMs, methods: ['sign_in'] });
+    }
+    const trimmed = code.trim().replace(/\s/g, '');
+    const step = typeof user.twoFactorSecret === 'string' ? matchingTotpStep(user.twoFactorSecret, trimmed) : null;
+    let method: 'totp' | 'backup_code' = 'totp';
+    let remaining: number | undefined;
+    if (step !== null) {
+      if (!await Users.consumeTotpStep(user._id, step)) return await refuse();
+    } else {
+      const backups = readBackupCodes(user.twoFactorBackup);
+      const stored = backups.find(candidate => backupCodeMatches(trimmed, candidate));
+      if (stored === undefined || !await Users.consumeBackupCode(user._id, stored)) return await refuse();
+      method = 'backup_code';
+      remaining = backups.length - 1;
+    }
+    const grant = mintStepUpGrant(user, method, scope);
+    logger.info({ userId: user._id, scope, method, event: 'step_up.granted' }, 'Step-up proof accepted');
+    res.set('Cache-Control', 'no-store');
+    return res.json({ ok: true, stepUp: grant, ...(method === 'backup_code' ? { usedBackup: true, remaining } : {}) });
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : String(err), userId: user._id, event: 'step_up.proof_unavailable' }, 'Step-up proof could not be checked');
+    return res.status(503).json({ error: 'STEP_UP_UNAVAILABLE' });
+  }
 });
 
 // POST /api/2fa/disable — legacy compatibility wrapper for clients/tests that
@@ -406,7 +490,7 @@ router.post('/check', limits.twoFactor(), async (req, res) => {
 // KARDES YOL: `DELETE /api/2fa` GECERLI BIR TOTP KODU istiyordu. Ayni islem,
 // iki uc, iki farkli guvenlik seviyesi — bu projede tekrar tekrar gercek acik
 // ureten desen.
-router.post('/disable', authMiddleware, limits.twoFactor(), async (req, res) => {
+router.post('/disable', authMiddleware, limits.twoFactor(), requireStepUp('two_factor.disable'), async (req, res) => {
   const _u = castAuthed(req).user;
   const password = (req.body as Record<string, unknown> | null | undefined)?.password;
   if (typeof password !== 'string' || password.length < 1 || password.length > 128)
@@ -468,7 +552,7 @@ router.post('/disable', authMiddleware, limits.twoFactor(), async (req, res) => 
 // Iki es zamanli yenileme ayni satirin TEK kolonunu yazar; son yazan kazanir.
 // Bu nedenle sonucta TEK bir kanonik set kalir ve digerinin kodlari gecersiz
 // olur. "Iki bagimsiz gecerli set" durumu OLUSAMAZ — istenen degismez budur.
-router.post('/backup-codes/regenerate', authMiddleware, limits.twoFactor(), async (req, res) => {
+router.post('/backup-codes/regenerate', authMiddleware, limits.twoFactor(), requireStepUp('backup_codes.regenerate'), async (req, res) => {
   const _u = castAuthed(req).user;
   const password = (req.body as Record<string, unknown> | null | undefined)?.password;
   if (typeof password !== 'string' || password.length < 1 || password.length > 128)

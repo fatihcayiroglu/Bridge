@@ -22,6 +22,15 @@ export interface ProductPromptOptions extends ProductConfirmOptions {
   initialValue?: string;
   placeholder?: string;
   maxLength?: number;
+  /**
+   * `password` masks the value and offers the saved password; `one-time-code`
+   * offers an authenticator code. Default `text`.
+   */
+  inputType?: 'text' | 'password' | 'one-time-code';
+  /** Visible label bound to the input (a placeholder is not a label). */
+  inputLabel?: string;
+  /** Problem with the previous attempt: announced (role="alert") and tied to the input. */
+  error?: string;
 }
 
 type ActiveDialog = { cancel: () => void };
@@ -70,15 +79,35 @@ function mountDialog<T>(
     card.setAttribute('aria-describedby', messageId);
 
     let input: HTMLInputElement | null = null;
+    let label: HTMLLabelElement | null = null;
+    let problem: HTMLParagraphElement | null = null;
     if (inputOptions) {
       input = document.createElement('input');
+      input.id = `${titleId}-input`;
       input.className = 'input bridge-product-dialog-input';
-      input.type = 'text';
+      input.type = inputOptions.inputType === 'password' ? 'password' : 'text';
       input.value = String(inputOptions.initialValue ?? '');
       input.placeholder = String(inputOptions.placeholder ?? '');
       input.maxLength = Math.max(1, Math.min(1024, Number(inputOptions.maxLength) || 256));
-      input.autocomplete = 'off';
+      input.autocomplete = inputOptions.inputType === 'password' ? 'current-password'
+        : inputOptions.inputType === 'one-time-code' ? 'one-time-code' : 'off';
       input.spellcheck = false;
+      if (inputOptions.inputType === 'one-time-code') input.setAttribute('autocapitalize', 'off');
+      if (inputOptions.inputLabel) {
+        label = document.createElement('label');
+        label.className = 'bridge-product-dialog-label';
+        label.htmlFor = input.id;
+        label.textContent = String(inputOptions.inputLabel);
+      }
+      if (inputOptions.error) {
+        problem = document.createElement('p');
+        problem.id = `${titleId}-error`;
+        problem.className = 'bridge-product-dialog-error';
+        problem.setAttribute('role', 'alert');
+        problem.textContent = String(inputOptions.error);
+        input.setAttribute('aria-invalid', 'true');
+        input.setAttribute('aria-describedby', problem.id);
+      }
     }
 
     const footer = document.createElement('div');
@@ -98,7 +127,9 @@ function mountDialog<T>(
 
     footer.append(cancelButton, confirmButton);
     card.append(title, message);
+    if (label) card.append(label);
     if (input) card.append(input);
+    if (problem) card.append(problem);
     card.append(footer);
     overlay.append(card);
 

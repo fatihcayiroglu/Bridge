@@ -38,6 +38,7 @@ import { router as activityRouter }         from '../routes/activity';
 import { router as e2eRouter }              from '../lib/e2e';
 import federationRouter                     from '../routes/federation/index';
 import twoFactorRouter                      from '../routes/twoFactor';
+import stepUpRouter                         from '../routes/stepUp';
 import webauthnRouter                       from '../routes/webauthn';
 import emailRouter                          from '../routes/email';
 import adminRouter                          from '../routes/admin';
@@ -154,6 +155,7 @@ export function setupRoutes(app: Application): void {
   mountApi('/e2e', e2eRouter);
   mountApi('/federation', federationRouter);
   mountApi('/2fa', twoFactorRouter);
+  mountApi('/step-up', stepUpRouter);       // P7 B2: password step-up proof
   mountApi('/webauthn', webauthnRouter);
   mountApi('/email', emailRouter);
   mountApi('/admin', adminRouter);

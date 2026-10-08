@@ -4,6 +4,7 @@
 
 import { chromium, expect, request as pwRequest } from '@playwright/test';
 import { pruneOwnedServers, userIdOf } from './helpers/prune-fixtures';
+import { rememberCredentials, stepUpGrant } from './helpers/stepUp';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -393,6 +394,12 @@ async function ensureTwoFactorUser(fetch, cachedTwoFactor): Promise<{ username: 
     // Eskiden önce giriş "yoklanıyordu"; hesap yoksa bu her setup'ta bir
     // BAŞARISIZ GİRİŞ (401) kaydediyordu ve IP'nin captcha sayacını besliyordu.
     let token = '';
+    // P7 B2: enabling 2FA is step-up protected (`account-security`). Like the
+    // product client, the fixture presents the grant its own fresh sign-in
+    // (registration or login) returned — memory only, never written to disk.
+    let securityGrant = '';
+    const grantOf = (data: unknown): string =>
+      String((data as { stepUp?: { grants?: Record<string, string> } })?.stepUp?.grants?.['account-security'] ?? '');
     if (cachedTwoFactor?.username !== username) {
       const reg = await fetch(`${BASE_URL}/api/register`, {
         method: 'POST', headers: BROWSER_HEADERS,
@@ -402,6 +409,7 @@ async function ensureTwoFactorUser(fetch, cachedTwoFactor): Promise<{ username: 
         const data = await reg.json().catch(() => ({}));
         token = (data as { token?: string; accessToken?: string }).token
           ?? (data as { accessToken?: string }).accessToken ?? '';
+        securityGrant = grantOf(data);
       } else if (reg.status !== 409) {
         throw new Error(`2FA fikstur kaydi basarisiz: HTTP ${reg.status}`);
       }
@@ -421,6 +429,7 @@ async function ensureTwoFactorUser(fetch, cachedTwoFactor): Promise<{ username: 
       }
       token = (body as { token?: string; accessToken?: string }).token
         ?? (body as { accessToken?: string }).accessToken ?? '';
+      securityGrant = grantOf(body);
       if (!probe.ok || !token) throw new Error(`2FA fikstur girisi basarisiz: HTTP ${probe.status}`);
     }
 
@@ -438,6 +447,7 @@ async function ensureTwoFactorUser(fetch, cachedTwoFactor): Promise<{ username: 
       ...auth,
       ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
       ...(cookies ? { Cookie: cookies } : {}),
+      ...(securityGrant ? { 'X-Bridge-Step-Up': securityGrant } : {}),
     };
 
     // Zaten acik mi? (tekrarli kosumlarda kayit yeniden yapilmaz)
@@ -448,14 +458,15 @@ async function ensureTwoFactorUser(fetch, cachedTwoFactor): Promise<{ username: 
     }
 
     const setup = await fetch(`${BASE_URL}/api/2fa/setup`, { method: 'POST', headers: writeHeaders, body: '{}' });
-    if (!setup.ok) return null;
+    // Sessizce atlamak bagimli testi KANITSIZ yesil gosterirdi: neden yazilir.
+    if (!setup.ok) throw new Error(`2FA kurulum basarisiz: HTTP ${setup.status}`);
     const { secret } = await setup.json() as { secret?: string };
     if (!secret) return null;
 
     const verify = await fetch(`${BASE_URL}/api/2fa/verify`, {
       method: 'POST', headers: writeHeaders, body: JSON.stringify({ code: totpCode(secret) }),
     });
-    if (!verify.ok) return null;
+    if (!verify.ok) throw new Error(`2FA dogrulama basarisiz: HTTP ${verify.status}`);
 
     console.log(`2FA fiksturu hazir: ${username}`);
     return { username, password };
@@ -526,7 +537,9 @@ async function setup() {
       ['alice', aliceToken], ['bob', bobToken],
       ['media1', media1Token], ['media2', media2Token],
     ] as const) {
-      const r = await pruneOwnedServers(pruneCtx, token, userIdOf(token), 5);
+      rememberCredentials(TEST_USERS[name].username, TEST_USERS[name].password);
+      const r = await pruneOwnedServers(pruneCtx, token, userIdOf(token), 5,
+        scope => stepUpGrant(pruneCtx, token, scope));
       if (r.before > 20) {
         console.log(`🧹 ${name}: ${r.before} sunucu → ${r.after} (silinen: ${r.deleted})`);
       }

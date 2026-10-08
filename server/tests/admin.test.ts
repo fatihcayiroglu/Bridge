@@ -40,6 +40,7 @@ import express from 'express';
 const jwt     = require('jsonwebtoken');
 
 import router from '../routes/admin';
+import { stepUpHeader } from './helpers/stepUp';
 const { Users: UserRepo, Auth: AuthRepo } = require('../db/repositories');
 
 // ── isAdmin GERCEK BOOLEAN'DIR ─────────────────────────────────────────────
@@ -175,7 +176,7 @@ describe('DELETE /api/admin/users/:id', () => {
     await mockDb.users.insert(makeUser({ _id: delId, username: 'tobedeleted' }));
 
     const res = await request(app)
-      .delete(`/api/admin/users/${delId}`)
+      .delete(`/api/admin/users/${delId}`).set(stepUpHeader(ADMIN_ID, 'destructive-admin'))
       .set('Authorization', `Bearer ${token(ADMIN_ID)}`);
 
     expect(res.status).toBe(503);
@@ -184,7 +185,7 @@ describe('DELETE /api/admin/users/:id', () => {
 
   it('prevents admin from deleting themselves', async () => {
     const res = await request(app)
-      .delete(`/api/admin/users/${ADMIN_ID}`)
+      .delete(`/api/admin/users/${ADMIN_ID}`).set(stepUpHeader(ADMIN_ID, 'destructive-admin'))
       .set('Authorization', `Bearer ${token(ADMIN_ID)}`);
 
     expect(res.status).toBe(400);
@@ -192,7 +193,7 @@ describe('DELETE /api/admin/users/:id', () => {
 
   it('returns 404 for unknown user', async () => {
     const res = await request(app)
-      .delete('/api/admin/users/does_not_exist')
+      .delete('/api/admin/users/does_not_exist').set(stepUpHeader(ADMIN_ID, 'destructive-admin'))
       .set('Authorization', `Bearer ${token(ADMIN_ID)}`);
 
     expect(res.status).toBe(404);
@@ -219,7 +220,7 @@ describe('GET /api/admin/servers', () => {
 describe('DELETE /api/admin/servers/:id', () => {
   it('returns 404 for unknown server', async () => {
     const res = await request(app)
-      .delete('/api/admin/servers/ghost_server')
+      .delete('/api/admin/servers/ghost_server').set(stepUpHeader(ADMIN_ID, 'destructive-admin'))
       .set('Authorization', `Bearer ${token(ADMIN_ID)}`);
 
     expect(res.status).toBe(404);
@@ -353,7 +354,7 @@ describe('Admin core strict contracts and destructive lifecycle', () => {
     await mockDb.members.insert({ userId:USER_ID, serverId:sid, roles:'[]', joinedAt:Date.now() });
     await mockDb.roles.insert({ _id:'del-role', serverId:sid, name:'r', permissions:0 });
     await mockDb.messages.insert({ _id:'del-msg', serverId:sid, channelId:'del-ch', userId:USER_ID, content:'x', createdAt:Date.now() });
-    const res = await request(app).delete(`/api/admin/servers/${sid}`).set('Authorization', `Bearer ${token(ADMIN_ID)}`);
+    const res = await request(app).delete(`/api/admin/servers/${sid}`).set(stepUpHeader(ADMIN_ID, 'destructive-admin')).set('Authorization', `Bearer ${token(ADMIN_ID)}`);
     expect(res.status).toBe(200);
     expect(await mockDb.servers.findOne({ _id:sid })).toBeNull();
     expect(await mockDb.channels.find({ serverId:sid })).toHaveLength(0);

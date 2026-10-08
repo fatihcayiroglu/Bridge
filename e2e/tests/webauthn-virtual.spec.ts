@@ -27,6 +27,7 @@
 
 import { test, expect } from '@playwright/test';
 import type { CDPSession, Page } from '@playwright/test';
+import { getTokens } from '../helpers/bridge';
 
 const PORT = process.env.E2E_PORT || '3000';
 // E2E_HOST belongs to the server BIND address (normally 127.0.0.1). It must
@@ -54,7 +55,7 @@ test.describe('passkey — sanal dogrulayici ile gercek yasam dongusu', () => {
   test.skip(({ browserName }) => browserName !== 'chromium',
     'Sanal dogrulayici yalnizca Chromium/CDP ile kullanilabilir.');
 
-  test('kayit + giris: gercek WebAuthn ile uctan uca', async ({ page }) => {
+  test('kayit + giris: gercek WebAuthn ile uctan uca', async ({ page, browser }) => {
     test.setTimeout(120_000);
 
     // ── Oturumlu sayfa: kayit icin kimlik gerekir ──────────────────────────
@@ -71,19 +72,15 @@ test.describe('passkey — sanal dogrulayici ile gercek yasam dongusu', () => {
       () => (window as unknown as { BridgeWebAuthn: { isSupported(): boolean } }).BridgeWebAuthn.isSupported());
     expect(destekli, 'sanal dogrulayici takiliyken WebAuthn destekli olmali').toBe(true);
 
-    // ── KAYIT ──────────────────────────────────────────────────────────────
-    const kayitSonuc = await page.evaluate(async () => {
-      const w = window as unknown as { BridgeWebAuthn: { registerPasskey(n?: string): Promise<boolean> } };
-      try { return { ok: await w.BridgeWebAuthn.registerPasskey('E2E Sanal Anahtar') }; }
-      catch (e) { return { ok: false, err: String(e) }; }
-    });
-
-    // Sunucu gercekten sakladi mi?
-    // NOT: Bridge kimligi BEARER JETONU ile tasir (cerez degil). Ilk yazimda
-    // duz `fetch(..., {credentials:'include'})` kullandim ve 401 aldim; test
-    // de bunu "oturum yok" sanip kendini ATLADI. Yani kanit uretmeden yesil
-    // gorunuyordu. Jeton depodan okunup basliga konur.
-    const kimlikler = await page.evaluate(async () => {
+    // ── P7 B2: ESKI (GERI YUKLENMIS) OTURUM BIR KEZ KANIT ISTER ────────────
+    // Bu sayfa oturumu depodan geri yukler; bellekte giris izni (grant) yoktur.
+    // Passkey eklemek hesaba kalici bir giris yolu ekler, bu yuzden urun ONCE
+    // aciklanabilir tek bir kanit ister. Iptal guvenlidir: hicbir sey saklanmaz.
+    // (Kanitin kendisi — parola/TOTP — istemci birim testleri ve iki dugumlu
+    // step-up laboratuvarinda gercek sunucuya karsi kanitlanir; burada
+    // gonderilmez, cunku IP basina paylasilan 2FA butcesini 2fa.spec bilerek
+    // tuketir ve sonuc kosum sirasina bagli olurdu.)
+    const kayitliAdet = async (p: Page) => p.evaluate(async () => {
       const jeton = localStorage.getItem('token') || localStorage.getItem('bridge_token');
       const r = await fetch('/api/webauthn/credentials', {
         credentials: 'include',
@@ -94,6 +91,48 @@ test.describe('passkey — sanal dogrulayici ile gercek yasam dongusu', () => {
       const list = Array.isArray(b) ? b : (b.credentials ?? []);
       return { durum: r.status, adet: Array.isArray(list) ? list.length : -1, jetonVar: Boolean(jeton) };
     });
+    const once = await kayitliAdet(page);
+    const iptalBekleyen = page.evaluate(async () => {
+      const w = window as unknown as { BridgeWebAuthn: { registerPasskey(n?: string): Promise<boolean> } };
+      try { return { ok: await w.BridgeWebAuthn.registerPasskey('E2E Iptal') }; }
+      catch (e) { return { ok: false, err: String(e) }; }
+    });
+    const kanitAlani = page.locator('.bridge-product-dialog-input');
+    await expect(kanitAlani, 'a restored session is asked for one proof').toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('.bridge-product-dialog-label')).toBeVisible();
+    await expect(kanitAlani).toHaveAttribute('type', 'password');
+    await page.keyboard.press('Escape');
+    await expect(kanitAlani).toBeHidden();
+    expect((await iptalBekleyen).ok, 'cancelled proof must not register a passkey').toBe(false);
+    expect((await kayitliAdet(page)).adet, 'nothing is stored without a proof').toBe(once.adet);
+    await cdp.send('WebAuthn.disable').catch(() => { /* temizlik */ });
+
+    // ── TAZE GIRIS: SURTUNME YOK ─────────────────────────────────────────
+    // Ayni kisi urunun giris formundan yeni oturum acar; giris yaniti her kapsam
+    // icin bir izin dondurur (yalnizca bellekte). Passkey kaydi SORMADAN gecer.
+    const tazeBaglam = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+    const taze = await tazeBaglam.newPage();
+    await taze.goto(`${ORIGIN}/`);
+    const { cdp: tazeCdp } = await sanalDogrulayiciTak(taze);
+    const alice = getTokens().users.alice;
+    await taze.locator('#l-username').fill(alice.username);
+    await taze.locator('#l-password').fill(alice.password);
+    await taze.locator('#login-form [data-auth-action="login"]').click();
+    await expect(taze.locator('#login-form')).toBeHidden({ timeout: 15_000 });
+
+    const kayitSonuc = await taze.evaluate(async () => {
+      const w = window as unknown as { BridgeWebAuthn: { registerPasskey(n?: string): Promise<boolean> } };
+      try { return { ok: await w.BridgeWebAuthn.registerPasskey('E2E Sanal Anahtar') }; }
+      catch (e) { return { ok: false, err: String(e) }; }
+    });
+    await expect(taze.locator('.bridge-product-dialog-input'), 'a fresh sign-in is not asked again').toHaveCount(0);
+
+    // Sunucu gercekten sakladi mi?
+    // NOT: Bridge kimligi BEARER JETONU ile tasir (cerez degil). Ilk yazimda
+    // duz `fetch(..., {credentials:'include'})` kullandim ve 401 aldim; test
+    // de bunu "oturum yok" sanip kendini ATLADI. Yani kanit uretmeden yesil
+    // gorunuyordu. Jeton depodan okunup basliga konur.
+    const kimlikler = await kayitliAdet(taze);
 
     // Kayit kimlik dogrulamasi gerektirir; oturum yoksa bu adim atlanir ama
     // SESSIZCE GECMEZ — durum acikca raporlanir.
@@ -111,7 +150,7 @@ test.describe('passkey — sanal dogrulayici ile gercek yasam dongusu', () => {
 
     // ── GIRIS ──────────────────────────────────────────────────────────────
     // Ayni sanal dogrulayici ile assertion uretilir; sunucu imzayi dogrular.
-    const girisSonuc = await page.evaluate(async () => {
+    const girisSonuc = await taze.evaluate(async () => {
       const r = await fetch('/api/webauthn/login/begin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -124,14 +163,15 @@ test.describe('passkey — sanal dogrulayici ile gercek yasam dongusu', () => {
     });
     expect(girisSonuc.meydanVar, 'sunucu giris meydan okumasi vermeli').toBe(true);
 
-    const girisOk = await page.evaluate(async () => {
+    const girisOk = await taze.evaluate(async () => {
       const w = window as unknown as { BridgeWebAuthn: { passkeyLogin(u?: string | null): Promise<boolean> } };
       try { return await w.BridgeWebAuthn.passkeyLogin(null); }
       catch { return false; }
     });
     expect(girisOk, 'sanal dogrulayici ile passkey girisi basarili olmali').toBe(true);
 
-    await cdp.send('WebAuthn.disable').catch(() => { /* temizlik */ });
+    await tazeCdp.send('WebAuthn.disable').catch(() => { /* temizlik */ });
+    await tazeBaglam.close();
   });
 
   test('dogrulayici YOKKEN giris temiz basarisiz olur (arayuz asili kalmaz)', async ({ page }) => {

@@ -422,3 +422,21 @@
 
 /* `<select class="input-field">` de ayni aileye girer. */
 select.input-field { appearance: auto; }
+
+/* P7 B2 — product dialog field label and announced error (step-up prompt).
+   A placeholder is not a label: the field gets a visible, associated one. The
+   error colour is the theme's text-contrast-tuned danger token. */
+.bridge-product-dialog-label {
+  display: block;
+  margin: 12px 0 6px;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.bridge-product-dialog-error {
+  margin: 8px 0 0;
+  color: var(--danger);
+  font-size: 0.875rem;
+}
+.bridge-product-dialog-input[aria-invalid="true"] {
+  border-color: var(--danger);
+}

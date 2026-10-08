@@ -48,6 +48,7 @@ jest.mock('../middleware/rateLimit', () => ({
 import db from '../db/loader';
 import { authMiddleware } from '../middleware/auth';
 import twoFactorRouter, { __totpNowForTest as totpNow } from '../routes/twoFactor';
+import { stepUpFor } from './helpers/stepUp';
 
 function buildApp(): Express {
   const app = express();
@@ -96,7 +97,7 @@ describe('POST /api/2fa/disable — parola doğrulaması', () => {
     // Duzeltmeden ONCE bu istek 200 donuyor ve 2FA'yi kapatiyordu.
     const { id, token } = await seed2fa();
     const r = await request(app).post('/api/2fa/disable')
-      .set('Authorization', `Bearer ${token}`)
+      .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security'))
       .send({ password: 'tamamenYanlisParola' });
 
     const u = await oku(id);
@@ -108,7 +109,7 @@ describe('POST /api/2fa/disable — parola doğrulaması', () => {
     // Basarisiz deneme kullaniciyi kurtarma kodlarindan ETMEMELI.
     const { id, token } = await seed2fa();
     await request(app).post('/api/2fa/disable')
-      .set('Authorization', `Bearer ${token}`)
+      .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security'))
       .send({ password: 'yanlis' });
 
     const u = await oku(id);
@@ -121,14 +122,14 @@ describe('POST /api/2fa/disable — parola doğrulaması', () => {
   it('BOŞ parola reddedilir', async () => {
     const { token } = await seed2fa();
     const r = await request(app).post('/api/2fa/disable')
-      .set('Authorization', `Bearer ${token}`).send({ password: '' });
+      .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security')).send({ password: '' });
     expect(r.status).toBe(400);
   });
 
   it('parola ALANI HİÇ yoksa reddedilir', async () => {
     const { token } = await seed2fa();
     const r = await request(app).post('/api/2fa/disable')
-      .set('Authorization', `Bearer ${token}`).send({});
+      .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security')).send({});
     expect(r.status).toBe(400);
   });
 
@@ -145,7 +146,7 @@ describe('POST /api/2fa/disable — parola doğrulaması', () => {
       password: await bcrypt.hash(PAROLA, 10), twoFactorEnabled: false,
     });
     const r = await request(app).post('/api/2fa/disable')
-      .set('Authorization', `Bearer ${tok(id)}`).send({ password: PAROLA });
+      .set('Authorization', `Bearer ${tok(id)}`).set(stepUpFor(tok(id), 'account-security')).send({ password: PAROLA });
     expect(r.status).toBe(400);
   });
 
@@ -155,7 +156,7 @@ describe('POST /api/2fa/disable — parola doğrulaması', () => {
     // yamada da yesil kalirdi — ve kullanici 2FA'yi HIC kapatamazdi.
     const { id, token } = await seed2fa();
     const r = await request(app).post('/api/2fa/disable')
-      .set('Authorization', `Bearer ${token}`).send({ password: PAROLA });
+      .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security')).send({ password: PAROLA });
 
     const u = await oku(id);
     expect({ status: r.status, kapandi: !u.twoFactorEnabled })
@@ -165,7 +166,7 @@ describe('POST /api/2fa/disable — parola doğrulaması', () => {
   it('başarılı kapatmada secret ve yedek kodlar TEMİZLENİR', async () => {
     const { id, token } = await seed2fa();
     await request(app).post('/api/2fa/disable')
-      .set('Authorization', `Bearer ${token}`).send({ password: PAROLA });
+      .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security')).send({ password: PAROLA });
     const u = await oku(id);
     expect({ secret: u.twoFactorSecret, yedek: String(u.twoFactorBackup) })
       .toEqual({ secret: null, yedek: '[]' });
@@ -199,12 +200,46 @@ describe('DELETE /api/2fa — kardeş yol TOTP ister', () => {
     // Asimetrinin kendisi bulguydu: bir uc dogrulama yapmiyordu.
     const a = await seed2fa();
     const ra = await request(app).post('/api/2fa/disable')
-      .set('Authorization', `Bearer ${a.token}`).send({ password: 'yanlis' });
+      .set('Authorization', `Bearer ${a.token}`).set(stepUpFor(a.token, 'account-security')).send({ password: 'yanlis' });
 
     const b = await seed2fa();
     const rb = await request(app).delete('/api/2fa')
       .set('Authorization', `Bearer ${b.token}`).send({ code: '000000' });
 
     expect({ disable: ra.status, del: rb.status }).toEqual({ disable: 400, del: 400 });
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// P7 B2 — SU-ATK-04: a stolen session plus a phished password must not remove
+// the second factor. The inline password check stays; a level-2 step-up proof
+// (TOTP or backup code) is required in addition.
+// ════════════════════════════════════════════════════════════════════════════
+describe('P7 B2 — POST /api/2fa/disable needs a level-2 account-security proof', () => {
+  it('the right password without a proof, or with a password-level proof, keeps 2FA on', async () => {
+    const { id, token } = await seed2fa();
+    const none = await request(app).post('/api/2fa/disable')
+      .set('Authorization', `Bearer ${token}`).send({ password: PAROLA });
+    expect(none.status).toBe(403);
+    expect(none.body).toMatchObject({ error: 'STEP_UP_REQUIRED', action: 'two_factor.disable', level: 2, reasons: ['step_up_missing'] });
+
+    const l1 = await request(app).post('/api/2fa/disable')
+      .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security', 'password')).send({ password: PAROLA });
+    expect(l1.status).toBe(403);
+    expect(l1.body.reasons).toEqual(['step_up_level']);
+    expect(!!(await oku(id)).twoFactorEnabled).toBe(true);
+
+    const l2 = await request(app).post('/api/2fa/disable')
+      .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security', 'totp')).send({ password: PAROLA });
+    expect(l2.status).toBe(200);
+    expect(!!(await oku(id)).twoFactorEnabled).toBe(false);
+  });
+
+  it('DELETE /api/2fa keeps its own inline TOTP check and needs no separate proof', async () => {
+    const { id, token } = await seed2fa();
+    const r = await request(app).delete('/api/2fa')
+      .set('Authorization', `Bearer ${token}`).send({ code: totpNow(SECRET)[1] });
+    expect(r.status).toBe(200);
+    expect(!!(await oku(id)).twoFactorEnabled).toBe(false);
   });
 });

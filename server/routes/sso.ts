@@ -34,8 +34,9 @@ import { envSafeInt } from '../lib/envNumbers';
 import { cache } from '../lib/redisAdapter';
 import { tryRequire } from '../lib/_optional-require';
 import { setRefreshCookie } from '../lib/authCookies';
+import { mintSignInGrants, type SignInGrants } from '../lib/stepUp';
 
-const BASE_URL            = process.env.BASE_URL || 'http://localhost:3001';
+const BASE_URL           = process.env.BASE_URL || 'http://localhost:3001';
 const SSO_FLOW_TTL_SECONDS = 10 * 60;
 const SSO_HANDOFF_TTL_SECONDS = 60;
 const SSO_HANDOFF_COOKIE = 'bridge_sso_handoff';
@@ -243,10 +244,11 @@ async function setAuthCookiesAndRedirect(
   res:          import('express').Response,
   accessToken:  string,
   refreshToken: string,
+  stepUp:       SignInGrants,
 ): Promise<void> {
   const handoff = crypto.randomBytes(32).toString('base64url');
   try {
-    await cache.setAuthoritative(flowKey('handoff', handoff), { accessToken }, SSO_HANDOFF_TTL_SECONDS);
+    await cache.setAuthoritative(flowKey('handoff', handoff), { accessToken, stepUp }, SSO_HANDOFF_TTL_SECONDS);
   } catch (err) {
     // makeRefreshToken has already persisted this token. If the one-time
     // browser handoff cannot be made durable, revoke the otherwise orphaned
@@ -365,7 +367,11 @@ async function findOrCreateSSOUser(
 async function issueTokens(user: Parameters<typeof makeToken>[0]) {
   const accessToken  = makeToken(user);
   const refreshToken = await makeRefreshToken(user);
-  return { accessToken, refreshToken };
+  // P7 B2: an SSO return is a fresh sign-in, but its assurance is not
+  // demonstrated beyond level 1, so these grants never satisfy an account that
+  // has 2FA enabled.
+  const stepUp = mintSignInGrants(user, 'sso');
+  return { accessToken, refreshToken, stepUp };
 }
 
 // ── Config yardımcıları ────────────────────────────────────────
@@ -659,7 +665,7 @@ router.get('/oidc/callback', async (req: import('express').Request, res: import(
   const tokens = await issueTokens(user);
 
   // [FIX 1] HttpOnly cookie — URL'de token yok
-  try { await setAuthCookiesAndRedirect(res, tokens.accessToken, tokens.refreshToken); }
+  try { await setAuthCookiesAndRedirect(res, tokens.accessToken, tokens.refreshToken, tokens.stepUp); }
   catch (err) {
     logger.error({ event: 'sso.oidc.handoff_store_failed', err: err instanceof Error ? err.message : String(err) }, 'SSO session handoff store unavailable');
     return res.status(503).json({ error: 'SSO session handoff is temporarily unavailable' });
@@ -681,7 +687,7 @@ router.post('/session', async (req: import('express').Request, res: import('expr
     return res.status(401).json({ error: 'SSO session handoff is missing or expired' });
   }
 
-  let claimed: { accessToken?: unknown } | null;
+  let claimed: { accessToken?: unknown; stepUp?: unknown } | null;
   try { claimed = await cache.takeAuthoritative(flowKey('handoff', handoff)); }
   catch (err) {
     logger.error({ event: 'sso.handoff.claim_failed', err: err instanceof Error ? err.message : String(err) }, 'SSO session handoff store unavailable');
@@ -690,7 +696,9 @@ router.post('/session', async (req: import('express').Request, res: import('expr
   if (!claimed || typeof claimed.accessToken !== 'string' || claimed.accessToken.length < 32 || claimed.accessToken.length > 32_768) {
     return res.status(401).json({ error: 'SSO session handoff is invalid, expired, or already used' });
   }
-  return res.json({ token: claimed.accessToken });
+  // Level-1 step-up grants minted at the callback travel with the one-time handoff (P7 B2).
+  const stepUp = claimed.stepUp && typeof claimed.stepUp === 'object' ? claimed.stepUp : undefined;
+  return res.json({ token: claimed.accessToken, ...(stepUp ? { stepUp } : {}) });
 });
 
 // ── SAML 2.0 ──────────────────────────────────────────────────
@@ -1169,7 +1177,7 @@ router.post('/saml/callback', express.urlencoded({ extended: false, limit: SAML_
     return res.status(403).json({ error: 'SSO identity does not match this account' });
   }
   const tokens = await issueTokens(user);
-  try { await setAuthCookiesAndRedirect(res, tokens.accessToken, tokens.refreshToken); }
+  try { await setAuthCookiesAndRedirect(res, tokens.accessToken, tokens.refreshToken, tokens.stepUp); }
   catch (err) {
     logger.error({ event: 'sso.saml.handoff_store_failed', err: err instanceof Error ? err.message : String(err) }, 'SSO session handoff store unavailable');
     return res.status(503).json({ error: 'SSO session handoff is temporarily unavailable' });

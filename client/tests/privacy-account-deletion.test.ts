@@ -123,3 +123,39 @@ describe('Gizlilik — hesabı sil', () => {
     expect(v.getByRole('button', { name: t('privacy_delete_start') })).not.toBeDisabled();
   });
 });
+
+describe('P7 B2 — SSO-only account (no password)', () => {
+  beforeEach(() => {
+    BridgeRegistry.register('getMe', (() => ({ _id: 'u1', hasPassword: false })) as unknown as AnyFn);
+  });
+
+  it('offers deletion without a password field; the request carries no password (the sign-in grant proves it)', async () => {
+    replies['GET /api/account/deletion-preflight'] = [{ status: 200, body: { canDelete: true, blockers: [] } }];
+    replies['DELETE /api/account'] = [{ status: 200, body: { ok: true, deleted: true } }];
+    const v = view();
+    await open(v);
+
+    const confirm = await waitFor(() => v.getByRole('button', { name: t('privacy_delete_confirm') }));
+    expect(v.queryByLabelText(t('privacy_delete_password'))).toBeNull();
+    expect(v.getByTestId('delete-account-sso-note').textContent).toBe(t('privacy_delete_sso_note'));
+    expect(confirm).toBeDisabled();
+    await fireEvent.click(v.getByLabelText(t('privacy_delete_ack')));
+    expect(confirm).not.toBeDisabled();
+    await fireEvent.click(confirm);
+
+    await waitFor(() => expect(authCompat.logout).toHaveBeenCalledOnce());
+    const [, init] = apiFetch.mock.calls.find((c) => c[0] === '/api/account')!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ confirm: 'DELETE' });
+  });
+
+  it('a refused proof (403, e.g. the person declined to sign in again) keeps the session and explains', async () => {
+    replies['GET /api/account/deletion-preflight'] = [{ status: 200, body: { canDelete: true, blockers: [] } }];
+    replies['DELETE /api/account'] = [{ status: 403, body: { error: 'STEP_UP_REQUIRED', scope: 'destructive-admin', methods: ['sign_in'] } }];
+    const v = view();
+    await open(v);
+    await fireEvent.click(await waitFor(() => v.getByLabelText(t('privacy_delete_ack'))));
+    await fireEvent.click(v.getByRole('button', { name: t('privacy_delete_confirm') }));
+    await waitFor(() => expect(v.getByRole('alert').textContent).toBe(t('privacy_delete_needs_proof')));
+    expect(authCompat.logout).not.toHaveBeenCalled();
+  });
+});

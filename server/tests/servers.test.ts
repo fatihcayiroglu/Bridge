@@ -45,6 +45,7 @@ jest.mock('../middleware/rateLimit', () => ({
 }));
 
 import serversRouter from '../routes/servers';
+import { stepUpFor } from './helpers/stepUp';
 
 function makeToken(userId: string, username = 'tester') {
   return jwt.sign({ id: userId, username, v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
@@ -508,7 +509,7 @@ describe('DELETE /api/servers/:sid — sunucu sil', () => {
   it('sahip sunucuyu silebilir', async () => {
     const res = await request(app)
       .delete(`/api/servers/${server._id}`)
-      .set('Authorization', `Bearer ${ownerToken}`);
+      .set('Authorization', `Bearer ${ownerToken}`).set(stepUpFor(ownerToken, 'destructive-admin'));
 
     expect(res.status).toBe(200);
     const deleted = await db.servers.findOne({ _id: server._id });
@@ -542,7 +543,7 @@ describe('DELETE /api/servers/:sid — sunucu sil', () => {
     await db.messages.insert({ _id:'keep-msg', serverId:otherServer._id, channelId:otherChannel._id, userId:ownerUser._id, content:'keep', createdAt:now });
     await db.automodRules.insert({ _id:'keep-rule', serverId:otherServer._id, type:'blocked_words', enabled:true, config:{}, createdBy:ownerUser._id, createdAt:now });
 
-    const res = await request(app).delete(`/api/servers/${sid}`).set('Authorization', `Bearer ${ownerToken}`);
+    const res = await request(app).delete(`/api/servers/${sid}`).set('Authorization', `Bearer ${ownerToken}`).set(stepUpFor(ownerToken, 'destructive-admin'));
     expect(res.status).toBe(200);
 
     // Cift elemanli diziler, aciklama olmadan `(MockCollection | {...})[][]`
@@ -576,16 +577,36 @@ describe('DELETE /api/servers/:sid — sunucu sil', () => {
     const spy = jest.spyOn(require('../db/repositories').Servers, 'deleteGraphAtomic').mockResolvedValueOnce('owner_mismatch');
     const res = await request(app)
       .delete(`/api/servers/${server._id}`)
-      .set('Authorization', `Bearer ${ownerToken}`);
+      .set('Authorization', `Bearer ${ownerToken}`).set(stepUpFor(ownerToken, 'destructive-admin'));
     expect(res.status).toBe(403);
     expect(spy).toHaveBeenCalledWith(server._id, ownerUser._id);
     spy.mockRestore();
   });
 
+  it('P7 B2 (SU-ATK-06): the owner’s session alone cannot delete — a destructive-admin proof is required', async () => {
+    const res = await request(app)
+      .delete(`/api/servers/${server._id}`)
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ error: 'STEP_UP_REQUIRED', action: 'server.delete', scope: 'destructive-admin' });
+    expect(await db.servers.findOne({ _id: server._id })).not.toBeNull();
+    // A proof for another scope does not count.
+    const wrong = await request(app)
+      .delete(`/api/servers/${server._id}`)
+      .set('Authorization', `Bearer ${ownerToken}`).set(stepUpFor(ownerToken, 'sensitive-export'));
+    expect(wrong.body.reasons).toEqual(['step_up_scope_mismatch']);
+    // A non-owner is told it is owner-only, never asked for a proof.
+    const other = await request(app)
+      .delete(`/api/servers/${server._id}`)
+      .set('Authorization', `Bearer ${otherToken}`);
+    expect(other.status).toBe(403);
+    expect(other.body.error).toBe('Only the server owner can delete it');
+  });
+
   it('sahip olmayan kullanıcı silemez', async () => {
     const res = await request(app)
       .delete(`/api/servers/${server._id}`)
-      .set('Authorization', `Bearer ${otherToken}`);
+      .set('Authorization', `Bearer ${otherToken}`).set(stepUpFor(otherToken, 'destructive-admin'));
 
     expect(res.status).toBe(403);
     const still = await db.servers.findOne({ _id: server._id });

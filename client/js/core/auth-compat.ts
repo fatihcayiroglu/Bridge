@@ -9,6 +9,7 @@ import { t } from './i18n/index.ts';
 import { ApiResponseError, safeApiErrorMessage } from './api-error.ts';
 import { registrationProblem, type RegistrationProblem } from './registration-rules.ts';
 import { pushTargetsForLogout } from './push-installation.ts';
+import { rememberSignInGrants } from './step-up.ts';
 
 type AuthTab = 'login' | 'register';
 
@@ -35,6 +36,8 @@ type AuthPayload = {
   message?: unknown;
   requiresTwoFactor?: unknown;
   tempToken?: unknown;
+  /** P7 B2: one short-lived step-up grant per scope; kept in memory only. */
+  stepUp?: unknown;
 };
 
 const log = createLogger('AuthCompat');
@@ -193,7 +196,7 @@ export async function completeTwoFactorLogin(): Promise<void> {
       throw new AuthFlowError(t('auth_session_failed', 'Oturum kurulamadı. Lütfen tekrar dene.'));
     }
     pendingTwoFactorToken = null;
-    await startApp(payload.token, payload.user);
+    await startApp(payload.token, payload.user, payload.stepUp);
   } catch (error) {
     if (isCurrentAuthTransition(transition)) {
       showAuthMsg(authExceptionText(error, t('auth_twofactor_failed', 'İki adımlı doğrulama başarısız.')));
@@ -335,8 +338,13 @@ export function updateUserPanel(user: AuthUser): void {
   }
 }
 
-export async function startApp(token: string, user: AuthUser): Promise<void> {
+export async function startApp(token: string, user: AuthUser, stepUp?: unknown): Promise<void> {
   if (!token || !isUser(user)) throw new Error('Geçersiz oturum yanıtı.');
+
+  // P7 B2: a fresh sign-in is a fresh proof — its step-up grants are held in
+  // memory for their short lifetime. A restored session (page reload) carries
+  // none, and any grant of an earlier session is dropped either way.
+  rememberSignInGrants(stepUp);
 
   // Any successfully validated session supersedes pending restore/login work.
   beginAuthTransition();
@@ -388,7 +396,7 @@ export async function login(): Promise<void> {
     if (typeof payload.token !== 'string' || !isUser(payload.user)) {
       throw new AuthFlowError(t('auth_session_failed', 'Oturum kurulamadı. Lütfen tekrar dene.'));
     }
-    await startApp(payload.token, payload.user);
+    await startApp(payload.token, payload.user, payload.stepUp);
   } catch (error) {
     if (isCurrentAuthTransition(transition)) {
       showAuthMsg(authExceptionText(error, t('auth_connection_failed', 'Sunucuya bağlanılamadı. İnternet bağlantını kontrol edip tekrar dene.')));
@@ -437,7 +445,7 @@ export async function register(): Promise<void> {
     if (typeof payload.token !== 'string' || !isUser(payload.user)) {
       throw new AuthFlowError(t('auth_session_failed', 'Oturum kurulamadı. Lütfen tekrar dene.'));
     }
-    await startApp(payload.token, payload.user);
+    await startApp(payload.token, payload.user, payload.stepUp);
   } catch (error) {
     if (isCurrentAuthTransition(transition)) {
       showAuthMsg(authExceptionText(error, t('auth_connection_failed', 'Sunucuya bağlanılamadı. İnternet bağlantını kontrol edip tekrar dene.')));
@@ -628,7 +636,7 @@ export async function consumeSsoSessionHandoff(): Promise<boolean> {
     }
 
     if (!isCurrentAuthTransition(transition)) return true;
-    await startApp(token, user);
+    await startApp(token, user, payload.stepUp);
     return true;
   } catch (error) {
     showAuthMsg(authExceptionText(error, t('auth_sso_complete_failed_short', 'SSO oturumu tamamlanamadı.')));

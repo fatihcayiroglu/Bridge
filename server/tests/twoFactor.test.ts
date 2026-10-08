@@ -15,6 +15,7 @@ const db       = require('../db/loader');
 const jwt      = require('jsonwebtoken');
 import { authMiddleware } from '../middleware/auth';
 import twoFactorRouter from '../routes/twoFactor';
+import { stepUpFor } from './helpers/stepUp';
 import { _resetRateLimitStoreForTest } from '../middleware/rateLimit';
 
 function buildApp() {
@@ -44,7 +45,7 @@ describe('Two Factor Auth Routes', () => {
     it('returns secret and QR code for authenticated user', async () => {
       const res = await request(app)
         .post('/api/2fa/setup')
-        .set('Authorization', `Bearer ${token}`);
+        .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security'));
       expect(res.status).toBe(200);
       expect(res.body).toHaveProperty('secret');
       expect(res.body).toHaveProperty('qrCode');
@@ -56,26 +57,26 @@ describe('Two Factor Auth Routes', () => {
     it('returns 400 without token', async () => {
       const res = await request(app)
         .post('/api/2fa/verify')
-        .set('Authorization', `Bearer ${token}`)
+        .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security'))
         .send({});
       expect(res.status).toBe(400);
     });
 
     it.each([123, {}, [], null])('rejects non-string verification code %p before TOTP', async (code) => {
-      await request(app).post('/api/2fa/setup').set('Authorization', `Bearer ${token}`);
+      await request(app).post('/api/2fa/setup').set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security'));
       const res = await request(app)
         .post('/api/2fa/verify')
-        .set('Authorization', `Bearer ${token}`)
+        .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security'))
         .send({ code });
       expect(res.status).toBe(400);
     });
 
     it('returns 400 with invalid TOTP token', async () => {
       // Setup first
-      await request(app).post('/api/2fa/setup').set('Authorization', `Bearer ${token}`);
+      await request(app).post('/api/2fa/setup').set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security'));
       const res = await request(app)
         .post('/api/2fa/verify')
-        .set('Authorization', `Bearer ${token}`)
+        .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security'))
         .send({ token: '000000' }); // wrong code
       expect([400, 401]).toContain(res.status);
     });
@@ -85,7 +86,7 @@ describe('Two Factor Auth Routes', () => {
     it('returns 400 without password', async () => {
       const res = await request(app)
         .post('/api/2fa/disable')
-        .set('Authorization', `Bearer ${token}`)
+        .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security'))
         .send({});
       expect(res.status).toBe(400);
     });
@@ -93,7 +94,7 @@ describe('Two Factor Auth Routes', () => {
     it.each([123, {}, [], null])('rejects non-string password %p before bcrypt', async (password) => {
       const res = await request(app)
         .post('/api/2fa/disable')
-        .set('Authorization', `Bearer ${token}`)
+        .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security'))
         .send({ password });
       expect(res.status).toBe(400);
     });
@@ -105,7 +106,7 @@ describe('Two Factor Auth Routes', () => {
 
       const res = await request(app)
         .post('/api/2fa/disable')
-        .set('Authorization', `Bearer ${token}`)
+        .set('Authorization', `Bearer ${token}`).set(stepUpFor(token, 'account-security'))
         .send({ password: 'correctpass' });
       expect([400, 409, 429]).toContain(res.status);
     });

@@ -32,7 +32,11 @@ test('kişi hesabını Ayarlar → Gizlilik üzerinden siler; sahiplik engeli ve
     data: { username, email: `${username}@bridge-e2e.test`, password, displayName: `Leaving ${stamp}` },
   });
   expect(reg.ok(), 'kayıt').toBe(true);
-  const token = (await reg.json()).token as string;
+  const registered = await reg.json() as { token: string; stepUp?: { grants?: Record<string, string> } };
+  const token = registered.token;
+  // P7 B2: registration is a fresh sign-in — like the product client, the API
+  // calls below present the grant it returned for irreversible actions.
+  const destructiveGrant = registered.stepUp?.grants?.['destructive-admin'] ?? '';
 
   // Başka üyesi olan bir sunucu: alice katılır.
   const aliceToken = getTokens().alice;
@@ -55,7 +59,10 @@ test('kişi hesabını Ayarlar → Gizlilik üzerinden siler; sahiplik engeli ve
 
   // 2. Sahip sunucuyu siler (kendi yolu), tekrar dener.
   const del = await request.delete(`${BASE}/api/servers/${serverId}`, {
-    headers: { ...JSON_HEADERS, Authorization: `Bearer ${token}`, 'X-CSRF-Token': await getCsrf(request, token) },
+    headers: {
+      ...JSON_HEADERS, Authorization: `Bearer ${token}`, 'X-CSRF-Token': await getCsrf(request, token),
+      'X-Bridge-Step-Up': destructiveGrant,
+    },
   });
   expect(del.ok(), 'sunucu silme').toBe(true);
   await page.getByTestId('delete-account-cancel').click();

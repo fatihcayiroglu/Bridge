@@ -19,6 +19,7 @@ import { evictUserFromServerRooms, evictSocketsWithoutChannelAccessBestEffort } 
 import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery, parseNonNegativeSafeIntValue } from '../lib/queryNumbers';
 import { resolvePermissions as resolveEffectivePermissions } from '../lib/permissions';
 import { storedMessageText } from '../lib/storedText';
+import { enforceStepUp } from '../lib/stepUp';
 
 type PermissionState = { allow: number; deny: number };
 type AuditRow = Record<string, unknown> & {
@@ -651,6 +652,9 @@ router.post('/members/:userId/kick', authMiddleware, limits.moderation(), async 
 
   const target = await Users.findById(userId);
   if (!target) return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
+  // P7 B2: past the moderation burst (5 destructive actions / 60 s / actor) a
+  // `moderation-burst` proof is needed; ordinary moderation is never asked.
+  if (!(await enforceStepUp(req, res, _u.id, 'moderation.kick'))) return;
 
   const removal = await Members.removeMember(userId, serverId);
   if (removal?.deleted !== 1) {
@@ -801,6 +805,8 @@ router.post('/bans', authMiddleware, limits.moderation(), async (req, res) => {
 
   const target = await Users.findById(userId);
   if (!target) return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
+  // P7 B2: moderation-burst step-up (see kick above).
+  if (!(await enforceStepUp(req, res, _u.id, 'moderation.ban'))) return;
 
   await Members.banMember(serverId, userId, reason);
   if (deleteMessageDays > 0) {

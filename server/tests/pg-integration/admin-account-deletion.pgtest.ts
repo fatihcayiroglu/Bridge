@@ -35,6 +35,7 @@ jest.mock('../../lib/sessionRevocation', () => ({ disconnectLiveUserSessions: je
 import express from 'express';
 import request from 'supertest';
 import { TOMBSTONE_USER_ID } from '../../lib/accountLifecycle';
+import { stepUpHeader } from '../helpers/stepUp';
 
 const db = require('../../db/loader').default;
 const { usersRouter } = require('../../routes/admin/users');
@@ -91,8 +92,22 @@ RUN('gerçek PostgreSQL — yönetici kullanıcı silmesi', () => {
     fs.rmSync(UPLOAD_ROOT, { recursive: true, force: true });
   });
 
+  // P7 B2: kalıcı silme, yöneticinin TAZE ve kapsamlı bir kanıtını ister
+  // (`destructive-admin`); oturum tek başına yetmez. Aşağıdaki silmeler gerçek
+  // bir izin sunar — istemcinin kanıttan sonra yaptığı gibi.
+  const proof = () => stepUpHeader(ADMIN, 'destructive-admin', { method: 'password' });
+
+  it('P7 B2: taze kanıt olmadan HİÇBİR şey silinmez — 403 STEP_UP_REQUIRED', async () => {
+    const res = await request(app()).delete(`/api/admin/users/${SPAMMER}`);
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ error: 'STEP_UP_REQUIRED', action: 'admin.user.delete', scope: 'destructive-admin' });
+    expect(await q(`SELECT 1 FROM users WHERE _id=$1`, [SPAMMER])).toHaveLength(1);
+    expect(await q(`SELECT 1 FROM messages WHERE _id=$1`, [`${P}-m1`])).toHaveLength(1);
+    expect(mockInvalidateTokenCache).not.toHaveBeenCalled();
+  });
+
   it('başka üyeleri olan sunucunun sahibi SİLİNMEZ: 409 ve hiçbir satır değişmez', async () => {
-    const res = await request(app()).delete(`/api/admin/users/${OWNER}`);
+    const res = await request(app()).delete(`/api/admin/users/${OWNER}`).set(proof());
     expect(res.status).toBe(409);
     expect(res.body.blockers).toEqual([expect.objectContaining({ kind: 'server', id: `${P}-owned`, memberCount: 2 })]);
     expect(await q(`SELECT 1 FROM users WHERE _id=$1`, [OWNER])).toHaveLength(1);
@@ -100,7 +115,7 @@ RUN('gerçek PostgreSQL — yönetici kullanıcı silmesi', () => {
   });
 
   it('silme politikanın TAMAMINI uygular', async () => {
-    const res = await request(app()).delete(`/api/admin/users/${SPAMMER}`);
+    const res = await request(app()).delete(`/api/admin/users/${SPAMMER}`).set(proof());
     expect(res.status).toBe(200);
     expect(await q(`SELECT 1 FROM users WHERE _id=$1`, [SPAMMER])).toHaveLength(0);
     // Silinen hesabın erişim jetonu önbellekten doğrulanmaya devam etmez.

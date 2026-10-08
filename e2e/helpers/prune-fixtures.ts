@@ -30,6 +30,7 @@
 
 import type { APIRequestContext } from '@playwright/test';
 import { getCsrf } from './csrf';
+import { stepUpScopeOf } from './stepUp';
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
@@ -49,6 +50,10 @@ export async function pruneOwnedServers(
   token: string,
   userId: string,
   keep = 5,
+  // P7 B2: server deletion is step-up protected (`destructive-admin`). Asked
+  // for at most ONCE, and only when a delete is actually refused — a run with
+  // nothing to prune signs nobody in again.
+  proveStepUp?: (scope: string) => Promise<string | null>,
 ): Promise<{ before: number; deleted: number; after: number }> {
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json', 'User-Agent': UA };
   // DELETE bir MUTASYONDUR ve sunucu CSRF token ister (olculdu: 403
@@ -67,10 +72,23 @@ export async function pruneOwnedServers(
   const excess = owned.slice(0, Math.max(0, owned.length - keep));
 
   let deleted = 0;
+  let stepUp: string | null = null;
+  let asked = false;
   for (const s of excess) {
     const id = s._id ?? s.id;
     if (!id) continue;
-    const del = await request.delete(`${BASE}/api/servers/${id}`, { headers: mutateHeaders });
+    const send = () => request.delete(`${BASE}/api/servers/${id}`,
+      { headers: stepUp ? { ...mutateHeaders, 'X-Bridge-Step-Up': stepUp } : mutateHeaders });
+    let del = await send();
+    const scope = await stepUpScopeOf(del);
+    if (scope) {
+      // Koruma ATLANMAZ: kanit alinamazsa budama durur.
+      if (asked || !proveStepUp) break;
+      asked = true;
+      stepUp = await proveStepUp(scope);
+      if (!stepUp) break;
+      del = await send();
+    }
     if (del.ok()) deleted++;
     // Silme ucu `limits.servers()` ile hiz sinirlidir; sinira carpinca DUR.
     if (del.status() === 429) break;

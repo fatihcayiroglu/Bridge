@@ -48,6 +48,7 @@ import { issueTwoFactorLoginChallenge } from '../lib/twoFactorLoginChallenge';
 import { disconnectLiveUserSessions } from '../lib/sessionRevocation';
 import { uploadRoot } from '../lib/runtimePaths';
 import { parseTokenVersion } from '../lib/tokenVersion';
+import { mintSignInGrants } from '../lib/stepUp';
 
 // sanitizeUser artık lib/userUtils.js'de tanımlı — tüm importlar oradan gelsin
 
@@ -225,7 +226,8 @@ router.post('/register',
   // Ozel ek yetkilendirmesi icin medya cerezi (path=/uploads).
   setMediaCookie(res, user);
   checkAndAwardAutoBadges(user._id).catch(() => {});
-  res.json({ token, user: sanitizeOwnUser(user) });
+  // The password was just set: a fresh credential proof (P7 B2 step-up, level 1).
+  res.json({ token, user: sanitizeOwnUser(user), stepUp: mintSignInGrants(user, 'password') });
 });
 
 /**
@@ -255,6 +257,7 @@ router.post('/register',
  *               properties:
  *                 token: { type: string }
  *                 user:  { $ref: '#/components/schemas/User' }
+ *                 stepUp: { type: object, description: 'P7 B2 — one short-lived step-up grant per scope (memory-only on the client)' }
  *       401: { description: Geçersiz kimlik bilgileri }
  *       403: { description: Hesap kilitli (2FA veya captcha) }
  *       429:
@@ -324,7 +327,8 @@ router.post('/login',
   setMediaCookie(res, user);
   // Auto-rozet kontrolü (fire-and-forget — login flow'unu bloklama)
   checkAndAwardAutoBadges(user._id).catch(() => {});
-  res.json({ token, user: sanitizeOwnUser({ ...user, status: 'online' }) });
+  // A password sign-in is a fresh level-1 proof: one step-up grant per scope (P7 B2).
+  res.json({ token, user: sanitizeOwnUser({ ...user, status: 'online' }), stepUp: mintSignInGrants(user, 'password') });
 });
 
 // POST /api/refresh  — refresh token rotation

@@ -156,6 +156,16 @@ describe('sanitizeOwnUser alan dışı değeri sızdırmaz', () => {
     expect(DM_PRIVACY_VALUES).toContain(out.dmPrivacy);
     expect(PRESENCE_VISIBILITY_VALUES).toContain(out.presenceVisibility);
   });
+
+  it('P7 B2: reports only WHETHER the account has a password — never the hash', () => {
+    const withPassword = sanitizeOwnUser({ _id: 'u1', username: 'u', password: '$2b$12$secret-hash' }) as unknown as Record<string, unknown>;
+    expect(withPassword.hasPassword).toBe(true);
+    expect(JSON.stringify(withPassword)).not.toContain('secret-hash');
+    expect(withPassword).not.toHaveProperty('password');
+    for (const password of ['', null, undefined, 7]) {
+      expect(sanitizeOwnUser({ _id: 'u2', username: 'sso', password }).hasPassword).toBe(false);
+    }
+  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -123,6 +123,8 @@ jest.mock('../middleware/asyncHandler', () =>
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const webauthnModule = require('../routes/webauthn');
+import { stepUpHeader } from './helpers/stepUp';
+import { Users } from '../db/repositories';
 const router = webauthnModule.default ?? webauthnModule;
 
 function buildApp() {
@@ -219,13 +221,13 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════════════
 describe('register/complete — tören doğrulama', () => {
   async function beginRegister(): Promise<string> {
-    const r = await request(app).post('/api/webauthn/register/begin').send({});
+    const r = await request(app).post('/api/webauthn/register/begin').set(stepUpHeader('u-ayse', 'account-security')).send({});
     expect(r.status).toBe(200);
     return r.body.challenge as string;
   }
 
   const post = (credential: unknown) =>
-    request(app).post('/api/webauthn/register/complete').send({ credential });
+    request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security')).send({ credential });
 
   it('POZİTİF KONTROL: geçerli kayıt credential’ı saklar', async () => {
     const ch = await beginRegister();
@@ -425,6 +427,10 @@ describe('login/complete — parolasız kimlik sınırı', () => {
     expect(r.status).toBe(200);
     expect(r.body.token).toBeTruthy();
     expect(r.body.user.username).toBe('ayse');
+    // P7 B2: a verified passkey assertion is a level-2 proof; one grant per scope.
+    expect(r.body.stepUp).toEqual(expect.objectContaining({ level: 2, method: 'passkey', ttlMs: 600_000 }));
+    expect(Object.keys(r.body.stepUp.grants).sort())
+      .toEqual(['account-security', 'destructive-admin', 'moderation-burst', 'sensitive-export']);
 
     // Cerez sozlesmesi: yenileme cerezi httpOnly olmali, medya cerezi
     // `/uploads` ile SINIRLI olmali (bkz. middleware/uploadAuthz.ts).
@@ -651,7 +657,7 @@ const cborMap = (entries: readonly CborEntry[]): Buffer => Buffer.concat([
 ]);
 
 async function beginRegistration(): Promise<string> {
-  const result = await request(app).post('/api/webauthn/register/begin').send({});
+  const result = await request(app).post('/api/webauthn/register/begin').set(stepUpHeader('u-ayse', 'account-security')).send({});
   expect(result.status).toBe(200);
   return result.body.challenge as string;
 }
@@ -681,8 +687,13 @@ function strictAttestationEntries(ad: Buffer): CborEntry[] {
 describe('register ceremony — strict envelope and CBOR handling', () => {
   it('returns 404 when the authenticated account disappears before either registration step', async () => {
     users.clear();
-    expect((await request(app).post('/api/webauthn/register/begin').send({})).status).toBe(404);
-    expect((await request(app).post('/api/webauthn/register/complete').send({})).status).toBe(404);
+    // P7 B2: the step-up guard reads the account first — with no account the session is invalid (401).
+    expect((await request(app).post('/api/webauthn/register/begin').set(stepUpHeader('u-ayse', 'account-security')).send({})).status).toBe(401);
+    // Deleted between the guard's read and the handler's read: the handler's own 404.
+    for (const step of ['begin', 'complete']) {
+      jest.spyOn(Users, 'findById').mockResolvedValueOnce({ _id: 'u-ayse', username: 'ayse' } as never);
+      expect((await request(app).post(`/api/webauthn/register/${step}`).set(stepUpHeader('u-ayse', 'account-security')).send({})).status).toBe(404);
+    }
   });
 
   it('rejects blank/oversized names and malformed transport lists before consuming a challenge', async () => {
@@ -691,14 +702,14 @@ describe('register ceremony — strict envelope and CBOR handling', () => {
       response: { clientDataJSON: 'AA', attestationObject: 'AA' },
     };
     for (const name of ['   ', 'x'.repeat(65)]) {
-      const result = await request(app).post('/api/webauthn/register/complete').send({ credential: baseCredential, name });
+      const result = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security')).send({ credential: baseCredential, name });
       expect(result.status).toBe(400);
       expect(result.body.error).toMatch(/credential name/i);
     }
     for (const transports of [
       'usb', Array.from({ length: 17 }, () => 'usb'), [''], [7], ['x'.repeat(65)],
     ]) {
-      const result = await request(app).post('/api/webauthn/register/complete').send({
+      const result = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security')).send({
         credential: { ...baseCredential, response: { ...baseCredential.response, transports } },
       });
       expect(result.status).toBe(400);
@@ -712,7 +723,7 @@ describe('register ceremony — strict envelope and CBOR handling', () => {
       _id: 'without-transports', userId: 'u-ayse', credentialId: b64u(Buffer.from('existing')),
       publicKey: '{}', counter: 0,
     });
-    const begin = await request(app).post('/api/webauthn/register/begin').send({});
+    const begin = await request(app).post('/api/webauthn/register/begin').set(stepUpHeader('u-ayse', 'account-security')).send({});
     expect(begin.status).toBe(200);
     expect(begin.body.user.displayName).toBe('ayse');
     expect(begin.body.excludeCredentials[0].transports).toEqual([]);
@@ -724,27 +735,27 @@ describe('register ceremony — strict envelope and CBOR handling', () => {
       differentOuterId,
       attestationObject(authData({ flags: 0x45, credentialId: credId })),
     );
-    const complete = await request(app).post('/api/webauthn/register/complete').send(body);
+    const complete = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security')).send(body);
     expect(complete.status).toBe(400);
     expect(complete.body.error).toMatch(/does not match/i);
 
     // Gövde HİÇ yoksa `express.json()` `req.body`'yi ATAMAZ (undefined kalır).
     // Rotanın `(req.body ?? {})` geri düşüşü tam olarak bu durumu karşılar:
     // tören, çökmek yerine kimlik bilgisi reddiyle kapanmalıdır.
-    const absentBody = await request(app).post('/api/webauthn/register/complete');
+    const absentBody = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security'));
     expect(absentBody.status).toBe(400);
     expect(absentBody.body.error).toMatch(/credential response/i);
 
     // Gövde JSON olarak ayrıştırılabiliyor ama kimlik bilgisi taşımıyorsa da
     // aynı ret dalı çalışır — 500'e düşmez.
-    const emptyObject = await request(app).post('/api/webauthn/register/complete').send({});
+    const emptyObject = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security')).send({});
     expect(emptyObject.status).toBe(400);
     expect(emptyObject.body.error).toMatch(/credential response/i);
 
     // `null` gövdesi katı JSON ayrıştırıcısında REDDEDİLİR ve rotaya hiç
     // ulaşmaz. Burada anlamlı olan sözleşme, törenin fail-closed davranışıdır:
     // 4xx döner, asla 2xx değil.
-    const nullBody = await request(app).post('/api/webauthn/register/complete')
+    const nullBody = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security'))
       .set('Content-Type', 'application/json').send('null');
     expect(nullBody.status).toBe(400);
     expect(typeof nullBody.body.error).toBe('string');
@@ -754,7 +765,7 @@ describe('register ceremony — strict envelope and CBOR handling', () => {
     const challenge = await beginRegistration();
     const credId = crypto.randomBytes(32);
     const ad = authData({ flags: 0x45, credentialId: credId });
-    const result = await request(app).post('/api/webauthn/register/complete')
+    const result = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security'))
       .send(registrationBody(challenge, credId, attestationObject(ad), { crossOrigin: true }));
     expect(result.status).toBe(400);
     expect(result.body.error).toMatch(/cross-origin/i);
@@ -774,7 +785,7 @@ describe('register ceremony — strict envelope and CBOR handling', () => {
   ])('rejects malformed CBOR: %s', async (_label, encoded) => {
     const challenge = await beginRegistration();
     const credId = crypto.randomBytes(32);
-    const result = await request(app).post('/api/webauthn/register/complete')
+    const result = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security'))
       .send(registrationBody(challenge, credId, encoded));
     expect(result.status).toBe(400);
     expect(result.body.error).toMatch(/attestation/i);
@@ -789,7 +800,7 @@ describe('register ceremony — strict envelope and CBOR handling', () => {
     const credId = crypto.randomBytes(32);
     const ad = authData({ flags: 0x45, credentialId: credId });
     const encoded = wrap(cborMapPayload(strictAttestationEntries(ad)));
-    const result = await request(app).post('/api/webauthn/register/complete')
+    const result = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security'))
       .send(registrationBody(challenge, credId, encoded));
     expect(result.status).toBe(200);
   });
@@ -798,7 +809,7 @@ describe('register ceremony — strict envelope and CBOR handling', () => {
     const challenge = await beginRegistration();
     const credId = crypto.randomBytes(32);
     const encoded = Buffer.concat([attestationObject(authData({ flags: 0x45, credentialId: credId })), Buffer.from([0])]);
-    const result = await request(app).post('/api/webauthn/register/complete')
+    const result = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security'))
       .send(registrationBody(challenge, credId, encoded));
     expect(result.status).toBe(400);
     expect(result.body.error).toMatch(/trailing/i);
@@ -814,7 +825,7 @@ describe('register ceremony — strict envelope and CBOR handling', () => {
     const challenge = await beginRegistration();
     const credId = crypto.randomBytes(32);
     const encoded = build(authData({ flags: 0x45, credentialId: credId }));
-    const result = await request(app).post('/api/webauthn/register/complete')
+    const result = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security'))
       .send(registrationBody(challenge, credId, encoded));
     expect(result.status).toBe(400);
     expect(result.body.error).toMatch(/none attestation/i);
@@ -824,7 +835,7 @@ describe('register ceremony — strict envelope and CBOR handling', () => {
     const challenge = await beginRegistration();
     const credId = crypto.randomBytes(32);
     const encoded = cborMap([['fmt', cborText('none')], ['attStmt', Buffer.from([0xa0])]]);
-    const result = await request(app).post('/api/webauthn/register/complete')
+    const result = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security'))
       .send(registrationBody(challenge, credId, encoded));
     expect(result.status).toBe(400);
     expect(result.body.error).toMatch(/Missing authData/i);
@@ -838,7 +849,7 @@ describe('register ceremony — strict envelope and CBOR handling', () => {
       ['fmt', cborText('packed')], ['fmt', cborText('none')],
       ['attStmt', Buffer.from([0xa0])], ['authData', cborBytes(ad)],
     ]);
-    const result = await request(app).post('/api/webauthn/register/complete')
+    const result = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security'))
       .send(registrationBody(challenge, credId, encoded));
     expect(result.status).toBe(400);
     expect(result.body.error).toMatch(/Duplicate CBOR map key fmt/i);
@@ -849,7 +860,7 @@ describe('register ceremony — strict envelope and CBOR handling', () => {
     const credId = crypto.randomBytes(32);
     const inheritedEnvelope = cborMap(strictAttestationEntries(authData({ flags: 0x45, credentialId: credId })));
     const encoded = cborMap([['__proto__', inheritedEnvelope]]);
-    const result = await request(app).post('/api/webauthn/register/complete')
+    const result = await request(app).post('/api/webauthn/register/complete').set(stepUpHeader('u-ayse', 'account-security'))
       .send(registrationBody(challenge, credId, encoded));
     expect(result.status).toBe(400);
     expect(result.body.error).toMatch(/none attestation/i);
@@ -1020,6 +1031,8 @@ describe('credential management — vanished account branches', () => {
     users.clear();
     expect((await request(app).get('/api/webauthn/credentials')).status).toBe(404);
     expect((await request(app).patch('/api/webauthn/credentials/x').send({ name: 'Key' })).status).toBe(404);
-    expect((await request(app).delete('/api/webauthn/credentials/x')).status).toBe(404);
+    expect((await request(app).delete('/api/webauthn/credentials/x').set(stepUpHeader('u-ayse', 'account-security'))).status).toBe(401);
+    jest.spyOn(Users, 'findById').mockResolvedValueOnce({ _id: 'u-ayse', username: 'ayse' } as never);
+    expect((await request(app).delete('/api/webauthn/credentials/x').set(stepUpHeader('u-ayse', 'account-security'))).status).toBe(404);
   });
 });
