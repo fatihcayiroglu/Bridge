@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, test-integrity/integrated-audit]
   workflow_dispatch:
   # Agir tarayici/medya paketleri her PR'da degil, gecelik kosar.
   schedule:
@@ -578,7 +578,7 @@ jobs:
     name: E2E full + media (nightly / test-integrity remediation)
     # Explicitly exercise the complete browser matrix on the cleanup PR itself.
     # Other PRs keep the normal nightly/manual schedule.
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.head_ref == 'p7/test-integrity-cleanup' || github.head_ref == 'test-integrity/integrated-audit') }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (github.head_ref == 'p7/test-integrity-cleanup' || github.head_ref == 'test-integrity/integrated-audit' || github.head_ref == 'test-integrity/minio-cursor-evidence')) }}
     runs-on: ubuntu-latest
     needs: [tests]
     env:
@@ -645,6 +645,44 @@ jobs:
         env:
           WEBP_CONVERT: 'true'
         run: cd e2e && npx playwright test tests/webp-upload.spec.ts --project=chromium --retries=0 --output=test-results/webp-enabled --reporter=list
+      # A real vendor-neutral S3-compatible path. This job also proves Bridge's HTTP upload/proxy contract.
+      - name: Start isolated MinIO
+        if: ${{ !cancelled() }}
+        run: |
+          docker pull cgr.dev/chainguard/minio:latest
+          docker image inspect --format='{{index .RepoDigests 0}}' cgr.dev/chainguard/minio:latest
+          docker run -d --name bridge-ci-minio -p 9000:9000 -e MINIO_ROOT_USER=bridgereview -e MINIO_ROOT_PASSWORD=bridgereview123 cgr.dev/chainguard/minio:latest server /data
+          for i in $(seq 1 40); do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:9000/minio/health/ready >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          docker logs bridge-ci-minio
+          exit 1
+      - name: Provision MinIO public/private buckets
+        if: ${{ !cancelled() }}
+        env:
+          MINIO_ENDPOINT: http://127.0.0.1:9000
+          MINIO_ACCESS_KEY: bridgereview
+          MINIO_SECRET_KEY: bridgereview123
+          MINIO_BUCKET: bridge-public
+          PRIVATE_MINIO_BUCKET: bridge-private
+        run: node scripts/ci-provision-minio.mjs
+      - name: Real remote protected upload E2E (zero retries)
+        if: ${{ !cancelled() }}
+        env:
+          WEBP_CONVERT: 'false'
+          CDN_PROVIDER: minio
+          PRIVATE_STORAGE_PROVIDER: minio
+          MINIO_ENDPOINT: http://127.0.0.1:9000
+          MINIO_ACCESS_KEY: bridgereview
+          MINIO_SECRET_KEY: bridgereview123
+          MINIO_BUCKET: bridge-public
+          PRIVATE_MINIO_BUCKET: bridge-private
+          MINIO_PUBLIC_URL: http://127.0.0.1:9000/bridge-public
+        run: cd e2e && npx playwright test tests/remote-storage.spec.ts --project=s3-remote --retries=0 --output=test-results/s3-remote --reporter=list
+      - name: Tear down isolated MinIO
+        if: ${{ always() }}
+        run: docker rm -f bridge-ci-minio || true
       - name: Firefox compatibility suite
         if: ${{ !cancelled() }}
         run: cd e2e && npx playwright test --project=firefox --retries=0 --output=test-results/firefox --reporter=list
