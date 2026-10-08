@@ -5,6 +5,7 @@
 
 import { test, expect } from '../helpers/apiTest';
 import { getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
+import { openSocket, waitForEvent, closeSockets } from '../helpers/socket';
 
 // ── Ortak setup ──────────────────────────────────────────────────────────────
 
@@ -151,29 +152,79 @@ test.describe('Anket (Polls)', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 test.describe('Canvas (Ortak Çizim)', () => {
-  test('canvas durumu alınabilir', async ({ request }) => {
-    // Final21 Faz 22 (19-37): bu test `[200, 404]` kabul ederek VAR OLMAYAN bir rotaya karşı
-    // GEÇİYORDU — ölçüldü: `GET /api/canvas/:id` → 404 "Not found: GET /api/canvas/…" (genel 404
-    // işleyicisi). Canvas durumu soket üzerinden gelir (`canvas:state-sync`); kardeş test zaten
-    // aynı gerekçeyle atlanıyordu. Geçmiş sayılmaz, AÇIKÇA atlanır.
-    test.skip(true, 'MIMARI: canvas REST degil soket tabanlidir (GET /api/canvas/:id yok — olculdu 404).');
-    const res = await request.get(`/api/canvas/${channelId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(res.status()).toBe(200);
-    expect(await res.json()).toHaveProperty('strokes');
+  type CanvasSnapshot = {
+    channelId: string;
+    strokes: Array<{ id: string; points: Array<{ x: number; y: number }> }>;
+    clearedAt: number | null;
+  };
+
+  test('canvas durumu gerçek Socket.IO protokolüyle alınabilir', async () => {
+    expect(channelId, 'kanal fixture kurulmalı').toBeTruthy();
+    const socket = await openSocket(token);
+    try {
+      const ready = waitForEvent<CanvasSnapshot>(
+        socket, 'canvas:state-sync', 15_000, value => value?.channelId === channelId,
+      );
+      socket.emit('canvas:join', { channelId });
+      const state = await ready;
+      expect(state.channelId).toBe(channelId);
+      expect(Array.isArray(state.strokes)).toBe(true);
+      expect(state.clearedAt === null || typeof state.clearedAt === 'number').toBe(true);
+    } finally {
+      closeSockets(socket);
+    }
   });
 
-  test('canvas temizlenebilir', async ({ request }) => {
-    // v1.123 DOGRULANDI: canvas'in REST yonlendiricisi YOKTUR; ozellik
-    // soket olaylari uzerinden sevk edilir (`canvas:state-sync`,
-    // `canvas:stroke-delete`). Atlama gecerlidir - gerekce duzeltildi.
-    test.skip(true, 'MIMARI: canvas REST degil soket tabanlidir.');
-    test.skip(!channelId, 'Kanal fixture gerekli');
-    const res = await request.delete(`/api/canvas/${channelId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect([200, 204, 403]).toContain(res.status());
+  test('canvas temizleme değişikliği kalıcı state-sync ile doğrulanır', async () => {
+    expect(channelId, 'kanal fixture kurulmalı').toBeTruthy();
+    const owner = await openSocket(token);
+    const observer = await openSocket(token);
+    try {
+      const ownerReady = waitForEvent<CanvasSnapshot>(
+        owner, 'canvas:state-sync', 15_000, value => value?.channelId === channelId,
+      );
+      owner.emit('canvas:join', { channelId });
+      await ownerReady;
+
+      const observerReady = waitForEvent<CanvasSnapshot>(
+        observer, 'canvas:state-sync', 15_000, value => value?.channelId === channelId,
+      );
+      observer.emit('canvas:join', { channelId });
+      await observerReady;
+
+      const strokeId = `canvas-e2e-${Date.now()}`;
+      const drawn = waitForEvent<{ channelId: string; stroke: { id: string } }>(
+        observer, 'canvas:draw', 15_000,
+        value => value?.channelId === channelId && value?.stroke?.id === strokeId,
+      );
+      owner.emit('canvas:draw', {
+        channelId,
+        stroke: { id: strokeId, tool: 'pen', color: '#123456', width: 2, points: [{ x: 10, y: 20 }] },
+      });
+      expect((await drawn).stroke.id).toBe(strokeId);
+
+      const before = waitForEvent<CanvasSnapshot>(
+        owner, 'canvas:state-sync', 15_000, value => value?.channelId === channelId,
+      );
+      owner.emit('canvas:state-request', { channelId });
+      expect((await before).strokes.some(stroke => stroke.id === strokeId)).toBe(true);
+
+      const clear = waitForEvent<{ channelId: string; clearedAt: number }>(
+        owner, 'canvas:clear', 15_000, value => value?.channelId === channelId,
+      );
+      owner.emit('canvas:clear', { channelId });
+      expect((await clear).clearedAt).toEqual(expect.any(Number));
+
+      const after = waitForEvent<CanvasSnapshot>(
+        owner, 'canvas:state-sync', 15_000, value => value?.channelId === channelId,
+      );
+      owner.emit('canvas:state-request', { channelId });
+      const cleared = await after;
+      expect(cleared.strokes).toHaveLength(0);
+      expect(cleared.clearedAt).toEqual(expect.any(Number));
+    } finally {
+      closeSockets(owner, observer);
+    }
   });
 });
 

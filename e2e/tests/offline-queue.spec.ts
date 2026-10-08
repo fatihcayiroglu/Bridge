@@ -5,7 +5,7 @@
 //   1. Socket kopukken mesaj kuyruğa alınır
 //   2. Reconnect sonrası kuyruk flush edilir
 //   3. Kuyruk badge gösterilir / kaldırılır
-//   4. SW outbox API testi (Background Sync yapısı)
+//   4. SW local-first background-sync notification contract
 //   5. /api/messages endpoint reconnect senaryosu
 
 import { test, expect } from '../helpers/apiTest';
@@ -23,74 +23,79 @@ let _sharedChannel = null;
 let _tokens        = null;
 
 test.beforeAll(async ({ request }) => {
-  try {
-    _tokens = getTokens();
-    _sharedServer  = await createTestServer(request, _tokens.alice, `Offline-Queue-Server-${Date.now()}`);
-    if (_sharedServer?._id || _sharedServer?.id) {
-      const sid = _sharedServer._id || _sharedServer.id;
-      _sharedChannel = await createTestChannel(request, _tokens.alice, sid, 'offline-test');
-    }
-  } catch { /* setup başarısız — testler skip edilir */ }
+  _tokens = getTokens();
+  _sharedServer = await createTestServer(request, _tokens.alice, `Offline-Queue-Server-${Date.now()}`);
+  expect(_sharedServer, 'offline-queue server fixture kurulamadı').toBeTruthy();
+  const serverId = _sharedServer._id || _sharedServer.id;
+  _sharedChannel = await createTestChannel(request, _tokens.alice, serverId, 'offline-test');
+  expect(_sharedChannel, 'offline-queue channel fixture kurulamadı').toBeTruthy();
 });
 
 // ══════════════════════════════════════════════════════════════
-// 1. API Seviyesi — Mesaj persistence
+// 1. Real Socket.IO message write + REST read (no retired REST send route)
 // ══════════════════════════════════════════════════════════════
 test.describe('Mesaj Kalıcılığı (API)', () => {
-
-  test('mesaj gönderilince veritabanına kaydedilmeli', async ({ request }) => {
-    test.skip(true, 'GEÇERSİZ MİMARİ: REST gönderim ucu yok; yerini alan kanonik kapsam → tests/message-actions.spec.ts (kalıcılık + ackId idempotency)');
-    test.skip(!_sharedChannel, 'Test fixture hazır değil'  );
-    const chId = _sharedChannel._id || _sharedChannel.id;
-    const content = `persistence-test-${Date.now()}`;
-
-    const sendRes = await request.post(`${BASE_URL}/api/channels/${chId}/messages`, {
-      headers: { Authorization: `Bearer ${_tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content }),
-    });
-    expect(sendRes.ok()).toBe(true);
-
-    // Hemen listeyi çek — mesaj orada olmalı
-    const listRes = await request.get(`${BASE_URL}/api/channels/${chId}/messages?limit=10`, {
+  async function listMessages(request: import('@playwright/test').APIRequestContext, channelId: string) {
+    const res = await request.get(`${BASE_URL}/api/channels/${channelId}/messages?limit=50`, {
       headers: { Authorization: `Bearer ${_tokens.alice}` },
     });
-    expect(listRes.ok()).toBe(true);
-    const data = await listRes.json();
-    const messages = Array.isArray(data) ? data : data.messages || [];
-    const found = messages.some(m => (m.content || '').includes(content));
-    expect(found).toBe(true);
+    expect(res.status()).toBe(200);
+    const result = await res.json();
+    return (Array.isArray(result) ? result : result.messages || []) as Array<{ _id?: string; id?: string; content?: string }>;
+  }
+
+  test('mesaj gönderilince gerçek Socket.IO ACK sonrası veritabanına kaydedilmeli', async ({ request }) => {
+    const channelId = _sharedChannel._id || _sharedChannel.id;
+    const serverId = _sharedServer._id || _sharedServer.id;
+    const socket = await openSocket(_tokens.alice);
+    try {
+      await paceSends('alice');
+      const ackId = `offline-persist-${Date.now()}`;
+      const content = `persistence-test-${ackId}`;
+      const ack = waitForEvent<{ ackId: string; messageId: string }>(
+        socket, 'message:ack', 15_000, (value) => value?.ackId === ackId,
+      );
+      socket.emit('message:send', { channelId, serverId, content, ackId });
+      const { messageId } = await ack;
+      expect(messageId).toBeTruthy();
+      await expect.poll(async () =>
+        (await listMessages(request, channelId)).some(m => m._id === messageId && m.content === content),
+        { timeout: 15_000 },
+      ).toBe(true);
+    } finally {
+      closeSockets(socket);
+    }
   });
 
-  test('mesaj silindikten sonra listede gözükmemeli', async ({ request }) => {
-    test.skip(true, 'GEÇERSİZ MİMARİ: REST gönderim ucu yok; yerini alan kanonik kapsam → tests/message-actions.spec.ts (message:delete kalıcı kaldırma)');
-    test.skip(!_sharedChannel, 'Test fixture hazır değil'  );
-    const chId = _sharedChannel._id || _sharedChannel.id;
-    const content = `delete-test-${Date.now()}`;
+  test('gerçek Socket.IO silme sonrası mesaj REST listesinde geri gelmemeli', async ({ request }) => {
+    const channelId = _sharedChannel._id || _sharedChannel.id;
+    const serverId = _sharedServer._id || _sharedServer.id;
+    const socket = await openSocket(_tokens.alice);
+    try {
+      await paceSends('alice');
+      const ackId = `offline-delete-${Date.now()}`;
+      const content = `delete-test-${ackId}`;
+      const ack = waitForEvent<{ ackId: string; messageId: string }>(
+        socket, 'message:ack', 15_000, (value) => value?.ackId === ackId,
+      );
+      socket.emit('message:send', { channelId, serverId, content, ackId });
+      const { messageId } = await ack;
+      expect(messageId).toBeTruthy();
 
-    const sendRes = await request.post(`${BASE_URL}/api/channels/${chId}/messages`, {
-      headers: { Authorization: `Bearer ${_tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content }),
-    });
-    expect(sendRes.ok()).toBe(true);
-    const sent = await sendRes.json();
-    const msgId = sent._id || sent.id || sent.message?._id;
-    test.skip(!msgId, 'Mesaj fixture gerekli'  );
+      // Positive control: prove this is a real, persisted message before delete.
+      await expect.poll(async () =>
+        (await listMessages(request, channelId)).some(m => m._id === messageId),
+        { timeout: 15_000 },
+      ).toBe(true);
 
-    // Sil
-    const delRes = await request.delete(`${BASE_URL}/api/messages/${msgId}`, {
-      headers: { Authorization: `Bearer ${_tokens.alice}` },
-    });
-    // 200 veya 204
-    expect(delRes.status()).toBeLessThan(300);
-
-    // Listede olmamalı
-    const listRes = await request.get(`${BASE_URL}/api/channels/${chId}/messages?limit=50`, {
-      headers: { Authorization: `Bearer ${_tokens.alice}` },
-    });
-    const data = await listRes.json();
-    const messages = Array.isArray(data) ? data : data.messages || [];
-    const found = messages.some(m => m._id === msgId || m.id === msgId);
-    expect(found).toBe(false);
+      socket.emit('message:delete', { messageId, channelId });
+      await expect.poll(async () =>
+        (await listMessages(request, channelId)).some(m => m._id === messageId),
+        { timeout: 15_000 },
+      ).toBe(false);
+    } finally {
+      closeSockets(socket);
+    }
   });
 });
 
@@ -150,11 +155,14 @@ test.describe('Service Worker Outbox', () => {
     expect([200, 304]).toContain(res.status());
   });
 
-  test('sw.js outbox kelimesini içermeli', async ({ request }) => {
+  test('sw.js local-first background-sync wake sözleşmesini içerir', async ({ request }) => {
     const res = await request.get(`${BASE_URL}/sw.js`);
-    test.skip(!res.ok(), 'Test fixture hazır değil'  );
+    expect(res.ok(), 'service worker erişilebilir olmalı').toBe(true);
     const body = await res.text();
-    expect(body).toContain('outbox');
+    // P7 A7: the worker only wakes open clients; it must never own private
+    // message payloads or auth tokens. The page owns encrypted outbox replay.
+    expect(body).toContain('bridge-local-first-replay');
+    expect(body).toContain('SW_LOCAL_FIRST_REPLAY');
   });
 
   test('manifest.json erişilebilir olmalı (PWA desteği)', async ({ request }) => {

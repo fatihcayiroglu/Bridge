@@ -5,6 +5,7 @@
 // durable at-rest representation from plaintext localStorage to one encrypted
 // queue snapshot.
 
+import { cloneLocalFirstJson } from './json-snapshot.ts';
 import type { OutboxEntry, OutboxState } from '../outbox-store.ts';
 import type { EncryptedLocalStore } from './store.ts';
 
@@ -95,7 +96,7 @@ function normalize(
     }
     if (seen.has(entry.ackId)) throw new Error('Duplicate local-first outbox ackId');
     seen.add(entry.ackId);
-    result.push(structuredClone(entry));
+    result.push(cloneLocalFirstJson(entry));
   }
   return result.sort((a, b) => a.createdAt - b.createdAt || a.ackId.localeCompare(b.ackId));
 }
@@ -144,10 +145,10 @@ export class EncryptedOutboxRepository {
     if (!validLocalOutboxEntry(entry, this.userId)) throw new Error('Invalid local-first outbox entry');
     const entries = await this.read();
     const index = entries.findIndex(item => item.ackId === entry.ackId);
-    if (index >= 0) entries[index] = structuredClone(entry);
+    if (index >= 0) entries[index] = cloneLocalFirstJson(entry);
     else {
       if (entries.length >= LOCAL_OUTBOX_MAX_ENTRIES) throw new Error('Local-first outbox is full');
-      entries.push(structuredClone(entry));
+      entries.push(cloneLocalFirstJson(entry));
     }
     return this.write(entries);
   }
@@ -163,7 +164,7 @@ export class EncryptedOutboxRepository {
     if (!validLocalOutboxEntry(next, this.userId)) throw new Error('Invalid local-first outbox patch');
     entries[index] = next;
     await this.write(entries);
-    return structuredClone(next);
+    return cloneLocalFirstJson(next);
   }
 
   async remove(ackId: string): Promise<void> {
