@@ -34,6 +34,7 @@
 
 import { test, expect } from '../helpers/apiTest';
 import path from 'path';
+import { deflateSync } from 'zlib';
 import type { Page } from '@playwright/test';
 import { getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
 
@@ -324,10 +325,32 @@ test.describe('çapraz tarayıcı — ürün yüzeyi', () => {
 //
 // Ağ yakalama (page.route) KULLANILMAZ: 404'ü ürünün kendi silme yolu üretir.
 test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
-  const PNG = Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
-    'base64',
-  );
+  // A valid 1x1 RGBA PNG with computed chunk CRCs; Firefox decodes it as well.
+  // Avoid opaque base64 fixtures whose CRC can be accepted by upload but rejected by browsers.
+  function pngChunk(type: string, data: Buffer): Buffer {
+    const payload = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    let crc = 0xffffffff;
+    for (const byte of payload) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+    const size = Buffer.alloc(4);
+    size.writeUInt32BE(data.length);
+    const checksum = Buffer.alloc(4);
+    checksum.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+    return Buffer.concat([size, payload, checksum]);
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(1, 0);
+  header.writeUInt32BE(1, 4);
+  header[8] = 8;
+  header[9] = 6;
+  const PNG = Buffer.concat([
+    Buffer.from('89504e470d0a1a0a', 'hex'),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(Buffer.from([0, 255, 0, 0, 255]))),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
 
   test('avatar dosyası silinince geçmiş mesaj kırık resim değil RENK AVATARI gösterir', async ({ page, request, browser }, testInfo) => {
     test.skip(!serverId, 'sunucu fikstürü kurulamadı — ölçüm yapılamaz');
