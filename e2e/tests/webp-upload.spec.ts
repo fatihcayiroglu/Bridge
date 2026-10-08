@@ -194,33 +194,9 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
 
   // ── CDN entegrasyonu ──────────────────────────────────────────────────────
 
-  test('CDN_PROVIDER=r2 olsa da özel mesaj eki Bridge yetki URL\'sinden döner', async ({ request }) => {
-    const cdnProvider = process.env.CDN_PROVIDER ?? 'local';
-    test.skip(cdnProvider !== 'r2', 'R2 CDN ortamı yapılandırılmamış');
-
-    const pngBuffer = fs.readFileSync(tmpPng);
-    const res = await request.post(`${BASE_URL}/api/upload`, {
-      headers: { Authorization: `Bearer ${tokens.alice}` },
-      multipart: {
-        file: { name: 'cdn-test.png', mimeType: 'image/png', buffer: pngBuffer },
-      },
-    });
-
-    expect(res.status()).toBe(200);
-    const body = await res.json() as { url?: string; key?: string };
-    const url = body.url ?? '';
-    expect(url).toMatch(/^\/uploads\/[A-Za-z0-9._-]+$/);
-    expect(url.startsWith('http')).toBeFalsy();
-    expect(body.key).toBeUndefined();
-
-    // Remote byte teslimi de uygulama yetki sınırından geçmelidir.
-    const denied = await request.get(`${BASE_URL}${url}`);
-    expect(denied.status()).toBe(401);
-    const allowed = await request.get(`${BASE_URL}${url}`, {
-      headers: { Authorization: `Bearer ${tokens.alice}` },
-    });
-    expect(allowed.status()).toBe(200);
-  });
+  // The former R2-environment-only scenario was a permanent local-mode skip.
+  // S3-compatible protected upload is now proved against real MinIO by
+  // remote-storage.spec.ts. This does NOT imply real Cloudflare R2 coverage.
 
   test('local provider\'da URL /uploads/ ile başlıyor', async ({ request }) => {
     test.skip((process.env.CDN_PROVIDER ?? 'local') !== 'local', 'Local storage CDN değil — test geçersiz');
