@@ -5,7 +5,7 @@
 //   1. Socket kopukken mesaj kuyruğa alınır
 //   2. Reconnect sonrası kuyruk flush edilir
 //   3. Kuyruk badge gösterilir / kaldırılır
-//   4. SW outbox API testi (Background Sync yapısı)
+//   4. SW local-first background-sync wake contract (encrypted replay stays in page)
 //   5. /api/messages endpoint reconnect senaryosu
 
 import { test, expect } from '../helpers/apiTest';
@@ -150,11 +150,14 @@ test.describe('Service Worker Outbox', () => {
     expect([200, 304]).toContain(res.status());
   });
 
-  test('sw.js outbox kelimesini içermeli', async ({ request }) => {
+  test('sw.js local-first background-sync wake sözleşmesini içerir', async ({ request }) => {
     const res = await request.get(`${BASE_URL}/sw.js`);
-    test.skip(!res.ok(), 'Test fixture hazır değil'  );
+    expect(res.ok(), 'service worker erişilebilir olmalı').toBe(true);
     const body = await res.text();
-    expect(body).toContain('outbox');
+    // P7 A7: the worker only wakes open clients; it must never own private
+    // message payloads or auth tokens. The page owns encrypted outbox replay.
+    expect(body).toContain('bridge-local-first-replay');
+    expect(body).toContain('SW_LOCAL_FIRST_REPLAY');
   });
 
   test('manifest.json erişilebilir olmalı (PWA desteği)', async ({ request }) => {

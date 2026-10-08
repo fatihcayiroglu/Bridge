@@ -9,6 +9,7 @@ import {
   readOutbox as readLegacyOutbox,
   type OutboxEntry,
 } from '../outbox-store.ts';
+import { cloneLocalFirstJson } from './json-snapshot.ts';
 import { createBrowserLocalFirstStore, type BrowserLocalFirstStore } from './indexeddb.ts';
 import {
   EncryptedOutboxRepository,
@@ -49,7 +50,7 @@ function requireUserId(userId: string): string {
 }
 
 function cloneEntries(entries: readonly OutboxEntry[]): OutboxEntry[] {
-  return entries.map(entry => structuredClone(entry));
+  return entries.map(entry => cloneLocalFirstJson(entry));
 }
 
 function sortEntries(entries: OutboxEntry[]): OutboxEntry[] {
@@ -169,8 +170,8 @@ export function putLocalFirstOutboxEntry(entry: OutboxEntry): boolean {
   const index = entries.findIndex(item => item.ackId === entry.ackId);
   if (index < 0 && entries.length >= LOCAL_OUTBOX_MAX_ENTRIES) return false;
 
-  if (index >= 0) entries[index] = structuredClone(entry);
-  else entries.push(structuredClone(entry));
+  if (index >= 0) entries[index] = cloneLocalFirstJson(entry);
+  else entries.push(cloneLocalFirstJson(entry));
   sortEntries(entries);
   bump(userId);
   volatile.set(userId, cloneEntries(entries));
@@ -201,7 +202,7 @@ export function patchLocalFirstOutboxEntry(
   enqueue(userId, runtime, async value => {
     await value.repository.write(snapshot);
   });
-  return structuredClone(entries[index]);
+  return cloneLocalFirstJson(entries[index]);
 }
 
 export function removeLocalFirstOutboxEntry(userIdInput: string, ackId: string): void {
