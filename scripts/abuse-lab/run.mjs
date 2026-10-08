@@ -81,13 +81,13 @@ const anyNode = () => nodeUrls()[rr++ % cluster.nodeNames.length];
 class Person {
   constructor(base, username, password, ip) { Object.assign(this, { base, username, password, ip, csrf: null, sockets: [] }); }
   headers() { return { 'X-Forwarded-For': this.ip }; }
-  async api(method, urlPath, body, { base = this.base } = {}) {
+  async api(method, urlPath, body, { base = this.base, headers = {} } = {}) {
     if (method !== 'GET' && !this.csrf) {
       const r = await request(base, 'GET', '/api/csrf-token', { token: this.token, headers: this.headers() });
       if (r.status !== 200) return r;
       this.csrf = r.body.token;
     }
-    return request(base, method, urlPath, { token: this.token, body, csrf: method === 'GET' ? undefined : this.csrf, headers: this.headers() });
+    return request(base, method, urlPath, { token: this.token, body, csrf: method === 'GET' ? undefined : this.csrf, headers: { ...this.headers(), ...headers } });
   }
   socket(base = this.base) {
     return new Promise((resolve, reject) => {
@@ -115,6 +115,9 @@ async function person(prefix) {
   const p = new Person(base, username, password, ip);
   p.id = r.body.user?._id || r.body.user?.id;
   p.token = r.body.token;
+  // P7 B2: registration is a fresh sign-in and returns one step-up grant per
+  // scope; the real client holds them in memory and sends the matching one.
+  p.stepUp = r.body.stepUp?.grants ?? {};
   return p;
 }
 // Fixture accounts are created in small batches: registration is deliberately
@@ -764,6 +767,9 @@ const S = {
   },
 
   // A moderator cleaning up after a raid: ban 40 accounts as fast as possible.
+  // P7 B2: a correctly signed-in moderator (fresh sign-in) carries the sign-in's
+  // moderation-burst grant, exactly as the client does, so the burst step-up
+  // never interrupts this cleanup (the step-up lab measures the older-session case).
   async legit_modops() {
     const owner = await person('lmod');
     const c = await community(owner);
@@ -772,7 +778,9 @@ const S = {
     const t0 = Date.now();
     let ok = 0; const statuses = [];
     for (const r of raiders) {
-      const res = await owner.api('POST', `/api/servers/${c.serverId}/bans`, { userId: r.id, reason: 'raid cleanup' });
+      const grant = owner.stepUp['moderation-burst'];
+      const res = await owner.api('POST', `/api/servers/${c.serverId}/bans`, { userId: r.id, reason: 'raid cleanup' },
+        { headers: grant ? { 'X-Bridge-Step-Up': grant } : {} });
       statuses.push(res.status);
       if (res.status < 300) ok += 1;
     }

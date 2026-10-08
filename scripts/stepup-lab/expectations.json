@@ -1,5 +1,5 @@
 {
-  "_comment": "Gate for `run.mjs --gate` (used only AFTER B2 lands). atLeast: the weakest acceptable attack outcome (OPEN < STEPUP < BLOCKED). knownFalsePositive: a legitimate control that is a FALSE_POSITIVE by design/deferral, with the reason; any OTHER false positive fails the gate. The baseline run is ungated: every attack is OPEN there by definition. Measured values and the reasoning live in docs/P7_TRUST_SOCIAL_FOUNDATION.md (B2 evidence).",
+  "_comment": "Gate for `run.mjs --gate` (after B2). Attacks: atLeast = the weakest acceptable outcome (OPEN < STEPUP < BLOCKED). Controls: outcome = the exact expected experience (OK = never asked, FRICTION = exactly one proof then the action continued); knownFalsePositive would name a documented exception (none). SU-ATK-09 (invite burst) deliberately has no floor: invite step-up is deferred and the existing 10/min limiter stays the bound (docs/P7_TRUST_SOCIAL_FOUNDATION.md § B2, approved decision). The baseline run is ungated: every attack was OPEN there by definition.",
   "SU-ATK-01": { "atLeast": "STEPUP" },
   "SU-ATK-02": { "atLeast": "STEPUP" },
   "SU-ATK-03": { "atLeast": "STEPUP" },
@@ -8,5 +8,15 @@
   "SU-ATK-06": { "atLeast": "STEPUP" },
   "SU-ATK-07": { "atLeast": "STEPUP" },
   "SU-ATK-08": { "atLeast": "STEPUP" },
-  "SU-ATK-10": { "atLeast": "STEPUP" }
+  "SU-ATK-10": { "atLeast": "BLOCKED" },
+  "SU-ATK-11": { "atLeast": "STEPUP" },
+  "SU-ATK-12": { "atLeast": "STEPUP" },
+  "SU-ATK-13": { "atLeast": "STEPUP" },
+  "SU-LEG-01": { "outcome": "OK" },
+  "SU-LEG-02": { "outcome": "FRICTION" },
+  "SU-LEG-03": { "outcome": "OK" },
+  "SU-LEG-04": { "outcome": "OK" },
+  "SU-LEG-05": { "outcome": "FRICTION" },
+  "SU-LEG-06": { "outcome": "FRICTION" },
+  "SU-LEG-07": { "outcome": "FRICTION" }
 }

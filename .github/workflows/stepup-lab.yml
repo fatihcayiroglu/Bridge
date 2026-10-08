@@ -1,0 +1,99 @@
+name: Bridge Step-up Lab Evidence
+
+# P7 B2: stolen-session attacks on high-risk actions AND the legitimate
+# experience (fresh sign-in, older session, 2FA with TOTP / backup code,
+# ordinary moderation, raid cleanup) against a disposable two-node cluster of
+# real processes (scripts/stepup-lab). `--gate` fails the run when a control's
+# experience differs from scripts/stepup-lab/expectations.json or an attack
+# weakens below its recorded floor. Runs on changes to the step-up owners,
+# weekly, and on demand. The fast unit / route-matrix tests run in the normal
+# Quality Gate.
+on:
+  pull_request:
+    paths:
+      - 'server/lib/stepUp.ts'
+      - 'server/routes/stepUp.ts'
+      - 'server/routes/twoFactor.ts'
+      - 'server/routes/auth.ts'
+      - 'server/routes/sso.ts'
+      - 'server/routes/webauthn.ts'
+      - 'server/routes/email.ts'
+      - 'server/routes/account.ts'
+      - 'server/routes/servers/core.ts'
+      - 'server/routes/admin/users.ts'
+      - 'server/routes/moderation.ts'
+      - 'server/routes/roles.ts'
+      - 'server/routes/messages.ts'
+      - 'server/middleware/auth.ts'
+      - 'server/middleware/rateLimit.ts'
+      - 'server/socket/socketRateLimit.ts'
+      - 'scripts/stepup-lab/**'
+      - '.github/workflows/stepup-lab.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '23 5 * * 2'
+
+concurrency:
+  group: stepup-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  lab:
+    name: Step-up attacks + legitimate controls (2 nodes, PostgreSQL, Redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_VERSION: '24.20.0'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install infrastructure (PostgreSQL binaries, Redis, S3 emulator)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server lsof
+          sudo systemctl stop redis-server || true
+          python -m pip install --quiet 'moto[server]==5.2.3'
+          ls -d /usr/lib/postgresql/*/bin
+      - name: Install and build Bridge
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund && npm run build
+      - name: Run the lab (gated)
+        run: |
+          node scripts/stepup-lab/run.mjs --gate \
+            --label "ci-${GITHUB_SHA::7}" \
+            --work "$RUNNER_TEMP/bridge-stepup" \
+            --out "$RUNNER_TEMP/bridge-stepup-report"
+        env:
+          MN_MOTO_SERVER: moto_server
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/bridge-stepup-report/report.md" ]; then
+            cat "$RUNNER_TEMP/bridge-stepup-report/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload report and node logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stepup-lab-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/bridge-stepup-report
+            ${{ runner.temp }}/bridge-stepup/logs
+          retention-days: 30
+          if-no-files-found: warn
