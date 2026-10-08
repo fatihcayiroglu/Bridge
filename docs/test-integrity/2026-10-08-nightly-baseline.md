@@ -46,9 +46,8 @@
 
 ## Disposition and follow-up
 
-- **23/26** are legacy or currently unshipped contract checks, not passing tests. The retired REST routes must not be implemented merely to turn red into green: replace each with an active test of the supported Socket.IO, native client, or plugin contract when equivalent behavior exists, or explicitly classify the feature as unshipped with an owner.
+- **24/26** are legacy or currently unshipped contract checks, not passing tests. The retired REST routes must not be implemented merely to turn red into green: replace each with an active test of the supported Socket.IO, native client, or plugin contract when equivalent behavior exists, or explicitly classify the feature as unshipped with an owner.
 - **2/26** are environment-configured WebP and R2 checks. Execute under a configured dedicated job before claiming verified coverage, or retain explicitly documented non-production-environment skips.
-- **1/26?** See row-level classification above; counts must be reconciled from the file-based ledger, not approximated from old tests.
 - Do not remove tests or loosen assertions as a skip-cleanup shortcut. When retiring invalid tests, link to their live canonical replacement and verify it runs.
 - Follow-up scan across **all** server/client/Electron/mobile/pgtest suites, conditional `skip/fixme/todo`, missing runner ownership and workflow event-gates is mandatory, not implied by a green PR.
 - Legacy observations from B2 Quality Gate (not the same head as nightly): server Jest 621 passing suites / 16 skipped tests, client 44/761, bot-sdk 55 tests, Electron 50 passed / 1 skipped, mobile bridge 105 passed / 22 skipped; real PG test suite 12 skipped tests. Every group needs its own skip-reason and execution audit.
