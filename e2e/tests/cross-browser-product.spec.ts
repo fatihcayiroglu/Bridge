@@ -48,12 +48,12 @@ test.beforeAll(async ({ request }) => {
   const stamp = Date.now().toString(36);
   const srv = await createTestServer(request, token, `XBP ${stamp}`);
   serverId = srv?._id || srv?.id || '';
-  if (!serverId) return;
+  expect(serverId, 'Cross-browser: sunucu fixture oluşturulamadı').toBeTruthy();
   // Kanal adı KOŞUMA ÖZGÜdür: `[aria-label="Kanal: ..."]` seçicisi böylece
   // önceki koşumların bıraktığı kanallarla çakışmaz.
   channelName = `urun-${stamp}`;
   const ch = await createTestChannel(request, token, serverId, channelName, 'text');
-  if (!(ch?._id || ch?.id)) channelName = '';
+  expect(ch?._id || ch?.id, 'Cross-browser: kanal fixture oluşturulamadı').toBeTruthy();
 });
 
 /**
