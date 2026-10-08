@@ -19,16 +19,9 @@ test.describe('Kanal Yönetimi', () => {
       tokens.alice,
       `Kanal Test Server ${Date.now()}`
     );
+    expect(server, 'kanal yönetimi sunucu fikstürü oluşturulamadı').toBeTruthy();
     testServerId = server._id || server.id;
-    // Guard: if server creation failed, remaining tests will be skipped via beforeEach
-  });
-
-  test.beforeEach(async ({}, testInfo) => {
-    // If beforeAll server creation failed, skip channel-dependent tests
-    if (!testServerId && testInfo.title.startsWith('API: ') &&
-        (testInfo.title.includes('kanal') || testInfo.title.includes('channel') || testInfo.title.includes('Channel'))) {
-      test.skip(true, 'Sunucu fixture oluşturulamadı — kanal testleri atlanıyor');
-    }
+    expect(testServerId, 'kanal yönetimi sunucu kimliği eksik').toBeTruthy();
   });
 
   // ── Sunucu Testleri ──────────────────────────────────────
