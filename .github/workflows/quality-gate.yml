@@ -649,9 +649,9 @@ jobs:
       - name: Start isolated MinIO
         if: ${{ !cancelled() }}
         run: |
-          docker pull cgr.dev/chainguard/minio:latest
-          docker image inspect --format='{{index .RepoDigests 0}}' cgr.dev/chainguard/minio:latest
-          docker run -d --name bridge-ci-minio -p 9000:9000 -e MINIO_ROOT_USER=bridgereview -e MINIO_ROOT_PASSWORD=bridgereview123 cgr.dev/chainguard/minio:latest server /data
+          docker pull quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+          docker image inspect --format='{{index .RepoDigests 0}}' quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+          docker run -d --name bridge-ci-minio -p 9000:9000 -e MINIO_ROOT_USER=bridgereview -e MINIO_ROOT_PASSWORD=bridgereview123 quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
           for i in $(seq 1 40); do
             if curl --fail --silent --max-time 2 http://127.0.0.1:9000/minio/health/ready >/dev/null; then exit 0; fi
             sleep 2
