@@ -27,8 +27,7 @@
 //
 // ── DÜRÜSTLÜK ─────────────────────────────────────────────────────────────
 // · Playwright WebKit GERÇEK Safari DEĞİLDİR; bilgilendirici bir sinyaldir.
-// · Fikstür kurulamazsa testler SESSİZCE geçmez; açık gerekçeyle atlanır ve
-//   atlama bir GEÇİŞ olarak raporlanmaz.
+// · Fikstür kurulamazsa testler açıkça BAŞARISIZ olur; skip ile gizlenmez.
 // · Medya/WebRTC iddiası BURADA yapılmaz (motorlar arası yetenek farkı);
 //   o yüzey `voice-media` projesine aittir.
 
@@ -65,7 +64,7 @@ test.beforeAll(async ({ request }) => {
  * `[aria-label="Kanal: <ad>"]`. Kanal öğeleri gerçek `<button>`dır.
  */
 async function enterChannel(page: Page): Promise<void> {
-  test.skip(!serverId || !channelName, 'sunucu/kanal fikstürü kurulamadı — ölçüm yapılamaz');
+  expect(serverId && channelName, 'Sunucu/kanal fixture kurulamadı').toBeTruthy();
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#app')).toBeVisible({ timeout: 30_000 });
   await page.locator(`.server-icon[data-id="${serverId}"]`).first().click({ timeout: 25_000 });
@@ -353,11 +352,11 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
   ]);
 
   test('avatar dosyası silinince geçmiş mesaj kırık resim değil RENK AVATARI gösterir', async ({ page, request, browser }, testInfo) => {
-    test.skip(!serverId, 'sunucu fikstürü kurulamadı — ölçüm yapılamaz');
+    expect(serverId, 'Sunucu fixture kurulamadı').toBeTruthy();
     // Gruplanmış takip mesajı avatar ÇİZMEZ; bu yüzden mesaj KENDİ kanalında ilk mesajdır.
     const avatarChannel = `avatar-${Date.now().toString(36)}`;
     const ch = await createTestChannel(request, token, serverId, avatarChannel, 'text');
-    test.skip(!(ch?._id || ch?.id), 'avatar kanalı kurulamadı — ölçüm yapılamaz');
+    expect(ch?._id || ch?.id, 'Avatar kanalı fixture kurulamadı').toBeTruthy();
 
     const up = await request.post(`${BASE_URL}/api/me/avatar`, {
       headers: { Authorization: `Bearer ${token}` },
