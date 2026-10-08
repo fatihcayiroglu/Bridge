@@ -5,6 +5,7 @@
 
 import { test, expect } from '../helpers/apiTest';
 import { getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
+import { openSocket, waitForEvent, closeSockets } from '../helpers/socket';
 
 // ── Ortak setup ──────────────────────────────────────────────────────────────
 
@@ -218,28 +219,69 @@ test.describe('Soundboard', () => {
 // CLIPS (Ses/Video Kayıt)
 // ══════════════════════════════════════════════════════════════════════════════
 
-test.describe('Clips', () => {
-  // Final21 Faz 22 (19-37): iki test de `[200, 404]` / `[403, 404]` ile VAR OLMAYAN rotalara karşı
-  // GEÇİYORDU — ölçüldü: `GET /api/clips` → 404 "Not found: GET /api/clips" (genel 404 işleyicisi;
-  // setupRoutes'ta klip yönlendiricisi YOK). Klip özelliği REST üzerinden sevk edilmiyor: açıkça atlanır.
-  test('clip listesi alınabilir', async ({ request }) => {
-    test.skip(true, 'SEVK EDİLMEDİ: /api/clips rotası yok (ölçüldü 404, genel not-found işleyicisi).');
-    const res = await request.get(`/api/clips?serverId=${serverId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(res.status()).toBe(200);
+test.describe('Clips — gerçek Socket.IO metadata protokolü', () => {
+  type Clip = {
+    id: string;
+    channelId: string;
+    filename: string;
+    mimeType: string;
+    sizeBytes: number;
+    durationMs: number;
+  };
+
+  async function listClips(socket: Awaited<ReturnType<typeof openSocket>>): Promise<Clip[]> {
+    const result = waitForEvent<Clip[]>(socket, 'clip:list_result', 10_000);
+    socket.emit('clip:list', { channelId });
+    return result;
+  }
+
+  test('clip:save → clip:saved ve clip:list gerçek metadata döndürür', async () => {
+    expect(channelId, 'kanal fixture gerekli').toBeTruthy();
+    const socket = await openSocket(token);
+    const filename = `clip-${Date.now()}.webm`;
+    try {
+      const saved = waitForEvent<{ clipId: string; filename: string }>(
+        socket, 'clip:saved', 10_000, value => value?.filename === filename,
+      );
+      socket.emit('clip:save', {
+        channelId, filename, mimeType: 'video/webm', sizeBytes: 1234, durationMs: 5000,
+      });
+      const clipId = (await saved).clipId;
+      expect(clipId).toBeTruthy();
+      const clips = await listClips(socket);
+      expect(clips.find(clip => clip.id === clipId)).toMatchObject({
+        channelId, filename, mimeType: 'video/webm', sizeBytes: 1234, durationMs: 5000,
+      });
+    } finally {
+      closeSockets(socket);
+    }
   });
 
-  test('clip silme yetkisiz kullanıcı 403 alır', async ({ request }) => {
-    test.skip(true, 'SEVK EDİLMEDİ: /api/clips rotası yok (ölçüldü 404, genel not-found işleyicisi).');
-    const fakeClipId = '00000000-0000-0000-0000-000000000000';
-    const res = await request.delete(`/api/clips/${fakeClipId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(res.status()).toBe(403);
+  test('başkasının klipleri clip:list üzerinden başka kullanıcıya sızmaz', async () => {
+    expect(channelId, 'kanal fixture gerekli').toBeTruthy();
+    const alice = await openSocket(tokens.alice);
+    const bob = await openSocket(tokens.bob);
+    const filename = `private-${Date.now()}.webm`;
+    try {
+      const saved = waitForEvent<{ clipId: string; filename: string }>(
+        alice, 'clip:saved', 10_000, value => value?.filename === filename,
+      );
+      alice.emit('clip:save', {
+        channelId, filename, mimeType: 'video/webm', sizeBytes: 2048, durationMs: 2000,
+      });
+      const { clipId } = await saved;
+      const mine = await listClips(alice);
+      expect(mine.some(clip => clip.id === clipId)).toBe(true);
+
+      // Bob has no membership in the freshly created private server.
+      // A clip:list request must never return Alice's clip metadata.
+      const others = await listClips(bob);
+      expect(others.some(clip => clip.id === clipId || clip.filename === filename)).toBe(false);
+    } finally {
+      closeSockets(alice, bob);
+    }
   });
 });
-
 // ══════════════════════════════════════════════════════════════════════════════
 // SEMANTİK ARAMA
 // ══════════════════════════════════════════════════════════════════════════════
