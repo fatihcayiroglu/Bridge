@@ -13,7 +13,7 @@ import { openSocket, waitForEvent, closeSockets } from '../helpers/socket';
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 test.describe('Ses Kanalı Akışları', () => {
-  let tokens: { alice: string; bob: string };
+  let tokens: { alice: string; bob: string; carol: string };
   let testServerName = '';
   let testServerId:   string;
   let voiceChannelId: string;
@@ -141,9 +141,17 @@ test.describe('Ses Kanalı Akışları', () => {
       const received = waitForEvent<{ socketId: string }>(
         bob, 'voice:peer-left', 15_000, e => e?.socketId === alice.id,
       );
+      // The room state Bob sees must drop Alice too, not just the peer-left signal.
+      const updated = waitForEvent<{ channelId: string; peers: Array<{ socketId: string }> }>(
+        bob, 'voice:room-update', 15_000,
+        e => e?.channelId === voiceChannelId && e.peers?.every(p => p.socketId !== alice.id) === true,
+      );
       alice.emit('voice:leave', { channelId: voiceChannelId, serverId: testServerId });
       const event = await received;
       expect(event.socketId).toBe(alice.id);
+      const state = await updated;
+      expect(state.peers.some(p => p.socketId === bob.id)).toBe(true);
+      expect(state.peers.some(p => p.socketId === alice.id)).toBe(false);
     } finally { closeSockets(alice, bob); }
   });
 
@@ -168,6 +176,21 @@ test.describe('Ses Kanalı Akışları', () => {
       expect(after.peers.length).toBeLessThan(before.peers.length);
       expect(after.peers.some(p => p.socketId === alice.id)).toBe(false);
     } finally { closeSockets(alice, watcher); }
+  });
+
+  // Fail-closed admission (from #147): a signed-in person who is not a member
+  // of the server is refused, never silently ignored. carol is the fixture
+  // that belongs to no server (global.setup.ts).
+  test('Socket: sunucu üyesi olmayan kullanıcı voice:join-rejected FORBIDDEN alır', async () => {
+    expect(voiceChannelId && testServerId, 'ses fikstürü eksik').toBeTruthy();
+    const outsider = await openSocket(tokens.carol);
+    try {
+      const refused = waitForEvent<{ channelId: string; code: string }>(
+        outsider, 'voice:join-rejected', 15_000, e => e?.channelId === voiceChannelId,
+      );
+      outsider.emit('voice:join', { channelId: voiceChannelId, serverId: testServerId });
+      expect((await refused).code).toBe('FORBIDDEN');
+    } finally { closeSockets(outsider); }
   });
 
   // ── UI Testleri ──────────────────────────────────────────
