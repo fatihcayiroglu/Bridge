@@ -9,6 +9,7 @@
 
 import { test, expect } from '../helpers/apiTest';
 import { getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
+import { openSocket, waitForEvent, closeSockets } from '../helpers/socket';
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
 const API  = `${BASE}/api`;
@@ -336,72 +337,116 @@ test.describe('Stage Video Grid — API akışları', () => {
 // 5. DRAW TOGETHER — HTTP katmanı ve bağlantı kontrolleri
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test.describe('Draw Together — API ve güvenlik', () => {
+test.describe('Draw Together — real activity socket security', () => {
   let tokens: { alice: string; bob: string };
   let serverId: string;
-  let channelId: string;
+  let voiceChannelId: string;
+
+  type ActivitySession = {
+    activityId: string;
+    channelId: string;
+    serverId: string;
+    hostUserId: string;
+    sessionId: string;
+    participants: string[];
+  };
 
   test.beforeAll(async ({ request }) => {
     tokens = getTokens();
     const srv = await createTestServer(request, tokens.alice, `S83-DrawTogether-${Date.now()}`);
-    serverId = srv?._id || srv?.id;
-    if (!serverId) return;
-    const ch = await createTestChannel(request, tokens.alice, serverId, 'draw-channel');
-    channelId = ch?._id || ch?.id;
+    expect(srv, 'activity server fixture failed').toBeTruthy();
+    serverId = srv._id || srv.id;
+    // activity:start requires membership in the actual voice:<channelId>
+    // room, not just a bearer token or a text channel.
+    const ch = await createTestChannel(request, tokens.alice, serverId, 'draw-voice', 'voice');
+    expect(ch, 'activity voice channel fixture failed').toBeTruthy();
+    voiceChannelId = ch._id || ch.id;
   });
 
-  test('Sunucu ve kanal oluşturuldu', () => {
-    expect(serverId).toBeTruthy();
-    expect(channelId).toBeTruthy();
-  });
-
-  test('Activities endpoint — auth gerektirir', async ({ request }) => {
-    // Aktivite başlatma (varsa) auth gerektirir
-    const res = await request.post(`${API}/channels/${channelId}/activities`, {
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ activityId: 'draw-together' }),
-    });
-    expect([401, 404, 405]).toContain(res.status());
-  });
-
-  test('Activities endpoint — auth ile çalışır (veya 404 if endpoint eksik)', async ({ request }) => {
-    // Final21 Faz 22 (19-37): `[200, 201, 404, 405]` kabul ederek VAR OLMAYAN rotaya karşı GEÇİYORDU —
-    // ölçüldü: 404 "Not found: POST /api/channels/…/activities". Etkinlikler soket üzerindendir
-    // (kardeş test aynı gerekçeyle atlanıyor); geçmiş sayılmaz.
-    test.skip(true, 'SEVK EDİLMEDİ: /api/channels/:id/activities REST ucu yok (ölçüldü 404) — etkinlikler soket tabanlı.');
-    const res = await request.post(`${API}/channels/${channelId}/activities`, {
-      headers: {
-        Authorization: `Bearer ${tokens.alice}`,
-        'Content-Type': 'application/json',
-      },
-      data: JSON.stringify({ activityId: 'draw-together' }),
-    });
-    // 200/201 (başarılı) veya 404 (route yoksa) — ikisi de kabul edilir
-    expect([200, 201, 404, 405]).toContain(res.status());
-  });
-
-  test('Draw Together aktivitesi listesinde görünür', async ({ request }) => {
-    // GET /api/activity veya benzeri endpoint activities listeler
-    const res = await request.get(`${API}/activity`, {
-      headers: { Authorization: `Bearer ${tokens.alice}` },
-    });
-    // Activity list endpoint opsiyonel — yoksa testi atla
-    if (res.status() === 404) {
-      test.skip(true, '/api/activity endpoint mevcut değil — Sprint 83 activity socket-only');
-      return;
-    }
-    expect(res.status()).toBe(200);
-    const body = await res.json();
-    const activities: unknown[] = Array.isArray(body) ? body : body.activities ?? [];
-    const hasDraw = activities.some(
-      (a: unknown) => typeof a === 'object' && a !== null && ('id' in a) &&
-        (a as { id: string }).id === 'draw-together'
+  async function joinVoice(socket: Awaited<ReturnType<typeof openSocket>>) {
+    const joined = waitForEvent<{ channelId: string }>(
+      socket, 'voice:joined', 15_000, value => value?.channelId === voiceChannelId,
     );
-    // draw-together built-in aktiviteler arasında olmalı
-    expect(hasDraw).toBe(true);
+    socket.emit('voice:join', { channelId: voiceChannelId, serverId });
+    expect((await joined).channelId).toBe(voiceChannelId);
+  }
+
+  // Session creation and listing are async Redis-backed operations. Observe
+  // the durable public session through the actual activity:list event rather
+  // than relying on a timing-sensitive channel-room broadcast.
+  async function startDrawTogether(socket: Awaited<ReturnType<typeof openSocket>>): Promise<ActivitySession> {
+    const listed = waitForEvent<ActivitySession>(
+      socket, 'activity:list_result', 15_000,
+      value => value?.channelId === voiceChannelId && value?.activityId === 'draw-together',
+    );
+    socket.emit('activity:start', { activityId: 'draw-together', channelId: voiceChannelId, serverId });
+    const probe = setInterval(() => socket.emit('activity:list', { channelId: voiceChannelId }), 150);
+    try {
+      return await listed;
+    } finally {
+      clearInterval(probe);
+    }
+  }
+
+  test('authenticated socket without voice-room admission cannot start activity', async () => {
+    const socket = await openSocket(tokens.alice);
+    try {
+      const refused = waitForEvent<{ message: string }>(socket, 'activity:error', 10_000);
+      socket.emit('activity:start', { activityId: 'draw-together', channelId: voiceChannelId, serverId });
+      expect((await refused).message).toContain('izniniz yok');
+
+      const empty = waitForEvent<ActivitySession | null>(socket, 'activity:list_result', 10_000);
+      socket.emit('activity:list', { channelId: voiceChannelId });
+      expect(await empty).toBeNull();
+    } finally {
+      closeSockets(socket);
+    }
+  });
+
+  test('authenticated voice member starts Draw Together using activity:start', async () => {
+    const socket = await openSocket(tokens.alice);
+    try {
+      await joinVoice(socket);
+      const active = await startDrawTogether(socket);
+      expect(active).toMatchObject({
+        activityId: 'draw-together',
+        channelId: voiceChannelId,
+        serverId,
+      });
+      expect(active.sessionId).toBeTruthy();
+      expect(active.participants).toHaveLength(1);
+    } finally {
+      socket.emit('activity:leave', { channelId: voiceChannelId });
+      closeSockets(socket);
+    }
+  });
+
+  test('activity:list exposes session only to authorized joined voice member', async () => {
+    const member = await openSocket(tokens.alice);
+    const outsider = await openSocket(tokens.bob);
+    try {
+      await joinVoice(member);
+      const active = await startDrawTogether(member);
+      expect(active.activityId).toBe('draw-together');
+
+      // Bob is not a member of this server and has not joined its voice room.
+      // The API must neither reveal an active session nor its participants.
+      const hidden = waitForEvent<ActivitySession | null>(outsider, 'activity:list_result', 10_000);
+      outsider.emit('activity:list', { channelId: voiceChannelId });
+      expect(await hidden).toBeNull();
+
+      const listed = waitForEvent<ActivitySession>(
+        member, 'activity:list_result', 10_000,
+        value => value?.sessionId === active.sessionId,
+      );
+      member.emit('activity:list', { channelId: voiceChannelId });
+      expect((await listed).participants).toEqual(active.participants);
+    } finally {
+      member.emit('activity:leave', { channelId: voiceChannelId });
+      closeSockets(member, outsider);
+    }
   });
 });
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // 6. SMOKE — Sprint 83 rotaları genel sağlık
 // ═══════════════════════════════════════════════════════════════════════════════
