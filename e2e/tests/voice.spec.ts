@@ -7,7 +7,7 @@
 //   UI:  ses kanalı UI elementleri, mute/deafen butonları
 
 import { test, expect } from '../helpers/apiTest';
-import { BridgePage, getTokens, createTestServer } from '../helpers/bridge';
+import { BridgePage, getTokens, createTestServer, joinServer } from '../helpers/bridge';
 import { openSocket, waitForEvent, closeSockets } from '../helpers/socket';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -23,24 +23,34 @@ test.describe('Ses Kanalı Akışları', () => {
 
     testServerName = `Voice E2E ${Date.now()}`;
     const server = await createTestServer(request, tokens.alice, testServerName);
-    testServerId = server?._id || server?.id;
-    if (!testServerId) return;
+    expect(server, 'ses testi sunucusu oluşturulamadı').toBeTruthy();
+    testServerId = server._id || server.id;
+    expect(testServerId, 'ses sunucu kimliği eksik').toBeTruthy();
 
     // Ses kanalı oluştur
     const res = await request.post(`${BASE_URL}/api/servers/${testServerId}/channels`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ name: 'genel-ses', type: 'voice' }),
     });
-    if (res.ok()) {
-      const ch = await res.json();
-      voiceChannelId = ch._id || ch.id;
-    }
+    expect(res.ok(), `ses kanalı oluşturma HTTP ${res.status()}`).toBe(true);
+    const ch = await res.json();
+    voiceChannelId = ch._id || ch.id;
+    expect(voiceChannelId, 'ses kanalı kimliği eksik').toBeTruthy();
+    expect(await joinServer(request, tokens.alice, tokens.bob, testServerId), 'Bob ses sunucusuna katılamadı').toBe(true);
   });
+
+  async function joinVoice(socket: Awaited<ReturnType<typeof openSocket>>): Promise<void> {
+    const ack = waitForEvent<{ channelId: string }>(
+      socket, 'voice:joined', 15_000, event => event?.channelId === voiceChannelId,
+    );
+    socket.emit('voice:join', { channelId: voiceChannelId, serverId: testServerId });
+    await ack;
+  }
 
   // ── API Testleri ─────────────────────────────────────────
 
   test('API: ses kanalı oluşturulabilir', async ({ request }) => {
-    test.skip(!testServerId, 'Ses testi için sunucu fixture gerekli');
+    expect(testServerId, 'ses sunucu fikstürü eksik').toBeTruthy();
     const res = await request.post(`${BASE_URL}/api/servers/${testServerId}/channels`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ name: `ses-${Date.now()}`, type: 'voice' }),
@@ -51,7 +61,7 @@ test.describe('Ses Kanalı Akışları', () => {
   });
 
   test('API: ses kanalı listede görünür', async ({ request }) => {
-    test.skip(!testServerId, 'Ses testi için sunucu fixture gerekli');
+    expect(testServerId, 'ses sunucu fikstürü eksik').toBeTruthy();
     const res = await request.get(`${BASE_URL}/api/servers/${testServerId}/channels`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
@@ -63,7 +73,7 @@ test.describe('Ses Kanalı Akışları', () => {
   });
 
   test('API: ses kanalına yetkisiz bağlanılamaz', async ({ request }) => {
-    test.skip(!voiceChannelId, 'Ses kanalı fixture gerekli');
+    expect(voiceChannelId, 'ses kanalı fikstürü eksik').toBeTruthy();
     const res = await request.post(`${BASE_URL}/api/channels/${voiceChannelId}/voice-state`, {
       headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({ selfMute: false, selfDeaf: false }),
@@ -72,7 +82,7 @@ test.describe('Ses Kanalı Akışları', () => {
   });
 
   test('API: ses durumu güncellenebilir (mute/deafen)', async ({ request }) => {
-    test.skip(!voiceChannelId, 'Ses kanalı fixture gerekli');
+    expect(voiceChannelId, 'ses kanalı fikstürü eksik').toBeTruthy();
     const res = await request.post(`${BASE_URL}/api/channels/${voiceChannelId}/voice-state`, {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ selfMute: true, selfDeaf: false }),
@@ -81,7 +91,7 @@ test.describe('Ses Kanalı Akışları', () => {
   });
 
   test('API: ses kanalı üye listesi alınabilir', async ({ request }) => {
-    test.skip(!voiceChannelId, 'Ses kanalı fixture gerekli');
+    expect(voiceChannelId, 'ses kanalı fikstürü eksik').toBeTruthy();
     const res = await request.get(`${BASE_URL}/api/channels/${voiceChannelId}/voice-members`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
@@ -93,7 +103,7 @@ test.describe('Ses Kanalı Akışları', () => {
   });
 
   test('API: ses kanalı silinemez (üye sayısı > 0 kontrolü olmasa da 5xx vermez)', async ({ request }) => {
-    test.skip(!testServerId, 'Ses testi için sunucu fixture gerekli');
+    expect(testServerId, 'ses sunucu fikstürü eksik').toBeTruthy();
     const res = await request.delete(`${BASE_URL}/api/channels/gecersiz-id`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
@@ -103,98 +113,61 @@ test.describe('Ses Kanalı Akışları', () => {
 
   // ── YENİ: Socket sinyal katmanı testleri ─────────────────
 
-  test('Socket: voice:join sonrası sunucu üyelerine voice:room-update gelir', async () => {
-    test.skip(!voiceChannelId || !testServerId, 'Ses kanalı ve sunucu fixture gerekli');
-
-    const alice = await openSocket(tokens.alice).catch(() => null);
-    const bob   = await openSocket(tokens.bob).catch(() => null);
-    test.skip(!alice || !bob, 'Çoklu kullanıcı fixture gerekli');
-
+  // 'server:join' ses odası aboneliği değildir. Olayın gerçekten
+  // ulaşmasını ve katılımcı listesini pozitif kontrollerle doğrula.
+  test('Socket: voice:join sonrası üyeler voice:room-update alır', async () => {
+    expect(voiceChannelId && testServerId, 'ses fikstürü eksik').toBeTruthy();
+    const alice = await openSocket(tokens.alice);
+    const bob = await openSocket(tokens.bob);
     try {
-      // Bob sunucu odasına giriyor
-      bob.emit('server:join', testServerId);
-      await new Promise(r => setTimeout(r, 400));
-
-      const updatePromise = waitForEvent<{ channelId: string; peers: unknown[] }>(
-        bob, 'voice:room-update', 5_000,
+      await joinVoice(bob);
+      const received = waitForEvent<{ channelId: string; peers: Array<{ socketId: string }> }>(
+        bob, 'voice:room-update', 15_000,
+        e => e?.channelId === voiceChannelId && e.peers?.some(p => p.socketId === alice.id) === true,
       );
-
-      alice.emit('voice:join', { channelId: voiceChannelId });
-
-      const update = await updatePromise.catch(() => null);
-
-      if (update) {
-        expect(update.channelId).toBe(voiceChannelId);
-        expect(Array.isArray(update.peers)).toBe(true);
-        expect(update.peers.length).toBeGreaterThan(0);
-      }
-      // null dönerse event ismi farklıdır — sunucu loglarından kontrol edilmeli
-    } finally {
-      closeSockets(alice, bob);
-    }
+      await joinVoice(alice);
+      const update = await received;
+      expect(update.peers.some(p => p.socketId === alice.id)).toBe(true);
+    } finally { closeSockets(alice, bob); }
   });
 
   test('Socket: voice:leave sonrası diğer üyeye voice:peer-left gelir', async () => {
-    test.skip(!voiceChannelId || !testServerId, 'Ses kanalı ve sunucu fixture gerekli');
-
-    const alice = await openSocket(tokens.alice).catch(() => null);
-    const bob   = await openSocket(tokens.bob).catch(() => null);
-    test.skip(!alice || !bob, 'Çoklu kullanıcı fixture gerekli');
-
+    expect(voiceChannelId && testServerId, 'ses fikstürü eksik').toBeTruthy();
+    const alice = await openSocket(tokens.alice);
+    const bob = await openSocket(tokens.bob);
     try {
-      alice.emit('voice:join', { channelId: voiceChannelId });
-      await new Promise(r => setTimeout(r, 500));
-
-      bob.emit('server:join', testServerId);
-      await new Promise(r => setTimeout(r, 300));
-
-      const leftPromise = waitForEvent<{ socketId: string; userId?: string }>(
-        bob, 'voice:peer-left', 5_000,
+      await joinVoice(bob);
+      await joinVoice(alice);
+      const received = waitForEvent<{ socketId: string }>(
+        bob, 'voice:peer-left', 15_000, e => e?.socketId === alice.id,
       );
-
-      alice.emit('voice:leave', { channelId: voiceChannelId });
-
-      const leftEvent = await leftPromise.catch(() => null);
-
-      if (leftEvent) {
-        expect(typeof leftEvent.socketId).toBe('string');
-      }
-    } finally {
-      closeSockets(alice, bob);
-    }
+      alice.emit('voice:leave', { channelId: voiceChannelId, serverId: testServerId });
+      const event = await received;
+      expect(event.socketId).toBe(alice.id);
+    } finally { closeSockets(alice, bob); }
   });
 
-  test('Socket: beklenmedik disconnect sonrası voice:room-update peers listesi azalır', async () => {
-    test.skip(!voiceChannelId || !testServerId, 'Ses kanalı ve sunucu fixture gerekli');
-
-    const alice   = await openSocket(tokens.alice).catch(() => null);
-    const watcher = await openSocket(tokens.bob).catch(() => null);
-    test.skip(!alice || !watcher, 'Alice kullanıcı fixture gerekli'  );
-
+  test('Socket: beklenmedik disconnect sonrası ses odasının peers listesi azalır', async () => {
+    expect(voiceChannelId && testServerId, 'ses fikstürü eksik').toBeTruthy();
+    const alice = await openSocket(tokens.alice);
+    const watcher = await openSocket(tokens.bob);
     try {
-      watcher.emit('server:join', testServerId);
-      await new Promise(r => setTimeout(r, 300));
-
-      alice.emit('voice:join', { channelId: voiceChannelId });
-      await new Promise(r => setTimeout(r, 500));
-
-      // Disconnect sonrası oda güncellemesini bekle
-      const updateAfterDisconnect = waitForEvent<{ channelId: string; peers: unknown[] }>(
-        watcher, 'voice:room-update', 6_000,
+      await joinVoice(watcher);
+      const joined = waitForEvent<{ channelId: string; peers: Array<{ socketId: string }> }>(
+        watcher, 'voice:room-update', 15_000,
+        e => e?.channelId === voiceChannelId && e.peers?.some(p => p.socketId === alice.id) === true,
       );
-
-      alice.disconnect(); // kasıtlı kopuş
-
-      const update = await updateAfterDisconnect.catch(() => null);
-
-      if (update) {
-        expect(update.channelId).toBe(voiceChannelId);
-        // Alice gittikten sonra peers azalmış olmalı
-        expect(Array.isArray(update.peers)).toBe(true);
-      }
-    } finally {
-      closeSockets(watcher);
-    }
+      await joinVoice(alice);
+      const before = await joined;
+      const left = waitForEvent<{ channelId: string; peers: Array<{ socketId: string }> }>(
+        watcher, 'voice:room-update', 15_000,
+        e => e?.channelId === voiceChannelId && e.peers?.every(p => p.socketId !== alice.id) === true,
+      );
+      alice.disconnect();
+      const after = await left;
+      expect(after.peers.length).toBeLessThan(before.peers.length);
+      expect(after.peers.some(p => p.socketId === alice.id)).toBe(false);
+    } finally { closeSockets(alice, watcher); }
   });
 
   // ── UI Testleri ──────────────────────────────────────────
@@ -210,7 +183,7 @@ test.describe('Ses Kanalı Akışları', () => {
   });
 
   test('UI: ses kanalı oluşturulduğunda kanal listesinde görünür', async ({ page, request }) => {
-    test.skip(!testServerId, 'Ses testi için sunucu fixture gerekli');
+    expect(testServerId, 'ses sunucu fikstürü eksik').toBeTruthy();
 
     const voiceName = `e2e-ses-${Date.now()}`;
     const { createTestChannel } = await import('../helpers/bridge');
