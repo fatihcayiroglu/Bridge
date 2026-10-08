@@ -416,7 +416,7 @@ password, so they cannot delete their account at all today.
   (SHA-256 of IP + user-agent, 30-day Redis TTL) used for an advisory e-mail. B2 does **not** use
   it: it is fingerprint-like and B3 owns its review.
 
-### B2 design (proposed — no production code until approved)
+### B2 design (approved; implemented on `p7/risk-adaptive-security`)
 
 **Principle.** Risk-adaptive here means *the bar rises with the action and with what the account
 itself has configured* — never with a hidden judgement of the person. Every decision is a pure
@@ -583,6 +583,95 @@ cleanup continues for the grant's lifetime (10 min, `STEP_UP_TTL_MS`). The check
 route after its own permission, ownership and hierarchy checks — so only actions the moderator may
 actually perform are counted or prompted — and long before the route limiters (moderation 30/min,
 roles 20/min), so the person gets an explainable `STEP_UP_REQUIRED`, not a bare 429.
+
+### B2 after (measured, gated)
+
+**Lab.** The same two-node lab (`scripts/stepup-lab`, gated by `expectations.json`; CI workflow
+`.github/workflows/stepup-lab.yml`). The simulated legitimate client behaves like the product
+client: it holds the grants its sign-in returned (memory only), sends the grant for the action's
+scope, and on a refusal performs ONE proof (password, or a real RFC 6238 TOTP / backup code for a
+2FA account) and retries; proofs and retries go to the other node. A thief holds only the stolen
+access token. Run label `after-b2-b0d1340` — gate **pass**.
+
+| Id | Attack (stolen session) | Baseline | After B2 |
+|---|---|---|---|
+| SU-ATK-01 | change recovery e-mail | OPEN | **STEPUP** — 403 `step_up_missing` (`account-security`) |
+| SU-ATK-02 | begin passkey registration | OPEN | **STEPUP** (read-only credential list stays open) |
+| SU-ATK-03 | begin 2FA enrolment | OPEN | **STEPUP** |
+| SU-ATK-04 | disable 2FA with a phished (correct) password | OPEN | **STEPUP** — level 2 required |
+| SU-ATK-05 | export the account | OPEN | **STEPUP** (`sensitive-export`) |
+| SU-ATK-06 | delete an owned server | OPEN | **STEPUP** (`destructive-admin`) |
+| SU-ATK-07 | instance-admin delete user + server | OPEN | **STEPUP** / **STEPUP** |
+| SU-ATK-08 | compromised moderator bans 40 | OPEN — 30/40 | **STEPUP** — 5/40; first refusal at request 6 (before the 30/min limiter) |
+| SU-ATK-09 | 25 invites back-to-back | OPEN — 8/25 | OPEN — 8/25 (**approved deferral**; unchanged 10/min limiter) |
+| SU-ATK-10 | distributed proof guessing (new address + alternating node per guess) | no endpoint | **BLOCKED** — locked after 5 wrong; the correct password is then refused too (429 `STEP_UP_LOCKED`); the owner still signs in (200, fresh grants) |
+| SU-ATK-11 | grant replayed after sign-out-everywhere | — | **STEPUP** — `step_up_revoked` (even beside a new valid session) |
+| SU-ATK-12 | stolen token + the attacker's own grant | — | **STEPUP** — `step_up_other_account` |
+| SU-ATK-13 | a grant for one scope used for another | — | export **STEPUP** `step_up_scope_mismatch`; account deletion **BLOCKED** by the existing password guard |
+
+| Id | Legitimate person | After B2 |
+|---|---|---|
+| SU-LEG-01 | ordinary moderation, 3 bans (older session) | **OK** — 0 proofs |
+| SU-LEG-02 | raid cleanup, 40 bans (older session) | **FRICTION** — asked once at the burst, then 29/40 (the remaining 429s are the unchanged 30/min limiter; baseline 30/40) |
+| SU-LEG-03 | organiser, 6 invites | **OK** |
+| SU-LEG-04 | fresh sign-in → export + server deletion, cross-node | **OK** — 0 proofs (4 sign-in grants) |
+| SU-LEG-05 | older session exports twice (proof on node A, export on node B) | **FRICTION** — one password proof; the second export uses the held grant |
+| SU-LEG-06 | 2FA account, TOTP | **FRICTION** — one TOTP proof (refusal level 2, methods totp/backup_code/sign_in) |
+| SU-LEG-07 | 2FA account, backup code | **FRICTION** — one backup-code proof (8 → 7 codes) |
+
+Totals: attacks 10 STEPUP / 2 BLOCKED / 1 OPEN (the deferred invite row); controls 3 OK /
+4 FRICTION / 0 FALSE_POSITIVE. The B1 abuse lab (`scripts/abuse-lab`) was re-run gated against
+the same build (label `b2-b0d1340`, gate **pass**): attacks 8 BLOCKED / 2 LIMITED / 0 OPEN,
+controls 15 OK / 1 FRICTION / 2 known FALSE_POSITIVE — identical to B1 after. Its raid-cleanup
+control (LEG-09) models the product client (a freshly signed-in moderator holds the sign-in
+`moderation-burst` grant) and is unchanged by B2: 30/40 applied, the 10 refusals are all the
+existing 30/min moderation limiter (429), 0 are `STEP_UP_REQUIRED` — still the known B1 false
+positive deferred to B5.
+
+**Tests.**
+- `server/tests/p7-step-up-core.test.ts` — grant shape, domain-separated key (also when
+  `STEP_UP_SECRET` equals `JWT_SECRET`), access token ↔ grant never interchangeable, every refusal
+  reason, failed-proof lock (fail-closed), burst counter, rollback switch; 100% of `lib/stepUp.ts`.
+- `server/tests/p7-step-up-proofs.test.ts`, `p7-step-up-proof-limits.test.ts` — password and
+  TOTP/backup-code proofs, replay, the lock (never applied to sign-in), sign-in grants per path,
+  revocation when enabling 2FA rotates the session, CSRF and the unchanged `limits.twoFactor()`
+  accounting.
+- `server/tests/p7-step-up-route-matrix.test.ts` — every always-protected route at its production
+  mount: no grant / other scope / other account / expired / tampered / access token / pre-revocation
+  grant / password-level grant on a 2FA account / the right grant; grants minted in one module
+  instance verify in another (and not with a different `STEP_UP_SECRET`).
+- `server/tests/p7-step-up-moderation-burst.test.ts` — real routers and real limiters: 3 bans
+  unprompted; the 6th asks once and the cleanup continues; a stolen session is stopped at 5 with
+  `STEP_UP_REQUIRED` for requests 6–30 and 429 only after 30; bans, both kick routes and bulk delete
+  share one per-actor counter; non-moderators are never asked or counted.
+- Existing suites that exercise protected actions present a real grant (`tests/helpers/stepUp.ts`);
+  the guard is never disabled in tests.
+- Client: `client/tests/p7-step-up-client.test.ts` (interception, one prompt for concurrent
+  refusals, cancel, wrong/empty proof, sign-in-again path, memory-only grants, per-action
+  localised explanations), `p7-step-up-dialog.test.ts` (keyboard-only operation, associated label,
+  `role="alert"` error, `aria-invalid`, focus trap, safe default focus),
+  `p7-step-up-sign-in.test.ts`, `privacy-account-deletion.test.ts` (SSO-only deletion in Settings).
+- E2E: the request fixture proves step-up like the client (`e2e/helpers/stepUp.ts`); the privacy
+  suite asserts the export refusal and the one-proof unlock; the passkey spec answers the real
+  step-up dialog from a restored session.
+
+**Decisions made during implementation (all strengthen, none relax).**
+- Every always-protected route runs *auth → its existing limiter → step-up*, so limiter accounting
+  is exactly as before B2.
+- Account deletion: a supplied password is always verified (a grant never makes a wrong one
+  acceptable); the grant replaces the password only when none is sent — the SSO-only path. Settings
+  shows SSO-only accounts (`hasPassword: false` in the own-user payload; only the fact, never the
+  hash) a deletion flow without a password field.
+
+**Design-decision contract.** *Problem:* a stolen session could take over, lock out, exfiltrate or
+irreversibly delete (baseline: 10 attacks OPEN). *Architecture:* one server owner (`lib/stepUp.ts`),
+one client owner (`client/js/core/step-up.ts`) behind the single HTTP owner; stateless scoped
+grants; no new storage beyond two bounded counters. *Security:* domain-separated signing, scope /
+account / level / `tokenVersion` checks, fail-closed counters, no IP / location / device input, no
+score. *UX:* fresh sessions are never prompted; older sessions prove once per scope per 10 min;
+ordinary moderation is never prompted. *Rollback:* `STEP_UP_DISABLED_SCOPES` per scope (logged), or
+revert the B2 commits. *Follow-ups:* a dedicated invite-rate budget, after which an invite step-up
+threshold can be measured and made reachable (SU-ATK-09).
 
 ## B3. Metadata minimization
 
