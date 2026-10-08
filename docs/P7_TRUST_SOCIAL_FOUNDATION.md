@@ -652,8 +652,13 @@ positive deferred to B5.
   `role="alert"` error, `aria-invalid`, focus trap, safe default focus),
   `p7-step-up-sign-in.test.ts`, `privacy-account-deletion.test.ts` (SSO-only deletion in Settings).
 - E2E: the request fixture proves step-up like the client (`e2e/helpers/stepUp.ts`); the privacy
-  suite asserts the export refusal and the one-proof unlock; the passkey spec answers the real
-  step-up dialog from a restored session.
+  suite asserts the export refusal and the one-proof unlock; the passkey spec shows a restored
+  session is asked once (labelled password field; cancelling stores nothing) and a fresh sign-in
+  through the login form adds the passkey with no prompt; the global-setup 2FA fixture enables 2FA
+  with its own sign-in grant. Full chromium project locally (fresh PostgreSQL): 509 passed /
+  26 skipped / 3 failed — the 3 fail identically on `main` (`ffc2a9d`), outside B2 (a
+  `structuredClone` page error in the local-first history/outbox path, and `sw.js` lacking the
+  outbox marker).
 
 **Decisions made during implementation (all strengthen, none relax).**
 - Every always-protected route runs *auth → its existing limiter → step-up*, so limiter accounting
