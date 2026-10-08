@@ -568,6 +568,8 @@ jobs:
         run: cd e2e && npx playwright test tests/voice.spec.ts --project=chromium --retries=0 --reporter=list
       - name: Verify reactions persist (no fixture skips or vacuous checks)
         run: cd e2e && npx playwright test tests/reactions.spec.ts --project=chromium --retries=0 --reporter=list
+      - name: Verify upload + file send E2E (no vacuous responses)
+        run: cd e2e && npx playwright test tests/upload.spec.ts --project=chromium --retries=0 --reporter=list
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v7
