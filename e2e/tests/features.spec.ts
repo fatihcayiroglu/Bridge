@@ -111,39 +111,41 @@ test.describe('Anket (Polls)', () => {
   });
 
   test('ankete oy verilebilir', async ({ request }) => {
-    test.skip(!channelId, 'Kanal fixture gerekli');
-    // Önce anket oluştur
-    const createRes = await request.post('/api/polls', {
+    expect(channelId, 'Kanal fixture gerekli').toBeTruthy();
+    const createRes = await request.post(`/api/channels/${channelId}/polls`, {
       headers: { Authorization: `Bearer ${token}` },
-      data: { channelId, question: 'Oy testi?', options: ['Evet', 'Hayır'], duration: 3600 },
+      data: { question: 'Oy testi?', options: ['Evet', 'Hayır'], duration: 3600 },
     });
-    if (createRes.status() !== 201 && createRes.status() !== 200) return;
+    expect(createRes.status()).toBe(200);
     const poll = await createRes.json();
-    const pollId = poll._id;
-
-    const voteRes = await request.post(`/api/polls/${pollId}/vote`, {
+    expect(poll.options).toHaveLength(2);
+    const optionId = poll.options[0].id;
+    expect(typeof optionId).toBe('string');
+    const voteRes = await request.post(`/api/polls/${poll._id}/vote`, {
       headers: { Authorization: `Bearer ${token}` },
-      data:    { optionIndex: 0 },
+      data: { optionIds: [optionId] },
     });
-    expect([200, 204]).toContain(voteRes.status());
+    expect(voteRes.status()).toBe(200);
+    const voted = await voteRes.json();
+    expect(voted.options.find((option: { id: string }) => option.id === optionId)?.votes).toBeDefined();
   });
 
   test('anket sonuçları alınabilir', async ({ request }) => {
-    test.skip(!channelId, 'Kanal fixture gerekli');
-    const createRes = await request.post('/api/polls', {
+    expect(channelId, 'Kanal fixture gerekli').toBeTruthy();
+    const createRes = await request.post(`/api/channels/${channelId}/polls`, {
       headers: { Authorization: `Bearer ${token}` },
-      data: { channelId, question: 'Sonuç testi?', options: ['A', 'B'], duration: 3600 },
+      data: { question: 'Sonuç testi?', options: ['A', 'B'], duration: 3600 },
     });
-    if (createRes.status() !== 201 && createRes.status() !== 200) return;
-    const poll    = await createRes.json();
-    const pollId  = poll._id;
-
-    const resRes = await request.get(`/api/polls/${pollId}`, {
+    expect(createRes.status()).toBe(200);
+    const poll = await createRes.json();
+    expect(poll._id).toBeTruthy();
+    const resRes = await request.get(`/api/polls/${poll._id}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(resRes.status()).toBe(200);
     const body = await resRes.json();
-    expect(body).toHaveProperty('options');
+    expect(body._id).toBe(poll._id);
+    expect(body.options).toHaveLength(2);
   });
 });
 
