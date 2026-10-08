@@ -340,7 +340,7 @@ test.describe('Stage Video Grid — API akışları', () => {
 test.describe('Draw Together — real activity socket security', () => {
   let tokens: { alice: string; bob: string };
   let serverId: string;
-  let voiceChannelId: string;
+  const voiceChannelIds: string[] = [];
 
   type ActivitySession = {
     activityId: string;
@@ -358,12 +358,14 @@ test.describe('Draw Together — real activity socket security', () => {
     serverId = srv._id || srv.id;
     // activity:start requires membership in the actual voice:<channelId>
     // room, not just a bearer token or a text channel.
-    const ch = await createTestChannel(request, tokens.alice, serverId, 'draw-voice', 'voice');
-    expect(ch, 'activity voice channel fixture failed').toBeTruthy();
-    voiceChannelId = ch._id || ch.id;
+    for (let i = 0; i < 3; i++) {
+      const ch = await createTestChannel(request, tokens.alice, serverId, `draw-voice-${i}`, 'voice');
+      expect(ch, `activity voice channel fixture ${i} failed`).toBeTruthy();
+      voiceChannelIds.push(ch._id || ch.id);
+    }
   });
 
-  async function joinVoice(socket: Awaited<ReturnType<typeof openSocket>>) {
+  async function joinVoice(socket: Awaited<ReturnType<typeof openSocket>>, voiceChannelId: string) {
     const joined = waitForEvent<{ channelId: string }>(
       socket, 'voice:joined', 15_000, value => value?.channelId === voiceChannelId,
     );
@@ -374,7 +376,7 @@ test.describe('Draw Together — real activity socket security', () => {
   // Session creation and listing are async Redis-backed operations. Observe
   // the durable public session through the actual activity:list event rather
   // than relying on a timing-sensitive channel-room broadcast.
-  async function startDrawTogether(socket: Awaited<ReturnType<typeof openSocket>>): Promise<ActivitySession> {
+  async function startDrawTogether(socket: Awaited<ReturnType<typeof openSocket>>, voiceChannelId: string): Promise<ActivitySession> {
     const listed = waitForEvent<ActivitySession>(
       socket, 'activity:list_result', 15_000,
       value => value?.channelId === voiceChannelId && value?.activityId === 'draw-together',
@@ -390,6 +392,7 @@ test.describe('Draw Together — real activity socket security', () => {
 
   test('authenticated socket without voice-room admission cannot start activity', async () => {
     const socket = await openSocket(tokens.alice);
+    const voiceChannelId = voiceChannelIds[0];
     try {
       const refused = waitForEvent<{ message: string }>(socket, 'activity:error', 10_000);
       socket.emit('activity:start', { activityId: 'draw-together', channelId: voiceChannelId, serverId });
@@ -405,9 +408,10 @@ test.describe('Draw Together — real activity socket security', () => {
 
   test('authenticated voice member starts Draw Together using activity:start', async () => {
     const socket = await openSocket(tokens.alice);
+    const voiceChannelId = voiceChannelIds[1];
     try {
-      await joinVoice(socket);
-      const active = await startDrawTogether(socket);
+      await joinVoice(socket, voiceChannelId);
+      const active = await startDrawTogether(socket, voiceChannelId);
       expect(active).toMatchObject({
         activityId: 'draw-together',
         channelId: voiceChannelId,
@@ -424,9 +428,10 @@ test.describe('Draw Together — real activity socket security', () => {
   test('activity:list exposes session only to authorized joined voice member', async () => {
     const member = await openSocket(tokens.alice);
     const outsider = await openSocket(tokens.bob);
+    const voiceChannelId = voiceChannelIds[2];
     try {
-      await joinVoice(member);
-      const active = await startDrawTogether(member);
+      await joinVoice(member, voiceChannelId);
+      const active = await startDrawTogether(member, voiceChannelId);
       expect(active.activityId).toBe('draw-together');
 
       // Bob is not a member of this server and has not joined its voice room.
