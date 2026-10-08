@@ -79,7 +79,7 @@ section "Test"
 run_bash "release-integrity-tests" "cd '$ROOT' && npm run test:release-integrity"
 run_bash "server-tests" "cd '$ROOT/server' && npm test -- --runInBand --forceExit"
 if [[ -d "$ROOT/electron" ]]; then run_bash "electron-tests" "cd '$ROOT/electron' && npm test -- --runInBand --forceExit"; fi
-run_bash "mobile-tests" "cd '$ROOT' && npx jest --config jest.mobile.config.js --passWithNoTests --runInBand --forceExit"
+run_bash "mobile-tests" "cd '$ROOT' && npx jest --config jest.mobile.config.js --runInBand --forceExit"
 
 section "Production preflight"
 run_bash "production-preflight" "cd '$ROOT' && ./scripts/production-preflight.sh"
