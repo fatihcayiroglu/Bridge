@@ -128,12 +128,12 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
       },
     });
 
-    if (res.status() === 200) {
-      const body = await res.json() as { url?: string; fileUrl?: string };
-      const url = body.url ?? body.fileUrl ?? '';
-      // GIF, WebP'ye dönüştürülmemeli
-      expect(url.endsWith('.webp'), 'GIF → .gif kalmalı').toBeFalsy();
-    }
+    // Geçerli bir GIF yüklenir: 200 (eskiden yalnız `if (status === 200)` içinde ölçülüyordu).
+    expect(res.status(), await res.text()).toBe(200);
+    const body = await res.json() as { url?: string; fileUrl?: string };
+    const url = body.url ?? body.fileUrl ?? '';
+    // GIF, WebP'ye dönüştürülmemeli
+    expect(url.endsWith('.webp'), 'GIF → .gif kalmalı').toBeFalsy();
   });
 
   // ── Güvenlik ve validasyon ────────────────────────────────────────────────

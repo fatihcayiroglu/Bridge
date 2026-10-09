@@ -110,6 +110,14 @@ const env = {
   // `test` KULLANILMAZ: derlenmis sunucuda mock DB yukleyip cikiyor.
   NODE_ENV: process.env.E2E_NODE_ENV || 'development',
 
+  // ── WEB PUSH ────────────────────────────────────────────────────────────
+  // E2E bilerek VAPID'siz kosar: `web-push.spec.ts` "yapilandirilmamis" sozlesmesini
+  // TAM olcer. Gelistiricinin `server/.env`'indeki anahtarlar sonucu degistirmesin
+  // diye bos deger ACIKCA verilir (`dotenv/config` mevcut degiskeni ezmez).
+  // Yapilandirilmis yol `server/tests/webpush.test.ts`'te kanitlanir.
+  VAPID_PUBLIC_KEY: process.env.E2E_VAPID_PUBLIC_KEY || '',
+  VAPID_PRIVATE_KEY: process.env.E2E_VAPID_PRIVATE_KEY || '',
+
   // ── ERISIM TOKEN OMRU ───────────────────────────────────────────────────
   // Uretim varsayilani 15 dakikadir (`middleware/auth.ts`). Tam E2E paketi
   // 15 dakikayi ASIYOR; global setup'ta uretilen tokenlar kosum ORTASINDA

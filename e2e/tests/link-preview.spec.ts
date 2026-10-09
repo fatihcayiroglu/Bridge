@@ -171,10 +171,10 @@ test.describe('Link Önizleme', () => {
       data: JSON.stringify({ content: 'URL olmayan bir metin.' }),
     });
 
-    if (res.status() === 200) {
-      const data = await res.json();
-      expect(data.previews).toHaveLength(0);
-    }
+    // Ağ gerektirmez (URL yoksa hiçbir istek yapılmaz): tam yanıt. Eskiden yalnız
+    // `if (status === 200)` içinde ölçülüyordu.
+    expect(res.status(), await res.text()).toBe(200);
+    expect(await res.json()).toEqual({ previews: [] });
   });
 
   test('POST: maksimum 3 URL işlenmeli (limit)', async ({ request }) => {
