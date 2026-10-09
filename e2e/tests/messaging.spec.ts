@@ -257,20 +257,42 @@ test.describe('Mesajlaşma Akışları', () => {
     expect(after.some((m) => m.content === overLimit), '2001 karakterlik mesaj kalıcılaştı').toBe(false);
   });
 
-  test('API: XSS içerikli mesaj sanitize edilmeli', async ({ request }) => {
-    expect(testChannelId, 'mesajlaşma kanalı fikstürü yok').toBeTruthy();
+  test('XSS içerikli mesaj metin olarak saklanır ve tarayıcıda çalışmaz', async ({ page, request }) => {
+    // Eski test var olmayan REST gönderim ucuna gidiyordu; 404 yüzünden `if (status < 400)`
+    // hiç doğru olmadı ve test HİÇBİR ŞEY iddia etmeden geçti. Ürün sözleşmesi
+    // (messages-send.ts, Final21 Faz 16): içerik HAM METİNDİR — HTML olarak hiçbir
+    // yüzeyde işlenmez. Yani saklanan içerik yükü aynen taşır; güvenlik, tarayıcının
+    // onu METİN olarak göstermesidir. İkisi de gerçek yoldan ölçülür.
+    expect(testServerId, 'mesajlaşma sunucusu fikstürü yok').toBeTruthy();
+    const stamp = Date.now();
+    const channelName = `xss-${stamp.toString(36)}`;
+    const channel = await createTestChannel(request, tokens.alice, testServerId, channelName);
+    const channelId = channel?._id || channel?.id;
+    expect(channelId, 'XSS kanalı oluşturulamadı').toBeTruthy();
 
-    const xssPayload = '<script>alert("xss")</script>Merhaba';
-    const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content: xssPayload }),
-    });
+    const scriptPayload = `<script>window.__bridgeXss = 'script-${stamp}'</script>xss-${stamp}`;
+    const imgPayload = `<img src="x-${stamp}" onerror="window.__bridgeXss = 'img-${stamp}'">img-${stamp}`;
+    const scriptId = await sendViaSocket(tokens.alice, testServerId, channelId, scriptPayload);
+    const imgId = await sendViaSocket(tokens.alice, testServerId, channelId, imgPayload);
 
-    if (res.status() < 400) {
-      const data = await res.json();
-      const content = data.content || data.message?.content || '';
-      // Script tag'i çalışmamalı (sanitize veya encode edilmiş olmalı)
-      expect(content).not.toContain('<script>');
-    }
+    const stored = await listMessages(request, tokens.alice, channelId);
+    expect(stored.find((m) => m._id === scriptId), 'ham metin olarak saklanmalı').toMatchObject({ content: scriptPayload });
+    expect(stored.find((m) => m._id === imgId)).toMatchObject({ content: imgPayload });
+
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('#app')).toBeVisible({ timeout: 30_000 });
+    await page.locator(`.server-icon[data-id="${testServerId}"]`).first().click({ timeout: 25_000 });
+    await page.locator(`[aria-label="Kanal: ${channelName}"]`).first().click({ timeout: 20_000 });
+    const scriptRow = page.locator('#messages-area .msg', { hasText: `xss-${stamp}` });
+    const imgRow = page.locator('#messages-area .msg', { hasText: `img-${stamp}` });
+    await expect(scriptRow).toBeVisible({ timeout: 20_000 });
+    await expect(imgRow).toBeVisible();
+    // Yük GÖRÜNÜR metindir…
+    await expect(scriptRow).toContainText(`<script>window.__bridgeXss`);
+    await expect(imgRow).toContainText(`<img src="x-${stamp}"`);
+    // …ve DOM'a eleman olarak girmez, çalışmaz.
+    await expect(page.locator(`#messages-area script`)).toHaveCount(0);
+    await expect(page.locator(`#messages-area img[src="x-${stamp}"]`)).toHaveCount(0);
+    expect(await page.evaluate(() => (window as unknown as { __bridgeXss?: string }).__bridgeXss)).toBeUndefined();
   });
 });

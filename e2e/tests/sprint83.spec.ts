@@ -299,7 +299,8 @@ test.describe('Stage Video Grid — API akışları', () => {
     const srv = await createTestServer(request, tokens.alice, `S83-VideoGrid-${Date.now()}`);
     serverId = srv?._id || srv?.id;
     if (!serverId) return;
-    const ch = await createTestChannel(request, tokens.alice, serverId, 'stage-video');
+    // Sahne/video ızgarası ses kanalında çalışır (kanal türleri: text | voice).
+    const ch = await createTestChannel(request, tokens.alice, serverId, 'stage-video', 'voice');
     channelId = ch?._id || ch?.id;
   });
 
@@ -308,14 +309,20 @@ test.describe('Stage Video Grid — API akışları', () => {
     expect(channelId).toBeTruthy();
   });
 
-  test('Stage kanalına katılım için auth gerekli', async ({ request }) => {
-    // Voice/stage katılım endpoint'i (varsa) auth gerektirir
-    const res = await request.post(`${API}/channels/${channelId}/voice/join`, {
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({}),
-    });
-    // 401 veya 404 (endpoint olmayabilir), her ikisi de auth katmanının doğru çalıştığını gösterir
-    expect([401, 404, 405]).toContain(res.status());
+  test('Stage kanalına katılım yetki ister — sunucu üyesi olmayan reddedilir', async () => {
+    // Katılım REST ile değil Socket.IO `voice:join` ile yapılır. Eski test var olmayan
+    // `POST /api/channels/:id/voice/join` ucuna gidiyor ve 404'ü "auth katmanı doğru
+    // çalışıyor" sayıyordu. Gerçek yol: üye olmayan kişi (carol hiçbir sunucuda
+    // değildir) AÇIKÇA reddedilir, sessizce yok sayılmaz.
+    expect(serverId && channelId, 'sahne fikstürü eksik').toBeTruthy();
+    const outsider = await openSocket(getTokens().carol);
+    try {
+      const refused = waitForEvent<{ channelId: string; code: string }>(
+        outsider, 'voice:join-rejected', 15_000, (e) => e?.channelId === channelId,
+      );
+      outsider.emit('voice:join', { channelId, serverId });
+      expect((await refused).code).toBe('FORBIDDEN');
+    } finally { closeSockets(outsider); }
   });
 
   test('Video grid WebSocket olayı: auth olmadan bağlantı reddedilir', async ({ page }) => {
