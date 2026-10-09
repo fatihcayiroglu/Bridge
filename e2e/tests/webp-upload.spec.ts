@@ -198,10 +198,15 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
   // S3-compatible protected upload is now proved against a real S3-compatible
   // service (RustFS in CI) by remote-storage.spec.ts. This is neither Cloudflare
   // R2 nor MinIO-vendor coverage.
+  //
+  // The attachment URL does not depend on the provider: routes/upload.ts never
+  // exposes a remote public-origin URL for a private attachment and always
+  // answers the Bridge-authorised ref `/uploads/<id>` (remote-storage.spec checks
+  // the same shape against RustFS). This test used to skip unless the RUNNER's
+  // CDN_PROVIDER was local and accepted `http…` as well — i.e. it would have
+  // passed on exactly the public-URL leak the contract forbids.
 
-  test('local provider\'da URL /uploads/ ile başlıyor', async ({ request }) => {
-    test.skip((process.env.CDN_PROVIDER ?? 'local') !== 'local', 'Local storage CDN değil — test geçersiz');
-
+  test('ek URL\'si sağlayıcıdan bağımsız Bridge yetki yoludur (/uploads/<id>)', async ({ request }) => {
     const pngBuffer = fs.readFileSync(tmpPng);
     const res = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
@@ -210,10 +215,9 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
       },
     });
 
-    expect(res.status()).toBe(200);
+    expect(res.status(), await res.text()).toBe(200);
     const body = await res.json() as { url?: string; fileUrl?: string };
-    const url = body.url ?? body.fileUrl ?? '';
-    expect(url.startsWith('/uploads/') || url.startsWith('http'), `URL /uploads/ veya http ile başlamalı: ${url}`).toBeTruthy();
+    expect(body.url ?? body.fileUrl, 'yanıt bir Bridge yetki yolu döndürmeli').toMatch(/^\/uploads\/[A-Za-z0-9._-]+$/);
   });
 
   // ── Chunked upload ────────────────────────────────────────────────────────
