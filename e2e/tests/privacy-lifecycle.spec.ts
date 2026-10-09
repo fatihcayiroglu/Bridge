@@ -50,15 +50,12 @@ test.describe('gizlilik ve oturum yaşam döngüsü', () => {
       headers: JSON_HEADERS,
       data: JSON.stringify({ username: u.username, password: u.password }),
     });
-    if (res.status() === 429) {
-      // Giriş hız sınırı (`RL_LOGIN_MAX`, 10/dk) KASITLI bir kötüye kullanım
-      // korumasıdır ve DEĞİŞTİRİLMEZ. Oturum iptali testi doğası gereği
-      // birden çok giriş ister; paket hızlı tekrar koşulduğunda sınıra
-      // takılabilir. Sessizce geçmek yerine AÇIKÇA atlanır.
-      test.skip(true, 'giriş hız sınırında (429) — bu koşumda ölçülemedi. '
-        + 'Yalıtık çalıştırın: npx playwright test tests/privacy-lifecycle.spec.ts');
-    }
-    expect(res.status(), 'giriş başarısız').toBe(200);
+    // Bir 429 ATLANMAZ: iptal ölçülemediyse test BAŞARISIZDIR. Giriş sınırı
+    // üretimde IP başına 10/dk'dır; E2E sunucusu bunu fikstür trafiği için bir
+    // VERİM bütçesine (2000/dk, scripts/e2e-server.js) yükseltir — bu dosyanın
+    // üç girişi oraya asla dayanmaz. Burada 429 görülürse paket kaçak bir
+    // döngüyle bütçeyi tüketmiştir: bu düzeltilecek bir kusurdur.
+    expect(res.status(), `giriş başarısız: ${await res.text()}`).toBe(200);
     const body = await res.json() as { token?: string; accessToken?: string };
     const token = body.token ?? body.accessToken ?? '';
     expect(token, 'jeton dönmedi').toBeTruthy();
@@ -74,15 +71,15 @@ test.describe('gizlilik ve oturum yaşam döngüsü', () => {
         headers: JSON_HEADERS,
         data: JSON.stringify({ username: u.username, password: u.password }),
       });
-      if (res.ok()) {
-        const body = await res.json() as { token?: string; accessToken?: string };
-        const fresh = body.token ?? body.accessToken;
-        if (fresh) {
-          const raw = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
-          raw.carol = fresh;
-          fs.writeFileSync(TOKENS_FILE, JSON.stringify(raw, null, 2));
-        }
-      }
+      // Sessizce geçilmez: tazelenmeyen jeton sonraki spec'lerde 401 olarak
+      // ve yanlış yerde görünürdü.
+      expect(res.status(), `carol'ın fikstür jetonu tazelenemedi: ${await res.text()}`).toBe(200);
+      const body = await res.json() as { token?: string; accessToken?: string };
+      const fresh = body.token ?? body.accessToken;
+      expect(fresh, 'tazeleme girişi jeton döndürmedi').toBeTruthy();
+      const raw = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
+      raw.carol = fresh;
+      fs.writeFileSync(TOKENS_FILE, JSON.stringify(raw, null, 2));
     } finally { await ctx.dispose(); }
   });
 
@@ -113,8 +110,8 @@ test.describe('gizlilik ve oturum yaşam döngüsü', () => {
     // ════════════════════════════════════════════════════════════════════
     // ÜÇ İPTAL YOLU TEK TESTTE
     // ════════════════════════════════════════════════════════════════════
-    // Ayrı testler ayrı girişler gerektiriyordu ve `RL_LOGIN_MAX` (10/dk)
-    // sınırına takılıyordu. Sınır DOĞRUDUR ve gevşetilmez; bunun yerine
+    // Ayrı testler ayrı girişler gerektiriyordu ve üretimdeki `RL_LOGIN_MAX`
+    // (10/dk) sınırına takılıyordu. Sınır DOĞRUDUR ve gevşetilmez; bunun yerine
     // test giriş sayısını azaltır. İddialardan HİÇBİRİ kaldırılmadı.
     //
     // KANITLAR    : `tokenVersion` artışı ÜÇ doğrulama yolunda da geçerli —
