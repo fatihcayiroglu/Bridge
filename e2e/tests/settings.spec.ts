@@ -84,8 +84,8 @@ test.describe('Settings Modal — Svelte', () => {
       },
       data: JSON.stringify({ displayName: '' }),
     });
-    // 400 bekliyoruz — boş display name reddedilmeli
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    // Boş display name reddedilir: tam olarak 400 (429/5xx bir ret değildir).
+    expect(res.status(), await res.text()).toBe(400);
   });
 
   test('API: kimlik doğrulamasız profil güncellemesi reddediliyor', async ({ request }) => {

@@ -159,7 +159,7 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
         },
       },
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(400);
   });
 
   test('SVG yüklenince sanitize ediliyor', async ({ request }) => {
@@ -174,22 +174,11 @@ test.describe('Dosya Yükleme ve WebP Dönüşümü', () => {
       },
     });
 
-    // Ya reddedilmeli ya da sanitize edilmeli
-    if (res.status() === 200) {
-      const body = await res.json() as { url?: string };
-      const url = body.url ?? '';
-      // Yüklendiyse içeriğini kontrol et
-      if (url) {
-        const content = await request.get(url.startsWith('http') ? url : `${BASE_URL}${url}`);
-        if (content.status() === 200) {
-          const svgText = await content.text();
-          expect(svgText).not.toContain('<script');
-          expect(svgText).not.toContain('javascript:');
-        }
-      }
-    } else {
-      expect(res.status()).toBeGreaterThanOrEqual(400);
-    }
+    // Ürün betik içeren SVG'yi temizleyip SAKLAMAZ, reddeder (lib/contentScanner.ts:
+    // 422 SVG_XSS, dosya karantinaya). Eski test "ya reddedilmeli ya temizlenmeli" diyordu; 200 dalı
+    // hiç çalışmadı ve ret dalı her >= 400'ü (429/5xx dahil) kabul ediyordu.
+    expect(res.status(), await res.text()).toBe(422);
+    expect(await res.json()).toEqual({ error: 'SVG contains dangerous content', code: 'SVG_XSS' });
   });
 
   // ── CDN entegrasyonu ──────────────────────────────────────────────────────

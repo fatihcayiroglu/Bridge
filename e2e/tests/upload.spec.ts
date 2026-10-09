@@ -69,17 +69,22 @@ test.describe('Dosya Yükleme Akışları', () => {
     const res = await request.post(`${BASE_URL}/api/upload`, {
       multipart: { file: { name: 'hack.png', mimeType: 'image/png', buffer: imgBuffer }, channelId: testChannelId },
     });
-    expect(res.status()).toBeGreaterThanOrEqual(401);
+    // Bağlamın çerezleri (refresh/media) yükleme kimliği DEĞİLDİR: Bearer yok → 401.
+    // `>= 401` 403/413/429/5xx'i de ret sayıyordu.
+    expect(res.status(), await res.text()).toBe(401);
+    expect(await res.json()).toEqual({ error: 'No token provided' });
   });
 
   test('API: çok büyük dosya reddedilir (413)', async ({ request }) => {
     expect(testChannelId, 'upload fixture failure must fail rather than skip').toBeTruthy();
+    // İZİN VERİLEN bir tür: eskiden `application/octet-stream` gönderiliyordu ve tür
+    // filtresi boyuta hiç bakmadan 400 dönüyordu — boyut sınırı ölçülmüyordu.
     const bigBuffer = Buffer.alloc(30 * 1024 * 1024, 0);
     const res = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
-      multipart: { file: { name: 'big.bin', mimeType: 'application/octet-stream', buffer: bigBuffer }, channelId: testChannelId },
+      multipart: { file: { name: 'big.png', mimeType: 'image/png', buffer: bigBuffer }, channelId: testChannelId },
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(413);
   });
 
   // KALDIRILDI — 'API: yüklenen dosya mesaj olarak gönderildiğinde kanalda görünür'

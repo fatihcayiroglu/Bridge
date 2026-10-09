@@ -76,7 +76,7 @@ test.describe('Profil Yönetimi', () => {
       },
       data: JSON.stringify({ displayName: '' }),
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(400);
   });
 
   test('PATCH /api/me — çok uzun displayName reddedilmeli', async ({ request }) => {
@@ -137,8 +137,8 @@ test.describe('Profil Yönetimi', () => {
       },
       data: JSON.stringify({ status: 'superonline' }),
     });
-    // 400 veya 422 — geçersiz enum değeri
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    // Geçersiz enum değeri: 400 (ölçüldü). 429/5xx bir ret değildir.
+    expect(res.status(), await res.text()).toBe(400);
   });
 
   // ── 5. Başka kullanıcının profili ─────────────────────────

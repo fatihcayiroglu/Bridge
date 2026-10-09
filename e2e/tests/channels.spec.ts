@@ -52,7 +52,7 @@ test.describe('Kanal Yönetimi', () => {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ name: '' }),
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(400);
   });
 
   // ── Kanal Testleri ───────────────────────────────────────
@@ -114,7 +114,7 @@ test.describe('Kanal Yönetimi', () => {
       headers: { Authorization: `Bearer ${tokens.bob}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ name: 'yetkisiz-kanal', type: 'text' }),
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(403);
   });
 
   test('API: özel karakterli kanal ismi', async ({ request }) => {
@@ -123,8 +123,10 @@ test.describe('Kanal Yönetimi', () => {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ name: 'genel-tartışma', type: 'text' }),
     });
-    // İzin verilmeli veya sanitize edilmeli
-    expect(res.status()).toBeLessThan(500);
+    // Türkçe harfler kanal adında izinlidir (lib/channelName.ts): 201 ve ad aynen
+    // saklanır. `< 500` 403/404/429'u da "izin verildi" sayıyordu.
+    expect(res.status(), await res.text()).toBe(201);
+    expect((await res.json() as { name?: string }).name).toBe('genel-tartışma');
   });
 
   // ── UI Testleri ──────────────────────────────────────────
