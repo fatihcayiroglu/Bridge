@@ -8,6 +8,9 @@ const checkMagicBytes = jest.fn((..._args: unknown[]) => true);
 const hasLiveUploadReference = jest.fn(async (..._args: unknown[]) => false);
 const resolvePermissions = jest.fn(async (..._args: unknown[]) => 0n);
 const hasPermission = jest.fn((...args: unknown[]) => args[0] === 1n);
+// P7 B3: the metadata walker is proven on real images in image-metadata.test.ts;
+// here (fs and multer are mocked) only WHEN the route calls it is under test.
+const stripUploadedImageOrRefuse = jest.fn(async (..._args: unknown[]): Promise<object | null> => ({ changed: false }));
 
 const repos = {
   Members: {
@@ -72,6 +75,9 @@ jest.mock('../lib/uploadFileSafety', () => ({
   canonicalExtensionForMime: (mime: string) => mime === 'image/png' ? '.png' : mime === 'image/gif' ? '.gif' : undefined,
   checkMagicBytes: (...args: unknown[]) => checkMagicBytes(...args),
 }));
+jest.mock('../lib/imageMetadata', () => ({
+  stripUploadedImageOrRefuse: (...args: unknown[]) => stripUploadedImageOrRefuse(...args),
+}));
 jest.mock('../lib/httpRequestDrain', () => ({
   respondDiscardingBody: (_req: any, res: any, status: number, body: any) => res.status(status).json(body),
 }));
@@ -94,6 +100,7 @@ describe('custom emoji production authority/storage behavior', () => {
     jest.clearAllMocks();
     existsSync.mockReturnValue(true);
     checkMagicBytes.mockReturnValue(true);
+    stripUploadedImageOrRefuse.mockImplementation(async () => ({ changed: false }));
     hasLiveUploadReference.mockResolvedValue(false);
     resolvePermissions.mockImplementation(async (...args: unknown[]) => args[0] === 'owner' ? 1n : 0n);
     hasPermission.mockImplementation((...args: unknown[]) => args[0] === 1n);
@@ -151,6 +158,33 @@ describe('custom emoji production authority/storage behavior', () => {
     unlinkSync.mockClear();
     r = await request(app()).post(`/api/servers/${SID}/emojis`).set('x-user', 'owner').set('x-file', '1').send({ name: '   ' });
     expect(r.status).toBe(400); expect(unlinkSync).toHaveBeenCalledWith('/tmp/emoji_deep.bin');
+  });
+
+  it('P7 B3: metadata is stripped only after every refusal check, right before the row is stored', async () => {
+    checkMagicBytes.mockReturnValueOnce(false);
+    await request(app()).post(`/api/servers/${SID}/emojis`).set('x-user', 'owner').set('x-file', '1').send({ name: 'safe' });
+    await request(app()).post(`/api/servers/${SID}/emojis`).set('x-user', 'owner').set('x-file', '1').send({ name: '   ' });
+    repos.ServerAssets.findEmojiByServerAndName.mockResolvedValueOnce({ _id: 'dup' } as any);
+    await request(app()).post(`/api/servers/${SID}/emojis`).set('x-user', 'owner').set('x-file', '1').send({ name: 'dup' });
+    expect(stripUploadedImageOrRefuse).not.toHaveBeenCalled();
+
+    const r = await request(app()).post(`/api/servers/${SID}/emojis`).set('x-user', 'owner').set('x-file', '1').send({ name: 'fine' });
+    expect(r.status).toBe(200);
+    expect(stripUploadedImageOrRefuse).toHaveBeenCalledTimes(1);
+    expect(stripUploadedImageOrRefuse.mock.calls[0]?.[1]).toMatchObject({ path: '/tmp/emoji_deep.bin', mimetype: 'image/png' });
+    expect(stripUploadedImageOrRefuse.mock.invocationCallOrder[0]!)
+      .toBeLessThan(repos.ServerAssets.insertEmoji.mock.invocationCallOrder[0]!);
+  });
+
+  it('P7 B3: an image whose container cannot be walked is refused and no emoji row is written', async () => {
+    stripUploadedImageOrRefuse.mockImplementationOnce(async (...args: unknown[]) => {
+      (args[0] as any).status(422).json({ error: 'Image could not be processed', code: 'IMAGE_UNPARSEABLE' });
+      return null;
+    });
+    const r = await request(app()).post(`/api/servers/${SID}/emojis`).set('x-user', 'owner').set('x-file', '1').send({ name: 'broken' });
+    expect(r.status).toBe(422);
+    expect(r.body.code).toBe('IMAGE_UNPARSEABLE');
+    expect(repos.ServerAssets.insertEmoji).not.toHaveBeenCalled();
   });
 
   it('normalizes names, rejects duplicate, and rolls file back when duplicate lookup fails', async () => {

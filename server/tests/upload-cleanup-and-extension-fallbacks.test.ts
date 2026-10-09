@@ -21,6 +21,7 @@ import path from 'path';
 import fs from 'fs';
 import express from 'express';
 import request from 'supertest';
+import { TINY_GIF, TINY_JPEG, TINY_PNG, TINY_WEBP } from './helpers/tinyImages';
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-upload-cleanup-'));
 // Pre-create the server-GIF directory so module load takes the "already
@@ -94,14 +95,17 @@ app.use('/api/upload', router);
 app.use((err: any, _req: any, res: any, _next: any) => res.status(err.status || 500).json({ error: err.message }));
 
 const BYTES = Buffer.from('some payload bytes');
+// P7 B3: walked image types need a REAL image (magic bytes alone get 422); other types keep BYTES.
+const REAL: Record<string, Buffer> = { 'image/png': TINY_PNG, 'image/gif': TINY_GIF, 'image/webp': TINY_WEBP, 'image/jpeg': TINY_JPEG };
+const bodyFor = (type: string) => REAL[type] ?? BYTES;
 
 function upload(filename: string, contentType: string, auth = 'u1') {
   return request(app).post('/api/upload').set('Authorization', `Bearer ${auth}`)
-    .attach('file', BYTES, { filename, contentType });
+    .attach('file', bodyFor(contentType), { filename, contentType });
 }
 function uploadGif(filename = 'sticker.gif', contentType = 'image/gif', auth = 'u1') {
   return request(app).post('/api/upload/server-gif').set('Authorization', `Bearer ${auth}`)
-    .attach('gif', BYTES, { filename, contentType });
+    .attach('gif', bodyFor(contentType), { filename, contentType });
 }
 function chunkOnce(id: string, name: string, type: string) {
   return request(app).post('/api/upload/chunk')
@@ -109,7 +113,7 @@ function chunkOnce(id: string, name: string, type: string) {
     .set('Content-Type', 'application/octet-stream')
     .set('x-upload-id', id).set('x-chunk-index', '0').set('x-total-chunks', '1')
     .set('x-file-name', name).set('x-file-type', type)
-    .send(BYTES);
+    .send(bodyFor(type));
 }
 
 /** A scanner that quarantines (removes) the file before rejecting. */

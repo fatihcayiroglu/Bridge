@@ -64,6 +64,7 @@ import express from 'express';
 const jwt    = require('jsonwebtoken');
 const router = require('../routes/serverAssets');
 import { requireDoc } from './helpers/mockDb';
+import { TINY_PNG } from './helpers/tinyImages';
 
 function token(userId: string) {
   return jwt.sign({ id: userId, username: 'owner', v: 0 }, 'test-jwt-secret-long-enough-32chars!!', { expiresIn: '1h' });
@@ -78,7 +79,8 @@ function buildApp() {
 }
 
 const FAKE_PNG = path.join(UPLOAD_DIR, 'test.png');
-fs.writeFileSync(FAKE_PNG, Buffer.from([0x89, 0x50, 0x4e, 0x47])); // PNG magic bytes
+// P7 B3: a REAL image — uploads are walked for metadata, magic bytes alone get 422.
+fs.writeFileSync(FAKE_PNG, TINY_PNG);
 const BAD_PNG = path.join(UPLOAD_DIR, 'bad.png');
 fs.writeFileSync(BAD_PNG, Buffer.from('not-a-png'));
 const HTML_FILE = path.join(UPLOAD_DIR, 'bad.html');

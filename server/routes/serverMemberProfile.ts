@@ -84,6 +84,7 @@ import db from '../db/loader';
 import logger from '../lib/logger';
 import { hasLiveUploadReference } from '../lib/uploadReferenceSafety';
 import { canonicalExtensionForMime, checkMagicBytes } from '../lib/uploadFileSafety';
+import { stripUploadedImageOrRefuse } from '../lib/imageMetadata';
 
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 import { respondDiscardingBody } from '../lib/httpRequestDrain';
@@ -237,6 +238,7 @@ router.post('/members/me/avatar', authMiddleware, limits.upload(), requireCurren
     safeUnlink(req.file.path);
     return res.status(400).json({ error: 'File content does not match declared type' });
   }
+  if (!(await stripUploadedImageOrRefuse(res, req.file))) return; // P7 B3: no location/device metadata
 
   let member;
   try {
@@ -285,6 +287,7 @@ router.post('/members/me/banner', authMiddleware, limits.upload(), requireCurren
     safeUnlink(req.file.path);
     return res.status(400).json({ error: 'File content does not match declared type' });
   }
+  if (!(await stripUploadedImageOrRefuse(res, req.file))) return; // P7 B3: no location/device metadata
 
   let member;
   try {

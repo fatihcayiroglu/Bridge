@@ -97,6 +97,7 @@ import db from '../db/loader';
 import logger from '../lib/logger';
 import { hasLiveUploadReference, normalizeUploadKey } from '../lib/uploadReferenceSafety';
 import { canonicalExtensionForMime, checkMagicBytes } from '../lib/uploadFileSafety';
+import { stripUploadedImageOrRefuse } from '../lib/imageMetadata';
 import { afterDiscardingBody, respondDiscardingBody } from '../lib/httpRequestDrain';
 
 import { uploadDir } from '../lib/runtimePaths';
@@ -196,6 +197,7 @@ router.post('/banner', authMiddleware, limits.write(), requireManageServerAsset,
     try { fs.unlinkSync(req.file.path); } catch {}
     return res.status(400).json({ error: 'File content does not match declared type' });
   }
+  if (!(await stripUploadedImageOrRefuse(res, req.file))) return; // P7 B3: no location/device metadata
 
   const serverId  = String(req.params.sid ?? '');
   let server;
@@ -256,6 +258,7 @@ router.post('/icon-image', authMiddleware, limits.write(), requireManageServerAs
     try { fs.unlinkSync(req.file.path); } catch {}
     return res.status(400).json({ error: 'File content does not match declared type' });
   }
+  if (!(await stripUploadedImageOrRefuse(res, req.file))) return; // P7 B3: no location/device metadata
 
   const serverId = String(req.params.sid ?? '');
   let server;
