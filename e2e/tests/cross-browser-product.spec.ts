@@ -31,7 +31,7 @@
 // · Medya/WebRTC iddiası BURADA yapılmaz (motorlar arası yetenek farkı);
 //   o yüzey `voice-media` projesine aittir.
 
-import { test, expect } from '../helpers/apiTest';
+import { test, expect, settleFirefoxCoopSwap } from '../helpers/apiTest';
 import path from 'path';
 import { deflateSync } from 'zlib';
 import type { Page } from '@playwright/test';
@@ -408,6 +408,8 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
       try {
         const p2 = await fresh.newPage();
         phase('fresh-context-page-created');
+        // Hand-made context: the `page` fixture's Firefox COOP warm-up does not run here (helpers/apiTest.ts).
+        await settleFirefoxCoopSwap(p2);
         await p2.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
         await expect(p2.locator('#app')).toBeVisible({ timeout: 30_000 });
         await p2.locator(`.server-icon[data-id="${serverId}"]`).first().click({ timeout: 25_000 });
@@ -432,7 +434,8 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
         // P3 gecelik koşu: Firefox'ta taze bağlamda ana dünya `locator.evaluate`
         // 10 sn yanıtsız kaldı — hemen önceki `toHaveCount(0)` geçmiş, öğe görünür
         // çözülmüştü; yeniden koşu ve Chromium/WebKit geçti. Ürün durumu değil,
-        // okuma yolu takılıyordu.
+        // okuma yolu takılıyordu. Kök neden sonradan ölçüldü: Firefox sürücüsü COOP süreç
+        // değişiminde ana dünyayı kaybediyor (helpers/apiTest.ts `settleFirefoxCoopSwap`).
         await expect(row.locator('.msg-avatar').first(), 'yedek renk avatarı arka planı yok')
           .toHaveAttribute('style', /background\s*:\s*\S/, { timeout: 15_000 });
         phase('fallback-background-verified');
