@@ -6,6 +6,7 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import { canonicalExtensionForMime, checkMagicBytes } from '../lib/uploadFileSafety';
+import { stripUploadedImageOrRefuse } from '../lib/imageMetadata';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -733,6 +734,7 @@ router.post('/me/avatar', authMiddleware, limits.settings(), (req, res, next) =>
     fs.unlink(req.file.path, () => {});
     return res.status(400).json({ error: 'File content does not match declared type' });
   }
+  if (!(await stripUploadedImageOrRefuse(res, req.file))) return; // P7 B3: no location/device metadata
   const avatarUrl = `/uploads/avatars/${req.file.filename}`;
   // Eski avatar yalnizca temizlik icin okunuyordu; degistirilen avatar artik
   // silinmedigi icin (F21-8-02, asagida) bu okuma olu bir DB sorgusuydu.
@@ -821,6 +823,7 @@ router.post('/me/banner', authMiddleware, limits.settings(), (req, res, next) =>
     fs.unlink(req.file.path, () => {});
     return res.status(400).json({ error: 'File content does not match declared type' });
   }
+  if (!(await stripUploadedImageOrRefuse(res, req.file))) return; // P7 B3: no location/device metadata
   const bannerUrl = `/uploads/banners/${req.file.filename}`;
   let currentUser;
   try {
