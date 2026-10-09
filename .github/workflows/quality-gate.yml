@@ -574,6 +574,11 @@ jobs:
         run: cd e2e && npx playwright test tests/reactions.spec.ts --project=chromium --retries=0 --reporter=list
       - name: Verify upload + file send E2E (no vacuous responses)
         run: cd e2e && npx playwright test tests/upload.spec.ts --project=chromium --retries=0 --reporter=list
+      # The shipped plugin runtime (bundled plugins, authenticated plugin routes,
+      # a real hook acting on a message) and the absence of any HTTP API that
+      # loads plugin code. Runs on every PR; the full matrix is nightly only.
+      - name: Verify shipped plugin runtime (no runtime code-loading API)
+        run: cd e2e && npx playwright test tests/plugins.spec.ts --project=chromium --retries=0 --reporter=list
       # Every E2E spec a PR adds or changes runs on that PR, not only in the
       # nightly full matrix (measured: several integrity PRs changed specs that
       # had never executed in CI). A changed spec outside the chromium project
