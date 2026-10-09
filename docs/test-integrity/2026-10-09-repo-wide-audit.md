@@ -83,6 +83,9 @@ actually received on a real backend.
 | messaging "XSS message is sanitized" | stored content has no `<script>` | 404 from the non-existent REST send; the assertion sat inside `if (status < 400)` and never ran. Premise also stale: content is RAW text by contract (Final21 phase 16) | **E** + **F** | Socket.IO send; stored verbatim; rendered in Chromium as visible text, no `script`/`img` element, handler never runs |
 | sprint83 "stage join requires auth" | join authorization | 404 from a non-existent `…/voice/join`, accepted as proof | **F** | Socket.IO `voice:join` by a non-member → `voice:join-rejected` FORBIDDEN |
 | attachment URL (webp-upload) | URL shape | skipped unless the runner's CDN_PROVIDER was local; accepted `http…` (a public-URL leak) | **F** + **E**-risk | `^/uploads/<id>$` for any provider |
+| auth "invalid e-mail login" | credential check | 400 from schema validation — it sent `{email}`, login reads `username` | **F** | unknown username from its own address → 401 (failed logins feed the per-IP CAPTCHA counter) |
+| auth "empty password" | empty password refused | the same "username is required" 400 | **F** | username + empty password → 400 naming the password |
+| upload "too large file (413)" | size limit | 400 from the type filter (`application/octet-stream`) before size was checked | **F** | 30 MB `image/png` → 413 |
 
 What the link-preview E2E cannot prove, by design: from the outside a refused private
 address looks like an unreachable one. The guard itself is proven in
@@ -135,9 +138,12 @@ counted — Playwright only captures HAR entries with snapshots on.)
    when its Jest JSON reports pending tests.
 2. **Visual project (G).** Run `visual-review.spec.ts`'s asserting tests in a workflow,
    or move UX-6 and theme application into the chromium project.
-3. **Remaining lenient assertions.** 19 traced sites receive a real refusal
-   (400/403/422) but still accept any `>= 400`, including 429 and 5xx. Tighten to the
-   exact code.
+3. ~~Remaining lenient assertions.~~ **Closed in #156** (`26ebfed`): 20 sites in 9
+   specs are now pinned to the traced status and body. Three of them never measured
+   their claim (table in §3); the other 17 got the right refusal but also accepted
+   429/5xx. The SVG ones are 422 `SVG_XSS` from the content scanner, which also
+   quarantines the file; the route's `SVG_UNSAFE` is the layer behind it. 0
+   `>= 400` / `< 500` status assertions remain in `e2e/`.
 4. **WebAuthn step-up proof** is not sent in `webauthn-virtual.spec.ts` because the
    browser shares 127.0.0.1's `twoFactor` budget with the global setup.
 5. **Conditional-only UI checks.** e.g. messaging "UI: mesaj input görünmeli" asserts
