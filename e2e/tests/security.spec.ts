@@ -115,9 +115,10 @@ test.describe('SVG Upload Sanitizasyonu', () => {
     });
 
     fs.unlinkSync(tmpFile);
-    // 415, 422 veya 400 — herhangi bir hata kodu kabul edilebilir
-    expect(res.status()).toBeGreaterThanOrEqual(400);
-    expect(res.status()).toBeLessThan(500);
+    // Ürün sözleşmesi: içerik tarayıcısı (lib/contentScanner.ts) 422 SVG_XSS ile reddeder
+    // ve dosyayı karantinaya alır. "Herhangi bir hata kodu" 429'u da kabul ederdi.
+    expect(res.status(), await res.text()).toBe(422);
+    expect(await res.json()).toEqual({ error: 'SVG contains dangerous content', code: 'SVG_XSS' });
   });
 
   test('onerror handler içeren SVG reddedilmeli', async ({ request }) => {
@@ -134,7 +135,9 @@ test.describe('SVG Upload Sanitizasyonu', () => {
       },
     });
 
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    // Ürün sözleşmesi (lib/contentScanner.ts): 422 SVG_XSS — tam kod; `>= 400` 429'u da kabul ederdi.
+    expect(res.status(), await res.text()).toBe(422);
+    expect(await res.json()).toEqual({ error: 'SVG contains dangerous content', code: 'SVG_XSS' });
   });
 
   test('temiz SVG yüklenebilmeli (200)', async ({ request }) => {
@@ -172,7 +175,9 @@ test.describe('SVG Upload Sanitizasyonu', () => {
       },
     });
 
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    // Ürün sözleşmesi (lib/contentScanner.ts): 422 SVG_XSS — tam kod; `>= 400` 429'u da kabul ederdi.
+    expect(res.status(), await res.text()).toBe(422);
+    expect(await res.json()).toEqual({ error: 'SVG contains dangerous content', code: 'SVG_XSS' });
   });
 });
 
@@ -320,12 +325,12 @@ test.describe('Token Family Invalidation', () => {
       headers: { 'Content-Type': 'application/json' },
     });
 
-    // Logout sonrası refresh 400 veya 401 dönmeli
+    // Logout çerezi temizler: refresh jetonsuz kalır → 400 (ölçüldü).
     const refreshAfterLogout = await request.post(`${BASE_URL}/api/refresh`, {
       headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({}),
     });
-    expect(refreshAfterLogout.status()).toBeGreaterThanOrEqual(400);
+    expect(refreshAfterLogout.status(), await refreshAfterLogout.text()).toBe(400);
     expect(refreshAfterLogout.status()).toBeLessThan(500);
   });
 });
@@ -347,8 +352,7 @@ test.describe('Upload MIME ve Boyut Validasyonu', () => {
       },
     });
 
-    expect(res.status()).toBeGreaterThanOrEqual(400);
-    expect(res.status()).toBeLessThan(500);
+    expect(res.status(), await res.text()).toBe(400);
   });
 
   test('auth olmadan upload reddedilmeli (401)', async ({ request }) => {
@@ -395,7 +399,7 @@ test.describe('Upload MIME ve Boyut Validasyonu', () => {
       },
     });
 
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(400);
   });
 });
 

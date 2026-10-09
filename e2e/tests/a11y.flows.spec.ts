@@ -396,22 +396,17 @@ test.describe('a11y — gerçek kullanıcı akışları', () => {
   // ── Yüksek kontrast ───────────────────────────────────────────────────────────
 
   test('Yüksek kontrast modu — kritik UI elementleri görünür', async ({ page }) => {
-    // prefers-contrast: more simüle et
+    // Zorunlu renkler (Windows yüksek kontrast) emüle edilir. Eskiden ardından sayfa
+    // yeniden yükleniyordu: beforeEach'in açtığı kanal kayboluyor, kontroller görünmüyor
+    // ve tek assertion `if (isVisible)` içinde kaldığı için test HİÇBİR ŞEY ölçmeden
+    // geçiyordu. Medya emülasyonu yeniden yükleme olmadan uygulanır.
     await page.emulateMedia({ forcedColors: 'active' });
-    await page.reload({ waitUntil: 'domcontentloaded' });
+    expect(await page.evaluate(() => matchMedia('(forced-colors: active)').matches)).toBe(true);
 
-    // Temel kontroller hâlâ görünür mü?
-    const criticalSelectors = [
-      '[data-testid="message-input"], [aria-label*="mesaj" i], textarea',
-      '[data-testid="send-btn"], button[type="submit"]',
-    ];
-    for (const sel of criticalSelectors) {
-      const el = page.locator(sel).first();
-      if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
-        // Görünürlük yeterli — kontrast doğrulaması için ayrı audit
-        await expect(el).toBeVisible();
-      }
-    }
+    // Kontrast oranının kendisi ayrı bir audit'tir; burada ölçülen, kritik kontrollerin
+    // zorunlu renk kipinde görünür kalmasıdır.
+    await expect(page.locator('#msg-input')).toBeVisible();
+    await expect(page.locator('button[data-bridge-action="sendMessage"]')).toBeVisible();
 
     await page.emulateMedia({ forcedColors: 'none' });
   });

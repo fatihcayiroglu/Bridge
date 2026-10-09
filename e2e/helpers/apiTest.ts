@@ -38,7 +38,9 @@ function bearerOf(headers: HeaderBag): string | null {
   return null;
 }
 
-function withCsrf(ctx: APIRequestContext): APIRequestContext {
+// Exported for clients that are not Playwright's own (helpers/clientAddress.ts):
+// they get the same CSRF and step-up handling as the `request` fixture.
+export function withCsrf<T extends object>(ctx: T): T {
   return new Proxy(ctx, {
     get(target, prop, receiver) {
       const key = String(prop);
@@ -54,7 +56,8 @@ function withCsrf(ctx: APIRequestContext): APIRequestContext {
         // Specs that assert the refusal itself opt out with `x-e2e-no-step-up`.
         const noStepUp = Object.keys(headers).find((h) => h.toLowerCase() === NO_STEP_UP_HEADER);
         if (noStepUp) delete headers[noStepUp];
-        const dispatch = (h: HeaderBag) => sendWithCsrf(target, original, key, url, options, h);
+        const api = target as unknown as APIRequestContext;
+        const dispatch = (h: HeaderBag) => sendWithCsrf(api, original, key, url, options, h);
         const bearer = bearerOf(headers);
         const route = routeKey(key === 'fetch' ? String((options as { method?: string }).method ?? 'GET') : key, url);
         const known = !noStepUp && bearer ? learnedScope.get(route) : undefined;
@@ -66,14 +69,14 @@ function withCsrf(ctx: APIRequestContext): APIRequestContext {
           if (!scope) break;
           learnedScope.set(route, scope);
           if (attempt === 1) forgetStepUpGrants(); // a held grant went stale (e.g. sign-out everywhere)
-          const grant = await stepUpGrant(target, bearer, scope);
+          const grant = await stepUpGrant(api, bearer, scope);
           if (!grant) break;
           res = await dispatch({ ...headers, [STEP_UP_HEADER]: grant });
         }
         return res;
       };
     },
-  }) as APIRequestContext;
+  }) as T;
 }
 
 async function sendWithCsrf(

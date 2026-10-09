@@ -27,27 +27,19 @@ test.describe('Web Push / VAPID', () => {
 
   // ── 1. VAPID public key ───────────────────────────────────
 
-  test('GET /api/webpush/vapid-public-key — 200 veya 503 (yapılandırılmamış)', async ({ request }) => {
+  // E2E sunucusu web push'u AÇIKÇA yapılandırmadan koşar (scripts/e2e-server.js:
+  // VAPID_* boş). Eskiden ortamdan ne gelirse kabul ediliyordu ve her dal `if` içindeydi;
+  // hangi yolun ölçüldüğü belli değildi. Yapılandırılmış yol (anahtar dönmesi) sunucu
+  // birim testlerinde kanıtlanır: server/tests/webpush.test.ts.
+  test('GET /api/webpush/vapid-public-key — kimlik istemez; VAPID yokken 503', async ({ request }) => {
     const res = await request.get(`${BASE}/api/webpush/vapid-public-key`);
-
-    // Auth gerektirmez
-    expect([200, 503]).toContain(res.status());
-
-    if (res.status() === 200) {
-      const data = await res.json();
-      expect(data.publicKey).toBeTruthy();
-      // VAPID public key base64url formatında olmalı (~87 karakter)
-      expect(data.publicKey.length).toBeGreaterThan(40);
-    }
+    expect(res.status(), await res.text()).toBe(503);
   });
 
-  test('GET /api/webpush/vapid-public-key — 503 ise hata mesajı içermeli', async ({ request }) => {
+  test('GET /api/webpush/vapid-public-key — 503 yanıtı nedenini söyler', async ({ request }) => {
     const res = await request.get(`${BASE}/api/webpush/vapid-public-key`);
-
-    if (res.status() === 503) {
-      const data = await res.json();
-      expect(data.error).toBeTruthy();
-    }
+    expect(res.status()).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Web push not configured' });
   });
 
   // ── 2. Abonelik oluşturma ─────────────────────────────────
@@ -157,8 +149,6 @@ test.describe('Web Push / VAPID', () => {
   // ── 4. Test push ──────────────────────────────────────────
 
   test('POST /api/webpush/test — VAPID yapılandırılmamışsa 503', async ({ request }) => {
-    const vapidRes = await request.get(`${BASE}/api/webpush/vapid-public-key`);
-
     const res = await request.post(`${BASE}/api/webpush/test`, {
       headers: {
         Authorization: `Bearer ${tokens.alice}`,
@@ -167,14 +157,9 @@ test.describe('Web Push / VAPID', () => {
       data: JSON.stringify({ message: 'E2E test push' }),
     });
 
-    if (vapidRes.status() === 503) {
-      // VAPID yok — 503 bekleniyor
-      expect(res.status()).toBe(503);
-    } else {
-      // VAPID var ama abonelik yok — 404 bekleniyor
-      // (ya da başarılı ise 200)
-      expect([200, 404, 503]).toContain(res.status());
-    }
+    // E2E sunucusunda VAPID yok (yukarıya bakın): gönderim denenmeden 503.
+    expect(res.status(), await res.text()).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Web push not configured' });
   });
 
   test('POST /api/webpush/test — auth olmadan 401', async ({ request }) => {
