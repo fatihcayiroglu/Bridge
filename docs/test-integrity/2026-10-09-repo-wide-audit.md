@@ -146,8 +146,27 @@ counted — Playwright only captures HAR entries with snapshots on.)
    `>= 400` / `< 500` status assertions remain in `e2e/`.
 4. **WebAuthn step-up proof** is not sent in `webauthn-virtual.spec.ts` because the
    browser shares 127.0.0.1's `twoFactor` budget with the global setup.
-5. **Conditional-only UI checks.** e.g. messaging "UI: mesaj input görünmeli" asserts
-   only `if (count > 0)` — passes with no input on screen. Not swept systematically yet.
+5. **Conditional-only assertions — swept; 7 closed, 3 open.** An AST sweep of
+   `e2e/tests` (TypeScript compiler API) listed every test whose assertions all sit
+   inside an `if` / ternary / `&&` / `catch`, counting `body`/`html` visibility as no
+   assertion. Tests with no `expect` at all are either helper-asserting
+   (`expectNoA11yViolations`, `expectRefused`) or the `visual`/`perf` capture tools in §4.
+
+   | Test | What it measured | Status |
+   |---|---|---|
+   | channels "server create modal opens" | nothing: none of its selectors exist in the client; both checks inside `if (count > 0)` | **closed** (`12f08a1`): real rail button → EmptyServerStart modal dialog |
+   | channels "channel list is visible" | only `body` | **closed** (`12f08a1`): own server → `general` in `.channel-list-host` |
+   | messaging "composer is visible" | only `body`; no channel was opened | **closed** (`5808014`): own channel → `#msg-input` visible + editable |
+   | a11y.flows "high contrast" | nothing: the reload after `emulateMedia` dropped the opened channel | **closed** (`12f08a1`): no reload; `forced-colors` matches; composer + send visible |
+   | link-preview POST without URL | only if 200 | **closed**: exactly `200 {previews: []}` (no network needed) |
+   | webp-upload GIF | only if 200 | **closed**: exactly 200 |
+   | web-push vapid key / test push (×3) | whatever the runner's env held | **closed**: E2E server pins VAPID off (`E2E_VAPID_*` overrides); exact 503. Negative control: with keys set, 3 fail (200). Configured path: `server/tests/webpush.test.ts` |
+   | a11y.flows "notification area has role/aria-live" | only if a toast happened to be visible; typing in Ctrl+K raises none | **open**: no deterministic toast trigger found in the flow. The role contract (`status`/`alert`, `aria-live`) is proven in `client/tests/toast-host.test.ts` |
+   | link-preview GET "expected fields" / POST "max 3 URLs" | only if a preview came back, i.e. if the runner has outbound internet | **open, class B**: a local fixture can't stand in, because the SSRF guard refuses loopback/private targets by design. Route shape and the 3-URL cap are proven in `server/tests/linkPreview.test.ts` and `link-preview-cache-layers.test.ts` |
+
+   Limits of the sweep: an assertion inside a loop over a possibly empty collection is
+   not flagged, and a weak unconditional assertion other than `body`/`html` visibility
+   still counts as one.
 6. **Root-relative stylesheet 404s** (route-missing sweep above).
 7. **#156 CI** runs the changed specs plus the security/smoke suites; the full browser
    matrix for it is the nightly run.
