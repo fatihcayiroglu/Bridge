@@ -34,6 +34,38 @@ async function sendViaSocket(token: string, serverId: string, channelId: string,
   }
 }
 
+/** Sends through Socket.IO and returns what the server answered to THIS send (ackId-matched). */
+async function sendExpectingOutcome(
+  token: string, serverId: string, channelId: string, content: string,
+): Promise<{ kind: 'ack' | 'error' | 'silence'; data?: { code?: string; ackId?: string; messageId?: string } }> {
+  const socket = await openSocket(token);
+  try {
+    await paceSends('alice');
+    await joinChannelConfirmed(socket, channelId, serverId);
+    await paceSends('alice');
+    const ackId = `e2e-reject-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    type Answer = { code?: string; ackId?: string; messageId?: string };
+    const mine = (d: Answer) => d?.ackId === ackId;
+    const acked = waitForEvent<Answer>(socket, 'message:ack', 10_000, mine).then((data) => ({ kind: 'ack' as const, data }), () => null);
+    const refused = waitForEvent<Answer>(socket, 'error:message', 10_000, mine).then((data) => ({ kind: 'error' as const, data }), () => null);
+    socket.emit('message:send', { channelId, serverId, content, ackId });
+    return (await Promise.race([acked, refused])) ?? (await Promise.all([acked, refused])).find(Boolean) ?? { kind: 'silence' };
+  } finally {
+    closeSockets(socket);
+  }
+}
+
+async function listMessages(
+  request: import('@playwright/test').APIRequestContext, token: string, channelId: string,
+): Promise<Array<{ _id: string; content: string }>> {
+  const res = await request.get(`${BASE_URL}/api/channels/${channelId}/messages?limit=50`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(res.status()).toBe(200);
+  const data = await res.json();
+  return Array.isArray(data) ? data : data.messages || [];
+}
+
 test.describe('Mesajlaşma Akışları', () => {
   let testServerId;
   let testChannelId;
@@ -79,15 +111,23 @@ test.describe('Mesajlaşma Akışları', () => {
     const messages = Array.isArray(data) ? data : data.messages || [];
     expect(messages.some((m: { _id: string; content: string }) => m._id === messageId && m.content === content)).toBe(true);
   });
-  test('API: boş mesaj reddedilmeli', async ({ request }) => {
-    expect(testChannelId, 'mesajlaşma kanalı fikstürü yok').toBeTruthy();
+  // Bu iki test eskiden var olmayan bir REST gönderim ucuna (`POST
+  // /api/channels/:id/messages`) gidiyor ve 404'ü `>= 400` ile "ret" sayıyordu —
+  // doğrulama HİÇ ölçülmüyordu. Ürünün tek yazma yolu Socket.IO `message:send`tir;
+  // ret, bu gönderime ait (ackId) `error:message` ile gelir ve mesaj KALICILAŞMAZ.
+  test('Socket.IO: boş mesaj reddedilir ve kalıcılaşmaz', async ({ request }) => {
+    expect(testServerId && testChannelId, 'sunucu/kanal fixture eksik').toBeTruthy();
+    const before = await listMessages(request, tokens.alice, testChannelId);
 
-    const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content: '' }),
-    });
+    const outcome = await sendExpectingOutcome(tokens.alice, testServerId, testChannelId, '');
+    expect(outcome.kind, 'boş içerik kabul edildi ya da sessizce düştü').toBe('error');
+    expect(outcome.data?.code).toBe('EMPTY_MESSAGE');
 
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    // Kanala katılım yoklaması kendi (dolu) mesajını yazar; o yüzden sayı değil,
+    // bu gönderim sırasında oluşan mesajların İÇERİĞİ denetlenir.
+    const seen = new Set(before.map((m) => m._id));
+    const created = (await listMessages(request, tokens.alice, testChannelId)).filter((m) => !seen.has(m._id));
+    expect(created.filter((m) => !String(m.content ?? '').trim()), 'boş mesaj kalıcılaştı').toEqual([]);
   });
 
   test('Socket.IO: üye olmayan kullanıcı gönderemez ve mesaj kalıcılaşmaz', async ({ request }) => {
@@ -201,17 +241,20 @@ test.describe('Mesajlaşma Akışları', () => {
     }
   });
 
-  test('UI: uzun mesaj 2000 karakteri geçememeli', async ({ request }) => {
-    expect(testChannelId, 'mesajlaşma kanalı fikstürü yok').toBeTruthy();
+  test('Socket.IO: 2000 karakter sınırı — 2000 kabul, 2001 reddedilir ve kalıcılaşmaz', async ({ request }) => {
+    expect(testServerId && testChannelId, 'sunucu/kanal fixture eksik').toBeTruthy();
+    // Pozitif sınır kontrolü: tam 2000 karakter kabul edilir (istemci `maxlength=2000`).
+    const atLimit = `${Date.now()}`.padEnd(2000, 'A');
+    const acceptedId = await sendViaSocket(tokens.alice, testServerId, testChannelId, atLimit);
 
-    const longMsg = 'A'.repeat(2001);
-    const res = await request.post(`${BASE_URL}/api/channels/${testChannelId}/messages`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ content: longMsg }),
-    });
+    const overLimit = `${Date.now()}`.padEnd(2001, 'B');
+    const outcome = await sendExpectingOutcome(tokens.alice, testServerId, testChannelId, overLimit);
+    expect(outcome.kind, '2001 karakter kabul edildi ya da sessizce düştü').toBe('error');
+    expect(outcome.data?.code).toBe('MESSAGE_TOO_LONG');
 
-    // 2000 karakterden uzun mesaj reddedilmeli
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    const after = await listMessages(request, tokens.alice, testChannelId);
+    expect(after.find((m) => m._id === acceptedId), '2000 karakterlik mesaj listede yok').toMatchObject({ content: atLimit });
+    expect(after.some((m) => m.content === overLimit), '2001 karakterlik mesaj kalıcılaştı').toBe(false);
   });
 
   test('API: XSS içerikli mesaj sanitize edilmeli', async ({ request }) => {
