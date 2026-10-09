@@ -3,7 +3,7 @@
 // Kritik akış: mesaj gönder, al, gerçek zamanlı güncelleme
 
 import { test, expect } from '../helpers/apiTest';
-import { BridgePage, getTokens, createTestServer, createTestChannel, sendApiMessage } from '../helpers/bridge';
+import { getTokens, createTestServer, createTestChannel, sendApiMessage } from '../helpers/bridge';
 import { openSocket, waitForEvent, closeSockets, paceSends, joinChannelConfirmed } from '../helpers/socket';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -223,22 +223,17 @@ test.describe('Mesajlaşma Akışları', () => {
   // ── UI Testleri ──────────────────────────────────────────
 
   test('UI: mesaj input görünmeli', async ({ page }) => {
-    const bp = new BridgePage(page);
-    await bp.goto('/');
-    await page.waitForTimeout(1000);
-
-    // Ana sayfa yüklendi mi
-    await expect(page.locator('body')).toBeVisible();
-    // Bir kanal seçiliyse mesaj input'u olmalı
-    const input = page.locator(
-      '[data-testid="message-input"], #message-input, .message-input, [placeholder*="Message"], [placeholder*="Mesaj"]'
-    ).first();
-
-    // Input varsa görünür olmalı (kanal seçili olmayabilir)
-    const count = await input.count();
-    if (count > 0) {
-      await expect(input).toBeVisible();
-    }
+    expect(testServerId && testChannelId, 'sunucu/kanal fixture eksik').toBeTruthy();
+    // Eskiden tek koşulsuz kontrol `body` görünürlüğüydü; giriş kutusu `if (count > 0)`
+    // içindeydi ve "kanal seçili olmayabilir" diye hiç kanal açılmıyordu. Bu paketin
+    // kendi kanalı açılır: besteci görünür ve yazılabilir olmalıdır.
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('#app')).toBeVisible({ timeout: 30_000 });
+    await page.locator(`.server-icon[data-id="${testServerId}"]`).first().click({ timeout: 25_000 });
+    await page.locator('[aria-label="Kanal: genel"]').first().click({ timeout: 20_000 });
+    const input = page.locator('#msg-input');
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await expect(input).toBeEditable();
   });
 
   test('Socket.IO: 2000 karakter sınırı — 2000 kabul, 2001 reddedilir ve kalıcılaşmaz', async ({ request }) => {
