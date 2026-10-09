@@ -488,12 +488,20 @@ test.describe('Sprint 83 — Genel Sağlık', () => {
   });
 
   test('GET /api/docs (Swagger) Sprint 83 route\'larını içeriyor', async ({ request }) => {
-    const res = await request.get(`${BASE}/api/docs`);
-    // Swagger UI opsiyonel bağımlılık — prod'da kapalı olabilir
-    if (res.status() === 404) {
-      test.skip(true, '/api/docs Swagger UI bu ortamda etkin değil');
-      return;
-    }
-    expect(res.status()).toBe(200);
+    // Swagger UI bir çalışma zamanı bağımlılığıdır (swagger-ui-express) ve /api/docs
+    // her ortamda sunulur (server/lib/swagger.ts). Eskiden 404'te "bu ortamda etkin
+    // değil" diye ATLANIYOR ve başlığın iddiasını (Sprint 83 rotaları) hiç ölçmeden
+    // yalnızca 200'e bakıyordu. Rotalar, sunulan spec'te (spec.json) aranır.
+    const ui = await request.get(`${BASE}/api/docs`);
+    expect(ui.status()).toBe(200);
+    expect(await ui.text()).toContain('swagger-ui');
+
+    const spec = await request.get(`${BASE}/api/docs/spec.json`);
+    expect(spec.status()).toBe(200);
+    const { paths } = await spec.json() as { paths: Record<string, Record<string, unknown>> };
+    const methods = (p: string) => Object.keys(paths[p] ?? {});
+    expect(methods('/bots/marketplace')).toEqual(expect.arrayContaining(['get', 'post']));
+    expect(methods('/bots/marketplace/{botId}')).toEqual(expect.arrayContaining(['get', 'patch', 'delete']));
+    expect(methods('/bots/marketplace/categories')).toEqual(expect.arrayContaining(['get']));
   });
 });
