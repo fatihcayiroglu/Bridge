@@ -64,15 +64,24 @@ test.describe('Link Önizleme', () => {
   });
 
   // ── 2. SSRF Koruması ──────────────────────────────────────
+  // Ürünün reddi: 404 `{ error: 'Preview not available' }`. Eskiden `!= 200`,
+  // `>= 400` yetiyordu — rota kaybolsa (404 "Not found: GET …") da geçerdi.
+  // E2E yalnız YÜZEYİ ölçer: özel bir adrese giden isteğin bekçi tarafından mı
+  // yoksa ulaşılamadığı için mi düştüğünü buradan ayırt edemez. Bekçinin kendisi
+  // (özel/loopback/metadata IP, DNS rebinding, genel IP pozitif kontrolü)
+  // server/tests/fetch-ssrf.test.ts'de; tehlikeli şemaların HİÇ istek
+  // yapılmadan reddi link-preview-cache-tiers.test.ts'de kanıtlanır.
+  async function expectRefused(res: import('@playwright/test').APIResponse) {
+    expect(res.status(), await res.text()).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Preview not available' });
+  }
 
   test('GET: localhost URL SSRF korumasıyla reddedilmeli', async ({ request }) => {
     const res = await request.get(
       `${BASE}/api/link-preview?url=${encodeURIComponent('http://localhost:5432')}`,
       { headers: { Authorization: `Bearer ${tokens.alice}` } }
     );
-    // 400 veya 404 — 200 kesinlikle olmamalı
-    expect(res.status()).not.toBe(200);
-    expect(res.status()).not.toBe(500);
+    await expectRefused(res);
   });
 
   test('GET: 192.168.x.x private IP SSRF koruması', async ({ request }) => {
@@ -80,7 +89,7 @@ test.describe('Link Önizleme', () => {
       `${BASE}/api/link-preview?url=${encodeURIComponent('http://192.168.1.1')}`,
       { headers: { Authorization: `Bearer ${tokens.alice}` } }
     );
-    expect(res.status()).not.toBe(200);
+    await expectRefused(res);
   });
 
   test('GET: 10.x.x.x private IP SSRF koruması', async ({ request }) => {
@@ -88,7 +97,7 @@ test.describe('Link Önizleme', () => {
       `${BASE}/api/link-preview?url=${encodeURIComponent('http://10.0.0.1/secret')}`,
       { headers: { Authorization: `Bearer ${tokens.alice}` } }
     );
-    expect(res.status()).not.toBe(200);
+    await expectRefused(res);
   });
 
   test('GET: file:// protokolü reddedilmeli', async ({ request }) => {
@@ -96,7 +105,7 @@ test.describe('Link Önizleme', () => {
       `${BASE}/api/link-preview?url=${encodeURIComponent('file:///etc/passwd')}`,
       { headers: { Authorization: `Bearer ${tokens.alice}` } }
     );
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    await expectRefused(res);
   });
 
   test('GET: javascript: protokolü reddedilmeli', async ({ request }) => {
@@ -104,7 +113,7 @@ test.describe('Link Önizleme', () => {
       `${BASE}/api/link-preview?url=${encodeURIComponent("javascript:alert('xss')")}`,
       { headers: { Authorization: `Bearer ${tokens.alice}` } }
     );
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    await expectRefused(res);
   });
 
   // ── 3. Parametre doğrulama ────────────────────────────────
