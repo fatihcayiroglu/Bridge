@@ -352,11 +352,17 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
   ]);
 
   test('avatar dosyası silinince geçmiş mesaj kırık resim değil RENK AVATARI gösterir', async ({ page, request, browser }, testInfo) => {
+    const traceStartedAt = Date.now();
+    const phase = (label: string): void => {
+      console.log(`[avatar-fallback][${testInfo.project.name}] +${Date.now() - traceStartedAt}ms ${label}`);
+    };
+    phase('start');
     expect(serverId, 'Sunucu fixture kurulamadı').toBeTruthy();
     // Gruplanmış takip mesajı avatar ÇİZMEZ; bu yüzden mesaj KENDİ kanalında ilk mesajdır.
     const avatarChannel = `avatar-${Date.now().toString(36)}`;
     const ch = await createTestChannel(request, token, serverId, avatarChannel, 'text');
     expect(ch?._id || ch?.id, 'Avatar kanalı fixture kurulamadı').toBeTruthy();
+    phase('channel-created');
 
     const up = await request.post(`${BASE_URL}/api/me/avatar`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -365,6 +371,7 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
     expect(up.status(), 'avatar yüklenemedi').toBe(200);
     const avatarUrl = String((await up.json()).avatarUrl ?? '');
     expect(avatarUrl).toMatch(/^\/uploads\/avatars\//);
+    phase('real-avatar-uploaded');
 
     let removed = false;
     try {
@@ -375,6 +382,7 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
       await page.locator(`[aria-label="Kanal: ${avatarChannel}"]`).first().click({ timeout: 20_000 });
       await page.locator('#msg-input').waitFor({ state: 'visible', timeout: 20_000 });
       await sendFromComposer(page, body);
+      phase('message-sent-and-visible');
 
       // Pozitif kontrol: resim gerçekten çizildi.
       const liveImg = page.locator('.msg', { hasText: body }).first().locator('.msg-avatar img');
@@ -382,12 +390,14 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
       await expect(liveImg, 'pozitif kontrol: avatar resmi yüklenmedi').toHaveJSProperty('complete', true, { timeout: 15_000 });
       await expect.poll(() => liveImg.getAttribute('src'), { timeout: 15_000 }).toBe(avatarUrl);
       await expect(liveImg, 'pozitif kontrol: avatar resmi boş veya kırık').not.toHaveJSProperty('naturalWidth', 0, { timeout: 15_000 });
+      phase('positive-image-render-confirmed');
 
       const del = await request.delete(`${BASE_URL}/api/me/avatar`, { headers: { Authorization: `Bearer ${token}` } });
       expect(del.status(), 'avatar kaldırılamadı').toBe(200);
       removed = true;
       const gone = await request.get(`${BASE_URL}${avatarUrl}`);
       expect(gone.status(), 'sunucu gerçeği: kaldırılan avatar dosyası hâlâ sunuluyor').toBe(404);
+      phase('avatar-deleted-and-404-confirmed');
 
       // Taze bağlam: önceki yüklemenin HTTP önbelleği ölçümü kirletemez.
       const fresh = await browser.newContext({
@@ -397,12 +407,14 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
       });
       try {
         const p2 = await fresh.newPage();
+        phase('fresh-context-page-created');
         await p2.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
         await expect(p2.locator('#app')).toBeVisible({ timeout: 30_000 });
         await p2.locator(`.server-icon[data-id="${serverId}"]`).first().click({ timeout: 25_000 });
         await p2.locator(`[aria-label="Kanal: ${avatarChannel}"]`).first().click({ timeout: 20_000 });
         const row = p2.locator('.msg', { hasText: body }).first();
         await expect(row).toBeVisible({ timeout: 20_000 });
+        phase('fresh-context-message-visible');
 
         // Mesaj anlık görüntüsü hâlâ eski URL'yi taşır — test ölçtüğünü sandığı şeyi ölçüyor mu?
         const history = await request.get(`${BASE_URL}/api/channels/${ch._id || ch.id}/messages?limit=5`,
@@ -412,8 +424,10 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
         const list: Array<{ content?: string; avatarUrl?: string | null }> = Array.isArray(raw) ? raw : (raw.messages ?? []);
         expect(list.find((m) => m.content === body)?.avatarUrl, 'mesaj anlık görüntüsü avatar URL taşımıyor — ölçüm anlamsız')
           .toBe(avatarUrl);
+        phase('historical-avatar-url-confirmed');
 
         await expect(row.locator('.msg-avatar img'), 'kırık avatar resmi hâlâ çiziliyor').toHaveCount(0, { timeout: 15_000 });
+        phase('broken-image-absent');
         // Aynı iddia (satır içi arka plan dolu), yeniden deneyen yardımcı dünyada okunur.
         // P3 gecelik koşu: Firefox'ta taze bağlamda ana dünya `locator.evaluate`
         // 10 sn yanıtsız kaldı — hemen önceki `toHaveCount(0)` geçmiş, öğe görünür
@@ -421,8 +435,11 @@ test.describe('çapraz tarayıcı — kayıp avatar dosyası', () => {
         // okuma yolu takılıyordu.
         await expect(row.locator('.msg-avatar').first(), 'yedek renk avatarı arka planı yok')
           .toHaveAttribute('style', /background\s*:\s*\S/, { timeout: 15_000 });
+        phase('fallback-background-verified');
       } finally {
+        phase('fresh-context-closing');
         await fresh.close();
+        phase('fresh-context-closed');
       }
     } finally {
       if (!removed) {
