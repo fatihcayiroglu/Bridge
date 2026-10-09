@@ -153,16 +153,19 @@ const env = {
   // uretmesinden kaynaklanir; sunucu DOGRU davranmaktadir.
   //
   // ── NE DEGISTI, NE DEGISMEDI ────────────────────────────────────────────
-  // DEGISEN (yalnizca bu betikte, yalnizca VERIM sinirlari):
-  //   RL_GLOBAL_MAX   — genel istek hacmi
-  //   RL_SERVERS_MAX  — fikstur sunucu olusturma/silme
+  // DEGISEN (yalnizca bu betikte, her biri asagida OLCULEN gerekcesiyle —
+  // fikstur trafigi icin VERIM butceleri):
+  //   RL_GLOBAL_MAX, RL_SERVERS_MAX, RL_CHANNELS_MAX, RL_ROLES_MAX, RL_API_MAX,
+  //   soket baglanti/olay sinirlari, RL_REGISTER_MAX, RL_LOGIN_MAX,
+  //   MAX_REG_PER_HOUR, RL_CSRF_MAX, RL_SETTINGS_MAX, RL_WEBHOOKS_MAX
   //
-  // DEGISMEYEN (kotuye kullanim / kimlik korumalari AYNEN kalir):
-  //   MAX_REG_PER_HOUR      — hesap acma kotasi
+  // DEGISMEYEN (kimlik korumalari URETIM degeriyle kalir):
   //   MAX_FAILED_LOGINS     — giris kilidi
-  //   RL_LOGIN_MAX          — giris hizi
-  //   RL_REGISTER_MAX       — kayit hizi
-  //   bot filtresi, CAPTCHA, CSRF, CORS, yetkilendirme
+  //   RL_2FA_MAX / _WIN     — 2FA ve adim-yukari kaniti, IP basina 5 / 5 dk;
+  //                           2fa.spec bu degeri ve kesmeyi kendi istemci
+  //                           adresinden OLCER (helpers/clientAddress.ts)
+  //   RL_CHGPWD_MAX         — parola degistirme
+  //   bot filtresi, CAPTCHA, CSRF dogrulamasi, CORS, yetkilendirme
   //
   // `server/.env` ve uretim varsayilanlari DOKUNULMADAN kalir; bu degerler
   // yalnizca Playwright'in baslattigi test sunucusunda gecerlidir. Deger
