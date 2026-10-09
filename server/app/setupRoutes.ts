@@ -96,7 +96,11 @@ export function setupRoutes(app: Application): void {
   mountApi('/servers', rolesRouter);
   mountApi('/servers/:sid/emojis', customEmojiRouter);
   mountApi('/servers/:sid', serverAssetsRouter);
-  mountApi('/servers', channelsRouter);
+  // Voice REST routes (`/:channelId/voice-state|voice-members`) — OpenAPI
+  // publishes them under `/channels/{channelId}/…`. Mounted under `/servers`
+  // since the Sprint 108 split, the documented URLs answered 404 and the
+  // handlers sat at `/api/servers/<channelId>/…` (voice-route-mount-contract.test.ts).
+  mountApi('/channels', channelsRouter);
   // C3 sınıfı — YÖNLENDİRME DÜZELTMESİ. Router `mergeParams: true` kullanır ve
   // handler'lar `req.params.serverId` okur; eski `/servers` mount'unda bu
   // parametre HİÇ dolmuyordu. OpenAPI `/servers/{serverId}/categories` ilan
