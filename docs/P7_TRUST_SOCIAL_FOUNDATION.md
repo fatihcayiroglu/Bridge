@@ -693,6 +693,23 @@ For each retained metadata class record:
 
 Logs/telemetry must not become a shadow social graph.
 
+### B3-1 — uploaded image metadata (branch `p7/b3-metadata-minimization`)
+
+One class only; **B3 as a whole stays open** (logs/telemetry, IP and device
+records, timestamps and the remaining classes still need their records).
+
+| | Record |
+|---|---|
+| What | Metadata a camera/phone writes into JPEG, PNG, WebP and GIF: EXIF GPS position, device make/model/serial, capture time, editing software, XMP/IPTC author fields, comments, embedded thumbnails (which can show the picture before it was cropped), data appended after the image |
+| Why required | Not required. The only field that changes how a picture looks is the display **orientation**; colour profiles (ICC) and animation are part of the picture |
+| Where stored | **Nowhere any more.** `server/lib/imageMetadata.ts` removes it before storage on every route that stores an uploaded raster image: message attachments (single and chunked), server GIFs, account and per-server avatar and banner, server banner and icon, custom emoji, stickers |
+| Who can access | Before: anyone allowed to read the file (an attachment's channel; an avatar or banner: anyone with the URL). After: no one — it is not stored |
+| Retention / deletion / export | Not retained, so nothing to delete or export. Files stored before this change keep their metadata (no backfill) |
+| Less identifying representation | Orientation alone is re-emitted (EXIF with a single tag, or applied to the pixels when WebP conversion re-encodes); colour profile and animation stay; compressed image data is copied byte for byte (no re-encode, no quality loss) |
+| Fail closed | A container that cannot be walked is refused (422 `IMAGE_UNPARSEABLE`), never stored as is |
+| Unchanged | Authorization, upload size limits, the magic-byte check, the content scanner |
+| Evidence | `server/tests/image-metadata.test.ts` (real images, pixels identical); `server/tests/upload-webp-orientation.test.ts` (real encoder: a portrait photo is stored upright); `e2e/tests/image-metadata.spec.ts` (bytes served by a real server; negative control against a server without B3: the metadata tests fail) |
+
 ## B4. E2EE research and hardening
 
 P7 does not make unsupported cryptographic claims.
