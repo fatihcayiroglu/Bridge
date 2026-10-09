@@ -62,9 +62,8 @@ const router = express.Router();
 // Yalnızca raster görüntüler dönüştürülür: jpeg/png/tiff/bmp
 // GIF ve SVG atlanır (animasyon/vektör korunur)
 // Sprint 74: require() → dynamic import() (no eslint-disable workaround needed)
-type SharpFn = (input: string) => {
-  webp(opts: Record<string, unknown>): { toFile(out: string): Promise<{ size: number }> };
-};
+type SharpWebp = { webp(opts: Record<string, unknown>): { toFile(out: string): Promise<{ size: number }> } };
+type SharpFn = (input: string) => SharpWebp & { rotate(): SharpWebp };
 let _sharp: SharpFn | null = null;
 let _sharpLoaded = false;
 
@@ -99,7 +98,9 @@ async function maybeConvertToWebP(
   if (!sharp) return { filePath, mimetype, converted: false };
   const webpPath = filePath.replace(/\.[^.]+$/, '.webp');
   try {
-    await sharp(filePath).webp({ quality: WEBP_QUALITY, effort: 4 }).toFile(webpPath);
+    // `.rotate()` applies the EXIF orientation to the pixels: the re-encode drops
+    // every EXIF field, and without it a portrait phone photo is stored sideways.
+    await sharp(filePath).rotate().webp({ quality: WEBP_QUALITY, effort: 4 }).toFile(webpPath);
   } catch (error) {
     try { if (fs.existsSync(webpPath)) fs.unlinkSync(webpPath); } catch {}
     throw error;

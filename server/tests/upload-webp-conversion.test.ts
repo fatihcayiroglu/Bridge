@@ -37,11 +37,14 @@ const toFile = jest.fn(async (out: string) => {
 });
 const webpOptions = jest.fn();
 const sharpCalls: string[] = [];
+const rotateCalls = jest.fn();
 const sharpFn = jest.fn((input: string) => {
   sharpCalls.push(input);
-  return {
+  const pipeline = {
+    rotate: () => { rotateCalls(input); return pipeline; },
     webp: (opts: Record<string, unknown>) => { webpOptions(opts); return { toFile }; },
   };
+  return pipeline;
 });
 
 jest.mock('sharp', () => ({ __esModule: true, default: (input: string) => sharpFn(input) }), { virtual: true });
@@ -187,6 +190,9 @@ describe('raster uploads are converted to WebP as one consistent identity', () =
 
     const original = sharpCalls[0]!;
     expect(original.endsWith('.png')).toBe(true);
+    // P7 B3: the EXIF orientation is applied to the pixels before the re-encode
+    // drops EXIF (proved with a real encoder in upload-webp-orientation.test.ts).
+    expect(rotateCalls).toHaveBeenCalledWith(original);
     // fs.unlink of the source is fire-and-forget; give the loop one turn.
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(fs.existsSync(original)).toBe(false);
