@@ -402,6 +402,36 @@ function makeReadOnlyDb(
 }
 
 // ── Plugin loader ─────────────────────────────────────────────
+/**
+ * Where the plugins (bundled and local) live at runtime:
+ *   - repository checkout, ts-node (server/plugins/loader.ts)       → <repo>/plugins
+ *   - repository checkout, compiled (server/dist/plugins/loader.js) → <repo>/plugins
+ *   - Docker image, compiled (the Dockerfile copies <repo>/plugins to
+ *     server/plugins next to server/dist)                            → server/plugins
+ * The compiled build used to look only at server/plugins. In a checkout that
+ * directory holds this loader's TypeScript sources and no plugin, so
+ * `node server/dist/index.js` (process self-hosting, the E2E server) loaded zero
+ * plugins without a warning while the Docker image loaded all three.
+ * Only these fixed locations are considered; nothing above the repository is.
+ */
+export function resolvePluginsDir(fromDir: string = __dirname): { dir: string | null; candidates: string[] } {
+  const compiled = path.basename(path.dirname(fromDir)) === 'dist';
+  const candidates = compiled
+    ? [path.resolve(fromDir, '../../plugins'), path.resolve(fromDir, '../../../plugins')]
+    : [path.resolve(fromDir, '../../plugins')];
+  return { dir: candidates.find(hasPluginManifest) ?? null, candidates };
+}
+
+function hasPluginManifest(dir: string): boolean {
+  try {
+    if (!fs.existsSync(dir)) return false;
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .some(e => e.isDirectory() && fs.existsSync(path.join(dir, e.name, 'plugin.json')));
+  } catch {
+    return false;
+  }
+}
+
 export async function loadPlugins(
   app: IRouter,
   db: Record<string, unknown>,
@@ -409,11 +439,12 @@ export async function loadPlugins(
   authMiddleware: RequestHandler,
 ): Promise<void> {
   registerPluginActionHandlers(hooks, io);
-  const pluginsDir = path.resolve(__dirname, '../../plugins');
-  if (!fs.existsSync(pluginsDir)) {
-    logger.info({ pluginsDir, event: 'plugins.dir.missing' }, 'Plugins directory not found, skipping plugin loading.');
+  const { dir: pluginsDir, candidates } = resolvePluginsDir();
+  if (!pluginsDir) {
+    logger.info({ candidates, event: 'plugins.dir.missing' }, 'Plugins directory not found, skipping plugin loading.');
     return;
   }
+  logger.info({ pluginsDir, event: 'plugins.dir' }, 'Loading plugins.');
 
   const entries = fs.readdirSync(pluginsDir, { withFileTypes: true })
     .filter(e => e.isDirectory());

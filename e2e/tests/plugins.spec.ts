@@ -1,301 +1,118 @@
-// e2e/tests/plugins.spec.ts — Sprint 81
-// Plugin sisteminin E2E entegrasyon testleri
+// e2e/tests/plugins.spec.ts — the SHIPPED plugin runtime, end to end.
 //
-// Kapsam:
-//   1. Plugin yükleme API'si — POST /api/admin/plugins/load
-//   2. Plugin listeleme — GET /api/admin/plugins
-//   3. Plugin hook event: kendi listener'ını tetikler
-//   4. Plugin emitToAll: cross-plugin broadcast
-//   5. emitToAll rate-limit: 20 istek/saniye aşılınca sonraki çağrılar
-//      yine de resolve eder (caller bloke olmaz)
-//   6. Plugin kaldırma — POST /api/admin/plugins/unload
+// What Bridge ships (server/plugins/loader.ts): the bundled plugins in
+// <repo>/plugins (welcome-bot, word-filter, auto-role) are loaded at start-up
+// with restricted, permission-gated capabilities; each may register routes under
+// /api/plugins/:id/* and subscribe to server hooks.
 //
-// Gereksinimler:
-//   - BASE_URL ortamda ya da localhost:3000
-//   - Admin kullanıcısı: ADMIN_USERNAME / ADMIN_PASSWORD env var
-//   - Test plugin'leri: fixtures/plugins/ altında (aşağıda inline tanımlanır)
+// What it does NOT ship: an admin HTTP API that loads executable code from an
+// arbitrary path at runtime. The previous version of this file tested exactly
+// that (POST /api/admin/plugins/load …) and skipped all six tests because the
+// endpoint does not exist. Such an endpoint would be remote code execution for
+// whoever holds an admin token, so its ABSENCE is asserted here instead of
+// being implemented to turn a skip green.
+//
+// These tests became runnable when the compiled server started finding the
+// bundled plugins outside Docker (fix/plugins-dir-compiled); before, the E2E
+// server logged "Plugin loading completed. count 0".
 
-import { test, expect, request as pwRequest } from '../helpers/apiTest';
-import * as path from 'path';
-import * as fs   from 'fs';
-import * as os   from 'os';
+import { test, expect } from '../helpers/apiTest';
+import { request as pwRequest } from '@playwright/test';
+import { getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
+import { openSocket, closeSockets, joinChannelConfirmed, paceSends, waitForEvent } from '../helpers/socket';
 
-const BASE_URL       = process.env.BASE_URL        || 'http://127.0.0.1:3000';
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME  || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD  || 'AdminPass123!';
+const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
+const BUNDLED = ['auto-role', 'welcome-bot', 'word-filter'];
 
-// ── Yardımcılar ───────────────────────────────────────────────────────────────
+test.describe('Plugin runtime — bundled plugins', () => {
+  let token: string;
+  let serverId: string;
+  let channelId: string;
 
-async function adminToken(request: ReturnType<typeof pwRequest.newContext> extends Promise<infer R> ? R : never): Promise<string> {
-  const res = await request.post(`${BASE_URL}/api/login`, {
-    headers: { 'Content-Type': 'application/json' },
-    data: JSON.stringify({ username: ADMIN_USERNAME, password: ADMIN_PASSWORD }),
-  });
-  if (!res.ok()) test.skip(true, `Admin giriş yapılamadı (${res.status()}) — ortam hazır değil`);
-  const data = await res.json() as { token?: string };
-  return data.token ?? '';
-}
-
-/** Geçici bir plugin dizini oluşturur ve main dosyasını yazar. */
-function makePluginFixture(id: string, mainCode: string): string {
-  const dir  = fs.mkdtempSync(path.join(os.tmpdir(), `bridge-plugin-e2e-${id}-`));
-  const meta = { id, name: `E2E Test Plugin (${id})`, version: '0.0.1', main: 'index.js' };
-  fs.writeFileSync(path.join(dir, 'plugin.json'), JSON.stringify(meta, null, 2));
-  fs.writeFileSync(path.join(dir, 'index.js'), mainCode);
-  return dir;
-}
-
-// ── Test suite ────────────────────────────────────────────────────────────────
-
-test.describe('Plugin sistemi E2E', () => {
-  let token = '';
-  let request: Awaited<ReturnType<typeof pwRequest.newContext>>;
-  const loadedPlugins: string[] = [];
-
-  test.beforeAll(async () => {
-    request = await pwRequest.newContext({ baseURL: BASE_URL });
-    token   = await adminToken(request);
-
-    // ── v1.123: ATLAMA GEREKCESI DUZELTILDI ────────────────────────────────
-    // Bu paketin 6 testi "Admin giris yapilamadi (401) - ortam hazir degil"
-    // diye atlaniyordu. Bu YANILTICIYDI: sorun ortam degil, ucun HIC SEVK
-    // EDILMEMIS olmasiydi. v1.123'te e2e kurulumu artik gercek bir yonetici
-    // sagliyor (global.setup.ts -> ensureAdminUser) ve giris 200 donuyor;
-    // buna ragmen API yok:
-    //
-    //   GET  /api/admin/plugins       -> 404  "Not found"
-    //   POST /api/admin/plugins/load  -> 403  "CSRF token missing"
-    //
-    // Testlerin kendi 404/501 muhafazasi CALISMIYORDU, cunku CSRF katmani
-    // yonlendirmeden ONCE 403 donuyor ve 404 hic gorulmuyor. Bu yuzden
-    // muhafaza GET ile, yani CSRF'den etkilenmeyen bir ucla yapilir.
-    const probe = await request.get(`${BASE_URL}/api/admin/plugins`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    test.skip(
-      probe.status() === 404,
-      'SEVK EDILMEDI (v1.123 dogrulandi): yonetici eklenti API ucu yok - GET /api/admin/plugins 404. '
-      + 'Yonetici kullanicisi ARTIK saglaniyor; engel yetki degil, ucun yoklugudur.',
-    );
+  test.beforeAll(async ({ request }) => {
+    token = getTokens().alice;
+    const server = await createTestServer(request, token, `Plugins ${Date.now()}`);
+    expect(server, 'plugin test server fixture').toBeTruthy();
+    serverId = server._id || server.id;
+    const channel = await createTestChannel(request, token, serverId, 'plugin-filter');
+    expect(channel, 'plugin test channel fixture').toBeTruthy();
+    channelId = channel._id || channel.id;
   });
 
-  test.afterAll(async () => {
-    // Yüklü kalan plugin'leri temizle
-    for (const id of loadedPlugins) {
-      await request.post(`${BASE_URL}/api/admin/plugins/unload`, {
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        data: JSON.stringify({ id }),
-      }).catch(() => { /* best-effort */ });
-    }
-    await request.dispose();
+  test('GET /api/plugins lists every bundled plugin, and only to a signed-in person', async ({ request }) => {
+    const res = await request.get(`${BASE}/api/plugins`, { headers: { Authorization: `Bearer ${token}` } });
+    expect(res.status()).toBe(200);
+    const list = await res.json() as Array<{ id: string; version: string }>;
+    expect(list.map(p => p.id).sort()).toEqual(BUNDLED);
+    for (const p of list) expect(p.version).toMatch(/^\d+\.\d+\.\d+/);
+
+    const anon = await pwRequest.newContext({ storageState: { cookies: [], origins: [] } });
+    try {
+      expect((await anon.get(`${BASE}/api/plugins`)).status()).toBe(401);
+    } finally { await anon.dispose(); }
   });
 
-  // ── [1] Plugin yükleme ─────────────────────────────────────────────────────
+  test('a plugin-registered route is mounted under /api/plugins/:id and requires authentication', async ({ request }) => {
+    const res = await request.get(`${BASE}/api/plugins/word-filter/blocked`, { headers: { Authorization: `Bearer ${token}` } });
+    expect(res.status()).toBe(200);
+    expect(await res.json()).toEqual({ blockedWords: ['spam', 'scam'] });
 
-  test('plugin yükle → 200 ve id döner', async () => {
-    const pluginDir = makePluginFixture('e2e-basic', `
-      module.exports = async function(ctx) {
-        ctx.logger.log('e2e-basic yüklendi');
-      };
-    `);
-
-    const res = await request.post(`${BASE_URL}/api/admin/plugins/load`, {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      data: JSON.stringify({ path: pluginDir }),
-    });
-
-    // Ortam desteklemiyorsa atla
-    if (res.status() === 404 || res.status() === 501) {
-      test.skip(true, 'Plugin yükleme API\'si bu ortamda aktif değil');
-      return;
-    }
-
-    expect(res.ok()).toBeTruthy();
-    const data = await res.json() as { id?: string };
-    expect(data.id).toBe('e2e-basic');
-    loadedPlugins.push('e2e-basic');
+    const anon = await pwRequest.newContext({ storageState: { cookies: [], origins: [] } });
+    try {
+      expect((await anon.get(`${BASE}/api/plugins/word-filter/blocked`)).status()).toBe(401);
+    } finally { await anon.dispose(); }
   });
 
-  // ── [2] Plugin listeleme ───────────────────────────────────────────────────
+  test('word-filter acts on the real message:created hook: a blocked word is removed and the author warned; a clean message stays', async ({ request }) => {
+    const socket = await openSocket(token);
+    try {
+      await joinChannelConfirmed(socket, channelId, serverId, 6, 'alice');
 
-  test('yüklü plugin listede görünür', async () => {
-    const res = await request.get(`${BASE_URL}/api/admin/plugins`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+      // Negative control: a clean message is persisted and not deleted.
+      await paceSends('alice');
+      const cleanAck = `plugin-clean-${Date.now()}`;
+      const cleanSaved = waitForEvent<{ ackId: string; messageId: string }>(socket, 'message:ack', 15_000, a => a?.ackId === cleanAck);
+      socket.emit('message:send', { channelId, serverId, content: 'a perfectly ordinary message', ackId: cleanAck });
+      const cleanId = (await cleanSaved).messageId;
+      expect(cleanId).toBeTruthy();
 
-    if (res.status() === 404) {
-      test.skip(true, 'Plugin listeleme API\'si bu ortamda aktif değil');
-      return;
-    }
+      await paceSends('alice');
+      const blockedAck = `plugin-blocked-${Date.now()}`;
+      const saved = waitForEvent<{ ackId: string; messageId: string }>(socket, 'message:ack', 15_000, a => a?.ackId === blockedAck);
+      const warned = waitForEvent<{ content?: string; displayName?: string }>(
+        socket, 'message:new', 15_000, m => m?.displayName === 'Word Filter' && /yasaklı içerik/.test(m?.content ?? ''),
+      );
+      socket.emit('message:send', { channelId, serverId, content: 'this offer is a SCAM, click here', ackId: blockedAck });
+      const blockedId = (await saved).messageId;
+      expect(blockedId).toBeTruthy();
+      const deleted = await waitForEvent<{ id: string }>(socket, 'message:deleted', 15_000, d => d?.id === blockedId);
+      expect(deleted.id).toBe(blockedId);
+      expect((await warned).content).toContain('yasaklı içerik');
 
-    expect(res.ok()).toBeTruthy();
-    const list = await res.json() as Array<{ id: string }>;
-    const ids  = list.map(p => p.id);
-    // e2e-basic ya yüklüdür ya da ortam bunu desteklemiyordur (skip)
-    if (loadedPlugins.includes('e2e-basic')) {
-      expect(ids).toContain('e2e-basic');
-    }
-  });
-
-  // ── [3] Hook event — kendi listener'ını tetikler ──────────────────────────
-
-  test('plugin kendi hook listener\'ını tetikleyebilir', async () => {
-    const pluginDir = makePluginFixture('e2e-hook', `
-      module.exports = async function(ctx) {
-        let received = null;
-        ctx.hooks.on('test:ping', (data) => { received = data; });
-        await ctx.hooks.emit('test:ping', { ts: Date.now() });
-        // Sonucu HTTP route üzerinden dışarıya aç
-        ctx.registerRoute('GET', '/ping-result', (req, res) => {
-          res.json({ received: received !== null });
+      await expect.poll(async () => {
+        const res = await request.get(`${BASE}/api/channels/${channelId}/messages?limit=50`, {
+          headers: { Authorization: `Bearer ${token}` },
         });
-      };
-    `);
-
-    const loadRes = await request.post(`${BASE_URL}/api/admin/plugins/load`, {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      data: JSON.stringify({ path: pluginDir }),
-    });
-
-    if (loadRes.status() === 404 || loadRes.status() === 501) {
-      test.skip(true, 'Plugin API bu ortamda aktif değil');
-      return;
+        expect(res.status()).toBe(200);
+        const body = await res.json() as { messages?: Array<{ _id: string }> } | Array<{ _id: string }>;
+        const ids = (Array.isArray(body) ? body : body.messages ?? []).map(m => m._id);
+        return { clean: ids.includes(cleanId), blocked: ids.includes(blockedId) };
+      }, { timeout: 15_000 }).toEqual({ clean: true, blocked: false });
+    } finally {
+      closeSockets(socket);
     }
-
-    expect(loadRes.ok()).toBeTruthy();
-    loadedPlugins.push('e2e-hook');
-
-    // Kısa bekleme — worker boot timeout'u aşmamak için
-    await new Promise(r => setTimeout(r, 300));
-
-    const res = await request.get(`${BASE_URL}/api/plugins/e2e-hook/ping-result`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(res.ok()).toBeTruthy();
-    const data = await res.json() as { received: boolean };
-    expect(data.received).toBe(true);
   });
 
-  // ── [4] emitToAll — cross-plugin broadcast ────────────────────────────────
-
-  test('emitToAll başka plugin\'in wildcard listener\'ını tetikler', async () => {
-    // Plugin B: wildcard listener kurar, sonucu HTTP route ile döner
-    const dirB = makePluginFixture('e2e-receiver', `
-      module.exports = async function(ctx) {
-        let broadcastReceived = false;
-        ctx.hooks.on('*', (event, data) => {
-          if (event === 'cross:broadcast') broadcastReceived = true;
-        });
-        ctx.registerRoute('GET', '/received', (req, res) => {
-          res.json({ broadcastReceived });
-        });
-      };
-    `);
-
-    // Plugin A: emitToAll çağırır
-    const dirA = makePluginFixture('e2e-broadcaster', `
-      module.exports = async function(ctx) {
-        // Kısa gecikme — receiver worker'ının boot etmesini bekle
-        await new Promise(r => setTimeout(r, 200));
-        await ctx.hooks.emitToAll('cross:broadcast', { from: 'e2e-broadcaster' });
-        ctx.registerRoute('GET', '/done', (req, res) => res.json({ ok: true }));
-      };
-    `);
-
-    const loadB = await request.post(`${BASE_URL}/api/admin/plugins/load`, {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      data: JSON.stringify({ path: dirB }),
+  test('there is no HTTP API that loads plugin code at runtime (it would be remote code execution)', async ({ request }) => {
+    // An instance admin must get 404 (not 403): the route does not exist at all.
+    const admin = (getTokens() as unknown as { admin?: string }).admin;
+    expect(admin, 'instance-admin fixture (global.setup.ts ensureAdminUser)').toBeTruthy();
+    const list = await request.get(`${BASE}/api/admin/plugins`, { headers: { Authorization: `Bearer ${admin}` } });
+    expect(list.status()).toBe(404);
+    const load = await request.post(`${BASE}/api/admin/plugins/load`, {
+      headers: { Authorization: `Bearer ${admin}`, 'Content-Type': 'application/json' },
+      data: { path: '/tmp' },
     });
-
-    if (loadB.status() === 404 || loadB.status() === 501) {
-      test.skip(true, 'Plugin API bu ortamda aktif değil');
-      return;
-    }
-
-    expect(loadB.ok()).toBeTruthy();
-    loadedPlugins.push('e2e-receiver');
-
-    const loadA = await request.post(`${BASE_URL}/api/admin/plugins/load`, {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      data: JSON.stringify({ path: dirA }),
-    });
-    expect(loadA.ok()).toBeTruthy();
-    loadedPlugins.push('e2e-broadcaster');
-
-    // Broadcaster'ın emitToAll'ı tamamlamasını bekle
-    await new Promise(r => setTimeout(r, 800));
-
-    const res = await request.get(`${BASE_URL}/api/plugins/e2e-receiver/received`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(res.ok()).toBeTruthy();
-    const data = await res.json() as { broadcastReceived: boolean };
-    expect(data.broadcastReceived).toBe(true);
-  });
-
-  // ── [5] emitToAll rate-limit — caller bloke olmaz ─────────────────────────
-
-  test('emitToAll rate-limit aşılınca çağrılar yine resolve eder', async () => {
-    const dir = makePluginFixture('e2e-ratelimit', `
-      module.exports = async function(ctx) {
-        // 25 emitToAll çağrısı — limit 20/s, 5'i düşürülmeli
-        let resolved = 0;
-        const calls = [];
-        for (let i = 0; i < 25; i++) {
-          calls.push(ctx.hooks.emitToAll('rl:test', { i }).then(() => { resolved++; }));
-        }
-        await Promise.all(calls);
-        ctx.registerRoute('GET', '/result', (req, res) => {
-          res.json({ resolved });
-        });
-      };
-    `);
-
-    const loadRes = await request.post(`${BASE_URL}/api/admin/plugins/load`, {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      data: JSON.stringify({ path: dir }),
-    });
-
-    if (loadRes.status() === 404 || loadRes.status() === 501) {
-      test.skip(true, 'Plugin API bu ortamda aktif değil');
-      return;
-    }
-
-    expect(loadRes.ok()).toBeTruthy();
-    loadedPlugins.push('e2e-ratelimit');
-
-    await new Promise(r => setTimeout(r, 600));
-
-    const res = await request.get(`${BASE_URL}/api/plugins/e2e-ratelimit/result`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(res.ok()).toBeTruthy();
-    const data = await res.json() as { resolved: number };
-    // Tüm 25 çağrı resolve olmalı (rate-limit düşürür ama bloke etmez)
-    expect(data.resolved).toBe(25);
-  });
-
-  // ── [6] Plugin kaldırma ────────────────────────────────────────────────────
-
-  test('plugin kaldırıldıktan sonra listede görünmez', async () => {
-    // e2e-basic yüklenmediyse bu testi de atla
-    if (!loadedPlugins.includes('e2e-basic')) {
-      test.skip(true, 'e2e-basic yüklenmedi — önceki test atlandı');
-      return;
-    }
-
-    const unloadRes = await request.post(`${BASE_URL}/api/admin/plugins/unload`, {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      data: JSON.stringify({ id: 'e2e-basic' }),
-    });
-    expect(unloadRes.ok()).toBeTruthy();
-    loadedPlugins.splice(loadedPlugins.indexOf('e2e-basic'), 1);
-
-    const listRes = await request.get(`${BASE_URL}/api/admin/plugins`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    expect(listRes.ok()).toBeTruthy();
-    const list = await listRes.json() as Array<{ id: string }>;
-    expect(list.map(p => p.id)).not.toContain('e2e-basic');
+    expect(load.status()).toBe(404);
   });
 });
