@@ -55,17 +55,15 @@ test.describe('Profil Yönetimi', () => {
       data: JSON.stringify({ displayName: newName }),
     });
 
-    // 200 veya 204
-    expect(res.status()).toBeLessThan(300);
+    expect(res.status(), await res.text()).toBe(200);
 
-    // Doğrula
+    // A failed profile read must not skip the persistence assertion.
     const meRes = await request.get(`${BASE}/api/me`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
-    if (meRes.ok()) {
-      const me = await meRes.json();
-      expect(me.displayName).toBe(newName);
-    }
+    expect(meRes.status(), await meRes.text()).toBe(200);
+    const me = await meRes.json();
+    expect(me.displayName).toBe(newName);
   });
 
   test('PATCH /api/me — boş displayName reddedilmeli', async ({ request }) => {
