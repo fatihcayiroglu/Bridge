@@ -35,11 +35,14 @@ test.describe('Link Önizleme', () => {
       { headers: { Authorization: `Bearer ${tokens.alice}` } }
     );
 
-    // 200 veya 404 (eğer example.com bloklu ise) — 500 olmamalı
-    expect(res.status()).not.toBe(500);
-    expect(res.status()).not.toBe(401);
-
-    if (res.status() === 200) {
+    // Positive OG response requires outbound internet; a failed external
+    // fetch is an exact 404, not an implicit green (or a made-up fixture).
+    expect([200, 404]).toContain(res.status());
+    if (res.status() === 404) {
+      expect(await res.json()).toEqual({ error: 'Preview not available' });
+      test.info().annotations.push({ type: 'EXTERNAL_UNVERIFIED',
+        description: 'Positive OG fetch not measured: public example.com unavailable' });
+    } else {
       const data = await res.json();
       // En azından url alanı dönmeli
       expect(data.url || data.title).toBeTruthy();
@@ -53,7 +56,12 @@ test.describe('Link Önizleme', () => {
       { headers: { Authorization: `Bearer ${tokens.alice}` } }
     );
 
-    if (res.status() === 200) {
+    expect([200, 404]).toContain(res.status());
+    if (res.status() === 404) {
+      expect(await res.json()).toEqual({ error: 'Preview not available' });
+      test.info().annotations.push({ type: 'EXTERNAL_UNVERIFIED',
+        description: 'No remote OG metadata was retrieved; field schema not positively tested' });
+    } else {
       const data = await res.json();
       // Zorunlu alanlar
       expect(typeof data.url).toBe('string');
@@ -143,14 +151,12 @@ test.describe('Link Önizleme', () => {
       data: JSON.stringify({ content: 'Bak şu siteye: https://example.com harika!' }),
     });
 
-    expect(res.status()).not.toBe(500);
-    expect(res.status()).not.toBe(401);
-
-    if (res.status() === 200) {
-      const data = await res.json();
-      expect(data).toHaveProperty('previews');
-      expect(Array.isArray(data.previews)).toBe(true);
-    }
+    // POST returns {previews: []} even when outbound URLs are unreachable.
+    expect(res.status(), await res.text()).toBe(200);
+    const data = await res.json();
+    expect(data).toHaveProperty('previews');
+    expect(Array.isArray(data.previews)).toBe(true);
+    expect(data.previews.length).toBeLessThanOrEqual(1);
   });
 
   test('POST: URL içermeyen metin — boş dizi döndürmeli', async ({ request }) => {
@@ -180,11 +186,12 @@ test.describe('Link Önizleme', () => {
       data: JSON.stringify({ content: manyUrls }),
     });
 
-    if (res.status() === 200) {
-      const data = await res.json();
-      // En fazla 3 önizleme
-      expect(data.previews.length).toBeLessThanOrEqual(3);
-    }
+    // Only the count is an offline-safe E2E contract. Remote OG positive
+    // responses remain explicitly external; absence is never a skipped assert.
+    expect(res.status(), await res.text()).toBe(200);
+    const data = await res.json();
+    expect(Array.isArray(data.previews)).toBe(true);
+    expect(data.previews.length).toBeLessThanOrEqual(3);
   });
 
   // ── 6. Cache davranışı ────────────────────────────────────
@@ -197,7 +204,16 @@ test.describe('Link Önizleme', () => {
     const res1 = await request.get(url, { headers });
     const dur1 = Date.now() - t1;
 
-    if (res1.status() !== 200) return; // önizleme dönmediyse cache testi skip
+    if (res1.status() === 404) {
+      expect(await res1.json()).toEqual({ error: 'Preview not available' });
+      const res2 = await request.get(url, { headers });
+      expect(res2.status(), await res2.text()).toBe(404);
+      expect(await res2.json()).toEqual({ error: 'Preview not available' });
+      test.info().annotations.push({ type: 'EXTERNAL_CACHE_UNVERIFIED',
+        description: 'No positive preview to measure cache speed; checked consistent 404 responses' });
+      return;
+    }
+    expect(res1.status(), await res1.text()).toBe(200);
 
     const t2 = Date.now();
     const res2 = await request.get(url, { headers });
