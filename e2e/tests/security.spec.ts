@@ -202,20 +202,40 @@ test.describe('SVG Upload Sanitizasyonu', () => {
 // ══════════════════════════════════════════════════════════════
 test.describe('SVG Statik Servis Güvenliği', () => {
 
-  test('mevcut bir SVG dosyası için güvenlik header kontrolü', async ({ request }) => {
-    // Test SVG'yi doğrudan upload etmeden, /uploads route'unun header ayarını kontrol et
-    // Burada HEAD isteği atarak header'ları incele (dosya yoksa 404 kabul edilir)
-    const res = await request.head(`${BASE_URL}/uploads/nonexistent.svg`);
+  test('gerçek SVG yanıtı nosniff ve sandbox CSP taşır; anonim istek reddedilir', async ({ request }) => {
+    const { token } = await registerAndGetToken(request, 'svgheaders');
+    const safeSvg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>',
+    );
+    const upload = await request.post(`${BASE_URL}/api/upload`, {
+      headers: { Authorization: `Bearer ${token}` },
+      multipart: {
+        file: { name: 'header-control.svg', mimeType: 'image/svg+xml', buffer: safeSvg },
+      },
+    });
+    expect(upload.status(), await upload.text()).toBe(200);
+    const { url } = await upload.json() as { url?: string };
+    expect(url).toMatch(/^\/uploads\/[A-Za-z0-9._-]+\.svg$/);
 
-    // SERTLEŞTİRME SONRASI SÖZLEŞME: /uploads/* uploadAuthz ile korunur ve
-    // KİMLİKSİZ istek 401 döner — dosyanın var olup olmadığı SIZDIRILMAZ.
-    // Eski spec 200/404 bekliyordu; bu, yetkilendirme eklenmeden önceki
-    // davranıştı. 401 daha güçlü ve doğru olandır.
-    expect([401, 403]).toContain(res.status());
+    // Verify headers on a REAL uploaded SVG, not a nonexistent path.
+    const served = await request.get(`${BASE_URL}${url}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(served.status(), await served.text()).toBe(200);
+    expect(served.headers()['content-type']).toContain('image/svg+xml');
+    expect(served.headers()['x-content-type-options']).toBe('nosniff');
+    const csp = served.headers()['content-security-policy'] || '';
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain('sandbox');
 
-    // Servis edilen içerik için nosniff her durumda korunur.
-    const xcto = res.headers()['x-content-type-options'] || '';
-    if (res.status() === 200) expect(xcto.toLowerCase()).toContain('nosniff');
+    // Use an explicitly clean request context; the shared fixture may carry cookies.
+    const anonymous = await pwRequest.newContext({ storageState: { cookies: [], origins: [] } });
+    try {
+      const denied = await anonymous.get(`${BASE_URL}${url}`);
+      expect(denied.status(), await denied.text()).toBe(401);
+    } finally {
+      await anonymous.dispose();
+    }
   });
 });
 
