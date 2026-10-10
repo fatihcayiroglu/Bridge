@@ -296,6 +296,10 @@ jobs:
             --results server/jest-results.json \
             --coverage server/coverage/coverage-summary.json \
             --test-dir server/tests --test-glob '.test.ts'
+      # A run that skipped tests is not a pass: a suite that falls back to
+      # describe.skip (missing env, service or build step) fails the job here.
+      - name: Server suite skipped nothing
+        run: node scripts/require-no-skipped-tests.js server/jest-results.json --label "server Jest"
       # Guvenlik gerileme korpusu ADLI bir kapi olarak kosar. Tam paketin
       # icinde yer alsa da, ayri kosmasi hangi sinifin dustugunu aninda
       # gorunur kilar.
@@ -341,8 +345,12 @@ jobs:
         run: cd electron && npm test -- --runInBand --forceExit
       - name: Build client bundle for packaged mobile shell tests
         run: npm run build:ci
-      - name: Run mobile bridge and packaged shell tests (no zero-test pass)
-        run: npx jest --config jest.mobile.config.js --runInBand --forceExit
+      # Without the client bundle the packaged-shell suites fall back to
+      # describe.skip and Jest still exits 0 (measured: 105 passed / 22 skipped).
+      - name: Run mobile bridge and packaged shell tests (no zero-test pass, no skips)
+        run: |
+          npx jest --config jest.mobile.config.js --runInBand --forceExit --json --outputFile=mobile-jest-results.json
+          node scripts/require-no-skipped-tests.js mobile-jest-results.json --label "mobile bridge + packaged shell"
       # ══════════════════════════════════════════════════════════════════
       # GERCEK PostgreSQL KAPILARI
       # ══════════════════════════════════════════════════════════════════
@@ -438,8 +446,11 @@ jobs:
           }));
           console.log('S3 test buckets provisioned: bridge-public (anonymous read), bridge-private (private)');
           NODE
+      # test:pg fails closed without PG_TEST_URL; the Redis and S3 suites fall
+      # back to describe.skip without REDIS_TEST_URL / MINIO_TEST_ENDPOINT, so the
+      # result is checked for skips as well.
       - name: Real PostgreSQL/Redis/MinIO integration suite
-        run: cd server && npm run test:pg
+        run: cd server && npm run test:pg -- --json --outputFile=pg-jest-results.json && node ../scripts/require-no-skipped-tests.js pg-jest-results.json --label "real PostgreSQL/Redis/S3"
         env:
           PG_TEST_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
           REDIS_TEST_URL: redis://localhost:6379
@@ -603,6 +614,9 @@ jobs:
           if [ ${#run[@]} -eq 0 ]; then echo "No changed spec belongs to the chromium project."; exit 0; fi
           printf 'Running changed specs:\n'; printf '  %s\n' "${run[@]}"
           npx playwright test "${run[@]}" --project=chromium --retries=0 --reporter=list
+      # Asserting UX-6 + applied theme tests: never count capture-only probes as pass.
+      - name: Verify visual UX-6 rhythm and applied themes (asserting tests)
+        run: cd e2e && npx playwright test tests/visual-review.spec.ts --project=visual --grep 'UX-6 ÖLÇÜM|TEMA KARŞILAŞTIRMASI' --retries=0 --reporter=list
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v7
@@ -620,7 +634,7 @@ jobs:
     name: E2E full + media (nightly / test-integrity remediation)
     # Explicitly exercise the complete browser matrix on the cleanup PR itself.
     # Other PRs keep the normal nightly/manual schedule.
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (github.head_ref == 'p7/test-integrity-cleanup' || github.head_ref == 'test-integrity/integrated-audit' || github.head_ref == 'test-integrity/minio-cursor-evidence')) }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (github.head_ref == 'p7/test-integrity-cleanup' || github.head_ref == 'test-integrity/integrated-audit' || github.head_ref == 'test-integrity/minio-cursor-evidence' || github.head_ref == 'test-integrity/audit-integration-20261010' || github.head_ref == 'test-integrity/full-audit-final-candidate-20261010' || github.head_ref == 'test-integrity/full-audit-toast-20261010')) }}
     runs-on: ubuntu-latest
     needs: [tests]
     env:

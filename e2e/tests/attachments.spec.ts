@@ -198,7 +198,7 @@ test.describe('Ekler — yükleme, gönderim, görüntüleme, yetkilendirme', ()
         },
       },
     });
-    expect(res.status(), 'exe yüklemesi kabul edildi').toBeGreaterThanOrEqual(400);
+    expect(res.status(), `exe yüklemesi: ${await res.text()}`).toBe(400);
   });
 
   test('sahtecilik — kayıtlı olmayan bir fileUrl ile file:send mesaj oluşturmaz', async ({ request }) => {

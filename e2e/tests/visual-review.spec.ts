@@ -25,7 +25,7 @@
 
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
 import { createTestServer, createTestChannel, getTokens, joinServer } from '../helpers/bridge';
-import { openSocket, waitForEvent } from '../helpers/socket';
+import { openSocket, waitForEvent, paceSends } from '../helpers/socket';
 import fs from 'fs';
 import path from 'path';
 
@@ -69,11 +69,16 @@ async function seedConversation(): Promise<void> {
   const bob = await openSocket(t.bob);
 
   const send = async (sock: typeof alice, content: string, extra: Record<string, unknown> = {}) => {
+    // Fail closed: a blocked, rate-limited or missing fixture message is not visual evidence.
+    await paceSends(sock === alice ? 'alice' : 'bob');
     const ackId = `vis-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const ack = waitForEvent<{ ackId: string; messageId: string }>(sock, 'message:ack', 15_000);
+    const ack = waitForEvent<{ ackId: string; messageId: string }>(
+      sock, 'message:ack', 15_000, (event) => event.ackId === ackId,
+    );
     sock.emit('message:send', { channelId: textChannelId, serverId, content, ackId, ...extra });
-    const got = await ack.catch(() => null);
-    return got?.messageId ?? '';
+    const got = await ack;
+    if (!got.messageId) throw new Error(`Visual fixture send returned no messageId for ${ackId}`);
+    return got.messageId;
   };
 
   try {
@@ -135,7 +140,7 @@ test.beforeAll(async ({ request }) => {
 
   const srv = await createTestServer(request, t.alice, `Görsel İnceleme ${Date.now()}`);
   serverId = String((srv as { _id?: string })?._id ?? '');
-  if (!serverId) return;
+  if (!serverId) throw new Error('Visual fixture: test server was not created');
 
   textChannel = 'genel';
   const ch = await createTestChannel(request, t.alice, serverId, textChannel, 'text');
@@ -146,8 +151,11 @@ test.beforeAll(async ({ request }) => {
   voiceChannel = 'sohbet-odası';
   await createTestChannel(request, t.alice, serverId, voiceChannel, 'voice');
 
-  await joinServer(request, t.alice, t.bob, serverId).catch(() => false);
-  if (textChannelId) await seedConversation();
+  if (!textChannelId) throw new Error('Visual fixture: text channel was not created');
+  if (!await joinServer(request, t.alice, t.bob, serverId)) {
+    throw new Error('Visual fixture: Bob failed to join the test server');
+  }
+  await seedConversation();
 });
 
 async function openShell(page: Page, locale = 'tr'): Promise<void> {

@@ -373,45 +373,49 @@ test.describe('a11y — gerçek kullanıcı akışları', () => {
 
   // ── Bildirimler ───────────────────────────────────────────────────────────────
 
-  test('Bildirim alanı — role="status" veya aria-live', async ({ page }) => {
-    // Toast/snackbar container'ı bul
-    const toastContainer = page.locator(
-      '#toast-container, [role="status"], [role="alert"], [aria-live], .toast-container',
+  test('Bildirim alanı — gerçek hata toastı role="alert" ve aria-live="assertive" taşır', async ({ page }) => {
+    // Ctrl+K hiçbir toast üretmiyordu: eskiden if (toast.visible) gövdesindeki
+    // tek assertion hiç çalışmadan test geçiyordu. Gerçek ürün doğrulamasını
+    // tetikle: sunucu emoji yükleme sınırı 256 KiB, güvenlik politikası değişmez.
+    const gear = page.locator(
+      '[aria-label*="Sunucu Ayarları" i], [aria-label*="Server Settings" i], [data-testid="server-settings-btn"]',
     ).first();
-
-    // Bir aksiyonla toast tetikle (geçersiz arama)
-    await page.keyboard.press('Control+k');
-    await page.waitForTimeout(200);
-    await page.keyboard.type('!invalid!');
-    await page.waitForTimeout(500);
-
-    // Toast yoksa sadece container var mı diye bak
-    if (await toastContainer.isVisible({ timeout: 1000 }).catch(() => false)) {
-      const role = await toastContainer.getAttribute('role');
-      const ariaLive = await toastContainer.getAttribute('aria-live');
-      expect(role === 'status' || role === 'alert' || ariaLive !== null).toBeTruthy();
-    }
+    await expect(gear, 'sunucu ayarları düğmesi bulunamadı').toBeVisible({ timeout: 10_000 });
+    await gear.click();
+    const dialog = page.locator('#server-settings-modal[role="dialog"]');
+    await expect(dialog, 'sunucu ayarları diyaloğu açılmalı').toBeVisible();
+    await dialog.locator('[data-tab="emoji"]').click();
+    const fileInput = dialog.locator('.emoji-tab input[type="file"]');
+    await expect(fileInput, 'emoji yükleme girdisi bulunmalı').toHaveCount(1);
+    await fileInput.setInputFiles({
+      name: 'oversized.png',
+      mimeType: 'image/png',
+      buffer: Buffer.alloc(256 * 1024 + 1, 0x41),
+    });
+    // Gerçek ApiErrorToast hostunun eksikliği veya ARIA kusuru artık FAIL.
+    // Test DOM'a toast enjekte etmez, üretim limitini ve API davranışını değiştirmez.
+    const toast = page.locator('#toast-container .toast[data-toast-type="error"]');
+    await expect(toast, 'büyük emoji yüklemesi kullanıcıya hata göstermeli').toBeVisible();
+    await expect(toast).toContainText('Max 256KB!');
+    await expect(toast).toHaveAttribute('role', 'alert');
+    await expect(toast).toHaveAttribute('aria-live', 'assertive');
+    await noA11yViolations(page, 'Hata bildirimi', '#toast-container .toast[role="alert"]');
   });
 
   // ── Yüksek kontrast ───────────────────────────────────────────────────────────
 
   test('Yüksek kontrast modu — kritik UI elementleri görünür', async ({ page }) => {
-    // prefers-contrast: more simüle et
+    // Zorunlu renkler (Windows yüksek kontrast) emüle edilir. Eskiden ardından sayfa
+    // yeniden yükleniyordu: beforeEach'in açtığı kanal kayboluyor, kontroller görünmüyor
+    // ve tek assertion `if (isVisible)` içinde kaldığı için test HİÇBİR ŞEY ölçmeden
+    // geçiyordu. Medya emülasyonu yeniden yükleme olmadan uygulanır.
     await page.emulateMedia({ forcedColors: 'active' });
-    await page.reload({ waitUntil: 'domcontentloaded' });
+    expect(await page.evaluate(() => matchMedia('(forced-colors: active)').matches)).toBe(true);
 
-    // Temel kontroller hâlâ görünür mü?
-    const criticalSelectors = [
-      '[data-testid="message-input"], [aria-label*="mesaj" i], textarea',
-      '[data-testid="send-btn"], button[type="submit"]',
-    ];
-    for (const sel of criticalSelectors) {
-      const el = page.locator(sel).first();
-      if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
-        // Görünürlük yeterli — kontrast doğrulaması için ayrı audit
-        await expect(el).toBeVisible();
-      }
-    }
+    // Kontrast oranının kendisi ayrı bir audit'tir; burada ölçülen, kritik kontrollerin
+    // zorunlu renk kipinde görünür kalmasıdır.
+    await expect(page.locator('#msg-input')).toBeVisible();
+    await expect(page.locator('button[data-bridge-action="sendMessage"]')).toBeVisible();
 
     await page.emulateMedia({ forcedColors: 'none' });
   });
