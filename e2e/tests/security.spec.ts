@@ -9,7 +9,7 @@
 //   5. SVG static serving güvenlik header'ları
 //   6. Upload MIME validation (client + server)
 
-import { test, expect } from '../helpers/apiTest';
+import { test, expect, request as pwRequest } from '../helpers/apiTest';
 import { getTokens } from '../helpers/bridge';
 const path = require('path');
 const fs   = require('fs');
@@ -34,6 +34,21 @@ test.use({ storageState: undefined });
  * login ile yeniden kullanir. Guvenlik testleri icin gereken "ayri kimlik"
  * ozelligi korunur, kota tuketilmez.
  */
+// Well-formed 1×1 RGBA PNG (every chunk CRC valid). Uploads are parsed, so a
+// magic-byte prefix with bad CRCs is a corrupt file, not a "valid PNG".
+const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+
+/** Value of the `bridge_refresh` cookie a response sets, or '' if none. */
+function refreshCookieOf(res: { headersArray(): { name: string; value: string }[] }): string {
+  for (const h of res.headersArray()) {
+    if (h.name.toLowerCase() !== 'set-cookie') continue;
+    const m = /^bridge_refresh=([^;]*)/.exec(h.value);
+    if (m && m[1]) return m[1];
+  }
+  return '';
+}
+
 async function registerAndGetToken(request, suffix = '') {
   // TEK etiket: her cagri AYNI kararli kimligi kullanir. Dokuz ayri etiket
   // dokuz hesap demekti ve kota 3/saat.
@@ -156,9 +171,10 @@ test.describe('SVG Upload Sanitizasyonu', () => {
       },
     });
 
-    // Yükleme başarılı olabilir ya da 415 (SVG izin verilmiyorsa)
-    // Önemli olan 500 olmaması
-    expect(res.status()).not.toBe(500);
+    // Betik/olay/`javascript:` içermeyen SVG kabul edilir. Eskiden yalnız "500 değil"
+    // deniyordu: 400/415/422/429 de geçerdi, yani temiz SVG'nin REDDİ yeşil görünürdü.
+    expect(res.status(), await res.text()).toBe(200);
+    expect((await res.json() as { url?: string }).url).toMatch(/^\/uploads\/[A-Za-z0-9._-]+$/);
   });
 
   test('javascript: URI içeren SVG reddedilmeli', async ({ request }) => {
@@ -301,14 +317,40 @@ test.describe('Token Family Invalidation', () => {
       data: JSON.stringify({ username, password: u.password }),
     });
     expect(loginRes.ok()).toBe(true);
+    const original = refreshCookieOf(loginRes);
+    expect(original, 'login set no bridge_refresh cookie').toBeTruthy();
 
-    // İlk refresh — başarılı
+    // Birinci kullanım: 200, yeni erişim jetonu ve DÖNDÜRÜLMÜŞ refresh çerezi.
+    // Eskiden yalnız "500 değil" deniyordu; ikinci kullanım hiç denenmiyordu.
     const refresh1 = await request.post(`${BASE_URL}/api/refresh`, {
       headers: { 'Content-Type': 'application/json' },
       data: JSON.stringify({}),
     });
-    // 200 veya 400 (cookie yoksa) — 500 olmamalı
-    expect(refresh1.status()).not.toBe(500);
+    expect(refresh1.status(), await refresh1.text()).toBe(200);
+    expect(typeof (await refresh1.json() as { token?: unknown }).token).toBe('string');
+    const rotated = refreshCookieOf(refresh1);
+    expect(rotated, 'refresh set no new bridge_refresh cookie').toBeTruthy();
+    expect(rotated).not.toBe(original);
+
+    // İkinci kullanım (eski jeton, çerezsiz bir istemciden): yeniden kullanım
+    // olarak reddedilir ve AİLE iptal edilir — döndürülmüş jeton da artık geçmez.
+    // (Yalnız bu girişin ailesi silinir; tokenVersion değişmez, fikstür oturumu etkilenmez.)
+    const anon = await pwRequest.newContext({ storageState: { cookies: [], origins: [] } });
+    try {
+      const replay = await anon.post(`${BASE_URL}/api/refresh`, {
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ refreshToken: original }),
+      });
+      expect(replay.status(), await replay.text()).toBe(401);
+      expect(await replay.json()).toMatchObject({ reason: 'reuse' });
+      const afterRevoke = await anon.post(`${BASE_URL}/api/refresh`, {
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ refreshToken: rotated }),
+      });
+      expect(afterRevoke.status(), await afterRevoke.text()).toBe(401);
+    } finally {
+      await anon.dispose();
+    }
   });
 
   test("logout sonrası /api/refresh çalışmamalı", async ({ request }) => {
@@ -367,12 +409,9 @@ test.describe('Upload MIME ve Boyut Validasyonu', () => {
   test('geçerli PNG yüklenebilmeli', async ({ request }) => {
     const { token } = await registerAndGetToken(request, 'png1');
 
-    // Minimal valid PNG (1x1 pixel)
-    const pngBuffer = Buffer.from(
-      '89504e470d0a1a0a0000000d49484452000000010000000108020000009001' +
-      '2e00000000c49444154789c6260f8cf0000000200014ea821580000000049454e44ae426082',
-      'hex'
-    );
+    // Eskiden "minimal valid PNG" denen bayt dizisi bozuktu (IHDR CRC'si yanlış) ve
+    // test 422 dahil her şeyi kabul ediyordu. Artık gerçekten geçerli bir PNG.
+    const pngBuffer = TINY_PNG;
 
     const res = await request.post(`${BASE_URL}/api/upload`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -381,10 +420,8 @@ test.describe('Upload MIME ve Boyut Validasyonu', () => {
       },
     });
 
-    // 200 veya 422 (magic bytes mismatch yukarıdaki minimal PNG için)
-    // 500 olmadığı sürece pipeline çalışıyor
-    expect(res.status()).not.toBe(500);
-    expect(res.status()).not.toBe(401);
+    expect(res.status(), await res.text()).toBe(200);
+    expect((await res.json() as { url?: string }).url).toMatch(/^\/uploads\/[A-Za-z0-9._-]+$/);
   });
 
   test('shell script yükleme reddedilmeli', async ({ request }) => {
@@ -488,9 +525,10 @@ test.describe('CSRF Koruması', () => {
       data: JSON.stringify({ name: 'CSRFValidServer' }),
     });
 
-    // 403 olmamalı — CSRF geçti (400/409 başka validasyon hatası olabilir, kabul edilir)
-    expect(res.status()).not.toBe(403);
-    expect(res.status()).not.toBe(500);
+    // Geçerli CSRF ile yazma BAŞARILIR: sunucu oluşturulur. Eskiden "403/500 değil"
+    // deniyordu; 400/409/429 de geçerdi, yani istek hiç işlenmese bile yeşildi.
+    expect(res.status(), await res.text()).toBe(200);
+    expect(await res.json()).toMatchObject({ name: 'CSRFValidServer' });
   });
 
   test('aynı CSRF token ikinci istekte hâlâ geçerli olmalı (stateless mod)', async ({ request }) => {
@@ -514,8 +552,10 @@ test.describe('CSRF Koruması', () => {
     const res1 = await makeReq();
     const res2 = await makeReq();
 
-    expect(res1.status()).not.toBe(403);
-    expect(res2.status()).not.toBe(403);
+    // Aynı token iki yazmada da geçer: iki sunucu oluşturulur. Eskiden "403 değil"
+    // deniyordu; 400/429/500 de geçerdi.
+    expect(res1.status(), await res1.text()).toBe(200);
+    expect(res2.status(), await res2.text()).toBe(200);
   });
 
   test('Authorization: Bot scheme ile CSRF kontrolü atlanmalı (API client exempt)', async ({ request }) => {
