@@ -616,6 +616,7 @@ jobs:
           npx playwright test "${run[@]}" --project=chromium --retries=0 --reporter=list
       # Asserting UX-6 + applied theme tests: never count capture-only probes as pass.
       - name: Verify visual UX-6 rhythm and applied themes (asserting tests)
+        if: ${{ !cancelled() }}
         run: cd e2e && npx playwright test tests/visual-review.spec.ts --project=visual --grep 'UX-6 ÖLÇÜM|TEMA KARŞILAŞTIRMASI' --retries=0 --reporter=list
       - name: Upload artifacts
         if: always()
@@ -707,6 +708,7 @@ jobs:
       # The MINIO_* env names below select Bridge's generic S3-compatible
       # adapter; this proves the S3 contract, NOT MinIO-vendor-specific behavior.
       - name: Start isolated S3-compatible RustFS
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           IMAGE=rustfs/rustfs:1.0.0-rc.6
@@ -723,6 +725,7 @@ jobs:
           docker logs bridge-ci-s3
           exit 1
       - name: Provision real S3 public/private buckets
+        if: ${{ !cancelled() }}
         env:
           MINIO_ENDPOINT: http://127.0.0.1:9000
           MINIO_ACCESS_KEY: bridgereview
@@ -731,6 +734,7 @@ jobs:
           PRIVATE_MINIO_BUCKET: bridge-private
         run: node scripts/ci-provision-minio.mjs
       - name: Real S3 protected upload E2E (zero retries)
+        if: ${{ !cancelled() }}
         env:
           WEBP_CONVERT: 'false'
           CDN_PROVIDER: minio
