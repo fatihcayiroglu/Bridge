@@ -64,16 +64,15 @@ test.describe('Settings Modal — Svelte', () => {
       },
       data: JSON.stringify({ displayName: newDisplayName }),
     });
-    expect(res.status()).toBeLessThan(400);
+    expect(res.status(), await res.text()).toBe(200);
 
     const profile = await request.get(`${BASE_URL}/api/me`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
+    expect(profile.status(), await profile.text()).toBe(200);
     const data = await profile.json() as { displayName?: string };
-    // displayName güncellendi (veya endpoint displayName desteklemiyorsa 200 yeterli)
-    if (data.displayName !== undefined) {
-      expect(data.displayName).toBe(newDisplayName);
-    }
+    // Persisted profile data is mandatory for a passing update test.
+    expect(data.displayName).toBe(newDisplayName);
   });
 
   test('API: display name boş bırakılamaz', async ({ request }) => {
