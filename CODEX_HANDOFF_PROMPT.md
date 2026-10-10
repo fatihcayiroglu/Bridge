@@ -4,6 +4,16 @@ Continue the security audit of `fatihcayiroglu/Bridge` from remote branch `hando
 
 ## Source and integrity
 
+Reproduction artifact commit: `494932a062653ca8bc1b208c27be772237689d07`. Fetch the handoff branch and create your own checkout pinned to that commit; the branch's later documentation commit only adds this immutable pointer:
+
+```sh
+git fetch origin refs/heads/handoff/security-audit-20261010
+git worktree add -b codex/security-audit-continuation /workspace/Bridge-codex-handoff 494932a062653ca8bc1b208c27be772237689d07
+cd /workspace/Bridge-codex-handoff
+```
+
+If the branch/path already exists, inspect it and choose a new unused name; never overwrite it.
+
 Preserve these five existing audit commits:
 
 - `161aa969e4354c512e4dd4ec4ff18046b1a914fa`

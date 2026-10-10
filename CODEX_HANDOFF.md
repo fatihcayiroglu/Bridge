@@ -4,6 +4,8 @@ Repository: `fatihcayiroglu/Bridge`. Remote handoff branch: `handoff/security-au
 
 ## Pinned source and preservation
 
+Immutable reproduction artifact commit: `494932a062653ca8bc1b208c27be772237689d07`. This commit contains both handoff documents and all eight files under `handoff/security-audit/`; the following documentation-only commit pins this identifier. Final branch-tip SHA is reported in the verified handoff response.
+
 The source remains at `8e10f51b7c60bab533edad4373414002caae4a7a`. Its tree is `b26a1b1d6061e02772699a8c8eaa1fe0b9db5c21`. All five audit commits remain unchanged:
 
 1. `161aa969e4354c512e4dd4ec4ff18046b1a914fa`
