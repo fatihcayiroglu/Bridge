@@ -189,7 +189,7 @@ it('excludes system payloads from warmed and fresh digests while retaining reada
     expect(filtered.body.channelStats[0].messageCount).toBe(1);
     expect(filtered.body.channelStats[0].topMessages).toHaveLength(1);
     expect(filtered.body.channelStats[0].topMessages[0]).toMatchObject({ _id: normalId, content: normalContent });
-    expect(filtered.body.topUsers).toEqual([{ userId: dave, messageCount: 1, username: dave }]);
+    expect(filtered.body.topUsers).toEqual([{ userId: dave, messageCount: 1, username: 'Test User' }]);
     expect(JSON.stringify(filtered.body)).not.toContain(secret);
   }
 });
