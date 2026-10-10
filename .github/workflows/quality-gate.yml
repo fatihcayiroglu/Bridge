@@ -614,6 +614,9 @@ jobs:
           if [ ${#run[@]} -eq 0 ]; then echo "No changed spec belongs to the chromium project."; exit 0; fi
           printf 'Running changed specs:\n'; printf '  %s\n' "${run[@]}"
           npx playwright test "${run[@]}" --project=chromium --retries=0 --reporter=list
+      # Asserting UX-6 + applied theme tests: never count capture-only probes as pass.
+      - name: Verify visual UX-6 rhythm and applied themes (asserting tests)
+        run: cd e2e && npx playwright test tests/visual-review.spec.ts --project=visual --grep 'UX-6 ÖLÇÜM|TEMA KARŞILAŞTIRMASI' --retries=0 --reporter=list
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v7
@@ -631,7 +634,7 @@ jobs:
     name: E2E full + media (nightly / test-integrity remediation)
     # Explicitly exercise the complete browser matrix on the cleanup PR itself.
     # Other PRs keep the normal nightly/manual schedule.
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (github.head_ref == 'p7/test-integrity-cleanup' || github.head_ref == 'test-integrity/integrated-audit' || github.head_ref == 'test-integrity/minio-cursor-evidence' || github.head_ref == 'test-integrity/audit-integration-20261010')) }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (github.head_ref == 'p7/test-integrity-cleanup' || github.head_ref == 'test-integrity/integrated-audit' || github.head_ref == 'test-integrity/minio-cursor-evidence' || github.head_ref == 'test-integrity/audit-integration-20261010' || github.head_ref == 'test-integrity/full-audit-final-candidate-20261010')) }}
     runs-on: ubuntu-latest
     needs: [tests]
     env:
