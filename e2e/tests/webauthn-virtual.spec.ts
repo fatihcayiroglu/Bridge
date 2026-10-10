@@ -28,6 +28,7 @@
 import { test, expect } from '@playwright/test';
 import type { CDPSession, Page } from '@playwright/test';
 import { getTokens } from '../helpers/bridge';
+import { requestFromOwnAddress } from '../helpers/clientAddress';
 
 const PORT = process.env.E2E_PORT || '3000';
 // E2E_HOST belongs to the server BIND address (normally 127.0.0.1). It must
@@ -172,6 +173,66 @@ test.describe('passkey — sanal dogrulayici ile gercek yasam dongusu', () => {
 
     await tazeCdp.send('WebAuthn.disable').catch(() => { /* temizlik */ });
     await tazeBaglam.close();
+  });
+
+  test('geri yüklenmiş oturumda gerçek parola step-up + WebAuthn kaydı (ayrı IP bütçesi)', async ({ page }) => {
+    test.setTimeout(120_000);
+    // Gerçek tarayıcı doğrulama arayüzü, gerçek sunucu grant'i ve gerçek WebAuthn
+    // kaydı. Yalnızca POST /step-up/password isteğini kendi source loopback
+    // adresimizden iletiriz; X-Forwarded-For yok, ürün 2FA limiti 5/5dk sabit.
+    const { address, request: isolated } = requestFromOwnAddress();
+    const statuses: number[] = [];
+    await page.route('**/api/step-up/password', async route => {
+      const outgoing = route.request();
+      const response = await isolated.post(outgoing.url(), {
+        headers: outgoing.headers(),
+        data: outgoing.postData() ?? '',
+      });
+      statuses.push(response.status());
+      const headers = { ...response.headers() };
+      // HTTP hop-by-hop headers belong to the proxy transport, not the page.
+      for (const name of ['connection', 'transfer-encoding', 'content-length', 'keep-alive']) {
+        delete headers[name];
+      }
+      await route.fulfill({ status: response.status(), headers, body: await response.text() });
+    });
+
+    await page.goto(`${ORIGIN}/`);
+    const { cdp } = await sanalDogrulayiciTak(page);
+    const count = () => page.evaluate(async () => {
+      const token = localStorage.getItem('token') || localStorage.getItem('bridge_token');
+      if (!token) throw new Error('WebAuthn fixture has no bearer token');
+      const res = await fetch('/api/webauthn/credentials', {
+        headers: { Authorization: 'Bearer ' + token },
+      });
+      if (!res.ok) throw new Error('WebAuthn credential list status: ' + res.status);
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : (data.credentials ?? []);
+      if (!Array.isArray(list)) throw new Error('WebAuthn credentials response is not an array');
+      return list.length;
+    });
+
+    try {
+      const before = await count();
+      const registration = page.evaluate(async () => {
+        const w = window as unknown as { BridgeWebAuthn: { registerPasskey(n?: string): Promise<boolean> } };
+        return w.BridgeWebAuthn.registerPasskey('E2E Stepup Verified');
+      });
+      const input = page.locator('.bridge-product-dialog-input');
+      await expect(input, 'restored session must require a real credential proof').toBeVisible({ timeout: 15_000 });
+      await expect(input).toHaveAttribute('type', 'password');
+      await input.fill(getTokens().users.alice.password);
+      await page.locator('[data-product-dialog-action="confirm"]').click();
+
+      expect(await registration, 'successful isolated password proof should complete registration').toBe(true);
+      expect(statuses, 'exactly one real isolated password proof must return 200').toEqual([200]);
+      expect(await count(), 'a WebAuthn credential must be saved only after valid step-up').toBe(before + 1);
+      // Log the transport identity only, never account credentials or grants.
+      console.log('WEBAUTHN_STEPUP_ISOLATED_LOOPBACK source=' + address + ' status=200');
+    } finally {
+      await cdp.send('WebAuthn.disable').catch(() => undefined);
+      await page.unroute('**/api/step-up/password');
+    }
   });
 
   test('dogrulayici YOKKEN giris temiz basarisiz olur (arayuz asili kalmaz)', async ({ page }) => {
