@@ -159,13 +159,12 @@ test.describe('Profil Yönetimi', () => {
     // kaybolmasını görünmez yapardı.
     expect(res.status()).toBe(200);
 
-    if (res.status() === 200) {
-      const profile = await res.json();
-      expect(profile.username).toBe(tokens.users.bob.username);
-      // Şifre hash'i asla dönmemeli
-      expect(profile.passwordHash).toBeUndefined();
-      expect(profile.password).toBeUndefined();
-    }
+    // The exact 200 response is already required; verify the body unconditionally.
+    const profile = await res.json();
+    expect(profile.username).toBe(tokens.users.bob.username);
+    // Şifre hash'i asla dönmemeli
+    expect(profile.passwordHash).toBeUndefined();
+    expect(profile.password).toBeUndefined();
   });
 
   // ── 6. Avatar upload ──────────────────────────────────────
