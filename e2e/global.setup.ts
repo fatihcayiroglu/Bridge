@@ -5,9 +5,9 @@
 import { chromium, expect, request as pwRequest } from '@playwright/test';
 import { pruneOwnedServers, userIdOf } from './helpers/prune-fixtures';
 import { rememberCredentials, stepUpGrant } from './helpers/stepUp';
+import { totpCode } from './helpers/totp';
 import path from 'path';
 import fs from 'fs';
-import crypto from 'crypto';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 const FIXTURES_DIR = path.join(__dirname, 'fixtures');
@@ -356,35 +356,13 @@ async function ensureAdminUser(fetch, cachedAdmin): Promise<string | null> {
 // pahaliya mal olabilecek bir bosluktu.
 //
 // TOTP kodu URUNUN kendi algoritmasiyla uretilir (routes/twoFactor.ts):
-// base32 secret + HMAC-SHA1 + 30 sn adim + 6 hane. Yeni bagimlilik EKLENMEZ.
-function base32Decode(str: string): Buffer {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  let bits = 0, value = 0;
-  const out: number[] = [];
-  for (const ch of str.replace(/=+$/, '').toUpperCase()) {
-    const idx = alphabet.indexOf(ch);
-    if (idx === -1) continue;
-    value = (value << 5) | idx; bits += 5;
-    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
-  }
-  return Buffer.from(out);
-}
-
-function totpCode(secret: string): string {
-  const key = base32Decode(secret);
-  const buf = Buffer.alloc(8);
-  let c = BigInt(Math.floor(Date.now() / 1000 / 30));
-  for (let i = 7; i >= 0; i--) { buf[i] = Number(c & 0xffn); c >>= 8n; }
-  const hmac = crypto.createHmac('sha1', key).update(buf).digest();
-  const offset = hmac[hmac.length - 1] & 0x0f;
-  const code = ((hmac[offset] & 0x7f) << 24) | (hmac[offset + 1] << 16)
-             | (hmac[offset + 2] << 8) | hmac[offset + 3];
-  return String(code % 1_000_000).padStart(6, '0');
-}
+// base32 secret + HMAC-SHA1 + 30 sn adim + 6 hane (helpers/totp.ts; 2fa.spec
+// ayni kodu kullanir). Yeni bagimlilik EKLENMEZ.
 
 /**
  * 2FA acik bir kullanici saglar. Basarisiz olursa `null` doner ve ilgili test
- * DURUSTCE atlanir — sahte bir gecis uretmez.
+ * (2fa.spec) bu nedeni gostererek BASARISIZ olur — ne sahte bir gecis ne de
+ * sessiz bir atlama uretir.
  */
 async function ensureTwoFactorUser(fetch, cachedTwoFactor): Promise<{ username: string; password: string } | null> {
   const username = `e2e_2fa_${RUN_ID}`;
