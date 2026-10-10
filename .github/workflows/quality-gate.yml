@@ -603,6 +603,10 @@ jobs:
           if [ ${#run[@]} -eq 0 ]; then echo "No changed spec belongs to the chromium project."; exit 0; fi
           printf 'Running changed specs:\n'; printf '  %s\n' "${run[@]}"
           npx playwright test "${run[@]}" --project=chromium --retries=0 --reporter=list
+      # Previously no CI job ran the visual project's actual UX-6 and theme
+      # assertions. Overlay-family and perf-probe remain unasserted capture tools.
+      - name: Verify visual UX-6 rhythm and applied themes (asserting tests)
+        run: cd e2e && npx playwright test tests/visual-review.spec.ts --project=visual --grep 'UX-6 ÖLÇÜM|TEMA KARŞILAŞTIRMASI' --retries=0 --reporter=list
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v7
