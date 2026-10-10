@@ -48,6 +48,9 @@ function search(id: string) {
 function digest(id: string) {
   return request(app).get(`/api/semantic/digest/${serverId}`).set('Authorization', `Bearer ${tokens.get(id)}`);
 }
+function engagement(id: string) {
+  return request(app).get(`/api/semantic/engagement/${serverId}`).set('Authorization', `Bearer ${tokens.get(id)}`);
+}
 
 it('proves Alice can read and Bob cannot before testing restricted Carol', async () => {
   const positive = await search(alice);
@@ -83,6 +86,36 @@ it('applies the same READ_HISTORY boundary to the weekly digest', async () => {
   expect(denied.body.channelStats).toEqual([]);
   expect(denied.body.totalMessages).toBe(0);
   expect(JSON.stringify(denied.body)).not.toContain(secret);
+});
+
+it('excludes unreadable history from engagement totals, participants and peak hours', async () => {
+  const activityAt = new Date(Date.now() - 86400000);
+  activityAt.setHours(12, 0, 0, 0);
+  await db.messages.update({ _id: messageId }, { $set: { createdAt: activityAt.getTime() } });
+  const permissions = await resolvePermissions(carol, serverId, channelId);
+  expect(hasPermission(permissions, PERMS.VIEW_CHANNELS)).toBe(true);
+  expect(hasPermission(permissions, PERMS.READ_HISTORY)).toBe(false);
+
+  const authorizedPeriods = [7, 14, 30].map(days => ({
+    days, messages: 1, activeUsers: 1, totalMembers: 3, engagementPct: 33,
+  }));
+  const allowed = await engagement(dave);
+  expect(allowed.status).toBe(200);
+  expect(allowed.body.periods).toEqual(authorizedPeriods);
+  expect(allowed.body.peakHour).toBe(12);
+
+  const denied = await engagement(carol);
+  expect(denied.status).toBe(200);
+  expect(denied.body.periods).toEqual([7, 14, 30].map(days => ({
+    days, messages: 0, activeUsers: 0, totalMembers: 3, engagementPct: 0,
+  })));
+  expect(denied.body.peakHour).toBe(0);
+  expect(denied.body.trend).toEqual({ pct: 0, direction: 'stable' });
+
+  const owner = await engagement(alice);
+  expect(owner.status).toBe(200);
+  expect(owner.body.periods).toEqual(authorizedPeriods);
+  expect(owner.body.peakHour).toBe(12);
 });
 
 it('does not let a moderator privilege imply read-history permission; an administrator is an explicit positive control', async () => {
@@ -128,7 +161,7 @@ it('does not retain deleted text in either a fresh or a warmed digest', async ()
   }
 });
 
-it('does not publish encrypted or system message payloads through digest topMessages', async () => {
+it('does not publish encrypted message payloads through digest topMessages', async () => {
   const positive = await digest(alice);
   expect(positive.body.channelStats[0].topMessages[0].content).toBe(secret);
   await db.messages.update({ _id: messageId }, { $set: { content: '🔒e2e:synthetic-ciphertext' } });
@@ -138,7 +171,30 @@ it('does not publish encrypted or system message payloads through digest topMess
   expect(JSON.stringify(encrypted.body)).not.toContain('synthetic-ciphertext');
 });
 
-it('does not preserve an AI explanation containing revoked or edited content in cached search responses', async () => {
+it('excludes system payloads from warmed and fresh digests while retaining readable normal messages', async () => {
+  const normalId = randomUUID();
+  const normalContent = 'Readable normal message positive control';
+  await db.messages.insert({ _id: normalId, serverId, channelId, userId: dave, content: normalContent, type: 'normal', deletedAt: null, createdAt: Date.now(), reactions: '{"ok":["dave"]}' });
+  const positive = await digest(alice);
+  expect(positive.status).toBe(200);
+  expect(positive.body.totalMessages).toBe(2);
+  expect(positive.body.channelStats[0].topMessages.map((message: { content: string }) => message.content)).toEqual(expect.arrayContaining([secret, normalContent]));
+
+  await db.messages.update({ _id: messageId }, { $set: { type: 'system' } });
+  for (const id of [alice, dave]) {
+    const filtered = await digest(id);
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.totalMessages).toBe(1);
+    expect(filtered.body.channelStats).toHaveLength(1);
+    expect(filtered.body.channelStats[0].messageCount).toBe(1);
+    expect(filtered.body.channelStats[0].topMessages).toHaveLength(1);
+    expect(filtered.body.channelStats[0].topMessages[0]).toMatchObject({ _id: normalId, content: normalContent });
+    expect(filtered.body.topUsers).toEqual([{ userId: dave, messageCount: 1, username: dave }]);
+    expect(JSON.stringify(filtered.body)).not.toContain(secret);
+  }
+});
+
+it('does not preserve an AI explanation containing revoked content in cached search responses', async () => {
   const positive = await search(dave);
   expect(positive.status).toBe(200);
   expect(positive.body.matches[0].content).toBe(secret);
@@ -149,4 +205,31 @@ it('does not preserve an AI explanation containing revoked or edited content in 
   expect(revoked.status).toBe(200);
   expect(revoked.body.matches).toEqual([]);
   expect(JSON.stringify(revoked.body)).not.toContain(secret);
+});
+
+it('replaces old quoted explanations after a message edit while keeping current authorized matches', async () => {
+  const positive = await search(dave);
+  expect(positive.status).toBe(200);
+  expect(positive.body.matches).toHaveLength(1);
+  expect(positive.body.matches[0].content).toBe(secret);
+  const key = `sem:${dave}:${serverId}::confidentialproject:7:10:noai`;
+  await cache.set(key, { ...positive.body, provider: 'synthetic-ai-cache-fixture', explanation: secret }, 180);
+  expect(await cache.get(key)).toMatchObject({ explanation: secret });
+
+  const currentContent = 'confidentialproject revised content safe to retain';
+  await db.messages.update({ _id: messageId }, { $set: { content: currentContent } });
+  const edited = await search(dave);
+  expect(edited.status).toBe(200);
+  expect(edited.body.cached).toBe(true);
+  expect(edited.body.matches).toHaveLength(1);
+  expect(edited.body.matches[0]).toMatchObject({ _id: messageId, content: currentContent });
+  expect(typeof edited.body.explanation).toBe('string');
+  expect(edited.body.explanation.length).toBeGreaterThan(0);
+  expect(JSON.stringify(edited.body)).not.toContain(secret);
+
+  const fresh = await search(alice);
+  expect(fresh.status).toBe(200);
+  expect(fresh.body.matches).toHaveLength(1);
+  expect(fresh.body.matches[0].content).toBe(currentContent);
+  expect(JSON.stringify(fresh.body)).not.toContain(secret);
 });
