@@ -634,7 +634,7 @@ jobs:
     name: E2E full + media (nightly / test-integrity remediation)
     # Explicitly exercise the complete browser matrix on the cleanup PR itself.
     # Other PRs keep the normal nightly/manual schedule.
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (github.head_ref == 'p7/test-integrity-cleanup' || github.head_ref == 'test-integrity/integrated-audit' || github.head_ref == 'test-integrity/minio-cursor-evidence' || github.head_ref == 'test-integrity/audit-integration-20261010' || github.head_ref == 'test-integrity/full-audit-final-candidate-20261010')) }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (github.head_ref == 'p7/test-integrity-cleanup' || github.head_ref == 'test-integrity/integrated-audit' || github.head_ref == 'test-integrity/minio-cursor-evidence' || github.head_ref == 'test-integrity/audit-integration-20261010' || github.head_ref == 'test-integrity/full-audit-final-candidate-20261010' || github.head_ref == 'test-integrity/full-audit-toast-20261010')) }}
     runs-on: ubuntu-latest
     needs: [tests]
     env:
