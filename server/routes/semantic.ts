@@ -72,7 +72,8 @@ import { callAI, AI_ENABLED } from '../lib/aiProvider';
 import { serverAllowsAi } from '../lib/aiServerPolicy';
 import logger from '../lib/logger';
 import { generateEmbedding, vectorSearch, PGVECTOR_ENABLED, EMBEDDING_PROVIDER } from '../lib/pgvector';
-import { viewableChannelIds } from '../lib/permissions';
+import { readableChannelIds } from '../lib/permissions';
+import { createHash } from 'crypto';
 import { parsePositiveIntWithinBoundQuery, parsePositiveIntWithinBoundValue } from '../lib/queryNumbers';
 
 // ── KURAL TABANLI FALLBACK ──────────────────────────────────────
@@ -98,16 +99,20 @@ async function revalidateCachedSearch(userId: string, serverId: string, cached: 
   if (typeof cached !== 'object' || Array.isArray(cached)) return cached;
   const entry = cached as Record<string, unknown>;
   const matches = Array.isArray(entry.matches) ? entry.matches as Array<Record<string, unknown>> : [];
-  if (!matches.length) return cached;
+  const explanation = 'Güncel erişim izinlerine göre filtrelenmiş sonuçlar.';
+  if (!matches.length) return { ...entry, matches: [], total: 0, explanation };
   const ids = matches.map((m) => String(m._id));
   const live = await Messages.findWhere({ _id: { $in: ids }, serverId, deletedAt: null }) as Array<{ _id: unknown; channelId: unknown; content?: unknown }>;
   const byId = new Map(live.map((m) => [String(m._id), m]));
-  const viewable = await viewableChannelIds(userId, serverId, live.map((m) => String(m.channelId)));
+  const viewable = await readableChannelIds(userId, serverId, live.map((m) => String(m.channelId)));
   const kept = matches.flatMap((m) => {
     const row = byId.get(String(m._id));
     return row && viewable.has(String(row.channelId)) ? [{ ...m, content: row.content }] : [];
   });
-  return { ...entry, matches: kept, total: kept.length };
+  // The provider's explanation may quote ANY input message, including inputs
+  // that did not become a match. Revalidating matches cannot authorize that
+  // free-text artifact; never return an old explanation from the cache.
+  return { ...entry, matches: kept, total: kept.length, explanation };
 }
 
 // ── POST /api/semantic/search — Doğal dil mesaj araması ─────────
@@ -182,7 +187,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   //
   // Faz D'de `search.ts` sertlestirilmisti; ayni VERIYE giden bu ikinci yol
   // denetimsiz kalmisti. Filtre, sonuc uretiminden ONCE uygulanir.
-  const viewable = await viewableChannelIds(_u.id, String(serverId), messages.map(m => String(m.channelId)));
+  const viewable = await readableChannelIds(_u.id, String(serverId), messages.map(m => String(m.channelId)));
   messages = messages.filter(m => viewable.has(String(m.channelId)));
 
   if (!messages.length) return res.json({
@@ -340,10 +345,6 @@ router.get('/digest/:serverId', authMiddleware, async (req, res) => {
   // P6: the server's AI setting is part of the key (an AI summary written
   // before the owner turned AI off is not served after).
   const serverAi = await serverAllowsAi(serverId);
-  const cacheKey = `digest:${_u.id}:${serverId}:${days}:${serverAi ? 'ai' : 'noai'}`;
-  const cached = await cache.get(cacheKey);
-  if (cached) return res.json({ ...cached, cached: true });
-
   const since = Date.now() - (days * 24 * 60 * 60 * 1000);
 
   // Tüm kanalları getir
@@ -353,14 +354,23 @@ router.get('/digest/:serverId', authMiddleware, async (req, res) => {
   // Digest her kanal icin en cok tepki alan mesajlarin ILK 100 KARAKTERINI
   // donduruyordu; filtre olmadan bu, gorunmeyen ozel kanallarin icerigini
   // "haftalik ozet" kilifinda sizdiriyordu.
-  const digestViewable = await viewableChannelIds(
+  const digestViewable = await readableChannelIds(
     _u.id, serverId, allChannels.map((c: { _id: string }) => String(c._id)),
   );
   const channels = allChannels.filter((c: { _id: string }) => digestViewable.has(String(c._id)));
 
+  // One current, authorized snapshot feeds every aggregate, excerpt and AI
+  // prompt. Deleted/system/encrypted rows must not reappear through topMessages.
+  const allMsgsRaw = await Messages.findWhere({ serverId, createdAt: { $gt: since }, deletedAt: null, type: { $ne: 'system' } });
+  const allMsgs = allMsgsRaw.filter(m =>
+    String(m.serverId) === serverId && digestViewable.has(String(m.channelId)) &&
+    !m.deletedAt && m.type !== 'system' &&
+    !(typeof m.content === 'string' && m.content.startsWith('🔒e2e:')),
+  );
+
   // Her kanal için mesaj sayısı ve en çok reaction alanlar
   const channelStats = await Promise.all(channels.map(async ch => {
-    const returned = await Messages.findWhere({ channelId: ch._id, createdAt: { $gt: since } });
+    const returned = allMsgs;
     // Treat repository filtering as an optimization, not a privacy boundary.
     // A malformed adapter/result must never let another channel's content
     // enter this visible channel's digest statistics or top-message payload.
@@ -387,12 +397,6 @@ router.get('/digest/:serverId', authMiddleware, async (req, res) => {
   // kullanici etkinligini SIZDIRIR: bir kullanici hic "acik" kanala yazmadigi
   // halde siralamada gorunebiliyordu. Bu, gizli kanal katilimini ifsa eder.
   // P5 AI-02: the digest (and its AI prompt) never reads deleted, system or E2EE messages.
-  const allMsgsRaw = (await Messages.findWhere({ serverId, createdAt: { $gt: since }, deletedAt: null, type: { $ne: 'system' } }))
-    .filter((m: { content?: string }) => !(typeof m.content === 'string' && m.content.startsWith('🔒e2e:')));
-  const digestMsgViewable = await viewableChannelIds(
-    _u.id, serverId, allMsgsRaw.map((m: { channelId: string }) => String(m.channelId)),
-  );
-  const allMsgs = allMsgsRaw.filter((m: { channelId: string }) => digestMsgViewable.has(String(m.channelId)));
   const msgByUser: Record<string, number> = {};
   allMsgs.forEach(m => { msgByUser[m.userId] = (msgByUser[m.userId] || 0) + 1; });
   const topUsers = Object.entries(msgByUser)
@@ -405,6 +409,19 @@ router.get('/digest/:serverId', authMiddleware, async (req, res) => {
   const userMap: Record<string, string> = {};
   users.forEach(u => { userMap[u._id] = u.displayName || u.username; });
   topUsers.forEach((u: { userId: string; username?: string }) => { u.username = userMap[u.userId] || '?'; });
+
+  // Per-user keys alone do not survive revocation or deletion safely. Hash the
+  // current authorized inputs BEFORE consulting the expensive-summary cache.
+  // Legacy digest keys cannot hit this namespace; edits, deletions, channel
+  // renames and permission changes produce a different snapshot immediately.
+  const snapshot = createHash('sha256').update(JSON.stringify({
+    channels: [...channels].sort((a, b) => String(a._id).localeCompare(String(b._id))),
+    messages: [...allMsgs].sort((a, b) => String(a._id).localeCompare(String(b._id))),
+    users: userMap,
+  })).digest('hex');
+  const cacheKey = `digest:v2:${_u.id}:${serverId}:${days}:${serverAi ? 'ai' : 'noai'}:${snapshot}`;
+  const cached = await cache.get(cacheKey);
+  if (cached) return res.json({ ...cached, cached: true });
 
   // AI özet
   let aiSummary = null;
@@ -451,8 +468,8 @@ router.get('/engagement/:serverId', authMiddleware, async (req, res) => {
 
   const scores = await Promise.all(periods.map(async ({ days, since }) => {
     // FAZ G — baglilik skoru gorunmeyen kanallardan ETKILENMEZ.
-    const msgsRaw = await Messages.findWhere({ serverId, createdAt: { $gt: since } });
-    const engViewable = await viewableChannelIds(
+    const msgsRaw = await Messages.findWhere({ serverId, createdAt: { $gt: since }, deletedAt: null, type: { $ne: 'system' } });
+    const engViewable = await readableChannelIds(
       _u.id, serverId, msgsRaw.map((m: { channelId: string }) => String(m.channelId)),
     );
     const msgs = msgsRaw.filter((m: { channelId: string }) => engViewable.has(String(m.channelId)));
@@ -472,8 +489,8 @@ router.get('/engagement/:serverId', authMiddleware, async (req, res) => {
     : 0;
 
   // En aktif saatler (son 7 gün)
-  const recentMsgsRaw = await Messages.findWhere({ serverId, createdAt: { $gt: now - 7 * 86400000 } });
-  const recentViewable = await viewableChannelIds(
+  const recentMsgsRaw = await Messages.findWhere({ serverId, createdAt: { $gt: now - 7 * 86400000 }, deletedAt: null, type: { $ne: 'system' } });
+  const recentViewable = await readableChannelIds(
     _u.id, serverId, recentMsgsRaw.map((m: { channelId: string }) => String(m.channelId)),
   );
   const recentMsgs = recentMsgsRaw.filter((m: { channelId: string }) => recentViewable.has(String(m.channelId)));
