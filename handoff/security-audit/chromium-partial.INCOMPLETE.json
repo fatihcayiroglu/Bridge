@@ -1,0 +1,862 @@
+{
+  "overall_status": "INCOMPLETE",
+  "scope": "Recovered six-spec Chromium subset only; not the full browser matrix or validation of the follow-up unit-test patch",
+  "process_observation": "No Chromium, Playwright, Node or npm process was running at handoff inspection; nothing killed; no wait or new tests started",
+  "raw_report_sha256": "3155e4ee72bb7a4b63e40af3098076208262755c908d4931652da799b728c6ca",
+  "raw_log_sha256": "c71e01028356a4b913520bbd5429f1dd1b7c19c2be71e53be531e6bb5cf7922d",
+  "raw_report_local_path": "/workspace/.bridge-env/audit-playwright.json",
+  "raw_log_local_path": "/workspace/.bridge-env/audit-playwright.log",
+  "reported_stats": {
+    "startTime": "2026-10-09T19:48:54.916Z",
+    "duration": 36561.677,
+    "expected": 60,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "reported_top_level_errors": 0,
+  "recovered_exit_code": null,
+  "source_to_runtime_binding": "Not independently re-established after environment restarts; retain as saved subset evidence only",
+  "tests": [
+    {
+      "file": "attachments.spec.ts",
+      "title": "yükleme — gerçek PNG kabul edilir ve kalıcı bir URL döner",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 25
+        }
+      ]
+    },
+    {
+      "file": "attachments.spec.ts",
+      "title": "uçtan uca — yüklenen ek file:send ile gönderilir ve mesajda görünür",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 56
+        }
+      ]
+    },
+    {
+      "file": "attachments.spec.ts",
+      "title": "yetkilendirme — kimliksiz istek özel eke erişemez",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 1093
+        }
+      ]
+    },
+    {
+      "file": "attachments.spec.ts",
+      "title": "yetkilendirme — üye olmayan kullanıcı ekin TAM URL’sine erişemez",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 1073
+        }
+      ]
+    },
+    {
+      "file": "attachments.spec.ts",
+      "title": "reddetme — çalıştırılabilir dosya yüklemesi kabul edilmez",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 10
+        }
+      ]
+    },
+    {
+      "file": "attachments.spec.ts",
+      "title": "sahtecilik — kayıtlı olmayan bir fileUrl ile file:send mesaj oluşturmaz",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 2561
+        }
+      ]
+    },
+    {
+      "file": "channel-permissions.spec.ts",
+      "title": "İLK override, targetType ile birlikte yazılabilir",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 38
+        }
+      ]
+    },
+    {
+      "file": "channel-permissions.spec.ts",
+      "title": "İLK override, targetName ile birlikte yazılabilir",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 30
+        }
+      ]
+    },
+    {
+      "file": "channel-permissions.spec.ts",
+      "title": "toplu yazma (/batch) çalışır",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 32
+        }
+      ]
+    },
+    {
+      "file": "channel-permissions.spec.ts",
+      "title": "sadece allow/deny ile yazma da çalışır — ürün istemcisinin yolu",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 30
+        }
+      ]
+    },
+    {
+      "file": "channel-permissions.spec.ts",
+      "title": "VIEW_CHANNELS reddi ÜYENİN mesaj okumasını GERÇEKTEN engeller",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 76
+        }
+      ]
+    },
+    {
+      "file": "channel-permissions.spec.ts",
+      "title": "reddedilen kanalda SUNUCU SAHİBİ okumaya devam eder",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 35
+        }
+      ]
+    },
+    {
+      "file": "channel-permissions.spec.ts",
+      "title": "override SİLİNİNCE erişim geri gelir (inherit)",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 55
+        }
+      ]
+    },
+    {
+      "file": "channel-permissions.spec.ts",
+      "title": "SIRADAN ÜYE izin geçersiz kılma YAZAMAZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 23
+        }
+      ]
+    },
+    {
+      "file": "channel-permissions.spec.ts",
+      "title": "ÜYE OLMAYAN kullanıcı izin geçersiz kılma YAZAMAZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 28
+        }
+      ]
+    },
+    {
+      "file": "channel-permissions.spec.ts",
+      "title": "CSRF token OLMADAN izin yazılamaz",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 17
+        }
+      ]
+    },
+    {
+      "file": "channel-permissions.spec.ts",
+      "title": "reddedilen kanaldaki MESAJ İÇERİĞİ üyeye sızmaz",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 52
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "MODERATÖR kendine ADMINISTRATOR rolü veremez",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 14
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE rol oluşturamaz",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 10
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE OLMAYAN rol oluşturamaz",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 10
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE kendine rol ATAYAMAZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 17
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE ban ATAMAZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 11
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE OLMAYAN ban ATAMAZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 9
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "MODERATÖR sunucu SAHİBİNİ banlayamaz",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 12
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "MODERATÖR KENDİNİ banlayamaz",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 8
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE kick ATAMAZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 11
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE timeout ATAMAZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 10
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "MODERATÖR sunucu sahibine timeout VEREMEZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 10
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE sunucuyu SİLEMEZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 9
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "MODERATÖR sunucuyu SİLEMEZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 17
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE kanal OLUŞTURAMAZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 12
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE kanal SİLEMEZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 10
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE sunucu ayarlarını DEĞİŞTİREMEZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 9
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE OLMAYAN kanal mesajlarını OKUYAMAZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 8
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE OLMAYAN üye listesini GÖREMEZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 11
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE OLMAYAN denetim günlüğünü GÖREMEZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 8
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE denetim günlüğünü GÖREMEZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 8
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "SAHİP kanal oluşturabilir",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 10
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "SAHİP denetim günlüğünü görebilir",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 8
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "ÜYE kanal mesajlarını okuyabilir",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 11
+        }
+      ]
+    },
+    {
+      "file": "permission-matrix.spec.ts",
+      "title": "MODERATÖR denetim günlüğünü görebilir",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 8
+        }
+      ]
+    },
+    {
+      "file": "privacy-lifecycle.spec.ts",
+      "title": "P7 B2: export — a session alone is refused (explainably); one fresh proof unlocks it",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 440
+        }
+      ]
+    },
+    {
+      "file": "privacy-lifecycle.spec.ts",
+      "title": "logout-all TÜM oturumları ve MEDYA yolunu birlikte iptal eder",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 772
+        }
+      ]
+    },
+    {
+      "file": "privacy-lifecycle.spec.ts",
+      "title": "yenileme jetonu OLMADAN yenileme yapılamaz",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 8
+        }
+      ]
+    },
+    {
+      "file": "privacy-lifecycle.spec.ts",
+      "title": "SAHTE yenileme jetonu reddedilir",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 7
+        }
+      ]
+    },
+    {
+      "file": "privacy-lifecycle.spec.ts",
+      "title": "SİLİNEN mesaj hiçbir okuma ucundan geri gelmez",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 3098
+        }
+      ]
+    },
+    {
+      "file": "search-security.spec.ts",
+      "title": "kimliksiz arama REDDEDİLİR",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 6
+        }
+      ]
+    },
+    {
+      "file": "search-security.spec.ts",
+      "title": "sahibi KENDİ sunucusundaki mesajı bulur — pozitif kontrol",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 18
+        }
+      ]
+    },
+    {
+      "file": "search-security.spec.ts",
+      "title": "ÜYE OLMAYAN kullanıcı başka sunucunun mesajını GÖREMEZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 33
+        }
+      ]
+    },
+    {
+      "file": "search-security.spec.ts",
+      "title": "SAHTE serverId ile arama 403 döner",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 8
+        }
+      ]
+    },
+    {
+      "file": "search-security.spec.ts",
+      "title": "ÜYE, erişebildiği kanaldaki mesajı bulur — pozitif kontrol",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 28
+        }
+      ]
+    },
+    {
+      "file": "search-security.spec.ts",
+      "title": "ÜYE, VIEW_CHANNELS REDDEDİLEN kanaldaki mesajı GÖREMEZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 31
+        }
+      ]
+    },
+    {
+      "file": "search-security.spec.ts",
+      "title": "sahibi gizli kanalı GÖRÜR — kural körü körüne engellemiyor",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 14
+        }
+      ]
+    },
+    {
+      "file": "search-security.spec.ts",
+      "title": "çok kısa sorgu sonuç SIZDIRMAZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 7
+        }
+      ]
+    },
+    {
+      "file": "search-security.spec.ts",
+      "title": "`from:` değiştiricisi kiracı sınırını AŞAMAZ",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 27
+        }
+      ]
+    },
+    {
+      "file": "search-security.spec.ts",
+      "title": "/search/unified AYNI sınırı uygular",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 23
+        }
+      ]
+    },
+    {
+      "file": "session-logout.spec.ts",
+      "title": "BASE is loopback (this suite logs real sessions out)",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 1
+        }
+      ]
+    },
+    {
+      "file": "session-logout.spec.ts",
+      "title": "Security › Log out returns to sign-in and the refresh session is revoked server-side",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 2568
+        }
+      ]
+    },
+    {
+      "file": "session-logout.spec.ts",
+      "title": "Log out on all devices ends the OTHER browser's session too (two-step confirm)",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 4076
+        }
+      ]
+    },
+    {
+      "file": "session-logout.spec.ts",
+      "title": "wide layout shows Log out at the bottom of the settings sidebar",
+      "project": "chromium",
+      "reported_status": "expected",
+      "expected_status": "passed",
+      "attempts": [
+        {
+          "status": "passed",
+          "retry": 0,
+          "duration": 2341
+        }
+      ]
+    }
+  ]
+}

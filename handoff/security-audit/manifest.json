@@ -1,0 +1,12 @@
+{
+  "handoff_branch": "handoff/security-audit-20261010",
+  "source_commit": "8e10f51b7c60bab533edad4373414002caae4a7a",
+  "source_tree": "b26a1b1d6061e02772699a8c8eaa1fe0b9db5c21",
+  "integration_tree": "4cced804918961678ac7b32de2ccedaaba4c5228",
+  "integration_tree_definition": "source_commit plus the exported UNVERIFIED test patch, excluding handoff documentation/artifacts; reconstructed using a temporary index only",
+  "patch_sha256": "3f839834d08341d1f3ba86be82ebef00920c6750ca459ff2957c2360efa8a1ed",
+  "patch_status": "UNVERIFIED",
+  "browser_matrix_status": "INCOMPLETE",
+  "remote_ci_status": "UNVERIFIED",
+  "protected_file_sha256": "9a28b62eb87e132da7b509ae7aefb66f47292cf199b899ac706d289e05a8a82c"
+}
