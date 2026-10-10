@@ -1,5 +1,11 @@
 # E2E SKIP AUDIT — Bridge v1.123
 
+> **Historical (v1.123).** The current ledger is
+> [`docs/test-integrity/2026-10-09-repo-wide-audit.md`](test-integrity/2026-10-09-repo-wide-audit.md).
+> One judgement below did not hold: the 2FA 429 tolerance was classified **A / risk none**;
+> traced on a real backend, three 2FA tests were passing on that 429 without the server
+> evaluating their request (fixed in PR #156).
+
 **Scope:** every skipped Playwright test in the `chromium` project, enumerated,
 categorised, and investigated.
 
