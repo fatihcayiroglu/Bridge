@@ -173,12 +173,10 @@ test.describe('Profil Yönetimi', () => {
   // ── 6. Avatar upload ──────────────────────────────────────
 
   test('POST /api/me/avatar — küçük PNG yüklenebilmeli', async ({ request }) => {
-    // Minimal valid 1x1 PNG
-    const pngHex =
-      '89504e470d0a1a0a' +
-      '0000000d49484452000000010000000108020000009001 2e00' +
-      '0000000c49444154789c626060f80f00000200016ba97e540000000049454e44ae426082';
-    const pngBuffer = Buffer.from(pngHex.replace(/\s/g, ''), 'hex');
+    // Gerçekten geçerli 1×1 PNG. Eskiden "minimal valid" denen bayt dizisinin IHDR
+    // CRC'si yanlıştı; yüklemeler ayrıştırıldığından bu bozuk bir dosyadır.
+    const pngBuffer = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
 
     const res = await request.post(`${BASE}/api/me/avatar`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
@@ -187,9 +185,10 @@ test.describe('Profil Yönetimi', () => {
       },
     });
 
-    // 200 (başarı) veya 400/422 (magic byte mismatch veya çok küçük) — 401/500 olmamalı
-    expect(res.status()).not.toBe(401);
-    expect(res.status()).not.toBe(500);
+    // Geçerli PNG avatar olur: 200 ve yeni avatar yolu. Eskiden yalnız "401/500 değil"
+    // deniyordu; 400/422 (reddedilen yükleme) de geçerdi.
+    expect(res.status(), await res.text()).toBe(200);
+    expect((await res.json() as { avatarUrl?: string }).avatarUrl).toMatch(/^\/uploads\//);
   });
 
   test('POST /api/me/avatar — auth olmadan 401', async ({ request }) => {
