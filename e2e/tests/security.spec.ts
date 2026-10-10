@@ -211,17 +211,17 @@ test.describe('httpOnly Refresh Token Cookie', () => {
       data: JSON.stringify({ username: u.username, password: u.password }),
     });
 
-    expect(res.ok()).toBe(true);
+    expect(res.status(), await res.text()).toBe(200);
     const setCookieHeaders = res.headersArray()
       .filter(h => h.name.toLowerCase() === 'set-cookie')
       .map(h => h.value);
 
-    const refreshCookie = setCookieHeaders.find(c => c.includes('bridge_refresh'));
-    if (refreshCookie) {
-      // HttpOnly flag olmalı
-      expect(refreshCookie.toLowerCase()).toContain('httponly');
-    }
-    // Cookie yoksa: sprint9'da set-cookie implement edilmedi demektir — yine de geçer
+    // A missing refresh cookie MUST fail the test.
+    const refreshCookie = setCookieHeaders.find(c => c.startsWith('bridge_refresh='));
+    expect(refreshCookie, 'login must set bridge_refresh').toBeDefined();
+    expect(refreshCookie).toMatch(/^bridge_refresh=[^;]+;/);
+    expect(refreshCookie).toMatch(/;\s*httponly(?:;|$)/i);
+    expect(refreshCookie).toMatch(/;\s*path=\/api\/refresh(?:;|$)/i);
   });
 
   test("login yanıtı body'sinde refreshToken olmamalı", async ({ request }) => {
@@ -240,40 +240,31 @@ test.describe('httpOnly Refresh Token Cookie', () => {
       data: JSON.stringify({ username, password: u.password }),
     });
 
+    expect(res.status(), await res.text()).toBe(200);
     const body = await res.json();
-    // Sprint 9 değişikliği: refreshToken artık body'de dönmemeli
+    // A refused login does not prove the successful-login contract.
     expect(body).not.toHaveProperty('refreshToken');
-    expect(body).toHaveProperty('token');
+    expect(typeof body.token).toBe('string');
   });
 
-  test('browser JS refresh cookie okuyamamalı (page eval)', async ({ page }) => {
-    // Login yap ve cookie'nin document.cookie'de görünmediğini doğrula
-    const username = `jsaccess_${Date.now()}`;
-    const BASE = BASE_URL;
+  test('browser refresh cookie is HttpOnly, path-scoped and hidden from document.cookie', async ({ page }) => {
+    // Reuse a fixture account, avoiding hourly registration quota.
+    // page.request shares the browser context's cookie jar.
+    const user = getTokens().users.bob;
+    const loginRes = await page.request.post(`${BASE_URL}/api/login`, {
+      headers: { 'Content-Type': 'application/json' },
+      data: JSON.stringify({ username: user.username, password: user.password }),
+    });
+    expect(loginRes.status(), await loginRes.text()).toBe(200);
+
+    // Browser-context cookie inspection sees attributes that JS cannot access.
+    const cookies = await page.context().cookies(`${BASE_URL}/api/refresh`);
+    const refreshCookie = cookies.find(cookie => cookie.name === 'bridge_refresh');
+    expect(refreshCookie, 'login did not create a browser refresh cookie').toBeDefined();
+    expect(refreshCookie?.httpOnly).toBe(true);
+    expect(refreshCookie?.path).toBe('/api/refresh');
 
     await page.goto(BASE_URL);
-
-    const regRes = await page.evaluate(async ({ base, user, pass }) => {
-      const r = await fetch(`${base}/api/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: user, password: pass }),
-        credentials: 'include',
-      });
-      return { status: r.status };
-    }, { base: BASE_URL, user: username, pass: 'JsAccessTest123!' });
-
-    // Login yap (credentials: 'include' ile cookie set olur)
-    await page.evaluate(async ({ base, user, pass }) => {
-      await fetch(`${base}/api/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: user, password: pass }),
-        credentials: 'include',
-      });
-    }, { base: BASE_URL, user: username, pass: 'JsAccessTest123!' });
-
-    // document.cookie'den bridge_refresh okunamaz olmalı (httpOnly)
     const cookieFromJs = await page.evaluate(() => document.cookie);
     expect(cookieFromJs).not.toContain('bridge_refresh');
   });
