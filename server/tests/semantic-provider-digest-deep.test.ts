@@ -36,7 +36,7 @@ function setup(o:Opts={}){
     // P6: the per-server AI gate reads the server row; a migrated row allows AI by default.
     Servers:{findById:async()=>({_id:'s1',aiEnabled:true})},
   }));
-  jest.doMock('../lib/permissions',()=>({viewableChannelIds}));
+  jest.doMock('../lib/permissions',()=>({readableChannelIds:viewableChannelIds}));
   jest.doMock('../lib/pgvector',()=>({generateEmbedding,vectorSearch,PGVECTOR_ENABLED:o.pg??false,EMBEDDING_PROVIDER:'test-embed'}));
   jest.doMock('../db/postgres',()=>({pool:{query:jest.fn()}}));
   jest.doMock('../lib/aiProvider',()=>({callAI,AI_ENABLED:o.ai??false,PROVIDER:o.provider??'mock-ai'}));
@@ -133,7 +133,15 @@ describe('P6: cached search answers are re-checked against current messages', ()
 describe('semantic digest and engagement behavior',()=>{
   afterEach(()=>{jest.restoreAllMocks();jest.clearAllMocks();});
 
-  it('serves digest cache without recomputing channel/message metadata',async()=>{const s=setup({cacheValue:{serverId:'s1',days:7,totalMessages:4}});const r=await request(s.app).get('/api/semantic/digest/s1');expect(r.status).toBe(200);expect(r.body.cached).toBe(true);expect(s.channelFind).not.toHaveBeenCalled();});
+  it('rechecks current authorized content before serving the snapshot-specific digest cache',async()=>{
+    const s=setup({cacheValue:{serverId:'s1',days:7,totalMessages:4}});
+    const r=await request(s.app).get('/api/semantic/digest/s1');
+    expect(r.status).toBe(200);expect(r.body.cached).toBe(true);
+    expect(s.channelFind).toHaveBeenCalledWith({serverId:'s1',type:'text'});
+    expect(s.findWhere).toHaveBeenCalledWith(expect.objectContaining({serverId:'s1',deletedAt:null,type:{$ne:'system'}}));
+    expect(s.cacheGet).toHaveBeenCalledWith(expect.stringMatching(/^digest:v2:u1:s1:7:ai:[a-f0-9]{64}$/));
+    expect(s.callAI).not.toHaveBeenCalled();
+  });
 
   it('digest excludes hidden channels/messages, tolerates malformed reactions, counts array reactions, and summarizes visible content',async()=>{
     const rows=[
@@ -143,7 +151,7 @@ describe('semantic digest and engagement behavior',()=>{
     ];
     const s=setup({ai:true,viewable:['c1'],searchMessages:rows,findWhereMessages:()=>rows,aiResult:'digest summary'});
     const r=await request(s.app).get('/api/semantic/digest/s1?days=14');
-    expect(r.status).toBe(200);expect(r.body.days).toBe(14);expect(r.body.totalMessages).toBe(2);expect(r.body.channelStats).toHaveLength(1);expect(r.body.channelStats[0].topMessages[0].reactionCount).toBe(2);expect(r.body.topUsers.map((x:any)=>x.userId)).not.toContain('secret-user');expect(r.body.aiSummary).toBe('digest summary');expect(s.callAI).toHaveBeenCalledWith(expect.stringContaining('digest'),expect.not.stringContaining('top secret'),300);expect(s.cacheSet).toHaveBeenCalledWith(expect.stringContaining('digest:u1:s1:14'),expect.any(Object),1800);
+    expect(r.status).toBe(200);expect(r.body.days).toBe(14);expect(r.body.totalMessages).toBe(2);expect(r.body.channelStats).toHaveLength(1);expect(r.body.channelStats[0].topMessages[0].reactionCount).toBe(2);expect(r.body.topUsers.map((x:any)=>x.userId)).not.toContain('secret-user');expect(r.body.aiSummary).toBe('digest summary');expect(s.callAI).toHaveBeenCalledWith(expect.stringContaining('digest'),expect.not.stringContaining('top secret'),300);expect(s.cacheSet).toHaveBeenCalledWith(expect.stringContaining('digest:v2:u1:s1:14'),expect.any(Object),1800);
   });
 
   it('digest contains AI failure and returns null summary without losing deterministic stats',async()=>{const s=setup({ai:true,aiError:new Error('ai down')});const r=await request(s.app).get('/api/semantic/digest/s1');expect(r.status).toBe(200);expect(r.body.aiSummary).toBeNull();expect(r.body.totalMessages).toBe(2);});

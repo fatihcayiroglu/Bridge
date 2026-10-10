@@ -77,6 +77,7 @@ import { Users, Members } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { cache } from '../lib/redisAdapter';
 import { getIo } from '../socket';
+import { normalizePresenceVisibility } from '../lib/userUtils';
 import { limits } from '../middleware/rateLimit';
 const ACTIVITY_TYPES = {
   PLAYING:   'playing',   // 🎮 Oyun oynuyor
@@ -161,7 +162,9 @@ router.patch('/', authMiddleware, limits.settings(), async (req, res) => {
     if (io) {
       const memberships = await Members.findByUser(_u.id);
       const serverIds   = memberships.map(m => m.serverId);
-      io.to(serverIds).emit('user:activity', { userId: _u.id, activity });
+      const current = await Users.findById(_u.id);
+      const publicActivity = normalizePresenceVisibility(current?.presenceVisibility) === 'visible' ? activity : null;
+      io.to(serverIds).emit('user:activity', { userId: _u.id, activity: publicActivity });
     }
   } catch { /* IO opsiyonel */ }
 
@@ -174,14 +177,18 @@ router.patch('/', authMiddleware, limits.settings(), async (req, res) => {
 router.get('/:userId', authMiddleware, async (req, res) => {
   const userId = String(req.params.userId ?? '');
 
+  // Privacy is authoritative even when an activity cache entry is still warm.
+  const user = await Users.findById(userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (castAuthed(req).user.id !== userId && normalizePresenceVisibility(user.presenceVisibility) === 'hidden') {
+    return res.json({ activity: null });
+  }
+
   // Cache'den dene
   const cached = await cache.get(`activity:${userId}`);
   if (cached) return res.json({ activity: cached, cached: true });
 
   // DB'den al
-  const user = await Users.findById(userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
   // Aktivite 4 saatten eskiyse temizle
   if (user.activity && user.activityUpdatedAt) {
     const age = Date.now() - user.activityUpdatedAt;
@@ -212,7 +219,7 @@ router.get('/server/:serverId', authMiddleware, async (req, res) => {
 
   const cutoff = Date.now() - 4 * 60 * 60 * 1000; // 4 saat
   const active = users
-    .filter(u => u.activity && typeof u.activityUpdatedAt === 'number' && u.activityUpdatedAt > cutoff)
+    .filter(u => normalizePresenceVisibility(u.presenceVisibility) === 'visible' && u.activity && typeof u.activityUpdatedAt === 'number' && u.activityUpdatedAt > cutoff)
     .map(u => ({
       userId:      u._id,
       displayName: u.displayName || u.username,

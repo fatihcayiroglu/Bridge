@@ -8,6 +8,7 @@
 
 import { test, expect } from '../helpers/apiTest';
 import { BridgePage, getTokens, createTestServer, joinServer } from '../helpers/bridge';
+import { userIdOf } from '../helpers/prune-fixtures';
 import { openSocket, waitForEvent, closeSockets } from '../helpers/socket';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -72,43 +73,88 @@ test.describe('Ses Kanalı Akışları', () => {
     expect(voiceChannels.length).toBeGreaterThan(0);
   });
 
+  // ── REST ses uçları ──────────────────────────────────────
+  // `POST /api/channels/:id/voice-state` ve `GET /api/channels/:id/voice-members`
+  // OpenAPI'de bu yolla yayımlanır. Router üretimde `/servers` altına bağlıydı;
+  // aşağıdaki dört test 404 alıyor ve `< 500` / `>= 401` ile GEÇİYORDU — uçlar
+  // hiç ölçülmüyordu (server/tests/voice-route-mount-contract.test.ts). Silme
+  // testi ise `DELETE /api/channels/:id` ile MESAJ silme rotasına gidiyordu.
+
   test('API: ses kanalına yetkisiz bağlanılamaz', async ({ request }) => {
     expect(voiceChannelId, 'ses kanalı fikstürü eksik').toBeTruthy();
-    const res = await request.post(`${BASE_URL}/api/channels/${voiceChannelId}/voice-state`, {
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ selfMute: false, selfDeaf: false }),
+    const url = `${BASE_URL}/api/channels/${voiceChannelId}/voice-state`;
+    const data = JSON.stringify({ selfMute: false, selfDeaf: false });
+    const anon = await request.post(url, { headers: { 'Content-Type': 'application/json' }, data });
+    expect(anon.status(), `oturumsuz: ${await anon.text()}`).toBe(401);
+    // carol bu sunucunun üyesi değildir.
+    const outsider = await request.post(url, {
+      headers: { Authorization: `Bearer ${tokens.carol}`, 'Content-Type': 'application/json' }, data,
     });
-    expect(res.status()).toBeGreaterThanOrEqual(401);
+    expect(outsider.status(), `üye olmayan: ${await outsider.text()}`).toBe(403);
+    const roster = await request.get(`${BASE_URL}/api/channels/${voiceChannelId}/voice-members`, {
+      headers: { Authorization: `Bearer ${tokens.carol}` },
+    });
+    expect(roster.status(), 'üye olmayan ses listesini okuyamaz').toBe(403);
   });
 
   test('API: ses durumu güncellenebilir (mute/deafen)', async ({ request }) => {
-    expect(voiceChannelId, 'ses kanalı fikstürü eksik').toBeTruthy();
-    const res = await request.post(`${BASE_URL}/api/channels/${voiceChannelId}/voice-state`, {
-      headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
-      data: JSON.stringify({ selfMute: true, selfDeaf: false }),
-    });
-    expect(res.status()).toBeLessThan(500);
+    expect(voiceChannelId && testServerId, 'ses fikstürü eksik').toBeTruthy();
+    const url = `${BASE_URL}/api/channels/${voiceChannelId}/voice-state`;
+    const headers = { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' };
+    const data = JSON.stringify({ selfMute: true, selfDeaf: false });
+    // Odada olmayan kullanıcı durum yayamaz.
+    const notInRoom = await request.post(url, { headers, data });
+    expect(notInRoom.status(), await notInRoom.text()).toBe(409);
+
+    const alice = await openSocket(tokens.alice);
+    const bob = await openSocket(tokens.bob);
+    try {
+      await joinVoice(alice);
+      await joinVoice(bob);
+      const aliceId = userIdOf(tokens.alice);
+      const seen = waitForEvent<{ channelId?: string; userId?: string; selfMute?: boolean; selfDeaf?: boolean }>(
+        bob, 'voice:state-update', 10_000, (e) => e?.channelId === voiceChannelId && e?.userId === aliceId,
+      );
+      const res = await request.post(url, { headers, data });
+      expect(res.status(), await res.text()).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+      expect(await seen, 'odadaki üye durumu almalı').toMatchObject({ selfMute: true, selfDeaf: false });
+    } finally { closeSockets(alice, bob); }
   });
 
   test('API: ses kanalı üye listesi alınabilir', async ({ request }) => {
-    expect(voiceChannelId, 'ses kanalı fikstürü eksik').toBeTruthy();
-    const res = await request.get(`${BASE_URL}/api/channels/${voiceChannelId}/voice-members`, {
-      headers: { Authorization: `Bearer ${tokens.alice}` },
-    });
-    expect(res.status()).toBeLessThan(500);
-    if (res.status() === 200) {
-      const data = await res.json();
-      expect(Array.isArray(data) || Array.isArray(data.members)).toBe(true);
-    }
+    expect(voiceChannelId && testServerId, 'ses fikstürü eksik').toBeTruthy();
+    const alice = await openSocket(tokens.alice);
+    try {
+      await joinVoice(alice);
+      const res = await request.get(`${BASE_URL}/api/channels/${voiceChannelId}/voice-members`, {
+        headers: { Authorization: `Bearer ${tokens.bob}` },
+      });
+      expect(res.status(), await res.text()).toBe(200);
+      const peers = await res.json() as Array<{ userId?: string; socketId?: string }>;
+      expect(Array.isArray(peers)).toBe(true);
+      expect(peers.find((p) => p.socketId === alice.id), 'odaya katılan alice listede olmalı')
+        .toMatchObject({ userId: userIdOf(tokens.alice) });
+    } finally { closeSockets(alice); }
   });
 
-  test('API: ses kanalı silinemez (üye sayısı > 0 kontrolü olmasa da 5xx vermez)', async ({ request }) => {
-    expect(testServerId, 'ses sunucu fikstürü eksik').toBeTruthy();
-    const res = await request.delete(`${BASE_URL}/api/channels/gecersiz-id`, {
+  test('API: ses kanalı yetkisiz silinemez; geçersiz kimlik 5xx vermez', async ({ request }) => {
+    expect(voiceChannelId && testServerId, 'ses fikstürü eksik').toBeTruthy();
+    const channels = `${BASE_URL}/api/servers/${testServerId}/channels`;
+    // bob sunucu üyesidir ama kanal yönetme izni yoktur.
+    const byMember = await request.delete(`${channels}/${voiceChannelId}`, {
+      headers: { Authorization: `Bearer ${tokens.bob}` },
+    });
+    expect(byMember.status(), await byMember.text()).toBe(403);
+    const list = await request.get(channels, { headers: { Authorization: `Bearer ${tokens.alice}` } });
+    expect(list.status()).toBe(200);
+    const all = await list.json() as Array<{ _id?: string; id?: string }>;
+    expect(all.some((c) => (c._id ?? c.id) === voiceChannelId), 'reddedilen silme kanalı kaldırmamalı').toBe(true);
+
+    const unknown = await request.delete(`${channels}/gecersiz-id`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
-    expect(res.status()).toBeLessThan(500);
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(unknown.status(), await unknown.text()).toBe(404);
   });
 
   // ── YENİ: Socket sinyal katmanı testleri ─────────────────
