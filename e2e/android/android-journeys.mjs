@@ -581,30 +581,49 @@ async function main() {
     return { ms: Date.now() - t0 };
   });
 
-  await check('L01', 'background 20 s → message arrives meanwhile → foreground shows it', async () => {
+  // The channel ID is part of the contract. A bare message text match can
+  // conceal a navigation regression; do not silently reopen the channel.
+  async function assertVisibleAfterResume(needle, label, timeout) {
+    await until(async () => (await activeChannel()) === channelId && await visibleMessage(needle), {
+      timeout, message: `${label}: original channel still active AND missed message visible`,
+    });
+  }
+
+  await check('L01', 'background 20 s → original channel and missed message survive hot resume', async () => {
+    const pidBefore = await pid();
     await platform.home();
     await sleep(3_000);
     const needle = `android-bg-${Date.now().toString(36)}`;
     await sendChannel(peerSock, serverId, channelId, needle);
+    await until(async () => (await channelHas(me.token, channelId, needle)).length === 1,
+      { message: 'L01 peer message persisted before foregrounding' });
     await sleep(17_000);
     const fg = await platform.foreground();
     const t0 = Date.now();
     await attachPage();
-    await until(() => visibleMessage(needle), { timeout: 30_000, message: 'background message visible after resume' });
-    return { resumeTotalMs: fg.totalTimeMs, launchState: fg.launchState, visibleAfterMs: Date.now() - t0, pidStable: true };
+    const pidAfter = await pid();
+    log('L01 resume context', JSON.stringify({ expectedChannel: channelId, actualChannel: await activeChannel(), pidStable: pidBefore === pidAfter, launchState: fg.launchState }));
+    assert(pidBefore === pidAfter, 'L01 process died; cannot claim hot resume');
+    await assertVisibleAfterResume(needle, 'L01', 30_000);
+    return { resumeTotalMs: fg.totalTimeMs, launchState: fg.launchState, visibleAfterMs: Date.now() - t0, pidStable: true, channelPreserved: true };
   });
 
-  await check('L02', 'background 75 s (past socket ping timeout) → foreground resyncs without stale UI', async () => {
+  await check('L02', 'background 75 s → original channel and missed message recover after socket idle', async () => {
+    const pidBefore = await pid();
     await platform.home();
     await sleep(5_000);
     const needle = `android-long-bg-${Date.now().toString(36)}`;
     await sendChannel(peerSock, serverId, channelId, needle);
+    await until(async () => (await channelHas(me.token, channelId, needle)).length === 1,
+      { message: 'L02 peer message persisted before foregrounding' });
     await sleep(70_000);
-    await platform.foreground();
+    const fg = await platform.foreground();
     const t0 = Date.now();
     await attachPage();
-    await until(() => visibleMessage(needle), { timeout: 60_000, message: 'message after long background' });
-    return { visibleAfterMs: Date.now() - t0 };
+    const pidAfter = await pid();
+    log('L02 resume context', JSON.stringify({ expectedChannel: channelId, actualChannel: await activeChannel(), pidStable: pidBefore === pidAfter, launchState: fg.launchState }));
+    await assertVisibleAfterResume(needle, 'L02', 60_000);
+    return { visibleAfterMs: Date.now() - t0, pidStable: pidBefore === pidAfter, channelPreserved: true };
   });
 
   await check('L03', 'process killed while backgrounded → relaunch restores session, channel and missed messages', async () => {
