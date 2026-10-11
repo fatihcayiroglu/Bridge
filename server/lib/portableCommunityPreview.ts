@@ -11,6 +11,8 @@ type Collision = {
   sourceId: string;
   name: string;
   targetIds: string[];
+  targetMatchCount: number;
+  targetIdsTruncated: boolean;
   reason: 'TARGET_NAME_EXISTS' | 'DUPLICATE_SOURCE_NAME';
 };
 const PREVIEW_LIMIT = 50;
@@ -36,7 +38,9 @@ function findCollisions(kind: Kind, source: readonly Item[], target: readonly It
   const destinationByName = new Map<string, string[]>();
   for (const row of target) {
     const k = key(row.name);
-    destinationByName.set(k, [...(destinationByName.get(k) ?? []), row.sourceId]);
+    const existing = destinationByName.get(k);
+    if (existing) existing.push(row.sourceId);
+    else destinationByName.set(k, [row.sourceId]);
   }
   const sourceCounts = new Map<string, number>();
   for (const row of source) {
@@ -51,13 +55,16 @@ function findCollisions(kind: Kind, source: readonly Item[], target: readonly It
       collisions.push({
         kind, sourceId: row.sourceId, name: row.name,
         targetIds: destinationIds.slice(0, PREVIEW_LIMIT),
+        targetMatchCount: destinationIds.length,
+        targetIdsTruncated: destinationIds.length > PREVIEW_LIMIT,
         reason: 'TARGET_NAME_EXISTS',
       });
     }
     if ((sourceCounts.get(k) ?? 0) > 1) {
       collisions.push({
         kind, sourceId: row.sourceId, name: row.name,
-        targetIds: [], reason: 'DUPLICATE_SOURCE_NAME',
+        targetIds: [], targetMatchCount: 0, targetIdsTruncated: false,
+        reason: 'DUPLICATE_SOURCE_NAME',
       });
     }
   }
