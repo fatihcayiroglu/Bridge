@@ -295,7 +295,7 @@ describe('stripImageMetadataFile (uploads on disk)', () => {
       } finally {
         readSpy.mockRestore();
       }
-      expect(largestRead, `${mime} must never buffer an entire untrusted EXIF chunk`).toBeLessThanOrEqual(1 << 20);
+      expect(largestRead).toBeLessThanOrEqual(1 << 20);
       expect(report).toMatchObject({ changed: true, orientation: expectedOrientation });
       const output = fs.readFileSync(file);
       expect(output.length).toBeLessThan(input.length - largeExif.length);
