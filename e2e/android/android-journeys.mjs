@@ -639,9 +639,12 @@ async function main() {
     await attachPage();
     await until(() => appVisible(), { timeout: 45_000, message: 'app restored without login' });
     assert(!(await authVisible()), 'auth screen shown after process death — session not restored');
-    await openServer(serverId);
-    await openChannel(channelId);
-    await until(() => visibleMessage(needle), { timeout: 30_000, message: 'missed message after relaunch' });
+    // Previously the harness manually reselected server/channel here, which
+    // could conceal a REAL navigation loss after the WebView process died.
+    // The product must restore the authorized previously active text channel.
+    await until(async () => (await activeChannel()) === channelId && await visibleMessage(needle), {
+      timeout: 30_000, message: 'original channel and missed message automatically restored after process death',
+    });
     return { pidBefore: before, pidAfter: await pid(), kill: killed, relaunchTotalMs: launch.totalTimeMs };
   });
 
@@ -650,7 +653,10 @@ async function main() {
     const launch = await platform.foreground();
     await attachPage();
     await until(() => appVisible(), { timeout: 45_000, message: 'app restored after force-stop' });
-    return { coldRelaunchTotalMs: launch.totalTimeMs };
+    await until(async () => (await activeChannel()) === channelId, {
+      timeout: 30_000, message: 'original authorized text channel restored after force-stop',
+    });
+    return { coldRelaunchTotalMs: launch.totalTimeMs, channelPreserved: true };
   });
 
   await check('N01', 'offline: banner shows, composed message is held, delivered exactly once on reconnect', async () => {
