@@ -236,13 +236,37 @@ async function seedLongChannel(serverId, userId, token, count) {
 // ── Platform layer ─────────────────────────────────────────────────────────
 const sh = async (cmd) => (await device.shell(cmd)).toString().trim();
 
+// Failure-only diagnostics: retain the ORIGINAL WebView assertion and capture
+// enough Android state to distinguish a native crash, a stopped Activity, and
+// an adb/DevTools attachment problem. No extra retry or implicit PASS.
+async function webViewAttachEvidence() {
+  const probes = [
+    ['pid', `pidof ${PKG}`],
+    ['activity', `dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity|com.bridge.app' | head -10`],
+    ['process', `dumpsys activity processes | grep -E 'ProcessRecord|com.bridge.app' | head -10`],
+    // Restrict logcat to native crash headers/stack frames; do not print arbitrary
+    // app log lines, HTTP headers, user messages or credential-bearing fields.
+    ['crash', `logcat -d -b crash -t 100 | grep -E 'FATAL EXCEPTION|Process: com.bridge.app|Fatal signal|Caused by:|at com.bridge.app' | tail -15`],
+  ];
+  const results = await Promise.all(probes.map(async ([label, command]) => {
+    try { return [label, (await sh(command)).slice(0, 1200)]; }
+    catch (err) { return [label, `probe failed: ${String(err?.message ?? err).slice(0, 120)}`]; }
+  }));
+  return Object.fromEntries(results);
+}
+
 async function attachPage({ timeout = 60_000 } = {}) {
   if (MODE === 'dryrun') return page;
-  const webview = await device.webView({ pkg: PKG }, { timeout });
-  const p = await webview.page();
-  p.setDefaultTimeout(20_000);
-  page = p;
-  return p;
+  try {
+    const webview = await device.webView({ pkg: PKG }, { timeout });
+    const p = await webview.page();
+    p.setDefaultTimeout(20_000);
+    page = p;
+    return p;
+  } catch (err) {
+    const evidence = await webViewAttachEvidence();
+    throw new Error(`Android WebView attach failed for ${PKG} after ${timeout}ms: ${String(err?.message ?? err)}; device evidence: ${JSON.stringify(evidence)}`, { cause: err });
+  }
 }
 async function pid() { return MODE === 'dryrun' ? 'dryrun' : (await sh(`pidof ${PKG}`)) || null; }
 
