@@ -326,7 +326,7 @@ describe('account export/delete production behavior', () => {
       displayName: 'Alice', bio: '', website: '', pronouns: '',
       avatarColor: '#2d9cdb', bannerColor: '#abcdef',
     };
-    const body = { document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE' };
+    const body = { document: source, expected, targetUserId: 'me', confirm: 'APPLY_PORTABLE_PROFILE' };
     const noStepUp = await request(app()).post('/api/account/portable-import/apply').send(body);
     expect(noStepUp.status).toBe(403);
     expect(noStepUp.body).toMatchObject({ error: 'STEP_UP_REQUIRED', scope: 'account-security' });
@@ -374,17 +374,35 @@ describe('account export/delete production behavior', () => {
     };
     for (const bad of [
       { document: source, expected },
-      { document: source, expected, confirm: 'yes' },
-      { document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE', targetUserId: 'someone-else' },
+      { document: source, expected, targetUserId: 'me', confirm: 'yes' },
+      { document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE', targetUserId: 'me', extra: 'reject-me' },
     ]) {
       const res = await request(app()).post('/api/account/portable-import/apply')
         .set(stepUpHeader('me', 'account-security')).send(bad);
       expect(res.status).toBe(400);
     }
+    // A session can change accounts while a password/2FA step-up is open.
+    // Even if the new account has IDENTICAL profile values, the prior preview
+    // must not be applied to a different bearer-token subject.
+    const switched = await request(app()).post('/api/account/portable-import/apply')
+      .set(stepUpHeader('me', 'account-security')).send({
+        document: source, expected, targetUserId: 'another-account',
+        confirm: 'APPLY_PORTABLE_PROFILE',
+      });
+    expect(switched.status).toBe(409);
+    expect(switched.body.code).toBe('PORTABLE_TARGET_ACCOUNT_CHANGED');
+    expect(query).not.toHaveBeenCalled();
+    const missingTarget = await request(app()).post('/api/account/portable-import/apply')
+      .set(stepUpHeader('me', 'account-security')).send({
+        document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE',
+      });
+    expect(missingTarget.status).toBe(400);
+    expect(query).not.toHaveBeenCalled();
     const malformed = await request(app()).post('/api/account/portable-import/apply')
       .set(stepUpHeader('me', 'account-security')).send({
         document: source,
         expected: { ...expected, password: 'attack' },
+        targetUserId: 'me',
         confirm: 'APPLY_PORTABLE_PROFILE',
       });
     expect(malformed.status).toBe(422);
@@ -396,7 +414,7 @@ describe('account export/delete production behavior', () => {
     const { buildPortableIdentityExport } = require('../lib/portableIdentity') as typeof import('../lib/portableIdentity');
     const source = buildPortableIdentityExport('origin', { username: 'origin', displayName: 'Origin' });
     const body = {
-      document: source, confirm: 'APPLY_PORTABLE_PROFILE',
+      document: source, targetUserId: 'me', confirm: 'APPLY_PORTABLE_PROFILE',
       expected: { displayName: 'Alice', bio: '', website: '', pronouns: '', avatarColor: '', bannerColor: '' },
     };
     query.mockResolvedValueOnce({ rows: [], rowCount: 0 });

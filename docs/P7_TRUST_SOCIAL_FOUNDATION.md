@@ -764,8 +764,9 @@ SHA-256 corruption check and clear exclusions. The existing comprehensive
 personal-data export stays separate. Both routes use the existing
 `sensitive-export` step-up protection. See
 [`P7_PORTABLE_IDENTITY_V1.md`](P7_PORTABLE_IDENTITY_V1.md) for the stable v1
-format and caveats. The checksum is **not** a signature. **No importer exists
-yet**, so C1 portability/restore proof and C2–C4 are still open.
+format and caveats. The checksum is **not** a signature. The profile-only atomic import API is
+merged in PR #181; its double-confirmed UI is proposed in PR #183. Complete
+community portability, cross-instance restore proof and C2–C4 remain open.
 
 ## C2. Community export
 
@@ -811,23 +812,29 @@ unknown-version or oversized files fail closed. The Settings → Privacy UI
 clearly says no change is saved. See
 [`P7_PORTABLE_IDENTITY_V1.md`](P7_PORTABLE_IDENTITY_V1.md).
 
-**This closes only the read-only format/preview subtask.** Applying import
-writes, deterministic conflict mapping, transaction rollback, community
-restoration, and cross-instance migration are not yet implemented.
+**The preview subtask is read-only.** Profile-only guarded writes were
+implemented and tested in PR #181. Community restoration, general conflict
+mapping and cross-instance migration remain incomplete.
 
 ### C3-2 — explicit, atomic profile-only apply endpoint (unverified candidate)
 
 `POST /api/account/portable-import/apply` accepts the complete v1 export,
-an exact six-field expected-current-state snapshot from preview, and an explicit
-`APPLY_PORTABLE_PROFILE` confirmation. Fresh account-security step-up is
+an exact six-field expected-current-state snapshot from preview, an explicit
+`targetUserId` matching the authenticated account even after token refresh,
+and an explicit `APPLY_PORTABLE_PROFILE` confirmation. A mismatched account
+returns 409 before any SQL mutation. Fresh account-security step-up is
 mandatory. The one conditional PostgreSQL `UPDATE` can write only
 displayName, bio, website, pronouns and the two profile colors. If any target
 field changed since preview, it returns 409 with no partial write.
 Source IDs, username, credentials, email, media and community records remain
 untouched. Empty optional colors preserve target colors in both preview and
-apply. This is an **API-only candidate**, not a shipped UI import, community
-migration, conflict-resolution engine or C4 round-trip; exact-head CI and real
-PostgreSQL coverage are still required before closing the subtask.
+apply. The atomic apply endpoint was verified through exact-head CI with live PostgreSQL
+concurrency and merged in PR #181. A separate Settings → Privacy
+**double-confirmation UI candidate** now provides preview → acknowledge → type
+`IMPORT` → account-security step-up → guarded apply, including 409 stale-preview
+recovery and account/logout isolation. The UI stays a **PR candidate** until
+its own exact-head CI is green. Full community migration, credential transfer,
+cross-instance C4 round-trip and generic conflict-resolution are not claimed.
 
 ## C4. Lock-in test
 

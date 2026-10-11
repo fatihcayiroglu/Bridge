@@ -4,10 +4,11 @@
 
 <script lang="ts">
   import { t } from '../../i18n/reactive.svelte.ts';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
+  import { expectedFromPortablePreview, portableAccountId, verifiedPortablePreview, type PortableProfilePreview } from '../portable-profile-import';
   import type { SettingsStore } from '../stores/settingsStore';
   import { BridgeRegistry } from '../../bridge-registry.js';
-  import { logout, showAuthMsg } from '../../auth-compat.js';
+  import { logout, showAuthMsg, updateUserPanel } from '../../auth-compat.js';
   let { store }: { store: SettingsStore } = $props();
 
   // ── State ─────────────────────────────────────────────────────────────────
@@ -70,50 +71,168 @@
     }
   }
 
-  // P7 C3 read-only import preflight. The browser sends ONLY a small JSON
-  // profile snapshot for validation; this endpoint never modifies the account.
-  interface PortablePreview {
-    dryRun: true;
-    applied: false;
-    checksumVerified: true;
-    fields: Array<{ field: string; current: string; proposed: string; changed: boolean }>;
-  }
+  // P7 C3: preview and apply are deliberately separate privileged actions.
+  // The imported JSON stays ONLY in memory; a second explicit checkbox + typed
+  // confirmation are required before sending a profile-only, guarded UPDATE.
   let previewingPortable = $state(false);
-  let portablePreview = $state<PortablePreview | null>(null);
+  let portablePreview = $state<PortableProfilePreview | null>(null);
   let portablePreviewError = $state(false);
+  let portableApplyAck = $state(false);
+  let portableApplyPhrase = $state('');
+  let applyingPortable = $state(false);
+  let portableApplyError = $state<string | null>(null);
+  let portableApplySuccess = $state(false);
+  let portableDocument = $state.raw<unknown | null>(null);
+  let portableOwner = $state<string | null>(null);
+  let portableRequestSeq = 0;
+
+  const portableHasChanges = $derived(Boolean(portablePreview?.fields.some(field => field.changed)));
+  const canApplyPortable = $derived(
+    portablePreview !== null && portableDocument !== null && portableOwner !== null &&
+    portableHasChanges && portableApplyAck && portableApplyPhrase.trim() === 'IMPORT' &&
+    !previewingPortable && !applyingPortable,
+  );
+
+  function signedInPortableOwner(): string | null {
+    return portableAccountId(BridgeRegistry.call('getMe'));
+  }
+
+  function resetPortableImport(): void {
+    portableRequestSeq += 1;
+    // Invalidate the previous in-flight request AND release the UI lock. Its
+    // finally block checks the sequence and cannot affect a newer operation.
+    previewingPortable = false;
+    applyingPortable = false;
+    portableDocument = null;
+    portableOwner = null;
+    portablePreview = null;
+    portablePreviewError = false;
+    portableApplyAck = false;
+    portableApplyPhrase = '';
+    portableApplyError = null;
+    portableApplySuccess = false;
+  }
 
   async function previewPortableFile(event: Event): Promise<void> {
     const input = event.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
     input.value = '';
-    if (!file || previewingPortable) return;
-    portablePreview = null;
-    portablePreviewError = false;
+    if (!file || previewingPortable || applyingPortable) return;
+    resetPortableImport();
     if (file.size > 16 * 1024) { portablePreviewError = true; return; }
     const apiFetch = BridgeRegistry.get<(url: string, init?: RequestInit) => Promise<Response>>('apiFetch');
-    if (!apiFetch) { portablePreviewError = true; return; }
+    const owner = signedInPortableOwner();
+    if (!apiFetch || !owner) { portablePreviewError = true; return; }
+    const seq = ++portableRequestSeq;
     previewingPortable = true;
     try {
       const content = JSON.parse(await file.text()) as unknown;
+      if (seq !== portableRequestSeq || signedInPortableOwner() !== owner) return;
       const response = await apiFetch('/api/account/portable-import/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(content),
       });
+      if (seq !== portableRequestSeq || signedInPortableOwner() !== owner) return;
       if (!response.ok) { portablePreviewError = true; return; }
-      const result = await response.json() as PortablePreview;
-      if (result.dryRun !== true || result.applied !== false ||
-          result.checksumVerified !== true || !Array.isArray(result.fields)) {
-        portablePreviewError = true;
-        return;
-      }
+      const result = verifiedPortablePreview(await response.json() as unknown, owner);
+      if (seq !== portableRequestSeq || signedInPortableOwner() !== owner) return;
+      if (!result) { portablePreviewError = true; return; }
+      portableDocument = content;
+      portableOwner = owner;
       portablePreview = result;
     } catch {
-      portablePreviewError = true;
+      if (seq === portableRequestSeq) portablePreviewError = true;
     } finally {
-      previewingPortable = false;
+      if (seq === portableRequestSeq) previewingPortable = false;
     }
   }
+
+  async function applyPortableProfile(): Promise<void> {
+    if (applyingPortable || !canApplyPortable || !portablePreview || !portableDocument || !portableOwner) return;
+    if (signedInPortableOwner() !== portableOwner) {
+      resetPortableImport();
+      portableApplyError = t('privacy_portable_account_changed', 'Hesap değişti. Dosyayı tekrar seçip önizleyin.');
+      return;
+    }
+    const apiFetch = BridgeRegistry.get<(url: string, init?: RequestInit) => Promise<Response>>('apiFetch');
+    if (!apiFetch) { portableApplyError = t('privacy_portable_apply_error', 'Profil içe aktarılamadı. Yeniden deneyin.'); return; }
+    const owner = portableOwner;
+    const seq = ++portableRequestSeq;
+    const body = {
+      document: portableDocument,
+      expected: expectedFromPortablePreview(portablePreview),
+      targetUserId: owner, // server MUST reject if authentication changed during step-up
+      confirm: 'APPLY_PORTABLE_PROFILE',
+    };
+    applyingPortable = true;
+    portableApplyError = null;
+    portableApplySuccess = false;
+    try {
+      const response = await apiFetch('/api/account/portable-import/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (seq !== portableRequestSeq || signedInPortableOwner() !== owner) return;
+      if (response.status === 409) {
+        resetPortableImport(); // stale preview must NEVER be resubmitted
+        portableApplyError = t('privacy_portable_conflict', 'Profiliniz önizlemeden sonra değişti. Dosyayı yeniden seçin ve tekrar önizleyin.');
+        return;
+      }
+      if (!response.ok) {
+        portableApplyError = response.status === 403
+          ? t('privacy_portable_proof_required', 'Güvenlik doğrulaması gerekli; işlem yapılmadı.')
+          : t('privacy_portable_apply_error', 'Profil içe aktarılamadı. Yeniden deneyin.');
+        return;
+      }
+      const result = await response.json() as { ok?: boolean; applied?: boolean; targetUserId?: string; version?: number };
+      if (seq !== portableRequestSeq || signedInPortableOwner() !== owner) return;
+      if (result.ok !== true || result.applied !== true || result.targetUserId !== owner || result.version !== 1) {
+        resetPortableImport();
+        portableApplyError = t('privacy_portable_apply_error', 'Profil içe aktarılamadı. Yeniden deneyin.');
+        return;
+      }
+      // Reflect only the verified six fields after the server's confirmed
+      // atomic write. Use a fresh object so Svelte's canonical identity owner
+      // and the header/profile panel see the same state (no direct mutation
+      // of the prior profile reference).
+      const currentMe = BridgeRegistry.call<Record<string, unknown> | null>('getMe');
+      if (currentMe && portableAccountId(currentMe) === owner) {
+        const updatedMe = { ...currentMe };
+        for (const field of portablePreview.fields) updatedMe[field.field] = field.proposed;
+        if (BridgeRegistry.has('setMe')) BridgeRegistry.call('setMe', updatedMe);
+        // The existing Profile tab still reads the legacy auth-compat
+        // currentUser reference. Keep it in sync with AppState, but ONLY when
+        // it belongs to the same authenticated account as the accepted write.
+        const legacy = globalThis as typeof globalThis & {
+          currentUser?: Record<string, unknown> | null;
+          me?: Record<string, unknown> | null;
+        };
+        if (portableAccountId(legacy.currentUser) === owner) legacy.currentUser = updatedMe;
+        if (portableAccountId(legacy.me) === owner) legacy.me = updatedMe;
+        updateUserPanel(updatedMe as Parameters<typeof updateUserPanel>[0]);
+      }
+      resetPortableImport(); // NEVER leave a successful write armed for replay
+      portableApplySuccess = true;
+    } catch {
+      if (seq === portableRequestSeq) portableApplyError = t('privacy_portable_apply_error', 'Profil içe aktarılamadı. Yeniden deneyin.');
+    } finally {
+      if (seq === portableRequestSeq) applyingPortable = false;
+    }
+  }
+
+  onMount(() => {
+    // A new login may replace the current account while Settings remains
+    // mounted. Remove even a successfully previewed previous user's details.
+    const onIdentityTransition = () => resetPortableImport();
+    document.addEventListener('bridge:auth-logout', onIdentityTransition);
+    document.addEventListener('bridge:auth-success', onIdentityTransition);
+    return () => {
+      document.removeEventListener('bridge:auth-logout', onIdentityTransition);
+      document.removeEventListener('bridge:auth-success', onIdentityTransition);
+    };
+  });
 
   // ── Hesabı sil (Final21 Faz 19) ──────────────────────────────────────────
   // Sunucuda eksiksiz bir silme ucu ve ön denetim vardı (`DELETE /api/account`,
@@ -250,6 +369,7 @@
   }
 
   onDestroy(() => {
+    resetPortableImport();
     if (savedResetTimer) { clearTimeout(savedResetTimer); savedResetTimer = null; }
   });
 </script>
@@ -336,10 +456,10 @@
             onclick={() => void exportMyData(true)}>
       {t('privacy_portable_export', 'Taşınabilir profilimi indir (JSON v1)')}
     </button>
-    <p class="field-note">{t('privacy_portable_export_hint', 'Yalnızca taşınabilir profil alanlarını içerir; parola, özel anahtar, e-posta ve mesajlar dahil değildir. Farklı bir Bridge sunucusuna içe aktarma henüz desteklenmiyor.')}</p>
+    <p class="field-note">{t('privacy_portable_export_hint', 'Yalnızca profil alanlarını içerir; parola, e-posta ve mesajlar dahil değildir. Desteklenen profil alanları başka bir Bridge hesabına güvenli şekilde uygulanabilir; tam hesap ve topluluk taşıma henüz desteklenmiyor.')}</p>
     <label class="field-label" for="portable-identity-file">{t('privacy_portable_preview_select', 'Taşınabilir profil dosyasını önizle (JSON v1)')}</label>
     <input id="portable-identity-file" class="field-input" type="file" accept=".json,application/json"
-           data-testid="portable-identity-preview-file" disabled={previewingPortable}
+           data-testid="portable-identity-preview-file" disabled={previewingPortable || applyingPortable}
            onchange={(event) => void previewPortableFile(event)} />
     {#if previewingPortable}
       <p class="field-note">{t('privacy_portable_preview_loading', 'Dosyanın bütünlüğü kontrol ediliyor…')}</p>
@@ -356,6 +476,47 @@
           <li>{field.field}: {field.current} → {field.proposed}</li>
         {/each}
       </ul>
+      {#if portableHasChanges}
+        <div class="field-group" data-testid="portable-identity-apply-panel">
+          <p class="field-note" id="portable-import-risk">
+            {t('privacy_portable_apply_warning', 'Bu işlem yalnızca görünen ad, biyografi, web sitesi, zamirler ve profil renklerini değiştirir. Kullanıcı adını, mesajları veya üyelikleri taşımaz.')}
+          </p>
+          <label class="field-label">
+            <input type="checkbox" bind:checked={portableApplyAck} disabled={applyingPortable}
+                   data-testid="portable-identity-apply-ack" />
+            {t('privacy_portable_apply_ack', 'Önizlemedeki değişiklikleri kendi hesabıma uygulamak istediğimi onaylıyorum.')}
+          </label>
+          <label class="field-label" for="portable-import-phrase">
+            {t('privacy_portable_apply_phrase', 'Onaylamak için IMPORT yazın.')}
+          </label>
+          <input class="field-input" id="portable-import-phrase" autocomplete="off"
+                 data-testid="portable-identity-apply-phrase" bind:value={portableApplyPhrase}
+                 disabled={applyingPortable} aria-describedby="portable-import-risk" />
+          <button class="btn btn--secondary" type="button"
+                  data-testid="portable-identity-apply"
+                  disabled={!canApplyPortable}
+                  onclick={() => void applyPortableProfile()}>
+            {applyingPortable
+              ? t('privacy_portable_applying', 'Profil uygulanıyor…')
+              : t('privacy_portable_apply', 'Profil değişikliklerini uygula')}
+          </button>
+          <button class="btn btn--secondary" type="button" disabled={applyingPortable}
+                  data-testid="portable-identity-apply-cancel"
+                  onclick={resetPortableImport}>
+            {t('cancel', 'İptal')}
+          </button>
+        </div>
+      {:else}
+        <p class="field-note">{t('privacy_portable_no_changes', 'İçe aktarılacak profil farkı bulunamadı.')}</p>
+      {/if}
+    {/if}
+    {#if portableApplyError}
+      <p class="field-error" role="alert" data-testid="portable-identity-apply-error">{portableApplyError}</p>
+    {/if}
+    {#if portableApplySuccess}
+      <p class="field-note" role="status" data-testid="portable-identity-apply-success">
+        {t('privacy_portable_apply_success', 'Desteklenen profil alanları güncellendi. Güncel bilgileri görmek için profilinizi yeniden açın.')}
+      </p>
     {/if}
   </div>
 

@@ -720,14 +720,60 @@ async function main() {
     return { needle };
   });
 
-  await check('K01', 'Android back closes an open dialog instead of leaving the app', async () => {
+  // K01 had an honest red Android API 34 emulator result (run 38160936435).
+  // OS logcat proved KEYCODE_BACK was received by GoogleInputMethodService
+  // while its soft keyboard was visible: Android consumes the FIRST Back to
+  // hide IME, so Capacitor never receives it. That is not evidence that the
+  // native Settings close handler failed. Test the two contracts separately.
+  const settingsDialogVisible = () => page.evaluate(
+    () => [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')]
+      .some(d => d.id === 'settings-modal-content' && d.getClientRects().length > 0),
+  );
+  const imeVisible = async () => /mInputShown=true/.test(await sh('dumpsys input_method'));
+
+  await check('K01', 'Android back closes an open dialog with IME hidden, instead of leaving the app', async () => {
     await page.evaluate(() => document.querySelector('[data-bridge-action="openSettingsModal"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    await until(() => page.evaluate(() => [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].some((d) => d.getClientRects().length > 0)), { message: 'settings dialog open' });
-    await platform.back();
-    await until(() => page.evaluate(() => ![...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].some((d) => d.getClientRects().length > 0)), { timeout: 5_000, message: 'dialog closed by back' });
+    await until(settingsDialogVisible, { message: 'settings dialog open' });
+    // The preceding DM journey may have left a focused text field and shown
+    // the OS keyboard. Blur it and explicitly VERIFY the IME is hidden:
+    // otherwise the OS consumes KEYCODE_BACK before Capacitor can see it.
+    const initialImeVisible = await imeVisible();
+    if (initialImeVisible) {
+      await page.evaluate(() => {
+        const el = document.activeElement;
+        if (el instanceof HTMLElement) el.blur();
+      });
+    }
+    await until(async () => !(await imeVisible()), {
+      timeout: 8_000, message: 'Android keyboard hidden before dialog-back contract',
+    });
+    assert(await settingsDialogVisible(), 'settings dialog closed during IME precondition');
+    await platform.back(); // exactly ONE physical OS Back
+    await until(async () => !(await settingsDialogVisible()), {
+      timeout: 5_000, message: 'dialog closed by back with IME hidden',
+    });
     const top = await sh('dumpsys activity activities | grep -m1 -E "topResumedActivity|mResumedActivity"').catch(() => '');
     assert(top.includes(PKG), `app left the foreground after back: ${top}`);
-    return { top };
+    return { top, initialImeVisible, imeHiddenBeforeBack: true };
+  });
+
+  await check('K02', 'Android Back first hides a visible soft keyboard, then closes Settings on a second press', async () => {
+    await page.evaluate(() => document.querySelector('[data-bridge-action="openSettingsModal"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await until(settingsDialogVisible, { message: 'K02 settings dialog open' });
+    const tap = await tapWebElement('#display-name');
+    await until(imeVisible, { timeout: 8_000, message: 'K02 soft keyboard visibly open on input' });
+    await platform.back();
+    await until(async () => !(await imeVisible()), {
+      timeout: 5_000, message: 'K02 first Android Back hides the keyboard',
+    });
+    assert(await settingsDialogVisible(), 'K02 first Back incorrectly dismissed Settings instead of the IME');
+    await platform.back();
+    await until(async () => !(await settingsDialogVisible()), {
+      timeout: 5_000, message: 'K02 second Android Back closes Settings',
+    });
+    const top = await sh('dumpsys activity activities | grep -m1 -E "topResumedActivity|mResumedActivity"').catch(() => '');
+    assert(top.includes(PKG), `K02 app left foreground: ${top}`);
+    return { tap, firstBackHidIme: true, secondBackClosedSettings: true };
   });
 
   await check('DL01', 'warm deep link bridge://channel/<id> opens that channel', async () => {

@@ -6,8 +6,9 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 import { createSettingsStore } from '../js/core/settings/stores/settingsStore.ts';
 import PrivacyTab from '../js/core/settings/tabs/PrivacyTab.svelte';
+import { updateUserPanel } from '../js/core/auth-compat.js';
 
-vi.mock('../js/core/auth-compat.js', () => ({ logout: vi.fn(), showAuthMsg: vi.fn() }));
+vi.mock('../js/core/auth-compat.js', () => ({ logout: vi.fn(), showAuthMsg: vi.fn(), updateUserPanel: vi.fn() }));
 
 let apiFetch: ReturnType<typeof vi.fn>;
 let reply: (url: string, init?: RequestInit) => Promise<Response>;
@@ -21,6 +22,20 @@ function portableFile(content: string, bytes = content.length): File {
 function response(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } });
 }
+const sixFields = [
+  { field: 'displayName', current: 'Target', proposed: 'Source', changed: true },
+  { field: 'bio', current: 'Same', proposed: 'Same', changed: false },
+  { field: 'website', current: '', proposed: 'https://example.test', changed: true },
+  { field: 'pronouns', current: '', proposed: '', changed: false },
+  { field: 'avatarColor', current: '#abcdef', proposed: '#abcdef', changed: false },
+  { field: 'bannerColor', current: '', proposed: '', changed: false },
+];
+const preview = (fields = sixFields, targetUserId = 'target') => ({
+  dryRun: true, applied: false, checksumVerified: true,
+  mapping: { sourceUserId: 'source-account', targetUserId, strategy: 'map-to-authenticated-account' },
+  fields,
+});
+const source = { format: 'bridge-portable-identity', version: 1, identity: { username: 'source' } };
 const view = () => render(PrivacyTab, { props: { store: createSettingsStore('privacy') } });
 
 beforeEach(() => {
@@ -33,23 +48,18 @@ afterEach(() => {
   cleanup();
   BridgeRegistry.unregister('getMe');
   BridgeRegistry.unregister('apiFetch');
+  BridgeRegistry.unregister('setMe');
 });
 
 describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
   it('sends exactly one authenticated preview request and renders proposed profile differences without writes', async () => {
-    const document = { format: 'bridge-portable-identity', version: 1, identity: { username: 'source' } };
+    const document = source;
     reply = async (url, init) => {
       expect(url).toBe('/api/account/portable-import/preview');
       expect(init?.method).toBe('POST');
       expect(new Headers(init?.headers).get('Content-Type')).toBe('application/json');
       expect(JSON.parse(String(init?.body))).toEqual(document);
-      return response({
-        dryRun: true, applied: false, checksumVerified: true,
-        fields: [
-          { field: 'displayName', current: 'Target', proposed: 'Source', changed: true },
-          { field: 'bio', current: 'Same', proposed: 'Same', changed: false },
-        ],
-      });
+      return response(preview());
     };
     const v = view();
     const input = v.getByTestId('portable-identity-preview-file') as HTMLInputElement;
@@ -101,4 +111,235 @@ describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
     expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull();
     expect(apiFetch).toHaveBeenCalledTimes(1);
   });
+  it('never sends an apply write until BOTH explicit confirmations; sends exactly six original preview fields', async () => {
+    const setMe = vi.fn();
+    BridgeRegistry.register('setMe', setMe as unknown as AnyFn);
+    const requests: Array<{ url: string; body: unknown }> = [];
+    reply = async (url, init) => {
+      requests.push({ url, body: JSON.parse(String(init?.body)) as unknown });
+      if (url.endsWith('/preview')) return response(preview());
+      expect(url).toBe('/api/account/portable-import/apply');
+      return response({ ok: true, applied: true, targetUserId: 'target', version: 1, appliedFields: ['displayName', 'website'] });
+    };
+    const v = view();
+    await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(v.getByTestId('portable-identity-preview-ok')).toBeTruthy());
+    const apply = v.getByTestId('portable-identity-apply') as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+    await fireEvent.click(apply);
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    await fireEvent.click(v.getByTestId('portable-identity-apply-ack'));
+    expect(apply.disabled).toBe(true);
+    await fireEvent.input(v.getByTestId('portable-identity-apply-phrase'), { target: { value: 'IMPORT' } });
+    expect(apply.disabled).toBe(false);
+    await fireEvent.click(apply);
+    await waitFor(() => expect(v.getByTestId('portable-identity-apply-success')).toBeTruthy());
+    expect(requests).toEqual([
+      { url: '/api/account/portable-import/preview', body: source },
+      { url: '/api/account/portable-import/apply',
+        body: {
+          document: source,
+          expected: {
+            displayName: 'Target', bio: 'Same', website: '', pronouns: '',
+            avatarColor: '#abcdef', bannerColor: '',
+          },
+          targetUserId: 'target',
+          confirm: 'APPLY_PORTABLE_PROFILE',
+        } },
+    ]);
+    expect(v.queryByTestId('portable-identity-apply')).toBeNull();
+    expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull();
+    expect((v.getByTestId('portable-identity-preview-file') as HTMLInputElement).disabled).toBe(false);
+    expect(setMe).toHaveBeenCalledTimes(1);
+    expect(setMe).toHaveBeenCalledWith(expect.objectContaining({
+      _id: 'target', displayName: 'Source', bio: 'Same',
+      website: 'https://example.test', avatarColor: '#abcdef',
+    }));
+  });
+
+  it('fails closed on stale-preview conflict (409); a second write requires an entirely new preview', async () => {
+    reply = async url => url.endsWith('/preview')
+      ? response(preview())
+      : response({ code: 'PORTABLE_PROFILE_CONFLICT' }, 409);
+    const v = view();
+    await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(v.getByTestId('portable-identity-apply')).toBeTruthy());
+    await fireEvent.click(v.getByTestId('portable-identity-apply-ack'));
+    await fireEvent.input(v.getByTestId('portable-identity-apply-phrase'), { target: { value: 'IMPORT' } });
+    await fireEvent.click(v.getByTestId('portable-identity-apply'));
+    await waitFor(() => expect(v.getByTestId('portable-identity-apply-error')).toBeTruthy());
+    expect(v.queryByTestId('portable-identity-apply')).toBeNull();
+    expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull();
+    expect(v.queryByTestId('portable-identity-apply-success')).toBeNull();
+    expect((v.getByTestId('portable-identity-preview-file') as HTMLInputElement).disabled).toBe(false);
+    expect(apiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not fake success when step-up is refused/cancelled or a 200 response is not an apply receipt', async () => {
+    let status = 403;
+    reply = async url => url.endsWith('/preview')
+      ? response(preview())
+      : response(status === 403 ? { error: 'STEP_UP_REQUIRED' } : { ok: true, applied: false }, status);
+    const v = view();
+    await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(v.getByTestId('portable-identity-apply')).toBeTruthy());
+    await fireEvent.click(v.getByTestId('portable-identity-apply-ack'));
+    await fireEvent.input(v.getByTestId('portable-identity-apply-phrase'), { target: { value: 'IMPORT' } });
+    await fireEvent.click(v.getByTestId('portable-identity-apply'));
+    await waitFor(() => expect(v.getByTestId('portable-identity-apply-error')).toBeTruthy());
+    expect(v.queryByTestId('portable-identity-apply-success')).toBeNull();
+    status = 200;
+    await fireEvent.click(v.getByTestId('portable-identity-apply'));
+    await waitFor(() => expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull());
+    expect(v.queryByTestId('portable-identity-apply-success')).toBeNull();
+  });
+
+  it('rejects an untrusted partial / duplicate-field / wrong-target preview before enabling any write', async () => {
+    const v = view();
+    reply = async () => response(preview(sixFields, 'different-account'));
+    await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(v.getByRole('alert').textContent).toBeTruthy());
+    expect(v.queryByTestId('portable-identity-apply')).toBeNull();
+    reply = async () => response(preview([...sixFields.slice(0, 5), sixFields[0]!]));
+    await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+    expect(v.queryByTestId('portable-identity-apply')).toBeNull();
+  });
+
+  it('cancels when the authenticated account changes after preview, without issuing a write', async () => {
+    let owner = 'target';
+    BridgeRegistry.register('getMe', (() => ({ _id: owner })) as unknown as AnyFn);
+    reply = async () => response(preview());
+    const v = view();
+    await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(v.getByTestId('portable-identity-apply')).toBeTruthy());
+    await fireEvent.click(v.getByTestId('portable-identity-apply-ack'));
+    await fireEvent.input(v.getByTestId('portable-identity-apply-phrase'), { target: { value: 'IMPORT' } });
+    owner = 'other';
+    await fireEvent.click(v.getByTestId('portable-identity-apply'));
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    expect(v.queryByTestId('portable-identity-apply')).toBeNull();
+    expect(v.getByTestId('portable-identity-apply-error').textContent).toBeTruthy();
+  });
+
+  it('erases previously previewed sensitive fields on a different login even with no apply click', async () => {
+    reply = async () => response(preview());
+    const v = view();
+    await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(v.getByTestId('portable-identity-preview-ok')).toBeTruthy());
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    await waitFor(() => expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull());
+    expect(v.queryByTestId('portable-identity-apply')).toBeNull();
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not display a late preview response from a session that logged out while loading', async () => {
+    let resolve!: (response: Response) => void;
+    reply = async () => new Promise<Response>(done => { resolve = done; });
+    const v = view();
+    const selection = fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+    document.dispatchEvent(new CustomEvent('bridge:auth-logout'));
+    resolve(response(preview()));
+    await selection;
+    expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull();
+    expect(v.queryByTestId('portable-identity-apply')).toBeNull();
+  });
+
+  it('erases the in-memory import intent on logout, even after both confirmations', async () => {
+    reply = async () => response(preview());
+    const v = view();
+    await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(v.getByTestId('portable-identity-apply')).toBeTruthy());
+    await fireEvent.click(v.getByTestId('portable-identity-apply-ack'));
+    await fireEvent.input(v.getByTestId('portable-identity-apply-phrase'), { target: { value: 'IMPORT' } });
+    document.dispatchEvent(new CustomEvent('bridge:auth-logout'));
+    await waitFor(() => expect(v.queryByTestId('portable-identity-apply')).toBeNull());
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not duplicate an in-flight apply or claim another account\'s late success after logout', async () => {
+    let resolveApply!: (value: Response) => void;
+    const pendingApply = new Promise<Response>(resolve => { resolveApply = resolve; });
+    reply = async url => url.endsWith('/preview') ? response(preview()) : pendingApply;
+    const v = view();
+    await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(v.getByTestId('portable-identity-apply')).toBeTruthy());
+    await fireEvent.click(v.getByTestId('portable-identity-apply-ack'));
+    await fireEvent.input(v.getByTestId('portable-identity-apply-phrase'), { target: { value: 'IMPORT' } });
+    const apply = v.getByTestId('portable-identity-apply') as HTMLButtonElement;
+    await fireEvent.click(apply);
+    expect(apply.disabled).toBe(true);
+    await fireEvent.click(apply); // forced extra click must be ignored
+    expect(apiFetch).toHaveBeenCalledTimes(2); // exactly one preview and one apply
+    document.dispatchEvent(new CustomEvent('bridge:auth-logout'));
+    BridgeRegistry.register('getMe', (() => ({ _id: 'another-account' })) as unknown as AnyFn);
+    resolveApply(response({ ok: true, applied: true, targetUserId: 'target', version: 1 }));
+    await waitFor(() => expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull());
+    expect(v.queryByTestId('portable-identity-apply-success')).toBeNull();
+    expect(v.queryByTestId('portable-identity-apply')).toBeNull();
+    expect(apiFetch).toHaveBeenCalledTimes(2);
+  });
+
+
+  it('immediately refreshes the canonical signed-in profile after confirmed apply, not before', async () => {
+    const user: Record<string, unknown> = { _id: 'target', displayName: 'Target', bio: 'Same', website: '' };
+    const setMe = vi.fn();
+    const legacy = globalThis as typeof globalThis & { currentUser?: Record<string, unknown> };
+    const previousLegacy = legacy.currentUser;
+    legacy.currentUser = user;
+    BridgeRegistry.register('getMe', (() => user) as AnyFn);
+    BridgeRegistry.register('setMe', setMe as AnyFn);
+    vi.mocked(updateUserPanel).mockClear();
+    reply = async url => url.endsWith('/preview') ? response(preview()) :
+      response({ ok: true, applied: true, targetUserId: 'target', version: 1 });
+    try {
+      const v = view();
+      await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+        target: { files: [portableFile(JSON.stringify(source))] },
+      });
+      await waitFor(() => expect(v.getByTestId('portable-identity-apply')).toBeTruthy());
+      expect(user.displayName).toBe('Target');
+      expect(setMe).not.toHaveBeenCalled();
+      await fireEvent.click(v.getByTestId('portable-identity-apply-ack'));
+      await fireEvent.input(v.getByTestId('portable-identity-apply-phrase'), { target: { value: 'IMPORT' } });
+      await fireEvent.click(v.getByTestId('portable-identity-apply'));
+      await waitFor(() => expect(v.getByTestId('portable-identity-apply-success')).toBeTruthy());
+      // A fresh user snapshot, not mutation of the old object, must reach
+      // AppState and the legacy profile tab after the server's 200 receipt.
+      expect(user.displayName).toBe('Target');
+      expect(user.website).toBe('');
+      expect(legacy.currentUser?.displayName).toBe('Source');
+      expect(legacy.currentUser?.website).toBe('https://example.test');
+      expect(setMe).toHaveBeenCalledWith(expect.objectContaining({
+        _id: 'target', displayName: 'Source', website: 'https://example.test', bio: 'Same',
+      }));
+      expect(updateUserPanel).toHaveBeenCalledWith(legacy.currentUser);
+    } finally {
+      BridgeRegistry.unregister('setMe');
+      if (previousLegacy === undefined) delete legacy.currentUser;
+      else legacy.currentUser = previousLegacy;
+    }
+  });
+
 });
