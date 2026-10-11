@@ -152,6 +152,16 @@ describe('P7 C2 permission manifest', () => {
     expect(await snapshot()).toEqual(initial);
   });
 
+  it('refuses contradictory persisted everyone target labels rather than granting another role', async () => {
+    await db.channelPermissions.insert({
+      _id: 'ambiguous', channelId: 'channel1', serverId: SID,
+      roleId: 'role1', targetType: 'everyone', allow: 0, deny: PERMS.VIEW_CHANNELS,
+    });
+    const bad = await download(OWNER, 'sensitive-export');
+    expect(bad.status).toBe(503);
+    expect(bad.body.code).toBe('PORTABLE_COMMUNITY_PERMISSIONS_UNAVAILABLE');
+  });
+
   it('does not treat a partial source read as an empty permission set', () => {
     expect(() => buildPortableCommunityPermissionManifest(
       { _id: SID },
