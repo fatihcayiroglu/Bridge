@@ -64,6 +64,10 @@
   let categories: Category[] = [];
   let serverId: string | null = null;
   let activeChannelId: string | null = null;
+  // Initial localStorage token can boot the channel list before /api/me has
+  // restored the user's identity. That provisional first-channel selection
+  // must not mask their remembered authorized choice once auth succeeds.
+  let provisionalPreAuthSelection = false;
   let requestSeq = 0;
   let pendingNavigation: PendingNavigation | null = null;
   let destroyed = false;
@@ -288,6 +292,7 @@
         c._id === rememberedId && (c.type ?? 'text') === 'text');
       if (!activeChannelId && !selectedByPendingNavigation && (remembered || first)) {
         selectChannel((remembered || first)!);
+        provisionalPreAuthSelection = owner === null;
       }
 
       // Apply optional presentation metadata only if this request is still the
@@ -320,6 +325,7 @@
   // ── Kanal seçimi ───────────────────────────────────────────────────────────
   function selectChannel(channel: Channel, historyMessageId?: string): void {
     if (destroyed) return;
+    provisionalPreAuthSelection = false;
     const safeChannel = sanitizeChannel(channel);
     if (!safeChannel) return;
     channel = safeChannel;
@@ -409,6 +415,7 @@
 
   function onLogout(): void {
     requestSeq += 1;
+    provisionalPreAuthSelection = false;
     if (pendingNavigation) finishPendingNavigation(pendingNavigation, false);
     channels = [];
     categories = [];
@@ -419,6 +426,17 @@
     BridgeRegistry.call('setCurrentServerChannels', []);
     BridgeRegistry.call('setCurrentChannel', null);
     void renderView();
+  }
+
+  function onAuthSuccess(): void {
+    if (!provisionalPreAuthSelection || !serverId) return;
+    const owner = navigationOwner(BridgeRegistry.call('getMe'));
+    if (!owner) return;
+    provisionalPreAuthSelection = false;
+    const remembered = lastTextChannel(owner, serverId);
+    const authorized = channels.find(c =>
+      c._id === remembered && (c.type ?? 'text') === 'text');
+    if (authorized && authorized._id !== activeChannelId) selectChannel(authorized);
   }
 
   // ── ERİŞİM DEĞİŞİKLİKLERİ (Final21 Faz 16) ─────────────────────────────────
@@ -456,6 +474,7 @@
     document.addEventListener('bridge:socket-ready', syncAccessSocket);
     document.addEventListener('bridge:socket-reconnected', syncAccessSocket);
     document.addEventListener('bridge:load-channels', onLoadChannels);
+    document.addEventListener('bridge:auth-success', onAuthSuccess);
     document.addEventListener('bridge:auth-logout', onLogout);
     // ServerSwitcher bu bileşenden önce sunucu seçmiş olabilir.
     const server = BridgeRegistry.call<{ _id?: string } | null>('getCurrentServer');
@@ -551,6 +570,7 @@
     destroyed = true;
     requestSeq += 1;
     document.removeEventListener('bridge:load-channels', onLoadChannels);
+    document.removeEventListener('bridge:auth-success', onAuthSuccess);
     document.removeEventListener('bridge:auth-logout', onLogout);
     document.removeEventListener('bridge:socket-ready', syncAccessSocket);
     document.removeEventListener('bridge:socket-reconnected', syncAccessSocket);
