@@ -332,19 +332,10 @@ describe('account export/delete production behavior', () => {
     expect(noStepUp.body).toMatchObject({ error: 'STEP_UP_REQUIRED', scope: 'sensitive-export' });
     expect(query).not.toHaveBeenCalled();
 
-    query.mockImplementation(async (sql: string, params: unknown[]) => {
-      expect(sql).toMatch(/^UPDATE users SET /);
-      expect(sql).toContain('WHERE _id=$1 AND');
-      expect(sql).toContain('COALESCE("displayName", \'\')=$8');
-      expect(sql).toContain('COALESCE("bannerColor", \'\')=$13');
-      expect(sql).not.toMatch(/username|password|email|token|sourceUserId|avatarUrl|membership/i);
-      expect(params).toEqual([
-        'me', 'Migrated Name', 'New biography', 'https://profile.example',
-        'they/them', '#2d9cdb', '#123456',
-        'Alice', '', '', '', '#2d9cdb', '#abcdef',
-      ]);
-      return { rows: [{ _id: 'me' }], rowCount: 1 };
-    });
+    // SQL mocks must not throw Jest assertion errors *inside* the route's
+    // catch block: that converts a useful SQL-contract failure into an opaque
+    // HTTP 500. Assert exact statement and parameter contract after the call.
+    query.mockResolvedValue({ rows: [{ _id: 'me' }], rowCount: 1 });
     const res = await request(app()).post('/api/account/portable-import/apply')
       .set(EXPORT_PROOF()).send(body);
     expect(res.status).toBe(200);
@@ -354,6 +345,17 @@ describe('account export/delete production behavior', () => {
       appliedFields: ['displayName', 'bio', 'website', 'pronouns', 'bannerColor'],
     });
     expect(query).toHaveBeenCalledTimes(1);
+    const [sql, params] = query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toMatch(/^UPDATE users SET /);
+    expect(sql).toContain('WHERE _id=$1 AND');
+    expect(sql).toContain('COALESCE("displayName", \'\')=$8');
+    expect(sql).toContain('COALESCE("bannerColor", \'\')=$13');
+    expect(sql).not.toMatch(/username|password|email|token|sourceUserId|avatarUrl|membership/i);
+    expect(params).toEqual([
+      'me', 'Migrated Name', 'New biography', 'https://profile.example',
+      'they/them', '#2d9cdb', '#123456',
+      'Alice', '', '', '', '#2d9cdb', '#abcdef',
+    ]);
     expect(txQuery).not.toHaveBeenCalled();
     expect(db._transaction).not.toHaveBeenCalled();
   });
