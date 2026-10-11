@@ -83,7 +83,8 @@
       "category": "Network;InstantMessaging",
       "synopsis": "Self-hosted federated communication platform",
       "maintainer": "Bridge Contributors <149966576+fatihcayiroglu@users.noreply.github.com>",
-      "syncDesktopName": true
+      "syncDesktopName": true,
+      "executableName": "bridge"
     },
     "nsis": {
       "oneClick": false,
