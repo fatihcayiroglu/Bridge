@@ -61,7 +61,17 @@ jobs:
           test -s electron/release/linux-unpacked/resources/app.asar
           for deb in "${debs[@]}"; do
             dpkg-deb --info "${deb}" >/dev/null
-            dpkg-deb --contents "${deb}" | grep -q 'usr/share/applications/bridge.desktop'
+            # Never combine dpkg-deb's large output with grep -q under
+            # pipefail: grep exits on the first match, SIGPIPE kills the
+            # producer, and a valid package is reported as a false failure.
+            listing="$(mktemp)"
+            dpkg-deb --contents "${deb}" > "${listing}"
+            if ! grep -Fq 'usr/share/applications/bridge.desktop' "${listing}"; then
+              echo "DEB missing expected desktop entry: ${deb}" >&2
+              rm -f "${listing}"
+              exit 1
+            fi
+            rm -f "${listing}"
           done
           file electron/release/linux-unpacked/bridge
       - name: Install headless desktop display dependencies
