@@ -25,6 +25,11 @@ manifest and reports excluded legacy/user rows by count.
   response with 503 — **never a partial success**. Up to 500 source
   channels are supported in this v1 increment; larger source topologies
   return 413 without truncation. The result is also bounded to 512 KiB.
+- **Consistency limit:** per-channel reads do not share a PostgreSQL
+  repeatable-read snapshot. Concurrent permission edits may race the
+  download; even a checksum-valid result is **not migration authority**.
+  Future apply requires an explicit server-side snapshot/epoch or
+  transaction-bound conflict policy. No importer consumes this file.
 - Data is a deterministic allowlisted JSON document with
   `format: bridge-portable-community-permissions`, `version: 1`,
   `sourceServerId`, stable sorted `channels[]` and `integrity`
