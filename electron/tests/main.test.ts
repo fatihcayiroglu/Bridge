@@ -249,16 +249,18 @@ describe('shell chrome', () => {
     expect(viewItems(installed.electron).some((item) => item.label === 'DevTools')).toBe(false);
   });
 
-  it('hides to the tray on close and explains it only once', async () => {
+  it('closes natively on macOS; Linux/Windows hide to tray with one notification', async () => {
     const { electron } = await loadMain({ serverOrigin: ORIGIN });
     const win = mainWindowOf(electron);
+    const onMac = process.platform === 'darwin';
     for (let i = 0; i < 2; i++) {
       const event = { preventDefault: jest.fn() };
       win.emit('close', event);
-      expect(event.preventDefault).toHaveBeenCalled();
+      if (onMac) expect(event.preventDefault).not.toHaveBeenCalled();
+      else expect(event.preventDefault).toHaveBeenCalledTimes(1);
     }
-    expect(win.hide).toHaveBeenCalledTimes(2);
-    expect(electron.Tray.instances[0].displayBalloon).toHaveBeenCalledTimes(1);
+    expect(win.hide).toHaveBeenCalledTimes(onMac ? 0 : 2);
+    expect(electron.Tray.instances[0].displayBalloon).toHaveBeenCalledTimes(onMac ? 0 : 1);
   });
 
   it('quits for real from the tray menu', async () => {
@@ -271,7 +273,8 @@ describe('shell chrome', () => {
     expect(event.preventDefault).not.toHaveBeenCalled();
   });
 
-  (process.platform === 'win32' ? it : it.skip)('Start with Windows is off by default and follows the tray checkbox', async () => {
+  if (process.platform === 'win32') {
+    it('Start with Windows is off by default and follows the tray checkbox', async () => {
     const { electron, main } = await loadMain({ serverOrigin: ORIGIN });
     const items = electron.Tray.instances[0].setContextMenu.mock.calls[0][0].items as Array<{ label?: string; checked?: boolean; click?: (i: object) => void }>;
     const toggle = items.find((item) => item.label === 'Windows ile başlat')!;
