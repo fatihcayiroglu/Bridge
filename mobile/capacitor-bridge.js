@@ -467,6 +467,16 @@
         ).filter((el) => el.offsetParent !== null || el.getClientRects().length > 0);
         if (dialogs.length > 0) {
           const top = dialogs[dialogs.length - 1];
+          // Mirror the TS source: send Settings through its canonical close
+          // control rather than a synthetic keyboard event.
+          const settingsClose = top.matches(".settings-modal")
+            ? top.querySelector("button.settings-close")
+            : null;
+          if (settingsClose) {
+            settingsClose.click();
+            void bridgeHaptic.light();
+            return;
+          }
           top.dispatchEvent(new KeyboardEvent("keydown", {
             key: "Escape",
             code: "Escape",
