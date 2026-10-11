@@ -485,6 +485,22 @@ export async function viewableChannelIds(
   return viewable;
 }
 
+/** Content-derived surfaces require history authority as well as channel visibility. */
+export async function readableChannelIds(
+  userId: string,
+  serverId: string,
+  channelIds: ReadonlyArray<string>,
+): Promise<Set<string>> {
+  const readable = new Set<string>();
+  for (const channelId of new Set(channelIds.map(String))) {
+    const permissions = await resolvePermissions(userId, serverId, channelId).catch(() => 0);
+    if (hasPermission(permissions, PERMS.VIEW_CHANNELS) && hasPermission(permissions, PERMS.READ_HISTORY)) {
+      readable.add(channelId);
+    }
+  }
+  return readable;
+}
+
 /**
  * Bir aktorun hedef rolun hiyerarsisinde ustunde olup olmadigini denetler.
  *

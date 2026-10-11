@@ -52,7 +52,7 @@ test.describe('Kanal Yönetimi', () => {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ name: '' }),
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(400);
   });
 
   // ── Kanal Testleri ───────────────────────────────────────
@@ -114,7 +114,7 @@ test.describe('Kanal Yönetimi', () => {
       headers: { Authorization: `Bearer ${tokens.bob}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ name: 'yetkisiz-kanal', type: 'text' }),
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(403);
   });
 
   test('API: özel karakterli kanal ismi', async ({ request }) => {
@@ -123,8 +123,10 @@ test.describe('Kanal Yönetimi', () => {
       headers: { Authorization: `Bearer ${tokens.alice}`, 'Content-Type': 'application/json' },
       data: JSON.stringify({ name: 'genel-tartışma', type: 'text' }),
     });
-    // İzin verilmeli veya sanitize edilmeli
-    expect(res.status()).toBeLessThan(500);
+    // Türkçe harfler kanal adında izinlidir (lib/channelName.ts): 201 ve ad aynen
+    // saklanır. `< 500` 403/404/429'u da "izin verildi" sayıyordu.
+    expect(res.status(), await res.text()).toBe(201);
+    expect((await res.json() as { name?: string }).name).toBe('genel-tartışma');
   });
 
   // ── UI Testleri ──────────────────────────────────────────
@@ -132,37 +134,27 @@ test.describe('Kanal Yönetimi', () => {
   test('UI: kanal listesi sidebar\'da görünmeli', async ({ page }) => {
     const bp = new BridgePage(page);
     await bp.goto('/');
-    await page.waitForTimeout(1500);
 
-    // Sidebar mevcut mu
-    const sidebar = page.locator('.channel-list, #channel-list, .sidebar, aside').first();
-    const count = await sidebar.count();
-    if (count > 0) {
-      await expect(sidebar).toBeVisible();
-    }
-    // En azından sayfa yüklendi
-    await expect(page.locator('body')).toBeVisible();
+    // Eskiden `if (count > 0)` içindeydi ve tek koşulsuz kontrol `body` görünürlüğüydü:
+    // liste hiç çizilmese de geçerdi. Kanal listesi yalnızca bir sunucu seçiliyken
+    // render edilir; bu paketin kendi sunucusu açılır ve varsayılan metin kanalı
+    // ('general', ServerRepository.createWithDefaultsAtomic) listede görünmelidir.
+    await page.locator(`.server-icon[data-id="${testServerId}"]`).first().click({ timeout: 15_000 });
+    await expect(page.locator('.channel-list-host').first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[aria-label="Kanal: general"]').first()).toBeVisible({ timeout: 10_000 });
   });
 
   test('UI: sunucu oluşturma modalı açılmalı', async ({ page }) => {
     const bp = new BridgePage(page);
     await bp.goto('/');
-    await page.waitForTimeout(1000);
 
-    // Sunucu oluştur butonu
-    const addServerBtn = page.locator(
-      '[data-testid="add-server"], .add-server, [title*="Sunucu"], [title*="Server"], [aria-label*="server"]'
-    ).first();
-
-    if (await addServerBtn.count() > 0) {
-      await addServerBtn.click();
-      await page.waitForTimeout(500);
-
-      // Modal açılmış olmalı
-      const modal = page.locator('.modal, [role="dialog"], .overlay').first();
-      if (await modal.count() > 0) {
-        await expect(modal).toBeVisible();
-      }
-    }
+    // Eski seçicilerin (`add-server`, `[title*="Sunucu"]`…) hiçbiri istemcide yoktu ve
+    // her iki kontrol de `if (count > 0)` içindeydi: test hiçbir şey ölçmeden geçiyordu.
+    // Gerçek tetikleyici sunucu rayındaki düğmedir (index.html, `openServerStart`);
+    // açtığı yüzey EmptyServerStart.svelte'nin modal diyaloğudur.
+    const addServerBtn = page.locator('button.server-add[data-bridge-action="openServerStart"]');
+    await expect(addServerBtn).toBeVisible({ timeout: 15_000 });
+    await addServerBtn.click();
+    await expect(page.locator('.empty-server-backdrop[role="dialog"][aria-modal="true"]')).toBeVisible({ timeout: 10_000 });
   });
 });

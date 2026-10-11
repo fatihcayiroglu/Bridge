@@ -22,6 +22,41 @@ function cleanup(...ids: string[]) {
   ids.forEach(id => unregister(id));
 }
 
+describe('plugin runtime wildcard contracts', () => {
+  afterEach(() => cleanup('plugin-a', 'plugin-b'));
+
+  it('wildcard callback with event parameter receives the real event name and payload', async () => {
+    const hooksA = register('plugin-a', makePlugin('plugin-a'));
+    const hooksB = register('plugin-b', makePlugin('plugin-b'));
+    const own = jest.fn((_event: string, _payload: unknown) => undefined);
+    const other = jest.fn((_event: string, _payload: unknown) => undefined);
+    hooksA.on('*', own);
+    hooksB.on('*', other);
+
+    await hooksA.emit('plugin:custom', { source: 'a' });
+    expect(own).toHaveBeenCalledWith('plugin:custom', { source: 'a' });
+    expect(other).not.toHaveBeenCalled();
+
+    await hooksA.emitToAll('plugin:broadcast', { source: 'a' });
+    expect(other).toHaveBeenCalledWith('plugin:broadcast', { source: 'a' });
+  });
+
+  it('unregistering a plugin does not remove another plugin wildcard listener', async () => {
+    const hooksA = register('plugin-a', makePlugin('plugin-a'));
+    const hooksB = register('plugin-b', makePlugin('plugin-b'));
+    const removed = jest.fn();
+    const retained = jest.fn();
+    hooksA.on('*', removed);
+    hooksB.on('*', retained);
+
+    unregister('plugin-a');
+    await emit('plugin:system-event', { ok: true });
+
+    expect(removed).not.toHaveBeenCalled();
+    expect(retained).toHaveBeenCalledWith({ ok: true });
+  });
+});
+
 // ── A — Wildcard izolasyonu ───────────────────────────────────────────────────
 
 describe('cross-plugin wildcard izolasyonu', () => {

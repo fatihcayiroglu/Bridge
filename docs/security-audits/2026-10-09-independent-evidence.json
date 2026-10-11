@@ -1,0 +1,305 @@
+{
+  "base_sha": "c517364b9289d13e16101a30d080ca51125971a5",
+  "validated_source_head": "274d270df0c55079a5993e6170bd70e2d2f949c7",
+  "note": "Full suite and targeted final runs validate these source file contents. Later documentation-only commits do not change them. Raw logs are local artifacts, not claimed GitHub CI. Expected failing runs are negative evidence, not PASS.",
+  "commits": [
+    "274d270df0c55079a5993e6170bd70e2d2f949c7 test(security): register independent confidentiality regressions",
+    "a97a481f0cabed156855cc0c06db4283b417b8ac test(security): require valid HTTP signatures to be accepted",
+    "5dae3293726cca4f245c05e165da925a868c044a fix(privacy): hide presence across public activity surfaces",
+    "161aa969e4354c512e4dd4ec4ff18046b1a914fa fix(security): revalidate semantic history and cached content"
+  ],
+  "source_sha256": {
+    "server/lib/permissions.ts": "552e21e0efba64a6a9ce244373cec404c418182c7662b9e354ead53b25a3ec10",
+    "server/lib/userUtils.ts": "0eb576f14ca02fc6d7182991df732cfeb43969fd337251bc25be82f92ac08bf5",
+    "server/routes/activity.ts": "94adadd43c09b02747445793ad8bc768af13f3243b488bb74be1df7de29d39bd",
+    "server/routes/semantic.ts": "92175aec89baafde5cac33d49c7f67a6e7225e2c93a6bb34f1b4819b26e01ce5",
+    "server/tests/httpSignature.test.ts": "d3638b32563f4dccfe83a16ef7f299dce2253bf042b829b93d3ff768a2929c49",
+    "server/tests/pg-integration/semantic-confidentiality.pgtest.ts": "85b79e803705b0b4e09432a4faa40a1f2f7fd5457ab649007834fd07341f65d6",
+    "server/tests/presence-public-surfaces-security.test.ts": "e95d73c08a166cf8aee23d3f4942d84a0354a00e702cd67d0ec021f46e1a5cc4",
+    "server/tests/security-corpus.test.ts": "f9f8edbbd54fb8d102806876d325ad9a3736556e9e49eb3f432a570b084fb79e",
+    "server/tests/semantic-confidentiality-regression.test.ts": "a53190acb64997dc16601de61a1adda1d986e055a05c16b20ff25567de99821a",
+    "server/tests/semantic-provider-digest-deep.test.ts": "801a33524ce0b166710646517bc85ff1dba09e78aa914d31eec3d78ce4960431"
+  },
+  "results": {
+    "audit-server-full": {
+      "status": "PASS",
+      "passed": 12011,
+      "failed": 0,
+      "pending": 0,
+      "passed_suites": 624,
+      "failed_suites": 0,
+      "success": true,
+      "raw_result_path": "/workspace/.bridge-env/audit-server-full.json",
+      "sha256": "89a50e5491acbf8c9aa72ebacb71f6776515555bc8e298660cbfdc814e21b5b7"
+    },
+    "semantic-green": {
+      "status": "PASS",
+      "passed": 113,
+      "failed": 0,
+      "pending": 0,
+      "passed_suites": 7,
+      "failed_suites": 0,
+      "success": true,
+      "raw_result_path": "/workspace/.bridge-env/semantic-green.json",
+      "sha256": "02ad9cda9d288bc8cfc7eea1655d65ef10e7b40c12eb1dfc54086f62f05e70af"
+    },
+    "semantic-live": {
+      "status": "PASS_LIVE_PG_REDIS_CSRF",
+      "passed": 3,
+      "failed": 0,
+      "pending": 0,
+      "passed_suites": 1,
+      "failed_suites": 0,
+      "success": true,
+      "raw_result_path": "/workspace/.bridge-env/semantic-live.json",
+      "sha256": "99cc56bf2aa2db5831af549c6ac8fcb57450023768ee8ef7bba2b80f97f2f77a"
+    },
+    "presence-green": {
+      "status": "PASS",
+      "passed": 6,
+      "failed": 0,
+      "pending": 0,
+      "passed_suites": 1,
+      "failed_suites": 0,
+      "success": true,
+      "raw_result_path": "/workspace/.bridge-env/presence-green.json",
+      "sha256": "98c4ca3a7aa0491f555b20f43aed7d2e182eb8bf96f956fbc99f7000ee68524b"
+    },
+    "signature-green": {
+      "status": "PASS",
+      "passed": 31,
+      "failed": 0,
+      "pending": 0,
+      "passed_suites": 1,
+      "failed_suites": 0,
+      "success": true,
+      "raw_result_path": "/workspace/.bridge-env/signature-green.json",
+      "sha256": "3feec7127c7cd2af486e6d11a10b207e00ed467580035f7766affac39c1314e7"
+    },
+    "mobile-built": {
+      "status": "PASS",
+      "passed": 127,
+      "failed": 0,
+      "pending": 0,
+      "passed_suites": 11,
+      "failed_suites": 0,
+      "success": true,
+      "raw_result_path": "/workspace/.bridge-env/mobile-built.json",
+      "sha256": "66f4d5b226b8bba6da7fd46d8e88eedd43cde236f5f431260abba52c51eb15e7"
+    },
+    "electron": {
+      "status": "PASS_WITH_PLATFORM_SKIP",
+      "passed": 50,
+      "failed": 0,
+      "pending": 1,
+      "passed_suites": 4,
+      "failed_suites": 0,
+      "success": true,
+      "raw_result_path": "/workspace/.bridge-env/electron.json",
+      "sha256": "bffb51ea52426075f75b45f1d603fe72a26f7a1b81026e7d3c1e892ab8bd4048"
+    },
+    "semantic-red": {
+      "status": "EXPECTED_BASELINE_FAILURE",
+      "passed": 1,
+      "failed": 7,
+      "pending": 0,
+      "passed_suites": 0,
+      "failed_suites": 1,
+      "success": false,
+      "raw_result_path": "/workspace/.bridge-env/semantic-red.json",
+      "sha256": "1d1535f60d3dadb897662ff265a1a4e01354ba1d1f84432d782981533f94e193"
+    },
+    "presence-red": {
+      "status": "EXPECTED_BASELINE_FAILURE",
+      "passed": 0,
+      "failed": 5,
+      "pending": 0,
+      "passed_suites": 0,
+      "failed_suites": 1,
+      "success": false,
+      "raw_result_path": "/workspace/.bridge-env/presence-red.json",
+      "sha256": "0a423595e49ee03d8159d0bec4796fb0eac41a952dae1dd8a9609349adf19337"
+    },
+    "mutation-history": {
+      "status": "EXPECTED_MUTATION_FAILURE",
+      "passed": 5,
+      "failed": 3,
+      "pending": 0,
+      "passed_suites": 0,
+      "failed_suites": 1,
+      "success": false,
+      "raw_result_path": "/workspace/.bridge-env/mutation-history.json",
+      "sha256": "b4b6b92963b27981ea71a51d5ced5a5ca56e82ebb887cceb050a7b2946784f7c"
+    },
+    "mutation-digest": {
+      "status": "EXPECTED_MUTATION_FAILURE",
+      "passed": 6,
+      "failed": 2,
+      "pending": 0,
+      "passed_suites": 0,
+      "failed_suites": 1,
+      "success": false,
+      "raw_result_path": "/workspace/.bridge-env/mutation-digest.json",
+      "sha256": "dab87c41e8317867e338ecb203651eb72b5337505eebb00738fa23499ff848d4"
+    },
+    "mutation-explanation": {
+      "status": "EXPECTED_MUTATION_FAILURE",
+      "passed": 7,
+      "failed": 1,
+      "pending": 0,
+      "passed_suites": 0,
+      "failed_suites": 1,
+      "success": false,
+      "raw_result_path": "/workspace/.bridge-env/mutation-explanation.json",
+      "sha256": "0295cdaaa84bc40c451c073860e8bf2983e9383e87b7bb39aca786489a2f2ece"
+    },
+    "mutation-presence": {
+      "status": "EXPECTED_MUTATION_FAILURE",
+      "passed": 0,
+      "failed": 6,
+      "pending": 0,
+      "passed_suites": 0,
+      "failed_suites": 1,
+      "success": false,
+      "raw_result_path": "/workspace/.bridge-env/mutation-presence.json",
+      "sha256": "6696da1e396cf76fcee4b0cb689ebaa7099c9d4097aaf7e60682fce3e8f422d6"
+    },
+    "signature-false-green": {
+      "status": "MISLEADING_PASS_WITH_REJECTION_MUTATION",
+      "passed": 31,
+      "failed": 0,
+      "pending": 0,
+      "passed_suites": 1,
+      "failed_suites": 0,
+      "success": true,
+      "raw_result_path": "/workspace/.bridge-env/signature-false-green.json",
+      "sha256": "572f11566004590e65de2167a9f8e31a65044fa5bace33107900e3d26de05cfa"
+    },
+    "signature-negative-control": {
+      "status": "EXPECTED_MUTATION_FAILURE",
+      "passed": 30,
+      "failed": 1,
+      "pending": 0,
+      "passed_suites": 0,
+      "failed_suites": 1,
+      "success": false,
+      "raw_result_path": "/workspace/.bridge-env/signature-negative-control.json",
+      "sha256": "200b9caf431db58af961d634f41e47b757cbc47cf4ada68ecba7b9c7b7fca17d"
+    },
+    "audit-security-corpus": {
+      "status": "PASS",
+      "raw_result_path": "/workspace/.bridge-env/audit-security-corpus.log",
+      "sha256": "49ac3f358de571d5740899d8ab394c18e0dabb22e328e81eda9db262ee7d5591",
+      "summary_lines": [
+        "Test Suites: 47 passed, 47 total",
+        "Tests:       806 passed, 806 total"
+      ]
+    },
+    "client-tests": {
+      "status": "PASS",
+      "raw_result_path": "/workspace/.bridge-env/client-tests.log",
+      "sha256": "946fa5424ac56857b744bf13326b08e77253da3417ced1c4e8acc2732e7a167d",
+      "summary_lines": []
+    },
+    "release-tests": {
+      "status": "PASS",
+      "raw_result_path": "/workspace/.bridge-env/release-tests.log",
+      "sha256": "3b6cfde9f74e33314a8798d66368b057804398ae5de03b2c4679736b7a142e18",
+      "summary_lines": []
+    },
+    "pg-concurrency-tests": {
+      "status": "PASS_LIVE",
+      "raw_result_path": "/workspace/.bridge-env/pg-concurrency-tests.log",
+      "sha256": "f337a46fbd31305a603d2d7ee520fe99d1582f363f99882e43d3b87f1b765bcd",
+      "summary_lines": [
+        "Test Suites: 1 passed, 1 total",
+        "Tests:       14 passed, 14 total"
+      ]
+    },
+    "pg-redis-tests": {
+      "status": "PASS_LIVE",
+      "raw_result_path": "/workspace/.bridge-env/pg-redis-tests.log",
+      "sha256": "907f77826c17c351d619d2a1a60df300680eac5bed28f6c4642782ebbb49060c",
+      "summary_lines": [
+        "Test Suites: 1 passed, 1 total",
+        "Tests:       4 passed, 4 total"
+      ]
+    },
+    "playwright-api-smoke": {
+      "status": "PASS_BASELINE_RUNNING_APP_ONLY",
+      "retries": 0,
+      "stats": {
+        "startTime": "2026-10-09T19:27:03.502Z",
+        "duration": 1179.9589999999998,
+        "expected": 3,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "config": "/workspace/.bridge-env/smoke-playwright.config.cjs"
+    }
+  },
+  "checks": {
+    "audit-server-types": {
+      "status": "PASS",
+      "raw_result_path": "/workspace/.bridge-env/audit-server-types.log",
+      "sha256": "bc32a1bfe7c25ed020fafc4722d6ef12dabaf80fd1979987b1ccedd624bd3440"
+    },
+    "audit-test-types": {
+      "status": "PASS",
+      "raw_result_path": "/workspace/.bridge-env/audit-test-types.log",
+      "sha256": "01299754039a313756ad1287ad28c2e1e607267a2ba58b3d1a6ab4db08b5a2cd"
+    },
+    "audit-lint": {
+      "status": "PASS",
+      "raw_result_path": "/workspace/.bridge-env/audit-lint.log",
+      "sha256": "a24886a4e09a85aea34063eea3bf1146e3c9d2b51bc3d109c6bdb220182dc3c7"
+    },
+    "audit-server-build": {
+      "status": "PASS",
+      "raw_result_path": "/workspace/.bridge-env/audit-server-build.log",
+      "sha256": "f24d8364fa0576979e38689c70e46eb43a71bf7628acfe3388fb754ff9f1aa35"
+    },
+    "client-types": {
+      "status": "PASS",
+      "raw_result_path": "/workspace/.bridge-env/client-types.log",
+      "sha256": "0f9114428ecaf7ea42e73432b9987f46077f06b790942f57af1df15c8e64d895"
+    },
+    "semantic-missing-env": {
+      "status": "EXPECTED_CONFIGURATION_FAILURE",
+      "reason": "requires PG_TEST_URL and REDIS_TEST_URL",
+      "sha256": "69911bae7876f0286fcea5c36ddde0001ae94d4f981f27921d54c006f4c98c87"
+    }
+  },
+  "ownership": {
+    "onDisk": 1065,
+    "claimed": 1065,
+    "runnerCounts": {
+      "server (jest)": 624,
+      "server (jest:pg)": 26,
+      "server (jest:pgvector)": 1,
+      "server (jest:search-it)": 1,
+      "client (vitest)": 318,
+      "bot-sdk (jest)": 1,
+      "e2e (playwright)": 75,
+      "electron (jest)": 4,
+      "mobile (jest)": 11,
+      "release integrity (node:test)": 4
+    },
+    "orphans": [],
+    "unavailable": []
+  },
+  "not_run": [
+    "browser security E2E: cdn.playwright.dev HTTP 403 Domain forbidden",
+    "real S3",
+    "real pgvector",
+    "live media/TURN/federation labs",
+    "installed native OS/device behavior",
+    "real external AI providers"
+  ],
+  "remote_ci": {
+    "status": "UNVERIFIED",
+    "reason": "api.github.com denied by current network policy; PR body statements are not independent exact-head evidence"
+  },
+  "untouched_abuse_lab_sha256": "9a28b62eb87e132da7b509ae7aefb66f47292cf199b899ac706d289e05a8a82c"
+}

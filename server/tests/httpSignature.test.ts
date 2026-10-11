@@ -580,9 +580,9 @@ describe('HTTP Signature güvenlik kenar durumları (Sprint 52)', () => {
         .set(req.headers)
         .send(JSON.parse(body));
 
-      // test modunda 202 ya da imza doğrulanabilir — production'da farklı davranabilir
-      // Burada yalnızca server crash etmediğini (5xx değil) doğruluyoruz
-      expect(res.status).not.toBe(500);
+      // A valid signature with the optional algorithm omitted must be accepted.
+      // A missing route or blanket signature rejection is not a passing control.
+      expect(res.status).toBe(202);
     });
   });
 

@@ -430,7 +430,7 @@ export { loginViaUI };
 async function registerFreshUser(
   request: import('@playwright/test').APIRequestContext,
   label: string,
-): Promise<{ token: string; username: string }> {
+): Promise<{ token: string; username: string; password: string }> {
   const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
   const password = 'E2eTestPass987!';
 
@@ -468,7 +468,7 @@ async function registerFreshUser(
   if (reg.ok()) {
     const d = await reg.json() as { token?: string; accessToken?: string };
     const t = d.token ?? d.accessToken;
-    if (t) return { token: t, username };
+    if (t) return { token: t, username, password };
   }
 
   // Zaten var (ya da kota) → GIRIS yap.
@@ -493,7 +493,7 @@ async function registerFreshUser(
   const d = await login.json() as { token?: string; accessToken?: string };
   const t = d.token ?? d.accessToken;
   if (!t) throw new Error(`giris yaniti token icermedi (${label})`);
-  return { token: t, username };
+  return { token: t, username, password };
 }
 
 export { registerFreshUser };

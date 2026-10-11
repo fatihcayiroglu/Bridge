@@ -299,7 +299,8 @@ test.describe('Stage Video Grid — API akışları', () => {
     const srv = await createTestServer(request, tokens.alice, `S83-VideoGrid-${Date.now()}`);
     serverId = srv?._id || srv?.id;
     if (!serverId) return;
-    const ch = await createTestChannel(request, tokens.alice, serverId, 'stage-video');
+    // Sahne/video ızgarası ses kanalında çalışır (kanal türleri: text | voice).
+    const ch = await createTestChannel(request, tokens.alice, serverId, 'stage-video', 'voice');
     channelId = ch?._id || ch?.id;
   });
 
@@ -308,14 +309,20 @@ test.describe('Stage Video Grid — API akışları', () => {
     expect(channelId).toBeTruthy();
   });
 
-  test('Stage kanalına katılım için auth gerekli', async ({ request }) => {
-    // Voice/stage katılım endpoint'i (varsa) auth gerektirir
-    const res = await request.post(`${API}/channels/${channelId}/voice/join`, {
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({}),
-    });
-    // 401 veya 404 (endpoint olmayabilir), her ikisi de auth katmanının doğru çalıştığını gösterir
-    expect([401, 404, 405]).toContain(res.status());
+  test('Stage kanalına katılım yetki ister — sunucu üyesi olmayan reddedilir', async () => {
+    // Katılım REST ile değil Socket.IO `voice:join` ile yapılır. Eski test var olmayan
+    // `POST /api/channels/:id/voice/join` ucuna gidiyor ve 404'ü "auth katmanı doğru
+    // çalışıyor" sayıyordu. Gerçek yol: üye olmayan kişi (carol hiçbir sunucuda
+    // değildir) AÇIKÇA reddedilir, sessizce yok sayılmaz.
+    expect(serverId && channelId, 'sahne fikstürü eksik').toBeTruthy();
+    const outsider = await openSocket(getTokens().carol);
+    try {
+      const refused = waitForEvent<{ channelId: string; code: string }>(
+        outsider, 'voice:join-rejected', 15_000, (e) => e?.channelId === channelId,
+      );
+      outsider.emit('voice:join', { channelId, serverId });
+      expect((await refused).code).toBe('FORBIDDEN');
+    } finally { closeSockets(outsider); }
   });
 
   test('Video grid WebSocket olayı: auth olmadan bağlantı reddedilir', async ({ page }) => {
@@ -488,12 +495,20 @@ test.describe('Sprint 83 — Genel Sağlık', () => {
   });
 
   test('GET /api/docs (Swagger) Sprint 83 route\'larını içeriyor', async ({ request }) => {
-    const res = await request.get(`${BASE}/api/docs`);
-    // Swagger UI opsiyonel bağımlılık — prod'da kapalı olabilir
-    if (res.status() === 404) {
-      test.skip(true, '/api/docs Swagger UI bu ortamda etkin değil');
-      return;
-    }
-    expect(res.status()).toBe(200);
+    // Swagger UI bir çalışma zamanı bağımlılığıdır (swagger-ui-express) ve /api/docs
+    // her ortamda sunulur (server/lib/swagger.ts). Eskiden 404'te "bu ortamda etkin
+    // değil" diye ATLANIYOR ve başlığın iddiasını (Sprint 83 rotaları) hiç ölçmeden
+    // yalnızca 200'e bakıyordu. Rotalar, sunulan spec'te (spec.json) aranır.
+    const ui = await request.get(`${BASE}/api/docs`);
+    expect(ui.status()).toBe(200);
+    expect(await ui.text()).toContain('swagger-ui');
+
+    const spec = await request.get(`${BASE}/api/docs/spec.json`);
+    expect(spec.status()).toBe(200);
+    const { paths } = await spec.json() as { paths: Record<string, Record<string, unknown>> };
+    const methods = (p: string) => Object.keys(paths[p] ?? {});
+    expect(methods('/bots/marketplace')).toEqual(expect.arrayContaining(['get', 'post']));
+    expect(methods('/bots/marketplace/{botId}')).toEqual(expect.arrayContaining(['get', 'patch', 'delete']));
+    expect(methods('/bots/marketplace/categories')).toEqual(expect.arrayContaining(['get']));
   });
 });
