@@ -149,9 +149,9 @@ router.post('/portable-import/preview', authMiddleware, limits.write(), requireS
 /**
  * @openapi
  * /account/portable-import/apply:
- *   post: { tags: [Account], summary: Explicitly apply a validated portable profile to the signed-in account with stale-preview detection, responses: { '200': { description: Applied positive-listed profile fields }, '400': { description: Confirmation or request shape missing }, '403': { description: 'STEP_UP_REQUIRED (sensitive-export)' }, '409': { description: Destination profile changed since preview }, '422': { description: Invalid portable v1 document or expected-state schema } } }
+ *   post: { tags: [Account], summary: Explicitly apply a validated portable profile to the signed-in account with stale-preview detection, responses: { '200': { description: Applied positive-listed profile fields }, '400': { description: Confirmation or request shape missing }, '403': { description: 'STEP_UP_REQUIRED (account-security)' }, '409': { description: Destination profile changed since preview }, '422': { description: Invalid portable v1 document or expected-state schema } } }
  */
-router.post('/portable-import/apply', authMiddleware, limits.write(), requireStepUp('account.export'), async (req: Request, res: Response) => {
+router.post('/portable-import/apply', authMiddleware, limits.write(), requireStepUp('account.import'), async (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store');
   const userId = castAuthed(req).user.id;
   const requestBody = req.body as unknown;
