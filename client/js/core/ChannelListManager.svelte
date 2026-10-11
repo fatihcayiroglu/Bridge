@@ -28,6 +28,7 @@
   import { mountOrUpdateChannelList, unmountChannelList } from './channel-list/channel-list-svelte.js';
   import { apiFetch } from './api-fetch.js';
   import { activeChannelSurvives, decideAccessReaction, type AccessEvent } from './channel-list/access-revocation.ts';
+  import { navigationOwner, lastTextChannel, rememberTextChannel } from './navigation-selection.js';
   const log = createLogger('ChannelListManager');
 
   let { children }: { children?: Snippet } = $props();
@@ -275,8 +276,19 @@
       }
 
       // Legacy channel-list.ts:61-62 — ilk metin kanalı otomatik seçilir.
+      // Android can recreate the WebView while the Activity survives: do not
+      // silently jump to the first channel after session restoration. The
+      // remembered ID is accepted ONLY when the fresh, authorized API list
+      // contains it. Voice/stage is not restored automatically (no implicit
+      // microphone/camera access).
       const first = channels.find(c => (c.type ?? 'text') === 'text');
-      if (first && !activeChannelId && !selectedByPendingNavigation) selectChannel(first);
+      const owner = navigationOwner(BridgeRegistry.call('getMe'));
+      const rememberedId = owner ? lastTextChannel(owner, targetServerId) : null;
+      const remembered = channels.find(c =>
+        c._id === rememberedId && (c.type ?? 'text') === 'text');
+      if (!activeChannelId && !selectedByPendingNavigation && (remembered || first)) {
+        selectChannel((remembered || first)!);
+      }
 
       // Apply optional presentation metadata only if this request is still the
       // current server. HTTP, network and malformed-JSON failures all preserve
@@ -346,6 +358,9 @@
 
     activeChannelId = channel._id;
     BridgeRegistry.call('setCurrentChannel', channel);
+    if ((channel.type ?? 'text') === 'text' && serverId) {
+      rememberTextChannel(navigationOwner(BridgeRegistry.call('getMe')), serverId, channel._id);
+    }
 
     // Kanal başlığı — legacy channel-list.ts:123-126 (DOM kopyalanmadı, davranış korundu)
     const iconEl  = document.getElementById('ch-h-icon');
