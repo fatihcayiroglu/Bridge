@@ -198,9 +198,15 @@
   }
 
   onMount(() => {
-    const onLogout = () => resetPortableImport();
-    document.addEventListener('bridge:auth-logout', onLogout);
-    return () => document.removeEventListener('bridge:auth-logout', onLogout);
+    // A new login may replace the current account while Settings remains
+    // mounted. Remove even a successfully previewed previous user's details.
+    const onIdentityTransition = () => resetPortableImport();
+    document.addEventListener('bridge:auth-logout', onIdentityTransition);
+    document.addEventListener('bridge:auth-success', onIdentityTransition);
+    return () => {
+      document.removeEventListener('bridge:auth-logout', onIdentityTransition);
+      document.removeEventListener('bridge:auth-success', onIdentityTransition);
+    };
   });
 
   // ── Hesabı sil (Final21 Faz 19) ──────────────────────────────────────────
