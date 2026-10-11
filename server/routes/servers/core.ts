@@ -22,6 +22,8 @@ import {
 } from '../../lib/raidProtection';
 import logger from '../../lib/logger';
 import { buildPortableCommunityStructure } from '../../lib/portableCommunity';
+import { validatePortableCommunityStructure, PortableCommunityValidationError } from '../../lib/portableCommunityValidation';
+import { buildPortableCommunityPreview } from '../../lib/portableCommunityPreview';
 import { enforceStepUp } from '../../lib/stepUp';
 
 // GET /api/servers
@@ -259,6 +261,61 @@ router.get('/:sid/portable-export', authMiddleware, limits.write(), async (req, 
       code: 'PORTABLE_COMMUNITY_SOURCE_INCONSISTENT',
       error: 'Community structure cannot be exported safely',
     });
+  }
+});
+
+// P7 C3 preflight ONLY: check source schema and show conservative name
+// collisions against a destination community. Never write a destination row.
+router.post('/:sid/portable-import/preview', authMiddleware, limits.write(), async (req, res) => {
+  const actor = castAuthed(req).user;
+  const sid = String(req.params.sid ?? '');
+  res.setHeader('Cache-Control', 'no-store');
+  const server = await Servers.findById(sid);
+  if (!server) return res.status(404).json({ error: 'Target community not found' });
+  if (server.ownerId !== actor.id) {
+    return res.status(403).json({ error: 'Only the destination owner may preview a structure import' });
+  }
+  if (!(await enforceStepUp(req, res, actor.id, 'account.import'))) return;
+
+  const body: unknown = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return res.status(400).json({ error: 'Invalid preview request' });
+  }
+  const fields = Object.keys(body);
+  if (fields.length !== 2 || !fields.includes('document') || !fields.includes('targetServerId')) {
+    return res.status(400).json({ error: 'Expected document and targetServerId' });
+  }
+  const input = body as { document: unknown; targetServerId: unknown };
+  if (input.targetServerId !== sid) {
+    return res.status(409).json({ code: 'PORTABLE_COMMUNITY_TARGET_CHANGED', error: 'Destination must match authenticated target' });
+  }
+
+  let snapshot: ReturnType<typeof validatePortableCommunityStructure>;
+  try {
+    snapshot = validatePortableCommunityStructure(input.document);
+  } catch (err) {
+    if (err instanceof PortableCommunityValidationError) {
+      return res.status(422).json({ code: err.code, error: 'Invalid community structure snapshot' });
+    }
+    throw err;
+  }
+  try {
+    const [categories, roles, channels] = await Promise.all([
+      Channels.findCategoriesByServer(sid),
+      Roles.findByServer(sid),
+      Channels.findByServer(sid),
+    ]);
+    const preview = buildPortableCommunityPreview(snapshot, {
+      serverId: sid, name: String(server.name ?? ''),
+      categories: categories as unknown as Array<Record<string, unknown>>,
+      roles: roles as unknown as Array<Record<string, unknown>>,
+      channels: channels as unknown as Array<Record<string, unknown>>,
+    });
+    return res.status(200).json(preview);
+  } catch (err) {
+    logger.error({ err, sid, userId: actor.id, event: 'server.portable_structure_preview.failed' },
+      'Read-only community structure preview unavailable.');
+    return res.status(503).json({ code: 'PORTABLE_COMMUNITY_PREVIEW_UNAVAILABLE', error: 'Cannot build a complete destination preview' });
   }
 });
 
