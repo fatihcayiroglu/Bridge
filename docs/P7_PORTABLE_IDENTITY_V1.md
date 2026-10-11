@@ -1,8 +1,9 @@
-# P7 C1 — Portable identity JSON v1 (export-only)
+# P7 C1/C3 — Portable identity JSON v1 (profile-only export, preview and apply)
 
-**Status:** implemented for exporting a limited profile subset. **Import, community
-migration, and P7 C1–C4 closure are NOT complete.** This is separate from the
-existing GDPR-style, comprehensive `GET /api/account/export` download.
+**Status:** export, read-only preview and atomic profile-only apply API are merged;
+the double-confirmed Privacy UI is in PR #183 pending exact-head CI.
+**Community migration, complete account import and P7 C1–C4 closure are NOT complete.**
+This is separate from the comprehensive `GET /api/account/export` download.
 
 ## API and user flow
 
@@ -96,11 +97,13 @@ characters, respectively. Optional avatar/banner colors must be valid hex
 colors. The preview returns 422 rather than showing a value that a future
 write would silently trim, truncate, sanitize or refuse. Legacy snapshots
 remain exportable; incompatible values must be corrected at the source.
-This is **not** an active importer or proof that import writes/rollback work.
+The preview itself never writes. The separate, merged profile-only apply endpoint
+has real PostgreSQL atomicity/concurrency tests; this is not a full-account importer.
 
-A preview is not an importer, and there is no DB mutation or automatic
-ownership/community migration. Applying changes, collision policy, safe
-rollback, and cross-instance round-trip proof remain explicit C3/C4 gaps.
+A preview is read-only. Profile-only writes are implemented separately via
+the atomic apply endpoint; they do not provide automatic ownership/community
+migration. General collision mapping and cross-instance round-trip proof remain
+explicit C3/C4 gaps.
 
 ## Account-profile-only atomic import and confirmation UI (C3 increment)
 
@@ -165,5 +168,6 @@ C4 cross-instance proof has not been claimed.
   unsupported-field report
 - C4: representative cross-instance export/import round-trip
 
-Until the importer exists, the UI and manifest expressly say
-`importSupported: false`. No P7 closure is implied by this PR.
+The manifest expressly says `importSupported: false` for **full portability**;
+a separately documented profile-only import is available. No P7 closure is
+implied by this PR.
