@@ -63,6 +63,7 @@
   async function loadServers(): Promise<void> {
     const token = readToken();
     if (!token) return; // Oturum yok — bridge:auth-success beklenir.
+    const requestedOwner = navigationOwner(BridgeRegistry.call('getMe'));
     if (isLoading) {
       pendingReload = true;
       return new Promise<void>(resolve => { reloadWaiters.push(resolve); });
@@ -81,7 +82,11 @@
       }
 
       const data = await response.json() as unknown;
-      if (readToken() !== token) return; // logout/account switch while HTTP was in flight
+      // Token refresh can rotate the JWT for the SAME account; do not drop
+      // a good response solely because its token string changed. A concurrent
+      // logout/account switch still invalidates the old response.
+      if (readToken() !== token &&
+          (requestedOwner === null || requestedOwner !== navigationOwner(BridgeRegistry.call('getMe')))) return;
       servers = Array.isArray(data) ? data as RailServer[] : [];
       log.info(`${servers.length} sunucu yüklendi`);
 
