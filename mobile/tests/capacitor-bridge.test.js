@@ -374,3 +374,61 @@ describe('Açılış katmanı', () => {
     }
   });
 });
+
+
+describe('P7 Android K01 — native back respects the real Settings close contract', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    App.minimizeApp.mockClear();
+  });
+  afterEach(() => { document.body.innerHTML = ''; });
+
+  function visibleDialog(id) {
+    const dialog = document.createElement('div');
+    dialog.id = id;
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    // jsdom has no layout: provide visibility exactly as the Android bridge
+    // tests in a real WebView (visible getClientRects).
+    dialog.getClientRects = jest.fn(() => [{ width: 400, height: 500 }]);
+    document.body.appendChild(dialog);
+    return dialog;
+  }
+
+  it('uses the Settings onClose button rather than synthetic Escape, never minimizes the app', () => {
+    const dialog = visibleDialog('settings-modal-content');
+    const close = document.createElement('button');
+    close.className = 'settings-close';
+    close.addEventListener('click', () => dialog.remove());
+    dialog.appendChild(close);
+    const click = jest.spyOn(close, 'click');
+    const nativeEscape = jest.fn();
+    window.addEventListener('keydown', nativeEscape);
+    try {
+      App._emit('backButton', {});
+      expect(click).toHaveBeenCalledTimes(1);
+      expect(document.getElementById('settings-modal-content')).toBeNull();
+      expect(nativeEscape).not.toHaveBeenCalled();
+      expect(App.minimizeApp).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', nativeEscape);
+    }
+  });
+
+  it('other modal types receive exactly one bubbling Escape, and never minimize', () => {
+    const dialog = visibleDialog('another-dialog');
+    const seen = jest.fn();
+    dialog.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { seen(); dialog.remove(); }
+    });
+    App._emit('backButton', {});
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(document.getElementById('another-dialog')).toBeNull();
+    expect(App.minimizeApp).not.toHaveBeenCalled();
+  });
+
+  it('without any overlay, Android Back minimizes only from root navigation', () => {
+    App._emit('backButton', {});
+    expect(App.minimizeApp).toHaveBeenCalledTimes(1);
+  });
+});
