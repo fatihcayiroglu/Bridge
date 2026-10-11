@@ -83,7 +83,6 @@
       "category": "Network;InstantMessaging",
       "synopsis": "Self-hosted federated communication platform",
       "maintainer": "Bridge Contributors <149966576+fatihcayiroglu@users.noreply.github.com>",
-      "desktopName": "bridge",
       "syncDesktopName": true
     },
     "nsis": {
@@ -134,5 +133,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/fatihcayiroglu/Bridge.git"
-  }
+  },
+  "desktopName": "bridge"
 }
