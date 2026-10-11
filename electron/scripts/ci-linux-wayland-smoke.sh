@@ -55,7 +55,11 @@ for i in {1..60}; do
     tail -40 "${ROOT}/app.log" >&2 || true
     exit 1
   fi
-  if grep -Eq -- 'xdg_surface@[0-9]+\.get_toplevel\(new id xdg_toplevel@[0-9]+' "${ROOT}/app.log"; then
+  # Weston 13 / Wayland debug prints protocol object IDs as #23, not @23.
+  # Require the top-level window's real size request AND its compositor
+  # configure acknowledgement. Neither can come from a mocked process.
+  if grep -Eq -- 'xdg_toplevel#[0-9]+\.set_(min|max)_size\(' "${ROOT}/app.log" \
+    && grep -Eq -- 'xdg_surface#[0-9]+\.ack_configure\(' "${ROOT}/app.log"; then
     echo "PASS: installed Bridge created a real xdg-toplevel surface on headless Weston/Wayland, sandbox enabled, X11 DISPLAY unset"
     exit 0
   fi
