@@ -159,10 +159,21 @@ router.post('/portable-import/apply', authMiddleware, limits.write(), requireSte
     return res.status(400).json({ error: 'Portable import requires a document, expected fields and explicit confirmation' });
   }
   const body = requestBody as Record<string, unknown>;
-  if (Object.keys(body).length !== 3 ||
-      !['document', 'expected', 'confirm'].every(key => Object.prototype.hasOwnProperty.call(body, key)) ||
+  if (Object.keys(body).length !== 4 ||
+      !['document', 'expected', 'confirm', 'targetUserId'].every(key => Object.prototype.hasOwnProperty.call(body, key)) ||
+      typeof body.targetUserId !== 'string' || body.targetUserId.length === 0 ||
       body.confirm !== 'APPLY_PORTABLE_PROFILE') {
-    return res.status(400).json({ error: 'Explicit APPLY_PORTABLE_PROFILE confirmation and exact request shape required' });
+    return res.status(400).json({ error: 'Explicit targetUserId, APPLY_PORTABLE_PROFILE confirmation and exact request shape required' });
+  }
+  // A step-up challenge can outlive the initiating login. apiFetch may retry
+  // after token refresh; the fresh bearer may then belong to ANOTHER account.
+  // Never reinterpret a preview for A as permission to update account B, even
+  // if B's six profile fields coincidentally match A's expected snapshot.
+  if (body.targetUserId !== userId) {
+    return res.status(409).json({
+      code: 'PORTABLE_TARGET_ACCOUNT_CHANGED',
+      error: 'The signed-in target account changed; reselect and preview the file',
+    });
   }
 
   try {
