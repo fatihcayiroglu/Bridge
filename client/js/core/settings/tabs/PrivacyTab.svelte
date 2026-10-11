@@ -37,14 +37,14 @@
     BridgeRegistry.call('setAiAssistanceEnabled', aiAssistance);
   }
 
-  async function exportMyData(): Promise<void> {
+  async function exportMyData(portable = false): Promise<void> {
     if (exporting) return;
     const apiFetch = BridgeRegistry.get<(url: string, init?: RequestInit) => Promise<Response>>('apiFetch');
     if (!apiFetch) { error = t("ui_veri_disa_aktarma_su_anda_kullanilamiyor", "Veri dışa aktarma şu anda kullanılamıyor."); return; }
     exporting = true;
     error = null;
     try {
-      const response = await apiFetch('/api/account/export');
+      const response = await apiFetch(portable ? '/api/account/portable-export' : '/api/account/export');
       if (!response.ok) {
         error = response.status === 503
           ? t("ui_veri_disa_aktarma_bu_kurulumda_su_anda_kullanilamiyo", "Veri dışa aktarma bu kurulumda şu anda kullanılamıyor.")
@@ -55,7 +55,9 @@
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `bridge-personal-export-${new Date().toISOString().slice(0, 10)}.json`;
+      anchor.download = portable
+        ? `bridge-portable-identity-v1-${new Date().toISOString().slice(0, 10)}.json`
+        : `bridge-personal-export-${new Date().toISOString().slice(0, 10)}.json`;
       anchor.style.display = 'none';
       document.body.appendChild(anchor);
       anchor.click();
@@ -285,6 +287,11 @@
     <button type="button" class="btn btn--secondary" disabled={exporting} onclick={() => void exportMyData()}>
       {exporting ? t("surface_haz_rlan_yor_aa7fb7") : t("surface_verilerimi_d_sa_aktar_86f34a")}
     </button>
+    <button type="button" class="btn btn--secondary" disabled={exporting} data-testid="portable-identity-export"
+            onclick={() => void exportMyData(true)}>
+      {t('privacy_portable_export', 'Taşınabilir profilimi indir (JSON v1)')}
+    </button>
+    <p class="field-note">{t('privacy_portable_export_hint', 'Yalnızca taşınabilir profil alanlarını içerir; parola, özel anahtar, e-posta ve mesajlar dahil değildir. Farklı bir Bridge sunucusuna içe aktarma henüz desteklenmiyor.')}</p>
   </div>
 
   <div class="toggle-row" role="group" aria-label={t("privacy_ai_opt_in")}>
