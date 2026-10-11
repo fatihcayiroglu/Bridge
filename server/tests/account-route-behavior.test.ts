@@ -262,6 +262,58 @@ describe('account export/delete production behavior', () => {
     expect(db._transaction).not.toHaveBeenCalled();
   });
 
+  it('P7 C3: checksum-valid legacy profile values never produce a falsely actionable preview', async () => {
+    const { buildPortableIdentityExport, portableIdentityDigest } =
+      require('../lib/portableIdentity') as typeof import('../lib/portableIdentity');
+    const source = buildPortableIdentityExport('foreign-account', {
+      username: 'foreign', displayName: 'Origin', bio: 'short bio',
+      website: 'https://example.test', pronouns: 'they/them',
+      avatarColor: '#2d9cdb', bannerColor: '#123456',
+    }, '2026-10-11T12:00:00.000Z');
+
+    // These are checksum-correct documents, not ordinary corruption. Every
+    // value below would be silently transformed or rejected by /api/me.
+    const incompatible = [
+      { displayName: 'Ad\\u200bmin' },
+      { displayName: 'X'.repeat(33) },
+      { displayName: '  Padded name  ' },
+      { displayName: '' },
+      { bio: 'x'.repeat(181) },
+      { bio: 'Padded bio ' },
+      { website: 'x'.repeat(121) },
+      { website: ' https://example.test' },
+      { pronouns: 'x'.repeat(41) },
+      { pronouns: ' they/them ' },
+      { avatarColor: 'url(https://attacker.invalid/track)' },
+      { bannerColor: 'red' },
+    ];
+    for (const changed of incompatible) {
+      const identity = { ...source.identity, ...changed };
+      const invalid = {
+        ...source,
+        identity,
+        integrity: { ...source.integrity, digest: portableIdentityDigest({ ...source, identity }) },
+      };
+      const res = await request(app()).post('/api/account/portable-import/preview')
+        .set(EXPORT_PROOF()).send(invalid);
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe('PORTABLE_IDENTITY_INVALID');
+      expect(res.body.error).toContain('cannot be applied losslessly');
+    }
+
+    // A valid checksum and a destination-compatible profile still preview.
+    const accepted = await request(app()).post('/api/account/portable-import/preview')
+      .set(EXPORT_PROOF()).send(source);
+    expect(accepted.status).toBe(200);
+    expect(accepted.body).toMatchObject({ dryRun: true, applied: false, checksumVerified: true });
+    expect(accepted.body.fields).toContainEqual({
+      field: 'bio', current: '', proposed: 'short bio', changed: true,
+    });
+    expect(query).not.toHaveBeenCalled();
+    expect(txQuery).not.toHaveBeenCalled();
+    expect(db._transaction).not.toHaveBeenCalled();
+  });
+
   it('preflight reports server and group-DM ownership blockers with member counts', async () => {
     installSqlModel({
       tables: ['servers','members','group_dm_conversations','group_dm_members'],
