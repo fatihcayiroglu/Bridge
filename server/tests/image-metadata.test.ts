@@ -275,6 +275,35 @@ describe('stripImageMetadataFile (uploads on disk)', () => {
     expect(fs.readdirSync(dir)).toEqual(['photo.jpg']); // no temp file left
   });
 
+  it('bounds disk read windows for multi-megabyte PNG/WebP EXIF while preserving orientation', async () => {
+    const largeExif = Buffer.alloc(3 * (1 << 20), 0x5a);
+    const png = withPngChunks(TINY_PNG, [pngChunk('eXIf', Buffer.concat([identifyingTiff(6), largeExif]))]);
+    const extendedWebp = await sharp(solid).withIccProfile('p3').webp({ lossless: true }).toBuffer();
+    const webp = withWebpExif(extendedWebp, Buffer.concat([identifyingTiff(7), largeExif]));
+    for (const [name, mime, input, expectedOrientation] of [
+      ['big.png', 'image/png', png, 6],
+      ['big.webp', 'image/webp', webp, 7],
+    ] as const) {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, input);
+      const readSpy = jest.spyOn(fs, 'readSync');
+      let report;
+      let largestRead = 0;
+      try {
+        report = await stripImageMetadataFile(file, mime);
+        largestRead = Math.max(0, ...readSpy.mock.calls.map(args => Number(args[3]) || 0));
+      } finally {
+        readSpy.mockRestore();
+      }
+      expect(largestRead, `${mime} must never buffer an entire untrusted EXIF chunk`).toBeLessThanOrEqual(1 << 20);
+      expect(report).toMatchObject({ changed: true, orientation: expectedOrientation });
+      const output = fs.readFileSync(file);
+      expect(output.length).toBeLessThan(input.length - largeExif.length);
+      const { buffer } = stripImageMetadataBuffer(input, mime);
+      expect(output.equals(buffer)).toBe(true);
+    }
+  });
+
   it('leaves non-image uploads and clean images untouched', async () => {
     const pdf = path.join(dir, 'doc.pdf');
     fs.writeFileSync(pdf, `%PDF-1.4 ${IDENTIFYING.author}`);

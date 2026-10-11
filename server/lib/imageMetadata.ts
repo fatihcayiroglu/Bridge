@@ -185,6 +185,42 @@ export function orientationOnlyTiff(orientation: number): Buffer {
   return t;
 }
 
+/**
+ * Read only TIFF's fixed header and IFD0 entries, not the complete EXIF chunk.
+ * An untrusted PNG/WebP EXIF payload can be megabytes large even though its
+ * orientation tag requires only a few bytes. IFD0 has at most 65535 entries,
+ * so this makes each Source.slice bounded below one MiB.
+ */
+function readExifOrientationFromSource(src: Source, start: number, size: number): number {
+  try {
+    if (size < 8) return 1;
+    const header = src.slice(start, 8);
+    const order = header.toString('latin1', 0, 2);
+    if (order !== 'II' && order !== 'MM') return 1;
+    const le = order === 'II';
+    const u16 = (b: Buffer, pos: number) => le ? b.readUInt16LE(pos) : b.readUInt16BE(pos);
+    const u32 = (b: Buffer, pos: number) => le ? b.readUInt32LE(pos) : b.readUInt32BE(pos);
+    if (u16(header, 2) !== 42) return 1;
+    const ifd = u32(header, 4);
+    if (ifd > size - 2) return 1;
+    const count = u16(src.slice(start + ifd, 2), 0);
+    const entryBytes = count * 12;
+    if (entryBytes > size - ifd - 2) return 1;
+    const entries = src.slice(start + ifd + 2, entryBytes);
+    for (let i = 0; i < count; i++) {
+      const offset = i * 12;
+      if (u16(entries, offset) === 0x0112 && u16(entries, offset + 2) === 3 &&
+          u32(entries, offset + 4) === 1) {
+        const value = u16(entries, offset + 8);
+        return value >= 1 && value <= 8 ? value : 1;
+      }
+    }
+    return 1;
+  } catch {
+    return 1;
+  }
+}
+
 const EXIF_HEADER = Buffer.from('Exif\0\0', 'latin1');
 
 // ── JPEG ──────────────────────────────────────────────────────────────────────
@@ -336,7 +372,7 @@ function planPng(src: Source): Plan {
       pieces.push({ start: pos, end });
       if (type === 'IHDR') afterIhdr = pieces.length;
     } else {
-      if (type === 'eXIf') orientation = readExifOrientation(src.slice(pos + 8, len));
+      if (type === 'eXIf') orientation = readExifOrientationFromSource(src, pos + 8, len);
       removed.push(type === 'eXIf' ? 'exif' : type);
     }
     pos = end;
@@ -381,9 +417,10 @@ function planWebp(src: Source): Plan {
       }
     } else {
       if (fourcc === 'EXIF') {
-        let tiff = src.slice(pos + 8, len);
-        if (startsWith(tiff, 'Exif\0\0')) tiff = tiff.subarray(6);
-        orientation = readExifOrientation(tiff);
+        const hasExifPrefix = len >= EXIF_HEADER.length &&
+          src.slice(pos + 8, EXIF_HEADER.length).equals(EXIF_HEADER);
+        const prefixSize = hasExifPrefix ? EXIF_HEADER.length : 0;
+        orientation = readExifOrientationFromSource(src, pos + 8 + prefixSize, len - prefixSize);
       }
       removed.push(fourcc === 'EXIF' ? 'exif' : fourcc === 'XMP ' ? 'xmp' : fourcc.trim());
     }
