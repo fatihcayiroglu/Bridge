@@ -149,6 +149,7 @@ describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
     ]);
     expect(v.queryByTestId('portable-identity-apply')).toBeNull();
     expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull();
+    expect((v.getByTestId('portable-identity-preview-file') as HTMLInputElement).disabled).toBe(false);
     expect(setMe).toHaveBeenCalledTimes(1);
     expect(setMe).toHaveBeenCalledWith(expect.objectContaining({
       _id: 'target', displayName: 'Source', bio: 'Same',
@@ -172,6 +173,7 @@ describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
     expect(v.queryByTestId('portable-identity-apply')).toBeNull();
     expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull();
     expect(v.queryByTestId('portable-identity-apply-success')).toBeNull();
+    expect((v.getByTestId('portable-identity-preview-file') as HTMLInputElement).disabled).toBe(false);
     expect(apiFetch).toHaveBeenCalledTimes(2);
   });
 
