@@ -91,6 +91,12 @@ jobs:
           ls -l /opt/Bridge/chrome-sandbox
       - name: Installed Linux first-run window smoke (real X11, OS sandbox)
         run: xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-window-smoke.sh
+      # Native Wayland compositor, no X11 DISPLAY and no Chromium sandbox opt-out.
+      # The script checks an actual xdg-toplevel protocol request, not just PID.
+      - name: Install Weston Wayland compositor
+        run: sudo apt-get install -y --no-install-recommends weston
+      - name: Installed Linux native Wayland surface smoke (headless Weston)
+        run: dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
       - name: Preserve Linux package artifacts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
