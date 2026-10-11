@@ -825,9 +825,13 @@ displayName, bio, website, pronouns and the two profile colors. If any target
 field changed since preview, it returns 409 with no partial write.
 Source IDs, username, credentials, email, media and community records remain
 untouched. Empty optional colors preserve target colors in both preview and
-apply. This is an **API-only candidate**, not a shipped UI import, community
-migration, conflict-resolution engine or C4 round-trip; exact-head CI and real
-PostgreSQL coverage are still required before closing the subtask.
+apply. The atomic apply endpoint was verified through exact-head CI with live PostgreSQL
+concurrency and merged in PR #181. A separate Settings → Privacy
+**double-confirmation UI candidate** now provides preview → acknowledge → type
+`IMPORT` → account-security step-up → guarded apply, including 409 stale-preview
+recovery and account/logout isolation. The UI stays a **PR candidate** until
+its own exact-head CI is green. Full community migration, credential transfer,
+cross-instance C4 round-trip and generic conflict-resolution are not claimed.
 
 ## C4. Lock-in test
 
