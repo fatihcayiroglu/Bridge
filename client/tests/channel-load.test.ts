@@ -160,6 +160,28 @@ describe('P7 Android reload: last authorized text channel restoration', () => {
     expect(recordNavigation).toHaveBeenCalledWith(expect.objectContaining({ channelId: 'second' }));
   });
 
+  it('repairs an auto-selected first channel when /api/me identity arrives later', async () => {
+    currentServer = { _id: 'srv-1' };
+    rememberTextChannel('user-1', 'srv-1', 'second');
+    mockApiFetch.mockResolvedValue(okResponse([
+      { _id: 'first', name: 'general', type: 'text' },
+      { _id: 'second', name: 'help', type: 'text' },
+    ]));
+    // WebView has a token already, but account identity is not available yet.
+    await requestLoad('srv-1');
+    await vi.waitFor(() => {
+      const last = mockMountList.mock.calls.at(-1)?.[1] as { activeChannelId?: string };
+      expect(last.activeChannelId).toBe('first');
+    });
+    BridgeRegistry.register('getMe', (() => ({ _id: 'user-1' })) as AnyFn);
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    await vi.waitFor(() => {
+      const last = mockMountList.mock.calls.at(-1)?.[1] as { activeChannelId?: string };
+      expect(last.activeChannelId).toBe('second');
+    });
+    expect(recordNavigation).toHaveBeenCalledWith(expect.objectContaining({ channelId: 'second' }));
+  });
+
   it('does not restore a remembered channel if it is no longer authorized', async () => {
     currentServer = { _id: 'srv-1' };
     BridgeRegistry.register('getMe', (() => ({ _id: 'user-1' })) as AnyFn);
