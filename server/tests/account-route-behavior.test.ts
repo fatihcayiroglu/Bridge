@@ -208,6 +208,60 @@ describe('account export/delete production behavior', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
+  it('P7 C3: portable import preview requires a scoped proof and cannot mutate target state', async () => {
+    const { buildPortableIdentityExport } = require('../lib/portableIdentity') as typeof import('../lib/portableIdentity');
+    const source = buildPortableIdentityExport('foreign-instance-user', {
+      username: 'origin', displayName: 'Origin', bio: 'Imported bio', website: 'https://example.test',
+    }, '2026-10-11T12:00:00.000Z');
+    const refused = await request(app()).post('/api/account/portable-import/preview').send(source);
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject({ error: 'STEP_UP_REQUIRED', scope: 'sensitive-export', action: 'account.export' });
+    const mismatched = await request(app()).post('/api/account/portable-import/preview')
+      .set(stepUpHeader('me', 'account-security')).send(source);
+    expect(mismatched.status).toBe(403);
+    expect(query).not.toHaveBeenCalled();
+
+    const res = await request(app()).post('/api/account/portable-import/preview')
+      .set(EXPORT_PROOF()).send(source);
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toContain('no-store');
+    expect(res.body).toMatchObject({
+      dryRun: true, applied: false, checksumVerified: true,
+      mapping: { sourceUserId: 'foreign-instance-user', targetUserId: 'me', strategy: 'map-to-authenticated-account' },
+    });
+    expect(res.body.fields).toContainEqual({
+      field: 'bio', current: '', proposed: 'Imported bio', changed: true,
+    });
+    expect(res.body.unsupportedFields.join(' ')).toContain('username');
+    expect(query).not.toHaveBeenCalled();
+    expect(txQuery).not.toHaveBeenCalled();
+    expect(db._transaction).not.toHaveBeenCalled();
+    expect(users.findById).toHaveBeenCalled();
+  });
+
+  it('P7 C3: damaged checksums, secret-bearing fields, unknown versions and oversized files fail closed', async () => {
+    const { buildPortableIdentityExport } = require('../lib/portableIdentity') as typeof import('../lib/portableIdentity');
+    const correct = buildPortableIdentityExport('origin', { username: 'alice', displayName: 'Alice' });
+    const probes = [
+      { ...correct, identity: { ...correct.identity, bio: 'tampered' } },
+      { ...correct, identity: { ...correct.identity, password: 'secret' } },
+      { ...correct, version: 999 },
+      { ...correct, extra: 'unlisted field' },
+      { ...correct, integrity: { ...correct.integrity, digest: '0'.repeat(64) } },
+      { ...correct, portability: { ...correct.portability, importSupported: true } },
+      { ...correct, identity: { ...correct.identity, bio: 'x'.repeat(17000) } },
+    ];
+    for (const bad of probes) {
+      const response = await request(app()).post('/api/account/portable-import/preview')
+        .set(EXPORT_PROOF()).send(bad);
+      expect(response.status).toBe(422);
+      expect(response.body.code).toBe('PORTABLE_IDENTITY_INVALID');
+      expect(response.body.error).toBeTruthy();
+    }
+    expect(txQuery).not.toHaveBeenCalled();
+    expect(db._transaction).not.toHaveBeenCalled();
+  });
+
   it('preflight reports server and group-DM ownership blockers with member counts', async () => {
     installSqlModel({
       tables: ['servers','members','group_dm_conversations','group_dm_members'],

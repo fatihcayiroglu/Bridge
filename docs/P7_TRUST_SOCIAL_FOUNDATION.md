@@ -801,6 +801,20 @@ P7 requires:
 P8's Matrix/IRC migration gateways build on these contracts rather than inventing
 another migration format.
 
+### C3-1 — portable profile schema validation and dry-run
+
+`POST /api/account/portable-import/preview` strictly validates a v1 JSON
+snapshot, its accidental-corruption checksum and schema, then previews
+field-level differences against the authenticated target account. A source
+account ID is **never reused** as the destination ID. Invalid, altered,
+unknown-version or oversized files fail closed. The Settings → Privacy UI
+clearly says no change is saved. See
+[`P7_PORTABLE_IDENTITY_V1.md`](P7_PORTABLE_IDENTITY_V1.md).
+
+**This closes only the read-only format/preview subtask.** Applying import
+writes, deterministic conflict mapping, transaction rollback, community
+restoration, and cross-instance migration are not yet implemented.
+
 ## C4. Lock-in test
 
 Closure evidence must demonstrate that a representative user/community can export

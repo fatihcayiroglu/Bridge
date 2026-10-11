@@ -38,7 +38,7 @@ import logger from '../lib/logger';
 import { disconnectLiveUserSessions } from '../lib/sessionRevocation';
 import bcrypt from 'bcryptjs';
 import { LIFECYCLE } from '../lib/accountLifecycle';
-import { buildPortableIdentityExport } from '../lib/portableIdentity';
+import { buildPortableIdentityExport, PortableIdentityValidationError, validatePortableIdentityV1, previewPortableIdentity } from '../lib/portableIdentity';
 import { evaluateStepUp, factorsOf, requiredLevel, requireStepUp } from '../lib/stepUp';
 import {
   eraseAccountData, existingTables, ownershipBlockers, releaseAfterErasure, tableColumns,
@@ -113,6 +113,32 @@ router.get('/portable-export', authMiddleware, limits.write(), requireStepUp('ac
   } catch (err) {
     logger.error({ err, userId, event: 'account.portable_export.failed' }, 'Taşınabilir kimlik dışa aktarımı başarısız.');
     return res.status(500).json({ error: 'Portable identity export failed' });
+  }
+});
+
+// POST /api/account/portable-import/preview — P7 C3 read-only migration preflight.
+/**
+ * @openapi
+ * /account/portable-import/preview:
+ *   post: { tags: [Account], summary: Validate portable identity JSON v1 and preview a target-account mapping without changing anything, responses: { '200': { description: Read-only mapping and field differences }, '403': { description: 'STEP_UP_REQUIRED (sensitive-export)' }, '422': { description: Invalid format or checksum } } }
+ */
+router.post('/portable-import/preview', authMiddleware, limits.write(), requireStepUp('account.export'), async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const userId = castAuthed(req).user.id;
+  try {
+    // Parsing and validation must happen before reading target profile state.
+    const portable = validatePortableIdentityV1(req.body);
+    const target = await Users.findById(userId) as Record<string, unknown> | null;
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    // There are deliberately no write calls and no imported identifiers
+    // accepted by this endpoint. Only a field-by-field preview is returned.
+    return res.status(200).json(previewPortableIdentity(portable, userId, target));
+  } catch (err) {
+    if (err instanceof PortableIdentityValidationError) {
+      return res.status(422).json({ code: err.code, error: err.message });
+    }
+    logger.error({ err, userId, event: 'account.portable_import_preview.failed' }, 'Taşınabilir profil önizlemesi başarısız.');
+    return res.status(500).json({ error: 'Portable identity preview failed' });
   }
 });
 
