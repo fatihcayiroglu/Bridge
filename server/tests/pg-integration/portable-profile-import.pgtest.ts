@@ -80,7 +80,7 @@ RUN('P7 C3 real PostgreSQL — portable import atomicity and conflict isolation'
     expect(refused.status).toBe(403);
 
     const accepted = await request(app()).post('/api/account/portable-import/apply')
-      .set(stepUpHeader(TARGET, 'sensitive-export'))
+      .set(stepUpHeader(TARGET, 'account-security'))
       .send({ document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE' });
     expect(accepted.status).toBe(200);
     expect(accepted.body).toMatchObject({ ok: true, applied: true, targetUserId: TARGET });
@@ -101,7 +101,7 @@ RUN('P7 C3 real PostgreSQL — portable import atomicity and conflict isolation'
     const { expected } = await preview(source);
     await q('UPDATE users SET bio=$2 WHERE _id=$1', [TARGET, 'edited from another session']);
     const r = await request(app()).post('/api/account/portable-import/apply')
-      .set(stepUpHeader(TARGET, 'sensitive-export'))
+      .set(stepUpHeader(TARGET, 'account-security'))
       .send({ document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE' });
     expect(r.status).toBe(409);
     expect(r.body.code).toBe('PORTABLE_PROFILE_CONFLICT');
@@ -113,7 +113,7 @@ RUN('P7 C3 real PostgreSQL — portable import atomicity and conflict isolation'
     const source1 = documentFor('First Proposal');
     const source2 = documentFor('Second Proposal');
     const { expected } = await preview(source1);
-    const proof = stepUpHeader(TARGET, 'sensitive-export');
+    const proof = stepUpHeader(TARGET, 'account-security');
     const requests = [source1, source2].map(document => request(app()).post('/api/account/portable-import/apply')
       .set(proof).send({ document, expected, confirm: 'APPLY_PORTABLE_PROFILE' }));
     const results = await Promise.all(requests);
