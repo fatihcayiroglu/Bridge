@@ -397,3 +397,31 @@ items 3, 14 and 16, notification delivery (9), in-app iOS deep-link dispatch (10
 transitions (13) need physical devices, an FCM project / APNs key and real networks. They are listed
 under EXTERNAL / UNVERIFIED with what would verify each.
 
+
+### P7 Android foreground/resume regression investigation — 11 October 2026
+
+The former P4 lifecycle success recorded above is **not unconditional**: on
+`main` commit `11f7ee9`, [Android run 38148509383](https://github.com/fatihcayiroglu/Bridge/actions/runs/38148509383)
+failed both L01 (20-second background) and L02 (75-second background). The
+emulator remained on the app shell but displayed a **different active channel**
+from the one to which the peer's message was delivered. A later independent
+main run `38150103352` passed both tests; that is evidence of intermittency,
+**not proof that the defect disappeared**. Track until resolved in
+[issue #180](https://github.com/fatihcayiroglu/Bridge/issues/180).
+
+The draft [PR #182](https://github.com/fatihcayiroglu/Bridge/pull/182)
+addresses two missing recovery contracts: message history refresh upon
+foregrounding even without a Socket.IO disconnect; and user-scoped restoration
+of the last *authorized text channel* and server across WebView recreation. It
+adds negative coverage for revoked channels, account isolation, unreadable
+storage, no voice auto-join, delayed auth hydration, duplicate lifecycle events
+and logout. The Android harness no longer masks navigation loss by explicitly
+reselecting the correct channel in L03. L01/L02 now assert the **correct
+channel identity AND visible persisted message**, with PID and active-channel
+observations.
+
+**Acceptance bar:** independent exact-HEAD Android emulators run L01/L02/L03/L04
+fully green repeatedly and preserve their original, unweakened timeouts; CI
+typecheck/unit and iOS simulator gates green; physical Android and iOS remain
+**EXTERNAL / UNVERIFIED**. Keep issue #180 open until repeatability is established.
+This PR is a **candidate fix**, not a closure claim before actual CI evidence.
