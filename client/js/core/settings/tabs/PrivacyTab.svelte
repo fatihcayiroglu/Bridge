@@ -188,6 +188,15 @@
         portableApplyError = t('privacy_portable_apply_error', 'Profil içe aktarılamadı. Yeniden deneyin.');
         return;
       }
+      // The DB is now authoritative. Refresh the in-memory Svelte identity
+      // through its canonical owner (no browser storage), so reopening the
+      // Profile tab does not display the stale pre-import name/colors.
+      const currentMe = BridgeRegistry.call<Record<string, unknown> | null>('getMe');
+      if (currentMe && portableAccountId(currentMe) === owner && BridgeRegistry.has('setMe')) {
+        const updatedMe = { ...currentMe };
+        for (const field of portablePreview.fields) updatedMe[field.field] = field.proposed;
+        BridgeRegistry.call('setMe', updatedMe);
+      }
       resetPortableImport(); // NEVER leave a successful write armed for replay
       portableApplySuccess = true;
     } catch {
