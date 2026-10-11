@@ -38,6 +38,7 @@ import logger from '../lib/logger';
 import { disconnectLiveUserSessions } from '../lib/sessionRevocation';
 import bcrypt from 'bcryptjs';
 import { LIFECYCLE } from '../lib/accountLifecycle';
+import { buildPortableIdentityExport } from '../lib/portableIdentity';
 import { evaluateStepUp, factorsOf, requiredLevel, requireStepUp } from '../lib/stepUp';
 import {
   eraseAccountData, existingTables, ownershipBlockers, releaseAfterErasure, tableColumns,
@@ -88,6 +89,32 @@ const EXPORT_SOURCES: Array<{ key: string; table: string; column: string; column
   { key: 'scheduledMessages',  table: 'scheduled_msgs',     column: 'userId' },
   { key: 'messageReports',     table: 'message_reports',    column: 'reporterId' },
 ];
+
+// GET /api/account/portable-export — P7 C1 (identity subset only).
+// The existing /export is the comprehensive personal-data archive; it is not
+// safe to import it wholesale into a different Bridge installation.
+// Reuse the exact sensitive-export step-up action for both download routes.
+/**
+ * @openapi
+ * /account/portable-export:
+ *   get: { tags: [Account], summary: Export versioned portable identity subset (not yet importable), responses: { '200': { description: Portable profile with SHA-256 digest }, '403': { description: 'STEP_UP_REQUIRED (sensitive-export)' } } }
+ */
+router.get('/portable-export', authMiddleware, limits.write(), requireStepUp('account.export'), async (req: Request, res: Response) => {
+  const userId = castAuthed(req).user.id;
+  try {
+    const user = await Users.findById(userId) as Record<string, unknown> | null;
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const portable = buildPortableIdentityExport(userId, user);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', 'attachment; filename="bridge-portable-identity-v1.json"');
+    logger.info({ userId, event: 'account.portable_export.generated' }, 'Taşınabilir kimlik dosyası oluşturuldu.');
+    return res.status(200).json(portable);
+  } catch (err) {
+    logger.error({ err, userId, event: 'account.portable_export.failed' }, 'Taşınabilir kimlik dışa aktarımı başarısız.');
+    return res.status(500).json({ error: 'Portable identity export failed' });
+  }
+});
 
 // GET /api/account/export
 // P7 B2: the export is the whole account history — a `sensitive-export` step-up
