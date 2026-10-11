@@ -314,6 +314,100 @@ describe('account export/delete production behavior', () => {
     expect(db._transaction).not.toHaveBeenCalled();
   });
 
+  it('P7 C3 apply: confirmed profile writes only allowlisted columns under atomic stale-state guards', async () => {
+    const { buildPortableIdentityExport } = require('../lib/portableIdentity') as typeof import('../lib/portableIdentity');
+    const source = buildPortableIdentityExport('foreign-id', {
+      username: 'source_login', displayName: 'Migrated Name', bio: 'New biography',
+      website: 'https://profile.example', pronouns: 'they/them',
+      avatarColor: '', bannerColor: '#123456',
+      email: 'never.import@example.test', password: 'never-import',
+    }, '2026-10-11T12:00:00.000Z');
+    const expected = {
+      displayName: 'Alice', bio: '', website: '', pronouns: '',
+      avatarColor: '#2d9cdb', bannerColor: '#abcdef',
+    };
+    const body = { document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE' };
+    const noStepUp = await request(app()).post('/api/account/portable-import/apply').send(body);
+    expect(noStepUp.status).toBe(403);
+    expect(noStepUp.body).toMatchObject({ error: 'STEP_UP_REQUIRED', scope: 'sensitive-export' });
+    expect(query).not.toHaveBeenCalled();
+
+    query.mockImplementation(async (sql: string, params: unknown[]) => {
+      expect(sql).toMatch(/^UPDATE users SET /);
+      expect(sql).toContain('WHERE _id=$1 AND');
+      expect(sql).toContain('COALESCE("displayName", \'\')=$8');
+      expect(sql).toContain('COALESCE("bannerColor", \'\')=$13');
+      expect(sql).not.toMatch(/username|password|email|token|sourceUserId|avatarUrl|membership/i);
+      expect(params).toEqual([
+        'me', 'Migrated Name', 'New biography', 'https://profile.example',
+        'they/them', '#2d9cdb', '#123456',
+        'Alice', '', '', '', '#2d9cdb', '#abcdef',
+      ]);
+      return { rows: [{ _id: 'me' }], rowCount: 1 };
+    });
+    const res = await request(app()).post('/api/account/portable-import/apply')
+      .set(EXPORT_PROOF()).send(body);
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toContain('no-store');
+    expect(res.body).toMatchObject({
+      ok: true, applied: true, targetUserId: 'me', version: 1,
+      appliedFields: ['displayName', 'bio', 'website', 'pronouns', 'bannerColor'],
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(txQuery).not.toHaveBeenCalled();
+    expect(db._transaction).not.toHaveBeenCalled();
+  });
+
+  it('P7 C3 apply: confirmation and exact current-state snapshot are mandatory', async () => {
+    const { buildPortableIdentityExport } = require('../lib/portableIdentity') as typeof import('../lib/portableIdentity');
+    const source = buildPortableIdentityExport('origin', { username: 'origin', displayName: 'Origin' });
+    const expected = {
+      displayName: 'Alice', bio: '', website: '', pronouns: '', avatarColor: '', bannerColor: '',
+    };
+    for (const bad of [
+      { document: source, expected },
+      { document: source, expected, confirm: 'yes' },
+      { document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE', targetUserId: 'someone-else' },
+    ]) {
+      const res = await request(app()).post('/api/account/portable-import/apply')
+        .set(EXPORT_PROOF()).send(bad);
+      expect(res.status).toBe(400);
+    }
+    const malformed = await request(app()).post('/api/account/portable-import/apply')
+      .set(EXPORT_PROOF()).send({
+        document: source,
+        expected: { ...expected, password: 'attack' },
+        confirm: 'APPLY_PORTABLE_PROFILE',
+      });
+    expect(malformed.status).toBe(422);
+    expect(malformed.body.code).toBe('PORTABLE_IDENTITY_INVALID');
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('P7 C3 apply: concurrent profile edits fail 409 without partial import; DB failures fail visibly', async () => {
+    const { buildPortableIdentityExport } = require('../lib/portableIdentity') as typeof import('../lib/portableIdentity');
+    const source = buildPortableIdentityExport('origin', { username: 'origin', displayName: 'Origin' });
+    const body = {
+      document: source, confirm: 'APPLY_PORTABLE_PROFILE',
+      expected: { displayName: 'Alice', bio: '', website: '', pronouns: '', avatarColor: '', bannerColor: '' },
+    };
+    query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    const conflict = await request(app()).post('/api/account/portable-import/apply')
+      .set(EXPORT_PROOF()).send(body);
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.code).toBe('PORTABLE_PROFILE_CONFLICT');
+    query.mockRejectedValueOnce(new Error('update failed; statement rolled back'));
+    const unavailable = await request(app()).post('/api/account/portable-import/apply')
+      .set(EXPORT_PROOF()).send(body);
+    expect(unavailable.status).toBe(500);
+    db._pool = null;
+    const noPg = await request(app()).post('/api/account/portable-import/apply')
+      .set(EXPORT_PROOF()).send(body);
+    expect(noPg.status).toBe(503);
+    expect(txQuery).not.toHaveBeenCalled();
+    expect(db._transaction).not.toHaveBeenCalled();
+  });
+
   it('preflight reports server and group-DM ownership blockers with member counts', async () => {
     installSqlModel({
       tables: ['servers','members','group_dm_conversations','group_dm_members'],
