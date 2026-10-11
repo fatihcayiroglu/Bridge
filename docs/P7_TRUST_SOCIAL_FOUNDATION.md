@@ -764,8 +764,9 @@ SHA-256 corruption check and clear exclusions. The existing comprehensive
 personal-data export stays separate. Both routes use the existing
 `sensitive-export` step-up protection. See
 [`P7_PORTABLE_IDENTITY_V1.md`](P7_PORTABLE_IDENTITY_V1.md) for the stable v1
-format and caveats. The checksum is **not** a signature. **No importer exists
-yet**, so C1 portability/restore proof and C2–C4 are still open.
+format and caveats. The checksum is **not** a signature. The profile-only atomic import API is
+merged in PR #181; its double-confirmed UI is proposed in PR #183. Complete
+community portability, cross-instance restore proof and C2–C4 remain open.
 
 ## C2. Community export
 
@@ -811,9 +812,9 @@ unknown-version or oversized files fail closed. The Settings → Privacy UI
 clearly says no change is saved. See
 [`P7_PORTABLE_IDENTITY_V1.md`](P7_PORTABLE_IDENTITY_V1.md).
 
-**This closes only the read-only format/preview subtask.** Applying import
-writes, deterministic conflict mapping, transaction rollback, community
-restoration, and cross-instance migration are not yet implemented.
+**The preview subtask is read-only.** Profile-only guarded writes were
+implemented and tested in PR #181. Community restoration, general conflict
+mapping and cross-instance migration remain incomplete.
 
 ### C3-2 — explicit, atomic profile-only apply endpoint (unverified candidate)
 
