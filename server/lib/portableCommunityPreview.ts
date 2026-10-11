@@ -10,7 +10,7 @@ type Collision = {
   kind: Kind;
   sourceId: string;
   name: string;
-  targetSourceIds: string[];
+  targetIds: string[];
   reason: 'TARGET_NAME_EXISTS' | 'DUPLICATE_SOURCE_NAME';
 };
 const PREVIEW_LIMIT = 50;
@@ -50,14 +50,14 @@ function findCollisions(kind: Kind, source: readonly Item[], target: readonly It
     if (destinationIds.length) {
       collisions.push({
         kind, sourceId: row.sourceId, name: row.name,
-        targetSourceIds: destinationIds.slice(0, PREVIEW_LIMIT),
+        targetIds: destinationIds.slice(0, PREVIEW_LIMIT),
         reason: 'TARGET_NAME_EXISTS',
       });
     }
     if ((sourceCounts.get(k) ?? 0) > 1) {
       collisions.push({
         kind, sourceId: row.sourceId, name: row.name,
-        targetSourceIds: [], reason: 'DUPLICATE_SOURCE_NAME',
+        targetIds: [], reason: 'DUPLICATE_SOURCE_NAME',
       });
     }
   }
