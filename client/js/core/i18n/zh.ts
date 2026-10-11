@@ -794,6 +794,8 @@ const translations: Record<string, string> = {
   "moderation_resolved": "已解决",
   "privacy_data_controls": "数据控制",
   "privacy_export_hint": "直接从服务器获取 Bridge 保存的个人数据副本。",
+  "privacy_portable_export": "下载可迁移个人资料（JSON v1）",
+  "privacy_portable_export_hint": "仅包含可迁移的个人资料字段；不包含密码、私钥、电子邮件和消息。尚不支持导入其他 Bridge 服务器。",
   "privacy_ai_opt_in": "可选 AI 辅助",
   "profile_presence_status": "在线状态",
   "appearance_content_density": "内容密度",
