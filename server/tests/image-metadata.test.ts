@@ -230,6 +230,43 @@ describe('GIF', () => {
 });
 
 describe('fail closed', () => {
+  it('rejects a multi-megabyte VP8X extension without an unbounded disk read', async () => {
+    // Start from an actual extended WebP and corrupt only the VP8X chunk
+    // length. Its payload is exactly 10 bytes; an oversized length is invalid.
+    const clean = await sharp(solid).withIccProfile('p3').webp({ lossless: true }).toBuffer();
+    expect(clean.toString('latin1', 12, 16)).toBe('VP8X');
+    expect(clean.readUInt32LE(16)).toBe(10);
+    const extra = Buffer.alloc(3 * (1 << 20), 0x5a);
+    const malformed = Buffer.concat([
+      clean.subarray(0, 20), // RIFF header and VP8X type/length
+      clean.subarray(20, 30), // original ten-byte VP8X payload
+      extra,
+      clean.subarray(30), // actual image chunks remain intact
+    ]);
+    malformed.writeUInt32LE(10 + extra.length, 16);
+    malformed.writeUInt32LE(malformed.length - 8, 4);
+    expect(() => stripImageMetadataBuffer(malformed, 'image/webp')).toThrow(ImageMetadataError);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-vp8x-bounds-'));
+    const file = path.join(dir, 'oversized.webp');
+    try {
+      fs.writeFileSync(file, malformed);
+      const readSpy = jest.spyOn(fs, 'readSync');
+      let largestRead = 0;
+      try {
+        await expect(stripImageMetadataFile(file, 'image/webp')).rejects.toBeInstanceOf(ImageMetadataError);
+        largestRead = Math.max(0, ...readSpy.mock.calls.map(args => Number(args[3]) || 0));
+      } finally {
+        readSpy.mockRestore();
+      }
+      expect(largestRead).toBeLessThanOrEqual(1 << 20);
+      expect(fs.readFileSync(file).equals(malformed)).toBe(true);
+      expect(fs.readdirSync(dir)).toEqual(['oversized.webp']); // no temp output
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('a JPEG header segment that overruns the file is refused, not stored as is', async () => {
     const photo = withJpegSegments(await sharp(solid).jpeg().toBuffer(), [exifApp1()]);
     const broken = Buffer.from(photo);
