@@ -145,6 +145,7 @@ describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
             displayName: 'Target', bio: 'Same', website: '', pronouns: '',
             avatarColor: '#abcdef', bannerColor: '',
           },
+          targetUserId: 'target',
           confirm: 'APPLY_PORTABLE_PROFILE',
         } },
     ]);
