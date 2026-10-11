@@ -756,6 +756,17 @@ Design requirements:
 - secrets/private cryptographic keys are not casually exported;
 - user can understand included/excluded fields.
 
+### C1-1 — versioned portable profile snapshot (export-only)
+
+`GET /api/account/portable-export` and Settings → Privacy provide a
+`bridge-portable-identity` JSON v1 file with an explicit allowlist, per-file
+SHA-256 corruption check and clear exclusions. The existing comprehensive
+personal-data export stays separate. Both routes use the existing
+`sensitive-export` step-up protection. See
+[`P7_PORTABLE_IDENTITY_V1.md`](P7_PORTABLE_IDENTITY_V1.md) for the stable v1
+format and caveats. The checksum is **not** a signature. **No importer exists
+yet**, so C1 portability/restore proof and C2–C4 are still open.
+
 ## C2. Community export
 
 Server/community owners can export portable community structure subject to
