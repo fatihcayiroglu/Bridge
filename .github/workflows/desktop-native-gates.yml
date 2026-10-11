@@ -74,11 +74,22 @@ jobs:
             rm -f "${listing}"
           done
           file electron/release/linux-unpacked/bridge
-      - name: Install headless desktop display dependencies
+      - name: Install built DEB and headless display dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends xvfb xdotool dbus-x11
-      - name: Packaged Linux first-run window smoke (real X11, no security relaxation)
+          shopt -s nullglob
+          debs=(electron/release/*.deb)
+          test "${#debs[@]}" -eq 1 || { echo "Expected one DEB to install" >&2; exit 1; }
+          sudo apt-get install -y --no-install-recommends "$(realpath "${debs[0]}")"
+          # A real DEB install runs postinst to configure Chromium's Linux
+          # sandbox. Do not bypass it with --no-sandbox or run as root.
+          test -x /opt/Bridge/bridge
+          test "$(stat -c %u /opt/Bridge/chrome-sandbox)" = 0
+          ls -l /opt/Bridge/chrome-sandbox
+      - name: Installed Linux first-run window smoke (real X11, OS sandbox)
         run: xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-window-smoke.sh
       - name: Preserve Linux package artifacts
         if: ${{ !cancelled() }}
