@@ -43,6 +43,19 @@ an ID mapping, changes permissions, moves members or persists any data.
 Checksums detect accidental corruption, not origin or authenticity, and must
 not be treated as a signature.
 
+
+## Safe response semantics
+
+A successful preview reports `mode: "read-only"`,
+`writesPerformed: false`, `importSupported: false`, the source and
+destination structure counts, and `conflicts: { total, truncated, items }`.
+Each collision item identifies a source category/role/channel and any
+name-matching target IDs. Source and destination IDs are not considered
+interchangeable, and **the absence of collisions is not an authorization to
+apply**. For 51 or more findings only the first 50 details are shown, while
+`total` remains complete and `truncated` is true. The caller must not
+silently interpret the first 50 entries as the whole report.
+
 ## Still blocked
 
 A safe importer needs a format for category/role/channel permission
