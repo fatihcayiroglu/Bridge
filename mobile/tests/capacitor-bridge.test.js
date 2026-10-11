@@ -374,3 +374,68 @@ describe('Açılış katmanı', () => {
     }
   });
 });
+
+
+
+describe('P7 Android K01 — native back uses real modal close contract', () => {
+  let dialogs;
+  let previousQuerySelectorAll;
+  let previousGetElementById;
+  let previousKeyboardEvent;
+
+  beforeEach(() => {
+    dialogs = [];
+    App.minimizeApp.mockClear();
+    // The mobile Jest environment uses a MINIMAL DOM SHIM, not jsdom. Supply
+    // the native bridge's actual query contract as a tiny deterministic DOM.
+    previousQuerySelectorAll = document.querySelectorAll;
+    previousGetElementById = document.getElementById;
+    previousKeyboardEvent = global.KeyboardEvent;
+    document.querySelectorAll = jest.fn(() => dialogs);
+    document.getElementById = jest.fn(() => null);
+    global.KeyboardEvent = class {
+      constructor(type, options) { Object.assign(this, { type, ...options }); }
+    };
+  });
+
+  afterEach(() => {
+    if (previousQuerySelectorAll === undefined) delete document.querySelectorAll;
+    else document.querySelectorAll = previousQuerySelectorAll;
+    document.getElementById = previousGetElementById;
+    if (previousKeyboardEvent === undefined) delete global.KeyboardEvent;
+    else global.KeyboardEvent = previousKeyboardEvent;
+  });
+
+  it('Settings native Back clicks the real Svelte onClose button (not Escape or minimize)', () => {
+    const close = { click: jest.fn(() => { dialogs = []; }) };
+    const dialog = {
+      id: 'settings-modal-content', offsetParent: null, getClientRects: () => [{}],
+      querySelector: jest.fn(() => close), dispatchEvent: jest.fn(),
+    };
+    dialogs = [dialog];
+    App._emit('backButton', {});
+    expect(dialog.querySelector).toHaveBeenCalledWith('.settings-close');
+    expect(close.click).toHaveBeenCalledTimes(1);
+    expect(dialog.dispatchEvent).not.toHaveBeenCalled();
+    expect(dialogs).toHaveLength(0);
+    expect(App.minimizeApp).not.toHaveBeenCalled();
+  });
+
+  it('other dialogs receive ONE Escape and never cause app minimize', () => {
+    const dialog = {
+      id: 'other-dialog', offsetParent: null, getClientRects: () => [{}],
+      querySelector: jest.fn(), dispatchEvent: jest.fn(() => { dialogs = []; }),
+    };
+    dialogs = [dialog];
+    App._emit('backButton', {});
+    expect(dialog.querySelector).not.toHaveBeenCalled();
+    expect(dialog.dispatchEvent).toHaveBeenCalledTimes(1);
+    expect(dialog.dispatchEvent.mock.calls[0][0].key).toBe('Escape');
+    expect(App.minimizeApp).not.toHaveBeenCalled();
+  });
+
+  it('Back on root with no dialogs or drawers invokes minimizeApp exactly once', () => {
+    App._emit('backButton', {});
+    expect(App.minimizeApp).toHaveBeenCalledTimes(1);
+  });
+});
