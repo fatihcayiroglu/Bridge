@@ -256,6 +256,37 @@ const PREVIEW_PROFILE_FIELDS = [
   'displayName', 'bio', 'website', 'pronouns', 'avatarColor', 'bannerColor',
 ] as const;
 
+export type PortableImportProfileField = typeof PREVIEW_PROFILE_FIELDS[number];
+export type PortableImportExpectedFields = Record<PortableImportProfileField, string>;
+
+/** Optimistic-concurrency snapshot supplied by the *same-account* preview. */
+export function validatePortableImportExpectedFields(input: unknown): PortableImportExpectedFields {
+  const fields = requireObject(input, 'expected');
+  exactKeys(fields, PREVIEW_PROFILE_FIELDS, 'expected');
+  const result = {} as PortableImportExpectedFields;
+  for (const field of PREVIEW_PROFILE_FIELDS) {
+    // The destination may legitimately have older, non-conforming profile
+    // content. It is only compared; it is never written back from this input.
+    result[field] = safeString(fields[field], 4096, `expected.${field}`);
+  }
+  return result;
+}
+
+/** Empty optional appearance values mean "keep the destination's color". */
+export function portableImportProposedFields(
+  file: PortableIdentityExport,
+  expected: PortableImportExpectedFields,
+): PortableImportExpectedFields {
+  const proposed = {} as PortableImportExpectedFields;
+  for (const field of PREVIEW_PROFILE_FIELDS) {
+    const source = file.identity[field];
+    proposed[field] = (field === 'avatarColor' || field === 'bannerColor') && source === ''
+      ? expected[field]
+      : source;
+  }
+  return proposed;
+}
+
 /** This is a READ-ONLY mapping plan. The source ID and username are never assigned. */
 export function previewPortableIdentity(
   file: PortableIdentityExport,
@@ -264,7 +295,8 @@ export function previewPortableIdentity(
 ) {
   const fields = PREVIEW_PROFILE_FIELDS.map((field) => {
     const current = typeof target[field] === 'string' ? target[field] as string : '';
-    const proposed = file.identity[field];
+    const source = file.identity[field];
+    const proposed = (field === 'avatarColor' || field === 'bannerColor') && source === '' ? current : source;
     return { field, current, proposed, changed: current !== proposed };
   });
   return {
