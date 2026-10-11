@@ -177,8 +177,8 @@ router.post('/portable-import/apply', authMiddleware, limits.write(), requireSte
     // select-then-write races and forbid request-controlled SQL identifiers.
     const fields = ['displayName', 'bio', 'website', 'pronouns', 'avatarColor', 'bannerColor'] as const;
     const names = fields.map(name => `"${name}"`);
-    const setSql = names.map((name, index) => `${name}=${index + 2}`).join(', ');
-    const matchSql = names.map((name, index) => `COALESCE(${name}, '')=${index + 8}`).join(' AND ');
+    const setSql = names.map((name, index) => `${name}=$${index + 2}`).join(', ');
+    const matchSql = names.map((name, index) => `COALESCE(${name}, '')=$${index + 8}`).join(' AND ');
     const values: unknown[] = [
       userId,
       ...fields.map(name => proposed[name]),
