@@ -71,6 +71,26 @@ metadata, not an identifier to reuse as the destination's primary key**.
 This is **not** a backup or a complete data subject access response. To download
 complete available account data, use the existing personal-data export.
 
+## Read-only import preview (C3 preflight milestone)
+
+Settings → Privacy now accepts a small JSON v1 file and calls
+`POST /api/account/portable-import/preview` (authenticated and protected by
+the same `sensitive-export` fresh proof). The endpoint **does not save** or
+import anything. A valid v1 file returns a field-by-field before/after preview
+for the account already signed in. The source `sourceUserId` is only mapping
+metadata; the target account ID and username remain unchanged.
+
+The server rejects documents above 16 KiB, unknown/extra fields, incompatible
+format versions, invalid timestamps, non-string/oversized profile properties,
+unknown integrity algorithms, invalid SHA-256 checksums, and unsupported
+capability declarations. Files are only ever parsed as data, not executable
+instructions. A checksum is **not** a cryptographic signature: an attacker
+can recalculate it after editing the file.
+
+A preview is not an importer, and there is no DB mutation or automatic
+ownership/community migration. Applying changes, collision policy, safe
+rollback, and cross-instance round-trip proof remain explicit C3/C4 gaps.
+
 ## Next gates (not claimed complete)
 
 - C1: source/target data format acceptance tests against independently installed
