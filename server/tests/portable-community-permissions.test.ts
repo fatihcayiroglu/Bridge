@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto';
 import serversRouter from '../routes/servers';
 import { stepUpHeader } from './helpers/stepUp';
 import { PERMS } from '../lib/permissions';
+import { ChannelPermissions, Channels } from '../db/repositories';
 import { buildPortableCommunityPermissionManifest } from '../lib/portableCommunityPermissions';
 
 const db = require('../db/loader') as import('./helpers/mockDb').MockDb;
@@ -126,6 +127,29 @@ describe('P7 C2 permission manifest', () => {
     await db.channelPermissions.update({ _id: 'permission1' }, { $set: { deny: PERMS.SEND_MESSAGES } });
     const invalidMask = await download(OWNER, 'sensitive-export');
     expect(invalidMask.status).toBe(503);
+  });
+
+  it('returns 503 rather than a successful incomplete manifest on either storage outage', async () => {
+    const initial = await snapshot();
+    const canonical = jest.spyOn(ChannelPermissions, 'findByChannel').mockRejectedValueOnce(new Error('PG permission read unavailable'));
+    try {
+      const fail = await download(OWNER, 'sensitive-export');
+      expect(fail.status).toBe(503);
+      expect(fail.body.code).toBe('PORTABLE_COMMUNITY_PERMISSIONS_UNAVAILABLE');
+      expect(fail.body.channels).toBeUndefined();
+    } finally {
+      canonical.mockRestore();
+    }
+    const legacy = jest.spyOn(Channels, 'findOverridesByChannel').mockRejectedValueOnce(new Error('legacy override read unavailable'));
+    try {
+      const fail = await download(OWNER, 'sensitive-export');
+      expect(fail.status).toBe(503);
+      expect(fail.body.code).toBe('PORTABLE_COMMUNITY_PERMISSIONS_UNAVAILABLE');
+      expect(fail.body.channels).toBeUndefined();
+    } finally {
+      legacy.mockRestore();
+    }
+    expect(await snapshot()).toEqual(initial);
   });
 
   it('does not treat a partial source read as an empty permission set', () => {
