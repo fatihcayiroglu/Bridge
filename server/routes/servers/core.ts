@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 const router = express.Router();
 
-import { Users, Servers, Members, Auth, Channels, Roles } from '../../db/repositories';
+import { Users, Servers, Members, Auth, Channels, Roles, ChannelPermissions } from '../../db/repositories';
 import { authMiddleware} from '../../middleware/auth';
 import { sanitizeUser } from '../../lib/userUtils';
 import { getMemberPerms, hasPermission, PERMS } from '../roles';
@@ -24,6 +24,7 @@ import logger from '../../lib/logger';
 import { buildPortableCommunityStructure } from '../../lib/portableCommunity';
 import { validatePortableCommunityStructure, PortableCommunityValidationError } from '../../lib/portableCommunityValidation';
 import { buildPortableCommunityPreview } from '../../lib/portableCommunityPreview';
+import { buildPortableCommunityPermissionManifest } from '../../lib/portableCommunityPermissions';
 import { enforceStepUp } from '../../lib/stepUp';
 
 // GET /api/servers
@@ -316,6 +317,68 @@ router.post('/:sid/portable-import/preview', authMiddleware, limits.write(), asy
     logger.error({ err, sid, userId: actor.id, event: 'server.portable_structure_preview.failed' },
       'Read-only community structure preview unavailable.');
     return res.status(503).json({ code: 'PORTABLE_COMMUNITY_PREVIEW_UNAVAILABLE', error: 'Cannot build a complete destination preview' });
+  }
+});
+
+// P7 C2: separate permission coverage download — never replace the C2 v1
+// structure format or claim the omitted per-user/legacy grants are portable.
+router.get('/:sid/portable-permissions-export', authMiddleware, limits.write(), async (req, res) => {
+  const actor = castAuthed(req).user;
+  const sid = String(req.params.sid ?? '');
+  res.setHeader('Cache-Control', 'no-store');
+  const server = await Servers.findById(sid);
+  if (!server) return res.status(404).json({ error: 'Server not found' });
+  if (server.ownerId !== actor.id) {
+    return res.status(403).json({ error: 'Only the source community owner may export its permissions' });
+  }
+  if (!(await enforceStepUp(req, res, actor.id, 'account.export'))) return;
+
+  try {
+    const [channels, roles] = await Promise.all([Channels.findByServer(sid), Roles.findByServer(sid)]);
+    // Bound per-channel reads and concurrent PostgreSQL queries.
+    if (channels.length > 500 || roles.length > 2000) {
+      return res.status(413).json({ error: 'Community permission manifest exceeds supported bounds' });
+    }
+    const data: Array<{
+      channelId: string;
+      canonical: Array<Record<string, unknown>>;
+      legacy: Array<Record<string, unknown>>;
+    }> = [];
+    for (let start = 0; start < channels.length; start += 8) {
+      const batch = channels.slice(start, start + 8);
+      const read = await Promise.all(batch.map(async channel => {
+        const channelId = String(channel._id);
+        const [canonical, legacy] = await Promise.all([
+          ChannelPermissions.findByChannel(channelId),
+          Channels.findOverridesByChannel(channelId),
+        ]);
+        return {
+          channelId,
+          canonical: canonical as Array<Record<string, unknown>>,
+          legacy: legacy as Array<Record<string, unknown>>,
+        };
+      }));
+      data.push(...read);
+    }
+    const manifest = buildPortableCommunityPermissionManifest(
+      server as unknown as Record<string, unknown>,
+      channels as Array<Record<string, unknown>>,
+      roles as Array<Record<string, unknown>>,
+      data,
+    );
+    if (Buffer.byteLength(JSON.stringify(manifest), 'utf8') > 512 * 1024) {
+      return res.status(413).json({ error: 'Permission manifest exceeds 512 KiB' });
+    }
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', 'attachment; filename="bridge-community-permissions-v1.json"');
+    return res.status(200).json(manifest);
+  } catch (err) {
+    logger.error({ err, sid, userId: actor.id, event: 'server.portable_permissions_export.failed' },
+      'Permission coverage export refused due to incomplete or invalid source data.');
+    return res.status(503).json({
+      code: 'PORTABLE_COMMUNITY_PERMISSIONS_UNAVAILABLE',
+      error: 'Cannot safely export complete permission coverage',
+    });
   }
 });
 
