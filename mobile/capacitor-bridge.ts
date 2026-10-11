@@ -760,12 +760,21 @@ if (typeof Capacitor === 'undefined') {
       ).filter((el) => el.offsetParent !== null || el.getClientRects().length > 0);
       if (dialogs.length > 0) {
         const top = dialogs[dialogs.length - 1]!;
-        top.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Escape', code: 'Escape', bubbles: true, cancelable: true,
-        }));
-        document.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Escape', code: 'Escape', bubbles: true, cancelable: true,
-        }));
+        // K01: the Svelte Settings dialog owns a REAL close button whose
+        // onClose callback unmounts the modal. Synthesising Escape at both
+        // `top` and `document` can be intercepted by focus traps / overlays,
+        // leaving the dialog visible after native Back. Follow the same
+        // actual button path used by a person; keep Escape for other modals.
+        const settingsClose = top.id === 'settings-modal-content'
+          ? top.querySelector<HTMLButtonElement>('.settings-close')
+          : null;
+        if (settingsClose) {
+          settingsClose.click();
+        } else {
+          top.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Escape', code: 'Escape', bubbles: true, cancelable: true,
+          }));
+        }
         void bridgeHaptic.light();
         return;
       }

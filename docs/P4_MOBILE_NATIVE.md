@@ -425,3 +425,12 @@ fully green repeatedly and preserve their original, unweakened timeouts; CI
 typecheck/unit and iOS simulator gates green; physical Android and iOS remain
 **EXTERNAL / UNVERIFIED**. Keep issue #180 open until repeatability is established.
 This PR is a **candidate fix**, not a closure claim before actual CI evidence.
+
+
+### P7 Android K01 hardware-back reliability — 11 October 2026
+
+Post-merge `main` commit `7ab895a`, [Android run 38155876130](https://github.com/fatihcayiroglu/Bridge/actions/runs/38155876130), recorded 30 PASS / 1 FAIL / 0 SKIP. L01/L02/L03/L04/ANR01 passed. **K01 failed**: after pressing native Android Back, the settings Svelte dialog remained visible for 5 seconds while the application stayed in foreground. The independent PR #182 Android runs had K01 passing. This is **intermittent real emulator evidence**, not a green release.
+
+[Issue #184](https://github.com/fatihcayiroglu/Bridge/issues/184) tracks the incident. [Draft PR #185](https://github.com/fatihcayiroglu/Bridge/pull/185) changes the native back path for Settings: call the existing `.settings-close` user-facing button, which directly invokes Svelte `onClose`, rather than synthesize two Escape events across a focus trap. For other dialogs, one Escape fallback remains. Native plugin-mock tests exercise the actual bridge listener. Its compiled JS and TypeScript must stay byte-identical under `mobile/tests/capacitor-bridge-freshness.test.js`.
+
+**DO NOT CLOSE #184** before exact-head K01 emulator pass and a successful post-merge main Android run. No timeout relaxation or skip. Physical Android hardware Back remains unverified.
