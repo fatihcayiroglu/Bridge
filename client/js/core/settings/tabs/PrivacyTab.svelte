@@ -192,25 +192,16 @@
         portableApplyError = t('privacy_portable_apply_error', 'Profil içe aktarılamadı. Yeniden deneyin.');
         return;
       }
-      // The DB is now authoritative. Refresh the in-memory Svelte identity
-      // through its canonical owner (no browser storage), so reopening the
-      // Profile tab does not display the stale pre-import name/colors.
+      // Reflect only the verified six fields after the server's confirmed
+      // atomic write. Use a fresh object so Svelte's canonical identity owner
+      // and the header/profile panel see the same state (no direct mutation
+      // of the prior profile reference).
       const currentMe = BridgeRegistry.call<Record<string, unknown> | null>('getMe');
-      if (currentMe && portableAccountId(currentMe) === owner && BridgeRegistry.has('setMe')) {
+      if (currentMe && portableAccountId(currentMe) === owner) {
         const updatedMe = { ...currentMe };
         for (const field of portablePreview.fields) updatedMe[field.field] = field.proposed;
-        BridgeRegistry.call('setMe', updatedMe);
-      }
-      // Keep the canonical signed-in profile in sync with the newly applied
-      // server-confirmed fields. Otherwise switching to Profile while Settings
-      // stays open would show a stale display name and could overwrite the
-      // import with the old value. The server's conditional UPDATE is already
-      // authoritative; only these six verified preview values are reflected.
-      const live = BridgeRegistry.call<Record<string, unknown> | null>('getMe');
-      if (portableAccountId(live) === owner && live) {
-        for (const field of portablePreview.fields) live[field.field] = field.proposed;
-        BridgeRegistry.call('setMe', live);
-        updateUserPanel(live);
+        if (BridgeRegistry.has('setMe')) BridgeRegistry.call('setMe', updatedMe);
+        updateUserPanel(updatedMe as Parameters<typeof updateUserPanel>[0]);
       }
       resetPortableImport(); // NEVER leave a successful write armed for replay
       portableApplySuccess = true;
