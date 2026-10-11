@@ -91,4 +91,35 @@ test.describe('çapraz tarayıcı — çekirdek', () => {
     }, BASE_URL);
     expect(status).toBe(200);
   });
+
+  test('CSS dosyaları gerçek tarayıcıda yüklenir; kök dizinde kayıp stylesheet yoktur', async ({ page }) => {
+    const failedStylesheets: string[] = [];
+    const origin = new URL(BASE_URL).origin;
+    page.on('response', (response) => {
+      const url = new URL(response.url());
+      if (url.origin === origin && url.pathname.endsWith('.css') && response.status() >= 400) {
+        failedStylesheets.push(url.pathname + ' → HTTP ' + response.status());
+      }
+    });
+
+    await page.goto(BASE_URL, { waitUntil: 'load' });
+    await expect(page.locator('#app')).toBeVisible({ timeout: 30_000 });
+
+    // Merely having <link> nodes is not proof that CSS applied: verify the
+    // browser accepted the stylesheet AND an imported design token resolved.
+    const css = await page.evaluate(() => ({
+      requested: Array.from(
+        document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'),
+        link => new URL(link.href).pathname,
+      ),
+      parsed: Array.from(document.styleSheets, sheet =>
+        sheet.href ? new URL(sheet.href).pathname : '').filter(Boolean),
+      brandHue: getComputedStyle(document.documentElement).getPropertyValue('--brand-h').trim(),
+    }));
+    expect(css.requested).toContain('/css/style.css');
+    expect(css.parsed).toContain('/css/style.css');
+    expect(css.brandHue, 'tokens.css was not applied to the document').not.toBe('');
+    expect(failedStylesheets, 'stylesheets returned HTTP errors').toEqual([]);
+  });
+
 });
