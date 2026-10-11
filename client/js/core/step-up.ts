@@ -168,6 +168,7 @@ function explanation(refusal: StepUpRefusal): string {
     case 'two_factor.disable': return t('stepup_why_two_factor_disable');
     case 'backup_codes.regenerate': return t('stepup_why_backup_codes');
     case 'account.export': return t('stepup_why_account_export');
+    case 'account.import': return t('stepup_generic_why');
     case 'account.delete': return t('stepup_why_account_delete');
     case 'server.delete': return t('stepup_why_server_delete');
     case 'admin.user.delete': return t('stepup_why_admin_user_delete');
