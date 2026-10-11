@@ -106,7 +106,7 @@ rollback, and cross-instance round-trip proof remain explicit C3/C4 gaps.
 
 `POST /api/account/portable-import/apply` is a **separate, explicitly
 confirmed** endpoint, not the read-only preview. It requires a signed-in user,
-a fresh `account.export` / `sensitive-export` step-up proof, and exactly:
+a fresh `account.import` / `account-security` step-up proof, and exactly:
 
 ```json
 {
