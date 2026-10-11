@@ -70,6 +70,51 @@
     }
   }
 
+  // P7 C3 read-only import preflight. The browser sends ONLY a small JSON
+  // profile snapshot for validation; this endpoint never modifies the account.
+  interface PortablePreview {
+    dryRun: true;
+    applied: false;
+    checksumVerified: true;
+    fields: Array<{ field: string; current: string; proposed: string; changed: boolean }>;
+  }
+  let previewingPortable = $state(false);
+  let portablePreview = $state<PortablePreview | null>(null);
+  let portablePreviewError = $state(false);
+
+  async function previewPortableFile(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file || previewingPortable) return;
+    portablePreview = null;
+    portablePreviewError = false;
+    if (file.size > 16 * 1024) { portablePreviewError = true; return; }
+    const apiFetch = BridgeRegistry.get<(url: string, init?: RequestInit) => Promise<Response>>('apiFetch');
+    if (!apiFetch) { portablePreviewError = true; return; }
+    previewingPortable = true;
+    try {
+      const content = JSON.parse(await file.text()) as unknown;
+      const response = await apiFetch('/api/account/portable-import/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(content),
+      });
+      if (!response.ok) { portablePreviewError = true; return; }
+      const result = await response.json() as PortablePreview;
+      if (result.dryRun !== true || result.applied !== false ||
+          result.checksumVerified !== true || !Array.isArray(result.fields)) {
+        portablePreviewError = true;
+        return;
+      }
+      portablePreview = result;
+    } catch {
+      portablePreviewError = true;
+    } finally {
+      previewingPortable = false;
+    }
+  }
+
   // ── Hesabı sil (Final21 Faz 19) ──────────────────────────────────────────
   // Sunucuda eksiksiz bir silme ucu ve ön denetim vardı (`DELETE /api/account`,
   // `GET /api/account/deletion-preflight`) ama istemcide HİÇBİR giriş noktası yoktu:
@@ -292,6 +337,26 @@
       {t('privacy_portable_export', 'Taşınabilir profilimi indir (JSON v1)')}
     </button>
     <p class="field-note">{t('privacy_portable_export_hint', 'Yalnızca taşınabilir profil alanlarını içerir; parola, özel anahtar, e-posta ve mesajlar dahil değildir. Farklı bir Bridge sunucusuna içe aktarma henüz desteklenmiyor.')}</p>
+    <label class="field-label" for="portable-identity-file">{t('privacy_portable_preview_select', 'Taşınabilir profil dosyasını önizle (JSON v1)')}</label>
+    <input id="portable-identity-file" class="field-input" type="file" accept=".json,application/json"
+           data-testid="portable-identity-preview-file" disabled={previewingPortable}
+           onchange={(event) => void previewPortableFile(event)} />
+    {#if previewingPortable}
+      <p class="field-note">{t('privacy_portable_preview_loading', 'Dosyanın bütünlüğü kontrol ediliyor…')}</p>
+    {/if}
+    {#if portablePreviewError}
+      <p class="field-error" role="alert">{t('privacy_portable_preview_error', 'Dosya geçersiz, değiştirilmiş veya desteklenmeyen bir sürümde.')}</p>
+    {/if}
+    {#if portablePreview}
+      <p class="field-note" role="status" data-testid="portable-identity-preview-ok">
+        {t('privacy_portable_preview_result', 'Yalnızca önizleme: hesabınızda hiçbir değişiklik kaydedilmedi.')}
+      </p>
+      <ul class="field-note">
+        {#each portablePreview.fields.filter(field => field.changed) as field (field.field)}
+          <li>{field.field}: {field.current} → {field.proposed}</li>
+        {/each}
+      </ul>
+    {/if}
   </div>
 
   <div class="toggle-row" role="group" aria-label={t("privacy_ai_opt_in")}>
