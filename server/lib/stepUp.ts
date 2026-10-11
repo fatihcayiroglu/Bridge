@@ -91,6 +91,7 @@ export const STEP_UP_ACTIONS = Object.freeze({
   'two_factor.disable': { scope: 'account-security', when: 'always', why: 'Turning off two-factor sign-in removes your second factor.' },
   'backup_codes.regenerate': { scope: 'account-security', when: 'always', why: 'New backup codes can be used instead of your second factor.' },
   'account.export': { scope: 'sensitive-export', when: 'always', why: 'The export contains your whole account history.' },
+  'account.import': { scope: 'account-security', when: 'always', why: 'Importing a profile changes account identity and requires explicit fresh proof.' },
   'account.delete': { scope: 'destructive-admin', when: 'always', why: 'Deleting your account cannot be undone.' },
   'server.delete': { scope: 'destructive-admin', when: 'always', why: 'Deleting a server cannot be undone for any of its members.' },
   'admin.user.delete': { scope: 'destructive-admin', when: 'always', why: 'Deleting an account on this instance cannot be undone.' },

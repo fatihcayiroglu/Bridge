@@ -102,6 +102,54 @@ A preview is not an importer, and there is no DB mutation or automatic
 ownership/community migration. Applying changes, collision policy, safe
 rollback, and cross-instance round-trip proof remain explicit C3/C4 gaps.
 
+## Account-profile-only atomic import API (C3 increment; no UI yet)
+
+`POST /api/account/portable-import/apply` is a **separate, explicitly
+confirmed** endpoint, not the read-only preview. It requires a signed-in user,
+a fresh `account.import` / `account-security` step-up proof, and exactly:
+
+```json
+{
+  "document": { "format": "bridge-portable-identity", "version": 1 },
+  "expected": {
+    "displayName": "Current name",
+    "bio": "",
+    "website": "",
+    "pronouns": "",
+    "avatarColor": "#2d9cdb",
+    "bannerColor": ""
+  },
+  "confirm": "APPLY_PORTABLE_PROFILE"
+}
+```
+
+`document` must be the **complete**, checksum-valid v1 export (the abbreviated
+example above is not a valid request). `expected` must match the **six current
+field values** returned as `fields[].current` by an immediately preceding
+authenticated preview. The apply endpoint independently verifies the complete
+document and expected-fields shape; the browser cannot bypass validation by
+copying a former successful preview response.
+
+One PostgreSQL `UPDATE ... WHERE` compares every expected field in the target
+account and updates only `displayName`, `bio`, `website`, `pronouns`,
+`avatarColor` and `bannerColor` atomically. A concurrent profile edit, a
+deleted target or a stale preview yields **409 without partial writes**. The
+source ID, username, credentials, account email, media, permissions, messages
+and social/community memberships can never be changed by this endpoint.
+Empty optional avatar/banner colors mean **keep the target color**; the preview
+shows their effective unchanged values.
+
+A 200 response reports applied fields but is not a community/whole-account
+restore. Invalid source content produces 422, missing explicit confirmation
+produces 400, and lack of a PostgreSQL write authority produces 503.
+
+**Product limitation:** this first incremental API has no Settings → Privacy
+confirmation/apply UI yet. The v1 manifest still declares
+`portability.importSupported: false` because full cross-instance/community
+migration, credentials and media remain unsupported. The UI remains preview-only
+until a dedicated, double-confirmed apply experience is implemented and
+independently tested. C4 cross-instance proof has not been claimed.
+
 ## Next gates (not claimed complete)
 
 - C1: source/target data format acceptance tests against independently installed

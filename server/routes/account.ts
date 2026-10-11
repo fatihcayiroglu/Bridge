@@ -38,7 +38,7 @@ import logger from '../lib/logger';
 import { disconnectLiveUserSessions } from '../lib/sessionRevocation';
 import bcrypt from 'bcryptjs';
 import { LIFECYCLE } from '../lib/accountLifecycle';
-import { buildPortableIdentityExport, PortableIdentityValidationError, validatePortableIdentityV1, previewPortableIdentity } from '../lib/portableIdentity';
+import { buildPortableIdentityExport, PortableIdentityValidationError, validatePortableIdentityV1, previewPortableIdentity, validatePortableImportExpectedFields, portableImportProposedFields } from '../lib/portableIdentity';
 import { evaluateStepUp, factorsOf, requiredLevel, requireStepUp } from '../lib/stepUp';
 import {
   eraseAccountData, existingTables, ownershipBlockers, releaseAfterErasure, tableColumns,
@@ -139,6 +139,72 @@ router.post('/portable-import/preview', authMiddleware, limits.write(), requireS
     }
     logger.error({ err, userId, event: 'account.portable_import_preview.failed' }, 'Taşınabilir profil önizlemesi başarısız.');
     return res.status(500).json({ error: 'Portable identity preview failed' });
+  }
+});
+
+// POST /api/account/portable-import/apply — P7 C3 strict profile-only import.
+// The single conditional UPDATE is atomic on PostgreSQL. Concurrent edits and
+// accounts deleted since preview cannot be silently overwritten. No username,
+// sourceUserId, memberships, credentials, media or messaging are ever written.
+/**
+ * @openapi
+ * /account/portable-import/apply:
+ *   post: { tags: [Account], summary: Explicitly apply a validated portable profile to the signed-in account with stale-preview detection, responses: { '200': { description: Applied positive-listed profile fields }, '400': { description: Confirmation or request shape missing }, '403': { description: 'STEP_UP_REQUIRED (account-security)' }, '409': { description: Destination profile changed since preview }, '422': { description: Invalid portable v1 document or expected-state schema } } }
+ */
+router.post('/portable-import/apply', authMiddleware, limits.write(), requireStepUp('account.import'), async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const userId = castAuthed(req).user.id;
+  const requestBody = req.body as unknown;
+  if (!requestBody || typeof requestBody !== 'object' || Array.isArray(requestBody)) {
+    return res.status(400).json({ error: 'Portable import requires a document, expected fields and explicit confirmation' });
+  }
+  const body = requestBody as Record<string, unknown>;
+  if (Object.keys(body).length !== 3 ||
+      !['document', 'expected', 'confirm'].every(key => Object.prototype.hasOwnProperty.call(body, key)) ||
+      body.confirm !== 'APPLY_PORTABLE_PROFILE') {
+    return res.status(400).json({ error: 'Explicit APPLY_PORTABLE_PROFILE confirmation and exact request shape required' });
+  }
+
+  try {
+    const portable = validatePortableIdentityV1(body.document);
+    const expected = validatePortableImportExpectedFields(body.expected);
+    const proposed = portableImportProposedFields(portable, expected);
+    const p = pool();
+    if (!p) return res.status(503).json({ error: 'Portable import requires PostgreSQL' });
+
+    // PostgreSQL rechecks the six predicates while acquiring the row lock.
+    // A changed/deleted profile produces 0 rows and NO PARTIAL WRITE. Avoid
+    // select-then-write races and forbid request-controlled SQL identifiers.
+    const fields = ['displayName', 'bio', 'website', 'pronouns', 'avatarColor', 'bannerColor'] as const;
+    const names = fields.map(name => `"${name}"`);
+    const setSql = names.map((name, index) => `${name}=$${index + 2}`).join(', ');
+    const matchSql = names.map((name, index) => `COALESCE(${name}, '')=$${index + 8}`).join(' AND ');
+    const values: unknown[] = [
+      userId,
+      ...fields.map(name => proposed[name]),
+      ...fields.map(name => expected[name]),
+    ];
+    const changed = fields.filter(name => proposed[name] !== expected[name]);
+    const result = await p.query<{ _id: string }>(
+      `UPDATE users SET ${setSql} WHERE _id=$1 AND ${matchSql} RETURNING _id`, values,
+    );
+    if (result.rows.length !== 1) {
+      return res.status(409).json({ code: 'PORTABLE_PROFILE_CONFLICT', error: 'The target profile changed; preview the file again before applying' });
+    }
+    logger.info({ userId, event: 'account.portable_import.applied', changedFields: changed },
+      'Taşınabilir profil alanları hedef hesaba uygulandı.');
+    return res.status(200).json({
+      ok: true, applied: true, format: portable.format, version: portable.version,
+      targetUserId: userId, appliedFields: changed,
+      preserved: ['username', 'sourceUserId', 'email', 'credentials', 'memberships', 'media', 'messages'],
+    });
+  } catch (err) {
+    if (err instanceof PortableIdentityValidationError) {
+      return res.status(422).json({ code: err.code, error: err.message });
+    }
+    logger.error({ err, userId, event: 'account.portable_import.failed' },
+      'Taşınabilir profil içe aktarılamadı.');
+    return res.status(500).json({ error: 'Portable profile import failed without partial writes' });
   }
 });
 
