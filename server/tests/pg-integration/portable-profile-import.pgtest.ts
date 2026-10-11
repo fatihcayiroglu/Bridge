@@ -79,12 +79,12 @@ RUN('P7 C3 real PostgreSQL — portable import atomicity and conflict isolation'
       current: '#223344', proposed: '#223344', changed: false,
     });
     const refused = await request(app()).post('/api/account/portable-import/apply')
-      .send({ document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE' });
+      .send({ document: source, expected, targetUserId: TARGET, confirm: 'APPLY_PORTABLE_PROFILE' });
     expect(refused.status).toBe(403);
 
     const accepted = await request(app()).post('/api/account/portable-import/apply')
       .set(stepUpHeader(TARGET, 'account-security'))
-      .send({ document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE' });
+      .send({ document: source, expected, targetUserId: TARGET, confirm: 'APPLY_PORTABLE_PROFILE' });
     expect(accepted.status).toBe(200);
     expect(accepted.body).toMatchObject({ ok: true, applied: true, targetUserId: TARGET });
     const [target] = await q(`SELECT _id, username, "displayName", bio, website, pronouns,
@@ -99,13 +99,27 @@ RUN('P7 C3 real PostgreSQL — portable import atomicity and conflict isolation'
     expect(other).toEqual({ username: 'pgt_pimp_other', displayName: 'Other Account', avatarColor: '#112233' });
   });
 
+  it('refuses a different previewed account even when a valid second account could match the same profile', async () => {
+    const source = documentFor('Wrong Account Attempt');
+    const { expected } = await preview(source);
+    const res = await request(app()).post('/api/account/portable-import/apply')
+      .set(stepUpHeader(TARGET, 'account-security'))
+      .send({ document: source, expected, targetUserId: OTHER, confirm: 'APPLY_PORTABLE_PROFILE' });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('PORTABLE_TARGET_ACCOUNT_CHANGED');
+    const [target] = await q('SELECT "displayName", bio FROM users WHERE _id=$1', [TARGET]);
+    expect(target).toEqual({ displayName: 'Existing Name', bio: 'existing bio' });
+    const [other] = await q('SELECT "displayName" FROM users WHERE _id=$1', [OTHER]);
+    expect(other.displayName).toBe('Other Account');
+  });
+
   it('returns 409 after a concurrent destination edit, preserving every unrelated field', async () => {
     const source = documentFor('Outdated Preview');
     const { expected } = await preview(source);
     await q('UPDATE users SET bio=$2 WHERE _id=$1', [TARGET, 'edited from another session']);
     const r = await request(app()).post('/api/account/portable-import/apply')
       .set(stepUpHeader(TARGET, 'account-security'))
-      .send({ document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE' });
+      .send({ document: source, expected, targetUserId: TARGET, confirm: 'APPLY_PORTABLE_PROFILE' });
     expect(r.status).toBe(409);
     expect(r.body.code).toBe('PORTABLE_PROFILE_CONFLICT');
     const [row] = await q('SELECT "displayName", bio, "bannerColor" FROM users WHERE _id=$1', [TARGET]);
@@ -132,7 +146,7 @@ RUN('P7 C3 real PostgreSQL — portable import atomicity and conflict isolation'
     });
     const applied = await request(app()).post('/api/account/portable-import/apply')
       .set(stepUpHeader(TARGET, 'account-security'))
-      .send({ document: sourceExport.body, expected, confirm: 'APPLY_PORTABLE_PROFILE' });
+      .send({ document: sourceExport.body, expected, targetUserId: TARGET, confirm: 'APPLY_PORTABLE_PROFILE' });
     expect(applied.status).toBe(200);
     expect(applied.body).toMatchObject({ ok: true, applied: true, targetUserId: TARGET });
 
@@ -157,7 +171,7 @@ RUN('P7 C3 real PostgreSQL — portable import atomicity and conflict isolation'
     // silently overwrite the destination's new data or claims.
     const replay = await request(app()).post('/api/account/portable-import/apply')
       .set(stepUpHeader(TARGET, 'account-security'))
-      .send({ document: sourceExport.body, expected, confirm: 'APPLY_PORTABLE_PROFILE' });
+      .send({ document: sourceExport.body, expected, targetUserId: TARGET, confirm: 'APPLY_PORTABLE_PROFILE' });
     expect(replay.status).toBe(409);
     expect(replay.body.code).toBe('PORTABLE_PROFILE_CONFLICT');
   });
@@ -168,7 +182,7 @@ RUN('P7 C3 real PostgreSQL — portable import atomicity and conflict isolation'
     const { expected } = await preview(source1);
     const proof = stepUpHeader(TARGET, 'account-security');
     const requests = [source1, source2].map(document => request(app()).post('/api/account/portable-import/apply')
-      .set(proof).send({ document, expected, confirm: 'APPLY_PORTABLE_PROFILE' }));
+      .set(proof).send({ document, expected, targetUserId: TARGET, confirm: 'APPLY_PORTABLE_PROFILE' }));
     const results = await Promise.all(requests);
     expect(results.map(r => r.status).sort()).toEqual([200, 409]);
     const [row] = await q('SELECT "displayName" FROM users WHERE _id=$1', [TARGET]);
