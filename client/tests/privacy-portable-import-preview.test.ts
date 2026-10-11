@@ -278,6 +278,9 @@ describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
   it('immediately refreshes the canonical signed-in profile after confirmed apply, not before', async () => {
     const user: Record<string, unknown> = { _id: 'target', displayName: 'Target', bio: 'Same', website: '' };
     const setMe = vi.fn();
+    const legacy = globalThis as typeof globalThis & { currentUser?: Record<string, unknown> };
+    const previousLegacy = legacy.currentUser;
+    legacy.currentUser = user;
     BridgeRegistry.register('getMe', (() => user) as AnyFn);
     BridgeRegistry.register('setMe', setMe as AnyFn);
     vi.mocked(updateUserPanel).mockClear();
@@ -295,13 +298,20 @@ describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
       await fireEvent.input(v.getByTestId('portable-identity-apply-phrase'), { target: { value: 'IMPORT' } });
       await fireEvent.click(v.getByTestId('portable-identity-apply'));
       await waitFor(() => expect(v.getByTestId('portable-identity-apply-success')).toBeTruthy());
-      expect(user.displayName).toBe('Source');
-      expect(user.website).toBe('https://example.test');
-      expect(user.bio).toBe('Same');
-      expect(setMe).toHaveBeenCalledWith(user);
-      expect(updateUserPanel).toHaveBeenCalledWith(user);
+      // A fresh user snapshot, not mutation of the old object, must reach
+      // AppState and the legacy profile tab after the server's 200 receipt.
+      expect(user.displayName).toBe('Target');
+      expect(user.website).toBe('');
+      expect(legacy.currentUser?.displayName).toBe('Source');
+      expect(legacy.currentUser?.website).toBe('https://example.test');
+      expect(setMe).toHaveBeenCalledWith(expect.objectContaining({
+        _id: 'target', displayName: 'Source', website: 'https://example.test', bio: 'Same',
+      }));
+      expect(updateUserPanel).toHaveBeenCalledWith(legacy.currentUser);
     } finally {
       BridgeRegistry.unregister('setMe');
+      if (previousLegacy === undefined) delete legacy.currentUser;
+      else legacy.currentUser = previousLegacy;
     }
   });
 
