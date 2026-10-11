@@ -272,7 +272,7 @@ function patchHTML(outputFiles, buildVersion) {
 
   if (appEntry) {
     const relPath = path.relative(SRC, appEntry).replace(/\\/g, '/');
-    const cdnBase = PUBLIC_PATH === '/' ? '' : PUBLIC_PATH;
+    const cdnBase = PUBLIC_PATH;
     const scriptSrc = `${cdnBase}${relPath}`;
 
     html = html.replace(
@@ -352,7 +352,7 @@ function patchSecondaryHTML(fileName, entryBaseName, outputFiles) {
     return;
   }
 
-  const cdnBase = PUBLIC_PATH === '/' ? '' : PUBLIC_PATH;
+  const cdnBase = PUBLIC_PATH;
   const rel     = path.relative(SRC, entry).replace(/\\/g, '/');
   let html      = fs.readFileSync(htmlSrc, 'utf8');
 
