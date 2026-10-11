@@ -31,6 +31,34 @@ function fixture() {
   return root;
 }
 
+
+test('web HTML entrypoints keep CSS and compiled assets rooted across deep links', () => {
+  const sources = ['index.html', 'marketplace.html'];
+  for (const name of sources) {
+    for (const candidate of [name, name.replace('.html', '.dist.html')]) {
+      const html = fs.readFileSync(path.join(__dirname, '..', 'client', candidate), 'utf8');
+      const urls = [...html.matchAll(/<(?:link|script)\b[^>]*?\b(?:href|src)="([^"]+)"/gi)]
+        .map(match => match[1]);
+      const stylesheets = urls.filter(url => url.endsWith('.css'));
+      assert.ok(stylesheets.includes('/css/style.css'),
+        candidate + ': primary CSS must be loaded from /css/style.css');
+      assert.ok(stylesheets.length > 0, candidate + ': no stylesheet was discovered');
+      for (const url of stylesheets) {
+        assert.match(url, /^(?:\/|https:\/\/)/,
+          candidate + ': CSS reference ' + url + ' would resolve relative to a deep-link route');
+      }
+      if (candidate.endsWith('.dist.html')) {
+        const bundled = urls.filter(url => /(?:^|\/)dist\/js\/.+\.js$/.test(url));
+        assert.ok(bundled.length > 0, candidate + ': no compiled JS reference was discovered');
+        for (const url of bundled) {
+          assert.match(url, /^(?:\/|https:\/\/)/,
+            candidate + ': JS reference ' + url + ' would resolve relative to a deep-link route');
+        }
+      }
+    }
+  }
+});
+
 test('manifest verifies the exact extracted file set and file content', (t) => {
   const root = fixture();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
