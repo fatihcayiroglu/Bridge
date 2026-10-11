@@ -794,6 +794,8 @@ const translations: Record<string, string> = {
   "moderation_resolved": "Erledigt",
   "privacy_data_controls": "Datenkontrollen",
   "privacy_export_hint": "Lade die von Bridge gespeicherte Kopie deiner personenbezogenen Daten direkt vom Server herunter.",
+  "privacy_portable_export": "Mein portables Profil herunterladen (JSON v1)",
+  "privacy_portable_export_hint": "Enthält nur portable Profilfelder; Passwörter, private Schlüssel, E-Mail und Nachrichten sind ausgeschlossen. Der Import auf einen anderen Bridge-Server wird noch nicht unterstützt.",
   "privacy_ai_opt_in": "Optionale KI-Unterstützung",
   "profile_presence_status": "Präsenzstatus",
   "appearance_content_density": "Inhaltsdichte",
