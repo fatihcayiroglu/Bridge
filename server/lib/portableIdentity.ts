@@ -5,6 +5,7 @@
 // never silently appear here. An unkeyed digest detects accidental corruption,
 // but does not authenticate the exporting server.
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { sanitizeDisplayName } from './displayName';
 
 export interface PortableIdentityCore {
   format: 'bridge-portable-identity';
@@ -215,7 +216,40 @@ export function validatePortableIdentityV1(input: unknown): PortableIdentityExpo
   stringList(portability.included, 'included');
   stringList(portability.excluded, 'excluded');
   stringList(portability.limitations, 'limitations');
+  // A checksum-valid snapshot can still contain legacy/out-of-contract profile
+  // values. Never preview them as importable if normal profile editing would
+  // silently trim, truncate, sanitize or refuse those same values.
+  validatePortableImportEligibility(core.identity);
   return file as unknown as PortableIdentityExport;
+}
+
+/**
+ * P7 C3 applicability contract. Match the *effective* destination profile
+ * setter, not only the wider transport-envelope limits above.
+ *
+ * Rejection is deliberate: a preview must never promise to apply values that
+ * the normal /api/me PATCH would silently trim/sanitize/truncate. Existing
+ * legacy exports remain downloadable; an unsupported legacy value must be
+ * corrected at the source before import can be considered.
+ */
+export function validatePortableImportEligibility(identity: PortableIdentityCore['identity']): void {
+  const fail = (field: string): never => {
+    throw new PortableIdentityValidationError(`${field} cannot be applied losslessly to this Bridge profile`);
+  };
+  // server/routes/auth.ts calls this same canonical sanitizer for displayName.
+  if (!identity.displayName || sanitizeDisplayName(identity.displayName) !== identity.displayName) fail('displayName');
+  for (const [field, maxLength] of [
+    ['bio', 180], ['website', 120], ['pronouns', 40],
+  ] as const) {
+    const value = identity[field];
+    if (value.length > maxLength || value.trim() !== value) fail(field);
+  }
+  // Appearance travels as colors only; never turn a portable manifest into
+  // arbitrary CSS, image references, usernames or mutable server-owned URLs.
+  const hexColor = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+  for (const field of ['avatarColor', 'bannerColor'] as const) {
+    if (identity[field] !== '' && !hexColor.test(identity[field])) fail(field);
+  }
 }
 
 const PREVIEW_PROFILE_FIELDS = [
