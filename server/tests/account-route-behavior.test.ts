@@ -329,7 +329,13 @@ describe('account export/delete production behavior', () => {
     const body = { document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE' };
     const noStepUp = await request(app()).post('/api/account/portable-import/apply').send(body);
     expect(noStepUp.status).toBe(403);
-    expect(noStepUp.body).toMatchObject({ error: 'STEP_UP_REQUIRED', scope: 'sensitive-export' });
+    expect(noStepUp.body).toMatchObject({ error: 'STEP_UP_REQUIRED', scope: 'account-security' });
+    expect(query).not.toHaveBeenCalled();
+    // A read-only export grant must NEVER authorize a profile mutation.
+    const wrongScope = await request(app()).post('/api/account/portable-import/apply')
+      .set(EXPORT_PROOF()).send(body);
+    expect(wrongScope.status).toBe(403);
+    expect(wrongScope.body).toMatchObject({ error: 'STEP_UP_REQUIRED', scope: 'account-security' });
     expect(query).not.toHaveBeenCalled();
 
     // SQL mocks must not throw Jest assertion errors *inside* the route's
@@ -337,7 +343,7 @@ describe('account export/delete production behavior', () => {
     // HTTP 500. Assert exact statement and parameter contract after the call.
     query.mockResolvedValue({ rows: [{ _id: 'me' }], rowCount: 1 });
     const res = await request(app()).post('/api/account/portable-import/apply')
-      .set(EXPORT_PROOF()).send(body);
+      .set(stepUpHeader('me', 'account-security')).send(body);
     expect(res.status).toBe(200);
     expect(res.headers['cache-control']).toContain('no-store');
     expect(res.body).toMatchObject({
@@ -372,11 +378,11 @@ describe('account export/delete production behavior', () => {
       { document: source, expected, confirm: 'APPLY_PORTABLE_PROFILE', targetUserId: 'someone-else' },
     ]) {
       const res = await request(app()).post('/api/account/portable-import/apply')
-        .set(EXPORT_PROOF()).send(bad);
+        .set(stepUpHeader('me', 'account-security')).send(bad);
       expect(res.status).toBe(400);
     }
     const malformed = await request(app()).post('/api/account/portable-import/apply')
-      .set(EXPORT_PROOF()).send({
+      .set(stepUpHeader('me', 'account-security')).send({
         document: source,
         expected: { ...expected, password: 'attack' },
         confirm: 'APPLY_PORTABLE_PROFILE',
@@ -395,16 +401,16 @@ describe('account export/delete production behavior', () => {
     };
     query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     const conflict = await request(app()).post('/api/account/portable-import/apply')
-      .set(EXPORT_PROOF()).send(body);
+      .set(stepUpHeader('me', 'account-security')).send(body);
     expect(conflict.status).toBe(409);
     expect(conflict.body.code).toBe('PORTABLE_PROFILE_CONFLICT');
     query.mockRejectedValueOnce(new Error('update failed; statement rolled back'));
     const unavailable = await request(app()).post('/api/account/portable-import/apply')
-      .set(EXPORT_PROOF()).send(body);
+      .set(stepUpHeader('me', 'account-security')).send(body);
     expect(unavailable.status).toBe(500);
     db._pool = null;
     const noPg = await request(app()).post('/api/account/portable-import/apply')
-      .set(EXPORT_PROOF()).send(body);
+      .set(stepUpHeader('me', 'account-security')).send(body);
     expect(noPg.status).toBe(503);
     expect(txQuery).not.toHaveBeenCalled();
     expect(db._transaction).not.toHaveBeenCalled();
