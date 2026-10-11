@@ -275,6 +275,32 @@ describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
     expect(apiFetch).toHaveBeenCalledTimes(1);
   });
 
+  it('does not duplicate an in-flight apply or claim another account\'s late success after logout', async () => {
+    let resolveApply!: (value: Response) => void;
+    const pendingApply = new Promise<Response>(resolve => { resolveApply = resolve; });
+    reply = async url => url.endsWith('/preview') ? response(preview()) : pendingApply;
+    const v = view();
+    await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(v.getByTestId('portable-identity-apply')).toBeTruthy());
+    await fireEvent.click(v.getByTestId('portable-identity-apply-ack'));
+    await fireEvent.input(v.getByTestId('portable-identity-apply-phrase'), { target: { value: 'IMPORT' } });
+    const apply = v.getByTestId('portable-identity-apply') as HTMLButtonElement;
+    await fireEvent.click(apply);
+    expect(apply.disabled).toBe(true);
+    await fireEvent.click(apply); // forced extra click must be ignored
+    expect(apiFetch).toHaveBeenCalledTimes(2); // exactly one preview and one apply
+    document.dispatchEvent(new CustomEvent('bridge:auth-logout'));
+    BridgeRegistry.register('getMe', (() => ({ _id: 'another-account' })) as unknown as AnyFn);
+    resolveApply(response({ ok: true, applied: true, targetUserId: 'target', version: 1 }));
+    await waitFor(() => expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull());
+    expect(v.queryByTestId('portable-identity-apply-success')).toBeNull();
+    expect(v.queryByTestId('portable-identity-apply')).toBeNull();
+    expect(apiFetch).toHaveBeenCalledTimes(2);
+  });
+
+
   it('immediately refreshes the canonical signed-in profile after confirmed apply, not before', async () => {
     const user: Record<string, unknown> = { _id: 'target', displayName: 'Target', bio: 'Same', website: '' };
     const setMe = vi.fn();
