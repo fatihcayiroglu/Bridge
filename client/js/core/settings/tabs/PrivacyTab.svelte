@@ -162,6 +162,7 @@
     const body = {
       document: portableDocument,
       expected: expectedFromPortablePreview(portablePreview),
+      targetUserId: owner, // server MUST reject if authentication changed during step-up
       confirm: 'APPLY_PORTABLE_PROFILE',
     };
     applyingPortable = true;
