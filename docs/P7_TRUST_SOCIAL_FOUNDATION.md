@@ -815,6 +815,20 @@ clearly says no change is saved. See
 writes, deterministic conflict mapping, transaction rollback, community
 restoration, and cross-instance migration are not yet implemented.
 
+### C3-2 — explicit, atomic profile-only apply endpoint (unverified candidate)
+
+`POST /api/account/portable-import/apply` accepts the complete v1 export,
+an exact six-field expected-current-state snapshot from preview, and an explicit
+`APPLY_PORTABLE_PROFILE` confirmation. Fresh sensitive-export step-up is
+mandatory. The one conditional PostgreSQL `UPDATE` can write only
+displayName, bio, website, pronouns and the two profile colors. If any target
+field changed since preview, it returns 409 with no partial write.
+Source IDs, username, credentials, email, media and community records remain
+untouched. Empty optional colors preserve target colors in both preview and
+apply. This is an **API-only candidate**, not a shipped UI import, community
+migration, conflict-resolution engine or C4 round-trip; exact-head CI and real
+PostgreSQL coverage are still required before closing the subtask.
+
 ## C4. Lock-in test
 
 Closure evidence must demonstrate that a representative user/community can export
