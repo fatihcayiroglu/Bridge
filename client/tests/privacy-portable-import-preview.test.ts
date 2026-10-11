@@ -6,8 +6,9 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 import { createSettingsStore } from '../js/core/settings/stores/settingsStore.ts';
 import PrivacyTab from '../js/core/settings/tabs/PrivacyTab.svelte';
+import { updateUserPanel } from '../js/core/auth-compat.js';
 
-vi.mock('../js/core/auth-compat.js', () => ({ logout: vi.fn(), showAuthMsg: vi.fn() }));
+vi.mock('../js/core/auth-compat.js', () => ({ logout: vi.fn(), showAuthMsg: vi.fn(), updateUserPanel: vi.fn() }));
 
 let apiFetch: ReturnType<typeof vi.fn>;
 let reply: (url: string, init?: RequestInit) => Promise<Response>;
@@ -272,6 +273,36 @@ describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
     document.dispatchEvent(new CustomEvent('bridge:auth-logout'));
     await waitFor(() => expect(v.queryByTestId('portable-identity-apply')).toBeNull());
     expect(apiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('immediately refreshes the canonical signed-in profile after confirmed apply, not before', async () => {
+    const user: Record<string, unknown> = { _id: 'target', displayName: 'Target', bio: 'Same', website: '' };
+    const setMe = vi.fn();
+    BridgeRegistry.register('getMe', (() => user) as AnyFn);
+    BridgeRegistry.register('setMe', setMe as AnyFn);
+    vi.mocked(updateUserPanel).mockClear();
+    reply = async url => url.endsWith('/preview') ? response(preview()) :
+      response({ ok: true, applied: true, targetUserId: 'target', version: 1 });
+    try {
+      const v = view();
+      await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+        target: { files: [portableFile(JSON.stringify(source))] },
+      });
+      await waitFor(() => expect(v.getByTestId('portable-identity-apply')).toBeTruthy());
+      expect(user.displayName).toBe('Target');
+      expect(setMe).not.toHaveBeenCalled();
+      await fireEvent.click(v.getByTestId('portable-identity-apply-ack'));
+      await fireEvent.input(v.getByTestId('portable-identity-apply-phrase'), { target: { value: 'IMPORT' } });
+      await fireEvent.click(v.getByTestId('portable-identity-apply'));
+      await waitFor(() => expect(v.getByTestId('portable-identity-apply-success')).toBeTruthy());
+      expect(user.displayName).toBe('Source');
+      expect(user.website).toBe('https://example.test');
+      expect(user.bio).toBe('Same');
+      expect(setMe).toHaveBeenCalledWith(user);
+      expect(updateUserPanel).toHaveBeenCalledWith(user);
+    } finally {
+      BridgeRegistry.unregister('setMe');
+    }
   });
 
 });
