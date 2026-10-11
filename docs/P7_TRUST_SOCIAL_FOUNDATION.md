@@ -819,7 +819,7 @@ restoration, and cross-instance migration are not yet implemented.
 
 `POST /api/account/portable-import/apply` accepts the complete v1 export,
 an exact six-field expected-current-state snapshot from preview, and an explicit
-`APPLY_PORTABLE_PROFILE` confirmation. Fresh sensitive-export step-up is
+`APPLY_PORTABLE_PROFILE` confirmation. Fresh account-security step-up is
 mandatory. The one conditional PostgreSQL `UPDATE` can write only
 displayName, bio, website, pronouns and the two profile colors. If any target
 field changed since preview, it returns 409 with no partial write.
