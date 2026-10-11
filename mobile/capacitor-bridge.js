@@ -467,18 +467,17 @@
         ).filter((el) => el.offsetParent !== null || el.getClientRects().length > 0);
         if (dialogs.length > 0) {
           const top = dialogs[dialogs.length - 1];
-          top.dispatchEvent(new KeyboardEvent("keydown", {
-            key: "Escape",
-            code: "Escape",
-            bubbles: true,
-            cancelable: true
-          }));
-          document.dispatchEvent(new KeyboardEvent("keydown", {
-            key: "Escape",
-            code: "Escape",
-            bubbles: true,
-            cancelable: true
-          }));
+          const settingsClose = top.id === "settings-modal-content" ? top.querySelector(".settings-close") : null;
+          if (settingsClose) {
+            settingsClose.click();
+          } else {
+            top.dispatchEvent(new KeyboardEvent("keydown", {
+              key: "Escape",
+              code: "Escape",
+              bubbles: true,
+              cancelable: true
+            }));
+          }
           void bridgeHaptic.light();
           return;
         }
