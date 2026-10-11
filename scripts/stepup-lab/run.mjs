@@ -215,7 +215,12 @@ async function enableTwoFactor(p) {
   const setup = await p.act('POST', '/api/2fa/setup', {}, 'account-security');
   if (!ok(setup) || !setup.body?.secret) throw new Error(`2fa setup ${setup.status} ${JSON.stringify(setup.body)}`);
   p.totpSecret = setup.body.secret;
-  const step = stepNow() - 1;
+  // Enrollment must use a fresh time slice. stepNow()-1 is already the
+  // oldest server-accepted TOTP; if setup/auth/CSRF requests cross a 30s
+  // boundary, the code expires and the attack scenario is NEVER measured.
+  // Generate the current TOTP immediately before verification, preserving
+  // the server's strict proof and replay checks (no fallback or test skip).
+  const step = stepNow();
   const verify = await p.act('POST', '/api/2fa/verify', { code: totp(p.totpSecret, step) }, 'account-security');
   if (!ok(verify) || !verify.body?.token) throw new Error(`2fa verify ${verify.status} ${JSON.stringify(verify.body)}`);
   p.lastStep = step;
