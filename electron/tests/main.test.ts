@@ -275,16 +275,25 @@ describe('shell chrome', () => {
 
   if (process.platform === 'win32') {
     it('Start with Windows is off by default and follows the tray checkbox', async () => {
-    const { electron, main } = await loadMain({ serverOrigin: ORIGIN });
-    const items = electron.Tray.instances[0].setContextMenu.mock.calls[0][0].items as Array<{ label?: string; checked?: boolean; click?: (i: object) => void }>;
-    const toggle = items.find((item) => item.label === 'Windows ile başlat')!;
-    expect(toggle.checked).toBe(false);
-    toggle.click!({ checked: true });
-    expect(electron.app.setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: true, args: ['--background'] });
-    expect(main.isStartWithWindowsEnabled()).toBe(true);
-    toggle.click!({ checked: false });
-    expect(main.isStartWithWindowsEnabled()).toBe(false);
-  });
+      const { electron, main } = await loadMain({ serverOrigin: ORIGIN });
+      const items = electron.Tray.instances[0].setContextMenu.mock.calls[0][0].items as Array<{ label?: string; checked?: boolean; click?: (i: object) => void }>;
+      const toggle = items.find((item) => item.label === 'Windows ile başlat')!;
+      expect(toggle.checked).toBe(false);
+      toggle.click!({ checked: true });
+      expect(electron.app.setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: true, args: ['--background'] });
+      expect(main.isStartWithWindowsEnabled()).toBe(true);
+      toggle.click!({ checked: false });
+      expect(main.isStartWithWindowsEnabled()).toBe(false);
+    });
+  } else {
+    it('Windows startup integration is disabled on Linux and macOS', async () => {
+      const { electron, main } = await loadMain({ serverOrigin: ORIGIN });
+      expect(main.isStartWithWindowsEnabled()).toBe(false);
+      main.setStartWithWindows(true);
+      expect(electron.app.setLoginItemSettings).not.toHaveBeenCalled();
+      expect(main.isStartWithWindowsEnabled()).toBe(false);
+    });
+  }
 
   it('stays in the tray when started by the login item', async () => {
     const { electron } = await loadMain({ serverOrigin: ORIGIN, argv: ['--background'] });
