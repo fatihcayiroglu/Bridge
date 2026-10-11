@@ -409,7 +409,10 @@ function planWebp(src: Source): Plan {
     if (end > riffEnd) throw new ImageMetadataError('WebP chunk overruns the file');
     if (WEBP_KEEP.has(fourcc)) {
       if (fourcc === 'VP8X') {
-        if (len < 10) throw new ImageMetadataError('WebP VP8X header too short');
+        // VP8X has exactly ten payload bytes per the WebP container specification.
+        // Reject oversized headers before `slice`: an attacker controls `len`
+        // and a multi-MiB read here would defeat bounded-memory metadata removal.
+        if (len !== 10) throw new ImageMetadataError('WebP VP8X chunk must be exactly 10 bytes');
         vp8xIndex = chunks.length;
         chunks.push(Buffer.from(src.slice(pos, end - pos))); // flags rewritten below
       } else {
