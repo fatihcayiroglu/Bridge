@@ -36,6 +36,10 @@ const TESTS_DIR = __dirname;
  * Yeni bir ciddi açık kapatıldığında buraya EKLENMELİDİR.
  */
 export const SECURITY_CORPUS: ReadonlyArray<{ sinif: string; dosya: string }> = [
+  // Independent audit: current authorization, deletion and hidden presence.
+  { sinif: 'semantic history, digest and cached explanation confidentiality (P1)', dosya: 'semantic-confidentiality-regression.test.ts' },
+  { sinif: 'hidden public presence and activity confidentiality (P1)', dosya: 'presence-public-surfaces-security.test.ts' },
+  { sinif: 'HTTP signature acceptance and rejection contracts', dosya: 'httpSignature.test.ts' },
   // ── Kiracı izolasyonu / soket güvenliği ────────────────────────────────
   { sinif: 'çapraz kiracı yayın enjeksiyonu (P0)',      dosya: 'broadcast-tenancy.test.ts' },
   { sinif: 'ses eş listesi çapraz kiracı sızıntısı (P1)', dosya: 'voice-leave-tenancy.test.ts' },

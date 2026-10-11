@@ -4,6 +4,7 @@
 
 import { test, expect, request as pwRequest } from '../helpers/apiTest';
 import { BridgePage, getTokens } from '../helpers/bridge';
+import { requestFromOwnAddress } from '../helpers/clientAddress';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
@@ -28,13 +29,17 @@ test.describe('Kimlik Doğrulama Akışları', () => {
     await expect(page.locator('#r-password')).toBeVisible();
   });
 
-  test('geçersiz e-posta ile giriş reddedilmeli', async ({ page, request }) => {
-    // API seviyesinde test (UI giriş sayfası UI-specific olabilir)
-    const res = await request.post(`${BASE_URL}/api/login`, {
+  test('olmayan hesapla giriş reddedilmeli', async () => {
+    // Giriş `username` alır (validate.ts). Eski test `{ email }` gönderiyordu ve şema
+    // reddinin 400'ü ile geçiyordu — kimlik bilgisi denetimine HİÇ ulaşmıyordu.
+    // Gerçek başarısız giriş IP'nin captcha sayacını besler (3+ başarısızlıkta
+    // CAPTCHA); paylaşılan 127.0.0.1'i kirletmemek için kendi istemci adresinden.
+    const { request: own } = requestFromOwnAddress();
+    const res = await own.post(`${BASE_URL}/api/login`, {
       headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ email: 'yok@yoktur.xyz', password: 'yanliş123' }),
+      data: JSON.stringify({ username: `no_such_${Date.now().toString(36)}`, password: 'Yanlis-Parola-123' }),
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(401);
     expect(res.status()).toBeLessThan(500);
   });
 
@@ -44,9 +49,12 @@ test.describe('Kimlik Doğrulama Akışları', () => {
       // Fixture hesabını (alice) KULLANMA: başarısız giriş denemeleri brute-force
       // kilidini tetikliyor ve sonraki run'larda globalSetup 429 ile düşüyordu.
       // Doğrulanan davranış "boş şifre reddedilir" — bunun için gerçek bir hesap gerekmez.
-      data: JSON.stringify({ email: 'empty-password-probe@bridge-e2e.invalid', password: '' }),
+      // `username` verilir: eskiden yalnız `email` vardı ve 400 "username is
+      // required"dan geliyordu — boş parola denetimi hiç ölçülmüyordu.
+      data: JSON.stringify({ username: 'empty_pw_probe', password: '' }),
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(400);
+    expect(String((await res.json() as { error?: string }).error)).toMatch(/password/i);
   });
 
   test('geçerli token ile /api/me çalışmalı', async ({ request }) => {

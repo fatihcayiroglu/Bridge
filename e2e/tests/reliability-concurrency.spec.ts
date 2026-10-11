@@ -208,7 +208,9 @@ test.describe('güvenilirlik ve eş zamanlılık', () => {
       headers: useHdr, data: '{}',
     });
     // İlki başarılı ya da zaten üye; İKİNCİSİ kesinlikle başarısız olmalı.
-    expect(secondUse.status(), 'aynı davet iki kez kullanıldı').toBeGreaterThanOrEqual(400);
+    // Tam sözleşme: üyelik zaten var → 400 'Already a member' (servers/invites.ts).
+    expect(secondUse.status(), `aynı davet iki kez kullanıldı: ${await secondUse.text()}`).toBe(400);
+    expect(await secondUse.json()).toMatchObject({ error: 'Already a member' });
     // Final21 Faz 22 (19-37): sunucu bu koşumda kurulur ve media1 üye DEĞİLDİR — ilk kullanım 200.
     expect(firstUse.status()).toBe(200);
   });

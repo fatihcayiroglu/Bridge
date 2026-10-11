@@ -31,7 +31,7 @@
     "build:budget": "node scripts/check-bundle-budget.js",
     "build:ci": "node scripts/build.js && node scripts/check-bundle-budget.js",
     "test": "npm run test:release-integrity && cd server && npm test",
-    "test:release-integrity": "node --test scripts/release-integrity.test.js scripts/product-surface-contract.test.js scripts/final23-adversarial-contract.test.js scripts/backup-tools.test.js",
+    "test:release-integrity": "node --test scripts/release-integrity.test.js scripts/product-surface-contract.test.js scripts/final23-adversarial-contract.test.js scripts/backup-tools.test.js scripts/require-no-skipped-tests.test.js",
     "lint": "cd server && npm run lint",
     "lint:client": "cd client && npx eslint js",
     "typecheck:server": "npx tsc -p server/tsconfig.json --noEmit",

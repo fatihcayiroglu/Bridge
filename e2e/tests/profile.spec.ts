@@ -12,7 +12,7 @@
 
 
 import { test, expect } from '../helpers/apiTest';
-import { getTokens } from '../helpers/bridge';
+import { getTokens, registerFreshUser } from '../helpers/bridge';
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
@@ -55,17 +55,15 @@ test.describe('Profil Yönetimi', () => {
       data: JSON.stringify({ displayName: newName }),
     });
 
-    // 200 veya 204
-    expect(res.status()).toBeLessThan(300);
+    expect(res.status(), await res.text()).toBe(200);
 
-    // Doğrula
+    // A failed profile read must not skip the persistence assertion.
     const meRes = await request.get(`${BASE}/api/me`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
     });
-    if (meRes.ok()) {
-      const me = await meRes.json();
-      expect(me.displayName).toBe(newName);
-    }
+    expect(meRes.status(), await meRes.text()).toBe(200);
+    const me = await meRes.json();
+    expect(me.displayName).toBe(newName);
   });
 
   test('PATCH /api/me — boş displayName reddedilmeli', async ({ request }) => {
@@ -76,7 +74,7 @@ test.describe('Profil Yönetimi', () => {
       },
       data: JSON.stringify({ displayName: '' }),
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(400);
   });
 
   test('PATCH /api/me — çok uzun displayName reddedilmeli', async ({ request }) => {
@@ -137,8 +135,8 @@ test.describe('Profil Yönetimi', () => {
       },
       data: JSON.stringify({ status: 'superonline' }),
     });
-    // 400 veya 422 — geçersiz enum değeri
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    // Geçersiz enum değeri: 400 (ölçüldü). 429/5xx bir ret değildir.
+    expect(res.status(), await res.text()).toBe(400);
   });
 
   // ── 5. Başka kullanıcının profili ─────────────────────────
@@ -161,24 +159,21 @@ test.describe('Profil Yönetimi', () => {
     // kaybolmasını görünmez yapardı.
     expect(res.status()).toBe(200);
 
-    if (res.status() === 200) {
-      const profile = await res.json();
-      expect(profile.username).toBe(tokens.users.bob.username);
-      // Şifre hash'i asla dönmemeli
-      expect(profile.passwordHash).toBeUndefined();
-      expect(profile.password).toBeUndefined();
-    }
+    // The exact 200 response is already required; verify the body unconditionally.
+    const profile = await res.json();
+    expect(profile.username).toBe(tokens.users.bob.username);
+    // Şifre hash'i asla dönmemeli
+    expect(profile.passwordHash).toBeUndefined();
+    expect(profile.password).toBeUndefined();
   });
 
   // ── 6. Avatar upload ──────────────────────────────────────
 
   test('POST /api/me/avatar — küçük PNG yüklenebilmeli', async ({ request }) => {
-    // Minimal valid 1x1 PNG
-    const pngHex =
-      '89504e470d0a1a0a' +
-      '0000000d49484452000000010000000108020000009001 2e00' +
-      '0000000c49444154789c626060f80f00000200016ba97e540000000049454e44ae426082';
-    const pngBuffer = Buffer.from(pngHex.replace(/\s/g, ''), 'hex');
+    // Gerçekten geçerli 1×1 PNG. Eskiden "minimal valid" denen bayt dizisinin IHDR
+    // CRC'si yanlıştı; yüklemeler ayrıştırıldığından bu bozuk bir dosyadır.
+    const pngBuffer = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
 
     const res = await request.post(`${BASE}/api/me/avatar`, {
       headers: { Authorization: `Bearer ${tokens.alice}` },
@@ -187,9 +182,10 @@ test.describe('Profil Yönetimi', () => {
       },
     });
 
-    // 200 (başarı) veya 400/422 (magic byte mismatch veya çok küçük) — 401/500 olmamalı
-    expect(res.status()).not.toBe(401);
-    expect(res.status()).not.toBe(500);
+    // Geçerli PNG avatar olur: 200 ve yeni avatar yolu. Eskiden yalnız "401/500 değil"
+    // deniyordu; 400/422 (reddedilen yükleme) de geçerdi.
+    expect(res.status(), await res.text()).toBe(200);
+    expect((await res.json() as { avatarUrl?: string }).avatarUrl).toMatch(/^\/uploads\//);
   });
 
   test('POST /api/me/avatar — auth olmadan 401', async ({ request }) => {
@@ -202,11 +198,27 @@ test.describe('Profil Yönetimi', () => {
   });
 
   // ── 7. Şifre değiştirme ───────────────────────────────────
+  // Ürün rotası `POST /api/change-password`tır (authRouter API köküne bağlı,
+  // server/routes/auth.ts). Bu iki test eskiden var olmayan
+  // `/api/me/change-password`'e gidiyor ve 404'ü `>= 400` ile "ret" sayıyordu:
+  // parola doğrulaması HİÇ ölçülmüyordu. `changePassword` sınırı kullanıcı başına
+  // 5 dk'da 3'tür ve gevşetilmez; her test kendi kalıcı kimliğiyle koşar ve
+  // reddin hiçbir şeyi değiştirmediğini eski parolayla yeniden girerek kanıtlar
+  // (yeni parolayla BAŞARISIZ giriş denenmez: IP'nin captcha sayacını besler).
 
-  test('POST /api/me/change-password — yanlış mevcut şifre reddedilmeli', async ({ request }) => {
-    const res = await request.post(`${BASE}/api/me/change-password`, {
+  async function signInStatus(request: import('@playwright/test').APIRequestContext, username: string, password: string) {
+    const res = await request.post(`${BASE}/api/login`, {
+      headers: { 'Content-Type': 'application/json' },
+      data: JSON.stringify({ username, password }),
+    });
+    return res.status();
+  }
+
+  test('POST /api/change-password — yanlış mevcut şifre reddedilmeli', async ({ request }) => {
+    const who = await registerFreshUser(request, 'chpwdwrong');
+    const res = await request.post(`${BASE}/api/change-password`, {
       headers: {
-        Authorization: `Bearer ${tokens.alice}`,
+        Authorization: `Bearer ${who.token}`,
         'Content-Type': 'application/json',
       },
       data: JSON.stringify({
@@ -214,20 +226,25 @@ test.describe('Profil Yönetimi', () => {
         newPassword:     'YeniSifre456!',
       }),
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'Current password is incorrect' });
+    expect(await signInStatus(request, who.username, who.password), 'eski parola geçerli kalmalı').toBe(200);
   });
 
-  test('POST /api/me/change-password — zayıf yeni şifre reddedilmeli', async ({ request }) => {
-    const res = await request.post(`${BASE}/api/me/change-password`, {
+  test('POST /api/change-password — zayıf yeni şifre reddedilmeli', async ({ request }) => {
+    const who = await registerFreshUser(request, 'chpwdweak');
+    const res = await request.post(`${BASE}/api/change-password`, {
       headers: {
-        Authorization: `Bearer ${tokens.alice}`,
+        Authorization: `Bearer ${who.token}`,
         'Content-Type': 'application/json',
       },
       data: JSON.stringify({
-        currentPassword: tokens.users.alice.password,
+        currentPassword: who.password,
         newPassword:     '123',
       }),
     });
-    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status(), await res.text()).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'newPassword must be at least 8 characters' });
+    expect(await signInStatus(request, who.username, who.password), 'eski parola geçerli kalmalı').toBe(200);
   });
 });

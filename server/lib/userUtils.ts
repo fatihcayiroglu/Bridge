@@ -38,6 +38,7 @@ export function sanitizeUser(u: object): SafeUser;
 export function sanitizeUser(u: object | null | undefined): SafeUser | null {
   if (!u) return null;
   const row = u as Record<string, unknown>;
+  const hidden = normalizePresenceVisibility(row.presenceVisibility) === 'hidden';
   return {
     _id:         asString(row._id),
     id:          asString(row._id),
@@ -45,9 +46,9 @@ export function sanitizeUser(u: object | null | undefined): SafeUser | null {
     displayName: asOptionalString(row.displayName) ?? asString(row.username),
     avatarColor: asOptionalString(row.avatarColor),
     avatarUrl:   asNullableString(row.avatarUrl),
-    status:      asOptionalString(row.status),
-    statusText:   asOptionalString(row.statusText),
-    statusEmoji:  asOptionalString(row.statusEmoji),
+    status:      hidden ? 'offline' : asOptionalString(row.status),
+    statusText:   hidden ? '' : asOptionalString(row.statusText),
+    statusEmoji:  hidden ? '' : asOptionalString(row.statusEmoji),
     createdAt:    typeof row.createdAt === 'number' ? row.createdAt : undefined,
     bio:         asString(row.bio),
     website:     asString(row.website),
@@ -131,6 +132,9 @@ export function sanitizeOwnUser(u: object): OwnUser {
   const row = u as Record<string, unknown>;
   return {
     ...sanitizeUser(u),
+    status: asOptionalString(row.status),
+    statusText: asOptionalString(row.statusText),
+    statusEmoji: asOptionalString(row.statusEmoji),
     presenceVisibility: normalizePresenceVisibility(row.presenceVisibility),
     dmPrivacy: normalizeDmPrivacy(row.dmPrivacy),
     presenceStatus: normalizePresenceStatus(row.presenceStatus),

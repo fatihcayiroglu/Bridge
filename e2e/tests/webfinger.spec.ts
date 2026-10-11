@@ -251,18 +251,18 @@ test.describe('NodeInfo Endpoint', () => {
   test('/nodeinfo/2.1 endpoint geçerli yanıt döndürür', async () => {
     const ctx = await request.newContext();
 
+    // Uç SEVK EDİLDİ (server/app/setupRoutes.ts) ve /.well-known/nodeinfo onu
+    // ilan eder. Eskiden 404'te "henüz uygulanmadı" diye ATLANIYORDU: ilan
+    // edilen ucun kaybolması bir gerilemedir, atlama değil başarısızlıktır.
     const res = await apiGet(ctx, '/nodeinfo/2.1');
-    if (res.status() === 404) {
-      // Opsiyonel endpoint — varsa kontrol et
-      test.skip(true, '/nodeinfo/2.1 henüz uygulanmadı');
-      return;
-    }
-
     expect(res.status()).toBe(200);
     const body = await res.json();
     expect(body.version).toBe('2.1');
     expect(body.software).toBeTruthy();
-    expect(body.software.name).toBeTruthy();
+    expect(body.software.name).toBe('bridge');
+    expect(body.protocols).toContain('activitypub');
+    expect(typeof body.usage?.users?.total).toBe('number');
+    expect(typeof body.openRegistrations).toBe('boolean');
 
     await ctx.dispose();
   });
