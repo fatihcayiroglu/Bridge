@@ -99,6 +99,10 @@
 
   function resetPortableImport(): void {
     portableRequestSeq += 1;
+    // Invalidate the previous in-flight request AND release the UI lock. Its
+    // finally block checks the sequence and cannot affect a newer operation.
+    previewingPortable = false;
+    applyingPortable = false;
     portableDocument = null;
     portableOwner = null;
     portablePreview = null;
