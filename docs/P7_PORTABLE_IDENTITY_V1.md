@@ -122,6 +122,7 @@ a fresh `account.import` / `account-security` step-up proof, and exactly:
     "avatarColor": "#2d9cdb",
     "bannerColor": ""
   },
+  "targetUserId": "authenticated-destination-user-id",
   "confirm": "APPLY_PORTABLE_PROFILE"
 }
 ```
@@ -130,10 +131,10 @@ a fresh `account.import` / `account-security` step-up proof, and exactly:
 example above is not a valid request). `expected` must match the **six current
 field values** returned as `fields[].current` by an immediately preceding
 authenticated preview. The apply endpoint independently verifies the complete
-document and expected-fields shape; the browser cannot bypass validation by
+document, expected-fields shape and explicit destination user ID; the browser cannot bypass validation by
 copying a former successful preview response.
 
-One PostgreSQL `UPDATE ... WHERE` compares every expected field in the target
+If the authenticated account no longer matches `targetUserId` (for example, a session changes during a step-up proof or token retry), the server returns **409 before any SQL write**. The identity binding is mandatory, not optional.\n\nOne PostgreSQL `UPDATE ... WHERE` compares every expected field in the target
 account and updates only `displayName`, `bio`, `website`, `pronouns`,
 `avatarColor` and `bannerColor` atomically. A concurrent profile edit, a
 deleted target or a stale preview yields **409 without partial writes**. The
@@ -149,7 +150,7 @@ produces 400, and lack of a PostgreSQL write authority produces 503.
 **Settings → Privacy now provides a double-confirmed profile-only apply UI.**
 After a successful server-side preview the user must check an explicit acknowledgement
 and enter the exact phrase `IMPORT`; the client then sends the original v1 file,
-exact six-field preview snapshot and `APPLY_PORTABLE_PROFILE`. The server still
+exact six-field preview snapshot, explicit destination account ID, and `APPLY_PORTABLE_PROFILE`. The server still
 requires a separate `account-security` step-up grant (not the read-only export
 grant). On 409 the UI discards the stale preview and requires a new file
 selection. A successful apply also clears the document and confirmation state.
