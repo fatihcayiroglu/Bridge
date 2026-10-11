@@ -27,6 +27,22 @@ describe('P7 C3 collision report completeness and nonclaims', () => {
     expect(preview.writesPerformed).toBe(false);
   });
 
+  it('reports when many target matches exceed the per-conflict identifier cap', () => {
+    const doc = snapshot([{ _id: 'source-cat', name: 'group', position: 0 }]);
+    const destination = Array.from({ length: 55 }, (_, i) => ({
+      _id: `target-${i}`, name: 'group',
+    }));
+    const preview = buildPortableCommunityPreview(doc, {
+      ...target, categories: destination,
+    });
+    expect(preview.conflicts.total).toBe(1);
+    expect(preview.conflicts.truncated).toBe(false);
+    expect(preview.conflicts.items[0]).toMatchObject({
+      targetMatchCount: 55, targetIdsTruncated: true,
+    });
+    expect(preview.conflicts.items[0]?.targetIds).toHaveLength(50);
+  });
+
   it('caps the displayed details but preserves the true total and truncation marker', () => {
     const categories = Array.from({ length: 60 }, (_, i) => ({
       _id: `source-${i}`, name: 'Same name', position: i,
