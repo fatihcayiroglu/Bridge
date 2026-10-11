@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 const router = express.Router();
 
-import { Users, Servers, Members, Auth } from '../../db/repositories';
+import { Users, Servers, Members, Auth, Channels, Roles } from '../../db/repositories';
 import { authMiddleware} from '../../middleware/auth';
 import { sanitizeUser } from '../../lib/userUtils';
 import { getMemberPerms, hasPermission, PERMS } from '../roles';
@@ -21,6 +21,7 @@ import {
   type RaidMitigationLevel,
 } from '../../lib/raidProtection';
 import logger from '../../lib/logger';
+import { buildPortableCommunityStructure } from '../../lib/portableCommunity';
 import { enforceStepUp } from '../../lib/stepUp';
 
 // GET /api/servers
@@ -216,6 +217,49 @@ router.get('/', authMiddleware, async (req, res) => {
   const serverIds   = memberships.map(m => m.serverId);
   const servers     = (await Servers.find({ _id: { $in: serverIds } })).sort((a, b) => Number(a.createdAt ?? 0) - Number(b.createdAt ?? 0));
   res.json(servers);
+});
+
+// P7 C2: owner-only, read-only community structure export.
+// No member roster, invitation, message, webhook, secret or channel override is
+// exported. A fresh sensitive-export grant is mandatory (stolen bearer is insufficient).
+// Future cross-instance import is NOT implied by this profile-independent endpoint.
+router.get('/:sid/portable-export', authMiddleware, limits.write(), async (req, res) => {
+  const actor = castAuthed(req).user;
+  const sid = String(req.params.sid ?? '');
+  const server = await Servers.findById(sid);
+  if (!server) return res.status(404).json({ error: 'Server not found' });
+  // Do NOT permit delegated managers to export private topology.
+  if (server.ownerId !== actor.id) return res.status(403).json({ error: 'Only the server owner may export its structure' });
+  if (!(await enforceStepUp(req, res, actor.id, 'account.export'))) return;
+
+  try {
+    const [categories, channels, roles] = await Promise.all([
+      Channels.findCategoriesByServer(sid),
+      Channels.findByServer(sid),
+      Roles.findByServer(sid),
+    ]);
+    const result = buildPortableCommunityStructure(
+      server as unknown as Record<string, unknown>,
+      categories as unknown as Array<Record<string, unknown>>,
+      channels as unknown as Array<Record<string, unknown>>,
+      roles as unknown as Array<Record<string, unknown>>,
+    );
+    // Bound downloads and refuse incomplete results instead of truncating rows.
+    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 512 * 1024) {
+      return res.status(413).json({ error: 'Community structure export exceeds 512 KiB' });
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', 'attachment; filename="bridge-community-structure-v1.json"');
+    return res.status(200).json(result);
+  } catch (err) {
+    logger.error({ err, sid, userId: actor.id, event: 'server.portable_structure_export.failed' },
+      'Community structure export failed closed.');
+    return res.status(409).json({
+      code: 'PORTABLE_COMMUNITY_SOURCE_INCONSISTENT',
+      error: 'Community structure cannot be exported safely',
+    });
+  }
 });
 
 // POST /api/servers
