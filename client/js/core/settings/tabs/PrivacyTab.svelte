@@ -82,8 +82,8 @@
   let applyingPortable = $state(false);
   let portableApplyError = $state<string | null>(null);
   let portableApplySuccess = $state(false);
-  let portableDocument: unknown | null = null;
-  let portableOwner: string | null = null;
+  let portableDocument = $state.raw<unknown | null>(null);
+  let portableOwner = $state<string | null>(null);
   let portableRequestSeq = 0;
 
   const portableHasChanges = $derived(Boolean(portablePreview?.fields.some(field => field.changed)));
@@ -140,12 +140,12 @@
     } catch {
       if (seq === portableRequestSeq) portablePreviewError = true;
     } finally {
-      previewingPortable = false;
+      if (seq === portableRequestSeq) previewingPortable = false;
     }
   }
 
   async function applyPortableProfile(): Promise<void> {
-    if (!canApplyPortable || !portablePreview || !portableDocument || !portableOwner) return;
+    if (applyingPortable || !canApplyPortable || !portablePreview || !portableDocument || !portableOwner) return;
     if (signedInPortableOwner() !== portableOwner) {
       resetPortableImport();
       portableApplyError = t('privacy_portable_account_changed', 'Hesap değişti. Dosyayı tekrar seçip önizleyin.');
@@ -193,7 +193,7 @@
     } catch {
       if (seq === portableRequestSeq) portableApplyError = t('privacy_portable_apply_error', 'Profil içe aktarılamadı. Yeniden deneyin.');
     } finally {
-      applyingPortable = false;
+      if (seq === portableRequestSeq) applyingPortable = false;
     }
   }
 
