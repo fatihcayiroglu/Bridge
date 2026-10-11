@@ -99,6 +99,7 @@ describe('which requests carry which grant', () => {
     ['POST', '/api/2fa/setup', 'account-security'],
     ['POST', '/api/2fa/backup-codes/regenerate', 'account-security'],
     ['GET', '/api/account/export', 'sensitive-export'],
+    ['GET', '/api/account/portable-export', 'sensitive-export'],
     ['DELETE', '/api/account', 'destructive-admin'],
     ['DELETE', '/api/servers/s1', 'destructive-admin'],
     ['DELETE', '/api/admin/users/u1', 'destructive-admin'],
