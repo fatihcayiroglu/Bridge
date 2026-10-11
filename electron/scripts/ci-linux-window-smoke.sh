@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# CI-only first-run smoke test of the ACTUAL packaged Linux application.
+# CI-only first-run smoke test of the ACTUALLY INSTALLED Linux DEB.
+# The DEB postinst sets up Chromium's sandbox helper and AppArmor policy.
 # Must execute within xvfb-run + dbus-run-session, without --no-sandbox.
 set -euo pipefail
 
-ELECTRON_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="${ELECTRON_ROOT}/release/linux-unpacked/bridge"
+APP="${BRIDGE_LINUX_APP:-/opt/Bridge/bridge}"
 if [[ ! -x "${APP}" ]]; then
   echo "Packaged Bridge Linux executable missing or not executable: ${APP}" >&2
   exit 1
