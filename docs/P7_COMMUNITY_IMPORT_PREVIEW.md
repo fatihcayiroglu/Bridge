@@ -55,6 +55,9 @@ interchangeable, and **the absence of collisions is not an authorization to
 apply**. For 51 or more findings only the first 50 details are shown, while
 `total` remains complete and `truncated` is true. The caller must not
 silently interpret the first 50 entries as the whole report.
+Within an individual collision, the first 50 target IDs are shown; the
+full `targetMatchCount` and `targetIdsTruncated` flag prevent silent omission
+when many destination rows share the same name.
 
 ## Still blocked
 
