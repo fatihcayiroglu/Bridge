@@ -102,7 +102,7 @@ A preview is not an importer, and there is no DB mutation or automatic
 ownership/community migration. Applying changes, collision policy, safe
 rollback, and cross-instance round-trip proof remain explicit C3/C4 gaps.
 
-## Account-profile-only atomic import API (C3 increment; no UI yet)
+## Account-profile-only atomic import and confirmation UI (C3 increment)
 
 `POST /api/account/portable-import/apply` is a **separate, explicitly
 confirmed** endpoint, not the read-only preview. It requires a signed-in user,
@@ -143,12 +143,18 @@ A 200 response reports applied fields but is not a community/whole-account
 restore. Invalid source content produces 422, missing explicit confirmation
 produces 400, and lack of a PostgreSQL write authority produces 503.
 
-**Product limitation:** this first incremental API has no Settings → Privacy
-confirmation/apply UI yet. The v1 manifest still declares
-`portability.importSupported: false` because full cross-instance/community
-migration, credentials and media remain unsupported. The UI remains preview-only
-until a dedicated, double-confirmed apply experience is implemented and
-independently tested. C4 cross-instance proof has not been claimed.
+**Settings → Privacy now provides a double-confirmed profile-only apply UI.**
+After a successful server-side preview the user must check an explicit acknowledgement
+and enter the exact phrase `IMPORT`; the client then sends the original v1 file,
+exact six-field preview snapshot and `APPLY_PORTABLE_PROFILE`. The server still
+requires a separate `account-security` step-up grant (not the read-only export
+grant). On 409 the UI discards the stale preview and requires a new file
+selection. A successful apply also clears the document and confirmation state.
+Logout/account changes discard the operation; nothing is stored in localStorage.
+These are **profile fields only**, not portable credentials, messages, media
+or memberships. The v1 manifest intentionally keeps `importSupported: false`
+because full cross-instance/community migration is not yet supported.
+C4 cross-instance proof has not been claimed.
 
 ## Next gates (not claimed complete)
 
