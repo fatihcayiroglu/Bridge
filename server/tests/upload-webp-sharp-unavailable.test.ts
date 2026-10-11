@@ -19,6 +19,7 @@ import path from 'path';
 import fs from 'fs';
 import express from 'express';
 import request from 'supertest';
+import { TINY_PNG } from './helpers/tinyImages';
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-upload-nosharp-'));
 process.env.NODE_ENV = 'test';
@@ -75,7 +76,8 @@ const app = express();
 app.use('/api/upload', router);
 app.use((err: any, _req: any, res: any, _next: any) => res.status(err.status || 500).json({ error: err.message }));
 
-const PNG = Buffer.from('\x89PNG\r\n\x1a\n fake png payload');
+// P7 B3: a REAL image — uploads are walked for metadata; magic bytes alone get 422.
+const PNG = TINY_PNG;
 
 function uploadPng(filename = 'photo.png') {
   return request(app).post('/api/upload').set('Authorization', 'Bearer u1')

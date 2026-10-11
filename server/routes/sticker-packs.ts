@@ -71,6 +71,7 @@ import { authMiddleware} from '../middleware/auth';
 import { limits } from '../middleware/rateLimit';
 import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
 import { canonicalExtensionForMime, checkMagicBytes } from '../lib/uploadFileSafety';
+import { stripUploadedImageOrRefuse } from '../lib/imageMetadata';
 import { Servers, ServerAssets } from '../db/repositories';
 import type { StickerPackRecord, StickerPackItemRecord } from '../db/repositories/types/entities';
 
@@ -281,6 +282,12 @@ router.post(
       if (files.some(file => !checkMagicBytes(file.path, file.mimetype))) {
         await cleanupRequestUploads(files);
         return res.status(400).json({ error: 'Sticker içeriği belirtilen formatla eşleşmiyor.' });
+      }
+      for (const file of files) { // P7 B3: no location/device metadata
+        if (!(await stripUploadedImageOrRefuse(res, file))) {
+          await cleanupRequestUploads(files);
+          return;
+        }
       }
 
       const packId    = uuidv4();

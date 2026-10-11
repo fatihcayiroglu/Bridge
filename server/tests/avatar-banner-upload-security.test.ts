@@ -28,6 +28,7 @@ import express, { Express, Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
 import fs from 'fs';
 import path from 'path';
+import { TINY_GIF, TINY_JPEG, TINY_PNG } from './helpers/tinyImages';
 
 process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
 process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
@@ -75,10 +76,12 @@ function buildApp(): Express {
 const app = buildApp();
 
 // ── Gerçek bayt dizileri ────────────────────────────────────────────────────
-// MAGIC tablosu ilk 12 bayta bakar (routes/upload.ts).
-const PNG_BYTES  = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
-const JPEG_BYTES = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(9)]);
-const GIF_BYTES  = Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(6)]);
+// MAGIC tablosu ilk 12 bayta bakar (routes/upload.ts). P7 B3: yüklenen her görüntü
+// metaveri için ayrıca BAŞTAN SONA yürünür; yalnızca sihirli baytlar + dolgu
+// artık (doğru olarak) 422 alır. Bu yüzden GERÇEK, çözülebilir 2×2 görüntüler.
+const PNG_BYTES  = TINY_PNG;
+const JPEG_BYTES = TINY_JPEG;
+const GIF_BYTES  = TINY_GIF;
 // Windows yurutulebilir dosyasi — "MZ" ile baslar, PNG DEGILDIR.
 const EXE_BYTES  = Buffer.concat([Buffer.from('MZ'), Buffer.alloc(10, 0x90)]);
 

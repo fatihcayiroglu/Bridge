@@ -10,10 +10,14 @@ import {
   register, login, mutate, makeServer, connectSocket, sendMessage, nextEvent, request, csrfToken, rnd, BROWSER,
 } from '../../multinode/lib/client.mjs';
 
-// 1×1 transparent PNG — passes the upload magic-byte check.
+// A well-formed 1×1 RGBA PNG (IHDR, IDAT, IEND; every CRC valid, nothing after
+// IEND). Uploads are parsed, not just magic-byte checked: the previous constant had
+// a corrupt IDAT CRC and a truncated IEND and is refused with 422
+// IMAGE_UNPARSEABLE. It carries no metadata chunk, so it is stored and served
+// byte-identical, which `verify()` relies on.
 const PNG = Buffer.from(
-  '89504e470d0a1a0a0000000d4948445200000001000000010806000000' +
-  '1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082', 'hex');
+  '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489' +
+  '0000000d4944415478da6364f8cf500f00038601805a347d6b0000000049454e44ae426082', 'hex');
 
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 

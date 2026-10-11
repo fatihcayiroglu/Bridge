@@ -5,6 +5,7 @@ import request from 'supertest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { TINY_PNG } from './helpers/tinyImages';
 
 const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-member-profile-'));
 const PROFILE_DIR = path.join(TEST_ROOT, 'member-profiles');
@@ -72,7 +73,7 @@ app.use('/api/servers/:serverId', profileRouter);
 app.use((err: any, _req: any, res: any, _next: any) => res.status(500).json({ error: err?.message || 'error' }));
 
 function tinyPng(): Buffer {
-  return Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a, 0,0,0,0]);
+  return TINY_PNG; // P7 B3: a real image — uploads are walked for metadata
 }
 
 function upload(url: string, mime = 'image/png') {

@@ -25,6 +25,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { requireDoc } from './helpers/mockDb';
+import { TINY_PNG } from './helpers/tinyImages';
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-auth-guards-'));
 process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
@@ -317,7 +318,7 @@ describe('profile asset cleanup', () => {
     await _db.users.update({ _id: userId }, { $set: { avatarUrl: '/uploads/avatars/avatar_replaced.png' } });
     hasLiveUploadReference.mockResolvedValue(false);
 
-    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+    const png = TINY_PNG; // P7 B3: a real image — uploads are walked for metadata
     const res = await request(app).post('/api/me/avatar')
       .set('Authorization', `Bearer ${token}`)
       .attach('avatar', png, { filename: 'new.png', contentType: 'image/png' });

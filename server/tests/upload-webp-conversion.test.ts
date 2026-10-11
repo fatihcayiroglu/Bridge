@@ -22,6 +22,7 @@ import path from 'path';
 import fs from 'fs';
 import express from 'express';
 import request from 'supertest';
+import { TINY_GIF, TINY_JPEG, TINY_PNG } from './helpers/tinyImages';
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-upload-webp-'));
 process.env.NODE_ENV = 'test';
@@ -36,11 +37,14 @@ const toFile = jest.fn(async (out: string) => {
 });
 const webpOptions = jest.fn();
 const sharpCalls: string[] = [];
+const rotateCalls = jest.fn();
 const sharpFn = jest.fn((input: string) => {
   sharpCalls.push(input);
-  return {
+  const pipeline = {
+    rotate: () => { rotateCalls(input); return pipeline; },
     webp: (opts: Record<string, unknown>) => { webpOptions(opts); return { toFile }; },
   };
+  return pipeline;
 });
 
 jest.mock('sharp', () => ({ __esModule: true, default: (input: string) => sharpFn(input) }), { virtual: true });
@@ -118,7 +122,8 @@ const app = express();
 app.use('/api/upload', router);
 app.use((err: any, _req: any, res: any, _next: any) => res.status(err.status || 500).json({ error: err.message }));
 
-const PNG = Buffer.from('\x89PNG\r\n\x1a\n fake png payload');
+// P7 B3: a REAL image — uploads are walked for metadata; magic bytes alone get 422.
+const PNG = TINY_PNG;
 
 function uploadPng(filename = 'photo.png', contentType = 'image/png') {
   return request(app).post('/api/upload').set('Authorization', 'Bearer u1')
@@ -185,6 +190,9 @@ describe('raster uploads are converted to WebP as one consistent identity', () =
 
     const original = sharpCalls[0]!;
     expect(original.endsWith('.png')).toBe(true);
+    // P7 B3: the EXIF orientation is applied to the pixels before the re-encode
+    // drops EXIF (proved with a real encoder in upload-webp-orientation.test.ts).
+    expect(rotateCalls).toHaveBeenCalledWith(original);
     // fs.unlink of the source is fire-and-forget; give the loop one turn.
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(fs.existsSync(original)).toBe(false);
@@ -193,9 +201,9 @@ describe('raster uploads are converted to WebP as one consistent identity', () =
 
   it('converts a JPEG the same way and keeps working across repeated uploads', async () => {
     const first = await request(app).post('/api/upload').set('Authorization', 'Bearer u1')
-      .attach('file', PNG, { filename: 'a.jpg', contentType: 'image/jpeg' }).expect(200);
+      .attach('file', TINY_JPEG, { filename: 'a.jpg', contentType: 'image/jpeg' }).expect(200);
     const second = await request(app).post('/api/upload').set('Authorization', 'Bearer u1')
-      .attach('file', PNG, { filename: 'b.jpg', contentType: 'image/jpeg' }).expect(200);
+      .attach('file', TINY_JPEG, { filename: 'b.jpg', contentType: 'image/jpeg' }).expect(200);
 
     expect(first.body.webp).toBe(true);
     expect(second.body.webp).toBe(true);
@@ -208,7 +216,7 @@ describe('raster uploads are converted to WebP as one consistent identity', () =
 describe('non-raster images are left alone', () => {
   it('a GIF keeps its animation, name and type', async () => {
     const res = await request(app).post('/api/upload').set('Authorization', 'Bearer u1')
-      .attach('file', Buffer.from('GIF89a fake'), { filename: 'loop.gif', contentType: 'image/gif' })
+      .attach('file', TINY_GIF, { filename: 'loop.gif', contentType: 'image/gif' })
       .expect(200);
     expect(res.body.webp).toBeUndefined();
     expect(res.body.fileType).toBe('image/gif');

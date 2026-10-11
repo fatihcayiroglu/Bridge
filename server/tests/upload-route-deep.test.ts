@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import express from 'express';
 import request from 'supertest';
+import { TINY_GIF } from './helpers/tinyImages';
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-upload-route-deep-'));
 process.env.NODE_ENV = 'test';
@@ -509,7 +510,7 @@ describe('chunk route resumability and finalization', () => {
 });
 
 describe('server GIF upload deep behavior', () => {
-  const gif = Buffer.from('GIF89a123456');
+  const gif = TINY_GIF; // P7 B3: a real image — uploads are walked for metadata
 
   it('stores a valid image and records ownership', async () => {
     const res = await request(app).post('/api/upload/server-gif').set('Authorization', auth('gif-owner')).attach('gif', gif, { filename: 'x.gif', contentType: 'image/gif' });

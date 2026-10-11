@@ -114,6 +114,7 @@ import db from '../db/loader';
 import logger from '../lib/logger';
 import { hasLiveUploadReference } from '../lib/uploadReferenceSafety';
 import { canonicalExtensionForMime, checkMagicBytes } from '../lib/uploadFileSafety';
+import { stripUploadedImageOrRefuse } from '../lib/imageMetadata';
 import { respondDiscardingBody } from '../lib/httpRequestDrain';
 
 import { uploadDir } from '../lib/runtimePaths';
@@ -230,6 +231,10 @@ router.post('/', authMiddleware, limits.write(), requireManageEmoji, (req, res, 
   }
 
   // Limit yok — Discord Nitro'nun aksine Bridge'de emoji sınırsız
+
+  // P7 B3: no location/device metadata is stored — after every check that can
+  // refuse the request, so a refused upload is never rewritten first.
+  if (!(await stripUploadedImageOrRefuse(res, req.file))) return;
 
   let emoji;
   try {

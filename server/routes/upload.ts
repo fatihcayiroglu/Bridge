@@ -21,6 +21,7 @@ import { getPrivateStorageAdapter, getPrivateStorageProvider, getStorageAdapter,
 import logger from '../lib/logger';
 import { hasLiveUploadReference, normalizeUploadKey, storageDeleteKey } from '../lib/uploadReferenceSafety';
 import { canonicalExtensionForMime, checkMagicBytes } from '../lib/uploadFileSafety';
+import { ImageMetadataError, stripImageMetadataFile, stripUploadedImageOrRefuse } from '../lib/imageMetadata';
 import {
   allChunksPresent,
   chunkFileName,
@@ -61,9 +62,8 @@ const router = express.Router();
 // Yalnızca raster görüntüler dönüştürülür: jpeg/png/tiff/bmp
 // GIF ve SVG atlanır (animasyon/vektör korunur)
 // Sprint 74: require() → dynamic import() (no eslint-disable workaround needed)
-type SharpFn = (input: string) => {
-  webp(opts: Record<string, unknown>): { toFile(out: string): Promise<{ size: number }> };
-};
+type SharpWebp = { webp(opts: Record<string, unknown>): { toFile(out: string): Promise<{ size: number }> } };
+type SharpFn = (input: string) => SharpWebp & { rotate(): SharpWebp };
 let _sharp: SharpFn | null = null;
 let _sharpLoaded = false;
 
@@ -98,7 +98,9 @@ async function maybeConvertToWebP(
   if (!sharp) return { filePath, mimetype, converted: false };
   const webpPath = filePath.replace(/\.[^.]+$/, '.webp');
   try {
-    await sharp(filePath).webp({ quality: WEBP_QUALITY, effort: 4 }).toFile(webpPath);
+    // `.rotate()` applies the EXIF orientation to the pixels: the re-encode drops
+    // every EXIF field, and without it a portrait phone photo is stored sideways.
+    await sharp(filePath).rotate().webp({ quality: WEBP_QUALITY, effort: 4 }).toFile(webpPath);
   } catch (error) {
     try { if (fs.existsSync(webpPath)) fs.unlinkSync(webpPath); } catch {}
     throw error;
@@ -374,6 +376,10 @@ router.post('/', authMiddleware, limits.upload(), handleUploadErrors(smallUpload
     }
   }
 
+  // P7 B3: GPS, device, serial, capture time, thumbnails — gone before storage.
+  const stripped = await stripUploadedImageOrRefuse(res, req.file);
+  if (!stripped) return;
+
   const safeOriginalName = path.basename(req.file.originalname).replace(/[^\w.-]/g, '_').slice(0, 200);
 
   // WebP dönüşüm (opsiyonel)
@@ -408,7 +414,7 @@ router.post('/', authMiddleware, limits.upload(), handleUploadErrors(smallUpload
     url:      protectedUploadUrl(finalFilename),
     fileName: safeOriginalName.replace(/\.[^.]+$/, finalExt),
     fileType: finalMime,
-    size:     req.file.size,
+    size:     stripped.bytesAfter,
     ...(webpResult.converted && { webp: true }),
   });
 });
@@ -826,6 +832,17 @@ router.post('/chunk', authMiddleware, limits.uploadChunk(), async (req, res) => 
         }
       }
 
+      let stripped;
+      try {
+        stripped = await stripImageMetadataFile(finalPath, fileType);
+      } catch (error) {
+        if (!(error instanceof ImageMetadataError)) throw error;
+        purgeSession = true;
+        fs.unlink(finalPath, () => {});
+        await closeSession();
+        return res.status(error.statusCode).json({ error: error.message, code: error.code });
+      }
+
       const chunkWebp      = await maybeConvertToWebP(finalPath, fileType);
       const chunkFinalPath = chunkWebp.filePath;
       cleanupPath = chunkFinalPath;
@@ -849,7 +866,7 @@ router.post('/chunk', authMiddleware, limits.uploadChunk(), async (req, res) => 
         url:      protectedUploadUrl(chunkFinalName),
         fileName: safeFileName.replace(/\.[^.]+$/, chunkWebp.converted ? '.webp' : ext),
         fileType: chunkFinalMime,
-        size,
+        size:     stripped.bytesAfter,
       };
       // Recorded BEFORE the session closes, so no retry can fall into the gap
       // between "session gone" and "completion known".
@@ -934,6 +951,8 @@ router.post('/server-gif', authMiddleware, limits.upload(), handleUploadErrors(g
     const e = scanErr as { statusCode?: number; message?: string; code?: string };
     return res.status(e.statusCode || 422).json({ error: e.message, code: e.code });
   }
+  const stripped = await stripUploadedImageOrRefuse(res, req.file);
+  if (!stripped) return;
   const store  = getStorageAdapter();
   const cdnKey = getProvider() !== 'local' ? `uploads/server-gifs/${req.file.filename}` : null;
   let result;
@@ -947,7 +966,7 @@ router.post('/server-gif', authMiddleware, limits.upload(), handleUploadErrors(g
   res.json({
     url:      result.url,
     fileType: req.file.mimetype,
-    size:     req.file.size,
+    size:     stripped.bytesAfter,
     ...(result.provider !== 'local' && { cdn: result.provider, key: result.key }),
   });
 });
