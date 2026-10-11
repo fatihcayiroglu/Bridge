@@ -146,6 +146,13 @@ jobs:
           file electron/release/mac-arm64/Bridge.app/Contents/MacOS/Bridge | grep -q arm64
           for image in "${dmgs[@]}"; do hdiutil imageinfo "${image}" >/dev/null; done
           for archive in "${zips[@]}"; do unzip -tq "${archive}" >/dev/null; done
+      # Launch the matching native packaged app from the same build. A DMG/ZIP
+      # checksum alone does not prove the app can bootstrap its real UI.
+      # CI-only loopback DevTools confirms connect.html loaded, not visible
+      # desktop window or signing/notarization.
+      - name: Packaged macOS native first-run renderer smoke
+        shell: bash
+        run: node electron/scripts/ci-macos-first-run.mjs
       - name: Preserve macOS package artifacts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
