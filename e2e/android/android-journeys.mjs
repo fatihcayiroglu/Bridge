@@ -1047,6 +1047,18 @@ async function main() {
     return { pid: after };
   });
 
+  await check('ANR01', 'Android OS never reported an app-not-responding event during these journeys', async () => {
+    if (MODE !== 'android') throw new Skip('Android OS process evidence requires a real Android runtime');
+    // Unlike a JavaScript console assertion, ActivityManager's ANR record
+    // survives a killed/restarted Activity. The failing 38148509383 run
+    // contained a FocusEvent timeout ANR at 14:51:40 and the OS killed the
+    // Activity at 14:52:04; the old tests mislabeled the later launch HOT.
+    const anrLog = await sh("logcat -d -v brief -s ActivityManager:E | grep -F 'ANR in com.bridge.app.debug' || true");
+    assert(!anrLog.includes('ANR in com.bridge.app.debug'),
+      'Android ActivityManager detected an ANR; process restart/restoration is NOT sufficient for a pass');
+    return { systemAnrCount: 0 };
+  });
+
   peerSock.close();
 }
 
