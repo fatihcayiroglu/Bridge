@@ -87,6 +87,17 @@ capability declarations. Files are only ever parsed as data, not executable
 instructions. A checksum is **not** a cryptographic signature: an attacker
 can recalculate it after editing the file.
 
+**Destination write-contract compatibility (C3 follow-up):** After verifying
+the digest, the preview also rejects checksum-valid but non-applicable profile
+values. Display names must already match Bridge's canonical display-name
+sanitizer (including its 32-character limit and invisible-character rules);
+bio, website and pronouns must be unpadded and at most 180, 120 and 40
+characters, respectively. Optional avatar/banner colors must be valid hex
+colors. The preview returns 422 rather than showing a value that a future
+write would silently trim, truncate, sanitize or refuse. Legacy snapshots
+remain exportable; incompatible values must be corrected at the source.
+This is **not** an active importer or proof that import writes/rollback work.
+
 A preview is not an importer, and there is no DB mutation or automatic
 ownership/community migration. Applying changes, collision policy, safe
 rollback, and cross-instance round-trip proof remain explicit C3/C4 gaps.
