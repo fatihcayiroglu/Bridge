@@ -8,8 +8,11 @@ const OTHER = 'pgt-pimp-other';
 const ids = [TARGET, OTHER];
 
 jest.mock('../../middleware/auth', () => ({
-  authMiddleware: (req: { user?: { id: string } }, _res: unknown, next: () => void) => {
-    req.user = { id: 'pgt-pimp-target' };
+  authMiddleware: (req: { user?: { id: string }; headers: Record<string, string | string[] | undefined> }, _res: unknown, next: () => void) => {
+    // Test-only source-account routing for a true HTTP export→import path.
+    // Production authMiddleware remains unmodified and must NEVER trust this header.
+    req.user = { id: req.headers['x-p7-test-source-user'] === 'pgt-pimp-other'
+      ? 'pgt-pimp-other' : 'pgt-pimp-target' };
     next();
   },
   _invalidateTokenCache: jest.fn(),
@@ -107,6 +110,56 @@ RUN('P7 C3 real PostgreSQL — portable import atomicity and conflict isolation'
     expect(r.body.code).toBe('PORTABLE_PROFILE_CONFLICT');
     const [row] = await q('SELECT "displayName", bio, "bannerColor" FROM users WHERE _id=$1', [TARGET]);
     expect(row).toEqual({ displayName: 'Existing Name', bio: 'edited from another session', bannerColor: '#445566' });
+  });
+
+  it('round-trips a SOURCE HTTP export through a DIFFERENT account preview, apply and re-export', async () => {
+    // This is a real PostgreSQL/HTTP profile-only round trip between distinct
+    // accounts. It deliberately does NOT claim a two-server C4 deployment.
+    const sourceExport = await request(app()).get('/api/account/portable-export')
+      .set('X-P7-Test-Source-User', OTHER)
+      .set(stepUpHeader(OTHER, 'sensitive-export'));
+    expect(sourceExport.status).toBe(200);
+    expect(sourceExport.body).toMatchObject({
+      format: 'bridge-portable-identity', version: 1,
+      identity: { sourceUserId: OTHER, username: 'pgt_pimp_other', displayName: 'Other Account' },
+    });
+    expect(sourceExport.body.integrity.digest).toMatch(/^[a-f0-9]{64}$/);
+
+    const { expected, result: preflight } = await preview(sourceExport.body);
+    expect(preflight).toMatchObject({
+      dryRun: true, applied: false, checksumVerified: true,
+      mapping: { sourceUserId: OTHER, targetUserId: TARGET, strategy: 'map-to-authenticated-account' },
+    });
+    const applied = await request(app()).post('/api/account/portable-import/apply')
+      .set(stepUpHeader(TARGET, 'account-security'))
+      .send({ document: sourceExport.body, expected, confirm: 'APPLY_PORTABLE_PROFILE' });
+    expect(applied.status).toBe(200);
+    expect(applied.body).toMatchObject({ ok: true, applied: true, targetUserId: TARGET });
+
+    const targetExport = await request(app()).get('/api/account/portable-export')
+      .set(stepUpHeader(TARGET, 'sensitive-export'));
+    expect(targetExport.status).toBe(200);
+    expect(targetExport.body).toMatchObject({
+      format: 'bridge-portable-identity', version: 1,
+      identity: { sourceUserId: TARGET, username: 'pgt_pimp_target', displayName: 'Other Account' },
+    });
+    // The re-export is a real, independently checksummed portable v1 file.
+    const { validatePortableIdentityV1 } = require('../../lib/portableIdentity') as typeof import('../../lib/portableIdentity');
+    expect(validatePortableIdentityV1(targetExport.body).identity.sourceUserId).toBe(TARGET);
+    expect(targetExport.body.identity.avatarColor).toBe('#112233');
+    expect(targetExport.body.identity.bannerColor).toBe('#667788');
+    const [target] = await q('SELECT username, password, "displayName" FROM users WHERE _id=$1', [TARGET]);
+    const [source] = await q('SELECT username, password, "displayName" FROM users WHERE _id=$1', [OTHER]);
+    expect(target).toEqual({ username: 'pgt_pimp_target', password: 'dummy', displayName: 'Other Account' });
+    expect(source).toEqual({ username: 'pgt_pimp_other', password: 'dummy', displayName: 'Other Account' });
+
+    // The original preview is now stale: importing a second time cannot
+    // silently overwrite the destination's new data or claims.
+    const replay = await request(app()).post('/api/account/portable-import/apply')
+      .set(stepUpHeader(TARGET, 'account-security'))
+      .send({ document: sourceExport.body, expected, confirm: 'APPLY_PORTABLE_PROFILE' });
+    expect(replay.status).toBe(409);
+    expect(replay.body.code).toBe('PORTABLE_PROFILE_CONFLICT');
   });
 
   it('two simultaneous apply attempts from one preview cannot both write', async () => {
