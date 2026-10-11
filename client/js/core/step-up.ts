@@ -110,7 +110,7 @@ const PROTECTED: ReadonlyArray<{ method: string; path: RegExp; scope: StepUpScop
   protectedRoute('POST', '/webauthn/register/(?:begin|complete)', 'account-security'),
   protectedRoute('DELETE', '/webauthn/credentials/[^/]+', 'account-security'),
   protectedRoute('POST', '/2fa/(?:setup|verify|disable|backup-codes/regenerate)', 'account-security'),
-  protectedRoute('GET', '/account/export', 'sensitive-export'),
+  protectedRoute('GET', '/account/(?:portable-)?export', 'sensitive-export'),
   protectedRoute('DELETE', '/account/?', 'destructive-admin'),
   protectedRoute('DELETE', '/servers/[^/]+', 'destructive-admin'),
   protectedRoute('DELETE', '/admin/(?:users|servers)/[^/]+', 'destructive-admin'),
