@@ -760,6 +760,19 @@ if (typeof Capacitor === 'undefined') {
       ).filter((el) => el.offsetParent !== null || el.getClientRects().length > 0);
       if (dialogs.length > 0) {
         const top = dialogs[dialogs.length - 1]!;
+        // P7 K01: Settings owns a real Svelte close button. A synthetic
+        // keydown on the dialog/document is not guaranteed to reach the
+        // window-level Escape listener after focus trap or native back routing.
+        // Follow the same close action as a real user; do not accidentally
+        // minimize the Android Activity while a dialog is visible.
+        const settingsClose = top.matches('.settings-modal')
+          ? top.querySelector<HTMLButtonElement>('button.settings-close')
+          : null;
+        if (settingsClose) {
+          settingsClose.click();
+          void bridgeHaptic.light();
+          return;
+        }
         top.dispatchEvent(new KeyboardEvent('keydown', {
           key: 'Escape', code: 'Escape', bubbles: true, cancelable: true,
         }));
