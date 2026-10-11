@@ -78,6 +78,10 @@ export function buildPortableCommunityPermissionManifest(
         continue;
       }
       const roleId = id(item.roleId, 'permission role ID');
+      if (item.targetType === 'everyone' &&
+          roleId !== '__everyone__' && roleId !== sourceServerId) {
+        throw new TypeError('Everyone override must target the canonical everyone role');
+      }
       const roleSourceId = roleId === sourceServerId ? '__everyone__' : roleId;
       if (roleSourceId !== '__everyone__' && !roleIds.has(roleSourceId)) {
         throw new TypeError('Permission references foreign role');
