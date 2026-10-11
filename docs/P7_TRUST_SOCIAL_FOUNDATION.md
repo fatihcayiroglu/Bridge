@@ -819,8 +819,10 @@ mapping and cross-instance migration remain incomplete.
 ### C3-2 — explicit, atomic profile-only apply endpoint (unverified candidate)
 
 `POST /api/account/portable-import/apply` accepts the complete v1 export,
-an exact six-field expected-current-state snapshot from preview, and an explicit
-`APPLY_PORTABLE_PROFILE` confirmation. Fresh account-security step-up is
+an exact six-field expected-current-state snapshot from preview, an explicit
+`targetUserId` matching the authenticated account even after token refresh,
+and an explicit `APPLY_PORTABLE_PROFILE` confirmation. A mismatched account
+returns 409 before any SQL mutation. Fresh account-security step-up is
 mandatory. The one conditional PostgreSQL `UPDATE` can write only
 displayName, bio, website, pronouns and the two profile colors. If any target
 field changed since preview, it returns 409 with no partial write.
