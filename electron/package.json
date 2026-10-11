@@ -81,7 +81,10 @@
         "snap"
       ],
       "category": "Network;InstantMessaging",
-      "synopsis": "Self-hosted federated communication platform"
+      "synopsis": "Self-hosted federated communication platform",
+      "maintainer": "Bridge Contributors <149966576+fatihcayiroglu@users.noreply.github.com>",
+      "syncDesktopName": true,
+      "executableName": "bridge"
     },
     "nsis": {
       "oneClick": false,
@@ -126,5 +129,11 @@
     "js-yaml": "4.3.2",
     "browserslist": "4.28.9",
     "baseline-browser-mapping": "2.11.21"
-  }
+  },
+  "homepage": "https://github.com/fatihcayiroglu/Bridge",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fatihcayiroglu/Bridge.git"
+  },
+  "desktopName": "bridge"
 }
