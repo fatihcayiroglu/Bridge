@@ -201,6 +201,15 @@
         const updatedMe = { ...currentMe };
         for (const field of portablePreview.fields) updatedMe[field.field] = field.proposed;
         if (BridgeRegistry.has('setMe')) BridgeRegistry.call('setMe', updatedMe);
+        // The existing Profile tab still reads the legacy auth-compat
+        // currentUser reference. Keep it in sync with AppState, but ONLY when
+        // it belongs to the same authenticated account as the accepted write.
+        const legacy = globalThis as typeof globalThis & {
+          currentUser?: Record<string, unknown> | null;
+          me?: Record<string, unknown> | null;
+        };
+        if (portableAccountId(legacy.currentUser) === owner) legacy.currentUser = updatedMe;
+        if (portableAccountId(legacy.me) === owner) legacy.me = updatedMe;
         updateUserPanel(updatedMe as Parameters<typeof updateUserPanel>[0]);
       }
       resetPortableImport(); // NEVER leave a successful write armed for replay
