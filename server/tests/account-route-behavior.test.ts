@@ -274,7 +274,7 @@ describe('account export/delete production behavior', () => {
     // These are checksum-correct documents, not ordinary corruption. Every
     // value below would be silently transformed or rejected by /api/me.
     const incompatible = [
-      { displayName: 'Ad\\u200bmin' },
+      { displayName: 'Ad\u200bmin' },
       { displayName: 'X'.repeat(33) },
       { displayName: '  Padded name  ' },
       { displayName: '' },
