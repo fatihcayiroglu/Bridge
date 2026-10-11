@@ -102,6 +102,7 @@ describe('which requests carry which grant', () => {
     ['GET', '/api/account/portable-export', 'sensitive-export'],
     ['POST', '/api/account/portable-import/preview', 'sensitive-export'],
     ['POST', '/api/account/portable-import/apply', 'account-security'],
+    ['POST', '/api/account/portable-import/apply', 'account-security'],
     ['DELETE', '/api/account', 'destructive-admin'],
     ['DELETE', '/api/servers/s1', 'destructive-admin'],
     ['DELETE', '/api/admin/users/u1', 'destructive-admin'],
