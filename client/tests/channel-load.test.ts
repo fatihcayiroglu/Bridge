@@ -47,6 +47,7 @@ vi.mock('../js/core/logger.js', () => ({
 
 import ChannelListManager from '../js/core/ChannelListManager.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
+import { rememberTextChannel } from '../js/core/navigation-selection.ts';
 
 type Channel = { _id: string; name: string; type?: string; serverId?: string };
 
@@ -76,7 +77,7 @@ let recordNavigation: ReturnType<typeof vi.fn>;
 const REGISTRY_KEYS = [
   'setCurrentServerChannels', 'getCurrentServer', 'setCurrentChannel', 'recordNavigationLocation',
   'selectServer', 'toast', 'jumpToMessage', 'openChannelMenu', 'createChannelInCategory',
-  'openCreateChannel', 'currentServer',
+  'openCreateChannel', 'currentServer', 'getMe',
 ] as const;
 
 /** Üretimdeki gerçek giriş noktası: `bridge:load-channels` olayı (:191-194). */
@@ -142,6 +143,74 @@ afterEach(() => {
 // ════════════════════════════════════════════════════════════════════════════
 // İstek kurulumu
 // ════════════════════════════════════════════════════════════════════════════
+describe('P7 Android reload: last authorized text channel restoration', () => {
+  it('chooses the remembered second channel instead of the first after WebView restart', async () => {
+    currentServer = { _id: 'srv-1' };
+    BridgeRegistry.register('getMe', (() => ({ _id: 'user-1' })) as AnyFn);
+    rememberTextChannel('user-1', 'srv-1', 'second');
+    mockApiFetch.mockResolvedValue(okResponse([
+      { _id: 'first', name: 'general', type: 'text' },
+      { _id: 'second', name: 'help', type: 'text' },
+    ]));
+    await requestLoad('srv-1');
+    await vi.waitFor(() => {
+      const last = mockMountList.mock.calls.at(-1)?.[1] as { activeChannelId?: string };
+      expect(last.activeChannelId).toBe('second');
+    });
+    expect(recordNavigation).toHaveBeenCalledWith(expect.objectContaining({ channelId: 'second' }));
+  });
+
+  it('repairs an auto-selected first channel when /api/me identity arrives later', async () => {
+    currentServer = { _id: 'srv-1' };
+    rememberTextChannel('user-1', 'srv-1', 'second');
+    mockApiFetch.mockResolvedValue(okResponse([
+      { _id: 'first', name: 'general', type: 'text' },
+      { _id: 'second', name: 'help', type: 'text' },
+    ]));
+    // WebView has a token already, but account identity is not available yet.
+    await requestLoad('srv-1');
+    await vi.waitFor(() => {
+      const last = mockMountList.mock.calls.at(-1)?.[1] as { activeChannelId?: string };
+      expect(last.activeChannelId).toBe('first');
+    });
+    BridgeRegistry.register('getMe', (() => ({ _id: 'user-1' })) as AnyFn);
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    await vi.waitFor(() => {
+      const last = mockMountList.mock.calls.at(-1)?.[1] as { activeChannelId?: string };
+      expect(last.activeChannelId).toBe('second');
+    });
+    expect(recordNavigation).toHaveBeenCalledWith(expect.objectContaining({ channelId: 'second' }));
+  });
+
+  it('does not restore a remembered channel if it is no longer authorized', async () => {
+    currentServer = { _id: 'srv-1' };
+    BridgeRegistry.register('getMe', (() => ({ _id: 'user-1' })) as AnyFn);
+    rememberTextChannel('user-1', 'srv-1', 'revoked');
+    mockApiFetch.mockResolvedValue(okResponse([{ _id: 'first', name: 'general', type: 'text' }]));
+    await requestLoad('srv-1');
+    await vi.waitFor(() => {
+      const last = mockMountList.mock.calls.at(-1)?.[1] as { activeChannelId?: string };
+      expect(last.activeChannelId).toBe('first');
+    });
+    expect(recordNavigation).not.toHaveBeenCalledWith(expect.objectContaining({ channelId: 'revoked' }));
+  });
+
+  it('does not automatically rejoin a previously visited voice channel', async () => {
+    currentServer = { _id: 'srv-1' };
+    BridgeRegistry.register('getMe', (() => ({ _id: 'user-1' })) as AnyFn);
+    rememberTextChannel('user-1', 'srv-1', 'voice');
+    mockApiFetch.mockResolvedValue(okResponse([
+      { _id: 'first', name: 'general', type: 'text' },
+      { _id: 'voice', name: 'meeting', type: 'voice' },
+    ]));
+    await requestLoad('srv-1');
+    await vi.waitFor(() => {
+      const last = mockMountList.mock.calls.at(-1)?.[1] as { activeChannelId?: string };
+      expect(last.activeChannelId).toBe('first');
+    });
+  });
+});
+
 describe('loadChannels — istek sözleşmesi', () => {
   it('sunucu kapsamlı doğru uca gider', async () => {
     mockApiFetch.mockResolvedValue(okResponse([]));

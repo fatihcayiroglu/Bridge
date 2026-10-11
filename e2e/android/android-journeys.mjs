@@ -581,30 +581,49 @@ async function main() {
     return { ms: Date.now() - t0 };
   });
 
-  await check('L01', 'background 20 s → message arrives meanwhile → foreground shows it', async () => {
+  // The channel ID is part of the contract. A bare message text match can
+  // conceal a navigation regression; do not silently reopen the channel.
+  async function assertVisibleAfterResume(needle, label, timeout) {
+    await until(async () => (await activeChannel()) === channelId && await visibleMessage(needle), {
+      timeout, message: `${label}: original channel still active AND missed message visible`,
+    });
+  }
+
+  await check('L01', 'background 20 s → original channel and missed message survive hot resume', async () => {
+    const pidBefore = await pid();
     await platform.home();
     await sleep(3_000);
     const needle = `android-bg-${Date.now().toString(36)}`;
     await sendChannel(peerSock, serverId, channelId, needle);
+    await until(async () => (await channelHas(me.token, channelId, needle)).length === 1,
+      { message: 'L01 peer message persisted before foregrounding' });
     await sleep(17_000);
     const fg = await platform.foreground();
     const t0 = Date.now();
     await attachPage();
-    await until(() => visibleMessage(needle), { timeout: 30_000, message: 'background message visible after resume' });
-    return { resumeTotalMs: fg.totalTimeMs, launchState: fg.launchState, visibleAfterMs: Date.now() - t0, pidStable: true };
+    const pidAfter = await pid();
+    log('L01 resume context', JSON.stringify({ expectedChannel: channelId, actualChannel: await activeChannel(), pidStable: pidBefore === pidAfter, launchState: fg.launchState }));
+    assert(pidBefore === pidAfter, 'L01 process died; cannot claim hot resume');
+    await assertVisibleAfterResume(needle, 'L01', 30_000);
+    return { resumeTotalMs: fg.totalTimeMs, launchState: fg.launchState, visibleAfterMs: Date.now() - t0, pidStable: true, channelPreserved: true };
   });
 
-  await check('L02', 'background 75 s (past socket ping timeout) → foreground resyncs without stale UI', async () => {
+  await check('L02', 'background 75 s → original channel and missed message recover after socket idle', async () => {
+    const pidBefore = await pid();
     await platform.home();
     await sleep(5_000);
     const needle = `android-long-bg-${Date.now().toString(36)}`;
     await sendChannel(peerSock, serverId, channelId, needle);
+    await until(async () => (await channelHas(me.token, channelId, needle)).length === 1,
+      { message: 'L02 peer message persisted before foregrounding' });
     await sleep(70_000);
-    await platform.foreground();
+    const fg = await platform.foreground();
     const t0 = Date.now();
     await attachPage();
-    await until(() => visibleMessage(needle), { timeout: 60_000, message: 'message after long background' });
-    return { visibleAfterMs: Date.now() - t0 };
+    const pidAfter = await pid();
+    log('L02 resume context', JSON.stringify({ expectedChannel: channelId, actualChannel: await activeChannel(), pidStable: pidBefore === pidAfter, launchState: fg.launchState }));
+    await assertVisibleAfterResume(needle, 'L02', 60_000);
+    return { visibleAfterMs: Date.now() - t0, pidStable: pidBefore === pidAfter, channelPreserved: true };
   });
 
   await check('L03', 'process killed while backgrounded → relaunch restores session, channel and missed messages', async () => {
@@ -620,9 +639,12 @@ async function main() {
     await attachPage();
     await until(() => appVisible(), { timeout: 45_000, message: 'app restored without login' });
     assert(!(await authVisible()), 'auth screen shown after process death — session not restored');
-    await openServer(serverId);
-    await openChannel(channelId);
-    await until(() => visibleMessage(needle), { timeout: 30_000, message: 'missed message after relaunch' });
+    // Previously the harness manually reselected server/channel here, which
+    // could conceal a REAL navigation loss after the WebView process died.
+    // The product must restore the authorized previously active text channel.
+    await until(async () => (await activeChannel()) === channelId && await visibleMessage(needle), {
+      timeout: 30_000, message: 'original channel and missed message automatically restored after process death',
+    });
     return { pidBefore: before, pidAfter: await pid(), kill: killed, relaunchTotalMs: launch.totalTimeMs };
   });
 
@@ -631,7 +653,10 @@ async function main() {
     const launch = await platform.foreground();
     await attachPage();
     await until(() => appVisible(), { timeout: 45_000, message: 'app restored after force-stop' });
-    return { coldRelaunchTotalMs: launch.totalTimeMs };
+    await until(async () => (await activeChannel()) === channelId, {
+      timeout: 30_000, message: 'original authorized text channel restored after force-stop',
+    });
+    return { coldRelaunchTotalMs: launch.totalTimeMs, channelPreserved: true };
   });
 
   await check('N01', 'offline: banner shows, composed message is held, delivered exactly once on reconnect', async () => {
@@ -1020,6 +1045,18 @@ async function main() {
     await attachPage();
     await until(() => authVisible(), { timeout: 20_000, message: 'sign-in screen after sign-out' });
     return { pid: after };
+  });
+
+  await check('ANR01', 'Android OS never reported an app-not-responding event during these journeys', async () => {
+    if (MODE !== 'android') throw new Skip('Android OS process evidence requires a real Android runtime');
+    // Unlike a JavaScript console assertion, ActivityManager's ANR record
+    // survives a killed/restarted Activity. The failing 38148509383 run
+    // contained a FocusEvent timeout ANR at 14:51:40 and the OS killed the
+    // Activity at 14:52:04; the old tests mislabeled the later launch HOT.
+    const anrLog = await sh("logcat -d -v brief -s ActivityManager:E | grep -F 'ANR in com.bridge.app.debug' || true");
+    assert(!anrLog.includes('ANR in com.bridge.app.debug'),
+      'Android ActivityManager detected an ANR; process restart/restoration is NOT sufficient for a pass');
+    return { systemAnrCount: 0 };
   });
 
   peerSock.close();

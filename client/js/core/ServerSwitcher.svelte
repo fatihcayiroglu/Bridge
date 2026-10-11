@@ -25,6 +25,7 @@
   import { getAPI } from './globals.js';
   import { readToken } from './auth-compat.js';
   import { apiFetch } from './api-fetch.js';
+  import { navigationOwner, lastServer, rememberServer } from './navigation-selection.js';
   const log = createLogger('ServerSwitcher');
 
   let { children }: { children?: Snippet } = $props();
@@ -47,6 +48,11 @@
   // yenilemeden yalnızca `loadServers` çağırır; istek düşürülürse yeni
   // katılınan sunucu rail'e hiç gelmez (sessiz no-op).
   let pendingReload = false;
+  // A WebView may recreate its JS world while Android keeps the Activity alive.
+  // The first automatic server is temporary until auth state is restored; do
+  // not mistake it for a user's explicit selection or overwrite their choice.
+  let explicitlySelected = false;
+  let restoredOwner: string | null = null;
   // P4 (MEASURED, Android 14 emulator + Chromium): a cold-start deep link asked for the list
   // while the boot load was in flight. The queued request returned at once, the caller read an
   // EMPTY list and reported the channel as unavailable. A queued caller now waits for the reload
@@ -57,6 +63,7 @@
   async function loadServers(): Promise<void> {
     const token = readToken();
     if (!token) return; // Oturum yok — bridge:auth-success beklenir.
+    const requestedOwner = navigationOwner(BridgeRegistry.call('getMe'));
     if (isLoading) {
       pendingReload = true;
       return new Promise<void>(resolve => { reloadWaiters.push(resolve); });
@@ -75,13 +82,28 @@
       }
 
       const data = await response.json() as unknown;
+      // Token refresh can rotate the JWT for the SAME account; do not drop
+      // a good response solely because its token string changed. A concurrent
+      // logout/account switch still invalidates the old response.
+      if (readToken() !== token &&
+          (requestedOwner === null || requestedOwner !== navigationOwner(BridgeRegistry.call('getMe')))) return;
       servers = Array.isArray(data) ? data as RailServer[] : [];
       log.info(`${servers.length} sunucu yüklendi`);
 
-      // Legacy servers.ts:194 — ilk sunucu otomatik seçilir.
+      const owner = navigationOwner(BridgeRegistry.call('getMe'));
+      if (owner && restoredOwner !== owner && !explicitlySelected) {
+        restoredOwner = owner;
+        const remembered = lastServer(owner);
+        const allowed = servers.find(s => s._id === remembered);
+        if (allowed) {
+          if (activeId !== allowed._id) selectServer(allowed, false);
+          return;
+        }
+      }
+      // Automatic first-server fallback is NOT a user navigation choice.
       const stillThere = servers.some(s => s._id === activeId);
       if (!stillThere) activeId = null;
-      if (!activeId && servers[0]) selectServer(servers[0]);
+      if (!activeId && servers[0]) selectServer(servers[0], false);
     } catch (error) {
       log.error('Sunucu listesi yüklenemedi', error);
       loadError = t('error_generic', 'Bir hata oluştu. Lütfen tekrar dene.');
@@ -100,9 +122,13 @@
   }
 
   // ── Sunucu seçimi ──────────────────────────────────────────────────────────
-  function selectServer(server: RailServer): void {
+  function selectServer(server: RailServer, explicit = true): void {
     if (!server?._id) return;
 
+    if (explicit) {
+      explicitlySelected = true;
+      rememberServer(navigationOwner(BridgeRegistry.call('getMe')), server._id);
+    }
     activeId = server._id;
 
     // Tek state kaynağı: AppState. globals.ts proxy'leri de bunu okur.
@@ -197,6 +223,8 @@
     activeId      = null;
     loadError     = '';
     pendingReload = false;
+    explicitlySelected = false;
+    restoredOwner = null;
   }
   document.addEventListener('bridge:auth-logout', onLogout);
 

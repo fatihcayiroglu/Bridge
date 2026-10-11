@@ -28,6 +28,7 @@
   import { mountOrUpdateChannelList, unmountChannelList } from './channel-list/channel-list-svelte.js';
   import { apiFetch } from './api-fetch.js';
   import { activeChannelSurvives, decideAccessReaction, type AccessEvent } from './channel-list/access-revocation.ts';
+  import { navigationOwner, lastTextChannel, rememberTextChannel } from './navigation-selection.js';
   const log = createLogger('ChannelListManager');
 
   let { children }: { children?: Snippet } = $props();
@@ -63,6 +64,10 @@
   let categories: Category[] = [];
   let serverId: string | null = null;
   let activeChannelId: string | null = null;
+  // Initial localStorage token can boot the channel list before /api/me has
+  // restored the user's identity. That provisional first-channel selection
+  // must not mask their remembered authorized choice once auth succeeds.
+  let provisionalPreAuthSelection = false;
   let requestSeq = 0;
   let pendingNavigation: PendingNavigation | null = null;
   let destroyed = false;
@@ -275,8 +280,20 @@
       }
 
       // Legacy channel-list.ts:61-62 — ilk metin kanalı otomatik seçilir.
+      // Android can recreate the WebView while the Activity survives: do not
+      // silently jump to the first channel after session restoration. The
+      // remembered ID is accepted ONLY when the fresh, authorized API list
+      // contains it. Voice/stage is not restored automatically (no implicit
+      // microphone/camera access).
       const first = channels.find(c => (c.type ?? 'text') === 'text');
-      if (first && !activeChannelId && !selectedByPendingNavigation) selectChannel(first);
+      const owner = navigationOwner(BridgeRegistry.call('getMe'));
+      const rememberedId = owner ? lastTextChannel(owner, targetServerId) : null;
+      const remembered = channels.find(c =>
+        c._id === rememberedId && (c.type ?? 'text') === 'text');
+      if (!activeChannelId && !selectedByPendingNavigation && (remembered || first)) {
+        selectChannel((remembered || first)!);
+        provisionalPreAuthSelection = owner === null;
+      }
 
       // Apply optional presentation metadata only if this request is still the
       // current server. HTTP, network and malformed-JSON failures all preserve
@@ -308,6 +325,7 @@
   // ── Kanal seçimi ───────────────────────────────────────────────────────────
   function selectChannel(channel: Channel, historyMessageId?: string): void {
     if (destroyed) return;
+    provisionalPreAuthSelection = false;
     const safeChannel = sanitizeChannel(channel);
     if (!safeChannel) return;
     channel = safeChannel;
@@ -346,6 +364,9 @@
 
     activeChannelId = channel._id;
     BridgeRegistry.call('setCurrentChannel', channel);
+    if ((channel.type ?? 'text') === 'text' && serverId) {
+      rememberTextChannel(navigationOwner(BridgeRegistry.call('getMe')), serverId, channel._id);
+    }
 
     // Kanal başlığı — legacy channel-list.ts:123-126 (DOM kopyalanmadı, davranış korundu)
     const iconEl  = document.getElementById('ch-h-icon');
@@ -394,6 +415,7 @@
 
   function onLogout(): void {
     requestSeq += 1;
+    provisionalPreAuthSelection = false;
     if (pendingNavigation) finishPendingNavigation(pendingNavigation, false);
     channels = [];
     categories = [];
@@ -404,6 +426,17 @@
     BridgeRegistry.call('setCurrentServerChannels', []);
     BridgeRegistry.call('setCurrentChannel', null);
     void renderView();
+  }
+
+  function onAuthSuccess(): void {
+    if (!provisionalPreAuthSelection || !serverId) return;
+    const owner = navigationOwner(BridgeRegistry.call('getMe'));
+    if (!owner) return;
+    provisionalPreAuthSelection = false;
+    const remembered = lastTextChannel(owner, serverId);
+    const authorized = channels.find(c =>
+      c._id === remembered && (c.type ?? 'text') === 'text');
+    if (authorized && authorized._id !== activeChannelId) selectChannel(authorized);
   }
 
   // ── ERİŞİM DEĞİŞİKLİKLERİ (Final21 Faz 16) ─────────────────────────────────
@@ -441,6 +474,7 @@
     document.addEventListener('bridge:socket-ready', syncAccessSocket);
     document.addEventListener('bridge:socket-reconnected', syncAccessSocket);
     document.addEventListener('bridge:load-channels', onLoadChannels);
+    document.addEventListener('bridge:auth-success', onAuthSuccess);
     document.addEventListener('bridge:auth-logout', onLogout);
     // ServerSwitcher bu bileşenden önce sunucu seçmiş olabilir.
     const server = BridgeRegistry.call<{ _id?: string } | null>('getCurrentServer');
@@ -536,6 +570,7 @@
     destroyed = true;
     requestSeq += 1;
     document.removeEventListener('bridge:load-channels', onLoadChannels);
+    document.removeEventListener('bridge:auth-success', onAuthSuccess);
     document.removeEventListener('bridge:auth-logout', onLogout);
     document.removeEventListener('bridge:socket-ready', syncAccessSocket);
     document.removeEventListener('bridge:socket-reconnected', syncAccessSocket);

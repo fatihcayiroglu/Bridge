@@ -52,6 +52,7 @@ vi.mock('../js/core/globals.js', () => ({ getAPI: () => '' }));
 
 import ServerSwitcher from '../js/core/ServerSwitcher.svelte';
 import { BridgeRegistry } from '../js/core/bridge-registry.ts';
+import { rememberServer } from '../js/core/navigation-selection.ts';
 
 let instance: ReturnType<typeof mount> | null = null;
 let host: HTMLDivElement;
@@ -75,6 +76,7 @@ async function mountRail(): Promise<void> {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   serverTruth = [{ _id: 'srv-a', name: 'ZZALICESUNUCU', icon: '🅰' }];
   inFlightGate = null;
   fetchCount = 0;
@@ -87,6 +89,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  BridgeRegistry.unregister('getMe');
+  localStorage.clear();
   if (instance) { unmount(instance); instance = null; }
   host?.remove();
   vi.restoreAllMocks();
@@ -197,6 +201,58 @@ describe('rail kanonik sunucu gerçeğini yansıtır', () => {
     await settle(); flushSync();
     expect(railTips()).toHaveLength(0);
     expect(host.querySelector('[aria-label*="yeniden dene"]')).toBeNull();
+  });
+});
+
+describe('P7 Android WebView reload selection integrity', () => {
+  it('restores the authenticated user\'s previously chosen server, not the first server', async () => {
+    BridgeRegistry.register('getMe', (() => ({ _id: 'user-a' })) as never);
+    serverTruth = [
+      { _id: 'first', name: 'Default' },
+      { _id: 'remembered', name: 'My Work' },
+    ];
+    rememberServer('user-a', 'remembered');
+    const channelLoads: string[] = [];
+    const onLoad = (event: Event) => channelLoads.push((event as CustomEvent<{ serverId: string }>).detail.serverId);
+    document.addEventListener('bridge:load-channels', onLoad);
+    try {
+      await mountRail();
+      expect(host.querySelector('[data-id="remembered"]')?.getAttribute('aria-current')).toBe('true');
+      expect(channelLoads.at(-1)).toBe('remembered');
+      await BridgeRegistry.call<Promise<void>>('loadServers');
+      await settle(); flushSync();
+      expect(host.querySelector('[data-id="remembered"]')?.getAttribute('aria-current')).toBe('true');
+    } finally {
+      document.removeEventListener('bridge:load-channels', onLoad);
+    }
+  });
+
+  it('does not follow a stale or different account\'s saved server', async () => {
+    BridgeRegistry.register('getMe', (() => ({ _id: 'user-b' })) as never);
+    serverTruth = [
+      { _id: 'first', name: 'Default' },
+      { _id: 'remembered', name: 'My Work' },
+    ];
+    rememberServer('user-a', 'remembered');
+    rememberServer('user-b', 'no-longer-member');
+    await mountRail();
+    expect(host.querySelector('[data-id="first"]')?.getAttribute('aria-current')).toBe('true');
+    expect(host.querySelector('[data-id="remembered"]')?.getAttribute('aria-current')).toBeNull();
+  });
+
+  it('a user click takes precedence over a later auto-restore', async () => {
+    serverTruth = [
+      { _id: 'first', name: 'Default' },
+      { _id: 'manual', name: 'Manual' },
+    ];
+    rememberServer('user-a', 'first');
+    await mountRail();
+    (host.querySelector('[data-id="manual"]') as HTMLButtonElement).click();
+    flushSync();
+    BridgeRegistry.register('getMe', (() => ({ _id: 'user-a' })) as never);
+    await BridgeRegistry.call<Promise<void>>('loadServers');
+    await settle(); flushSync();
+    expect(host.querySelector('[data-id="manual"]')?.getAttribute('aria-current')).toBe('true');
   });
 });
 

@@ -144,6 +144,69 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
+describe('P7 Android foreground resume message integrity', () => {
+  it('fetches authoritative history after native resume WITHOUT a socket reconnect; coalesces duplicate OS events', async () => {
+    const now = vi.spyOn(Date, 'now');
+    now.mockReturnValue(10_000);
+    apiFetchMock.mockResolvedValue(apiResponse({ messages: [{ _id: 'm-resume', channelId: 'c1', content: 'from background' }] }));
+    render(MessageLoader);
+    select('c1');
+    await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1));
+    apiFetchMock.mockClear();
+
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: false } }));
+    expect(apiFetchMock).not.toHaveBeenCalled();
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1));
+    expect(apiFetchMock).toHaveBeenCalledWith(expect.stringContaining('/channels/c1/messages?limit=50'));
+
+    // Android emits appStateChange and browsers commonly emit visibilitychange
+    // for one single foreground transition: one authoritative fetch, not two.
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(apiFetchMock).toHaveBeenCalledTimes(1);
+    now.mockReturnValue(11_000);
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(2));
+    expect(calls.setMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ _id: 'm-resume' })]), expect.any(Set),
+    );
+  });
+
+  it('refuses foreground loads for a logged-out or no-longer-active channel', async () => {
+    const now = vi.spyOn(Date, 'now');
+    now.mockReturnValue(20_000);
+    apiFetchMock.mockResolvedValue(apiResponse({ messages: [] }));
+    render(MessageLoader);
+    select('old-channel');
+    await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1));
+    apiFetchMock.mockClear();
+    currentChannel = { _id: 'new-channel' };
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    expect(apiFetchMock).not.toHaveBeenCalled();
+
+    document.dispatchEvent(new Event('bridge:auth-logout'));
+    currentChannel = null;
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    expect(apiFetchMock).not.toHaveBeenCalled();
+    expect(BridgeRegistry.call('getActiveChannelId')).toBeNull();
+  });
+
+  it('restores a bfcache page by resyncing its already-active channel', async () => {
+    const now = vi.spyOn(Date, 'now');
+    now.mockReturnValue(30_000);
+    apiFetchMock.mockResolvedValue(apiResponse({ messages: [] }));
+    render(MessageLoader);
+    select('c1');
+    await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1));
+    apiFetchMock.mockClear();
+    const event = new Event('pageshow');
+    Object.defineProperty(event, 'persisted', { value: true });
+    window.dispatchEvent(event);
+    await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1));
+  });
+});
+
 describe('MessageLoader — request state machine', () => {
   it('no-ops without a channel/cursor and can reload the active channel through the public bridge', async () => {
     apiFetchMock.mockResolvedValue(apiResponse({ messages: [], hasMore: false }));

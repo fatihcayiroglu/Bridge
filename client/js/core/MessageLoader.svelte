@@ -556,10 +556,51 @@
    */
   function onAuthLogout(): void {
     requestSeq += 1;
+    channelId = null;
+    joinedChannel = null;
+    lastForegroundRefreshAt = 0;
     liveSinceLoad = null;
     BridgeRegistry.call('setMessagesOffline', false);
     if (lastHistoryUserId) closeLocalFirstHistoryRuntime(lastHistoryUserId);
     lastHistoryUserId = '';
+  }
+
+  let lastForegroundRefreshAt = 0;
+  const FOREGROUND_EVENT_COALESCE_MS = 750;
+
+  /**
+   * A foregrounded WebView may never experience a Socket.IO disconnect.
+   * Android can suspend JS/events while backgrounded; therefore the server's
+   * message window must be reconciled even if socket.connected stays true.
+   *
+   * Two independent native/browser lifecycle events can fire on the same
+   * resume. Coalesce ONLY near-duplicate triggers, not later real resumes.
+   * Existing requestSeq/liveSinceLoad reconciliation prevents stale reloads
+   * from replacing newer live messages or a different channel's history.
+   */
+  function syncAfterForeground(): void {
+    if (!channelId) return;
+    const current = BridgeRegistry.call<{ _id?: string } | null>('getCurrentChannel');
+    if (!current || current._id !== channelId) return;
+    const now = Date.now();
+    if (lastForegroundRefreshAt && now - lastForegroundRefreshAt < FOREGROUND_EVENT_COALESCE_MS) return;
+    lastForegroundRefreshAt = now;
+    const socket = getSocket() as (SocketLike & { connected?: boolean }) | null;
+    if (socket?.connected === true) socket.emit('channel:join', channelId);
+    log.info('Foreground resume: active channel history is being reconciled');
+    void loadMessages(channelId);
+  }
+
+  function onAppState(event: Event): void {
+    if ((event as CustomEvent<{ active?: boolean }>).detail?.active === true) syncAfterForeground();
+  }
+
+  function onVisibilityChange(): void {
+    if (document.visibilityState === 'visible') syncAfterForeground();
+  }
+
+  function onPageShow(event: Event): void {
+    if ((event as PageTransitionEvent).persisted) syncAfterForeground();
   }
 
   function onSocketReconnected(): void {
@@ -567,6 +608,7 @@
     if (!socket || !channelId) return;
     socket.emit('channel:join', channelId);
     joinedChannel = channelId;
+    lastForegroundRefreshAt = Date.now();
     log.info('Yeniden bağlanma sonrası mesajlar senkronize ediliyor');
     void loadMessages(channelId);
   }
@@ -576,6 +618,9 @@
     document.addEventListener('bridge:socket-ready', onSocketReady);
     document.addEventListener('bridge:socket-reconnected', onSocketReconnected);
     document.addEventListener('bridge:auth-logout', onAuthLogout);
+    window.addEventListener('bridge:appstate', onAppState);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pageshow', onPageShow);
     bindSocketEvents(); // socket zaten hazırsa
 
     // Bu bileşen kanal seçiminden sonra mount olduysa mevcut kanalı yakala.
@@ -602,6 +647,9 @@
     document.removeEventListener('bridge:socket-ready', onSocketReady);
     document.removeEventListener('bridge:socket-reconnected', onSocketReconnected);
     document.removeEventListener('bridge:auth-logout', onAuthLogout);
+    window.removeEventListener('bridge:appstate', onAppState);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+    window.removeEventListener('pageshow', onPageShow);
     if (lastHistoryUserId) closeLocalFirstHistoryRuntime(lastHistoryUserId);
     lastHistoryUserId = '';
     // Faz 10.4: bağlı olduğumuz sockete ait dinleyicileri bırak.
