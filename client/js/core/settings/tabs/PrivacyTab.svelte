@@ -8,7 +8,7 @@
   import { expectedFromPortablePreview, portableAccountId, verifiedPortablePreview, type PortableProfilePreview } from '../portable-profile-import';
   import type { SettingsStore } from '../stores/settingsStore';
   import { BridgeRegistry } from '../../bridge-registry.js';
-  import { logout, showAuthMsg } from '../../auth-compat.js';
+  import { logout, showAuthMsg, updateUserPanel } from '../../auth-compat.js';
   let { store }: { store: SettingsStore } = $props();
 
   // ── State ─────────────────────────────────────────────────────────────────
@@ -200,6 +200,17 @@
         const updatedMe = { ...currentMe };
         for (const field of portablePreview.fields) updatedMe[field.field] = field.proposed;
         BridgeRegistry.call('setMe', updatedMe);
+      }
+      // Keep the canonical signed-in profile in sync with the newly applied
+      // server-confirmed fields. Otherwise switching to Profile while Settings
+      // stays open would show a stale display name and could overwrite the
+      // import with the old value. The server's conditional UPDATE is already
+      // authoritative; only these six verified preview values are reflected.
+      const live = BridgeRegistry.call<Record<string, unknown> | null>('getMe');
+      if (portableAccountId(live) === owner && live) {
+        for (const field of portablePreview.fields) live[field.field] = field.proposed;
+        BridgeRegistry.call('setMe', live);
+        updateUserPanel(live);
       }
       resetPortableImport(); // NEVER leave a successful write armed for replay
       portableApplySuccess = true;
