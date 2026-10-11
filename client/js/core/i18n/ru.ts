@@ -794,6 +794,8 @@ const translations: Record<string, string> = {
   "moderation_resolved": "Решено",
   "privacy_data_controls": "Управление данными",
   "privacy_export_hint": "Скачайте напрямую с сервера копию ваших персональных данных, хранящуюся в Bridge.",
+  "privacy_portable_export": "Скачать переносимый профиль (JSON v1)",
+  "privacy_portable_export_hint": "Включает только данные профиля; пароли, закрытые ключи, почта и сообщения исключены. Импорт на другой сервер Bridge пока не поддерживается.",
   "privacy_ai_opt_in": "Дополнительная помощь ИИ",
   "profile_presence_status": "Статус присутствия",
   "appearance_content_density": "Плотность контента",

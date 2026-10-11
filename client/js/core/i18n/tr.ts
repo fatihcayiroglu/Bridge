@@ -765,6 +765,8 @@ const translations: Record<string, string> = {
   "moderation_resolved": "Çözüldü",
   "privacy_data_controls": "Veri kontrolü",
   "privacy_export_hint": "Kişisel verilerinin Bridge tarafından tutulan kopyasını sunucudan doğrudan al.",
+  "privacy_portable_export": "Taşınabilir profilimi indir (JSON v1)",
+  "privacy_portable_export_hint": "Yalnızca profil bilgilerini içerir; parola, özel anahtarlar, e-posta ve mesajlar dışarıda tutulur. Başka bir Bridge sunucusuna içe aktarma henüz desteklenmiyor.",
   "privacy_ai_opt_in": "İsteğe bağlı yapay zekâ yardımı",
   "profile_presence_status": "Varlık durumu",
   "appearance_content_density": "İçerik yoğunluğu",

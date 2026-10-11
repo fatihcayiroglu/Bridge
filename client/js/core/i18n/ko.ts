@@ -794,6 +794,8 @@ const translations: Record<string, string> = {
   "moderation_resolved": "해결됨",
   "privacy_data_controls": "데이터 제어",
   "privacy_export_hint": "Bridge가 보관하는 개인 데이터 사본을 서버에서 직접 받습니다.",
+  "privacy_portable_export": "이식용 프로필 다운로드(JSON v1)",
+  "privacy_portable_export_hint": "이식 가능한 프로필 정보만 포함합니다. 비밀번호, 개인 키, 이메일, 메시지는 제외됩니다. 다른 Bridge 서버로 가져오기는 아직 지원되지 않습니다.",
   "privacy_ai_opt_in": "선택적 AI 지원",
   "profile_presence_status": "접속 상태",
   "appearance_content_density": "콘텐츠 밀도",

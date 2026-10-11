@@ -153,6 +153,61 @@ describe('account export/delete production behavior', () => {
     expect(error).toHaveBeenCalledWith(expect.objectContaining({ event: 'account.export.failed' }), expect.any(String));
   });
 
+  it('P7 C1: portable identity export requires the existing sensitive-export step-up grant', async () => {
+    const refused = await request(app()).get('/api/account/portable-export');
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject({ error: 'STEP_UP_REQUIRED', scope: 'sensitive-export', action: 'account.export' });
+    expect(query).not.toHaveBeenCalled();
+
+    const mismatch = await request(app()).get('/api/account/portable-export')
+      .set(stepUpHeader('me', 'destructive-admin'));
+    expect(mismatch.status).toBe(403);
+    expect(mismatch.body.reasons).toEqual(['step_up_scope_mismatch']);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('P7 C1: portable snapshot exports only allowlisted identity fields and a reproducible digest', async () => {
+    const { createHash } = require('node:crypto') as typeof import('node:crypto');
+    users.findById.mockResolvedValue({
+      _id: 'me', username: 'alice', displayName: 'Alice', bio: 'Hello', website: 'https://example.test',
+      pronouns: 'she/her', avatarColor: '#123456', bannerColor: '#654321',
+      password: 'SHOULD-NOT-LEAK', twoFactorSecret: 'SHOULD-NOT-LEAK',
+      email: 'PRIVATE@example.test', location: 'PRIVATE GPS', refreshToken: 'SHOULD-NOT-LEAK',
+      avatarUrl: 'https://source.example/private.png',
+    });
+    const res = await request(app()).get('/api/account/portable-export').set(EXPORT_PROOF());
+    expect(res.status).toBe(200);
+    expect(res.headers['content-disposition']).toContain('bridge-portable-identity-v1.json');
+    expect(res.headers['cache-control']).toContain('no-store');
+    expect(res.body).toMatchObject({
+      format: 'bridge-portable-identity', version: 1,
+      identity: { sourceUserId: 'me', username: 'alice', displayName: 'Alice', bio: 'Hello' },
+      integrity: { algorithm: 'sha256', canonicalization: 'ordered-json-v1' },
+      portability: { importSupported: false },
+    });
+    expect(Object.keys(res.body.identity).sort()).toEqual([
+      'avatarColor', 'bannerColor', 'bio', 'displayName', 'pronouns',
+      'sourceUserId', 'username', 'website',
+    ].sort());
+    const responseText = JSON.stringify(res.body);
+    for (const forbidden of ['SHOULD-NOT-LEAK', 'PRIVATE@example.test', 'PRIVATE GPS', 'private.png']) {
+      expect(responseText).not.toContain(forbidden);
+    }
+    const { format, version, exportedAt, identity } = res.body;
+    expect(res.body.integrity.digest).toBe(
+      createHash('sha256').update(JSON.stringify({ format, version, exportedAt, identity }), 'utf8').digest('hex'),
+    );
+    expect(query).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(expect.objectContaining({ event: 'account.portable_export.generated' }), expect.any(String));
+  });
+
+  it('P7 C1: cannot generate a portable snapshot for an account deleted after step-up', async () => {
+    users.findById.mockResolvedValueOnce({ _id: 'me', password: 'hash' }).mockResolvedValueOnce(null);
+    const res = await request(app()).get('/api/account/portable-export').set(EXPORT_PROOF());
+    expect(res.status).toBe(404);
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('preflight reports server and group-DM ownership blockers with member counts', async () => {
     installSqlModel({
       tables: ['servers','members','group_dm_conversations','group_dm_members'],
