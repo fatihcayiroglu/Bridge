@@ -222,6 +222,34 @@ describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
     expect(v.getByTestId('portable-identity-apply-error').textContent).toBeTruthy();
   });
 
+  it('erases previously previewed sensitive fields on a different login even with no apply click', async () => {
+    reply = async () => response(preview());
+    const v = view();
+    await fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(v.getByTestId('portable-identity-preview-ok')).toBeTruthy());
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    await waitFor(() => expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull());
+    expect(v.queryByTestId('portable-identity-apply')).toBeNull();
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not display a late preview response from a session that logged out while loading', async () => {
+    let resolve!: (response: Response) => void;
+    reply = async () => new Promise<Response>(done => { resolve = done; });
+    const v = view();
+    const selection = fireEvent.change(v.getByTestId('portable-identity-preview-file'), {
+      target: { files: [portableFile(JSON.stringify(source))] },
+    });
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+    document.dispatchEvent(new CustomEvent('bridge:auth-logout'));
+    resolve(response(preview()));
+    await selection;
+    expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull();
+    expect(v.queryByTestId('portable-identity-apply')).toBeNull();
+  });
+
   it('erases the in-memory import intent on logout, even after both confirmations', async () => {
     reply = async () => response(preview());
     const v = view();
