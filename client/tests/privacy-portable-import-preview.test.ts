@@ -47,6 +47,7 @@ afterEach(() => {
   cleanup();
   BridgeRegistry.unregister('getMe');
   BridgeRegistry.unregister('apiFetch');
+  BridgeRegistry.unregister('setMe');
 });
 
 describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
@@ -110,6 +111,8 @@ describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
     expect(apiFetch).toHaveBeenCalledTimes(1);
   });
   it('never sends an apply write until BOTH explicit confirmations; sends exactly six original preview fields', async () => {
+    const setMe = vi.fn();
+    BridgeRegistry.register('setMe', setMe as unknown as AnyFn);
     const requests: Array<{ url: string; body: unknown }> = [];
     reply = async (url, init) => {
       requests.push({ url, body: JSON.parse(String(init?.body)) as unknown });
@@ -146,6 +149,11 @@ describe('P7 C3 portable profile preflight in the real PrivacyTab', () => {
     ]);
     expect(v.queryByTestId('portable-identity-apply')).toBeNull();
     expect(v.queryByTestId('portable-identity-preview-ok')).toBeNull();
+    expect(setMe).toHaveBeenCalledTimes(1);
+    expect(setMe).toHaveBeenCalledWith(expect.objectContaining({
+      _id: 'target', displayName: 'Source', bio: 'Same',
+      website: 'https://example.test', avatarColor: '#abcdef',
+    }));
   });
 
   it('fails closed on stale-preview conflict (409); a second write requires an entirely new preview', async () => {
