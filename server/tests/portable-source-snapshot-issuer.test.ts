@@ -119,6 +119,13 @@ describe('P7 C4 single-transaction source snapshot issuance (NO import)', () => 
     expect(f.released()).toBe(1);
   });
 
+  it('rejects a channel permission row with a foreign serverId, even when the channel belongs to source', async () => {
+    const f = fixture();
+    f.rows.channel_permissions[0].serverId = 'another-server';
+    await expect(f.issue()).rejects.toThrow(PortableSourceSnapshotError);
+    expect(f.queries.at(-1)?.sql).toBe('ROLLBACK');
+  });
+
   it('rejects unsafe bigint coercion and never signs rounded channel positions', async () => {
     const f = fixture();
     f.rows.channels[0].order = '9007199254740993';
