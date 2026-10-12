@@ -59,6 +59,31 @@ describe('P7 C3 cross-manifest permission migration preflight', () => {
     expect(preview.diagnosticNameMatches.usableForImport).toBe(false);
   });
 
+  it('rejects ambiguous source role names even if destination has a unique name match', () => {
+    const server = { _id: SID, name: 'Source' };
+    const channels = [{ _id: 'c1', serverId: SID, name: 'general', type: 'text', order: 0 }];
+    const roles = [
+      { _id: 'r1', serverId: SID, name: 'Reader', position: 0, permissions: 0 },
+      { _id: 'r2', serverId: SID, name: 'ＲＥＡＤＥＲ', position: 1, permissions: 0 },
+    ];
+    const structure = buildPortableCommunityStructure(server, [], channels, roles, ts);
+    const permission = buildPortableCommunityPermissionManifest(server, channels, roles, [
+      { channelId: 'c1', canonical: [], legacy: [] },
+    ], ts);
+    const report = previewCommunityPermissionRemapping(structure, permission, {
+      channels: [{ _id: 'target-channel', name: 'general', type: 'text' }],
+      roles: [{ _id: 'target-role', name: 'reader' }],
+    });
+    expect(report.unresolved).toMatchObject({
+      total: 2,
+      items: [
+        { kind: 'role', sourceId: 'r1', reason: 'AMBIGUOUS_SOURCE_NAME' },
+        { kind: 'role', sourceId: 'r2', reason: 'AMBIGUOUS_SOURCE_NAME' },
+      ],
+    });
+    expect(report.diagnosticNameMatches.usableForImport).toBe(false);
+  });
+
   it('uses channel type plus normalized name and does not falsely match mismatched types', () => {
     const { structure, permission } = source();
     const preview = previewCommunityPermissionRemapping(structure, permission, {
