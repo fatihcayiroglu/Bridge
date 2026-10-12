@@ -44,7 +44,10 @@ function errorLinesMentioningMissingSchema(logFile) {
 }
 
 const instances = [];
-let base = 56100; // port block for this run
+// Linux's default ephemeral ports often include 56100..56199. Using those
+// ports for NEW Redis/PostgreSQL listeners can race with short-lived outbound
+// HTTP connections from preceding scenarios on a shared CI runner.
+let base = 26100; // fixed, non-ephemeral block for this isolated test job
 const newInstance = (name, env) => {
   const inst = new Instance({ name, workDir, pgPort: base + 1, redisPort: base + 2, appPort: base + 3, env });
   base += 10;
