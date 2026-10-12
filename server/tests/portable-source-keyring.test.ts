@@ -65,6 +65,7 @@ function prove(fixture: ReturnType<typeof signed>, registryJson: string,
     ...fixture,
     operatorRegistryJson: registryJson,
     expectedSourceOrigin: ORIGIN,
+    expectedSourceServerId: 'source-server',
     now: NOW,
     ...overrides,
   });
@@ -112,6 +113,16 @@ describe('P7 destination-pinned key registry: offline source verification only',
       .toThrow(PortableSourceAttestationError);
     expect(() => prove(authentic, trust, { expectedSourceOrigin: OTHER }))
       .toThrow(PortableSourceAttestationError);
+    expect(() => prove(authentic, trust, { expectedSourceServerId: 'other-community' }))
+      .toThrow(PortableSourceAttestationError);
+    expect(() => prove(authentic, trust, { expectedSourceServerId: '' }))
+      .toThrow(PortableSourceAttestationError);
+    // An operator pins both the source origin AND the expected community.
+    // An otherwise signed document cannot silently switch identities.
+    expect(() => prove(authentic, trust, { attestation: {
+      ...authentic.attestation, sourceServerId: 'other-community',
+    } })).toThrow(PortableSourceAttestationError);
+
     expect(() => prove(authentic, registry([key(signer, { sourceOrigin: OTHER })])))
       .toThrow(PortableSourceAttestationError);
     const tampered = signed(attacker);
