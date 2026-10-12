@@ -99,6 +99,26 @@ describe('P7 C3 explicit community mapping review', () => {
     }));
   });
 
+  it('refuses invalid or incomplete target topology instead of inventing a fingerprint', () => {
+    const check = (mutate: (f: ReturnType<typeof fixtures>) => void) => {
+      const f = fixtures();
+      mutate(f);
+      expect(() => fingerprintDestinationTopology(f.target)).toThrow();
+    };
+    check(f => { f.target.roles[0]!.permissions = -1; });
+    check(f => { delete (f.target.roles[0] as unknown as Record<string, unknown>).permissions; });
+    check(f => { f.target.roles.push({ ...f.target.roles[0]! }); });
+    check(f => { f.target.channels[0]!.type = 'bad-type'; });
+    check(f => {
+      (f.target.channels[0] as unknown as Record<string, unknown>).categoryId = 'missing-category';
+    });
+    check(f => { f.target.categories[0]!.serverId = 'foreign-target'; });
+    check(f => { (f.target.roles[0] as unknown as Record<string, unknown>).name = 42; });
+    check(f => {
+      (f.target.channels[0] as unknown as Record<string, unknown>).categoryId = '';
+    });
+  });
+
   it('rejects digests or target IDs not bound exactly to both source files and route', () => {
     const f = fixtures();
     f.mapping.permissionsDigest = 'f'.repeat(64);
@@ -239,6 +259,7 @@ describe('P7 C3 explicit community mapping review', () => {
     const f = fixtures();
     f.target.roles[0]!.permissions = 0;
     f.target.roles[0]!.name = 'Renamed destination role';
+    f.mapping.expectedTargetDigest = fingerprintDestinationTopology(f.target);
     const result = inspectExplicitCommunityMapping(f.structure, f.permissions, f.mapping, f.target);
     expect(result.counts.renamedLabels).toBe(2);
     expect(result.counts.unsafeRoleMappings).toBe(0);
