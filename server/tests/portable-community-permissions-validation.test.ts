@@ -52,7 +52,7 @@ describe('P7 C3 permission file strict preflight', () => {
     invalid({ ...sample(), version: 2 });
     invalid({ ...sample(), targetUserId: 'secret-user' });
     const badChannel = clone(sample());
-    (badChannel.channels[0] as Record<string, unknown>).memberIds = ['someone'];
+    (badChannel.channels[0] as unknown as Record<string, unknown>).memberIds = ['someone'];
     invalid(badChannel);
     invalid({ ...sample(), portability: { ...sample().portability, migrationReady: true } });
     invalid({ ...sample(), portability: { ...sample().portability, importSupported: true } });
@@ -81,7 +81,7 @@ describe('P7 C3 permission file strict preflight', () => {
 
   it('fails on oversized or incomplete exports, never infers destination privileges', () => {
     invalid({ ...sample(), unexpected: 'x'.repeat(600 * 1024) });
-    const noUnsupported = clone(sample()) as Record<string, unknown>;
+    const noUnsupported = clone(sample()) as unknown as Record<string, unknown>;
     delete noUnsupported.unsupported;
     invalid(noUnsupported);
     const valid = validatePortableCommunityPermissionManifest(sample());
