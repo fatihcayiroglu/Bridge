@@ -149,8 +149,8 @@ describe('Server roles editor (client visibility, server authority)', () => {
     });
   });
 
-  it('does not open editor for missing, negative or unknown-bit role permissions', async () => {
-    fetchMock.mockResolvedValue(response([{ ...baseRole, permissions: undefined }]));
+  it.each([undefined, -1, 1 << 22, 1.25])('fails closed on invalid role masks (%s)', async (invalidMask) => {
+    fetchMock.mockResolvedValue(response([{ ...baseRole, permissions: invalidMask }]));
     await render();
     click('.role-edit');
     expect(host.querySelector('.role-editor')).toBeNull();
