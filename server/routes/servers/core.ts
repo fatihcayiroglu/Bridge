@@ -26,7 +26,11 @@ import { validatePortableCommunityStructure, PortableCommunityValidationError } 
 import { buildPortableCommunityPreview } from '../../lib/portableCommunityPreview';
 import { inspectPortableCommunityManifestPair, PortableCommunityPairError } from '../../lib/portableCommunityPair';
 import { previewCommunityPermissionRemapping } from '../../lib/portableCommunityPermissionPreflight';
-import { inspectExplicitCommunityMapping, PortableCommunityMappingError } from '../../lib/portableCommunityMappingReview';
+import {
+  inspectExplicitCommunityMapping, PortableCommunityMappingError,
+  PortableCommunityTargetRevisionMismatchError,
+} from '../../lib/portableCommunityMappingReview';
+import { computePortableCommunityTargetRevision } from '../../lib/portableCommunityTargetRevision';
 import { buildPortableCommunityPermissionManifest } from '../../lib/portableCommunityPermissions';
 import { enforceStepUp } from '../../lib/stepUp';
 
@@ -414,6 +418,45 @@ router.post('/:sid/portable-import/paired-preview', authMiddleware, limits.write
   }
 });
 
+// P7 C3: private, owner-only topology fingerprint for preparing reviewed maps.
+// A digest is not an authentication signature or transaction-bound lock.
+router.get('/:sid/portable-import/target-revision', authMiddleware, limits.write(), async (req, res) => {
+  const actor = castAuthed(req).user;
+  const sid = String(req.params.sid ?? '');
+  res.setHeader('Cache-Control', 'no-store');
+  const destination = await Servers.findById(sid);
+  if (!destination) return res.status(404).json({ error: 'Target community not found' });
+  if (destination.ownerId !== actor.id) {
+    return res.status(403).json({ error: 'Only the destination owner may inspect its topology revision' });
+  }
+  if (!(await enforceStepUp(req, res, actor.id, 'account.import'))) return;
+  try {
+    const [categories, roles, channels] = await Promise.all([
+      Channels.findCategoriesByServer(sid), Roles.findByServer(sid), Channels.findByServer(sid),
+    ]);
+    const targetRevision = computePortableCommunityTargetRevision({
+      serverId: sid,
+      categories: categories as unknown as Array<Record<string, unknown>>,
+      roles: roles as unknown as Array<Record<string, unknown>>,
+      channels: channels as unknown as Array<Record<string, unknown>>,
+    });
+    return res.status(200).json({
+      mode: 'read-only', writesPerformed: false, importSupported: false,
+      targetServerId: sid, targetRevision,
+      topologyOnly: true,
+      transactionalLock: false,
+      counts: { categories: categories.length, roles: roles.length, channels: channels.length },
+    });
+  } catch (err) {
+    logger.error({ err, sid, userId: actor.id, event: 'server.portable_target_revision.failed' },
+      'Target topology revision unavailable due to inconsistent destination.');
+    return res.status(503).json({
+      code: 'PORTABLE_COMMUNITY_TARGET_REVISION_UNAVAILABLE',
+      error: 'Cannot compute complete destination topology revision',
+    });
+  }
+});
+
 // P7 C3: require explicit, one-to-one source => EXISTING target ID choices.
 // Review only. A fresh step-up proof is NOT an import/write authorization.
 router.post('/:sid/portable-import/mapping-review', authMiddleware, limits.write(), async (req, res) => {
@@ -465,6 +508,10 @@ router.post('/:sid/portable-import/mapping-review', authMiddleware, limits.write
       input.mapping, { serverId: sid, categories, roles, channels });
     return res.status(200).json(review);
   } catch (err) {
+    if (err instanceof PortableCommunityTargetRevisionMismatchError) {
+      return res.status(409).json({ code: err.code,
+        error: 'Destination topology changed since the mapping was prepared' });
+    }
     if (err instanceof PortableCommunityMappingError) {
       return res.status(422).json({ code: err.code, error: 'Invalid or unsafe identity mapping request' });
     }
