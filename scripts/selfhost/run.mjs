@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { Instance, REPO, EGRESS_GUARD, sleep } from './lib/instance.mjs';
-import { seed, verify } from './lib/fixture.mjs';
+import { seed, verify, inspectPreviousChannelMessage } from './lib/fixture.mjs';
 import { request } from '../multinode/lib/client.mjs';
 
 const args = process.argv.slice(2);
@@ -44,7 +44,10 @@ function errorLinesMentioningMissingSchema(logFile) {
 }
 
 const instances = [];
-let base = 56100; // port block for this run
+// Linux's default ephemeral ports often include 56100..56199. Using those
+// ports for NEW Redis/PostgreSQL listeners can race with short-lived outbound
+// HTTP connections from preceding scenarios on a shared CI runner.
+let base = 26100; // fixed, non-ephemeral block for this isolated test job
 const newInstance = (name, env) => {
   const inst = new Instance({ name, workDir, pgPort: base + 1, redisPort: base + 2, appPort: base + 3, env });
   base += 10;
@@ -169,6 +172,17 @@ const scenarios = {
       let fx;
       try { fx = await seed(inst.base, `up${variant[0]}`); record('upgrade', `${sid}2`, `data created on ${prevVersion} through its API`, 'PASS'); }
       catch (e) { record('upgrade', `${sid}2`, `data created on ${prevVersion} through its API`, 'FAIL', e.message); await inst.stop(); continue; }
+      // Prove the OLD release already exposes the acknowledged message to a
+      // fresh login, before any upgrade runs. A failure here is separately
+      // recorded and cannot be excused as a new-release migration regression.
+      try {
+        const observed = await inspectPreviousChannelMessage(inst.base, fx);
+        record('upgrade', `${sid}PRE`, `[${variant}] previous release exposes the acknowledged channel message`,
+          observed.ok ? 'PASS' : 'FAIL', observed.detail);
+      } catch (e) {
+        record('upgrade', `${sid}PRE`, `[${variant}] previous release exposes the acknowledged channel message`,
+          'FAIL', String(e?.message || e));
+      }
       await inst.stop();
       let boot;
       try { boot = await inst.start({ tag: `upgraded-${variant}` }); }
