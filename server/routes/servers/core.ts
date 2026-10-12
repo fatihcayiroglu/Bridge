@@ -30,6 +30,9 @@ import { inspectExplicitCommunityMapping, PortableCommunityMappingError } from '
 import { fingerprintDestinationTopology } from '../../lib/portableCommunityTargetFingerprint';
 import { buildPortableCommunityPermissionManifest } from '../../lib/portableCommunityPermissions';
 import { enforceStepUp } from '../../lib/stepUp';
+import db from '../../db/loader';
+import { issueAtomicPortableSourceAttestation } from '../../lib/portableSourceSnapshotIssuer';
+import { readPortableSourceSigningConfig } from '../../lib/portableSourceExportConfig';
 
 // GET /api/servers
 /**
@@ -265,6 +268,52 @@ router.get('/:sid/portable-export', authMiddleware, limits.write(), async (req, 
     return res.status(409).json({
       code: 'PORTABLE_COMMUNITY_SOURCE_INCONSISTENT',
       error: 'Community structure cannot be exported safely',
+    });
+  }
+});
+
+// P7 C4: optional operator-provisioned, owner-only paired source export.
+// Uses one READ ONLY REPEATABLE READ PostgreSQL snapshot; NEVER imports or
+// modifies a community. A key from the request or its Host header is NOT trusted.
+router.get('/:sid/portable-export/attested-pair', authMiddleware, limits.write(), async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  const actor = castAuthed(req).user;
+  const sid = String(req.params.sid ?? '');
+  const server = await Servers.findById(sid);
+  if (!server) return res.status(404).json({ error: 'Source community not found' });
+  if (server.ownerId !== actor.id) {
+    return res.status(403).json({ error: 'Only the source community owner may export a signed snapshot' });
+  }
+  if (!(await enforceStepUp(req, res, actor.id, 'account.export'))) return;
+
+  // Test DBs, wrong deployment backends, or unconfigured operators MUST
+  // fail closed. Never substitute multiple repository queries for a PG client.
+  try {
+    const { sourceOrigin, signingPrivateKeyPem } = readPortableSourceSigningConfig();
+    const pool = (db as unknown as {
+      _pool?: Parameters<typeof issueAtomicPortableSourceAttestation>[0]['pool'];
+    })._pool;
+    if (!pool || typeof pool.connect !== 'function') throw new Error('PG pool unavailable');
+    const result = await issueAtomicPortableSourceAttestation({
+      pool, sourceServerId: sid, ownerUserId: actor.id,
+      sourceOrigin, signingPrivateKeyPem,
+    });
+    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 1152 * 1024) {
+      return res.status(503).json({
+        code: 'PORTABLE_SOURCE_ATTESTED_EXPORT_UNAVAILABLE',
+        error: 'Signed source snapshot could not be exported safely',
+      });
+    }
+    res.setHeader('Content-Disposition', 'attachment; filename="bridge-community-attested-pair-v1.json"');
+    return res.status(200).json(result);
+  } catch {
+    // Never log the signer config/PEM, SQL, manifest contents or owner ID.
+    logger.warn({ event: 'server.portable_attested_export.unavailable' },
+      'Signed source snapshot unavailable.');
+    return res.status(503).json({
+      code: 'PORTABLE_SOURCE_ATTESTED_EXPORT_UNAVAILABLE',
+      error: 'Signed source snapshot could not be exported safely',
     });
   }
 });
