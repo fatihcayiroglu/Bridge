@@ -289,8 +289,8 @@
       <h2 id="roles-heading" class="roles-title">{t('srv_tab_roles', 'Roller')}</h2>
       <p class="roles-help">{t('role_editor_help', 'Roller sunucu genelinde yetkileri belirler. Üye atamaları Üyeler sekmesinde yönetilir.')}</p>
     </div>
-    {#if canManage && !loading}
-      <button type="button" class="role-action role-primary" onclick={openCreate} disabled={busy} aria-label={t('role_create', 'Rol oluştur')}>
+    {#if canManage && !loading && !(error && roles.length === 0)}
+      <button type="button" class="role-action role-primary role-create" onclick={openCreate} disabled={busy} aria-label={t('role_create', 'Rol oluştur')}>
         {t('role_create', 'Rol oluştur')}
       </button>
     {/if}
@@ -354,7 +354,7 @@
     {/if}
   {/if}
 
-  {#if canManage && !loading && editorMode !== 'closed'}
+  {#if canManage && !loading && !(error && roles.length === 0) && editorMode !== 'closed'}
     <form class="role-editor" aria-label={t('role_editor', 'Rol düzenleyici')} onsubmit={(event) => { event.preventDefault(); void saveRole(); }}>
       <h3>{editorMode === 'create' ? t('role_create', 'Rol oluştur') : t('role_edit', 'Rolü düzenle')}</h3>
       {#if formError}<p class="roles-state roles-error" role="alert">{formError}</p>{/if}
