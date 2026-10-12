@@ -285,17 +285,38 @@ async function androidPressureEvidence(label) {
     memory: 'cat /proc/pressure/memory',
     io: 'cat /proc/pressure/io',
     pid: `pidof ${PKG}`,
+    // Android emulators can expose no per-cgroup/global PSI from adb shell.
+    // These kernel totals are a separately labelled FALLBACK, not PSI.
+    loadavg: 'cat /proc/loadavg',
+    meminfo: 'cat /proc/meminfo',
   };
   for (const [key, command] of Object.entries(commands)) {
     try {
       const value = await sh(command);
-      // The format here is fixed Linux PSI or one decimal PID list. Never
-      // record arbitrary app logs, env vars, tokens, paths or HTTP responses.
-      outputs[key] = key === 'pid'
-        ? (/^[0-9 ]{1,120}$/.test(value) ? value : 'unavailable')
-        : (/^(?:some|full) avg10=[0-9.]+ avg60=[0-9.]+ avg300=[0-9.]+ total=[0-9]+(?:$|\n)/.test(value)
-          ? value.slice(0, 280) : 'unavailable');
-    } catch { outputs[key] = 'unavailable'; }
+      if (key === 'pid') {
+        outputs.pid = /^[0-9 ]{1,120}$/.test(value) ? value : 'unavailable';
+      } else if (key === 'loadavg') {
+        const match = /^(\\d+(?:\\.\\d+)?) (\\d+(?:\\.\\d+)?) (\\d+(?:\\.\\d+)?) \\d+\\/\\d+ \\d+$/.exec(value);
+        outputs.kernelLoadavg = match ? match.slice(1, 4).map(Number) : 'unavailable';
+      } else if (key === 'meminfo') {
+        const total = /^MemTotal:\\s+(\\d+) kB$/m.exec(value);
+        const available = /^MemAvailable:\\s+(\\d+) kB$/m.exec(value);
+        outputs.kernelMemTotalKb = total ? Number(total[1]) : 'unavailable';
+        outputs.kernelMemAvailableKb = available ? Number(available[1]) : 'unavailable';
+      } else {
+        // Only allow the precisely defined kernel pressure text format.
+        const lines = value.split('\\n').filter(line =>
+          /^(?:some|full) avg10=[0-9.]+ avg60=[0-9.]+ avg300=[0-9.]+ total=[0-9]+$/.test(line));
+        outputs[key] = lines.length > 0 ? lines.slice(0, 2).join(' | ').slice(0, 280) : 'unavailable';
+      }
+    } catch {
+      if (key === 'meminfo') {
+        outputs.kernelMemTotalKb = 'unavailable';
+        outputs.kernelMemAvailableKb = 'unavailable';
+      } else {
+        outputs[key === 'loadavg' ? 'kernelLoadavg' : key] = 'unavailable';
+      }
+    }
   }
   const item = { label, ...outputs };
   (facts.androidPressureEvidence ??= []).push(item);
