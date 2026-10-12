@@ -58,6 +58,7 @@ describe('P7 C3 full portable target topology fingerprint coverage', () => {
       t => { t.channels[0]!.name = 'Renamed channel'; },
       t => { t.channels[0]!.type = 'text'; },
       t => { t.channels[0]!.categoryId = 'category-1'; },
+      t => { (t.channels[0] as unknown as Record<string, unknown>).category = 'Legacy category renamed'; },
       t => { t.channels[0]!.order = 3; },
       t => { t.channels[0]!.topic = 'Changed topic'; },
       t => { t.channels[0]!.nsfw = true; },
