@@ -1,4 +1,4 @@
-name: Desktop Linux + macOS native gates
+name: Desktop Linux + macOS + Windows native gates
 
 # Non-publishing PR/branch verification, independent of release signing.
 # Installed desktop clients connect to a Bridge server; no server is bundled.
@@ -7,11 +7,17 @@ on:
     branches: [main, develop]
     paths:
       - 'electron/**'
+      # The packaged app connects to the live web UI; PRs changing shared
+      # client behavior must re-prove the native desktop startup contracts.
+      - 'client/**'
       - '.github/workflows/desktop-native-gates.yml'
   push:
     branches: [main]
     paths:
       - 'electron/**'
+      # The packaged app connects to the live web UI; PRs changing shared
+      # client behavior must re-prove the native desktop startup contracts.
+      - 'client/**'
       - '.github/workflows/desktop-native-gates.yml'
   workflow_dispatch:
 
@@ -167,5 +173,71 @@ jobs:
           path: |
             electron/release/*.dmg
             electron/release/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Windows x64 — unsigned NSIS + native first-run renderer
+    runs-on: windows-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.20.0'
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+      - name: Install exact Electron dependencies
+        shell: pwsh
+        run: |
+          cd electron
+          npm ci --no-audit --no-fund
+      - name: Windows Electron contract suite (real Windows runner)
+        shell: pwsh
+        run: |
+          cd electron
+          npm test -- --runInBand --ci
+      # compile must not call Unix 'rm'; native Windows process and release
+      # CLI both use this same npm script.
+      - name: Compile packaged Electron source on Windows
+        shell: pwsh
+        run: |
+          cd electron
+          npm run compile
+      - name: Build unsigned Windows x64 NSIS without publishing
+        shell: pwsh
+        working-directory: electron
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --win nsis --x64 --publish never
+      - name: Assert Windows installer and unpacked runtime
+        shell: pwsh
+        run: |
+          $exe = 'electron/release/win-unpacked/Bridge.exe'
+          $asar = 'electron/release/win-unpacked/resources/app.asar'
+          if (-not (Test-Path $exe -PathType Leaf)) { throw 'Bridge.exe missing from win-unpacked' }
+          if (-not (Test-Path $asar -PathType Leaf)) { throw 'app.asar missing from Windows package' }
+          $installers = @(Get-ChildItem 'electron/release' -Filter '*.exe' -File)
+          if ($installers.Count -lt 1) { throw 'No Windows NSIS installer produced' }
+          foreach ($installer in $installers) {
+            $stream = [System.IO.File]::OpenRead($installer.FullName)
+            try {
+              if ($stream.ReadByte() -ne 77 -or $stream.ReadByte() -ne 90) {
+                throw "Installer has no PE header: $($installer.Name)"
+              }
+            } finally { $stream.Dispose() }
+          }
+      # Validates REAL Chromium renderer bootstrap, not an Electron mock or
+      # an installed signed public release. DevTools uses isolated loopback.
+      - name: Windows native packaged first-run renderer smoke
+        shell: pwsh
+        run: node electron/scripts/ci-windows-first-run.mjs
+      - name: Preserve Windows installer artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: bridge-windows-x64-pr-unsigned
+          path: |
+            electron/release/*.exe
           if-no-files-found: error
           retention-days: 7
