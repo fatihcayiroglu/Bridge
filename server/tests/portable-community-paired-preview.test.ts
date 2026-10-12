@@ -178,6 +178,28 @@ describe('POST /api/servers/:sid/portable-import/paired-preview', () => {
     expect(await state()).toEqual(before);
   });
 
+  it('changes owner-only paired preview fingerprint after transported metadata changes', async () => {
+    const initial = await post(OWNER, documents(), 'account-security');
+    expect(initial.status).toBe(200);
+    const originalDigest: string = initial.body.targetTopologyDigest;
+    await db.channelCategories.update({ _id: 'target-category' }, { $set: { position: 5 } });
+    const categoryMoved = await post(OWNER, documents(), 'account-security');
+    expect(categoryMoved.status).toBe(200);
+    expect(categoryMoved.body.targetTopologyDigest).not.toBe(originalDigest);
+    await db.roles.update({ _id: 'target-role' }, { $set: { color: '#ff0000' } });
+    const roleChanged = await post(OWNER, documents(), 'account-security');
+    expect(roleChanged.status).toBe(200);
+    expect(roleChanged.body.targetTopologyDigest).not.toBe(categoryMoved.body.targetTopologyDigest);
+    await db.channels.update({ _id: 'target-channel' }, { $set: { topic: 'updated topic' } });
+    const topicChanged = await post(OWNER, documents(), 'account-security');
+    expect(topicChanged.status).toBe(200);
+    expect(topicChanged.body.targetTopologyDigest).not.toBe(roleChanged.body.targetTopologyDigest);
+    expect(topicChanged.body).toMatchObject({
+      mode: 'read-only', writesPerformed: false, importSupported: false,
+    });
+    expect(JSON.stringify(topicChanged.body)).not.toContain('private-user-id');
+  });
+
   it('fails closed when target topology is malformed or cannot be completely read', async () => {
     const before = await state();
     await db.channels.insert({ _id: 'broken-target', serverId: SID, name: 1, type: 'text' });
