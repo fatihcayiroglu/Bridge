@@ -119,6 +119,14 @@ describe('P7 C4 single-transaction source snapshot issuance (NO import)', () => 
     expect(f.released()).toBe(1);
   });
 
+  it('rejects an orphan canonical permission row that claims the source server but has no channel', async () => {
+    const f = fixture();
+    f.rows.channel_permissions[0].channelId = 'removed-channel';
+    await expect(f.issue()).rejects.toThrow(PortableSourceSnapshotError);
+    expect(f.queries.at(-1)?.sql).toBe('ROLLBACK');
+    expect(f.queries.some(q => q.sql.includes('p."serverId"=$1 OR p."channelId" IN'))).toBe(true);
+  });
+
   it('rejects a channel permission row with a foreign serverId, even when the channel belongs to source', async () => {
     const f = fixture();
     f.rows.channel_permissions[0].serverId = 'another-server';
