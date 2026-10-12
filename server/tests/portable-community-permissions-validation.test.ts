@@ -40,7 +40,7 @@ describe('P7 C3 permission file strict preflight', () => {
 
   it('detects modified masks, unsupported count edits and modified digest', () => {
     const changed = clone(sample());
-    changed.channels[0]!.overrides[0]!.allow = 0;
+    changed.channels[0]!.overrides[0]!.deny = 0;
     invalid(changed);
     const changedCount = clone(sample());
     changedCount.unsupported.legacyOverrideRows = 0;
@@ -63,7 +63,7 @@ describe('P7 C3 permission file strict preflight', () => {
     malformed.channels[0]!.overrides[0]!.allow = -1;
     invalid(malformed);
     const overlapped = clone(sample());
-    overlapped.channels[0]!.overrides[0]!.deny = PERMS.VIEW_CHANNELS;
+    overlapped.channels[0]!.overrides[1]!.deny = PERMS.VIEW_CHANNELS;
     invalid(overlapped);
   });
 
