@@ -52,7 +52,12 @@ export async function seed(base, tag = 'sh') {
   const { serverId, channelId } = await makeServer(base, a, [b]);
 
   const sock = await connectSocket(base, a.token);
-  const channelText = `selfhost channel message ${rnd()}`;
+  // Use a cryptographically unique HEX token for the neutral retention probe.
+  // The bundled word-filter legitimately deletes messages containing "spam" or
+  // "scam". rnd() is base36 and CAN randomly include those banned substrings;
+  // a passed message:ack does not override a subsequent moderation delete.
+  // HEX has no 's', 'p' or 'm', so this synthetic message stays permitted.
+  const channelText = `selfhost channel message ${crypto.randomBytes(12).toString('hex')}`;
   const ack = await sendMessage(sock, { channelId, serverId, content: channelText, ackId: `sh-${rnd()}` });
   if (!ack) throw new Error('message:send was not acknowledged');
 
