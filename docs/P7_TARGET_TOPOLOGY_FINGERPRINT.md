@@ -13,10 +13,15 @@ fingerprint of the **currently read destination topology**.
    to the current target fingerprint. A missing, malformed or stale value
    is rejected with 422 and no mapping details are returned.
 
-The hash canonically sorts each resource type by stable ID and includes the
-destination server ID, each category's ID and name, every role's ID/name/
-canonical permission bitmask, every channel's ID/name/type and optional
-category ID (null when absent). It does not include members, messages,
+The hash uses the same canonical ordering and positive-list metadata as
+the versioned C2 community structure export, with a fixed timestamp and
+a fixed empty server name. It covers destination ID; every category's
+ID, name, order/position and collapsed flag; every role's ID, name,
+position, color and permission bitmask; and every channel's ID, name,
+type, topic, category relation, legacy category label, order, NSFW flag
+and slowmode. Changes to any of these transported fields invalidate
+the previous fingerprint, even when identity/name pairs remain unchanged.
+Unknown database fields are deliberately not serialized. It does not include members, messages,
 secrets, audit records, or user-specific overrides. Rows must belong to
 the same destination, use valid bounded IDs/names/masks, and have unique
 IDs per collection. A channel whose category reference is not present
