@@ -126,8 +126,26 @@ describe('Server roles editor (client visibility, server authority)', () => {
       const [url, init] = calls[0]!;
       expect(url).toBe('http://test/api/servers/roles-ui/roles/role%2Fmember');
       expect(JSON.parse(String((init as RequestInit).body))).toEqual({
-        name: 'Trusted Member', color: '#123abc', permissions: (1 << 0) | (1 << 8) | (1 << 5),
+        name: 'Trusted Member', permissions: (1 << 0) | (1 << 8) | (1 << 5),
       });
+    });
+  });
+
+
+  it('preserves an unchanged stored 8-digit color when editing role permissions', async () => {
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH') return response({ ...baseRole, color: '#abcdef80' });
+      return response([{ ...baseRole, color: '#abcdef80' }]);
+    });
+    await render();
+    click('.role-edit');
+    checkedPermission('Üyeleri yasakla').click();
+    flushSync();
+    click('.role-editor button[type=submit]');
+    await vi.waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(c => (c[1] as RequestInit | undefined)?.method === 'PATCH');
+      expect(calls).toHaveLength(1);
+      expect(JSON.parse(String((calls[0]![1] as RequestInit).body))).not.toHaveProperty('color');
     });
   });
 
