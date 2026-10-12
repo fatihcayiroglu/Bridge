@@ -4,6 +4,7 @@
 import { parsePermissionMask } from './permissionMaskInvariant';
 import { validatePortableCommunityStructure } from './portableCommunityValidation';
 import { inspectPortableCommunityManifestPair } from './portableCommunityPair';
+import { fingerprintDestinationTopology } from './portableCommunityTargetFingerprint';
 
 type Row = Record<string, unknown>;
 type Kind = 'categories' | 'roles' | 'channels';
@@ -105,11 +106,16 @@ export function inspectExplicitCommunityMapping(
     const pair = inspectPortableCommunityManifestPair(structureInput, permissionInput);
     const structure = validatePortableCommunityStructure(structureInput);
     const mapping = record(mappingInput, [
-      'targetServerId', 'structureDigest', 'permissionsDigest', 'categories', 'roles', 'channels',
+      'targetServerId', 'structureDigest', 'permissionsDigest', 'expectedTargetDigest',
+      'categories', 'roles', 'channels',
     ]);
     if (mapping.targetServerId !== sid ||
         mapping.structureDigest !== pair.structureDigest ||
         mapping.permissionsDigest !== pair.permissionsDigest) bad();
+    // A pair of preflight responses can straddle a destination edit.
+    // This only detects a stale READ-ONLY review; it cannot guard future writes.
+    const targetDigest = fingerprintDestinationTopology(destination);
+    if (mapping.expectedTargetDigest !== targetDigest) bad();
     const categories = validatedLinks(mapping.categories, 'categories', structure.categories,
       indexTarget('categories', destination.categories, sid));
     const roles = validatedLinks(mapping.roles, 'roles', structure.roles,
@@ -134,6 +140,7 @@ export function inspectExplicitCommunityMapping(
       mappingApproved: false as const,
       sourceServerId: pair.sourceServerId,
       targetServerId: sid,
+      targetTopologyDigest: targetDigest,
       sourceDigests: { structure: pair.structureDigest, permissions: pair.permissionsDigest },
       mapping: { categories: categories.links, roles: roles.links, channels: channels.links },
       counts: {
