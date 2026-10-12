@@ -98,10 +98,31 @@ export class Instance {
 
   // ── Redis ─────────────────────────────────────────────────────────────────
   async startRedis() {
-    if (await portOpen(this.redisPort)) return;
+    const respondsToPing = () => {
+      const r = spawnSync('redis-cli', ['-h', '127.0.0.1', '-p', String(this.redisPort), 'PING'],
+        { encoding: 'utf8', timeout: 2_000 });
+      return r.status === 0 && r.stdout.trim() === 'PONG';
+    };
+    if (await portOpen(this.redisPort)) {
+      if (respondsToPing()) return;
+      // Never mistake some other ephemeral listener for a healthy Redis.
+      throw new Error(`redis ${this.name}: TCP port ${this.redisPort} already occupied by a non-Redis service`);
+    }
     this.redisProc = spawn('redis-server', ['--port', String(this.redisPort), '--bind', '127.0.0.1', '--save', '', '--appendonly', 'no',
-      '--maxmemory', '256mb', '--maxmemory-policy', 'noeviction'], { stdio: 'ignore' });
-    await waitFor(() => portOpen(this.redisPort), { label: `redis ${this.name}` });
+      '--maxmemory', '256mb', '--maxmemory-policy', 'noeviction'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    let processError = '';
+    const collect = (chunk) => { output = (output + String(chunk)).slice(-1200); };
+    this.redisProc.stdout.on('data', collect);
+    this.redisProc.stderr.on('data', collect);
+    this.redisProc.on('error', (error) => { processError = String(error?.message || error); });
+    try {
+      await waitFor(respondsToPing, { label: `redis ${this.name}` });
+    } catch (error) {
+      // The original harness used stdio:ignore, hiding bind failures and
+      // converting them into an opaque 30-second timeout. Preserve the FAIL.
+      throw new Error(`redis ${this.name} could not start on port ${this.redisPort}: ${error?.message || error}; exit=${this.redisProc.exitCode ?? 'pending'}; ${processError}; ${output}`);
+    }
   }
 
   async stopRedis() {
