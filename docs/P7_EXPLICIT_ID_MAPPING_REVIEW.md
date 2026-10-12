@@ -10,12 +10,20 @@ proof of shared identity.
 
 The request must have exactly `targetServerId`, `structure`, `permissions`
 and `mapping`. The first must equal the authenticated route `:sid`.
+Retrieve the revision from `GET /api/servers/:sid/portable-import/target-revision`
+first, using the **same owner session** with fresh `account-security`
+step-up. That read-only route returns a deterministic `targetRevision`
+checksum of the destination topology fields (source format v1 allowlist):
+categories, roles including permission masks, channels including type,
+positions, labels and category associations. It never reveals the actual
+records or any member/secret payload.
 The two manifest documents must be the full checksum-valid C2 v1 exports
 from the same source community. `mapping` must contain exactly:
 
 ```json
 {
   "targetServerId": "destination-id",
+  "targetRevision": "the 64-digit revision from target-revision",
   "structureDigest": "the 64-digit checksum from the structure file",
   "permissionsDigest": "the 64-digit checksum from the permission file",
   "categories": [
@@ -34,7 +42,10 @@ These sample IDs are placeholders, not a valid complete request. Every source
 category, role and channel must appear **exactly once**, and within each
 kind an existing target ID can be used **at most once**. Missing, duplicate,
 foreign and invented IDs, extra request keys or different source checksums
-fail with 422. Target channel type must match. Destination child records
+fail with 422. If a structurally valid request references a **stale**
+`targetRevision`, the mapping review returns
+`409 PORTABLE_COMMUNITY_TARGET_REVISION_CHANGED`; fetch a new revision
+and re-review the choices rather than reusing a stale result. Target channel type must match. Destination child records
 must belong to the requested destination and contain valid target IDs,
 names and permission masks; invalid or missing data fails closed.
 
@@ -50,6 +61,14 @@ destination role has permissions absent in its mapped source role and
 includes `TARGET_ROLE_PERMISSION_WIDENING` as a blocker. Names may differ:
 an owner-selected destination ID is inspected, not silently inferred by
 case-insensitive matching. No grant is copied or enabled by this report.
+
+**Snapshot limitation:** the fingerprint has no transaction- or
+database-lock semantics. It does **not** cover member grants, legacy or
+canonical channel permission tables, invitation state, or arbitrary
+unexported metadata. Concurrent writes may occur *between* the revision
+read and the review read; a future transactional apply must recheck the
+complete relevant state **inside the same locked SQL transaction**.
+The fingerprint is neither a signature nor an import-approval token.
 
 **Crucially, even with no missing references or widened role masks, the
 report always says** `mode: read-only`, `writesPerformed: false`,
