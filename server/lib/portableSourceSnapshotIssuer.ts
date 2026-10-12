@@ -94,8 +94,11 @@ export async function issueAtomicPortableSourceAttestation(input: {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     const serverRows = await read(client,
       'SELECT _id, "ownerId", name, description, icon FROM servers WHERE _id=$1 LIMIT 2', [sid], 2);
-    if (serverRows.length !== 1 || serverRows[0].ownerId !== owner) refuse();
+    // With noUncheckedIndexedAccess, even length===1 does not narrow [0].
+    // Check the actual row before accessing ownerId or passing it to builders.
+    // Never treat a missing server as an approved export.
     const server = serverRows[0];
+    if (!server || serverRows.length !== 1 || server.ownerId !== owner) refuse();
     const categories = await read(client,
       'SELECT _id, name, position, collapsed FROM channel_categories WHERE "serverId"=$1 LIMIT 501', [sid], 500);
     const channels = (await read(client,
