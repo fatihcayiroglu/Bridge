@@ -45,6 +45,7 @@ export function inspectPortableCommunityManifestPair(
     const excluded = permissions.unsupported;
     const unsupportedCount = excluded.legacyOverrideRows +
       excluded.individualOverrideRows + excluded.unknownTargetRows;
+    if (!Number.isSafeInteger(unsupportedCount)) reject();
     // All entries can be well-formed without proving that two independent
     // live reads belong to one transactional source epoch.
     const blockers = [
