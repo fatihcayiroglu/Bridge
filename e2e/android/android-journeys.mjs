@@ -270,6 +270,61 @@ async function attachPage({ timeout = 60_000 } = {}) {
 }
 async function pid() { return MODE === 'dryrun' ? 'dryrun' : (await sh(`pidof ${PKG}`)) || null; }
 
+/**
+ * A bounded, no-PII OS pressure snapshot. L01/ANR01 keep their original
+ * PASS/FAIL semantics, but these measurements let the CI artifact distinguish
+ * host CPU/memory starvation from a durable app process failure.
+ *
+ * Do not attach raw logcat/ANR traces here: they can contain private user data.
+ */
+async function androidPressureEvidence(label) {
+  if (MODE !== 'android') return null;
+  const outputs = {};
+  const commands = {
+    cpu: 'cat /proc/pressure/cpu',
+    memory: 'cat /proc/pressure/memory',
+    io: 'cat /proc/pressure/io',
+    pid: `pidof ${PKG}`,
+    // Android emulators can expose no per-cgroup/global PSI from adb shell.
+    // These kernel totals are a separately labelled FALLBACK, not PSI.
+    loadavg: 'cat /proc/loadavg',
+    meminfo: 'cat /proc/meminfo',
+  };
+  for (const [key, command] of Object.entries(commands)) {
+    try {
+      const value = await sh(command);
+      if (key === 'pid') {
+        outputs.pid = /^[0-9 ]{1,120}$/.test(value) ? value : 'unavailable';
+      } else if (key === 'loadavg') {
+        const match = /^(\d+(?:\.\d+)?) (\d+(?:\.\d+)?) (\d+(?:\.\d+)?) \d+\/\d+ \d+$/.exec(value);
+        outputs.kernelLoadavg = match ? match.slice(1, 4).map(Number) : 'unavailable';
+      } else if (key === 'meminfo') {
+        const total = /^MemTotal:\s+(\d+) kB$/m.exec(value);
+        const available = /^MemAvailable:\s+(\d+) kB$/m.exec(value);
+        outputs.kernelMemTotalKb = total ? Number(total[1]) : 'unavailable';
+        outputs.kernelMemAvailableKb = available ? Number(available[1]) : 'unavailable';
+      } else {
+        // Only allow the precisely defined kernel pressure text format.
+        const lines = value.split('\n').filter(line =>
+          /^(?:some|full) avg10=[0-9.]+ avg60=[0-9.]+ avg300=[0-9.]+ total=[0-9]+$/.test(line));
+        outputs[key] = lines.length > 0 ? lines.slice(0, 2).join(' | ').slice(0, 280) : 'unavailable';
+      }
+    } catch {
+      if (key === 'meminfo') {
+        outputs.kernelMemTotalKb = 'unavailable';
+        outputs.kernelMemAvailableKb = 'unavailable';
+      } else {
+        outputs[key === 'loadavg' ? 'kernelLoadavg' : key] = 'unavailable';
+      }
+    }
+  }
+  const item = { label, ...outputs };
+  (facts.androidPressureEvidence ??= []).push(item);
+  log('Android OS PSI', JSON.stringify(item));
+  return item;
+}
+
+
 const platform = {
   async coldLaunch(extra = '') {
     if (MODE === 'dryrun') { await page.goto(API); return { totalTimeMs: null }; }
@@ -590,6 +645,7 @@ async function main() {
   }
 
   await check('L01', 'background 20 s → original channel and missed message survive hot resume', async () => {
+    await androidPressureEvidence('before-L01');
     const pidBefore = await pid();
     await platform.home();
     await sleep(3_000);
@@ -603,6 +659,7 @@ async function main() {
     await attachPage();
     const pidAfter = await pid();
     log('L01 resume context', JSON.stringify({ expectedChannel: channelId, actualChannel: await activeChannel(), pidStable: pidBefore === pidAfter, launchState: fg.launchState }));
+    await androidPressureEvidence('after-L01');
     assert(pidBefore === pidAfter, 'L01 process died; cannot claim hot resume');
     await assertVisibleAfterResume(needle, 'L01', 30_000);
     return { resumeTotalMs: fg.totalTimeMs, launchState: fg.launchState, visibleAfterMs: Date.now() - t0, pidStable: true, channelPreserved: true };
@@ -1100,6 +1157,11 @@ async function main() {
     // contained a FocusEvent timeout ANR at 14:51:40 and the OS killed the
     // Activity at 14:52:04; the old tests mislabeled the later launch HOT.
     const anrLog = await sh("logcat -d -v brief -s ActivityManager:E | grep -F 'ANR in com.bridge.app.debug' || true");
+    if (anrLog.includes('ANR in com.bridge.app.debug')) {
+      await androidPressureEvidence('ANR01-failure');
+      // Count only package-specific ANR headers, never expose raw logcat lines.
+      facts.androidAnrCount = anrLog.split('\n').filter(line => line.includes('ANR in com.bridge.app.debug')).length;
+    }
     assert(!anrLog.includes('ANR in com.bridge.app.debug'),
       'Android ActivityManager detected an ANR; process restart/restoration is NOT sufficient for a pass');
     return { systemAnrCount: 0 };
