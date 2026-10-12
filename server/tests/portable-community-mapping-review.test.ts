@@ -4,6 +4,7 @@ import { buildPortableCommunityStructure } from '../lib/portableCommunity';
 import { buildPortableCommunityPermissionManifest } from '../lib/portableCommunityPermissions';
 import { inspectExplicitCommunityMapping, PortableCommunityMappingError } from '../lib/portableCommunityMappingReview';
 import { PERMS } from '../lib/permissions';
+import { computePortableCommunityTargetRevision } from '../lib/portableCommunityTargetRevision';
 
 const SOURCE = 'mapping-source', TARGET = 'mapping-target';
 const AT = '2026-10-12T11:00:00.000Z';
@@ -33,6 +34,7 @@ function fixtures() {
   };
   const mapping = {
     targetServerId: TARGET,
+    targetRevision: computePortableCommunityTargetRevision(target),
     structureDigest: structure.integrity.digest,
     permissionsDigest: permissions.integrity.digest,
     categories: [{ sourceId: 'cat-a', targetId: 'target-cat' }],
@@ -62,6 +64,27 @@ describe('P7 C3 explicit community mapping review', () => {
     });
     expect(result.blockers).toContain('TRANSACTIONAL_IMPORT_AND_ROLLBACK_NOT_IMPLEMENTED');
     expect(result.blockers).toContain('OWNER_MAPPING_APPROVAL_NOT_DURABLY_RECORDED');
+  });
+
+  it('refuses stale destination revisions after renamed channels, role masks or category order', () => {
+    const changes: Array<(f: ReturnType<typeof fixtures>) => void> = [
+      f => { f.target.channels[0]!.name = 'Changed channel'; },
+      f => { f.target.roles[0]!.permissions = PERMS.VIEW_CHANNELS | PERMS.SEND_MESSAGES; },
+      f => { (f.target.categories[0] as unknown as Record<string, unknown>).position = 9; },
+    ];
+    for (const mutate of changes) {
+      const f = fixtures();
+      mutate(f);
+      expect(() => inspectExplicitCommunityMapping(f.structure, f.permissions, f.mapping, f.target))
+        .toThrow('Destination community topology changed');
+    }
+  });
+
+  it('rejects a fabricated revision token even when all explicit IDs are valid', () => {
+    const f = fixtures();
+    f.mapping.targetRevision = '0'.repeat(64);
+    expect(() => inspectExplicitCommunityMapping(f.structure, f.permissions, f.mapping, f.target))
+      .toThrow('Destination community topology changed');
   });
 
   it('rejects digests or target IDs not bound exactly to both source files and route', () => {
@@ -135,6 +158,7 @@ describe('P7 C3 explicit community mapping review', () => {
   it('reports widened destination role permissions as a hard blocker, not an approval', () => {
     const f = fixtures();
     f.target.roles[0]!.permissions = PERMS.VIEW_CHANNELS | PERMS.SEND_MESSAGES;
+    f.mapping.targetRevision = computePortableCommunityTargetRevision(f.target);
     const result = inspectExplicitCommunityMapping(f.structure, f.permissions, f.mapping, f.target);
     expect(result.counts.unsafeRoleMappings).toBe(1);
     expect(result.risks.rolePermissionWidening[0]).toMatchObject({
@@ -203,6 +227,7 @@ describe('P7 C3 explicit community mapping review', () => {
     const f = fixtures();
     f.target.roles[0]!.permissions = 0;
     f.target.roles[0]!.name = 'Renamed destination role';
+    f.mapping.targetRevision = computePortableCommunityTargetRevision(f.target);
     const result = inspectExplicitCommunityMapping(f.structure, f.permissions, f.mapping, f.target);
     expect(result.counts.renamedLabels).toBe(2);
     expect(result.counts.unsafeRoleMappings).toBe(0);
