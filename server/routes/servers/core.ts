@@ -354,16 +354,16 @@ router.get('/:sid/portable-permissions-export', authMiddleware, limits.write(), 
         ]);
         return {
           channelId,
-          canonical: canonical as Array<Record<string, unknown>>,
-          legacy: legacy as Array<Record<string, unknown>>,
+          canonical: canonical as unknown as Array<Record<string, unknown>>,
+          legacy: legacy as unknown as Array<Record<string, unknown>>,
         };
       }));
       data.push(...read);
     }
     const manifest = buildPortableCommunityPermissionManifest(
       server as unknown as Record<string, unknown>,
-      channels as Array<Record<string, unknown>>,
-      roles as Array<Record<string, unknown>>,
+      channels as unknown as Array<Record<string, unknown>>,
+      roles as unknown as Array<Record<string, unknown>>,
       data,
     );
     if (Buffer.byteLength(JSON.stringify(manifest), 'utf8') > 512 * 1024) {
