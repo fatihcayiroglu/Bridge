@@ -45,6 +45,13 @@ export function fingerprintDestinationTopology(value: DestinationTopology): stri
   const categories = validatedRows(value.categories, serverId, 2000);
   const roles = validatedRows(value.roles, serverId, 2000);
   const channels = validatedRows(value.channels, serverId, 500);
+  for (const channel of channels) {
+    // Preserve the existing v1 fingerprint contract: an empty category ID
+    // is malformed, rather than quietly equivalent to no category.
+    if (channel.categoryId === '') {
+      throw new TypeError('Invalid destination channel category reference');
+    }
+  }
   for (const role of roles) {
     if (role.permissions === undefined) throw new TypeError('Missing destination role permissions');
     parsePermissionMask(role.permissions, 'destination role mask');
