@@ -4,12 +4,17 @@ import { mount, unmount, flushSync } from 'svelte';
 import RolesTab from '../js/core/server-settings/tabs/RolesTab.svelte';
 import { BridgeRegistry } from '../js/core/bridge-registry.ts';
 
-const { fetchMock } = vi.hoisted(() => ({ fetchMock: vi.fn() }));
+const { fetchMock, permissionsMock } = vi.hoisted(() => ({ fetchMock: vi.fn(), permissionsMock: vi.fn() }));
 
 vi.mock('../js/core/api-fetch.js', () => ({
   apiFetch: (...args: unknown[]) => fetchMock(...args),
 }));
 vi.mock('../js/core/globals.js', () => ({ getAPI: () => 'http://test' }));
+vi.mock('../js/core/permissions/myPermissions.js', () => ({
+  PERM_MANAGE_ROLES: 1 << 2,
+  fetchMyPermissions: (...args: unknown[]) => permissionsMock(...args),
+  hasPerm: (perms: number, flag: number) => (perms & (1 << 30)) !== 0 || (perms & flag) !== 0,
+}));
 
 const SID = 'srv-roles';
 const roles = [
@@ -47,6 +52,8 @@ beforeEach(() => {
   instance = null;
   setCurrent({ _id: SID });
   fetchMock.mockReset();
+  permissionsMock.mockReset();
+  permissionsMock.mockResolvedValue(1 << 2);
   fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
     if (init?.method === 'PATCH') {
       const body = JSON.parse(String(init.body));
