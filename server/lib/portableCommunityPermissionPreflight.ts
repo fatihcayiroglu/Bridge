@@ -29,10 +29,15 @@ function indexTarget(rows: readonly Row[], kind: Kind) {
     if (uniqueIds.has(id)) throw new TypeError('Duplicate destination ID');
     uniqueIds.add(id);
     const name = safeName(row.name);
-    const channelType = kind === 'channel'
-      ? (typeof row.type === 'string' && ['text', 'voice', 'forum', 'stage', 'announcement'].includes(row.type)
-          ? row.type : (() => { throw new TypeError('Invalid destination channel type'); })())
-      : '';
+    let channelType = '';
+    if (kind === 'channel') {
+      const value = row.type;
+      if (typeof value !== 'string' ||
+          !['text', 'voice', 'forum', 'stage', 'announcement'].includes(value)) {
+        throw new TypeError('Invalid destination channel type');
+      }
+      channelType = value;
+    }
     const key = norm(name) + '\u0000' + channelType;
     const matches = byName.get(key);
     if (matches) matches.push(id); else byName.set(key, [id]);
