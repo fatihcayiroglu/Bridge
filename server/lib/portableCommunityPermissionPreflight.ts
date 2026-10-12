@@ -84,6 +84,9 @@ export function previewCommunityPermissionRemapping(
     throw new TypeError('Permission coverage does not match source channel set');
   }
   const roles = new Set(structure.roles.map(r => r.sourceId));
+  if (roles.has('__everyone__') || roles.has(structure.community.sourceServerId)) {
+    throw new TypeError('Source role collides with reserved everyone marker');
+  }
   for (const channel of permission.channels) {
     for (const override of channel.overrides) {
       if (override.roleSourceId !== '__everyone__' && !roles.has(override.roleSourceId)) {
