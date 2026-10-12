@@ -2,6 +2,7 @@
 // This is a comparison hint, NOT an atomic database version or import token.
 // Reuse the C2 field allowlist: never hash user identities, secrets or messages.
 import { buildPortableCommunityStructure } from './portableCommunity';
+import { parsePermissionMask } from './permissionMaskInvariant';
 
 type Row = Record<string, unknown>;
 const AT = '1970-01-01T00:00:00.000Z';
@@ -47,6 +48,10 @@ export function computePortableCommunityTargetRevision(target: {
   const serverId = requiredId(target.serverId);
   const categories = checkedRows(target.categories, serverId, 2000);
   const roles = checkedRows(target.roles, serverId, 2000);
+  for (const role of roles) {
+    if (role.permissions === undefined) throw new TypeError('Missing target role permissions');
+    parsePermissionMask(role.permissions, 'target role permissions');
+  }
   const channels = checkedRows(target.channels, serverId, 500);
   const canonical = buildPortableCommunityStructure(
     { _id: serverId, name: '' }, categories, channels, roles, AT,
