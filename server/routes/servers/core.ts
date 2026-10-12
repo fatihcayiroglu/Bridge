@@ -25,6 +25,7 @@ import { buildPortableCommunityStructure } from '../../lib/portableCommunity';
 import { validatePortableCommunityStructure, PortableCommunityValidationError } from '../../lib/portableCommunityValidation';
 import { buildPortableCommunityPreview } from '../../lib/portableCommunityPreview';
 import { inspectPortableCommunityManifestPair, PortableCommunityPairError } from '../../lib/portableCommunityPair';
+import { previewCommunityPermissionRemapping } from '../../lib/portableCommunityPermissionPreflight';
 import { buildPortableCommunityPermissionManifest } from '../../lib/portableCommunityPermissions';
 import { enforceStepUp } from '../../lib/stepUp';
 
@@ -375,9 +376,18 @@ router.post('/:sid/portable-import/paired-preview', authMiddleware, limits.write
       roles: roles as unknown as Array<Record<string, unknown>>,
       channels: channels as unknown as Array<Record<string, unknown>>,
     });
+    // Read-only diagnostics: name/type agreement is NOT a trusted ID map.
+    const permissionMapping = previewCommunityPermissionRemapping(
+      input.structure, input.permissions,
+      {
+        roles: roles as unknown as Array<Record<string, unknown>>,
+        channels: channels as unknown as Array<Record<string, unknown>>,
+      },
+    );
     return res.status(200).json({
       ...preview,
       permissionPair: pair,
+      permissionMapping,
       unsupported: [
         'Legacy, user-specific and unknown-target permissions are only counted; not imported',
         'Member identities, memberships, messages and attachments',
@@ -388,6 +398,7 @@ router.post('/:sid/portable-import/paired-preview', authMiddleware, limits.write
         ...new Set([
           ...preview.blockers.filter(value => value !== 'PERMISSION_OVERRIDES_NOT_EXPORTED'),
           ...pair.blockers,
+          ...permissionMapping.blockers,
           'CHANNEL_PERMISSION_APPLICATION_NOT_IMPLEMENTED',
         ]),
       ],
