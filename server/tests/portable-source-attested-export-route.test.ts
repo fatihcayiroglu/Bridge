@@ -163,10 +163,20 @@ describe('GET /api/servers/:sid/portable-export/attested-pair', () => {
     expect(JSON.stringify(failed.body)).not.toContain('database password');
   });
 
-  it('fails closed when an issuer result exceeds the fixed response size limit', async () => {
-    issue.mockResolvedValueOnce({ huge: 'x'.repeat(1152 * 1024 + 1) });
+  it('fails closed when a VALID read-only issuer response exceeds the fixed size limit', async () => {
+    issue.mockResolvedValueOnce({
+      mode: 'read-only', importSupported: false, writesPerformed: false,
+      mappingApproved: false, approvalReusable: false,
+      sourceReadIsolation: 'single-client-repeatable-read',
+      remotelyVerifiedAtomicity: false,
+      structure: { oversizedCanary: 'x'.repeat(1152 * 1024 + 1) },
+      permissions: {},
+      attestation: { sourceOrigin: 'https://operator-pinned-source.example' },
+    });
     const res = await get(OWNER, 'sensitive-export');
     expect(res.status).toBe(503);
-    expect(res.body).not.toHaveProperty('huge');
+    expect(res.body.code).toBe('PORTABLE_SOURCE_ATTESTED_EXPORT_UNAVAILABLE');
+    expect(res.body).not.toHaveProperty('structure');
+    expect(JSON.stringify(res.body)).not.toContain('oversizedCanary');
   });
 });
