@@ -107,6 +107,24 @@ describe('P7 C3 cross-manifest permission migration preflight', () => {
     expect(() => previewCommunityPermissionRemapping(structure, foreign, destination)).toThrow('unknown source role');
   });
 
+  it('rejects reserved source role IDs that could be mistaken for everyone grants', () => {
+    for (const reserved of ['__everyone__', SID]) {
+      const server = { _id: SID, name: 'Source' };
+      const channels = [{ _id: 'c1', serverId: SID, name: 'general', type: 'text', order: 0 }];
+      const roles = [{ _id: reserved, serverId: SID, name: 'Misleading', permissions: 0, position: 0 }];
+      const structure = buildPortableCommunityStructure(server, [], channels, roles, ts);
+      const permissions = buildPortableCommunityPermissionManifest(
+        server, channels, roles,
+        [{ channelId: 'c1', canonical: [], legacy: [] }],
+        ts,
+      );
+      expect(() => previewCommunityPermissionRemapping(
+        structure, permissions,
+        { channels: [{ _id: 'target', name: 'general', type: 'text' }], roles: [] },
+      )).toThrow('reserved everyone marker');
+    }
+  });
+
   it('counts excluded permission records and blocks rather than silently discarding them', () => {
     const { structure } = source();
     const srv = { _id: SID };
