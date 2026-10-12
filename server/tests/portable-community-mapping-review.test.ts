@@ -91,6 +91,35 @@ describe('P7 C3 explicit community mapping review', () => {
     invalid(j);
   });
 
+  it('rejects target-ID reuse across multiple real source channels', () => {
+    const f = fixtures();
+    f.structure = buildPortableCommunityStructure(
+      { _id: SOURCE, name: 'Source' },
+      [{ _id: 'cat-a', name: 'General', position: 0 }],
+      [
+        { _id: 'channel-a', name: 'Announcements', type: 'text', categoryId: 'cat-a', order: 0 },
+        { _id: 'channel-b', name: 'Another', type: 'text', categoryId: 'cat-a', order: 1 },
+      ],
+      [{ _id: 'role-a', name: 'Readers', permissions: PERMS.VIEW_CHANNELS, position: 0 }], AT,
+    );
+    f.permissions = buildPortableCommunityPermissionManifest(
+      { _id: SOURCE },
+      [{ _id: 'channel-a', serverId: SOURCE }, { _id: 'channel-b', serverId: SOURCE }],
+      [{ _id: 'role-a', serverId: SOURCE }],
+      [
+        { channelId: 'channel-a', canonical: [], legacy: [] },
+        { channelId: 'channel-b', canonical: [], legacy: [] },
+      ], AT,
+    );
+    f.mapping.structureDigest = f.structure.integrity.digest;
+    f.mapping.permissionsDigest = f.permissions.integrity.digest;
+    f.mapping.channels = [
+      { sourceId: 'channel-a', targetId: 'target-channel' },
+      { sourceId: 'channel-b', targetId: 'target-channel' },
+    ];
+    invalid(f);
+  });
+
   it('rejects any target child row from another community or with malformed permissions', () => {
     const f = fixtures();
     f.target.roles[0]!.serverId = 'other-server';
