@@ -16,6 +16,7 @@ import { buildPortableCommunityStructure } from '../lib/portableCommunity';
 import { buildPortableCommunityPermissionManifest } from '../lib/portableCommunityPermissions';
 import { stepUpHeader } from './helpers/stepUp';
 import { PERMS } from '../lib/permissions';
+import { computePortableCommunityTargetRevision } from '../lib/portableCommunityTargetRevision';
 
 const db = require('../db/loader') as import('./helpers/mockDb').MockDb;
 const SID = 'mapping-review-target', OWNER = 'mapping-owner', OTHER = 'mapping-member';
@@ -49,6 +50,14 @@ function input() {
     structure, permissions, targetServerId: SID,
     mapping: {
       targetServerId: SID,
+      targetRevision: computePortableCommunityTargetRevision({
+        serverId: SID,
+        categories: [{ _id: 'target-cat', serverId: SID, name: 'General' }],
+        roles: [{ _id: 'target-role', serverId: SID, name: 'Readers',
+          permissions: PERMS.VIEW_CHANNELS, position: 0 }],
+        channels: [{ _id: 'target-channel', serverId: SID,
+          name: 'welcome', type: 'text', order: 0 }],
+      }),
       structureDigest: structure.integrity.digest,
       permissionsDigest: permissions.integrity.digest,
       categories: [{ sourceId: 'source-cat', targetId: 'target-cat' }],
@@ -61,6 +70,11 @@ function post(userId: string, body: unknown, scope: 'account-security' | 'sensit
   const q = request(app()).post(`/api/servers/${SID}/portable-import/mapping-review`)
     .set('Authorization', `Bearer ${token(userId)}`);
   return (scope ? q.set(stepUpHeader(userId, scope)) : q).send(body);
+}
+function revision(userId: string, scope: 'account-security' | 'sensitive-export' | null = null) {
+  const q = request(app()).get(`/api/servers/${SID}/portable-import/target-revision`)
+    .set('Authorization', `Bearer ${token(userId)}`);
+  return scope ? q.set(stepUpHeader(userId, scope)) : q;
 }
 async function snapshot() {
   return {
@@ -110,6 +124,56 @@ describe('POST /api/servers/:sid/portable-import/mapping-review', () => {
     expect(extra.status).toBe(400);
   });
 
+
+  it('GET target revision is owner-only, step-up protected, deterministic and writes nothing', async () => {
+    const before = await snapshot();
+    const anonymous = await request(app()).get(`/api/servers/${SID}/portable-import/target-revision`);
+    expect(anonymous.status).toBe(401);
+    const stranger = await revision(OTHER, 'account-security');
+    expect(stranger.status).toBe(403);
+    const noProof = await revision(OWNER);
+    expect(noProof.status).toBe(403);
+    const wrongProof = await revision(OWNER, 'sensitive-export');
+    expect(wrongProof.status).toBe(403);
+    const first = await revision(OWNER, 'account-security');
+    const second = await revision(OWNER, 'account-security');
+    expect(first.status).toBe(200);
+    expect(first.headers['cache-control']).toContain('no-store');
+    expect(first.body).toMatchObject({
+      mode: 'read-only', writesPerformed: false, importSupported: false,
+      targetServerId: SID, topologyOnly: true, transactionalLock: false,
+      counts: { categories: 1, roles: 1, channels: 1 },
+    });
+    expect(first.body.targetRevision).toMatch(/^[0-9a-f]{64}$/);
+    expect(second.body.targetRevision).toBe(first.body.targetRevision);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('returns 409 for a valid previously reviewed mapping after target topology changes', async () => {
+    const old = input();
+    const before = await snapshot();
+    await db.channels.update({ _id: 'target-channel' }, { $set: { name: 'renamed-after-review' } });
+    const changed = await revision(OWNER, 'account-security');
+    expect(changed.status).toBe(200);
+    expect(changed.body.targetRevision).not.toBe(old.mapping.targetRevision);
+    const stale = await post(OWNER, old, 'account-security');
+    expect(stale.status).toBe(409);
+    expect(stale.body.code).toBe('PORTABLE_COMMUNITY_TARGET_REVISION_CHANGED');
+    expect(stale.body.mapping).toBeUndefined();
+    const after = await snapshot();
+    expect(after.roles).toEqual(before.roles);
+    expect(after.members).toEqual(before.members);
+    expect(after.channelPermissions).toEqual(before.channelPermissions);
+  });
+
+  it('refuses incomplete destination snapshots for revision lookup instead of a misleading digest', async () => {
+    await db.channels.insert({ _id: 'malformed', serverId: SID, type: 'text', name: 37 });
+    const out = await revision(OWNER, 'account-security');
+    expect(out.status).toBe(503);
+    expect(out.body.code).toBe('PORTABLE_COMMUNITY_TARGET_REVISION_UNAVAILABLE');
+    expect(out.body.targetRevision).toBeUndefined();
+  });
+
   it('returns explicit complete mapping diagnostics without modifying the database', async () => {
     const before = await snapshot();
     const result = await post(OWNER, input(), 'account-security');
@@ -132,7 +196,11 @@ describe('POST /api/servers/:sid/portable-import/mapping-review', () => {
     await db.roles.update({ _id: 'target-role' },
       { $set: { permissions: PERMS.VIEW_CHANNELS | PERMS.SEND_MESSAGES } });
     const before = await snapshot();
-    const result = await post(OWNER, input(), 'account-security');
+    const updatedRevision = await revision(OWNER, 'account-security');
+    expect(updatedRevision.status).toBe(200);
+    const body = input();
+    body.mapping.targetRevision = updatedRevision.body.targetRevision as string;
+    const result = await post(OWNER, body, 'account-security');
     expect(result.status).toBe(200);
     expect(result.body.counts.unsafeRoleMappings).toBe(1);
     expect(result.body.blockers).toContain('TARGET_ROLE_PERMISSION_WIDENING');
