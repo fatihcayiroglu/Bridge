@@ -61,7 +61,7 @@ export function fingerprintDestinationTopology(value: DestinationTopology): stri
   const channels = rowsOf('channel', value.channels, serverId);
   const categoryIds = new Set(categories.map(row => row.id));
   for (const channel of channels) {
-    if (channel.categoryId !== null && !categoryIds.has(channel.categoryId!)) {
+    if (channel.categoryId != null && !categoryIds.has(channel.categoryId)) {
       throw new TypeError('Destination channel references missing category');
     }
   }
