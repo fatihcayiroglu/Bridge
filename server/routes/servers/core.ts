@@ -24,6 +24,7 @@ import logger from '../../lib/logger';
 import { buildPortableCommunityStructure } from '../../lib/portableCommunity';
 import { validatePortableCommunityStructure, PortableCommunityValidationError } from '../../lib/portableCommunityValidation';
 import { buildPortableCommunityPreview } from '../../lib/portableCommunityPreview';
+import { inspectPortableCommunityManifestPair, PortableCommunityPairError } from '../../lib/portableCommunityPair';
 import { buildPortableCommunityPermissionManifest } from '../../lib/portableCommunityPermissions';
 import { enforceStepUp } from '../../lib/stepUp';
 
@@ -317,6 +318,87 @@ router.post('/:sid/portable-import/preview', authMiddleware, limits.write(), asy
     logger.error({ err, sid, userId: actor.id, event: 'server.portable_structure_preview.failed' },
       'Read-only community structure preview unavailable.');
     return res.status(503).json({ code: 'PORTABLE_COMMUNITY_PREVIEW_UNAVAILABLE', error: 'Cannot build a complete destination preview' });
+  }
+});
+
+// P7 C3: paired structure + permission manifest preflight. Read-only,
+// owner-bound and fresh account-security proof. NOT an apply endpoint.
+router.post('/:sid/portable-import/paired-preview', authMiddleware, limits.write(), async (req, res) => {
+  const actor = castAuthed(req).user;
+  const sid = String(req.params.sid ?? '');
+  res.setHeader('Cache-Control', 'no-store');
+  const destination = await Servers.findById(sid);
+  if (!destination) return res.status(404).json({ error: 'Target community not found' });
+  if (destination.ownerId !== actor.id) {
+    return res.status(403).json({ error: 'Only the destination owner may preview community migration' });
+  }
+  if (!(await enforceStepUp(req, res, actor.id, 'account.import'))) return;
+
+  const body: unknown = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return res.status(400).json({ error: 'Invalid paired preview request' });
+  }
+  const fields = Object.keys(body);
+  if (fields.length !== 3 || !fields.includes('structure') ||
+      !fields.includes('permissions') || !fields.includes('targetServerId')) {
+    return res.status(400).json({ error: 'Expected structure, permissions and targetServerId' });
+  }
+  const input = body as { structure: unknown; permissions: unknown; targetServerId: unknown };
+  if (input.targetServerId !== sid) {
+    return res.status(409).json({
+      code: 'PORTABLE_COMMUNITY_TARGET_CHANGED',
+      error: 'Destination must match authenticated target',
+    });
+  }
+
+  let pair: ReturnType<typeof inspectPortableCommunityManifestPair>;
+  let structure: ReturnType<typeof validatePortableCommunityStructure>;
+  try {
+    pair = inspectPortableCommunityManifestPair(input.structure, input.permissions);
+    structure = validatePortableCommunityStructure(input.structure);
+  } catch (err) {
+    if (err instanceof PortableCommunityPairError || err instanceof PortableCommunityValidationError) {
+      return res.status(422).json({
+        code: 'PORTABLE_COMMUNITY_PAIR_INVALID',
+        error: 'Invalid or inconsistent community migration documents',
+      });
+    }
+    throw err;
+  }
+  try {
+    const [categories, roles, channels] = await Promise.all([
+      Channels.findCategoriesByServer(sid), Roles.findByServer(sid), Channels.findByServer(sid),
+    ]);
+    const preview = buildPortableCommunityPreview(structure, {
+      serverId: sid, name: String(destination.name ?? ''),
+      categories: categories as unknown as Array<Record<string, unknown>>,
+      roles: roles as unknown as Array<Record<string, unknown>>,
+      channels: channels as unknown as Array<Record<string, unknown>>,
+    });
+    return res.status(200).json({
+      ...preview,
+      permissionPair: pair,
+      unsupported: [
+        'Legacy, user-specific and unknown-target permissions are only counted; not imported',
+        'Member identities, memberships, messages and attachments',
+        'Credentials, webhooks, bots and moderation records',
+        'Actual import, rollback and ID remapping',
+      ],
+      blockers: [
+        ...new Set([
+          ...preview.blockers.filter(value => value !== 'PERMISSION_OVERRIDES_NOT_EXPORTED'),
+          ...pair.blockers,
+          'CHANNEL_PERMISSION_APPLICATION_NOT_IMPLEMENTED',
+        ]),
+      ],
+    });
+  } catch (err) {
+    logger.error({ err, sid, userId: actor.id, event: 'server.portable_pair_preview.failed' },
+      'Paired community preview refused because destination data could not be read completely.');
+    return res.status(503).json({
+      code: 'PORTABLE_COMMUNITY_PREVIEW_UNAVAILABLE',
+      error: 'Cannot build a complete destination preview',
+    });
   }
 });
 
