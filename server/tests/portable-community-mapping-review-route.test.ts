@@ -72,6 +72,11 @@ function post(userId: string, body: unknown, scope: 'account-security' | 'sensit
     .set('Authorization', `Bearer ${token(userId)}`);
   return (scope ? q.set(stepUpHeader(userId, scope)) : q).send(body);
 }
+function getFingerprint(userId: string, scope: 'account-security' | 'sensitive-export' | null = null) {
+  const q = request(app()).get(`/api/servers/${SID}/portable-import/target-fingerprint`)
+    .set('Authorization', `Bearer ${token(userId)}`);
+  return scope ? q.set(stepUpHeader(userId, scope)) : q;
+}
 async function snapshot() {
   return {
     servers: await db.servers.find({}),
@@ -99,6 +104,51 @@ beforeEach(async () => {
 });
 
 describe('POST /api/servers/:sid/portable-import/mapping-review', () => {
+  it('provides an owner-only no-store target fingerprint without source files or DB writes', async () => {
+    const before = await snapshot();
+    const anonymous = await request(app()).get(`/api/servers/${SID}/portable-import/target-fingerprint`);
+    expect(anonymous.status).toBe(401);
+    expect((await getFingerprint(OTHER, 'account-security')).status).toBe(403);
+    const missingStepUp = await getFingerprint(OWNER);
+    expect(missingStepUp.status).toBe(403);
+    expect(missingStepUp.body).toMatchObject({ error: 'STEP_UP_REQUIRED', scope: 'account-security' });
+    expect((await getFingerprint(OWNER, 'sensitive-export')).status).toBe(403);
+    const first = await getFingerprint(OWNER, 'account-security');
+    const second = await getFingerprint(OWNER, 'account-security');
+    expect(first.status).toBe(200);
+    expect(first.headers['cache-control']).toContain('no-store');
+    expect(first.body).toMatchObject({
+      mode: 'read-only', writesPerformed: false, importSupported: false,
+      targetServerId: SID, topologyOnly: true, transactionalLock: false,
+      counts: { categories: 1, roles: 1, channels: 1 },
+    });
+    expect(first.body.targetTopologyDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(first.body.targetTopologyDigest).toBe(input().mapping.expectedTargetDigest);
+    expect(second.body.targetTopologyDigest).toBe(first.body.targetTopologyDigest);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('detects topology drift without disclosing target records or granting writes', async () => {
+    const stale = input();
+    const first = await getFingerprint(OWNER, 'account-security');
+    expect(first.status).toBe(200);
+    await db.channels.update({ _id: 'target-channel' }, { $set: { topic: 'new topic' } });
+    const refreshed = await getFingerprint(OWNER, 'account-security');
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.targetTopologyDigest).not.toBe(first.body.targetTopologyDigest);
+    const rejected = await post(OWNER, stale, 'account-security');
+    expect(rejected.status).toBe(422);
+    expect(rejected.body.mapping).toBeUndefined();
+  });
+
+  it('fails closed rather than returning a partial fingerprint on an inconsistent target', async () => {
+    await db.channels.insert({ _id: 'broken', serverId: SID, name: 123, type: 'text' });
+    const response = await getFingerprint(OWNER, 'account-security');
+    expect(response.status).toBe(503);
+    expect(response.body.code).toBe('PORTABLE_COMMUNITY_TARGET_FINGERPRINT_UNAVAILABLE');
+  });
+
+
   it('refuses anonymous and nonowner requests before reading destination children', async () => {
     const anon = await request(app()).post(`/api/servers/${SID}/portable-import/mapping-review`)
       .send(input());
