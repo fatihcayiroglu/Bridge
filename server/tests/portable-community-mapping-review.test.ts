@@ -267,6 +267,45 @@ describe('P7 C3 explicit community mapping review', () => {
     expect(result.blockers).toContain('OWNER_MAPPING_APPROVAL_NOT_DURABLY_RECORDED');
   });
 
+  it('fails closed on every malformed explicit mapping identifier and malformed entry shape', () => {
+    const check = (mutate: (f: ReturnType<typeof fixtures>) => void) => {
+      const f = fixtures();
+      mutate(f);
+      invalid(f);
+    };
+    // Exercise source/target identifier parsing and strict positive-list shape.
+    check(f => { (f.mapping.categories[0] as unknown as Record<string, unknown>).sourceId = 12; });
+    check(f => { (f.mapping.roles[0] as unknown as Record<string, unknown>).targetId = null; });
+    check(f => { f.mapping.channels[0]!.sourceId = 'x'.repeat(257); });
+    check(f => { f.mapping.categories[0]!.targetId = 'x'.repeat(257); });
+    check(f => { (f.mapping.channels[0] as unknown as Record<string, unknown>).targetId = 22; });
+    check(f => { (f.mapping.roles[0] as unknown as Record<string, unknown>).sourceId = false; });
+    check(f => { (f.mapping.categories as unknown as unknown[])[0] = null; });
+    check(f => { (f.mapping.channels as unknown as unknown[])[0] = []; });
+    check(f => { (f.mapping.roles[0] as unknown as Record<string, unknown>).unreviewed = true; });
+    check(f => { delete (f.mapping.roles[0] as unknown as Record<string, unknown>).targetId; });
+    check(f => { (f.mapping as unknown as Record<string, unknown>).categories = {}; });
+    check(f => { (f.mapping as unknown as Record<string, unknown>).roles = 'role-a'; });
+    check(f => { (f.mapping as unknown as Record<string, unknown>).channels = []; });
+  });
+
+  it('refuses malformed destination records instead of producing a trusted fingerprint', () => {
+    const check = (mutate: (f: ReturnType<typeof fixtures>) => void) => {
+      const f = fixtures();
+      mutate(f);
+      expect(() => fingerprintDestinationTopology(f.target)).toThrow();
+      invalid(f);
+    };
+    check(f => { (f.target.roles[0] as unknown as Record<string, unknown>)._id = 12; });
+    check(f => { (f.target.categories[0] as unknown as Record<string, unknown>).name = null; });
+    check(f => { f.target.categories[0]!.name = 'a'.repeat(201); });
+    check(f => { (f.target.channels[0] as unknown as Record<string, unknown>).type = null; });
+    check(f => { (f.target.channels[0] as unknown as Record<string, unknown>).categoryId = 4; });
+    check(f => { (f.target.roles[0] as unknown as Record<string, unknown>).permissions = 'NaN'; });
+    check(f => { (f.target as unknown as Record<string, unknown>).roles = {}; });
+    check(f => { (f.target as unknown as Record<string, unknown>).serverId = ''; });
+  });
+
   it('rejects extra keys and malformed mapping documents rather than ignoring apply flags', () => {
     const f = fixtures();
     const malicious = { ...f.mapping, apply: true };
