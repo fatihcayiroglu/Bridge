@@ -21,7 +21,11 @@ are read. Nonowners get 403, and swapped destinations get 409.
 It validates both manifests and their source/channel/role correspondence
 via `inspectPortableCommunityManifestPair`, then compares source
 category/channel/role names with the **destination topology** and reports
-conservative name collisions, counts and truncation markers. Success
+conservative name collisions, counts and truncation markers. It also
+includes a `permissionMapping` report from the role/channel remapping preflight:
+missing, ambiguous, or type-incompatible role/channel matches are named
+without creating a trusted mapping. Even when all diagnostic names match,
+`permissionMapping.diagnosticNameMatches.usableForImport` is **false**. Success
 returns `mode: read-only`, `writesPerformed: false`,
 `importSupported: false`, a nested `permissionPair` report, and blockers
 that explicitly identify missing source authenticity, snapshot atomicity,
