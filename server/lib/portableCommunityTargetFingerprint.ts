@@ -53,6 +53,12 @@ export function fingerprintDestinationTopology(target: DestinationTopology): str
   const categories = completeRows(target.categories, serverId, 2000);
   const roles = completeRows(target.roles, serverId, 2000);
   const channels = completeRows(target.channels, serverId, 500);
+  // The legacy structure exporter normalizes an empty categoryId to null.
+  // Keep the stricter destination-review contract: an empty persisted
+  // reference must not silently become an uncategorized channel.
+  for (const channel of channels) {
+    if (channel.categoryId === '') throw new TypeError('Empty target category reference');
+  }
   // Missing persisted masks must never silently become zero via the C2
   // exporter's backward-compatible normalization.
   for (const role of roles) {
