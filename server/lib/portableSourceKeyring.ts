@@ -100,15 +100,22 @@ export function verifyAttestationAgainstPinnedRegistry(args: {
   permissions: unknown;
   attestation: unknown;
   expectedSourceOrigin: string;
+  // Exact source community approved by the DESTINATION operator. Do not
+  // derive this identifier from the signed artifact itself.
+  expectedSourceServerId: string;
   operatorRegistryJson: string;
   now?: number;
 }) {
   try {
-    if (!isCanonicalPortableSourceOrigin(args.expectedSourceOrigin)) invalid();
+    if (!isCanonicalPortableSourceOrigin(args.expectedSourceOrigin) ||
+        typeof args.expectedSourceServerId !== 'string' ||
+        args.expectedSourceServerId.length === 0 ||
+        args.expectedSourceServerId.length > 256) invalid();
     const clock = args.now ?? Date.now();
     if (!Number.isSafeInteger(clock) || clock < 0) invalid();
     const attestation = obj(args.attestation);
     if (attestation.sourceOrigin !== args.expectedSourceOrigin ||
+        attestation.sourceServerId !== args.expectedSourceServerId ||
         typeof attestation.keyFingerprint !== 'string' ||
         !HEX.test(attestation.keyFingerprint)) invalid();
     const issued = canonicalTime(attestation.issuedAt);
