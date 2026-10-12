@@ -136,6 +136,62 @@ describe('P6 federation coverage closure', () => {
     else process.env.PORT = originalPort;
   });
 
+
+  describe('null publication timestamps never override durable event ordering', () => {
+    it('keeps a newer Delete tombstone ahead of an older Create when publishedAt is null', async () => {
+      Federation.findActivities.mockResolvedValue([
+        createRow({ publishedAt: 100, createdAt: 100 }),
+        {
+          _id: 'delete-with-null-published',
+          actorUserId: alice._id, type: 'Delete', noteId: noteId(),
+          publishedAt: null, createdAt: 300,
+          activity: { type: 'Delete', object: noteId(), published: null },
+        },
+      ]);
+
+      const read = await request(app).get('/lifecycle/users/alice/notes/note-1');
+      expect(read.status).toBe(410);
+      expect(read.body).toMatchObject({
+        type: 'Tombstone',
+        formerType: 'Note',
+        deleted: new Date(300).toISOString(),
+      });
+
+      const patch = await request(app)
+        .patch('/lifecycle/users/alice/notes/note-1')
+        .set('Authorization', `Bearer ${token(alice._id)}`)
+        .send({ content: 'must not resurrect' });
+      expect(patch.status).toBe(410);
+      expect(Federation.insertActivity).not.toHaveBeenCalled();
+    });
+
+    it('orders remote DM threads and pagination by createdAt when publication fields are null', async () => {
+      inboundResult = [{
+        _id: 'in-fallback', actorUrl: remoteActor, targetUserId: alice._id,
+        visibility: 'direct', deletedAt: null, content: 'newer incoming',
+        published: null, publishedAt: null, createdAt: 500,
+      }];
+      outboundResult = [directCreate(remoteActor, 'older outgoing', {
+        publishedAt: 300, createdAt: 300,
+      })];
+
+      const threads = await request(app)
+        .get('/dm/remote-dms')
+        .set('Authorization', `Bearer ${token(alice._id)}`);
+      expect(threads.status).toBe(200);
+      expect(threads.body).toHaveLength(1);
+      expect(threads.body[0].lastMessage.content).toBe('newer incoming');
+      expect(threads.body[0].lastMessage.createdAt).toBe(500);
+
+      const threadId = Buffer.from(remoteActor, 'utf8').toString('base64url');
+      const messages = await request(app)
+        .get(`/dm/remote-dms/${threadId}/messages?before=600`)
+        .set('Authorization', `Bearer ${token(alice._id)}`);
+      expect(messages.status).toBe(200);
+      expect(messages.body.map((message: { createdAt: number }) => message.createdAt)).toEqual([300, 500]);
+    });
+  });
+
   describe('authored Note lifecycle edge paths', () => {
     it('uses the localhost fallback and materializes cursor-backed legacy history', async () => {
       delete process.env.INSTANCE_URL;

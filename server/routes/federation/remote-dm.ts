@@ -11,6 +11,7 @@ import { Federation, Users } from '../../db/repositories';
 import { authMiddleware, castAuthed } from '../../middleware/auth';
 import { deliverApActivity } from './helpers';
 import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery } from '../../lib/queryNumbers';
+import { firstUsableRowTime } from '../../lib/firstUsableRowTime';
 
 const router = express.Router();
 const AP_CONTEXT = 'https://www.w3.org/ns/activitystreams';
@@ -47,12 +48,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function rowTime(row: Record<string, unknown>): number {
-  for (const key of ['published', 'publishedAt', 'createdAt']) {
-    const raw = row[key];
-    const value = typeof raw === 'number' ? raw : Number(raw);
-    if (Number.isFinite(value) && value >= 0) return Math.trunc(value);
-  }
-  return 0;
+  return firstUsableRowTime(row, ['published', 'publishedAt', 'createdAt']);
 }
 
 function encodeActor(actorUrl: string): string {

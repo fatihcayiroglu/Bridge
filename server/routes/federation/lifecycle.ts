@@ -11,6 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Federation, Users } from '../../db/repositories';
 import { authMiddleware, castAuthed } from '../../middleware/auth';
 import logger from '../../lib/logger';
+import { firstUsableRowTime } from '../../lib/firstUsableRowTime';
 import { fanOutActivityToFollowers } from './helpers';
 
 const router = express.Router();
@@ -50,10 +51,7 @@ function noteApId(username: string, noteId: string): string {
 }
 
 function rowTime(row: ActivityRow): number {
-  const published = typeof row.publishedAt === 'number' ? row.publishedAt : Number(row.publishedAt);
-  if (Number.isFinite(published)) return published;
-  const created = typeof row.createdAt === 'number' ? row.createdAt : Number(row.createdAt);
-  return Number.isFinite(created) ? created : 0;
+  return firstUsableRowTime(row, ['publishedAt', 'createdAt']);
 }
 
 async function materializeRows(value: unknown): Promise<ActivityRow[]> {
