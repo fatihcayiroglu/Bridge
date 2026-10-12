@@ -45,7 +45,11 @@ describe('P7 C4 signed community export explicit deployer configuration', () => 
     for (const encoded of [
       undefined, '', '%%%$', Buffer.from('random text').toString('base64'),
       Buffer.from(rsaPem).toString('base64'), 'A'.repeat(5000),
-      secret + ' ', secret + '===', secret.replace(/.$/, 'A'),
+      secret + ' ', secret + '===', secret.replace(/.$/, secret.endsWith('A') ? 'B' : 'A'),
+      // OpenSSL can parse a valid PEM while ignoring appended text. Reject it.
+      Buffer.from(validPrivate + 'malicious suffix', 'utf8').toString('base64'),
+      Buffer.from(validPrivate + validPrivate, 'utf8').toString('base64'),
+      Buffer.from(validPrivate.trimEnd(), 'utf8').toString('base64'),
     ]) {
       expect(() => readPortableSourceSigningConfig(env({
         BRIDGE_PORTABLE_SOURCE_ED25519_PRIVATE_KEY_B64: encoded,
