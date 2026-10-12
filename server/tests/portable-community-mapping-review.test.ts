@@ -96,7 +96,7 @@ describe('P7 C3 explicit community mapping review', () => {
     f.target.roles[0]!.serverId = 'other-server';
     invalid(f);
     const g = fixtures();
-    (g.target.roles[0] as Record<string, unknown>).permissions = 'not-a-mask';
+    (g.target.roles[0] as unknown as Record<string, unknown>).permissions = 'not-a-mask';
     invalid(g);
     const h = fixtures();
     h.target.channels[0]!.type = 'voice';
