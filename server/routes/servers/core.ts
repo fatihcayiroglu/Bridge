@@ -299,14 +299,32 @@ router.get('/:sid/portable-export/attested-pair', authMiddleware, limits.write()
       pool, sourceServerId: sid, ownerUserId: actor.id,
       sourceOrigin, signingPrivateKeyPem,
     });
-    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 1152 * 1024) {
-      return res.status(503).json({
-        code: 'PORTABLE_SOURCE_ATTESTED_EXPORT_UNAVAILABLE',
-        error: 'Signed source snapshot could not be exported safely',
-      });
+    // Only publish an explicit positive list. If future internal signers add
+    // credentials, backend state, key material or debugging fields, those
+    // fields must NEVER automatically become part of this download.
+    if (result.mode !== 'read-only' || result.importSupported !== false ||
+        result.writesPerformed !== false || result.mappingApproved !== false ||
+        result.approvalReusable !== false ||
+        result.sourceReadIsolation !== 'single-client-repeatable-read' ||
+        result.remotelyVerifiedAtomicity !== false ||
+        result.attestation.sourceOrigin !== sourceOrigin) {
+      throw new Error('Unexpected source signing contract');
+    }
+    const safeResult = {
+      mode: 'read-only' as const, importSupported: false as const,
+      writesPerformed: false as const, mappingApproved: false as const,
+      approvalReusable: false as const,
+      sourceReadIsolation: 'single-client-repeatable-read' as const,
+      remotelyVerifiedAtomicity: false as const,
+      structure: result.structure,
+      permissions: result.permissions,
+      attestation: result.attestation,
+    };
+    if (Buffer.byteLength(JSON.stringify(safeResult), 'utf8') > 1152 * 1024) {
+      throw new Error('Source snapshot response size exceeds limit');
     }
     res.setHeader('Content-Disposition', 'attachment; filename="bridge-community-attested-pair-v1.json"');
-    return res.status(200).json(result);
+    return res.status(200).json(safeResult);
   } catch {
     // Never log the signer config/PEM, SQL, manifest contents or owner ID.
     logger.warn({ event: 'server.portable_attested_export.unavailable' },
