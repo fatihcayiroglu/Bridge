@@ -58,8 +58,13 @@ export function parsePinnedPortableSourceRegistry(raw: string): readonly Trusted
           typeof record.publicKeyPem !== 'string' ||
           record.publicKeyPem.length > 1000 ||
           typeof record.revoked !== 'boolean') invalid();
-      const from = canonicalTime(record.activeFrom);
-      const until = canonicalTime(record.activeUntil);
+      // Explicit narrowing is required: validating an unknown record field
+      // through a helper does not give TypeScript a string type to retain.
+      const activeFrom = record.activeFrom;
+      const activeUntil = record.activeUntil;
+      if (typeof activeFrom !== 'string' || typeof activeUntil !== 'string') invalid();
+      const from = canonicalTime(activeFrom);
+      const until = canonicalTime(activeUntil);
       if (from >= until) invalid();
       const key = createPublicKey(record.publicKeyPem);
       if (key.asymmetricKeyType !== 'ed25519') invalid();
@@ -74,8 +79,8 @@ export function parsePinnedPortableSourceRegistry(raw: string): readonly Trusted
       parsed.push(Object.freeze({
         sourceOrigin: record.sourceOrigin,
         publicKeyPem: pem,
-        activeFrom: record.activeFrom,
-        activeUntil: record.activeUntil,
+        activeFrom,
+        activeUntil,
         revoked: record.revoked,
         fingerprint,
       } as TrustedKey));
