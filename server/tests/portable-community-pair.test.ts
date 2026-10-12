@@ -80,7 +80,7 @@ describe('P7 C3 paired community structure/permissions intake', () => {
 
   it('rejects checksum-valid orphan channels and missing channel permission matrices', () => {
     const foreign = clone(permissions());
-    foreign.channels[0]!.channelSourceId = 'foreign-channel';
+    foreign.channels[0]!.channelSourceId = 'channel-0'; // Still sorted and individually valid
     resign(foreign);
     invalid(structure(), foreign);
 
