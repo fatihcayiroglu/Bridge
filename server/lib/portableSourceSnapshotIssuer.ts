@@ -5,8 +5,8 @@ import { buildPortableCommunityStructure } from './portableCommunity';
 import { buildPortableCommunityPermissionManifest, type SourcePermissionRows } from './portableCommunityPermissions';
 import { inspectPortableCommunityManifestPair } from './portableCommunityPair';
 import {
-  portableSourceAttestationSigningBytes, verifyPortableSourceAttestation,
-  type PortableSourceAttestation,
+  isCanonicalPortableSourceOrigin, portableSourceAttestationSigningBytes,
+  verifyPortableSourceAttestation, type PortableSourceAttestation,
 } from './portableSourceAttestation';
 
 type Row = Record<string, unknown>;
@@ -28,6 +28,18 @@ export class PortableSourceSnapshotError extends Error {
 function refuse(): never { throw new PortableSourceSnapshotError(); }
 function textId(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 256) refuse();
+  return value;
+}
+function bool01(value: unknown): boolean {
+  // PostgreSQL channels.nsfw is INTEGER; a truthy 1 must NOT silently become
+  // "false" when serialized by the portable structure builder.
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  refuse();
+}
+function normalizeChannel(row: Row): Row {
+  const value = normalize(row, ['order', 'position', 'slowmode']);
+  value.nsfw = bool01(row.nsfw);
   return value;
 }
 function numeric(value: unknown): number {
@@ -62,7 +74,8 @@ export async function issueAtomicPortableSourceAttestation(input: {
   const sid = textId(input.sourceServerId);
   const owner = textId(input.ownerUserId);
   const now = input.now ?? Date.now();
-  if (!Number.isSafeInteger(now) || now < 0 || now > 8_640_000_000_000_000 - 300_000) refuse();
+  if (!Number.isSafeInteger(now) || now < 0 || now > 8_640_000_000_000_000 - 300_000 ||
+      !isCanonicalPortableSourceOrigin(input.sourceOrigin)) refuse();
   // The trust relationship and private key lifecycle are controlled by the
   // source deployer, not by the client request. Never accept them from HTTP.
   let client: Client | null = null;
@@ -87,7 +100,7 @@ export async function issueAtomicPortableSourceAttestation(input: {
       'SELECT _id, name, position, collapsed FROM channel_categories WHERE "serverId"=$1 LIMIT 501', [sid], 500);
     const channels = (await read(client,
       'SELECT _id, "serverId", name, type, topic, "categoryId", category, "order", position, nsfw, slowmode FROM channels WHERE "serverId"=$1 LIMIT 501',
-      [sid], 500)).map(row => normalize(row, ['order', 'position', 'nsfw', 'slowmode']));
+      [sid], 500)).map(normalizeChannel);
     const roles = (await read(client,
       'SELECT _id, "serverId", name, color, position, permissions FROM roles WHERE "serverId"=$1 LIMIT 2001',
       [sid], 2000)).map(row => normalize(row, ['position', 'permissions']));
