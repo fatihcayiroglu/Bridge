@@ -1,6 +1,6 @@
 // P7 C4: source-side read-only paired snapshot and offline attestation issuer.
 // No HTTP route, source trust store, replay authorization or import/apply path.
-import { createHash, createPrivateKey, randomBytes, sign } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, randomBytes, sign } from 'node:crypto';
 import { buildPortableCommunityStructure } from './portableCommunity';
 import { buildPortableCommunityPermissionManifest, type SourcePermissionRows } from './portableCommunityPermissions';
 import { inspectPortableCommunityManifestPair } from './portableCommunityPair';
@@ -72,7 +72,7 @@ export async function issueAtomicPortableSourceAttestation(input: {
     const key = createPrivateKey(input.signingPrivateKeyPem);
     if (key.asymmetricKeyType !== 'ed25519') refuse();
     const publicKey = createHash('sha256')
-      .update((await import('node:crypto')).createPublicKey(key).export({ type: 'spki', format: 'der' }))
+      .update(createPublicKey(key).export({ type: 'spki', format: 'der' }))
       .digest('hex');
     client = await input.pool.connect();
     // FIRST query on this physical PG session sets the isolation snapshot;
@@ -92,7 +92,7 @@ export async function issueAtomicPortableSourceAttestation(input: {
       'SELECT _id, "serverId", name, color, position, permissions FROM roles WHERE "serverId"=$1 LIMIT 2001',
       [sid], 2000)).map(row => normalize(row, ['position', 'permissions']));
     const canonical = (await read(client,
-      'SELECT "channelId", "serverId", "roleId", allow, deny FROM channel_permissions WHERE "serverId"=$1 LIMIT 20001',
+      'SELECT p."channelId", p."serverId", p."roleId", p.allow, p.deny FROM channel_permissions p JOIN channels c ON c._id=p."channelId" WHERE c."serverId"=$1 LIMIT 20001',
       [sid], 20000)).map(row => normalize(row, ['allow', 'deny']));
     // Legacy overrides are intentionally EXCLUDED from migration payloads;
     // count them without selecting targetId, userId or other sensitive columns.
@@ -101,7 +101,10 @@ export async function issueAtomicPortableSourceAttestation(input: {
       [sid], 20000);
     const allowed = new Set(channels.map(channel => textId(channel._id)));
     for (const item of canonical) {
-      if (!allowed.has(textId(item.channelId))) refuse();
+      // A permission row bound to a channel of this server MUST also declare
+      // the same server. Query through the channel prevents corrupt
+      // cross-server rows from silently disappearing during export.
+      if (!allowed.has(textId(item.channelId)) || item.serverId !== sid) refuse();
     }
     const permissions: SourcePermissionRows[] = channels.map(channel => ({
       channelId: textId(channel._id),
@@ -139,7 +142,7 @@ export async function issueAtomicPortableSourceAttestation(input: {
       signature: sign(null, portableSourceAttestationSigningBytes(fields), key).toString('base64url'),
     };
     // Self-check the public verifier before returning any artifact.
-    const pub = (await import('node:crypto')).createPublicKey(key).export({ type: 'spki', format: 'pem' }).toString();
+    const pub = createPublicKey(key).export({ type: 'spki', format: 'pem' }).toString();
     verifyPortableSourceAttestation({
       structure, permissions: permissionManifest, attestation,
       expectedSourceOrigin: input.sourceOrigin, trustedSourcePublicKeyPem: pub, now,
