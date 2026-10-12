@@ -49,9 +49,6 @@ const translations: Record<string, string> = {
   "role_name": "Rol adı",
   "role_color": "Rol rengi",
   "role_permissions_warning": "Yalnızca sahip olduğunuz izinleri verebilirsiniz. Yönetici izni tüm yetkileri içerir.",
-  "save": "Kaydet",
-  "delete": "Sil",
-  "cancel": "İptal",
 
   'socket_connection_problem': 'Gerçek zamanlı bağlantı kurulamadı. Yeniden bağlanılıyor…',
   'socket_client_unavailable': 'Gerçek zamanlı özellikler yüklenemedi. Sayfayı yenileyin.',
