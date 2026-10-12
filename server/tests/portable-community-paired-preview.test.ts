@@ -12,6 +12,7 @@ jest.mock('../middleware/rateLimit', () => ({
 import express from 'express';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { createHash } from 'node:crypto';
 import serversRouter from '../routes/servers';
 import { buildPortableCommunityStructure } from '../lib/portableCommunity';
 import { buildPortableCommunityPermissionManifest } from '../lib/portableCommunityPermissions';
@@ -119,6 +120,9 @@ describe('POST /api/servers/:sid/portable-import/paired-preview', () => {
     expect(damaged.body.permissionPair).toBeUndefined();
     const incomplete = documents();
     incomplete.permissions.channels = [];
+    const { integrity: _integrity, portability: _portability, ...canonical } = incomplete.permissions;
+    incomplete.permissions.integrity.digest =
+      createHash('sha256').update(JSON.stringify(canonical), 'utf8').digest('hex');
     const missing = await post(OWNER, incomplete, 'account-security');
     expect(missing.status).toBe(422);
     expect(await state()).toEqual(before);
