@@ -14,7 +14,7 @@
     "dev": "ELECTRON_DEV=true npm run compile && electron .",
     "build": "npm run compile && electron-builder",
     "test": "jest --config ./jest.electron.config.ts",
-    "compile": "rm -rf dist && tsc -p tsconfig.build.json",
+    "compile": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "dist": "npm run build",
     "dist:win": "npm run compile && electron-builder --win",
     "dist:mac": "npm run compile && electron-builder --mac",
