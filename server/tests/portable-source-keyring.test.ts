@@ -23,8 +23,8 @@ function generateSigner() {
   return { publicKeyPem, fingerprint, privateKey };
 }
 type Signer = ReturnType<typeof generateSigner>;
-function signed(signer: Signer, origin = ORIGIN, sourceServerId = 'source-server') {
-  const server = { _id: sourceServerId, name: 'Community' };
+function signed(signer: Signer, origin = ORIGIN, sourceServerId = 'source-server', name = 'Community') {
+  const server = { _id: sourceServerId, name };
   const categories = [{ _id: 'cat-1', name: 'General', position: 0 }];
   const channels = [{ _id: 'chan-1', serverId: sourceServerId, name: 'welcome',
     type: 'text', categoryId: 'cat-1', order: 0 }];
@@ -131,7 +131,12 @@ describe('P7 destination-pinned key registry: offline source verification only',
 
     expect(() => prove(authentic, registry([key(signer, { sourceOrigin: OTHER })])))
       .toThrow(PortableSourceAttestationError);
-    const tampered = signed(attacker);
+    // A second valid signed fixture with IDENTICAL manifest bytes isn't
+    // tampering: the authentic signature remains valid for those bytes.
+    // Make the source topology genuinely different, recompute its own
+    // checksums, then attach the original attestation: digests MUST disagree.
+    const tampered = signed(attacker, ORIGIN, 'source-server', 'Malicious replacement community');
+    expect(tampered.structure.integrity.digest).not.toBe(authentic.structure.integrity.digest);
     expect(() => prove({ ...tampered, attestation: authentic.attestation }, trust))
       .toThrow(PortableSourceAttestationError);
   });
