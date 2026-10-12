@@ -117,11 +117,11 @@ describe('C1.4 — üretim gezinmesi yalnız gerçek sekmeleri gösterir', () =>
     expect(navIds()).toContain('general');
   });
 
-  it('profil sunum ayarı için Roller sekmesi YAYINDADIR', () => {
+  it('rol düzenleme ve profil görünürlüğü için Roller sekmesi YAYINDADIR', () => {
     mountModal('roles');
 
     expect(navIds()).toContain('roles');
-    expect(host.querySelector('#roles-heading')?.textContent).toBe(t('markup_profil_rolleri_9d2dc77'));
+    expect(host.querySelector('#roles-heading')?.textContent).toBe(t('srv_tab_roles'));
   });
 
   it('yetkili operasyonel servis görünümü Sistem sekmesinde YAYINDADIR', () => {
