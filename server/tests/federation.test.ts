@@ -347,7 +347,7 @@ describe('POST /api/federation/users/:username/inbox', () => {
     expect(res.status).toBe(202);
   });
 
-  it('accepts a Delete activity and removes the stored message', async () => {
+  it('accepts Delete as a scrubbed tombstone so a late Create cannot resurrect content', async () => {
     // Önce silinecek bir mesaj ekle
     const apId = 'https://mastodon.social/users/remote_actor/statuses/to-delete';
     await mockDb.apMessages.insert({
@@ -365,8 +365,21 @@ describe('POST /api/federation/users/:username/inbox', () => {
 
     expect(res.status).toBe(202);
 
-    const stillExists = await mockDb.apMessages.findOne({ apId });
-    expect(stillExists).toBeFalsy();
+    // Deletion must erase content without removing the durable replay guard:
+    // a physical DELETE would allow an out-of-order late Create to reappear.
+    const tombstone = await requireDoc(mockDb.apMessages, { apId });
+    expect(tombstone).toMatchObject({
+      apId,
+      actorUrl: ACTOR_URL,
+      content: '',
+      attachments: [],
+      summary: null,
+      tags: [],
+      visibility: 'direct',
+      deletedAt: expect.any(Number),
+    });
+    expect(tombstone.deletedAt).toBeGreaterThan(0);
+    expect(JSON.stringify(tombstone)).not.toContain('silinecek');
   });
 
   it('accepts Undo(Follow) and removes the follow record', async () => {
