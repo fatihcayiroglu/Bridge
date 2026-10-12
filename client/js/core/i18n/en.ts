@@ -49,9 +49,6 @@ const translations: Record<string, string> = {
   "role_name": "Role name",
   "role_color": "Role color",
   "role_permissions_warning": "You can grant only permissions you already have. Administrator includes all permissions.",
-  "save": "Save",
-  "delete": "Delete",
-  "cancel": "Cancel",
 
   'socket_connection_problem': 'Realtime connection could not be established. Reconnecting…',
   'socket_client_unavailable': 'Realtime features did not load. Refresh the page.',
