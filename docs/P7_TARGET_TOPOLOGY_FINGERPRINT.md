@@ -2,26 +2,33 @@
 
 **Status: read-only preflight only; import remains unimplemented.**
 
-Two owner-protected APIs now share a canonical, deterministic SHA-256
+Three owner-protected APIs now share a canonical, deterministic SHA-256
 fingerprint of the **currently read destination topology**.
 
 1. `POST /api/servers/:sid/portable-import/paired-preview` returns
    `targetTopologyDigest` (64 lowercase hex characters) alongside
    its source topology/permission comparison.
-2. `POST /api/servers/:sid/portable-import/mapping-review` now requires
+2. `GET /api/servers/:sid/portable-import/target-fingerprint` returns
+   `targetTopologyDigest` with resource counts **without uploading source
+   exports**. Requires authenticated destination ownership and a fresh
+   `account.import` step-up. No-store; no SQL writes.
+3. `POST /api/servers/:sid/portable-import/mapping-review` requires
    the mapping object to include `expectedTargetDigest` **exactly equal**
    to the current target fingerprint. A missing, malformed or stale value
    is rejected with 422 and no mapping details are returned.
 
-The hash canonically sorts each resource type by stable ID and includes the
-destination server ID, each category's ID and name, every role's ID/name/
-canonical permission bitmask, every channel's ID/name/type and optional
-category ID (null when absent). It does not include members, messages,
+The fingerprint reuses the **entire C2 v1 portable structure field allowlist**
+in deterministic sorted order, with a fixed snapshot timestamp: destination
+server ID; category ID/name/position/collapsed state; role ID/name/color/
+position/permission bitmask; channel ID/name/type/topic/category reference/
+legacy category/order/NSFW/slowmode. The response is bounded at 512 KiB.
+Rows must have destination provenance, unique valid IDs and valid role masks. It does not include members, messages,
 secrets, audit records, or user-specific overrides. Rows must belong to
 the same destination, use valid bounded IDs/names/masks, and have unique
 IDs per collection. A channel whose category reference is not present
 in the category snapshot makes the fingerprint unavailable rather than
 pretending the target is consistent.
+Unknown extra row fields (members, secrets, API tokens) are not hashed.
 
 **Read-only request sequence:**
 - The destination owner authenticates with fresh `account.import`
