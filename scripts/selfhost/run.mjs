@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { Instance, REPO, EGRESS_GUARD, sleep } from './lib/instance.mjs';
-import { seed, verify } from './lib/fixture.mjs';
+import { seed, verify, inspectPreviousChannelMessage } from './lib/fixture.mjs';
 import { request } from '../multinode/lib/client.mjs';
 
 const args = process.argv.slice(2);
@@ -169,6 +169,17 @@ const scenarios = {
       let fx;
       try { fx = await seed(inst.base, `up${variant[0]}`); record('upgrade', `${sid}2`, `data created on ${prevVersion} through its API`, 'PASS'); }
       catch (e) { record('upgrade', `${sid}2`, `data created on ${prevVersion} through its API`, 'FAIL', e.message); await inst.stop(); continue; }
+      // Prove the OLD release already exposes the acknowledged message to a
+      // fresh login, before any upgrade runs. A failure here is separately
+      // recorded and cannot be excused as a new-release migration regression.
+      try {
+        const observed = await inspectPreviousChannelMessage(inst.base, fx);
+        record('upgrade', `${sid}PRE`, `[${variant}] previous release exposes the acknowledged channel message`,
+          observed.ok ? 'PASS' : 'FAIL', observed.detail);
+      } catch (e) {
+        record('upgrade', `${sid}PRE`, `[${variant}] previous release exposes the acknowledged channel message`,
+          'FAIL', String(e?.message || e));
+      }
       await inst.stop();
       let boot;
       try { boot = await inst.start({ tag: `upgraded-${variant}` }); }
