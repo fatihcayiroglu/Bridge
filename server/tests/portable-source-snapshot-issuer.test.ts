@@ -29,7 +29,7 @@ function fixture() {
     async query(sql: string, params?: unknown[]) {
       queries.push({ sql, params });
       if (sql.startsWith('BEGIN') || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
-      const match = /\\b(?:FROM|JOIN) (servers|channel_categories|channels|roles|channel_permissions|channel_overrides)\\b/.exec(sql);
+      const match = /\b(?:FROM|JOIN) (servers|channel_categories|channels|roles|channel_permissions|channel_overrides)\b/.exec(sql);
       if (!match) throw new Error('unexpected SQL (no fixture table)');
       const key = sql.includes('FROM channel_overrides') ? 'channel_overrides' : match[1];
       if (key === failTable) throw new Error('private SQL error including secret');
@@ -64,7 +64,7 @@ describe('P7 C4 single-transaction source snapshot issuance (NO import)', () => 
     for (const q of f.queries.filter(q => /^SELECT/.test(q.sql))) {
       expect(q.params).toEqual([SID]);
       expect(q.sql).toContain('LIMIT');
-      expect(q.sql).not.toMatch(/\\bINSERT\\b|\\bUPDATE\\b|\\bDELETE\\b/);
+      expect(q.sql).not.toMatch(/\bINSERT\b|\bUPDATE\b|\bDELETE\b/);
     }
     // Neither member identifiers nor legacy target IDs are selected/exported.
     expect(sql.join(' ')).not.toContain('"targetId"');
