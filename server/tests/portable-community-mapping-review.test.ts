@@ -306,6 +306,103 @@ describe('P7 C3 explicit community mapping review', () => {
     check(f => { (f.target as unknown as Record<string, unknown>).serverId = ''; });
   });
 
+
+  it('sorts multi-entity owner choices independently of submitted order, while reporting every widened role', () => {
+    const f = fixtures();
+    f.structure = buildPortableCommunityStructure(
+      { _id: SOURCE, name: 'Multi source' },
+      [{ _id: 'cat-a', name: 'First', position: 0 }, { _id: 'cat-b', name: 'Second', position: 1 }],
+      [
+        { _id: 'channel-a', name: 'A', type: 'text', categoryId: 'cat-a', order: 0 },
+        { _id: 'channel-b', name: 'B', type: 'voice', categoryId: 'cat-b', order: 1 },
+      ],
+      [
+        { _id: 'role-a', name: 'Readers', permissions: PERMS.VIEW_CHANNELS, position: 0 },
+        { _id: 'role-b', name: 'Writers', permissions: PERMS.SEND_MESSAGES, position: 1 },
+      ],
+      AT,
+    );
+    f.permissions = buildPortableCommunityPermissionManifest(
+      { _id: SOURCE },
+      [{ _id: 'channel-a', serverId: SOURCE }, { _id: 'channel-b', serverId: SOURCE }],
+      [{ _id: 'role-a', serverId: SOURCE }, { _id: 'role-b', serverId: SOURCE }],
+      [
+        { channelId: 'channel-a', canonical: [], legacy: [] },
+        { channelId: 'channel-b', canonical: [], legacy: [] },
+      ],
+      AT,
+    );
+    f.target.categories.push({ _id: 'target-cat-b', serverId: TARGET, name: 'Second' });
+    f.target.roles[0]!.permissions = PERMS.VIEW_CHANNELS | PERMS.SEND_MESSAGES;
+    f.target.roles.push({
+      _id: 'target-role-b', serverId: TARGET, name: 'Writers',
+      permissions: PERMS.SEND_MESSAGES | PERMS.MANAGE_MESSAGES,
+    });
+    f.target.channels.push({
+      _id: 'target-channel-b', serverId: TARGET, name: 'B', type: 'voice',
+    });
+    f.mapping.expectedTargetDigest = fingerprintDestinationTopology(f.target);
+    f.mapping.structureDigest = f.structure.integrity.digest;
+    f.mapping.permissionsDigest = f.permissions.integrity.digest;
+    // Reverse each mapping array: response order must come from source IDs, not input order.
+    f.mapping.categories = [
+      { sourceId: 'cat-b', targetId: 'target-cat-b' },
+      { sourceId: 'cat-a', targetId: 'target-cat' },
+    ];
+    f.mapping.roles = [
+      { sourceId: 'role-b', targetId: 'target-role-b' },
+      { sourceId: 'role-a', targetId: 'target-role' },
+    ];
+    f.mapping.channels = [
+      { sourceId: 'channel-b', targetId: 'target-channel-b' },
+      { sourceId: 'channel-a', targetId: 'target-channel' },
+    ];
+    const result = inspectExplicitCommunityMapping(f.structure, f.permissions, f.mapping, f.target);
+    expect(result.mode).toBe('read-only');
+    expect(result.writesPerformed).toBe(false);
+    expect(result.mappingApproved).toBe(false);
+    expect(result.importSupported).toBe(false);
+    expect(result.mapping.categories.map(x => x.sourceId)).toEqual(['cat-a', 'cat-b']);
+    expect(result.mapping.roles.map(x => x.sourceId)).toEqual(['role-a', 'role-b']);
+    expect(result.mapping.channels.map(x => x.sourceId)).toEqual(['channel-a', 'channel-b']);
+    expect(result.counts.unsafeRoleMappings).toBe(2);
+    expect(result.risks.rolePermissionWidening).toEqual([
+      { sourceId: 'role-a', targetId: 'target-role', extraMask: PERMS.SEND_MESSAGES },
+      { sourceId: 'role-b', targetId: 'target-role-b', extraMask: PERMS.MANAGE_MESSAGES },
+    ]);
+    expect(result.blockers).toContain('TARGET_ROLE_PERMISSION_WIDENING');
+
+    // An owner cannot map two distinct real sources onto the same target.
+    f.mapping.roles[0]!.targetId = 'target-role';
+    invalid(f);
+    f.mapping.roles[0]!.targetId = 'target-role-b';
+    f.mapping.categories[0]!.targetId = 'target-cat';
+    invalid(f);
+    f.mapping.categories[0]!.targetId = 'target-cat-b';
+    f.mapping.channels[0]!.targetId = 'target-channel';
+    invalid(f);
+  });
+
+  it('rejects foreign, incomplete or duplicate mapping entries without ever producing an approval', () => {
+    const check = (mutate: (f: ReturnType<typeof fixtures>) => void) => {
+      const f = fixtures();
+      mutate(f);
+      invalid(f);
+    };
+    check(f => { (f.mapping as unknown as Record<string, unknown>).categories = null; });
+    check(f => { (f.mapping as unknown as Record<string, unknown>).roles = {}; });
+    check(f => { (f.mapping as unknown as Record<string, unknown>).channels = 'channel-a'; });
+    check(f => { (f.mapping.roles[0] as unknown as Record<string, unknown>).sourceId = undefined; });
+    check(f => { (f.mapping.channels[0] as unknown as Record<string, unknown>).targetId = false; });
+    check(f => { (f.mapping.roles[0] as unknown as Record<string, unknown>).targetId = 0; });
+    check(f => { (f.mapping.categories[0] as unknown as Record<string, unknown>).sourceId = null; });
+    check(f => { (f.mapping.channels[0] as unknown as Record<string, unknown>).sourceId = 'unknown'; });
+    check(f => { (f.mapping.roles[0] as unknown as Record<string, unknown>).targetId = 'unknown'; });
+    check(f => { (f.mapping.categories[0] as unknown as Record<string, unknown>).targetId = 'x'.repeat(257); });
+    check(f => { (f.mapping.roles[0] as unknown as Record<string, unknown>).approval = true; });
+    check(f => { (f.mapping.channels[0] as unknown as Record<string, unknown>).sourceId = 'x'.repeat(257); });
+  });
+
   it('rejects extra keys and malformed mapping documents rather than ignoring apply flags', () => {
     const f = fixtures();
     const malicious = { ...f.mapping, apply: true };
