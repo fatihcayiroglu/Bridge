@@ -92,7 +92,7 @@ export async function issueAtomicPortableSourceAttestation(input: {
       'SELECT _id, "serverId", name, color, position, permissions FROM roles WHERE "serverId"=$1 LIMIT 2001',
       [sid], 2000)).map(row => normalize(row, ['position', 'permissions']));
     const canonical = (await read(client,
-      'SELECT p."channelId", p."serverId", p."roleId", p.allow, p.deny FROM channel_permissions p JOIN channels c ON c._id=p."channelId" WHERE c."serverId"=$1 LIMIT 20001',
+      'SELECT p."channelId", p."serverId", p."roleId", p.allow, p.deny FROM channel_permissions p WHERE p."serverId"=$1 OR p."channelId" IN (SELECT _id FROM channels WHERE "serverId"=$1) LIMIT 20001',
       [sid], 20000)).map(row => normalize(row, ['allow', 'deny']));
     // Legacy overrides are intentionally EXCLUDED from migration payloads;
     // count them without selecting targetId, userId or other sensitive columns.
@@ -101,9 +101,9 @@ export async function issueAtomicPortableSourceAttestation(input: {
       [sid], 20000);
     const allowed = new Set(channels.map(channel => textId(channel._id)));
     for (const item of canonical) {
-      // A permission row bound to a channel of this server MUST also declare
-      // the same server. Query through the channel prevents corrupt
-      // cross-server rows from silently disappearing during export.
+      // Select rows by BOTH claimed server and owning channel; otherwise a
+      // mis-scoped or orphan row could vanish silently. Every returned row
+      // must belong to the exact source channel and source community.
       if (!allowed.has(textId(item.channelId)) || item.serverId !== sid) refuse();
     }
     const permissions: SourcePermissionRows[] = channels.map(channel => ({
