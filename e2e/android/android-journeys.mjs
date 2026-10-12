@@ -293,7 +293,7 @@ async function androidPressureEvidence(label) {
       // record arbitrary app logs, env vars, tokens, paths or HTTP responses.
       outputs[key] = key === 'pid'
         ? (/^[0-9 ]{1,120}$/.test(value) ? value : 'unavailable')
-        : (/^(?:some|full) avg10=[0-9.]+ avg60=[0-9.]+ avg300=[0-9.]+ total=[0-9]+(?:\\n|$)/.test(value)
+        : (/^(?:some|full) avg10=[0-9.]+ avg60=[0-9.]+ avg300=[0-9.]+ total=[0-9]+(?:$|\n)/.test(value)
           ? value.slice(0, 280) : 'unavailable');
     } catch { outputs[key] = 'unavailable'; }
   }
@@ -1139,7 +1139,7 @@ async function main() {
     if (anrLog.includes('ANR in com.bridge.app.debug')) {
       await androidPressureEvidence('ANR01-failure');
       // Count only package-specific ANR headers, never expose raw logcat lines.
-      facts.androidAnrCount = anrLog.split('\\n').filter(line => line.includes('ANR in com.bridge.app.debug')).length;
+      facts.androidAnrCount = anrLog.split('\n').filter(line => line.includes('ANR in com.bridge.app.debug')).length;
     }
     assert(!anrLog.includes('ANR in com.bridge.app.debug'),
       'Android ActivityManager detected an ANR; process restart/restoration is NOT sufficient for a pass');
