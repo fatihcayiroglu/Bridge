@@ -71,6 +71,21 @@ export async function seed(base, tag = 'sh') {
 }
 
 /**
+ * Read-only, fresh-credential baseline check BEFORE upgrading a previous
+ * release. It distinguishes data absent on the old release from data lost
+ * only after the upgrade. No retries, sleeps or extra fixture writes.
+ */
+export async function inspectPreviousChannelMessage(base, fx) {
+  const member = await login(base, fx.users.b);
+  const history = await request(base, 'GET', `/api/channels/${fx.channelId}/messages`, { token: member.token });
+  const visible = history.status === 200 && JSON.stringify(history.body).includes(fx.channelText);
+  return {
+    ok: visible,
+    detail: `member HTTP ${history.status}; returned rows ${rows(history.body).length}; synthetic fixture message present ${visible}`,
+  };
+}
+
+/**
  * Re-reads the dataset with fresh logins. Returns a list of
  * { check, ok, detail } — the caller records each one.
  */
@@ -86,7 +101,17 @@ export async function verify(base, fx) {
   check('server still listed for its owner', rows(servers.body).some((s) => (s._id || s.id) === fx.serverId) || JSON.stringify(servers.body).includes(fx.serverId), `status ${servers.status}`);
 
   const hist = await request(base, 'GET', `/api/channels/${fx.channelId}/messages`, { token: b.token });
-  check('channel message readable by the other member', hist.status === 200 && JSON.stringify(hist.body).includes(fx.channelText), `status ${hist.status}`);
+  const memberCanRead = hist.status === 200 && JSON.stringify(hist.body).includes(fx.channelText);
+  let messageEvidence = `member HTTP ${hist.status}; rows ${rows(hist.body).length}`;
+  if (!memberCanRead) {
+    // Owner-vs-member read isolates a permission issue from missing or stale
+    // durable data. Log ONLY synthetic fixture visibility and row counts;
+    // never log response bodies, user identifiers, cookies or auth tokens.
+    const ownerHist = await request(base, 'GET', `/api/channels/${fx.channelId}/messages`, { token: a.token });
+    const ownerCanRead = ownerHist.status === 200 && JSON.stringify(ownerHist.body).includes(fx.channelText);
+    messageEvidence += `; owner HTTP ${ownerHist.status}; rows ${rows(ownerHist.body).length}; owner sees fixture ${ownerCanRead}`;
+  }
+  check('channel message readable by the other member', memberCanRead, messageEvidence);
 
   const dms = await request(base, 'GET', '/api/dm', { token: b.token });
   const conv = rows(dms.body).find((c) => JSON.stringify(c).includes(fx.users.a.id));
