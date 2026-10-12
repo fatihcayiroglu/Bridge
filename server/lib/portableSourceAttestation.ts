@@ -38,7 +38,7 @@ export class PortableSourceAttestationError extends Error {
   }
 }
 function bad(): never { throw new PortableSourceAttestationError(); }
-function validOrigin(value: unknown): value is string {
+export function isCanonicalPortableSourceOrigin(value: unknown): value is string {
   if (typeof value !== 'string' || value.length > 512) return false;
   try {
     const u = new URL(value);
@@ -80,7 +80,7 @@ export function verifyPortableSourceAttestation(args: {
 }) {
   try {
     const pair = inspectPortableCommunityManifestPair(args.structure, args.permissions);
-    if (!validOrigin(args.expectedSourceOrigin)) bad();
+    if (!isCanonicalPortableSourceOrigin(args.expectedSourceOrigin)) bad();
     const a = args.attestation;
     if (!a || typeof a !== 'object' || Array.isArray(a)) bad();
     const obj = a as Record<string, unknown>;
