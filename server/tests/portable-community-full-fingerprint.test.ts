@@ -83,6 +83,7 @@ describe('P7 C3 full destination topology fingerprint coverage', () => {
     expect(() => altered(v => { v.categories.push({ ...v.categories[0]! }); })).toThrow();
     expect(() => altered(v => { v.channels[0]!.serverId = 'foreign-server'; })).toThrow();
     expect(() => altered(v => { v.channels[0]!.categoryId = 'nonexistent'; })).toThrow();
+    expect(() => altered(v => { v.channels[0]!.categoryId = ''; })).toThrow();
     expect(() => altered(v => { v.channels[0]!.type = 'unknown-type'; })).toThrow();
     expect(() => fingerprintDestinationTopology({
       ...topology(),
