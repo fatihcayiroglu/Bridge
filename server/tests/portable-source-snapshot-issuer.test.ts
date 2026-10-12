@@ -134,6 +134,24 @@ describe('P7 C4 single-transaction source snapshot issuance (NO import)', () => 
     expect(f.queries.at(-1)?.sql).toBe('ROLLBACK');
   });
 
+  it('preserves enabled PostgreSQL NSFW integer rather than silently exporting false', async () => {
+    const f = fixture();
+    f.rows.channels[0].nsfw = 1;
+    const result = await f.issue();
+    expect(result.structure.channels[0].nsfw).toBe(true);
+    expect(f.queries.at(-1)?.sql).toBe('COMMIT');
+  });
+
+  it.each([2, -1, null, '1', 'invalid'])(
+    'rejects malformed PostgreSQL NSFW bit (%s) before source COMMIT',
+    async (mask) => {
+      const f = fixture();
+      f.rows.channels[0].nsfw = mask;
+      await expect(f.issue()).rejects.toThrow(PortableSourceSnapshotError);
+      expect(f.queries.at(-1)?.sql).toBe('ROLLBACK');
+    },
+  );
+
   it('rejects unsafe bigint coercion and never signs rounded channel positions', async () => {
     const f = fixture();
     f.rows.channels[0].order = '9007199254740993';
