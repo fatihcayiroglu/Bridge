@@ -38,6 +38,11 @@ export function readPortableSourceSigningConfig(
     const signingPrivateKeyPem = pem.toString('utf8');
     const key = createPrivateKey(signingPrivateKeyPem);
     if (key.asymmetricKeyType !== 'ed25519') unavailable();
+    // Node/OpenSSL may accept ignored trailing bytes after an otherwise
+    // well-formed PEM block. Do NOT accept that as a different signing
+    // identity: require the full decoded text to be canonical PKCS#8 PEM.
+    const canonicalPem = key.export({ type: 'pkcs8', format: 'pem' }).toString();
+    if (signingPrivateKeyPem !== canonicalPem) unavailable();
     return { sourceOrigin: origin, signingPrivateKeyPem };
   } catch { return unavailable(); }
 }
