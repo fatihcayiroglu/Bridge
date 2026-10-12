@@ -87,6 +87,7 @@
   let editingId = $state('');
   let formName = $state('');
   let formColor = $state('#64748b');
+  let colorDirty = $state(false);
   let formPermissions = $state(0);
   let pendingDeleteId = $state('');
   let formError = $state('');
@@ -129,6 +130,7 @@
     editingId = '';
     formName = '';
     formColor = '#64748b';
+    colorDirty = false;
     // Explicit 0 is safer than the backend's legacy default SEND_MESSAGES.
     formPermissions = 0;
     formError = '';
@@ -147,6 +149,7 @@
     editingId = role._id;
     formName = role.name;
     formColor = editorColor(role.color);
+    colorDirty = false;
     formPermissions = mask;
     formError = '';
     error = '';
@@ -189,7 +192,12 @@
       const res = await apiFetch(isCreate ? endpoint() : `${endpoint()}/${encodeURIComponent(id)}`, {
         method: isCreate ? 'POST' : 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, color: formColor, permissions: formPermissions }),
+        // Do not silently replace legacy 3/8-digit stored colors merely because
+        // the browser's color picker displays a 6-digit approximation.
+        body: JSON.stringify({
+          name, permissions: formPermissions,
+          ...(isCreate || colorDirty ? { color: formColor } : {}),
+        }),
       });
       if (!isStillCurrentServer(serverId)) {
         formError = t('ui_sunucu_degisti_roller_yeniden_yuklenmeli', 'Sunucu değişti — roller yeniden yüklenmeli.');
@@ -363,7 +371,7 @@
           <input class="role-name-input" type="text" maxlength="32" required bind:value={formName} disabled={busy} />
         </label>
         <label>{t('role_color', 'Rol rengi')}
-          <input class="role-color-input" type="color" bind:value={formColor} disabled={busy} />
+          <input class="role-color-input" type="color" bind:value={formColor} disabled={busy} onchange={() => { colorDirty = true; }} />
         </label>
       </div>
       <p class="roles-help">{t('role_permissions_warning', 'Yalnızca sahip olduğunuz izinleri verebilirsiniz. Yönetici izni tüm yetkileri içerir.')}</p>
