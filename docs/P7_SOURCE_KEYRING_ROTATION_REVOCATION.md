@@ -12,7 +12,10 @@ A valid signature with an attacker-provided public key is not authentication.
 `server/lib/portableSourceKeyring.ts` defines a bounded, operator-supplied
 keyring and a verifier combining the existing strict signature verifier with
 key lifecycle checks. The caller, **not the untrusted artifact**, provides the
-trusted source origin and registry JSON. The library makes no outbound
+trusted source origin, **expected source community ID**, and registry JSON.
+The community ID is checked against the signed attestation before key
+acceptance; an export cannot silently switch to another community on the
+same trusted source installation. The library makes no outbound
 connections and has no migration or authorization side effects.
 
 ## Independent operator provisioning
