@@ -26,6 +26,7 @@ import { validatePortableCommunityStructure, PortableCommunityValidationError } 
 import { buildPortableCommunityPreview } from '../../lib/portableCommunityPreview';
 import { inspectPortableCommunityManifestPair, PortableCommunityPairError } from '../../lib/portableCommunityPair';
 import { previewCommunityPermissionRemapping } from '../../lib/portableCommunityPermissionPreflight';
+import { inspectExplicitCommunityMapping, PortableCommunityMappingError } from '../../lib/portableCommunityMappingReview';
 import { buildPortableCommunityPermissionManifest } from '../../lib/portableCommunityPermissions';
 import { enforceStepUp } from '../../lib/stepUp';
 
@@ -410,6 +411,64 @@ router.post('/:sid/portable-import/paired-preview', authMiddleware, limits.write
       code: 'PORTABLE_COMMUNITY_PREVIEW_UNAVAILABLE',
       error: 'Cannot build a complete destination preview',
     });
+  }
+});
+
+// P7 C3: require explicit, one-to-one source => EXISTING target ID choices.
+// Review only. A fresh step-up proof is NOT an import/write authorization.
+router.post('/:sid/portable-import/mapping-review', authMiddleware, limits.write(), async (req, res) => {
+  const actor = castAuthed(req).user;
+  const sid = String(req.params.sid ?? '');
+  res.setHeader('Cache-Control', 'no-store');
+  const destination = await Servers.findById(sid);
+  if (!destination) return res.status(404).json({ error: 'Target community not found' });
+  if (destination.ownerId !== actor.id) {
+    return res.status(403).json({ error: 'Only the destination owner may inspect identity mappings' });
+  }
+  if (!(await enforceStepUp(req, res, actor.id, 'account.import'))) return;
+
+  const body: unknown = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return res.status(400).json({ error: 'Invalid identity mapping request' });
+  }
+  const keys = Object.keys(body);
+  if (keys.length !== 4 || !keys.includes('structure') || !keys.includes('permissions') ||
+      !keys.includes('mapping') || !keys.includes('targetServerId')) {
+    return res.status(400).json({ error: 'Expected structure, permissions, mapping and targetServerId' });
+  }
+  const input = body as {
+    structure: unknown; permissions: unknown; mapping: unknown; targetServerId: unknown;
+  };
+  if (input.targetServerId !== sid) {
+    return res.status(409).json({ code: 'PORTABLE_COMMUNITY_TARGET_CHANGED',
+      error: 'Destination must match authenticated target' });
+  }
+
+  let categories: Array<Record<string, unknown>>;
+  let roles: Array<Record<string, unknown>>;
+  let channels: Array<Record<string, unknown>>;
+  try {
+    const data = await Promise.all([
+      Channels.findCategoriesByServer(sid), Roles.findByServer(sid), Channels.findByServer(sid),
+    ]);
+    categories = data[0] as unknown as Array<Record<string, unknown>>;
+    roles = data[1] as unknown as Array<Record<string, unknown>>;
+    channels = data[2] as unknown as Array<Record<string, unknown>>;
+  } catch (err) {
+    logger.error({ err, sid, userId: actor.id, event: 'server.portable_mapping_read.failed' },
+      'Destination identity mapping data unavailable.');
+    return res.status(503).json({ code: 'PORTABLE_COMMUNITY_MAPPING_UNAVAILABLE',
+      error: 'Cannot read complete destination mapping data' });
+  }
+  try {
+    const review = inspectExplicitCommunityMapping(input.structure, input.permissions,
+      input.mapping, { serverId: sid, categories, roles, channels });
+    return res.status(200).json(review);
+  } catch (err) {
+    if (err instanceof PortableCommunityMappingError) {
+      return res.status(422).json({ code: err.code, error: 'Invalid or unsafe identity mapping request' });
+    }
+    throw err;
   }
 });
 
