@@ -80,7 +80,7 @@ describe('P7 C3 paired community structure/permissions intake', () => {
 
   it('rejects checksum-valid orphan channels and missing channel permission matrices', () => {
     const foreign = clone(permissions());
-    foreign.channels[0]!.channelSourceId = 'foreign-channel';
+    foreign.channels[0]!.channelSourceId = 'channel-0'; // Still sorted and individually valid
     resign(foreign);
     invalid(structure(), foreign);
 
@@ -110,6 +110,24 @@ describe('P7 C3 paired community structure/permissions intake', () => {
     p.unsupported.individualOverrideRows = Number.MAX_SAFE_INTEGER;
     resign(p);
     invalid(structure(), p);
+  });
+
+  it('rejects source role IDs that collide with the reserved everyone marker', () => {
+    for (const reserved of ['__everyone__', SERVER]) {
+      const roleRow = { _id: reserved, name: 'Ambiguous', permissions: 0, position: 0 };
+      const src = buildPortableCommunityStructure(
+        { _id: SERVER, name: 'Source' }, [],
+        [{ _id: 'channel-1', name: 'general', type: 'text', order: 1 }],
+        [roleRow], at,
+      );
+      const p = buildPortableCommunityPermissionManifest(
+        { _id: SERVER },
+        [{ _id: 'channel-1', serverId: SERVER }],
+        [{ _id: reserved, serverId: SERVER }],
+        [{ channelId: 'channel-1', canonical: [], legacy: [] }], at,
+      );
+      invalid(src, p);
+    }
   });
 
   it('keeps apply blocked even if both files have zero excluded rows', () => {

@@ -24,6 +24,9 @@ export function inspectPortableCommunityManifestPair(
 
     const channelIds = new Set(structure.channels.map(row => row.sourceId));
     const roleIds = new Set(structure.roles.map(row => row.sourceId));
+    // These source IDs would collapse into the synthetic everyone marker
+    // in the permission exporter. Reject instead of guessing a grant target.
+    if (roleIds.has('__everyone__') || roleIds.has(structure.community.sourceServerId)) reject();
     if (permissions.channels.length !== channelIds.size) reject();
     const seenChannels = new Set<string>();
     let roleOverrideCount = 0;
