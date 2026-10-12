@@ -56,3 +56,32 @@ owner privileges, permission policy and snapshot/version **inside one
 PostgreSQL transaction**, using the same DB client and a proper
 transactional concurrency gate. Full rollback/failpoint evidence and
 two independently deployed instances remain mandatory.
+
+
+## Discord-style role ownership and delegation contract
+
+Bridge server roles are **defined by the server's owner or by a delegated
+administrator with `MANAGE_ROLES`**. The existing roles API enforces
+`canManageRole`/role-position hierarchy and prevents a delegated role
+manager from granting permission bits they do not already possess.
+The special `@everyone` role represents the server baseline; channel-level
+allow/deny overrides follow the existing effective-permission resolver.
+Users and bots must never acquire administrative powers merely because a
+source community has a role with a matching name or ID.
+
+**Portable identity rule:** source role IDs/names/colors/masks are *reference
+data only*. The destination's authorized server administrator decides which
+destination roles to create, edit, or map, and which destination members may
+receive them. No preview or fingerprint may create a role, assign members,
+reorder hierarchy, copy dangerous `ADMINISTRATOR` grants, change channel
+overrides or bypass `MANAGE_ROLES` checks. A matching title such as
+"Moderator" is never permission to merge role privileges.
+
+Current P7 portable preview/mapping endpoints deliberately require the
+**destination owner with fresh `account.import` step-up**. Delegation of
+community-wide imports to an administrator has **not** been implemented or
+approved. Before any such delegation, enforce the same role hierarchy and
+non-escalation rules as `server/routes/roles.ts`, plus independent approval
+for privileged permission changes, durable authorization, audit and
+transactional rollback. Do not silently reinterpret a `MANAGE_ROLES` grant
+as permission to perform a whole-community import.
