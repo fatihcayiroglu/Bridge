@@ -4,6 +4,7 @@
 import { parsePermissionMask } from './permissionMaskInvariant';
 import { validatePortableCommunityStructure } from './portableCommunityValidation';
 import { inspectPortableCommunityManifestPair } from './portableCommunityPair';
+import { computePortableCommunityTargetRevision } from './portableCommunityTargetRevision';
 
 type Row = Record<string, unknown>;
 type Kind = 'categories' | 'roles' | 'channels';
@@ -16,6 +17,13 @@ export class PortableCommunityMappingError extends Error {
   constructor() {
     super('Invalid explicit community identity mapping');
     this.name = 'PortableCommunityMappingError';
+  }
+}
+export class PortableCommunityTargetRevisionMismatchError extends Error {
+  readonly code = 'PORTABLE_COMMUNITY_TARGET_REVISION_CHANGED';
+  constructor() {
+    super('Destination community topology changed since the mapping was prepared');
+    this.name = 'PortableCommunityTargetRevisionMismatchError';
   }
 }
 function bad(): never { throw new PortableCommunityMappingError(); }
@@ -105,11 +113,15 @@ export function inspectExplicitCommunityMapping(
     const pair = inspectPortableCommunityManifestPair(structureInput, permissionInput);
     const structure = validatePortableCommunityStructure(structureInput);
     const mapping = record(mappingInput, [
-      'targetServerId', 'structureDigest', 'permissionsDigest', 'categories', 'roles', 'channels',
+      'targetServerId', 'targetRevision', 'structureDigest', 'permissionsDigest', 'categories', 'roles', 'channels',
     ]);
     if (mapping.targetServerId !== sid ||
         mapping.structureDigest !== pair.structureDigest ||
         mapping.permissionsDigest !== pair.permissionsDigest) bad();
+    const targetRevision = computePortableCommunityTargetRevision(destination);
+    if (mapping.targetRevision !== targetRevision) {
+      throw new PortableCommunityTargetRevisionMismatchError();
+    }
     const categories = validatedLinks(mapping.categories, 'categories', structure.categories,
       indexTarget('categories', destination.categories, sid));
     const roles = validatedLinks(mapping.roles, 'roles', structure.roles,
@@ -122,6 +134,7 @@ export function inspectExplicitCommunityMapping(
       'SOURCE_AUTHENTICITY_NOT_VERIFIED',
       'CROSS_FILE_SNAPSHOT_ATOMICITY_NOT_VERIFIED',
       'TARGET_TOPOLOGY_CONCURRENT_CHANGE_NOT_PREVENTED',
+      'TARGET_REVISION_IS_NOT_A_TRANSACTIONAL_LOCK',
       'OWNER_MAPPING_APPROVAL_NOT_DURABLY_RECORDED',
       'TRANSACTIONAL_IMPORT_AND_ROLLBACK_NOT_IMPLEMENTED',
       ...(unsupported > 0 ? ['UNSUPPORTED_PERMISSION_ROWS_PRESENT'] : []),
@@ -134,6 +147,7 @@ export function inspectExplicitCommunityMapping(
       mappingApproved: false as const,
       sourceServerId: pair.sourceServerId,
       targetServerId: sid,
+      targetRevision,
       sourceDigests: { structure: pair.structureDigest, permissions: pair.permissionsDigest },
       mapping: { categories: categories.links, roles: roles.links, channels: channels.links },
       counts: {
@@ -147,7 +161,8 @@ export function inspectExplicitCommunityMapping(
       risks: { rolePermissionWidening: roles.widened },
       blockers,
     };
-  } catch {
+  } catch (err) {
+    if (err instanceof PortableCommunityTargetRevisionMismatchError) throw err;
     // Malformed source documents and target read failures must not expose
     // private topology or generate a partial mapping.
     return bad();
