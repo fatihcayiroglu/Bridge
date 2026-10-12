@@ -109,6 +109,21 @@ describe('POST /api/servers/:sid/portable-import/paired-preview', () => {
     expect(await state()).toEqual(before);
   });
 
+  it('rejects inconsistent channel coverage and bad digests before reading target children', async () => {
+    const before = await state();
+    const broken = documents();
+    broken.permissions.channels[0]!.overrides[0]!.allow = 0;
+    const damaged = await post(OWNER, broken, 'account-security');
+    expect(damaged.status).toBe(422);
+    expect(damaged.body.code).toBe('PORTABLE_COMMUNITY_PAIR_INVALID');
+    expect(damaged.body.permissionPair).toBeUndefined();
+    const incomplete = documents();
+    incomplete.permissions.channels = [];
+    const missing = await post(OWNER, incomplete, 'account-security');
+    expect(missing.status).toBe(422);
+    expect(await state()).toEqual(before);
+  });
+
   it('returns conservative collisions, counted nonportable overrides and explicit blockers', async () => {
     const before = await state();
     const res = await post(OWNER, documents(), 'account-security');
