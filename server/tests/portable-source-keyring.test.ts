@@ -23,12 +23,12 @@ function generateSigner() {
   return { publicKeyPem, fingerprint, privateKey };
 }
 type Signer = ReturnType<typeof generateSigner>;
-function signed(signer: Signer, origin = ORIGIN) {
-  const server = { _id: 'source-server', name: 'Community' };
+function signed(signer: Signer, origin = ORIGIN, sourceServerId = 'source-server') {
+  const server = { _id: sourceServerId, name: 'Community' };
   const categories = [{ _id: 'cat-1', name: 'General', position: 0 }];
-  const channels = [{ _id: 'chan-1', serverId: 'source-server', name: 'welcome',
+  const channels = [{ _id: 'chan-1', serverId: sourceServerId, name: 'welcome',
     type: 'text', categoryId: 'cat-1', order: 0 }];
-  const roles = [{ _id: 'role-1', serverId: 'source-server', name: 'Member',
+  const roles = [{ _id: 'role-1', serverId: sourceServerId, name: 'Member',
     position: 0, permissions: 1 }];
   const at = new Date(NOW - 60_000).toISOString();
   const structure = buildPortableCommunityStructure(server, categories, channels, roles, at);
@@ -114,6 +114,12 @@ describe('P7 destination-pinned key registry: offline source verification only',
     expect(() => prove(authentic, trust, { expectedSourceOrigin: OTHER }))
       .toThrow(PortableSourceAttestationError);
     expect(() => prove(authentic, trust, { expectedSourceServerId: 'other-community' }))
+      .toThrow(PortableSourceAttestationError);
+    // Distinct community signed by the SAME legitimately pinned source key:
+    // the cryptographic signature is authentic, but the destination selected
+    // a different community and must fail closed BEFORE treating it as usable.
+    const signedOtherCommunity = signed(signer, ORIGIN, 'other-community');
+    expect(() => prove(signedOtherCommunity, trust))
       .toThrow(PortableSourceAttestationError);
     expect(() => prove(authentic, trust, { expectedSourceServerId: '' }))
       .toThrow(PortableSourceAttestationError);
