@@ -64,12 +64,12 @@
     return value;
   }
   function editorColor(value: unknown): string {
-    if (typeof value !== 'string') return '#99aab5';
+    if (typeof value !== 'string') return '#64748b';
     if (/^#[0-9a-fA-F]{6}$/.test(value)) return value;
     if (/^#[0-9a-fA-F]{3}$/.test(value)) {
       return '#' + [...value.slice(1)].map(char => char + char).join('');
     }
-    return '#99aab5';
+    return '#64748b';
   }
 
   const server = getCurrentServerFromRegistry();
@@ -86,7 +86,7 @@
   let editorMode = $state<EditorMode>('closed');
   let editingId = $state('');
   let formName = $state('');
-  let formColor = $state('#99aab5');
+  let formColor = $state('#64748b');
   let formPermissions = $state(0);
   let pendingDeleteId = $state('');
   let formError = $state('');
@@ -128,7 +128,7 @@
     editorMode = 'create';
     editingId = '';
     formName = '';
-    formColor = '#99aab5';
+    formColor = '#64748b';
     // Explicit 0 is safer than the backend's legacy default SEND_MESSAGES.
     formPermissions = 0;
     formError = '';
