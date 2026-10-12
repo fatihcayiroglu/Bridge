@@ -92,8 +92,10 @@ export function previewCommunityPermissionRemapping(
   const channelCheck = inspect('channel', structure.channels, targetChannels);
   const findings = [...roleCheck.findings, ...channelCheck.findings];
   const unsupported = permission.unsupported;
-  const excludedCount = unsupported.legacyOverrideRows +
-    unsupported.individualOverrideRows + unsupported.unknownTargetRows;
+  // Avoid precision loss if several individually valid (safe-integer) counts
+  // would overflow Number.MAX_SAFE_INTEGER when added together.
+  const hasUnsupportedGrants = unsupported.legacyOverrideRows > 0 ||
+    unsupported.individualOverrideRows > 0 || unsupported.unknownTargetRows > 0;
   const overrideRows = permission.channels.reduce((sum, ch) => sum + ch.overrides.length, 0);
   return {
     mode: 'read-only',
@@ -104,7 +106,7 @@ export function previewCommunityPermissionRemapping(
       channels: permission.channels.length,
       roleOverrides: overrideRows,
       excludedRows: unsupported,
-      hasUnsupportedGrants: excludedCount !== 0,
+      hasUnsupportedGrants,
     },
     diagnosticNameMatches: {
       roles: roleCheck.provisional,
@@ -122,7 +124,7 @@ export function previewCommunityPermissionRemapping(
       'SOURCE_AUTHENTICITY_NOT_VERIFIED',
       'ROLE_AND_CHANNEL_IDENTITY_NOT_VERIFIED',
       'PERMISSION_ESCALATION_POLICY_NOT_REVIEWED',
-      ...(excludedCount !== 0 ? ['UNSUPPORTED_PERMISSION_ROWS'] : []),
+      ...(hasUnsupportedGrants ? ['UNSUPPORTED_PERMISSION_ROWS'] : []),
     ],
   } as const;
 }
