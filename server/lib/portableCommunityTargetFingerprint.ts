@@ -1,74 +1,61 @@
-// P7 C3: deterministic topology fingerprint for comparing two READ-ONLY
-// owner preflight requests. This is not a DB revision, signed snapshot, lock,
-// durable approval, concurrency barrier, or authorization to import.
-import { createHash } from 'node:crypto';
+// P7 C3 — owner-only destination topology fingerprint.
+// Field allowlist matches the C2 community structure export, so review
+// comparisons catch structural edits beyond name and ID changes.
+// Still NOT a database revision, signed snapshot, transaction lock, approval,
+// or authorization to import. User/member/secret data is never serialized.
+import { buildPortableCommunityStructure } from './portableCommunity';
 import { parsePermissionMask } from './permissionMaskInvariant';
 
 type Row = Record<string, unknown>;
-type Kind = 'category' | 'role' | 'channel';
 export type DestinationTopology = {
   serverId: string;
   categories: readonly Row[];
   roles: readonly Row[];
   channels: readonly Row[];
 };
-const CHANNEL_TYPES = ['text', 'voice', 'forum', 'stage', 'announcement'];
-function id(v: unknown): string {
-  if (typeof v !== 'string' || !v || v.length > 256) throw new TypeError('Invalid topology ID');
-  return v;
-}
-function label(v: unknown): string {
-  if (typeof v !== 'string' || v.length > 200) throw new TypeError('Invalid topology name');
-  return v;
-}
-function sortById<T extends { id: string }>(rows: T[]): T[] {
-  return rows.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-}
-function rowsOf(kind: Kind, rows: readonly Row[], serverId: string) {
-  const limit = kind === 'channel' ? 500 : 2000;
-  if (!Array.isArray(rows) || rows.length > limit) throw new TypeError('Invalid topology row count');
-  const seen = new Set<string>();
-  const result: Array<{ id: string; name: string; type?: string;
-    permissions?: number; categoryId?: string | null }> = [];
-  for (const row of rows) {
-    if (!row || typeof row !== 'object' || Array.isArray(row) ||
-        row.serverId !== serverId) throw new TypeError('Foreign target topology row');
-    const rowId = id(row._id);
-    if (seen.has(rowId)) throw new TypeError('Duplicate target topology ID');
-    seen.add(rowId);
-    const entry: typeof result[number] = { id: rowId, name: label(row.name) };
-    if (kind === 'role') {
-      entry.permissions = parsePermissionMask(row.permissions, 'target role permission mask');
-    }
-    if (kind === 'channel') {
-      if (typeof row.type !== 'string' || !CHANNEL_TYPES.includes(row.type)) {
-        throw new TypeError('Invalid target channel type');
-      }
-      entry.type = row.type;
-      const rawCategory = row.categoryId;
-      entry.categoryId = rawCategory === null || rawCategory === undefined ? null : id(rawCategory);
-    }
-    result.push(entry);
+const SNAPSHOT_AT = '1970-01-01T00:00:00.000Z';
+function identifier(value: unknown): string {
+  if (typeof value !== 'string' || !value || value.length > 256) {
+    throw new TypeError('Invalid destination topology identifier');
   }
-  return sortById(result);
+  return value;
+}
+function validatedRows(rows: readonly Row[], sid: string, max: number) {
+  if (!Array.isArray(rows) || rows.length > max) {
+    throw new TypeError('Invalid destination topology row count');
+  }
+  const ids = new Set<string>();
+  return rows.map(row => {
+    if (!row || typeof row !== 'object' || Array.isArray(row) ||
+        row.serverId !== sid) throw new TypeError('Foreign destination topology row');
+    const id = identifier(row._id);
+    if (ids.has(id)) throw new TypeError('Duplicate destination topology identifier');
+    ids.add(id);
+    return row;
+  });
 }
 
-/** Hash only allowlisted identity/permission metadata, with deterministic sorting. */
+/**
+ * Canonical, bounded fingerprint of ALL portable community structure v1 fields.
+ * Its input MUST come from the destination, not an untrusted client's copy.
+ * Doesn't cover permission override tables, memberships or nonportable fields.
+ */
 export function fingerprintDestinationTopology(value: DestinationTopology): string {
-  const serverId = id(value.serverId);
-  const categories = rowsOf('category', value.categories, serverId);
-  const roles = rowsOf('role', value.roles, serverId);
-  const channels = rowsOf('channel', value.channels, serverId);
-  const categoryIds = new Set(categories.map(row => row.id));
-  for (const channel of channels) {
-    if (channel.categoryId != null && !categoryIds.has(channel.categoryId)) {
-      throw new TypeError('Destination channel references missing category');
-    }
+  const serverId = identifier(value.serverId);
+  const categories = validatedRows(value.categories, serverId, 2000);
+  const roles = validatedRows(value.roles, serverId, 2000);
+  const channels = validatedRows(value.channels, serverId, 500);
+  for (const role of roles) {
+    if (role.permissions === undefined) throw new TypeError('Missing destination role permissions');
+    parsePermissionMask(role.permissions, 'destination role mask');
   }
-  const canonical = {
-    format: 'bridge-destination-topology-review',
-    version: 1,
-    serverId, categories, roles, channels,
-  };
-  return createHash('sha256').update(JSON.stringify(canonical), 'utf8').digest('hex');
+  // Reuse the exporter field allowlist and stable position/ID sorting to
+  // avoid maintaining a subtly divergent second topology definition.
+  const canonical = buildPortableCommunityStructure(
+    { _id: serverId, name: '' }, categories, channels, roles, SNAPSHOT_AT,
+  );
+  if (Buffer.byteLength(JSON.stringify(canonical), 'utf8') > 512 * 1024) {
+    throw new TypeError('Destination topology fingerprint exceeds 512 KiB');
+  }
+  return canonical.integrity.digest;
 }
