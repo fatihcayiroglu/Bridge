@@ -163,6 +163,12 @@ describe('POST /api/servers/:sid/portable-import/paired-preview', () => {
         mode: 'read-only', importSupported: false, writesPerformed: false,
         counts: { channels: 1, roles: 1, roleOverrides: 1, unsupportedPermissionRows: 1 },
       },
+      permissionMapping: {
+        mode: 'read-only', importSupported: false, writesPerformed: false,
+        coverage: { channels: 1, roleOverrides: 1, hasUnsupportedGrants: true },
+        diagnosticNameMatches: { roles: 1, channels: 1, usableForImport: false },
+        unresolved: { total: 0, truncated: false },
+      },
     });
     expect(res.body.blockers).toContain('TRANSACTIONAL_IMPORT_AND_ROLLBACK_NOT_IMPLEMENTED');
     expect(res.body.blockers).toContain('CHANNEL_PERMISSION_APPLICATION_NOT_IMPLEMENTED');
