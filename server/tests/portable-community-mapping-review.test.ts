@@ -160,6 +160,56 @@ describe('P7 C3 explicit community mapping review', () => {
     expect(JSON.stringify(result)).not.toContain('SENSITIVE_MEMBER');
   });
 
+  it('fails closed on malformed destination IDs, missing ownership and duplicate stored IDs', () => {
+    const check = (mutate: (value: ReturnType<typeof fixtures>) => void) => {
+      const f = fixtures();
+      mutate(f);
+      invalid(f);
+    };
+    check(f => { f.target.categories.push({ ...f.target.categories[0]! }); });
+    check(f => { delete (f.target.categories[0] as unknown as Record<string, unknown>).serverId; });
+    check(f => { (f.target.categories[0] as unknown as Record<string, unknown>)._id = ''; });
+    check(f => { (f.target.categories[0] as unknown as Record<string, unknown>).name = 123; });
+    check(f => { (f.target as unknown as Record<string, unknown>).categories = null; });
+    check(f => { (f.target as unknown as Record<string, unknown>).channels = Array.from(
+      { length: 501 }, (_, i) => ({ _id: `ch-${i}`, name: 'x', type: 'text', serverId: TARGET }),
+    ); });
+    check(f => { (f.target.channels[0] as unknown as Record<string, unknown>).type = 7; });
+    check(f => { f.target.channels[0]!.type = 'not-a-channel-type'; });
+    check(f => { delete (f.target.roles[0] as unknown as Record<string, unknown>).permissions; });
+    check(f => { f.target.roles[0]!.permissions = -1; });
+  });
+
+  it('fails closed on malformed source/target choices and arrays without partial approval', () => {
+    const check = (mutate: (value: ReturnType<typeof fixtures>) => void) => {
+      const f = fixtures();
+      mutate(f);
+      invalid(f);
+    };
+    check(f => { f.mapping.categories[0]!.sourceId = ''; });
+    check(f => { f.mapping.channels[0]!.targetId = ''; });
+    check(f => { f.mapping.roles[0]!.targetId = 'missing-role'; });
+    check(f => { f.mapping.roles[0]!.sourceId = 'unknown-source-role'; });
+    check(f => { (f.mapping as unknown as Record<string, unknown>).roles = null; });
+    check(f => { (f.mapping as unknown as Record<string, unknown>).channels = [null]; });
+    check(f => { f.mapping.categories.push({ ...f.mapping.categories[0]! }); });
+    check(f => { (f.mapping.roles[0] as unknown as Record<string, unknown>).apply = true; });
+    check(f => { f.mapping.channels[0]!.targetId = 'a'.repeat(257); });
+    check(f => { f.structure.channels[0]!.name = 'tampered-source'; });
+    check(f => { f.permissions.channels[0]!.overrides[0]!.allow = 0; });
+  });
+
+  it('treats a lower-privilege existing target role as inspection only, not approval', () => {
+    const f = fixtures();
+    f.target.roles[0]!.permissions = 0;
+    f.target.roles[0]!.name = 'Renamed destination role';
+    const result = inspectExplicitCommunityMapping(f.structure, f.permissions, f.mapping, f.target);
+    expect(result.counts.renamedLabels).toBe(2);
+    expect(result.counts.unsafeRoleMappings).toBe(0);
+    expect(result.mappingApproved).toBe(false);
+    expect(result.blockers).toContain('OWNER_MAPPING_APPROVAL_NOT_DURABLY_RECORDED');
+  });
+
   it('rejects extra keys and malformed mapping documents rather than ignoring apply flags', () => {
     const f = fixtures();
     const malicious = { ...f.mapping, apply: true };
