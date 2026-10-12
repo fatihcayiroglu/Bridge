@@ -48,5 +48,11 @@ Do not connect this function to a route before those controls and their tests
 exist. Never log or distribute private key material.
 
 This incremental feature tracks [issue #205](https://github.com/fatihcayiroglu/Bridge/issues/205).
-A passed unit test with a mock PostgreSQL client is not a two-instance
-deployment proof or physical-device validation.
+The unit suite asserts transaction sequencing and fail-closed bounds. The
+**real** PostgreSQL test
+`server/tests/pg-integration/p7-source-atomic-snapshot.pgtest.ts`, executed by
+CI's mandatory `test:pg` step with `PG_TEST_URL`, performs actual concurrent
+COMMITs from another connection after the read snapshot was established, then
+checks that the signed pair reflects the same older MVCC state. This is live
+single-database evidence, **not** a two-independent-installation deployment
+proof, an out-of-band key trust bootstrap, or physical-device validation.
