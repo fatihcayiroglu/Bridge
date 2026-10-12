@@ -2,26 +2,33 @@
 
 **Status: read-only preflight only; import remains unimplemented.**
 
-Two owner-protected APIs now share a canonical, deterministic SHA-256
+Three owner-protected APIs now share a canonical, deterministic SHA-256
 fingerprint of the **currently read destination topology**.
 
 1. `POST /api/servers/:sid/portable-import/paired-preview` returns
    `targetTopologyDigest` (64 lowercase hex characters) alongside
    its source topology/permission comparison.
-2. `POST /api/servers/:sid/portable-import/mapping-review` now requires
+2. `GET /api/servers/:sid/portable-import/target-fingerprint` returns
+   `targetTopologyDigest` with resource counts **without uploading source
+   exports**. Requires authenticated destination ownership and a fresh
+   `account.import` step-up. No-store; no SQL writes.
+3. `POST /api/servers/:sid/portable-import/mapping-review` requires
    the mapping object to include `expectedTargetDigest` **exactly equal**
    to the current target fingerprint. A missing, malformed or stale value
    is rejected with 422 and no mapping details are returned.
 
-The hash canonically sorts each resource type by stable ID and includes the
-destination server ID, each category's ID and name, every role's ID/name/
-canonical permission bitmask, every channel's ID/name/type and optional
-category ID (null when absent). It does not include members, messages,
+The fingerprint reuses the **entire C2 v1 portable structure field allowlist**
+in deterministic sorted order, with a fixed snapshot timestamp: destination
+server ID; category ID/name/position/collapsed state; role ID/name/color/
+position/permission bitmask; channel ID/name/type/topic/category reference/
+legacy category/order/NSFW/slowmode. The response is bounded at 512 KiB.
+Rows must have destination provenance, unique valid IDs and valid role masks. It does not include members, messages,
 secrets, audit records, or user-specific overrides. Rows must belong to
 the same destination, use valid bounded IDs/names/masks, and have unique
 IDs per collection. A channel whose category reference is not present
 in the category snapshot makes the fingerprint unavailable rather than
 pretending the target is consistent.
+Unknown extra row fields (members, secrets, API tokens) are not hashed.
 
 **Read-only request sequence:**
 - The destination owner authenticates with fresh `account.import`
@@ -49,3 +56,32 @@ owner privileges, permission policy and snapshot/version **inside one
 PostgreSQL transaction**, using the same DB client and a proper
 transactional concurrency gate. Full rollback/failpoint evidence and
 two independently deployed instances remain mandatory.
+
+
+## Discord-style role ownership and delegation contract
+
+Bridge server roles are **defined by the server's owner or by a delegated
+administrator with `MANAGE_ROLES`**. The existing roles API enforces
+`canManageRole`/role-position hierarchy and prevents a delegated role
+manager from granting permission bits they do not already possess.
+The special `@everyone` role represents the server baseline; channel-level
+allow/deny overrides follow the existing effective-permission resolver.
+Users and bots must never acquire administrative powers merely because a
+source community has a role with a matching name or ID.
+
+**Portable identity rule:** source role IDs/names/colors/masks are *reference
+data only*. The destination's authorized server administrator decides which
+destination roles to create, edit, or map, and which destination members may
+receive them. No preview or fingerprint may create a role, assign members,
+reorder hierarchy, copy dangerous `ADMINISTRATOR` grants, change channel
+overrides or bypass `MANAGE_ROLES` checks. A matching title such as
+"Moderator" is never permission to merge role privileges.
+
+Current P7 portable preview/mapping endpoints deliberately require the
+**destination owner with fresh `account.import` step-up**. Delegation of
+community-wide imports to an administrator has **not** been implemented or
+approved. Before any such delegation, enforce the same role hierarchy and
+non-escalation rules as `server/routes/roles.ts`, plus independent approval
+for privileged permission changes, durable authorization, audit and
+transactional rollback. Do not silently reinterpret a `MANAGE_ROLES` grant
+as permission to perform a whole-community import.
