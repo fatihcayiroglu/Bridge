@@ -128,6 +128,28 @@ describe('POST /api/servers/:sid/portable-import/paired-preview', () => {
     expect(await state()).toEqual(before);
   });
 
+  it('rejects a checksum-valid orphan role permission rather than suggesting any mapping', async () => {
+    const original = await state();
+    const source = documents();
+    source.permissions = buildPortableCommunityPermissionManifest(
+      { _id: FROM },
+      [{ _id: 'source-channel', serverId: FROM }],
+      [{ _id: 'orphan-role', serverId: FROM }],
+      [{
+        channelId: 'source-channel',
+        canonical: [{ channelId: 'source-channel', serverId: FROM,
+          roleId: 'orphan-role', allow: PERMS.VIEW_CHANNELS, deny: 0 }],
+        legacy: [],
+      }],
+      NOW,
+    );
+    const rejected = await post(OWNER, source, 'account-security');
+    expect(rejected.status).toBe(422);
+    expect(rejected.body.code).toBe('PORTABLE_COMMUNITY_PAIR_INVALID');
+    expect(rejected.body.permissionPair).toBeUndefined();
+    expect(await state()).toEqual(original);
+  });
+
   it('returns conservative collisions, counted nonportable overrides and explicit blockers', async () => {
     const before = await state();
     const res = await post(OWNER, documents(), 'account-security');
