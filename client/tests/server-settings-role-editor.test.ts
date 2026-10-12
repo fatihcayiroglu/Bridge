@@ -105,7 +105,7 @@ describe('Server roles editor (client visibility, server authority)', () => {
       const calls = fetchMock.mock.calls.filter(c => (c[1] as RequestInit | undefined)?.method === 'POST');
       expect(calls).toHaveLength(1);
       expect(JSON.parse(String((calls[0]![1] as RequestInit).body))).toEqual({
-        name: 'Helpers', color: '#99aab5', permissions: 0,
+        name: 'Helpers', color: '#64748b', permissions: 0,
       });
     });
     await vi.waitFor(() => expect(host.querySelector('.role-editor')).toBeNull());
