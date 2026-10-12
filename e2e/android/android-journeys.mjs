@@ -296,16 +296,16 @@ async function androidPressureEvidence(label) {
       if (key === 'pid') {
         outputs.pid = /^[0-9 ]{1,120}$/.test(value) ? value : 'unavailable';
       } else if (key === 'loadavg') {
-        const match = /^(\\d+(?:\\.\\d+)?) (\\d+(?:\\.\\d+)?) (\\d+(?:\\.\\d+)?) \\d+\\/\\d+ \\d+$/.exec(value);
+        const match = /^(\d+(?:\.\d+)?) (\d+(?:\.\d+)?) (\d+(?:\.\d+)?) \d+\/\d+ \d+$/.exec(value);
         outputs.kernelLoadavg = match ? match.slice(1, 4).map(Number) : 'unavailable';
       } else if (key === 'meminfo') {
-        const total = /^MemTotal:\\s+(\\d+) kB$/m.exec(value);
-        const available = /^MemAvailable:\\s+(\\d+) kB$/m.exec(value);
+        const total = /^MemTotal:\s+(\d+) kB$/m.exec(value);
+        const available = /^MemAvailable:\s+(\d+) kB$/m.exec(value);
         outputs.kernelMemTotalKb = total ? Number(total[1]) : 'unavailable';
         outputs.kernelMemAvailableKb = available ? Number(available[1]) : 'unavailable';
       } else {
         // Only allow the precisely defined kernel pressure text format.
-        const lines = value.split('\\n').filter(line =>
+        const lines = value.split('\n').filter(line =>
           /^(?:some|full) avg10=[0-9.]+ avg60=[0-9.]+ avg300=[0-9.]+ total=[0-9]+$/.test(line));
         outputs[key] = lines.length > 0 ? lines.slice(0, 2).join(' | ').slice(0, 280) : 'unavailable';
       }
