@@ -104,6 +104,14 @@ describe('P7 C3 paired community structure/permissions intake', () => {
     invalid({ ...structure(), format: 'not-bridge' }, permissions());
   });
 
+  it('refuses checksum-valid excluded counts whose sum is not a safe integer', () => {
+    const p = clone(permissions());
+    p.unsupported.legacyOverrideRows = Number.MAX_SAFE_INTEGER;
+    p.unsupported.individualOverrideRows = Number.MAX_SAFE_INTEGER;
+    resign(p);
+    invalid(structure(), p);
+  });
+
   it('keeps apply blocked even if both files have zero excluded rows', () => {
     const p = clone(permissions());
     p.unsupported.legacyOverrideRows = 0;
