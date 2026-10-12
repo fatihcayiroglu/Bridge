@@ -112,6 +112,24 @@ describe('P7 C3 paired community structure/permissions intake', () => {
     invalid(structure(), p);
   });
 
+  it('rejects source role IDs that collide with the reserved everyone marker', () => {
+    for (const reserved of ['__everyone__', SERVER]) {
+      const roleRow = { _id: reserved, name: 'Ambiguous', permissions: 0, position: 0 };
+      const src = buildPortableCommunityStructure(
+        { _id: SERVER, name: 'Source' }, [],
+        [{ _id: 'channel-1', name: 'general', type: 'text', order: 1 }],
+        [roleRow], at,
+      );
+      const p = buildPortableCommunityPermissionManifest(
+        { _id: SERVER },
+        [{ _id: 'channel-1', serverId: SERVER }],
+        [{ _id: reserved, serverId: SERVER }],
+        [{ channelId: 'channel-1', canonical: [], legacy: [] }], at,
+      );
+      invalid(src, p);
+    }
+  });
+
   it('keeps apply blocked even if both files have zero excluded rows', () => {
     const p = clone(permissions());
     p.unsupported.legacyOverrideRows = 0;
