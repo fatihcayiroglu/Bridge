@@ -4,6 +4,7 @@ import { buildPortableCommunityStructure } from '../lib/portableCommunity';
 import { buildPortableCommunityPermissionManifest } from '../lib/portableCommunityPermissions';
 import { inspectExplicitCommunityMapping, PortableCommunityMappingError } from '../lib/portableCommunityMappingReview';
 import { PERMS } from '../lib/permissions';
+import { fingerprintDestinationTopology } from '../lib/portableCommunityTargetFingerprint';
 
 const SOURCE = 'mapping-source', TARGET = 'mapping-target';
 const AT = '2026-10-12T11:00:00.000Z';
@@ -33,6 +34,7 @@ function fixtures() {
   };
   const mapping = {
     targetServerId: TARGET,
+    expectedTargetDigest: fingerprintDestinationTopology(target),
     structureDigest: structure.integrity.digest,
     permissionsDigest: permissions.integrity.digest,
     categories: [{ sourceId: 'cat-a', targetId: 'target-cat' }],
@@ -62,6 +64,39 @@ describe('P7 C3 explicit community mapping review', () => {
     });
     expect(result.blockers).toContain('TRANSACTIONAL_IMPORT_AND_ROLLBACK_NOT_IMPLEMENTED');
     expect(result.blockers).toContain('OWNER_MAPPING_APPROVAL_NOT_DURABLY_RECORDED');
+  });
+
+  it('rejects stale target digests after destination role or category changes', () => {
+    const rename = fixtures();
+    rename.target.categories[0]!.name = 'changed after preview';
+    invalid(rename);
+    const changedRole = fixtures();
+    changedRole.target.roles[0]!.permissions = PERMS.VIEW_CHANNELS | PERMS.SEND_MESSAGES;
+    invalid(changedRole);
+    const changedType = fixtures();
+    changedType.target.channels[0]!.type = 'voice';
+    invalid(changedType);
+  });
+
+  it('rejects missing, invented or foreign target-revision fingerprints', () => {
+    const absent = fixtures();
+    delete (absent.mapping as unknown as Record<string, unknown>).expectedTargetDigest;
+    invalid(absent);
+    const bad = fixtures();
+    bad.mapping.expectedTargetDigest = '0'.repeat(64);
+    invalid(bad);
+  });
+
+  it('uses stable hashes for reordered target rows but not different target IDs', () => {
+    const f = fixtures();
+    const first = fingerprintDestinationTopology(f.target);
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    expect(first).toBe(fingerprintDestinationTopology({
+      ...f.target, categories: [...f.target.categories].reverse(),
+    }));
+    expect(first).not.toBe(fingerprintDestinationTopology({
+      ...f.target, channels: [{ ...f.target.channels[0]!, _id: 'another-target-channel' }],
+    }));
   });
 
   it('rejects digests or target IDs not bound exactly to both source files and route', () => {
@@ -135,6 +170,7 @@ describe('P7 C3 explicit community mapping review', () => {
   it('reports widened destination role permissions as a hard blocker, not an approval', () => {
     const f = fixtures();
     f.target.roles[0]!.permissions = PERMS.VIEW_CHANNELS | PERMS.SEND_MESSAGES;
+    f.mapping.expectedTargetDigest = fingerprintDestinationTopology(f.target);
     const result = inspectExplicitCommunityMapping(f.structure, f.permissions, f.mapping, f.target);
     expect(result.counts.unsafeRoleMappings).toBe(1);
     expect(result.risks.rolePermissionWidening[0]).toMatchObject({
