@@ -1,7 +1,10 @@
 # P7 C1/C3 — Portable identity JSON v1 (profile-only export, preview and apply)
 
-**Status:** export, read-only preview and atomic profile-only apply API are merged;
-the double-confirmed Privacy UI is in PR #183 pending exact-head CI.
+**Status:** export, read-only preview, atomic profile-only apply API and the
+double-confirmed Privacy UI are merged (PR #183). The real PostgreSQL
+profile export → import → re-export regression is merged (PR #187); it
+uses two accounts on one installation, **not** two independently deployed
+Bridge server instances.
 **Community migration, complete account import and P7 C1–C4 closure are NOT complete.**
 This is separate from the comprehensive `GET /api/account/export` download.
 
@@ -134,7 +137,9 @@ authenticated preview. The apply endpoint independently verifies the complete
 document, expected-fields shape and explicit destination user ID; the browser cannot bypass validation by
 copying a former successful preview response.
 
-If the authenticated account no longer matches `targetUserId` (for example, a session changes during a step-up proof or token retry), the server returns **409 before any SQL write**. The identity binding is mandatory, not optional.\n\nOne PostgreSQL `UPDATE ... WHERE` compares every expected field in the target
+If the authenticated account no longer matches `targetUserId` (for example, a session changes during a step-up proof or token retry), the server returns **409 before any SQL write**. The identity binding is mandatory, not optional.
+
+One PostgreSQL `UPDATE ... WHERE` compares every expected field in the target
 account and updates only `displayName`, `bio`, `website`, `pronouns`,
 `avatarColor` and `bannerColor` atomically. A concurrent profile edit, a
 deleted target or a stale preview yields **409 without partial writes**. The
