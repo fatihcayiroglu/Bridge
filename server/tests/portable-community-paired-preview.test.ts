@@ -155,6 +155,7 @@ describe('POST /api/servers/:sid/portable-import/paired-preview', () => {
     const res = await post(OWNER, documents(), 'account-security');
     expect(res.status).toBe(200);
     expect(res.headers['cache-control']).toContain('no-store');
+    expect(res.body.targetTopologyDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(res.body).toMatchObject({
       mode: 'read-only', importSupported: false, writesPerformed: false,
       source: { serverId: FROM }, target: { serverId: SID },

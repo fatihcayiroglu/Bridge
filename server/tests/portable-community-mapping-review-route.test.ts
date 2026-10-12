@@ -16,6 +16,7 @@ import { buildPortableCommunityStructure } from '../lib/portableCommunity';
 import { buildPortableCommunityPermissionManifest } from '../lib/portableCommunityPermissions';
 import { stepUpHeader } from './helpers/stepUp';
 import { PERMS } from '../lib/permissions';
+import { fingerprintDestinationTopology } from '../lib/portableCommunityTargetFingerprint';
 
 const db = require('../db/loader') as import('./helpers/mockDb').MockDb;
 const SID = 'mapping-review-target', OWNER = 'mapping-owner', OTHER = 'mapping-member';
@@ -26,6 +27,14 @@ function app() {
   a.use(express.json({ limit: '2mb' }));
   a.use('/api/servers', serversRouter);
   return a;
+}
+function expectedTargetDigest(roleMask = PERMS.VIEW_CHANNELS) {
+  return fingerprintDestinationTopology({
+    serverId: SID,
+    categories: [{ _id: 'target-cat', serverId: SID, name: 'General' }],
+    roles: [{ _id: 'target-role', serverId: SID, name: 'Readers', permissions: roleMask }],
+    channels: [{ _id: 'target-channel', serverId: SID, name: 'welcome', type: 'text' }],
+  });
 }
 function input() {
   const structure = buildPortableCommunityStructure(
@@ -49,6 +58,7 @@ function input() {
     structure, permissions, targetServerId: SID,
     mapping: {
       targetServerId: SID,
+      expectedTargetDigest: expectedTargetDigest(),
       structureDigest: structure.integrity.digest,
       permissionsDigest: permissions.integrity.digest,
       categories: [{ sourceId: 'source-cat', targetId: 'target-cat' }],
@@ -128,11 +138,27 @@ describe('POST /api/servers/:sid/portable-import/mapping-review', () => {
     expect(await snapshot()).toEqual(before);
   });
 
+  it('refuses previously valid mappings after a target category change', async () => {
+    const previous = input();
+    const changed = await db.channelCategories.update({ _id: 'target-cat' },
+      { $set: { name: 'Changed since preview' } });
+    expect(changed).toBeDefined();
+    const before = await snapshot();
+    const rejected = await post(OWNER, previous, 'account-security');
+    expect(rejected.status).toBe(422);
+    expect(rejected.body.code).toBe('PORTABLE_COMMUNITY_MAPPING_INVALID');
+    expect(rejected.body.mapping).toBeUndefined();
+    expect(await snapshot()).toEqual(before);
+  });
+
   it('detects privilege-widening target roles without permitting apply or writing any data', async () => {
     await db.roles.update({ _id: 'target-role' },
       { $set: { permissions: PERMS.VIEW_CHANNELS | PERMS.SEND_MESSAGES } });
     const before = await snapshot();
-    const result = await post(OWNER, input(), 'account-security');
+    const reviewed = input();
+    reviewed.mapping.expectedTargetDigest =
+      expectedTargetDigest(PERMS.VIEW_CHANNELS | PERMS.SEND_MESSAGES);
+    const result = await post(OWNER, reviewed, 'account-security');
     expect(result.status).toBe(200);
     expect(result.body.counts.unsafeRoleMappings).toBe(1);
     expect(result.body.blockers).toContain('TARGET_ROLE_PERMISSION_WIDENING');

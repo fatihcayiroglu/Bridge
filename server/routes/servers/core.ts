@@ -27,6 +27,7 @@ import { buildPortableCommunityPreview } from '../../lib/portableCommunityPrevie
 import { inspectPortableCommunityManifestPair, PortableCommunityPairError } from '../../lib/portableCommunityPair';
 import { previewCommunityPermissionRemapping } from '../../lib/portableCommunityPermissionPreflight';
 import { inspectExplicitCommunityMapping, PortableCommunityMappingError } from '../../lib/portableCommunityMappingReview';
+import { fingerprintDestinationTopology } from '../../lib/portableCommunityTargetFingerprint';
 import { buildPortableCommunityPermissionManifest } from '../../lib/portableCommunityPermissions';
 import { enforceStepUp } from '../../lib/stepUp';
 
@@ -385,8 +386,15 @@ router.post('/:sid/portable-import/paired-preview', authMiddleware, limits.write
         channels: channels as unknown as Array<Record<string, unknown>>,
       },
     );
+    const targetTopologyDigest = fingerprintDestinationTopology({
+      serverId: sid,
+      categories: categories as unknown as Array<Record<string, unknown>>,
+      roles: roles as unknown as Array<Record<string, unknown>>,
+      channels: channels as unknown as Array<Record<string, unknown>>,
+    });
     return res.status(200).json({
       ...preview,
+      targetTopologyDigest,
       permissionPair: pair,
       permissionMapping,
       unsupported: [
