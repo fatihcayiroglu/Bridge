@@ -62,7 +62,11 @@ beforeEach(async () => {
   });
   issue.mockResolvedValue({
     mode: 'read-only', writesPerformed: false, importSupported: false,
-    mappingApproved: false, remotelyVerifiedAtomicity: false,
+    mappingApproved: false, approvalReusable: false,
+    sourceReadIsolation: 'single-client-repeatable-read',
+    remotelyVerifiedAtomicity: false,
+    signingPrivateKeyPem: PRIVATE, // MUST NOT be returned via HTTP
+    backendDebug: 'internal-only-canary',
     structure: { integrity: { digest: 'a'.repeat(64) } },
     permissions: { integrity: { digest: 'b'.repeat(64) } },
     attestation: { signature: 'test-ed25519-signature', sourceOrigin: 'https://operator-pinned-source.example' },
@@ -107,11 +111,35 @@ describe('GET /api/servers/:sid/portable-export/attested-pair', () => {
       signingPrivateKeyPem: PRIVATE,
     });
     expect(JSON.stringify(result.body)).not.toContain(PRIVATE);
+    expect(JSON.stringify(result.body)).not.toContain('internal-only-canary');
     expect(JSON.stringify(result.body)).not.toContain('forged-untrusted-domain.example');
     expect(await db.servers.find({})).toEqual(before.servers);
     expect(await db.channels.find({})).toEqual(before.channels);
     expect(await db.roles.find({})).toEqual(before.roles);
     expect(await db.channelPermissions.find({})).toEqual(before.permissions);
+  });
+
+  it('fails closed if signer suddenly claims imports, writes or a foreign origin', async () => {
+    for (const alteration of [
+      { importSupported: true }, { writesPerformed: true },
+      { mappingApproved: true }, { approvalReusable: true },
+      { sourceReadIsolation: 'non-transactional' },
+      { attestation: { signature: 'signed', sourceOrigin: 'https://untrusted.example' } },
+    ]) {
+      issue.mockResolvedValueOnce({
+        mode: 'read-only', writesPerformed: false, importSupported: false,
+        mappingApproved: false, approvalReusable: false,
+        sourceReadIsolation: 'single-client-repeatable-read',
+        remotelyVerifiedAtomicity: false,
+        attestation: { signature: 'signed', sourceOrigin: 'https://operator-pinned-source.example' },
+        structure: {}, permissions: {},
+        ...alteration,
+      });
+      const response = await get(OWNER, 'sensitive-export');
+      expect(response.status).toBe(503);
+      expect(response.body.code).toBe('PORTABLE_SOURCE_ATTESTED_EXPORT_UNAVAILABLE');
+      expect(JSON.stringify(response.body)).not.toContain('signed');
+    }
   });
 
   it('fails closed if key is not provisioned, no real PG pool exists, or snapshot issuer fails', async () => {
