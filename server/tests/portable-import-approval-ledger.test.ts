@@ -78,7 +78,7 @@ describe('P7 C4 approval ledger — no route, no import permission', () => {
       { ...binding, reviewFingerprint: 'deadbeef' },
       { ...binding, targetGrantDigest: 'not-a-hex-digest' },
       { ...binding, targetGrantDigest: undefined },
-      { targetServerId: binding.targetServerId, ownerId: binding.ownerId, ...Object.fromEntries(Object.entries(binding).filter(([k]) => k !== 'targetGrantDigest')) },
+      { ...binding, targetGrantDigest: null },
       { ...binding, sourceOrigin: 'http://source.example' },
       { ...binding, sourceOrigin: 'https://source.example/path' },
       { ...binding, sourceSnapshotId: 'short' },
