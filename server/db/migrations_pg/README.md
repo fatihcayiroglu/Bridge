@@ -72,6 +72,8 @@ DATABASE_URL=postgresql://... node -r ts-node/register db/migrate-postgres.ts do
 | 073 | marketplace_seed_truthfulness | Built-in example listings declare only enforced bot scopes; unimplementable examples withdrawn |
 | 074 | message_content_format | Channel message text stored as typed (RAW=1); existing rows stay LEGACY=0 and are decoded on read |
 | 075 | user_locale | The language a person reads, so server-written push copy is not Turkish-only |
+| 081 | portable_import_approval_ledger | One-use hashed approval primitives (unmounted) |
+| 082 | portable_import_approval_grant_binding | Grant-set digest required for new approvals; legacy NULL grants cannot be claimed |
 
 ## `_inline.ts` Dosyaları
 
