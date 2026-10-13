@@ -1,0 +1,170 @@
+// P7 C4 — internal atomic apply of ALREADY MAPPED destination rows.
+// UNMOUNTED: never expose to HTTP until independent deploy/recovery sign-off.
+// No user, member, permission, message, role-power or hierarchy migration.
+import { validatePortableCommunityStructure } from './portableCommunityValidation';
+import { requireLockedPortableOwnerStepUp } from './portableLockedOwnerStepUp';
+import { deriveVerifiedPortableApprovalBinding } from './portableVerifiedApprovalBinding';
+import { claimPortableImportApproval, type ApprovalPool, type ApprovalClient } from './portableImportApprovalLedger';
+import { requireMappedDestinationGrantParity } from './portableTargetGrantParity';
+
+const HEX64 = /^[0-9a-f]{64}$/;
+type Link = { sourceId: string; targetId: string };
+type Stage = 'after_claim' | 'after_categories' | 'after_roles' | 'after_channels' | 'before_commit';
+export class PortableAtomicApplyError extends Error {
+  readonly code = 'PORTABLE_ATOMIC_APPLY_UNAVAILABLE';
+  constructor() { super('Portable community apply unavailable'); this.name = 'PortableAtomicApplyError'; }
+}
+function refuse(): never { throw new PortableAtomicApplyError(); }
+function links(value: unknown, expected: readonly { sourceId: string }[], max: number): Map<string, string> {
+  if (!Array.isArray(value) || value.length !== expected.length || value.length > max) refuse();
+  const ids = new Set(expected.map(x => x.sourceId));
+  const seen = new Set<string>(), dests = new Set<string>();
+  const map = new Map<string, string>();
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) refuse();
+    const fields = Object.keys(item);
+    if (fields.length !== 2 || !fields.includes('sourceId') || !fields.includes('targetId')) refuse();
+    const { sourceId, targetId } = item as Link;
+    if (typeof sourceId !== 'string' || !ids.has(sourceId) || seen.has(sourceId) ||
+        typeof targetId !== 'string' || !targetId || targetId.length > 256 ||
+        targetId.trim() !== targetId || dests.has(targetId)) refuse();
+    seen.add(sourceId); dests.add(targetId); map.set(sourceId, targetId);
+  }
+  if (seen.size !== expected.length) refuse();
+  return map;
+}
+async function updateOne(client: ApprovalClient, sql: string, params: unknown[], targetId: string): Promise<void> {
+  const result = await client.query(sql, params);
+  if (!result || result.rows.length !== 1 || result.rows[0]?._id !== targetId) refuse();
+}
+function maybeFail(at: Stage, failpoint: Stage | undefined): void {
+  if (failpoint === at) {
+    // Never permit an untrusted caller to turn an internal test fault on.
+    if (process.env.NODE_ENV !== 'test') refuse();
+    refuse();
+  }
+}
+
+export async function applyApprovedPortableCommunityMapping(input: {
+  pool: ApprovalPool;
+  targetServerId: string;
+  ownerId: string; // authenticated server-side identity, never request ownerId
+  stepUpGrant: unknown;
+  approvalToken: string;
+  confirmedReviewFingerprint: string;
+  structure: unknown;
+  permissions: unknown;
+  attestation: unknown;
+  expectedSourceOrigin: string;
+  expectedSourceServerId: string;
+  operatorRegistryJson: string; // pinned independently from operator config
+  mapping: { categories: unknown; roles: unknown; channels: unknown };
+  now?: number;
+  /** Deterministic integration-only rollback assertions. No HTTP wiring. */
+  failpoint?: Stage;
+}): Promise<{
+  applied: true;
+  transactionCommitted: true;
+  routeMounted: false;
+  changed: { categories: number; roles: number; channels: number };
+  grantsPreserved: true;
+  identitiesPreserved: true;
+}> {
+  if (typeof input.confirmedReviewFingerprint !== 'string' ||
+      !HEX64.test(input.confirmedReviewFingerprint) ||
+      (input.failpoint !== undefined && process.env.NODE_ENV !== 'test')) refuse();
+
+  // Deserialize strictly before even beginning a destination write.
+  let structure: ReturnType<typeof validatePortableCommunityStructure>;
+  let categories: Map<string, string>, roles: Map<string, string>, channels: Map<string, string>;
+  try {
+    structure = validatePortableCommunityStructure(input.structure);
+    categories = links(input.mapping.categories, structure.categories, 2000);
+    roles = links(input.mapping.roles, structure.roles, 2000);
+    channels = links(input.mapping.channels, structure.channels, 500);
+  } catch { return refuse(); }
+
+  let client: ApprovalClient | undefined;
+  let began = false, committed = false;
+  let discard: Error | undefined;
+  try {
+    client = await input.pool.connect();
+    began = true;
+    await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+    const proof = await requireLockedPortableOwnerStepUp({
+      client, ownerId: input.ownerId, stepUpGrant: input.stepUpGrant, now: input.now,
+    });
+    if (proof.stepUpVerified !== true) refuse();
+    const verified = await deriveVerifiedPortableApprovalBinding({
+      client, targetServerId: input.targetServerId, ownerId: input.ownerId,
+      structure: input.structure, permissions: input.permissions,
+      attestation: input.attestation, expectedSourceOrigin: input.expectedSourceOrigin,
+      expectedSourceServerId: input.expectedSourceServerId, operatorRegistryJson: input.operatorRegistryJson,
+      mapping: input.mapping, now: input.now,
+    });
+    if (verified.binding.reviewFingerprint !== input.confirmedReviewFingerprint ||
+        verified.importSupported !== false || verified.tokenIssued !== false) refuse();
+
+    // CAS claim and ALL updates share the identical SERIALIZABLE connection.
+    // Any error rolls back consumed_at along with every affected destination row.
+    await claimPortableImportApproval(client, input.approvalToken, verified.binding);
+    maybeFail('after_claim', input.failpoint);
+
+    for (const item of structure.categories) {
+      const target = categories.get(item.sourceId);
+      if (!target) refuse();
+      await updateOne(client,
+        'UPDATE channel_categories SET name=$1, position=$2, collapsed=$3 WHERE _id=$4 AND "serverId"=$5 RETURNING _id',
+        [item.name, item.position, item.collapsed, target, input.targetServerId], target);
+    }
+    maybeFail('after_categories', input.failpoint);
+
+    // Preserve destination role hierarchy and permission masks. Portability
+    // of the *source* role power would be a privilege-escalation bug.
+    for (const item of structure.roles) {
+      const target = roles.get(item.sourceId);
+      if (!target) refuse();
+      await updateOne(client,
+        'UPDATE roles SET name=$1, color=$2 WHERE _id=$3 AND "serverId"=$4 RETURNING _id',
+        [item.name, item.color, target, input.targetServerId], target);
+    }
+    maybeFail('after_roles', input.failpoint);
+
+    for (const item of structure.channels) {
+      const target = channels.get(item.sourceId);
+      if (!target) refuse();
+      const targetCategory = item.categorySourceId === null
+        ? null : categories.get(item.categorySourceId);
+      if (item.categorySourceId !== null && !targetCategory) refuse();
+      await updateOne(client,
+        'UPDATE channels SET name=$1, topic=$2, "categoryId"=$3, category=$4, "order"=$5, nsfw=$6, slowmode=$7 WHERE _id=$8 AND "serverId"=$9 AND type=$10 RETURNING _id',
+        [item.name, item.topic, targetCategory, item.legacyCategoryName, item.order,
+          item.nsfw ? 1 : 0, item.slowmode, target, input.targetServerId, item.type], target);
+    }
+    maybeFail('after_channels', input.failpoint);
+
+    // Check that permission grants are still the exact signed/approved set.
+    const after = await requireMappedDestinationGrantParity({
+      client, targetServerId: input.targetServerId, ownerId: input.ownerId,
+      sourcePermissions: input.permissions, mapping: input.mapping,
+    });
+    if (after.targetGrantDigest !== verified.binding.targetGrantDigest) refuse();
+    maybeFail('before_commit', input.failpoint);
+    await client.query('COMMIT');
+    committed = true;
+    return {
+      applied: true, transactionCommitted: true, routeMounted: false,
+      changed: { categories: structure.categories.length, roles: structure.roles.length,
+        channels: structure.channels.length },
+      grantsPreserved: true, identitiesPreserved: true,
+    };
+  } catch {
+    if (began && !committed && client) {
+      try { await client.query('ROLLBACK'); }
+      catch (e) { discard = e instanceof Error ? e : new Error('Rollback failed'); }
+    }
+    return refuse();
+  } finally {
+    if (client) client.release(discard);
+  }
+}
