@@ -166,6 +166,28 @@ describe('P7 C4 owner-only source attestation review is NOT migration authority'
       ...body(), expectedSourceServerId: '',
     }, 'account-security');
     expect(missingId.status).toBe(400);
+    for (const malformedOrigin of [
+      'http://operator-pinned-source.example',
+      'https://operator-pinned-source.example/',
+      'https://operator-pinned-source.example/path',
+      'https://operator-pinned-source.example?key=abc',
+      'https://attacker.example@operator-pinned-source.example',
+    ]) {
+      const rejected = await review(OWNER, {
+        ...body(), expectedSourceOrigin: malformedOrigin,
+      }, 'account-security');
+      expect(rejected.status).toBe(400);
+    }
+    for (const malformed of [
+      { ...body(), expectedSourceServerId: '  ' },
+      { ...body(), structure: null },
+      { ...body(), permissions: [] },
+      { ...body(), attestation: 'forged' },
+    ]) {
+      const rejected = await review(OWNER, malformed, 'account-security');
+      expect(rejected.status).toBe(400);
+    }
     expect(config).not.toHaveBeenCalled();
+    expect(verify).not.toHaveBeenCalled();
   });
 });
