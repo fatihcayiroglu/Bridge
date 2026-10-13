@@ -112,8 +112,8 @@ describe('ALLOWED_COLUMNS covers the real schema', () => {
       expect(ledger).toContain(col);
       expect(owner).toContain(col);
     }
-    expect(ledger).toMatch(/token_hash\\s+TEXT\\s+PRIMARY\\s+KEY/);
-    expect(ledger).toMatch(/target_server_id\\s+TEXT\\s+NOT NULL REFERENCES servers\\(_id\\) ON DELETE CASCADE/);
+    expect(ledger).toMatch(/token_hash\s+TEXT\s+PRIMARY\s+KEY/);
+    expect(ledger).toMatch(/target_server_id\s+TEXT\s+NOT NULL REFERENCES servers\(_id\) ON DELETE CASCADE/);
     expect(owner).toContain('UPDATE portable_import_approvals');
     expect(owner).toContain('consumed_at IS NULL');
   });
