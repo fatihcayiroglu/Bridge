@@ -99,6 +99,23 @@ describe('P7 C4 approval ledger actual PG session/rollback behaviour', () => {
     expect(await consumedCount(issued.approvalToken)).toBe(1);
   });
 
+  it('invalidates legacy NULL grant evidence and rejects invalid persisted digests', async () => {
+    const issued = await stage();
+    const digest = createHash('sha256').update('bridge-portable-import-approval-v1\\n')
+      .update(issued.approvalToken).digest('hex');
+    await expect(pool.query(
+      'UPDATE portable_import_approvals SET target_grant_digest=$1 WHERE token_hash=$2',
+      ['not-a-hex-digest', digest],
+    )).rejects.toThrow();
+    await pool.query(
+      'UPDATE portable_import_approvals SET target_grant_digest=NULL WHERE token_hash=$1',
+      [digest],
+    );
+    await expect(claimOn(second, issued.approvalToken))
+      .rejects.toBeInstanceOf(PortableImportApprovalError);
+    expect(await consumedCount(issued.approvalToken)).toBe(0);
+  });
+
   it('refuses mismatched target digest, revoked ownership and expired consent', async () => {
     const issued = await stage();
     await expect(claimOn(second, issued.approvalToken,
