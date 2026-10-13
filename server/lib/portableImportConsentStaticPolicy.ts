@@ -58,14 +58,10 @@ export function inspectStaticPortableImportConsentPolicy(input: {
   now?: number;
 }): StaticConsentPolicyResult {
   const reasons = new Set<Reason>();
-  let reviewFingerprint: string | null = null;
-  let topologyDigest: string | null = null;
   try {
     // Reverify source Ed25519 signature against operator-pinned, revocable
     // keys and re-check the complete explicit target topology mapping.
     const review = inspectSignedCommunityMappingReview(input);
-    reviewFingerprint = review.reviewFingerprint;
-    topologyDigest = review.targetTopologyDigest;
     if (review.blockers.some(x => !STRUCTURAL_ONLY_BLOCKERS.has(x)) ||
         review.counts.unsafeRoleMappings !== 0) {
       reasons.add('MAPPING_REVIEW_BLOCKED');
@@ -84,26 +80,36 @@ export function inspectStaticPortableImportConsentPolicy(input: {
          parsePermissionMask(grant.deny, 'channel deny')) & PRIVILEGED_MASK) !== 0))) {
       reasons.add('SOURCE_PRIVILEGED_CHANNEL_GRANTS');
     }
+    return {
+      mode: 'read-only',
+      staticChecksPassed: reasons.size === 0,
+      reasons: [...reasons].sort(),
+      verifiedReviewFingerprint: review.reviewFingerprint,
+      targetTopologyDigest: review.targetTopologyDigest,
+      consentSupported: false,
+      consentIssued: false,
+      writesPerformed: false,
+      importSupported: false,
+      liveTargetPermissionGrantsVerified: false,
+      destinationRevisionLocked: false,
+      approvalReusable: false,
+    };
   } catch {
     // Generic invalid result: do not expose signature-verification,
     // key-revocation, mapping or topology oracle details.
-    reasons.clear();
-    reasons.add('MAPPING_REVIEW_UNVERIFIED');
-    reviewFingerprint = null;
-    topologyDigest = null;
+    return {
+      mode: 'read-only',
+      staticChecksPassed: false,
+      reasons: ['MAPPING_REVIEW_UNVERIFIED'],
+      verifiedReviewFingerprint: null,
+      targetTopologyDigest: null,
+      consentSupported: false,
+      consentIssued: false,
+      writesPerformed: false,
+      importSupported: false,
+      liveTargetPermissionGrantsVerified: false,
+      destinationRevisionLocked: false,
+      approvalReusable: false,
+    };
   }
-  return {
-    mode: 'read-only',
-    staticChecksPassed: reasons.size === 0,
-    reasons: [...reasons].sort(),
-    verifiedReviewFingerprint: reviewFingerprint,
-    targetTopologyDigest: topologyDigest,
-    consentSupported: false,
-    consentIssued: false,
-    writesPerformed: false,
-    importSupported: false,
-    liveTargetPermissionGrantsVerified: false,
-    destinationRevisionLocked: false,
-    approvalReusable: false,
-  };
 }
