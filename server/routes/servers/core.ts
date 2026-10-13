@@ -36,6 +36,7 @@ import { readPortableSourceSigningConfig } from '../../lib/portableSourceExportC
 import { readDestinationPinnedSourceRegistry } from '../../lib/portableDestinationTrustConfig';
 import { isCanonicalPortableSourceOrigin } from '../../lib/portableSourceAttestation';
 import { verifyAttestationAgainstPinnedRegistry } from '../../lib/portableSourceKeyring';
+import { inspectSignedCommunityMappingReview } from '../../lib/portableSignedMappingReview';
 
 // GET /api/servers
 /**
@@ -470,6 +471,93 @@ router.post('/:sid/portable-import/source-attestation-review',
       return res.status(422).json({
         code: 'PORTABLE_SOURCE_ATTESTATION_INVALID',
         error: 'Source attestation cannot be verified',
+      });
+    }
+  },
+);
+
+// P7 C4: bind an independently verified source signature to EVERY explicit
+// mapping choice and current destination topology fingerprint. Never approve
+// migration, issue a bearer capability or write a destination row.
+router.post('/:sid/portable-import/signed-mapping-review',
+  authMiddleware, limits.write(), async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    const actor = castAuthed(req).user;
+    const sid = String(req.params.sid ?? '');
+    const target = await Servers.findById(sid);
+    if (!target) return res.status(404).json({ error: 'Target community not found' });
+    if (target.ownerId !== actor.id) {
+      return res.status(403).json({ error: 'Only the destination owner may review signed mappings' });
+    }
+    if (!(await enforceStepUp(req, res, actor.id, 'account.import'))) return;
+
+    const body: unknown = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return res.status(400).json({ error: 'Invalid signed mapping review request' });
+    }
+    const fields = Object.keys(body);
+    const expected = [
+      'structure', 'permissions', 'attestation', 'expectedSourceOrigin',
+      'expectedSourceServerId', 'targetServerId', 'mapping',
+    ];
+    if (fields.length !== expected.length || fields.some(x => !expected.includes(x))) {
+      return res.status(400).json({ error: 'Invalid signed mapping review request' });
+    }
+    const input = body as Record<string, unknown>;
+    if (input.targetServerId !== sid ||
+        !isCanonicalPortableSourceOrigin(input.expectedSourceOrigin) ||
+        typeof input.expectedSourceServerId !== 'string' ||
+        input.expectedSourceServerId.length === 0 ||
+        input.expectedSourceServerId.length > 256 ||
+        !input.expectedSourceServerId.trim() ||
+        !['structure', 'permissions', 'attestation', 'mapping'].every(k =>
+          input[k] && typeof input[k] === 'object' && !Array.isArray(input[k]))) {
+      return res.status(400).json({ error: 'Invalid signed mapping review request' });
+    }
+
+    let registry: string;
+    try { registry = readDestinationPinnedSourceRegistry(); }
+    catch {
+      return res.status(503).json({
+        code: 'PORTABLE_SIGNED_MAPPING_TRUST_UNAVAILABLE',
+        error: 'Destination source trust configuration unavailable',
+      });
+    }
+    let categories: Array<Record<string, unknown>>;
+    let roles: Array<Record<string, unknown>>;
+    let channels: Array<Record<string, unknown>>;
+    try {
+      const rows = await Promise.all([
+        Channels.findCategoriesByServer(sid),
+        Roles.findByServer(sid),
+        Channels.findByServer(sid),
+      ]);
+      categories = rows[0] as unknown as Array<Record<string, unknown>>;
+      roles = rows[1] as unknown as Array<Record<string, unknown>>;
+      channels = rows[2] as unknown as Array<Record<string, unknown>>;
+    } catch {
+      return res.status(503).json({
+        code: 'PORTABLE_SIGNED_MAPPING_TARGET_UNAVAILABLE',
+        error: 'Cannot read complete destination mapping data',
+      });
+    }
+    try {
+      const review = inspectSignedCommunityMappingReview({
+        structure: input.structure,
+        permissions: input.permissions,
+        attestation: input.attestation,
+        expectedSourceOrigin: input.expectedSourceOrigin,
+        expectedSourceServerId: input.expectedSourceServerId,
+        operatorRegistryJson: registry,
+        mapping: input.mapping,
+        destination: { serverId: sid, categories, roles, channels },
+      });
+      return res.status(200).json(review);
+    } catch {
+      return res.status(422).json({
+        code: 'PORTABLE_SIGNED_MAPPING_REVIEW_INVALID',
+        error: 'Signed source and destination mapping cannot be verified',
       });
     }
   },
