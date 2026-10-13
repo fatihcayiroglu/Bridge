@@ -7,6 +7,23 @@ close #205 or claim production replay security until integrated and tested.
 
 ## Stored state
 
+## 082 — destination grant-bound token upgrade
+
+Migration 082 adds a nullable `target_grant_digest` (SHA-256). It is
+nullable ONLY so historic 081 records remain intact on upgrade: claim SQL
+requires exact non-null equality, therefore all pre-upgrade records fail
+closed. Every new staged token requires this digest; the token is bound to
+the exact verified destination channel/@everyone grant set and refuses a
+changed grant digest at claim time.
+
+**This does not turn a token into owner consent.** The unmounted staging
+helper accepts a caller-provided digest; it does not itself verify current
+target grants. The eventual authenticated OWNER + fresh `account.import`
+route must obtain the grant digest from the same serializable locked review,
+and the importer must re-run that review on its own physical transaction
+before claiming and applying. Token staging, claim and apply must never
+be based on a detached stale review.
+
 The `portable_import_approvals` table stores only a domain-separated
 SHA-256 digest of a 256-bit random approval token. Each row binds:
 destination community and OWNER; exact Ed25519 source origin, community,

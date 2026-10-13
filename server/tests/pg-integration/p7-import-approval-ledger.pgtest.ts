@@ -17,6 +17,7 @@ const quoted = '"' + schema + '"';
 const b: PortableApprovalBinding = {
   targetServerId: 'destination', ownerId: 'owner',
   reviewFingerprint: 'a'.repeat(64), targetTopologyDigest: 'b'.repeat(64),
+  targetGrantDigest: 'f'.repeat(64),
   sourceOrigin: 'https://source.example', sourceServerId: 'source',
   sourceSnapshotId: 'source-snapshot-token-1234567',
   sourceKeyFingerprint: 'c'.repeat(64),
@@ -37,6 +38,8 @@ beforeAll(async () => {
   // Exercise exactly the production migration in a private schema.
   const sql = readFileSync(join(__dirname, '../../db/migrations_pg/081_portable_import_approval_ledger.sql'), 'utf8');
   await pool.query(sql);
+  const grantMigration = readFileSync(join(__dirname, '../../db/migrations_pg/082_portable_import_approval_grant_binding.sql'), 'utf8');
+  await pool.query(grantMigration);
 }, 60_000);
 
 afterAll(async () => {
@@ -87,6 +90,7 @@ describe('P7 C4 approval ledger actual PG session/rollback behaviour', () => {
     expect(row.source_origin).toBe(b.sourceOrigin);
     expect(row.source_key_fingerprint).toBe(b.sourceKeyFingerprint);
     expect(row.review_fingerprint).toBe(b.reviewFingerprint);
+    expect(row.target_grant_digest).toBe(b.targetGrantDigest);
     expect(row.expires_at).toBeInstanceOf(Date);
     expect(row.expires_at.getTime() - row.created_at.getTime()).toBeLessThanOrEqual(120_000);
     await claimOn(second, issued.approvalToken);
@@ -95,10 +99,30 @@ describe('P7 C4 approval ledger actual PG session/rollback behaviour', () => {
     expect(await consumedCount(issued.approvalToken)).toBe(1);
   });
 
+  it('invalidates legacy NULL grant evidence and rejects invalid persisted digests', async () => {
+    const issued = await stage();
+    const digest = createHash('sha256').update('bridge-portable-import-approval-v1\n')
+      .update(issued.approvalToken).digest('hex');
+    await expect(pool.query(
+      'UPDATE portable_import_approvals SET target_grant_digest=$1 WHERE token_hash=$2',
+      ['not-a-hex-digest', digest],
+    )).rejects.toThrow();
+    await pool.query(
+      'UPDATE portable_import_approvals SET target_grant_digest=NULL WHERE token_hash=$1',
+      [digest],
+    );
+    await expect(claimOn(second, issued.approvalToken))
+      .rejects.toBeInstanceOf(PortableImportApprovalError);
+    expect(await consumedCount(issued.approvalToken)).toBe(0);
+  });
+
   it('refuses mismatched target digest, revoked ownership and expired consent', async () => {
     const issued = await stage();
     await expect(claimOn(second, issued.approvalToken,
       { ...b, targetTopologyDigest: 'f'.repeat(64) }))
+      .rejects.toBeInstanceOf(PortableImportApprovalError);
+    await expect(claimOn(second, issued.approvalToken,
+      { ...b, targetGrantDigest: '0'.repeat(64) }))
       .rejects.toBeInstanceOf(PortableImportApprovalError);
     await pool.query('UPDATE servers SET "ownerId"=$1 WHERE _id=$2', ['new-owner', b.targetServerId]);
     await expect(claimOn(second, issued.approvalToken))

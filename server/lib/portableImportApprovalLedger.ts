@@ -11,7 +11,7 @@ const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const SNAPSHOT = /^[A-Za-z0-9_-]{16,128}$/;
 const MAX_ID = 256;
 const FIELDS = [
-  'targetServerId', 'ownerId', 'reviewFingerprint', 'targetTopologyDigest',
+  'targetServerId', 'ownerId', 'reviewFingerprint', 'targetTopologyDigest', 'targetGrantDigest',
   'sourceOrigin', 'sourceServerId', 'sourceSnapshotId', 'sourceKeyFingerprint',
   'structureDigest', 'permissionsDigest',
 ] as const;
@@ -20,6 +20,7 @@ export type PortableApprovalBinding = {
   ownerId: string;
   reviewFingerprint: string;
   targetTopologyDigest: string;
+  targetGrantDigest: string;
   sourceOrigin: string;
   sourceServerId: string;
   sourceSnapshotId: string;
@@ -54,7 +55,7 @@ function binding(value: unknown): asserts value is PortableApprovalBinding {
   for (const field of ['targetServerId', 'ownerId', 'sourceServerId'] as const) {
     if (!id(obj[field])) fail();
   }
-  for (const field of ['reviewFingerprint', 'targetTopologyDigest',
+  for (const field of ['reviewFingerprint', 'targetTopologyDigest', 'targetGrantDigest',
     'sourceKeyFingerprint', 'structureDigest', 'permissionsDigest'] as const) {
     if (typeof obj[field] !== 'string' || !HEX64.test(obj[field])) fail();
   }
@@ -67,7 +68,7 @@ function hashToken(token: string): string {
 }
 function args(b: PortableApprovalBinding): unknown[] {
   return [b.targetServerId, b.ownerId, b.reviewFingerprint, b.targetTopologyDigest,
-    b.sourceOrigin, b.sourceServerId, b.sourceSnapshotId, b.sourceKeyFingerprint,
+    b.targetGrantDigest, b.sourceOrigin, b.sourceServerId, b.sourceSnapshotId, b.sourceKeyFingerprint,
     b.structureDigest, b.permissionsDigest];
 }
 function validSourceExpiry(value: unknown): value is string {
@@ -78,7 +79,7 @@ function validSourceExpiry(value: unknown): value is string {
 
 /**
  * Internal staging only. NOT user consent: the caller must verify the source,
- * owner's fresh step-up and explicit safe mapping before ever exposing a route.
+ * owner's fresh step-up, freshly locked grant digest and explicit safe mapping before ever exposing a route.
  * Uses DB clock and a <= 120s lifetime, additionally capped by signature expiry.
  * A failed COMMIT never returns a token. Never log approvalToken.
  */
@@ -107,12 +108,12 @@ export async function stagePortableImportApproval(input: {
     if (current.rows.length !== 1) fail();
     const sql = `INSERT INTO portable_import_approvals (
       token_hash, target_server_id, owner_id, review_fingerprint, target_topology_digest,
-      source_origin, source_server_id, source_snapshot_id, source_key_fingerprint,
+      target_grant_digest, source_origin, source_server_id, source_snapshot_id, source_key_fingerprint,
       structure_digest, permissions_digest, created_at, expires_at
-    ) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,clock.ts,
-      LEAST($12::timestamptz,clock.ts+INTERVAL '120 seconds')
+    ) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,clock.ts,
+      LEAST($13::timestamptz,clock.ts+INTERVAL '120 seconds')
     FROM (SELECT clock_timestamp() AS ts) AS clock
-    WHERE $12::timestamptz > clock.ts
+    WHERE $13::timestamptz > clock.ts
     RETURNING expires_at`;
     const res = await client.query(sql, [digest, ...args(input.binding), input.sourceAttestationExpiresAt]);
     if (res.rows.length !== 1 || !(res.rows[0]?.expires_at instanceof Date ||
@@ -154,9 +155,10 @@ export async function claimPortableImportApproval(
       WHERE a.token_hash=$1
         AND a.target_server_id=$2 AND a.owner_id=$3
         AND a.review_fingerprint=$4 AND a.target_topology_digest=$5
-        AND a.source_origin=$6 AND a.source_server_id=$7
-        AND a.source_snapshot_id=$8 AND a.source_key_fingerprint=$9
-        AND a.structure_digest=$10 AND a.permissions_digest=$11
+        AND a.target_grant_digest=$6
+        AND a.source_origin=$7 AND a.source_server_id=$8
+        AND a.source_snapshot_id=$9 AND a.source_key_fingerprint=$10
+        AND a.structure_digest=$11 AND a.permissions_digest=$12
         AND a.consumed_at IS NULL AND a.expires_at > clock_timestamp()
         AND EXISTS (SELECT 1 FROM servers s
                     WHERE s._id=a.target_server_id AND s."ownerId"=a.owner_id)

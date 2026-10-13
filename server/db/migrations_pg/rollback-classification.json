@@ -193,5 +193,14 @@
       "071_delete_cascade_fk_indexes"
     ],
     "rationale": "071 adds the referencing-column index for the channel_read_positions.channelId ON DELETE CASCADE foreign key. 065's down drops the whole table, taking 071's index with it; re-applying 065 alone cannot recreate an object owned by 071. Ordered rollback unwinds 071 first (its isolated cycle is lossless) and the full ordered chain measures 0 lost / 0 extra (Final21 Phase 19 run). Unclassified since 071 was added in Phase 11; the gate had not completed a full run since."
+  },
+  "081_portable_import_approval_ledger": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "Isolated 081 down/re-up loses precisely COL portable_import_approvals.target_grant_digest and CON portable_import_approvals.portable_import_approval_grant_digest_check, both introduced by 082; measured 2 lost / 0 extra. The ordered 082 then 081 down and 081 then 082 up cycle restores both with zero drift.",
+    "dependsOn": [
+      "082_portable_import_approval_grant_binding"
+    ],
+    "rationale": "081 owns the portable_import_approvals table and its down drops that table. The later 082 adds the grant digest column and its hex-format CHECK to that same table, so a standalone 081 rollback destroys objects which 081 cannot recreate. 082 by itself is lossless. The mandatory --ordered rollback proof on real PostgreSQL completed the entire down/up chain with zero missing or extra objects. This declaration does not waive the ordered rollback, column validator, exact-head integration checks or any other migration failure."
   }
 }
