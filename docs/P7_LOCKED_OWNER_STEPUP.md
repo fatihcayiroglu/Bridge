@@ -10,7 +10,10 @@ switch is not sufficient for an irreversible community change.
 `requireLockedPortableOwnerStepUp` accepts ONE caller-owned PostgreSQL client
 which MUST already be in a `SERIALIZABLE READ WRITE` transaction. It reads
 and locks the current user row (`tokenVersion`, `twoFactorEnabled`) in that
-client, then validates the signed `account.import` scope via the existing
+client, checks the same PostgreSQL transaction ID before and after the
+user read (serializable autocommit is NOT an acceptable substitute for a
+caller-owned open transaction), then validates the signed `account.import`
+scope via the existing
 `checkStepUpGrant` cryptographic verification. The scope must be current,
 for the exact owner ID, sufficient for current 2FA requirements and issued
 within the previous **120 seconds**. It rejects missing, forged, expired,
