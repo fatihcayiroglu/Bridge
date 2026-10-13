@@ -311,10 +311,13 @@ class ServerRepository {
 
         if (has('members', 'serverId')) await del('members', 'DELETE FROM members WHERE "serverId"=$1');
         if (has('channels', 'serverId')) await del('channels', 'DELETE FROM channels WHERE "serverId"=$1');
-        // Migration 081 portable_import_approvals.target_server_id has a
-        // PostgreSQL FK ON DELETE CASCADE to servers(_id). The final parent
-        // DELETE atomically destroys pending/consumed consent evidence too;
-        // never preserve an import token after its destination is deleted.
+        // Migrations 081 and 083 own durable records with target_server_id
+        // REFERENCES servers(_id) ON DELETE CASCADE. The final parent DELETE
+        // atomically removes portable_import_approvals AND
+        // portable_import_snapshot_consumptions: never preserve an approval or
+        // a replay reservation after its destination community is deleted.
+        // Do not manually delete these before the parent row; the declarative
+        // FK guarantees cleanup on this same transaction (or fails closed).
         await client.query('DELETE FROM servers WHERE _id=$1', [id]);
         await client.query('COMMIT');
         // Veritabanı yetkilidir: dosya bırakılamazsa silme GERİ ALINMAZ, olay kaydedilir.
