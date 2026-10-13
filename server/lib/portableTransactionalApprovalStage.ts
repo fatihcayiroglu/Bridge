@@ -72,8 +72,8 @@ export async function stageOwnerConfirmedPortableApproval(input: {
   let discard: Error | undefined;
   try {
     client = await input.pool.connect();
-    await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
     inTransaction = true;
+    await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
 
     const proof = await requireLockedPortableOwnerStepUp({
       client, ownerId: input.ownerId,
