@@ -217,7 +217,7 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
     });
     expect(after.channels[0]).toMatchObject({
       _id: 'tch', name: 'imported-welcome', topic: 'Imported topic',
-      categoryId: 'tc', category: 'IMPORTED', nsfw: 1, slowmode: 5, order: '7',
+      categoryId: 'tc', category: 'IMPORTED', nsfw: 1, slowmode: 5, order: 7,
     });
     expect(after.grants).toEqual(before.grants);
     const consumed = await pool.query(
