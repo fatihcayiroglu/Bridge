@@ -83,29 +83,19 @@ function validSourceExpiry(value: unknown): value is string {
  * Uses DB clock and a <= 120s lifetime, additionally capped by signature expiry.
  * A failed COMMIT never returns a token. Never log approvalToken.
  */
-export async function stagePortableImportApproval(input: {
-  pool: ApprovalPool;
-  binding: PortableApprovalBinding;
-  sourceAttestationExpiresAt: string;
-}): Promise<{ approvalToken: string; expiresAt: string; importSupported: false; writesPerformed: false }> {
-  binding(input.binding);
-  if (!validSourceExpiry(input.sourceAttestationExpiresAt)) fail();
+export async function insertPortableImportApprovalWithinTransaction(
+  client: Pick<ApprovalClient, 'query'>,
+  checkedBinding: PortableApprovalBinding,
+  sourceAttestationExpiresAt: string,
+): Promise<{ approvalToken: string; expiresAt: string }> {
+  // Internal primitive: caller MUST keep the same SERIALIZABLE client
+  // for signed source, current owner, user step-up and grant verification.
+  // The returned token must NEVER escape until an external COMMIT succeeds.
+  binding(checkedBinding);
+  if (!validSourceExpiry(sourceAttestationExpiresAt)) fail();
   const secret = randomBytes(32).toString('base64url');
   const digest = hashToken(secret);
-  let client: ApprovalClient | undefined;
-  let began = false;
-  let committed = false;
-  let discard: Error | undefined;
   try {
-    client = await input.pool.connect();
-    began = true;
-    await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
-    // Re-evaluate OWNER from the DB, not a client claim; row lock prevents
-    // concurrent owner change until consent staging commits.
-    const current = await client.query(
-      'SELECT _id FROM servers WHERE _id=$1 AND "ownerId"=$2 FOR UPDATE',
-      [input.binding.targetServerId, input.binding.ownerId]);
-    if (current.rows.length !== 1) fail();
     const sql = `INSERT INTO portable_import_approvals (
       token_hash, target_server_id, owner_id, review_fingerprint, target_topology_digest,
       target_grant_digest, source_origin, source_server_id, source_snapshot_id, source_key_fingerprint,
@@ -115,13 +105,44 @@ export async function stagePortableImportApproval(input: {
     FROM (SELECT clock_timestamp() AS ts) AS clock
     WHERE $13::timestamptz > clock.ts
     RETURNING expires_at`;
-    const res = await client.query(sql, [digest, ...args(input.binding), input.sourceAttestationExpiresAt]);
+    const res = await client.query(sql, [digest, ...args(checkedBinding), sourceAttestationExpiresAt]);
     if (res.rows.length !== 1 || !(res.rows[0]?.expires_at instanceof Date ||
       typeof res.rows[0]?.expires_at === 'string')) fail();
-    const expiry = new Date(res.rows[0].expires_at as string | Date).toISOString();
+    return { approvalToken: secret, expiresAt: new Date(res.rows[0].expires_at as string | Date).toISOString() };
+  } catch {
+    return fail();
+  }
+}
+
+/**
+ * Backward-compatible internal staging. This primitive alone does NOT prove
+ * credential freshness or mapping consent. No public route may call it.
+ */
+export async function stagePortableImportApproval(input: {
+  pool: ApprovalPool;
+  binding: PortableApprovalBinding;
+  sourceAttestationExpiresAt: string;
+}): Promise<{ approvalToken: string; expiresAt: string; importSupported: false; writesPerformed: false }> {
+  binding(input.binding);
+  if (!validSourceExpiry(input.sourceAttestationExpiresAt)) fail();
+  let client: ApprovalClient | undefined;
+  let began = false;
+  let committed = false;
+  let discard: Error | undefined;
+  try {
+    client = await input.pool.connect();
+    began = true;
+    await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+    const current = await client.query(
+      'SELECT _id FROM servers WHERE _id=$1 AND "ownerId"=$2 FOR UPDATE',
+      [input.binding.targetServerId, input.binding.ownerId]);
+    if (current.rows.length !== 1) fail();
+    const staged = await insertPortableImportApprovalWithinTransaction(
+      client, input.binding, input.sourceAttestationExpiresAt,
+    );
     await client.query('COMMIT');
     committed = true;
-    return { approvalToken: secret, expiresAt: expiry, importSupported: false, writesPerformed: false };
+    return { ...staged, importSupported: false, writesPerformed: false };
   } catch {
     if (began && !committed && client) {
       try { await client.query('ROLLBACK'); } catch (e) { discard = e as Error; }
