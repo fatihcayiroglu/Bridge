@@ -15,7 +15,7 @@ const NOW = Date.parse('2026-10-13T08:00:00.000Z');
 const AT = new Date(NOW - 60_000).toISOString();
 const sourceServer = { _id: SOURCE, name: 'Source community' };
 const sourceCategories = [{ _id: 'source-cat', name: 'General', position: 0 }];
-const sourceRoles = [{ _id: 'source-role', name: 'Readers', permissions: 1, position: 0 }];
+const sourceRoles = [{ _id: 'source-role', serverId: SOURCE, name: 'Readers', permissions: 1, position: 0 }];
 const sourceChannels = [{ _id: 'source-channel', serverId: SOURCE, name: 'welcome', type: 'text', categoryId: 'source-cat', order: 0 }];
 
 function fixture() {
