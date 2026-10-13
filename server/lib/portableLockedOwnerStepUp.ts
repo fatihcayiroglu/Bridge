@@ -47,11 +47,13 @@ export async function requireLockedPortableOwnerStepUp(input: {
         !Number.isSafeInteger(now) || now < 0) refuse();
 
     const session = await input.client.query(
-      "SELECT current_setting('transaction_isolation') AS isolation, current_setting('transaction_read_only') AS readonly",
+      "SELECT current_setting('transaction_isolation') AS isolation, current_setting('transaction_read_only') AS readonly, txid_current()::text AS txid",
     );
     if (!session || session.rows.length !== 1 ||
         session.rows[0]?.isolation !== 'serializable' ||
-        session.rows[0]?.readonly !== 'off') refuse();
+        session.rows[0]?.readonly !== 'off' ||
+        typeof session.rows[0]?.txid !== 'string' ||
+        !/^[1-9][0-9]*$/.test(session.rows[0].txid)) refuse();
 
     const current = await input.client.query(
       'SELECT _id, "tokenVersion", "twoFactorEnabled" FROM users WHERE _id=$1 FOR SHARE',
@@ -72,6 +74,13 @@ export async function requireLockedPortableOwnerStepUp(input: {
     // require a truly recent credential proof (<= 120 seconds).
     if (!Number.isSafeInteger(iatMs) || iatMs > now ||
         now - iatMs > MAX_FRESH_MS) refuse();
+
+    // Isolation config alone does NOT prove an explicit transaction: a
+    // serializable autocommit session can run both statements in DIFFERENT
+    // transactions. Require the same PostgreSQL xid across both reads.
+    const ending = await input.client.query('SELECT txid_current()::text AS txid');
+    if (!ending || ending.rows.length !== 1 ||
+        ending.rows[0]?.txid !== session.rows[0].txid) refuse();
     return {
       mode: 'transaction-check-only',
       action: 'account.import',
