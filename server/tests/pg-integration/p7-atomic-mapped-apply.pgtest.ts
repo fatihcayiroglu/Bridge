@@ -236,7 +236,7 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
     expect(after.snapshots[0]).toMatchObject({
       target_server_id: SID, source_origin: ORIGIN,
       source_server_id: SOURCE, source_snapshot_id: fields.snapshotId,
-      source_key_fingerprint: fingerprint,
+      source_key_fingerprint: fields.keyFingerprint,
       structure_digest: structure.integrity.digest,
       permissions_digest: permissions.integrity.digest,
     });
@@ -269,7 +269,7 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
       'VALUES ($1,$2,$3,$4,$5,$6,$7) ' +
       'ON CONFLICT (target_server_id, source_origin, source_server_id, source_snapshot_id) ' +
       'DO NOTHING RETURNING source_snapshot_id',
-      [SID, ORIGIN, SOURCE, fields.snapshotId, fingerprint,
+      [SID, ORIGIN, SOURCE, fields.snapshotId, fields.keyFingerprint,
         structure.integrity.digest, permissions.integrity.digest],
     );
     expect(replay.rows).toHaveLength(0);
