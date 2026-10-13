@@ -44,7 +44,7 @@ function fixture(options: { failAt?: string; rollbackFails?: boolean } = {}) {
       if (options.failAt && sql.includes(options.failAt)) throw new Error('sensitive backend error');
       if (sql.includes('INSERT INTO portable_import_approvals')) {
         expect(params).toHaveLength(13);
-        expect(params?.[6]).toBe(binding.targetGrantDigest);
+        expect(params?.[5]).toBe(binding.targetGrantDigest);
         return { rows: [{ expires_at: '2026-10-13T17:02:00.000Z' }] };
       }
       if (sql === 'ROLLBACK' && options.rollbackFails) throw Error('rollback failed');
