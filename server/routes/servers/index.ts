@@ -2,11 +2,16 @@
 // Replaces the monolithic servers.ts (526 lines → 4 focused modules)
 import express from 'express';
 import coreRouter    from './core';
+import portableApprovalRouter from './portable-approval';
 import invitesRouter from './invites';
 import channelsRouter from './channels';
 import ogImageRouter  from './og-image';
 
 const router = express.Router();
+
+// Feature-flagged owner approval staging. Register before core routes;
+// it never routes category/role/channel data writes.
+router.use('/', portableApprovalRouter);
 
 // Server CRUD + member operations
 router.use('/', coreRouter);
