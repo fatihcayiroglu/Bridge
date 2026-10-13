@@ -87,7 +87,7 @@ describe('P7 C4 approval ledger actual PG session/rollback behaviour', () => {
     expect(row.source_origin).toBe(b.sourceOrigin);
     expect(row.source_key_fingerprint).toBe(b.sourceKeyFingerprint);
     expect(row.review_fingerprint).toBe(b.reviewFingerprint);
-    expect(Number(row.expires_at) || row.expires_at.getTime()).toBeDefined();
+    expect(row.expires_at).toBeInstanceOf(Date);
     expect(row.expires_at.getTime() - row.created_at.getTime()).toBeLessThanOrEqual(120_000);
     await claimOn(second, issued.approvalToken);
     expect(await consumedCount(issued.approvalToken)).toBe(1);
