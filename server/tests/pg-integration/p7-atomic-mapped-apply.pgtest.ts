@@ -312,7 +312,7 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
       client.release();
     }
   }, 30000);
-}
+
   it('fails closed after a lost COMMIT acknowledgement while a fresh connection proves durable apply', async () => {
     // Previous test committed snapshot #1. A distinct, signed snapshot changes
     // the category label, so a lost ACK cannot be mistaken for a no-op.
