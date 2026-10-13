@@ -14,7 +14,7 @@ afterAll(() => {
 });
 function fixture(config: {
   isolation?: string; readOnly?: string; owner?: string; version?: number;
-  twoFactor?: boolean; missing?: boolean;
+  twoFactor?: boolean; missing?: boolean; autocommit?: boolean;
 } = {}) {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   return {
@@ -24,8 +24,9 @@ function fixture(config: {
         queries.push({ sql, params });
         if (sql.includes('transaction_isolation')) return { rows: [{
           isolation: config.isolation ?? 'serializable',
-          readonly: config.readOnly ?? 'off',
+          readonly: config.readOnly ?? 'off', txid: '314',
         }] };
+        if (sql.includes('txid_current()')) return { rows: [{ txid: config.autocommit ? '315' : '314' }] };
         if (sql.includes('FROM users')) return { rows: config.missing ? [] : [{
           _id: config.owner ?? OWNER,
           tokenVersion: config.version ?? 7,
@@ -53,9 +54,10 @@ describe('P7 C4 locked owner step-up (never an approval)', () => {
       stepUpVerified: true, consentVerified: false, tokenIssued: false,
       writesPerformed: false, importSupported: false,
     });
-    expect(f.queries).toHaveLength(2);
+    expect(f.queries).toHaveLength(3);
     expect(f.queries[1]?.sql).toContain('FROM users WHERE _id=$1 FOR SHARE');
     expect(f.queries[1]?.params).toEqual([OWNER]);
+    expect(f.queries[2]?.sql).toContain('txid_current()');
     expect(JSON.stringify(result)).not.toContain('grant');
   });
 
@@ -63,6 +65,7 @@ describe('P7 C4 locked owner step-up (never an approval)', () => {
     { isolation: 'read committed' },
     { isolation: 'repeatable read' },
     { readOnly: 'on' },
+    { autocommit: true },
     { owner: 'different-owner' },
     { missing: true },
     { version: 8 },
