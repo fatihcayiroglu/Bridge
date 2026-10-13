@@ -21,6 +21,19 @@ const SERVER = path.resolve(__dirname, '..');
 const DELIBERATELY_UNREACHABLE: Record<string, string> = {
   // Created by migration 006 and DROPPED by 009 (plaintext private key). Never allowlist it.
   apPrivateKey: 'plaintext ActivityPub private key column, dropped by migration 009',
+  token_hash: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  target_server_id: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  owner_id: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  review_fingerprint: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  target_topology_digest: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  source_origin: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  source_server_id: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  source_snapshot_id: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  source_key_fingerprint: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  structure_digest: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  permissions_digest: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  expires_at: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  consumed_at: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
 };
 
 function allowedColumns(): Set<string> {
@@ -80,5 +93,28 @@ describe('ALLOWED_COLUMNS covers the real schema', () => {
 
   it('every exception still exists in some schema source (no stale exceptions)', () => {
     for (const col of Object.keys(DELIBERATELY_UNREACHABLE)) expect(columns.has(col)).toBe(true);
+  });
+
+  it('081 consent ledger columns remain SQL-only, with no generic collection access', () => {
+    const ledger = fs.readFileSync(path.join(SERVER, 'db/migrations_pg/081_portable_import_approval_ledger.sql'), 'utf8');
+    const owner = fs.readFileSync(path.join(SERVER, 'lib/portableImportApprovalLedger.ts'), 'utf8');
+    const privileged = [
+      'token_hash', 'target_server_id', 'owner_id', 'review_fingerprint',
+      'target_topology_digest', 'source_origin', 'source_server_id',
+      'source_snapshot_id', 'source_key_fingerprint', 'structure_digest',
+      'permissions_digest', 'expires_at', 'consumed_at',
+    ];
+    expect(privileged).toHaveLength(13);
+    for (const col of privileged) {
+      expect(columns.get(col)).toContain('portable_import_approvals (db/migrations_pg/081_portable_import_approval_ledger.sql)');
+      expect(allowed.has(col)).toBe(false);
+      expect(DELIBERATELY_UNREACHABLE[col]).toContain('dedicated parameterized SQL');
+      expect(ledger).toContain(col);
+      expect(owner).toContain(col);
+    }
+    expect(ledger).toMatch(/token_hash\\s+TEXT\\s+PRIMARY\\s+KEY/);
+    expect(ledger).toMatch(/target_server_id\\s+TEXT\\s+NOT NULL REFERENCES servers\\(_id\\) ON DELETE CASCADE/);
+    expect(owner).toContain('UPDATE portable_import_approvals');
+    expect(owner).toContain('consumed_at IS NULL');
   });
 });
