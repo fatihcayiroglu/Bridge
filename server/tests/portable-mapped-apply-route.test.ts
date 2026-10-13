@@ -31,6 +31,9 @@ const OWNER = 'mapped-owner', MEMBER = 'mapped-member', SID = 'mapped-target';
 const SOURCE = 'another-installation';
 const origin = 'https://another-installation.example';
 const sha = (c: string) => c.repeat(64);
+// Actual canonical 32-byte Base64URL proof; 43 random-looking characters alone
+// are intentionally not a sufficient token-shape guarantee.
+const token = Buffer.alloc(32, 0x15).toString('base64url');
 const oldApprovalFlag = process.env.BRIDGE_PORTABLE_OWNER_APPROVAL_ENABLED;
 const oldApplyFlag = process.env.BRIDGE_PORTABLE_MAPPED_APPLY_ENABLED;
 
@@ -58,7 +61,7 @@ const payload = () => ({
   },
   confirmedReviewFingerprint: sha('f'),
   confirmation: 'APPLY_MAPPED_PORTABLE_METADATA_ONLY',
-  approvalToken: 'a'.repeat(43),
+  approvalToken: token,
 });
 function submit(user: string | null, body: unknown = payload(),
   scope: 'account-security' | 'sensitive-export' | null = null) {
@@ -148,6 +151,7 @@ describe('P7 C4 narrowly scoped mapped-apply HTTP guard', () => {
       { ...payload(), publicKeyPem: 'attacker-key' },
       { ...payload(), failpoint: 'after_claim' },
       { ...payload(), approvalToken: 'bad' },
+      { ...payload(), approvalToken: 'a'.repeat(43) },
       { ...payload(), confirmedReviewFingerprint: sha('F') },
       { ...payload(), targetServerId: 'foreign' },
       { ...payload(), expectedSourceOrigin: 'http://source.example' },
