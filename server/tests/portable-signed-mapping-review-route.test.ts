@@ -93,7 +93,7 @@ describe('P7 signed+mapped owner review HTTP boundary', () => {
     expect((await post(OWNER)).status).toBe(403);
     expect((await post(OWNER, input(), 'sensitive-export')).status).toBe(403);
     const missing = await request(app())
-      .post('/api/servers/no-such/signed-mapping-review')
+      .post('/api/servers/no-such/portable-import/signed-mapping-review')
       .set('Authorization', `Bearer ${jwtToken(OWNER)}`)
       .set(stepUpHeader(OWNER, 'account-security')).send(input());
     expect(missing.status).toBe(404);
