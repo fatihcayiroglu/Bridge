@@ -15,7 +15,7 @@ function createTableBlocks(source: string): Array<{ table: string; body: string 
 describe('server graph deletion stays aligned with the PostgreSQL schema', () => {
   it('ledger 081 is removed by the real server FK cascade, not an unsafe manual delete', () => {
     const migration = read('db/migrations_pg/081_portable_import_approval_ledger.sql');
-    expect(migration).toMatch(/target_server_id\\s+TEXT\\s+NOT NULL REFERENCES servers\\(_id\\) ON DELETE CASCADE/);
+    expect(migration).toMatch(/target_server_id\s+TEXT\s+NOT NULL REFERENCES servers\(_id\) ON DELETE CASCADE/);
     const repo = read('db/repositories/ServerRepository.ts');
     const start = repo.indexOf('async deleteGraphAtomic');
     const end = repo.indexOf('\\n  async getMember', start);
