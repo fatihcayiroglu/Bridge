@@ -63,7 +63,7 @@ describe('P7 C4 approval ledger — no route, no import permission', () => {
     const insert = f.statements.find(x => x.sql.startsWith('INSERT INTO'));
     expect(insert?.sql).toContain('LEAST(');
     expect(insert?.sql).toContain('target_grant_digest');
-    expect(insert?.params?.[6]).toBe(binding.targetGrantDigest);
+    expect(insert?.params?.[5]).toBe(binding.targetGrantDigest);
     expect(insert?.sql).toContain('120 seconds');
     expect(insert?.params?.[0]).toBe(createHash('sha256')
       .update('bridge-portable-import-approval-v1\n')
