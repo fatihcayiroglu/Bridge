@@ -109,6 +109,25 @@ export async function applyApprovedPortableCommunityMapping(input: {
     // CAS claim and ALL updates share the identical SERIALIZABLE connection.
     // Any error rolls back consumed_at along with every affected destination row.
     await claimPortableImportApproval(client, input.approvalToken, verified.binding);
+
+    // An approval token is one-use, but a second *fresh* approval for the
+    // same signed source snapshot must never reapply it. The composite
+    // UNIQUE key is a durable cross-process barrier, and its INSERT
+    // rolls back with the CAS, all mapped writes and the redacted audit.
+    const bound = verified.binding;
+    const snapshot = await client.query(
+      'INSERT INTO portable_import_snapshot_consumptions ' +
+      '(target_server_id, source_origin, source_server_id, source_snapshot_id, ' +
+      'source_key_fingerprint, structure_digest, permissions_digest) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7) ' +
+      'ON CONFLICT (target_server_id, source_origin, source_server_id, source_snapshot_id) ' +
+      'DO NOTHING RETURNING source_snapshot_id',
+      [bound.targetServerId, bound.sourceOrigin, bound.sourceServerId,
+        bound.sourceSnapshotId, bound.sourceKeyFingerprint,
+        bound.structureDigest, bound.permissionsDigest],
+    );
+    if (!snapshot || snapshot.rows.length !== 1 ||
+        snapshot.rows[0]?.source_snapshot_id !== bound.sourceSnapshotId) refuse();
     maybeFail('after_claim', input.failpoint);
 
     for (const item of structure.categories) {
