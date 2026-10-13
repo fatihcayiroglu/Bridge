@@ -44,6 +44,9 @@ function fixture(failSQL?: string) {
     async query(sql: string, params?: unknown[]) {
       calls.push({ sql, params });
       if (failSQL && sql.includes(failSQL)) throw Error('internal secret');
+      if (sql.startsWith('INSERT INTO audit_logs')) {
+        return { rows: [{ _id: params?.[0] }] };
+      }
       if (sql.startsWith('UPDATE')) {
         return { rows: [{ _id: params?.[sql.includes('UPDATE channel_categories') ? 3
           : sql.includes('UPDATE roles') ? 2 : 7] }] };
@@ -79,6 +82,7 @@ describe('P7 C4 internal mapped atomic category/role/channel importer', () => {
       expect.stringContaining('UPDATE channel_categories'),
       expect.stringContaining('UPDATE roles'),
       expect.stringContaining('UPDATE channels'),
+      expect.stringContaining('INSERT INTO audit_logs'),
       'COMMIT',
     ]);
     expect(f.calls.find(c => c.sql.includes('UPDATE roles'))?.sql).not.toContain('permissions');
@@ -91,6 +95,16 @@ describe('P7 C4 internal mapped atomic category/role/channel importer', () => {
     expect(claim).toHaveBeenCalledWith(f.client, input.approvalToken,
       expect.objectContaining({ targetGrantDigest: digest('g') }));
     expect(grants).toHaveBeenCalledWith(expect.objectContaining({ client: f.client }));
+    const audited = f.calls.find(c => c.sql.startsWith('INSERT INTO audit_logs'));
+    expect(audited?.params?.[3]).toBe('portable.mapped_metadata.apply');
+    expect(JSON.parse(audited?.params?.[5] as string)).toEqual({
+      mode: 'existing-mapped-metadata-only', categories: 1, roles: 1, channels: 1,
+      grantsPreserved: true, membershipsImported: false,
+    });
+    const auditDetails = String(audited?.params?.[5]);
+    for (const sensitive of ['owner', input.approvalToken, 'https://src.example', 'operator-pinned']) {
+      expect(auditDetails).not.toContain(sensitive);
+    }
     expect(f.released).toEqual([undefined]);
   });
 
@@ -117,6 +131,10 @@ describe('P7 C4 internal mapped atomic category/role/channel importer', () => {
     await expect(applyApprovedPortableCommunityMapping({ ...input, pool: b.pool }))
       .rejects.toBeInstanceOf(PortableAtomicApplyError);
     expect(b.calls.at(-1)?.sql).toBe('ROLLBACK');
+    const auditFailure = fixture('INSERT INTO audit_logs');
+    await expect(applyApprovedPortableCommunityMapping({ ...input, pool: auditFailure.pool }))
+      .rejects.toBeInstanceOf(PortableAtomicApplyError);
+    expect(auditFailure.calls.at(-1)?.sql).toBe('ROLLBACK');
     const c = fixture('COMMIT');
     await expect(applyApprovedPortableCommunityMapping({ ...input, pool: c.pool }))
       .rejects.toBeInstanceOf(PortableAtomicApplyError);
