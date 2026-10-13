@@ -19,17 +19,25 @@ const EXACT_KEYS = [
   'confirmedReviewFingerprint', 'confirmation',
 ];
 const CONFIRM = 'CONFIRM_SIGNED_MAPPING_AND_PERMISSION_CONSEQUENCES';
+const APPLY_CONFIRM = 'APPLY_MAPPED_PORTABLE_METADATA_ONLY';
+const APPLY_KEYS = [...EXACT_KEYS, 'approvalToken'];
 const HEX64 = /^[0-9a-f]{64}$/;
 const MAX_BODY_BYTES = 1152 * 1024;
 function validObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
-function validate(value: unknown, sid: string): value is Record<string, unknown> {
+/** Shared, strict boundary for two different owner decisions. */
+export function validatePortableOwnerMappingRequest(value: unknown, sid: string,
+  action: 'approval' | 'apply' = 'approval'): value is Record<string, unknown> {
   if (!validObject(value)) return false;
   const keys = Object.keys(value);
-  if (keys.length !== EXACT_KEYS.length || keys.some(x => !EXACT_KEYS.includes(x))) return false;
+  const expected = action === 'approval' ? EXACT_KEYS : APPLY_KEYS;
+  if (keys.length !== expected.length || keys.some(x => !expected.includes(x))) return false;
+  if (action === 'apply' &&
+      (typeof value.approvalToken !== 'string' ||
+       !/^[A-Za-z0-9_-]{43}$/.test(value.approvalToken))) return false;
   if (value.targetServerId !== sid ||
-      value.confirmation !== CONFIRM ||
+      value.confirmation !== (action === 'approval' ? CONFIRM : APPLY_CONFIRM) ||
       typeof value.confirmedReviewFingerprint !== 'string' ||
       !HEX64.test(value.confirmedReviewFingerprint) ||
       !isCanonicalPortableSourceOrigin(value.expectedSourceOrigin) ||
@@ -136,7 +144,7 @@ router.post('/:sid/portable-import/owner-approval',
     }
     const pool = db._pool;
     if (!pool) return res.status(503).json({ code: 'PORTABLE_OWNER_APPROVAL_DB_UNAVAILABLE' });
-    if (!validate(req.body as unknown, sid)) {
+    if (!validatePortableOwnerMappingRequest(req.body as unknown, sid)) {
       return res.status(400).json({ code: 'PORTABLE_OWNER_APPROVAL_INVALID' });
     }
     const input = req.body as Record<string, unknown>;
