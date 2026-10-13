@@ -94,6 +94,8 @@ beforeAll(async () => {
     '../../db/migrations_pg/081_portable_import_approval_ledger.sql'), 'utf8'));
   await pool.query(readFileSync(join(__dirname,
     '../../db/migrations_pg/082_portable_import_approval_grant_binding.sql'), 'utf8'));
+  await pool.query(readFileSync(join(__dirname,
+    '../../db/migrations_pg/083_portable_import_snapshot_replay_barrier.sql'), 'utf8'));
 }, 60_000);
 afterAll(async () => {
   if (pool) await pool.end();
@@ -140,15 +142,16 @@ async function approve(confirmedReviewFingerprint: string, stepUpGrant = ownerGr
 }
 
 async function destinationSnapshot() {
-  const [cats, roles, channels, grants, audit] = await Promise.all([
+  const [cats, roles, channels, grants, audit, snapshots] = await Promise.all([
     pool.query('SELECT * FROM channel_categories ORDER BY _id'),
     pool.query('SELECT * FROM roles ORDER BY _id'),
     pool.query('SELECT * FROM channels ORDER BY _id'),
     pool.query('SELECT * FROM channel_permissions ORDER BY "channelId", "roleId"'),
     pool.query('SELECT * FROM audit_logs ORDER BY _id'),
+    pool.query('SELECT * FROM portable_import_snapshot_consumptions ORDER BY source_snapshot_id'),
   ]);
   return { cats: cats.rows, roles: roles.rows, channels: channels.rows,
-    grants: grants.rows, audit: audit.rows };
+    grants: grants.rows, audit: audit.rows, snapshots: snapshots.rows };
 }
 function apply(approvalToken: string, confirmedReviewFingerprint: string,
   failpoint?: 'after_claim' | 'after_categories' | 'after_roles' | 'after_channels' | 'before_commit') {
@@ -201,6 +204,9 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
   it('recovers from rollback, commits all mapped metadata once and refuses replay', async () => {
     const fingerprint = await reviewFingerprint();
     const approval = await approve(fingerprint);
+    // This second, independently minted valid token is NOT sufficient to
+    // replay a source snapshot after the first apply commits.
+    const secondApproval = await approve(fingerprint);
     const before = await destinationSnapshot();
     await expect(apply(approval.approvalToken, fingerprint, 'after_channels'))
       .rejects.toBeInstanceOf(PortableAtomicApplyError);
@@ -225,6 +231,15 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
     expect(after.grants).toEqual(before.grants);
     expect(before.audit).toHaveLength(0);
     expect(after.audit).toHaveLength(1);
+    expect(before.snapshots).toHaveLength(0);
+    expect(after.snapshots).toHaveLength(1);
+    expect(after.snapshots[0]).toMatchObject({
+      target_server_id: SID, source_origin: ORIGIN,
+      source_server_id: SOURCE, source_snapshot_id: fields.snapshotId,
+      source_key_fingerprint: fields.keyFingerprint,
+      structure_digest: structure.integrity.digest,
+      permissions_digest: permissions.integrity.digest,
+    });
     expect(after.audit[0]).toMatchObject({
       serverId: SID, actorId: 'owner', action: 'portable.mapped_metadata.apply',
       target: SID,
@@ -241,6 +256,55 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
     expect(consumed.rows[0].n).toBe(1);
     await expect(apply(approval.approvalToken, fingerprint))
       .rejects.toBeInstanceOf(PortableAtomicApplyError);
+    await expect(apply(secondApproval.approvalToken, fingerprint))
+      .rejects.toBeInstanceOf(PortableAtomicApplyError);
     expect(await destinationSnapshot()).toEqual(after);
+
+    // Prove the ledger barrier independently of stale topology: a brand
+    // new token cannot bypass the durable UNIQUE signed-snapshot tuple.
+    const replay = await rival.query(
+      'INSERT INTO portable_import_snapshot_consumptions ' +
+      '(target_server_id, source_origin, source_server_id, source_snapshot_id, ' +
+      'source_key_fingerprint, structure_digest, permissions_digest) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7) ' +
+      'ON CONFLICT (target_server_id, source_origin, source_server_id, source_snapshot_id) ' +
+      'DO NOTHING RETURNING source_snapshot_id',
+      [SID, ORIGIN, SOURCE, fields.snapshotId, fields.keyFingerprint,
+        structure.integrity.digest, permissions.integrity.digest],
+    );
+    expect(replay.rows).toHaveLength(0);
+    expect(await destinationSnapshot()).toEqual(after);
+  }, 30000);
+
+  it('proves server deletion transactionally cascades the replay barrier and approval ledger', async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const before = await client.query(
+        'SELECT count(*)::integer AS n FROM portable_import_snapshot_consumptions WHERE target_server_id=$1',
+        [SID],
+      );
+      expect(before.rows[0].n).toBe(1);
+      await client.query('DELETE FROM servers WHERE _id=$1', [SID]);
+      const replay = await client.query(
+        'SELECT count(*)::integer AS n FROM portable_import_snapshot_consumptions WHERE target_server_id=$1',
+        [SID],
+      );
+      const approvals = await client.query(
+        'SELECT count(*)::integer AS n FROM portable_import_approvals WHERE target_server_id=$1',
+        [SID],
+      );
+      expect(replay.rows[0].n).toBe(0);
+      expect(approvals.rows[0].n).toBe(0);
+      await client.query('ROLLBACK');
+      const restored = await pool.query(
+        'SELECT count(*)::integer AS n FROM portable_import_snapshot_consumptions WHERE target_server_id=$1',
+        [SID],
+      );
+      expect(restored.rows[0].n).toBe(1);
+    } finally {
+      await client.query('ROLLBACK').catch(() => undefined);
+      client.release();
+    }
   }, 30000);
 });

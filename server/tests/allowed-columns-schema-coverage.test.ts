@@ -35,6 +35,7 @@ const DELIBERATELY_UNREACHABLE: Record<string, string> = {
   permissions_digest: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
   expires_at: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
   consumed_at: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  committed_at: '083 portable_import_snapshot_consumptions: replay barrier committed timestamp, dedicated parameterized SQL only; no generic PgCollection',
 };
 
 function allowedColumns(): Set<string> {
@@ -94,6 +95,18 @@ describe('ALLOWED_COLUMNS covers the real schema', () => {
 
   it('every exception still exists in some schema source (no stale exceptions)', () => {
     for (const col of Object.keys(DELIBERATELY_UNREACHABLE)) expect(columns.has(col)).toBe(true);
+  });
+
+  it('083 replay ledger timestamp stays strictly SQL-only and durable', () => {
+    const migration = fs.readFileSync(path.join(SERVER,
+      'db/migrations_pg/083_portable_import_snapshot_replay_barrier.sql'), 'utf8');
+    const owner = fs.readFileSync(path.join(SERVER, 'lib/portableAtomicMappedApply.ts'), 'utf8');
+    expect(columns.get('committed_at'))
+      .toContain('portable_import_snapshot_consumptions (db/migrations_pg/083_portable_import_snapshot_replay_barrier.sql)');
+    expect(allowed.has('committed_at')).toBe(false);
+    expect(DELIBERATELY_UNREACHABLE.committed_at).toContain('dedicated parameterized SQL');
+    expect(migration).toMatch(/committed_at\s+TIMESTAMPTZ\s+NOT NULL DEFAULT clock_timestamp\(\)/);
+    expect(owner).toContain('portable_import_snapshot_consumptions');
   });
 
   it('082 grant digest is present only in the consent ledger extension and dedicated SQL', () => {

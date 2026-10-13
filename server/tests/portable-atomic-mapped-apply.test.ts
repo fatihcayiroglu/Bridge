@@ -44,6 +44,10 @@ function fixture(failSQL?: string) {
     async query(sql: string, params?: unknown[]) {
       calls.push({ sql, params });
       if (failSQL && sql.includes(failSQL)) throw Error('internal secret');
+      if (sql.startsWith('INSERT INTO portable_import_snapshot_consumptions')) {
+        if (failSQL === 'SNAPSHOT_CONFLICT') return { rows: [] };
+        return { rows: [{ source_snapshot_id: params?.[3] }] };
+      }
       if (sql.startsWith('INSERT INTO audit_logs')) {
         return { rows: [{ _id: params?.[0] }] };
       }
@@ -62,7 +66,13 @@ beforeEach(() => {
   step.mockReset(); review.mockReset(); claim.mockReset(); grants.mockReset();
   step.mockResolvedValue({ stepUpVerified: true });
   review.mockResolvedValue({
-    binding: { reviewFingerprint: digest('a'), targetGrantDigest: digest('g') },
+    binding: {
+      reviewFingerprint: digest('a'), targetGrantDigest: digest('g'),
+      targetServerId: 'dest', sourceOrigin: 'https://src.example',
+      sourceServerId: 'source', sourceSnapshotId: 'source-snapshot-id-123456',
+      sourceKeyFingerprint: digest('k'), structureDigest: digest('s'),
+      permissionsDigest: digest('p'),
+    },
     tokenIssued: false, importSupported: false,
   });
   grants.mockResolvedValue({ targetGrantDigest: digest('g') });
@@ -79,11 +89,17 @@ describe('P7 C4 internal mapped atomic category/role/channel importer', () => {
     });
     expect(f.calls.map(c => c.sql)).toEqual([
       'BEGIN ISOLATION LEVEL SERIALIZABLE',
+      expect.stringContaining('INSERT INTO portable_import_snapshot_consumptions'),
       expect.stringContaining('UPDATE channel_categories'),
       expect.stringContaining('UPDATE roles'),
       expect.stringContaining('UPDATE channels'),
       expect.stringContaining('INSERT INTO audit_logs'),
       'COMMIT',
+    ]);
+    const replay = f.calls.find(c => c.sql.startsWith('INSERT INTO portable_import_snapshot_consumptions'));
+    expect(replay?.params).toEqual([
+      'dest', 'https://src.example', 'source', 'source-snapshot-id-123456',
+      digest('k'), digest('s'), digest('p'),
     ]);
     expect(f.calls.find(c => c.sql.includes('UPDATE roles'))?.sql).not.toContain('permissions');
     expect(f.calls.find(c => c.sql.includes('UPDATE roles'))?.sql).not.toContain('position');
@@ -131,6 +147,16 @@ describe('P7 C4 internal mapped atomic category/role/channel importer', () => {
     await expect(applyApprovedPortableCommunityMapping({ ...input, pool: b.pool }))
       .rejects.toBeInstanceOf(PortableAtomicApplyError);
     expect(b.calls.at(-1)?.sql).toBe('ROLLBACK');
+    const snapshotConflict = fixture('SNAPSHOT_CONFLICT');
+    await expect(applyApprovedPortableCommunityMapping({ ...input, pool: snapshotConflict.pool }))
+      .rejects.toBeInstanceOf(PortableAtomicApplyError);
+    expect(snapshotConflict.calls.map(c => c.sql).filter(c => c.startsWith('UPDATE'))).toHaveLength(0);
+    expect(snapshotConflict.calls.at(-1)?.sql).toBe('ROLLBACK');
+
+    const missingBarrier = fixture('INSERT INTO portable_import_snapshot_consumptions');
+    await expect(applyApprovedPortableCommunityMapping({ ...input, pool: missingBarrier.pool }))
+      .rejects.toBeInstanceOf(PortableAtomicApplyError);
+    expect(missingBarrier.calls.at(-1)?.sql).toBe('ROLLBACK');
     const auditFailure = fixture('INSERT INTO audit_logs');
     await expect(applyApprovedPortableCommunityMapping({ ...input, pool: auditFailure.pool }))
       .rejects.toBeInstanceOf(PortableAtomicApplyError);
