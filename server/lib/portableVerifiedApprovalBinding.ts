@@ -25,6 +25,8 @@ export class PortableVerifiedApprovalBindingError extends Error {
   }
 }
 function refuse(): never { throw new PortableVerifiedApprovalBindingError(); }
+const SHA256 = /^[0-9a-f]{64}$/;
+const SNAPSHOT = /^[A-Za-z0-9_-]{16,128}$/;
 
 /**
  * Caller supplies its ONE existing SERIALIZABLE READ WRITE PostgreSQL client.
@@ -61,8 +63,8 @@ export async function deriveVerifiedPortableApprovalBinding(input: {
     // all source/target mapping decisions, exact topology, role policy,
     // every existing mapped channel grant on the *same client*.
     const checked = await inspectLockedPortableImportReview(input);
-    if (!checked.verifiedReviewFingerprint ||
-        !checked.targetTopologyDigest || !checked.targetGrantDigest ||
+    if (!SHA256.test(checked.verifiedReviewFingerprint) ||
+        !SHA256.test(checked.targetTopologyDigest) || !SHA256.test(checked.targetGrantDigest) ||
         checked.consentIssued !== false || checked.writesPerformed !== false) refuse();
 
     // Source fields are read only AFTER the Ed25519 signed tuple has been
@@ -71,11 +73,11 @@ export async function deriveVerifiedPortableApprovalBinding(input: {
     if (!att || typeof att !== 'object' ||
         att.sourceOrigin !== input.expectedSourceOrigin ||
         att.sourceServerId !== input.expectedSourceServerId ||
-        typeof att.snapshotId !== 'string' ||
-        typeof att.keyFingerprint !== 'string' ||
-        typeof att.structureDigest !== 'string' ||
-        typeof att.permissionsDigest !== 'string' ||
-        typeof att.expiresAt !== 'string') refuse();
+        typeof att.snapshotId !== 'string' || !SNAPSHOT.test(att.snapshotId) ||
+        typeof att.keyFingerprint !== 'string' || !SHA256.test(att.keyFingerprint) ||
+        typeof att.structureDigest !== 'string' || !SHA256.test(att.structureDigest) ||
+        typeof att.permissionsDigest !== 'string' || !SHA256.test(att.permissionsDigest) ||
+        typeof att.expiresAt !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}T/.test(att.expiresAt)) refuse();
 
     const binding: PortableApprovalBinding = {
       targetServerId: input.targetServerId,
