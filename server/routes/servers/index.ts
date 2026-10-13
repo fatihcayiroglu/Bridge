@@ -3,6 +3,7 @@
 import express from 'express';
 import coreRouter    from './core';
 import portableApprovalRouter from './portable-approval';
+import portableApplyRouter from './portable-apply';
 import invitesRouter from './invites';
 import channelsRouter from './channels';
 import ogImageRouter  from './og-image';
@@ -12,6 +13,7 @@ const router = express.Router();
 // Feature-flagged owner approval staging. Register before core routes;
 // it never routes category/role/channel data writes.
 router.use('/', portableApprovalRouter);
+router.use('/', portableApplyRouter);
 
 // Server CRUD + member operations
 router.use('/', coreRouter);
