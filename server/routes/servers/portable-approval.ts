@@ -43,8 +43,15 @@ function validate(value: unknown, sid: string): value is Record<string, unknown>
       !validObject(value.mapping)) return false;
   const mapping = value.mapping;
   const mkeys = Object.keys(mapping);
-  if (mkeys.length !== 3 ||
-      !['categories', 'roles', 'channels'].every(x => mkeys.includes(x))) return false;
+  const mapFields = [
+    'targetServerId', 'structureDigest', 'permissionsDigest',
+    'expectedTargetDigest', 'categories', 'roles', 'channels',
+  ];
+  if (mkeys.length !== mapFields.length ||
+      !mapFields.every(x => mkeys.includes(x)) ||
+      mapping.targetServerId !== sid ||
+      !['structureDigest', 'permissionsDigest', 'expectedTargetDigest'].every(x =>
+        typeof mapping[x] === 'string' && HEX64.test(mapping[x] as string))) return false;
   for (const field of ['categories', 'roles', 'channels']) {
     const links: unknown = mapping[field];
     if (!Array.isArray(links) || links.length > 2000 ||
