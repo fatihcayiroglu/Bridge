@@ -145,8 +145,7 @@ describe('P7 C4 approval ledger — no route, no import permission', () => {
       pool: f.pool, binding, sourceAttestationExpiresAt: expiry(),
     });
     const count = f.statements.length;
-    for (const bad of ['x', 'a'.repeat(43), approvalToken + 'x', '']) {
-      if (bad === 'a'.repeat(43)) continue; // This one can encode valid 32 bytes.
+    for (const bad of ['x', approvalToken + 'x', '']) {
       await expect(claimPortableImportApproval(f.client, bad, binding))
         .rejects.toBeInstanceOf(PortableImportApprovalError);
     }
