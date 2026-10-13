@@ -92,7 +92,7 @@ describe('P7 C4 locked owner step-up (never an approval)', () => {
 
   it('never honors the general scope enforcement rollback switch', async () => {
     process.env.STEP_UP_DISABLED_SCOPES = 'account-security';
-    await expect(verify({}, undefined)).rejects.toBeInstanceOf(LockedPortableOwnerStepUpError);
+    await expect(verify({}, null)).rejects.toBeInstanceOf(LockedPortableOwnerStepUpError);
     expect((await verify({}, grant())).stepUpVerified).toBe(true);
     delete process.env.STEP_UP_DISABLED_SCOPES;
   });
