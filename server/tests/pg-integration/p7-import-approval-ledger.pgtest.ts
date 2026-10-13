@@ -101,7 +101,7 @@ describe('P7 C4 approval ledger actual PG session/rollback behaviour', () => {
 
   it('invalidates legacy NULL grant evidence and rejects invalid persisted digests', async () => {
     const issued = await stage();
-    const digest = createHash('sha256').update('bridge-portable-import-approval-v1\\n')
+    const digest = createHash('sha256').update('bridge-portable-import-approval-v1\n')
       .update(issued.approvalToken).digest('hex');
     await expect(pool.query(
       'UPDATE portable_import_approvals SET target_grant_digest=$1 WHERE token_hash=$2',
