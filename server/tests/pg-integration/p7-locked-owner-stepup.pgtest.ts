@@ -52,6 +52,19 @@ describe('live P7 locked owner credential proof in serializable PostgreSQL trans
       await client.query('COMMIT');
     } finally { client.release(); rival.release(); }
   });
+  it('rejects an autocommit session even if its default isolation is serializable', async () => {
+    const client = await primary.connect();
+    try {
+      await client.query('SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+      await expect(requireLockedPortableOwnerStepUp({
+        client, ownerId: OWNER, stepUpGrant: grant(), now: NOW,
+      })).rejects.toBeInstanceOf(LockedPortableOwnerStepUpError);
+    } finally {
+      await client.query('SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED');
+      client.release();
+    }
+  });
+
   it('rejects stale tokenVersion, 2FA downgrade and unsuitable isolation', async () => {
     const signed = grant();
     await secondary.query('UPDATE users SET "tokenVersion"=5 WHERE _id=$1', [OWNER]);
