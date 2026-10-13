@@ -77,7 +77,7 @@ export async function deriveVerifiedPortableApprovalBinding(input: {
         typeof att.keyFingerprint !== 'string' || !SHA256.test(att.keyFingerprint) ||
         typeof att.structureDigest !== 'string' || !SHA256.test(att.structureDigest) ||
         typeof att.permissionsDigest !== 'string' || !SHA256.test(att.permissionsDigest) ||
-        typeof att.expiresAt !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}T/.test(att.expiresAt)) refuse();
+        typeof att.expiresAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(att.expiresAt)) refuse();
 
     const binding: PortableApprovalBinding = {
       targetServerId: input.targetServerId,
