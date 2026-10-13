@@ -275,4 +275,36 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
     expect(replay.rows).toHaveLength(0);
     expect(await destinationSnapshot()).toEqual(after);
   }, 30000);
+
+  it('proves server deletion transactionally cascades the replay barrier and approval ledger', async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const before = await client.query(
+        'SELECT count(*)::integer AS n FROM portable_import_snapshot_consumptions WHERE target_server_id=$1',
+        [SID],
+      );
+      expect(before.rows[0].n).toBe(1);
+      await client.query('DELETE FROM servers WHERE _id=$1', [SID]);
+      const replay = await client.query(
+        'SELECT count(*)::integer AS n FROM portable_import_snapshot_consumptions WHERE target_server_id=$1',
+        [SID],
+      );
+      const approvals = await client.query(
+        'SELECT count(*)::integer AS n FROM portable_import_approvals WHERE target_server_id=$1',
+        [SID],
+      );
+      expect(replay.rows[0].n).toBe(0);
+      expect(approvals.rows[0].n).toBe(0);
+      await client.query('ROLLBACK');
+      const restored = await pool.query(
+        'SELECT count(*)::integer AS n FROM portable_import_snapshot_consumptions WHERE target_server_id=$1',
+        [SID],
+      );
+      expect(restored.rows[0].n).toBe(1);
+    } finally {
+      await client.query('ROLLBACK').catch(() => undefined);
+      client.release();
+    }
+  }, 30000);
 });
