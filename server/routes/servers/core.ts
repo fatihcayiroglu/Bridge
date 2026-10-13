@@ -34,6 +34,7 @@ import db from '../../db/loader';
 import { issueAtomicPortableSourceAttestation } from '../../lib/portableSourceSnapshotIssuer';
 import { readPortableSourceSigningConfig } from '../../lib/portableSourceExportConfig';
 import { readDestinationPinnedSourceRegistry } from '../../lib/portableDestinationTrustConfig';
+import { isCanonicalPortableSourceOrigin } from '../../lib/portableSourceAttestation';
 import { verifyAttestationAgainstPinnedRegistry } from '../../lib/portableSourceKeyring';
 
 // GET /api/servers
@@ -422,10 +423,16 @@ router.post('/:sid/portable-import/source-attestation-review',
       return res.status(400).json({ error: 'Invalid source attestation review request' });
     }
     const input = body as Record<string, unknown>;
-    if (typeof input.expectedSourceOrigin !== 'string' ||
+    // Source identity must be explicitly selected and canonical BEFORE
+    // invoking even a mocked/offline verifier: blank or alternate origins
+    // must never be interpreted as a trusted operator-pinned source.
+    if (!isCanonicalPortableSourceOrigin(input.expectedSourceOrigin) ||
         typeof input.expectedSourceServerId !== 'string' ||
-        input.expectedSourceOrigin.length > 512 || input.expectedSourceServerId.length > 256 ||
-        !input.expectedSourceServerId) {
+        input.expectedSourceServerId.length === 0 ||
+        input.expectedSourceServerId.length > 256 ||
+        !input.expectedSourceServerId.trim() ||
+        !['structure', 'permissions', 'attestation'].every(field =>
+          input[field] && typeof input[field] === 'object' && !Array.isArray(input[field]))) {
       return res.status(400).json({ error: 'Invalid source attestation review request' });
     }
 
