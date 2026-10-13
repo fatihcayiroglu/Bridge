@@ -109,9 +109,10 @@ export async function stagePortableImportApproval(input: {
       token_hash, target_server_id, owner_id, review_fingerprint, target_topology_digest,
       source_origin, source_server_id, source_snapshot_id, source_key_fingerprint,
       structure_digest, permissions_digest, created_at, expires_at
-    ) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,clock_timestamp(),
-      LEAST($12::timestamptz,clock_timestamp()+INTERVAL '120 seconds')
-    WHERE $12::timestamptz > clock_timestamp()
+    ) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,clock.ts,
+      LEAST($12::timestamptz,clock.ts+INTERVAL '120 seconds')
+    FROM (SELECT clock_timestamp() AS ts) AS clock
+    WHERE $12::timestamptz > clock.ts
     RETURNING expires_at`;
     const res = await client.query(sql, [digest, ...args(input.binding), input.sourceAttestationExpiresAt]);
     if (res.rows.length !== 1 || !(res.rows[0]?.expires_at instanceof Date ||
