@@ -65,6 +65,113 @@ function validate(value: unknown, sid: string): value is Record<string, unknown>
   } catch { return false; }
 }
 
+/**
+ * @openapi
+ * /servers/{sid}/portable-import/owner-approval:
+ *   post:
+ *     tags: [Servers]
+ *     summary: Stage a short-lived signed mapping owner approval (not an import)
+ *     description: Disabled by default. Requires authenticated destination owner, fresh account.import step-up, pinned signed source, and exact explicit mapping confirmation. Never writes destination community data.
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: sid
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             additionalProperties: false
+ *             required: [structure, permissions, attestation, expectedSourceOrigin, expectedSourceServerId, targetServerId, mapping, confirmedReviewFingerprint, confirmation]
+ *             properties:
+ *               structure: { type: object, description: Signed source structure manifest }
+ *               permissions: { type: object, description: Paired signed source permission manifest }
+ *               attestation: { type: object, description: Operator-pinned Ed25519 source proof }
+ *               expectedSourceOrigin: { type: string, format: uri, description: Canonical HTTPS origin }
+ *               expectedSourceServerId: { type: string }
+ *               targetServerId: { type: string }
+ *               mapping: { type: object, description: Exact seven-field mapping and target topology digest }
+ *               confirmedReviewFingerprint: { type: string, pattern: '^[0-9a-f]{64}
+// A committed token is not a data-migration authorization unless and until
+// an independently reviewed atomic importer is enabled in a future release.
+router.post('/:sid/portable-import/owner-approval',
+  authMiddleware, limits.write(), async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    const actor = castAuthed(req).user;
+    const sid = String(req.params.sid ?? '');
+    const destination = await Servers.findById(sid);
+    if (!destination) return res.status(404).json({ error: 'Target community not found' });
+    if (destination.ownerId !== actor.id) {
+      return res.status(403).json({ error: 'Only destination owner can approve signed mappings' });
+    }
+    // Both the HTTP precheck and the transaction-local guard are needed.
+    // The latter *never* honors the global step-up disable switch.
+    if (!(await enforceStepUp(req, res, actor.id, 'account.import'))) return;
+    if (process.env.BRIDGE_PORTABLE_OWNER_APPROVAL_ENABLED !== 'true') {
+      return res.status(503).json({ code: 'PORTABLE_OWNER_APPROVAL_DISABLED' });
+    }
+    const pool = db._pool;
+    if (!pool) return res.status(503).json({ code: 'PORTABLE_OWNER_APPROVAL_DB_UNAVAILABLE' });
+    if (!validate(req.body as unknown, sid)) {
+      return res.status(400).json({ code: 'PORTABLE_OWNER_APPROVAL_INVALID' });
+    }
+    const input = req.body as Record<string, unknown>;
+    const grant = req.header(STEP_UP_HEADER);
+    if (!grant || grant.length > 2048) {
+      return res.status(403).json({ code: 'PORTABLE_OWNER_APPROVAL_STEPUP_REQUIRED' });
+    }
+
+    let registry: string;
+    try { registry = readDestinationPinnedSourceRegistry(); }
+    catch {
+      return res.status(503).json({ code: 'PORTABLE_SOURCE_TRUST_UNAVAILABLE' });
+    }
+    try {
+      const result = await stageOwnerConfirmedPortableApproval({
+        pool, targetServerId: sid, ownerId: actor.id, stepUpGrant: grant,
+        confirmedReviewFingerprint: input.confirmedReviewFingerprint,
+        structure: input.structure, permissions: input.permissions,
+        attestation: input.attestation,
+        expectedSourceOrigin: input.expectedSourceOrigin as string,
+        expectedSourceServerId: input.expectedSourceServerId as string,
+        mapping: input.mapping as { categories: unknown; roles: unknown; channels: unknown },
+        operatorRegistryJson: registry,
+      });
+      // Never cache, log or repeat the bearer approvalToken.
+      return res.status(201).json(result);
+    } catch {
+      // Uniform error: no registry, signature, step-up, owner-row, topology
+      // or grant-parity oracle, and never reveal an uncommitted token.
+      return res.status(422).json({ code: 'PORTABLE_OWNER_APPROVAL_UNAVAILABLE' });
+    }
+  },
+);
+
+export default router;
+ }
+ *               confirmation: { type: string, enum: [CONFIRM_SIGNED_MAPPING_AND_PERMISSION_CONSEQUENCES] }
+ *     responses:
+ *       201:
+ *         description: Hashed one-use approval stored; no community data imported
+ *       400:
+ *         description: Malformed request or incomplete explicit confirmation
+ *       401:
+ *         description: Authentication required
+ *       403:
+ *         description: Destination owner or step-up proof required
+ *       404:
+ *         description: Destination community not found
+ *       422:
+ *         description: Signed proof, topology, grants or owner approval unavailable
+ *       503:
+ *         description: Feature disabled or operator-pinned trust/database unavailable
+ */
 // This endpoint only stages an approval record (short-lived, one-use).
 // A committed token is not a data-migration authorization unless and until
 // an independently reviewed atomic importer is enabled in a future release.
