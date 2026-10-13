@@ -83,6 +83,7 @@ beforeAll(async () => {
   await pool.query('CREATE TABLE channels (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, topic TEXT NOT NULL, "categoryId" TEXT, category TEXT NOT NULL, "order" BIGINT NOT NULL, nsfw INTEGER NOT NULL, slowmode INTEGER NOT NULL)');
   await pool.query('CREATE TABLE channel_permissions ("channelId" TEXT NOT NULL, "serverId" TEXT NOT NULL, "roleId" TEXT NOT NULL, allow BIGINT NOT NULL, deny BIGINT NOT NULL)');
   await pool.query('CREATE TABLE channel_overrides ("channelId" TEXT NOT NULL)');
+  await pool.query('CREATE TABLE audit_logs (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, "actorId" TEXT NOT NULL, action TEXT NOT NULL, target TEXT, detail TEXT, "createdAt" BIGINT NOT NULL)');
   await pool.query("INSERT INTO servers VALUES ('dest','owner')");
   await pool.query("INSERT INTO users VALUES ('owner',4,FALSE)");
   await pool.query("INSERT INTO channel_categories VALUES ('tc','dest','General',0,FALSE)");
@@ -139,13 +140,15 @@ async function approve(confirmedReviewFingerprint: string, stepUpGrant = ownerGr
 }
 
 async function destinationSnapshot() {
-  const [cats, roles, channels, grants] = await Promise.all([
+  const [cats, roles, channels, grants, audit] = await Promise.all([
     pool.query('SELECT * FROM channel_categories ORDER BY _id'),
     pool.query('SELECT * FROM roles ORDER BY _id'),
     pool.query('SELECT * FROM channels ORDER BY _id'),
     pool.query('SELECT * FROM channel_permissions ORDER BY "channelId", "roleId"'),
+    pool.query('SELECT * FROM audit_logs ORDER BY _id'),
   ]);
-  return { cats: cats.rows, roles: roles.rows, channels: channels.rows, grants: grants.rows };
+  return { cats: cats.rows, roles: roles.rows, channels: channels.rows,
+    grants: grants.rows, audit: audit.rows };
 }
 function apply(approvalToken: string, confirmedReviewFingerprint: string,
   failpoint?: 'after_claim' | 'after_categories' | 'after_roles' | 'after_channels' | 'before_commit') {
@@ -220,6 +223,19 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
       categoryId: 'tc', category: 'IMPORTED', nsfw: 1, slowmode: 5, order: 7,
     });
     expect(after.grants).toEqual(before.grants);
+    expect(before.audit).toHaveLength(0);
+    expect(after.audit).toHaveLength(1);
+    expect(after.audit[0]).toMatchObject({
+      serverId: SID, actorId: 'owner', action: 'portable.mapped_metadata.apply',
+      target: SID,
+    });
+    expect(JSON.parse(after.audit[0]!.detail)).toEqual({
+      mode: 'existing-mapped-metadata-only', categories: 1, roles: 1,
+      channels: 1, grantsPreserved: true, membershipsImported: false,
+    });
+    expect(after.audit[0]!.detail).not.toContain(approval.approvalToken);
+    expect(after.audit[0]!.detail).not.toContain('owner');
+    expect(after.audit[0]!.detail).not.toContain(ORIGIN);
     const consumed = await pool.query(
       'SELECT count(*)::integer AS n FROM portable_import_approvals WHERE consumed_at IS NOT NULL');
     expect(consumed.rows[0].n).toBe(1);
