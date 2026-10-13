@@ -24,6 +24,18 @@ describe('server graph deletion stays aligned with the PostgreSQL schema', () =>
     expect(code).toContain('DELETE FROM servers WHERE _id=$1');
   });
 
+  it('083 replay reservations expire with the destination via real FK CASCADE', () => {
+    const migration = read('db/migrations_pg/083_portable_import_snapshot_replay_barrier.sql');
+    expect(migration).toMatch(/target_server_id\s+TEXT\s+NOT NULL REFERENCES servers\(_id\) ON DELETE CASCADE/);
+    expect(migration).toMatch(/PRIMARY KEY\s*\(target_server_id,\s*source_origin,\s*source_server_id,\s*source_snapshot_id\)/);
+    const repository = read('db/repositories/ServerRepository.ts');
+    const start = repository.indexOf('async deleteGraphAtomic');
+    const end = repository.indexOf('\n  async getMember', start);
+    const owner = repository.slice(start, end);
+    expect(owner).toContain('portable_import_snapshot_consumptions');
+    expect(owner).toContain('DELETE FROM servers WHERE _id=$1');
+  });
+
   it('mentions every schema table carrying a direct server/channel ownership key', () => {
     const schemaSources = [read('db/postgres/schema.ts'), read('db/postgres/migrations.ts')];
     const migrationDir = path.join(__dirname, '..', 'db', 'migrations_pg');
