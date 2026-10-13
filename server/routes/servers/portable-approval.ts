@@ -33,9 +33,14 @@ export function validatePortableOwnerMappingRequest(value: unknown, sid: string,
   const keys = Object.keys(value);
   const expected = action === 'approval' ? EXACT_KEYS : APPLY_KEYS;
   if (keys.length !== expected.length || keys.some(x => !expected.includes(x))) return false;
-  if (action === 'apply' &&
-      (typeof value.approvalToken !== 'string' ||
-       !/^[A-Za-z0-9_-]{43}$/.test(value.approvalToken))) return false;
+  if (action === 'apply') {
+    if (typeof value.approvalToken !== 'string' ||
+        !/^[A-Za-z0-9_-]{43}$/.test(value.approvalToken) ||
+        Buffer.from(value.approvalToken, 'base64url').length !== 32 ||
+        Buffer.from(value.approvalToken, 'base64url').toString('base64url') !== value.approvalToken) {
+      return false;
+    }
+  }
   if (value.targetServerId !== sid ||
       value.confirmation !== (action === 'approval' ? CONFIRM : APPLY_CONFIRM) ||
       typeof value.confirmedReviewFingerprint !== 'string' ||
