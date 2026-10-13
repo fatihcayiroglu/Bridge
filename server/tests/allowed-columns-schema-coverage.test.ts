@@ -26,6 +26,7 @@ const DELIBERATELY_UNREACHABLE: Record<string, string> = {
   owner_id: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
   review_fingerprint: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
   target_topology_digest: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
+  target_grant_digest: '082 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
   source_origin: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
   source_server_id: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
   source_snapshot_id: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
@@ -93,6 +94,19 @@ describe('ALLOWED_COLUMNS covers the real schema', () => {
 
   it('every exception still exists in some schema source (no stale exceptions)', () => {
     for (const col of Object.keys(DELIBERATELY_UNREACHABLE)) expect(columns.has(col)).toBe(true);
+  });
+
+  it('082 grant digest is present only in the consent ledger extension and dedicated SQL', () => {
+    const migration = fs.readFileSync(path.join(SERVER,
+      'db/migrations_pg/082_portable_import_approval_grant_binding.sql'), 'utf8');
+    const owner = fs.readFileSync(path.join(SERVER, 'lib/portableImportApprovalLedger.ts'), 'utf8');
+    expect(columns.get('target_grant_digest'))
+      .toContain('portable_import_approvals (db/migrations_pg/082_portable_import_approval_grant_binding.sql)');
+    expect(allowed.has('target_grant_digest')).toBe(false);
+    expect(DELIBERATELY_UNREACHABLE.target_grant_digest).toContain('dedicated parameterized SQL');
+    expect(migration).toContain('target_grant_digest');
+    expect(owner).toContain('target_grant_digest');
+    expect(owner).toContain('AND a.target_grant_digest=$6');
   });
 
   it('081 consent ledger columns remain SQL-only, with no generic collection access', () => {
