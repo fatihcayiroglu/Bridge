@@ -88,7 +88,7 @@ describe('P7 C4 approval ledger — no route, no import permission', () => {
     ]) {
       const f = fixture();
       await expect(stagePortableImportApproval({
-        pool: f.pool, binding: invalid, sourceAttestationExpiresAt: expiry(),
+        pool: f.pool, binding: invalid as PortableApprovalBinding, sourceAttestationExpiresAt: expiry(),
       })).rejects.toBeInstanceOf(PortableImportApprovalError);
       expect(f.connect).not.toHaveBeenCalled();
     }
