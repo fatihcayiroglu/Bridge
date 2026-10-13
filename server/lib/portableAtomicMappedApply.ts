@@ -1,6 +1,7 @@
 // P7 C4 — internal atomic apply of ALREADY MAPPED destination rows.
 // UNMOUNTED: never expose to HTTP until independent deploy/recovery sign-off.
 // No user, member, permission, message, role-power or hierarchy migration.
+import { randomUUID } from 'node:crypto';
 import { validatePortableCommunityStructure } from './portableCommunityValidation';
 import { requireLockedPortableOwnerStepUp } from './portableLockedOwnerStepUp';
 import { deriveVerifiedPortableApprovalBinding } from './portableVerifiedApprovalBinding';
@@ -149,6 +150,26 @@ export async function applyApprovedPortableCommunityMapping(input: {
       sourcePermissions: input.permissions, mapping: input.mapping,
     });
     if (after.targetGrantDigest !== verified.binding.targetGrantDigest) refuse();
+
+    // The audit record is durable ONLY when the same transaction commits.
+    // Its bounded detail never includes owner ID, source IDs, bearer tokens,
+    // attestation, signing keys, raw grants or mapping contents.
+    const auditId = 'portable-mapped-' + randomUUID();
+    const detail = JSON.stringify({
+      mode: 'existing-mapped-metadata-only',
+      categories: structure.categories.length,
+      roles: structure.roles.length,
+      channels: structure.channels.length,
+      grantsPreserved: true,
+      membershipsImported: false,
+    });
+    const audit = await client.query(
+      'INSERT INTO audit_logs (_id, "serverId", "actorId", action, target, detail, "createdAt") ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint) RETURNING _id',
+      [auditId, input.targetServerId, input.ownerId,
+        'portable.mapped_metadata.apply', input.targetServerId, detail],
+    );
+    if (!audit || audit.rows.length !== 1 || audit.rows[0]?._id !== auditId) refuse();
     maybeFail('before_commit', input.failpoint);
     await client.query('COMMIT');
     committed = true;
