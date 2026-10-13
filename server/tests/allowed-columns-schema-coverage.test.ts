@@ -105,7 +105,7 @@ describe('ALLOWED_COLUMNS covers the real schema', () => {
       .toContain('portable_import_snapshot_consumptions (db/migrations_pg/083_portable_import_snapshot_replay_barrier.sql)');
     expect(allowed.has('committed_at')).toBe(false);
     expect(DELIBERATELY_UNREACHABLE.committed_at).toContain('dedicated parameterized SQL');
-    expect(migration).toMatch(/committed_at\\s+TIMESTAMPTZ\\s+NOT NULL DEFAULT clock_timestamp\\(\\)/);
+    expect(migration).toMatch(/committed_at\s+TIMESTAMPTZ\s+NOT NULL DEFAULT clock_timestamp\(\)/);
     expect(owner).toContain('portable_import_snapshot_consumptions');
   });
 
