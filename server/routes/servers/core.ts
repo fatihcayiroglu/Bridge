@@ -33,6 +33,9 @@ import { enforceStepUp } from '../../lib/stepUp';
 import db from '../../db/loader';
 import { issueAtomicPortableSourceAttestation } from '../../lib/portableSourceSnapshotIssuer';
 import { readPortableSourceSigningConfig } from '../../lib/portableSourceExportConfig';
+import { readDestinationPinnedSourceRegistry } from '../../lib/portableDestinationTrustConfig';
+import { isCanonicalPortableSourceOrigin } from '../../lib/portableSourceAttestation';
+import { verifyAttestationAgainstPinnedRegistry } from '../../lib/portableSourceKeyring';
 
 // GET /api/servers
 /**
@@ -390,6 +393,87 @@ router.post('/:sid/portable-import/preview', authMiddleware, limits.write(), asy
     return res.status(503).json({ code: 'PORTABLE_COMMUNITY_PREVIEW_UNAVAILABLE', error: 'Cannot build a complete destination preview' });
   }
 });
+
+// P7 C4: verify a downloaded signed source pair against a DESTINATION
+// OPERATOR-PINNED keyring. Owner-only, fresh import step-up, READ-ONLY.
+// User-selected expected source identity is checked against the signed proof;
+// no public key, registry or origin lookup URL comes from the request.
+router.post('/:sid/portable-import/source-attestation-review',
+  authMiddleware, limits.write(), async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    const actor = castAuthed(req).user;
+    const sid = String(req.params.sid ?? '');
+    const destination = await Servers.findById(sid);
+    if (!destination) return res.status(404).json({ error: 'Destination community not found' });
+    if (destination.ownerId !== actor.id) {
+      return res.status(403).json({ error: 'Only the destination owner may review source attestations' });
+    }
+    if (!(await enforceStepUp(req, res, actor.id, 'account.import'))) return;
+
+    const body: unknown = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return res.status(400).json({ error: 'Invalid source attestation review request' });
+    }
+    const fields = Object.keys(body);
+    const expected = [
+      'structure', 'permissions', 'attestation', 'expectedSourceOrigin', 'expectedSourceServerId',
+    ];
+    if (fields.length !== expected.length || fields.some(field => !expected.includes(field))) {
+      return res.status(400).json({ error: 'Invalid source attestation review request' });
+    }
+    const input = body as Record<string, unknown>;
+    // Source identity must be explicitly selected and canonical BEFORE
+    // invoking even a mocked/offline verifier: blank or alternate origins
+    // must never be interpreted as a trusted operator-pinned source.
+    if (!isCanonicalPortableSourceOrigin(input.expectedSourceOrigin) ||
+        typeof input.expectedSourceServerId !== 'string' ||
+        input.expectedSourceServerId.length === 0 ||
+        input.expectedSourceServerId.length > 256 ||
+        !input.expectedSourceServerId.trim() ||
+        !['structure', 'permissions', 'attestation'].every(field =>
+          input[field] && typeof input[field] === 'object' && !Array.isArray(input[field]))) {
+      return res.status(400).json({ error: 'Invalid source attestation review request' });
+    }
+
+    let registry: string;
+    try {
+      registry = readDestinationPinnedSourceRegistry();
+    } catch {
+      return res.status(503).json({
+        code: 'PORTABLE_SOURCE_TRUST_UNAVAILABLE',
+        error: 'Source trust verification is not configured',
+      });
+    }
+    try {
+      const checked = verifyAttestationAgainstPinnedRegistry({
+        structure: input.structure,
+        permissions: input.permissions,
+        attestation: input.attestation,
+        expectedSourceOrigin: input.expectedSourceOrigin,
+        expectedSourceServerId: input.expectedSourceServerId,
+        operatorRegistryJson: registry,
+      });
+      return res.status(200).json({
+        ...checked,
+        targetServerId: sid,
+        mode: 'read-only',
+        mappingApproved: false,
+        importSupported: false,
+        writesPerformed: false,
+        targetTopologyBound: false,
+      });
+    } catch {
+      // One generic error for forged manifests, revoked keys, mismatched
+      // sources, expired signatures and invalid keyrings; no cryptographic
+      // oracle or disclosure of configured public-key registry details.
+      return res.status(422).json({
+        code: 'PORTABLE_SOURCE_ATTESTATION_INVALID',
+        error: 'Source attestation cannot be verified',
+      });
+    }
+  },
+);
 
 // P7 C3: paired structure + permission manifest preflight. Read-only,
 // owner-bound and fresh account-security proof. NOT an apply endpoint.
