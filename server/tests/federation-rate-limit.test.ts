@@ -305,3 +305,96 @@ describe('limit uygulaması', () => {
     expect({ passed, status: res.statusCode }).toEqual({ passed: true, status: 200 });
   });
 });
+
+
+// Configure Redis BEFORE loading a fresh middleware module. REDIS_CONFIGURED is
+// captured once at module evaluation, so mutating the env against the default
+// imported middleware would be a false test of this high-risk fail-closed path.
+describe('configured Redis remains an authoritative federation rate-limit dependency', () => {
+  async function runWithRedisConfigured(
+    exercise: (middleware: typeof import('../middleware/federationRateLimit')) => Promise<void>,
+  ): Promise<void> {
+    const original = process.env.REDIS_URL;
+    let configured!: typeof import('../middleware/federationRateLimit');
+    try {
+      process.env.REDIS_URL = 'redis://required-shared-authority.test:6379';
+      jest.isolateModules(() => {
+        configured = require('../middleware/federationRateLimit') as
+          typeof import('../middleware/federationRateLimit');
+      });
+      await exercise(configured);
+    } finally {
+      if (original === undefined) delete process.env.REDIS_URL;
+      else process.env.REDIS_URL = original;
+    }
+  }
+
+  function assertClosed(res: Res, next: jest.Mock): void {
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['Retry-After']).toBe(1);
+    expect(res.body).toEqual({ error: 'Federation rate limit service unavailable' });
+    expect(next).not.toHaveBeenCalled();
+    // Never present a fake healthy quota from a process-local counter.
+    expect(res.headers['X-AP-RateLimit-Remaining']).toBeUndefined();
+    expect(res.headers['X-AP-Peer-RateLimit-Remaining']).toBeUndefined();
+  }
+
+  it('refuses global and peer requests when explicitly configured Redis is unavailable', async () => {
+    await runWithRedisConfigured(async middleware => {
+      redisUp = false;
+      for (const limiter of [middleware.federationGlobalRateLimit, middleware.federationInboxRateLimit]) {
+        const res = makeRes();
+        const next = jest.fn();
+        await limiter(makeReq(), res as never, next);
+        assertClosed(res, next);
+      }
+      expect(zsets.size).toBe(0);
+    });
+  });
+
+  it('does not downgrade to a local quota if the configured shared counter returns null', async () => {
+    await runWithRedisConfigured(async middleware => {
+      redisUp = true;
+      clientNull = true;
+      for (const limiter of [middleware.federationGlobalRateLimit, middleware.federationInboxRateLimit]) {
+        const res = makeRes();
+        const next = jest.fn();
+        await limiter(makeReq(), res as never, next);
+        assertClosed(res, next);
+      }
+      expect(zsets.size).toBe(0);
+    });
+  });
+
+  it('fails closed on configured Redis command errors instead of permitting the request', async () => {
+    await runWithRedisConfigured(async middleware => {
+      redisUp = true;
+      throwOnExec = true;
+      for (const limiter of [middleware.federationGlobalRateLimit, middleware.federationInboxRateLimit]) {
+        const res = makeRes();
+        const next = jest.fn();
+        await limiter(makeReq(), res as never, next);
+        assertClosed(res, next);
+      }
+    });
+  });
+
+  it('still allows legitimate inbox traffic when the configured shared counters work', async () => {
+    await runWithRedisConfigured(async middleware => {
+      const global = makeRes(), peer = makeRes();
+      const nextGlobal = jest.fn(), nextPeer = jest.fn();
+      await middleware.federationGlobalRateLimit(makeReq(), global as never, nextGlobal);
+      await middleware.federationInboxRateLimit(
+        makeReq({ headers: { signature: 'keyId="https://legitimate.example/actor#key"' } }),
+        peer as never, nextPeer,
+      );
+      expect(nextGlobal).toHaveBeenCalledTimes(1);
+      expect(nextPeer).toHaveBeenCalledTimes(1);
+      expect(global.statusCode).toBe(200);
+      expect(peer.statusCode).toBe(200);
+      expect(zsets.has('ap:inbox:global')).toBe(true);
+      expect(zsets.has('ap:inbox:burst:legitimate.example')).toBe(true);
+      expect(zsets.has('ap:inbox:peer:legitimate.example')).toBe(true);
+    });
+  });
+});
