@@ -53,13 +53,17 @@ function destination(value) {
   if (process.platform === 'win32' || typeof process.getuid !== 'function') {
     refuse('Provision in a hardened POSIX environment with mode-0700 storage.');
   }
-  const dir = resolve(value);
-  if (dir === ROOT || dir.startsWith(ROOT + sep)) {
-    refuse('Refusing to store signing material inside the Bridge repository.');
-  }
-  const info = lstatSync(dir);
-  if (!info.isDirectory() || info.isSymbolicLink() || realpathSync(dir) !== dir) {
+  const requested = resolve(value);
+  const info = lstatSync(requested);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
     refuse('Output must be an existing real directory, not a symlink.');
+  }
+  // Resolve parent aliases (e.g. macOS /var -> /private/var), then check
+  // against the canonical repository root and write ONLY via this real path.
+  const dir = realpathSync(requested);
+  const repository = realpathSync(ROOT);
+  if (dir === repository || dir.startsWith(repository + sep)) {
+    refuse('Refusing to store signing material inside the Bridge repository.');
   }
   if (info.uid !== process.getuid() || (info.mode & 0o077) !== 0) {
     refuse('Output directory must be owned by the operator and mode 0700.');
