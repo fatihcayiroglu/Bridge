@@ -40,7 +40,7 @@ import jwt from 'jsonwebtoken';
 import { authMiddleware } from '../middleware/auth';
 
 const db: any = require('../db/loader');
-const { Channels, Members } = require('../db/repositories');
+const { Channels, Members, ChannelPermissions } = require('../db/repositories');
 const profileRouter = require('../routes/serverProfile');
 
 function buildApp() {
@@ -211,7 +211,7 @@ describe('the public vanity page', () => {
       { _id: 'c-private', name: 'gizli-yonetim' },
     ]);
     findOverridesByChannel.mockImplementation(async (channelId: string) => (
-      channelId === 'c-private' ? [{ targetType: 'everyone', deny: 1 }] : []
+      channelId === 'c-private' ? [{ targetType: 'everyone', targetId: serverId, deny: 1 }] : []
     ));
 
     const res = await request(app).get('/s/gaming');
@@ -222,10 +222,47 @@ describe('the public vanity page', () => {
     expect(res.text).not.toContain('gizli-yonetim');
   });
 
+  it('hides a channel made private the way the channel permission routes store it', async () => {
+    // Routes persist @everyone in the canonical `channel_permissions` store,
+    // not in the legacy override table. Checking only the legacy table
+    // published every such channel's name and topic here.
+    boosts.getLiveVanityServer.mockResolvedValue(server());
+    findWhere.mockResolvedValue([
+      { _id: 'c-public', name: 'genel', topic: 'Herkese açık' },
+      { _id: 'c-staff', name: 'yonetim-odasi', topic: 'maaş listesi' },
+      { _id: 'c-staff-legacy-id', name: 'eski-kayit-gizli' },
+    ]);
+    await db.channelPermissions.insert({ _id: uuidv4(), channelId: 'c-staff', roleId: '__everyone__', serverId, allow: 0, deny: 1, createdAt: 1 });
+    // Older rows name @everyone by the server id; they resolve the same way.
+    await db.channelPermissions.insert({ _id: uuidv4(), channelId: 'c-staff-legacy-id', roleId: serverId, serverId, allow: 0, deny: 1, createdAt: 1 });
+    await db.channelPermissions.insert({ _id: uuidv4(), channelId: 'c-staff', roleId: 'r-staff', serverId, allow: 1, deny: 0, createdAt: 1 });
+
+    const res = await request(app).get('/s/gaming');
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('genel');
+    expect(res.text).not.toContain('yonetim-odasi');
+    expect(res.text).not.toContain('maaş listesi');
+    expect(res.text).not.toContain('eski-kayit-gizli');
+  });
+
+  it('a channel whose canonical permissions cannot be read is treated as private', async () => {
+    boosts.getLiveVanityServer.mockResolvedValue(server());
+    findWhere.mockResolvedValue([{ _id: 'c1', name: 'belirsiz-kanonik' }]);
+    const spy = jest.spyOn(ChannelPermissions, 'findByChannel').mockRejectedValue(new Error('store offline'));
+    try {
+      const res = await request(app).get('/s/gaming');
+      expect(res.status).toBe(200);
+      expect(res.text).not.toContain('belirsiz-kanonik');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('an override row with no deny mask does not hide a channel', async () => {
     boosts.getLiveVanityServer.mockResolvedValue(server());
     findWhere.mockResolvedValue([{ _id: 'c1', name: 'duyurular' }]);
-    findOverridesByChannel.mockResolvedValue([{ targetType: 'everyone' }]);
+    findOverridesByChannel.mockResolvedValue([{ targetType: 'everyone', targetId: serverId }]);
 
     const res = await request(app).get('/s/gaming');
     expect(res.text).toContain('duyurular');
@@ -234,7 +271,7 @@ describe('the public vanity page', () => {
   it('a role override does not hide a channel from the public list', async () => {
     boosts.getLiveVanityServer.mockResolvedValue(server());
     findWhere.mockResolvedValue([{ _id: 'c1', name: 'duyurular' }]);
-    findOverridesByChannel.mockResolvedValue([{ targetType: 'role', deny: 1 }]);
+    findOverridesByChannel.mockResolvedValue([{ targetType: 'role', targetId: 'r-mods', deny: 1 }]);
 
     const res = await request(app).get('/s/gaming');
     expect(res.text).toContain('duyurular');

@@ -424,7 +424,9 @@ router.delete('/:sid/roles/:rid', authMiddleware, limits.roles(), async (req: Re
   if (!role) return void res.status(404).json({ error: 'Role not found in this server' });
   if (!await canManageRole(_u.id, rid, sid))
     return void res.status(403).json({ error: 'Role hierarchy prevents managing this role' });
-  await Roles.delete(rid, sid);
+  // Removes the role together with its channel permission rows and its id in
+  // every member's role list (one transaction), so nothing it granted survives.
+  if (!await Roles.delete(rid, sid)) return void res.status(404).json({ error: 'Role not found in this server' });
   invalidatePerms(String(req.params.sid ?? ''));
   await evictSocketsWithoutChannelAccessBestEffort(req.app.get('io'), String(req.params.sid ?? ''), null);
   res.json({ deleted: true });

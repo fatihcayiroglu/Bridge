@@ -74,6 +74,7 @@ import { authMiddleware} from '../middleware/auth';
 import { limits } from '../middleware/rateLimit';
 import { isUserOnline } from '../lib/presenceCache';
 import { escapeHtml as _escHtml } from '../lib/security';
+import { PERMS, hasPermission, resolveRolePermissionResolution } from '../lib/permissions';
 
 // escapeHtml from lib/security — Sprint 101: deduplication
 const escHtml = (str: unknown): string => _escHtml(str as string);
@@ -194,20 +195,22 @@ router.get('/:slug', async (req, res, next) => {
     // KONUSU (ilk 8) yayinlaniyordu — ozel kanallar dahil. Yani bir sunucu
     // vanity URL actiginda, gizli kanal adlari da internete aciliyordu.
     //
-    // Kimlik yok, dolayisiyla "gorunur" olcutu @everyone'dir: @everyone icin
-    // VIEW_CHANNELS REDDEDILMIS bir kanal kamuya acik sayilmaz. Kaynak,
-    // `resolvePermissions`in okudugu kanonik override deposudur.
-    const VIEW_CHANNELS_BIT = 1 << 0;
+    // Kimlik yok, dolayisiyla "gorunur" olcutu @everyone'dir: @everyone'in
+    // GERCEK yetki cozumlemesinde VIEW_CHANNELS'i olmayan kanal kamuya acik
+    // sayilmaz. Karar, uye erisimini belirleyen ayni cozumleyiciden gelir: hem
+    // kanonik `channel_permissions` (rotalarin @everyone'i yazdigi yer) hem de
+    // eski override deposu okunur. Yalniz eski depoya bakmak, rotalarla gizli
+    // yapilan HER kanalin adini ve konusunu bu sayfada yayinliyordu.
     const publicChannels = [];
     for (const c of allChannels) {
-      let denied = false;
+      let visible = false;
       try {
-        const ovr = await Channels.findOverridesByChannel(String(c._id)) as Array<{ targetType?: string; deny?: number }>;
-        denied = ovr.some(o => o.targetType === 'everyone' && ((o.deny ?? 0) & VIEW_CHANNELS_BIT) !== 0);
+        const everyone = await resolveRolePermissionResolution('__everyone__', String(server._id), String(c._id));
+        visible = !!everyone && hasPermission(everyone.permissions, PERMS.VIEW_CHANNELS);
       } catch {
-        denied = true;   // fail-closed: cozulemeyen kanal GIZLI sayilir
+        visible = false;   // fail-closed: cozulemeyen kanal GIZLI sayilir
       }
-      if (!denied) publicChannels.push(c);
+      if (visible) publicChannels.push(c);
       if (publicChannels.length >= 8) break;
     }
 
