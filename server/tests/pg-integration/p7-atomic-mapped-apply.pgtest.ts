@@ -119,25 +119,30 @@ function review(client: import('pg').PoolClient, ownerId = 'owner') {
 function ownerGrant() {
   return mintStepUpGrant({ _id: 'owner', tokenVersion: 4 }, 'password', 'account-security', NOW).token;
 }
-async function reviewFingerprint() {
+async function reviewFingerprint(
+  signed = attestation, reviewedStructure = structure, reviewedMapping = mapping,
+) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
     const verified = await deriveVerifiedPortableApprovalBinding({
-      client, targetServerId: SID, ownerId: 'owner', structure, permissions,
-      attestation, expectedSourceOrigin: ORIGIN, expectedSourceServerId: SOURCE,
-      operatorRegistryJson, mapping, now: NOW,
+      client, targetServerId: SID, ownerId: 'owner', structure: reviewedStructure, permissions,
+      attestation: signed, expectedSourceOrigin: ORIGIN, expectedSourceServerId: SOURCE,
+      operatorRegistryJson, mapping: reviewedMapping, now: NOW,
     });
     await client.query('ROLLBACK');
     return verified.binding.reviewFingerprint;
   } finally { client.release(); }
 }
-async function approve(confirmedReviewFingerprint: string, stepUpGrant = ownerGrant()) {
+async function approve(
+  confirmedReviewFingerprint: string, stepUpGrant = ownerGrant(),
+  signed = attestation, reviewedStructure = structure, reviewedMapping = mapping,
+) {
   return stageOwnerConfirmedPortableApproval({
     pool, targetServerId: SID, ownerId: 'owner', stepUpGrant,
-    confirmedReviewFingerprint, structure, permissions, attestation,
+    confirmedReviewFingerprint, structure: reviewedStructure, permissions, attestation: signed,
     expectedSourceOrigin: ORIGIN, expectedSourceServerId: SOURCE,
-    operatorRegistryJson, mapping, now: NOW,
+    operatorRegistryJson, mapping: reviewedMapping, now: NOW,
   });
 }
 
@@ -305,6 +310,122 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
     } finally {
       await client.query('ROLLBACK').catch(() => undefined);
       client.release();
+    }
+  }, 30000);
+
+  it('fails closed after a lost COMMIT acknowledgement while a fresh connection proves durable apply', async () => {
+    // Previous test committed snapshot #1. A distinct, signed snapshot changes
+    // the category label, so a lost ACK cannot be mistaken for a no-op.
+    const currentTarget = {
+      serverId: SID,
+      categories: [{ ...topology.categories[0], name: 'Imported category', position: 4, collapsed: true }],
+      roles: [{ ...topology.roles[0], name: 'Imported role', color: '#abcdef' }],
+      channels: [{ ...topology.channels[0], name: 'imported-welcome',
+        topic: 'Imported topic', category: 'IMPORTED', order: 7, nsfw: true, slowmode: 5 }],
+    };
+    const nextStructure = buildPortableCommunityStructure(
+      sourceServer, [{ ...sourceCats[0], name: 'Recovered after COMMIT ambiguity' }],
+      sourceChannels, sourceRoles, AT,
+    );
+    const signedFields = {
+      ...fields, snapshotId: 'locked-pg-lost-ack-12345678',
+      structureDigest: nextStructure.integrity.digest,
+    };
+    const signed = {
+      ...signedFields,
+      signature: sign(null, portableSourceAttestationSigningBytes(signedFields), privateKey).toString('base64url'),
+    };
+    const nextMapping = {
+      ...mapping, structureDigest: nextStructure.integrity.digest,
+      expectedTargetDigest: fingerprintDestinationTopology(currentTarget),
+    };
+    const confirmed = await reviewFingerprint(signed, nextStructure, nextMapping);
+    const approval = await approve(confirmed, ownerGrant(), signed, nextStructure, nextMapping);
+    const baseline = await destinationSnapshot();
+    expect(baseline.snapshots).toHaveLength(1);
+    expect(baseline.audit).toHaveLength(1);
+
+    let databaseCommitCompleted = false;
+    const lostAcknowledgementPool = {
+      connect: async () => {
+        const client = await pool.connect();
+        return {
+          query: async (sql: string, params?: unknown[]) => {
+            // PostgreSQL actually receives and executes COMMIT. Only the
+            // acknowledgement delivered to our importer is lost.
+            const result = await client.query(sql, params);
+            if (sql === 'COMMIT') {
+              databaseCommitCompleted = true;
+              throw new Error('simulated response loss after PostgreSQL COMMIT');
+            }
+            return result;
+          },
+          release: (error?: Error) => client.release(error),
+        };
+      },
+    };
+    const input = {
+      approvalToken: approval.approvalToken, confirmedReviewFingerprint: confirmed,
+      ownerId: 'owner', targetServerId: SID, stepUpGrant: ownerGrant(),
+      structure: nextStructure, permissions, attestation: signed,
+      expectedSourceOrigin: ORIGIN, expectedSourceServerId: SOURCE,
+      mapping: nextMapping, operatorRegistryJson, now: NOW,
+    };
+    // No 200/success may escape when the COMMIT acknowledgement is unknown.
+    await expect(applyApprovedPortableCommunityMapping({
+      ...input, pool: lostAcknowledgementPool,
+    })).rejects.toBeInstanceOf(PortableAtomicApplyError);
+    expect(databaseCommitCompleted).toBe(true);
+
+    // A brand-new pool/session observes durable results; this is not an
+    // independent deployed Bridge process or a real TLS failure injection.
+    const fresh = new Pool({ connectionString: URL, max: 1, options: '-c search_path=' + schema });
+    try {
+      const category = await fresh.query('SELECT name FROM channel_categories WHERE _id=$1', ['tc']);
+      expect(category.rows[0]?.name).toBe('Recovered after COMMIT ambiguity');
+      const consumed = await fresh.query(
+        'SELECT count(*)::integer AS n FROM portable_import_approvals ' +
+        'WHERE source_snapshot_id=$1 AND consumed_at IS NOT NULL', [signedFields.snapshotId],
+      );
+      expect(consumed.rows[0]?.n).toBe(1);
+      const reservation = await fresh.query(
+        'SELECT source_key_fingerprint, structure_digest, permissions_digest ' +
+        'FROM portable_import_snapshot_consumptions ' +
+        'WHERE target_server_id=$1 AND source_origin=$2 AND source_server_id=$3 AND source_snapshot_id=$4',
+        [SID, ORIGIN, SOURCE, signedFields.snapshotId],
+      );
+      expect(reservation.rows).toEqual([{
+        source_key_fingerprint: fields.keyFingerprint,
+        structure_digest: nextStructure.integrity.digest,
+        permissions_digest: permissions.integrity.digest,
+      }]);
+      const audit = await fresh.query(
+        "SELECT count(*)::integer AS n FROM audit_logs WHERE action='portable.mapped_metadata.apply'",
+      );
+      expect(audit.rows[0]?.n).toBe(2);
+
+      // The original token is consumed and the signed snapshot remains
+      // reserved. No second apply or audit event is allowed after reconnect.
+      await expect(applyApprovedPortableCommunityMapping({ ...input, pool: fresh }))
+        .rejects.toBeInstanceOf(PortableAtomicApplyError);
+      const after = await fresh.query(
+        'SELECT count(*)::integer AS n FROM audit_logs WHERE action=$1',
+        ['portable.mapped_metadata.apply'],
+      );
+      expect(after.rows[0]?.n).toBe(2);
+      const conflict = await fresh.query(
+        'INSERT INTO portable_import_snapshot_consumptions ' +
+        '(target_server_id, source_origin, source_server_id, source_snapshot_id, ' +
+        'source_key_fingerprint, structure_digest, permissions_digest) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7) ' +
+        'ON CONFLICT (target_server_id, source_origin, source_server_id, source_snapshot_id) ' +
+        'DO NOTHING RETURNING source_snapshot_id',
+        [SID, ORIGIN, SOURCE, signedFields.snapshotId, fields.keyFingerprint,
+          nextStructure.integrity.digest, permissions.integrity.digest],
+      );
+      expect(conflict.rows).toHaveLength(0);
+    } finally {
+      await fresh.end();
     }
   }, 30000);
 });
