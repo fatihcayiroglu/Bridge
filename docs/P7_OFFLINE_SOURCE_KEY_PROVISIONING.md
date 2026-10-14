@@ -7,7 +7,9 @@ the two-independent-TLS-deployment acceptance requirement in issue #205.
 
 ## Create a key OUTSIDE the Git repository
 
-On a trusted offline/provisioning host, create a protected directory first.
+On a trusted POSIX (Linux/macOS) offline/provisioning host, create a
+mode-0700 directory owned by the operator first. The CLI refuses Windows
+because POSIX mode bits alone do not establish Windows ACL safety.
 Use real HTTPS origin and explicit UTC validity dates, not these examples:
 
     umask 077
@@ -21,7 +23,8 @@ Use real HTTPS origin and explicit UTC validity dates, not these examples:
 All flags are required. The tool refuses malformed/noncanonical origins,
 invalid/reversed dates, missing or duplicate options, existing output files,
 a destination under the Bridge Git checkout, symlink output directories,
-symlink overwrites and group/world-writable output directories. Failed file
+symlink overwrites, operator-foreign directories and any directory
+accessible to group/world users. Failed file
 writes clean up newly created partial files.
 
 Three local files are created with permission mode 0600:
