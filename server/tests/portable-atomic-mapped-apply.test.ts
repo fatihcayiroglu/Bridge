@@ -164,7 +164,14 @@ describe('P7 C4 internal mapped atomic category/role/channel importer', () => {
     const c = fixture('COMMIT');
     await expect(applyApprovedPortableCommunityMapping({ ...input, pool: c.pool }))
       .rejects.toBeInstanceOf(PortableAtomicApplyError);
-    expect(c.calls.at(-1)?.sql).toBe('ROLLBACK');
+    // A rejected COMMIT is ambiguous, even if the mock rejected before
+    // the server committed. No ROLLBACK may be presumed to undo it and
+    // the pool must destroy the connection rather than loan it again.
+    expect(c.calls.at(-1)?.sql).toBe('COMMIT');
+    expect(c.calls.map(x => x.sql)).not.toContain('ROLLBACK');
+    expect(c.released).toHaveLength(1);
+    expect(c.released[0]).toBeInstanceOf(PortableAtomicApplyError);
+    expect(c.released[0]?.message).not.toContain('internal secret');
   });
 
   it('fails closed before acquiring a connection for malformed structure or mapping', async () => {
