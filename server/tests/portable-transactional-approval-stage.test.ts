@@ -117,12 +117,20 @@ describe('P7 unmounted verified approval staging on one physical transaction', (
       .rejects.toBeInstanceOf(TransactionalPortableApprovalError);
     expect(b.operations).toEqual(['BEGIN ISOLATION LEVEL SERIALIZABLE', 'ROLLBACK']);
   });
-  it('hides approvalToken when INSERT or COMMIT fails, and always closes the client', async () => {
+  it('hides approvalToken and destroys the uncertain connection on failed COMMIT', async () => {
     for (const failAt of ['INSERT INTO portable_import_approvals', 'COMMIT']) {
       const f = fixture({ failAt });
       await expect(stageOwnerConfirmedPortableApproval({ ...input, pool: f.pool }))
         .rejects.toMatchObject({ code: 'PORTABLE_TRANSACTIONAL_APPROVAL_UNAVAILABLE' });
-      expect(f.operations).toContain('ROLLBACK');
+      if (failAt === 'COMMIT') {
+        expect(f.operations.at(-1)).toBe('COMMIT');
+        expect(f.operations).not.toContain('ROLLBACK');
+        expect(f.released[0]).toBeInstanceOf(TransactionalPortableApprovalError);
+        expect(f.released[0]?.message).not.toContain('sensitive backend error');
+      } else {
+        expect(f.operations.at(-1)).toBe('ROLLBACK');
+        expect(f.released[0]).toBeUndefined();
+      }
       expect(f.released).toHaveLength(1);
     }
   });
