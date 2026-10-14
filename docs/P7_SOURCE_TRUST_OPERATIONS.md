@@ -150,3 +150,20 @@ revoked key is never un-revoked: the CLI has no un-revoke command.
 - **Origin ownership is still on you.** The CLI cannot prove a domain is
   owned by the person you spoke to. Step 2 of the first pin is your
   responsibility.
+
+## Live evidence (federation lab, two independent installations)
+
+`scripts/federation-lab/run.mjs --scenarios portable` changes B's registry
+**only** through this tool, redeploying B after each step. A switches its
+signer only after B has deployed the rotation, as this runbook requires.
+
+| ID | Proven over real HTTPS against B's review route |
+|----|--------------------------------------------------|
+| P7-ROT-01 | `add` with a fingerprint that does not match is refused and writes nothing. The confirmed key is then pinned, and A's snapshot verifies. |
+| P7-ROT-02 | During the overlap, B accepts a snapshot signed by the old key **and** one signed by the new key. |
+| P7-ROT-03 | A's boot audit logs its new signer fingerprint, and it equals the key B pinned. Only public data appears. |
+| P7-ROT-04 | After `revoke`, the old-key snapshot is refused (422) and the new key still verifies. |
+| P7-ROT-05 | `registry.json.audit.jsonl` records add → rotate → revoke, bound to the deployed registry SHA-256. It contains no key material. |
+
+This proves the lab rotation path end to end. It does not prove that a real
+operator confirmed a fingerprint with a real person.
