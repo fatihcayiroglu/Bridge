@@ -675,3 +675,228 @@ describe('SAML — attribute statement parsing', () => {
     expect(r.body.error).toMatch(/configuration changed during the flow/i);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fail-closed edges that were not yet exercised. Each case asserts the HTTP
+// outcome AND that no account was created, claimed or opened.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('OIDC — a token is never trusted without a key set and a subject', () => {
+  it('a discovery document without jwks_uri is refused before the authorization code is exchanged', async () => {
+    const flow = await beginOidcFlow();
+    const { jwks_uri: _dropped, ...withoutJwks } = flow.discovery;
+    mockFetchB.mockResolvedValueOnce(jsonResponse(withoutJwks));
+    const callsBefore = mockFetchB.mock.calls.length;
+    const verifySpy = jest.spyOn(jwt, 'verify');
+    try {
+      const r = await flow.agent.get(`/api/sso/oidc/callback?code=abc&state=${flow.state}`).expect(503);
+      expect(r.body.error).toBe('OIDC discovery failed');
+      // Only the discovery document was fetched: the code never reached the token endpoint.
+      expect(mockFetchB).toHaveBeenCalledTimes(callsBefore + 1);
+      expect(verifySpy).not.toHaveBeenCalled();
+      expect(branchUsers.findByEmail).not.toHaveBeenCalled();
+    } finally { verifySpy.mockRestore(); }
+  });
+
+  it.each([
+    ['no subject', { sub: undefined }],
+    ['a numeric subject', { sub: 12345 }],
+    ['an object subject', { sub: { id: 'subject-1' } }],
+  ])('an id_token with %s cannot open or create an account', async (_name, claims) => {
+    const flow = await beginOidcFlow();
+    const primed = primeCallback(flow, [GOOD_JWK], claims);
+    try {
+      // Refused at claim validation, before any account lookup.
+      const r = await flow.agent.get(`/api/sso/oidc/callback?code=abc&state=${flow.state}`).expect(401);
+      expect(r.body).toMatchObject({ error: 'id_token verification failed', detail: 'id_token has invalid sub claim' });
+      expect(branchUsers.findBySsoIdentity).not.toHaveBeenCalled();
+      expect(branchUsers.findByEmail).not.toHaveBeenCalled();
+      expect(branchUsers.create).not.toHaveBeenCalled();
+    } finally { primed.restore(); }
+  });
+
+  it('a lost link race is refused when the re-read row carries no binding at all', async () => {
+    // The email matched an unbound local account, but the conditional claim
+    // lost. The re-read row is still unbound: that is not proof this identity
+    // owns it, so the login must not proceed.
+    const flow = await beginOidcFlow();
+    branchUsers.findByEmail.mockResolvedValue({ _id: 'local-account', email: 'branch-user@example.com' });
+    branchUsers.claimSsoIdentity.mockResolvedValue(false);
+    branchUsers.findById.mockResolvedValue({ _id: 'local-account', email: 'branch-user@example.com' });
+    const primed = primeCallback(flow, [GOOD_JWK], {});
+    try {
+      const r = await flow.agent.get(`/api/sso/oidc/callback?code=abc&state=${flow.state}`).expect(403);
+      expect(r.body.error).toBe('SSO identity does not match this account');
+      expect(branchUsers.claimSsoIdentity).toHaveBeenCalledWith('local-account', 'oidc', flow.issuer, 'subject-1');
+      expect(r.headers.location).toBeUndefined();
+    } finally { primed.restore(); }
+  });
+
+  it('a lost link race is accepted only when the winner is exactly this identity', async () => {
+    const flow = await beginOidcFlow();
+    branchUsers.findByEmail.mockResolvedValue({ _id: 'local-account', email: 'branch-user@example.com' });
+    branchUsers.claimSsoIdentity.mockResolvedValue(false);
+    branchUsers.findById.mockResolvedValue({
+      _id: 'local-account', email: 'branch-user@example.com',
+      ssoProvider: 'oidc', ssoIssuer: flow.issuer, ssoId: 'subject-1',
+    });
+    const primed = primeCallback(flow, [GOOD_JWK], {});
+    try {
+      await flow.agent.get(`/api/sso/oidc/callback?code=abc&state=${flow.state}`).expect(302);
+      expect(branchUsers.create).not.toHaveBeenCalled();
+    } finally { primed.restore(); }
+  });
+});
+
+describe('SSO stores failing with real errors answer 503 and never leak the error text', () => {
+  const cacheMock = () => require('../lib/redisAdapter').cache as Record<string, jest.Mock>;
+  const SECRET = 'redis://admin:hunter2@cache.internal:6379 ECONNREFUSED';
+
+  it('authorization-state write', async () => {
+    enableOidc('https://issuer-store-error.example');
+    mockFetchB.mockResolvedValueOnce(jsonResponse(discoveryFor('https://issuer-store-error.example')));
+    cacheMock().setAuthoritative!.mockRejectedValueOnce(new Error(SECRET));
+    const r = await request(app()).get('/api/sso/oidc/start').expect(503);
+    expect(r.headers.location).toBeUndefined();
+    expect(JSON.stringify(r.body)).not.toContain('hunter2');
+  });
+
+  it('authorization-state claim', async () => {
+    const flow = await beginOidcFlow();
+    cacheMock().takeAuthoritative!.mockRejectedValueOnce(new Error(SECRET));
+    const r = await flow.agent.get(`/api/sso/oidc/callback?code=abc&state=${flow.state}`).expect(503);
+    expect(JSON.stringify(r.body)).not.toContain('hunter2');
+    expect(branchUsers.create).not.toHaveBeenCalled();
+  });
+
+  it('session handoff claim', async () => {
+    cacheMock().takeAuthoritative!.mockRejectedValueOnce(new Error(SECRET));
+    const r = await request(app()).post('/api/sso/session')
+      .set('Cookie', `bridge_sso_handoff=${crypto.randomBytes(32).toString('base64url')}`).expect(503);
+    expect(r.body.token).toBeUndefined();
+    expect(JSON.stringify(r.body)).not.toContain('hunter2');
+  });
+});
+
+/** Like beginSamlFlow, with a chosen IdP certificate and optional SP issuer. */
+async function beginSamlFlowWith(options: { cert?: string; spIssuer?: string } = {}) {
+  process.env.SAML_ENABLED = 'true';
+  process.env.SAML_ENTRY_POINT = 'https://saml.example/login';
+  if (options.spIssuer) process.env.SAML_ISSUER = options.spIssuer;
+  process.env.SAML_IDP_CERT = options.cert ?? samlKeys.publicKey;
+  process.env.SAML_IDP_ENTITY_ID = IDP_ISSUER;
+  const agent = request.agent(app());
+  const start = await agent.get('/api/sso/saml/start').expect(302);
+  const target = new URL(start.headers.location);
+  const requestXml = zlib.inflateRawSync(Buffer.from(target.searchParams.get('SAMLRequest')!, 'base64')).toString('utf8');
+  return {
+    agent, requestXml,
+    relayState: target.searchParams.get('RelayState')!,
+    requestId: requestXml.match(/\bID="([^"]+)"/)![1]!,
+  };
+}
+
+describe('SAML — signature element identity and the default SP entity ID', () => {
+  it('a Signature element outside the XML-DSig namespace is not a signature', async () => {
+    const flow = await beginSamlFlow();
+    // Unsigned assertion carrying a look-alike <Signature> with no namespace:
+    // counting it would let an attacker supply "the one signature" themselves.
+    const forged = buildAssertion({
+      requestId: flow.requestId,
+      extraChild: '<Signature><SignedInfo/><SignatureValue>AAAA</SignatureValue></Signature>',
+    }).xml;
+    const r = await postSaml(flow, forged);
+    expect(r.status).toBe(401);
+    expect(r.body.detail).toMatch(/Exactly one XML Signature is required/);
+    expect(branchUsers.create).not.toHaveBeenCalled();
+    expect(branchUsers.findByEmail).not.toHaveBeenCalled();
+  });
+
+  it('without SAML_ISSUER, metadata, request and audience check all use the metadata URL', async () => {
+    const DEFAULT_SP = 'http://localhost:3001/api/sso/saml/metadata';
+    const flow = await beginSamlFlowWith();
+    const metadata = await request(app()).get('/api/sso/saml/metadata').expect(200);
+    expect(metadata.text).toContain(`entityID="${DEFAULT_SP}"`);
+    expect(flow.requestXml).toContain(DEFAULT_SP);
+    // An assertion addressed to the default entity ID is accepted...
+    const ok = await postSaml(flow, signedResponse({ requestId: flow.requestId, audience: DEFAULT_SP }));
+    expect(ok.status).toBe(302);
+    expect(branchUsers.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('without SAML_ISSUER, an assertion addressed to another SP entity ID is refused', async () => {
+    const flow = await beginSamlFlowWith();
+    const r = await postSaml(flow, signedResponse({ requestId: flow.requestId, audience: SP_ISSUER }));
+    expect(r.status).toBe(401);
+    expect(r.body.detail).toMatch(/audience mismatch/i);
+    expect(branchUsers.create).not.toHaveBeenCalled();
+  });
+});
+
+// A minimal, real, self-signed X.509 certificate (DER built by hand, signed
+// with node:crypto) so the bare-base64 certificate path verifies a genuine
+// signature rather than only failing on malformed input.
+function selfSignedCertificateDer(keys: { publicKey: string; privateKey: string }, commonName: string): Buffer {
+  const len = (n: number) => n < 0x80 ? Buffer.from([n])
+    : n < 0x100 ? Buffer.from([0x81, n]) : Buffer.from([0x82, n >> 8, n & 0xff]);
+  const tlv = (tag: number, body: Buffer) => Buffer.concat([Buffer.from([tag]), len(body.length), body]);
+  const seq = (...items: Buffer[]) => tlv(0x30, Buffer.concat(items));
+  const oid = (dotted: string) => {
+    const [a, b, ...rest] = dotted.split('.').map(Number);
+    const bytes = [a! * 40 + b!];
+    for (const v of rest) {
+      const chunk = [v & 0x7f];
+      for (let x = v >> 7; x > 0; x >>= 7) chunk.unshift((x & 0x7f) | 0x80);
+      bytes.push(...chunk);
+    }
+    return tlv(0x06, Buffer.from(bytes));
+  };
+  const utc = (d: Date) => tlv(0x17, Buffer.from(d.toISOString().replace(/[-:T]/g, '').slice(2, 14) + 'Z'));
+  const name = seq(tlv(0x31, seq(oid('2.5.4.3'), tlv(0x0c, Buffer.from(commonName)))));
+  const sha256WithRsa = seq(oid('1.2.840.113549.1.1.11'), Buffer.from([0x05, 0x00]));
+  const spki = crypto.createPublicKey(keys.publicKey).export({ type: 'spki', format: 'der' }) as Buffer;
+  const now = Date.now();
+  const tbs = seq(
+    tlv(0xa0, tlv(0x02, Buffer.from([2]))),
+    tlv(0x02, Buffer.from([0x01, 0x23, 0x45])),
+    sha256WithRsa, name,
+    seq(utc(new Date(now - 86_400_000)), utc(new Date(now + 86_400_000))),
+    name, spki,
+  );
+  const signature = crypto.sign('sha256', tbs, keys.privateKey);
+  return seq(tbs, sha256WithRsa, tlv(0x03, Buffer.concat([Buffer.from([0]), signature])));
+}
+
+describe('SAML — an IdP certificate pasted as bare base64 (as IdP metadata carries it)', () => {
+  const bare = (der: Buffer) => der.toString('base64');
+
+  it('is wrapped as a certificate and verifies a genuinely signed Response', async () => {
+    const der = selfSignedCertificateDer(samlKeys, 'test-idp');
+    // Sanity: the fixture is a real certificate for the signing key.
+    expect(new crypto.X509Certificate(der).publicKey.export({ type: 'spki', format: 'pem' })).toBe(samlKeys.publicKey);
+    const flow = await beginSamlFlowWith({ cert: bare(der), spIssuer: SP_ISSUER });
+    const r = await flow.agent.post('/api/sso/saml/callback').type('form').send({
+      RelayState: flow.relayState,
+      SAMLResponse: Buffer.from(signedResponse({ requestId: flow.requestId }), 'utf8').toString('base64'),
+    });
+    expect(r.status).toBe(302);
+    expect(branchUsers.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('a bare certificate for a different key refuses the same Response', async () => {
+    const otherKeys = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    });
+    const flow = await beginSamlFlowWith({ cert: bare(selfSignedCertificateDer(otherKeys, 'other-idp')), spIssuer: SP_ISSUER });
+    const r = await flow.agent.post('/api/sso/saml/callback').type('form').send({
+      RelayState: flow.relayState,
+      SAMLResponse: Buffer.from(signedResponse({ requestId: flow.requestId }), 'utf8').toString('base64'),
+    });
+    expect(r.status).toBe(401);
+    // xml-crypto rejects the wrong key by throwing ("invalid signature ... is incorrect").
+    expect(r.body.detail).toMatch(/invalid signature/i);
+    expect(branchUsers.create).not.toHaveBeenCalled();
+  });
+});
