@@ -232,6 +232,19 @@ describe('PostgreSQL federation RSA key rotation — transaction and COMMIT ackn
     expect(getFederationPublicKeyDoc()).toBeNull();
   });
 
+  it('discards a PostgreSQL session when BEGIN acknowledgement is missing', async () => {
+    const unknownBegin = new Error('connection disappeared after BEGIN');
+    const client = installClient(async sql => {
+      if (sql === 'BEGIN') throw unknownBegin;
+      return { rows: [] };
+    });
+    await expect(rotateFederationKeys()).rejects.toBe(unknownBegin);
+    expect(client.query.mock.calls.map(([sql]) => sql)).toEqual(['BEGIN']);
+    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(client.release.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+    expect(getFederationPublicKeyDoc()).toBeNull();
+  });
+
   it('rolls back a failure before COMMIT and returns a normally reusable client', async () => {
     const writeFailed = new Error('unique constraint or disk write failed');
     const client = installClient(async sql => {
