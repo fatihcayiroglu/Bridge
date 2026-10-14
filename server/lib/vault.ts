@@ -188,6 +188,16 @@ function hashicorpBaseUrl(cfg: VaultConfig): URL {
   return url;
 }
 
+/**
+ * An API URL on VAULT_ADDR. A root origin's pathname is "/", so naive
+ * `${pathname}/v1/...` yields "//v1/..." — a protocol-relative reference that
+ * `new URL` resolves to the HOST "v1". Collapse slashes before resolving so
+ * every request (AppRole login included) stays on VAULT_ADDR.
+ */
+function hashicorpUrl(base: URL, apiPath: string): URL {
+  return new URL(`${base.pathname}/${apiPath}`.replace(/\/{2,}/g, '/'), base);
+}
+
 async function getVaultToken(cfg: VaultConfig): Promise<string> {
   if (_vaultToken && Date.now() < _vaultTokenExp) return _vaultToken;
 
@@ -204,7 +214,7 @@ async function getVaultToken(cfg: VaultConfig): Promise<string> {
   }
 
   const base = hashicorpBaseUrl(cfg);
-  const resp = await fetch(new URL(`${base.pathname}/v1/auth/approle/login`, base).toString(), {
+  const resp = await fetch(hashicorpUrl(base, 'v1/auth/approle/login').toString(), {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ role_id: cfg.roleId, secret_id: cfg.secretId }),
@@ -235,8 +245,7 @@ async function readFromHashicorp(secretName: string, cfg: VaultConfig): Promise<
   const mount = encodeURIComponent(cfg.mount ?? 'secret');
   const prefix = (cfg.pathPrefix ?? 'bridge').split('/').filter(Boolean).map(encodeURIComponent).join('/');
   const key = encodeURIComponent(secretName);
-  const relativePath = `${base.pathname}/v1/${mount}/data/${prefix}/${key}`.replace(/\/{2,}/g, '/');
-  const url = new URL(relativePath, base);
+  const url = hashicorpUrl(base, `v1/${mount}/data/${prefix}/${key}`);
 
   const resp = await fetch(url.toString(), {
     headers: { 'X-Vault-Token': token },
