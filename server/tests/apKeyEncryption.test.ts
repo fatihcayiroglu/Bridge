@@ -136,3 +136,181 @@ describe('apKeyEncryption — wrong key', () => {
 // baska bir dosyanin bildirimine cozulmesi). Bu satir modul kapsami
 // ilan eder; calisma zamaninda hicbir sey degistirmez.
 export {};
+
+
+/**
+ * These deployment branches were previously invisible to the ordinary
+ * round-trip tests because the module caches its first resolved encryption
+ * key. Each case therefore loads a FRESH module registry with controlled
+ * deployment environment and restores the caller's environment afterwards.
+ * Never invoke the real process.exit in a Jest worker.
+ */
+describe('apKeyEncryption — production key safety and fallback branches', () => {
+  const keys = ['AP_ENCRYPTION_KEY', 'FEDERATION_ENABLED', 'NODE_ENV'] as const;
+  type Environment = Partial<Record<typeof keys[number], string | undefined>>;
+  type Encryption = typeof import('../lib/apKeyEncryption');
+  type Audit = import('../lib/logger').BridgeLogger;
+
+  function withFreshModule(input: Environment, check: (api: Encryption, audit: Audit) => void): void {
+    const previous = Object.fromEntries(keys.map(key => [key, process.env[key]])) as Environment;
+    try {
+      for (const [key, value] of Object.entries(input)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      let api!: Encryption;
+      let audit!: Audit;
+      jest.isolateModules(() => {
+        api = require('../lib/apKeyEncryption') as Encryption;
+        audit = require('../lib/logger').default as Audit;
+      });
+      check(api, audit);
+    } finally {
+      for (const key of keys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  it('explicitly warns and falls back only in nonproduction when federation requires a missing key', () => {
+    withFreshModule({
+      AP_ENCRYPTION_KEY: undefined, FEDERATION_ENABLED: 'true', NODE_ENV: 'test',
+    }, (api, audit) => {
+      const warning = jest.spyOn(audit, 'warn').mockImplementation(() => undefined);
+      const fatal = jest.spyOn(audit, 'fatal').mockImplementation(() => undefined);
+      try {
+        const encrypted = api.encryptApPrivateKey('real-private-key-canary');
+        expect(api.decryptApPrivateKey(encrypted)).toBe('real-private-key-canary');
+        expect(warning).toHaveBeenCalledWith(
+          expect.objectContaining({ event: 'ap_key.missing' }), expect.any(String),
+        );
+        expect(warning).toHaveBeenCalledWith(
+          expect.objectContaining({ event: 'ap_key.fallback' }), expect.any(String),
+        );
+        expect(fatal).not.toHaveBeenCalled();
+        // _loadKey is cached inside one process: a second call does not
+        // repeatedly silently generate a new ephemeral key.
+        api.encryptApPrivateKey('second');
+        expect(warning).toHaveBeenCalledTimes(2);
+      } finally {
+        warning.mockRestore();
+        fatal.mockRestore();
+      }
+    });
+  });
+
+  it('logs only the fallback event when federation is disabled and no key is configured', () => {
+    withFreshModule({
+      AP_ENCRYPTION_KEY: undefined, FEDERATION_ENABLED: 'false', NODE_ENV: 'production',
+    }, (api, audit) => {
+      const warning = jest.spyOn(audit, 'warn').mockImplementation(() => undefined);
+      const fatal = jest.spyOn(audit, 'fatal').mockImplementation(() => undefined);
+      try {
+        const data = api.encryptApPrivateKey('federation-off');
+        expect(api.canDecrypt(data)).toBe(true);
+        expect(warning).toHaveBeenCalledTimes(1);
+        expect(warning).toHaveBeenCalledWith(
+          expect.objectContaining({ event: 'ap_key.fallback' }), expect.any(String),
+        );
+        expect(fatal).not.toHaveBeenCalled();
+      } finally {
+        warning.mockRestore();
+        fatal.mockRestore();
+      }
+    });
+  });
+
+  it('rejects invalid-length and nonhex configured keys in development without echoing secret bytes', () => {
+    for (const bad of ['z'.repeat(64), 'e'.repeat(63), 'e'.repeat(65)]) {
+      withFreshModule({
+        AP_ENCRYPTION_KEY: bad, FEDERATION_ENABLED: 'true', NODE_ENV: 'test',
+      }, (api, audit) => {
+        const warning = jest.spyOn(audit, 'warn').mockImplementation(() => undefined);
+        const fatal = jest.spyOn(audit, 'fatal').mockImplementation(() => undefined);
+        try {
+          expect(() => api.encryptApPrivateKey('secret')).toThrow(/64-char hex string/);
+          try {
+            api.encryptApPrivateKey('secret');
+            throw new Error('unexpected successful encryption');
+          } catch (err) {
+            expect(String(err)).not.toContain(bad);
+          }
+          expect(warning).not.toHaveBeenCalled();
+          expect(fatal).not.toHaveBeenCalled();
+        } finally {
+          warning.mockRestore();
+          fatal.mockRestore();
+        }
+      });
+    }
+  });
+
+  it('refuses a missing production federation key with a fatal event and exit(1)', () => {
+    withFreshModule({
+      AP_ENCRYPTION_KEY: undefined, FEDERATION_ENABLED: 'true', NODE_ENV: 'production',
+    }, (api, audit) => {
+      const warning = jest.spyOn(audit, 'warn').mockImplementation(() => undefined);
+      const fatal = jest.spyOn(audit, 'fatal').mockImplementation(() => undefined);
+      const exit = jest.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('test-intercepted-production-exit');
+      });
+      try {
+        expect(() => api.encryptApPrivateKey('never-encrypt')).toThrow('test-intercepted-production-exit');
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(fatal).toHaveBeenCalledWith(
+          expect.objectContaining({ event: 'ap_key.missing' }), expect.any(String),
+        );
+        expect(warning).not.toHaveBeenCalled();
+      } finally {
+        exit.mockRestore();
+        warning.mockRestore();
+        fatal.mockRestore();
+      }
+    });
+  });
+
+  it('refuses an invalid production key with a fatal event and exit(1)', () => {
+    withFreshModule({
+      AP_ENCRYPTION_KEY: 'not-a-32-byte-hex-key',
+      FEDERATION_ENABLED: 'true', NODE_ENV: 'production',
+    }, (api, audit) => {
+      const fatal = jest.spyOn(audit, 'fatal').mockImplementation(() => undefined);
+      const exit = jest.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('test-intercepted-production-exit');
+      });
+      try {
+        expect(() => api.encryptApPrivateKey('never-encrypt')).toThrow('test-intercepted-production-exit');
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(fatal).toHaveBeenCalledWith(
+          expect.objectContaining({ event: 'ap_key.invalid' }), expect.any(String),
+        );
+        const message = fatal.mock.calls[0]?.[1];
+        expect(message).not.toContain('not-a-32-byte-hex-key');
+      } finally {
+        exit.mockRestore();
+        fatal.mockRestore();
+      }
+    });
+  });
+
+  it('fails authentication for modified IV and rejects a 28-byte blob with an invalid GCM tag', () => {
+    withFreshModule({
+      AP_ENCRYPTION_KEY: 'c'.repeat(64), FEDERATION_ENABLED: 'true', NODE_ENV: 'test',
+    }, (api, audit) => {
+      const warning = jest.spyOn(audit, 'warn').mockImplementation(() => undefined);
+      try {
+        const encrypted = Buffer.from(api.encryptApPrivateKey('federation-secret'), 'base64');
+        encrypted[0] ^= 0x01; // IV is authenticated by the tag, not just ciphertext.
+        expect(api.decryptApPrivateKey(encrypted.toString('base64'))).toBeNull();
+        expect(api.decryptApPrivateKey(Buffer.alloc(28).toString('base64'))).toBeNull();
+        expect(warning).toHaveBeenCalledWith(
+          expect.objectContaining({ event: 'ap_key.decrypt.failed' }), expect.any(String),
+        );
+      } finally {
+        warning.mockRestore();
+      }
+    });
+  });
+});
