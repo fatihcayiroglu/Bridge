@@ -57,7 +57,10 @@ case.
    - In every case the token is discarded after the attempt.
 
 Any change to the file, the expected source or a mapping choice invalidates
-every later step. Late responses from an earlier step are ignored.
+every later step. Late responses from an earlier step are ignored, and they
+never leave the owner locked out: the buttons are usable again once the
+superseded request ends. (Before this fix, editing the input while a request
+was pending left every button disabled until the page was reloaded.)
 
 ## Tests
 
@@ -76,7 +79,27 @@ every later step. Late responses from an earlier step are ignored.
   - refused apply, unverified review and disabled installation;
   - blocked widening;
   - approval expiry;
-  - invalidation on mapping change.
+  - invalidation on mapping change;
+  - no API client;
+  - the cause of a failed export (stale proof, not owner, incomplete or
+    unreadable answer), with no partial download;
+  - empty, oversized and superseded file choices;
+  - an invalid expected origin;
+  - an unusable target fingerprint or owner structure;
+  - duplicate mapping;
+  - approval needing a fresh proof, or malformed or invalid;
+  - an apply that did not commit is never shown as success;
+  - zero counts when a committed apply omits them;
+  - "nothing renamed";
+  - role renames;
+  - late answers at every step (target check, structure, review, approval,
+    apply) are dropped without locking the owner out.
+- **`client/tests/portable-community-import.test.ts`** also checks structure
+  validation: list sizes, the digest form, row identity, name and channel
+  type, and that optional numeric fields are kept only when numeric.
+- **`client/tests/server-settings-tabs.test.ts`:** only the owner gets the
+  tab, bound to the current server. A non-owner or an unknown user cannot
+  open it, even by asking for it.
 
 ## Not covered here
 

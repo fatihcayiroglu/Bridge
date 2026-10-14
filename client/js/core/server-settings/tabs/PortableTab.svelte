@@ -40,6 +40,10 @@
   let applied = $state.raw<{ categories: number; roles: number; channels: number } | null>(null);
   let busy = $state<Phase | null>(null);
   let outcome = $state<Outcome | 'expired' | null>(null);
+  // Every action refuses to start while another is in flight, so `busy`
+  // always belongs to the request that is finishing: release it even when
+  // newer owner input made that request's answer stale (`seq`), or every
+  // button would stay disabled until the page is reloaded.
   let seq = 0;
   let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -144,7 +148,7 @@
       target = rows;
       links = suggestLinks(bundle.rows, rows);
     } finally {
-      if (mine === seq) busy = null;
+      busy = null;
     }
   }
 
@@ -180,7 +184,7 @@
         unsupportedPermissionRows: Number(counts.unsupportedPermissionRows) || 0,
       };
     } finally {
-      if (mine === seq) busy = null;
+      busy = null;
     }
   }
 
@@ -202,7 +206,7 @@
       tick();
       timer = setInterval(tick, 1000);
     } finally {
-      if (mine === seq) busy = null;
+      busy = null;
     }
   }
 
@@ -235,7 +239,7 @@
       review = null;
       outcome = classify('apply', status, body.error ?? body.code);
     } finally {
-      if (mine === seq) busy = null;
+      busy = null;
     }
   }
 

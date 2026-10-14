@@ -89,6 +89,7 @@ afterEach(() => {
   host.remove();
   BridgeRegistry.unregister('getCurrentServer');
   BridgeRegistry.unregister('me');
+  BridgeRegistry.unregister('getMe');
   vi.restoreAllMocks();
   document.body.innerHTML = '';
 });
@@ -219,6 +220,28 @@ describe('sunucu ayarları modal etkileşimleri', () => {
     expect(onClose).toHaveBeenCalledTimes(2);
     host.querySelector<HTMLElement>('.ss-overlay')!.click();
     expect(onClose).toHaveBeenCalledTimes(3);
+  });
+
+  it('P7 C4: only the owner gets the "Move community" tab, bound to this server', () => {
+    BridgeRegistry.register('getCurrentServer', () => ({ id: 'srv-9', name: 'Test', ownerId: 'u1' }));
+    BridgeRegistry.register('getMe', () => ({ id: 'u1' }));
+    mountModal('portable');
+    expect(navIds()).toContain('portable');
+    expect(host.querySelector('.ss-nav-btn[data-tab="portable"]')?.getAttribute('aria-current')).toBe('page');
+    expect(host.querySelector('[data-testid="pci-export"]')).not.toBeNull();
+    expect(host.textContent).toContain('srv-9');
+  });
+
+  it('P7 C4: a non-owner, or an unknown user, cannot open the portable tab even by asking for it', () => {
+    for (const me of [() => ({ _id: 'u2' }), () => null, () => ({})]) {
+      BridgeRegistry.register('getMe', me);
+      mountModal('portable');
+      expect(navIds()).not.toContain('portable');
+      expect(host.querySelector('[data-testid="pci-export"]')).toBeNull();
+      expect(host.querySelector('[data-testid="pci-owner-only"]')).toBeNull();
+      unmount(instance!);
+      instance = null;
+    }
   });
 
   it('sunucu çözülemezse kapatılabilir dürüst boş durum gösterir', () => {

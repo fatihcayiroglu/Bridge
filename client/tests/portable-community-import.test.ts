@@ -64,6 +64,43 @@ describe('signed bundle parsing', () => {
   });
 });
 
+describe('structure validation', () => {
+  const valid = () => sourceStructure();
+
+  it('refuses a structure whose lists or digest are not what the server signs', () => {
+    expect(structureRows(null)).toBeNull();
+    expect(structureRows([])).toBeNull();
+    expect(structureRows({ ...valid(), integrity: { digest: 'A'.repeat(64) } })).toBeNull();   // not lowercase hex
+    expect(structureRows({ ...valid(), integrity: { digest: H('a') + 'a' } })).toBeNull();     // too long
+    expect(structureRows({ ...valid(), roles: { sr1: 'Crew' } })).toBeNull();                  // not a list
+    const tooMany = Array.from({ length: 501 }, (_, i) => ({ sourceId: `c${i}`, name: 'x', type: 'text' }));
+    expect(structureRows({ ...valid(), channels: tooMany })).toBeNull();
+    expect(structureRows({ ...valid(), channels: tooMany.slice(0, 500) })?.channels).toHaveLength(500);
+  });
+
+  it('refuses rows without a usable identity, name or channel type', () => {
+    const withChannel = (channel: unknown) => structureRows({ ...valid(), channels: [channel] });
+    expect(withChannel({ sourceId: '', name: 'general', type: 'text' })).toBeNull();
+    expect(withChannel({ sourceId: 'x'.repeat(257), name: 'general', type: 'text' })).toBeNull();
+    expect(withChannel({ sourceId: 'sch1', name: 7, type: 'text' })).toBeNull();
+    expect(withChannel({ sourceId: 'sch1', name: 'n'.repeat(201), type: 'text' })).toBeNull();
+    expect(withChannel({ sourceId: 'sch1', name: 'general' })).toBeNull();
+    expect(withChannel('general')).toBeNull();
+  });
+
+  it('keeps optional ordering and permission fields only when they are numbers', () => {
+    const rows = structureRows({
+      ...valid(),
+      categories: [{ sourceId: 'sc1', name: 'OPS', position: '0' }],
+      roles: [{ sourceId: 'sr1', name: 'Crew', position: 1, permissions: '256' }],
+      channels: [{ sourceId: 'sch1', name: 'general', type: 'text', order: 'first' }],
+    })!;
+    expect(rows.categories[0]).toEqual({ sourceId: 'sc1', name: 'OPS' });
+    expect(rows.roles[0]).toEqual({ sourceId: 'sr1', name: 'Crew', position: 1 });
+    expect(rows.channels[0]).toEqual({ sourceId: 'sch1', name: 'general', type: 'text' });
+  });
+});
+
 describe('owner-entered expectations and mapping', () => {
   it('accepts only canonical https origins', () => {
     expect(canonicalOrigin('https://source.example')).toBe('https://source.example');
