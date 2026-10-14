@@ -13,6 +13,17 @@ import {
 } from '../lib/client.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Passkey registration is a step-up protected action (P7 B2): the server
+// answers 403 STEP_UP_REQUIRED without a fresh account-security proof. Like
+// the real client, take the grant every password sign-in returns and send it
+// in X-Bridge-Step-Up. The guard itself is never bypassed or disabled.
+async function accountSecurityGrant(base, user) {
+  const r = await request(base, 'POST', '/api/login', { body: { username: user.username, password: user.password }, ip: fakeIp() });
+  const grant = r.body?.stepUp?.grants?.['account-security'];
+  if (r.status !== 200 || typeof grant !== 'string') throw new Error(`step-up grant unavailable: login ${r.status}`);
+  return grant;
+}
 const b64u = (buf) => Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
 async function timed(fn, budgetMs = 10_000) {
@@ -57,7 +68,8 @@ export async function run({ cluster, record, measure }) {
 
   // ── WebAuthn challenge: consumed exactly once across nodes ───────────────
   {
-    const begin = await mutate(url('A'), 'POST', '/api/webauthn/register/begin', bob.token, {});
+    const stepUp = { 'X-Bridge-Step-Up': await accountSecurityGrant(url('A'), bob) };
+    const begin = await mutate(url('A'), 'POST', '/api/webauthn/register/begin', bob.token, {}, stepUp);
     const challenge = begin.body?.challenge;
     const cred = () => ({
       credential: {
@@ -69,8 +81,8 @@ export async function run({ cluster, record, measure }) {
       },
     });
     const [x, y] = await Promise.all([
-      mutate(url('B'), 'POST', '/api/webauthn/register/complete', bob.token, cred()),
-      mutate(url('C'), 'POST', '/api/webauthn/register/complete', bob.token, cred()),
+      mutate(url('B'), 'POST', '/api/webauthn/register/complete', bob.token, cred(), stepUp),
+      mutate(url('C'), 'POST', '/api/webauthn/register/complete', bob.token, cred(), stepUp),
     ]);
     const expired = [x, y].filter((r) => /Challenge expired/.test(String(r.body?.error))).length;
     record('RD-01', 'WebAuthn challenge issued on A is consumed exactly once when completed concurrently on B and C',
@@ -82,6 +94,9 @@ export async function run({ cluster, record, measure }) {
   // uses a fresh identity so per-user budgets (CSRF 20/5 min, spam 5/4 s)
   // consumed by earlier modes cannot masquerade as dependency failures.
   let probeUser = bob;
+  // Taken while Redis is healthy (a stateless signed grant, valid 10 min);
+  // during an outage the probe must still fail closed on its own.
+  let probeGrant = await accountSecurityGrant(url('B'), bob).catch(() => null);
   const senderErrors = [];
   tapErrors(aliceS);
   async function probes() {
@@ -94,9 +109,12 @@ export async function run({ cluster, record, measure }) {
     out.csrf = csrf;
     out.login = await timed(() => request(url('C'), 'POST', '/api/login', { body: { username: probeUser.username, password: probeUser.password }, ip }));
     const token = csrf.status === 200 ? csrf.body?.token : null;
-    out.webauthn = token
-      ? await timed(() => request(url('B'), 'POST', '/api/webauthn/register/begin', { token: probeUser.token, csrf: token, body: {}, ip }))
-      : { status: `csrf:${csrf.status}`, ms: 0 };
+    if (token && !probeGrant) probeGrant = await accountSecurityGrant(url('C'), probeUser).catch(() => null);
+    out.webauthn = token && probeGrant
+      ? await timed(() => request(url('B'), 'POST', '/api/webauthn/register/begin', {
+        token: probeUser.token, csrf: token, body: {}, ip, headers: { 'X-Bridge-Step-Up': probeGrant },
+      }))
+      : { status: token ? 'stepup:unavailable' : `csrf:${csrf.status}`, ms: 0 };
     out.chunk = token
       ? await timed(() => request(url('B'), 'POST', '/api/upload/chunk', {
         token: probeUser.token, csrf: token, ip, raw: Buffer.alloc(8, 1),
@@ -114,7 +132,13 @@ export async function run({ cluster, record, measure }) {
     }, 6_000);
     return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, { status: v.status, ms: v.ms }]));
   }
-  const freshProbeUser = async () => { probeUser = await register(url('A'), 'rdp'); };
+  const freshProbeUser = async () => {
+    probeUser = await register(url('A'), 'rdp');
+    // The grant always belongs to the current probe user; fetched lazily
+    // by probes() when it could not be taken here.
+    probeGrant = null;
+    probeGrant = await accountSecurityGrant(url('A'), probeUser).catch(() => null);
+  };
 
   // Healthy baseline (positive control).
   const base = await probes();

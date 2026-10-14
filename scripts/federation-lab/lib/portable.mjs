@@ -1,62 +1,140 @@
 // P7 C4: live two-INDEPENDENT-Bridge-installation TLS source review evidence.
 // One signer belongs to A; B's trusted SPKI registry is operator-provisioned
 // in the lab BEFORE A exports any payload. This is not TOFU / automatic trust.
-// Only the read-only stage is measured: never imply approved apply/import.
+// This file measures the read-only stage; portable-roundtrip.mjs the writes.
 import { generateKeyPairSync, createHash } from 'node:crypto';
 import { request, makeServer, BROWSER } from '../../multinode/lib/client.mjs';
 import { getTls, postTls } from './apsign.mjs';
 
-export function makePortableLabTrust(sourceOrigin, now = Date.now()) {
+function signer() {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-  const privatePem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
-  const publicPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
-  const from = new Date(now - 86400000).toISOString();
-  const until = new Date(now + 86400000).toISOString();
-  const registry = {
-    format: 'bridge-portable-source-trust-registry', version: 1,
-    keys: [{ sourceOrigin, publicKeyPem: publicPem, activeFrom: from, activeUntil: until, revoked: false }],
-  };
-  // Do not retain the private PEM in the exported trust fixture. The
-  // destination env has only the public source registry.
   return {
-    sourceEnv: {
-      BRIDGE_PORTABLE_SOURCE_EXPORT_ENABLED: 'true',
-      BRIDGE_PORTABLE_SOURCE_ORIGIN: sourceOrigin,
-      BRIDGE_PORTABLE_SOURCE_ED25519_PRIVATE_KEY_B64: Buffer.from(privatePem).toString('base64'),
-    },
-    destinationEnv: {
-      BRIDGE_PORTABLE_DESTINATION_SOURCE_VERIFY_ENABLED: 'true',
-      BRIDGE_PORTABLE_DESTINATION_SOURCE_REGISTRY_B64: Buffer.from(JSON.stringify(registry)).toString('base64'),
-    },
+    privateB64: Buffer.from(privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()).toString('base64'),
+    publicPem: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
     fingerprint: createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex'),
   };
 }
 
-async function scopedGrant(base, person, scope) {
-  // Exercise real password sign-in (not a synthetic grant or admin bypass).
-  const result = await request(base, 'POST', '/api/login', {
-    body: { username: person.username, password: person.password },
+export function makePortableLabTrust(sourceOrigin, now = Date.now()) {
+  const pinned = signer();
+  // A second, NEVER pinned key for the same origin: what a stolen-host or
+  // misprovisioned signer would produce. B must refuse it.
+  const rogue = signer();
+  // The planned successor key, pinned only through the operator CLI's
+  // rotate step (portable-rotation.mjs), never through this fixture.
+  const next = signer();
+  const from = new Date(now - 86400000).toISOString();
+  const until = new Date(now + 86400000).toISOString();
+  const registry = (revoked) => Buffer.from(JSON.stringify({
+    format: 'bridge-portable-source-trust-registry', version: 1,
+    keys: [{ sourceOrigin, publicKeyPem: pinned.publicPem, activeFrom: from, activeUntil: until, revoked }],
+  })).toString('base64');
+  const sourceEnv = (key) => ({
+    BRIDGE_PORTABLE_SOURCE_EXPORT_ENABLED: 'true',
+    BRIDGE_PORTABLE_SOURCE_ORIGIN: sourceOrigin,
+    BRIDGE_PORTABLE_SOURCE_ED25519_PRIVATE_KEY_B64: key.privateB64,
   });
-  if (result.status !== 200 || typeof result.body?.stepUp?.grants?.[scope] !== 'string') {
-    throw new Error('Could not obtain a fresh real ' + scope + ' proof; HTTP ' + result.status);
-  }
-  return result.body.stepUp.grants[scope];
+  // The destination env has only the public source registry. Owner approval
+  // and mapped apply are separate operator opt-ins, both enabled for the lab.
+  const destinationEnv = (revoked) => ({
+    BRIDGE_PORTABLE_DESTINATION_SOURCE_VERIFY_ENABLED: 'true',
+    BRIDGE_PORTABLE_DESTINATION_SOURCE_REGISTRY_B64: registry(revoked),
+    BRIDGE_PORTABLE_OWNER_APPROVAL_ENABLED: 'true',
+    BRIDGE_PORTABLE_MAPPED_APPLY_ENABLED: 'true',
+  });
+  return {
+    sourceEnv: sourceEnv(pinned),
+    rogueSourceEnv: sourceEnv(rogue),
+    destinationEnv: destinationEnv(false),
+    revokedDestinationEnv: destinationEnv(true),
+    fingerprint: pinned.fingerprint,
+    pinnedPublicPem: pinned.publicPem,
+    next: { sourceEnv: sourceEnv(next), publicPem: next.publicPem, fingerprint: next.fingerprint },
+  };
 }
 
-async function tlsMutation(url, owner, grant, body, ca) {
-  const base = new URL(url).origin;
-  const csrf = await getTls(base + '/api/csrf-token', ca, {
-    ...BROWSER, Authorization: 'Bearer ' + owner.token,
-  });
-  if (csrf.status !== 200 || typeof csrf.body?.token !== 'string') {
-    throw new Error('TLS CSRF issuance unavailable (' + csrf.status + ')');
+// Production rate limits stay ON in the lab. These scenarios pace
+// themselves below them (login 10/min per IP, write 30/min per account)
+// exactly as a well-behaved owner client would, instead of relaxing them.
+const spent = new Map();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export async function pace(key, max, windowMs = 61_000) {
+  for (;;) {
+    const now = Date.now();
+    const recent = (spent.get(key) || []).filter((t) => now - t < windowMs);
+    if (recent.length < max) { recent.push(now); spent.set(key, recent); return; }
+    await sleep(windowMs - (now - recent[0]) + 50);
   }
-  return postTls(url, {
+}
+
+/** Bridge's `limits.write()` budget is per account, on each installation. */
+export const paceWrite = (base, who) => pace('write:' + new URL(base).host + ':' + who.username, 24);
+
+/** Every step-up scope from one real password sign-in (no synthetic grant). */
+export async function freshGrants(base, person) {
+  for (let attempt = 0; ; attempt++) {
+    await pace('login:' + base, 8);
+    const result = await request(base, 'POST', '/api/login', {
+      body: { username: person.username, password: person.password },
+    });
+    // Another scenario may have used this IP's login budget moments ago:
+    // wait out the limiter's own window rather than bypassing it.
+    if (result.status === 429 && attempt < 2) {
+      const wait = Number(result.headers.get('retry-after'));
+      await sleep((Number.isFinite(wait) && wait > 0 ? wait : 61) * 1000);
+      continue;
+    }
+    if (result.status !== 200 || !result.body?.stepUp?.grants) {
+      throw new Error('Could not obtain fresh real step-up proofs; HTTP ' + result.status);
+    }
+    return result.body.stepUp.grants;
+  }
+}
+
+async function scopedGrant(base, person, scope) {
+  const grants = await freshGrants(base, person);
+  if (typeof grants[scope] !== 'string') throw new Error('Could not obtain a fresh real ' + scope + ' proof');
+  return grants[scope];
+}
+
+// One CSRF token per user and installation, reused like a real client:
+// Bridge rate-limits CSRF issuance per account, and tokens are reusable
+// until they expire (Redis-backed, so they survive an app restart).
+const csrfCache = new Map();
+const isCsrfRefusal = (r) => r.status === 403 && /CSRF/i.test(String(r.body?.error || ''));
+
+export async function labCsrf(base, owner, ca, { fresh = false } = {}) {
+  const key = base + '|' + owner.token;
+  if (!fresh && csrfCache.has(key)) return csrfCache.get(key);
+  const csrf = base.startsWith('https:')
+    ? await getTls(base + '/api/csrf-token', ca, { ...BROWSER, Authorization: 'Bearer ' + owner.token })
+    : await request(base, 'GET', '/api/csrf-token', { token: owner.token });
+  if (csrf.status !== 200 || typeof csrf.body?.token !== 'string') {
+    throw new Error('CSRF issuance unavailable (' + csrf.status + ')');
+  }
+  csrfCache.set(key, csrf.body.token);
+  return csrf.body.token;
+}
+
+/** Plain-HTTP setup mutation on one installation with a cached CSRF token. */
+export async function labMutate(base, method, urlPath, owner, body) {
+  const send = async (fresh) => request(base, method, urlPath, {
+    token: owner.token, body, csrf: await labCsrf(base, owner, null, { fresh }),
+  });
+  const first = await send(false);
+  return isCsrfRefusal(first) ? send(true) : first;
+}
+
+export async function tlsMutation(url, owner, grant, body, ca) {
+  const base = new URL(url).origin;
+  const send = async (fresh) => paceWrite(base, owner).then(async () => postTls(url, {
     ...BROWSER, Host: new URL(url).host, Authorization: 'Bearer ' + owner.token,
-    'X-CSRF-Token': csrf.body.token,
+    'X-CSRF-Token': await labCsrf(base, owner, ca, { fresh }),
     'X-Bridge-Step-Up': grant,
     'Content-Type': 'application/json',
-  }, JSON.stringify(body), ca);
+  }, JSON.stringify(body), ca));
+  const first = await send(false);
+  return isCsrfRefusal(first) ? send(true) : first;
 }
 
 function mutateCharacter(value) {
@@ -79,6 +157,7 @@ export async function runPortableTlsSourceReview({ lab, origins, check }) {
   // processes/stores, not two tenants on one process or a mocked server.
   const sourceUrl = origins.a + '/api/servers/' + encodeURIComponent(source.serverId) +
     '/portable-export/attested-pair';
+  await paceWrite(origins.a, ownerA);
   const bundle = await getTls(sourceUrl, ca, {
     ...BROWSER, Authorization: 'Bearer ' + ownerA.token,
     'X-Bridge-Step-Up': exportGrant,
@@ -144,6 +223,6 @@ export async function runPortableTlsSourceReview({ lab, origins, check }) {
     before === after && reviewed.body?.writesPerformed === false,
     'snapshot ledger count unchanged: ' + String(after === before));
 
-  // Full owner mapping review, approval, write apply, parity, outages and
-  // restarts still need separate accepted evidence; issue #205 stays OPEN.
+  // The approval/apply/parity round trip is runPortableTlsRoundTrip
+  // (portable-roundtrip.mjs), run right after this read-only stage.
 }
