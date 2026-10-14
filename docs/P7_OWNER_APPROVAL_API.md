@@ -13,7 +13,15 @@ operator deliberately sets BOTH:
 `POST /api/servers/:sid/portable-import/owner-approval`
 
 Authenticated destination OWNER only, rate-limited, `x-bridge-step-up`
-credential proof for `account.import`, plus full exactly-shaped JSON:
+credential proof for `account.import`, plus full exactly-shaped JSON.
+
+**Proof age.** The transaction rejects a proof older than 120 s. A proof
+older than 100 s is already refused at the route, with
+`403 STEP_UP_REQUIRED` and reason `step_up_stale`. The client then asks
+once for a fresh proof, instead of the owner hitting an unexplained 422.
+`mapped-apply` applies the same bound.
+
+The JSON body:
 
 - `targetServerId` must equal `:sid`
 - `structure`, `permissions`, `attestation`: paired signed C2 source data

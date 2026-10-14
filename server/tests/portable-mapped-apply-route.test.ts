@@ -19,6 +19,7 @@ import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import serversRouter from '../routes/servers';
 import { stepUpHeader } from './helpers/stepUp';
+import { mintStepUpGrant, STEP_UP_HEADER } from '../lib/stepUp';
 import { readDestinationPinnedSourceRegistry } from '../lib/portableDestinationTrustConfig';
 import { applyApprovedPortableCommunityMapping } from '../lib/portableAtomicMappedApply';
 
@@ -183,5 +184,24 @@ describe('P7 C4 narrowly scoped mapped-apply HTTP guard', () => {
     expect(result.status).toBe(422);
     expect(result.body.code).toBe('PORTABLE_MAPPED_APPLY_UNAVAILABLE');
     expect(JSON.stringify(result.body)).not.toContain('token existence');
+  });
+
+  // The in-transaction check refuses an owner proof older than 120 s with
+  // the uniform 422, which the client cannot act on. A stale-but-valid grant
+  // must instead get 403 STEP_UP_REQUIRED (step_up_stale) at the route, so
+  // the client asks for ONE fresh proof; a recent one still proceeds.
+  it('asks for a fresh owner proof instead of failing later with a silent 422', async () => {
+    const minted = (ageMs: number) => ({
+      [STEP_UP_HEADER]: mintStepUpGrant({ _id: OWNER, tokenVersion: 0 }, 'totp', 'account-security', Date.now() - ageMs).token,
+    });
+    const stale = await request(app()).post('/api/servers/' + SID + '/portable-import/mapped-apply')
+      .set('Authorization', 'Bearer ' + credential(OWNER)).set(minted(101_000)).send(payload());
+    expect(stale.status).toBe(403);
+    expect(stale.body).toMatchObject({ error: 'STEP_UP_REQUIRED', scope: 'account-security', reasons: ['step_up_stale'] });
+    expect(apply).not.toHaveBeenCalled();
+    const recent = await request(app()).post('/api/servers/' + SID + '/portable-import/mapped-apply')
+      .set('Authorization', 'Bearer ' + credential(OWNER)).set(minted(60_000)).send(payload());
+    expect(recent.status).toBe(200);
+    expect(apply).toHaveBeenCalledTimes(1);
   });
 });

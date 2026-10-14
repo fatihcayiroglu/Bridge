@@ -8,6 +8,13 @@ type Row = Record<string, unknown>;
 type Client = { query(sql: string, params?: unknown[]): Promise<{ rows: Row[] }> };
 const MAX_OWNER_ID = 256;
 const MAX_FRESH_MS = 120_000;
+/**
+ * HTTP-side bound for approval/apply: tighter than MAX_FRESH_MS so a proof
+ * accepted at the route cannot age past the in-transaction bound before the
+ * transaction checks it. A staler proof gets 403 STEP_UP_REQUIRED
+ * (`step_up_stale`) and the client asks once for a fresh one.
+ */
+export const PORTABLE_OWNER_PROOF_ROUTE_MAX_AGE_MS = MAX_FRESH_MS - 20_000;
 
 export class LockedPortableOwnerStepUpError extends Error {
   readonly code = 'PORTABLE_OWNER_STEPUP_UNAVAILABLE';
