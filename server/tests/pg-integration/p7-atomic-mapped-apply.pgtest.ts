@@ -346,11 +346,16 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
     expect(baseline.audit).toHaveLength(1);
 
     let databaseCommitCompleted = false;
+    let discardedUnknownCommitConnection = false;
+    let rollbackAfterAttemptedCommit = false;
     const lostAcknowledgementPool = {
       connect: async () => {
         const client = await pool.connect();
         return {
           query: async (sql: string, params?: unknown[]) => {
+            if (sql === 'ROLLBACK' && databaseCommitCompleted) {
+              rollbackAfterAttemptedCommit = true;
+            }
             // PostgreSQL actually receives and executes COMMIT. Only the
             // acknowledgement delivered to our importer is lost.
             const result = await client.query(sql, params);
@@ -360,7 +365,10 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
             }
             return result;
           },
-          release: (error?: Error) => client.release(error),
+          release: (error?: Error) => {
+            discardedUnknownCommitConnection = error instanceof PortableAtomicApplyError;
+            client.release(error);
+          },
         };
       },
     };
@@ -376,6 +384,11 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
       ...input, pool: lostAcknowledgementPool,
     })).rejects.toBeInstanceOf(PortableAtomicApplyError);
     expect(databaseCommitCompleted).toBe(true);
+    // After the acknowledgement is lost, the session state cannot be trusted.
+    // Neither an ineffective compensating ROLLBACK nor a healthy release
+    // is acceptable; node-postgres must discard the original socket.
+    expect(rollbackAfterAttemptedCommit).toBe(false);
+    expect(discardedUnknownCommitConnection).toBe(true);
 
     // A brand-new pool/session observes durable results; this is not an
     // independent deployed Bridge process or a real TLS failure injection.
