@@ -16,11 +16,15 @@ community import.
   COMMIT acknowledgement** to the importer.
 - Because the acknowledgement is missing, the importer must return a
   generic **failure** and must never claim `transactionCommitted: true`
-  to the caller. Its compensating `ROLLBACK` cannot undo a committed
-  transaction.
+  to the caller. Once `COMMIT` has been attempted, the importer does **not**
+  run a compensating `ROLLBACK` on the uncertain session and releases the
+  physical PostgreSQL client with an error, forcing the pool to discard it.
+  A `ROLLBACK` cannot undo a successfully committed transaction.
 - An independently acquired PostgreSQL pool/connection confirms that the
   changed category, consumed approval, signed snapshot reservation and one
   redacted audit event **did commit together**.
+- The failure-injection test also asserts that the unknown-COMMIT session
+  was discarded and was never reused with a misleadingly clean release.
 - Retrying the original token refuses. A direct duplicate signed-snapshot
   insertion from the new connection is rejected by the PostgreSQL UNIQUE
   barrier. Repeated requests do not create an additional audit event.
