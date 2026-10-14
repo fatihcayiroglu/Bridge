@@ -188,6 +188,82 @@ describe('P7 C4 internal mapped atomic category/role/channel importer', () => {
     }
   });
 
+  it('refuses mapping items that are not exactly {sourceId, targetId} before connecting', async () => {
+    for (const channels of [
+      [{ sourceId: 'sch', targetId: 'tch', permissions: 8 }],   // smuggled extra field
+      [{ sourceId: 'sch' }],                                       // missing target
+      [null],
+      ['sch'],
+    ]) {
+      const f = fixture();
+      await expect(applyApprovedPortableCommunityMapping({ ...input, mapping: { ...mapping, channels }, pool: f.pool }))
+        .rejects.toBeInstanceOf(PortableAtomicApplyError);
+      expect(f.pool.connect).not.toHaveBeenCalled();
+    }
+  });
+
+  it('rolls everything back when a mapped target is not a row of the destination server', async () => {
+    // A target id of ANOTHER server: `WHERE _id=$ AND "serverId"=$` matches nothing.
+    const f = fixture();
+    const query = f.client.query.bind(f.client);
+    f.client.query = async (sql: string, params?: unknown[]) =>
+      sql.includes('UPDATE channels') ? (f.calls.push({ sql, params }), { rows: [] }) : query(sql, params);
+    await expect(applyApprovedPortableCommunityMapping({ ...input, pool: f.pool }))
+      .rejects.toBeInstanceOf(PortableAtomicApplyError);
+    expect(f.calls.at(-1)?.sql).toBe('ROLLBACK');
+    expect(f.calls.map(c => c.sql)).not.toContain('COMMIT');
+    expect(f.calls.some(c => c.sql.startsWith('INSERT INTO audit_logs'))).toBe(false);
+    expect(f.released).toEqual([undefined]);
+  });
+
+  it('refuses a step-up proof that does not explicitly verify, before any claim', async () => {
+    step.mockResolvedValueOnce({ stepUpVerified: 'yes' });
+    const f = fixture();
+    await expect(applyApprovedPortableCommunityMapping({ ...input, pool: f.pool }))
+      .rejects.toBeInstanceOf(PortableAtomicApplyError);
+    expect(review).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+    expect(f.calls.map(c => c.sql)).toEqual(['BEGIN ISOLATION LEVEL SERIALIZABLE', 'ROLLBACK']);
+  });
+
+  it('rolls back when the audit insert does not return its own row', async () => {
+    const f = fixture();
+    const query = f.client.query.bind(f.client);
+    f.client.query = async (sql: string, params?: unknown[]) =>
+      sql.startsWith('INSERT INTO audit_logs') ? (f.calls.push({ sql, params }), { rows: [{ _id: 'someone-else' }] }) : query(sql, params);
+    await expect(applyApprovedPortableCommunityMapping({ ...input, pool: f.pool }))
+      .rejects.toBeInstanceOf(PortableAtomicApplyError);
+    expect(f.calls.at(-1)?.sql).toBe('ROLLBACK');
+    expect(f.calls.map(c => c.sql)).not.toContain('COMMIT');
+  });
+
+  it('applies an uncategorized, non-NSFW channel with a null category and nsfw 0', async () => {
+    const plain = buildPortableCommunityStructure(
+      { _id: 'source', name: 'Source' }, [],
+      [{ _id: 'sch', name: 'Plain channel', type: 'text', topic: '', order: 1, nsfw: false, slowmode: 0 }],
+      [], '2026-10-13T12:00:00.000Z',
+    );
+    const f = fixture();
+    const result = await applyApprovedPortableCommunityMapping({
+      ...input, structure: plain, pool: f.pool,
+      mapping: { categories: [], roles: [], channels: [{ sourceId: 'sch', targetId: 'tch' }] },
+    });
+    expect(result.changed).toEqual({ categories: 0, roles: 0, channels: 1 });
+    const update = f.calls.find(c => c.sql.includes('UPDATE channels'));
+    expect(update?.params?.[2]).toBeNull();      // categoryId
+    expect(update?.params?.[5]).toBe(0);          // nsfw
+  });
+
+  it('never runs a query or releases a connection it could not obtain', async () => {
+    const f = fixture();
+    f.pool.connect.mockRejectedValueOnce(Error('pool exhausted: secret dsn'));
+    const error = await applyApprovedPortableCommunityMapping({ ...input, pool: f.pool }).catch(e => e);
+    expect(error).toBeInstanceOf(PortableAtomicApplyError);
+    expect(String(error)).not.toContain('secret dsn');
+    expect(f.calls).toHaveLength(0);
+    expect(f.released).toHaveLength(0);
+  });
+
   it('rejects mismatched fresh review and revoked step-up before claim', async () => {
     review.mockResolvedValueOnce({
       binding: { reviewFingerprint: digest('b'), targetGrantDigest: digest('g') },
