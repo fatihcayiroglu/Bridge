@@ -548,3 +548,37 @@ another 120 seconds per diagnostic. Normal app actions, original L01/ANR01
 assertions, cold-start timing and the 120-second standard shell cap are
 unchanged. Timeouts report missing evidence explicitly; they never become a
 PASS. This still does not diagnose the underlying Android process death.
+
+**Third run (PR #238, [run 38593466416](https://github.com/fatihcayiroglu/Bridge/actions/runs/38593466416), attempt 1, head `ed82fb4`): FAIL, 32 PASS / 1 FAIL / 0 SKIPPED / 4 MEASURED.**
+
+- **CS01 failed on cold start 5 again**, as in the first run. Launches 1–4
+  reached the UI (load average 20–23). Launch 5 returned `am start` ok/COLD
+  with PID 6573. The OS then ended that process at 16:01:47.761, about 7 s
+  after launch, with exit reason **12 (DEPENDENCY DIED)**, importance 100
+  (foreground). The DevTools attach then timed out after 60 s.
+- **It was neither an ANR nor a crash.** ANR01 counted zero ANRs, the crash
+  buffer had no header for the app, and the reason is neither low-memory nor
+  signal. L01 stayed HOT with a stable PID. The restore after CS01 worked, and
+  no later check inherited the failure (no cascade).
+- **What "dependency died" means.** ActivityManager uses this reason when it
+  kills a client because a process it holds a *stable content-provider
+  connection* to has died. The app's WebView sandbox renderer exited 61 ms
+  later as "ISOLATED NOT NEEDED". That is a consequence of the app dying, not
+  the cause.
+- **Which dependency: not established.** The process list taken after the
+  failure shows `com.google.android.gms.persistent` with PID 6895. That PID is
+  higher than every PID from the failing launch (6573, 6642), so Google Play
+  services restarted that process in the same minute. The emulator had
+  finished booting only about 96 s before the kill (boot completed at
+  16:00:11). Play services dying shortly after boot is therefore the leading
+  hypothesis. It is **not** proven: the exit record does not name the
+  dependency, and the harness did not yet read Play services' own exit
+  records.
+- **Harness change after this run.** When an exit record says DEPENDENCY
+  DIED, the evidence now adds ActivityManager's own attribution: the
+  `depends on provider <component> in dying proc <process>` kill line, read
+  from the system log for that PID only. It also adds the dying process's
+  exit records from its own package (`dumpsys activity exit-info <pkg>`). Only
+  the provider component, the process name and the allow-listed exit fields
+  are kept, never the raw log line or the free-text description. Nothing is
+  retried and no assertion changed.

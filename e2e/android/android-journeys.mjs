@@ -312,10 +312,11 @@ async function webViewAttachEvidence() {
  * Only allow-listed numeric/enum fields are kept: never the free-text
  * description or trace, which can carry app data.
  */
-async function processExits(limit = 6) {
+async function processExits(limit = 6, pkg = PKG) {
   if (MODE !== 'android') return null;
+  if (!/^[A-Za-z0-9_.]{1,120}$/.test(pkg)) return 'probe refused: not a package name';
   let out;
-  try { out = await sh(`dumpsys activity exit-info ${PKG}`, DIAGNOSTIC_SHELL_BUDGET_MS); }
+  try { out = await sh(`dumpsys activity exit-info ${pkg}`, DIAGNOSTIC_SHELL_BUDGET_MS); }
   catch (err) { return `probe failed: ${String(err?.message ?? err).slice(0, 120)}`; }
   return out.split(/ApplicationExitInfo #\d+:/).slice(1, limit + 1).map((rec) => {
     const field = (re) => (re.exec(rec) || [])[1] ?? null;
@@ -332,7 +333,37 @@ async function processExits(limit = 6) {
 }
 async function exitOf(pidValue) {
   const exits = await processExits(10);
-  return Array.isArray(exits) ? exits.find((e) => String(e.pid) === String(pidValue)) ?? null : exits;
+  if (!Array.isArray(exits)) return exits;
+  const exit = exits.find((e) => String(e.pid) === String(pidValue)) ?? null;
+  if (exit && /^12 /.test(exit.reason ?? '')) exit.dependency = await dependencyDeath(pidValue);
+  return exit;
+}
+
+/**
+ * Exit reason 12 (DEPENDENCY DIED) means ActivityManager killed our process
+ * because a process it held a stable content-provider connection to died.
+ * The exit record does not say which one; ActivityManager's own kill line
+ * does ("Killing <pid>:<proc> (adj N): depends on provider <component> in
+ * dying proc <process>"). Keep only those two names and the dying process's
+ * allow-listed exit records, never the raw log line.
+ */
+async function dependencyDeath(pidValue) {
+  if (!/^[0-9]{1,7}$/.test(String(pidValue ?? ''))) return null;
+  let line;
+  try {
+    line = await sh(`logcat -d -b system,main -v brief -s ActivityManager:I | grep -E 'Killing ${pidValue}:' | tail -1`, DIAGNOSTIC_SHELL_BUDGET_MS);
+  } catch (err) { return `probe failed: ${String(err?.message ?? err).slice(0, 120)}`; }
+  const named = /depends on provider ([A-Za-z0-9_.$/]{1,200}) in dying proc ([A-Za-z0-9_.:]{1,120})/.exec(line);
+  if (!named) return { provider: null, dyingProcess: null, killLineFound: /Killing \d+:/.test(line) };
+  const [, provider, dyingProcess] = named;
+  // The provider's package owns the dying process (gms.persistent belongs to
+  // com.google.android.gms), so read that package's exit records.
+  const exits = await processExits(10, provider.split('/')[0]);
+  return {
+    provider,
+    dyingProcess,
+    dyingProcessExits: Array.isArray(exits) ? exits.filter((e) => e.process === dyingProcess).slice(0, 2) : exits,
+  };
 }
 
 async function attachPage({ timeout = 60_000 } = {}) {
