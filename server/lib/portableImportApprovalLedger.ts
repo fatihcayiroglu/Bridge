@@ -128,6 +128,7 @@ export async function stagePortableImportApproval(input: {
   let client: ApprovalClient | undefined;
   let began = false;
   let committed = false;
+  let commitAttempted = false;
   let discard: Error | undefined;
   try {
     client = await input.pool.connect();
@@ -140,12 +141,17 @@ export async function stagePortableImportApproval(input: {
     const staged = await insertPortableImportApprovalWithinTransaction(
       client, input.binding, input.sourceAttestationExpiresAt,
     );
+    commitAttempted = true;
     await client.query('COMMIT');
     committed = true;
     return { ...staged, importSupported: false, writesPerformed: false };
   } catch {
-    if (began && !committed && client) {
-      try { await client.query('ROLLBACK'); } catch (e) { discard = e as Error; }
+    if (commitAttempted && !committed) {
+      // Unknown COMMIT acknowledgement: never expose the token, try a
+      // misleading rollback, or recycle the physical session.
+      discard = new PortableImportApprovalError();
+    } else if (began && !committed && client) {
+      try { await client.query('ROLLBACK'); } catch { discard = new PortableImportApprovalError(); }
     }
     return fail();
   } finally {

@@ -114,13 +114,24 @@ describe('P7 C4 approval ledger — no route, no import permission', () => {
     }
   });
 
-  it('does not return token on failed COMMIT, and quarantines client after failed rollback', async () => {
+  it('does not return token on unknown COMMIT and discards the client without rollback', async () => {
     const f = fixture(); f.failCommit(); f.failRollback();
     await expect(stagePortableImportApproval({
       pool: f.pool, binding, sourceAttestationExpiresAt: expiry(),
     })).rejects.toBeInstanceOf(PortableImportApprovalError);
-    expect(f.statements.map(x => x.sql).slice(-2)).toEqual(['COMMIT', 'ROLLBACK']);
-    expect(f.release).toHaveBeenCalledWith(expect.any(Error));
+    expect(f.statements.at(-1)?.sql).toBe('COMMIT');
+    expect(f.statements.map(x => x.sql)).not.toContain('ROLLBACK');
+    expect(f.release).toHaveBeenCalledWith(expect.any(PortableImportApprovalError));
+    expect((f.release.mock.calls[0]?.[0] as Error).message).not.toContain('secret');
+  });
+
+  it('rolls back pre-COMMIT failures and discards only if that rollback fails', async () => {
+    const f = fixture(); f.denyOwner(); f.failRollback();
+    await expect(stagePortableImportApproval({
+      pool: f.pool, binding, sourceAttestationExpiresAt: expiry(),
+    })).rejects.toBeInstanceOf(PortableImportApprovalError);
+    expect(f.statements.at(-1)?.sql).toBe('ROLLBACK');
+    expect(f.release).toHaveBeenCalledWith(expect.any(PortableImportApprovalError));
   });
 
   it('claims via exact binding, DB time, unconsumed CAS and current owner; rejects replay', async () => {

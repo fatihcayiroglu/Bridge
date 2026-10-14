@@ -69,6 +69,7 @@ export async function stageOwnerConfirmedPortableApproval(input: {
   let client: ApprovalClient | undefined;
   let inTransaction = false;
   let committed = false;
+  let commitAttempted = false;
   let discard: Error | undefined;
   try {
     client = await input.pool.connect();
@@ -98,6 +99,7 @@ export async function stageOwnerConfirmedPortableApproval(input: {
     const staged = await insertPortableImportApprovalWithinTransaction(
       client, checked.binding, checked.sourceAttestationExpiresAt,
     );
+    commitAttempted = true;
     await client.query('COMMIT');
     committed = true;
     return {
@@ -108,9 +110,14 @@ export async function stageOwnerConfirmedPortableApproval(input: {
       importSupported: false,
     };
   } catch {
-    if (inTransaction && !committed && client) {
-      try { await client.query('ROLLBACK'); } catch (err) {
-        discard = err instanceof Error ? err : new Error('Rollback failed');
+    if (commitAttempted && !committed) {
+      // COMMIT might have succeeded despite a lost acknowledgement. Neither
+      // a second ROLLBACK nor a healthy pool release can make this safe.
+      // Return no approval token and discard this physical connection.
+      discard = new TransactionalPortableApprovalError();
+    } else if (inTransaction && !committed && client) {
+      try { await client.query('ROLLBACK'); } catch {
+        discard = new TransactionalPortableApprovalError();
       }
     }
     return refuse();
