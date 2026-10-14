@@ -101,6 +101,36 @@ Beklenen çıktı:
 
 ---
 
+## Belirsiz BEGIN / COMMIT Yanıtı — Güvenli Kurtarma
+
+Admin API rotasyonu sırasında PostgreSQL bağlantısı kesilir veya `BEGIN` /
+`COMMIT` yanıtı alınamazsa hata yanıtı **işlemin kesinlikle geri alındığı
+anlamına gelmez**. `COMMIT` başarılı olmuş ancak yanıt ulaşmamış olabilir.
+
+`server/lib/federationKeys.ts` belirsiz `BEGIN` / `COMMIT` sonucunda fiziksel
+PostgreSQL istemcisini havuzdan atar, `COMMIT` sonrasında sahte `ROLLBACK`
+göndermez ve onaylanmamış yeni anahtarı başarı olarak duyurmaz. `COMMIT`
+öncesindeki hatalarda `ROLLBACK` denenir; başarısızsa oturum atılır.
+
+**Operatör eylemi:**
+
+1. Hata yanıtı sonrası **hemen ikinci rotasyonu başlatma** veya sonucu
+   doğrulanmamış bir anahtarı diğer instance'lara duyurma.
+2. **Yeni bir PostgreSQL bağlantısıyla** kanonik `_id='instance'` kaydının
+   `keyVersion`, `rotatedAt` ve açık anahtar parmak izini oku; önceki
+   onaylı kayıtla karşılaştır. Özel anahtarı, şifreli anahtarı veya
+   `AP_ENCRYPTION_KEY` değerini loglara ve destek kayıtlarına koyma.
+3. Kanonik satır değişmişse commit gerçekleşmiş olabilir: uygulamanın
+   yeni anahtarı kullanabildiğini ve imzaların doğrulandığını kontrol et.
+   Peer anahtar duyurularını gözlemlenen kalıcı duruma göre uzlaştır.
+4. Satır değişmemişse nedeni araştır; DB ve şifreleme anahtarı
+   otoritesini doğruladıktan sonra kontrollü biçimde tekrar dene.
+   Belirsizliğin devam ettiği durumda yeniden rastgele anahtar üretme.
+
+Bu işlem, gerçek ağ kopmasıyla uçtan uca dayanıklılık kanıtı yerine geçmez.
+
+---
+
 ## Adım 2 — Peer'lara Yeni Public Key Duyur
 
 Her aktif peer'a yeni public key'i bildirin:

@@ -35,7 +35,7 @@ jest.mock('../lib/apKeyEncryption', () => ({
 import {
   getFederationKeyId, getFederationPublicKeyDoc, getOrCreateFederationKeys,
   formatBridgeSignatureHeader, parseBridgeSignatureHeader,
-  signFederationPayload, _resetFederationKeyCache,
+  signFederationPayload, rotateFederationKeys, _resetFederationKeyCache,
 } from '../lib/federationKeys';
 
 const db = require('../db/loader');
@@ -164,5 +164,113 @@ describe('signature headers round-trip exactly', () => {
     const tampered = crypto.createVerify('RSA-SHA256');
     tampered.update(ts + JSON.stringify({ ...body, actor: 'https://saldirgan.test/u/x' }));
     expect(tampered.verify(keys.publicKeyPem, signature, 'base64')).toBe(false);
+  });
+});
+
+
+describe('PostgreSQL federation RSA key rotation — transaction and COMMIT acknowledgement safety', () => {
+  let previousPool: unknown;
+
+  beforeEach(() => { previousPool = db._pool; });
+  afterEach(() => {
+    if (previousPool === undefined) delete db._pool;
+    else db._pool = previousPool;
+    _resetFederationKeyCache();
+  });
+
+  function installClient(
+    handler: (sql: string) => Promise<{ rows: Array<Record<string, unknown>> }>,
+  ) {
+    const client = {
+      query: jest.fn((sql: string) => handler(sql)),
+      release: jest.fn((_error?: Error) => undefined),
+    };
+    db._pool = { connect: jest.fn(async () => client) };
+    return client;
+  }
+
+  it('updates an existing key only within the advisory-locked transaction and releases a clean session', async () => {
+    const client = installClient(async sql =>
+      sql.includes('SELECT "keyVersion"') ? { rows: [{ keyVersion: '5' }] } : { rows: [] });
+    const result = await rotateFederationKeys();
+    expect(result.keyVersion).toBe(6);
+    expect(result.publicKeyPem).toContain('BEGIN PUBLIC KEY');
+    const commands = client.query.mock.calls.map(([sql]) => sql);
+    expect(commands[0]).toBe('BEGIN');
+    expect(commands[1]).toContain('pg_advisory_xact_lock');
+    expect(commands[2]).toContain('FOR UPDATE');
+    expect(commands[3]).toContain('UPDATE server_federation_keys');
+    expect(commands[4]).toBe('COMMIT');
+    expect(commands).not.toContain('ROLLBACK');
+    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(client.release.mock.calls[0]?.[0]).toBeUndefined();
+  });
+
+  it('inserts the key in the same transaction when no row exists', async () => {
+    const client = installClient(async () => ({ rows: [] }));
+    const result = await rotateFederationKeys();
+    expect(result.keyVersion).toBe(1);
+    expect(client.query.mock.calls.map(([sql]) => sql))
+      .toEqual(expect.arrayContaining([expect.stringContaining('INSERT INTO server_federation_keys'), 'COMMIT']));
+    expect(client.release.mock.calls[0]?.[0]).toBeUndefined();
+  });
+
+  it('does NOT send ROLLBACK after an unacknowledged COMMIT; rejects and discards the physical client', async () => {
+    const lostAck = new Error('socket closed after COMMIT was sent');
+    const client = installClient(async sql => {
+      if (sql.includes('SELECT "keyVersion"')) return { rows: [{ keyVersion: 7 }] };
+      if (sql === 'COMMIT') throw lostAck;
+      return { rows: [] };
+    });
+    await expect(rotateFederationKeys()).rejects.toBe(lostAck);
+    const commands = client.query.mock.calls.map(([sql]) => sql);
+    expect(commands).toContain('COMMIT');
+    expect(commands).not.toContain('ROLLBACK');
+    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(client.release.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+    // No uncommitted signer is exposed or announced as a successful rotation.
+    expect(getFederationPublicKeyDoc()).toBeNull();
+  });
+
+  it('discards a PostgreSQL session when BEGIN acknowledgement is missing', async () => {
+    const unknownBegin = new Error('connection disappeared after BEGIN');
+    const client = installClient(async sql => {
+      if (sql === 'BEGIN') throw unknownBegin;
+      return { rows: [] };
+    });
+    await expect(rotateFederationKeys()).rejects.toBe(unknownBegin);
+    expect(client.query.mock.calls.map(([sql]) => sql)).toEqual(['BEGIN']);
+    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(client.release.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+    expect(getFederationPublicKeyDoc()).toBeNull();
+  });
+
+  it('rolls back a failure before COMMIT and returns a normally reusable client', async () => {
+    const writeFailed = new Error('unique constraint or disk write failed');
+    const client = installClient(async sql => {
+      if (sql.includes('SELECT "keyVersion"')) return { rows: [{ keyVersion: 7 }] };
+      if (sql.includes('UPDATE server_federation_keys')) throw writeFailed;
+      return { rows: [] };
+    });
+    await expect(rotateFederationKeys()).rejects.toBe(writeFailed);
+    const commands = client.query.mock.calls.map(([sql]) => sql);
+    expect(commands.at(-1)).toBe('ROLLBACK');
+    expect(commands).not.toContain('COMMIT');
+    expect(client.release.mock.calls[0]?.[0]).toBeUndefined();
+  });
+
+  it('discards the client if a pre-COMMIT ROLLBACK also fails, preserving the original write error', async () => {
+    const writeFailed = new Error('pre-commit write failure');
+    const client = installClient(async sql => {
+      if (sql.includes('SELECT "keyVersion"')) return { rows: [{ keyVersion: 3 }] };
+      if (sql.includes('UPDATE server_federation_keys')) throw writeFailed;
+      if (sql === 'ROLLBACK') throw new Error('session unusable');
+      return { rows: [] };
+    });
+    await expect(rotateFederationKeys()).rejects.toBe(writeFailed);
+    expect(client.query.mock.calls.map(([sql]) => sql)).toContain('ROLLBACK');
+    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(client.release.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+    expect(getFederationPublicKeyDoc()).toBeNull();
   });
 });

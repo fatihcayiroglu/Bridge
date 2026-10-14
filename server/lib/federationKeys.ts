@@ -153,8 +153,12 @@ async function _rotateAtomic(): Promise<FederationKeyPair> {
   if (!pool?.connect) return _rotateFallbackSerialized();
 
   const client = await pool.connect();
+  let began = false;
+  let commitAttempted = false;
+  let discard: Error | undefined;
   try {
     await client.query('BEGIN');
+    began = true;
     // Row locking alone cannot serialize the "row does not exist yet" case.
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['bridge:federation-instance-key']);
     const current = await client.query<{ keyVersion: number | string }>(
@@ -182,13 +186,31 @@ async function _rotateAtomic(): Promise<FederationKeyPair> {
         [INSTANCE_KEY_ID, generated.publicKeyPem, privateKeyEnc, generated.keyVersion, now],
       );
     }
+    commitAttempted = true;
     await client.query('COMMIT');
     return generated;
   } catch (err) {
-    try { await client.query('ROLLBACK'); } catch { /* preserve original error */ }
+    if (commitAttempted) {
+      // A failed COMMIT acknowledgement does not establish whether the
+      // database committed the new signer. Never issue a misleading rollback
+      // after COMMIT was sent or reuse this physical PostgreSQL connection.
+      // The caller must not announce the new key when commit status is unknown.
+      discard = new Error('Federation key rotation COMMIT acknowledgement unknown');
+    } else if (!began) {
+      // BEGIN itself may have reached PostgreSQL before its response was lost.
+      // Do not issue commands on or return this uncertain session to the pool.
+      discard = new Error('Federation key rotation BEGIN acknowledgement unknown');
+    } else {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // A failed rollback leaves transaction/session state unknowable.
+        discard = new Error('Federation key rotation ROLLBACK failed');
+      }
+    }
     throw err;
   } finally {
-    client.release();
+    client.release(discard);
   }
 }
 
