@@ -274,3 +274,96 @@ describe('PostgreSQL federation RSA key rotation — transaction and COMMIT ackn
     expect(getFederationPublicKeyDoc()).toBeNull();
   });
 });
+
+
+describe('single-process fallback federation key rotation without a PostgreSQL pool', () => {
+  let originalPool: unknown;
+
+  beforeEach(() => {
+    originalPool = db._pool;
+    delete db._pool;
+  });
+  afterEach(() => {
+    if (originalPool === undefined) delete db._pool;
+    else db._pool = originalPool;
+    _resetFederationKeyCache();
+  });
+
+  it('initializes a missing canonical key once, with its private half encrypted at rest', async () => {
+    const rotated = await rotateFederationKeys();
+    expect(rotated.keyVersion).toBe(1);
+    expect(rotated.publicKeyPem).toContain('BEGIN PUBLIC KEY');
+    expect(await db.serverFederationKeys.count({})).toBe(1);
+    const row = await db.serverFederationKeys.findOne({ _id: 'instance' });
+    expect(row).toMatchObject({
+      publicKeyPem: rotated.publicKeyPem,
+      privateKeyEnc: expect.stringMatching(/^enc:-----BEGIN PRIVATE KEY-----/),
+      keyVersion: 1,
+    });
+    expect(row).not.toHaveProperty('privateKeyPem');
+    expect(getFederationPublicKeyDoc()).toMatchObject({
+      publicKeyPem: rotated.publicKeyPem,
+    });
+    expect(JSON.stringify(getFederationPublicKeyDoc())).not.toContain('BEGIN PRIVATE KEY');
+  });
+
+  it('serializes concurrent fallback rotations and preserves strictly increasing canonical versions', async () => {
+    const results = await Promise.all([
+      rotateFederationKeys(),
+      rotateFederationKeys(),
+      rotateFederationKeys(),
+    ]);
+    expect(results.map(x => x.keyVersion)).toEqual([1, 2, 3]);
+    expect(new Set(results.map(x => x.publicKeyPem)).size).toBe(3);
+    const row = await db.serverFederationKeys.findOne({ _id: 'instance' });
+    expect(await db.serverFederationKeys.count({})).toBe(1);
+    expect(row?.keyVersion).toBe(3);
+    expect(row?.publicKeyPem).toBe(results[2].publicKeyPem);
+    expect(getFederationPublicKeyDoc()?.publicKeyPem).toBe(results[2].publicKeyPem);
+  });
+
+  it('preserves the previous signer on a failed update, then permits a safe retry', async () => {
+    const initial = await getOrCreateFederationKeys();
+    const storedBefore = await db.serverFederationKeys.findOne({ _id: 'instance' });
+    const failedWrite = new Error('federation key storage temporarily unavailable');
+    const update = jest.spyOn(db.serverFederationKeys, 'update').mockRejectedValueOnce(failedWrite);
+    try {
+      await expect(rotateFederationKeys()).rejects.toBe(failedWrite);
+      expect(await db.serverFederationKeys.findOne({ _id: 'instance' }))
+        .toEqual(storedBefore);
+      expect(getFederationPublicKeyDoc()?.publicKeyPem).toBe(initial.publicKeyPem);
+    } finally {
+      update.mockRestore();
+    }
+    const retried = await rotateFederationKeys();
+    expect(retried.keyVersion).toBe(initial.keyVersion + 1);
+    expect(retried.publicKeyPem).not.toBe(initial.publicKeyPem);
+    expect((await db.serverFederationKeys.findOne({ _id: 'instance' }))?.publicKeyPem)
+      .toBe(retried.publicKeyPem);
+  });
+
+  it('releases the fallback serialization lock after a failed rotation', async () => {
+    const initial = await getOrCreateFederationKeys();
+    const update = jest.spyOn(db.serverFederationKeys, 'update')
+      .mockRejectedValueOnce(new Error('injected storage error'));
+    try {
+      const [failed, recovered] = await Promise.allSettled([
+        rotateFederationKeys(),
+        rotateFederationKeys(),
+      ]);
+      expect(failed.status).toBe('rejected');
+      if (failed.status === 'rejected') {
+        expect(failed.reason).toBeInstanceOf(Error);
+        expect(String(failed.reason)).toContain('injected storage error');
+      }
+      expect(recovered.status).toBe('fulfilled');
+      if (recovered.status === 'fulfilled') {
+        expect(recovered.value.keyVersion).toBe(initial.keyVersion + 1);
+        expect((await db.serverFederationKeys.findOne({ _id: 'instance' }))?.publicKeyPem)
+          .toBe(recovered.value.publicKeyPem);
+      }
+    } finally {
+      update.mockRestore();
+    }
+  });
+});
