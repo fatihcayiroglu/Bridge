@@ -20,6 +20,7 @@ import { socketUsers, voiceRooms } from './socket';
 // ── Logger ───────────────────────────────────────────────────────────────────
 import logger from './lib/logger';
 import { reportLimits } from './lib/limitsReport';
+import { reportPortableTrust } from './lib/portableTrustReport';
 import { getPrivateStorageAdapter, getStorageAdapter } from './lib/storageAdapter';
 
 // ── Jobs ─────────────────────────────────────────────────────────────────────
@@ -110,6 +111,8 @@ async function bootstrap(): Promise<void> {
     logger.info({ event: 'server.start', port: PORT, host: HOST }, `Bridge listening on ${HOST}:${PORT}`);
     // Katmanli sinirlar TEK BIR YERDE gorunur olsun (operator kesfedilebilirligi).
     reportLimits();
+    // P7 C4: which source keys this installation trusts (public data only).
+    reportPortableTrust();
 
     // CALISMA-ZAMANI VERITABANI AYRICALIGI: bu kurulumda rol SUPERUSER olarak
     // olculdu. Uygulamanin ihtiyaci yalnizca CRUD'dur; fazlasi ele gecirilmis

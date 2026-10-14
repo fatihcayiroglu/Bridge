@@ -43,9 +43,8 @@ that a user inspected a mapping before approval, that a destination applied
 metadata, that any users/messages/grants migrated, or that a real network
 outage/restart during apply preserves topology parity.
 
-**Remaining #205 acceptance:** two independent installations must next
-perform the entire source signed export → safe mapping review →
-destination owner confirmation → one-use approval → restricted metadata
-apply → post-apply re-export/topology and grant comparison, alongside
-concurrent edits, outage/rollback, replay, key revocation and restart.
-Only once those tests actually PASS should they be considered completed.
+**Follow-up:** the same scenario continues with the full owner review →
+one-use approval → atomic mapped apply → re-export parity round trip, with
+concurrent edits, outage, crash/restart, replay, revocation and unpinned-key
+attacks: see [P7_LIVE_TLS_ROUND_TRIP.md](P7_LIVE_TLS_ROUND_TRIP.md)
+(`P7-RT-01..22`).

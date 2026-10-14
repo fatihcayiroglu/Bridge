@@ -78,10 +78,12 @@ registry. Retired keys are never silently trusted.
 On compromise the destination operator must mark the old registry entry
 revoked=true through the existing trusted config path and replace the source
 secret in a controlled deployment process. Revocation immediately rejects
-even historically signed proofs from the revoked key. Maintain an auditable
-operator record of fingerprints, origin, timestamps and approval, without
-recording private PEMs, bearer tokens or raw user exports. This utility is
-not a full key-custody, approval or revocation management system.
+even historically signed proofs from the revoked key.
+
+The destination side of rotation, revocation, re-authorisation and its
+secret-free audit record is handled by `scripts/portable-trust-registry.mjs`.
+See [P7_SOURCE_TRUST_OPERATIONS.md](P7_SOURCE_TRUST_OPERATIONS.md). Never
+record private PEMs, bearer tokens or raw user exports anywhere.
 
 ## Verification and limitations
 
