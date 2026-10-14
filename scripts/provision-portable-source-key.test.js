@@ -124,5 +124,3 @@ test('rejects output inside the repository even if the directory exists', () => 
   assert.match(result.stderr, /Bridge repository/);
 });
 
-function requireDir() {
-  // Keep the t
