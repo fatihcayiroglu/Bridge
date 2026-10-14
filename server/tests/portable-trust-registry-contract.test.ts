@@ -165,4 +165,40 @@ describe('P7 C4 operator trust registry CLI <-> server contract', () => {
     reportPortableTrust({});
     expect(logger.info).not.toHaveBeenCalled();
   });
+
+  it('reports pending and expired pinned keys by state and warns when none is usable', () => {
+    const DAY = 86400_000;
+    const now = Date.parse('2026-10-14T12:00:00.000Z');
+    const pemOf = (k: ReturnType<typeof key>) => k.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const pending = key('pending'), expired = key('expired'), active = key('active');
+    const entry = (k: ReturnType<typeof key>, from: number, until: number) => ({
+      sourceOrigin: ORIGIN, publicKeyPem: pemOf(k), activeFrom: iso(from), activeUntil: iso(until), revoked: false,
+    });
+    const envOf = (keys: unknown[]): NodeJS.ProcessEnv => ({
+      BRIDGE_PORTABLE_DESTINATION_SOURCE_VERIFY_ENABLED: 'true',
+      BRIDGE_PORTABLE_DESTINATION_SOURCE_REGISTRY_B64: Buffer.from(JSON.stringify({
+        format: 'bridge-portable-source-trust-registry', version: 1, keys,
+      })).toString('base64'),
+    });
+    const notYet = entry(pending, now + DAY, now + 60 * DAY);
+    const over = entry(expired, now - 60 * DAY, now - DAY);
+
+    const mixed = summarizePortableTrust(envOf([notYet, over, entry(active, now - DAY, now + 60 * DAY)]), now);
+    expect(mixed.destination.keys.map(k => [k.fingerprint, k.state])).toEqual([
+      [pending.fingerprint, 'pending'], [expired.fingerprint, 'expired'], [active.fingerprint, 'active'],
+    ]);
+    expect(mixed.destination.activeKeys).toBe(1);
+    expect(mixed.warnings).toEqual([]);
+
+    // A key exactly at its end instant is already expired; one at its start is active.
+    const edges = summarizePortableTrust(envOf([entry(expired, now - DAY, now), entry(active, now, now + 60 * DAY)]), now);
+    expect(edges.destination.keys.map(k => k.state)).toEqual(['expired', 'active']);
+
+    const unusable = envOf([notYet, over]);
+    expect(summarizePortableTrust(unusable, now).warnings).toEqual(['NO_ACTIVE_PINNED_SOURCE_KEY']);
+    reportPortableTrust(unusable);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'portable.trust.warning', warnings: ['NO_ACTIVE_PINNED_SOURCE_KEY'] }),
+      expect.any(String));
+  });
 });

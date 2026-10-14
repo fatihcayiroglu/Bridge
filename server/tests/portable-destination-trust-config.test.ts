@@ -26,6 +26,15 @@ function env(change: Record<string, string | undefined> = {}) {
   } as NodeJS.ProcessEnv;
 }
 
+/** A second base64 spelling of the same bytes: flips an unused low bit before the padding. */
+function base64Twin(b64: string): string {
+  const pad = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
+  if (!pad) throw new Error('fixture must be padded to have unused bits');
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const i = b64.length - pad - 1;
+  return b64.slice(0, i) + alphabet[alphabet.indexOf(b64[i]!) ^ 1] + b64.slice(i + 1);
+}
+
 describe('P7 destination source registry must come from operator provisioning', () => {
   it('accepts only explicit opt-in and canonical base64 of pinned valid public keys', () => {
     expect(readDestinationPinnedSourceRegistry(env())).toBe(policy);
@@ -58,6 +67,19 @@ describe('P7 destination source registry must come from operator provisioning', 
         BRIDGE_PORTABLE_DESTINATION_SOURCE_REGISTRY_B64: encoded,
       }))).toThrow(PortableDestinationTrustUnavailable);
     }
+  });
+
+  it('refuses a second base64 spelling of the same registry', () => {
+    // Pad the JSON with insignificant whitespace until its base64 has padding.
+    let padded = policy;
+    while (Buffer.byteLength(padded) % 3 === 0) padded += ' ';
+    const canonical = Buffer.from(padded, 'utf8').toString('base64');
+    const twin = base64Twin(canonical);
+    expect(Buffer.from(twin, 'base64').equals(Buffer.from(canonical, 'base64'))).toBe(true);
+    expect(readDestinationPinnedSourceRegistry(env({ BRIDGE_PORTABLE_DESTINATION_SOURCE_REGISTRY_B64: canonical }))).toBe(padded);
+    expect(() => readDestinationPinnedSourceRegistry(env({
+      BRIDGE_PORTABLE_DESTINATION_SOURCE_REGISTRY_B64: twin,
+    }))).toThrow(PortableDestinationTrustUnavailable);
   });
 
   it('never reveals policy content in errors', () => {

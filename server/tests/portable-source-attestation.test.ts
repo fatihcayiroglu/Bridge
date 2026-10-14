@@ -4,6 +4,7 @@ import { buildPortableCommunityPermissionManifest } from '../lib/portableCommuni
 import {
   portableSourceAttestationSigningBytes,
   verifyPortableSourceAttestation,
+  isCanonicalPortableSourceOrigin,
   PortableSourceAttestationError,
   type PortableSourceAttestation,
 } from '../lib/portableSourceAttestation';
@@ -158,5 +159,36 @@ describe('P7 C4 independently pinned source signature proof (NOT an import)', ()
     expect(() => verifyWith(f, {
       trustedSourcePublicKeyPem: rsa.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
     })).toThrow(PortableSourceAttestationError);
+  });
+
+  it('refuses a second spelling of the same signature (no base64url malleability)', () => {
+    const f = signedProof();
+    const sig = f.attestation.signature;
+    // 86 base64url characters carry 516 bits for a 64-byte signature: the last
+    // character's 4 low bits are padding. Flipping one of them spells the SAME
+    // bytes differently; only the canonical spelling may verify.
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const last = alphabet.indexOf(sig.slice(-1));
+    const twin = sig.slice(0, -1) + alphabet[last ^ 1];
+    expect(twin).not.toBe(sig);
+    expect(Buffer.from(twin, 'base64url').equals(Buffer.from(sig, 'base64url'))).toBe(true);
+    expect(verifyWith(f).sourceSignatureValid).toBe(true);
+    expect(() => verifyWith(f, { attestation: { ...f.attestation, signature: twin } }))
+      .toThrow(PortableSourceAttestationError);
+  });
+
+  it('refuses an attestation that is not a plain object', () => {
+    const f = signedProof();
+    for (const attestation of [null, undefined, 'signed', 42, [f.attestation]]) {
+      expect(() => verifyWith(f, { attestation })).toThrow(PortableSourceAttestationError);
+    }
+  });
+
+  it('accepts only bounded canonical https origins', () => {
+    expect(isCanonicalPortableSourceOrigin(ORIGIN)).toBe(true);
+    expect(isCanonicalPortableSourceOrigin(`https://${'a'.repeat(497)}.example`)).toBe(false); // > 512 chars
+    for (const value of [undefined, null, 42, {}, 'https://', 'https://source.bridge.example:443']) {
+      expect(isCanonicalPortableSourceOrigin(value)).toBe(false);
+    }
   });
 });

@@ -14,6 +14,15 @@ function env(input: Record<string, string | undefined> = {}) {
   } as NodeJS.ProcessEnv;
 }
 
+/** A second base64 spelling of the same bytes: flips an unused low bit before the padding. */
+function base64Twin(b64: string): string {
+  const pad = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
+  if (!pad) throw new Error('fixture must be padded to have unused bits');
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const i = b64.length - pad - 1;
+  return b64.slice(0, i) + alphabet[alphabet.indexOf(b64[i]!) ^ 1] + b64.slice(i + 1);
+}
+
 describe('P7 C4 signed community export explicit deployer configuration', () => {
   it('rejects default-off and any non-literal opt-in', () => {
     for (const flag of [undefined, '', 'TRUE', '1', 'false', 'yes']) {
@@ -55,6 +64,16 @@ describe('P7 C4 signed community export explicit deployer configuration', () => 
         BRIDGE_PORTABLE_SOURCE_ED25519_PRIVATE_KEY_B64: encoded,
       }))).toThrow(PortableSourceSigningUnavailable);
     }
+  });
+
+  it('refuses a second base64 spelling of the same private key', () => {
+    const twin = base64Twin(secret);
+    expect(twin).not.toBe(secret);
+    expect(Buffer.from(twin, 'base64').equals(Buffer.from(secret, 'base64'))).toBe(true);
+    expect(readPortableSourceSigningConfig(env()).signingPrivateKeyPem).toBe(validPrivate);
+    expect(() => readPortableSourceSigningConfig(env({
+      BRIDGE_PORTABLE_SOURCE_ED25519_PRIVATE_KEY_B64: twin,
+    }))).toThrow(PortableSourceSigningUnavailable);
   });
 
   it('never embeds actual key material in the exception or serialized metadata', () => {
