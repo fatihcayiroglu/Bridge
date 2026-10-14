@@ -540,3 +540,11 @@ nothing retried):
   evidence: PID, top activity, crash headers and the OS exit record. The next
   check then starts from a freshly launched app, so a wedged WebView cannot
   stall the run again.
+
+**Bounded failure-only diagnostics:** after the check watchdog fires, the
+four bounded Android state/log probes and the process-exit probe have a
+separate **12-second cap each**, so a dead `adb` connection cannot burn
+another 120 seconds per diagnostic. Normal app actions, original L01/ANR01
+assertions, cold-start timing and the 120-second standard shell cap are
+unchanged. Timeouts report missing evidence explicitly; they never become a
+PASS. This still does not diagnose the underlying Android process death.
