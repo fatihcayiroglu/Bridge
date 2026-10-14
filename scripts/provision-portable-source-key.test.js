@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  mkdtempSync, readFileSync, readdirSync, statSync, mkdirSync,
+  mkdtempSync, readFileSync, readdirSync, statSync, mkdirSync, chmodSync,
   writeFileSync, symlinkSync, rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -116,6 +116,18 @@ test('unsafe directories and output symlinks cannot receive private material', (
     assert.notEqual(result.status, 0);
     assert.equal(readFileSync(outside, 'utf8'), 'sentinel');
     assert.deepEqual(readdirSync(bundleDir), ['portable-source-private.pem']);
+  }));
+
+test('refuses directory permissions that expose operator-controlled output', () =>
+  work(dir => {
+    if (process.platform === 'win32') return;
+    const safe = join(dir, 'unrestricted');
+    mkdirSync(safe, { mode: 0o700 });
+    chmodSync(safe, 0o755);
+    const res = run(safe);
+    assert.notEqual(res.status, 0);
+    assert.match(res.stderr, /owned by the operator and mode 0700/);
+    assert.deepEqual(readdirSync(safe), []);
   }));
 
 test('rejects output inside the repository even if the directory exists', () => {
