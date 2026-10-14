@@ -303,7 +303,7 @@ async function webViewAttachEvidence() {
     try { return [label, (await sh(command, DIAGNOSTIC_SHELL_BUDGET_MS)).slice(0, 1200)]; }
     catch (err) { return [label, `probe failed: ${String(err?.message ?? err).slice(0, 120)}`]; }
   }));
-  return { ...Object.fromEntries(results), exits: await processExits(), anrs: await anrReports() };
+  return { ...Object.fromEntries(results), exits: await recentExits(), anrs: await anrReports() };
 }
 
 /**
@@ -337,6 +337,19 @@ async function exitOf(pidValue) {
   const exit = exits.find((e) => String(e.pid) === String(pidValue)) ?? null;
   if (exit && /^12 /.test(exit.reason ?? '')) exit.dependency = await dependencyDeath(pidValue);
   return exit;
+}
+/**
+ * Recent exit records with the dependency named for every DEPENDENCY DIED
+ * entry. Used when the launched PID is unknown: a process killed within a
+ * second or two of `am start` is gone before `pidof` can see it.
+ */
+async function recentExits(limit = 6) {
+  const exits = await processExits(limit);
+  if (!Array.isArray(exits)) return exits;
+  for (const exit of exits) {
+    if (/^12 /.test(exit.reason ?? '')) exit.dependency = await dependencyDeath(exit.pid);
+  }
+  return exits;
 }
 
 /**
@@ -829,7 +842,7 @@ async function main() {
       } catch (err) {
         // Name the launch that failed and why the OS ended its process, if it did.
         facts.coldStartStress = launches;
-        const exit = launchedPid ? await exitOf(launchedPid) : await processExits(2);
+        const exit = launchedPid ? await exitOf(launchedPid) : await recentExits(2);
         await restoreLaunch(`CS01 cold start ${i}`);
         throw new Error(`cold start ${i}/${COLD_STARTS} (am start: ${launch.status ?? 'no status'}/${launch.launchState ?? 'no launch state'}; ` +
           `pid after launch ${launchedPid ?? 'none'}; OS exit record ${JSON.stringify(exit)}): ${err?.message ?? err}`, { cause: err });

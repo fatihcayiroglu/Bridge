@@ -616,3 +616,14 @@ The subject's free text, other threads, lock arguments, build IDs and any app da
   - The parser now collapses runs of ART interpreter frames into one `libart.so` entry. In this run the 14-frame limit was used up by ART plumbing before any Java frame.
   - It also records the RenderThread's state and top frames, as code locations only.
   - Nothing else changed.
+
+**Sixth run (PR #238, [run 38635601354](https://github.com/fatihcayiroglu/Bridge/actions/runs/38635601354), head `9f093c9`): FAIL, 32 PASS / 1 FAIL / 0 SKIPPED / 4 MEASURED.**
+
+- **Cold start 5 was killed as DEPENDENCY DIED again.** This repeats the third run's form. The app process (PID 6666) died at 20:57:51.225, about 2 s after `am start` and before `pidof` could see it, so `am start` reported `ok/UNKNOWN`. Its sandboxed renderer then exited. Again, `gms.persistent` shows a PID (6796) newer than the failed launch. Boot had completed at 20:56:37, 74 s earlier.
+- **No ANR this time.** ANR01 passed, and every other journey passed.
+- **The pattern across the three runs since the OS evidence was added:**
+  - two failed on cold start 5 with DEPENDENCY DIED, 74–96 s after boot, each time next to a fresh `gms.persistent` process;
+  - one failed with a FocusEvent ANR, the main thread blocked in RenderThread frame sync.
+
+  Which provider connection killed the app is still **not proven**.
+- **Harness gap found and fixed.** The dependency attribution ran only when the launched PID was known. In this run the process died before `pidof`, so no attribution was recorded. Every DEPENDENCY DIED record in the evidence, including the attach-failure bundle, now carries its attribution: the provider, the dying process and that process's exit records.
