@@ -19,10 +19,11 @@
   import AutomationTab from './tabs/AutomationTab.svelte';
   import SsoTab       from './tabs/SsoTab.svelte';
   import PluginTab    from './tabs/PluginTab.svelte';
+  import PortableTab  from './tabs/PortableTab.svelte';
   import { createServerSettingsStore, getCurrentServerFromRegistry } from './stores/serverSettingsStore';
   import { BridgeRegistry } from '../bridge-registry.js';
 
-  type TabId = 'general' | 'members' | 'roles' | 'media' | 'emoji' | 'webhooks' | 'audit' | 'moderation' | 'analytics' | 'boost' | 'automation' | 'health' | 'sso' | 'plugins' | 'onboarding';
+  type TabId = 'general' | 'members' | 'roles' | 'media' | 'emoji' | 'webhooks' | 'audit' | 'moderation' | 'analytics' | 'boost' | 'automation' | 'health' | 'sso' | 'plugins' | 'portable' | 'onboarding';
 
   interface Props {
     initialTab?: TabId;
@@ -33,6 +34,12 @@
 
   const server = getCurrentServerFromRegistry();
   const store  = server ? createServerSettingsStore(server) : null;
+  const serverId = server ? String((server as { _id?: unknown; id?: unknown })._id ?? (server as { id?: unknown }).id ?? '') : '';
+  // P7 C4: portable export/import are owner-only on the server; the tab is
+  // only listed for the owner (the server still enforces it on every call).
+  const me = BridgeRegistry.call<{ _id?: unknown; id?: unknown } | null>('getMe');
+  const myId = me ? String(me._id ?? me.id ?? '') : '';
+  const isOwner = !!server && !!myId && String((server as { ownerId?: unknown }).ownerId ?? '') === myId;
 
   interface Tab { id: TabId; label: string; icon: string; }
   interface NavGroup { id: string; label: string; tabs: TabId[]; }
@@ -78,6 +85,7 @@
     { id: 'health',     label: t('srv_tab_health',     'Sistem'),     icon: 'M3 10.5h3l2-4.5 3 8.5 2-4h4'   },
     { id: 'sso',        label: t('srv_tab_sso',        'SSO'),        icon: 'M3.5 10a3 3 0 1 0 6 0a3 3 0 1 0-6 0M9.5 10h7M14 10v2.5M16.5 10v2'  },
     { id: 'plugins',    label: t('srv_tab_plugins',    'Pluginler'),  icon: 'M4 7h3a1.5 1.5 0 1 1 3 0h3v3a1.5 1.5 0 1 1 0 3v3H4z'  },
+    ...(isOwner ? [{ id: 'portable' as TabId, label: t('pci_tab'), icon: 'M4 6.5h8.5M10 3.5l3 3-3 3M16 13.5H7.5M10 10.5l-3 3 3 3' }] : []),
   ]);
 
   // Final21 UX: 15 sekme tek düz listeydi ve simgeleri renkli emoji (⚙️👥😀🔗📋⚡🔐🧩) ile
@@ -85,7 +93,7 @@
   // yan yana "farklı bileşen kütüphanesi" hissi veriyordu. Simgeler artık aynı çizgi
   // dilinde (20×20, currentColor) ve sekmeler dört anlamlı gruba ayrılır.
   const GROUPS: NavGroup[] = $derived([
-    { id: 'server',       label: t('ssm_group_server', 'Sunucu'),               tabs: ['general', 'media', 'emoji'] },
+    { id: 'server',       label: t('ssm_group_server', 'Sunucu'),               tabs: ['general', 'media', 'emoji', 'portable'] },
     { id: 'people',       label: t('ssm_group_people', 'Üyeler ve güvenlik'),    tabs: ['members', 'roles', 'moderation', 'audit'] },
     { id: 'integrations', label: t('ssm_group_integrations', 'Entegrasyonlar'), tabs: ['webhooks', 'automation', 'plugins', 'sso'] },
     { id: 'status',       label: t('ssm_group_status', 'Durum'),                 tabs: ['analytics', 'boost', 'health'] },
@@ -208,6 +216,8 @@
             <SsoTab />
           {:else if activeTab === 'plugins'}
             <PluginTab />
+          {:else if activeTab === 'portable'}
+            <PortableTab {serverId} {isOwner} />
           {:else if activeTab === 'onboarding'}
             <div class="ss-delegated">
               <p>{t('ssm_onboarding', 'Onboarding ayarları için:')}</p>

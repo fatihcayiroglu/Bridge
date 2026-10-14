@@ -308,6 +308,23 @@ describe('P7 B2 decision and guard', () => {
     expect(await evaluateStepUp(req(l1), u, 'account.export', T0)).toMatchObject({ allowed: false, body: { reasons: ['step_up_level'] } });
   });
 
+  it('an optional freshness bound refuses an older valid grant as step_up_stale, failing closed on bad bounds', async () => {
+    const u = uid();
+    account(u, { twoFactorEnabled: 1 });
+    const g = mintStepUpGrant({ _id: u }, 'totp', 'account-security', T0).token;
+    await expect(evaluateStepUp(req(g), u, 'account.import', T0 + 90_000, { maxAgeMs: 100_000 }))
+      .resolves.toEqual({ allowed: true, via: 'grant' });
+    expect(await evaluateStepUp(req(g), u, 'account.import', T0 + 101_000, { maxAgeMs: 100_000 }))
+      .toMatchObject({ allowed: false, status: 403, body: { error: 'STEP_UP_REQUIRED', scope: 'account-security', reasons: ['step_up_stale'] } });
+    // Without a bound the same grant is still inside its 10-minute lifetime.
+    await expect(evaluateStepUp(req(g), u, 'account.import', T0 + 101_000))
+      .resolves.toEqual({ allowed: true, via: 'grant' });
+    for (const maxAgeMs of [0, -1, Number.NaN, 1.5]) {
+      expect(await evaluateStepUp(req(g), u, 'account.import', T0, { maxAgeMs }))
+        .toMatchObject({ allowed: false, body: { reasons: ['step_up_stale'] } });
+    }
+  });
+
   it('a vanished account is a 401, never a waived proof', async () => {
     findById.mockResolvedValue(null);
     await expect(evaluateStepUp(req(), 'nobody', 'account.delete', T0)).resolves.toEqual({ allowed: false, status: 401, body: { error: 'User not found' } });

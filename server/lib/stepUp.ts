@@ -106,7 +106,9 @@ export type StepUpAction = keyof typeof STEP_UP_ACTIONS;
 export type StepUpReason =
   | 'step_up_missing' | 'step_up_expired' | 'step_up_invalid' | 'step_up_revoked'
   | 'step_up_other_account' | 'step_up_level' | 'step_up_scope_mismatch'
-  | 'moderation_burst' | 'invite_burst' | 'step_up_locked';
+  | 'moderation_burst' | 'invite_burst' | 'step_up_locked'
+  // A valid grant older than a route's own freshness bound (see maxAgeMs).
+  | 'step_up_stale';
 
 export interface StepUpGrantClaims {
   sub: string;
@@ -368,14 +370,32 @@ async function refusal(userId: string, action: StepUpAction, factors: AccountFac
  * whose existing body credential (a password) keeps working beside a grant;
  * everything else uses `requireStepUp`.
  */
-export async function evaluateStepUp(req: Request, userId: string, action: StepUpAction, now = Date.now()): Promise<StepUpDecision> {
+export interface StepUpFreshness {
+  /**
+   * Refuse an otherwise valid grant proven longer ago than this, with reason
+   * `step_up_stale`, so the client asks for ONE fresh proof instead of the
+   * route failing later. For actions that re-check freshness themselves.
+   */
+  maxAgeMs?: number;
+}
+
+export async function evaluateStepUp(
+  req: Request, userId: string, action: StepUpAction, now = Date.now(), freshness: StepUpFreshness = {},
+): Promise<StepUpDecision> {
   const spec: ActionSpec = STEP_UP_ACTIONS[action];
   if (!scopeEnforced(spec.scope)) return { allowed: true, via: 'not_required' };
   const factors = await accountFactors(userId);
   if (!factors) return { allowed: false, status: 401, body: { error: 'User not found' } };
 
   const check = checkStepUpGrant(headerGrant(req), userId, factors, spec.scope, now);
-  if (check.ok) return { allowed: true, via: 'grant' };
+  if (check.ok) {
+    const maxAgeMs = freshness.maxAgeMs;
+    if (maxAgeMs !== undefined && (!Number.isSafeInteger(maxAgeMs) || maxAgeMs <= 0 ||
+        now - check.claims.iat * 1000 > maxAgeMs)) {
+      return refusal(userId, action, factors, ['step_up_stale']);
+    }
+    return { allowed: true, via: 'grant' };
+  }
 
   if (spec.when === 'burst') {
     // Counted only when no valid grant is presented: one proof lets a cleanup
@@ -394,9 +414,11 @@ export async function evaluateStepUp(req: Request, userId: string, action: StepU
  * proof or counted toward a burst. Answers the request itself and returns false
  * when the action may not proceed.
  */
-export async function enforceStepUp(req: Request, res: Response, userId: string, action: StepUpAction): Promise<boolean> {
+export async function enforceStepUp(
+  req: Request, res: Response, userId: string, action: StepUpAction, freshness: StepUpFreshness = {},
+): Promise<boolean> {
   try {
-    const decision = await evaluateStepUp(req, userId, action);
+    const decision = await evaluateStepUp(req, userId, action, Date.now(), freshness);
     if (decision.allowed) return true;
     res.status(decision.status).json(decision.body);
   } catch (err) {

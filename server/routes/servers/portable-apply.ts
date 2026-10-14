@@ -7,6 +7,7 @@ import { limits } from '../../middleware/rateLimit';
 import { Servers } from '../../db/repositories';
 import db from '../../db/loader';
 import { enforceStepUp, STEP_UP_HEADER } from '../../lib/stepUp';
+import { PORTABLE_OWNER_PROOF_ROUTE_MAX_AGE_MS } from '../../lib/portableLockedOwnerStepUp';
 import { readDestinationPinnedSourceRegistry } from '../../lib/portableDestinationTrustConfig';
 import { applyApprovedPortableCommunityMapping } from '../../lib/portableAtomicMappedApply';
 import { validatePortableOwnerMappingRequest } from './portable-approval';
@@ -73,7 +74,8 @@ router.post('/:sid/portable-import/mapped-apply',
     if (target.ownerId !== actor.id) {
       return res.status(403).json({ code: 'PORTABLE_OWNER_REQUIRED' });
     }
-    if (!(await enforceStepUp(req, res, actor.id, 'account.import'))) return;
+    if (!(await enforceStepUp(req, res, actor.id, 'account.import',
+      { maxAgeMs: PORTABLE_OWNER_PROOF_ROUTE_MAX_AGE_MS }))) return;
 
     // Double independent operator switches. Neither is request-controlled.
     if (process.env.BRIDGE_PORTABLE_OWNER_APPROVAL_ENABLED !== 'true' ||
