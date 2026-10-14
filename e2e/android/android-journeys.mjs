@@ -280,6 +280,11 @@ async function seedLongChannel(serverId, userId, token, count) {
 const sh = async (cmd, ms = 120_000) =>
   (await withTimeout(device.shell(cmd), ms, `adb shell "${cmd.slice(0, 80)}"`)).toString().trim();
 
+// Diagnostic probes must be much shorter than normal UI or shell operations.
+// On a wedged adb bridge, collecting four 120 s probes after the 300 s
+// watchdog could itself consume most of the job timeout without a report.
+const DIAGNOSTIC_SHELL_BUDGET_MS = 12_000;
+
 // Failure-only diagnostics: retain the ORIGINAL WebView assertion and capture
 // enough Android state to distinguish a native crash, a stopped Activity, and
 // an adb/DevTools attachment problem. No extra retry or implicit PASS.
@@ -295,7 +300,7 @@ async function webViewAttachEvidence() {
     ['crash', `logcat -d -b crash -t 100 | grep -E 'FATAL EXCEPTION|Process: com.bridge.app|Fatal signal|>>> com.bridge.app|signal [0-9]+ \\(SIG[A-Z]+\\)|Caused by:|at com.bridge.app' | tail -15`],
   ];
   const results = await Promise.all(probes.map(async ([label, command]) => {
-    try { return [label, (await sh(command)).slice(0, 1200)]; }
+    try { return [label, (await sh(command, DIAGNOSTIC_SHELL_BUDGET_MS)).slice(0, 1200)]; }
     catch (err) { return [label, `probe failed: ${String(err?.message ?? err).slice(0, 120)}`]; }
   }));
   return { ...Object.fromEntries(results), exits: await processExits() };
@@ -310,7 +315,7 @@ async function webViewAttachEvidence() {
 async function processExits(limit = 6) {
   if (MODE !== 'android') return null;
   let out;
-  try { out = await sh(`dumpsys activity exit-info ${PKG}`); }
+  try { out = await sh(`dumpsys activity exit-info ${PKG}`, DIAGNOSTIC_SHELL_BUDGET_MS); }
   catch (err) { return `probe failed: ${String(err?.message ?? err).slice(0, 120)}`; }
   return out.split(/ApplicationExitInfo #\d+:/).slice(1, limit + 1).map((rec) => {
     const field = (re) => (re.exec(rec) || [])[1] ?? null;
@@ -387,7 +392,7 @@ async function androidPressureEvidence(label) {
   };
   for (const [key, command] of Object.entries(commands)) {
     try {
-      const value = await sh(command);
+      const value = await sh(command, DIAGNOSTIC_SHELL_BUDGET_MS);
       if (key === 'pid') {
         outputs.pid = /^[0-9 ]{1,120}$/.test(value) ? value : 'unavailable';
       } else if (key === 'loadavg') {
