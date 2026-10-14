@@ -110,6 +110,40 @@ describe('permission persistence boundaries', () => {
     expect(result.overrides.map(entry => entry.targetName)).toEqual(['r2', 'r1', 'Üyeye özel']);
   });
 
+  test('a role that no longer exists grants nothing, even where its rows were left behind', async () => {
+    // Shape of data written before role deletion cleaned up after itself: the
+    // member still lists the deleted role and the private channel still
+    // carries its ALLOW, while the role row itself is gone.
+    mockMembers.findOne.mockResolvedValue({ roles: ['deleted-role'] });
+    mockRoles.findByIdsInServer.mockResolvedValue([]);
+    mockChannelPermissions.findByChannel.mockResolvedValue([
+      { roleId: '__everyone__', allow: 0, deny: PERMS.VIEW_CHANNELS },
+      { roleId: 'deleted-role', allow: PERMS.VIEW_CHANNELS | PERMS.MANAGE_MESSAGES, deny: 0 },
+    ]);
+    mockChannels.findOverridesByChannel.mockResolvedValue([
+      { targetType: 'role', targetId: 'deleted-role', allow: PERMS.SEND_MESSAGES, deny: 0 },
+    ]);
+
+    expect(await canViewChannel('u1', 's1', 'c1')).toBe(false);
+    const result = await resolvePermissionResolution('u1', 's1', 'c1');
+    // Nothing from the deleted role's ALLOW rows, and only @everyone applied.
+    expect(result.permissions).toBe(0);
+    expect(result.overrides.map(entry => entry.targetId)).toEqual(['__everyone__']);
+    // The base keeps its existing fail-closed meaning (see
+    // serverMePermissionsCanonical): listed roles that no longer exist add nothing.
+    expect(await resolvePermissionResolution('u1', 's1')).toMatchObject({ permissions: 0, baseSource: 'roles', roles: [] });
+  });
+
+  test('a live role still grants its channel ALLOW next to a deleted one', async () => {
+    mockMembers.findOne.mockResolvedValue({ roles: ['deleted-role', 'staff'] });
+    mockRoles.findByIdsInServer.mockResolvedValue([{ _id: 'staff', serverId: 's1', name: 'Staff', permissions: 0 }]);
+    mockChannelPermissions.findByChannel.mockResolvedValue([
+      { roleId: '__everyone__', allow: 0, deny: PERMS.VIEW_CHANNELS },
+      { roleId: 'staff', allow: PERMS.VIEW_CHANNELS, deny: 0 },
+    ]);
+    expect(await canViewChannel('u1', 's1', 'c1')).toBe(true);
+  });
+
   test('role-only preview returns null for a foreign role and supports default channel arguments', async () => {
     expect(await resolveRolePermissionResolution('missing', 's1')).toBeNull();
 

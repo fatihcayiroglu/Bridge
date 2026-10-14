@@ -12,6 +12,7 @@ const db      = require('../db/loader');
 const jwt     = require('jsonwebtoken');
 import { authMiddleware } from '../middleware/auth';
 import rolesRouter from '../routes/roles';
+import { canViewChannel, PERMS } from '../lib/permissions';
 
 function buildApp() {
   const app = express();
@@ -136,6 +137,43 @@ describe('Roles Routes', () => {
         .delete(`/api/servers/${serverId}/roles/${roleId}`)
         .set('Authorization', `Bearer ${memberToken}`);
       expect(res.status).toBe(403);
+    });
+
+    it('revokes the private channel the deleted role granted and removes it from every member', async () => {
+      const channelId = uuidv4();
+      const staffRole = uuidv4();
+      const otherRole = uuidv4();
+      await db.channels.insert({ _id: channelId, serverId, name: 'staff', type: 'text' });
+      await db.roles.insert({ _id: staffRole, serverId, name: 'Staff', permissions: 0, position: 1, createdAt: Date.now() });
+      await db.roles.insert({ _id: otherRole, serverId, name: 'Other', permissions: 0, position: 2, createdAt: Date.now() });
+      await db.members.update({ userId: memberId, serverId }, { $set: { roles: [staffRole, otherRole] } });
+      // How the channel permission routes persist a private channel: @everyone
+      // denied, one role allowed.
+      await db.channelPermissions.insert({ _id: uuidv4(), channelId, roleId: '__everyone__', serverId, allow: 0, deny: PERMS.VIEW_CHANNELS, createdAt: 1 });
+      await db.channelPermissions.insert({ _id: uuidv4(), channelId, roleId: staffRole, serverId, allow: PERMS.VIEW_CHANNELS, deny: 0, createdAt: 1 });
+      expect(await canViewChannel(memberId, serverId, channelId)).toBe(true);
+
+      const res = await request(app)
+        .delete(`/api/servers/${serverId}/roles/${staffRole}`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(await canViewChannel(memberId, serverId, channelId)).toBe(false);
+      expect((await db.members.findOne({ userId: memberId, serverId })).roles).toEqual([otherRole]);
+      const rows = await db.channelPermissions.find({ channelId });
+      expect(rows.map((row: { roleId: string }) => row.roleId)).toEqual(['__everyone__']);
+    });
+
+    it('answers 404 and changes nothing for a role of another server', async () => {
+      const foreignServer = uuidv4();
+      const foreignRole = uuidv4();
+      await db.servers.insert({ _id: foreignServer, name: 'Other', ownerId: memberId });
+      await db.roles.insert({ _id: foreignRole, serverId: foreignServer, name: 'Foreign', permissions: 0, createdAt: Date.now() });
+      const res = await request(app)
+        .delete(`/api/servers/${serverId}/roles/${foreignRole}`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+      expect(res.status).toBe(404);
+      expect(await db.roles.findOne({ _id: foreignRole })).not.toBeNull();
     });
   });
 

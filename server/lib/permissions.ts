@@ -301,20 +301,27 @@ export async function resolvePermissionResolution(
   );
   if (!membership) return emptyResolution('not_member');
 
-  const roleIds = normalizeRoleIds((membership as { roles?: unknown }).roles);
-  let basePermissions = DEFAULT_PERMISSIONS;
+  const memberRoleIds = normalizeRoleIds((membership as { roles?: unknown }).roles);
   let roles: RoleRow[] = [];
-  if (roleIds.length) {
+  if (memberRoleIds.length) {
     const persistedRoles = await memoizeInRequest(
-      `perm:roles:${serverId}:${roleIds.join(',')}`,
-      () => Roles.findByIdsInServer(roleIds, serverId) as Promise<Array<RoleRow & { permissions: unknown }>>,
+      `perm:roles:${serverId}:${memberRoleIds.join(',')}`,
+      () => Roles.findByIdsInServer(memberRoleIds, serverId) as Promise<Array<RoleRow & { permissions: unknown }>>,
     );
     roles = persistedRoles.map((role) => ({
       ...role,
       permissions: parsePermissionMask(role.permissions, 'persisted role permissions'),
     }));
-    basePermissions = roles.reduce((permissions, role) => permissions | role.permissions, 0);
   }
+  // Channel overrides are matched ONLY against roles that still exist in THIS
+  // server. A deleted role's id can linger in `members.roles` and in channel
+  // permission rows; matching against those raw ids let a deleted role keep
+  // granting the channels it allowed. The base is unchanged: a member who lists
+  // roles keeps the OR of the live ones (0, fail-closed, when none survive).
+  const roleIds = roles.map((role) => String(role._id));
+  const basePermissions = memberRoleIds.length
+    ? roles.reduce((permissions, role) => permissions | role.permissions, 0)
+    : DEFAULT_PERMISSIONS;
 
   return resolveRoleSetPermissionResolution({
     serverId,
@@ -322,7 +329,7 @@ export async function resolvePermissionResolution(
     roleIds,
     roles,
     basePermissions,
-    baseSource: roleIds.length ? 'roles' : 'server_default',
+    baseSource: memberRoleIds.length ? 'roles' : 'server_default',
     userId,
   });
 }
