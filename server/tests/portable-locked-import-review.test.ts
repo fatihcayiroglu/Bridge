@@ -14,7 +14,7 @@ const AT = new Date(NOW - 60_000).toISOString();
 function fixture(options: {
   ownerMissing?: boolean; isolation?: string; readonly?: string;
   targetRoleMask?: number; grantAllow?: number; legacy?: boolean;
-  movedTarget?: boolean;
+  movedTarget?: boolean; repositoryNsfw?: boolean;
 } = {}) {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const publicKeyPem = publicKey.export({ format: 'pem', type: 'spki' }).toString();
@@ -50,9 +50,11 @@ function fixture(options: {
     color: '#99aab5', position: 0, permissions: options.targetRoleMask ?? 1 }];
   const channels = [{ _id: 'tch', serverId: SID, name: 'welcome', type: 'text',
     topic: options.movedTarget ? 'edited' : '', categoryId: 'tc', category: 'GENERAL',
-    order: '0', nsfw: 0, slowmode: 0 }];
+    order: '0', nsfw: options.repositoryNsfw ? 1 : 0, slowmode: 0 }];
+  // A real route digests repository rows: numeric order, INTEGER nsfw.
   const initialDestination = { serverId: SID, categories, roles,
-    channels: channels.map(c => ({ ...c, order: 0, nsfw: false })) };
+    channels: channels.map(c => ({ ...c, order: 0,
+      nsfw: options.repositoryNsfw ? 1 : false })) };
   const mapping = {
     targetServerId: SID,
     structureDigest: structure.integrity.digest,
@@ -103,6 +105,16 @@ describe('P7 locked signed source + destination grant review', () => {
     expect(f.queries.some(x => x.includes('FOR UPDATE'))).toBe(true);
     expect(result).not.toHaveProperty('approvalToken');
     expect(JSON.stringify(result)).not.toContain(f.operatorRegistryJson);
+  });
+
+  // Found by the two-installation TLS round trip: once a destination held an
+  // NSFW channel (INTEGER 1), the route-side digest said nsfw:false while the
+  // transaction said true, so every later owner approval failed closed.
+  it('agrees with the route-side digest for an NSFW channel stored as INTEGER 1', async () => {
+    const f = fixture({ repositoryNsfw: true });
+    const result = await inspectLockedPortableImportReview(f);
+    expect(result.targetTopologyDigest).toBe(f.mapping.expectedTargetDigest);
+    expect(f.mapping.expectedTargetDigest).not.toBe(fixture().mapping.expectedTargetDigest);
   });
 
   it.each([

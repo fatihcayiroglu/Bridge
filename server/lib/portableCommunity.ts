@@ -24,6 +24,16 @@ function text(value: unknown, label: string, max: number, fallback?: string): st
   return value;
 }
 
+// channels.nsfw is persisted as PostgreSQL INTEGER 0/1 and repository rows
+// carry it as a number. `=== true` exported every NSFW channel as `false`,
+// and made route-side topology digests disagree with the transaction-side
+// (normalized) digest for any community holding an NSFW channel.
+function flag(value: unknown, label: string): boolean {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0 || value === null || value === undefined) return false;
+  throw new TypeError(`Invalid ${label}`);
+}
+
 function integer(value: unknown, label: string): number {
   const n = value === undefined || value === null ? 0 : value;
   if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 0) {
@@ -91,7 +101,7 @@ export function buildPortableCommunityStructure(
       categorySourceId,
       legacyCategoryName: text(channel.category, 'legacy category', MAX_NAME_LENGTH, ''),
       order: integer(channel.order ?? channel.position, 'channel order'),
-      nsfw: channel.nsfw === true,
+      nsfw: flag(channel.nsfw, 'channel nsfw'),
       slowmode: integer(channel.slowmode, 'slowmode'),
     };
   }), 'channel').sort((a, b) => a.order - b.order || a.sourceId.localeCompare(b.sourceId));
