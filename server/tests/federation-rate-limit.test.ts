@@ -31,6 +31,7 @@ process.env.NODE_ENV = 'test';
 let redisUp = true;
 let clientNull = false;
 let throwOnExec = false;
+let peerOnlyFailure: 'null' | 'throw' | null = null;
 const zsets = new Map<string, number>();
 
 jest.mock('../lib/redisAdapter', () => ({
@@ -39,6 +40,10 @@ jest.mock('../lib/redisAdapter', () => ({
     slidingWindowCount: async (key: string) => {
       if (throwOnExec) throw new Error('redis down');
       if (clientNull) return null;
+      if (key.startsWith('ap:inbox:peer:')) {
+        if (peerOnlyFailure === 'null') return null;
+        if (peerOnlyFailure === 'throw') throw new Error('redis peer counter unavailable');
+      }
       const count = (zsets.get(key) ?? 0) + 1;
       zsets.set(key, count);
       return count;
@@ -81,6 +86,7 @@ beforeEach(() => {
   redisUp = true;
   clientNull = false;
   throwOnExec = false;
+  peerOnlyFailure = null;
   zsets.clear();
   _resetFederationRateLimitFallbackForTest();
 });
@@ -395,6 +401,35 @@ describe('configured Redis remains an authoritative federation rate-limit depend
       expect(zsets.has('ap:inbox:global')).toBe(true);
       expect(zsets.has('ap:inbox:burst:legitimate.example')).toBe(true);
       expect(zsets.has('ap:inbox:peer:legitimate.example')).toBe(true);
+    });
+  });
+
+
+  it('fails closed when burst passes but the later peer counter returns null', async () => {
+    await runWithRedisConfigured(async middleware => {
+      peerOnlyFailure = 'null';
+      const res = makeRes(), next = jest.fn();
+      await middleware.federationInboxRateLimit(
+        makeReq({ headers: { signature: 'keyId="https://peer-null.example/key#main"' } }),
+        res as never, next,
+      );
+      assertClosed(res, next);
+      expect(zsets.get('ap:inbox:burst:peer-null.example')).toBe(1);
+      expect(zsets.has('ap:inbox:peer:peer-null.example')).toBe(false);
+    });
+  });
+
+  it('fails closed when burst passes but the later peer counter throws', async () => {
+    await runWithRedisConfigured(async middleware => {
+      peerOnlyFailure = 'throw';
+      const res = makeRes(), next = jest.fn();
+      await middleware.federationInboxRateLimit(
+        makeReq({ headers: { signature: 'keyId="https://peer-throw.example/key#main"' } }),
+        res as never, next,
+      );
+      assertClosed(res, next);
+      expect(zsets.get('ap:inbox:burst:peer-throw.example')).toBe(1);
+      expect(zsets.has('ap:inbox:peer:peer-throw.example')).toBe(false);
     });
   });
 });
