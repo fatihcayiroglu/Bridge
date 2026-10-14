@@ -477,3 +477,37 @@ earlier failure fixed. Keep #209 open until all of the following hold:
 - a localised main-thread cost, ideally from a native trace;
 - a physical-device run, which is currently **BLOCKED — physical device
   required**.
+
+**First CS01 run (PR #238, [run 38542004949](https://github.com/fatihcayiroglu/Bridge/actions/runs/38542004949)): FAIL, and the harness made it worse.**
+
+- **Cold starts 1–4 reached the UI.** The load average was 19–23.
+- **Cold start 5 lost the app.** About 12 s after `am start -W`, `pidof`
+  was empty and the launcher was the top activity. No Java crash header was
+  logged. The WebView attach then failed with "Target page ... has been
+  closed". ANR01 counted **zero** ANRs for the whole run, so this was not
+  the 5 s FocusEvent ANR. It was a process disappearing during a cold
+  launch.
+- **One failure took the rest of the run with it.** The run recorded
+  30 FAIL, 6 PASS and 1 MEASURED. A02 (login) reused the closed page and
+  failed, so every later check that needs a signed-in session failed too.
+  L01 additionally found its process dead after 20 s in the background,
+  with no recorded reason. Apart from CS01 and that L01 process death, the
+  run is not evidence of independent product failures.
+
+**Harness changes after that run** (CS01 stays FAIL when a launch fails;
+no retries and no relaxed timeouts):
+
+- **Exit reason.** A failed cold start reports the `am start` status and
+  launch state, the PID it launched, and the OS's own exit record for that
+  process (`dumpsys activity exit-info`: low-memory kill, native or Java
+  crash, signal, ANR or user stop). Only allow-listed numeric and enum
+  fields are kept, never the free-text description or trace.
+- **Native crashes.** The crash probe now also matches native tombstone
+  headers (`>>> pkg <<<`, `signal N (SIGxxx)`), which the Java patterns
+  missed.
+- **L01 process death.** When L01 finds the process gone, it reports the
+  same exit record.
+- **No cascade.** After a failed cold start, the app is launched once more,
+  exactly as A01 does. The next, independent check therefore does not
+  inherit a dead WebView. The restore is recorded in the evidence, and a
+  failed restore is reported.

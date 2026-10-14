@@ -248,13 +248,44 @@ async function webViewAttachEvidence() {
     ['process', `dumpsys activity processes | grep -E 'ProcessRecord|com.bridge.app' | head -10`],
     // Restrict logcat to native crash headers/stack frames; do not print arbitrary
     // app log lines, HTTP headers, user messages or credential-bearing fields.
-    ['crash', `logcat -d -b crash -t 100 | grep -E 'FATAL EXCEPTION|Process: com.bridge.app|Fatal signal|Caused by:|at com.bridge.app' | tail -15`],
+    // A native (tombstone) crash names the process as ">>> pkg <<<" and the
+    // signal as "signal N (SIGxxx)"; the Java patterns alone missed it.
+    ['crash', `logcat -d -b crash -t 100 | grep -E 'FATAL EXCEPTION|Process: com.bridge.app|Fatal signal|>>> com.bridge.app|signal [0-9]+ \\(SIG[A-Z]+\\)|Caused by:|at com.bridge.app' | tail -15`],
   ];
   const results = await Promise.all(probes.map(async ([label, command]) => {
     try { return [label, (await sh(command)).slice(0, 1200)]; }
     catch (err) { return [label, `probe failed: ${String(err?.message ?? err).slice(0, 120)}`]; }
   }));
-  return Object.fromEntries(results);
+  return { ...Object.fromEntries(results), exits: await processExits() };
+}
+
+/**
+ * Why the OS ended this package's recent processes (ApplicationExitInfo, API 30+):
+ * low-memory kill, native or Java crash, signal, ANR, or a user/force stop.
+ * Only allow-listed numeric/enum fields are kept: never the free-text
+ * description or trace, which can carry app data.
+ */
+async function processExits(limit = 6) {
+  if (MODE !== 'android') return null;
+  let out;
+  try { out = await sh(`dumpsys activity exit-info ${PKG}`); }
+  catch (err) { return `probe failed: ${String(err?.message ?? err).slice(0, 120)}`; }
+  return out.split(/ApplicationExitInfo #\d+:/).slice(1, limit + 1).map((rec) => {
+    const field = (re) => (re.exec(rec) || [])[1] ?? null;
+    return {
+      at: field(/timestamp=(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?)/),
+      pid: Number(field(/\bpid=(\d+)/)) || null,
+      process: field(/process=([A-Za-z0-9_.:]+)/),
+      reason: field(/reason=(\d+ \([A-Z_ ]+\))/),
+      subreason: field(/subreason=(\d+ \([A-Z_ ]+\))/),
+      status: Number(field(/status=(-?\d+)/)),
+      importance: Number(field(/importance=(\d+)/)),
+    };
+  });
+}
+async function exitOf(pidValue) {
+  const exits = await processExits(10);
+  return Array.isArray(exits) ? exits.find((e) => String(e.pid) === String(pidValue)) ?? null : exits;
 }
 
 async function attachPage({ timeout = 60_000 } = {}) {
@@ -271,6 +302,25 @@ async function attachPage({ timeout = 60_000 } = {}) {
   }
 }
 async function pid() { return MODE === 'dryrun' ? 'dryrun' : (await sh(`pidof ${PKG}`)) || null; }
+
+/**
+ * After a check failed inside a cold start, start the app once more exactly as
+ * A01 does, so the next, independent check does not inherit a dead WebView
+ * (one failed CS01 launch once turned 29 later checks red). This is not a
+ * retry: the failed check stays FAIL, and a restore that fails is recorded.
+ */
+async function restoreLaunch(label) {
+  try {
+    await platform.coldLaunch();
+    await attachPage();
+    await until(async () => (await authVisible()) || (await appVisible()), { timeout: 45_000, message: `UI after restoring from ${label}` });
+    (facts.restores ??= []).push({ after: label, ok: true });
+    log(`restored a freshly launched app after ${label} (that check stays FAIL)`);
+  } catch (err) {
+    (facts.restores ??= []).push({ after: label, ok: false, error: String(err?.message ?? err).slice(0, 400) });
+    log(`restore after ${label} failed: ${String(err?.message ?? err).slice(0, 400)}`);
+  }
+}
 
 /**
  * A bounded, no-PII OS pressure snapshot. L01/ANR01 keep their original
@@ -332,7 +382,13 @@ const platform = {
     if (MODE === 'dryrun') { await page.goto(API); return { totalTimeMs: null }; }
     await sh(`am force-stop ${PKG}`);
     const out = await sh(`am start -W -n ${ACTIVITY} ${extra}`);
-    return { totalTimeMs: Number((/TotalTime:\s*(\d+)/.exec(out) || [])[1]) || null, raw: out.split('\n').slice(-4).join(' | ') };
+    return {
+      totalTimeMs: Number((/TotalTime:\s*(\d+)/.exec(out) || [])[1]) || null,
+      // ActivityManager's own verdict on the launch (e.g. "ok"/"timeout", "COLD").
+      status: (/^Status:\s*(\w+)/m.exec(out) || [])[1] ?? null,
+      launchState: (/LaunchState:\s*(\w+)/.exec(out) || [])[1] ?? null,
+      raw: out.split('\n').slice(-4).join(' | '),
+    };
   },
   async home() { if (MODE === 'dryrun') return; await sh('input keyevent KEYCODE_HOME'); },
   async foreground() {
@@ -616,9 +672,22 @@ async function main() {
     const launches = [];
     for (let i = 1; i <= COLD_STARTS; i++) {
       const pressure = await androidPressureEvidence(`CS01-cold-${i}`);
-      const launch = await platform.coldLaunch();
-      await attachPage();
-      await until(async () => (await authVisible()) || (await appVisible()), { timeout: 45_000, message: `UI after cold start ${i}` });
+      let launch = {};
+      let launchedPid = null;
+      try {
+        launch = await platform.coldLaunch();
+        launchedPid = await pid();
+        await attachPage();
+        await until(async () => (await authVisible()) || (await appVisible()), { timeout: 45_000, message: `UI after cold start ${i}` });
+      } catch (err) {
+        // Name the launch that failed and why the OS ended its process, if it did.
+        facts.coldStartStress = launches;
+        const exit = launchedPid ? await exitOf(launchedPid) : await processExits(2);
+        await restoreLaunch(`CS01 cold start ${i}`);
+        throw new Error(`cold start ${i}/${COLD_STARTS} (am start: ${launch.status ?? 'no status'}/${launch.launchState ?? 'no launch state'}; ` +
+          `pid after launch ${launchedPid ?? 'none'}; OS exit record ${JSON.stringify(exit)}): ${err?.message ?? err}`, { cause: err });
+      }
+      const amStatus = `${launch.status ?? 'no status'}/${launch.launchState ?? 'no launch state'}`;
       const appPid = await pid();
       let stalls = [];
       if (/^[0-9]{1,7}$/.test(appPid ?? '')) {
@@ -627,6 +696,7 @@ async function main() {
       }
       launches.push({
         totalTimeMs: launch.totalTimeMs,
+        amStatus,
         skippedFrameEvents: stalls.length,
         maxSkippedFrames: stalls.length ? Math.max(...stalls) : 0,
         load1: Array.isArray(pressure?.kernelLoadavg) ? pressure.kernelLoadavg[0] : null,
@@ -708,7 +778,7 @@ async function main() {
     const pidAfter = await pid();
     log('L01 resume context', JSON.stringify({ expectedChannel: channelId, actualChannel: await activeChannel(), pidStable: pidBefore === pidAfter, launchState: fg.launchState }));
     await androidPressureEvidence('after-L01');
-    assert(pidBefore === pidAfter, 'L01 process died; cannot claim hot resume');
+    if (pidBefore !== pidAfter) throw new Error(`L01 process died (OS exit record ${JSON.stringify(await exitOf(pidBefore))}); cannot claim hot resume`);
     await assertVisibleAfterResume(needle, 'L01', 30_000);
     return { resumeTotalMs: fg.totalTimeMs, launchState: fg.launchState, visibleAfterMs: Date.now() - t0, pidStable: true, channelPreserved: true };
   });
