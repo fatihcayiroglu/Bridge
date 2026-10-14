@@ -49,8 +49,12 @@ fs.writeFileSync(envFile, [
   'ALLOWED_ORIGINS=http://localhost:3001',
   // A 10 000-port UDP publish range makes `docker compose up` take minutes on a
   // CI runner; the SFU range itself is not under test here.
-  'MEDIASOUP_RTC_MIN_PORT=40000',
-  'MEDIASOUP_RTC_MAX_PORT=40009',
+  // Use a small non-ephemeral host UDP range in this CI harness. Linux's
+  // common ephemeral range (32768–60999) can allocate 40000 between compose
+  // stop and start during restore, causing a false deployment failure.
+  // Production defaults in docker-compose.yml remain unchanged.
+  'MEDIASOUP_RTC_MIN_PORT=20000',
+  'MEDIASOUP_RTC_MAX_PORT=20009',
   '',
 ].join('\n'));
 
