@@ -383,3 +383,169 @@ describe('profile asset cleanup', () => {
     expect(hasLiveUploadReference).not.toHaveBeenCalled();
   });
 });
+
+// ── Refresh tokens that must no longer mint access ─────────────────────────
+// The route answers each refusal with a distinct, machine-readable reason, and
+// a refused token is gone afterwards: it can never be retried into a session.
+describe('refresh tokens die with expiry and with a stale token generation', () => {
+  const refreshCookieOf = (res: { headers: Record<string, unknown> }) => {
+    const cookie = ([] as string[]).concat((res.headers['set-cookie'] as string[] | undefined) ?? [])
+      .find((c) => c.startsWith('bridge_refresh='));
+    return decodeURIComponent(String(cookie).split(';')[0]!.slice('bridge_refresh='.length));
+  };
+  /** Registration and the later sign-in each open their own refresh session. */
+  async function signIn(username: string) {
+    const registered = await register(username);
+    const res = await request(app).post('/api/login').send({ username, password: 'parola-1234' });
+    const user = await requireDoc(_db.users, { username });
+    return { registrationToken: refreshCookieOf(registered), refreshToken: refreshCookieOf(res), userId: String(user._id) };
+  }
+  const refresh = (refreshToken: string) => request(app).post('/api/refresh').send({ refreshToken });
+  const newRefreshCookie = (res: { headers: Record<string, unknown> }) =>
+    ([] as string[]).concat((res.headers['set-cookie'] as string[] | undefined) ?? [])
+      .some((c) => /^bridge_refresh=[^;]+/.test(c));
+
+  it('an expired refresh token is refused as expired and is then gone', async () => {
+    const { refreshToken, userId } = await signIn(`expired${++seq}`);
+    expect(refreshToken.length).toBeGreaterThan(32);
+    await _db.refreshTokens.update({ userId }, { $set: { expiresAt: Date.now() - 1_000 } }, { multi: true });
+
+    const first = await refresh(refreshToken);
+    expect(first.status).toBe(401);
+    expect(first.body).toEqual({ error: 'Refresh token expired. Please log in again.', reason: 'expired' });
+    expect(first.body.token).toBeUndefined();
+    expect(newRefreshCookie(first)).toBe(false);
+
+    const retry = await refresh(refreshToken);
+    expect(retry.status).toBe(401);
+    expect(retry.body.reason).toBe('not_found');
+  });
+
+  it('every refresh session from an older token generation is refused as revoked and removed', async () => {
+    // Another path (an account-security action, another node) bumped the
+    // generation without deleting these rows: a surviving row is not enough.
+    const { registrationToken, refreshToken, userId } = await signIn(`stale${++seq}`);
+    expect(registrationToken).not.toBe(refreshToken);
+    expect(await _db.refreshTokens.find({ userId })).toHaveLength(2);
+    const user = await requireDoc(_db.users, { _id: userId });
+    await _db.users.update({ _id: userId }, { $set: { tokenVersion: Number(user.tokenVersion ?? 0) + 1 } });
+
+    for (const token of [refreshToken, registrationToken]) {
+      const res = await refresh(token);
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual({ error: 'Session revoked. Please log in again.', reason: 'revoked' });
+      expect(newRefreshCookie(res)).toBe(false);
+    }
+    expect(await _db.refreshTokens.find({ userId })).toEqual([]);
+    expect((await refresh(refreshToken)).body.reason).toBe('not_found');
+  });
+
+  it('control: the same flow with an unchanged generation rotates normally', async () => {
+    const { refreshToken } = await signIn(`fresh${++seq}`);
+    const res = await refresh(refreshToken);
+    expect(res.status).toBe(200);
+    expect(typeof res.body.token).toBe('string');
+    expect(newRefreshCookie(res)).toBe(true);
+  });
+});
+
+// ── P7 B3: an image whose metadata cannot be removed is never stored ───────
+// The file passes the magic-byte check (it starts like a PNG) but its chunk
+// structure cannot be walked, so location/device metadata could not be
+// proven absent. The upload is refused, the temporary file deleted and the
+// profile left exactly as it was.
+describe('profile image uploads refuse what metadata stripping cannot clean', () => {
+  let token = '';
+  let userId = '';
+  const CORRUPT_PNG = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from([0x00, 0x00, 0x00, 0x0d]), Buffer.from('IHDR'), Buffer.alloc(3, 0x01), // truncated chunk
+  ]);
+  const filesIn = (dir: string) => (fs.existsSync(path.join(ROOT, dir)) ? fs.readdirSync(path.join(ROOT, dir)) : []);
+
+  beforeEach(async () => {
+    if (!token) {
+      const name = `imgowner${++seq}`;
+      await register(name);
+      token = await loginToken(name);
+      userId = String((await requireDoc(_db.users, { username: name }))._id);
+    }
+  });
+
+  it.each([
+    ['avatar', '/api/me/avatar', 'avatars', 'avatarUrl'],
+    ['banner', '/api/me/banner', 'banners', 'bannerUrl'],
+  ])('a %s that cannot be walked is refused with 422 and leaves nothing behind', async (field, url, dir, column) => {
+    const before = filesIn(dir);
+    const profileBefore = (await requireDoc(_db.users, { _id: userId }))[column];
+    const res = await request(app).post(url)
+      .set('Authorization', `Bearer ${token}`)
+      .attach(field, CORRUPT_PNG, { filename: 'photo.png', contentType: 'image/png' });
+
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('IMAGE_UNPARSEABLE');
+    expect(res.body[column]).toBeUndefined();
+    // The temporary upload is removed asynchronously; give the unlink a tick.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(filesIn(dir)).toEqual(before);
+    expect((await requireDoc(_db.users, { _id: userId }))[column]).toEqual(profileBefore);
+  });
+
+  it('control: a real image of the same type is accepted as a banner', async () => {
+    const res = await request(app).post('/api/me/banner')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('banner', TINY_PNG, { filename: 'banner.png', contentType: 'image/png' });
+    expect(res.status).toBe(200);
+    expect(res.body.bannerUrl).toMatch(/^\/uploads\/banners\//);
+  });
+
+  it('a banner request without a file is refused before anything is written', async () => {
+    const before = await requireDoc(_db.users, { _id: userId });
+    const res = await request(app).post('/api/me/banner').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('No file uploaded');
+    expect((await requireDoc(_db.users, { _id: userId })).bannerUrl).toEqual(before.bannerUrl);
+  });
+});
+
+// ── Push copy language: only a locale the server has copy for is stored ────
+describe('profile locale updates keep only languages the server can speak', () => {
+  let token = '';
+  let userId = '';
+  beforeEach(async () => {
+    if (!token) {
+      const name = `localeowner${++seq}`;
+      await register(name);
+      token = await loginToken(name);
+      userId = String((await requireDoc(_db.users, { username: name }))._id);
+    }
+  });
+  const patchLocale = (locale: unknown) =>
+    request(app).patch('/api/me').set('Authorization', `Bearer ${token}`).send({ locale });
+  const storedLocale = async () => (await requireDoc(_db.users, { _id: userId })).locale;
+
+  it('a regional tag of a supported language is stored as that language', async () => {
+    expect((await patchLocale('EN-us')).status).toBe(200);
+    expect(await storedLocale()).toBe('en');
+  });
+
+  it('an unsupported language leaves the stored locale alone instead of falling back to the default', async () => {
+    await patchLocale('en');
+    // Nothing acceptable was sent, so nothing is written (not the default 'tr').
+    const res = await patchLocale('xx-YY');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Nothing to update');
+    expect(await storedLocale()).toBe('en');
+  });
+
+  it('a non-string locale is ignored, also next to a valid field', async () => {
+    await patchLocale('en');
+    expect((await patchLocale(42)).status).toBe(400);
+    expect(await storedLocale()).toBe('en');
+    // Alongside a valid field, the bad locale is dropped and the rest applies.
+    const mixed = await request(app).patch('/api/me').set('Authorization', `Bearer ${token}`).send({ locale: 'xx', bio: 'hello' });
+    expect(mixed.status).toBe(200);
+    expect(await storedLocale()).toBe('en');
+    expect((await requireDoc(_db.users, { _id: userId })).bio).toBe('hello');
+  });
+});
