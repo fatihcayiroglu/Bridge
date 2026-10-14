@@ -434,3 +434,46 @@ Post-merge `main` commit `7ab895a`, [Android run 38155876130](https://github.com
 [Issue #184](https://github.com/fatihcayiroglu/Bridge/issues/184) tracks the incident. [Draft PR #185](https://github.com/fatihcayiroglu/Bridge/pull/185) changes the native back path for Settings: call the existing `.settings-close` user-facing button, which directly invokes Svelte `onClose`, rather than synthesize two Escape events across a focus trap. For other dialogs, one Escape fallback remains. Native plugin-mock tests exercise the actual bridge listener. Its compiled JS and TypeScript must stay byte-identical under `mobile/tests/capacitor-bridge-freshness.test.js`.
 
 **DO NOT CLOSE #184** before exact-head K01 emulator pass and a successful post-merge main Android run. No timeout relaxation or skip. Physical Android hardware Back remains unverified.
+
+### #209 cold-start ANR margin — 14 October 2026 (investigation, not closure)
+
+**What is known.** In the failing #206 run, the app's process started at
+15:41:01. The main thread then logged `Choreographer: Skipped 123 frames`,
+which is about 2 s of stall, right after Capacitor loaded `https://localhost`.
+A **5 s FocusEvent input-dispatch ANR** followed at 15:41:11, and the OS
+killed the process. That kill is why L01 then saw a COLD launch with a new
+PID. The app's own native layer is minimal: `MainActivity` only registers
+one plugin before `BridgeActivity.onCreate`. That points the stall at
+WebView/Capacitor initialisation on a starved emulator. It does not yet
+point to a specific application call.
+
+**Emulator load alone is not the cause.** The green nightly `main` run
+[38539082294](https://github.com/fatihcayiroglu/Bridge/actions/runs/38539082294)
+recorded a kernel 1-minute load average of **29.5** before L01. That is
+higher than the **21.6** in the failing run. The same run measured an
+8.65 s cold launch (A01), yet had zero ANRs and a HOT L01. Kernel PSI is
+`unavailable` on this emulator image, so the load average is the only
+pressure signal. A high load is consistent with the failure but does not
+determine it. The likely model is a narrow margin: a multi-second
+main-thread stall during cold start, measured against Android's 5 s focus
+timeout.
+
+**New repeatable measurement (CS01).** The journey now performs
+`ANDROID_COLD_STARTS` (default 5, bounded 1–20) consecutive cold starts,
+right after A01.
+
+- **PASS requires** that the UI appears every time and that the OS reports
+  **zero** new package ANRs.
+- **Recorded per launch:** `am start -W` TotalTime; the number and maximum
+  size of that PID's `Choreographer` skipped-frame events; and the load
+  average.
+- **Logging limits:** only the numbers are kept, never raw log lines, and
+  logcat is not cleared, so ANR01 still sees everything.
+
+This quantifies the margin across many CI runs. It does **not** make the
+earlier failure fixed. Keep #209 open until all of the following hold:
+
+- repeated CS01/L01/ANR01 evidence;
+- a localised main-thread cost, ideally from a native trace;
+- a physical-device run, which is currently **BLOCKED — physical device
+  required**.

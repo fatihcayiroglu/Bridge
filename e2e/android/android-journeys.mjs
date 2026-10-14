@@ -211,6 +211,8 @@ async function channelHas(token, channelId, needle) {
 
 // ── Long-channel seeding (direct SQL, the same shape the P3 measurement used) ─────────────
 const LONG_CHANNEL_MESSAGES = Number(process.env.ANDROID_LONG_CHANNEL_MESSAGES || 2000);
+// #209 cold-start stress: bounded so a misconfiguration cannot stall the job.
+const COLD_STARTS = Math.min(20, Math.max(1, Number(process.env.ANDROID_COLD_STARTS || 5)));
 async function seedLongChannel(serverId, userId, token, count) {
   if (!process.env.DATABASE_URL) return null;
   const { createRequire } = await import('node:module');
@@ -597,6 +599,52 @@ async function main() {
     const splashGone = await page.evaluate(() => !document.getElementById('native-splash') || document.getElementById('native-splash').classList.contains('hidden'));
     assert(splashGone, 'native splash still covering the app');
     return { coldLaunchTotalMs: launch.totalTimeMs, origin: await page.evaluate(() => location.origin), api: await page.evaluate(() => globalThis.BRIDGE_API ?? null) };
+  });
+
+  // #209: the original failure was a 5 s FocusEvent ANR during a cold start
+  // on a CPU-starved emulator (later killed by the OS, which made L01 COLD).
+  // One green launch says little about that margin, so repeat the cold start
+  // and record each launch's own main-thread stalls. PASS requires the UI
+  // every time and ZERO package ANRs; timings and stalls are MEASURED facts.
+  // logcat is never cleared here (ANR01 still reads the whole buffer) and
+  // only frame counts, never raw log lines, are kept.
+  await check('CS01', `${COLD_STARTS} consecutive cold starts reach the UI without any OS ANR`, async () => {
+    if (MODE !== 'android') throw new Skip('cold-start stress needs a real Android runtime');
+    const anrs = async () => (await sh("logcat -d -v brief -s ActivityManager:E | grep -cF 'ANR in com.bridge.app.debug' || true"))
+      .split('\n').map(Number).find(Number.isFinite) ?? 0;
+    const anrBefore = await anrs();
+    const launches = [];
+    for (let i = 1; i <= COLD_STARTS; i++) {
+      const pressure = await androidPressureEvidence(`CS01-cold-${i}`);
+      const launch = await platform.coldLaunch();
+      await attachPage();
+      await until(async () => (await authVisible()) || (await appVisible()), { timeout: 45_000, message: `UI after cold start ${i}` });
+      const appPid = await pid();
+      let stalls = [];
+      if (/^[0-9]{1,7}$/.test(appPid ?? '')) {
+        const out = await sh(`logcat -d -v brief -s Choreographer:I | grep -E '\\( *${appPid}\\)' | grep -oE 'Skipped [0-9]+ frames' || true`);
+        stalls = (out.match(/Skipped \d+ frames/g) || []).map((line) => Number(/\d+/.exec(line)[0]));
+      }
+      launches.push({
+        totalTimeMs: launch.totalTimeMs,
+        skippedFrameEvents: stalls.length,
+        maxSkippedFrames: stalls.length ? Math.max(...stalls) : 0,
+        load1: Array.isArray(pressure?.kernelLoadavg) ? pressure.kernelLoadavg[0] : null,
+      });
+    }
+    const anrAfter = await anrs();
+    facts.coldStartStress = launches;
+    assert(anrAfter === anrBefore,
+      `Android ActivityManager reported ${anrAfter - anrBefore} ANR(s) across ${COLD_STARTS} cold starts`);
+    const times = launches.map((l) => l.totalTimeMs).filter(Number.isFinite);
+    return {
+      launches: launches.length,
+      maxTotalTimeMs: times.length ? Math.max(...times) : null,
+      maxSkippedFrames: Math.max(...launches.map((l) => l.maxSkippedFrames)),
+      maxLoad1: Math.max(...launches.map((l) => l.load1 ?? 0)),
+      newAnrs: anrAfter - anrBefore,
+      runs: launches,
+    };
   });
 
   await check('A02', 'login through the WebView reaches the app shell', async () => {
