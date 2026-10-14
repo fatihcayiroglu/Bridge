@@ -34,6 +34,22 @@ is **not evidence of rollback**. Clients must use a new authenticated
 read/re-export to determine current destination state, never blindly
 resubmit the original approval or automatically mint a new one.
 
+## Same session-disposal invariant across P7
+
+The identical generic, no-success, no-compensating-rollback and error-marked
+pool release rule also applies to:
+- `stageOwnerConfirmedPortableApproval` (owner-signed review staging):
+  do not reveal a one-use capability when COMMIT is ambiguous.
+- `stagePortableImportApproval` (older internal staging primitive):
+  never return the token on uncertain persistence.
+- `issueAtomicPortableSourceAttestation` (read-only paired source export):
+  never issue a signed source artifact or return a possibly poisoned session
+  if the snapshot's read-only COMMIT acknowledgement is lost.
+
+Unit regressions assert each path discards the exact uncertain physical
+client; normal validation failures still use rollback. None of these checks
+is a substitute for testing real broken TCP sockets or a database restart.
+
 ## Limitations / next acceptance work
 
 This test intentionally replaces only the application's receipt of a
