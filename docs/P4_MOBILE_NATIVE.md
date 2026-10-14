@@ -598,3 +598,21 @@ PASS. This still does not diagnose the underlying Android process death.
 - the top 14 main-thread frames, as code locations only: `pkg.Class.method(File.java:N)`, or a library basename with the symbol's leading identifier.
 
 The subject's free text, other threads, lock arguments, build IDs and any app data are never kept. A parser check against a realistic report confirms what is kept and what is dropped. This is what can localise the main-thread cost that #209 needs. It localises nothing until a failing run actually records it.
+
+**Fifth run (PR #238, [run 38632246276](https://github.com/fatihcayiroglu/Bridge/actions/runs/38632246276), head `8b390d7`): FAIL, 31 PASS / 2 FAIL / 0 SKIPPED / 4 MEASURED. This is the first run with the OS ANR report.**
+
+- **The original #209 signature, now with a location.** All five cold starts reached the UI, but ActivityManager reported **one ANR**, so CS01 and ANR01 failed.
+- **What the OS's own ANR report recorded:**
+  - **Time and process:** 20:34:34, PID 5582. That is the process launched by cold start 2, about 13 s after its launch.
+  - **Reason:** "Input dispatching timed out", waited **5,003 ms for FocusEvent**.
+  - **Main thread:** in `Native` state, blocked in `libc pthread_cond_wait`, called from **`libhwui android_view_ThreadedRenderer_syncAndDrawFrame`** through ART's JNI trampoline.
+- **What that means:** the UI thread was not running Bridge, Capacitor or WebView JavaScript. It was waiting for the **RenderThread** to accept a frame. While it waited, it could not take the focus event within Android's 5 s limit.
+- **Why the emulator matters here:** this emulator renders with `-gpu swiftshader_indirect`, a CPU software renderer behind gfxstream, on a runner whose 1-minute load average was 20–27 during CS01. That makes a multi-second render-pipeline stall on the emulator plausible.
+- **Still unknown:**
+  - which Java caller (WebView or app layout) requested the frame;
+  - what the RenderThread itself was waiting on;
+  - whether a real GPU on a physical device has any comparable margin. That remains **BLOCKED: physical device required**.
+- **Harness change after this run:**
+  - The parser now collapses runs of ART interpreter frames into one `libart.so` entry. In this run the 14-frame limit was used up by ART plumbing before any Java frame.
+  - It also records the RenderThread's state and top frames, as code locations only.
+  - Nothing else changed.

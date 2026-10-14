@@ -381,6 +381,32 @@ async function anrReports(limit = 3, frames = 14) {
   catch (err) { return `probe failed: ${String(err?.message ?? err).slice(0, 120)}`; }
   return parseAnrReports(out, limit, frames);
 }
+/**
+ * One thread's state and top frames from an ART trace, as code locations only.
+ * Runs of ART interpreter/JNI plumbing (libart.so) collapse into one entry so
+ * the frames that matter, Java callers included, fit inside the limit.
+ */
+function threadFrames(entry, name, limit) {
+  const start = entry.search(new RegExp(`^"${name}" `, 'm'));
+  if (start < 0) return { state: null, top: [] };
+  const header = entry.slice(start, entry.indexOf('\n', start) >>> 0);
+  const block = entry.slice(start + header.length).split(/\n\s*\n/)[0];
+  const top = [];
+  for (const line of block.split('\n')) {
+    const java = /^\s+at ([\w$.<>]+)\(((?:[\w$.]+:\d+)|Native method|Unknown Source)\)/.exec(line);
+    // Library basename (also inside an APK: "base.apk!libx.so") and the
+    // symbol's leading identifier only, never its argument list.
+    const native = /^\s+native: #\d+ pc [0-9a-f]+\s+\S*[/!]([\w.+-]+\.so)(?: \(offset 0x[0-9a-f]+\))?(?: \((?!BuildId)([A-Za-z_][\w:.$~<>-]{0,159}))?/.exec(line);
+    let frame = null;
+    if (java) frame = `${java[1]}(${java[2]})`;
+    else if (native) frame = native[1] === 'libart.so' ? 'libart.so' : native[2] ? `${native[1]} (${native[2]})` : native[1];
+    if (!frame || (frame === 'libart.so' && top[top.length - 1] === 'libart.so')) continue;
+    top.push(frame);
+    if (top.length >= limit) break;
+  }
+  const state = /\b(Runnable|Native|Blocked|Waiting|TimedWaiting|Sleeping|Suspended|WaitingForGcToComplete)\b/.exec(header)?.[1] ?? null;
+  return { state, top };
+}
 function parseAnrReports(out, limit = 3, frames = 14) {
   const reports = [];
   for (const entry of String(out).split(/^={20,}$/m).slice(1)) {
@@ -389,28 +415,20 @@ function parseAnrReports(out, limit = 3, frames = 14) {
     const subject = /^Subject: (.*)$/m.exec(entry)?.[1] ?? '';
     const reason = /^(Input dispatching timed out|executing service|Broadcast of Intent|ContentProvider not responding|Application does not have a focused window|App requested ANR)/.exec(subject)?.[1] ?? 'other';
     const waited = /Waited (\d+)ms for ([A-Za-z]+)/.exec(subject);
-    // The main thread's block runs from its '"main" ...' header to the next blank line.
-    const start = entry.search(/^"main" /m);
-    const header = start < 0 ? '' : entry.slice(start, entry.indexOf('\n', start) >>> 0);
-    const main = start < 0 ? '' : entry.slice(start + header.length).split(/\n\s*\n/)[0];
-    const stack = [];
-    for (const line of main.split('\n')) {
-      const java = /^\s+at ([\w$.<>]+)\(((?:[\w$.]+:\d+)|Native method|Unknown Source)\)/.exec(line);
-      // Library basename (also inside an APK: "base.apk!libx.so") and the
-      // symbol's leading identifier only, never its argument list.
-      const native = /^\s+native: #\d+ pc [0-9a-f]+\s+\S*[/!]([\w.+-]+\.so)(?: \(offset 0x[0-9a-f]+\))?(?: \((?!BuildId)([A-Za-z_][\w:.$~<>-]{0,159}))?/.exec(line);
-      if (java) stack.push(`${java[1]}(${java[2]})`);
-      else if (native) stack.push(native[2] ? `${native[1]} (${native[2]})` : native[1]);
-      if (stack.length >= frames) break;
-    }
+    const main = threadFrames(entry, 'main', frames);
+    const render = threadFrames(entry, 'RenderThread', 8);
     reports.push({
       at,
       pid: Number(/^PID: (\d+)$/m.exec(entry)?.[1]) || null,
       reason,
       waitedMs: waited ? Number(waited[1]) : null,
       waitedFor: waited ? waited[2] : null,
-      mainThreadState: /\b(Runnable|Native|Blocked|Waiting|TimedWaiting|Sleeping|Suspended|WaitingForGcToComplete)\b/.exec(header)?.[1] ?? null,
-      mainThreadTop: stack,
+      mainThreadState: main.state,
+      mainThreadTop: main.top,
+      // The main thread often waits on the RenderThread (frame sync); its own
+      // top frames say what the render pipeline itself was blocked on.
+      renderThreadState: render.state,
+      renderThreadTop: render.top,
     });
   }
   return reports.slice(-limit);
