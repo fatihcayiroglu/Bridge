@@ -20,6 +20,9 @@ export function makePortableLabTrust(sourceOrigin, now = Date.now()) {
   // A second, NEVER pinned key for the same origin: what a stolen-host or
   // misprovisioned signer would produce. B must refuse it.
   const rogue = signer();
+  // The planned successor key, pinned only through the operator CLI's
+  // rotate step (portable-rotation.mjs), never through this fixture.
+  const next = signer();
   const from = new Date(now - 86400000).toISOString();
   const until = new Date(now + 86400000).toISOString();
   const registry = (revoked) => Buffer.from(JSON.stringify({
@@ -45,6 +48,8 @@ export function makePortableLabTrust(sourceOrigin, now = Date.now()) {
     destinationEnv: destinationEnv(false),
     revokedDestinationEnv: destinationEnv(true),
     fingerprint: pinned.fingerprint,
+    pinnedPublicPem: pinned.publicPem,
+    next: { sourceEnv: sourceEnv(next), publicPem: next.publicPem, fingerprint: next.fingerprint },
   };
 }
 
