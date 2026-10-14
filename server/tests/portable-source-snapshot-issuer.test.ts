@@ -23,11 +23,14 @@ function fixture() {
   };
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   let released = 0;
+  const releaseErrors: Array<Error | undefined> = [];
   let connections = 0;
   let failTable = '';
+  let failCommit = false;
   const client = {
     async query(sql: string, params?: unknown[]) {
       queries.push({ sql, params });
+      if (sql === 'COMMIT' && failCommit) throw Error('private COMMIT response lost');
       if (sql.startsWith('BEGIN') || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
       const match = /\b(?:FROM|JOIN) (servers|channel_categories|channels|roles|channel_permissions|channel_overrides)\b/.exec(sql);
       if (!match) throw new Error('unexpected SQL (no fixture table)');
@@ -35,7 +38,7 @@ function fixture() {
       if (key === failTable) throw new Error('private SQL error including secret');
       return { rows: rows[key].map(row => ({ ...row })) };
     },
-    release() { released++; },
+    release(error?: Error) { released++; releaseErrors.push(error); },
   };
   const pool = { async connect() { connections++; return client; } };
   const issue = (override: Record<string, unknown> = {}) => issueAtomicPortableSourceAttestation({
@@ -45,6 +48,8 @@ function fixture() {
   return {
     issue, rows, queries, pool, signingPrivateKeyPem, trustedSourcePublicKeyPem,
     released: () => released, connections: () => connections,
+    releaseErrors,
+    failCommit() { failCommit = true; },
     failOn(table: string) { failTable = table; },
   };
 }
@@ -85,6 +90,18 @@ describe('P7 C4 single-transaction source snapshot issuance (NO import)', () => 
     });
     expect(verify).toMatchObject({ sourceSignatureValid: true, importSupported: false });
     expect(JSON.stringify(result)).not.toContain(f.signingPrivateKeyPem);
+  });
+
+  it('does not sign an ambiguous COMMIT and destroys the pooled source session', async () => {
+    const f = fixture();
+    f.failCommit();
+    await expect(f.issue()).rejects.toBeInstanceOf(PortableSourceSnapshotError);
+    expect(f.queries.at(-1)?.sql).toBe('COMMIT');
+    expect(f.queries.map(q => q.sql)).not.toContain('ROLLBACK');
+    expect(f.released()).toBe(1);
+    expect(f.releaseErrors).toHaveLength(1);
+    expect(f.releaseErrors[0]).toBeInstanceOf(PortableSourceSnapshotError);
+    expect(f.releaseErrors[0]?.message).not.toContain('private');
   });
 
   it('generates unique snapshot tokens without reusing the signed tuple', async () => {
