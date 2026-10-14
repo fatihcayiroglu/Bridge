@@ -87,6 +87,10 @@ export async function applyApprovedPortableCommunityMapping(input: {
 
   let client: ApprovalClient | undefined;
   let began = false, committed = false;
+  // A rejected COMMIT does not tell us whether PostgreSQL committed. Never
+  // run a compensating ROLLBACK on that uncertain session or return it to
+  // the pool: a subsequent request must acquire an independent connection.
+  let commitAttempted = false;
   let discard: Error | undefined;
   try {
     client = await input.pool.connect();
@@ -190,6 +194,7 @@ export async function applyApprovedPortableCommunityMapping(input: {
     );
     if (!audit || audit.rows.length !== 1 || audit.rows[0]?._id !== auditId) refuse();
     maybeFail('before_commit', input.failpoint);
+    commitAttempted = true;
     await client.query('COMMIT');
     committed = true;
     return {
@@ -199,9 +204,14 @@ export async function applyApprovedPortableCommunityMapping(input: {
       grantsPreserved: true, identitiesPreserved: true,
     };
   } catch {
-    if (began && !committed && client) {
+    if (commitAttempted && !committed) {
+      // COMMIT might have taken effect even if its acknowledgement was lost.
+      // node-postgres release(error) destroys this client instead of reusing
+      // an unknown transaction/protocol state. Do not expose error contents.
+      discard = new PortableAtomicApplyError();
+    } else if (began && !committed && client) {
       try { await client.query('ROLLBACK'); }
-      catch (e) { discard = e instanceof Error ? e : new Error('Rollback failed'); }
+      catch { discard = new PortableAtomicApplyError(); }
     }
     return refuse();
   } finally {
