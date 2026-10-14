@@ -183,6 +183,42 @@ describe('P7 destination-pinned key registry: offline source verification only',
       .toThrow(PortableSourceAttestationError);
   });
 
+  it('rejects calendar-impossible windows that only look canonical, and non-string windows', () => {
+    const signer = generateSigner();
+    for (const update of [
+      { activeFrom: '2026-02-30T00:00:00.000Z' },          // shape is canonical, the date does not exist
+      { activeUntil: '2026-13-01T00:00:00.000Z' },
+      { activeFrom: NOW - 3600_000 },                         // epoch number instead of an ISO string
+      { activeUntil: null },
+    ]) {
+      expect(() => parsePinnedPortableSourceRegistry(registry([key(signer, update)])))
+        .toThrow(PortableSourceAttestationError);
+    }
+  });
+
+  it('rejects registry documents and entries that are not plain objects', () => {
+    const signer = generateSigner();
+    for (const document of ['null', '[]', '"registry"', '42']) {
+      expect(() => parsePinnedPortableSourceRegistry(document)).toThrow(PortableSourceAttestationError);
+    }
+    for (const entry of [null, 'key', [key(signer)]]) {
+      expect(() => parsePinnedPortableSourceRegistry(registry([entry]))).toThrow(PortableSourceAttestationError);
+    }
+  });
+
+  it('refuses to verify against an invalid clock or a non-object attestation', () => {
+    const signer = generateSigner();
+    const f = signed(signer);
+    const pinned = registry([key(signer)]);
+    expect(prove(f, pinned).sourceSignatureValid).toBe(true);               // positive control
+    for (const now of [-1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 2]) {
+      expect(() => prove(f, pinned, { now })).toThrow(PortableSourceAttestationError);
+    }
+    for (const attestation of [null, 'signed', [f.attestation]]) {
+      expect(() => prove(f, pinned, { attestation })).toThrow(PortableSourceAttestationError);
+    }
+  });
+
   it('always rejects invalid proofs with one generic error and no data leaks', () => {
     const signer = generateSigner();
     const f = signed(signer);
