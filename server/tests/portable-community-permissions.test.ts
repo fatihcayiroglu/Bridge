@@ -185,3 +185,91 @@ describe('P7 C2 permission manifest', () => {
     ])).toThrow('Duplicate role permission override');
   });
 });
+
+// The builder is the export's last line of defence: whatever the route read,
+// a manifest is produced only from one server's own, complete, unambiguous rows.
+describe('P7 C2 permission manifest builder refuses inputs it cannot vouch for', () => {
+  const AT = '2026-10-12T00:00:00.000Z';
+  const channel = (id: string, serverId = SID) => ({ _id: id, serverId });
+  const role = (id: string, serverId = SID) => ({ _id: id, serverId });
+  const rows = (channelId: string, canonical: Array<Record<string, unknown>> = [], legacy: Array<Record<string, unknown>> = []) =>
+    ({ channelId, canonical, legacy });
+  const build = (over: { server?: Record<string, unknown>; channels?: Array<Record<string, unknown>>;
+    roles?: Array<Record<string, unknown>>; data?: ReturnType<typeof rows>[]; at?: string } = {}) =>
+    () => buildPortableCommunityPermissionManifest(
+      over.server ?? { _id: SID }, over.channels ?? [channel('channel1')], over.roles ?? [role('role1')],
+      over.data ?? [rows('channel1')], over.at ?? AT,
+    );
+
+  it('needs a real server id and an exact ISO timestamp', () => {
+    expect(build({ server: { _id: '' } })).toThrow('Invalid server ID');
+    expect(build({ server: { _id: 7 } })).toThrow('Invalid server ID');
+    expect(build({ server: { _id: 's'.repeat(257) } })).toThrow('Invalid server ID');
+    // A timestamp that parses but is not in canonical form would change the digest.
+    expect(build({ at: '2026-10-12T00:00:00Z' })).toThrow('Invalid timestamp');
+    expect(build({ at: 'yesterday' })).toThrow();
+  });
+
+  it('refuses channels or roles from another server, and duplicates of either', () => {
+    expect(build({ channels: [channel('channel1', 'other-server')] })).toThrow('Foreign channel');
+    expect(build({ roles: [role('role1', 'other-server')] })).toThrow('Foreign role');
+    expect(build({ channels: [channel('channel1'), channel('channel1')], data: [rows('channel1'), rows('channel1')] }))
+      .toThrow('Duplicate channel');
+    expect(build({ roles: [role('role1'), role('role1')] })).toThrow('Duplicate role');
+  });
+
+  it('refuses permission rows for an unknown channel or the same channel twice', () => {
+    expect(build({ data: [rows('channel-elsewhere')] })).toThrow('Foreign or duplicate permission channel');
+    expect(build({ channels: [channel('channel1'), channel('channel2')], data: [rows('channel1'), rows('channel1')] }))
+      .toThrow('Foreign or duplicate permission channel');
+  });
+
+  it('refuses unreadable or oversized override lists', () => {
+    expect(build({ data: [{ channelId: 'channel1', canonical: null as never, legacy: [] }] })).toThrow('exceed supported bound');
+    expect(build({ data: [{ channelId: 'channel1', canonical: [], legacy: 'x' as never }] })).toThrow('exceed supported bound');
+    const many = Array.from({ length: 2001 }, () => ({ channelId: 'channel1', roleId: 'role1', allow: 0, deny: 0 }));
+    expect(build({ data: [rows('channel1', many)] })).toThrow('exceed supported bound');
+    expect(build({ data: [rows('channel1', [], many)] })).toThrow('exceed supported bound');
+  });
+
+  it('refuses an override row that is empty, for another channel, or from another server', () => {
+    expect(build({ data: [rows('channel1', [null as never])] })).toThrow('Foreign or incomplete permission row');
+    expect(build({ data: [rows('channel1', [{ channelId: 'channel2', roleId: 'role1', allow: 1, deny: 0 }])] }))
+      .toThrow('Foreign or incomplete permission row');
+    expect(build({ data: [rows('channel1', [{ channelId: 'channel1', serverId: 'other-server', roleId: 'role1', allow: 1, deny: 0 }])] }))
+      .toThrow('Foreign or incomplete permission row');
+  });
+
+  it('counts unknown override targets but never exports them as role grants', () => {
+    const manifest = build({ data: [rows('channel1', [
+      { channelId: 'channel1', targetType: 'member', roleId: 'secret-member-id', allow: 8, deny: 0 },
+      { channelId: 'channel1', targetType: 'webhook', roleId: 'secret-webhook-id', allow: 8, deny: 0 },
+      { channelId: 'channel1', targetType: 'role', roleId: 'role1', allow: 8, deny: 0 },
+    ])] })();
+    expect(manifest.unsupported).toEqual({ legacyOverrideRows: 0, individualOverrideRows: 0, unknownTargetRows: 2 });
+    expect(manifest.channels[0]?.overrides).toEqual([{ roleSourceId: 'role1', allow: 8, deny: 0 }]);
+    expect(JSON.stringify(manifest)).not.toMatch(/secret-(member|webhook)-id/);
+  });
+
+  it('a row with no allow or deny exports as an explicit zero, not as missing data', () => {
+    const manifest = build({ data: [rows('channel1', [{ channelId: 'channel1', roleId: 'role1' }])] })();
+    expect(manifest.channels[0]?.overrides).toEqual([{ roleSourceId: 'role1', allow: 0, deny: 0 }]);
+  });
+
+  it('the digest does not depend on the order the database returned rows in', () => {
+    const channels = [channel('channel-a'), channel('channel-b')];
+    const roles = [role('role-a'), role('role-b')];
+    const grant = (channelId: string, roleId: string, allow: number) => ({ channelId, roleId, allow, deny: 0 });
+    const forward = buildPortableCommunityPermissionManifest({ _id: SID }, channels, roles, [
+      rows('channel-a', [grant('channel-a', 'role-a', 1), grant('channel-a', 'role-b', 2)]),
+      rows('channel-b', [grant('channel-b', 'role-a', 4)]),
+    ], AT);
+    const reversed = buildPortableCommunityPermissionManifest({ _id: SID }, [...channels].reverse(), [...roles].reverse(), [
+      rows('channel-b', [grant('channel-b', 'role-a', 4)]),
+      rows('channel-a', [grant('channel-a', 'role-b', 2), grant('channel-a', 'role-a', 1)]),
+    ], AT);
+    expect(reversed.channels.map((c) => c.channelSourceId)).toEqual(['channel-a', 'channel-b']);
+    expect(reversed.channels[0]?.overrides.map((o) => o.roleSourceId)).toEqual(['role-a', 'role-b']);
+    expect(reversed.integrity.digest).toBe(forward.integrity.digest);
+  });
+});

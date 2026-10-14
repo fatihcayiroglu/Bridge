@@ -414,3 +414,61 @@ describe('P7 C3 explicit community mapping review', () => {
     )).toThrow(PortableCommunityMappingError);
   });
 });
+
+describe('P7 C3 mapping review output does not depend on the order the owner listed choices in', () => {
+  function twoRoles(order: 'forward' | 'reversed') {
+    const structure = buildPortableCommunityStructure(
+      { _id: SOURCE, name: 'Community Source' },
+      [{ _id: 'cat-a', name: 'General', position: 0 }],
+      [{ _id: 'channel-a', name: 'Announcements', type: 'text', categoryId: 'cat-a', order: 0 }],
+      [
+        { _id: 'role-a', name: 'Readers', permissions: PERMS.VIEW_CHANNELS, position: 0 },
+        { _id: 'role-b', name: 'Writers', permissions: PERMS.VIEW_CHANNELS, position: 1 },
+      ],
+      AT,
+    );
+    const permissions = buildPortableCommunityPermissionManifest(
+      { _id: SOURCE },
+      [{ _id: 'channel-a', serverId: SOURCE }],
+      [{ _id: 'role-a', serverId: SOURCE }, { _id: 'role-b', serverId: SOURCE }],
+      [{ channelId: 'channel-a', canonical: [], legacy: [] }],
+      AT,
+    );
+    // Both destination roles can do more than their source roles: two widenings.
+    const target = {
+      serverId: TARGET,
+      categories: [{ _id: 'target-cat', serverId: TARGET, name: 'General' }],
+      roles: [
+        { _id: 'target-role-a', serverId: TARGET, name: 'Readers', permissions: PERMS.VIEW_CHANNELS | PERMS.SEND_MESSAGES },
+        { _id: 'target-role-b', serverId: TARGET, name: 'Writers', permissions: PERMS.VIEW_CHANNELS | PERMS.MANAGE_MESSAGES },
+      ],
+      channels: [{ _id: 'target-channel', serverId: TARGET, name: 'Announcements', type: 'text' }],
+    };
+    const roles = [
+      { sourceId: 'role-a', targetId: 'target-role-a' },
+      { sourceId: 'role-b', targetId: 'target-role-b' },
+    ];
+    const mapping = {
+      targetServerId: TARGET,
+      expectedTargetDigest: fingerprintDestinationTopology(target),
+      structureDigest: structure.integrity.digest,
+      permissionsDigest: permissions.integrity.digest,
+      categories: [{ sourceId: 'cat-a', targetId: 'target-cat' }],
+      roles: order === 'forward' ? roles : [...roles].reverse(),
+      channels: [{ sourceId: 'channel-a', targetId: 'target-channel' }],
+    };
+    return inspectExplicitCommunityMapping(structure, permissions, mapping, target);
+  }
+
+  it('lists mappings and widening risks by source id, so the review reads the same either way', () => {
+    const forward = twoRoles('forward');
+    const reversed = twoRoles('reversed');
+    expect(reversed.mapping.roles.map((l) => l.sourceId)).toEqual(['role-a', 'role-b']);
+    expect(reversed.risks.rolePermissionWidening).toEqual([
+      { sourceId: 'role-a', targetId: 'target-role-a', extraMask: PERMS.SEND_MESSAGES },
+      { sourceId: 'role-b', targetId: 'target-role-b', extraMask: PERMS.MANAGE_MESSAGES },
+    ]);
+    expect(reversed).toEqual(forward);
+    expect(reversed.blockers).toContain('TARGET_ROLE_PERMISSION_WIDENING');
+  });
+});
