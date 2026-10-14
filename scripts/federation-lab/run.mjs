@@ -25,10 +25,11 @@ import { register, mutate, request, rnd, login, makeServer, connectSocket, sendM
 import { makeLabPki, TlsFront } from './lib/tls.mjs';
 import { rsaKeyPair, signAp, postTls, getTls, actorDoc } from './lib/apsign.mjs';
 import { FakeAiProvider, hashEmbed } from './lib/fake-ai.mjs';
+import { makePortableLabTrust, runPortableTlsSourceReview } from './lib/portable.mjs';
 
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(`--${n}`); return i >= 0 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : d; };
-const ALL = ['identity', 'follow', 'post', 'outbound-lifecycle', 'remote-dm', 'inbound-lifecycle', 'adversarial', 'ssrf', 'partition', 'restart', 'peers', 'revocation', 'ai', 'aiserver', 'vector', 'egress'];
+const ALL = ['identity', 'follow', 'post', 'outbound-lifecycle', 'remote-dm', 'inbound-lifecycle', 'adversarial', 'ssrf', 'partition', 'restart', 'peers', 'revocation', 'ai', 'aiserver', 'vector', 'portable', 'egress'];
 const selected = opt('scenarios', ALL.join(',')).split(',').map((s) => s.trim()).filter(Boolean);
 const workDir = opt('work', fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-fedlab-')));
 const outDir = opt('out', path.join(workDir, 'report'));
@@ -52,7 +53,7 @@ const record = (scenario, id, name, status, detail = '', data) => {
 const check = (scenario, id, name, ok, detail = '') => record(scenario, id, name, ok ? 'PASS' : 'FAIL', detail);
 
 // ── lab state ────────────────────────────────────────────────────────────────
-const lab = { inst: {}, front: {}, users: {}, mallory: null, pki: null, evilInbox: [], spoofInfo: null, canary: null, ai: null };
+const lab = { inst: {}, front: {}, users: {}, mallory: null, pki: null, evilInbox: [], spoofInfo: null, canary: null, ai: null, portableTrust: null };
 // A self-hosted AI provider for A (OpenAI-compatible, on loopback). B runs with
 // AI_PROVIDER=none AND a Groq key set: the off switch must win, and any attempt
 // to reach Groq would show up in B's egress log.
@@ -86,6 +87,9 @@ async function setup() {
     if (addr?.address !== '127.0.0.1') throw Object.assign(new Error(`${h} must resolve to 127.0.0.1 (add it to /etc/hosts)`), { blocked: true });
   }
   lab.pki = makeLabPki(path.join(workDir, 'pki'), Object.values(HOSTS));
+  // Independently create the source signing key and destination PUBLIC pin
+  // before exporting any data, never using the artifact to decide trust.
+  if (selected.includes('portable')) lab.portableTrust = makePortableLabTrust(ORIGIN.a);
   const allow = Object.values(HOSTS).join(',');
   lab.ai = new FakeAiProvider({ port: AI.port });
   await lab.ai.start();
@@ -105,6 +109,8 @@ async function setup() {
         SSRF_ALLOWLIST: allow, NODE_EXTRA_CA_CERTS: lab.pki.caFile,
         BRIDGE_EGRESS_LOCAL_HOSTS: allow, BRIDGE_EGRESS_RECORD_LAB: '1', ADMIN_SETUP_SECRET: `lab-admin-setup-${k}`,
         ...aiEnv[k],
+        ...(lab.portableTrust ? (k === 'a'
+          ? lab.portableTrust.sourceEnv : lab.portableTrust.destinationEnv) : {}),
       },
     });
     port += 10;
@@ -168,6 +174,14 @@ async function eventually(fn, ms = 15_000, every = 250) {
 
 // ── scenarios ────────────────────────────────────────────────────────────────
 const S = {
+  async portable() {
+    await runPortableTlsSourceReview({
+      lab, origins: ORIGIN,
+      check: (id, title, success, detail = '') =>
+        check('portable', id, title, success, detail),
+    });
+  },
+
   async identity() {
     const info = await getTls(`${ORIGIN.a}/api/federation/info`, lab.pki.ca);
     check('identity', 'F-ID-01', 'instance info over HTTPS names its public URL and RSA key', info.status === 200 && info.body?.url === ORIGIN.a && /BEGIN PUBLIC KEY/.test(info.body?.publicKey?.publicKeyPem || ''), `status ${info.status}, url ${info.body?.url}`);
