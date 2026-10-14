@@ -1,7 +1,7 @@
 // P7 C4 offline operator provisioning. No HTTP, no automatic trust bootstrap.
 // Run ONLY in a protected provisioning environment, outside the Git worktree.
 import { generateKeyPairSync, createHash } from 'node:crypto';
-import { existsSync, lstatSync, realpathSync, writeFileSync, unlinkSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, openSync, closeSync, writeFileSync, unlinkSync } from 'node:fs';
 import { resolve, sep, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -91,8 +91,12 @@ function main() {
     for (const [index, content] of [privatePem, publicPem, registry].entries()) {
       // wx and mode 0600: never truncate an existing secret or follow an
       // already present final-path symlink; only trusted operators see files.
-      writeFileSync(paths[index], content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      // Record the newly created file before writing its bytes. A disk-full
+      // or partial-write failure then cleans up even the incomplete key.
+      const fd = openSync(paths[index], 'wx', 0o600);
       created.push(paths[index]);
+      try { writeFileSync(fd, content, { encoding: 'utf8' }); }
+      finally { closeSync(fd); }
     }
   } catch {
     // Never leave half-provisioned files after a write failure.
