@@ -21,8 +21,10 @@ the HTTP request, Host header, browser, or source export file:
 - `BRIDGE_PORTABLE_SOURCE_ED25519_PRIVATE_KEY_B64` — canonical padded base64
   encoding of a separately provisioned Ed25519 **PKCS#8 PEM private key**.
 
-Example local key creation (run outside application processes in a secure
-provisioning environment; never add this key to source control):
+Use the repository's audited offline provisioning command described in
+[P7 offline source key provisioning](P7_OFFLINE_SOURCE_KEY_PROVISIONING.md)
+when preparing a NEW keypair. The legacy OpenSSL example below remains an
+alternative for experienced operators in a secure provisioning environment:
 
 ```sh
 openssl genpkey -algorithm Ed25519 -out bridge-source-ed25519.pem
@@ -35,9 +37,11 @@ Independently verify the source's ownership and transmit only the SPKI public
 key to the destination operator over a trusted, out-of-band channel. The
 destination pins that key separately before verifying exports. Do not
 automatically trust keys embedded in artifacts or fetched through the
-untrusted source URL. **Key rotation, revocation, trust registry and a durable
-snapshot replay ledger are not yet implemented.** Do not use this endpoint as
-a production-wide portability guarantee until those are built.
+untrusted source URL. The destination now has a pinned, revocable keyring,
+owner approval, a durable snapshot replay barrier and a restricted existing-row
+metadata apply. Operational key custody/rotation remains operator-controlled;
+full source-to-destination TLS acceptance and unrestricted import remain
+unverified. Do not present this endpoint as a complete portability guarantee.
 
 ## Authorization and safety
 
@@ -61,10 +65,12 @@ the configured private key or SQL/manifest details. Rate limiting applies.
 The download size is bounded. Read and signer failures return HTTP 503,
 not an unsigned fallback. **The signing key never crosses the response.**
 
-No key-provisioning API, endpoint to apply or import, one-use destination
-approval, destination serializable write transaction or independent
-installations' round-trip proof is added here. Signed data is not itself
-authorization to migrate. Source key rotation, revocation and account/
+This source-export endpoint does not itself grant import authority. Separate
+owner approval and restricted double-opt-in destination apply endpoints now
+exist; they do not import members, messages, identities or permission grants.
+There is still no remote key-provisioning API, automatic trust bootstrap,
+full migration or accepted independent-TLS-deployment round-trip proof.
+Signed data is not itself authorization to migrate. Source key rotation, revocation and account/
 destination security are tracked by [P7 #205](https://github.com/fatihcayiroglu/Bridge/issues/205).
 
 ## Validation
