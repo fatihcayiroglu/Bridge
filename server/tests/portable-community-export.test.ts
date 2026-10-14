@@ -130,4 +130,29 @@ describe('P7 C2 owner-only community structure export', () => {
     expect(a.integrity.digest).toBe(b.integrity.digest);
     expect(a.categories.map(row => row.sourceId)).toEqual(['a', 'b']);
   });
+
+  // Found by the two-installation TLS round trip: PostgreSQL channels.nsfw is
+  // INTEGER 0/1, and `=== true` exported every NSFW channel as false.
+  it('exports a persisted INTEGER nsfw flag faithfully and refuses unknown encodings', () => {
+    const build = (nsfw: unknown) => buildPortableCommunityStructure(
+      { _id: SID, name: 'Owner Only' }, [],
+      [{ _id: 'c', name: 'adult', type: 'text', order: 0, nsfw }], [],
+      '2026-10-11T12:00:00.000Z',
+    );
+    expect(build(1).channels[0]!.nsfw).toBe(true);
+    expect(build(0).channels[0]!.nsfw).toBe(false);
+    expect(build(1).integrity.digest).toBe(build(true).integrity.digest);
+    expect(build(0).integrity.digest).toBe(build(false).integrity.digest);
+    expect(build(1).integrity.digest).not.toBe(build(0).integrity.digest);
+    for (const bad of [2, -1, '1', 'true', {}]) {
+      expect(() => build(bad)).toThrow(TypeError);
+    }
+  });
+
+  it('route export reports an NSFW channel stored as INTEGER 1 as nsfw:true', async () => {
+    await db.channels.update({ _id: 'channel1' }, { $set: { nsfw: 1 } });
+    const res = await exportAs(OWNER, 'sensitive-export');
+    expect(res.status).toBe(200);
+    expect(res.body.channels).toEqual([expect.objectContaining({ sourceId: 'channel1', nsfw: true })]);
+  });
 });

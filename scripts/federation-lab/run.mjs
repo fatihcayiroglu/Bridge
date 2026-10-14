@@ -26,6 +26,7 @@ import { makeLabPki, TlsFront } from './lib/tls.mjs';
 import { rsaKeyPair, signAp, postTls, getTls, actorDoc } from './lib/apsign.mjs';
 import { FakeAiProvider, hashEmbed } from './lib/fake-ai.mjs';
 import { makePortableLabTrust, runPortableTlsSourceReview } from './lib/portable.mjs';
+import { runPortableTlsRoundTrip } from './lib/portable-roundtrip.mjs';
 
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(`--${n}`); return i >= 0 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : d; };
@@ -175,11 +176,19 @@ async function eventually(fn, ms = 15_000, every = 250) {
 // ── scenarios ────────────────────────────────────────────────────────────────
 const S = {
   async portable() {
-    await runPortableTlsSourceReview({
-      lab, origins: ORIGIN,
-      check: (id, title, success, detail = '') =>
-        check('portable', id, title, success, detail),
-    });
+    const portableCheck = (id, title, success, detail = '') =>
+      check('portable', id, title, success, detail);
+    try {
+      await runPortableTlsSourceReview({ lab, origins: ORIGIN, check: portableCheck });
+      await runPortableTlsRoundTrip({ lab, origins: ORIGIN, check: portableCheck });
+    } finally {
+      // A crashed check must not leave a later scenario behind a closed
+      // front or a stopped installation.
+      for (const k of ['a', 'b']) {
+        lab.front[k].setMode('open');
+        if (!lab.inst[k].app || lab.inst[k].app.exited) await lab.inst[k].start({ tag: 'portable-recover' });
+      }
+    }
   },
 
   async identity() {
