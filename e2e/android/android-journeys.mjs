@@ -303,7 +303,7 @@ async function webViewAttachEvidence() {
     try { return [label, (await sh(command, DIAGNOSTIC_SHELL_BUDGET_MS)).slice(0, 1200)]; }
     catch (err) { return [label, `probe failed: ${String(err?.message ?? err).slice(0, 120)}`]; }
   }));
-  return { ...Object.fromEntries(results), exits: await processExits() };
+  return { ...Object.fromEntries(results), exits: await processExits(), anrs: await anrReports() };
 }
 
 /**
@@ -364,6 +364,56 @@ async function dependencyDeath(pidValue) {
     dyingProcess,
     dyingProcessExits: Array.isArray(exits) ? exits.filter((e) => e.process === dyingProcess).slice(0, 2) : exits,
   };
+}
+
+/**
+ * Where this package's main thread was when the OS declared an ANR. The
+ * system's own report (dropbox `data_app_anr`) is reduced to allow-listed
+ * facts: entry time, PID, the reason class with its wait in ms, and the top
+ * main-thread frames as code locations (`pkg.Class.method(File.java:N)` or
+ * `lib.so (symbol+off)`). Never the subject's free text, other threads,
+ * lock arguments or any app data.
+ */
+async function anrReports(limit = 3, frames = 14) {
+  if (MODE !== 'android') return null;
+  let out;
+  try { out = await sh('dumpsys dropbox --print data_app_anr', DIAGNOSTIC_SHELL_BUDGET_MS); }
+  catch (err) { return `probe failed: ${String(err?.message ?? err).slice(0, 120)}`; }
+  return parseAnrReports(out, limit, frames);
+}
+function parseAnrReports(out, limit = 3, frames = 14) {
+  const reports = [];
+  for (const entry of String(out).split(/^={20,}$/m).slice(1)) {
+    const at = /^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) data_app_anr/m.exec(entry)?.[1];
+    if (!at || !new RegExp(`^Process: ${PKG.replace(/\./g, '\\.')}$`, 'm').test(entry)) continue;
+    const subject = /^Subject: (.*)$/m.exec(entry)?.[1] ?? '';
+    const reason = /^(Input dispatching timed out|executing service|Broadcast of Intent|ContentProvider not responding|Application does not have a focused window|App requested ANR)/.exec(subject)?.[1] ?? 'other';
+    const waited = /Waited (\d+)ms for ([A-Za-z]+)/.exec(subject);
+    // The main thread's block runs from its '"main" ...' header to the next blank line.
+    const start = entry.search(/^"main" /m);
+    const header = start < 0 ? '' : entry.slice(start, entry.indexOf('\n', start) >>> 0);
+    const main = start < 0 ? '' : entry.slice(start + header.length).split(/\n\s*\n/)[0];
+    const stack = [];
+    for (const line of main.split('\n')) {
+      const java = /^\s+at ([\w$.<>]+)\(((?:[\w$.]+:\d+)|Native method|Unknown Source)\)/.exec(line);
+      // Library basename (also inside an APK: "base.apk!libx.so") and the
+      // symbol's leading identifier only, never its argument list.
+      const native = /^\s+native: #\d+ pc [0-9a-f]+\s+\S*[/!]([\w.+-]+\.so)(?: \(offset 0x[0-9a-f]+\))?(?: \((?!BuildId)([A-Za-z_][\w:.$~<>-]{0,159}))?/.exec(line);
+      if (java) stack.push(`${java[1]}(${java[2]})`);
+      else if (native) stack.push(native[2] ? `${native[1]} (${native[2]})` : native[1]);
+      if (stack.length >= frames) break;
+    }
+    reports.push({
+      at,
+      pid: Number(/^PID: (\d+)$/m.exec(entry)?.[1]) || null,
+      reason,
+      waitedMs: waited ? Number(waited[1]) : null,
+      waitedFor: waited ? waited[2] : null,
+      mainThreadState: /\b(Runnable|Native|Blocked|Waiting|TimedWaiting|Sleeping|Suspended|WaitingForGcToComplete)\b/.exec(header)?.[1] ?? null,
+      mainThreadTop: stack,
+    });
+  }
+  return reports.slice(-limit);
 }
 
 async function attachPage({ timeout = 60_000 } = {}) {
@@ -1358,9 +1408,11 @@ async function main() {
       await androidPressureEvidence('ANR01-failure');
       // Count only package-specific ANR headers, never expose raw logcat lines.
       facts.androidAnrCount = anrLog.split('\n').filter(line => line.includes('ANR in com.bridge.app.debug')).length;
+      facts.androidAnrReports = await anrReports();
     }
     assert(!anrLog.includes('ANR in com.bridge.app.debug'),
-      'Android ActivityManager detected an ANR; process restart/restoration is NOT sufficient for a pass');
+      'Android ActivityManager detected an ANR; process restart/restoration is NOT sufficient for a pass; ' +
+      `OS ANR reports ${JSON.stringify(facts.androidAnrReports ?? null)}`);
     return { systemAnrCount: 0 };
   });
 

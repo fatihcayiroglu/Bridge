@@ -582,3 +582,19 @@ PASS. This still does not diagnose the underlying Android process death.
   the provider component, the process name and the allow-listed exit fields
   are kept, never the raw log line or the free-text description. Nothing is
   retried and no assertion changed.
+
+**Fourth run: exact-head rerun of the same commit (run 38593466416, attempt 2, head `ed82fb4`): FAIL, 31 PASS / 2 FAIL / 0 SKIPPED / 4 MEASURED.** The failed attempt 1 above stays in the acceptance history. This rerun only shows that the failure repeats and that its form varies.
+
+- **CS01 failed on cold start 3, a different form from attempt 1.** `am start` returned ok/COLD with PID 5916. Sixty seconds later that process was **still alive**, and `MainActivity` was the top resumed activity. The WebView DevTools socket never appeared ("Timeout 60000ms exceeded while waiting for event webview"). There was no exit record (the process had not ended) and no crash header.
+- **ANR01 failed.** ActivityManager logged an ANR for the package during the run. The harness then recorded only the count, not when the ANR happened or why. CS01's own ANR comparison never ran, because the cold-start failure ended that check first. The ANR is therefore **not yet proven** to belong to cold start 3, though a live, resumed process with no WebView fits a blocked main thread.
+- **Other checks.** L01 (HOT, stable PID), L02 and every later journey passed, and the restore after CS01 worked.
+- **Two runs on one commit, two forms.** Attempt 1 was an OS kill with reason DEPENDENCY DIED and zero ANRs. Attempt 2 was a live process that never brought up its WebView, plus an ANR. Both happened on a launch within about two minutes of emulator boot (boot completed at 20:07:07; cold start 3 began at 20:08:23).
+
+**Harness change after this run: the OS's own ANR report.** Every failure-evidence bundle, and ANR01, now include the system's ANR report for this package (`dumpsys dropbox --print data_app_anr`), reduced to allow-listed facts:
+
+- the entry time and PID;
+- the reason class, such as "Input dispatching timed out", with the wait in ms and the event waited for;
+- the main thread's state;
+- the top 14 main-thread frames, as code locations only: `pkg.Class.method(File.java:N)`, or a library basename with the symbol's leading identifier.
+
+The subject's free text, other threads, lock arguments, build IDs and any app data are never kept. A parser check against a realistic report confirms what is kept and what is dropped. This is what can localise the main-thread cost that #209 needs. It localises nothing until a failing run actually records it.
