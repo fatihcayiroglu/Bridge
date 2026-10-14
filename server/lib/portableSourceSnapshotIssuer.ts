@@ -12,7 +12,7 @@ import {
 type Row = Record<string, unknown>;
 type Client = {
   query(sql: string, params?: unknown[]): Promise<{ rows: Row[] }>;
-  release(): void;
+  release(error?: Error): void;
 };
 type Pool = { connect(): Promise<Client> };
 const MAX_DOCUMENT_BYTES = 512 * 1024;
@@ -81,6 +81,8 @@ export async function issueAtomicPortableSourceAttestation(input: {
   let client: Client | null = null;
   let begun = false;
   let committed = false;
+  let commitAttempted = false;
+  let discard: Error | undefined;
   try {
     const key = createPrivateKey(input.signingPrivateKeyPem);
     if (key.asymmetricKeyType !== 'ed25519') refuse();
@@ -139,6 +141,7 @@ export async function issueAtomicPortableSourceAttestation(input: {
     if (pair.sourceServerId !== sid ||
         pair.sourceSnapshotTimes.structure !== pair.sourceSnapshotTimes.permissions) refuse();
 
+    commitAttempted = true;
     await client.query('COMMIT');
     committed = true;
     const fields: Omit<PortableSourceAttestation, 'signature'> = {
@@ -173,11 +176,16 @@ export async function issueAtomicPortableSourceAttestation(input: {
       structure, permissions: permissionManifest, attestation,
     };
   } catch {
-    if (begun && !committed && client) {
-      try { await client.query('ROLLBACK'); } catch { /* fail closed */ }
+    if (commitAttempted && !committed) {
+      // Even a read-only COMMIT can leave an uncertain pooled session if
+      // the acknowledgement vanishes. Discard it without an extra ROLLBACK.
+      discard = new PortableSourceSnapshotError();
+    } else if (begun && !committed && client) {
+      try { await client.query('ROLLBACK'); }
+      catch { discard = new PortableSourceSnapshotError(); }
     }
     return refuse();
   } finally {
-    if (client) client.release();
+    if (client) client.release(discard);
   }
 }
