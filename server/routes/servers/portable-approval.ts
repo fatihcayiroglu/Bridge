@@ -8,6 +8,7 @@ import { limits } from '../../middleware/rateLimit';
 import { Servers } from '../../db/repositories';
 import db from '../../db/loader';
 import { enforceStepUp, STEP_UP_HEADER } from '../../lib/stepUp';
+import { PORTABLE_OWNER_PROOF_ROUTE_MAX_AGE_MS } from '../../lib/portableLockedOwnerStepUp';
 import { readDestinationPinnedSourceRegistry } from '../../lib/portableDestinationTrustConfig';
 import { isCanonicalPortableSourceOrigin } from '../../lib/portableSourceAttestation';
 import { stageOwnerConfirmedPortableApproval } from '../../lib/portableTransactionalApprovalStage';
@@ -143,7 +144,8 @@ router.post('/:sid/portable-import/owner-approval',
     }
     // Both the HTTP precheck and the transaction-local guard are needed.
     // The latter *never* honors the global step-up disable switch.
-    if (!(await enforceStepUp(req, res, actor.id, 'account.import'))) return;
+    if (!(await enforceStepUp(req, res, actor.id, 'account.import',
+      { maxAgeMs: PORTABLE_OWNER_PROOF_ROUTE_MAX_AGE_MS }))) return;
     if (process.env.BRIDGE_PORTABLE_OWNER_APPROVAL_ENABLED !== 'true') {
       return res.status(503).json({ code: 'PORTABLE_OWNER_APPROVAL_DISABLED' });
     }
