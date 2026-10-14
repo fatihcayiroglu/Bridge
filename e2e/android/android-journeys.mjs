@@ -78,17 +78,37 @@ function log(...args) { console.log(`[android-journeys ${new Date().toISOString(
 async function screenshot(name) {
   const file = path.join(OUT_DIR, `${name}.png`);
   try {
-    if (device) fs.writeFileSync(file, await device.screenshot());
-    else if (page) await page.screenshot({ path: file });
+    if (device) fs.writeFileSync(file, await withTimeout(device.screenshot(), 20_000, 'device screenshot'));
+    else if (page) await withTimeout(page.screenshot({ path: file }), 20_000, 'page screenshot');
     return path.basename(file);
   } catch { return null; }
 }
 
-async function check(id, title, fn) {
+// A check that outlives this budget is a FAIL with device evidence, never a
+// silent stall: one wedged WebView once hung A01 for 56 minutes until the job
+// was cancelled with no result at all. The longest check of a green run takes
+// ~76 s. The next check then starts from a freshly launched app.
+const CHECK_BUDGET_MS = 300_000;
+let wedgedBy = null;
+async function overBudget(id, err) {
+  const message = String(err?.message ?? err);
+  if (!message.startsWith(`${id} as a whole did not answer`)) return message;
+  wedgedBy = id;
+  return `${message}; device evidence: ${JSON.stringify(await webViewAttachEvidence().catch((e) => `unavailable: ${e.message}`))}`;
+}
+async function recoverFromWedge() {
+  if (!wedgedBy || MODE !== 'android') return;
+  const label = `${wedgedBy} exceeding its budget`;
+  wedgedBy = null;
+  await restoreLaunch(label);
+}
+
+async function check(id, title, fn, { budgetMs = CHECK_BUDGET_MS } = {}) {
   const started = Date.now();
   log(`▶ ${id} ${title}`);
+  await recoverFromWedge();
   try {
-    const detail = await fn();
+    const detail = await withTimeout(Promise.resolve().then(fn), budgetMs, `${id} as a whole`);
     results.push({ id, title, status: 'PASS', ms: Date.now() - started, detail: detail ?? null });
     log(`  PASS ${id}`, detail ? JSON.stringify(detail) : '');
   } catch (err) {
@@ -97,18 +117,19 @@ async function check(id, title, fn) {
       log(`  SKIPPED ${id}: ${err.message}`);
       return;
     }
+    const message = await overBudget(id, err);
     const shot = await screenshot(`${id}-fail`);
     const dom = await domSummary();
-    results.push({ id, title, status: 'FAIL', ms: Date.now() - started, error: String(err?.message ?? err).slice(0, 2000), screenshot: shot, dom });
+    results.push({ id, title, status: 'FAIL', ms: Date.now() - started, error: message.slice(0, 2000), screenshot: shot, dom });
     if (dom) log(`  DOM ${id}: ${dom}`);
-    log(`  FAIL ${id}: ${err?.message ?? err}`);
+    log(`  FAIL ${id}: ${message}`);
   }
 }
 
 /** What the user was looking at when a check failed (the artifact host may be unreachable). */
 async function domSummary() {
   if (!page) return null;
-  return page.evaluate(() => {
+  return withTimeout(page.evaluate(() => {
     const vis = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
     const text = (el) => (el?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 240);
     const dialogs = [...document.querySelectorAll('[role="dialog"]')].filter(vis).map((d) => d.getAttribute('aria-label') || d.className).slice(0, 4);
@@ -116,31 +137,51 @@ async function domSummary() {
     return JSON.stringify({ url: location.href, app: vis(document.getElementById('app')), auth: vis(document.getElementById('auth-screen')),
       activeChannel: document.querySelector('.ch-item.active')?.getAttribute('data-id') ?? null, dialogs, alerts,
       dmPanel: vis(document.querySelector('.dm-panel')) ? text(document.querySelector('.dm-panel')) : null });
-  }).catch((e) => `unavailable: ${e.message}`);
+  }), 10_000, 'DOM summary').catch((e) => `unavailable: ${e.message}`);
 }
 
 /** Measurement-only probe: records numbers, asserts nothing, and is NEVER counted as a PASS. */
 async function measure(id, title, fn) {
   const started = Date.now();
   log(`▶ ${id} ${title} (measurement)`);
+  await recoverFromWedge();
   try {
-    const detail = await fn();
+    const detail = await withTimeout(Promise.resolve().then(fn), CHECK_BUDGET_MS, `${id} as a whole`);
     results.push({ id, title, status: 'MEASURED', ms: Date.now() - started, detail: detail ?? null });
     log(`  MEASURED ${id}`, detail ? JSON.stringify(detail) : '');
   } catch (err) {
     if (err instanceof Skip) { results.push({ id, title, status: 'SKIPPED', ms: Date.now() - started, reason: err.message }); return; }
-    results.push({ id, title, status: 'FAIL', ms: Date.now() - started, error: String(err?.message ?? err).slice(0, 2000), screenshot: await screenshot(`${id}-fail`) });
-    log(`  FAIL ${id}: ${err?.message ?? err}`);
+    const message = await overBudget(id, err);
+    results.push({ id, title, status: 'FAIL', ms: Date.now() - started, error: message.slice(0, 2000), screenshot: await screenshot(`${id}-fail`) });
+    log(`  FAIL ${id}: ${message}`);
   }
 }
 
 function assert(cond, message) { if (!cond) throw new Error(message); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * Bounds a call that has no timeout of its own (adb shell, page.evaluate, the
+ * DevTools attach). The underlying call may keep running; the journey moves on
+ * with an error that names what did not answer.
+ */
+function withTimeout(promise, ms, what) {
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
 async function until(fn, { timeout = 15_000, interval = 250, message = 'condition' } = {}) {
   const deadline = Date.now() + timeout;
   let last;
   while (Date.now() < deadline) {
-    try { last = await fn(); if (last) return last; } catch (e) { last = e; }
+    // Each attempt is bounded by the time left: a page.evaluate on a frozen
+    // WebView never settles, and an unbounded await made this loop's own
+    // timeout unreachable.
+    try {
+      last = await withTimeout(Promise.resolve().then(fn), Math.max(1, deadline - Date.now()), message);
+      if (last) return last;
+    } catch (e) { last = e; }
     await sleep(interval);
   }
   throw new Error(`timed out after ${timeout} ms waiting for ${message}${last instanceof Error ? ` (last error: ${last.message})` : ''}`);
@@ -236,7 +277,8 @@ async function seedLongChannel(serverId, userId, token, count) {
 }
 
 // ── Platform layer ─────────────────────────────────────────────────────────
-const sh = async (cmd) => (await device.shell(cmd)).toString().trim();
+const sh = async (cmd, ms = 120_000) =>
+  (await withTimeout(device.shell(cmd), ms, `adb shell "${cmd.slice(0, 80)}"`)).toString().trim();
 
 // Failure-only diagnostics: retain the ORIGINAL WebView assertion and capture
 // enough Android state to distinguish a native crash, a stopped Activity, and
@@ -291,8 +333,9 @@ async function exitOf(pidValue) {
 async function attachPage({ timeout = 60_000 } = {}) {
   if (MODE === 'dryrun') return page;
   try {
+    const attachStarted = Date.now();
     const webview = await device.webView({ pkg: PKG }, { timeout });
-    const p = await webview.page();
+    const p = await withTimeout(webview.page(), Math.max(1_000, timeout - (Date.now() - attachStarted)), 'WebView DevTools page');
     p.setDefaultTimeout(20_000);
     page = p;
     return p;
@@ -715,7 +758,7 @@ async function main() {
       newAnrs: anrAfter - anrBefore,
       runs: launches,
     };
-  });
+  }, { budgetMs: Math.max(CHECK_BUDGET_MS, COLD_STARTS * 120_000) });
 
   await check('A02', 'login through the WebView reaches the app shell', async () => {
     const t0 = Date.now();
@@ -1316,6 +1359,6 @@ main()
     console.log(`device: ${JSON.stringify(facts.device ?? {})}`);
     for (const r of results) console.log(`${r.status.padEnd(8)} ${r.id.padEnd(7)} ${r.title}${r.error ? `\n          ↳ ${r.error.split('\n')[0]}` : ''}${r.reason ? `\n          ↳ ${r.reason}` : ''}${r.detail ? `\n          ↳ ${JSON.stringify(r.detail)}` : ''}`);
     console.log(`TOTAL pass=${summary.totals.pass} fail=${summary.totals.fail} skipped=${summary.totals.skipped} measured=${summary.totals.measured} (skipped and measured are never counted as pass)`);
-    try { if (device) await device.close(); } catch {}
+    try { if (device) await withTimeout(device.close(), 10_000, 'adb device close'); } catch {}
     process.exit(summary.totals.fail > 0 ? 1 : 0);
   });

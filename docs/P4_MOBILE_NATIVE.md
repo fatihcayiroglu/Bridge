@@ -511,3 +511,32 @@ no retries and no relaxed timeouts):
   exactly as A01 does. The next, independent check therefore does not
   inherit a dead WebView. The restore is recorded in the evidence, and a
   failed restore is reported.
+
+**Second run (PR #238, [run 38582334149](https://github.com/fatihcayiroglu/Bridge/actions/runs/38582334149)): the harness hung.**
+
+- **Hung on the first check.** A01 started at 14:46:29 and produced no
+  further output until the job was cancelled at its 60-minute limit (15:42).
+  There is no PASS or FAIL and no evidence; it counts as **UNEXECUTED**, not
+  as a result.
+- **The cause is in the harness.** It had no bound on two calls:
+  - `until()` checked its deadline only between attempts, so a
+    `page.evaluate` on a frozen WebView (Playwright gives it no timeout)
+    never returned.
+  - `sh()` (adb shell, including `am start -W`) had no timeout at all.
+- **What hung inside A01 is still unknown.** A frozen renderer, a stuck
+  `am start` and a stuck DevTools attach are all possible. A green `main`
+  run finishes the whole journey in about 9 minutes; its longest check is
+  L02 at 76 s.
+
+**Harness changes after that run** (assertions and timeouts unchanged,
+nothing retried):
+
+- **Bounded calls.** Every `adb shell` call is bounded at 120 s and names
+  itself when it fails. Each `until()` attempt is bounded by the time left.
+  The DevTools attach, the DOM summary, the screenshot and the device close
+  are all bounded.
+- **Per-check watchdog.** Each check and measurement has a 300 s budget
+  (CS01: 120 s per cold start). Overrunning it is a FAIL carrying device
+  evidence: PID, top activity, crash headers and the OS exit record. The next
+  check then starts from a freshly launched app, so a wedged WebView cannot
+  stall the run again.
