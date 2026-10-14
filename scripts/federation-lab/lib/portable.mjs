@@ -3,7 +3,7 @@
 // in the lab BEFORE A exports any payload. This is not TOFU / automatic trust.
 // Only the read-only stage is measured: never imply approved apply/import.
 import { generateKeyPairSync, createHash } from 'node:crypto';
-import { request, makeServer } from '../../multinode/lib/client.mjs';
+import { request, makeServer, BROWSER } from '../../multinode/lib/client.mjs';
 import { getTls, postTls } from './apsign.mjs';
 
 export function makePortableLabTrust(sourceOrigin, now = Date.now()) {
@@ -46,13 +46,13 @@ async function scopedGrant(base, person, scope) {
 async function tlsMutation(url, owner, grant, body, ca) {
   const base = new URL(url).origin;
   const csrf = await getTls(base + '/api/csrf-token', ca, {
-    Authorization: 'Bearer ' + owner.token,
+    ...BROWSER, Authorization: 'Bearer ' + owner.token,
   });
   if (csrf.status !== 200 || typeof csrf.body?.token !== 'string') {
     throw new Error('TLS CSRF issuance unavailable (' + csrf.status + ')');
   }
   return postTls(url, {
-    Host: new URL(url).host, Authorization: 'Bearer ' + owner.token,
+    ...BROWSER, Host: new URL(url).host, Authorization: 'Bearer ' + owner.token,
     'X-CSRF-Token': csrf.body.token,
     'X-Bridge-Step-Up': grant,
     'Content-Type': 'application/json',
@@ -73,13 +73,14 @@ export async function runPortableTlsSourceReview({ lab, origins, check }) {
   const dest = await makeServer(B, ownerB);
   const exportGrant = await scopedGrant(A, ownerA, 'sensitive-export');
   const importGrant = await scopedGrant(B, ownerB, 'account-security');
+  const nonOwnerGrant = await scopedGrant(B, otherB, 'account-security');
 
   // Real HTTPS: DNS name in SNI, trust-anchored lab CA; independent A & B
   // processes/stores, not two tenants on one process or a mocked server.
   const sourceUrl = origins.a + '/api/servers/' + encodeURIComponent(source.serverId) +
     '/portable-export/attested-pair';
   const bundle = await getTls(sourceUrl, ca, {
-    Authorization: 'Bearer ' + ownerA.token,
+    ...BROWSER, Authorization: 'Bearer ' + ownerA.token,
     'X-Bridge-Step-Up': exportGrant,
   });
   const shape = bundle.body?.structure && bundle.body?.permissions && bundle.body?.attestation;
@@ -133,7 +134,7 @@ export async function runPortableTlsSourceReview({ lab, origins, check }) {
     wrongOrigin.status === 422 && wrongOrigin.body?.code === 'PORTABLE_SOURCE_ATTESTATION_INVALID',
     'TLS POST ' + wrongOrigin.status);
 
-  const nonOwner = await tlsMutation(reviewUrl, otherB, importGrant, baseBody, ca);
+  const nonOwner = await tlsMutation(reviewUrl, otherB, nonOwnerGrant, baseBody, ca);
   check('P7-TLS-06', 'a nonowner on B cannot review an independently signed source',
     nonOwner.status === 403, 'TLS POST ' + nonOwner.status);
 
