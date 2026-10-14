@@ -48,6 +48,11 @@ function canonicalOrigin(value) {
   return value;
 }
 function destination(value) {
+  // Node's POSIX mode does not enforce Windows ACLs. Refuse an unverifiable
+  // security guarantee rather than writing a potentially public private key.
+  if (process.platform === 'win32' || typeof process.getuid !== 'function') {
+    refuse('Provision in a hardened POSIX environment with mode-0700 storage.');
+  }
   const dir = resolve(value);
   if (dir === ROOT || dir.startsWith(ROOT + sep)) {
     refuse('Refusing to store signing material inside the Bridge repository.');
@@ -56,8 +61,8 @@ function destination(value) {
   if (!info.isDirectory() || info.isSymbolicLink() || realpathSync(dir) !== dir) {
     refuse('Output must be an existing real directory, not a symlink.');
   }
-  if (process.platform !== 'win32' && (info.mode & 0o022) !== 0) {
-    refuse('Output directory must not be group/world-writable.');
+  if (info.uid !== process.getuid() || (info.mode & 0o077) !== 0) {
+    refuse('Output directory must be owned by the operator and mode 0700.');
   }
   const paths = Object.values(NAMES).map(name => join(dir, name));
   if (paths.some(path => existsSync(path))) {
