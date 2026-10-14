@@ -156,3 +156,86 @@ describe('single-node mode', () => {
     expect(JSON.stringify([...store.entries()])).not.toContain(token);
   });
 });
+
+
+describe('challenge-store error boundaries and one-use recovery', () => {
+  it('propagates a live authoritative Redis read failure instead of interpreting it as an absent challenge', async () => {
+    const { mod, cache } = loadConfigured();
+    cache.getAuthoritative.mockRejectedValueOnce(new Error('redis read deadline exceeded'));
+    await expect(mod.peekTwoFactorLoginChallenge(TOKEN))
+      .rejects.toThrow('redis read deadline exceeded');
+    expect(cache.get).not.toHaveBeenCalled();
+  });
+
+  it('propagates an authoritative Redis Lua failure without falling back to in-memory consumption', async () => {
+    const { mod, cache } = loadConfigured();
+    cache.luaEvalAuthoritative.mockRejectedValueOnce(new Error('redis write deadline exceeded'));
+    await expect(mod.claimTwoFactorLoginChallenge(TOKEN))
+      .rejects.toThrow('redis write deadline exceeded');
+    expect(cache.get).not.toHaveBeenCalled();
+    expect(cache.del).not.toHaveBeenCalled();
+  });
+
+  it('never trusts a wrong-type Redis Lua reply or deserializes a scalar as a valid challenge', async () => {
+    const { mod, cache } = loadConfigured();
+    for (const raw of [Buffer.from('{}'), 1, true, { userId: 'u1' }, 'null', 'false', '[]', '"user-1"']) {
+      cache.luaEvalAuthoritative.mockResolvedValueOnce(raw);
+      await expect(mod.claimTwoFactorLoginChallenge(TOKEN)).resolves.toBeNull();
+    }
+    expect(cache.get).not.toHaveBeenCalled();
+    expect(cache.del).not.toHaveBeenCalled();
+  });
+
+  it('refuses non-object or missing persisted challenge fields without leaking a session', async () => {
+    const { mod, cache } = loadConfigured();
+    const invalid = [
+      false, 'serialized-string', 123, {},
+      { userId: 'u1', tokenVersion: 1 },
+      { userId: 'u1', issuedAt: Date.now() },
+      { userId: 'u1', tokenVersion: Number.NaN, issuedAt: Date.now() },
+      { userId: 'u1', tokenVersion: 1.5, issuedAt: Date.now() },
+      { userId: 'u1', tokenVersion: 1, issuedAt: 'yesterday' },
+    ];
+    for (const value of invalid) {
+      cache.getAuthoritative.mockResolvedValueOnce(value);
+      await expect(mod.peekTwoFactorLoginChallenge(TOKEN)).resolves.toBeNull();
+    }
+    expect(cache.getAuthoritative).toHaveBeenCalledTimes(invalid.length);
+  });
+
+  it('a single-node failed deletion never returns a consumed challenge, and a retry may claim it', async () => {
+    const { mod, cache } = loadSingleNode();
+    const token = await mod.issueTwoFactorLoginChallenge('owner-1', 7);
+    cache.del.mockRejectedValueOnce(new Error('delete failed before mutation'));
+
+    await expect(mod.claimTwoFactorLoginChallenge(token))
+      .rejects.toThrow('delete failed before mutation');
+    await expect(mod.claimTwoFactorLoginChallenge(token))
+      .resolves.toMatchObject({ userId: 'owner-1', tokenVersion: 7 });
+    await expect(mod.claimTwoFactorLoginChallenge(token)).resolves.toBeNull();
+    expect(cache.del).toHaveBeenCalledTimes(2);
+  });
+
+  it('a single-node failed read releases its per-token lock before the next retry', async () => {
+    const { mod, cache } = loadSingleNode();
+    const token = await mod.issueTwoFactorLoginChallenge('owner-2', 8);
+    cache.get.mockRejectedValueOnce(new Error('local cache read unavailable'));
+
+    await expect(mod.claimTwoFactorLoginChallenge(token))
+      .rejects.toThrow('local cache read unavailable');
+    await expect(mod.claimTwoFactorLoginChallenge(token))
+      .resolves.toMatchObject({ userId: 'owner-2', tokenVersion: 8 });
+    expect(cache.del).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalid local state does not delete an unverifiable challenge or issue a session', async () => {
+    const { mod, cache, store } = loadSingleNode();
+    const token = await mod.issueTwoFactorLoginChallenge('owner-3', 9);
+    const key = [...store.keys()][0]!;
+    store.set(key, { userId: 'owner-3', tokenVersion: -1, issuedAt: Date.now() });
+
+    await expect(mod.claimTwoFactorLoginChallenge(token)).resolves.toBeNull();
+    expect(cache.del).not.toHaveBeenCalled();
+    expect(store.has(key)).toBe(true);
+  });
+});
