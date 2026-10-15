@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseApplicationExits, parseDependencyKillLine } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -39,4 +39,40 @@ test('only reports provider and process names from ActivityManager kill logs', (
     provider: null, dyingProcess: null, killLineFound: false,
   });
   assert.doesNotMatch(JSON.stringify(parseDependencyKillLine(log, 6654)), /private-id/);
+});
+
+
+test('categorizes Bridge ANRs while stripping raw intent, window and user data', () => {
+  const text = [
+    'E ActivityManager: ANR in com.bridge.app.debug (com.bridge.app.debug/.MainActivity)',
+    'E ActivityManager: PID: 1234 token=never-export',
+    'E ActivityManager: Reason: Input dispatching timed out (FocusEvent(hasFocus=false) account=private@example.com)',
+    'E ActivityManager: ANR in com.other.app',
+    'E ActivityManager: Reason: executing service secret=other-process',
+    'E ActivityManager: ANR in com.bridge.app.debug',
+    'E ActivityManager: Reason: Broadcast of Intent { act=private.password.RESET token=topsecret }',
+    'E ActivityManager: ANR in com.bridge.app.debug.evil',
+    'E ActivityManager: Reason: ContentProvider not responding',
+    'E ActivityManager: ANR in com.bridge.app.debug',
+    'E ActivityManager: Reason: unexpected private/path/user/id',
+  ].join('\n');
+  const facts = parseActivityManagerAnrs(text, 'com.bridge.app.debug');
+  assert.deepEqual(facts, [
+    { category: 'input_dispatch_timeout', focusEvent: true },
+    { category: 'broadcast_timeout', focusEvent: false },
+    { category: 'unknown', focusEvent: false },
+  ]);
+  assert.doesNotMatch(JSON.stringify(facts),
+    /private|secret|token|password|email|example\.com|reset|1234|\/path/i);
+  assert.deepEqual(parseActivityManagerAnrs(text, 'com.bridge.app.debug', 1), [
+    { category: 'input_dispatch_timeout', focusEvent: true },
+  ]);
+});
+
+test('rejects unsafe process selectors and safely bounds unknown ANR records', () => {
+  assert.deepEqual(parseActivityManagerAnrs('ANR in com.bridge.app.debug', 'com.bridge.app.debug; cat /secrets'), []);
+  const raw = Array.from({ length: 20 }, () => 'ANR in com.bridge.app.debug\nReason: executing service').join('\n');
+  const facts = parseActivityManagerAnrs(raw, 'com.bridge.app.debug', 1000);
+  assert.equal(facts.length, 10);
+  assert.ok(facts.every((item) => item.category === 'service_timeout'));
 });
