@@ -163,6 +163,8 @@ describe('@everyone / @here with MENTION_EVERYONE', () => {
     '@everyone_else is a username, not a mass ping',
     '@here123 is a username, not a mass ping',
     '@everyoneElse is a username, not a mass ping',
+    'contact team@everyone.example by email, not by mass ping',
+    'prefix@here should not alert a whole server',
   ])('a privileged user writing %s does not trigger a mass notification', async (content) => {
     await grantRole(sender._id, PERMS.MENTION_EVERYONE);
     await send(content);
