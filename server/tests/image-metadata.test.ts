@@ -255,7 +255,7 @@ describe('fail closed', () => {
       let largestRead = 0;
       try {
         await expect(stripImageMetadataFile(file, 'image/webp')).rejects.toBeInstanceOf(ImageMetadataError);
-        largestRead = Math.max(0, ...readSpy.mock.calls.map(args => Number(args[3]) || 0));
+        largestRead = Math.max(0, ...readSpy.mock.calls.map(args => Number((args as readonly unknown[])[3]) || 0));
       } finally {
         readSpy.mockRestore();
       }
@@ -328,7 +328,7 @@ describe('stripImageMetadataFile (uploads on disk)', () => {
       let largestRead = 0;
       try {
         report = await stripImageMetadataFile(file, mime);
-        largestRead = Math.max(0, ...readSpy.mock.calls.map(args => Number(args[3]) || 0));
+        largestRead = Math.max(0, ...readSpy.mock.calls.map(args => Number((args as readonly unknown[])[3]) || 0));
       } finally {
         readSpy.mockRestore();
       }

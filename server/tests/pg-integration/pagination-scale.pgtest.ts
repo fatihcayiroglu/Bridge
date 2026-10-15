@@ -280,7 +280,7 @@ RUN('real PostgreSQL — deterministic pagination at scale', () => {
       [['idx_members_server_page', 'idx_messages_channel_cursor']],
     );
     expect(result.rows).toHaveLength(2);
-    const definitions = Object.fromEntries(result.rows.map(row => [row.indexname, row.indexdef]));
+    const definitions = Object.fromEntries(result.rows.map((row: { indexname: string; indexdef: string }) => [row.indexname, row.indexdef]));
     expect(definitions.idx_messages_channel_cursor).toContain('"channelId", "createdAt" DESC, _id DESC');
     expect(definitions.idx_members_server_page).toContain('"serverId", "joinedAt", "userId"');
     expect(definitions.idx_members_server_page).not.toContain('WHERE');

@@ -88,7 +88,7 @@ function setPolicy(key: Record<string, unknown>) {
   process.env.BRIDGE_PORTABLE_DESTINATION_SOURCE_REGISTRY_B64 =
     Buffer.from(JSON.stringify(policy), 'utf8').toString('base64');
 }
-function post(data: unknown) {
+function post(data: string | object) {
   return request(app())
     .post(`/api/servers/${SID}/portable-import/source-attestation-review`)
     .set('Host', 'attacker-host.invalid')

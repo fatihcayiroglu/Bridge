@@ -189,7 +189,7 @@ RUN('gerçek PostgreSQL — arama puanlaması sınırlı pencerede', () => {
 
     const rows = await unifiedFtsSearch(
       'ortak', { userId: 'pgt-u', serverIds: [SERVER], channelIds: [ALLOWED], sources: ['channel'] }, 50,
-    ) as Array<{ channelId: string }>;
+    );
     expect(rows).toHaveLength(50);
     for (const r of rows) expect(r.channelId).toBe(ALLOWED);
   }, 120_000);

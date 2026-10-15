@@ -23,7 +23,8 @@ function sample() {
     '2026-10-12T00:00:00.000Z',
   );
 }
-const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
+type Mutable<T> = { -readonly [K in keyof T]: Mutable<T[K]> };
+const clone = <T>(x: T): Mutable<T> => JSON.parse(JSON.stringify(x)) as Mutable<T>;
 const invalid = (value: unknown) => expect(() => validatePortableCommunityPermissionManifest(value))
   .toThrow(PortableCommunityPermissionsError);
 

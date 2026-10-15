@@ -39,7 +39,8 @@ function permissions() {
     at,
   );
 }
-function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
+type Mutable<T> = { -readonly [K in keyof T]: Mutable<T[K]> };
+function clone<T>(value: T): Mutable<T> { return JSON.parse(JSON.stringify(value)) as Mutable<T>; }
 function resign(value: ReturnType<typeof permissions>) {
   const { integrity: _integrity, portability: _portability, ...data } = value;
   value.integrity.digest = createHash('sha256').update(JSON.stringify(data), 'utf8').digest('hex');

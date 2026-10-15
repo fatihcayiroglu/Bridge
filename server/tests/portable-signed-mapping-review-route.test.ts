@@ -47,7 +47,7 @@ function app() {
   a.use('/api/servers', serversRouter);
   return a;
 }
-function post(user: string | null, payload: unknown = input(),
+function post(user: string | null, payload: string | object = input(),
   scope: 'account-security' | 'sensitive-export' | null = null) {
   let q = request(app())
     .post(`/api/servers/${SID}/portable-import/signed-mapping-review`)

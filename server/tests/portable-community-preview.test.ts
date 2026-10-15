@@ -32,7 +32,7 @@ const source = () => buildPortableCommunityStructure(
   [{ _id: 'source-role', name: 'Moderator', permissions: 0, position: 0 }],
   '2026-10-11T12:00:00.000Z',
 );
-function preview(userId: string, body: unknown, scope: 'account-security' | 'sensitive-export' | null = null) {
+function preview(userId: string, body: string | object, scope: 'account-security' | 'sensitive-export' | null = null) {
   const q = request(app()).post(`/api/servers/${TARGET}/portable-import/preview`)
     .set('Authorization', `Bearer ${token(userId)}`);
   return (scope ? q.set(stepUpHeader(userId, scope)) : q).send(body);

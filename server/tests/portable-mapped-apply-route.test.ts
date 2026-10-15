@@ -23,7 +23,7 @@ import { mintStepUpGrant, STEP_UP_HEADER } from '../lib/stepUp';
 import { readDestinationPinnedSourceRegistry } from '../lib/portableDestinationTrustConfig';
 import { applyApprovedPortableCommunityMapping } from '../lib/portableAtomicMappedApply';
 
-const db = require('../db/loader') as import('./helpers/mockDb').MockDb & {
+const db = require('../db/loader') as Omit<import('./helpers/mockDb').MockDb, '_pool'> & {
   _pool?: { connect(): Promise<never> };
 };
 const registry = readDestinationPinnedSourceRegistry as jest.Mock;
@@ -64,7 +64,7 @@ const payload = () => ({
   confirmation: 'APPLY_MAPPED_PORTABLE_METADATA_ONLY',
   approvalToken: token,
 });
-function submit(user: string | null, body: unknown = payload(),
+function submit(user: string | null, body: string | object = payload(),
   scope: 'account-security' | 'sensitive-export' | null = null) {
   let r = request(app()).post('/api/servers/' + SID + '/portable-import/mapped-apply')
     .set('Host', 'attacker-redirect.example');

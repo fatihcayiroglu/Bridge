@@ -98,7 +98,7 @@ RUN('gerçek PostgreSQL — sunucu aggregate oluşturma', () => {
 
   async function removeAggregates(ownerId: string): Promise<void> {
     const owned = await q('SELECT _id FROM servers WHERE "ownerId"=$1', [ownerId]);
-    const ids = owned.rows.map(row => String(row._id));
+    const ids = owned.rows.map((row: { _id: unknown }) => String(row._id));
     if (!ids.length) return;
     await q('DELETE FROM members WHERE "serverId" = ANY($1::text[])', [ids]);
     await q('DELETE FROM channels WHERE "serverId" = ANY($1::text[])', [ids]);

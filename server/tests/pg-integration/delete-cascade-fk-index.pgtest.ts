@@ -172,3 +172,5 @@ RUN('gerçek PostgreSQL — cascade silmede başvuran sütun indeksli', () => {
       .toBe(USERS * (CHANNELS - DELETE_CHANNELS - 2));
   });
 });
+
+export {};
