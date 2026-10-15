@@ -21,7 +21,21 @@ fi
 
 CHECKSUM_FILE="${DUMP_FILE}.sha256"
 if [ -f "$CHECKSUM_FILE" ]; then
-  (cd "$(dirname "$DUMP_FILE")" && sha256sum -c "$(basename "$CHECKSUM_FILE")")
+  # sha256sum -c accepts ANY filename listed in the sidecar. A sidecar copied
+  # from another valid dump can therefore pass without checking DUMP_FILE at all.
+  # Require the exact single record emitted by backup.sh for THIS basename.
+  # A checksum is an accidental-integrity check, not an authenticity signature.
+  if [ "$(wc -c < "$CHECKSUM_FILE")" -gt 512 ] || [ "$(wc -l < "$CHECKSUM_FILE")" -ne 1 ]; then
+    echo "Checksum sidecar must contain exactly one bounded record for this dump." >&2
+    exit 65
+  fi
+  expected_record="$(cd "$(dirname "$DUMP_FILE")" && sha256sum -- "$(basename "$DUMP_FILE")")"
+  actual_record="$(cat -- "$CHECKSUM_FILE")"
+  if [ "$actual_record" != "$expected_record" ]; then
+    echo "Checksum sidecar does not match the requested dump (name and SHA-256)." >&2
+    exit 65
+  fi
+  echo "$(basename "$DUMP_FILE"): OK"
 else
   echo "UYARI: checksum sidecar yok; gzip bütünlüğü doğrulandı ancak artifact identity doğrulanamadı." >&2
 fi
