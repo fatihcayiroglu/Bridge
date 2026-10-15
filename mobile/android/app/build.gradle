@@ -56,6 +56,17 @@ android {
   }
 }
 
+// #209 A/B DIAGNOSTIC ONLY — no production adoption.
+ // The previous experiment removed the *eager* EmojiCompatInitializer but
+ // still held a stable gms.persistent FontsProvider connection and failed
+ // CS01 with DEPENDENCY DIED. Here remove the emoji2 runtime artifact
+ // entirely to distinguish lazy library ownership from another source.
+ // This deliberately changes native emoji capabilities and may break
+ // AppCompat views. A PASS without a provider death is not a reliability fix.
+configurations.configureEach {
+  exclude group: 'androidx.emoji2', module: 'emoji2'
+}
+
 repositories {
   flatDir {
     dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
