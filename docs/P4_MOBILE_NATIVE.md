@@ -652,3 +652,28 @@ The subject's free text, other threads, lock arguments, build IDs and any app da
 
   Nothing is retried and no assertion changed.
 - **Still not proven:** which app component opens the font-provider connection. The candidate is still AndroidX EmojiCompat's start-up initializer. The built APK could not be inspected from the investigation environment, whose network policy denies the CI artifact host. So whether `androidx.emoji2` is in this build is still unconfirmed.
+
+**Ninth run (PR #238, [run 38691656963](https://github.com/fatihcayiroglu/Bridge/actions/runs/38691656963), head `3ed12f5`): PASS, 33 PASS / 0 FAIL / 0 SKIPPED / 4 MEASURED. This green run is diagnostic only.** It does not erase the failures above and does not close #209. The early samples it added show why it passed.
+
+| launch | started (UTC) | font provider right after `am start` | font provider once the UI was up |
+|---|---|---|---|
+| 1 | 06:25:25 | **stable** (s1), opened 2.3 s earlier | unstable only (s0 u1), 10.1 s old |
+| 2 | 06:25:40 | **stable** (s1), 2.0 s old | **still stable**, 12.2 s old |
+| 3 | 06:25:56 | **stable** (s1), 1.9 s old | **still stable**, 10.9 s old |
+| 4 | 06:26:12 | **stable** (s1), 2.5 s old | unstable only (s0 u1), 12.4 s old |
+| 5 | 06:26:29 | **stable** (s1), 2.1 s old | gone |
+
+- **Every cold start opens a stable connection** to `com.google.android.gms/.fonts.provider.FontsProvider` within about 2 s of process start. It stays stable for a variable time: at least 2 s, and more than 12 s in two of five launches.
+- **Play services' persistent process was SIGKILLed again**, at 06:26:43.786: PID 1426, SIGNALED, status 9, about 123 s after a slower boot (06:24:41).
+- **That kill landed about 14 s into cold start 5.** By then launch 5's connection was no longer stable, and ActivityManager kills only clients with a *stable* connection, so the app survived. Had the same kill landed 12 s into launch 2 or 3, the app would have died exactly as in runs 3, 6, 7 and 8. **The PASS is a matter of timing, not a fix.**
+- **L01:** a process 52 s old held no font-provider connection, which confirms the run-8 finding.
+
+**Experiment after this run.** The curated manifest now removes AndroidX's EmojiCompat start-up initializer (`androidx.emoji2.text.EmojiCompatInitializer`, `tools:node="remove"`). It does so through the standard merge into `androidx.startup.InitializationProvider`. A static test (`mobile/tests/android-startup-initializers.test.js`) locks the opt-out in place.
+
+- **Why it settles the question:** the connection appeared in 5 of 5 early samples, so one run decides it:
+  - if the font-provider connection is gone from every early sample, EmojiCompat was the component that opened it;
+  - if it is still there, the hypothesis is refuted, and the change will be reverted.
+- **User-visible effect:** Bridge's UI is a WebView, which draws emoji with Chromium's own fonts. Only native AppCompat text (Capacitor's alert/confirm dialogs) loses EmojiCompat. On old Android versions, emoji newer than the system font there may show as boxes.
+- **Still open:**
+  - whether this makes CS01 reliable needs more than one run, because the kill only lands in the window sometimes;
+  - real-device evidence stays **BLOCKED: physical device required**.
