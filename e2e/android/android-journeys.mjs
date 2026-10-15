@@ -932,8 +932,13 @@ async function main() {
     }
     const anrAfter = await anrs();
     facts.coldStartStress = launches;
+    const gmsExits = await gmsPersistentExits();
+    // A failed assertion never prints the return value, so the per-launch
+    // samples ride in the message (#209: run 38696869775 lost them this way).
     assert(anrAfter === anrBefore,
-      `Android ActivityManager reported ${anrAfter - anrBefore} ANR(s) across ${COLD_STARTS} cold starts`);
+      `Android ActivityManager reported ${anrAfter - anrBefore} ANR(s) across ${COLD_STARTS} cold starts; ` +
+      `launches ${JSON.stringify(launches.map((l, n) => ({ launch: n + 1, startedAt: l.startedAt, early: providerList(l.providersEarly), atUi: providerList(l.providers) })))}; ` +
+      `gms.persistent exits ${JSON.stringify(gmsExits)}`);
     const times = launches.map((l) => l.totalTimeMs).filter(Number.isFinite);
     return {
       launches: launches.length,
@@ -942,7 +947,7 @@ async function main() {
       maxLoad1: Math.max(...launches.map((l) => l.load1 ?? 0)),
       newAnrs: anrAfter - anrBefore,
       // Did Play services' persistent process die during these launches? (#209, MEASURED)
-      gmsPersistentExits: await gmsPersistentExits(),
+      gmsPersistentExits: gmsExits,
       runs: launches,
     };
   }, { budgetMs: Math.max(CHECK_BUDGET_MS, COLD_STARTS * 120_000) });

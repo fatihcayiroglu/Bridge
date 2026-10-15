@@ -690,3 +690,34 @@ The subject's free text, other threads, lock arguments, build IDs and any app da
   - Bridge's font stacks start with `'Inter'` and `'JetBrains Mono'` (`client/css/tokens.css`), which are not installed on Android.
   - Chromium on Android can match fonts through Play services' font provider.
   - This is unproven. The next run also lists which bundled libraries name the font authority (`com.google.android.gms.fonts`) or emoji2's `LOAD_EMOJI_FONT` discovery intent at all. The system WebView is not bundled, so it cannot appear in that list.
+
+**Eleventh run (PR #238, [run 38696869775](https://github.com/fatihcayiroglu/Bridge/actions/runs/38696869775), head `37e4a92`, EmojiCompat initializer still removed): FAIL, 31 PASS / 2 FAIL (CS01, ANR01) / 0 SKIPPED / 4 MEASURED.**
+
+**What the build shows (APK job, new facts step):**
+- **The removal did reach the build.** The manifest merger records `meta-data#androidx.emoji2.text.EmojiCompatInitializer` as **REJECTED from `androidx.emoji2:emoji2:1.3.0`**, which is how it records `tools:node="remove"`. So emoji2 *is* in the app, and its initializer was absent in runs 10 and 11. The manifest was the same for both.
+- **Start-up initializers left:** `androidx.lifecycle.ProcessLifecycleInitializer` (lifecycle-process 2.6.2) and `androidx.profileinstaller.ProfileInstallerInitializer` (profileinstaller 1.4.0).
+- **Nothing bundled names the font authority.** No bundled code or resource contains `com.google.android.gms.fonts`. The only match for either pattern is emoji2's `LOAD_EMOJI_FONT` discovery intent.
+- **Conclusion: EmojiCompat is ruled out** as the opener of the stable font-provider connection. In run 10, every early sample still showed that connection with the initializer verifiably removed. No other bundled library knows the provider, so the opener is outside the APK. That leaves the system WebView (Chromium runs inside the app process) or the Android framework. This is **not yet proven**.
+- **The experiment is reverted** in the next commit, as stated before it was run. The CI facts step stays.
+
+**What the emulator showed, a third failure form: a WebView input-device ANR.**
+- **Where it happened:** ActivityManager reported one ANR at 07:16:04, about 2 s into cold start 2 (launched 07:16:02), on a runner with a 1-minute load average of 25–29. It was "Input dispatching timed out", waited **5,001 ms for FocusEvent**.
+- **Main thread:**
+  - **State:** `Native`, blocked in a synchronous Binder call to system_server: `IInputManager$Stub$Proxy.getInputDevice` ← `InputManagerGlobal.getInputDevice` ← `InputDevice.getDevice`.
+  - **What triggered the call:** `J.N.MGCvz8lp(Native method)`, a Chromium JNI stub, which the main looper reached through `InputManagerGlobal$InputDeviceListenerDelegate.handleMessage`.
+  - **Meaning:** an input-device listener running WebView (Chromium) code asked the busy system process about an input device, and the main thread waited for the answer past Android's 5 s focus limit.
+- **RenderThread:** drawing (`CanvasContext::draw` → `FrameCommitWrapper::onFrameCommit`).
+- **No Bridge or Capacitor frame** is on either thread.
+
+**The three #209 forms seen so far, all inside Android or WebView code on a heavily loaded software-rendered emulator:**
+1. **DEPENDENCY DIED:** the app held a stable connection to Play services' font provider while Play services' persistent process was SIGKILLed (runs 3, 6, 7, 8).
+2. **RenderThread sync ANR** (run 5).
+3. **WebView input-device ANR** (this run).
+
+**Harness gap found and fixed.** CS01 failed on its final ANR assertion, which also never prints the return value, so this run's per-launch provider samples were lost again. The ANR assertion now carries every launch's early and at-UI samples and the `gms.persistent` exit records. Nothing is retried and no assertion changed.
+
+**Still open:**
+- the opener of the font-provider connection (next suspect: the system WebView; unproven);
+- whether any of the three forms appears on real hardware: **BLOCKED: physical device required**.
+
+#209 stays open.

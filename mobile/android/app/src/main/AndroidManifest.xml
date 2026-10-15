@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-  xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
   <application
     android:allowBackup="false"
@@ -51,26 +50,6 @@
         <action android:name="com.google.firebase.MESSAGING_EVENT" />
       </intent-filter>
     </service>
-
-    <!-- #209: no EmojiCompat auto-initialisation. AndroidX AppCompat pulls in
-         androidx.emoji2, whose start-up initializer loads an emoji font from Google Play
-         services' font provider. On the emulator every cold start held a STABLE
-         connection to com.google.android.gms/.fonts.provider.FontsProvider for 2-12 s
-         after launch, and four runs lost the app (exit reason DEPENDENCY DIED) when Play
-         services' persistent process was killed inside that window. Bridge's UI is a
-         WebView, which draws emoji with its own fonts, so nothing here needs EmojiCompat.
-         Whether this removes the connection is measured by CS01's provider samples
-         (e2e/android/android-journeys.mjs); evidence and limits in docs/P4_MOBILE_NATIVE.md.
-         Lock: mobile/tests/android-startup-initializers.test.js -->
-    <provider
-      android:name="androidx.startup.InitializationProvider"
-      android:authorities="${applicationId}.androidx-startup"
-      android:exported="false"
-      tools:node="merge">
-      <meta-data
-        android:name="androidx.emoji2.text.EmojiCompatInitializer"
-        tools:node="remove" />
-    </provider>
 
     <meta-data android:name="com.google.firebase.messaging.default_notification_icon"
       android:resource="@drawable/ic_notification" />
