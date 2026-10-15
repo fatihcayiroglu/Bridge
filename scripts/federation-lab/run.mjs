@@ -5,9 +5,9 @@
 //   node scripts/federation-lab/run.mjs [--scenarios identity,follow,post,...] [--work DIR] [--out DIR] [--keep]
 //
 // Topology (every process real, every state separate):
-//   A  https://a.bridge.test:57443 → Bridge (own PostgreSQL, Redis, uploads)
-//   B  https://b.bridge.test:57444 → Bridge (own PostgreSQL, Redis, uploads)
-//   X  https://evil.bridge.test:57445 → lab ActivityPub actor "mallory" (own key)
+//   A  https://a.bridge.test:24143 → Bridge (own PostgreSQL, Redis, uploads)
+//   B  https://b.bridge.test:24144 → Bridge (own PostgreSQL, Redis, uploads)
+//   X  https://evil.bridge.test:24145 → lab ActivityPub actor "mallory" (own key)
 // The names must resolve to 127.0.0.1 (/etc/hosts); TLS is a lab CA the
 // installations trust via NODE_EXTRA_CA_CERTS. SSRF_ALLOWLIST names exactly
 // these three hosts — the operator opt-in for a private federation.
@@ -41,8 +41,8 @@ const HOSTS = { a: 'a.bridge.test', b: 'b.bridge.test', x: 'evil.bridge.test' };
 // Resolves to 127.0.0.1 like the others but is NOT in SSRF_ALLOWLIST: a
 // private-address target reached through DNS. A raw TCP listener counts every
 // connection made to it — the SSRF checks assert that count stays zero.
-const CANARY = { host: 'canary.bridge.test', port: 57461 };
-const PORTS = { a: 57443, b: 57444, x: 57445 };
+// Keep the lab's fixed TCP listeners outside the default Linux ephemeral\n// range (32768–60999). Outbound connections from previous CI steps can\n// otherwise temporarily take a port before a lab service binds it.\n// The separate self-host lab uses 26100+, so these suites do not overlap.\nconst CANARY = { host: 'canary.bridge.test', port: 24161 };
+const PORTS = { a: 24143, b: 24144, x: 24145 };
 const ORIGIN = Object.fromEntries(Object.entries(HOSTS).map(([k, h]) => [k, `https://${h}:${PORTS[k]}`]));
 const actorUrl = (k, user) => `${ORIGIN[k]}/api/federation/users/${user}`;
 
@@ -59,10 +59,10 @@ const lab = { inst: {}, front: {}, users: {}, mallory: null, pki: null, evilInbo
 // A self-hosted AI provider for A (OpenAI-compatible, on loopback). B runs with
 // AI_PROVIDER=none AND a Groq key set: the off switch must win, and any attempt
 // to reach Groq would show up in B's egress log.
-const AI = { port: 57470, key: `lab-ai-key-${rnd()}${rnd()}` };
+const AI = { port: 24170, key: `lab-ai-key-${rnd()}${rnd()}` };
 // P6: a separate, Ollama-shaped embedding provider for A's pgvector path, so
 // the P5 chat-provider checks above keep their meaning. Started by `vector`.
-const EMBED = { port: 57471, dim: 768 };
+const EMBED = { port: 24171, dim: 768 };
 
 function sqlA(sql) { return lab.inst.a.psql('bridge', sql); }
 function sqlB(sql) { return lab.inst.b.psql('bridge', sql); }
@@ -99,7 +99,7 @@ async function setup() {
     a: { AI_PROVIDER: 'openai-compatible', AI_BASE_URL: lab.ai.baseUrl, AI_MODEL: 'lab-model', AI_API_KEY: AI.key, AI_TIMEOUT_MS: '6000' },
     b: { AI_PROVIDER: 'none', GROQ_API_KEY: 'gsk-lab-must-never-be-used' },
   };
-  let port = 57100;
+  let port = 24100;
   for (const k of ['a', 'b']) {
     const inst = new Instance({
       name: `fed${k}`, workDir, pgPort: port + 1, redisPort: port + 2, appPort: port + 3,
