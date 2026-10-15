@@ -258,6 +258,21 @@ export function registerSFUHandlers(
       socket.currentVoiceChannel = channelId;
       socket.currentVoiceServer  = actualServerId;
 
+      // Authorize again now that the peer is visible to the revocation paths
+      // (the same step as `voice:join` in voice.ts): a revocation that ran
+      // while this join was in flight found no peer and no room to evict.
+      const recheck = await authorizeMediaRoom(channelId, serverId);
+      const stillAllowed = !!recheck && (recheck.channelType !== 'stage' || await isStageParticipant(channelId, user._id));
+      if (generation !== sfuJoinGeneration) return;   // a leave or a newer join owns the cleanup
+      if (!stillAllowed || sfuPeers.get(socket.id) !== peer) {
+        await socket.leave(`voice:${channelId}`);
+        await cleanupPeer(socket.id, io, channelId, actualServerId);   // no-op if an eviction already ran
+        socket.currentVoiceChannel = null;
+        socket.currentVoiceServer = null;
+        emitSfuError(socket, 'join', requestId, 'FORBIDDEN', 'Bu medya odasına katılma yetkiniz yok.');
+        return;
+      }
+
       const existingPeers = [];
       for (const [sid, p] of room.peers) {
         if (sid === socket.id) continue;

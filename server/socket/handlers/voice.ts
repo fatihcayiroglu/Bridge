@@ -232,6 +232,20 @@ async function signalAllowed(socket: { id: string; currentVoiceChannel?: string;
       socket.currentVoiceServer = serverId;
       socket.join(`voice:${channelId}`);
 
+      // Authorize again now that the admission is visible. Every revocation
+      // (kick, ban, leave, a CONNECT or VIEW change) writes first and then
+      // evicts the sockets it finds in `voice:<id>` or by `currentVoiceChannel`.
+      // One that ran while this join waited for the roster lock found neither,
+      // so it could not evict this socket; its write is visible to this read.
+      // A revocation written after this read finds the socket and evicts it.
+      const stillAllowed = await mayJoinVoice(user._id, channelId, serverId);
+      if (generation !== voiceJoinGeneration) return;   // a leave or a newer join owns the cleanup
+      if (!stillAllowed || activeVoiceChannel(socket) !== channelId) {
+        await leaveVoice(socket, channelId, serverId, io);   // idempotent if an eviction already ran
+        socket.emit('voice:join-rejected', { channelId, requestId, code: 'FORBIDDEN' });
+        return;
+      }
+
       // Publish authoritative admission BEFORE asking this client to create
       // offers. Previously `voice:existing-peers` was emitted while
       // `currentVoiceChannel` was still null, so the first offers could be
