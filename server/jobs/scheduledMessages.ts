@@ -8,6 +8,8 @@ import { ScheduledMessages, Users, Messages, Members, Channels } from '../db/rep
 import { publishPersistedMessage } from '../lib/channelActivity';
 import { hasPermission, PERMS, resolvePermissions } from '../lib/permissions';
 import { parsePersistedNonNegativeInteger } from '../lib/persistedInteger';
+import { isMemberTimedOut } from '../lib/memberTimeout';
+import { checkMessageContent } from '../lib/messageContentPolicy';
 
 let _io: SocketServer | null = null;
 let _scheduledInterval: ReturnType<typeof setInterval> | null = null;
@@ -56,12 +58,14 @@ async function verifyDispatchAuthority(scheduled: {
   userId: string;
   serverId: string;
   channelId: string;
-}): Promise<{ ok: true } | { ok: false; reason: string }> {
+}): Promise<{ ok: true; perms: number; memberRoles: unknown; displayName: string } | { ok: false; reason: string }> {
   const user = await Users.findById(scheduled.userId);
   if (!user) return { ok: false, reason: 'user_not_found' };
 
   const member = await Members.findOne(scheduled.userId, scheduled.serverId);
   if (!member) return { ok: false, reason: 'membership_revoked' };
+  // A timed-out member cannot post, so neither can their schedule.
+  if (isMemberTimedOut(member.timeoutUntil)) return { ok: false, reason: 'member_timed_out' };
 
   const channel = await Channels.findById(scheduled.channelId) as { serverId?: string } | null;
   if (!channel || String(channel.serverId ?? '') !== scheduled.serverId) {
@@ -73,7 +77,12 @@ async function verifyDispatchAuthority(scheduled: {
     return { ok: false, reason: 'send_permission_revoked' };
   }
 
-  return { ok: true };
+  return {
+    ok: true,
+    perms,
+    memberRoles: (member as { roles?: unknown }).roles,
+    displayName: (member as { nickname?: string }).nickname || user.displayName || user.username,
+  };
 }
 
 async function dispatchDue(): Promise<void> {
@@ -99,6 +108,28 @@ async function dispatchDue(): Promise<void> {
           const user = await Users.findById(scheduled.userId);
           if (!user) {
             await ScheduledMessages.markFailed(scheduled._id, WORKER_ID, 'user_not_found', now);
+            continue;
+          }
+
+          // Posted now on the author's behalf: the content checks a message
+          // sent now passes (lib/messageContentPolicy.ts). A refusal is final;
+          // a rule-store failure throws and is retried like any dispatch error.
+          const refusal = await checkMessageContent({
+            userId: scheduled.userId,
+            serverId: scheduled.serverId,
+            channelId: scheduled.channelId,
+            content: scheduled.content,
+            senderPerms: authority.perms,
+            memberRoles: authority.memberRoles,
+            displayName: authority.displayName,
+          }, _io);
+          if (refusal) {
+            const reason = refusal.kind === 'spam' ? refusal.reason : refusal.code.toLowerCase();
+            await ScheduledMessages.markFailed(scheduled._id, WORKER_ID, reason, now);
+            logger.warn(
+              { event: 'scheduled_msg_content_refused', id: scheduled._id, reason },
+              'Scheduled message was not posted because its content was refused',
+            );
             continue;
           }
 
