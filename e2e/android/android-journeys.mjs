@@ -744,7 +744,11 @@ async function tapUiNode(match, what) {
     await sh(`input tap ${Math.round((x1 + x2) / 2)} ${Math.round((y1 + y2) / 2)}`);
     return { x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) };
   }
-  throw new Error(`no on-screen node for ${what}`);
+  // What was on screen instead (package names and permission-controller resource ids only):
+  // tells "the sheet had already gone" apart from "a different sheet or dialog was showing".
+  const packages = [...new Set([...xml.matchAll(/package="([^"]+)"/g)].map((m) => m[1]))].slice(0, 5);
+  const permissionIds = [...new Set([...xml.matchAll(/resource-id="[^"]*:id\/(permission_[a-z_]+)"/g)].map((m) => m[1]))].slice(0, 8);
+  throw new Error(`no on-screen node for ${what} (on screen: ${JSON.stringify(packages)}; permission controls: ${JSON.stringify(permissionIds)})`);
 }
 async function tapPermissionButton(kind) {
   const id = kind === 'deny' ? 'permission_deny_button' : 'permission_allow_foreground_only_button';
@@ -1344,11 +1348,13 @@ async function main() {
     await sleep(1_000);
     await requireVoiceSession('to send video in (P03 must have joined)');
     await page.evaluate(() => document.getElementById('vc-video')?.click());
+    // The permission was granted with `pm grant` above, so no sheet is expected here.
+    // Record whether one showed anyway (MEASURED; run 38709837786 saw one vanish before the tap).
     const sheet = await permissionSheet(4_000);
     if (sheet.shown) await tapPermissionButton('allow');
     const flow = await until(async () => { const a = await outboundAudio(); return a.videoPacketsSent > 30 ? a : null; }, { timeout: 45_000, message: 'outbound video RTP' });
     await page.evaluate(() => document.getElementById('vc-video')?.click());
-    return { videoPacketsSent: flow.videoPacketsSent };
+    return { videoPacketsSent: flow.videoPacketsSent, osSheetAfterGrant: sheet };
   });
 
   await check('V03', 'leaving voice closes the media connections', async () => {

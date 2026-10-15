@@ -785,3 +785,15 @@ The subject's free text, other threads, lock arguments, build IDs and any app da
 - **V03:** closed a real call. It passed `requireVoiceSession` first.
 
 **CS01.** All five early samples again show a **stable** font-provider connection (2.1–2.4 s old). At UI time, launches 2 and 3 still held it stable (10.6 s and 8.5 s). Play services did not die during the launches (`gmsPersistentExits` empty), so this PASS says nothing about reliability. #209 stays open.
+
+**Fifteenth run (PR #238, [run 38709837786](https://github.com/fatihcayiroglu/Bridge/actions/runs/38709837786), head `c2fa3ea`, docs-only): FAIL, 32 PASS / 1 FAIL (P07) / 0 SKIPPED / 4 MEASURED.**
+
+- **CS01 passed.** The same stable font-provider connection appeared in every early sample (2.2–3.1 s old). No Play services kill landed during the launches, so the PASS is diagnostic only.
+- **P07 failed: "no on-screen node for permission allow button".**
+  - **Setup:** P07 grants CAMERA with `pm grant`, passes its new voice-session precondition, and taps the camera toggle.
+  - **What failed:** `permissionSheet()` then found a permission-controller sheet in one UI dump. The follow-up `tapPermissionButton('allow')` took a second dump and found no allow button.
+  - **Afterwards:** V03 ran on the still-live call and passed.
+  - **What the log does not show:** whether the sheet had already gone by the second dump, or whether a different screen matched. Either way, a sheet appearing at all after `pm grant` is unexpected.
+- **Harness change after this run (evidence only; no assertion, timeout or retry changed):**
+  - a failed UI tap now reports what was on screen instead, as package names and permission-controller resource IDs only;
+  - P07 records, on every run, whether a permission sheet appeared after the grant (`osSheetAfterGrant`).
