@@ -21,7 +21,7 @@ import { io } from 'socket.io-client';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -1210,8 +1210,20 @@ async function main() {
     const anrLog = await sh("logcat -d -v brief -s ActivityManager:E | grep -F 'ANR in com.bridge.app.debug' || true");
     if (anrLog.includes('ANR in com.bridge.app.debug')) {
       await androidPressureEvidence('ANR01-failure');
-      // Count only package-specific ANR headers, never expose raw logcat lines.
+      // Preserve the original OS ANR assertion. Optionally classify its
+      // ActivityManager reason; never expose raw reason text or stack traces.
+      // Keep other-package ANR headers in the probe so their following Reason
+      // lines cannot be misattributed to this app.
       facts.androidAnrCount = anrLog.split('\n').filter(line => line.includes('ANR in com.bridge.app.debug')).length;
+      try {
+        const rawCategories = await androidFailureShell(
+          "logcat -d -v brief -s ActivityManager:E | grep -E 'ANR in |Reason:' || true");
+        const categories = parseActivityManagerAnrs(rawCategories, PKG);
+        facts.androidAnrCategories = { available: true, categories };
+        log('Android ANR category evidence', JSON.stringify(facts.androidAnrCategories));
+      } catch {
+        facts.androidAnrCategories = { available: false, error: 'anr-category-probe-unavailable' };
+      }
     }
     assert(!anrLog.includes('ANR in com.bridge.app.debug'),
       'Android ActivityManager detected an ANR; process restart/restoration is NOT sufficient for a pass');
