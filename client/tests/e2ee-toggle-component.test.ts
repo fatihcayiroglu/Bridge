@@ -85,6 +85,44 @@ describe('explicit E2EE toggle component contract', () => {
     expect(button.getAttribute('aria-pressed')).toBe('true');
   });
 
+  it('stays invisible when there is no API owner at mount, or feature-status cannot be reached', async () => {
+    BridgeRegistry.unregister('apiFetch');
+    instance = mount(E2EEToggle, { target: host, props: { channelId: 'c1' } });
+    await settle();
+    expect(host.querySelector('.e2ee-btn')).toBeNull();
+    await unmount(instance); instance = null; host.innerHTML = '';
+
+    BridgeRegistry.register('apiFetch', apiFetch as never);
+    apiFetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    instance = mount(E2EEToggle, { target: host, props: { channelId: 'c1' } });
+    await settle();
+    expect(apiFetch).toHaveBeenCalledWith('/api/e2e/feature-status');
+    expect(host.querySelector('.e2ee-btn')).toBeNull();
+  });
+
+  it('locks the switch while the change is in flight, and turning it off is announced as off', async () => {
+    apiFetch.mockResolvedValueOnce(response(200, { enabled: true }));
+    instance = mount(E2EEToggle, { target: host, props: { channelId: 'c1', initialEnabled: true } });
+    await settle();
+    const button = host.querySelector<HTMLButtonElement>('.e2ee-btn')!;
+
+    let answer!: (r: Response) => void;
+    apiFetch.mockReturnValueOnce(new Promise<Response>(resolve => { answer = resolve; }));
+    button.click();
+    flushSync();
+    expect(button.disabled).toBe(true);
+    expect(host.querySelector('.e2ee-spinner')).not.toBeNull();
+    expect(host.querySelector('.e2ee-switch')).toBeNull();
+    expect(JSON.parse(String(apiFetch.mock.calls[1]?.[1]?.body))).toEqual({ enabled: false });
+
+    answer(response(200, { e2eeEnabled: false }));
+    await settle();
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-pressed')).toBe('false');
+    expect(host.querySelector('.e2ee-switch.on')).toBeNull();
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining('devre dışı'), 'info');
+  });
+
   it('fails closed if the API registry owner disappears after mount', async () => {
     apiFetch.mockResolvedValueOnce(response(200, { enabled: true }));
     instance = mount(E2EEToggle, { target: host, props: { channelId: 'c1' } });
