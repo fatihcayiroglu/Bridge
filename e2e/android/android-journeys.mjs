@@ -419,6 +419,17 @@ function parseProviderConnections(out) {
   }
   return { sections, connections };
 }
+/** One line per connection, for failure messages that must stay readable. */
+function providerList(sample) {
+  if (!sample || !Array.isArray(sample.connections)) return sample ?? null;
+  return sample.connections.map((c) => (c.unparsed ? 'unparsed'
+    : `${c.provider} s${c.stable} u${c.unstable}${c.waiting ? ' WAITING' : ''}${c.dead ? ' DEAD' : ''}${c.age ? ` ${c.age}` : ''}`));
+}
+/** Play services' persistent process exit records (the process whose death took the app with it in #209). */
+async function gmsPersistentExits() {
+  const exits = await processExits(10, 'com.google.android.gms');
+  return Array.isArray(exits) ? exits.filter((e) => e.process === 'com.google.android.gms.persistent').slice(0, 3) : exits;
+}
 
 /**
  * Where this package's main thread was when the OS declared an ANR. The
@@ -875,18 +886,29 @@ async function main() {
       const pressure = await androidPressureEvidence(`CS01-cold-${i}`);
       let launch = {};
       let launchedPid = null;
+      let providersEarly = null;
+      const startedAt = new Date().toISOString();
       try {
         launch = await platform.coldLaunch();
         launchedPid = await pid();
+        // #209: sampled while start-up is still running (the DEPENDENCY DIED
+        // kills came 2-7 s after am start), before the WebView is attached.
+        providersEarly = await providerConnections();
         await attachPage();
         await until(async () => (await authVisible()) || (await appVisible()), { timeout: 45_000, message: `UI after cold start ${i}` });
       } catch (err) {
         // Name the launch that failed and why the OS ended its process, if it did.
         facts.coldStartStress = launches;
         const exit = launchedPid ? await exitOf(launchedPid) : await recentExits(2);
+        const gms = await gmsPersistentExits();
         await restoreLaunch(`CS01 cold start ${i}`);
-        throw new Error(`cold start ${i}/${COLD_STARTS} (am start: ${launch.status ?? 'no status'}/${launch.launchState ?? 'no launch state'}; ` +
-          `pid after launch ${launchedPid ?? 'none'}; OS exit record ${JSON.stringify(exit)}): ${err?.message ?? err}`, { cause: err });
+        // The earlier launches' provider samples are part of the evidence; a
+        // thrown check never prints its return value, so carry them here.
+        const earlier = launches.map((l, n) => ({ launch: n + 1, startedAt: l.startedAt, early: providerList(l.providersEarly), atUi: providerList(l.providers) }));
+        throw new Error(`cold start ${i}/${COLD_STARTS} (started ${startedAt}; am start: ${launch.status ?? 'no status'}/${launch.launchState ?? 'no launch state'}; ` +
+          `pid after launch ${launchedPid ?? 'none'}; providers right after am start ${JSON.stringify(providerList(providersEarly))}; ` +
+          `OS exit record ${JSON.stringify(exit)}; gms.persistent exits ${JSON.stringify(gms)}; ` +
+          `earlier launches ${JSON.stringify(earlier)}): ${err?.message ?? err}`, { cause: err });
       }
       const amStatus = `${launch.status ?? 'no status'}/${launch.launchState ?? 'no launch state'}`;
       const appPid = await pid();
@@ -901,8 +923,10 @@ async function main() {
         skippedFrameEvents: stalls.length,
         maxSkippedFrames: stalls.length ? Math.max(...stalls) : 0,
         load1: Array.isArray(pressure?.kernelLoadavg) ? pressure.kernelLoadavg[0] : null,
-        // #209: three CS01 failures were DEPENDENCY DIED kills; one named the
-        // GMS FontsProvider. Record what this launch is connected to once the UI is up.
+        startedAt,
+        // #209: the DEPENDENCY DIED kills named the GMS FontsProvider. What
+        // this launch was connected to right after am start, and once the UI is up.
+        providersEarly,
         providers: await providerConnections(),
       });
     }
@@ -917,6 +941,8 @@ async function main() {
       maxSkippedFrames: Math.max(...launches.map((l) => l.maxSkippedFrames)),
       maxLoad1: Math.max(...launches.map((l) => l.load1 ?? 0)),
       newAnrs: anrAfter - anrBefore,
+      // Did Play services' persistent process die during these launches? (#209, MEASURED)
+      gmsPersistentExits: await gmsPersistentExits(),
       runs: launches,
     };
   }, { budgetMs: Math.max(CHECK_BUDGET_MS, COLD_STARTS * 120_000) });
