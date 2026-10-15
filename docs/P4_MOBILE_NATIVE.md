@@ -721,3 +721,27 @@ The subject's free text, other threads, lock arguments, build IDs and any app da
 - whether any of the three forms appears on real hardware: **BLOCKED: physical device required**.
 
 #209 stays open.
+
+**Twelfth run (PR #238, [run 38700412278](https://github.com/fatihcayiroglu/Bridge/actions/runs/38700412278), head `78dbc6e`, experiment reverted): PASS, 33 PASS / 0 FAIL / 0 SKIPPED / 4 MEASURED. Diagnostic only.**
+
+- **The revert reached the build.** The merger records `meta-data#androidx.emoji2.text.EmojiCompatInitializer` as **ADDED from `androidx.emoji2:emoji2:1.3.0`** again. As before, emoji2 is the only bundled match for either font pattern.
+- **Same connection with or without EmojiCompat.**
+  - All five early samples show a **stable** font-provider connection, opened 1.4–2.7 s before the sample.
+  - At UI time, launches 2–4 still held it stable (9.7–10.5 s old); launches 1 and 5 held it unstable only.
+  - This matches run 10, which had the initializer removed, and run 9, which had it present.
+  - The connection does not depend on EmojiCompat, which confirms the run-11 conclusion.
+- **Play services did not die during the launches** (`gmsPersistentExits` empty), so this PASS says nothing about reliability. L01 again held only SettingsProvider after 48 s.
+
+**Where #209 stands after twelve runs:**
+
+- **Failure history:**
+  - CS01 failed in runs 1–8 and 11; it passed in runs 9, 10 and 12.
+  - Every pass is explained by the timing of a Play services kill (run 9) or by no such kill at all (runs 10 and 12), not by a fix.
+  - The red results stay in the acceptance history.
+- **Localised to OS level:**
+  - Every cold start holds a stable connection to Play services' font provider for 2–12 s. A SIGKILL of `gms.persistent` inside that window takes the app down with exit reason DEPENDENCY DIED.
+  - The opener is outside the APK: no bundled library names the authority, and EmojiCompat is excluded.
+  - The two ANR forms block the main thread inside Android or WebView code (RenderThread frame sync, and a system-server input-device query).
+- **Not localised:**
+  - which component outside the APK opens the font connection (system WebView or framework);
+  - whether any of these forms happens on real hardware: **BLOCKED: physical device required**.
