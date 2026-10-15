@@ -164,6 +164,24 @@ export async function mentionNotificationAllowed(senderId: string, targetId: str
   return seen <= ABUSE_POLICY.mentions.perTarget;
 }
 
+/**
+ * The ping decisions for ONE message from `senderId`. Several deliveries of a
+ * message ask about the same person (processNotifications: inbox row, push,
+ * unread; the socket path: `mention:received`), so each person is counted once
+ * per message: the window holds `perTarget` messages, not deliveries.
+ */
+export function mentionPingGate(senderId: string): (targetId: string) => Promise<boolean> {
+  const decided = new Map<string, Promise<boolean>>();
+  return (targetId) => {
+    let decision = decided.get(targetId);
+    if (!decision) {
+      decision = mentionNotificationAllowed(senderId, targetId);
+      decided.set(targetId, decision);
+    }
+    return decision;
+  };
+}
+
 export type NewConversationVerdict = { allowed: true } | { allowed: false; retryAfterMs: number };
 
 /** Budget for opening NEW direct conversations. Existing ones never consume it. */

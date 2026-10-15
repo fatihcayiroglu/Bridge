@@ -1021,6 +1021,7 @@ describe('sendChannelMessage', () => {
     expect(mockProcessNotifications).toHaveBeenCalledWith(
       expect.objectContaining({ _id: messageId }), io, expect.any(Map),
       expect.any(Set),
+      expect.any(Function), // the message's ping gate, shared with `mention:received`
     );
     const excluded = mockProcessNotifications.mock.calls.at(-1)?.[3] as Set<string>;
     expect(excluded.has(recipient._id)).toBe(true);

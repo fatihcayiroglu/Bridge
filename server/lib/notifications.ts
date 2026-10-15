@@ -10,6 +10,7 @@ import { sendPushToUser, PushPayload } from './pushSender';
 import express from 'express';
 import { authMiddleware } from '../middleware/auth';
 import { canViewChannel, hasPermission, PERMS, resolvePermissions } from './permissions';
+import { mentionPingGate } from './abusePolicy';
 import { validateWebPushSubscription } from './webPushSubscriptionPolicy';
 import { extractNotificationWatchTokens } from './notificationWatchWords';
 import { storedMessageText } from './storedText';
@@ -58,6 +59,9 @@ export async function processNotifications(
   io: unknown,
   socketUsers: Map<string, { id: string }>,
   excludedUserIds: Set<string> = new Set(),
+  // One ping decision per person for this message; the socket path shares it
+  // with its `mention:received` event so a message is counted once.
+  pingAllowed: (targetId: string) => Promise<boolean> = mentionPingGate(String(msg.userId ?? '')),
 ): Promise<void> {
   try {
     const content = String(msg.content || '');
@@ -186,6 +190,11 @@ export async function processNotifications(
       // so it remains eligible under "mentions only". Mute is checked above
       // and always wins.
       if (pref.level === 'mentions' && !explicitlyMentioned && !matchedKeyword) return;
+      // P7 B1 (lab ATK-04b): one sender pings one person by name at most
+      // `mentions.perTarget` times per window; the message itself is delivered
+      // regardless. `@everyone` needs MENTION_EVERYONE and a watch word is the
+      // recipient's own choice, so neither draws on this budget.
+      if (!isEveryoneMention && (directlyMentioned || usernameMentioned) && !await pingAllowed(userId)) return;
 
       const inserted = await Notifications.insertChannelAttention({
         userId,
