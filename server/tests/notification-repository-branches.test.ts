@@ -417,6 +417,42 @@ describe('gelen kutusu kayıtları YİNELENMEZ', () => {
     })).rejects.toThrow('disk full');
   });
 
+  // Production path: PostgreSQL decides who stored the row (see
+  // tests/pg-integration/inbox-attention-created-once.pgtest.ts for the race).
+  it('üretimde satırı YALNIZCA ekleyen çağrı "yazıldı" der (ON CONFLICT DO NOTHING RETURNING)', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [{ _id: 'inbox:u1:m-5' }] })
+      .mockResolvedValueOnce({ rows: [] });
+    poolOrFallback.mockReturnValue({ query });
+    const attention = { userId: 'u1', type: 'mention' as const, serverId: 's1', channelId: 'c1', messageId: 'm-5', actorId: 'a1', createdAt: 77 };
+
+    expect(await inProduction(() => Notifications.insertChannelAttention(attention))).toBe(true);
+    expect(await inProduction(() => Notifications.insertChannelAttention(attention))).toBe(false);
+    const [sql, params] = query.mock.calls[0]! as [string, unknown[]];
+    expect(sql).toMatch(/INSERT INTO notifications \("_id", "userId", "type", "serverId", "channelId", "messageId", "actorId", "read", "createdAt"\)/);
+    expect(sql).toMatch(/ON CONFLICT DO NOTHING\s+RETURNING _id/);
+    expect(params).toEqual(['inbox:u1:m-5', 'u1', 'mention', 's1', 'c1', 'm-5', 'a1', false, 77]);
+    expect(inbox.insert).not.toHaveBeenCalled();
+  });
+
+  it('üretimde hatırlatıcı da aynı yoldan yazılır', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+    poolOrFallback.mockReturnValue({ query });
+
+    expect(await inProduction(() => Notifications.insertSavedReminder('u1', 'saved-1', 5000))).toBe(false);
+    expect(query.mock.calls[0]![1]).toEqual(expect.arrayContaining(['inbox:saved-reminder:u1:saved-1:5000', 'saved_reminder']));
+    expect(inbox.insert).not.toHaveBeenCalled();
+  });
+
+  it('üretimde havuz yoksa gelen kutusu yazımı koleksiyona DÜŞMEZ, açık hata verir', async () => {
+    poolOrFallback.mockReturnValue(undefined);
+
+    await expect(inProduction(() => Notifications.insertChannelAttention({
+      userId: 'u1', type: 'mention', serverId: 's1', channelId: 'c1', messageId: 'm-6', actorId: 'a1',
+    }))).rejects.toThrow('PostgreSQL pool cannot query for inbox row insert');
+    expect(inbox.insert).not.toHaveBeenCalled();
+  });
+
   it('gelen kutusu NULL dönerse boş liste verilir', async () => {
     inbox.find.mockResolvedValue(null);
     expect(await Notifications.findInbox({ userId: 'u1' })).toEqual([]);

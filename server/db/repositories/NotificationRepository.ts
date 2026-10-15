@@ -25,6 +25,39 @@ class NotificationRepository {
     return db.notifications;
   }
 
+  /**
+   * Writes one inbox row unless it already exists, and reports whether THIS
+   * call wrote it. Callers send the realtime event and push and increment the
+   * unread count only on `true`, so exactly one of several concurrent
+   * deliveries of the same row may get it.
+   *
+   * On PostgreSQL the generic collection insert cannot answer that: it runs
+   * `ON CONFLICT (_id) DO NOTHING` and hands back the row that already exists,
+   * so a delivery racing past the existence check looked created too and was
+   * announced twice. PostgreSQL is asked directly here; `RETURNING` yields a
+   * row only for the insert that won. Other write errors still reject.
+   */
+  private async insertInboxRowIfAbsent(row: Record<string, string | number | boolean>): Promise<boolean> {
+    if (process.env.NODE_ENV !== 'test') {
+      const pool = postgresPoolOrTestFallback(
+        (db as unknown as { _pool?: import('pg').Pool })._pool,
+        'inbox row insert',
+      );
+      if (!pool?.query) throw new Error('PostgreSQL pool cannot query for inbox row insert');
+      const columns = Object.keys(row);
+      const result = await pool.query(
+        `INSERT INTO notifications (${columns.map(column => `"${column}"`).join(', ')})
+         VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')})
+         ON CONFLICT DO NOTHING
+         RETURNING _id`,
+        Object.values(row),
+      );
+      return result.rows.length === 1;
+    }
+    await this.inboxStore().insert(row);
+    return true;
+  }
+
   // ── Notification Preferences ───────────────────────────────
 
   async findPref(userId: string, channelId: string) {
@@ -376,11 +409,10 @@ class NotificationRepository {
     const _id = `inbox:saved-reminder:${userId}:${savedId}:${remindAt}`;
     if (await this.inboxStore().findOne({ _id })) return false;
     try {
-      await this.inboxStore().insert({
+      return await this.insertInboxRowIfAbsent({
         _id, userId, type: 'saved_reminder', activityId: `saved:${savedId}:${remindAt}`, noteId: savedId,
         read: false, createdAt: Date.now(),
       });
-      return true;
     } catch (error) {
       const code = String((error as { code?: unknown })?.code ?? '');
       if (code === '23505' || /duplicate|unique/i.test(String((error as Error)?.message ?? ''))) return false;
@@ -438,7 +470,7 @@ class NotificationRepository {
     const _id = `inbox:${data.userId}:${data.messageId}`;
     try {
       if (await this.inboxStore().findOne({ _id })) return false;
-      await this.inboxStore().insert({
+      return await this.insertInboxRowIfAbsent({
         _id,
         userId: data.userId,
         type: data.type,
@@ -449,7 +481,6 @@ class NotificationRepository {
         read: false,
         createdAt: data.createdAt ?? Date.now(),
       });
-      return true;
     } catch (error) {
       // Duplicate delivery is expected and means the canonical row already
       // exists. Fail closed for other write errors without breaking messages.
