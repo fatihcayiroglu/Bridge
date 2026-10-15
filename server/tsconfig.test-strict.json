@@ -32,7 +32,8 @@
     "db/repositories/types/*.d.ts",
     "tests/helpers/**/*.js",
     "tests/helpers/**/*.ts",
-    "tests/**/*.test.ts"
+    "tests/**/*.test.ts",
+    "tests/pg-integration/**/*.ts"
   ],
   "exclude": [
     "node_modules",

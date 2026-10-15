@@ -49,7 +49,7 @@ function documents(sourceId: string = FROM) {
   );
   return { structure, permissions, targetServerId: SID };
 }
-const post = (id: string, body: unknown, scope: 'account-security' | 'sensitive-export' | null = null) => {
+const post = (id: string, body: string | object, scope: 'account-security' | 'sensitive-export' | null = null) => {
   const requestBuilder = request(app()).post(`/api/servers/${SID}/portable-import/paired-preview`)
     .set('Authorization', `Bearer ${token(id)}`);
   return (scope ? requestBuilder.set(stepUpHeader(id, scope)) : requestBuilder).send(body);

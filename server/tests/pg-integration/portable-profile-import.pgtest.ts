@@ -43,7 +43,7 @@ function documentFor(displayName: string) {
   }, '2026-10-11T12:00:00.000Z');
 }
 
-async function preview(document: unknown) {
+async function preview(document: string | object) {
   const r = await request(app()).post('/api/account/portable-import/preview')
     .set(stepUpHeader(TARGET, 'sensitive-export')).send(document);
   expect(r.status).toBe(200);

@@ -110,3 +110,5 @@ RUN('gerçek Redis — bayat soket varlığı biçme', () => {
     expect(await raw.zScore('bridge:cache:presence:users', u)).toBeNull();
   });
 });
+
+export {};

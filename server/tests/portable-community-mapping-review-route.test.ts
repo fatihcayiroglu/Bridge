@@ -67,7 +67,7 @@ function input() {
     },
   };
 }
-function post(userId: string, body: unknown, scope: 'account-security' | 'sensitive-export' | null = null) {
+function post(userId: string, body: string | object, scope: 'account-security' | 'sensitive-export' | null = null) {
   const q = request(app()).post(`/api/servers/${SID}/portable-import/mapping-review`)
     .set('Authorization', `Bearer ${token(userId)}`);
   return (scope ? q.set(stepUpHeader(userId, scope)) : q).send(body);

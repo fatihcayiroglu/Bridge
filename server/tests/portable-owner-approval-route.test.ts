@@ -23,7 +23,7 @@ import { mintStepUpGrant, STEP_UP_HEADER } from '../lib/stepUp';
 import { readDestinationPinnedSourceRegistry } from '../lib/portableDestinationTrustConfig';
 import { stageOwnerConfirmedPortableApproval } from '../lib/portableTransactionalApprovalStage';
 
-const db = require('../db/loader') as import('./helpers/mockDb').MockDb & {
+const db = require('../db/loader') as Omit<import('./helpers/mockDb').MockDb, '_pool'> & {
   _pool?: { connect: () => Promise<never> };
 };
 const config = readDestinationPinnedSourceRegistry as jest.Mock;
@@ -61,7 +61,7 @@ const body = () => ({
   confirmedReviewFingerprint: hash('f'),
   confirmation: 'CONFIRM_SIGNED_MAPPING_AND_PERMISSION_CONSEQUENCES',
 });
-function post(user: string | null, payload: unknown = body(),
+function post(user: string | null, payload: string | object = body(),
   scope: 'account-security' | 'sensitive-export' | null = null) {
   let r = request(app())
     .post('/api/servers/' + SID + '/portable-import/owner-approval')

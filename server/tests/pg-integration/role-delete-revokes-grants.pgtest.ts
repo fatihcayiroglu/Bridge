@@ -97,7 +97,10 @@ RUN('real PostgreSQL — role deletion revokes its grants', () => {
       canonical: await ChannelPermissions.findByChannel(String(channel._id)),
       legacy: await Channels.findOverridesByChannel(String(channel._id)),
     })));
-    expect(() => buildPortableCommunityPermissionManifest(server, channels, roles, data as never)).not.toThrow();
+    // The serializer takes plain rows; repository interfaces carry no index signature.
+    const channelRows = channels.map((row): Record<string, unknown> => ({ ...row }));
+    const roleRows = roles.map((row): Record<string, unknown> => ({ ...row }));
+    expect(() => buildPortableCommunityPermissionManifest(server, channelRows, roleRows, data as never)).not.toThrow();
   });
 
   it('refuses a role of another server or a missing role and changes nothing', async () => {

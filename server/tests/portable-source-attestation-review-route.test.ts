@@ -43,7 +43,7 @@ const body = () => ({
   expectedSourceOrigin: ORIGIN,
   expectedSourceServerId: SOURCE,
 });
-function review(user: string | null, payload: unknown = body(),
+function review(user: string | null, payload: string | object = body(),
   scope: 'account-security' | 'sensitive-export' | null = null) {
   let q = request(app()).post(`/api/servers/${SID}/portable-import/source-attestation-review`)
     .set('Host', 'untrusted-attacker.example');

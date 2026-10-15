@@ -82,7 +82,8 @@ RUN('gerçek PostgreSQL — ilk okunmamış ayracı taraması sınırlı', () =>
   async function planOf(run: () => Promise<unknown>): Promise<PlanNode> {
     const calls: Array<[string, unknown[]]> = [];
     const original = db._pool.query.bind(db._pool);
-    const spy = jest.spyOn(db._pool, 'query').mockImplementation((sql: string, params: unknown[]) => {
+    const spy = jest.spyOn(db._pool, 'query').mockImplementation((...args: unknown[]) => {
+      const [sql, params] = args as [string, unknown[]];
       calls.push([sql, params]);
       return original(sql, params);
     });

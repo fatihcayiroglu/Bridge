@@ -156,6 +156,12 @@ jobs:
         run: npm run typecheck
       - name: Strict server indexed-access and catch-variable hardening
         run: cd server && npm run typecheck:hardening
+      # The test-strict ratchet (server/TYPE_DEBT.json, bucket testStrict) was
+      # only chained from `npm test`, which CI never calls, so it had been red on
+      # main unnoticed. It also covers tests/pg-integration: ts-jest runs those
+      # with diagnostics off, so nothing else type-checks them.
+      - name: Strict server test typecheck (debt ratchet, includes real-PG tests)
+        run: cd server && npm run typecheck:test-strict
       - name: Strict client gates
         run: |
           npm run typecheck:strict-client

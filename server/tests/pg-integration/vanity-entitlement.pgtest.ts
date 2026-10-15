@@ -34,7 +34,7 @@ RUN('real PostgreSQL — vanity URL entitlement is decided by the database', () 
   const vanityOf = async (sid: string) => (await q(`SELECT "vanityUrl" FROM servers WHERE _id=$1`, [sid]))[0]?.vanityUrl ?? null;
 
   /** `live` boosters who are members, plus optional expired/banned/departed extras. */
-  async function boost(sid: string, live: number, extra: { expired?: number; banned?: number; notMember?: number } = {}) {
+  async function boost(sid: string, live: number, extra: { live?: number; expired?: number; banned?: number; notMember?: number } = {}) {
     let n = 0;
     const add = async (kind: 'live' | 'expired' | 'banned' | 'notMember') => {
       const uid = `${P}-${sid.slice(-1)}-u${++n}`;
