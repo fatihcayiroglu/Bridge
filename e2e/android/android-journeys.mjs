@@ -21,6 +21,7 @@ import { io } from 'socket.io-client';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { parseApplicationExits, parseDependencyKillLine } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -96,6 +97,13 @@ async function check(id, title, fn) {
       results.push({ id, title, status: 'SKIPPED', ms: Date.now() - started, reason: err.message });
       log(`  SKIPPED ${id}: ${err.message}`);
       return;
+    }
+    // #209: preserve the failure as FAIL, and record only allow-listed OS
+    // exit/dependency facts before any screenshot or DevTools probe can stall.
+    if (MODE === 'android' && (id === 'L01' || id === 'ANR01')) {
+      const exitFacts = await androidFailureExits();
+      (facts.androidFailureExits ??= []).push({ check: id, ...exitFacts });
+      log(`Android exit evidence ${id}`, JSON.stringify(exitFacts));
     }
     const shot = await screenshot(`${id}-fail`);
     const dom = await domSummary();
@@ -235,6 +243,49 @@ async function seedLongChannel(serverId, userId, token, count) {
 
 // ── Platform layer ─────────────────────────────────────────────────────────
 const sh = async (cmd) => (await device.shell(cmd)).toString().trim();
+
+// Failure-only adb probes are time-budgeted. The Android OS exit records can
+// contain free-text descriptions and user data: NEVER log the original output.
+async function androidFailureShell(command) {
+  let timer;
+  try {
+    return await Promise.race([
+      sh(command),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('diagnostic-timeout')), 12_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function androidFailureExits() {
+  if (MODE !== 'android' || !/^[A-Za-z0-9_.]{1,120}$/.test(PKG)) {
+    return { available: false };
+  }
+  let exits;
+  try {
+    exits = parseApplicationExits(await androidFailureShell(`dumpsys activity exit-info ${PKG}`), 6)
+      .filter((item) => item.process === PKG);
+  } catch {
+    return { available: false, error: 'exit-info-probe-unavailable' };
+  }
+  const rows = [];
+  for (const exit of exits.slice(0, 3)) {
+    let dependency = null;
+    if (/^12 /.test(exit.reason ?? '') && Number.isInteger(exit.pid)) {
+      try {
+        const lines = await androidFailureShell(
+          `logcat -d -b system,main -v brief -s ActivityManager:I | grep -E 'Killing ${exit.pid}:' | tail -1`);
+        dependency = parseDependencyKillLine(lines, exit.pid);
+      } catch {
+        dependency = { available: false };
+      }
+    }
+    rows.push({ ...exit, ...(dependency ? { dependency } : {}) });
+  }
+  return { available: true, exits: rows };
+}
 
 // Failure-only diagnostics: retain the ORIGINAL WebView assertion and capture
 // enough Android state to distinguish a native crash, a stopped Activity, and
