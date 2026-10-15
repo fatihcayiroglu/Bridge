@@ -677,3 +677,16 @@ The subject's free text, other threads, lock arguments, build IDs and any app da
 - **Still open:**
   - whether this makes CS01 reliable needs more than one run, because the kill only lands in the window sometimes;
   - real-device evidence stays **BLOCKED: physical device required**.
+
+**Tenth run (PR #238, [run 38694118517](https://github.com/fatihcayiroglu/Bridge/actions/runs/38694118517), head `0955210`, EmojiCompat initializer removed): PASS, 33 PASS / 0 FAIL / 0 SKIPPED / 4 MEASURED. Diagnostic only.**
+
+- **The experiment refutes the EmojiCompat hypothesis, provided the removal reached the build.**
+  - With `EmojiCompatInitializer` removed from the curated manifest, **all five** early samples still show a **stable** connection to `com.google.android.gms/.fonts.provider.FontsProvider`, opened 1.4–2.7 s before the sample.
+  - At UI time, launches 2 and 3 still held it stable (7.5 s and 8.8 s old); launches 1, 4 and 5 held it unstable only.
+  - The pattern is the same as in run 9.
+- **Why the result is not yet conclusive:** CI applies the overlay (`apply-android-overlay.js`) before Gradle, and A01 started cleanly, so the merged provider is valid. But the merged manifest the build printed does not list start-up initializers, so the removal itself is not yet shown. The next run prints the manifest merger's own record (ADDED/REMOVED and from which library) to settle that. The manifest change is kept for that one run only and is then reverted.
+- **Play services did not die during the launches this time** (`gmsPersistentExits` empty), so this PASS says nothing about reliability. L01 again held only SettingsProvider after 52 s.
+- **Remaining candidate: the system WebView.**
+  - Bridge's font stacks start with `'Inter'` and `'JetBrains Mono'` (`client/css/tokens.css`), which are not installed on Android.
+  - Chromium on Android can match fonts through Play services' font provider.
+  - This is unproven. The next run also lists which bundled libraries name the font authority (`com.google.android.gms.fonts`) or emoji2's `LOAD_EMOJI_FONT` discovery intent at all. The system WebView is not bundled, so it cannot appear in that list.
