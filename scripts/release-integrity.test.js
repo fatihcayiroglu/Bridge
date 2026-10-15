@@ -794,3 +794,29 @@ test('release copy refuses a link that points OUTSIDE the source tree', (t) => {
   assert.throws(() => copyReleaseTree(source, candidate), /symbolic link: docs/);
   assert.equal(fs.existsSync(path.join(candidate, 'docs', 'secret.txt')), false);
 });
+
+test('federation evidence listeners use a distinct non-ephemeral TCP port block', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'federation-lab/run.mjs'), 'utf8');
+  const captured = (regex, label) => {
+    const match = source.match(regex);
+    assert.ok(match, label + ' port declaration missing');
+    return match.slice(1).map(Number);
+  };
+  const front = captured(/const PORTS = \{ a: (\d+), b: (\d+), x: (\d+) \};/, 'TLS fronts');
+  const canary = captured(/const CANARY = \{ host: 'canary\.bridge\.test', port: (\d+) \};/, 'SSRF canary');
+  const ai = captured(/const AI = \{ port: (\d+), key:/, 'AI mock');
+  const embed = captured(/const EMBED = \{ port: (\d+), dim:/, 'embedding mock');
+  const [base] = captured(/let port = (\d+);\s*for \(const k of \['a', 'b'\]\)/, 'PostgreSQL/Redis/app base');
+  const all = [...front, ...canary, ...ai, ...embed,
+    ...[0, 10].flatMap(offset => [base + offset + 1, base + offset + 2, base + offset + 3])];
+  assert.equal(new Set(all).size, all.length, 'the lab must never bind the same TCP port twice');
+  for (const port of all) {
+    assert.ok(port >= 1024 && port < 32768,
+      'lab port ' + port + ' is privileged or inside the default Linux ephemeral port range');
+  }
+  const docs = fs.readFileSync(path.join(__dirname, '../docs/P5_FEDERATION_AI_SELFHOSTING.md'), 'utf8');
+  for (const [host, port] of [['a', front[0]], ['b', front[1]], ['evil', front[2]]]) {
+    assert.ok(docs.includes('https://' + host + '.bridge.test:' + port),
+      'P5 topology documentation must match the actual TLS frontend for ' + host);
+  }
+});
