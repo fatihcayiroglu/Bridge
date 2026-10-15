@@ -23,3 +23,45 @@ export function parseDependencyKillLine(raw, expectedPid) {
   const m = /depends on provider ([A-Za-z0-9_.$/]{1,200}) in dying proc ([A-Za-z0-9_.:]{1,120})/.exec(line);
   return m ? { provider: m[1], dyingProcess: m[2] } : { provider: null, dyingProcess: null, killLineFound: Boolean(line) };
 }
+
+
+/**
+ * Classify ActivityManager ANR headers using only pre-defined categories.
+ * No raw Reason text, stack frames, intent data, window names, identities or
+ * filesystem paths may cross this boundary into test logs/artifacts.
+ *
+ * Intended input is an ordered, already-filtered list of "ANR in " and
+ * "Reason:" ActivityManager lines, including headers from other packages
+ * so their reasons cannot be attributed to Bridge.
+ */
+export function parseActivityManagerAnrs(raw, expectedProcess, limit = 8) {
+  if (!/^[A-Za-z0-9_.:]{1,120}$/.test(String(expectedProcess))) return [];
+  const max = Number.isInteger(limit) ? Math.max(0, Math.min(10, limit)) : 8;
+  const records = [];
+  let current = null;
+  for (const line of String(raw).split(/\r?\n/)) {
+    const header = /\bANR in ([A-Za-z0-9_.:]{1,120})(?:\s|$)/.exec(line);
+    if (header) {
+      current = header[1] === expectedProcess && records.length < max
+        ? { category: 'unknown', focusEvent: false }
+        : null;
+      if (current) records.push(current);
+      continue;
+    }
+    if (!current) continue;
+    const reason = /\bReason:\s*(.*)$/.exec(line);
+    if (!reason) continue;
+    const value = reason[1];
+    if (/input dispatching timed out/i.test(value)) {
+      current.category = 'input_dispatch_timeout';
+      current.focusEvent = /\bFocusEvent\b/i.test(value);
+    } else if (/broadcast of intent|broadcast.*timed out/i.test(value)) {
+      current.category = 'broadcast_timeout';
+    } else if (/executing service|service.*timed out/i.test(value)) {
+      current.category = 'service_timeout';
+    } else if (/contentprovider|content provider/i.test(value)) {
+      current.category = 'provider_timeout';
+    }
+  }
+  return records;
+}
