@@ -11,7 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { effectiveNotificationPref, isMuted } from '../../lib/notificationMute';
 import {
   Messages, Members, Channels, Users,
-  Notifications, Bridges, Automod, ServerAssets,
+  Notifications, Bridges, ServerAssets,
 } from '../../db/repositories';
 import { hasPermission, PERMS, resolvePermissions } from '../../routes/roles';
 import { canViewChannel, explainResolvedPermission, resolvePermissionResolution } from '../../lib/permissions';
@@ -19,9 +19,8 @@ import { sanitizeUser } from '../../lib/userUtils';
 import { getCachedPerms } from '../../lib/permCache';
 import { extractUrls, fetchLinkPreview } from '../../lib/linkPreview';
 import { checkSpamAsync } from '../../lib/security';
-import { ABUSE_POLICY, checkContentAbuse, mentionNotificationAllowed, mentionsWithinLimit } from '../../lib/abusePolicy';
-import { evaluateAutomodRules } from '../../lib/automodPolicy';
-import { normalizeAutomodMemberRoleIds, writeAutomodLogs } from '../../lib/automodRuntime';
+import { mentionNotificationAllowed } from '../../lib/abusePolicy';
+import { checkMessageContent } from '../../lib/messageContentPolicy';
 // Sprint 120: T5 — Server-side DOMPurify sanitization eklendi
 // sanitizeMessage() (regex tabanlı) yerine sanitizeMessageContent() (DOMPurify/jsdom) kullanılıyor
 import { normalizeMessageText, RAW_TEXT_FORMAT } from '../../lib/storedText';
@@ -384,58 +383,27 @@ export async function sendChannelMessage(
     }
   }
 
-  // P7 B1 shared abuse policy (lib/abusePolicy.ts): measured low-and-slow
-  // repeats, link floods and mass mentions. Placed after ACK de-duplication so
-  // a replayed ackId never counts twice. Encrypted content is not inspected.
+  // P7 B1 abuse limits (repeats, link floods, mass mentions) and the server's
+  // AutoMod rules: one owner shared with thread replies
+  // (lib/messageContentPolicy.ts). Placed after ACK de-duplication so a
+  // replayed ackId never counts twice. Encrypted content is not inspected.
   if (type !== 'file' && type !== 'e2ee' && content?.trim()) {
-    const verdict = await checkContentAbuse(user._id, content);
-    if (!verdict.allowed) {
-      socket.emit('error:spam', { reason: verdict.reason, remainingMs: verdict.retryAfterMs, ...(validAckId ? { ackId } : {}), ...(validTmpId ? { tmpId: _tmpId } : {}) });
+    const refusal = await checkMessageContent({
+      userId: user._id,
+      serverId,
+      channelId,
+      content,
+      senderPerms: sendPerms,
+      memberRoles: (membership as { roles?: unknown }).roles,
+      displayName: membership.nickname || user.displayName || user.username,
+    }, io);
+    if (refusal?.kind === 'spam') {
+      socket.emit('error:spam', { reason: refusal.reason, remainingMs: refusal.retryAfterMs, ...(validAckId ? { ackId } : {}), ...(validTmpId ? { tmpId: _tmpId } : {}) });
       return;
     }
-    const mayMentionEveryone = hasPermission(sendPerms, PERMS.MENTION_EVERYONE) || hasPermission(sendPerms, PERMS.ADMINISTRATOR);
-    if (!mentionsWithinLimit(content, mayMentionEveryone)) {
-      reject('TOO_MANY_MENTIONS', `En fazla ${ABUSE_POLICY.mentions.perMessage} kişi etiketlenebilir.`);
+    if (refusal) {
+      reject(refusal.code, refusal.message);
       return;
-    }
-  }
-
-  // Persisted realtime AutoMod rules. Rule lookup failure propagates to `isolate` so
-  // a storage outage cannot silently disable configured moderation (fail-closed).
-  if (type !== 'file' && type !== 'e2ee' && content?.trim()) {
-    const automodRules = await Automod.findByServer(serverId);
-    const decision = await evaluateAutomodRules(
-      automodRules,
-      {
-        serverId,
-        userId: user._id,
-        content,
-        memberRoleIds: normalizeAutomodMemberRoleIds((membership as { roles?: unknown }).roles),
-      },
-      (key, ttlSeconds) => cache.increment(key, ttlSeconds),
-    );
-
-    if (decision.matched) {
-      if (decision.timeoutMs) {
-        // Durable timeout is part of the action. If this fails, do not persist the triggering
-        // message and pretend the moderation action succeeded.
-        await Members.setTimeout(serverId, user._id, Date.now() + decision.timeoutMs);
-      }
-      await writeAutomodLogs(
-        decision,
-        {
-          serverId,
-          channelId,
-          userId: user._id,
-          displayName: membership.nickname || user.displayName || user.username,
-          content,
-        },
-        io,
-      );
-      if (decision.deleteMessage) {
-        reject('AUTOMOD_BLOCKED', decision.reasons.join(', ') || 'Mesaj AutoMod tarafından engellendi.');
-        return;
-      }
     }
   }
 
