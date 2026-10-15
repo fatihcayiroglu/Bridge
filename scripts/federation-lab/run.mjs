@@ -41,7 +41,11 @@ const HOSTS = { a: 'a.bridge.test', b: 'b.bridge.test', x: 'evil.bridge.test' };
 // Resolves to 127.0.0.1 like the others but is NOT in SSRF_ALLOWLIST: a
 // private-address target reached through DNS. A raw TCP listener counts every
 // connection made to it — the SSRF checks assert that count stays zero.
-// Keep the lab's fixed TCP listeners outside the default Linux ephemeral\n// range (32768–60999). Outbound connections from previous CI steps can\n// otherwise temporarily take a port before a lab service binds it.\n// The separate self-host lab uses 26100+, so these suites do not overlap.\nconst CANARY = { host: 'canary.bridge.test', port: 24161 };
+// Keep the lab's fixed TCP listeners outside the default Linux ephemeral
+// range (32768–60999). Outbound connections from previous CI steps can
+// otherwise temporarily take a port before a lab service binds it.
+// The separate self-host lab uses 26100+, so these suites do not overlap.
+const CANARY = { host: 'canary.bridge.test', port: 24161 };
 const PORTS = { a: 24143, b: 24144, x: 24145 };
 const ORIGIN = Object.fromEntries(Object.entries(HOSTS).map(([k, h]) => [k, `https://${h}:${PORTS[k]}`]));
 const actorUrl = (k, user) => `${ORIGIN[k]}/api/federation/users/${user}`;
