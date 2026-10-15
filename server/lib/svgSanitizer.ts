@@ -35,8 +35,9 @@ const DANGEROUS_ELEMENTS = new Set([
 // ── Tehlikeli attribute pattern'ları ─────────────────────────
 const DANGEROUS_ATTR_PATTERNS = [
   /^on\w+$/i,              // onerror, onload, onclick, vb.
-  /^xlink:href$/i,         // harici kaynak referansı
-  /^href$/i,               // <a href="javascript:">
+  // href, xlink:href and ANY other prefix bound to XLink (xmlns:xl=… → xl:href):
+  // the prefix is chosen by the document, so the local name decides.
+  /^(?:[\w.-]+:)?href$/i,
   /^action$/i,             // form action
   /^formaction$/i,
   /^data-\w*src$/i,        // data-src gibi lazy-load tricky pattern'lar
@@ -52,6 +53,19 @@ const DANGEROUS_VALUE_PATTERNS = [
   /expression\s*\(/i,     // IE CSS expression
   /url\s*\(\s*['"]\s*javascript/i,
 ];
+
+// The browser parses an uploaded SVG as XML: numeric character references in
+// attribute values are decoded before a value is used as a URL, and URL
+// parsing drops ASCII tab/newline. Dangerous schemes are matched against
+// that view as well as against the raw text ("j&#97;vascript:", "java&#9;script:").
+function asBrowserSees(text: string): string {
+  return text
+    .replace(/&#(?:x([0-9a-f]{1,6})|([0-9]{1,7}));?/gi, (_ref, hex: string | undefined, dec: string | undefined) => {
+      const code = hex !== undefined ? parseInt(hex, 16) : Number(dec);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '\uFFFD';
+    })
+    .replace(/[\t\n\r]/g, '');
+}
 
 /**
  * SVG string'ini sanitize eder — tehlikeli element ve attribute'ları kaldırır.
@@ -90,7 +104,8 @@ function sanitizeSvgString(svgContent: string): SanitizeResult {
       }
 
       // Tehlikeli değer mi?
-      if (DANGEROUS_VALUE_PATTERNS.some(p => p.test(value))) {
+      const decoded = asBrowserSees(value);
+      if (DANGEROUS_VALUE_PATTERNS.some(p => p.test(value) || p.test(decoded))) {
         stripped.push(`attr:${attrName}=<dangerous-value>`);
         return '';
       }
@@ -132,6 +147,21 @@ function sanitizeSvgString(svgContent: string): SanitizeResult {
  */
 interface SvgFileResult { safe: boolean; stripped: string[]; rewritten: boolean }
 
+// What must not remain after stripping. Shapes the strip passes cannot see
+// (e.g. "<script/src=…>", "<svg/onload=…>") are caught here. The scheme is
+// also checked as the browser will read it.
+const RESIDUAL_DANGER = [
+  /<script/i,
+  /javascript\s*:/i,
+  /on\w+\s*=/i,
+  /<foreignObject/i,
+];
+function residualDanger(clean: string): RegExp | null {
+  const decoded = asBrowserSees(clean);
+  return RESIDUAL_DANGER.find((pattern) => pattern.test(clean))
+    ?? (/javascript\s*:/i.test(decoded) ? /javascript\s*:/i : null);
+}
+
 async function sanitizeSvgFile(filePath: string): Promise<SvgFileResult> {
   const ext = path.extname(filePath).toLowerCase();
   if (ext !== '.svg' && ext !== '.svgz') {
@@ -148,18 +178,10 @@ async function sanitizeSvgFile(filePath: string): Promise<SvgFileResult> {
   const { clean, stripped } = sanitizeSvgString(content);
 
   // Sanitize sonrası ek tehlike kontrolü
-  const RESIDUAL_DANGER = [
-    /<script/i,
-    /javascript\s*:/i,
-    /on\w+\s*=/i,
-    /<foreignObject/i,
-  ];
-
-  for (const pattern of RESIDUAL_DANGER) {
-    if (pattern.test(clean)) {
-      // Temizlenemedi — dosyayı reddet
-      return { safe: false, stripped: [...stripped, `residual:${pattern}`], rewritten: false };
-    }
+  const residual = residualDanger(clean);
+  if (residual) {
+    // Temizlenemedi — dosyayı reddet
+    return { safe: false, stripped: [...stripped, `residual:${residual}`], rewritten: false };
   }
 
   // Değişiklik yapıldıysa dosyayı güncelle
@@ -179,8 +201,10 @@ async function sanitizeSvgFile(filePath: string): Promise<SvgFileResult> {
  * Tarama sonucu false ise dosyayı reddet.
  */
 function isSvgSafe(svgContent: string): boolean {
-  const { stripped } = sanitizeSvgString(svgContent);
-  return stripped.length === 0;
+  const { clean, stripped } = sanitizeSvgString(svgContent);
+  // Nothing stripped is not enough: shapes the strip passes cannot see must
+  // also be absent, exactly as sanitizeSvgFile requires before storing.
+  return stripped.length === 0 && residualDanger(clean) === null;
 }
 
 export { sanitizeSvgFile, sanitizeSvgString, isSvgSafe };

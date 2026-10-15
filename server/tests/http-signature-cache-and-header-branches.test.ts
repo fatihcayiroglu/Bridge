@@ -81,13 +81,16 @@ function signRequest(options: {
   headerList?: string[];
   extraHeaders?: Headers;
   headerCase?: (name: string) => string;
+  /** The Host value the sender signs and sends; `null` sends no Host header at all. */
+  host?: string | null;
 }) {
   const method = 'post';
   const url = '/api/federation/users/alice/inbox';
   const body = 'body' in options ? options.body : { type: 'Follow' };
   const date = new Date().toUTCString();
   const headerList = options.headerList ?? ['(request-target)', 'host', 'date', 'digest'];
-  const values: Record<string, string> = { host: 'bridge.test', date, digest: digestOf(body) };
+  const values: Record<string, string> = { host: options.host ?? 'bridge.test', date, digest: digestOf(body) };
+  if (options.host === null) delete values.host;
 
   const signingString = headerList.map(h => (
     h === '(request-target)' ? `(request-target): ${method} ${url}` : `${h}: ${values[h] ?? ''}`
@@ -503,5 +506,47 @@ describe('host, date and digest must be inside the signature, not just present',
 
   it('positive control: the full Mastodon-shaped list verifies', async () => {
     await expect(verifyHttpSignature(signRequest({ keyId }))).resolves.toMatchObject({ ok: true });
+  });
+});
+
+describe('the signed Host is compared as a host, not as a string', () => {
+  const keyId = 'https://bridge.test/api/federation/users/alice#main-key';
+  beforeEach(() => { users.findOne.mockResolvedValue({ username: 'alice', apPublicKey: publicKeyPem }); });
+
+  it.each([
+    ['an explicit default HTTPS port', 'bridge.test:443'],
+    ['upper case', 'BRIDGE.TEST'],
+    ['surrounding whitespace', ' bridge.test '],
+  ])('a Host with %s is this instance', async (_name, host) => {
+    await expect(verifyHttpSignature(signRequest({ keyId, host }))).resolves.toMatchObject({ ok: true });
+  });
+
+  it.each([
+    ['a non-default port', 'bridge.test:8443'],
+    ['a different host that merely ends like ours', 'evilbridge.test'],
+    ['the HTTP default port on an HTTPS instance', 'bridge.test:80'],
+  ])('a Host with %s is not this instance', async (_name, host) => {
+    await expect(verifyHttpSignature(signRequest({ keyId, host })))
+      .resolves.toEqual({ ok: false, reason: 'Signed Host does not match this instance' });
+    expect(setIfAbsentAuthoritative).not.toHaveBeenCalled();
+  });
+
+  it('a signed but absent Host never matches this instance', async () => {
+    await expect(verifyHttpSignature(signRequest({ keyId, host: null })))
+      .resolves.toEqual({ ok: false, reason: 'Signed Host does not match this instance' });
+  });
+});
+
+describe('Bridge-to-Bridge RSA requires its timestamp', () => {
+  it('an RSA signature header without x-bridge-ts is refused, with no HMAC fallback and no key lookup', async () => {
+    process.env.FEDERATION_SECRET = 'test-federation-secret';
+    const body = { url: 'https://peer.test' };
+    const hmac = crypto.createHmac('sha256', 'test-federation-secret').update(JSON.stringify(body)).digest('hex');
+    await expect(verifyFederationRequest({
+      method: 'POST', url: '/x', body,
+      headers: { 'x-bridge-signature': 'keyId="k",signature="AAAA"', 'x-bridge-sig': hmac },
+    } as never)).resolves.toBe(false);
+    expect(federation.findPeerByUrl).not.toHaveBeenCalled();
+    expect(federationKeys.parseBridgeSignatureHeader).not.toHaveBeenCalled();
   });
 });

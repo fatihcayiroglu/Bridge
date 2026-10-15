@@ -247,8 +247,35 @@ describe('hashicorp backend', () => {
     const { getSecret: freshGetSecret } = require('../lib/vault');
 
     const val = await freshGetSecret('APPROLE_KEY');
-    // AppRole flow test edildi; sonuç env fallback veya vault değeri olabilir
-    expect(typeof val === 'string' || val === null).toBe(true);
+    // The value must come from Vault itself, through a login sent to
+    // VAULT_ADDR. (An "any string or null" check here once hid a login URL
+    // that pointed at a host named "v1".)
+    expect(val).toBe('approle-value');
+    expect(mockFetch.mock.calls.map((call) => String(call[0]))).toEqual([
+      'https://vault.test:8200/v1/auth/approle/login',
+      'https://vault.test:8200/v1/secret/data/bridge/APPROLE_KEY',
+    ]);
+  });
+
+  it.each([
+    ['a bare origin', 'https://vault.test:8200', 'https://vault.test:8200/v1/auth/approle/login'],
+    ['an origin with a trailing slash', 'https://vault.test:8200/', 'https://vault.test:8200/v1/auth/approle/login'],
+    ['a path prefix', 'https://vault.test:8200/vault/', 'https://vault.test:8200/vault/v1/auth/approle/login'],
+  ])('AppRole credentials are posted to VAULT_ADDR for %s, never to another host', async (_name, addr, expected) => {
+    delete process.env.VAULT_TOKEN;
+    process.env.VAULT_ADDR      = addr;
+    process.env.VAULT_ROLE_ID   = 'role-abc';
+    process.env.VAULT_SECRET_ID = 'secret-xyz';
+    mockFetchOk({ auth: { client_token: 'hvs.approle-token', lease_duration: 3600 } });
+    mockFetchOk({ data: { data: { APPROLE_ADDR_KEY: 'from-vault' } } });
+    _resetConfig();
+    await expect(getSecret('APPROLE_ADDR_KEY')).resolves.toBe('from-vault');
+    const [loginUrl, loginInit] = mockFetch.mock.calls[0]!;
+    expect(String(loginUrl)).toBe(expected);
+    expect(new URL(String(loginUrl)).host).toBe('vault.test:8200');
+    expect(JSON.parse((loginInit as { body: string }).body)).toEqual({ role_id: 'role-abc', secret_id: 'secret-xyz' });
+    // The KV read then uses the token the login returned.
+    expect((mockFetch.mock.calls[1]![1] as { headers: Record<string, string> }).headers['X-Vault-Token']).toBe('hvs.approle-token');
   });
 });
 

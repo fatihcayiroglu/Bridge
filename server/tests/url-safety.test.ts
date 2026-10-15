@@ -104,3 +104,51 @@ describe('rotalar denetimi KULLANIR', () => {
     expect(src).not.toMatch(/try \{ new URL\(url\); \} catch/);
   });
 });
+
+// A domain name is only as safe as EVERY address it resolves to. Without these
+// checks a hostname pointing at 169.254.169.254 (or one public plus one
+// private address, the DNS-rebinding shape) would turn a webhook into a proxy
+// into the operator's network.
+describe('checkOutboundUrl — domain names are judged by what they resolve to', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const dnsPromises = require('dns').promises as { lookup: (...args: unknown[]) => Promise<unknown> };
+  let lookup: jest.SpyInstance;
+  beforeEach(() => {
+    delete process.env.ALLOW_INTERNAL_WEBHOOKS;
+    lookup = jest.spyOn(dnsPromises, 'lookup');
+  });
+  afterEach(() => lookup.mockRestore());
+  const resolvesTo = (...addresses: string[]) => lookup.mockResolvedValueOnce(
+    addresses.map((address) => ({ address, family: address.includes(':') ? 6 : 4 })));
+
+  it('a name resolving only to public addresses is allowed, and every address was asked for', async () => {
+    resolvesTo('93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946');
+    await expect(checkOutboundUrl('https://hooks.example.com/x')).resolves.toEqual({ ok: true });
+    expect(lookup).toHaveBeenCalledWith('hooks.example.com', { all: true });
+  });
+
+  it.each([
+    ['the cloud metadata address', ['169.254.169.254']],
+    ['one public and one private address', ['93.184.216.34', '10.1.2.3']],
+    ['IPv6 loopback', ['::1']],
+    ['an IPv4-mapped private address', ['::ffff:192.168.0.10']],
+  ])('a name resolving to %s is refused', async (_name, addresses) => {
+    resolvesTo(...addresses);
+    await expect(checkOutboundUrl('https://hooks.example.com/x'))
+      .resolves.toEqual({ ok: false, reason: 'Özel/yerel ağ adresleri hedef olamaz' });
+  });
+
+  it('a name that resolves to nothing, or fails to resolve, is refused', async () => {
+    lookup.mockResolvedValueOnce([]);
+    await expect(checkOutboundUrl('https://empty.example.com/')).resolves.toEqual({ ok: false, reason: 'Adres çözümlenemedi' });
+    lookup.mockRejectedValueOnce(Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }));
+    await expect(checkOutboundUrl('https://nxdomain.example.com/')).resolves.toEqual({ ok: false, reason: 'Adres çözümlenemedi' });
+  });
+
+  it('local name suffixes are refused before any lookup', async () => {
+    for (const url of ['http://printer.local/', 'http://admin.localhost/', 'http://svc.internal/']) {
+      await expect(checkOutboundUrl(url)).resolves.toMatchObject({ ok: false });
+    }
+    expect(lookup).not.toHaveBeenCalled();
+  });
+});

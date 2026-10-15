@@ -298,3 +298,116 @@ describe('P5 FED-03: the signature binds the whole request, once', () => {
     expect(headers['x-bridge-instance-url']).toBe(TEST_PEER_URL);
   });
 });
+
+// How a peer's key and identity are stored varies by backend and by age of
+// the row. Every shape must either verify against the registered key or be
+// refused; none may fall through to accepting an unverified request.
+describe('verifyFederationRequestV3 — stored key and peer-row shapes', () => {
+  const loaderDb = () => (require('../db/loader').default as {
+    federationPeers?: { findOne: jest.Mock };
+  });
+  const repository = () => require('../db/repositories').Federation as { getPeerByUrl: jest.Mock };
+  const withPeerRow = (row: Record<string, unknown> | null) => {
+    loaderDb().federationPeers!.findOne.mockImplementationOnce(async () => row);
+  };
+  // Restore the module-level doubles so no queued answer leaks into another test.
+  afterEach(() => {
+    const findOne = loaderDb().federationPeers!.findOne;
+    findOne.mockReset();
+    findOne.mockImplementation(async ({ url }: { url: string }) => (url === TEST_PEER_URL ? mockPeer : null));
+    const getPeerByUrl = repository().getPeerByUrl;
+    getPeerByUrl.mockReset();
+    getPeerByUrl.mockImplementation(async (url: string) => (url === TEST_PEER_URL ? mockPeer : null));
+  });
+
+  it('a key stored as a JSON key document verifies through its publicKeyPem', async () => {
+    withPeerRow({ ...mockPeer, publicKey: JSON.stringify({ publicKeyPem: publicKey, keyId: 'key-1' }) });
+    await expect(verifyFederationRequestV3(TEST_PEER_URL, TEST_PAYLOAD, validHeaders(), CTX))
+      .resolves.toEqual({ ok: true, method: 'rsa', peerId: 'peer-1' });
+  });
+
+  it.each([
+    ['a JSON key document without publicKeyPem', JSON.stringify({ keyId: 'key-1' })],
+    ['a JSON value that is not a document', 'null'],
+    ['a string that is neither JSON nor a PEM key', 'ssh-rsa AAAAB3NzaC1yc2E attacker@host'],
+  ])('%s is refused as an invalid key, not tried', async (_name, stored) => {
+    withPeerRow({ ...mockPeer, publicKey: stored });
+    const result = await verifyFederationRequestV3(TEST_PEER_URL, TEST_PAYLOAD, validHeaders(), CTX);
+    expect(result).toEqual({ ok: false, peerId: 'peer-1', reason: 'Invalid RSA public key format' });
+    // Refused before the signature was consumed: the same request can still
+    // be verified once the key is fixed, and nothing was marked as used.
+    expect(mockReplaySeen.size).toBe(0);
+  });
+
+  it('a JSON key document carrying a different key still refuses the signature', async () => {
+    const other = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    });
+    withPeerRow({ ...mockPeer, publicKey: JSON.stringify({ publicKeyPem: other.publicKey }) });
+    const result = await verifyFederationRequestV3(TEST_PEER_URL, TEST_PAYLOAD, validHeaders(), CTX);
+    expect(result).toEqual({ ok: false, peerId: 'peer-1', reason: 'RSA signature invalid' });
+  });
+
+  it('a legacy row stored under a non-canonical URL is found by that exact URL', async () => {
+    // Neither store knows the canonical form; only the exact stored form matches.
+    const legacyUrl = 'https://Peer.Bridge.Test/';
+    const seen: string[] = [];
+    loaderDb().federationPeers!.findOne.mockImplementation(async ({ url }: { url: string }) => {
+      seen.push(url);
+      return url === legacyUrl ? { ...mockPeer, url: legacyUrl } : null;
+    });
+    repository().getPeerByUrl.mockImplementation(async () => null);
+    const result = await verifyFederationRequestV3(legacyUrl, TEST_PAYLOAD, validHeaders(), CTX);
+    expect(seen).toEqual([TEST_PEER_URL, legacyUrl]);
+    expect(result).toMatchObject({ ok: true, peerId: 'peer-1' });
+  });
+
+  it('a PostgreSQL row identified by `id` reports that id', async () => {
+    withPeerRow({ id: 7, url: TEST_PEER_URL, publicKey });
+    await expect(verifyFederationRequestV3(TEST_PEER_URL, TEST_PAYLOAD, validHeaders(), CTX))
+      .resolves.toEqual({ ok: true, method: 'rsa', peerId: 7 });
+  });
+
+  it('a row without a url binds the signature to the canonical lookup URL, never to the request', async () => {
+    withPeerRow({ _id: 'peer-1', publicKey });
+    await expect(verifyFederationRequestV3(`${TEST_PEER_URL}/`, TEST_PAYLOAD, validHeaders(), CTX))
+      .resolves.toMatchObject({ ok: true });
+    // Signed by someone claiming another sender: still refused.
+    withPeerRow({ _id: 'peer-1', publicKey });
+    const forged = buildFederationHeadersV3(TEST_PAYLOAD, privateKey, 'key-1', { ...CTX, sender: 'https://evil.bridge.test' });
+    await expect(verifyFederationRequestV3(TEST_PEER_URL, TEST_PAYLOAD, forged, CTX))
+      .resolves.toMatchObject({ ok: false, reason: 'RSA signature invalid' });
+  });
+
+  it('without an in-memory peer collection the repository is the source of peers', async () => {
+    const db = loaderDb();
+    const collection = db.federationPeers;
+    delete db.federationPeers;
+    try {
+      await expect(verifyFederationRequestV3(TEST_PEER_URL, TEST_PAYLOAD, validHeaders(), CTX))
+        .resolves.toMatchObject({ ok: true, peerId: 'peer-1' });
+      expect(repository().getPeerByUrl).toHaveBeenCalledWith(TEST_PEER_URL);
+      // ...and an unknown peer there is still unknown.
+      await expect(verifyFederationRequestV3('https://stranger.bridge.test', TEST_PAYLOAD, validHeaders(), CTX))
+        .resolves.toEqual({ ok: false, reason: 'Unknown peer: https://stranger.bridge.test' });
+    } finally {
+      db.federationPeers = collection;
+    }
+  });
+
+  it('a claimed peer URL that is not a URL is looked up only as given, and is unknown', async () => {
+    const seen: string[] = [];
+    loaderDb().federationPeers!.findOne.mockImplementation(async ({ url }: { url: string }) => { seen.push(url); return null; });
+    await expect(verifyFederationRequestV3('peer.bridge.test', TEST_PAYLOAD, validHeaders(), CTX))
+      .resolves.toEqual({ ok: false, reason: 'Unknown peer: peer.bridge.test' });
+    // Never "repaired" into the registered https://peer.bridge.test identity.
+    expect(seen).toEqual(['peer.bridge.test']);
+  });
+
+  it('a peer store that throws is an unknown peer, never an accepted one', async () => {
+    loaderDb().federationPeers!.findOne.mockRejectedValueOnce(new Error('peer store offline'));
+    await expect(verifyFederationRequestV3(TEST_PEER_URL, TEST_PAYLOAD, validHeaders(), CTX))
+      .resolves.toEqual({ ok: false, reason: `Unknown peer: ${TEST_PEER_URL}` });
+  });
+});
