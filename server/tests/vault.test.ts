@@ -289,14 +289,25 @@ describe('aws backend', () => {
     process.env.AWS_REGION    = 'us-east-1';
   });
 
-  it('AWS SDK yüklü değilse env fallback yapar', async () => {
-    // @aws-sdk/client-secrets-manager mock yok → dynamic import başarısız
-    // vault.ts hata yakalar ve env'e düşer
+  it('AWS isteği başarısız olursa (production dışı) env fallback yapar', async () => {
+    // The signer is real (credentials from the environment, so no instance
+    // metadata lookup); the request itself fails. This was asserted as
+    // "env value OR null" — a check that could not fail. Outside production
+    // the outcome is exactly the env value. Response handling, endpoint
+    // validation and the production fail-closed path are covered in
+    // tests/vault-aws-secrets-manager.test.ts.
+    process.env.AWS_ACCESS_KEY_ID = 'AKIDEXAMPLETEST0000';
+    process.env.AWS_SECRET_ACCESS_KEY = 'test-secret-access-key-not-real';
     process.env.AWS_FALLBACK_TEST = 'from-env-aws';
-    const val = await getSecret('AWS_FALLBACK_TEST');
-    // Ya env fallback ya da null (SDK yok)
-    expect(val === 'from-env-aws' || val === null).toBe(true);
-    delete process.env.AWS_FALLBACK_TEST;
+    mockFetch.mockRejectedValueOnce(new Error('network down'));
+    try {
+      await expect(getSecret('AWS_FALLBACK_TEST')).resolves.toBe('from-env-aws');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      delete process.env.AWS_FALLBACK_TEST;
+      delete process.env.AWS_ACCESS_KEY_ID;
+      delete process.env.AWS_SECRET_ACCESS_KEY;
+    }
   });
 });
 
