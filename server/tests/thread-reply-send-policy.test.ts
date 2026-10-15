@@ -10,7 +10,9 @@
 //   - the P7 B1 mass-mention limit (more than `mentions.perMessage` distinct
 //     people in one message, unless the sender has MENTION_EVERYONE).
 // `POST /api/threads/:id/messages` applied none of them, so a reply in a
-// thread carried exactly what the channel refused.
+// thread carried exactly what the channel refused. Neither did a forum post
+// (`POST /api/threads` with a forum `channelId`): its title and first message
+// are read by every viewer of the forum.
 //
 // Each case runs the channel path first as the control, then the thread
 // route, through the real handlers, the real AutoMod evaluator and abuse
@@ -208,5 +210,54 @@ describe('the P7 repeated-content limit applies to thread replies', () => {
     for (let i = 0; i < ABUSE_POLICY.repeat.max; i += 1) await channelSend(text);
     const res = await threadReply('something else entirely here');
     expect(res.status).toBe(200);
+  });
+});
+
+describe('a forum post (title and first message) passes the same checks', () => {
+  let forum: ReturnType<typeof makeChannel>;
+  beforeEach(async () => {
+    forum = makeChannel(server._id, { type: 'forum', name: 'ideas' });
+    await mockDb.channels.insert(forum);
+    invalidatePerms(server._id);
+  });
+
+  function post(body: Record<string, unknown>, as = member) {
+    const token = jwt.sign({ id: as._id, username: 'tester', v: 0 }, process.env.JWT_SECRET!, { expiresIn: '1h' });
+    return request(app).post('/api/threads').set('Authorization', `Bearer ${token}`).send({ channelId: forum._id, ...body });
+  }
+  const forumPosts = async () => (await mockDb.threads.find({ channelId: forum._id })).length;
+  const created = () => io.emitted.filter(e => e.ev === 'forum:thread:created');
+
+  it('a blocked word in the first message is refused; no post is created or announced', async () => {
+    await blockWord('forbiddenword');
+    const res = await post({ name: 'a fine title', firstMessage: 'this has forbiddenword in it' });
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ code: 'AUTOMOD_BLOCKED' });
+    expect(await forumPosts()).toBe(0);
+    expect(created()).toEqual([]);
+  });
+
+  it('a blocked word in the title is refused', async () => {
+    await blockWord('forbiddenword');
+    const res = await post({ name: 'forbiddenword title' });
+    expect(res.status).toBe(422);
+    expect(await forumPosts()).toBe(0);
+  });
+
+  it(`the same post more than ${ABUSE_POLICY.repeat.max} times per window is refused`, async () => {
+    const body = { name: 'cheap followers', firstMessage: 'buy cheap followers at my shop now' };
+    for (let i = 0; i < ABUSE_POLICY.repeat.max; i += 1) expect((await post(body)).status).toBe(201);
+    const res = await post(body);
+    expect(res.status).toBe(429);
+    expect(res.body).toMatchObject({ code: 'SPAM_REPEAT' });
+    expect(await forumPosts()).toBe(ABUSE_POLICY.repeat.max);
+  });
+
+  it('CONTROL: an ordinary post is created', async () => {
+    await blockWord('forbiddenword');
+    const res = await post({ name: 'a fine title', firstMessage: 'a perfectly ordinary first message' });
+    expect(res.status).toBe(201);
+    expect(await forumPosts()).toBe(1);
+    expect(created()).toHaveLength(1);
   });
 });
