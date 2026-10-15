@@ -1687,7 +1687,36 @@ test('P2 stage channels use an authoritative listener-first session owner withou
     'the UI must remain explicit about real-media verification boundaries');
 
   assert.match(handler, /type StageAck = \(result: \{ ok: boolean; code\?: string; canManage\?: boolean \}\) => void/);
-  assert.match(handler, /stage:join'[\s\S]{0,900}ack\?\.\(\{ ok: true, canManage:/,
+  // Inspect exactly the stage:join handler instead of assuming its ACK falls
+  // within an arbitrary number of source characters after the event label.
+  // Extra permission re-checks, comments and formatting must not produce a
+  // false red contract if the actual admission/ACK order is still correct.
+  const ts = require('typescript');
+  const stageAst = ts.createSourceFile('stage.ts', handler, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const stageJoinHandlers = [];
+  function visitStageNode(node) {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+        && node.expression.expression.getText(stageAst) === 'socket'
+        && node.expression.name.text === 'on'
+        && node.arguments.length >= 2 && ts.isStringLiteral(node.arguments[0])
+        && node.arguments[0].text === 'stage:join') {
+      stageJoinHandlers.push(node.arguments[1].getText(stageAst));
+    }
+    ts.forEachChild(node, visitStageNode);
+  }
+  visitStageNode(stageAst);
+  assert.equal(stageJoinHandlers.length, 1, 'stage join must have one canonical handler');
+  const stageJoin = stageJoinHandlers[0];
+  const requiredStageStep = (fragment) => {
+    const at = stageJoin.indexOf(fragment);
+    assert.notEqual(at, -1, `stage:join missing ${fragment}`);
+    return at;
+  };
+  const accessAt = requiredStageStep('await _stageAccess(channelId, user._id)');
+  const roomAt = requiredStageStep('await getOrCreateRoom(channelId)');
+  const joinedAt = requiredStageStep('socket.join(`stage:${channelId}`)');
+  const ackAt = requiredStageStep('ack?.({ ok: true, canManage:');
+  assert.ok(accessAt < roomAt && roomAt < joinedAt && joinedAt < ackAt,
     'stage join must ACK only after access, room creation and Socket.IO room join');
   assert.match(handler, /stage:setRole'[\s\S]{0,1800}ack\?\.\(\{ ok: true \}\)/,
     'role changes must ACK only after authoritative room persistence');
