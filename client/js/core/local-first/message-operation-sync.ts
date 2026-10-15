@@ -313,7 +313,10 @@ async function queueOperation(
     current = await getLocalFirstOperation(userId, opId);
   }
 
-  return { opId, dispatched: current?.state === 'sending' };
+  // "Dispatched" means emitted and awaiting its ACK: the ACK timer is armed
+  // only after a successful emit. A row left in "sending" because a re-queue
+  // write failed was NOT emitted, and must not be reported as if it had been.
+  return { opId, dispatched: current?.state === 'sending' && acknowledgementTimers.has(opId) };
 }
 
 export async function queueEditMessageOperation(input: QueueEditInput): Promise<QueuedMessageOperation> {
