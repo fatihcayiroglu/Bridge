@@ -159,6 +159,21 @@ describe('when the sender\'s permissions cannot be resolved', () => {
 });
 
 describe('@everyone / @here with MENTION_EVERYONE', () => {
+  it.each([
+    '@everyone_else is a username, not a mass ping',
+    '@here123 is a username, not a mass ping',
+    '@everyoneElse is a username, not a mass ping',
+  ])('a privileged user writing %s does not trigger a mass notification', async (content) => {
+    await grantRole(sender._id, PERMS.MENTION_EVERYONE);
+    await send(content);
+    expect(posted()).toHaveLength(1);
+    for (const u of [owner, bob, carol]) {
+      expect(await notified(u._id)).toBe(0);
+      expect(mentionEvents(u._id)).toEqual([]);
+      expect(await unread(u._id)).toBe(0);
+    }
+  });
+
   it('a role that grants it: every member who can see the channel is notified', async () => {
     await grantRole(sender._id, PERMS.MENTION_EVERYONE);
     await send('@everyone standup in 5');
