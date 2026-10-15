@@ -344,3 +344,136 @@ describe('scheduled message dispatcher', () => {
     expect(await mockDbInstance.messages.find({ scheduledId: scheduled._id })).toHaveLength(0);
   });
 });
+
+// ── Authority and lease edges the cases above do not reach ─────────────────
+// A scheduled message is posted minutes or days after it was written. Between
+// the two, the author's account, the channel and the worker's own lease can
+// all change. None of these may produce a post, a post in the wrong place, or
+// a second copy.
+describe('scheduled message dispatcher — what changed since scheduling', () => {
+  const repos = require('../db/repositories');
+  const logger = require('../lib/logger').default;
+  const failureOf = async (id: string) => (await requireDoc(mockDbInstance.scheduledMsgs, { _id: id })).failureReason;
+
+  beforeEach(async () => {
+    mockDbInstance._reset();
+    mockCreateFailure = null;
+    mockMarkFailedFailure = null;
+    mockPermissionMask = (1 << 0) | (1 << 8);
+    await seedAuthority();
+  });
+  afterEach(() => {
+    stopScheduledJob();
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it('the author\'s account was deleted: nothing is posted, the row fails as user_not_found', async () => {
+    jest.useFakeTimers();
+    const scheduled = await seedScheduledMsg();
+    await mockDbInstance.users.remove({ _id: 'u1' });
+    startScheduledJob(null);
+    await tick();
+    expect(await mockDbInstance.messages.find({})).toHaveLength(0);
+    expect(await failureOf(scheduled._id)).toBe('user_not_found');
+  });
+
+  it('the channel was deleted, or now belongs to another server: nothing is posted anywhere', async () => {
+    jest.useFakeTimers();
+    const deleted = await seedScheduledMsg({ channelId: 'gone' });
+    await mockDbInstance.channels.insert({ _id: 'moved', serverId: 'other-server', name: 'moved', type: 'text' });
+    const moved = await seedScheduledMsg({ channelId: 'moved' });
+    startScheduledJob(null);
+    await tick();
+    expect(await mockDbInstance.messages.find({})).toHaveLength(0);
+    expect(await failureOf(deleted._id)).toBe('channel_scope_invalid');
+    expect(await failureOf(moved._id)).toBe('channel_scope_invalid');
+  });
+
+  it('profile fields missing on the current account fall back to the values saved at scheduling', async () => {
+    jest.useFakeTimers();
+    await mockDbInstance.users.update({ _id: 'u1' }, { $set: { username: '', displayName: '', avatarColor: '' } });
+    await seedScheduledMsg({ username: 'saved-name', displayName: 'Saved Name', avatarColor: '#123456' });
+    startScheduledJob(null);
+    await tick();
+    expect(await mockDbInstance.messages.find({ userId: 'u1' })).toEqual([
+      expect.objectContaining({ username: 'saved-name', displayName: 'Saved Name', avatarColor: '#123456' }),
+    ]);
+  });
+
+  it('a lease taken over by another worker before finalising: this worker publishes nothing and leaves one copy for the new owner', async () => {
+    jest.useFakeTimers();
+    const scheduled = await seedScheduledMsg();
+    const emit = jest.fn();
+    const io = { to: jest.fn().mockReturnValue({ emit }) };
+    const create = repos.Messages.create;
+    repos.Messages.create = async (doc: Record<string, unknown>) => {
+      const saved = await mockDbInstance.messages.insert(doc);
+      // Our lease expired while the insert ran; another worker claimed the row.
+      await mockDbInstance.scheduledMsgs.update({ _id: scheduled._id }, { $set: { claimOwner: 'other-worker' } });
+      return saved;
+    };
+    const error = jest.spyOn(logger, 'error');
+    try {
+      startScheduledJob(io as never);
+      await tick();
+    } finally {
+      repos.Messages.create = create;
+    }
+    expect(emit).not.toHaveBeenCalled();
+    const row = await requireDoc(mockDbInstance.scheduledMsgs, { _id: scheduled._id });
+    expect(row).toMatchObject({ sent: false, claimOwner: 'other-worker' });
+    // Exactly one copy exists; the new owner's crash recovery reuses it.
+    expect(await mockDbInstance.messages.find({ scheduledId: scheduled._id })).toHaveLength(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'scheduled_msg_dispatch_fail', id: scheduled._id }),
+      'scheduled_claim_lost_before_finalize',
+    );
+  });
+
+  it('an error without a message is recorded as dispatch_failed, not as an empty reason', async () => {
+    jest.useFakeTimers();
+    const scheduled = await seedScheduledMsg();
+    mockCreateFailure = new Error('');
+    startScheduledJob(null);
+    await tick();
+    expect((await requireDoc(mockDbInstance.scheduledMsgs, { _id: scheduled._id })).lastError).toBe('dispatch_failed');
+  });
+
+  it('a lease that cannot be released after a failure is logged, and the next row is still dispatched', async () => {
+    jest.useFakeTimers();
+    const failing = await seedScheduledMsg({ content: 'fails' });
+    const healthy = await seedScheduledMsg({ content: 'healthy', sendAt: Date.now() - 500 });
+    const create = repos.Messages.create;
+    const release = repos.ScheduledMessages.releaseClaim;
+    repos.Messages.create = async (doc: Record<string, unknown>) => {
+      if (doc.scheduledId === failing._id) throw new Error('db unavailable');
+      return mockDbInstance.messages.insert(doc);
+    };
+    repos.ScheduledMessages.releaseClaim = async () => { throw new Error('lease store unavailable'); };
+    const error = jest.spyOn(logger, 'error');
+    try {
+      startScheduledJob(null);
+      await tick();
+    } finally {
+      repos.Messages.create = create;
+      repos.ScheduledMessages.releaseClaim = release;
+    }
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'scheduled_msg_release_fail', id: failing._id, err: 'lease store unavailable' }),
+      expect.any(String),
+    );
+    expect((await requireDoc(mockDbInstance.scheduledMsgs, { _id: healthy._id })).sent).toBe(true);
+  });
+
+  it('a corrupt negative attempt counter fails the row terminally instead of retrying forever', async () => {
+    jest.useFakeTimers();
+    const scheduled = await seedScheduledMsg({ dispatchAttempts: -1 }); // the claim makes it 0
+    mockCreateFailure = new Error('db unavailable');
+    startScheduledJob(null);
+    await tick();
+    const row = await requireDoc(mockDbInstance.scheduledMsgs, { _id: scheduled._id });
+    expect(row.failedAt).toBeGreaterThan(0);
+    expect(row.failureReason).toBe('dispatch_retry_exhausted:db unavailable');
+  });
+});
