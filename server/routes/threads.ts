@@ -9,6 +9,7 @@ import { authMiddleware} from '../middleware/auth';
 import { hasPermission, PERMS, resolvePermissions } from './roles';
 import { limits } from '../middleware/rateLimit';
 import { processNotifications } from '../lib/notifications';
+import { checkMessageContent, type MessageContentRefusal } from '../lib/messageContentPolicy';
 import logger from '../lib/logger';
 import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
 
@@ -19,6 +20,14 @@ async function memberCheck(userId: string, serverId: string) {
 
 async function channelPermissions(userId: string, serverId: string, channelId: string): Promise<number> {
   return resolvePermissions(userId, serverId, channelId).catch(() => 0);
+}
+
+/** The HTTP answer for content the message policy refused. */
+function sendContentRefusal(res: express.Response, refusal: MessageContentRefusal) {
+  if (refusal.kind === 'spam') {
+    return res.status(429).json({ error: 'Too many similar messages', code: refusal.reason.toUpperCase(), retryAfterMs: refusal.retryAfterMs });
+  }
+  return res.status(422).json({ error: refusal.message, code: refusal.code });
 }
 
 async function canReadThread(userId: string, thread: { serverId: string; channelId: string }): Promise<boolean> {
@@ -91,6 +100,21 @@ router.post('/', authMiddleware, limits.messages(), async (req, res) => {
 
     const user = await Users.findById(_u.id);
     if (!user) return res.status(401).json({ error: 'User not found' });
+
+    // A forum post is read by every channel viewer: its title and first
+    // message pass the same content checks as a message (one owner, see
+    // lib/messageContentPolicy.ts).
+    const refusal = await checkMessageContent({
+      userId: _u.id,
+      serverId: channel.serverId,
+      channelId,
+      content: [name.trim(), firstMessage?.trim()].filter(Boolean).join('\n'),
+      senderPerms: perms,
+      memberRoles: (member as { roles?: unknown }).roles,
+      displayName: (member as { nickname?: string }).nickname || user.displayName || user.username,
+    }, req.app.get('io'));
+    if (refusal) return sendContentRefusal(res, refusal);
+
     const now  = Date.now();
 
     const thread = await Threads.insert({
@@ -295,6 +319,24 @@ router.post('/:threadId/messages', authMiddleware, limits.messages(), async (req
   const user = await Users.findById(_u.id);
   if (!user) return res.status(401).json({ error: 'User not found' });
 
+  // A retry of a stored reply answers with it and is not counted again.
+  const nonce = typeof clientNonce === 'string' ? clientNonce : null;
+  const stored = nonce ? await Threads.findMessageByClientNonce(thread._id, _u.id, nonce) : null;
+  if (stored) return res.status(200).json(stored);
+
+  // A thread reply is a message: the same P7 abuse limits, mass-mention limit
+  // and AutoMod rules as a channel message (one owner, see the module).
+  const refusal = await checkMessageContent({
+    userId: _u.id,
+    serverId: thread.serverId,
+    channelId: thread.channelId,
+    content,
+    senderPerms: perms,
+    memberRoles: (member as { roles?: unknown }).roles,
+    displayName: (member as { nickname?: string }).nickname || user.displayName || user.username,
+  }, req.app.get('io'));
+  if (refusal) return sendContentRefusal(res, refusal);
+
   const inserted = await Threads.insertMessageIdempotent({
     threadId:    thread._id,
     channelId:   thread.channelId,
@@ -304,7 +346,7 @@ router.post('/:threadId/messages', authMiddleware, limits.messages(), async (req
     displayName: user.displayName,
     avatarColor: user.avatarColor,
     content:     content.trim(),
-    clientNonce: typeof clientNonce === 'string' ? clientNonce : null,
+    clientNonce: nonce,
     type:        'normal',
     reactions:   {},
     createdAt:   Date.now(),
