@@ -108,6 +108,24 @@ jobs:
             hit=$(unzip -p "$jar" 2>/dev/null | grep -aoE "$pattern" | sort -u | tr '\n' ' ')
             if [ -n "$hit" ]; then echo "  ${jar#"$caches"/} -> $hit"; fi
           done | sort -u | head -40 || true
+      # #209 controlled A/B: confirm the manifest merger removed only emoji2
+      # eager initialization. A green emulator without this is not evidence the
+      # experiment ran at all. Other AndroidX lifecycle initializers must stay.
+      - name: Verify emoji2 initializer isolated (#209 experiment)
+        run: |
+          merged=$(find android/app/build/intermediates -name AndroidManifest.xml -path '*merged_manifests*debug*' | head -1)
+          test -n "$merged"
+          if grep -q 'androidx.emoji2.text.EmojiCompatInitializer' "$merged"; then
+            echo "FAIL: emoji2 initializer was not removed from merged debug manifest" >&2
+            exit 1
+          fi
+          for required in androidx.lifecycle.ProcessLifecycleInitializer androidx.profileinstaller.ProfileInstallerInitializer; do
+            if ! grep -q "$required" "$merged"; then
+              echo "FAIL: unrelated AndroidX initializer missing: $required" >&2
+              exit 1
+            fi
+          done
+          echo "PASS: emoji2 eager initializer absent; lifecycle/profile initializers intact"
       - uses: actions/upload-artifact@v7
         with:
           name: bridge-android-debug-apk
