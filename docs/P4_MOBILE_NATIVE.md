@@ -434,3 +434,388 @@ Post-merge `main` commit `7ab895a`, [Android run 38155876130](https://github.com
 [Issue #184](https://github.com/fatihcayiroglu/Bridge/issues/184) tracks the incident. [Draft PR #185](https://github.com/fatihcayiroglu/Bridge/pull/185) changes the native back path for Settings: call the existing `.settings-close` user-facing button, which directly invokes Svelte `onClose`, rather than synthesize two Escape events across a focus trap. For other dialogs, one Escape fallback remains. Native plugin-mock tests exercise the actual bridge listener. Its compiled JS and TypeScript must stay byte-identical under `mobile/tests/capacitor-bridge-freshness.test.js`.
 
 **DO NOT CLOSE #184** before exact-head K01 emulator pass and a successful post-merge main Android run. No timeout relaxation or skip. Physical Android hardware Back remains unverified.
+
+### #209 cold-start ANR margin — 14 October 2026 (investigation, not closure)
+
+**What is known.** In the failing #206 run, the app's process started at
+15:41:01. The main thread then logged `Choreographer: Skipped 123 frames`,
+which is about 2 s of stall, right after Capacitor loaded `https://localhost`.
+A **5 s FocusEvent input-dispatch ANR** followed at 15:41:11, and the OS
+killed the process. That kill is why L01 then saw a COLD launch with a new
+PID. The app's own native layer is minimal: `MainActivity` only registers
+one plugin before `BridgeActivity.onCreate`. That points the stall at
+WebView/Capacitor initialisation on a starved emulator. It does not yet
+point to a specific application call.
+
+**Emulator load alone is not the cause.** The green nightly `main` run
+[38539082294](https://github.com/fatihcayiroglu/Bridge/actions/runs/38539082294)
+recorded a kernel 1-minute load average of **29.5** before L01. That is
+higher than the **21.6** in the failing run. The same run measured an
+8.65 s cold launch (A01), yet had zero ANRs and a HOT L01. Kernel PSI is
+`unavailable` on this emulator image, so the load average is the only
+pressure signal. A high load is consistent with the failure but does not
+determine it. The likely model is a narrow margin: a multi-second
+main-thread stall during cold start, measured against Android's 5 s focus
+timeout.
+
+**New repeatable measurement (CS01).** The journey now performs
+`ANDROID_COLD_STARTS` (default 5, bounded 1–20) consecutive cold starts,
+right after A01.
+
+- **PASS requires** that the UI appears every time and that the OS reports
+  **zero** new package ANRs.
+- **Recorded per launch:** `am start -W` TotalTime; the number and maximum
+  size of that PID's `Choreographer` skipped-frame events; and the load
+  average.
+- **Logging limits:** only the numbers are kept, never raw log lines, and
+  logcat is not cleared, so ANR01 still sees everything.
+
+This quantifies the margin across many CI runs. It does **not** make the
+earlier failure fixed. Keep #209 open until all of the following hold:
+
+- repeated CS01/L01/ANR01 evidence;
+- a localised main-thread cost, ideally from a native trace;
+- a physical-device run, which is currently **BLOCKED — physical device
+  required**.
+
+**First CS01 run (PR #238, [run 38542004949](https://github.com/fatihcayiroglu/Bridge/actions/runs/38542004949)): FAIL, and the harness made it worse.**
+
+- **Cold starts 1–4 reached the UI.** The load average was 19–23.
+- **Cold start 5 lost the app.** About 12 s after `am start -W`, `pidof`
+  was empty and the launcher was the top activity. No Java crash header was
+  logged. The WebView attach then failed with "Target page ... has been
+  closed". ANR01 counted **zero** ANRs for the whole run, so this was not
+  the 5 s FocusEvent ANR. It was a process disappearing during a cold
+  launch.
+- **One failure took the rest of the run with it.** The run recorded
+  30 FAIL, 6 PASS and 1 MEASURED. A02 (login) reused the closed page and
+  failed, so every later check that needs a signed-in session failed too.
+  L01 additionally found its process dead after 20 s in the background,
+  with no recorded reason. Apart from CS01 and that L01 process death, the
+  run is not evidence of independent product failures.
+
+**Harness changes after that run** (CS01 stays FAIL when a launch fails;
+no retries and no relaxed timeouts):
+
+- **Exit reason.** A failed cold start reports the `am start` status and
+  launch state, the PID it launched, and the OS's own exit record for that
+  process (`dumpsys activity exit-info`: low-memory kill, native or Java
+  crash, signal, ANR or user stop). Only allow-listed numeric and enum
+  fields are kept, never the free-text description or trace.
+- **Native crashes.** The crash probe now also matches native tombstone
+  headers (`>>> pkg <<<`, `signal N (SIGxxx)`), which the Java patterns
+  missed.
+- **L01 process death.** When L01 finds the process gone, it reports the
+  same exit record.
+- **No cascade.** After a failed cold start, the app is launched once more,
+  exactly as A01 does. The next, independent check therefore does not
+  inherit a dead WebView. The restore is recorded in the evidence, and a
+  failed restore is reported.
+
+**Second run (PR #238, [run 38582334149](https://github.com/fatihcayiroglu/Bridge/actions/runs/38582334149)): the harness hung.**
+
+- **Hung on the first check.** A01 started at 14:46:29 and produced no
+  further output until the job was cancelled at its 60-minute limit (15:42).
+  There is no PASS or FAIL and no evidence; it counts as **UNEXECUTED**, not
+  as a result.
+- **The cause is in the harness.** It had no bound on two calls:
+  - `until()` checked its deadline only between attempts, so a
+    `page.evaluate` on a frozen WebView (Playwright gives it no timeout)
+    never returned.
+  - `sh()` (adb shell, including `am start -W`) had no timeout at all.
+- **What hung inside A01 is still unknown.** A frozen renderer, a stuck
+  `am start` and a stuck DevTools attach are all possible. A green `main`
+  run finishes the whole journey in about 9 minutes; its longest check is
+  L02 at 76 s.
+
+**Harness changes after that run** (assertions and timeouts unchanged,
+nothing retried):
+
+- **Bounded calls.** Every `adb shell` call is bounded at 120 s and names
+  itself when it fails. Each `until()` attempt is bounded by the time left.
+  The DevTools attach, the DOM summary, the screenshot and the device close
+  are all bounded.
+- **Per-check watchdog.** Each check and measurement has a 300 s budget
+  (CS01: 120 s per cold start). Overrunning it is a FAIL carrying device
+  evidence: PID, top activity, crash headers and the OS exit record. The next
+  check then starts from a freshly launched app, so a wedged WebView cannot
+  stall the run again.
+
+**Bounded failure-only diagnostics:** after the check watchdog fires, the
+four bounded Android state/log probes and the process-exit probe have a
+separate **12-second cap each**, so a dead `adb` connection cannot burn
+another 120 seconds per diagnostic. Normal app actions, original L01/ANR01
+assertions, cold-start timing and the 120-second standard shell cap are
+unchanged. Timeouts report missing evidence explicitly; they never become a
+PASS. This still does not diagnose the underlying Android process death.
+
+**Third run (PR #238, [run 38593466416](https://github.com/fatihcayiroglu/Bridge/actions/runs/38593466416), attempt 1, head `ed82fb4`): FAIL, 32 PASS / 1 FAIL / 0 SKIPPED / 4 MEASURED.**
+
+- **CS01 failed on cold start 5 again**, as in the first run. Launches 1–4
+  reached the UI (load average 20–23). Launch 5 returned `am start` ok/COLD
+  with PID 6573. The OS then ended that process at 16:01:47.761, about 7 s
+  after launch, with exit reason **12 (DEPENDENCY DIED)**, importance 100
+  (foreground). The DevTools attach then timed out after 60 s.
+- **It was neither an ANR nor a crash.** ANR01 counted zero ANRs, the crash
+  buffer had no header for the app, and the reason is neither low-memory nor
+  signal. L01 stayed HOT with a stable PID. The restore after CS01 worked, and
+  no later check inherited the failure (no cascade).
+- **What "dependency died" means.** ActivityManager uses this reason when it
+  kills a client because a process it holds a *stable content-provider
+  connection* to has died. The app's WebView sandbox renderer exited 61 ms
+  later as "ISOLATED NOT NEEDED". That is a consequence of the app dying, not
+  the cause.
+- **Which dependency: not established.** The process list taken after the
+  failure shows `com.google.android.gms.persistent` with PID 6895. That PID is
+  higher than every PID from the failing launch (6573, 6642), so Google Play
+  services restarted that process in the same minute. The emulator had
+  finished booting only about 96 s before the kill (boot completed at
+  16:00:11). Play services dying shortly after boot is therefore the leading
+  hypothesis. It is **not** proven: the exit record does not name the
+  dependency, and the harness did not yet read Play services' own exit
+  records.
+- **Harness change after this run.** When an exit record says DEPENDENCY
+  DIED, the evidence now adds ActivityManager's own attribution: the
+  `depends on provider <component> in dying proc <process>` kill line, read
+  from the system log for that PID only. It also adds the dying process's
+  exit records from its own package (`dumpsys activity exit-info <pkg>`). Only
+  the provider component, the process name and the allow-listed exit fields
+  are kept, never the raw log line or the free-text description. Nothing is
+  retried and no assertion changed.
+
+**Fourth run: exact-head rerun of the same commit (run 38593466416, attempt 2, head `ed82fb4`): FAIL, 31 PASS / 2 FAIL / 0 SKIPPED / 4 MEASURED.** The failed attempt 1 above stays in the acceptance history. This rerun only shows that the failure repeats and that its form varies.
+
+- **CS01 failed on cold start 3, a different form from attempt 1.** `am start` returned ok/COLD with PID 5916. Sixty seconds later that process was **still alive**, and `MainActivity` was the top resumed activity. The WebView DevTools socket never appeared ("Timeout 60000ms exceeded while waiting for event webview"). There was no exit record (the process had not ended) and no crash header.
+- **ANR01 failed.** ActivityManager logged an ANR for the package during the run. The harness then recorded only the count, not when the ANR happened or why. CS01's own ANR comparison never ran, because the cold-start failure ended that check first. The ANR is therefore **not yet proven** to belong to cold start 3, though a live, resumed process with no WebView fits a blocked main thread.
+- **Other checks.** L01 (HOT, stable PID), L02 and every later journey passed, and the restore after CS01 worked.
+- **Two runs on one commit, two forms.** Attempt 1 was an OS kill with reason DEPENDENCY DIED and zero ANRs. Attempt 2 was a live process that never brought up its WebView, plus an ANR. Both happened on a launch within about two minutes of emulator boot (boot completed at 20:07:07; cold start 3 began at 20:08:23).
+
+**Harness change after this run: the OS's own ANR report.** Every failure-evidence bundle, and ANR01, now include the system's ANR report for this package (`dumpsys dropbox --print data_app_anr`), reduced to allow-listed facts:
+
+- the entry time and PID;
+- the reason class, such as "Input dispatching timed out", with the wait in ms and the event waited for;
+- the main thread's state;
+- the top 14 main-thread frames, as code locations only: `pkg.Class.method(File.java:N)`, or a library basename with the symbol's leading identifier.
+
+The subject's free text, other threads, lock arguments, build IDs and any app data are never kept. A parser check against a realistic report confirms what is kept and what is dropped. This is what can localise the main-thread cost that #209 needs. It localises nothing until a failing run actually records it.
+
+**Fifth run (PR #238, [run 38632246276](https://github.com/fatihcayiroglu/Bridge/actions/runs/38632246276), head `8b390d7`): FAIL, 31 PASS / 2 FAIL / 0 SKIPPED / 4 MEASURED. This is the first run with the OS ANR report.**
+
+- **The original #209 signature, now with a location.** All five cold starts reached the UI, but ActivityManager reported **one ANR**, so CS01 and ANR01 failed.
+- **What the OS's own ANR report recorded:**
+  - **Time and process:** 20:34:34, PID 5582. That is the process launched by cold start 2, about 13 s after its launch.
+  - **Reason:** "Input dispatching timed out", waited **5,003 ms for FocusEvent**.
+  - **Main thread:** in `Native` state, blocked in `libc pthread_cond_wait`, called from **`libhwui android_view_ThreadedRenderer_syncAndDrawFrame`** through ART's JNI trampoline.
+- **What that means:** the UI thread was not running Bridge, Capacitor or WebView JavaScript. It was waiting for the **RenderThread** to accept a frame. While it waited, it could not take the focus event within Android's 5 s limit.
+- **Why the emulator matters here:** this emulator renders with `-gpu swiftshader_indirect`, a CPU software renderer behind gfxstream, on a runner whose 1-minute load average was 20–27 during CS01. That makes a multi-second render-pipeline stall on the emulator plausible.
+- **Still unknown:**
+  - which Java caller (WebView or app layout) requested the frame;
+  - what the RenderThread itself was waiting on;
+  - whether a real GPU on a physical device has any comparable margin. That remains **BLOCKED: physical device required**.
+- **Harness change after this run:**
+  - The parser now collapses runs of ART interpreter frames into one `libart.so` entry. In this run the 14-frame limit was used up by ART plumbing before any Java frame.
+  - It also records the RenderThread's state and top frames, as code locations only.
+  - Nothing else changed.
+
+**Sixth run (PR #238, [run 38635601354](https://github.com/fatihcayiroglu/Bridge/actions/runs/38635601354), head `9f093c9`): FAIL, 32 PASS / 1 FAIL / 0 SKIPPED / 4 MEASURED.**
+
+- **Cold start 5 was killed as DEPENDENCY DIED again.** This repeats the third run's form. The app process (PID 6666) died at 20:57:51.225, about 2 s after `am start` and before `pidof` could see it, so `am start` reported `ok/UNKNOWN`. Its sandboxed renderer then exited. Again, `gms.persistent` shows a PID (6796) newer than the failed launch. Boot had completed at 20:56:37, 74 s earlier.
+- **No ANR this time.** ANR01 passed, and every other journey passed.
+- **The pattern across the three runs since the OS evidence was added:**
+  - two failed on cold start 5 with DEPENDENCY DIED, 74–96 s after boot, each time next to a fresh `gms.persistent` process;
+  - one failed with a FocusEvent ANR, the main thread blocked in RenderThread frame sync.
+
+  Which provider connection killed the app is still **not proven**.
+- **Harness gap found and fixed.** The dependency attribution ran only when the launched PID was known. In this run the process died before `pidof`, so no attribution was recorded. Every DEPENDENCY DIED record in the evidence, including the attach-failure bundle, now carries its attribution: the provider, the dying process and that process's exit records.
+
+**Seventh run (PR #238, [run 38639246510](https://github.com/fatihcayiroglu/Bridge/actions/runs/38639246510), head `be6f912`): FAIL, 32 PASS / 1 FAIL / 0 SKIPPED / 4 MEASURED. This is the first run where the OS named the dependency.**
+
+- **Cold start 5 was killed as DEPENDENCY DIED again.** This is the third time in this form. Cold starts 1–4 reached the UI (1-minute load average 19–21). Launch 5 returned `am start` ok/COLD with PID 6822. The OS killed that process at 21:26:32.731, about 5 s after launch and about 90 s after boot completed (21:25:03). No ANR was reported; ANR01 passed, and so did every other journey.
+- **What the OS's own records say:**
+  - **ActivityManager's kill line:** the app "depends on provider `com.google.android.gms/.fonts.provider.FontsProvider` in dying proc `com.google.android.gms.persistent`".
+  - **Google Play services' own exit record:** `gms.persistent` PID 1418, the instance started at boot, ended at 21:26:32.735 with reason **2 (SIGNALED)**, status 9 (SIGKILL), importance 100. A new `gms.persistent` (PID 7035) appears in the process list afterwards.
+- **What that proves.** At the moment Play services' persistent process was killed, the app held a *stable* connection to Play services' font provider (Downloadable Fonts). ActivityManager kills every non-persistent client with a stable connection to a dying provider, so the app went with it.
+- **What it does not prove:**
+  - **Which part of the app opened that connection.** Bridge's own Android and web code never asks for fonts from Play services. A candidate is AndroidX EmojiCompat: AppCompat, which the app depends on, pulls in `androidx.emoji2`, and its default start-up initializer loads an emoji font from this provider soon after the first activity resumes. That is a **hypothesis**. It has not been checked against this build's resolved dependencies or observed on the device.
+  - **Why Play services' process was SIGKILLed about 90 s after boot.** Two earlier runs show the same timing next to a fresh `gms.persistent`. The cause is inside Play services and is not observable from the app.
+  - **Whether this happens on real devices.** Play services also restarts on phones (for example when it updates). How often the app holds the connection at that moment is unmeasured. This stays **BLOCKED: physical device required**.
+- **Harness change after this run: the app's provider connections.** After each CS01 cold start reaches the UI, and once in L01 (a process that has lived much longer), the evidence now records the app process's connected providers from ActivityManager's process record (`dumpsys activity processes <pkg>`, the "Connected Providers" section). Only these fields are kept: the provider component, the client PID, the stable and unstable counts, the WAITING/DEAD flags and the connection's age. An unrecognised line is recorded as `unparsed`, never as raw text. A parser check against a realistic dump confirms what is kept. These fields are MEASURED facts; no assertion changed and nothing is retried. They show whether the stable font-provider connection is short-lived (open only during start-up) or held for the life of the process. That decides whether turning off the start-up initializer is the right fix, and the same fields would then show whether the connection is gone.
+
+**Eighth run (PR #238, [run 38689628334](https://github.com/fatihcayiroglu/Bridge/actions/runs/38689628334), head `10ff3c0`): FAIL, 32 PASS / 1 FAIL / 0 SKIPPED / 4 MEASURED.**
+
+- **The same kill, a fourth time.** Cold starts 1–4 reached the UI (1-minute load average 19–23). Cold start 5 (PID 6699) was killed at 06:04:18.306, about 6 s after launch and 91 s after boot completed (06:02:47). Exit reason was 12 (DEPENDENCY DIED). ActivityManager again named `com.google.android.gms/.fonts.provider.FontsProvider` in the dying `com.google.android.gms.persistent`. That process, the boot-time instance (PID 1431), ended 9 ms later with reason 2 (SIGNALED), status 9. ANR01 passed, and so did every other journey.
+- **What the new provider evidence shows.** In L01 the app process (PID 7309) had been alive for 43 s, and it was started after Play services had restarted. Its only connection was a stable one to `com.android.providers.settings/.SettingsProvider`. **There was no connection to the font provider.** A connection appears in this list only while one of its counts is above zero, so the app does not hold the font provider for the life of its process. Together with the four kills 2–7 s after launch, this points to a connection held around start-up.
+- **Harness gap found and fixed.** CS01 also records each launch's connections once its UI is up. Those samples were lost: a check that throws never prints its return value. Now:
+  - each cold start also samples its connections **right after `am start` returns**, while start-up is still running;
+  - a failing CS01 carries every earlier launch's samples, the failing launch's early sample and Play services' persistent-process exit records in its message;
+  - a passing CS01 reports whether `gms.persistent` died during the launches.
+
+  Nothing is retried and no assertion changed.
+- **Still not proven:** which app component opens the font-provider connection. The candidate is still AndroidX EmojiCompat's start-up initializer. The built APK could not be inspected from the investigation environment, whose network policy denies the CI artifact host. So whether `androidx.emoji2` is in this build is still unconfirmed.
+
+**Ninth run (PR #238, [run 38691656963](https://github.com/fatihcayiroglu/Bridge/actions/runs/38691656963), head `3ed12f5`): PASS, 33 PASS / 0 FAIL / 0 SKIPPED / 4 MEASURED. This green run is diagnostic only.** It does not erase the failures above and does not close #209. The early samples it added show why it passed.
+
+| launch | started (UTC) | font provider right after `am start` | font provider once the UI was up |
+|---|---|---|---|
+| 1 | 06:25:25 | **stable** (s1), opened 2.3 s earlier | unstable only (s0 u1), 10.1 s old |
+| 2 | 06:25:40 | **stable** (s1), 2.0 s old | **still stable**, 12.2 s old |
+| 3 | 06:25:56 | **stable** (s1), 1.9 s old | **still stable**, 10.9 s old |
+| 4 | 06:26:12 | **stable** (s1), 2.5 s old | unstable only (s0 u1), 12.4 s old |
+| 5 | 06:26:29 | **stable** (s1), 2.1 s old | gone |
+
+- **Every cold start opens a stable connection** to `com.google.android.gms/.fonts.provider.FontsProvider` within about 2 s of process start. It stays stable for a variable time: at least 2 s, and more than 12 s in two of five launches.
+- **Play services' persistent process was SIGKILLed again**, at 06:26:43.786: PID 1426, SIGNALED, status 9, about 123 s after a slower boot (06:24:41).
+- **That kill landed about 14 s into cold start 5.** By then launch 5's connection was no longer stable, and ActivityManager kills only clients with a *stable* connection, so the app survived. Had the same kill landed 12 s into launch 2 or 3, the app would have died exactly as in runs 3, 6, 7 and 8. **The PASS is a matter of timing, not a fix.**
+- **L01:** a process 52 s old held no font-provider connection, which confirms the run-8 finding.
+
+**Experiment after this run.** The curated manifest now removes AndroidX's EmojiCompat start-up initializer (`androidx.emoji2.text.EmojiCompatInitializer`, `tools:node="remove"`). It does so through the standard merge into `androidx.startup.InitializationProvider`. A static test (`mobile/tests/android-startup-initializers.test.js`) locks the opt-out in place.
+
+- **Why it settles the question:** the connection appeared in 5 of 5 early samples, so one run decides it:
+  - if the font-provider connection is gone from every early sample, EmojiCompat was the component that opened it;
+  - if it is still there, the hypothesis is refuted, and the change will be reverted.
+- **User-visible effect:** Bridge's UI is a WebView, which draws emoji with Chromium's own fonts. Only native AppCompat text (Capacitor's alert/confirm dialogs) loses EmojiCompat. On old Android versions, emoji newer than the system font there may show as boxes.
+- **Still open:**
+  - whether this makes CS01 reliable needs more than one run, because the kill only lands in the window sometimes;
+  - real-device evidence stays **BLOCKED: physical device required**.
+
+**Tenth run (PR #238, [run 38694118517](https://github.com/fatihcayiroglu/Bridge/actions/runs/38694118517), head `0955210`, EmojiCompat initializer removed): PASS, 33 PASS / 0 FAIL / 0 SKIPPED / 4 MEASURED. Diagnostic only.**
+
+- **The experiment refutes the EmojiCompat hypothesis, provided the removal reached the build.**
+  - With `EmojiCompatInitializer` removed from the curated manifest, **all five** early samples still show a **stable** connection to `com.google.android.gms/.fonts.provider.FontsProvider`, opened 1.4–2.7 s before the sample.
+  - At UI time, launches 2 and 3 still held it stable (7.5 s and 8.8 s old); launches 1, 4 and 5 held it unstable only.
+  - The pattern is the same as in run 9.
+- **Why the result is not yet conclusive:** CI applies the overlay (`apply-android-overlay.js`) before Gradle, and A01 started cleanly, so the merged provider is valid. But the merged manifest the build printed does not list start-up initializers, so the removal itself is not yet shown. The next run prints the manifest merger's own record (ADDED/REMOVED and from which library) to settle that. The manifest change is kept for that one run only and is then reverted.
+- **Play services did not die during the launches this time** (`gmsPersistentExits` empty), so this PASS says nothing about reliability. L01 again held only SettingsProvider after 52 s.
+- **Remaining candidate: the system WebView.**
+  - Bridge's font stacks start with `'Inter'` and `'JetBrains Mono'` (`client/css/tokens.css`), which are not installed on Android.
+  - Chromium on Android can match fonts through Play services' font provider.
+  - This is unproven. The next run also lists which bundled libraries name the font authority (`com.google.android.gms.fonts`) or emoji2's `LOAD_EMOJI_FONT` discovery intent at all. The system WebView is not bundled, so it cannot appear in that list.
+
+**Eleventh run (PR #238, [run 38696869775](https://github.com/fatihcayiroglu/Bridge/actions/runs/38696869775), head `37e4a92`, EmojiCompat initializer still removed): FAIL, 31 PASS / 2 FAIL (CS01, ANR01) / 0 SKIPPED / 4 MEASURED.**
+
+**What the build shows (APK job, new facts step):**
+- **The removal did reach the build.** The manifest merger records `meta-data#androidx.emoji2.text.EmojiCompatInitializer` as **REJECTED from `androidx.emoji2:emoji2:1.3.0`**, which is how it records `tools:node="remove"`. So emoji2 *is* in the app, and its initializer was absent in runs 10 and 11. The manifest was the same for both.
+- **Start-up initializers left:** `androidx.lifecycle.ProcessLifecycleInitializer` (lifecycle-process 2.6.2) and `androidx.profileinstaller.ProfileInstallerInitializer` (profileinstaller 1.4.0).
+- **Nothing bundled names the font authority.** No bundled code or resource contains `com.google.android.gms.fonts`. The only match for either pattern is emoji2's `LOAD_EMOJI_FONT` discovery intent.
+- **Conclusion: EmojiCompat is ruled out** as the opener of the stable font-provider connection. In run 10, every early sample still showed that connection with the initializer verifiably removed. No other bundled library knows the provider, so the opener is outside the APK. That leaves the system WebView (Chromium runs inside the app process) or the Android framework. This is **not yet proven**.
+- **The experiment is reverted** in the next commit, as stated before it was run. The CI facts step stays.
+
+**What the emulator showed, a third failure form: a WebView input-device ANR.**
+- **Where it happened:** ActivityManager reported one ANR at 07:16:04, about 2 s into cold start 2 (launched 07:16:02), on a runner with a 1-minute load average of 25–29. It was "Input dispatching timed out", waited **5,001 ms for FocusEvent**.
+- **Main thread:**
+  - **State:** `Native`, blocked in a synchronous Binder call to system_server: `IInputManager$Stub$Proxy.getInputDevice` ← `InputManagerGlobal.getInputDevice` ← `InputDevice.getDevice`.
+  - **What triggered the call:** `J.N.MGCvz8lp(Native method)`, a Chromium JNI stub, which the main looper reached through `InputManagerGlobal$InputDeviceListenerDelegate.handleMessage`.
+  - **Meaning:** an input-device listener running WebView (Chromium) code asked the busy system process about an input device, and the main thread waited for the answer past Android's 5 s focus limit.
+- **RenderThread:** drawing (`CanvasContext::draw` → `FrameCommitWrapper::onFrameCommit`).
+- **No Bridge or Capacitor frame** is on either thread.
+
+**The three #209 forms seen so far, all inside Android or WebView code on a heavily loaded software-rendered emulator:**
+1. **DEPENDENCY DIED:** the app held a stable connection to Play services' font provider while Play services' persistent process was SIGKILLed (runs 3, 6, 7, 8).
+2. **RenderThread sync ANR** (run 5).
+3. **WebView input-device ANR** (this run).
+
+**Harness gap found and fixed.** CS01 failed on its final ANR assertion, which also never prints the return value, so this run's per-launch provider samples were lost again. The ANR assertion now carries every launch's early and at-UI samples and the `gms.persistent` exit records. Nothing is retried and no assertion changed.
+
+**Still open:**
+- the opener of the font-provider connection (next suspect: the system WebView; unproven);
+- whether any of the three forms appears on real hardware: **BLOCKED: physical device required**.
+
+#209 stays open.
+
+**Twelfth run (PR #238, [run 38700412278](https://github.com/fatihcayiroglu/Bridge/actions/runs/38700412278), head `78dbc6e`, experiment reverted): PASS, 33 PASS / 0 FAIL / 0 SKIPPED / 4 MEASURED. Diagnostic only.**
+
+- **The revert reached the build.** The merger records `meta-data#androidx.emoji2.text.EmojiCompatInitializer` as **ADDED from `androidx.emoji2:emoji2:1.3.0`** again. As before, emoji2 is the only bundled match for either font pattern.
+- **Same connection with or without EmojiCompat.**
+  - All five early samples show a **stable** font-provider connection, opened 1.4–2.7 s before the sample.
+  - At UI time, launches 2–4 still held it stable (9.7–10.5 s old); launches 1 and 5 held it unstable only.
+  - This matches run 10, which had the initializer removed, and run 9, which had it present.
+  - The connection does not depend on EmojiCompat, which confirms the run-11 conclusion.
+- **Play services did not die during the launches** (`gmsPersistentExits` empty), so this PASS says nothing about reliability. L01 again held only SettingsProvider after 48 s.
+
+**Where #209 stands after twelve runs:**
+
+- **Failure history:**
+  - CS01 failed in runs 1–8 and 11; it passed in runs 9, 10 and 12.
+  - Every pass is explained by the timing of a Play services kill (run 9) or by no such kill at all (runs 10 and 12), not by a fix.
+  - The red results stay in the acceptance history.
+- **Localised to OS level:**
+  - Every cold start holds a stable connection to Play services' font provider for 2–12 s. A SIGKILL of `gms.persistent` inside that window takes the app down with exit reason DEPENDENCY DIED.
+  - The opener is outside the APK: no bundled library names the authority, and EmojiCompat is excluded.
+  - The two ANR forms block the main thread inside Android or WebView code (RenderThread frame sync, and a system-server input-device query).
+- **Not localised:**
+  - which component outside the APK opens the font connection (system WebView or framework);
+  - whether any of these forms happens on real hardware: **BLOCKED: physical device required**.
+
+**Thirteenth run (PR #238, [run 38703224124](https://github.com/fatihcayiroglu/Bridge/actions/runs/38703224124), head `f2d425c`, docs-only change): FAIL, 28 PASS / 6 FAIL (CS01, P03, P04, V02, P06, P07) / 0 SKIPPED / 3 MEASURED.**
+
+**CS01: the kill was caught in the act for the first time.**
+
+| launch | started (UTC) | font provider right after `am start` | font provider at UI |
+|---|---|---|---|
+| 1 | 08:12:03 | **stable**, 2.6 s old | unstable only, 11.5 s old |
+| 2 | 08:12:20 | **stable**, 1.8 s old | **still stable**, 9.4 s old |
+| 3 | 08:12:33 | **stable**, 1.1 s old | **still stable**, 9.4 s old |
+| 4 | 08:12:45 | **stable**, 2.0 s old | **still stable**, 7.2 s old |
+| 5 | 08:12:56.2 | **stable**, 2.2 s old (PID 6678) | killed before the UI |
+
+- **The kill:** at 08:13:03.409, about 7 s into launch 5 and about 92 s after boot (08:11:31), ActivityManager killed PID 6678 with exit reason **DEPENDENCY DIED**. Its kill line names `com.google.android.gms/.fonts.provider.FontsProvider` in the dying `com.google.android.gms.persistent`. Play services' boot-time process (PID 1391) ended 7 ms later: SIGNALED, status 9.
+- **What it confirms:** the launch that died had just been sampled holding exactly that stable connection. Mechanism and timing are now observed in one launch, not inferred across runs.
+- **Still not known:** which component outside the APK opens the connection.
+
+**P03, P04, V02, P06, P07: the voice join never reached the server.**
+- **Server log:** at P03, the SFU logged no room creation at all. In passing runs, P03's join creates a room within about 14 s.
+- **Why the failure looked like something else:** P03 clicked the voice channel with a bare `document.querySelector(…)?.click()`. If the entry was not rendered yet, that silently did nothing, and the check failed 45 s later as "no outbound audio RTP".
+- **Cascade:** P04, V02, P06 and P07 then had no call to work with.
+- **V03 passed vacuously:** "leaving voice closes the media connections" passed because no peer connection ever existed. It tested nothing.
+- **Not a code change:** the commit changed only this document. `78dbc6e`, the same code, passed all of these checks.
+
+**Harness changes after this run** (no assertion weakened, no timeout raised, nothing retried):
+- **`joinVoice`:** P01 and P03 wait until the voice channel's entry is rendered, click it, and fail precisely if it is not there.
+- **P03 on timeout:** reports the live peer connections, so "never joined" (pcs 0) is told apart from "joined, no audio".
+- **`requireVoiceSession` precondition:** P06, P07 and V03 check for live peer connections. The VoicePanel and `#vc-video` are mounted at start-up, so their presence proves nothing.
+- **V03:** can no longer pass when there is no call to leave.
+
+**Fourteenth run (PR #238, [run 38707469667](https://github.com/fatihcayiroglu/Bridge/actions/runs/38707469667), head `ff35f27`): PASS, 33 PASS / 0 FAIL / 0 SKIPPED / 4 MEASURED. Diagnostic only.**
+
+**The voice checks now test what they claim.**
+- **P03:** joined for real. The SFU created a room during P03 (08:53:01), and audio flowed: 31 packets, send transport connected.
+- **P04 and V02:** P04 measured 54 → 3,161 packets, and V02 recovered after 6.5 s, both on that live call.
+- **P06:** ran inside the live call. The UI read "Connected" and explained the camera denial.
+- **P07:** sent 578 video packets.
+- **V03:** closed a real call. It passed `requireVoiceSession` first.
+
+**CS01.** All five early samples again show a **stable** font-provider connection (2.1–2.4 s old). At UI time, launches 2 and 3 still held it stable (10.6 s and 8.5 s). Play services did not die during the launches (`gmsPersistentExits` empty), so this PASS says nothing about reliability. #209 stays open.
+
+**Fifteenth run (PR #238, [run 38709837786](https://github.com/fatihcayiroglu/Bridge/actions/runs/38709837786), head `c2fa3ea`, docs-only): FAIL, 32 PASS / 1 FAIL (P07) / 0 SKIPPED / 4 MEASURED.**
+
+- **CS01 passed.** The same stable font-provider connection appeared in every early sample (2.2–3.1 s old). No Play services kill landed during the launches, so the PASS is diagnostic only.
+- **P07 failed: "no on-screen node for permission allow button".**
+  - **Setup:** P07 grants CAMERA with `pm grant`, passes its new voice-session precondition, and taps the camera toggle.
+  - **What failed:** `permissionSheet()` then found a permission-controller sheet in one UI dump. The follow-up `tapPermissionButton('allow')` took a second dump and found no allow button.
+  - **Afterwards:** V03 ran on the still-live call and passed.
+  - **What the log does not show:** whether the sheet had already gone by the second dump, or whether a different screen matched. Either way, a sheet appearing at all after `pm grant` is unexpected.
+- **Harness change after this run (evidence only; no assertion, timeout or retry changed):**
+  - a failed UI tap now reports what was on screen instead, as package names and permission-controller resource IDs only;
+  - P07 records, on every run, whether a permission sheet appeared after the grant (`osSheetAfterGrant`).
+
+**Sixteenth run (PR #238, [run 38713326248](https://github.com/fatihcayiroglu/Bridge/actions/runs/38713326248), head `5261cad`, evidence-only harness change): PASS, 33 PASS / 0 FAIL / 0 SKIPPED / 4 MEASURED. Diagnostic only.**
+
+- **CS01 passed, which says nothing about reliability.**
+  - All five launches again held a **stable** font-provider connection. It was 1.6–2.3 s old right after `am start`, and still stable at UI time, 7.1–9.1 s old.
+  - No Play services kill landed during the launches (`gmsPersistentExits` empty).
+  - The window in which DEPENDENCY DIED kills the app was present on every launch, but no kill landed inside it.
+- **P07 passed.**
+  - It sent 474 video packets.
+  - Its new `osSheetAfterGrant` record shows no permission sheet after `pm grant`; only `com.bridge.app.debug` was in the foreground.
+  - Because nothing failed, the new on-screen report never ran. Run 15's P07 failure (a permission sheet seen after the grant, then no allow button) is **still unexplained**. It stays in the history as a FAIL.
+- **P03 joined for real:** 2 peer connections, send transport connected, 51 packets.
+- **V03** closed a live call.
+- **L01** again held only SettingsProvider after 44 s.
+- **ANR01:** the OS reported no ANR in the run.
+
+**Ledger after sixteen runs:**
+- CS01 failed in runs 1–8, 11 and 13. It passed in runs 9, 10, 12, 14, 15 and 16, each time because a Play services kill missed the launch windows or never happened. None of these passes is a fix.
+- P07 failed once, in run 15, with the cause not localised.
+- Real-device evidence: **BLOCKED: physical device required.**
+
+#209 stays open.

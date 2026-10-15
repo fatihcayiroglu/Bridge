@@ -78,17 +78,37 @@ function log(...args) { console.log(`[android-journeys ${new Date().toISOString(
 async function screenshot(name) {
   const file = path.join(OUT_DIR, `${name}.png`);
   try {
-    if (device) fs.writeFileSync(file, await device.screenshot());
-    else if (page) await page.screenshot({ path: file });
+    if (device) fs.writeFileSync(file, await withTimeout(device.screenshot(), 20_000, 'device screenshot'));
+    else if (page) await withTimeout(page.screenshot({ path: file }), 20_000, 'page screenshot');
     return path.basename(file);
   } catch { return null; }
 }
 
-async function check(id, title, fn) {
+// A check that outlives this budget is a FAIL with device evidence, never a
+// silent stall: one wedged WebView once hung A01 for 56 minutes until the job
+// was cancelled with no result at all. The longest check of a green run takes
+// ~76 s. The next check then starts from a freshly launched app.
+const CHECK_BUDGET_MS = 300_000;
+let wedgedBy = null;
+async function overBudget(id, err) {
+  const message = String(err?.message ?? err);
+  if (!message.startsWith(`${id} as a whole did not answer`)) return message;
+  wedgedBy = id;
+  return `${message}; device evidence: ${JSON.stringify(await webViewAttachEvidence().catch((e) => `unavailable: ${e.message}`))}`;
+}
+async function recoverFromWedge() {
+  if (!wedgedBy || MODE !== 'android') return;
+  const label = `${wedgedBy} exceeding its budget`;
+  wedgedBy = null;
+  await restoreLaunch(label);
+}
+
+async function check(id, title, fn, { budgetMs = CHECK_BUDGET_MS } = {}) {
   const started = Date.now();
   log(`▶ ${id} ${title}`);
+  await recoverFromWedge();
   try {
-    const detail = await fn();
+    const detail = await withTimeout(Promise.resolve().then(fn), budgetMs, `${id} as a whole`);
     results.push({ id, title, status: 'PASS', ms: Date.now() - started, detail: detail ?? null });
     log(`  PASS ${id}`, detail ? JSON.stringify(detail) : '');
   } catch (err) {
@@ -97,18 +117,19 @@ async function check(id, title, fn) {
       log(`  SKIPPED ${id}: ${err.message}`);
       return;
     }
+    const message = await overBudget(id, err);
     const shot = await screenshot(`${id}-fail`);
     const dom = await domSummary();
-    results.push({ id, title, status: 'FAIL', ms: Date.now() - started, error: String(err?.message ?? err).slice(0, 2000), screenshot: shot, dom });
+    results.push({ id, title, status: 'FAIL', ms: Date.now() - started, error: message.slice(0, 2000), screenshot: shot, dom });
     if (dom) log(`  DOM ${id}: ${dom}`);
-    log(`  FAIL ${id}: ${err?.message ?? err}`);
+    log(`  FAIL ${id}: ${message}`);
   }
 }
 
 /** What the user was looking at when a check failed (the artifact host may be unreachable). */
 async function domSummary() {
   if (!page) return null;
-  return page.evaluate(() => {
+  return withTimeout(page.evaluate(() => {
     const vis = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
     const text = (el) => (el?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 240);
     const dialogs = [...document.querySelectorAll('[role="dialog"]')].filter(vis).map((d) => d.getAttribute('aria-label') || d.className).slice(0, 4);
@@ -116,31 +137,51 @@ async function domSummary() {
     return JSON.stringify({ url: location.href, app: vis(document.getElementById('app')), auth: vis(document.getElementById('auth-screen')),
       activeChannel: document.querySelector('.ch-item.active')?.getAttribute('data-id') ?? null, dialogs, alerts,
       dmPanel: vis(document.querySelector('.dm-panel')) ? text(document.querySelector('.dm-panel')) : null });
-  }).catch((e) => `unavailable: ${e.message}`);
+  }), 10_000, 'DOM summary').catch((e) => `unavailable: ${e.message}`);
 }
 
 /** Measurement-only probe: records numbers, asserts nothing, and is NEVER counted as a PASS. */
 async function measure(id, title, fn) {
   const started = Date.now();
   log(`▶ ${id} ${title} (measurement)`);
+  await recoverFromWedge();
   try {
-    const detail = await fn();
+    const detail = await withTimeout(Promise.resolve().then(fn), CHECK_BUDGET_MS, `${id} as a whole`);
     results.push({ id, title, status: 'MEASURED', ms: Date.now() - started, detail: detail ?? null });
     log(`  MEASURED ${id}`, detail ? JSON.stringify(detail) : '');
   } catch (err) {
     if (err instanceof Skip) { results.push({ id, title, status: 'SKIPPED', ms: Date.now() - started, reason: err.message }); return; }
-    results.push({ id, title, status: 'FAIL', ms: Date.now() - started, error: String(err?.message ?? err).slice(0, 2000), screenshot: await screenshot(`${id}-fail`) });
-    log(`  FAIL ${id}: ${err?.message ?? err}`);
+    const message = await overBudget(id, err);
+    results.push({ id, title, status: 'FAIL', ms: Date.now() - started, error: message.slice(0, 2000), screenshot: await screenshot(`${id}-fail`) });
+    log(`  FAIL ${id}: ${message}`);
   }
 }
 
 function assert(cond, message) { if (!cond) throw new Error(message); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * Bounds a call that has no timeout of its own (adb shell, page.evaluate, the
+ * DevTools attach). The underlying call may keep running; the journey moves on
+ * with an error that names what did not answer.
+ */
+function withTimeout(promise, ms, what) {
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
 async function until(fn, { timeout = 15_000, interval = 250, message = 'condition' } = {}) {
   const deadline = Date.now() + timeout;
   let last;
   while (Date.now() < deadline) {
-    try { last = await fn(); if (last) return last; } catch (e) { last = e; }
+    // Each attempt is bounded by the time left: a page.evaluate on a frozen
+    // WebView never settles, and an unbounded await made this loop's own
+    // timeout unreachable.
+    try {
+      last = await withTimeout(Promise.resolve().then(fn), Math.max(1, deadline - Date.now()), message);
+      if (last) return last;
+    } catch (e) { last = e; }
     await sleep(interval);
   }
   throw new Error(`timed out after ${timeout} ms waiting for ${message}${last instanceof Error ? ` (last error: ${last.message})` : ''}`);
@@ -211,6 +252,8 @@ async function channelHas(token, channelId, needle) {
 
 // ── Long-channel seeding (direct SQL, the same shape the P3 measurement used) ─────────────
 const LONG_CHANNEL_MESSAGES = Number(process.env.ANDROID_LONG_CHANNEL_MESSAGES || 2000);
+// #209 cold-start stress: bounded so a misconfiguration cannot stall the job.
+const COLD_STARTS = Math.min(20, Math.max(1, Number(process.env.ANDROID_COLD_STARTS || 5)));
 async function seedLongChannel(serverId, userId, token, count) {
   if (!process.env.DATABASE_URL) return null;
   const { createRequire } = await import('node:module');
@@ -234,7 +277,13 @@ async function seedLongChannel(serverId, userId, token, count) {
 }
 
 // ── Platform layer ─────────────────────────────────────────────────────────
-const sh = async (cmd) => (await device.shell(cmd)).toString().trim();
+const sh = async (cmd, ms = 120_000) =>
+  (await withTimeout(device.shell(cmd), ms, `adb shell "${cmd.slice(0, 80)}"`)).toString().trim();
+
+// Diagnostic probes must be much shorter than normal UI or shell operations.
+// On a wedged adb bridge, collecting four 120 s probes after the 300 s
+// watchdog could itself consume most of the job timeout without a report.
+const DIAGNOSTIC_SHELL_BUDGET_MS = 12_000;
 
 // Failure-only diagnostics: retain the ORIGINAL WebView assertion and capture
 // enough Android state to distinguish a native crash, a stopped Activity, and
@@ -246,20 +295,216 @@ async function webViewAttachEvidence() {
     ['process', `dumpsys activity processes | grep -E 'ProcessRecord|com.bridge.app' | head -10`],
     // Restrict logcat to native crash headers/stack frames; do not print arbitrary
     // app log lines, HTTP headers, user messages or credential-bearing fields.
-    ['crash', `logcat -d -b crash -t 100 | grep -E 'FATAL EXCEPTION|Process: com.bridge.app|Fatal signal|Caused by:|at com.bridge.app' | tail -15`],
+    // A native (tombstone) crash names the process as ">>> pkg <<<" and the
+    // signal as "signal N (SIGxxx)"; the Java patterns alone missed it.
+    ['crash', `logcat -d -b crash -t 100 | grep -E 'FATAL EXCEPTION|Process: com.bridge.app|Fatal signal|>>> com.bridge.app|signal [0-9]+ \\(SIG[A-Z]+\\)|Caused by:|at com.bridge.app' | tail -15`],
   ];
   const results = await Promise.all(probes.map(async ([label, command]) => {
-    try { return [label, (await sh(command)).slice(0, 1200)]; }
+    try { return [label, (await sh(command, DIAGNOSTIC_SHELL_BUDGET_MS)).slice(0, 1200)]; }
     catch (err) { return [label, `probe failed: ${String(err?.message ?? err).slice(0, 120)}`]; }
   }));
-  return Object.fromEntries(results);
+  return { ...Object.fromEntries(results), exits: await recentExits(), anrs: await anrReports() };
+}
+
+/**
+ * Why the OS ended this package's recent processes (ApplicationExitInfo, API 30+):
+ * low-memory kill, native or Java crash, signal, ANR, or a user/force stop.
+ * Only allow-listed numeric/enum fields are kept: never the free-text
+ * description or trace, which can carry app data.
+ */
+async function processExits(limit = 6, pkg = PKG) {
+  if (MODE !== 'android') return null;
+  if (!/^[A-Za-z0-9_.]{1,120}$/.test(pkg)) return 'probe refused: not a package name';
+  let out;
+  try { out = await sh(`dumpsys activity exit-info ${pkg}`, DIAGNOSTIC_SHELL_BUDGET_MS); }
+  catch (err) { return `probe failed: ${String(err?.message ?? err).slice(0, 120)}`; }
+  return out.split(/ApplicationExitInfo #\d+:/).slice(1, limit + 1).map((rec) => {
+    const field = (re) => (re.exec(rec) || [])[1] ?? null;
+    return {
+      at: field(/timestamp=(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?)/),
+      pid: Number(field(/\bpid=(\d+)/)) || null,
+      process: field(/process=([A-Za-z0-9_.:]+)/),
+      reason: field(/reason=(\d+ \([A-Z_ ]+\))/),
+      subreason: field(/subreason=(\d+ \([A-Z_ ]+\))/),
+      status: Number(field(/status=(-?\d+)/)),
+      importance: Number(field(/importance=(\d+)/)),
+    };
+  });
+}
+async function exitOf(pidValue) {
+  const exits = await processExits(10);
+  if (!Array.isArray(exits)) return exits;
+  const exit = exits.find((e) => String(e.pid) === String(pidValue)) ?? null;
+  if (exit && /^12 /.test(exit.reason ?? '')) exit.dependency = await dependencyDeath(pidValue);
+  return exit;
+}
+/**
+ * Recent exit records with the dependency named for every DEPENDENCY DIED
+ * entry. Used when the launched PID is unknown: a process killed within a
+ * second or two of `am start` is gone before `pidof` can see it.
+ */
+async function recentExits(limit = 6) {
+  const exits = await processExits(limit);
+  if (!Array.isArray(exits)) return exits;
+  for (const exit of exits) {
+    if (/^12 /.test(exit.reason ?? '')) exit.dependency = await dependencyDeath(exit.pid);
+  }
+  return exits;
+}
+
+/**
+ * Exit reason 12 (DEPENDENCY DIED) means ActivityManager killed our process
+ * because a process it held a stable content-provider connection to died.
+ * The exit record does not say which one; ActivityManager's own kill line
+ * does ("Killing <pid>:<proc> (adj N): depends on provider <component> in
+ * dying proc <process>"). Keep only those two names and the dying process's
+ * allow-listed exit records, never the raw log line.
+ */
+async function dependencyDeath(pidValue) {
+  if (!/^[0-9]{1,7}$/.test(String(pidValue ?? ''))) return null;
+  let line;
+  try {
+    line = await sh(`logcat -d -b system,main -v brief -s ActivityManager:I | grep -E 'Killing ${pidValue}:' | tail -1`, DIAGNOSTIC_SHELL_BUDGET_MS);
+  } catch (err) { return `probe failed: ${String(err?.message ?? err).slice(0, 120)}`; }
+  const named = /depends on provider ([A-Za-z0-9_.$/]{1,200}) in dying proc ([A-Za-z0-9_.:]{1,120})/.exec(line);
+  if (!named) return { provider: null, dyingProcess: null, killLineFound: /Killing \d+:/.test(line) };
+  const [, provider, dyingProcess] = named;
+  // The provider's package owns the dying process (gms.persistent belongs to
+  // com.google.android.gms), so read that package's exit records.
+  const exits = await processExits(10, provider.split('/')[0]);
+  return {
+    provider,
+    dyingProcess,
+    dyingProcessExits: Array.isArray(exits) ? exits.filter((e) => e.process === dyingProcess).slice(0, 2) : exits,
+  };
+}
+
+/**
+ * The content providers this package's live process holds connections to,
+ * from ActivityManager's own process record ("Connected Providers:"). A
+ * stable count above zero is exactly what lets ActivityManager kill us with
+ * DEPENDENCY DIED when the provider's process dies, and the age says how long
+ * the connection has been open. Keep only the provider component, the client
+ * pid, the stable/unstable counts, the WAITING/DEAD flags and the age.
+ */
+async function providerConnections() {
+  if (MODE !== 'android') return null;
+  let out;
+  try { out = await sh(`dumpsys activity processes ${PKG}`, DIAGNOSTIC_SHELL_BUDGET_MS); }
+  catch (err) { return `probe failed: ${String(err?.message ?? err).slice(0, 120)}`; }
+  return parseProviderConnections(out);
+}
+function parseProviderConnections(out) {
+  const connections = [];
+  let sections = 0;
+  let inSection = false;
+  for (const line of String(out).split('\n')) {
+    if (/^\s*Connected Providers:\s*$/.test(line)) { sections++; inSection = true; continue; }
+    if (!inSection) continue;
+    if (!/^\s+- /.test(line)) { inSection = false; continue; }
+    // ContentProviderConnection.toShortString():
+    // "<hash>/<pkg>/<cls>-><pid>:<proc>/<uid> s<stable>/<incs> u<unstable>/<incs>[ WAITING][ DEAD] <age>"
+    const m = /^\s+- [0-9a-f]+\/([A-Za-z0-9_.]{1,120}\/[A-Za-z0-9_.$]{1,160})->(\d{1,7}):\S+ s(\d+)\/(\d+) u(\d+)\/(\d+)( WAITING)?( DEAD)?(?: ([+-][0-9dhms]{1,24}))?\s*$/.exec(line);
+    connections.push(m ? {
+      provider: m[1],
+      clientPid: Number(m[2]),
+      stable: Number(m[3]),
+      stableIncs: Number(m[4]),
+      unstable: Number(m[5]),
+      unstableIncs: Number(m[6]),
+      waiting: Boolean(m[7]),
+      dead: Boolean(m[8]),
+      age: m[9] ?? null,
+    } : { unparsed: true });
+  }
+  return { sections, connections };
+}
+/** One line per connection, for failure messages that must stay readable. */
+function providerList(sample) {
+  if (!sample || !Array.isArray(sample.connections)) return sample ?? null;
+  return sample.connections.map((c) => (c.unparsed ? 'unparsed'
+    : `${c.provider} s${c.stable} u${c.unstable}${c.waiting ? ' WAITING' : ''}${c.dead ? ' DEAD' : ''}${c.age ? ` ${c.age}` : ''}`));
+}
+/** Play services' persistent process exit records (the process whose death took the app with it in #209). */
+async function gmsPersistentExits() {
+  const exits = await processExits(10, 'com.google.android.gms');
+  return Array.isArray(exits) ? exits.filter((e) => e.process === 'com.google.android.gms.persistent').slice(0, 3) : exits;
+}
+
+/**
+ * Where this package's main thread was when the OS declared an ANR. The
+ * system's own report (dropbox `data_app_anr`) is reduced to allow-listed
+ * facts: entry time, PID, the reason class with its wait in ms, and the top
+ * main-thread frames as code locations (`pkg.Class.method(File.java:N)` or
+ * `lib.so (symbol+off)`). Never the subject's free text, other threads,
+ * lock arguments or any app data.
+ */
+async function anrReports(limit = 3, frames = 14) {
+  if (MODE !== 'android') return null;
+  let out;
+  try { out = await sh('dumpsys dropbox --print data_app_anr', DIAGNOSTIC_SHELL_BUDGET_MS); }
+  catch (err) { return `probe failed: ${String(err?.message ?? err).slice(0, 120)}`; }
+  return parseAnrReports(out, limit, frames);
+}
+/**
+ * One thread's state and top frames from an ART trace, as code locations only.
+ * Runs of ART interpreter/JNI plumbing (libart.so) collapse into one entry so
+ * the frames that matter, Java callers included, fit inside the limit.
+ */
+function threadFrames(entry, name, limit) {
+  const start = entry.search(new RegExp(`^"${name}" `, 'm'));
+  if (start < 0) return { state: null, top: [] };
+  const header = entry.slice(start, entry.indexOf('\n', start) >>> 0);
+  const block = entry.slice(start + header.length).split(/\n\s*\n/)[0];
+  const top = [];
+  for (const line of block.split('\n')) {
+    const java = /^\s+at ([\w$.<>]+)\(((?:[\w$.]+:\d+)|Native method|Unknown Source)\)/.exec(line);
+    // Library basename (also inside an APK: "base.apk!libx.so") and the
+    // symbol's leading identifier only, never its argument list.
+    const native = /^\s+native: #\d+ pc [0-9a-f]+\s+\S*[/!]([\w.+-]+\.so)(?: \(offset 0x[0-9a-f]+\))?(?: \((?!BuildId)([A-Za-z_][\w:.$~<>-]{0,159}))?/.exec(line);
+    let frame = null;
+    if (java) frame = `${java[1]}(${java[2]})`;
+    else if (native) frame = native[1] === 'libart.so' ? 'libart.so' : native[2] ? `${native[1]} (${native[2]})` : native[1];
+    if (!frame || (frame === 'libart.so' && top[top.length - 1] === 'libart.so')) continue;
+    top.push(frame);
+    if (top.length >= limit) break;
+  }
+  const state = /\b(Runnable|Native|Blocked|Waiting|TimedWaiting|Sleeping|Suspended|WaitingForGcToComplete)\b/.exec(header)?.[1] ?? null;
+  return { state, top };
+}
+function parseAnrReports(out, limit = 3, frames = 14) {
+  const reports = [];
+  for (const entry of String(out).split(/^={20,}$/m).slice(1)) {
+    const at = /^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) data_app_anr/m.exec(entry)?.[1];
+    if (!at || !new RegExp(`^Process: ${PKG.replace(/\./g, '\\.')}$`, 'm').test(entry)) continue;
+    const subject = /^Subject: (.*)$/m.exec(entry)?.[1] ?? '';
+    const reason = /^(Input dispatching timed out|executing service|Broadcast of Intent|ContentProvider not responding|Application does not have a focused window|App requested ANR)/.exec(subject)?.[1] ?? 'other';
+    const waited = /Waited (\d+)ms for ([A-Za-z]+)/.exec(subject);
+    const main = threadFrames(entry, 'main', frames);
+    const render = threadFrames(entry, 'RenderThread', 8);
+    reports.push({
+      at,
+      pid: Number(/^PID: (\d+)$/m.exec(entry)?.[1]) || null,
+      reason,
+      waitedMs: waited ? Number(waited[1]) : null,
+      waitedFor: waited ? waited[2] : null,
+      mainThreadState: main.state,
+      mainThreadTop: main.top,
+      // The main thread often waits on the RenderThread (frame sync); its own
+      // top frames say what the render pipeline itself was blocked on.
+      renderThreadState: render.state,
+      renderThreadTop: render.top,
+    });
+  }
+  return reports.slice(-limit);
 }
 
 async function attachPage({ timeout = 60_000 } = {}) {
   if (MODE === 'dryrun') return page;
   try {
+    const attachStarted = Date.now();
     const webview = await device.webView({ pkg: PKG }, { timeout });
-    const p = await webview.page();
+    const p = await withTimeout(webview.page(), Math.max(1_000, timeout - (Date.now() - attachStarted)), 'WebView DevTools page');
     p.setDefaultTimeout(20_000);
     page = p;
     return p;
@@ -269,6 +514,25 @@ async function attachPage({ timeout = 60_000 } = {}) {
   }
 }
 async function pid() { return MODE === 'dryrun' ? 'dryrun' : (await sh(`pidof ${PKG}`)) || null; }
+
+/**
+ * After a check failed inside a cold start, start the app once more exactly as
+ * A01 does, so the next, independent check does not inherit a dead WebView
+ * (one failed CS01 launch once turned 29 later checks red). This is not a
+ * retry: the failed check stays FAIL, and a restore that fails is recorded.
+ */
+async function restoreLaunch(label) {
+  try {
+    await platform.coldLaunch();
+    await attachPage();
+    await until(async () => (await authVisible()) || (await appVisible()), { timeout: 45_000, message: `UI after restoring from ${label}` });
+    (facts.restores ??= []).push({ after: label, ok: true });
+    log(`restored a freshly launched app after ${label} (that check stays FAIL)`);
+  } catch (err) {
+    (facts.restores ??= []).push({ after: label, ok: false, error: String(err?.message ?? err).slice(0, 400) });
+    log(`restore after ${label} failed: ${String(err?.message ?? err).slice(0, 400)}`);
+  }
+}
 
 /**
  * A bounded, no-PII OS pressure snapshot. L01/ANR01 keep their original
@@ -292,7 +556,7 @@ async function androidPressureEvidence(label) {
   };
   for (const [key, command] of Object.entries(commands)) {
     try {
-      const value = await sh(command);
+      const value = await sh(command, DIAGNOSTIC_SHELL_BUDGET_MS);
       if (key === 'pid') {
         outputs.pid = /^[0-9 ]{1,120}$/.test(value) ? value : 'unavailable';
       } else if (key === 'loadavg') {
@@ -330,7 +594,13 @@ const platform = {
     if (MODE === 'dryrun') { await page.goto(API); return { totalTimeMs: null }; }
     await sh(`am force-stop ${PKG}`);
     const out = await sh(`am start -W -n ${ACTIVITY} ${extra}`);
-    return { totalTimeMs: Number((/TotalTime:\s*(\d+)/.exec(out) || [])[1]) || null, raw: out.split('\n').slice(-4).join(' | ') };
+    return {
+      totalTimeMs: Number((/TotalTime:\s*(\d+)/.exec(out) || [])[1]) || null,
+      // ActivityManager's own verdict on the launch (e.g. "ok"/"timeout", "COLD").
+      status: (/^Status:\s*(\w+)/m.exec(out) || [])[1] ?? null,
+      launchState: (/LaunchState:\s*(\w+)/.exec(out) || [])[1] ?? null,
+      raw: out.split('\n').slice(-4).join(' | '),
+    };
   },
   async home() { if (MODE === 'dryrun') return; await sh('input keyevent KEYCODE_HOME'); },
   async foreground() {
@@ -474,7 +744,11 @@ async function tapUiNode(match, what) {
     await sh(`input tap ${Math.round((x1 + x2) / 2)} ${Math.round((y1 + y2) / 2)}`);
     return { x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) };
   }
-  throw new Error(`no on-screen node for ${what}`);
+  // What was on screen instead (package names and permission-controller resource ids only):
+  // tells "the sheet had already gone" apart from "a different sheet or dialog was showing".
+  const packages = [...new Set([...xml.matchAll(/package="([^"]+)"/g)].map((m) => m[1]))].slice(0, 5);
+  const permissionIds = [...new Set([...xml.matchAll(/resource-id="[^"]*:id\/(permission_[a-z_]+)"/g)].map((m) => m[1]))].slice(0, 8);
+  throw new Error(`no on-screen node for ${what} (on screen: ${JSON.stringify(packages)}; permission controls: ${JSON.stringify(permissionIds)})`);
 }
 async function tapPermissionButton(kind) {
   const id = kind === 'deny' ? 'permission_deny_button' : 'permission_allow_foreground_only_button';
@@ -529,6 +803,31 @@ async function openChannel(channelId) {
   await until(() => page.evaluate((cid) => !!document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`), channelId), { message: `channel ${channelId} in list` });
   await page.evaluate((cid) => { document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`)?.click(); }, channelId);
   await until(() => activeChannel().then((c) => c === channelId), { message: `channel ${channelId} active` });
+}
+/**
+ * Click a voice channel's entry once it is rendered. A bare `?.click()` on an
+ * entry that is not there yet does nothing, and the check then fails much later
+ * as "no outbound RTP" although no join was ever attempted (run 38703224124).
+ */
+async function joinVoice(voiceChannelId) {
+  await until(() => page.evaluate((cid) => !!document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`), voiceChannelId),
+    { message: `voice channel ${voiceChannelId} in list` });
+  const clicked = await page.evaluate((cid) => {
+    const el = document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`);
+    el?.click();
+    return !!el;
+  }, voiceChannelId);
+  assert(clicked, `voice channel ${voiceChannelId} entry disappeared before the click`);
+}
+/**
+ * A voice session exists only while the call's peer connections are live.
+ * (The VoicePanel, its controls and `#vc-video` are mounted at start-up, so
+ * their presence says nothing about being in a call.)
+ */
+async function requireVoiceSession(purpose) {
+  const session = await outboundAudio();
+  assert(session.pcs > 0, `no voice session ${purpose} (live peer connections: ${session.pcs})`);
+  return session;
 }
 async function activeChannel() {
   return page.evaluate(() => document.querySelector('.ch-item.active')?.getAttribute('data-id') ?? null).catch(() => null);
@@ -599,6 +898,89 @@ async function main() {
     return { coldLaunchTotalMs: launch.totalTimeMs, origin: await page.evaluate(() => location.origin), api: await page.evaluate(() => globalThis.BRIDGE_API ?? null) };
   });
 
+  // #209: the original failure was a 5 s FocusEvent ANR during a cold start
+  // on a CPU-starved emulator (later killed by the OS, which made L01 COLD).
+  // One green launch says little about that margin, so repeat the cold start
+  // and record each launch's own main-thread stalls. PASS requires the UI
+  // every time and ZERO package ANRs; timings and stalls are MEASURED facts.
+  // logcat is never cleared here (ANR01 still reads the whole buffer) and
+  // only frame counts, never raw log lines, are kept.
+  await check('CS01', `${COLD_STARTS} consecutive cold starts reach the UI without any OS ANR`, async () => {
+    if (MODE !== 'android') throw new Skip('cold-start stress needs a real Android runtime');
+    const anrs = async () => (await sh("logcat -d -v brief -s ActivityManager:E | grep -cF 'ANR in com.bridge.app.debug' || true"))
+      .split('\n').map(Number).find(Number.isFinite) ?? 0;
+    const anrBefore = await anrs();
+    const launches = [];
+    for (let i = 1; i <= COLD_STARTS; i++) {
+      const pressure = await androidPressureEvidence(`CS01-cold-${i}`);
+      let launch = {};
+      let launchedPid = null;
+      let providersEarly = null;
+      const startedAt = new Date().toISOString();
+      try {
+        launch = await platform.coldLaunch();
+        launchedPid = await pid();
+        // #209: sampled while start-up is still running (the DEPENDENCY DIED
+        // kills came 2-7 s after am start), before the WebView is attached.
+        providersEarly = await providerConnections();
+        await attachPage();
+        await until(async () => (await authVisible()) || (await appVisible()), { timeout: 45_000, message: `UI after cold start ${i}` });
+      } catch (err) {
+        // Name the launch that failed and why the OS ended its process, if it did.
+        facts.coldStartStress = launches;
+        const exit = launchedPid ? await exitOf(launchedPid) : await recentExits(2);
+        const gms = await gmsPersistentExits();
+        await restoreLaunch(`CS01 cold start ${i}`);
+        // The earlier launches' provider samples are part of the evidence; a
+        // thrown check never prints its return value, so carry them here.
+        const earlier = launches.map((l, n) => ({ launch: n + 1, startedAt: l.startedAt, early: providerList(l.providersEarly), atUi: providerList(l.providers) }));
+        throw new Error(`cold start ${i}/${COLD_STARTS} (started ${startedAt}; am start: ${launch.status ?? 'no status'}/${launch.launchState ?? 'no launch state'}; ` +
+          `pid after launch ${launchedPid ?? 'none'}; providers right after am start ${JSON.stringify(providerList(providersEarly))}; ` +
+          `OS exit record ${JSON.stringify(exit)}; gms.persistent exits ${JSON.stringify(gms)}; ` +
+          `earlier launches ${JSON.stringify(earlier)}): ${err?.message ?? err}`, { cause: err });
+      }
+      const amStatus = `${launch.status ?? 'no status'}/${launch.launchState ?? 'no launch state'}`;
+      const appPid = await pid();
+      let stalls = [];
+      if (/^[0-9]{1,7}$/.test(appPid ?? '')) {
+        const out = await sh(`logcat -d -v brief -s Choreographer:I | grep -E '\\( *${appPid}\\)' | grep -oE 'Skipped [0-9]+ frames' || true`);
+        stalls = (out.match(/Skipped \d+ frames/g) || []).map((line) => Number(/\d+/.exec(line)[0]));
+      }
+      launches.push({
+        totalTimeMs: launch.totalTimeMs,
+        amStatus,
+        skippedFrameEvents: stalls.length,
+        maxSkippedFrames: stalls.length ? Math.max(...stalls) : 0,
+        load1: Array.isArray(pressure?.kernelLoadavg) ? pressure.kernelLoadavg[0] : null,
+        startedAt,
+        // #209: the DEPENDENCY DIED kills named the GMS FontsProvider. What
+        // this launch was connected to right after am start, and once the UI is up.
+        providersEarly,
+        providers: await providerConnections(),
+      });
+    }
+    const anrAfter = await anrs();
+    facts.coldStartStress = launches;
+    const gmsExits = await gmsPersistentExits();
+    // A failed assertion never prints the return value, so the per-launch
+    // samples ride in the message (#209: run 38696869775 lost them this way).
+    assert(anrAfter === anrBefore,
+      `Android ActivityManager reported ${anrAfter - anrBefore} ANR(s) across ${COLD_STARTS} cold starts; ` +
+      `launches ${JSON.stringify(launches.map((l, n) => ({ launch: n + 1, startedAt: l.startedAt, early: providerList(l.providersEarly), atUi: providerList(l.providers) })))}; ` +
+      `gms.persistent exits ${JSON.stringify(gmsExits)}`);
+    const times = launches.map((l) => l.totalTimeMs).filter(Number.isFinite);
+    return {
+      launches: launches.length,
+      maxTotalTimeMs: times.length ? Math.max(...times) : null,
+      maxSkippedFrames: Math.max(...launches.map((l) => l.maxSkippedFrames)),
+      maxLoad1: Math.max(...launches.map((l) => l.load1 ?? 0)),
+      newAnrs: anrAfter - anrBefore,
+      // Did Play services' persistent process die during these launches? (#209, MEASURED)
+      gmsPersistentExits: gmsExits,
+      runs: launches,
+    };
+  }, { budgetMs: Math.max(CHECK_BUDGET_MS, COLD_STARTS * 120_000) });
+
   await check('A02', 'login through the WebView reaches the app shell', async () => {
     const t0 = Date.now();
     const how = await login(me.username, me.id);
@@ -660,9 +1042,11 @@ async function main() {
     const pidAfter = await pid();
     log('L01 resume context', JSON.stringify({ expectedChannel: channelId, actualChannel: await activeChannel(), pidStable: pidBefore === pidAfter, launchState: fg.launchState }));
     await androidPressureEvidence('after-L01');
-    assert(pidBefore === pidAfter, 'L01 process died; cannot claim hot resume');
+    if (pidBefore !== pidAfter) throw new Error(`L01 process died (OS exit record ${JSON.stringify(await exitOf(pidBefore))}); cannot claim hot resume`);
     await assertVisibleAfterResume(needle, 'L01', 30_000);
-    return { resumeTotalMs: fg.totalTimeMs, launchState: fg.launchState, visibleAfterMs: Date.now() - t0, pidStable: true, channelPreserved: true };
+    // A process that has lived far longer than one cold start: does it still
+    // hold the provider connections it opened at startup? (#209, MEASURED)
+    return { resumeTotalMs: fg.totalTimeMs, launchState: fg.launchState, visibleAfterMs: Date.now() - t0, pidStable: true, channelPreserved: true, providers: await providerConnections() };
   });
 
   await check('L02', 'background 75 s → original channel and missed message recover after socket idle', async () => {
@@ -875,7 +1259,7 @@ async function main() {
     await attachPage();
     await until(() => appVisible(), { timeout: 45_000, message: 'app after permission revoke' });
     await openServer(serverId);
-    await page.evaluate((cid) => { document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`)?.click(); }, voiceId);
+    await joinVoice(voiceId);
     const sheet = await permissionSheet();
     facts.micPermissionSheet = sheet;
     if (sheet.shown) await tapPermissionButton('deny');
@@ -895,8 +1279,14 @@ async function main() {
     await page.reload();
     await until(() => appVisible(), { timeout: 45_000, message: 'app after grant' });
     await openServer(serverId);
-    await page.evaluate((cid) => { document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`)?.click(); }, voiceId);
-    const flow = await until(async () => { const a = await outboundAudio(); return a.packetsSent > 20 ? a : null; }, { timeout: 45_000, message: 'outbound audio RTP' });
+    await joinVoice(voiceId);
+    let flow;
+    try {
+      flow = await until(async () => { const a = await outboundAudio(); return a.packetsSent > 20 ? a : null; }, { timeout: 45_000, message: 'outbound audio RTP' });
+    } catch (err) {
+      // pcs 0 = the join never produced a call; pcs > 0 = joined, but no audio flowed.
+      throw new Error(`${err?.message ?? err}; peer connections ${JSON.stringify(await outboundAudio().catch(() => null))}`, { cause: err });
+    }
     facts.voice = { joinedWithOutboundAudio: flow };
     return flow;
   });
@@ -942,6 +1332,7 @@ async function main() {
   });
 
   await check('P06', 'camera permission denied in the real Android sheet → the camera toggle tells the user', async () => {
+    await requireVoiceSession('to toggle the camera in (P03 must have joined)');
     await page.evaluate(() => document.getElementById('vc-video')?.click());
     const sheet = await permissionSheet();
     facts.cameraPermissionSheet = sheet;
@@ -955,15 +1346,21 @@ async function main() {
   await check('P07', 'camera permission granted → video is sent (emulated camera, outbound video RTP)', async () => {
     await platform.permission('android.permission.CAMERA', true);
     await sleep(1_000);
+    await requireVoiceSession('to send video in (P03 must have joined)');
     await page.evaluate(() => document.getElementById('vc-video')?.click());
+    // The permission was granted with `pm grant` above, so no sheet is expected here.
+    // Record whether one showed anyway (MEASURED; run 38709837786 saw one vanish before the tap).
     const sheet = await permissionSheet(4_000);
     if (sheet.shown) await tapPermissionButton('allow');
     const flow = await until(async () => { const a = await outboundAudio(); return a.videoPacketsSent > 30 ? a : null; }, { timeout: 45_000, message: 'outbound video RTP' });
     await page.evaluate(() => document.getElementById('vc-video')?.click());
-    return { videoPacketsSent: flow.videoPacketsSent };
+    return { videoPacketsSent: flow.videoPacketsSent, osSheetAfterGrant: sheet };
   });
 
   await check('V03', 'leaving voice closes the media connections', async () => {
+    // Without a live call there is nothing to close, and pcs === 0 would pass vacuously
+    // (it did in run 38703224124, after P03 never joined).
+    await requireVoiceSession('to leave');
     await page.evaluate(() => document.querySelector('.vc-controls .vc-btn-danger')?.click());
     const closed = await until(async () => (await outboundAudio()).pcs === 0, { timeout: 20_000, message: 'all peer connections closed' });
     return { closed };
@@ -1161,9 +1558,11 @@ async function main() {
       await androidPressureEvidence('ANR01-failure');
       // Count only package-specific ANR headers, never expose raw logcat lines.
       facts.androidAnrCount = anrLog.split('\n').filter(line => line.includes('ANR in com.bridge.app.debug')).length;
+      facts.androidAnrReports = await anrReports();
     }
     assert(!anrLog.includes('ANR in com.bridge.app.debug'),
-      'Android ActivityManager detected an ANR; process restart/restoration is NOT sufficient for a pass');
+      'Android ActivityManager detected an ANR; process restart/restoration is NOT sufficient for a pass; ' +
+      `OS ANR reports ${JSON.stringify(facts.androidAnrReports ?? null)}`);
     return { systemAnrCount: 0 };
   });
 
@@ -1198,6 +1597,6 @@ main()
     console.log(`device: ${JSON.stringify(facts.device ?? {})}`);
     for (const r of results) console.log(`${r.status.padEnd(8)} ${r.id.padEnd(7)} ${r.title}${r.error ? `\n          ↳ ${r.error.split('\n')[0]}` : ''}${r.reason ? `\n          ↳ ${r.reason}` : ''}${r.detail ? `\n          ↳ ${JSON.stringify(r.detail)}` : ''}`);
     console.log(`TOTAL pass=${summary.totals.pass} fail=${summary.totals.fail} skipped=${summary.totals.skipped} measured=${summary.totals.measured} (skipped and measured are never counted as pass)`);
-    try { if (device) await device.close(); } catch {}
+    try { if (device) await withTimeout(device.close(), 10_000, 'adb device close'); } catch {}
     process.exit(summary.totals.fail > 0 ? 1 : 0);
   });

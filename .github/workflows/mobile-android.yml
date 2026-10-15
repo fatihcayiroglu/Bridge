@@ -84,6 +84,30 @@ jobs:
           merged=$(find android/app/build/intermediates -name AndroidManifest.xml -path '*merged_manifests*debug*' | head -1)
           echo "merged manifest: $merged"
           grep -E 'package=|uses-permission|android:scheme|allowBackup|networkSecurityConfig' "$merged" | sed 's/^ *//' | sort -u
+      # #209: the app holds a stable connection to Play services' font provider
+      # (com.google.android.gms/.fonts.provider.FontsProvider) during every cold
+      # start. Which component opens it? Facts only, nothing here gates the build:
+      # the merger's own record of every androidx.startup initializer (ADDED or
+      # REMOVED, and from which library), and which bundled libraries' code or
+      # resources name that font authority at all.
+      - name: Start-up initializers and font-provider references (#209)
+        run: |
+          report=$(find android/app/build/outputs/logs -name 'manifest-merger-debug-report.txt' | head -1)
+          echo "merger report: ${report:-not found}"
+          if [ -n "$report" ]; then
+            # Each element line is followed by its ADDED from / REMOVED from [library] line(s).
+            grep -nE -A2 'androidx\.startup|Initializer|preloaded_fonts' "$report" | sed 's/^ *//' | head -80 || true
+          fi
+          # emoji2 finds its provider through the LOAD_EMOJI_FONT intent, not by name.
+          caches="$HOME/.gradle/caches"
+          pattern='com\.google\.android\.gms\.fonts|androidx\.content\.action\.LOAD_EMOJI_FONT'
+          echo "bundled resources matching $pattern:"
+          grep -rlE --include='*.xml' "$pattern" "$caches" 2>/dev/null | grep '/transforms' | sed "s|^$caches/||" | sort -u | head -20 || true
+          echo "bundled code matching $pattern:"
+          find "$caches" -path '*transforms*' -name 'classes.jar' 2>/dev/null | while read -r jar; do
+            hit=$(unzip -p "$jar" 2>/dev/null | grep -aoE "$pattern" | sort -u | tr '\n' ' ')
+            if [ -n "$hit" ]; then echo "  ${jar#"$caches"/} -> $hit"; fi
+          done | sort -u | head -40 || true
       - uses: actions/upload-artifact@v7
         with:
           name: bridge-android-debug-apk
