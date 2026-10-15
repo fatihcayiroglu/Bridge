@@ -9,7 +9,7 @@ import { Users, Channels, Members, Notifications } from '../db/repositories';
 import { sendPushToUser, PushPayload } from './pushSender';
 import express from 'express';
 import { authMiddleware } from '../middleware/auth';
-import { canViewChannel } from './permissions';
+import { canViewChannel, hasPermission, PERMS, resolvePermissions } from './permissions';
 import { validateWebPushSubscription } from './webPushSubscriptionPolicy';
 import { extractNotificationWatchTokens } from './notificationWatchWords';
 import { storedMessageText } from './storedText';
@@ -61,7 +61,6 @@ export async function processNotifications(
     const content = String(msg.content || '');
     const mentions = extractMentions(content);
     const directMentionIds = extractDirectMentionIds(content);
-    const isEveryoneMention = EVERYONE_REGEX.test(content);
 
     // Watch words are SERVER-scoped policy, so channel ownership must be
     // canonical before matching them. Do not short-circuit only because the
@@ -70,6 +69,14 @@ export async function processNotifications(
     if (!channel) return;
     const canonicalServerId = String((channel as { serverId?: unknown }).serverId || '');
     if (!canonicalServerId) return;
+
+    // `@everyone` / `@here` notify every member who can see the channel, so
+    // they are the sender's only with MENTION_EVERYONE there ("Mention
+    // @everyone"; not a default permission; ADMINISTRATOR and the owner have
+    // it). Without it the message is still posted, but the mass mention
+    // notifies nobody; direct mentions and watch words still apply.
+    const isEveryoneMention = EVERYONE_REGEX.test(content)
+      && hasPermission(await resolvePermissions(String(msg.userId ?? ''), canonicalServerId, String(msg.channelId)).catch(() => 0), PERMS.MENTION_EVERYONE);
 
     const members = await Members.findByServer(canonicalServerId) as Array<{ userId: string }>;
     const memberUserIds = new Set(members.map(m => m.userId));
