@@ -48,7 +48,10 @@ interface UnreadRow {
 // ── Regex ─────────────────────────────────────────────────────
 const MENTION_REGEX  = /@([a-zA-Z0-9_]+)/g;
 const DIRECT_MENTION_REGEX = /<@([a-zA-Z0-9_-]+)>/g;
-const EVERYONE_REGEX = /@(everyone|here)/;
+// A mass mention must be a whole token, not the prefix of a username such
+// as @everyone_else or @here123 (the mention parser treats underscores
+// and digits as username characters).
+const EVERYONE_REGEX = /@(everyone|here)(?![A-Za-z0-9_])/;
 
 // ── ANA FONKSİYON ────────────────────────────────────────────
 export async function processNotifications(
