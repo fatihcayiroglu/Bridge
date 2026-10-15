@@ -32,7 +32,13 @@ command -v psql >/dev/null 2>&1 || { echo "psql bulunamadı" >&2; exit 69; }
 # Restore is intentionally explicit and fail-closed. It does not drop/create a
 # database automatically: operators must choose the target DB beforehand.
 echo "Restore başlıyor: host=$POSTGRES_HOST port=$POSTGRES_PORT db=$POSTGRES_DB user=$POSTGRES_USER"
+# Without -f, psql reads stdin in autocommit mode: ON_ERROR_STOP prevents
+# subsequent statements but cannot undo earlier successful ones. -f - tells
+# psql that stdin is a script; --single-transaction rolls back the whole dump
+# on the first SQL error. -X ignores operator .psqlrc startup commands.
+# pg_dump here is a plain SQL dump without CREATE DATABASE/-C, restored into
+# an explicitly selected, initially empty target database.
 gzip -cd "$DUMP_FILE" | PGPASSWORD="$POSTGRES_PASSWORD" psql \
-  -v ON_ERROR_STOP=1 \
+  -X -v ON_ERROR_STOP=1 --single-transaction -f - \
   -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 echo "RESTORE=PASS"
