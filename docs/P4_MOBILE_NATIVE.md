@@ -797,3 +797,25 @@ The subject's free text, other threads, lock arguments, build IDs and any app da
 - **Harness change after this run (evidence only; no assertion, timeout or retry changed):**
   - a failed UI tap now reports what was on screen instead, as package names and permission-controller resource IDs only;
   - P07 records, on every run, whether a permission sheet appeared after the grant (`osSheetAfterGrant`).
+
+**Sixteenth run (PR #238, [run 38713326248](https://github.com/fatihcayiroglu/Bridge/actions/runs/38713326248), head `5261cad`, evidence-only harness change): PASS, 33 PASS / 0 FAIL / 0 SKIPPED / 4 MEASURED. Diagnostic only.**
+
+- **CS01 passed, which says nothing about reliability.**
+  - All five launches again held a **stable** font-provider connection. It was 1.6–2.3 s old right after `am start`, and still stable at UI time, 7.1–9.1 s old.
+  - No Play services kill landed during the launches (`gmsPersistentExits` empty).
+  - The window in which DEPENDENCY DIED kills the app was present on every launch, but no kill landed inside it.
+- **P07 passed.**
+  - It sent 474 video packets.
+  - Its new `osSheetAfterGrant` record shows no permission sheet after `pm grant`; only `com.bridge.app.debug` was in the foreground.
+  - Because nothing failed, the new on-screen report never ran. Run 15's P07 failure (a permission sheet seen after the grant, then no allow button) is **still unexplained**. It stays in the history as a FAIL.
+- **P03 joined for real:** 2 peer connections, send transport connected, 51 packets.
+- **V03** closed a live call.
+- **L01** again held only SettingsProvider after 44 s.
+- **ANR01:** the OS reported no ANR in the run.
+
+**Ledger after sixteen runs:**
+- CS01 failed in runs 1–8, 11 and 13. It passed in runs 9, 10, 12, 14, 15 and 16, each time because a Play services kill missed the launch windows or never happened. None of these passes is a fix.
+- P07 failed once, in run 15, with the cause not localised.
+- Real-device evidence: **BLOCKED: physical device required.**
+
+#209 stays open.
