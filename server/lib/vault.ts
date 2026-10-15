@@ -222,8 +222,9 @@ async function getVaultToken(cfg: VaultConfig): Promise<string> {
   });
 
   if (!resp.ok) {
-    const body = await resp.text().catch(() => '');
-    throw new Error(`[vault] AppRole auth başarısız (${resp.status}): ${body.slice(0, 200)}`);
+    // Vault error responses are untrusted and can echo credentials or secret values.
+    // Retain the HTTP status for diagnosis, but never read or log the body.
+    throw new Error(`[vault] AppRole auth başarısız (${resp.status})`);
   }
 
   const data = await resp.json() as { auth?: { client_token: string; lease_duration: number } };
@@ -254,8 +255,9 @@ async function readFromHashicorp(secretName: string, cfg: VaultConfig): Promise<
 
   if (resp.status === 404) return null;
   if (!resp.ok) {
-    const body = await resp.text().catch(() => '');
-    throw new Error(`[vault] KV okuma başarısız (${resp.status}) — path: ${url.pathname}: ${body.slice(0, 200)}`);
+    // A failing upstream can echo stored secrets in its response body.
+    // Do not copy that payload (or a path containing secret names) into logs.
+    throw new Error(`[vault] KV okuma başarısız (${resp.status})`);
   }
 
   const data = await resp.json() as { data?: { data?: Record<string, string> } };
