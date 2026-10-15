@@ -2,8 +2,9 @@
 //
 // The content checks a new plaintext message passes before it is stored,
 // whichever path posts it: the socket channel send (socket/handlers/
-// messages-send.ts) and thread replies (routes/threads.ts). One owner, so no
-// path skips them; thread replies did, and posted what the channel refused.
+// messages-send.ts), thread replies and forum posts (routes/threads.ts). One
+// owner, so no path skips them; the thread routes did, and posted what the
+// channel refused.
 //
 //   1. P7 B1 content abuse (lib/abusePolicy.ts): the same text, or links to
 //      one host, too often per window. Counted per account across paths.
