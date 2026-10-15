@@ -123,3 +123,40 @@ describe('media cookie lifetime', () => {
     expect(mediaTokenTtlMs('tomorrow')).toBe(604_800_000);
   });
 });
+
+describe('media cookie lifetime refuses impossible durations', () => {
+  it('a zero or unrepresentable duration falls back to the seven-day default', () => {
+    expect(mediaTokenTtlMs('0d')).toBe(604_800_000);
+    expect(mediaTokenTtlMs(`${Number.MAX_SAFE_INTEGER}w`)).toBe(604_800_000);
+    expect(mediaTokenTtlMs(' 3H ')).toBe(10_800_000);
+  });
+});
+
+describe('the media cookie carries an identity or is not issued at all', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { setMediaCookie } = require('../lib/mediaCookie') as typeof import('../lib/mediaCookie');
+  const fakeRes = () => ({ cookie: jest.fn() });
+
+  it('a PostgreSQL row identified by `id` gets a token for that id, scoped to /uploads', () => {
+    const res = fakeRes();
+    setMediaCookie(res as never, { id: 'pg-user-7', username: 'pg', tokenVersion: 3 });
+    expect(res.cookie).toHaveBeenCalledTimes(1);
+    const [name, token, options] = res.cookie.mock.calls[0]!;
+    expect(name).toBe('bridge_media');
+    expect(options).toMatchObject({ httpOnly: true, sameSite: 'strict', path: '/uploads' });
+    expect(jwt.decode(token)).toMatchObject({ id: 'pg-user-7', username: 'pg' });
+  });
+
+  it('a user object without any id gets no cookie, never a token for an empty identity', () => {
+    const res = fakeRes();
+    setMediaCookie(res as never, { username: 'ghost' });
+    setMediaCookie(res as never, { _id: '', id: '' });
+    expect(res.cookie).not.toHaveBeenCalled();
+  });
+
+  it('a missing username is carried as empty, not as "undefined"', () => {
+    const res = fakeRes();
+    setMediaCookie(res as never, { _id: 'no-name-user' });
+    expect(jwt.decode(res.cookie.mock.calls[0]![1])).toMatchObject({ id: 'no-name-user', username: '' });
+  });
+});
