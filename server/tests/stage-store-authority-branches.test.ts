@@ -318,8 +318,11 @@ describe('erişim ve yetki çözümü', () => {
     seedRoom(room({ speakers: [stageUser({ userId: OTHER, socketId: 'sock-x' })] }));
     const socket = makeSocket(); const io = makeIo();
     registerStageHandlers(socket.asSocket, io.asServer, me);
-    // Katılım geçtikten SONRA kanal kaybolursa yetki üretilmemelidir.
+    // Katılım geçtikten SONRA kanal kaybolursa yetki üretilmemelidir. Katılım
+    // kanalı iki kez okur (ilk denetim ve odaya girdikten sonraki yeniden
+    // denetim); kanal ancak ikisinden sonra, yetki çözümünde kaybolur.
     repos.Channels.findById.mockResolvedValueOnce({ _id: CH, serverId: SRV, type: 'stage' })
+      .mockResolvedValueOnce({ _id: CH, serverId: SRV, type: 'stage' })
       .mockResolvedValue(null);
     const result = ack();
 

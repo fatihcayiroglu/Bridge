@@ -328,6 +328,18 @@ function registerCanvasHandlers(
     }
     socket.join(room);
     joinedCanvasRooms.add(channelId);
+    // Authorize again now that the socket is in the room. Revocations evict
+    // the sockets they find in `canvas:<id>`; one that ran while the room was
+    // counted or the strokes were read found nothing (the same window as
+    // `voice:join`). Its write is visible to this read; a later one finds us.
+    const stillAllowed = await hasCanvasAccess(channelId);
+    if (!joinedCanvasRooms.has(channelId)) return;   // left meanwhile; canvas:leave cleaned up
+    if (!stillAllowed || !socket.rooms.has(room)) {
+      joinedCanvasRooms.delete(channelId);
+      socket.leave(room);
+      socket.emit('error', { event: 'canvas:join', message: 'Bu kanala erişim yetkiniz yok.' });
+      return;
+    }
     socket.emit('canvas:state-sync', { channelId, strokes: state.strokes, clearedAt: state.meta.clearedAt });
   }));
 

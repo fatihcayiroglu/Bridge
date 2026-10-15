@@ -234,6 +234,16 @@ export function registerStageHandlers(
       const room = await getOrCreateRoom(channelId);
       joinedStageChannels.add(channelId);
       socket.join(`stage:${channelId}`);
+      // Authorize again now that the socket is in the room. Revocations evict
+      // the sockets they find in `stage:<id>`; one that ran while the room was
+      // read found nothing (the same window as `voice:join`). Its write is
+      // visible to this read; a revocation written after it finds the socket.
+      if (!(await _stageAccess(channelId, user._id)) || !_joined(socket, channelId)) {
+        joinedStageChannels.delete(channelId);
+        socket.leave(`stage:${channelId}`);
+        ack?.({ ok: false, code: 'STAGE_UNAVAILABLE' });
+        return;
+      }
       socket.emit('stage:state', { channelId, ...room });
       ack?.({ ok: true, canManage: await _isAuthorized(channelId, user._id, room) });
     })();

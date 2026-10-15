@@ -186,6 +186,46 @@ export function registerDrawTogetherHandlers(
 
   const joinedCanvasChannels = new Set<string>();
 
+  // Remove this socket from a channel's draw session (host hand-over,
+  // session end) and tell the remaining participants.
+  async function leaveDrawSession(channelId: string): Promise<void> {
+    const outcome = await drawStore.withLock(channelId, async () => {
+      const session = await drawStore.get(channelId);
+      if (!session || !session.participants.has(socket.id)) return null;
+      const participant = session.participants.get(socket.id);
+      session.participants.delete(socket.id);
+      session.activeStrokes.delete(socket.id);
+      let newHostSocketId: string | undefined;
+      let newHostUserId: string | undefined;
+      if (session.hostSocketId === socket.id) {
+        newHostSocketId = session.participants.keys().next().value as string | undefined;
+        if (newHostSocketId) {
+          session.hostSocketId = newHostSocketId;
+          newHostUserId = session.participants.get(newHostSocketId)?.userId;
+        }
+      }
+      if (session.participants.size === 0) {
+        await drawStore.del(channelId);
+        return { ended: true, participant };
+      }
+      await drawStore.set(channelId, session);
+      return { ended: false, participant, newHostSocketId, newHostUserId };
+    });
+    if (!outcome) return;
+    if (outcome.ended) {
+      logger.info(`[draw-together] session ended — channel:${channelId}`);
+      return;
+    }
+    if (outcome.newHostSocketId) {
+      io.to(`draw:${channelId}`).emit('draw:host-changed', {
+        newHostSocketId: outcome.newHostSocketId, newHostUserId: outcome.newHostUserId,
+      });
+    }
+    io.to(`draw:${channelId}`).emit('draw:participant-left', {
+      userId: outcome.participant?.userId, displayName: outcome.participant?.displayName,
+    });
+  }
+
   // ── draw:join — aktiviteye katıl, mevcut state'i al ───────────────────────
   // activity:join zaten activities.ts tarafından işlenmiş; bu event
   // canvas state'ini getirmek için ayrıca gönderilir.
@@ -222,6 +262,16 @@ export function registerDrawTogetherHandlers(
 
     joinedCanvasChannels.add(channelId);
     socket.join(`draw:${channelId}`);
+    // Authorize again now that the socket is in the room. Revocations evict
+    // the sockets they find in `voice:<id>` / `draw:<id>`; one that ran while
+    // this join waited for the session lock found nothing (the same window as
+    // `voice:join`). Its write is visible to this read; a later one finds us.
+    if (!await mayJoinCanvas(socket, user._id, channelId) || !inCanvasRoom(socket, channelId)) {
+      joinedCanvasChannels.delete(channelId);
+      socket.leave(`draw:${channelId}`);
+      await leaveDrawSession(channelId);
+      return;
+    }
     socket.emit('draw:state', state);
     socket.to(`draw:${channelId}`).emit('draw:participant-joined', {
       userId: user._id, displayName: user.displayName, color: user.avatarColor,
@@ -391,43 +441,7 @@ export function registerDrawTogetherHandlers(
     cursorLastSent.delete(socket.id);
     const channels = [...joinedCanvasChannels];
     joinedCanvasChannels.clear();
-    for (const channelId of channels) {
-      const outcome = await drawStore.withLock(channelId, async () => {
-        const session = await drawStore.get(channelId);
-        if (!session || !session.participants.has(socket.id)) return null;
-        const participant = session.participants.get(socket.id);
-        session.participants.delete(socket.id);
-        session.activeStrokes.delete(socket.id);
-        let newHostSocketId: string | undefined;
-        let newHostUserId: string | undefined;
-        if (session.hostSocketId === socket.id) {
-          newHostSocketId = session.participants.keys().next().value as string | undefined;
-          if (newHostSocketId) {
-            session.hostSocketId = newHostSocketId;
-            newHostUserId = session.participants.get(newHostSocketId)?.userId;
-          }
-        }
-        if (session.participants.size === 0) {
-          await drawStore.del(channelId);
-          return { ended: true, participant };
-        }
-        await drawStore.set(channelId, session);
-        return { ended: false, participant, newHostSocketId, newHostUserId };
-      });
-      if (!outcome) continue;
-      if (outcome.ended) {
-        logger.info(`[draw-together] session ended — channel:${channelId}`);
-        continue;
-      }
-      if (outcome.newHostSocketId) {
-        io.to(`draw:${channelId}`).emit('draw:host-changed', {
-          newHostSocketId: outcome.newHostSocketId, newHostUserId: outcome.newHostUserId,
-        });
-      }
-      io.to(`draw:${channelId}`).emit('draw:participant-left', {
-        userId: outcome.participant?.userId, displayName: outcome.participant?.displayName,
-      });
-    }
+    for (const channelId of channels) await leaveDrawSession(channelId);
   }));
 }
 
