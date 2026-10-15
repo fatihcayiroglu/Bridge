@@ -76,6 +76,17 @@ jobs:
           npx cap add android
           node mobile/scripts/apply-android-overlay.js
           npx cap sync android
+      # #209 A/B provenance: prove the runtime artifact is absent rather than
+      # assuming the manifest experiment disabled every lazy Emoji2 path.
+      - name: Verify emoji2 removed from debug runtime (#209 experiment)
+        working-directory: android
+        run: |
+          ./gradlew :app:dependencies --configuration debugRuntimeClasspath --no-daemon > /tmp/bridge-runtime-deps.txt
+          if grep -E 'androidx\\.emoji2:emoji2:[0-9]' /tmp/bridge-runtime-deps.txt; then
+            echo "FAIL: emoji2 core is still a debug runtime dependency" >&2
+            exit 1
+          fi
+          echo "PASS: emoji2 core absent from debug runtime dependency graph"
       - name: Gradle assembleDebug
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
