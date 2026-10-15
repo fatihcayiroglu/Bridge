@@ -380,6 +380,47 @@ async function dependencyDeath(pidValue) {
 }
 
 /**
+ * The content providers this package's live process holds connections to,
+ * from ActivityManager's own process record ("Connected Providers:"). A
+ * stable count above zero is exactly what lets ActivityManager kill us with
+ * DEPENDENCY DIED when the provider's process dies, and the age says how long
+ * the connection has been open. Keep only the provider component, the client
+ * pid, the stable/unstable counts, the WAITING/DEAD flags and the age.
+ */
+async function providerConnections() {
+  if (MODE !== 'android') return null;
+  let out;
+  try { out = await sh(`dumpsys activity processes ${PKG}`, DIAGNOSTIC_SHELL_BUDGET_MS); }
+  catch (err) { return `probe failed: ${String(err?.message ?? err).slice(0, 120)}`; }
+  return parseProviderConnections(out);
+}
+function parseProviderConnections(out) {
+  const connections = [];
+  let sections = 0;
+  let inSection = false;
+  for (const line of String(out).split('\n')) {
+    if (/^\s*Connected Providers:\s*$/.test(line)) { sections++; inSection = true; continue; }
+    if (!inSection) continue;
+    if (!/^\s+- /.test(line)) { inSection = false; continue; }
+    // ContentProviderConnection.toShortString():
+    // "<hash>/<pkg>/<cls>-><pid>:<proc>/<uid> s<stable>/<incs> u<unstable>/<incs>[ WAITING][ DEAD] <age>"
+    const m = /^\s+- [0-9a-f]+\/([A-Za-z0-9_.]{1,120}\/[A-Za-z0-9_.$]{1,160})->(\d{1,7}):\S+ s(\d+)\/(\d+) u(\d+)\/(\d+)( WAITING)?( DEAD)?(?: ([+-][0-9dhms]{1,24}))?\s*$/.exec(line);
+    connections.push(m ? {
+      provider: m[1],
+      clientPid: Number(m[2]),
+      stable: Number(m[3]),
+      stableIncs: Number(m[4]),
+      unstable: Number(m[5]),
+      unstableIncs: Number(m[6]),
+      waiting: Boolean(m[7]),
+      dead: Boolean(m[8]),
+      age: m[9] ?? null,
+    } : { unparsed: true });
+  }
+  return { sections, connections };
+}
+
+/**
  * Where this package's main thread was when the OS declared an ANR. The
  * system's own report (dropbox `data_app_anr`) is reduced to allow-listed
  * facts: entry time, PID, the reason class with its wait in ms, and the top
@@ -860,6 +901,9 @@ async function main() {
         skippedFrameEvents: stalls.length,
         maxSkippedFrames: stalls.length ? Math.max(...stalls) : 0,
         load1: Array.isArray(pressure?.kernelLoadavg) ? pressure.kernelLoadavg[0] : null,
+        // #209: three CS01 failures were DEPENDENCY DIED kills; one named the
+        // GMS FontsProvider. Record what this launch is connected to once the UI is up.
+        providers: await providerConnections(),
       });
     }
     const anrAfter = await anrs();
@@ -940,7 +984,9 @@ async function main() {
     await androidPressureEvidence('after-L01');
     if (pidBefore !== pidAfter) throw new Error(`L01 process died (OS exit record ${JSON.stringify(await exitOf(pidBefore))}); cannot claim hot resume`);
     await assertVisibleAfterResume(needle, 'L01', 30_000);
-    return { resumeTotalMs: fg.totalTimeMs, launchState: fg.launchState, visibleAfterMs: Date.now() - t0, pidStable: true, channelPreserved: true };
+    // A process that has lived far longer than one cold start: does it still
+    // hold the provider connections it opened at startup? (#209, MEASURED)
+    return { resumeTotalMs: fg.totalTimeMs, launchState: fg.launchState, visibleAfterMs: Date.now() - t0, pidStable: true, channelPreserved: true, providers: await providerConnections() };
   });
 
   await check('L02', 'background 75 s → original channel and missed message recover after socket idle', async () => {
