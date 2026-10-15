@@ -371,13 +371,24 @@ async function readFromAws(secretName: string, cfg: VaultConfig): Promise<string
 
   const str = typeof parsed.SecretString === 'string' ? parsed.SecretString : '';
   if (!str) return null;
+  let decoded: unknown;
   try {
-    const value = JSON.parse(str) as Record<string, unknown>;
-    const selected = value[secretName] ?? value.value;
-    return typeof selected === 'string' ? selected : str;
+    decoded = JSON.parse(str);
   } catch {
+    // Non-JSON SecretString values are stored as raw strings.
     return str;
   }
+
+  // Structured secrets are an authority boundary: a missing or wrong-typed
+  // field must never return the entire JSON document (which can contain
+  // unrelated credentials). Keep the supported generic "value" shape.
+  if (decoded === null) return null;
+  if (typeof decoded !== 'object') return str; // legacy JSON scalar payloads
+  if (Array.isArray(decoded)) return null;
+
+  const values = decoded as Record<string, unknown>;
+  const selected = values[secretName] ?? values.value;
+  return typeof selected === 'string' ? selected : null;
 }
 
 // ── Env fallback ──────────────────────────────────────────────────────────────
