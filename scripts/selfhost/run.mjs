@@ -9,6 +9,8 @@
 
 import fs from 'node:fs';
 import os from 'node:os';
+import { createHash } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { Instance, REPO, EGRESS_GUARD, sleep } from './lib/instance.mjs';
@@ -222,6 +224,34 @@ const scenarios = {
     fs.rmSync(inst.uploads, { recursive: true, force: true });
     fs.mkdirSync(inst.uploads, { recursive: true });
     record('backup', 'SH-BACKUP-02', 'target database recreated empty, uploads removed', tablesBefore === 0 ? 'PASS' : 'FAIL', `${tablesBefore} tables before restore`);
+
+    // P7 D3 negative proof on real PostgreSQL: a failed plain SQL restore must
+    // undo BOTH earlier DDL and DML. An exit-code-only assertion would not catch
+    // psql's default per-statement autocommit and its partial-restore damage.
+    // Run this on the disposable EMPTY target, before importing the valid dump.
+    const rollbackProbeName = 'selfhost_failed_restore_guard';
+    const rollbackProbe = path.join(backupRoot, 'rollback-probe.sql.gz');
+    const rollbackSql = [
+      '-- PostgreSQL database dump',
+      'SET statement_timeout = 0;',
+      `CREATE TABLE ${rollbackProbeName} (n INTEGER);`,
+      `INSERT INTO ${rollbackProbeName} VALUES (1);`,
+      'INSERT INTO selfhost_missing_restore_table (n) VALUES (1);',
+      '',
+    ].join('\n');
+    const rollbackBytes = gzipSync(Buffer.from(rollbackSql));
+    fs.writeFileSync(rollbackProbe, rollbackBytes);
+    const rollbackDigest = createHash('sha256').update(rollbackBytes).digest('hex');
+    fs.writeFileSync(`${rollbackProbe}.sha256`, `${rollbackDigest}  ${path.basename(rollbackProbe)}\n`);
+    const failedRestore = spawnSync('bash', [path.join(REPO, 'backup/restore.sh'), rollbackProbe], {
+      env: { ...envBackup, BRIDGE_RESTORE_CONFIRM: 'RESTORE' }, encoding: 'utf8',
+    });
+    const probeAbsent = inst.psql('bridge', `SELECT to_regclass('public.${rollbackProbeName}') IS NULL`) === 't';
+    const restoredAtomically = failedRestore.status !== 0 && probeAbsent;
+    record('backup', 'SH-BACKUP-ATOMIC-01',
+      'failed SQL restore leaves no earlier committed tables/rows (real PostgreSQL)',
+      restoredAtomically ? 'PASS' : 'FAIL',
+      `failed restore exit=${failedRestore.status}; partial table absent=${probeAbsent}`);
 
     const r = spawnSync('bash', [path.join(REPO, 'backup/restore.sh'), dumpPath], { env: { ...envBackup, BRIDGE_RESTORE_CONFIRM: 'RESTORE' }, encoding: 'utf8' });
     record('backup', 'SH-BACKUP-03', 'backup/restore.sh verifies the dump and restores it', r.status === 0 && /RESTORE=PASS/.test(r.stdout) ? 'PASS' : 'FAIL', r.status === 0 ? '' : (r.stderr || r.stdout).slice(-300));

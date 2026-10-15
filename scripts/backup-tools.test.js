@@ -73,6 +73,60 @@ test('restore.sh runs its verifier without relying on the exec bit (SH-02) and s
   assert.equal(ungated.status, 77, 'restore without BRIDGE_RESTORE_CONFIRM=RESTORE must refuse');
 });
 
+
+test('verify-backup.sh refuses a valid checksum for the wrong dump or a multi-record sidecar', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bk-identity-'));
+  const first = writeDump(dir, 'bridge_first.sql.gz', sqlDump(12_000));
+  const second = writeDump(dir, 'bridge_second.sql.gz', sqlDump(20_000));
+  const verify = path.join(REPO, 'backup/verify-backup.sh');
+
+  // A valid sidecar for a different dump made sha256sum -c return zero,
+  // even though it never inspected the requested first dump.
+  fs.copyFileSync(`${second}.sha256`, `${first}.sha256`);
+  const wrong = run(verify, [first]);
+  assert.equal(wrong.status, 65, `wrong artifact: ${wrong.stdout} ${wrong.stderr}`);
+  assert.match(wrong.stderr, /does not match the requested dump/);
+
+  // Multiple checksum records cannot hide the requested artifact among others.
+  const validFirst = crypto.createHash('sha256').update(fs.readFileSync(first)).digest('hex');
+  const validSecond = crypto.createHash('sha256').update(fs.readFileSync(second)).digest('hex');
+  fs.writeFileSync(`${first}.sha256`,
+    `${validFirst}  bridge_first.sql.gz\n${validSecond}  bridge_second.sql.gz\n`);
+  assert.equal(run(verify, [first]).status, 65, 'multi-record sidecar must refuse');
+
+  fs.writeFileSync(`${first}.sha256`, `${validFirst}  bridge_first.sql.gz\n`);
+  const valid = run(verify, [first]);
+  assert.equal(valid.status, 0, valid.stderr);
+  assert.match(valid.stdout, /BACKUP_VERIFY=PASS/);
+});
+
+test('restore.sh uses one psql transaction for the entire stdin dump, without psqlrc', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bk-atomic-'));
+  const dump = writeDump(dir, 'bridge_atomic.sql.gz', sqlDump(3_000));
+  const bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin);
+  const psql = path.join(bin, 'psql');
+  // Stub captures command arguments without requiring a database. The
+  // selfhost workflow separately runs the restore against real PostgreSQL.
+  fs.writeFileSync(psql,
+    '#!/bin/sh\nprintf "%s\\n" "$@" > "$BRIDGE_TEST_PSQL_ARGS"\ncat >/dev/null\n',
+    { mode: 0o755 });
+  const argsFile = path.join(dir, 'psql-argv.txt');
+  const restored = run(path.join(REPO, 'backup/restore.sh'), [dump], {
+    BRIDGE_RESTORE_DRY_RUN: 'false',
+    BRIDGE_RESTORE_CONFIRM: 'RESTORE',
+    POSTGRES_PASSWORD: 'test-only',
+    BRIDGE_TEST_PSQL_ARGS: argsFile,
+    PATH: `${bin}:${process.env.PATH}`,
+  });
+  assert.equal(restored.status, 0, `${restored.stdout}\n${restored.stderr}`);
+  const args = fs.readFileSync(argsFile, 'utf8').trimEnd().split('\n');
+  assert.ok(args.includes('-X'), 'must disable .psqlrc startup commands');
+  assert.ok(args.includes('--single-transaction'), 'must roll back all statements on error');
+  assert.equal(args[args.indexOf('-f') + 1], '-', 'psql must execute stdin as one -f script');
+  assert.equal(args[args.indexOf('-v') + 1], 'ON_ERROR_STOP=1', 'SQL errors must stop restore');
+});
+
 test('the backup image ships the restore half and the scripts are executable in git', () => {
   const dockerfile = fs.readFileSync(path.join(REPO, 'backup/Dockerfile'), 'utf8');
   assert.match(dockerfile, /COPY restore\.sh \/usr\/local\/bin\/restore\.sh/);
