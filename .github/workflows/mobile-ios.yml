@@ -36,7 +36,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Boot the simulator early (it warms up while the app builds)
         run: |
           mkdir -p e2e/ios/results
