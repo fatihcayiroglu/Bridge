@@ -774,3 +774,14 @@ The subject's free text, other threads, lock arguments, build IDs and any app da
 - **P03 on timeout:** reports the live peer connections, so "never joined" (pcs 0) is told apart from "joined, no audio".
 - **`requireVoiceSession` precondition:** P06, P07 and V03 check for live peer connections. The VoicePanel and `#vc-video` are mounted at start-up, so their presence proves nothing.
 - **V03:** can no longer pass when there is no call to leave.
+
+**Fourteenth run (PR #238, [run 38707469667](https://github.com/fatihcayiroglu/Bridge/actions/runs/38707469667), head `ff35f27`): PASS, 33 PASS / 0 FAIL / 0 SKIPPED / 4 MEASURED. Diagnostic only.**
+
+**The voice checks now test what they claim.**
+- **P03:** joined for real. The SFU created a room during P03 (08:53:01), and audio flowed: 31 packets, send transport connected.
+- **P04 and V02:** P04 measured 54 → 3,161 packets, and V02 recovered after 6.5 s, both on that live call.
+- **P06:** ran inside the live call. The UI read "Connected" and explained the camera denial.
+- **P07:** sent 578 video packets.
+- **V03:** closed a real call. It passed `requireVoiceSession` first.
+
+**CS01.** All five early samples again show a **stable** font-provider connection (2.1–2.4 s old). At UI time, launches 2 and 3 still held it stable (10.6 s and 8.5 s). Play services did not die during the launches (`gmsPersistentExits` empty), so this PASS says nothing about reliability. #209 stays open.
