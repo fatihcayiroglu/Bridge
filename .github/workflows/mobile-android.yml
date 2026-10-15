@@ -66,6 +66,8 @@ jobs:
         run: npm run build
       - name: Mobile native bridge tests (no packaged-shell skips)
         run: npx jest --config jest.mobile.config.js --runInBand
+      - name: Android failure exit parser unit contracts (#209)
+        run: node --test e2e/android/exit-diagnostics.test.mjs
       - name: Packaged web root (www/) for the emulator server address
         env:
           # The emulator reaches the host server through `adb reverse tcp:3000 tcp:3000`.
