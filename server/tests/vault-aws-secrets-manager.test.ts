@@ -103,6 +103,30 @@ describe('AWS Secrets Manager — reading the answer', () => {
     await expect(getSecret('AWS_JSON_KEY')).resolves.toBe(expected);
   });
 
+  it.each([
+    ['an object keyed only by an unrelated secret', { OTHER_SECRET: 'sensitive-unrelated-value' }],
+    ['an empty object', {}],
+    ['a non-string named key', { AWS_JSON_MISSING_KEY: { token: 'nested-secret' } }],
+    ['a non-string generic value', { value: { token: 'nested-secret' } }],
+    ['an array of secrets', ['sensitive-unrelated-value']],
+    ['JSON null', null],
+  ])('does not expose the full SecretString for %s', async (_case, stored) => {
+    answer(200, { SecretString: JSON.stringify(stored) });
+    await expect(getSecret('AWS_JSON_MISSING_KEY')).resolves.toBeNull();
+  });
+
+  it('missing JSON keys cannot hydrate a stale local secret in production', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.AWS_JSON_MISSING_KEY = 'stale-local-copy';
+    _clearVaultCache();
+    try {
+      answer(200, { SecretString: JSON.stringify({ OTHER_SECRET: 'unrelated-secret' }) });
+      await expect(getSecret('AWS_JSON_MISSING_KEY')).resolves.toBeNull();
+    } finally {
+      delete process.env.AWS_JSON_MISSING_KEY;
+    }
+  });
+
   it('a secret with no SecretString (binary or empty) is absent, not an empty string', async () => {
     answer(200, { SecretBinary: 'AAEC' });
     await expect(getSecret('AWS_BINARY_KEY')).resolves.toBeNull();
