@@ -166,11 +166,17 @@ Compose **32 PASS**. PR-head runs are listed in § Closure record.
 Harness: `scripts/federation-lab/run.mjs`; CI: `.github/workflows/federation-evidence.yml`.
 
 **Topology.**
+
+The lab uses fixed TCP ports below Linux's usual ephemeral allocation range
+(32768–60999). This avoids incidental short-lived outbound sockets taking
+one of the listeners' ports during CI setup. The test continues to fail
+if a listener is genuinely occupied; it does not retry or skip a scenario.
+
 - **Two installations.** A and B are independent Bridge processes, each with
   its own PostgreSQL, Redis and uploads. They run the production build behind
-  TLS fronts at `https://a.bridge.test:57443` and `https://b.bridge.test:57444`,
+  TLS fronts at `https://a.bridge.test:24143` and `https://b.bridge.test:24144`,
   signed by a lab CA the installations trust.
-- **Hostile remote.** X (`https://evil.bridge.test:57445`) is a remote
+- **Hostile remote.** X (`https://evil.bridge.test:24145`) is a remote
   ActivityPub actor ("mallory") with its own RSA key. Every signing parameter
   is under the lab's control.
 - **SSRF canary.** `canary.bridge.test` resolves to 127.0.0.1 but is **not** in
