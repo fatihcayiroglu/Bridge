@@ -260,8 +260,12 @@ async function readFromHashicorp(secretName: string, cfg: VaultConfig): Promise<
     throw new Error(`[vault] KV okuma başarısız (${resp.status})`);
   }
 
-  const data = await resp.json() as { data?: { data?: Record<string, string> } };
-  return data?.data?.data?.[secretName] ?? null;
+  // KV v2 payloads are untrusted JSON: a claimed secret can be an object,
+  // array, number or boolean at runtime despite the TypeScript annotation.
+  // Never hand a non-string value to callers or the string-only secret cache.
+  const data = await resp.json() as { data?: { data?: Record<string, unknown> } } | null;
+  const value = data?.data?.data?.[secretName];
+  return typeof value === 'string' ? value : null;
 }
 
 // ── AWS Secrets Manager okuma ─────────────────────────────────────────────────
