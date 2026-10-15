@@ -820,3 +820,26 @@ test('federation evidence listeners use a distinct non-ephemeral TCP port block'
       'P5 topology documentation must match the actual TLS frontend for ' + host);
   }
 });
+
+
+test('CI PostgreSQL healthchecks use the declared database principal', () => {
+  const root = path.resolve(__dirname, '..');
+  for (const file of ['.github/workflows/mobile-android.yml', '.github/workflows/quality-gate.yml']) {
+    const lines = fs.readFileSync(path.join(root, file), 'utf8').split(/\r?\n/);
+    let db = null;
+    let user = null;
+    let verified = 0;
+    for (const line of lines) {
+      const dbMatch = line.match(/^\s+POSTGRES_DB:\s+([a-zA-Z_]\w*)\s*$/);
+      if (dbMatch) db = dbMatch[1];
+      const userMatch = line.match(/^\s+POSTGRES_USER:\s+([a-zA-Z_]\w*)\s*$/);
+      if (userMatch) user = userMatch[1];
+      if (!/^\s+--health-cmd\b/.test(line) || !/pg_isready/.test(line)) continue;
+      assert.ok(user && db, file + ': healthcheck has no declared database principal');
+      assert.equal(line.trim(), '--health-cmd "pg_isready -U ' + user + ' -d ' + db + '"',
+        file + ': PostgreSQL healthcheck must use the service account, not root');
+      verified++;
+    }
+    assert.ok(verified > 0, file + ': PostgreSQL readiness is not checked');
+  }
+});
