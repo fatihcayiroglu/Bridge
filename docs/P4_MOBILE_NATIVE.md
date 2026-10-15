@@ -745,3 +745,32 @@ The subject's free text, other threads, lock arguments, build IDs and any app da
 - **Not localised:**
   - which component outside the APK opens the font connection (system WebView or framework);
   - whether any of these forms happens on real hardware: **BLOCKED: physical device required**.
+
+**Thirteenth run (PR #238, [run 38703224124](https://github.com/fatihcayiroglu/Bridge/actions/runs/38703224124), head `f2d425c`, docs-only change): FAIL, 28 PASS / 6 FAIL (CS01, P03, P04, V02, P06, P07) / 0 SKIPPED / 3 MEASURED.**
+
+**CS01: the kill was caught in the act for the first time.**
+
+| launch | started (UTC) | font provider right after `am start` | font provider at UI |
+|---|---|---|---|
+| 1 | 08:12:03 | **stable**, 2.6 s old | unstable only, 11.5 s old |
+| 2 | 08:12:20 | **stable**, 1.8 s old | **still stable**, 9.4 s old |
+| 3 | 08:12:33 | **stable**, 1.1 s old | **still stable**, 9.4 s old |
+| 4 | 08:12:45 | **stable**, 2.0 s old | **still stable**, 7.2 s old |
+| 5 | 08:12:56.2 | **stable**, 2.2 s old (PID 6678) | killed before the UI |
+
+- **The kill:** at 08:13:03.409, about 7 s into launch 5 and about 92 s after boot (08:11:31), ActivityManager killed PID 6678 with exit reason **DEPENDENCY DIED**. Its kill line names `com.google.android.gms/.fonts.provider.FontsProvider` in the dying `com.google.android.gms.persistent`. Play services' boot-time process (PID 1391) ended 7 ms later: SIGNALED, status 9.
+- **What it confirms:** the launch that died had just been sampled holding exactly that stable connection. Mechanism and timing are now observed in one launch, not inferred across runs.
+- **Still not known:** which component outside the APK opens the connection.
+
+**P03, P04, V02, P06, P07: the voice join never reached the server.**
+- **Server log:** at P03, the SFU logged no room creation at all. In passing runs, P03's join creates a room within about 14 s.
+- **Why the failure looked like something else:** P03 clicked the voice channel with a bare `document.querySelector(…)?.click()`. If the entry was not rendered yet, that silently did nothing, and the check failed 45 s later as "no outbound audio RTP".
+- **Cascade:** P04, V02, P06 and P07 then had no call to work with.
+- **V03 passed vacuously:** "leaving voice closes the media connections" passed because no peer connection ever existed. It tested nothing.
+- **Not a code change:** the commit changed only this document. `78dbc6e`, the same code, passed all of these checks.
+
+**Harness changes after this run** (no assertion weakened, no timeout raised, nothing retried):
+- **`joinVoice`:** P01 and P03 wait until the voice channel's entry is rendered, click it, and fail precisely if it is not there.
+- **P03 on timeout:** reports the live peer connections, so "never joined" (pcs 0) is told apart from "joined, no audio".
+- **`requireVoiceSession` precondition:** P06, P07 and V03 check for live peer connections. The VoicePanel and `#vc-video` are mounted at start-up, so their presence proves nothing.
+- **V03:** can no longer pass when there is no call to leave.

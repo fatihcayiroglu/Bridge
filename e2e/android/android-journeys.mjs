@@ -800,6 +800,31 @@ async function openChannel(channelId) {
   await page.evaluate((cid) => { document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`)?.click(); }, channelId);
   await until(() => activeChannel().then((c) => c === channelId), { message: `channel ${channelId} active` });
 }
+/**
+ * Click a voice channel's entry once it is rendered. A bare `?.click()` on an
+ * entry that is not there yet does nothing, and the check then fails much later
+ * as "no outbound RTP" although no join was ever attempted (run 38703224124).
+ */
+async function joinVoice(voiceChannelId) {
+  await until(() => page.evaluate((cid) => !!document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`), voiceChannelId),
+    { message: `voice channel ${voiceChannelId} in list` });
+  const clicked = await page.evaluate((cid) => {
+    const el = document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`);
+    el?.click();
+    return !!el;
+  }, voiceChannelId);
+  assert(clicked, `voice channel ${voiceChannelId} entry disappeared before the click`);
+}
+/**
+ * A voice session exists only while the call's peer connections are live.
+ * (The VoicePanel, its controls and `#vc-video` are mounted at start-up, so
+ * their presence says nothing about being in a call.)
+ */
+async function requireVoiceSession(purpose) {
+  const session = await outboundAudio();
+  assert(session.pcs > 0, `no voice session ${purpose} (live peer connections: ${session.pcs})`);
+  return session;
+}
 async function activeChannel() {
   return page.evaluate(() => document.querySelector('.ch-item.active')?.getAttribute('data-id') ?? null).catch(() => null);
 }
@@ -1230,7 +1255,7 @@ async function main() {
     await attachPage();
     await until(() => appVisible(), { timeout: 45_000, message: 'app after permission revoke' });
     await openServer(serverId);
-    await page.evaluate((cid) => { document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`)?.click(); }, voiceId);
+    await joinVoice(voiceId);
     const sheet = await permissionSheet();
     facts.micPermissionSheet = sheet;
     if (sheet.shown) await tapPermissionButton('deny');
@@ -1250,8 +1275,14 @@ async function main() {
     await page.reload();
     await until(() => appVisible(), { timeout: 45_000, message: 'app after grant' });
     await openServer(serverId);
-    await page.evaluate((cid) => { document.querySelector(`.ch-item[data-id="${cid}"] .ch-open`)?.click(); }, voiceId);
-    const flow = await until(async () => { const a = await outboundAudio(); return a.packetsSent > 20 ? a : null; }, { timeout: 45_000, message: 'outbound audio RTP' });
+    await joinVoice(voiceId);
+    let flow;
+    try {
+      flow = await until(async () => { const a = await outboundAudio(); return a.packetsSent > 20 ? a : null; }, { timeout: 45_000, message: 'outbound audio RTP' });
+    } catch (err) {
+      // pcs 0 = the join never produced a call; pcs > 0 = joined, but no audio flowed.
+      throw new Error(`${err?.message ?? err}; peer connections ${JSON.stringify(await outboundAudio().catch(() => null))}`, { cause: err });
+    }
     facts.voice = { joinedWithOutboundAudio: flow };
     return flow;
   });
@@ -1297,6 +1328,7 @@ async function main() {
   });
 
   await check('P06', 'camera permission denied in the real Android sheet → the camera toggle tells the user', async () => {
+    await requireVoiceSession('to toggle the camera in (P03 must have joined)');
     await page.evaluate(() => document.getElementById('vc-video')?.click());
     const sheet = await permissionSheet();
     facts.cameraPermissionSheet = sheet;
@@ -1310,6 +1342,7 @@ async function main() {
   await check('P07', 'camera permission granted → video is sent (emulated camera, outbound video RTP)', async () => {
     await platform.permission('android.permission.CAMERA', true);
     await sleep(1_000);
+    await requireVoiceSession('to send video in (P03 must have joined)');
     await page.evaluate(() => document.getElementById('vc-video')?.click());
     const sheet = await permissionSheet(4_000);
     if (sheet.shown) await tapPermissionButton('allow');
@@ -1319,6 +1352,9 @@ async function main() {
   });
 
   await check('V03', 'leaving voice closes the media connections', async () => {
+    // Without a live call there is nothing to close, and pcs === 0 would pass vacuously
+    // (it did in run 38703224124, after P03 never joined).
+    await requireVoiceSession('to leave');
     await page.evaluate(() => document.querySelector('.vc-controls .vc-btn-danger')?.click());
     const closed = await until(async () => (await outboundAudio()).pcs === 0, { timeout: 20_000, message: 'all peer connections closed' });
     return { closed };
