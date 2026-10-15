@@ -196,7 +196,15 @@ describe('P7 C4 operator trust registry CLI <-> server contract', () => {
 
     const unusable = envOf([notYet, over]);
     expect(summarizePortableTrust(unusable, now).warnings).toEqual(['NO_ACTIVE_PINNED_SOURCE_KEY']);
-    reportPortableTrust(unusable);
+    // `reportPortableTrust` reads the real clock. Pin it to the fixture's `now`:
+    // otherwise the "pending" key becomes active once the wall clock passes
+    // `now + DAY` (2026-10-15T12:00Z) and the warning is legitimately absent.
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      reportPortableTrust(unusable);
+    } finally {
+      clock.mockRestore();
+    }
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'portable.trust.warning', warnings: ['NO_ACTIVE_PINNED_SOURCE_KEY'] }),
       expect.any(String));
