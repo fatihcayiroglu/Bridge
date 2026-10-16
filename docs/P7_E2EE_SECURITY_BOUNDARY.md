@@ -31,6 +31,7 @@ Even a correct content encryption protocol does **not** conceal participant iden
 - Public README, landing page and team-marketing claims no longer promise default/native E2EE.
 - `/api/e2e/feature-status` formerly exposed the server-side opt-in flag, which could show a misleading E2EE toggle if mounted. Follow-up B4 capability fix makes `enabled=false` until a genuinely implemented client cryptosystem exists. The separate socket-level `BRIDGE_E2EE_ENABLED` switch remains an experimental backend opt-in, **not** proof of E2EE.
 - Preserve backend key scaffolding and migration data; do **not** remove fields, enable unimplemented crypto, or claim local-at-rest AES-GCM is message E2EE.
+- `GET /api/mobile/info` must also report `features.voiceE2ee=false`. The shipped WebRTC P2P/SFU paths use DTLS-SRTP transport security; the SFU terminates encrypted media transport to forward group calls. This is not proof of a separate client-owned end-to-end media cipher. The `BridgeVoiceE2E` registry references in `client/js/webrtc.ts` and `client/js/webrtc-sfu.ts` do not on their own establish a live encryption implementation. Require per-mode P2P/SFU wire tests, authenticated peer keys and real end-to-end encrypted frame processing before exposing `voiceE2ee=true`.
 
 ## Mandatory closure evidence (not run or passed by this document)
 

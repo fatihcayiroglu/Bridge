@@ -1,12 +1,12 @@
 # Bridge — Production Deployment Rehberi
 
-## ⚠️ Sprint 115 — E2EE Varsayılan Açık (Breaking Change)
+## ⚠️ Güncel E2EE üretim durumu — varsayılan kapalı (P7 B4)
 
-Sprint 115'ten itibaren **E2EE varsayılan olarak AÇIKTIR** (`BRIDGE_E2EE_ENABLED !== 'false'`).
+**Mesajlar ve SFU grup ses akışı için doğrulanmış uçtan uca şifreleme henüz sunulmuyor.** `BRIDGE_E2EE_ENABLED` yalnızca deneysel sunucu anahtar/Socket altyapısını etkinleştirir; varsayılan değeri `false` olmalıdır. Bu bayrağı `true` yapmak, istemcinin mesajları veya ses medyasını E2EE ile şifrelediği anlamına **gelmez**.
 
-Eğer E2EE'yi kapatmak istiyorsanız: `BRIDGE_E2EE_ENABLED=false`
+Üretim kurulumlarında `BRIDGE_E2EE_ENABLED=false` kullanın; kullanıcıya E2EE güvenlik garantisi vermeyin. WebRTC DTLS-SRTP taşıma güvenliği, özellikle Mediasoup SFU söz konusu olduğunda, uçtan uca medya gizliliği garantisi değildir.
 
-Mevcut deploymentlar için migration adımları → [ADR-0013](docs/ADR-0013-sprint115-production-readiness.md)
+Sprint 115'in varsayılan açık E2EE iddiası tarihsel ve geçersizdir. Referans: [P7 B4 güvenlik sınırı](docs/P7_E2EE_SECURITY_BOUNDARY.md).
 
 ---
 

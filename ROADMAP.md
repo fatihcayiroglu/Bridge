@@ -14,7 +14,7 @@
 | **Sesli** | WebRTC P2P ses kanalları, SFU group voice (Mediasoup) |
 | **Roller** | Gelişmiş izin sistemi (kanal bazlı granüler) |
 | **Moderasyon** | Ban/kick/timeout, auto-mod AI, IP ban, içerik tarama |
-| **DM** | Direkt mesajlaşma + E2E şifreleme |
+| **DM** | Direkt mesajlaşma mevcut; gerçek istemci mesaj E2EE henüz sunulmuyor (P7 B4 açık) |
 | **Arkadaşlar** | Arkadaş sistemi |
 | **Keşif** | Sunucu keşif sayfası |
 | **Bot** | Bot API + Webhook + SDK |
@@ -122,7 +122,7 @@ Redis adapter mevcut — `REDIS_URL` ortam değişkeni yeterli.
 | ~~DiscoverPanel Svelte geçişi~~ | Sprint 114 | ✅ `DiscoverPanel.svelte` + ADR-0008 Faz 2 |
 | ~~Mobile iOS/Android native projeler~~ | Sprint 115 | ✅ ADR-0013 K1: `mobile/ios/App/` + `mobile/android/` |
 | ~~Electron release pipeline~~ | Sprint 115 | ✅ ADR-0013 K2: `.github/workflows/electron-release.yml` |
-| ~~E2EE production default: true~~ | Sprint 115 | ✅ ADR-0013 K3: `BRIDGE_E2EE_ENABLED` varsayılan açık |
+| E2EE üretim varsayılanı (tarihsel Sprint 115 kaydı) | Sprint 115 | ⚠️ Eski iddia geçersiz: `BRIDGE_E2EE_ENABLED` varsayılan kapalıdır; backend iskelesi mesaj E2EE değildir. [P7 B4](docs/P7_E2EE_SECURITY_BOUNDARY.md) |
 | ~~SAST + Dependency Review CI~~ | Sprint 115 | ✅ ADR-0013 K4: CodeQL + dependency-review job |
 | ~~OpenAPI 3.1 Spec~~ | Sprint 115 | ✅ ADR-0013 K6: `docs/api/openapi.yaml` (1128 satır) |
 | ~~Svelte Migration Faz 3 (169 dosya)~~ | Sprint 116 | ✅ ADR-0008 KAPANDI: 143 bileşen, sıfır vanilla TS |
@@ -132,8 +132,8 @@ Redis adapter mevcut — `REDIS_URL` ortam değişkeni yeterli.
 
 ### Bridge'i Discord'dan Ayıran 5 Temel Özellik
 
-**1. Gerçek Gizlilik (E2EE)**
-Mesajlar sunucuda şifreli; sağlayıcı okuyamaz. **Sprint 115'ten itibaren production'da varsayılan açık.** ✅
+**1. Gerçek Gizlilik (E2EE) — HEDEF, HENÜZ TAMAMLANMADI**
+Gerçek istemci mesaj E2EE ve SFU üzerinden uçtan uca ses şifreleme **henüz sunulmuyor**. WebRTC DTLS-SRTP taşıma şifrelemesi ve yerel veritabanı şifrelemesi sunucunun mesaj/medyayı çözemediğini kanıtlamaz. Kalan güvenlik ve kabul kriterleri: [P7 B4](docs/P7_E2EE_SECURITY_BOUNDARY.md).
 
 **2. Native AI Entegrasyonu**
 Konuşma özeti, çeviri, öneri sistemi mevcut. Hedef: AI moderatör, AI kanal organizatörü.
@@ -191,7 +191,7 @@ ActivityPub ile farklı Bridge sunucuları birbirine bağlanabilir. Docker ile t
 | ✅ Tamamlandı | **Mobile Android native proje** — `mobile/android/`: MainActivity.kt, AndroidManifest, proguard, Gradle signing konfig (Sprint 115 / ADR-0013 K1) |
 | ✅ Tamamlandı | **Mobile publish pipeline** — `.github/workflows/mobile-publish.yml`: iOS TestFlight + Android Play Store, tag push tetiklemesi (Sprint 115 / ADR-0013 K1) |
 | ✅ Tamamlandı | **Electron release pipeline** — `.github/workflows/electron-release.yml`: Windows NSIS/MSIX, macOS DMG + notarization, Linux AppImage/deb/snap (Sprint 115 / ADR-0013 K2) |
-| ✅ Tamamlandı | **E2EE production aktivasyonu** — `BRIDGE_E2EE_ENABLED` varsayılan `true`, DEPLOYMENT_GUIDE'a migration notu eklendi (Sprint 115 / ADR-0013 K3) |
+| ⚠️ Açık | **E2EE üretim kapsamı** — Sprint 115'teki varsayılan `true` iddiası yürürlükte değil. Bayrak varsayılan kapalı; server anahtar/Socket iskelesi ürün E2EE garantisi değildir. İstemci kriptografisi ve bağımsız kabul kanıtı P7 B4'te eksik. |
 | ✅ Tamamlandı | **SAST + Dependency Review** — CodeQL (javascript-typescript, security-and-quality) + PR'larda high severity bağımlılık taraması (Sprint 115 / ADR-0013 K4) |
 | ✅ Tamamlandı | **OpenAPI 3.1 Spec** — `docs/api/openapi.yaml` (1128 satır): auth, users, servers, channels, messages, e2ee, search, moderation, federation, health. `/api/docs` Swagger UI (Sprint 115 / ADR-0013 K6) |
 | ✅ Tamamlandı | **k6 performans baseline** — `k6/results/baseline-summary.json`: p95=61ms, p99=142ms, error_rate=0% (Sprint 115 / ADR-0013 K10) |
