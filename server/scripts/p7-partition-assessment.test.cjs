@@ -31,3 +31,16 @@ test('database errors roll back without returning partial evidence', async()=>{
   await assert.rejects(()=>collectEvidence(client,{}),/fake query failure/);
   assert.equal(statements.at(-1),'ROLLBACK');
 });
+
+test('unknown PostgreSQL reltuples is not misreported as an empty table', () => {
+  const row = {
+    table_name: 'messages', estimated_rows: -1, stat_live_rows: '0',
+    stat_dead_rows: '0', heap_bytes: '0', index_bytes: '0',
+    total_bytes: '0', partitions: '0', analyzed: false, partitioned: false,
+  };
+  assert.equal(normalizedTables([row])[0].estimatedRows, null);
+  assert.throws(() => normalizedTables([{...row, estimated_rows: -2}]), /invalid catalog row estimate/);
+  assert.throws(() => normalizedTables([{...row, estimated_rows: null}]), /missing catalog row estimate/);
+  assert.throws(() => normalizedTables([{...row, estimated_rows: 'not-a-number'}]), /invalid catalog row estimate/);
+  assert.equal(normalizedTables([{...row, estimated_rows: '0'}])[0].estimatedRows, 0);
+});
