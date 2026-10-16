@@ -247,16 +247,24 @@ export function parseNativeEmojiStartupProbe(raw) {
   const samples = [];
   for (const line of String(raw).split(/\r?\n/).slice(-1500)) {
     if (!line.includes('BridgeEmojiStartupProbe')) continue;
-    const m = /\bstage=(before-super|after-super|resumed) classPresent=(true|false)\b/.exec(line);
+    const m = /\bstage=(before-super|after-super|resumed) classPresent=(true|false) configured=(true|false|unknown)\b/.exec(line);
     if (!m || !allowed.has(m[1])) continue;
-    if (samples.length < 20) samples.push({ stage: m[1], classPresent: m[2] === 'true' });
+    if (samples.length < 20) {
+      samples.push({
+        stage: m[1],
+        classPresent: m[2] === 'true',
+        configured: m[3] === 'unknown' ? null : m[3] === 'true',
+      });
+    }
   }
   return {
     available: samples.length > 0,
     samples: samples.length,
     anyClassPresent: samples.some((s) => s.classPresent),
-    beforeSuper: samples.find((s) => s.stage === 'before-super')?.classPresent ?? null,
-    afterSuper: samples.find((s) => s.stage === 'after-super')?.classPresent ?? null,
-    lastResume: [...samples].reverse().find((s) => s.stage === 'resumed')?.classPresent ?? null,
+    anyConfigured: samples.some((s) => s.configured === true),
+    beforeSuper: samples.find((s) => s.stage === 'before-super')?.configured ?? null,
+    afterSuper: samples.find((s) => s.stage === 'after-super')?.configured ?? null,
+    lastResume: [...samples].reverse().find((s) => s.stage === 'resumed')?.configured ?? null,
+    unknownConfigured: samples.filter((s) => s.configured === null).length,
   };
 }

@@ -61,14 +61,25 @@ public class MainActivity extends BridgeActivity {
         if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) {
             return;
         }
-        boolean classPresent;
+        boolean classPresent = false;
+        String configured = "unknown";
         try {
-            Class.forName("androidx.emoji2.text.EmojiCompat", false, getClassLoader());
+            // The AndroidX public isConfigured() API observes initialization
+            // without requesting a font download. Use reflection because
+            // emoji2 is present at runtime but absent from compileClasspath.
+            // Class lookup alone does not initialize the optional class.
+            Class<?> emoji = Class.forName(
+                    "androidx.emoji2.text.EmojiCompat", false, getClassLoader());
             classPresent = true;
-        } catch (ClassNotFoundException | LinkageError e) {
-            classPresent = false;
+            Object state = emoji.getMethod("isConfigured").invoke(null);
+            if (state instanceof Boolean) {
+                configured = ((Boolean) state) ? "true" : "false";
+            }
+        } catch (ReflectiveOperationException | LinkageError | SecurityException e) {
+            // Unavailable != false. Preserve this as an unknown diagnostic.
         }
         android.util.Log.i("BridgeEmojiStartupProbe",
-                "stage=" + stage + " classPresent=" + classPresent);
+                "stage=" + stage + " classPresent=" + classPresent
+                        + " configured=" + configured);
     }
 }

@@ -211,24 +211,32 @@ test('font-provider probe exposes uncertain reference strength rather than silen
 });
 
 
-test('native EmojiCompat class-presence diagnostic parses fixed-shape Boolean state only', () => {
+test('native EmojiCompat diagnostic distinguishes initialized, uninitialized and unknown', () => {
   const raw = [
-    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=before-super classPresent=false',
-    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=after-super classPresent=false',
-    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=resumed classPresent=true',
-    '10-17 I/BridgeEmojiStartupProbe( 5304): token=secret@example.com stage=wild classPresent=false',
-    '10-17 I/OtherTag( 5304): stage=resumed classPresent=false',
-    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=resumed configured=true',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=before-super classPresent=true configured=false',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=after-super classPresent=true configured=true',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=resumed classPresent=true configured=unknown',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): token=secret@example.com stage=wild classPresent=false configured=false',
+    '10-17 I/OtherTag( 5304): stage=resumed classPresent=false configured=false',
     'PRIVATE phone contact=secret@example.com',
   ].join('\n');
   const result = parseNativeEmojiStartupProbe(raw);
   assert.deepEqual(result, {
-    available: true, samples: 3, anyClassPresent: true,
-    beforeSuper: false, afterSuper: false, lastResume: true,
+    available: true, samples: 3, anyClassPresent: true, anyConfigured: true,
+    beforeSuper: false, afterSuper: true, lastResume: null,
+    unknownConfigured: 1,
   });
-  assert.doesNotMatch(JSON.stringify(result), /5304|contact|email|token|PRIVATE|configured/);
+  assert.doesNotMatch(JSON.stringify(result), /5304|contact|email|token|PRIVATE/);
   assert.deepEqual(parseNativeEmojiStartupProbe(''), {
-    available: false, samples: 0, anyClassPresent: false,
-    beforeSuper: null, afterSuper: null, lastResume: null,
+    available: false, samples: 0, anyClassPresent: false, anyConfigured: false,
+    beforeSuper: null, afterSuper: null, lastResume: null, unknownConfigured: 0,
   });
+});
+
+test('native EmojiCompat missing class is not mistaken for confirmed uninitialized font client', () => {
+  const result = parseNativeEmojiStartupProbe(
+    'I/BridgeEmojiStartupProbe( 22): stage=before-super classPresent=false configured=unknown');
+  assert.equal(result.anyClassPresent, false);
+  assert.equal(result.beforeSuper, null);
+  assert.equal(result.unknownConfigured, 1);
 });
