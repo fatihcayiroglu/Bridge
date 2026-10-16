@@ -2446,6 +2446,10 @@ const translations: Record<string, string> = {
   "pci_error": "문제가 발생했습니다. 다시 시도하세요.",
   "pci_review_again": "다시 검토",
   "pci_expired": "승인이 만료되었습니다. 다시 검토하세요."
+  "automation_link_exemption_label": "이 통합에서 링크 허용",
+  "automation_link_exemption_empty": "설치된 봇이나 웹훅이 없습니다",
+  "automation_link_exemption_save_failed": "통합 예외를 저장하지 못했습니다.",
+  "automation_link_exemption_saved": "통합 예외가 저장되었습니다.",
 };
 
 export default translations;
