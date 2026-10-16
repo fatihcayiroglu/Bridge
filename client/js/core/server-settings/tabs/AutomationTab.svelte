@@ -49,9 +49,14 @@
           apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/outgoing-webhooks`),
           apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/automod/integrations`),
         ]);
-        if (!a.ok || !i.ok) throw new Error('AutoMod integrations unavailable');
-        automod = await a.json() as AutomodRule[];
-        integrations = await i.json() as InstalledIntegration[];
+        automod = a.ok ? await a.json() as AutomodRule[] : [];
+        // An absent/invalid roster grants no exemptions; never invent bindings.
+        const rawIntegrations: unknown = i.ok ? await i.json() : [];
+        integrations = Array.isArray(rawIntegrations) ? rawIntegrations.filter(
+          (entry): entry is InstalledIntegration => entry !== null && typeof entry === 'object'
+            && typeof entry.principal === 'string' && typeof entry.installationId === 'string'
+            && typeof entry.name === 'string',
+        ) : [];
         hooks = h.ok ? await h.json() as OutgoingHook[] : [];
       } else { automod = []; hooks = []; integrations = []; }
       const rr = await apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/reaction-roles`);
