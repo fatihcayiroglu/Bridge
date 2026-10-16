@@ -8,7 +8,7 @@ const PROBES = Object.freeze([
   { name: 'message_channel_cursor', table: 'messages', sql: 'SELECT _id FROM public.messages WHERE "channelId" = $1 ORDER BY "createdAt" DESC, _id DESC LIMIT 50', env: 'P7_CHANNEL_PROBE_ID' },
   { name: 'member_server_cursor', table: 'members', sql: 'SELECT "userId" FROM public.members WHERE "serverId" = $1 ORDER BY "joinedAt", "userId" LIMIT 50', env: 'P7_SERVER_PROBE_ID' },
 ]);
-const SIZE_SQL = \`SELECT c.relname AS table_name, c.reltuples::bigint AS estimated_rows,
+const SIZE_SQL = `SELECT c.relname AS table_name, c.reltuples::bigint AS estimated_rows,
   pg_relation_size(c.oid)::bigint AS heap_bytes,
   pg_indexes_size(c.oid)::bigint AS index_bytes,
   pg_total_relation_size(c.oid)::bigint AS total_bytes,
@@ -21,8 +21,8 @@ FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
 WHERE n.nspname = 'public' AND c.relkind IN ('r','p') AND c.relname = ANY($1::text[])
-ORDER BY c.relname\`;
-const INDEX_SQL = \`SELECT t.relname AS table_name, ix.relname AS index_name,
+ORDER BY c.relname`;
+const INDEX_SQL = `SELECT t.relname AS table_name, ix.relname AS index_name,
   pg_relation_size(ix.oid)::bigint AS index_bytes,
   COALESCE(st.idx_scan,0)::bigint AS scans
 FROM pg_class t JOIN pg_namespace n ON n.oid = t.relnamespace
@@ -30,7 +30,7 @@ JOIN pg_index i ON i.indrelid = t.oid
 JOIN pg_class ix ON ix.oid = i.indexrelid
 LEFT JOIN pg_stat_user_indexes st ON st.indexrelid = ix.oid
 WHERE n.nspname = 'public' AND t.relname = ANY($1::text[])
-ORDER BY t.relname, ix.relname\`;
+ORDER BY t.relname, ix.relname`;
 function safeCount(value) {
   const x = Number(value);
   if (!Number.isSafeInteger(x) || x < 0) throw new Error('invalid catalog counter');
