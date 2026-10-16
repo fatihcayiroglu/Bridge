@@ -308,9 +308,9 @@ Bridge mesajları ActivityPub `Note` nesnesi olarak sunulur.
 | Follow / Accept / Reject / Undo | ✅ Tam |
 | Mastodon'dan takip et | ✅ Destekleniyor |
 | Bridge'den uzak aktör takip et | ✅ Destekleniyor |
-| DM (Direct Message) | ✅ E2EE ile destekleniyor |
+| DM (Direct Message) | Mesaj teslimi mevcut; istemci mesaj E2EE henüz sunulmuyor |
 
-> Bridge-to-Bridge federasyonu tam özellikli ve production kullanımına hazırdır. ActivityPub (Fediverse) desteği de Follow/Accept/Reject/Undo akışları ve E2EE DM ile production kalitesine ulaşmıştır.
+> Bridge-to-Bridge ve ActivityPub farklı protokol kapsamlarına sahiptir. ActivityPub Follow/Accept/Reject/Undo desteği, federasyon mesajlarının veya DM içeriğinin E2EE ile korunduğu anlamına gelmez. Gerçek dağıtım uygunluğu ayrıca doğrulanmalıdır.
 
 ---
 
