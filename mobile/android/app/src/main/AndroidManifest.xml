@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools">
 
   <application
     android:allowBackup="false"
@@ -9,6 +10,25 @@
     android:roundIcon="@mipmap/ic_launcher_round"
     android:supportsRtl="true"
     android:theme="@style/AppTheme">
+
+    <!-- P7 / Android #209: Capacitor's UI is rendered in a WebView. The
+         native Activity does not use EmojiCompat-backed TextViews.
+         AppCompat's transitive emoji2 initializer asynchronously queries
+         Google Play services' downloadable-font provider just after
+         Activity resume. Historical device-exit evidence included a
+         dependency death on that exact GMS FontsProvider. Remove only
+         this optional startup initializer; preserve AndroidX Startup and
+         its other initializers. This is a candidate mitigation, NOT proof
+         that the ANR/exit root cause has been found. -->
+    <provider
+      android:name="androidx.startup.InitializationProvider"
+      android:authorities="${applicationId}.androidx-startup"
+      android:exported="false"
+      tools:node="merge">
+      <meta-data
+        android:name="androidx.emoji2.text.EmojiCompatInitializer"
+        tools:node="remove" />
+    </provider>
 
     <activity
       android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"

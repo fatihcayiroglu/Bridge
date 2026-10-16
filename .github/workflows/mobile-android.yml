@@ -84,8 +84,21 @@ jobs:
       - name: Merged manifest facts
         run: |
           merged=$(find android/app/build/intermediates -name AndroidManifest.xml -path '*merged_manifests*debug*' | head -1)
+          test -n "$merged" && test -f "$merged"
           echo "merged manifest: $merged"
           grep -E 'package=|uses-permission|android:scheme|allowBackup|networkSecurityConfig' "$merged" | sed 's/^ *//' | sort -u
+      # Manifest source rules alone are not enough: the Gradle merger can
+      # override them. Ensure the APK's actual merged manifest cannot auto-
+      # initialize the optional downloadable emoji font on first resume.
+      - name: AndroidX emoji startup not present in merged debug manifest (#209)
+        run: |
+          merged=$(find android/app/build/intermediates -name AndroidManifest.xml -path '*merged_manifests*debug*' | head -1)
+          test -n "$merged" && test -f "$merged"
+          if grep -q 'androidx.emoji2.text.EmojiCompatInitializer' "$merged"; then
+            echo "::error::Unwanted EmojiCompatInitializer in actual merged manifest"
+            exit 1
+          fi
+          echo "No automatic EmojiCompat font-provider initializer in actual merged APK manifest"
       - uses: actions/upload-artifact@v7
         with:
           name: bridge-android-debug-apk
