@@ -41,6 +41,8 @@ import threadsRouter from '../routes/threads';
 import { invalidatePerms } from '../lib/permCache';
 import { ABUSE_POLICY } from '../lib/abusePolicy';
 import { DEFAULT_PERMISSIONS, PERMS } from '../lib/permissions';
+import { Automod } from '../db/repositories';
+import { errorHandler } from '../middleware/errorHandler';
 
 type Emitted = { ev: string; data: Record<string, unknown>; to?: string };
 
@@ -291,5 +293,50 @@ describe('a forum post (title and first message) passes the same checks', () => 
     expect(res.status).toBe(201);
     expect(await forumPosts()).toBe(1);
     expect(created()).toHaveLength(1);
+  });
+});
+
+describe('an AutoMod rule-store failure refuses the post (fail closed)', () => {
+  // The rules cannot be read, so the content cannot be checked: nothing may be
+  // stored or announced as if it had passed, and the client learns nothing
+  // about the failure beyond a generic server error (the app's errorHandler).
+  let forum: ReturnType<typeof makeChannel>;
+  beforeEach(async () => {
+    forum = makeChannel(server._id, { type: 'forum', name: 'ideas' });
+    await mockDb.channels.insert(forum);
+    invalidatePerms(server._id);
+    app.use(errorHandler);
+    jest.spyOn(Automod, 'findByServer').mockRejectedValue(new Error('automod rule store unavailable'));
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  const forumPost = (body: Record<string, unknown>) => {
+    const token = jwt.sign({ id: member._id, username: 'tester', v: 0 }, process.env.JWT_SECRET!, { expiresIn: '1h' });
+    return request(app).post('/api/threads').set('Authorization', `Bearer ${token}`).send({ channelId: forum._id, ...body });
+  };
+  const expectGenericServerError = (res: { status: number; body: unknown }) => {
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Internal server error' });
+    expect(JSON.stringify(res.body)).not.toContain('automod');
+  };
+
+  it('CONTROL: the channel send path refuses too; nothing is published', async () => {
+    await expect(channelSend('an ordinary message')).rejects.toThrow('automod rule store unavailable');
+    expect(io.emitted.filter(e => e.ev === 'message:new')).toEqual([]);
+  });
+
+  it('a thread reply is answered with a generic 500; nothing is stored or broadcast', async () => {
+    const res = await threadReply('an ordinary reply');
+    expectGenericServerError(res);
+    expect(await storedReplies()).toBe(0);
+    expect(replyBroadcasts()).toEqual([]);
+  });
+
+  it('a forum post is answered with a generic 500; no post is created or announced', async () => {
+    const res = await forumPost({ name: 'a fine title', firstMessage: 'an ordinary first message' });
+    expectGenericServerError(res);
+    expect((await mockDb.threads.find({ channelId: forum._id })).length).toBe(0);
+    expect(await mockDb.threadMessages.find({ channelId: forum._id })).toHaveLength(0);
+    expect(io.emitted.filter(e => e.ev === 'forum:thread:created')).toEqual([]);
   });
 });
