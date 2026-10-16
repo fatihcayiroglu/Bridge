@@ -397,6 +397,7 @@ const receiveWebhook = async (req: express.Request, res: express.Response): Prom
   const webhook = await ChannelWebhooks.findById(webhookId) as {
     _id: string;
     channelId?: string;
+    serverId?: string;
     createdBy?: string;
     token?: string;
     name?: string;
@@ -428,6 +429,12 @@ const receiveWebhook = async (req: express.Request, res: express.Response): Prom
   const channel = await Channels.findById(webhook.channelId);
   if (!channel) {
     res.status(404).json({ error: 'Kanal bulunamadı' });
+    return;
+  }
+  // Channel moves/deletions or stale rows must never turn a bearer webhook
+  // credential into authority to write to a different server.
+  if (typeof webhook.serverId !== 'string' || webhook.serverId !== String(channel.serverId)) {
+    res.status(403).json({ error: 'Webhook scope mismatch' });
     return;
   }
 
