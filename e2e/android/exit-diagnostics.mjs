@@ -238,9 +238,10 @@ export function inspectBridgeEmojiFontProvider(raw, appPid) {
 
 /**
  * Parse only a fixed-shape, debug-only native EmojiCompat state marker from a
- * PID-restricted Android logcat. No free-text log data, PID or device identity
- * may be exposed as CI evidence. A class-presence probe uses Class.forName
- * with initialize=false; it never calls EmojiCompat or acquires fonts.
+ * PID-filtered (or tag-filtered with exact PID verification) Android
+ * logcat. No free-text log data, PID or device identity is emitted to CI.
+ * Native debug reflection may initialize EmojiCompat; neither presence nor
+ * configuration status attributes the observed provider connection.
  */
 export function parseNativeEmojiStartupProbe(raw, appPid = null) {
   // A tag-only fallback can contain markers from another app process.
