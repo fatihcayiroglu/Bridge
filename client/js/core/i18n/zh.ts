@@ -2446,6 +2446,10 @@ const translations: Record<string, string> = {
   "pci_error": "出现问题，请重试。",
   "pci_review_again": "重新审核",
   "pci_expired": "批准已过期。请重新审核。"
+  "automation_link_exemption_label": "允许这些集成发送链接",
+  "automation_link_exemption_empty": "没有已安装的机器人或 Webhook",
+  "automation_link_exemption_save_failed": "无法保存集成豁免。",
+  "automation_link_exemption_saved": "集成豁免已保存。",
 };
 
 export default translations;
