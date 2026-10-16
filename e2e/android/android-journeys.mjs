@@ -21,7 +21,7 @@ import { io } from 'socket.io-client';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -668,6 +668,24 @@ async function main() {
     const how = await login(me.username, me.id);
     return { how, ms: Date.now() - t0 };
   });
+
+  // P7 Android #209: the original five-cold-start lab found a live GMS
+  // FontsProvider connection on EVERY startup. Verify the manifest change
+  // also eliminates the unneeded dependency from the running app process.
+  await check('FD01', 'native startup does not retain a Google Play emoji font dependency', async () => {
+    if (MODE !== 'android') throw new Skip('Android ActivityManager evidence requires Android');
+    const currentPid = await pid();
+    assert(currentPid && /^[0-9]{1,8}$/.test(currentPid), 'app process absent after login');
+    const raw = await sh('dumpsys activity processes ' + PKG);
+    const evidence = inspectBridgeEmojiFontProvider(raw, currentPid);
+    assert(evidence.appPidValid, 'cannot identify the app process');
+    assert(evidence.unparsedConnections === 0,
+      'could not parse all Android content-provider connections; cannot claim no dependency');
+    assert(!evidence.fontProviderConnected,
+      'app still holds the unnecessary Google Play emoji FontsProvider after startup');
+    return evidence;
+  });
+
 
   await check('PN01', 'the notification channel named by server pushes (bridge_default) exists on the device', async () => {
     if (MODE === 'dryrun') throw new Skip('notification channels need a device');
