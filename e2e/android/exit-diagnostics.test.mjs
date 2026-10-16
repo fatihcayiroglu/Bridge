@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -136,3 +136,19 @@ test('ANR CPU pressure rejects malformed input and bounds its output', () => {
   assert.deepEqual(r.cpu[0], { window: 'after', totalPct: 7, appPct: 0, webviewRendererPct: 0, systemServerPct: 0, topPct: 0, topClass: null });
 });
 
+
+test('WebView attach diagnostics distinguish Activity PID from actual DevTools socket without leaking names', () => {
+  const raw = [
+    'Num RefCount Protocol Flags Type St Inode Path',
+    '00000: 00000002 00000000 00010000 0001 01 54321 @webview_devtools_remote_8792',
+    '00001: 00000002 00000000 00010000 0001 01 54322 @webview_devtools_remote_9999',
+    '00002: 00000002 00000000 00010000 0001 01 54323 @webview_devtools_remote_8792',
+    'PRIVATE-USERNAME@example.com secret-token=not-for-logs',
+  ].join('\\n');
+  const visible = parseWebViewDevToolsSockets(raw, '8792');
+  assert.deepEqual(visible, { socketCount: 2, appPidHasSocket: true });
+  assert.deepEqual(parseWebViewDevToolsSockets(raw, '1234'), { socketCount: 2, appPidHasSocket: false });
+  assert.deepEqual(parseWebViewDevToolsSockets('', '8792'), { socketCount: 0, appPidHasSocket: false });
+  assert.deepEqual(parseWebViewDevToolsSockets(raw, '8792;rm /'), { socketCount: 2, appPidHasSocket: false });
+  assert.doesNotMatch(JSON.stringify(visible), /PRIVATE|secret|token|example|9999|8792/);
+});

@@ -146,3 +146,21 @@ export function parseAnrCpuPressure(raw, expectedProcess, limit = 3) {
   }
   return records;
 }
+
+// Android's devtools socket is a different capability from the Activity being
+// resumed. A running native PID with NO WebView devtools socket indicates a
+// WebView/renderer/inspection failure, not an assertion that Bridge is healthy.
+// Keep only the count and exact running-app-PID match; do not publish raw
+// /proc/net/unix lines, which can name unrelated apps or user identifiers.
+export function parseWebViewDevToolsSockets(raw, appPid) {
+  const pid = /^[0-9]{1,8}$/.test(String(appPid)) ? String(appPid) : null;
+  const socketPids = new Set();
+  for (const line of String(raw).split(/\r?\n/).slice(0, 20_000)) {
+    const found = /(?:^|[\s@/])webview_devtools_remote_([0-9]{1,8})(?=\s|$)/.exec(line);
+    if (found) socketPids.add(found[1]);
+  }
+  return {
+    socketCount: Math.min(socketPids.size, 100),
+    appPidHasSocket: Boolean(pid && socketPids.has(pid)),
+  };
+}

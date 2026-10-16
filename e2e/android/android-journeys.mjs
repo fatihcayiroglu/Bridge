@@ -21,7 +21,7 @@ import { io } from 'socket.io-client';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -303,7 +303,20 @@ async function webViewAttachEvidence() {
     try { return [label, (await sh(command)).slice(0, 1200)]; }
     catch (err) { return [label, `probe failed: ${String(err?.message ?? err).slice(0, 120)}`]; }
   }));
-  return Object.fromEntries(results);
+  const evidence = Object.fromEntries(results);
+  // A live Android Activity is insufficient proof that the embedded WebView
+  // exposes a DevTools endpoint. Capture a bounded, identifier-free presence
+  // check only on failure; never log full /proc/net/unix contents.
+  try {
+    const rawSockets = await androidFailureShell('cat /proc/net/unix');
+    evidence.devtools = {
+      available: true,
+      ...parseWebViewDevToolsSockets(rawSockets, evidence.pid),
+    };
+  } catch {
+    evidence.devtools = { available: false, socketCount: 0, appPidHasSocket: false };
+  }
+  return evidence;
 }
 
 async function attachPage({ timeout = 60_000 } = {}) {
