@@ -173,6 +173,38 @@ describe('GET /api/client-error/stats', () => {
     expect(report.receivedAt).toBeLessThan(9999999999999);
   });
 
+  it('B3: does not persist or log arbitrary URL/path source and bounds line/col fields', async () => {
+    const app = buildApp({ id: 'admin1', isAdmin: true });
+    const marker = 'B3-source-allowlist-report';
+    const res = await request(app).post('/api/client-error').send({
+      type: 'manual', message: marker,
+      source: 'https://service.example/debug.js?token=B3-source-private-token',
+      line: 'Infinity', col: -500,
+    });
+    expect(res.status).toBe(204);
+    const stats = await request(app).get('/api/client-error/stats');
+    expect(stats.status).toBe(200);
+    const report = stats.body.recent.find((x: { message?: string }) => x.message === marker);
+    expect(report).toEqual(expect.objectContaining({
+      source: 'other', line: 0, col: 0,
+    }));
+    expect(JSON.stringify(report)).not.toMatch(/service\.example|B3-source-private-token|debug\.js/);
+  });
+
+  it('B3: retains allowlisted diagnostic categories and finite integer positions', async () => {
+    const app = buildApp({ id: 'admin1', isAdmin: true });
+    const marker = 'B3-safe-source-position-report';
+    const res = await request(app).post('/api/client-error').send({
+      type: 'manual', message: marker, source: 'ui', line: '21', col: 8,
+    });
+    expect(res.status).toBe(204);
+    const stats = await request(app).get('/api/client-error/stats');
+    const report = stats.body.recent.find((x: { message?: string }) => x.message === marker);
+    expect(report).toEqual(expect.objectContaining({
+      source: 'ui', line: 21, col: 8,
+    }));
+  });
+
   it('B3: expires individual recent entries after 24h even if reports keep arriving', async () => {
     const app = buildApp({ id: 'admin1', isAdmin: true });
     const dateSpy = jest.spyOn(Date, 'now');
