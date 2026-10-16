@@ -27,7 +27,8 @@
 
 import express from 'express';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
-import { Automod, Members, Channels, Roles } from '../db/repositories';
+import { Automod, Members, Channels, Roles, Auth } from '../db/repositories';
+import { bindIncomingIntegrationSelections, listInstalledAutomodIntegrations } from '../lib/automodIntegrationExemptions';
 import { authMiddleware } from '../middleware/auth';
 import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
 import { limits } from '../middleware/rateLimit';
@@ -83,6 +84,40 @@ async function validateConfigReferences(
   return null;
 }
 
+/** Turn untrusted principal strings into current installation bindings on the server. */
+async function bindConfig(serverId: string, type: string, value: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!Object.prototype.hasOwnProperty.call(value, 'exemptIntegrations')) return value;
+  if (type !== 'link_filter') return value; // normalizer will refuse this key
+  return { ...value, exemptIntegrations: await bindIncomingIntegrationSelections(serverId, value.exemptIntegrations) };
+}
+
+async function auditRuleChange(
+  serverId: string, actorId: string, action: string, ruleId: string,
+  previous: AutomodConfig | null, next: AutomodConfig | null,
+): Promise<void> {
+  const before = previous?.exemptIntegrations?.map((x) => x.principal) ?? [];
+  const after = next?.exemptIntegrations?.map((x) => x.principal) ?? [];
+  await Auth.insertAuditLog({
+    serverId, actorId, action, targetId: ruleId, createdAt: Date.now(),
+    extra: {
+      exemptionsAdded: after.filter((x) => !before.includes(x)),
+      exemptionsRemoved: before.filter((x) => !after.includes(x)),
+    },
+  });
+}
+
+// GET /api/servers/:sid/automod/integrations
+router.get('/integrations', authMiddleware, async (req, res) => {
+  const user = castAuthed(req).user;
+  const serverId = String(req.params.sid ?? '');
+  if (!await checkMod(user.id, serverId)) return res.status(403).json({ error: 'Yönetici yetkisi gerekli' });
+  try {
+    return res.json(await listInstalledAutomodIntegrations(serverId));
+  } catch {
+    return res.status(503).json({ error: 'Integration listing unavailable' });
+  }
+});
+
 // GET /api/servers/:sid/automod
 router.get('/', authMiddleware, async (req, res) => {
   const user = castAuthed(req).user;
@@ -110,7 +145,17 @@ router.post('/', authMiddleware, limits.moderation(), async (req, res) => {
     return res.status(400).json({ error: 'enabled boolean olmalı' });
   }
 
-  const normalized = normalizeAutomodConfig(req.body.type, req.body.config ?? {});
+  let incoming = req.body.config ?? {};
+  if (isPlainObject(incoming)) {
+    try { incoming = await bindConfig(serverId, req.body.type, incoming); }
+    catch (err) {
+      if (err instanceof Error && err.message === 'invalid_integration_selection') {
+        return res.status(400).json({ error: 'Invalid integration selection' });
+      }
+      throw err;
+    }
+  }
+  const normalized = normalizeAutomodConfig(req.body.type, incoming);
   if (!normalized.ok) return res.status(400).json({ error: normalized.error });
   const referenceError = await validateConfigReferences(serverId, normalized.config);
   if (referenceError) return res.status(400).json({ error: referenceError });
@@ -126,6 +171,7 @@ router.post('/', authMiddleware, limits.moderation(), async (req, res) => {
     createdBy: user.id,
     updatedAt: Date.now(),
   });
+  await auditRuleChange(serverId, user.id, 'AUTOMOD_RULE_CREATE', String(rule._id), null, normalized.config);
   return res.status(201).json(serializeRule(rule));
 });
 
@@ -152,7 +198,15 @@ router.patch('/:rid', authMiddleware, limits.moderation(), async (req, res) => {
     if (!isPlainObject(req.body.config) || !isAutomodRuleType(rule.type)) {
       return res.status(400).json({ error: 'config veya kayıtlı kural türü geçersiz' });
     }
-    const merged = { ...parseStoredAutomodConfig(rule.config), ...req.body.config };
+    let incoming: Record<string, unknown>;
+    try { incoming = await bindConfig(serverId, rule.type, req.body.config); }
+    catch (err) {
+      if (err instanceof Error && err.message === 'invalid_integration_selection') {
+        return res.status(400).json({ error: 'Invalid integration selection' });
+      }
+      throw err;
+    }
+    const merged = { ...parseStoredAutomodConfig(rule.config), ...incoming };
     const normalized = normalizeAutomodConfig(rule.type, merged);
     if (!normalized.ok) return res.status(400).json({ error: normalized.error });
     const referenceError = await validateConfigReferences(serverId, normalized.config);
@@ -161,6 +215,13 @@ router.patch('/:rid', authMiddleware, limits.moderation(), async (req, res) => {
   }
 
   await Automod.update(ruleId, serverId, patch);
+  const oldNormalized = isAutomodRuleType(rule.type)
+    ? normalizeAutomodConfig(rule.type, parseStoredAutomodConfig(rule.config))
+    : null;
+  const nextConfig = patch.config as AutomodConfig | undefined;
+  await auditRuleChange(serverId, user.id, 'AUTOMOD_RULE_UPDATE', ruleId,
+    oldNormalized?.ok ? oldNormalized.config : null,
+    nextConfig ?? (oldNormalized?.ok ? oldNormalized.config : null));
   const updated = await Automod.findByIdAndServer(ruleId, serverId);
   if (!updated) return res.status(404).json({ error: 'Kural bulunamadı' });
   return res.json(serializeRule(updated));
@@ -175,6 +236,11 @@ router.delete('/:rid', authMiddleware, limits.moderation(), async (req, res) => 
   const rule = await Automod.findByIdAndServer(ruleId, serverId);
   if (!rule) return res.status(404).json({ error: 'Kural bulunamadı' });
   await Automod.delete(ruleId, serverId);
+  const oldNormalized = isAutomodRuleType(rule.type)
+    ? normalizeAutomodConfig(rule.type, parseStoredAutomodConfig(rule.config))
+    : null;
+  await auditRuleChange(serverId, user.id, 'AUTOMOD_RULE_DELETE', ruleId,
+    oldNormalized?.ok ? oldNormalized.config : null, null);
   return res.json({ deleted: true });
 });
 

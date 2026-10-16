@@ -116,4 +116,47 @@ describe('canonical AutoMod policy', () => {
       async () => 100,
     )).rejects.toThrow(message);
   });
+  it('permits a binding only on link_filter and refuses malformed or duplicate entries', () => {
+    const binding = { principal: 'bot:b1', installationId: 'install-1' };
+    expect(normalizeAutomodConfig('link_filter', { exemptIntegrations: [binding] })).toMatchObject({ ok: true });
+    expect(normalizeAutomodConfig('blocked_words', { words: ['bad'], exemptIntegrations: [binding] }).ok).toBe(false);
+    expect(normalizeAutomodConfig('link_filter', { exemptIntegrations: ['bot:b1'] }).ok).toBe(false);
+    expect(normalizeAutomodConfig('link_filter', { exemptIntegrations: [binding, binding] }).ok).toBe(false);
+    expect(normalizeAutomodConfig('link_filter', { exemptIntegrations: [{ ...binding, extra: true }] }).ok).toBe(false);
+    expect(normalizeAutomodConfig('link_filter', { exemptIntegrations: [{ principal: 'plugin:p', installationId: 'i' }] }).ok).toBe(false);
+  });
+
+  it('matches installation and principal, and cannot bypass any other AutoMod rule', async () => {
+    const rules = [
+      { _id: 'l', type: 'link_filter', enabled: true, config: {
+        exemptIntegrations: [{ principal: 'webhook:w', installationId: 'install-1' }],
+      } },
+      { _id: 'b', type: 'blocked_words', enabled: true, config: { words: ['forbidden'] } },
+    ];
+    const context = { serverId: 's', userId: 'webhook:w', memberRoleIds: [], content: 'https://example.test' };
+    const increment = async () => 1;
+    const allowed = await evaluateAutomodRules(rules, { ...context,
+      integration: { principal: 'webhook:w', installationId: 'install-1' } }, increment);
+    expect(allowed.matched).toBe(false);
+    const reinstalled = await evaluateAutomodRules(rules, { ...context,
+      integration: { principal: 'webhook:w', installationId: 'install-2' } }, increment);
+    expect(reinstalled.matchedRuleIds).toEqual(['l']);
+    const forged = await evaluateAutomodRules(rules, { ...context,
+      integration: { principal: 'webhook:other', installationId: 'install-1' } }, increment);
+    expect(forged.matchedRuleIds).toEqual(['l']);
+    const blocked = await evaluateAutomodRules(rules, { ...context,
+      content: 'https://example.test forbidden',
+      integration: { principal: 'webhook:w', installationId: 'install-1' } }, increment);
+    expect(blocked.matchedRuleIds).toEqual(['b']);
+    const human = await evaluateAutomodRules(rules, { ...context, userId: 'human' }, increment);
+    expect(human.matchedRuleIds).toEqual(['l']);
+  });
+
+  it('fails closed on corrupted persisted exemption entries', async () => {
+    await expect(evaluateAutomodRules([
+      { _id: 'l', type: 'link_filter', enabled: true, config: { exemptIntegrations: [{ principal: 'bot:x', installationId: 123 }] } },
+    ], { serverId: 's', userId: 'bot:x', memberRoleIds: [], content: 'https://example.test' },
+    async () => 1)).rejects.toThrow(/config/);
+  });
+
 });

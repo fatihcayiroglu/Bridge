@@ -14,7 +14,14 @@ export const AUTOMOD_RULE_TYPES = [
 export type AutomodRuleType = typeof AUTOMOD_RULE_TYPES[number];
 export type AutomodAction = 'delete' | 'timeout' | 'delete_and_timeout';
 
+export interface AutomodIntegrationBinding {
+  principal: string;
+  installationId: string;
+}
+
 export interface AutomodConfig {
+  /** Only the link_filter rule may exempt an installed machine principal. */
+  exemptIntegrations?: AutomodIntegrationBinding[];
   action: AutomodAction;
   timeoutMs: number;
   logChannelId: string | null;
@@ -55,7 +62,7 @@ const TYPE_KEYS: Record<AutomodRuleType, ReadonlySet<string>> = {
   blocked_words: new Set(['words']),
   spam_messages: new Set(['maxMessages', 'windowSecs']),
   caps_lock: new Set(['minLength']),
-  link_filter: new Set(),
+  link_filter: new Set(['exemptIntegrations']),
   invite_filter: new Set(),
   mention_spam: new Set(['maxMentions']),
   repeated_chars: new Set(['minRepeat']),
@@ -142,6 +149,24 @@ export function normalizeAutomodConfig(type: AutomodRuleType, input: unknown): N
   }
 
   const config: AutomodConfig = { action, timeoutMs, logChannelId, exemptRoles };
+  if (type === 'link_filter' && input.exemptIntegrations !== undefined) {
+    if (!Array.isArray(input.exemptIntegrations) || input.exemptIntegrations.length > 20) {
+      return { ok: false, error: 'config.exemptIntegrations must contain at most 20 installed integrations' };
+    }
+    const seen = new Set<string>();
+    const bindings: AutomodIntegrationBinding[] = [];
+    for (const item of input.exemptIntegrations) {
+      if (!isPlainObject(item) || Object.keys(item).sort().join(',') !== 'installationId,principal'
+        || typeof item.principal !== 'string' || !/^(bot|webhook):[A-Za-z0-9_-]{1,128}$/.test(item.principal)
+        || typeof item.installationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(item.installationId)
+        || seen.has(item.principal)) {
+        return { ok: false, error: 'config.exemptIntegrations contains an invalid or duplicate installation binding' };
+      }
+      seen.add(item.principal);
+      bindings.push({ principal: item.principal, installationId: item.installationId });
+    }
+    config.exemptIntegrations = bindings;
+  }
 
   if (type === 'blocked_words') {
     if (!Array.isArray(input.words) || input.words.length < 1 || input.words.length > 100) {
@@ -253,6 +278,8 @@ export async function evaluateAutomodRules(
     content: string;
     memberRoleIds: string[];
     event?: 'send' | 'edit';
+    /** Server-derived installation identity; never supplied by a client. */
+    integration?: AutomodIntegrationBinding | null;
   },
   increment: (key: string, ttlSeconds: number) => Promise<number>,
 ): Promise<AutomodDecision> {
@@ -286,6 +313,11 @@ export async function evaluateAutomodRules(
     }
     const config = normalized.config;
     if (config.exemptRoles.some((roleId) => roleIds.has(roleId))) continue;
+    if (rule.type === 'link_filter' && context.integration
+      && context.integration.principal === context.userId
+      && config.exemptIntegrations?.some((entry) =>
+        entry.principal === context.integration?.principal
+        && entry.installationId === context.integration?.installationId)) continue;
 
     let reason: string | null;
     if (rule.type === 'spam_messages') {

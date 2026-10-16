@@ -26,6 +26,7 @@
 // not moderated.
 
 import { Automod, Members } from '../db/repositories';
+import { currentIntegrationBinding } from './automodIntegrationExemptions';
 import { ABUSE_POLICY, checkContentAbuse, mentionsWithinLimit } from './abusePolicy';
 import { evaluateAutomodRules } from './automodPolicy';
 import { normalizeAutomodMemberRoleIds, writeAutomodLogs } from './automodRuntime';
@@ -100,9 +101,21 @@ export async function machineContentRefused(
   io: HandlerServer | null,
 ): Promise<boolean> {
   const { principalId, serverId, channelId, displayName, content } = input;
+  const rules = await Automod.findByServer(serverId);
+  // Resolve installation identity only if some rule has machine exemptions.
+  // The resolver reads authoritative, current server/installation records;
+  // deleting or reinstalling a bot/webhook invalidates previous bindings.
+  const hasLinkExemptions = rules.some((rule) => rule.type === 'link_filter'
+    && rule.enabled !== false
+    && (typeof rule.config === 'string'
+      ? rule.config.includes('exemptIntegrations')
+      : Boolean(rule.config && typeof rule.config === 'object' && 'exemptIntegrations' in rule.config)));
+  const integration = hasLinkExemptions
+    ? await currentIntegrationBinding(serverId, principalId)
+    : null;
   const decision = await evaluateAutomodRules(
-    await Automod.findByServer(serverId),
-    { serverId, userId: principalId, content, memberRoleIds: [] },
+    rules,
+    { serverId, userId: principalId, content, memberRoleIds: [], integration },
     (key, ttlSeconds) => cache.increment(key, ttlSeconds),
   );
   if (!decision.matched) return false;
