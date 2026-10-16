@@ -1,15 +1,10 @@
-// server/lib/e2e.ts Uçtan Uca Şifreleme (E2EE)
-// Signal Protocol'dan ilham alınmıştır
-// 
-// MİMARİ:
-//   - Her kullanıcının bir public/private anahtar çifti var
-//   - Public keyler sunucuda saklanır (plaintext)
-//   - Private keyler SADECE istemcide kalır (sunucuya gönderilmez)
-//   - DM şifrelemesi: alıcının public key'i ile şifrele
-//   - Sunucu şifreli içeriği göremez
-//
-// KULLANIM (client-side):
-//   const { generateKeyPair, encryptMessage, decryptMessage } = window.BridgeE2E;
+// P7 B4: server-side public-key and X3DH prekey API scaffolding only.
+// This module stores/returns *public* key material; it neither encrypts nor
+// decrypts DM/channel messages and does not authenticate the server as a key
+// directory. The shipped message client does not provide an end-to-end
+// encryption protocol (see client/tests/e2ee-truthfulness.test.ts).
+// BRIDGE_E2EE_ENABLED is an opt-in server flag, NOT evidence of an E2EE product
+// capability or a guarantee that ordinary messages are ciphertext.
 
 import express from 'express';
 const router  = express.Router();

@@ -41,7 +41,7 @@ Arayüz düzeni: Ayarlar → Görünüm → **Odak / Kompakt / Klasik**
 |---------|----------|
 | Self-host | Docker veya bare metal — verin sende |
 | Federasyon | ActivityPub ile diğer instance'lara bağlan |
-| E2EE | Uçtan uca şifreli kanallar |
+| E2EE (henüz sunulmuyor) | Anahtar/prekey sunucu altyapısı mevcut; DM/kanal mesajları için doğrulanmış uçtan uca şifreleme istemcisi henüz yok. Mesajların E2EE ile korunduğunu varsaymayın. |
 | Ses & video | WebRTC + Mediasoup SFU |
 | AI | Özet, çeviri, moderasyon (opsiyonel) |
 | Açık kaynak | MIT lisansı |
@@ -165,7 +165,7 @@ VAPID_PRIVATE_KEY=...
 - Audit log, sunucu şablonları
 
 ### Güvenlik & Gizlilik
-- Uçtan uca şifreleme — DM ve kanallar (opsiyonel)
+- E2EE: geliştirme aşamasında; sunucu anahtar altyapısı gerçek istemci tarafı şifreleme/anahtar doğrulaması yerine geçmez. [P7 B4 değerlendirmesi](docs/P7_E2EE_SECURITY_BOUNDARY.md)
 - İki faktörlü doğrulama (TOTP)
 - WebAuthn / Passkey desteği (FIDO2)
 - JWT + refresh token rotasyonu, rate limiting
