@@ -36,6 +36,15 @@ function safeCount(value) {
   if (!Number.isSafeInteger(x) || x < 0) throw new Error('invalid catalog counter');
   return x;
 }
+// PostgreSQL reports reltuples=-1 when no useful row estimate exists.
+// Treat it as UNKNOWN, never silently as an empty table.
+function safeEstimatedRows(value) {
+  if (value === null || value === undefined || value === '') throw new Error('missing catalog row estimate');
+  const x = Number(value);
+  if (x === -1) return null;
+  if (!Number.isSafeInteger(x) || x < 0) throw new Error('invalid catalog row estimate');
+  return x;
+}
 function safeTable(raw) {
   if (!TABLE_SET.has(raw)) throw new Error('unexpected table returned by catalog query');
   return raw;
@@ -51,7 +60,7 @@ function normalizedTables(rows) {
     if (visited.has(table)) throw new Error('duplicate table catalog row');
     visited.add(table);
     return {
-      table, estimatedRows: Math.max(0, Number(r.estimated_rows) || 0),
+      table, estimatedRows: safeEstimatedRows(r.estimated_rows),
       statLiveRows: safeCount(r.stat_live_rows), statDeadRows: safeCount(r.stat_dead_rows),
       heapBytes: safeCount(r.heap_bytes), indexBytes: safeCount(r.index_bytes),
       totalBytes: safeCount(r.total_bytes), analyzed: r.analyzed === true,
