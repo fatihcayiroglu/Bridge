@@ -4,7 +4,7 @@
 process.env.JWT_SECRET = 'test-jwt-secret-long-enough-32chars!!';
 process.env.NODE_ENV   = 'test';
 
-import { createMockDb, makeUser, makeServer } from './helpers/mockDb';
+import { createMockDb, makeUser, makeServer, makeChannel } from './helpers/mockDb';
 const mockDb = createMockDb();
 
 jest.mock('../db/index', () => mockDb);
@@ -203,5 +203,71 @@ describe('POST /api/webhooks/:webhookId', () => {
       .post('/api/webhooks/doesnotexist')
       .send({ content: 'Hello' });
     expect(res.status).toBe(401);
+  });
+});
+
+describe('webhook machine principal AutoMod', () => {
+  const WEBHOOK_ID = 'webhook-am1';
+  const CHANNEL_ID = 'webhook-am-channel';
+  const webhookUrl = `/api/webhooks/${WEBHOOK_ID}?token=the-integration-secret`;
+
+  beforeAll(async () => {
+    await mockDb.channels.insert(makeChannel(SERVER_ID, { _id: CHANNEL_ID, type: 'text' }));
+    await mockDb.webhooks.insert({
+      _id: WEBHOOK_ID, channelId: CHANNEL_ID, serverId: SERVER_ID,
+      token: 'the-integration-secret', name: 'Webhook CI', createdAt: Date.now(),
+    });
+    await mockDb.automodRules.insert({
+      _id: 'webhook-am-blocked-word', serverId: SERVER_ID, type: 'blocked_words',
+      enabled: true, config: JSON.stringify({ words: ['forbiddenword'], action: 'delete' }),
+      createdAt: Date.now(),
+    });
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('refuses blocked plaintext with no message row or realtime publish', async () => {
+    const before = await mockDb.messages.find({ channelId: CHANNEL_ID });
+    const response = await request(app).post(webhookUrl).send({ content: 'build contains forbiddenword' });
+    expect(response.status).toBe(422);
+    expect(response.body).toEqual({ error: 'Message blocked by server moderation' });
+    expect(await mockDb.messages.find({ channelId: CHANNEL_ID })).toHaveLength(before.length);
+  });
+
+  it('inspects text in embed-only posts and refuses a blocked description', async () => {
+    const before = await mockDb.messages.find({ channelId: CHANNEL_ID });
+    const response = await request(app).post(webhookUrl)
+      .send({ embeds: [{ title: 'Build', description: 'contains forbiddenword' }] });
+    expect(response.status).toBe(422);
+    expect(await mockDb.messages.find({ channelId: CHANNEL_ID })).toHaveLength(before.length);
+  });
+
+  it('legitimate webhook messages are still persisted', async () => {
+    const before = await mockDb.messages.find({ channelId: CHANNEL_ID });
+    const response = await request(app).post(webhookUrl).send({ content: 'Build succeeded' });
+    expect(response.status).toBe(200);
+    const rows = await mockDb.messages.find({ channelId: CHANNEL_ID });
+    expect(rows).toHaveLength(before.length + 1);
+    expect(rows[rows.length - 1]).toMatchObject({
+      userId: `webhook:${WEBHOOK_ID}`, content: 'Build succeeded', isWebhook: true,
+    });
+  });
+
+  it('a rule-store outage refuses the webhook without writing', async () => {
+    const { Automod } = require('../db/repositories');
+    jest.spyOn(Automod, 'findByServer').mockRejectedValueOnce(new Error('policy store unavailable'));
+    const before = await mockDb.messages.find({ channelId: CHANNEL_ID });
+    const response = await request(app).post(webhookUrl).send({ content: 'ordinary content' });
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Moderation unavailable' });
+    expect(await mockDb.messages.find({ channelId: CHANNEL_ID })).toHaveLength(before.length);
+  });
+
+  it('oversized embed text is rejected before rule lookup and persistence', async () => {
+    const before = await mockDb.messages.find({ channelId: CHANNEL_ID });
+    const response = await request(app).post(webhookUrl)
+      .send({ embeds: [{ description: 'a'.repeat(33_000) }] });
+    expect(response.status).toBe(413);
+    expect(await mockDb.messages.find({ channelId: CHANNEL_ID })).toHaveLength(before.length);
   });
 });
