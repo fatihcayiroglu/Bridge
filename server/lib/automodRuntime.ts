@@ -25,7 +25,7 @@ export async function writeAutomodLogs(
     content: string;
     operation?: 'send' | 'edit';
   },
-  io: HandlerServer,
+  io: HandlerServer | null,
 ): Promise<void> {
   if (!decision.matched || decision.logChannelIds.length === 0) return;
   const preview = normalizeMessageText(context.content.slice(0, 200)).replace(/`/g, '\\`');

@@ -96,6 +96,7 @@ import { Members, ScheduledMessages, Channels } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { hasPermission, PERMS, resolvePermissions } from '../lib/permissions';
 import { limits } from '../middleware/rateLimit';
+import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
 
 // POST /api/scheduled
 router.post('/', authMiddleware, limits.write(), async (req, res) => {
@@ -114,6 +115,8 @@ router.post('/', authMiddleware, limits.write(), async (req, res) => {
 
   const membership = await Members.findOne(_u.id, serverId);
   if (!membership) return res.status(403).json({ error: 'Not a member' });
+  if (isMemberTimedOut(membership.timeoutUntil))
+    return res.status(403).json({ error: 'You are timed out', until: parseMemberTimeoutUntil(membership.timeoutUntil) });
   const channel = await Channels.findById(channelId) as { _id: string; serverId: string } | null;
   if (!channel || String(channel.serverId) !== serverId) return res.status(400).json({ error: 'Channel/server mismatch' });
   const perms = await resolvePermissions(_u.id, serverId, channelId).catch(() => 0);

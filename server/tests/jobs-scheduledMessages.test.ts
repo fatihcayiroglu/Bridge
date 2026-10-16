@@ -16,6 +16,11 @@ jest.mock('../lib/permissions', () => ({
   resolvePermissions: jest.fn(async () => mockPermissionMask),
 }));
 
+// The content checks at posting time are lib/messageContentPolicy.ts, covered
+// with the real modules in scheduled-send-policy.test.ts. This file is about
+// claims, leases and retries, so the policy allows everything here.
+jest.mock('../lib/messageContentPolicy', () => ({ checkMessageContent: jest.fn(async () => null) }));
+
 jest.mock('../db/repositories', () => {
   const { createMockDb } = require('./helpers/mockDb');
   mockDbInstance = createMockDb();
