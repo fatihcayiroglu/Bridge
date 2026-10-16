@@ -134,7 +134,11 @@ router.get('/info', (req, res) => {
       // not a deployed client encryption/decryption protocol. Never advertise
       // a privacy guarantee that the shipped clients cannot provide.
       e2ee: false,
-      voiceE2ee: true,
+      // DTLS-SRTP protects WebRTC transport hops. For SFU group voice, the
+      // mediasoup server terminates those hops; no verified SFrame/insertable-
+      // streams end-to-end media cipher runs in the shipped client. Do not
+      // claim that *all* voice sessions are private from the media server.
+      voiceE2ee: false,
       federation: true,
       ai: !!process.env.GROQ_API_KEY || !!process.env.GEMINI_API_KEY,
     },

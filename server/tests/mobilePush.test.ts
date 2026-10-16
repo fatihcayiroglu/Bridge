@@ -52,6 +52,8 @@ describe('GET /api/mobile/info', () => {
     expect(res.body.features).toBeDefined();
     // A key-management API does not mean that clients encrypt messages.
     expect(res.body.features.e2ee).toBe(false);
+    // WebRTC hop encryption is not app-level E2EE for SFU group voice.
+    expect(res.body.features.voiceE2ee).toBe(false);
     expect(typeof res.body.features.federation).toBe('boolean');
   });
 
@@ -64,11 +66,23 @@ describe('GET /api/mobile/info', () => {
         const res = await request(app).get('/api/mobile/info');
         expect(res.status).toBe(200);
         expect(res.body.features.e2ee).toBe(false);
+        expect(res.body.features.voiceE2ee).toBe(false);
       }
     } finally {
       if (original === undefined) delete process.env.BRIDGE_E2EE_ENABLED;
       else process.env.BRIDGE_E2EE_ENABLED = original;
     }
+  });
+
+  it('does not conflate SFU/WebRTC transport encryption with voice E2EE', async () => {
+    const response = await request(app).get('/api/mobile/info');
+    expect(response.status).toBe(200);
+    expect(response.body.features).toEqual(expect.objectContaining({
+      voiceE2ee: false,
+      e2ee: false,
+    }));
+    // Keep the field's boolean API contract rather than removing it.
+    expect(typeof response.body.features.voiceE2ee).toBe('boolean');
   });
 });
 
