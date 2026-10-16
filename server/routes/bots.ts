@@ -7,13 +7,16 @@ import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router   = express.Router();
-import { Bots, Channels, ChannelWebhooks, Messages } from '../db/repositories';
+import { Bots, Channels, ChannelWebhooks, Messages, Automod } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { botAuthMiddleware, type BotAuthedRequest } from '../middleware/botAuth';
 import { limits } from '../middleware/rateLimit';
 import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
 import { normalizeContextCommands, normalizeSlashCommands, readPersistedCommandArray } from '../lib/botCommands';
 import { replyToInvocation } from '../lib/botInteractionReply';
+import { evaluateAutomodRules } from '../lib/automodPolicy';
+import { writeAutomodLogs } from '../lib/automodRuntime';
+import { cache } from '../lib/redisAdapter';
 import type { HandlerServer } from '../socket/handler-contracts';
 import { broadcastPersistedMessage, publishPersistedMessage } from '../lib/channelActivity';
 function generateBotToken(_serverId: string, _botId: string): string {
@@ -425,6 +428,40 @@ const receiveWebhook = async (req: express.Request, res: express.Response): Prom
   const channel = await Channels.findById(webhook.channelId);
   if (!channel) {
     res.status(404).json({ error: 'Kanal bulunamadı' });
+    return;
+  }
+
+  // Webhook tokens authorize an integration to post; they do not confer a
+  // human member's permissions or exemptions. Apply the server's current
+  // AutoMod rules to both plain text and embed text before writing anything.
+  // A machine principal cannot receive a member timeout, so any matching
+  // configured rule refuses its post (as with bot interaction replies).
+  // Bound inspection input: large embed payloads must not bypass moderation.
+  const embeddedText = hasEmbeds ? JSON.stringify(embeds) : '';
+  if (embeddedText.length > 32_768) {
+    res.status(413).json({ error: 'Webhook embeds too large for moderation' });
+    return;
+  }
+  const policyText = [hasContent ? content : '', embeddedText].filter(Boolean).join('\n');
+  try {
+    const decision = await evaluateAutomodRules(
+      await Automod.findByServer(String(channel.serverId)),
+      { serverId: String(channel.serverId), userId: `webhook:${webhook._id}`,
+        content: policyText, memberRoleIds: [] },
+      (key, ttlSeconds) => cache.increment(key, ttlSeconds),
+    );
+    if (decision.matched) {
+      await writeAutomodLogs(decision, {
+        serverId: String(channel.serverId), channelId: webhook.channelId,
+        userId: `webhook:${webhook._id}`, displayName: webhook.name || 'Webhook',
+        content: policyText,
+      }, (req.app.get('io') as HandlerServer | undefined) ?? null);
+      res.status(422).json({ error: 'Message blocked by server moderation' });
+      return;
+    }
+  } catch {
+    // Policy-store outages cannot become an implicit permission to post.
+    res.status(503).json({ error: 'Moderation unavailable' });
     return;
   }
 
