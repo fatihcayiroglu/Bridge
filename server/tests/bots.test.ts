@@ -277,6 +277,22 @@ describe('webhook machine principal AutoMod', () => {
     expect(emitted.some(e => e.name === 'message:new' || e.name === 'channel:activity')).toBe(false);
   });
 
+  it('rejects webhook rows from another server despite a matching bearer token', async () => {
+    const foreignId = 'webhook-foreign-server';
+    await mockDb.webhooks.insert({
+      _id: foreignId, channelId: CHANNEL_ID, serverId: 'unrelated-server',
+      token: 'foreign-secret', name: 'Foreign', createdAt: Date.now(),
+    });
+    const before = await mockDb.messages.find({ channelId: CHANNEL_ID });
+    const response = await request(app)
+      .post(`/api/webhooks/${foreignId}?token=foreign-secret`)
+      .send({ content: 'should never reach this channel' });
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ error: 'Webhook scope mismatch' });
+    expect(await mockDb.messages.find({ channelId: CHANNEL_ID })).toHaveLength(before.length);
+    expect(emitted.some(e => e.name === 'message:new' || e.name === 'channel:activity')).toBe(false);
+  });
+
   it('oversized embed text is rejected before rule lookup and persistence', async () => {
     const before = await mockDb.messages.find({ channelId: CHANNEL_ID });
     const response = await request(app).post(webhookUrl)
