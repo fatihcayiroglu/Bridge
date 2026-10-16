@@ -128,11 +128,11 @@ describe('ağ güvenliği yapılandırması', () => {
 describe('Android cold-start font-provider dependency (#209)', () => {
   it('removes only automatic EmojiCompat startup, without disabling the Startup provider', () => {
     // AndroidX official manifest merger rule, not an app-level timeout waiver.
-    const rule = /<provider\\b(?=[^>]*android:name="androidx\\.startup\\.InitializationProvider")(?=[^>]*tools:node="merge")[^>]*>([\\s\\S]*?)<\\/provider>/g;
+    const rule = /<provider\b(?=[^>]*android:name="androidx\.startup\.InitializationProvider")(?=[^>]*tools:node="merge")[^>]*>([\s\S]*?)<\/provider>/g;
     const providers = [...kod.matchAll(rule)];
     expect(providers).toHaveLength(1);
-    expect(providers[0][1]).toMatch(/<meta-data\\b(?=[^>]*android:name="androidx\\.emoji2\\.text\\.EmojiCompatInitializer")(?=[^>]*tools:node="remove")\\s*\\/>/);
-    expect(kod).not.toMatch(/tools:node="remove"[^>]*android:name="androidx\\.startup\\.InitializationProvider"/);
+    expect(providers[0][1]).toMatch(/<meta-data\b(?=[^>]*android:name="androidx\.emoji2\.text\.EmojiCompatInitializer")(?=[^>]*tools:node="remove")\s*\/>/);
+    expect(kod).not.toMatch(/tools:node="remove"[^>]*android:name="androidx\.startup\.InitializationProvider"/);
     expect(kod).not.toMatch(/android:debuggable="true"/);
   });
 });
