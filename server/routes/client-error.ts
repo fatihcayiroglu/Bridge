@@ -124,7 +124,8 @@ function isValidReport(body: unknown): body is ClientErrorReportBody {
   if (typeof report.message !== 'string') return false;
   if (report.message.length > 2000) return false;
   const validTypes = ['uncaught', 'unhandledrejection', 'resource', 'manual', 'crash'];
-  if (typeof report.type === 'string' && !validTypes.includes(report.type)) return false;
+  if (report.type !== undefined &&
+      (typeof report.type !== 'string' || !validTypes.includes(report.type))) return false;
   return true;
 }
 
