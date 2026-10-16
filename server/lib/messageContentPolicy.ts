@@ -27,7 +27,8 @@
 
 import { Automod, Members } from '../db/repositories';
 import { ABUSE_POLICY, checkContentAbuse, mentionsWithinLimit } from './abusePolicy';
-import { evaluateAutomodRules } from './automodPolicy';
+import { evaluateAutomodRules, parseStoredAutomodConfig } from './automodPolicy';
+import { currentIntegrationInstallation } from './automodIntegrationExemptions';
 import { normalizeAutomodMemberRoleIds, writeAutomodLogs } from './automodRuntime';
 import { hasPermission, PERMS } from './permissions';
 import { cache } from './redisAdapter';
@@ -100,9 +101,20 @@ export async function machineContentRefused(
   io: HandlerServer | null,
 ): Promise<boolean> {
   const { principalId, serverId, channelId, displayName, content } = input;
+  const rules = await Automod.findByServer(serverId);
+  // Only resolve a bot/webhook installation when a configured link_filter has
+  // exemptions. This avoids changing other machine moderation paths and never
+  // confers a role or a plugin-wide exemption.
+  const hasLinkExemptions = /^(?:bot|webhook):/.test(principalId)
+    && rules.some(rule => rule.type === 'link_filter' && rule.enabled !== false
+      && Array.isArray(parseStoredAutomodConfig(rule.config).exemptIntegrations)
+      && (parseStoredAutomodConfig(rule.config).exemptIntegrations as unknown[]).length > 0);
+  const machineInstallationId = hasLinkExemptions
+    ? await currentIntegrationInstallation(serverId, principalId)
+    : null;
   const decision = await evaluateAutomodRules(
-    await Automod.findByServer(serverId),
-    { serverId, userId: principalId, content, memberRoleIds: [] },
+    rules,
+    { serverId, userId: principalId, content, memberRoleIds: [], machineInstallationId },
     (key, ttlSeconds) => cache.increment(key, ttlSeconds),
   );
   if (!decision.matched) return false;
