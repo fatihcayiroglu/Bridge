@@ -2446,6 +2446,10 @@ const translations: Record<string, string> = {
   "pci_error": "Une erreur s’est produite. Réessayez.",
   "pci_review_again": "Examiner à nouveau",
   "pci_expired": "L’approbation a expiré. Examinez à nouveau."
+  "automation_link_exemption_label": "Autoriser les liens pour ces intégrations",
+  "automation_link_exemption_empty": "Aucun bot ou webhook installé",
+  "automation_link_exemption_save_failed": "Impossible d'enregistrer l'exception d'intégration.",
+  "automation_link_exemption_saved": "Exception d'intégration enregistrée.",
 };
 
 export default translations;
