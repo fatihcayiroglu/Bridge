@@ -272,7 +272,7 @@ DM recipients, and the client replayed its whole outbox at once on reconnect.
 | ATK-02 | identical text every 1.4 s | **OPEN** — 15/15 (~2,569/h) | BLOCKED — 3/15 (`spam_repeat`) |
 | ATK-03 | varied spam to one site every 900 ms | **OPEN** — 20/20 (~3,996/h) | BLOCKED — 4/20 (`spam_links`) |
 | ATK-04a | 26 people in one message (no AutoMod rule) | **OPEN** — delivered | BLOCKED — `TOO_MANY_MENTIONS` |
-| ATK-04b | one victim pinged every 900 ms | **OPEN** — 15 notifications / 15 s | BLOCKED — 5 notifications (messages still delivered) |
+| ATK-04b | one victim pinged every 900 ms | **OPEN** — 15 notifications / 15 s | BLOCKED — 5 `mention:received` (messages still delivered); see the ATK-04b correction below |
 | ATK-05 | 40 new DM conversations | LIMITED — socket gate only (~2,400 recipients/h) | BLOCKED — 10/40, then `DM_NEW_CONVERSATION_LIMIT` (10 per 10 min) |
 | ATK-06 | join/leave one community ×15 | LIMITED — 5/15 | LIMITED — 5/15 |
 | ATK-07 | 25 invites by one member | LIMITED — 9/25 | LIMITED — 9/25 |
@@ -303,6 +303,14 @@ LEG-12–14 were added when PR #127's unique evidence was ported into #129: B1 c
 mention-notification and new-DM paths, and before them the lab measured only the attacks on
 those paths. Clean full gated run with them (local, two nodes): attacks 8 BLOCKED / 2 LIMITED /
 0 OPEN; controls 15 OK / 1 FRICTION / 2 FALSE_POSITIVE (LEG-09, LEG-11, as above); gate pass.
+
+**ATK-04b correction.** The lab counts the victim's `mention:received` events, and B1 capped
+those. No client listens to `mention:received`. What a person receives as a ping is the inbox
+row, `notification:mention`, push and +1 unread from `processNotifications`, and B1 left those
+uncapped: 7 of 7 pings reached the victim in `server/tests/mention-ping-cap.test.ts` on
+`a7b05e6`. The cap now gates them through one decision per message and person, shared with
+`mention:received` (`mentionPingGate`), for channel messages and thread replies. The test
+counts every delivery. The lab itself still counts `mention:received` only.
 
 Resources (node CPU time and RSS per scenario, two nodes; fixture registration dominates):
 no change distinguishable from run-to-run noise — e.g. 12-person chat 3.7 + 4.0 s CPU before,

@@ -19,7 +19,7 @@ import { sanitizeUser } from '../../lib/userUtils';
 import { getCachedPerms } from '../../lib/permCache';
 import { extractUrls, fetchLinkPreview } from '../../lib/linkPreview';
 import { checkSpamAsync } from '../../lib/security';
-import { mentionNotificationAllowed } from '../../lib/abusePolicy';
+import { mentionPingGate } from '../../lib/abusePolicy';
 import { checkMessageContent } from '../../lib/messageContentPolicy';
 // Sprint 120: T5 — Server-side DOMPurify sanitization eklendi
 // sanitizeMessage() (regex tabanlı) yerine sanitizeMessageContent() (DOMPurify/jsdom) kullanılıyor
@@ -569,6 +569,10 @@ export async function sendChannelMessage(
   // aliyordu.
   await invalidateChannelMessages(String(channelId));
 
+  // P7 B1 (lab ATK-04b): one ping decision per mentioned person for this
+  // message, shared by the inbox delivery and `mention:received` below.
+  const pingAllowed = mentionPingGate(user._id);
+
   // Mention notification sistemi
   try {
     const excluded = new Set<string>();
@@ -601,7 +605,7 @@ export async function sendChannelMessage(
         }
       }
     }
-    await processNotifications(msg, io, socketUsers, excluded);
+    await processNotifications(msg, io, socketUsers, excluded, pingAllowed);
   } catch (err) {
     logger.warn({ event: 'message_notification_pipeline_failed', serverId, channelId,
       messageId: String(msg._id), err: err instanceof Error ? err.message : String(err) },
@@ -658,7 +662,7 @@ export async function sendChannelMessage(
     if (uid === user._id) continue;
     // P7 B1: a sender can ping one person at most N times per window; the
     // message itself is delivered regardless (lab ATK-04b).
-    if (!await mentionNotificationAllowed(user._id, uid)) continue;
+    if (!await pingAllowed(uid)) continue;
     if (!await canViewChannel(uid, serverId, channelId)) continue;
     const [channelPref, serverPref] = await Promise.all([
       Notifications.findPref(uid, channelId),
