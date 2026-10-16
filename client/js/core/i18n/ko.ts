@@ -1,6 +1,9 @@
 // client/js/core/i18n/ko.ts — stable production locale
 // Generated from the canonical i18n key set; keep key/placeholder parity enforced by scripts/check-i18n-parity.js.
 const translations: Record<string, string> = {
+  "automod_link_exemptions_title": "링크 게시를 허용할 통합",
+  "automod_link_exemptions_help": "다른 AutoMod 규칙은 계속 적용되며 이 설치만 예외입니다.",
+  "automod_link_exemptions_empty": "설치된 봇이나 수신 웹훅이 없습니다",
   // Server role management editor (canonical REST, hierarchy and grant ceiling).
   "role_group_general": "일반",
   "role_perm_view": "채널 보기",

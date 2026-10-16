@@ -1,6 +1,9 @@
 // client/js/core/i18n/zh.ts — stable production locale
 // Generated from the canonical i18n key set; keep key/placeholder parity enforced by scripts/check-i18n-parity.js.
 const translations: Record<string, string> = {
+  "automod_link_exemptions_title": "允许发布链接的集成",
+  "automod_link_exemptions_help": "其他 AutoMod 规则仍然生效；只有此次安装获得豁免。",
+  "automod_link_exemptions_empty": "没有已安装的机器人或传入 Webhook",
   // Server role management editor (canonical REST, hierarchy and grant ceiling).
   "role_group_general": "常规",
   "role_perm_view": "查看频道",

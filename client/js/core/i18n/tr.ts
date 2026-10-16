@@ -1,5 +1,8 @@
 // client/js/core/i18n/tr.ts — Sprint 120
 const translations: Record<string, string> = {
+  "automod_link_exemptions_title": "Bağlantı paylaşmasına izin verilen entegrasyonlar",
+  "automod_link_exemptions_help": "Diğer AutoMod kuralları uygulanır; sadece bu kurulum muaftır.",
+  "automod_link_exemptions_empty": "Kurulu bot veya gelen webhook yok",
   // Server role management editor (canonical REST, hierarchy and grant ceiling).
   "role_group_general": "Genel",
   "role_perm_view": "Kanalları görüntüle",

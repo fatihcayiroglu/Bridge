@@ -1,5 +1,8 @@
 // client/js/core/i18n/en.ts — Sprint 120
 const translations: Record<string, string> = {
+  "automod_link_exemptions_title": "Integrations allowed to post links",
+  "automod_link_exemptions_help": "Other AutoMod rules still apply; only this installation is exempt.",
+  "automod_link_exemptions_empty": "No installed bots or incoming webhooks",
   // Server role management editor (canonical REST, hierarchy and grant ceiling).
   "role_group_general": "General",
   "role_perm_view": "View channels",

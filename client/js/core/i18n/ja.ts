@@ -1,6 +1,9 @@
 // client/js/core/i18n/ja.ts — stable production locale
 // Generated from the canonical i18n key set; keep key/placeholder parity enforced by scripts/check-i18n-parity.js.
 const translations: Record<string, string> = {
+  "automod_link_exemptions_title": "リンクの投稿を許可する連携",
+  "automod_link_exemptions_help": "他のAutoModルールは引き続き適用され、このインストールだけが免除されます。",
+  "automod_link_exemptions_empty": "インストール済みのボットまたは受信Webhookがありません",
   // Server role management editor (canonical REST, hierarchy and grant ceiling).
   "role_group_general": "一般",
   "role_perm_view": "チャンネルを表示",

@@ -1,6 +1,9 @@
 // client/js/core/i18n/es.ts — stable production locale
 // Generated from the canonical i18n key set; keep key/placeholder parity enforced by scripts/check-i18n-parity.js.
 const translations: Record<string, string> = {
+  "automod_link_exemptions_title": "Integraciones autorizadas para publicar enlaces",
+  "automod_link_exemptions_help": "Las demás reglas AutoMod siguen vigentes; solo esta instalación está exenta.",
+  "automod_link_exemptions_empty": "No hay bots ni webhooks entrantes instalados",
   // Server role management editor (canonical REST, hierarchy and grant ceiling).
   "role_group_general": "General",
   "role_perm_view": "Ver canales",
