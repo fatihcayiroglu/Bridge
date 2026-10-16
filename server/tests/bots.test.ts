@@ -302,3 +302,76 @@ describe('webhook machine principal AutoMod', () => {
     expect(emitted.some(e => e.name === 'message:new' || e.name === 'channel:activity')).toBe(false);
   });
 });
+
+describe('webhook machine principal AutoMod: message-frequency rule and moderation log', () => {
+  // A message-frequency rule counts posts per principal per window. Each
+  // webhook is its own principal (`webhook:<id>`): an integration flooding a
+  // channel is refused past the limit and the refusal is logged to the rule's
+  // log channel, while another webhook in the same channel keeps its own count.
+  const FREQ_SERVER = 'webhook-freq-server';
+  const FREQ_CHANNEL = 'webhook-freq-channel';
+  const LOG_CHANNEL = 'webhook-freq-modlog';
+  const HOOK_A = 'webhook-freq-a';
+  const HOOK_B = 'webhook-freq-b';
+  const emitted: Array<{ room: string; name: string }> = [];
+  const freqIo = { to(room: string) { return { emit(name: string) { emitted.push({ room, name }); } }; } };
+  const post = (id: string, body: Record<string, unknown>) =>
+    request(app).post(`/api/webhooks/${id}?token=secret-${id}`).send(body);
+  const channelRows = () => mockDb.messages.find({ channelId: FREQ_CHANNEL });
+  const logRows = () => mockDb.messages.find({ channelId: LOG_CHANNEL });
+  const published = () => emitted.filter(e => e.room === `channel:${FREQ_CHANNEL}` && e.name === 'message:new');
+
+  beforeAll(async () => {
+    app.set('io', freqIo);
+    await mockDb.channels.insert(makeChannel(FREQ_SERVER, { _id: FREQ_CHANNEL, type: 'text' }));
+    await mockDb.channels.insert(makeChannel(FREQ_SERVER, { _id: LOG_CHANNEL, type: 'text', name: 'mod-log' }));
+    for (const id of [HOOK_A, HOOK_B]) {
+      await mockDb.webhooks.insert({
+        _id: id, channelId: FREQ_CHANNEL, serverId: FREQ_SERVER,
+        token: `secret-${id}`, name: `Hook ${id}`, createdAt: Date.now(),
+      });
+    }
+    await mockDb.automodRules.insert({
+      _id: 'webhook-freq-rule', serverId: FREQ_SERVER, type: 'spam_messages', enabled: true,
+      config: JSON.stringify({ maxMessages: 2, windowSecs: 60, action: 'delete', logChannelId: LOG_CHANNEL }),
+      createdAt: Date.now(),
+    });
+  });
+  afterAll(() => { app.set('io', null); });
+
+  it('past the limit one webhook is refused and logged; another webhook keeps its own count', async () => {
+    for (const text of ['deploy 1 finished', 'deploy 2 finished']) {
+      expect((await post(HOOK_A, { content: text })).status).toBe(200);
+    }
+    expect(await channelRows()).toHaveLength(2);
+    expect(published()).toHaveLength(2);
+
+    const refused = await post(HOOK_A, { content: 'deploy 3 finished' });
+    expect(refused.status).toBe(422);
+    expect(refused.body).toEqual({ error: 'Message blocked by server moderation' });
+    expect(await channelRows()).toHaveLength(2);
+    expect(published()).toHaveLength(2);
+
+    const logs = await logRows() as Array<{ userId?: string; autoModAlert?: boolean; content?: string }>;
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({ userId: 'system', autoModAlert: true });
+    expect(logs[0]?.content).toContain(`webhook:${HOOK_A}`);
+    expect(logs[0]?.content).toContain('Mesaj sıklığı filtresi');
+
+    const other = await post(HOOK_B, { content: 'nightly tests passed' });
+    expect(other.status).toBe(200);
+    expect(await channelRows()).toHaveLength(3);
+    expect((await channelRows()).at(-1)).toMatchObject({ userId: `webhook:${HOOK_B}`, isWebhook: true });
+  });
+
+  it('CONTROL: an embed-only post without blocked content is delivered with its embeds', async () => {
+    const embeds = [{ title: 'Release', description: 'v2 is out' }];
+    const before = published().length;
+    const response = await post(HOOK_B, { embeds });
+    expect(response.status).toBe(200);
+    const last = (await channelRows()).at(-1) as { userId?: string; isWebhook?: boolean; embeds?: unknown } | undefined;
+    expect(last).toMatchObject({ userId: `webhook:${HOOK_B}`, isWebhook: true });
+    expect(typeof last?.embeds === 'string' ? JSON.parse(last.embeds) : last?.embeds).toEqual(embeds);
+    expect(published()).toHaveLength(before + 1);
+  });
+});
