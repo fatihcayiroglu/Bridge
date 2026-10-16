@@ -50,8 +50,25 @@ describe('GET /api/mobile/info', () => {
     expect(res.body.serverVersion).toBe(BRIDGE_VERSION);
     expect(res.body.minAppVersion).toBeDefined();
     expect(res.body.features).toBeDefined();
-    expect(typeof res.body.features.e2ee).toBe('boolean');
+    // A key-management API does not mean that clients encrypt messages.
+    expect(res.body.features.e2ee).toBe(false);
     expect(typeof res.body.features.federation).toBe('boolean');
+  });
+
+  it('does not advertise E2EE even when an operator opts into the incomplete server scaffold', async () => {
+    const original = process.env.BRIDGE_E2EE_ENABLED;
+    try {
+      for (const value of [undefined, 'false', 'true']) {
+        if (value === undefined) delete process.env.BRIDGE_E2EE_ENABLED;
+        else process.env.BRIDGE_E2EE_ENABLED = value;
+        const res = await request(app).get('/api/mobile/info');
+        expect(res.status).toBe(200);
+        expect(res.body.features.e2ee).toBe(false);
+      }
+    } finally {
+      if (original === undefined) delete process.env.BRIDGE_E2EE_ENABLED;
+      else process.env.BRIDGE_E2EE_ENABLED = original;
+    }
   });
 });
 

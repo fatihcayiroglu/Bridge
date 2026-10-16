@@ -130,7 +130,10 @@ router.get('/info', (req, res) => {
     minAppVersion: '1.0.0',
     platform: 'bridge',
     features: {
-      e2ee: true,
+      // P7 B4: key/prekey endpoints and an opt-in server flag are scaffolding,
+      // not a deployed client encryption/decryption protocol. Never advertise
+      // a privacy guarantee that the shipped clients cannot provide.
+      e2ee: false,
       voiceE2ee: true,
       federation: true,
       ai: !!process.env.GROQ_API_KEY || !!process.env.GEMINI_API_KEY,

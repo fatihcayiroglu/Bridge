@@ -41,7 +41,7 @@ Arayüz düzeni: Ayarlar → Görünüm → **Odak / Kompakt / Klasik**
 |---------|----------|
 | Self-host | Docker veya bare metal — verin sende |
 | Federasyon | ActivityPub ile diğer instance'lara bağlan |
-| E2EE | Uçtan uca şifreli kanallar |
+| E2EE (henüz sunulmuyor) | Anahtar/prekey sunucu altyapısı mevcut; DM/kanal mesajları için doğrulanmış uçtan uca şifreleme istemcisi henüz yok. Mesajların E2EE ile korunduğunu varsaymayın. |
 | Ses & video | WebRTC + Mediasoup SFU |
 | AI | Özet, çeviri, moderasyon (opsiyonel) |
 | Açık kaynak | MIT lisansı |
@@ -165,7 +165,7 @@ VAPID_PRIVATE_KEY=...
 - Audit log, sunucu şablonları
 
 ### Güvenlik & Gizlilik
-- Uçtan uca şifreleme — DM ve kanallar (opsiyonel)
+- E2EE: geliştirme aşamasında; sunucu anahtar altyapısı gerçek istemci tarafı şifreleme/anahtar doğrulaması yerine geçmez. [P7 B4 değerlendirmesi](docs/P7_E2EE_SECURITY_BOUNDARY.md)
 - İki faktörlü doğrulama (TOTP)
 - WebAuthn / Passkey desteği (FIDO2)
 - JWT + refresh token rotasyonu, rate limiting
@@ -308,9 +308,9 @@ Bridge mesajları ActivityPub `Note` nesnesi olarak sunulur.
 | Follow / Accept / Reject / Undo | ✅ Tam |
 | Mastodon'dan takip et | ✅ Destekleniyor |
 | Bridge'den uzak aktör takip et | ✅ Destekleniyor |
-| DM (Direct Message) | ✅ E2EE ile destekleniyor |
+| DM (Direct Message) | Mesaj teslimi mevcut; istemci mesaj E2EE henüz sunulmuyor |
 
-> Bridge-to-Bridge federasyonu tam özellikli ve production kullanımına hazırdır. ActivityPub (Fediverse) desteği de Follow/Accept/Reject/Undo akışları ve E2EE DM ile production kalitesine ulaşmıştır.
+> Bridge-to-Bridge ve ActivityPub farklı protokol kapsamlarına sahiptir. ActivityPub Follow/Accept/Reject/Undo desteği, federasyon mesajlarının veya DM içeriğinin E2EE ile korunduğu anlamına gelmez. Gerçek dağıtım uygunluğu ayrıca doğrulanmalıdır.
 
 ---
 
