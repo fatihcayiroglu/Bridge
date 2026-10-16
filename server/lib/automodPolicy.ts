@@ -162,7 +162,9 @@ export function normalizeAutomodConfig(type: AutomodRuleType, input: unknown): N
       seen.add(entry.principal);
       bindings.push({ principal: entry.principal, installationId: entry.installationId });
     }
-    config.exemptIntegrations = bindings;
+    // Preserve the original public default shape for existing link_filter rules.
+    // A manager-supplied empty list remains explicit and revokes all grants.
+    if (input.exemptIntegrations !== undefined) config.exemptIntegrations = bindings;
   }
 
   if (type === 'blocked_words') {

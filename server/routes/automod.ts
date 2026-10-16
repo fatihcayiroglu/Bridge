@@ -204,10 +204,13 @@ router.patch('/:rid', authMiddleware, limits.moderation(), async (req, res) => {
     patch.config = normalized.config;
   }
 
+  // Mock repositories can mutate the fetched row in place. Snapshot the
+  // immutable previous config before the update, so revocations are audited.
+  const previousConfig = parseStoredAutomodConfig(rule.config);
   await Automod.update(ruleId, serverId, patch);
   const updated = await Automod.findByIdAndServer(ruleId, serverId);
   if (!updated) return res.status(404).json({ error: 'Kural bulunamadı' });
-  await auditRuleChange(serverId, user.id, 'AUTOMOD_RULE_UPDATE', ruleId, String(rule.type), rule.config, updated.config);
+  await auditRuleChange(serverId, user.id, 'AUTOMOD_RULE_UPDATE', ruleId, String(rule.type), previousConfig, updated.config);
   return res.json(serializeRule(updated));
 });
 
