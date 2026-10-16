@@ -2411,7 +2411,7 @@ const translations: Record<string, string> = {
   "pci_proof_needed": "Confirm it's you to continue.",
   "pci_error": "Something went wrong. Try again.",
   "pci_review_again": "Review again",
-  "pci_expired": "The approval expired. Review again."
+  "pci_expired": "The approval expired. Review again.",
   "automation_link_exemption_label": "Allow links for these integrations",
   "automation_link_exemption_empty": "No installed bots or webhooks",
   "automation_link_exemption_save_failed": "Could not save integration exemption.",
