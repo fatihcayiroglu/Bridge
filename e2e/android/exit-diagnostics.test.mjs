@@ -144,7 +144,7 @@ test('WebView attach diagnostics distinguish Activity PID from actual DevTools s
     '00001: 00000002 00000000 00010000 0001 01 54322 @webview_devtools_remote_9999',
     '00002: 00000002 00000000 00010000 0001 01 54323 @webview_devtools_remote_8792',
     'PRIVATE-USERNAME@example.com secret-token=not-for-logs',
-  ].join('\\n');
+  ].join('\n');
   const visible = parseWebViewDevToolsSockets(raw, '8792');
   assert.deepEqual(visible, { socketCount: 2, appPidHasSocket: true });
   assert.deepEqual(parseWebViewDevToolsSockets(raw, '1234'), { socketCount: 2, appPidHasSocket: false });
