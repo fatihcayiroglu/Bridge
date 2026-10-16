@@ -77,6 +77,14 @@ describe('POST /api/client-error', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects non-string type instead of coercing it into an aggregation key', async () => {
+    const app = buildApp();
+    const res = await request(app).post('/api/client-error').send({
+      ...VALID_REPORT, type: { injected: true },
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('returns 204 for a valid full report', async () => {
     const app = buildApp();
     const res = await request(app).post('/api/client-error').send(VALID_REPORT);
@@ -141,6 +149,46 @@ describe('GET /api/client-error/stats', () => {
     const app = buildApp({ id: 'admin1', isAdmin: true });
     const res = await request(app).get('/api/client-error/stats');
     expect(typeof res.body.total).toBe('number');
+  });
+
+  it('B3: excludes IP, user id, user-agent, URL and client-selected timestamp', async () => {
+    const app = buildApp({ id: 'b3-specific-user-id', isAdmin: true });
+    const res = await request(app).post('/api/client-error').send({
+      type: 'manual', message: 'b3-report-marker', source: 'ui',
+      userAgent: 'B3-private-device-string', url: '/secret?token=B3-query-secret',
+      lang: 'tr', timestamp: 9999999999999,
+    });
+    expect(res.status).toBe(204);
+    const stats = await request(app).get('/api/client-error/stats');
+    expect(stats.status).toBe(200);
+    const report = stats.body.recent.find((x: { message?: string }) => x.message === 'b3-report-marker');
+    expect(report).toBeDefined();
+    expect(report).toEqual(expect.objectContaining({
+      type: 'manual', message: 'b3-report-marker', receivedAt: expect.any(Number),
+    }));
+    for (const forbidden of ['ip', 'userId', 'userAgent', 'url', 'lang', 'timestamp']) {
+      expect(report).not.toHaveProperty(forbidden);
+    }
+    expect(JSON.stringify(report)).not.toMatch(/B3-private-device-string|B3-query-secret|b3-specific-user-id/);
+    expect(report.receivedAt).toBeLessThan(9999999999999);
+  });
+
+  it('B3: expires individual recent entries after 24h even if reports keep arriving', async () => {
+    const app = buildApp({ id: 'admin1', isAdmin: true });
+    const dateSpy = jest.spyOn(Date, 'now');
+    const t0 = 1_750_000_000_000;
+    try {
+      dateSpy.mockReturnValue(t0);
+      expect((await request(app).post('/api/client-error').send({ type: 'manual', message: 'B3-old-entry' })).status).toBe(204);
+      dateSpy.mockReturnValue(t0 + 24 * 60 * 60 * 1000 + 1);
+      expect((await request(app).post('/api/client-error').send({ type: 'manual', message: 'B3-new-entry' })).status).toBe(204);
+      const res = await request(app).get('/api/client-error/stats');
+      expect(res.status).toBe(200);
+      expect(res.body.recent.some((e: { message?: string }) => e.message === 'B3-old-entry')).toBe(false);
+      expect(res.body.recent.some((e: { message?: string }) => e.message === 'B3-new-entry')).toBe(true);
+    } finally {
+      dateSpy.mockRestore();
+    }
   });
 });
 
