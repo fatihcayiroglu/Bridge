@@ -21,7 +21,7 @@ import { io } from 'socket.io-client';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -1223,6 +1223,16 @@ async function main() {
         log('Android ANR category evidence', JSON.stringify(facts.androidAnrCategories));
       } catch {
         facts.androidAnrCategories = { available: false, error: 'anr-category-probe-unavailable' };
+      }
+      // CPU pressure from the same ActivityManager ANR record (load average and
+      // its before/after CPU tables): tells a starved emulator from an app that
+      // is busy itself. Numbers and fixed categories only (exit-diagnostics.mjs).
+      try {
+        const rawCpu = await androidFailureShell('logcat -d -v brief -s ActivityManager:E | tail -n 4000 || true');
+        facts.androidAnrCpu = { available: true, records: parseAnrCpuPressure(rawCpu, PKG) };
+        log('Android ANR CPU evidence', JSON.stringify(facts.androidAnrCpu));
+      } catch {
+        facts.androidAnrCpu = { available: false, error: 'anr-cpu-probe-unavailable' };
       }
     }
     assert(!anrLog.includes('ANR in com.bridge.app.debug'),
