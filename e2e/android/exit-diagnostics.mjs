@@ -164,3 +164,47 @@ export function parseWebViewDevToolsSockets(raw, appPid) {
     appPidHasSocket: Boolean(pid && socketPids.has(pid)),
   };
 }
+
+
+/**
+ * Privacy-safe observation of the Android app's live provider dependencies.
+ * Keep only counts and a boolean; never publish raw ActivityManager output.
+ */
+export function inspectBridgeEmojiFontProvider(raw, appPid) {
+  const validPid = /^[0-9]{1,8}$/.test(String(appPid));
+  const pid = validPid ? Number(appPid) : null;
+  let sections = 0;
+  let parsedConnections = 0;
+  let unparsedConnections = 0;
+  let active = false;
+  let fontProviderConnected = false;
+  for (const line of String(raw).split(/\r?\n/).slice(0, 20000)) {
+    if (/^\s*Connected Providers:\s*$/.test(line)) {
+      active = true;
+      sections++;
+      continue;
+    }
+    if (!active) continue;
+    if (!/^\s+- /.test(line)) {
+      active = false;
+      continue;
+    }
+    const m = /^\s+- [0-9a-f]+\/([A-Za-z0-9_.$]+\/[A-Za-z0-9_.$]+)->(\d{1,8}):/.exec(line);
+    if (!m) {
+      unparsedConnections++;
+      continue;
+    }
+    parsedConnections++;
+    if (pid !== null && Number(m[2]) === pid &&
+        m[1] === 'com.google.android.gms/.fonts.provider.FontsProvider') {
+      fontProviderConnected = true;
+    }
+  }
+  return {
+    appPidValid: validPid,
+    providerSections: Math.min(sections, 100),
+    parsedConnections: Math.min(parsedConnections, 100),
+    unparsedConnections: Math.min(unparsedConnections, 100),
+    fontProviderConnected,
+  };
+}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -151,4 +151,32 @@ test('WebView attach diagnostics distinguish Activity PID from actual DevTools s
   assert.deepEqual(parseWebViewDevToolsSockets('', '8792'), { socketCount: 0, appPidHasSocket: false });
   assert.deepEqual(parseWebViewDevToolsSockets(raw, '8792;rm /'), { socketCount: 2, appPidHasSocket: false });
   assert.doesNotMatch(JSON.stringify(visible), /PRIVATE|secret|token|example|9999|8792/);
+});
+
+
+test('font-provider probe isolates the Bridge PID and removes raw identity-bearing data', () => {
+  const raw = [
+    'ProcessRecord{... account=private@example.com}',
+    '    Connected Providers:',
+    '      - abcd1234/com.android.providers.settings/.SettingsProvider->5304:com.bridge.app.debug/123 s1/1 u0/0 +5s',
+    '      - aabc1234/com.google.android.gms/.fonts.provider.FontsProvider->5304:com.bridge.app.debug/123 s1/1 u0/1 +3s',
+    '      - bbcc1234/com.google.android.gms/.fonts.provider.FontsProvider->6400:another.app/555 s1/1 u0/1 +3s',
+  ].join('\n');
+  const present = inspectBridgeEmojiFontProvider(raw, '5304');
+  assert.deepEqual(present, {
+    appPidValid: true, providerSections: 1, parsedConnections: 3,
+    unparsedConnections: 0, fontProviderConnected: true,
+  });
+  assert.equal(inspectBridgeEmojiFontProvider(raw, '4200').fontProviderConnected, false);
+  const invalid = inspectBridgeEmojiFontProvider(raw, '5304;id');
+  assert.equal(invalid.appPidValid, false);
+  assert.equal(invalid.fontProviderConnected, false);
+  assert.doesNotMatch(JSON.stringify(present), /private|example|FontsProvider|5304|6400/);
+});
+
+test('malformed Android provider records produce explicit uncertainty, not false success', () => {
+  const malformed = 'Connected Providers:\n  - unknown format; secret=example.com\nnot-a-connection';
+  const result = inspectBridgeEmojiFontProvider(malformed, '5304');
+  assert.equal(result.unparsedConnections, 1);
+  assert.equal(result.fontProviderConnected, false);
 });
