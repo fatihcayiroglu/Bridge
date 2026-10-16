@@ -125,10 +125,11 @@ describe('E2EE key/prekey route contracts', () => {
     expect(users.updateWhere).toHaveBeenCalledWith({ _id: 'me' }, { $set: { e2ePublicKey: null, e2eKeyUpdatedAt: expect.any(Number) } });
   });
 
-  it.each([[undefined,false], ['false',false], ['TRUE',false], ['true',true]])('feature flag %p -> %p', async (value, expected) => {
+  it.each([undefined, 'false', 'TRUE', 'true'])('public messaging capability stays false for backend flag %p', async (value) => {
     if (value === undefined) delete process.env.BRIDGE_E2EE_ENABLED; else process.env.BRIDGE_E2EE_ENABLED = value;
     const res = await request(app()).get('/api/e2e/feature-status');
-    expect(res.body).toEqual({ enabled: expected });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ enabled: false });
   });
 
   it('returns disabled/null status for missing user and populated status for configured user', async () => {
