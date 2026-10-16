@@ -25,9 +25,8 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { normalizeMessageText, RAW_TEXT_FORMAT } from './storedText';
-import { Automod, Bots, Channels, Messages } from '../db/repositories';
-import { evaluateAutomodRules } from './automodPolicy';
-import { writeAutomodLogs } from './automodRuntime';
+import { Bots, Channels, Messages } from '../db/repositories';
+import { machineContentRefused } from './messageContentPolicy';
 import { invalidateChannelMessages } from './messageCache';
 import { cache } from './redisAdapter';
 import type { HandlerServer } from '../socket/handler-contracts';
@@ -110,21 +109,12 @@ export async function replyToInvocation(
   if (!channel || String(channel.serverId) !== serverId) return { ok: false, status: 404, error: 'Channel not found' };
 
   const botUserId = `bot:${bot._id}`;
-  const increment = (key: string, ttlSeconds: number) => cache.increment(key, ttlSeconds);
-  const decision = await evaluateAutomodRules(
-    await Automod.findByServer(serverId),
-    { serverId, userId: botUserId, content: rawContent, memberRoleIds: [] },
-    increment,
-  );
-  if (decision.matched) {
-    if (io) {
-      await writeAutomodLogs(decision, { serverId, channelId, userId: botUserId, displayName: bot.username, content: rawContent }, io);
-    }
+  if (await machineContentRefused({ principalId: botUserId, serverId, channelId, displayName: bot.username, content: rawContent }, io)) {
     return { ok: false, status: 403, error: 'automod_blocked' };
   }
 
   // Counted last, so refused attempts do not use up the invocation's replies.
-  const replies = await increment(`bot-interaction-replies:${bot._id}:${invocation._id}`, Math.ceil(INTERACTION_REPLY_WINDOW_MS / 1000));
+  const replies = await cache.increment(`bot-interaction-replies:${bot._id}:${invocation._id}`, Math.ceil(INTERACTION_REPLY_WINDOW_MS / 1000));
   if (replies > INTERACTION_REPLY_LIMIT) return { ok: false, status: 429, error: 'reply_limit' };
 
   const message = await Messages.create({

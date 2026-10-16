@@ -12,6 +12,7 @@ import logger from '../lib/logger';
 import { PERMS } from '../lib/permissions';
 import { parsePermissionMask } from '../lib/permissionMaskInvariant';
 import { authorizePluginAction, type PluginActionEvent } from './capabilities';
+import { machineContentRefused } from '../lib/messageContentPolicy';
 
 const MAX_PLUGIN_MESSAGE_LENGTH = 2_000;
 const MAX_PLUGIN_BOT_NAME_LENGTH = 80;
@@ -90,9 +91,22 @@ export function registerPluginActionHandlers(hooks: HookBus, io: IOServer): void
         logger.warn({ channelId, serverId, event: 'plugin.sendMessage.denied' }, 'channel/server mismatch');
         return;
       }
+      // The plugin's text is read by the channel's members and is often built
+      // from their data (a welcome template with a display name): the
+      // server's AutoMod rules apply, with the plugin as its own principal.
+      // A rule-store failure throws to the catch below and nothing is posted.
+      const displayName = botName || '🤖 Plugin Bot';
+      if (await machineContentRefused({
+        principalId: `plugin:${pluginId}`, serverId: String(channel.serverId), channelId: String(channel._id),
+        displayName, content: content.trim(),
+      }, state.io)) {
+        logger.warn({ pluginId, channelId, serverId, event: 'plugin.sendMessage.automod_refused' },
+          'Plugin message refused by the server AutoMod rules');
+        return;
+      }
       const msg = {
         ...systemMsg(String(channel._id), String(channel.serverId), content.trim()),
-        displayName: botName || '🤖 Plugin Bot',
+        displayName,
         username:    `plugin-${pluginId}`,
       };
       const saved = await Messages.create(msg);

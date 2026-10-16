@@ -7,16 +7,14 @@ import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router   = express.Router();
-import { Bots, Channels, ChannelWebhooks, Messages, Automod } from '../db/repositories';
+import { Bots, Channels, ChannelWebhooks, Messages } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { botAuthMiddleware, type BotAuthedRequest } from '../middleware/botAuth';
 import { limits } from '../middleware/rateLimit';
 import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
 import { normalizeContextCommands, normalizeSlashCommands, readPersistedCommandArray } from '../lib/botCommands';
 import { replyToInvocation } from '../lib/botInteractionReply';
-import { evaluateAutomodRules } from '../lib/automodPolicy';
-import { writeAutomodLogs } from '../lib/automodRuntime';
-import { cache } from '../lib/redisAdapter';
+import { machineContentRefused } from '../lib/messageContentPolicy';
 import type { HandlerServer } from '../socket/handler-contracts';
 import { broadcastPersistedMessage, publishPersistedMessage } from '../lib/channelActivity';
 function generateBotToken(_serverId: string, _botId: string): string {
@@ -450,25 +448,19 @@ const receiveWebhook = async (req: express.Request, res: express.Response): Prom
     return;
   }
   const policyText = [hasContent ? content : '', embeddedText].filter(Boolean).join('\n');
+  let refused: boolean;
   try {
-    const decision = await evaluateAutomodRules(
-      await Automod.findByServer(String(channel.serverId)),
-      { serverId: String(channel.serverId), userId: `webhook:${webhook._id}`,
-        content: policyText, memberRoleIds: [] },
-      (key, ttlSeconds) => cache.increment(key, ttlSeconds),
-    );
-    if (decision.matched) {
-      await writeAutomodLogs(decision, {
-        serverId: String(channel.serverId), channelId: webhook.channelId,
-        userId: `webhook:${webhook._id}`, displayName: webhook.name || 'Webhook',
-        content: policyText,
-      }, (req.app.get('io') as HandlerServer | undefined) ?? null);
-      res.status(422).json({ error: 'Message blocked by server moderation' });
-      return;
-    }
+    refused = await machineContentRefused({
+      principalId: `webhook:${webhook._id}`, serverId: String(channel.serverId), channelId: webhook.channelId,
+      displayName: webhook.name || 'Webhook', content: policyText,
+    }, (req.app.get('io') as HandlerServer | undefined) ?? null);
   } catch {
     // Policy-store outages cannot become an implicit permission to post.
     res.status(503).json({ error: 'Moderation unavailable' });
+    return;
+  }
+  if (refused) {
+    res.status(422).json({ error: 'Message blocked by server moderation' });
     return;
   }
 
