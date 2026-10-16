@@ -2446,6 +2446,10 @@ const translations: Record<string, string> = {
   "pci_error": "問題が発生しました。もう一度お試しください。",
   "pci_review_again": "もう一度確認",
   "pci_expired": "承認の期限が切れました。もう一度確認してください。"
+  "automation_link_exemption_label": "これらの連携によるリンク投稿を許可",
+  "automation_link_exemption_empty": "インストール済みのボットやWebhookはありません",
+  "automation_link_exemption_save_failed": "連携の例外を保存できませんでした。",
+  "automation_link_exemption_saved": "連携の例外を保存しました。",
 };
 
 export default translations;
