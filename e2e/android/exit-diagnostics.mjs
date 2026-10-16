@@ -242,11 +242,23 @@ export function inspectBridgeEmojiFontProvider(raw, appPid) {
  * may be exposed as CI evidence. A class-presence probe uses Class.forName
  * with initialize=false; it never calls EmojiCompat or acquires fonts.
  */
-export function parseNativeEmojiStartupProbe(raw) {
+export function parseNativeEmojiStartupProbe(raw, appPid = null) {
+  // A tag-only fallback can contain markers from another app process.
+  // Require an exact Android logcat PID when a target process is supplied.
+  const targetPid = /^[0-9]{1,8}$/.test(String(appPid)) ? String(Number(appPid)) : null;
+  if (appPid !== null && targetPid === null) return parseNativeEmojiStartupProbe('');
   const allowed = new Set(['before-super', 'after-super', 'resumed']);
   const samples = [];
   for (const line of String(raw).split(/\r?\n/).slice(-1500)) {
     if (!line.includes('BridgeEmojiStartupProbe')) continue;
+    if (targetPid !== null) {
+      // Support both Android's brief and threadtime logcat formats.
+      // Never treat a PID-less free-text imitation as trusted evidence.
+      const brief = /\b[A-Z]\/BridgeEmojiStartupProbe\(\s*([0-9]{1,8})\)/.exec(line);
+      const threadtime = /\b[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+\s+([0-9]{1,8})\s+[0-9]{1,8}\s+[A-Z]\s+BridgeEmojiStartupProbe:/.exec(line);
+      const observedPid = brief?.[1] ?? threadtime?.[1];
+      if (!observedPid || String(Number(observedPid)) !== targetPid) continue;
+    }
     const m = /\bstage=(before-super|after-super|resumed) classPresent=(true|false) configured=(true|false|unknown)\b/.exec(line);
     if (!m || !allowed.has(m[1])) continue;
     if (samples.length < 20) {
