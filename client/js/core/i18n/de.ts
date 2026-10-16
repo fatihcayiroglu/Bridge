@@ -2446,6 +2446,10 @@ const translations: Record<string, string> = {
   "pci_error": "Etwas ist schiefgelaufen. Versuche es erneut.",
   "pci_review_again": "Erneut prüfen",
   "pci_expired": "Die Freigabe ist abgelaufen. Prüfe erneut."
+  "automation_link_exemption_label": "Links für diese Integrationen zulassen",
+  "automation_link_exemption_empty": "Keine installierten Bots oder Webhooks",
+  "automation_link_exemption_save_failed": "Integrationsausnahme konnte nicht gespeichert werden.",
+  "automation_link_exemption_saved": "Integrationsausnahme gespeichert.",
 };
 
 export default translations;
