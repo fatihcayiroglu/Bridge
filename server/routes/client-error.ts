@@ -74,9 +74,35 @@ const _errorStats: ClientErrorStats = {
   recent:  [],
 };
 const MAX_RECENT = 100;
+const RECENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const REDIS_STATS_KEY = 'client_error_stats_v1';
 
+// B3 metadata minimization. Historical Redis reports included userId, IP,
+// user-agent, URL and a client-selected timestamp. NEVER resurrect those fields
+// while loading a legacy Redis snapshot. Use an explicit allowlist and only
+// server-received timestamps; client clocks cannot extend retention.
+function sanitizedRecent(value: unknown, now = Date.now()): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): Record<string, unknown>[] => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const record = entry as Record<string, unknown>;
+    const at = record.receivedAt;
+    if (typeof at !== 'number' || !Number.isFinite(at) ||
+        at > now || at <= now - RECENT_MAX_AGE_MS) return [];
+    return [{
+      type: typeof record.type === 'string' ? record.type.slice(0, 24) : 'unknown',
+      message: typeof record.message === 'string' ? record.message.slice(0, 500) : '',
+      source: typeof record.source === 'string' ? record.source.slice(0, 300) : '',
+      line: Number.isFinite(record.line) ? record.line : 0,
+      col: Number.isFinite(record.col) ? record.col : 0,
+      stack: typeof record.stack === 'string' ? record.stack.slice(0, 3000) : '',
+      receivedAt: at,
+    }];
+  }).slice(-MAX_RECENT);
+}
+
 async function persistStats() {
+  _errorStats.recent = sanitizedRecent(_errorStats.recent);
   await cache.set(REDIS_STATS_KEY, _errorStats, 24 * 60 * 60);
 }
 
@@ -85,7 +111,7 @@ async function loadStats() {
   if (fromRedis && typeof fromRedis === 'object') {
     _errorStats.total = Number(fromRedis.total || 0);
     _errorStats.byType = fromRedis.byType || {};
-    _errorStats.recent = Array.isArray(fromRedis.recent) ? fromRedis.recent.slice(-MAX_RECENT) : [];
+    _errorStats.recent = sanitizedRecent(fromRedis.recent);
   }
 }
 
@@ -119,25 +145,23 @@ router.post(
       line:      Number(body.line)   || 0,
       col:       Number(body.col)    || 0,
       stack:     String(body.stack   || '').slice(0, 3000),
-      url:       String(body.url     || '').slice(0, 500),
-      userAgent: String(body.userAgent || '').slice(0, 300),
-      lang:      String(body.lang    || '').slice(0, 10),
-      timestamp: body.timestamp || Date.now(),
-      userId:    req.user?.id   || null,
-      ip:        req.ip,
+      // No IP, user id, URL, user-agent, locale or client-supplied timestamps
+      // in Redis recent reports. Diagnostic message/stack may still contain
+      // user-supplied information; they are subject to short, bounded retention.
+      receivedAt: Date.now(),
     };
 
     // İstatistik güncelle
     _errorStats.total += 1;
     _errorStats.byType[report.type] = (_errorStats.byType[report.type] || 0) + 1;
     _errorStats.recent.push(report);
-    if (_errorStats.recent.length > MAX_RECENT) _errorStats.recent.shift();
+    _errorStats.recent = sanitizedRecent(_errorStats.recent);
 
     // Sunucu logu
     const logLevel = report.type === 'crash' ? 'error' : 'warn';
     logger[logLevel](
-      { event: 'client.error.reported', type: report.type, userId: report.userId || 'anon', source: report.source, line: report.line },
-      report.message
+      { event: 'client.error.reported', type: report.type, source: report.source, line: report.line },
+      'Client-side error reported'
     );
 
     persistStats().catch(() => {});
@@ -148,6 +172,7 @@ router.post(
 
 // GET /api/client-error/stats — sadece admin
 router.get('/stats', authMiddleware, databaseAdminOnly, (_req, res) => {
+  _errorStats.recent = sanitizedRecent(_errorStats.recent);
   res.json({
     total:  _errorStats.total,
     byType: _errorStats.byType,
