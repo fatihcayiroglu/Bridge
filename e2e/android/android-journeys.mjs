@@ -347,9 +347,9 @@ async function fontProviderStage(stage) {
     const currentPid = await pid();
     const raw = await androidFailureShell('dumpsys activity processes ' + PKG);
     record = { stage, available: true, ...inspectBridgeEmojiFontProvider(raw, currentPid) };
-    // Read-only JVM state; unlike the provider list this can show whether
-    // AndroidX EmojiCompat was actually initialized. PID-restricted and
-    // transformed to allowlisted booleans: raw logcat is NEVER retained.
+    // Read-only class availability only; NOT initialized/used status.
+    // The previous direct EmojiCompat API call did not compile on this app.
+    // PID-restricted, allowlisted booleans; raw logcat is NEVER retained.
     try {
       const nativeLog = await androidFailureShell(
         "logcat -d --pid " + currentPid + " -s BridgeEmojiStartupProbe:I '*:S'");

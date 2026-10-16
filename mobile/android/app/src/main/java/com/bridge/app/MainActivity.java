@@ -38,9 +38,10 @@ public class MainActivity extends BridgeActivity {
      */
     @Override
     public void onCreate(android.os.Bundle savedInstanceState) {
-        // #209: fixed-shape, debug-only diagnostic. EmojiCompat.isConfigured()
-        // does not initialize or load a font. Never log app identifiers or raw
-        // provider/activity dumps. Helps distinguish Emoji2 from other callers.
+        // #209: debug-only, fixed-shape diagnostic. Probe the optional
+        // EmojiCompat class WITHOUT depending on it or initializing it.
+        // Prior direct EmojiCompat.isConfigured() broke compileDebugJavaWithJavac
+        // because emoji2 isn't even on this build's compile classpath.
         logEmojiStartup("before-super");
         registerPlugin(BridgePushSupportPlugin.class);
         super.onCreate(savedInstanceState);
@@ -54,11 +55,20 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void logEmojiStartup(String stage) {
-        // No release-side logging or native startup dependency is introduced.
-        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
-            android.util.Log.i("BridgeEmojiStartupProbe",
-                    "stage=" + stage + " configured=" +
-                    androidx.emoji2.text.EmojiCompat.isConfigured());
+        // Only observe class availability. Class.forName(..., false) does not
+        // initialize the class or invoke downloadable-font code. No emoji2
+        // dependency is added to debug OR release just to make diagnostics run.
+        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) {
+            return;
         }
+        boolean classPresent;
+        try {
+            Class.forName("androidx.emoji2.text.EmojiCompat", false, getClassLoader());
+            classPresent = true;
+        } catch (ClassNotFoundException | LinkageError e) {
+            classPresent = false;
+        }
+        android.util.Log.i("BridgeEmojiStartupProbe",
+                "stage=" + stage + " classPresent=" + classPresent);
     }
 }

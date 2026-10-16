@@ -239,24 +239,24 @@ export function inspectBridgeEmojiFontProvider(raw, appPid) {
 /**
  * Parse only a fixed-shape, debug-only native EmojiCompat state marker from a
  * PID-restricted Android logcat. No free-text log data, PID or device identity
- * may be exposed as CI evidence. isConfigured() is read-only and does not
- * acquire fonts or initialize the library.
+ * may be exposed as CI evidence. A class-presence probe uses Class.forName
+ * with initialize=false; it never calls EmojiCompat or acquires fonts.
  */
 export function parseNativeEmojiStartupProbe(raw) {
   const allowed = new Set(['before-super', 'after-super', 'resumed']);
   const samples = [];
   for (const line of String(raw).split(/\r?\n/).slice(-1500)) {
     if (!line.includes('BridgeEmojiStartupProbe')) continue;
-    const m = /\bstage=(before-super|after-super|resumed) configured=(true|false)\b/.exec(line);
+    const m = /\bstage=(before-super|after-super|resumed) classPresent=(true|false)\b/.exec(line);
     if (!m || !allowed.has(m[1])) continue;
-    if (samples.length < 20) samples.push({ stage: m[1], configured: m[2] === 'true' });
+    if (samples.length < 20) samples.push({ stage: m[1], classPresent: m[2] === 'true' });
   }
   return {
     available: samples.length > 0,
     samples: samples.length,
-    anyConfigured: samples.some((s) => s.configured),
-    beforeSuper: samples.find((s) => s.stage === 'before-super')?.configured ?? null,
-    afterSuper: samples.find((s) => s.stage === 'after-super')?.configured ?? null,
-    lastResume: [...samples].reverse().find((s) => s.stage === 'resumed')?.configured ?? null,
+    anyClassPresent: samples.some((s) => s.classPresent),
+    beforeSuper: samples.find((s) => s.stage === 'before-super')?.classPresent ?? null,
+    afterSuper: samples.find((s) => s.stage === 'after-super')?.classPresent ?? null,
+    lastResume: [...samples].reverse().find((s) => s.stage === 'resumed')?.classPresent ?? null,
   };
 }

@@ -211,23 +211,24 @@ test('font-provider probe exposes uncertain reference strength rather than silen
 });
 
 
-test('native EmojiCompat diagnostic parses only bounded fixed-shape Boolean state', () => {
+test('native EmojiCompat class-presence diagnostic parses fixed-shape Boolean state only', () => {
   const raw = [
-    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=before-super configured=false',
-    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=after-super configured=false',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=before-super classPresent=false',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=after-super classPresent=false',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=resumed classPresent=true',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): token=secret@example.com stage=wild classPresent=false',
+    '10-17 I/OtherTag( 5304): stage=resumed classPresent=false',
     '10-17 I/BridgeEmojiStartupProbe( 5304): stage=resumed configured=true',
-    '10-17 I/BridgeEmojiStartupProbe( 5304): token=secret@example.com stage=wild configured=false',
-    '10-17 I/OtherTag( 5304): stage=resumed configured=false',
     'PRIVATE phone contact=secret@example.com',
   ].join('\n');
   const result = parseNativeEmojiStartupProbe(raw);
   assert.deepEqual(result, {
-    available: true, samples: 3, anyConfigured: true,
+    available: true, samples: 3, anyClassPresent: true,
     beforeSuper: false, afterSuper: false, lastResume: true,
   });
-  assert.doesNotMatch(JSON.stringify(result), /5304|contact|email|token|PRIVATE/);
+  assert.doesNotMatch(JSON.stringify(result), /5304|contact|email|token|PRIVATE|configured/);
   assert.deepEqual(parseNativeEmojiStartupProbe(''), {
-    available: false, samples: 0, anyConfigured: false,
+    available: false, samples: 0, anyClassPresent: false,
     beforeSuper: null, afterSuper: null, lastResume: null,
   });
 });
