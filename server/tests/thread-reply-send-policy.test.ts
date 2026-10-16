@@ -253,6 +253,38 @@ describe('a forum post (title and first message) passes the same checks', () => 
     expect(await forumPosts()).toBe(ABUSE_POLICY.repeat.max);
   });
 
+  it('more than the permitted direct mentions in a forum first message is refused before either row or announce', async () => {
+    const tooMany = people.map(p => `<@${p._id}>`).join(' ');
+    expect((await channelSend(tooMany)).refused).toBe('TOO_MANY_MENTIONS');
+    const res = await post({ name: 'a normal forum title', firstMessage: tooMany });
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ code: 'TOO_MANY_MENTIONS' });
+    expect(await forumPosts()).toBe(0);
+    expect(await mockDb.threadMessages.find({ channelId: forum._id })).toHaveLength(0);
+    expect(created()).toEqual([]);
+    expect(await mockDb.notifications.find({})).toEqual([]);
+  });
+
+  it('exactly the permitted direct mentions in a forum first message are allowed', async () => {
+    const allowed = people.slice(0, ABUSE_POLICY.mentions.perMessage).map(p => `<@${p._id}>`).join(' ');
+    const res = await post({ name: 'a normal forum title', firstMessage: allowed });
+    expect(res.status).toBe(201);
+    expect(await forumPosts()).toBe(1);
+    expect(await mockDb.threadMessages.find({ channelId: forum._id })).toHaveLength(1);
+    expect(created()).toHaveLength(1);
+  });
+
+  it.each([
+    ['omitted', {}],
+    ['empty', { firstMessage: '' }],
+  ])('CONTROL: a forum title with an %s first message can be created without an empty reply', async (_case, optionalBody) => {
+    const res = await post({ name: 'An ordinary forum topic', ...optionalBody });
+    expect(res.status).toBe(201);
+    expect(await forumPosts()).toBe(1);
+    expect(await mockDb.threadMessages.find({ channelId: forum._id })).toHaveLength(0);
+    expect(created()).toHaveLength(1);
+  });
+
   it('CONTROL: an ordinary post is created', async () => {
     await blockWord('forbiddenword');
     const res = await post({ name: 'a fine title', firstMessage: 'a perfectly ordinary first message' });
