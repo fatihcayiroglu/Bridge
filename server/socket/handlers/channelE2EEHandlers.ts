@@ -31,10 +31,11 @@ import { isolateSocketHandler } from '../handlerIsolation';
 
 // ── E2EE üretim bayrağı ──────────────────────────────────────────────────────
 //
-// FAZ D0: VARSAYILAN KAPALI. `lib/e2e.ts` feature-status ile AYNI sözleşme;
-// iki yer ayrışırsa arayüz ile soket katmanı farklı şey iddia ederdi.
-// Gerekçe: istemcide gerçek şifreleme YOK (bkz. lib/e2e.ts açıklaması).
-// Durum: E2EE = ARCHITECTURE_REQUIRED — açık rıza olmadan etkinleşmez.
+// FAZ D0: VARSAYILAN KAPALI. Bu yalnızca deneysel server-side socket/key
+// altyapısının operatör bayrağıdır; lib/e2e.ts feature-status ise güvenli
+// kullanıcı mesaj E2EE yeteneğini bildirir ve gerçek istemci protokolü yokken
+// false kalır. Backend deneyini başlatmak şifreli mesaj garantisi DEĞİLDİR.
+// Durum: E2EE = ARCHITECTURE_REQUIRED.
 const E2EE_ENABLED = process.env.BRIDGE_E2EE_ENABLED === 'true';
 
 export function isE2EEProductionEnabled(): boolean { return E2EE_ENABLED; }

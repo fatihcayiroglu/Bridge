@@ -29,7 +29,7 @@ Even a correct content encryption protocol does **not** conceal participant iden
 
 - `GET /api/mobile/info` returns `features.e2ee = false` even when the operator sets `BRIDGE_E2EE_ENABLED=true`; the server flag cannot by itself certify end-to-end encrypted messages.
 - Public README, landing page and team-marketing claims no longer promise default/native E2EE.
-- Existing `/api/e2e/feature-status` is a **server-side opt-in flag**, not cryptographic proof. Its semantics and other public surfaces still need a separate compatibility/API review.
+- `/api/e2e/feature-status` formerly exposed the server-side opt-in flag, which could show a misleading E2EE toggle if mounted. Follow-up B4 capability fix makes `enabled=false` until a genuinely implemented client cryptosystem exists. The separate socket-level `BRIDGE_E2EE_ENABLED` switch remains an experimental backend opt-in, **not** proof of E2EE.
 - Preserve backend key scaffolding and migration data; do **not** remove fields, enable unimplemented crypto, or claim local-at-rest AES-GCM is message E2EE.
 
 ## Mandatory closure evidence (not run or passed by this document)

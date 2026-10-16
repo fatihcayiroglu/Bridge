@@ -1416,12 +1416,13 @@
         "tags": [
           "E2EE"
         ],
-        "summary": "E2EE production feature flag durumu",
+        "summary": "İstemcide doğrulanmış mesaj E2EE kullanılabilirliği",
+        "description": "Deneysel BRIDGE_E2EE_ENABLED sunucu anahtar/soket altyapısı mesajların istemcide şifrelendiğini kanıtlamaz. Ürün E2EE hazır olmadığı için enabled=false döner ve şifreleme arayüzü açılmaz.\n",
         "operationId": "getE2EEFeatureStatus",
         "security": [],
         "responses": {
           "200": {
-            "description": "E2EE etkin mi?",
+            "description": "Gerçek istemci mesaj E2EE desteği (şu anda kapalı)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1429,7 +1430,7 @@
                   "properties": {
                     "enabled": {
                       "type": "boolean",
-                      "example": true
+                      "example": false
                     }
                   }
                 }

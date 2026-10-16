@@ -15,7 +15,8 @@
 //
 // Yani bayrak açıkken ürün, karşılığı olmayan bir güvenlik güvencesi
 // verebiliyordu. Eksik bir özellikten farklı olarak bu YANILTICIDIR.
-// Durum: E2EE = ARCHITECTURE_REQUIRED — açık rıza (`=== 'true'`) gerekir.
+// Durum: E2EE = ARCHITECTURE_REQUIRED — sunucu deneysel soket bayrağı
+// (`=== 'true'`) kullanıcıya şifreli mesajlaşma sunulduğu anlamına GELMEZ.
 //
 // Arka uç iskelesi (rotalar, anahtar değişim olayları, encryptedContent/iv,
 // migration'lar) KASITLI olarak korunur ve bu test onları KALDIRMAZ.
@@ -78,12 +79,13 @@ describe('D0 — GET /api/e2e/feature-status', () => {
     // butcelenmis bir test. Butce yapilan ise oranli verilir.
   }, 60_000);
 
-  it('yalnız açık rıza ("true") ile AÇILIR', async () => {
+  it('GÜVENLİK: deneysel backend bayrağı açık olsa da kullanıcı E2EE özelliği AÇILMAZ', async () => {
     process.env.BRIDGE_E2EE_ENABLED = 'true';
 
     const res = await request(buildApp()).get('/api/e2e/feature-status');
 
-    expect(res.body).toEqual({ enabled: true });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ enabled: false });
   });
 
   it('açıkça "false" verildiğinde KAPALI kalır', async () => {
@@ -95,7 +97,7 @@ describe('D0 — GET /api/e2e/feature-status', () => {
   });
 });
 
-describe('D0 — soket katmanı ile arayüz AYNI şeyi söyler', () => {
+describe('D0 — deneysel soket altyapısı kullanıcı E2EE özelliğinden AYRIDIR', () => {
   it('GÜVENLİK: soket bayrağı da varsayılan KAPALIdır', () => {
     delete process.env.BRIDGE_E2EE_ENABLED;
     jest.resetModules();
@@ -105,13 +107,18 @@ describe('D0 — soket katmanı ile arayüz AYNI şeyi söyler', () => {
     expect(isE2EEProductionEnabled()).toBe(false);
   });
 
-  it('açık rıza ile soket bayrağı da açılır (iki katman ayrışmaz)', () => {
+  it('açık operatör tercihi deneysel soket altyapısını açar; public capability yine kapalıdır', async () => {
     process.env.BRIDGE_E2EE_ENABLED = 'true';
     jest.resetModules();
 
     const { isE2EEProductionEnabled } = require('../socket/handlers/channelE2EEHandlers');
 
     expect(isE2EEProductionEnabled()).toBe(true);
+
+    // This intentionally differs from the public messaging capability:
+    // socket experiments must not turn the visible UI security toggle on.
+    const res = await request(buildApp()).get('/api/e2e/feature-status');
+    expect(res.body).toEqual({ enabled: false });
   });
 });
 
