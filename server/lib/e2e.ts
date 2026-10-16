@@ -113,7 +113,12 @@ router.delete('/keys', authMiddleware, async (req, res) => {
 });
 
 /**
- * GET /api/e2e/feature-status — üretim özellik bayrağı (kimlik gerekmez)
+ * GET /api/e2e/feature-status — public messaging capability (no auth)
+ *
+ * IMPORTANT: the separate BRIDGE_E2EE_ENABLED experiment flag only enables
+ * backend socket/key scaffolding. The shipped message client still sends
+ * plaintext, so it MUST NOT unlock the consumer E2EE toggle. Returning true
+ * here would misrepresent confidentiality and could expose sensitive messages.
  *
  * ── FAZ D0: VARSAYILAN KAPALI (AÇIK RIZA GEREKİR) ─────────────────────────
  * Bayrak Sprint 115'te varsayılan AÇIK yapılmıştı. Ölçülen gerçek şuydu:
@@ -124,14 +129,18 @@ router.delete('/keys', authMiddleware, async (req, res) => {
  * "uçtan uca şifreleme aktif" denip mesajlar DÜZ METİN olarak saklanıyordu.
  *
  * Eksik bir özellik olmaktan farklı olarak bu YANILTICIDIR: kullanıcı hassas
- * bilgiyi şifreli sanarak paylaşabilir. Bu yüzden bayrak açık rıza ister.
+ * bilgiyi şifreli sanarak paylaşabilir. Feature capability daima KAPALIdır;
+ * deneysel backend socket bayrağıyla karıştırılmamalıdır.
  *
  * Arka uç iskelesi (anahtar değişim rotaları/olayları, `encryptedContent`/`iv`
  * sütunları, migration'lar) KASITLI olarak korunur — gelecekteki gerçek
  * mimari için gereklidir. Durum: E2EE = ARCHITECTURE_REQUIRED.
  */
 router.get('/feature-status', (_req, res) => {
-  res.json({ enabled: process.env.BRIDGE_E2EE_ENABLED === 'true' });
+  // This means a client can safely offer end-to-end encrypted messaging, NOT
+  // that the operator opted into unvalidated server-side key transport.
+  // Revisit only after independently tested client-side E2EE exists.
+  res.json({ enabled: false });
 });
 
 // GET /api/e2e/status — E2EE durumu
