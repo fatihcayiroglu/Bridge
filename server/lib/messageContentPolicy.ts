@@ -17,6 +17,13 @@
 //      disable configured moderation (fail closed).
 //
 // Encrypted content and file messages are not inspected by the callers.
+//
+// Machine principals (machineContentRefused below) post through their own
+// paths: an installed bot's interaction reply (`bot:<id>`), an incoming
+// webhook (`webhook:<id>`) and a plugin (`plugin:<id>`). They get the server's
+// AutoMod rules and not the P7 per-account limits. Bridge's own system and
+// audit messages (AutoMod alerts, join notices) are written directly and are
+// not moderated.
 
 import { Automod, Members } from '../db/repositories';
 import { ABUSE_POLICY, checkContentAbuse, mentionsWithinLimit } from './abusePolicy';
@@ -70,4 +77,35 @@ export async function checkMessageContent(
     return { kind: 'refused', code: 'AUTOMOD_BLOCKED', message: decision.reasons.join(', ') || 'Mesaj AutoMod tarafından engellendi.' };
   }
   return null;
+}
+
+/**
+ * The server's AutoMod rules for a machine principal posting into one of its
+ * channels: `bot:<id>`, `webhook:<id>` or `plugin:<id>`. True when the post is
+ * refused; the caller then stores and publishes nothing.
+ *
+ * A machine is not a member: it has no roles, so role exemptions never apply,
+ * and it cannot be timed out, so any matching rule refuses the post (whatever
+ * its configured action). A match is written to the rule's log channels.
+ * Message-frequency rules count each principal on its own. A rule-store
+ * failure propagates (fail closed); each caller answers it.
+ *
+ * The P7 per-account limits (checkMessageContent) do not apply: they bound one
+ * person's posting across paths, while a webhook or plugin is one principal
+ * that may legitimately post the same text to many channels. Each machine path
+ * keeps its own volume control (bot reply budget, webhook route limit).
+ */
+export async function machineContentRefused(
+  input: { principalId: string; serverId: string; channelId: string; displayName: string; content: string },
+  io: HandlerServer | null,
+): Promise<boolean> {
+  const { principalId, serverId, channelId, displayName, content } = input;
+  const decision = await evaluateAutomodRules(
+    await Automod.findByServer(serverId),
+    { serverId, userId: principalId, content, memberRoleIds: [] },
+    (key, ttlSeconds) => cache.increment(key, ttlSeconds),
+  );
+  if (!decision.matched) return false;
+  await writeAutomodLogs(decision, { serverId, channelId, userId: principalId, displayName, content }, io);
+  return true;
 }
