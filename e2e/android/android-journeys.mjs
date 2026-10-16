@@ -679,6 +679,8 @@ async function main() {
     const raw = await sh('dumpsys activity processes ' + PKG);
     const evidence = inspectBridgeEmojiFontProvider(raw, currentPid);
     assert(evidence.appPidValid, 'cannot identify the app process');
+    assert(evidence.providerSections > 0,
+      'Android process-provider listing missing; cannot claim no provider dependency');
     assert(evidence.unparsedConnections === 0,
       'could not parse all Android content-provider connections; cannot claim no dependency');
     assert(!evidence.fontProviderConnected,
