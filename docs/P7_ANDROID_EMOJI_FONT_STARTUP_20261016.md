@@ -18,3 +18,9 @@
 ## Acceptance and unresolved work
 
 The candidate is meaningful only if exact-head build/Android emulator and broader gates pass. Repeat cold-start stress on real and emulated devices, inspect process-exit and ANR data, and establish causal evidence before closing #209. In particular, an unchanged first-run pass does not demonstrate the historical non-deterministic crash is gone. See the separate #238 stress diagnostic effort and the merged #314 attach-socket instrumentation.
+
+## FD01 — running-app provider dependency assertion
+
+In addition to manifest tests, the Android emulator journey now runs **FD01** after the app signs in. It queries Android's `dumpsys activity processes` for the Bridge process and checks that **there is no live dependency on `com.google.android.gms/.fonts.provider.FontsProvider`**. The parser reports only a boolean and bounded counts; raw process data remains private. Unparseable provider connection records make FD01 **FAIL**, not a green assertion based on absent evidence.
+
+This is a focused regression for the observed provider dependency in the previous five-start [#238 run 38722179952](https://github.com/fatihcayiroglu/Bridge/actions/runs/38722179952). A passing FD01 does **not** prove all Android ANRs are fixed; repeated cold starts and real hardware remain separate acceptance gates.
