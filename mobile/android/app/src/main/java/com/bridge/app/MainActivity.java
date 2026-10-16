@@ -38,8 +38,9 @@ public class MainActivity extends BridgeActivity {
      */
     @Override
     public void onCreate(android.os.Bundle savedInstanceState) {
-        // #209: debug-only, fixed-shape diagnostic. Probe the optional
-        // EmojiCompat class WITHOUT depending on it or initializing it.
+        // #209: debug-only, fixed-shape diagnostic. No compile-time emoji2
+        // dependency. Reflective static invocation may initialize the class;
+        // compare with earlier uninstrumented FD01 evidence.
         // Prior direct EmojiCompat.isConfigured() broke compileDebugJavaWithJavac
         // because emoji2 isn't even on this build's compile classpath.
         logEmojiStartup("before-super");
@@ -67,7 +68,9 @@ public class MainActivity extends BridgeActivity {
             // The AndroidX public isConfigured() API observes initialization
             // without requesting a font download. Use reflection because
             // emoji2 is present at runtime but absent from compileClasspath.
-            // Class lookup alone does not initialize the optional class.
+            // Class lookup does not initialize it; invoking the static
+            // isConfigured method below MAY trigger class initialization.
+            // This instrumentation alone cannot attribute FontsProvider.
             Class<?> emoji = Class.forName(
                     "androidx.emoji2.text.EmojiCompat", false, getClassLoader());
             classPresent = true;
