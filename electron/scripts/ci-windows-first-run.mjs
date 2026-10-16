@@ -4,7 +4,7 @@
 // localhost DevTools. A compile-only or mocked Electron test is not sufficient.
 // Evidence: Windows CI runner, unpacked unsigned executable (NOT installed NSIS,
 // code signing, SmartScreen, microphone/camera, or human desktop interaction).
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -96,12 +96,43 @@ try {
   process.exitCode = 1;
 } finally {
   if (child && !stopped) {
-    child.kill();
+    // On Windows, Electron owns Chromium child processes. Killing only the
+    // direct Bridge.exe PID can leave a renderer/utility process holding an
+    // APPDATA/profile file and make an otherwise passing native smoke fail
+    // during temp cleanup. Terminate the *tree* before waiting for parent exit.
+    // A nonzero taskkill status is not itself a passed/failed assertion:
+    // the real correctness gate is the verified workspace removal below.
+    if (Number.isInteger(child.pid)) {
+      const killed = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+        windowsHide: true,
+        encoding: 'utf8',
+        timeout: 12_000,
+      });
+      if (killed.error || killed.status !== 0) {
+        console.warn('Windows native smoke: process-tree shutdown returned nonzero; verifying cleanup.');
+      }
+    }
+    if (!stopped) child.kill();
     await Promise.race([
       new Promise((resolve) => child.once('exit', resolve)),
       new Promise((resolve) => setTimeout(resolve, 3_000)),
     ]);
     if (!stopped) child.kill();
   }
-  rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });
+
+  // Windows may hold transient file handles briefly *after* Electron exits.
+  // Retry only the known Windows lock errors, with a finite total budget.
+  // Never convert a failed renderer assertion or permanent cleanup failure
+  // into green CI; the last unsuccessful removal still throws.
+  const retryable = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY']);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      rmSync(workspace, { recursive: true, force: true, maxRetries: 2, retryDelay: 200 });
+      break;
+    } catch (error) {
+      if (!retryable.has(error?.code) || attempt === 7) throw error;
+      console.warn(`Windows native smoke: temporary workspace cleanup busy (${error.code}), retry ${attempt + 1}/7`);
+      await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+    }
+  }
 }
