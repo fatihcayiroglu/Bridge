@@ -21,7 +21,7 @@ import { io } from 'socket.io-client';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -347,6 +347,16 @@ async function fontProviderStage(stage) {
     const currentPid = await pid();
     const raw = await androidFailureShell('dumpsys activity processes ' + PKG);
     record = { stage, available: true, ...inspectBridgeEmojiFontProvider(raw, currentPid) };
+    // Read-only JVM state; unlike the provider list this can show whether
+    // AndroidX EmojiCompat was actually initialized. PID-restricted and
+    // transformed to allowlisted booleans: raw logcat is NEVER retained.
+    try {
+      const nativeLog = await androidFailureShell(
+        "logcat -d --pid " + currentPid + " -s BridgeEmojiStartupProbe:I '*:S'");
+      record.nativeEmoji = parseNativeEmojiStartupProbe(nativeLog);
+    } catch {
+      record.nativeEmoji = parseNativeEmojiStartupProbe('');
+    }
   } catch {
     record = { stage, available: false, appPidValid: false, providerSections: 0 };
   }

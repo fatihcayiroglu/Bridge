@@ -38,7 +38,27 @@ public class MainActivity extends BridgeActivity {
      */
     @Override
     public void onCreate(android.os.Bundle savedInstanceState) {
+        // #209: fixed-shape, debug-only diagnostic. EmojiCompat.isConfigured()
+        // does not initialize or load a font. Never log app identifiers or raw
+        // provider/activity dumps. Helps distinguish Emoji2 from other callers.
+        logEmojiStartup("before-super");
         registerPlugin(BridgePushSupportPlugin.class);
         super.onCreate(savedInstanceState);
+        logEmojiStartup("after-super");
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        logEmojiStartup("resumed");
+    }
+
+    private void logEmojiStartup(String stage) {
+        // No release-side logging or native startup dependency is introduced.
+        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            android.util.Log.i("BridgeEmojiStartupProbe",
+                    "stage=" + stage + " configured=" +
+                    androidx.emoji2.text.EmojiCompat.isConfigured());
+        }
     }
 }

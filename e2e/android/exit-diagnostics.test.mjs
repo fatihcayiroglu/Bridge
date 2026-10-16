@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -208,4 +208,26 @@ test('font-provider probe exposes uncertain reference strength rather than silen
   assert.equal(result.fontProviderConnected, true);
   assert.equal(result.fontProviderRefCountsKnown, false);
   assert.equal(result.fontProviderStableRefs, 0);
+});
+
+
+test('native EmojiCompat diagnostic parses only bounded fixed-shape Boolean state', () => {
+  const raw = [
+    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=before-super configured=false',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=after-super configured=false',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=resumed configured=true',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): token=secret@example.com stage=wild configured=false',
+    '10-17 I/OtherTag( 5304): stage=resumed configured=false',
+    'PRIVATE phone contact=secret@example.com',
+  ].join('\n');
+  const result = parseNativeEmojiStartupProbe(raw);
+  assert.deepEqual(result, {
+    available: true, samples: 3, anyConfigured: true,
+    beforeSuper: false, afterSuper: false, lastResume: true,
+  });
+  assert.doesNotMatch(JSON.stringify(result), /5304|contact|email|token|PRIVATE/);
+  assert.deepEqual(parseNativeEmojiStartupProbe(''), {
+    available: false, samples: 0, anyConfigured: false,
+    beforeSuper: null, afterSuper: null, lastResume: null,
+  });
 });
