@@ -1,4 +1,4 @@
-# BETA PLAN — Bridge v1.123
+# BETA PLAN — Bridge v1.123 (historical baseline; browser evidence updated 2026-10-16)
 
 Goal: learn whether Bridge survives real use, with a blast radius small enough that
 failure is recoverable.
@@ -25,7 +25,7 @@ failure is recoverable.
 | Nightly `backup/backup.sh`, verified restorable at least once | RPO is 24 h and untested backups are not backups |
 | Someone watching `bridge_http_errors_total` daily | There is no alerting yet |
 | A named person on call | Runbooks need an operator |
-| **Browser guidance: Chrome / Edge / Safari** | Firefox has a known reload defect — see §4 |
+| **Browser guidance: Chromium/Chrome, Firefox and Safari/WebKit** | Core Playwright suites run on three engines. Firefox reload behavior was reclassified as a Playwright driver issue, not a proven Bridge app failure; physical Safari and media scenarios remain unverified — see §4. |
 | Voice labelled experimental | Not validated under real network conditions |
 
 **Duration:** minimum 2 weeks. Do not advance on a quiet week — quiet may mean nobody
@@ -69,7 +69,7 @@ Only with evidence from Phase B. Requires, at minimum:
 - Multi-instance deployment validated (never tested — `REDIS_URL` is mandatory there)
 - Rolling deploy validated, or an accepted maintenance window
 - Soak at target concurrency
-- Cross-browser matrix complete, including the Firefox defect fixed
+- Cross-browser matrix complete on the release candidate, including Firefox reload and real Safari user journeys; nightly engine tests alone are insufficient
 - Voice validated under real network conditions
 
 ---
@@ -80,12 +80,22 @@ Say these up front. A surprise is a support ticket; a stated limitation is a cho
 
 | Limitation | Impact |
 |---|---|
-| **Firefox: reloading the page can hang or show a blank app** | Measured and reproducible; caused by the service worker. Chromium and WebKit are unaffected. Recommend Chrome/Edge/Safari for the beta. |
+| **Firefox reload: historical automation-driver issue, not a confirmed product failure** | The old service-worker root-cause claim was disproven by isolation tests. `e2e/tests/cross-browser-journeys.spec.ts` checks a real in-page `location.reload()`, document replacement, rerender and session persistence. This regression passed in the 2026-10-16 nightly Firefox project. Recheck against real Firefox releases before beta sign-off. |
 | **10 concurrent users per public IP** | Everyone behind one school/office NAT shares that budget. |
 | **Voice is experimental** | Not validated under real multi-network conditions. |
 | **RPO is 24 hours** | A crash could lose up to a day of messages. |
 | **No alerting yet** | Problems are found by humans looking, or by users reporting. |
 | **Redis outage rejects all traffic** | Deliberate (fail-closed). Recovery is automatic. |
+
+
+### Cross-browser test evidence and its limits (2026-10-16)
+
+The [scheduled full Quality Gate run 38861389494](https://github.com/fatihcayiroglu/Bridge/actions/runs/38861389494) passed: **Chromium 534/534, Firefox 28/28, WebKit 28/28**. The media project separately passed **33/33 on Chromium only**, using fake input devices. These are automated engine-level results on commit `89daecd1f0f74d96bee25ccfe108abcfaf2e0c83`, **not** tests of the latest branch or of actual Google Chrome/Safari consumer installations.
+
+- Firefox and WebKit execute the scoped `cross-browser-core`, `cross-browser-journeys` and `cross-browser-product` suites, not every Chromium feature test. A green Firefox suite is useful but not a warranty that all sharing, audio and upload behavior works.
+- The older Firefox service-worker reload warning was incorrect: the recorded reproduction still hung Playwright's `page.reload()` when the service worker was disabled. An ordinary in-page reload succeeded and the updated E2E checks both rerendering and persisted login. We must not describe the old driver hang as an established Firefox product defect.
+- Playwright WebKit is **not** a physical macOS/iOS Safari user session. Real Safari permissions, screen capture, iOS storage policies and long-duration use remain release acceptance.
+- For routine PRs, `E2E full + media` may be conditionally **SKIPPED**; do not count it as passed just because Quality Gate passes. Keep nightly green with zero retries, and rerun all three engines on the final release SHA.
 
 ## 5. Feedback
 
