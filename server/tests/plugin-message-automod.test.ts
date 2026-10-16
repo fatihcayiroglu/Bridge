@@ -117,10 +117,16 @@ describe('server AutoMod applies to plugin messages', () => {
   });
 
   it('a link rule refuses a plugin link (no implicit integration exemption)', async () => {
-    await addRule('links', {});
+    // A malformed rule type used to make this test pass only because evaluation threw.
+    // Use the real link_filter policy and verify its matching moderation alert.
+    await addRule('link_filter', {});
     await pluginSend('read the rules at https://example.org/rules');
     expect(await posted()).toEqual([]);
     expect(published()).toEqual([]);
+    const logs = await logEntries();
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({ userId: 'system', autoModAlert: true });
+    expect(logs[0]?.content).toContain('plugin:welcome-bot');
   });
 
   it('a rule whose action is only a timeout still refuses: a plugin cannot be timed out', async () => {
