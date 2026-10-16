@@ -147,8 +147,9 @@ router.post('/', authMiddleware, limits.moderation(), async (req, res) => {
     return res.status(400).json({ error: 'enabled boolean olmalı' });
   }
 
-  if (!isPlainObject(req.body.config ?? {})) return res.status(400).json({ error: 'config nesne olmalı' });
-  const boundConfig = await bindLinkExemptions(serverId, req.body.type, req.body.config ?? {});
+  const rawConfig: unknown = req.body.config ?? {};
+  if (!isPlainObject(rawConfig)) return res.status(400).json({ error: 'config nesne olmalı' });
+  const boundConfig = await bindLinkExemptions(serverId, req.body.type, rawConfig);
   if (!boundConfig) return res.status(400).json({ error: 'Geçersiz veya sunucu dışı entegrasyon seçimi' });
   const normalized = normalizeAutomodConfig(req.body.type, boundConfig);
   if (!normalized.ok) return res.status(400).json({ error: normalized.error });
