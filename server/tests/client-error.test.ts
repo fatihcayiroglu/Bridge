@@ -188,7 +188,7 @@ describe('GET /api/client-error/stats', () => {
     expect(report).toEqual(expect.objectContaining({
       source: 'other', line: 0, col: 0,
     }));
-    expect(JSON.stringify(report)).not.toMatch(/service\\.example|B3-source-private-token|debug\\.js/);
+    expect(JSON.stringify(report)).not.toMatch(/service\.example|B3-source-private-token|debug\.js/);
   });
 
   it('B3: retains allowlisted diagnostic categories and finite integer positions', async () => {

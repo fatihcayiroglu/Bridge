@@ -89,7 +89,7 @@ function safeErrorSource(value: unknown): string {
 
 function safeErrorLocation(value: unknown): number {
   const numeric = typeof value === 'number' ? value
-    : typeof value === 'string' && /^\\d{1,7}$/.test(value) ? Number(value) : NaN;
+    : typeof value === 'string' && /^\d{1,7}$/.test(value) ? Number(value) : NaN;
   return Number.isSafeInteger(numeric) && numeric >= 0 && numeric <= 1_000_000
     ? numeric : 0;
 }
