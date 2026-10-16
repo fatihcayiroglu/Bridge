@@ -2445,7 +2445,7 @@ const translations: Record<string, string> = {
   "pci_proof_needed": "Подтвердите свою личность, чтобы продолжить.",
   "pci_error": "Что-то пошло не так. Повторите попытку.",
   "pci_review_again": "Проверить снова",
-  "pci_expired": "Срок одобрения истёк. Проверьте снова."
+  "pci_expired": "Срок одобрения истёк. Проверьте снова.",
   "automation_link_exemption_label": "Разрешить ссылки для этих интеграций",
   "automation_link_exemption_empty": "Нет установленных ботов или вебхуков",
   "automation_link_exemption_save_failed": "Не удалось сохранить исключение интеграции.",
