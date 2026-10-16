@@ -347,16 +347,32 @@ async function fontProviderStage(stage) {
     const currentPid = await pid();
     const raw = await androidFailureShell('dumpsys activity processes ' + PKG);
     record = { stage, available: true, ...inspectBridgeEmojiFontProvider(raw, currentPid) };
-    // Read-only class availability only; NOT initialized/used status.
-    // The previous direct EmojiCompat API call did not compile on this app.
-    // PID-restricted, allowlisted booleans; raw logcat is NEVER retained.
+    // Debug-only native state. Never emit or persist raw logcat. The first
+    // attempt uses Android's own PID filter; if it yields no markers, use a
+    // TAG-filtered fallback and verify the exact app PID in our parser.
+    // Either method remains a diagnostic only; FD01 is never waived.
+    let nativeEmoji = parseNativeEmojiStartupProbe('');
+    let nativeCapture = 'unavailable';
     try {
       const nativeLog = await androidFailureShell(
         "logcat -d --pid " + currentPid + " -s BridgeEmojiStartupProbe:I '*:S'");
-      record.nativeEmoji = parseNativeEmojiStartupProbe(nativeLog);
+      nativeEmoji = parseNativeEmojiStartupProbe(nativeLog, currentPid);
+      if (nativeEmoji.available) nativeCapture = 'pid-filtered';
     } catch {
-      record.nativeEmoji = parseNativeEmojiStartupProbe('');
+      // Missing diagnostics must remain unknown, not false.
     }
+    if (!nativeEmoji.available) {
+      try {
+        const taggedLog = await androidFailureShell(
+          "logcat -d -b main -v brief -s BridgeEmojiStartupProbe:I '*:S'");
+        nativeEmoji = parseNativeEmojiStartupProbe(taggedLog, currentPid);
+        if (nativeEmoji.available) nativeCapture = 'tag-filtered-pid-verified';
+      } catch {
+        // Missing diagnostics must remain unknown, not false.
+      }
+    }
+    record.nativeEmoji = nativeEmoji;
+    record.nativeCapture = nativeCapture;
   } catch {
     record = { stage, available: false, appPidValid: false, providerSections: 0 };
   }
