@@ -19,6 +19,8 @@ export interface AutomodConfig {
   timeoutMs: number;
   logChannelId: string | null;
   exemptRoles: string[];
+  /** Only link_filter rules; server-bound installation IDs, never client supplied. */
+  exemptIntegrations?: Array<{ principal: string; installationId: string }>;
   words?: string[];
   maxMessages?: number;
   windowSecs?: number;
@@ -55,7 +57,7 @@ const TYPE_KEYS: Record<AutomodRuleType, ReadonlySet<string>> = {
   blocked_words: new Set(['words']),
   spam_messages: new Set(['maxMessages', 'windowSecs']),
   caps_lock: new Set(['minLength']),
-  link_filter: new Set(),
+  link_filter: new Set(['exemptIntegrations']),
   invite_filter: new Set(),
   mention_spam: new Set(['maxMentions']),
   repeated_chars: new Set(['minRepeat']),
@@ -142,6 +144,28 @@ export function normalizeAutomodConfig(type: AutomodRuleType, input: unknown): N
   }
 
   const config: AutomodConfig = { action, timeoutMs, logChannelId, exemptRoles };
+
+  if (type === 'link_filter') {
+    const incoming = input.exemptIntegrations ?? [];
+    if (!Array.isArray(incoming) || incoming.length > 20) {
+      return { ok: false, error: 'config.exemptIntegrations en fazla 20 entegrasyon içermeli' };
+    }
+    const seen = new Set<string>();
+    const bindings: Array<{ principal: string; installationId: string }> = [];
+    for (const entry of incoming) {
+      if (!isPlainObject(entry) || Object.keys(entry).some(key => key !== 'principal' && key !== 'installationId')
+        || typeof entry.principal !== 'string' || !/^(?:bot|webhook):[A-Za-z0-9_-]{1,128}$/.test(entry.principal)
+        || typeof entry.installationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(entry.installationId)
+        || seen.has(entry.principal)) {
+        return { ok: false, error: 'config.exemptIntegrations geçersiz veya yinelenen entegrasyon içeriyor' };
+      }
+      seen.add(entry.principal);
+      bindings.push({ principal: entry.principal, installationId: entry.installationId });
+    }
+    // Preserve the original public default shape for existing link_filter rules.
+    // A manager-supplied empty list remains explicit and revokes all grants.
+    if (input.exemptIntegrations !== undefined) config.exemptIntegrations = bindings;
+  }
 
   if (type === 'blocked_words') {
     if (!Array.isArray(input.words) || input.words.length < 1 || input.words.length > 100) {
@@ -253,6 +277,8 @@ export async function evaluateAutomodRules(
     content: string;
     memberRoleIds: string[];
     event?: 'send' | 'edit';
+    /** Verified by the server-side installation resolver, not from message payloads. */
+    machineInstallationId?: string | null;
   },
   increment: (key: string, ttlSeconds: number) => Promise<number>,
 ): Promise<AutomodDecision> {
@@ -286,6 +312,12 @@ export async function evaluateAutomodRules(
     }
     const config = normalized.config;
     if (config.exemptRoles.some((roleId) => roleIds.has(roleId))) continue;
+    // Exempt only the exact current machine installation from this link rule.
+    // Human principals and other AutoMod rule types never use these bindings.
+    if (rule.type === 'link_filter' && context.machineInstallationId
+      && /^(?:bot|webhook):/.test(context.userId)
+      && config.exemptIntegrations?.some(binding =>
+        binding.principal === context.userId && binding.installationId === context.machineInstallationId)) continue;
 
     let reason: string | null;
     if (rule.type === 'spam_messages') {

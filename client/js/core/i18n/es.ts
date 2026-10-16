@@ -2445,7 +2445,11 @@ const translations: Record<string, string> = {
   "pci_proof_needed": "Confirma tu identidad para continuar.",
   "pci_error": "Algo salió mal. Inténtalo de nuevo.",
   "pci_review_again": "Revisar de nuevo",
-  "pci_expired": "La aprobación caducó. Revisa de nuevo."
+  "pci_expired": "La aprobación caducó. Revisa de nuevo.",
+  "automation_link_exemption_label": "Permitir enlaces para estas integraciones",
+  "automation_link_exemption_empty": "No hay bots ni webhooks instalados",
+  "automation_link_exemption_save_failed": "No se pudo guardar la excepción de integración.",
+  "automation_link_exemption_saved": "Excepción de integración guardada.",
 };
 
 export default translations;

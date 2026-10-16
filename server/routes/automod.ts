@@ -27,7 +27,8 @@
 
 import express from 'express';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
-import { Automod, Members, Channels, Roles } from '../db/repositories';
+import { Automod, Members, Channels, Roles, Auth } from '../db/repositories';
+import { bindSelectedIntegrations, listInstalledIntegrations } from '../lib/automodIntegrationExemptions';
 import { authMiddleware } from '../middleware/auth';
 import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
 import { limits } from '../middleware/rateLimit';
@@ -57,6 +58,34 @@ function hasOnlyKeys(body: Record<string, unknown>, allowed: ReadonlySet<string>
   return Object.keys(body).every((key) => allowed.has(key));
 }
 
+async function bindLinkExemptions(serverId: string, type: string, config: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+  if (!Object.prototype.hasOwnProperty.call(config, 'exemptIntegrations')) return config;
+  if (type !== 'link_filter') return null;
+  // Only the list of principals comes from the client, never binding objects.
+  const bindings = await bindSelectedIntegrations(serverId, config.exemptIntegrations);
+  return bindings === null ? null : { ...config, exemptIntegrations: bindings };
+}
+
+function principalNames(config: unknown): string[] {
+  const raw = parseStoredAutomodConfig(config).exemptIntegrations;
+  return Array.isArray(raw) ? raw.flatMap(entry =>
+    entry && typeof entry === 'object' && typeof entry.principal === 'string' ? [entry.principal] : []) : [];
+}
+
+async function auditRuleChange(serverId: string, actorId: string, action: string, ruleId: string,
+  type: string, before: unknown, after: unknown): Promise<void> {
+  const oldNames = new Set(principalNames(before));
+  const newNames = new Set(principalNames(after));
+  await Auth.insertAuditLog({
+    serverId, actorId, action, targetId: ruleId, targetName: type,
+    detail: JSON.stringify({
+      ruleType: type,
+      exemptionsAdded: [...newNames].filter(name => !oldNames.has(name)),
+      exemptionsRemoved: [...oldNames].filter(name => !newNames.has(name)),
+    }),
+  });
+}
+
 async function checkMod(userId: string, serverId: string): Promise<boolean> {
   // Permission resolution is not a membership oracle.  A stale role/cache or
   // permissive test adapter must never turn a non-member into a moderator.
@@ -82,6 +111,14 @@ async function validateConfigReferences(
   }
   return null;
 }
+
+// Server-side roster for the picker; tokens and credentials are never exposed.
+router.get('/integrations', authMiddleware, async (req, res) => {
+  const user = castAuthed(req).user;
+  const serverId = String(req.params.sid ?? '');
+  if (!await checkMod(user.id, serverId)) return res.status(403).json({ error: 'Yönetici yetkisi gerekli' });
+  return res.json(await listInstalledIntegrations(serverId));
+});
 
 // GET /api/servers/:sid/automod
 router.get('/', authMiddleware, async (req, res) => {
@@ -110,7 +147,11 @@ router.post('/', authMiddleware, limits.moderation(), async (req, res) => {
     return res.status(400).json({ error: 'enabled boolean olmalı' });
   }
 
-  const normalized = normalizeAutomodConfig(req.body.type, req.body.config ?? {});
+  const rawConfig: unknown = req.body.config ?? {};
+  if (!isPlainObject(rawConfig)) return res.status(400).json({ error: 'config nesne olmalı' });
+  const boundConfig = await bindLinkExemptions(serverId, req.body.type, rawConfig);
+  if (!boundConfig) return res.status(400).json({ error: 'Geçersiz veya sunucu dışı entegrasyon seçimi' });
+  const normalized = normalizeAutomodConfig(req.body.type, boundConfig);
   if (!normalized.ok) return res.status(400).json({ error: normalized.error });
   const referenceError = await validateConfigReferences(serverId, normalized.config);
   if (referenceError) return res.status(400).json({ error: referenceError });
@@ -126,6 +167,7 @@ router.post('/', authMiddleware, limits.moderation(), async (req, res) => {
     createdBy: user.id,
     updatedAt: Date.now(),
   });
+  await auditRuleChange(serverId, user.id, 'AUTOMOD_RULE_CREATE', String(rule._id), String(rule.type), null, rule.config);
   return res.status(201).json(serializeRule(rule));
 });
 
@@ -152,7 +194,9 @@ router.patch('/:rid', authMiddleware, limits.moderation(), async (req, res) => {
     if (!isPlainObject(req.body.config) || !isAutomodRuleType(rule.type)) {
       return res.status(400).json({ error: 'config veya kayıtlı kural türü geçersiz' });
     }
-    const merged = { ...parseStoredAutomodConfig(rule.config), ...req.body.config };
+    const boundConfig = await bindLinkExemptions(serverId, rule.type, req.body.config);
+    if (!boundConfig) return res.status(400).json({ error: 'Geçersiz veya sunucu dışı entegrasyon seçimi' });
+    const merged = { ...parseStoredAutomodConfig(rule.config), ...boundConfig };
     const normalized = normalizeAutomodConfig(rule.type, merged);
     if (!normalized.ok) return res.status(400).json({ error: normalized.error });
     const referenceError = await validateConfigReferences(serverId, normalized.config);
@@ -160,9 +204,13 @@ router.patch('/:rid', authMiddleware, limits.moderation(), async (req, res) => {
     patch.config = normalized.config;
   }
 
+  // Mock repositories can mutate the fetched row in place. Snapshot the
+  // immutable previous config before the update, so revocations are audited.
+  const previousConfig = parseStoredAutomodConfig(rule.config);
   await Automod.update(ruleId, serverId, patch);
   const updated = await Automod.findByIdAndServer(ruleId, serverId);
   if (!updated) return res.status(404).json({ error: 'Kural bulunamadı' });
+  await auditRuleChange(serverId, user.id, 'AUTOMOD_RULE_UPDATE', ruleId, String(rule.type), previousConfig, updated.config);
   return res.json(serializeRule(updated));
 });
 
@@ -175,6 +223,7 @@ router.delete('/:rid', authMiddleware, limits.moderation(), async (req, res) => 
   const rule = await Automod.findByIdAndServer(ruleId, serverId);
   if (!rule) return res.status(404).json({ error: 'Kural bulunamadı' });
   await Automod.delete(ruleId, serverId);
+  await auditRuleChange(serverId, user.id, 'AUTOMOD_RULE_DELETE', ruleId, String(rule.type), rule.config, null);
   return res.json({ deleted: true });
 });
 

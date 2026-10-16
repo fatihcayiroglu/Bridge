@@ -9,6 +9,7 @@
   import { fetchMyPermissions, hasPerm, PERM_MANAGE_ROLES, PERM_MANAGE_SERVER } from '../../permissions/myPermissions.js';
   import { getCurrentServerFromRegistry, isStillCurrentServer } from '../stores/serverSettingsStore';
 
+  interface InstalledIntegration { principal: string; installationId: string; name: string }
   interface AutomodRule { _id: string; type: string; enabled?: boolean; config?: Record<string, unknown> }
   interface ReactionRule { _id: string; channelId?: string; messageId?: string; emoji?: string; roleId?: string }
   interface OutgoingHook { _id: string; name?: string; url?: string; events?: string[]; enabled?: boolean; lastStatus?: number | null; consecutiveFailures?: number }
@@ -19,6 +20,7 @@
   let perms = $state(0); let loading = $state(true); let busy = $state(''); let error = $state(''); let notice = $state('');
   let automod = $state<AutomodRule[]>([]); let reaction = $state<ReactionRule[]>([]); let hooks = $state<OutgoingHook[]>([]);
   let roles = $state<Row[]>([]); let channels = $state<Row[]>([]);
+  let integrations = $state<InstalledIntegration[]>([]);
   let ruleType = $state('link_filter'); let blockedWords = $state('');
   let rrChannel = $state(''); let rrMessage = $state(''); let rrEmoji = $state(''); let rrRole = $state('');
   let hookName = $state(''); let hookUrl = $state(''); let hookEvents = $state<string[]>(['message:new']); let hookSecret = $state('');
@@ -42,13 +44,21 @@
       const roleRes = await apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/roles`);
       if (roleRes.ok) roles = await roleRes.json() as Row[]; else roles = [];
       if (canServer) {
-        const [a,h] = await Promise.all([
+        const [a,h,i] = await Promise.all([
           apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/automod`),
           apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/outgoing-webhooks`),
+          apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/automod/integrations`),
         ]);
         automod = a.ok ? await a.json() as AutomodRule[] : [];
+        // An absent/invalid roster grants no exemptions; never invent bindings.
+        const rawIntegrations: unknown = i.ok ? await i.json() : [];
+        integrations = Array.isArray(rawIntegrations) ? rawIntegrations.filter(
+          (entry): entry is InstalledIntegration => entry !== null && typeof entry === 'object'
+            && typeof entry.principal === 'string' && typeof entry.installationId === 'string'
+            && typeof entry.name === 'string',
+        ) : [];
         hooks = h.ok ? await h.json() as OutgoingHook[] : [];
-      } else { automod = []; hooks = []; }
+      } else { automod = []; hooks = []; integrations = []; }
       const rr = await apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/reaction-roles`);
       reaction = rr.ok ? await rr.json() as ReactionRule[] : [];
       if (!rrChannel) rrChannel = channels[0]?._id ?? ''; if (!rrRole) rrRole = roles[0]?._id ?? '';
@@ -74,6 +84,26 @@
   async function deleteAutomod(rule: AutomodRule): Promise<void> { if(!canServer||!await confirmProductAction({title:t("ui_automod_kuralini_sil", "AutoMod kuralını sil"),message:t("ui_bu_kurali_kalici_olarak_silmek_istiyor_musun", "Bu kuralı kalıcı olarak silmek istiyor musun?"),confirmLabel:t("msg_action_delete", "Sil"),tone:'danger'}))return; const ok=await req(`automod:del:${rule._id}`,()=>apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/automod/${encodeURIComponent(rule._id)}`,{method:'DELETE'}),t('ui_automod_delete_failed', 'AutoMod kuralı silinemedi.'));if(ok){notice=t("ui_automod_kurali_silindi", "AutoMod kuralı silindi.");await load(true);} }
   async function createReaction(): Promise<void> { if(!canRoles)return; if(!rrChannel||!rrMessage.trim()||!rrEmoji.trim()||!rrRole){error=t("ui_kanal_mesaj_kimligi_emoji_ve_rol_zorunlu", "Kanal, mesaj kimliği, emoji ve rol zorunlu.");return;} const ok=await req('rr:new',()=>apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/reaction-roles`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channelId:rrChannel,messageId:rrMessage.trim(),emoji:rrEmoji.trim(),roleId:rrRole})}),t('ui_reaction_role_create_failed', 'Reaction role oluşturulamadı.'));if(ok){rrMessage='';rrEmoji='';notice=t("ui_reaction_role_olusturuldu", "Reaction role oluşturuldu.");await load(true);} }
   async function deleteReaction(row:ReactionRule):Promise<void>{if(!canRoles||!await confirmProductAction({title:t("ui_reaction_role_sil", "Reaction role sil"),message:t("ui_bu_reaction_role_kuralini_silmek_istiyor_musun", "Bu reaction role kuralını silmek istiyor musun?"),confirmLabel:t("msg_action_delete", "Sil"),tone:'danger'}))return;const ok=await req(`rr:del:${row._id}`,()=>apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/reaction-roles/${encodeURIComponent(row._id)}`,{method:'DELETE'}),'Reaction role silinemedi.');if(ok){notice='Reaction role silindi.';await load(true);}}
+  function currentLinkExemptions(rule: AutomodRule): string[] {
+    const entries = rule.config?.exemptIntegrations;
+    if (!Array.isArray(entries)) return [];
+    return integrations.filter(integration => entries.some((entry: unknown) =>
+      entry !== null && typeof entry === 'object'
+      && (entry as InstalledIntegration).principal === integration.principal
+      && (entry as InstalledIntegration).installationId === integration.installationId))
+      .map(integration => integration.principal);
+  }
+  async function setLinkExemption(rule: AutomodRule, principal: string, checked: boolean): Promise<void> {
+    if (!canServer || rule.type !== 'link_filter' || !integrations.some(i => i.principal === principal)) return;
+    const selected = new Set(currentLinkExemptions(rule));
+    if (checked) selected.add(principal); else selected.delete(principal);
+    const ok = await req(`automod:exempt:${rule._id}`, () => apiFetch(
+      `${getAPI()}/api/servers/${encodeURIComponent(serverId)}/automod/${encodeURIComponent(rule._id)}`,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: { exemptIntegrations: [...selected] } }) },
+    ), t('automation_link_exemption_save_failed', 'Integration exemption could not be saved.'));
+    if (ok) { notice = t('automation_link_exemption_saved', 'Integration exemption saved.'); await load(true); }
+  }
   function toggleEvent(event:string):void{hookEvents=hookEvents.includes(event)?hookEvents.filter(x=>x!==event):[...hookEvents,event];}
   async function createHook():Promise<void>{if(!canServer)return;if(!hookName.trim()||!hookUrl.trim()||!hookEvents.length){error=t("ui_webhook_adi_url_ve_en_az_bir_event_zorunlu", "Webhook adı, URL ve en az bir event zorunlu.");return;}const ok=await req('hook:new',()=>apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/outgoing-webhooks`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:hookName.trim(),url:hookUrl.trim(),events:hookEvents,secret:hookSecret.trim()||null})}),t('ui_outgoing_webhook_create_failed', 'Giden webhook oluşturulamadı.'));if(ok){hookName='';hookUrl='';hookSecret='';notice=t("ui_giden_webhook_olusturuldu", "Giden webhook oluşturuldu.");await load(true);}}
   async function toggleHook(row:OutgoingHook):Promise<void>{if(!canServer)return;const ok=await req(`hook:${row._id}`,()=>apiFetch(`${getAPI()}/api/servers/${encodeURIComponent(serverId)}/outgoing-webhooks/${encodeURIComponent(row._id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!row.enabled})}),t('ui_webhook_update_failed', 'Webhook güncellenemedi.'));if(ok){notice=t("ui_webhook_guncellendi", "Webhook güncellendi.");await load(true);}}
@@ -88,7 +118,7 @@
     {#if error}<p class="state error" role="alert">{error}</p>{/if}{#if notice}<p class="state success" role="status">{notice}</p>{/if}
     <article><h3>{t('markup_automod_145d753', "AutoMod")}</h3>{#if !canServer}<p class="state">{t('markup_manage_server_yetkisi_gerekli_b053111', "MANAGE_SERVER yetkisi gerekli.")}</p>{:else}
       <div class="form row"><select bind:value={ruleType}>{#each RULE_TYPES as entry}<option value={entry[0]}>{entry[1]}</option>{/each}</select>{#if ruleType==='blocked_words'}<input bind:value={blockedWords} placeholder={t('attr_kelime1_kelime2_8b5396b', "kelime1, kelime2")} />{/if}<button disabled={Boolean(busy)} onclick={()=>void createAutomod()}>{t('markup_kural_ekle_8ece5a0', "Kural ekle")}</button></div>
-      <div class="list">{#each automod as rule (rule._id)}<div class="item"><span><strong>{RULE_TYPES.find(x=>x[0]===rule.type)?.[1]??rule.type}</strong><small>{rule.enabled===false?t("ui_kapali"):t("ui_acik")}</small></span><span class="actions"><button disabled={Boolean(busy)} onclick={()=>void toggleAutomod(rule)}>{rule.enabled===false?t("surface_ac_7205e6"):t("close")}</button><button class="danger" disabled={Boolean(busy)} onclick={()=>void deleteAutomod(rule)}>{t('delete')}</button></span></div>{:else}<p class="state">{t("automation_no_automod")}</p>{/each}</div>
+      <div class="list">{#each automod as rule (rule._id)}<div class="item"><span><strong>{RULE_TYPES.find(x=>x[0]===rule.type)?.[1]??rule.type}</strong><small>{rule.enabled===false?t("ui_kapali"):t("ui_acik")}</small></span><span class="actions"><button disabled={Boolean(busy)} onclick={()=>void toggleAutomod(rule)}>{rule.enabled===false?t("surface_ac_7205e6"):t("close")}</button><button class="danger" disabled={Boolean(busy)} onclick={()=>void deleteAutomod(rule)}>{t('delete')}</button></span>{#if rule.type === 'link_filter'}<div class="link-exemptions"><small>{t('automation_link_exemption_label', 'Allow links for these installed integrations:')}</small>{#each integrations as integration (integration.principal)}<label><input type="checkbox" checked={currentLinkExemptions(rule).includes(integration.principal)} disabled={Boolean(busy)} onchange={(event)=>void setLinkExemption(rule, integration.principal, (event.currentTarget as HTMLInputElement).checked)}/>{integration.name} ({integration.principal.split(':')[0]})</label>{:else}<small>{t('automation_link_exemption_empty', 'No installed bots or webhooks.')}</small>{/each}</div>{/if}</div>{:else}<p class="state">{t("automation_no_automod")}</p>{/each}</div>
     {/if}</article>
     <article><h3>{t('markup_reaction_roles_c21aed8', "Reaction Roles")}</h3>{#if !canRoles}<p class="state">{t('markup_manage_roles_yetkisi_gerekli_d364770', "MANAGE_ROLES yetkisi gerekli.")}</p>{:else}
       <div class="form grid"><select bind:value={rrChannel}>{#each channels as ch}<option value={ch._id}>#{ch.name??ch._id}</option>{/each}</select><input bind:value={rrMessage} placeholder={t('attr_mesaj_id_4396bb1', "Mesaj ID")}/><input bind:value={rrEmoji} maxlength="64" placeholder={t('srv_tab_emoji')}/><select bind:value={rrRole}>{#each roles as role}<option value={role._id}>{role.name??role._id}</option>{/each}</select><button disabled={Boolean(busy)} onclick={()=>void createReaction()}>{t('markup_kural_ekle_8ece5a0', "Kural ekle")}</button></div>
@@ -102,5 +132,6 @@
 </section>
 
 <style>
+  .link-exemptions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:7px}.link-exemptions label{display:inline-flex;align-items:center;gap:5px}.link-exemptions input{min-height:unset}
   .automation{display:grid;gap:14px}.intro h2,article h3{margin:0}.intro p,.state{margin:5px 0 0;color:var(--text-2);font-size:var(--type-body-sm)}article{display:grid;gap:10px;padding:12px;border:1px solid var(--border-subtle);border-radius:var(--radius-control);background:var(--surface-1)}.form{display:grid;gap:8px}.row{grid-template-columns:minmax(160px,1fr) minmax(180px,1.4fr) auto}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.form input,.form select,.form button,.item button{min-height:36px;border:1px solid var(--border-subtle);border-radius:var(--radius-control);background:var(--surface-2);color:var(--text-primary);padding:6px 9px}.form button,.item button{cursor:pointer}.events{display:flex;flex-wrap:wrap;gap:6px 12px;color:var(--text-2);font-size:var(--type-caption)}.events label{display:flex;align-items:center;gap:5px}.list{display:grid;gap:6px}.item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--border-subtle);border-radius:var(--radius-control)}.item span:first-child{display:grid;gap:2px;min-width:0}.item small{color:var(--text-muted);overflow-wrap:anywhere}.actions{display:flex;gap:6px;flex-wrap:wrap}.danger{color:var(--danger)!important}.error{color:var(--danger)}.success{color:var(--success)}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}@media(max-width:700px){.row,.grid{grid-template-columns:1fr}.item{align-items:flex-start;flex-direction:column}.actions{width:100%}}
 </style>
