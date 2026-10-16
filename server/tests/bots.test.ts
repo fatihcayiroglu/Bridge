@@ -207,11 +207,18 @@ describe('POST /api/webhooks/:webhookId', () => {
 });
 
 describe('webhook machine principal AutoMod', () => {
+  const emitted: Array<{ room: string; name: string }> = [];
+  const webhookIo = {
+    to(room: string) {
+      return { emit(name: string) { emitted.push({ room, name }); } };
+    },
+  };
   const WEBHOOK_ID = 'webhook-am1';
   const CHANNEL_ID = 'webhook-am-channel';
   const webhookUrl = `/api/webhooks/${WEBHOOK_ID}?token=the-integration-secret`;
 
   beforeAll(async () => {
+    app.set('io', webhookIo);
     await mockDb.channels.insert(makeChannel(SERVER_ID, { _id: CHANNEL_ID, type: 'text' }));
     await mockDb.webhooks.insert({
       _id: WEBHOOK_ID, channelId: CHANNEL_ID, serverId: SERVER_ID,
@@ -224,7 +231,9 @@ describe('webhook machine principal AutoMod', () => {
     });
   });
 
+  beforeEach(() => { emitted.length = 0; });
   afterEach(() => jest.restoreAllMocks());
+  afterAll(() => { app.set('io', null); });
 
   it('refuses blocked plaintext with no message row or realtime publish', async () => {
     const before = await mockDb.messages.find({ channelId: CHANNEL_ID });
@@ -232,6 +241,7 @@ describe('webhook machine principal AutoMod', () => {
     expect(response.status).toBe(422);
     expect(response.body).toEqual({ error: 'Message blocked by server moderation' });
     expect(await mockDb.messages.find({ channelId: CHANNEL_ID })).toHaveLength(before.length);
+    expect(emitted.some(e => e.name === 'message:new' || e.name === 'channel:activity')).toBe(false);
   });
 
   it('inspects text in embed-only posts and refuses a blocked description', async () => {
@@ -240,6 +250,7 @@ describe('webhook machine principal AutoMod', () => {
       .send({ embeds: [{ title: 'Build', description: 'contains forbiddenword' }] });
     expect(response.status).toBe(422);
     expect(await mockDb.messages.find({ channelId: CHANNEL_ID })).toHaveLength(before.length);
+    expect(emitted.some(e => e.name === 'message:new' || e.name === 'channel:activity')).toBe(false);
   });
 
   it('legitimate webhook messages are still persisted', async () => {
@@ -248,6 +259,8 @@ describe('webhook machine principal AutoMod', () => {
     expect(response.status).toBe(200);
     const rows = await mockDb.messages.find({ channelId: CHANNEL_ID });
     expect(rows).toHaveLength(before.length + 1);
+    expect(emitted).toContainEqual({ room: `channel:${CHANNEL_ID}`, name: 'message:new' });
+
     expect(rows[rows.length - 1]).toMatchObject({
       userId: `webhook:${WEBHOOK_ID}`, content: 'Build succeeded', isWebhook: true,
     });
@@ -261,6 +274,7 @@ describe('webhook machine principal AutoMod', () => {
     expect(response.status).toBe(503);
     expect(response.body).toEqual({ error: 'Moderation unavailable' });
     expect(await mockDb.messages.find({ channelId: CHANNEL_ID })).toHaveLength(before.length);
+    expect(emitted.some(e => e.name === 'message:new' || e.name === 'channel:activity')).toBe(false);
   });
 
   it('oversized embed text is rejected before rule lookup and persistence', async () => {
@@ -269,5 +283,6 @@ describe('webhook machine principal AutoMod', () => {
       .send({ embeds: [{ description: 'a'.repeat(33_000) }] });
     expect(response.status).toBe(413);
     expect(await mockDb.messages.find({ channelId: CHANNEL_ID })).toHaveLength(before.length);
+    expect(emitted.some(e => e.name === 'message:new' || e.name === 'channel:activity')).toBe(false);
   });
 });
