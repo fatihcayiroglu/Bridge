@@ -12,8 +12,10 @@ export async function currentIntegrationBinding(
   principal: string,
 ): Promise<AutomodIntegrationBinding | null> {
   const match = /^(bot|webhook):([A-Za-z0-9_-]{1,128})$/.exec(principal);
-  if (!match) return null;
-  const [, kind, id] = match;
+  if (!match || typeof match[1] !== 'string' || typeof match[2] !== 'string') return null;
+  // noUncheckedIndexedAccess: each capture must be verified before use.
+  const kind = match[1];
+  const id = match[2];
 
   if (kind === 'webhook') {
     const webhook = await ChannelWebhooks.findById(id) as {
