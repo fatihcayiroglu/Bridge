@@ -345,7 +345,7 @@ async function fontProviderStage(stage) {
   let record;
   try {
     const currentPid = await pid();
-    const raw = await sh('dumpsys activity processes ' + PKG, DIAGNOSTIC_SHELL_BUDGET_MS);
+    const raw = await androidFailureShell('dumpsys activity processes ' + PKG);
     record = { stage, available: true, ...inspectBridgeEmojiFontProvider(raw, currentPid) };
   } catch {
     record = { stage, available: false, appPidValid: false, providerSections: 0 };
