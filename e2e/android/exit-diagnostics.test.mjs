@@ -240,3 +240,23 @@ test('native EmojiCompat missing class is not mistaken for confirmed uninitializ
   assert.equal(result.beforeSuper, null);
   assert.equal(result.unknownConfigured, 1);
 });
+
+test('tag-filtered EmojiCompat logcat fallback accepts only exact target PID', () => {
+  const raw = [
+    'I/BridgeEmojiStartupProbe( 5304): stage=before-super classPresent=true configured=false',
+    'I/BridgeEmojiStartupProbe( 8888): stage=after-super classPresent=true configured=true',
+    '10-17 01:24:18.123  5304  5305 I BridgeEmojiStartupProbe: stage=after-super classPresent=true configured=true',
+    'BridgeEmojiStartupProbe stage=resumed classPresent=true configured=true',
+    'I/BridgeEmojiStartupProbe( 53040): stage=resumed classPresent=true configured=true',
+    'I/BridgeEmojiStartupProbe( 5304): stage=resumed classPresent=true configured=unknown',
+  ].join('\n');
+  const evidence = parseNativeEmojiStartupProbe(raw, '5304');
+  assert.equal(evidence.samples, 3);
+  assert.equal(evidence.beforeSuper, false);
+  assert.equal(evidence.afterSuper, true);
+  assert.equal(evidence.lastResume, null);
+  assert.equal(evidence.unknownConfigured, 1);
+  assert.equal(parseNativeEmojiStartupProbe(raw, 'not-a-pid').available, false);
+  assert.equal(parseNativeEmojiStartupProbe('BridgeEmojiStartupProbe stage=before-super classPresent=true configured=true', '5304').available, false);
+  assert.doesNotMatch(JSON.stringify(evidence), /5304|8888/);
+});
