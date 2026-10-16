@@ -334,6 +334,27 @@ async function attachPage({ timeout = 60_000 } = {}) {
 }
 async function pid() { return MODE === 'dryrun' ? 'dryrun' : (await sh(`pidof ${PKG}`)) || null; }
 
+
+/**
+ * Read only a bounded/allowlisted font-provider summary at distinct stages.
+ * This is evidence, not a retry. Never put raw dumpsys lines or app PIDs
+ * in logs or CI artifacts. Failure to obtain a probe remains explicit.
+ */
+async function fontProviderStage(stage) {
+  if (MODE !== 'android') return null;
+  let record;
+  try {
+    const currentPid = await pid();
+    const raw = await sh('dumpsys activity processes ' + PKG, DIAGNOSTIC_SHELL_BUDGET_MS);
+    record = { stage, available: true, ...inspectBridgeEmojiFontProvider(raw, currentPid) };
+  } catch {
+    record = { stage, available: false, appPidValid: false, providerSections: 0 };
+  }
+  (facts.fontProviderStages ??= []).push(record);
+  log('Android font-provider dependency', JSON.stringify(record));
+  return record;
+}
+
 /**
  * A bounded, no-PII OS pressure snapshot. L01/ANR01 keep their original
  * PASS/FAIL semantics, but these measurements let the CI artifact distinguish
@@ -660,6 +681,8 @@ async function main() {
     await until(async () => (await authVisible()) || (await appVisible()), { timeout: 45_000, message: 'auth screen visible' });
     const splashGone = await page.evaluate(() => !document.getElementById('native-splash') || document.getElementById('native-splash').classList.contains('hidden'));
     assert(splashGone, 'native splash still covering the app');
+    // Stage one: immediately after first UI render, before login or channels.
+    await fontProviderStage('first-ui-before-login');
     return { coldLaunchTotalMs: launch.totalTimeMs, origin: await page.evaluate(() => location.origin), api: await page.evaluate(() => globalThis.BRIDGE_API ?? null) };
   });
 
@@ -669,22 +692,22 @@ async function main() {
     return { how, ms: Date.now() - t0 };
   });
 
-  // P7 Android #209: the original five-cold-start lab found a live GMS
-  // FontsProvider connection on EVERY startup. Verify the manifest change
-  // also eliminates the unneeded dependency from the running app process.
+  // P7 Android #209: the strict FD01 assertion is kept red if a live
+  // FontsProvider connection remains. Disabling EmojiCompatInitializer alone
+  // does not prove which subsystem made this connection; compare stage/refs.
   await check('FD01', 'native startup does not retain a Google Play emoji font dependency', async () => {
     if (MODE !== 'android') throw new Skip('Android ActivityManager evidence requires Android');
-    const currentPid = await pid();
-    assert(currentPid && /^[0-9]{1,8}$/.test(currentPid), 'app process absent after login');
-    const raw = await sh('dumpsys activity processes ' + PKG);
-    const evidence = inspectBridgeEmojiFontProvider(raw, currentPid);
-    assert(evidence.appPidValid, 'cannot identify the app process');
+    const evidence = await fontProviderStage('after-login');
+    assert(evidence?.available && evidence.appPidValid, 'app process or OS provider probe unavailable after login');
     assert(evidence.providerSections > 0,
       'Android process-provider listing missing; cannot claim no provider dependency');
     assert(evidence.unparsedConnections === 0,
       'could not parse all Android content-provider connections; cannot claim no dependency');
+    assert(evidence.fontProviderRefCountsKnown,
+      'provider connection reference strength unknown; cannot classify dependency');
     assert(!evidence.fontProviderConnected,
-      'app still holds the unnecessary Google Play emoji FontsProvider after startup');
+      'FontsProvider still connected; initiating component is not established. Safe stage evidence: ' +
+      JSON.stringify(facts.fontProviderStages));
     return evidence;
   });
 

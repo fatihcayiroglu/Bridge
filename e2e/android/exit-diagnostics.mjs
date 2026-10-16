@@ -178,6 +178,12 @@ export function inspectBridgeEmojiFontProvider(raw, appPid) {
   let unparsedConnections = 0;
   let active = false;
   let fontProviderConnected = false;
+  let fontProviderConnections = 0;
+  let fontProviderStableRefs = 0;
+  let fontProviderUnstableRefs = 0;
+  let fontProviderRefCountsKnown = true;
+  let fontProviderWaiting = false;
+  let fontProviderDead = false;
   for (const line of String(raw).split(/\r?\n/).slice(0, 20000)) {
     if (/^\s*Connected Providers:\s*$/.test(line)) {
       active = true;
@@ -198,6 +204,20 @@ export function inspectBridgeEmojiFontProvider(raw, appPid) {
     if (pid !== null && Number(m[2]) === pid &&
         m[1] === 'com.google.android.gms/.fonts.provider.FontsProvider') {
       fontProviderConnected = true;
+      fontProviderConnections = Math.min(fontProviderConnections + 1, 100);
+      // A live connection alone does not identify its caller. In particular,
+      // AndroidX EmojiCompat, WebView and other components could establish a
+      // provider reference. Stable refs matter to Android process dependency
+      // handling; don't classify an unstable-only connection as equivalent.
+      const refs = /\s+s(\d{1,8})\/\d{1,8}\s+u(\d{1,8})\/\d{1,8}(?=\s|$)/.exec(line);
+      if (refs) {
+        fontProviderStableRefs = Math.min(100_000, fontProviderStableRefs + Number(refs[1]));
+        fontProviderUnstableRefs = Math.min(100_000, fontProviderUnstableRefs + Number(refs[2]));
+      } else {
+        fontProviderRefCountsKnown = false;
+      }
+      fontProviderWaiting ||= /\sWAITING(?:\s|$)/.test(line);
+      fontProviderDead ||= /\sDEAD(?:\s|$)/.test(line);
     }
   }
   return {
@@ -206,5 +226,11 @@ export function inspectBridgeEmojiFontProvider(raw, appPid) {
     parsedConnections: Math.min(parsedConnections, 100),
     unparsedConnections: Math.min(unparsedConnections, 100),
     fontProviderConnected,
+    fontProviderConnections,
+    fontProviderStableRefs,
+    fontProviderUnstableRefs,
+    fontProviderRefCountsKnown,
+    fontProviderWaiting,
+    fontProviderDead,
   };
 }

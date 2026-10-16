@@ -166,6 +166,9 @@ test('font-provider probe isolates the Bridge PID and removes raw identity-beari
   assert.deepEqual(present, {
     appPidValid: true, providerSections: 1, parsedConnections: 3,
     unparsedConnections: 0, fontProviderConnected: true,
+    fontProviderConnections: 1, fontProviderStableRefs: 1,
+    fontProviderUnstableRefs: 0, fontProviderRefCountsKnown: true,
+    fontProviderWaiting: false, fontProviderDead: false,
   });
   assert.equal(inspectBridgeEmojiFontProvider(raw, '4200').fontProviderConnected, false);
   const invalid = inspectBridgeEmojiFontProvider(raw, '5304;id');
@@ -179,4 +182,30 @@ test('malformed Android provider records produce explicit uncertainty, not false
   const result = inspectBridgeEmojiFontProvider(malformed, '5304');
   assert.equal(result.unparsedConnections, 1);
   assert.equal(result.fontProviderConnected, false);
+});
+
+
+test('font-provider strength distinguishes stable OS dependency from unstable-only usage', () => {
+  const raw = [
+    'Connected Providers:',
+    '  - abcde/com.google.android.gms/.fonts.provider.FontsProvider->9021:com.bridge.app.debug/123 s0/2 u1/3 +6s',
+    '  - ef012/com.google.android.gms/.fonts.provider.FontsProvider->9022:some.other.app/456 s9/9 u8/8 +6s',
+    '  - 123ab/com.android.providers.settings/.SettingsProvider->9021:com.bridge.app.debug/123 s1/1 u0/0 +5s',
+  ].join('\n');
+  const result = inspectBridgeEmojiFontProvider(raw, '9021');
+  assert.equal(result.fontProviderConnected, true);
+  assert.equal(result.fontProviderConnections, 1);
+  assert.equal(result.fontProviderStableRefs, 0);
+  assert.equal(result.fontProviderUnstableRefs, 1);
+  assert.equal(result.fontProviderRefCountsKnown, true);
+  assert.equal(result.unparsedConnections, 0);
+  assert.doesNotMatch(JSON.stringify(result), /some.other|9021|9022|FontsProvider/);
+});
+
+test('font-provider probe exposes uncertain reference strength rather than silently treating it as zero', () => {
+  const raw = 'Connected Providers:\n  - aabbcc/com.google.android.gms/.fonts.provider.FontsProvider->8901:com.bridge.app.debug/123 exotic_format\nend';
+  const result = inspectBridgeEmojiFontProvider(raw, '8901');
+  assert.equal(result.fontProviderConnected, true);
+  assert.equal(result.fontProviderRefCountsKnown, false);
+  assert.equal(result.fontProviderStableRefs, 0);
 });
