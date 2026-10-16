@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -76,3 +76,63 @@ test('rejects unsafe process selectors and safely bounds unknown ANR records', (
   assert.equal(facts.length, 10);
   assert.ok(facts.every((item) => item.category === 'service_timeout'));
 });
+
+const AM = (line) => `E/ActivityManager(  512): ${line}`;
+const anrCpuLog = [
+  AM('ANR in com.other.app (com.other.app/.Main)'),
+  AM('Load: 1.0 / 1.0 / 1.0'),
+  AM('CPU usage from 0ms to 5000ms later:'),
+  AM('  99% 777/com.other.app: 90% user + 9% kernel'),
+  AM('99% TOTAL: 90% user + 9% kernel'),
+  AM('ANR in com.bridge.app.debug (com.bridge.app.debug/com.bridge.app.MainActivity)'),
+  AM('PID: 9136'),
+  AM('Reason: Input dispatching timed out (owner@example.com secret-token FocusEvent)'),
+  AM('Parent: com.bridge.app.debug/com.bridge.app.MainActivity'),
+  AM('Load: 26.68 / 7.72 / 2.66'),
+  AM('----- Output from /proc/pressure/memory -----'),
+  AM('some avg10=12.00 avg60=3.00 avg300=1.00 total=123'),
+  AM('CPU usage from 6100ms to 0ms ago (2026-10-16 01:19:33.800 to 01:19:39.900):'),
+  AM('  148% 512/system_server: 90% user + 58% kernel / faults: 100 minor'),
+  AM('  61% 3011/com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0: 50% user + 11% kernel'),
+  AM('  9.1% 9136/com.bridge.app.debug: 7% user + 2.1% kernel'),
+  AM('  40% 233/surfaceflinger: 20% user + 20% kernel'),
+  AM('  33% 4321/com.google.android.gms.persistent: 30% user + 3% kernel'),
+  AM('198% TOTAL: 120% user + 70% kernel + 3% iowait + 5% irq'),
+  AM('CPU usage from 40ms to 5000ms later (2026-10-16 01:19:39.940 to 01:19:44.900):'),
+  AM('  80% 512/system_server: 50% user + 30% kernel'),
+  AM('  2% 9136/com.bridge.app.debug: 1% user + 1% kernel'),
+  AM('120% TOTAL: 80% user + 40% kernel'),
+  AM('CPU usage from 9ms to 10ms later:'),
+  AM('  5% 1/init: 5% user'),
+].join('\n');
+
+test('ANR CPU pressure keeps only numbers and fixed categories for the expected process', () => {
+  const [record, ...rest] = parseAnrCpuPressure(anrCpuLog, 'com.bridge.app.debug');
+  assert.equal(rest.length, 0, 'another app\'s ANR is not attributed to Bridge');
+  assert.deepEqual(record.load, [26.68, 7.72, 2.66]);
+  assert.equal(record.cpu.length, 2, 'at most the before and after windows');
+  assert.deepEqual(record.cpu[0], {
+    window: 'before', totalPct: 198, appPct: 9.1, webviewRendererPct: 61, systemServerPct: 148,
+    topPct: 148, topClass: 'system_server',
+  });
+  assert.deepEqual(record.cpu[1], {
+    window: 'after', totalPct: 120, appPct: 2, webviewRendererPct: 0, systemServerPct: 80,
+    topPct: 80, topClass: 'system_server',
+  });
+  const json = JSON.stringify(record);
+  assert.doesNotMatch(json, /example\.com|secret|token|gms|com\.google|sandboxed|chromium|other\.app|9136|FocusEvent|avg10/);
+});
+
+test('ANR CPU pressure rejects malformed input and bounds its output', () => {
+  assert.deepEqual(parseAnrCpuPressure(anrCpuLog, 'bad process; rm -rf'), []);
+  assert.deepEqual(parseAnrCpuPressure('', 'com.bridge.app.debug'), []);
+  const many = Array.from({ length: 8 }, () => AM('ANR in com.bridge.app.debug (x)')).join('\n');
+  assert.equal(parseAnrCpuPressure(many, 'com.bridge.app.debug').length, 3);
+  assert.equal(parseAnrCpuPressure(many, 'com.bridge.app.debug', 100).length, 5);
+  const odd = [AM('ANR in com.bridge.app.debug (x)'), AM('Load: NaN / 1 / 1'),
+    AM('CPU usage from 0ms to 1ms later:'), AM('  999999% 1/com.bridge.app.debug: x'), AM('7% TOTAL: 7% user')].join('\n');
+  const [r] = parseAnrCpuPressure(odd, 'com.bridge.app.debug');
+  assert.equal(r.load, null);
+  assert.deepEqual(r.cpu[0], { window: 'after', totalPct: 7, appPct: 0, webviewRendererPct: 0, systemServerPct: 0, topPct: 0, topClass: null });
+});
+
