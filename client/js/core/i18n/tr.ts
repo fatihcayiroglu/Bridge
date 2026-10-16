@@ -2417,5 +2417,9 @@ const translations: Record<string, string> = {
   "pci_error": "Bir şeyler ters gitti. Yeniden deneyin.",
   "pci_review_again": "Yeniden incele",
   "pci_expired": "Onayın süresi doldu. Yeniden inceleyin."
+  "automation_link_exemption_label": "Bu entegrasyonların bağlantı göndermesine izin ver",
+  "automation_link_exemption_empty": "Kurulu bot veya webhook yok",
+  "automation_link_exemption_save_failed": "Entegrasyon istisnası kaydedilemedi.",
+  "automation_link_exemption_saved": "Entegrasyon istisnası kaydedildi.",
 };
 export default translations;
