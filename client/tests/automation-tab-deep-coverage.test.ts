@@ -661,3 +661,31 @@ describe('AutomationTab — giden webhooklar', () => {
     await flush();
   });
 });
+
+
+describe('AutomationTab integration link exemptions', () => {
+  const installed = [{principal:'webhook:w',installationId:'w',name:'CI'}];
+  function setup(binding='w') {
+    apiMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/automod/integrations')) return ok(installed);
+      if (url.endsWith('/automod')) return ok([{_id:'l',type:'link_filter',config:{
+        exemptIntegrations:[{principal:'webhook:w',installationId:binding}]}}]);
+      if (init?.method==='PATCH') return ok({});
+      if (url.includes('/roles')) return ok(ROLES);
+      if (url.includes('/outgoing-webhooks')) return ok(HOOKS);
+      if (url.includes('/reaction-roles')) return ok(REACTION);
+      return ok([]);
+    });
+  }
+  it('does not check a stale install',async()=>{setup('old');await mount();
+    expect(articles()[0]!.querySelector<HTMLInputElement>('.link-exemptions input')?.checked).toBe(false);
+  });
+  it('sends principals only',async()=>{setup('old');await mount();
+    articles()[0]!.querySelector<HTMLInputElement>('.link-exemptions input')!.click();await flush();
+    const call=apiMock.mock.calls.find(x=>(x[1] as RequestInit | undefined)?.method==='PATCH')!;
+    expect(JSON.parse(String((call[1] as RequestInit).body))).toEqual({config:{exemptIntegrations:['webhook:w']}});
+  });
+  it('denies picker to non-managers',async()=>{myPerms=PERM_MANAGE_ROLES;setup();await mount();
+    expect(apiMock.mock.calls.some(x=>String(x[0]).endsWith('/automod/integrations'))).toBe(false);
+  });
+});
