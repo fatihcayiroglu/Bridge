@@ -77,6 +77,14 @@ describe('POST /api/client-error', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects non-string type instead of coercing it into an aggregation key', async () => {
+    const app = buildApp();
+    const res = await request(app).post('/api/client-error').send({
+      ...VALID_REPORT, type: { injected: true },
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('returns 204 for a valid full report', async () => {
     const app = buildApp();
     const res = await request(app).post('/api/client-error').send(VALID_REPORT);
