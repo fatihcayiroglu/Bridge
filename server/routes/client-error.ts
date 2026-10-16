@@ -77,6 +77,23 @@ const MAX_RECENT = 100;
 const RECENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const REDIS_STATS_KEY = 'client_error_stats_v1';
 
+// A client-provided "source" is arbitrary text, often a script URL with query
+// parameters or an inline filename. Do not persist or log URLs, credentials,
+// paths or other caller-selected strings. Retain only stable diagnostic kinds.
+const SAFE_ERROR_SOURCES = new Set([
+  'ui', 'window', 'script', 'resource', 'worker', 'network', 'manual', 'promise',
+]);
+function safeErrorSource(value: unknown): string {
+  return typeof value === 'string' && SAFE_ERROR_SOURCES.has(value) ? value : 'other';
+}
+
+function safeErrorLocation(value: unknown): number {
+  const numeric = typeof value === 'number' ? value
+    : typeof value === 'string' && /^\\d{1,7}$/.test(value) ? Number(value) : NaN;
+  return Number.isSafeInteger(numeric) && numeric >= 0 && numeric <= 1_000_000
+    ? numeric : 0;
+}
+
 // B3 metadata minimization. Historical Redis reports included userId, IP,
 // user-agent, URL and a client-selected timestamp. NEVER resurrect those fields
 // while loading a legacy Redis snapshot. Use an explicit allowlist and only
@@ -92,9 +109,9 @@ function sanitizedRecent(value: unknown, now = Date.now()): Record<string, unkno
     return [{
       type: typeof record.type === 'string' ? record.type.slice(0, 24) : 'unknown',
       message: typeof record.message === 'string' ? record.message.slice(0, 500) : '',
-      source: typeof record.source === 'string' ? record.source.slice(0, 300) : '',
-      line: Number.isFinite(record.line) ? record.line : 0,
-      col: Number.isFinite(record.col) ? record.col : 0,
+      source: safeErrorSource(record.source),
+      line: safeErrorLocation(record.line),
+      col: safeErrorLocation(record.col),
       stack: typeof record.stack === 'string' ? record.stack.slice(0, 3000) : '',
       receivedAt: at,
     }];
@@ -142,9 +159,9 @@ router.post(
     const report = {
       type:      body.type      || 'unknown',
       message:   String(body.message).slice(0, 500),
-      source:    String(body.source  || '').slice(0, 300),
-      line:      Number(body.line)   || 0,
-      col:       Number(body.col)    || 0,
+      source:    safeErrorSource(body.source),
+      line:      safeErrorLocation(body.line),
+      col:       safeErrorLocation(body.col),
       stack:     String(body.stack   || '').slice(0, 3000),
       // No IP, user id, URL, user-agent, locale or client-supplied timestamps
       // in Redis recent reports. Diagnostic message/stack may still contain

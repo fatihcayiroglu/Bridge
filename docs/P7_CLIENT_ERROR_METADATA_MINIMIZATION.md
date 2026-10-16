@@ -12,6 +12,7 @@
 - Filter both new and older Redis snapshots through a strict allowlist. Legacy entries without a trusted `receivedAt` are removed, rather than preserving historical personally identifying payloads.
 - Expire individual recent entries after 24 hours at ingest/persistence/admin read, independent of the shared Redis key refresh. Preserve aggregated totals as existing operational counters.
 - Remove the client-supplied message and user id from the structured Pino event. This does not establish retention of independently configured external log infrastructure.
+- Follow-up: normalize client-supplied `source` to a fixed diagnostic-kind allowlist, both at ingest and when re-reading Redis legacy snapshots. Never write arbitrary URL, path, or query-string values to Redis or the structured Pino event. Bound line/column to finite, nonnegative integers at most 1,000,000. This does **not** redact the independent message/stack free-text fields.
 - Add negative tests for identity-bearing keys and for clock/retention behavior.
 
 ## Still open
