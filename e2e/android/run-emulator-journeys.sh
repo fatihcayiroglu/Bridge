@@ -24,5 +24,8 @@ set +e
 node android/android-journeys.mjs
 status=$?
 set -e
-adb logcat -d -v time > android/results/logcat.txt 2>/dev/null || true
+# Never archive unfiltered device-wide logs: they can contain user data,
+# credentials, intent extras and unrelated app activity. The journey runner
+# already records allowlisted, bounded ANR/process/provider summaries when
+# those checks execute, preserving exact failures without exporting raw logs.
 exit $status
