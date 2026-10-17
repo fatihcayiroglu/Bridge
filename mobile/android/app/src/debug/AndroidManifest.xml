@@ -48,7 +48,7 @@
       android:name="com.bridge.app.AppCompatBaselineActivity"
       android:exported="true"
       android:excludeFromRecents="true"
-      android:theme="@style/Theme.AppCompat.Light.NoActionBar" />
+      android:theme="@style/AppTheme" />
     <!-- Constructor-only WebView in a native DEBUG Activity: no view
          attachment, navigation, Bridge content or Capacitor plugins. -->
     <activity
