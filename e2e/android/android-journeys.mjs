@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -1036,11 +1036,29 @@ async function main() {
           const record = {
             attempt, kind: control.kind, activityResumed,
             pidStable: firstPid === finalPid,
+            pidPresentAfterObservation: /^[0-9]{1,8}$/.test(String(finalPid)),
             newlyRecordedAnrs: count - previousAnrs,
           };
           samples.push(record);
-          assert(activityResumed, 'CS00 control Activity was not foreground');
-          assert(record.pidStable, 'CS00 baseline Activity process died after launch');
+          if (!record.pidStable) {
+            // Failure-only: query a *bounded* OS exit-info snapshot for the
+            // original PID, but publish ONLY numeric reason codes and booleans.
+            // Never disclose the PID, process names, timestamps or raw logs.
+            // Absence of an exit record is UNKNOWN, not proof of no crash.
+            let exitEvidence = { evidenceValid: false, matchingExit: false,
+              reasonCode: null, subreasonCode: null };
+            try {
+              const info = await androidFailureExits();
+              if (info.available)
+                exitEvidence = summarizeControlProcessExit(info.exits, firstPid);
+            } catch { /* diagnostic failure never makes the check PASS */ }
+            record.exitEvidence = exitEvidence;
+            log('CS00 safe process-loss evidence', JSON.stringify(record));
+          }
+          assert(activityResumed,
+            'CS00 ' + control.kind + ' attempt ' + attempt + ': Activity was not foreground');
+          assert(record.pidStable,
+            'CS00 ' + control.kind + ' attempt ' + attempt + ': baseline Activity PID changed or vanished');
           assert(count >= previousAnrs, 'CS00 ANR log count decreased; result inconclusive');
           assert(count === previousAnrs,
             'CS00 Android OS reported an ANR during a baseline Activity');
