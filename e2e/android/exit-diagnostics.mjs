@@ -25,6 +25,24 @@ export function parseApplicationExits(raw, limit = 6) {
  * A PID can be absent before Android records an exit, hence matching=false
  * must remain unknown rather than "no crash".
  */
+/**
+ * A01 failure-only safe projection of Android's am start -W output.
+ * Never surface a raw launch response: it can include package names,
+ * component paths and other diagnostic context.
+ */
+export function summarizeAndroidColdLaunch(raw) {
+  const src = String(raw ?? '');
+  const status = /(?:^|\n)\s*Status:\s*(ok|[A-Za-z0-9_-]{1,24})\s*(?:\r?\n|$)/.exec(src);
+  const state = /(?:^|\n)\s*LaunchState:\s*(COLD|WARM|HOT)\s*(?:\r?\n|$)/.exec(src);
+  const total = /(?:^|\n)\s*TotalTime:\s*([0-9]{1,7})\s*(?:\r?\n|$)/.exec(src);
+  const ms = total ? Number(total[1]) : null;
+  return {
+    status: status ? (status[1] === 'ok' ? 'ok' : 'not-ok') : 'unknown',
+    launchState: state?.[1] ?? 'unknown',
+    totalTimeMs: ms !== null && Number.isSafeInteger(ms) && ms <= 120_000 ? ms : null,
+  };
+}
+
 export function summarizeControlProcessExit(exits, expectedPid) {
   if (!/^[0-9]{1,8}$/.test(String(expectedPid)) || !Array.isArray(exits))
     return { evidenceValid: false, matchingExit: false, reasonCode: null, subreasonCode: null };
