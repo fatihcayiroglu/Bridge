@@ -94,7 +94,8 @@ export function classifyChannelExpiryWithTombstone(
           positiveStoredStamp(tombstone.expiredAt, 'tombstone expiration') >
             positiveStoredStamp(tombstone.recordedAt, 'tombstone recording') ||
           parsePersistedNonNegativeInteger(tombstone.expiryVersion, 'tombstone version') === 0 ||
-          !['pending', 'objects_cleaned', 'converged'].includes(String(tombstone.cleanupState))) {
+          typeof tombstone.cleanupState !== 'string' ||
+          !['pending', 'objects_cleaned', 'converged'].includes(tombstone.cleanupState)) {
         return invalid;
       }
       if (channel !== null && channel !== undefined) {
@@ -114,6 +115,7 @@ export function classifyChannelExpiryWithTombstone(
     const hasExpiry = Object.prototype.hasOwnProperty.call(channel, 'expiresAt');
     const hasVersion = Object.prototype.hasOwnProperty.call(channel, 'expiryVersion');
     if (hasExpiry !== hasVersion) return invalid;
+    if (hasExpiry && channel.expiresAt === undefined) return invalid;
     const version = hasVersion
       ? parsePersistedNonNegativeInteger(channel.expiryVersion, 'expiry version') : 0;
     const status = channelExpiryStatus(hasExpiry ? channel.expiresAt : null, nowMs);
