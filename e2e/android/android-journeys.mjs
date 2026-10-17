@@ -717,10 +717,15 @@ async function main() {
       const baselinePid = await pid();
       const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
       const evidence = inspectBridgeEmojiFontProvider(raw, baselinePid);
-      assert(evidence.appPidValid && evidence.providerSections > 0 &&
-        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown,
-        'native-only baseline provider probe unavailable/unparseable');
-      const result = { stage: 'native-only-before-webview', ...evidence };
+      assert(evidence.appPidValid,
+        'native-only baseline app PID unavailable');
+      // A native-only process may legitimately have NO Connected Providers
+      // section. That is an explicitly INCONCLUSIVE absence, not a proven
+      // zero-dependency result; FD01 still enforces the original strict gate.
+      const providerListingVerified = evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
+      const result = { stage: 'native-only-before-webview',
+        providerListingVerified, ...evidence };
       (facts.fontProviderStages ??= []).push(result);
       return result;
     } finally {
