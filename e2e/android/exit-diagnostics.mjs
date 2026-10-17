@@ -167,6 +167,62 @@ export function parseWebViewDevToolsSockets(raw, appPid) {
 
 
 /**
+ * Pure, allowlisted Android WebView-attachment failure evidence. dumpsys,
+ * logcat and /proc/net/unix can contain paths, user identifiers, intents and
+ * arbitrary app data. Never print those inputs or exception messages.
+ *
+ * An app-owned Unix socket is not proof that Chrome DevTools Protocol works.
+ * Preserve uncertainty instead of labelling an L03 failure as healthy.
+ */
+export function summarizeWebViewAttachEvidence(
+  { pid = '', activity = '', processes = '', sockets = '', crash = '' } = {},
+  pkg = 'com.bridge.app.debug',
+) {
+  const validPackage = /^[A-Za-z][A-Za-z0-9_.]{0,119}$/.test(String(pkg));
+  const validPid = /^[0-9]{1,8}$/.test(String(pid));
+  const activityLines = String(activity).split(/\r?\n/).slice(0, 1000);
+  const processLines = String(processes).split(/\r?\n/).slice(0, 2000);
+  const activityRecordAvailable = activityLines.some(line =>
+    /(?:topResumedActivity|mResumedActivity)\s*=/.test(line));
+  const processRecordAvailable = processLines.some(line => /ProcessRecord\{/.test(line));
+  const packageNeedle = validPackage ? String(pkg) : '';
+  const mainActivityResumed = validPackage && activityLines.some(line =>
+    /(?:topResumedActivity|mResumedActivity)\s*=/.test(line) &&
+    line.includes(packageNeedle + '/com.bridge.app.MainActivity'));
+  const pidAndPackageNeedle = validPid && validPackage ? String(pid) + ':' + packageNeedle + '/' : '';
+  const appProcessMatched = Boolean(pidAndPackageNeedle &&
+    processLines.some(line => line.includes(pidAndPackageNeedle)));
+  const devtools = parseWebViewDevToolsSockets(sockets, pid);
+  return {
+    appPidValid: validPid,
+    activityRecordAvailable,
+    mainActivityResumed,
+    processRecordAvailable,
+    appProcessMatched,
+    devtools,
+    // These are only category flags, NOT evidence of a Bridge-specific crash.
+    crashBufferHasFatalMarker: /\b(?:FATAL EXCEPTION|Fatal signal)\b/.test(String(crash)),
+    cdpPageResponsive: 'unverified',
+  };
+}
+
+
+/**
+ * Summarize a localhost DevTools /json/list response. The raw response holds
+ * page titles, app URLs and debugging websocket addresses: NEVER log it.
+ * A responding endpoint is different from one usable WebView page target.
+ */
+export function classifyWebViewDevToolsTargets(raw) {
+  const listValid = Array.isArray(raw);
+  const rows = listValid ? raw.slice(0, 100) : [];
+  const pageTargetCount = rows.filter(row =>
+    row !== null && typeof row === 'object' && !Array.isArray(row) &&
+    row.type === 'page').length;
+  return { listValid, targetCount: rows.length, pageTargetCount };
+}
+
+
+/**
  * Privacy-safe observation of the Android app's live provider dependencies.
  * Keep only counts and a boolean; never publish raw ActivityManager output.
  */

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -292,4 +292,248 @@ test('Android failure-only DOM evidence excludes user text, URL paths, channel i
   }
   assert.ok(summary.includes("catch(() => 'unavailable')"),
     'Playwright exception text must not be copied verbatim to CI output');
+});
+
+
+test('L03 failure evidence proves only OS state and redacts all free-text and device paths', () => {
+  const sample = {
+    pid: '8460',
+    activity: [
+      'topResumedActivity=ActivityRecord{8424cb u0 com.bridge.app.debug/com.bridge.app.MainActivity t13}',
+      '  Intent { url=https://private.example/secret?token=xyz }',
+      '  baseDir=/data/app/customer-private',
+    ].join('\n'),
+    processes: [
+      '*APP* UID 10192 ProcessRecord{c57864f 8460:com.bridge.app.debug/u0a192}',
+      '  account=owner@example.com',
+    ].join('\n'),
+    sockets: '000000 @webview_devtools_remote_8460\nsecretSocket=@other-private-id',
+    crash: 'Caused by: user=alice@example.com; token=my-secret',
+  };
+  const facts = summarizeWebViewAttachEvidence(sample);
+  assert.deepEqual(facts, {
+    appPidValid: true,
+    activityRecordAvailable: true,
+    mainActivityResumed: true,
+    processRecordAvailable: true,
+    appProcessMatched: true,
+    devtools: { socketCount: 1, appPidHasSocket: true },
+    crashBufferHasFatalMarker: false,
+    cdpPageResponsive: 'unverified',
+  });
+  assert.doesNotMatch(JSON.stringify(facts), /secret|alice|owner|private|8460|10192|https:|token|\/data\/app/);
+  // PID-specific attribution: a socket may belong to a previous process.
+  const wrongPid = summarizeWebViewAttachEvidence({ ...sample, pid: '1234' });
+  assert.equal(wrongPid.devtools.appPidHasSocket, false);
+  assert.equal(wrongPid.appProcessMatched, false);
+  assert.equal(wrongPid.mainActivityResumed, true);
+  assert.equal(wrongPid.cdpPageResponsive, 'unverified');
+  // No record is never a proven healthy WebView or evidence of an ANR.
+  assert.deepEqual(summarizeWebViewAttachEvidence(), {
+    appPidValid: false, activityRecordAvailable: false,
+    mainActivityResumed: false, processRecordAvailable: false,
+    appProcessMatched: false,
+    devtools: { socketCount: 0, appPidHasSocket: false },
+    crashBufferHasFatalMarker: false,
+    cdpPageResponsive: 'unverified',
+  });
+  assert.equal(summarizeWebViewAttachEvidence({
+    crash: 'Fatal signal 6 in another process',
+  }).crashBufferHasFatalMarker, true);
+});
+
+test('L03 WebView attach failure path cannot archive raw Android dump or transport exception', () => {
+  const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const begin = code.indexOf('async function webViewAttachEvidence() {');
+  const end = code.indexOf('\nasync function attachPage(', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const actual = code.slice(begin, end);
+  assert.ok(actual.includes('summarizeWebViewAttachEvidence(inputs, PKG)'));
+  assert.doesNotMatch(actual, /slice\(0,\s*1200\)|probe failed:|JSON.stringify\(inputs\)/);
+  const failure = code.slice(end, code.indexOf('\nasync function pid()', end));
+  assert.ok(failure.includes('safe device evidence'));
+  assert.doesNotMatch(failure, /String\(err\?\.message\s*\?\?\s*err\)/);
+});
+
+
+test('DevTools HTTP targets are counted without leaking page titles, URLs or websocket endpoints', () => {
+  const targets = [
+    { type: 'page', title: 'Private DM with user', url: 'https://private.example/?token=secret',
+      webSocketDebuggerUrl: 'ws://127.0.0.1:1234/devtools/page/secret' },
+    { type: 'background_page', url: 'https://private.example/background' },
+    { type: 'page', url: 'https://private.example/other' },
+  ];
+  const safe = classifyWebViewDevToolsTargets(targets);
+  assert.deepEqual(safe, { listValid: true, targetCount: 3, pageTargetCount: 2 });
+  assert.doesNotMatch(JSON.stringify(safe), /secret|token|private|localhost|ws:/);
+  assert.deepEqual(classifyWebViewDevToolsTargets(null),
+    { listValid: false, targetCount: 0, pageTargetCount: 0 });
+  assert.deepEqual(classifyWebViewDevToolsTargets([{ type: 'other' }]),
+    { listValid: true, targetCount: 1, pageTargetCount: 0 });
+  assert.equal(classifyWebViewDevToolsTargets(Array(1000).fill({ type: 'page' })).pageTargetCount, 100);
+});
+
+test('failure-only CDP probing preserves strict L03 failures and removes ADB forwards', () => {
+  const src = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const begin = src.indexOf('async function devToolsHttpProbe(');
+  const end = src.indexOf('\nasync function webViewAttachEvidence()', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const fn = src.slice(begin, end);
+  assert.ok(fn.includes("['-s', serial, 'forward', '--remove'"));
+  assert.ok(fn.includes("http://127.0.0.1:"));
+  assert.ok(fn.includes('classifyWebViewDevToolsTargets'));
+  assert.doesNotMatch(fn, /console\.(?:log|error)|log\(raw\)|JSON\.stringify\(raw\)/);
+  const l03 = src.slice(src.indexOf("await check('L03'"), src.indexOf("await check('L04'"));
+  assert.ok(l03.includes('await attachPage()'));
+  assert.doesNotMatch(l03, /\.catch\(\(\)\s*=>\s*(?:true|false)\)/);
+});
+
+
+// Debug-only experiment must separate construction from navigation and keep
+// strict FD01/L01/L03/ANR01/CS01 acceptance intact; the control is MEASURED.
+test('Android WebView constructor baseline never attaches or loads content', () => {
+  const src = readFileSync(new URL('../../mobile/android/app/src/debug/java/com/bridge/app/WebViewConstructorBaselineActivity.java',
+    import.meta.url), 'utf8');
+  assert.match(src, /new android\.webkit\.WebView\(this\)/);
+  assert.doesNotMatch(src, /\.loadUrl\s*\(|setContentView\s*\(|setJavaScriptEnabled\s*\(/);
+  const overlay = readFileSync(new URL('../../mobile/android/app/src/debug/AndroidManifest.xml',
+    import.meta.url), 'utf8');
+  assert.match(overlay, /android:name="com\.bridge\.app\.WebViewConstructorBaselineActivity"/);
+  const release = readFileSync(new URL('../../mobile/android/app/src/main/AndroidManifest.xml',
+    import.meta.url), 'utf8');
+  assert.doesNotMatch(release, /WebViewConstructorBaselineActivity/);
+
+  const harness = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(harness, /await measure\('FD00C'/);
+  for (const gate of ['FD01', 'L01', 'L03', 'ANR01', 'CS01']) {
+    assert.ok(harness.includes("await check('" + gate + "'"),
+      `required Android assertion ${gate} was removed`);
+  }
+});
+
+
+test('debug-only attached WebView control does not load a page or relax FD01', () => {
+  const attached = readFileSync(new URL('../../mobile/android/app/src/debug/java/com/bridge/app/WebViewAttachedBaselineActivity.java',
+    import.meta.url), 'utf8');
+  assert.match(attached, /new android\.webkit\.WebView\(this\)/);
+  assert.match(attached, /setContentView\(view\)/);
+  assert.doesNotMatch(attached, /\.loadUrl\s*\(|\.loadData\s*\(|\.loadDataWithBaseURL\s*\(|setJavaScriptEnabled\s*\(/);
+  const manifest = readFileSync(new URL('../../mobile/android/app/src/debug/AndroidManifest.xml',
+    import.meta.url), 'utf8');
+  assert.match(manifest, /android:name="com\.bridge\.app\.WebViewAttachedBaselineActivity"/);
+  const release = readFileSync(new URL('../../mobile/android/app/src/main/AndroidManifest.xml',
+    import.meta.url), 'utf8');
+  assert.doesNotMatch(release, /WebViewAttachedBaselineActivity/);
+  const harness = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(harness, /await measure\('FD00A'/);
+  for (const gate of ['FD01', 'L01', 'L03', 'ANR01', 'CS01']) {
+    assert.ok(harness.includes("await check('" + gate + "'"),
+      `required asserting check ${gate} was removed`);
+  }
+});
+
+
+test('debug-only unattached navigation WebView isolates loadUrl without setContentView', () => {
+  const source = readFileSync(new URL(
+    '../../mobile/android/app/src/debug/java/com/bridge/app/WebViewUnattachedNavigationBaselineActivity.java',
+    import.meta.url), 'utf8');
+  assert.match(source, /new android\.webkit\.WebView\(this\)/);
+  assert.match(source, /view\.loadUrl\("about:blank"\)/);
+  assert.doesNotMatch(source, /setContentView\s*\(|setJavaScriptEnabled\s*\(|loadData\s*\(/);
+  const debug = readFileSync(new URL('../../mobile/android/app/src/debug/AndroidManifest.xml',
+    import.meta.url), 'utf8');
+  assert.match(debug, /android:name="com\.bridge\.app\.WebViewUnattachedNavigationBaselineActivity"/);
+  const release = readFileSync(new URL('../../mobile/android/app/src/main/AndroidManifest.xml',
+    import.meta.url), 'utf8');
+  assert.doesNotMatch(release, /WebViewUnattachedNavigationBaselineActivity/);
+  const harness = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(harness, /await measure\('FD00N'/);
+  for (const gate of ['FD01', 'CS01', 'L01', 'L03', 'ANR01']) {
+    assert.ok(harness.includes("await check('" + gate + "'"),
+      `strict Android check ${gate} must remain an assertion`);
+  }
+});
+
+
+test('FD02 remains measurement-only after strict FD01 and rejects missing provider facts', () => {
+  const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const fd01 = code.indexOf("await check('FD01'");
+  const fd02 = code.indexOf("await measure('FD02'");
+  const pn01 = code.indexOf("await check('PN01'");
+  assert.ok(fd01 >= 0 && fd02 > fd01 && pn01 > fd02);
+  const gate = code.slice(fd01, fd02);
+  assert.ok(gate.includes('assert(!evidence.fontProviderConnected'));
+  const measure = code.slice(fd02, pn01);
+  assert.ok(gate.includes('fd01Pid = await pid()'));
+  assert.match(measure, /const startingPid = await pid\(\)/);
+  assert.ok(measure.includes('startingPid === fd01Pid'));
+  assert.ok(measure.includes('facts.fontProviderDecay = { sameAppProcess: true, complete: false, samples }'));
+  assert.ok(measure.includes('facts.fontProviderDecay.complete = true'));
+  assert.ok(measure.includes('facts.fontProviderDecay.sameAppProcess = false'));
+  assert.match(measure, /assert\(stablePid/);
+  assert.match(measure, /info\.unparsedConnections === 0 && info\.fontProviderRefCountsKnown/);
+  assert.match(measure, /const samples = \[\]/);
+  assert.ok(measure.includes('[1500, 4000, 8000]'));
+  assert.doesNotMatch(measure, /await check\('FD02'|return \{.*status:\s*'PASS'/);
+});
+
+
+test('CS00 compares repeated real native and WebView-only cold starts without waiving CS01', () => {
+  const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const c = code.indexOf("await measure('CS00'");
+  const a = code.indexOf("await check('A01'");
+  const cs = code.indexOf("await check('CS01'");
+  assert.ok(c >= 0 && c < a && a < cs);
+  const body = code.slice(c, a);
+  for (const literal of ["kind: 'native-only'", "kind: 'blank-webview'",
+    "for (let attempt = 1; attempt <= 3; attempt++)",
+    "await sh('am force-stop ' + PKG)",
+    'pidStable: firstPid === finalPid',
+    'assert(count === previousAnrs',
+    'facts.androidControlColdStarts = { complete: false, samples }']) {
+    assert.ok(body.includes(literal), 'CS00 missing contract: ' + literal);
+  }
+  assert.doesNotMatch(body, /await check\('CS00'|console\.log\(raw\)/);
+  for (const gate of ['FD01', 'CS01', 'L01', 'L03', 'ANR01']) {
+    assert.ok(code.includes("await check('" + gate + "'"),
+      'original strict Android assertion missing: ' + gate);
+  }
+});
+
+
+test('A01 original 45s gate records only safe failure-only app/CDP evidence, never retries', () => {
+  const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const a01 = code.slice(code.indexOf("await check('A01'"), code.indexOf("await check('CS01'"));
+  assert.match(a01, /await attachPage\(\)/);
+  assert.match(a01, /timeout: 45_000/);
+  assert.match(a01, /throw new Error\('A01 auth\/app screen was not reachable/);
+  assert.doesNotMatch(a01, /(?:platform\.coldLaunch|attachPage)\(\).*\b(?:retry|second)/);
+  const failBlock = code.slice(code.indexOf("async function check(id,"), code.indexOf("async function domSummary()"));
+  assert.match(failBlock, /id === 'A01'/);
+  assert.match(failBlock, /await webViewAttachEvidence\(\)/);
+  assert.match(failBlock, /facts\.androidA01FailureEvidence = a01/);
+  assert.match(failBlock, /pageHandlePresent: Boolean\(page\), pageClosed, osEvidence/);
+  assert.doesNotMatch(failBlock, /log\([^\n]*(?:page\.url|err\.stack|err\.cause)/);
+});
+
+
+test('FD00W blank-WebView font reference decay is measured on the original PID without waiving FD01', () => {
+  const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const start = code.indexOf("await measure('FD00W'");
+  const end = code.indexOf("await measure('CS00'", start);
+  assert.ok(start >= 0 && end > start);
+  const control = code.slice(start, end);
+  assert.match(control, /facts\.fontProviderPlainWebViewDecay = decay/);
+  assert.match(control, /\[1500, 4000, 8000\]/);
+  assert.match(control, /currentPid === baselinePid/);
+  assert.match(control, /if \(!samePid\) break/);
+  assert.match(control, /inspectBridgeEmojiFontProvider\(snapshot, currentPid\)/);
+  assert.match(control, /decay\.complete = decay\.sameAppProcess/);
+  assert.doesNotMatch(control, /await check\('FD00W'|await check\('FD01'/);
+  const fd01 = code.indexOf("await check('FD01'");
+  const fd02 = code.indexOf("await measure('FD02'", fd01);
+  assert.ok(fd01 > end && fd02 > fd01, 'strict FD01 must precede FD02');
+  assert.match(code.slice(fd01, fd02), /assert\(!evidence\.fontProviderConnected/);
+  assert.ok(code.includes("await check('A01'"));
+  assert.ok(code.includes("await check('ANR01'"));
 });

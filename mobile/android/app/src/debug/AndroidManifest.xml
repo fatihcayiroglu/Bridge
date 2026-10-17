@@ -34,6 +34,40 @@
 
   <application
     android:networkSecurityConfig="@xml/network_security_config"
-    tools:replace="android:networkSecurityConfig" />
+    tools:replace="android:networkSecurityConfig">
+    <!-- P7 Android #209: a native-only isolated DEBUG baseline. Not released,
+         not the launcher, and does not initialize a WebView or any fonts. -->
+    <activity
+      android:name="com.bridge.app.FontBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- Constructor-only WebView in a native DEBUG Activity: no view
+         attachment, navigation, Bridge content or Capacitor plugins. -->
+    <activity
+      android:name="com.bridge.app.WebViewConstructorBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- Debug-only WebView attached to the Activity, with NO page navigation. -->
+    <activity
+      android:name="com.bridge.app.WebViewAttachedBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- DEBUG-only: navigation to about:blank without attaching WebView. -->
+    <activity
+      android:name="com.bridge.app.WebViewUnattachedNavigationBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- Same base Android theme; instantiate an inert, JavaScript-disabled
+         about:blank WebView without Capacitor or Bridge assets. Debug only. -->
+    <activity
+      android:name="com.bridge.app.WebViewBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+  </application>
 
 </manifest>

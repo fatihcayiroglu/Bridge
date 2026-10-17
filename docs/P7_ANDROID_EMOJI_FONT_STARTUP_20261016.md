@@ -58,3 +58,28 @@ The latest #318 Android run at `775a051d` had **32 PASS, one FD01 FAIL, zero ski
 The follow-up test harness first reads PID-scoped logcat, then, only when no valid marker was recovered, reads the unique debug-only `BridgeEmojiStartupProbe` tag. The fallback accepts records only with the current app's **exact** PID in recognized Android logcat formats. No raw logcat/PIDs or user text appear in evidence. A regression test rejects markers from other PIDs, PID-less free text and invalid PIDs. Diagnostic availability is reported independently as `pid-filtered`, `tag-filtered-pid-verified` or `unavailable`.
 
 This is an attribution/data-quality improvement only. **FD01 must remain FAIL** whenever a live provider connection is observed, including if native diagnostic markers cannot be obtained. The provider's initiating caller is still unidentified; #209 and physical-device acceptance stay open. Exact-head Android/Quality Gate CI is pending and must be reviewed before merging this draft.
+
+
+## Controlled native-only versus plain-WebView differential (17 October 2026)
+
+**Exact head:** `adbe1cdf005572d3b169461011139da5b99d6ad9`, [PR #322 Android run 39017377880](https://github.com/fatihcayiroglu/Bridge/actions/runs/39017377880). The debug APK built; the emulator journey **FAILED: 31 PASS, 2 FAIL (L01, ANR01), 0 skipped, 6 measured**. [Quality Gate 39017377863](https://github.com/fatihcayiroglu/Bridge/actions/runs/39017377863) and [iOS 39017377930](https://github.com/fatihcayiroglu/Bridge/actions/runs/39017377930) succeeded on that same head; the nightly-only full/media job is not counted as a pass on this PR.
+
+The same installed Android 14 emulator APK was force-stopped between each controlled Activity:
+
+| Stage | Real `dumpsys activity processes` result | Conclusions |
+| --- | --- | --- |
+| FD00 plain Android `Activity`, no WebView | Verified provider listing, **no** Google FontsProvider reference | Negative baseline for **this** native-only Activity and emulator run |
+| FD00W Android `Activity` + only `android.webkit.WebView` displaying `about:blank` (JS disabled) | Verified provider listing, **one stable** Google FontsProvider ref | An ordinary WebView can initiate the provider connection **without** Bridge's JS app or Capacitor |
+| Bridge `MainActivity`, first product UI | **one unstable** FontsProvider ref | Caller still not identified at the method/process level |
+| Bridge `MainActivity`, after login | **no** FontsProvider ref in this sample | Strict FD01 passed **in this run only**, but has repeatedly failed on other exact heads |
+
+The Google Play services **font** content provider and the Android **WebView implementation/provider package** are separate concepts. The observed call-chain differential does **not** prove the exact font requester within WebView nor that the provider is removable from Bridge without breaking the WebView product. Do not block/kill Google Play services or revoke provider access speculatively. Android's downloadable-font contract describes legitimate app-to-provider queries; that is **not** evidence that a font query caused an ANR.
+
+### More important: L01/ANR01 real user-facing regression reappeared
+
+In the **same red job**, when L01 backgrounded the product Activity for 20 seconds, the original Bridge PID disappeared and `am start -W` reported **COLD**. Targeted `ApplicationExitInfo` identified **reason 6 (ANR)** on the previous PID (record time **08:33:26 UTC**). At ANR01 the independent ActivityManager category parser recovered **`input_dispatch_timeout` with `focusEvent=true`**, matching the historical symptom. Therefore **L01 FAIL** and **ANR01 FAIL** are real, must not be relabelled as startup recovery passes, and outweigh a transiently green FD01.
+
+The red job's bounded ANR CPU evidence captured a **post-event** sample with load `[26.52, 7.26, 2.47]`, total CPU **100%**, app **37%**, `system_server` **57%**, WebView renderer **0% in that interval**. These values do not establish a causal blocked call or thread stack. Earlier runs, notably `39015735748`, proved intermittent stable/unstable font references **without** an observed ANR. Correlation cannot be upgraded to causation.
+
+**Release gate remains OPEN:** retain strict L01/ANR01/FD01 results unchanged; compare a sufficiently repeated normal production-path startup against FD00/FD00W instrumentation and real physical Android hardware, gather bounded main-thread/platform ANR attribution, and separately revisit whether a zero-FontsProvider requirement is under Bridge's control for a WebView-based app. Changing FD01 solely to make CI green is prohibited. Prevent future raw device log exports (PR #323) without erasing historical red evidence.
+

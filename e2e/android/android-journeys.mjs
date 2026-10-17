@@ -20,8 +20,10 @@ import { _android as android, chromium, devices } from '@playwright/test';
 import { io } from 'socket.io-client';
 import fs from 'node:fs';
 import net from 'node:net';
+import { execFile as execFileCallback } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -104,6 +106,21 @@ async function check(id, title, fn) {
       const exitFacts = await androidFailureExits();
       (facts.androidFailureExits ??= []).push({ check: id, ...exitFacts });
       log(`Android exit evidence ${id}`, JSON.stringify(exitFacts));
+    }
+    // A01 can time out with a detached/closed CDP page even while the
+    // Android process and Activity are still alive. Failure-only and never
+    // a retry: log only fixed booleans/counts, no page URLs, target titles,
+    // raw ActivityManager output, Playwright exceptions or user content.
+    if (MODE === 'android' && id === 'A01') {
+      let pageClosed = null;
+      try { pageClosed = typeof page?.isClosed === 'function' ? Boolean(page.isClosed()) : null; }
+      catch { /* diagnostic cannot replace the original A01 failure */ }
+      let osEvidence = null;
+      try { osEvidence = await webViewAttachEvidence(); }
+      catch { /* an unavailable probe stays unknown rather than healthy */ }
+      const a01 = { pageHandlePresent: Boolean(page), pageClosed, osEvidence };
+      facts.androidA01FailureEvidence = a01;
+      log('Android A01 first-launch evidence', JSON.stringify(a01));
     }
     const shot = await screenshot(`${id}-fail`);
     const dom = await domSummary();
@@ -299,33 +316,85 @@ async function androidFailureExits() {
 // Failure-only diagnostics: retain the ORIGINAL WebView assertion and capture
 // enough Android state to distinguish a native crash, a stopped Activity, and
 // an adb/DevTools attachment problem. No extra retry or implicit PASS.
-async function webViewAttachEvidence() {
-  const probes = [
-    ['pid', `pidof ${PKG}`],
-    ['activity', `dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity|com.bridge.app' | head -10`],
-    ['process', `dumpsys activity processes | grep -E 'ProcessRecord|com.bridge.app' | head -10`],
-    // Restrict logcat to native crash headers/stack frames; do not print arbitrary
-    // app log lines, HTTP headers, user messages or credential-bearing fields.
-    ['crash', `logcat -d -b crash -t 100 | grep -E 'FATAL EXCEPTION|Process: com.bridge.app|Fatal signal|Caused by:|at com.bridge.app' | tail -15`],
-  ];
-  const results = await Promise.all(probes.map(async ([label, command]) => {
-    try { return [label, (await sh(command)).slice(0, 1200)]; }
-    catch (err) { return [label, `probe failed: ${String(err?.message ?? err).slice(0, 120)}`]; }
-  }));
-  const evidence = Object.fromEntries(results);
-  // A live Android Activity is insufficient proof that the embedded WebView
-  // exposes a DevTools endpoint. Capture a bounded, identifier-free presence
-  // check only on failure; never log full /proc/net/unix contents.
+
+const execFileAsync = promisify(execFileCallback);
+
+/**
+ * Failure-only, short-lived ADB localabstract forward to the exact running
+ * app PID's DevTools socket. Probe /json/list via 127.0.0.1, keeping the
+ * complete response ONLY in memory (never archive titles/URLs/ws endpoints).
+ * This cannot turn any failed journey green, and a successful HTTP response
+ * is not proof that a Playwright CDP connection or product restoration works.
+ */
+async function devToolsHttpProbe(appPid) {
+  const unavailable = { attempted: false, httpResponsive: false, listValid: false, targetCount: 0, pageTargetCount: 0 };
+  if (MODE !== 'android' || !/^[0-9]{1,8}$/.test(String(appPid))) return unavailable;
+  let serial;
+  try { serial = device?.serial?.(); } catch { return unavailable; }
+  if (!/^[A-Za-z0-9_.:-]{1,100}$/.test(String(serial))) return unavailable;
+  let port = null;
   try {
-    const rawSockets = await androidFailureShell('cat /proc/net/unix');
-    evidence.devtools = {
-      available: true,
-      ...parseWebViewDevToolsSockets(rawSockets, evidence.pid),
-    };
+    const forwarded = await execFileAsync('adb', ['-s', serial, 'forward', 'tcp:0',
+      'localabstract:webview_devtools_remote_' + appPid], { timeout: 4000, maxBuffer: 2048 });
+    const candidate = String(forwarded.stdout).trim();
+    if (!/^[0-9]{1,5}$/.test(candidate)) return unavailable;
+    port = Number(candidate);
+    if (port < 1024 || port > 65535) return unavailable;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: ctrl.signal });
+      if (!response.ok) return { ...unavailable, attempted: true };
+      const length = Number(response.headers.get('content-length') || 0);
+      if (length > 1_000_000) return { ...unavailable, attempted: true };
+      const raw = await response.text();
+      if (raw.length > 1_000_000) return { ...unavailable, attempted: true };
+      const safe = classifyWebViewDevToolsTargets(JSON.parse(raw));
+      return { attempted: true, httpResponsive: true, ...safe };
+    } finally { clearTimeout(timer); }
   } catch {
-    evidence.devtools = { available: false, socketCount: 0, appPidHasSocket: false };
+    return { ...unavailable, attempted: true };
+  } finally {
+    if (port !== null) {
+      try {
+        await execFileAsync('adb', ['-s', serial, 'forward', '--remove', `tcp:${port}`],
+          { timeout: 4000, maxBuffer: 2048 });
+      } catch { /* Debug cleanup only; original failure remains a failure. */ }
+    }
   }
-  return evidence;
+}
+
+async function webViewAttachEvidence() {
+  // All outputs below are held only in memory. Do NOT write raw dumpsys,
+  // process records, Unix sockets, crash lines or arbitrary Playwright errors
+  // to CI logs/artifacts: they can contain private identities and paths.
+  const commands = {
+    pid: `pidof ${PKG}`,
+    activity: 'dumpsys activity activities',
+    processes: 'dumpsys activity processes',
+    sockets: 'cat /proc/net/unix',
+    crash: 'logcat -d -b crash -t 100',
+  };
+  const inputs = {};
+  const probeAvailable = {};
+  await Promise.all(Object.entries(commands).map(async ([name, command]) => {
+    try {
+      inputs[name] = await androidFailureShell(command);
+      probeAvailable[name] = true;
+    } catch {
+      inputs[name] = '';
+      probeAvailable[name] = false;
+    }
+  }));
+  const os = summarizeWebViewAttachEvidence(inputs, PKG);
+  const devtoolsHttp = await devToolsHttpProbe(inputs.pid);
+  return {
+    probeAvailable,
+    ...os,
+    devtoolsHttp,
+    // A reachable /json/list is NOT proof that Playwright attached to a page.
+    // Keep original L03 FAIL; no retries or timeout extension.
+  };
 }
 
 async function attachPage({ timeout = 60_000 } = {}) {
@@ -338,7 +407,10 @@ async function attachPage({ timeout = 60_000 } = {}) {
     return p;
   } catch (err) {
     const evidence = await webViewAttachEvidence();
-    throw new Error(`Android WebView attach failed for ${PKG} after ${timeout}ms: ${String(err?.message ?? err)}; device evidence: ${JSON.stringify(evidence)}`, { cause: err });
+    // Only fixed categories leave this diagnostic boundary. The original
+    // Playwright message can contain device or URL paths and must not leak.
+    const category = /Timeout/.test(String(err?.name ?? '')) ? 'timeout' : 'attach-failed';
+    throw new Error(`Android WebView attach ${category} after ${timeout}ms; safe device evidence: ${JSON.stringify(evidence)}`, { cause: err });
   }
 }
 async function pid() { return MODE === 'dryrun' ? 'dryrun' : (await sh(`pidof ${PKG}`)) || null; }
@@ -710,15 +782,322 @@ async function main() {
     facts.device = { note: 'DRYRUN — desktop Chromium phone viewport, NOT evidence' };
   }
 
+  // Android #209 controlled differential: observe the *same installed APK*
+  // running a native-only Activity before Capacitor/BridgeActivity/WebView.
+  // This DEBUG-only baseline is measured, not a PASS and not an FD01 bypass.
+  // A connected provider here points to startup/platform/native components;
+  // absence here followed by FD01 connection narrows it to the product
+  // activity/WebView initialization path. Neither outcome identifies a caller.
+  await measure('FD00', 'native-only Activity FontsProvider baseline before WebView', async () => {
+    if (MODE !== 'android') throw new Skip('native Android Activity required');
+    await sh(`am force-stop ${PKG}`);
+    try {
+      const start = await sh(`am start -W -n ${PKG}/com.bridge.app.FontBaselineActivity`);
+      assert(/Status: ok/.test(start), 'debug native baseline Activity failed to launch');
+      await sleep(1200);
+      const baselinePid = await pid();
+      const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+      const evidence = inspectBridgeEmojiFontProvider(raw, baselinePid);
+      assert(evidence.appPidValid,
+        'native-only baseline app PID unavailable');
+      // A native-only process may legitimately have NO Connected Providers
+      // section. That is an explicitly INCONCLUSIVE absence, not a proven
+      // zero-dependency result; FD01 still enforces the original strict gate.
+      const providerListingVerified = evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
+      const result = { stage: 'native-only-before-webview',
+        providerListingVerified, ...evidence };
+      (facts.fontProviderStages ??= []).push(result);
+      return result;
+    } finally {
+      // Reset native-only process: the next A01 must be an independent cold
+      // product launch with original checks, permissions and thresholds.
+      await sh(`am force-stop ${PKG}`).catch(() => {});
+    }
+  });
+
+  // Isolate the WebView CONSTRUCTOR from page navigation. This debug-only
+  // Activity does not call setContentView or loadUrl and does not use
+  // Capacitor/plugins. Force-stop both before and after so the comparison
+  // with FD00W is independent and can't contaminate A01.
+  await measure('FD00C', 'constructed but never attached or navigated WebView baseline', async () => {
+    if (MODE !== 'android') throw new Skip('native Android WebView required');
+    await sh(`am force-stop ${PKG}`);
+    try {
+      const start = await sh(`am start -W -n ${PKG}/com.bridge.app.WebViewConstructorBaselineActivity`);
+      assert(/Status: ok/.test(start), 'debug constructor-only WebView Activity failed to launch');
+      await sleep(2000);
+      const baselinePid = await pid();
+      const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+      const evidence = inspectBridgeEmojiFontProvider(raw, baselinePid);
+      assert(evidence.appPidValid, 'constructor-only baseline app PID unavailable');
+      const providerListingVerified = evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
+      const result = { stage: 'webview-constructed-not-attached-or-navigated',
+        providerListingVerified, ...evidence };
+      (facts.fontProviderStages ??= []).push(result);
+      return result;
+    } finally {
+      await sh(`am force-stop ${PKG}`).catch(() => {});
+    }
+  });
+
+  // Third independently cold-started DEBUG control: attach an inert WebView
+  // to the Activity, but do NOT navigate. FD00C tested construction alone;
+  // FD00W will separately test about:blank navigation. All three are
+  // measurements, not FD01 waivers or PASS substitutes.
+  await measure('FD00A', 'attached WebView without navigation FontsProvider baseline', async () => {
+    if (MODE !== 'android') throw new Skip('native Android WebView required');
+    await sh(`am force-stop ${PKG}`);
+    try {
+      const start = await sh(`am start -W -n ${PKG}/com.bridge.app.WebViewAttachedBaselineActivity`);
+      assert(/Status: ok/.test(start), 'debug attached-no-navigation WebView Activity failed to launch');
+      await sleep(2000);
+      const baselinePid = await pid();
+      const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+      const evidence = inspectBridgeEmojiFontProvider(raw, baselinePid);
+      assert(evidence.appPidValid, 'attached no-navigation app PID unavailable');
+      const providerListingVerified = evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
+      const result = { stage: 'webview-attached-without-navigation',
+        providerListingVerified, ...evidence };
+      (facts.fontProviderStages ??= []).push(result);
+      return result;
+    } finally {
+      await sh(`am force-stop ${PKG}`).catch(() => {});
+    }
+  });
+
+  // Fourth independent DEBUG control: begin a WebView navigation without
+  // attaching it to the window. FD00A checked attachment without navigation;
+  // FD00W checks both. This isolates whether page load alone acquires GMS
+  // FontsProvider. Failure to measure is FAIL, never a silent success.
+  await measure('FD00N', 'unattached WebView loading about:blank FontsProvider baseline', async () => {
+    if (MODE !== 'android') throw new Skip('native Android WebView required');
+    await sh(`am force-stop ${PKG}`);
+    try {
+      const start = await sh(`am start -W -n ${PKG}/com.bridge.app.WebViewUnattachedNavigationBaselineActivity`);
+      assert(/Status: ok/.test(start), 'debug unattached-navigation WebView Activity failed to launch');
+      await sleep(2000);
+      const baselinePid = await pid();
+      const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+      const evidence = inspectBridgeEmojiFontProvider(raw, baselinePid);
+      assert(evidence.appPidValid, 'unattached-navigation baseline app PID unavailable');
+      const providerListingVerified = evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
+      const result = { stage: 'webview-unattached-about-blank-navigation', providerListingVerified,
+        ...evidence };
+      (facts.fontProviderStages ??= []).push(result);
+      return result;
+    } finally {
+      await sh(`am force-stop ${PKG}`).catch(() => {});
+    }
+  });
+
+  // Second, independently cold-started DEBUG-only control. This one has a
+  // bare Android WebView displaying about:blank with JavaScript disabled by
+  // default, but NO Capacitor, plugin registry or Bridge web application.
+  // It distinguishes native-only from WebView framework initialization.
+  await measure('FD00W', 'plain WebView-only FontsProvider baseline', async () => {
+    if (MODE !== 'android') throw new Skip('native Android WebView required');
+    await sh(`am force-stop ${PKG}`);
+    try {
+      const start = await sh(`am start -W -n ${PKG}/com.bridge.app.WebViewBaselineActivity`);
+      assert(/Status: ok/.test(start), 'debug plain-WebView baseline failed to launch');
+      await sleep(2000);
+      const baselinePid = await pid();
+      const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+      const evidence = inspectBridgeEmojiFontProvider(raw, baselinePid);
+      assert(evidence.appPidValid, 'plain-WebView baseline app PID unavailable');
+      const providerListingVerified = evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
+      const result = { stage: 'plain-webview-about-blank', providerListingVerified, ...evidence };
+      (facts.fontProviderStages ??= []).push(result);
+      // Compare the same-PID 1.5/4/8 s reference lifecycle with FD02 on
+      // Bridge's actual WebView. A pristine about:blank WebView can acquire
+      // this provider without any Bridge JS, Capacitor or plugins; observe
+      // whether it releases it naturally while remaining foregrounded.
+      // Partial samples are retained on probe failure, never a synthetic PASS.
+      const decay = { sameAppProcess: true, complete: false, samples: [] };
+      facts.fontProviderPlainWebViewDecay = decay;
+      const baselineStarted = Date.now();
+      for (const offsetMs of [1500, 4000, 8000]) {
+        await sleep(Math.max(0, offsetMs - (Date.now() - baselineStarted)));
+        const currentPid = await pid();
+        const samePid = currentPid === baselinePid;
+        if (!samePid) decay.sameAppProcess = false;
+        const sample = {
+          sampleAtMs: offsetMs,
+          samePid,
+          available: false,
+          connected: null,
+          stableRefs: null,
+          unstableRefs: null,
+          waiting: null,
+          dead: null,
+        };
+        decay.samples.push(sample);
+        // No PID substitution: a new app process cannot prove the ORIGINAL
+        // provider connection was released.
+        if (!samePid) break;
+        try {
+          const snapshot = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+          const info = inspectBridgeEmojiFontProvider(snapshot, currentPid);
+          const valid = info.appPidValid && info.providerSections > 0 &&
+            info.unparsedConnections === 0 && info.fontProviderRefCountsKnown;
+          if (!valid) break;
+          Object.assign(sample, {
+            available: true,
+            connected: info.fontProviderConnected,
+            stableRefs: info.fontProviderStableRefs,
+            unstableRefs: info.fontProviderUnstableRefs,
+            waiting: info.fontProviderWaiting,
+            dead: info.fontProviderDead,
+          });
+        } catch {
+          // Report unknown; raw Android or ADB exception text stays private.
+          break;
+        }
+      }
+      decay.complete = decay.sameAppProcess && decay.samples.length === 3 &&
+        decay.samples.every(sample => sample.available);
+      return { ...result, samePidProviderDecay: decay };
+    } finally {
+      // Isolate the following real A01 cold launch from this diagnostic.
+      await sh(`am force-stop ${PKG}`).catch(() => {});
+    }
+  });
+
+  // #209 differential: alternate three native-only and three plain-WebView
+  // cold starts BEFORE authenticated Bridge journeys. No JS or Capacitor.
+  // This is a MEASUREMENT: a failed control remains FAIL, not a CS01 bypass.
+  await measure('CS00', 'native-only versus plain-WebView cold-start ANR controls', async () => {
+    if (MODE !== 'android') throw new Skip('Android ActivityManager required');
+    const controls = [
+      { kind: 'native-only', activity: 'FontBaselineActivity' },
+      { kind: 'blank-webview', activity: 'WebViewBaselineActivity' },
+    ];
+    const anrCount = async () => {
+      // Restrict to an exact package ANR marker. Never export logcat lines.
+      const raw = await androidFailureShell(
+        "logcat -d -v brief -s ActivityManager:E | grep -F 'ANR in com.bridge.app.debug' || true");
+      const matches = raw.split('\n').filter(line =>
+        line.includes('ANR in com.bridge.app.debug')).length;
+      assert(matches < 100, 'CS00 ANR log count saturated');
+      return matches;
+    };
+    const samples = [];
+    let previousAnrs = await anrCount();
+    facts.androidControlColdStarts = { complete: false, samples };
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        for (const control of controls) {
+          await sh('am force-stop ' + PKG);
+          const started = await sh('am start -W -n ' + PKG +
+            '/com.bridge.app.' + control.activity);
+          assert(/Status: ok/.test(started), 'CS00 baseline Activity failed to start');
+          const firstPid = await pid();
+          assert(/^[0-9]{1,8}$/.test(String(firstPid)),
+            'CS00 baseline app PID unavailable');
+          const resume = await androidFailureShell(
+            'dumpsys activity activities | grep -m1 topResumedActivity || true');
+          const expectedActivity = PKG + '/com.bridge.app.' + control.activity;
+          const activityResumed = resume.includes(expectedActivity);
+          await sleep(2000);
+          const finalPid = await pid();
+          const count = await anrCount();
+          const record = {
+            attempt, kind: control.kind, activityResumed,
+            pidStable: firstPid === finalPid,
+            newlyRecordedAnrs: count - previousAnrs,
+          };
+          samples.push(record);
+          assert(activityResumed, 'CS00 control Activity was not foreground');
+          assert(record.pidStable, 'CS00 baseline Activity process died after launch');
+          assert(count >= previousAnrs, 'CS00 ANR log count decreased; result inconclusive');
+          assert(count === previousAnrs,
+            'CS00 Android OS reported an ANR during a baseline Activity');
+          previousAnrs = count;
+        }
+      }
+      facts.androidControlColdStarts.complete = true;
+      return { complete: true, samples };
+    } finally {
+      // The product launch A01 must start in a fresh Android app process.
+      await sh('am force-stop ' + PKG).catch(() => {});
+    }
+  });
+
   await check('A01', 'cold launch reaches the auth screen (no stuck splash)', async () => {
     const launch = await platform.coldLaunch();
     await attachPage();
-    await until(async () => (await authVisible()) || (await appVisible()), { timeout: 45_000, message: 'auth screen visible' });
+    // Preserve the original 45-second failure boundary. The generic 'until'
+    // helper can append untrusted Playwright error text (page URLs/paths).
+    // A01 only publishes a fixed failure code; check() separately captures
+    // booleans and sanitized native/CDP evidence. No restart or second try.
+    try {
+      await until(async () => (await authVisible()) || (await appVisible()), {
+        timeout: 45_000, message: 'auth screen visible',
+      });
+    } catch {
+      throw new Error('A01 auth/app screen was not reachable before the 45s deadline');
+    }
     const splashGone = await page.evaluate(() => !document.getElementById('native-splash') || document.getElementById('native-splash').classList.contains('hidden'));
     assert(splashGone, 'native splash still covering the app');
     // Stage one: immediately after first UI render, before login or channels.
     await fontProviderStage('first-ui-before-login');
     return { coldLaunchTotalMs: launch.totalTimeMs, origin: await page.evaluate(() => location.origin), api: await page.evaluate(() => globalThis.BRIDGE_API ?? null) };
+  });
+
+  // #209: repeated COLD starts on the ordinary Bridge Activity, after the
+  // isolated FD00/FD00W baselines. A lone green start cannot disprove the
+  // intermittent FocusEvent ANR seen in run 39017377880. This is an ASSERTING
+  // check (not a measurement-only pseudo-pass), and the later ANR01 still
+  // scans the entire session, even if CS01 itself fails.
+  await check('CS01', 'three additional cold starts retain the app PID and report no Android ANR', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android ActivityManager required');
+    const anrCount = async () => {
+      // Raw system logs stay entirely in memory; only a bounded count is
+      // retained. Never export ANR headers, reason text, PIDs or stack data.
+      const raw = await androidFailureShell(
+        "logcat -d -v brief -s ActivityManager:E | grep -F 'ANR in com.bridge.app.debug' || true");
+      return Math.min(100, raw.split('\n').filter(line => line.includes('ANR in com.bridge.app.debug')).length);
+    };
+    const baselineAnrs = await anrCount();
+    assert(baselineAnrs === 0, 'an OS ANR was already recorded before repeated cold starts');
+    const samples = [];
+    // Fixed and small on purpose; stress must not consume the entire emulator
+    // CI budget or silently redefine later L01 / FD01 acceptance.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const launch = await platform.coldLaunch();
+      const initialPid = await pid();
+      assert(/^[0-9]{1,8}$/.test(String(initialPid)),
+        `cold start ${attempt}: no valid app PID after Activity launch`);
+      await attachPage();
+      await until(async () => (await authVisible()) || (await appVisible()), {
+        timeout: 45_000,
+        message: `visible UI after repeated cold start ${attempt}`,
+      });
+      // Catch the delayed process death that earlier cold-launch-only checks
+      // missed: a 2 s OS-observation window is part of the assertion.
+      await sleep(2000);
+      const finalPid = await pid();
+      const newAnrs = await anrCount();
+      samples.push({
+        attempt,
+        totalTimeMs: launch.totalTimeMs,
+        pidStable: finalPid === initialPid,
+        anrCount: newAnrs,
+      });
+      facts.androidColdStartSamples = samples;
+      assert(finalPid === initialPid,
+        `cold start ${attempt}: Android replaced the app process after UI render`);
+      assert(newAnrs === baselineAnrs,
+        `cold start ${attempt}: ActivityManager reported an app ANR`);
+    }
+    return { attempts: samples.length, anrs: 0,
+      allPidStable: samples.every(row => row.pidStable),
+      maxStartMs: Math.max(...samples.map(row => row.totalTimeMs || 0)) };
   });
 
   await check('A02', 'login through the WebView reaches the app shell', async () => {
@@ -727,11 +1106,15 @@ async function main() {
     return { how, ms: Date.now() - t0 };
   });
 
+  // In-memory only: ties FD02 decay samples to the precise app process
+  // observed by FD01, even when FD01's strict assertion fails.
+  let fd01Pid = null;
   // P7 Android #209: the strict FD01 assertion is kept red if a live
   // FontsProvider connection remains. Disabling EmojiCompatInitializer alone
   // does not prove which subsystem made this connection; compare stage/refs.
   await check('FD01', 'native startup does not retain a Google Play emoji font dependency', async () => {
     if (MODE !== 'android') throw new Skip('Android ActivityManager evidence requires Android');
+    fd01Pid = await pid(); // Never persisted or emitted in CI evidence.
     const evidence = await fontProviderStage('after-login');
     assert(evidence?.available && evidence.appPidValid, 'app process or OS provider probe unavailable after login');
     assert(evidence.providerSections > 0,
@@ -746,6 +1129,47 @@ async function main() {
     return evidence;
   });
 
+
+  // #209: The existing FD01 gate remains STRICT and may be red even when a
+  // transient reference disappears later. Measure its lifetime on the SAME
+  // foreground app process; delayed clearance is not a retry or a PASS.
+  // Read no raw provider names, URLs or process details into CI artifacts.
+  await measure('FD02', 'post-login FontsProvider reference decay (measurement only)', async () => {
+    if (MODE !== 'android') throw new Skip('Android ActivityManager required');
+    const startingPid = await pid();
+    assert(/^[0-9]{1,8}$/.test(String(startingPid)), 'FD02 baseline app process unavailable');
+    assert(startingPid === fd01Pid,
+      'FD02 and original FD01 saw different app processes; cannot infer dependency clearance');
+    const start = Date.now();
+    const samples = [];
+    // Persist safe partial samples immediately: a later probe failure may be
+    // critical evidence, and must never make earlier observations vanish.
+    facts.fontProviderDecay = { sameAppProcess: true, complete: false, samples };
+    for (const offsetMs of [1500, 4000, 8000]) {
+      await sleep(Math.max(0, offsetMs - (Date.now() - start)));
+      const currentPid = await pid();
+      const stablePid = currentPid === startingPid;
+      // Preserve the original app PID, never substitute a fresh process as
+      // evidence that the original provider dependency cleared.
+      if (!stablePid) facts.fontProviderDecay.sameAppProcess = false;
+      assert(stablePid, 'FD02 app process changed during provider reference decay');
+      const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+      const info = inspectBridgeEmojiFontProvider(raw, currentPid);
+      assert(info.appPidValid && info.providerSections > 0 &&
+        info.unparsedConnections === 0 && info.fontProviderRefCountsKnown,
+        'FD02 Android provider evidence unavailable or unparseable');
+      samples.push({
+        sampleAtMs: offsetMs,
+        connected: info.fontProviderConnected,
+        stableRefs: info.fontProviderStableRefs,
+        unstableRefs: info.fontProviderUnstableRefs,
+        waiting: info.fontProviderWaiting,
+        dead: info.fontProviderDead,
+      });
+    }
+    facts.fontProviderDecay.complete = true;
+    return facts.fontProviderDecay;
+  });
 
   await check('PN01', 'the notification channel named by server pushes (bridge_default) exists on the device', async () => {
     if (MODE === 'dryrun') throw new Skip('notification channels need a device');
