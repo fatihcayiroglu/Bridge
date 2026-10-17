@@ -735,6 +735,32 @@ async function main() {
     }
   });
 
+  // Second, independently cold-started DEBUG-only control. This one has a
+  // bare Android WebView displaying about:blank with JavaScript disabled by
+  // default, but NO Capacitor, plugin registry or Bridge web application.
+  // It distinguishes native-only from WebView framework initialization.
+  await measure('FD00W', 'plain WebView-only FontsProvider baseline', async () => {
+    if (MODE !== 'android') throw new Skip('native Android WebView required');
+    await sh(`am force-stop ${PKG}`);
+    try {
+      const start = await sh(`am start -W -n ${PKG}/com.bridge.app.WebViewBaselineActivity`);
+      assert(/Status: ok/.test(start), 'debug plain-WebView baseline failed to launch');
+      await sleep(2000);
+      const baselinePid = await pid();
+      const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+      const evidence = inspectBridgeEmojiFontProvider(raw, baselinePid);
+      assert(evidence.appPidValid, 'plain-WebView baseline app PID unavailable');
+      const providerListingVerified = evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
+      const result = { stage: 'plain-webview-about-blank', providerListingVerified, ...evidence };
+      (facts.fontProviderStages ??= []).push(result);
+      return result;
+    } finally {
+      // Isolate the following real A01 cold launch from this diagnostic.
+      await sh(`am force-stop ${PKG}`).catch(() => {});
+    }
+  });
+
   await check('A01', 'cold launch reaches the auth screen (no stuck splash)', async () => {
     const launch = await platform.coldLaunch();
     await attachPage();
