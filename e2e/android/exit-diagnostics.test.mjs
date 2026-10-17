@@ -387,3 +387,26 @@ test('failure-only CDP probing preserves strict L03 failures and removes ADB for
   assert.ok(l03.includes('await attachPage()'));
   assert.doesNotMatch(l03, /\.catch\(\(\)\s*=>\s*(?:true|false)\)/);
 });
+
+
+// Debug-only experiment must separate construction from navigation and keep
+// strict FD01/L01/L03/ANR01/CS01 acceptance intact; the control is MEASURED.
+test('Android WebView constructor baseline never attaches or loads content', () => {
+  const src = readFileSync(new URL('../../mobile/android/app/src/debug/java/com/bridge/app/WebViewConstructorBaselineActivity.java',
+    import.meta.url), 'utf8');
+  assert.match(src, /new android\.webkit\.WebView\(this\)/);
+  assert.doesNotMatch(src, /\.loadUrl\s*\(|setContentView\s*\(|setJavaScriptEnabled\s*\(/);
+  const overlay = readFileSync(new URL('../../mobile/android/app/src/debug/AndroidManifest.xml',
+    import.meta.url), 'utf8');
+  assert.match(overlay, /android:name="com\.bridge\.app\.WebViewConstructorBaselineActivity"/);
+  const release = readFileSync(new URL('../../mobile/android/app/src/main/AndroidManifest.xml',
+    import.meta.url), 'utf8');
+  assert.doesNotMatch(release, /WebViewConstructorBaselineActivity/);
+
+  const harness = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(harness, /await measure\('FD00C'/);
+  for (const gate of ['FD01', 'L01', 'L03', 'ANR01', 'CS01']) {
+    assert.ok(harness.includes("await check('" + gate + "'"),
+      `required Android assertion ${gate} was removed`);
+  }
+});

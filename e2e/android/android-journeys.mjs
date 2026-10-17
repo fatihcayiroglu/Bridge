@@ -801,6 +801,32 @@ async function main() {
     }
   });
 
+  // Isolate the WebView CONSTRUCTOR from page navigation. This debug-only
+  // Activity does not call setContentView or loadUrl and does not use
+  // Capacitor/plugins. Force-stop both before and after so the comparison
+  // with FD00W is independent and can't contaminate A01.
+  await measure('FD00C', 'constructed but never attached or navigated WebView baseline', async () => {
+    if (MODE !== 'android') throw new Skip('native Android WebView required');
+    await sh(`am force-stop ${PKG}`);
+    try {
+      const start = await sh(`am start -W -n ${PKG}/com.bridge.app.WebViewConstructorBaselineActivity`);
+      assert(/Status: ok/.test(start), 'debug constructor-only WebView Activity failed to launch');
+      await sleep(2000);
+      const baselinePid = await pid();
+      const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+      const evidence = inspectBridgeEmojiFontProvider(raw, baselinePid);
+      assert(evidence.appPidValid, 'constructor-only baseline app PID unavailable');
+      const providerListingVerified = evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
+      const result = { stage: 'webview-constructed-not-attached-or-navigated',
+        providerListingVerified, ...evidence };
+      (facts.fontProviderStages ??= []).push(result);
+      return result;
+    } finally {
+      await sh(`am force-stop ${PKG}`).catch(() => {});
+    }
+  });
+
   // Second, independently cold-started DEBUG-only control. This one has a
   // bare Android WebView displaying about:blank with JavaScript disabled by
   // default, but NO Capacitor, plugin registry or Bridge web application.

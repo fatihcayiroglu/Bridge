@@ -42,6 +42,13 @@
       android:exported="true"
       android:excludeFromRecents="true"
       android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- Constructor-only WebView in a native DEBUG Activity: no view
+         attachment, navigation, Bridge content or Capacitor plugins. -->
+    <activity
+      android:name="com.bridge.app.WebViewConstructorBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
     <!-- Same base Android theme; instantiate an inert, JavaScript-disabled
          about:blank WebView without Capacitor or Bridge assets. Debug only. -->
     <activity
