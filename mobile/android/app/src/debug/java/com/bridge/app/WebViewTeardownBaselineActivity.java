@@ -29,7 +29,11 @@ public final class WebViewTeardownBaselineActivity extends android.app.Activity 
 
     private void releaseWebView() {
         if (view == null) return;
+        // Android's documented teardown sequence: stop navigation, remove
+        // the View from its container, clear history, destroy and dereference.
+        view.stopLoading();
         root.removeView(view);
+        view.clearHistory();
         view.destroy();
         view = null;
         // Fixed, debug-only marker; no PID, user data, URLs or raw process data.
