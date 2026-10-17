@@ -453,3 +453,21 @@ test('debug-only unattached navigation WebView isolates loadUrl without setConte
       `strict Android check ${gate} must remain an assertion`);
   }
 });
+
+
+test('FD02 remains measurement-only after strict FD01 and rejects missing provider facts', () => {
+  const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const fd01 = code.indexOf("await check('FD01'");
+  const fd02 = code.indexOf("await measure('FD02'");
+  const pn01 = code.indexOf("await check('PN01'");
+  assert.ok(fd01 >= 0 && fd02 > fd01 && pn01 > fd02);
+  const gate = code.slice(fd01, fd02);
+  assert.ok(gate.includes('assert(!evidence.fontProviderConnected'));
+  const measure = code.slice(fd02, pn01);
+  assert.match(measure, /const startingPid = await pid\(\)/);
+  assert.match(measure, /assert\(stablePid/);
+  assert.match(measure, /info\.unparsedConnections === 0 && info\.fontProviderRefCountsKnown/);
+  assert.match(measure, /const samples = \[\]/);
+  assert.ok(measure.includes('[1500, 4000, 8000]'));
+  assert.doesNotMatch(measure, /await check\('FD02'|return \{.*status:\s*'PASS'/);
+});

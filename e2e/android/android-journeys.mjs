@@ -993,6 +993,41 @@ async function main() {
   });
 
 
+  // #209: The existing FD01 gate remains STRICT and may be red even when a
+  // transient reference disappears later. Measure its lifetime on the SAME
+  // foreground app process; delayed clearance is not a retry or a PASS.
+  // Read no raw provider names, URLs or process details into CI artifacts.
+  await measure('FD02', 'post-login FontsProvider reference decay (measurement only)', async () => {
+    if (MODE !== 'android') throw new Skip('Android ActivityManager required');
+    const startingPid = await pid();
+    assert(/^[0-9]{1,8}$/.test(String(startingPid)), 'FD02 baseline app process unavailable');
+    const start = Date.now();
+    const samples = [];
+    for (const offsetMs of [1500, 4000, 8000]) {
+      await sleep(Math.max(0, offsetMs - (Date.now() - start)));
+      const currentPid = await pid();
+      const stablePid = currentPid === startingPid;
+      // Preserve the original app PID, never substitute a fresh process as
+      // evidence that the original provider dependency cleared.
+      assert(stablePid, 'FD02 app process changed during provider reference decay');
+      const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+      const info = inspectBridgeEmojiFontProvider(raw, currentPid);
+      assert(info.appPidValid && info.providerSections > 0 &&
+        info.unparsedConnections === 0 && info.fontProviderRefCountsKnown,
+        'FD02 Android provider evidence unavailable or unparseable');
+      samples.push({
+        sampleAtMs: offsetMs,
+        connected: info.fontProviderConnected,
+        stableRefs: info.fontProviderStableRefs,
+        unstableRefs: info.fontProviderUnstableRefs,
+        waiting: info.fontProviderWaiting,
+        dead: info.fontProviderDead,
+      });
+    }
+    facts.fontProviderDecay = { sameAppProcess: true, samples };
+    return { sameAppProcess: true, samples };
+  });
+
   await check('PN01', 'the notification channel named by server pushes (bridge_default) exists on the device', async () => {
     if (MODE === 'dryrun') throw new Skip('notification channels need a device');
     const lines = await until(async () => {
