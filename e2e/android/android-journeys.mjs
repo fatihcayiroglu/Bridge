@@ -989,6 +989,13 @@ async function main() {
         const currentPid = await pid();
         assert(currentPid === initialPid,
           'FD00T Activity process changed before ' + stage + ' observation');
+        // A process can survive while Android has torn down its Activity.
+        // Require the same diagnostic control to remain foreground/resumed;
+        // otherwise onDestroy() could counterfeit successful WebView release.
+        const resumed = await androidFailureShell(
+          'dumpsys activity activities | grep -m1 topResumedActivity || true');
+        assert(resumed.includes(PKG + '/com.bridge.app.WebViewTeardownBaselineActivity'),
+          'FD00T Activity no longer resumed at ' + stage);
         const raw = await androidFailureShell('dumpsys activity processes ' + PKG);
         const evidence = inspectBridgeEmojiFontProvider(raw, currentPid);
         assert(evidence.appPidValid && evidence.providerSections > 0 &&
