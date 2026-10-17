@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeAndroidColdLaunch } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -87,6 +87,10 @@ async function screenshot(name) {
   } catch { return null; }
 }
 
+// A01 original startup process is kept ONLY in memory for failure attribution.
+// Never append this PID to the CI result JSON or diagnostic logs.
+let a01InitialPid = null;
+
 async function check(id, title, fn) {
   const started = Date.now();
   log(`▶ ${id} ${title}`);
@@ -118,7 +122,23 @@ async function check(id, title, fn) {
       let osEvidence = null;
       try { osEvidence = await webViewAttachEvidence(); }
       catch { /* an unavailable probe stays unknown rather than healthy */ }
-      const a01 = { pageHandlePresent: Boolean(page), pageClosed, osEvidence };
+      // A successful am start response does not prove the Android process
+      // survived until CDP attached. If the launch PID was observed, correlate
+      // ONLY that PID against bounded OS ApplicationExitInfo on failure.
+      // Matching=false means unknown, never "no crash".
+      let exitEvidence = { evidenceValid: false, matchingExit: false,
+        reasonCode: null, subreasonCode: null };
+      if (a01InitialPid !== null) {
+        try {
+          const exits = await androidFailureExits();
+          if (exits.available)
+            exitEvidence = summarizeControlProcessExit(exits.exits, a01InitialPid);
+        } catch { /* no diagnostic error may replace A01 FAIL */ }
+      }
+      const a01 = {
+        pageHandlePresent: Boolean(page), pageClosed, osEvidence,
+        launch: facts.androidA01Launch ?? null, exitEvidence,
+      };
       facts.androidA01FailureEvidence = a01;
       log('Android A01 first-launch evidence', JSON.stringify(a01));
     }
@@ -522,7 +542,7 @@ const platform = {
     if (MODE === 'dryrun') { await page.goto(API); return { totalTimeMs: null }; }
     await sh(`am force-stop ${PKG}`);
     const out = await sh(`am start -W -n ${ACTIVITY} ${extra}`);
-    return { totalTimeMs: Number((/TotalTime:\s*(\d+)/.exec(out) || [])[1]) || null, raw: out.split('\n').slice(-4).join(' | ') };
+    return summarizeAndroidColdLaunch(out);
   },
   async home() { if (MODE === 'dryrun') return; await sh('input keyevent KEYCODE_HOME'); },
   async foreground() {
@@ -1103,7 +1123,14 @@ async function main() {
   });
 
   await check('A01', 'cold launch reaches the auth screen (no stuck splash)', async () => {
+    a01InitialPid = null;
     const launch = await platform.coldLaunch();
+    // Launch status and PID existence are evidence, not proof of survival.
+    // Keep the original A01 WebView and 45-second UI assertions unchanged.
+    a01InitialPid = await pid().catch(() => null);
+    facts.androidA01Launch = {
+      ...launch, appPidPresentImmediately: /^[0-9]{1,8}$/.test(String(a01InitialPid)),
+    };
     await attachPage();
     // Preserve the original 45-second failure boundary. The generic 'until'
     // helper can append untrusted Playwright error text (page URLs/paths).
