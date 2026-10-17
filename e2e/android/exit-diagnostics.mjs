@@ -16,6 +16,32 @@ export function parseApplicationExits(raw, limit = 6) {
     };
   });
 }
+/**
+ * CS00 failure-only summary of a SAME-PID Android ApplicationExitInfo record.
+ * No PID, process name, path, timestamp, user content, provider identity,
+ * stack or raw exit description may enter logs / artifacts.
+ *
+ * This is attribution evidence, NOT a retry and NOT proof of a root cause.
+ * A PID can be absent before Android records an exit, hence matching=false
+ * must remain unknown rather than "no crash".
+ */
+export function summarizeControlProcessExit(exits, expectedPid) {
+  if (!/^[0-9]{1,8}$/.test(String(expectedPid)) || !Array.isArray(exits))
+    return { evidenceValid: false, matchingExit: false, reasonCode: null, subreasonCode: null };
+  const hit = exits.slice(0, 6).find(row =>
+    row && Number.isInteger(row.pid) && String(row.pid) === String(Number(expectedPid)));
+  const code = value => {
+    const m = /^([0-9]{1,2}) \([A-Z_ ]+\)$/.exec(String(value ?? ''));
+    return m ? Number(m[1]) : null;
+  };
+  return {
+    evidenceValid: true,
+    matchingExit: Boolean(hit),
+    reasonCode: hit ? code(hit.reason) : null,
+    subreasonCode: hit ? code(hit.subreason) : null,
+  };
+}
+
 export function parseDependencyKillLine(raw, expectedPid) {
   if (!/^[0-9]{1,7}$/.test(String(expectedPid))) return null;
   const prefix = new RegExp('\\bKilling ' + expectedPid + ':');
