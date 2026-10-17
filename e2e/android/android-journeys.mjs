@@ -827,6 +827,32 @@ async function main() {
     }
   });
 
+  // Third independently cold-started DEBUG control: attach an inert WebView
+  // to the Activity, but do NOT navigate. FD00C tested construction alone;
+  // FD00W will separately test about:blank navigation. All three are
+  // measurements, not FD01 waivers or PASS substitutes.
+  await measure('FD00A', 'attached WebView without navigation FontsProvider baseline', async () => {
+    if (MODE !== 'android') throw new Skip('native Android WebView required');
+    await sh(`am force-stop ${PKG}`);
+    try {
+      const start = await sh(`am start -W -n ${PKG}/com.bridge.app.WebViewAttachedBaselineActivity`);
+      assert(/Status: ok/.test(start), 'debug attached-no-navigation WebView Activity failed to launch');
+      await sleep(2000);
+      const baselinePid = await pid();
+      const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+      const evidence = inspectBridgeEmojiFontProvider(raw, baselinePid);
+      assert(evidence.appPidValid, 'attached no-navigation app PID unavailable');
+      const providerListingVerified = evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
+      const result = { stage: 'webview-attached-without-navigation',
+        providerListingVerified, ...evidence };
+      (facts.fontProviderStages ??= []).push(result);
+      return result;
+    } finally {
+      await sh(`am force-stop ${PKG}`).catch(() => {});
+    }
+  });
+
   // Second, independently cold-started DEBUG-only control. This one has a
   // bare Android WebView displaying about:blank with JavaScript disabled by
   // default, but NO Capacitor, plugin registry or Bridge web application.

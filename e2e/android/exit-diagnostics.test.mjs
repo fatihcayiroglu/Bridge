@@ -410,3 +410,24 @@ test('Android WebView constructor baseline never attaches or loads content', () 
       `required Android assertion ${gate} was removed`);
   }
 });
+
+
+test('debug-only attached WebView control does not load a page or relax FD01', () => {
+  const attached = readFileSync(new URL('../../mobile/android/app/src/debug/java/com/bridge/app/WebViewAttachedBaselineActivity.java',
+    import.meta.url), 'utf8');
+  assert.match(attached, /new android\.webkit\.WebView\(this\)/);
+  assert.match(attached, /setContentView\(view\)/);
+  assert.doesNotMatch(attached, /\.loadUrl\s*\(|\.loadData\s*\(|\.loadDataWithBaseURL\s*\(|setJavaScriptEnabled\s*\(/);
+  const manifest = readFileSync(new URL('../../mobile/android/app/src/debug/AndroidManifest.xml',
+    import.meta.url), 'utf8');
+  assert.match(manifest, /android:name="com\.bridge\.app\.WebViewAttachedBaselineActivity"/);
+  const release = readFileSync(new URL('../../mobile/android/app/src/main/AndroidManifest.xml',
+    import.meta.url), 'utf8');
+  assert.doesNotMatch(release, /WebViewAttachedBaselineActivity/);
+  const harness = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(harness, /await measure\('FD00A'/);
+  for (const gate of ['FD01', 'L01', 'L03', 'ANR01', 'CS01']) {
+    assert.ok(harness.includes("await check('" + gate + "'"),
+      `required asserting check ${gate} was removed`);
+  }
+});
