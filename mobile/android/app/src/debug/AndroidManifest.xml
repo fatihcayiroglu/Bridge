@@ -68,6 +68,13 @@
       android:exported="true"
       android:excludeFromRecents="true"
       android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- Debug-only in-memory HTML navigation comparator: no external URL,
+         JavaScript, Bridge content, network or Capacitor plugins. -->
+    <activity
+      android:name="com.bridge.app.WebViewDataBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
     <!-- Same base Android theme; instantiate an inert, JavaScript-disabled
          about:blank WebView without Capacitor or Bridge assets. Debug only. -->
     <activity
