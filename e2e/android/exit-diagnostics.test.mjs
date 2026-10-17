@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -292,4 +292,65 @@ test('Android failure-only DOM evidence excludes user text, URL paths, channel i
   }
   assert.ok(summary.includes("catch(() => 'unavailable')"),
     'Playwright exception text must not be copied verbatim to CI output');
+});
+
+
+test('L03 failure evidence proves only OS state and redacts all free-text and device paths', () => {
+  const sample = {
+    pid: '8460',
+    activity: [
+      'topResumedActivity=ActivityRecord{8424cb u0 com.bridge.app.debug/com.bridge.app.MainActivity t13}',
+      '  Intent { url=https://private.example/secret?token=xyz }',
+      '  baseDir=/data/app/customer-private',
+    ].join('\n'),
+    processes: [
+      '*APP* UID 10192 ProcessRecord{c57864f 8460:com.bridge.app.debug/u0a192}',
+      '  account=owner@example.com',
+    ].join('\n'),
+    sockets: '000000 @webview_devtools_remote_8460\nsecretSocket=@other-private-id',
+    crash: 'Caused by: user=alice@example.com; token=my-secret',
+  };
+  const facts = summarizeWebViewAttachEvidence(sample);
+  assert.deepEqual(facts, {
+    appPidValid: true,
+    activityRecordAvailable: true,
+    mainActivityResumed: true,
+    processRecordAvailable: true,
+    appProcessMatched: true,
+    devtools: { socketCount: 1, appPidHasSocket: true },
+    crashBufferHasFatalMarker: false,
+    cdpPageResponsive: 'unverified',
+  });
+  assert.doesNotMatch(JSON.stringify(facts), /secret|alice|owner|private|8460|10192|https:|token|\/data\/app/);
+  // PID-specific attribution: a socket may belong to a previous process.
+  const wrongPid = summarizeWebViewAttachEvidence({ ...sample, pid: '1234' });
+  assert.equal(wrongPid.devtools.appPidHasSocket, false);
+  assert.equal(wrongPid.appProcessMatched, false);
+  assert.equal(wrongPid.mainActivityResumed, true);
+  assert.equal(wrongPid.cdpPageResponsive, 'unverified');
+  // No record is never a proven healthy WebView or evidence of an ANR.
+  assert.deepEqual(summarizeWebViewAttachEvidence(), {
+    appPidValid: false, activityRecordAvailable: false,
+    mainActivityResumed: false, processRecordAvailable: false,
+    appProcessMatched: false,
+    devtools: { socketCount: 0, appPidHasSocket: false },
+    crashBufferHasFatalMarker: false,
+    cdpPageResponsive: 'unverified',
+  });
+  assert.equal(summarizeWebViewAttachEvidence({
+    crash: 'Fatal signal 6 in another process',
+  }).crashBufferHasFatalMarker, true);
+});
+
+test('L03 WebView attach failure path cannot archive raw Android dump or transport exception', () => {
+  const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const begin = code.indexOf('async function webViewAttachEvidence() {');
+  const end = code.indexOf('\nasync function attachPage(', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const actual = code.slice(begin, end);
+  assert.ok(actual.includes('summarizeWebViewAttachEvidence(inputs, PKG)'));
+  assert.doesNotMatch(actual, /slice\(0,\s*1200\)|probe failed:|JSON.stringify\(inputs\)/);
+  const failure = code.slice(end, code.indexOf('\nasync function pid()', end));
+  assert.ok(failure.includes('safe device evidence'));
+  assert.doesNotMatch(failure, /String\(err\?\.message\s*\?\?\s*err\)/);
 });
