@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
@@ -259,4 +260,17 @@ test('tag-filtered EmojiCompat logcat fallback accepts only exact target PID', (
   assert.equal(parseNativeEmojiStartupProbe(raw, 'not-a-pid').available, false);
   assert.equal(parseNativeEmojiStartupProbe('BridgeEmojiStartupProbe stage=before-super classPresent=true configured=true', '5304').available, false);
   assert.doesNotMatch(JSON.stringify(evidence), /5304|8888/);
+});
+
+test('Android CI never persists raw device logcat in uploaded emulator evidence', () => {
+  const runner = readFileSync(new URL('./run-emulator-journeys.sh', import.meta.url), 'utf8');
+  // The runner may use allowlisted, bounded native diagnostics in the main JS
+  // harness, but must never dump unredacted device-wide output into the
+  // results/ artifact directory, whether the journeys PASS or FAIL.
+  assert.doesNotMatch(runner, /\badb\s+logcat\b/);
+  assert.doesNotMatch(runner, /\blogcat\.txt\b/);
+  const workflow = readFileSync(
+    new URL('../../.github/workflows/mobile-android.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /e2e\/android\/results\//,
+    'the runner result directory is uploaded, so raw capture here is sensitive');
 });
