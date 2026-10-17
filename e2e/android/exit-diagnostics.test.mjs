@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -536,4 +536,38 @@ test('FD00W blank-WebView font reference decay is measured on the original PID w
   assert.match(code.slice(fd01, fd02), /assert\(!evidence\.fontProviderConnected/);
   assert.ok(code.includes("await check('A01'"));
   assert.ok(code.includes("await check('ANR01'"));
+});
+
+
+test('CS00 PID-specific failure evidence contains numeric Android exit codes only', () => {
+  const exits = [{
+    pid: 6812, process: 'com.bridge.app.debug', reason: '6 (ANR)',
+    subreason: '0 (UNKNOWN)', status: 9, importance: 100,
+    at: 'private-time', dependency: { provider: 'private.example/path' },
+    description: 'token=secret-user@example.com',
+  }, {
+    pid: 8701, process: 'com.google.android.gms.persistent',
+    reason: '12 (DEPENDENCY DIED)', subreason: null,
+    description: 'hidden=another-account',
+  }];
+  const result = summarizeControlProcessExit(exits, '6812');
+  assert.deepEqual(result, {
+    evidenceValid: true, matchingExit: true, reasonCode: 6, subreasonCode: 0,
+  });
+  assert.doesNotMatch(JSON.stringify(result),
+    /6812|8701|secret|private|example|token|android|gms|process|path/i);
+  assert.deepEqual(summarizeControlProcessExit(exits, '9000'), {
+    evidenceValid: true, matchingExit: false, reasonCode: null, subreasonCode: null,
+  });
+  assert.deepEqual(summarizeControlProcessExit(exits, '6812; echo leak'), {
+    evidenceValid: false, matchingExit: false, reasonCode: null, subreasonCode: null,
+  });
+  assert.deepEqual(summarizeControlProcessExit(null, '6812'), {
+    evidenceValid: false, matchingExit: false, reasonCode: null, subreasonCode: null,
+  });
+  assert.deepEqual(summarizeControlProcessExit([
+    { pid: 6812, reason: '6 (ANR) token=secret', subreason: 'not-valid' },
+  ], '6812'), {
+    evidenceValid: true, matchingExit: true, reasonCode: null, subreasonCode: null,
+  });
 });
