@@ -42,6 +42,13 @@
       android:exported="true"
       android:excludeFromRecents="true"
       android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- DEBUG-only AndroidX AppCompat Activity baseline: same provider
+         probe without any WebView or Bridge application code. -->
+    <activity
+      android:name="com.bridge.app.AppCompatBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@style/Theme.AppCompat.Light.NoActionBar" />
     <!-- Constructor-only WebView in a native DEBUG Activity: no view
          attachment, navigation, Bridge content or Capacitor plugins. -->
     <activity
