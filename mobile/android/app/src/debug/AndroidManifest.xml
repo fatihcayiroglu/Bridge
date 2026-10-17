@@ -34,6 +34,14 @@
 
   <application
     android:networkSecurityConfig="@xml/network_security_config"
-    tools:replace="android:networkSecurityConfig" />
+    tools:replace="android:networkSecurityConfig">
+    <!-- P7 Android #209: a native-only isolated DEBUG baseline. Not released,
+         not the launcher, and does not initialize a WebView or any fonts. -->
+    <activity
+      android:name="com.bridge.app.FontBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+  </application>
 
 </manifest>
