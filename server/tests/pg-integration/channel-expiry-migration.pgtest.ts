@@ -40,7 +40,7 @@ RUN('P7 D2 migration 084 — real PostgreSQL reversible schema-only foundation',
       const version = cols.rows.find(r => r.column_name === 'expiryVersion');
       expect(expiry?.is_nullable).toBe('YES');
       expect(version?.is_nullable).toBe('NO');
-      expect(version?.column_default).toBe('0');
+      expect(version?.column_default).toMatch(/^(?:0|'0')(?:\:\:(?:pg_catalog\.)?(?:int8|bigint))?$/i);
       const found = await client.query(
         "SELECT to_regclass('public.channel_expiry_tombstones') IS NOT NULL AS exists",
       );
