@@ -124,6 +124,41 @@ RUN('P7 D2 migration 084 — real PostgreSQL reversible schema-only foundation',
       )).rows[0].expiryVersion).toBe('1');
     });
   });
+  it('upgrades a populated pre-084 schema twice without expiring legacy channels', async () => {
+    await inDisposableTransaction(async client => {
+      // Reproduce the older shape on an isolated, rollback-only schema view.
+      // Never run this on a production database.
+      const rows = await client.query('SELECT COUNT(*)::integer AS n FROM channel_expiry_tombstones');
+      expect(rows.rows[0].n).toBe(0);
+      await client.query('DROP TABLE channel_expiry_tombstones');
+      await client.query('ALTER TABLE channels DROP COLUMN "expiresAt", DROP COLUMN "expiryVersion"');
+
+      const legacyServer = 'pgt-d2-084-upgrade';
+      const legacyChannel = 'pgt-d2-084-channel';
+      await client.query(
+        'INSERT INTO servers (_id,name,"ownerId","createdAt") VALUES ($1,$1,$2,1)',
+        [legacyServer, 'pgt-d2-owner'],
+      );
+      await client.query(
+        'INSERT INTO channels (_id,"serverId",name,"createdAt") VALUES ($1,$2,$1,1)',
+        [legacyChannel, legacyServer],
+      );
+
+      await client.query(up);
+      // Idempotence when the migration runner encounters already-upgraded DDL.
+      await client.query(up);
+      const result = await client.query(
+        'SELECT "expiresAt", "expiryVersion" FROM channels WHERE _id=$1',
+        [legacyChannel],
+      );
+      expect(result.rows).toEqual([{ expiresAt: null, expiryVersion: '0' }]);
+      const table = await client.query(
+        "SELECT to_regclass('public.channel_expiry_tombstones') IS NOT NULL AS exists",
+      );
+      expect(table.rows[0].exists).toBe(true);
+    });
+  });
+
   it('real channel and server deletion leave durable expiry tombstones intact', async () => {
     const { Channels, Servers } = require('../../db/repositories');
     // Only disposable PG_TEST_URL is used. Cleanup is explicit even on fail;
