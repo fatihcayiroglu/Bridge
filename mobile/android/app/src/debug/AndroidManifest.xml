@@ -75,6 +75,14 @@
       android:exported="true"
       android:excludeFromRecents="true"
       android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- Debug-only: release a navigated WebView within the SAME foreground
+         Android process and measure provider reference lifetime, without
+         killing GMS or changing the product/release Activity. -->
+    <activity
+      android:name="com.bridge.app.WebViewTeardownBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
     <!-- Same base Android theme; instantiate an inert, JavaScript-disabled
          about:blank WebView without Capacitor or Bridge assets. Debug only. -->
     <activity
