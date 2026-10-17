@@ -124,4 +124,53 @@ RUN('P7 D2 migration 084 — real PostgreSQL reversible schema-only foundation',
       )).rows[0].expiryVersion).toBe('1');
     });
   });
+  it('real channel and server deletion leave durable expiry tombstones intact', async () => {
+    const { Channels, Servers } = require('../../db/repositories');
+    // Only disposable PG_TEST_URL is used. Cleanup is explicit even on fail;
+    // the repositories themselves use independent, committed transactions.
+    const client = new Client({ connectionString: PG_URL });
+    const id = `pgt-d2-retain-${process.pid}-${Date.now()}`;
+    const channel = `${id}-a`;
+    const sibling = `${id}-b`;
+    await client.connect();
+    try {
+      await client.query(
+        'INSERT INTO servers (_id, name, "ownerId", "createdAt") VALUES ($1,$2,$3,1)',
+        [id, 'D2 tombstone proof', 'pgt-d2-owner'],
+      );
+      await client.query(
+        'INSERT INTO channels (_id, "serverId", name, "createdAt") VALUES ($1,$3,$1,1),($2,$3,$2,1)',
+        [channel, sibling, id],
+      );
+      await client.query(
+        `INSERT INTO channel_expiry_tombstones
+         ("channelId","serverId","expiredAt","expiryVersion","recordedAt")
+         VALUES ($1,$2,100,1,101)`,
+        [channel, id],
+      );
+
+      await expect(Channels.deleteGraphAtomic(channel, id)).resolves.toBe('deleted');
+      const retained = await client.query(
+        'SELECT "channelId" FROM channel_expiry_tombstones WHERE "channelId"=$1', [channel],
+      );
+      expect(retained.rows).toHaveLength(1);
+      expect((await client.query('SELECT _id FROM channels WHERE _id=$1', [channel])).rows).toHaveLength(0);
+      expect((await client.query('SELECT _id FROM channels WHERE _id=$1', [sibling])).rows).toHaveLength(1);
+
+      await expect(Servers.deleteGraphAtomic(id)).resolves.toBe('deleted');
+      expect((await client.query(
+        'SELECT "channelId" FROM channel_expiry_tombstones WHERE "channelId"=$1', [channel],
+      )).rows).toHaveLength(1);
+      expect((await client.query('SELECT _id FROM servers WHERE _id=$1', [id])).rows).toHaveLength(0);
+    } finally {
+      try {
+        await client.query('DELETE FROM channel_expiry_tombstones WHERE "channelId"=$1', [channel]);
+        await client.query('DELETE FROM channels WHERE "serverId"=$1', [id]);
+        await client.query('DELETE FROM servers WHERE _id=$1', [id]);
+      } finally {
+        await client.end();
+      }
+    }
+  });
+
 });
