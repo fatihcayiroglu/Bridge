@@ -116,15 +116,24 @@ async function check(id, title, fn) {
 /** What the user was looking at when a check failed (the artifact host may be unreachable). */
 async function domSummary() {
   if (!page) return null;
+  // CI artifacts are retained after failures. Report only bounded counts and
+  // booleans: labels, toasts, DM text, channel IDs and arbitrary URL paths
+  // can contain account data or credentials. These are NOT safe to archive.
   return page.evaluate(() => {
-    const vis = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
-    const text = (el) => (el?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 240);
-    const dialogs = [...document.querySelectorAll('[role="dialog"]')].filter(vis).map((d) => d.getAttribute('aria-label') || d.className).slice(0, 4);
-    const alerts = [...document.querySelectorAll('[role="alert"], [role="status"], .toast')].filter(vis).map(text).filter(Boolean).slice(0, 4);
-    return JSON.stringify({ url: location.href, app: vis(document.getElementById('app')), auth: vis(document.getElementById('auth-screen')),
-      activeChannel: document.querySelector('.ch-item.active')?.getAttribute('data-id') ?? null, dialogs, alerts,
-      dmPanel: vis(document.querySelector('.dm-panel')) ? text(document.querySelector('.dm-panel')) : null });
-  }).catch((e) => `unavailable: ${e.message}`);
+    const visible = (el) => !!el && el.getClientRects().length > 0 &&
+      getComputedStyle(el).visibility !== 'hidden';
+    const count = (selector) =>
+      Math.min(99, [...document.querySelectorAll(selector)].filter(visible).length);
+    return JSON.stringify({
+      packagedOrigin: location.origin === 'https://localhost',
+      appVisible: visible(document.getElementById('app')),
+      authVisible: visible(document.getElementById('auth-screen')),
+      activeChannelPresent: Boolean(document.querySelector('.ch-item.active')),
+      dialogCount: count('[role="dialog"]'),
+      alertCount: count('[role="alert"], [role="status"], .toast'),
+      dmPanelVisible: visible(document.querySelector('.dm-panel')),
+    });
+  }).catch(() => 'unavailable');
 }
 
 /** Measurement-only probe: records numbers, asserts nothing, and is NEVER counted as a PASS. */
