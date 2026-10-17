@@ -38,11 +38,10 @@ public class MainActivity extends BridgeActivity {
      */
     @Override
     public void onCreate(android.os.Bundle savedInstanceState) {
-        // #209: debug-only, fixed-shape diagnostic. No compile-time emoji2
-        // dependency. Reflective static invocation may initialize the class;
-        // compare with earlier uninstrumented FD01 evidence.
-        // Prior direct EmojiCompat.isConfigured() broke compileDebugJavaWithJavac
-        // because emoji2 isn't even on this build's compile classpath.
+        // #209 A/B probe: debug-only, class-presence-only diagnostic.
+        // Never call static EmojiCompat methods during observation; they can
+        // initialize the class and contaminate FD01 attribution.
+        // No compile-time emoji2 dependency or runtime font lookup is added.
         logEmojiStartup("before-super");
         registerPlugin(BridgePushSupportPlugin.class);
         super.onCreate(savedInstanceState);
@@ -56,33 +55,28 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void logEmojiStartup(String stage) {
-        // Only observe class availability. Class.forName(..., false) does not
-        // initialize the class or invoke downloadable-font code. No emoji2
-        // dependency is added to debug OR release just to make diagnostics run.
+        // Android #209 A/B experiment: reflection on a STATIC method can
+        // initialize EmojiCompat even when isConfigured() reports false.
+        // This diagnostic must not become the possible cause of the very
+        // FontsProvider connection it is supposed to observe.
+        //
+        // Class.forName(..., false) checks availability WITHOUT class
+        // initialization. Configuration status is intentionally UNKNOWN,
+        // not reported as false; PID-filtered OS provider evidence remains
+        // authoritative for the unchanged strict FD01 test.
         if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) {
             return;
         }
         boolean classPresent = false;
-        String configured = "unknown";
         try {
-            // The AndroidX public isConfigured() API observes initialization
-            // without requesting a font download. Use reflection because
-            // emoji2 is present at runtime but absent from compileClasspath.
-            // Class lookup does not initialize it; invoking the static
-            // isConfigured method below MAY trigger class initialization.
-            // This instrumentation alone cannot attribute FontsProvider.
-            Class<?> emoji = Class.forName(
+            Class.forName(
                     "androidx.emoji2.text.EmojiCompat", false, getClassLoader());
             classPresent = true;
-            Object state = emoji.getMethod("isConfigured").invoke(null);
-            if (state instanceof Boolean) {
-                configured = ((Boolean) state) ? "true" : "false";
-            }
-        } catch (ReflectiveOperationException | LinkageError | SecurityException e) {
-            // Unavailable != false. Preserve this as an unknown diagnostic.
+        } catch (ClassNotFoundException | LinkageError | SecurityException ignored) {
+            // Unavailable does not imply configured=false or provider-free.
         }
         android.util.Log.i("BridgeEmojiStartupProbe",
                 "stage=" + stage + " classPresent=" + classPresent
-                        + " configured=" + configured);
+                        + " configured=unknown");
     }
 }
