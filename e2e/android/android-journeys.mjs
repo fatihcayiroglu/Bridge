@@ -324,9 +324,11 @@ async function androidFailureExits() {
     let dependency = null;
     if (/^12 /.test(exit.reason ?? '') && Number.isInteger(exit.pid)) {
       try {
+        // Android may reuse a PID; timestamp and exact package are required.
+        // Logcat content stays in memory; never export raw lines.
         const lines = await androidFailureShell(
-          `logcat -d -b system,main -v brief -s ActivityManager:I | grep -E 'Killing ${exit.pid}:' | tail -1`);
-        dependency = parseDependencyKillLine(lines, exit.pid);
+          `logcat -d -b system,main -v threadtime -s ActivityManager:I | grep -F 'Killing ${exit.pid}:${PKG}' | tail -n 30`);
+        dependency = parseDependencyKillLine(lines, exit.pid, PKG, exit.at);
       } catch {
         dependency = { available: false };
       }
