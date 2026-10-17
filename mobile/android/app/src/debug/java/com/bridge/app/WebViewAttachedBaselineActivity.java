@@ -11,7 +11,7 @@ public final class WebViewAttachedBaselineActivity extends android.app.Activity 
         super.onCreate(state);
         view = new android.webkit.WebView(this);
         setContentView(view);
-        // Intentionally never call view.loadUrl(...) or loadData(...).
+        // No page navigation; only window attachment is under test.
     }
 
     @Override
