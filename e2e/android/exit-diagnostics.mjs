@@ -98,12 +98,45 @@ export function classifyAndroidDependencyDeath(exits, expectedPid) {
   };
 }
 
-export function parseDependencyKillLine(raw, expectedPid) {
-  if (!/^[0-9]{1,7}$/.test(String(expectedPid))) return null;
-  const prefix = new RegExp('\\bKilling ' + expectedPid + ':');
-  const line = String(raw).split('\n').find((item) => prefix.test(item)) ?? '';
-  const m = /depends on provider ([A-Za-z0-9_.$/]{1,200}) in dying proc ([A-Za-z0-9_.:]{1,120})/.exec(line);
-  return m ? { provider: m[1], dyingProcess: m[2] } : { provider: null, dyingProcess: null, killLineFound: Boolean(line) };
+/**
+ * Attribute a provider-dependency kill to the EXACT exited app process and
+ * Android event time, not just a PID (which Android may subsequently reuse).
+ * When exitAt is supplied, only a timestamped ActivityManager threadtime
+ * record within 30 seconds is eligible. No raw log content is returned.
+ */
+export function parseDependencyKillLine(raw, expectedPid, expectedProcess = 'com.bridge.app.debug', exitAt = null) {
+  const absent = { provider: null, dyingProcess: null, killLineFound: false };
+  if (!/^[0-9]{1,8}$/.test(String(expectedPid)) ||
+      !/^[A-Za-z0-9_.:]{1,120}$/.test(String(expectedProcess))) return null;
+  const pid = String(Number(expectedPid));
+  const exitMatch = exitAt === null ? null :
+    /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(String(exitAt));
+  if (exitAt !== null && !exitMatch) return absent;
+  const asUtc = (year, month, day, hour, min, sec, ms = '0') =>
+    Date.UTC(Number(year), Number(month) - 1, Number(day),
+      Number(hour), Number(min), Number(sec), Number(ms.padEnd(3, '0')));
+  const exitTime = exitMatch ? asUtc(...exitMatch.slice(1)) : null;
+  if (exitMatch && !Number.isFinite(exitTime)) return absent;
+  let seen = false;
+  let chosen = null;
+  let closestMs = Infinity;
+  for (const line of String(raw).split(/\r?\n/).slice(-200)) {
+    const victim = /\bKilling ([0-9]{1,8}):([A-Za-z0-9_.:]{1,120})(?=[\s/(]|$)/.exec(line);
+    if (!victim || String(Number(victim[1])) !== pid || victim[2] !== expectedProcess) continue;
+    if (exitMatch) {
+      const logTime = /^(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\.(\d{1,3})\s+/.exec(line);
+      if (!logTime) continue;
+      const eventTime = asUtc(exitMatch[1], ...logTime.slice(1));
+      const delta = Math.abs(eventTime - exitTime);
+      if (!Number.isFinite(delta) || delta > 30_000 || delta >= closestMs) continue;
+      closestMs = delta;
+    }
+    seen = true;
+    const m = /\bdepends on provider ([A-Za-z0-9_.$/]{1,200}) in dying proc ([A-Za-z0-9_.:]{1,120})(?=[\s;]|$)/.exec(line);
+    chosen = m ? { provider: m[1], dyingProcess: m[2] } :
+      { provider: null, dyingProcess: null, killLineFound: true };
+  }
+  return chosen ?? { ...absent, killLineFound: seen };
 }
 
 
