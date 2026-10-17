@@ -194,6 +194,10 @@ jobs:
             echo "Android API34 Google APIs x86_64 image already installed"
             exit 0
           fi
+          # The runner normally accepts licenses during its own setup;
+          # this preflight executes before it. The actual install and image
+          # verification below remain strict even if licenses are unavailable.
+          yes | sdkmanager --licenses > /dev/null || true
           for attempt in 1 2; do
             echo "Installing Android API34 Google APIs image, attempt $attempt/2"
             if sdkmanager --install 'system-images;android-34;google_apis;x86_64' --channel=0 && valid_image; then
