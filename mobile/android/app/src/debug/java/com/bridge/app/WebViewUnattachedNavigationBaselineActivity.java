@@ -10,7 +10,7 @@ public final class WebViewUnattachedNavigationBaselineActivity extends android.a
     public void onCreate(android.os.Bundle state) {
         super.onCreate(state);
         view = new android.webkit.WebView(this);
-        // Intentionally navigate but never setContentView(view).
+        // Intentionally navigate with the view kept offscreen and unattached.
         view.loadUrl("about:blank");
     }
 
