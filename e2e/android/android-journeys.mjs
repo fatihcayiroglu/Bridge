@@ -905,6 +905,66 @@ async function main() {
     }
   });
 
+  // #209 differential: alternate three native-only and three plain-WebView
+  // cold starts BEFORE authenticated Bridge journeys. No JS or Capacitor.
+  // This is a MEASUREMENT: a failed control remains FAIL, not a CS01 bypass.
+  await measure('CS00', 'native-only versus plain-WebView cold-start ANR controls', async () => {
+    if (MODE !== 'android') throw new Skip('Android ActivityManager required');
+    const controls = [
+      { kind: 'native-only', activity: 'FontBaselineActivity' },
+      { kind: 'blank-webview', activity: 'WebViewBaselineActivity' },
+    ];
+    const anrCount = async () => {
+      // Restrict to an exact package ANR marker. Never export logcat lines.
+      const raw = await androidFailureShell(
+        "logcat -d -v brief -s ActivityManager:E | grep -F 'ANR in com.bridge.app.debug' || true");
+      const matches = raw.split('\n').filter(line =>
+        line.includes('ANR in com.bridge.app.debug')).length;
+      assert(matches < 100, 'CS00 ANR log count saturated');
+      return matches;
+    };
+    const samples = [];
+    let previousAnrs = await anrCount();
+    facts.androidControlColdStarts = { complete: false, samples };
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        for (const control of controls) {
+          await sh('am force-stop ' + PKG);
+          const started = await sh('am start -W -n ' + PKG +
+            '/com.bridge.app.' + control.activity);
+          assert(/Status: ok/.test(started), 'CS00 baseline Activity failed to start');
+          const firstPid = await pid();
+          assert(/^[0-9]{1,8}$/.test(String(firstPid)),
+            'CS00 baseline app PID unavailable');
+          const resume = await androidFailureShell(
+            'dumpsys activity activities | grep -m1 topResumedActivity || true');
+          const expectedActivity = PKG + '/com.bridge.app.' + control.activity;
+          const activityResumed = resume.includes(expectedActivity);
+          await sleep(2000);
+          const finalPid = await pid();
+          const count = await anrCount();
+          const record = {
+            attempt, kind: control.kind, activityResumed,
+            pidStable: firstPid === finalPid,
+            newlyRecordedAnrs: count - previousAnrs,
+          };
+          samples.push(record);
+          assert(activityResumed, 'CS00 control Activity was not foreground');
+          assert(record.pidStable, 'CS00 baseline Activity process died after launch');
+          assert(count >= previousAnrs, 'CS00 ANR log count decreased; result inconclusive');
+          assert(count === previousAnrs,
+            'CS00 Android OS reported an ANR during a baseline Activity');
+          previousAnrs = count;
+        }
+      }
+      facts.androidControlColdStarts.complete = true;
+      return { complete: true, samples };
+    } finally {
+      // The product launch A01 must start in a fresh Android app process.
+      await sh('am force-stop ' + PKG).catch(() => {});
+    }
+  });
+
   await check('A01', 'cold launch reaches the auth screen (no stuck splash)', async () => {
     const launch = await platform.coldLaunch();
     await attachPage();

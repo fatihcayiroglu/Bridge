@@ -476,3 +476,26 @@ test('FD02 remains measurement-only after strict FD01 and rejects missing provid
   assert.ok(measure.includes('[1500, 4000, 8000]'));
   assert.doesNotMatch(measure, /await check\('FD02'|return \{.*status:\s*'PASS'/);
 });
+
+
+test('CS00 compares repeated real native and WebView-only cold starts without waiving CS01', () => {
+  const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const c = code.indexOf("await measure('CS00'");
+  const a = code.indexOf("await check('A01'");
+  const cs = code.indexOf("await check('CS01'");
+  assert.ok(c >= 0 && c < a && a < cs);
+  const body = code.slice(c, a);
+  for (const literal of ["kind: 'native-only'", "kind: 'blank-webview'",
+    "for (let attempt = 1; attempt <= 3; attempt++)",
+    "await sh('am force-stop ' + PKG)",
+    'pidStable: firstPid === finalPid',
+    'assert(count === previousAnrs',
+    'facts.androidControlColdStarts = { complete: false, samples }']) {
+    assert.ok(body.includes(literal), 'CS00 missing contract: ' + literal);
+  }
+  assert.doesNotMatch(body, /await check\('CS00'|console\.log\(raw\)/);
+  for (const gate of ['FD01', 'CS01', 'L01', 'L03', 'ANR01']) {
+    assert.ok(code.includes("await check('" + gate + "'"),
+      'original strict Android assertion missing: ' + gate);
+  }
+});
