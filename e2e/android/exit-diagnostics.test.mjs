@@ -613,7 +613,7 @@ test('A01 same-PID dependency death identifies Google FontsProvider with fixed e
     dyingProcessClass: 'gms-persistent', attribution: 'matched-kill-line',
   });
   assert.doesNotMatch(JSON.stringify(evidence),
-    /12345|private|token|secret|example|persistent|com\.google|FontsProvider|pathname|processName/);
+    /12345|private|token|secret|example|com\.google|FontsProvider|pathname|processName/);
 });
 
 test('A01 dependency attribution fails closed on missing kill lines, other PIDs and other providers', () => {
