@@ -21,7 +21,7 @@ import { io } from 'socket.io-client';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -300,32 +300,33 @@ async function androidFailureExits() {
 // enough Android state to distinguish a native crash, a stopped Activity, and
 // an adb/DevTools attachment problem. No extra retry or implicit PASS.
 async function webViewAttachEvidence() {
-  const probes = [
-    ['pid', `pidof ${PKG}`],
-    ['activity', `dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity|com.bridge.app' | head -10`],
-    ['process', `dumpsys activity processes | grep -E 'ProcessRecord|com.bridge.app' | head -10`],
-    // Restrict logcat to native crash headers/stack frames; do not print arbitrary
-    // app log lines, HTTP headers, user messages or credential-bearing fields.
-    ['crash', `logcat -d -b crash -t 100 | grep -E 'FATAL EXCEPTION|Process: com.bridge.app|Fatal signal|Caused by:|at com.bridge.app' | tail -15`],
-  ];
-  const results = await Promise.all(probes.map(async ([label, command]) => {
-    try { return [label, (await sh(command)).slice(0, 1200)]; }
-    catch (err) { return [label, `probe failed: ${String(err?.message ?? err).slice(0, 120)}`]; }
+  // All outputs below are held only in memory. Do NOT write raw dumpsys,
+  // process records, Unix sockets, crash lines or arbitrary Playwright errors
+  // to CI logs/artifacts: they can contain private identities and paths.
+  const commands = {
+    pid: `pidof ${PKG}`,
+    activity: 'dumpsys activity activities',
+    processes: 'dumpsys activity processes',
+    sockets: 'cat /proc/net/unix',
+    crash: 'logcat -d -b crash -t 100',
+  };
+  const inputs = {};
+  const probeAvailable = {};
+  await Promise.all(Object.entries(commands).map(async ([name, command]) => {
+    try {
+      inputs[name] = await androidFailureShell(command);
+      probeAvailable[name] = true;
+    } catch {
+      inputs[name] = '';
+      probeAvailable[name] = false;
+    }
   }));
-  const evidence = Object.fromEntries(results);
-  // A live Android Activity is insufficient proof that the embedded WebView
-  // exposes a DevTools endpoint. Capture a bounded, identifier-free presence
-  // check only on failure; never log full /proc/net/unix contents.
-  try {
-    const rawSockets = await androidFailureShell('cat /proc/net/unix');
-    evidence.devtools = {
-      available: true,
-      ...parseWebViewDevToolsSockets(rawSockets, evidence.pid),
-    };
-  } catch {
-    evidence.devtools = { available: false, socketCount: 0, appPidHasSocket: false };
-  }
-  return evidence;
+  return {
+    probeAvailable,
+    ...summarizeWebViewAttachEvidence(inputs, PKG),
+    // Android may expose a devtools socket and still have no CDP page.
+    // No retry, forced restart, timeout extension, or hidden PASS here.
+  };
 }
 
 async function attachPage({ timeout = 60_000 } = {}) {
@@ -338,7 +339,10 @@ async function attachPage({ timeout = 60_000 } = {}) {
     return p;
   } catch (err) {
     const evidence = await webViewAttachEvidence();
-    throw new Error(`Android WebView attach failed for ${PKG} after ${timeout}ms: ${String(err?.message ?? err)}; device evidence: ${JSON.stringify(evidence)}`, { cause: err });
+    // Only fixed categories leave this diagnostic boundary. The original
+    // Playwright message can contain device or URL paths and must not leak.
+    const category = /Timeout/.test(String(err?.name ?? '')) ? 'timeout' : 'attach-failed';
+    throw new Error(`Android WebView attach ${category} after ${timeout}ms; safe device evidence: ${JSON.stringify(evidence)}`, { cause: err });
   }
 }
 async function pid() { return MODE === 'dryrun' ? 'dryrun' : (await sh(`pidof ${PKG}`)) || null; }
