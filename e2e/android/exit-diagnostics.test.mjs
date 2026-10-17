@@ -464,7 +464,12 @@ test('FD02 remains measurement-only after strict FD01 and rejects missing provid
   const gate = code.slice(fd01, fd02);
   assert.ok(gate.includes('assert(!evidence.fontProviderConnected'));
   const measure = code.slice(fd02, pn01);
+  assert.ok(gate.includes('fd01Pid = await pid()'));
   assert.match(measure, /const startingPid = await pid\(\)/);
+  assert.ok(measure.includes('startingPid === fd01Pid'));
+  assert.ok(measure.includes('facts.fontProviderDecay = { sameAppProcess: true, complete: false, samples }'));
+  assert.ok(measure.includes('facts.fontProviderDecay.complete = true'));
+  assert.ok(measure.includes('facts.fontProviderDecay.sameAppProcess = false'));
   assert.match(measure, /assert\(stablePid/);
   assert.match(measure, /info\.unparsedConnections === 0 && info\.fontProviderRefCountsKnown/);
   assert.match(measure, /const samples = \[\]/);

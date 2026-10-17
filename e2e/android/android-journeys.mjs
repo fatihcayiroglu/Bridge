@@ -973,11 +973,15 @@ async function main() {
     return { how, ms: Date.now() - t0 };
   });
 
+  // In-memory only: ties FD02 decay samples to the precise app process
+  // observed by FD01, even when FD01's strict assertion fails.
+  let fd01Pid = null;
   // P7 Android #209: the strict FD01 assertion is kept red if a live
   // FontsProvider connection remains. Disabling EmojiCompatInitializer alone
   // does not prove which subsystem made this connection; compare stage/refs.
   await check('FD01', 'native startup does not retain a Google Play emoji font dependency', async () => {
     if (MODE !== 'android') throw new Skip('Android ActivityManager evidence requires Android');
+    fd01Pid = await pid(); // Never persisted or emitted in CI evidence.
     const evidence = await fontProviderStage('after-login');
     assert(evidence?.available && evidence.appPidValid, 'app process or OS provider probe unavailable after login');
     assert(evidence.providerSections > 0,
@@ -1001,14 +1005,20 @@ async function main() {
     if (MODE !== 'android') throw new Skip('Android ActivityManager required');
     const startingPid = await pid();
     assert(/^[0-9]{1,8}$/.test(String(startingPid)), 'FD02 baseline app process unavailable');
+    assert(startingPid === fd01Pid,
+      'FD02 and original FD01 saw different app processes; cannot infer dependency clearance');
     const start = Date.now();
     const samples = [];
+    // Persist safe partial samples immediately: a later probe failure may be
+    // critical evidence, and must never make earlier observations vanish.
+    facts.fontProviderDecay = { sameAppProcess: true, complete: false, samples };
     for (const offsetMs of [1500, 4000, 8000]) {
       await sleep(Math.max(0, offsetMs - (Date.now() - start)));
       const currentPid = await pid();
       const stablePid = currentPid === startingPid;
       // Preserve the original app PID, never substitute a fresh process as
       // evidence that the original provider dependency cleared.
+      if (!stablePid) facts.fontProviderDecay.sameAppProcess = false;
       assert(stablePid, 'FD02 app process changed during provider reference decay');
       const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
       const info = inspectBridgeEmojiFontProvider(raw, currentPid);
@@ -1024,8 +1034,8 @@ async function main() {
         dead: info.fontProviderDead,
       });
     }
-    facts.fontProviderDecay = { sameAppProcess: true, samples };
-    return { sameAppProcess: true, samples };
+    facts.fontProviderDecay.complete = true;
+    return facts.fontProviderDecay;
   });
 
   await check('PN01', 'the notification channel named by server pushes (bridge_default) exists on the device', async () => {
