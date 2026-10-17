@@ -701,6 +701,35 @@ async function main() {
     facts.device = { note: 'DRYRUN — desktop Chromium phone viewport, NOT evidence' };
   }
 
+  // Android #209 controlled differential: observe the *same installed APK*
+  // running a native-only Activity before Capacitor/BridgeActivity/WebView.
+  // This DEBUG-only baseline is measured, not a PASS and not an FD01 bypass.
+  // A connected provider here points to startup/platform/native components;
+  // absence here followed by FD01 connection narrows it to the product
+  // activity/WebView initialization path. Neither outcome identifies a caller.
+  await measure('FD00', 'native-only Activity FontsProvider baseline before WebView', async () => {
+    if (MODE !== 'android') throw new Skip('native Android Activity required');
+    await sh(`am force-stop ${PKG}`);
+    try {
+      const start = await sh(`am start -W -n ${PKG}/com.bridge.app.FontBaselineActivity`);
+      assert(/Status: ok/.test(start), 'debug native baseline Activity failed to launch');
+      await sleep(1200);
+      const baselinePid = await pid();
+      const raw = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+      const evidence = inspectBridgeEmojiFontProvider(raw, baselinePid);
+      assert(evidence.appPidValid && evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown,
+        'native-only baseline provider probe unavailable/unparseable');
+      const result = { stage: 'native-only-before-webview', ...evidence };
+      (facts.fontProviderStages ??= []).push(result);
+      return result;
+    } finally {
+      // Reset native-only process: the next A01 must be an independent cold
+      // product launch with original checks, permissions and thresholds.
+      await sh(`am force-stop ${PKG}`).catch(() => {});
+    }
+  });
+
   await check('A01', 'cold launch reaches the auth screen (no stuck splash)', async () => {
     const launch = await platform.coldLaunch();
     await attachPage();
