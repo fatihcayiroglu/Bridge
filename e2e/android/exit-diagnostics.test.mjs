@@ -499,3 +499,19 @@ test('CS00 compares repeated real native and WebView-only cold starts without wa
       'original strict Android assertion missing: ' + gate);
   }
 });
+
+
+test('A01 original 45s gate records only safe failure-only app/CDP evidence, never retries', () => {
+  const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const a01 = code.slice(code.indexOf("await check('A01'"), code.indexOf("await check('CS01'"));
+  assert.match(a01, /await attachPage\(\)/);
+  assert.match(a01, /timeout: 45_000/);
+  assert.match(a01, /throw new Error\('A01 auth\/app screen was not reachable/);
+  assert.doesNotMatch(a01, /(?:platform\.coldLaunch|attachPage)\(\).*\b(?:retry|second)/);
+  const failBlock = code.slice(code.indexOf("async function check(id,"), code.indexOf("async function domSummary()"));
+  assert.match(failBlock, /id === 'A01'/);
+  assert.match(failBlock, /await webViewAttachEvidence\(\)/);
+  assert.match(failBlock, /facts\.androidA01FailureEvidence = a01/);
+  assert.match(failBlock, /pageHandlePresent: Boolean\(page\), pageClosed, osEvidence/);
+  assert.doesNotMatch(failBlock, /log\([^\n]*(?:page\.url|err\.stack|err\.cause)/);
+});

@@ -107,6 +107,21 @@ async function check(id, title, fn) {
       (facts.androidFailureExits ??= []).push({ check: id, ...exitFacts });
       log(`Android exit evidence ${id}`, JSON.stringify(exitFacts));
     }
+    // A01 can time out with a detached/closed CDP page even while the
+    // Android process and Activity are still alive. Failure-only and never
+    // a retry: log only fixed booleans/counts, no page URLs, target titles,
+    // raw ActivityManager output, Playwright exceptions or user content.
+    if (MODE === 'android' && id === 'A01') {
+      let pageClosed = null;
+      try { pageClosed = typeof page?.isClosed === 'function' ? Boolean(page.isClosed()) : null; }
+      catch { /* diagnostic cannot replace the original A01 failure */ }
+      let osEvidence = null;
+      try { osEvidence = await webViewAttachEvidence(); }
+      catch { /* an unavailable probe stays unknown rather than healthy */ }
+      const a01 = { pageHandlePresent: Boolean(page), pageClosed, osEvidence };
+      facts.androidA01FailureEvidence = a01;
+      log('Android A01 first-launch evidence', JSON.stringify(a01));
+    }
     const shot = await screenshot(`${id}-fail`);
     const dom = await domSummary();
     results.push({ id, title, status: 'FAIL', ms: Date.now() - started, error: String(err?.message ?? err).slice(0, 2000), screenshot: shot, dom });
@@ -968,7 +983,17 @@ async function main() {
   await check('A01', 'cold launch reaches the auth screen (no stuck splash)', async () => {
     const launch = await platform.coldLaunch();
     await attachPage();
-    await until(async () => (await authVisible()) || (await appVisible()), { timeout: 45_000, message: 'auth screen visible' });
+    // Preserve the original 45-second failure boundary. The generic 'until'
+    // helper can append untrusted Playwright error text (page URLs/paths).
+    // A01 only publishes a fixed failure code; check() separately captures
+    // booleans and sanitized native/CDP evidence. No restart or second try.
+    try {
+      await until(async () => (await authVisible()) || (await appVisible()), {
+        timeout: 45_000, message: 'auth screen visible',
+      });
+    } catch {
+      throw new Error('A01 auth/app screen was not reachable before the 45s deadline');
+    }
     const splashGone = await page.evaluate(() => !document.getElementById('native-splash') || document.getElementById('native-splash').classList.contains('hidden'));
     assert(splashGone, 'native splash still covering the app');
     // Stage one: immediately after first UI render, before login or channels.
