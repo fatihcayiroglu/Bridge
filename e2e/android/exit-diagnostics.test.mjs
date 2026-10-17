@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
@@ -259,4 +260,36 @@ test('tag-filtered EmojiCompat logcat fallback accepts only exact target PID', (
   assert.equal(parseNativeEmojiStartupProbe(raw, 'not-a-pid').available, false);
   assert.equal(parseNativeEmojiStartupProbe('BridgeEmojiStartupProbe stage=before-super classPresent=true configured=true', '5304').available, false);
   assert.doesNotMatch(JSON.stringify(evidence), /5304|8888/);
+});
+
+test('Android CI never persists raw device logcat in uploaded emulator evidence', () => {
+  const runner = readFileSync(new URL('./run-emulator-journeys.sh', import.meta.url), 'utf8');
+  // The runner may use allowlisted, bounded native diagnostics in the main JS
+  // harness, but must never dump unredacted device-wide output into the
+  // results/ artifact directory, whether the journeys PASS or FAIL.
+  assert.doesNotMatch(runner, /\badb\s+logcat\b/);
+  assert.doesNotMatch(runner, /\blogcat\.txt\b/);
+  const workflow = readFileSync(
+    new URL('../../.github/workflows/mobile-android.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /e2e\/android\/results\//,
+    'the runner result directory is uploaded, so raw capture here is sensitive');
+});
+
+test('Android failure-only DOM evidence excludes user text, URL paths, channel identifiers and arbitrary error strings', () => {
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const begin = journeys.indexOf('async function domSummary() {');
+  const end = journeys.indexOf('\n/** Measurement-only probe:', begin);
+  assert.ok(begin >= 0 && end > begin, 'actual production failure summary must exist');
+  const summary = journeys.slice(begin, end);
+  for (const unsafe of ['innerText', 'textContent', 'location.href', 'location.pathname',
+    'getAttribute', '.className', 'error.message', 'JSON.stringify(err)']) {
+    assert.equal(summary.includes(unsafe), false,
+      `unsafe user-controllable field ${unsafe} must not leave failure summary`);
+  }
+  for (const required of ['packagedOrigin', 'appVisible', 'authVisible', 'activeChannelPresent',
+    'dialogCount', 'alertCount', 'dmPanelVisible']) {
+    assert.ok(summary.includes(required), `allowlisted diagnostic ${required} required`);
+  }
+  assert.ok(summary.includes("catch(() => 'unavailable')"),
+    'Playwright exception text must not be copied verbatim to CI output');
 });
