@@ -772,6 +772,57 @@ async function main() {
     return { coldLaunchTotalMs: launch.totalTimeMs, origin: await page.evaluate(() => location.origin), api: await page.evaluate(() => globalThis.BRIDGE_API ?? null) };
   });
 
+  // #209: repeated COLD starts on the ordinary Bridge Activity, after the
+  // isolated FD00/FD00W baselines. A lone green start cannot disprove the
+  // intermittent FocusEvent ANR seen in run 39017377880. This is an ASSERTING
+  // check (not a measurement-only pseudo-pass), and the later ANR01 still
+  // scans the entire session, even if CS01 itself fails.
+  await check('CS01', 'three additional cold starts retain the app PID and report no Android ANR', async () => {
+    if (MODE !== 'android') throw new Skip('actual Android ActivityManager required');
+    const anrCount = async () => {
+      // Raw system logs stay entirely in memory; only a bounded count is
+      // retained. Never export ANR headers, reason text, PIDs or stack data.
+      const raw = await androidFailureShell(
+        "logcat -d -v brief -s ActivityManager:E | grep -F 'ANR in com.bridge.app.debug' || true");
+      return Math.min(100, raw.split('\n').filter(line => line.includes('ANR in com.bridge.app.debug')).length);
+    };
+    const baselineAnrs = await anrCount();
+    assert(baselineAnrs === 0, 'an OS ANR was already recorded before repeated cold starts');
+    const samples = [];
+    // Fixed and small on purpose; stress must not consume the entire emulator
+    // CI budget or silently redefine later L01 / FD01 acceptance.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const launch = await platform.coldLaunch();
+      const initialPid = await pid();
+      assert(/^[0-9]{1,8}$/.test(String(initialPid)),
+        `cold start ${attempt}: no valid app PID after Activity launch`);
+      await attachPage();
+      await until(async () => (await authVisible()) || (await appVisible()), {
+        timeout: 45_000,
+        message: `visible UI after repeated cold start ${attempt}`,
+      });
+      // Catch the delayed process death that earlier cold-launch-only checks
+      // missed: a 2 s OS-observation window is part of the assertion.
+      await sleep(2000);
+      const finalPid = await pid();
+      const newAnrs = await anrCount();
+      samples.push({
+        attempt,
+        totalTimeMs: launch.totalTimeMs,
+        pidStable: finalPid === initialPid,
+        anrCount: newAnrs,
+      });
+      facts.androidColdStartSamples = samples;
+      assert(finalPid === initialPid,
+        `cold start ${attempt}: Android replaced the app process after UI render`);
+      assert(newAnrs === baselineAnrs,
+        `cold start ${attempt}: ActivityManager reported an app ANR`);
+    }
+    return { attempts: samples.length, anrs: 0,
+      allPidStable: samples.every(row => row.pidStable),
+      maxStartMs: Math.max(...samples.map(row => row.totalTimeMs || 0)) };
+  });
+
   await check('A02', 'login through the WebView reaches the app shell', async () => {
     const t0 = Date.now();
     const how = await login(me.username, me.id);
