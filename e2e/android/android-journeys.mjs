@@ -970,6 +970,57 @@ async function main() {
     }
   });
 
+  // FD00T: provider lifetime AFTER destroying a navigated WebView in the
+  // SAME foreground Android process. The teardown marker is exact-PID
+  // filtered, so elapsed time is never mistaken for proof of destruction.
+  // Measurement only: it cannot grant FD01/L01/ANR01 a PASS.
+  await measure('FD00T', 'same-process WebView destruction and provider retention', async () => {
+    if (MODE !== 'android') throw new Skip('native WebView Activity required');
+    await sh('am force-stop ' + PKG);
+    try {
+      const started = await sh('am start -W -n ' + PKG +
+        '/com.bridge.app.WebViewTeardownBaselineActivity');
+      assert(/Status: ok/.test(started), 'debug teardown baseline Activity failed to launch');
+      await sleep(1600);
+      const initialPid = await pid();
+      assert(/^[0-9]{1,8}$/.test(String(initialPid)),
+        'FD00T initial app process unavailable');
+      const snapshot = async stage => {
+        const currentPid = await pid();
+        assert(currentPid === initialPid,
+          'FD00T Activity process changed before ' + stage + ' observation');
+        const raw = await androidFailureShell('dumpsys activity processes ' + PKG);
+        const evidence = inspectBridgeEmojiFontProvider(raw, currentPid);
+        assert(evidence.appPidValid && evidence.providerSections > 0 &&
+          evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown,
+          'FD00T provider listing not verified at ' + stage);
+        return { stage, connected: evidence.fontProviderConnected,
+          stableRefs: evidence.fontProviderStableRefs,
+          unstableRefs: evidence.fontProviderUnstableRefs,
+          waiting: evidence.fontProviderWaiting, dead: evidence.fontProviderDead };
+      };
+      const before = await snapshot('webview-navigated');
+      // The Activity destroys its WebView after 3.5s; the later sample
+      // takes place > 7s after launch with no simulated provider death.
+      await sleep(5600);
+      const after = await snapshot('webview-destroyed');
+      let teardownObserved = false;
+      try {
+        const marker = await androidFailureShell('logcat -d --pid ' + initialPid +
+          " -s BridgeWebViewTeardown:I '*:S'");
+        // Logcat is explicitly filtered to the SAME PID observed above.
+        // Never export or persist the raw log, PIDs or unrelated Android data.
+        teardownObserved = /BridgeWebViewTeardown.*stage=destroyed/.test(marker);
+      } catch { /* missing marker remains failure, not a PASS */ }
+      assert(teardownObserved, 'FD00T same-process WebView destroy marker unavailable');
+      const result = { sameProcess: true, webviewDestroyed: true, before, after };
+      facts.androidWebViewTeardownEvidence = result;
+      return result;
+    } finally {
+      await sh('am force-stop ' + PKG).catch(() => {});
+    }
+  });
+
   // Second, independently cold-started DEBUG-only control. This one has a
   // bare Android WebView displaying about:blank with JavaScript disabled by
   // default, but NO Capacitor, plugin registry or Bridge web application.
