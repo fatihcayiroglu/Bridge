@@ -83,3 +83,17 @@ The red job's bounded ANR CPU evidence captured a **post-event** sample with loa
 
 **Release gate remains OPEN:** retain strict L01/ANR01/FD01 results unchanged; compare a sufficiently repeated normal production-path startup against FD00/FD00W instrumentation and real physical Android hardware, gather bounded main-thread/platform ANR attribution, and separately revisit whether a zero-FontsProvider requirement is under Bridge's control for a WebView-based app. Changing FD01 solely to make CI green is prohibited. Prevent future raw device log exports (PR #323) without erasing historical red evidence.
 
+
+
+## 17 October 2026 — controlled WebView localization and negative observer-ablation result
+
+Two independently executed Android 14 emulator comparisons, [baseline #322](https://github.com/fatihcayiroglu/Bridge/actions/runs/39061720181) and [observer-ablation #327](https://github.com/fatihcayiroglu/Bridge/actions/runs/39061117747), both reported **33 PASS, 1 FAIL (FD01), 0 SKIPPED, 12 MEASURED**. L01 HOT with PID retained, CS01 and CS00 controls completed, ANR01 reported 0 system ANRs **in these runs**. Neither eliminates the historical FocusEvent ANR/process death.
+
+The following separately force-stopped activities had verified Android provider listings:
+- Native-only Activity **FD00**, AppCompat-only **FD00P**, constructed but unattached/unnavigated WebView **FD00C**, and attached but unnavigated WebView **FD00A**: **zero** FontsProvider connections in both runs.
+- A plain WebView navigating to `about:blank` **without attachment** (FD00N) and a plain attached WebView navigating to `about:blank` (FD00W): **one stable** FontsProvider connection, even though there were **no Bridge web assets, Capacitor plugins or JavaScript**. The FD00W same-process connection remained present at 1.5, 4 and 8 seconds.
+- Real Bridge FD01: provider reference was still present at its after-login checkpoint, **strict FAIL**. Its later same-PID FD02 observations showed reference disappearance; this does not retroactively make FD01 pass.
+
+A separate experiment removed the debug instrumentation's reflective static call to `EmojiCompat.isConfigured()`, replacing it with **noninitializing class-presence-only** `Class.forName(..., false, loader)`; it now truthfully logs `configured=unknown`. FD01 still FAILED. This is a **negative** A/B result: reflective static invocation is not required for the observed WebView font connection. To prevent future observer interference, the noninitializing diagnostic and its Jest contract are retained on #322; the separate #327 experiment can be closed without merge. This change is debug-only; it does **not** remove, block, kill, or mock system FontsProvider.
+
+**Inference boundary:** The evidence localizes creation to the WebView **navigation** path on this tested emulator, not to the precise requester inside Chromium/Android. It does not establish that FontsProvider causes the observed process death, nor that a platform-owned WebView implementation can fulfill a zero-connection contract without functional regression. Preserve strict FD01 and historical red run evidence while separately proving safety during provider loss, Android process resurrection and real-device acceptance. #209 remains OPEN.
