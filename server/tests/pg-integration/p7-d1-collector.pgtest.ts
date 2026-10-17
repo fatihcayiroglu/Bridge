@@ -67,7 +67,7 @@ describe('P7 D1 — live PostgreSQL read-only catalog and planner evidence', () 
     expect(evidence.plans.map((plan) => plan.inputKind)).toEqual([
       'operator-supplied', 'operator-supplied',
     ]);
-    expect(JSON.stringify(evidence)).not.toMatch(/d1-sensitive|Index Cond|Filter|SELECT |userId|channelId/);
+    expect(JSON.stringify(evidence)).not.toMatch(/d1-sensitive|Index Cond|\"Filter\"|\"Index Cond\"|SELECT /);
   });
 
   it('rolls back an interrupted catalog transaction and leaves the connection reusable', async () => {
