@@ -274,3 +274,22 @@ test('Android CI never persists raw device logcat in uploaded emulator evidence'
   assert.match(workflow, /e2e\/android\/results\//,
     'the runner result directory is uploaded, so raw capture here is sensitive');
 });
+
+test('Android failure-only DOM evidence excludes user text, URL paths, channel identifiers and arbitrary error strings', () => {
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const begin = journeys.indexOf('async function domSummary() {');
+  const end = journeys.indexOf('\n/** Measurement-only probe:', begin);
+  assert.ok(begin >= 0 && end > begin, 'actual production failure summary must exist');
+  const summary = journeys.slice(begin, end);
+  for (const unsafe of ['innerText', 'textContent', 'location.href', 'location.pathname',
+    'getAttribute', '.className', 'error.message', 'JSON.stringify(err)']) {
+    assert.equal(summary.includes(unsafe), false,
+      `unsafe user-controllable field ${unsafe} must not leave failure summary`);
+  }
+  for (const required of ['packagedOrigin', 'appVisible', 'authVisible', 'activeChannelPresent',
+    'dialogCount', 'alertCount', 'dmPanelVisible']) {
+    assert.ok(summary.includes(required), `allowlisted diagnostic ${required} required`);
+  }
+  assert.ok(summary.includes("catch(() => 'unavailable')"),
+    'Playwright exception text must not be copied verbatim to CI output');
+});
