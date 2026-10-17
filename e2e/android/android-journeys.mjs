@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeAndroidColdLaunch } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -128,16 +128,19 @@ async function check(id, title, fn) {
       // Matching=false means unknown, never "no crash".
       let exitEvidence = { evidenceValid: false, matchingExit: false,
         reasonCode: null, subreasonCode: null };
+      let dependencyEvidence = classifyAndroidDependencyDeath(null, null);
       if (a01InitialPid !== null) {
         try {
           const exits = await androidFailureExits();
-          if (exits.available)
+          if (exits.available) {
             exitEvidence = summarizeControlProcessExit(exits.exits, a01InitialPid);
+            dependencyEvidence = classifyAndroidDependencyDeath(exits.exits, a01InitialPid);
+          }
         } catch { /* no diagnostic error may replace A01 FAIL */ }
       }
       const a01 = {
         pageHandlePresent: Boolean(page), pageClosed, osEvidence,
-        launch: facts.androidA01Launch ?? null, exitEvidence,
+        launch: facts.androidA01Launch ?? null, exitEvidence, dependencyEvidence,
       };
       facts.androidA01FailureEvidence = a01;
       log('Android A01 first-launch evidence', JSON.stringify(a01));
