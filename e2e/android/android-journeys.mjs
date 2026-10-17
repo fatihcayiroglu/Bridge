@@ -913,7 +913,55 @@ async function main() {
         evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
       const result = { stage: 'plain-webview-about-blank', providerListingVerified, ...evidence };
       (facts.fontProviderStages ??= []).push(result);
-      return result;
+      // Compare the same-PID 1.5/4/8 s reference lifecycle with FD02 on
+      // Bridge's actual WebView. A pristine about:blank WebView can acquire
+      // this provider without any Bridge JS, Capacitor or plugins; observe
+      // whether it releases it naturally while remaining foregrounded.
+      // Partial samples are retained on probe failure, never a synthetic PASS.
+      const decay = { sameAppProcess: true, complete: false, samples: [] };
+      facts.fontProviderPlainWebViewDecay = decay;
+      const baselineStarted = Date.now();
+      for (const offsetMs of [1500, 4000, 8000]) {
+        await sleep(Math.max(0, offsetMs - (Date.now() - baselineStarted)));
+        const currentPid = await pid();
+        const samePid = currentPid === baselinePid;
+        if (!samePid) decay.sameAppProcess = false;
+        const sample = {
+          sampleAtMs: offsetMs,
+          samePid,
+          available: false,
+          connected: null,
+          stableRefs: null,
+          unstableRefs: null,
+          waiting: null,
+          dead: null,
+        };
+        decay.samples.push(sample);
+        // No PID substitution: a new app process cannot prove the ORIGINAL
+        // provider connection was released.
+        if (!samePid) break;
+        try {
+          const snapshot = await androidFailureShell(`dumpsys activity processes ${PKG}`);
+          const info = inspectBridgeEmojiFontProvider(snapshot, currentPid);
+          const valid = info.appPidValid && info.providerSections > 0 &&
+            info.unparsedConnections === 0 && info.fontProviderRefCountsKnown;
+          if (!valid) break;
+          Object.assign(sample, {
+            available: true,
+            connected: info.fontProviderConnected,
+            stableRefs: info.fontProviderStableRefs,
+            unstableRefs: info.fontProviderUnstableRefs,
+            waiting: info.fontProviderWaiting,
+            dead: info.fontProviderDead,
+          });
+        } catch {
+          // Report unknown; raw Android or ADB exception text stays private.
+          break;
+        }
+      }
+      decay.complete = decay.sameAppProcess && decay.samples.length === 3 &&
+        decay.samples.every(sample => sample.available);
+      return { ...result, samePidProviderDecay: decay };
     } finally {
       // Isolate the following real A01 cold launch from this diagnostic.
       await sh(`am force-stop ${PKG}`).catch(() => {});

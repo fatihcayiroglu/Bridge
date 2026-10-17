@@ -515,3 +515,25 @@ test('A01 original 45s gate records only safe failure-only app/CDP evidence, nev
   assert.match(failBlock, /pageHandlePresent: Boolean\(page\), pageClosed, osEvidence/);
   assert.doesNotMatch(failBlock, /log\([^\n]*(?:page\.url|err\.stack|err\.cause)/);
 });
+
+
+test('FD00W blank-WebView font reference decay is measured on the original PID without waiving FD01', () => {
+  const code = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const start = code.indexOf("await measure('FD00W'");
+  const end = code.indexOf("await measure('CS00'", start);
+  assert.ok(start >= 0 && end > start);
+  const control = code.slice(start, end);
+  assert.match(control, /facts\.fontProviderPlainWebViewDecay = decay/);
+  assert.match(control, /\[1500, 4000, 8000\]/);
+  assert.match(control, /currentPid === baselinePid/);
+  assert.match(control, /if \(!samePid\) break/);
+  assert.match(control, /inspectBridgeEmojiFontProvider\(snapshot, currentPid\)/);
+  assert.match(control, /decay\.complete = decay\.sameAppProcess/);
+  assert.doesNotMatch(control, /await check\('FD00W'|await check\('FD01'/);
+  const fd01 = code.indexOf("await check('FD01'");
+  const fd02 = code.indexOf("await measure('FD02'", fd01);
+  assert.ok(fd01 > end && fd02 > fd01, 'strict FD01 must precede FD02');
+  assert.match(code.slice(fd01, fd02), /assert\(!evidence\.fontProviderConnected/);
+  assert.ok(code.includes("await check('A01'"));
+  assert.ok(code.includes("await check('ANR01'"));
+});
