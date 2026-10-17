@@ -648,3 +648,53 @@ test('A01 dependency attribution fails closed on missing kill lines, other PIDs 
   assert.deepEqual(classifyAndroidDependencyDeath([{ ...base }], '77; cat /private'), missing);
   assert.deepEqual(classifyAndroidDependencyDeath(null, 77), missing);
 });
+
+
+test('dependency death cannot be attributed to reused PID, another process or stale log time', () => {
+  const raw = [
+    '10-17 18:00:00.000  123  456 I ActivityManager: Killing 12345:com.bridge.app.debug (adj 0): depends on provider com.fake/.Wrong in dying proc com.fake.old',
+    '10-17 20:49:20.000  123  456 I ActivityManager: Killing 12345:com.bridge.app.debug.evil (adj 0): depends on provider com.fake/.Spoof in dying proc com.fake.evil',
+    '10-17 20:49:20.050  123  456 I ActivityManager: Killing 12345:com.other.app (adj 0): depends on provider com.fake/.Other in dying proc com.fake.other',
+    '10-17 20:49:20.100  123  456 I ActivityManager: Killing 12345:com.bridge.app.debug (adj 0): depends on provider com.google.android.gms/.fonts.provider.FontsProvider in dying proc com.google.android.gms.persistent; owner=secret@example.com',
+    '10-17 20:49:20.170  123  456 I ActivityManager: Killing 22222:com.bridge.app.debug (adj 0): depends on provider com.fake/.AnotherPid in dying proc com.fake.other',
+  ].join('\n');
+  const expected = {
+    provider: 'com.google.android.gms/.fonts.provider.FontsProvider',
+    dyingProcess: 'com.google.android.gms.persistent',
+  };
+  const answer = parseDependencyKillLine(raw, 12345, 'com.bridge.app.debug',
+    '2026-10-17 20:49:20.350');
+  assert.deepEqual(answer, expected);
+  assert.doesNotMatch(JSON.stringify(answer), /fake|secret|example|12345/);
+  assert.deepEqual(parseDependencyKillLine(raw, 12345, 'com.bridge.app.debug',
+    '2026-10-18 20:49:20.350'),
+    { provider: null, dyingProcess: null, killLineFound: false });
+  assert.deepEqual(parseDependencyKillLine(raw, 12345, 'com.bridge.app.debug',
+    '2026-10-17 21:49:20.350'),
+    { provider: null, dyingProcess: null, killLineFound: false });
+  assert.deepEqual(parseDependencyKillLine(raw, 12345, 'com.bridge.app.debug',
+    '2026-10-17 20:49:20.350 secret=tainted'),
+    { provider: null, dyingProcess: null, killLineFound: false });
+  assert.deepEqual(parseDependencyKillLine(
+    'Killing 12345:com.bridge.app.debug (adj 0): depends on provider com.fake/.Late in dying proc com.fake.old',
+    12345, 'com.bridge.app.debug', '2026-10-17 20:49:20.350'),
+  { provider: null, dyingProcess: null, killLineFound: false });
+});
+
+test('PID-kill line parser rejects package and PID spoofing without leaking details', () => {
+  const malicious = [
+    'Killing 12345:com.bridge.app.debug.evil (adj 0): depends on provider com.fake/.Bad in dying proc com.fake.bad',
+    'Killing 12345:com.bridge.app.debug.other (adj 0): depends on provider com.fake/.Bad in dying proc com.fake.bad',
+    'Killing 1234:com.bridge.app.debug (adj 0): depends on provider com.fake/.Bad in dying proc com.fake.bad',
+  ].join('\n');
+  assert.deepEqual(parseDependencyKillLine(malicious, 12345, 'com.bridge.app.debug'),
+    { provider: null, dyingProcess: null, killLineFound: false });
+  assert.equal(parseDependencyKillLine(malicious, '12345; echo SECRET',
+    'com.bridge.app.debug'), null);
+  assert.equal(parseDependencyKillLine(malicious, 12345,
+    'com.bridge.app.debug; echo SECRET'), null);
+  assert.deepEqual(parseDependencyKillLine(
+    'Killing 99999999:com.bridge.app.debug (adj 0): depends on provider com.fake/.P in dying proc com.fake.p',
+    99999999, 'com.bridge.app.debug'),
+    { provider: 'com.fake/.P', dyingProcess: 'com.fake.p' });
+});
