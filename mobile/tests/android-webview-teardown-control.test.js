@@ -25,7 +25,9 @@ describe('FD00T WebView destruction baseline cannot modify release behavior', ()
   test('teardown happens on existing UI thread without killing app or GMS', () => {
     expect(code).toContain('android.os.Looper.getMainLooper()');
     expect(code).toMatch(/mainHandler\.postDelayed\(teardown,\s*3500L\)/);
+    expect(code).toContain('view.stopLoading()');
     expect(code).toContain('root.removeView(view)');
+    expect(code).toContain('view.clearHistory()');
     expect(code).toContain('view.destroy()');
     expect(code).toContain('stage=destroyed');
     expect(code).not.toMatch(/\b(?:killProcess|killBackgroundProcesses|forceStopPackage)\s*\(/);
