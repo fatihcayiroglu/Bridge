@@ -60,6 +60,44 @@ export function summarizeControlProcessExit(exits, expectedPid) {
   };
 }
 
+/**
+ * A01 exit dependency attribution: ONLY fixed enums leave the process.
+ *
+ * ApplicationExitInfo reason 12 says a dependency died, but does not name
+ * which dependency. The OS "Killing PID: depends on provider ..." line may
+ * name it; absent/malformed lines MUST remain unknown.
+ *
+ * Classifications refer only to a verified SAME-PID exit record. This must
+ * not claim that a font request directly caused that upstream process death.
+ */
+export function classifyAndroidDependencyDeath(exits, expectedPid) {
+  const unknown = { exitMatched: false, isDependencyDeath: null,
+    providerClass: 'unknown', dyingProcessClass: 'unknown', attribution: 'unavailable' };
+  if (!/^[0-9]{1,8}$/.test(String(expectedPid)) || !Array.isArray(exits))
+    return unknown;
+  const found = exits.slice(0, 6).find(row => row &&
+    Number.isInteger(row.pid) && String(row.pid) === String(Number(expectedPid)));
+  if (!found) return unknown;
+  if (found.reason !== '12 (DEPENDENCY DIED)') {
+    return { ...unknown, exitMatched: true, isDependencyDeath: false,
+      attribution: 'not-dependency-death' };
+  }
+  const dep = found.dependency;
+  if (!dep || typeof dep !== 'object') {
+    return { ...unknown, exitMatched: true, isDependencyDeath: true };
+  }
+  const provider = typeof dep.provider === 'string' ? dep.provider : null;
+  const processName = typeof dep.dyingProcess === 'string' ? dep.dyingProcess : null;
+  return {
+    exitMatched: true, isDependencyDeath: true,
+    providerClass: provider === 'com.google.android.gms/.fonts.provider.FontsProvider'
+      ? 'gms-fonts' : provider ? 'other-provider' : 'unknown',
+    dyingProcessClass: processName === 'com.google.android.gms.persistent'
+      ? 'gms-persistent' : processName ? 'other-process' : 'unknown',
+    attribution: provider && processName ? 'matched-kill-line' : 'unavailable',
+  };
+}
+
 export function parseDependencyKillLine(raw, expectedPid) {
   if (!/^[0-9]{1,7}$/.test(String(expectedPid))) return null;
   const prefix = new RegExp('\\bKilling ' + expectedPid + ':');
