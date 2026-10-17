@@ -181,9 +181,29 @@ CREATE TABLE IF NOT EXISTS channels (
   slowmode INTEGER NOT NULL DEFAULT 0 CHECK (slowmode IN (0,5,10,15,30,60,120,300,600,900,1800,3600,7200,21600)),
   "forumTags" JSONB NOT NULL DEFAULT '[]'::jsonb,
   "modOnly" BOOLEAN NOT NULL DEFAULT FALSE,
+  -- D2, pre-rollout only: nullable expiry never changes existing channels.
+  -- No server writes expireAt until all API, worker and offline gates exist.
+  "expiresAt" BIGINT CONSTRAINT channels_expiry_at_check
+    CHECK ("expiresAt" IS NULL OR ("expiresAt" > 0 AND "expiresAt" <= 9007199254740991)),
+  "expiryVersion" BIGINT NOT NULL DEFAULT 0 CONSTRAINT channels_expiry_version_check
+    CHECK ("expiryVersion" >= 0 AND "expiryVersion" <= 9007199254740991),
   "createdAt" BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_channels_server ON channels("serverId");
+
+-- Survives deletion of a channel row, so stale offline/federated snapshots
+-- cannot be interpreted as live again. No FK to channels BY DESIGN.
+-- This is schema groundwork only: no cleanup worker or producer is wired.
+CREATE TABLE IF NOT EXISTS channel_expiry_tombstones (
+  "channelId" TEXT PRIMARY KEY,
+  "serverId" TEXT NOT NULL,
+  "expiredAt" BIGINT NOT NULL CHECK ("expiredAt" > 0 AND "expiredAt" <= 9007199254740991),
+  "expiryVersion" BIGINT NOT NULL CHECK ("expiryVersion" >= 0 AND "expiryVersion" <= 9007199254740991),
+  "recordedAt" BIGINT NOT NULL CHECK ("recordedAt" > 0 AND "recordedAt" <= 9007199254740991),
+  "cleanupState" TEXT NOT NULL DEFAULT 'pending'
+    CHECK ("cleanupState" IN ('pending', 'objects_cleaned', 'converged'))
+);
+
 
 CREATE TABLE IF NOT EXISTS messages (
   _id TEXT PRIMARY KEY,

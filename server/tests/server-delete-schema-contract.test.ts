@@ -62,6 +62,31 @@ describe('server graph deletion stays aligned with the PostgreSQL schema', () =>
     expect(missing).toEqual([]);
   });
 
+  it('084 expiry tombstones survive ordinary channel and server deletion', () => {
+    // Durable deletion markers are not ordinary channel-owned content.
+    // A stale offline or federated snapshot must not resurrect a deleted
+    // channel just because its parent server/channel row was removed.
+    const migration = read('db/migrations_pg/084_channel_expiry_foundation.sql');
+    const channelRepo = read('db/repositories/ChannelRepository.ts');
+    const serverRepo = read('db/repositories/ServerRepository.ts');
+    const channelOwner = channelRepo.slice(
+      channelRepo.indexOf('async deleteGraphAtomic'),
+      channelRepo.indexOf('\n  async deleteByServer'),
+    );
+    const serverOwner = serverRepo.slice(
+      serverRepo.indexOf('async deleteGraphAtomic'),
+      serverRepo.indexOf('\n  async getMember'),
+    );
+
+    const tombstone = migration.slice(migration.indexOf('CREATE TABLE IF NOT EXISTS channel_expiry_tombstones'));
+    expect(tombstone).toContain('"channelId" TEXT PRIMARY KEY');
+    expect(tombstone).not.toMatch(/REFERENCES\s+(?:channels|servers)\s*\(/i);
+    expect(channelOwner).toContain("table === 'channel_expiry_tombstones'");
+    expect(serverOwner).toContain('channel_expiry_tombstones');
+    expect(serverOwner).not.toMatch(/DELETE\s+FROM\s+channel_expiry_tombstones\b/i);
+    expect(channelOwner).not.toMatch(/DELETE\s+FROM\s+channel_expiry_tombstones\b/i);
+  });
+
   it('keeps non-obvious derived/cross-tenant identities in the canonical owner', () => {
     const repo = read('db/repositories/ServerRepository.ts');
     const start = repo.indexOf('async deleteGraphAtomic');

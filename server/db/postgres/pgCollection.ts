@@ -214,6 +214,10 @@ const ALLOWED_COLUMNS = new Set([
   'aiEnabled',
   // P7 B1 (080): server join-raid policy and raid-mode deadline.
   'raidMitigationLevel', 'raidLockdownUntil',
+  // P7 D2 migration 084: exact schema identifiers only, for eventual repository
+  // access. This identifier allowlist is NOT an authorization gate and does
+  // not activate expiry APIs, cleanup, or tombstone reads on any route.
+  'expiryVersion', 'expiredAt', 'recordedAt', 'cleanupState',
 ]);
 
 /**
