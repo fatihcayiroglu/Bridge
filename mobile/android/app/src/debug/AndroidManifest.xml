@@ -55,6 +55,12 @@
       android:exported="true"
       android:excludeFromRecents="true"
       android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- DEBUG-only: navigation to about:blank without attaching WebView. -->
+    <activity
+      android:name="com.bridge.app.WebViewUnattachedNavigationBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
     <!-- Same base Android theme; instantiate an inert, JavaScript-disabled
          about:blank WebView without Capacitor or Bridge assets. Debug only. -->
     <activity

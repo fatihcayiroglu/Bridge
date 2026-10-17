@@ -431,3 +431,25 @@ test('debug-only attached WebView control does not load a page or relax FD01', (
       `required asserting check ${gate} was removed`);
   }
 });
+
+
+test('debug-only unattached navigation WebView isolates loadUrl without setContentView', () => {
+  const source = readFileSync(new URL(
+    '../../mobile/android/app/src/debug/java/com/bridge/app/WebViewUnattachedNavigationBaselineActivity.java',
+    import.meta.url), 'utf8');
+  assert.match(source, /new android\.webkit\.WebView\(this\)/);
+  assert.match(source, /view\.loadUrl\("about:blank"\)/);
+  assert.doesNotMatch(source, /setContentView\s*\(|setJavaScriptEnabled\s*\(|loadData\s*\(/);
+  const debug = readFileSync(new URL('../../mobile/android/app/src/debug/AndroidManifest.xml',
+    import.meta.url), 'utf8');
+  assert.match(debug, /android:name="com\.bridge\.app\.WebViewUnattachedNavigationBaselineActivity"/);
+  const release = readFileSync(new URL('../../mobile/android/app/src/main/AndroidManifest.xml',
+    import.meta.url), 'utf8');
+  assert.doesNotMatch(release, /WebViewUnattachedNavigationBaselineActivity/);
+  const harness = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(harness, /await measure\('FD00N'/);
+  for (const gate of ['FD01', 'CS01', 'L01', 'L03', 'ANR01']) {
+    assert.ok(harness.includes("await check('" + gate + "'"),
+      `strict Android check ${gate} must remain an assertion`);
+  }
+});
