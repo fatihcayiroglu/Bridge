@@ -20,8 +20,10 @@ import { _android as android, chromium, devices } from '@playwright/test';
 import { io } from 'socket.io-client';
 import fs from 'node:fs';
 import net from 'node:net';
+import { execFile as execFileCallback } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -299,6 +301,54 @@ async function androidFailureExits() {
 // Failure-only diagnostics: retain the ORIGINAL WebView assertion and capture
 // enough Android state to distinguish a native crash, a stopped Activity, and
 // an adb/DevTools attachment problem. No extra retry or implicit PASS.
+
+const execFileAsync = promisify(execFileCallback);
+
+/**
+ * Failure-only, short-lived ADB localabstract forward to the exact running
+ * app PID's DevTools socket. Probe /json/list via 127.0.0.1, keeping the
+ * complete response ONLY in memory (never archive titles/URLs/ws endpoints).
+ * This cannot turn any failed journey green, and a successful HTTP response
+ * is not proof that a Playwright CDP connection or product restoration works.
+ */
+async function devToolsHttpProbe(appPid) {
+  const unavailable = { attempted: false, httpResponsive: false, listValid: false, targetCount: 0, pageTargetCount: 0 };
+  if (MODE !== 'android' || !/^[0-9]{1,8}$/.test(String(appPid))) return unavailable;
+  let serial;
+  try { serial = device?.serial?.(); } catch { return unavailable; }
+  if (!/^[A-Za-z0-9_.:-]{1,100}$/.test(String(serial))) return unavailable;
+  let port = null;
+  try {
+    const forwarded = await execFileAsync('adb', ['-s', serial, 'forward', 'tcp:0',
+      'localabstract:webview_devtools_remote_' + appPid], { timeout: 4000, maxBuffer: 2048 });
+    const candidate = String(forwarded.stdout).trim();
+    if (!/^[0-9]{1,5}$/.test(candidate)) return unavailable;
+    port = Number(candidate);
+    if (port < 1024 || port > 65535) return unavailable;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: ctrl.signal });
+      if (!response.ok) return { ...unavailable, attempted: true };
+      const length = Number(response.headers.get('content-length') || 0);
+      if (length > 1_000_000) return { ...unavailable, attempted: true };
+      const raw = await response.text();
+      if (raw.length > 1_000_000) return { ...unavailable, attempted: true };
+      const safe = classifyWebViewDevToolsTargets(JSON.parse(raw));
+      return { attempted: true, httpResponsive: true, ...safe };
+    } finally { clearTimeout(timer); }
+  } catch {
+    return { ...unavailable, attempted: true };
+  } finally {
+    if (port !== null) {
+      try {
+        await execFileAsync('adb', ['-s', serial, 'forward', '--remove', `tcp:${port}`],
+          { timeout: 4000, maxBuffer: 2048 });
+      } catch { /* Debug cleanup only; original failure remains a failure. */ }
+    }
+  }
+}
+
 async function webViewAttachEvidence() {
   // All outputs below are held only in memory. Do NOT write raw dumpsys,
   // process records, Unix sockets, crash lines or arbitrary Playwright errors
@@ -321,11 +371,14 @@ async function webViewAttachEvidence() {
       probeAvailable[name] = false;
     }
   }));
+  const os = summarizeWebViewAttachEvidence(inputs, PKG);
+  const devtoolsHttp = await devToolsHttpProbe(inputs.pid);
   return {
     probeAvailable,
-    ...summarizeWebViewAttachEvidence(inputs, PKG),
-    // Android may expose a devtools socket and still have no CDP page.
-    // No retry, forced restart, timeout extension, or hidden PASS here.
+    ...os,
+    devtoolsHttp,
+    // A reachable /json/list is NOT proof that Playwright attached to a page.
+    // Keep original L03 FAIL; no retries or timeout extension.
   };
 }
 

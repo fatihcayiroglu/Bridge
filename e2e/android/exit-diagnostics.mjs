@@ -208,6 +208,21 @@ export function summarizeWebViewAttachEvidence(
 
 
 /**
+ * Summarize a localhost DevTools /json/list response. The raw response holds
+ * page titles, app URLs and debugging websocket addresses: NEVER log it.
+ * A responding endpoint is different from one usable WebView page target.
+ */
+export function classifyWebViewDevToolsTargets(raw) {
+  const listValid = Array.isArray(raw);
+  const rows = listValid ? raw.slice(0, 100) : [];
+  const pageTargetCount = rows.filter(row =>
+    row !== null && typeof row === 'object' && !Array.isArray(row) &&
+    row.type === 'page').length;
+  return { listValid, targetCount: rows.length, pageTargetCount };
+}
+
+
+/**
  * Privacy-safe observation of the Android app's live provider dependencies.
  * Keep only counts and a boolean; never publish raw ActivityManager output.
  */

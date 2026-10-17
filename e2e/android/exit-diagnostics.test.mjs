@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -353,4 +353,37 @@ test('L03 WebView attach failure path cannot archive raw Android dump or transpo
   const failure = code.slice(end, code.indexOf('\nasync function pid()', end));
   assert.ok(failure.includes('safe device evidence'));
   assert.doesNotMatch(failure, /String\(err\?\.message\s*\?\?\s*err\)/);
+});
+
+
+test('DevTools HTTP targets are counted without leaking page titles, URLs or websocket endpoints', () => {
+  const targets = [
+    { type: 'page', title: 'Private DM with user', url: 'https://private.example/?token=secret',
+      webSocketDebuggerUrl: 'ws://127.0.0.1:1234/devtools/page/secret' },
+    { type: 'background_page', url: 'https://private.example/background' },
+    { type: 'page', url: 'https://private.example/other' },
+  ];
+  const safe = classifyWebViewDevToolsTargets(targets);
+  assert.deepEqual(safe, { listValid: true, targetCount: 3, pageTargetCount: 2 });
+  assert.doesNotMatch(JSON.stringify(safe), /secret|token|private|localhost|ws:/);
+  assert.deepEqual(classifyWebViewDevToolsTargets(null),
+    { listValid: false, targetCount: 0, pageTargetCount: 0 });
+  assert.deepEqual(classifyWebViewDevToolsTargets([{ type: 'other' }]),
+    { listValid: true, targetCount: 1, pageTargetCount: 0 });
+  assert.equal(classifyWebViewDevToolsTargets(Array(1000).fill({ type: 'page' })).pageTargetCount, 100);
+});
+
+test('failure-only CDP probing preserves strict L03 failures and removes ADB forwards', () => {
+  const src = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const begin = src.indexOf('async function devToolsHttpProbe(');
+  const end = src.indexOf('\nasync function webViewAttachEvidence()', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const fn = src.slice(begin, end);
+  assert.ok(fn.includes("['-s', serial, 'forward', '--remove'"));
+  assert.ok(fn.includes("http://127.0.0.1:"));
+  assert.ok(fn.includes('classifyWebViewDevToolsTargets'));
+  assert.doesNotMatch(fn, /console\.(?:log|error)|log\(raw\)|JSON\.stringify\(raw\)/);
+  const l03 = src.slice(src.indexOf("await check('L03'"), src.indexOf("await check('L04'"));
+  assert.ok(l03.includes('await attachPage()'));
+  assert.doesNotMatch(l03, /\.catch\(\(\)\s*=>\s*(?:true|false)\)/);
 });
