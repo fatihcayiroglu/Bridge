@@ -311,6 +311,11 @@ class ServerRepository {
 
         if (has('members', 'serverId')) await del('members', 'DELETE FROM members WHERE "serverId"=$1');
         if (has('channels', 'serverId')) await del('channels', 'DELETE FROM channels WHERE "serverId"=$1');
+        // channel_expiry_tombstones are deliberately retained, even on server
+        // deletion: stale offline/federated snapshots must not re-create prior
+        // channel IDs. Migration 084 intentionally gives them no FK to servers
+        // or channels. A future D2 tombstone-retention/reconciliation worker
+        // must own their eventual disposal, not this generic tenant cascade.
         // Migrations 081 and 083 own durable records with target_server_id
         // REFERENCES servers(_id) ON DELETE CASCADE. The final parent DELETE
         // atomically removes portable_import_approvals AND
