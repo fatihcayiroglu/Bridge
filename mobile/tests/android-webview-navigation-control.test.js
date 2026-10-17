@@ -13,13 +13,16 @@ const read = rel => fs.readFileSync(path.join(source, rel), 'utf8');
 describe('FD00D WebView navigation differential is isolated and noninvasive', () => {
   test('inline HTML control never touches JS, accounts, network or packaged Bridge', () => {
     const code = read('debug/java/com/bridge/app/WebViewDataBaselineActivity.java');
+    // Reject forbidden *executed source*, not documentation mentioning the
+    // control comparisons (about:blank, Capacitor and Bridge by name).
+    const implementation = code.split('\n').filter(line => !line.trim().startsWith('//')).join('\n');
     expect(code).toContain('extends android.app.Activity');
     expect(code).toMatch(/loadDataWithBaseURL\s*\(/);
     expect(code).toContain('setJavaScriptEnabled(false)');
     expect(code).toContain('<!doctype html>');
-    expect(code).not.toMatch(/\bloadUrl\s*\(/);
-    expect(code).not.toMatch(/https?:\/\//);
-    expect(code).not.toMatch(/BridgeActivity|Capacitor|registerPlugin/);
+    expect(implementation).not.toMatch(/\bloadUrl\s*\(/);
+    expect(implementation).not.toMatch(/https?:\/\//);
+    expect(implementation).not.toMatch(/BridgeActivity|Capacitor|registerPlugin/);
     expect(code).toMatch(/view\.destroy\(\)/);
   });
 
