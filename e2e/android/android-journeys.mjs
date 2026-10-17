@@ -816,6 +816,33 @@ async function main() {
     }
   });
 
+  // FD00P: isolate AndroidX AppCompat without WebView or Bridge JS.
+  // Same installed debug APK, separately force-stopped for each baseline.
+  // This is MEASURED only, NEVER a FD01 waiver or ANR/L01 pass substitute.
+  await measure('FD00P', 'AppCompat-only Activity FontsProvider baseline', async () => {
+    if (MODE !== 'android') throw new Skip('Android AppCompat Activity required');
+    await sh('am force-stop ' + PKG);
+    try {
+      const start = await sh('am start -W -n ' + PKG + '/com.bridge.app.AppCompatBaselineActivity');
+      assert(/Status: ok/.test(start), 'debug AppCompat-only baseline Activity failed to launch');
+      await sleep(2000);
+      const baselinePid = await pid();
+      const raw = await androidFailureShell('dumpsys activity processes ' + PKG);
+      const evidence = inspectBridgeEmojiFontProvider(raw, baselinePid);
+      assert(evidence.appPidValid, 'AppCompat-only baseline app PID unavailable');
+      // Missing provider listing is UNKNOWN, not a valid zero-dependency proof.
+      const providerListingVerified = evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
+      const result = { stage: 'appcompat-only-before-webview',
+        providerListingVerified, ...evidence };
+      (facts.fontProviderStages ??= []).push(result);
+      return result;
+    } finally {
+      // Preserve a genuinely cold next baseline and final product A01.
+      await sh('am force-stop ' + PKG).catch(() => {});
+    }
+  });
+
   // Isolate the WebView CONSTRUCTOR from page navigation. This debug-only
   // Activity does not call setContentView or loadUrl and does not use
   // Capacitor/plugins. Force-stop both before and after so the comparison
