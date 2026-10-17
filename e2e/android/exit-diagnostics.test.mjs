@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -166,6 +166,9 @@ test('font-provider probe isolates the Bridge PID and removes raw identity-beari
   assert.deepEqual(present, {
     appPidValid: true, providerSections: 1, parsedConnections: 3,
     unparsedConnections: 0, fontProviderConnected: true,
+    fontProviderConnections: 1, fontProviderStableRefs: 1,
+    fontProviderUnstableRefs: 0, fontProviderRefCountsKnown: true,
+    fontProviderWaiting: false, fontProviderDead: false,
   });
   assert.equal(inspectBridgeEmojiFontProvider(raw, '4200').fontProviderConnected, false);
   const invalid = inspectBridgeEmojiFontProvider(raw, '5304;id');
@@ -179,4 +182,81 @@ test('malformed Android provider records produce explicit uncertainty, not false
   const result = inspectBridgeEmojiFontProvider(malformed, '5304');
   assert.equal(result.unparsedConnections, 1);
   assert.equal(result.fontProviderConnected, false);
+});
+
+
+test('font-provider strength distinguishes stable OS dependency from unstable-only usage', () => {
+  const raw = [
+    'Connected Providers:',
+    '  - abcde/com.google.android.gms/.fonts.provider.FontsProvider->9021:com.bridge.app.debug/123 s0/2 u1/3 +6s',
+    '  - ef012/com.google.android.gms/.fonts.provider.FontsProvider->9022:some.other.app/456 s9/9 u8/8 +6s',
+    '  - 123ab/com.android.providers.settings/.SettingsProvider->9021:com.bridge.app.debug/123 s1/1 u0/0 +5s',
+  ].join('\n');
+  const result = inspectBridgeEmojiFontProvider(raw, '9021');
+  assert.equal(result.fontProviderConnected, true);
+  assert.equal(result.fontProviderConnections, 1);
+  assert.equal(result.fontProviderStableRefs, 0);
+  assert.equal(result.fontProviderUnstableRefs, 1);
+  assert.equal(result.fontProviderRefCountsKnown, true);
+  assert.equal(result.unparsedConnections, 0);
+  assert.doesNotMatch(JSON.stringify(result), /some.other|9021|9022|FontsProvider/);
+});
+
+test('font-provider probe exposes uncertain reference strength rather than silently treating it as zero', () => {
+  const raw = 'Connected Providers:\n  - aabbcc/com.google.android.gms/.fonts.provider.FontsProvider->8901:com.bridge.app.debug/123 exotic_format\nend';
+  const result = inspectBridgeEmojiFontProvider(raw, '8901');
+  assert.equal(result.fontProviderConnected, true);
+  assert.equal(result.fontProviderRefCountsKnown, false);
+  assert.equal(result.fontProviderStableRefs, 0);
+});
+
+
+test('native EmojiCompat diagnostic distinguishes initialized, uninitialized and unknown', () => {
+  const raw = [
+    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=before-super classPresent=true configured=false',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=after-super classPresent=true configured=true',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): stage=resumed classPresent=true configured=unknown',
+    '10-17 I/BridgeEmojiStartupProbe( 5304): token=secret@example.com stage=wild classPresent=false configured=false',
+    '10-17 I/OtherTag( 5304): stage=resumed classPresent=false configured=false',
+    'PRIVATE phone contact=secret@example.com',
+  ].join('\n');
+  const result = parseNativeEmojiStartupProbe(raw);
+  assert.deepEqual(result, {
+    available: true, samples: 3, anyClassPresent: true, anyConfigured: true,
+    beforeSuper: false, afterSuper: true, lastResume: null,
+    unknownConfigured: 1,
+  });
+  assert.doesNotMatch(JSON.stringify(result), /5304|contact|email|token|PRIVATE/);
+  assert.deepEqual(parseNativeEmojiStartupProbe(''), {
+    available: false, samples: 0, anyClassPresent: false, anyConfigured: false,
+    beforeSuper: null, afterSuper: null, lastResume: null, unknownConfigured: 0,
+  });
+});
+
+test('native EmojiCompat missing class is not mistaken for confirmed uninitialized font client', () => {
+  const result = parseNativeEmojiStartupProbe(
+    'I/BridgeEmojiStartupProbe( 22): stage=before-super classPresent=false configured=unknown');
+  assert.equal(result.anyClassPresent, false);
+  assert.equal(result.beforeSuper, null);
+  assert.equal(result.unknownConfigured, 1);
+});
+
+test('tag-filtered EmojiCompat logcat fallback accepts only exact target PID', () => {
+  const raw = [
+    'I/BridgeEmojiStartupProbe( 5304): stage=before-super classPresent=true configured=false',
+    'I/BridgeEmojiStartupProbe( 8888): stage=after-super classPresent=true configured=true',
+    '10-17 01:24:18.123  5304  5305 I BridgeEmojiStartupProbe: stage=after-super classPresent=true configured=true',
+    'BridgeEmojiStartupProbe stage=resumed classPresent=true configured=true',
+    'I/BridgeEmojiStartupProbe( 53040): stage=resumed classPresent=true configured=true',
+    'I/BridgeEmojiStartupProbe( 5304): stage=resumed classPresent=true configured=unknown',
+  ].join('\n');
+  const evidence = parseNativeEmojiStartupProbe(raw, '5304');
+  assert.equal(evidence.samples, 3);
+  assert.equal(evidence.beforeSuper, false);
+  assert.equal(evidence.afterSuper, true);
+  assert.equal(evidence.lastResume, null);
+  assert.equal(evidence.unknownConfigured, 1);
+  assert.equal(parseNativeEmojiStartupProbe(raw, 'not-a-pid').available, false);
+  assert.equal(parseNativeEmojiStartupProbe('BridgeEmojiStartupProbe stage=before-super classPresent=true configured=true', '5304').available, false);
+  assert.doesNotMatch(JSON.stringify(evidence), /5304|8888/);
 });

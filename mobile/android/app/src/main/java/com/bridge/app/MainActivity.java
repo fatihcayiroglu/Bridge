@@ -38,7 +38,51 @@ public class MainActivity extends BridgeActivity {
      */
     @Override
     public void onCreate(android.os.Bundle savedInstanceState) {
+        // #209: debug-only, fixed-shape diagnostic. No compile-time emoji2
+        // dependency. Reflective static invocation may initialize the class;
+        // compare with earlier uninstrumented FD01 evidence.
+        // Prior direct EmojiCompat.isConfigured() broke compileDebugJavaWithJavac
+        // because emoji2 isn't even on this build's compile classpath.
+        logEmojiStartup("before-super");
         registerPlugin(BridgePushSupportPlugin.class);
         super.onCreate(savedInstanceState);
+        logEmojiStartup("after-super");
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        logEmojiStartup("resumed");
+    }
+
+    private void logEmojiStartup(String stage) {
+        // Only observe class availability. Class.forName(..., false) does not
+        // initialize the class or invoke downloadable-font code. No emoji2
+        // dependency is added to debug OR release just to make diagnostics run.
+        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) {
+            return;
+        }
+        boolean classPresent = false;
+        String configured = "unknown";
+        try {
+            // The AndroidX public isConfigured() API observes initialization
+            // without requesting a font download. Use reflection because
+            // emoji2 is present at runtime but absent from compileClasspath.
+            // Class lookup does not initialize it; invoking the static
+            // isConfigured method below MAY trigger class initialization.
+            // This instrumentation alone cannot attribute FontsProvider.
+            Class<?> emoji = Class.forName(
+                    "androidx.emoji2.text.EmojiCompat", false, getClassLoader());
+            classPresent = true;
+            Object state = emoji.getMethod("isConfigured").invoke(null);
+            if (state instanceof Boolean) {
+                configured = ((Boolean) state) ? "true" : "false";
+            }
+        } catch (ReflectiveOperationException | LinkageError | SecurityException e) {
+            // Unavailable != false. Preserve this as an unknown diagnostic.
+        }
+        android.util.Log.i("BridgeEmojiStartupProbe",
+                "stage=" + stage + " classPresent=" + classPresent
+                        + " configured=" + configured);
     }
 }
