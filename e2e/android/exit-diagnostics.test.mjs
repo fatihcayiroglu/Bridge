@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeAndroidColdLaunch } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -570,4 +570,28 @@ test('CS00 PID-specific failure evidence contains numeric Android exit codes onl
   ], '6812'), {
     evidenceValid: true, matchingExit: true, reasonCode: null, subreasonCode: null,
   });
+});
+
+
+test('A01 launch summary is a bounded, identity-free projection of am start -W', () => {
+  const sample = [
+    'Starting: Intent { secret-token=never-export-private@example.com }',
+    'Status: ok',
+    'LaunchState: COLD',
+    'Activity: com.bridge.app.debug/com.bridge.app.MainActivity',
+    'TotalTime: 2472',
+    'WaitTime: 2549',
+    'Complete',
+  ].join('\n');
+  const clean = summarizeAndroidColdLaunch(sample);
+  assert.deepEqual(clean, { status: 'ok', launchState: 'COLD', totalTimeMs: 2472 });
+  assert.doesNotMatch(JSON.stringify(clean), /secret|token|@|bridge|MainActivity|Activity|private/i);
+  assert.deepEqual(summarizeAndroidColdLaunch(
+    'Status: internal_error\nLaunchState: HOT\nTotalTime: 125000',
+  ), { status: 'not-ok', launchState: 'HOT', totalTimeMs: null });
+  assert.deepEqual(summarizeAndroidColdLaunch(
+    'Activity: com.private.secret/Main\nTotalTime: NaN',
+  ), { status: 'unknown', launchState: 'unknown', totalTimeMs: null });
+  assert.deepEqual(summarizeAndroidColdLaunch(null),
+    { status: 'unknown', launchState: 'unknown', totalTimeMs: null });
 });
