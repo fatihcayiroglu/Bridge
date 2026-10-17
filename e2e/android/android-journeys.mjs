@@ -921,6 +921,35 @@ async function main() {
     }
   });
 
+  // FD00D: same WebView navigation family as FD00W, but load an inline
+  // empty HTML document via loadDataWithBaseURL instead of loadUrl(about:blank).
+  // JavaScript disabled, no network, Bridge assets or Capacitor plugins.
+  // A provider here implicates generic document navigation, not remote fonts.
+  // It remains only a measurement and never excuses strict FD01/ANR01/L01.
+  await measure('FD00D', 'local inline HTML WebView navigation FontsProvider baseline', async () => {
+    if (MODE !== 'android') throw new Skip('native Android WebView required');
+    await sh('am force-stop ' + PKG);
+    try {
+      const start = await sh('am start -W -n ' + PKG + '/com.bridge.app.WebViewDataBaselineActivity');
+      assert(/Status: ok/.test(start), 'debug inline HTML WebView baseline Activity failed to launch');
+      await sleep(2000);
+      const baselinePid = await pid();
+      const raw = await androidFailureShell('dumpsys activity processes ' + PKG);
+      const evidence = inspectBridgeEmojiFontProvider(raw, baselinePid);
+      assert(evidence.appPidValid, 'inline HTML WebView baseline app PID unavailable');
+      const providerListingVerified = evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
+      // Lack of a complete listing is UNKNOWN, never positive evidence of absence.
+      const result = { stage: 'webview-local-inline-html-navigation',
+        providerListingVerified, ...evidence };
+      (facts.fontProviderStages ??= []).push(result);
+      return result;
+    } finally {
+      // Keep subsequent FD00W and product A01 isolated by fresh cold launch.
+      await sh('am force-stop ' + PKG).catch(() => {});
+    }
+  });
+
   // Second, independently cold-started DEBUG-only control. This one has a
   // bare Android WebView displaying about:blank with JavaScript disabled by
   // default, but NO Capacitor, plugin registry or Bridge web application.
