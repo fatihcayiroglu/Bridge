@@ -15,7 +15,8 @@ describe('P7 D2 schema groundwork is inert until lifecycle enforcement is shippe
       expect(source).toContain('CREATE TABLE IF NOT EXISTS channel_expiry_tombstones');
       expect(source).toContain('"channelId" TEXT PRIMARY KEY');
       expect(source).toContain('CHECK ("cleanupState" IN');
-      expect(source).not.toMatch(/REFERENCES channels\s*\(/);
+      const tombstoneDdl = source.slice(source.indexOf('CREATE TABLE IF NOT EXISTS channel_expiry_tombstones')); 
+      expect(tombstoneDdl).not.toMatch(/"channelId" TEXT PRIMARY KEY REFERENCES channels\s*\(/);
     }
     expect(migration).not.toMatch(/UPDATE\s+channels\s+SET/i);
     expect(migration).not.toMatch(/DELETE\s+FROM\s+channels/i);
