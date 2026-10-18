@@ -22,6 +22,14 @@ export interface ExpiryEvidenceReader {
 const INVALID: ChannelExpiryDecision = { state: 'invalid', accessible: false };
 const UNVERIFIED: ChannelExpiryDecision = { state: 'unverified', accessible: false };
 
+// A missing projection is NOT proof of a missing tombstone. Keep every column
+// explicit so future SQL/driver refactors cannot silently allow a channel.
+const CHANNEL_COLUMNS = ['channelId', 'ownerServerId', 'expiresAt', 'expiryVersion'] as const;
+const TOMBSTONE_COLUMNS = [
+  'tombstoneChannelId', 'tombstoneServerId', 'tombstoneExpiredAt',
+  'tombstoneExpiryVersion', 'tombstoneRecordedAt', 'tombstoneCleanupState',
+] as const;
+
 function validIdentity(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 &&
     value.length <= 256 && value.trim() === value;
@@ -74,6 +82,16 @@ export async function readAndClassifyChannelExpiry(
     // NOT evidence that no tombstone exists.
     return UNVERIFIED;
   }
+
+  // SQL LEFT JOIN returns NULL for *every* column of an absent record.
+  // Reject inconsistent nulls and absent aliases rather than treating partial
+  // evidence as a verified negative tombstone query (fail closed).
+  if ([...CHANNEL_COLUMNS, ...TOMBSTONE_COLUMNS]
+      .some((field) => !Object.prototype.hasOwnProperty.call(row, field))) return UNVERIFIED;
+  if (row.channelId === null &&
+      CHANNEL_COLUMNS.slice(1).some((field) => row[field] !== null)) return INVALID;
+  if (row.tombstoneChannelId === null &&
+      TOMBSTONE_COLUMNS.slice(1).some((field) => row[field] !== null)) return INVALID;
 
   const channel = row.channelId === null ? null : {
     _id: row.channelId,
