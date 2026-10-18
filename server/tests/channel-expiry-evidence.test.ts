@@ -76,6 +76,44 @@ describe('P7 D2 atomic expiry/tombstone evidence reader (NOT wired to routes)', 
     }
   });
 
+  it('treats every omitted projection alias as unverified, never as tombstone absence', async () => {
+    for (const field of Object.keys(row())) {
+      const incomplete = row();
+      delete incomplete[field];
+      const { db } = reader(incomplete);
+      expect(await readAndClassifyChannelExpiry(db, 'c1', 's1', now))
+        .toEqual({ state: 'unverified', accessible: false });
+    }
+  });
+
+  it('rejects contradictory LEFT JOIN null evidence instead of granting permanent access', async () => {
+    for (const overrides of [
+      { tombstoneChannelId: null, tombstoneServerId: 's1' },
+      { tombstoneChannelId: null, tombstoneExpiredAt: String(now) },
+      { tombstoneChannelId: null, tombstoneExpiryVersion: '1' },
+      { tombstoneChannelId: null, tombstoneRecordedAt: String(now) },
+      { tombstoneChannelId: null, tombstoneCleanupState: 'pending' },
+      { channelId: null, ownerServerId: 's1' },
+      { channelId: null, expiresAt: String(now + 1) },
+      { channelId: null, expiryVersion: '1' },
+    ]) {
+      const { db } = reader(row(overrides));
+      expect(await readAndClassifyChannelExpiry(db, 'c1', 's1', now))
+        .toEqual({ state: 'invalid', accessible: false });
+    }
+  });
+
+  it('still recognizes a complete tombstone after channel deletion', async () => {
+    const { db } = reader(row({
+      channelId: null, ownerServerId: null, expiresAt: null, expiryVersion: null,
+      tombstoneChannelId: 'c1', tombstoneServerId: 's1',
+      tombstoneExpiredAt: String(now - 1), tombstoneExpiryVersion: '2',
+      tombstoneRecordedAt: String(now), tombstoneCleanupState: 'pending',
+    }));
+    expect(await readAndClassifyChannelExpiry(db, 'c1', 's1', now - 1000))
+      .toEqual({ state: 'tombstoned', accessible: false });
+  });
+
   it('database failure and unavailable evidence return unverified instead of access', async () => {
     for (const db of [
       { query: async () => { throw new Error('database offline'); } },
