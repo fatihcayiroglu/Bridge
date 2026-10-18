@@ -701,3 +701,26 @@ export function parseAnrTraceProbeMarkers(raw, appPid) {
   }
   return result;
 }
+
+/**
+ * #209 FD00G: progress of the debug finalization control in the EXACT app
+ * process (brief logcat). scheduled -> started -> finalized distinguishes a
+ * pass that never ran, one blocked inside GC/finalization, and a missing log.
+ */
+export function parseFinalizationProbeMarkers(raw, appPid) {
+  const none = { scheduled: false, started: false, webViewAttached: null,
+    finalized: false, passMs: null };
+  if (!/^[0-9]{1,8}$/.test(String(appPid))) return none;
+  const targetPid = String(Number(appPid));
+  const result = { ...none };
+  for (const line of String(raw).split(/\r?\n/).slice(-200)) {
+    const m = /^[A-Z]\/BridgeFinalizeProbe\(\s*([0-9]{1,8})\):\s*(.*?)\s*$/.exec(line);
+    if (!m || String(Number(m[1])) !== targetPid) continue;
+    if (m[2] === 'stage=scheduled') { result.scheduled = true; continue; }
+    const started = /^stage=started webViewAttached=(true|false)$/.exec(m[2]);
+    if (started) { result.started = true; result.webViewAttached = started[1] === 'true'; continue; }
+    const done = /^stage=finalized passMs=([0-9]{1,6})$/.exec(m[2]);
+    if (done) { result.finalized = true; result.passMs = Number(done[1]); }
+  }
+  return result;
+}

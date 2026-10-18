@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -1137,28 +1137,27 @@ async function main() {
           waiting: evidence.fontProviderWaiting, dead: evidence.fontProviderDead };
       };
       const before = await snapshot('webview-alive-before-finalization');
-      // The Activity starts the pass ~6 s after onCreate. Poll the fixed
-      // marker from the SAME PID only; raw logcat never leaves memory.
-      let marker = null;
+      // Partial evidence survives a failure below (FD02 rule): fixed enums only.
+      const evidence = { sameProcess: true, before, markers: null, pollAttempts: 0, after: null };
+      facts.androidWebViewFinalizationEvidence = evidence;
+      // The Activity starts the pass ~6 s after onCreate. Poll its fixed
+      // markers from the SAME PID only; raw logcat never leaves memory.
       const deadline = Date.now() + 15_000;
-      while (!marker && Date.now() < deadline) {
+      do {
+        if (evidence.pollAttempts++) await sleep(500);
         try {
-          const out = await androidFailureShell('logcat -d --pid ' + initialPid +
-            " -s BridgeWebViewFinalization:I '*:S'");
-          const m = /BridgeWebViewFinalization.*stage=finalized webViewAttached=(true|false)/.exec(out);
-          if (m) marker = { webViewAttached: m[1] === 'true' };
+          evidence.markers = parseFinalizationProbeMarkers(await androidFailureShell(
+            'logcat -d -v brief --pid ' + initialPid + " -s BridgeFinalizeProbe:I '*:S'"), initialPid);
         } catch { /* keep polling until the deadline */ }
-        if (!marker) await sleep(500);
+      } while (!evidence.markers?.finalized && Date.now() < deadline);
+      if (!evidence.markers?.finalized) {
+        throw new Error('FD00G finalization pass not observed; safe evidence: ' + JSON.stringify(evidence));
       }
-      assert(marker, 'FD00G same-process finalization marker unavailable');
       // ActivityThread turns the last released stable ref into ONE unstable
       // ref for CONTENT_PROVIDER_RETAIN_TIME (1000 ms) before removing it.
       await sleep(2500);
-      const after = await snapshot('webview-alive-after-finalization');
-      const result = { sameProcess: true,
-        webViewAttachedAtFinalization: marker.webViewAttached, before, after };
-      facts.androidWebViewFinalizationEvidence = result;
-      return result;
+      evidence.after = await snapshot('webview-alive-after-finalization');
+      return evidence;
     } finally {
       await sh('am force-stop ' + PKG).catch(() => {});
     }

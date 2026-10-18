@@ -8,6 +8,10 @@ package com.bridge.app;
 // is alive was held by unreachable garbage, not by the live WebView.
 // No Bridge web assets, Capacitor plugins, JavaScript, network or GMS calls.
 public final class WebViewFinalizationBaselineActivity extends android.app.Activity {
+    // Fixed, debug-only markers; no PID, user data, URLs or raw process data.
+    // scheduled -> started -> finalized tells "never ran" from "blocked in
+    // the pass" from "log not captured" when the harness misses a marker.
+    private static final String TAG = "BridgeFinalizeProbe";
     private android.webkit.WebView view;
     private final android.os.Handler mainHandler =
             new android.os.Handler(android.os.Looper.getMainLooper());
@@ -22,16 +26,18 @@ public final class WebViewFinalizationBaselineActivity extends android.app.Activ
         // The harness samples before this (stable ref expected on WebView 113)
         // and again > 1 s after the marker (ActivityThread's retain window).
         mainHandler.postDelayed(finalizationPass, 6000L);
+        android.util.Log.i(TAG, "stage=scheduled");
     }
 
     private void startFinalizationPass() {
         final boolean attached = view != null && view.isAttachedToWindow();
+        android.util.Log.i(TAG, "stage=started webViewAttached=" + attached);
         Thread worker = new Thread(() -> {
+            long started = android.os.SystemClock.elapsedRealtime();
             WebViewFontProviderRelease.runFinalizationPass();
-            // Fixed, debug-only marker; no PID, user data, URLs or raw process data.
-            android.util.Log.i("BridgeWebViewFinalization",
-                    "stage=finalized webViewAttached=" + attached);
-        }, "BridgeWebViewFinalization");
+            long passMs = android.os.SystemClock.elapsedRealtime() - started;
+            android.util.Log.i(TAG, "stage=finalized passMs=" + Math.min(passMs, 999_999L));
+        }, "BridgeFinalize");
         worker.setDaemon(true);
         worker.start();
     }

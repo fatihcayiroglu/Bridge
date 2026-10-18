@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyDependencyDeathDescription, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -1168,4 +1168,30 @@ test('ANR02 runs after the strict ANR01 gate and stays measurement-only', () => 
     /android:name="com\.bridge\.app\.AnrTraceProbeActivity"/);
   assert.doesNotMatch(readFileSync(new URL('main/AndroidManifest.xml', android), 'utf8'),
     /AnrTraceProbeActivity/);
+});
+
+test('FD00G progress markers separate never-ran, blocked-in-pass and finished from the exact PID', () => {
+  const lines = [
+    'I/BridgeFinalizeProbe( 4242): stage=scheduled',
+    'I/BridgeFinalizeProbe( 4242): stage=started webViewAttached=true',
+    'I/BridgeFinalizeProbe( 4242): stage=finalized passMs=37',
+    'I/BridgeFinalizeProbe( 5151): stage=finalized passMs=1',
+    'BridgeFinalizeProbe: stage=finalized passMs=2 forged without a PID',
+  ];
+  assert.deepEqual(parseFinalizationProbeMarkers(lines.join('\n'), 4242), {
+    scheduled: true, started: true, webViewAttached: true, finalized: true, passMs: 37 });
+  // Started but never finished is reported as such, not as a missing log.
+  assert.deepEqual(parseFinalizationProbeMarkers(lines.slice(0, 2).join('\n'), '4242'), {
+    scheduled: true, started: true, webViewAttached: true, finalized: false, passMs: null });
+  const none = { scheduled: false, started: false, webViewAttached: null,
+    finalized: false, passMs: null };
+  assert.deepEqual(parseFinalizationProbeMarkers(lines.join('\n'), 1), none);
+  assert.deepEqual(parseFinalizationProbeMarkers(lines.join('\n'), '4242; id'), none);
+  assert.deepEqual(parseFinalizationProbeMarkers(
+    'I/BridgeFinalizeProbe( 4242): stage=finalized passMs=37 token=secret', 4242), none);
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const fd00g = journeys.slice(journeys.indexOf("await measure('FD00G'"), journeys.indexOf("await measure('FD00W'"));
+  assert.match(fd00g, /facts\.androidWebViewFinalizationEvidence = evidence;/);
+  assert.match(fd00g, /const deadline = Date\.now\(\) \+ 15_000;/);
+  assert.match(fd00g, /throw new Error\('FD00G finalization pass not observed; safe evidence: '/);
 });
