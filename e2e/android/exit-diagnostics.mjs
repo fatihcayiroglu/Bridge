@@ -25,6 +25,37 @@ export function summarizeAndroidWebViewProvider(raw) {
     version: match[2], majorVersion };
 }
 
+/**
+ * Read-only WebViewUpdateService eligibility evidence for a same-OS version
+ * comparison. Never switch providers, install APKs or expose package names,
+ * serials or raw dumpsys lines in uploaded CI evidence.
+ *
+ * "Valid package" and "installed/enabled for all users" are BOTH required.
+ * An alternative with an identical version cannot isolate a version change.
+ * Missing/truncated/unrecognized listings stay UNKNOWN, never "none".
+ */
+export function summarizeAndroidWebViewAlternatives(raw) {
+  const unknown = { verified: false, eligibleProviderCount: null,
+    alternateEligibleCount: null, distinctVersionAlternateAvailable: null };
+  const src = String(raw ?? '').slice(0, 24000);
+  const current = /Current WebView package \(name, version\): \(([A-Za-z0-9_.]{1,120}), ([0-9]{1,4}(?:\.[0-9]{1,8}){1,3})\)/.exec(src);
+  const section = /\bWebView packages:[ \t]*\r?\n/.exec(src);
+  if (!current || !section) return unknown;
+  const entries = [];
+  for (const line of src.slice(section.index + section[0].length).split(/\r?\n/).slice(0, 32)) {
+    if (!/^\s*Valid package\b/.test(line)) continue;
+    const match = /^\s*Valid package ([A-Za-z0-9_.]{1,120}) \(versionName: ([0-9]{1,4}(?:\.[0-9]{1,8}){1,3}), versionCode: -?\d{1,20}, targetSdkVersion: \d{1,3}\) is\s+(NOT\s+)?installed\/enabled for all users\s*$/.exec(line);
+    if (!match) return unknown; // Never turn an unparsed eligible package into zero.
+    if (!match[3]) entries.push({ name: match[1], version: match[2] });
+  }
+  if (!entries.length || entries.length > 16 ||
+      !entries.some(x => x.name === current[1] && x.version === current[2])) return unknown;
+  const other = entries.filter(x => x.name !== current[1]);
+  return { verified: true, eligibleProviderCount: entries.length,
+    alternateEligibleCount: other.length,
+    distinctVersionAlternateAvailable: other.some(x => x.version !== current[2]) };
+}
+
 export function parseApplicationExits(raw, limit = 6) {
   const bounded = Number.isInteger(limit) ? Math.max(0, Math.min(10, limit)) : 6;
   return String(raw).split(/ApplicationExitInfo #\d+:/).slice(1, bounded + 1).map((record) => {

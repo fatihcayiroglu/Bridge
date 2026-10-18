@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, summarizeAndroidWebViewProvider } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -740,4 +740,62 @@ test('Android #209 WebView fingerprint fails closed when version is missing, mal
   assert.match(snapshot, /serial: 'redacted'/);
   assert.doesNotMatch(snapshot, /serial: device\.serial\(\)/);
   assert.match(snapshot, /webview: summarizeAndroidWebViewProvider/);
+});
+
+
+test('Android WebViewUpdateService lists verified installed alternatives without revealing packages', () => {
+  const raw = [
+    'Current WebView Update Service state',
+    '  Current WebView package (name, version): (com.google.android.webview, 113.0.5672.136)',
+    '  WebView packages:',
+    '    Valid package com.google.android.webview (versionName: 113.0.5672.136, versionCode: 567263637, targetSdkVersion: 34) is  installed/enabled for all users',
+    '    com.google.android.webview.beta is NOT installed.',
+    '    com.google.android.webview.dev is NOT installed.',
+    '    com.android.webview is NOT installed.',
+    '  owner@example.com token=private',
+  ].join('\n');
+  assert.deepEqual(summarizeAndroidWebViewAlternatives(raw), {
+    verified: true, eligibleProviderCount: 1, alternateEligibleCount: 0,
+    distinctVersionAlternateAvailable: false,
+  });
+  assert.doesNotMatch(JSON.stringify(summarizeAndroidWebViewAlternatives(raw)),
+    /google\.android|example\.com|private|beta|token|@/);
+});
+
+test('Android WebView provider comparison requires a DISTINCT installed version', () => {
+  const fixture = (otherVersion, otherStatus = 'installed/enabled') => [
+    'Current WebView package (name, version): (com.google.android.webview, 124.0.6367.219)',
+    'WebView packages:',
+    ' Valid package com.google.android.webview (versionName: 124.0.6367.219, versionCode: 636721900, targetSdkVersion: 35) is  installed/enabled for all users',
+    ' Valid package com.google.android.webview.beta (versionName: ' + otherVersion + ', versionCode: 640000000, targetSdkVersion: 35) is ' + otherStatus + ' for all users',
+  ].join('\n');
+  assert.deepEqual(summarizeAndroidWebViewAlternatives(fixture('126.0.0.0')), {
+    verified: true, eligibleProviderCount: 2, alternateEligibleCount: 1,
+    distinctVersionAlternateAvailable: true,
+  });
+  assert.deepEqual(summarizeAndroidWebViewAlternatives(fixture('124.0.6367.219')), {
+    verified: true, eligibleProviderCount: 2, alternateEligibleCount: 1,
+    distinctVersionAlternateAvailable: false,
+  });
+  assert.deepEqual(summarizeAndroidWebViewAlternatives(fixture('126.0.0.0', 'NOT installed/enabled')), {
+    verified: true, eligibleProviderCount: 1, alternateEligibleCount: 0,
+    distinctVersionAlternateAvailable: false,
+  });
+});
+
+test('Android WebView package listing fails closed if missing, malformed or unrecognized', () => {
+  const unknown = { verified: false, eligibleProviderCount: null,
+    alternateEligibleCount: null, distinctVersionAlternateAvailable: null };
+  assert.deepEqual(summarizeAndroidWebViewAlternatives(''), unknown);
+  assert.deepEqual(summarizeAndroidWebViewAlternatives(
+    'Current WebView package (name, version): (com.google.android.webview, 124.0.1.1)'), unknown);
+  assert.deepEqual(summarizeAndroidWebViewAlternatives(
+    'Current WebView package (name, version): (com.google.android.webview, 124.0.1.1)\nWebView packages:\n Valid package com.google.android.webview (versionName: 124.0.1.1, versionCode: 1, targetSdkVersion: 35) is MAGIC enabled for all users'), unknown);
+  assert.deepEqual(summarizeAndroidWebViewAlternatives(
+    'Current WebView package (name, version): (com.google.android.webview, 124.0.1.1)\nWebView packages:\n com.google.android.webview is NOT installed.'), unknown);
+  const harness = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(harness, /webviewAlternatives: summarizeAndroidWebViewAlternatives/);
+  assert.match(harness, /const webviewUpdate = await sh\('dumpsys webviewupdate'\)/);
+  assert.doesNotMatch(harness.slice(harness.indexOf('facts.device = {'),
+    harness.indexOf('facts.apkInstalled =')), /serial: device\.serial\(\)/);
 });

@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, summarizeAndroidWebViewProvider } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -789,6 +789,7 @@ async function main() {
     // ANDROID_SERIAL picks one device when several are attached (e.g. a USB phone).
     device = list.find((d) => d.serial() === process.env.ANDROID_SERIAL) ?? list[0];
     const qemu = (await sh('getprop ro.kernel.qemu')) || (await sh('getprop ro.boot.qemu'));
+    const webviewUpdate = await sh('dumpsys webviewupdate');
     facts.device = {
       // Use the serial to select the device, NEVER serialize it to CI artifacts.
       serial: 'redacted',
@@ -798,7 +799,9 @@ async function main() {
       sdk: await sh('getprop ro.build.version.sdk'),
       abi: await sh('getprop ro.product.cpu.abi'),
       qemu,
-      webview: summarizeAndroidWebViewProvider(await sh('dumpsys webviewupdate')),
+      webview: summarizeAndroidWebViewProvider(webviewUpdate),
+      // Only a safe count/boolean is emitted; never retain raw candidates.
+      webviewAlternatives: summarizeAndroidWebViewAlternatives(webviewUpdate),
     };
     facts.apkInstalled = (await sh(`pm list packages ${PKG}`)).includes(PKG);
     log('device', JSON.stringify(facts.device));
