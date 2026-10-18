@@ -1186,6 +1186,9 @@ async function main() {
       for (let attempt = 1; attempt <= 3; attempt++) {
         for (const control of controls) {
           await sh('am force-stop ' + PKG);
+          // Device-clock bounds distinguish this launch from older exits after
+          // Android PID reuse. No CI host timestamps or raw logcat are exported.
+          const controlStartedAt = await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null);
           const started = await sh('am start -W -n ' + PKG +
             '/com.bridge.app.' + control.activity);
           assert(/Status: ok/.test(started), 'CS00 baseline Activity failed to start');
@@ -1211,14 +1214,22 @@ async function main() {
             // original PID, but publish ONLY numeric reason codes and booleans.
             // Never disclose the PID, process names, timestamps or raw logs.
             // Absence of an exit record is UNKNOWN, not proof of no crash.
-            let exitEvidence = { evidenceValid: false, matchingExit: false,
+            const controlEndedAt = await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null);
+            let exitEvidence = { windowValid: false, matchingExit: false,
               reasonCode: null, subreasonCode: null };
+            let dependencyEvidence = classifyFreshAndroidDependencyDeath(
+              null, firstPid, PKG, controlStartedAt, controlEndedAt);
             try {
               const info = await androidFailureExits();
-              if (info.available)
-                exitEvidence = summarizeControlProcessExit(info.exits, firstPid);
+              if (info.available) {
+                exitEvidence = summarizeFreshControlProcessExit(
+                  info.exits, firstPid, PKG, controlStartedAt, controlEndedAt);
+                dependencyEvidence = classifyFreshAndroidDependencyDeath(
+                  info.exits, firstPid, PKG, controlStartedAt, controlEndedAt);
+              }
             } catch { /* diagnostic failure never makes the check PASS */ }
             record.exitEvidence = exitEvidence;
+            record.dependencyEvidence = dependencyEvidence;
             log('CS00 safe process-loss evidence', JSON.stringify(record));
           }
           assert(activityResumed,
