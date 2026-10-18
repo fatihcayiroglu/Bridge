@@ -526,7 +526,12 @@ test('FD00W blank-WebView font reference decay is measured on the original PID w
   assert.match(control, /facts\.fontProviderPlainWebViewDecay = decay/);
   assert.match(control, /\[1500, 4000, 8000\]/);
   assert.match(control, /currentPid === baselinePid/);
-  assert.match(control, /if \(!samePid\) break/);
+  // A vanished foreground WebView control is now a real FAIL, not a
+  // silently incomplete MEASURED control or a second-PID success.
+  assert.match(control, /if \(!samePid\) \{/);
+  assert.match(control, /summarizeFreshControlProcessExit\(/);
+  assert.match(control, /throw new Error\('FD00W original foreground process disappeared/);
+  assert.doesNotMatch(control, /if \(!samePid\) break/);
   assert.match(control, /inspectBridgeEmojiFontProvider\(snapshot, currentPid\)/);
   assert.match(control, /decay\.complete = decay\.sameAppProcess/);
   assert.doesNotMatch(control, /await check\('FD00W'|await check\('FD01'/);
