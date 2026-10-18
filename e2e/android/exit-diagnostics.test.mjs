@@ -934,3 +934,43 @@ test('A01 diagnostics require windowed dependency attribution; strict FD01 remai
   assert.match(source, /await check\('FD01'/);
   assert.match(source, /assert\(!evidence\.fontProviderConnected/);
 });
+
+test('CS00 failed minimal WebView run cannot attribute historical PID reuse to dependency death', () => {
+  const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const from = source.indexOf("await measure('CS00'");
+  const until = source.indexOf("await check('A01'", from);
+  assert.ok(from >= 0 && until > from, 'CS00 source window must be present');
+  const segment = source.slice(from, until);
+  assert.ok(segment.includes("const controlStartedAt = await sh('date +%Y-%m-%dT%H:%M:%S')"));
+  assert.ok(segment.includes("const controlEndedAt = await sh('date +%Y-%m-%dT%H:%M:%S')"));
+  assert.ok(segment.includes('summarizeFreshControlProcessExit('));
+  assert.ok(segment.includes('classifyFreshAndroidDependencyDeath('));
+  assert.ok(!segment.includes('summarizeControlProcessExit(info.exits, firstPid)'));
+  assert.ok(segment.includes('record.dependencyEvidence = dependencyEvidence'));
+  assert.ok(segment.includes("assert(record.pidStable,"));
+  assert.ok(source.includes("await check('FD01'"));
+  assert.ok(source.includes('assert(!evidence.fontProviderConnected'));
+
+  const historical = { at: '2026-10-18 17:00:00.000', pid: 1234,
+    process: 'com.bridge.app.debug', reason: '12 (DEPENDENCY DIED)',
+    dependency: { provider: 'com.google.android.gms/.fonts.provider.FontsProvider',
+      dyingProcess: 'com.google.android.gms.persistent' } };
+  const start = '2026-10-18T19:37:20';
+  const end = '2026-10-18T19:37:51';
+  // A timestamp-bounded absence is UNKNOWN, not fake proof of FontsProvider.
+  assert.deepEqual(classifyFreshAndroidDependencyDeath(
+    [historical], 1234, 'com.bridge.app.debug', start, end), {
+    exitMatched: false, isDependencyDeath: null, providerClass: 'unknown',
+    dyingProcessClass: 'unknown', attribution: 'unavailable',
+  });
+  assert.deepEqual(summarizeFreshControlProcessExit(
+    [historical], 1234, 'com.bridge.app.debug', start, end), {
+    windowValid: true, matchingExit: false, reasonCode: null, subreasonCode: null,
+  });
+  const sameRun = { ...historical, at: '2026-10-18 19:37:49.150' };
+  assert.deepEqual(classifyFreshAndroidDependencyDeath(
+    [historical, sameRun], 1234, 'com.bridge.app.debug', start, end), {
+    exitMatched: true, isDependencyDeath: true, providerClass: 'gms-fonts',
+    dyingProcessClass: 'gms-persistent', attribution: 'matched-kill-line',
+  });
+});
