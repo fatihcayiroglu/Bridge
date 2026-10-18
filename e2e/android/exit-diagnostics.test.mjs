@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeAndroidWebViewProvider } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -292,4 +292,38 @@ test('Android failure-only DOM evidence excludes user text, URL paths, channel i
   }
   assert.ok(summary.includes("catch(() => 'unavailable')"),
     'Playwright exception text must not be copied verbatim to CI output');
+});
+
+
+test('Android device WebView fingerprint emits only allowlisted numeric version and provider category', () => {
+  const sample = 'Current WebView package (name, version): (com.google.android.webview, 113.0.5672.136)\ncustomer=private@example.com token=secret';
+  const out = summarizeAndroidWebViewProvider(sample);
+  assert.deepEqual(out, {
+    available: true, providerKind: 'google-webview',
+    version: '113.0.5672.136', majorVersion: 113,
+  });
+  assert.doesNotMatch(JSON.stringify(out), /google\.android|secret|private|@|token|customer/i);
+  assert.deepEqual(summarizeAndroidWebViewProvider(
+    'Current WebView package (name, version): (com.android.webview, 130.0.1.2)'),
+  { available: true, providerKind: 'aosp-webview', version: '130.0.1.2', majorVersion: 130 });
+  assert.deepEqual(summarizeAndroidWebViewProvider(
+    'Current WebView package (name, version): (com.android.chrome, 128.0.0.0)'),
+  { available: true, providerKind: 'chrome-webview', version: '128.0.0.0', majorVersion: 128 });
+  assert.deepEqual(summarizeAndroidWebViewProvider(
+    'Current WebView package (name, version): (com.oem.custom, 128.0.0.0)'),
+  { available: true, providerKind: 'other-webview', version: '128.0.0.0', majorVersion: 128 });
+});
+
+test('Android fingerprint parser fails closed; native hardware serial is never reported', () => {
+  const unknown = { available: false, providerKind: 'unknown',
+    version: null, majorVersion: null };
+  for (const raw of [null, '', 'Current WebView package (name, version): (com.oem, secret@example.com)',
+    'Current WebView package (name, version): (com.google.android.webview, 0.0.0.0)'])
+    assert.deepEqual(summarizeAndroidWebViewProvider(raw), unknown);
+  const harness = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const part = harness.slice(harness.indexOf('facts.device = {'), harness.indexOf('facts.apkInstalled ='));
+  assert.match(part, /serial: 'redacted'/);
+  assert.doesNotMatch(part, /serial: device\.serial\(\)/);
+  assert.match(part, /webview: summarizeAndroidWebViewProvider/);
+  assert.match(harness, /device = list\.find\(\(d\) => d\.serial\(\) === process\.env\.ANDROID_SERIAL\)/);
 });

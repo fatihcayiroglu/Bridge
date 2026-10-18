@@ -21,7 +21,7 @@ import { io } from 'socket.io-client';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeAndroidWebViewProvider } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -693,13 +693,15 @@ async function main() {
     device = list.find((d) => d.serial() === process.env.ANDROID_SERIAL) ?? list[0];
     const qemu = (await sh('getprop ro.kernel.qemu')) || (await sh('getprop ro.boot.qemu'));
     facts.device = {
-      serial: device.serial(),
+      // The actual serial remains in memory for ADB selection, never in artifacts.
+      serial: 'redacted',
+      serialExplicitlySelected: Boolean(process.env.ANDROID_SERIAL),
       model: await sh('getprop ro.product.model'),
       release: await sh('getprop ro.build.version.release'),
       sdk: await sh('getprop ro.build.version.sdk'),
       abi: await sh('getprop ro.product.cpu.abi'),
       qemu,
-      webview: ((await sh('dumpsys webviewupdate')).match(/Current WebView package \(name, version\): \(([^)]+)\)/) || [])[1] ?? null,
+      webview: summarizeAndroidWebViewProvider(await sh('dumpsys webviewupdate')),
     };
     facts.apkInstalled = (await sh(`pm list packages ${PKG}`)).includes(PKG);
     log('device', JSON.stringify(facts.device));
