@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -850,4 +850,87 @@ test('FD00W invalid/hostile clocks cannot classify a historical exit as current'
   const harness = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   assert.match(harness, /FD00W original foreground process disappeared/);
   assert.match(harness, /summarizeFreshControlProcessExit\(/);
+});
+
+
+test('A01 fresh dependency attribution uses exact app, PID, and bounded device-clock window', () => {
+  const stale = {
+    at: '2026-10-18 17:01:00.000', pid: 4261,
+    process: 'com.bridge.app.debug', reason: '12 (DEPENDENCY DIED)',
+    subreason: '0 (UNKNOWN)',
+    dependency: {
+      provider: 'com.google.android.gms/.fonts.provider.FontsProvider',
+      dyingProcess: 'com.google.android.gms.persistent',
+    },
+  };
+  const fresh = {
+    at: '2026-10-18 18:01:04.200', pid: 4261,
+    process: 'com.bridge.app.debug', reason: '9 (OTHER)',
+    subreason: '0 (UNKNOWN)',
+    dependency: null,
+  };
+  const summarize = rows => classifyFreshAndroidDependencyDeath(
+    rows, '4261', 'com.bridge.app.debug',
+    '2026-10-18T18:01:00', '2026-10-18T18:01:11');
+  const observed = summarize([stale, fresh]);
+  assert.deepEqual(observed, {
+    exitMatched: true, isDependencyDeath: false,
+    providerClass: 'unknown', dyingProcessClass: 'unknown',
+    attribution: 'not-dependency-death',
+  });
+  assert.deepEqual(summarize([stale]), {
+    exitMatched: false, isDependencyDeath: null,
+    providerClass: 'unknown', dyingProcessClass: 'unknown',
+    attribution: 'unavailable',
+  });
+
+  // An exit of another app with an identical recycled PID is NOT Bridge evidence.
+  assert.equal(summarize([{ ...stale, at: fresh.at, process: 'com.other.app' }]).exitMatched, false);
+  assert.equal(summarize([{ ...stale, at: fresh.at, pid: 4262 }]).exitMatched, false);
+  assert.equal(summarize([{ ...stale, at: '2026-10-18 18:04:00.000' }]).exitMatched, false);
+});
+
+test('A01 fresh GMS attribution requires a true dependency exit in the same time window', () => {
+  const exited = {
+    at: '2026-10-18 18:01:04.200', pid: 4261,
+    process: 'com.bridge.app.debug', reason: '12 (DEPENDENCY DIED)',
+    subreason: '0 (UNKNOWN)',
+    description: 'private@example.com /home/customer/?token=secret',
+    dependency: {
+      provider: 'com.google.android.gms/.fonts.provider.FontsProvider',
+      dyingProcess: 'com.google.android.gms.persistent',
+      raw: 'private user URL and PID must not escape',
+    },
+  };
+  const from = '2026-10-18T18:01:00', to = '2026-10-18T18:01:11';
+  const facts = classifyFreshAndroidDependencyDeath(
+    [exited], 4261, 'com.bridge.app.debug', from, to);
+  assert.deepEqual(facts, {
+    exitMatched: true, isDependencyDeath: true, providerClass: 'gms-fonts',
+    dyingProcessClass: 'gms-persistent', attribution: 'matched-kill-line',
+  });
+  assert.doesNotMatch(JSON.stringify(facts),
+    /4261|private|token|secret|customer|example|com\\.google|FontsProvider/);
+  // Missing or corrupt time bounds never produce a positive attribution.
+  for (const [start, end] of [
+    [null, to], [from, null], ['2026-99-18T18:01:00', to],
+    [to, from], ['2026-10-18T18:00:00', '2026-10-18T18:05:00'],
+  ]) {
+    assert.equal(classifyFreshAndroidDependencyDeath(
+      [exited], 4261, 'com.bridge.app.debug', start, end).exitMatched, false);
+  }
+  // Stable/provider ref presence alone is never causal proof.
+  assert.equal(classifyFreshAndroidDependencyDeath(
+    [{ ...exited, reason: '1 (EXIT SELF)' }],
+    4261, 'com.bridge.app.debug', from, to).isDependencyDeath, false);
+});
+
+test('A01 diagnostics require windowed dependency attribution; strict FD01 remains asserted', () => {
+  const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(source, /a01LaunchStartedAt = MODE === 'android'/);
+  assert.match(source, /dependencyEvidence = classifyFreshAndroidDependencyDeath\\(/);
+  assert.match(source, /exitEvidence = summarizeFreshControlProcessExit\\(/);
+  assert.match(source, /const endedAt = await sh\\('date \\+%Y-%m-%dT%H:%M:%S'\\)/);
+  assert.match(source, /await check\\('FD01'/);
+  assert.match(source, /assert\\(!evidence\\.fontProviderConnected/);
 });
