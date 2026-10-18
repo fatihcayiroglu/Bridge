@@ -34,3 +34,31 @@ describe('FD00D WebView navigation differential is isolated and noninvasive', ()
     expect(main).not.toContain('WebViewDataBaselineActivity');
   });
 });
+
+
+describe('FD00S data-scheme control is an isolated counterfactual to about:blank', () => {
+  test('runs a local base64 data: document with JavaScript disabled and no Bridge assets', () => {
+    const code = read('debug/java/com/bridge/app/WebViewDataSchemeBaselineActivity.java');
+    const impl = code.split('\n').filter(line => !line.trim().startsWith('//')).join('\n');
+    expect(code).toContain('extends android.app.Activity');
+    expect(code).toContain('setJavaScriptEnabled(false)');
+    expect(code).toMatch(/\bloadData\s*\(encoded,\s*"text\/html",\s*"base64"\)/);
+    expect(code).toContain('Base64.NO_WRAP');
+    expect(code).toContain('<!doctype html>');
+    expect(impl).not.toMatch(/loadDataWithBaseURL|\bloadUrl\s*\(|https?:\/\/|BridgeActivity|Capacitor|registerPlugin/);
+    expect(code).toContain('view.destroy()');
+  });
+
+  test('debug manifest only; measurement cannot substitute for strict FD01', () => {
+    expect(read('debug/AndroidManifest.xml')).toContain(
+      'android:name="com.bridge.app.WebViewDataSchemeBaselineActivity"');
+    expect(read('main/AndroidManifest.xml')).not.toContain('WebViewDataSchemeBaselineActivity');
+    const journeys = fs.readFileSync(path.join(__dirname, '../../e2e/android/android-journeys.mjs'), 'utf8');
+    const measurement = journeys.indexOf("await measure('FD00S'");
+    const strictFd01 = journeys.indexOf("await check('FD01'");
+    expect(measurement).toBeGreaterThan(0);
+    expect(strictFd01).toBeGreaterThan(measurement);
+    expect(journeys.slice(measurement, measurement + 1900)).toContain('provider evidence incomplete');
+    expect(journeys.slice(strictFd01)).toContain('assert(!evidence.fontProviderConnected');
+  });
+});

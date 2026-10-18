@@ -75,6 +75,13 @@
       android:exported="true"
       android:excludeFromRecents="true"
       android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- Debug-only data:-scheme HTML navigation independent of about:blank;
+         no scripts, network, Bridge web assets or Capacitor plugins. -->
+    <activity
+      android:name="com.bridge.app.WebViewDataSchemeBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
     <!-- Debug-only: release a navigated WebView within the SAME foreground
          Android process and measure provider reference lifetime, without
          killing GMS or changing the product/release Activity. -->

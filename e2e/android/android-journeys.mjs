@@ -975,6 +975,34 @@ async function main() {
     }
   });
 
+  // FD00S: a separate DATA-SCHEME navigation experiment. Unlike FD00D's
+  // loadDataWithBaseURL(null, ...) (which defaults to about:blank), loadData
+  // explicitly creates a data: URL. All inputs are local; JavaScript disabled.
+  // Fresh PID/force-stop isolate it from FD00D and the real product launch.
+  // This is MEASURED, never a waiver or PASS for strict FD01/ANR01.
+  await measure('FD00S', 'data-scheme inline HTML WebView FontsProvider control', async () => {
+    if (MODE !== 'android') throw new Skip('native Android WebView required');
+    await sh('am force-stop ' + PKG);
+    try {
+      const start = await sh('am start -W -n ' + PKG +
+        '/com.bridge.app.WebViewDataSchemeBaselineActivity');
+      assert(/Status: ok/.test(start), 'debug data-scheme baseline Activity failed to launch');
+      await sleep(2000);
+      const controlPid = await pid();
+      const raw = await androidFailureShell('dumpsys activity processes ' + PKG);
+      const evidence = inspectBridgeEmojiFontProvider(raw, controlPid);
+      const complete = evidence.appPidValid && evidence.providerSections > 0 &&
+        evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown;
+      assert(complete, 'data-scheme baseline provider evidence incomplete; do not infer absence');
+      const result = { stage: 'webview-data-scheme-inline-html-navigation',
+        providerListingVerified: true, ...evidence };
+      (facts.fontProviderStages ??= []).push(result);
+      return result;
+    } finally {
+      await sh('am force-stop ' + PKG).catch(() => {});
+    }
+  });
+
   // FD00T: provider lifetime AFTER destroying a navigated WebView in the
   // SAME foreground Android process. The teardown marker is exact-PID
   // filtered, so elapsed time is never mistaken for proof of destruction.
