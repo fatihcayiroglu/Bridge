@@ -910,7 +910,7 @@ test('A01 fresh GMS attribution requires a true dependency exit in the same time
     dyingProcessClass: 'gms-persistent', attribution: 'matched-kill-line',
   });
   assert.doesNotMatch(JSON.stringify(facts),
-    /4261|private|token|secret|customer|example|com\\.google|FontsProvider/);
+    /4261|private|token|secret|customer|example|com\.google|FontsProvider/);
   // Missing or corrupt time bounds never produce a positive attribution.
   for (const [start, end] of [
     [null, to], [from, null], ['2026-99-18T18:01:00', to],
@@ -928,9 +928,9 @@ test('A01 fresh GMS attribution requires a true dependency exit in the same time
 test('A01 diagnostics require windowed dependency attribution; strict FD01 remains asserted', () => {
   const source = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   assert.match(source, /a01LaunchStartedAt = MODE === 'android'/);
-  assert.match(source, /dependencyEvidence = classifyFreshAndroidDependencyDeath\\(/);
-  assert.match(source, /exitEvidence = summarizeFreshControlProcessExit\\(/);
-  assert.match(source, /const endedAt = await sh\\('date \\+%Y-%m-%dT%H:%M:%S'\\)/);
-  assert.match(source, /await check\\('FD01'/);
-  assert.match(source, /assert\\(!evidence\\.fontProviderConnected/);
+  assert.match(source, /dependencyEvidence = classifyFreshAndroidDependencyDeath\(/);
+  assert.match(source, /exitEvidence = summarizeFreshControlProcessExit\(/);
+  assert.match(source, /const endedAt = await sh\('date \+%Y-%m-%dT%H:%M:%S'\)/);
+  assert.match(source, /await check\('FD01'/);
+  assert.match(source, /assert\(!evidence\.fontProviderConnected/);
 });
