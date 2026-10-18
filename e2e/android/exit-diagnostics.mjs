@@ -1,5 +1,27 @@
 // Failure-only Android process exit diagnostics. Never log raw exit descriptions,
 // stack traces, user text, provider arguments or tokens.
+/**
+ * Public, non-identifying WebView runtime fingerprint for Android CI/device
+ * comparisons. Never output raw dumpsys, arbitrary package identifiers,
+ * hardware identifiers, serials or user-provided text.
+ */
+export function summarizeAndroidWebViewProvider(raw) {
+  const unknown = { available: false, providerKind: 'unknown',
+    version: null, majorVersion: null };
+  const match = /Current WebView package \(name, version\): \(([A-Za-z0-9_.]{1,120}), ([0-9]{1,4}(?:\.[0-9]{1,8}){1,3})\)/.exec(String(raw ?? '').slice(0, 12000));
+  if (!match) return unknown;
+  const provider = match[1];
+  const kind = /^com\.google\.android\.webview(?:\.(?:beta|dev|canary))?$/.test(provider)
+    ? 'google-webview'
+    : provider === 'com.android.webview' ? 'aosp-webview'
+      : /^(?:com\.android\.chrome|com\.chrome\.(?:beta|dev|canary))$/.test(provider)
+        ? 'chrome-webview' : 'other-webview';
+  const majorVersion = Number(match[2].split('.')[0]);
+  if (!Number.isSafeInteger(majorVersion) || majorVersion < 1) return unknown;
+  return { available: true, providerKind: kind,
+    version: match[2], majorVersion };
+}
+
 export function parseApplicationExits(raw, limit = 6) {
   const bounded = Number.isInteger(limit) ? Math.max(0, Math.min(10, limit)) : 6;
   return String(raw).split(/ApplicationExitInfo #\d+:/).slice(1, bounded + 1).map((record) => {
