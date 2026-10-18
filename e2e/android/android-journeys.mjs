@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -90,6 +90,8 @@ async function screenshot(name) {
 // A01 original startup process is kept ONLY in memory for failure attribution.
 // Never append this PID to the CI result JSON or diagnostic logs.
 let a01InitialPid = null;
+// Device epoch ms at journey start: ANR02 reads only exits recorded after it.
+let journeyStartedEpochMs = null;
 let a01LaunchStartedAt = null;
 
 async function check(id, title, fn) {
@@ -816,6 +818,9 @@ async function main() {
       webviewAlternatives: summarizeAndroidWebViewAlternatives(webviewUpdate),
     };
     facts.apkInstalled = (await sh(`pm list packages ${PKG}`)).includes(PKG);
+    const deviceSeconds = Number(await sh('date +%s'));
+    journeyStartedEpochMs = Number.isSafeInteger(deviceSeconds) && deviceSeconds > 0
+      ? deviceSeconds * 1000 : null;
     log('device', JSON.stringify(facts.device));
   } else {
     const browser = await chromium.launch();
@@ -2077,6 +2082,42 @@ async function main() {
     assert(!anrLog.includes('ANR in com.bridge.app.debug'),
       'Android ActivityManager detected an ANR; process restart/restoration is NOT sufficient for a pass');
     return { systemAnrCount: 0 };
+  });
+
+  // ANR02 (#209): for every FATAL ANR the OS recorded for this package during
+  // the journeys, the app reads its own ApplicationExitInfo trace and reduces
+  // the "main" thread to fixed enums: idle looper vs binder call vs lock wait,
+  // and Bridge / Capacitor / WebView / framework owner. Idle-looper means the
+  // input never reached a blocked app. MEASURED only: ANR01 above stays the
+  // asserting gate, and zero fatal ANRs here never excuses an ANR01 failure.
+  // Coverage limits: non-fatal ANRs leave no exit record, and Android keeps
+  // only 16 exit records per package (config_app_exit_info_history_list_size),
+  // so early-journey exits can be evicted by later force-stops.
+  await measure('ANR02', 'app-local main-thread classification of OS-recorded fatal ANRs', async () => {
+    if (MODE !== 'android') throw new Skip('Android ApplicationExitInfo required');
+    assert(journeyStartedEpochMs !== null, 'ANR02 device journey start time unavailable');
+    await sh('am force-stop ' + PKG);
+    try {
+      const started = await sh('am start -W -n ' + PKG +
+        '/com.bridge.app.AnrTraceProbeActivity --el sinceEpochMs ' + journeyStartedEpochMs);
+      assert(/Status: ok/.test(started), 'ANR02 trace probe Activity failed to launch');
+      const probePid = await pid();
+      assert(/^[0-9]{1,8}$/.test(String(probePid)), 'ANR02 probe process unavailable');
+      let result = parseAnrTraceProbeMarkers('', probePid);
+      const deadline = Date.now() + 15_000;
+      while (!result.complete && Date.now() < deadline) {
+        try {
+          result = parseAnrTraceProbeMarkers(await androidFailureShell(
+            "logcat -d -v brief --pid " + probePid + " -s BridgeAnrTraceProbe:I '*:S'"), probePid);
+        } catch { /* keep polling until the deadline */ }
+        if (!result.complete) await sleep(500);
+      }
+      assert(result.complete, 'ANR02 probe did not report completion');
+      facts.androidFatalAnrTraces = result;
+      return result;
+    } finally {
+      await sh('am force-stop ' + PKG).catch(() => {});
+    }
   });
 
   peerSock.close();

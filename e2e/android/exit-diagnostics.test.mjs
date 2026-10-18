@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyDependencyDeathDescription, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { classifyDependencyDeathDescription, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -1124,4 +1124,48 @@ test('production release and FD00G sources keep the release off the main thread 
   assert.match(journeys, /record\.fontRefRelease = parseFontRefReleaseMarkers\(/);
   assert.match(journeys, /await check\('FD01'/);
   assert.match(journeys, /assert\(!evidence\.fontProviderConnected/);
+});
+
+test('ANR02 probe markers keep only allowlisted main-thread enums from the exact PID', () => {
+  const raw = [
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=framework-only',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Blocked top=lock-wait subsystem=webview',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=com.secret.Customer',
+    'I/BridgeAnrTraceProbe( 6000): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=bridge',
+    'I/BridgeAnrTraceProbe( 5150): stage=done supported=true error=false anrExits=3',
+  ].join('\n');
+  const result = parseAnrTraceProbeMarkers(raw, 5150);
+  assert.deepEqual(result, {
+    complete: true, supported: true, error: false, fatalAnrs: 3,
+    traces: [
+      { traceAvailable: true, mainState: 'Native', top: 'idle-looper', subsystem: 'framework-only' },
+      { traceAvailable: true, mainState: 'Blocked', top: 'lock-wait', subsystem: 'webview' },
+    ],
+  });
+  assert.doesNotMatch(JSON.stringify(result), /secret|Customer|5150|6000/);
+  // No completion marker from this PID: incomplete, never "zero ANRs".
+  assert.equal(parseAnrTraceProbeMarkers(raw, 6000).complete, false);
+  assert.equal(parseAnrTraceProbeMarkers(raw, '5150; id').complete, false);
+  assert.deepEqual(parseAnrTraceProbeMarkers(
+    'I/BridgeAnrTraceProbe( 77): stage=done supported=false anrExits=0', 77),
+  { complete: true, supported: false, error: null, fatalAnrs: 0, traces: [] });
+});
+
+test('ANR02 runs after the strict ANR01 gate and stays measurement-only', () => {
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const anr01 = journeys.indexOf("await check('ANR01'");
+  const anr02 = journeys.indexOf("await measure('ANR02'");
+  assert.ok(anr01 > 0 && anr02 > anr01);
+  assert.ok(!journeys.includes("await check('ANR02'"));
+  assert.match(journeys, /'Android ActivityManager detected an ANR; process restart\/restoration is NOT sufficient for a pass'/);
+  const android = new URL('../../mobile/android/app/src/', import.meta.url);
+  const probe = readFileSync(new URL('debug/java/com/bridge/app/AnrTraceProbeActivity.java', android), 'utf8');
+  // Debug-only classifier: its JUnit test must live in the debug unit-test sourceSet.
+  assert.ok(readFileSync(new URL('testDebug/java/com/bridge/app/AnrTraceClassifierTest.java', android), 'utf8').includes('AnrTraceClassifier.classify'));
+  assert.match(probe, /AnrTraceClassifier\.classify\(trace\)/);
+  assert.doesNotMatch(probe, /Log\.[a-z]\([^)]*\btrace\b\s*\)/);
+  assert.match(readFileSync(new URL('debug/AndroidManifest.xml', android), 'utf8'),
+    /android:name="com\.bridge\.app\.AnrTraceProbeActivity"/);
+  assert.doesNotMatch(readFileSync(new URL('main/AndroidManifest.xml', android), 'utf8'),
+    /AnrTraceProbeActivity/);
 });

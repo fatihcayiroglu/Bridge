@@ -664,3 +664,40 @@ export function parseFontRefReleaseMarkers(raw, appPid) {
   }
   return seen ? { available: true, skippedReason, passes } : none;
 }
+
+const ANR_MAIN_STATES = new Set(['Runnable', 'Native', 'Blocked', 'Waiting',
+  'TimedWaiting', 'Sleeping', 'Suspended', 'other', 'missing']);
+const ANR_TOPS = new Set(['idle-looper', 'binder-transaction', 'lock-wait', 'sleep',
+  'running-code', 'unknown']);
+const ANR_SUBSYSTEMS = new Set(['bridge', 'capacitor', 'webview', 'androidx', 'gms',
+  'other-app', 'framework-only', 'none']);
+
+/**
+ * #209 ANR02: parse the debug AnrTraceProbeActivity's fixed markers from the
+ * EXACT probe PID. Every field is re-validated against an allowlist; an
+ * unknown value drops the record instead of passing text through.
+ */
+export function parseAnrTraceProbeMarkers(raw, appPid) {
+  const empty = { complete: false, supported: null, error: null, fatalAnrs: null, traces: [] };
+  if (!/^[0-9]{1,8}$/.test(String(appPid))) return empty;
+  const targetPid = String(Number(appPid));
+  const result = { ...empty, traces: [] };
+  for (const line of String(raw).split(/\r?\n/).slice(-200)) {
+    const m = /^[A-Z]\/BridgeAnrTraceProbe\(\s*([0-9]{1,8})\):\s*(.*?)\s*$/.exec(line);
+    if (!m || String(Number(m[1])) !== targetPid) continue;
+    const body = m[2];
+    const exit = /^stage=exit traceAvailable=(true|false) mainState=([A-Za-z-]{1,24}) top=([a-z-]{1,24}) subsystem=([a-z-]{1,24})$/.exec(body);
+    if (exit && ANR_MAIN_STATES.has(exit[2]) && ANR_TOPS.has(exit[3]) &&
+        ANR_SUBSYSTEMS.has(exit[4]) && result.traces.length < 5) {
+      result.traces.push({ traceAvailable: exit[1] === 'true', mainState: exit[2],
+        top: exit[3], subsystem: exit[4] });
+      continue;
+    }
+    const done = /^stage=done supported=(true|false)(?: error=(true|false))? anrExits=([0-9]{1,3})$/.exec(body);
+    if (done) {
+      Object.assign(result, { complete: true, supported: done[1] === 'true',
+        error: done[2] === undefined ? null : done[2] === 'true', fatalAnrs: Number(done[3]) });
+    }
+  }
+  return result;
+}

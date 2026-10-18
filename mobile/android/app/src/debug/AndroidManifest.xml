@@ -90,6 +90,13 @@
       android:exported="true"
       android:excludeFromRecents="true"
       android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- Debug-only, end-of-journey: classify this package's own fatal ANR
+         traces (ApplicationExitInfo) into fixed main-thread categories. -->
+    <activity
+      android:name="com.bridge.app.AnrTraceProbeActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
     <!-- Debug-only: keep a navigated about:blank WebView alive and run the
          production finalization pass, measuring whether the stable provider
          ref was held by garbage rather than by the live WebView. -->
