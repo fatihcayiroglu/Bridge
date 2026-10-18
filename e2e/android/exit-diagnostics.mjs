@@ -1,5 +1,30 @@
 // Failure-only Android process exit diagnostics. Never log raw exit descriptions,
 // stack traces, user text, provider arguments or tokens.
+/**
+ * Reduce the selected Android WebView implementation to a stable, safe
+ * environment fingerprint. Never persist dumpsys text or arbitrary
+ * package names, which can contain OEM-specific identifiers.
+ *
+ * This identifies a test environment, not the internal caller of FontsProvider
+ * or the cause of a historical ANR/dependency-process death.
+ */
+export function summarizeAndroidWebViewProvider(raw) {
+  const unknown = { available: false, providerKind: 'unknown',
+    version: null, majorVersion: null };
+  const match = /Current WebView package \(name, version\): \(([A-Za-z0-9_.]{1,120}), ([0-9]{1,4}(?:\.[0-9]{1,8}){1,3})\)/.exec(String(raw ?? '').slice(0, 12000));
+  if (!match) return unknown;
+  const provider = match[1];
+  const kind = /^com\.google\.android\.webview(?:\.(?:beta|dev|canary))?$/.test(provider)
+    ? 'google-webview'
+    : provider === 'com.android.webview' ? 'aosp-webview'
+      : /^(?:com\.android\.chrome|com\.chrome\.(?:beta|dev|canary))$/.test(provider)
+        ? 'chrome-webview' : 'other-webview';
+  const majorVersion = Number(match[2].split('.')[0]);
+  if (!Number.isSafeInteger(majorVersion) || majorVersion < 1) return unknown;
+  return { available: true, providerKind: kind,
+    version: match[2], majorVersion };
+}
+
 export function parseApplicationExits(raw, limit = 6) {
   const bounded = Number.isInteger(limit) ? Math.max(0, Math.min(10, limit)) : 6;
   return String(raw).split(/ApplicationExitInfo #\d+:/).slice(1, bounded + 1).map((record) => {
@@ -16,12 +41,127 @@ export function parseApplicationExits(raw, limit = 6) {
     };
   });
 }
-export function parseDependencyKillLine(raw, expectedPid) {
-  if (!/^[0-9]{1,7}$/.test(String(expectedPid))) return null;
-  const prefix = new RegExp('\\bKilling ' + expectedPid + ':');
-  const line = String(raw).split('\n').find((item) => prefix.test(item)) ?? '';
-  const m = /depends on provider ([A-Za-z0-9_.$/]{1,200}) in dying proc ([A-Za-z0-9_.:]{1,120})/.exec(line);
-  return m ? { provider: m[1], dyingProcess: m[2] } : { provider: null, dyingProcess: null, killLineFound: Boolean(line) };
+/**
+ * CS00 failure-only summary of a SAME-PID Android ApplicationExitInfo record.
+ * No PID, process name, path, timestamp, user content, provider identity,
+ * stack or raw exit description may enter logs / artifacts.
+ *
+ * This is attribution evidence, NOT a retry and NOT proof of a root cause.
+ * A PID can be absent before Android records an exit, hence matching=false
+ * must remain unknown rather than "no crash".
+ */
+/**
+ * A01 failure-only safe projection of Android's am start -W output.
+ * Never surface a raw launch response: it can include package names,
+ * component paths and other diagnostic context.
+ */
+export function summarizeAndroidColdLaunch(raw) {
+  const src = String(raw ?? '');
+  const status = /(?:^|\n)\s*Status:\s*(ok|[A-Za-z0-9_-]{1,24})\s*(?:\r?\n|$)/.exec(src);
+  const state = /(?:^|\n)\s*LaunchState:\s*(COLD|WARM|HOT)\s*(?:\r?\n|$)/.exec(src);
+  const total = /(?:^|\n)\s*TotalTime:\s*([0-9]{1,7})\s*(?:\r?\n|$)/.exec(src);
+  const ms = total ? Number(total[1]) : null;
+  return {
+    status: status ? (status[1] === 'ok' ? 'ok' : 'not-ok') : 'unknown',
+    launchState: state?.[1] ?? 'unknown',
+    totalTimeMs: ms !== null && Number.isSafeInteger(ms) && ms <= 120_000 ? ms : null,
+  };
+}
+
+export function summarizeControlProcessExit(exits, expectedPid) {
+  if (!/^[0-9]{1,8}$/.test(String(expectedPid)) || !Array.isArray(exits))
+    return { evidenceValid: false, matchingExit: false, reasonCode: null, subreasonCode: null };
+  const hit = exits.slice(0, 6).find(row =>
+    row && Number.isInteger(row.pid) && String(row.pid) === String(Number(expectedPid)));
+  const code = value => {
+    const m = /^([0-9]{1,2}) \([A-Z_ ]+\)$/.exec(String(value ?? ''));
+    return m ? Number(m[1]) : null;
+  };
+  return {
+    evidenceValid: true,
+    matchingExit: Boolean(hit),
+    reasonCode: hit ? code(hit.reason) : null,
+    subreasonCode: hit ? code(hit.subreason) : null,
+  };
+}
+
+/**
+ * A01 exit dependency attribution: ONLY fixed enums leave the process.
+ *
+ * ApplicationExitInfo reason 12 says a dependency died, but does not name
+ * which dependency. The OS "Killing PID: depends on provider ..." line may
+ * name it; absent/malformed lines MUST remain unknown.
+ *
+ * Classifications refer only to a verified SAME-PID exit record. This must
+ * not claim that a font request directly caused that upstream process death.
+ */
+export function classifyAndroidDependencyDeath(exits, expectedPid) {
+  const unknown = { exitMatched: false, isDependencyDeath: null,
+    providerClass: 'unknown', dyingProcessClass: 'unknown', attribution: 'unavailable' };
+  if (!/^[0-9]{1,8}$/.test(String(expectedPid)) || !Array.isArray(exits))
+    return unknown;
+  const found = exits.slice(0, 6).find(row => row &&
+    Number.isInteger(row.pid) && String(row.pid) === String(Number(expectedPid)));
+  if (!found) return unknown;
+  if (found.reason !== '12 (DEPENDENCY DIED)') {
+    return { ...unknown, exitMatched: true, isDependencyDeath: false,
+      attribution: 'not-dependency-death' };
+  }
+  const dep = found.dependency;
+  if (!dep || typeof dep !== 'object') {
+    return { ...unknown, exitMatched: true, isDependencyDeath: true };
+  }
+  const provider = typeof dep.provider === 'string' ? dep.provider : null;
+  const processName = typeof dep.dyingProcess === 'string' ? dep.dyingProcess : null;
+  return {
+    exitMatched: true, isDependencyDeath: true,
+    providerClass: provider === 'com.google.android.gms/.fonts.provider.FontsProvider'
+      ? 'gms-fonts' : provider ? 'other-provider' : 'unknown',
+    dyingProcessClass: processName === 'com.google.android.gms.persistent'
+      ? 'gms-persistent' : processName ? 'other-process' : 'unknown',
+    attribution: provider && processName ? 'matched-kill-line' : 'unavailable',
+  };
+}
+
+/**
+ * Attribute a provider-dependency kill to the EXACT exited app process and
+ * Android event time, not just a PID (which Android may subsequently reuse).
+ * When exitAt is supplied, only a timestamped ActivityManager threadtime
+ * record within 30 seconds is eligible. No raw log content is returned.
+ */
+export function parseDependencyKillLine(raw, expectedPid, expectedProcess = 'com.bridge.app.debug', exitAt = null) {
+  const absent = { provider: null, dyingProcess: null, killLineFound: false };
+  if (!/^[0-9]{1,8}$/.test(String(expectedPid)) ||
+      !/^[A-Za-z0-9_.:]{1,120}$/.test(String(expectedProcess))) return null;
+  const pid = String(Number(expectedPid));
+  const exitMatch = exitAt === null ? null :
+    /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(String(exitAt));
+  if (exitAt !== null && !exitMatch) return absent;
+  const asUtc = (year, month, day, hour, min, sec, ms = '0') =>
+    Date.UTC(Number(year), Number(month) - 1, Number(day),
+      Number(hour), Number(min), Number(sec), Number(ms.padEnd(3, '0')));
+  const exitTime = exitMatch ? asUtc(...exitMatch.slice(1)) : null;
+  if (exitMatch && !Number.isFinite(exitTime)) return absent;
+  let seen = false;
+  let chosen = null;
+  let closestMs = Infinity;
+  for (const line of String(raw).split(/\r?\n/).slice(-200)) {
+    const victim = /\bKilling ([0-9]{1,8}):([A-Za-z0-9_.:]{1,120})(?=[\s/(]|$)/.exec(line);
+    if (!victim || String(Number(victim[1])) !== pid || victim[2] !== expectedProcess) continue;
+    if (exitMatch) {
+      const logTime = /^(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\.(\d{1,3})\s+/.exec(line);
+      if (!logTime) continue;
+      const eventTime = asUtc(exitMatch[1], ...logTime.slice(1));
+      const delta = Math.abs(eventTime - exitTime);
+      if (!Number.isFinite(delta) || delta > 30_000 || delta >= closestMs) continue;
+      closestMs = delta;
+    }
+    seen = true;
+    const m = /\bdepends on provider ([A-Za-z0-9_.$/]{1,200}) in dying proc ([A-Za-z0-9_.:]{1,120})(?=[\s;]|$)/.exec(line);
+    chosen = m ? { provider: m[1], dyingProcess: m[2] } :
+      { provider: null, dyingProcess: null, killLineFound: true };
+  }
+  return chosen ?? { ...absent, killLineFound: seen };
 }
 
 
@@ -163,6 +303,62 @@ export function parseWebViewDevToolsSockets(raw, appPid) {
     socketCount: Math.min(socketPids.size, 100),
     appPidHasSocket: Boolean(pid && socketPids.has(pid)),
   };
+}
+
+
+/**
+ * Pure, allowlisted Android WebView-attachment failure evidence. dumpsys,
+ * logcat and /proc/net/unix can contain paths, user identifiers, intents and
+ * arbitrary app data. Never print those inputs or exception messages.
+ *
+ * An app-owned Unix socket is not proof that Chrome DevTools Protocol works.
+ * Preserve uncertainty instead of labelling an L03 failure as healthy.
+ */
+export function summarizeWebViewAttachEvidence(
+  { pid = '', activity = '', processes = '', sockets = '', crash = '' } = {},
+  pkg = 'com.bridge.app.debug',
+) {
+  const validPackage = /^[A-Za-z][A-Za-z0-9_.]{0,119}$/.test(String(pkg));
+  const validPid = /^[0-9]{1,8}$/.test(String(pid));
+  const activityLines = String(activity).split(/\r?\n/).slice(0, 1000);
+  const processLines = String(processes).split(/\r?\n/).slice(0, 2000);
+  const activityRecordAvailable = activityLines.some(line =>
+    /(?:topResumedActivity|mResumedActivity)\s*=/.test(line));
+  const processRecordAvailable = processLines.some(line => /ProcessRecord\{/.test(line));
+  const packageNeedle = validPackage ? String(pkg) : '';
+  const mainActivityResumed = validPackage && activityLines.some(line =>
+    /(?:topResumedActivity|mResumedActivity)\s*=/.test(line) &&
+    line.includes(packageNeedle + '/com.bridge.app.MainActivity'));
+  const pidAndPackageNeedle = validPid && validPackage ? String(pid) + ':' + packageNeedle + '/' : '';
+  const appProcessMatched = Boolean(pidAndPackageNeedle &&
+    processLines.some(line => line.includes(pidAndPackageNeedle)));
+  const devtools = parseWebViewDevToolsSockets(sockets, pid);
+  return {
+    appPidValid: validPid,
+    activityRecordAvailable,
+    mainActivityResumed,
+    processRecordAvailable,
+    appProcessMatched,
+    devtools,
+    // These are only category flags, NOT evidence of a Bridge-specific crash.
+    crashBufferHasFatalMarker: /\b(?:FATAL EXCEPTION|Fatal signal)\b/.test(String(crash)),
+    cdpPageResponsive: 'unverified',
+  };
+}
+
+
+/**
+ * Summarize a localhost DevTools /json/list response. The raw response holds
+ * page titles, app URLs and debugging websocket addresses: NEVER log it.
+ * A responding endpoint is different from one usable WebView page target.
+ */
+export function classifyWebViewDevToolsTargets(raw) {
+  const listValid = Array.isArray(raw);
+  const rows = listValid ? raw.slice(0, 100) : [];
+  const pageTargetCount = rows.filter(row =>
+    row !== null && typeof row === 'object' && !Array.isArray(row) &&
+    row.type === 'page').length;
+  return { listValid, targetCount: rows.length, pageTargetCount };
 }
 
 

@@ -186,12 +186,12 @@ jobs:
         run: |
           set -euo pipefail
           sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          image_dir="$sdk_root/system-images/android-34/google_apis/x86_64"
+          image_dir="$sdk_root/system-images/android-35/google_apis/x86_64"
           valid_image() {
             test -s "$image_dir/system.img" && test -s "$image_dir/package.xml"
           }
           if valid_image; then
-            echo "Android API34 Google APIs x86_64 image already installed"
+            echo "Android API35 Google APIs x86_64 image already installed"
             exit 0
           fi
           # GitHub's hosted Android SDK has cmdline-tools installed, but its
@@ -213,9 +213,9 @@ jobs:
           # verification below remain strict even if licenses are unavailable.
           yes | "$sdkmanager_bin" --sdk_root="$sdk_root" --licenses > /dev/null || true
           for attempt in 1 2; do
-            echo "Installing Android API34 Google APIs image, attempt $attempt/2"
-            if "$sdkmanager_bin" --sdk_root="$sdk_root" --install 'system-images;android-34;google_apis;x86_64' --channel=0 && valid_image; then
-              echo "Android API34 Google APIs image verified"
+            echo "Installing Android API35 Google APIs image, attempt $attempt/2"
+            if "$sdkmanager_bin" --sdk_root="$sdk_root" --install 'system-images;android-35;google_apis;x86_64' --channel=0 && valid_image; then
+              echo "Android API35 Google APIs image verified"
               exit 0
             fi
             if [[ $attempt -eq 1 ]]; then
@@ -230,7 +230,7 @@ jobs:
         env:
           APK_PATH: ${{ github.workspace }}/apk/app-debug.apk
         with:
-          api-level: 34
+          api-level: 35
           arch: x86_64
           target: google_apis
           profile: pixel_6
