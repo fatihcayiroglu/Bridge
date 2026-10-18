@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -90,6 +90,7 @@ async function screenshot(name) {
 // A01 original startup process is kept ONLY in memory for failure attribution.
 // Never append this PID to the CI result JSON or diagnostic logs.
 let a01InitialPid = null;
+let a01LaunchStartedAt = null;
 
 async function check(id, title, fn) {
   const started = Date.now();
@@ -131,10 +132,13 @@ async function check(id, title, fn) {
       let dependencyEvidence = classifyAndroidDependencyDeath(null, null);
       if (a01InitialPid !== null) {
         try {
+          const endedAt = await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null);
           const exits = await androidFailureExits();
           if (exits.available) {
-            exitEvidence = summarizeControlProcessExit(exits.exits, a01InitialPid);
-            dependencyEvidence = classifyAndroidDependencyDeath(exits.exits, a01InitialPid);
+            exitEvidence = summarizeFreshControlProcessExit(
+              exits.exits, a01InitialPid, PKG, a01LaunchStartedAt, endedAt);
+            dependencyEvidence = classifyFreshAndroidDependencyDeath(
+              exits.exits, a01InitialPid, PKG, a01LaunchStartedAt, endedAt);
           }
         } catch { /* no diagnostic error may replace A01 FAIL */ }
       }
@@ -1237,6 +1241,10 @@ async function main() {
 
   await check('A01', 'cold launch reaches the auth screen (no stuck splash)', async () => {
     a01InitialPid = null;
+    // Android-clock bounds prevent stale ApplicationExitInfo entries from
+    // masquerading as a new A01 process crash after PID reuse.
+    a01LaunchStartedAt = MODE === 'android'
+      ? await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null) : null;
     const launch = await platform.coldLaunch();
     // Launch status and PID existence are evidence, not proof of survival.
     // Keep the original A01 WebView and 45-second UI assertions unchanged.
