@@ -114,7 +114,7 @@ function freshAndroidExitRows(exits, expectedPid, expectedProcess, fromAt, toAt)
   if (!Array.isArray(exits) || !/^[0-9]{1,8}$/.test(String(expectedPid)) ||
       !/^[A-Za-z0-9_.:]{1,120}$/.test(String(expectedProcess))) return null;
   const stamp = input => {
-    const m = /^(\\d{4})-(\\d{2})-(\\d{2})[ T](\\d{2}):(\\d{2}):(\\d{2})(?:\\.(\\d{1,3}))?$/.exec(String(input ?? ''));
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(String(input ?? ''));
     if (!m) return null;
     const [y, mo, d, h, mi, s, ms = '0'] = m.slice(1);
     const t = Date.UTC(+y, +mo - 1, +d, +h, +mi, +s, +ms.padEnd(3, '0'));
@@ -141,7 +141,7 @@ export function summarizeFreshControlProcessExit(exits, expectedPid, expectedPro
   if (matches === null) return unknown;
   if (!matches.length) return { ...unknown, windowValid: true };
   const code = value => {
-    const m = /^([0-9]{1,2}) \\([A-Z_ ]+\\)$/.exec(String(value ?? ''));
+    const m = /^([0-9]{1,2}) \([A-Z_ ]+\)$/.exec(String(value ?? ''));
     return m ? Number(m[1]) : null;
   };
   return { windowValid: true, matchingExit: true,
