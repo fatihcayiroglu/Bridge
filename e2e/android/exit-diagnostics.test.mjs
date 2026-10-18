@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { classifyDependencyDeathDescription, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -21,7 +21,10 @@ test('keeps only allow-listed exit fields and redacts descriptions and credentia
     pid: 6654, process: 'com.bridge.app.debug',
     reason: '12 (DEPENDENCY DIED)', subreason: '0 (UNKNOWN)',
     status: 0, importance: 100,
+    dependencyDescription: { kind: 'unrecognized', providerClass: 'unknown',
+      dyingProcessClass: 'unknown', dependencyPackageClass: 'unknown' },
   });
+  assert.equal(parsed[1].dependencyDescription, null);
   assert.equal(parsed[1].reason, '2 (SIGNALED)');
   assert.equal(parsed[1].status, 9);
   assert.doesNotMatch(JSON.stringify(parsed), /secret|token|example\.com/);
@@ -614,8 +617,9 @@ test('A01 same-PID dependency death identifies Google FontsProvider with fixed e
   }];
   const evidence = classifyAndroidDependencyDeath(exits, 12345);
   assert.deepEqual(evidence, {
-    exitMatched: true, isDependencyDeath: true, providerClass: 'gms-fonts',
-    dyingProcessClass: 'gms-persistent', attribution: 'matched-kill-line',
+    exitMatched: true, isDependencyDeath: true, dependencyKind: 'provider-death',
+    providerClass: 'gms-fonts', dyingProcessClass: 'gms-persistent',
+    dependencyPackageClass: 'unknown', attribution: 'matched-kill-line',
   });
   assert.doesNotMatch(JSON.stringify(evidence),
     /12345|private|token|secret|example|com\.google|FontsProvider|pathname|processName/);
@@ -624,9 +628,9 @@ test('A01 same-PID dependency death identifies Google FontsProvider with fixed e
 test('A01 dependency attribution fails closed on missing kill lines, other PIDs and other providers', () => {
   const base = { pid: 77, reason: '12 (DEPENDENCY DIED)', subreason: '0 (UNKNOWN)' };
   const unavailable = {
-    exitMatched: true, isDependencyDeath: true,
+    exitMatched: true, isDependencyDeath: true, dependencyKind: 'unknown',
     providerClass: 'unknown', dyingProcessClass: 'unknown',
-    attribution: 'unavailable',
+    dependencyPackageClass: 'unknown', attribution: 'unavailable',
   };
   assert.deepEqual(classifyAndroidDependencyDeath([{ ...base }], 77), unavailable);
   assert.deepEqual(classifyAndroidDependencyDeath([{
@@ -635,8 +639,9 @@ test('A01 dependency attribution fails closed on missing kill lines, other PIDs 
   assert.deepEqual(classifyAndroidDependencyDeath([{
     ...base, dependency: { provider: 'com.some.other/Provider', dyingProcess: 'com.other.service' },
   }], '77'), {
-    exitMatched: true, isDependencyDeath: true, providerClass: 'other-provider',
-    dyingProcessClass: 'other-process', attribution: 'matched-kill-line',
+    exitMatched: true, isDependencyDeath: true, dependencyKind: 'provider-death',
+    providerClass: 'other-provider', dyingProcessClass: 'other-process',
+    dependencyPackageClass: 'unknown', attribution: 'matched-kill-line',
   });
   assert.deepEqual(classifyAndroidDependencyDeath([{
     ...base, reason: '6 (ANR)', dependency: {
@@ -644,11 +649,13 @@ test('A01 dependency attribution fails closed on missing kill lines, other PIDs 
       dyingProcess: 'com.google.android.gms.persistent',
     },
   }], 77), {
-    exitMatched: true, isDependencyDeath: false, providerClass: 'unknown',
-    dyingProcessClass: 'unknown', attribution: 'not-dependency-death',
+    exitMatched: true, isDependencyDeath: false, dependencyKind: 'unknown',
+    providerClass: 'unknown', dyingProcessClass: 'unknown',
+    dependencyPackageClass: 'unknown', attribution: 'not-dependency-death',
   });
-  const missing = { exitMatched: false, isDependencyDeath: null,
-    providerClass: 'unknown', dyingProcessClass: 'unknown', attribution: 'unavailable' };
+  const missing = { exitMatched: false, isDependencyDeath: null, dependencyKind: 'unknown',
+    providerClass: 'unknown', dyingProcessClass: 'unknown',
+    dependencyPackageClass: 'unknown', attribution: 'unavailable' };
   assert.deepEqual(classifyAndroidDependencyDeath([{ ...base }], 78), missing);
   assert.deepEqual(classifyAndroidDependencyDeath([{ ...base }], '77; cat /private'), missing);
   assert.deepEqual(classifyAndroidDependencyDeath(null, 77), missing);
@@ -874,14 +881,14 @@ test('A01 fresh dependency attribution uses exact app, PID, and bounded device-c
     '2026-10-18T18:01:00', '2026-10-18T18:01:11');
   const observed = summarize([stale, fresh]);
   assert.deepEqual(observed, {
-    exitMatched: true, isDependencyDeath: false,
+    exitMatched: true, isDependencyDeath: false, dependencyKind: 'unknown',
     providerClass: 'unknown', dyingProcessClass: 'unknown',
-    attribution: 'not-dependency-death',
+    dependencyPackageClass: 'unknown', attribution: 'not-dependency-death',
   });
   assert.deepEqual(summarize([stale]), {
-    exitMatched: false, isDependencyDeath: null,
+    exitMatched: false, isDependencyDeath: null, dependencyKind: 'unknown',
     providerClass: 'unknown', dyingProcessClass: 'unknown',
-    attribution: 'unavailable',
+    dependencyPackageClass: 'unknown', attribution: 'unavailable',
   });
 
   // An exit of another app with an identical recycled PID is NOT Bridge evidence.
@@ -906,8 +913,9 @@ test('A01 fresh GMS attribution requires a true dependency exit in the same time
   const facts = classifyFreshAndroidDependencyDeath(
     [exited], 4261, 'com.bridge.app.debug', from, to);
   assert.deepEqual(facts, {
-    exitMatched: true, isDependencyDeath: true, providerClass: 'gms-fonts',
-    dyingProcessClass: 'gms-persistent', attribution: 'matched-kill-line',
+    exitMatched: true, isDependencyDeath: true, dependencyKind: 'provider-death',
+    providerClass: 'gms-fonts', dyingProcessClass: 'gms-persistent',
+    dependencyPackageClass: 'unknown', attribution: 'matched-kill-line',
   });
   assert.doesNotMatch(JSON.stringify(facts),
     /4261|private|token|secret|customer|example|com\.google|FontsProvider/);
@@ -960,8 +968,9 @@ test('CS00 failed minimal WebView run cannot attribute historical PID reuse to d
   // A timestamp-bounded absence is UNKNOWN, not fake proof of FontsProvider.
   assert.deepEqual(classifyFreshAndroidDependencyDeath(
     [historical], 1234, 'com.bridge.app.debug', start, end), {
-    exitMatched: false, isDependencyDeath: null, providerClass: 'unknown',
-    dyingProcessClass: 'unknown', attribution: 'unavailable',
+    exitMatched: false, isDependencyDeath: null, dependencyKind: 'unknown',
+    providerClass: 'unknown', dyingProcessClass: 'unknown',
+    dependencyPackageClass: 'unknown', attribution: 'unavailable',
   });
   assert.deepEqual(summarizeFreshControlProcessExit(
     [historical], 1234, 'com.bridge.app.debug', start, end), {
@@ -970,7 +979,102 @@ test('CS00 failed minimal WebView run cannot attribute historical PID reuse to d
   const sameRun = { ...historical, at: '2026-10-18 19:37:49.150' };
   assert.deepEqual(classifyFreshAndroidDependencyDeath(
     [historical, sameRun], 1234, 'com.bridge.app.debug', start, end), {
-    exitMatched: true, isDependencyDeath: true, providerClass: 'gms-fonts',
-    dyingProcessClass: 'gms-persistent', attribution: 'matched-kill-line',
+    exitMatched: true, isDependencyDeath: true, dependencyKind: 'provider-death',
+    providerClass: 'gms-fonts', dyingProcessClass: 'gms-persistent',
+    dependencyPackageClass: 'unknown', attribution: 'matched-kill-line',
   });
+});
+
+// #209: the ApplicationExitInfo description is the durable record of WHICH
+// dependency died (logcat can rotate before a failure is inspected). Layout
+// below is AOSP android14 ApplicationExitInfo.dump(); the text is
+// ContentProviderHelper.removeDyingProviderLocked's kill reason.
+const AOSP_PROVIDER_DEATH_EXIT = [
+  'Historical process exit for com.bridge.app.debug:',
+  '  ApplicationExitInfo #0:',
+  '    timestamp=2026-10-18 19:37:49.150 pid=1234 realUid=10192 packageUid=10192 definingUid=10192 user=0',
+  '    process=com.bridge.app.debug reason=12 (DEPENDENCY DIED) subreason=0 (UNKNOWN) status=0',
+  '    importance=100 pss=96MB rss=180MB description=depends on provider com.google.android.gms/.fonts.provider.FontsProvider in dying proc com.google.android.gms.persistent (adj 100) state=empty trace=null',
+].join('\n');
+
+test('reason-12 exit description names the dead dependency with fixed enums only', () => {
+  const [row] = parseApplicationExits(AOSP_PROVIDER_DEATH_EXIT);
+  assert.equal(row.pid, 1234);
+  assert.deepEqual(row.dependencyDescription, {
+    kind: 'provider-death', providerClass: 'gms-fonts',
+    dyingProcessClass: 'gms-persistent', dependencyPackageClass: 'unknown',
+  });
+  assert.doesNotMatch(JSON.stringify(row.dependencyDescription),
+    /com\.google|FontsProvider|adj|1234|depends/);
+  const facts = classifyFreshAndroidDependencyDeath([row], 1234, 'com.bridge.app.debug',
+    '2026-10-18T19:37:20', '2026-10-18T19:37:51');
+  assert.deepEqual(facts, {
+    exitMatched: true, isDependencyDeath: true, dependencyKind: 'provider-death',
+    providerClass: 'gms-fonts', dyingProcessClass: 'gms-persistent',
+    dependencyPackageClass: 'unknown', attribution: 'exit-description',
+  });
+});
+
+test('reason-12 description distinguishes package replacement and SDK sandbox from provider death', () => {
+  const c = classifyDependencyDeathDescription;
+  assert.deepEqual(c('dep: com.google.android.webview'), { kind: 'package-dependency',
+    providerClass: 'unknown', dyingProcessClass: 'unknown', dependencyPackageClass: 'webview-provider' });
+  assert.equal(c('dep: com.google.android.gms').dependencyPackageClass, 'gms');
+  assert.equal(c('dep: com.example.private').dependencyPackageClass, 'other-package');
+  assert.equal(c('sdk sandbox died').kind, 'sdk-sandbox');
+  assert.deepEqual(c('depends on provider com.example/.Private in dying proc com.example:svc (adj 0)'), {
+    kind: 'provider-death', providerClass: 'other-provider',
+    dyingProcessClass: 'other-process', dependencyPackageClass: 'unknown' });
+  // Other GMS processes and an unknown dying process ("??") stay distinct.
+  assert.equal(c('depends on provider com.google.android.gms/com.google.android.gms.fonts.provider.FontsProvider in dying proc com.google.android.gms (adj 100)').dyingProcessClass, 'gms');
+  assert.equal(c('depends on provider com.google.android.gms/.fonts.provider.FontsProvider in dying proc com.google.android.gms.ui (adj 200)').dyingProcessClass, 'gms-ui');
+  assert.equal(c('depends on provider com.google.android.gms/.fonts.provider.FontsProvider in dying proc ?? (adj ??)').dyingProcessClass, 'unknown');
+  assert.equal(c('depends on provider com.google.android.gms/.fonts.provider.FontsProvider in dying proc com.google.android.gms:snet (adj 0)').dyingProcessClass, 'gms-other');
+});
+
+test('reason-12 description parser fails closed on absent, injected or unrelated text', () => {
+  const absent = { kind: 'absent', providerClass: 'unknown',
+    dyingProcessClass: 'unknown', dependencyPackageClass: 'unknown' };
+  for (const value of [null, undefined, '', 'null', 42]) {
+    assert.deepEqual(classifyDependencyDeathDescription(value), absent);
+  }
+  for (const value of [
+    'depends on provider com.google.android.gms/.fonts.provider.FontsProvider in dying proc com.google.android.gms.persistent (adj 100); token=secret',
+    'depends on provider com.google.android.gms/.fonts.provider.FontsProvider in dying proc com.google.android.gms.persistent',
+    'dep: com.google.android.webview owner@example.com',
+    'crash user@example.com /data/user/0/com.bridge.app/files',
+  ]) {
+    const result = classifyDependencyDeathDescription(value);
+    assert.equal(result.kind, 'unrecognized');
+    assert.doesNotMatch(JSON.stringify(result), /secret|example|data\/user|webview\b/);
+  }
+  // Non-dependency exits are never classified, even with matching text.
+  const anr = AOSP_PROVIDER_DEATH_EXIT.replace('reason=12 (DEPENDENCY DIED)', 'reason=6 (ANR)');
+  assert.equal(parseApplicationExits(anr)[0].dependencyDescription, null);
+});
+
+test('durable exit description and logcat kill line must agree before attribution', () => {
+  const row = parseApplicationExits(AOSP_PROVIDER_DEATH_EXIT)[0];
+  const agreeing = { ...row, dependency: {
+    provider: 'com.google.android.gms/.fonts.provider.FontsProvider',
+    dyingProcess: 'com.google.android.gms.persistent' } };
+  assert.equal(classifyAndroidDependencyDeath([agreeing], 1234).attribution, 'exit-description');
+  const conflicting = { ...row, dependency: {
+    provider: 'com.example/.Other', dyingProcess: 'com.example' } };
+  assert.deepEqual(classifyAndroidDependencyDeath([conflicting], 1234), {
+    exitMatched: true, isDependencyDeath: true, dependencyKind: 'unknown',
+    providerClass: 'unknown', dyingProcessClass: 'unknown',
+    dependencyPackageClass: 'unknown', attribution: 'conflicting-evidence' });
+  // A hand-built row cannot smuggle an unvalidated kind or raw names through.
+  const forged = { ...row, dependencyDescription: { kind: 'com.google.android.gms', providerClass: 'x' } };
+  assert.deepEqual(classifyAndroidDependencyDeath([forged], 1234), {
+    exitMatched: true, isDependencyDeath: true, dependencyKind: 'unknown',
+    providerClass: 'unknown', dyingProcessClass: 'unknown',
+    dependencyPackageClass: 'unknown', attribution: 'unavailable' });
+  const replaced = parseApplicationExits(AOSP_PROVIDER_DEATH_EXIT.replace(
+    /description=.*? state=/, 'description=dep: com.google.android.webview state='))[0];
+  assert.deepEqual(classifyAndroidDependencyDeath([replaced], 1234), {
+    exitMatched: true, isDependencyDeath: true, dependencyKind: 'package-dependency',
+    providerClass: 'unknown', dyingProcessClass: 'unknown',
+    dependencyPackageClass: 'webview-provider', attribution: 'exit-description' });
 });

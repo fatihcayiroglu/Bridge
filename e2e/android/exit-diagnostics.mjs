@@ -61,16 +61,72 @@ export function parseApplicationExits(raw, limit = 6) {
   return String(raw).split(/ApplicationExitInfo #\d+:/).slice(1, bounded + 1).map((record) => {
     const field = (re) => (re.exec(record) ?? [])[1] ?? null;
     const status = field(/\bstatus=(-?\d+)/);
+    const reason = field(/reason=(\d+ \([A-Z_ ]+\))/);
     return {
       at: field(/timestamp=(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/),
       pid: Number(field(/\bpid=(\d+)/)) || null,
       process: field(/process=([A-Za-z0-9_.:]+)/),
-      reason: field(/reason=(\d+ \([A-Z_ ]+\))/),
+      reason,
       subreason: field(/subreason=(\d+ \([A-Z_ ]+\))/),
       status: status === null ? null : Number(status),
       importance: Number(field(/importance=(\d+)/)) || null,
+      // Only DEPENDENCY DIED rows are classified, and only into fixed enums.
+      // The raw description never leaves this function.
+      dependencyDescription: reason === '12 (DEPENDENCY DIED)'
+        ? classifyDependencyDeathDescription(field(/\bdescription=([^\r\n]*?)(?:\s+state=|\r?\n|$)/))
+        : null,
     };
   });
+}
+
+const GMS_FONTS_PROVIDERS = new Set([
+  'com.google.android.gms/.fonts.provider.FontsProvider',
+  'com.google.android.gms/com.google.android.gms.fonts.provider.FontsProvider',
+]);
+const WEBVIEW_PROVIDER_PACKAGES = new Set([
+  'com.google.android.webview', 'com.google.android.webview.beta',
+  'com.google.android.webview.dev', 'com.google.android.webview.canary',
+  'com.android.webview', 'com.android.chrome', 'com.chrome.beta',
+  'com.chrome.dev', 'com.chrome.canary',
+]);
+
+function gmsProcessClass(name) {
+  if (name === 'com.google.android.gms.persistent') return 'gms-persistent';
+  if (name === 'com.google.android.gms') return 'gms';
+  if (name === 'com.google.android.gms.ui') return 'gms-ui';
+  if (/^com\.google\.android\.gms[.:][A-Za-z0-9_.:]{1,80}$/.test(name)) return 'gms-other';
+  return name === '??' ? 'unknown' : 'other-process';
+}
+
+/**
+ * #209: classify the durable ApplicationExitInfo description of a reason-12
+ * exit. On API 34, ActivityManager writes exactly three reason-12 texts:
+ *   ContentProviderHelper  "depends on provider <component> in dying proc <proc> (adj N)"
+ *                          (only clients holding a STABLE provider ref are killed)
+ *   killPackageDependents  "dep: <package>"   (a loaded package was replaced/stopped)
+ *   SDK sandbox            "sdk sandbox died"
+ * Unlike the ActivityManager logcat line, the description survives log
+ * rotation. Returns fixed enums only; no component, process or package name.
+ */
+export function classifyDependencyDeathDescription(description) {
+  const result = { kind: 'absent', providerClass: 'unknown',
+    dyingProcessClass: 'unknown', dependencyPackageClass: 'unknown' };
+  if (typeof description !== 'string' || !description || description === 'null') return result;
+  const text = description.trim();
+  const provider = /^depends on provider ([A-Za-z0-9_.$/]{1,200}) in dying proc ([A-Za-z0-9_.:]{1,120}|\?\?) \(adj -?[0-9?]{1,6}\)$/.exec(text);
+  if (provider) {
+    return { ...result, kind: 'provider-death',
+      providerClass: GMS_FONTS_PROVIDERS.has(provider[1]) ? 'gms-fonts' : 'other-provider',
+      dyingProcessClass: gmsProcessClass(provider[2]) };
+  }
+  const dep = /^dep: ([A-Za-z0-9_.]{1,120})$/.exec(text);
+  if (dep) {
+    return { ...result, kind: 'package-dependency',
+      dependencyPackageClass: WEBVIEW_PROVIDER_PACKAGES.has(dep[1]) ? 'webview-provider'
+        : dep[1] === 'com.google.android.gms' ? 'gms' : 'other-package' };
+  }
+  if (text === 'sdk sandbox died') return { ...result, kind: 'sdk-sandbox' };
+  return { ...result, kind: 'unrecognized' };
 }
 /**
  * CS00 failure-only summary of a SAME-PID Android ApplicationExitInfo record.
@@ -188,7 +244,8 @@ export function summarizeControlProcessExit(exits, expectedPid) {
  */
 export function classifyAndroidDependencyDeath(exits, expectedPid) {
   const unknown = { exitMatched: false, isDependencyDeath: null,
-    providerClass: 'unknown', dyingProcessClass: 'unknown', attribution: 'unavailable' };
+    dependencyKind: 'unknown', providerClass: 'unknown', dyingProcessClass: 'unknown',
+    dependencyPackageClass: 'unknown', attribution: 'unavailable' };
   if (!/^[0-9]{1,8}$/.test(String(expectedPid)) || !Array.isArray(exits))
     return unknown;
   const found = exits.slice(0, 6).find(row => row &&
@@ -199,19 +256,32 @@ export function classifyAndroidDependencyDeath(exits, expectedPid) {
       attribution: 'not-dependency-death' };
   }
   const dep = found.dependency;
-  if (!dep || typeof dep !== 'object') {
-    return { ...unknown, exitMatched: true, isDependencyDeath: true };
-  }
-  const provider = typeof dep.provider === 'string' ? dep.provider : null;
-  const processName = typeof dep.dyingProcess === 'string' ? dep.dyingProcess : null;
-  return {
+  const provider = dep && typeof dep.provider === 'string' ? dep.provider : null;
+  const processName = dep && typeof dep.dyingProcess === 'string' ? dep.dyingProcess : null;
+  const killLine = provider && processName
+    ? classifyDependencyDeathDescription(`depends on provider ${provider} in dying proc ${processName} (adj 0)`)
+    : null;
+  // Re-validate instead of trusting the row: callers may pass hand-built rows.
+  const described = found.dependencyDescription;
+  const description = described && typeof described === 'object' &&
+    ['provider-death', 'package-dependency', 'sdk-sandbox'].includes(described.kind)
+    ? described : null;
+  const pick = (source, attribution) => ({
     exitMatched: true, isDependencyDeath: true,
-    providerClass: provider === 'com.google.android.gms/.fonts.provider.FontsProvider'
-      ? 'gms-fonts' : provider ? 'other-provider' : 'unknown',
-    dyingProcessClass: processName === 'com.google.android.gms.persistent'
-      ? 'gms-persistent' : processName ? 'other-process' : 'unknown',
-    attribution: provider && processName ? 'matched-kill-line' : 'unavailable',
-  };
+    dependencyKind: source.kind, providerClass: source.providerClass,
+    dyingProcessClass: source.dyingProcessClass,
+    dependencyPackageClass: source.dependencyPackageClass, attribution,
+  });
+  if (description && killLine && (description.kind !== killLine.kind ||
+      description.providerClass !== killLine.providerClass ||
+      description.dyingProcessClass !== killLine.dyingProcessClass)) {
+    // Two OS sources disagree: name neither.
+    return { ...unknown, exitMatched: true, isDependencyDeath: true,
+      attribution: 'conflicting-evidence' };
+  }
+  if (description) return pick(description, 'exit-description');
+  if (killLine) return pick(killLine, 'matched-kill-line');
+  return { ...unknown, exitMatched: true, isDependencyDeath: true };
 }
 
 /**

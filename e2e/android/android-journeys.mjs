@@ -1126,6 +1126,8 @@ async function main() {
             const exits = await androidFailureExits();
             if (exits.available) {
               processLoss = { available: true, ...summarizeFreshControlProcessExit(
+                exits.exits, baselinePid, PKG, controlStartedAt, controlEndedAt),
+              dependencyEvidence: classifyFreshAndroidDependencyDeath(
                 exits.exits, baselinePid, PKG, controlStartedAt, controlEndedAt) };
             }
           } catch { /* Unknown is honest; never emit raw Android diagnostic data. */ }
