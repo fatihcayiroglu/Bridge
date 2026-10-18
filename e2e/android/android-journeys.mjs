@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -1073,6 +1073,8 @@ async function main() {
   await measure('FD00W', 'plain WebView-only FontsProvider baseline', async () => {
     if (MODE !== 'android') throw new Skip('native Android WebView required');
     await sh(`am force-stop ${PKG}`);
+    // Android-local time bounds the exit observation, preventing PID-reuse attribution.
+    const controlStartedAt = await sh('date +%Y-%m-%dT%H:%M:%S');
     try {
       const start = await sh(`am start -W -n ${PKG}/com.bridge.app.WebViewBaselineActivity`);
       assert(/Status: ok/.test(start), 'debug plain-WebView baseline failed to launch');
@@ -1110,8 +1112,23 @@ async function main() {
         };
         decay.samples.push(sample);
         // No PID substitution: a new app process cannot prove the ORIGINAL
-        // provider connection was released.
-        if (!samePid) break;
+        // provider connection was released. Treat a vanished foreground control
+        // as a real FAIL; attach safe, timestamp-bounded Android exit evidence.
+        if (!samePid) {
+          const controlEndedAt = await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null);
+          let processLoss = { available: false, windowValid: false,
+            matchingExit: false, reasonCode: null, subreasonCode: null };
+          try {
+            const exits = await androidFailureExits();
+            if (exits.available) {
+              processLoss = { available: true, ...summarizeFreshControlProcessExit(
+                exits.exits, baselinePid, PKG, controlStartedAt, controlEndedAt) };
+            }
+          } catch { /* Unknown is honest; never emit raw Android diagnostic data. */ }
+          decay.processLoss = processLoss;
+          throw new Error('FD00W original foreground process disappeared; ' +
+            'timestamp-bounded exit evidence: ' + JSON.stringify(processLoss));
+        }
         try {
           const snapshot = await androidFailureShell(`dumpsys activity processes ${PKG}`);
           const info = inspectBridgeEmojiFontProvider(snapshot, currentPid);

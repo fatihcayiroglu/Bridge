@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -798,4 +798,51 @@ test('Android WebView package listing fails closed if missing, malformed or unre
   assert.match(harness, /const webviewUpdate = await sh\('dumpsys webviewupdate'\)/);
   assert.doesNotMatch(harness.slice(harness.indexOf('facts.device = {'),
     harness.indexOf('facts.apkInstalled =')), /serial: device\.serial\(\)/);
+});
+
+
+test('FD00W foreground process loss requires exact PID, package, and recent device clock', () => {
+  const rows = [
+    { pid: 8123, process: 'com.bridge.app.debug', at: '2026-10-18 15:01:01.200',
+      reason: '12 (DEPENDENCY DIED)', subreason: '0 (UNKNOWN)',
+      description: 'token=secret@example.com' },
+    { pid: 8123, process: 'com.bridge.app.debug', at: '2026-10-18 17:01:05.150',
+      reason: '6 (ANR)', subreason: '0 (UNKNOWN)' },
+    { pid: 8123, process: 'com.bridge.app.debug.evil', at: '2026-10-18 17:01:08.100',
+      reason: '12 (DEPENDENCY DIED)', subreason: '0 (UNKNOWN)' },
+    { pid: 8124, process: 'com.bridge.app.debug', at: '2026-10-18 17:01:08.100',
+      reason: '12 (DEPENDENCY DIED)', subreason: '0 (UNKNOWN)' },
+  ];
+  const selected = summarizeFreshControlProcessExit(rows, 8123, 'com.bridge.app.debug',
+    '2026-10-18T17:01:00', '2026-10-18T17:01:10');
+  assert.deepEqual(selected, { windowValid: true, matchingExit: true,
+    reasonCode: 6, subreasonCode: 0 });
+  assert.doesNotMatch(JSON.stringify(selected), /8123|secret|example|ANR|com\.bridge|description|15:01/);
+  assert.deepEqual(summarizeFreshControlProcessExit(rows, 8123, 'com.bridge.app.debug',
+    '2026-10-18T17:05:00', '2026-10-18T17:05:10'),
+  { windowValid: true, matchingExit: false, reasonCode: null, subreasonCode: null });
+  assert.deepEqual(summarizeFreshControlProcessExit(rows, 8123, 'com.bridge.app.debug.evil2',
+    '2026-10-18T17:01:00', '2026-10-18T17:01:10'),
+  { windowValid: true, matchingExit: false, reasonCode: null, subreasonCode: null });
+});
+
+test('FD00W invalid/hostile clocks cannot classify a historical exit as current', () => {
+  const rows = [{ pid: 33, process: 'com.bridge.app.debug', at: '2026-10-18 17:00:02.111',
+    reason: '12 (DEPENDENCY DIED)', subreason: '0 (UNKNOWN)' }];
+  const unknown = { windowValid: false, matchingExit: false,
+    reasonCode: null, subreasonCode: null };
+  for (const [from, to] of [
+    [null, '2026-10-18T17:00:09'],
+    ['2026-10-18T17:00:09', '2026-10-18T17:00:01'],
+    ['2026-10-18T16:00:00', '2026-10-18T17:00:09'],
+    ['2026-13-18T17:00:00', '2026-10-18T17:00:09'],
+    ['2026-10-18T17:00:00;cat /private', '2026-10-18T17:00:09'],
+  ]) assert.deepEqual(summarizeFreshControlProcessExit(rows, 33, 'com.bridge.app.debug', from, to), unknown);
+  assert.deepEqual(summarizeFreshControlProcessExit(rows, '33;rm', 'com.bridge.app.debug',
+    '2026-10-18T17:00:00', '2026-10-18T17:00:09'), unknown);
+  assert.deepEqual(summarizeFreshControlProcessExit(null, 33, 'com.bridge.app.debug',
+    '2026-10-18T17:00:00', '2026-10-18T17:00:09'), unknown);
+  const harness = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(harness, /FD00W original foreground process disappeared/);
+  assert.match(harness, /summarizeFreshControlProcessExit\(/);
 });

@@ -99,6 +99,47 @@ export function summarizeAndroidColdLaunch(raw) {
   };
 }
 
+
+/**
+ * FD00W: attribute a disappeared foreground debug control ONLY to a newly
+ * recorded Android ApplicationExitInfo row for that exact app PID/process.
+ * The timestamps come from the SAME Android device clock (not host TZ).
+ * A stale same-PID exit is not evidence. No private/raw row fields leave.
+ */
+export function summarizeFreshControlProcessExit(exits, expectedPid, expectedProcess, fromAt, toAt) {
+  const unknown = { windowValid: false, matchingExit: false,
+    reasonCode: null, subreasonCode: null };
+  if (!Array.isArray(exits) || !/^[0-9]{1,8}$/.test(String(expectedPid)) ||
+      !/^[A-Za-z0-9_.:]{1,120}$/.test(String(expectedProcess))) return unknown;
+  const stamp = input => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(String(input ?? ''));
+    if (!m) return null;
+    const [y, mo, d, h, mi, s, ms = '0'] = m.slice(1);
+    const t = Date.UTC(+y, +mo - 1, +d, +h, +mi, +s, +ms.padEnd(3, '0'));
+    const check = new Date(t);
+    return Number.isFinite(t) && check.getUTCFullYear() === +y &&
+      check.getUTCMonth() === +mo - 1 && check.getUTCDate() === +d &&
+      check.getUTCHours() === +h && check.getUTCMinutes() === +mi &&
+      check.getUTCSeconds() === +s ? t : null;
+  };
+  const from = stamp(fromAt), to = stamp(toAt);
+  if (from === null || to === null || from > to || to - from > 120_000) return unknown;
+  const code = value => {
+    const m = /^([0-9]{1,2}) \([A-Z_ ]+\)$/.exec(String(value ?? ''));
+    return m ? Number(m[1]) : null;
+  };
+  const matches = exits.slice(0, 10).filter(row =>
+    row?.process === expectedProcess && Number.isInteger(row.pid) &&
+    row.pid === Number(expectedPid) &&
+    stamp(row.at) !== null &&
+    stamp(row.at) >= from - 2000 && stamp(row.at) <= to + 2000);
+  if (!matches.length) return { ...unknown, windowValid: true };
+  // Prefer the newest eligible exit; never a stale/historical PID reuse.
+  matches.sort((a, b) => stamp(b.at) - stamp(a.at));
+  return { windowValid: true, matchingExit: true,
+    reasonCode: code(matches[0].reason), subreasonCode: code(matches[0].subreason) };
+}
+
 export function summarizeControlProcessExit(exits, expectedPid) {
   if (!/^[0-9]{1,8}$/.test(String(expectedPid)) || !Array.isArray(exits))
     return { evidenceValid: false, matchingExit: false, reasonCode: null, subreasonCode: null };
