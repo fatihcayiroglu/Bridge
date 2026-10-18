@@ -1101,6 +1101,7 @@ test('production font-ref release markers are read only from the exact app PID',
 test('production release and FD00G sources keep the release off the main thread and FD01 strict', () => {
   const android = new URL('../../mobile/android/app/src/', import.meta.url);
   const release = readFileSync(new URL('main/java/com/bridge/app/WebViewFontProviderRelease.java', android), 'utf8');
+  const main = readFileSync(new URL('main/java/com/bridge/app/MainActivity.java', android), 'utf8');
   const control = readFileSync(new URL('debug/java/com/bridge/app/WebViewFinalizationBaselineActivity.java', android), 'utf8');
   const debugManifest = readFileSync(new URL('debug/AndroidManifest.xml', android), 'utf8');
   const mainManifest = readFileSync(new URL('main/AndroidManifest.xml', android), 'utf8');
@@ -1110,6 +1111,7 @@ test('production release and FD00G sources keep the release off the main thread 
   assert.match(release, /worker\.setDaemon\(true\);/);
   assert.match(release, /if \(debuggable\) Log\.i\(LOG_TAG, message\);/);
   assert.doesNotMatch(release, /ContentProviderClient|releaseProvider|killBackgroundProcesses|forceStop/);
+  assert.match(main, /WebViewFontProviderRelease\.scheduleAfterFirstPageLoad\(MainActivity\.this\)/);
   // The control keeps its WebView alive and reuses the production pass.
   assert.match(control, /WebViewFontProviderRelease\.runFinalizationPass\(\);/);
   assert.doesNotMatch(control, /\.destroy\(\);[\s\S]*startFinalizationPass|setJavaScriptEnabled\(true\)/);
