@@ -81,6 +81,11 @@ jobs:
       - name: Gradle assembleDebug
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
+      # JVM unit tests of the curated native layer (e.g. the #209 WebView
+      # version gate). Scoped to :app so plugin modules' suites don't run here.
+      - name: Gradle app unit tests
+        working-directory: android
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
       - name: Merged manifest facts
         run: |
           merged=$(find android/app/build/intermediates -name AndroidManifest.xml -path '*merged_manifests*debug*' | head -1)

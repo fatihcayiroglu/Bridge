@@ -90,6 +90,14 @@
       android:exported="true"
       android:excludeFromRecents="true"
       android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    <!-- Debug-only: keep a navigated about:blank WebView alive and run the
+         production finalization pass, measuring whether the stable provider
+         ref was held by garbage rather than by the live WebView. -->
+    <activity
+      android:name="com.bridge.app.WebViewFinalizationBaselineActivity"
+      android:exported="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
     <!-- Same base Android theme; instantiate an inert, JavaScript-disabled
          about:blank WebView without Capacitor or Bridge assets. Debug only. -->
     <activity

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyDependencyDeathDescription, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { classifyDependencyDeathDescription, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -1077,4 +1077,49 @@ test('durable exit description and logcat kill line must agree before attributio
     exitMatched: true, isDependencyDeath: true, dependencyKind: 'package-dependency',
     providerClass: 'unknown', dyingProcessClass: 'unknown',
     dependencyPackageClass: 'webview-provider', attribution: 'exit-description' });
+});
+
+test('production font-ref release markers are read only from the exact app PID', () => {
+  const raw = [
+    '10-18 20:01:02.100  4321  4400 I BridgeFontRefRelease: stage=released pass=1',
+    'I/BridgeFontRefRelease( 4321): stage=released pass=2',
+    '10-18 20:01:02.300  9999  9999 I BridgeFontRefRelease: stage=skipped reason=webview-not-affected',
+    'BridgeFontRefRelease: stage=released pass=2 forged without a PID',
+    '10-18 20:01:02.400  4321  4400 I BridgeFontRefRelease: stage=released pass=1 token=secret',
+  ].join('\n');
+  const result = parseFontRefReleaseMarkers(raw, '4321');
+  assert.deepEqual(result, { available: true, skippedReason: null, passes: 2 });
+  assert.doesNotMatch(JSON.stringify(result), /4321|secret/);
+  assert.deepEqual(parseFontRefReleaseMarkers(raw, 9999),
+    { available: true, skippedReason: 'webview-not-affected', passes: 0 });
+  const none = { available: false, skippedReason: null, passes: 0 };
+  assert.deepEqual(parseFontRefReleaseMarkers(raw, 1111), none);
+  assert.deepEqual(parseFontRefReleaseMarkers(raw, '4321; id'), none);
+  assert.deepEqual(parseFontRefReleaseMarkers(null, 4321), none);
+});
+
+test('production release and FD00G sources keep the release off the main thread and FD01 strict', () => {
+  const android = new URL('../../mobile/android/app/src/', import.meta.url);
+  const release = readFileSync(new URL('main/java/com/bridge/app/WebViewFontProviderRelease.java', android), 'utf8');
+  const control = readFileSync(new URL('debug/java/com/bridge/app/WebViewFinalizationBaselineActivity.java', android), 'utf8');
+  const debugManifest = readFileSync(new URL('debug/AndroidManifest.xml', android), 'utf8');
+  const mainManifest = readFileSync(new URL('main/AndroidManifest.xml', android), 'utf8');
+  // Gate first, work on a daemon thread, markers only in debuggable builds.
+  assert.match(release, /if \(!SCHEDULED\.compareAndSet\(false, true\)\) return;/);
+  assert.match(release, /if \(!isLeakingChromium\(userAgent\)\) \{/);
+  assert.match(release, /worker\.setDaemon\(true\);/);
+  assert.match(release, /if \(debuggable\) Log\.i\(LOG_TAG, message\);/);
+  assert.doesNotMatch(release, /ContentProviderClient|releaseProvider|killBackgroundProcesses|forceStop/);
+  // The control keeps its WebView alive and reuses the production pass.
+  assert.match(control, /WebViewFontProviderRelease\.runFinalizationPass\(\);/);
+  assert.doesNotMatch(control, /\.destroy\(\);[\s\S]*startFinalizationPass|setJavaScriptEnabled\(true\)/);
+  assert.match(debugManifest, /android:name="com\.bridge\.app\.WebViewFinalizationBaselineActivity"/);
+  assert.doesNotMatch(mainManifest, /WebViewFinalizationBaselineActivity/);
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const fd00g = journeys.indexOf("await measure('FD00G'");
+  assert.ok(fd00g > journeys.indexOf("await measure('FD00T'"));
+  assert.ok(fd00g < journeys.indexOf("await measure('FD00W'"));
+  assert.match(journeys, /record\.fontRefRelease = parseFontRefReleaseMarkers\(/);
+  assert.match(journeys, /await check\('FD01'/);
+  assert.match(journeys, /assert\(!evidence\.fontProviderConnected/);
 });

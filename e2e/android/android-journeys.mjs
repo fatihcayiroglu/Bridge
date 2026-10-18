@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
@@ -483,6 +483,14 @@ async function fontProviderStage(stage) {
     }
     record.nativeEmoji = nativeEmoji;
     record.nativeCapture = nativeCapture;
+    // Whether the production WebViewFontProviderRelease pass had run in THIS
+    // process before the sample. Context for FD01 only; never changes it.
+    let releaseLog = '';
+    try {
+      releaseLog = await androidFailureShell(
+        "logcat -d -v brief --pid " + currentPid + " -s BridgeFontRefRelease:I '*:S'");
+    } catch { /* unavailable stays available=false */ }
+    record.fontRefRelease = parseFontRefReleaseMarkers(releaseLog, currentPid);
   } catch {
     record = { stage, available: false, appPidValid: false, providerSections: 0 };
   }
@@ -1064,6 +1072,87 @@ async function main() {
       assert(teardownObserved, 'FD00T same-process WebView destroy marker unavailable');
       const result = { sameProcess: true, webviewDestroyed: true, before, after };
       facts.androidWebViewTeardownEvidence = result;
+      return result;
+    } finally {
+      await sh('am force-stop ' + PKG).catch(() => {});
+    }
+  });
+
+  // FD00G: causal intervention on the SAME PID. FD00W shows the stable ref
+  // persisting >= 8 s in an idle plain WebView and FD00T shows it outliving
+  // WebView.destroy(). Here the WebView stays ALIVE, attached and referenced
+  // while the Activity runs the production finalization pass. A stable ref
+  // that disappears was held by unreachable, finalizable garbage (Chromium
+  // < 117.0.5938.60 detachFd() of the ContentResolver wrapper), not by the
+  // live WebView; one that survives refutes that mechanism.
+  // Measurement only: it cannot grant FD01/CS00/L01/ANR01 a PASS.
+  await measure('FD00G', 'same-process finalization with the WebView alive and provider retention', async () => {
+    if (MODE !== 'android') throw new Skip('native WebView Activity required');
+    const activity = 'com.bridge.app.WebViewFinalizationBaselineActivity';
+    await sh('am force-stop ' + PKG);
+    const controlStartedAt = await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null);
+    try {
+      const started = await sh('am start -W -n ' + PKG + '/' + activity);
+      assert(/Status: ok/.test(started), 'debug finalization baseline Activity failed to launch');
+      await sleep(2000);
+      const initialPid = await pid();
+      assert(/^[0-9]{1,8}$/.test(String(initialPid)),
+        'FD00G initial app process unavailable');
+      const snapshot = async stage => {
+        const currentPid = await pid();
+        if (currentPid !== initialPid) {
+          // Same rule as FD00W: a vanished control is a FAIL with safe,
+          // device-clock-bounded exit enums, never a PID substitution.
+          const controlEndedAt = await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null);
+          let processLoss = { available: false };
+          try {
+            const exits = await androidFailureExits();
+            if (exits.available) {
+              processLoss = { available: true, ...summarizeFreshControlProcessExit(
+                exits.exits, initialPid, PKG, controlStartedAt, controlEndedAt),
+              dependencyEvidence: classifyFreshAndroidDependencyDeath(
+                exits.exits, initialPid, PKG, controlStartedAt, controlEndedAt) };
+            }
+          } catch { /* unknown stays unknown */ }
+          throw new Error('FD00G Activity process changed before ' + stage +
+            ' observation; timestamp-bounded exit evidence: ' + JSON.stringify(processLoss));
+        }
+        const resumed = await androidFailureShell(
+          'dumpsys activity activities | grep -m1 topResumedActivity || true');
+        assert(resumed.includes(PKG + '/' + activity),
+          'FD00G Activity no longer resumed at ' + stage);
+        const raw = await androidFailureShell('dumpsys activity processes ' + PKG);
+        const evidence = inspectBridgeEmojiFontProvider(raw, currentPid);
+        assert(evidence.appPidValid && evidence.providerSections > 0 &&
+          evidence.unparsedConnections === 0 && evidence.fontProviderRefCountsKnown,
+          'FD00G provider listing not verified at ' + stage);
+        return { stage, connected: evidence.fontProviderConnected,
+          stableRefs: evidence.fontProviderStableRefs,
+          unstableRefs: evidence.fontProviderUnstableRefs,
+          waiting: evidence.fontProviderWaiting, dead: evidence.fontProviderDead };
+      };
+      const before = await snapshot('webview-alive-before-finalization');
+      // The Activity starts the pass ~6 s after onCreate. Poll the fixed
+      // marker from the SAME PID only; raw logcat never leaves memory.
+      let marker = null;
+      const deadline = Date.now() + 15_000;
+      while (!marker && Date.now() < deadline) {
+        try {
+          const out = await androidFailureShell('logcat -d --pid ' + initialPid +
+            " -s BridgeWebViewFinalization:I '*:S'");
+          const m = /BridgeWebViewFinalization.*stage=finalized webViewAttached=(true|false)/.exec(out);
+          if (m) marker = { webViewAttached: m[1] === 'true' };
+        } catch { /* keep polling until the deadline */ }
+        if (!marker) await sleep(500);
+      }
+      assert(marker, 'FD00G same-process finalization marker unavailable');
+      // ActivityThread turns the last released stable ref into ONE unstable
+      // ref for CONTENT_PROVIDER_RETAIN_TIME (1000 ms) before removing it.
+      await sleep(2500);
+      const after = await snapshot('webview-alive-after-finalization');
+      const result = { sameProcess: true,
+        webViewAttachedAtFinalization: marker.webViewAttached, before, after };
+      facts.androidWebViewFinalizationEvidence = result;
       return result;
     } finally {
       await sh('am force-stop ' + PKG).catch(() => {});

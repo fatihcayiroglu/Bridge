@@ -638,3 +638,29 @@ export function parseNativeEmojiStartupProbe(raw, appPid = null) {
     unknownConfigured: samples.filter((s) => s.configured === null).length,
   };
 }
+
+/**
+ * #209: did the production WebViewFontProviderRelease pass run in the EXACT
+ * app process? Debug builds emit only the fixed markers below; anything else
+ * (another PID, free-text imitations) is ignored. Returns counts and enums.
+ */
+export function parseFontRefReleaseMarkers(raw, appPid) {
+  const none = { available: false, skippedReason: null, passes: 0 };
+  if (!/^[0-9]{1,8}$/.test(String(appPid))) return none;
+  const targetPid = String(Number(appPid));
+  let skippedReason = null;
+  let passes = 0;
+  let seen = false;
+  for (const line of String(raw).split(/\r?\n/).slice(-500)) {
+    if (!line.includes('BridgeFontRefRelease')) continue;
+    const brief = /\b[A-Z]\/BridgeFontRefRelease\(\s*([0-9]{1,8})\)/.exec(line);
+    const threadtime = /\b[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+\s+([0-9]{1,8})\s+[0-9]{1,8}\s+[A-Z]\s+BridgeFontRefRelease:/.exec(line);
+    const observedPid = brief?.[1] ?? threadtime?.[1];
+    if (!observedPid || String(Number(observedPid)) !== targetPid) continue;
+    const released = /:\s*stage=released pass=([12])\s*$/.exec(line);
+    const skipped = /:\s*stage=skipped reason=(webview-not-affected|provider-unavailable)\s*$/.exec(line);
+    if (released) { seen = true; passes = Math.max(passes, Number(released[1])); }
+    else if (skipped) { seen = true; skippedReason = skipped[1]; }
+  }
+  return seen ? { available: true, skippedReason, passes } : none;
+}
