@@ -229,9 +229,13 @@ class ChannelRepository {
         }
 
         // Every remaining table with a canonical channelId column is owned by
-        // that channel for deletion purposes. Delete children before channels.
+        // that channel for deletion purposes EXCEPT durable expiry tombstones.
+        // A tombstone must survive ordinary deletion: otherwise delayed/offline
+        // snapshots could later make a deleted channel appear live again.
+        // D2 cleanup/retention will require a separate, audited lifecycle.
         for (const [table, tableCols] of cols.entries()) {
-          if (table === 'channels' || !tableCols.has('channelId')) continue;
+          if (table === 'channels' || table === 'channel_expiry_tombstones' ||
+              !tableCols.has('channelId')) continue;
           await client.query(`DELETE FROM "${table}" WHERE "channelId"=$1`, [id]);
         }
 
