@@ -106,13 +106,15 @@ export function summarizeAndroidColdLaunch(raw) {
  * The timestamps come from the SAME Android device clock (not host TZ).
  * A stale same-PID exit is not evidence. No private/raw row fields leave.
  */
-export function summarizeFreshControlProcessExit(exits, expectedPid, expectedProcess, fromAt, toAt) {
-  const unknown = { windowValid: false, matchingExit: false,
-    reasonCode: null, subreasonCode: null };
+// Reuse ONE strict PID/process/time-window matcher for both the numerical
+// exit summary and dependency-death attribution. A PID alone is insufficient:
+// Android can recycle PIDs between diagnostic samples. The bounds are from
+// the Android device clock, not the CI runner, and never leave this process.
+function freshAndroidExitRows(exits, expectedPid, expectedProcess, fromAt, toAt) {
   if (!Array.isArray(exits) || !/^[0-9]{1,8}$/.test(String(expectedPid)) ||
-      !/^[A-Za-z0-9_.:]{1,120}$/.test(String(expectedProcess))) return unknown;
+      !/^[A-Za-z0-9_.:]{1,120}$/.test(String(expectedProcess))) return null;
   const stamp = input => {
-    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(String(input ?? ''));
+    const m = /^(\\d{4})-(\\d{2})-(\\d{2})[ T](\\d{2}):(\\d{2}):(\\d{2})(?:\\.(\\d{1,3}))?$/.exec(String(input ?? ''));
     if (!m) return null;
     const [y, mo, d, h, mi, s, ms = '0'] = m.slice(1);
     const t = Date.UTC(+y, +mo - 1, +d, +h, +mi, +s, +ms.padEnd(3, '0'));
@@ -123,21 +125,38 @@ export function summarizeFreshControlProcessExit(exits, expectedPid, expectedPro
       check.getUTCSeconds() === +s ? t : null;
   };
   const from = stamp(fromAt), to = stamp(toAt);
-  if (from === null || to === null || from > to || to - from > 120_000) return unknown;
-  const code = value => {
-    const m = /^([0-9]{1,2}) \([A-Z_ ]+\)$/.exec(String(value ?? ''));
-    return m ? Number(m[1]) : null;
-  };
-  const matches = exits.slice(0, 10).filter(row =>
+  if (from === null || to === null || from > to || to - from > 120_000) return null;
+  return exits.slice(0, 10).filter(row =>
     row?.process === expectedProcess && Number.isInteger(row.pid) &&
     row.pid === Number(expectedPid) &&
     stamp(row.at) !== null &&
-    stamp(row.at) >= from - 2000 && stamp(row.at) <= to + 2000);
+    stamp(row.at) >= from - 2000 && stamp(row.at) <= to + 2000)
+    .sort((a, b) => stamp(b.at) - stamp(a.at));
+}
+
+export function summarizeFreshControlProcessExit(exits, expectedPid, expectedProcess, fromAt, toAt) {
+  const unknown = { windowValid: false, matchingExit: false,
+    reasonCode: null, subreasonCode: null };
+  const matches = freshAndroidExitRows(exits, expectedPid, expectedProcess, fromAt, toAt);
+  if (matches === null) return unknown;
   if (!matches.length) return { ...unknown, windowValid: true };
-  // Prefer the newest eligible exit; never a stale/historical PID reuse.
-  matches.sort((a, b) => stamp(b.at) - stamp(a.at));
+  const code = value => {
+    const m = /^([0-9]{1,2}) \\([A-Z_ ]+\\)$/.exec(String(value ?? ''));
+    return m ? Number(m[1]) : null;
+  };
   return { windowValid: true, matchingExit: true,
     reasonCode: code(matches[0].reason), subreasonCode: code(matches[0].subreason) };
+}
+
+/**
+ * A01: classify a dependency-death ONLY if the same app package, PID and
+ * bounded launch-time exit record match. Old same-PID rows cannot be used to
+ * implicate WebView/FontsProvider in a new unrelated failure.
+ * Returns fixed safe enums only; never a raw OS kill line or user data.
+ */
+export function classifyFreshAndroidDependencyDeath(exits, expectedPid, expectedProcess, fromAt, toAt) {
+  const matches = freshAndroidExitRows(exits, expectedPid, expectedProcess, fromAt, toAt);
+  return classifyAndroidDependencyDeath(matches?.length ? [matches[0]] : null, expectedPid);
 }
 
 export function summarizeControlProcessExit(exits, expectedPid) {
