@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath } from './exit-diagnostics.mjs';
+import { parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, summarizeAndroidWebViewProvider } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -697,4 +697,47 @@ test('PID-kill line parser rejects package and PID spoofing without leaking deta
     'Killing 99999999:com.bridge.app.debug (adj 0): depends on provider com.fake/.P in dying proc com.fake.p',
     99999999, 'com.bridge.app.debug'),
     { provider: 'com.fake/.P', dyingProcess: 'com.fake.p' });
+});
+
+
+test('Android #209 WebView fingerprint records numeric version without raw package/serial data', () => {
+  const sample = [
+    'WebView update service state',
+    'Current WebView package (name, version): (com.google.android.webview, 113.0.5672.136)',
+    'customer=private-account@example.com token=secret',
+  ].join('\n');
+  const result = summarizeAndroidWebViewProvider(sample);
+  assert.deepEqual(result, {
+    available: true, providerKind: 'google-webview',
+    version: '113.0.5672.136', majorVersion: 113,
+  });
+  assert.doesNotMatch(JSON.stringify(result), /google\.android|secret|private|@|token|customer/i);
+  assert.deepEqual(summarizeAndroidWebViewProvider(
+    'Current WebView package (name, version): (com.android.webview, 130.0.1.2)'),
+  { available: true, providerKind: 'aosp-webview', version: '130.0.1.2', majorVersion: 130 });
+  assert.deepEqual(summarizeAndroidWebViewProvider(
+    'Current WebView package (name, version): (com.android.chrome, 128.0.0.0)'),
+  { available: true, providerKind: 'chrome-webview', version: '128.0.0.0', majorVersion: 128 });
+  assert.deepEqual(summarizeAndroidWebViewProvider(
+    'Current WebView package (name, version): (com.vendor.customwebview, 128.0.0.0)'),
+  { available: true, providerKind: 'other-webview', version: '128.0.0.0', majorVersion: 128 });
+});
+
+test('Android #209 WebView fingerprint fails closed when version is missing, malformed or injected', () => {
+  const unknown = { available: false, providerKind: 'unknown',
+    version: null, majorVersion: null };
+  assert.deepEqual(summarizeAndroidWebViewProvider(''), unknown);
+  assert.deepEqual(summarizeAndroidWebViewProvider(null), unknown);
+  assert.deepEqual(summarizeAndroidWebViewProvider(
+    'Current WebView package (name, version): (com.google.android.webview, secret@example.com)'), unknown);
+  assert.deepEqual(summarizeAndroidWebViewProvider(
+    'Current WebView package (name, version): (com.google.android.webview, 0.0.0.0)'), unknown);
+  // The device serial is needed in memory to select ADB hardware, but it must
+  // never appear in the serialized facts.device report on a physical phone.
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const snapshot = journeys.slice(journeys.indexOf('facts.device = {'),
+    journeys.indexOf('facts.apkInstalled ='));
+  assert.match(snapshot, /serial: 'redacted'/);
+  assert.doesNotMatch(snapshot, /serial: device\.serial\(\)/);
+  assert.match(snapshot, /webview: summarizeAndroidWebViewProvider/);
 });
