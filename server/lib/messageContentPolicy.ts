@@ -18,7 +18,9 @@
 //      it. A rule-store failure propagates, so an outage cannot silently
 //      disable configured moderation (fail closed).
 //
-// Encrypted content and file messages are not inspected by the callers.
+// Every check matches the visible text (lib/storedText.ts visibleMessageText):
+// an invisible character cannot carry a refused word past it. Encrypted
+// content and file messages are not inspected by the callers.
 //
 // Machine principals (machineContentRefused below) post through their own
 // paths: an installed bot's interaction reply (`bot:<id>`), an incoming
@@ -34,6 +36,7 @@ import { currentIntegrationInstallation } from './automodIntegrationExemptions';
 import { normalizeAutomodMemberRoleIds, writeAutomodLogs } from './automodRuntime';
 import { hasPermission, PERMS } from './permissions';
 import { cache } from './redisAdapter';
+import { visibleMessageText } from './storedText';
 import type { HandlerServer } from '../socket/handler-contracts';
 
 export type MessageContentRefusal =
@@ -56,11 +59,14 @@ export async function checkMessageContent(
   io: HandlerServer | null,
 ): Promise<MessageContentRefusal | null> {
   const { userId, serverId, channelId, content } = input;
+  // The P7 limits count what a reader sees: texts that differ only by where an
+  // invisible character sits are one text (AutoMod matches the same way).
+  const visible = visibleMessageText(content);
 
-  const abuse = await checkContentAbuse(userId, content);
+  const abuse = await checkContentAbuse(userId, visible);
   if (!abuse.allowed) return { kind: 'spam', reason: abuse.reason, retryAfterMs: abuse.retryAfterMs };
 
-  if (!mentionsWithinLimit(content, hasPermission(input.senderPerms, PERMS.MENTION_EVERYONE))) {
+  if (!mentionsWithinLimit(visible, hasPermission(input.senderPerms, PERMS.MENTION_EVERYONE))) {
     return { kind: 'refused', code: 'TOO_MANY_MENTIONS', message: `En fazla ${ABUSE_POLICY.mentions.perMessage} kişi etiketlenebilir.` };
   }
 

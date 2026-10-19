@@ -7,6 +7,8 @@ Status: **implementation in draft PR #307; not accepted or merged until exact-he
 Human sends use `checkMessageContent` (P7 spam/link-host, mention limits, AutoMod roles and timeouts).
 Machine sends use `machineContentRefused`: `bot:<id>` replies, `webhook:<id>` incoming webhook text and bounded embeds, and `plugin:<id>` posts. Machines have no member roles or member timeout. Any matched AutoMod rule rejects before persistence; configured moderation events are logged. Bridge's own system/audit posts are outside this policy to avoid recursion. E2EE ciphertext is not inspected.
 
+All AutoMod rules and the P7 content limits match the **visible** text: the C0/C1 control characters storage strips and Unicode format characters (zero-width space/joiners, soft hyphen, bidi controls, BOM) are removed before matching, without changing what is stored. Before, `forbidden\u0001word` passed AutoMod on the channel send and edit paths and was stored and shown as `forbiddenword`. Evidence: `server/tests/automod-invisible-character-evasion.test.ts`.
+
 ## Exact-installation exemptions
 
 Only enabled `link_filter` rules can exempt named bots or incoming webhooks, never all bots, plugins, roles, channels, other rules or a server globally. An authorized member holding `MANAGE_SERVER` sends a *principal list*, never an installation ID. The server looks up current live installations before saving a record `{principal, installationId}`.

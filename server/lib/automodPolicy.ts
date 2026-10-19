@@ -1,6 +1,8 @@
 // Canonical persisted AutoMod policy contract shared by HTTP CRUD and realtime enforcement.
 // Keep input normalization here so route validation and message enforcement cannot drift.
 
+import { visibleMessageText } from './storedText';
+
 export const AUTOMOD_RULE_TYPES = [
   'blocked_words',
   'spam_messages',
@@ -291,6 +293,9 @@ export async function evaluateAutomodRules(
     logChannelIds: [],
   };
   const roleIds = new Set(context.memberRoleIds);
+  // Content rules match what a reader sees: an invisible character inside a
+  // word must not hide it from them (lib/storedText.ts visibleMessageText).
+  const visibleContent = visibleMessageText(context.content);
 
   for (const rule of Array.isArray(rules) ? rules : []) {
     const enabled = persistedEnabledState(rule.enabled);
@@ -331,7 +336,7 @@ export async function evaluateAutomodRules(
       );
       reason = count > (config.maxMessages || 5) ? 'Mesaj sıklığı filtresi' : null;
     } else {
-      reason = matchesContentRule(rule.type, config, context.content);
+      reason = matchesContentRule(rule.type, config, visibleContent);
     }
     if (!reason) continue;
 
