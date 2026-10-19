@@ -1,6 +1,6 @@
 # Android #209 — FontsProvider stable reference: upstream root cause and product mitigation
 
-**2026-10-19 · root cause traced in upstream source · product mitigation implemented and observed working in two exact-head CI runs · causal control FD00G still unresolved · #209 stays OPEN**
+**2026-10-19 · root cause traced in upstream source, confirmed by a same-process intervention (FD00G) and a durably attributed DEPENDENCY DIED kill (FD00W) · product mitigation observed working in three exact-head CI runs · #209 stays OPEN (FocusEvent ANRs, physical devices, owner decisions)**
 
 Tracking issue: [#209](https://github.com/fatihcayiroglu/Bridge/issues/209). Diagnostic PR: [#322](https://github.com/fatihcayiroglu/Bridge/pull/322). Evidence dossier: [`P7_ANDROID_209_UPSTREAM_REPRODUCTION.md`](P7_ANDROID_209_UPSTREAM_REPRODUCTION.md).
 
@@ -78,17 +78,40 @@ FD00G (commit `e93e311`) is the same-OS, same-WebView **intervention test** of t
 
 Expected cost on affected WebView: two explicit GCs per process, off the main thread. On fixed WebView (any up-to-date Play-updated device) the cost is zero: a single UA check.
 
-### 4a. CI evidence so far (API 34 emulator, WebView 113.0.5672.136)
+### 4a. CI evidence (API 34 emulator, WebView 113.0.5672.136)
 
-| Observation | Before the mitigation (e.g. [39160502999](https://github.com/fatihcayiroglu/Bridge/actions/runs/39160502999)) | With it: [39164884625](https://github.com/fatihcayiroglu/Bridge/actions/runs/39164884625) (`a9bd659`) and [39166491452](https://github.com/fatihcayiroglu/Bridge/actions/runs/39166491452) (`bfb7177`) |
+| Observation | Before the mitigation (e.g. [39160502999](https://github.com/fatihcayiroglu/Bridge/actions/runs/39160502999)) | With it: [39164884625](https://github.com/fatihcayiroglu/Bridge/actions/runs/39164884625) (`a9bd659`), [39166491452](https://github.com/fatihcayiroglu/Bridge/actions/runs/39166491452) (`bfb7177`), [39254381137](https://github.com/fatihcayiroglu/Bridge/actions/runs/39254381137) (`4603fe6`) |
 |---|---|---|
-| A01 first UI (product) | 1 **stable** / 0 unstable | **0 stable / 1 unstable**, `passes=1`, in both runs: the ActivityThread stable→unstable retain window right after release pass 1 |
-| FD01 after login | 0 stable / 1 unstable → **FAIL** | **0 / 0 → PASS**, `passes=2`, in both runs |
+| A01 first UI (product) | 1 **stable** / 0 unstable | **0 stable / 1 unstable**, `passes=1`, in all three runs: the ActivityThread stable→unstable retain window right after release pass 1 |
+| FD01 after login | 0 stable / 1 unstable → **FAIL** | **0 / 0 → PASS**, `passes=2`, in all three runs |
 | FD02 1.5 / 4 / 8 s | 0 | 0 |
 | FD00W / FD00T (unmitigated controls) | 1 stable for 8 s; survives `destroy()` | unchanged: the platform leak itself is untouched |
-| CS00, CS01, L01 (HOT), L03, L04, ANR01 | — | PASS in both runs; ANR02 found 0 fatal ANRs |
+| CS00, CS01, L01 (HOT), L03, L04, ANR01 | — | PASS in all three runs; ANR02 found 0 fatal ANRs (in run 39254381137 its coverage was honestly `possibly-truncated`: 16/16 records) |
 
-Both runs are **34 PASS / 1 FAIL / 0 SKIPPED / 16 MEASURED**. The one FAIL is the new causal control **FD00G**. Its `before` sample shows 1 stable ref on the same PID with the WebView alive. The pass then logs `started` but not `finalized` within ~13 s, although the identical production pass completes in the product process. The current branch head adds liveness and exit attribution, a `stalled` snapshot of the pass thread and ART's FinalizerDaemon, and a FinalizerWatchdog `uncaught` marker, to establish whether the control process died or the pass blocked. **Until FD00G is explained, the same-process causal proof is missing**, and the product evidence above is consistent with the mechanism but not a controlled experiment.
+**Same-process intervention, FD00G (run 39254381137).** A plain about:blank WebView stays attached and referenced, and the production pass runs on the same PID:
+
+- `before`: **stableRefs=1**, unstableRefs=0. `baselineBeforePass=true`, one Activity instance, `webViewAttached=true`.
+- The pass completes (`finalized`, `passMs=36`).
+- `after`: **stableRefs=0**, unstableRefs=1.
+
+The stable reference was held by finalizable garbage, not by the live WebView. This is the controlled experiment the source analysis predicted.
+
+In the two earlier runs, before stall, liveness and exit instrumentation existed, the same control logged `started` but not `finalized` within ~13 s. Those runs cannot tell a blocked pass from a killed control process. The instrumentation now in place (stall snapshot of the pass thread, FinalizerDaemon and ReferenceQueueDaemon; FinalizerWatchdog marker; liveness and exit attribution) will classify any recurrence. Across all runs, the product's identical pass has always completed and the product process has survived.
+
+**The kill path, attributed durably: FD00W (run 39254381137).** During its 8 s observation, the **unmitigated** plain-WebView control, holding the leaked stable ref, was killed. The durable `ApplicationExitInfo.description` classifies the exit as:
+
+- `reason=12 DEPENDENCY DIED`, `subreason=0`
+- `provider-death`, `providerClass=gms-fonts`, `dyingProcessClass=gms-persistent`
+- `attribution=exit-description`
+
+That is ActivityManager killing a stable FontsProvider client because `com.google.android.gms.persistent`, the process hosting the GMS FontsProvider, died. It is the same Activity (`WebViewBaselineActivity`) and the same reason and subreason as the earlier CS00 blank-WebView death ([39159049059](https://github.com/fatihcayiroglu/Bridge/actions/runs/39159049059)). Why GMS persistent died is not observable from the app and was not investigated: no GMS internals are touched.
+
+Every run is **34 PASS / 1 FAIL / 0 SKIPPED / 16 MEASURED**:
+
+- In runs 39164884625 and 39166491452 the FAIL is FD00G, the uninstrumented stall above.
+- In run 39254381137 the FAIL is **FD00W**: the unmitigated control's process was killed by DEPENDENCY DIED. By design, a control whose process vanishes is a FAIL, and it was not relabelled.
+
+Turning these unmitigated, platform-defect controls into non-gating diagnostics (e.g. a nightly job) would change test semantics, so it is left to the owner (§7).
 
 Found and fixed on the way: `parseApplicationExits` read crash exits (`reason=4 (APP CRASH(EXCEPTION))`, `5 (APP CRASH(NATIVE))`) as reason 0, because the nested parenthesis made its regex fall through to `subreason=`. Any earlier "reason 0" process loss in #209 evidence must be re-read with this in mind.
 
@@ -101,7 +124,7 @@ Found and fixed on the way: `parseApplicationExits` read crash exits (`reason=4 
 - **The FontsProvider reference causes the FocusEvent ANRs (reason 6).** Not supported. In run 39038117703, FD02 saw **zero** references at 1.5, 4 and 8 s on the very PID that later hit the FocusEvent ANR at L01. The ANRs remain a separate, open defect.
 - **CS00's death came from the SDK sandbox.** Disproven: subreason 0, and that path writes subreason 27.
 
-**Still not proven:** that a GMS provider-process death (rather than a `killPackageDependents` package update) produced the specific CS00 event. The harness now records the durable exit description, so a recurrence will settle it.
+**Settled:** FD00W in run 39254381137 is a durably attributed GMS-FontsProvider provider-death kill of an unmitigated WebView control, not a `killPackageDependents` package update and not the SDK sandbox. The earlier CS00 event predates description attribution. It is attributed only by its identical control, reason and subreason, not by its own description.
 
 ## 6. FD01 contract — analysis for owner review (FD01 is NOT changed here)
 
@@ -123,9 +146,10 @@ Until that decision, FD01 stays as written. With the mitigation in place, FD01 s
 
 ## 7. Remaining work before #209 can close
 
-1. **Explain FD00G** (§4a): whether the control process died or the pass blocked. Then show stable → 0 on the same PID with the WebView alive. If the forced pass can kill or wedge a WebView-113 process, the production mitigation must be revisited before merge.
-2. Repeat the product evidence over several independent runs: `fontRefRelease.passes ≥ 1` and 0 stable refs after login.
+1. ~~Show stable → 0 on the same PID with the WebView alive~~ **done** (FD00G, run 39254381137). **Open:** classify any recurrence of the earlier "started but not finalized" stalls with the new instrumentation. If the forced pass is ever seen to wedge or kill a WebView-113 process, the production mitigation must be revisited.
+2. Product evidence is consistent across three independent runs (`passes ≥ 1`, 0 stable refs after login, FD01 PASS). Keep collecting runs, and run on physical devices.
 3. A **fixed-WebView** image (e.g. API 35, WebView 124) must show no stable reference in FD00W/FD00T without any mitigation, and the mitigation must report `skipped webview-not-affected`.
 4. **Physical devices** with current Play-updated WebView, plus one GMS device with a frozen pre-117 WebView if obtainable. No physical-device testing has been done.
 5. The **FocusEvent ANRs** (reason 6) need their own main-thread evidence. ANR02 now classifies fatal ANR traces app-locally, but no ANR has recurred since it was added, and it cannot see non-fatal ANRs or exits evicted from Android's 16-record history.
 6. Owner decision on the FD01′ contract (§6).
+7. **Owner decision:** the unmitigated controls (FD00W, CS00 blank-WebView, FD00T, FD00N/D/S) reproduce a platform defect that Bridge cannot fix in an unmodified WebView. They can turn CI red through a DEPENDENCY DIED kill whenever GMS persistent restarts during their window, as FD00W did in run 39254381137. Decide whether they stay per-PR gates or move to a non-gating nightly diagnostic. Per the project rules, this PR does not change their semantics.
