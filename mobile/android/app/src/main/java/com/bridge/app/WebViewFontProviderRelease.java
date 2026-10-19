@@ -2,6 +2,8 @@ package com.bridge.app;
 
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 import android.webkit.WebSettings;
@@ -117,13 +119,24 @@ final class WebViewFontProviderRelease {
             }
             for (int i = 0; i < PASS_DELAYS_MS.length; i++) {
                 SystemClock.sleep(PASS_DELAYS_MS[i]);
+                MainThreadGapMeter meter = debuggable ? MainThreadGapMeter.start() : null;
+                long started = SystemClock.uptimeMillis();
                 runFinalizationPass();
+                long passMs = SystemClock.uptimeMillis() - started;
                 // Proves the pass ran, not that anything was released.
-                marker(debuggable, "stage=pass-complete pass=" + (i + 1));
+                if (meter != null) {
+                    marker(true, "stage=pass-complete pass=" + (i + 1)
+                            + " passMs=" + Math.min(passMs, 999_999L)
+                            + " mainMaxGapMs=" + Math.min(meter.stop(), 999_999L));
+                }
             }
         }, LOG_TAG);
         worker.setDaemon(true);
-        worker.setPriority(Thread.MIN_PRIORITY);
+        // NOT a low priority: an explicit GC suspends every thread, the main
+        // thread included, for its flip, and only this thread can resume them.
+        // A starved nice-19 GC thread would freeze the UI (priority inversion).
+        // Normal priority matches ART's own HeapTaskDaemon/FinalizerDaemon.
+        worker.setPriority(Thread.NORM_PRIORITY);
         worker.start();
     }
 
@@ -138,6 +151,46 @@ final class WebViewFontProviderRelease {
         System.runFinalization();
         Runtime.getRuntime().gc();
         System.runFinalization();
+    }
+
+    /**
+     * Debug builds only: the worst delay of a 50 ms main-thread heartbeat
+     * while a pass runs, i.e. how long the main thread could not run. CI
+     * evidence that the pass does not block the UI; never built into a
+     * release path (only constructed when the app is debuggable).
+     */
+    static final class MainThreadGapMeter implements Runnable {
+        private static final long TICK_MS = 50L;
+        private static final long MAX_TICKING_MS = 30_000L;
+        private final Handler main = new Handler(Looper.getMainLooper());
+        private final long startedAt = SystemClock.uptimeMillis();
+        private volatile long expectedAt;
+        private volatile long maxGapMs;
+        private volatile boolean running = true;
+
+        static MainThreadGapMeter start() {
+            MainThreadGapMeter meter = new MainThreadGapMeter();
+            meter.expectedAt = meter.startedAt + TICK_MS;
+            meter.main.postDelayed(meter, TICK_MS);
+            return meter;
+        }
+
+        @Override
+        public void run() {
+            long now = SystemClock.uptimeMillis();
+            maxGapMs = Math.max(maxGapMs, now - expectedAt);
+            if (!running || now - startedAt > MAX_TICKING_MS) return;
+            expectedAt = now + TICK_MS;
+            main.postDelayed(this, TICK_MS);
+        }
+
+        /** Stop ticking; includes the delay of a tick that is still waiting to run. */
+        long stop() {
+            running = false;
+            long pending = SystemClock.uptimeMillis() - expectedAt;
+            main.removeCallbacks(this);
+            return Math.max(maxGapMs, Math.max(0L, pending));
+        }
     }
 
     private static boolean isDebuggable(Context context) {
