@@ -485,8 +485,10 @@ async function fontProviderStage(stage) {
     }
     record.nativeEmoji = nativeEmoji;
     record.nativeCapture = nativeCapture;
-    // Whether the production WebViewFontProviderRelease pass had run in THIS
-    // process before the sample. Context for FD01 only; never changes it.
+    // Production WebViewFontProviderRelease passes logged by THIS process by
+    // the time of this read, which is AFTER the provider sample (so an upper
+    // bound for "before the sample"). Read after on purpose: nothing may be
+    // added between pid() and the sample that strict FD01 asserts on.
     let releaseLog = '';
     try {
       releaseLog = await androidFailureShell(
@@ -1088,7 +1090,7 @@ async function main() {
   // WebView.destroy(). Here the WebView stays ALIVE, attached and referenced
   // while the Activity runs the production finalization pass. A stable ref
   // that disappears was held by unreachable, finalizable garbage (Chromium
-  // < 117.0.5938.60 detachFd() of the ContentResolver wrapper), not by the
+  // < 117.0.5938.29 / 118.0.5971.0 detachFd() of the ContentResolver wrapper), not by the
   // live WebView; one that survives refutes that mechanism.
   // Measurement only: it cannot grant FD01/CS00/L01/ANR01 a PASS.
   await measure('FD00G', 'same-process finalization with the WebView alive and provider retention', async () => {
@@ -1136,21 +1138,79 @@ async function main() {
           unstableRefs: evidence.fontProviderUnstableRefs,
           waiting: evidence.fontProviderWaiting, dead: evidence.fontProviderDead };
       };
+      // Non-throwing variant of snapshot()'s identity checks, for the
+      // failure path: fixed booleans and exit enums only.
+      const controlLiveness = async () => {
+        const currentPid = await pid().catch(() => null);
+        const alive = currentPid === initialPid;
+        let resumed = null;
+        let processLoss = null;
+        if (alive) {
+          resumed = (await androidFailureShell(
+            'dumpsys activity activities | grep -m1 topResumedActivity || true').catch(() => ''))
+            .includes(PKG + '/' + activity);
+        } else {
+          const controlEndedAt = await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null);
+          processLoss = { available: false };
+          try {
+            const exits = await androidFailureExits();
+            if (exits.available) {
+              processLoss = { available: true, ...summarizeFreshControlProcessExit(
+                exits.exits, initialPid, PKG, controlStartedAt, controlEndedAt),
+              dependencyEvidence: classifyFreshAndroidDependencyDeath(
+                exits.exits, initialPid, PKG, controlStartedAt, controlEndedAt) };
+            }
+          } catch { /* unknown stays unknown */ }
+        }
+        return { alive, resumed, processLoss };
+      };
+      const readMarkers = async () => parseFinalizationProbeMarkers(await androidFailureShell(
+        'logcat -d -v brief --pid ' + initialPid + " -s BridgeFinalizeProbe:I '*:S'"), initialPid);
       const before = await snapshot('webview-alive-before-finalization');
       // Partial evidence survives a failure below (FD02 rule): fixed enums only.
-      const evidence = { sameProcess: true, before, markers: null, pollAttempts: 0, after: null };
+      const evidence = { sameProcess: true, before, baselineBeforePass: null,
+        markers: null, pollAttempts: 0, after: null };
       facts.androidWebViewFinalizationEvidence = evidence;
+      // A "before" sample read after the pass started is not a baseline.
+      // An empty read proves nothing ("scheduled" is logged in onCreate).
+      try {
+        const early = await readMarkers();
+        evidence.baselineBeforePass = early.scheduled ? !early.started : null;
+      } catch { /* stays null */ }
       // The Activity starts the pass ~6 s after onCreate. Poll its fixed
       // markers from the SAME PID only; raw logcat never leaves memory.
       const deadline = Date.now() + 15_000;
       do {
         if (evidence.pollAttempts++) await sleep(500);
         try {
-          evidence.markers = parseFinalizationProbeMarkers(await androidFailureShell(
-            'logcat -d -v brief --pid ' + initialPid + " -s BridgeFinalizeProbe:I '*:S'"), initialPid);
+          // Never let an empty or failed later read erase markers already seen.
+          const parsed = await readMarkers();
+          if (parsed.scheduled || !evidence.markers) evidence.markers = parsed;
         } catch { /* keep polling until the deadline */ }
       } while (!evidence.markers?.finalized && Date.now() < deadline);
       if (!evidence.markers?.finalized) {
+        // The verdict is already FAIL. Failure-only evidence: ART's
+        // FinalizerWatchdog fires 10-20 s after a finalizer sticks and kills
+        // 5 s after SIGQUIT, i.e. up to ~25 s after the pass starts, which is
+        // past the verdict window. Keep observing for up to 15 s more (until
+        // the process dies or reports an uncaught exception), then tell a dead
+        // control from a pass still blocked in a live process. Never a PASS.
+        const evidenceDeadline = Date.now() + 15_000;
+        while (!evidence.markers?.uncaught && Date.now() < evidenceDeadline) {
+          await sleep(1000);
+          try {
+            const parsed = await readMarkers();
+            if (parsed.scheduled) evidence.markers = parsed;
+          } catch { /* keep the markers already seen */ }
+          if ((await pid().catch(() => null)) !== initialPid) break;
+        }
+        evidence.liveness = await controlLiveness();
+        // A marker logged just before a kill is still in logd: read once more.
+        try {
+          const parsed = await readMarkers();
+          if (parsed.scheduled) evidence.markers = parsed;
+        } catch { /* keep the markers already seen */ }
+        evidence.sameProcess = evidence.liveness.alive;
         throw new Error('FD00G finalization pass not observed; safe evidence: ' + JSON.stringify(evidence));
       }
       // ActivityThread turns the last released stable ref into ONE unstable
@@ -2111,8 +2171,10 @@ async function main() {
         } catch { /* keep polling until the deadline */ }
         if (!result.complete) await sleep(500);
       }
-      assert(result.complete, 'ANR02 probe did not report completion');
+      // Partial evidence survives a missing completion marker (enums only).
       facts.androidFatalAnrTraces = result;
+      assert(result.complete, 'ANR02 probe did not report completion; safe evidence: ' +
+        JSON.stringify(result));
       return result;
     } finally {
       await sh('am force-stop ' + PKG).catch(() => {});

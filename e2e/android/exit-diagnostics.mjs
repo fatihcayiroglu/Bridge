@@ -61,7 +61,9 @@ export function parseApplicationExits(raw, limit = 6) {
   return String(raw).split(/ApplicationExitInfo #\d+:/).slice(1, bounded + 1).map((record) => {
     const field = (re) => (re.exec(record) ?? [])[1] ?? null;
     const status = field(/\bstatus=(-?\d+)/);
-    const reason = field(/reason=(\d+ \([A-Z_ ]+\))/);
+    // Leading whitespace keeps this off "subreason="; one level of nested
+    // parentheses is allowed for AOSP's "APP CRASH(EXCEPTION)" / "(NATIVE)".
+    const reason = field(/(?:^|\s)reason=(\d+ \((?:[A-Z_ ]|\([A-Z_ ]+\))+\))/);
     return {
       at: field(/timestamp=(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/),
       pid: Number(field(/\bpid=(\d+)/)) || null,
@@ -197,7 +199,7 @@ export function summarizeFreshControlProcessExit(exits, expectedPid, expectedPro
   if (matches === null) return unknown;
   if (!matches.length) return { ...unknown, windowValid: true };
   const code = value => {
-    const m = /^([0-9]{1,2}) \([A-Z_ ]+\)$/.exec(String(value ?? ''));
+    const m = /^([0-9]{1,2}) \((?:[A-Z_ ]|\([A-Z_ ]+\))+\)$/.exec(String(value ?? ''));
     return m ? Number(m[1]) : null;
   };
   return { windowValid: true, matchingExit: true,
@@ -221,7 +223,7 @@ export function summarizeControlProcessExit(exits, expectedPid) {
   const hit = exits.slice(0, 6).find(row =>
     row && Number.isInteger(row.pid) && String(row.pid) === String(Number(expectedPid)));
   const code = value => {
-    const m = /^([0-9]{1,2}) \([A-Z_ ]+\)$/.exec(String(value ?? ''));
+    const m = /^([0-9]{1,2}) \((?:[A-Z_ ]|\([A-Z_ ]+\))+\)$/.exec(String(value ?? ''));
     return m ? Number(m[1]) : null;
   };
   return {
@@ -264,7 +266,11 @@ export function classifyAndroidDependencyDeath(exits, expectedPid) {
   // Re-validate instead of trusting the row: callers may pass hand-built rows.
   const described = found.dependencyDescription;
   const description = described && typeof described === 'object' &&
-    ['provider-death', 'package-dependency', 'sdk-sandbox'].includes(described.kind)
+    ['provider-death', 'package-dependency', 'sdk-sandbox'].includes(described.kind) &&
+    ['gms-fonts', 'other-provider', 'unknown'].includes(described.providerClass) &&
+    ['gms-persistent', 'gms', 'gms-ui', 'gms-other', 'other-process', 'unknown']
+      .includes(described.dyingProcessClass) &&
+    ['webview-provider', 'gms', 'other-package', 'unknown'].includes(described.dependencyPackageClass)
     ? described : null;
   const pick = (source, attribution) => ({
     exitMatched: true, isDependencyDeath: true,
@@ -657,7 +663,7 @@ export function parseFontRefReleaseMarkers(raw, appPid) {
     const threadtime = /\b[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+\s+([0-9]{1,8})\s+[0-9]{1,8}\s+[A-Z]\s+BridgeFontRefRelease:/.exec(line);
     const observedPid = brief?.[1] ?? threadtime?.[1];
     if (!observedPid || String(Number(observedPid)) !== targetPid) continue;
-    const released = /:\s*stage=released pass=([12])\s*$/.exec(line);
+    const released = /:\s*stage=pass-complete pass=([12])\s*$/.exec(line);
     const skipped = /:\s*stage=skipped reason=(webview-not-affected|provider-unavailable)\s*$/.exec(line);
     if (released) { seen = true; passes = Math.max(passes, Number(released[1])); }
     else if (skipped) { seen = true; skippedReason = skipped[1]; }
@@ -678,7 +684,8 @@ const ANR_SUBSYSTEMS = new Set(['bridge', 'capacitor', 'webview', 'androidx', 'g
  * unknown value drops the record instead of passing text through.
  */
 export function parseAnrTraceProbeMarkers(raw, appPid) {
-  const empty = { complete: false, supported: null, error: null, fatalAnrs: null, traces: [] };
+  const empty = { complete: false, supported: null, error: null, fatalAnrs: null,
+    records: null, capacity: null, coverage: 'unknown', traces: [] };
   if (!/^[0-9]{1,8}$/.test(String(appPid))) return empty;
   const targetPid = String(Number(appPid));
   const result = { ...empty, traces: [] };
@@ -693,10 +700,23 @@ export function parseAnrTraceProbeMarkers(raw, appPid) {
         top: exit[3], subsystem: exit[4] });
       continue;
     }
-    const done = /^stage=done supported=(true|false)(?: error=(true|false))? anrExits=([0-9]{1,3})$/.exec(body);
+    const done = /^stage=done supported=(true|false)(?: error=(true|false))? anrExits=([0-9]{1,3})(?: records=([0-9]{1,4}) oldestBeforeStart=(true|false) capacity=(-1|[0-9]{1,4}))?$/.exec(body);
     if (done) {
+      // Android keeps a bounded exit history per package and evicts only when
+      // it is full (config_app_exit_info_history_list_size, read on device).
+      // A history below capacity, or one reaching back before the journey,
+      // proves no fatal ANR was evicted; otherwise fatalAnrs is a lower bound.
+      // A probe error or an unreadable capacity never yields "complete" by guess.
+      const records = done[4] === undefined ? null : Number(done[4]);
+      const capacity = done[6] === undefined || done[6] === '-1' ? null : Number(done[6]);
+      let coverage = 'unknown';
+      if (records !== null && done[1] === 'true' && done[2] === 'false') {
+        coverage = done[5] === 'true' || (capacity !== null && records < capacity)
+          ? 'complete' : 'possibly-truncated';
+      }
       Object.assign(result, { complete: true, supported: done[1] === 'true',
-        error: done[2] === undefined ? null : done[2] === 'true', fatalAnrs: Number(done[3]) });
+        error: done[2] === undefined ? null : done[2] === 'true', fatalAnrs: Number(done[3]),
+        records, capacity, coverage });
     }
   }
   return result;
@@ -705,22 +725,49 @@ export function parseAnrTraceProbeMarkers(raw, appPid) {
 /**
  * #209 FD00G: progress of the debug finalization control in the EXACT app
  * process (brief logcat). scheduled -> started -> finalized distinguishes a
- * pass that never ran, one blocked inside GC/finalization, and a missing log.
+ * pass that never ran, one blocked inside GC/finalization, and a missing log;
+ * "stalled" says where the pass and ART's FinalizerDaemon were 5 s into the
+ * pass, and "uncaught" records a FinalizerWatchdog timeout before a crash.
+ * Every value is re-validated against an allowlist; anything else is dropped.
  */
+const STALL_THREAD_STATES = new Set(['NEW', 'RUNNABLE', 'BLOCKED', 'WAITING',
+  'TIMED_WAITING', 'TERMINATED', 'missing']);
+const STALL_WHERE = /^(?:none|other|binder|await-finalization|gc|idle-queue|finalizer-(?:pfd|cursor|webview|bridge|framework|other)(?:\+binder)?)$/;
+const UNCAUGHT_OWNERS = new Set(['pfd', 'cursor', 'webview', 'bridge', 'framework', 'other', 'none']);
+
 export function parseFinalizationProbeMarkers(raw, appPid) {
-  const none = { scheduled: false, started: false, webViewAttached: null,
-    finalized: false, passMs: null };
+  const none = { scheduled: false, instances: 0, started: false, webViewAttached: null,
+    finalized: false, passMs: null, stall: null, uncaught: null };
   if (!/^[0-9]{1,8}$/.test(String(appPid))) return none;
   const targetPid = String(Number(appPid));
   const result = { ...none };
   for (const line of String(raw).split(/\r?\n/).slice(-200)) {
     const m = /^[A-Z]\/BridgeFinalizeProbe\(\s*([0-9]{1,8})\):\s*(.*?)\s*$/.exec(line);
     if (!m || String(Number(m[1])) !== targetPid) continue;
-    if (m[2] === 'stage=scheduled') { result.scheduled = true; continue; }
-    const started = /^stage=started webViewAttached=(true|false)$/.exec(m[2]);
+    const body = m[2];
+    const scheduled = /^stage=scheduled instance=([0-9]{1,4})$/.exec(body);
+    if (scheduled) {
+      result.scheduled = true;
+      result.instances = Math.max(result.instances, Number(scheduled[1]));
+      continue;
+    }
+    const started = /^stage=started webViewAttached=(true|false)$/.exec(body);
     if (started) { result.started = true; result.webViewAttached = started[1] === 'true'; continue; }
-    const done = /^stage=finalized passMs=([0-9]{1,6})$/.exec(m[2]);
-    if (done) { result.finalized = true; result.passMs = Number(done[1]); }
+    const done = /^stage=finalized passMs=([0-9]{1,6})$/.exec(body);
+    if (done) { result.finalized = true; result.passMs = Number(done[1]); continue; }
+    const stall = /^stage=stalled passThread=([A-Za-z_]{1,16}) passIn=([a-z+-]{1,40}) finalizerDaemon=([A-Za-z_]{1,16}) finalizerIn=([a-z+-]{1,40}) refQueueDaemon=([A-Za-z_]{1,16}) refQueueIn=([a-z+-]{1,40})$/.exec(body);
+    if (stall && STALL_THREAD_STATES.has(stall[1]) && STALL_WHERE.test(stall[2]) &&
+        STALL_THREAD_STATES.has(stall[3]) && STALL_WHERE.test(stall[4]) &&
+        STALL_THREAD_STATES.has(stall[5]) && STALL_WHERE.test(stall[6])) {
+      result.stall = { passThread: stall[1], passIn: stall[2],
+        finalizerDaemon: stall[3], finalizerIn: stall[4],
+        refQueueDaemon: stall[5], refQueueIn: stall[6] };
+      continue;
+    }
+    const uncaught = /^stage=uncaught kind=(finalizer-timeout|refqueue-timeout|other) owner=([a-z]{1,12})$/.exec(body);
+    if (uncaught && UNCAUGHT_OWNERS.has(uncaught[2])) {
+      result.uncaught = { kind: uncaught[1], owner: uncaught[2] };
+    }
   }
   return result;
 }

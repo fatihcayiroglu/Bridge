@@ -28,9 +28,29 @@ public final class AnrTraceProbeActivity extends android.app.Activity {
             return;
         }
         int anrs = 0;
+        int records = 0;
+        boolean oldestBeforeStart = false;
+        // Platform retention cap (AOSP default 16); -1 when not readable.
+        int capacity = -1;
+        try {
+            android.content.res.Resources system = android.content.res.Resources.getSystem();
+            int id = system.getIdentifier("config_app_exit_info_history_list_size", "integer", "android");
+            if (id != 0) capacity = system.getInteger(id);
+        } catch (RuntimeException e) {
+            capacity = -1;
+        }
         try {
             android.app.ActivityManager am = getSystemService(android.app.ActivityManager.class);
-            for (android.app.ApplicationExitInfo exit : am.getHistoricalProcessExitReasons(null, 0, 16)) {
+            // maxNum 0 = every retained record. Android keeps a bounded history
+            // per package, so report whether it still reaches back before the
+            // journey; if not, early in-journey exits may have been evicted.
+            java.util.List<android.app.ApplicationExitInfo> exits =
+                    am.getHistoricalProcessExitReasons(null, 0, 0);
+            records = exits.size();
+            for (android.app.ApplicationExitInfo exit : exits) {
+                if (exit.getTimestamp() < since) oldestBeforeStart = true;
+            }
+            for (android.app.ApplicationExitInfo exit : exits) {
                 if (exit.getReason() != android.app.ApplicationExitInfo.REASON_ANR
                         || exit.getTimestamp() < since) continue;
                 if (++anrs > MAX_EXITS) continue;
@@ -45,10 +65,14 @@ public final class AnrTraceProbeActivity extends android.app.Activity {
                         + " " + result.marker());
             }
         } catch (RuntimeException e) {
-            android.util.Log.i(TAG, "stage=done supported=true error=true anrExits=" + anrs);
+            android.util.Log.i(TAG, "stage=done supported=true error=true anrExits=" + anrs
+                    + " records=" + records + " oldestBeforeStart=" + oldestBeforeStart
+                    + " capacity=" + capacity);
             return;
         }
-        android.util.Log.i(TAG, "stage=done supported=true error=false anrExits=" + anrs);
+        android.util.Log.i(TAG, "stage=done supported=true error=false anrExits=" + anrs
+                + " records=" + records + " oldestBeforeStart=" + oldestBeforeStart
+                + " capacity=" + capacity);
     }
 
     private static String readBounded(java.io.InputStream in) throws java.io.IOException {

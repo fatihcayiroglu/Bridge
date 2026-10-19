@@ -1081,11 +1081,11 @@ test('durable exit description and logcat kill line must agree before attributio
 
 test('production font-ref release markers are read only from the exact app PID', () => {
   const raw = [
-    '10-18 20:01:02.100  4321  4400 I BridgeFontRefRelease: stage=released pass=1',
-    'I/BridgeFontRefRelease( 4321): stage=released pass=2',
+    '10-18 20:01:02.100  4321  4400 I BridgeFontRefRelease: stage=pass-complete pass=1',
+    'I/BridgeFontRefRelease( 4321): stage=pass-complete pass=2',
     '10-18 20:01:02.300  9999  9999 I BridgeFontRefRelease: stage=skipped reason=webview-not-affected',
-    'BridgeFontRefRelease: stage=released pass=2 forged without a PID',
-    '10-18 20:01:02.400  4321  4400 I BridgeFontRefRelease: stage=released pass=1 token=secret',
+    'BridgeFontRefRelease: stage=pass-complete pass=2 forged without a PID',
+    '10-18 20:01:02.400  4321  4400 I BridgeFontRefRelease: stage=pass-complete pass=1 token=secret',
   ].join('\n');
   const result = parseFontRefReleaseMarkers(raw, '4321');
   assert.deepEqual(result, { available: true, skippedReason: null, passes: 2 });
@@ -1121,7 +1121,14 @@ test('production release and FD00G sources keep the release off the main thread 
   const fd00g = journeys.indexOf("await measure('FD00G'");
   assert.ok(fd00g > journeys.indexOf("await measure('FD00T'"));
   assert.ok(fd00g < journeys.indexOf("await measure('FD00W'"));
-  assert.match(journeys, /record\.fontRefRelease = parseFontRefReleaseMarkers\(/);
+  // Strict FD01's sample path is untouched: the provider sample follows pid()
+  // directly, and release markers are read only after it.
+  const stage = journeys.slice(journeys.indexOf('async function fontProviderStage('),
+    journeys.indexOf('async function androidPressureEvidence('));
+  assert.match(stage, /const currentPid = await pid\(\);\n    const raw = await androidFailureShell\('dumpsys activity processes ' \+ PKG\);/);
+  assert.ok(stage.indexOf("androidFailureShell('dumpsys activity processes ' + PKG)") <
+    stage.indexOf('BridgeFontRefRelease'));
+  assert.match(stage, /record\.fontRefRelease = parseFontRefReleaseMarkers\(releaseLog, currentPid\);/);
   assert.match(journeys, /await check\('FD01'/);
   assert.match(journeys, /assert\(!evidence\.fontProviderConnected/);
 });
@@ -1132,11 +1139,12 @@ test('ANR02 probe markers keep only allowlisted main-thread enums from the exact
     'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Blocked top=lock-wait subsystem=webview',
     'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=com.secret.Customer',
     'I/BridgeAnrTraceProbe( 6000): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=bridge',
-    'I/BridgeAnrTraceProbe( 5150): stage=done supported=true error=false anrExits=3',
+    'I/BridgeAnrTraceProbe( 5150): stage=done supported=true error=false anrExits=3 records=16 oldestBeforeStart=false capacity=16',
   ].join('\n');
   const result = parseAnrTraceProbeMarkers(raw, 5150);
   assert.deepEqual(result, {
-    complete: true, supported: true, error: false, fatalAnrs: 3,
+    complete: true, supported: true, error: false, fatalAnrs: 3, records: 16, capacity: 16,
+    coverage: 'possibly-truncated',
     traces: [
       { traceAvailable: true, mainState: 'Native', top: 'idle-looper', subsystem: 'framework-only' },
       { traceAvailable: true, mainState: 'Blocked', top: 'lock-wait', subsystem: 'webview' },
@@ -1148,7 +1156,27 @@ test('ANR02 probe markers keep only allowlisted main-thread enums from the exact
   assert.equal(parseAnrTraceProbeMarkers(raw, '5150; id').complete, false);
   assert.deepEqual(parseAnrTraceProbeMarkers(
     'I/BridgeAnrTraceProbe( 77): stage=done supported=false anrExits=0', 77),
-  { complete: true, supported: false, error: null, fatalAnrs: 0, traces: [] });
+  { complete: true, supported: false, error: null, fatalAnrs: 0, records: null, capacity: null,
+    coverage: 'unknown', traces: [] });
+  // Coverage: a history reaching back before the journey, or no history at
+  // all, is complete; a full history newer than the journey start is not.
+  const done = (tail) => parseAnrTraceProbeMarkers(
+    'I/BridgeAnrTraceProbe( 77): stage=done supported=true error=false anrExits=0 ' + tail, 77).coverage;
+  assert.equal(done('records=9 oldestBeforeStart=true capacity=16'), 'complete');
+  assert.equal(done('records=0 oldestBeforeStart=false capacity=16'), 'complete');
+  // Fresh CI install: nothing predates the journey, but a non-full history
+  // has evicted nothing.
+  assert.equal(done('records=15 oldestBeforeStart=false capacity=16'), 'complete');
+  assert.equal(done('records=16 oldestBeforeStart=false capacity=16'), 'possibly-truncated');
+  assert.equal(done('records=16 oldestBeforeStart=true capacity=16'), 'complete');
+  // Unreadable capacity or a probe error never yields "complete" by guess.
+  assert.equal(done('records=3 oldestBeforeStart=false capacity=-1'), 'possibly-truncated');
+  assert.equal(parseAnrTraceProbeMarkers('I/BridgeAnrTraceProbe( 77): stage=done supported=true ' +
+    'error=true anrExits=0 records=0 oldestBeforeStart=false capacity=16', 77).coverage, 'unknown');
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const anr02 = journeys.slice(journeys.indexOf("await measure('ANR02'"));
+  assert.ok(anr02.indexOf('facts.androidFatalAnrTraces = result;') <
+    anr02.indexOf("assert(result.complete, 'ANR02 probe did not report completion"));
 });
 
 test('ANR02 runs after the strict ANR01 gate and stays measurement-only', () => {
@@ -1172,19 +1200,20 @@ test('ANR02 runs after the strict ANR01 gate and stays measurement-only', () => 
 
 test('FD00G progress markers separate never-ran, blocked-in-pass and finished from the exact PID', () => {
   const lines = [
-    'I/BridgeFinalizeProbe( 4242): stage=scheduled',
+    'I/BridgeFinalizeProbe( 4242): stage=scheduled instance=1',
     'I/BridgeFinalizeProbe( 4242): stage=started webViewAttached=true',
     'I/BridgeFinalizeProbe( 4242): stage=finalized passMs=37',
     'I/BridgeFinalizeProbe( 5151): stage=finalized passMs=1',
     'BridgeFinalizeProbe: stage=finalized passMs=2 forged without a PID',
   ];
+  const none = { scheduled: false, instances: 0, started: false, webViewAttached: null,
+    finalized: false, passMs: null, stall: null, uncaught: null };
   assert.deepEqual(parseFinalizationProbeMarkers(lines.join('\n'), 4242), {
-    scheduled: true, started: true, webViewAttached: true, finalized: true, passMs: 37 });
+    ...none, scheduled: true, instances: 1, started: true, webViewAttached: true,
+    finalized: true, passMs: 37 });
   // Started but never finished is reported as such, not as a missing log.
   assert.deepEqual(parseFinalizationProbeMarkers(lines.slice(0, 2).join('\n'), '4242'), {
-    scheduled: true, started: true, webViewAttached: true, finalized: false, passMs: null });
-  const none = { scheduled: false, started: false, webViewAttached: null,
-    finalized: false, passMs: null };
+    ...none, scheduled: true, instances: 1, started: true, webViewAttached: true });
   assert.deepEqual(parseFinalizationProbeMarkers(lines.join('\n'), 1), none);
   assert.deepEqual(parseFinalizationProbeMarkers(lines.join('\n'), '4242; id'), none);
   assert.deepEqual(parseFinalizationProbeMarkers(
@@ -1193,5 +1222,77 @@ test('FD00G progress markers separate never-ran, blocked-in-pass and finished fr
   const fd00g = journeys.slice(journeys.indexOf("await measure('FD00G'"), journeys.indexOf("await measure('FD00W'"));
   assert.match(fd00g, /facts\.androidWebViewFinalizationEvidence = evidence;/);
   assert.match(fd00g, /const deadline = Date\.now\(\) \+ 15_000;/);
+  // Evidence-only window after the FAIL verdict; it can never produce a PASS.
+  assert.ok(fd00g.indexOf('const evidenceDeadline = Date.now() + 15_000;') >
+    fd00g.indexOf('if (!evidence.markers?.finalized) {'));
   assert.match(fd00g, /throw new Error\('FD00G finalization pass not observed; safe evidence: '/);
+  // A dead control must never be reported as a blocked pass.
+  assert.match(fd00g, /evidence\.liveness = await controlLiveness\(\);/);
+  // The "before" sample is only a baseline if the pass had not started yet,
+  // and an empty read proves nothing.
+  assert.match(fd00g, /evidence\.baselineBeforePass = early\.scheduled \? !early\.started : null;/);
+  assert.match(fd00g, /if \(parsed\.scheduled \|\| !evidence\.markers\) evidence\.markers = parsed;/);
+});
+
+test('FD00G stall, relaunch and finalizer-watchdog markers are allowlisted enums only', () => {
+  const raw = [
+    'I/BridgeFinalizeProbe( 4242): stage=scheduled instance=1',
+    'I/BridgeFinalizeProbe( 4242): stage=scheduled instance=2',
+    'I/BridgeFinalizeProbe( 4242): stage=started webViewAttached=true',
+    'I/BridgeFinalizeProbe( 4242): stage=stalled passThread=WAITING passIn=await-finalization finalizerDaemon=RUNNABLE finalizerIn=finalizer-pfd+binder refQueueDaemon=WAITING refQueueIn=other',
+    'I/BridgeFinalizeProbe( 4242): stage=uncaught kind=finalizer-timeout owner=pfd',
+  ].join('\n');
+  const parsed = parseFinalizationProbeMarkers(raw, 4242);
+  assert.equal(parsed.instances, 2);
+  assert.deepEqual(parsed.stall, { passThread: 'WAITING', passIn: 'await-finalization',
+    finalizerDaemon: 'RUNNABLE', finalizerIn: 'finalizer-pfd+binder',
+    refQueueDaemon: 'WAITING', refQueueIn: 'other' });
+  assert.deepEqual(parseFinalizationProbeMarkers(
+    'I/BridgeFinalizeProbe( 4242): stage=uncaught kind=refqueue-timeout owner=none', 4242).uncaught,
+  { kind: 'refqueue-timeout', owner: 'none' });
+  assert.deepEqual(parsed.uncaught, { kind: 'finalizer-timeout', owner: 'pfd' });
+  for (const forged of [
+    'I/BridgeFinalizeProbe( 4242): stage=stalled passThread=WAITING passIn=com.secret.Thing finalizerDaemon=RUNNABLE finalizerIn=gc refQueueDaemon=WAITING refQueueIn=other',
+    'I/BridgeFinalizeProbe( 4242): stage=stalled passThread=EVIL passIn=gc finalizerDaemon=RUNNABLE finalizerIn=gc refQueueDaemon=WAITING refQueueIn=other',
+    'I/BridgeFinalizeProbe( 4242): stage=stalled passThread=WAITING passIn=gc finalizerDaemon=RUNNABLE finalizerIn=gc refQueueDaemon=WAITING refQueueIn=com.secret',
+    'I/BridgeFinalizeProbe( 4242): stage=uncaught kind=finalizer-timeout owner=secret',
+  ]) {
+    const result = parseFinalizationProbeMarkers(forged, 4242);
+    assert.equal(result.stall, null);
+    assert.equal(result.uncaught, null);
+  }
+});
+
+test('crash exits keep their reason code instead of falling through to the subreason', () => {
+  const row = (reason) => [
+    '  ApplicationExitInfo #0:',
+    '    timestamp=2026-10-18 21:16:05.000 pid=777 realUid=10192 packageUid=10192 definingUid=10192 user=0',
+    `    process=com.bridge.app.debug reason=${reason} subreason=0 (UNKNOWN) status=0`,
+    '    importance=100 pss=1MB rss=1MB description=crash state=empty trace=null',
+  ].join('\n');
+  const window = ['2026-10-18T21:16:00', '2026-10-18T21:16:10'];
+  for (const [label, code] of [['4 (APP CRASH(EXCEPTION))', 4], ['5 (APP CRASH(NATIVE))', 5],
+    ['6 (ANR)', 6], ['12 (DEPENDENCY DIED)', 12], ['1 (EXIT_SELF)', 1]]) {
+    const parsed = parseApplicationExits(row(label));
+    assert.equal(parsed[0].reason, label);
+    assert.equal(parsed[0].subreason, '0 (UNKNOWN)');
+    assert.equal(summarizeFreshControlProcessExit(parsed, 777, 'com.bridge.app.debug', ...window).reasonCode, code);
+    assert.equal(summarizeControlProcessExit(parsed, 777).reasonCode, code);
+  }
+  // A crash is never misread as a dependency death or vice versa.
+  assert.equal(classifyAndroidDependencyDeath(parseApplicationExits(row('4 (APP CRASH(EXCEPTION))')), 777)
+    .attribution, 'not-dependency-death');
+});
+
+test('hand-built dependency descriptions cannot smuggle free text through any field', () => {
+  const base = { pid: 77, reason: '12 (DEPENDENCY DIED)', subreason: '0 (UNKNOWN)' };
+  for (const forged of [
+    { kind: 'provider-death', providerClass: 'com.secret.Customer/.Provider', dyingProcessClass: 'gms', dependencyPackageClass: 'unknown' },
+    { kind: 'provider-death', providerClass: 'gms-fonts', dyingProcessClass: 'user@example.com', dependencyPackageClass: 'unknown' },
+    { kind: 'package-dependency', providerClass: 'unknown', dyingProcessClass: 'unknown', dependencyPackageClass: 'com.secret.pkg' },
+  ]) {
+    const result = classifyAndroidDependencyDeath([{ ...base, dependencyDescription: forged }], 77);
+    assert.equal(result.attribution, 'unavailable');
+    assert.doesNotMatch(JSON.stringify(result), /secret|example|Customer/);
+  }
 });
