@@ -1,6 +1,6 @@
 # Android #209 — FontsProvider stable reference: upstream root cause and product mitigation
 
-**2026-10-19 · root cause traced in upstream source, confirmed by a same-process intervention (FD00G) and a durably attributed DEPENDENCY DIED kill (FD00W) · product mitigation observed working in three exact-head CI runs · #209 stays OPEN (FocusEvent ANRs, physical devices, owner decisions)**
+**2026-10-19 · root cause traced in upstream source, confirmed by a same-process intervention (FD00G) and a durably attributed DEPENDENCY DIED kill (FD00W) · product mitigation observed working in four exact-head CI runs · #209 stays OPEN (FocusEvent ANRs, fixed-WebView and physical-device validation, FD01′ decision)**
 
 Tracking issue: [#209](https://github.com/fatihcayiroglu/Bridge/issues/209). Diagnostic PR: [#322](https://github.com/fatihcayiroglu/Bridge/pull/322). Evidence dossier: [`P7_ANDROID_209_UPSTREAM_REPRODUCTION.md`](P7_ANDROID_209_UPSTREAM_REPRODUCTION.md).
 
@@ -66,9 +66,9 @@ The historical CS00 death (`reason=12, subreason=0` in the blank-WebView control
 - runs **once per process** and **only** when all of these hold:
   - the default user agent's `Chrome/x.y.z.w` is a build not known to contain the fix: anything below M117; M117 below `117.0.5938.29`; M118 below `118.0.5971.0`. Builds older than any tag read are conservatively treated as leaking; an extra GC is harmless. A missing or unparseable version is left alone.
   - `com.google.android.gms.fonts` resolves for this app. This uses the same visibility WebView's fetch has.
-- on a **daemon, minimum-priority thread**, runs `gc(); runFinalization(); gc(); runFinalization()` at ≈1.5 s and ≈10 s after the first page load.
+- on a **daemon thread at normal priority** (deliberately not a low priority, §4b), runs `gc(); runFinalization(); gc(); runFinalization()` at ≈1.5 s and ≈10 s after the first page load. The main thread only schedules it: it never runs a GC, a finalization, a sleep or a package-manager query for this.
 - touches **no** GMS state, provider, `ContentProviderClient`, ref count or WebView internals. It runs the finalizer AOSP already relies on, sooner, for an object Bridge never references.
-- logs fixed markers (`BridgeFontRefRelease`, `stage=pass-complete`) only in debuggable builds. A marker proves the pass ran, not that anything was released. Release builds log nothing.
+- logs fixed markers (`BridgeFontRefRelease`, `stage=pass-complete pass=N passMs=… mainMaxGapMs=…`) only in debuggable builds. `mainMaxGapMs` is the worst delay of a 50 ms main-thread heartbeat while the pass ran (§4b). A marker proves the pass ran, not that anything was released. Release builds log nothing and run no heartbeat.
 - is **best effort**: a prefetch that completes after the last pass (a very slow GMS provider) keeps its stable reference until the next natural GC, i.e. the behaviour without the mitigation.
 
 FD00G (commit `e93e311`) is the same-OS, same-WebView **intervention test** of the mechanism. It runs **the production pass** in a plain about:blank WebView that stays attached and referenced:
@@ -80,13 +80,13 @@ Expected cost on affected WebView: two explicit GCs per process, off the main th
 
 ### 4a. CI evidence (API 34 emulator, WebView 113.0.5672.136)
 
-| Observation | Before the mitigation (e.g. [39160502999](https://github.com/fatihcayiroglu/Bridge/actions/runs/39160502999)) | With it: [39164884625](https://github.com/fatihcayiroglu/Bridge/actions/runs/39164884625) (`a9bd659`), [39166491452](https://github.com/fatihcayiroglu/Bridge/actions/runs/39166491452) (`bfb7177`), [39254381137](https://github.com/fatihcayiroglu/Bridge/actions/runs/39254381137) (`4603fe6`) |
+| Observation | Before the mitigation (e.g. [39160502999](https://github.com/fatihcayiroglu/Bridge/actions/runs/39160502999)) | With it: [39164884625](https://github.com/fatihcayiroglu/Bridge/actions/runs/39164884625) (`a9bd659`), [39166491452](https://github.com/fatihcayiroglu/Bridge/actions/runs/39166491452) (`bfb7177`), [39254381137](https://github.com/fatihcayiroglu/Bridge/actions/runs/39254381137) (`4603fe6`), [39256893223](https://github.com/fatihcayiroglu/Bridge/actions/runs/39256893223) (`5663710`) |
 |---|---|---|
-| A01 first UI (product) | 1 **stable** / 0 unstable | **0 stable / 1 unstable**, `passes=1`, in all three runs: the ActivityThread stable→unstable retain window right after release pass 1 |
-| FD01 after login | 0 stable / 1 unstable → **FAIL** | **0 / 0 → PASS**, `passes=2`, in all three runs |
+| A01 first UI (product) | 1 **stable** / 0 unstable | **0 stable / 1 unstable**, `passes=1`, in the first three runs: the ActivityThread stable→unstable retain window right after release pass 1 |
+| FD01 after login | 0 stable / 1 unstable → **FAIL** | **0 / 0 → PASS**, `passes=2`, in all four runs |
 | FD02 1.5 / 4 / 8 s | 0 | 0 |
-| FD00W / FD00T (unmitigated controls) | 1 stable for 8 s; survives `destroy()` | unchanged: the platform leak itself is untouched |
-| CS00, CS01, L01 (HOT), L03, L04, ANR01 | — | PASS in all three runs; ANR02 found 0 fatal ANRs (in run 39254381137 its coverage was honestly `possibly-truncated`: 16/16 records) |
+| FD00W / FD00T (unmitigated controls) | 1 stable for 8 s; survives `destroy()` | unchanged: the platform leak itself is untouched. FD00W was **killed by DEPENDENCY DIED in the last two runs** (below) |
+| CS01, L01 (HOT), L03, L04, ANR01 | — | PASS in all four runs; ANR02 found 0 fatal ANRs (in run 39254381137 its coverage was honestly `possibly-truncated`: 16/16 records). CS00 is a MEASURED control, not a PASS; in run 39256893223 all six of its cold starts kept their PID |
 
 **Same-process intervention, FD00G (run 39254381137).** A plain about:blank WebView stays attached and referenced, and the production pass runs on the same PID:
 
@@ -94,9 +94,9 @@ Expected cost on affected WebView: two explicit GCs per process, off the main th
 - The pass completes (`finalized`, `passMs=36`).
 - `after`: **stableRefs=0**, unstableRefs=1.
 
-The stable reference was held by finalizable garbage, not by the live WebView. This is the controlled experiment the source analysis predicted.
+The stable reference was held by finalizable garbage, not by the live WebView. This is the controlled experiment the source analysis predicted. Run 39256893223 repeated it on the next commit: **stableRefs 1 → 0** on the same PID, `passMs=29`, no stall and no uncaught marker.
 
-In the two earlier runs, before stall, liveness and exit instrumentation existed, the same control logged `started` but not `finalized` within ~13 s. Those runs cannot tell a blocked pass from a killed control process. The instrumentation now in place (stall snapshot of the pass thread, FinalizerDaemon and ReferenceQueueDaemon; FinalizerWatchdog marker; liveness and exit attribution) will classify any recurrence. Across all runs, the product's identical pass has always completed and the product process has survived.
+The two earlier "started but not finalized" FD00G results are analysed in §4b.
 
 **The kill path, attributed durably: FD00W (run 39254381137).** During its 8 s observation, the **unmitigated** plain-WebView control, holding the leaked stable ref, was killed. The durable `ApplicationExitInfo.description` classifies the exit as:
 
@@ -106,12 +106,56 @@ In the two earlier runs, before stall, liveness and exit instrumentation existed
 
 That is ActivityManager killing a stable FontsProvider client because `com.google.android.gms.persistent`, the process hosting the GMS FontsProvider, died. It is the same Activity (`WebViewBaselineActivity`) and the same reason and subreason as the earlier CS00 blank-WebView death ([39159049059](https://github.com/fatihcayiroglu/Bridge/actions/runs/39159049059)). Why GMS persistent died is not observable from the app and was not investigated: no GMS internals are touched.
 
-Every run is **34 PASS / 1 FAIL / 0 SKIPPED / 16 MEASURED**:
+Run 39256893223 recorded the identical kill of the identical control: reason 12, subreason 0, `provider-death`, `gms-fonts`, `gms-persistent`, `exit-description`.
 
-- In runs 39164884625 and 39166491452 the FAIL is FD00G, the uninstrumented stall above.
-- In run 39254381137 the FAIL is **FD00W**: the unmitigated control's process was killed by DEPENDENCY DIED. By design, a control whose process vanishes is a FAIL, and it was not relabelled.
+Every run is **34 PASS / 1 FAIL / 0 SKIPPED / 16 MEASURED**, and every FAIL is an unmitigated upstream control, never a product journey:
 
-Turning these unmitigated, platform-defect controls into non-gating diagnostics (e.g. a nightly job) would change test semantics, so it is left to the owner (§7).
+- In runs 39164884625 and 39166491452 the FAIL is FD00G, the uninstrumented stall (§4b).
+- In runs 39254381137 and 39256893223 the FAIL is **FD00W**: the unmitigated control's process was killed by DEPENDENCY DIED. By design, a control whose process vanishes is a FAIL, and it was not relabelled.
+
+On the owner's decision these controls now run in a separate non-gating diagnostic workflow, still as real FAILs (§4c).
+
+### 4b. FD00G stalls and main-thread safety of the production pass
+
+**What was observed.** In runs 39164884625 and 39166491452, the FD00G control logged `started` but not `finalized` within ~13 s. Neither run had stall, liveness or exit instrumentation, so neither can tell a pass that blocked from a control process that was killed. Both instrumented runs since (39254381137, 39256893223) finished the same pass in 36 ms and 29 ms with no stall or watchdog marker. The product's own pass completed in every run, and the product process survived.
+
+**What was ruled out, by reading source:**
+
+- Contention on ActivityManager's global lock. Releasing a provider reference ends in `ActivityManagerService.refContentProvider`, which adjusts the connection's counts without taking that lock.
+- A starved finalizer. ART's FinalizerDaemon and ReferenceQueueDaemon run at normal priority, as did FD00G's pass thread.
+
+**What remains possible:** the control process was killed mid-pass, or a finalizer ran long. The kill is plausible: FD00W and CS00 show that exactly this kind of unmitigated control, holding the leaked stable ref, gets DEPENDENCY DIED kills on this image. A kill before the `finalized` marker is indistinguishable from a stall in those two runs. This is consistent but **unproven**. The diagnostic suite now runs FD00G three times per night with:
+
+- a stall snapshot of the pass thread, FinalizerDaemon and ReferenceQueueDaemon;
+- FinalizerWatchdog and uncaught-exception markers;
+- liveness and exit attribution.
+
+**A real production risk was found and fixed.** The production pass thread was `MIN_PRIORITY`. An explicit GC suspends every thread, the main thread included, for its brief flip, and only the GC thread can resume them. A nice-19 thread descheduled by CPU contention would therefore stall the UI: a priority inversion that could turn into jank or an ANR on a busy device. The pass now runs at `NORM_PRIORITY`, as ART's own HeapTaskDaemon and FinalizerDaemon do.
+
+The pass cannot block the main thread on any other path:
+
+- `System.runFinalization()` blocks only the calling worker.
+- The main thread only reads the user agent and starts the thread.
+- Source-contract tests keep `resolveContentProvider`, sleeps, `gc()` and `runFinalization()` out of the main-thread part.
+
+**Evidence and gates.**
+
+- Debug builds report `passMs` and `mainMaxGapMs` for each pass. FD01's facts expose them as `maxPassMs` and `maxMainGapMs`.
+- They are MEASURED, not yet asserted: no baseline exists, and choosing a threshold without one would be arbitrary.
+- The strict gates that would catch a UI stall stay unchanged: ANR01 (no OS-reported ANR), CS01 (cold starts PID-stable, no ANR), L01 (HOT resume, PID-stable).
+
+### 4c. Gating after the owner's decisions (2026-10-19)
+
+- **Product suite** (`mobile-android.yml`, `ANDROID_JOURNEY_SUITE=product`, required): every Bridge journey and gate as before, including A01, CS01, A02, FD01 (unchanged), L01–L04 and ANR01. Plus **PD01**: the Bridge process must never exit with reason 12 (DEPENDENCY DIED) during the journeys.
+  - PD01 reads `dumpsys activity exit-info` after startup, after the lifecycle journeys and at the end.
+  - It de-duplicates the records and counts only those after the device-clock journey start.
+  - It attributes any reason-12 record from its durable description.
+  - It FAILs when the history is unreadable or the journey window is unknown.
+  - It also FAILs when a full 16-record history shows no overlap with what was already read, since exits may then have been evicted unread. Unverifiable is never a PASS.
+- **Upstream WebView controls** (`android-upstream-webview-diagnostics.yml`, `ANDROID_JOURNEY_SUITE=upstream-webview-controls`, nightly and on demand, not required): FD00, FD00P/C/A/N/D/S/T, FD00G ×3, FD00W and CS00.
+  - These are unmitigated debug Activities without Bridge code.
+  - A control FAIL is still a FAIL: the job exits nonzero and its summary says so.
+  - Nothing there is counted in, or excused by, the product totals.
 
 Found and fixed on the way: `parseApplicationExits` read crash exits (`reason=4 (APP CRASH(EXCEPTION))`, `5 (APP CRASH(NATIVE))`) as reason 0, because the nested parenthesis made its regex fall through to `subreason=`. Any earlier "reason 0" process loss in #209 evidence must be re-read with this in mind.
 
@@ -142,14 +186,14 @@ Proposed equally strict replacement, requiring owner approval before any change:
 - **CS01, L01 (HOT, PID-stable), ANR01, A01, L03/L04 recovery** unchanged.
 - Plus a reason-12 gate: any Bridge exit with reason 12 during the journey is a FAIL, reported with its classified description.
 
-Until that decision, FD01 stays as written. With the mitigation in place, FD01 should now pass for a real reason, since the stable reference is gone. A pass on one run proves nothing permanent.
+FD01 stays as written: on the owner's decision (2026-10-19) it is not changed until FD01′ has been validated on a fixed-WebView image and on physical devices. The reason-12 gate is implemented independently as PD01 (§4c) and does not replace FD01. With the mitigation in place, FD01 should now pass for a real reason, since the stable reference is gone. A pass on one run proves nothing permanent.
 
 ## 7. Remaining work before #209 can close
 
-1. ~~Show stable → 0 on the same PID with the WebView alive~~ **done** (FD00G, run 39254381137). **Open:** classify any recurrence of the earlier "started but not finalized" stalls with the new instrumentation. If the forced pass is ever seen to wedge or kill a WebView-113 process, the production mitigation must be revisited.
-2. Product evidence is consistent across three independent runs (`passes ≥ 1`, 0 stable refs after login, FD01 PASS). Keep collecting runs, and run on physical devices.
+1. ~~Show stable → 0 on the same PID with the WebView alive~~ **done** (FD00G, runs 39254381137 and 39256893223). **Open:** classify any recurrence of the two earlier "started but not finalized" results with the nightly instrumentation (§4b). If the forced pass is ever seen to wedge or kill a WebView-113 process, the production mitigation must be revisited.
+2. Product evidence is consistent across four exact-head runs (`passes ≥ 1`, 0 stable refs after login, FD01 PASS), which shows consistency, not permanence. PD01 must hold across further product runs. Collect a `mainMaxGapMs` baseline before turning it into an asserted bound.
 3. A **fixed-WebView** image (e.g. API 35, WebView 124) must show no stable reference in FD00W/FD00T without any mitigation, and the mitigation must report `skipped webview-not-affected`.
 4. **Physical devices** with current Play-updated WebView, plus one GMS device with a frozen pre-117 WebView if obtainable. No physical-device testing has been done.
 5. The **FocusEvent ANRs** (reason 6) need their own main-thread evidence. ANR02 now classifies fatal ANR traces app-locally, but no ANR has recurred since it was added, and it cannot see non-fatal ANRs or exits evicted from Android's 16-record history.
 6. Owner decision on the FD01′ contract (§6).
-7. **Owner decision:** the unmitigated controls (FD00W, CS00 blank-WebView, FD00T, FD00N/D/S) reproduce a platform defect that Bridge cannot fix in an unmodified WebView. They can turn CI red through a DEPENDENCY DIED kill whenever GMS persistent restarts during their window, as FD00W did in run 39254381137. Decide whether they stay per-PR gates or move to a non-gating nightly diagnostic. Per the project rules, this PR does not change their semantics.
+7. ~~Owner decision on the unmitigated controls~~ **decided 2026-10-19:** they moved to the non-gating nightly diagnostic workflow, with their FAILs and nonzero exit status preserved (§4c). Its schedule only runs from the default branch; on this PR it runs because the workflow file changed.
