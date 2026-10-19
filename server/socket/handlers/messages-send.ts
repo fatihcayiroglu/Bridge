@@ -20,7 +20,7 @@ import { getCachedPerms } from '../../lib/permCache';
 import { extractUrls, fetchLinkPreview } from '../../lib/linkPreview';
 import { checkSpamAsync } from '../../lib/security';
 import { mentionPingGate } from '../../lib/abusePolicy';
-import { checkMessageContent } from '../../lib/messageContentPolicy';
+import { checkMessageContent, machineContentRefused } from '../../lib/messageContentPolicy';
 // Sprint 120: T5 — Server-side DOMPurify sanitization eklendi
 // sanitizeMessage() (regex tabanlı) yerine sanitizeMessageContent() (DOMPurify/jsdom) kullanılıyor
 import { normalizeMessageText, RAW_TEXT_FORMAT } from '../../lib/storedText';
@@ -617,6 +617,10 @@ export async function sendChannelMessage(
     const bridges = await Bridges.findActiveFromSourceChannel(channelId);
     for (const bridge of bridges) {
       if (type === 'file' || type === 'sticker') continue;
+      // Only plaintext text is relayed. An encrypted message has none (its
+      // stored content is empty); `message:send` does not accept that type
+      // today, and the relay must not depend on it.
+      if (type === 'e2ee') continue;
       // Persistent bridge rows are not authority by themselves: legacy/corrupt
       // rows must not be able to cross tenants by pairing arbitrary ids.
       if (String(bridge.sourceChannelId) !== channelId || String(bridge.sourceServerId) !== serverId) {
@@ -630,11 +634,36 @@ export async function sendChannelMessage(
           event: 'bridge.integrity.target_mismatch' }, 'Bridge forwarding skipped because target tenant identity is invalid.');
         continue;
       }
+      // The stored text, never the raw payload, is what the bridge relays.
+      const relayed = `🌉 **[${bridge.label || 'Bridge'}]** ${String(msg.content ?? '').trim()}`;
+      // The target channel belongs to another server, whose AutoMod rules
+      // apply to what the bridge writes there, as to an incoming webhook. The
+      // bridge is a machine principal (`bridge:<id>`): the target's member
+      // roles and timeouts do not apply and any matching rule refuses the
+      // copy; the source message stays. A rule-store failure skips the copy
+      // (fail closed).
+      let refused: boolean;
+      try {
+        refused = await machineContentRefused({
+          principalId: `bridge:${bridge._id}`, serverId: String(bridge.targetServerId),
+          channelId: String(bridge.targetChannelId), displayName: bridge.label || 'Bridge', content: relayed,
+        }, io);
+      } catch (err) {
+        logger.warn({ bridgeId: bridge._id, targetServerId: bridge.targetServerId, event: 'bridge.forward.moderation_unavailable',
+          err: err instanceof Error ? err.message : String(err) },
+        'Bridge forwarding skipped because the target server moderation is unavailable.');
+        continue;
+      }
+      if (refused) {
+        logger.info({ bridgeId: bridge._id, targetServerId: bridge.targetServerId, event: 'bridge.forward.moderation_refused' },
+          'Bridge forwarding refused by the target server AutoMod.');
+        continue;
+      }
       const bMsg = await Messages.create({
         _id: uuidv4(), channelId: bridge.targetChannelId, serverId: bridge.targetServerId,
         userId: user._id, username: user.username, displayName: user.displayName,
         avatarColor: user.avatarColor, avatarUrl: user.avatarUrl || null,
-        content: `🌉 **[${bridge.label || 'Bridge'}]** ${content?.trim() || ''}`,
+        content: relayed,
         type: 'normal', reactions: {}, createdAt: Date.now(),
         bridgedFrom: { channelId, serverId },
       });

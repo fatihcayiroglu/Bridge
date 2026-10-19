@@ -24,10 +24,12 @@
 //
 // Machine principals (machineContentRefused below) post through their own
 // paths: an installed bot's interaction reply (`bot:<id>`), an incoming
-// webhook (`webhook:<id>`) and a plugin (`plugin:<id>`). They get the server's
-// AutoMod rules and not the P7 per-account limits. Bridge's own system and
-// audit messages (AutoMod alerts, join notices) are written directly and are
-// not moderated.
+// webhook (`webhook:<id>`), a plugin (`plugin:<id>`), and the two relays that
+// copy another server's message into this server's channel: a channel bridge
+// (`bridge:<id>`) and an announcement crosspost (`crosspost:<source channel
+// id>`). They get the RECEIVING server's AutoMod rules and not the P7
+// per-account limits. Bridge's own system and audit messages (AutoMod alerts,
+// join notices) are written directly and are not moderated.
 
 import { Automod, Members } from '../db/repositories';
 import { ABUSE_POLICY, checkContentAbuse, mentionsWithinLimit } from './abusePolicy';
