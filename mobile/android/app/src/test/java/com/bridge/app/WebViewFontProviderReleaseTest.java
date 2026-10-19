@@ -19,13 +19,20 @@ public class WebViewFontProviderReleaseTest {
         assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("113.0.5672.136")));
         assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("116.0.5845.96")));
         assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("117.0.5938.0")));
-        assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("117.0.5938.59")));
+        // Last unfixed builds, verified by tag on the M117 branch and on trunk.
+        assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("117.0.5938.28")));
+        assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("118.0.5970.0")));
+        assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("118.0.5950.3")));
         assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("117.0.5900.12")));
+        // Older than any build read; assumed to leak (an extra GC is harmless).
         assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("83.0.4103.106")));
     }
 
     @Test
     public void fixedBuildsAreLeftAlone() {
+        // First fixed builds on the M117 branch and on trunk.
+        assertFalse(WebViewFontProviderRelease.isLeakingChromium(ua("117.0.5938.29")));
+        assertFalse(WebViewFontProviderRelease.isLeakingChromium(ua("118.0.5971.0")));
         assertFalse(WebViewFontProviderRelease.isLeakingChromium(ua("117.0.5938.60")));
         assertFalse(WebViewFontProviderRelease.isLeakingChromium(ua("117.0.5938.140")));
         assertFalse(WebViewFontProviderRelease.isLeakingChromium(ua("118.0.5993.0")));

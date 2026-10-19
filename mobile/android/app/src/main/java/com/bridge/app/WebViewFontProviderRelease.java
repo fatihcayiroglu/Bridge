@@ -14,24 +14,28 @@ import java.util.regex.Pattern;
  * Android #209: release a STABLE Google Play Services FontsProvider reference
  * that older Android System WebView builds leak into the app process.
  *
- * <p>Upstream mechanism (verified against source, not inferred from timing):
+ * <p>Upstream mechanism, read in Chromium 113-140 and AOSP android14-release
+ * sources (older Android releases were not re-read):
  * <ol>
- *   <li>On renderer start, Blink's {@code FontUniqueNameLookupAndroid::Init}
- *       asks the browser side to {@code FetchAllFontFiles} (Google Sans,
- *       Noto Color Emoji Compat) from {@code com.google.android.gms.fonts}.</li>
+ *   <li>When {@code AndroidDownloadableFontsMatching} is enabled, Blink's
+ *       {@code FontUniqueNameLookupAndroid::Init} asks the browser side to
+ *       {@code FetchAllFontFiles} (Google Sans, Noto Color Emoji Compat) from
+ *       {@code com.google.android.gms.fonts}. On the CI image this happens
+ *       on the first navigation (no navigation, no provider ref).</li>
  *   <li>Chromium's {@code AndroidFontLookupImpl.tryFetchFont} opens the font
  *       with {@code ContentResolver.openFileDescriptor}. AOSP returns a
  *       {@code ParcelFileDescriptorInner} that holds a STABLE provider
  *       reference until {@code releaseResources()} runs.</li>
- *   <li>Before Chromium 117.0.5938.60 that wrapper went straight to
+ *   <li>Before the upstream fix that wrapper went straight to
  *       {@code CoreImpl.wrapFileDescriptor}, which calls {@code detachFd()}.
  *       For a wrapping descriptor AOSP's {@code detachFd()} delegates to the
  *       inner descriptor and never calls the wrapper's
  *       {@code releaseResources()}; only {@code finalize()} does. The stable
  *       reference therefore lives until the unreachable wrapper is garbage
- *       collected and finalized. 117.0.5938.60+ dups the descriptor and closes
- *       the original immediately (verified: absent at 117.0.5938.0, present
- *       at 117.0.5938.60).</li>
+ *       collected and finalized. Fixed builds dup the descriptor and close the
+ *       original immediately. By tag: unfixed through 117.0.5938.28 on the
+ *       M117 branch and through 118.0.5970.0 on trunk; fixed from
+ *       117.0.5938.29 and 118.0.5971.0.</li>
  *   <li>While any stable reference exists, ActivityManager kills the app with
  *       {@code REASON_DEPENDENCY_DIED} if the providing GMS process dies
  *       ({@code ContentProviderHelper.removeDyingProviderLocked}); unstable-only
@@ -43,6 +47,10 @@ import java.util.regex.Pattern;
  * relies on simply ends the exposure window early instead of "whenever the
  * next GC happens", which in an idle app can be the rest of the process
  * lifetime. Up-to-date WebView never reaches this code.
+ *
+ * <p>Best effort: the passes run at fixed times after the first page load,
+ * so a prefetch that only completes after the last pass (a very slow GMS
+ * provider) keeps its stable reference until the next natural GC.
  */
 final class WebViewFontProviderRelease {
     static final String LOG_TAG = "BridgeFontRefRelease";
@@ -58,9 +66,9 @@ final class WebViewFontProviderRelease {
     private WebViewFontProviderRelease() {}
 
     /**
-     * True only for Chromium builds that predate the upstream fix. Unknown or
-     * non-Chromium user agents return false: no action without positive
-     * identification.
+     * True for Chromium builds not known to contain the upstream fix, judged
+     * conservatively (every build older than M117 is assumed to leak). A user
+     * agent without a parseable Chrome/x.y.z.w token returns false.
      */
     static boolean isLeakingChromium(String userAgent) {
         if (userAgent == null) return false;
@@ -75,9 +83,11 @@ final class WebViewFontProviderRelease {
     }
 
     static boolean isLeakingChromium(int major, int build, int patch) {
-        if (major != 117) return major < 117;
-        // The fix landed on the M117 branch between 117.0.5938.0 and .60.
-        return build < 5938 || (build == 5938 && patch < 60);
+        if (major < 117) return true;
+        // M117 branch: fixed from 117.0.5938.29. Trunk: fixed from 118.0.5971.0.
+        if (major == 117) return !(build == 5938 && patch >= 29);
+        if (major == 118) return build < 5971;
+        return false;
     }
 
     /**
@@ -108,7 +118,8 @@ final class WebViewFontProviderRelease {
             for (int i = 0; i < PASS_DELAYS_MS.length; i++) {
                 SystemClock.sleep(PASS_DELAYS_MS[i]);
                 runFinalizationPass();
-                marker(debuggable, "stage=released pass=" + (i + 1));
+                // Proves the pass ran, not that anything was released.
+                marker(debuggable, "stage=pass-complete pass=" + (i + 1));
             }
         }, LOG_TAG);
         worker.setDaemon(true);

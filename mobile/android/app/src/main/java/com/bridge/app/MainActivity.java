@@ -46,9 +46,10 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(BridgePushSupportPlugin.class);
         super.onCreate(savedInstanceState);
         logEmojiStartup("after-super");
-        // #209: WebView builds before Chromium 117.0.5938.60 leak a STABLE
-        // GMS FontsProvider reference (a DEPENDENCY DIED kill path) until the
-        // next GC. Version-gated; a no-op on current WebView. See the class.
+        // #209: WebView builds without the upstream fix (Chromium < 117.0.5938.29
+        // / 118.0.5971.0) leak a STABLE GMS FontsProvider reference (a
+        // DEPENDENCY DIED kill path) until the next GC. Version-gated; a no-op
+        // on current WebView. See the class.
         if (getBridge() != null) {
             getBridge().addWebViewListener(new com.getcapacitor.WebViewListener() {
                 @Override
