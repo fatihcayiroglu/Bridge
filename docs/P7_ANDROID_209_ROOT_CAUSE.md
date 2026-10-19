@@ -1,12 +1,12 @@
 # Android #209 — FontsProvider stable reference: upstream root cause and product mitigation
 
-**2026-10-18 · root cause traced in upstream source · product mitigation implemented · CI validation pending on this branch · #209 stays OPEN**
+**2026-10-19 · root cause traced in upstream source · product mitigation implemented and observed working in two exact-head CI runs · causal control FD00G still unresolved · #209 stays OPEN**
 
 Tracking issue: [#209](https://github.com/fatihcayiroglu/Bridge/issues/209). Diagnostic PR: [#322](https://github.com/fatihcayiroglu/Bridge/pull/322). Evidence dossier: [`P7_ANDROID_209_UPSTREAM_REPRODUCTION.md`](P7_ANDROID_209_UPSTREAM_REPRODUCTION.md).
 
 ## 1. Summary
 
-The STABLE `com.google.android.gms.fonts` reference that FD00N/FD00D/FD00S/FD00W/FD00T and FD01 observe on the CI image (Android 14, Google APIs x86_64, **Android System WebView 113.0.5672.136**) comes from a **Chromium bug that was fixed in 117.0.5938.60**. It isn't caused by Bridge code, Capacitor or AndroidX:
+The STABLE `com.google.android.gms.fonts` reference that FD00N/FD00D/FD00S/FD00W/FD00T and FD01 observe on the CI image (Android 14, Google APIs x86_64, **Android System WebView 113.0.5672.136**) comes from a **Chromium bug fixed in 117.0.5938.29 (M117 branch) and 118.0.5971.0 (trunk)**. It isn't caused by Bridge code, Capacitor or AndroidX:
 
 1. The renderer prefetches GMS downloadable fonts at startup.
 2. Chromium opens each font through `ContentResolver.openFileDescriptor`. That returns a wrapper holding a **stable** provider reference.
@@ -26,9 +26,14 @@ That one mechanism accounts for every FontsProvider observation recorded so far 
 | 5 | For a wrapping PFD (`mWrapped != null`), `detachFd()` returns `mWrapped.detachFd()` and **never calls the wrapper's `releaseResources()`**. Only `finalize()` does (L1073-1076). | AOSP [`ParcelFileDescriptor.java` L769-783 @android14-release](https://github.com/aosp-mirror/platform_frameworks_base/blob/android14-release/core/java/android/os/ParcelFileDescriptor.java#L769-L783) |
 | 6 | When the last stable reference is released, ActivityThread converts it into **one unstable reference** and removes that after `CONTENT_PROVIDER_RETAIN_TIME = 1000` ms. | AOSP [`ActivityThread.java` @android14-release](https://github.com/aosp-mirror/platform_frameworks_base/blob/android14-release/core/java/android/app/ActivityThread.java#L290), `releaseProvider(..., stable)` |
 | 7 | When a provider's process dies, clients with `conn.stableCount() > 0` are killed with `REASON_DEPENDENCY_DIED`. Unstable-only clients get `unstableProviderDied`. | AOSP [`ContentProviderHelper.java` L1794 @android14-release](https://github.com/aosp-mirror/platform_frameworks_base/blob/android14-release/services/core/java/com/android/server/am/ContentProviderHelper.java#L1794) |
-| 8 | **Fix:** "Duplicate the ParcelFileDescriptor and close the original". It is absent at `117.0.5938.0` and present at `117.0.5938.60` (L263-265). The provider reference is released immediately. | Chromium [`AndroidFontLookupImpl.java` @117.0.5938.60](https://github.com/chromium/chromium/blob/117.0.5938.60/content/public/android/java/src/org/chromium/content/browser/font/AndroidFontLookupImpl.java#L263-L265) vs [@117.0.5938.0](https://github.com/chromium/chromium/blob/117.0.5938.0/content/public/android/java/src/org/chromium/content/browser/font/AndroidFontLookupImpl.java) |
+| 8 | **Fix:** "Duplicate the ParcelFileDescriptor and close the original". It is absent through `117.0.5938.28` and present from `117.0.5938.29` (L263-265). The provider reference is released immediately. | Chromium [`AndroidFontLookupImpl.java` @117.0.5938.29](https://github.com/chromium/chromium/blob/117.0.5938.29/content/public/android/java/src/org/chromium/content/browser/font/AndroidFontLookupImpl.java#L263-L265) vs [@117.0.5938.28](https://github.com/chromium/chromium/blob/117.0.5938.28/content/public/android/java/src/org/chromium/content/browser/font/AndroidFontLookupImpl.java) |
 
-The fix commit was located by tag bisection: 114, 116 and 117.0.5938.0 are unfixed; 117.0.5938.60, 118 and later are fixed. The individual Chromium commit could not be resolved from this environment, because `chromium.googlesource.com` and the GitHub API were not reachable.
+The fix was located by tag bisection:
+
+- **M117 branch:** `117.0.5938.0`–`.28` unfixed; `.29`, `.30`, `.60`, `.140` fixed.
+- **Trunk:** `118.0.5939.0`–`118.0.5970.0` unfixed; `118.0.5971.0` and every later tag checked (5975, 5993, 120–140) fixed.
+
+The landing build on each line is therefore known exactly. The individual Chromium commit could not be resolved from this environment, because `chromium.googlesource.com` and the GitHub API were not reachable.
 
 ### Reason-12 attribution (API 34)
 
@@ -59,18 +64,33 @@ The historical CS00 death (`reason=12, subreason=0` in the blank-WebView control
 `MainActivity` calls `WebViewFontProviderRelease.scheduleAfterFirstPageLoad` from Capacitor's `WebViewListener.onPageLoaded`. The routine:
 
 - runs **once per process** and **only** when all of these hold:
-  - the default user agent's `Chrome/x.y.z.w` is older than `117.0.5938.60`. Unknown or unparseable versions are left alone.
+  - the default user agent's `Chrome/x.y.z.w` is a build not known to contain the fix: anything below M117; M117 below `117.0.5938.29`; M118 below `118.0.5971.0`. Builds older than any tag read are conservatively treated as leaking; an extra GC is harmless. A missing or unparseable version is left alone.
   - `com.google.android.gms.fonts` resolves for this app. This uses the same visibility WebView's fetch has.
 - on a **daemon, minimum-priority thread**, runs `gc(); runFinalization(); gc(); runFinalization()` at ≈1.5 s and ≈10 s after the first page load.
 - touches **no** GMS state, provider, `ContentProviderClient`, ref count or WebView internals. It runs the finalizer AOSP already relies on, sooner, for an object Bridge never references.
-- logs fixed markers (`BridgeFontRefRelease`) only in debuggable builds. Release builds log nothing.
+- logs fixed markers (`BridgeFontRefRelease`, `stage=pass-complete`) only in debuggable builds. A marker proves the pass ran, not that anything was released. Release builds log nothing.
+- is **best effort**: a prefetch that completes after the last pass (a very slow GMS provider) keeps its stable reference until the next natural GC, i.e. the behaviour without the mitigation.
 
 FD00G (commit `e93e311`) is the same-OS, same-WebView **intervention test** of the mechanism. It runs **the production pass** in a plain about:blank WebView that stays attached and referenced:
 
 - If the stable reference is **gone** afterwards (same PID, after the 1 s retain window), it was held by finalizable garbage. That confirms the mechanism and the mitigation.
 - If it **persists**, the mechanism is refuted, and the mitigation must be reverted.
 
-Expected cost on affected WebView: two explicit GCs per process, off the main thread. On WebView ≥ 117.0.5938.60 (any up-to-date Play-updated device) the cost is zero: a single UA check.
+Expected cost on affected WebView: two explicit GCs per process, off the main thread. On fixed WebView (any up-to-date Play-updated device) the cost is zero: a single UA check.
+
+### 4a. CI evidence so far (API 34 emulator, WebView 113.0.5672.136)
+
+| Observation | Before the mitigation (e.g. [39160502999](https://github.com/fatihcayiroglu/Bridge/actions/runs/39160502999)) | With it: [39164884625](https://github.com/fatihcayiroglu/Bridge/actions/runs/39164884625) (`a9bd659`) and [39166491452](https://github.com/fatihcayiroglu/Bridge/actions/runs/39166491452) (`bfb7177`) |
+|---|---|---|
+| A01 first UI (product) | 1 **stable** / 0 unstable | **0 stable / 1 unstable**, `passes=1`, in both runs: the ActivityThread stable→unstable retain window right after release pass 1 |
+| FD01 after login | 0 stable / 1 unstable → **FAIL** | **0 / 0 → PASS**, `passes=2`, in both runs |
+| FD02 1.5 / 4 / 8 s | 0 | 0 |
+| FD00W / FD00T (unmitigated controls) | 1 stable for 8 s; survives `destroy()` | unchanged: the platform leak itself is untouched |
+| CS00, CS01, L01 (HOT), L03, L04, ANR01 | — | PASS in both runs; ANR02 found 0 fatal ANRs |
+
+Both runs are **34 PASS / 1 FAIL / 0 SKIPPED / 16 MEASURED**. The one FAIL is the new causal control **FD00G**. Its `before` sample shows 1 stable ref on the same PID with the WebView alive. The pass then logs `started` but not `finalized` within ~13 s, although the identical production pass completes in the product process. The current branch head adds liveness and exit attribution, a `stalled` snapshot of the pass thread and ART's FinalizerDaemon, and a FinalizerWatchdog `uncaught` marker, to establish whether the control process died or the pass blocked. **Until FD00G is explained, the same-process causal proof is missing**, and the product evidence above is consistent with the mechanism but not a controlled experiment.
+
+Found and fixed on the way: `parseApplicationExits` read crash exits (`reason=4 (APP CRASH(EXCEPTION))`, `5 (APP CRASH(NATIVE))`) as reason 0, because the nested parenthesis made its regex fall through to `subreason=`. Any earlier "reason 0" process loss in #209 evidence must be re-read with this in mind.
 
 ## 5. Hypotheses disproven or narrowed
 
@@ -103,8 +123,9 @@ Until that decision, FD01 stays as written. With the mitigation in place, FD01 s
 
 ## 7. Remaining work before #209 can close
 
-1. CI on this branch: **FD00G** must show stable → 0 on the same PID, and the FD01 stage evidence must show the release ran (`fontRefRelease.passes ≥ 1`) with 0 stable after login. Repeat over several independent runs.
-2. A **WebView ≥ 117** image (e.g. API 35, WebView 124) must show no stable reference in FD00W/FD00T without any mitigation, and the mitigation must report `skipped webview-not-affected`.
-3. **Physical devices** with current Play-updated WebView, plus one GMS device with a frozen pre-117 WebView if obtainable. No physical-device testing has been done.
-4. The **FocusEvent ANRs** (reason 6) need their own main-thread evidence. Nothing here addresses them.
-5. Owner decision on the FD01′ contract (§6).
+1. **Explain FD00G** (§4a): whether the control process died or the pass blocked. Then show stable → 0 on the same PID with the WebView alive. If the forced pass can kill or wedge a WebView-113 process, the production mitigation must be revisited before merge.
+2. Repeat the product evidence over several independent runs: `fontRefRelease.passes ≥ 1` and 0 stable refs after login.
+3. A **fixed-WebView** image (e.g. API 35, WebView 124) must show no stable reference in FD00W/FD00T without any mitigation, and the mitigation must report `skipped webview-not-affected`.
+4. **Physical devices** with current Play-updated WebView, plus one GMS device with a frozen pre-117 WebView if obtainable. No physical-device testing has been done.
+5. The **FocusEvent ANRs** (reason 6) need their own main-thread evidence. ANR02 now classifies fatal ANR traces app-locally, but no ANR has recurred since it was added, and it cannot see non-fatal ANRs or exits evicted from Android's 16-record history.
+6. Owner decision on the FD01′ contract (§6).

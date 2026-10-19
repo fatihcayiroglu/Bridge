@@ -2,7 +2,7 @@
 
 **2026-10-18 · experimental evidence · not a proven root cause · do not merge as a product fix**
 
-> **Update 2026-10-18:** the upstream question below is answered in source. The stable reference is a Chromium bug fixed in 117.0.5938.60: the ContentResolver font descriptor was detached without being closed, so its stable reference waited for GC finalization. See [`P7_ANDROID_209_ROOT_CAUSE.md`](P7_ANDROID_209_ROOT_CAUSE.md) for the source chain, the FD00G intervention control and the product mitigation.
+> **Update 2026-10-18:** the upstream question below is answered in source. The stable reference is a Chromium bug fixed in 117.0.5938.29 (M117 branch) / 118.0.5971.0 (trunk): the ContentResolver font descriptor was detached without being closed, so its stable reference waited for GC finalization. See [`P7_ANDROID_209_ROOT_CAUSE.md`](P7_ANDROID_209_ROOT_CAUSE.md) for the source chain, the FD00G intervention control and the product mitigation.
 
 Canonical diagnostic PR: [#322](https://github.com/fatihcayiroglu/Bridge/pull/322).
 Tracking issue: [#209](https://github.com/fatihcayiroglu/Bridge/issues/209).
