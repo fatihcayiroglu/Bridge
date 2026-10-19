@@ -59,6 +59,22 @@
     if (action === 'delete') return t("ui_anket_silinemedi", "Anket silinemedi.");
     return t("ui_oy_kaydedilemedi", "Oy kaydedilemedi.");
   }
+  // A new poll is moderated like a message. Its refusals are told apart by
+  // bounded fields only (never the body's text); anything else keeps the
+  // status mapping above.
+  async function createError(response: Response): Promise<string> {
+    let body: { code?: unknown; until?: unknown } | null;
+    try { body = await response.json() as { code?: unknown; until?: unknown } | null; } catch { body = null; }
+    const until = body?.until;
+    if (response.status === 403 && typeof until === 'number' && Number.isFinite(until)) {
+      const minutes = Math.max(1, Math.ceil((until - Date.now()) / 60_000));
+      return t('send_failed_timeout', 'Bu sunucuda geçici olarak susturuldun. {minutes} dk sonra tekrar yazabilirsin.', { minutes });
+    }
+    if (response.status === 422 && body?.code === 'TOO_MANY_MENTIONS') {
+      return t('delivery_too_many_mentions', 'Bir mesajda çok fazla kişiyi etiketledin. Daha az kişi etiketleyip yeniden gönder.');
+    }
+    return safeError(response.status, 'create');
+  }
   function myUserId(): string {
     try {
       const me = BridgeRegistry.has('getMe') ? BridgeRegistry.call<{ _id?: string; id?: string } | null>('getMe') : null;
@@ -126,7 +142,7 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: question.trim(), options: cleaned, multiSelect, allowVoteChange, duration: Number(duration) || 0 }),
       });
-      if (!response.ok) { error = safeError(response.status, 'create'); return; }
+      if (!response.ok) { error = await createError(response); return; }
       question = ''; options = ['', '']; multiSelect = false; allowVoteChange = true; duration = '1440';
       await load();
     } catch (err) { log.error('poll create failed', err); error = t("ui_anket_olusturulamadi", "Anket oluşturulamadı."); }

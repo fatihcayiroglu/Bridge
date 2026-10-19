@@ -246,6 +246,44 @@ describe('Voice Messages Routes', () => {
       expect(mockStore.uploadFile).not.toHaveBeenCalled();
     });
 
+    // A voice message is a channel message: a member timed out by a moderator
+    // or AutoMod is refused here as on `file:send`, before any byte is stored.
+    it('susturulmuş (timeout) üye voice-message gönderemez; hiçbir şey saklanmaz', async () => {
+      const memberId = uuidv4();
+      const until = Date.now() + 60_000;
+      await db.users.insert({ _id: memberId, username: 'muted', displayName: 'Muted', tokenVersion: 0 });
+      await db.members.insert({ userId: memberId, serverId, roles: [], timeoutUntil: until });
+      const mockStore = getPrivateStorageAdapter();
+
+      const res = await request(app)
+        .post('/api/voice-messages')
+        .set('Authorization', `Bearer ${tok(memberId)}`)
+        .field('channelId', channelId)
+        .field('serverId', serverId)
+        .attach('audio', FAKE_WEBM, { contentType: 'audio/webm' });
+
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ until });
+      expect(mockStore.uploadFile).not.toHaveBeenCalled();
+      expect(await db.messages.find({ channelId })).toEqual([]);
+      expect(await db.voiceMessages.find({ channelId })).toEqual([]);
+    });
+
+    it('süresi dolmuş timeout voice-message göndermeyi engellemez', async () => {
+      const memberId = uuidv4();
+      await db.users.insert({ _id: memberId, username: 'unmuted', displayName: 'Unmuted', tokenVersion: 0 });
+      await db.members.insert({ userId: memberId, serverId, roles: [], timeoutUntil: Date.now() - 1 });
+
+      const res = await request(app)
+        .post('/api/voice-messages')
+        .set('Authorization', `Bearer ${tok(memberId)}`)
+        .field('channelId', channelId)
+        .field('serverId', serverId)
+        .attach('audio', FAKE_WEBM, { contentType: 'audio/webm' });
+
+      expect(res.status).toBe(200);
+    });
+
     it('başarılı yüklemede storageAdapter.uploadFile çağrılır', async () => {
       const mockStore = getPrivateStorageAdapter();
       (getPrivateStorageAdapter as jest.Mock).mockReturnValue(mockStore);

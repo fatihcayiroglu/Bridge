@@ -2,12 +2,16 @@
 import express from 'express';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router  = express.Router();
-import { Polls, Channels, Members } from '../db/repositories';
+import { Polls, Channels, Members, Users } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { limits } from '../middleware/rateLimit';
 import { PERMS, hasPermission, resolvePermissions } from '../lib/permissions';
 import { parseNonNegativeSafeIntValue } from '../lib/queryNumbers';
 import { parsePersistedEpochMillis } from '../lib/persistedEpoch';
+import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
+import { checkEditedContent, checkMessageContent, contentRefusalHttp } from '../lib/messageContentPolicy';
+import logger from '../lib/logger';
+import type { HandlerServer } from '../socket/handler-contracts';
 
 // POST /api/channels/:cid/polls
 /**
@@ -108,6 +112,20 @@ function emitPollInvalidation(req: express.Request, channelId: string, event: st
   io?.to(`channel:${channelId}`).emit(event, { channelId, pollId });
 }
 
+/** What a poll shows its channel: the question and option texts, as stored. */
+function pollText(question: string, options: Array<{ text: string }>): string {
+  return [question, ...options.map(o => o.text)].join('\n');
+}
+
+async function displayNameOf(userId: string, member: { nickname?: unknown }): Promise<string> {
+  const user = await Users.findById(userId).catch(() => null);
+  return String(member.nickname || user?.displayName || user?.username || userId);
+}
+
+function ioOf(req: express.Request): HandlerServer | null {
+  return (req.app.get('io') as HandlerServer | undefined) ?? null;
+}
+
 function mutationError(res: express.Response, status: string): express.Response {
   switch (status) {
     case 'not_found': return res.status(404).json({ error: 'Poll not found' });
@@ -135,6 +153,9 @@ router.post('/:cid/polls', authMiddleware, limits.polls(), async (req, res) => {
   if (!channel) return res.status(404).json({ error: 'Channel not found' });
   const member = await Members.findOne(_u.id, channel.serverId);
   if (!member) return res.status(403).json({ error: 'Not a member' });
+  // A poll posts text to the channel, so a timed-out member cannot create one.
+  if (isMemberTimedOut(member.timeoutUntil))
+    return res.status(403).json({ error: 'You are timed out', until: parseMemberTimeoutUntil(member.timeoutUntil) });
   const perms = await channelPerms(_u.id, channel.serverId, channelId);
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.SEND_MESSAGES)) {
     return res.status(403).json({ error: 'Missing channel permission' });
@@ -153,12 +174,30 @@ router.post('/:cid/polls', authMiddleware, limits.polls(), async (req, res) => {
   if (expiresAt !== null && !Number.isSafeInteger(expiresAt)) {
     return res.status(400).json({ error: 'duration produces an unsafe expiration timestamp' });
   }
+  const storedQuestion = question.trim().slice(0, 300);
+  const storedOptions = options.map((o, i) => ({ id: String(i), text: o.trim().slice(0, 100), votes: [] }));
+  // A poll is read by every channel viewer: its text passes the same content
+  // checks as a message (one owner, see lib/messageContentPolicy.ts). A
+  // rule-store failure propagates to the error handler (fail closed).
+  const refusal = await checkMessageContent({
+    userId: _u.id,
+    serverId: channel.serverId,
+    channelId,
+    content: pollText(storedQuestion, storedOptions),
+    senderPerms: perms,
+    memberRoles: (member as { roles?: unknown }).roles,
+    displayName: await displayNameOf(_u.id, member as { nickname?: unknown }),
+  }, ioOf(req));
+  if (refusal) {
+    const { status, body } = contentRefusalHttp(refusal);
+    return res.status(status).json(body);
+  }
   const poll = await Polls.insert({
     channelId,
     serverId: channel.serverId,
     createdBy: _u.id,
-    question: question.trim().slice(0, 300),
-    options: options.map((o, i) => ({ id: String(i), text: o.trim().slice(0, 100), votes: [] })),
+    question: storedQuestion,
+    options: storedOptions,
     multiSelect,
     allowVoteChange,
     expiresAt,
@@ -399,6 +438,34 @@ router.patch('/:pid', authMiddleware, limits.polls(), async (req, res) => {
   if (allowVoteChange !== undefined) {
     if (typeof allowVoteChange !== 'boolean') return res.status(400).json({ error: 'allowVoteChange must be a boolean' });
     updates.allowVoteChange = allowVoteChange;
+  }
+
+  // AutoMod protects poll edits as it protects message edits: the text the
+  // poll will show is checked before anything changes or is broadcast.
+  if (updates.question !== undefined || updates.options !== undefined) {
+    const member = await Members.findOne(_u.id, poll.serverId);
+    if (!member) return res.status(403).json({ error: 'Forbidden' });
+    let refusal: { reasons: string[] } | null;
+    try {
+      refusal = await checkEditedContent({
+        userId: _u.id,
+        serverId: poll.serverId,
+        channelId: poll.channelId,
+        content: pollText(
+          (updates.question as string | undefined) ?? poll.question,
+          (updates.options as Array<{ text: string }> | undefined) ?? poll.options,
+        ),
+        memberRoles: (member as { roles?: unknown }).roles,
+        displayName: () => displayNameOf(_u.id, member as { nickname?: unknown }),
+      }, ioOf(req));
+    } catch (err) {
+      logger.warn({ event: 'automod.poll_edit.failed', serverId: poll.serverId, pollId: poll._id, err },
+        '[automod] poll edit enforcement failed');
+      return res.status(503).json({ error: 'Moderation unavailable', code: 'AUTOMOD_UNAVAILABLE' });
+    }
+    if (refusal) {
+      return res.status(422).json({ error: refusal.reasons.join(', ') || 'Anket AutoMod tarafından engellendi.', code: 'AUTOMOD_BLOCKED' });
+    }
   }
 
   const atomic = await Polls.updateEditableAtomic(poll._id, updates, options !== undefined);

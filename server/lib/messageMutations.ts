@@ -17,14 +17,12 @@
 //   · HTTP delete used a different deletion (no thread/unread cascade).
 // Both surfaces now call these functions; they differ only in how they report a refusal.
 
-import { Automod, Members, Messages, Users } from '../db/repositories';
-import { evaluateAutomodRules } from './automodPolicy';
-import { normalizeAutomodMemberRoleIds, writeAutomodLogs } from './automodRuntime';
+import { Members, Messages, Users } from '../db/repositories';
 import { deleteMessageWithCascade } from './deleteMessageCascade';
 import logger from './logger';
 import { invalidateChannelMessages } from './messageCache';
+import { checkEditedContent } from './messageContentPolicy';
 import { canViewChannel, hasPermission, PERMS, resolvePermissions } from './permissions';
-import { cache } from './redisAdapter';
 import { normalizeMessageText, RAW_TEXT_FORMAT, storedMessageText } from './storedText';
 import type { HandlerServer } from '../socket/handler-contracts';
 
@@ -114,43 +112,21 @@ export async function editChannelMessage(io: HandlerServer | null | undefined, i
     return { ok: false, code: 'CONFLICT' };
   }
 
-  // Persisted AutoMod protects edits too; otherwise a benign send can be edited into content
-  // that would have been refused. Spam-frequency rules count new sends only.
+  // Persisted AutoMod protects edits too (one owner, shared with poll edits).
   try {
-    const decision = await evaluateAutomodRules(
-      await Automod.findByServer(String(msg.serverId)),
-      {
-        serverId: String(msg.serverId),
-        userId: input.actorId,
-        content: raw,
-        memberRoleIds: normalizeAutomodMemberRoleIds(membership.roles),
-        event: 'edit',
+    const refusal = await checkEditedContent({
+      userId: input.actorId,
+      serverId: String(msg.serverId),
+      channelId: String(msg.channelId),
+      content: raw,
+      memberRoles: membership.roles,
+      displayName: async () => {
+        const actor = await Users.findById(input.actorId).catch(() => null);
+        return String(membership.nickname || actor?.displayName || actor?.username || input.actorId);
       },
-      (key, ttlSeconds) => cache.increment(key, ttlSeconds),
-    );
-    if (decision.matched) {
-      if (decision.timeoutMs) {
-        // Durable policy state: if it cannot be written, fail closed and change nothing.
-        await Members.setTimeout(String(msg.serverId), input.actorId, Date.now() + decision.timeoutMs);
-      }
-      const actor = await Users.findById(input.actorId).catch(() => null);
-      await writeAutomodLogs(
-        decision,
-        {
-          serverId: String(msg.serverId),
-          channelId: String(msg.channelId),
-          userId: input.actorId,
-          displayName: String(membership.nickname || actor?.displayName || actor?.username || input.actorId),
-          content: raw,
-          operation: 'edit',
-        },
-        io as HandlerServer,
-      );
-      // The pre-edit text was accepted; "delete" means refuse the triggering edit.
-      if (decision.deleteMessage) {
-        return { ok: false, code: 'AUTOMOD_BLOCKED', reason: decision.reasons.join(', ') || undefined };
-      }
-    }
+    }, io ?? null);
+    // The pre-edit text was accepted; "delete" means refuse the triggering edit.
+    if (refusal) return { ok: false, code: 'AUTOMOD_BLOCKED', reason: refusal.reasons.join(', ') || undefined };
   } catch (err) {
     logger.warn({ event: 'automod.edit.failed', serverId: msg.serverId, messageId: input.messageId, err },
       '[automod] message edit enforcement failed');

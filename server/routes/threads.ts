@@ -9,7 +9,7 @@ import { authMiddleware} from '../middleware/auth';
 import { hasPermission, PERMS, resolvePermissions } from './roles';
 import { limits } from '../middleware/rateLimit';
 import { processNotifications } from '../lib/notifications';
-import { checkMessageContent, type MessageContentRefusal } from '../lib/messageContentPolicy';
+import { checkMessageContent, contentRefusalHttp, type MessageContentRefusal } from '../lib/messageContentPolicy';
 import logger from '../lib/logger';
 import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
 
@@ -24,10 +24,8 @@ async function channelPermissions(userId: string, serverId: string, channelId: s
 
 /** The HTTP answer for content the message policy refused. */
 function sendContentRefusal(res: express.Response, refusal: MessageContentRefusal) {
-  if (refusal.kind === 'spam') {
-    return res.status(429).json({ error: 'Too many similar messages', code: refusal.reason.toUpperCase(), retryAfterMs: refusal.retryAfterMs });
-  }
-  return res.status(422).json({ error: refusal.message, code: refusal.code });
+  const { status, body } = contentRefusalHttp(refusal);
+  return res.status(status).json(body);
 }
 
 async function canReadThread(userId: string, thread: { serverId: string; channelId: string }): Promise<boolean> {
