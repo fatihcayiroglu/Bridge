@@ -57,7 +57,9 @@ export function summarizeAndroidWebViewAlternatives(raw) {
 }
 
 export function parseApplicationExits(raw, limit = 6) {
-  const bounded = Number.isInteger(limit) ? Math.max(0, Math.min(10, limit)) : 6;
+  // Up to 32 rows: Android retains 16 per package by default, and PD01 must
+  // see a full history to prove no journey exit was evicted unread.
+  const bounded = Number.isInteger(limit) ? Math.max(0, Math.min(32, limit)) : 6;
   return String(raw).split(/ApplicationExitInfo #\d+:/).slice(1, bounded + 1).map((record) => {
     const field = (re) => (re.exec(record) ?? [])[1] ?? null;
     const status = field(/\bstatus=(-?\d+)/);
@@ -168,20 +170,25 @@ export function summarizeAndroidColdLaunch(raw) {
 // exit summary and dependency-death attribution. A PID alone is insufficient:
 // Android can recycle PIDs between diagnostic samples. The bounds are from
 // the Android device clock, not the CI runner, and never leave this process.
+// Device-local wall clock ("YYYY-MM-DD HH:MM:SS[.mmm]" or with "T") to a
+// comparable number. Both sides of every comparison come from the same device
+// clock, so treating them as UTC is consistent. Invalid dates give null.
+function deviceClockMs(input) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(String(input ?? ''));
+  if (!m) return null;
+  const [y, mo, d, h, mi, s, ms = '0'] = m.slice(1);
+  const t = Date.UTC(+y, +mo - 1, +d, +h, +mi, +s, +ms.padEnd(3, '0'));
+  const check = new Date(t);
+  return Number.isFinite(t) && check.getUTCFullYear() === +y &&
+    check.getUTCMonth() === +mo - 1 && check.getUTCDate() === +d &&
+    check.getUTCHours() === +h && check.getUTCMinutes() === +mi &&
+    check.getUTCSeconds() === +s ? t : null;
+}
+
 function freshAndroidExitRows(exits, expectedPid, expectedProcess, fromAt, toAt) {
   if (!Array.isArray(exits) || !/^[0-9]{1,8}$/.test(String(expectedPid)) ||
       !/^[A-Za-z0-9_.:]{1,120}$/.test(String(expectedProcess))) return null;
-  const stamp = input => {
-    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(String(input ?? ''));
-    if (!m) return null;
-    const [y, mo, d, h, mi, s, ms = '0'] = m.slice(1);
-    const t = Date.UTC(+y, +mo - 1, +d, +h, +mi, +s, +ms.padEnd(3, '0'));
-    const check = new Date(t);
-    return Number.isFinite(t) && check.getUTCFullYear() === +y &&
-      check.getUTCMonth() === +mo - 1 && check.getUTCDate() === +d &&
-      check.getUTCHours() === +h && check.getUTCMinutes() === +mi &&
-      check.getUTCSeconds() === +s ? t : null;
-  };
+  const stamp = deviceClockMs;
   const from = stamp(fromAt), to = stamp(toAt);
   if (from === null || to === null || from > to || to - from > 120_000) return null;
   return exits.slice(0, 10).filter(row =>
@@ -651,11 +658,14 @@ export function parseNativeEmojiStartupProbe(raw, appPid = null) {
  * (another PID, free-text imitations) is ignored. Returns counts and enums.
  */
 export function parseFontRefReleaseMarkers(raw, appPid) {
-  const none = { available: false, skippedReason: null, passes: 0 };
+  const none = { available: false, skippedReason: null, passes: 0,
+    maxPassMs: null, maxMainGapMs: null };
   if (!/^[0-9]{1,8}$/.test(String(appPid))) return none;
   const targetPid = String(Number(appPid));
   let skippedReason = null;
   let passes = 0;
+  let maxPassMs = null;
+  let maxMainGapMs = null;
   let seen = false;
   for (const line of String(raw).split(/\r?\n/).slice(-500)) {
     if (!line.includes('BridgeFontRefRelease')) continue;
@@ -663,12 +673,20 @@ export function parseFontRefReleaseMarkers(raw, appPid) {
     const threadtime = /\b[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+\s+([0-9]{1,8})\s+[0-9]{1,8}\s+[A-Z]\s+BridgeFontRefRelease:/.exec(line);
     const observedPid = brief?.[1] ?? threadtime?.[1];
     if (!observedPid || String(Number(observedPid)) !== targetPid) continue;
-    const released = /:\s*stage=pass-complete pass=([12])\s*$/.exec(line);
+    // passMs: duration of the GC/finalization pass on its worker thread.
+    // mainMaxGapMs: worst main-thread heartbeat delay while it ran (debug only).
+    const released = /:\s*stage=pass-complete pass=([12])(?: passMs=([0-9]{1,6}) mainMaxGapMs=([0-9]{1,6}))?\s*$/.exec(line);
     const skipped = /:\s*stage=skipped reason=(webview-not-affected|provider-unavailable)\s*$/.exec(line);
-    if (released) { seen = true; passes = Math.max(passes, Number(released[1])); }
-    else if (skipped) { seen = true; skippedReason = skipped[1]; }
+    if (released) {
+      seen = true;
+      passes = Math.max(passes, Number(released[1]));
+      if (released[2] !== undefined) {
+        maxPassMs = Math.max(maxPassMs ?? 0, Number(released[2]));
+        maxMainGapMs = Math.max(maxMainGapMs ?? 0, Number(released[3]));
+      }
+    } else if (skipped) { seen = true; skippedReason = skipped[1]; }
   }
-  return seen ? { available: true, skippedReason, passes } : none;
+  return seen ? { available: true, skippedReason, passes, maxPassMs, maxMainGapMs } : none;
 }
 
 const ANR_MAIN_STATES = new Set(['Runnable', 'Native', 'Blocked', 'Waiting',
@@ -770,4 +788,68 @@ export function parseFinalizationProbeMarkers(raw, appPid) {
     }
   }
   return result;
+}
+
+/**
+ * #209 PD01: product exit ledger. Each checkpoint folds the package's retained
+ * ApplicationExitInfo rows (already filtered to the Bridge process) into a
+ * de-duplicated record of exits since the journey started. A history that is
+ * full and whose oldest row is newer than everything already seen may have
+ * evicted a journey exit unread: that is a potential gap, so PD01 cannot prove
+ * absence. The ledger keeps PID/timestamp keys in memory only; the summary
+ * holds counts and allowlisted enums.
+ */
+export function emptyProductExitLedger() {
+  return { checkpoints: 0, windowValid: null, seen: [], newestSeenMs: null,
+    reasonCounts: {}, dependencyEvidence: [], potentialGap: false };
+}
+
+export function mergeProductExitCheckpoint(ledger, exits, journeyStartedAt, historyCapacity = 16) {
+  const start = deviceClockMs(journeyStartedAt);
+  const next = { ...ledger, checkpoints: ledger.checkpoints + 1, seen: [...ledger.seen],
+    reasonCounts: { ...ledger.reasonCounts }, dependencyEvidence: [...ledger.dependencyEvidence] };
+  if (start === null || !Array.isArray(exits)) {
+    next.windowValid = false;
+    return next;
+  }
+  if (next.windowValid === null) next.windowValid = true;
+  const rows = exits.filter(row => row && Number.isInteger(row.pid) && deviceClockMs(row.at) !== null);
+  if (rows.length >= historyCapacity) {
+    const oldest = Math.min(...rows.map(row => deviceClockMs(row.at)));
+    if (oldest > (next.newestSeenMs ?? start)) next.potentialGap = true;
+  }
+  const code = value => {
+    const m = /^([0-9]{1,2}) \((?:[A-Z_ ]|\([A-Z_ ]+\))+\)$/.exec(String(value ?? ''));
+    return m ? Number(m[1]) : null;
+  };
+  for (const row of rows) {
+    const at = deviceClockMs(row.at);
+    if (at < start) continue;
+    const key = row.pid + '@' + at;
+    if (next.seen.includes(key)) continue;
+    next.seen.push(key);
+    next.newestSeenMs = Math.max(next.newestSeenMs ?? at, at);
+    const reasonCode = code(row.reason);
+    const bucket = reasonCode === null ? 'unknown' : String(reasonCode);
+    next.reasonCounts[bucket] = (next.reasonCounts[bucket] ?? 0) + 1;
+    if (reasonCode === 12 && next.dependencyEvidence.length < 5) {
+      const facts = classifyAndroidDependencyDeath([row], row.pid);
+      next.dependencyEvidence.push({ dependencyKind: facts.dependencyKind,
+        providerClass: facts.providerClass, dyingProcessClass: facts.dyingProcessClass,
+        dependencyPackageClass: facts.dependencyPackageClass, attribution: facts.attribution });
+    }
+  }
+  return next;
+}
+
+export function summarizeProductExitLedger(ledger) {
+  return {
+    checkpoints: ledger.checkpoints,
+    windowValid: ledger.windowValid === true,
+    exitsInJourney: ledger.seen.length,
+    reasonCounts: { ...ledger.reasonCounts },
+    dependencyDeaths: ledger.reasonCounts['12'] ?? 0,
+    dependencyEvidence: [...ledger.dependencyEvidence],
+    potentialGap: ledger.potentialGap,
+  };
 }

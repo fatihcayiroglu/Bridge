@@ -23,9 +23,17 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
+// #209: 'product' (default) runs every Bridge reliability journey and gates CI.
+// 'upstream-webview-controls' runs ONLY the unmitigated Android WebView
+// reproduction controls (FD00*, CS00): debug Activities with no Bridge code
+// that reproduce the upstream FontsProvider leak and its DEPENDENCY DIED kill.
+// They run in the non-gating nightly diagnostic workflow; their failures stay
+// real FAILs with a nonzero exit, and they are never counted in product totals.
+const SUITE = process.env.ANDROID_JOURNEY_SUITE === 'upstream-webview-controls'
+  ? 'upstream-webview-controls' : 'product';
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
 const PKG = process.env.ANDROID_PKG || 'com.bridge.app.debug';
 const ACTIVITY = `${PKG}/com.bridge.app.MainActivity`;
@@ -92,6 +100,13 @@ async function screenshot(name) {
 let a01InitialPid = null;
 // Device epoch ms at journey start: ANR02 reads only exits recorded after it.
 let journeyStartedEpochMs = null;
+// Same instant on the device's local clock, the clock ApplicationExitInfo
+// timestamps in `dumpsys activity exit-info` are printed in.
+let journeyStartedAt = null;
+// PD01: product exit history accumulated across checkpoints (memory only; the
+// ledger keeps PIDs/timestamps for de-duplication and never leaves).
+let productExitLedger = emptyProductExitLedger();
+let productExitUnreadable = 0;
 let a01LaunchStartedAt = null;
 
 async function check(id, title, fn) {
@@ -775,30 +790,27 @@ async function sendFromComposer(text) {
 }
 
 // ── Journeys ───────────────────────────────────────────────────────────────
-async function main() {
-  log(`mode=${MODE} api=${API} pkg=${PKG}`);
-  const me = await account('droid');
-  const peer = await account('peer');
-  const outsider = await account('out');
-  const server = await write('POST', '/api/servers', me.token, { name: `Android P4 ${Date.now().toString(36)}` });
-  const serverId = server._id || server.id || server.server?._id;
-  const text = await write('POST', `/api/servers/${serverId}/channels`, me.token, { name: 'android-genel', type: 'text' });
-  const other = await write('POST', `/api/servers/${serverId}/channels`, me.token, { name: 'android-ikinci', type: 'text' });
-  const voice = await write('POST', `/api/servers/${serverId}/channels`, me.token, { name: 'android-ses', type: 'voice' });
-  const channelId = text._id || text.id || text.channel?._id;
-  const otherId = other._id || other.id || other.channel?._id;
-  const voiceId = voice._id || voice.id || voice.channel?._id;
-  const invite = await write('POST', '/api/servers/invites', me.token, { serverId });
-  await write('POST', `/api/servers/invites/${invite.code}/use`, peer.token, {});
-  const privateServer = await write('POST', '/api/servers', outsider.token, { name: `Private ${Date.now().toString(36)}` });
-  const privateServerId = privateServer._id || privateServer.id || privateServer.server?._id;
-  const privateChannel = await write('POST', `/api/servers/${privateServerId}/channels`, outsider.token, { name: 'gizli', type: 'text' });
-  const privateChannelId = privateChannel._id || privateChannel.id || privateChannel.channel?._id;
-  const peerSock = await openSocket(peer.token);
-  peerSock.emit('channel:join', { channelId, serverId });
-  Object.assign(facts, { deviceUser: me.username, serverId, channelId, otherId, voiceId, privateChannelId });
+/**
+ * PD01: fold the current `dumpsys activity exit-info` into the product exit
+ * ledger. Returns whether the history was readable. Never throws, never logs
+ * raw rows, and never changes any check's outcome by itself.
+ */
+async function productExitCheckpoint(label) {
+  if (MODE !== 'android') return false;
+  try {
+    const raw = await androidFailureShell(`dumpsys activity exit-info ${PKG}`);
+    const exits = parseApplicationExits(raw, 32).filter((row) => row.process === PKG);
+    productExitLedger = mergeProductExitCheckpoint(productExitLedger, exits, journeyStartedAt);
+    log('Android product exit checkpoint', label, JSON.stringify(summarizeProductExitLedger(productExitLedger)));
+    return true;
+  } catch {
+    productExitUnreadable += 1;
+    return false;
+  }
+}
 
-  if (netPath) { await netPath.start(); facts.networkPath = `adb reverse → proxy :${PROXY_PORT} → server :${netPath.targetPort}`; }
+/** Connect the Android device (or the dryrun desktop page) and record safe device facts. */
+async function connectDevice() {
   if (MODE === 'android') {
     const list = await android.devices();
     assert(list.length > 0, 'no adb device');
@@ -820,6 +832,7 @@ async function main() {
       webviewAlternatives: summarizeAndroidWebViewAlternatives(webviewUpdate),
     };
     facts.apkInstalled = (await sh(`pm list packages ${PKG}`)).includes(PKG);
+    journeyStartedAt = await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null);
     const deviceSeconds = Number(await sh('date +%s'));
     journeyStartedEpochMs = Number.isSafeInteger(deviceSeconds) && deviceSeconds > 0
       ? deviceSeconds * 1000 : null;
@@ -830,7 +843,16 @@ async function main() {
     page = await ctx.newPage();
     facts.device = { note: 'DRYRUN — desktop Chromium phone viewport, NOT evidence' };
   }
+}
 
+/**
+ * #209 upstream WebView reproduction controls (DIAGNOSTIC, NON-GATING suite).
+ * Unmitigated debug Activities without Bridge code: they reproduce the
+ * Chromium < 117.0.5938.29 FontsProvider stable-ref leak, and a GMS restart
+ * during their window kills them with DEPENDENCY DIED by design. Run only
+ * when ANDROID_JOURNEY_SUITE=upstream-webview-controls.
+ */
+async function runUpstreamWebViewControls() {
   // Android #209 controlled differential: observe the *same installed APK*
   // running a native-only Activity before Capacitor/BridgeActivity/WebView.
   // This DEBUG-only baseline is measured, not a PASS and not an FD01 bypass.
@@ -1093,7 +1115,7 @@ async function main() {
   // < 117.0.5938.29 / 118.0.5971.0 detachFd() of the ContentResolver wrapper), not by the
   // live WebView; one that survives refutes that mechanism.
   // Measurement only: it cannot grant FD01/CS00/L01/ANR01 a PASS.
-  await measure('FD00G', 'same-process finalization with the WebView alive and provider retention', async () => {
+  const measureFd00g = id => measure(id, 'same-process finalization with the WebView alive and provider retention', async () => {
     if (MODE !== 'android') throw new Skip('native WebView Activity required');
     const activity = 'com.bridge.app.WebViewFinalizationBaselineActivity';
     await sh('am force-stop ' + PKG);
@@ -1170,7 +1192,7 @@ async function main() {
       // Partial evidence survives a failure below (FD02 rule): fixed enums only.
       const evidence = { sameProcess: true, before, baselineBeforePass: null,
         markers: null, pollAttempts: 0, after: null };
-      facts.androidWebViewFinalizationEvidence = evidence;
+      (facts.androidWebViewFinalizationEvidence ??= {})[id] = evidence;
       // A "before" sample read after the pass started is not a baseline.
       // An empty read proves nothing ("scheduled" is logged in onCreate).
       try {
@@ -1222,6 +1244,10 @@ async function main() {
       await sh('am force-stop ' + PKG).catch(() => {});
     }
   });
+
+  // Three repetitions sample how often the pass stalls: two uninstrumented
+  // "started but not finalized" runs out of three earlier ones (issue #209).
+  for (const id of ['FD00G', 'FD00G-2', 'FD00G-3']) await measureFd00g(id);
 
   // Second, independently cold-started DEBUG-only control. This one has a
   // bare Android WebView displaying about:blank with JavaScript disabled by
@@ -1404,6 +1430,40 @@ async function main() {
       await sh('am force-stop ' + PKG).catch(() => {});
     }
   });
+}
+
+async function main() {
+  log(`mode=${MODE} suite=${SUITE} api=${API} pkg=${PKG}`);
+  if (SUITE === 'upstream-webview-controls') {
+    // No Bridge server, accounts or product journeys: the controls never
+    // load Bridge content.
+    await connectDevice();
+    await runUpstreamWebViewControls();
+    return;
+  }
+  const me = await account('droid');
+  const peer = await account('peer');
+  const outsider = await account('out');
+  const server = await write('POST', '/api/servers', me.token, { name: `Android P4 ${Date.now().toString(36)}` });
+  const serverId = server._id || server.id || server.server?._id;
+  const text = await write('POST', `/api/servers/${serverId}/channels`, me.token, { name: 'android-genel', type: 'text' });
+  const other = await write('POST', `/api/servers/${serverId}/channels`, me.token, { name: 'android-ikinci', type: 'text' });
+  const voice = await write('POST', `/api/servers/${serverId}/channels`, me.token, { name: 'android-ses', type: 'voice' });
+  const channelId = text._id || text.id || text.channel?._id;
+  const otherId = other._id || other.id || other.channel?._id;
+  const voiceId = voice._id || voice.id || voice.channel?._id;
+  const invite = await write('POST', '/api/servers/invites', me.token, { serverId });
+  await write('POST', `/api/servers/invites/${invite.code}/use`, peer.token, {});
+  const privateServer = await write('POST', '/api/servers', outsider.token, { name: `Private ${Date.now().toString(36)}` });
+  const privateServerId = privateServer._id || privateServer.id || privateServer.server?._id;
+  const privateChannel = await write('POST', `/api/servers/${privateServerId}/channels`, outsider.token, { name: 'gizli', type: 'text' });
+  const privateChannelId = privateChannel._id || privateChannel.id || privateChannel.channel?._id;
+  const peerSock = await openSocket(peer.token);
+  peerSock.emit('channel:join', { channelId, serverId });
+  Object.assign(facts, { deviceUser: me.username, serverId, channelId, otherId, voiceId, privateChannelId });
+
+  if (netPath) { await netPath.start(); facts.networkPath = `adb reverse → proxy :${PROXY_PORT} → server :${netPath.targetPort}`; }
+  await connectDevice();
 
   await check('A01', 'cold launch reaches the auth screen (no stuck splash)', async () => {
     a01InitialPid = null;
@@ -1487,6 +1547,9 @@ async function main() {
       allPidStable: samples.every(row => row.pidStable),
       maxStartMs: Math.max(...samples.map(row => row.totalTimeMs || 0)) };
   });
+
+  // PD01 evidence: read the exit history while it still holds every startup exit.
+  await productExitCheckpoint('after-startup');
 
   await check('A02', 'login through the WebView reaches the app shell', async () => {
     const t0 = Date.now();
@@ -1656,7 +1719,8 @@ async function main() {
     await until(async () => (await activeChannel()) === channelId && await visibleMessage(needle), {
       timeout: 30_000, message: 'original channel and missed message automatically restored after process death',
     });
-    return { pidBefore: before, pidAfter: await pid(), kill: killed, relaunchTotalMs: launch.totalTimeMs };
+    // Only whether the process changed: PIDs never go to CI logs or artifacts.
+    return { newProcess: before !== await pid(), kill: killed, relaunchTotalMs: launch.totalTimeMs };
   });
 
   await check('L04', 'force-stop (user kill) → cold relaunch restores the session', async () => {
@@ -1669,6 +1733,8 @@ async function main() {
     });
     return { coldRelaunchTotalMs: launch.totalTimeMs, channelPreserved: true };
   });
+
+  await productExitCheckpoint('after-lifecycle');
 
   await check('N01', 'offline: banner shows, composed message is held, delivered exactly once on reconnect', async () => {
     await openServer(serverId);
@@ -2143,6 +2209,29 @@ async function main() {
     return { systemAnrCount: 0 };
   });
 
+  // PD01 (#209): strict product regression gate. ActivityManager kills a
+  // client holding a STABLE provider reference with REASON_DEPENDENCY_DIED (12)
+  // when the provider's process dies, which is how the WebView FontsProvider
+  // leak killed WebView processes. Any reason-12 exit of the Bridge process
+  // during the journeys FAILs, attributed from the durable exit description.
+  // An unreadable history, or one that may have evicted a journey exit before
+  // it was read, also FAILs (unverifiable is never a PASS).
+  await check('PD01', 'the Bridge app process was never killed by DEPENDENCY DIED (reason 12) during these journeys', async () => {
+    if (MODE !== 'android') throw new Skip('Android ApplicationExitInfo requires a real Android runtime');
+    const finalReadOk = await productExitCheckpoint('final');
+    const summary = { ...summarizeProductExitLedger(productExitLedger),
+      unreadableCheckpoints: productExitUnreadable };
+    facts.productExitLedger = summary;
+    assert(finalReadOk, 'Android exit history unreadable at the end of the journeys; cannot prove no DEPENDENCY DIED');
+    assert(summary.windowValid, 'device journey start time unavailable; cannot bound the exit history');
+    assert(!summary.potentialGap,
+      'Android exit history may have evicted journey exits before they were read; cannot prove no DEPENDENCY DIED');
+    assert(summary.dependencyDeaths === 0,
+      'Bridge app process was killed by DEPENDENCY DIED during the journeys: ' +
+      JSON.stringify(summary.dependencyEvidence));
+    return summary;
+  });
+
   // ANR02 (#209): for every FATAL ANR the OS recorded for this package during
   // the journeys, the app reads its own ApplicationExitInfo trace and reduces
   // the "main" thread to fixed enums: idle looper vs binder call vs lock wait,
@@ -2191,6 +2280,7 @@ main()
   })
   .finally(async () => {
     const summary = {
+      suite: SUITE,
       // Derived from the device itself, never assumed: an emulator reports ro.kernel.qemu / ro.boot.qemu = 1.
       evidenceCategory: MODE !== 'android' ? 'DRYRUN (harness debugging only — NOT evidence)'
         : facts.device?.qemu === '1' ? 'AUTOMATED / EMULATOR'
@@ -2209,6 +2299,9 @@ main()
     fs.writeFileSync(path.join(OUT_DIR, 'android-evidence.json'), JSON.stringify(summary, null, 2));
     console.log('\n══════ ANDROID JOURNEY EVIDENCE ══════');
     console.log(`category: ${summary.evidenceCategory}`);
+    console.log(SUITE === 'product'
+      ? 'suite: product (Bridge reliability journeys; the upstream WebView reproduction controls run in the separate non-gating diagnostic workflow and are not counted here)'
+      : 'suite: upstream-webview-controls (DIAGNOSTIC, NON-GATING: unmitigated upstream WebView reproduction controls; a FAIL is a real failure and is never counted as a pass)');
     console.log(`device: ${JSON.stringify(facts.device ?? {})}`);
     for (const r of results) console.log(`${r.status.padEnd(8)} ${r.id.padEnd(7)} ${r.title}${r.error ? `\n          ↳ ${r.error.split('\n')[0]}` : ''}${r.reason ? `\n          ↳ ${r.reason}` : ''}${r.detail ? `\n          ↳ ${JSON.stringify(r.detail)}` : ''}`);
     console.log(`TOTAL pass=${summary.totals.pass} fail=${summary.totals.fail} skipped=${summary.totals.skipped} measured=${summary.totals.measured} (skipped and measured are never counted as pass)`);

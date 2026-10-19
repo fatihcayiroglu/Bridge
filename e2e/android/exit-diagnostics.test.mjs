@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -1088,11 +1088,22 @@ test('production font-ref release markers are read only from the exact app PID',
     '10-18 20:01:02.400  4321  4400 I BridgeFontRefRelease: stage=pass-complete pass=1 token=secret',
   ].join('\n');
   const result = parseFontRefReleaseMarkers(raw, '4321');
-  assert.deepEqual(result, { available: true, skippedReason: null, passes: 2 });
+  assert.deepEqual(result, { available: true, skippedReason: null, passes: 2,
+    maxPassMs: null, maxMainGapMs: null });
   assert.doesNotMatch(JSON.stringify(result), /4321|secret/);
   assert.deepEqual(parseFontRefReleaseMarkers(raw, 9999),
-    { available: true, skippedReason: 'webview-not-affected', passes: 0 });
-  const none = { available: false, skippedReason: null, passes: 0 };
+    { available: true, skippedReason: 'webview-not-affected', passes: 0,
+      maxPassMs: null, maxMainGapMs: null });
+  // Debug builds also report pass duration and worst main-thread delay.
+  const timed = [
+    'I/BridgeFontRefRelease( 4321): stage=pass-complete pass=1 passMs=36 mainMaxGapMs=4',
+    'I/BridgeFontRefRelease( 4321): stage=pass-complete pass=2 passMs=21 mainMaxGapMs=12',
+    'I/BridgeFontRefRelease( 4321): stage=pass-complete pass=2 passMs=9 mainMaxGapMs=7 user=secret',
+  ].join('\n');
+  assert.deepEqual(parseFontRefReleaseMarkers(timed, 4321), { available: true,
+    skippedReason: null, passes: 2, maxPassMs: 36, maxMainGapMs: 12 });
+  const none = { available: false, skippedReason: null, passes: 0,
+    maxPassMs: null, maxMainGapMs: null };
   assert.deepEqual(parseFontRefReleaseMarkers(raw, 1111), none);
   assert.deepEqual(parseFontRefReleaseMarkers(raw, '4321; id'), none);
   assert.deepEqual(parseFontRefReleaseMarkers(null, 4321), none);
@@ -1109,6 +1120,16 @@ test('production release and FD00G sources keep the release off the main thread 
   assert.match(release, /if \(!SCHEDULED\.compareAndSet\(false, true\)\) return;/);
   assert.match(release, /if \(!isLeakingChromium\(userAgent\)\) \{/);
   assert.match(release, /worker\.setDaemon\(true\);/);
+  // No GC priority inversion: the GC-running worker matches ART's own daemons.
+  assert.match(release, /worker\.setPriority\(Thread\.NORM_PRIORITY\);/);
+  assert.doesNotMatch(release, /MIN_PRIORITY/);
+  // Everything that can block (binder lookup, sleeps, GC, finalization) runs
+  // inside the worker lambda; the main-thread part only checks and starts it.
+  const schedule = release.slice(release.indexOf('static void scheduleAfterFirstPageLoad('),
+    release.indexOf('static void runFinalizationPass()'));
+  const mainPart = schedule.slice(0, schedule.indexOf('Thread worker = new Thread(() -> {'));
+  assert.doesNotMatch(mainPart, /resolveContentProvider|SystemClock\.sleep|runFinalizationPass|\.gc\(\)|runFinalization\(/);
+  assert.match(schedule, /MainThreadGapMeter meter = debuggable \? MainThreadGapMeter\.start\(\) : null;/);
   assert.match(release, /if \(debuggable\) Log\.i\(LOG_TAG, message\);/);
   assert.doesNotMatch(release, /ContentProviderClient|releaseProvider|killBackgroundProcesses|forceStop/);
   assert.match(main, /WebViewFontProviderRelease\.scheduleAfterFirstPageLoad\(MainActivity\.this\)/);
@@ -1118,9 +1139,12 @@ test('production release and FD00G sources keep the release off the main thread 
   assert.match(debugManifest, /android:name="com\.bridge\.app\.WebViewFinalizationBaselineActivity"/);
   assert.doesNotMatch(mainManifest, /WebViewFinalizationBaselineActivity/);
   const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
-  const fd00g = journeys.indexOf("await measure('FD00G'");
+  const fd00g = journeys.indexOf("const measureFd00g = id => measure(id, 'same-process finalization");
   assert.ok(fd00g > journeys.indexOf("await measure('FD00T'"));
   assert.ok(fd00g < journeys.indexOf("await measure('FD00W'"));
+  // Three instrumented repetitions, all before FD00W, inside the controls suite.
+  const loop = journeys.indexOf("for (const id of ['FD00G', 'FD00G-2', 'FD00G-3']) await measureFd00g(id);");
+  assert.ok(loop > fd00g && loop < journeys.indexOf("await measure('FD00W'"));
   // Strict FD01's sample path is untouched: the provider sample follows pid()
   // directly, and release markers are read only after it.
   const stage = journeys.slice(journeys.indexOf('async function fontProviderStage('),
@@ -1219,8 +1243,9 @@ test('FD00G progress markers separate never-ran, blocked-in-pass and finished fr
   assert.deepEqual(parseFinalizationProbeMarkers(
     'I/BridgeFinalizeProbe( 4242): stage=finalized passMs=37 token=secret', 4242), none);
   const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
-  const fd00g = journeys.slice(journeys.indexOf("await measure('FD00G'"), journeys.indexOf("await measure('FD00W'"));
-  assert.match(fd00g, /facts\.androidWebViewFinalizationEvidence = evidence;/);
+  const fd00g = journeys.slice(journeys.indexOf('const measureFd00g = id => measure(id,'),
+    journeys.indexOf("await measure('FD00W'"));
+  assert.match(fd00g, /\(facts\.androidWebViewFinalizationEvidence \?\?= \{\}\)\[id\] = evidence;/);
   assert.match(fd00g, /const deadline = Date\.now\(\) \+ 15_000;/);
   // Evidence-only window after the FAIL verdict; it can never produce a PASS.
   assert.ok(fd00g.indexOf('const evidenceDeadline = Date.now() + 15_000;') >
@@ -1295,4 +1320,148 @@ test('hand-built dependency descriptions cannot smuggle free text through any fi
     assert.equal(result.attribution, 'unavailable');
     assert.doesNotMatch(JSON.stringify(result), /secret|example|Customer/);
   }
+});
+
+// #209 PD01: AOSP android14 `dumpsys activity exit-info` rows for the product.
+function exitInfoDump(rows) {
+  return ['Historical process exit for com.bridge.app.debug:', ...rows.map(([pid, at, reason, description], i) => [
+    `  ApplicationExitInfo #${i}:`,
+    `    timestamp=${at} pid=${pid} realUid=10192 packageUid=10192 definingUid=10192 user=0`,
+    `    process=com.bridge.app.debug reason=${reason} subreason=0 (UNKNOWN) status=0`,
+    `    importance=100 pss=96MB rss=180MB description=${description} state=empty trace=null`,
+  ].join('\n'))].join('\n');
+}
+const PROVIDER_DEATH = 'depends on provider com.google.android.gms/.fonts.provider.FontsProvider in dying proc com.google.android.gms.persistent (adj 0)';
+
+test('PD01 ledger counts only journey exits, de-duplicates checkpoints and attributes reason 12', () => {
+  const start = '2026-10-19T12:44:00';
+  const first = parseApplicationExits(exitInfoDump([
+    [5001, '2026-10-19 12:45:10.000', '10 (USER REQUESTED)', 'stop com.bridge.app.debug due to from pid 1'],
+    [4000, '2026-10-19 12:40:00.000', '12 (DEPENDENCY DIED)', PROVIDER_DEATH],
+  ]), 32).filter(r => r.process === 'com.bridge.app.debug');
+  let ledger = mergeProductExitCheckpoint(emptyProductExitLedger(), first, start);
+  const second = parseApplicationExits(exitInfoDump([
+    [5002, '2026-10-19 12:50:03.500', '12 (DEPENDENCY DIED)', PROVIDER_DEATH],
+    [5001, '2026-10-19 12:45:10.000', '10 (USER REQUESTED)', 'stop com.bridge.app.debug due to from pid 1'],
+  ]), 32);
+  ledger = mergeProductExitCheckpoint(ledger, second, start);
+  const summary = summarizeProductExitLedger(ledger);
+  assert.deepEqual(summary, {
+    checkpoints: 2, windowValid: true, exitsInJourney: 2,
+    reasonCounts: { 10: 1, 12: 1 }, dependencyDeaths: 1,
+    dependencyEvidence: [{ dependencyKind: 'provider-death', providerClass: 'gms-fonts',
+      dyingProcessClass: 'gms-persistent', dependencyPackageClass: 'unknown',
+      attribution: 'exit-description' }],
+    potentialGap: false,
+  });
+  // The pre-journey reason-12 row (12:40) is not this journey's failure.
+  assert.doesNotMatch(JSON.stringify(summary), /5001|5002|4000|12:45|com\.google/);
+});
+
+test('PD01 ledger flags a possibly evicted journey exit and an unusable window', () => {
+  const start = '2026-10-19T12:00:00';
+  const full = (fromMinute) => parseApplicationExits(exitInfoDump(Array.from({ length: 16 }, (_, i) =>
+    [6000 + fromMinute + i, `2026-10-19 12:${String(fromMinute + i).padStart(2, '0')}:00.000`,
+      '10 (USER REQUESTED)', 'stop'])), 32);
+  // A full history that is entirely newer than the journey start, seen for the
+  // first time: earlier journey exits may have been evicted unread.
+  assert.equal(summarizeProductExitLedger(
+    mergeProductExitCheckpoint(emptyProductExitLedger(), full(10), start)).potentialGap, true);
+  // Overlapping checkpoints prove continuity: no gap.
+  let ledger = mergeProductExitCheckpoint(emptyProductExitLedger(), full(10).slice(0, 8), start);
+  ledger = mergeProductExitCheckpoint(ledger, full(10), start);
+  assert.equal(summarizeProductExitLedger(ledger).potentialGap, false);
+  // Fewer rows than the history holds: nothing can have been evicted.
+  assert.equal(summarizeProductExitLedger(
+    mergeProductExitCheckpoint(emptyProductExitLedger(), full(10).slice(0, 15), start)).potentialGap, false);
+  // No usable journey start: the window is invalid, never "no deaths".
+  for (const bad of [null, 'garbage', '2026-99-19T12:00:00']) {
+    assert.equal(summarizeProductExitLedger(
+      mergeProductExitCheckpoint(emptyProductExitLedger(), full(10), bad)).windowValid, false);
+  }
+  // parseApplicationExits keeps a full 16+ record history (it used to stop at 10).
+  assert.equal(full(10).length, 16);
+});
+
+test('product and upstream-control suites are separated; PD01 is a strict product gate', () => {
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(journeys, /const SUITE = process\.env\.ANDROID_JOURNEY_SUITE === 'upstream-webview-controls'\n  \? 'upstream-webview-controls' : 'product';/);
+  const controls = journeys.slice(journeys.indexOf('async function runUpstreamWebViewControls() {'),
+    journeys.indexOf('async function main() {'));
+  const main = journeys.slice(journeys.indexOf('async function main() {'));
+  for (const id of ['FD00', 'FD00P', 'FD00C', 'FD00A', 'FD00N', 'FD00D', 'FD00S', 'FD00T', 'FD00W', 'CS00']) {
+    assert.ok(controls.includes(`await measure('${id}'`), `${id} must be in the controls suite`);
+    assert.ok(!main.includes(`await measure('${id}'`), `${id} must not run in the product suite`);
+  }
+  assert.ok(controls.includes('const measureFd00g = id => measure(id,'));
+  assert.doesNotMatch(controls, /await check\(/, 'controls are measurements, never product checks');
+  // The product suite returns before any product journey only in the controls suite.
+  assert.match(main, /if \(SUITE === 'upstream-webview-controls'\) \{\n[\s\S]*?await connectDevice\(\);\n    await runUpstreamWebViewControls\(\);\n    return;\n  \}/);
+  assert.equal((journeys.match(/await runUpstreamWebViewControls\(\)/g) ?? []).length, 1);
+  // Every product gate stays mandatory in the product suite.
+  for (const gate of ['A01', 'CS01', 'A02', 'FD01', 'L01', 'L02', 'L03', 'L04', 'ANR01', 'PD01']) {
+    assert.ok(main.includes(`await check('${gate}'`), `${gate} must stay a product check`);
+  }
+  // PD01: after ANR01, before ANR02's force-stop; asserting, fail-closed.
+  const anr01 = main.indexOf("await check('ANR01'");
+  const pd01 = main.indexOf("await check('PD01'");
+  const anr02 = main.indexOf("await measure('ANR02'");
+  assert.ok(anr01 > 0 && pd01 > anr01 && anr02 > pd01);
+  const pd01Body = main.slice(pd01, anr02);
+  for (const literal of ["assert(finalReadOk,", 'assert(summary.windowValid,',
+    'assert(!summary.potentialGap,', 'assert(summary.dependencyDeaths === 0,']) {
+    assert.ok(pd01Body.includes(literal), 'PD01 missing ' + literal);
+  }
+  assert.ok(!journeys.includes("await measure('PD01'"));
+  // Exit-history checkpoints while the startup and lifecycle exits are retained.
+  assert.ok(main.indexOf("await productExitCheckpoint('after-startup');") > main.indexOf("await check('CS01'"));
+  assert.ok(main.indexOf("await productExitCheckpoint('after-startup');") < main.indexOf("await check('A02'"));
+  assert.ok(main.indexOf("await productExitCheckpoint('after-lifecycle');") > main.indexOf("await check('L04'"));
+  // FD01's assertion is untouched.
+  assert.match(main, /assert\(!evidence\.fontProviderConnected,\n      'FontsProvider still connected; initiating component is not established/);
+});
+
+test('job summary labels the diagnostic suite, keeps FAILs and prints no run data', async () => {
+  const { formatSuiteSummary } = await import('./suite-summary.mjs');
+  const controls = formatSuiteSummary({
+    suite: 'upstream-webview-controls', evidenceCategory: 'AUTOMATED / EMULATOR',
+    facts: { device: { model: 'sdk_gphone64_x86_64' } },
+    results: [
+      { id: 'FD00G', title: 'same-process finalization', status: 'MEASURED', detail: { pid: 4242 } },
+      { id: 'FD00W', title: 'attached WebView about:blank', status: 'FAIL', error: 'pid 4243 died at 12:01' },
+      { id: 'CS00', title: 'x|y', status: 'weird' },
+    ],
+  });
+  assert.match(controls, /DIAGNOSTIC, NON-GATING/);
+  assert.match(controls, /never counted as a pass/);
+  assert.match(controls, /\| FD00W \| \*\*FAIL\*\* \|/);
+  // An unknown status is a failure, never a pass.
+  assert.match(controls, /\| CS00 \| \*\*FAIL\*\* \| x y \|/);
+  assert.match(controls, /pass=0 fail=2 skipped=0 measured=1/);
+  assert.doesNotMatch(controls, /4242|4243|12:01|sdk_gphone/);
+  assert.match(formatSuiteSummary({ suite: 'product', results: [] }), /mandatory Bridge reliability suite/);
+  for (const missing of [null, {}, { results: 'x' }]) {
+    assert.match(formatSuiteSummary(missing), /did not complete\.\*\* This is a failure, not a pass/);
+  }
+});
+
+test('workflows: product suite gates, upstream controls run non-gating but keep their exit status', () => {
+  const product = readFileSync(new URL('../../.github/workflows/mobile-android.yml', import.meta.url), 'utf8');
+  const diagnostics = readFileSync(new URL('../../.github/workflows/android-upstream-webview-diagnostics.yml', import.meta.url), 'utf8');
+  assert.match(product, /\n      ANDROID_JOURNEY_SUITE: product\n/);
+  assert.doesNotMatch(product, /upstream-webview-controls/);
+  assert.match(diagnostics, /\n      ANDROID_JOURNEY_SUITE: upstream-webview-controls\n/);
+  for (const workflow of [product, diagnostics]) {
+    // A failing journey or control must fail its job.
+    assert.doesNotMatch(workflow, /continue-on-error|\|\| true\n\s*$|ANDROID_JOURNEY_SUITE: product\b[\s\S]*ANDROID_JOURNEY_SUITE/m);
+    assert.match(workflow, /script: bash e2e\/android\/run-emulator-journeys\.sh\n/);
+    assert.match(workflow, /run: bash e2e\/android\/verify-emulator-image\.sh\n/);
+    assert.match(workflow, /node e2e\/android\/suite-summary\.mjs e2e\/android\/results\/android-evidence\.json >> "\$GITHUB_STEP_SUMMARY"/);
+  }
+  // Nightly + manual; on pull requests only when this workflow itself changes.
+  assert.match(diagnostics, /\n  schedule:\n    - cron: '[0-9 *]+'\n  workflow_dispatch:\n/);
+  assert.match(diagnostics, /\n  pull_request:\n    branches: \[main, develop\]\n    paths:\n      - '\.github\/workflows\/android-upstream-webview-diagnostics\.yml'\n\n/);
+  // The runner script propagates the journey exit status unchanged.
+  const runner = readFileSync(new URL('./run-emulator-journeys.sh', import.meta.url), 'utf8');
+  assert.match(runner, /node android\/android-journeys\.mjs\nstatus=\$\?\n[\s\S]*exit \$status\n$/);
 });

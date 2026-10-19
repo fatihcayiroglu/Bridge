@@ -1,0 +1,119 @@
+name: Android upstream WebView diagnostics (non-gating)
+
+# #209 — DIAGNOSTIC, NON-GATING. Runs ONLY the unmitigated upstream Android
+# WebView reproduction controls (FD00*, CS00): debug Activities with no Bridge
+# code that reproduce the Chromium < 117.0.5938.29 FontsProvider stable-ref leak
+# and its DEPENDENCY DIED kill on the CI image's WebView. Bridge cannot fix them
+# inside an unmodified WebView, so they do not gate pull requests: the Bridge
+# product suite in mobile-android.yml (FD01, PD01, ANR01, ...) does. A control
+# FAIL is still a real failure: the job exits nonzero and nothing here is ever
+# counted as a pass. Evidence category: AUTOMATED / EMULATOR, not physical-device.
+
+on:
+  schedule:
+    - cron: '10 4 * * *'
+  workflow_dispatch:
+  # Validates changes to this workflow itself; product changes never trigger it.
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - '.github/workflows/android-upstream-webview-diagnostics.yml'
+
+concurrency:
+  group: android-upstream-webview-diagnostics-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: '24.20.0'
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: Android debug APK (documented build path)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Client bundle
+        run: npm run build
+      - name: Packaged web root (www/)
+        env:
+          BRIDGE_API_URL: http://localhost:3000
+        run: node mobile/scripts/setup.js
+      - name: Generate the Android project and apply the curated native layer
+        run: |
+          npx cap add android
+          node mobile/scripts/apply-android-overlay.js
+          npx cap sync android
+      - name: Gradle assembleDebug
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bridge-android-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+
+  controls:
+    name: DIAGNOSTIC (non-gating) upstream WebView controls (AUTOMATED / EMULATOR)
+    runs-on: ubuntu-latest
+    needs: [apk]
+    timeout-minutes: 45
+    env:
+      ANDROID_JOURNEY_SUITE: upstream-webview-controls
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - uses: actions/download-artifact@v8
+        with:
+          name: bridge-android-debug-apk
+          path: apk
+      # The controls never load Bridge content: no server or database.
+      - name: Install harness dependencies
+        run: cd e2e && npm ci --no-audit --no-fund
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify API 34 Google APIs emulator image
+        run: bash e2e/android/verify-emulator-image.sh
+      # Same image and emulator options as the product suite. A control FAIL
+      # fails this step and the job; it is reported, never converted to a pass.
+      - name: Upstream WebView controls
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          APK_PATH: ${{ github.workspace }}/apk/app-debug.apk
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -no-snapshot -camera-back emulated -camera-front emulated
+          script: bash e2e/android/run-emulator-journeys.sh
+      - name: Job summary
+        if: always()
+        run: node e2e/android/suite-summary.mjs e2e/android/results/android-evidence.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: android-upstream-webview-diagnostics-evidence
+          path: e2e/android/results/
+          retention-days: 30
