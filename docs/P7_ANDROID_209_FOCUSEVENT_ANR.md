@@ -49,6 +49,8 @@ H1, H2 and H3 can hold together: H3 would be the common cause and H1/H2 how it s
 - `am_anr`, `am_kill`, `am_proc_died` and `am_proc_start` lines, read at the PD01 checkpoints and at the end so the rotating buffer cannot drop early ones;
 - device-clock offsets from the journey start, using toybox `date +%s.%N` when available, otherwise whole seconds;
 - the check that was running when each ANR was declared and when its process was killed;
+- events before the journey origin or after the observation end are excluded and counted separately; reused numeric PIDs are separated by process incarnation;
+- **coverage is never certified complete**: `observed-only` means only observed rows are reported, `partial` flags a missing process start, capped rows or a failed checkpoint read, and `unknown` covers no Bridge events in the observation window. An empty or foreign-only log is **not** proof of zero ANRs;
 - the kill's reason as a fixed class (`user-request-after-error`, `background-anr`, `force-stop`, …);
 - ANR-dialog samples (from `dumpsys window windows`; booleans only) after startup, **right before L01's HOME press**, and at the end.
 
