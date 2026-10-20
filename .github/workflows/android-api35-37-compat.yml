@@ -125,6 +125,9 @@ jobs:
           arch: x86_64
           target: google_apis
           profile: pixel_6
+          # API37 needs more writable /data space for the exact APK install.
+          # Leave API35/36 at the action's original default disk size.
+          disk-size: ${{ matrix.api == 37 && '10G' || '' }}
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -no-snapshot -camera-back emulated -camera-front emulated
           script: bash e2e/android/compat-api35-37-smoke.sh "$EXPECTED_ANDROID_API" "$APK_PATH"
