@@ -1,0 +1,254 @@
+package com.bridge.app;
+
+import android.content.Context;
+import android.content.pm.ApplicationInfo;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.util.Log;
+import android.webkit.WebSettings;
+
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * Android #209: release a STABLE Google Play Services FontsProvider reference
+ * that older Android System WebView builds leak into the app process.
+ *
+ * <p>Upstream mechanism, read in Chromium 113-140 and AOSP android14-release
+ * sources (older Android releases were not re-read):
+ * <ol>
+ *   <li>When {@code AndroidDownloadableFontsMatching} is enabled, Blink's
+ *       {@code FontUniqueNameLookupAndroid::Init} asks the browser side to
+ *       {@code FetchAllFontFiles} (Google Sans, Noto Color Emoji Compat) from
+ *       {@code com.google.android.gms.fonts}. On the CI image this happens
+ *       on the first navigation (no navigation, no provider ref).</li>
+ *   <li>Chromium's {@code AndroidFontLookupImpl.tryFetchFont} opens the font
+ *       with {@code ContentResolver.openFileDescriptor}. AOSP returns a
+ *       {@code ParcelFileDescriptorInner} that holds a STABLE provider
+ *       reference until {@code releaseResources()} runs.</li>
+ *   <li>Before the upstream fix that wrapper went straight to
+ *       {@code CoreImpl.wrapFileDescriptor}, which calls {@code detachFd()}.
+ *       For a wrapping descriptor AOSP's {@code detachFd()} delegates to the
+ *       inner descriptor and never calls the wrapper's
+ *       {@code releaseResources()}; only {@code finalize()} does. The stable
+ *       reference therefore lives until the unreachable wrapper is garbage
+ *       collected and finalized. Fixed builds dup the descriptor and close the
+ *       original immediately. By tag: unfixed through 117.0.5938.28 on the
+ *       M117 branch and through 118.0.5970.0 on trunk; fixed from
+ *       117.0.5938.29 and 118.0.5971.0. M116 carries a partial,
+ *       non-monotonic backport (116.0.5845.124, .163, .188).</li>
+ *   <li>While any stable reference exists, ActivityManager kills the app with
+ *       {@code REASON_DEPENDENCY_DIED} if the providing GMS process dies
+ *       ({@code ContentProviderHelper.removeDyingProviderLocked}); unstable-only
+ *       clients are merely notified.</li>
+ * </ol>
+ *
+ * <p>The wrapper is already garbage: Bridge holds nothing and changes no
+ * provider, GMS or WebView state. Running the finalizer that AOSP itself
+ * relies on simply ends the exposure window early instead of "whenever the
+ * next GC happens", which in an idle app can be the rest of the process
+ * lifetime. Up-to-date WebView never reaches this code.
+ *
+ * <p>Best effort: the passes run at fixed times after the first page load,
+ * so a prefetch that only completes after the last pass (a very slow GMS
+ * provider) keeps its stable reference until the next natural GC. A failure
+ * inside the worker is swallowed: the mitigation must never take the app down.
+ *
+ * <p>Cost per process, only on WebView builds treated as leaking: two passes,
+ * each two explicit GCs and two finalization waits, on a normal-priority
+ * daemon thread.
+ */
+final class WebViewFontProviderRelease {
+    static final String LOG_TAG = "BridgeFontRefRelease";
+    static final String GMS_FONTS_AUTHORITY = "com.google.android.gms.fonts";
+
+    /**
+     * Sleeps before each pass, counted from the first page load (pass 1 at
+     * about 1.5 s) and then from the end of the previous pass (pass 2 at
+     * about 10 s): once for the renderer's prefetch, once as a backstop.
+     */
+    static final long[] PASS_DELAYS_MS = { 1_500L, 8_500L };
+
+    /**
+     * Debug builds only: the last part of each sleep is a pass-free control
+     * window for the main-thread heartbeat. Release builds sleep the same
+     * total time and measure nothing.
+     */
+    static final long BASELINE_WINDOW_MS = 500L;
+
+    private static final Pattern CHROME_VERSION =
+            Pattern.compile("\\bChrome/(\\d{1,4})\\.(\\d{1,4})\\.(\\d{1,6})\\.(\\d{1,6})\\b");
+    private static final AtomicBoolean SCHEDULED = new AtomicBoolean(false);
+
+    private WebViewFontProviderRelease() {}
+
+    /**
+     * True for Chromium builds not known to contain the upstream fix, judged
+     * conservatively. Every M116 and older build counts as leaking, although
+     * some M116 patch releases (116.0.5845.124, .163, .188) carry a backport
+     * and others (.140 to .153) do not: on a fixed build the pass only costs a
+     * few GCs. A reduced user agent (117.0.0.0, 118.0.0.0) also counts as
+     * leaking. A user agent without a parseable Chrome/x.y.z.w token returns
+     * false.
+     */
+    static boolean isLeakingChromium(String userAgent) {
+        if (userAgent == null) return false;
+        Matcher m = CHROME_VERSION.matcher(userAgent);
+        if (!m.find()) return false;
+        try {
+            return isLeakingChromium(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(3)),
+                    Integer.parseInt(m.group(4)));
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    static boolean isLeakingChromium(int major, int build, int patch) {
+        if (major < 117) return true;
+        // M117 branch: fixed from 117.0.5938.29. Trunk: fixed from 118.0.5971.0.
+        // M116 and older: always treated as leaking (see the Javadoc).
+        if (major == 117) return !(build == 5938 && patch >= 29);
+        if (major == 118) return build < 5971;
+        return false;
+    }
+
+    /**
+     * Schedule the release passes once per process, off the main thread.
+     * Call on the main thread after the first page load, so the renderer
+     * prefetch has started; later calls are no-ops.
+     */
+    static void scheduleAfterFirstPageLoad(Context context) {
+        if (!SCHEDULED.compareAndSet(false, true)) return;
+        final Context app = context.getApplicationContext();
+        final boolean debuggable = isDebuggable(app);
+        String userAgent;
+        try {
+            userAgent = WebSettings.getDefaultUserAgent(app);
+        } catch (RuntimeException e) {
+            userAgent = null;
+        }
+        if (!isLeakingChromium(userAgent)) {
+            marker(debuggable, "stage=skipped reason=webview-not-affected");
+            return;
+        }
+        Thread worker = new Thread(() -> {
+            try {
+                releaseOffMainThread(app, debuggable);
+            } catch (RuntimeException e) {
+                // Never crash the app over a best-effort release. Fixed marker:
+                // the exception text could carry provider or package details.
+                marker(debuggable, "stage=failed reason=exception");
+            }
+        }, LOG_TAG);
+        worker.setDaemon(true);
+        // NOT a low priority: an explicit GC suspends every thread, the main
+        // thread included, for its flip, and only this thread can resume them.
+        // A starved nice-19 GC thread would freeze the UI (priority inversion).
+        // Normal priority matches ART's own HeapTaskDaemon/FinalizerDaemon.
+        worker.setPriority(Thread.NORM_PRIORITY);
+        worker.start();
+    }
+
+    /** The worker's body: provider check, then the timed passes. */
+    private static void releaseOffMainThread(Context app, boolean debuggable) {
+        // No provider means WebView cannot have acquired it either.
+        if (app.getPackageManager().resolveContentProvider(GMS_FONTS_AUTHORITY, 0) == null) {
+            marker(debuggable, "stage=skipped reason=provider-unavailable");
+            return;
+        }
+        for (int i = 0; i < PASS_DELAYS_MS.length; i++) {
+            long baselineGapMs = 0L;
+            if (debuggable) {
+                SystemClock.sleep(PASS_DELAYS_MS[i] - BASELINE_WINDOW_MS);
+                MainThreadGapMeter baseline = MainThreadGapMeter.start();
+                SystemClock.sleep(BASELINE_WINDOW_MS);
+                baselineGapMs = baseline.stop();
+            } else {
+                SystemClock.sleep(PASS_DELAYS_MS[i]);
+            }
+            MainThreadGapMeter meter = debuggable ? MainThreadGapMeter.start() : null;
+            long started = SystemClock.uptimeMillis();
+            runFinalizationPass();
+            long passMs = SystemClock.uptimeMillis() - started;
+            // Proves the pass ran, not that anything was released.
+            if (meter != null) {
+                marker(true, "stage=pass-complete pass=" + (i + 1)
+                        + " passMs=" + Math.min(passMs, 999_999L)
+                        + " mainMaxGapMs=" + Math.min(meter.stop(), 999_999L)
+                        + " baselineMaxGapMs=" + Math.min(baselineGapMs, 999_999L));
+            }
+        }
+    }
+
+    /**
+     * Collect and finalize unreachable objects. Twice, because a finalizable
+     * object needs one GC to be discovered and its finalizer to run before
+     * anything it alone kept alive can be reclaimed. Blocks the caller: never
+     * call on the main thread.
+     */
+    static void runFinalizationPass() {
+        Runtime.getRuntime().gc();
+        System.runFinalization();
+        Runtime.getRuntime().gc();
+        System.runFinalization();
+    }
+
+    /**
+     * Debug builds only (compiled into every build, constructed only when the
+     * app is debuggable): the worst delay of a 50 ms main-thread heartbeat
+     * over a window, i.e. how long the main thread could not run a message.
+     * A gap has ANY cause (a GC pause, CPU contention from the pass, or the
+     * app's own main-thread work), so compare a pass window with the
+     * pass-free baseline window before attributing it to the pass.
+     */
+    static final class MainThreadGapMeter implements Runnable {
+        private static final long TICK_MS = 50L;
+        private static final long MAX_TICKING_MS = 30_000L;
+        private final Handler main = new Handler(Looper.getMainLooper());
+        private final long startedAt = SystemClock.uptimeMillis();
+        private volatile long expectedAt;
+        private volatile long maxGapMs;
+        private volatile boolean ticking = true;
+
+        static MainThreadGapMeter start() {
+            MainThreadGapMeter meter = new MainThreadGapMeter();
+            meter.expectedAt = meter.startedAt + TICK_MS;
+            meter.main.postDelayed(meter, TICK_MS);
+            return meter;
+        }
+
+        @Override
+        public void run() {
+            long now = SystemClock.uptimeMillis();
+            maxGapMs = Math.max(maxGapMs, now - expectedAt);
+            if (!ticking) return;
+            if (now - startedAt > MAX_TICKING_MS) {
+                // Capped: no tick is pending, so stop() must not count one.
+                ticking = false;
+                return;
+            }
+            expectedAt = now + TICK_MS;
+            main.postDelayed(this, TICK_MS);
+        }
+
+        /** Stop ticking; includes the delay of a tick that is still waiting to run. */
+        long stop() {
+            boolean wasTicking = ticking;
+            ticking = false;
+            main.removeCallbacks(this);
+            long pending = wasTicking ? SystemClock.uptimeMillis() - expectedAt : 0L;
+            return Math.max(maxGapMs, Math.max(0L, pending));
+        }
+    }
+
+    private static boolean isDebuggable(Context context) {
+        return (context.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+    }
+
+    /** Fixed debug-only markers for the emulator harness; no PIDs, URLs or user data. */
+    private static void marker(boolean debuggable, String message) {
+        if (debuggable) Log.i(LOG_TAG, message);
+    }
+}
