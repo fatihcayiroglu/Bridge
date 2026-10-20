@@ -61,7 +61,8 @@ const router = express.Router();
 import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
-import { Channels, Messages, VoiceMessages } from '../db/repositories';
+import { Channels, Members, Messages, VoiceMessages } from '../db/repositories';
+import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
 import { authMiddleware} from '../middleware/auth';
 import logger from '../lib/logger';
 import { limits } from '../middleware/rateLimit';
@@ -165,6 +166,13 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
   const perms = await resolvePermissions(_u.id, serverId, channelId);
   if (!hasAllPermissions(perms, PERMS.VIEW_CHANNELS, PERMS.SEND_MESSAGES, PERMS.ATTACH_FILES)) {
     return res.status(403).json({ error: 'Missing channel permissions' });
+  }
+  // A voice message is a channel message: a timed-out member is refused here
+  // as on `file:send`, before any byte is written or stored.
+  const membership = await Members.findOne(_u.id, serverId);
+  if (!membership) return res.status(403).json({ error: 'Missing channel permissions' });
+  if (isMemberTimedOut(membership.timeoutUntil)) {
+    return res.status(403).json({ error: 'You are timed out', until: parseMemberTimeoutUntil(membership.timeoutUntil) });
   }
 
   const parsedDuration = parseNonNegativeSafeIntText(duration, 0);

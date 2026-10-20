@@ -2,10 +2,12 @@
 //
 // The content checks a new plaintext message passes before it is stored,
 // whichever path posts it: the socket channel send (socket/handlers/
-// messages-send.ts), thread replies and forum posts (routes/threads.ts), and
-// scheduled messages when they are posted (jobs/scheduledMessages.ts). One
-// owner, so no path skips them; the thread routes and scheduled messages did,
-// and posted what the channel refused.
+// messages-send.ts), thread replies and forum posts (routes/threads.ts),
+// scheduled messages when they are posted (jobs/scheduledMessages.ts) and
+// polls (routes/polls.ts). One owner, so no path skips them; the thread
+// routes, scheduled messages and polls did, and posted what the channel
+// refused. Edits of accepted content (messages, polls) pass
+// checkEditedContent below.
 //
 //   1. P7 B1 content abuse (lib/abusePolicy.ts): the same text, or links to
 //      one host, too often per window. Counted per account across paths.
@@ -16,14 +18,18 @@
 //      it. A rule-store failure propagates, so an outage cannot silently
 //      disable configured moderation (fail closed).
 //
-// Encrypted content and file messages are not inspected by the callers.
+// Every check matches the visible text (lib/storedText.ts visibleMessageText):
+// an invisible character cannot carry a refused word past it. Encrypted
+// content and file messages are not inspected by the callers.
 //
 // Machine principals (machineContentRefused below) post through their own
 // paths: an installed bot's interaction reply (`bot:<id>`), an incoming
-// webhook (`webhook:<id>`) and a plugin (`plugin:<id>`). They get the server's
-// AutoMod rules and not the P7 per-account limits. Bridge's own system and
-// audit messages (AutoMod alerts, join notices) are written directly and are
-// not moderated.
+// webhook (`webhook:<id>`), a plugin (`plugin:<id>`), and the two relays that
+// copy another server's message into this server's channel: a channel bridge
+// (`bridge:<id>`) and an announcement crosspost (`crosspost:<source channel
+// id>`). They get the RECEIVING server's AutoMod rules and not the P7
+// per-account limits. Bridge's own system and audit messages (AutoMod alerts,
+// join notices) are written directly and are not moderated.
 
 import { Automod, Members } from '../db/repositories';
 import { ABUSE_POLICY, checkContentAbuse, mentionsWithinLimit } from './abusePolicy';
@@ -32,6 +38,7 @@ import { currentIntegrationInstallation } from './automodIntegrationExemptions';
 import { normalizeAutomodMemberRoleIds, writeAutomodLogs } from './automodRuntime';
 import { hasPermission, PERMS } from './permissions';
 import { cache } from './redisAdapter';
+import { visibleMessageText } from './storedText';
 import type { HandlerServer } from '../socket/handler-contracts';
 
 export type MessageContentRefusal =
@@ -54,11 +61,14 @@ export async function checkMessageContent(
   io: HandlerServer | null,
 ): Promise<MessageContentRefusal | null> {
   const { userId, serverId, channelId, content } = input;
+  // The P7 limits count what a reader sees: texts that differ only by where an
+  // invisible character sits are one text (AutoMod matches the same way).
+  const visible = visibleMessageText(content);
 
-  const abuse = await checkContentAbuse(userId, content);
+  const abuse = await checkContentAbuse(userId, visible);
   if (!abuse.allowed) return { kind: 'spam', reason: abuse.reason, retryAfterMs: abuse.retryAfterMs };
 
-  if (!mentionsWithinLimit(content, hasPermission(input.senderPerms, PERMS.MENTION_EVERYONE))) {
+  if (!mentionsWithinLimit(visible, hasPermission(input.senderPerms, PERMS.MENTION_EVERYONE))) {
     return { kind: 'refused', code: 'TOO_MANY_MENTIONS', message: `En fazla ${ABUSE_POLICY.mentions.perMessage} kişi etiketlenebilir.` };
   }
 
@@ -78,6 +88,58 @@ export async function checkMessageContent(
     return { kind: 'refused', code: 'AUTOMOD_BLOCKED', message: decision.reasons.join(', ') || 'Mesaj AutoMod tarafından engellendi.' };
   }
   return null;
+}
+
+/** The HTTP answer for content the message policy refused (thread, forum and poll routes). */
+export function contentRefusalHttp(refusal: MessageContentRefusal): { status: number; body: Record<string, unknown> } {
+  if (refusal.kind === 'spam') {
+    return { status: 429, body: { error: 'Too many similar messages', code: refusal.reason.toUpperCase(), retryAfterMs: refusal.retryAfterMs } };
+  }
+  return { status: 422, body: { error: refusal.message, code: refusal.code } };
+}
+
+/**
+ * The server's AutoMod rules for an edit of accepted content: a message
+ * (lib/messageMutations.ts) or a poll's question and options (routes/
+ * polls.ts). Otherwise a benign post can be edited into content that would
+ * have been refused. Spam-frequency rules count new sends only, and the P7
+ * per-account limits do not apply: an edit posts nothing new.
+ *
+ * A matched rule's timeout is applied and logged even when the edit is
+ * allowed. Returns the matched reasons when a delete action refuses the edit
+ * (the pre-edit text stays), otherwise null. A rule-store failure propagates
+ * (fail closed); each caller answers it.
+ */
+export async function checkEditedContent(
+  input: {
+    userId: string;
+    serverId: string;
+    channelId: string;
+    content: string;
+    /** The editor's membership `roles` as stored (array or JSON text). */
+    memberRoles: unknown;
+    /** Shown in AutoMod log entries; resolved only when a rule matches. */
+    displayName: () => Promise<string>;
+  },
+  io: HandlerServer | null,
+): Promise<{ reasons: string[] } | null> {
+  const { userId, serverId, channelId, content } = input;
+  const decision = await evaluateAutomodRules(
+    await Automod.findByServer(serverId),
+    { serverId, userId, content, memberRoleIds: normalizeAutomodMemberRoleIds(input.memberRoles), event: 'edit' },
+    (key, ttlSeconds) => cache.increment(key, ttlSeconds),
+  );
+  if (!decision.matched) return null;
+  if (decision.timeoutMs) {
+    // Durable policy state: if it cannot be written, fail closed and change nothing.
+    await Members.setTimeout(serverId, userId, Date.now() + decision.timeoutMs);
+  }
+  await writeAutomodLogs(
+    decision,
+    { serverId, channelId, userId, displayName: await input.displayName(), content, operation: 'edit' },
+    io,
+  );
+  return decision.deleteMessage ? { reasons: decision.reasons } : null;
 }
 
 /**

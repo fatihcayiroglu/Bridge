@@ -59,6 +59,22 @@ export function normalizeMessageText(content: unknown): string {
   return bounded.replace(INVISIBLE_CONTROLS, '');
 }
 
+// Unicode format characters (Cf): zero-width space and joiners, word joiner,
+// soft hyphen, bidi controls, BOM. Storage keeps them (they belong in emoji
+// sequences and some scripts), but they render as nothing, so a word split by
+// one reads as the whole word.
+const INVISIBLE_FORMAT = /\p{Cf}/gu;
+
+/**
+ * The text a reader sees: without the control characters storage strips and
+ * without format characters. Content moderation matches this, so an invisible
+ * character cannot carry a refused word past it. Not bounded: callers moderate
+ * more than one stored message (webhook embeds, poll options).
+ */
+export function visibleMessageText(content: string): string {
+  return content.replace(INVISIBLE_CONTROLS, '').replace(INVISIBLE_FORMAT, '');
+}
+
 /** Minimal shape of anything that carries stored channel text. */
 export interface StoredTextRecord {
   content?: unknown;

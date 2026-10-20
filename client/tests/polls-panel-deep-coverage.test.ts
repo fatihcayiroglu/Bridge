@@ -327,6 +327,54 @@ describe('PollsPanel — anket oluşturma', () => {
     expect(questionInput().value).toBe('Soru?');
   });
 
+  // A new poll is moderated like a message (server routes/polls.ts).
+  it('susturulmuş üyeye susturma süresi söylenir; sunucu metni SIZMAZ, form korunur', async () => {
+    render(PollsPanel);
+    await openPanel();
+    apiFetch.mockClear();
+    apiFetch.mockResolvedValueOnce(response({ error: 'GIZLI-SUNUCU-AYRINTISI', until: Date.now() + 5 * 60_000 - 1_000 }, 403));
+
+    await typeCreateForm('Soru?', ['A', 'B']);
+    submitCreate().click();
+    await flush();
+
+    expect(errorText()).toBe(t('send_failed_timeout', '', { minutes: 5 }));
+    expect(errorText()).not.toContain('GIZLI-SUNUCU-AYRINTISI');
+    expect(questionInput().value).toBe('Soru?');
+  });
+
+  it.each([
+    ['TOO_MANY_MENTIONS', () => t('delivery_too_many_mentions')],
+    ['AUTOMOD_BLOCKED', () => t('ui_anket_olusturulamadi')],
+    ['BILINMEYEN', () => t('ui_anket_olusturulamadi')],
+  ])('içerik reddi %s yalnız sabit metinle gösterilir', async (code, expected) => {
+    render(PollsPanel);
+    await openPanel();
+    apiFetch.mockClear();
+    apiFetch.mockResolvedValueOnce(response({ error: 'GIZLI-SUNUCU-AYRINTISI', code }, 422));
+
+    await typeCreateForm('Soru?', ['A', 'B']);
+    submitCreate().click();
+    await flush();
+
+    expect(errorText()).toBe(expected());
+    expect(errorText()).not.toContain('GIZLI-SUNUCU-AYRINTISI');
+    expect(questionInput().value).toBe('Soru?');
+  });
+
+  it('gövdesi okunamayan ret durum koduna göre gösterilir', async () => {
+    render(PollsPanel);
+    await openPanel();
+    apiFetch.mockClear();
+    apiFetch.mockResolvedValueOnce({ ok: false, status: 403, json: async () => { throw new Error('not json'); } } as unknown as Response);
+
+    await typeCreateForm('Soru?', ['A', 'B']);
+    submitCreate().click();
+    await flush();
+
+    expect(errorText()).toBe(t('ui_bu_kanalda_bu_islem_icin_yetkin_yok'));
+  });
+
   it('oluşturma taşıma hatası sabit metne düşer', async () => {
     render(PollsPanel);
     await openPanel();

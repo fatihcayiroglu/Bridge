@@ -53,6 +53,9 @@ import { authMiddleware}  from '../middleware/auth';
 import { limits }                      from '../middleware/rateLimit';
 import type { Server as IOServer }     from 'socket.io';
 import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
+import { machineContentRefused } from '../lib/messageContentPolicy';
+import { storedMessageText } from '../lib/storedText';
+import type { HandlerServer } from '../socket/handler-contracts';
 
 let _io: IOServer | null = null;
 export function setIo(io: IOServer): void { _io = io; }
@@ -231,6 +234,22 @@ router.post('/:cid/messages/:mid/crosspost', authMiddleware, limits.api(), async
       if (!target) throw new Error('Stale or cross-tenant follower channel');
       if (target.type && !['text', 'announcement', 'forum'].includes(target.type))
         throw new Error('Follower channel does not support messages');
+
+      // The follower channel belongs to another server, whose AutoMod rules
+      // apply to what is crossposted there, as to an incoming webhook. The
+      // source announcement channel is the machine principal
+      // (`crosspost:<sourceChannelId>`): any matching rule refuses this
+      // follower's copy. A rule-store failure skips it (fail closed).
+      let refused: boolean;
+      try {
+        refused = await machineContentRefused({
+          principalId: `crosspost:${source._id}`, serverId: target.serverId, channelId: target._id,
+          displayName: `📢 ${msg.displayName}`, content: storedMessageText(msg),
+        }, _io as HandlerServer | null);
+      } catch {
+        throw new Error('Follower server moderation unavailable');
+      }
+      if (refused) throw new Error('Refused by the follower server moderation');
 
       const persisted = await Announcements.persistCrosspost({
         bridgeMessageId: uuidv4(),
