@@ -127,6 +127,15 @@ test('ANR CPU pressure keeps only numbers and fixed categories for the expected 
   assert.doesNotMatch(json, /example\.com|secret|token|gms|com\.google|sandboxed|chromium|other\.app|9136|FocusEvent|avg10/);
 });
 
+test('ANR CPU pressure counts the Chromium-built WebView provider\'s renderers as WebView', () => {
+  const chromium = anrCpuLog.replace(
+    '3011/com.google.android.webview:sandboxed_process0', '3011/com.android.webview:sandboxed_process0');
+  assert.notEqual(chromium, anrCpuLog);
+  const [record] = parseAnrCpuPressure(chromium, 'com.bridge.app.debug');
+  assert.equal(record.cpu[0].webviewRendererPct, 61);
+  assert.doesNotMatch(JSON.stringify(record), /com\.android|sandboxed/);
+});
+
 test('ANR CPU pressure rejects malformed input and bounds its output', () => {
   assert.deepEqual(parseAnrCpuPressure(anrCpuLog, 'bad process; rm -rf'), []);
   assert.deepEqual(parseAnrCpuPressure('', 'com.bridge.app.debug'), []);

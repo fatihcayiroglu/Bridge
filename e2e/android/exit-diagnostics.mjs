@@ -384,7 +384,8 @@ const ANR_CPU_TOP_CLASSES = ['app', 'webview_renderer', 'system_server', 'surfac
 
 function cpuClass(processName, expectedProcess) {
   if (processName === expectedProcess) return 'app';
-  if (/^(?:com\.google\.android\.webview|com\.android\.chrome|com\.google\.android\.trichromelibrary)[A-Za-z0-9_.]*:sandboxed_process\d+/.test(processName)) {
+  // com.android.webview: the Chromium-built provider of the #209 comparison.
+  if (/^(?:com\.google\.android\.webview|com\.android\.webview|com\.android\.chrome|com\.google\.android\.trichromelibrary)[A-Za-z0-9_.]*:sandboxed_process\d+/.test(processName)) {
     return 'webview_renderer';
   }
   if (processName === 'system_server') return 'system_server';
