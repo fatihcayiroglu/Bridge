@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseAnrEventTimeline, stepAtOffset, inspectAnrDialogWindows, parseDeviceEpoch, parseStallControlMarkers, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -1600,4 +1600,138 @@ test('workflows: product suite gates, upstream controls run non-gating but keep 
   // The runner script propagates the journey exit status unchanged.
   const runner = readFileSync(new URL('./run-emulator-journeys.sh', import.meta.url), 'utf8');
   assert.match(runner, /node android\/android-journeys\.mjs\nstatus=\$\?\n[\s\S]*exit \$status\n$/);
+});
+
+// #209 FocusEvent ANRs: the event log's own ANR/kill timeline.
+const EV = (epoch, tag, payload, pid = 512) => `${epoch}  ${pid}  ${pid + 7} I ${tag}: [${payload}]`;
+const originEpochMs = Date.UTC(2026, 9, 15, 11, 9, 0);
+const sec = offsetMs => ((originEpochMs + offsetMs) / 1000).toFixed(3);
+
+test('ANR event timeline links each ANR to the kill that ended its process, with fixed classes only', () => {
+  const raw = [
+    EV(sec(1000), 'am_proc_start', '0,3697,10123,com.bridge.app.debug,next-top-activity,{com.bridge.app.debug/com.bridge.app.MainActivity}'),
+    EV(sec(1200), 'am_proc_start', '0,3720,10123,com.other.app,service,{com.other.app/.S}'),
+    EV(sec(16000), 'am_anr', '0,3697,com.bridge.app.debug,550026820,Input dispatching timed out (8d4 com.bridge.app.debug/com.bridge.app.MainActivity (server) is not responding. Waited 5002ms for FocusEvent(hasFocus=true))'),
+    EV(sec(16500), 'am_anr', '0,3720,com.other.app,0,executing service com.other.app/.S'),
+    EV(sec(40100), 'am_kill', '0,3697,com.bridge.app.debug,0,user request after error'),
+    EV(sec(40150), 'am_proc_died', '0,3697,com.bridge.app.debug,0,2'),
+    EV(sec(41000), 'am_proc_start', '0,3801,10123,com.bridge.app.debug,activity,{com.bridge.app.debug/com.bridge.app.MainActivity}'),
+    EV(sec(90000), 'am_kill', '0,3801,com.bridge.app.debug,0,stop com.bridge.app.debug due to from pid 2401'),
+    'garbage am_anr line without structure',
+  ].join('\n');
+  const result = parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs);
+  assert.equal(result.available, true);
+  assert.equal(result.unparsedLines, 1);
+  assert.deepEqual(result.anrs, [{ atMs: 16000, process: 1, reasonClass: 'input-focus-event',
+    killAfterMs: 24100, killReasonClass: 'user-request-after-error', diedAfterMs: 24150 }]);
+  assert.deepEqual(result.events.map(e => [e.type, e.process, e.reasonClass ?? null]), [
+    ['am_proc_start', 1, null], ['am_anr', 1, 'input-focus-event'], ['am_kill', 1, 'user-request-after-error'],
+    ['am_proc_died', 1, null], ['am_proc_start', 2, null], ['am_kill', 2, 'force-stop']]);
+  const json = JSON.stringify(result);
+  assert.doesNotMatch(json, /3697|3801|other\.app|MainActivity|Waited|server|2401/);
+  // An ANR whose process was never killed afterwards keeps nulls, not zeros.
+  const open = parseAnrEventTimeline(raw.split('\n').slice(0, 3).join('\n'), 'com.bridge.app.debug', originEpochMs);
+  assert.deepEqual(open.anrs, [{ atMs: 16000, process: 1, reasonClass: 'input-focus-event',
+    killAfterMs: null, killReasonClass: null, diedAfterMs: null }]);
+});
+
+test('ANR event timeline fails closed on bad input', () => {
+  const none = { available: false, events: [], anrs: [], unparsedLines: 0 };
+  assert.deepEqual(parseAnrEventTimeline('', 'com.bridge.app.debug', originEpochMs), none);
+  assert.deepEqual(parseAnrEventTimeline(EV(sec(1), 'am_anr', '0,1,x,0,y'), 'bad name; rm', originEpochMs), none);
+  assert.deepEqual(parseAnrEventTimeline(EV(sec(1), 'am_anr', '0,1,x,0,y'), 'x', NaN), none);
+  // A Bridge row whose PID does not parse is counted, never silently dropped.
+  const bad = parseAnrEventTimeline(EV(sec(5), 'am_kill', '0,abc,com.bridge.app.debug,0,bg anr'), 'com.bridge.app.debug', originEpochMs);
+  assert.equal(bad.unparsedLines, 1);
+  assert.deepEqual(bad.events, []);
+  const kinds = ['bg anr', 'anr', 'remove task', 'depends on provider x in dying proc y (adj 0)', 'crash', 'lmk'].map(reason =>
+    parseAnrEventTimeline(EV(sec(5), 'am_kill', `0,9,com.bridge.app.debug,0,${reason}`), 'com.bridge.app.debug', originEpochMs).events[0].reasonClass);
+  assert.deepEqual(kinds, ['background-anr', 'anr', 'remove-task', 'provider-dependency', 'crash', 'other']);
+});
+
+test('stepAtOffset names the check that was running, or null before the first one', () => {
+  const steps = [{ id: 'A01', atMs: 5000 }, { id: 'CS01', atMs: 20000 }, { id: 'bad id!', atMs: 30000 }, { id: 'L01', atMs: 40000 }];
+  assert.equal(stepAtOffset(steps, 4999), null);
+  assert.equal(stepAtOffset(steps, 16000), 'A01');
+  assert.equal(stepAtOffset(steps, 35000), 'CS01');
+  assert.equal(stepAtOffset(steps, 40100), 'L01');
+  assert.equal(stepAtOffset(null, 1), null);
+});
+
+test('ANR dialog windows are counted by their AOSP title, focus is a boolean', () => {
+  const dump = [
+    'WINDOW MANAGER WINDOWS (dumpsys window windows)',
+    '  Window #9 Window{1a2b3c u0 Application Not Responding: com.bridge.app.debug}:',
+    '    mDisplayId=0 rootTaskId=1 mSession=Session{4 1234:1000} mClient=android.os.BinderProxy@a',
+    '  Window #8 Window{9f8e7d u0 com.bridge.app.debug/com.bridge.app.MainActivity}:',
+    '  Window #7 Window{5c5c5c u0 Application Not Responding: com.other.app}:',
+    '  mCurrentFocus=Window{1a2b3c u0 Application Not Responding: com.bridge.app.debug}',
+  ].join('\n');
+  assert.deepEqual(inspectAnrDialogWindows(dump, 'com.bridge.app.debug'),
+    { available: true, anrDialogs: 1, focusedOnAnrDialog: true });
+  const noDialog = dump.split('\n').filter(l => !l.includes('Not Responding: com.bridge')).join('\n')
+    .concat('\n  mCurrentFocus=Window{9f8e7d u0 com.bridge.app.debug/com.bridge.app.MainActivity}');
+  assert.deepEqual(inspectAnrDialogWindows(noDialog, 'com.bridge.app.debug'),
+    { available: true, anrDialogs: 0, focusedOnAnrDialog: false });
+  assert.deepEqual(inspectAnrDialogWindows('error: no window manager', 'com.bridge.app.debug'),
+    { available: false, anrDialogs: 0, focusedOnAnrDialog: null });
+  assert.doesNotMatch(JSON.stringify(inspectAnrDialogWindows(dump, 'com.bridge.app.debug')), /1a2b3c|other|Session/);
+});
+
+test('device clock reads keep their precision and reject toybox format leftovers', () => {
+  assert.deepEqual(parseDeviceEpoch('1792486915.123456789\r\n'), { epochMs: 1792486915123, precision: 'ms' });
+  assert.deepEqual(parseDeviceEpoch('1792486915'), { epochMs: 1792486915000, precision: 's' });
+  for (const bad of ['1792486915.%N', '1792486915.N', '', 'date: bad format', null]) assert.equal(parseDeviceEpoch(bad), null);
+});
+
+test('AN00 stall-control markers are read only from the exact control PID', () => {
+  const raw = [
+    'I/BridgeStallControl( 4321): stage=stall-end',
+    'I/BridgeStallControl( 4321): stage=stall-begin stallMs=7000',
+    'I/BridgeStallControl( 9999): stage=stall-begin stallMs=20000',
+    'BridgeStallControl: stage=stall-end forged',
+    'I/BridgeStallControl( 4321): stage=stall-end',
+  ].join('\n');
+  assert.deepEqual(parseStallControlMarkers(raw, '4321'), { began: true, ended: true, stallMs: 7000 });
+  assert.deepEqual(parseStallControlMarkers(raw.split('\n').slice(0, 2).join('\n'), 4321),
+    { began: true, ended: false, stallMs: 7000 }, 'an end before the begin does not count');
+  assert.deepEqual(parseStallControlMarkers(raw, 1111), { began: false, ended: false, stallMs: null });
+  assert.deepEqual(parseStallControlMarkers(raw, '4321; id'), { began: false, ended: false, stallMs: null });
+});
+
+test('ANR03 and AN00 are measurements: wired at the checkpoints, before L01 HOME, and debug-only', () => {
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const android = new URL('../../mobile/android/app/src/', import.meta.url);
+  const debugManifest = readFileSync(new URL('debug/AndroidManifest.xml', android), 'utf8');
+  const mainManifest = readFileSync(new URL('main/AndroidManifest.xml', android), 'utf8');
+  const control = readFileSync(new URL('debug/java/com/bridge/app/MainThreadStallControlActivity.java', android), 'utf8');
+  // Measurement only: never an asserting check, never in the product verdicts.
+  assert.match(journeys, /await measure\('ANR03', /);
+  assert.doesNotMatch(journeys, /await check\('(?:ANR03|AN00)/);
+  // Every check and measurement records its start for step attribution.
+  assert.match(journeys, /async function check\(id, title, fn\) \{\n  const started = Date\.now\(\);\n  stepStarts\.push\(\{ id, hostMs: started \}\);/);
+  assert.match(journeys, /async function measure\(id, title, fn\) \{\n  const started = Date\.now\(\);\n  stepStarts\.push\(\{ id, hostMs: started \}\);/);
+  // Event-log reads at the PD01 checkpoints, a dialog sample right before L01's HOME.
+  assert.match(journeys, /await productExitCheckpoint\('after-startup'\);\n  await collectAnrEvents\(\);\n  await anrDialogSample\('after-startup'\);/);
+  assert.match(journeys, /await productExitCheckpoint\('after-lifecycle'\);\n  await collectAnrEvents\(\);/);
+  const l01 = journeys.slice(journeys.indexOf("await check('L01'"), journeys.indexOf("await check('L02'"));
+  assert.ok(l01.indexOf("await anrDialogSample('before-L01-home');") < l01.indexOf('await platform.home();'));
+  assert.ok(l01.indexOf("await anrDialogSample('before-L01-home');") > 0);
+  // L01's verdict is untouched.
+  assert.match(l01, /assert\(pidBefore === pidAfter, 'L01 process died; cannot claim hot resume'\);/);
+  // The probes never throw into a check.
+  const collect = journeys.slice(journeys.indexOf('async function collectAnrEvents('), journeys.indexOf('async function anrDialogSample('));
+  assert.match(collect, /\} catch \{\n    return false;\n  \}/);
+  // AN00 runs only in the controls suite, after CS00.
+  const controls = journeys.slice(journeys.indexOf('async function runUpstreamWebViewControls('), journeys.indexOf('async function main('));
+  assert.ok(controls.indexOf("await measureAn00('AN00', 7_000);") > controls.indexOf("await measure('CS00'"));
+  assert.match(controls, /await measureAn00\('AN00-L', 20_000\);/);
+  const product = journeys.slice(journeys.indexOf('async function main('));
+  assert.doesNotMatch(product, /measureAn00|MainThreadStallControlActivity/);
+  // Debug source set only, bounded stall, fixed markers.
+  assert.match(debugManifest, /android:name="com\.bridge\.app\.MainThreadStallControlActivity"/);
+  assert.doesNotMatch(mainManifest, /MainThreadStallControlActivity/);
+  assert.match(control, /static final long MAX_STALL_MS = 30_000L;/);
+  assert.match(control, /Log\.i\(LOG_TAG, "stage=stall-begin stallMs=" \+ stallMs\);/);
+  assert.doesNotMatch(control, /new WebView|android\.webkit|getContentResolver|openFileDescriptor/);
 });
