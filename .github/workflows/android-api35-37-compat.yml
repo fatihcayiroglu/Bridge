@@ -1,0 +1,133 @@
+name: Android 15–17 compatibility smoke (separate, non-gating)
+
+# This workflow is intentionally NOT a replacement for the required API34
+# Mobile Android product-journey gate. It runs a bounded OS compatibility
+# smoke on exact OS images. No passes are claimed for untested features.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/android-api35-37-compat.yml'
+      - 'e2e/android/compat-api35-37-smoke.sh'
+      - 'e2e/android/compat-api35-37-smoke.test.sh'
+  workflow_dispatch:
+
+concurrency:
+  group: android-api35-37-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: '24.20.0'
+
+jobs:
+  apk:
+    name: Build exact Bridge debug APK and verify Play target SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate compatibility smoke fail-closed contracts
+        run: |
+          bash -n e2e/android/compat-api35-37-smoke.sh e2e/android/compat-api35-37-smoke.test.sh
+          bash e2e/android/compat-api35-37-smoke.test.sh
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Bundle Bridge web application
+        run: npm run build
+      - name: Prepare packaged Capacitor assets
+        env:
+          BRIDGE_API_URL: http://localhost:3000
+        run: node mobile/scripts/setup.js
+      - name: Generate Android platform and apply curated native overlay
+        run: |
+          npx cap add android
+          node mobile/scripts/apply-android-overlay.js
+          npx cap sync android
+      - name: Compile Android APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Verify built APK targets API 36 or later (Play 2026)
+        shell: bash
+        run: |
+          set -euo pipefail
+          aapt_bin="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -perm -111 | sort -V | tail -n 1)"
+          test -n "$aapt_bin" && test -x "$aapt_bin" || {
+            echo "::error::Android build-tools aapt not found"
+            exit 1
+          }
+          target="$("$aapt_bin" dump badging android/app/build/outputs/apk/debug/app-debug.apk | sed -n "s/^targetSdkVersion:'\([0-9][0-9]*\)'.*/\1/p" | head -n 1)"
+          if [[ ! "$target" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not verify targetSdkVersion from built APK"
+            exit 1
+          fi
+          echo "Verified debug APK targetSdkVersion=$target"
+          if (( target < 36 )); then
+            echo "::error::Target SDK is below Google Play's API36 requirement for updates"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bridge-api35-37-compat-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+
+  os-smoke:
+    name: "Android ${{ matrix.os }} API${{ matrix.api }} native compatibility (AUTOMATED / EMULATOR)"
+    runs-on: ubuntu-latest
+    needs: [apk]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - os: '15'
+            api: 35
+            sdk_package_api: '35'
+          - os: '16'
+            api: 36
+            sdk_package_api: '36'
+          - os: '17'
+            api: 37
+            # Android SDK 37 is published as the minor-versioned 37.0 package;
+            # the unqualified android-37 SDK package does not exist.
+            sdk_package_api: '37.0'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: bridge-api35-37-compat-apk
+          path: apk
+      - name: Enable KVM on GitHub-hosted Linux runner
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install and launch APK on Android ${{ matrix.os }} emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          EXPECTED_ANDROID_API: ${{ matrix.api }}
+          APK_PATH: ${{ github.workspace }}/apk/app-debug.apk
+        with:
+          api-level: ${{ matrix.sdk_package_api }}
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          # API37 needs more writable /data space for the exact APK install.
+          # Leave API35/36 at the action's original default disk size.
+          disk-size: ${{ matrix.api == 37 && '10G' || '' }}
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -no-snapshot -camera-back emulated -camera-front emulated
+          script: bash e2e/android/compat-api35-37-smoke.sh "$EXPECTED_ANDROID_API" "$APK_PATH"
