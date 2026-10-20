@@ -95,10 +95,15 @@ jobs:
         include:
           - os: '15'
             api: 35
+            sdk_package_api: '35'
           - os: '16'
             api: 36
+            sdk_package_api: '36'
           - os: '17'
             api: 37
+            # Android SDK 37 is published as the minor-versioned 37.0 package;
+            # the unqualified android-37 SDK package does not exist.
+            sdk_package_api: '37.0'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -116,7 +121,7 @@ jobs:
           EXPECTED_ANDROID_API: ${{ matrix.api }}
           APK_PATH: ${{ github.workspace }}/apk/app-debug.apk
         with:
-          api-level: ${{ matrix.api }}
+          api-level: ${{ matrix.sdk_package_api }}
           arch: x86_64
           target: google_apis
           profile: pixel_6
