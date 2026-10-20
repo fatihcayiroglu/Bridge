@@ -1,5 +1,7 @@
 # Android #209 — remove optional emoji2 startup font provider (candidate)
 
+> **Superseded for attribution (2026-10-19):** the requester was traced in source to Chromium's `AndroidFontLookupImpl`; see [`P7_ANDROID_209_ROOT_CAUSE.md`](P7_ANDROID_209_ROOT_CAUSE.md). The dated entries below are kept as history. #209, the FocusEvent ANRs (reason 6) and the product's reason-12 death in run 39067739321 remain open and unattributed.
+
 **Status: CODE FIX CANDIDATE / NOT A ROOT-CAUSE CLOSURE.**
 
 ## Observed failure and mechanism
@@ -58,3 +60,70 @@ The latest #318 Android run at `775a051d` had **32 PASS, one FD01 FAIL, zero ski
 The follow-up test harness first reads PID-scoped logcat, then, only when no valid marker was recovered, reads the unique debug-only `BridgeEmojiStartupProbe` tag. The fallback accepts records only with the current app's **exact** PID in recognized Android logcat formats. No raw logcat/PIDs or user text appear in evidence. A regression test rejects markers from other PIDs, PID-less free text and invalid PIDs. Diagnostic availability is reported independently as `pid-filtered`, `tag-filtered-pid-verified` or `unavailable`.
 
 This is an attribution/data-quality improvement only. **FD01 must remain FAIL** whenever a live provider connection is observed, including if native diagnostic markers cannot be obtained. The provider's initiating caller is still unidentified; #209 and physical-device acceptance stay open. Exact-head Android/Quality Gate CI is pending and must be reviewed before merging this draft.
+
+
+## Controlled native-only versus plain-WebView differential (17 October 2026)
+
+**Exact head:** `adbe1cdf005572d3b169461011139da5b99d6ad9`, [PR #322 Android run 39017377880](https://github.com/fatihcayiroglu/Bridge/actions/runs/39017377880). The debug APK built; the emulator journey **FAILED: 31 PASS, 2 FAIL (L01, ANR01), 0 skipped, 6 measured**. [Quality Gate 39017377863](https://github.com/fatihcayiroglu/Bridge/actions/runs/39017377863) and [iOS 39017377930](https://github.com/fatihcayiroglu/Bridge/actions/runs/39017377930) succeeded on that same head; the nightly-only full/media job is not counted as a pass on this PR.
+
+The same installed Android 14 emulator APK was force-stopped between each controlled Activity:
+
+| Stage | Real `dumpsys activity processes` result | Conclusions |
+| --- | --- | --- |
+| FD00 plain Android `Activity`, no WebView | Verified provider listing, **no** Google FontsProvider reference | Negative baseline for **this** native-only Activity and emulator run |
+| FD00W Android `Activity` + only `android.webkit.WebView` displaying `about:blank` (JS disabled) | Verified provider listing, **one stable** Google FontsProvider ref | An ordinary WebView can initiate the provider connection **without** Bridge's JS app or Capacitor |
+| Bridge `MainActivity`, first product UI | **one unstable** FontsProvider ref | Caller still not identified at the method/process level |
+| Bridge `MainActivity`, after login | **no** FontsProvider ref in this sample | Strict FD01 passed **in this run only**, but has repeatedly failed on other exact heads |
+
+The Google Play services **font** content provider and the Android **WebView implementation/provider package** are separate concepts. The observed call-chain differential does **not** prove the exact font requester within WebView nor that the provider is removable from Bridge without breaking the WebView product. Do not block/kill Google Play services or revoke provider access speculatively. Android's downloadable-font contract describes legitimate app-to-provider queries; that is **not** evidence that a font query caused an ANR.
+
+### More important: L01/ANR01 real user-facing regression reappeared
+
+In the **same red job**, when L01 backgrounded the product Activity for 20 seconds, the original Bridge PID disappeared and `am start -W` reported **COLD**. Targeted `ApplicationExitInfo` identified **reason 6 (ANR)** on the previous PID (record time **08:33:26 UTC**). At ANR01 the independent ActivityManager category parser recovered **`input_dispatch_timeout` with `focusEvent=true`**, matching the historical symptom. Therefore **L01 FAIL** and **ANR01 FAIL** are real, must not be relabelled as startup recovery passes, and outweigh a transiently green FD01.
+
+The red job's bounded ANR CPU evidence captured a **post-event** sample with load `[26.52, 7.26, 2.47]`, total CPU **100%**, app **37%**, `system_server` **57%**, WebView renderer **0% in that interval**. These values do not establish a causal blocked call or thread stack. Earlier runs, notably `39015735748`, proved intermittent stable/unstable font references **without** an observed ANR. Correlation cannot be upgraded to causation.
+
+**Release gate remains OPEN:** retain strict L01/ANR01/FD01 results unchanged; compare a sufficiently repeated normal production-path startup against FD00/FD00W instrumentation and real physical Android hardware, gather bounded main-thread/platform ANR attribution, and separately revisit whether a zero-FontsProvider requirement is under Bridge's control for a WebView-based app. Changing FD01 solely to make CI green is prohibited. Prevent future raw device log exports (PR #323) without erasing historical red evidence.
+
+
+
+## 17 October 2026 — controlled WebView localization and negative observer-ablation result
+
+Two independently executed Android 14 emulator comparisons, [baseline #322](https://github.com/fatihcayiroglu/Bridge/actions/runs/39061720181) and [observer-ablation #327](https://github.com/fatihcayiroglu/Bridge/actions/runs/39061117747), both reported **33 PASS, 1 FAIL (FD01), 0 SKIPPED, 12 MEASURED**. L01 HOT with PID retained, CS01 and CS00 controls completed, ANR01 reported 0 system ANRs **in these runs**. Neither eliminates the historical FocusEvent ANR/process death.
+
+The following separately force-stopped activities had verified Android provider listings:
+- Native-only Activity **FD00**, AppCompat-only **FD00P**, constructed but unattached/unnavigated WebView **FD00C**, and attached but unnavigated WebView **FD00A**: **zero** FontsProvider connections in both runs.
+- A plain WebView navigating to `about:blank` **without attachment** (FD00N) and a plain attached WebView navigating to `about:blank` (FD00W): **one stable** FontsProvider connection, even though there were **no Bridge web assets, Capacitor plugins or JavaScript**. The FD00W same-process connection remained present at 1.5, 4 and 8 seconds.
+- Real Bridge FD01: provider reference was still present at its after-login checkpoint, **strict FAIL**. Its later same-PID FD02 observations showed reference disappearance; this does not retroactively make FD01 pass.
+
+A separate experiment removed the debug instrumentation's reflective static call to `EmojiCompat.isConfigured()`, replacing it with **noninitializing class-presence-only** `Class.forName(..., false, loader)`; it now truthfully logs `configured=unknown`. FD01 still FAILED. This is a **negative** A/B result: reflective static invocation is not required for the observed WebView font connection. To prevent future observer interference, the noninitializing diagnostic and its Jest contract are retained on #322; the separate #327 experiment can be closed without merge. This change is debug-only; it does **not** remove, block, kill, or mock system FontsProvider.
+
+**Inference boundary:** The evidence localizes creation to the WebView **navigation** path on this tested emulator, not to the precise requester inside Chromium/Android. It does not establish that FontsProvider causes the observed process death, nor that a platform-owned WebView implementation can fulfill a zero-connection contract without functional regression. Preserve strict FD01 and historical red run evidence while separately proving safety during provider loss, Android process resurrection and real-device acceptance. #209 remains OPEN.
+
+ 
+## 17 October — FD00D interpretation correction and FD00T teardown experiment
+
+The exact-head run [39065266704](https://github.com/fatihcayiroglu/Bridge/actions/runs/39065266704) had **33 PASS, 1 FAIL FD01, 0 SKIPPED, 13 MEASURED**. A01, CS00, CS01, L01 and ANR01 passed **in that one run**; strict FD01 remained red. FD00D navigation with inert inline HTML, no network resources and JavaScript disabled still acquired one stable FontsProvider reference, just as FD00N/FD00W did.
+
+**Precision:** Android's [`WebView.loadDataWithBaseURL` documentation](https://developer.android.com/reference/android/webkit/WebView#loadDataWithBaseURL(java.lang.String,java.lang.String,java.lang.String,java.lang.String,java.lang.String)) says a **null `baseUrl` defaults to `about:blank`**. FD00D therefore isolates Bridge's HTML/JavaScript and ordinary network resources, but does **not** eliminate an `about:blank`-origin explanation. The supported inference remains: on this emulator, navigation to a minimal document can acquire FontsProvider even without Bridge/Capacitor code. A distinct `data:`-scheme control would be needed to rule out the origin-specific possibility. Do not reinterpret FD00D as such a control.
+
+To separate provider ownership by a live WebView object from wider WebView process/runtime ownership, an additional DEBUG-ONLY `FD00T` measurement creates a navigated inert WebView, then explicitly `stopLoading()`, detaches, `clearHistory()`, `destroy()` and dereferences it on the main thread while keeping the Activity foreground and its original PID intact. Two verified ActivityManager provider snapshots and a same-PID teardown marker distinguish actual reference release from process death, unverified measurement or mere elapsed time. This is **MEASURED only**; FD01, L01 and ANR01 gates remain STRICT. Android's [WebView memory management guidance](https://developer.android.com/develop/ui/views/layout/webapps/manage-webview-memory) motivates the complete teardown sequence. Whether refs disappear after teardown is **unknown until exact-head emulator CI**. The historical FocusEvent ANR, dependency-death pathway and physical-device acceptance remain open in #209.
+
+
+## 17 October — FD00T shows process-wide font-provider retention; A01 dependency death
+
+The exact-head [Android CI run 39067739321](https://github.com/fatihcayiroglu/Bridge/actions/runs/39067739321) on `0da0029c` was **33 PASS / 1 FAIL (A01) / 0 SKIPPED / 14 MEASURED**. The FD01 check happened to pass on a later restarted product process, as did L01 and ANR01; **this is NOT platform resolution**.
+
+The new, verified `FD00T` same-process control measured exactly **one STABLE FontsProvider reference before and after** a `WebView` was stopped, detached, history-cleared, destroyed and dereferenced, while the same Activity remained foreground and the original app PID remained alive. The fixed PID-filtered teardown marker was present. This supports **reference lifetime beyond the destroyed WebView instance** under this emulator's Java/Chromium/Android runtime; it does not prove which process owns the reference or whether it ever releases it without process death.
+
+More significantly, A01 originally launched with `Status: ok`, `LaunchState: COLD`, a live initial PID and a Playwright page. Before A01 completion, the page became closed and the app process disappeared. Android's same-PID `ApplicationExitInfo` recorded **reason code 12 (DEPENDENCY DIED), subreason 0**. No A01 ANR can be claimed from this record. The specific upstream provider/process **was not identified in that run**; inferring it was GMS FontsProvider from other runs would overstate the evidence.
+
+New #322 instrumentation classifies any separately available, exact-PID ActivityManager `Killing ... depends on provider ... in dying proc ...` evidence into only **`gms-fonts`, `other-provider` or `unknown`**, and reports `gms-persistent`, `other-process` or `unknown` for the upstream process. Missing or malformed evidence remains UNKNOWN; no raw PIDs, provider identifiers, stack data, names or user content appear in exported reports. Additional direct unit tests reject unsafe PID selectors and spoofed unrelated OS exits. This is diagnostic only, not a retry, mitigation, or gate relaxation.
+
+`L03` already enforces session/channel/missed-message restoration after background OS process death; it does not prove resilience against dependency death **mid-startup**, which remains the focus. Keep strict FD01, A01, L01 and ANR01 unchanged and #209 open pending upstream kill-line attribution and physical-device acceptance.
+
+## 18 October — distinct data:-scheme document navigation control (FD00S)
+
+The previous `FD00D` control calls `WebView.loadDataWithBaseURL(null,...)`, for which Android documents the fallback base URL as `about:blank`. Therefore FD00D's connected FontsProvider result cannot distinguish **generic document navigation** from an **about:blank-specific** trigger. The new DEBUG-only `FD00S` comparison uses `WebView.loadData(base64Html, "text/html", "base64")`, which Android documents as a `data:`-scheme URL. HTML is local and contains no external resources, scripts, Bridge assets or Capacitor plugins; JavaScript is off. The Activity's process is freshly cold-started, the provider listing must be complete or the measurement is marked FAIL, and the app is force-stopped before subsequent controls. This test is measurement-only; strict FD01, A01, L01 and ANR01 remain untouched.
+
+**Interpretation pre-registered before CI:** FD00S linked + FD00D linked => the dependency is **not restricted to about:blank** on that Android WebView/image. FD00S verified zero + FD00D linked => the trigger differs by navigation path, but exact Chromium/OS requester remains unidentified. FD00S probe incomplete => no inference. Regardless of the result, no inference establishes the cause of the historical DEPENDENCY DIED or FocusEvent ANR; keep #209 OPEN. Android API docs: https://developer.android.com/reference/android/webkit/WebView
