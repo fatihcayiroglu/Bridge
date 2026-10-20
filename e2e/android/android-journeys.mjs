@@ -2234,6 +2234,10 @@ async function main() {
       unreadableCheckpoints: productExitUnreadable };
     facts.productExitLedger = summary;
     assert(finalReadOk, 'Android exit history unreadable at the end of the journeys; cannot prove no DEPENDENCY DIED');
+    // A later successful read cannot prove the absence of exits lost while an
+    // earlier checkpoint was unavailable: Android retains bounded history.
+    assert(summary.unreadableCheckpoints === 0,
+      'Android exit history unreadable at an earlier checkpoint; cannot prove no DEPENDENCY DIED');
     assert(summary.windowValid, 'device journey start time unavailable; cannot bound the exit history');
     // A recorded reason-12 exit is reported first: it is a definite failure.
     assert(summary.dependencyDeaths === 0,
