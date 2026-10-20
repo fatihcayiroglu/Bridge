@@ -1,6 +1,6 @@
 # Android #209 — controlled WebView comparison (one variable at a time)
 
-**2026-10-20 · design and predictions recorded before the first run · AUTOMATED / EMULATOR only · #209 stays OPEN**
+**2026-10-20 · predictions recorded before the first run; first run supports them (one run per arm) · AUTOMATED / EMULATOR only · #209 stays OPEN**
 
 Tracking issue: [#209](https://github.com/fatihcayiroglu/Bridge/issues/209). Root cause and mitigation: [`P7_ANDROID_209_ROOT_CAUSE.md`](P7_ANDROID_209_ROOT_CAUSE.md).
 
@@ -49,8 +49,24 @@ Only the WebView provider differs between A and B. The OS image, Play services, 
 
 ## Results
 
-Filled in from exact-head CI logs only.
+Filled in from exact-head CI logs only. First run: [39398677365](https://github.com/fatihcayiroglu/Bridge/actions/runs/39398677365), head `f1706a2`, `workflow_dispatch`, all three jobs on the same API 34 image.
 
-| Run | Head | Arm | Result |
+**The provider switch worked.** The image's configured provider list contains `com.android.webview` (listed as not installed before the install, valid after it). The selection read back as `com.android.webview@158.0.8114.0`; the harness's device facts show `aosp-webview` 158.0.8114.0. Both pinned hashes verified.
+
+| Observation | Arm A, WebView 113 (job 118548880771) | Arm B, WebView 158 (jobs 118548881167, 118548880764) | Prediction |
 |---|---|---|---|
-| — | — | — | pending |
+| FD00 / FD00P (no WebView) | 0 | 0 | held |
+| FD00C / FD00A (WebView constructed or attached, not navigated) | 0 | **0 stable / 1 unstable** | not predicted (see below) |
+| FD00N / FD00D / FD00S (navigated) | **1 STABLE** | 0 stable / 1 unstable | held |
+| FD00W at 1.5 / 4 / 8 s | **1 STABLE** at every sample | 0/1 at 1.5 s, then 0/0 and 0/0 | held |
+| FD00T after `WebView.destroy()` | **1 STABLE survives** | 0 | held |
+| FD00G ×3 (forced finalization) | stable 1 → 0 on the same PID | 0 stable before; nothing to release | held |
+| CS00 cold starts | 6/6 PID-stable, 0 ANRs | 6/6 PID-stable, 0 ANRs | — |
+| Product: release-pass marker | (product job on `main`: `pass-complete` ×2) | **`stage=skipped reason=webview-not-affected`** at first UI and after login | held |
+| Product: refs at first UI / after login | (`main`: 0/1 after pass 1; 0/0) | **0/0 and 0/0** without any pass | held |
+| Product: totals | — | **35 PASS / 0 FAIL / 0 SKIPPED / 6 MEASURED**; FD01, PD01, ANR01 (0), CS01 (3/3 PID-stable), L01 (HOT) PASS | — |
+| Controls totals | 0 / 0 / 0 / 13 MEASURED | 0 / 0 / 0 / 13 MEASURED | — |
+
+**Reading.** On the same OS image, Play services and APK, the STABLE FontsProvider reference appears with WebView 113 and does not appear with WebView 158. The prefetch did run on 158: the transient unstable reference is the positive control. That fits the source analysis: the stable reference follows the WebView (Chromium) version. It is one run per arm and a Chromium build, not Google's (§ Confounds), so it is support, not proof for every Google WebView release.
+
+**Unpredicted:** on 158 the font fetch already happens when a WebView is constructed, without a navigation (FD00C/FD00A show an unstable reference; 113 shows none). The fetch trigger moved earlier in newer Chromium. The reference is unstable only, so it carries no DEPENDENCY DIED risk.
