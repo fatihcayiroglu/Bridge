@@ -2223,9 +2223,16 @@ async function main() {
       unreadableCheckpoints: productExitUnreadable };
     facts.productExitLedger = summary;
     assert(finalReadOk, 'Android exit history unreadable at the end of the journeys; cannot prove no DEPENDENCY DIED');
+    // A successful final read does NOT repair an unreadable earlier checkpoint:
+    // process exits could have fallen out of Android's bounded history meanwhile.
+    assert(summary.unreadableCheckpoints === 0,
+      'Android exit history unreadable at an earlier checkpoint; cannot prove no DEPENDENCY DIED');
     assert(summary.windowValid, 'device journey start time unavailable; cannot bound the exit history');
     assert(!summary.potentialGap,
       'Android exit history may have evicted journey exits before they were read; cannot prove no DEPENDENCY DIED');
+    // An unparsed reason cannot be treated as evidence that a dependency kill did not occur.
+    assert((summary.reasonCounts.unknown ?? 0) === 0,
+      'Android exit history contained an unclassified process exit reason; cannot prove no DEPENDENCY DIED');
     assert(summary.dependencyDeaths === 0,
       'Bridge app process was killed by DEPENDENCY DIED during the journeys: ' +
       JSON.stringify(summary.dependencyEvidence));
