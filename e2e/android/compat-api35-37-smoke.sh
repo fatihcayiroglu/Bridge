@@ -16,7 +16,7 @@ test -s "$apk" || { echo "::error::Android debug APK is missing"; exit 1; }
 # issue affecting GMS clients: explicitly reject that unsupported test fixture.
 if [[ "$api" == 37 ]]; then
   sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-  props="$sdk_root/system-images/android-37/google_apis/x86_64/source.properties"
+  props="$sdk_root/system-images/android-37.0/google_apis/x86_64/source.properties"
   test -s "$props" || { echo "::error::API37 image revision metadata unavailable"; exit 1; }
   revision="$(sed -n 's/^Pkg.Revision=//p' "$props" | head -n1)"
   if [[ ! "$revision" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
@@ -42,6 +42,18 @@ test "$boot" = 1 || { echo "::error::Emulator did not complete boot"; exit 1; }
 
 pkg="com.bridge.app.debug"
 activity="$pkg/com.bridge.app.MainActivity"
+
+# Android may kill a background process because of an app crash, ANR, or an
+# OS policy. Show only bounded numeric ApplicationExitInfo reason/subreason
+# codes, NEVER raw dumpsys descriptions (they can contain user data). This
+# diagnostic cannot by itself tie an exit to a particular PID; the gate remains
+# FAIL when a required live-process assertion fails.
+exit_reason_evidence() {
+  local raw codes
+  raw="$(adb shell dumpsys activity exit-info "$pkg" 2>/dev/null || true)"
+  codes="$(printf '%s' "$raw" | grep -Eo '(reason|subreason)=[0-9]{1,4}' | head -n 6 | tr '\n' ' ' || true)"
+  echo "recent OS app exit reason codes (not PID-attributed): ${codes:-unavailable}"
+}
 echo "Android $release / API $sdk: installing exact CI debug APK"
 adb install -r "$apk"
 
@@ -49,8 +61,9 @@ adb install -r "$apk"
 # background/resume. We do NOT claim a login/message/notification PASS here.
 adb shell am start -W -n "$activity" >/dev/null
 sleep 10
-before="$(adb shell pidof "$pkg" | tr -d '\r\n')"
+before="$(adb shell pidof "$pkg" 2>/dev/null | tr -d '\r\n' || true)"
 if [[ ! "$before" =~ ^[0-9]{1,8}$ ]]; then
+  exit_reason_evidence
   echo "::error::App failed to remain alive after cold launch (API $api)"
   exit 1
 fi
@@ -58,16 +71,18 @@ echo "COLD LAUNCH: PASS"
 
 adb shell input keyevent KEYCODE_HOME
 sleep 8
-background="$(adb shell pidof "$pkg" | tr -d '\r\n')"
+background="$(adb shell pidof "$pkg" 2>/dev/null | tr -d '\r\n' || true)"
 if [[ "$background" != "$before" ]]; then
-  echo "::error::App process died in short background interval (API $api)"
+  exit_reason_evidence
+  echo "::error::App process died in short background interval (API $api); original PID not alive"
   exit 1
 fi
 
 adb shell am start -W -n "$activity" >/dev/null
 sleep 10
-after="$(adb shell pidof "$pkg" | tr -d '\r\n')"
+after="$(adb shell pidof "$pkg" 2>/dev/null | tr -d '\r\n' || true)"
 if [[ "$after" != "$before" ]]; then
+  exit_reason_evidence
   echo "::error::Hot resume lost the original process (API $api)"
   exit 1
 fi
