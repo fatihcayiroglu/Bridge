@@ -6,7 +6,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
-mkdir -p "$tmp/bin" "$tmp/sdk/system-images/android-37/google_apis/x86_64"
+mkdir -p "$tmp/bin" "$tmp/sdk/system-images/android-37.0/google_apis/x86_64"
 printf 'fake apk\n' > "$tmp/app.apk"
 
 cat > "$tmp/bin/adb" <<'FAKE_ADB'
@@ -27,13 +27,17 @@ if [[ "$1" == shell && "$2" == am && "$3" == start ]]; then
   exit 0
 fi
 if [[ "$1" == shell && "$2" == input && "$3" == keyevent ]]; then exit 0; fi
+if [[ "$1" == shell && "$2" == dumpsys && "$3" == activity && "$4" == exit-info ]]; then
+  echo "ApplicationExitInfo reason=6 subreason=0 description=SECRET_CANARY_NEVER_LOG"
+  exit 0
+fi
 if [[ "$1" == shell && "$2" == pidof ]]; then
   count=0
   if [[ -s "$COMPAT_FAKE_COUNTER" ]]; then read -r count < "$COMPAT_FAKE_COUNTER"; fi
   count=$((count + 1))
   echo "$count" > "$COMPAT_FAKE_COUNTER"
   if [[ "${COMPAT_FAKE_LOSE_PID:-0}" == 1 && "$count" -gt 1 ]]; then
-    echo 5555
+    exit 1
   else
     echo 4444
   fi
@@ -47,7 +51,7 @@ chmod +x "$tmp/bin/adb" "$tmp/bin/sleep"
 
 run_smoke() {
   local api="$1" sdk="$2" rev="$3" lose="${4:-0}"
-  printf '%s\n' "Pkg.Revision=$rev" > "$tmp/sdk/system-images/android-37/google_apis/x86_64/source.properties"
+  printf '%s\n' "Pkg.Revision=$rev" > "$tmp/sdk/system-images/android-37.0/google_apis/x86_64/source.properties"
   rm -f "$tmp/counter"
   PATH="$tmp/bin:$PATH" ANDROID_HOME="$tmp/sdk" COMPAT_FAKE_SDK="$sdk" \
     COMPAT_FAKE_LOSE_PID="$lose" COMPAT_FAKE_COUNTER="$tmp/counter" \
@@ -78,5 +82,10 @@ if run_smoke 35 35 0 1; then
   exit 1
 fi
 grep -q "process died in short background" "$tmp/output.log"
+grep -q "reason=6" "$tmp/output.log"
+if grep -q "SECRET_CANARY_NEVER_LOG" "$tmp/output.log"; then
+  echo "::error::Sensitive dumpsys descriptions leaked into CI output"
+  exit 1
+fi
 
 echo "Offline Android API35–37 smoke contracts: 6 PASS / 0 FAIL / 0 SKIPPED (synthetic only)"
