@@ -86,6 +86,28 @@ jobs:
       - name: Gradle app unit tests
         working-directory: android
         run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+      # A Gradle test task that finds no tests still succeeds. Every curated
+      # test class must have run, with as many test cases as the sources
+      # declare (template tests included) and none skipped.
+      - name: Gradle app unit tests ran (none missing, none skipped)
+        run: |
+          results=android/app/build/test-results/testDebugUnitTest
+          for f in $(find mobile/android/app/src/test mobile/android/app/src/testDebug -name '*Test.java'); do
+            cls=$(basename "$f" .java)
+            test -f "$results/TEST-com.bridge.app.$cls.xml" || { echo "::error::JVM test class $cls did not run"; exit 1; }
+          done
+          # awk, not grep | wc: a grep without matches fails under pipefail.
+          expected=$(find android/app/src/test android/app/src/testDebug -name '*.java' -exec cat {} + | awk '{ n += gsub(/@Test([^A-Za-z0-9_]|$)/, "") } END { print n + 0 }')
+          ran=$(awk '{ n += gsub(/<testcase /, "") } END { print n + 0 }' "$results"/TEST-*.xml)
+          skipped=$(awk '{ n += gsub(/<skipped/, "") } END { print n + 0 }' "$results"/TEST-*.xml)
+          echo "JVM unit tests: ran=$ran declared=$expected skipped=$skipped"
+          test "$expected" -gt 0 && test "$ran" -eq "$expected" && test "$skipped" -eq 0
+      # The diagnostics live in the debug source set only. Compiling the
+      # release variant proves src/main never references them (no signing,
+      # packaging or R8 needed for that).
+      - name: Release variant compiles without the debug source set
+        working-directory: android
+        run: ./gradlew :app:compileReleaseJavaWithJavac --no-daemon --stacktrace
       - name: Merged manifest facts
         run: |
           merged=$(find android/app/build/intermediates -name AndroidManifest.xml -path '*merged_manifests*debug*' | head -1)

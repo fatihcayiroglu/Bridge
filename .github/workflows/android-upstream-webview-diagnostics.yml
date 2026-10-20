@@ -2,12 +2,14 @@ name: Android upstream WebView diagnostics (non-gating)
 
 # #209 — DIAGNOSTIC, NON-GATING. Runs ONLY the unmitigated upstream Android
 # WebView reproduction controls (FD00*, CS00): debug Activities with no Bridge
-# code that reproduce the Chromium < 117.0.5938.29 FontsProvider stable-ref leak
-# and its DEPENDENCY DIED kill on the CI image's WebView. Bridge cannot fix them
-# inside an unmodified WebView, so they do not gate pull requests: the Bridge
-# product suite in mobile-android.yml (FD01, PD01, ANR01, ...) does. A control
-# FAIL is still a real failure: the job exits nonzero and nothing here is ever
-# counted as a pass. Evidence category: AUTOMATED / EMULATOR, not physical-device.
+# code that reproduce the unfixed-WebView FontsProvider stable-ref leak on the
+# CI image's WebView 113 (fixed upstream in 117.0.5938.29 / 118.0.5971.0) and
+# are exposed to its DEPENDENCY DIED kill (seen in some runs, not every run).
+# Bridge cannot fix them inside an unmodified WebView, so they do not gate
+# pull requests: the Bridge product suite in mobile-android.yml (FD01, PD01,
+# ANR01, ...) does. A control FAIL is still a real failure: the job exits
+# nonzero and nothing here is ever counted as a pass. Evidence category:
+# AUTOMATED / EMULATOR, not physical-device.
 
 on:
   schedule:

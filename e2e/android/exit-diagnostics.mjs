@@ -655,17 +655,18 @@ export function parseNativeEmojiStartupProbe(raw, appPid = null) {
 /**
  * #209: did the production WebViewFontProviderRelease pass run in the EXACT
  * app process? Debug builds emit only the fixed markers below; anything else
- * (another PID, free-text imitations) is ignored. Returns counts and enums.
+ * (another PID, free-text imitations) is ignored. Returns counts, enums and
+ * per-pass millisecond timings.
  */
 export function parseFontRefReleaseMarkers(raw, appPid) {
-  const none = { available: false, skippedReason: null, passes: 0,
-    maxPassMs: null, maxMainGapMs: null };
+  const none = { available: false, skippedReason: null, failedReason: null, passes: 0,
+    maxPassMs: null, maxMainGapMs: null, maxBaselineGapMs: null, passTimings: [] };
   if (!/^[0-9]{1,8}$/.test(String(appPid))) return none;
   const targetPid = String(Number(appPid));
   let skippedReason = null;
+  let failedReason = null;
   let passes = 0;
-  let maxPassMs = null;
-  let maxMainGapMs = null;
+  const timings = new Map();
   let seen = false;
   for (const line of String(raw).split(/\r?\n/).slice(-500)) {
     if (!line.includes('BridgeFontRefRelease')) continue;
@@ -675,18 +676,73 @@ export function parseFontRefReleaseMarkers(raw, appPid) {
     if (!observedPid || String(Number(observedPid)) !== targetPid) continue;
     // passMs: duration of the GC/finalization pass on its worker thread.
     // mainMaxGapMs: worst main-thread heartbeat delay while it ran (debug only).
-    const released = /:\s*stage=pass-complete pass=([12])(?: passMs=([0-9]{1,6}) mainMaxGapMs=([0-9]{1,6}))?\s*$/.exec(line);
+    // baselineMaxGapMs: the same, over a pass-free window just before it.
+    const released = /:\s*stage=pass-complete pass=([12])(?: passMs=([0-9]{1,6}) mainMaxGapMs=([0-9]{1,6})(?: baselineMaxGapMs=([0-9]{1,6}))?)?\s*$/.exec(line);
     const skipped = /:\s*stage=skipped reason=(webview-not-affected|provider-unavailable)\s*$/.exec(line);
+    const failed = /:\s*stage=failed reason=(exception)\s*$/.exec(line);
     if (released) {
       seen = true;
       passes = Math.max(passes, Number(released[1]));
       if (released[2] !== undefined) {
-        maxPassMs = Math.max(maxPassMs ?? 0, Number(released[2]));
-        maxMainGapMs = Math.max(maxMainGapMs ?? 0, Number(released[3]));
+        timings.set(Number(released[1]), { pass: Number(released[1]),
+          passMs: Number(released[2]), mainMaxGapMs: Number(released[3]),
+          baselineMaxGapMs: released[4] === undefined ? null : Number(released[4]) });
       }
     } else if (skipped) { seen = true; skippedReason = skipped[1]; }
+    else if (failed) { seen = true; failedReason = failed[1]; }
   }
-  return seen ? { available: true, skippedReason, passes, maxPassMs, maxMainGapMs } : none;
+  if (!seen) return none;
+  const passTimings = [...timings.values()].sort((a, b) => a.pass - b.pass);
+  const max = key => {
+    const values = passTimings.map(t => t[key]).filter(v => v !== null);
+    return values.length ? Math.max(...values) : null;
+  };
+  return { available: true, skippedReason, failedReason, passes,
+    maxPassMs: max('passMs'), maxMainGapMs: max('mainMaxGapMs'),
+    maxBaselineGapMs: max('baselineMaxGapMs'), passTimings };
+}
+
+const ART_DURATION = /^(?:0|([0-9]{1,9}(?:\.[0-9]{1,6})?)(ns|us|ms|s))$/;
+function artDurationMs(text) {
+  const m = ART_DURATION.exec(text);
+  if (!m) return null;
+  if (m[1] === undefined) return 0;
+  const scale = { ns: 1e-6, us: 1e-3, ms: 1, s: 1000 }[m[2]];
+  return Number(m[1]) * scale;
+}
+const roundMs = v => Math.round(v * 10) / 10;
+
+/**
+ * #209: ART logs every explicit GC (Runtime.gc(), as the release pass calls
+ * it) with the pauses it imposed on ALL threads, the main thread included,
+ * and its wall time. Read from the EXACT app process; any other explicit GC
+ * in that process counts too, so compare explicitGcs with two per pass.
+ * Brief-format lines only; returns counts and milliseconds, nothing else.
+ */
+export function parseArtExplicitGcLog(raw, appPid) {
+  const none = { available: false, explicitGcs: 0, unparsedLines: 0,
+    maxPauseMs: null, sumPauseMs: null, maxGcTotalMs: null };
+  if (!/^[0-9]{1,8}$/.test(String(appPid))) return none;
+  const targetPid = String(Number(appPid));
+  let explicitGcs = 0;
+  let unparsedLines = 0;
+  let maxPause = 0;
+  let sumPause = 0;
+  let maxTotal = 0;
+  for (const line of String(raw).split(/\r?\n/).slice(-2000)) {
+    const head = /^[A-Z]\/[A-Za-z0-9_.:-]{1,128}\(\s*([0-9]{1,8})\):\s+Explicit [a-z +()]{1,64}GC freed /.exec(line);
+    if (!head || String(Number(head[1])) !== targetPid) continue;
+    const tail = /\bpaused ([0-9a-z.]{1,24}(?:,[0-9a-z.]{1,24}){0,15}) total ([0-9a-z.]{1,24})\s*$/.exec(line);
+    const pauses = tail ? tail[1].split(',').map(artDurationMs) : [null];
+    const total = tail ? artDurationMs(tail[2]) : null;
+    if (total === null || pauses.some(v => v === null)) { unparsedLines++; continue; }
+    explicitGcs++;
+    for (const pause of pauses) { maxPause = Math.max(maxPause, pause); sumPause += pause; }
+    maxTotal = Math.max(maxTotal, total);
+  }
+  if (explicitGcs === 0) return { ...none, unparsedLines };
+  return { available: true, explicitGcs, unparsedLines, maxPauseMs: roundMs(maxPause),
+    sumPauseMs: roundMs(sumPause), maxGcTotalMs: roundMs(maxTotal) };
 }
 
 const ANR_MAIN_STATES = new Set(['Runnable', 'Native', 'Blocked', 'Waiting',
@@ -792,19 +848,29 @@ export function parseFinalizationProbeMarkers(raw, appPid) {
 
 /**
  * #209 PD01: product exit ledger. Each checkpoint folds the package's retained
- * ApplicationExitInfo rows (already filtered to the Bridge process) into a
- * de-duplicated record of exits since the journey started. A history that is
- * full and whose oldest row is newer than everything already seen may have
- * evicted a journey exit unread: that is a potential gap, so PD01 cannot prove
- * absence. The ledger keeps PID/timestamp keys in memory only; the summary
- * holds counts and allowlisted enums.
+ * ApplicationExitInfo rows into a de-duplicated record of the Bridge
+ * process's exits since the journey started. The ledger keeps PID/timestamp
+ * keys in memory only; the summary holds counts and allowlisted enums.
+ *
+ * Android keeps ONE bounded history per package (16 rows on AOSP), shared by
+ * the main process and every other process of the package (the WebView
+ * sandboxed renderer's exits land there too), and evicts oldest first. So
+ * eviction is judged on ALL retained rows, while only `mainProcess` rows are
+ * counted:
+ *  - continuity: the newest row an earlier read saw must still be retained.
+ *    While it is, nothing newer was evicted; once it is gone, later rows may
+ *    have been evicted unread. This needs no capacity assumption.
+ *  - first read: a full history reaching back to no pre-journey row may
+ *    already have evicted the earliest journey exits.
+ * Either is a potential gap: PD01 cannot prove absence. A row whose fields do
+ * not parse is counted as unparsed, never skipped silently.
  */
 export function emptyProductExitLedger() {
-  return { checkpoints: 0, windowValid: null, seen: [], newestSeenMs: null,
-    reasonCounts: {}, dependencyEvidence: [], potentialGap: false };
+  return { checkpoints: 0, windowValid: null, seen: [], newestSeen: null,
+    reasonCounts: {}, dependencyEvidence: [], potentialGap: false, unparsedRows: 0 };
 }
 
-export function mergeProductExitCheckpoint(ledger, exits, journeyStartedAt, historyCapacity = 16) {
+export function mergeProductExitCheckpoint(ledger, exits, journeyStartedAt, mainProcess = null, historyCapacity = 16) {
   const start = deviceClockMs(journeyStartedAt);
   const next = { ...ledger, checkpoints: ledger.checkpoints + 1, seen: [...ledger.seen],
     reasonCounts: { ...ledger.reasonCounts }, dependencyEvidence: [...ledger.dependencyEvidence] };
@@ -813,22 +879,34 @@ export function mergeProductExitCheckpoint(ledger, exits, journeyStartedAt, hist
     return next;
   }
   if (next.windowValid === null) next.windowValid = true;
-  const rows = exits.filter(row => row && Number.isInteger(row.pid) && deviceClockMs(row.at) !== null);
-  if (rows.length >= historyCapacity) {
-    const oldest = Math.min(...rows.map(row => deviceClockMs(row.at)));
-    if (oldest > (next.newestSeenMs ?? start)) next.potentialGap = true;
+  // mainProcess null: the caller passed only main-process rows.
+  const dated = [];
+  for (const row of exits) {
+    const at = row ? deviceClockMs(row.at) : null;
+    const isMain = mainProcess === null || row?.process === mainProcess;
+    if (at === null || (isMain && !Number.isInteger(row.pid))) {
+      next.unparsedRows += 1;
+      continue;
+    }
+    dated.push({ row, at, isMain, key: (row.process ?? '?') + '#' + (row.pid ?? '?') + '@' + at });
+  }
+  if (next.newestSeen !== null) {
+    if (!dated.some(entry => entry.key === next.newestSeen.key)) next.potentialGap = true;
+  } else if (exits.length >= historyCapacity && !dated.some(entry => entry.at < start)) {
+    next.potentialGap = true;
+  }
+  for (const entry of dated) {
+    if (next.newestSeen === null || entry.at > next.newestSeen.at) next.newestSeen = { key: entry.key, at: entry.at };
   }
   const code = value => {
     const m = /^([0-9]{1,2}) \((?:[A-Z_ ]|\([A-Z_ ]+\))+\)$/.exec(String(value ?? ''));
     return m ? Number(m[1]) : null;
   };
-  for (const row of rows) {
-    const at = deviceClockMs(row.at);
-    if (at < start) continue;
+  for (const { row, at, isMain } of dated) {
+    if (!isMain || at < start) continue;
     const key = row.pid + '@' + at;
     if (next.seen.includes(key)) continue;
     next.seen.push(key);
-    next.newestSeenMs = Math.max(next.newestSeenMs ?? at, at);
     const reasonCode = code(row.reason);
     const bucket = reasonCode === null ? 'unknown' : String(reasonCode);
     next.reasonCounts[bucket] = (next.reasonCounts[bucket] ?? 0) + 1;
@@ -849,7 +927,10 @@ export function summarizeProductExitLedger(ledger) {
     exitsInJourney: ledger.seen.length,
     reasonCounts: { ...ledger.reasonCounts },
     dependencyDeaths: ledger.reasonCounts['12'] ?? 0,
+    // A main-process exit whose reason does not parse could be a reason 12.
+    unknownReasons: ledger.reasonCounts.unknown ?? 0,
     dependencyEvidence: [...ledger.dependencyEvidence],
     potentialGap: ledger.potentialGap,
+    unparsedRows: ledger.unparsedRows ?? 0,
   };
 }

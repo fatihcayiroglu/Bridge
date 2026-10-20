@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -510,6 +510,14 @@ async function fontProviderStage(stage) {
         "logcat -d -v brief --pid " + currentPid + " -s BridgeFontRefRelease:I '*:S'");
     } catch { /* unavailable stays available=false */ }
     record.fontRefRelease = parseFontRefReleaseMarkers(releaseLog, currentPid);
+    // ART's own pause and wall time for each explicit GC in this process: ties
+    // the heartbeat gaps above to GC pauses, or rules GC pauses out.
+    let gcLog = '';
+    try {
+      gcLog = await androidFailureShell(
+        "logcat -d -v brief --pid " + currentPid + " -e 'Explicit .*GC freed'");
+    } catch { /* unavailable stays available=false */ }
+    record.explicitGc = parseArtExplicitGcLog(gcLog, currentPid);
   } catch {
     record = { stage, available: false, appPidValid: false, providerSections: 0 };
   }
@@ -799,8 +807,9 @@ async function productExitCheckpoint(label) {
   if (MODE !== 'android') return false;
   try {
     const raw = await androidFailureShell(`dumpsys activity exit-info ${PKG}`);
-    const exits = parseApplicationExits(raw, 32).filter((row) => row.process === PKG);
-    productExitLedger = mergeProductExitCheckpoint(productExitLedger, exits, journeyStartedAt);
+    // Every process's rows: they share and evict the package's one history.
+    const exits = parseApplicationExits(raw, 32);
+    productExitLedger = mergeProductExitCheckpoint(productExitLedger, exits, journeyStartedAt, PKG);
     log('Android product exit checkpoint', label, JSON.stringify(summarizeProductExitLedger(productExitLedger)));
     return true;
   } catch {
@@ -848,7 +857,8 @@ async function connectDevice() {
 /**
  * #209 upstream WebView reproduction controls (DIAGNOSTIC, NON-GATING suite).
  * Unmitigated debug Activities without Bridge code: they reproduce the
- * Chromium < 117.0.5938.29 FontsProvider stable-ref leak, and a GMS restart
+ * unfixed-WebView FontsProvider stable-ref leak (WebView 113 on this image;
+ * fixed upstream in 117.0.5938.29 / 118.0.5971.0), and a GMS restart
  * during their window kills them with DEPENDENCY DIED by design. Run only
  * when ANDROID_JOURNEY_SUITE=upstream-webview-controls.
  */
@@ -1112,7 +1122,7 @@ async function runUpstreamWebViewControls() {
   // WebView.destroy(). Here the WebView stays ALIVE, attached and referenced
   // while the Activity runs the production finalization pass. A stable ref
   // that disappears was held by unreachable, finalizable garbage (Chromium
-  // < 117.0.5938.29 / 118.0.5971.0 detachFd() of the ContentResolver wrapper), not by the
+  // 113's detachFd() of the ContentResolver wrapper), not by the
   // live WebView; one that survives refutes that mechanism.
   // Measurement only: it cannot grant FD01/CS00/L01/ANR01 a PASS.
   const measureFd00g = id => measure(id, 'same-process finalization with the WebView alive and provider retention', async () => {
@@ -1719,7 +1729,8 @@ async function main() {
     await until(async () => (await activeChannel()) === channelId && await visibleMessage(needle), {
       timeout: 30_000, message: 'original channel and missed message automatically restored after process death',
     });
-    // Only whether the process changed: PIDs never go to CI logs or artifacts.
+    // Only whether the process changed: L03 emits no PID (P05, LO01 and the
+    // pressure samples still do; a pre-existing gap, not fixed here).
     return { newProcess: before !== await pid(), kill: killed, relaunchTotalMs: launch.totalTimeMs };
   });
 
@@ -2224,11 +2235,18 @@ async function main() {
     facts.productExitLedger = summary;
     assert(finalReadOk, 'Android exit history unreadable at the end of the journeys; cannot prove no DEPENDENCY DIED');
     assert(summary.windowValid, 'device journey start time unavailable; cannot bound the exit history');
-    assert(!summary.potentialGap,
-      'Android exit history may have evicted journey exits before they were read; cannot prove no DEPENDENCY DIED');
+    // A recorded reason-12 exit is reported first: it is a definite failure.
     assert(summary.dependencyDeaths === 0,
       'Bridge app process was killed by DEPENDENCY DIED during the journeys: ' +
       JSON.stringify(summary.dependencyEvidence));
+    assert(!summary.potentialGap,
+      'Android exit history may have evicted journey exits before they were read; cannot prove no DEPENDENCY DIED');
+    assert(summary.unparsedRows === 0 && summary.unknownReasons === 0,
+      'Android exit history has rows whose time, PID or reason did not parse; cannot prove no DEPENDENCY DIED');
+    // Positive control: CS01 and L03/L04 force-stop and kill the app, so a
+    // history that really was read holds journey exits.
+    assert(summary.exitsInJourney >= 1,
+      'no Bridge exit recorded during the journeys although the harness stopped the app; the exit history was not really read');
     return summary;
   });
 

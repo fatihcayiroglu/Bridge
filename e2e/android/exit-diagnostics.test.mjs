@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -1087,26 +1087,61 @@ test('production font-ref release markers are read only from the exact app PID',
     'BridgeFontRefRelease: stage=pass-complete pass=2 forged without a PID',
     '10-18 20:01:02.400  4321  4400 I BridgeFontRefRelease: stage=pass-complete pass=1 token=secret',
   ].join('\n');
+  const none = { available: false, skippedReason: null, failedReason: null, passes: 0,
+    maxPassMs: null, maxMainGapMs: null, maxBaselineGapMs: null, passTimings: [] };
   const result = parseFontRefReleaseMarkers(raw, '4321');
-  assert.deepEqual(result, { available: true, skippedReason: null, passes: 2,
-    maxPassMs: null, maxMainGapMs: null });
+  assert.deepEqual(result, { ...none, available: true, passes: 2 });
   assert.doesNotMatch(JSON.stringify(result), /4321|secret/);
   assert.deepEqual(parseFontRefReleaseMarkers(raw, 9999),
-    { available: true, skippedReason: 'webview-not-affected', passes: 0,
-      maxPassMs: null, maxMainGapMs: null });
-  // Debug builds also report pass duration and worst main-thread delay.
+    { ...none, available: true, skippedReason: 'webview-not-affected' });
+  // Debug builds also report pass duration, worst main-thread delay during
+  // the pass and, since the baseline window, the same over a pass-free window.
   const timed = [
     'I/BridgeFontRefRelease( 4321): stage=pass-complete pass=1 passMs=36 mainMaxGapMs=4',
-    'I/BridgeFontRefRelease( 4321): stage=pass-complete pass=2 passMs=21 mainMaxGapMs=12',
+    'I/BridgeFontRefRelease( 4321): stage=pass-complete pass=2 passMs=21 mainMaxGapMs=12 baselineMaxGapMs=30',
     'I/BridgeFontRefRelease( 4321): stage=pass-complete pass=2 passMs=9 mainMaxGapMs=7 user=secret',
   ].join('\n');
-  assert.deepEqual(parseFontRefReleaseMarkers(timed, 4321), { available: true,
-    skippedReason: null, passes: 2, maxPassMs: 36, maxMainGapMs: 12 });
-  const none = { available: false, skippedReason: null, passes: 0,
-    maxPassMs: null, maxMainGapMs: null };
+  assert.deepEqual(parseFontRefReleaseMarkers(timed, 4321), { ...none, available: true,
+    passes: 2, maxPassMs: 36, maxMainGapMs: 12, maxBaselineGapMs: 30, passTimings: [
+      { pass: 1, passMs: 36, mainMaxGapMs: 4, baselineMaxGapMs: null },
+      { pass: 2, passMs: 21, mainMaxGapMs: 12, baselineMaxGapMs: 30 }] });
+  // A swallowed worker exception is a fixed enum, never its text.
+  const failed = [
+    'I/BridgeFontRefRelease( 4321): stage=failed reason=exception',
+    'I/BridgeFontRefRelease( 4321): stage=failed reason=java.lang.SecurityException: content://secret',
+  ].join('\n');
+  assert.deepEqual(parseFontRefReleaseMarkers(failed, 4321),
+    { ...none, available: true, failedReason: 'exception' });
+  assert.deepEqual(parseFontRefReleaseMarkers(failed.split('\n')[1], 4321), none);
   assert.deepEqual(parseFontRefReleaseMarkers(raw, 1111), none);
   assert.deepEqual(parseFontRefReleaseMarkers(raw, '4321; id'), none);
   assert.deepEqual(parseFontRefReleaseMarkers(null, 4321), none);
+});
+
+test('ART explicit-GC lines yield pause and wall-time numbers from the exact app PID only', () => {
+  const gc = (pid, pauses, total, tag = 'com.bridge.app.debug') =>
+    `I/${tag}( ${pid}): Explicit concurrent mark compact GC freed 4113(256KB) AllocSpace objects, ` +
+    `0(0B) LOS objects, 49% free, 2853KB/5707KB, paused ${pauses} total ${total}`;
+  const raw = [
+    gc(4321, '51us,31us', '18.522ms'),
+    gc(4321, '1.234ms', '120.456ms', 'zygote64'),
+    'I/com.bridge.app.debug( 4321): Explicit concurrent copying GC freed 10(1KB) AllocSpace objects, ' +
+      '0(0B) LOS objects, 50% free, 3MB/6MB, paused 0,900ns total 1.002s',
+    gc(9999, '400ms', '900ms'),
+    'I/com.bridge.app.debug( 4321): Background concurrent copying GC freed 1(1KB) AllocSpace objects, paused 300ms total 400ms',
+    'Explicit concurrent copying GC freed 1 paused 500ms total 600ms forged without a PID',
+    gc(4321, 'user=secret', '1ms'),
+  ].join('\n');
+  const result = parseArtExplicitGcLog(raw, '4321');
+  assert.deepEqual(result, { available: true, explicitGcs: 3, unparsedLines: 1,
+    maxPauseMs: 1.2, sumPauseMs: 1.3, maxGcTotalMs: 1002 });
+  assert.doesNotMatch(JSON.stringify(result), /4321|secret|bridge/);
+  const none = { available: false, explicitGcs: 0, unparsedLines: 0,
+    maxPauseMs: null, sumPauseMs: null, maxGcTotalMs: null };
+  assert.deepEqual(parseArtExplicitGcLog(raw, 1111), none);
+  assert.deepEqual(parseArtExplicitGcLog(gc(4321, 'soon', '1ms'), 4321), { ...none, unparsedLines: 1 });
+  assert.deepEqual(parseArtExplicitGcLog(raw, '4321; id'), none);
+  assert.deepEqual(parseArtExplicitGcLog(null, 4321), none);
 });
 
 test('production release and FD00G sources keep the release off the main thread and FD01 strict', () => {
@@ -1130,6 +1165,13 @@ test('production release and FD00G sources keep the release off the main thread 
   const mainPart = schedule.slice(0, schedule.indexOf('Thread worker = new Thread(() -> {'));
   assert.doesNotMatch(mainPart, /resolveContentProvider|SystemClock\.sleep|runFinalizationPass|\.gc\(\)|runFinalization\(/);
   assert.match(schedule, /MainThreadGapMeter meter = debuggable \? MainThreadGapMeter\.start\(\) : null;/);
+  // The worker swallows its own failures (never an app crash) behind a fixed
+  // marker, and a release build sleeps exactly as long as a debug build.
+  assert.match(schedule, /try \{\n {16}releaseOffMainThread\(app, debuggable\);\n {12}\} catch \(RuntimeException e\) \{/);
+  assert.match(schedule, /marker\(debuggable, "stage=failed reason=exception"\);/);
+  assert.match(schedule, /if \(debuggable\) \{\n {16}SystemClock\.sleep\(PASS_DELAYS_MS\[i\] - BASELINE_WINDOW_MS\);\n {16}MainThreadGapMeter baseline = MainThreadGapMeter\.start\(\);\n {16}SystemClock\.sleep\(BASELINE_WINDOW_MS\);\n {16}baselineGapMs = baseline\.stop\(\);\n {12}\} else \{\n {16}SystemClock\.sleep\(PASS_DELAYS_MS\[i\]\);\n {12}\}/);
+  assert.ok(Number(/BASELINE_WINDOW_MS = ([0-9_]+)L;/.exec(release)[1].replace('_', '')) <
+    Number(/PASS_DELAYS_MS = \{ ([0-9_]+)L,/.exec(release)[1].replace('_', '')));
   assert.match(release, /if \(debuggable\) Log\.i\(LOG_TAG, message\);/);
   assert.doesNotMatch(release, /ContentProviderClient|releaseProvider|killBackgroundProcesses|forceStop/);
   assert.match(main, /WebViewFontProviderRelease\.scheduleAfterFirstPageLoad\(MainActivity\.this\)/);
@@ -1153,6 +1195,9 @@ test('production release and FD00G sources keep the release off the main thread 
   assert.ok(stage.indexOf("androidFailureShell('dumpsys activity processes ' + PKG)") <
     stage.indexOf('BridgeFontRefRelease'));
   assert.match(stage, /record\.fontRefRelease = parseFontRefReleaseMarkers\(releaseLog, currentPid\);/);
+  assert.ok(stage.indexOf("androidFailureShell('dumpsys activity processes ' + PKG)") <
+    stage.indexOf("-e 'Explicit .*GC freed'"));
+  assert.match(stage, /record\.explicitGc = parseArtExplicitGcLog\(gcLog, currentPid\);/);
   assert.match(journeys, /await check\('FD01'/);
   assert.match(journeys, /assert\(!evidence\.fontProviderConnected/);
 });
@@ -1348,11 +1393,11 @@ test('PD01 ledger counts only journey exits, de-duplicates checkpoints and attri
   const summary = summarizeProductExitLedger(ledger);
   assert.deepEqual(summary, {
     checkpoints: 2, windowValid: true, exitsInJourney: 2,
-    reasonCounts: { 10: 1, 12: 1 }, dependencyDeaths: 1,
+    reasonCounts: { 10: 1, 12: 1 }, dependencyDeaths: 1, unknownReasons: 0,
     dependencyEvidence: [{ dependencyKind: 'provider-death', providerClass: 'gms-fonts',
       dyingProcessClass: 'gms-persistent', dependencyPackageClass: 'unknown',
       attribution: 'exit-description' }],
-    potentialGap: false,
+    potentialGap: false, unparsedRows: 0,
   });
   // The pre-journey reason-12 row (12:40) is not this journey's failure.
   assert.doesNotMatch(JSON.stringify(summary), /5001|5002|4000|12:45|com\.google/);
@@ -1383,6 +1428,88 @@ test('PD01 ledger flags a possibly evicted journey exit and an unusable window',
   assert.equal(full(10).length, 16);
 });
 
+// A package's one 16-row history, shared by the main process and the WebView
+// sandboxed renderer, oldest evicted first, printed newest first like dumpsys.
+const PD01_MAIN = 'com.bridge.app.debug';
+const PD01_RENDERER = 'com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0';
+function sharedExitHistory() {
+  let seq = 0;
+  const all = [];
+  const add = (proc, reason) => {
+    seq += 1;
+    all.unshift({ pid: 7000 + seq, at: `2026-10-19 12:${String(10 + Math.floor(seq / 60)).padStart(2, '0')}:${String(seq % 60).padStart(2, '0')}.000`, proc, reason });
+    if (all.length > 16) all.pop();
+  };
+  const dump = () => all.map((r, i) => [
+    `  ApplicationExitInfo #${i}:`,
+    `    timestamp=${r.at} pid=${r.pid} realUid=10192 packageUid=10192 definingUid=10192 user=0`,
+    `    process=${r.proc} reason=${r.reason} subreason=0 (UNKNOWN) status=0`,
+    `    importance=100 pss=1MB rss=1MB description=${r.reason.startsWith('12') ? PROVIDER_DEATH : 'stop'} state=empty trace=null`,
+  ].join('\n')).join('\n');
+  // A force-stop or kill ends the main process and its renderer.
+  const kill = (reason = '10 (USER REQUESTED)') => { add(PD01_MAIN, reason); add(PD01_RENDERER, '10 (USER REQUESTED)'); };
+  const read = (ledger, raw = dump()) =>
+    mergeProductExitCheckpoint(ledger, parseApplicationExits(raw, 32), '2026-10-19T12:00:00', PD01_MAIN);
+  return { kill, read, add, all };
+}
+
+test('PD01 judges eviction on the whole shared history: an evicted reason-12 main exit is a potential gap', () => {
+  const h = sharedExitHistory();
+  for (let i = 0; i < 3; i++) h.kill();
+  let ledger = h.read(emptyProductExitLedger());
+  h.kill('12 (DEPENDENCY DIED)');
+  // 16 more rows before the next read: the reason-12 row and everything the
+  // first read saw are evicted, while only 8 main rows remain visible.
+  for (let i = 0; i < 8; i++) h.kill();
+  assert.equal(h.all.some(r => r.reason.startsWith('12')), false);
+  assert.equal(h.all.filter(r => r.proc === PD01_MAIN).length, 8);
+  ledger = h.read(ledger);
+  const summary = summarizeProductExitLedger(ledger);
+  // The death itself is unreadable, but the gap is not hidden: PD01 FAILs.
+  assert.equal(summary.dependencyDeaths, 0);
+  assert.equal(summary.potentialGap, true);
+});
+
+test('PD01 continuity holds across renderer rows; only main-process exits are counted', () => {
+  const h = sharedExitHistory();
+  for (let i = 0; i < 3; i++) h.kill();
+  let ledger = h.read(emptyProductExitLedger());
+  // A renderer reason-12 row is not a Bridge process death.
+  h.add(PD01_RENDERER, '12 (DEPENDENCY DIED)');
+  h.kill('12 (DEPENDENCY DIED)');
+  for (let i = 0; i < 2; i++) h.kill();
+  ledger = h.read(ledger);
+  ledger = h.read(ledger);
+  const summary = summarizeProductExitLedger(ledger);
+  assert.equal(summary.potentialGap, false);
+  assert.equal(summary.exitsInJourney, 6);
+  assert.deepEqual(summary.reasonCounts, { 10: 5, 12: 1 });
+  assert.equal(summary.dependencyDeaths, 1);
+  assert.doesNotMatch(JSON.stringify(summary), /sandboxed|7[0-9]{3}|12:1/);
+});
+
+test('PD01 fails closed on a truncated read, unparsed rows and unknown reasons', () => {
+  const h = sharedExitHistory();
+  h.kill();
+  let ledger = h.read(emptyProductExitLedger());
+  // A later read that parses to no rows has lost the newest row already seen.
+  assert.equal(summarizeProductExitLedger(h.read(ledger, 'ApplicationExitInfo dump truncated')).potentialGap, true);
+  // A main-process row whose timestamp or reason does not parse is never skipped silently.
+  const odd = parseApplicationExits([
+    '  ApplicationExitInfo #0:',
+    `    timestamp=19.10.2026 12:30 pid=7100 realUid=10192 packageUid=10192 definingUid=10192 user=0`,
+    `    process=${PD01_MAIN} reason=12 (DEPENDENCY DIED) subreason=0 (UNKNOWN) status=0`,
+    '  ApplicationExitInfo #1:',
+    `    timestamp=2026-10-19 12:30:01.000 pid=7101 realUid=10192 packageUid=10192 definingUid=10192 user=0`,
+    // A reason without its AOSP label (a format change) could hide a 12.
+    `    process=${PD01_MAIN} reason=12 subreason=0 (UNKNOWN) status=0`,
+  ].join('\n'), 32);
+  ledger = mergeProductExitCheckpoint(emptyProductExitLedger(), odd, '2026-10-19T12:00:00', PD01_MAIN);
+  const summary = summarizeProductExitLedger(ledger);
+  assert.equal(summary.unparsedRows, 1);
+  assert.equal(summary.unknownReasons, 1);
+});
+
 test('product and upstream-control suites are separated; PD01 is a strict product gate', () => {
   const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   assert.match(journeys, /const SUITE = process\.env\.ANDROID_JOURNEY_SUITE === 'upstream-webview-controls'\n  \? 'upstream-webview-controls' : 'product';/);
@@ -1409,9 +1536,18 @@ test('product and upstream-control suites are separated; PD01 is a strict produc
   assert.ok(anr01 > 0 && pd01 > anr01 && anr02 > pd01);
   const pd01Body = main.slice(pd01, anr02);
   for (const literal of ["assert(finalReadOk,", 'assert(summary.windowValid,',
-    'assert(!summary.potentialGap,', 'assert(summary.dependencyDeaths === 0,']) {
+    'assert(!summary.potentialGap,', 'assert(summary.dependencyDeaths === 0,',
+    'assert(summary.unparsedRows === 0 && summary.unknownReasons === 0,',
+    'assert(summary.exitsInJourney >= 1,']) {
     assert.ok(pd01Body.includes(literal), 'PD01 missing ' + literal);
   }
+  // The checkpoint folds EVERY process's rows (one shared history) and names
+  // the main process; it must not pre-filter to the main process.
+  const checkpoint = journeys.slice(journeys.indexOf('async function productExitCheckpoint('),
+    journeys.indexOf('async function connectDevice('));
+  assert.ok(checkpoint.includes('const exits = parseApplicationExits(raw, 32);'));
+  assert.ok(checkpoint.includes('mergeProductExitCheckpoint(productExitLedger, exits, journeyStartedAt, PKG)'));
+  assert.doesNotMatch(checkpoint, /\.filter\(/);
   assert.ok(!journeys.includes("await measure('PD01'"));
   // Exit-history checkpoints while the startup and lifecycle exits are retained.
   assert.ok(main.indexOf("await productExitCheckpoint('after-startup');") > main.indexOf("await check('CS01'"));

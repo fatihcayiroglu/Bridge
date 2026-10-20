@@ -27,8 +27,9 @@ export function formatSuiteSummary(evidence) {
   const lines = [`## ${SUITE_HEADINGS[suite] ?? 'Android journeys (unknown suite)'}`, ''];
   if (suite === 'upstream-webview-controls') {
     lines.push('These unmitigated debug Activities contain no Bridge code. They reproduce the ' +
-      'Chromium < 117.0.5938.29 FontsProvider stable-reference leak and its DEPENDENCY DIED kill ' +
-      'on the CI WebView. They do not gate pull requests; the product suite in Mobile Android does. ' +
+      'unfixed-WebView FontsProvider stable-reference leak (WebView 113 on this image; fixed upstream ' +
+      'in 117.0.5938.29 / 118.0.5971.0) and are exposed to its DEPENDENCY DIED kill. ' +
+      'They do not gate pull requests; the product suite in Mobile Android does. ' +
       '**A FAIL here is a real failure and is never counted as a pass.**', '');
   }
   lines.push(`Evidence category: ${cell(evidence.evidenceCategory ?? 'unknown')}`, '');

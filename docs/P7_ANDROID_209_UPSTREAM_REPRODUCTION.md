@@ -1,8 +1,8 @@
 # Android #209 — WebView / FontsProvider upstream reproduction dossier
 
-**2026-10-18 · experimental evidence · not a proven root cause · do not merge as a product fix**
+**2026-10-18 · historical experimental dossier · root cause since traced in source (see the update below) · this dossier is evidence, not the product change**
 
-> **Update 2026-10-18:** the upstream question below is answered in source. The stable reference is a Chromium bug fixed in 117.0.5938.29 (M117 branch) / 118.0.5971.0 (trunk): the ContentResolver font descriptor was detached without being closed, so its stable reference waited for GC finalization. See [`P7_ANDROID_209_ROOT_CAUSE.md`](P7_ANDROID_209_ROOT_CAUSE.md) for the source chain, the FD00G intervention control and the product mitigation.
+> **Update 2026-10-18:** the upstream question below is answered in source. The stable reference is a Chromium bug fixed in 117.0.5938.29 (M117 branch) / 118.0.5971.0 (trunk), with a partial non-monotonic M116 backport (116.0.5845.124/.163/.188): the ContentResolver font descriptor was detached without being closed, so its stable reference waited for GC finalization. See [`P7_ANDROID_209_ROOT_CAUSE.md`](P7_ANDROID_209_ROOT_CAUSE.md) for the source chain, the FD00G intervention control and the product mitigation.
 
 Canonical diagnostic PR: [#322](https://github.com/fatihcayiroglu/Bridge/pull/322).
 Tracking issue: [#209](https://github.com/fatihcayiroglu/Bridge/issues/209).
@@ -13,7 +13,7 @@ The CI SDK-image installation fix [#328](https://github.com/fatihcayiroglu/Bridg
 
 A bare `android.app.Activity` with an Android `WebView`, JavaScript **disabled**, and an inert, entirely local HTML document acquires a connection to Google Play Services' FontsProvider. On the observed **Android 14 / Google APIs x86_64 / Google WebView 113.0.5672.136** image, this is a **stable** ContentProvider reference. The stable reference remains after `WebView.stopLoading()`, removing the WebView from its parent, clearing history, `WebView.destroy()`, and dropping the Java field, while the Activity remains resumed and its process PID stays unchanged. The same minimal controls on an **Android 15 / Google APIs x86_64 / Google WebView 124.0.6367.219** image acquire an **unstable** reference, which is gone after the same teardown.
 
-This is a *platform-image difference*, not an isolated WebView-version regression: the Android OS, Play Services and bundled WebView versions change together.
+This comparison is a *platform-image difference*: the Android OS, Play Services and bundled WebView versions change together, so it cannot isolate one variable. Source reading ([`P7_ANDROID_209_ROOT_CAUSE.md`](P7_ANDROID_209_ROOT_CAUSE.md) §2) later attributed the stable reference to the WebView (Chromium) version. A same-OS run with only the WebView changed is still outstanding.
 
 **Question for upstream maintainers:** Is the persistent **stable** FontsProvider connection in the Android-14/WebView-113 environment intentional? If not, which Android/Chromium change controls its acquisition, reference strength and release? Can that dependency survive until process exit even after the last navigated WebView is destroyed? An upstream explanation would help establish whether an application can mitigate a dependency-death risk without manipulating Google Play Services or overriding WebView internals.
 
@@ -45,7 +45,7 @@ Reproduce on each chosen system image, with independent cold app processes:
 3. In another cold process, navigate then destroy the WebView as above, keeping the same Activity resumed; capture provider counts before and after. Verify teardown through a **fixed, same-PID** debug marker, not by elapsed time.
 4. Record Android API, allowed-category WebView provider name/version, complete provider-list validity, and whether **stable/unstable** reference counts changed. Avoid uploading raw `dumpsys`, logcat, hardware serials, accounts, URLs or app-process IDs as public evidence.
 
-The current harness's baselines are `FD00` / `FD00P` / `FD00C` / `FD00A` / `FD00N` / `FD00D` / `FD00S` / `FD00T` / `FD00W`. All are classified as **MEASURED**, never PASS or a waiver for strict FD01.
+The harness's upstream controls are `FD00` / `FD00P` / `FD00C` / `FD00A` / `FD00N` / `FD00D` / `FD00S` / `FD00T` / `FD00G` (×3) / `FD00W` and `CS00`. They run only in the non-gating `android-upstream-webview-diagnostics.yml` workflow. Each is MEASURED or FAIL (a control whose process vanishes, e.g. FD00W's DEPENDENCY DIED kill, is a FAIL), never a PASS and never a waiver for strict FD01.
 
 ## Reproduced evidence
 
@@ -55,7 +55,7 @@ The current harness's baselines are `FD00` / `FD00P` / `FD00C` / `FD00A` / `FD00
 | Inert `data:` HTML navigation — FD00S | **1 STABLE** ref | **1 UNSTABLE** ref |
 | Inert `about:blank`-based HTML — FD00D | **1 STABLE** ref | **1 UNSTABLE** ref |
 | Same PID / foreground Activity, after `WebView.destroy()` — FD00T | **1 STABLE** ref persists | **0** refs, released |
-| Actual Bridge after-login strict FD01 | **1 UNSTABLE** ref, **FAIL** (latest canonical #322); prior runs also observed 1 STABLE | **0** refs, **PASS** in one API35 experimental run |
+| Actual Bridge after-login strict FD01 | Before the mitigation: **1 UNSTABLE** ref, **FAIL** (#322); prior runs also observed 1 STABLE. With the PR #332 mitigation: **0** refs, **PASS** in five exact-head runs | **0** refs, **PASS** in one API35 experimental run |
 | A01 cold-start, L01 HOT, L03 process recovery, ANR01 | Passed in the compared API34 run | Passed in the compared API35 run |
 
 - API34 [Android run 39115534640](https://github.com/fatihcayiroglu/Bridge/actions/runs/39115534640): **33 PASS / 1 FD01 FAIL / 0 SKIPPED / 15 MEASURED**; [independent privacy PR #330 run 39118551989](https://github.com/fatihcayiroglu/Bridge/actions/runs/39118551989) **32 PASS / 1 FD01 FAIL / 0 SKIPPED / 4 MEASURED**, including a stable after-login ref on the unmodified main app.

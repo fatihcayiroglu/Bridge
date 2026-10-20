@@ -26,6 +26,27 @@ public class WebViewFontProviderReleaseTest {
         assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("117.0.5900.12")));
         // Older than any build read; assumed to leak (an extra GC is harmless).
         assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("83.0.4103.106")));
+        // Trunk before the fix, on an M118 version number.
+        assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("118.0.5939.0")));
+    }
+
+    @Test
+    public void m116IsTreatedAsLeakingEvenWhereABackportLanded() {
+        // Read by tag: .140 to .153 lack the fix; .124, .163 and .188 carry a
+        // backport. The gate does not track patch-level backports on M116.
+        assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("116.0.5845.140")));
+        assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("116.0.5845.153")));
+        assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("116.0.5845.124")));
+        assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("116.0.5845.188")));
+    }
+
+    @Test
+    public void reducedUserAgentsErrOnTheLeakingSideBelowM119() {
+        // A reduced user agent hides the build and patch numbers.
+        assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("117.0.0.0")));
+        assertTrue(WebViewFontProviderRelease.isLeakingChromium(ua("118.0.0.0")));
+        assertFalse(WebViewFontProviderRelease.isLeakingChromium(ua("119.0.0.0")));
+        assertFalse(WebViewFontProviderRelease.isLeakingChromium(ua("119.0.6045.0")));
     }
 
     @Test

@@ -1,5 +1,7 @@
 # Android #209 — remove optional emoji2 startup font provider (candidate)
 
+> **Superseded for attribution (2026-10-19):** the requester was traced in source to Chromium's `AndroidFontLookupImpl`; see [`P7_ANDROID_209_ROOT_CAUSE.md`](P7_ANDROID_209_ROOT_CAUSE.md). The dated entries below are kept as history. #209, the FocusEvent ANRs (reason 6) and the product's reason-12 death in run 39067739321 remain open and unattributed.
+
 **Status: CODE FIX CANDIDATE / NOT A ROOT-CAUSE CLOSURE.**
 
 ## Observed failure and mechanism
