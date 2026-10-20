@@ -56,6 +56,41 @@ export function summarizeAndroidWebViewAlternatives(raw) {
     distinctVersionAlternateAvailable: other.some(x => x.version !== current[2]) };
 }
 
+// #209 controlled WebView comparison: the provider each arm must observe.
+// 'system' is the image's own Google WebView (no switch); 'chromium-fixed' is
+// the pinned Chromium SystemWebView, past the upstream fix (117.0.5938.29 /
+// 118.0.5971.0), so at least 119.
+const WEBVIEW_ARM_EXPECTATIONS = {
+  system: { providerKind: 'google-webview', minMajorVersion: 1 },
+  'chromium-fixed': { providerKind: 'aosp-webview', minMajorVersion: 119 },
+};
+const WEBVIEW_PROVIDER_KINDS = new Set(['google-webview', 'aosp-webview',
+  'chrome-webview', 'other-webview', 'unknown']);
+
+/**
+ * Compare a comparison arm with the provider summarizeAndroidWebViewProvider
+ * reported. Returns enums and an integer only. An unknown arm, an unreadable
+ * provider or an out-of-range version never matches.
+ */
+export function verifyWebViewArm(arm, webview) {
+  const expected = typeof arm === 'string' && Object.hasOwn(WEBVIEW_ARM_EXPECTATIONS, arm)
+    ? WEBVIEW_ARM_EXPECTATIONS[arm] : null;
+  const available = webview?.available === true;
+  const observedProviderKind = available && WEBVIEW_PROVIDER_KINDS.has(webview.providerKind)
+    ? webview.providerKind : 'unknown';
+  const major = available ? webview.majorVersion : null;
+  const observedMajorVersion = Number.isSafeInteger(major) && major >= 1 && major <= 9999
+    ? major : null;
+  return {
+    arm: expected ? arm : 'unknown',
+    expectedProviderKind: expected?.providerKind ?? null,
+    expectedMinMajorVersion: expected?.minMajorVersion ?? null,
+    observedProviderKind, observedMajorVersion,
+    matches: Boolean(expected) && observedProviderKind === expected.providerKind &&
+      observedMajorVersion !== null && observedMajorVersion >= expected.minMajorVersion,
+  };
+}
+
 export function parseApplicationExits(raw, limit = 6) {
   // Up to 32 rows: Android retains 16 per package by default, and PD01 must
   // see a full history to prove no journey exit was evicted unread.

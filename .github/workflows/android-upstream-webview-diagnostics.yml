@@ -8,17 +8,23 @@ name: Android upstream WebView diagnostics (non-gating)
 # Bridge cannot fix them inside an unmodified WebView, so they do not gate
 # pull requests: the Bridge product suite in mobile-android.yml (FD01, PD01,
 # ANR01, ...) does. A control FAIL is still a real failure: the job exits
-# nonzero and nothing here is ever counted as a pass. Evidence category:
-# AUTOMATED / EMULATOR, not physical-device.
+# nonzero and no control is ever counted as a pass. The only PASS-able check
+# in the controls jobs is WV00, which asserts the arm's provider; a WV00 PASS
+# is never a control pass. Evidence category: AUTOMATED / EMULATOR, not
+# physical-device.
 #
-# Controlled WebView comparison (one variable): the controls run twice on the
-# SAME API 34 image, Play services, emulator options and APK, once with the
-# image's own WebView (113, unfixed) and once with a pinned Chromium-built
-# SystemWebView (158, fixed upstream) selected as the provider. The Bridge
-# product suite also runs on that fixed WebView here, non-gating. If the image
-# refuses the provider switch, those jobs FAIL with the refusal reason: an
-# unavailable comparison is never a pass. Confounds that remain: a Chromium
-# build is not Google's WebView build (branding, field trials, optimisation).
+# Controlled WebView comparison: the controls run twice on the SAME API 34
+# image, Play services, emulator options and APK, once with the image's own
+# WebView (113, unfixed) and once with a pinned Chromium-built SystemWebView
+# (158, fixed upstream) selected as the provider. The Bridge product suite
+# also runs on that fixed WebView here, non-gating. If the image refuses the
+# provider switch, those jobs FAIL with the refusal reason: an unavailable
+# comparison is never a pass. WV00 asserts each arm from the provider the
+# device reports, not from the job label. The provider is the intended
+# variable, not the only difference: a Chromium build is not Google's WebView
+# build (branding, field trials, optimisation), and only the chromium-fixed
+# arm removes a possible webview-command-line file, starts its journeys later
+# after boot and has the switch's background RELRO preparation.
 
 on:
   schedule:
@@ -39,10 +45,12 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NODE_VERSION: '24.20.0'
-  # Official Chromium continuous build (chromium-browser-snapshots bucket),
-  # AndroidDesktop_x64 r1722592: SystemWebView.apk, package com.android.webview,
-  # versionName 158.0.8114.0, minSdk 29, x86/x86_64. Both hashes are pinned:
-  # a different file fails the job before anything is installed.
+  # A build from the Chromium project's continuous (snapshot) builder, not a
+  # release channel (chromium-browser-snapshots bucket), AndroidDesktop_x64
+  # r1722592: SystemWebView.apk, package com.android.webview, versionName
+  # 158.0.8114.0. fetch-pinned-webview.sh prints its min/target SDK and ABIs.
+  # Both hashes are pinned: a different file fails the job before anything is
+  # installed.
   WEBVIEW_SNAPSHOT_URL: https://commondatastorage.googleapis.com/chromium-browser-snapshots/AndroidDesktop_x64/1722592/chrome-android-desktop.zip
   WEBVIEW_SNAPSHOT_SHA256: 97bb6b0d0b8758e9fcdaa15a8f2a894a6e554d78279b3cfaa795d625b1c9228a
   WEBVIEW_APK_SHA256: 28d6eaf52871376eb18420a663d201ca88f0a6e3fb74be04832a091ffe8e6369
@@ -151,8 +159,11 @@ jobs:
           retention-days: 30
 
   # The Bridge product suite on the fixed WebView: the same journeys and gates
-  # as the required product job, non-gating here. The mitigation must report
-  # stage=skipped reason=webview-not-affected, and FD01 must hold without it.
+  # as the required product job, non-gating here and not the required gate.
+  # WV00 asserts the device reports the pinned Chromium provider; WV01 asserts
+  # the mitigation reported stage=skipped reason=webview-not-affected with no
+  # release pass at every stage, so FD01 is checked without it. WV00/WV01 run
+  # only when WEBVIEW_ARM is set, which mobile-android.yml never does.
   product-fixed-webview:
     name: DIAGNOSTIC (non-gating) Bridge product journeys, chromium-fixed WebView (AUTOMATED / EMULATOR)
     runs-on: ubuntu-latest

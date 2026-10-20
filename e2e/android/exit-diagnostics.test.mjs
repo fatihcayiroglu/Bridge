@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, verifyWebViewArm } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -1531,8 +1531,9 @@ test('product and upstream-control suites are separated; PD01 is a strict produc
   }
   assert.ok(controls.includes('const measureFd00g = id => measure(id,'));
   assert.doesNotMatch(controls, /await check\(/, 'controls are measurements, never product checks');
-  // The product suite returns before any product journey only in the controls suite.
-  assert.match(main, /if \(SUITE === 'upstream-webview-controls'\) \{\n[\s\S]*?await connectDevice\(\);\n    await runUpstreamWebViewControls\(\);\n    return;\n  \}/);
+  // The product suite returns before any product journey only in the controls
+  // suite. The only check there is WV00, and only on a #209 comparison arm.
+  assert.match(main, /if \(SUITE === 'upstream-webview-controls'\) \{\n[\s\S]*?await connectDevice\(\);\n    if \(WEBVIEW_ARM !== undefined\) await checkWebViewArm\(\);\n    await runUpstreamWebViewControls\(\);\n    return;\n  \}/);
   assert.equal((journeys.match(/await runUpstreamWebViewControls\(\)/g) ?? []).length, 1);
   // Every product gate stays mandatory in the product suite.
   for (const gate of ['A01', 'CS01', 'A02', 'FD01', 'L01', 'L02', 'L03', 'L04', 'ANR01', 'PD01']) {
@@ -1588,15 +1589,117 @@ test('job summary labels the diagnostic suite, keeps FAILs and prints no run dat
   // The controlled WebView comparison names its arm with fixed text only.
   assert.doesNotMatch(controls, /WebView arm/);
   assert.match(formatSuiteSummary({ suite: 'product', results: [] }, 'chromium-fixed'),
-    /WebView arm: chromium-fixed: pinned Chromium SystemWebView 158 selected as the provider/);
+    /WebView arm: chromium-fixed: pinned Chromium SystemWebView 158\.0\.8114\.0 selected as the provider/);
   assert.match(formatSuiteSummary({ suite: 'upstream-webview-controls', results: [] }, 'system'),
-    /WebView arm: system: the image's own WebView \(113/);
+    /WebView arm: system: the image's own WebView provider \(no provider switch\)/);
   const forged = formatSuiteSummary({ suite: 'product', results: [] }, '<b>serial 4242</b>');
   assert.match(forged, /WebView arm: unknown/);
   assert.doesNotMatch(forged, /4242|<b>/);
   for (const missing of [null, {}, { results: 'x' }]) {
     assert.match(formatSuiteSummary(missing), /did not complete\.\*\* This is a failure, not a pass/);
   }
+});
+
+test('#209 comparison arm is verified against the observed provider, enums and an integer only', () => {
+  const google113 = { available: true, providerKind: 'google-webview', version: '113.0.5672.136', majorVersion: 113 };
+  const aosp158 = { available: true, providerKind: 'aosp-webview', version: '158.0.8114.0', majorVersion: 158 };
+  assert.deepEqual(verifyWebViewArm('system', google113), { arm: 'system',
+    expectedProviderKind: 'google-webview', expectedMinMajorVersion: 1,
+    observedProviderKind: 'google-webview', observedMajorVersion: 113, matches: true });
+  assert.deepEqual(verifyWebViewArm('chromium-fixed', aosp158), { arm: 'chromium-fixed',
+    expectedProviderKind: 'aosp-webview', expectedMinMajorVersion: 119,
+    observedProviderKind: 'aosp-webview', observedMajorVersion: 158, matches: true });
+  // A swapped, reverted, too-old or unreadable provider never matches.
+  assert.equal(verifyWebViewArm('system', aosp158).matches, false);
+  assert.equal(verifyWebViewArm('chromium-fixed', google113).matches, false);
+  assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, majorVersion: 118 }).matches, false);
+  assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, majorVersion: 119 }).matches, true);
+  assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, available: false }).matches, false);
+  assert.equal(verifyWebViewArm('chromium-fixed', summarizeAndroidWebViewProvider('')).matches, false);
+  assert.equal(verifyWebViewArm('chromium-fixed', undefined).matches, false);
+  // An unknown arm never matches and is not echoed.
+  for (const arm of [undefined, '', 'Chromium-fixed', 'constructor', '__proto__', '<b>4242</b>']) {
+    const result = verifyWebViewArm(arm, aosp158);
+    assert.equal(result.matches, false);
+    assert.equal(result.arm, 'unknown');
+  }
+  // Forged fields are reduced to the fixed enum set and a bounded integer.
+  const forged = verifyWebViewArm('chromium-fixed', { available: true,
+    providerKind: 'com.secret.vendor', version: 'owner@example.com', majorVersion: '158' });
+  assert.equal(forged.observedProviderKind, 'unknown');
+  assert.equal(forged.observedMajorVersion, null);
+  assert.equal(forged.matches, false);
+  assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, majorVersion: 10000 }).observedMajorVersion, null);
+  assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, majorVersion: 158.5 }).matches, false);
+  assert.doesNotMatch(JSON.stringify(forged), /secret|example|158\.0/);
+});
+
+test('#209 comparison job summary: product arm is labelled non-gating and states the observed provider', async () => {
+  const { formatSuiteSummary } = await import('./suite-summary.mjs');
+  const aosp158 = { available: true, providerKind: 'aosp-webview', version: '158.0.8114.0', majorVersion: 158 };
+  const fixed = formatSuiteSummary({ suite: 'product', facts: { device: { webview: aosp158, model: 'sdk_gphone64' } },
+    results: [{ id: 'FD01', title: 'native startup', status: 'PASS' }] }, 'chromium-fixed');
+  assert.match(fixed, /^## DIAGNOSTIC, NON-GATING: Bridge product journeys on a controlled WebView arm \(#209\)\n/);
+  assert.doesNotMatch(fixed, /mandatory/);
+  assert.match(fixed, /\*\*not the required gate\*\*/);
+  assert.match(fixed, /Observed WebView provider \(device facts\): aosp-webview, major version 158\n/);
+  assert.doesNotMatch(fixed, /MISMATCH|sdk_gphone/);
+  // The observed provider disagrees with the arm: an explicit MISMATCH line.
+  const reverted = formatSuiteSummary({ suite: 'product', results: [], facts: { device: { webview:
+    { available: true, providerKind: 'google-webview', version: '113.0.5672.136', majorVersion: 113 } } } }, 'chromium-fixed');
+  assert.match(reverted, /\*\*WebView arm MISMATCH: expected aosp-webview, major version >= 119, observed google-webview, major version 113\./);
+  const unread = formatSuiteSummary({ suite: 'upstream-webview-controls', results: [] }, 'system');
+  assert.match(unread, /Observed WebView provider \(device facts\): unknown, major version unknown\n/);
+  assert.match(unread, /WebView arm MISMATCH: expected google-webview/);
+  // The controls heading is unchanged; no arm leaves the gate's heading alone.
+  assert.match(unread, /^## DIAGNOSTIC, NON-GATING: upstream Android WebView reproduction controls/);
+  assert.match(formatSuiteSummary({ suite: 'product', results: [] }), /^## Android product journeys \(mandatory Bridge reliability suite\)\n/);
+  assert.doesNotMatch(formatSuiteSummary({ suite: 'product', results: [], facts: { device: { webview: aosp158 } } }),
+    /Observed WebView|MISMATCH|NON-GATING/);
+  // No run data: forged provider fields never reach the summary.
+  const forged = formatSuiteSummary({ suite: 'product', results: [], facts: { device: { webview:
+    { available: true, providerKind: 'com.secret|vendor', version: 'owner@example.com', majorVersion: '4242' } } } }, 'chromium-fixed');
+  assert.match(forged, /observed unknown, major version unknown\./);
+  assert.doesNotMatch(forged, /secret|example|4242/);
+});
+
+test('#209 WV00/WV01 run only on a comparison arm, never in the required product workflow', () => {
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  const product = readFileSync(new URL('../../.github/workflows/mobile-android.yml', import.meta.url), 'utf8');
+  const runner = readFileSync(new URL('./run-emulator-journeys.sh', import.meta.url), 'utf8');
+  // The required workflow and the shared runner never set the arm.
+  assert.doesNotMatch(product, /WEBVIEW_ARM/);
+  assert.doesNotMatch(runner, /WEBVIEW_ARM/);
+  // The arm comes from the environment only, and every use is gated on it.
+  assert.equal(journeys.match(/process\.env\.WEBVIEW_ARM/g)?.length, 1);
+  assert.match(journeys, /\nconst WEBVIEW_ARM = process\.env\.WEBVIEW_ARM;\n/);
+  assert.equal(journeys.match(/await checkWebViewArm\(\)/g)?.length, 2);
+  assert.equal(journeys.match(/\n {2,4}if \(WEBVIEW_ARM !== undefined\) await checkWebViewArm\(\);\n/g)?.length, 2);
+  assert.equal(journeys.match(/check\('WV00'/g)?.length, 1);
+  assert.equal(journeys.match(/check\('WV01'/g)?.length, 1);
+  const wv00 = journeys.slice(journeys.indexOf('async function checkWebViewArm('),
+    journeys.indexOf('async function runUpstreamWebViewControls('));
+  assert.ok(wv00.includes("await check('WV00'"));
+  assert.ok(wv00.includes('verifyWebViewArm(WEBVIEW_ARM, facts.device?.webview)'));
+  assert.ok(wv00.includes("assert(arm.matches, 'WebView arm mismatch; safe evidence: '"));
+  const main = journeys.slice(journeys.indexOf('async function main('));
+  // WV00 at the start of both suites, right after the device facts are read.
+  assert.match(main, /await connectDevice\(\);\n {4}if \(WEBVIEW_ARM !== undefined\) await checkWebViewArm\(\);\n {4}await runUpstreamWebViewControls\(\);/);
+  assert.match(main, /await connectDevice\(\);\n {2}if \(WEBVIEW_ARM !== undefined\) await checkWebViewArm\(\);\n\n {2}await check\('A01'/);
+  // WV01: chromium-fixed only, after FD01 and before FD02, asserting.
+  const fd01 = main.indexOf("await check('FD01'");
+  const gate = main.indexOf("if (WEBVIEW_ARM === 'chromium-fixed') {\n    await check('WV01'");
+  const fd02 = main.indexOf("await measure('FD02'");
+  assert.ok(fd01 > 0 && gate > fd01 && fd02 > gate);
+  const wv01 = main.slice(gate, fd02);
+  assert.match(wv01, /assert\(stages\.length > 0,/);
+  assert.match(wv01, /s\.available && s\.skippedReason === 'webview-not-affected' &&\n {8}s\.failedReason === null && s\.passes === 0\)/);
+  assert.doesNotMatch(wv01, /measure\(|Skip\('(?!the mitigation markers are read from an Android device)/);
+  // Each skips only off-device, with exactly one Skip line and no broader condition.
+  assert.equal(wv00.match(/throw new Skip\(/g)?.length, 1);
+  assert.ok(wv00.includes("if (MODE !== 'android') throw new Skip('the WebView provider is read from an Android device');"));
+  assert.equal(wv01.match(/throw new Skip\(/g)?.length, 1);
+  assert.ok(wv01.includes("if (MODE !== 'android') throw new Skip('the mitigation markers are read from an Android device');"));
 });
 
 test('workflows: product suite gates, upstream controls run non-gating but keep their exit status', () => {
@@ -1621,16 +1724,34 @@ test('workflows: product suite gates, upstream controls run non-gating but keep 
   assert.match(diagnostics, /\n  WEBVIEW_SNAPSHOT_URL: https:\/\/commondatastorage\.googleapis\.com\/chromium-browser-snapshots\/AndroidDesktop_x64\/[0-9]+\/chrome-android-desktop\.zip\n  WEBVIEW_SNAPSHOT_SHA256: [0-9a-f]{64}\n  WEBVIEW_APK_SHA256: [0-9a-f]{64}\n/);
   const fetchWebView = readFileSync(new URL('./fetch-pinned-webview.sh', import.meta.url), 'utf8');
   assert.match(fetchWebView, /set -euo pipefail/);
-  assert.match(fetchWebView, /echo "\$ZIP_SHA  \$zip" \| sha256sum -c -/);
-  assert.match(fetchWebView, /echo "\$APK_SHA  \$OUT\/SystemWebView\.apk" \| sha256sum -c -/);
+  assert.match(fetchWebView, /if ! echo "\$ZIP_SHA  \$zip" \| sha256sum --status -c - 2>\/dev\/null; then\n  echo "WEBVIEW_FETCH status=failed reason=zip-sha256-mismatch"\n  exit 4\n/);
+  assert.match(fetchWebView, /if ! echo "\$APK_SHA  \$OUT\/SystemWebView\.apk" \| sha256sum --status -c - 2>\/dev\/null; then\n  echo "WEBVIEW_FETCH status=failed reason=apk-sha256-mismatch"\n  exit 4\n/);
+  // No runner paths in the log: hash checks print fixed words only.
+  assert.doesNotMatch(fetchWebView, /sha256sum -c -(?! 2>)/);
+  // One anchored archive shape, not a bucket prefix.
+  assert.ok(fetchWebView.includes('if ! [[ "$URL" =~ ^https://commondatastorage\\.googleapis\\.com/chromium-browser-snapshots/AndroidDesktop_x64/[0-9]{1,12}/chrome-android-desktop\\.zip$ ]]; then'));
+  assert.doesNotMatch(fetchWebView, /chromium-browser-snapshots\/\*/);
+  // aapt2's keys: minSdkVersion: (not aapt1's sdkVersion:) and alt-native-code:.
+  assert.ok(fetchWebView.includes('grep -E "^(package:|minSdkVersion:|targetSdkVersion:|native-code:|alt-native-code:)"'));
+  assert.match(fetchWebView, /if \[ -z "\$aapt2" \]; then\n  echo "WEBVIEW_FETCH status=failed reason=aapt2-not-found"\n  exit 6\n/);
   const select = readFileSync(new URL('./select-webview-provider.sh', import.meta.url), 'utf8');
   assert.match(select, /set -euo pipefail/);
   assert.match(select, /case "\$PKG" in\n  com\.android\.webview\) ;;\n  \*\) echo "WEBVIEW_OVERRIDE status=refused reason=package-not-allowlisted"; exit 2 ;;/);
-  assert.match(select, /reason=install-failed"\n  exit 3\n/);
+  assert.match(select, /if ! adb install -r -d "\$APK" >\/dev\/null 2>&1; then\n  echo "WEBVIEW_OVERRIDE status=refused reason=install-failed"\n  exit 3\n/);
+  // The APK is re-hashed right before the install.
+  const rehash = select.indexOf('&& ! echo "$WEBVIEW_APK_SHA256  $APK" | sha256sum --status -c - >/dev/null 2>&1; then\n  echo "WEBVIEW_OVERRIDE status=refused reason=apk-sha256-mismatch"\n  exit 5\n');
+  assert.ok(rehash > 0 && rehash < select.indexOf('adb install'));
+  // No raw adb or dumpsys text: every adb call that can print is silenced.
+  assert.match(select, /webview_dump\(\) \{ adb shell dumpsys webviewupdate 2>\/dev\/null \| tr -d '\\r'; \}/);
+  for (const line of select.split('\n').filter((l) => /^\s*(?:if !\s+)?adb (?:install|shell (?:rm|cmd))/.test(l))) {
+    assert.match(line, />\/dev\/null 2>&1/, line);
+  }
+  // A failed or empty read-back is a fixed reason, not a silent set -e exit.
+  assert.ok(select.includes('selected="$(current_provider)" || selected=""\nif [ -z "$selected" ]; then\n  echo "WEBVIEW_OVERRIDE status=refused reason=readback-unavailable"\n  exit 6\n'));
   assert.match(select, /reason=provider-not-selectable current=\$selected"\n  exit 4\n/);
   assert.doesNotMatch(select, /get-serialno|ro\.serialno/);
   // The set command's own status is not trusted: selection is read back.
-  assert.match(select, /set-webview-implementation "\$PKG" >\/dev\/null 2>&1 \|\| true\nselected="\$\(current_provider\)"\nif \[ "\$\{selected%%@\*\}" != "\$PKG" \]; then/);
+  assert.match(select, /set-webview-implementation "\$PKG" >\/dev\/null 2>&1 \|\| true\nselected="\$\(current_provider\)" \|\| selected=""\n[\s\S]{0,160}\nif \[ "\$\{selected%%@\*\}" != "\$PKG" \]; then/);
   // Nightly + manual; on pull requests only when this workflow or its WebView scripts change.
   assert.match(diagnostics, /\n  schedule:\n    - cron: '[0-9 *]+'\n  workflow_dispatch:\n/);
   assert.match(diagnostics, /\n  pull_request:\n    branches: \[main, develop\]\n    paths:\n      - '\.github\/workflows\/android-upstream-webview-diagnostics\.yml'\n      - 'e2e\/android\/select-webview-provider\.sh'\n      - 'e2e\/android\/fetch-pinned-webview\.sh'\n\n/);

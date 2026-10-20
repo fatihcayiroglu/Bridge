@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, verifyWebViewArm } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -34,6 +34,11 @@ const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android
 // real FAILs with a nonzero exit, and they are never counted in product totals.
 const SUITE = process.env.ANDROID_JOURNEY_SUITE === 'upstream-webview-controls'
   ? 'upstream-webview-controls' : 'product';
+// #209 controlled WebView comparison arm. Set ONLY by the non-gating
+// android-upstream-webview-diagnostics.yml, never by the required
+// mobile-android.yml: WV00/WV01 run only when it is set, so the product gate
+// never runs them.
+const WEBVIEW_ARM = process.env.WEBVIEW_ARM;
 const API = process.env.BASE_URL || 'http://127.0.0.1:3000';
 const PKG = process.env.ANDROID_PKG || 'com.bridge.app.debug';
 const ACTIVITY = `${PKG}/com.bridge.app.MainActivity`;
@@ -855,6 +860,21 @@ async function connectDevice() {
 }
 
 /**
+ * WV00 (#209 comparison jobs only): the provider the device reported at
+ * connect must be the one this job's arm names. The arm is asserted from the
+ * device, not taken from the job label. Records enums and an integer only.
+ */
+async function checkWebViewArm() {
+  await check('WV00', 'the WebView provider the device reports matches the comparison arm', async () => {
+    if (MODE !== 'android') throw new Skip('the WebView provider is read from an Android device');
+    const arm = verifyWebViewArm(WEBVIEW_ARM, facts.device?.webview);
+    facts.webviewArm = arm;
+    assert(arm.matches, 'WebView arm mismatch; safe evidence: ' + JSON.stringify(arm));
+    return arm;
+  });
+}
+
+/**
  * #209 upstream WebView reproduction controls (DIAGNOSTIC, NON-GATING suite).
  * Unmitigated debug Activities without Bridge code: they reproduce the
  * unfixed-WebView FontsProvider stable-ref leak (WebView 113 on this image;
@@ -1448,6 +1468,7 @@ async function main() {
     // No Bridge server, accounts or product journeys: the controls never
     // load Bridge content.
     await connectDevice();
+    if (WEBVIEW_ARM !== undefined) await checkWebViewArm();
     await runUpstreamWebViewControls();
     return;
   }
@@ -1474,6 +1495,7 @@ async function main() {
 
   if (netPath) { await netPath.start(); facts.networkPath = `adb reverse → proxy :${PROXY_PORT} → server :${netPath.targetPort}`; }
   await connectDevice();
+  if (WEBVIEW_ARM !== undefined) await checkWebViewArm();
 
   await check('A01', 'cold launch reaches the auth screen (no stuck splash)', async () => {
     a01InitialPid = null;
@@ -1590,6 +1612,28 @@ async function main() {
     return evidence;
   });
 
+  // #209 comparison, chromium-fixed arm only (never in the product gate): the
+  // pre-registered prediction is that the mitigation's version gate skips on
+  // a fixed WebView, so FD01 held WITHOUT a release pass. Asserted: a pass, a
+  // failure marker or a missing/unreadable marker at any stage is a FAIL.
+  if (WEBVIEW_ARM === 'chromium-fixed') {
+    await check('WV01', 'on the fixed WebView the mitigation skipped (webview-not-affected) at every stage', async () => {
+      if (MODE !== 'android') throw new Skip('the mitigation markers are read from an Android device');
+      const stages = (facts.fontProviderStages ?? []).map((record) => ({
+        stage: record?.stage ?? null,
+        available: record?.fontRefRelease?.available === true,
+        skippedReason: record?.fontRefRelease?.skippedReason ?? null,
+        failedReason: record?.fontRefRelease?.failedReason ?? null,
+        passes: record?.fontRefRelease?.passes ?? null,
+      }));
+      assert(stages.length > 0, 'no font-provider stage recorded; cannot verify that the mitigation skipped');
+      assert(stages.every((s) => s.available && s.skippedReason === 'webview-not-affected' &&
+        s.failedReason === null && s.passes === 0),
+        'mitigation did not report skipped webview-not-affected with no pass at every stage; safe evidence: ' +
+        JSON.stringify(stages));
+      return { stages };
+    });
+  }
 
   // #209: The existing FD01 gate remains STRICT and may be red even when a
   // transient reference disappears later. Measure its lifetime on the SAME
