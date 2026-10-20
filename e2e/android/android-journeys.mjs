@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseAnrEventTimeline, stepAtOffset, inspectAnrDialogWindows, parseDeviceEpoch, parseStallControlMarkers, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -108,9 +108,20 @@ let journeyStartedAt = null;
 let productExitLedger = emptyProductExitLedger();
 let productExitUnreadable = 0;
 let a01LaunchStartedAt = null;
+// #209 ANR03 (memory only): the device-clock origin of the ANR timeline and
+// the host instant it was read at, every check's host start time, the Bridge
+// process's de-duplicated event-log lines and ANR-dialog samples. Only
+// offsets, process ordinals and fixed classes ever leave.
+let anrOrigin = null;
+const stepStarts = [];
+const anrEventLines = new Set();
+let anrEventReads = 0;
+let anrEventReadFailures = 0;
+const anrDialogSamples = [];
 
 async function check(id, title, fn) {
   const started = Date.now();
+  stepStarts.push({ id, hostMs: started });
   log(`▶ ${id} ${title}`);
   try {
     const detail = await fn();
@@ -200,6 +211,7 @@ async function domSummary() {
 /** Measurement-only probe: records numbers, asserts nothing, and is NEVER counted as a PASS. */
 async function measure(id, title, fn) {
   const started = Date.now();
+  stepStarts.push({ id, hostMs: started });
   log(`▶ ${id} ${title} (measurement)`);
   try {
     const detail = await fn();
@@ -818,6 +830,56 @@ async function productExitCheckpoint(label) {
   }
 }
 
+/**
+ * Device wall clock paired with the host instant it was read at:
+ * { epochMs, hostMs, precision }. Milliseconds when toybox date supports %N,
+ * else whole seconds (offsets are then good to about 1 s). Null if unreadable.
+ */
+async function deviceClockOrigin() {
+  if (MODE !== 'android') return null;
+  const hostBefore = Date.now();
+  const precise = parseDeviceEpoch(await sh('date +%s.%N').catch(() => ''));
+  const hostAfter = Date.now();
+  if (precise?.precision === 'ms') return { ...precise, hostMs: Math.round((hostBefore + hostAfter) / 2) };
+  const hostMs = Date.now();
+  const coarse = parseDeviceEpoch(await sh('date +%s').catch(() => ''));
+  return coarse ? { ...coarse, hostMs } : null;
+}
+
+const ANR_EVENT_LOG = 'logcat -b events -d -v epoch -s am_anr:I am_kill:I am_proc_died:I am_proc_start:I';
+
+/**
+ * ANR03: keep this package's ANR/kill/death/start event-log lines, read at
+ * checkpoints so a rotating buffer cannot drop early ones before the end.
+ * Memory only; never throws, never changes a check's outcome.
+ */
+async function collectAnrEvents() {
+  if (MODE !== 'android') return false;
+  try {
+    for (const line of (await androidFailureShell(ANR_EVENT_LOG)).split(/\r?\n/)) {
+      if (line.includes(PKG)) anrEventLines.add(line);
+    }
+    anrEventReads++;
+    return true;
+  } catch {
+    anrEventReadFailures++;
+    return false;
+  }
+}
+
+/** ANR03: is an ANR dialog for the Bridge process on screen? Booleans only. */
+async function anrDialogSample(label) {
+  if (MODE !== 'android') return null;
+  let sample;
+  try {
+    sample = { label, ...inspectAnrDialogWindows(await androidFailureShell('dumpsys window windows'), PKG) };
+  } catch {
+    sample = { label, available: false, anrDialogs: 0, focusedOnAnrDialog: null };
+  }
+  anrDialogSamples.push(sample);
+  return sample;
+}
+
 /** Connect the Android device (or the dryrun desktop page) and record safe device facts. */
 async function connectDevice() {
   if (MODE === 'android') {
@@ -845,6 +907,7 @@ async function connectDevice() {
     const deviceSeconds = Number(await sh('date +%s'));
     journeyStartedEpochMs = Number.isSafeInteger(deviceSeconds) && deviceSeconds > 0
       ? deviceSeconds * 1000 : null;
+    anrOrigin = await deviceClockOrigin();
     log('device', JSON.stringify(facts.device));
   } else {
     const browser = await chromium.launch();
@@ -1440,6 +1503,75 @@ async function runUpstreamWebViewControls() {
       await sh('am force-stop ' + PKG).catch(() => {});
     }
   });
+
+  // AN00 (#209): ANR mechanics on THIS image, deterministically. A debug
+  // Activity blocks its own main thread right after its first traversal, as a
+  // cold start's first frame would; a key event sent during the stall cannot
+  // be consumed either. Recorded: whether and when Android declares an ANR,
+  // whether its dialog is still up after the app recovered, and what the same
+  // HOME press L01 uses then does to the process (AOSP: the dialog's
+  // ACTION_CLOSE_SYSTEM_DIALOGS handler kills the app, "user request after
+  // error", exit reason 6). Tests the L01 reading of #209's reason-6 exits.
+  // AN00 lets the app recover while the ANR is being reported; AN00-L keeps it
+  // blocked well past the dialog. Measurement only.
+  const measureAn00 = (id, stallMs) => measure(id, `main thread blocked ${stallMs / 1000} s after the first frame: ANR declaration, dialog lifetime, effect of HOME`, async () => {
+    if (MODE !== 'android') throw new Skip('native Activity required');
+    const activity = 'com.bridge.app.MainThreadStallControlActivity';
+    await sh('am force-stop ' + PKG);
+    const origin = await deviceClockOrigin();
+    assert(origin, 'device clock unavailable; cannot place the ANR on a timeline');
+    const controlStartedAt = await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null);
+    // No -W: the stalled main thread may not report the launch complete.
+    const started = await sh(`am start -n ${PKG}/${activity} --el stallMs ${stallMs}`);
+    assert(!/Error/.test(started), 'stall control Activity failed to launch');
+    let controlPid = null;
+    let markers = parseStallControlMarkers('', null);
+    const readMarkers = async () => parseStallControlMarkers(await androidFailureShell(
+      'logcat -d -v brief --pid ' + controlPid + " -s BridgeStallControl:I '*:S'"), controlPid);
+    for (const deadline = Date.now() + 15_000; Date.now() < deadline && !markers.began;) {
+      await sleep(250);
+      controlPid = await pid().catch(() => null);
+      if (/^[0-9]{1,8}$/.test(String(controlPid))) markers = await readMarkers().catch(() => markers);
+    }
+    assert(markers.began, 'stall control process never began its stall');
+    const stallBeganHostMs = Date.now();
+    // Not awaited here: injection into a blocked window may wait for it.
+    const injection = sh('input keyevent KEYCODE_DPAD_DOWN').catch(() => null);
+    await sleep(stallMs + 4_000);
+    await Promise.race([injection, sleep(5_000)]);
+    markers = await readMarkers().catch(() => markers);
+    const aliveBeforeHome = (await pid().catch(() => null)) === controlPid;
+    const dialogBeforeHome = inspectAnrDialogWindows(
+      await androidFailureShell('dumpsys window windows').catch(() => ''), PKG);
+    await platform.home();
+    await sleep(3_000);
+    const aliveAfterHome = (await pid().catch(() => null)) === controlPid;
+    const timeline = parseAnrEventTimeline(await androidFailureShell(ANR_EVENT_LOG).catch(() => ''), PKG, origin.epochMs);
+    const stallBeganAtMs = stallBeganHostMs - origin.hostMs;
+    // Only this control's process: the last Bridge process started in the window.
+    const lastStart = [...timeline.events].reverse().find(e => e.type === 'am_proc_start');
+    const anr = timeline.anrs.find(a => a.process === lastStart?.process) ?? null;
+    let exit = { windowValid: false, matchingExit: false, reasonCode: null, subreasonCode: null };
+    if (!aliveAfterHome) {
+      const controlEndedAt = await sh('date +%Y-%m-%dT%H:%M:%S').catch(() => null);
+      try {
+        const exits = await androidFailureExits();
+        if (exits.available) {
+          exit = summarizeFreshControlProcessExit(exits.exits, controlPid, PKG, controlStartedAt, controlEndedAt);
+        }
+      } catch { /* unknown stays unknown */ }
+    }
+    await sh('am force-stop ' + PKG).catch(() => null);
+    return { stallMs, originPrecision: origin.precision, stallEnded: markers.ended,
+      timelineAvailable: timeline.available,
+      anrDeclared: anr !== null, anrReasonClass: anr?.reasonClass ?? null,
+      anrAfterStallBeganMs: anr ? anr.atMs - stallBeganAtMs : null,
+      aliveBeforeHome, dialogBeforeHome, aliveAfterHome,
+      killAfterAnrMs: anr?.killAfterMs ?? null, killReasonClass: anr?.killReasonClass ?? null,
+      exitReasonCode: exit.reasonCode, exitSubreasonCode: exit.subreasonCode };
+  });
+  await measureAn00('AN00', 7_000);
+  await measureAn00('AN00-L', 20_000);
 }
 
 async function main() {
@@ -1560,6 +1692,8 @@ async function main() {
 
   // PD01 evidence: read the exit history while it still holds every startup exit.
   await productExitCheckpoint('after-startup');
+  await collectAnrEvents();
+  await anrDialogSample('after-startup');
 
   await check('A02', 'login through the WebView reaches the app shell', async () => {
     const t0 = Date.now();
@@ -1673,6 +1807,9 @@ async function main() {
 
   await check('L01', 'background 20 s → original channel and missed message survive hot resume', async () => {
     await androidPressureEvidence('before-L01');
+    // ANR03: an ANR dialog still up here is closed by the HOME press below,
+    // and AOSP then kills the app with REASON_ANR ("user request after error").
+    await anrDialogSample('before-L01-home');
     const pidBefore = await pid();
     await platform.home();
     await sleep(3_000);
@@ -1746,6 +1883,7 @@ async function main() {
   });
 
   await productExitCheckpoint('after-lifecycle');
+  await collectAnrEvents();
 
   await check('N01', 'offline: banner shows, composed message is held, delivered exactly once on reconnect', async () => {
     await openServer(serverId);
@@ -2259,6 +2397,38 @@ async function main() {
   // Coverage limits: non-fatal ANRs leave no exit record, and Android keeps
   // only 16 exit records per package (config_app_exit_info_history_list_size),
   // so early-journey exits can be evicted by later force-stops.
+  // ANR03 (#209): the system event log's own timeline for the Bridge process:
+  // when each ANR was declared, during which check, and what ended that
+  // process (kill reason, delay). ApplicationExitInfo alone records only the
+  // exit, so a reason-6 exit at L01 cannot tell an ANR during L01 from an
+  // earlier ANR whose dialog the L01 HOME press closed. Measurement only.
+  await measure('ANR03', 'system ANR timeline: when each Bridge ANR was declared, during which check, and what ended that process', async () => {
+    if (MODE !== 'android') throw new Skip('Android event log requires a real Android runtime');
+    const finalRead = await collectAnrEvents();
+    await anrDialogSample('end');
+    const base = { originPrecision: anrOrigin?.precision ?? null, finalRead,
+      eventReads: anrEventReads, eventReadFailures: anrEventReadFailures,
+      dialogSamples: anrDialogSamples };
+    if (!anrOrigin) return { ...base, available: false, coverage: 'unknown', reason: 'device-clock-unavailable' };
+    // Bound the observation to this journey's current instant. An older ANR
+    // still in logcat must not become a new ANR03 occurrence.
+    const endOffsetMs = Math.max(0, Date.now() - anrOrigin.hostMs);
+    const timeline = parseAnrEventTimeline([...anrEventLines].join('\n'), PKG, anrOrigin.epochMs, 64, endOffsetMs);
+    if (!timeline.available) return { ...base, available: false, coverage: 'unknown',
+      reason: 'no-bridge-events-in-window', unparsedLines: timeline.unparsedLines,
+      preOriginEvents: timeline.preOriginEvents ?? 0, postWindowEvents: timeline.postWindowEvents ?? 0 };
+    const coverage = anrEventReadFailures || !finalRead || timeline.coverage === 'partial'
+      ? 'partial' : 'observed-only';
+    const steps = stepStarts.map(step => ({ id: step.id, atMs: step.hostMs - anrOrigin.hostMs }));
+    const anrs = timeline.anrs.map(anr => ({ ...anr, step: stepAtOffset(steps, anr.atMs),
+      killStep: anr.killAfterMs === null ? null : stepAtOffset(steps, anr.atMs + anr.killAfterMs) }));
+    return { ...base, available: true, coverage, events: timeline.events.length,
+      processes: new Set(timeline.events.map(e => e.process)).size,
+      unparsedLines: timeline.unparsedLines, truncated: timeline.truncated,
+      preOriginEvents: timeline.preOriginEvents, postWindowEvents: timeline.postWindowEvents,
+      anrCount: anrs.length, anrs };
+  });
+
   await measure('ANR02', 'app-local main-thread classification of OS-recorded fatal ANRs', async () => {
     if (MODE !== 'android') throw new Skip('Android ApplicationExitInfo required');
     assert(journeyStartedEpochMs !== null, 'ANR02 device journey start time unavailable');
