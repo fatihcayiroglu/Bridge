@@ -1535,8 +1535,8 @@ test('product and upstream-control suites are separated; PD01 is a strict produc
   const anr02 = main.indexOf("await measure('ANR02'");
   assert.ok(anr01 > 0 && pd01 > anr01 && anr02 > pd01);
   const pd01Body = main.slice(pd01, anr02);
-  for (const literal of ["assert(finalReadOk,", 'assert(summary.windowValid,',
-    'assert(!summary.potentialGap,', 'assert(summary.dependencyDeaths === 0,',
+  for (const literal of ["assert(finalReadOk,", 'assert(summary.unreadableCheckpoints === 0,',
+    'assert(summary.windowValid,', 'assert(!summary.potentialGap,', 'assert(summary.dependencyDeaths === 0,',
     'assert(summary.unparsedRows === 0 && summary.unknownReasons === 0,',
     'assert(summary.exitsInJourney >= 1,']) {
     assert.ok(pd01Body.includes(literal), 'PD01 missing ' + literal);
