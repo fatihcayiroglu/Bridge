@@ -9,6 +9,7 @@ on:
     paths:
       - '.github/workflows/android-api35-37-compat.yml'
       - 'e2e/android/compat-api35-37-smoke.sh'
+      - 'e2e/android/compat-api35-37-smoke.test.sh'
   workflow_dispatch:
 
 concurrency:
@@ -29,6 +30,10 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
+      - name: Validate compatibility smoke fail-closed contracts
+        run: |
+          bash -n e2e/android/compat-api35-37-smoke.sh e2e/android/compat-api35-37-smoke.test.sh
+          bash e2e/android/compat-api35-37-smoke.test.sh
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
