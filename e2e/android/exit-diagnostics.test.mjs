@@ -1604,16 +1604,22 @@ test('#209 comparison arm is verified against the observed provider, enums and a
   const google113 = { available: true, providerKind: 'google-webview', version: '113.0.5672.136', majorVersion: 113 };
   const aosp158 = { available: true, providerKind: 'aosp-webview', version: '158.0.8114.0', majorVersion: 158 };
   assert.deepEqual(verifyWebViewArm('system', google113), { arm: 'system',
-    expectedProviderKind: 'google-webview', expectedMinMajorVersion: 1,
-    observedProviderKind: 'google-webview', observedMajorVersion: 113, matches: true });
+    expectedProviderKind: 'google-webview', expectedVersion: '113.0.5672.136',
+    observedProviderKind: 'google-webview', observedMajorVersion: 113, exactVersionMatch: true, matches: true });
   assert.deepEqual(verifyWebViewArm('chromium-fixed', aosp158), { arm: 'chromium-fixed',
-    expectedProviderKind: 'aosp-webview', expectedMinMajorVersion: 119,
-    observedProviderKind: 'aosp-webview', observedMajorVersion: 158, matches: true });
+    expectedProviderKind: 'aosp-webview', expectedVersion: '158.0.8114.0',
+    observedProviderKind: 'aosp-webview', observedMajorVersion: 158, exactVersionMatch: true, matches: true });
+  // Version identity, not a band: a drifted image or an unpinned build fails closed.
+  const google124 = { available: true, providerKind: 'google-webview', version: '124.0.6367.219', majorVersion: 124 };
+  assert.equal(verifyWebViewArm('system', google124).matches, false);
+  assert.equal(verifyWebViewArm('system', google124).exactVersionMatch, false);
+  assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, version: '119.0.0.0', majorVersion: 119 }).matches, false);
+  assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, version: '158.0.8114.1' }).matches, false);
+  assert.equal(verifyWebViewArm('chromium-fixed', { ...google113, providerKind: 'aosp-webview' }).matches, false);
   // A swapped, reverted, too-old or unreadable provider never matches.
   assert.equal(verifyWebViewArm('system', aosp158).matches, false);
   assert.equal(verifyWebViewArm('chromium-fixed', google113).matches, false);
-  assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, majorVersion: 118 }).matches, false);
-  assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, majorVersion: 119 }).matches, true);
+  assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, majorVersion: 118 }).observedMajorVersion, 118);
   assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, available: false }).matches, false);
   assert.equal(verifyWebViewArm('chromium-fixed', summarizeAndroidWebViewProvider('')).matches, false);
   assert.equal(verifyWebViewArm('chromium-fixed', undefined).matches, false);
@@ -1630,8 +1636,13 @@ test('#209 comparison arm is verified against the observed provider, enums and a
   assert.equal(forged.observedMajorVersion, null);
   assert.equal(forged.matches, false);
   assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, majorVersion: 10000 }).observedMajorVersion, null);
-  assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, majorVersion: 158.5 }).matches, false);
-  assert.doesNotMatch(JSON.stringify(forged), /secret|example|158\.0/);
+  assert.equal(verifyWebViewArm('chromium-fixed', { ...aosp158, majorVersion: 158.5 }).observedMajorVersion, null);
+  // Only the arm's own expected-version constant is echoed, never the observed string.
+  assert.doesNotMatch(JSON.stringify(forged), /secret|example/);
+  assert.doesNotMatch(JSON.stringify(verifyWebViewArm('system', google124)), /124\.0/);
+  // The pinned version agrees with the workflow that pins the APK.
+  const diagnostics = readFileSync(new URL('../../.github/workflows/android-upstream-webview-diagnostics.yml', import.meta.url), 'utf8');
+  assert.match(diagnostics, /versionName 158\.0\.8114\.0/);
 });
 
 test('#209 comparison job summary: product arm is labelled non-gating and states the observed provider', async () => {
@@ -1647,7 +1658,7 @@ test('#209 comparison job summary: product arm is labelled non-gating and states
   // The observed provider disagrees with the arm: an explicit MISMATCH line.
   const reverted = formatSuiteSummary({ suite: 'product', results: [], facts: { device: { webview:
     { available: true, providerKind: 'google-webview', version: '113.0.5672.136', majorVersion: 113 } } } }, 'chromium-fixed');
-  assert.match(reverted, /\*\*WebView arm MISMATCH: expected aosp-webview, major version >= 119, observed google-webview, major version 113\./);
+  assert.match(reverted, /\*\*WebView arm MISMATCH: expected aosp-webview 158\.0\.8114\.0, observed google-webview, major version 113 \(exact version match: no\)\./);
   const unread = formatSuiteSummary({ suite: 'upstream-webview-controls', results: [] }, 'system');
   assert.match(unread, /Observed WebView provider \(device facts\): unknown, major version unknown\n/);
   assert.match(unread, /WebView arm MISMATCH: expected google-webview/);
@@ -1659,7 +1670,7 @@ test('#209 comparison job summary: product arm is labelled non-gating and states
   // No run data: forged provider fields never reach the summary.
   const forged = formatSuiteSummary({ suite: 'product', results: [], facts: { device: { webview:
     { available: true, providerKind: 'com.secret|vendor', version: 'owner@example.com', majorVersion: '4242' } } } }, 'chromium-fixed');
-  assert.match(forged, /observed unknown, major version unknown\./);
+  assert.match(forged, /observed unknown, major version unknown \(exact version match: no\)\./);
   assert.doesNotMatch(forged, /secret|example|4242/);
 });
 

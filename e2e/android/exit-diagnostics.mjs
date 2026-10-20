@@ -56,21 +56,25 @@ export function summarizeAndroidWebViewAlternatives(raw) {
     distinctVersionAlternateAvailable: other.some(x => x.version !== current[2]) };
 }
 
-// #209 controlled WebView comparison: the provider each arm must observe.
-// 'system' is the image's own Google WebView (no switch); 'chromium-fixed' is
-// the pinned Chromium SystemWebView, past the upstream fix (117.0.5938.29 /
-// 118.0.5971.0), so at least 119.
+// #209 controlled WebView comparison: the exact provider each arm must
+// observe. 'system' is the API 34 image's own Google WebView 113 (unfixed;
+// no switch); 'chromium-fixed' is the pinned Chromium SystemWebView (the
+// WEBVIEW_APK_SHA256 file in android-upstream-webview-diagnostics.yml, past
+// the upstream fix). A drifted image or a different build fails closed until
+// the experiment is updated.
 const WEBVIEW_ARM_EXPECTATIONS = {
-  system: { providerKind: 'google-webview', minMajorVersion: 1 },
-  'chromium-fixed': { providerKind: 'aosp-webview', minMajorVersion: 119 },
+  system: { providerKind: 'google-webview', version: '113.0.5672.136' },
+  'chromium-fixed': { providerKind: 'aosp-webview', version: '158.0.8114.0' },
 };
 const WEBVIEW_PROVIDER_KINDS = new Set(['google-webview', 'aosp-webview',
   'chrome-webview', 'other-webview', 'unknown']);
 
 /**
  * Compare a comparison arm with the provider summarizeAndroidWebViewProvider
- * reported. Returns enums and an integer only. An unknown arm, an unreadable
- * provider or an out-of-range version never matches.
+ * reported: the kind and the exact version must both match. Returns enums,
+ * an integer, a boolean and the arm's own expected-version constant; the
+ * observed version string is compared, never echoed. An unknown arm, an
+ * unreadable provider or an out-of-range version never matches.
  */
 export function verifyWebViewArm(arm, webview) {
   const expected = typeof arm === 'string' && Object.hasOwn(WEBVIEW_ARM_EXPECTATIONS, arm)
@@ -81,13 +85,13 @@ export function verifyWebViewArm(arm, webview) {
   const major = available ? webview.majorVersion : null;
   const observedMajorVersion = Number.isSafeInteger(major) && major >= 1 && major <= 9999
     ? major : null;
+  const exactVersionMatch = Boolean(expected) && available && webview.version === expected.version;
   return {
     arm: expected ? arm : 'unknown',
     expectedProviderKind: expected?.providerKind ?? null,
-    expectedMinMajorVersion: expected?.minMajorVersion ?? null,
-    observedProviderKind, observedMajorVersion,
-    matches: Boolean(expected) && observedProviderKind === expected.providerKind &&
-      observedMajorVersion !== null && observedMajorVersion >= expected.minMajorVersion,
+    expectedVersion: expected?.version ?? null,
+    observedProviderKind, observedMajorVersion, exactVersionMatch,
+    matches: Boolean(expected) && observedProviderKind === expected.providerKind && exactVersionMatch,
   };
 }
 

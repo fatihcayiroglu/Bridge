@@ -47,10 +47,11 @@ env:
   NODE_VERSION: '24.20.0'
   # A build from the Chromium project's continuous (snapshot) builder, not a
   # release channel (chromium-browser-snapshots bucket), AndroidDesktop_x64
-  # r1722592: SystemWebView.apk, package com.android.webview, versionName
-  # 158.0.8114.0. fetch-pinned-webview.sh prints its min/target SDK and ABIs.
-  # Both hashes are pinned: a different file fails the job before anything is
-  # installed.
+  # r1722592: SystemWebView.apk, package com.android.webview,
+  # versionName 158.0.8114.0 (WV00 requires exactly this version on the
+  # chromium-fixed arm and the image's 113.0.5672.136 on the system arm).
+  # fetch-pinned-webview.sh prints its min/target SDK and ABIs. Both hashes
+  # are pinned: a different file fails the job before anything is installed.
   WEBVIEW_SNAPSHOT_URL: https://commondatastorage.googleapis.com/chromium-browser-snapshots/AndroidDesktop_x64/1722592/chrome-android-desktop.zip
   WEBVIEW_SNAPSHOT_SHA256: 97bb6b0d0b8758e9fcdaa15a8f2a894a6e554d78279b3cfaa795d625b1c9228a
   WEBVIEW_APK_SHA256: 28d6eaf52871376eb18420a663d201ca88f0a6e3fb74be04832a091ffe8e6369

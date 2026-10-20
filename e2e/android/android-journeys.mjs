@@ -861,8 +861,9 @@ async function connectDevice() {
 
 /**
  * WV00 (#209 comparison jobs only): the provider the device reported at
- * connect must be the one this job's arm names. The arm is asserted from the
- * device, not taken from the job label. Records enums and an integer only.
+ * connect must be the exact kind and version this job's arm names. The arm is
+ * asserted from the device, not taken from the job label. Records enums, an
+ * integer, booleans and the arm's own expected-version constant only.
  */
 async function checkWebViewArm() {
   await check('WV00', 'the WebView provider the device reports matches the comparison arm', async () => {

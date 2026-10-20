@@ -59,8 +59,9 @@ export function formatSuiteSummary(evidence, webviewArm = null) {
     lines.push(`Observed WebView provider (device facts): ${observed}`, '');
     if (!arm.matches) {
       const expected = arm.expectedProviderKind === null ? 'a known arm'
-        : `${arm.expectedProviderKind}, major version >= ${arm.expectedMinMajorVersion}`;
-      lines.push(`**WebView arm MISMATCH: expected ${expected}, observed ${observed}. ` +
+        : `${arm.expectedProviderKind} ${arm.expectedVersion}`;
+      lines.push(`**WebView arm MISMATCH: expected ${expected}, observed ${observed} ` +
+        `(exact version match: ${arm.exactVersionMatch ? 'yes' : 'no'}). ` +
         'These results do not describe the named arm.**', '');
     }
   }
