@@ -115,6 +115,8 @@ let a01LaunchStartedAt = null;
 let anrOrigin = null;
 const stepStarts = [];
 const anrEventLines = new Set();
+let anrEventReads = 0;
+let anrEventReadFailures = 0;
 const anrDialogSamples = [];
 
 async function check(id, title, fn) {
@@ -857,8 +859,10 @@ async function collectAnrEvents() {
     for (const line of (await androidFailureShell(ANR_EVENT_LOG)).split(/\r?\n/)) {
       if (line.includes(PKG)) anrEventLines.add(line);
     }
+    anrEventReads++;
     return true;
   } catch {
+    anrEventReadFailures++;
     return false;
   }
 }
@@ -2402,16 +2406,27 @@ async function main() {
     if (MODE !== 'android') throw new Skip('Android event log requires a real Android runtime');
     const finalRead = await collectAnrEvents();
     await anrDialogSample('end');
-    const base = { originPrecision: anrOrigin?.precision ?? null, finalRead, dialogSamples: anrDialogSamples };
-    if (!anrOrigin) return { ...base, available: false, reason: 'device-clock-unavailable' };
-    const timeline = parseAnrEventTimeline([...anrEventLines].join('\n'), PKG, anrOrigin.epochMs);
-    if (!timeline.available) return { ...base, available: false, reason: 'no-event-log-lines', unparsedLines: timeline.unparsedLines };
+    const base = { originPrecision: anrOrigin?.precision ?? null, finalRead,
+      eventReads: anrEventReads, eventReadFailures: anrEventReadFailures,
+      dialogSamples: anrDialogSamples };
+    if (!anrOrigin) return { ...base, available: false, coverage: 'unknown', reason: 'device-clock-unavailable' };
+    // Bound the observation to this journey's current instant. An older ANR
+    // still in logcat must not become a new ANR03 occurrence.
+    const endOffsetMs = Math.max(0, Date.now() - anrOrigin.hostMs);
+    const timeline = parseAnrEventTimeline([...anrEventLines].join('\n'), PKG, anrOrigin.epochMs, 64, endOffsetMs);
+    if (!timeline.available) return { ...base, available: false, coverage: 'unknown',
+      reason: 'no-bridge-events-in-window', unparsedLines: timeline.unparsedLines,
+      preOriginEvents: timeline.preOriginEvents ?? 0, postWindowEvents: timeline.postWindowEvents ?? 0 };
+    const coverage = anrEventReadFailures || !finalRead || timeline.coverage === 'partial'
+      ? 'partial' : 'observed-only';
     const steps = stepStarts.map(step => ({ id: step.id, atMs: step.hostMs - anrOrigin.hostMs }));
     const anrs = timeline.anrs.map(anr => ({ ...anr, step: stepAtOffset(steps, anr.atMs),
       killStep: anr.killAfterMs === null ? null : stepAtOffset(steps, anr.atMs + anr.killAfterMs) }));
-    return { ...base, available: true, events: timeline.events.length,
+    return { ...base, available: true, coverage, events: timeline.events.length,
       processes: new Set(timeline.events.map(e => e.process)).size,
-      unparsedLines: timeline.unparsedLines, anrCount: anrs.length, anrs };
+      unparsedLines: timeline.unparsedLines, truncated: timeline.truncated,
+      preOriginEvents: timeline.preOriginEvents, postWindowEvents: timeline.postWindowEvents,
+      anrCount: anrs.length, anrs };
   });
 
   await measure('ANR02', 'app-local main-thread classification of OS-recorded fatal ANRs', async () => {
