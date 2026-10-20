@@ -68,6 +68,8 @@ jobs:
         run: npx jest --config jest.mobile.config.js --runInBand
       - name: Android failure exit parser unit contracts (#209)
         run: node --test e2e/android/exit-diagnostics.test.mjs
+      - name: Android SDK preflight fail-closed regression tests (#209)
+        run: bash e2e/android/verify-emulator-image.test.sh
       - name: Packaged web root (www/) for the emulator server address
         env:
           # The emulator reaches the host server through `adb reverse tcp:3000 tcp:3000`.
