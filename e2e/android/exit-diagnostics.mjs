@@ -534,42 +534,75 @@ function killReasonClass(text) {
  * relative to the kill that ended that process, and the kill's own reason (an
  * ANR dialog closed by HOME is "user request after error").
  */
-export function parseAnrEventTimeline(raw, expectedProcess, originEpochMs, limit = 64) {
+export function parseAnrEventTimeline(raw, expectedProcess, originEpochMs, limit = 64, endOffsetMs = Infinity) {
   const none = { available: false, events: [], anrs: [], unparsedLines: 0 };
   if (!/^[A-Za-z0-9_.:]{1,120}$/.test(String(expectedProcess))) return none;
   if (!Number.isFinite(originEpochMs)) return none;
+  if (endOffsetMs !== Infinity && (!Number.isFinite(endOffsetMs) || endOffsetMs < 0)) return none;
   const max = Number.isInteger(limit) ? Math.max(0, Math.min(128, limit)) : 64;
-  const ordinals = new Map();
-  const ordinal = pidText => {
-    if (!ordinals.has(pidText)) ordinals.set(pidText, ordinals.size + 1);
-    return ordinals.get(pidText);
-  };
-  const events = [];
+  const rows = [];
   let unparsedLines = 0;
-  let seen = false;
+  let preOriginEvents = 0;
+  let postWindowEvents = 0;
   for (const line of String(raw ?? '').split(/\r?\n/)) {
     const m = /^\s*([0-9]{9,11}\.[0-9]{3,9})\s+(?:[0-9]{1,6}\s+)?[0-9]{1,8}\s+[0-9]{1,8}\s+[A-Z]\s+(am_anr|am_kill|am_proc_died|am_proc_start)\s*:\s*\[(.*)\]\s*$/.exec(line);
     if (!m) {
       if (/\b(?:am_anr|am_kill|am_proc_died|am_proc_start)\b/.test(line)) unparsedLines++;
       continue;
     }
-    seen = true;
     const fields = m[3].split(',');
-    // am_proc_start: [user, pid, uid, process, type, component]; the others:
-    // [user, pid, process, ...].
     const processName = m[2] === 'am_proc_start' ? fields[3] : fields[2];
-    const pidText = fields[1];
     if (processName !== expectedProcess) continue;
+    const pidText = fields[1];
     if (!/^[0-9]{1,8}$/.test(String(pidText))) { unparsedLines++; continue; }
-    if (events.length >= max) break;
     const atMs = Math.round(Number(m[1]) * 1000 - originEpochMs);
-    const event = { type: m[2], atMs, process: ordinal(pidText) };
-    if (m[2] === 'am_anr') event.reasonClass = anrReasonClass(fields.slice(4).join(','));
-    if (m[2] === 'am_kill') event.reasonClass = killReasonClass(fields.slice(4).join(','));
-    events.push(event);
+    if (!Number.isFinite(atMs)) { unparsedLines++; continue; }
+    // logcat -d can include a previous run (including an earlier ANR).
+    // Such events are NOT evidence about this journey.
+    if (atMs < 0) { preOriginEvents++; continue; }
+    if (atMs > endOffsetMs) { postWindowEvents++; continue; }
+    const type = m[2];
+    const row = { type, atMs, pidText, sequence: rows.length };
+    if (type === 'am_anr') row.reasonClass = anrReasonClass(fields.slice(4).join(','));
+    if (type === 'am_kill') row.reasonClass = killReasonClass(fields.slice(4).join(','));
+    rows.push(row);
   }
-  if (!seen) return { ...none, unparsedLines };
-  // Each ANR with what ended its process next: kill (with reason) and death.
+  if (rows.length === 0) {
+    return { ...none, unparsedLines,
+      ...(preOriginEvents ? { preOriginEvents } : {}),
+      ...(postWindowEvents ? { postWindowEvents } : {}) };
+  }
+
+  // The Set of logcat snapshots may contain rows read at different times.
+  // Sort by the event's own clock before attributing a process incarnation.
+  rows.sort((a, b) => a.atMs - b.atMs || a.sequence - b.sequence);
+  const truncated = rows.length > max;
+  const activePids = new Map();
+  let nextProcess = 0;
+  let missingStarts = false;
+  const events = [];
+  for (const row of rows.slice(0, max)) {
+    let process;
+    if (row.type === 'am_proc_start') {
+      // The same numeric PID can be reused after an earlier process dies.
+      process = ++nextProcess;
+      activePids.set(row.pidText, process);
+    } else {
+      process = activePids.get(row.pidText);
+      if (process === undefined) {
+        // A missing start is an evidence gap, not proof of a complete lifetime.
+        missingStarts = true;
+        process = ++nextProcess;
+        activePids.set(row.pidText, process);
+      }
+    }
+    const event = { type: row.type, atMs: row.atMs, process };
+    if (row.reasonClass !== undefined) event.reasonClass = row.reasonClass;
+    events.push(event);
+    if (row.type === 'am_proc_died') activePids.delete(row.pidText);
+  }
+  // Never pair an ANR from an older process incarnation with a later kill
+  // on a reused PID. The published result contains ordinals, never raw PIDs.
   const anrs = events.filter(e => e.type === 'am_anr').map(anr => {
     const after = events.filter(e => e.process === anr.process && e.atMs >= anr.atMs);
     const kill = after.find(e => e.type === 'am_kill') ?? null;
@@ -578,9 +611,11 @@ export function parseAnrEventTimeline(raw, expectedProcess, originEpochMs, limit
       killAfterMs: kill ? kill.atMs - anr.atMs : null, killReasonClass: kill?.reasonClass ?? null,
       diedAfterMs: died ? died.atMs - anr.atMs : null };
   });
-  return { available: true, events, anrs, unparsedLines };
+  return { available: events.length > 0, events, anrs, unparsedLines,
+    preOriginEvents, postWindowEvents, truncated,
+    // 'observed-only' is not a claim that Android's ring buffer was complete.
+    coverage: truncated || missingStarts ? 'partial' : 'observed-only' };
 }
-
 /**
  * The check that was running at device-clock offset `atMs`: the last step
  * that started at or before it. `steps` are { id, atMs } in start order.
