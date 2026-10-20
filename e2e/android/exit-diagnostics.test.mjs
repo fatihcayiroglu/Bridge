@@ -1383,6 +1383,18 @@ test('PD01 ledger flags a possibly evicted journey exit and an unusable window',
   assert.equal(full(10).length, 16);
 });
 
+test('PD01 exit ledger preserves malformed reasons as unknown, not dependency-free proof', () => {
+  const ledger = mergeProductExitCheckpoint(emptyProductExitLedger(), [{
+    pid: 7001, at: '2026-10-19 12:00:03.000', reason: null,
+  }], '2026-10-19T12:00:00');
+  const summary = summarizeProductExitLedger(ledger);
+  assert.equal(summary.exitsInJourney, 1);
+  assert.equal(summary.reasonCounts.unknown, 1,
+    'unparseable exit information must not silently become a non-dependency exit');
+  assert.equal(summary.dependencyDeaths, 0,
+    'zero explicitly classified dependency deaths alone is insufficient to pass PD01');
+});
+
 test('product and upstream-control suites are separated; PD01 is a strict product gate', () => {
   const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   assert.match(journeys, /const SUITE = process\.env\.ANDROID_JOURNEY_SUITE === 'upstream-webview-controls'\n  \? 'upstream-webview-controls' : 'product';/);
@@ -1408,8 +1420,10 @@ test('product and upstream-control suites are separated; PD01 is a strict produc
   const anr02 = main.indexOf("await measure('ANR02'");
   assert.ok(anr01 > 0 && pd01 > anr01 && anr02 > pd01);
   const pd01Body = main.slice(pd01, anr02);
-  for (const literal of ["assert(finalReadOk,", 'assert(summary.windowValid,',
-    'assert(!summary.potentialGap,', 'assert(summary.dependencyDeaths === 0,']) {
+  for (const literal of ["assert(finalReadOk,", 'assert(summary.unreadableCheckpoints === 0,',
+    'assert(summary.windowValid,', 'assert(!summary.potentialGap,',
+    'assert((summary.reasonCounts.unknown ?? 0) === 0,',
+    'assert(summary.dependencyDeaths === 0,']) {
     assert.ok(pd01Body.includes(literal), 'PD01 missing ' + literal);
   }
   assert.ok(!journeys.includes("await measure('PD01'"));
