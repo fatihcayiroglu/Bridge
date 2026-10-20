@@ -1821,6 +1821,66 @@ test('ANR event timeline fails closed on bad input', () => {
   assert.deepEqual(kinds, ['background-anr', 'anr', 'remove-task', 'provider-dependency', 'crash', 'other']);
 });
 
+test('ANR03 excludes pre-journey and post-window events, including stale ANRs', () => {
+  const raw = [
+    EV(sec(-4000), 'am_proc_start', '0,123,10123,com.bridge.app.debug,activity,X'),
+    EV(sec(-2000), 'am_anr', '0,123,com.bridge.app.debug,0,Input dispatching timed out for FocusEvent'),
+    EV(sec(1000), 'am_proc_start', '0,456,10123,com.bridge.app.debug,activity,X'),
+    EV(sec(3000), 'am_kill', '0,456,com.bridge.app.debug,0,force-stop'),
+    EV(sec(15000), 'am_anr', '0,456,com.bridge.app.debug,0,Input dispatching timed out for FocusEvent'),
+  ].join('\n');
+  const result = parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs, 64, 5000);
+  assert.equal(result.available, true);
+  assert.equal(result.preOriginEvents, 2);
+  assert.equal(result.postWindowEvents, 1);
+  assert.equal(result.anrs.length, 0);
+  assert.equal(result.events.length, 2);
+  assert.equal(result.events[0].process, 1);
+  assert.doesNotMatch(JSON.stringify(result), /\b123\b|\b456\b/);
+  const onlyOld = parseAnrEventTimeline(raw.split('\n').slice(0, 2).join('\n'), 'com.bridge.app.debug', originEpochMs);
+  assert.equal(onlyOld.available, false, 'old ANRs cannot make this journey look measured');
+  assert.equal(onlyOld.preOriginEvents, 2);
+});
+
+test('ANR03 rejects foreign-only log snapshots and never calls them zero Bridge ANRs', () => {
+  const raw = [
+    EV(sec(1000), 'am_proc_start', '0,900,10123,com.other.app,activity,X'),
+    EV(sec(8000), 'am_anr', '0,900,com.other.app,0,Input dispatching timed out'),
+  ].join('\n');
+  assert.deepEqual(parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs),
+    { available: false, events: [], anrs: [], unparsedLines: 0 });
+});
+
+test('ANR03 separates reused PIDs and never borrows a later incarnation kill', () => {
+  const raw = [
+    EV(sec(1000), 'am_proc_start', '0,222,10123,com.bridge.app.debug,activity,X'),
+    EV(sec(2000), 'am_anr', '0,222,com.bridge.app.debug,0,Input dispatching timed out for FocusEvent'),
+    EV(sec(3000), 'am_proc_died', '0,222,com.bridge.app.debug,0,2'),
+    EV(sec(5000), 'am_proc_start', '0,222,10123,com.bridge.app.debug,activity,Y'),
+    EV(sec(7000), 'am_kill', '0,222,com.bridge.app.debug,0,user request after error'),
+  ].join('\n');
+  const result = parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs);
+  assert.equal(result.anrs.length, 1);
+  assert.equal(result.anrs[0].killAfterMs, null, 'later process kill is unrelated');
+  assert.equal(result.anrs[0].diedAfterMs, 1000);
+  assert.equal(result.events.at(-1).process, 2);
+  assert.equal(result.coverage, 'observed-only');
+});
+
+test('ANR03 marks truncated histories and missing process starts as incomplete evidence', () => {
+  const raw = [
+    EV(sec(1000), 'am_anr', '0,333,com.bridge.app.debug,0,Input dispatching timed out'),
+    EV(sec(2000), 'am_kill', '0,333,com.bridge.app.debug,0,bg anr'),
+    EV(sec(3000), 'am_proc_died', '0,333,com.bridge.app.debug,0,2'),
+  ].join('\n');
+  const limited = parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs, 1);
+  assert.equal(limited.truncated, true);
+  assert.equal(limited.coverage, 'partial');
+  const full = parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs);
+  assert.equal(full.coverage, 'partial', 'a missing process-start cannot prove full coverage');
+  assert.equal(parseAnrEventTimeline(raw, 'com.bridge.app.debug', originEpochMs, 64, -1).available, false);
+});
+
 test('stepAtOffset names the check that was running, or null before the first one', () => {
   const steps = [{ id: 'A01', atMs: 5000 }, { id: 'CS01', atMs: 20000 }, { id: 'bad id!', atMs: 30000 }, { id: 'L01', atMs: 40000 }];
   assert.equal(stepAtOffset(steps, 4999), null);
