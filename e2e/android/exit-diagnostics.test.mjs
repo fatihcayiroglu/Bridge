@@ -1576,6 +1576,15 @@ test('job summary labels the diagnostic suite, keeps FAILs and prints no run dat
   assert.match(controls, /pass=0 fail=2 skipped=0 measured=1/);
   assert.doesNotMatch(controls, /4242|4243|12:01|sdk_gphone/);
   assert.match(formatSuiteSummary({ suite: 'product', results: [] }), /mandatory Bridge reliability suite/);
+  // The controlled WebView comparison names its arm with fixed text only.
+  assert.doesNotMatch(controls, /WebView arm/);
+  assert.match(formatSuiteSummary({ suite: 'product', results: [] }, 'chromium-fixed'),
+    /WebView arm: chromium-fixed: pinned Chromium SystemWebView 158 selected as the provider/);
+  assert.match(formatSuiteSummary({ suite: 'upstream-webview-controls', results: [] }, 'system'),
+    /WebView arm: system: the image's own WebView \(113/);
+  const forged = formatSuiteSummary({ suite: 'product', results: [] }, '<b>serial 4242</b>');
+  assert.match(forged, /WebView arm: unknown/);
+  assert.doesNotMatch(forged, /4242|<b>/);
   for (const missing of [null, {}, { results: 'x' }]) {
     assert.match(formatSuiteSummary(missing), /did not complete\.\*\* This is a failure, not a pass/);
   }
@@ -1590,13 +1599,32 @@ test('workflows: product suite gates, upstream controls run non-gating but keep 
   for (const workflow of [product, diagnostics]) {
     // A failing journey or control must fail its job.
     assert.doesNotMatch(workflow, /continue-on-error|\|\| true\n\s*$|ANDROID_JOURNEY_SUITE: product\b[\s\S]*ANDROID_JOURNEY_SUITE/m);
-    assert.match(workflow, /script: bash e2e\/android\/run-emulator-journeys\.sh\n/);
     assert.match(workflow, /run: bash e2e\/android\/verify-emulator-image\.sh\n/);
-    assert.match(workflow, /node e2e\/android\/suite-summary\.mjs e2e\/android\/results\/android-evidence\.json >> "\$GITHUB_STEP_SUMMARY"/);
+    assert.match(workflow, /node e2e\/android\/suite-summary\.mjs e2e\/android\/results\/android-evidence\.json(?: "\$WEBVIEW_ARM")? >> "\$GITHUB_STEP_SUMMARY"/);
   }
-  // Nightly + manual; on pull requests only when this workflow itself changes.
+  assert.match(product, /script: bash e2e\/android\/run-emulator-journeys\.sh\n/);
+  assert.doesNotMatch(product, /select-webview-provider|WEBVIEW_/);
+  // Controlled WebView comparison: the provider switch runs before the same
+  // runner; a refused switch fails the step, it is never skipped into a pass.
+  assert.match(diagnostics, /script: \|\n {12}if \[ "\$WEBVIEW_ARM" = "chromium-fixed" \]; then bash e2e\/android\/select-webview-provider\.sh; fi\n {12}bash e2e\/android\/run-emulator-journeys\.sh\n/);
+  assert.match(diagnostics, /script: \|\n {12}bash e2e\/android\/select-webview-provider\.sh\n {12}bash e2e\/android\/run-emulator-journeys\.sh\n/);
+  assert.match(diagnostics, /\n      fail-fast: false\n      matrix:\n        webview: \[system, chromium-fixed\]\n/);
+  assert.match(diagnostics, /\n  WEBVIEW_SNAPSHOT_URL: https:\/\/commondatastorage\.googleapis\.com\/chromium-browser-snapshots\/AndroidDesktop_x64\/[0-9]+\/chrome-android-desktop\.zip\n  WEBVIEW_SNAPSHOT_SHA256: [0-9a-f]{64}\n  WEBVIEW_APK_SHA256: [0-9a-f]{64}\n/);
+  const fetchWebView = readFileSync(new URL('./fetch-pinned-webview.sh', import.meta.url), 'utf8');
+  assert.match(fetchWebView, /set -euo pipefail/);
+  assert.match(fetchWebView, /echo "\$ZIP_SHA  \$zip" \| sha256sum -c -/);
+  assert.match(fetchWebView, /echo "\$APK_SHA  \$OUT\/SystemWebView\.apk" \| sha256sum -c -/);
+  const select = readFileSync(new URL('./select-webview-provider.sh', import.meta.url), 'utf8');
+  assert.match(select, /set -euo pipefail/);
+  assert.match(select, /case "\$PKG" in\n  com\.android\.webview\) ;;\n  \*\) echo "WEBVIEW_OVERRIDE status=refused reason=package-not-allowlisted"; exit 2 ;;/);
+  assert.match(select, /reason=install-failed"\n  exit 3\n/);
+  assert.match(select, /reason=provider-not-selectable current=\$selected"\n  exit 4\n/);
+  assert.doesNotMatch(select, /get-serialno|ro\.serialno/);
+  // The set command's own status is not trusted: selection is read back.
+  assert.match(select, /set-webview-implementation "\$PKG" >\/dev\/null 2>&1 \|\| true\nselected="\$\(current_provider\)"\nif \[ "\$\{selected%%@\*\}" != "\$PKG" \]; then/);
+  // Nightly + manual; on pull requests only when this workflow or its WebView scripts change.
   assert.match(diagnostics, /\n  schedule:\n    - cron: '[0-9 *]+'\n  workflow_dispatch:\n/);
-  assert.match(diagnostics, /\n  pull_request:\n    branches: \[main, develop\]\n    paths:\n      - '\.github\/workflows\/android-upstream-webview-diagnostics\.yml'\n\n/);
+  assert.match(diagnostics, /\n  pull_request:\n    branches: \[main, develop\]\n    paths:\n      - '\.github\/workflows\/android-upstream-webview-diagnostics\.yml'\n      - 'e2e\/android\/select-webview-provider\.sh'\n      - 'e2e\/android\/fetch-pinned-webview\.sh'\n\n/);
   // The runner script propagates the journey exit status unchanged.
   const runner = readFileSync(new URL('./run-emulator-journeys.sh', import.meta.url), 'utf8');
   assert.match(runner, /node android\/android-journeys\.mjs\nstatus=\$\?\n[\s\S]*exit \$status\n$/);
