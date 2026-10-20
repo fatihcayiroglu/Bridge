@@ -4,6 +4,13 @@
 does **not** replace the required Android 14 (API34) full product journey CI,
 does not change any gate's verdict, and does not close Android issue #209.
 
+## 2026-10-21 first exact-head CI findings (draft #343)
+
+- Initial run [39498226368](https://github.com/fatihcayiroglu/Bridge/actions/runs/39498226368): API35 smoke PASS; API36 smoke FAIL after cold launch, at the eight-second background PID-survival gate; API37 **not run** because SDK installation requested nonexistent `platforms;android-37`.
+- API36: the first run contained no app exit reason, so cause is **unknown**. The next run will capture only allowlisted numeric ApplicationExitInfo reason/subreason codes on process loss. Do not weaken the PID preservation requirement or claim an Android defect without those measurements.
+- API37: Android 17 SDK is published with a minor version component (`android-37.0`), as documented by the Flutter Android SDK release tooling and public Android emulator runner reports. The test requests that exact package for both platform and system image. The actual emulated OS API is still verified as `37`; the Google APIs image must report revision >=5. Initial runner support is not yet established: treat further installation/boot failures as unverified, not a product PASS.
+- This test is **standalone and non-gating**, and no failure changes the mandatory API34 journey pass contract.
+
 ## Exact experiment
 
 Workflow: `.github/workflows/android-api35-37-compat.yml`.
