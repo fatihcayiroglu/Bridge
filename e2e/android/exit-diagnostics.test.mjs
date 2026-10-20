@@ -1953,7 +1953,11 @@ test('ANR03 and AN00 are measurements: wired at the checkpoints, before L01 HOME
   assert.match(l01, /assert\(pidBefore === pidAfter, 'L01 process died; cannot claim hot resume'\);/);
   // The probes never throw into a check.
   const collect = journeys.slice(journeys.indexOf('async function collectAnrEvents('), journeys.indexOf('async function anrDialogSample('));
-  assert.match(collect, /\} catch \{\n    return false;\n  \}/);
+  assert.match(collect, /\} catch \{\n    anrEventReadFailures\+\+;\n    return false;\n  \}/);
+  assert.match(journeys, /const endOffsetMs = Math\.max\(0, Date\.now\(\) - anrOrigin\.hostMs\);/);
+  assert.match(journeys, /coverage: 'unknown'/);
+  assert.match(journeys, /eventReadFailures: anrEventReadFailures/);
+  assert.match(journeys, /truncated: timeline\.truncated/);
   // AN00 runs only in the controls suite, after CS00.
   const controls = journeys.slice(journeys.indexOf('async function runUpstreamWebViewControls('), journeys.indexOf('async function main('));
   assert.ok(controls.indexOf("await measureAn00('AN00', 7_000);") > controls.indexOf("await measure('CS00'"));
