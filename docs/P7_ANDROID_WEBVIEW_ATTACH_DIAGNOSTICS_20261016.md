@@ -9,3 +9,22 @@
 - The older failure-only OS crash/activity evidence is retained; investigate whether it needs additional privacy minimization later.
 - A single isolated failed-job rerun of #313's original red Android job was requested to assess reproducibility. Its result is **separate** from exact-head validation of this diagnostic PR.
 - Android issue [#209](https://github.com/fatihcayiroglu/Bridge/issues/209) remains OPEN. Real-device certification and original ANR investigation remain outstanding.
+
+## Addendum — CDP page-level failure diagnostic (21 October 2026)
+
+L03 can fail with a resumed Activity, the app's DevTools Unix socket and an
+HTTP-responsive `/json/list` containing a page, while Playwright still cannot
+attach to the WebView. These observations do **not** establish a responsive CDP
+page or successful session recovery.
+
+The failure-only probe now attempts a single bounded WebSocket handshake to an
+allowlisted `ws://localhost` / `ws://127.0.0.1` page endpoint on the exact
+temporary ADB-forwarded port. A `Runtime.evaluate` request for the constant
+`1+1` distinguishes a responsive CDP page from socket/handshake/protocol
+failure. Only `attempted`, `handshake` and a fixed status value are logged;
+raw URLs, target titles, page data, protocol replies, tokens and device IDs
+stay in memory. The ADB forward is removed in a `finally` block.
+
+This is **diagnostics only**: it does not add retry attempts, extend the L03
+timeout, bypass failed assertions, prove normal application restoration or
+classify an emulator failure as passed. Product L03 remains a strict gate.
