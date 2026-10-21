@@ -17,6 +17,7 @@ const tombstone = {
 
 function fixture(opts: {
   row?: Record<string, unknown> | null;
+  afterRow?: Record<string, unknown> | null;
   tombstone?: Record<string, unknown> | null;
   clocks?: unknown[];
   failAt?: string;
@@ -24,6 +25,7 @@ function fixture(opts: {
   const queries: string[] = [];
   let connections = 0;
   let releases = 0;
+  let lockReads = 0;
   const clocks = [...(opts.clocks ?? [String(NOW), String(NOW)])];
   const pool: ChannelWritePool = {
     connect: async () => {
@@ -34,7 +36,9 @@ function fixture(opts: {
           if (sql === opts.failAt) throw new Error('postgres unavailable');
           if (sql === CHANNEL_WRITE_LOCK_SQL) {
             expect(values).toEqual(['channel1', 'server1']);
-            return { rows: opts.row === null ? [] : [opts.row ?? active] };
+            lockReads++;
+            const row = lockReads > 1 && 'afterRow' in opts ? opts.afterRow : opts.row;
+            return { rows: row === null ? [] : [row ?? active] };
           }
           if (sql === CHANNEL_WRITE_CLOCK_SQL) return { rows: [{ nowMs: clocks.shift() }] };
           if (sql === CHANNEL_WRITE_TOMBSTONE_SQL) {
@@ -61,7 +65,7 @@ describe('P7 D2 dormant transaction-scoped live-channel write barrier', () => {
     expect(queries).toEqual([
       'BEGIN', CHANNEL_WRITE_LOCK_SQL, CHANNEL_WRITE_CLOCK_SQL,
       CHANNEL_WRITE_TOMBSTONE_SQL, 'INSERT TEST WRITE',
-      CHANNEL_WRITE_CLOCK_SQL, CHANNEL_WRITE_TOMBSTONE_SQL, 'COMMIT',
+      CHANNEL_WRITE_LOCK_SQL, CHANNEL_WRITE_CLOCK_SQL, CHANNEL_WRITE_TOMBSTONE_SQL, 'COMMIT',
     ]);
     expect(CHANNEL_WRITE_LOCK_SQL).toMatch(/FOR SHARE/);
     expect(CHANNEL_WRITE_LOCK_SQL).toContain('"serverId"=$2');
@@ -135,6 +139,18 @@ describe('P7 D2 dormant transaction-scoped live-channel write barrier', () => {
     expect(queries).toContain('INSERT TEST WRITE');
     expect(queries).toContain('ROLLBACK');
     expect(queries).not.toContain('COMMIT');
+  });
+
+  it('rechecks modified expiry metadata after a database callback', async () => {
+    const { pool, queries } = fixture({
+      row: active,
+      afterRow: { ...active, expiresAt: String(NOW - 1), expiryVersion: '2' },
+    });
+    expect(await withLiveChannelWriteLock(pool, 'channel1', 'server1', async () => 'uncommitted'))
+      .toEqual({ state: 'denied', reason: 'expired' });
+    expect(queries.filter(sql => sql === CHANNEL_WRITE_LOCK_SQL)).toHaveLength(2);
+    expect(queries).not.toContain('COMMIT');
+    expect(queries.at(-1)).toBe('ROLLBACK');
   });
 
   it('rolls back and releases the client if the callback throws', async () => {
