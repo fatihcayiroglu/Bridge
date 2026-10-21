@@ -85,6 +85,7 @@ RUN('P7 D2 deferred INSERT barrier — isolated real PostgreSQL', () => {
       ['idempotent', later, 1],
       ['changed-during-write', later, 1],
       ['row-locked-by-worker', later, 1],
+      ['early-trigger-bypass', later, 1],
     ] as Array<[string, number | null, number]>) {
       await query('INSERT INTO ' + S + '.channels VALUES ($1,$2,$3,$4)',
         [id, 'tenant-one', expiry, version]);
@@ -157,6 +158,30 @@ RUN('P7 D2 deferred INSERT barrier — isolated real PostgreSQL', () => {
       worker.release();
     }
     expect(await rowCount('lock-denied')).toBe(0);
+  });
+
+  it('exposes SET CONSTRAINTS IMMEDIATE as a bypass of commit-time recheck', async () => {
+    // This is intentionally a NEGATIVE result in a throwaway test schema:
+    // a privileged client can force the AFTER constraint trigger to run
+    // before the transaction's later metadata update. This illustrates
+    // why the candidate trigger alone is not production authorization.
+    const writer = await pool.connect();
+    try {
+      await writer.query('BEGIN');
+      await writer.query('SET CONSTRAINTS ALL IMMEDIATE');
+      await writer.query(SQL_INSERT, ['early-accepted', 'early-trigger-bypass',
+        'tenant-one', 'author-one', 'early-accepted']);
+      await writer.query('UPDATE ' + S +
+        '.channels SET "expiresAt"=$1,"expiryVersion"=2 WHERE _id=$2',
+        [Date.now() - 1000, 'early-trigger-bypass']);
+      await writer.query('COMMIT');
+    } finally {
+      await writer.query('ROLLBACK').catch(() => undefined);
+      writer.release();
+    }
+    expect(await rowCount('early-accepted')).toBe(1);
+    // This persisted row is the counterexample; do not install the candidate
+    // trigger on production tables before mitigating this mutation ordering.
   });
 
   it('does not reject a duplicate suppressed by ON CONFLICT DO NOTHING', async () => {
