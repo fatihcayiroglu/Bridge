@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, selectLoopbackWebViewPageTarget, classifyWebViewCdpReply, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -376,6 +376,44 @@ test('DevTools HTTP targets are counted without leaking page titles, URLs or web
   assert.equal(classifyWebViewDevToolsTargets(Array(1000).fill({ type: 'page' })).pageTargetCount, 100);
 });
 
+test('failure-only CDP probe selects only the matching ADB loopback page endpoint', () => {
+  const good = 'ws://localhost:12345/devtools/page/abc-123';
+  const other = 'ws://127.0.0.1:12345/devtools/page/def-456';
+  const hostile = [
+    'ws://attacker.example:12345/devtools/page/x',
+    'wss://localhost:12345/devtools/page/x',
+    'ws://localhost:12346/devtools/page/x',
+    'ws://user:pass@localhost:12345/devtools/page/x',
+    'ws://localhost:12345/devtools/page/x?secret=1',
+    'ws://localhost:12345/private/path',
+    'ws://localhost:12345/devtools/page/x#fragment',
+    'http://localhost:12345/devtools/page/x',
+  ];
+  const rows = [
+    ...hostile.map(webSocketDebuggerUrl => ({ type: 'page', webSocketDebuggerUrl })),
+    { type: 'background_page', webSocketDebuggerUrl: good },
+    { type: 'page', webSocketDebuggerUrl: good },
+    { type: 'page', webSocketDebuggerUrl: other },
+  ];
+  assert.equal(selectLoopbackWebViewPageTarget(rows, 12345), good);
+  assert.equal(selectLoopbackWebViewPageTarget(rows, 12346), null);
+  assert.equal(selectLoopbackWebViewPageTarget(rows, 0), null);
+  assert.equal(selectLoopbackWebViewPageTarget(null, 12345), null);
+  assert.equal(selectLoopbackWebViewPageTarget([{ type: 'page', webSocketDebuggerUrl: hostile[0] }], 12345), null);
+  assert.equal(selectLoopbackWebViewPageTarget([{ type: 'page', webSocketDebuggerUrl: other }], 12345), other);
+});
+
+test('failure-only CDP reply classifier returns fixed statuses, never page content', () => {
+  assert.equal(classifyWebViewCdpReply(JSON.stringify({
+    id: 1, result: { result: { type: 'number', value: 2, description: 'private-page-title' } },
+  })), 'responsive');
+  assert.equal(classifyWebViewCdpReply(JSON.stringify({ method: 'Runtime.consoleAPICalled', params: { text: 'secret' } })), 'unrelated');
+  assert.equal(classifyWebViewCdpReply(JSON.stringify({ id: 1, error: { message: 'secret' } })), 'rejected');
+  assert.equal(classifyWebViewCdpReply(JSON.stringify({ id: 1, result: { exceptionDetails: { text: 'secret' } } })), 'rejected');
+  assert.equal(classifyWebViewCdpReply('not-json with secret'), 'invalid');
+  assert.equal(classifyWebViewCdpReply('x'.repeat(4097)), 'invalid');
+});
+
 test('failure-only CDP probing preserves strict L03 failures and removes ADB forwards', () => {
   const src = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
   const begin = src.indexOf('async function devToolsHttpProbe(');
@@ -385,6 +423,15 @@ test('failure-only CDP probing preserves strict L03 failures and removes ADB for
   assert.ok(fn.includes("['-s', serial, 'forward', '--remove'"));
   assert.ok(fn.includes("http://127.0.0.1:"));
   assert.ok(fn.includes('classifyWebViewDevToolsTargets'));
+  assert.ok(fn.includes('selectLoopbackWebViewPageTarget'));
+  assert.ok(fn.includes('devToolsCdpProbe'));
+  const cdpStart = src.indexOf('async function devToolsCdpProbe(');
+  const cdpEnd = src.indexOf('\\nasync function devToolsHttpProbe(', cdpStart);
+  assert.ok(cdpStart >= 0 && cdpEnd > cdpStart);
+  const cdp = src.slice(cdpStart, cdpEnd);
+  assert.match(cdp, /Runtime\\.evaluate/);
+  assert.match(cdp, /expression: '1\\+1'/);
+  assert.doesNotMatch(cdp, /console\\.(?:log|error)|JSON\\.stringify\\(event\\.data\\)/);
   assert.doesNotMatch(fn, /console\.(?:log|error)|log\(raw\)|JSON\.stringify\(raw\)/);
   const l03 = src.slice(src.indexOf("await check('L03'"), src.indexOf("await check('L04'"));
   assert.ok(l03.includes('await attachPage()'));
