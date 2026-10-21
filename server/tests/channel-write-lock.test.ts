@@ -42,7 +42,7 @@ function fixture(opts: {
           }
           if (sql === CHANNEL_WRITE_CLOCK_SQL) return { rows: [{ nowMs: clocks.shift() }] };
           if (sql === CHANNEL_WRITE_TOMBSTONE_SQL) {
-            expect(values).toEqual(['channel1', 'server1']);
+            expect(values).toEqual(['channel1']);
             return { rows: opts.tombstone ? [opts.tombstone] : [] };
           }
           return { rows: [] };
@@ -69,7 +69,8 @@ describe('P7 D2 dormant transaction-scoped live-channel write barrier', () => {
     ]);
     expect(CHANNEL_WRITE_LOCK_SQL).toMatch(/FOR SHARE/);
     expect(CHANNEL_WRITE_LOCK_SQL).toContain('"serverId"=$2');
-    expect(CHANNEL_WRITE_TOMBSTONE_SQL).toContain('"serverId"=$2');
+    expect(CHANNEL_WRITE_TOMBSTONE_SQL).toContain('"channelId"=$1');
+    expect(CHANNEL_WRITE_TOMBSTONE_SQL).not.toContain('"serverId"=$2');
     expect(CHANNEL_WRITE_CLOCK_SQL).toContain('clock_timestamp()');
     expect(releases()).toBe(1);
   });
@@ -93,6 +94,14 @@ describe('P7 D2 dormant transaction-scoped live-channel write barrier', () => {
       expect(write).not.toHaveBeenCalled();
       expect(queries.at(-1)).toBe('ROLLBACK');
     }
+  });
+
+  it('fails closed if a durable tombstone belongs to a different tenant', async () => {
+    const { pool } = fixture({ row: permanent, tombstone: { ...tombstone, serverId: 'foreign' } });
+    const write = jest.fn(async () => 1);
+    expect(await withLiveChannelWriteLock(pool, 'channel1', 'server1', write))
+      .toEqual({ state: 'denied', reason: 'invalid' });
+    expect(write).not.toHaveBeenCalled();
   });
 
   it('denies missing channels and never discloses a cross-tenant writer grant', async () => {
