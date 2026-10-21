@@ -8,6 +8,7 @@ import { ScheduledMessages, Users, Messages, Members, Channels } from '../db/rep
 import { publishPersistedMessage } from '../lib/channelActivity';
 import { hasPermission, PERMS, resolvePermissions } from '../lib/permissions';
 import { parsePersistedNonNegativeInteger } from '../lib/persistedInteger';
+import { channelExpiryStatus } from '../lib/channelExpiry';
 import { isMemberTimedOut } from '../lib/memberTimeout';
 import { checkMessageContent } from '../lib/messageContentPolicy';
 
@@ -67,9 +68,38 @@ async function verifyDispatchAuthority(scheduled: {
   // A timed-out member cannot post, so neither can their schedule.
   if (isMemberTimedOut(member.timeoutUntil)) return { ok: false, reason: 'member_timed_out' };
 
-  const channel = await Channels.findById(scheduled.channelId) as { serverId?: string } | null;
+  const channel = await Channels.findById(scheduled.channelId) as {
+    serverId?: string; expiresAt?: unknown; expiryVersion?: unknown;
+  } | null;
   if (!channel || String(channel.serverId ?? '') !== scheduled.serverId) {
     return { ok: false, reason: 'channel_scope_invalid' };
+  }
+
+  // P7 D2 preflight: never send a scheduled message into a channel whose
+  // persisted expiry is already in the past. Legacy permanent channels (both
+  // expiry columns absent) remain unchanged. Corrupt or partial expiry state
+  // fails closed, rather than silently treating it as permanent.
+  //
+  // This is NOT the final D2 authorization boundary: a channel can expire
+  // between this read and Messages.create. Final protection needs the same
+  // transaction-scoped expiry/version check on EVERY message write, plus a
+  // verified durable tombstone read and offline/federation convergence.
+  const hasExpiry = Object.prototype.hasOwnProperty.call(channel, 'expiresAt');
+  const hasVersion = Object.prototype.hasOwnProperty.call(channel, 'expiryVersion');
+  if (hasExpiry !== hasVersion || (hasExpiry && channel.expiresAt === undefined)) {
+    return { ok: false, reason: 'channel_expiry_invalid' };
+  }
+  try {
+    const status = channelExpiryStatus(hasExpiry ? channel.expiresAt : null, Date.now());
+    if (hasVersion) {
+      const version = parsePersistedNonNegativeInteger(channel.expiryVersion, 'channel expiry version');
+      if (status !== 'permanent' && version === 0) {
+        return { ok: false, reason: 'channel_expiry_invalid' };
+      }
+    }
+    if (status === 'expired') return { ok: false, reason: 'channel_expired' };
+  } catch {
+    return { ok: false, reason: 'channel_expiry_invalid' };
   }
 
   const perms = await resolvePermissions(scheduled.userId, scheduled.serverId, scheduled.channelId);
