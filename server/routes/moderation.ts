@@ -19,6 +19,7 @@ import { evictUserFromServerRooms, evictSocketsWithoutChannelAccessBestEffort } 
 import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery, parseNonNegativeSafeIntValue } from '../lib/queryNumbers';
 import { resolvePermissions as resolveEffectivePermissions } from '../lib/permissions';
 import { storedMessageText } from '../lib/storedText';
+import { currentStateSinceReport, evidenceView } from '../lib/reportEvidence';
 import { enforceStepUp } from '../lib/stepUp';
 
 type PermissionState = { allow: number; deny: number };
@@ -149,16 +150,25 @@ router.get('/reports', authMiddleware, limits.moderation(), async (req, res) => 
       Channels.findByIdAndServer(channelId, serverId),
       Users.findById(String(row.reporterId ?? '')),
     ]);
-    if (!message || !channel) continue;
+    if (!channel) continue;
+    // P7 B5 (#336): the snapshot taken at report time is the reported content.
+    // A report whose message row is gone stays reviewable when it has one; a
+    // report filed before migration 085 has nothing to show and is skipped, as before.
+    const evidence = evidenceView(row);
+    if (!message && evidence.state !== 'captured') continue;
+    const evidenceName = typeof evidence.authorName === 'string' && evidence.authorName ? evidence.authorName : null;
     visible.push({
       id: String(row._id), messageId: String(row.messageId), channelId,
       reason: String(row.reason ?? 'other'), detail: String(row.detail ?? ''),
       createdAt: Number(row.createdAt ?? 0),
       channel: { _id: channelId, name: String(channel.name ?? channelId) },
+      // The message as it is NOW (empty when the row is gone).
       message: {
-        displayName: String(message.displayName ?? message.username ?? 'Bridge user'),
-        preview: storedMessageText(message).replace(/\s+/g, ' ').trim().slice(0, 240),
+        displayName: String(message?.displayName ?? message?.username ?? evidenceName ?? 'Bridge user'),
+        preview: message ? storedMessageText(message).replace(/\s+/g, ' ').trim().slice(0, 240) : '',
       },
+      evidence,
+      currentState: currentStateSinceReport(row, message as Record<string, unknown> | null),
       reporter: { _id: String(row.reporterId ?? ''), displayName: String(reporter?.displayName ?? reporter?.username ?? 'Bridge user') },
     });
   }

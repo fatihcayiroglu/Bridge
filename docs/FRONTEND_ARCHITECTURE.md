@@ -102,3 +102,4 @@ BridgeRegistry.mount('<component-key>', targetEl, props);
 
 - ADR-0002: Svelte vs Vue orijinal karar
 - ADR-0008: Bu mimari stratejinin gerekçesi
+- [ADR-0014](ADR-0014-cross-platform-client-architecture.md): Svelte 5 web, Electron masaüstü, P8'de React Native mobil ve paylaşılan TypeScript çekirdek yönü; ölçülen bağımlılıklar (`node scripts/measure-client-coupling.cjs`). Not: `scripts/check-svelte-boundary.sh` listelenen ama artık var olmayan `core/socket.ts`, `core/auth.ts` ve `core/offline-queue.ts` dosyalarını atlıyor; servis mantığının bir kısmı artık `SocketManager.svelte`, `MessageLoader.svelte` ve `AppState.svelte` içinde.
