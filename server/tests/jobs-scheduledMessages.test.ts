@@ -282,6 +282,20 @@ describe('scheduled message dispatcher', () => {
       .toBe('channel_expired');
   });
 
+  it('keeps migrated permanent channels (NULL expiry, version zero) functional', async () => {
+    jest.useFakeTimers();
+    const scheduled = await seedScheduledMsg();
+    await mockDbInstance.channels.update(
+      { _id: 'ch1' },
+      { $set: { expiresAt: null, expiryVersion: '0' } },
+    );
+    startScheduledJob(null);
+    await tick();
+
+    expect(await mockDbInstance.messages.find({ scheduledId: scheduled._id })).toHaveLength(1);
+    expect((await requireDoc(mockDbInstance.scheduledMsgs, { _id: scheduled._id })).sent).toBe(true);
+  });
+
   it('retains normal scheduled delivery when channel expiry is in the future', async () => {
     jest.useFakeTimers();
     const scheduled = await seedScheduledMsg();
