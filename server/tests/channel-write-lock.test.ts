@@ -1,6 +1,6 @@
 import {
   CHANNEL_WRITE_CLOCK_SQL, CHANNEL_WRITE_LOCK_SQL, CHANNEL_WRITE_TOMBSTONE_SQL,
-  withLiveChannelWriteLock, type ChannelWritePool,
+  withLiveChannelWriteLock, type ChannelWritePool, type ChannelWriteTransaction,
 } from '../lib/channelWriteLock';
 
 const NOW = 1_800_000_000_000;
@@ -125,7 +125,7 @@ describe('P7 D2 dormant transaction-scoped live-channel write barrier', () => {
       row: { ...active, expiresAt: String(NOW + 1) },
       clocks: [String(NOW), String(NOW + 1)],
     });
-    const write = jest.fn(async (tx) => {
+    const write = jest.fn(async (tx: ChannelWriteTransaction) => {
       await tx.query('INSERT TEST WRITE');
       return 'not committed';
     });
