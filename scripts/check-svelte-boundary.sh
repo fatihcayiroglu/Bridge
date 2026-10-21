@@ -49,15 +49,9 @@ if [ "${1:-}" = "--list" ]; then
   exit 0
 fi
 
-# Yakalanan biçimler: from 'svelte' · from 'svelte/store' · from './X.svelte'
-# from './x.svelte.ts' · import 'svelte/...' · import('./X.svelte') · require('svelte')
-IMPORT_RE=$'(^|[^[:alnum:]_$])(from|import|require)[[:space:]]*\\(?[[:space:]]*[\'"`](svelte|[^\'"`]*\\.svelte)'
-# Yalnızca yorum olan satırlar (grep -n çıktısında "N:" önekinden sonra). Satır
-# sonundaki yorum bir importu gizlemez.
-COMMENT_LINE_RE='^[0-9]+:[[:space:]]*(//|/\*|\*)'
-
 ERRORS=()
 VIOLATIONS=()
+CHECKED_FILES=()
 CHECKED=0
 
 is_svelte_module() {
@@ -68,18 +62,8 @@ is_svelte_module() {
 }
 
 check_file() {
-  local file="$1" hits status=0
   CHECKED=$((CHECKED + 1))
-  hits="$(grep -En -- "$IMPORT_RE" "$file")" || status=$?
-  if [ "$status" -gt 1 ]; then
-    ERRORS+=("$file: okunamadı (grep çıkış kodu $status)")
-    return
-  fi
-  hits="$(printf '%s\n' "$hits" | grep -Ev -- "$COMMENT_LINE_RE" || true)"
-  if [ -n "$hits" ]; then
-    VIOLATIONS+=("$file")
-    while IFS= read -r line; do VIOLATIONS+=("      $line"); done <<< "$hits"
-  fi
+  CHECKED_FILES+=("$1")
 }
 
 for FILE in "${SERVICE_FILES[@]}"; do
@@ -115,6 +99,17 @@ for DIR in "${SERVICE_DIRS[@]}"; do
     ERRORS+=("$DIR/: dizinde denetlenecek kaynak dosya yok")
   fi
 done
+
+if [ "${#CHECKED_FILES[@]}" -gt 0 ]; then
+  # Valid imports may contain comments or line breaks between their tokens.
+  SCAN_OUTPUT="$(node scripts/check-svelte-imports.cjs "${CHECKED_FILES[@]}")" || {
+    ERRORS+=("TypeScript import scanner failed")
+    SCAN_OUTPUT=""
+  }
+  if [ -n "$SCAN_OUTPUT" ]; then
+    while IFS= read -r line; do VIOLATIONS+=("$line"); done <<< "$SCAN_OUTPUT"
+  fi
+fi
 
 STATUS=0
 

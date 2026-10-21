@@ -19,7 +19,9 @@ const LOCAL_FIRST = 'client/js/core/local-first/';
 const CODE_EXT = /\.(ts|mts|cts|js|mjs|cjs)$/;
 
 function run(root, args = []) {
-  const r = spawnSync('bash', [path.join(root, SCRIPT), ...args], { cwd: root, encoding: 'utf8' });
+  const r = spawnSync('bash', [path.join(root, SCRIPT), ...args], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, NODE_PATH: path.join(ROOT, 'node_modules') },
+  });
   if (r.error) throw r.error;
   return { code: r.status, out: `${r.stdout}${r.stderr}` };
 }
@@ -35,7 +37,7 @@ function codeFilesUnder(dir) {
 function copyTree(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'svelte-boundary-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  for (const rel of [SCRIPT, ...GUARDED]) {
+  for (const rel of [SCRIPT, 'scripts/check-svelte-imports.cjs', ...GUARDED]) {
     fs.cpSync(path.join(ROOT, rel), path.join(dir, rel), { recursive: true });
   }
   return dir;
@@ -107,6 +109,11 @@ const SVELTE_IMPORTS = [
   "export { onMount } from 'svelte';",
   "import {\n  mount,\n} from 'svelte';",
   "import { mount } from 'svelte'; // a trailing comment does not hide the import",
+  "const loader = import /* inline comment */ ('svelte/store');",
+  "const loader = import\n  ('svelte/store');",
+  "export { mount } from /* inline comment */ 'svelte';",
+  "type Store = import('svelte/store').Writable<string>;",
+  "const loader = import(`svelte/${name}`);",
 ];
 
 // Each form goes in its own new module, which also proves that files added to

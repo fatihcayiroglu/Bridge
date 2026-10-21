@@ -74,13 +74,14 @@ kalıcı giden mesaj kuyruğu `outbox-store.ts`'tedir. Eski `api*.ts` kalıbı
 `api-error-toast-svelte.ts` mount shim'ini de kapsıyordu; liste bu yüzden açık
 dosya adları kullanır.
 
-CI bu kuralı `scripts/check-svelte-boundary.sh` ile denetler (`quality-gate.yml` →
+CI bu kuralı `scripts/check-svelte-boundary.sh` ve TypeScript sözdizimi ayrıştırıcısı
+`scripts/check-svelte-imports.cjs` ile denetler (`quality-gate.yml` →
 `typecheck-build`). Listelenen bir dosya ya da dizin yoksa betik **başarısız**
 olur; eskiden sessizce atlıyordu ve 8 girdinin 3'ü silinmişken kapı yeşil
 kalıyordu. Kontrol doğrudan importlara bakar: `from 'svelte'`, `from 'svelte/…'`,
 `from './X.svelte'`, `.svelte.ts` modülleri, `import '…'`, `import('…')` ve
-`require('…')`. Yalnızca yorum olan satırlar sayılmaz; satır sonundaki yorum bir
-importu gizlemez. Listeyi değiştirirken bu bölümü de güncelleyin:
+`require('…')`. Yorumlar ve satır sonları importu gizlemez; hesaplanan dinamik
+importlar doğrulanamadığı için reddedilir. Listeyi değiştirirken bu bölümü de güncelleyin:
 `scripts/check-svelte-boundary.test.js` (`npm run test:release-integrity`) ikisinin
 aynı olduğunu doğrular.
 
