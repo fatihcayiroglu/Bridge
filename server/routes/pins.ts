@@ -48,6 +48,9 @@ const router       = express.Router();
 import { Channels, Members, Messages } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { canViewChannel } from '../lib/permissions';
+import db from '../db/loader';
+import { channelLiveForMessageRead } from '../lib/channelReadExpiryGuard';
+import { classifyChannelExpiryWithTombstone } from '../lib/channelExpiry';
 
 // ════════════════════════════════════════════════════════════════════════════
 // FAZ J-SONRASI GUVENLIK DUZELTMESI — SUNUCU UYELIGI KANAL GORUNURLUGU DEGILDIR
@@ -75,6 +78,28 @@ import { canViewChannel } from '../lib/permissions';
 // mantigi YAZILMAZ.
 // ════════════════════════════════════════════════════════════════════════════
 // GET /api/channels/:cid/pins
+async function requireLiveChannelContent(
+  channel: { _id: string; serverId: string; expiresAt?: unknown; expiryVersion?: unknown },
+  res: express.Response,
+): Promise<boolean> {
+  let live: boolean;
+  if (db._pool) {
+    try {
+      live = await channelLiveForMessageRead(db._pool, channel._id, channel.serverId);
+    } catch {
+      res.status(503).json({ error: 'Channel availability could not be verified' });
+      return false;
+    }
+  } else if (process.env.NODE_ENV === 'test') {
+    live = classifyChannelExpiryWithTombstone(channel, null, Date.now()).accessible;
+  } else {
+    res.status(503).json({ error: 'Channel availability could not be verified' });
+    return false;
+  }
+  if (!live) res.status(404).json({ error: 'Channel not found' });
+  return live;
+}
+
 router.get('/:cid/pins', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const channel = await Channels.findById(String(req.params.cid ?? ''));
@@ -83,6 +108,7 @@ router.get('/:cid/pins', authMiddleware, async (req, res) => {
   if (!membership) return res.status(403).json({ error: 'Not a member' });
   if (!(await canViewChannel(_u.id, channel.serverId, String(req.params.cid ?? ''))))
     return res.status(403).json({ error: 'Bu kanalı görüntüleyemezsiniz.' });
+  if (!(await requireLiveChannelContent(channel, res))) return;
   const pins = await Messages.findPinsInChannel(String(req.params.cid ?? ''), 50);
   res.json(pins);
 });
@@ -96,6 +122,7 @@ router.get('/:cid/files', authMiddleware, async (req, res) => {
   if (!membership) return res.status(403).json({ error: 'Not a member' });
   if (!(await canViewChannel(_u.id, channel.serverId, String(req.params.cid ?? ''))))
     return res.status(403).json({ error: 'Bu kanalı görüntüleyemezsiniz.' });
+  if (!(await requireLiveChannelContent(channel, res))) return;
   const limit  = parseBoundedPositiveIntQuery(req.query.limit, 50, 100);
   const before = parseNonNegativeSafeIntQuery(req.query.before, Date.now() + 1);
   if (limit === null || before === null) {

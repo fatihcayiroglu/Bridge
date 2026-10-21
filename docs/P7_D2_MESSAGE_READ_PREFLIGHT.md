@@ -17,6 +17,12 @@ are cached. This is one production-reachable **read preflight**, not D2 closure.
 - The HTTP suite verifies an actual first-page cache population followed by
   a direct PostgreSQL expiry update, and checks pinned/history against a
   tombstone. The unit suite covers tenant, clock, version and error states.
+- The separate `/channels/:cid/pins` and `/channels/:cid/files` listings also
+  perform the live PostgreSQL check after their existing membership and
+  channel-visibility checks, before returning message content. The real
+  PostgreSQL suite verifies expiry and tombstone denial on both routes while
+  the channel metadata and message first-page caches still contain the prior
+  active channel and message body. Pin/file listings do not cache responses.
 
 ## Explicit limitations
 
