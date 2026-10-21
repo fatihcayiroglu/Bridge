@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, selectLoopbackWebViewPageTarget, classifyWebViewCdpReply, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import http from 'node:http';
+import { createHash } from 'node:crypto';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, selectLoopbackWebViewPageTarget, classifyWebViewCdpReply, probeWebViewCdpPage, WEBVIEW_CDP_PROBE_RESULTS, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -379,27 +381,39 @@ test('DevTools HTTP targets are counted without leaking page titles, URLs or web
 test('failure-only CDP probe selects only the matching ADB loopback page endpoint', () => {
   const good = 'ws://localhost:12345/devtools/page/abc-123';
   const other = 'ws://127.0.0.1:12345/devtools/page/def-456';
+  const wrongPort = 'ws://localhost:12346/devtools/page/x';
   const hostile = [
     'ws://attacker.example:12345/devtools/page/x',
+    'ws://localhost.attacker.example:12345/devtools/page/x',
+    'ws://[::1]:12345/devtools/page/x',
     'wss://localhost:12345/devtools/page/x',
-    'ws://localhost:12346/devtools/page/x',
+    wrongPort,
     'ws://user:pass@localhost:12345/devtools/page/x',
     'ws://localhost:12345/devtools/page/x?secret=1',
     'ws://localhost:12345/private/path',
+    'ws://localhost:12345/devtools/page/../../json/new',
+    'ws://localhost:12345/devtools/page/' + 'a'.repeat(161),
     'ws://localhost:12345/devtools/page/x#fragment',
     'http://localhost:12345/devtools/page/x',
   ];
+  const hostileRows = hostile.map(webSocketDebuggerUrl => ({ type: 'page', webSocketDebuggerUrl }));
   const rows = [
-    ...hostile.map(webSocketDebuggerUrl => ({ type: 'page', webSocketDebuggerUrl })),
+    ...hostileRows,
     { type: 'background_page', webSocketDebuggerUrl: good },
     { type: 'page', webSocketDebuggerUrl: good },
     { type: 'page', webSocketDebuggerUrl: other },
   ];
-  assert.equal(selectLoopbackWebViewPageTarget(rows, 12345), good);
-  assert.equal(selectLoopbackWebViewPageTarget(rows, 12346), null);
-  assert.equal(selectLoopbackWebViewPageTarget(rows, 0), null);
+  // "localhost" never reaches the resolver: the endpoint is rewritten to the
+  // IPv4 loopback literal that the ADB forward listens on.
+  assert.equal(selectLoopbackWebViewPageTarget(rows, 12345), 'ws://127.0.0.1:12345/devtools/page/abc-123');
+  assert.equal(selectLoopbackWebViewPageTarget(hostileRows, 12345), null);
+  // A row is acceptable only for its own forwarded port.
+  assert.equal(selectLoopbackWebViewPageTarget(rows, 12346), 'ws://127.0.0.1:12346/devtools/page/x');
+  assert.equal(selectLoopbackWebViewPageTarget(rows, 23456), null);
+  for (const port of [0, 1023, 65536, '12345', 12345.5]) {
+    assert.equal(selectLoopbackWebViewPageTarget(rows, port), null);
+  }
   assert.equal(selectLoopbackWebViewPageTarget(null, 12345), null);
-  assert.equal(selectLoopbackWebViewPageTarget([{ type: 'page', webSocketDebuggerUrl: hostile[0] }], 12345), null);
   assert.equal(selectLoopbackWebViewPageTarget([{ type: 'page', webSocketDebuggerUrl: other }], 12345), other);
 });
 
@@ -408,10 +422,173 @@ test('failure-only CDP reply classifier returns fixed statuses, never page conte
     id: 1, result: { result: { type: 'number', value: 2, description: 'private-page-title' } },
   })), 'responsive');
   assert.equal(classifyWebViewCdpReply(JSON.stringify({ method: 'Runtime.consoleAPICalled', params: { text: 'secret' } })), 'unrelated');
+  assert.equal(classifyWebViewCdpReply(JSON.stringify({ id: 2, result: { result: { value: 2 } } })), 'unrelated');
   assert.equal(classifyWebViewCdpReply(JSON.stringify({ id: 1, error: { message: 'secret' } })), 'rejected');
   assert.equal(classifyWebViewCdpReply(JSON.stringify({ id: 1, result: { exceptionDetails: { text: 'secret' } } })), 'rejected');
+  assert.equal(classifyWebViewCdpReply(JSON.stringify({ id: 1, result: { result: { value: 3 } } })), 'rejected');
   assert.equal(classifyWebViewCdpReply('not-json with secret'), 'invalid');
+  assert.equal(classifyWebViewCdpReply(new ArrayBuffer(8)), 'invalid');
   assert.equal(classifyWebViewCdpReply('x'.repeat(4097)), 'invalid');
+});
+
+// Scripted stand-in for the WHATWG WebSocket: `script(socket)` runs after
+// construction and drives open/message/error/close the way a page would.
+function scriptedWebSocket(script) {
+  const made = [];
+  class ScriptedWebSocket extends EventTarget {
+    constructor(uri) {
+      super();
+      this.uri = uri;
+      this.sent = [];
+      this.closed = false;
+      made.push(this);
+      queueMicrotask(() => script(this));
+    }
+    send(data) { this.sent.push(data); this.onsent?.(data); }
+    close() { this.closed = true; }
+    fire(type, data) {
+      this.dispatchEvent(type === 'message' ? new MessageEvent('message', { data }) : new Event(type));
+    }
+  }
+  return { WebSocketImpl: ScriptedWebSocket, made };
+}
+
+const CDP_URI = 'ws://127.0.0.1:12345/devtools/page/abc-123';
+const REPLY_OK = JSON.stringify({ id: 1, result: { result: { type: 'number', value: 2 } } });
+
+async function probeWith(script, timeoutMs = 50) {
+  const fake = scriptedWebSocket(script);
+  const result = await probeWebViewCdpPage(CDP_URI, { timeoutMs, WebSocketImpl: fake.WebSocketImpl });
+  assert.ok(WEBVIEW_CDP_PROBE_RESULTS.includes(result.result), result.result);
+  assert.deepEqual(Object.keys(result).sort(), ['attempted', 'handshake', 'result']);
+  return { result, made: fake.made };
+}
+
+test('CDP probe reports a responsive page, ignores unrelated events and leaks nothing', async () => {
+  const { result, made } = await probeWith(ws => {
+    ws.onsent = (data) => {
+      const request = JSON.parse(data);
+      assert.deepEqual(request, { id: 1, method: 'Runtime.evaluate', params: { expression: '1+1', returnByValue: true } });
+      ws.fire('message', JSON.stringify({ method: 'Runtime.consoleAPICalled', params: { text: 'secret-page-text' } }));
+      ws.fire('message', REPLY_OK);
+    };
+    ws.fire('open');
+  }, 60_000);
+  assert.deepEqual(result, { attempted: true, handshake: true, result: 'responsive' });
+  assert.equal(made.length, 1);
+  assert.equal(made[0].uri, CDP_URI);
+  assert.equal(made[0].sent.length, 1, 'exactly one request, no retries');
+  assert.equal(made[0].closed, true);
+  assert.doesNotMatch(JSON.stringify(result), /secret|127\.0\.0\.1|devtools/);
+});
+
+test('CDP probe separates a silent page after handshake from a socket that never opens', async () => {
+  let r = await probeWith(ws => ws.fire('open'));
+  assert.deepEqual(r.result, { attempted: true, handshake: true, result: 'timeout' });
+  assert.equal(r.made[0].closed, true);
+  r = await probeWith(() => {});
+  assert.deepEqual(r.result, { attempted: true, handshake: false, result: 'timeout' });
+  assert.equal(r.made[0].closed, true);
+});
+
+test('CDP probe classifies rejected replies, socket errors and early closes', async () => {
+  let r = await probeWith(ws => {
+    ws.onsent = () => ws.fire('message', JSON.stringify({ id: 1, error: { message: 'secret' } }));
+    ws.fire('open');
+  });
+  assert.deepEqual(r.result, { attempted: true, handshake: true, result: 'protocol-error' });
+  r = await probeWith(ws => {
+    ws.onsent = () => ws.fire('message', 'not json: secret');
+    ws.fire('open');
+  });
+  assert.equal(r.result.result, 'protocol-error');
+  r = await probeWith(ws => { ws.fire('error'); ws.fire('close'); });
+  assert.deepEqual(r.result, { attempted: true, handshake: false, result: 'socket-error' });
+  r = await probeWith(ws => { ws.fire('open'); ws.fire('close'); });
+  assert.deepEqual(r.result, { attempted: true, handshake: true, result: 'socket-closed' });
+  class Throwing { constructor() { throw new Error('secret connect failure'); } }
+  const thrown = await probeWebViewCdpPage(CDP_URI, { timeoutMs: 60_000, WebSocketImpl: Throwing });
+  assert.deepEqual(thrown, { attempted: true, handshake: false, result: 'socket-error' });
+});
+
+test('CDP probe refuses anything but a normalized loopback page URI and needs a WebSocket API', async () => {
+  const fake = scriptedWebSocket(() => assert.fail('must not connect'));
+  for (const uri of [null, '', 'ws://localhost:12345/devtools/page/x', 'wss://127.0.0.1:12345/devtools/page/x',
+    'ws://127.0.0.1:12345/devtools/page/x?q=1', 'ws://127.0.0.1:12345/json/new', 'ws://10.0.2.2:12345/devtools/page/x']) {
+    assert.deepEqual(await probeWebViewCdpPage(uri, { WebSocketImpl: fake.WebSocketImpl }),
+      { attempted: false, handshake: false, result: 'unverified' });
+  }
+  // `undefined` would select the default global WebSocket; model a missing API.
+  for (const WebSocketImpl of [null, {}, 'WebSocket']) {
+    assert.deepEqual(await probeWebViewCdpPage(CDP_URI, { WebSocketImpl }),
+      { attempted: false, handshake: false, result: 'unverified' });
+  }
+  assert.equal(fake.made.length, 0);
+});
+
+test('CDP probe clears its deadline timer once it settles', async () => {
+  const timers = () => process.getActiveResourcesInfo().filter(kind => kind === 'Timeout').length;
+  const before = timers();
+  await probeWith(ws => { ws.onsent = () => ws.fire('message', REPLY_OK); ws.fire('open'); }, 20_000);
+  await probeWith(ws => { ws.fire('error'); }, 20_000);
+  assert.equal(timers(), before);
+});
+
+// The Android job runs this file on the same Node as the journeys; without a
+// global WebSocket every probe would silently report 'unverified'.
+test('the Node runtime that runs the journeys provides a global WebSocket', () => {
+  assert.equal(typeof globalThis.WebSocket, 'function');
+});
+
+// Minimal RFC 6455 server on 127.0.0.1 so the real Node WebSocket client is
+// exercised end to end; `reply` false keeps the page silent after the handshake.
+async function withLoopbackDevTools({ reply }, fn) {
+  const sockets = new Set();
+  const seen = [];
+  const server = http.createServer((req, res) => { res.writeHead(404); res.end(); });
+  server.on('upgrade', (req, socket) => {
+    sockets.add(socket);
+    seen.push({ url: req.url, host: req.headers.host });
+    const accept = createHash('sha1')
+      .update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    socket.once('data', () => {
+      if (!reply) return;
+      const payload = Buffer.from(REPLY_OK);
+      socket.write(Buffer.concat([Buffer.from([0x81, payload.length]), payload]));
+    });
+    socket.on('error', () => {});
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    return await fn(port, seen);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => server.close(resolve));
+  }
+}
+
+test('real WebSocket: responsive loopback page end to end', async () => {
+  await withLoopbackDevTools({ reply: true }, async (port, seen) => {
+    const uri = selectLoopbackWebViewPageTarget(
+      [{ type: 'page', webSocketDebuggerUrl: `ws://localhost:${port}/devtools/page/real-1` }], port);
+    assert.equal(uri, `ws://127.0.0.1:${port}/devtools/page/real-1`);
+    assert.deepEqual(await probeWebViewCdpPage(uri, { timeoutMs: 5000 }),
+      { attempted: true, handshake: true, result: 'responsive' });
+    assert.deepEqual(seen, [{ url: '/devtools/page/real-1', host: `127.0.0.1:${port}` }]);
+  });
+});
+
+test('real WebSocket: handshake without a reply is a timeout, a closed port is a socket error', async () => {
+  await withLoopbackDevTools({ reply: false }, async (port) => {
+    assert.deepEqual(await probeWebViewCdpPage(`ws://127.0.0.1:${port}/devtools/page/silent`, { timeoutMs: 300 }),
+      { attempted: true, handshake: true, result: 'timeout' });
+  });
+  const closedPort = await withLoopbackDevTools({ reply: false }, async (port) => port);
+  assert.deepEqual(await probeWebViewCdpPage(`ws://127.0.0.1:${closedPort}/devtools/page/gone`, { timeoutMs: 5000 }),
+    { attempted: true, handshake: false, result: 'socket-error' });
 });
 
 test('failure-only CDP probing preserves strict L03 failures and removes ADB forwards', () => {
@@ -421,20 +598,20 @@ test('failure-only CDP probing preserves strict L03 failures and removes ADB for
   assert.ok(begin >= 0 && end > begin);
   const fn = src.slice(begin, end);
   assert.ok(fn.includes("['-s', serial, 'forward', '--remove'"));
-  assert.ok(fn.includes("http://127.0.0.1:"));
+  assert.ok(fn.includes('http://127.0.0.1:'));
   assert.ok(fn.includes('classifyWebViewDevToolsTargets'));
   assert.ok(fn.includes('selectLoopbackWebViewPageTarget'));
-  assert.ok(fn.includes('devToolsCdpProbe'));
-  const cdpStart = src.indexOf('async function devToolsCdpProbe(');
-  const cdpEnd = src.indexOf('async function devToolsHttpProbe(', cdpStart);
-  assert.ok(cdpStart >= 0 && cdpEnd > cdpStart);
-  const cdp = src.slice(cdpStart, cdpEnd);
-  assert.ok(cdp.includes("method: 'Runtime.evaluate'"));
-  assert.ok(cdp.includes("expression: '1+1'"));
-  assert.equal(cdp.includes('console.log'), false);
-  assert.equal(cdp.includes('console.error'), false);
-  assert.equal(cdp.includes('JSON.stringify(event.data)'), false);
+  assert.ok(fn.includes('await probeWebViewCdpPage(uri)'));
   assert.doesNotMatch(fn, /console\.(?:log|error)|log\(raw\)|JSON\.stringify\(raw\)/);
+  // The only CDP connection is the tested probe in exit-diagnostics.mjs.
+  assert.doesNotMatch(src, /new WebSocket\b/);
+  const evidence = src.slice(end, src.indexOf('\nasync function attachPage(', end));
+  assert.ok(evidence.includes("cdpPageResponsive: devtoolsHttp.cdp?.result ?? 'unverified'"));
+  const lib = readFileSync(new URL('./exit-diagnostics.mjs', import.meta.url), 'utf8');
+  const probeStart = lib.indexOf('export function probeWebViewCdpPage(');
+  const probe = lib.slice(probeStart, lib.indexOf('\n}\n', probeStart));
+  assert.ok(probeStart >= 0 && probe.includes("method: 'Runtime.evaluate'") && probe.includes("expression: '1+1'"));
+  assert.doesNotMatch(probe, /console\.|JSON\.stringify\(event|setInterval|retry/i);
   const l03 = src.slice(src.indexOf("await check('L03'"), src.indexOf("await check('L04'"));
   assert.ok(l03.includes('await attachPage()'));
   assert.doesNotMatch(l03, /\.catch\(\(\)\s*=>\s*(?:true|false)\)/);

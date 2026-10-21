@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, selectLoopbackWebViewPageTarget, classifyWebViewCdpReply, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, selectLoopbackWebViewPageTarget, probeWebViewCdpPage, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -372,49 +372,6 @@ const execFileAsync = promisify(execFileCallback);
  * This cannot turn any failed journey green, and a successful HTTP response
  * is not proof that a Playwright CDP connection or product restoration works.
  */
-/**
- * Failure-only CDP protocol probe, distinct from both an HTTP /json/list and
- * Playwright's actual WebView attachment. Never log the websocket URI, frames,
- * page content or error messages. No retries and no effect on L03's result.
- */
-async function devToolsCdpProbe(uri) {
-  const unverified = { attempted: false, handshake: false, result: 'unverified' };
-  if (!uri || typeof WebSocket !== 'function') return unverified;
-  return new Promise(resolve => {
-    let socket;
-    let handshake = false;
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try { socket?.close(); } catch { /* only failure diagnostics */ }
-      resolve({ attempted: true, handshake, result });
-    };
-    const timer = setTimeout(() => finish('timeout'), 4000);
-    try {
-      socket = new WebSocket(uri);
-      socket.addEventListener('open', () => {
-        handshake = true;
-        try {
-          socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate',
-            params: { expression: '1+1', returnByValue: true } }));
-        } catch { finish('protocol-error'); }
-      });
-      socket.addEventListener('message', event => {
-        const classification = classifyWebViewCdpReply(event.data);
-        if (classification === 'responsive') finish('responsive');
-        else if (classification === 'rejected' || classification === 'invalid')
-          finish('protocol-error');
-      });
-      socket.addEventListener('error', () => finish('socket-error'));
-      socket.addEventListener('close', () => finish('socket-closed'));
-    } catch {
-      finish('socket-error');
-    }
-  });
-}
-
 async function devToolsHttpProbe(appPid) {
   const unavailable = { attempted: false, httpResponsive: false, listValid: false, targetCount: 0, pageTargetCount: 0 };
   if (MODE !== 'android' || !/^[0-9]{1,8}$/.test(String(appPid))) return unavailable;
@@ -443,7 +400,7 @@ async function devToolsHttpProbe(appPid) {
       // An HTTP target list is not a working CDP page. Probe only a sanitized
       // loopback page endpoint and publish category flags, not protocol data.
       const uri = selectLoopbackWebViewPageTarget(targets, port);
-      const cdp = await devToolsCdpProbe(uri);
+      const cdp = await probeWebViewCdpPage(uri);
       return { attempted: true, httpResponsive: true, ...safe, cdp };
     } finally { clearTimeout(timer); }
   } catch {
@@ -485,6 +442,8 @@ async function webViewAttachEvidence() {
   return {
     probeAvailable,
     ...os,
+    // Fixed enum from probeWebViewCdpPage; 'unverified' when no probe ran.
+    cdpPageResponsive: devtoolsHttp.cdp?.result ?? 'unverified',
     devtoolsHttp,
     // A reachable /json/list is NOT proof that Playwright attached to a page.
     // Keep original L03 FAIL; no retries or timeout extension.

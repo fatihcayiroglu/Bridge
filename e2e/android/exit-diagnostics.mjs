@@ -540,6 +540,11 @@ export function classifyWebViewDevToolsTargets(raw) {
  * Select one app WebView page target for failure-only CDP diagnosis.
  * Only the exact ADB-forwarded loopback port is allowed. The returned URI is
  * private diagnostic input: never log, serialize or upload it.
+ *
+ * The result always names the IPv4 loopback literal, never "localhost": a
+ * hostname goes through the resolver (hosts file, or ::1 first, where the ADB
+ * forward does not listen), so the loopback-only guarantee and the handshake
+ * result would otherwise depend on name resolution.
  */
 export function selectLoopbackWebViewPageTarget(rows, port) {
   if (!Number.isInteger(port) || port < 1024 || port > 65535 || !Array.isArray(rows)) return null;
@@ -552,10 +557,66 @@ export function selectLoopbackWebViewPageTarget(rows, port) {
           target.port !== String(port) || target.username || target.password ||
           target.search || target.hash ||
           !/^\/devtools\/page\/[A-Za-z0-9_.-]{1,160}$/.test(target.pathname)) continue;
-      return target.href;
+      return `ws://127.0.0.1:${port}${target.pathname}`;
     } catch { /* malformed endpoint is not a reason to connect elsewhere */ }
   }
   return null;
+}
+
+/** Fixed result values of probeWebViewCdpPage; nothing else is ever returned. */
+export const WEBVIEW_CDP_PROBE_RESULTS = Object.freeze([
+  'unverified', 'responsive', 'timeout', 'socket-error', 'socket-closed', 'protocol-error',
+]);
+
+/**
+ * Failure-only CDP page probe, distinct from both an HTTP /json/list and
+ * Playwright's WebView attachment: one bounded WebSocket handshake and one
+ * Runtime.evaluate of the constant `1+1`. No retries. Returns only
+ * { attempted, handshake, result } with result from WEBVIEW_CDP_PROBE_RESULTS;
+ * the URI, frames, page data and error messages never leave this function.
+ * `handshake: true` with result 'timeout' means the page accepted a CDP
+ * connection but did not answer a trivial evaluation in time.
+ */
+export function probeWebViewCdpPage(uri, { timeoutMs = 4000, WebSocketImpl = globalThis.WebSocket } = {}) {
+  if (typeof uri !== 'string' ||
+      !/^ws:\/\/127\.0\.0\.1:[0-9]{4,5}\/devtools\/page\/[A-Za-z0-9_.-]{1,160}$/.test(uri) ||
+      typeof WebSocketImpl !== 'function') {
+    return Promise.resolve({ attempted: false, handshake: false, result: 'unverified' });
+  }
+  return new Promise(resolve => {
+    let socket = null;
+    let handshake = false;
+    let settled = false;
+    let timer = null;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket?.close(); } catch { /* failure diagnostics only */ }
+      resolve({ attempted: true, handshake, result });
+    };
+    timer = setTimeout(() => finish('timeout'), timeoutMs);
+    try {
+      socket = new WebSocketImpl(uri);
+      socket.addEventListener('open', () => {
+        handshake = true;
+        try {
+          socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate',
+            params: { expression: '1+1', returnByValue: true } }));
+        } catch { finish('protocol-error'); }
+      });
+      socket.addEventListener('message', event => {
+        const classification = classifyWebViewCdpReply(event?.data);
+        if (classification === 'responsive') finish('responsive');
+        else if (classification === 'rejected' || classification === 'invalid') finish('protocol-error');
+        // 'unrelated' (events, other ids) keeps waiting for the reply or the deadline.
+      });
+      socket.addEventListener('error', () => finish('socket-error'));
+      socket.addEventListener('close', () => finish('socket-closed'));
+    } catch {
+      finish('socket-error');
+    }
+  });
 }
 
 /** Allowlisted CDP diagnostic; never returns evaluated page data or protocol text. */
