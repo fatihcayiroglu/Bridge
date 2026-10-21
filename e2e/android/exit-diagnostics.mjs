@@ -537,6 +537,42 @@ export function classifyWebViewDevToolsTargets(raw) {
 
 
 /**
+ * Select one app WebView page target for failure-only CDP diagnosis.
+ * Only the exact ADB-forwarded loopback port is allowed. The returned URI is
+ * private diagnostic input: never log, serialize or upload it.
+ */
+export function selectLoopbackWebViewPageTarget(rows, port) {
+  if (!Number.isInteger(port) || port < 1024 || port > 65535 || !Array.isArray(rows)) return null;
+  for (const row of rows.slice(0, 100)) {
+    if (!row || typeof row !== 'object' || Array.isArray(row) || row.type !== 'page' ||
+        typeof row.webSocketDebuggerUrl !== 'string' || row.webSocketDebuggerUrl.length > 512) continue;
+    try {
+      const target = new URL(row.webSocketDebuggerUrl);
+      if (target.protocol !== 'ws:' || !['localhost', '127.0.0.1'].includes(target.hostname) ||
+          target.port !== String(port) || target.username || target.password ||
+          target.search || target.hash ||
+          !/^\/devtools\/page\/[A-Za-z0-9_.-]{1,160}$/.test(target.pathname)) continue;
+      return target.href;
+    } catch { /* malformed endpoint is not a reason to connect elsewhere */ }
+  }
+  return null;
+}
+
+/** Allowlisted CDP diagnostic; never returns evaluated page data or protocol text. */
+export function classifyWebViewCdpReply(raw) {
+  try {
+    if (typeof raw !== 'string' || raw.length > 4096) return 'invalid';
+    const reply = JSON.parse(raw);
+    if (!reply || typeof reply !== 'object' || Array.isArray(reply) || reply.id !== 1)
+      return 'unrelated';
+    return reply.error === undefined && reply.result?.result?.value === 2 &&
+      reply.result?.exceptionDetails === undefined ? 'responsive' : 'rejected';
+  } catch {
+    return 'invalid';
+  }
+}
+
+/**
  * Privacy-safe observation of the Android app's live provider dependencies.
  * Keep only counts and a boolean; never publish raw ActivityManager output.
  */
