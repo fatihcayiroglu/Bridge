@@ -1104,10 +1104,14 @@ BEGIN
    WHERE "evidenceAuthorId" = OLD._id AND "evidenceScrubbedAt" IS NULL;
   RETURN OLD;
 END $$;
-DROP TRIGGER IF EXISTS message_reports_author_erasure ON users;
-CREATE TRIGGER message_reports_author_erasure
-  BEFORE DELETE ON users FOR EACH ROW
-  EXECUTE FUNCTION anonymize_report_evidence_on_user_delete();
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                  WHERE tgrelid = 'users'::regclass AND tgname = 'message_reports_author_erasure') THEN
+    CREATE TRIGGER message_reports_author_erasure
+      BEFORE DELETE ON users FOR EACH ROW
+      EXECUTE FUNCTION anonymize_report_evidence_on_user_delete();
+  END IF;
+END $$;
 
 
 -- P1 Saved follow-up reminders. Delivery state is separate from the saved item
