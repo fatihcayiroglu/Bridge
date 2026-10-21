@@ -135,7 +135,15 @@ export async function withLiveChannelWriteLock<T>(
     }
 
     const value = await write(tx);
-    const lastDenial = await evaluateLockedChannel(tx, channelId, serverId, channel);
+    // Re-read within the SAME transaction: the callback may have changed
+    // expiry metadata itself. A cached channel projection is not sufficient.
+    const refreshed = await tx.query(CHANNEL_WRITE_LOCK_SQL, [channelId, serverId]);
+    if (refreshed.rows.length !== 1) {
+      await tx.query('ROLLBACK');
+      finished = true;
+      return { state: 'denied', reason: 'invalid' };
+    }
+    const lastDenial = await evaluateLockedChannel(tx, channelId, serverId, refreshed.rows[0]);
     if (lastDenial) {
       await tx.query('ROLLBACK');
       finished = true;
