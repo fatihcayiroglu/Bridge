@@ -426,12 +426,14 @@ test('failure-only CDP probing preserves strict L03 failures and removes ADB for
   assert.ok(fn.includes('selectLoopbackWebViewPageTarget'));
   assert.ok(fn.includes('devToolsCdpProbe'));
   const cdpStart = src.indexOf('async function devToolsCdpProbe(');
-  const cdpEnd = src.indexOf('\\nasync function devToolsHttpProbe(', cdpStart);
+  const cdpEnd = src.indexOf('async function devToolsHttpProbe(', cdpStart);
   assert.ok(cdpStart >= 0 && cdpEnd > cdpStart);
   const cdp = src.slice(cdpStart, cdpEnd);
-  assert.match(cdp, /Runtime\\.evaluate/);
-  assert.match(cdp, /expression: '1\\+1'/);
-  assert.doesNotMatch(cdp, /console\\.(?:log|error)|JSON\\.stringify\\(event\\.data\\)/);
+  assert.ok(cdp.includes("method: 'Runtime.evaluate'"));
+  assert.ok(cdp.includes("expression: '1+1'"));
+  assert.equal(cdp.includes('console.log'), false);
+  assert.equal(cdp.includes('console.error'), false);
+  assert.equal(cdp.includes('JSON.stringify(event.data)'), false);
   assert.doesNotMatch(fn, /console\.(?:log|error)|log\(raw\)|JSON\.stringify\(raw\)/);
   const l03 = src.slice(src.indexOf("await check('L03'"), src.indexOf("await check('L04'"));
   assert.ok(l03.includes('await attachPage()'));
