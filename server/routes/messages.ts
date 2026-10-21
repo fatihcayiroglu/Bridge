@@ -101,7 +101,7 @@ async function requireChannelMembership(userId: string, channelId: string, res: 
   // authority. Recheck PostgreSQL on every channel-content read, including
   // pinned messages, edit history, reactions and unread/read endpoints.
   // Fail closed on an unavailable PG store; never serve stale cached content.
-  let live = false;
+  let live: boolean;
   if (db._pool) {
     try {
       live = await channelLiveForMessageRead(db._pool, channelId, channel.serverId);
