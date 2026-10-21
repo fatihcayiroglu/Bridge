@@ -45,7 +45,7 @@ RUN('P7 D2 authoritative message read — real PostgreSQL', () => {
 
   beforeAll(async () => {
     await cleanup();
-    await q('INSERT INTO users (_id,username,"displayName",password,"createdAt") VALUES ($1,$1,$1,$2,1)',
+    await q('INSERT INTO users (_id,username,"displayName",password,"createdAt") VALUES ($1,$2,$3,$4,1)',
       [OWNER, 'owner', 'Owner', 'irrelevant']);
     await q('INSERT INTO servers (_id,name,"ownerId","createdAt") VALUES ($1,$2,$3,1)',
       [SERVER, 'expiry-guard-server', OWNER]);
@@ -68,6 +68,11 @@ RUN('P7 D2 authoritative message read — real PostgreSQL', () => {
     const baseline = await request(app).get('/api/channels/' + CHANNEL + '/messages');
     expect(baseline.status).toBe(200);
     expect(baseline.body.messages.some((m: { _id: string }) => m._id === MESSAGE)).toBe(true);
+
+    const cached = await request(app).get('/api/channels/' + CHANNEL + '/messages');
+    expect(cached.status).toBe(200);
+    expect(cached.headers['x-cache']).toBe('HIT');
+    expect(cached.body.messages.some((m: { _id: string }) => m._id === MESSAGE)).toBe(true);
 
     await q('UPDATE channels SET "expiresAt"=$1,"expiryVersion"=1 WHERE _id=$2',
       [Date.now() - 1000, CHANNEL]);
