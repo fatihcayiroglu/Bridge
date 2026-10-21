@@ -336,6 +336,28 @@ describe('scheduled message dispatcher', () => {
     },
   );
 
+  it('rechecks expiry after awaited content policy before persisting the message', async () => {
+    jest.useFakeTimers();
+    const scheduled = await seedScheduledMsg();
+    const policy = require('../lib/messageContentPolicy');
+    policy.checkMessageContent.mockImplementationOnce(async () => {
+      // The channel expires while the asynchronous content check is running.
+      await mockDbInstance.channels.update(
+        { _id: 'ch1' },
+        { $set: { expiresAt: Date.now() - 1, expiryVersion: 1 } },
+      );
+      return null;
+    });
+    startScheduledJob(null);
+    await tick();
+
+    expect(policy.checkMessageContent).toHaveBeenCalled();
+    expect(await mockDbInstance.messages.find({ scheduledId: scheduled._id })).toHaveLength(0);
+    const row = await requireDoc(mockDbInstance.scheduledMsgs, { _id: scheduled._id });
+    expect(row.sent).toBe(false);
+    expect(row.failureReason).toBe('channel_expired');
+  });
+
   it('recovers a message committed before a worker crash without duplicating it', async () => {
     jest.useFakeTimers();
     const scheduled = await seedScheduledMsg();
