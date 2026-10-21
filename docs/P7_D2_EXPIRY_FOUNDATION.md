@@ -60,7 +60,8 @@ explicit owner/UI/product review. No feature activation or D2 acceptance yet.
 ## Scheduled-message expiry preflight (incremental, NOT final enforcement)
 
 The scheduled-message worker checks the channel's persisted expiry at dispatch
-preflight. A channel already expired by server time is terminally refused;
+preflight and re-reads channel eligibility after the asynchronous content check,
+immediately before creating the message. A channel already expired by server time is terminally refused;
 noncanonical/missing expiry metadata is refused, and legacy or migrated
 permanent channels continue to work. Regression tests cover expiry equality,
 future expiry, NULL permanence and corrupt versions/timestamps.
