@@ -746,6 +746,22 @@ Moderators need usable controls alongside abuse prevention:
 - expiry/reversal for temporary controls;
 - permission-safe operation under multi-node deployment.
 
+### B5 raid control visibility candidate
+
+Server Settings → Moderation now reads `GET /api/servers/:sid/raid-protection`
+for a member with `MANAGE_SERVER` and shows the configured level, live response
+state and the server's actual threshold/window/duration. It sends level changes
+and manual reversal through the existing permission-checked, audited PATCH
+endpoint. The client hides changes when the status is absent or malformed; the
+server remains the authorization authority. The response explains that balanced
+mode holds young accounts from posting while strict mode also refuses joins.
+
+This closes the missing client entry point for existing raid controls only after
+the candidate merges and exact-head CI passes. B5 still needs #345 report
+evidence acceptance, audited bulk raid cleanup, rate-limit visibility beyond
+join raids, multi-node response/reversal evidence and final acceptance. The
+local UI test does not establish those remaining guarantees.
+
 ### B5-1 — evidence-safe message reports (issue #336)
 
 One item only; **B5 as a whole stays open** (raid actions, lockdown visibility,

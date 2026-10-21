@@ -23,6 +23,7 @@ import { render, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
 const PERM_KICK    = 1 << 4;
 const PERM_BAN     = 1 << 5;
 const PERM_TIMEOUT = 1 << 7;
+const PERM_MANAGE_SERVER = 1 << 3;
 const PERM_ADMIN   = 1 << 30;
 
 let myPerms = 0;
@@ -99,6 +100,93 @@ beforeEach(() => {
 });
 
 afterEach(() => cleanup());
+
+const raidStatus = (level: 'off' | 'balanced' | 'strict', active = false) => ({
+  level,
+  active,
+  lockdownUntil: active ? Date.now() + 60_000 : null,
+  policy: level === 'off' ? null : {
+    windowMs: 10_000,
+    maxUniqueAccounts: level === 'strict' ? 10 : 30,
+    lockdownMs: level === 'strict' ? 300_000 : 600_000,
+    refuseJoins: level === 'strict',
+    youngAccountMs: 86_400_000,
+  },
+});
+
+describe('raid protection controls', () => {
+  it('shows server policy to a MANAGE_SERVER moderator and persists the selected level', async () => {
+    myPerms = PERM_MANAGE_SERVER;
+    let current = raidStatus('balanced');
+    apiMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/raid-protection')) {
+        if (init?.method === 'PATCH') {
+          current = raidStatus(JSON.parse(String(init.body)).level);
+          return ok(current);
+        }
+        return ok(current);
+      }
+      return ok([]);
+    });
+    render(ModerationTab);
+
+    await waitFor(() => expect(document.querySelector('[aria-labelledby="mod-raid-title"]')?.textContent).toContain('30'));
+    expect(document.querySelector('[aria-labelledby="mod-action-title"]')).toBeNull();
+    expect(document.querySelector('[aria-labelledby="mod-raid-title"]')?.textContent).toContain('10');
+    await fireEvent.click(document.querySelector<HTMLButtonElement>('[aria-labelledby="mod-raid-title"] [aria-pressed="false"]:last-of-type')!);
+
+    await waitFor(() => expect(calls('PATCH')).toHaveLength(1));
+    expect(calls('PATCH')[0]![0]).toBe('/api/servers/s1/raid-protection');
+    expect(JSON.parse(String((calls('PATCH')[0]![1] as RequestInit).body))).toEqual({ level: 'strict' });
+    await waitFor(() => expect(document.querySelector('[aria-labelledby="mod-raid-title"]')?.textContent).toContain('10'));
+  });
+
+  it('ends an active response with the server reversal endpoint', async () => {
+    myPerms = PERM_MANAGE_SERVER;
+    let current = raidStatus('strict', true);
+    apiMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/raid-protection')) {
+        if (init?.method === 'PATCH') {
+          current = raidStatus('strict');
+          return ok(current);
+        }
+        return ok(current);
+      }
+      return ok([]);
+    });
+    render(ModerationTab);
+    await waitFor(() => expect(document.querySelector<HTMLButtonElement>('[aria-labelledby="mod-raid-title"] .mod-btn-warn')).toBeTruthy());
+    await fireEvent.click(document.querySelector<HTMLButtonElement>('[aria-labelledby="mod-raid-title"] .mod-btn-warn')!);
+    await waitFor(() => expect(calls('PATCH')).toHaveLength(1));
+    expect(JSON.parse(String((calls('PATCH')[0]![1] as RequestInit).body))).toEqual({ clearLockdown: true });
+    await waitFor(() => expect(document.querySelector('[aria-labelledby="mod-raid-title"] .mod-btn-warn')).toBeNull());
+  });
+
+  it('does not offer policy changes when the server denies status or the selected server changes', async () => {
+    myPerms = PERM_MANAGE_SERVER;
+    apiMock = vi.fn(async (url: string) => String(url).endsWith('/raid-protection') ? fail(403) : ok([]));
+    const first = render(ModerationTab);
+    await waitFor(() => expect(document.querySelector('[aria-labelledby="mod-raid-title"]')).toBeTruthy());
+    expect(document.querySelector('[aria-pressed]')).toBeNull();
+    first.unmount();
+
+    apiMock = vi.fn(async (url: string) => String(url).endsWith('/raid-protection') ? ok(raidStatus('balanced')) : ok([]));
+    render(ModerationTab);
+    await waitFor(() => expect(document.querySelector('[aria-pressed="false"]')).toBeTruthy());
+    stillCurrent = false;
+    await fireEvent.click(document.querySelector<HTMLButtonElement>('[aria-pressed="false"]')!);
+    expect(calls('PATCH')).toHaveLength(0);
+  });
+
+  it('does not offer policy changes for a malformed status response', async () => {
+    myPerms = PERM_MANAGE_SERVER;
+    apiMock = vi.fn(async (url: string) => String(url).endsWith('/raid-protection')
+      ? ok({ level: 'strict', active: true, lockdownUntil: null, policy: {} }) : ok([]));
+    render(ModerationTab);
+    await waitFor(() => expect(document.querySelector('[aria-labelledby="mod-raid-title"] [role="alert"]')).toBeTruthy());
+    expect(document.querySelector('[aria-pressed]')).toBeNull();
+  });
+});
 
 // ════════════════════════════════════════════════════════════════════════════
 describe('görünürlük — yetkisiz kullanıcı', () => {

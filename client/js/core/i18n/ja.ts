@@ -2459,6 +2459,23 @@ const translations: Record<string, string> = {
   "automation_link_exemption_empty": "インストール済みのボットやWebhookはありません",
   "automation_link_exemption_save_failed": "連携の例外を保存できませんでした。",
   "automation_link_exemption_saved": "連携の例外を保存しました。",
+  "raid_title": "荒らし対策",
+  "raid_status_unavailable": "荒らし対策の状態を取得できませんでした。",
+  "raid_updated": "荒らし対策を更新しました。",
+  "raid_current_level": "現在のレベル: {level}",
+  "raid_level_off": "オフ",
+  "raid_level_balanced": "標準",
+  "raid_level_strict": "厳格",
+  "raid_active_until": "対策は {time} まで有効です。",
+  "raid_inactive": "現在、有効な対策はありません。",
+  "raid_threshold": "{seconds} 秒間に {count} 件を超える異なるアカウントが参加すると、{minutes} 分間の対策が始まります。",
+  "raid_strict_effect": "有効中は新規参加を拒否し、作成間もないアカウントの投稿を一時的に制限します。",
+  "raid_balanced_effect": "新規参加は可能ですが、作成間もないアカウントの投稿を一時的に制限します。",
+  "raid_off_effect": "自動対策は無効です。",
+  "raid_level_control": "荒らし対策レベル",
+  "raid_clear": "現在の対策を終了",
+  "raid_change_hint": "オフにするか対策を終了すると、この対策による投稿制限も解除されます。",
+  "raid_refresh": "状態を更新",
 };
 
 export default translations;

@@ -2459,6 +2459,23 @@ const translations: Record<string, string> = {
   "automation_link_exemption_empty": "Нет установленных ботов или вебхуков",
   "automation_link_exemption_save_failed": "Не удалось сохранить исключение интеграции.",
   "automation_link_exemption_saved": "Исключение интеграции сохранено.",
+  "raid_title": "Защита от рейдов",
+  "raid_status_unavailable": "Не удалось получить состояние защиты от рейдов.",
+  "raid_updated": "Защита от рейдов обновлена.",
+  "raid_current_level": "Текущий уровень: {level}",
+  "raid_level_off": "Выключена",
+  "raid_level_balanced": "Сбалансирована",
+  "raid_level_strict": "Строгая",
+  "raid_active_until": "Защита активна до {time}.",
+  "raid_inactive": "Активной защиты сейчас нет.",
+  "raid_threshold": "Более {count} разных аккаунтов за {seconds} секунд запускают защиту на {minutes} минут.",
+  "raid_strict_effect": "Новые участники не допускаются; недавно созданные аккаунты временно не могут писать.",
+  "raid_balanced_effect": "Новые участники допускаются; недавно созданные аккаунты временно не могут писать.",
+  "raid_off_effect": "Автоматическая защита отключена.",
+  "raid_level_control": "Уровень защиты от рейдов",
+  "raid_clear": "Завершить текущую защиту",
+  "raid_change_hint": "Выключение или завершение снимает ограничения на публикацию, введённые этой защитой.",
+  "raid_refresh": "Обновить состояние",
 };
 
 export default translations;

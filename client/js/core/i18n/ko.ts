@@ -2459,6 +2459,23 @@ const translations: Record<string, string> = {
   "automation_link_exemption_empty": "설치된 봇이나 웹훅이 없습니다",
   "automation_link_exemption_save_failed": "통합 예외를 저장하지 못했습니다.",
   "automation_link_exemption_saved": "통합 예외가 저장되었습니다.",
+  "raid_title": "레이드 보호",
+  "raid_status_unavailable": "레이드 보호 상태를 불러올 수 없습니다.",
+  "raid_updated": "레이드 보호가 업데이트되었습니다.",
+  "raid_current_level": "현재 수준: {level}",
+  "raid_level_off": "끔",
+  "raid_level_balanced": "균형",
+  "raid_level_strict": "엄격",
+  "raid_active_until": "레이드 대응이 {time}까지 활성화됩니다.",
+  "raid_inactive": "활성화된 레이드 대응이 없습니다.",
+  "raid_threshold": "{seconds}초 동안 서로 다른 계정이 {count}개를 넘게 참여하면 {minutes}분 동안 대응합니다.",
+  "raid_strict_effect": "활성화 중에는 새 참여를 거부하고 최근 생성된 계정의 게시를 일시적으로 제한합니다.",
+  "raid_balanced_effect": "새 참여는 허용하지만 최근 생성된 계정의 게시를 일시적으로 제한합니다.",
+  "raid_off_effect": "자동 레이드 대응이 꺼져 있습니다.",
+  "raid_level_control": "레이드 보호 수준",
+  "raid_clear": "현재 레이드 대응 종료",
+  "raid_change_hint": "끄거나 대응을 종료하면 이 대응으로 설정된 게시 제한도 해제됩니다.",
+  "raid_refresh": "상태 새로고침",
 };
 
 export default translations;
