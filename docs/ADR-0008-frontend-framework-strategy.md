@@ -82,6 +82,13 @@ client/js/core/api*.ts
 
 Servis katmanı asla Svelte import etmez.
 
+> **Not (2026-10-21):** Yukarıdaki blok Sprint 108'deki dosyaları kaydeder.
+> `socket.ts` ve `auth.ts` artık yok: soket Sprint 116'da `SocketManager.svelte`'e
+> taşındı, kimlik doğrulama işlevleri `auth-compat.ts`'tedir. CI'ın bugün
+> denetlediği liste `docs/FRONTEND_ARCHITECTURE.md` → "Kesin Sınır: Servis
+> Katmanı" bölümündedir ve local-first katmanını ile
+> `messages/message-format.ts`'i de kapsar.
+
 #### 3. Svelte bileşenleri vanilla servis katmanını çağırabilir
 
 ```typescript
