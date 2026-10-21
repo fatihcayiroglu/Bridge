@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import db from '../loader';
-import { scrubbedEvidence, type ReportEvidenceColumns } from '../../lib/reportEvidence';
+import { anonymizeReportAuthor, isMachineMessageAuthor, scrubbedEvidence, type ReportEvidenceColumns } from '../../lib/reportEvidence';
 
 export type MessageReportReason = 'spam' | 'harassment' | 'hate' | 'sexual' | 'violence' | 'other';
 export type MessageReportResolution = 'resolved' | 'dismissed';
@@ -12,6 +12,10 @@ class MessageReportRepository {
     /** P7 B5: what was reported, captured from the message at report time. */
     evidence: ReportEvidenceColumns;
   }): Promise<{ row: Record<string, unknown>; created: boolean }> {
+    // In production, report insertion and the author lock must share one client.
+    // Mock collections have no pool; their route tests exercise presentation while
+    // real-PostgreSQL tests exercise this transaction and its race ordering.
+    if (db._pool) return this.createProtected(input);
     const existing = await db.messageReports.findOne({ reporterId: input.reporterId, messageId: input.messageId, status: 'open' });
     if (existing) return { row: existing as Record<string, unknown>, created: false };
     try {
@@ -28,6 +32,43 @@ class MessageReportRepository {
       if (!raced) throw error;
       return { row: raced as Record<string, unknown>, created: false };
     }
+  }
+
+  private async createProtected(input: {
+    serverId: string; channelId: string; messageId: string; reporterId: string;
+    reason: MessageReportReason; detail: string; evidence: ReportEvidenceColumns;
+  }): Promise<{ row: Record<string, unknown>; created: boolean }> {
+    const transaction = db._transaction as <T>(fn: (client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> }) => Promise<T>) => Promise<T>;
+    return transaction(async client => {
+      const authorId = input.evidence.evidenceAuthorId;
+      let evidence = input.evidence;
+      if (authorId && authorId !== 'deleted-user' && !isMachineMessageAuthor(authorId)) {
+        // FOR SHARE conflicts with erasure's first FOR UPDATE. If erasure wins,
+        // the missing row identifies a formerly human author; never persist the
+        // name or id from the route's earlier message read.
+        const author = await client.query('SELECT _id FROM users WHERE _id = $1 FOR SHARE', [authorId]);
+        if (author.rows.length === 0) evidence = anonymizeReportAuthor(evidence);
+      } else if (authorId === 'deleted-user') {
+        evidence = anonymizeReportAuthor(evidence);
+      }
+      const existing = await client.query(
+        `SELECT * FROM message_reports WHERE "reporterId" = $1 AND "messageId" = $2 AND status = 'open' LIMIT 1`,
+        [input.reporterId, input.messageId]);
+      if (existing.rows[0]) return { row: existing.rows[0], created: false };
+      const fields = ['_id', 'serverId', 'channelId', 'messageId', 'reporterId', 'reason', 'detail',
+        'status', 'createdAt', 'resolvedAt', 'resolvedBy', 'resolution', ...Object.keys(evidence)];
+      const values: unknown[] = [uuidv4(), input.serverId, input.channelId, input.messageId,
+        input.reporterId, input.reason, input.detail, 'open', Date.now(), null, null, null,
+        ...Object.values(evidence)];
+      const inserted = await client.query(
+        `INSERT INTO message_reports (${fields.map(field => `"${field}"`).join(', ')}) VALUES (${fields.map((_, i) => `$${i + 1}`).join(', ')}) ON CONFLICT DO NOTHING RETURNING *`, values);
+      if (inserted.rows[0]) return { row: inserted.rows[0], created: true };
+      const raced = await client.query(
+        `SELECT * FROM message_reports WHERE "reporterId" = $1 AND "messageId" = $2 AND status = 'open' LIMIT 1`,
+        [input.reporterId, input.messageId]);
+      if (!raced.rows[0]) throw new Error('Report insertion conflicted without an open report');
+      return { row: raced.rows[0], created: false };
+    });
   }
 
   async findOpenForServer(serverId: string, limit = 200): Promise<Record<string, unknown>[]> {

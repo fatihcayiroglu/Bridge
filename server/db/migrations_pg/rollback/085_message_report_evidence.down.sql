@@ -1,7 +1,11 @@
 -- 085: fail closed instead of destroying moderation evidence.
--- Rolling the application back does NOT need this script: older code ignores
--- the nullable evidence columns and already handles a report whose message is
--- gone. Run this only to reverse the schema, before any evidence is captured.
+-- Run in one transaction. An application rollback loses report-time capture;
+-- it must not be represented as an evidence-safe rolling deployment.
+-- Lock users before reports, matching erasure's lock order. This also prevents
+-- a concurrent old-node DELETE from running its evidence trigger mid-rollback.
+-- The locks are held to COMMIT by the migration runner.
+LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE message_reports IN ACCESS EXCLUSIVE MODE;
 DO $$
 BEGIN
   IF EXISTS (
@@ -19,6 +23,9 @@ BEGIN
     RAISE EXCEPTION 'Cannot roll back 085: message reports reference messages that no longer exist';
   END IF;
 END $$;
+
+DROP TRIGGER IF EXISTS message_reports_author_erasure ON users;
+DROP FUNCTION IF EXISTS anonymize_report_evidence_on_user_delete();
 
 ALTER TABLE message_reports DROP CONSTRAINT IF EXISTS message_reports_evidence_lifecycle_check;
 ALTER TABLE message_reports DROP CONSTRAINT IF EXISTS message_reports_evidence_bounds_check;

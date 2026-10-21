@@ -388,7 +388,7 @@
                   <small>{t('moderation_reporter', undefined, { name: report.reporter?.displayName ?? t('ui_bridge_user') })}</small>
                 </div>
                 <div class="mod-report-actions">
-                  <button type="button" class="mod-btn" disabled={busyId !== '' || report.currentState === 'removed'} onclick={() => openReportedMessage(report)}>{t('pin_jump')}</button>
+                  <button type="button" class="mod-btn" disabled={busyId !== '' || report.currentState === 'removed' || report.currentState === 'deleted'} onclick={() => openReportedMessage(report)}>{t('pin_jump')}</button>
                   <button type="button" class="mod-btn" disabled={busyId !== ''} onclick={() => void resolveReport(report, 'dismissed')}>{t('dmc_reject')}</button>
                   <button type="button" class="mod-btn mod-btn-warn" disabled={busyId !== ''} onclick={() => void resolveReport(report, 'resolved')}>{t("moderation_resolved")}</button>
                 </div>

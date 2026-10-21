@@ -2221,7 +2221,7 @@ const translations: Record<string, string> = {
   "moderation_report_note": "신고 메모: {detail}",
   "moderation_reporter": "신고자: {name}",
   "moderation_report_edited_since": "신고 후 수정됨 — 신고된 내용을 표시합니다.",
-  "moderation_report_deleted_since": "신고 후 삭제됨 — 신고된 내용을 표시합니다.",
+  "moderation_report_deleted_since": "신고 후 채팅에서 숨겨짐 — 신고된 내용을 표시합니다.",
   "moderation_report_removed": "메시지가 더 이상 없습니다 — 신고된 내용을 표시합니다.",
   "moderation_report_no_snapshot": "Bridge가 사본을 보관하기 전에 신고됨 — 현재 메시지를 표시합니다.",
   "moderation_report_now": "현재: {text}",

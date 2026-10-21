@@ -578,13 +578,14 @@ describe('rapor kuyruğu — raporlanan içerik', () => {
     expect(jump()?.disabled).toBe(false);
   });
 
-  it('a deleted message still shows what was reported', async () => {
+  it('a soft-deleted message shows the report-time text and cannot jump into hidden history', async () => {
     apiMock = withReports([reportRow({ currentState: 'deleted', message: { displayName: 'Abuser', preview: '[Mesaj silindi]' } })]);
     render(ModerationTab);
     await waitFor(() => expect(content()).toContain('abusive original text'));
     expect(content()).not.toContain('[Mesaj silindi]');
     expect(stateLine()).toBe(t('moderation_report_deleted_since'));
     expect(document.querySelector('.mod-report-now')).toBeNull();
+    expect(jump()?.disabled).toBe(true);
   });
 
   it('a removed message: the snapshot, and no jump to a message that is gone', async () => {
@@ -600,6 +601,7 @@ describe('rapor kuyruğu — raporlanan içerik', () => {
     render(ModerationTab);
     await waitFor(() => expect(content()).toContain('abusive original text'));
     expect(document.querySelector('.mod-report-state')).toBeNull();
+    expect(jump()?.disabled).toBe(false);
   });
 
   it('a report filed before snapshots shows the current message and says so', async () => {

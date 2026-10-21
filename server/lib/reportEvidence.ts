@@ -112,6 +112,16 @@ export function captureReportEvidence(message: ReportableMessage, now = Date.now
   };
 }
 
+/** Machine principals have no users row and must retain their own attribution. */
+export function isMachineMessageAuthor(id: string): boolean {
+  return id === 'system' || ['bot:', 'webhook:', 'bridge:', 'crosspost:', 'ap:'].some(prefix => id.startsWith(prefix));
+}
+
+/** A previously erased human must not be reidentified by a stale message read. */
+export function anonymizeReportAuthor(evidence: ReportEvidenceColumns): ReportEvidenceColumns {
+  return { ...evidence, evidenceAuthorId: 'deleted-user', evidenceAuthorName: '' };
+}
+
 export function evidenceState(row: Record<string, unknown>): ReportEvidenceState {
   if (timestamp(row.evidenceScrubbedAt) !== null) return 'scrubbed';
   if (timestamp(row.evidenceCapturedAt) !== null && typeof row.evidenceText === 'string') return 'captured';

@@ -2221,7 +2221,7 @@ const translations: Record<string, string> = {
   "moderation_report_note": "Примечание к жалобе: {detail}",
   "moderation_reporter": "Сообщил: {name}",
   "moderation_report_edited_since": "Изменено после жалобы — показано то, на что пожаловались.",
-  "moderation_report_deleted_since": "Удалено после жалобы — показано то, на что пожаловались.",
+  "moderation_report_deleted_since": "После жалобы скрыто из чата — показано то, на что пожаловались.",
   "moderation_report_removed": "Сообщения больше нет — показано то, на что пожаловались.",
   "moderation_report_no_snapshot": "Жалоба подана до того, как Bridge начал сохранять копию, — показано текущее сообщение.",
   "moderation_report_now": "Сейчас: {text}",

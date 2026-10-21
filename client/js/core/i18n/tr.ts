@@ -2192,7 +2192,7 @@ const translations: Record<string, string> = {
   "moderation_report_note": "Rapor notu: {detail}",
   "moderation_reporter": "Raporlayan: {name}",
   "moderation_report_edited_since": "Raporlandıktan sonra düzenlendi — raporlanan hâli gösteriliyor.",
-  "moderation_report_deleted_since": "Raporlandıktan sonra silindi — raporlanan hâli gösteriliyor.",
+  "moderation_report_deleted_since": "Raporlandıktan sonra sohbetten kaldırıldı — raporlanan hâli gösteriliyor.",
   "moderation_report_removed": "Mesaj artık yok — raporlanan hâli gösteriliyor.",
   "moderation_report_no_snapshot": "Bridge kopya saklamaya başlamadan önce raporlandı — mesajın şimdiki hâli gösteriliyor.",
   "moderation_report_now": "Şimdi: {text}",

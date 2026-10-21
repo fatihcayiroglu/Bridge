@@ -2221,7 +2221,7 @@ const translations: Record<string, string> = {
   "moderation_report_note": "報告メモ: {detail}",
   "moderation_reporter": "報告者: {name}",
   "moderation_report_edited_since": "報告後に編集されました — 報告時の内容を表示しています。",
-  "moderation_report_deleted_since": "報告後に削除されました — 報告時の内容を表示しています。",
+  "moderation_report_deleted_since": "報告後にチャットから非表示になりました — 報告時の内容を表示しています。",
   "moderation_report_removed": "メッセージはもう存在しません — 報告時の内容を表示しています。",
   "moderation_report_no_snapshot": "Bridge がコピーを保存する前に報告されました — 現在のメッセージを表示しています。",
   "moderation_report_now": "現在: {text}",

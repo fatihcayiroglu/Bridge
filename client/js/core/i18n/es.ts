@@ -2221,7 +2221,7 @@ const translations: Record<string, string> = {
   "moderation_report_note": "Nota del informe: {detail}",
   "moderation_reporter": "Reportado por: {name}",
   "moderation_report_edited_since": "Editado después del reporte: se muestra lo que se reportó.",
-  "moderation_report_deleted_since": "Eliminado después del reporte: se muestra lo que se reportó.",
+  "moderation_report_deleted_since": "Retirado del chat después del reporte: se muestra lo que se reportó.",
   "moderation_report_removed": "El mensaje ya no existe: se muestra lo que se reportó.",
   "moderation_report_no_snapshot": "Reportado antes de que Bridge guardara una copia: se muestra el mensaje actual.",
   "moderation_report_now": "Ahora: {text}",

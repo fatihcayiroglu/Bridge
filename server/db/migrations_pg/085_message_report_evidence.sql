@@ -14,8 +14,9 @@
 --    snapshot outlive the row. Channel, server and reporter foreign keys are
 --    unchanged.
 --
--- Additive and backwards compatible: older code reads and writes reports
--- without these columns, and already handles a report whose message is gone.
+-- Older code can still write legacy reports without a snapshot. A database
+-- trigger protects captured author identity if an older node erases an account.
+-- Full evidence capture requires every reporting node to run the new code.
 
 ALTER TABLE message_reports ADD COLUMN IF NOT EXISTS "evidenceCapturedAt" BIGINT;
 ALTER TABLE message_reports ADD COLUMN IF NOT EXISTS "evidenceText" TEXT;
@@ -63,3 +64,18 @@ DO $$ BEGIN
 END $$;
 
 ALTER TABLE message_reports DROP CONSTRAINT IF EXISTS "message_reports_messageId_fkey";
+
+-- Erasure can run on an older application node during a rolling deployment.
+-- Keep identity removal in the same transaction as DELETE FROM users even if
+-- that node does not know about migration 085's columns.
+CREATE OR REPLACE FUNCTION anonymize_report_evidence_on_user_delete()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE message_reports SET "evidenceAuthorId" = 'deleted-user', "evidenceAuthorName" = ''
+   WHERE "evidenceAuthorId" = OLD._id AND "evidenceScrubbedAt" IS NULL;
+  RETURN OLD;
+END $$;
+DROP TRIGGER IF EXISTS message_reports_author_erasure ON users;
+CREATE TRIGGER message_reports_author_erasure
+  BEFORE DELETE ON users FOR EACH ROW
+  EXECUTE FUNCTION anonymize_report_evidence_on_user_delete();

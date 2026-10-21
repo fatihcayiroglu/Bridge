@@ -95,6 +95,8 @@ oluşturulabilecekse. Çoğu durumda yalnızca `.sql` yeterlidir.
 ## Rollback
 
 Her migration için `rollback/` klasöründe `.down.sql` dosyası mevcuttur.
+Migration 085 has a guarded, transactional rollback. Its mixed-version and
+erasure behavior is documented in `docs/P7_MESSAGE_REPORT_EVIDENCE_ROLLOUT.md`.
 
 ## Yeni Migration Ekleme
 

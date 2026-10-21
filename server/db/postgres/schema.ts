@@ -1095,6 +1095,20 @@ CREATE INDEX IF NOT EXISTS idx_message_reports_channel_open
 CREATE INDEX IF NOT EXISTS idx_message_reports_message
   ON message_reports("messageId");
 
+-- Migration 085: old application nodes erasing users must also remove captured
+-- author identity. The trigger executes in the same transaction as the delete.
+CREATE OR REPLACE FUNCTION anonymize_report_evidence_on_user_delete()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE message_reports SET "evidenceAuthorId" = 'deleted-user', "evidenceAuthorName" = ''
+   WHERE "evidenceAuthorId" = OLD._id AND "evidenceScrubbedAt" IS NULL;
+  RETURN OLD;
+END $$;
+DROP TRIGGER IF EXISTS message_reports_author_erasure ON users;
+CREATE TRIGGER message_reports_author_erasure
+  BEFORE DELETE ON users FOR EACH ROW
+  EXECUTE FUNCTION anonymize_report_evidence_on_user_delete();
+
 
 -- P1 Saved follow-up reminders. Delivery state is separate from the saved item
 -- so a reminder can be scheduled, delivered and later rescheduled safely.

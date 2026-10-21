@@ -155,6 +155,19 @@ RUN('real PostgreSQL — P7 B5 evidence-safe message reports (085)', () => {
     expect(JSON.stringify(row)).not.toContain('PG-CIPHERTEXT');
   });
 
+  it.each(['bot:pgt-rev-machine', 'webhook:pgt-rev-machine', 'bridge:pgt-rev-machine', 'crosspost:pgt-rev-machine', 'ap:pgt-rev-machine', 'system'])(
+    'a machine principal without a users row keeps its attribution: %s', async principal => {
+      const id = `${P}-m-${principal.replace(':', '-')}`;
+      const msg = await insertMessage(id, principal, 'machine evidence');
+      const { row } = await MessageReports.create({
+        serverId: SRV, channelId: CH, messageId: id, reporterId: REPORTER,
+        reason: 'spam', detail: '', evidence: captureReportEvidence(msg),
+      });
+      expect(row.evidenceAuthorId).toBe(principal);
+      expect(row.evidenceAuthorName).toBe('Abuser');
+    },
+  );
+
   it('the CHECKs refuse oversized evidence and a partial scrub', async () => {
     const id = `${P}-m-check`;
     await insertMessage(id, AUTHOR, 'bounded');
@@ -200,6 +213,114 @@ RUN('real PostgreSQL — P7 B5 evidence-safe message reports (085)', () => {
     expect(reports.some(r => r.messageId === id && r.reason === 'harassment' && r.detail === 'please look')).toBe(true);
     for (const r of reports) expect(Object.keys(r).filter(k => k.startsWith('evidence'))).toEqual([]);
     expect(JSON.stringify(res.body)).not.toContain('EXPORT-SHOULD-NOT-CONTAIN-THIS');
+  });
+
+  async function raceAuthor(suffix: string): Promise<{ userId: string; messageId: string; evidence: ReturnType<typeof captureReportEvidence> }> {
+    const userId = `${P}-race-${suffix}`;
+    const messageId = `${P}-m-race-${suffix}`;
+    await q(`INSERT INTO users (_id, username, "displayName", password, "createdAt") VALUES ($1, $2, 'Race Author', 'x', 1)`,
+      [userId, userId.replace(/-/g, '_')]);
+    const msg = await insertMessage(messageId, userId, 'race evidence');
+    return { userId, messageId, evidence: captureReportEvidence(msg) };
+  }
+
+  function raceInput(messageId: string, evidence: ReturnType<typeof captureReportEvidence>) {
+    return { serverId: SRV, channelId: CH, messageId, reporterId: REPORTER,
+      reason: 'harassment' as const, detail: 'race', evidence };
+  }
+
+  async function waitForBlocked(queryFragment: string): Promise<void> {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const rows = await q(
+        `SELECT pid FROM pg_stat_activity WHERE datname = current_database()
+          AND pid <> pg_backend_pid() AND query LIKE $1 AND cardinality(pg_blocking_pids(pid)) > 0`,
+        [`%${queryFragment}%`]);
+      if (rows.length) return;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    throw new Error(`Expected PostgreSQL row-lock wait: ${queryFragment}`);
+  }
+
+  function expectErasedEvidence(row: Record<string, unknown>, userId: string): void {
+    expect(row.evidenceText).toBe('race evidence');
+    expect(row.evidenceAuthorId).toBe(TOMBSTONE_USER_ID);
+    expect(row.evidenceAuthorName).toBe('');
+    expect(JSON.stringify({ id: row.evidenceAuthorId, name: row.evidenceAuthorName })).not.toContain(userId);
+  }
+
+  it('erasure gets the user lock first: a blocked report writes no stale human identity, including on retry', async () => {
+    const { userId, messageId, evidence } = await raceAuthor('erase-first');
+    let unlock!: () => void;
+    let locked!: () => void;
+    const held = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const transaction: TransactionRunner = async fn => {
+      const client = new Client({ connectionString: PG_URL });
+      await client.connect();
+      await client.query('BEGIN');
+      try {
+        const result = await fn({
+          query: async (sql: string, params?: unknown[]) => {
+            const answer = await client.query(sql, params);
+            if (sql.includes('FOR UPDATE')) { locked(); await held; }
+            return answer;
+          },
+        });
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally { await client.end(); }
+    };
+    const erasure = eraseAccountData(db._pool, transaction, userId);
+    await acquired;
+    const report = MessageReports.create(raceInput(messageId, evidence));
+    await waitForBlocked('FOR SHARE');
+    unlock();
+    await erasure;
+    const created = await report;
+    expectErasedEvidence(created.row, userId);
+    const retried = await MessageReports.create(raceInput(messageId, evidence));
+    expect(retried.created).toBe(false);
+    expectErasedEvidence(retried.row, userId);
+  });
+
+  it('report gets the user lock first: erasure waits, then scrubs the committed report', async () => {
+    const { userId, messageId, evidence } = await raceAuthor('report-first');
+    const holder = new Client({ connectionString: PG_URL });
+    await holder.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query('SELECT _id FROM users WHERE _id = $1 FOR SHARE', [userId]);
+      const erasure = eraseAccountData(db._pool, db._transaction as TransactionRunner, userId);
+      await waitForBlocked('FOR UPDATE');
+      const created = await MessageReports.create(raceInput(messageId, evidence));
+      expect(created.row.evidenceAuthorId).toBe(userId);
+      await holder.query('COMMIT');
+      await erasure;
+      const [row] = await q(`SELECT * FROM message_reports WHERE _id = $1`, [created.row._id]);
+      expectErasedEvidence(row, userId);
+    } finally {
+      await holder.query('ROLLBACK').catch(() => undefined);
+      await holder.end();
+    }
+  });
+
+  it('a crashed erasure rolls back; an older node deleting the user later still scrubs committed evidence', async () => {
+    const { userId, messageId, evidence } = await raceAuthor('crash');
+    const holder = new Client({ connectionString: PG_URL });
+    await holder.connect();
+    await holder.query('BEGIN');
+    await holder.query('SELECT _id FROM users WHERE _id = $1 FOR UPDATE', [userId]);
+    const report = MessageReports.create(raceInput(messageId, evidence));
+    await waitForBlocked('FOR SHARE');
+    await holder.end(); // connection loss aborts the uncommitted erasure and releases its lock
+    const created = await report;
+    expect(created.row.evidenceAuthorId).toBe(userId); // account still exists
+    await q(`DELETE FROM users WHERE _id = $1`, [userId]); // older application node, unaware of evidence columns
+    const [row] = await q(`SELECT * FROM message_reports WHERE _id = $1`, [created.row._id]);
+    expectErasedEvidence(row, userId);
   });
 
   describe('rollback 085 fails closed', () => {
