@@ -40,7 +40,8 @@ export const CHANNEL_WRITE_CLOCK_SQL =
 export const CHANNEL_WRITE_TOMBSTONE_SQL = [
   'SELECT "channelId", "serverId", "expiredAt", "expiryVersion",',
   '       "recordedAt", "cleanupState"',
-  'FROM channel_expiry_tombstones WHERE "channelId"=$1 AND "serverId"=$2',
+  // Global channel identities: never hide a mismatched-tenant tombstone.
+  'FROM channel_expiry_tombstones WHERE "channelId"=$1',
 ].join('\n');
 
 export type ChannelWriteDenial = 'missing' | 'expired' | 'tombstoned' | 'invalid' | 'unverified';
@@ -70,7 +71,7 @@ async function evaluateLockedChannel(
     return 'invalid';
   }
 
-  const tombstoneResult = await tx.query(CHANNEL_WRITE_TOMBSTONE_SQL, [channelId, serverId]);
+  const tombstoneResult = await tx.query(CHANNEL_WRITE_TOMBSTONE_SQL, [channelId]);
   if (tombstoneResult.rows.length > 1) return 'invalid';
 
   if (channel !== null &&
