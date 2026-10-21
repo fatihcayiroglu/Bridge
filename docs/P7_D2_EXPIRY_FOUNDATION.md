@@ -56,3 +56,19 @@ Do NOT combine the two independently; rebase #324 onto this canonical
 persistence model and remove/replace duplicate policy before merging it.
 Any future policy default (1h to 30d is only a proposed window here) requires
 explicit owner/UI/product review. No feature activation or D2 acceptance yet.
+
+## Scheduled-message expiry preflight (incremental, NOT final enforcement)
+
+The scheduled-message worker checks the channel's persisted expiry at dispatch
+preflight. A channel already expired by server time is terminally refused;
+noncanonical/missing expiry metadata is refused, and legacy or migrated
+permanent channels continue to work. Regression tests cover expiry equality,
+future expiry, NULL permanence and corrupt versions/timestamps.
+
+**This is not D2 closure or a complete no-republication guarantee.** The
+preflight is not under the message insert transaction, so a concurrent expiry
+between the read and write remains possible. Nor does it query the durable
+expiry tombstone or protect direct API/socket/offline/federated writes.
+Final enforcement must lock/revalidate expiry version at the actual write,
+read tombstones consistently, implement cross-node cleanup and block stale
+replay. No expiry lifecycle endpoint is enabled by this change.
