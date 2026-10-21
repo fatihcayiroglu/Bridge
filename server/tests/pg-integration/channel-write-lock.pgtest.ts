@@ -82,6 +82,30 @@ RUN('P7 D2 live-channel write barrier — real PostgreSQL', () => {
     });
   });
 
+  it('rolls back changes if the callback makes its own channel expiry invalid', async () => {
+    await fixture(async (serverId, channelId) => {
+      const before = await pool.query('SELECT "expiresAt", "expiryVersion" FROM channels WHERE _id=$1', [channelId]);
+      const originalExpiry = String(before.rows[0].expiresAt);
+      const callback = jest.fn(async (tx) => {
+        await tx.query(
+          'UPDATE channels SET "expiresAt"=$1, "expiryVersion"=2, name=$2 WHERE _id=$3',
+          [String(Date.now() - 1_000), 'must-not-commit', channelId],
+        );
+        return 'attempted';
+      });
+      const result = await withLiveChannelWriteLock(pool, channelId, serverId, callback);
+      expect(result).toEqual({ state: 'denied', reason: 'expired' });
+      expect(callback).toHaveBeenCalledTimes(1);
+      const after = await pool.query(
+        'SELECT name, "expiresAt", "expiryVersion" FROM channels WHERE _id=$1',
+        [channelId],
+      );
+      expect(after.rows[0].name).toBe(channelId);
+      expect(String(after.rows[0].expiresAt)).toBe(originalExpiry);
+      expect(Number(after.rows[0].expiryVersion)).toBe(1);
+    });
+  });
+
   it('callback failure rolls back its own writes and frees the row lock', async () => {
     await fixture(async (serverId, channelId) => {
       await expect(withLiveChannelWriteLock(pool, channelId, serverId, async (tx) => {
