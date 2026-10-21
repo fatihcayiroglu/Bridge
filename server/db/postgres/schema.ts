@@ -1033,7 +1033,9 @@ CREATE TABLE IF NOT EXISTS message_reports (
   _id          TEXT PRIMARY KEY,
   "serverId"  TEXT NOT NULL REFERENCES servers(_id) ON DELETE CASCADE,
   "channelId" TEXT NOT NULL REFERENCES channels(_id) ON DELETE CASCADE,
-  "messageId" TEXT NOT NULL REFERENCES messages(_id) ON DELETE CASCADE,
+  -- Migration 085: no foreign key. The report and its evidence snapshot outlive
+  -- a hard delete of the message (ban with message removal, admin purge).
+  "messageId" TEXT NOT NULL,
   "reporterId" TEXT NOT NULL REFERENCES users(_id) ON DELETE CASCADE,
   reason       TEXT NOT NULL,
   detail       TEXT NOT NULL DEFAULT '',
@@ -1042,9 +1044,45 @@ CREATE TABLE IF NOT EXISTS message_reports (
   "resolvedAt" BIGINT,
   "resolvedBy" TEXT REFERENCES users(_id) ON DELETE SET NULL,
   resolution   TEXT,
+  -- Migration 085 (P7 B5, #336): what was reported, captured at report time.
+  -- server/lib/reportEvidence.ts documents the content, access and retention.
+  "evidenceCapturedAt" BIGINT,
+  "evidenceText" TEXT,
+  "evidenceTextTruncated" BOOLEAN,
+  "evidenceAuthorId" TEXT,
+  "evidenceAuthorName" TEXT,
+  "evidenceMessageType" TEXT,
+  "evidenceMessageCreatedAt" BIGINT,
+  "evidenceMessageEditedAt" BIGINT,
+  "evidenceFileName" TEXT,
+  "evidenceFileType" TEXT,
+  "evidenceScrubbedAt" BIGINT,
   CHECK (reason IN ('spam','harassment','hate','sexual','violence','other')),
   CHECK (status IN ('open','resolved','dismissed')),
-  CHECK (resolution IS NULL OR resolution IN ('resolved','dismissed'))
+  CHECK (resolution IS NULL OR resolution IN ('resolved','dismissed')),
+  CONSTRAINT message_reports_evidence_bounds_check CHECK (
+    ("evidenceText" IS NULL OR char_length("evidenceText") <= 4000)
+    AND ("evidenceAuthorId" IS NULL OR char_length("evidenceAuthorId") <= 256)
+    AND ("evidenceAuthorName" IS NULL OR char_length("evidenceAuthorName") <= 256)
+    AND ("evidenceMessageType" IS NULL OR char_length("evidenceMessageType") <= 32)
+    AND ("evidenceFileName" IS NULL OR char_length("evidenceFileName") <= 512)
+    AND ("evidenceFileType" IS NULL OR char_length("evidenceFileType") <= 255)
+    AND ("evidenceCapturedAt" IS NULL OR ("evidenceCapturedAt" > 0 AND "evidenceCapturedAt" <= 9007199254740991))
+    AND ("evidenceMessageCreatedAt" IS NULL OR ("evidenceMessageCreatedAt" > 0 AND "evidenceMessageCreatedAt" <= 9007199254740991))
+    AND ("evidenceMessageEditedAt" IS NULL OR ("evidenceMessageEditedAt" > 0 AND "evidenceMessageEditedAt" <= 9007199254740991))
+    AND ("evidenceScrubbedAt" IS NULL OR ("evidenceScrubbedAt" > 0 AND "evidenceScrubbedAt" <= 9007199254740991))
+  ),
+  CONSTRAINT message_reports_evidence_lifecycle_check CHECK (
+    ("evidenceText" IS NULL OR "evidenceCapturedAt" IS NOT NULL)
+    AND ("evidenceScrubbedAt" IS NULL OR (
+      "evidenceCapturedAt" IS NOT NULL
+      AND "evidenceText" IS NULL AND "evidenceTextTruncated" IS NULL
+      AND "evidenceAuthorId" IS NULL AND "evidenceAuthorName" IS NULL
+      AND "evidenceMessageType" IS NULL AND "evidenceMessageCreatedAt" IS NULL
+      AND "evidenceMessageEditedAt" IS NULL
+      AND "evidenceFileName" IS NULL AND "evidenceFileType" IS NULL
+    ))
+  )
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_message_reports_open_unique
   ON message_reports("reporterId", "messageId") WHERE status = 'open';

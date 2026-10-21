@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import db from '../loader';
+import { scrubbedEvidence, type ReportEvidenceColumns } from '../../lib/reportEvidence';
 
 export type MessageReportReason = 'spam' | 'harassment' | 'hate' | 'sexual' | 'violence' | 'other';
 export type MessageReportResolution = 'resolved' | 'dismissed';
@@ -8,12 +9,15 @@ class MessageReportRepository {
   async create(input: {
     serverId: string; channelId: string; messageId: string; reporterId: string;
     reason: MessageReportReason; detail: string;
+    /** P7 B5: what was reported, captured from the message at report time. */
+    evidence: ReportEvidenceColumns;
   }): Promise<{ row: Record<string, unknown>; created: boolean }> {
     const existing = await db.messageReports.findOne({ reporterId: input.reporterId, messageId: input.messageId, status: 'open' });
     if (existing) return { row: existing as Record<string, unknown>, created: false };
     try {
+      const { evidence, ...report } = input;
       const row = await db.messageReports.insert({
-        _id: uuidv4(), ...input, status: 'open', createdAt: Date.now(),
+        _id: uuidv4(), ...report, ...evidence, status: 'open', createdAt: Date.now(),
         resolvedAt: null, resolvedBy: null, resolution: null,
       });
       return { row: row as Record<string, unknown>, created: true };
@@ -49,6 +53,23 @@ class MessageReportRepository {
     );
     if (result?.updated !== 1) return { kind: 'conflict' as const, row: await this.findById(input.serverId, input.id) };
     return { kind: 'updated' as const, row: await this.findById(input.serverId, input.id) };
+  }
+
+  /**
+   * P7 B5 retention: clears the evidence of reports resolved or dismissed at or before
+   * `resolvedBefore`. Open reports keep theirs. Idempotent, so every node may run it.
+   */
+  async scrubEvidenceResolvedBefore(resolvedBefore: number, now = Date.now()): Promise<number> {
+    const result = await db.messageReports.update(
+      {
+        status: { $in: ['resolved', 'dismissed'] },
+        resolvedAt: { $lte: resolvedBefore },
+        evidenceCapturedAt: { $exists: true },
+        evidenceScrubbedAt: null,
+      },
+      { $set: scrubbedEvidence(now) },
+    );
+    return Number(result?.updated ?? 0);
   }
 }
 
