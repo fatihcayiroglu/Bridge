@@ -2450,6 +2450,23 @@ const translations: Record<string, string> = {
   "automation_link_exemption_empty": "没有已安装的机器人或 Webhook",
   "automation_link_exemption_save_failed": "无法保存集成豁免。",
   "automation_link_exemption_saved": "集成豁免已保存。",
+  "raid_title": "防突袭保护",
+  "raid_status_unavailable": "无法读取防突袭保护状态。",
+  "raid_updated": "防突袭保护已更新。",
+  "raid_current_level": "当前级别：{level}",
+  "raid_level_off": "关闭",
+  "raid_level_balanced": "均衡",
+  "raid_level_strict": "严格",
+  "raid_active_until": "防突袭响应持续至 {time}。",
+  "raid_inactive": "当前没有正在进行的防突袭响应。",
+  "raid_threshold": "{seconds} 秒内超过 {count} 个不同账号加入时，将启动 {minutes} 分钟的响应。",
+  "raid_strict_effect": "响应期间拒绝新成员加入，并暂时限制新注册账号发言。",
+  "raid_balanced_effect": "仍允许新成员加入，但暂时限制新注册账号发言。",
+  "raid_off_effect": "自动防突袭响应已关闭。",
+  "raid_level_control": "防突袭保护级别",
+  "raid_clear": "结束当前响应",
+  "raid_change_hint": "关闭保护或结束响应也会解除此次响应设置的发言限制。",
+  "raid_refresh": "刷新状态",
 };
 
 export default translations;
