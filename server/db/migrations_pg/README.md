@@ -75,6 +75,7 @@ DATABASE_URL=postgresql://... node -r ts-node/register db/migrate-postgres.ts do
 | 081 | portable_import_approval_ledger | One-use hashed approval primitives (unmounted) |
 | 082 | portable_import_approval_grant_binding | Grant-set digest required for new approvals; legacy NULL grants cannot be claimed |
 | 083 | portable_import_snapshot_replay_barrier | Per-destination signed snapshot replay ledger; UNIQUE key, same-transaction apply, FK CASCADE cleanup |
+| 085 | message_report_evidence | P7 B5: report-time evidence snapshot on message reports; the message FK (CASCADE) is dropped so reports outlive a hard delete |
 
 ## `_inline.ts` Dosyaları
 
@@ -94,6 +95,8 @@ oluşturulabilecekse. Çoğu durumda yalnızca `.sql` yeterlidir.
 ## Rollback
 
 Her migration için `rollback/` klasöründe `.down.sql` dosyası mevcuttur.
+Migration 085 has a guarded, transactional rollback. Its mixed-version and
+erasure behavior is documented in `docs/P7_MESSAGE_REPORT_EVIDENCE_ROLLOUT.md`.
 
 ## Yeni Migration Ekleme
 
