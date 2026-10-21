@@ -13,6 +13,7 @@ yeni modül eklerken uyulacak kuralları açıklar.
 ┌─────────────────────────────────────────────────────────────┐
 │  UI Katmanı (Svelte bileşenleri)                            │
 │  SettingsModal, ChannelList, BotMarketplace, ...            │
+│  SocketManager, MessageLoader, AppState (renderless)        │
 │  → Reaktif state, form yönetimi, izole widget'lar           │
 ├─────────────────────────────────────────────────────────────┤
 │  Köprü (Bridge Registry)                                    │
@@ -21,8 +22,9 @@ yeni modül eklerken uyulacak kuralları açıklar.
 │  → Vanilla modüller buradan bileşen referansı alır          │
 ├─────────────────────────────────────────────────────────────┤
 │  Servis Katmanı (Vanilla TypeScript — Svelte import yok)    │
-│  socket.ts, auth.ts, state.ts, api-fetch.ts, globals.ts     │
-│  → Socket.IO, API çağrıları, global state                   │
+│  globals, state, api-fetch, api-error, auth-compat,         │
+│  outbox-store; local-first/*, messages/message-format       │
+│  → API çağrıları, oturum, yerel-öncelikli depolama          │
 ├─────────────────────────────────────────────────────────────┤
 │  Platform (Tarayıcı / Electron / Capacitor)                 │
 └─────────────────────────────────────────────────────────────┘
@@ -47,15 +49,40 @@ Servis kodu, event binding, socket handler → vanilla TS.
 
 Aşağıdaki dosyalar asla Svelte import etmez:
 
-- `client/js/core/socket.ts`
-- `client/js/core/state.ts`
-- `client/js/core/auth.ts`
-- `client/js/core/globals.ts`
 - `client/js/app.ts`
-- `client/js/core/api*.ts`
-- `client/js/core/offline-queue.ts`
+- `client/js/core/globals.ts`
+- `client/js/core/state.ts`
+- `client/js/core/bridge-registry.ts`
+- `client/js/core/api-fetch.ts`
+- `client/js/core/api-error.ts`
+- `client/js/core/auth-compat.ts`
+- `client/js/core/outbox-store.ts`
 
-CI bu kuralı `check-svelte-boundary.sh` ile denetler.
+Framework'ten bağımsız katman da Svelte import etmez. Dizin girdisinde içindeki
+her kaynak dosya (sonradan eklenenler dahil) denetlenir ve dizine `.svelte` /
+`.svelte.ts` dosyası eklenemez:
+
+- `client/js/core/local-first/`
+- `client/js/core/messages/message-format.ts`
+
+`.svelte` dosyaları bu listeye girmez; tanım gereği Svelte'dirler. Soket
+bağlantısı bugün `SocketManager.svelte`'te, mesaj yükleme `MessageLoader.svelte`'te,
+uygulama mesaj durumu `AppState.svelte`'tedir (işaretlemesi tek satır olan,
+renderless bileşenler). Eski listedeki `socket.ts`, `auth.ts` ve `offline-queue.ts`
+artık yok: kimlik doğrulama işlevleri (`readToken`, `logout`, …) `auth-compat.ts`'te,
+kalıcı giden mesaj kuyruğu `outbox-store.ts`'tedir. Eski `api*.ts` kalıbı
+`api-error-toast-svelte.ts` mount shim'ini de kapsıyordu; liste bu yüzden açık
+dosya adları kullanır.
+
+CI bu kuralı `scripts/check-svelte-boundary.sh` ile denetler (`quality-gate.yml` →
+`typecheck-build`). Listelenen bir dosya ya da dizin yoksa betik **başarısız**
+olur; eskiden sessizce atlıyordu ve 8 girdinin 3'ü silinmişken kapı yeşil
+kalıyordu. Kontrol doğrudan importlara bakar: `from 'svelte'`, `from 'svelte/…'`,
+`from './X.svelte'`, `.svelte.ts` modülleri, `import '…'`, `import('…')` ve
+`require('…')`. Yalnızca yorum olan satırlar sayılmaz; satır sonundaki yorum bir
+importu gizlemez. Listeyi değiştirirken bu bölümü de güncelleyin:
+`scripts/check-svelte-boundary.test.js` (`npm run test:release-integrity`) ikisinin
+aynı olduğunu doğrular.
 
 ---
 
