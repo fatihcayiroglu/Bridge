@@ -56,3 +56,28 @@ Do NOT combine the two independently; rebase #324 onto this canonical
 persistence model and remove/replace duplicate policy before merging it.
 Any future policy default (1h to 30d is only a proposed window here) requires
 explicit owner/UI/product review. No feature activation or D2 acceptance yet.
+
+
+## Dormant PostgreSQL live-write barrier (additional groundwork)
+
+`server/lib/channelWriteLock.ts` is a **non-production-wired** transactional
+helper for a future channel-message write path. It obtains a tenant-scoped
+`SELECT ... FOR SHARE` channel row lock, reads server time and a verified
+channel-expiry tombstone within the same transaction, denies missing/expired/
+malformed state, runs a **database-only** callback, then re-reads the channel,
+server clock and tombstone before deciding to COMMIT or ROLLBACK. This lock
+conflicts with cooperating `FOR UPDATE` expiry claims but is not a general
+replacement for message authorization.
+
+Real PostgreSQL tests exercise committed updates, conflicting concurrent expiry
+updates, a callback that changes expiry and is rolled back, thrown callback
+rollback and an existing tombstone. Unit tests also cover boundary equality,
+corrupt metadata, missing channel and failed SQL.
+
+**Not yet a product guarantee:** no API, socket, scheduled job, webhook, bot or
+federation route invokes this helper. An expiry at the final clock boundary
+between recheck and COMMIT, tombstone writers that do not first acquire the
+channel row lock, and non-transactional external side effects still require
+further engineering. Do not report D2 complete or accept expired-channel writes
+until every production writer enforces this lifecycle atomically and the full
+cleanup/offline/federation acceptance matrix in #321 is proven.
