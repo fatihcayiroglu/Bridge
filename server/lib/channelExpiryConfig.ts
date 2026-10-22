@@ -108,8 +108,9 @@ export async function setChannelExpiry(
     open = true;
 
     const server = await client.query(LOCK_SERVER_SQL, [input.serverId]);
-    if (server.rows.length !== 1) return await finish({ ok: false, reason: 'not_found' });
-    if (server.rows[0].ownerId !== input.actorId) return await finish({ ok: false, reason: 'forbidden' });
+    const owner = server.rows.length === 1 ? server.rows[0] : undefined;
+    if (!owner) return await finish({ ok: false, reason: 'not_found' });
+    if (owner.ownerId !== input.actorId) return await finish({ ok: false, reason: 'forbidden' });
 
     const locked = await client.query(LOCK_CHANNEL_SQL, [input.channelId, input.serverId]);
     const row = locked.rows[0];
