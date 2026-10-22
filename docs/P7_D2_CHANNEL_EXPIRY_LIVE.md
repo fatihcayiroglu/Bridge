@@ -43,9 +43,22 @@ Stacked on the expiry API (#358) → worker (#357) → write barrier (#356).
      `PATCH /:cid` hide it while a sibling stays visible;
   3. after the database clock passes, the job claims it and emits exactly
      `channel:expired { serverId }` to that server's room;
-  4. the row is gone.
+  4. the row is gone once cleanup converges (the claim keeps it while the
+     graph drains; a small channel converges in the same tick).
 
   Removing the list filter fails this case.
 - **Unit:** `jobs-channelExpiry.test.ts` covers ordering, the payload,
   continuing after one announcement fails, and running without a socket server.
 - **Client:** `access-revocation.test.ts` has 3 new cases.
+
+## Every channel listing, not only the main list
+
+`ChannelRepository.findByServer` itself omits expired channels (and fails
+closed on corrupt expiry metadata). Since the expiry claim now keeps the row
+until its graph is drained, this stops the draining row's metadata reaching
+portable export / import fingerprints, the role permission editor, server
+stats, health, channel activity and automod exemptions; portable export can no
+longer copy an expired channel into another server as a permanent one.
+Evidence: `channel-repository-coverage.test.ts` (permanent/active kept,
+expired and corrupt hidden) and `channel-expiry-worker.pgtest.ts` (the claimed
+row is absent from `findByServer` while it drains).

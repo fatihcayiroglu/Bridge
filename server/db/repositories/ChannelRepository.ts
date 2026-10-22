@@ -4,6 +4,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import db from '../loader';
 import { postgresPoolOrTestFallback } from './postgresInvariant';
+import { classifyChannelExpiryWithTombstone } from '../../lib/channelExpiry';
 import type { ChannelType } from './types/entities';
 
 /**
@@ -36,8 +37,23 @@ class ChannelRepository {
     return db.channels.findOne({ _id: id });
   }
 
+  /**
+   * P7 D2: an expired channel is gone for every listing, including while the
+   * expiry worker drains a claimed row (its expiresAt has passed). Exports,
+   * permission editors, stats and activity feeds share this read. Corrupt
+   * expiry metadata hides the channel (fail closed). Writes are refused by the
+   * PostgreSQL barrier; this keeps metadata from reaching clients.
+   */
   async findByServer(serverId: string) {
-    return db.channels.find({ serverId }).sort({ order: 1 });
+    const channels = await db.channels.find({ serverId }).sort({ order: 1 });
+    const now = Date.now();
+    return channels.filter((channel) => {
+      try {
+        return classifyChannelExpiryWithTombstone(channel, null, now).accessible;
+      } catch {
+        return false;
+      }
+    });
   }
 
   async findByIdAndServer(id: string, serverId: string) {

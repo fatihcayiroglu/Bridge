@@ -295,6 +295,8 @@ RUN('P7 D2 channel expiry worker — real PostgreSQL', () => {
     expect(await Channels.deleteGraphAtomic(doomed, sid)).toBe('not_found');
     // The tombstoned row does not count as a surviving channel.
     expect(await Channels.deleteGraphAtomic(survivor, sid)).toBe('last_channel');
+    // Every listing (exports, permission editors, stats) omits the draining row.
+    expect((await Channels.findByServer(sid)).map((c: { _id: string }) => c._id)).toEqual([survivor]);
 
     // Bounded passes: batch size 2 never removes more than 2 rows per table.
     let pass: { state: string; channelId?: string } = { state: 'none' };

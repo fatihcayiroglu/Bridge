@@ -147,6 +147,15 @@ describe('ChannelRepository behavior coverage', () => {
     });
   });
 
+  test('findByServer omits expired channels and fails closed on corrupt expiry metadata (P7 D2)', async () => {
+    const now = Date.now();
+    await db.channels.insert({ _id: 'perm', serverId: 'sx', name: 'p', order: 0 } as any);
+    await db.channels.insert({ _id: 'active', serverId: 'sx', name: 'a', order: 1, expiresAt: now + 60_000, expiryVersion: 1 } as any);
+    await db.channels.insert({ _id: 'gone', serverId: 'sx', name: 'g', order: 2, expiresAt: now - 1, expiryVersion: 1 } as any);
+    await db.channels.insert({ _id: 'corrupt', serverId: 'sx', name: 'c', order: 3, expiresAt: now + 60_000, expiryVersion: 0 } as any);
+    expect((await ChannelRepository.findByServer('sx')).map((x: any) => x._id)).toEqual(['perm', 'active']);
+  });
+
   test('basic channel/category repository methods remain tenant-scoped', async () => {
     await db.channels.insert({ _id: 'c1', serverId: 's1', name: 'one', order: 2 } as any);
     await db.channels.insert({ _id: 'c2', serverId: 's1', name: 'two', order: 1 } as any);
