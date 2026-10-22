@@ -111,3 +111,13 @@ describe('channel:expired (P7 D2)', () => {
     expect(openChannelExpired('', [])).toBe(false);
   });
 });
+
+describe('resumeReloadDue (P7 D2 lifecycle)', () => {
+  it('needs a server and coalesces near-duplicate lifecycle events', async () => {
+    const { resumeReloadDue, RESUME_RELOAD_COALESCE_MS } = await import('../js/core/channel-list/access-revocation.ts');
+    expect(resumeReloadDue(null, 0, 10)).toBe(false);
+    expect(resumeReloadDue('s1', 0, 10)).toBe(true);
+    expect(resumeReloadDue('s1', 1_000, 1_000 + RESUME_RELOAD_COALESCE_MS - 1)).toBe(false);
+    expect(resumeReloadDue('s1', 1_000, 1_000 + RESUME_RELOAD_COALESCE_MS)).toBe(true);
+  });
+});

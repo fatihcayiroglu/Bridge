@@ -100,3 +100,29 @@ alone would not have stopped them. Evidence: `live-voice-access-revocation.test.
 channels untouched; control without the flag) and `jobs-channelExpiry.test.ts`
 (the job evicts only with a full socket server). Re-joining is refused by the
 admission checks of #354.
+
+## Android/iOS lifecycle: missed events after background or offline
+
+A Capacitor WebView suspended in the background (Android/iOS), or a client that
+was offline, can miss `channel:expired` and access changes entirely, and the
+socket may still report "connected". `ChannelListManager` therefore refetches
+the current server's authorized list (which drops a vanished open channel and
+runs the local-first purge) on:
+
+- native resume: Capacitor `appStateChange` → `bridge:appstate {active: true}`;
+- a `visibilitychange` back to visible after at least 30 s hidden (a browser tab
+  hidden for a moment keeps its socket and does not refetch);
+- bfcache restore (`pageshow` with `persisted`);
+- a socket reconnect.
+
+Near-duplicate triggers of one resume coalesce (2 s). Evidence:
+`client/tests/channel-load.test.ts` (resume drops a channel that expired while
+backgrounded; the same resume's `pageshow` coalesces; reconnect refetches; a
+5 s hidden tab does not, a 120 s one does; nothing before a server is open; 3/4
+fail without the listeners) and `access-revocation.test.ts`.
+
+Emulator/simulator evidence is still owed: the product journeys
+(`e2e/android/android-journeys.mjs`, `mobile-ios.yml`) cannot expire a channel
+inside a run because the public API enforces a 1 h minimum lifetime. Proving it
+on a device needs a harness-side database step (seed `expiresAt` in the past),
+not a server test hook; that journey is the next item.

@@ -27,7 +27,7 @@
   import { readToken } from './auth-compat.js';
   import { mountOrUpdateChannelList, unmountChannelList } from './channel-list/channel-list-svelte.js';
   import { apiFetch } from './api-fetch.js';
-  import { activeChannelSurvives, decideAccessReaction, openChannelExpired, type AccessEvent } from './channel-list/access-revocation.ts';
+  import { activeChannelSurvives, decideAccessReaction, openChannelExpired, resumeReloadDue, RESUME_HIDDEN_MIN_MS, type AccessEvent } from './channel-list/access-revocation.ts';
   import { reconcileLocalChannels } from './local-first/channel-reconcile.ts';
   import { navigationOwner, lastTextChannel, rememberTextChannel } from './navigation-selection.js';
   const log = createLogger('ChannelListManager');
@@ -483,6 +483,33 @@
     }
   }
 
+  // P7 D2: refetch after a background/offline window (see resumeReloadDue).
+  let lastResumeReloadAt = 0;
+  function reloadAfterResume(): void {
+    const now = Date.now();
+    if (destroyed || !resumeReloadDue(serverId, lastResumeReloadAt, now)) return;
+    lastResumeReloadAt = now;
+    void loadChannels(serverId!, true);
+  }
+  function onAppStateChange(event: Event): void {
+    if ((event as CustomEvent<{ active?: boolean }>).detail?.active === true) reloadAfterResume();
+  }
+  let hiddenSince = 0;
+  function onVisibilityResume(): void {
+    if (document.visibilityState === 'hidden') { hiddenSince = Date.now(); return; }
+    if (document.visibilityState !== 'visible' || hiddenSince === 0) return;
+    const hiddenFor = Date.now() - hiddenSince;
+    hiddenSince = 0;
+    if (hiddenFor >= RESUME_HIDDEN_MIN_MS) reloadAfterResume();
+  }
+  function onPageShowResume(event: Event): void {
+    if ((event as PageTransitionEvent).persisted) reloadAfterResume();
+  }
+  function onSocketReconnected(): void {
+    syncAccessSocket();
+    reloadAfterResume();
+  }
+
   function syncAccessSocket(): void {
     const socket = BridgeRegistry.get<AccessSocket>('socket') ?? null;
     if (socket === accessSocket) return;
@@ -494,7 +521,10 @@
   onMount(() => {
     syncAccessSocket();
     document.addEventListener('bridge:socket-ready', syncAccessSocket);
-    document.addEventListener('bridge:socket-reconnected', syncAccessSocket);
+    document.addEventListener('bridge:socket-reconnected', onSocketReconnected);
+    window.addEventListener('bridge:appstate', onAppStateChange);
+    document.addEventListener('visibilitychange', onVisibilityResume);
+    window.addEventListener('pageshow', onPageShowResume);
     document.addEventListener('bridge:load-channels', onLoadChannels);
     document.addEventListener('bridge:auth-success', onAuthSuccess);
     document.addEventListener('bridge:auth-logout', onLogout);
@@ -595,7 +625,10 @@
     document.removeEventListener('bridge:auth-success', onAuthSuccess);
     document.removeEventListener('bridge:auth-logout', onLogout);
     document.removeEventListener('bridge:socket-ready', syncAccessSocket);
-    document.removeEventListener('bridge:socket-reconnected', syncAccessSocket);
+    document.removeEventListener('bridge:socket-reconnected', onSocketReconnected);
+    window.removeEventListener('bridge:appstate', onAppStateChange);
+    document.removeEventListener('visibilitychange', onVisibilityResume);
+    window.removeEventListener('pageshow', onPageShowResume);
     for (const [event, handler] of accessHandlers) accessSocket?.off?.(event, handler);
     accessSocket = null;
     BridgeRegistry.unregister('loadChannels');

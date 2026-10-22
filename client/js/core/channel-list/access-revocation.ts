@@ -82,3 +82,25 @@ export function activeChannelSurvives(activeChannelId: string | null, channelIds
   if (!activeChannelId) return true;
   return channelIds.includes(activeChannelId);
 }
+
+/**
+ * P7 D2: an Android/iOS WebView suspended in the background, or a client that
+ * was offline, can miss `channel:expired` (and access changes) entirely; the
+ * socket may even stay "connected". After a foreground resume or a socket
+ * reconnect the current server's list is therefore fetched again, which also
+ * drops a vanished open channel and purges its local copies. Native and
+ * browser lifecycle events often fire together; near-duplicates coalesce.
+ */
+export const RESUME_RELOAD_COALESCE_MS = 2_000;
+/**
+ * A browser tab that was merely hidden keeps its socket; only a hidden period
+ * long enough for a mobile WebView to be suspended triggers a refetch on
+ * `visibilitychange`. Native app resume, bfcache restore and socket reconnect
+ * always refetch.
+ */
+export const RESUME_HIDDEN_MIN_MS = 30_000;
+
+export function resumeReloadDue(serverId: string | null, lastReloadAt: number, now: number): boolean {
+  if (!serverId) return false;
+  return lastReloadAt === 0 || now - lastReloadAt >= RESUME_RELOAD_COALESCE_MS;
+}
