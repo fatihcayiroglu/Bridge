@@ -1032,7 +1032,9 @@ CREATE INDEX IF NOT EXISTS idx_apqueue_claim_due
 CREATE TABLE IF NOT EXISTS message_reports (
   _id          TEXT PRIMARY KEY,
   "serverId"  TEXT NOT NULL REFERENCES servers(_id) ON DELETE CASCADE,
-  "channelId" TEXT NOT NULL REFERENCES channels(_id) ON DELETE CASCADE,
+  -- Migration 088: no foreign key. Reports and their evidence outlive an
+  -- expired or deleted channel; retention follows lib/reportEvidence.ts.
+  "channelId" TEXT NOT NULL,
   -- Migration 085: no foreign key. The report and its evidence snapshot outlive
   -- a hard delete of the message (ban with message removal, admin purge).
   "messageId" TEXT NOT NULL,

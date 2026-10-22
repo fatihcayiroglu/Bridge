@@ -118,8 +118,10 @@ RUN('real PostgreSQL — P7 B5 evidence-safe message reports (085)', () => {
         WHERE conrelid = 'message_reports'::regclass AND contype = 'f'`,
     )).map((r: { def: string }) => r.def);
     expect(fks.some((d: string) => d.includes('REFERENCES messages'))).toBe(false);
-    // Channel, server, reporter and resolver foreign keys are unchanged.
-    expect(fks.filter((d: string) => /REFERENCES (channels|servers|users)/.test(d))).toHaveLength(4);
+    // Migration 088 (P7 D2): the channel key is gone too, so reports outlive an
+    // expired or deleted channel. Server, reporter and resolver keys are unchanged.
+    expect(fks.some((d: string) => d.includes('REFERENCES channels'))).toBe(false);
+    expect(fks.filter((d: string) => /REFERENCES (servers|users)/.test(d))).toHaveLength(3);
   });
 
   it('an administrator purge of the author no longer erases the reports against them', async () => {

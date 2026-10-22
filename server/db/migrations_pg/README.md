@@ -78,6 +78,7 @@ DATABASE_URL=postgresql://... node -r ts-node/register db/migrate-postgres.ts do
 | 085 | message_report_evidence | P7 B5: report-time evidence snapshot on message reports; the message FK (CASCADE) is dropped so reports outlive a hard delete |
 | 086 | channel_write_barrier | P7 D2: BEFORE INSERT/UPDATE kanal yazma bariyeri (messages, thread_messages, threads); süresi dolmuş/tombstone/kiracı uyumsuz kanala yazımı SQLSTATE BX001 ile reddeder |
 | 087 | channel_expiry_worker_index | P7 D2 süre sonu işçisi için kısmi indeksler (süreli kanallar, bekleyen tombstone temizliği) |
+| 088 | message_report_channel_retention | P7 D2 x B5: message_reports channel FK (CASCADE) dropped; reports and 085 evidence outlive channel expiry/deletion; down refuses while reports point at missing channels |
 
 > 085 is taken by B5 #345 (`085_message_report_evidence`); D2 was renumbered to
 > 086/087 so the two branches merge in either order. Every number must be unique

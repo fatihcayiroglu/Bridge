@@ -20,6 +20,9 @@ import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery, parseNonNeg
 import { resolvePermissions as resolveEffectivePermissions } from '../lib/permissions';
 import { storedMessageText } from '../lib/storedText';
 import { currentStateSinceReport, evidenceView } from '../lib/reportEvidence';
+import { classifyChannelExpiryWithTombstone } from '../lib/channelExpiry';
+import { channelLiveForMessageRead, type ChannelReadQuery } from '../lib/channelReadExpiryGuard';
+import db from '../db/loader';
 import { enforceStepUp } from '../lib/stepUp';
 
 type PermissionState = { allow: number; deny: number };
@@ -134,6 +137,29 @@ async function writeAudit(serverId: string, actor: JwtPayload, action: string, t
   });
 }
 
+/**
+ * P7 D2 x B5: a report outlives its channel (migration 088). While the channel
+ * is live, the moderator's permissions in that channel decide (overrides
+ * included). Once it is deleted, expired or tombstoned, only SERVER-level
+ * MANAGE_MESSAGES/ADMIN decides (its overrides go with the channel), and only
+ * the report-time evidence is shown, never rows of the expired channel.
+ * Liveness comes from PostgreSQL (row, tenant, tombstone, database clock).
+ */
+async function reportChannel(serverId: string, channelId: string): Promise<{ live: boolean; name: string | null }> {
+  const channel = await Channels.findByIdAndServer(channelId, serverId) as Record<string, unknown> | null;
+  if (!channel) return { live: false, name: null };
+  const pool = (db as unknown as { _pool?: ChannelReadQuery })._pool;
+  const live = pool
+    ? await channelLiveForMessageRead(pool, channelId, serverId)
+    : classifyChannelExpiryWithTombstone(channel, null, Date.now()).accessible;
+  return { live, name: live ? String(channel.name ?? channelId) : null };
+}
+
+async function canModerateReport(userId: string, serverId: string, channelId: string, live: boolean): Promise<boolean> {
+  const perms = await resolveEffectivePermissions(userId, serverId, live ? channelId : null).catch(() => 0);
+  return hasPermission(perms, PERMS.MANAGE_MESSAGES) || hasPermission(perms, PERMS.ADMIN);
+}
+
 /** User-submitted message reports visible only where the moderator has MANAGE_MESSAGES. */
 router.get('/reports', authMiddleware, limits.moderation(), async (req, res) => {
   const _u = castAuthed(req).user;
@@ -143,14 +169,12 @@ router.get('/reports', authMiddleware, limits.moderation(), async (req, res) => 
 
   for (const row of rows) {
     const channelId = String(row.channelId ?? '');
-    const perms = await resolveEffectivePermissions(_u.id, serverId, channelId).catch(() => 0);
-    if (!hasPermission(perms, PERMS.MANAGE_MESSAGES) && !hasPermission(perms, PERMS.ADMIN)) continue;
-    const [message, channel, reporter] = await Promise.all([
-      Messages.findById(String(row.messageId ?? '')),
-      Channels.findByIdAndServer(channelId, serverId),
+    const channel = await reportChannel(serverId, channelId);
+    if (!await canModerateReport(_u.id, serverId, channelId, channel.live)) continue;
+    const [message, reporter] = await Promise.all([
+      channel.live ? Messages.findById(String(row.messageId ?? '')) : Promise.resolve(null),
       Users.findById(String(row.reporterId ?? '')),
     ]);
-    if (!channel) continue;
     // P7 B5 (#336): the snapshot taken at report time is the reported content.
     // A report whose message row is gone stays reviewable when it has one; a
     // report filed before migration 085 has nothing to show and is skipped, as before.
@@ -161,7 +185,8 @@ router.get('/reports', authMiddleware, limits.moderation(), async (req, res) => 
       id: String(row._id), messageId: String(row.messageId), channelId,
       reason: String(row.reason ?? 'other'), detail: String(row.detail ?? ''),
       createdAt: Number(row.createdAt ?? 0),
-      channel: { _id: channelId, name: String(channel.name ?? channelId) },
+      // `available: false`: the channel expired or was deleted; only the evidence remains.
+      channel: { _id: channelId, name: channel.name, available: channel.live },
       // The message as it is NOW (empty when the row is gone).
       message: {
         displayName: String(message?.displayName ?? message?.username ?? evidenceName ?? 'Bridge user'),
@@ -185,8 +210,8 @@ router.put('/reports/:reportId', authMiddleware, limits.moderation(), async (req
   const report = await MessageReports.findById(serverId, reportId);
   if (!report) return res.status(404).json({ error: 'Report not found' });
   const channelId = String(report.channelId ?? '');
-  const perms = await resolveEffectivePermissions(_u.id, serverId, channelId).catch(() => 0);
-  if (!hasPermission(perms, PERMS.MANAGE_MESSAGES) && !hasPermission(perms, PERMS.ADMIN)) {
+  const channel = await reportChannel(serverId, channelId);
+  if (!await canModerateReport(_u.id, serverId, channelId, channel.live)) {
     return res.status(403).json({ error: 'No permission' });
   }
 

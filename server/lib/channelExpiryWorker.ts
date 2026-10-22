@@ -8,8 +8,8 @@
  *    channel FOR UPDATE SKIP LOCKED (other nodes skip it), lock one
  *    surviving live sibling FOR KEY SHARE SKIP LOCKED (the server keeps a
  *    channel) and write the durable tombstone. The channel row is NOT
- *    deleted here: its FK cascades (message_reports, channel_read_positions,
- *    server_events, ...) are unbounded and would run inside the claim. From
+ *    deleted here: its FK cascades (channel_read_positions, server_events,
+ *    ...) are unbounded and would run inside the claim. From
  *    this commit on, reads deny (read preflights) and writes deny (write
  *    barrier: tombstone first); listings already hide the row because its
  *    expiresAt has passed, and the expiry API refuses tombstoned channels.
@@ -26,14 +26,11 @@
  *    safe. Attachment files are released by the existing reference-based
  *    upload cleanup once no row references them.
  *
- * Retention: `audit_logs` (security audit history) is never deleted.
- * `message_reports` of the channel are deleted with its content, the same as
- * ordinary channel deletion (their channelId FK cascades); see
- * docs/P7_D2_EXPIRY_CLEANUP_GRAPH_AND_SCHEDULE.md for the policy and its
- * interaction with evidence-safe reports (#345).
- *
- * A server's last live channel is never claimed. The expiry API
- * (lib/channelExpiryConfig.ts) also keeps one permanent channel per server.
+ * Retention: security `audit_logs` and `message_reports` (with migration
+ * 085's bounded evidence snapshot) are never deleted by expiry. Since
+ * migration 088 a report has no foreign key to its channel; its evidence is
+ * kept while open and scrubbed 90 days (configurable) after resolution by
+ * jobs/reportEvidenceRetention.ts. See docs/P7_D2_REPORT_RETENTION.md.
  */
 
 export interface ExpiryQueryable {
@@ -139,8 +136,11 @@ const CHANNEL_POINTERS = [
   { table: 'server_onboarding', serverKey: 'serverId', fields: ['rulesChannelId', 'welcomeChannelId'] },
 ] as const;
 
-/** Tables never cleaned by expiry: the channel itself, tombstones and security audit history. */
-const RETAINED_TABLES = ['channels', 'channel_expiry_tombstones', 'audit_logs'];
+/**
+ * Tables never cleaned by expiry: the channel itself, tombstones, security
+ * audit history and moderation reports (owner decision on #321, migration 088).
+ */
+const RETAINED_TABLES = ['channels', 'channel_expiry_tombstones', 'audit_logs', 'message_reports'];
 
 /**
  * Single-column foreign keys that reference channels(_id), whatever the

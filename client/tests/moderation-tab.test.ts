@@ -596,6 +596,19 @@ describe('rapor kuyruğu — raporlanan içerik', () => {
     expect(jump()?.disabled).toBe(true);
   });
 
+  it('a report whose channel expired or was deleted: the snapshot, a "channel gone" label, no jump (P7 D2)', async () => {
+    apiMock = withReports([reportRow({
+      channel: { _id: 'c1', name: null, available: false },
+      currentState: 'removed', message: { displayName: 'Abuser', preview: '' },
+    })]);
+    render(ModerationTab);
+    await waitFor(() => expect(content()).toContain('abusive original text'));
+    const meta = document.querySelector('.mod-report-meta')?.textContent ?? '';
+    expect(meta).toContain(t('moderation_report_channel_gone'));
+    expect(meta).not.toContain('#c1');
+    expect(jump()?.disabled).toBe(true);
+  });
+
   it('an unchanged message shows no state line', async () => {
     apiMock = withReports([reportRow({ currentState: 'unchanged', message: { displayName: 'Abuser', preview: 'abusive original text' } })]);
     render(ModerationTab);

@@ -308,13 +308,13 @@ RUN('P7 D2 channel expiry worker — real PostgreSQL', () => {
     const after = await refs();
     expect(after.reads).toBe(3);
     expect(after.events).toBe(1);
-    // Reports also go through their messageId cascade as messages are deleted (2 per pass).
-    expect(after.reports).toBeLessThan(4);
+    // Moderation reports are retained (migration 088, owner decision on #321).
+    expect(after.reports).toBe(4);
     expect((await remaining(doomed)).channel).toBe(1);
 
     await drain({ batchSize: 2 });
     expect(await tombstone(doomed)).toBe('converged');
-    expect(await refs()).toEqual({ reads: 0, reports: 0, events: 0 });
+    expect(await refs()).toEqual({ reads: 0, reports: 4, events: 0 });
     expect(await remaining(doomed)).toEqual({ messages: 0, threads: 0, threadMessages: 0, notifications: 0, saved: 0, channel: 0 });
     expect(await n('SELECT COUNT(*)::int AS n FROM audit_logs WHERE _id=$1', [auditId])).toBe(1);
     expect((await remaining(survivor)).channel).toBe(1);

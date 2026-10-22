@@ -57,7 +57,8 @@
   type ReportCurrentState = 'unchanged' | 'edited' | 'deleted' | 'removed' | 'unknown';
   interface ReportRow {
     id: string; messageId: string; channelId: string; reason: string; detail?: string; createdAt?: number;
-    channel?: { _id?: string; name?: string };
+    /** `available: false`: the channel expired or was deleted; the report and its evidence remain. */
+    channel?: { _id?: string; name?: string | null; available?: boolean };
     /** The message as it is now. */
     message?: { displayName?: string; preview?: string };
     evidence?: ReportEvidence;
@@ -380,7 +381,7 @@
             {#each reports as report (report.id)}
               <li class="mod-report">
                 <div class="mod-report-main">
-                  <div class="mod-report-meta"><strong>{REPORT_REASON_LABELS[report.reason] ?? t('report_reason_other', 'Diğer')}</strong><span>#{report.channel?.name ?? report.channelId}</span><span>{whenOf(report.createdAt)}</span></div>
+                  <div class="mod-report-meta"><strong>{REPORT_REASON_LABELS[report.reason] ?? t('report_reason_other', 'Diğer')}</strong><span>{report.channel?.available === false ? t('moderation_report_channel_gone') : `#${report.channel?.name ?? report.channelId}`}</span><span>{whenOf(report.createdAt)}</span></div>
                   <p class="mod-report-content"><strong>{reportedAuthor(report)}:</strong> {reportedText(report)}{#if report.evidence?.state === 'captured' && report.evidence.truncated} <em>{t('moderation_report_truncated')}</em>{/if}</p>
                   {#if reportStateLabel(report)}<small class="mod-report-state" data-state={report.currentState}>{reportStateLabel(report)}</small>{/if}
                   {#if report.currentState === 'edited' && report.message?.preview}<small class="mod-report-now">{t('moderation_report_now', undefined, { text: report.message.preview })}</small>{/if}

@@ -254,9 +254,11 @@ class ChannelRepository {
         // A tombstone must survive ordinary deletion: otherwise delayed/offline
         // snapshots could later make a deleted channel appear live again.
         // D2 cleanup/retention will require a separate, audited lifecycle.
+        // Moderation reports are retained too (migration 088): their evidence
+        // follows the report retention policy, not the channel's lifetime.
         for (const [table, tableCols] of cols.entries()) {
           if (table === 'channels' || table === 'channel_expiry_tombstones' ||
-              !tableCols.has('channelId')) continue;
+              table === 'message_reports' || !tableCols.has('channelId')) continue;
           await client.query(`DELETE FROM "${table}" WHERE "channelId"=$1`, [id]);
         }
 

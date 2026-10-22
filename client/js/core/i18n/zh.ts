@@ -2224,6 +2224,7 @@ const translations: Record<string, string> = {
   "moderation_report_edited_since": "举报后被编辑 — 显示的是被举报时的内容。",
   "moderation_report_deleted_since": "举报后从聊天中移除 — 显示的是被举报时的内容。",
   "moderation_report_removed": "该消息已不存在 — 显示的是被举报时的内容。",
+  "moderation_report_channel_gone": "该频道已不存在",
   "moderation_report_no_snapshot": "在 Bridge 保存副本之前被举报 — 显示的是当前消息。",
   "moderation_report_now": "现在：{text}",
   "moderation_report_truncated": "（已缩短）",

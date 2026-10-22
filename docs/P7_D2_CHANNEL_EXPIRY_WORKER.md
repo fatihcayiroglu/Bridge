@@ -13,8 +13,9 @@ indexed query (migration 087) that finds nothing.
    one expired, untombstoned channel (other nodes skip it), a live sibling
    locked FOR KEY SHARE SKIP LOCKED (the server keeps a channel) and the
    durable tombstone (`cleanupState = 'pending'`). The channel row is **not**
-   deleted here: its FK cascades (`message_reports`, `channel_read_positions`,
-   `server_events`) are unbounded and used to run inside the claim. From this
+   deleted here: its FK cascades (`channel_read_positions`, `server_events`;
+   before migration 088 also `message_reports`) are unbounded and used to run
+   inside the claim. From this
    commit reads deny (read preflights), writes deny (barrier checks the
    tombstone first), listings hide the row (its `expiresAt` has passed), the
    expiry API answers 404 (tombstone) and ordinary deletion answers
@@ -53,7 +54,7 @@ tombstones are not reprocessed; the claim leaves 5 read positions, 4 reports
 and 3 server events intact (no cascade), a tombstoned channel is never
 claimed twice, the expiry API and ordinary deletion refuse it, it does not
 count as a surviving channel, and batch size 2 drains the FK tables before the
-row is deleted while the audit row survives. Rollback gate: 087 lossless; isolated 084
+row is deleted while the audit row and all 4 reports survive. Rollback gate: 087 lossless; isolated 084
 reversal is a declared `EXPECTED_DEPENDENCY` on 087.
 
 ## Owner decisions / not built
@@ -61,13 +62,9 @@ reversal is a declared `EXPECTED_DEPENDENCY` on 087.
 - **Last live channel:** never claimed. Whether such a channel may expire
   (refused at configuration time, or replaced by a fresh default channel)
   is a product decision for the expiry API.
-- **Moderation evidence (explicit policy):** an expired channel's
-  `message_reports` are deleted with its content, in bounded batches, exactly
-  like ordinary channel deletion (their `channelId` FK cascades). Security
-  `audit_logs` are retained. Keeping reports (and #345's evidence snapshots)
-  beyond channel expiry would require relaxing `message_reports.channelId`'s
-  FK and is an owner decision tied to #345; until then an ephemeral channel
-  is not a place where reports outlive the content.
+- **Moderation evidence (owner decision, migration 088):** an expired
+  channel's `message_reports` and their 085 evidence snapshots are retained, as
+  are security `audit_logs`. See `docs/P7_D2_REPORT_RETENTION.md`.
 - Not built: expiry configuration API/UI, live notification of connected
   clients when a channel expires (they see 404/`CHANNEL_NOT_FOUND`), search
   index/embedding cleanup beyond row deletion, federation tombstone
