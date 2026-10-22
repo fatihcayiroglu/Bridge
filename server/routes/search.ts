@@ -23,6 +23,7 @@ import { sanitizeUser } from '../lib/userUtils';
 import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
 import { getCachedPerms } from '../lib/permCache';
 import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery } from '../lib/queryNumbers';
+import { liveChannelSet, ChannelAvailabilityUnverifiable } from '../lib/channelLiveReadSet';
 
 /**
  * GÜVENLİK — KANAL GÖRÜNÜRLÜĞÜ (VIEW_CHANNELS).
@@ -62,6 +63,33 @@ async function viewableChannelIds(
     if (hasPermission(perms, PERMS.VIEW_CHANNELS)) viewable.add(channelId);
   }
   return viewable;
+}
+
+/**
+ * P7 D2: VIEW_CHANNELS alone is not enough. An expired or tombstoned channel
+ * keeps its permission rows until cleanup, so the allowlist is intersected
+ * with the authoritative PostgreSQL expiry check BEFORE any FTS call. Expired
+ * channels therefore never enter the ranked candidate window and cannot
+ * displace live results. A channel row under a different server than the
+ * pair claims is excluded by the check itself. Throws
+ * ChannelAvailabilityUnverifiable when PostgreSQL cannot answer.
+ */
+async function liveViewableChannelIds(
+  userId: string,
+  pairs: ReadonlyArray<{ channelId?: unknown; serverId?: unknown; channel?: unknown }>,
+): Promise<Set<string>> {
+  const viewable = await viewableChannelIds(userId, pairs);
+  const candidates = pairs.filter(pair => viewable.has(String(pair.channelId ?? '')));
+  const live = await liveChannelSet(candidates.map(pair => ({
+    channelId: pair.channelId, serverId: pair.serverId, channel: (pair as { channel?: unknown }).channel,
+  })));
+  return new Set([...viewable].filter(id => live.has(id)));
+}
+
+function unverifiable(res: Response, err: unknown): boolean {
+  if (!(err instanceof ChannelAvailabilityUnverifiable)) return false;
+  res.status(503).json({ error: 'Search temporarily unavailable' });
+  return true;
 }
 
 /** `/unified` için kabul edilen kaynaklar — istemci girdisi allowlist'tir. */
@@ -248,10 +276,16 @@ router.get('/', authMiddleware, limits.search(), async (req: Request, res: Respo
   // results and influence timing/rank behavior. Resolve the current channel
   // allowlist once and push it into PostgreSQL; post-filter remains defense in depth.
   const scopedChannels = await Channels.findWhere({ serverId: { $in: serverIds } }) as Array<{ _id?: unknown; serverId?: unknown }>;
-  const visibleChannelSet = await viewableChannelIds(
-    _u.id,
-    scopedChannels.map(c => ({ channelId: c._id, serverId: c.serverId })),
-  );
+  let visibleChannelSet: Set<string>;
+  try {
+    visibleChannelSet = await liveViewableChannelIds(
+      _u.id,
+      scopedChannels.map(c => ({ channelId: c._id, serverId: c.serverId, channel: c })),
+    );
+  } catch (err) {
+    if (unverifiable(res, err)) return;
+    throw err;
+  }
   const visibleChannelIds = [...visibleChannelSet];
 
   // Exact channel scope is fail-closed and existence-hiding. An unknown,
@@ -510,10 +544,16 @@ router.get('/unified', authMiddleware, limits.search(), async (req: Request, res
   const searchTerm = q || rawQ;
 
   const scopedChannels = await Channels.findWhere({ serverId: { $in: serverIds } }) as Array<{ _id?: unknown; serverId?: unknown }>;
-  const visibleChannelSet = await viewableChannelIds(
-    _u.id,
-    scopedChannels.map(c => ({ channelId: c._id, serverId: c.serverId })),
-  );
+  let visibleChannelSet: Set<string>;
+  try {
+    visibleChannelSet = await liveViewableChannelIds(
+      _u.id,
+      scopedChannels.map(c => ({ channelId: c._id, serverId: c.serverId, channel: c })),
+    );
+  } catch (err) {
+    if (unverifiable(res, err)) return;
+    throw err;
+  }
   const visibleChannelIds = [...visibleChannelSet];
 
   // Tam kanal kapsami, kullanicinin GOREBILDIGI kanal kimliklerinden biri
@@ -639,7 +679,14 @@ router.get('/context', authMiddleware, limits.searchContext(), async (req: Reque
     if (!channelId || !serverId) return res.status(404).json({ error: 'Bağlam bulunamadı.' });
 
     // Hata → fail-closed (yardımcının kendi davranışı).
-    const viewable = await viewableChannelIds(_u.id, [{ channelId, serverId }]);
+    let viewable: Set<string>;
+    try {
+      viewable = await liveViewableChannelIds(_u.id, [{ channelId, serverId }]);
+    } catch (err) {
+      if (unverifiable(res, err)) return;
+      throw err;
+    }
+    // Expired, tombstoned and invisible anchors share the not-found answer.
     if (!viewable.has(channelId)) return res.status(404).json({ error: 'Bağlam bulunamadı.' });
   }
 

@@ -59,6 +59,11 @@ import { pool } from './pool';
 // açıkça işaretlenmiştir.
 export const FTS_RANK_WINDOW = 2_000;
 
+/** The row's channel exists under the same server the row claims. */
+function channelTenantMatches(alias: 'm' | 't'): string {
+  return `EXISTS (SELECT 1 FROM channels tc WHERE tc._id = ${alias}."channelId" AND tc."serverId" = ${alias}."serverId")`;
+}
+
 export async function ftsSearch(
   queryText: string,
   serverIds: string[],
@@ -69,7 +74,13 @@ export async function ftsSearch(
   if (allowedChannelIds && !allowedChannelIds.length) return [];
 
   const q = queryText.trim();
-  const channelFilter = allowedChannelIds ? 'AND m."channelId" = ANY($4)' : '';
+  // P7 D2 tenant check BEFORE the candidate limit: a row is searchable only
+  // if its channel really belongs to the server the row claims. Otherwise a
+  // row whose serverId disagrees with its channel passes two independent
+  // ANY() filters and occupies the ranked window.
+  const channelFilter = allowedChannelIds
+    ? 'AND m."channelId" = ANY($4) AND ' + channelTenantMatches('m')
+    : '';
   const params = (query: string) => allowedChannelIds
     ? [serverIds, query, limit, allowedChannelIds]
     : [serverIds, query, limit];
@@ -283,7 +294,7 @@ function sourceSql(source: SearchSource, p: Placeholders): { sql: string } {
              'channel'::text AS _source`, `
         SELECT m.* FROM messages m
         WHERE m."serverId" = ANY(${p.servers})
-          ${p.channels ? `AND m."channelId" = ANY(${p.channels})` : ''}
+          ${p.channels ? `AND m."channelId" = ANY(${p.channels}) AND ${channelTenantMatches('m')}` : ''}
           AND m."deletedAt" IS NULL
           AND m.type <> 'e2ee'
           AND ${vector('m')} @@ ${tsquery}`) };
@@ -297,7 +308,7 @@ function sourceSql(source: SearchSource, p: Placeholders): { sql: string } {
              'thread'::text AS _source`, `
         SELECT t.* FROM thread_messages t
         WHERE t."serverId" = ANY(${p.servers})
-          ${p.channels ? `AND t."channelId" = ANY(${p.channels})` : ''}
+          ${p.channels ? `AND t."channelId" = ANY(${p.channels}) AND ${channelTenantMatches('t')}` : ''}
           AND ${vector('t')} @@ ${tsquery}`) };
   }
 

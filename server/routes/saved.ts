@@ -27,6 +27,7 @@ import { sanitizeUser } from '../lib/userUtils';
 import type { SavedDestinationType } from '../db/repositories/SavedMessageRepository';
 import { limits } from '../middleware/rateLimit';
 import { storedMessageText } from '../lib/storedText';
+import { liveChannelSet, ChannelAvailabilityUnverifiable } from '../lib/channelLiveReadSet';
 
 const router = express.Router();
 const MAX_ITEMS = 100;
@@ -67,7 +68,10 @@ async function authorizeTarget(
     if (!message || message.deletedAt || String(message.channelId ?? '') !== targetId) return false;
     const serverId = String(message.serverId ?? '');
     const permissions = await resolvePermissions(userId, serverId, targetId).catch(() => 0);
-    return hasPermission(permissions, PERMS.VIEW_CHANNELS) && hasPermission(permissions, PERMS.READ_HISTORY);
+    if (!hasPermission(permissions, PERMS.VIEW_CHANNELS) || !hasPermission(permissions, PERMS.READ_HISTORY)) return false;
+    // P7 D2: an expired or tombstoned channel cannot gain new saved items or
+    // reminders. Throws ChannelAvailabilityUnverifiable when PG cannot answer.
+    return (await liveChannelSet([{ channelId: targetId, serverId }])).has(targetId);
   }
 
   if (type === 'dm') {
@@ -90,7 +94,14 @@ router.post('/', authMiddleware, async (req, res) => {
 
   // Missing and inaccessible targets deliberately share one response so this
   // endpoint cannot be used as a message-existence oracle.
-  if (!(await authorizeTarget(user.id, type, targetId, messageId))) {
+  let authorized: boolean;
+  try {
+    authorized = await authorizeTarget(user.id, type, targetId, messageId);
+  } catch (err) {
+    if (err instanceof ChannelAvailabilityUnverifiable) return res.status(503).json({ error: 'Saved messages temporarily unavailable' });
+    throw err;
+  }
+  if (!authorized) {
     return res.status(404).json({ error: 'Message not available' });
   }
 
@@ -113,6 +124,20 @@ router.get('/', authMiddleware, async (req, res) => {
     const rows = await SavedMessages.findForUser(user.id, MAX_ITEMS) as Array<Record<string, unknown>>;
     const items: Array<Record<string, unknown>> = [];
 
+    // P7 D2: load channel messages once, then decide liveness for all of
+    // their channels in one authoritative query (fails closed to 503 below).
+    const channelMessages = new Map<string, Record<string, unknown> | null>();
+    for (const row of rows) {
+      if (destinationType(row.destinationType) !== 'channel' || !String(row.destinationId ?? '')) continue;
+      const messageId = String(row.messageId ?? '');
+      if (messageId && !channelMessages.has(messageId)) {
+        channelMessages.set(messageId, await Messages.findById(messageId) as unknown as Record<string, unknown> | null);
+      }
+    }
+    const liveChannels = await liveChannelSet([...channelMessages.values()]
+      .filter((message): message is Record<string, unknown> => Boolean(message))
+      .map(message => ({ channelId: message.channelId, serverId: message.serverId })));
+
     for (const row of rows) {
       const type = destinationType(row.destinationType);
       const targetId = String(row.destinationId ?? '');
@@ -120,10 +145,11 @@ router.get('/', authMiddleware, async (req, res) => {
       if (!type || !targetId || !messageId) { items.push(unavailable(row)); continue; }
 
       if (type === 'channel') {
-        const message = await Messages.findById(messageId) as unknown as Record<string, unknown> | null;
+        const message = channelMessages.get(messageId) ?? null;
         const channelId = String(message?.channelId ?? '');
         const serverId = String(message?.serverId ?? '');
         if (!message || message.deletedAt || channelId !== targetId) { items.push(unavailable(row)); continue; }
+        if (!liveChannels.has(channelId)) { items.push(unavailable(row)); continue; }
         const permissions = await resolvePermissions(user.id, serverId, channelId).catch(() => 0);
         if (!hasPermission(permissions, PERMS.VIEW_CHANNELS) || !hasPermission(permissions, PERMS.READ_HISTORY)) {
           items.push(unavailable(row)); continue;
@@ -208,7 +234,16 @@ router.put('/:id/reminder', authMiddleware, limits.api(), async (req, res) => {
   const type = destinationType(row.destinationType);
   const targetId = String(row.destinationId ?? '');
   const messageId = String(row.messageId ?? '');
-  if (!type || !targetId || !messageId || !(await authorizeTarget(user.id, type, targetId, messageId))) {
+  let authorized = false;
+  if (type && targetId && messageId) {
+    try {
+      authorized = await authorizeTarget(user.id, type, targetId, messageId);
+    } catch (err) {
+      if (err instanceof ChannelAvailabilityUnverifiable) return res.status(503).json({ error: 'Saved messages temporarily unavailable' });
+      throw err;
+    }
+  }
+  if (!authorized) {
     return res.status(404).json({ error: 'Saved item not available' });
   }
 

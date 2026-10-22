@@ -21,6 +21,7 @@ import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
 import { sanitizeUser } from '../lib/userUtils';
 import { parsePersistedEpochMillis } from '../lib/persistedEpoch';
 import { storedMessageText } from '../lib/storedText';
+import { liveChannelSet } from '../lib/channelLiveReadSet';
 
 const router = express.Router();
 const MAX_CHANNEL_ITEMS = 100;
@@ -63,6 +64,7 @@ router.get('/', authMiddleware, async (req, res) => {
   try {
     // Channel attention records contain identifiers only. Every response is
     // re-hydrated from canonical rows and re-authorized now, not at send time.
+    // P7 D2: the repository prefilters live channels before the limit.
     const attentionRows = await Notifications.findUnreadChannelAttention(user.id, MAX_CHANNEL_ITEMS) as Array<Record<string, unknown>>;
     const messageIds = [...new Set(attentionRows.map(row => String(row.messageId ?? '')).filter(Boolean))];
     const messages = messageIds.length ? await Messages.findWhere({ _id: { $in: messageIds } }) : [];
@@ -73,6 +75,12 @@ router.get('/', authMiddleware, async (req, res) => {
     const serverIds = [...new Set(channels.map(channel => String(channel.serverId ?? '')).filter(Boolean))];
     const servers = serverIds.length ? await Servers.findByIds(serverIds) : [];
     const serverMap = new Map(servers.map(server => [String(server._id), server as unknown as Record<string, unknown>]));
+    // Authoritative re-check of every candidate channel (corrupt expiry
+    // metadata, tenant mismatch). A database failure lands in the 503 below.
+    const liveChannels = await liveChannelSet(messages.map(message => ({
+      channelId: message.channelId, serverId: message.serverId,
+      channel: channelMap.get(String(message.channelId ?? '')) ?? null,
+    })));
 
     const channelItems: Array<Record<string, unknown>> = [];
     const seenAttentionMessages = new Set<string>();
@@ -87,7 +95,7 @@ router.get('/', authMiddleware, async (req, res) => {
       const serverId = String(message.serverId ?? '');
       const channel = channelMap.get(channelId);
       const server = serverMap.get(serverId);
-      if (!channel || !server) continue;
+      if (!channel || !server || !liveChannels.has(channelId)) continue;
 
       // Stored routing identifiers must still agree with the canonical row.
       if (String(row.channelId ?? '') !== channelId || String(row.serverId ?? '') !== serverId) continue;
