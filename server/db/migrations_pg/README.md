@@ -75,6 +75,7 @@ DATABASE_URL=postgresql://... node -r ts-node/register db/migrate-postgres.ts do
 | 081 | portable_import_approval_ledger | One-use hashed approval primitives (unmounted) |
 | 082 | portable_import_approval_grant_binding | Grant-set digest required for new approvals; legacy NULL grants cannot be claimed |
 | 083 | portable_import_snapshot_replay_barrier | Per-destination signed snapshot replay ledger; UNIQUE key, same-transaction apply, FK CASCADE cleanup |
+| 085 | channel_write_barrier | P7 D2: BEFORE INSERT/UPDATE kanal yazma bariyeri (messages, thread_messages, threads); süresi dolmuş/tombstone/kiracı uyumsuz kanala yazımı SQLSTATE BX001 ile reddeder |
 
 ## `_inline.ts` Dosyaları
 
