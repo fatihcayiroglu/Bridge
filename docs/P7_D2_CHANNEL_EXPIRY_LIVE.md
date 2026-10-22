@@ -79,3 +79,18 @@ against the real encrypted history runtime: the expired channel's text is gone,
 live and foreign copies stay).
 Not covered yet: drafts (the user's own unsent text) and an offline client that
 never loads that server's list again.
+
+## Live room members are evicted
+
+After announcing a claim, the job calls
+`evictSocketsWithoutChannelAccess(io, serverId, channelId, { channelGone: true })`:
+every socket in the channel's text, voice and thread rooms leaves them on every
+node, live voice sessions are evicted and the socket receives
+`channel:access-revoked` with the channel id (it already knew it). The normal
+permission re-check is skipped because the claimed row still resolves while it
+drains. Typing relays and voice never touch the database, so the write barrier
+alone would not have stopped them. Evidence: `live-voice-access-revocation.test.ts`
+(channelGone evicts text and voice rooms although VIEW still resolves; other
+channels untouched; control without the flag) and `jobs-channelExpiry.test.ts`
+(the job evicts only with a full socket server). Re-joining is refused by the
+admission checks of #354.

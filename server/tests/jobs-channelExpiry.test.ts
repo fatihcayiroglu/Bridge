@@ -9,6 +9,8 @@ const invalidateList = jest.fn();
 const invalidateMessages = jest.fn();
 jest.mock('../routes/servers/channels', () => ({ invalidateChannelList: (...a: unknown[]) => invalidateList(...a) }));
 jest.mock('../lib/messageCache', () => ({ invalidateChannelMessages: (...a: unknown[]) => invalidateMessages(...a) }));
+const evict = jest.fn();
+jest.mock('../lib/liveMembership', () => ({ evictSocketsWithoutChannelAccessBestEffort: (...a: unknown[]) => evict(...a) }));
 
 import { runChannelExpiryJobTick, startChannelExpiryJob, stopChannelExpiryJob } from '../jobs/channelExpiry';
 
@@ -74,4 +76,22 @@ it('keeps announcing the rest when one announcement fails, and is silent without
   tick.mockResolvedValueOnce({ claimed: ['c3'], converged: [], deleted: 0, claimedChannels: [{ channelId: 'c3', serverId: 's3' }] });
   await runChannelExpiryJobTick();
   expect(emit).toHaveBeenCalledTimes(1);
+});
+
+it('evicts the claimed channel\'s live room members when it has a full socket server, and only then', async () => {
+  dbMock._pool = {};
+  const emit = jest.fn();
+  const full = { to: jest.fn(() => ({ emit })), in: jest.fn() };
+  startChannelExpiryJob(full);
+  tick.mockResolvedValueOnce({ claimed: ['c1'], claimedChannels: [{ channelId: 'c1', serverId: 's1' }], converged: [], deleted: 0 });
+  await runChannelExpiryJobTick();
+  expect(emit).toHaveBeenCalledWith('channel:expired', { serverId: 's1' });
+  expect(evict).toHaveBeenCalledWith(full, 's1', 'c1', { channelGone: true });
+  stopChannelExpiryJob();
+
+  const emitOnly = { to: jest.fn(() => ({ emit: jest.fn() })) };
+  startChannelExpiryJob(emitOnly);
+  tick.mockResolvedValueOnce({ claimed: ['c2'], claimedChannels: [{ channelId: 'c2', serverId: 's1' }], converged: [], deleted: 0 });
+  await runChannelExpiryJobTick();
+  expect(evict).toHaveBeenCalledTimes(1);
 });

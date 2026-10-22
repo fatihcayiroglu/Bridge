@@ -10,9 +10,16 @@ import logger from '../lib/logger';
 import { runChannelExpiryTick, type ExpiryPool } from '../lib/channelExpiryWorker';
 import { invalidateChannelMessages } from '../lib/messageCache';
 import { invalidateChannelList } from '../routes/servers/channels';
+import { evictSocketsWithoutChannelAccessBestEffort } from '../lib/liveMembership';
+import type { Server as SocketIOServer } from 'socket.io';
 
 /** The slice of socket.io the job needs; with the Redis adapter it reaches every node. */
 export interface ExpiryBroadcaster { to(room: string): { emit(event: string, payload: unknown): unknown } }
+
+/** A full socket.io server can also evict the channel's live room members. */
+function canEvict(io: ExpiryBroadcaster | null): io is ExpiryBroadcaster & SocketIOServer {
+  return typeof (io as { in?: unknown } | null)?.in === 'function';
+}
 
 const POLL_MS = 60_000;
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -31,6 +38,12 @@ async function announceExpired(channels: ReadonlyArray<{ channelId: string; serv
       await invalidateChannelMessages(channelId);
       // Server id only: members who cannot see a private channel do not learn its id.
       broadcaster?.to(`server:${serverId}`).emit('channel:expired', { serverId });
+      // Sockets already in the channel's rooms (text, voice, threads) leave them
+      // on every node: typing relays and live voice never touch the database,
+      // so the write barrier alone would not stop them.
+      if (canEvict(broadcaster)) {
+        await evictSocketsWithoutChannelAccessBestEffort(broadcaster, serverId, channelId, { channelGone: true });
+      }
     } catch (error) {
       logger.warn({ event: 'channel.expiry.announce_failed', channelId, error }, 'Channel expiry announcement failed');
     }
