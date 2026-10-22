@@ -35,12 +35,25 @@ UPDATE` row trigger on `messages`, `thread_messages` and `threads`.
   channel under another server → deny; `expiresAt` with `expiryVersion <= 0`
   → deny; `expiresAt <= now` → deny; no channel row and no tombstone → allow
   (pre-D2 behaviour, `messages.channelId` has no FK).
-- **Updates** are denied by default on an unavailable channel, except a soft
-  delete (row gains `deletedAt`, which scrubs its payload) and updates that
-  only change housekeeping columns (author display fields, `replyTo`,
-  `deletedAt`/`deletedBy`, `embedding`), so account erasure and cleanup are
-  never blocked. `DELETE` is not guarded. Moving a row into an unavailable
-  channel is a write to it and is denied.
+- **Updates** are denied by default on an unavailable channel. One passes
+  only when EVERY column it changes is a recognised erasure step
+  (`bridge_channel_update_is_erasure`, judged per column on OLD and NEW):
+  author display fields; `deletedAt` set (never cleared, so no undelete) with
+  `deletedBy`; payload columns scrubbed to NULL/empty/`[Mesaj silindi]` by a
+  soft delete; `replyTo` cleared or narrowed to a subset of itself plus
+  `deleted=true`; `embedding` cleared. Account erasure, the soft-delete scrub
+  and cleanup are never blocked, but a soft delete cannot carry new content,
+  reactions, pins or edit history. `DELETE` is not guarded.
+- **Moves:** changing `channelId`/`serverId` is a write to BOTH channels, so a
+  row can neither be moved into an unavailable channel nor rescued out of one
+  before cleanup.
+- **Correction (follow-up to #356):** the first version returned early on any
+  `deletedAt` NULL→value transition and allowed arbitrary `replyTo` and
+  `embedding` writes, so `UPDATE ... SET "deletedAt"=..., content='new'` on an
+  expired channel committed. A regression now fails against that trigger and
+  passes against this one. The embedding eligibility predicate
+  (`EMBEDDABLE_ROW_PREDICATE`) also excludes expired and tombstoned channels, so
+  their text is never sent to the embedding provider.
 - **Contract:** denial raises SQLSTATE `BX001`. HTTP routes answer 404
   "Channel not found" (global error handler); socket handlers emit the
   existing terminal `CHANNEL_NOT_FOUND` code, which current clients already
@@ -48,11 +61,13 @@ UPDATE` row trigger on `messages`, `thread_messages` and `threads`.
 
 ## Evidence
 
-- `server/tests/pg-integration/channel-write-barrier.pgtest.ts` (11 cases,
+- `server/tests/pg-integration/channel-write-barrier.pgtest.ts` (14 cases,
   real PostgreSQL): trigger kind; permanent/active/legacy allowed; expired,
   tombstoned, tenant-mismatched and corrupt denied; database-clock boundary;
   `SET CONSTRAINTS` cannot defer or skip; `ON CONFLICT` replay denied;
-  update rules incl. the real soft-delete scrub; real `Messages.create`,
+  update rules incl. the real soft-delete scrub; soft-delete/housekeeping
+  smuggling, move-out, undelete, reply-snapshot and embedding writes denied;
+  embedding eligibility excludes expired/tombstoned channels; real `Messages.create`,
   `Threads.insert`, `Threads.insertMessage`, `Announcements.persistCrosspost`
   (whole crosspost transaction rolls back); worker-first and writer-first
   races; no contention with metadata updates.

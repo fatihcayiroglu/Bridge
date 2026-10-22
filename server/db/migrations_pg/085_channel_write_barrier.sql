@@ -25,56 +25,53 @@
 --   expiresAt NULL                        -> allowed (permanent channel)
 -- Denials raise SQLSTATE BX001 so applications can map them precisely.
 --
--- UPDATE is denied by default. Two kinds stay possible on an unavailable
--- channel so privacy and cleanup work is never blocked: a soft delete (the
--- row gains deletedAt, which also scrubs its payload) and an update that
--- changes nothing but housekeeping columns (author display fields, replyTo
--- snapshots, deletedAt/deletedBy, embedding). DELETE is never guarded.
+-- UPDATE is denied by default. On an unavailable channel an UPDATE passes
+-- only when EVERY column it changes is a recognised erasure step, judged per
+-- column on the old and new row (bridge_channel_update_is_erasure):
+--   author display fields (username, displayName, avatarColor, avatarUrl);
+--   deletedAt set to a value (never cleared: no undelete), deletedBy with it;
+--   payload columns scrubbed to NULL/empty/'[Mesaj silindi]' by a soft delete;
+--   replyTo cleared, or narrowed to a subset of itself plus deleted=true;
+--   embedding cleared (a vector of expired text is never written).
+-- A soft delete therefore cannot carry new content, reactions, pins or edit
+-- history, and nothing can be smuggled into the reply snapshot.
+-- Changing channelId or serverId is a write to BOTH channels: content can be
+-- neither moved into an unavailable channel nor rescued out of one before
+-- cleanup. DELETE is never guarded.
 -- The triggers name no columns (no UPDATE OF list): a column list would make
 -- earlier migrations' rollbacks fail to drop those columns.
-CREATE OR REPLACE FUNCTION bridge_channel_write_barrier() RETURNS trigger
-LANGUAGE plpgsql AS $barrier$
+CREATE OR REPLACE FUNCTION bridge_channel_assert_writable(target_channel TEXT, target_server TEXT) RETURNS void
+LANGUAGE plpgsql AS $assert$
 DECLARE
   channel_server  TEXT;
   channel_expires BIGINT;
   channel_version BIGINT;
   channel_found   BOOLEAN;
-  housekeeping    CONSTANT TEXT[] := ARRAY['username', 'displayName', 'avatarColor', 'avatarUrl',
-                                           'replyTo', 'deletedAt', 'deletedBy', 'embedding'];
 BEGIN
-  IF NEW."channelId" IS NULL THEN
-    RETURN NEW;
-  END IF;
-
-  IF TG_OP = 'UPDATE' THEN
-    IF (to_jsonb(OLD) ->> 'deletedAt') IS NULL AND (to_jsonb(NEW) ->> 'deletedAt') IS NOT NULL THEN
-      RETURN NEW;
-    END IF;
-    IF (to_jsonb(NEW) - housekeeping) = (to_jsonb(OLD) - housekeeping) THEN
-      RETURN NEW;
-    END IF;
+  IF target_channel IS NULL THEN
+    RETURN;
   END IF;
 
   SELECT c."serverId", c."expiresAt", c."expiryVersion"
     INTO channel_server, channel_expires, channel_version
     FROM channels c
-   WHERE c._id = NEW."channelId"
+   WHERE c._id = target_channel
      FOR KEY SHARE;
   channel_found := FOUND;
 
   -- Read AFTER the lock: if we waited on the expiry worker, this statement
   -- runs on a fresh snapshot and sees its committed tombstone.
-  IF EXISTS (SELECT 1 FROM channel_expiry_tombstones t WHERE t."channelId" = NEW."channelId") THEN
+  IF EXISTS (SELECT 1 FROM channel_expiry_tombstones t WHERE t."channelId" = target_channel) THEN
     RAISE EXCEPTION USING ERRCODE = 'BX001', MESSAGE = 'channel_unavailable', DETAIL = 'tombstoned';
   END IF;
   IF NOT channel_found THEN
-    RETURN NEW;
+    RETURN;
   END IF;
-  IF channel_server IS DISTINCT FROM NEW."serverId" THEN
+  IF channel_server IS DISTINCT FROM target_server THEN
     RAISE EXCEPTION USING ERRCODE = 'BX001', MESSAGE = 'channel_unavailable', DETAIL = 'tenant_mismatch';
   END IF;
   IF channel_expires IS NULL THEN
-    RETURN NEW;
+    RETURN;
   END IF;
   IF channel_version IS NULL OR channel_version <= 0 THEN
     RAISE EXCEPTION USING ERRCODE = 'BX001', MESSAGE = 'channel_unavailable', DETAIL = 'invalid_expiry';
@@ -82,6 +79,58 @@ BEGIN
   IF channel_expires <= FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT THEN
     RAISE EXCEPTION USING ERRCODE = 'BX001', MESSAGE = 'channel_unavailable', DETAIL = 'expired';
   END IF;
+END
+$assert$;
+
+CREATE OR REPLACE FUNCTION bridge_channel_update_is_erasure(old_row JSONB, new_row JSONB) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE AS $erasure$
+DECLARE
+  col       TEXT;
+  new_value JSONB;
+  old_value JSONB;
+  deleting  BOOLEAN := (new_row ->> 'deletedAt') IS NOT NULL;
+BEGIN
+  FOR col, new_value IN SELECT key, value FROM jsonb_each(new_row) LOOP
+    old_value := old_row -> col;
+    CONTINUE WHEN new_value IS NOT DISTINCT FROM old_value;
+    IF col IN ('username', 'displayName', 'avatarColor', 'avatarUrl') THEN
+      CONTINUE;
+    ELSIF col = 'deletedAt' THEN
+      CONTINUE WHEN deleting;
+    ELSIF col = 'deletedBy' THEN
+      CONTINUE WHEN deleting;
+    ELSIF col = 'embedding' THEN
+      CONTINUE WHEN new_value = 'null'::jsonb;
+    ELSIF col = 'replyTo' THEN
+      CONTINUE WHEN new_value = 'null'::jsonb;
+      CONTINUE WHEN jsonb_typeof(new_value) = 'object' AND jsonb_typeof(old_value) = 'object'
+                AND old_value @> (new_value - 'deleted')
+                AND (NOT new_value ? 'deleted' OR new_value -> 'deleted' = 'true'::jsonb);
+    ELSIF col IN ('content', 'embeds', 'encryptedContent', 'iv', 'fileUrl', 'fileName',
+                  'fileType', 'editHistory', 'transcript') THEN
+      CONTINUE WHEN deleting AND new_value IN ('null'::jsonb, '""'::jsonb, '[]'::jsonb, '{}'::jsonb,
+                                               '"[Mesaj silindi]"'::jsonb);
+    END IF;
+    RETURN FALSE;
+  END LOOP;
+  RETURN TRUE;
+END
+$erasure$;
+
+CREATE OR REPLACE FUNCTION bridge_channel_write_barrier() RETURNS trigger
+LANGUAGE plpgsql AS $barrier$
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD."channelId" IS DISTINCT FROM NEW."channelId" OR OLD."serverId" IS DISTINCT FROM NEW."serverId" THEN
+      PERFORM bridge_channel_assert_writable(OLD."channelId", OLD."serverId");
+      PERFORM bridge_channel_assert_writable(NEW."channelId", NEW."serverId");
+      RETURN NEW;
+    END IF;
+    IF NEW."channelId" IS NULL OR bridge_channel_update_is_erasure(to_jsonb(OLD), to_jsonb(NEW)) THEN
+      RETURN NEW;
+    END IF;
+  END IF;
+  PERFORM bridge_channel_assert_writable(NEW."channelId", NEW."serverId");
   RETURN NEW;
 END
 $barrier$;

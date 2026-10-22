@@ -164,6 +164,107 @@ RUN('P7 D2 channel write barrier — real PostgreSQL', () => {
     expect(await count(cid)).toBe(0);
   });
 
+  it('a soft delete or housekeeping column cannot carry other changes past the barrier', async () => {
+    const cid = await channel('smuggle', { expiresAt: later() });
+    const live = await channel('smuggle-live');
+    const mid = id('smuggle-msg');
+    const deleted = id('smuggle-deleted');
+    const movable = id('smuggle-movable');
+    await insertSql(db._pool, cid, SERVER, mid);
+    await insertSql(db._pool, cid, SERVER, deleted);
+    await insertSql(db._pool, live, SERVER, movable);
+    await q(`INSERT INTO threads (_id,"channelId","serverId","parentMessageId",name,"createdBy","createdAt","lastMessageAt")
+             VALUES ($1,$2,$3,$4,'t',$5,1,1)`, [id('thread'), cid, SERVER, mid, USER]);
+    const threadId = (await q('SELECT _id FROM threads WHERE "channelId"=$1', [cid])).rows[0]._id;
+    await q(`INSERT INTO thread_messages (_id,"threadId","channelId","serverId","userId",username,"displayName",content,"createdAt")
+             VALUES ($1,$2,$3,$4,$5,'u','U','reply',1)`, [id('reply'), threadId, cid, SERVER, USER]);
+    await q(`UPDATE messages SET content='[Mesaj silindi]', "deletedAt"=$1, "deletedBy"=$2 WHERE _id=$3`,
+      [Date.now(), USER, deleted]);
+    await q('UPDATE channels SET "expiresAt"=$1,"expiryVersion"=2 WHERE _id=$2', [earlier(), cid]);
+
+    // Soft delete that also writes new content, reactions or a pin.
+    await expectDenied(q('UPDATE messages SET "deletedAt"=$1, content=$2 WHERE _id=$3', [Date.now(), 'smuggled', mid]));
+    await expectDenied(q(`UPDATE messages SET "deletedAt"=$1, reactions='{"x":["u"]}'::jsonb WHERE _id=$2`, [Date.now(), mid]));
+    await expectDenied(q('UPDATE messages SET "deletedAt"=$1, pinned=TRUE WHERE _id=$2', [Date.now(), mid]));
+    await expectDenied(q(`UPDATE messages SET "deletedAt"=$1, "editHistory"='[{"content":"old"}]'::jsonb WHERE _id=$2`, [Date.now(), mid]));
+    // Soft delete that moves a live row into the expired channel.
+    await expectDenied(q('UPDATE messages SET "deletedAt"=$1, "channelId"=$2 WHERE _id=$3', [Date.now(), cid, movable]));
+    // Moving content OUT of an unavailable channel would let it escape cleanup.
+    await expectDenied(q('UPDATE messages SET "channelId"=$1 WHERE _id=$2', [live, mid]));
+    await expectDenied(q('UPDATE messages SET "deletedAt"=$1, "channelId"=$2 WHERE _id=$3', [Date.now(), live, mid]));
+    await expectDenied(q('UPDATE thread_messages SET "channelId"=$1 WHERE "threadId"=$2', [live, threadId]));
+    await expectDenied(q('UPDATE threads SET "channelId"=$1 WHERE _id=$2', [live, threadId]));
+    // Undeleting a row on an unavailable channel.
+    await expectDenied(q('UPDATE messages SET "deletedAt"=NULL, "deletedBy"=NULL WHERE _id=$1', [deleted]));
+    // A reply snapshot is not a free-form payload slot.
+    await expectDenied(q(`UPDATE messages SET "replyTo"='{"_id":"x","content":"smuggled"}'::jsonb WHERE _id=$1`, [mid]));
+    // A derived vector of expired content may be cleared but never (re)written.
+    const client: PoolClient = await db._pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS embedding REAL[]');
+      await client.query('SAVEPOINT s');
+      await expectDenied(client.query(`UPDATE messages SET embedding='{1,2}' WHERE _id=$1`, [mid]));
+      await client.query('ROLLBACK TO SAVEPOINT s');
+      await client.query('UPDATE messages SET embedding=NULL WHERE _id=$1', [mid]);
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+
+    const rows = (await q('SELECT _id, content, "channelId", "deletedAt", pinned, reactions FROM messages WHERE _id = ANY($1)',
+      [[mid, deleted, movable]])).rows;
+    const byId = new Map(rows.map((r: { _id: string }) => [r._id, r]));
+    expect(byId.get(mid)).toMatchObject({ content: 'body', channelId: cid, deletedAt: null, pinned: false });
+    expect(byId.get(movable)).toMatchObject({ channelId: live, deletedAt: null });
+    expect(byId.get(deleted)!.deletedAt).not.toBeNull();
+
+    // Legitimate erasure paths on the same unavailable channel still work.
+    await q(`UPDATE messages SET "username"='deleted', "displayName"='Deleted user', "avatarUrl"=NULL WHERE _id=$1`, [mid]);
+    await q(`UPDATE messages SET content='[Mesaj silindi]', "deletedAt"=$1, "deletedBy"=$2, embeds=NULL,
+               "encryptedContent"=NULL, iv=NULL, "fileUrl"=NULL, "fileName"=NULL, "fileType"=NULL,
+               "editHistory"='[]'::jsonb, transcript=NULL WHERE _id=$3`, [Date.now(), USER, mid]);
+    await q('UPDATE messages SET "deletedAt"=$1, "deletedBy"=$2 WHERE _id=$3', [Date.now(), 'mod', deleted]);
+    await q('DELETE FROM thread_messages WHERE "threadId"=$1', [threadId]);
+    await q('DELETE FROM threads WHERE _id=$1', [threadId]);
+  });
+
+  it('never offers expired or tombstoned channel content to the embedding provider', async () => {
+    const { EMBEDDABLE_ROW_PREDICATE } = require('../../lib/pgvector');
+    const eligible = async (mid: string) =>
+      (await q(`SELECT 1 FROM messages m WHERE m._id = $1 AND ${EMBEDDABLE_ROW_PREDICATE}`, [mid])).rows.length === 1;
+    await q('UPDATE servers SET "aiEnabled" = TRUE WHERE _id = $1', [SERVER]);
+    const permanent = await channel('embed-permanent');
+    const active = await channel('embed-active', { expiresAt: later() });
+    const expiring = await channel('embed-expired', { expiresAt: later() });
+    const tombed = await channel('embed-tomb', { expiresAt: later() });
+    const ids = { permanent: id('e1'), active: id('e2'), expired: id('e3'), tombed: id('e4') };
+    await insertSql(db._pool, permanent, SERVER, ids.permanent);
+    await insertSql(db._pool, active, SERVER, ids.active);
+    await insertSql(db._pool, expiring, SERVER, ids.expired);
+    await insertSql(db._pool, tombed, SERVER, ids.tombed);
+    await q('UPDATE channels SET "expiresAt"=$1,"expiryVersion"=2 WHERE _id=$2', [earlier(), expiring]);
+    await tombstone(tombed);
+    expect(await eligible(ids.permanent)).toBe(true);
+    expect(await eligible(ids.active)).toBe(true);
+    expect(await eligible(ids.expired)).toBe(false);
+    expect(await eligible(ids.tombed)).toBe(false);
+  });
+
+  it('keeps reply-snapshot erasure working on an unavailable channel', async () => {
+    const cid = await channel('reply-snap', { expiresAt: later() });
+    const mid = id('reply-snap-msg');
+    await insertSql(db._pool, cid, SERVER, mid);
+    await q(`UPDATE messages SET "replyTo"='{"_id":"p","displayName":"A","content":"q"}'::jsonb WHERE _id=$1`, [mid]);
+    await q('UPDATE channels SET "expiresAt"=$1,"expiryVersion"=2 WHERE _id=$2', [earlier(), cid]);
+    // accountErasure.prepareAuthorErasure and deleteMessageCascade's reply flag.
+    await q(`UPDATE messages SET "replyTo" = "replyTo" - 'displayName' WHERE _id=$1`, [mid]);
+    await q(`UPDATE messages SET "replyTo" = jsonb_set("replyTo", '{deleted}', 'true'::jsonb) WHERE _id=$1`, [mid]);
+    await q('UPDATE messages SET "replyTo" = NULL WHERE _id=$1', [mid]);
+    const row = (await q('SELECT "replyTo" FROM messages WHERE _id=$1', [mid])).rows[0];
+    expect(row.replyTo).toBeNull();
+  });
+
   it('covers the real repository writers: Messages.create, threads, thread replies and crossposts', async () => {
     const expired = await channel('repos', { expiresAt: earlier() });
     await expectDenied(Messages.create({
