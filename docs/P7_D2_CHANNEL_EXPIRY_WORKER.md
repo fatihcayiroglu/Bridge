@@ -29,10 +29,35 @@ indexed query (migration 087) that finds nothing.
    `channels` (discovered from `pg_constraint`, e.g. `server_events.channel_id`),
    the channel edges (bridges, follows, crosspost log) and channel saved items.
    A pass that deletes nothing deletes the channel row — its cascades now
-   find nothing — and marks the tombstone `converged`. Every step is
+   find nothing — and marks the tombstone `converged` (the DATABASE graph has
+   converged; objects have their own lifecycle below). Every step is
    idempotent and durable, so crashes, retries and concurrent nodes are safe.
-   Attachment files are released by the existing reference-based upload
-   cleanup once no row references them.
+3. **Objects (migration 089)** — deleting stored bytes cannot be atomic with
+   PostgreSQL, so the cleanup records the upload URLs of the rows it deletes
+   (`messages.fileUrl`, `voice_messages.url`, podcast audio/cover/legacy file
+   name; never `messages.avatarUrl`, a shared author avatar) in
+   `channel_object_release_outbox` **in the same statement** as the delete. A
+   separate post-commit phase leases due rows (attempts + 1, lease 5 min,
+   FOR UPDATE SKIP LOCKED) and asks `lib/channelObjectRelease.ts` to delete each:
+   - only exact Bridge locations are deleted: `/uploads/<file>` in the PRIVATE
+     storage (local disk, S3, R2, MinIO, B2) and the persistent assets
+     `lib/uploadRelease.ts` recognises (e.g. `/uploads/recordings/<file>`);
+     anything else (an external URL, a path with `..`, a subdirectory Bridge
+     does not own) is `retained` as `unrecognized` — an external URL's
+     basename is never mapped onto a local file;
+   - `hasLiveUploadReference` re-checks every upload column first; a file still
+     used elsewhere (a crosspost) is `retained` as `still_referenced`; the check
+     is fail-closed (no PostgreSQL → error → retry, never delete);
+   - errors retry with backoff (30 s doubling, max 6 h) and become `failed`
+     after 8 attempts (logged as `channel.expiry.objects_failed`, kept for an
+     operator); a crash between the delete and the state update lets the lease
+     expire and the retry finds the object absent (idempotent);
+   - a finished row is reopened if another row of the same channel queues the
+     same URL later (it may have been retained only because that row still
+     pointed at it);
+   - `released`/`retained` history is pruned after 30 days; `failed` stays.
+   The daily `cleanupUploads` sweep remains the reconciliation backstop for
+   root-level attachments.
 
 Lock order matches the write barrier (channel row first). A writer holding
 the channel's `FOR KEY SHARE` makes the claim skip that channel for the tick;
@@ -65,7 +90,24 @@ reversal is a declared `EXPECTED_DEPENDENCY` on 087.
 - **Moderation evidence (owner decision, migration 088):** an expired
   channel's `message_reports` and their 085 evidence snapshots are retained, as
   are security `audit_logs`. See `docs/P7_D2_REPORT_RETENTION.md`.
-- Not built: expiry configuration API/UI, live notification of connected
-  clients when a channel expires (they see 404/`CHANNEL_NOT_FOUND`), search
-  index/embedding cleanup beyond row deletion, federation tombstone
-  propagation, offline-client tombstone sync.
+- Not built: federation tombstone propagation. Ordinary (non-expiry) channel
+  deletion still relies on the daily sweep for root attachments and does not
+  use the object outbox.
+
+## Object release evidence
+
+- `channel-object-release.pgtest.ts` (real PostgreSQL + real local storage, 6
+  cases): attachment, voice message, podcast recording and legacy file name
+  released; a crossposted file and an external URL whose basename matches a
+  local file retained; a bounded pass queues exactly what it deleted and
+  nothing is touched before the post-commit phase; 8 failing attempts with
+  growing backoff end in `failed` and the object survives; two concurrent nodes
+  release each of 6 objects once; a lease that expires after a crash finishes
+  idempotently; a retained duplicate is reopened and released; 089's down
+  refuses while objects are pending. Negative controls run locally: without URL
+  capture 6/6 fail, without reopening 1/6, without the reference check 2/6.
+- `channel-object-release-s3.pgtest.ts` (S3-compatible private bucket; CI's
+  MinIO-compatible service, locally moto): the expired channel's object is
+  deleted, the one still referenced from a live channel stays.
+- `channel-object-release.test.ts`: location rules and the state machine.
+- Rollback gate: 089 lossless; ordered chain 0 lost / 0 extra.

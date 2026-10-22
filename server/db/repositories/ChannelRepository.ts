@@ -258,7 +258,8 @@ class ChannelRepository {
         // follows the report retention policy, not the channel's lifetime.
         for (const [table, tableCols] of cols.entries()) {
           if (table === 'channels' || table === 'channel_expiry_tombstones' ||
-              table === 'message_reports' || !tableCols.has('channelId')) continue;
+              table === 'message_reports' || table === 'channel_object_release_outbox' ||
+              !tableCols.has('channelId')) continue;
           await client.query(`DELETE FROM "${table}" WHERE "channelId"=$1`, [id]);
         }
 

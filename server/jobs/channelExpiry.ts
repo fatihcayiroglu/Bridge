@@ -8,6 +8,8 @@
 import db from '../db/loader';
 import logger from '../lib/logger';
 import { runChannelExpiryTick, type ExpiryPool } from '../lib/channelExpiryWorker';
+import { createChannelObjectReleaser } from '../lib/channelObjectRelease';
+import type { UploadReferenceQueryable } from '../lib/uploadReferenceSafety';
 import { invalidateChannelMessages } from '../lib/messageCache';
 import { invalidateChannelList } from '../routes/servers/channels';
 import { evictSocketsWithoutChannelAccessBestEffort } from '../lib/liveMembership';
@@ -56,11 +58,18 @@ export async function runChannelExpiryJobTick(): Promise<void> {
   if (!pool) return;
   running = true;
   try {
-    const report = await runChannelExpiryTick(pool);
+    const report = await runChannelExpiryTick(pool, {},
+      createChannelObjectReleaser(pool as unknown as UploadReferenceQueryable));
     await announceExpired(report.claimedChannels ?? []);
-    if (report.claimed.length || report.converged.length || report.deleted) {
+    const objects = report.objects;
+    if (report.claimed.length || report.converged.length || report.deleted ||
+        (objects && objects.released + objects.retained + objects.retried + objects.failed > 0)) {
       logger.info({ event: 'channel.expiry.tick', claimed: report.claimed.length,
-        converged: report.converged.length, deleted: report.deleted }, 'Channel expiry tick');
+        converged: report.converged.length, deleted: report.deleted, objects }, 'Channel expiry tick');
+    }
+    if (objects?.failed) {
+      logger.error({ event: 'channel.expiry.objects_failed', failed: objects.failed },
+        'Expired-channel objects exhausted their release retries; see channel_object_release_outbox state=failed');
     }
   } catch (error) {
     logger.error({ event: 'channel.expiry.tick_failed', error }, 'Channel expiry tick failed');

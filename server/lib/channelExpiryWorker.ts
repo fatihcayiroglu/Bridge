@@ -23,8 +23,11 @@
  *    pass deletes nothing, the channel row itself is deleted (its cascades
  *    now find nothing to remove) and the tombstone becomes `converged`.
  *    Deletes are idempotent, so retries, crashes and concurrent nodes are
- *    safe. Attachment files are released by the existing reference-based
- *    upload cleanup once no row references them.
+ *    safe. Upload URLs of deleted rows are queued in the same statement.
+ *
+ * 3. OBJECTS (post-commit, leased): releaseChannelObjects deletes the queued
+ *    objects with retries, after a fail-closed live-reference check, and
+ *    records a terminal state for each (migration 089).
  *
  * Retention: security `audit_logs` and `message_reports` (with migration
  * 085's bounded evidence snapshot) are never deleted by expiry. Since
@@ -138,9 +141,12 @@ const CHANNEL_POINTERS = [
 
 /**
  * Tables never cleaned by expiry: the channel itself, tombstones, security
- * audit history and moderation reports (owner decision on #321, migration 088).
+ * audit history, moderation reports (owner decision on #321, migration 088)
+ * and the object-release outbox (migration 089).
  */
-const RETAINED_TABLES = ['channels', 'channel_expiry_tombstones', 'audit_logs', 'message_reports'];
+const RETAINED_TABLES = ['channels', 'channel_expiry_tombstones', 'audit_logs', 'message_reports',
+  // The object-release outbox is keyed by channelId too, but it is this worker's own durable queue.
+  'channel_object_release_outbox'];
 
 /**
  * Single-column foreign keys that reference channels(_id), whatever the
@@ -156,8 +162,27 @@ export const CHANNEL_FK_SQL = `
      AND array_length(c.conkey, 1) = 1
      AND cl.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())`;
 
+/**
+ * Upload URLs carried by channel-owned rows. The cleanup records them in the
+ * object-release outbox (migration 089) in the same statement that deletes the
+ * rows, so no deleted row can lose track of its object. `messages.avatarUrl` is
+ * an author/webhook avatar shared across channels and is never released here.
+ */
+const URL_COLUMNS: ReadonlyArray<{ table: string; column: string; expr: string }> = [
+  { table: 'messages', column: 'fileUrl', expr: '"fileUrl"' },
+  { table: 'voice_messages', column: 'url', expr: 'url' },
+  { table: 'podcast_settings', column: 'coverUrl', expr: '"coverUrl"' },
+  { table: 'podcast_settings', column: 'imageUrl', expr: '"imageUrl"' },
+  { table: 'podcast_episodes', column: 'audioUrl', expr: '"audioUrl"' },
+  // Legacy episodes store a bare file name served as /uploads/<filename>.
+  { table: 'podcast_episodes', column: 'filename', expr: `'/uploads/' || filename` },
+];
+const OUTBOX = 'channel_object_release_outbox';
+
 /** Discover channel-owned content, with durable security audit rows excluded. */
 async function channelOwnedTables(db: ExpiryQueryable): Promise<{
+  /** Upload URL expressions per table, only when the outbox exists. */
+  urlExprs: Map<string, string[]>;
   owned: string[];
   references: Array<[string, string]>;
   edges: Array<[string, string[]]>;
@@ -197,7 +222,14 @@ async function channelOwnedTables(db: ExpiryQueryable): Promise<{
     const present = fields.filter(field => columns.has(field));
     return present.length ? [{ table, serverKey, fields: present }] : [];
   });
-  return { owned, references, edges, saved, linkedReplies, pointers };
+  const urlExprs = new Map<string, string[]>();
+  if (cols.has(OUTBOX)) {
+    for (const { table, column, expr } of URL_COLUMNS) {
+      if (!cols.get(table)?.has(column)) continue;
+      urlExprs.set(table, [...(urlExprs.get(table) ?? []), expr]);
+    }
+  }
+  return { urlExprs, owned, references, edges, saved, linkedReplies, pointers };
 }
 
 const quote = (identifier: string) => '"' + identifier.replace(/"/g, '""') + '"';
@@ -238,13 +270,40 @@ export async function cleanupNextTombstone(pool: ExpiryPool, batchSize = 500): P
       [channelId, serverId]);
     if (live.rows.length) throw new Error('Tombstoned channel id has a live channel row');
 
-    const { owned, references, edges, saved, linkedReplies, pointers } = await channelOwnedTables(client);
+    const { urlExprs, owned, references, edges, saved, linkedReplies, pointers } = await channelOwnedTables(client);
     let deleted = 0;
+    // Every predicate binds the tombstoned channel id as $1.
     const batch = async (table: string, predicate: string, params: unknown[]) => {
+      const exprs = urlExprs.get(table);
+      if (!exprs?.length) {
+        const r = await client.query(
+          `DELETE FROM ${quote(table)} WHERE ctid = ANY(ARRAY(
+             SELECT ctid FROM ${quote(table)} WHERE ${predicate} LIMIT ${batchSize}))`, params);
+        deleted += r.rowCount ?? 0;
+        return;
+      }
+      // Same statement: the rows go and their upload URLs are queued, or neither.
       const r = await client.query(
-        `DELETE FROM ${quote(table)} WHERE ctid = ANY(ARRAY(
-           SELECT ctid FROM ${quote(table)} WHERE ${predicate} LIMIT ${batchSize}))`, params);
-      deleted += r.rowCount ?? 0;
+        `WITH gone AS (
+           DELETE FROM ${quote(table)} WHERE ctid = ANY(ARRAY(
+             SELECT ctid FROM ${quote(table)} WHERE ${predicate} LIMIT ${batchSize}))
+           RETURNING ${exprs.map((e, i) => `${e} AS u${i}`).join(', ')}),
+         urls AS (
+           SELECT DISTINCT v.u FROM gone
+             CROSS JOIN LATERAL (VALUES ${exprs.map((_, i) => `(gone.u${i})`).join(', ')}) AS v(u)
+            WHERE v.u IS NOT NULL AND char_length(v.u) BETWEEN 1 AND 2048),
+         queued AS (
+           INSERT INTO ${OUTBOX} ("channelId", url, "enqueuedAt", "nextAttemptAt")
+           SELECT $1, urls.u, ${NOW_MS}, ${NOW_MS} FROM urls
+           -- A finished row is reopened: it may have been retained only because a
+           -- not-yet-drained row of this channel still referenced the object.
+           ON CONFLICT ("channelId", url) DO UPDATE
+              SET state = 'pending', attempts = 0, "finishedAt" = NULL, "lastError" = NULL,
+                  "nextAttemptAt" = EXCLUDED."nextAttemptAt"
+            WHERE ${OUTBOX}.state <> 'pending'
+           RETURNING 1)
+         SELECT (SELECT COUNT(*) FROM gone)::int AS deleted, (SELECT COUNT(*) FROM queued)::int AS queued`, params);
+      deleted += Number(r.rows[0]?.deleted ?? 0);
     };
     for (const [table, columns] of edges) {
       await batch(table, columns.map(c => `${quote(c)} = $1`).join(' OR '), [channelId]);
@@ -309,17 +368,107 @@ export async function cleanupNextTombstone(pool: ExpiryPool, batchSize = 500): P
   }
 }
 
-export interface ExpiryTickLimits { maxClaims?: number; maxCleanupPasses?: number; batchSize?: number }
+/**
+ * Deletes one stored object after the rows that referenced it are gone. It
+ * must re-check live references itself (another channel may share the file)
+ * and must never delete a location Bridge does not own.
+ */
+export interface ObjectReleaser {
+  release(url: string): Promise<'released' | 'absent' | 'still_referenced' | 'unrecognized'>;
+}
+export interface ObjectReleaseReport { released: number; retained: number; retried: number; failed: number }
+
+export const OBJECT_RELEASE_MAX_ATTEMPTS = 8;
+const OBJECT_RELEASE_LEASE_MS = 5 * 60_000;
+const OBJECT_RELEASE_FINISHED_TTL_MS = 30 * 24 * 60 * 60_000;
+
+/** 30 s, 1 min, 2 min ... capped at 6 h. */
+export function objectReleaseBackoffMs(attempts: number): number {
+  return Math.min(30_000 * 2 ** Math.max(0, attempts - 1), 6 * 60 * 60_000);
+}
+
+export const CLAIM_OBJECT_RELEASES_SQL = `
+  UPDATE ${OUTBOX} o
+     SET attempts = o.attempts + 1, "nextAttemptAt" = ${NOW_MS} + ${OBJECT_RELEASE_LEASE_MS}
+   WHERE ("channelId", url) IN (
+     SELECT "channelId", url FROM ${OUTBOX}
+      WHERE state = 'pending' AND "nextAttemptAt" <= ${NOW_MS}
+      ORDER BY "nextAttemptAt", "channelId", url
+      LIMIT $1
+      FOR UPDATE SKIP LOCKED)
+  RETURNING o."channelId", o.url, o.attempts`;
+
+/**
+ * Post-commit object phase. Each due outbox row is leased (attempts + 1, next
+ * attempt pushed out by the lease) in one short statement, so concurrent nodes
+ * never release the same object and a crash mid-release simply lets the lease
+ * expire. Outcomes are terminal (released/retained), retried with backoff, or
+ * `failed` after OBJECT_RELEASE_MAX_ATTEMPTS for reconciliation.
+ */
+export async function releaseChannelObjects(
+  pool: ExpiryPool, releaser: ObjectReleaser, limit = 50,
+): Promise<ObjectReleaseReport> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new RangeError('Invalid object release limit');
+  const report: ObjectReleaseReport = { released: 0, retained: 0, retried: 0, failed: 0 };
+  const client = await pool.connect();
+  try {
+    const leased = await client.query(CLAIM_OBJECT_RELEASES_SQL, [limit]);
+    for (const row of leased.rows) {
+      const channelId = String(row.channelId);
+      const url = String(row.url);
+      const attempts = Number(row.attempts);
+      const finish = (state: 'released' | 'retained' | 'failed', note: string | null) => client.query(
+        `UPDATE ${OUTBOX} SET state = $3, "finishedAt" = ${NOW_MS}, "lastError" = $4
+          WHERE "channelId" = $1 AND url = $2 AND state = 'pending'`, [channelId, url, state, note]);
+      try {
+        const outcome = await releaser.release(url);
+        if (outcome === 'released' || outcome === 'absent') {
+          await finish('released', outcome === 'absent' ? 'already_absent' : null);
+          report.released += 1;
+        } else {
+          await finish('retained', outcome);
+          report.retained += 1;
+        }
+      } catch (err) {
+        const note = String((err as Error)?.message ?? err).slice(0, 500);
+        if (attempts >= OBJECT_RELEASE_MAX_ATTEMPTS) {
+          await finish('failed', note);
+          report.failed += 1;
+        } else {
+          await client.query(
+            `UPDATE ${OUTBOX} SET "nextAttemptAt" = ${NOW_MS} + $3, "lastError" = $4
+              WHERE "channelId" = $1 AND url = $2 AND state = 'pending'`,
+            [channelId, url, objectReleaseBackoffMs(attempts), note]);
+          report.retried += 1;
+        }
+      }
+    }
+    // Finished history is kept 30 days; `failed` rows stay until an operator acts.
+    await client.query(
+      `DELETE FROM ${OUTBOX} WHERE ctid = ANY(ARRAY(
+         SELECT ctid FROM ${OUTBOX} WHERE state IN ('released', 'retained')
+            AND "finishedAt" < ${NOW_MS} - ${OBJECT_RELEASE_FINISHED_TTL_MS} LIMIT 500))`);
+    return report;
+  } finally {
+    client.release();
+  }
+}
+
+export interface ExpiryTickLimits { maxClaims?: number; maxCleanupPasses?: number; batchSize?: number; maxObjectReleases?: number }
 export interface ExpiryTickReport {
   claimed: string[];
   /** The same claims with their server, for broadcasting and cache invalidation. */
   claimedChannels: Array<{ channelId: string; serverId: string }>;
   converged: string[];
   deleted: number;
+  /** Present when the tick ran the object phase (a releaser was given). */
+  objects?: ObjectReleaseReport;
 }
 
 /** One bounded worker tick: claim up to N channels, then up to M cleanup passes. */
-export async function runChannelExpiryTick(pool: ExpiryPool, limits: ExpiryTickLimits = {}): Promise<ExpiryTickReport> {
+export async function runChannelExpiryTick(
+  pool: ExpiryPool, limits: ExpiryTickLimits = {}, releaser?: ObjectReleaser,
+): Promise<ExpiryTickReport> {
   const maxClaims = limits.maxClaims ?? 20;
   const maxPasses = limits.maxCleanupPasses ?? 50;
   const report: ExpiryTickReport = { claimed: [], claimedChannels: [], converged: [], deleted: 0 };
@@ -336,5 +485,6 @@ export async function runChannelExpiryTick(pool: ExpiryPool, limits: ExpiryTickL
     if (pass.state === 'converged') report.converged.push(pass.channelId);
     else report.deleted += pass.deleted;
   }
+  if (releaser) report.objects = await releaseChannelObjects(pool, releaser, limits.maxObjectReleases ?? 50);
   return report;
 }
