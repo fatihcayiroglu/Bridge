@@ -202,5 +202,14 @@
       "082_portable_import_approval_grant_binding"
     ],
     "rationale": "081 owns the portable_import_approvals table and its down drops that table. The later 082 adds the grant digest column and its hex-format CHECK to that same table, so a standalone 081 rollback destroys objects which 081 cannot recreate. 082 by itself is lossless. The mandatory --ordered rollback proof on real PostgreSQL completed the entire down/up chain with zero missing or extra objects. This declaration does not waive the ordered rollback, column validator, exact-head integration checks or any other migration failure."
+  },
+  "084_channel_expiry_foundation": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "cross-migration-dependency",
+    "expectedDifference": "idx_channels_expires_at and idx_channel_expiry_tombstones_pending (created by 086) are lost when 084 drops channels.\"expiresAt\" and channel_expiry_tombstones, and are not recreated by 084's re-up",
+    "dependsOn": [
+      "086_channel_expiry_worker_index"
+    ],
+    "rationale": "086 indexes columns and a table that 084 owns. Isolated reversal of 084 drops them, which drops 086's two partial indexes with them; re-applying 084 alone cannot recreate objects that belong to 086. Ordered rollback unwinds 086 first, and 086's own isolated cycle is lossless (proven by the gate). 084's down is otherwise unchanged and still refuses while expiry metadata or tombstones exist."
   }
 }
