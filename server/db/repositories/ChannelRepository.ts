@@ -319,8 +319,11 @@ class ChannelRepository {
     return db.channels.count({ serverId });
   }
 
+  /** Same P7 D2 rule as findByServer: expired (or corrupt) channels are never listed. */
   async findWhere(query: Record<string, unknown>) {
-    return db.channels.find(query);
+    const channels = await db.channels.find(query);
+    const now = Date.now();
+    return channels.filter((channel) => classifyChannelExpiryWithTombstone(channel, null, now).accessible);
   }
 
   async findOneWhere(query: Record<string, unknown>) {

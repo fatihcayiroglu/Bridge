@@ -154,6 +154,9 @@ describe('ChannelRepository behavior coverage', () => {
     await db.channels.insert({ _id: 'gone', serverId: 'sx', name: 'g', order: 2, expiresAt: now - 1, expiryVersion: 1 } as any);
     await db.channels.insert({ _id: 'corrupt', serverId: 'sx', name: 'c', order: 3, expiresAt: now + 60_000, expiryVersion: 0 } as any);
     expect((await ChannelRepository.findByServer('sx')).map((x: any) => x._id)).toEqual(['perm', 'active']);
+    // findWhere (discovery counts, onboarding, server profile, semantic, push) follows the same rule.
+    const where = await ChannelRepository.findWhere({ serverId: 'sx' });
+    expect(where.map((x: any) => x._id).sort()).toEqual(['active', 'perm']);
   });
 
   test('basic channel/category repository methods remain tenant-scoped', async () => {
