@@ -15,11 +15,11 @@ import request from 'supertest';
 import { readChannelForAi } from '../../lib/aiContext';
 
 const db = require('../../db/loader').default;
-const unwrap = (m: { default?: unknown }) => m.default ?? m;
+const unwrap = (m: { default?: express.Router }) => (m.default ?? m) as express.Router;
 const semanticRouter = unwrap(require('../../routes/semantic'));
 const aiRouter = unwrap(require('../../routes/ai'));
 const pinsRouter = unwrap(require('../../routes/pins'));
-const { router: announcementRouter } = require('../../routes/announcement');
+const { router: announcementRouter } = require('../../routes/announcement') as { router: express.Router };
 
 const PG_TEST_URL = process.env.PG_TEST_URL;
 const RUN = PG_TEST_URL ? describe : describe.skip;
