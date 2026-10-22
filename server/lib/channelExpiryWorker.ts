@@ -106,8 +106,24 @@ export async function claimExpiredChannel(pool: ExpiryPool): Promise<ClaimOutcom
   }
 }
 
-/** Every table with a "channelId" column except channels and tombstones. */
-async function channelOwnedTables(db: ExpiryQueryable): Promise<{ owned: string[]; edges: Array<[string, string[]]>; saved: boolean }> {
+/**
+ * A channel can also be referenced by server configuration without an FK.
+ * These are deliberately allowlisted: we do not delete server settings or
+ * audit history just because they mention an expired channel.
+ */
+const CHANNEL_POINTERS = [
+  { table: 'servers', serverKey: '_id', fields: ['verificationChannelId', 'logChannelId'] },
+  { table: 'server_onboarding', serverKey: 'serverId', fields: ['rulesChannelId', 'welcomeChannelId'] },
+] as const;
+
+/** Discover channel-owned content, with durable security audit rows excluded. */
+async function channelOwnedTables(db: ExpiryQueryable): Promise<{
+  owned: string[];
+  edges: Array<[string, string[]]>;
+  saved: boolean;
+  linkedReplies: boolean;
+  pointers: Array<{ table: string; serverKey: string; fields: string[] }>;
+}> {
   const result = await db.query(
     `SELECT table_name, column_name FROM information_schema.columns
       WHERE table_schema = current_schema()`);
@@ -118,7 +134,7 @@ async function channelOwnedTables(db: ExpiryQueryable): Promise<{ owned: string[
     cols.get(t)!.add(String(r.column_name));
   }
   const owned = [...cols.entries()]
-    .filter(([t, c]) => c.has('channelId') && t !== 'channels' && t !== 'channel_expiry_tombstones')
+    .filter(([t, c]) => c.has('channelId') && !['channels', 'channel_expiry_tombstones', 'audit_logs'].includes(t))
     .map(([t]) => t)
     .sort();
   const edges = EDGE_TABLES
@@ -126,7 +142,16 @@ async function channelOwnedTables(db: ExpiryQueryable): Promise<{ owned: string[
     .filter(([t, c]) => cols.has(t) && c.length > 0);
   const saved = cols.get('saved_messages')?.has('destinationType') === true &&
     cols.get('saved_messages')?.has('destinationId') === true;
-  return { owned, edges, saved };
+  const linkedReplies = cols.get('threads')?.has('_id') === true &&
+    cols.get('threads')?.has('channelId') === true &&
+    cols.get('thread_messages')?.has('threadId') === true;
+  const pointers = CHANNEL_POINTERS.flatMap(({ table, serverKey, fields }) => {
+    const columns = cols.get(table);
+    if (!columns?.has(serverKey)) return [];
+    const present = fields.filter(field => columns.has(field));
+    return present.length ? [{ table, serverKey, fields: present }] : [];
+  });
+  return { owned, edges, saved, linkedReplies, pointers };
 }
 
 const quote = (identifier: string) => '"' + identifier.replace(/"/g, '""') + '"';
@@ -148,13 +173,14 @@ export async function cleanupNextTombstone(pool: ExpiryPool, batchSize = 500): P
     await client.query('BEGIN');
     open = true;
     const pending = await client.query(
-      `SELECT "channelId" FROM channel_expiry_tombstones
+      `SELECT "channelId", "serverId" FROM channel_expiry_tombstones
         WHERE "cleanupState" = 'pending'
         ORDER BY "recordedAt", "channelId"
         LIMIT 1
         FOR UPDATE SKIP LOCKED`);
     const channelId = pending.rows[0]?.channelId;
-    if (typeof channelId !== 'string') {
+    const serverId = pending.rows[0]?.serverId;
+    if (typeof channelId !== 'string' || typeof serverId !== 'string') {
       await client.query('ROLLBACK');
       open = false;
       return { state: 'none' };
@@ -163,7 +189,7 @@ export async function cleanupNextTombstone(pool: ExpiryPool, batchSize = 500): P
     const live = await client.query('SELECT 1 FROM channels WHERE _id = $1', [channelId]);
     if (live.rows.length) throw new Error('Tombstoned channel id still has a channel row');
 
-    const { owned, edges, saved } = await channelOwnedTables(client);
+    const { owned, edges, saved, linkedReplies, pointers } = await channelOwnedTables(client);
     let deleted = 0;
     const batch = async (table: string, predicate: string, params: unknown[]) => {
       const r = await client.query(
@@ -175,7 +201,38 @@ export async function cleanupNextTombstone(pool: ExpiryPool, batchSize = 500): P
       await batch(table, columns.map(c => `${quote(c)} = $1`).join(' OR '), [channelId]);
     }
     if (saved) await batch('saved_messages', `"destinationType" = 'channel' AND "destinationId" = $1`, [channelId]);
-    for (const table of owned) await batch(table, '"channelId" = $1', [channelId]);
+
+    // A reply can refer to a thread from this channel by threadId, even if its
+    // stored channelId is absent/corrupt. Delete those in bounded passes FIRST.
+    // Never delete a thread while any of its replies still exist: an orphan
+    // with only threadId would otherwise become impossible to discover.
+    if (linkedReplies) {
+      await batch('thread_messages', '"threadId" IN (SELECT _id FROM threads WHERE "channelId" = $1)', [channelId]);
+    }
+    if (owned.includes('thread_messages')) {
+      await batch('thread_messages', '"channelId" = $1', [channelId]);
+    }
+    for (const table of owned) {
+      if (table === 'threads' || table === 'thread_messages') continue;
+      await batch(table, '"channelId" = $1', [channelId]);
+    }
+    if (owned.includes('threads')) {
+      await batch('threads', linkedReplies
+        ? '"channelId" = $1 AND NOT EXISTS (SELECT 1 FROM thread_messages r WHERE r."threadId" = "threads"._id)'
+        : '"channelId" = $1', [channelId]);
+    }
+
+    // Clear dangling server configuration pointers. Keep verification policy
+    // flags unchanged; never silently weaken the server's security posture.
+    for (const { table, serverKey, fields } of pointers) {
+      for (const field of fields) {
+        await client.query(
+          `UPDATE ${quote(table)} SET ${quote(field)} = NULL
+           WHERE ${quote(serverKey)} = $2 AND ${quote(field)} = $1`,
+          [channelId, serverId],
+        );
+      }
+    }
 
     if (deleted === 0) {
       await client.query(

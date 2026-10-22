@@ -69,6 +69,8 @@ RUN('P7 D2 channel expiry worker — real PostgreSQL', () => {
   }
 
   async function cleanup() {
+    await q('DELETE FROM audit_logs WHERE "serverId" LIKE $1', [P + '%']);
+    await q('DELETE FROM server_onboarding WHERE "serverId" LIKE $1', [P + '%']);
     for (const t of ['saved_messages']) await q(`DELETE FROM ${t} WHERE "userId"=$1`, [USER]);
     for (const t of ['thread_messages', 'threads', 'messages', 'notifications']) {
       await q(`DELETE FROM ${t} WHERE "channelId" LIKE $1`, [P + '%']);
@@ -104,6 +106,54 @@ RUN('P7 D2 channel expiry worker — real PostgreSQL', () => {
     await q('INSERT INTO messages (_id,"channelId","serverId","userId",username,"displayName",content,"createdAt") VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
       [id('late'), doomed, sid, USER, 'u', 'U', 'x', Date.now()]).catch((e: unknown) => { err = e; });
     expect(isChannelWriteDenied(err)).toBe(true);
+  });
+
+  it('preserves security audit history, unlinks settings, and drains threadId replies before their parent', async () => {
+    const sid = await server();
+    const survivor = await channel(sid);
+    const doomed = await channel(sid, past());
+    await content(doomed, sid, 0);
+
+    const tid = (await q('SELECT _id FROM threads WHERE "channelId"=$1', [doomed])).rows[0]._id as string;
+    // Deliberately disagree with the parent on channelId. A sweep by channelId
+    // alone would leave these replies orphaned when the parent gets deleted.
+    await q('UPDATE thread_messages SET "channelId"=$1 WHERE "threadId"=$2', [survivor, tid]);
+    for (let i = 0; i < 2; i++) {
+      await q('INSERT INTO thread_messages (_id,"threadId","channelId","serverId","userId",username,"displayName",content,"createdAt")' +
+        ' VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        [id('mismatch-reply'), tid, survivor, sid, USER, 'u', 'U', 'x', Date.now()]);
+    }
+
+    const auditId = id('audit');
+    await q('INSERT INTO audit_logs (_id,"serverId","actorId",action,"channelId","createdAt") VALUES ($1,$2,$3,$4,$5,$6)',
+      [auditId, sid, USER, 'channel.updated', doomed, Date.now()]);
+    await q('UPDATE servers SET "logChannelId"=$1,"verificationChannelId"=$1 WHERE _id=$2', [doomed, sid]);
+    await q('INSERT INTO server_onboarding (_id,"serverId","rulesChannelId","welcomeChannelId","createdAt")' +
+      ' VALUES ($1,$2,$3,$3,$4)', [id('onboard'), sid, doomed, Date.now()]);
+
+    await expire(doomed);
+    for (let i = 0; i < 50 && !(await tombstone(doomed)); i++) await claimExpiredChannel(db._pool);
+    expect(await tombstone(doomed)).toBe('pending');
+
+    let first: { state: string; channelId?: string } = { state: 'none' };
+    for (let i = 0; i < 100; i++) {
+      first = await cleanupNextTombstone(db._pool, 1);
+      if (first.channelId === doomed) break;
+    }
+    expect(first.state).toBe('progress');
+    expect(await n('SELECT COUNT(*)::int AS n FROM thread_messages WHERE "threadId"=$1', [tid])).toBe(2);
+    expect(await n('SELECT COUNT(*)::int AS n FROM threads WHERE _id=$1', [tid])).toBe(1);
+
+    await drain({ batchSize: 1 });
+    expect(await tombstone(doomed)).toBe('converged');
+    expect(await n('SELECT COUNT(*)::int AS n FROM thread_messages WHERE "threadId"=$1', [tid])).toBe(0);
+    expect(await n('SELECT COUNT(*)::int AS n FROM threads WHERE _id=$1', [tid])).toBe(0);
+    expect(await n('SELECT COUNT(*)::int AS n FROM audit_logs WHERE _id=$1', [auditId])).toBe(1);
+    const serverPointers = (await q('SELECT "logChannelId","verificationChannelId" FROM servers WHERE _id=$1', [sid])).rows[0];
+    expect(serverPointers).toMatchObject({ logChannelId: null, verificationChannelId: null });
+    const onboarding = (await q('SELECT "rulesChannelId","welcomeChannelId" FROM server_onboarding WHERE "serverId"=$1', [sid])).rows[0];
+    expect(onboarding).toMatchObject({ rulesChannelId: null, welcomeChannelId: null });
+    expect((await remaining(survivor)).channel).toBe(1);
   });
 
   it('never claims a server\'s last live channel', async () => {
