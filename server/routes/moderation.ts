@@ -143,7 +143,8 @@ async function writeAudit(serverId: string, actor: JwtPayload, action: string, t
  * is live, the moderator's permissions in that channel decide (overrides
  * included): VIEW_CHANNELS and MANAGE_MESSAGES there, or ADMIN. Once it is
  * deleted, expired or tombstoned, its overrides are gone with it. Migration
- * 090 recorded, at that moment, whether any override hid the channel: only an
+ * 090 recorded, at that moment, whether any override (channel_permissions or
+ * legacy channel_overrides) denied VIEW_CHANNELS or MANAGE_MESSAGES there: only an
  * 'open' channel's reports stay reviewable with server-level VIEW_CHANNELS +
  * MANAGE_MESSAGES; a 'restricted' or unrecorded one is ADMIN only (owner
  * included), so a private channel never becomes readable to moderators it hid

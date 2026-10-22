@@ -1060,7 +1060,8 @@ CREATE TABLE IF NOT EXISTS message_reports (
   "evidenceFileType" TEXT,
   "evidenceScrubbedAt" BIGINT,
   -- Migration 090: recorded when the channel is claimed or deleted ('open' when
-  -- no override denied VIEW_CHANNELS, else 'restricted'); NULL means ADMIN only.
+  -- no override in channel_permissions or channel_overrides denied VIEW_CHANNELS
+  -- or MANAGE_MESSAGES, else 'restricted'); NULL means ADMIN only.
   "channelVisibility" TEXT,
   CHECK (reason IN ('spam','harassment','hate','sexual','violence','other')),
   CHECK (status IN ('open','resolved','dismissed')),

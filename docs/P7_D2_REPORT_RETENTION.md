@@ -47,10 +47,15 @@ reply quotes or E2EE ciphertext (an `e2ee` message is captured with empty text).
 - Once the channel is deleted, expired (even before the worker claims it) or
   tombstoned, its overrides are gone with it. Migration 090 records, in the
   transaction that claims or deletes the channel and before its overrides are
-  drained, whether any override denied `VIEW_CHANNELS` there
-  (`message_reports."channelVisibility"`):
-  - `'open'`: nothing hid the channel. Server-level `VIEW_CHANNELS` +
-    `MANAGE_MESSAGES` keep reviewing its reports.
+  drained, whether any override denied `VIEW_CHANNELS` or `MANAGE_MESSAGES`
+  there (`message_reports."channelVisibility"`). Both override stores the
+  permission resolver enforces are read: `channel_permissions` and the legacy
+  `channel_overrides` (role and per-member rows, which nothing writes today
+  but upgraded installations can still hold):
+  - `'open'`: no override narrowed who could review the channel's reports.
+    Server-level `VIEW_CHANNELS` + `MANAGE_MESSAGES` keep reviewing them.
+    Without a deny, a member's channel permissions are a superset of their
+    server-level ones, so this never widens access.
   - `'restricted'`, or not recorded (expired but not yet claimed, or gone
     before 090): **`ADMIN` only**, the owner included.
 
@@ -109,7 +114,10 @@ an unrecorded gone channel is ADMIN only and the CHECK refuses other values; a p
 stays hidden from it while live, expired-unclaimed and after the worker drained
 its overrides (recorded `'restricted'` at the claim, before the drain; both private-channel
 cases fail under the earlier server-level rule, and removing either snapshot
-call fails one case); an expired-but-unclaimed channel's edited row is never shown; the
+call fails one case); a legacy `channel_overrides` role deny, a legacy per-member
+deny and a `MANAGE_MESSAGES` deny each stay `'restricted'` through deletion and
+expiry (the first two failed when only `channel_permissions` was read, the third
+fails with a `VIEW_CHANNELS`-only mask); an expired-but-unclaimed channel's edited row is never shown; the
 retention worker scrubs at 91 days, keeps 89 days and open reports; author
 erasure anonymizes and reporter erasure removes; 088 down refuses. Negative
 controls (each run locally): with the FK restored 7/8 fail; with the worker

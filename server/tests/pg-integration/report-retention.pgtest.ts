@@ -85,6 +85,7 @@ RUN('real PostgreSQL — reports outlive expired and deleted channels (088)', ()
       await q('DELETE FROM message_reports WHERE "serverId"=$1', [s]);
       await q('DELETE FROM messages WHERE "serverId"=$1', [s]);
       await q('DELETE FROM channel_permissions WHERE "serverId"=$1', [s]);
+      await q('DELETE FROM channel_overrides WHERE "channelId" LIKE $1', [`${P}-%`]);
       await q('DELETE FROM channel_expiry_tombstones WHERE "serverId"=$1', [s]);
       await q('DELETE FROM audit_logs WHERE "serverId"=$1', [s]);
       await q('DELETE FROM channels WHERE "serverId"=$1', [s]);
@@ -270,6 +271,36 @@ RUN('real PostgreSQL — reports outlive expired and deleted channels (088)', ()
     await hidden();
     expect(ids(await list(ADMIN))).toContain(rid);
     expect((await reportRow(rid)).status).toBe('open');
+  });
+
+  it('090: every override the resolver enforces counts — legacy channel_overrides rows and a MANAGE_MESSAGES deny', async () => {
+    // Each case hides the channel's reports from MOD while it is live; the
+    // recorded visibility must keep them hidden once it is gone.
+    const cases: Array<[string, (cid: string) => Promise<unknown>]> = [
+      ['legacy-role-deny', (cid) => q(`INSERT INTO channel_overrides (_id,"channelId","targetId","targetType",allow,deny) VALUES ($1,$2,$3,'role',0,$4)`,
+        [id('ovr'), cid, MOD_ROLE, PERMS.VIEW_CHANNELS])],
+      ['legacy-user-deny', (cid) => q(`INSERT INTO channel_overrides (_id,"channelId","targetId","targetType",allow,deny) VALUES ($1,$2,$3,'user',0,$4)`,
+        [id('ovr'), cid, MOD, PERMS.VIEW_CHANNELS])],
+      ['manage-deny', (cid) => q(`INSERT INTO channel_permissions (_id,"channelId","roleId","serverId",allow,deny,"createdAt") VALUES ($1,$2,$3,$4,0,$5,1)`,
+        [id('deny'), cid, MOD_ROLE, SRV, PERMS.MANAGE_MESSAGES])],
+    ];
+    for (const [label, hide] of cases) {
+      for (const how of ['delete', 'expire'] as const) {
+        const cid = await channel(`${label}-${how}`, how === 'expire');
+        await hide(cid);
+        const rid = await report(cid, await message(cid, `${label} secret`));
+        expect(ids(await list(MOD))).not.toContain(rid);          // live: hidden by the override
+        if (how === 'delete') expect(await Channels.deleteGraphAtomic(cid, SRV)).toBe('deleted');
+        else { await expire(cid); await drainExpiry(); }
+        expect((await q('SELECT 1 FROM channel_overrides WHERE "channelId"=$1', [cid]))).toHaveLength(0);
+        expect([label, how, (await reportRow(rid)).channelVisibility]).toEqual([label, how, 'restricted']);
+        const res = await list(MOD);
+        expect(ids(res)).not.toContain(rid);
+        expect(JSON.stringify(res.body)).not.toContain(`${label} secret`);
+        expect((await resolve(MOD, rid)).status).toBe(403);
+        expect(ids(await list(ADMIN))).toContain(rid);
+      }
+    }
   });
 
   it('never shows an expired-but-unclaimed channel\'s live rows, only the snapshot', async () => {

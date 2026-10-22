@@ -7,9 +7,10 @@
 -- must never become readable to moderators it hid from).
 --
 -- This column records, at the moment the channel is claimed by the expiry
--- worker or deleted, whether any override denied VIEW_CHANNELS in it:
---   'restricted' — some role was denied the channel: ADMIN only, as before;
---   'open'       — no override hid it: server-level VIEW_CHANNELS +
+-- worker or deleted, whether any override (channel_permissions or the legacy
+-- channel_overrides) denied VIEW_CHANNELS or MANAGE_MESSAGES in it:
+--   'restricted' — some role or member was denied: ADMIN only, as before;
+--   'open'       — no override narrowed it: server-level VIEW_CHANNELS +
 --                  MANAGE_MESSAGES may keep reviewing its reports;
 --   NULL         — live channel, or gone before this migration: ADMIN only.
 -- Nothing is inferred for existing rows (fail closed).
