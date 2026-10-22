@@ -2,9 +2,8 @@
  * P7 D2: periodic driver for lib/channelExpiryWorker.ts.
  *
  * Safe on every node at once: claims use FOR UPDATE SKIP LOCKED and cleanup
- * passes lock their tombstone the same way. Until an expiry API exists no
- * channel has expiresAt set, so each tick is one indexed query that finds
- * nothing.
+ * passes lock their tombstone the same way. When nothing is due, each tick
+ * is one indexed query that finds nothing.
  */
 import db from '../db/loader';
 import logger from '../lib/logger';

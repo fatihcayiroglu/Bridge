@@ -3,8 +3,9 @@
 `server/lib/channelExpiryWorker.ts`, driven every 60 s by
 `server/jobs/channelExpiry.ts` on every node. Depends on the write barrier
 (migration 085, #356): without it a late writer could still insert into a
-tombstoned channel. Until an expiry API exists no channel has `expiresAt`,
-so each tick is one indexed query (migration 086) that finds nothing.
+tombstoned channel. Expiry is set through the owner-only API
+(`docs/P7_D2_CHANNEL_EXPIRY_API.md`); when nothing is due, each tick is one
+indexed query (migration 086) that finds nothing.
 
 ## Phases
 

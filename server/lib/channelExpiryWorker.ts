@@ -20,8 +20,8 @@
  *    crashes and concurrent nodes are safe. Attachment files are released by
  *    the existing reference-based upload cleanup once no row references them.
  *
- * A server's last live channel is never claimed: whether such a channel may
- * expire at all is a product decision for the (not yet built) expiry API.
+ * A server's last live channel is never claimed. The expiry API
+ * (lib/channelExpiryConfig.ts) also keeps one permanent channel per server.
  */
 
 export interface ExpiryQueryable {
