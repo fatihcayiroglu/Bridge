@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, selectLoopbackWebViewPageTarget, probeWebViewCdpPage, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -395,8 +395,13 @@ async function devToolsHttpProbe(appPid) {
       if (length > 1_000_000) return { ...unavailable, attempted: true };
       const raw = await response.text();
       if (raw.length > 1_000_000) return { ...unavailable, attempted: true };
-      const safe = classifyWebViewDevToolsTargets(JSON.parse(raw));
-      return { attempted: true, httpResponsive: true, ...safe };
+      const targets = JSON.parse(raw);
+      const safe = classifyWebViewDevToolsTargets(targets);
+      // An HTTP target list is not a working CDP page. Probe only a sanitized
+      // loopback page endpoint and publish category flags, not protocol data.
+      const uri = selectLoopbackWebViewPageTarget(targets, port);
+      const cdp = await probeWebViewCdpPage(uri);
+      return { attempted: true, httpResponsive: true, ...safe, cdp };
     } finally { clearTimeout(timer); }
   } catch {
     return { ...unavailable, attempted: true };
@@ -437,6 +442,8 @@ async function webViewAttachEvidence() {
   return {
     probeAvailable,
     ...os,
+    // Fixed enum from probeWebViewCdpPage; 'unverified' when no probe ran.
+    cdpPageResponsive: devtoolsHttp.cdp?.result ?? 'unverified',
     devtoolsHttp,
     // A reachable /json/list is NOT proof that Playwright attached to a page.
     // Keep original L03 FAIL; no retries or timeout extension.
