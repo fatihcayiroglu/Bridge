@@ -23,6 +23,7 @@
 const P = 'pgt-rret-' + process.pid;
 const OWNER = `${P}-owner`;
 const MOD = `${P}-mod`;
+const ADMIN = `${P}-admin`;
 const CHMOD = `${P}-chmod`;
 const MEMBER = `${P}-member`;
 const REPORTER = `${P}-reporter`;
@@ -33,6 +34,7 @@ const OTHER_SRV = `${P}-other-srv`;
 const KEEP = `${P}-keep`;
 const MOD_ROLE = `${P}-role-mod`;
 const HELPER_ROLE = `${P}-role-helper`;
+const ADMIN_ROLE = `${P}-role-admin`;
 const DAY = 24 * 60 * 60 * 1000;
 
 jest.mock('../../middleware/auth', () => ({
@@ -125,16 +127,16 @@ RUN('real PostgreSQL — reports outlive expired and deleted channels (088)', ()
 
   beforeAll(async () => {
     await cleanup();
-    for (const u of [OWNER, MOD, CHMOD, MEMBER, REPORTER, AUTHOR, OTHER_OWNER]) {
+    for (const u of [OWNER, MOD, ADMIN, CHMOD, MEMBER, REPORTER, AUTHOR, OTHER_OWNER]) {
       await q(`INSERT INTO users (_id,username,"displayName",password,"createdAt") VALUES ($1,$2,$2,'x',1)`, [u, u.replace(/-/g, '_')]);
     }
     await q(`INSERT INTO servers (_id,name,"ownerId","createdAt") VALUES ($1,'Retention',$2,1)`, [SRV, OWNER]);
     await q(`INSERT INTO servers (_id,name,"ownerId","createdAt") VALUES ($1,'Other',$2,1)`, [OTHER_SRV, OTHER_OWNER]);
     const base = PERMS.VIEW_CHANNELS | PERMS.SEND_MESSAGES | PERMS.READ_HISTORY;
-    await q(`INSERT INTO roles (_id,"serverId",name,permissions,position,"createdAt") VALUES ($1,$2,'mod',$3,2,1),($4,$2,'helper',$5,1,1)`,
-      [MOD_ROLE, SRV, base | PERMS.MANAGE_MESSAGES, HELPER_ROLE, base]);
+    await q(`INSERT INTO roles (_id,"serverId",name,permissions,position,"createdAt") VALUES ($1,$2,'mod',$3,2,1),($4,$2,'helper',$5,1,1),($6,$2,'admin',$7,3,1)`,
+      [MOD_ROLE, SRV, base | PERMS.MANAGE_MESSAGES, HELPER_ROLE, base, ADMIN_ROLE, base | PERMS.ADMIN]);
     const members: Array<[string, string, string[]]> = [
-      [OWNER, SRV, []], [MOD, SRV, [MOD_ROLE]], [CHMOD, SRV, [HELPER_ROLE]], [MEMBER, SRV, [HELPER_ROLE]],
+      [OWNER, SRV, []], [MOD, SRV, [MOD_ROLE]], [ADMIN, SRV, [ADMIN_ROLE]], [CHMOD, SRV, [HELPER_ROLE]], [MEMBER, SRV, [HELPER_ROLE]],
       [REPORTER, SRV, []], [AUTHOR, SRV, []], [OTHER_OWNER, OTHER_SRV, []],
     ];
     for (const [u, s, roles] of members) {
@@ -197,7 +199,7 @@ RUN('real PostgreSQL — reports outlive expired and deleted channels (088)', ()
     expect(await q('SELECT 1 FROM message_reports WHERE "serverId"=$1', [tmpServer])).toHaveLength(0);
   });
 
-  it('only server-level moderators see and resolve a gone channel\'s reports; tenants stay isolated', async () => {
+  it('only administrators see and resolve a gone channel\'s reports; tenants stay isolated', async () => {
     const live = await channel('override-live');
     // HELPER gets MANAGE_MESSAGES on this one channel only (CHMOD and MEMBER share the role).
     await q(`INSERT INTO channel_permissions (_id,"channelId","roleId","serverId",allow,deny,"createdAt") VALUES ($1,$2,$3,$4,$5,0,1)`,
@@ -214,7 +216,11 @@ RUN('real PostgreSQL — reports outlive expired and deleted channels (088)', ()
       evidence: expect.objectContaining({ state: 'captured', text: 'threat' }),
       message: { preview: '' }, currentState: 'removed',
     });
-    expect(ids(await list(MOD))).toContain(rid);
+    expect(ids(await list(ADMIN))).toContain(rid);
+    // Server-level MANAGE_MESSAGES is not enough once the channel is gone: nothing says
+    // this moderator could see it (see the private-channel case below).
+    expect(ids(await list(MOD))).not.toContain(rid);
+    expect((await resolve(MOD, rid)).status).toBe(403);
     // The override died with the channel: no channel-level authority remains.
     expect(ids(await list(CHMOD))).not.toContain(rid);
     expect(ids(await list(MEMBER))).not.toContain(rid);
@@ -227,8 +233,32 @@ RUN('real PostgreSQL — reports outlive expired and deleted channels (088)', ()
     expect((await resolve(OTHER_OWNER, rid)).status).toBe(403);
     expect((await reportRow(rid)).status).toBe('open');
 
-    expect((await resolve(MOD, rid)).status).toBe(200);
-    expect(await reportRow(rid)).toMatchObject({ status: 'resolved', resolvedBy: MOD, evidenceText: 'threat' });
+    expect((await resolve(ADMIN, rid)).status).toBe(200);
+    expect(await reportRow(rid)).toMatchObject({ status: 'resolved', resolvedBy: ADMIN, evidenceText: 'threat' });
+  });
+
+  it('a private channel\'s reports never reach a moderator it hid, before or after it is gone', async () => {
+    const priv = await channel('private');
+    // Server-level moderators are denied this channel.
+    await q(`INSERT INTO channel_permissions (_id,"channelId","roleId","serverId",allow,deny,"createdAt") VALUES ($1,$2,$3,$4,0,$5,1)`,
+      [id('deny'), priv, MOD_ROLE, SRV, PERMS.VIEW_CHANNELS]);
+    const rid = await report(priv, await message(priv, 'private secret'));
+    const hidden = async () => {
+      const res = await list(MOD);
+      expect(ids(res)).not.toContain(rid);
+      expect(JSON.stringify(res.body)).not.toContain('private secret');
+      expect((await resolve(MOD, rid)).status).toBe(403);
+    };
+    await hidden();                                   // live: no VIEW_CHANNELS there
+    expect(ids(await list(OWNER))).toContain(rid);
+
+    await expire(priv);                               // expired, not yet claimed
+    await hidden();
+    await drainExpiry();                              // claimed and cleaned: the override is gone
+    expect((await q('SELECT 1 FROM channel_permissions WHERE "channelId"=$1', [priv]))).toHaveLength(0);
+    await hidden();
+    expect(ids(await list(ADMIN))).toContain(rid);
+    expect((await reportRow(rid)).status).toBe('open');
   });
 
   it('never shows an expired-but-unclaimed channel\'s live rows, only the snapshot', async () => {

@@ -40,13 +40,22 @@ reply quotes or E2EE ciphertext (an `e2ee` message is captured with empty text).
 
 ## Access
 
-- While the channel is live: the moderator's permissions **in that channel**
-  (overrides included) decide, as before.
+- While the channel is live, the moderator's permissions **in that channel**
+  decide, overrides included. The moderator needs `VIEW_CHANNELS` and
+  `MANAGE_MESSAGES` there, or `ADMIN`. A moderator who cannot see a channel
+  cannot moderate its reports.
 - Once the channel is deleted, expired (even before the worker claims it) or
-  tombstoned: only **server-level** `MANAGE_MESSAGES` or `ADMIN` decides; the
-  channel's overrides go with it, so a moderator who held authority only through
-  that channel's override loses it. Liveness is read from PostgreSQL (row,
-  tenant, tombstone, database clock: `channelLiveForMessageRead`).
+  tombstoned, only **`ADMIN`** (the owner included) decides. The channel's
+  overrides go with it, so nothing records whether a server-level moderator
+  could see it. A private channel's evidence would otherwise reach moderators
+  it had hidden from them, and a deleted channel would widen access.
+  Administrators could see every channel anyway.
+- Liveness is read from PostgreSQL (row, tenant, tombstone, database clock:
+  `channelLiveForMessageRead`).
+- Follow-up: a finer rule needs a schema change, so it is not done here. At
+  deletion or claim time, record on the channel's reports whether the channel
+  restricted `VIEW_CHANNELS`. Server-level moderators could then keep access
+  to reports from public channels.
 - Rows of an expired channel that the worker has not drained yet are never
   shown; the queue shows only the snapshot.
 - Reports are always read by `(serverId, reportId)`: another server's owner
@@ -86,12 +95,14 @@ reply quotes or E2EE ciphertext (an `e2ee` message is captured with empty text).
 
 ## Evidence
 
-`server/tests/pg-integration/report-retention.pgtest.ts` (real PostgreSQL, 8
+`server/tests/pg-integration/report-retention.pgtest.ts` (real PostgreSQL, 9
 cases): schema; expiry keeps open and resolved reports with evidence while the
 conversation is removed; channel deletion keeps reports and server deletion
-removes them; server-level moderator sees and resolves a gone channel's report,
-the channel-override moderator, a plain member and another server's owner
-cannot; an expired-but-unclaimed channel's edited row is never shown; the
+removes them; an administrator sees and resolves a gone channel's report, while
+a server-level moderator, the channel-override moderator, a plain member and
+another server's owner cannot; a private channel hidden from the moderator role
+stays hidden from it while live, expired-unclaimed and after the worker drained
+its overrides (both cases fail under the previous server-level rule); an expired-but-unclaimed channel's edited row is never shown; the
 retention worker scrubs at 91 days, keeps 89 days and open reports; author
 erasure anonymizes and reporter erasure removes; 088 down refuses. Negative
 controls (each run locally): with the FK restored 7/8 fail; with the worker

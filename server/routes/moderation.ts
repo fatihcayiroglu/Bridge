@@ -140,9 +140,12 @@ async function writeAudit(serverId: string, actor: JwtPayload, action: string, t
 /**
  * P7 D2 x B5: a report outlives its channel (migration 088). While the channel
  * is live, the moderator's permissions in that channel decide (overrides
- * included). Once it is deleted, expired or tombstoned, only SERVER-level
- * MANAGE_MESSAGES/ADMIN decides (its overrides go with the channel), and only
- * the report-time evidence is shown, never rows of the expired channel.
+ * included): VIEW_CHANNELS and MANAGE_MESSAGES there, or ADMIN. Once it is
+ * deleted, expired or tombstoned, its overrides are gone with it, so
+ * server-level MANAGE_MESSAGES could include a moderator who was denied that
+ * (possibly private) channel; reading its evidence then would be a bypass.
+ * Only ADMIN (owner included), who could see every channel, keeps access, and
+ * only the report-time evidence is shown, never rows of the expired channel.
  * Liveness comes from PostgreSQL (row, tenant, tombstone, database clock).
  */
 async function reportChannel(serverId: string, channelId: string): Promise<{ live: boolean; name: string | null }> {
@@ -157,7 +160,8 @@ async function reportChannel(serverId: string, channelId: string): Promise<{ liv
 
 async function canModerateReport(userId: string, serverId: string, channelId: string, live: boolean): Promise<boolean> {
   const perms = await resolveEffectivePermissions(userId, serverId, live ? channelId : null).catch(() => 0);
-  return hasPermission(perms, PERMS.MANAGE_MESSAGES) || hasPermission(perms, PERMS.ADMIN);
+  if (hasPermission(perms, PERMS.ADMIN)) return true;
+  return live && hasPermission(perms, PERMS.VIEW_CHANNELS) && hasPermission(perms, PERMS.MANAGE_MESSAGES);
 }
 
 /** User-submitted message reports visible only where the moderator has MANAGE_MESSAGES. */
