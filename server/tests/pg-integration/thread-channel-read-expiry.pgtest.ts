@@ -31,6 +31,28 @@ const PARENT_BODY = 'private parent body ' + STEM;
 
 RUN('P7 D2 thread/forum reads — real PostgreSQL', () => {
   const q = (sql: string, params: unknown[] = []) => db._pool.query(sql, params);
+
+  /**
+   * A thread row whose server disagrees with its channel can no longer be
+   * written (the D2 write barrier refuses tenant_mismatch). This models a row
+   * that predates the barrier: the trigger is disabled only inside this one
+   * transaction (ACCESS EXCLUSIVE; no other session ever sees it disabled).
+   */
+  async function legacyThreadServer(serverId: string, threadId: string): Promise<void> {
+    const legacy = await db._pool.connect();
+    try {
+      await legacy.query('BEGIN');
+      await legacy.query('ALTER TABLE threads DISABLE TRIGGER channel_write_barrier');
+      await legacy.query('UPDATE threads SET "serverId"=$1 WHERE _id=$2', [serverId, threadId]);
+      await legacy.query('ALTER TABLE threads ENABLE TRIGGER channel_write_barrier');
+      await legacy.query('COMMIT');
+    } catch (err) {
+      await legacy.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      legacy.release();
+    }
+  }
   const app = express();
   app.use(express.json());
   app.use('/api/threads', threadsRouter);
@@ -97,7 +119,9 @@ RUN('P7 D2 thread/forum reads — real PostgreSQL', () => {
   beforeEach(async () => {
     await q('DELETE FROM channel_expiry_tombstones WHERE "channelId"=$1', [CHANNEL]);
     await q('UPDATE channels SET "expiresAt"=NULL,"expiryVersion"=0 WHERE _id=$1', [CHANNEL]);
-    await q('UPDATE threads SET "serverId"=$1 WHERE _id=$2', [SERVER, THREAD]);
+    // A legacy tenant-mismatched row is frozen by the barrier (OLD is checked too), so the
+    // tenant case's corruption is undone the same way it was made.
+    await legacyThreadServer(SERVER, THREAD);
     await q('DELETE FROM thread_messages WHERE "channelId"=$1 AND _id<>$2', [CHANNEL, REPLY]);
     await q('DELETE FROM threads WHERE "channelId"=$1 AND _id<>$2', [CHANNEL, THREAD]);
   });
@@ -134,7 +158,7 @@ RUN('P7 D2 thread/forum reads — real PostgreSQL', () => {
 
   it('verifies canonical channel tenant even when the thread names a different server', async () => {
     await expectContentVisible();
-    await q('UPDATE threads SET "serverId"=$1 WHERE _id=$2', [OTHER_SERVER, THREAD]);
+    await legacyThreadServer(OTHER_SERVER, THREAD);
     for (const path of paths.slice(0, 2)) {
       // This caller owns the server recorded on the stale thread. That
       // permission cannot authorize a channel owned by the canonical tenant.

@@ -22,6 +22,28 @@ type ObservedSocket = HandlerSocket & { currentChannel?: string };
 
 RUN('P7 D2 fresh channel/thread admission — real PostgreSQL + Socket.IO', () => {
   const q = (sql: string, params: unknown[] = []) => db._pool.query(sql, params);
+
+  /**
+   * A thread row whose server disagrees with its channel can no longer be
+   * written (the D2 write barrier refuses tenant_mismatch). This models a row
+   * that predates the barrier: the trigger is disabled only inside this one
+   * transaction (ACCESS EXCLUSIVE; no other session ever sees it disabled).
+   */
+  async function legacyThreadServer(serverId: string, threadId: string): Promise<void> {
+    const legacy = await db._pool.connect();
+    try {
+      await legacy.query('BEGIN');
+      await legacy.query('ALTER TABLE threads DISABLE TRIGGER channel_write_barrier');
+      await legacy.query('UPDATE threads SET "serverId"=$1 WHERE _id=$2', [serverId, threadId]);
+      await legacy.query('ALTER TABLE threads ENABLE TRIGGER channel_write_barrier');
+      await legacy.query('COMMIT');
+    } catch (err) {
+      await legacy.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      legacy.release();
+    }
+  }
   const http = createServer();
   const io = new SocketServer(http);
   const sockets = new Map<string, { real: ServerSocket; observed: ObservedSocket }>();
@@ -167,7 +189,7 @@ RUN('P7 D2 fresh channel/thread admission — real PostgreSQL + Socket.IO', () =
   });
 
   it('denies a thread with mismatched parent tenant despite membership in both servers', async () => {
-    await q('UPDATE threads SET "serverId"=$1 WHERE _id=$2', [OTHER_SERVER, THREAD]);
+    await legacyThreadServer(OTHER_SERVER, THREAD);
     const { client, selected, joined } = await connect();
     await join(client, 'thread:join', THREAD);
     expect(selected.real.rooms.has('thread:' + THREAD)).toBe(false);
