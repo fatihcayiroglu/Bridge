@@ -15,6 +15,7 @@ import { enforceStepUp } from '../lib/stepUp';
 import db from '../db/loader';
 import { channelLiveForMessageRead } from '../lib/channelReadExpiryGuard';
 import { classifyChannelExpiryWithTombstone } from '../lib/channelExpiry';
+import { captureReportEvidence } from '../lib/reportEvidence';
 
 
 interface CursorData { ts: number; id: string; dir: 'before' | 'after' }
@@ -615,11 +616,14 @@ router.post('/:id/report', authMiddleware, limits.moderation(), async (req: Requ
   }
   if (String(msg.userId ?? '') === _u.id) return void res.status(400).json({ error: 'Cannot report your own message' });
 
+  // P7 B5 (#336): the report keeps what was reported. The author can still edit or
+  // delete the message; the moderator reviews this snapshot, not the later text.
   const result = await MessageReports.create({
     serverId: String(msg.serverId), channelId: String(msg.channelId), messageId,
     reporterId: _u.id,
     reason: reason as 'spam' | 'harassment' | 'hate' | 'sexual' | 'violence' | 'other',
     detail,
+    evidence: captureReportEvidence(msg),
   });
   return void res.status(result.created ? 201 : 200).json({ reported: true, created: result.created, id: String(result.row._id) });
 });
