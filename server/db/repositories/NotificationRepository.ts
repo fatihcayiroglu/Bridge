@@ -490,11 +490,43 @@ class NotificationRepository {
     }
   }
 
-  async findUnreadChannelAttention(userId: string, limit = 100) {
-    return this.inboxStore()
-      .find({ userId, read: false, type: { $in: ['mention', 'reply', 'watch'] } })
-      .sort({ createdAt: -1 })
-      .limit(Math.min(Math.max(limit, 1), 200));
+  /**
+   * Unread channel attention (mentions, replies, watches), newest first.
+   *
+   * P7 D2: on PostgreSQL only rows whose channel is live NOW are returned,
+   * filtered BEFORE the limit. Filtering after the limit let rows of expired,
+   * tombstoned or deleted channels fill the window and hide live mentions.
+   * The channel row must exist under the row's own server (tenant check) and
+   * expiry is compared with the database clock. This is a prefilter: the
+   * inbox route still runs the authoritative per-channel classification,
+   * which also rejects corrupt expiry metadata. The in-memory unit-test
+   * store keeps the plain query.
+   */
+  async findUnreadChannelAttention(userId: string, limit = 100): Promise<Record<string, unknown>[]> {
+    const bounded = Math.min(Math.max(limit, 1), 200);
+    const pool = (db as unknown as { _pool?: import('pg').Pool })._pool;
+    if (!pool?.query) {
+      if (process.env.NODE_ENV !== 'test') throw new Error('PostgreSQL pool cannot query for inbox attention');
+      return await this.inboxStore()
+        .find({ userId, read: false, type: { $in: ['mention', 'reply', 'watch'] } })
+        .sort({ createdAt: -1 })
+        .limit(bounded) as unknown as Record<string, unknown>[];
+    }
+    const result = await pool.query(
+      `SELECT n.* FROM notifications n
+        WHERE n."userId" = $1 AND n.read = FALSE AND n.type IN ('mention', 'reply', 'watch')
+          AND EXISTS (
+            SELECT 1 FROM channels c
+             WHERE c._id = n."channelId" AND c."serverId" = n."serverId"
+               AND (c."expiresAt" IS NULL
+                    OR c."expiresAt" > FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT))
+          AND NOT EXISTS (
+            SELECT 1 FROM channel_expiry_tombstones t WHERE t."channelId" = n."channelId")
+        ORDER BY n."createdAt" DESC, n._id DESC
+        LIMIT $2`,
+      [userId, bounded],
+    );
+    return result.rows as Record<string, unknown>[];
   }
 
   async markChannelAttentionRead(userId: string, channelId: string) {
