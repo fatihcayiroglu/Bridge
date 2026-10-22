@@ -49,8 +49,7 @@ function escapeLike(value: string): string {
  * Every canonical relational column that can point at an upload. Shared by the
  * single-key and batched checks so both always see the same reference set.
  */
-const UPLOAD_REFS_CTE = `
-    upload_refs(value) AS (
+const UPLOAD_REFS_CTE = `upload_refs(value) AS (
       SELECT "fileUrl" FROM messages WHERE "fileUrl" IS NOT NULL
       UNION ALL SELECT "fileUrl" FROM dm_messages WHERE "fileUrl" IS NOT NULL
       UNION ALL SELECT "fileUrl" FROM group_dm_messages WHERE "fileUrl" IS NOT NULL

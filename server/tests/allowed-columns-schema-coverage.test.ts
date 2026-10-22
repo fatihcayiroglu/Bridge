@@ -19,6 +19,11 @@ const SERVER = path.resolve(__dirname, '..');
 
 /** Columns that exist in SOME schema source but must never be reachable through pgCollection. */
 const DELIBERATELY_UNREACHABLE: Record<string, string> = {
+  // P7 D2 migration 089: never written through the generic PgCollection.
+  enqueuedAt: '089 channel_object_release_outbox: the expiry worker\'s own queue, raw parameterized SQL only (lib/channelExpiryWorker.ts)',
+  state: '089 channel_object_release_outbox: the expiry worker\'s own queue, raw parameterized SQL only (lib/channelExpiryWorker.ts)',
+  nextAttemptAt: '089 channel_object_release_outbox: the expiry worker\'s own queue, raw parameterized SQL only (lib/channelExpiryWorker.ts)',
+  finishedAt: '089 channel_object_release_outbox: the expiry worker\'s own queue, raw parameterized SQL only (lib/channelExpiryWorker.ts)',
   // Created by migration 006 and DROPPED by 009 (plaintext private key). Never allowlist it.
   apPrivateKey: 'plaintext ActivityPub private key column, dropped by migration 009',
   token_hash: '081 portable_import_approvals: sensitive, dedicated parameterized SQL only; do not expose via generic PgCollection',
