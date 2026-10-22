@@ -12,6 +12,9 @@ import { deleteChannelMessage, editChannelMessage, type MutationFailureCode } fr
 import { clearUnread } from '../lib/notifications';
 import logger from '../lib/logger';
 import { enforceStepUp } from '../lib/stepUp';
+import db from '../db/loader';
+import { channelLiveForMessageRead } from '../lib/channelReadExpiryGuard';
+import { classifyChannelExpiryWithTombstone } from '../lib/channelExpiry';
 
 
 interface CursorData { ts: number; id: string; dir: 'before' | 'after' }
@@ -94,6 +97,27 @@ async function requireChannelMembership(userId: string, channelId: string, res: 
     if (channel) await cache.set(cacheKey, channel, 60);
   }
   if (!channel) { res.status(404).json({ error: 'Channel not found' }); return null; }
+  // P7 D2: the channel cache and message first-page cache are NOT expiry
+  // authority. Recheck PostgreSQL on every channel-content read, including
+  // pinned messages, edit history, reactions and unread/read endpoints.
+  // Fail closed on an unavailable PG store; never serve stale cached content.
+  let live: boolean;
+  if (db._pool) {
+    try {
+      live = await channelLiveForMessageRead(db._pool, channelId, channel.serverId);
+    } catch {
+      res.status(503).json({ error: 'Channel availability could not be verified' });
+      return null;
+    }
+  } else if (process.env.NODE_ENV === 'test') {
+    // Unit test mock has no PostgreSQL pool or tombstone collection. A
+    // permanent legacy channel remains testable; expiry is fail-closed.
+    live = classifyChannelExpiryWithTombstone(channel, null, Date.now()).accessible;
+  } else {
+    res.status(503).json({ error: 'Channel availability could not be verified' });
+    return null;
+  }
+  if (!live) { res.status(404).json({ error: 'Channel not found' }); return null; }
   const membership = await Members.findOne(userId, channel.serverId);
   if (!membership) { res.status(403).json({ error: 'Not a member' }); return null; }
   return channel;
