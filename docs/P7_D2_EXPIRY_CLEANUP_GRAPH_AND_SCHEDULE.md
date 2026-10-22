@@ -46,6 +46,12 @@ the other claimed schedules.
   config pointers; keeps a sibling channel.
 - `jobs-scheduledMessages.test.ts`: SQLSTATE `BX001` fails on attempt 1
   without lease retry; SQLSTATE `40001` still retries.
+- `scheduled-expiry-terminal.pgtest.ts` (real PostgreSQL, the refusal comes
+  from the migration 086 trigger): schedules into a channel that expired and
+  one that was tombstoned after scheduling fail with `channel_unavailable` on
+  the first tick, keep no lease, post nothing and are not picked up again; a
+  live channel's schedule in the same batch posts. Fails if the terminal
+  branch is removed.
 
 Do not treat authored tests as **passed** until exact-head CI and the real
 PostgreSQL suite execute. Resolved in the follow-up to this PR: the
