@@ -179,11 +179,21 @@ class ChannelRepository {
         }
         // Lock the complete sibling set so two concurrent deletes cannot both
         // observe "2 channels" and race the tenant down to zero channels.
-        const siblings = await client.query<{ _id: string }>(
-          'SELECT _id FROM channels WHERE "serverId"=$1 FOR UPDATE',
+        // P7 D2: an expired or tombstoned row is not a surviving channel (the
+        // expiry worker keeps it only until its graph is drained), and such a
+        // channel is already gone for its owner too.
+        const siblings = await client.query<{ _id: string; live: boolean }>(
+          `SELECT c._id,
+                  (c."expiresAt" IS NULL OR c."expiresAt" > FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
+                  AND NOT EXISTS (SELECT 1 FROM channel_expiry_tombstones t WHERE t."channelId" = c._id) AS live
+             FROM channels c WHERE c."serverId"=$1 FOR UPDATE OF c`,
           [serverId],
         );
-        if (siblings.rows.length <= 1) {
+        if (!siblings.rows.some((r) => r._id === id && r.live)) {
+          await client.query('ROLLBACK');
+          return 'not_found';
+        }
+        if (!siblings.rows.some((r) => r._id !== id && r.live)) {
           await client.query('ROLLBACK');
           return 'last_channel';
         }

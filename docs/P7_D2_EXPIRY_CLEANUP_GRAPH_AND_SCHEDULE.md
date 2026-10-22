@@ -5,8 +5,9 @@ It does not enable the public ephemeral-channel feature on `main`.
 
 ## Channel cleanup rules
 
-The expiry worker still claims with `FOR UPDATE SKIP LOCKED`, writes a
-tombstone and commits before the bounded cleanup phases.
+The expiry worker claims with FOR UPDATE SKIP LOCKED and writes only the
+tombstone; the channel row is deleted by the last cleanup pass, after every
+FK-referencing table is drained (see `P7_D2_CHANNEL_EXPIRY_WORKER.md`).
 
 - **Keep `audit_logs`**. Channel deletion must not destroy security or
   administrative history. The `channelId` in an audit record is retained as
@@ -47,7 +48,8 @@ the other claimed schedules.
   without lease retry; SQLSTATE `40001` still retries.
 
 Do not treat authored tests as **passed** until exact-head CI and the real
-PostgreSQL suite execute. A prior migration-085 conflict with B5 #345,
-the unbounded FK cascade inside the initial claim, open B5 evidence retention,
-the expiry write-barrier update exception, notification delivery
-and offline/federation convergence must be resolved separately before rollout.
+PostgreSQL suite execute. Resolved in the follow-up to this PR: the
+migration-085 conflict with B5 #345, the unbounded FK cascade inside the
+initial claim and the write-barrier update exception. Still open: B5 evidence
+retention beyond expiry (owner decision), notification delivery and
+offline/federation convergence.

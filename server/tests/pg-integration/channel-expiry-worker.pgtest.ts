@@ -71,6 +71,9 @@ RUN('P7 D2 channel expiry worker — real PostgreSQL', () => {
   async function cleanup() {
     await q('DELETE FROM audit_logs WHERE "serverId" LIKE $1', [P + '%']);
     await q('DELETE FROM server_onboarding WHERE "serverId" LIKE $1', [P + '%']);
+    await q('DELETE FROM server_events WHERE server_id LIKE $1', [P + '%']);
+    await q('DELETE FROM message_reports WHERE "serverId" LIKE $1', [P + '%']);
+    await q('DELETE FROM channel_read_positions WHERE "channelId" LIKE $1', [P + '%']);
     for (const t of ['saved_messages']) await q(`DELETE FROM ${t} WHERE "userId"=$1`, [USER]);
     for (const t of ['thread_messages', 'threads', 'messages', 'notifications']) {
       await q(`DELETE FROM ${t} WHERE "channelId" LIKE $1`, [P + '%']);
@@ -234,6 +237,86 @@ RUN('P7 D2 channel expiry worker — real PostgreSQL', () => {
     // Idempotent: a converged tombstone is not processed again.
     const again = await runChannelExpiryTick(db._pool);
     expect(again.converged).not.toContain(big);
+  });
+
+  it('claims in O(1): no FK cascade runs in the claim; referencing rows drain in batches before the row goes', async () => {
+    const sid = await server();
+    const survivor = await channel(sid);
+    const doomed = await channel(sid, past());
+    await content(doomed, sid, 4);
+    const readers: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const uid = id('reader');
+      readers.push(uid);
+      await q('INSERT INTO users (_id,username,"displayName",password,"createdAt") VALUES ($1,$1,$2,$3,1)', [uid, 'R', 'x']);
+      await q('INSERT INTO channel_read_positions ("userId","channelId","lastReadAt","lastReadMessageId","updatedAt") VALUES ($1,$2,1,$3,1)',
+        [uid, doomed, 'm']);
+    }
+    const messageIds = (await q('SELECT _id FROM messages WHERE "channelId"=$1 ORDER BY _id', [doomed])).rows.map((r: { _id: string }) => r._id);
+    for (const [i, mid] of messageIds.entries()) {
+      await q(`INSERT INTO message_reports (_id,"serverId","channelId","messageId","reporterId",reason,"createdAt") VALUES ($1,$2,$3,$4,$5,'spam',1)`,
+        [id('report'), sid, doomed, mid, readers[i]]);
+    }
+    for (let i = 0; i < 3; i++) {
+      await q(`INSERT INTO server_events (id,server_id,creator_id,title,channel_id,starts_at) VALUES ($1,$2,$3,'e',$4,now())`,
+        [id('event'), sid, USER, doomed]);
+    }
+    const auditId = id('audit');
+    await q('INSERT INTO audit_logs (_id,"serverId","actorId",action,"channelId","createdAt") VALUES ($1,$2,$3,$4,$5,$6)',
+      [auditId, sid, USER, 'channel.created', doomed, Date.now()]);
+    const refs = async () => ({
+      reads: await n('SELECT COUNT(*)::int AS n FROM channel_read_positions WHERE "channelId"=$1', [doomed]),
+      reports: await n('SELECT COUNT(*)::int AS n FROM message_reports WHERE "channelId"=$1', [doomed]),
+      events: await n('SELECT COUNT(*)::int AS n FROM server_events WHERE channel_id=$1', [doomed]),
+    });
+    await expire(doomed);
+
+    for (let i = 0; i < 50 && !(await tombstone(doomed)); i++) await claimExpiredChannel(db._pool);
+    expect(await tombstone(doomed)).toBe('pending');
+    // The claim wrote the tombstone and nothing else: the row and every referencing row are intact.
+    expect(await remaining(doomed)).toMatchObject({ messages: 4, channel: 1 });
+    expect(await refs()).toEqual({ reads: 5, reports: 4, events: 3 });
+    // Already tombstoned: never claimed (or announced) twice.
+    for (let i = 0; i < 20; i++) {
+      const again = await claimExpiredChannel(db._pool);
+      expect(again.state === 'claimed' && again.channelId === doomed).toBe(false);
+      if (again.state === 'none') break;
+    }
+    // Unavailable while the row exists: reads, writes, the expiry API and ordinary deletion.
+    expect(await channelLiveForMessageRead(db._pool, doomed, sid)).toBe(false);
+    let err: unknown = null;
+    await q('INSERT INTO messages (_id,"channelId","serverId","userId",username,"displayName",content,"createdAt") VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+      [id('late'), doomed, sid, USER, 'u', 'U', 'x', Date.now()]).catch((e: unknown) => { err = e; });
+    expect(isChannelWriteDenied(err)).toBe(true);
+    const { setChannelExpiry } = require('../../lib/channelExpiryConfig');
+    expect(await setChannelExpiry(db._pool, { serverId: sid, channelId: doomed, actorId: USER, expiresAt: null }))
+      .toEqual({ ok: false, reason: 'not_found' });
+    const { Channels } = require('../../db/repositories');
+    expect(await Channels.deleteGraphAtomic(doomed, sid)).toBe('not_found');
+    // The tombstoned row does not count as a surviving channel.
+    expect(await Channels.deleteGraphAtomic(survivor, sid)).toBe('last_channel');
+
+    // Bounded passes: batch size 2 never removes more than 2 rows per table.
+    let pass: { state: string; channelId?: string } = { state: 'none' };
+    for (let i = 0; i < 100; i++) {
+      pass = await cleanupNextTombstone(db._pool, 2);
+      if (pass.channelId === doomed) break;
+    }
+    expect(pass.state).toBe('progress');
+    const after = await refs();
+    expect(after.reads).toBe(3);
+    expect(after.events).toBe(1);
+    // Reports also go through their messageId cascade as messages are deleted (2 per pass).
+    expect(after.reports).toBeLessThan(4);
+    expect((await remaining(doomed)).channel).toBe(1);
+
+    await drain({ batchSize: 2 });
+    expect(await tombstone(doomed)).toBe('converged');
+    expect(await refs()).toEqual({ reads: 0, reports: 0, events: 0 });
+    expect(await remaining(doomed)).toEqual({ messages: 0, threads: 0, threadMessages: 0, notifications: 0, saved: 0, channel: 0 });
+    expect(await n('SELECT COUNT(*)::int AS n FROM audit_logs WHERE _id=$1', [auditId])).toBe(1);
+    expect((await remaining(survivor)).channel).toBe(1);
+    for (const uid of readers) await q('DELETE FROM users WHERE _id=$1', [uid]);
   });
 
   it('leaves permanent and not-yet-expired channels untouched', async () => {
