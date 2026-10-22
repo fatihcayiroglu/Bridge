@@ -8,6 +8,7 @@ import { ScheduledMessages, Users, Messages, Members, Channels } from '../db/rep
 import { publishPersistedMessage } from '../lib/channelActivity';
 import { hasPermission, PERMS, resolvePermissions } from '../lib/permissions';
 import { parsePersistedNonNegativeInteger } from '../lib/persistedInteger';
+import { channelExpiryStatus } from '../lib/channelExpiry';
 import { isMemberTimedOut } from '../lib/memberTimeout';
 import { checkMessageContent } from '../lib/messageContentPolicy';
 
@@ -54,6 +55,46 @@ function retryDelay(attempts: number): number {
   return Math.min(30_000 * (2 ** exp), MAX_RETRY_DELAY_MS);
 }
 
+/** Two fail-closed reads narrow the asynchronous dispatch window. They are
+ * not a substitute for the future transaction-scoped D2 write barrier. */
+async function scheduledChannelProblem(scheduled: { channelId: string; serverId: string }): Promise<string | null> {
+  const channel = await Channels.findById(scheduled.channelId) as {
+    serverId?: string; expiresAt?: unknown; expiryVersion?: unknown;
+  } | null;
+  if (!channel || String(channel.serverId ?? '') !== scheduled.serverId) {
+    return 'channel_scope_invalid';
+  }
+
+  // P7 D2 preflight: never send a scheduled message into a channel whose
+  // persisted expiry is already in the past. Legacy permanent channels (both
+  // expiry columns absent) remain unchanged. Corrupt or partial expiry state
+  // fails closed, rather than silently treating it as permanent.
+  //
+  // This is NOT the final D2 authorization boundary: a channel can expire
+  // between this read and Messages.create. Final protection needs the same
+  // transaction-scoped expiry/version check on EVERY message write, plus a
+  // verified durable tombstone read and offline/federation convergence.
+  const hasExpiry = Object.prototype.hasOwnProperty.call(channel, 'expiresAt');
+  const hasVersion = Object.prototype.hasOwnProperty.call(channel, 'expiryVersion');
+  if (hasExpiry !== hasVersion || (hasExpiry && channel.expiresAt === undefined)) {
+    return 'channel_expiry_invalid';
+  }
+  try {
+    const status = channelExpiryStatus(hasExpiry ? channel.expiresAt : null, Date.now());
+    if (hasVersion) {
+      const version = parsePersistedNonNegativeInteger(channel.expiryVersion, 'channel expiry version');
+      if (status !== 'permanent' && version === 0) {
+        return 'channel_expiry_invalid';
+      }
+    }
+    if (status === 'expired') return 'channel_expired';
+  } catch {
+    return 'channel_expiry_invalid';
+  }
+
+  return null;
+}
+
 async function verifyDispatchAuthority(scheduled: {
   userId: string;
   serverId: string;
@@ -67,10 +108,8 @@ async function verifyDispatchAuthority(scheduled: {
   // A timed-out member cannot post, so neither can their schedule.
   if (isMemberTimedOut(member.timeoutUntil)) return { ok: false, reason: 'member_timed_out' };
 
-  const channel = await Channels.findById(scheduled.channelId) as { serverId?: string } | null;
-  if (!channel || String(channel.serverId ?? '') !== scheduled.serverId) {
-    return { ok: false, reason: 'channel_scope_invalid' };
-  }
+  const channelIssue = await scheduledChannelProblem(scheduled);
+  if (channelIssue) return { ok: false, reason: channelIssue };
 
   const perms = await resolvePermissions(scheduled.userId, scheduled.serverId, scheduled.channelId);
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.SEND_MESSAGES)) {
@@ -129,6 +168,18 @@ async function dispatchDue(): Promise<void> {
             logger.warn(
               { event: 'scheduled_msg_content_refused', id: scheduled._id, reason },
               'Scheduled message was not posted because its content was refused',
+            );
+            continue;
+          }
+
+          // The content policy may await I/O while the channel expires or is
+          // removed. Re-read immediately before persistence (still not atomic).
+          const channelIssue = await scheduledChannelProblem(scheduled);
+          if (channelIssue) {
+            await ScheduledMessages.markFailed(scheduled._id, WORKER_ID, channelIssue, now);
+            logger.warn(
+              { event: 'scheduled_msg_authority_revoked', id: scheduled._id, reason: channelIssue },
+              'Scheduled message was not dispatched because channel eligibility changed',
             );
             continue;
           }
