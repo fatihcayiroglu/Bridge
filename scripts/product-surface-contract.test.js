@@ -661,7 +661,10 @@ test('message reports are durable, permission-scoped, duplicate-safe and idempot
   assert.match(messages, /MessageReports\.create/);
 
   assert.match(moderation, /router\.get\('\/reports'/);
-  assert.match(moderation, /resolveEffectivePermissions\(_u\.id, serverId, channelId\)/);
+  // P7 D2 x B5 (migration 088): a live channel's permissions decide; once the
+  // channel is gone/expired only server-level authority does, on both routes.
+  assert.match(moderation, /resolveEffectivePermissions\(userId, serverId, live \? channelId : null\)/);
+  assert.equal((moderation.match(/await canModerateReport\(_u\.id, serverId, channelId, channel\.live\)/g) ?? []).length, 2);
   assert.match(moderation, /PERMS\.MANAGE_MESSAGES/);
   assert.match(moderation, /router\.put\('\/reports\/:reportId'/);
   assert.match(moderation, /result\.kind === 'updated'/);
