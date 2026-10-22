@@ -46,3 +46,67 @@ export async function channelLiveForMessageRead(
     return false;
   }
 }
+
+/**
+ * Batch form of channelLiveForMessageRead for list surfaces (search, saved,
+ * inbox). One statement reads every channel row, its tombstone and ONE
+ * database clock sample, so all decisions share a consistent view.
+ *
+ * Each pair names the tenant the caller expects. A channel is live only if
+ * its row exists under exactly that server, has no tombstone and classifies
+ * as accessible. Duplicate channel IDs that disagree on the server are
+ * excluded rather than resolved. Database failures throw (fail closed).
+ */
+export const CHANNEL_BATCH_READ_EXPIRY_SQL = [
+  'SELECT c._id, c."serverId", c."expiresAt", c."expiryVersion",',
+  '  EXISTS (SELECT 1 FROM channel_expiry_tombstones t',
+  '          WHERE t."channelId" = c._id) AS "hasTombstone",',
+  '  FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT AS "nowMs"',
+  'FROM channels c WHERE c._id = ANY($1::text[])',
+].join('\n');
+
+const BATCH_CHUNK = 500;
+
+export interface ChannelPair {
+  channelId: unknown;
+  serverId: unknown;
+  /** Stored record the caller already holds; used only by the unit-test fallback. */
+  channel?: unknown;
+}
+
+function validPairId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 256;
+}
+
+export async function liveChannelIdsForRead(
+  pool: ChannelReadQuery, pairs: ReadonlyArray<ChannelPair>,
+): Promise<Set<string>> {
+  const expected = new Map<string, string | null>();
+  for (const pair of pairs) {
+    if (!validPairId(pair.channelId) || !validPairId(pair.serverId)) continue;
+    const previous = expected.get(pair.channelId);
+    if (previous === undefined) expected.set(pair.channelId, pair.serverId);
+    else if (previous !== pair.serverId) expected.set(pair.channelId, null);
+  }
+  const ids = [...expected.entries()].filter(([, serverId]) => serverId !== null).map(([id]) => id);
+  const live = new Set<string>();
+  for (let i = 0; i < ids.length; i += BATCH_CHUNK) {
+    const result = await pool.query(CHANNEL_BATCH_READ_EXPIRY_SQL, [ids.slice(i, i + BATCH_CHUNK)]);
+    if (!result || !Array.isArray(result.rows)) throw new Error('Channel availability query failed');
+    for (const row of result.rows) {
+      const channelId = row?._id;
+      if (typeof channelId !== 'string' || live.has(channelId)) continue;
+      const serverId = expected.get(channelId);
+      if (!serverId || row.serverId !== serverId ||
+          typeof row.hasTombstone !== 'boolean' || row.hasTombstone) continue;
+      try {
+        const nowMs = parsePersistedNonNegativeInteger(row.nowMs, 'database clock');
+        if (classifyChannelExpiryWithTombstone(
+          { _id: channelId, serverId, expiresAt: row.expiresAt, expiryVersion: row.expiryVersion },
+          null, nowMs,
+        ).accessible) live.add(channelId);
+      } catch { /* corrupt metadata is unavailable, never live */ }
+    }
+  }
+  return live;
+}

@@ -55,6 +55,11 @@ RUN('gerçek PostgreSQL — arama puanlaması sınırlı pencerede', () => {
 
   beforeAll(async () => {
     await q('DELETE FROM messages WHERE "serverId" = $1', [SERVER]);
+    // Production allowlists only name existing channel rows, and search now
+    // requires each row's channel to belong to the server the row claims.
+    await q('DELETE FROM channels WHERE "serverId" = $1', [SERVER]);
+    await q(`INSERT INTO channels (_id,"serverId",name,"createdAt") VALUES ($1,$3,'allowed',1),($2,$3,'forbidden',1)`,
+      [ALLOWED, FORBIDDEN, SERVER]);
 
     // İzinli kanal: tek sayılı satırlar yaygın kelime ("ortak") içerir.
     // En ESKİ mesaj (g = 1) tek başına nadir kelimeyi ("nadirkelime") taşır.
@@ -98,6 +103,7 @@ RUN('gerçek PostgreSQL — arama puanlaması sınırlı pencerede', () => {
 
   afterAll(async () => {
     await q('DELETE FROM messages WHERE "serverId" = $1', [SERVER]);
+    await q('DELETE FROM channels WHERE "serverId" = $1', [SERVER]);
     await productPool.end();
   });
 
