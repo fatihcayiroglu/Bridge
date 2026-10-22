@@ -35,6 +35,7 @@
  * kept while open and scrubbed 90 days (configurable) after resolution by
  * jobs/reportEvidenceRetention.ts. See docs/P7_D2_REPORT_RETENTION.md.
  */
+import { recordReportChannelVisibility } from './reportChannelVisibility';
 
 export interface ExpiryQueryable {
   query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>>; rowCount?: number | null }>;
@@ -118,6 +119,8 @@ export async function claimExpiredChannel(pool: ExpiryPool): Promise<ClaimOutcom
       open = false;
       return { state: 'raced' };
     }
+    // Before cleanup drains the channel's overrides: who could see it (migration 090).
+    await recordReportChannelVisibility(client, channelId, serverId);
     await client.query('COMMIT');
     open = false;
     return { state: 'claimed', channelId, serverId };

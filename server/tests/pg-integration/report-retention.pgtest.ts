@@ -199,7 +199,7 @@ RUN('real PostgreSQL — reports outlive expired and deleted channels (088)', ()
     expect(await q('SELECT 1 FROM message_reports WHERE "serverId"=$1', [tmpServer])).toHaveLength(0);
   });
 
-  it('only administrators see and resolve a gone channel\'s reports; tenants stay isolated', async () => {
+  it('a gone channel nothing hid stays reviewable by server-level moderators only; tenants stay isolated', async () => {
     const live = await channel('override-live');
     // HELPER gets MANAGE_MESSAGES on this one channel only (CHMOD and MEMBER share the role).
     await q(`INSERT INTO channel_permissions (_id,"channelId","roleId","serverId",allow,deny,"createdAt") VALUES ($1,$2,$3,$4,$5,0,1)`,
@@ -217,10 +217,9 @@ RUN('real PostgreSQL — reports outlive expired and deleted channels (088)', ()
       message: { preview: '' }, currentState: 'removed',
     });
     expect(ids(await list(ADMIN))).toContain(rid);
-    // Server-level MANAGE_MESSAGES is not enough once the channel is gone: nothing says
-    // this moderator could see it (see the private-channel case below).
-    expect(ids(await list(MOD))).not.toContain(rid);
-    expect((await resolve(MOD, rid)).status).toBe(403);
+    // 090 recorded that no override hid this channel: server-level moderators keep it.
+    expect((await reportRow(rid)).channelVisibility).toBe('open');
+    expect(ids(await list(MOD))).toContain(rid);
     // The override died with the channel: no channel-level authority remains.
     expect(ids(await list(CHMOD))).not.toContain(rid);
     expect(ids(await list(MEMBER))).not.toContain(rid);
@@ -233,8 +232,19 @@ RUN('real PostgreSQL — reports outlive expired and deleted channels (088)', ()
     expect((await resolve(OTHER_OWNER, rid)).status).toBe(403);
     expect((await reportRow(rid)).status).toBe('open');
 
-    expect((await resolve(ADMIN, rid)).status).toBe(200);
-    expect(await reportRow(rid)).toMatchObject({ status: 'resolved', resolvedBy: ADMIN, evidenceText: 'threat' });
+    expect((await resolve(MOD, rid)).status).toBe(200);
+    expect(await reportRow(rid)).toMatchObject({ status: 'resolved', resolvedBy: MOD, evidenceText: 'threat' });
+  });
+
+  it('090: an unrecorded gone channel (gone before 090, or recorded value lost) is ADMIN only', async () => {
+    const legacy = await channel('legacy');
+    const rid = await report(legacy, await message(legacy, 'legacy evidence'));
+    expect(await Channels.deleteGraphAtomic(legacy, SRV)).toBe('deleted');
+    await q('UPDATE message_reports SET "channelVisibility"=NULL WHERE _id=$1', [rid]);   // as before 090
+    expect(ids(await list(MOD))).not.toContain(rid);
+    expect((await resolve(MOD, rid)).status).toBe(403);
+    expect(ids(await list(ADMIN))).toContain(rid);
+    await expect(q(`UPDATE message_reports SET "channelVisibility"='public' WHERE _id=$1`, [rid])).rejects.toThrow(/channel_visibility_check/);
   });
 
   it('a private channel\'s reports never reach a moderator it hid, before or after it is gone', async () => {
@@ -252,10 +262,11 @@ RUN('real PostgreSQL — reports outlive expired and deleted channels (088)', ()
     await hidden();                                   // live: no VIEW_CHANNELS there
     expect(ids(await list(OWNER))).toContain(rid);
 
-    await expire(priv);                               // expired, not yet claimed
+    await expire(priv);                               // expired, not yet claimed (nothing recorded)
     await hidden();
     await drainExpiry();                              // claimed and cleaned: the override is gone
     expect((await q('SELECT 1 FROM channel_permissions WHERE "channelId"=$1', [priv]))).toHaveLength(0);
+    expect((await reportRow(rid)).channelVisibility).toBe('restricted');   // recorded at claim, before the drain
     await hidden();
     expect(ids(await list(ADMIN))).toContain(rid);
     expect((await reportRow(rid)).status).toBe('open');

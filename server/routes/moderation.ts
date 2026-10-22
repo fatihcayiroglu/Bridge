@@ -18,6 +18,7 @@ import { emitPermsUpdated, sendPermLogMessage, writePermAudit } from './channelP
 import { evictUserFromServerRooms, evictSocketsWithoutChannelAccessBestEffort } from '../lib/liveMembership';
 import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery, parseNonNegativeSafeIntValue } from '../lib/queryNumbers';
 import { resolvePermissions as resolveEffectivePermissions } from '../lib/permissions';
+import { reportChannelVisibility } from '../lib/reportChannelVisibility';
 import { storedMessageText } from '../lib/storedText';
 import { currentStateSinceReport, evidenceView } from '../lib/reportEvidence';
 import { classifyChannelExpiryWithTombstone } from '../lib/channelExpiry';
@@ -141,11 +142,12 @@ async function writeAudit(serverId: string, actor: JwtPayload, action: string, t
  * P7 D2 x B5: a report outlives its channel (migration 088). While the channel
  * is live, the moderator's permissions in that channel decide (overrides
  * included): VIEW_CHANNELS and MANAGE_MESSAGES there, or ADMIN. Once it is
- * deleted, expired or tombstoned, its overrides are gone with it, so
- * server-level MANAGE_MESSAGES could include a moderator who was denied that
- * (possibly private) channel; reading its evidence then would be a bypass.
- * Only ADMIN (owner included), who could see every channel, keeps access, and
- * only the report-time evidence is shown, never rows of the expired channel.
+ * deleted, expired or tombstoned, its overrides are gone with it. Migration
+ * 090 recorded, at that moment, whether any override hid the channel: only an
+ * 'open' channel's reports stay reviewable with server-level VIEW_CHANNELS +
+ * MANAGE_MESSAGES; a 'restricted' or unrecorded one is ADMIN only (owner
+ * included), so a private channel never becomes readable to moderators it hid
+ * from. Only the report-time evidence is shown, never rows of the expired channel.
  * Liveness comes from PostgreSQL (row, tenant, tombstone, database clock).
  */
 async function reportChannel(serverId: string, channelId: string): Promise<{ live: boolean; name: string | null }> {
@@ -158,10 +160,13 @@ async function reportChannel(serverId: string, channelId: string): Promise<{ liv
   return { live, name: live ? String(channel.name ?? channelId) : null };
 }
 
-async function canModerateReport(userId: string, serverId: string, channelId: string, live: boolean): Promise<boolean> {
+async function canModerateReport(
+  userId: string, serverId: string, channelId: string, live: boolean, report: Record<string, unknown>,
+): Promise<boolean> {
   const perms = await resolveEffectivePermissions(userId, serverId, live ? channelId : null).catch(() => 0);
   if (hasPermission(perms, PERMS.ADMIN)) return true;
-  return live && hasPermission(perms, PERMS.VIEW_CHANNELS) && hasPermission(perms, PERMS.MANAGE_MESSAGES);
+  const visible = live || reportChannelVisibility(report) === 'open';
+  return visible && hasPermission(perms, PERMS.VIEW_CHANNELS) && hasPermission(perms, PERMS.MANAGE_MESSAGES);
 }
 
 /** User-submitted message reports visible only where the moderator has MANAGE_MESSAGES. */
@@ -174,7 +179,7 @@ router.get('/reports', authMiddleware, limits.moderation(), async (req, res) => 
   for (const row of rows) {
     const channelId = String(row.channelId ?? '');
     const channel = await reportChannel(serverId, channelId);
-    if (!await canModerateReport(_u.id, serverId, channelId, channel.live)) continue;
+    if (!await canModerateReport(_u.id, serverId, channelId, channel.live, row)) continue;
     const [message, reporter] = await Promise.all([
       channel.live ? Messages.findById(String(row.messageId ?? '')) : Promise.resolve(null),
       Users.findById(String(row.reporterId ?? '')),
@@ -215,7 +220,7 @@ router.put('/reports/:reportId', authMiddleware, limits.moderation(), async (req
   if (!report) return res.status(404).json({ error: 'Report not found' });
   const channelId = String(report.channelId ?? '');
   const channel = await reportChannel(serverId, channelId);
-  if (!await canModerateReport(_u.id, serverId, channelId, channel.live)) {
+  if (!await canModerateReport(_u.id, serverId, channelId, channel.live, report)) {
     return res.status(403).json({ error: 'No permission' });
   }
 

@@ -1059,6 +1059,9 @@ CREATE TABLE IF NOT EXISTS message_reports (
   "evidenceFileName" TEXT,
   "evidenceFileType" TEXT,
   "evidenceScrubbedAt" BIGINT,
+  -- Migration 090: recorded when the channel is claimed or deleted ('open' when
+  -- no override denied VIEW_CHANNELS, else 'restricted'); NULL means ADMIN only.
+  "channelVisibility" TEXT,
   CHECK (reason IN ('spam','harassment','hate','sexual','violence','other')),
   CHECK (status IN ('open','resolved','dismissed')),
   CHECK (resolution IS NULL OR resolution IN ('resolved','dismissed')),
@@ -1073,6 +1076,9 @@ CREATE TABLE IF NOT EXISTS message_reports (
     AND ("evidenceMessageCreatedAt" IS NULL OR ("evidenceMessageCreatedAt" > 0 AND "evidenceMessageCreatedAt" <= 9007199254740991))
     AND ("evidenceMessageEditedAt" IS NULL OR ("evidenceMessageEditedAt" > 0 AND "evidenceMessageEditedAt" <= 9007199254740991))
     AND ("evidenceScrubbedAt" IS NULL OR ("evidenceScrubbedAt" > 0 AND "evidenceScrubbedAt" <= 9007199254740991))
+  ),
+  CONSTRAINT message_reports_channel_visibility_check CHECK (
+    "channelVisibility" IS NULL OR "channelVisibility" IN ('open', 'restricted')
   ),
   CONSTRAINT message_reports_evidence_lifecycle_check CHECK (
     ("evidenceText" IS NULL OR "evidenceCapturedAt" IS NOT NULL)

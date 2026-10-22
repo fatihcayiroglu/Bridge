@@ -661,12 +661,14 @@ test('message reports are durable, permission-scoped, duplicate-safe and idempot
   assert.match(messages, /MessageReports\.create/);
 
   assert.match(moderation, /router\.get\('\/reports'/);
-  // P7 D2 x B5 (migration 088): a live channel's permissions decide (VIEW_CHANNELS
-  // + MANAGE_MESSAGES there, or ADMIN); once the channel is gone/expired only ADMIN
-  // does, on both routes, so a deleted private channel never widens who reads it.
+  // P7 D2 x B5 (migrations 088/090): a live channel's permissions decide (VIEW_CHANNELS
+  // + MANAGE_MESSAGES there, or ADMIN); a gone channel's reports need ADMIN unless 090
+  // recorded the channel as 'open', on both routes, so a deleted private channel never
+  // widens who reads it.
   assert.match(moderation, /resolveEffectivePermissions\(userId, serverId, live \? channelId : null\)/);
-  assert.match(moderation, /return live && hasPermission\(perms, PERMS\.VIEW_CHANNELS\) && hasPermission\(perms, PERMS\.MANAGE_MESSAGES\)/);
-  assert.equal((moderation.match(/await canModerateReport\(_u\.id, serverId, channelId, channel\.live\)/g) ?? []).length, 2);
+  assert.match(moderation, /const visible = live \|\| reportChannelVisibility\(report\) === 'open';/);
+  assert.match(moderation, /return visible && hasPermission\(perms, PERMS\.VIEW_CHANNELS\) && hasPermission\(perms, PERMS\.MANAGE_MESSAGES\)/);
+  assert.equal((moderation.match(/await canModerateReport\(_u\.id, serverId, channelId, channel\.live, (row|report)\)/g) ?? []).length, 2);
   assert.match(moderation, /PERMS\.MANAGE_MESSAGES/);
   assert.match(moderation, /router\.put\('\/reports\/:reportId'/);
   assert.match(moderation, /result\.kind === 'updated'/);

@@ -222,6 +222,9 @@ const ALLOWED_COLUMNS = new Set([
   'evidenceCapturedAt', 'evidenceText', 'evidenceTextTruncated', 'evidenceAuthorId',
   'evidenceAuthorName', 'evidenceMessageType', 'evidenceMessageCreatedAt',
   'evidenceMessageEditedAt', 'evidenceFileName', 'evidenceFileType', 'evidenceScrubbedAt',
+  // P7 D2 x B5 migration 090: recorded visibility of a gone channel's reports
+  // (written by raw SQL in lib/reportChannelVisibility.ts; read with the row).
+  'channelVisibility',
 ]);
 
 /**

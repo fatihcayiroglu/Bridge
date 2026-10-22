@@ -1,6 +1,7 @@
 // server/db/repositories/ChannelRepository.ts
 // Kanal ve kanal kategorisi sorgularını tek noktada toplar.
 
+import { recordReportChannelVisibility } from '../../lib/reportChannelVisibility';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../loader';
 import { postgresPoolOrTestFallback } from './postgresInvariant';
@@ -256,6 +257,9 @@ class ChannelRepository {
         // D2 cleanup/retention will require a separate, audited lifecycle.
         // Moderation reports are retained too (migration 088): their evidence
         // follows the report retention policy, not the channel's lifetime.
+        // Before the overrides go: whether the channel hid itself from anyone
+        // decides who may review its retained reports (migration 090).
+        if (has('message_reports', 'channelVisibility')) await recordReportChannelVisibility(client, id, serverId);
         for (const [table, tableCols] of cols.entries()) {
           if (table === 'channels' || table === 'channel_expiry_tombstones' ||
               table === 'message_reports' || table === 'channel_object_release_outbox' ||
