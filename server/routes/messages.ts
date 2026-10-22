@@ -6,6 +6,7 @@ import { Messages, Channels, Members, Notifications, MessageReports } from '../d
 import { limits } from '../middleware/rateLimit';
 import { validateBody, schemas } from '../middleware/validate';
 import { cache } from '../lib/redisAdapter';
+import { channelMessagesGeneration, currentChannelPage, type CachedChannelPage } from '../lib/messageCache';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
 import { deleteChannelMessage, editChannelMessage, type MutationFailureCode } from '../lib/messageMutations';
@@ -332,8 +333,13 @@ router.get('/:cid/messages', authMiddleware, async (req: Request, res: Response)
   const cacheKey     = `messages:${channelId}:first:${limit}`;
   const readAnchor = isFirstPage ? await getReadAnchor(_u.id, channelId) : null;
 
+  // Read before the database query: a send that commits and invalidates while
+  // this read runs changes the generation, so the page stored below is never
+  // served (lib/messageCache.ts).
+  const generation = isFirstPage ? await channelMessagesGeneration(channelId) : '';
+
   if (isFirstPage) {
-    const cached = await cache.get(cacheKey);
+    const cached = currentChannelPage<Record<string, unknown>>(await cache.get(cacheKey), generation);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
       attachReadAnchorHeaders(res, readAnchor);
@@ -406,7 +412,7 @@ router.get('/:cid/messages', authMiddleware, async (req: Request, res: Response)
     const ttl = ageMs < 2 * 60_000  ? 5   // çok aktif kanal   → 5s
                : ageMs < 10 * 60_000 ? 15  // orta aktif kanal  → 15s
                : 45;                        // sessiz kanal      → 45s
-    await cache.set(cacheKey, response, ttl);
+    await cache.set(cacheKey, { generation, page: response } satisfies CachedChannelPage<typeof response>, ttl);
   }
   attachReadAnchorHeaders(res, readAnchor);
   settleChannelRead(_u.id, channelId, publicPage);
