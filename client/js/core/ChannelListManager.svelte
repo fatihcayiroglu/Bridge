@@ -29,6 +29,7 @@
   import { apiFetch } from './api-fetch.js';
   import { activeChannelSurvives, decideAccessReaction, openChannelExpired, resumeReloadDue, RESUME_HIDDEN_MIN_MS, channelsChangedDelay, type AccessEvent } from './channel-list/access-revocation.ts';
   import { reconcileLocalChannels } from './local-first/channel-reconcile.ts';
+  import { channelExpiresAt, formatChannelExpiry } from './channel-list/channel-expiry.ts';
   import { navigationOwner, lastTextChannel, rememberTextChannel } from './navigation-selection.js';
   const log = createLogger('ChannelListManager');
 
@@ -386,6 +387,7 @@
     if (iconEl)  iconEl.dataset.channelType = channelIconKind(channel.type);
     if (nameEl)  nameEl.textContent  = channel.name;
     if (topicEl) topicEl.textContent = channel.topic ?? '';
+    renderExpiryNotice(topicEl, channel);
 
     // Faz 8.3 — SAHİPLİK: metin/ses görünüm geçişi buradan ALINDI.
     // Liste bileşeni yalnızca SEÇİM yapar; hangi sahnenin görüneceğine
@@ -485,6 +487,26 @@
     } else if (reaction.notice === 'channel-access-lost') {
       BridgeRegistry.call('toast', t('access_channel_lost', 'Bu kanala erişimin kaldırıldı.'), 'warning');
     }
+  }
+
+  /**
+   * P7 D2 (#321): an expiring channel says so in its header, as an absolute server-authoritative
+   * time (a relative "in 3 h" would go stale on screen). Text only; role="note" for screen readers.
+   */
+  function renderExpiryNotice(anchor: HTMLElement | null, channel: Channel): void {
+    let el = document.getElementById('ch-h-expiry');
+    const shown = formatChannelExpiry(channelExpiresAt(channel), Date.now());
+    if (!shown) { el?.remove(); return; }
+    if (!el && anchor?.parentElement) {
+      el = document.createElement('span');
+      el.id = 'ch-h-expiry';
+      el.className = 'ch-h-expiry';
+      el.setAttribute('role', 'note');
+      anchor.after(el);
+    }
+    if (!el) return;
+    el.dataset.soon = shown.soon ? 'true' : 'false';
+    el.textContent = t('channel_expiry_notice', 'Bu kanal ve mesajları {when} tarihinde silinecek.', { when: shown.absolute });
   }
 
   // Another member or device changed this server's channels: one refetch per burst, spread

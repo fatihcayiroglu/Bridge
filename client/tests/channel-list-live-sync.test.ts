@@ -159,3 +159,35 @@ describe('channels:changed — live channel list sync', () => {
     expect(channelRequests('s1')).toBe(1);
   });
 });
+
+describe('channel header expiry notice (P7 D2 #321)', () => {
+  function header(): HTMLElement {
+    const bar = document.createElement('div');
+    bar.className = 'channel-header';
+    bar.innerHTML = '<span id="ch-h-icon"></span><span id="ch-h-name"></span><span class="ch-h-topic" id="ch-h-topic"></span>';
+    document.body.appendChild(bar);
+    return bar;
+  }
+
+  it('states an absolute deletion time as a note, warns within a day, and clears for a permanent channel', async () => {
+    const bar = header();
+    const at = Date.now() + 2 * 60 * 60 * 1000;
+    serverChannels.s1 = [
+      { _id: 'soon', name: 'soon', type: 'text', expiresAt: at } as Channel,
+      { _id: 'general', name: 'general', type: 'text' },
+    ];
+    await openServer('s1');
+    BridgeRegistry.call('selectChannel', serverChannels.s1![0]);
+    flushSync();
+    const note = bar.querySelector<HTMLElement>('#ch-h-expiry')!;
+    expect(note.getAttribute('role')).toBe('note');
+    expect(note.dataset.soon).toBe('true');
+    expect(note.textContent).toContain(String(new Date(at).getFullYear()));
+    expect(note.previousElementSibling?.id).toBe('ch-h-topic');
+
+    BridgeRegistry.call('selectChannel', serverChannels.s1![1]);
+    flushSync();
+    expect(bar.querySelector('#ch-h-expiry')).toBeNull();
+    bar.remove();
+  });
+});
