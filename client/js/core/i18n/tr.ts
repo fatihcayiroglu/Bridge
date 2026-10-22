@@ -573,6 +573,7 @@ const translations: Record<string, string> = {
   'gdm_gone': 'Bu konuşma artık kullanılamıyor.',
   'access_server_lost': 'Bu sunucuya erişimin kaldırıldı.',
   'access_channel_lost': 'Bu kanala erişimin kaldırıldı.',
+  'channel_expired': 'Bu kanalın süresi doldu.',
   'ccp_type_announcement': 'Duyuru',
   'ccp_announcement_desc': 'Önemli güncellemeler ve duyurular',
   'ccp_type_forum': 'Forum',

@@ -6,7 +6,7 @@
 // view does; ChannelListManager.svelte applies them.
 
 import { describe, expect, it } from 'vitest';
-import { activeChannelSurvives, decideAccessReaction } from '../js/core/channel-list/access-revocation.ts';
+import { activeChannelSurvives, decideAccessReaction, openChannelExpired } from '../js/core/channel-list/access-revocation.ts';
 
 const onServer = (activeChannelId: string | null = 'c1') => ({ currentServerId: 's1', activeChannelId });
 const elsewhere = { currentServerId: 's2', activeChannelId: 'x1' };
@@ -87,5 +87,27 @@ describe('activeChannelSurvives — the open channel is released when the author
 
   it('nothing open means nothing to release', () => {
     expect(activeChannelSurvives(null, [])).toBe(true);
+  });
+});
+
+describe('channel:expired (P7 D2)', () => {
+  it('reloads the list of the server on screen; the payload carries no channel id', () => {
+    expect(decideAccessReaction('channel:expired', { serverId: 's1' }, onServer('c1'))).toEqual({
+      reloadServers: false, reloadChannelsOf: 's1', notice: null,
+    });
+  });
+
+  it('does nothing for a server the user is not looking at, or a malformed payload', () => {
+    expect(decideAccessReaction('channel:expired', { serverId: 's1' }, elsewhere)).toEqual({
+      reloadServers: false, reloadChannelsOf: null, notice: null,
+    });
+    expect(decideAccessReaction('channel:expired', { serverId: 7 }, onServer('c1')).reloadChannelsOf).toBeNull();
+  });
+
+  it('tells the user only when the channel they had open is gone after the reload', () => {
+    expect(openChannelExpired('c1', ['c2', 'c3'])).toBe(true);
+    expect(openChannelExpired('c1', ['c1', 'c2'])).toBe(false);
+    expect(openChannelExpired(null, [])).toBe(false);
+    expect(openChannelExpired('', [])).toBe(false);
   });
 });

@@ -13,7 +13,9 @@
 // This module is the decision, not the effect: it maps an event to what the channel list and
 // server rail must do, so the rules are testable without a DOM or a socket.
 
-export type AccessEvent = 'membership:revoked' | 'channel:access-revoked' | 'permissions:updated';
+// P7 D2: `channel:expired` carries only the serverId (a private channel's id is not
+// broadcast to members who cannot see it); the reload drops the expired channel.
+export type AccessEvent = 'membership:revoked' | 'channel:access-revoked' | 'permissions:updated' | 'channel:expired';
 
 export interface AccessContext {
   /** Server the user is looking at right now (null on home / DMs). */
@@ -59,8 +61,16 @@ export function decideAccessReaction(event: AccessEvent, payload: unknown, conte
     return { reloadServers: false, reloadChannelsOf: serverId, notice: wasOpen ? 'channel-access-lost' : null };
   }
 
-  // permissions:updated — channels may have appeared or disappeared.
+  // permissions:updated / channel:expired — channels may have appeared or disappeared.
   return { reloadServers: false, reloadChannelsOf: serverId, notice: null };
+}
+
+/**
+ * After the reload a `channel:expired` event triggered: was the channel the user had open
+ * the one that went away? Only then is the user told why their view changed.
+ */
+export function openChannelExpired(openBefore: string | null, channelIdsAfter: readonly string[]): boolean {
+  return openBefore !== null && openBefore !== '' && !channelIdsAfter.includes(openBefore);
 }
 
 /**

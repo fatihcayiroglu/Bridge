@@ -27,7 +27,7 @@
   import { readToken } from './auth-compat.js';
   import { mountOrUpdateChannelList, unmountChannelList } from './channel-list/channel-list-svelte.js';
   import { apiFetch } from './api-fetch.js';
-  import { activeChannelSurvives, decideAccessReaction, type AccessEvent } from './channel-list/access-revocation.ts';
+  import { activeChannelSurvives, decideAccessReaction, openChannelExpired, type AccessEvent } from './channel-list/access-revocation.ts';
   import { navigationOwner, lastTextChannel, rememberTextChannel } from './navigation-selection.js';
   const log = createLogger('ChannelListManager');
 
@@ -444,7 +444,7 @@
   // gizlediğinde `channel:access-revoked`, her kanal yetkisi yazımında
   // `permissions:updated` yayar. Hiçbirini dinleyen istemci kodu YOKTU.
   type AccessSocket = { on?(e: string, h: (p: unknown) => void): unknown; off?(e: string, h: (p: unknown) => void): unknown };
-  const ACCESS_EVENTS: AccessEvent[] = ['membership:revoked', 'channel:access-revoked', 'permissions:updated'];
+  const ACCESS_EVENTS: AccessEvent[] = ['membership:revoked', 'channel:access-revoked', 'permissions:updated', 'channel:expired'];
   const accessHandlers = new Map<AccessEvent, (payload: unknown) => void>(
     ACCESS_EVENTS.map(event => [event, (payload: unknown) => onAccessEvent(event, payload)]),
   );
@@ -453,6 +453,17 @@
   function onAccessEvent(event: AccessEvent, payload: unknown): void {
     const reaction = decideAccessReaction(event, payload, { currentServerId: serverId, activeChannelId });
     if (reaction.reloadServers) BridgeRegistry.call('loadServers');
+    if (event === 'channel:expired' && reaction.reloadChannelsOf) {
+      const openBefore = activeChannelId;
+      const expiredServer = reaction.reloadChannelsOf;
+      void loadChannels(expiredServer, true).then(() => {
+        // Only an authorized, current list may say the open channel is gone.
+        if (!loadError && serverId === expiredServer && openChannelExpired(openBefore, channels.map(c => c._id))) {
+          BridgeRegistry.call('toast', t('channel_expired', 'Bu kanalın süresi doldu.'), 'info');
+        }
+      });
+      return;
+    }
     if (reaction.reloadChannelsOf) void loadChannels(reaction.reloadChannelsOf, true);
     if (reaction.notice === 'server-access-lost') {
       BridgeRegistry.call('toast', t('access_server_lost', 'Bu sunucuya erişimin kaldırıldı.'), 'warning');

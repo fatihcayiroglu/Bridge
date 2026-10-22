@@ -100,7 +100,7 @@ async function bootstrap(): Promise<void> {
   startEventReminderJob();
   startSavedMessageReminderJob();
   // P7 D2: claims expired channels and cleans their graph (no-op until expiry is configurable).
-  startChannelExpiryJob();
+  startChannelExpiryJob(io);
   startFederationHeartbeat();
   // P5 SH-01b: after initSchema — the queue table is created by the migration chain.
   startFederationDeliveryWorker();

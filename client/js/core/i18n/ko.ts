@@ -608,6 +608,7 @@ const translations: Record<string, string> = {
   "gdm_gone": "이 대화는 더 이상 사용할 수 없습니다.",
   "access_server_lost": "이 서버에 대한 접근 권한이 삭제되었습니다.",
   "access_channel_lost": "이 채널에 대한 접근 권한이 삭제되었습니다.",
+  "channel_expired": "이 채널은 만료되었습니다.",
   "ccp_type_announcement": "공지",
   "ccp_announcement_desc": "중요한 업데이트와 공지",
   "ccp_type_forum": "포럼",

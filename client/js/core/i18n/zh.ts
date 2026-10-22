@@ -608,6 +608,7 @@ const translations: Record<string, string> = {
   "gdm_gone": "此对话已不可用。",
   "access_server_lost": "你对此服务器的访问权限已被移除。",
   "access_channel_lost": "你对此频道的访问权限已被移除。",
+  "channel_expired": "此频道已过期。",
   "ccp_type_announcement": "公告",
   "ccp_announcement_desc": "重要更新和公告",
   "ccp_type_forum": "论坛",
