@@ -47,13 +47,8 @@ class ChannelRepository {
   async findByServer(serverId: string) {
     const channels = await db.channels.find({ serverId }).sort({ order: 1 });
     const now = Date.now();
-    return channels.filter((channel) => {
-      try {
-        return classifyChannelExpiryWithTombstone(channel, null, now).accessible;
-      } catch {
-        return false;
-      }
-    });
+    // The classifier never throws: corrupt input is already `invalid` (hidden).
+    return channels.filter((channel) => classifyChannelExpiryWithTombstone(channel, null, now).accessible);
   }
 
   async findByIdAndServer(id: string, serverId: string) {

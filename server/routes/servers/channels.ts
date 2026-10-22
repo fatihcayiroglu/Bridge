@@ -119,11 +119,8 @@ function presentChannel<T extends ChannelRow | null | undefined>(
  * metadata hides the channel (fail closed).
  */
 function listedAsLive(channel: unknown, now = Date.now()): boolean {
-  try {
-    return classifyChannelExpiryWithTombstone(channel, null, now).accessible;
-  } catch {
-    return false;
-  }
+  // The classifier never throws: corrupt input is already `invalid`.
+  return classifyChannelExpiryWithTombstone(channel, null, now).accessible;
 }
 
 // GET /api/servers/:sid/channels
