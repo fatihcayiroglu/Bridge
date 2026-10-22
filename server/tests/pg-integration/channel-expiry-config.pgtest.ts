@@ -18,6 +18,7 @@ import { MIN_CHANNEL_LIFETIME_MS, MAX_CHANNEL_LIFETIME_MS } from '../../lib/chan
 const db = require('../../db/loader').default;
 const channelsRouter = require('../../routes/servers/channels');
 const { isChannelWriteDenied } = require('../../lib/channelWriteBarrier');
+const { runChannelExpiryJobTick, startChannelExpiryJob, stopChannelExpiryJob } = require('../../jobs/channelExpiry');
 
 const PG_TEST_URL = process.env.PG_TEST_URL;
 const RUN = PG_TEST_URL ? describe : describe.skip;
@@ -224,5 +225,47 @@ RUN('P7 D2 channel expiry configuration — real PostgreSQL', () => {
     await q('INSERT INTO messages (_id,"channelId","serverId","userId",username,"displayName",content,"createdAt") VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
       [id('m'), cid, sid, OWNER, 'o', 'O', 'too late', Date.now()]).catch((e: unknown) => { err = e; });
     expect(isChannelWriteDenied(err)).toBe(true);
+  });
+
+  it('hides an expired channel from listings at once, then announces its removal to the server room', async () => {
+    const sid = await server();
+    const keep = await channel(sid);
+    const doomed = await channel(sid);
+    mockActor.id = OWNER;
+    const ids = (r: { body: Array<{ _id: string }> }) => r.body.map(c => c._id).sort();
+    const listed = await request(app).get(`/api/servers/${sid}/channels`);  // also primes the list cache
+    expect(ids(listed)).toEqual([keep, doomed].sort());
+
+    // Real path: the API sets the expiry and invalidates the list cache; the
+    // re-cached list carries expiresAt, and serving filters by the clock.
+    const at = Date.now() + 2 * HOUR;
+    expect((await put(sid, doomed, { expiresAt: at })).status).toBe(200);
+    expect(ids(await request(app).get(`/api/servers/${sid}/channels`))).toEqual([keep, doomed].sort());
+    const realNow = Date.now;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 2 * HOUR + 1000);
+    try {
+      const afterExpiry = await request(app).get(`/api/servers/${sid}/channels`);
+      expect(afterExpiry.status).toBe(200);
+      expect(ids(afterExpiry)).toEqual([keep]);
+      expect((await request(app).get(`/api/servers/${sid}/channels/${doomed}`)).status).toBe(404);
+      expect((await request(app).patch(`/api/servers/${sid}/channels/${doomed}`).send({ name: 'revived' })).status).toBe(404);
+      expect((await request(app).get(`/api/servers/${sid}/channels/${keep}`)).status).toBe(200);
+    } finally {
+      clock.mockRestore();
+    }
+
+    // The database clock decides the claim; move the stored expiry into its past.
+    await q('UPDATE channels SET "expiresAt"=$1 WHERE _id=$2', [Date.now() - 1000, doomed]);
+
+    const emitted: Array<[string, string, unknown]> = [];
+    startChannelExpiryJob({ to: (room: string) => ({ emit: (event: string, payload: unknown) => emitted.push([room, event, payload]) }) });
+    try {
+      for (let i = 0; i < 20 && !emitted.some(([room]) => room === `server:${sid}`); i++) await runChannelExpiryJobTick();
+    } finally {
+      stopChannelExpiryJob();
+    }
+    expect(emitted.filter(([room]) => room === `server:${sid}`)).toEqual([[`server:${sid}`, 'channel:expired', { serverId: sid }]]);
+    expect(await row(doomed)).toBeUndefined();
+    expect(ids(await request(app).get(`/api/servers/${sid}/channels`))).toEqual([keep]);
   });
 });

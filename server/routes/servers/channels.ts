@@ -56,6 +56,7 @@ import { envSafeInt } from '../../lib/envNumbers';
 import type { ChannelType } from '../../db/repositories/types/entities';
 import db from '../../db/loader';
 import { setChannelExpiry, type ExpiryConfigPool } from '../../lib/channelExpiryConfig';
+import { classifyChannelExpiryWithTombstone } from '../../lib/channelExpiry';
 
 const router = express.Router({ mergeParams: true });
 const VALID_CHANNEL_TYPES = new Set<ChannelType>(['text', 'voice', 'announcement', 'forum', 'stage']);
@@ -111,6 +112,20 @@ function presentChannel<T extends ChannelRow | null | undefined>(
   return { ...channel, forumTags: readForumTags(channel.forumTags) } as never;
 }
 
+/**
+ * P7 D2: channel metadata is hidden once the channel expires, before the
+ * worker removes the row. Uses the app clock: this is listing metadata only;
+ * content reads use the authoritative PostgreSQL preflight. Corrupt expiry
+ * metadata hides the channel (fail closed).
+ */
+function listedAsLive(channel: unknown, now = Date.now()): boolean {
+  try {
+    return classifyChannelExpiryWithTombstone(channel, null, now).accessible;
+  } catch {
+    return false;
+  }
+}
+
 // GET /api/servers/:sid/channels
 router.get('/', authMiddleware, async (req, res) => {
   try {
@@ -133,7 +148,10 @@ router.get('/', authMiddleware, async (req, res) => {
 
     const visible = await viewableChannelIds(userId, sid, channels.map((ch) => String(ch._id)));
     res.setHeader('X-Cache', cacheHit ? 'HIT' : 'MISS');
-    return void res.json(channels.filter((ch) => visible.has(String(ch._id))).map((ch) => presentChannel(ch as unknown as ChannelRow)));
+    const now = Date.now();
+    return void res.json(channels
+      .filter((ch) => visible.has(String(ch._id)) && listedAsLive(ch, now))
+      .map((ch) => presentChannel(ch as unknown as ChannelRow)));
   } catch {
     return void res.status(500).json({ error: 'Internal server error' });
   }
@@ -191,7 +209,7 @@ router.patch('/:cid', authMiddleware, limits.channels(), async (req, res) => {
     const sid = String(req.params.sid ?? '');
     const cid = String(req.params.cid ?? '');
     const channel = await Channels.findByIdAndServer(cid, sid);
-    if (!channel) return void res.status(404).json({ error: 'Channel not found' });
+    if (!channel || !listedAsLive(channel)) return void res.status(404).json({ error: 'Channel not found' });
     const perms = await resolvePermissions(userId, sid, cid).catch(() => 0);
     if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.MANAGE_CHANNELS)) return void res.status(403).json({ error: 'Missing channel permission' });
 
@@ -292,7 +310,7 @@ router.get('/:cid', authMiddleware, async (req, res) => {
     const sid = String(req.params.sid ?? '');
     const cid = String(req.params.cid ?? '');
     const channel = await Channels.findByIdAndServer(cid, sid);
-    if (!channel) return void res.status(404).json({ error: 'Channel not found' });
+    if (!channel || !listedAsLive(channel)) return void res.status(404).json({ error: 'Channel not found' });
     const perms = await resolvePermissions(userId, sid, cid).catch(() => 0);
     if (!hasPermission(perms, PERMS.VIEW_CHANNELS)) return void res.status(404).json({ error: 'Channel not found' });
     return void res.json(presentChannel(channel as unknown as ChannelRow));

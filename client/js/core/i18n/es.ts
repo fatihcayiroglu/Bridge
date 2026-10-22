@@ -608,6 +608,7 @@ const translations: Record<string, string> = {
   "gdm_gone": "Esta conversación ya no está disponible.",
   "access_server_lost": "Se ha retirado tu acceso a este servidor.",
   "access_channel_lost": "Se ha retirado tu acceso a este canal.",
+  "channel_expired": "Este canal ha caducado.",
   "ccp_type_announcement": "Anuncios",
   "ccp_announcement_desc": "Novedades y anuncios importantes",
   "ccp_type_forum": "Foro",

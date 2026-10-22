@@ -197,17 +197,24 @@ export async function cleanupNextTombstone(pool: ExpiryPool, batchSize = 500): P
 }
 
 export interface ExpiryTickLimits { maxClaims?: number; maxCleanupPasses?: number; batchSize?: number }
-export interface ExpiryTickReport { claimed: string[]; converged: string[]; deleted: number }
+export interface ExpiryTickReport {
+  claimed: string[];
+  /** The same claims with their server, for broadcasting and cache invalidation. */
+  claimedChannels: Array<{ channelId: string; serverId: string }>;
+  converged: string[];
+  deleted: number;
+}
 
 /** One bounded worker tick: claim up to N channels, then up to M cleanup passes. */
 export async function runChannelExpiryTick(pool: ExpiryPool, limits: ExpiryTickLimits = {}): Promise<ExpiryTickReport> {
   const maxClaims = limits.maxClaims ?? 20;
   const maxPasses = limits.maxCleanupPasses ?? 50;
-  const report: ExpiryTickReport = { claimed: [], converged: [], deleted: 0 };
+  const report: ExpiryTickReport = { claimed: [], claimedChannels: [], converged: [], deleted: 0 };
   for (let i = 0; i < maxClaims; i++) {
     const claim = await claimExpiredChannel(pool);
     if (claim.state !== 'claimed') break;
     report.claimed.push(claim.channelId);
+    report.claimedChannels.push({ channelId: claim.channelId, serverId: claim.serverId });
   }
   for (let i = 0; i < maxPasses; i++) {
     const pass = await cleanupNextTombstone(pool, limits.batchSize);
