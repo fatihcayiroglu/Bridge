@@ -77,8 +77,14 @@ empty snapshots are never touched. Evidence:
 `client/tests/local-first-channel-reconcile.test.ts` (pure decision and a run
 against the real encrypted history runtime: the expired channel's text is gone,
 live and foreign copies stay).
-Not covered yet: drafts (the user's own unsent text) and an offline client that
-never loads that server's list again.
+Drafts are purged the same way: the user's unsent text for a vanished channel,
+in the encrypted draft store and in the legacy plaintext store (a draft written
+before encryption and never migrated because the channel was not reopened).
+Drafts of other servers that reuse the same channel id are untouched (draft
+records are scoped by server). Evidence: the same test file, against the real
+encrypted draft runtime and localStorage.
+Not covered: an offline client that never loads that server's list again keeps
+its copies until it does (it cannot learn about the expiry otherwise).
 
 ## Live room members are evicted
 

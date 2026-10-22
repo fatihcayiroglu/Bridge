@@ -7,6 +7,15 @@ import {
   staleLocalChannels,
 } from '../js/core/local-first/channel-reconcile.ts';
 import {
+  hydrateLocalFirstDraft,
+  localFirstChannelDraftIds,
+  persistLocalFirstDraftText,
+  flushLocalFirstDraft,
+  purgeLocalFirstDraft,
+  resetLocalFirstDraftRuntimeForTests,
+} from '../js/core/local-first/draft-runtime.ts';
+import { writeDraft, readDraft } from '../js/core/draft-store.ts';
+import {
   listLocalFirstHistory,
   replaceLocalFirstHistory,
   resetLocalFirstHistoryRuntimeForTests,
@@ -36,11 +45,15 @@ describe('P7 D2 staleLocalChannels', () => {
       queued('a3', 'other-server', 's2'),
       queued('a4', 'dm-channel', 's1', 'dm'),
     ]);
-    expect(stale).toEqual({ history: ['expired'], outbox: ['a1'] });
+    expect(stale).toEqual({ history: ['expired'], outbox: ['a1'], drafts: [] });
   });
 
   it('does nothing without a server id', () => {
-    expect(staleLocalChannels('', [], [snapshot('x', 's1')], [queued('a', 'x', 's1')])).toEqual({ history: [], outbox: [] });
+    expect(staleLocalChannels('', [], [snapshot('x', 's1')], [queued('a', 'x', 's1')], ['x'])).toEqual({ history: [], outbox: [], drafts: [] });
+  });
+
+  it('selects drafts of channels the list dropped', () => {
+    expect(staleLocalChannels('s1', ['live'], [], [], ['live', 'gone', 'gone', ''])).toEqual({ history: [], outbox: [], drafts: ['gone'] });
   });
 });
 
@@ -61,12 +74,49 @@ describe('P7 D2 reconcileLocalChannels against the encrypted history runtime', (
       clearHistory: clearLocalFirstHistoryChannel,
       readOutbox: () => outbox,
       removeOutbox: (_user, ackId) => { removed.push(ackId); outbox = outbox.filter(e => e.ackId !== ackId); },
+      listDraftChannels: async () => [],
+      clearDraft: () => undefined,
     });
 
-    expect(result).toEqual({ history: ['gone'], outbox: ['q-gone'] });
+    expect(result).toEqual({ history: ['gone'], outbox: ['q-gone'], drafts: [] });
     expect(removed).toEqual(['q-gone']);
     const left = (await listLocalFirstHistory(user)).map(s => s.channelId).sort();
     expect(left).toEqual(['elsewhere', 'live']);
     expect(JSON.stringify(await listLocalFirstHistory(user))).not.toContain('expired secret');
+  });
+});
+
+describe('P7 D2 reconcileLocalChannels purges drafts of vanished channels', () => {
+  beforeEach(() => { resetLocalFirstDraftRuntimeForTests(); localStorage.clear(); });
+  afterEach(() => { resetLocalFirstDraftRuntimeForTests(); localStorage.clear(); });
+
+  it('clears encrypted and legacy plaintext drafts of the dropped channel only', async () => {
+    const user = 'u-drafts';
+    const id = (serverId: string, conversationId: string) => ({ userId: user, kind: 'channel' as const, serverId, conversationId });
+    persistLocalFirstDraftText(id('s1', 'gone'), 'secret plan for the ephemeral room');
+    persistLocalFirstDraftText(id('s1', 'live'), 'keep me');
+    persistLocalFirstDraftText(id('s2', 'gone'), 'other server, same channel id');
+    await flushLocalFirstDraft(id('s1', 'gone'));
+    await flushLocalFirstDraft(id('s1', 'live'));
+    await flushLocalFirstDraft(id('s2', 'gone'));
+    // A legacy plaintext draft never migrated because the channel was never reopened.
+    expect(writeDraft(id('s1', 'legacy-gone'), 'old plaintext draft')).toBe(true);
+
+    expect(await localFirstChannelDraftIds(user, 's1')).toEqual(['gone', 'legacy-gone', 'live']);
+    const result = await reconcileLocalChannels(user, 's1', ['live'], {
+      listHistory: async () => [], clearHistory: async () => undefined,
+      readOutbox: () => [], removeOutbox: () => undefined,
+      listDraftChannels: localFirstChannelDraftIds,
+      clearDraft: (userId, serverId, channelId) =>
+        purgeLocalFirstDraft({ userId, kind: 'channel', serverId, conversationId: channelId }),
+    });
+    expect(result.drafts).toEqual(['gone', 'legacy-gone']);
+    await flushLocalFirstDraft(id('s1', 'gone'));
+
+    expect(await hydrateLocalFirstDraft(id('s1', 'gone'))).toBeNull();
+    expect(readDraft(id('s1', 'legacy-gone'))).toBe('');
+    expect((await hydrateLocalFirstDraft(id('s1', 'live')))?.text).toBe('keep me');
+    expect((await hydrateLocalFirstDraft(id('s2', 'gone')))?.text).toBe('other server, same channel id');
+    expect(await localFirstChannelDraftIds(user, 's1')).toEqual(['live']);
   });
 });

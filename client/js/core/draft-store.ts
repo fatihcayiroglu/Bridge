@@ -156,6 +156,28 @@ function rawSet(key: string, entry: StoredDraft): boolean {
   }
 }
 
+/**
+ * P7 D2: channel ids of `serverId` that still hold a legacy (pre-encryption)
+ * draft for this user. Used to purge drafts of channels that no longer exist.
+ */
+export function legacyChannelDraftIds(userId: string, serverId: string): string[] {
+  const store = storage();
+  if (!store || !userId || !serverId) return [];
+  const prefix = `${DRAFT_KEY_PREFIX}:${encodeURIComponent(userId)}:channel:${encodeURIComponent(serverId)}:`;
+  const ids: string[] = [];
+  try {
+    for (let index = 0; index < store.length; index += 1) {
+      const key = store.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      const rest = key.slice(prefix.length);
+      if (rest && !rest.includes(':')) ids.push(decodeURIComponent(rest));
+    }
+  } catch {
+    return [];
+  }
+  return ids;
+}
+
 /** Remove stale/invalid records first, then the oldest overflow records. */
 function pruneUserDrafts(userId: string): void {
   const store = storage();
