@@ -214,7 +214,8 @@ RUN('P7 D2 channel write barrier — real PostgreSQL', () => {
 
     const rows = (await q('SELECT _id, content, "channelId", "deletedAt", pinned, reactions FROM messages WHERE _id = ANY($1)',
       [[mid, deleted, movable]])).rows;
-    const byId = new Map(rows.map((r: { _id: string }) => [r._id, r]));
+    type Row = { _id: string; deletedAt: string | null };
+    const byId = new Map<string, Row>(rows.map((r: Row) => [r._id, r]));
     expect(byId.get(mid)).toMatchObject({ content: 'body', channelId: cid, deletedAt: null, pinned: false });
     expect(byId.get(movable)).toMatchObject({ channelId: live, deletedAt: null });
     expect(byId.get(deleted)!.deletedAt).not.toBeNull();
