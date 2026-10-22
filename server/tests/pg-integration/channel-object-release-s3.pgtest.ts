@@ -109,3 +109,5 @@ RUN('P7 D2 expired-channel object release — real S3-compatible private bucket'
     expect(await present(KEY_SHARED)).toBe(true);
   });
 });
+
+export {};

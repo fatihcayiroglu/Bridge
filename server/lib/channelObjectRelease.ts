@@ -8,26 +8,44 @@
  *                                    PRIVATE storage (local disk, S3, R2, MinIO, B2)
  *   /uploads/recordings/<file>, ...  persistent assets recognised by
  *                                    lib/uploadRelease.ts (local or adapter)
- * Before every delete, `hasLiveUploadReference` re-checks every column that can
- * point at an upload; a still-referenced object (a crosspost, a copy in another
- * channel) is retained. The check is fail-closed: without PostgreSQL it throws
- * and the outbox retries later instead of deleting.
+ * Before every delete, the live-reference check (hasLiveUploadReference, or for a
+ * leased batch liveUploadReferenceKeys with identical semantics) covers every
+ * column that can point at an upload; a still-referenced object (a crosspost, a
+ * copy in another channel) is retained. The check is fail-closed: without
+ * PostgreSQL it throws and the outbox retries later instead of deleting.
  */
-import { hasLiveUploadReference, storageDeleteKey, type UploadReferenceQueryable } from './uploadReferenceSafety';
+import {
+  hasLiveUploadReference, liveUploadReferenceKeys, storageDeleteKey, type UploadReferenceQueryable,
+} from './uploadReferenceSafety';
 import { locateAsset, releaseUnreferencedUploads } from './uploadRelease';
 import { getPrivateStorageAdapter, getPrivateStorageProvider } from './storageAdapter';
 import type { ObjectReleaser } from './channelExpiryWorker';
 
 const ROOT_ATTACHMENT = /^\/uploads\/([A-Za-z0-9][A-Za-z0-9._-]{0,200})$/;
 
-export function createChannelObjectReleaser(pool: UploadReferenceQueryable | null | undefined): ObjectReleaser {
+/** The canonical key of a root attachment URL, or null. */
+function rootAttachmentKey(url: string): string | null {
+  const fileName = ROOT_ATTACHMENT.exec(url)?.[1];
+  return fileName && !fileName.includes('..') ? `uploads/${fileName}` : null;
+}
+
+/**
+ * `batch`, when given, answers the reference check for the root attachments of
+ * one leased batch from a single query (liveUploadReferenceKeys); keys outside
+ * it are checked one by one as before.
+ */
+export function createChannelObjectReleaser(
+  pool: UploadReferenceQueryable | null | undefined,
+  batch?: { keys: ReadonlySet<string>; referenced: ReadonlySet<string> },
+): ObjectReleaser {
   return {
     async release(url: string) {
-      const root = ROOT_ATTACHMENT.exec(url);
-      const fileName = root?.[1];
-      if (fileName && !fileName.includes('..')) {
-        const canonicalKey = `uploads/${fileName}`;
-        if (await hasLiveUploadReference(pool, canonicalKey)) return 'still_referenced';
+      const canonicalKey = rootAttachmentKey(url);
+      if (canonicalKey) {
+        const referenced = batch?.keys.has(canonicalKey)
+          ? batch.referenced.has(canonicalKey)
+          : await hasLiveUploadReference(pool, canonicalKey);
+        if (referenced) return 'still_referenced';
         await getPrivateStorageAdapter().deleteFile(storageDeleteKey(canonicalKey, getPrivateStorageProvider()));
         // Ownership metadata only; the byte decision is already made.
         await pool?.query('DELETE FROM uploads WHERE key = $1', [canonicalKey]).catch(() => undefined);
@@ -39,6 +57,11 @@ export function createChannelObjectReleaser(pool: UploadReferenceQueryable | nul
       if (failure) throw failure;
       if (result.stillReferenced) return 'still_referenced';
       return result.alreadyAbsent ? 'absent' : 'released';
+    },
+    async forBatch(urls: readonly string[]) {
+      const keys = new Set(urls.map(rootAttachmentKey).filter((k): k is string => k !== null));
+      const referenced = await liveUploadReferenceKeys(pool, [...keys]);
+      return createChannelObjectReleaser(pool, { keys, referenced });
     },
   };
 }

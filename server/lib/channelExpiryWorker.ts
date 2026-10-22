@@ -375,6 +375,11 @@ export async function cleanupNextTombstone(pool: ExpiryPool, batchSize = 500): P
  */
 export interface ObjectReleaser {
   release(url: string): Promise<'released' | 'absent' | 'still_referenced' | 'unrecognized'>;
+  /**
+   * Optional: a releaser scoped to one leased batch that may answer reference
+   * checks for all of it with one query. A failure falls back to `release`.
+   */
+  forBatch?(urls: readonly string[]): Promise<ObjectReleaser>;
 }
 export interface ObjectReleaseReport { released: number; retained: number; retried: number; failed: number }
 
@@ -413,6 +418,9 @@ export async function releaseChannelObjects(
   const client = await pool.connect();
   try {
     const leased = await client.query(CLAIM_OBJECT_RELEASES_SQL, [limit]);
+    const active = releaser.forBatch && leased.rows.length
+      ? await releaser.forBatch(leased.rows.map(row => String(row.url))).catch(() => releaser)
+      : releaser;
     for (const row of leased.rows) {
       const channelId = String(row.channelId);
       const url = String(row.url);
@@ -421,7 +429,7 @@ export async function releaseChannelObjects(
         `UPDATE ${OUTBOX} SET state = $3, "finishedAt" = ${NOW_MS}, "lastError" = $4
           WHERE "channelId" = $1 AND url = $2 AND state = 'pending'`, [channelId, url, state, note]);
       try {
-        const outcome = await releaser.release(url);
+        const outcome = await active.release(url);
         if (outcome === 'released' || outcome === 'absent') {
           await finish('released', outcome === 'absent' ? 'already_absent' : null);
           report.released += 1;

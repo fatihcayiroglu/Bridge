@@ -4,11 +4,13 @@
  * storage are proven in tests/pg-integration/channel-object-release*.pgtest.ts.
  */
 const mockHasRef = jest.fn();
+const mockBatchRef = jest.fn();
 const mockPrivateDelete = jest.fn();
 const mockRelease = jest.fn();
 jest.mock('../lib/uploadReferenceSafety', () => ({
   ...jest.requireActual('../lib/uploadReferenceSafety'),
   hasLiveUploadReference: (...a: unknown[]) => mockHasRef(...a),
+  liveUploadReferenceKeys: (...a: unknown[]) => mockBatchRef(...a),
 }));
 jest.mock('../lib/storageAdapter', () => ({
   getPrivateStorageAdapter: () => ({ deleteFile: (...a: unknown[]) => mockPrivateDelete(...a) }),
@@ -70,6 +72,35 @@ describe('createChannelObjectReleaser', () => {
       return { removed: 0, alreadyAbsent: 0, stillReferenced: 0, failed: 1 };
     });
     await expect(r().release('/uploads/recordings/ep.mp3')).rejects.toThrow('EACCES');
+  });
+});
+
+describe('batch-scoped releaser', () => {
+  it('answers root attachments of the batch from one batched query, others one by one', async () => {
+    mockBatchRef.mockResolvedValue(new Set(['uploads/kept.png']));
+    const batch = await createChannelObjectReleaser(pool as never).forBatch!([
+      '/uploads/kept.png', '/uploads/gone.png', '/uploads/recordings/r.mp3', 'https://x/y.png',
+    ]);
+    expect(mockBatchRef).toHaveBeenCalledWith(pool, ['uploads/kept.png', 'uploads/gone.png']);
+    await expect(batch.release('/uploads/kept.png')).resolves.toBe('still_referenced');
+    await expect(batch.release('/uploads/gone.png')).resolves.toBe('released');
+    expect(mockHasRef).not.toHaveBeenCalled();
+    // Outside the batch: the single-key check still runs.
+    await expect(batch.release('/uploads/other.png')).resolves.toBe('released');
+    expect(mockHasRef).toHaveBeenCalledWith(pool, 'uploads/other.png');
+  });
+
+  it('falls back to per-object checks when the batched query fails', async () => {
+    mockBatchRef.mockRejectedValue(new Error('statement timeout'));
+    const leased = [{ channelId: 'c', url: '/uploads/a.png', attempts: 1 }];
+    const client = {
+      query: jest.fn(async (sql: string) => ({ rows: /RETURNING o\."channelId"/.test(sql) ? leased : [] })),
+      release: jest.fn(),
+    };
+    const report = await releaseChannelObjects({ connect: async () => client } as never,
+      createChannelObjectReleaser(pool as never), 10);
+    expect(report).toEqual({ released: 1, retained: 0, retried: 0, failed: 0 });
+    expect(mockHasRef).toHaveBeenCalledWith(pool, 'uploads/a.png');
   });
 });
 

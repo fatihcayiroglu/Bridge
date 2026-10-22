@@ -80,3 +80,5 @@ RUN('P7 D2 scheduled posts into unavailable channels — real PostgreSQL', () =>
     expect(await posted(EXPIRING)).toBe(0);
   });
 });
+
+export {};

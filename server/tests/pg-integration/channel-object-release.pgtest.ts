@@ -16,6 +16,7 @@ import {
   releaseChannelObjects, runChannelExpiryTick, type ObjectReleaser,
 } from '../../lib/channelExpiryWorker';
 import { createChannelObjectReleaser } from '../../lib/channelObjectRelease';
+import { hasLiveUploadReference, liveUploadReferenceKeys } from '../../lib/uploadReferenceSafety';
 
 const UPLOADS = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-d2-objects-'));
 process.env.BRIDGE_UPLOAD_ROOT = UPLOADS;
@@ -215,7 +216,7 @@ RUN('P7 D2 expired-channel object release — real PostgreSQL + local storage', 
     await attachment(cid, sid, '/uploads/dup.png');
     await expire(cid);
     for (let i = 0; i < 50; i++) { const c = await claimExpiredChannel(db._pool); if (c.state === 'none') break; }
-    let pass: { channelId?: string } = {};
+    let pass: { state: string; channelId?: string } = { state: 'none' };
     for (let i = 0; i < 100; i++) { pass = await cleanupNextTombstone(db._pool, 1); if (pass.channelId === cid) break; }
     await releaseChannelObjects(db._pool, releaser(), 1000);
     expect((await outbox(cid))[0]).toMatchObject({ state: 'retained', lastError: 'still_referenced' });
@@ -223,6 +224,32 @@ RUN('P7 D2 expired-channel object release — real PostgreSQL + local storage', 
     await drain(releaser(), 1);
     expect((await outbox(cid))[0]).toMatchObject({ state: 'released' });
     expect(exists('dup.png')).toBe(false);
+  });
+
+  it('the batched reference check answers exactly like the single-key check on every URL shape', async () => {
+    const sid = await server();
+    const keep = sid + '-keep';
+    const values = [
+      '/uploads/eq-a.png', 'uploads/eq-b.png', 'https://cdn.example/y/uploads/eq-c.png', '/uploads/xeq-d.png',
+      '/uploads/eq-e.png?x=1', '/uploads/recordings/eq-f.mp3', 'https://h/uploads/recordings/eq-g.mp3',
+      'uploads/recordings/eq-h.mp3', '/other/uploads/eq-i.png', '/uploads/eq-j.png/', 'https://h/a/b/uploads/eq-k.png',
+    ];
+    for (const v of values) await attachment(keep, sid, v);
+    const keys = [
+      'uploads/eq-a.png', 'uploads/eq-b.png', 'uploads/eq-c.png', 'uploads/eq-d.png', 'uploads/eq-e.png',
+      'uploads/recordings/eq-f.mp3', 'uploads/recordings/eq-g.mp3', 'uploads/recordings/eq-h.mp3',
+      'uploads/eq-i.png', 'uploads/eq-j.png', 'uploads/eq-k.png', 'uploads/recordings/eq-zz.mp3', 'uploads/eq-zz.png',
+    ];
+    const batched = await liveUploadReferenceKeys(db._pool, keys);
+    for (const key of keys) {
+      expect([key, batched.has(key)]).toEqual([key, await hasLiveUploadReference(db._pool, key)]);
+    }
+    // Sanity: both positive and negative answers are exercised.
+    expect(batched.has('uploads/eq-a.png')).toBe(true);
+    expect(batched.has('uploads/eq-d.png')).toBe(false);
+    await expect(liveUploadReferenceKeys(db._pool, ['uploads/a/b/c/d.png'])).rejects.toThrow(/unsupported/);
+    await expect(liveUploadReferenceKeys(db._pool, ['../etc/passwd'])).rejects.toThrow(/unsupported/);
+    expect(await liveUploadReferenceKeys(db._pool, [])).toEqual(new Set());
   });
 
   it('089 down refuses while objects are pending release', async () => {
