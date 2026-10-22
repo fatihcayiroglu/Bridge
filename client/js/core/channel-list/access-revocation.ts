@@ -15,7 +15,10 @@
 
 // P7 D2: `channel:expired` carries only the serverId (a private channel's id is not
 // broadcast to members who cannot see it); the reload drops the expired channel.
-export type AccessEvent = 'membership:revoked' | 'channel:access-revoked' | 'permissions:updated' | 'channel:expired';
+// `channels:changed` (server id only) follows any channel or category create/update/delete by
+// another member or device; the list reloads through the permission-filtered endpoint.
+export type AccessEvent = 'membership:revoked' | 'channel:access-revoked' | 'permissions:updated' | 'channel:expired'
+  | 'channels:changed';
 
 export interface AccessContext {
   /** Server the user is looking at right now (null on home / DMs). */
@@ -61,7 +64,7 @@ export function decideAccessReaction(event: AccessEvent, payload: unknown, conte
     return { reloadServers: false, reloadChannelsOf: serverId, notice: wasOpen ? 'channel-access-lost' : null };
   }
 
-  // permissions:updated / channel:expired — channels may have appeared or disappeared.
+  // permissions:updated / channel:expired / channels:changed — channels may have appeared or disappeared.
   return { reloadServers: false, reloadChannelsOf: serverId, notice: null };
 }
 
@@ -104,3 +107,6 @@ export function resumeReloadDue(serverId: string | null, lastReloadAt: number, n
   if (!serverId) return false;
   return lastReloadAt === 0 || now - lastReloadAt >= RESUME_RELOAD_COALESCE_MS;
 }
+
+/** Trailing window that folds a burst of `channels:changed` events into one list refetch. */
+export const CHANNELS_CHANGED_COALESCE_MS = 150;

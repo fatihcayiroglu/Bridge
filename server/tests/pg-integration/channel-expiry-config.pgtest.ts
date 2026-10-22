@@ -35,6 +35,8 @@ RUN('P7 D2 channel expiry configuration — real PostgreSQL', () => {
   const app = express();
   app.use(express.json());
   app.use('/api/servers/:sid/channels', channelsRouter);
+  const emitted: Array<[string, string, unknown]> = [];
+  app.set('io', { to: (room: string) => ({ emit: (event: string, payload: unknown) => emitted.push([room, event, payload]) }) });
   const put = (sid: string, cid: string, body: unknown, actor = OWNER) => {
     mockActor.id = actor;
     return request(app).put(`/api/servers/${sid}/channels/${cid}/expiry`).send(body as object);
@@ -267,5 +269,36 @@ RUN('P7 D2 channel expiry configuration — real PostgreSQL', () => {
     expect(emitted.filter(([room]) => room === `server:${sid}`)).toEqual([[`server:${sid}`, 'channel:expired', { serverId: sid }]]);
     expect(await row(doomed)).toBeUndefined();
     expect(ids(await request(app).get(`/api/servers/${sid}/channels`))).toEqual([keep]);
+  });
+
+  it('announces every committed channel mutation to the server room with the server id only', async () => {
+    const sid = await server();
+    const keep = await channel(sid);
+    mockActor.id = OWNER;
+    const changes = () => emitted.filter(([room, event]) => room === `server:${sid}` && event === 'channels:changed');
+    emitted.length = 0;
+
+    const created = await request(app).post(`/api/servers/${sid}/channels`).send({ name: 'live-sync', type: 'text' });
+    expect(created.status).toBe(201);
+    expect(changes()).toEqual([[`server:${sid}`, 'channels:changed', { serverId: sid }]]);
+    const cid = String(created.body._id);
+
+    expect((await request(app).patch(`/api/servers/${sid}/channels/${cid}`).send({ name: 'renamed' })).status).toBe(200);
+    expect((await put(sid, cid, { expiresAt: Date.now() + 2 * HOUR })).status).toBe(200);
+    expect((await request(app).delete(`/api/servers/${sid}/channels/${cid}`)).status).toBe(200);
+    expect(changes()).toHaveLength(4);
+    for (const [, , payload] of changes()) expect(payload).toEqual({ serverId: sid });  // no name, id or type
+
+    // Refused or no-op mutations announce nothing.
+    emitted.length = 0;
+    expect((await request(app).patch(`/api/servers/${sid}/channels/${keep}`).send({ name: 'x' }).then(r => r.status))).toBe(200);
+    emitted.length = 0;
+    mockActor.id = MEMBER;
+    expect((await request(app).patch(`/api/servers/${sid}/channels/${keep}`).send({ name: 'nope' })).status).toBe(403);
+    expect((await request(app).post(`/api/servers/${sid}/channels`).send({ name: 'nope', type: 'text' })).status).toBe(403);
+    mockActor.id = OWNER;
+    expect((await request(app).delete(`/api/servers/${sid}/channels/${keep}`)).status).toBe(400);  // last channel
+    expect((await put(sid, keep, { expiresAt: Date.now() + 2 * HOUR })).status).toBe(409);  // last permanent
+    expect(changes()).toEqual([]);
   });
 });

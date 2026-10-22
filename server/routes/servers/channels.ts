@@ -55,6 +55,7 @@ import { cache } from '../../lib/redisAdapter';
 import { envSafeInt } from '../../lib/envNumbers';
 import type { ChannelType } from '../../db/repositories/types/entities';
 import db from '../../db/loader';
+import { announceChannelListChanged } from '../../lib/channelListEvents';
 import { setChannelExpiry, type ExpiryConfigPool } from '../../lib/channelExpiryConfig';
 import { classifyChannelExpiryWithTombstone } from '../../lib/channelExpiry';
 
@@ -190,9 +191,11 @@ router.post('/', authMiddleware, limits.channels(), async (req, res) => {
     if (created.status === 'server_not_found') return void res.status(404).json({ error: 'Server not found' });
     if (created.status === 'limit') return void res.status(400).json({ error: `Channel limit reached (max ${cap} per server)` });
     await invalidateChannelList(sid);
+    announceChannelListChanged(req.app.get('io'), sid);
     // Channel metadata is intentionally NOT broadcast to the whole server
-    // room. Private-channel visibility is requester/channel scoped; clients
-    // reload the authorized list after their own successful mutation.
+    // room: private-channel visibility is requester/channel scoped. The
+    // announcement above carries only the server id; each client refetches
+    // its own authorized list.
     return void res.status(201).json(presentChannel(created.channel as unknown as ChannelRow));
   } catch {
     return void res.status(500).json({ error: 'Internal server error' });
@@ -254,6 +257,7 @@ router.patch('/:cid', authMiddleware, limits.channels(), async (req, res) => {
     await Channels.updateByIdAndServer(cid, sid, updates);
     const updated = await Channels.findByIdAndServer(cid, sid);
     await invalidateChannelList(sid);
+    announceChannelListChanged(req.app.get('io'), sid);
     return void res.json(presentChannel(updated as unknown as ChannelRow));
   } catch {
     return void res.status(500).json({ error: 'Internal server error' });
@@ -294,6 +298,7 @@ router.put('/:cid/expiry', authMiddleware, limits.channels(), async (req, res) =
       return void res.status(status).json({ error, code: result.reason.toUpperCase() });
     }
     await invalidateChannelList(sid);
+    announceChannelListChanged(req.app.get('io'), sid);
     return void res.json({ channelId: cid, expiresAt: result.expiresAt, expiryVersion: result.expiryVersion });
   } catch {
     return void res.status(500).json({ error: 'Internal server error' });
@@ -331,6 +336,7 @@ router.delete('/:cid', authMiddleware, limits.channels(), async (req, res) => {
     if (result === 'not_found') return void res.status(404).json({ error: 'Channel not found' });
     if (result === 'last_channel') return void res.status(400).json({ error: 'Cannot delete the last channel' });
     await invalidateChannelList(sid);
+    announceChannelListChanged(req.app.get('io'), sid);
     return void res.json({ deleted: true });
   } catch {
     return void res.status(500).json({ error: 'Internal server error' });

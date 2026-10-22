@@ -121,8 +121,59 @@ backgrounded; the same resume's `pageshow` coalesces; reconnect refetches; a
 5 s hidden tab does not, a 120 s one does; nothing before a server is open; 3/4
 fail without the listeners) and `access-revocation.test.ts`.
 
-Emulator/simulator evidence is still owed: the product journeys
-(`e2e/android/android-journeys.mjs`, `mobile-ios.yml`) cannot expire a channel
-inside a run because the public API enforces a 1 h minimum lifetime. Proving it
-on a device needs a harness-side database step (seed `expiresAt` in the past),
-not a server test hook; that journey is the next item.
+Emulator journey **D2L01** (`e2e/android/android-journeys.mjs`):
+
+1. A channel created through the API by another device appears in the
+   already-loaded list (see the next section).
+2. The user opens it and types a draft, and the app goes to the background.
+3. The journey sets the expiry through the real owner API, then moves the
+   stored `expiresAt` into the database clock's past. This is a harness-side
+   database step that needs `DATABASE_URL`, which CI provides. It is not a
+   server hook, and without `DATABASE_URL` the journey fails instead of
+   skipping.
+4. The server refuses the channel's history with 404.
+5. On resume, the channel is not listed and not active, and no local storage
+   key references it.
+6. The original channel is reopened, so L03 and later journeys start unchanged.
+
+The iOS simulator has no equivalent journey yet.
+
+## Channel list changes made elsewhere (`channels:changed`)
+
+**Measured defect:** the first D2L01 attempt failed at step 1. Channel
+create, update, delete and expiry changes, and category create, rename,
+reorder and delete, emitted nothing. The relay of client-sent `channel:*`
+events had been removed as spoofable, and no server-side replacement was
+added. So a list that was already open never learned that another member or
+device had changed it until the next resume or reconnect.
+
+**Fix:** every committed mutation in `routes/servers/channels.ts` and
+`routes/categories.ts` calls `announceChannelListChanged`
+(`server/lib/channelListEvents.ts`). It emits `channels:changed { serverId }`
+to `server:<sid>`.
+
+- The payload carries the server id only, so members never receive the name,
+  id or type of a channel they cannot see.
+- The client refetches `GET /servers/:sid/channels`, which applies that
+  member's permissions.
+- Refused or failed mutations announce nothing.
+
+**Client:** `ChannelListManager` folds a burst into one refetch (150 ms
+trailing window). It refetches only if the user is still on that server, and
+stops on unmount.
+
+**Evidence:**
+- Real PG: `channel-expiry-config.pgtest.ts`. Create, patch, expiry and delete
+  each emit exactly `{ serverId }`. A 403, the last-channel refusal and the
+  last-permanent refusal emit nothing. Removing the emit fails this case.
+- `categories.test.ts`: 4 mutations emit; a refusal and a 404 do not.
+- `channel-list-events.test.ts`: the helper's guard and throw paths.
+- `client/tests/channel-list-live-sync.test.ts` (real component):
+  - a created channel appears;
+  - a burst refetches once;
+  - other servers and malformed payloads are ignored;
+  - a server switch cancels the pending refresh;
+  - a deleted or withheld channel disappears;
+  - nothing happens after unmount.
+
+  Its 3 positive cases fail without the listener.

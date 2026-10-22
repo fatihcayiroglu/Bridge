@@ -121,3 +121,13 @@ describe('resumeReloadDue (P7 D2 lifecycle)', () => {
     expect(resumeReloadDue('s1', 1_000, 1_000 + RESUME_RELOAD_COALESCE_MS)).toBe(true);
   });
 });
+
+describe('channels:changed (P7 D2 live list sync)', () => {
+  it('reloads the list of the server on screen only, without a notice', () => {
+    expect(decideAccessReaction('channels:changed', { serverId: 's1' }, onServer('c1'))).toEqual({
+      reloadServers: false, reloadChannelsOf: 's1', notice: null,
+    });
+    expect(decideAccessReaction('channels:changed', { serverId: 's1' }, elsewhere).reloadChannelsOf).toBeNull();
+    expect(decideAccessReaction('channels:changed', {}, onServer('c1')).reloadChannelsOf).toBeNull();
+  });
+});

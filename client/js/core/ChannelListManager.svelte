@@ -27,7 +27,7 @@
   import { readToken } from './auth-compat.js';
   import { mountOrUpdateChannelList, unmountChannelList } from './channel-list/channel-list-svelte.js';
   import { apiFetch } from './api-fetch.js';
-  import { activeChannelSurvives, decideAccessReaction, openChannelExpired, resumeReloadDue, RESUME_HIDDEN_MIN_MS, type AccessEvent } from './channel-list/access-revocation.ts';
+  import { activeChannelSurvives, decideAccessReaction, openChannelExpired, resumeReloadDue, RESUME_HIDDEN_MIN_MS, CHANNELS_CHANGED_COALESCE_MS, type AccessEvent } from './channel-list/access-revocation.ts';
   import { reconcileLocalChannels } from './local-first/channel-reconcile.ts';
   import { navigationOwner, lastTextChannel, rememberTextChannel } from './navigation-selection.js';
   const log = createLogger('ChannelListManager');
@@ -455,7 +455,7 @@
   // gizlediğinde `channel:access-revoked`, her kanal yetkisi yazımında
   // `permissions:updated` yayar. Hiçbirini dinleyen istemci kodu YOKTU.
   type AccessSocket = { on?(e: string, h: (p: unknown) => void): unknown; off?(e: string, h: (p: unknown) => void): unknown };
-  const ACCESS_EVENTS: AccessEvent[] = ['membership:revoked', 'channel:access-revoked', 'permissions:updated', 'channel:expired'];
+  const ACCESS_EVENTS: AccessEvent[] = ['membership:revoked', 'channel:access-revoked', 'permissions:updated', 'channel:expired', 'channels:changed'];
   const accessHandlers = new Map<AccessEvent, (payload: unknown) => void>(
     ACCESS_EVENTS.map(event => [event, (payload: unknown) => onAccessEvent(event, payload)]),
   );
@@ -464,6 +464,10 @@
   function onAccessEvent(event: AccessEvent, payload: unknown): void {
     const reaction = decideAccessReaction(event, payload, { currentServerId: serverId, activeChannelId });
     if (reaction.reloadServers) BridgeRegistry.call('loadServers');
+    if (event === 'channels:changed' && reaction.reloadChannelsOf) {
+      scheduleListRefresh(reaction.reloadChannelsOf);
+      return;
+    }
     if (event === 'channel:expired' && reaction.reloadChannelsOf) {
       const openBefore = activeChannelId;
       const expiredServer = reaction.reloadChannelsOf;
@@ -481,6 +485,17 @@
     } else if (reaction.notice === 'channel-access-lost') {
       BridgeRegistry.call('toast', t('access_channel_lost', 'Bu kanala erişimin kaldırıldı.'), 'warning');
     }
+  }
+
+  // Another member or device changed this server's channels: one refetch per burst, and only
+  // if the user is still on that server when the window closes.
+  let listRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleListRefresh(target: string): void {
+    if (listRefreshTimer) clearTimeout(listRefreshTimer);
+    listRefreshTimer = setTimeout(() => {
+      listRefreshTimer = null;
+      if (!destroyed && serverId === target) void loadChannels(target, true);
+    }, CHANNELS_CHANGED_COALESCE_MS);
   }
 
   // P7 D2: refetch after a background/offline window (see resumeReloadDue).
@@ -620,6 +635,7 @@
 
   onDestroy(() => {
     destroyed = true;
+    if (listRefreshTimer) clearTimeout(listRefreshTimer);
     requestSeq += 1;
     document.removeEventListener('bridge:load-channels', onLoadChannels);
     document.removeEventListener('bridge:auth-success', onAuthSuccess);
