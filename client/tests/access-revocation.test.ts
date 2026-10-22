@@ -6,7 +6,7 @@
 // view does; ChannelListManager.svelte applies them.
 
 import { describe, expect, it } from 'vitest';
-import { activeChannelSurvives, decideAccessReaction, openChannelExpired } from '../js/core/channel-list/access-revocation.ts';
+import { activeChannelSurvives, decideAccessReaction, openChannelExpired, channelsChangedDelay, CHANNELS_CHANGED_COALESCE_MS, CHANNELS_CHANGED_JITTER_MS } from '../js/core/channel-list/access-revocation.ts';
 
 const onServer = (activeChannelId: string | null = 'c1') => ({ currentServerId: 's1', activeChannelId });
 const elsewhere = { currentServerId: 's2', activeChannelId: 'x1' };
@@ -129,5 +129,17 @@ describe('channels:changed (P7 D2 live list sync)', () => {
     });
     expect(decideAccessReaction('channels:changed', { serverId: 's1' }, elsewhere).reloadChannelsOf).toBeNull();
     expect(decideAccessReaction('channels:changed', {}, onServer('c1')).reloadChannelsOf).toBeNull();
+  });
+});
+
+describe('channelsChangedDelay', () => {
+  it('spreads refetches between the coalesce window and the jitter bound', () => {
+    expect(channelsChangedDelay(() => 0)).toBe(CHANNELS_CHANGED_COALESCE_MS);
+    expect(channelsChangedDelay(() => 0.999999)).toBe(CHANNELS_CHANGED_COALESCE_MS + CHANNELS_CHANGED_JITTER_MS - 1);
+    expect(channelsChangedDelay(() => Number.NaN)).toBe(CHANNELS_CHANGED_COALESCE_MS);
+    expect(channelsChangedDelay(() => 7)).toBe(CHANNELS_CHANGED_COALESCE_MS + CHANNELS_CHANGED_JITTER_MS);
+    const d = channelsChangedDelay();
+    expect(d).toBeGreaterThanOrEqual(CHANNELS_CHANGED_COALESCE_MS);
+    expect(d).toBeLessThanOrEqual(CHANNELS_CHANGED_COALESCE_MS + CHANNELS_CHANGED_JITTER_MS);
   });
 });

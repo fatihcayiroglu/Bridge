@@ -110,3 +110,17 @@ export function resumeReloadDue(serverId: string | null, lastReloadAt: number, n
 
 /** Trailing window that folds a burst of `channels:changed` events into one list refetch. */
 export const CHANNELS_CHANGED_COALESCE_MS = 150;
+/**
+ * Every member of a server receives the same event at the same moment, and the mutation just
+ * invalidated the server's 30 s list cache. A random extra delay of up to this much spreads the
+ * refetches, so the first one repopulates the cache and the rest mostly hit it instead of all
+ * members querying PostgreSQL in the same instant.
+ */
+export const CHANNELS_CHANGED_JITTER_MS = 1850;
+
+/** Delay before the coalesced refetch; `random` is injectable for tests. */
+export function channelsChangedDelay(random: () => number = Math.random): number {
+  const r = random();
+  const unit = Number.isFinite(r) ? Math.min(Math.max(r, 0), 1) : 0;
+  return CHANNELS_CHANGED_COALESCE_MS + Math.floor(unit * CHANNELS_CHANGED_JITTER_MS);
+}

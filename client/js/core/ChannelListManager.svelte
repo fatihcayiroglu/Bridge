@@ -27,7 +27,7 @@
   import { readToken } from './auth-compat.js';
   import { mountOrUpdateChannelList, unmountChannelList } from './channel-list/channel-list-svelte.js';
   import { apiFetch } from './api-fetch.js';
-  import { activeChannelSurvives, decideAccessReaction, openChannelExpired, resumeReloadDue, RESUME_HIDDEN_MIN_MS, CHANNELS_CHANGED_COALESCE_MS, type AccessEvent } from './channel-list/access-revocation.ts';
+  import { activeChannelSurvives, decideAccessReaction, openChannelExpired, resumeReloadDue, RESUME_HIDDEN_MIN_MS, channelsChangedDelay, type AccessEvent } from './channel-list/access-revocation.ts';
   import { reconcileLocalChannels } from './local-first/channel-reconcile.ts';
   import { navigationOwner, lastTextChannel, rememberTextChannel } from './navigation-selection.js';
   const log = createLogger('ChannelListManager');
@@ -487,15 +487,15 @@
     }
   }
 
-  // Another member or device changed this server's channels: one refetch per burst, and only
-  // if the user is still on that server when the window closes.
+  // Another member or device changed this server's channels: one refetch per burst, spread
+  // with jitter across members, and only if the user is still on that server when it fires.
   let listRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   function scheduleListRefresh(target: string): void {
     if (listRefreshTimer) clearTimeout(listRefreshTimer);
     listRefreshTimer = setTimeout(() => {
       listRefreshTimer = null;
       if (!destroyed && serverId === target) void loadChannels(target, true);
-    }, CHANNELS_CHANGED_COALESCE_MS);
+    }, channelsChangedDelay());
   }
 
   // P7 D2: refetch after a background/offline window (see resumeReloadDue).

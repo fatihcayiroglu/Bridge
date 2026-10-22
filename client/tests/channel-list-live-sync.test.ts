@@ -30,7 +30,9 @@ vi.mock('../js/core/logger.js', () => ({
 
 import ChannelListManager from '../js/core/ChannelListManager.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
-import { CHANNELS_CHANGED_COALESCE_MS } from '../js/core/channel-list/access-revocation.ts';
+import { CHANNELS_CHANGED_COALESCE_MS, CHANNELS_CHANGED_JITTER_MS } from '../js/core/channel-list/access-revocation.ts';
+
+const WINDOW = CHANNELS_CHANGED_COALESCE_MS + CHANNELS_CHANGED_JITTER_MS + 10;
 
 type Channel = { _id: string; name: string; type?: string };
 type Handler = (payload: unknown) => void;
@@ -102,7 +104,7 @@ describe('channels:changed — live channel list sync', () => {
 
     serverChannels.s1 = [...serverChannels.s1!, { _id: 'fresh', name: 'fresh', type: 'text' }];
     emit('channels:changed', { serverId: 's1' });
-    await vi.advanceTimersByTimeAsync(CHANNELS_CHANGED_COALESCE_MS + 10);
+    await vi.advanceTimersByTimeAsync(WINDOW);
     await settle();
 
     expect(channelRequests('s1')).toBe(2);
@@ -112,7 +114,7 @@ describe('channels:changed — live channel list sync', () => {
   it('folds a burst of changes into one refetch', async () => {
     await openServer('s1');
     for (let i = 0; i < 5; i++) emit('channels:changed', { serverId: 's1' });
-    await vi.advanceTimersByTimeAsync(CHANNELS_CHANGED_COALESCE_MS + 10);
+    await vi.advanceTimersByTimeAsync(WINDOW);
     await settle();
     expect(channelRequests('s1')).toBe(2);
   });
@@ -122,7 +124,7 @@ describe('channels:changed — live channel list sync', () => {
     emit('channels:changed', { serverId: 's2' });
     emit('channels:changed', { serverId: 7 });
     emit('channels:changed', null);
-    await vi.advanceTimersByTimeAsync(CHANNELS_CHANGED_COALESCE_MS + 10);
+    await vi.advanceTimersByTimeAsync(WINDOW);
     await settle();
     expect(channelRequests('s1')).toBe(1);
     expect(channelRequests('s2')).toBe(0);
@@ -132,7 +134,7 @@ describe('channels:changed — live channel list sync', () => {
     await openServer('s1');
     emit('channels:changed', { serverId: 's1' });
     document.dispatchEvent(new CustomEvent('bridge:load-channels', { detail: { serverId: 's2' } }));
-    await vi.advanceTimersByTimeAsync(CHANNELS_CHANGED_COALESCE_MS + 10);
+    await vi.advanceTimersByTimeAsync(WINDOW);
     await settle();
     expect(channelRequests('s1')).toBe(1);
     expect(listed.map(c => c._id)).toEqual(['other']);
@@ -142,7 +144,7 @@ describe('channels:changed — live channel list sync', () => {
     await openServer('s1');
     serverChannels.s1 = [];  // deleted, or hidden from this member by permissions
     emit('channels:changed', { serverId: 's1' });
-    await vi.advanceTimersByTimeAsync(CHANNELS_CHANGED_COALESCE_MS + 10);
+    await vi.advanceTimersByTimeAsync(WINDOW);
     await settle();
     expect(listed).toEqual([]);
   });
@@ -152,7 +154,7 @@ describe('channels:changed — live channel list sync', () => {
     unmount(instance!);
     instance = null;
     emit('channels:changed', { serverId: 's1' });
-    await vi.advanceTimersByTimeAsync(CHANNELS_CHANGED_COALESCE_MS + 10);
+    await vi.advanceTimersByTimeAsync(WINDOW);
     await settle();
     expect(channelRequests('s1')).toBe(1);
   });

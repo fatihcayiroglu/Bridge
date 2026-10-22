@@ -158,8 +158,10 @@ to `server:<sid>`.
   member's permissions.
 - Refused or failed mutations announce nothing.
 
-**Client:** `ChannelListManager` folds a burst into one refetch (150 ms
-trailing window). It refetches only if the user is still on that server, and
+**Client:** `ChannelListManager` folds a burst into one refetch. The delay is a
+150 ms trailing window plus up to 1.85 s of random jitter, so a large server's
+members do not all refetch at once; the first refetch repopulates the server's
+list cache and the rest mostly hit it. It refetches only if the user is still on that server, and
 stops on unmount.
 
 **Evidence:**
