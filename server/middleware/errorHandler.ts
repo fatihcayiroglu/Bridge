@@ -59,7 +59,7 @@ export function errorHandler(
 ): void {
   if (res.headersSent) return;
 
-  // P7 D2: the PostgreSQL write barrier (migration 085) refused a write to an
+  // P7 D2: the PostgreSQL write barrier (migration 086) refused a write to an
   // expired, tombstoned or tenant-mismatched channel. Same answer as a
   // missing channel; nothing about the reason is disclosed.
   if (isChannelWriteDenied(err)) {

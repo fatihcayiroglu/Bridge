@@ -29,7 +29,7 @@ RUN('gerçek PostgreSQL — okunmamış kanal etkinliği', () => {
     await q(`DELETE FROM users WHERE _id LIKE $1`, [`${P}-%`]);
   };
   // A message carries its channel's real server, as every production writer
-  // does; the D2 write barrier (migration 085) rejects a mismatched tenant.
+  // does; the D2 write barrier (migration 086) rejects a mismatched tenant.
   const channelServer = new Map<string, string>();
   const channel = (id: string, serverId: string, type = 'text') => {
     channelServer.set(id, serverId);

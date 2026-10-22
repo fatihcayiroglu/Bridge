@@ -1,4 +1,4 @@
--- 086: P7 D2 expiry worker support. The worker polls for channels whose
+-- 087: P7 D2 expiry worker support. The worker polls for channels whose
 -- expiresAt has passed; permanent channels (NULL) are excluded from the
 -- index, so the poll touches only expiring channels.
 CREATE INDEX IF NOT EXISTS idx_channels_expires_at

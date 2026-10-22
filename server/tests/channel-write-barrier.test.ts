@@ -1,5 +1,5 @@
 /**
- * P7 D2: application mapping of the PostgreSQL write barrier (migration 085).
+ * P7 D2: application mapping of the PostgreSQL write barrier (migration 086).
  * The barrier itself is proven in pg-integration/channel-write-barrier.pgtest.ts.
  */
 const log = { error: jest.fn(), info: jest.fn(), warn: jest.fn() };

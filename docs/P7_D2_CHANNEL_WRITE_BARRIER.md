@@ -1,4 +1,4 @@
-# P7 D2 — authoritative channel write barrier (migration 085)
+# P7 D2 — authoritative channel write barrier (migration 086)
 
 Every write of channel content is checked by PostgreSQL inside the writing
 statement, whatever application path issued it. No expiry API, worker or UI
@@ -72,7 +72,7 @@ UPDATE` row trigger on `messages`, `thread_messages` and `threads`.
   (whole crosspost transaction rolls back); worker-first and writer-first
   races; no contention with metadata updates.
 - `server/tests/channel-write-barrier.test.ts`: HTTP and socket mapping.
-- Migration rollback gate: 085 is lossless. The triggers name no columns; an
+- Migration rollback gate: 086 is lossless. The triggers name no columns; an
   `UPDATE OF` list made earlier migrations' rollbacks fail.
 
 ## Limits

@@ -75,8 +75,13 @@ DATABASE_URL=postgresql://... node -r ts-node/register db/migrate-postgres.ts do
 | 081 | portable_import_approval_ledger | One-use hashed approval primitives (unmounted) |
 | 082 | portable_import_approval_grant_binding | Grant-set digest required for new approvals; legacy NULL grants cannot be claimed |
 | 083 | portable_import_snapshot_replay_barrier | Per-destination signed snapshot replay ledger; UNIQUE key, same-transaction apply, FK CASCADE cleanup |
-| 085 | channel_write_barrier | P7 D2: BEFORE INSERT/UPDATE kanal yazma bariyeri (messages, thread_messages, threads); süresi dolmuş/tombstone/kiracı uyumsuz kanala yazımı SQLSTATE BX001 ile reddeder |
-| 086 | channel_expiry_worker_index | P7 D2 süre sonu işçisi için kısmi indeksler (süreli kanallar, bekleyen tombstone temizliği) |
+| 086 | channel_write_barrier | P7 D2: BEFORE INSERT/UPDATE kanal yazma bariyeri (messages, thread_messages, threads); süresi dolmuş/tombstone/kiracı uyumsuz kanala yazımı SQLSTATE BX001 ile reddeder |
+| 087 | channel_expiry_worker_index | P7 D2 süre sonu işçisi için kısmi indeksler (süreli kanallar, bekleyen tombstone temizliği) |
+
+> 085 is taken by B5 #345 (`085_message_report_evidence`); D2 was renumbered to
+> 086/087 so the two branches merge in either order. Every number must be unique
+> (`tests/versioned-migrations.test.ts`). The two chains touch disjoint objects,
+> so an upgraded database that applies 085 after 087 ends in the same schema.
 
 ## `_inline.ts` Dosyaları
 

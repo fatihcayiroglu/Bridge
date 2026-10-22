@@ -29,7 +29,7 @@ export function isolateSocketHandler<A extends unknown[]>(
       ...(tmpId ? { tmpId } : {}),
       ...(clientNonce ? { clientNonce } : {}),
     };
-    // P7 D2: the PostgreSQL write barrier (migration 085) refused a write to
+    // P7 D2: the PostgreSQL write barrier (migration 086) refused a write to
     // an expired, tombstoned or tenant-mismatched channel. That is final, not
     // an outage: answer with the terminal code clients already know so an
     // offline outbox drops the item instead of retrying it forever.

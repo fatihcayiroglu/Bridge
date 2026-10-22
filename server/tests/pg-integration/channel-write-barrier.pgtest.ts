@@ -1,5 +1,5 @@
 /**
- * P7 D2: real PostgreSQL proof of the channel write barrier (migration 085).
+ * P7 D2: real PostgreSQL proof of the channel write barrier (migration 086).
  *
  * Expiry is seeded through SQL because no public API creates ephemeral
  * channels yet. Races use separate pooled clients and explicit transactions;

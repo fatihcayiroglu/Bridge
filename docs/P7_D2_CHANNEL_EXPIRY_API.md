@@ -3,7 +3,7 @@
 `PUT /api/servers/:sid/channels/:cid/expiry`, body
 `{ "expiresAt": <epoch ms> | null, "expectedVersion"?: <int> }`.
 Logic in `server/lib/channelExpiryConfig.ts`; PostgreSQL only (503 otherwise).
-Depends on the write barrier (085, #356) and the expiry worker (086, #357).
+Depends on the write barrier (086, #356) and the expiry worker (087, #357).
 
 ## Transaction
 

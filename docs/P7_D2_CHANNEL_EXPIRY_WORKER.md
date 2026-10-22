@@ -2,10 +2,10 @@
 
 `server/lib/channelExpiryWorker.ts`, driven every 60 s by
 `server/jobs/channelExpiry.ts` on every node. Depends on the write barrier
-(migration 085, #356): without it a late writer could still insert into a
+(migration 086, #356): without it a late writer could still insert into a
 tombstoned channel. Expiry is set through the owner-only API
 (`docs/P7_D2_CHANNEL_EXPIRY_API.md`); when nothing is due, each tick is one
-indexed query (migration 086) that finds nothing.
+indexed query (migration 087) that finds nothing.
 
 ## Phases
 
@@ -53,8 +53,8 @@ tombstones are not reprocessed; the claim leaves 5 read positions, 4 reports
 and 3 server events intact (no cascade), a tombstoned channel is never
 claimed twice, the expiry API and ordinary deletion refuse it, it does not
 count as a surviving channel, and batch size 2 drains the FK tables before the
-row is deleted while the audit row survives. Rollback gate: 086 lossless; isolated 084
-reversal is a declared `EXPECTED_DEPENDENCY` on 086.
+row is deleted while the audit row survives. Rollback gate: 087 lossless; isolated 084
+reversal is a declared `EXPECTED_DEPENDENCY` on 087.
 
 ## Owner decisions / not built
 

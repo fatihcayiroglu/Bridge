@@ -1,4 +1,4 @@
--- 085: P7 D2 authoritative channel write barrier.
+-- 086: P7 D2 authoritative channel write barrier.
 --
 -- Every write of channel content (messages, thread replies, threads) passes
 -- through ONE BEFORE ROW trigger in the writing statement itself, whatever

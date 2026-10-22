@@ -206,10 +206,10 @@
   "084_channel_expiry_foundation": {
     "classification": "EXPECTED_DEPENDENCY",
     "kind": "cross-migration-dependency",
-    "expectedDifference": "idx_channels_expires_at and idx_channel_expiry_tombstones_pending (created by 086) are lost when 084 drops channels.\"expiresAt\" and channel_expiry_tombstones, and are not recreated by 084's re-up",
+    "expectedDifference": "idx_channels_expires_at and idx_channel_expiry_tombstones_pending (created by 087) are lost when 084 drops channels.\"expiresAt\" and channel_expiry_tombstones, and are not recreated by 084's re-up",
     "dependsOn": [
-      "086_channel_expiry_worker_index"
+      "087_channel_expiry_worker_index"
     ],
-    "rationale": "086 indexes columns and a table that 084 owns. Isolated reversal of 084 drops them, which drops 086's two partial indexes with them; re-applying 084 alone cannot recreate objects that belong to 086. Ordered rollback unwinds 086 first, and 086's own isolated cycle is lossless (proven by the gate). 084's down is otherwise unchanged and still refuses while expiry metadata or tombstones exist."
+    "rationale": "087 indexes columns and a table that 084 owns. Isolated reversal of 084 drops them, which drops 087's two partial indexes with them; re-applying 084 alone cannot recreate objects that belong to 087. Ordered rollback unwinds 087 first, and 087's own isolated cycle is lossless (proven by the gate). 084's down is otherwise unchanged and still refuses while expiry metadata or tombstones exist."
   }
 }
