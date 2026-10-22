@@ -48,9 +48,7 @@ const router       = express.Router();
 import { Channels, Members, Messages } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { canViewChannel } from '../lib/permissions';
-import db from '../db/loader';
-import { channelLiveForMessageRead } from '../lib/channelReadExpiryGuard';
-import { classifyChannelExpiryWithTombstone } from '../lib/channelExpiry';
+import { channelRecordIsLive, channelAvailabilityErrors } from '../lib/channelLiveReadSet';
 
 // ════════════════════════════════════════════════════════════════════════════
 // FAZ J-SONRASI GUVENLIK DUZELTMESI — SUNUCU UYELIGI KANAL GORUNURLUGU DEGILDIR
@@ -78,37 +76,14 @@ import { classifyChannelExpiryWithTombstone } from '../lib/channelExpiry';
 // mantigi YAZILMAZ.
 // ════════════════════════════════════════════════════════════════════════════
 // GET /api/channels/:cid/pins
-async function requireLiveChannelContent(
-  channel: { _id: string; serverId: string; expiresAt?: unknown; expiryVersion?: unknown },
-  res: express.Response,
-): Promise<boolean> {
-  let live: boolean;
-  if (db._pool) {
-    try {
-      live = await channelLiveForMessageRead(db._pool, channel._id, channel.serverId);
-    } catch {
-      res.status(503).json({ error: 'Channel availability could not be verified' });
-      return false;
-    }
-  } else if (process.env.NODE_ENV === 'test') {
-    live = classifyChannelExpiryWithTombstone(channel, null, Date.now()).accessible;
-  } else {
-    res.status(503).json({ error: 'Channel availability could not be verified' });
-    return false;
-  }
-  if (!live) res.status(404).json({ error: 'Channel not found' });
-  return live;
-}
-
 router.get('/:cid/pins', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const channel = await Channels.findById(String(req.params.cid ?? ''));
-  if (!channel) return res.status(404).json({ error: 'Channel not found' });
+  if (!channel || !await channelRecordIsLive(channel)) return res.status(404).json({ error: 'Channel not found' });
   const membership = await Members.findOne(_u.id, channel.serverId);
   if (!membership) return res.status(403).json({ error: 'Not a member' });
   if (!(await canViewChannel(_u.id, channel.serverId, String(req.params.cid ?? ''))))
     return res.status(403).json({ error: 'Bu kanalı görüntüleyemezsiniz.' });
-  if (!(await requireLiveChannelContent(channel, res))) return;
   const pins = await Messages.findPinsInChannel(String(req.params.cid ?? ''), 50);
   res.json(pins);
 });
@@ -117,12 +92,11 @@ router.get('/:cid/pins', authMiddleware, async (req, res) => {
 router.get('/:cid/files', authMiddleware, async (req, res) => {
   const _u = castAuthed(req).user;
   const channel = await Channels.findById(String(req.params.cid ?? ''));
-  if (!channel) return res.status(404).json({ error: 'Channel not found' });
+  if (!channel || !await channelRecordIsLive(channel)) return res.status(404).json({ error: 'Channel not found' });
   const membership = await Members.findOne(_u.id, channel.serverId);
   if (!membership) return res.status(403).json({ error: 'Not a member' });
   if (!(await canViewChannel(_u.id, channel.serverId, String(req.params.cid ?? ''))))
     return res.status(403).json({ error: 'Bu kanalı görüntüleyemezsiniz.' });
-  if (!(await requireLiveChannelContent(channel, res))) return;
   const limit  = parseBoundedPositiveIntQuery(req.query.limit, 50, 100);
   const before = parseNonNegativeSafeIntQuery(req.query.before, Date.now() + 1);
   if (limit === null || before === null) {
@@ -135,6 +109,9 @@ router.get('/:cid/files', authMiddleware, async (req, res) => {
   }).sort({ createdAt: -1 }).limit(limit);
   res.json(files.reverse());
 });
+
+// P7 D2: an unverifiable channel availability check answers 503, never content.
+router.use(channelAvailabilityErrors);
 
 export default router;
 
