@@ -62,3 +62,20 @@ longer copy an expired channel into another server as a permanent one.
 Evidence: `channel-repository-coverage.test.ts` (permanent/active kept,
 expired and corrupt hidden) and `channel-expiry-worker.pgtest.ts` (the claimed
 row is absent from `findByServer` while it drains).
+
+## Local-first copies (offline clients)
+
+`client/js/core/local-first/channel-reconcile.ts`: after every **authorized**
+channel-list load for a server (the `channel:expired` reload, the first load
+after reconnecting from an offline window, a permission change), the encrypted
+history snapshots and queued outbox sends of that server's channels that the
+list no longer contains are deleted. Before, they survived until the user
+re-opened the channel and got a 404, so offline search kept returning expired
+content and its queued sends kept waiting. A snapshot is attributed to the
+server only through its cached messages' `serverId`; other servers, DMs and
+empty snapshots are never touched. Evidence:
+`client/tests/local-first-channel-reconcile.test.ts` (pure decision and a run
+against the real encrypted history runtime: the expired channel's text is gone,
+live and foreign copies stay).
+Not covered yet: drafts (the user's own unsent text) and an offline client that
+never loads that server's list again.

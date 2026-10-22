@@ -28,6 +28,7 @@
   import { mountOrUpdateChannelList, unmountChannelList } from './channel-list/channel-list-svelte.js';
   import { apiFetch } from './api-fetch.js';
   import { activeChannelSurvives, decideAccessReaction, openChannelExpired, type AccessEvent } from './channel-list/access-revocation.ts';
+  import { reconcileLocalChannels } from './local-first/channel-reconcile.ts';
   import { navigationOwner, lastTextChannel, rememberTextChannel } from './navigation-selection.js';
   const log = createLogger('ChannelListManager');
 
@@ -245,6 +246,16 @@
       }
 
       channels = sanitizeChannels(data);
+      // P7 D2: the authorized list is the truth for this server. Encrypted
+      // history and queued sends of channels it no longer contains (expired,
+      // deleted, access lost while offline) are purged, not kept for offline
+      // search or a later retry.
+      const me = BridgeRegistry.call<{ _id?: string; id?: string } | null>('getMe');
+      const reconcileUser = me?._id ?? me?.id ?? null;
+      if (reconcileUser) {
+        void reconcileLocalChannels(reconcileUser, targetServerId, channels.map(c => c._id))
+          .catch((error: unknown) => log.warn('Yerel kanal kopyaları temizlenemedi', error));
+      }
       // Final21 Faz 16: açık kanal yetkili listede artık YOKSA (erişim kaldırıldı,
       // kanal silindi) görünüm onu bırakır. Aksi hâlde `activeChannelId` dolu
       // kaldığı için aşağıdaki otomatik seçim hiç çalışmaz ve kullanıcı okuyamadığı
