@@ -31,6 +31,7 @@ They do not remove sockets that subscribed before expiry, stop later room
 broadcasts, enforce writes atomically or clean up content. Existing subscribers
 require delivery/eviction enforcement as part of the complete lifecycle.
 
-Search, saved/inbox previews, other readers, transactional writers, workers,
-offline caches and federation remain open under #321. Public ephemeral-channel
+Search/Saved/Inbox preflights were merged separately in #355, but semantic/AI
+search, remaining content readers, live subscriber eviction, transactional
+writers, cleanup workers, offline caches and federation remain open under #321. Public ephemeral-channel
 creation remains disabled. These preflights do not establish D2 closure.
