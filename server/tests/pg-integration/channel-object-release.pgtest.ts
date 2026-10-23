@@ -208,6 +208,49 @@ RUN('P7 D2 expired-channel object release — real PostgreSQL + local storage', 
     expect((await outbox(cid2))[0]).toMatchObject({ state: 'released', attempts: 2 });
   });
 
+  it.each(['released', 'still_referenced', 'error'] as const)(
+    'a superseded worker cannot overwrite its successor after a late %s', async (outcome) => {
+      const sid = await server();
+      const cid = await channel(sid);
+      const url = `/uploads/${id('lease')}.png`;
+      await q(`INSERT INTO channel_object_release_outbox
+        ("channelId", url, "enqueuedAt", "nextAttemptAt") VALUES ($1,$2,1,1)`, [cid, url]);
+
+      let entered!: () => void;
+      let resume!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      const paused = new Promise<void>(resolve => { resume = resolve; });
+      const first = releaseChannelObjects(db._pool, {
+        async release() {
+          entered();
+          await paused;
+          if (outcome === 'error') throw new Error('obsolete store failure');
+          return outcome;
+        },
+      }, 1000);
+      try {
+        await started;
+        // Move the lease deadline in the disposable DB instead of sleeping five minutes.
+        await q('UPDATE channel_object_release_outbox SET "nextAttemptAt"=1 WHERE "channelId"=$1', [cid]);
+        const successor = await releaseChannelObjects(db._pool, {
+          async release() { throw new Error('current store failure'); },
+        }, 1000);
+        expect(successor.retried).toBe(1);
+        const before = (await outbox(cid))[0];
+        expect(before).toMatchObject({ state: 'pending', attempts: 2, lastError: 'current store failure' });
+
+        resume();
+        const superseded = await first;
+        // The old completion must change neither the new lease's state nor its backoff/error.
+        expect((await outbox(cid))[0]).toEqual(before);
+        expect(superseded).toMatchObject({ released: 0, retained: 0, retried: 0, failed: 0, superseded: 1 });
+      } finally {
+        resume();
+        await first;
+      }
+    },
+  );
+
   it('reopens an object retained only because a not-yet-drained row of the same channel still pointed at it', async () => {
     const sid = await server();
     const cid = await channel(sid);

@@ -384,7 +384,7 @@ export interface ObjectReleaser {
    */
   forBatch?(urls: readonly string[]): Promise<ObjectReleaser>;
 }
-export interface ObjectReleaseReport { released: number; retained: number; retried: number; failed: number }
+export interface ObjectReleaseReport { released: number; retained: number; retried: number; failed: number; superseded: number }
 
 export const OBJECT_RELEASE_MAX_ATTEMPTS = 8;
 const OBJECT_RELEASE_LEASE_MS = 5 * 60_000;
@@ -409,15 +409,16 @@ export const CLAIM_OBJECT_RELEASES_SQL = `
 /**
  * Post-commit object phase. Each due outbox row is leased (attempts + 1, next
  * attempt pushed out by the lease) in one short statement, so concurrent nodes
- * never release the same object and a crash mid-release simply lets the lease
- * expire. Outcomes are terminal (released/retained), retried with backoff, or
- * `failed` after OBJECT_RELEASE_MAX_ATTEMPTS for reconciliation.
+ * cannot claim the same current attempt. A crash lets the lease expire;
+ * storage operations must remain idempotent when an old request is still in
+ * flight. The attempt number fences every completion and retry, so a late
+ * worker cannot overwrite its successor's state or backoff.
  */
 export async function releaseChannelObjects(
   pool: ExpiryPool, releaser: ObjectReleaser, limit = 50,
 ): Promise<ObjectReleaseReport> {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new RangeError('Invalid object release limit');
-  const report: ObjectReleaseReport = { released: 0, retained: 0, retried: 0, failed: 0 };
+  const report: ObjectReleaseReport = { released: 0, retained: 0, retried: 0, failed: 0, superseded: 0 };
   const client = await pool.connect();
   try {
     const leased = await client.query(CLAIM_OBJECT_RELEASES_SQL, [limit]);
@@ -428,29 +429,39 @@ export async function releaseChannelObjects(
       const channelId = String(row.channelId);
       const url = String(row.url);
       const attempts = Number(row.attempts);
+      if (!Number.isSafeInteger(attempts) || attempts < 1) throw new TypeError('Invalid object release attempt');
+      // Earlier objects or the batch reference check can consume the lease.
+      // Revalidate and renew this attempt before starting another storage call.
+      const renewed = await client.query(
+        `UPDATE ${OUTBOX} SET "nextAttemptAt" = ${NOW_MS} + ${OBJECT_RELEASE_LEASE_MS}
+          WHERE "channelId" = $1 AND url = $2 AND state = 'pending'
+            AND attempts = $3 AND "nextAttemptAt" > ${NOW_MS}`, [channelId, url, attempts]);
+      if (renewed.rowCount !== 1) { report.superseded += 1; continue; }
+      const counted = (result: { rowCount?: number | null }, outcome: 'released' | 'retained' | 'retried' | 'failed') => {
+        if (result.rowCount === 1) report[outcome] += 1;
+        else report.superseded += 1;
+      };
       const finish = (state: 'released' | 'retained' | 'failed', note: string | null) => client.query(
         `UPDATE ${OUTBOX} SET state = $3, "finishedAt" = ${NOW_MS}, "lastError" = $4
-          WHERE "channelId" = $1 AND url = $2 AND state = 'pending'`, [channelId, url, state, note]);
+          WHERE "channelId" = $1 AND url = $2 AND state = 'pending'
+            AND attempts = $5 AND "nextAttemptAt" > ${NOW_MS}`, [channelId, url, state, note, attempts]);
       try {
         const outcome = await active.release(url);
         if (outcome === 'released' || outcome === 'absent') {
-          await finish('released', outcome === 'absent' ? 'already_absent' : null);
-          report.released += 1;
+          counted(await finish('released', outcome === 'absent' ? 'already_absent' : null), 'released');
         } else {
-          await finish('retained', outcome);
-          report.retained += 1;
+          counted(await finish('retained', outcome), 'retained');
         }
       } catch (err) {
         const note = String((err as Error)?.message ?? err).slice(0, 500);
         if (attempts >= OBJECT_RELEASE_MAX_ATTEMPTS) {
-          await finish('failed', note);
-          report.failed += 1;
+          counted(await finish('failed', note), 'failed');
         } else {
-          await client.query(
+          counted(await client.query(
             `UPDATE ${OUTBOX} SET "nextAttemptAt" = ${NOW_MS} + $3, "lastError" = $4
-              WHERE "channelId" = $1 AND url = $2 AND state = 'pending'`,
-            [channelId, url, objectReleaseBackoffMs(attempts), note]);
-          report.retried += 1;
+              WHERE "channelId" = $1 AND url = $2 AND state = 'pending'
+                AND attempts = $5 AND "nextAttemptAt" > ${NOW_MS}`,
+            [channelId, url, objectReleaseBackoffMs(attempts), note, attempts]), 'retried');
         }
       }
     }

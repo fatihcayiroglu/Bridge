@@ -63,7 +63,7 @@ export async function runChannelExpiryJobTick(): Promise<void> {
     await announceExpired(report.claimedChannels ?? []);
     const objects = report.objects;
     if (report.claimed.length || report.converged.length || report.deleted ||
-        (objects && objects.released + objects.retained + objects.retried + objects.failed > 0)) {
+        (objects && objects.released + objects.retained + objects.retried + objects.failed + objects.superseded > 0)) {
       logger.info({ event: 'channel.expiry.tick', claimed: report.claimed.length,
         converged: report.converged.length, deleted: report.deleted, objects }, 'Channel expiry tick');
     }

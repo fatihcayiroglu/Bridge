@@ -94,12 +94,12 @@ describe('batch-scoped releaser', () => {
     mockBatchRef.mockRejectedValue(new Error('statement timeout'));
     const leased = [{ channelId: 'c', url: '/uploads/a.png', attempts: 1 }];
     const client = {
-      query: jest.fn(async (sql: string) => ({ rows: /RETURNING o\."channelId"/.test(sql) ? leased : [] })),
+      query: jest.fn(async (sql: string) => ({ rows: /RETURNING o\."channelId"/.test(sql) ? leased : [], rowCount: 1 })),
       release: jest.fn(),
     };
     const report = await releaseChannelObjects({ connect: async () => client } as never,
       createChannelObjectReleaser(pool as never), 10);
-    expect(report).toEqual({ released: 1, retained: 0, retried: 0, failed: 0 });
+    expect(report).toEqual({ released: 1, retained: 0, retried: 0, failed: 0, superseded: 0 });
     expect(mockHasRef).toHaveBeenCalledWith(pool, 'uploads/a.png');
   });
 });
@@ -110,7 +110,7 @@ describe('releaseChannelObjects state machine', () => {
     const client = {
       query: jest.fn(async (sql: string, params?: unknown[]) => {
         calls.push({ sql, params });
-        return { rows: /RETURNING o\."channelId"/.test(sql) ? leased : [] };
+        return { rows: /RETURNING o\."channelId"/.test(sql) ? leased : [], rowCount: 1 };
       }),
       release: jest.fn(),
     };
@@ -126,10 +126,10 @@ describe('releaseChannelObjects state machine', () => {
     ]);
     const outcomes: Record<string, string> = { a: 'released', b: 'absent', c: 'still_referenced', d: 'unrecognized' };
     const releaser: ObjectReleaser = { release: async (url) => outcomes[url] as never };
-    await expect(releaseChannelObjects(p as never, releaser, 10)).resolves.toEqual({ released: 2, retained: 2, retried: 0, failed: 0 });
+    await expect(releaseChannelObjects(p as never, releaser, 10)).resolves.toEqual({ released: 2, retained: 2, retried: 0, failed: 0, superseded: 0 });
     expect(finishes(calls)).toEqual([
-      ['c', 'a', 'released', null], ['c', 'b', 'released', 'already_absent'],
-      ['c', 'c', 'retained', 'still_referenced'], ['c', 'd', 'retained', 'unrecognized'],
+      ['c', 'a', 'released', null, 1], ['c', 'b', 'released', 'already_absent', 1],
+      ['c', 'c', 'retained', 'still_referenced', 1], ['c', 'd', 'retained', 'unrecognized', 1],
     ]);
     expect(calls.some(c => /DELETE FROM channel_object_release_outbox/.test(c.sql))).toBe(true);
     expect(client.release).toHaveBeenCalled();
@@ -140,11 +140,11 @@ describe('releaseChannelObjects state machine', () => {
       { channelId: 'c', url: 'x', attempts: 2 }, { channelId: 'c', url: 'y', attempts: OBJECT_RELEASE_MAX_ATTEMPTS },
     ]);
     const releaser: ObjectReleaser = { release: async () => { throw new Error('boom'.repeat(200)); } };
-    await expect(releaseChannelObjects(p as never, releaser, 10)).resolves.toEqual({ released: 0, retained: 0, retried: 1, failed: 1 });
-    const retry = calls.find(c => /SET "nextAttemptAt"/.test(c.sql) && c.params?.[1] === 'x');
+    await expect(releaseChannelObjects(p as never, releaser, 10)).resolves.toEqual({ released: 0, retained: 0, retried: 1, failed: 1, superseded: 0 });
+    const retry = calls.find(c => /SET "nextAttemptAt"/.test(c.sql) && c.params?.[1] === 'x' && /lastError/.test(c.sql));
     expect(retry?.params?.[2]).toBe(objectReleaseBackoffMs(2));
     expect(String(retry?.params?.[3]).length).toBe(500);
-    expect(finishes(calls)).toEqual([['c', 'y', 'failed', 'boom'.repeat(200).slice(0, 500)]]);
+    expect(finishes(calls)).toEqual([['c', 'y', 'failed', 'boom'.repeat(200).slice(0, 500), OBJECT_RELEASE_MAX_ATTEMPTS]]);
   });
 
   it('rejects an invalid limit and caps the backoff', async () => {
@@ -152,5 +152,29 @@ describe('releaseChannelObjects state machine', () => {
     expect(objectReleaseBackoffMs(1)).toBe(30_000);
     expect(objectReleaseBackoffMs(3)).toBe(120_000);
     expect(objectReleaseBackoffMs(40)).toBe(6 * 60 * 60_000);
+  });
+
+  it('does not start storage work when a queued item no longer owns its lease', async () => {
+    const { pool: p, client } = fakePool([{ channelId: 'c', url: 'a', attempts: 1 }]);
+    client.query.mockImplementation(async (sql) => ({
+      rows: /RETURNING o\."channelId"/.test(sql) ? [{ channelId: 'c', url: 'a', attempts: 1 }] : [],
+      rowCount: /AND attempts = \$3/.test(sql) ? 0 : 1,
+    }));
+    const release = jest.fn();
+    await expect(releaseChannelObjects(p as never, { release }, 10)).resolves.toEqual({
+      released: 0, retained: 0, retried: 0, failed: 0, superseded: 1,
+    });
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it('does not report success when a newer lease rejects its completion', async () => {
+    const { pool: p, client } = fakePool([{ channelId: 'c', url: 'a', attempts: 1 }]);
+    client.query.mockImplementation(async (sql) => ({
+      rows: /RETURNING o\."channelId"/.test(sql) ? [{ channelId: 'c', url: 'a', attempts: 1 }] : [],
+      rowCount: /AND attempts = \$5/.test(sql) ? 0 : 1,
+    }));
+    await expect(releaseChannelObjects(p as never, { release: async () => 'released' }, 10)).resolves.toEqual({
+      released: 0, retained: 0, retried: 0, failed: 0, superseded: 1,
+    });
   });
 });
