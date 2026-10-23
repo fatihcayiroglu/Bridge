@@ -14,7 +14,7 @@ Every earlier head in the stack still carries a defect that #362 fixes:
 | #345 | its report → channel FK still cascades (migration 088 changes this) |
 
 Merging any of #356–#361 on its own would put that defect on `main`, and the
-migration IDs would not match the final chain (085–089).
+migration IDs would not match the final chain (085–090).
 
 `claude/ecstatic-einstein-d9am2j` (#362) contains `main`, #345, #356–#361 and
 the fixes. The integration branch also merges #353, #354 and #359 into it:
@@ -50,10 +50,28 @@ the fixes. The integration branch also merges #353, #354 and #359 into it:
    - #326, #331, #348, #349 and #351 are older dormant drafts superseded in
      scope. Close them as superseded.
 
-## Not part of this merge
+## Acceptance that remains after this merge
 
 - Owner-approved policy is implemented: report retention, 90-day scrub.
   Other open policy items are listed in `P7_FINAL_CLOSURE_LEDGER_20261016.md`.
-- An expiry configuration UI, and the disclosure that report snapshots
-  outlive the channel.
+- The expiry configuration UI and disclosure that report snapshots outlive the
+  channel are included in #362 (`c3002bc0`), with all ten locales. Preserve
+  those controls and their tests; they are no longer an unimplemented item.
 - iOS simulator equivalent of D2L01, and production-scale S3 throughput.
+
+## Review follow-up (2026-10-23)
+
+The independent `p7/d2-acceptance-20261023` branch contains a correction to the
+089 object-release lease protocol. Previously a worker whose lease had been
+reclaimed could overwrite the newer attempt's state, error and retry deadline.
+Real PostgreSQL interleavings reproduced late success, retained and failure
+completions; all three altered the successor before the correction. Every
+completion/retry now checks the attempt number and unexpired database deadline,
+and each object renews its own lease before storage work. Superseded work is
+reported separately and cannot count as a successful release.
+
+Review and integrate this correction before accepting the worker's recovery
+contract. It does not change migration numbering, object reference policy or
+the outstanding iOS/S3 acceptance. Security PR #363 independently patches the
+dependency advisories reported on `main`; #362's older green runs do not prove
+that its dependencies pass the current advisory database.
