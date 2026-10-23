@@ -17,6 +17,7 @@ import {
   erasedLocalAccounts, isLocalAccountErased, markLocalAccountErased, resetErasedLocalAccountsForTests,
 } from '../js/core/local-first/erased-accounts.ts';
 import { createBrowserLocalFirstStore, IndexedDbKeyProvider, IndexedDbRecordBackend } from '../js/core/local-first/indexeddb.ts';
+import { iosLocalFirstCipher } from '../js/core/local-first/ios-crypto.ts';
 import { EncryptedLocalStore, MemoryKeyProvider, MemoryRecordBackend, localRecordId } from '../js/core/local-first/store.ts';
 import { DRAFT_KEY_PREFIX } from '../js/core/draft-store.ts';
 
@@ -148,6 +149,23 @@ describe('an erased account never gets durable storage or a key again', () => {
     vi.mocked(IndexedDbKeyProvider.prototype.delete).mockRestore();
     markLocalAccountErased(ERASED);
     await expect(new IndexedDbKeyProvider().getOrCreate(ERASED)).rejects.toThrow('Local data for this account was erased');
+  });
+
+  it('the native Keychain provider refuses to create a key for an erased account', async () => {
+    markLocalAccountErased(ERASED);
+    await expect(iosLocalFirstCipher(ERASED)!.ensureKey()).rejects.toThrow('Local data for this account was erased');
+    expect(native.ensureKey).not.toHaveBeenCalled();
+  });
+
+  it('a Keychain key created while the account is being erased is deleted again', async () => {
+    native.ensureKey.mockImplementation(async ({ userId }: { userId: string }) => {
+      nativeKeys.add(userId);
+      markLocalAccountErased(userId);          // the erasure lands mid-creation
+      return { persistent: true };
+    });
+    await expect(iosLocalFirstCipher(ERASED)!.ensureKey()).rejects.toThrow('Local data for this account was erased');
+    expect(native.deleteKey).toHaveBeenCalledWith({ userId: ERASED });
+    expect(nativeKeys.has(ERASED)).toBe(false);
   });
 
   it('a different account is unaffected by the mark (positive control)', async () => {
