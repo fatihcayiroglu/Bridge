@@ -84,3 +84,14 @@ checks, Android, iOS, self-host and federation checks passed. Post-merge main
 checks are separate evidence; #362's older green runs do not prove its current
 dependencies pass the advisory database. Human review and the outstanding
 iOS/S3 acceptance remain required.
+
+The independent `p7/d2-publication-guard-20261023` follow-up is also required.
+Real PostgreSQL regressions demonstrated that a message committed before expiry
+could still be broadcast afterward from a detached in-memory row, including
+after a tombstone was recorded. A separate interleaving reproduced delivery of
+slash-command arguments after expiry during bot discovery. The follow-up uses
+the existing database-clock/tombstone read guard immediately before publication,
+preserves content-free ACKs for already committed writes, and denies detached
+HTTP bot replies and late link-preview broadcasts. See
+[publication review](P7_D2_PUBLICATION_REVIEW_20261023.md). These corrections do
+not establish native iOS lifecycle or full P7 acceptance; issue #321 stays open.

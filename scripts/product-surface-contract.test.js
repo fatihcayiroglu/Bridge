@@ -873,7 +873,8 @@ test('all production message mutations invalidate every cached first-page varian
   assert.match(cacheOwner, /channelMessagesCachePrefix/);
   assert.match(cacheOwner, /cache\.invalidatePattern\(channelMessagesCachePrefix\(channelId\)\)/);
 
-  assert.match(send, /await invalidateChannelMessages\(String\(channelId\)\)/);
+  assert.match(send, /published = await publishPersistedMessage\(io, publicMsg\)/,
+    'Normal sends must use the shared cache-invalidating, expiry-guarded publisher');
 
   // Phase 15 moved every persisted-message fan-out onto one publisher. The
   // guarantee is unchanged — a bridge-forwarded message must not leave a stale
@@ -884,7 +885,7 @@ test('all production message mutations invalidate every cached first-page varian
     'bridge-forwarded messages must go through the canonical persisted-message publisher');
   assert.match(
     activity,
-    /export async function publishPersistedMessage[\s\S]*?await invalidateChannelMessages\(channelId\);\s*\n\s*broadcastPersistedMessage\(io, message\);/,
+    /export async function publishPersistedMessage[\s\S]*?await invalidateChannelMessages\(channelId\);\s*\n\s*return broadcastPersistedMessage\(io, message\);/,
     'the canonical publisher must invalidate the channel cache BEFORE broadcasting, '
     + 'or a client that refetches on the broadcast can be served the stale page');
 

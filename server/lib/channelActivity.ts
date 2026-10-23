@@ -21,6 +21,7 @@
 import { Channels, Members } from '../db/repositories';
 import { MAX_WATCHED_CHANNELS, MESSAGE_CHANNEL_TYPES } from '../db/queries/activityUnread';
 import { invalidateChannelMessages } from './messageCache';
+import { liveChannelSet } from './channelLiveReadSet';
 import { canViewChannel } from './permissions';
 import { newRequestId, runWithRequestContext } from './requestContext';
 
@@ -60,13 +61,21 @@ type MessageBroadcaster = ActivityEmitter;
 /**
  * A persisted message reaches the people in its channel (`message:new`) and the
  * people watching the server (`channel:activity`). For callers that have already
- * invalidated the channel history cache.
+ * invalidated the channel history cache. A committed row is not authority to
+ * publish later: the database clock and tombstone are checked again immediately
+ * before delivery. False means the channel is no longer available; a database
+ * failure throws without emitting. With no io, true still proves availability
+ * for an HTTP caller returning the persisted row.
  */
-export function broadcastPersistedMessage(io: MessageBroadcaster | null | undefined, message: ChannelActivityMessage | null | undefined): void {
+export async function broadcastPersistedMessage(io: MessageBroadcaster | null | undefined, message: ChannelActivityMessage | null | undefined): Promise<boolean> {
   const channelId = typeof message?.channelId === 'string' ? message.channelId : '';
-  if (!io || !channelId) return;
+  const serverId = typeof message?.serverId === 'string' ? message.serverId : '';
+  if (!channelId || !serverId) return false;
+  if (!(await liveChannelSet([{ channelId, serverId }])).has(channelId)) return false;
+  if (!io) return true;
   io.to(`channel:${channelId}`).emit('message:new', message);
   announceChannelActivity(io, message);
+  return true;
 }
 
 /**
@@ -75,11 +84,11 @@ export function broadcastPersistedMessage(io: MessageBroadcaster | null | undefi
  * five creators that skipped this), then it is broadcast. Without `io` (jobs
  * before the socket server exists) the cache is still invalidated.
  */
-export async function publishPersistedMessage(io: MessageBroadcaster | null | undefined, message: ChannelActivityMessage | null | undefined): Promise<void> {
+export async function publishPersistedMessage(io: MessageBroadcaster | null | undefined, message: ChannelActivityMessage | null | undefined): Promise<boolean> {
   const channelId = typeof message?.channelId === 'string' ? message.channelId : '';
-  if (!channelId) return;
+  if (!channelId) return false;
   await invalidateChannelMessages(channelId);
-  broadcastPersistedMessage(io, message);
+  return broadcastPersistedMessage(io, message);
 }
 
 interface WatchingSocket {
