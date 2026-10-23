@@ -14,6 +14,12 @@ Do not accept #362's object-release contract without integrating these fixes.
    the object. The batch used its old negative answer and deleted those bytes.
    The full object-release PG file reported 10 pass / 1 fail in this negative
    control, with no skipped cases.
+3. `keyFromUrl` extracts a path without verifying its origin. A foreign URL
+   containing `/uploads/server-assets/...` could select and delete a local
+   file at that path. Three adversarial tests failed before the fix, including
+   actual deletion of a temporary file. `locateAsset` now accepts exact relative
+   references or the configured adapter's canonical service URL. Unverified
+   legacy aliases are retained for operator reconciliation.
 
 ## Implementation
 
@@ -60,7 +66,8 @@ rollback classification or assertion was relaxed.
 
 ## Validation and limits
 
-- Object-release and reservation units: **27 passed / 0 failed / 0 skipped**.
+- Object-release, reservation and asset-ownership units:
+  **36 passed / 0 failed / 0 skipped**.
 - Complete real PostgreSQL 18.6 + Redis + S3-compatible suite:
   **342 passed / 0 failed / 0 skipped**. The existing moderation visibility,
   retention, erasure, tenant and protected-storage regressions all execute.

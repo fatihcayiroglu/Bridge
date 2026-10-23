@@ -14,6 +14,7 @@ process.env.BRIDGE_UPLOAD_ROOT = ROOT;
 delete process.env.CDN_PROVIDER;
 
 import { locateAsset, memberProfileAssetUrls, releaseUnreferencedUploads } from '../lib/uploadRelease';
+import * as storage from '../lib/storageAdapter';
 import type { UploadReferenceQueryable } from '../lib/uploadReferenceSafety';
 
 afterAll(() => {
@@ -51,11 +52,35 @@ describe('locateAsset — only recognised persistent asset paths are ever releas
     for (const bad of [
       '/uploads/stickers/s.png', '/uploads/attachment.png', '/uploads/avatars/../../etc', '/uploads/avatars/a..b.png',
       'https://cdn.example/x.png', '/uploads/other/x.png', '', null, 42, undefined,
+      'https://foreign.example/uploads/server-assets/icon.png',
+      'https://foreign.example/uploads/server-gifs/g.gif',
     ]) expect({ bad, loc: locateAsset(bad) }).toEqual({ bad, loc: null });
+  });
+
+  it('accepts the configured provider URL and rejects the same path at another origin', () => {
+    const adapter = storage.getStorageAdapter();
+    const spy = jest.spyOn(storage, 'getStorageAdapter').mockReturnValue({
+      ...adapter,
+      keyFromUrl: url => new URL(url).pathname.slice(1),
+      publicUrlForKey: key => `https://assets.example/${key}`,
+    });
+    try {
+      expect(locateAsset('https://assets.example/uploads/server-assets/icon.png')?.kind).toBe('adapter');
+      expect(locateAsset('https://foreign.example/uploads/server-assets/icon.png')).toBeNull();
+      expect(locateAsset('https://assets.example.evil/uploads/server-assets/icon.png')).toBeNull();
+    } finally { spy.mockRestore(); }
   });
 });
 
 describe('releaseUnreferencedUploads', () => {
+  it('never maps a foreign URL onto an unreferenced local file of the same asset path', async () => {
+    const kept = put('server-assets', 'foreign.png');
+    const q = queryable();
+    expect(await releaseUnreferencedUploads(q, ['https://foreign.example/uploads/server-assets/foreign.png'], jest.fn()))
+      .toEqual({ removed: 0, alreadyAbsent: 0, stillReferenced: 0, failed: 0 });
+    expect(fs.existsSync(kept)).toBe(true);
+    expect(q.calls).not.toHaveBeenCalled();
+  });
   it('removes unreferenced files, keeps referenced ones, counts absent files, skips unknown paths, de-duplicates', async () => {
     const gone = put('avatars', 'gone.png');
     const kept = put('emojis', 'kept.png');
