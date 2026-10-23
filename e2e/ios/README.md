@@ -145,3 +145,31 @@ is in the native Keychain path, not missing plugin registration. The next run
 preserves only read-only key-availability booleans and a numeric Security.framework
 status after failure. It never initializes a key or seeds records from the test.
 No signing/protection setting or persistence assertion is relaxed.
+
+### Simulator signing (Keychain error -34018)
+
+The `a6ce1de7` run recorded that numeric status: every native key operation
+returned `-34018` (`errSecMissingEntitlement`). The workflow built the app with
+`CODE_SIGNING_ALLOWED=NO`. An unsigned app carries no entitlements, so iOS
+cannot assign it a Keychain access group and refuses every Keychain call. The
+macOS vault tests pass because a command-line binary on macOS uses the login
+keychain without that requirement.
+
+The simulator build is now signed ad hoc (`CODE_SIGN_IDENTITY=-`, the
+"Sign to Run Locally" mode; no team, certificate or profile). It uses
+`mobile/ios-simulator-debug.entitlements`, which grants exactly the app's own
+group (`$(AppIdentifierPrefix)com.bridge.app`). The vault's queries name no
+access group, so they use that one. Nothing in the vault, its accessibility
+class (`WhenUnlockedThisDeviceOnly`, non-synchronizable), the plugin or any
+journey assertion changes. Release and device builds are signed with the
+team's provisioning profile and do not use this file.
+
+`verify-simulator-signature.sh` gates the journey on what the built binary
+actually carries rather than on build settings:
+- `codesign --verify --deep --strict` must pass, with `Signature=adhoc`;
+- the entitlements are read from the signature and from the `__TEXT,__entitlements`
+  section that the simulator honours;
+- at least one source must grant the app's own Keychain group;
+- any other or wildcard group fails the job.
+
+The summary is kept as `signature-summary.json` with the other evidence.

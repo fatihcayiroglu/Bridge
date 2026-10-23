@@ -126,13 +126,29 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains dict' ios/App/App/Info.plist
           /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains:localhost dict' ios/App/App/Info.plist
           /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains:localhost:NSExceptionAllowsInsecureHTTPLoads bool true' ios/App/App/Info.plist
-      - name: xcodebuild (Debug, iphonesimulator)
+      - name: xcodebuild (Debug, iphonesimulator, ad hoc signed)
         id: ios_build
+        # Keychain access needs entitlements, and an unsigned app has none: with
+        # CODE_SIGNING_ALLOWED=NO every native key operation failed with
+        # errSecMissingEntitlement (-34018). Sign ad hoc ("Sign to Run Locally";
+        # no team, certificate or profile) with the app's own Keychain group.
         run: |
+          set -o pipefail
           xcodebuild -version
+          cp mobile/ios-simulator-debug.entitlements ios/App/App/BridgeSimulatorDebug.entitlements
           xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 40
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
+            CODE_SIGN_ENTITLEMENTS=App/BridgeSimulatorDebug.entitlements \
+            build | tail -n 60
+      - name: Verify the app's actual signature and Keychain entitlements
+        run: |
+          APP=$(find build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' -print -quit)
+          bash e2e/ios/verify-simulator-signature.sh "$APP" com.bridge.app
+          # The xcent files Xcode derived, for review alongside the binary's own view.
+          find build/Build/Intermediates.noindex -name '*.xcent' -print -exec cat {} \; 2>/dev/null | head -n 80 || true
       - name: Native iOS expiry lifecycle (real WKWebView, XCUITest and PostgreSQL)
         timeout-minutes: 25
         run: bash e2e/ios/run-expiry-journey.sh
@@ -143,6 +159,8 @@ jobs:
           name: ios-expiry-evidence
           path: |
             e2e/ios/results/expiry-journey.json
+            e2e/ios/results/signature-summary.json
+            e2e/ios/results/codesign-details.txt
             e2e/ios/results/appium.log
             e2e/ios/results/appium-discovery.log
           retention-days: 30
