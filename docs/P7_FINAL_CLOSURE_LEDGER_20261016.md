@@ -4,6 +4,32 @@
 
 **Source of truth:** [P7_TRUST_SOCIAL_FOUNDATION.md](P7_TRUST_SOCIAL_FOUNDATION.md). Historical PR statuses embedded in that document (e.g. #129, #183) are not current GitHub state; audit the **merged** implementation at the relevant commit, rather than relying on its old snapshot.
 
+**2026-10-23 refresh:** security PR [#363](https://github.com/fatihcayiroglu/Bridge/pull/363)
+merged as `c061d72fee43a23a068a86c6d8f9726c44ad6f41`. Root/server audits now report
+zero findings after compatible DOMPurify, Vitest, ip-address and sanitize-html
+patches. Required checks and Android/iOS/self-host/federation passed on its
+reviewed head `0c26bb07`; post-merge [Quality Gate 39925415039](https://github.com/fatihcayiroglu/Bridge/actions/runs/39925415039)
+and [Android 39925415056](https://github.com/fatihcayiroglu/Bridge/actions/runs/39925415056)
+were still running when this note was written. Do not substitute branch evidence
+for those results.
+
+D2 integration #362 remains unmerged. Its expiry UI, ten locales and Android
+D2L01 journey are implemented and have CI evidence; the later descriptions below
+that call them unimplemented are historical. Draft [#364](https://github.com/fatihcayiroglu/Bridge/pull/364)
+adds two independently reproduced object-release race fixes and migration 091
+after the unchanged 085–090 chain. Local evidence: 27 unit tests and 342 actual
+PostgreSQL/Redis/S3 tests, all passed with zero skips; ordered 91-migration
+rollback/roll-forward reports zero missing/extra objects and zero actual
+failures. Final-commit CI and human review are still integration gates. See
+[recovery evidence](P7_D2_OBJECT_RELEASE_RECOVERY.md).
+
+The owner has approved the report-retention policy: preserve bounded evidence
+while open; default 90 days after resolution/dismissal; scrub afterward; preserve
+erasure and private-channel visibility rules. Older statements that this policy
+is awaiting approval are superseded. Native iOS expiry lifecycle acceptance,
+representative production storage throughput, B4's reviewed E2EE protocol and
+the remaining pillar criteria are still open. **P7 and #321 remain OPEN.**
+
 **2026-10-21 refresh — latest verified main SHA:** `17d0a6a84c846e74ad0feec08cdc6d336eb554a4` (#341 sanitize-html bump after #335 AutoMod ingress fixes). The scheduled [Quality Gate 39556836358](https://github.com/fatihcayiroglu/Bridge/actions/runs/39556836358) on that SHA is **FAIL** at "Security audit": a new high advisory in `vite` 8.0.0–8.1.5 (`launch-editor` GHSA-698v-4r3x-3vcv, GHSA-r825-w8mm-5pxw, GHSA-587h-7wmj-h5pm) fails `npm audit --audit-level=high` and every later job is skipped. This is a dependency failure, not a product test failure; the fix (vite 8.1.6) is on branch `claude/eloquent-bardeen-929yqs` and is PASS only after its exact-head CI and merge. The [#335 push CI](https://github.com/fatihcayiroglu/Bridge/actions/runs/39436700760) on `08175373` was green (Quality Gate, [Android 39436700723](https://github.com/fatihcayiroglu/Bridge/actions/runs/39436700723), [Self-host 39436700918](https://github.com/fatihcayiroglu/Bridge/actions/runs/39436700918), [Federation 39436700814](https://github.com/fatihcayiroglu/Bridge/actions/runs/39436700814), [Desktop 39436700730](https://github.com/fatihcayiroglu/Bridge/actions/runs/39436700730)).
 
 **Previous refresh:** `08cd10182c08ed94bddd3298b675eb4e6036da30` (#313 merged after #312). Earlier #306/#307 AutoMod evidence remains applicable. Since this document's original snapshot, #309/#310 corrected false messaging E2EE claims, #311 fixed Windows Electron test cleanup, #312 minimized client-error metadata and bounded per-entry retention, and #313 corrected false voice-E2EE capability/old deployment docs. **No actual client message or media E2EE protocol is claimed.** Post-merge exact-head CI remains a separate evidence gate.

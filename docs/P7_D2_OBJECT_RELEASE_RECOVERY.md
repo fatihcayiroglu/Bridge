@@ -60,7 +60,7 @@ rollback classification or assertion was relaxed.
 
 ## Validation and limits
 
-- Object-release units: **18 passed / 0 failed / 0 skipped**.
+- Object-release and reservation units: **27 passed / 0 failed / 0 skipped**.
 - Complete real PostgreSQL 18.6 + Redis + S3-compatible suite:
   **342 passed / 0 failed / 0 skipped**. The existing moderation visibility,
   retention, erasure, tenant and protected-storage regressions all execute.
