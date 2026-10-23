@@ -54,9 +54,9 @@ const { registerStageHandlers, isStageParticipant, isStageSpeaker, canManageStag
 const { authorizeChannelMediaRoom } = require('../../socket/handlers/mediasoup/authority') as typeof import('../../socket/handlers/mediasoup/authority');
 const { cache, isRedisAvailable, applyAdapter, disconnect } = require('../../lib/redisAdapter') as typeof import('../../lib/redisAdapter');
 const { channelLiveForMedia } = require('../../lib/channelContentAvailability') as typeof import('../../lib/channelContentAvailability');
-const { registerLocalVoiceEvictor } = require('../../lib/liveMembership') as typeof import('../../lib/liveMembership');
+const { registerLocalVoiceEvictor, bindVoiceEvictionClusterControl } = require('../../lib/liveMembership') as typeof import('../../lib/liveMembership');
 const { evictLocalVoiceSessions } = require('../../socket/voiceEviction') as typeof import('../../socket/voiceEviction');
-const { __armedMediaExpiryForTest, __resetMediaExpiryEvictionForTest } =
+const { armMediaExpiryEviction, __armedMediaExpiryForTest, __resetMediaExpiryEvictionForTest } =
   require('../../socket/mediaExpiryEviction') as typeof import('../../socket/mediaExpiryEviction');
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -77,6 +77,12 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
   const q = async (sql: string, params: unknown[] = []) => (await db._pool.query(sql, params)).rows as Array<Record<string, unknown>>;
   const http = createServer();
   const io = new SocketServer(http);
+  // Node B (real Redis mode only): a second Socket.IO server on the same Redis,
+  // with its own adapter clients, as a second Bridge node would have.
+  const httpB = createServer();
+  const ioB = new SocketServer(httpB);
+  let urlB = '';
+  const nodeBClients: Array<{ quit(): Promise<unknown> }> = [];
   const sockets = new Map<string, { real: ServerSocket; observed: Observed }>();
   const clients: ClientSocket[] = [];
   let url = '';
@@ -122,7 +128,7 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
       [OWNER, PEER, SERVER, '[]']);
     // PEER gets CONNECT/SPEAK through @everyone defaults; grant explicitly so
     // the controls do not depend on the default role mask.
-    io.on('connection', (socket) => {
+    const wire = (node: SocketServer) => node.on('connection', (socket) => {
       const observed: Observed = {
         id: socket.id,
         rooms: socket.rooms,
@@ -154,14 +160,30 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
       const user = { _id: userId, username: userId, displayName: userId, avatarColor: '#123456' };
       // The rooms every authenticated socket of a server member holds.
       void socket.join([`user:${userId}`, `server:${SERVER}`]);
-      registerVoiceHandlers(observed as never, io as never, user);
-      registerStageHandlers(observed, io as unknown as ClusterServer, user as never);
+      registerVoiceHandlers(observed as never, node as never, user);
+      registerStageHandlers(observed, node as unknown as ClusterServer, user as never);
       socket.emit('test:ready');
     });
+    wire(io);
     registerLocalVoiceEvictor(evictLocalVoiceSessions);
     if (REDIS_TEST_URL) {
       expect(await applyAdapter(io)).toBe(true);
       expect(isRedisAvailable()).toBe(true);
+      /* eslint-disable @typescript-eslint/no-require-imports */
+      const { createClient } = require('redis') as { createClient(o: { url: string }): { connect(): Promise<unknown>; duplicate(): never; quit(): Promise<unknown> } };
+      const { createAdapter } = require('@socket.io/redis-adapter') as { createAdapter(pub: unknown, sub: unknown): never };
+      /* eslint-enable @typescript-eslint/no-require-imports */
+      const pub = createClient({ url: REDIS_TEST_URL });
+      const sub = (pub as unknown as { duplicate(): typeof pub }).duplicate();
+      await Promise.all([pub.connect(), sub.connect()]);
+      nodeBClients.push(pub, sub);
+      ioB.adapter(createAdapter(pub, sub));
+      // Production socket setup binds the cluster eviction listener on every node.
+      bindVoiceEvictionClusterControl(io);
+      bindVoiceEvictionClusterControl(ioB);
+      wire(ioB);
+      await new Promise<void>(resolve => httpB.listen(0, '127.0.0.1', resolve));
+      urlB = 'http://127.0.0.1:' + (httpB.address() as AddressInfo).port;
     }
     await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
     url = 'http://127.0.0.1:' + (http.address() as AddressInfo).port;
@@ -170,6 +192,8 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
   afterAll(async () => {
     registerLocalVoiceEvictor(null);
     await io.close();
+    await ioB.close();
+    for (const client of nodeBClients) await client.quit();
     await cleanup();
     if (REDIS_TEST_URL) {
       for (const pattern of [`voice:room:${P}*`, `stage:room:${P}*`]) {
@@ -180,8 +204,8 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
     }
   });
 
-  async function connect(userId = OWNER) {
-    const client = connectClient(url, { transports: ['websocket'], reconnection: false, auth: { userId } });
+  async function connect(userId = OWNER, target = url) {
+    const client = connectClient(target, { transports: ['websocket'], reconnection: false, auth: { userId } });
     clients.push(client);
     await new Promise<void>((resolve, reject) => {
       client.once('test:ready', resolve);
@@ -573,6 +597,30 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
       expect(received).toHaveLength(1);
       expect((await __getVoiceRoomForTest(ch)).map(p => p.userId)).not.toContain(OWNER);
       expect(a.server.rooms.has(`voice:${ch}`)).toBe(false);
+    });
+
+    // Two Bridge nodes need a shared Redis; in-memory mode has no cluster. CI's
+    // PG job always sets REDIS_TEST_URL and rejects skipped tests there.
+    (REDIS_TEST_URL ? it : it.skip)('multi-node: the expiry timer on node A evicts a member whose socket is on node B', async () => {
+      const { id: ch, expiresAtLocal } = await expiringSoon(1_500);
+      const a = await connect(OWNER);
+      const b = await connect(PEER, urlB);
+      expect(await voiceJoin(a.client, ch)).toEqual(['voice:joined']);
+      expect(await voiceJoin(b.client, ch)).toEqual(['voice:joined']);
+      expect((await __getVoiceRoomForTest(ch)).map(p => p.userId).sort()).toEqual([OWNER, PEER].sort());
+      // Only node A holds the timer: node B's member is reached through the
+      // Redis adapter (remote fetchSockets) and the cluster eviction event.
+      __resetMediaExpiryEvictionForTest();
+      await armMediaExpiryEviction(io, ch, SERVER);
+      const evictedB = record(b.client, ['voice:evicted']);
+
+      await until(expiresAtLocal - 250);
+      expect(evictedB).toEqual([]);
+      await until(expiresAtLocal + 1_000);
+      expect(evictedB.map(e => e.payload)).toEqual([{ channelId: ch }]);
+      expect(b.server.rooms.has(`voice:${ch}`)).toBe(false);
+      expect(b.server.currentVoiceChannel ?? null).toBeNull();
+      expect(await __getVoiceRoomForTest(ch)).toEqual([]);
     });
 
     it('Stage and permanent channels: a live stage arms one timer, a permanent channel none', async () => {
