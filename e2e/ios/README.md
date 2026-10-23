@@ -78,3 +78,14 @@ no URL, page title, account content or credentials are recorded. It also asserts
 the compiled app's existing `CAPACITOR_DEBUG=true` before automation starts.
 The required context and product assertions are unchanged; this diagnostic
 change is not an accepted expiry journey or a retry of an unchanged test.
+
+Run 39993002937 (`ee9825e5`) established the discovery cause: Bridge was active
+in the foreground, with three native WebView nodes and two login text fields,
+while Web Inspector advertised its process as `process-App`, not its signed
+bundle identifier. The pinned upstream debugger matches exact bundle aliases;
+its default filter never selected that process. The harness now supplies this
+one observed alias through `additionalWebviewBundleIds`. No wildcard is used.
+The selected WebView must also match the foreground `com.bridge.app` process
+PID, the packaged origin, the Bridge DOM and Capacitor's native iOS identity.
+These stricter checks and the unchanged complete lifecycle assertions must pass
+in a new run; discovery diagnosis alone is not D2 acceptance.

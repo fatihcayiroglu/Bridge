@@ -36,6 +36,10 @@ const native = (name, args = {}) => command('POST', '/execute/sync', { script: `
 const nativeContext = () => command('POST', '/context', { name: 'NATIVE_APP' });
 
 async function webContext() {
+  await nativeContext();
+  const active = await native('activeAppInfo');
+  assert.equal(active.bundleId, BUNDLE, 'The native Bridge app must own the foreground context');
+  assert(Number.isInteger(active.pid) && active.pid > 0, 'Native process identity is required');
   await until(async () => {
     const contexts = await command('GET', '/contexts');
     const views = contexts.filter(value => typeof value === 'string' && value.startsWith('WEBVIEW'));
@@ -43,10 +47,15 @@ async function webContext() {
       contextCount: contexts.length, webviewCount: views.length,
       maxWebviewCount: Math.max(facts.webviewProbe?.maxWebviewCount || 0, views.length),
       switched: false, packagedOrigin: false, capacitorScheme: false,
-      localhost: false, bridgeDom: false, nativeIOS: false,
+      localhost: false, bridgeDom: false, nativeIOS: false, nativeProcessMatches: false,
     };
     facts.webviewProbe = probe;
     for (const context of views) {
+      // Unsigned simulator Web Inspector reports process-App rather than the
+      // bundle id. The exact observed alias is allowed at discovery, but the
+      // actual page must belong to the foreground com.bridge.app process.
+      probe.nativeProcessMatches = Number(/^WEBVIEW_(\d+)\./.exec(context)?.[1]) === active.pid;
+      if (!probe.nativeProcessMatches) continue;
       await command('POST', '/context', { name: context });
       Object.assign(probe, await js(() => ({
         switched: true,
@@ -56,7 +65,7 @@ async function webContext() {
         bridgeDom: !!document.querySelector('#auth-screen, #app'),
         nativeIOS: window.Capacitor?.getPlatform() === 'ios',
       })));
-      if (probe.packagedOrigin && probe.bridgeDom) return true;
+      if (probe.packagedOrigin && probe.bridgeDom && probe.nativeIOS) return true;
     }
     return false;
   }, 'Bridge packaged WKWebView context', 120_000);
@@ -174,6 +183,9 @@ try {
     'appium:simulatorStartupTimeout': 480_000,
     'appium:webviewConnectTimeout': 60_000,
     'appium:fullContextList': false,
+    // Observed in run 39993002937: Web Inspector advertises the unsigned
+    // Debug app as process-App, which the default bundle filter excludes.
+    'appium:additionalWebviewBundleIds': ['process-App'],
   } } }, 840_000);
   session = created.sessionId;
   assert(session, 'Native XCUITest session required');

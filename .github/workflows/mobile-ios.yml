@@ -125,6 +125,7 @@ jobs:
           path: |
             e2e/ios/results/expiry-journey.json
             e2e/ios/results/appium.log
+            e2e/ios/results/appium-discovery.log
           retention-days: 30
       - name: Simulator smoke
         if: ${{ !cancelled() && steps.ios_build.outcome == 'success' }}
