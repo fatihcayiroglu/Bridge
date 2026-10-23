@@ -49,3 +49,11 @@ WKWebView inspection uses Capacitor's existing Debug-only setting.
 Local syntax checks on Linux cannot establish iOS acceptance. Only a successful
 native workflow run with `expiry-journey.json` reporting `D2L01-iOS: PASS` on the
 tested commit establishes this simulator journey.
+
+First native run (`baf8f75f`, run 39931429924) failed before obtaining a WebDriver
+session: Appium's default 120-second simulator boot wait expired. The subsequent
+preserved smoke launched Bridge and observed its native bridge ready after 22
+seconds. Automation startup now uses the same 480-second simulator boot bound
+as the existing smoke, and supplies the simulator's actual runtime version.
+Product assertion deadlines and acceptance requirements are unchanged. This is
+not counted as a passed expiry journey; a new commit must execute the full test.

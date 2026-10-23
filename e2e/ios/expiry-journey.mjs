@@ -137,8 +137,9 @@ async function localCounts(userId, serverId, channelId) {
 
 const started = Date.now();
 try {
-  assert(process.env.IOS_SIMULATOR_UDID && process.env.IOS_APP_PATH && process.env.DATABASE_URL,
-    'Simulator UDID, built app and real PostgreSQL URL are mandatory');
+  assert(process.env.IOS_SIMULATOR_UDID && process.env.IOS_PLATFORM_VERSION && process.env.IOS_APP_PATH && process.env.DATABASE_URL,
+    'Simulator UDID/version, built app and real PostgreSQL URL are mandatory');
+  facts.stage = 'fixture';
   const username = `iosd2${Date.now().toString(36)}`;
   const registered = await write('POST', '/api/register', null, { username, password });
   const loggedIn = await write('POST', '/api/login', null, { username, password });
@@ -150,17 +151,23 @@ try {
   const serverId = id(await write('POST', '/api/servers', token, { name: 'iOS D2 acceptance' }));
   const permanent = id(await write('POST', `/api/servers/${serverId}/channels`, token, { name: 'ios-permanent', type: 'text' }));
 
+  facts.stage = 'native-session';
   const created = await wd('POST', '/session', { capabilities: { alwaysMatch: {
     platformName: 'iOS', 'appium:automationName': 'XCUITest',
     'appium:udid': process.env.IOS_SIMULATOR_UDID,
+    'appium:platformVersion': process.env.IOS_PLATFORM_VERSION,
     'appium:app': path.resolve(process.env.IOS_APP_PATH), 'appium:bundleId': BUNDLE,
     'appium:noReset': false, 'appium:autoAcceptAlerts': true,
     'appium:newCommandTimeout': 180, 'appium:wdaLaunchTimeout': 180_000,
+    // Match the existing smoke's 480-second simulator boot bound. This is
+    // infrastructure startup only; all product assertion deadlines stay fixed.
+    'appium:simulatorStartupTimeout': 480_000,
     'appium:webviewConnectTimeout': 60_000,
-  } } }, 300_000);
+  } } }, 840_000);
   session = created.sessionId;
   assert(session, 'Native XCUITest session required');
   await command('POST', '/timeouts', { script: 20_000 });
+  facts.stage = 'packaged-webview';
   await webContext();
   assert(await js(() => window.Capacitor?.getPlatform() === 'ios'), 'Must drive the native iOS app');
   await until(() => js(() => {
@@ -175,10 +182,12 @@ try {
   await fill('#l-username', username);
   await fill('#l-password', password);
   await click('[data-auth-action="login"]');
+  facts.stage = 'ui-login';
   await until(() => js(() => document.getElementById('app')?.getClientRects().length > 0), 'signed-in app', 60_000);
   await until(() => js(sid => !!document.querySelector(`.server-icon[data-id="${sid}"]`), serverId), 'fixture server');
   await click(`.server-icon[data-id="${serverId}"]`);
   await openChannel(permanent);
+  facts.stage = 'permanent-draft';
   const permanentDraft = 'permanent channel draft control';
   await fill('#msg-input', permanentDraft);
   await until(async () => (await localCounts(userId, serverId, permanent)).draft === 1, 'permanent encrypted draft persisted');
@@ -186,6 +195,7 @@ try {
   // Creation happens on another API session after the app already loaded the channel list.
   const tLive = Date.now();
   const doomed = id(await write('POST', `/api/servers/${serverId}/channels`, token, { name: 'ios-expiring', type: 'text' }));
+  facts.stage = 'live-channel';
   await until(() => js(cid => !!document.querySelector(`.ch-item[data-id="${cid}"]`), doomed), 'live channel creation without reload');
   facts.liveListMs = Date.now() - tLive;
   const database = new Client({ connectionString: process.env.DATABASE_URL });
@@ -197,6 +207,7 @@ try {
     [`ios-d2-${Date.now()}`, doomed, serverId, userId, username, Date.now()]);
     assert.equal(seeded.rowCount, 1);
     await openChannel(doomed);
+    facts.stage = 'encrypted-history-and-draft';
     await until(() => js(() => [...document.querySelectorAll('.msg')].some(row => row.textContent.includes('ios-d2-history-control'))), 'history displayed');
     await fill('#msg-input', 'expired channel draft control');
     await until(async () => {
@@ -205,6 +216,7 @@ try {
     }, 'encrypted draft AND history persisted before expiry');
 
     await nativeContext();
+    facts.stage = 'native-background';
     const before = await native('activeAppInfo');
     assert.equal(before.bundleId, BUNDLE);
     assert(Number(before.pid) > 0, 'Process identity required before backgrounding');
@@ -220,12 +232,14 @@ try {
     facts.serverDeniedExpiredHistory = true;
     assert([2, 3].includes(await native('queryAppState', { bundleId: BUNDLE })), 'App must still be backgrounded at expiry');
     await native('activateApp', { bundleId: BUNDLE });
+    facts.stage = 'native-resume';
     const after = await native('activeAppInfo');
     assert.equal(after.bundleId, BUNDLE);
     assert.equal(after.pid, before.pid, 'A relaunch must not mask a crash during resume');
     facts.sameProcessResumed = true;
     const resumed = Date.now();
     await webContext();
+    facts.stage = 'expiry-reconciliation';
     await until(() => js(cid => !document.querySelector(`.ch-item[data-id="${cid}"]`) && document.querySelector('.ch-item.active')?.dataset.id !== cid, doomed), 'expired channel removed and inactive after resume');
     await until(async () => {
       const counts = await localCounts(userId, serverId, doomed);
@@ -241,6 +255,7 @@ try {
     facts.expiredEncryptedHistoryRemoved = true;
     facts.expiredEncryptedDraftRemoved = true;
     facts.permanentChannelControlPassed = true;
+    facts.stage = 'complete';
   } finally { await database.end(); }
   fs.writeFileSync(path.join(OUT, 'expiry-journey.json'), JSON.stringify({
     id: 'D2L01-iOS', category: 'AUTOMATED / SIMULATOR', status: 'PASS',

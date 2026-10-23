@@ -12,6 +12,12 @@ candidates=[(runtime,device) for runtime,group in devices.items() if "iOS" in ru
 candidates.sort(key=lambda item: item[0])
 print(candidates[-1][1]["udid"] if candidates else "")')}"
 test -n "$IOS_SIMULATOR_UDID"
+export IOS_PLATFORM_VERSION="$(xcrun simctl list -j | python3 -c '
+import json,sys,os
+info=json.load(sys.stdin)
+runtime=next(runtime for runtime,group in info["devices"].items() for device in group if device["udid"]==os.environ["IOS_SIMULATOR_UDID"])
+print(next(item["version"] for item in info["runtimes"] if item["identifier"]==runtime))')"
+test -n "$IOS_PLATFORM_VERSION"
 state=$(xcrun simctl list devices available -j | python3 -c '
 import json,sys,os
 print(next(device["state"] for group in json.load(sys.stdin)["devices"].values() for device in group if device["udid"]==os.environ["IOS_SIMULATOR_UDID"]))')

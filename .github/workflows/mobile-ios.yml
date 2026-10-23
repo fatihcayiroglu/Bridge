@@ -115,6 +115,15 @@ jobs:
       - name: Native iOS expiry lifecycle (real WKWebView, XCUITest and PostgreSQL)
         timeout-minutes: 25
         run: bash e2e/ios/run-expiry-journey.sh
+      - name: Preserve native expiry evidence before the separate smoke
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-expiry-evidence
+          path: |
+            e2e/ios/results/expiry-journey.json
+            e2e/ios/results/appium.log
+          retention-days: 30
       - name: Simulator smoke
         if: ${{ !cancelled() && steps.ios_build.outcome == 'success' }}
         timeout-minutes: 30
