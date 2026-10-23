@@ -113,9 +113,25 @@ The existing version-1 envelope, 128-bit authentication tag and authenticated
 user/namespace/record scope are preserved. Input sizes and canonical base64 are
 checked; errors contain no plaintext, key bytes or account identifiers.
 
-The composition root preserves a working browser key. It selects Keychain only
-after the observed `DataCloneError`, and keeps that choice across OS upgrades
-by checking the existing native account key first. It reports durability only
+On iOS with the plugin present, the Keychain vault is the account key provider
+by policy:
+1. an existing native account key is always reopened first;
+2. an account that already has a browser WebCrypto key keeps it, so the
+   records it protects stay readable (a read-only lookup that never creates a
+   key);
+3. a new account key is always created in the Keychain, never as a browser key.
+
+An unverifiable lookup in step 1 or 2 fails closed to non-durable memory and
+never switches providers.
+
+The earlier rule, "browser key unless `DataCloneError`", made the provider a
+side effect of what the WebView could persist. Run 40001865845 observed
+`DataCloneError` on an unsigned build. Once the app was signed with its
+Keychain group (below), WebKit could wrap and store the browser key. The
+composition root then silently chose it: run 40025917599 (`0606ceb8`) failed
+D2L01-iOS with `{ available: true, keyExists: false }`. The journey now
+requires the native key **and** a read-only proof that no browser key exists
+for the account. It reports durability only
 after both IndexedDB and key persistence succeed. Provider failures fall back
 honestly to non-durable memory. Native decryption and encryption cannot recreate
 a deleted key; initialization is explicit. Account wipe deletes records before

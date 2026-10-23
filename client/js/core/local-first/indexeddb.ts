@@ -96,14 +96,22 @@ export class IndexedDbKeyProvider implements LocalFirstKeyProvider {
     return this.dbPromise;
   }
 
+  /** Read-only: the account's persisted browser key, or null. Never creates one. */
+  async get(userId: string): Promise<CryptoKey | null> {
+    if (!userId) throw new Error('userId is required');
+    const db = await this.db();
+    const tx = db.transaction(KEY_STORE, 'readonly');
+    const existing = await requestResult(tx.objectStore(KEY_STORE).get(userId));
+    await transactionDone(tx);
+    return validStoredKey(existing, userId) ? existing.key : null;
+  }
+
   async getOrCreate(userId: string): Promise<CryptoKey> {
     if (!userId) throw new Error('userId is required');
 
+    const existing = await this.get(userId);
+    if (existing) return existing;
     const db = await this.db();
-    const existingTx = db.transaction(KEY_STORE, 'readonly');
-    const existing = await requestResult(existingTx.objectStore(KEY_STORE).get(userId));
-    await transactionDone(existingTx);
-    if (validStoredKey(existing, userId)) return existing.key;
 
     // Generate before the read/write transaction. Awaiting WebCrypto inside an
     // otherwise idle IDB transaction can let browsers auto-close it.
@@ -233,24 +241,26 @@ export async function createBrowserLocalFirstStore(userId: string): Promise<Brow
     const native = iosLocalFirstCipher(userId);
     if (native) {
       await records.listByPrefix('__p7_capability_probe__');
-      // Keychain is the durable provider selection. Once it holds an account
-      // key, keep using it across OS upgrades instead of creating a new browser
-      // key that cannot decrypt the existing native envelopes.
+      // iOS key policy: the device-only Keychain vault is the account key
+      // provider. The provider is a policy decision, never a side effect of
+      // what this WebView build can persist: once the app is signed with its
+      // Keychain group, WebKit can wrap and store a browser CryptoKey too, and
+      // the old "browser key unless DataCloneError" rule silently picked it.
+      // 1. An existing native key is always reopened.
       if (await native.hasKey()) {
         await native.ensureKey();
         keys.close();
         return { store: new EncryptedLocalStore(userId, records, null, native), durable: true, backend: 'indexeddb' };
       }
-      try {
-        // Preserve any working, existing WebCrypto key and its records.
-        await keys.getOrCreate(userId);
-      } catch (cause) {
-        if (!(cause instanceof DOMException) || cause.name !== 'DataCloneError') throw cause;
-        await native.ensureKey();
-        keys.close();
-        return { store: new EncryptedLocalStore(userId, records, null, native), durable: true, backend: 'indexeddb' };
+      // 2. An existing browser key keeps protecting the records it wrote
+      //    (read-only lookup; no browser key is ever created here).
+      if (await keys.get(userId)) {
+        return { store: new EncryptedLocalStore(userId, records, keys), durable: true, backend: 'indexeddb' };
       }
-      return { store: new EncryptedLocalStore(userId, records, keys), durable: true, backend: 'indexeddb' };
+      // 3. A new account key is created in the Keychain.
+      await native.ensureKey();
+      keys.close();
+      return { store: new EncryptedLocalStore(userId, records, null, native), durable: true, backend: 'indexeddb' };
     }
     // Force both databases open before reporting durability.
     await Promise.all([
