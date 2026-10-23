@@ -9,6 +9,7 @@
     "appium-xcuitest-driver": "git+https://github.com/appium/appium-xcuitest-driver.git#77dfb1390ed33914555bfeb37ace8c9ab2f57b28"
   },
   "overrides": {
-    "shell-quote": "1.11.0"
+    "shell-quote": "1.11.0",
+    "body-parser": "2.4.0"
   }
 }
