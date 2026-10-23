@@ -39,6 +39,7 @@ jobs:
             server/package-lock.json
             electron/package-lock.json
             e2e/package-lock.json
+            e2e/ios/package-lock.json
       - name: Audit root/workspaces
         run: npm audit --audit-level=high
       - name: Audit server
@@ -47,6 +48,10 @@ jobs:
         run: cd electron && npm audit --audit-level=high
       - name: Audit E2E harness
         run: cd e2e && npm audit --audit-level=high
+      - name: Audit native iOS acceptance tooling
+        run: npm audit --prefix e2e/ios --audit-level=low
+      - name: Native WebDriver transport regression tests
+        run: node --test e2e/ios/webdriver-http.test.js
 
 
   # Native win32-only behavior must run on its actual supported OS.
