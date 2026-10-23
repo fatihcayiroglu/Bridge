@@ -8,8 +8,23 @@ name: Android upstream WebView diagnostics (non-gating)
 # Bridge cannot fix them inside an unmodified WebView, so they do not gate
 # pull requests: the Bridge product suite in mobile-android.yml (FD01, PD01,
 # ANR01, ...) does. A control FAIL is still a real failure: the job exits
-# nonzero and nothing here is ever counted as a pass. Evidence category:
-# AUTOMATED / EMULATOR, not physical-device.
+# nonzero and no control is ever counted as a pass. The only PASS-able check
+# in the controls jobs is WV00, which asserts the arm's provider; a WV00 PASS
+# is never a control pass. Evidence category: AUTOMATED / EMULATOR, not
+# physical-device.
+#
+# Controlled WebView comparison: the controls run twice on the SAME API 34
+# image, Play services, emulator options and APK, once with the image's own
+# WebView (113, unfixed) and once with a pinned Chromium-built SystemWebView
+# (158, fixed upstream) selected as the provider. The Bridge product suite
+# also runs on that fixed WebView here, non-gating. If the image refuses the
+# provider switch, those jobs FAIL with the refusal reason: an unavailable
+# comparison is never a pass. WV00 asserts each arm from the provider the
+# device reports, not from the job label. The provider is the intended
+# variable, not the only difference: a Chromium build is not Google's WebView
+# build (branding, field trials, optimisation), and only the chromium-fixed
+# arm removes a possible webview-command-line file, starts its journeys later
+# after boot and has the switch's background RELRO preparation.
 
 on:
   schedule:
@@ -20,6 +35,8 @@ on:
     branches: [main, develop]
     paths:
       - '.github/workflows/android-upstream-webview-diagnostics.yml'
+      - 'e2e/android/select-webview-provider.sh'
+      - 'e2e/android/fetch-pinned-webview.sh'
 
 concurrency:
   group: android-upstream-webview-diagnostics-${{ github.ref }}
@@ -28,6 +45,16 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NODE_VERSION: '24.20.0'
+  # A build from the Chromium project's continuous (snapshot) builder, not a
+  # release channel (chromium-browser-snapshots bucket), AndroidDesktop_x64
+  # r1722592: SystemWebView.apk, package com.android.webview,
+  # versionName 158.0.8114.0 (WV00 requires exactly this version on the
+  # chromium-fixed arm and the image's 113.0.5672.136 on the system arm).
+  # fetch-pinned-webview.sh prints its min/target SDK and ABIs. Both hashes
+  # are pinned: a different file fails the job before anything is installed.
+  WEBVIEW_SNAPSHOT_URL: https://commondatastorage.googleapis.com/chromium-browser-snapshots/AndroidDesktop_x64/1722592/chrome-android-desktop.zip
+  WEBVIEW_SNAPSHOT_SHA256: 97bb6b0d0b8758e9fcdaa15a8f2a894a6e554d78279b3cfaa795d625b1c9228a
+  WEBVIEW_APK_SHA256: 28d6eaf52871376eb18420a663d201ca88f0a6e3fb74be04832a091ffe8e6369
 
 permissions:
   contents: read
@@ -70,12 +97,18 @@ jobs:
           retention-days: 7
 
   controls:
-    name: DIAGNOSTIC (non-gating) upstream WebView controls (AUTOMATED / EMULATOR)
+    name: DIAGNOSTIC (non-gating) upstream WebView controls, ${{ matrix.webview }} WebView (AUTOMATED / EMULATOR)
     runs-on: ubuntu-latest
     needs: [apk]
-    timeout-minutes: 45
+    timeout-minutes: 50
+    strategy:
+      # Each arm is evidence on its own; one arm's FAIL must not cancel the other.
+      fail-fast: false
+      matrix:
+        webview: [system, chromium-fixed]
     env:
       ANDROID_JOURNEY_SUITE: upstream-webview-controls
+      WEBVIEW_ARM: ${{ matrix.webview }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -96,12 +129,16 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Verify API 34 Google APIs emulator image
         run: bash e2e/android/verify-emulator-image.sh
+      - name: Fetch the pinned fixed Chromium WebView
+        if: matrix.webview == 'chromium-fixed'
+        run: bash e2e/android/fetch-pinned-webview.sh "$RUNNER_TEMP/webview"
       # Same image and emulator options as the product suite. A control FAIL
       # fails this step and the job; it is reported, never converted to a pass.
       - name: Upstream WebView controls
         uses: reactivecircus/android-emulator-runner@v2
         env:
           APK_PATH: ${{ github.workspace }}/apk/app-debug.apk
+          WEBVIEW_OVERRIDE_APK: ${{ runner.temp }}/webview/SystemWebView.apk
         with:
           api-level: 34
           arch: x86_64
@@ -109,13 +146,120 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -no-snapshot -camera-back emulated -camera-front emulated
-          script: bash e2e/android/run-emulator-journeys.sh
+          script: |
+            if [ "$WEBVIEW_ARM" = "chromium-fixed" ]; then bash e2e/android/select-webview-provider.sh; fi
+            bash e2e/android/run-emulator-journeys.sh
       - name: Job summary
         if: always()
-        run: node e2e/android/suite-summary.mjs e2e/android/results/android-evidence.json >> "$GITHUB_STEP_SUMMARY"
+        run: node e2e/android/suite-summary.mjs e2e/android/results/android-evidence.json "$WEBVIEW_ARM" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: android-upstream-webview-diagnostics-evidence
+          name: android-upstream-webview-diagnostics-evidence-${{ matrix.webview }}
           path: e2e/android/results/
+          retention-days: 30
+
+  # The Bridge product suite on the fixed WebView: the same journeys and gates
+  # as the required product job, non-gating here and not the required gate.
+  # WV00 asserts the device reports the pinned Chromium provider; WV01 asserts
+  # the mitigation reported stage=skipped reason=webview-not-affected with no
+  # release pass at every stage, so FD01 is checked without it. WV00/WV01 run
+  # only when WEBVIEW_ARM is set, which mobile-android.yml never does.
+  product-fixed-webview:
+    name: DIAGNOSTIC (non-gating) Bridge product journeys, chromium-fixed WebView (AUTOMATED / EMULATOR)
+    runs-on: ubuntu-latest
+    needs: [apk]
+    timeout-minutes: 65
+    env:
+      ANDROID_JOURNEY_SUITE: product
+      WEBVIEW_ARM: chromium-fixed
+      DATABASE_URL: postgresql://bridge:test_password@localhost:5432/bridge_test
+      JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
+      REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
+      BASE_URL: http://127.0.0.1:3000
+      E2E_ALLOWED_ORIGINS: http://127.0.0.1:3000,http://localhost:3000,https://localhost
+      MEDIASOUP_LISTEN_IP: 127.0.0.1
+      MEDIASOUP_ANNOUNCED_IP: 10.0.2.2
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: bridge_test
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: test_password
+        options: >-
+          --health-cmd "pg_isready -U bridge -d bridge_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - uses: actions/download-artifact@v8
+        with:
+          name: bridge-android-debug-apk
+          path: apk
+      - name: Install server and harness dependencies
+        run: |
+          npm ci --no-audit --no-fund
+          cd server && npm ci --no-audit --no-fund
+          cd ../e2e && npm ci --no-audit --no-fund
+      - name: Build server
+        run: cd server && npm run build
+      - name: Database schema and migrations
+        run: |
+          cd server
+          npx ts-node --project tsconfig.json db/postgres/index.ts
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts up
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts status
+      - name: Start Bridge server
+        run: |
+          nohup node scripts/e2e-server.js > server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:3000/api/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:3000/api/health
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify API 34 Google APIs emulator image
+        run: bash e2e/android/verify-emulator-image.sh
+      - name: Fetch the pinned fixed Chromium WebView
+        run: bash e2e/android/fetch-pinned-webview.sh "$RUNNER_TEMP/webview"
+      - name: Product journeys on the fixed WebView
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          APK_PATH: ${{ github.workspace }}/apk/app-debug.apk
+          WEBVIEW_OVERRIDE_APK: ${{ runner.temp }}/webview/SystemWebView.apk
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -no-snapshot -camera-back emulated -camera-front emulated
+          script: |
+            bash e2e/android/select-webview-provider.sh
+            bash e2e/android/run-emulator-journeys.sh
+      - name: Job summary
+        if: always()
+        run: node e2e/android/suite-summary.mjs e2e/android/results/android-evidence.json "$WEBVIEW_ARM" >> "$GITHUB_STEP_SUMMARY"
+      - name: Server log tail
+        if: always()
+        run: tail -n 200 server.log || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: android-product-fixed-webview-evidence
+          path: |
+            e2e/android/results/
+            server.log
           retention-days: 30

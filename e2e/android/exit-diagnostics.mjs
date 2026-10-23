@@ -56,6 +56,45 @@ export function summarizeAndroidWebViewAlternatives(raw) {
     distinctVersionAlternateAvailable: other.some(x => x.version !== current[2]) };
 }
 
+// #209 controlled WebView comparison: the exact provider each arm must
+// observe. 'system' is the API 34 image's own Google WebView 113 (unfixed;
+// no switch); 'chromium-fixed' is the pinned Chromium SystemWebView (the
+// WEBVIEW_APK_SHA256 file in android-upstream-webview-diagnostics.yml, past
+// the upstream fix). A drifted image or a different build fails closed until
+// the experiment is updated.
+const WEBVIEW_ARM_EXPECTATIONS = {
+  system: { providerKind: 'google-webview', version: '113.0.5672.136' },
+  'chromium-fixed': { providerKind: 'aosp-webview', version: '158.0.8114.0' },
+};
+const WEBVIEW_PROVIDER_KINDS = new Set(['google-webview', 'aosp-webview',
+  'chrome-webview', 'other-webview', 'unknown']);
+
+/**
+ * Compare a comparison arm with the provider summarizeAndroidWebViewProvider
+ * reported: the kind and the exact version must both match. Returns enums,
+ * an integer, a boolean and the arm's own expected-version constant; the
+ * observed version string is compared, never echoed. An unknown arm, an
+ * unreadable provider or an out-of-range version never matches.
+ */
+export function verifyWebViewArm(arm, webview) {
+  const expected = typeof arm === 'string' && Object.hasOwn(WEBVIEW_ARM_EXPECTATIONS, arm)
+    ? WEBVIEW_ARM_EXPECTATIONS[arm] : null;
+  const available = webview?.available === true;
+  const observedProviderKind = available && WEBVIEW_PROVIDER_KINDS.has(webview.providerKind)
+    ? webview.providerKind : 'unknown';
+  const major = available ? webview.majorVersion : null;
+  const observedMajorVersion = Number.isSafeInteger(major) && major >= 1 && major <= 9999
+    ? major : null;
+  const exactVersionMatch = Boolean(expected) && available && webview.version === expected.version;
+  return {
+    arm: expected ? arm : 'unknown',
+    expectedProviderKind: expected?.providerKind ?? null,
+    expectedVersion: expected?.version ?? null,
+    observedProviderKind, observedMajorVersion, exactVersionMatch,
+    matches: Boolean(expected) && observedProviderKind === expected.providerKind && exactVersionMatch,
+  };
+}
+
 export function parseApplicationExits(raw, limit = 6) {
   // Up to 32 rows: Android retains 16 per package by default, and PD01 must
   // see a full history to prove no journey exit was evicted unread.
@@ -384,7 +423,8 @@ const ANR_CPU_TOP_CLASSES = ['app', 'webview_renderer', 'system_server', 'surfac
 
 function cpuClass(processName, expectedProcess) {
   if (processName === expectedProcess) return 'app';
-  if (/^(?:com\.google\.android\.webview|com\.android\.chrome|com\.google\.android\.trichromelibrary)[A-Za-z0-9_.]*:sandboxed_process\d+/.test(processName)) {
+  // com.android.webview: the Chromium-built provider of the #209 comparison.
+  if (/^(?:com\.google\.android\.webview|com\.android\.webview|com\.android\.chrome|com\.google\.android\.trichromelibrary)[A-Za-z0-9_.]*:sandboxed_process\d+/.test(processName)) {
     return 'webview_renderer';
   }
   if (processName === 'system_server') return 'system_server';
