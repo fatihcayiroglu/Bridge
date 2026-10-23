@@ -500,7 +500,7 @@ export async function sendChannelMessage(
   }
   const publicMsg = { ...msg } as Record<string, unknown>;
   delete publicMsg.ackId;
-  let published = false;
+  let published: boolean;
   try {
     published = await publishPersistedMessage(io, publicMsg);
   } finally {
