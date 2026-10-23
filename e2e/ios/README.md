@@ -129,11 +129,26 @@ separately cover adapter composition and failure paths with a mocked native API.
 The native lifecycle journey remains mandatory and is the iOS-specific evidence
 for the packaged plugin. No new cryptographic primitive or E2EE claim is made.
 
-This is still a draft requiring native validation and security review. The
-existing wider account-deletion flow does not yet invoke the local store's
-`wipeAccount()` contract; connecting erasure, including in-flight runtime work,
-is an explicit follow-up before production acceptance. Ordinary logout retains
-local drafts by existing policy. Device-only Keychain entries do not synchronize
+This is still a draft requiring native validation and security review.
+
+Account deletion now erases this device's local-first data of the deleted
+account (`client/js/core/local-first/account-erasure.ts`, called by the
+Privacy tab after the server confirms deletion and before logout):
+- encrypted records of every namespace, the legacy plaintext drafts, the browser
+  IndexedDB key and the native Keychain key;
+- records are deleted before keys, so a failed record wipe never orphans
+  undecryptable ciphertext.
+
+The account is marked erased first, and the mark is persisted. From then on:
+- no store for it opens durable storage;
+- no key is created for it;
+- no encrypted record is written for it, including by a write already in
+  flight.
+
+The startup sweep completes an interrupted wipe and removes anything a late
+write landed. `local-first-account-erasure.test.ts` covers each guard with its
+own negative control. Ordinary logout still retains local drafts by existing
+policy. Device-only Keychain entries do not synchronize
 or migrate in a backup, and reinstall/key-loss behavior needs separate product
 acceptance; it is not established by this simulator expiry journey.
 

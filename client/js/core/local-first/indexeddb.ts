@@ -7,6 +7,7 @@
 
 import { generateLocalFirstKey } from './crypto.ts';
 import { iosLocalFirstCipher } from './ios-crypto.ts';
+import { isLocalAccountErased } from './erased-accounts.ts';
 import {
   EncryptedLocalStore,
   MemoryKeyProvider,
@@ -98,6 +99,8 @@ export class IndexedDbKeyProvider implements LocalFirstKeyProvider {
 
   async getOrCreate(userId: string): Promise<CryptoKey> {
     if (!userId) throw new Error('userId is required');
+    // An erased account never gets a key again (see erased-accounts.ts).
+    if (isLocalAccountErased(userId)) throw new Error('Local data for this account was erased');
 
     const db = await this.db();
     const existingTx = db.transaction(KEY_STORE, 'readonly');
@@ -117,6 +120,11 @@ export class IndexedDbKeyProvider implements LocalFirstKeyProvider {
     if (validStoredKey(winner, userId)) {
       await transactionDone(tx);
       return winner.key;
+    }
+    // The account may have been erased while the candidate was generated.
+    if (isLocalAccountErased(userId)) {
+      tx.abort();
+      throw new Error('Local data for this account was erased');
     }
 
     store.put({ userId, v: 1, key: candidate, createdAt: Date.now() } satisfies StoredKey);
@@ -222,6 +230,12 @@ export interface BrowserLocalFirstStore {
  * that reload persistence exists.
  */
 export async function createBrowserLocalFirstStore(userId: string): Promise<BrowserLocalFirstStore> {
+  // An erased account opens no durable storage and no key provider again: a
+  // delayed draft/outbox/history task gets a throwaway in-memory store.
+  if (isLocalAccountErased(userId)) {
+    const store = new EncryptedLocalStore(userId, new MemoryRecordBackend(), new MemoryKeyProvider());
+    return { store, durable: false, backend: 'memory', reason: 'Local data for this account was erased' };
+  }
   if (!idb()) {
     const store = new EncryptedLocalStore(userId, new MemoryRecordBackend(), new MemoryKeyProvider());
     return { store, durable: false, backend: 'memory', reason: 'IndexedDB unavailable' };
