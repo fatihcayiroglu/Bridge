@@ -223,6 +223,22 @@ try {
   const permanentDraft = 'permanent channel draft control';
   await fill('#msg-input', permanentDraft);
   await until(async () => (await localCounts(userId, serverId, permanent)).draft === 1, 'permanent encrypted draft persisted');
+  // The persisted records must be protected by the native Keychain key, not
+  // by a browser fallback: WKWebView cannot clone a non-extractable CryptoKey
+  // (DataCloneError), which is why the native vault exists. Read-only lookup;
+  // the harness never initializes a key or seeds records.
+  const nativeKey = await command('POST', '/execute/async', {
+    args: [userId], script: `const uid = arguments[0], done = arguments[arguments.length - 1];
+      const cap = globalThis.Capacitor;
+      if (cap?.isPluginAvailable?.('BridgeLocalFirstCrypto') !== true) { done({ available: false }); } else {
+        cap.Plugins.BridgeLocalFirstCrypto.hasKey({ userId: uid }).then(
+          value => done({ available: true, keyExists: value?.exists === true }),
+          error => done({ available: true, keyExists: false, code: String(error?.code || '') }));
+      }`,
+  });
+  facts.nativeKeyAfterDraft = nativeKey;
+  assert.deepEqual(nativeKey, { available: true, keyExists: true },
+    'The encrypted draft must be protected by the native Keychain key (no browser-key fallback)');
 
   // Creation happens on another API session after the app already loaded the channel list.
   const tLive = Date.now();
