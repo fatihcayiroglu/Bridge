@@ -95,3 +95,11 @@ preserves content-free ACKs for already committed writes, and denies detached
 HTTP bot replies and late link-preview broadcasts. See
 [publication review](P7_D2_PUBLICATION_REVIEW_20261023.md). These corrections do
 not establish native iOS lifecycle or full P7 acceptance; issue #321 stays open.
+
+The `p7/d2-bridge-source-20261023` follow-up additionally closes source-copy and
+post-reference-lock write gaps reproduced against PostgreSQL. Migration 092
+reuses 086's policy in a final statement guard, includes repeatable-read-safe
+channel locks, and retains the erasure exception. Shared publication checks both
+the copy's source and destination. Review its independent migration/catalog and
+concurrency evidence before integration; see
+[source-copy authority](P7_D2_COPY_AUTHORITY_20261023.md). Keep 085–092 ordered.
