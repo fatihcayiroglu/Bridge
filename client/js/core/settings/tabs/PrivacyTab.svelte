@@ -6,6 +6,7 @@
   import { t } from '../../i18n/reactive.svelte.ts';
   import { onDestroy, onMount } from 'svelte';
   import { expectedFromPortablePreview, portableAccountId, verifiedPortablePreview, type PortableProfilePreview } from '../portable-profile-import';
+  import { eraseLocalAccount } from '../../local-first/account-erasure';
   import type { SettingsStore } from '../stores/settingsStore';
   import { BridgeRegistry } from '../../bridge-registry.js';
   import { logout, showAuthMsg, updateUserPanel } from '../../auth-compat.js';
@@ -305,6 +306,12 @@
       });
       if (response.ok) {
         deletePassword = '';
+        // P7: the account no longer exists, so neither may its local-first data
+        // on this device (encrypted history/outbox/drafts and every key). Erased
+        // before logout tears the session down; never throws, and an incomplete
+        // wipe is finished by the startup sweep.
+        const accountId = portableAccountId(BridgeRegistry.call('getMe'));
+        if (accountId) await eraseLocalAccount(accountId);
         // Sunucu oturumları ve jetonları zaten iptal etti; istemci durumu temizlenir.
         logout();
         showAuthMsg(t('privacy_delete_done'), 'success');
