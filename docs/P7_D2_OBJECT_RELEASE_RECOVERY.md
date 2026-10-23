@@ -89,3 +89,32 @@ new code; those runs are not evidence for the final commit.
 Exact final-commit CI and human review remain integration gates. This does not
 close #321 or P7: the native iOS expiry journey, representative production S3
 throughput and the other P7 pillar criteria remain separate requirements.
+## Backup and restore of durable expiry state
+
+The existing self-host process drill now seeds D2 recovery states in its own
+disposable PostgreSQL installation before running the shipped backup/restore
+scripts. The app is stopped during this fixture so worker progress cannot change
+the expected snapshot. It covers a converged tombstone, open/resolved/dismissed
+reports from a deleted private channel, pending and leased object-release rows,
+a completed release, and reserved/unreserved upload keys.
+
+`SH-BACKUP-D2-01` compares a digest of every column in those fixture rows before
+backup and after restore, and requires the expected nonempty lifecycle states.
+The retained `restricted` visibility policy is part of the comparison. Evidence
+text, object URLs and user identifiers are not emitted in the report.
+
+`SH-BACKUP-D2-02` executes the restored triggers: attaching an already released
+key must fail with SQLSTATE 55000, and deleting the reported author must anonymize
+all retained evidence snapshots. The erasure probe rolls back and the graph is
+compared again before the existing API login/message/file checks continue.
+
+Local PostgreSQL 18.6 validation used an actual `pg_dump` and the shipped atomic
+`backup/restore.sh` into a separate disposable database. Both graph and security
+trigger checks passed. Four negative controls independently removed a retained
+report, tombstone, leased release entry or reserved key: each damaged graph was
+rejected, and each intact graph passed after restoring the fixture row.
+
+This is database recovery evidence, not production backup certification. A
+production drill must also verify object-store backup/versioning, restore-point
+consistency with external objects, deployment-specific lock/runtime limits and
+the operator's recovery objectives. D3 and issue #321 remain open.
