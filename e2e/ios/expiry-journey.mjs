@@ -17,6 +17,7 @@ const OUT = path.resolve(process.env.IOS_EVIDENCE_DIR || 'e2e/ios/results');
 const password = 'Ios-D2-acceptance-only-2026';
 const facts = {};
 let session;
+let fixtureUserId;
 fs.mkdirSync(OUT, { recursive: true });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -171,6 +172,7 @@ try {
   const me = await api('GET', '/api/me', token);
   assert.equal(me.status, 200);
   const userId = id(me.json.user || me.json);
+  fixtureUserId = userId;
   const serverId = id(await write('POST', '/api/servers', token, { name: 'iOS D2 acceptance' }));
   const permanent = id(await write('POST', `/api/servers/${serverId}/channels`, token, { name: 'ios-permanent', type: 'text' }));
 
@@ -307,7 +309,7 @@ try {
       // Read-only native lookup after a failed assertion. Never initialize a
       // key or seed app records from the harness to make persistence pass.
       facts.nativeKeyAvailability = await command('POST', '/execute/async', {
-        args: [userId], script: `const uid = arguments[0], done = arguments[arguments.length - 1];
+        args: [fixtureUserId], script: `const uid = arguments[0], done = arguments[arguments.length - 1];
           const cap = globalThis.Capacitor;
           const facts = { available: cap?.isPluginAvailable?.('BridgeLocalFirstCrypto') === true,
             headerPresent: cap?.PluginHeaders?.some(h => h.name === 'BridgeLocalFirstCrypto') === true };
