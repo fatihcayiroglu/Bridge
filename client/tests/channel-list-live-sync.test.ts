@@ -149,6 +149,21 @@ describe('channels:changed — live channel list sync', () => {
     expect(listed).toEqual([]);
   });
 
+  it('announces an explicit cleared selection when the authorized list removes the last visible channel', async () => {
+    await openServer('s1');
+    const selected = vi.fn();
+    document.addEventListener('bridge:channel-selected', selected);
+    try {
+      serverChannels.s1 = [];
+      emit('channels:changed', { serverId: 's1' });
+      await vi.advanceTimersByTimeAsync(WINDOW);
+      await settle();
+      expect(listed).toEqual([]);
+      expect(selected).toHaveBeenCalledOnce();
+      expect((selected.mock.calls[0]![0] as CustomEvent).detail).toEqual({ channelId: null });
+    } finally { document.removeEventListener('bridge:channel-selected', selected); }
+  });
+
   it('stops listening after unmount', async () => {
     await openServer('s1');
     unmount(instance!);

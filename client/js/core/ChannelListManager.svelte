@@ -264,6 +264,9 @@
       if (!activeChannelSurvives(activeChannelId, channels.map(c => c._id))) {
         activeChannelId = null;
         BridgeRegistry.call('setCurrentChannel', null);
+        // Invalidate loaders/composer work immediately, including when there
+        // is no remaining visible channel to auto-select below.
+        document.dispatchEvent(new CustomEvent('bridge:channel-selected', { detail: { channelId: null } }));
       }
       // Render the primary response immediately. Categories arrive below and
       // update this same canonical view when available.
