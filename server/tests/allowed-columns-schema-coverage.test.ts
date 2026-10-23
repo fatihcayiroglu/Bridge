@@ -19,6 +19,7 @@ const SERVER = path.resolve(__dirname, '..');
 
 /** Columns that exist in SOME schema source but must never be reachable through pgCollection. */
 const DELIBERATELY_UNREACHABLE: Record<string, string> = {
+  reserved: '091 upload_release_keys: deletion fence, dedicated parameterized SQL and database triggers only; no generic PgCollection writes (lib/uploadReleaseFence.ts)',
   // P7 D2 migration 089: never written through the generic PgCollection.
   enqueuedAt: '089 channel_object_release_outbox: the expiry worker\'s own queue, raw parameterized SQL only (lib/channelExpiryWorker.ts)',
   state: '089 channel_object_release_outbox: the expiry worker\'s own queue, raw parameterized SQL only (lib/channelExpiryWorker.ts)',

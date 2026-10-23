@@ -1,5 +1,30 @@
 # P7 D2 — measured expiry performance (issue #321)
 
+## 23 October: durable object-release reservations (091)
+
+The corrected worker and batched deletion reservations were measured with the
+same script on a disposable PostgreSQL **18.6** database, **3 vCPU** Linux
+container and local disk: **50,000 messages**, batch **500**, **5,000 actual
+files**. This is a different host/database version from the measurements below;
+the numbers are absolute observations, not a controlled speed comparison.
+
+| Metric | Observed |
+|---|---|
+| Expiry → tombstone | 6 ms |
+| Claim calls p50 / max (2 calls) | 0.96 / 5.41 ms |
+| Cleanup passes p50 / p95 / max (102 passes) | 25.68 / 34.50 / 85.35 ms |
+| Database graph drained | 2.797 s |
+| Sibling inserts during drain p50 / p95 / max (1,685 inserts) | 1.37 / 3.40 / 19.47 ms |
+| Objects released | 5,000 / 5,000 in 15.921 s |
+| Expiry → convergence | 18.728 s |
+
+The reservation protocol keeps one reference scan per batch, adds indexed key
+locks and commits before storage requests. Shared-file retention and concurrent
+writer correctness are exercised on PostgreSQL and S3-compatible storage.
+Production S3 throughput and production-sized contention are still unmeasured.
+
+## Earlier measurements
+
 Measured with `server/scripts/bench-channel-expiry.ts` on **real PostgreSQL**,
 the production worker code and real local-disk objects. Reproduce on a
 disposable database:
