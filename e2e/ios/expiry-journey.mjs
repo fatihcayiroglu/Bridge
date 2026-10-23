@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { webdriverRequest } from './webdriver-http.mjs';
+import { probeIndexedDbTransactions } from './indexeddb-probe.mjs';
 
 const require = createRequire(import.meta.url);
 const { Client } = require('../../server/node_modules/pg');
@@ -303,6 +304,9 @@ try {
         composerEnabled: document.querySelector('#msg-input')?.disabled === false,
         activeChannelPresent: !!document.querySelector('.ch-item.active'),
       }));
+      facts.indexedDbKeyProbe = await command('POST', '/execute/async', {
+        args: [], script: `const done = arguments[arguments.length - 1]; (${probeIndexedDbTransactions.toString()})().then(done, () => done({ probeFailed: true }));`,
+      });
     } catch { facts.draftDiagnosticFailed = true; }
   }
   if (session && facts.stage === 'packaged-webview') {
