@@ -164,6 +164,14 @@ class (`WhenUnlockedThisDeviceOnly`, non-synchronizable), the plugin or any
 journey assertion changes. Release and device builds are signed with the
 team's provisioning profile and do not use this file.
 
+The entitlements attach to the App target's Debug configuration only, through
+`scope-simulator-entitlements.mjs`. Passing `CODE_SIGN_ENTITLEMENTS` on the
+xcodebuild command line applies it to every Swift package target as well.
+Run 40021067365 failed exactly that way, and that route would also have
+granted package bundles the app's Keychain group. The script edits exactly one
+configuration and refuses to override an existing value. It was checked
+against Capacitor's SPM and CocoaPods templates and the curated project.
+
 `verify-simulator-signature.sh` gates the journey on what the built binary
 actually carries rather than on build settings:
 - `codesign --verify --deep --strict` must pass, with `Signature=adhoc`;

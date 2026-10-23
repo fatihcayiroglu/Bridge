@@ -136,12 +136,15 @@ jobs:
           set -o pipefail
           xcodebuild -version
           cp mobile/ios-simulator-debug.entitlements ios/App/App/BridgeSimulatorDebug.entitlements
+          # Entitlements on the App target's Debug configuration only: a
+          # command-line CODE_SIGN_ENTITLEMENTS would apply to every Swift
+          # package target too (run 40021067365 failed exactly that way).
+          node e2e/ios/scope-simulator-entitlements.mjs ios/App/App.xcodeproj/project.pbxproj App/BridgeSimulatorDebug.entitlements
           xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
-            CODE_SIGN_ENTITLEMENTS=App/BridgeSimulatorDebug.entitlements \
             build | tail -n 60
       - name: Verify the app's actual signature and Keychain entitlements
         run: |
