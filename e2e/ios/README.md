@@ -57,3 +57,7 @@ seconds. Automation startup now uses the same 480-second simulator boot bound
 as the existing smoke, and supplies the simulator's actual runtime version.
 Product assertion deadlines and acceptance requirements are unchanged. This is
 not counted as a passed expiry journey; a new commit must execute the full test.
+Inspection of the installed driver's `appium-ios-simulator` startup confirmed
+that its GUI default shuts down an already booted headless simulator and restarts
+it with a window. The workflow's early boot is headless. `isHeadless: true` now
+preserves that warmed simulator rather than discarding the startup preparation.

@@ -157,6 +157,9 @@ try {
     'appium:udid': process.env.IOS_SIMULATOR_UDID,
     'appium:platformVersion': process.env.IOS_PLATFORM_VERSION,
     'appium:app': path.resolve(process.env.IOS_APP_PATH), 'appium:bundleId': BUNDLE,
+    // The workflow preboots without Simulator.app. The driver's GUI default
+    // shuts that warmed simulator down and restarts it; preserve that boot.
+    'appium:isHeadless': true,
     'appium:noReset': false, 'appium:autoAcceptAlerts': true,
     'appium:newCommandTimeout': 180, 'appium:wdaLaunchTimeout': 180_000,
     // Match the existing smoke's 480-second simulator boot bound. This is
