@@ -26,6 +26,7 @@ describe('iOS local encryption bridge and composition (native API mocked; real W
     vi.spyOn(IndexedDbRecordBackend.prototype, 'get').mockImplementation(id => physical.get(id));
     vi.spyOn(IndexedDbRecordBackend.prototype, 'clearPrefix').mockImplementation(prefix => physical.clearPrefix(prefix));
     vi.spyOn(IndexedDbKeyProvider.prototype, 'getOrCreate').mockRejectedValue(new DOMException('Unsupported key clone', 'DataCloneError'));
+    vi.spyOn(IndexedDbKeyProvider.prototype, 'get').mockResolvedValue(null);
     native.hasKey.mockImplementation(async ({ userId }: { userId: string }) => ({ exists: existing.has(userId) }));
     native.ensureKey.mockImplementation(async ({ userId }: { userId: string }) => {
       await keys.getOrCreate(userId); existing.add(userId); return { persistent: true };
@@ -43,7 +44,7 @@ describe('iOS local encryption bridge and composition (native API mocked; real W
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-  it('uses the native persistent key after the observed WKWebView DataCloneError', async () => {
+  it('creates a new account key in the native Keychain (fresh account)', async () => {
     const storage = await createBrowserLocalFirstStore('alice');
     expect(storage).toMatchObject({ durable: true, backend: 'indexeddb' });
     expect(storage.store.keyProviderKind).toBe('ios-keychain');
@@ -54,14 +55,31 @@ describe('iOS local encryption bridge and composition (native API mocked; real W
     await expect(storage.store.getJson('draft', 'channel:c1')).resolves.toEqual({ text: 'private native fixture' });
     expect(native.encrypt).toHaveBeenCalledWith({ userId: 'alice', plaintext: '{"text":"private native fixture"}', scope: 'user:alice:draft:channel%3Ac1' });
     expect(native.ensureKey).toHaveBeenCalledWith({ userId: 'alice' });
+    expect(IndexedDbKeyProvider.prototype.getOrCreate).not.toHaveBeenCalled();
+  });
+
+  it('a WebView that CAN persist browser keys still gets a native key for a new account (no silent browser fallback)', async () => {
+    // A signed app's WKWebView wraps and stores a non-extractable CryptoKey;
+    // the provider must not depend on that (native D2L01-iOS, run 40025917599).
+    const browserKey = vi.mocked(IndexedDbKeyProvider.prototype.getOrCreate).mockResolvedValue(await new MemoryKeyProvider().getOrCreate('alice'));
+    const storage = await createBrowserLocalFirstStore('alice');
+    expect(storage).toMatchObject({ durable: true, backend: 'indexeddb' });
+    expect(storage.store.keyProviderKind).toBe('ios-keychain');
+    expect(browserKey).not.toHaveBeenCalled();
+    expect(IndexedDbKeyProvider.prototype.get).toHaveBeenCalledWith('alice');
+    await storage.store.putJson('draft', 'channel:c1', { text: 'native only' });
+    expect(native.encrypt).toHaveBeenCalledTimes(1);
+    expect(existing.has('alice')).toBe(true);
   });
 
   it('reopens an existing native account key even when a newer OS supports browser keys', async () => {
     const first = await createBrowserLocalFirstStore('alice');
     await first.store.putJson('history', 'channel:c1', { messages: ['fixture'] }); first.store.close();
     const browser = vi.mocked(IndexedDbKeyProvider.prototype.getOrCreate).mockClear().mockResolvedValue(await new MemoryKeyProvider().getOrCreate('alice'));
+    vi.mocked(IndexedDbKeyProvider.prototype.get).mockClear();
     const reopened = await createBrowserLocalFirstStore('alice');
     expect(browser).not.toHaveBeenCalled();
+    expect(IndexedDbKeyProvider.prototype.get).not.toHaveBeenCalled();
     expect(reopened.store.keyProviderKind).toBe('ios-keychain');
     await expect(reopened.store.getJson('history', 'channel:c1')).resolves.toEqual({ messages: ['fixture'] });
   });
@@ -69,7 +87,9 @@ describe('iOS local encryption bridge and composition (native API mocked; real W
   it('preserves a working existing WebCrypto key instead of replacing legacy records', async () => {
     const legacyKeys = new MemoryKeyProvider();
     await new EncryptedLocalStore('alice', physical, legacyKeys).putJson('draft', 'c1', { text: 'existing legacy fixture' });
-    vi.mocked(IndexedDbKeyProvider.prototype.getOrCreate).mockResolvedValue(await legacyKeys.getOrCreate('alice'));
+    const legacyKey = await legacyKeys.getOrCreate('alice');
+    vi.mocked(IndexedDbKeyProvider.prototype.get).mockResolvedValue(legacyKey);
+    vi.mocked(IndexedDbKeyProvider.prototype.getOrCreate).mockResolvedValue(legacyKey);
     const storage = await createBrowserLocalFirstStore('alice');
     expect(storage.store.keyProviderKind).toBe('indexeddb-cryptokey');
     await expect(storage.store.getJson('draft', 'c1')).resolves.toEqual({ text: 'existing legacy fixture' });
@@ -88,6 +108,7 @@ describe('iOS local encryption bridge and composition (native API mocked; real W
     const storage = await createBrowserLocalFirstStore('alice');
     expect(storage.durable).toBe(false);
     expect(IndexedDbKeyProvider.prototype.getOrCreate).not.toHaveBeenCalled();
+    expect(IndexedDbKeyProvider.prototype.get).not.toHaveBeenCalled();
     expect(native.ensureKey).not.toHaveBeenCalled();
   });
 
@@ -97,10 +118,14 @@ describe('iOS local encryption bridge and composition (native API mocked; real W
     expect(IndexedDbKeyProvider.prototype.getOrCreate).not.toHaveBeenCalled();
   });
 
-  it('does not switch key providers after a non-clone storage failure', async () => {
-    vi.mocked(IndexedDbKeyProvider.prototype.getOrCreate).mockRejectedValue(new DOMException('Full', 'QuotaExceededError'));
-    expect((await createBrowserLocalFirstStore('alice')).durable).toBe(false);
+  it.each([
+    ['QuotaExceededError'], ['DataCloneError'], ['UnknownError'],
+  ])('an unverifiable browser-key lookup (%s) fails closed: no native key is created over possible legacy records', async name => {
+    vi.mocked(IndexedDbKeyProvider.prototype.get).mockRejectedValue(new DOMException('lookup failed', name));
+    const storage = await createBrowserLocalFirstStore('alice');
+    expect(storage).toMatchObject({ durable: false, backend: 'memory' });
     expect(native.ensureKey).not.toHaveBeenCalled();
+    expect(IndexedDbKeyProvider.prototype.getOrCreate).not.toHaveBeenCalled();
   });
 
   it.each(['web', 'android'])('keeps %s on the existing storage composition', async name => {
