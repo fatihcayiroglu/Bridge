@@ -1,10 +1,12 @@
 // P7 A1 — browser/PWA physical adapter for the encrypted local-first store.
 //
 // IndexedDB stores only encrypted record envelopes and non-extractable CryptoKey
-// objects. It is NOT described as protection from same-origin XSS or an OS-level
-// attacker. Native Capacitor will use a SQLite + platform secure-key adapter.
+// objects where supported. Native iOS uses device-only Keychain/CryptoKit when
+// WKWebView cannot clone CryptoKeys. This does not protect against same-origin
+// XSS or an OS-level attacker, and is not an E2EE protocol.
 
 import { generateLocalFirstKey } from './crypto.ts';
+import { iosLocalFirstCipher } from './ios-crypto.ts';
 import {
   EncryptedLocalStore,
   MemoryKeyProvider,
@@ -228,6 +230,28 @@ export async function createBrowserLocalFirstStore(userId: string): Promise<Brow
   const records = new IndexedDbRecordBackend();
   const keys = new IndexedDbKeyProvider();
   try {
+    const native = iosLocalFirstCipher(userId);
+    if (native) {
+      await records.listByPrefix('__p7_capability_probe__');
+      // Keychain is the durable provider selection. Once it holds an account
+      // key, keep using it across OS upgrades instead of creating a new browser
+      // key that cannot decrypt the existing native envelopes.
+      if (await native.hasKey()) {
+        await native.ensureKey();
+        keys.close();
+        return { store: new EncryptedLocalStore(userId, records, null, native), durable: true, backend: 'indexeddb' };
+      }
+      try {
+        // Preserve any working, existing WebCrypto key and its records.
+        await keys.getOrCreate(userId);
+      } catch (cause) {
+        if (!(cause instanceof DOMException) || cause.name !== 'DataCloneError') throw cause;
+        await native.ensureKey();
+        keys.close();
+        return { store: new EncryptedLocalStore(userId, records, null, native), durable: true, backend: 'indexeddb' };
+      }
+      return { store: new EncryptedLocalStore(userId, records, keys), durable: true, backend: 'indexeddb' };
+    }
     // Force both databases open before reporting durability.
     await Promise.all([
       records.listByPrefix('__p7_capability_probe__'),

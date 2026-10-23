@@ -49,6 +49,17 @@ export interface LocalFirstKeyProvider {
   close?(): void;
 }
 
+/** Platform cipher for keys that remain inside a native keystore. */
+export interface LocalFirstCipher {
+  readonly userId: string;
+  readonly kind: string;
+  readonly durable: boolean;
+  encryptJson(value: unknown, scope: string): Promise<LocalFirstEnvelope>;
+  decryptJson<T>(envelope: LocalFirstEnvelope, scope: string): Promise<T>;
+  deleteKey(): Promise<void>;
+  close?(): void;
+}
+
 export class LocalFirstCorruptionError extends Error {
   readonly cause: unknown;
 
@@ -112,10 +123,14 @@ export class EncryptedLocalStore {
   constructor(
     readonly userId: string,
     private readonly backend: LocalFirstRecordBackend,
-    private readonly keys: LocalFirstKeyProvider,
+    private readonly keys: LocalFirstKeyProvider | null,
+    private readonly cipher?: LocalFirstCipher,
   ) {
     segment(userId, 'userId');
-    this.durable = backend.durable && keys.durable;
+    if (Boolean(keys) === Boolean(cipher) || (cipher && cipher.userId !== userId)) {
+      throw new Error('Exactly one account-bound local encryption provider is required');
+    }
+    this.durable = backend.durable && (cipher?.durable ?? keys?.durable ?? false);
   }
 
   get backendKind(): string {
@@ -123,7 +138,17 @@ export class EncryptedLocalStore {
   }
 
   get keyProviderKind(): string {
-    return this.keys.kind;
+    return this.cipher?.kind ?? this.keys!.kind;
+  }
+
+  private async encrypt(value: unknown, scope: string): Promise<LocalFirstEnvelope> {
+    if (this.cipher) return this.cipher.encryptJson(value, scope);
+    return encryptLocalJson(await this.keys!.getOrCreate(this.userId), value, scope);
+  }
+
+  private async decrypt<T>(envelope: LocalFirstEnvelope, scope: string): Promise<T> {
+    if (this.cipher) return this.cipher.decryptJson<T>(envelope, scope);
+    return decryptLocalJson<T>(await this.keys!.getOrCreate(this.userId), envelope, scope);
   }
 
   async putJson<T>(
@@ -133,12 +158,7 @@ export class EncryptedLocalStore {
     updatedAt = Date.now(),
   ): Promise<void> {
     if (!Number.isFinite(updatedAt) || updatedAt < 0) throw new Error('updatedAt is invalid');
-    const key = await this.keys.getOrCreate(this.userId);
-    const envelope = await encryptLocalJson(
-      key,
-      value,
-      localRecordScope(this.userId, namespace, recordId),
-    );
+    const envelope = await this.encrypt(value, localRecordScope(this.userId, namespace, recordId));
     await this.backend.put({
       id: localRecordId(this.userId, namespace, recordId),
       userId: this.userId,
@@ -159,12 +179,7 @@ export class EncryptedLocalStore {
     }
 
     try {
-      const key = await this.keys.getOrCreate(this.userId);
-      return await decryptLocalJson<T>(
-        key,
-        record.envelope,
-        localRecordScope(this.userId, namespace, recordId),
-      );
+      return await this.decrypt<T>(record.envelope, localRecordScope(this.userId, namespace, recordId));
     } catch (cause) {
       throw new LocalFirstCorruptionError('Local-first record authentication failed', cause);
     }
@@ -190,14 +205,9 @@ export class EncryptedLocalStore {
         throw new LocalFirstCorruptionError('Local-first namespace contains an invalid record');
       }
       try {
-        const key = await this.keys.getOrCreate(this.userId);
         result.push({
           recordId: row.recordId,
-          value: await decryptLocalJson<T>(
-            key,
-            row.envelope,
-            localRecordScope(this.userId, namespace, row.recordId),
-          ),
+          value: await this.decrypt<T>(row.envelope, localRecordScope(this.userId, namespace, row.recordId)),
           updatedAt: row.updatedAt,
         });
       } catch (cause) {
@@ -219,12 +229,14 @@ export class EncryptedLocalStore {
    */
   async wipeAccount(): Promise<void> {
     await this.backend.clearPrefix(localUserPrefix(this.userId));
-    await this.keys.delete(this.userId);
+    if (this.cipher) await this.cipher.deleteKey();
+    else await this.keys!.delete(this.userId);
   }
 
   close(): void {
     this.backend.close?.();
-    this.keys.close?.();
+    this.keys?.close?.();
+    this.cipher?.close?.();
   }
 }
 

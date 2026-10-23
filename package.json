@@ -75,6 +75,7 @@
     "generate:openapi-runtime": "node scripts/generate-openapi-runtime.js"
   },
   "dependencies": {
+    "@bridge/local-first-crypto": "file:mobile/plugins/local-first-crypto",
     "@socket.io/redis-adapter": "^8.3.0",
     "@types/node": "^25.9.3",
     "bcryptjs": "^3.0.3",

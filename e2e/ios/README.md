@@ -96,3 +96,43 @@ observe an encrypted draft record. This remains a real acceptance failure.
 The next diagnostic preserves only record counts and browser capability/DOM
 booleans to distinguish absent encryption/storage from a composer-context issue;
 the mandatory persisted-draft assertion remains unchanged.
+
+Run 40001865845 (`6d684625`) isolated the storage failure on the real simulator:
+all three non-extractable CryptoKey writes raised `DataCloneError`, including
+the immediate write and the IndexedDB callback form. No record was stored.
+Linux WebKit 1.61.1 passed the same primitive probe, so changing transaction
+timing would not address the observed native failure.
+
+## Native local encryption boundary
+
+The private `@bridge/local-first-crypto` Capacitor plugin uses Apple's CryptoKit
+AES-256-GCM and generic-password Keychain entries. Keys are random, account
+scoped, non-synchronizing and `WhenUnlockedThisDeviceOnly`; key bytes never cross
+the JavaScript bridge. CryptoKit supplies a fresh 96-bit nonce for every write.
+The existing version-1 envelope, 128-bit authentication tag and authenticated
+user/namespace/record scope are preserved. Input sizes and canonical base64 are
+checked; errors contain no plaintext, key bytes or account identifiers.
+
+The composition root preserves a working browser key. It selects Keychain only
+after the observed `DataCloneError`, and keeps that choice across OS upgrades
+by checking the existing native account key first. It reports durability only
+after both IndexedDB and key persistence succeed. Provider failures fall back
+honestly to non-durable memory. Native decryption and encryption cannot recreate
+a deleted key; initialization is explicit. Account wipe deletes records before
+the key, and preserves the key if record deletion fails.
+
+The iOS workflow compiles and runs `key-vault.test.swift` against **real macOS
+Keychain and CryptoKit** before building the app. These mandatory tests cover
+persistence, tampering, account/scope isolation, erasure, bounds and two-way
+interoperability with the production WebCrypto envelope. JavaScript unit tests
+separately cover adapter composition and failure paths with a mocked native API.
+The native lifecycle journey remains mandatory and is the iOS-specific evidence
+for the packaged plugin. No new cryptographic primitive or E2EE claim is made.
+
+This is still a draft requiring native validation and security review. The
+existing wider account-deletion flow does not yet invoke the local store's
+`wipeAccount()` contract; connecting erasure, including in-flight runtime work,
+is an explicit follow-up before production acceptance. Ordinary logout retains
+local drafts by existing policy. Device-only Keychain entries do not synchronize
+or migrate in a backup, and reinstall/key-loss behavior needs separate product
+acceptance; it is not established by this simulator expiry journey.
