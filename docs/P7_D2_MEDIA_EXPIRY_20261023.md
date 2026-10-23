@@ -79,8 +79,16 @@ Missing, tenant-mismatched, expired, tombstoned and unverifiable
 
 ## Evidence (local, real services)
 
-- `tests/pg-integration/media-channel-expiry.pgtest.ts`, 25 cases (21 below
-  plus 4 for the expiry instant, which run with no expiry worker):
+- `tests/pg-integration/media-channel-expiry.pgtest.ts`, 26 cases (21 below
+  plus 5 for the expiry instant, which run with no expiry worker):
+  - **multi-node** (real Redis only): two Socket.IO nodes share one Redis
+    adapter; only node A holds the timer. A member whose socket is on node B
+    gets `voice:evicted`, leaves the room and the shared roster. It is reached
+    through the adapter's remote `fetchSockets` and the cluster eviction
+    event. Negative control: without node B's
+    `bindVoiceEvictionClusterControl` listener the case fails. In-memory mode
+    has no cluster, so the case is skipped there; CI's PG job always sets
+    `REDIS_TEST_URL` and rejects skipped tests;
   - live voice is evicted when `expiresAt` passes: nobody at −250 ms; both
     members told, off the roster and out of the room by +750 ms. The harness
     runs the production node-local evictor (`socket/voiceEviction.ts`);
@@ -111,7 +119,7 @@ Missing, tenant-mismatched, expired, tombstoned and unverifiable
     fails;
   - without the P2P client's `voice:evicted` handler, its client test fails
     (`client/tests/voice-rtc-lifecycle.test.ts`).
-- **Full real-PG + Redis suite:** 379 passed / 14 skipped. The skipped cases
+- **Full real-PG + Redis suite:** 380 passed / 14 skipped. The skipped cases
   need MinIO and pgvector, which CI provides.
 - **Server unit tests:** 711 suites / 13,179 tests, with coverage thresholds
   met. `socket/mediaExpiryEviction.ts` has its own unit test (100% of the
@@ -149,15 +157,74 @@ to. What it guarantees, and what is left over:
   fully would need SFU-only media for expiring channels; that is a product
   decision, not done here.
 - **Best effort, with the worker as backstop.** Each timer lives in the
-  memory of the node that admitted the member. It is lost if that node
-  restarts, and it is never armed if the arming read fails. A later join on
-  any node re-arms it. Otherwise the worker's claim-time eviction still runs,
-  up to a minute after `expiresAt`. Every control path above stays refused
-  regardless.
+  memory of the node that admitted the member:
+  - **Restart:** a node's timers die with it, but so do the socket
+    connections it served: every member that node admitted is disconnected
+    by the restart. When a member reconnects and rejoins, a new timer is
+    armed. Members admitted on other nodes are covered by those nodes' own
+    timers. A restart therefore leaves no connected member without a timer,
+    by construction; no test kills a node mid-call.
+  - **Database failure at the expiry instant:** the re-read fails closed and
+    the eviction runs. That can end a call whose expiry was extended while
+    the database was unreachable; its members can rejoin once it is back.
+  - **Database failure when arming:** no timer is armed. Admission itself
+    already required a successful read moments earlier, so this needs the
+    database to fail between two reads of the same join. The worker's
+    claim-time eviction then applies, up to a minute after `expiresAt`.
+  Every control path above stays refused regardless.
 - **Voice-message uploads:** an upload that passes the check just before
   `expiresAt` can still store its object. The write barrier then refuses its
   message row and the route removes the voice row. This is the existing
   two-table rollback, unchanged here.
+
+## Option: SFU-only media for expiring channels (proposal, not implemented)
+
+The only residual that the server cannot close today is P2P media between
+modified clients. Closing it needs every expiring channel's media to pass
+through the SFU, which the server can tear down. This is a product decision
+(availability and cost), so it is **not** implemented here.
+
+**Today**
+- `voice:get-capabilities` answers `{ p2p: true, sfu: <ready> }`.
+- The shipped client uses the SFU when it is ready and falls back to P2P.
+- The server also accepts the P2P path (`voice:join` and `webrtc:*` relays)
+  while the SFU is up, so a modified client can choose P2P deliberately.
+
+**Change**
+1. Server: for a channel with `expiresAt` set, `voice:join` (the P2P
+   admission) answers `voice:join-rejected` with `code: 'SFU_REQUIRED'`, and
+   the `webrtc:*` relays refuse it. Stage is already SFU-only.
+   `voice:get-capabilities` gains an optional `channelId` and answers
+   `p2p: false` for such a channel.
+2. Client: an expiring channel joins through the SFU only. When the SFU is
+   not ready, the user is told that voice is unavailable in temporary
+   channels, with no silent P2P fallback.
+3. Tests:
+   - P2P join and relays refused on an expiring channel, accepted on a
+     permanent one (real PostgreSQL);
+   - an SFU-only call evicted at the instant, with the media transports
+     closed server-side;
+   - the client message when the SFU is down.
+
+**What it buys:** for an expired channel, Bridge carries and relays no media
+at all. All media of an expiring channel runs through server-owned SFU
+transports that the expiry eviction closes. A TURN allocation pointed at the
+SFU then forwards nothing. The residual becomes the eviction latency above,
+not "until both clients choose to hang up".
+
+**What it costs**
+
+| Area | Impact |
+|---|---|
+| Availability | When no SFU worker is ready, voice in expiring channels is unavailable (today it falls back to P2P) |
+| Server load and cost | Every call in an expiring channel uses SFU bandwidth and CPU (mediasoup workers), including 1:1 calls that are P2P today |
+| Latency | One extra network hop (client → SFU → client) |
+| E2EE | Voice E2EE keys travel over `voice:e2e-key`; frames through the SFU stay end-to-end encrypted only where insertable streams are used. To be verified before enabling |
+| Scope | It does not stop two users from setting up their own WebRTC call outside Bridge; the guarantee is "Bridge relays no media", not control over user devices |
+
+Estimated effort: about a day of implementation plus tests. It should land
+behind a server setting (`EPHEMERAL_VOICE_SFU_ONLY`, default off) until the
+owner decides.
 
 ## Relation to the interrupted Codex session
 
