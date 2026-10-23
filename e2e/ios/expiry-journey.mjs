@@ -274,6 +274,24 @@ try {
   }, null, 2));
   console.log('PASS D2L01-iOS: native background/resume, expired history and draft purge, permanent-channel control');
 } catch (error) {
+  if (session && facts.stage === 'packaged-webview') {
+    // The fixture has not logged in yet. Keep only native state/shape facts,
+    // never the source tree, account data or WebDriver argument payloads.
+    const probe = {};
+    facts.nativeStartup = probe;
+    try {
+      await nativeContext();
+      probe.appState = await native('queryAppState', { bundleId: BUNDLE });
+      const active = await native('activeAppInfo');
+      probe.bridgeIsActive = active.bundleId === BUNDLE;
+      probe.activePIDPresent = Number.isInteger(active.pid) && active.pid > 0;
+      const source = await command('GET', '/source');
+      probe.sourceLength = source.length;
+      probe.webViewCount = (source.match(/<XCUIElementTypeWebView\b/g) || []).length;
+      probe.textFieldCount = (source.match(/<XCUIElementType(?:Secure)?TextField\b/g) || []).length;
+      probe.alertCount = (source.match(/<XCUIElementTypeAlert\b/g) || []).length;
+    } catch { probe.diagnosticFailed = true; }
+  }
   fs.writeFileSync(path.join(OUT, 'expiry-journey.json'), JSON.stringify({
     id: 'D2L01-iOS', category: 'AUTOMATED / SIMULATOR', status: 'FAIL',
     commit: process.env.GITHUB_SHA || null, ms: Date.now() - started, facts,

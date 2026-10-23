@@ -29,10 +29,20 @@ xcrun simctl bootstatus "$IOS_SIMULATOR_UDID" -b
 # Appium discovers ONLY the pinned driver in this audited dependency directory.
 export APPIUM_HOME="$PWD/e2e/ios"
 e2e/ios/node_modules/.bin/appium driver list --installed
-e2e/ios/node_modules/.bin/appium --address 127.0.0.1 --port 4723 --use-drivers xcuitest --log-level warn \
-  > "$IOS_EVIDENCE_DIR/appium.log" 2>&1 &
+# Raw debug traffic stays outside uploaded artifacts: it can include WebDriver
+# arguments. Preserve only the inspector's application-discovery metadata.
+appium_raw=$(mktemp "${RUNNER_TEMP:-/tmp}/bridge-ios-appium.XXXXXX")
+e2e/ios/node_modules/.bin/appium --address 127.0.0.1 --port 4723 --use-drivers xcuitest --log-level debug --log-no-colors \
+  > "$appium_raw" 2>&1 &
 appium_pid=$!
-trap 'kill "$appium_pid" 2>/dev/null || true' EXIT
+cleanup_appium() {
+  kill "$appium_pid" 2>/dev/null || true
+  # No scripts, command arguments, page titles, URLs or console payloads.
+  awk '/RemoteDebugger/ && /Remote Debugger version|Connecting to remote debugger|Received connected applications list|Found app id key|Current applications available|Application:|bundleId:|isActive:|isProxy:|No matching|No applications|Empty page dictionary|Notified that new application/ { print substr($0,1,800); count++; if(count>=100) exit }' \
+    "$appium_raw" > "$IOS_EVIDENCE_DIR/appium-discovery.log"
+  rm -f "$appium_raw"
+}
+trap cleanup_appium EXIT
 for i in $(seq 1 60); do
   curl -sf http://127.0.0.1:4723/status >/dev/null && break
   kill -0 "$appium_pid"
