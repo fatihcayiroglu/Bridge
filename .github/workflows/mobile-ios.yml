@@ -1,7 +1,7 @@
 name: Mobile iOS
 
 # P4 — the Capacitor iOS app built the documented way (setup.js → cap add ios → curated overlay →
-# cap sync → xcodebuild) and launched on an iOS simulator. Evidence category: AUTOMATED /
+# cap sync → xcodebuild), exercised through XCUITest and launched on an iOS simulator. Evidence category: AUTOMATED /
 # SIMULATOR — not device evidence (no APNs delivery, no microphone/camera hardware, no radio).
 
 on:
@@ -10,6 +10,7 @@ on:
     paths:
       - 'mobile/**'
       - 'client/**'
+      - 'server/**'
       - 'e2e/ios/**'
       - 'capacitor.config.js'
       - 'package.json'
@@ -32,9 +33,15 @@ permissions:
 
 jobs:
   simulator:
-    name: iOS simulator build + launch (AUTOMATED / SIMULATOR)
+    name: iOS build, expiry journey + launch (AUTOMATED / SIMULATOR)
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: postgresql://bridge@127.0.0.1:55432/bridge_ios_d2
+      JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
+      REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
+      BASE_URL: http://127.0.0.1:3000
+      E2E_ALLOWED_ORIGINS: http://127.0.0.1:3000,http://localhost:3000,capacitor://localhost
     steps:
       - uses: actions/checkout@v7
       - name: Boot the simulator early (it warms up while the app builds)
@@ -46,7 +53,41 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        env:
+          # npm normalizes GitHub Git dependencies to SSH in its lockfile.
+          # Fetch the public, commit-pinned driver over HTTPS without SSH credentials.
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: url.https://github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: ssh://git@github.com/
+        run: |
+          npm ci --no-audit --no-fund
+          npm ci --prefix server --no-audit --no-fund
+          npm ci --prefix e2e/ios --no-audit --no-fund
+      - name: Audit native acceptance tooling
+        run: npm audit --prefix e2e/ios --audit-level=low
+      - name: Real PostgreSQL for the expiry journey
+        run: |
+          brew list --versions postgresql@18 || brew install postgresql@18
+          pg_bin="$(brew --prefix postgresql@18)/bin"
+          echo "$pg_bin" >> "$GITHUB_PATH"
+          "$pg_bin/initdb" -D "$RUNNER_TEMP/bridge-ios-postgres" --username=bridge --auth-local=trust --auth-host=trust
+          "$pg_bin/pg_ctl" -D "$RUNNER_TEMP/bridge-ios-postgres" -l "$RUNNER_TEMP/bridge-ios-postgres.log" -o '-h 127.0.0.1 -p 55432' -w start
+          "$pg_bin/createdb" -h 127.0.0.1 -p 55432 -U bridge bridge_ios_d2
+      - name: Build server and apply the full migration chain
+        run: |
+          npm run build --prefix server
+          cd server
+          npx ts-node --project tsconfig.json db/postgres/index.ts
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts up
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts status
+      - name: Start the real Bridge server
+        run: |
+          nohup node scripts/e2e-server.js > "$RUNNER_TEMP/bridge-ios-server.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:3000/api/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:3000/api/health
       - name: Client bundle
         run: npm run build
       - name: Packaged web root (www/)
@@ -58,19 +99,37 @@ jobs:
           npx cap add ios
           node mobile/scripts/apply-ios-overlay.js
           npx cap sync ios
+          # Only the generated CI Debug app may use this loopback HTTP fixture.
+          # No release plist, arbitrary-load exception or remote host is changed.
+          /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains dict' ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains:localhost dict' ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains:localhost:NSExceptionAllowsInsecureHTTPLoads bool true' ios/App/App/Info.plist
       - name: xcodebuild (Debug, iphonesimulator)
+        id: ios_build
         run: |
           xcodebuild -version
           xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 40
+      - name: Native iOS expiry lifecycle (real WKWebView, XCUITest and PostgreSQL)
+        timeout-minutes: 25
+        run: bash e2e/ios/run-expiry-journey.sh
       - name: Simulator smoke
+        if: ${{ !cancelled() && steps.ios_build.outcome == 'success' }}
         timeout-minutes: 30
         run: |
           APP=$(find build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' | head -1)
           echo "app: $APP"
           cat e2e/ios/results/early-boot.log 2>/dev/null || true
           IOS_APP_PATH="$APP" bash e2e/ios/run-simulator-smoke.sh
+      - name: Stop disposable PostgreSQL
+        if: always()
+        run: |
+          pg_bin="$(brew --prefix postgresql@18)/bin"
+          if [ -f "$RUNNER_TEMP/bridge-ios-postgres/postmaster.pid" ]; then
+            "$pg_bin/pg_ctl" -D "$RUNNER_TEMP/bridge-ios-postgres" -m fast -w stop
+          fi
       - uses: actions/upload-artifact@v7
         if: always()
         with:
