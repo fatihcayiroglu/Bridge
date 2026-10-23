@@ -71,7 +71,16 @@ and each object renews its own lease before storage work. Superseded work is
 reported separately and cannot count as a successful release.
 
 Review and integrate this correction before accepting the worker's recovery
-contract. It does not change migration numbering, object reference policy or
-the outstanding iOS/S3 acceptance. Security PR #363 independently patches the
-dependency advisories reported on `main`; #362's older green runs do not prove
-that its dependencies pass the current advisory database.
+contract. A second real-PG regression demonstrated that a batch's cached
+negative reference answer could delete an object newly referenced by a live
+message. Migration **091**, after the existing 085–090 sequence, adds durable
+deletion reservations shared by the reference writers and object releaser.
+The batched scan stays; storage calls run only after the reservation commits.
+Rollback refuses to discard a deletion reservation. See
+[object-release recovery](P7_D2_OBJECT_RELEASE_RECOVERY.md).
+
+Security PR #363 merged into `main` as `c061d72f` after its exact-commit required
+checks, Android, iOS, self-host and federation checks passed. Post-merge main
+checks are separate evidence; #362's older green runs do not prove its current
+dependencies pass the advisory database. Human review and the outstanding
+iOS/S3 acceptance remain required.

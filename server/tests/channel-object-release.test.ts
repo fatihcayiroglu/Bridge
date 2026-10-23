@@ -12,12 +12,16 @@ jest.mock('../lib/uploadReferenceSafety', () => ({
   hasLiveUploadReference: (...a: unknown[]) => mockHasRef(...a),
   liveUploadReferenceKeys: (...a: unknown[]) => mockBatchRef(...a),
 }));
+jest.mock('../lib/uploadReleaseFence', () => ({
+  reserveUploadReleaseKeys: (...args: unknown[]) => mockBatchRef(...args),
+}));
+
 jest.mock('../lib/storageAdapter', () => ({
   getPrivateStorageAdapter: () => ({ deleteFile: (...a: unknown[]) => mockPrivateDelete(...a) }),
   getPrivateStorageProvider: () => 's3',
 }));
 jest.mock('../lib/uploadRelease', () => ({
-  locateAsset: (url: string) => (url.startsWith('/uploads/recordings/') ? { kind: 'local' } : null),
+  locateAsset: (url: string) => (url.startsWith('/uploads/recordings/') ? { kind: 'local', canonicalKey: url.slice(1) } : null),
   releaseUnreferencedUploads: (...a: unknown[]) => mockRelease(...a),
 }));
 
@@ -27,26 +31,26 @@ import {
 } from '../lib/channelExpiryWorker';
 
 const pool = { query: jest.fn(async () => ({ rows: [] })) };
-beforeEach(() => { jest.clearAllMocks(); mockHasRef.mockResolvedValue(false); });
+beforeEach(() => { jest.clearAllMocks(); mockHasRef.mockResolvedValue(false); mockBatchRef.mockResolvedValue(new Set()); });
 
 describe('createChannelObjectReleaser', () => {
   const r = () => createChannelObjectReleaser(pool as never);
 
   it('deletes an unreferenced root attachment from private storage with the provider key', async () => {
     await expect(r().release('/uploads/a.png')).resolves.toBe('released');
-    expect(mockHasRef).toHaveBeenCalledWith(pool, 'uploads/a.png');
+    expect(mockBatchRef).toHaveBeenCalledWith(pool, ['uploads/a.png']);
     expect(mockPrivateDelete).toHaveBeenCalledWith('uploads/a.png');
     expect(pool.query).toHaveBeenCalledWith('DELETE FROM uploads WHERE key = $1', ['uploads/a.png']);
   });
 
   it('keeps a root attachment another row still references', async () => {
-    mockHasRef.mockResolvedValue(true);
+    mockBatchRef.mockResolvedValue(new Set(['uploads/a.png']));
     await expect(r().release('/uploads/a.png')).resolves.toBe('still_referenced');
     expect(mockPrivateDelete).not.toHaveBeenCalled();
   });
 
   it('fails closed when the reference check cannot run', async () => {
-    mockHasRef.mockRejectedValue(new Error('no pool'));
+    mockBatchRef.mockRejectedValue(new Error('no pool'));
     await expect(r().release('/uploads/a.png')).rejects.toThrow('no pool');
     expect(mockPrivateDelete).not.toHaveBeenCalled();
   });
@@ -81,16 +85,16 @@ describe('batch-scoped releaser', () => {
     const batch = await createChannelObjectReleaser(pool as never).forBatch!([
       '/uploads/kept.png', '/uploads/gone.png', '/uploads/recordings/r.mp3', 'https://x/y.png',
     ]);
-    expect(mockBatchRef).toHaveBeenCalledWith(pool, ['uploads/kept.png', 'uploads/gone.png']);
+    expect(mockBatchRef).toHaveBeenCalledWith(pool, ['uploads/kept.png', 'uploads/gone.png', 'uploads/recordings/r.mp3']);
     await expect(batch.release('/uploads/kept.png')).resolves.toBe('still_referenced');
     await expect(batch.release('/uploads/gone.png')).resolves.toBe('released');
     expect(mockHasRef).not.toHaveBeenCalled();
     // Outside the batch: the single-key check still runs.
     await expect(batch.release('/uploads/other.png')).resolves.toBe('released');
-    expect(mockHasRef).toHaveBeenCalledWith(pool, 'uploads/other.png');
+    expect(mockBatchRef).toHaveBeenCalledWith(pool, ['uploads/other.png']);
   });
 
-  it('falls back to per-object checks when the batched query fails', async () => {
+  it('retries without deleting when deletion reservations cannot be established', async () => {
     mockBatchRef.mockRejectedValue(new Error('statement timeout'));
     const leased = [{ channelId: 'c', url: '/uploads/a.png', attempts: 1 }];
     const client = {
@@ -99,8 +103,8 @@ describe('batch-scoped releaser', () => {
     };
     const report = await releaseChannelObjects({ connect: async () => client } as never,
       createChannelObjectReleaser(pool as never), 10);
-    expect(report).toEqual({ released: 1, retained: 0, retried: 0, failed: 0, superseded: 0 });
-    expect(mockHasRef).toHaveBeenCalledWith(pool, 'uploads/a.png');
+    expect(report).toEqual({ released: 0, retained: 0, retried: 1, failed: 0, superseded: 0 });
+    expect(mockPrivateDelete).not.toHaveBeenCalled();
   });
 });
 

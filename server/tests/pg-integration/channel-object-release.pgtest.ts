@@ -35,7 +35,9 @@ const down089 = fs.readFileSync(path.resolve(__dirname, '../../db/migrations_pg/
 RUN('P7 D2 expired-channel object release — real PostgreSQL + local storage', () => {
   const q = async (sql: string, params: unknown[] = []) => (await db._pool.query(sql, params)).rows as Array<Record<string, unknown>>;
   const releaser = () => createChannelObjectReleaser(db._pool);
+  const fixtureKeys = new Set<string>();
   const file = (rel: string, body = 'bytes') => {
+    fixtureKeys.add('uploads/' + rel);
     const full = path.join(UPLOADS, rel);
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, body);
@@ -86,6 +88,7 @@ RUN('P7 D2 expired-channel object release — real PostgreSQL + local storage', 
   });
   afterAll(async () => {
     await cleanup();
+    await q('DELETE FROM upload_release_keys WHERE key = ANY($1::text[])', [[...fixtureKeys]]);
     fs.rmSync(UPLOADS, { recursive: true, force: true });
   });
 
@@ -293,6 +296,31 @@ RUN('P7 D2 expired-channel object release — real PostgreSQL + local storage', 
     await expect(liveUploadReferenceKeys(db._pool, ['uploads/a/b/c/d.png'])).rejects.toThrow(/unsupported/);
     await expect(liveUploadReferenceKeys(db._pool, ['../etc/passwd'])).rejects.toThrow(/unsupported/);
     expect(await liveUploadReferenceKeys(db._pool, [])).toEqual(new Set());
+  });
+
+  it('a batch cannot delete an object a new live message references after its reference scan', async () => {
+    const sid = await server();
+    const key = id('late-reference') + '.png';
+    const url = `/uploads/${key}`;
+    file(key);
+    const batch = await releaser().forBatch!([url]);
+    // A deletion reservation must reject this write. If it is admitted, the
+    // releaser must preserve its bytes; a cached negative answer is insufficient.
+    let admitted = false;
+    try {
+      await attachment(sid + '-keep', sid, url);
+      admitted = true;
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('upload_release_reserved')) throw error;
+    }
+    const result = await batch.release(url);
+    if (admitted) {
+      expect(result).toBe('still_referenced');
+      expect(exists(key)).toBe(true);
+    } else {
+      expect(result).toBe('released');
+      expect(exists(key)).toBe(false);
+    }
   });
 
   it('089 down refuses while objects are pending release', async () => {

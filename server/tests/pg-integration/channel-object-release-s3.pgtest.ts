@@ -80,6 +80,7 @@ RUN('P7 D2 expired-channel object release — real S3-compatible private bucket'
       await s3.send(new DeleteObjectCommand({ Bucket: PRIVATE_BUCKET, Key: key })).catch(() => undefined);
     }
     await cleanup();
+    await q('DELETE FROM upload_release_keys WHERE key = ANY($1::text[])', [[KEY_GONE, KEY_SHARED]]);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 

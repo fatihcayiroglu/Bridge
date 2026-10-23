@@ -470,6 +470,11 @@ export async function releaseChannelObjects(
       `DELETE FROM ${OUTBOX} WHERE ctid = ANY(ARRAY(
          SELECT ctid FROM ${OUTBOX} WHERE state IN ('released', 'retained')
             AND "finishedAt" < ${NOW_MS} - ${OBJECT_RELEASE_FINISHED_TTL_MS} LIMIT 500))`);
+    // Only true deletion reservations must outlive offline clients. Ordinary
+    // writer lock rows can be removed after COMMIT; skip currently locked keys.
+    await client.query(`DELETE FROM upload_release_keys WHERE ctid = ANY(ARRAY(
+      SELECT ctid FROM upload_release_keys WHERE NOT reserved
+      ORDER BY key LIMIT 500 FOR UPDATE SKIP LOCKED))`);
     return report;
   } finally {
     client.release();
