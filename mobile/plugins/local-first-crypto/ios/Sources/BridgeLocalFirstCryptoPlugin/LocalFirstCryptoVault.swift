@@ -5,7 +5,7 @@ import Security
 enum LocalFirstCryptoFailure: Error {
     case invalidInput
     case keyUnavailable
-    case keychainFailure
+    case keychainFailure(OSStatus)
 }
 
 struct LocalFirstCryptoEnvelope: Codable {
@@ -42,14 +42,14 @@ final class LocalFirstCryptoVault {
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess,
-              let record = result as? [String: Any],
+        guard status == errSecSuccess else { throw LocalFirstCryptoFailure.keychainFailure(status) }
+        guard let record = result as? [String: Any],
               let data = record[kSecValueData as String] as? Data,
-              data.count == 32 else { throw LocalFirstCryptoFailure.keychainFailure }
+              data.count == 32 else { throw LocalFirstCryptoFailure.keychainFailure(errSecDecode) }
         #if os(iOS)
         guard record[kSecAttrAccessible as String] as? String == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String,
               (record[kSecAttrSynchronizable as String] as? Bool ?? false) == false else {
-            throw LocalFirstCryptoFailure.keychainFailure
+            throw LocalFirstCryptoFailure.keychainFailure(errSecDecode)
         }
         #endif
         return SymmetricKey(data: data)
@@ -70,14 +70,14 @@ final class LocalFirstCryptoVault {
         let status = SecItemAdd(attributes as CFDictionary, nil)
         // Another bridge/extension can win between the lookup and atomic Add.
         // Never overwrite it: every writer must use that same canonical key.
-        guard status == errSecSuccess || status == errSecDuplicateItem,
-              let stored = try existingKey(userId) else { throw LocalFirstCryptoFailure.keychainFailure }
+        guard status == errSecSuccess || status == errSecDuplicateItem else { throw LocalFirstCryptoFailure.keychainFailure(status) }
+        guard let stored = try existingKey(userId) else { throw LocalFirstCryptoFailure.keychainFailure(errSecItemNotFound) }
         return stored
     }
 
     func deleteKey(_ userId: String) throws {
         let status = SecItemDelete(try keyQuery(userId) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw LocalFirstCryptoFailure.keychainFailure }
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw LocalFirstCryptoFailure.keychainFailure(status) }
     }
 
     private func aad(_ scope: String) throws -> Data {

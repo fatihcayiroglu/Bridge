@@ -23,6 +23,10 @@ public class BridgeLocalFirstCryptoPlugin: CAPPlugin, CAPBridgedPlugin {
             do {
                 let result = try action(userId)
                 DispatchQueue.main.async { call.resolve(result) }
+            } catch LocalFirstCryptoFailure.keychainFailure(let status) {
+                // Numeric Security.framework status only; never a provider
+                // description, account alias, key bytes or request payload.
+                DispatchQueue.main.async { call.reject("Local encryption unavailable", "LOCAL_CRYPTO_KEYCHAIN", nil, ["status": Int(status)]) }
             } catch {
                 // No user identifiers, plaintext, key data or provider errors.
                 DispatchQueue.main.async { call.reject("Local encryption unavailable", "LOCAL_CRYPTO_UNAVAILABLE") }

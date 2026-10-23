@@ -136,3 +136,12 @@ is an explicit follow-up before production acceptance. Ordinary logout retains
 local drafts by existing policy. Device-only Keychain entries do not synchronize
 or migrate in a backup, and reinstall/key-loss behavior needs separate product
 acceptance; it is not established by this simulator expiry journey.
+
+Run 40010032013 (`55bf20dd`) passed all 14 real macOS Keychain/CryptoKit checks,
+the two-way envelope interoperability check, plugin discovery and Xcode build.
+It still failed the mandatory permanent-draft assertion. Native smoke logs show
+the plugin receiving `hasKey` calls and rejecting them, so the remaining failure
+is in the native Keychain path, not missing plugin registration. The next run
+preserves only read-only key-availability booleans and a numeric Security.framework
+status after failure. It never initializes a key or seeds records from the test.
+No signing/protection setting or persistence assertion is relaxed.

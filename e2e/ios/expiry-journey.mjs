@@ -304,6 +304,24 @@ try {
         composerEnabled: document.querySelector('#msg-input')?.disabled === false,
         activeChannelPresent: !!document.querySelector('.ch-item.active'),
       }));
+      // Read-only native lookup after a failed assertion. Never initialize a
+      // key or seed app records from the harness to make persistence pass.
+      facts.nativeKeyAvailability = await command('POST', '/execute/async', {
+        args: [userId], script: `const uid = arguments[0], done = arguments[arguments.length - 1];
+          const cap = globalThis.Capacitor;
+          const facts = { available: cap?.isPluginAvailable?.('BridgeLocalFirstCrypto') === true,
+            headerPresent: cap?.PluginHeaders?.some(h => h.name === 'BridgeLocalFirstCrypto') === true };
+          if (!facts.available) { done(facts); } else {
+            cap.Plugins.BridgeLocalFirstCrypto.hasKey({ userId: uid }).then(value => {
+              facts.keyExists = value?.exists === true; done(facts);
+            }, error => {
+              facts.keychainFailure = error?.code === 'LOCAL_CRYPTO_KEYCHAIN';
+              const status = error?.data?.status;
+              if (Number.isInteger(status)) facts.osStatus = status;
+              done(facts);
+            });
+          }`,
+      });
       facts.indexedDbKeyProbe = await command('POST', '/execute/async', {
         args: [], script: `const done = arguments[arguments.length - 1]; (${probeIndexedDbTransactions.toString()})().then(done, () => done({ probeFailed: true }));`,
       });

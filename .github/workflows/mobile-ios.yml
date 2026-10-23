@@ -5,6 +5,17 @@ name: Mobile iOS
 # SIMULATOR — not device evidence (no APNs delivery, no microphone/camera hardware, no radio).
 
 on:
+  # Native validation must also run for stacked P7 branches.
+  push:
+    branches: ['p7/**']
+    paths:
+      - 'mobile/**'
+      - 'client/**'
+      - 'server/**'
+      - 'e2e/ios/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/mobile-ios.yml'
   pull_request:
     branches: [main, develop]
     paths:
@@ -108,6 +119,7 @@ jobs:
           npx cap add ios
           node mobile/scripts/apply-ios-overlay.js
           npx cap sync ios
+          node -e 'const assert=require("node:assert/strict"); const cfg=require("./ios/App/App/capacitor.config.json"); assert(cfg.packageClassList.includes("BridgeLocalFirstCryptoPlugin"), "Native local encryption plugin must be packaged");'
           # Only the generated CI Debug app may use this loopback HTTP fixture.
           # No release plist, arbitrary-load exception or remote host is changed.
           /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' ios/App/App/Info.plist
