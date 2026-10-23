@@ -27,6 +27,12 @@ lint pass. Full client coverage and final-commit CI are separate required gates;
 their actual results belong on the review PR. No server authorization, migration,
 Android source, coverage threshold or test assertion is weakened.
 
+Quality Gate previously triggered only for pushes to main/develop or PRs whose
+base matched its fixed list, so these stacked P7 PRs depended on manual
+dispatch. Pushes to `p7/**` now trigger the existing gate automatically, including
+its full browser/media matrix. Existing events, jobs and checks are preserved;
+no required test becomes optional and no workflow permission is expanded.
+
 This branch follows #368 and does not include #365's native encryption adapter.
 Human review, final integration/mobile checks and post-merge verification remain
 required. Issue #321 remains open.
