@@ -13,15 +13,17 @@ import { Channels, Members } from '../../db/repositories';
 import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
 import { isolateSocketHandler } from '../handlerIsolation';
 import { envSafeInt } from '../../lib/envNumbers';
-import { channelLiveForMedia } from '../../lib/channelContentAvailability';
+import { channelLiveForMedia, channelMediaLiveWindow } from '../../lib/channelContentAvailability';
+import { armMediaExpiryEviction } from '../mediaExpiryEviction';
 
 
 const VOICE_ROOM_TTL_S = 4 * 60 * 60; // 4 saat — aktif ses kanalı
 // Sprint 121 FIX 20: Ses kanalı katılımcı limiti — env ile yapılandırılabilir
 const MAX_VOICE_PEERS = envSafeInt('MAX_VOICE_PEERS', 25, { min: 1, max: 10_000 });
 // P7 D2: how long an admitted peer's channel liveness may be reused before the
-// next relay re-reads PostgreSQL. Bounds the database load of ICE bursts; an
-// expiry is enforced on the first relay after this window at the latest.
+// next relay re-reads PostgreSQL (bounds the database load of ICE bursts). The
+// reuse never extends past the channel's authoritative expiresAt: see
+// liveVoiceChannel.
 const VOICE_LIVE_RECHECK_MS = 2_000;
 
 // In-memory fallback (Redis yoksa / test ortamında)
@@ -169,22 +171,29 @@ function activeVoiceChannel(socket: { currentVoiceChannel?: string | null; rooms
 /**
  * P7 D2: the socket's voice room, only while its channel is still live.
  * Admission alone is not enough: a peer admitted before the channel expired
- * keeps its room until the expiry worker's eviction reaches it (a minute at
- * most, best effort). A relay from such a peer is refused here and the peer
- * leaves the room, so it can negotiate nothing further. A positive answer is
- * reused for VOICE_LIVE_RECHECK_MS; a refusal is never cached.
+ * keeps its room until an eviction reaches it. A relay from such a peer is
+ * refused here and the peer leaves the room, so it can negotiate nothing
+ * further. A positive answer is reused for at most VOICE_LIVE_RECHECK_MS and
+ * never past the channel's authoritative expiry: the reuse deadline is the
+ * local monotonic time at which the read was SENT plus (expiresAt - database
+ * now), so it can only end early. The expiry API's one-hour minimum lifetime
+ * means no expiry can be moved inside that window, and a tombstone only
+ * follows expiresAt. A refusal is never cached.
  */
 let liveVoiceCheck: { channelId: string; until: number } | null = null;
 async function liveVoiceChannel(): Promise<string | null> {
   const channelId = activeVoiceChannel(socket);
   if (!channelId) return null;
-  if (liveVoiceCheck?.channelId === channelId && liveVoiceCheck.until > Date.now()) return channelId;
+  if (liveVoiceCheck?.channelId === channelId && liveVoiceCheck.until > performance.now()) return channelId;
   const serverId = socket.currentVoiceServer ?? '';
   // A group-DM call (SFU room with no server) has no channel lifecycle; the
   // SFU authorizes it by group membership on every operation.
   if (!serverId) return channelId;
-  if (await channelLiveForMedia(channelId, serverId)) {
-    liveVoiceCheck = { channelId, until: Date.now() + VOICE_LIVE_RECHECK_MS };
+  const sentAt = performance.now();
+  const window = await channelMediaLiveWindow(channelId, serverId);
+  if (window.live) {
+    const reuse = Math.min(VOICE_LIVE_RECHECK_MS, window.remainingMs ?? VOICE_LIVE_RECHECK_MS);
+    liveVoiceCheck = { channelId, until: sentAt + reuse };
     return channelId;
   }
   liveVoiceCheck = null;
@@ -280,6 +289,10 @@ async function signalAllowed(targetSocketId: unknown): Promise<string | null> {
         socket.emit('voice:join-rejected', { channelId, requestId, code: 'FORBIDDEN' });
         return;
       }
+
+      // Live media ends at the channel's expiry instant (mediaExpiryEviction.ts).
+      await armMediaExpiryEviction(io, channelId, serverId);
+      if (generation !== voiceJoinGeneration) return;   // a leave or a newer join owns the cleanup
 
       // Publish authoritative admission BEFORE asking this client to create
       // offers. Previously `voice:existing-peers` was emitted while

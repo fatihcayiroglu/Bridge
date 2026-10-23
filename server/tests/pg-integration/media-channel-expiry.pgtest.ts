@@ -15,7 +15,10 @@
  *     held on the roster lock across expiry), stage:leave cleanup, and the
  *     Stage helpers the SFU and video grid rely on;
  *   · SFU channel authority (every sfu:* operation re-checks it);
- *   · voice messages: upload and transcript read.
+ *   · voice messages: upload and transcript read;
+ *   · the expiry instant itself: live media is evicted when `expiresAt`
+ *     passes with no expiry worker running, and an admitted peer's cached
+ *     liveness never outlives `expiresAt`.
  * Each refusal is paired with a positive control on a permanent channel and on
  * an ephemeral channel that is still live.
  */
@@ -51,6 +54,10 @@ const { registerStageHandlers, isStageParticipant, isStageSpeaker, canManageStag
 const { authorizeChannelMediaRoom } = require('../../socket/handlers/mediasoup/authority') as typeof import('../../socket/handlers/mediasoup/authority');
 const { cache, isRedisAvailable, applyAdapter, disconnect } = require('../../lib/redisAdapter') as typeof import('../../lib/redisAdapter');
 const { channelLiveForMedia } = require('../../lib/channelContentAvailability') as typeof import('../../lib/channelContentAvailability');
+const { registerLocalVoiceEvictor } = require('../../lib/liveMembership') as typeof import('../../lib/liveMembership');
+const { evictLocalVoiceSessions } = require('../../socket/voiceEviction') as typeof import('../../socket/voiceEviction');
+const { __armedMediaExpiryForTest, __resetMediaExpiryEvictionForTest } =
+  require('../../socket/mediaExpiryEviction') as typeof import('../../socket/mediaExpiryEviction');
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 const db = require('../../db/loader').default;
@@ -132,13 +139,26 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
         leave: room => socket.leave(room),
         to: room => socket.to(room),
       } as Observed;
+      // The production evictor (socket/voiceEviction.ts) works on the real
+      // Socket instances of this node; keep the voice fields on the real socket
+      // so it sees what the handlers set.
+      const voiceFields = socket as unknown as Pick<Observed, 'currentVoiceChannel' | 'currentVoiceServer'>;
+      for (const field of ['currentVoiceChannel', 'currentVoiceServer'] as const) {
+        Object.defineProperty(observed, field, {
+          get: () => voiceFields[field],
+          set: (value: string | null | undefined) => { voiceFields[field] = value; },
+        });
+      }
       sockets.set(socket.id, { real: socket, observed });
       const userId = String(socket.handshake.auth.userId);
       const user = { _id: userId, username: userId, displayName: userId, avatarColor: '#123456' };
+      // The rooms every authenticated socket of a server member holds.
+      void socket.join([`user:${userId}`, `server:${SERVER}`]);
       registerVoiceHandlers(observed as never, io as never, user);
       registerStageHandlers(observed, io as unknown as ClusterServer, user as never);
       socket.emit('test:ready');
     });
+    registerLocalVoiceEvictor(evictLocalVoiceSessions);
     if (REDIS_TEST_URL) {
       expect(await applyAdapter(io)).toBe(true);
       expect(isRedisAvailable()).toBe(true);
@@ -146,8 +166,9 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
     await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
     url = 'http://127.0.0.1:' + (http.address() as AddressInfo).port;
   });
-  afterEach(() => { for (const c of clients.splice(0)) c.close(); sockets.clear(); });
+  afterEach(() => { for (const c of clients.splice(0)) c.close(); sockets.clear(); __resetMediaExpiryEvictionForTest(); });
   afterAll(async () => {
+    registerLocalVoiceEvictor(null);
     await io.close();
     await cleanup();
     if (REDIS_TEST_URL) {
@@ -472,6 +493,95 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
       expect(await authorizeChannelMediaRoom(OWNER, permanent, 'another-server')).toBeNull();
       expect(await authorizeChannelMediaRoom(OWNER, text, SERVER)).toBeNull();
       expect(await authorizeChannelMediaRoom(OWNER, P + '-no-such-channel', null)).toBe('no-channel');
+    });
+  });
+
+  describe('the expiry instant (no expiry worker runs in this suite)', () => {
+    /** A live channel whose expiresAt is `inMs` after the DATABASE clock; returns when that is on this process's monotonic clock. */
+    async function expiringSoon(inMs: number): Promise<{ id: string; expiresAtLocal: number }> {
+      const id = `${P}-voice-soon-${++seq}`;
+      const sentAt = performance.now();
+      const [row] = await q(
+        `INSERT INTO channels (_id,"serverId",name,type,"createdAt","expiresAt","expiryVersion")
+         VALUES ($1,$2,$1,'voice',1,FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT + $3,1)
+         RETURNING "expiresAt", FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT AS "dbNow"`,
+        [id, SERVER, inMs]);
+      return { id, expiresAtLocal: sentAt + (Number(row.expiresAt) - Number(row.dbNow)) };
+    }
+    const until = (localDeadline: number) => new Promise(r => setTimeout(r, Math.max(0, localDeadline - performance.now())));
+
+    it('live voice is evicted when expiresAt passes, not when a worker later claims the channel', async () => {
+      const { id: ch, expiresAtLocal } = await expiringSoon(1_500);
+      const a = await connect(OWNER);
+      const b = await connect(PEER);
+      expect(await voiceJoin(a.client, ch)).toEqual(['voice:joined']);
+      expect(await voiceJoin(b.client, ch)).toEqual(['voice:joined']);
+      expect(__armedMediaExpiryForTest()).toContain(ch);
+      const evicted = { a: record(a.client, ['voice:evicted']), b: record(b.client, ['voice:evicted']) };
+
+      // Still live shortly before the instant: nobody is evicted early.
+      await until(expiresAtLocal - 250);
+      expect([evicted.a.length, evicted.b.length]).toEqual([0, 0]);
+      expect((await __getVoiceRoomForTest(ch)).map(p => p.userId).sort()).toEqual([OWNER, PEER].sort());
+
+      // Shortly after it, both are out: told, off the roster, out of the room.
+      await until(expiresAtLocal + 750);
+      expect(evicted.a.map(e => e.payload)).toEqual([{ channelId: ch }]);
+      expect(evicted.b.map(e => e.payload)).toEqual([{ channelId: ch }]);
+      expect(await __getVoiceRoomForTest(ch)).toEqual([]);
+      for (const side of [a, b]) {
+        expect(side.server.rooms.has(`voice:${ch}`)).toBe(false);
+        expect(side.server.currentVoiceChannel ?? null).toBeNull();
+      }
+    });
+
+    it('an expiry moved later before the instant re-arms instead of evicting (positive control)', async () => {
+      const { id: ch, expiresAtLocal } = await expiringSoon(1_000);
+      const a = await connect(OWNER);
+      expect(await voiceJoin(a.client, ch)).toEqual(['voice:joined']);
+      const evicted = record(a.client, ['voice:evicted']);
+      await q(`UPDATE channels SET "expiresAt" = "expiresAt" + $2, "expiryVersion" = "expiryVersion" + 1 WHERE _id = $1`, [ch, HOUR]);
+      await until(expiresAtLocal + 750);
+      expect(evicted).toEqual([]);
+      expect((await __getVoiceRoomForTest(ch)).map(p => p.userId)).toEqual([OWNER]);
+      expect(__armedMediaExpiryForTest()).toContain(ch);   // re-armed for the new expiry
+    });
+
+    it('a relay just after expiresAt is refused even though liveness was confirmed just before it', async () => {
+      const { id: ch, expiresAtLocal } = await expiringSoon(1_200);
+      const a = await connect(OWNER);
+      const b = await connect(PEER);
+      expect(await voiceJoin(a.client, ch)).toEqual(['voice:joined']);
+      expect(await voiceJoin(b.client, ch)).toEqual(['voice:joined']);
+      // Isolate the relay check from the expiry-instant eviction above.
+      __resetMediaExpiryEvictionForTest();
+      const received = record(b.client, ['webrtc:offer']);
+      const offer = () => call(a.client, 'webrtc:offer', { targetSocketId: b.client.id, offer: { sdp: 'v=0', type: 'offer' }, channelId: ch });
+
+      await offer();                                   // live: delivered, and liveness confirmed
+      const confirmedAt = performance.now();
+      await new Promise(r => setTimeout(r, 50));
+      expect(received).toHaveLength(1);
+      expect(expiresAtLocal - confirmedAt).toBeGreaterThan(0);
+
+      await until(expiresAtLocal + 150);
+      // Well inside the two-second reuse window of that confirmation…
+      expect(performance.now() - confirmedAt).toBeLessThan(2_000);
+      await offer();
+      await new Promise(r => setTimeout(r, 50));
+      // …yet past expiresAt: refused, and the sender is dropped.
+      expect(received).toHaveLength(1);
+      expect((await __getVoiceRoomForTest(ch)).map(p => p.userId)).not.toContain(OWNER);
+      expect(a.server.rooms.has(`voice:${ch}`)).toBe(false);
+    });
+
+    it('Stage and permanent channels: a live stage arms one timer, a permanent channel none', async () => {
+      const stage = await channel('stage');
+      const permanent = await channel('voice', 'permanent');
+      const { client } = await connect();
+      expect(await call(client, 'stage:join', { channelId: stage })).toMatchObject({ ok: true });
+      expect(await voiceJoin(client, permanent)).toEqual(['voice:joined']);
+      expect(__armedMediaExpiryForTest()).toEqual([stage]);
     });
   });
 

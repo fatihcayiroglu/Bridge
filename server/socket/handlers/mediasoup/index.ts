@@ -21,6 +21,7 @@ import logger from '../../../lib/logger';
 import { isolateSocketHandler } from '../../handlerIsolation';
 import { isStageParticipant, isStageSpeaker } from '../stage';
 import { authorizeChannelMediaRoom } from './authority';
+import { armMediaExpiryEviction } from '../../mediaExpiryEviction';
 
 export { initMediasoup, isSFUReady } from './workers';
 export { sfuRooms, sfuPeers, cleanupRoom } from './rooms';
@@ -258,6 +259,10 @@ export function registerSFUHandlers(
         emitSfuError(socket, 'join', requestId, 'FORBIDDEN', 'Bu medya odasına katılma yetkiniz yok.');
         return;
       }
+
+      // Live media ends at the channel's expiry instant (mediaExpiryEviction.ts).
+      await armMediaExpiryEviction(io, channelId, actualServerId);
+      if (generation !== sfuJoinGeneration) return;   // a leave or a newer join owns the cleanup
 
       const existingPeers = [];
       for (const [sid, p] of room.peers) {

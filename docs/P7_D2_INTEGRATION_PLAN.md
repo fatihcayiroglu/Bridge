@@ -112,6 +112,11 @@ operation. It also still let admitted peers signal and Stage hosts mutate
 roles, and served the voice HTTP routes and voice-message transcripts. A
 join that waited on the roster lock while the channel expired was admitted
 too. Each path now reads the channel's lifecycle from PostgreSQL (row, tenant,
-tombstone, database clock) and fails closed; no migration. Real PostgreSQL +
-Socket.IO + Redis evidence, negative controls and the remaining bounded window
-are in [media expiry](P7_D2_MEDIA_EXPIRY_20261023.md).
+tombstone, database clock) and fails closed; no migration. Live media is
+evicted at the authoritative `expiresAt` by a per-channel timer on the
+admitting node, not only at the worker's claim. Relay liveness reuse never
+outlives `expiresAt`. Revocation is still **not immediate**: a modified P2P
+client pair that ignores `voice:evicted` keeps its direct connection, and the
+timer is best effort with the worker as backstop. Real PostgreSQL + Socket.IO
++ Redis evidence, negative controls and the exact residuals are in
+[media expiry](P7_D2_MEDIA_EXPIRY_20261023.md).

@@ -17,6 +17,7 @@ import { isMemberTimedOut } from '../../lib/memberTimeout';
 import { cache, isRedisAvailable } from '../../lib/redisAdapter';
 import { revokeStagePublishers } from './mediasoup/rooms';
 import { channelLiveForMedia } from '../../lib/channelContentAvailability';
+import { armMediaExpiryEviction } from '../mediaExpiryEviction';
 
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -259,11 +260,14 @@ export function registerStageHandlers(
     if (!validateSocketPayload(payload, socketSchemas.stageChannelId).valid) { ack?.({ ok: false, code: 'STAGE_UNAVAILABLE' }); return; }
     const { channelId } = payload as { channelId: string };
     return (async () => {
-      if (!(await _stageAccess(channelId, user._id))) { ack?.({ ok: false, code: 'STAGE_UNAVAILABLE' }); return; }
+      const access = await _stageAccess(channelId, user._id);
+      if (!access) { ack?.({ ok: false, code: 'STAGE_UNAVAILABLE' }); return; }
       const room = await getOrCreateRoom(channelId);
       joinedStageChannels.add(channelId);
       socket.join(`stage:${channelId}`);
       if (!(await keepAdmittedStageJoin(channelId))) { ack?.({ ok: false, code: 'STAGE_UNAVAILABLE' }); return; }
+      // Live Stage media ends at the channel's expiry instant (mediaExpiryEviction.ts).
+      await armMediaExpiryEviction(io, channelId, access.serverId);
       socket.emit('stage:state', { channelId, ...room });
       ack?.({ ok: true, canManage: await _isAuthorized(channelId, user._id, room) });
     })();
