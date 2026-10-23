@@ -52,6 +52,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Native WebDriver transport regression tests
+        run: node --test e2e/ios/webdriver-http.test.js
       - name: Install dependencies
         env:
           # npm normalizes GitHub Git dependencies to SSH in its lockfile.

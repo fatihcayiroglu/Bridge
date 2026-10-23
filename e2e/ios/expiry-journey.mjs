@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { webdriverRequest } from './webdriver-http.mjs';
 
 const require = createRequire(import.meta.url);
 const { Client } = require('../../server/node_modules/pg');
@@ -28,17 +29,7 @@ async function until(predicate, label, timeout = 30_000) {
   throw new Error(`Timed out: ${label}`);
 }
 
-async function wd(method, route, body, timeout = 90_000) {
-  const response = await fetch(`${APPIUM}${route}`, {
-    method, headers: { 'Content-Type': 'application/json' },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    signal: AbortSignal.timeout(timeout),
-  });
-  const data = await response.json();
-  // Do not archive command arguments or driver messages: they may contain credentials.
-  assert(response.ok && !data.value?.error, `WebDriver ${route.split('/').at(-1)} failed (${response.status}; ${data.value?.error || 'HTTP'})`);
-  return data.value;
-}
+const wd = (method, route, body, timeout) => webdriverRequest(APPIUM, method, route, body, timeout);
 const command = (method, route, body) => wd(method, `/session/${session}${route}`, body);
 const js = (fn, ...args) => command('POST', '/execute/sync', { script: `return (${fn.toString()})(...arguments);`, args });
 const native = (name, args = {}) => command('POST', '/execute/sync', { script: `mobile: ${name}`, args: [args] });

@@ -61,3 +61,12 @@ Inspection of the installed driver's `appium-ios-simulator` startup confirmed
 that its GUI default shuts down an already booted headless simulator and restarts
 it with a window. The workflow's early boot is headless. `isHeadless: true` now
 preserves that warmed simulator rather than discarding the startup preparation.
+
+The next native run (`62fae462`, run 39933990825) passed simulator preparation
+but its Node `fetch` request failed during session creation after 342 seconds,
+before any product assertion. An independent fetch header deadline can preempt
+the explicit 840-second session deadline. The WebDriver client now uses Node's
+HTTP transport with one abort deadline and bounded/redacted response handling.
+Executable transport tests cover delayed headers, aborting stalled requests,
+invalid/oversized responses, W3C failures and credential redaction. The native
+journey still must pass; neither startup run is expiry acceptance evidence.

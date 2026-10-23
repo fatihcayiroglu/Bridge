@@ -96,6 +96,8 @@ const RUNNERS = [
 // çalıştırmak yerine KENDİ yapılandırma/komut kaynakları okunur ve belirtilir.
 // Yapılandırma değişirse bu liste de değişmelidir — o yüzden kaynak yazılıdır.
 const CONFIG_OWNERS = [
+  // mobile-ios.yml and quality-gate.yml execute this exact standalone Node suite.
+  { owner: 'iOS harness (node:test)', prefix: 'e2e/ios/', suffixes: ['webdriver-http.test.js'] },
   // package.json:33 test:release-integrity; quality-gate.yml ve quality-gate.sh
   // bu komutu ayrıca doğrudan çağırır.
   { owner: 'release integrity (node:test)', prefix: 'scripts/', suffixes: ['release-integrity.test.js', 'product-surface-contract.test.js', 'final23-adversarial-contract.test.js', 'backup-tools.test.js', 'require-no-skipped-tests.test.js', 'provision-portable-source-key.test.js', 'portable-trust-registry.test.js', 'check-svelte-boundary.test.js'] },
