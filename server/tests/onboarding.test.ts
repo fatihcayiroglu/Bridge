@@ -230,3 +230,73 @@ describe('Onboarding canonical scope + idempotent completion', () => {
     expect(res.status).toBe(200); expect(res.body).toMatchObject({required:true,completed:true,completedAt:123});
   });
 });
+
+// P7 B1: the member's name is the only member-controlled text in Bridge's
+// system welcome; it must not carry what the server's AutoMod refuses.
+describe('Onboarding welcome: the member name passes the server AutoMod content rules', () => {
+  let uid: string;
+  let sid: string;
+  let welcome: string;
+  let auth: string;
+  let app3: ReturnType<typeof buildApp>;
+  beforeEach(async () => {
+    db._reset?.(); jest.clearAllMocks(); app3 = buildApp();
+    uid = uuidv4(); sid = uuidv4(); welcome = uuidv4(); auth = tok(uid);
+    await db.users.insert({ _id: uid, username: 'nick-user', displayName: 'Nick User', tokenVersion: 0 });
+    await db.servers.insert({ _id: sid, name: 'Moderated', ownerId: 'owner' });
+    await db.channels.insert({ _id: welcome, serverId: sid, name: 'welcome', type: 'text' });
+    await db.serverOnboarding.insert({ _id: uuidv4(), serverId: sid, enabled: true, welcomeChannelId: welcome,
+      welcomeMessage: 'Welcome {user}!', defaultRoles: '[]', questions: '[]', createdAt: Date.now() });
+    perms.resolvePermissions.mockResolvedValue(8); perms.hasPermission.mockReturnValue(true);
+  });
+  const rule = (config: Record<string, unknown>, type = 'blocked_words') => db.automodRules.insert({
+    _id: uuidv4(), serverId: sid, type, enabled: true, config: JSON.stringify(config), createdAt: Date.now(),
+  });
+  const complete = async (nickname: string | null, roles: string[] = []) => {
+    await db.members.insert({ userId: uid, serverId: sid, roles, nickname });
+    const res = await request(app3).post(`/api/servers/${sid}/onboarding/complete`).set('Authorization', `Bearer ${auth}`).send({ answers: {} });
+    expect(res.status).toBe(200);
+    return (await db.messages.find({ channelId: welcome })).map((m: { content: string }) => m.content);
+  };
+
+  it('withholds a nickname that a blocking rule refuses; the refused word is never posted', async () => {
+    await rule({ words: ['slur'], action: 'delete' });
+    expect(await complete('xSLURx')).toEqual(['Welcome @yeni üye!']);
+  });
+
+  it('matches what a reader sees: an invisible character cannot hide the word', async () => {
+    await rule({ words: ['slur'] });
+    expect(await complete('sl​ur')).toEqual(['Welcome @yeni üye!']);
+  });
+
+  it('also covers the display name when there is no server nickname', async () => {
+    await rule({ words: ['nick'] });
+    expect(await complete(null)).toEqual(['Welcome @yeni üye!']);
+  });
+
+  it('keeps an acceptable name, a timeout-only match and a member with an exempt role (positive controls)', async () => {
+    expect(await complete('Friendly')).toEqual(['Welcome @Friendly!']);
+    db._reset?.();
+    await db.users.insert({ _id: uid, username: 'nick-user', displayName: 'Nick User', tokenVersion: 0 });
+    await db.servers.insert({ _id: sid, name: 'Moderated', ownerId: 'owner' });
+    await db.channels.insert({ _id: welcome, serverId: sid, name: 'welcome', type: 'text' });
+    await db.serverOnboarding.insert({ _id: uuidv4(), serverId: sid, enabled: true, welcomeChannelId: welcome,
+      welcomeMessage: 'Welcome {user}!', defaultRoles: '[]', questions: '[]', createdAt: Date.now() });
+    await rule({ words: ['slur'], action: 'timeout', timeoutMs: 60_000 });
+    await rule({ words: ['badge'], exemptRoles: ['trusted'] });
+    expect(await complete('slur badge', ['trusted'])).toEqual(['Welcome @slur badge!']);
+    // The member sent nothing: no timeout is applied for a name.
+    expect((await db.members.findOne({ userId: uid, serverId: sid })).timeoutUntil ?? null).toBeNull();
+  });
+
+  it('a spam rule neither counts the welcome nor withholds the name', async () => {
+    await rule({ maxMessages: 1, windowSecs: 60 }, 'spam_messages');
+    expect(await complete('Friendly')).toEqual(['Welcome @Friendly!']);
+  });
+
+  it('posts no welcome when the rules cannot be read (fail closed), and onboarding still completes', async () => {
+    await db.automodRules.insert({ _id: uuidv4(), serverId: sid, type: 'blocked_words', enabled: true, config: '{not json', createdAt: Date.now() });
+    expect(await complete('anything')).toEqual([]);
+    expect(await db.onboardingCompletions.find({ serverId: sid, userId: uid })).toHaveLength(1);
+  });
+});
