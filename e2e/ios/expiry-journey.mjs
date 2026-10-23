@@ -38,9 +38,25 @@ const nativeContext = () => command('POST', '/context', { name: 'NATIVE_APP' });
 async function webContext() {
   await until(async () => {
     const contexts = await command('GET', '/contexts');
-    for (const context of contexts.filter(value => typeof value === 'string' && value.startsWith('WEBVIEW'))) {
+    const views = contexts.filter(value => typeof value === 'string' && value.startsWith('WEBVIEW'));
+    const probe = {
+      contextCount: contexts.length, webviewCount: views.length,
+      maxWebviewCount: Math.max(facts.webviewProbe?.maxWebviewCount || 0, views.length),
+      switched: false, packagedOrigin: false, capacitorScheme: false,
+      localhost: false, bridgeDom: false, nativeIOS: false,
+    };
+    facts.webviewProbe = probe;
+    for (const context of views) {
       await command('POST', '/context', { name: context });
-      if (await js(() => location.origin === 'capacitor://localhost' && !!document.querySelector('#auth-screen, #app'))) return true;
+      Object.assign(probe, await js(() => ({
+        switched: true,
+        packagedOrigin: location.origin === 'capacitor://localhost',
+        capacitorScheme: location.protocol === 'capacitor:',
+        localhost: location.hostname === 'localhost',
+        bridgeDom: !!document.querySelector('#auth-screen, #app'),
+        nativeIOS: window.Capacitor?.getPlatform() === 'ios',
+      })));
+      if (probe.packagedOrigin && probe.bridgeDom) return true;
     }
     return false;
   }, 'Bridge packaged WKWebView context', 120_000);
@@ -157,6 +173,7 @@ try {
     // infrastructure startup only; all product assertion deadlines stay fixed.
     'appium:simulatorStartupTimeout': 480_000,
     'appium:webviewConnectTimeout': 60_000,
+    'appium:fullContextList': false,
   } } }, 840_000);
   session = created.sessionId;
   assert(session, 'Native XCUITest session required');

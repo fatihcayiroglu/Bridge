@@ -5,6 +5,9 @@ export IOS_EVIDENCE_DIR="${IOS_EVIDENCE_DIR:-e2e/ios/results}"
 mkdir -p "$IOS_EVIDENCE_DIR"
 export IOS_APP_PATH="${IOS_APP_PATH:-$(find build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' -print -quit)}"
 test -d "$IOS_APP_PATH"
+# Assert the built app's existing Debug setting, rather than silently enabling
+# release inspection or accepting an uninspectable build as journey evidence.
+test "$(/usr/libexec/PlistBuddy -c 'Print :CAPACITOR_DEBUG' "$IOS_APP_PATH/Info.plist")" = true
 export IOS_SIMULATOR_UDID="${IOS_SIMULATOR_UDID:-$(xcrun simctl list devices available -j | python3 -c '
 import json,sys
 devices=json.load(sys.stdin)["devices"]

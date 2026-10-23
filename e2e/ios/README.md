@@ -70,3 +70,11 @@ HTTP transport with one abort deadline and bounded/redacted response handling.
 Executable transport tests cover delayed headers, aborting stalled requests,
 invalid/oversized responses, W3C failures and credential redaction. The native
 journey still must pass; neither startup run is expiry acceptance evidence.
+
+Run 39987898065 (`8484f73c`) successfully created its native session, then failed
+the packaged WebView context assertion. The harness now preserves only counts
+and booleans describing context discovery and the expected packaged document;
+no URL, page title, account content or credentials are recorded. It also asserts
+the compiled app's existing `CAPACITOR_DEBUG=true` before automation starts.
+The required context and product assertions are unchanged; this diagnostic
+change is not an accepted expiry journey or a retry of an unchanged test.
