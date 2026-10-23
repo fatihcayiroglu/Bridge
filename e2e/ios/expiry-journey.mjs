@@ -143,11 +143,17 @@ async function localCounts(userId, serverId, channelId) {
             draft: rows.filter(row => row.namespace === 'draft' && row.recordId === draftId).length,
             history: rows.filter(row => row.namespace === 'history' && row.recordId === historyId).length
           };
-          db.close(); done({ ok: true, counts });
+          const stats = {
+            totalRecords: query.result.length, recordsForUser: rows.length,
+            draftsForUser: rows.filter(row => row.namespace === 'draft').length,
+            historiesForUser: rows.filter(row => row.namespace === 'history').length,
+          };
+          db.close(); done({ ok: true, counts, stats });
         };
       };`,
   });
   assert.equal(result.ok, true, 'Encrypted IndexedDB must be readable; memory fallback is insufficient evidence');
+  facts.storageProbe = { ...result.stats, matchingDrafts: result.counts.draft, matchingHistories: result.counts.history };
   return result.counts;
 }
 
@@ -286,6 +292,19 @@ try {
   }, null, 2));
   console.log('PASS D2L01-iOS: native background/resume, expired history and draft purge, permanent-channel control');
 } catch (error) {
+  if (session && facts.stage === 'permanent-draft') {
+    try {
+      facts.draftEnvironment = await js(() => ({
+        secureContext: globalThis.isSecureContext === true,
+        webCrypto: !!globalThis.crypto?.subtle,
+        indexedDB: !!globalThis.indexedDB,
+        composerCount: document.querySelectorAll('#msg-input').length,
+        composerHasText: (document.querySelector('#msg-input')?.value || '').length > 0,
+        composerEnabled: document.querySelector('#msg-input')?.disabled === false,
+        activeChannelPresent: !!document.querySelector('.ch-item.active'),
+      }));
+    } catch { facts.draftDiagnosticFailed = true; }
+  }
   if (session && facts.stage === 'packaged-webview') {
     // The fixture has not logged in yet. Keep only native state/shape facts,
     // never the source tree, account data or WebDriver argument payloads.

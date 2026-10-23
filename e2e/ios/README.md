@@ -89,3 +89,10 @@ The selected WebView must also match the foreground `com.bridge.app` process
 PID, the packaged origin, the Bridge DOM and Capacitor's native iOS identity.
 These stricter checks and the unchanged complete lifecycle assertions must pass
 in a new run; discovery diagnosis alone is not D2 acceptance.
+
+Run 39995680530 (`0b3ea23a`) passed those identity/origin checks, logged in through
+the native app and selected the permanent fixture channel. It then failed to
+observe an encrypted draft record. This remains a real acceptance failure.
+The next diagnostic preserves only record counts and browser capability/DOM
+booleans to distinguish absent encryption/storage from a composer-context issue;
+the mandatory persisted-draft assertion remains unchanged.
