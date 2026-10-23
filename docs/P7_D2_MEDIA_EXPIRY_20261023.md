@@ -58,12 +58,21 @@ Missing, tenant-mismatched, expired, tombstoned and unverifiable
 
 ## Evidence (local, real services)
 
-- `tests/pg-integration/media-channel-expiry.pgtest.ts`, 10 cases. It covers
+- `tests/pg-integration/media-channel-expiry.pgtest.ts`, 21 cases. It covers
   every row above plus positive controls on permanent and live ephemeral
   channels. It passes with in-memory rosters, and with real Redis through the
-  production Socket.IO adapter (`REDIS_TEST_URL`, as in CI).
-  - **Negative control:** without the product change, 8 of 10 fail. Only the
-    two positive controls pass.
+  production Socket.IO adapter (`REDIS_TEST_URL`, as in CI). It also covers:
+  - each of the six relay paths (`webrtc:offer`/`answer`/`ice-candidate`,
+    `voice:state-update`, `voice:activity`, `voice:e2e-key`) on its own,
+    delivered while live and refused after expiry;
+  - the database clock deciding when the application clock is skewed two
+    hours either way;
+  - four Stage mutations (`setRole`, `setTopic`, `setLive`, `promote`) held on
+    the roster lock while the channel expires: refused, roster unchanged.
+- **Negative controls:**
+  - without the product change, 8 of the first 10 cases fail;
+  - without the in-lock re-check, exactly the four lock-held cases fail;
+  - without the relay check, the six per-path cases and the stale-peer case fail.
 - **Full real-PG + Redis suite:** 364 passed / 14 skipped. The skipped cases
   need MinIO and pgvector, which CI provides.
 - **Server unit tests:** 710 suites / 13,154 tests, with coverage thresholds
@@ -87,3 +96,15 @@ Missing, tenant-mismatched, expired, tombstoned and unverifiable
   `expiresAt` can still store its object. The write barrier then refuses its
   message row and the route removes the voice row. This is the existing
   two-table rollback, unchanged here.
+
+## Relation to the interrupted Codex session
+
+A Codex session found the same class of gaps on 2026-10-23 and reported 21
+real PostgreSQL/Redis/Socket.IO cases for its fix. That fix and its tests were
+never committed or pushed: no branch on GitHub contains them, so they could not
+be recovered. This branch is an independent implementation. Its tests were
+extended to cover each category that session's log names:
+- HTTP reads and writes;
+- the six signaling paths;
+- application-clock rollback;
+- four Stage mutations held on a real Redis lock across expiry.

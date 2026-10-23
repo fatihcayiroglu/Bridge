@@ -9,9 +9,11 @@
  * that would otherwise admit or mutate state in a channel that no longer
  * exists:
  *   · voice:join (fresh, and one waiting on the roster lock while the channel
- *     expires), signaling from a peer admitted before expiry, voice HTTP;
- *   · stage:join, the Stage mutations of an already-joined user, stage:leave
- *     cleanup, and the Stage helpers the SFU and video grid rely on;
+ *     expires), each of the six relay paths from a peer admitted before
+ *     expiry, voice HTTP, and the database (not application) clock;
+ *   · stage:join, the Stage mutations of an already-joined user (also while
+ *     held on the roster lock across expiry), stage:leave cleanup, and the
+ *     Stage helpers the SFU and video grid rely on;
  *   · SFU channel authority (every sfu:* operation re-checks it);
  *   · voice messages: upload and transcript read.
  * Each refusal is paired with a positive control on a permanent channel and on
@@ -48,6 +50,7 @@ const { registerStageHandlers, isStageParticipant, isStageSpeaker, canManageStag
   require('../../socket/handlers/stage') as typeof import('../../socket/handlers/stage');
 const { authorizeChannelMediaRoom } = require('../../socket/handlers/mediasoup/authority') as typeof import('../../socket/handlers/mediasoup/authority');
 const { cache, isRedisAvailable, applyAdapter, disconnect } = require('../../lib/redisAdapter') as typeof import('../../lib/redisAdapter');
+const { channelLiveForMedia } = require('../../lib/channelContentAvailability') as typeof import('../../lib/channelContentAvailability');
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 const db = require('../../db/loader').default;
@@ -263,6 +266,74 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
       expect(a.server.rooms.has(`voice:${ch}`)).toBe(false);
     });
 
+    // Each relay path, checked on its own: a fresh pair per path, no relay before
+    // expiry (so no reused liveness answer), one relay attempt after it.
+    const relays: Array<{ event: string; delivered: string; payload: (ch: string, target: { id: string; user: string }) => unknown }> = [
+      { event: 'webrtc:offer', delivered: 'webrtc:offer',
+        payload: (ch, t) => ({ targetSocketId: t.id, offer: { type: 'offer', sdp: 'v=0' }, channelId: ch }) },
+      { event: 'webrtc:answer', delivered: 'webrtc:answer',
+        payload: (ch, t) => ({ targetSocketId: t.id, answer: { type: 'answer', sdp: 'v=0' }, channelId: ch }) },
+      { event: 'webrtc:ice-candidate', delivered: 'webrtc:ice-candidate',
+        payload: (ch, t) => ({ targetSocketId: t.id, candidate: { candidate: 'c' }, channelId: ch }) },
+      { event: 'voice:state-update', delivered: 'voice:peer-state',
+        payload: ch => ({ channelId: ch, muted: true, deafened: false, screensharing: false, video: false }) },
+      { event: 'voice:activity', delivered: 'voice:activity',
+        payload: ch => ({ channelId: ch, speaking: true }) },
+      { event: 'voice:e2e-key', delivered: 'voice:e2e-key',
+        payload: (ch, t) => ({ channelId: ch, targetUserId: t.user, encryptedKey: 'opaque-wrapped-key' }) },
+    ];
+    for (const relay of relays) {
+      it(`${relay.event}: delivered while live, refused from a peer admitted before expiry`, async () => {
+        for (const phase of ['live', 'expired'] as const) {
+          const ch = await channel('voice');
+          const a = await connect(OWNER);
+          const b = await connect(PEER);
+          expect(await voiceJoin(a.client, ch)).toEqual(['voice:joined']);
+          expect(await voiceJoin(b.client, ch)).toEqual(['voice:joined']);
+          const received = record(b.client, [relay.delivered]);
+          if (phase === 'expired') await expire(ch);
+          await call(a.client, relay.event, relay.payload(ch, { id: String(b.client.id), user: PEER }));
+          await new Promise(r => setTimeout(r, 50));
+          expect([phase, received.length]).toEqual([phase, phase === 'live' ? 1 : 0]);
+          if (phase === 'expired') {
+            expect((await __getVoiceRoomForTest(ch)).map(p => p.userId)).not.toContain(OWNER);
+            expect(a.server.rooms.has(`voice:${ch}`)).toBe(false);
+          }
+          for (const c of [a.client, b.client]) c.close();
+        }
+      });
+    }
+
+    it('expiry is decided by the database clock, not the application clock', async () => {
+      const expired = await channel('voice');
+      await expire(expired);
+      const live = await channel('voice');
+      const { client } = await connect();
+      // Shift the application clock (it keeps advancing; a frozen clock would
+      // stall unrelated timers), never the database's.
+      const realDateNow = Date.now.bind(Date);
+      let skewMs = 0;
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => realDateNow() + skewMs);
+      try {
+        // An application clock two hours behind must not revive the expired channel.
+        skewMs = -2 * HOUR;
+        expect(await voiceJoin(client, expired)).toEqual(['voice:join-rejected']);
+        expect(await authorizeChannelMediaRoom(OWNER, expired, SERVER)).toBeNull();
+        // An application clock two hours ahead (past the live channel's expiry)
+        // must not expire a channel the database still holds live. Checked on the
+        // same authority without a client socket: the in-process Socket.IO
+        // client's own ping-expiry check reads Date.now() and would drop its
+        // connection on a forward jump (a harness artifact, not product state).
+        client.close();
+        skewMs = 2 * HOUR;
+        expect(await authorizeChannelMediaRoom(OWNER, live, SERVER)).toMatchObject({ serverId: SERVER, channelType: 'voice' });
+        expect(await channelLiveForMedia(live, SERVER)).toBe(true);
+        expect(await channelLiveForMedia(expired, SERVER)).toBe(false);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
     it('voice HTTP: state updates and the member list are refused for an expired channel, served for a live one', async () => {
       const live = await channel('voice');
       const gone = await channel('voice');
@@ -338,6 +409,50 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
       const ids = roster ? [...roster.speakers, ...roster.listeners].map(u => u.userId) : [];
       expect(ids).not.toContain(PEER);
     });
+  });
+
+  describe('stage mutations held on the roster lock across expiry', () => {
+    // The access check runs before the lock; the channel expires while the
+    // mutation waits for it. The mutation must be refused inside the lock and
+    // leave the roster unchanged (not applied, then published).
+    const roster = async (ch: string) => (isRedisAvailable()
+      ? await cache.getAuthoritative<{ speakers: Array<{ userId: string }>; listeners: Array<{ userId: string }>; topic: string; live: boolean }>(`stage:room:${ch}`)
+      : stageRooms.get(ch)) ?? null;
+    const mutations: Array<{ event: string; payload: (ch: string) => unknown; rejected: unknown }> = [
+      { event: 'stage:setRole', payload: ch => ({ channelId: ch, role: 'speaker' }), rejected: { ok: false, code: 'STAGE_ROLE_REJECTED' } },
+      { event: 'stage:setTopic', payload: ch => ({ channelId: ch, topic: 'written after expiry' }), rejected: { ok: false, code: 'STAGE_ACTION_REJECTED' } },
+      { event: 'stage:setLive', payload: ch => ({ channelId: ch, live: true }), rejected: { ok: false, code: 'STAGE_ACTION_REJECTED' } },
+      { event: 'stage:promote', payload: ch => ({ channelId: ch, targetUserId: PEER }), rejected: { ok: false, code: 'STAGE_ACTION_REJECTED' } },
+    ];
+    for (const mutation of mutations) {
+      it(`${mutation.event} that waited on the lock while the stage expired is refused and not applied`, async () => {
+        const ch = await channel('stage');
+        const host = await connect(OWNER);
+        const listener = await connect(PEER);
+        expect(await call(host.client, 'stage:join', { channelId: ch })).toMatchObject({ ok: true });
+        expect(await call(host.client, 'stage:setRole', { channelId: ch, role: 'speaker' })).toEqual({ ok: true });
+        expect(await call(listener.client, 'stage:join', { channelId: ch })).toMatchObject({ ok: true });
+        expect(await call(listener.client, 'stage:setRole', { channelId: ch, role: 'listener' })).toEqual({ ok: true });
+        const before = JSON.stringify(await roster(ch));
+
+        let release!: () => void;
+        const held = new Promise<void>(resolve => { release = resolve; });
+        let locked!: () => void;
+        const lockTaken = new Promise<void>(resolve => { locked = resolve; });
+        const holder = cache.withKeyLock(`stage-room:${ch}`, async () => { locked(); await held; },
+          { leaseSeconds: 10, waitMs: 10_000 });
+        await lockTaken;
+        // setRole by the listener; the other three by the host.
+        const actor = mutation.event === 'stage:setRole' ? listener.client : host.client;
+        const pending = call(actor, mutation.event, mutation.payload(ch));
+        await new Promise(r => setTimeout(r, 150));   // the pre-lock access check has passed
+        await expire(ch);
+        release();
+        await holder;
+        expect(await pending).toEqual(mutation.rejected);
+        expect(JSON.stringify(await roster(ch))).toBe(before);
+      });
+    }
   });
 
   describe('SFU channel authority', () => {
