@@ -129,6 +129,35 @@ describe('publishing a persisted message', () => {
     expect(mockLiveChannels).not.toHaveBeenCalled();
     expect(io.events).toEqual([]);
   });
+
+  it('checks both tenants before publishing a copied message', async () => {
+    const io = recordingIo();
+    const copied = { ...message, bridgedFrom: { channelId: 'source', serverId: 'source-server' } };
+    mockLiveChannels.mockResolvedValue(new Set(['c1', 'source']));
+    expect(await publishPersistedMessage(io, copied)).toBe(true);
+    expect(mockLiveChannels).toHaveBeenCalledWith([
+      { channelId: 'c1', serverId: 's1' }, { channelId: 'source', serverId: 'source-server' },
+    ]);
+    expect(io.events[0]?.payload).toBe(copied);
+  });
+
+  it.each([['c1'], ['source']])('withholds a copy unless both channels are live (%j)', async live => {
+    const io = recordingIo();
+    mockLiveChannels.mockResolvedValue(new Set([live]));
+    expect(await publishPersistedMessage(io, { ...message, bridgedFrom: { channelId: 'source', serverId: 'source-server' } })).toBe(false);
+    expect(io.events).toEqual([]);
+  });
+
+  it.each([
+    'not-an-object', 7, [], {}, { channelId: 'source' }, { serverId: 'source-server' },
+    { channelId: 7, serverId: 'source-server' }, { channelId: '', serverId: 'source-server' },
+    { channelId: 'source', serverId: 7 }, { channelId: 'source', serverId: '' },
+  ].map(bridgedFrom => ({ bridgedFrom })))('withholds malformed source metadata $bridgedFrom', async ({ bridgedFrom }) => {
+    const io = recordingIo();
+    expect(await broadcastPersistedMessage(io, { ...message, bridgedFrom })).toBe(false);
+    expect(mockLiveChannels).not.toHaveBeenCalled();
+    expect(io.events).toEqual([]);
+  });
 });
 
 describe('watchServerChannels', () => {

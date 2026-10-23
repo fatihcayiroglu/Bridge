@@ -57,6 +57,7 @@ import { channelRecordIsLive, channelAvailabilityErrors } from '../lib/channelLi
 import { machineContentRefused } from '../lib/messageContentPolicy';
 import { storedMessageText } from '../lib/storedText';
 import type { HandlerServer } from '../socket/handler-contracts';
+import { persistedMessageIsLive } from '../lib/channelActivity';
 
 let _io: IOServer | null = null;
 export function setIo(io: IOServer): void { _io = io; }
@@ -276,7 +277,7 @@ router.post('/:cid/messages/:mid/crosspost', authMiddleware, limits.api(), async
 
       // Emit yalnız transaction gerçekten yeni/healed bir message persist ettiyse.
       // Idempotent tekrar publish mevcut mesajı ikinci kez realtime'a basmaz.
-      if (_io && persisted.created) {
+      if (_io && persisted.created && await persistedMessageIsLive({ channelId: target._id, serverId: target.serverId, bridgedFrom })) {
         _io.to(`channel:${target._id}`).emit('new_message', {
           _id: persisted.bridgeMessageId,
           channelId: target._id,
