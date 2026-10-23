@@ -25,3 +25,12 @@ export async function channelContentAvailability(
     return 'unavailable';
   }
 }
+
+/**
+ * Live media admission (voice, Stage, SFU, voice messages). A channel that is
+ * expired, tombstoned, in another tenant, missing, or whose state cannot be
+ * verified is not live: media control paths fail closed.
+ */
+export async function channelLiveForMedia(channelId: string, serverId: string): Promise<boolean> {
+  return await channelContentAvailability(channelId, serverId) === 'live';
+}

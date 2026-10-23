@@ -13,11 +13,16 @@ import { Channels, Members } from '../../db/repositories';
 import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
 import { isolateSocketHandler } from '../handlerIsolation';
 import { envSafeInt } from '../../lib/envNumbers';
+import { channelLiveForMedia } from '../../lib/channelContentAvailability';
 
 
 const VOICE_ROOM_TTL_S = 4 * 60 * 60; // 4 saat — aktif ses kanalı
 // Sprint 121 FIX 20: Ses kanalı katılımcı limiti — env ile yapılandırılabilir
 const MAX_VOICE_PEERS = envSafeInt('MAX_VOICE_PEERS', 25, { min: 1, max: 10_000 });
+// P7 D2: how long an admitted peer's channel liveness may be reused before the
+// next relay re-reads PostgreSQL. Bounds the database load of ICE bursts; an
+// expiry is enforced on the first relay after this window at the latest.
+const VOICE_LIVE_RECHECK_MS = 2_000;
 
 // In-memory fallback (Redis yoksa / test ortamında)
 const _fallback = new Map<string, VoicePeer[]>();
@@ -130,6 +135,9 @@ async function mayJoinVoice(userId: string, channelId: string, claimedServerId: 
   if (!channel) return false;
   // Istemcinin bildirdigi serverId, kanalin GERCEK sunucusu olmalidir.
   if (String(channel.serverId) !== String(claimedServerId)) return false;
+  // P7 D2: an expired or tombstoned channel admits nobody, whatever the
+  // permissions say. Read from PostgreSQL (row, tombstone, database clock).
+  if (!await channelLiveForMedia(channelId, String(channel.serverId))) return false;
   if (!await Members.findOne(userId, String(channel.serverId)).catch(() => null)) return false;
   const perms = await resolvePermissions(userId, String(channel.serverId), channelId).catch(() => 0);
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS)) return false;
@@ -158,8 +166,35 @@ function activeVoiceChannel(socket: { currentVoiceChannel?: string | null; rooms
   return socket.rooms?.has(`voice:${channelId}`) ? channelId : null;
 }
 
-async function signalAllowed(socket: { id: string; currentVoiceChannel?: string; rooms?: Set<string> }, targetSocketId: unknown): Promise<string | null> {
-  const room = activeVoiceChannel(socket);
+/**
+ * P7 D2: the socket's voice room, only while its channel is still live.
+ * Admission alone is not enough: a peer admitted before the channel expired
+ * keeps its room until the expiry worker's eviction reaches it (a minute at
+ * most, best effort). A relay from such a peer is refused here and the peer
+ * leaves the room, so it can negotiate nothing further. A positive answer is
+ * reused for VOICE_LIVE_RECHECK_MS; a refusal is never cached.
+ */
+let liveVoiceCheck: { channelId: string; until: number } | null = null;
+async function liveVoiceChannel(): Promise<string | null> {
+  const channelId = activeVoiceChannel(socket);
+  if (!channelId) return null;
+  if (liveVoiceCheck?.channelId === channelId && liveVoiceCheck.until > Date.now()) return channelId;
+  const serverId = socket.currentVoiceServer ?? '';
+  // A group-DM call (SFU room with no server) has no channel lifecycle; the
+  // SFU authorizes it by group membership on every operation.
+  if (!serverId) return channelId;
+  if (await channelLiveForMedia(channelId, serverId)) {
+    liveVoiceCheck = { channelId, until: Date.now() + VOICE_LIVE_RECHECK_MS };
+    return channelId;
+  }
+  liveVoiceCheck = null;
+  // Idempotent; a join in flight re-validates its own room before admitting.
+  await leaveVoice(socket, channelId, serverId, io);
+  return null;
+}
+
+async function signalAllowed(targetSocketId: unknown): Promise<string | null> {
+  const room = await liveVoiceChannel();
   if (!room || typeof targetSocketId !== 'string' || !targetSocketId) return null;
   // Oda uyeligi ALAN GERCEGIDIR: Socket.IO ic yapilarini ( io.sockets.sockets )
   // yoklamak yerine, sesin kendi peer listesi kullanilir. Hem daha saglam hem
@@ -296,7 +331,7 @@ async function signalAllowed(socket: { id: string; currentVoiceChannel?: string;
   socket.on('webrtc:offer', isolateSocketHandler(socket, 'webrtc:offer', (payload: { targetSocketId: string; offer: unknown; channelId: string }) => {
     if (!validateSocketPayload(payload, socketSchemas.webrtcSignal).valid) return;
     return (async () => {
-      const t = await signalAllowed(socket as never, payload.targetSocketId);
+      const t = await signalAllowed(payload.targetSocketId);
       if (!t) return;
       io.to(t).emit('webrtc:offer', { fromSocketId: socket.id, offer: payload.offer, channelId: socket.currentVoiceChannel });
     })();
@@ -304,7 +339,7 @@ async function signalAllowed(socket: { id: string; currentVoiceChannel?: string;
   socket.on('webrtc:answer', isolateSocketHandler(socket, 'webrtc:answer', (payload: { targetSocketId: string; answer: unknown }) => {
     if (!validateSocketPayload(payload, socketSchemas.webrtcSignal).valid) return;
     return (async () => {
-      const t = await signalAllowed(socket as never, payload.targetSocketId);
+      const t = await signalAllowed(payload.targetSocketId);
       if (!t) return;
       io.to(t).emit('webrtc:answer', { fromSocketId: socket.id, answer: payload.answer });
     })();
@@ -312,7 +347,7 @@ async function signalAllowed(socket: { id: string; currentVoiceChannel?: string;
   socket.on('webrtc:ice-candidate', isolateSocketHandler(socket, 'webrtc:ice-candidate', (payload: { targetSocketId: string; candidate: unknown }) => {
     if (!validateSocketPayload(payload, socketSchemas.webrtcSignal).valid) return;
     return (async () => {
-      const t = await signalAllowed(socket as never, payload.targetSocketId);
+      const t = await signalAllowed(payload.targetSocketId);
       if (!t) return;
       io.to(t).emit('webrtc:ice-candidate', { fromSocketId: socket.id, candidate: payload.candidate });
     })();
@@ -324,16 +359,20 @@ async function signalAllowed(socket: { id: string; currentVoiceChannel?: string;
     // FAZ G6 — oda payload'dan ALINMAZ: kullanici yalniz GERCEKTEN icinde
     // oldugu odaya durum yayabilir. Aksi halde hic katilmadigi bir odaya
     // sahte mute/screenshare durumu enjekte edilebilirdi.
-    const channelId = activeVoiceChannel(socket);
-    if (!channelId) return;
-    socket.to(`voice:${channelId}`).emit('voice:peer-state', { socketId: socket.id, userId: user._id, muted, deafened, screensharing, video });
+    return (async () => {
+      const channelId = await liveVoiceChannel();
+      if (!channelId) return;
+      socket.to(`voice:${channelId}`).emit('voice:peer-state', { socketId: socket.id, userId: user._id, muted, deafened, screensharing, video });
+    })();
   }));
 
   socket.on('voice:activity', isolateSocketHandler(socket, 'voice:activity', (payload: { channelId: string; speaking: boolean }) => {
     if (!validateSocketPayload(payload, socketSchemas.voiceActivity).valid) return;
-    const room = activeVoiceChannel(socket);
-    if (!room) return;   // FAZ G6 — yalniz gercek odaya konusma sinyali
-    socket.to(`voice:${room}`).emit('voice:activity', { socketId: socket.id, userId: user._id, speaking: payload.speaking });
+    return (async () => {
+      const room = await liveVoiceChannel();
+      if (!room) return;   // FAZ G6 — yalniz gercek odaya konusma sinyali
+      socket.to(`voice:${room}`).emit('voice:activity', { socketId: socket.id, userId: user._id, speaking: payload.speaking });
+    })();
   }));
 
   // ── Voice E2E key exchange ─────────────────────────────────
@@ -343,7 +382,7 @@ async function signalAllowed(socket: { id: string; currentVoiceChannel?: string;
     return (async () => {
       // FAZ G6 — GONDEREN de odada olmalidir; aksi halde disaridan anahtar
       // enjekte edilebilirdi.
-      if (activeVoiceChannel(socket) !== channelId) return;
+      if (await liveVoiceChannel() !== channelId) return;
       const room   = await _loadRoom(channelId);
       if (!room.some(p => p.socketId === socket.id)) return;
       const target = room.find(p => p.userId === targetUserId);

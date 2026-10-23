@@ -103,3 +103,15 @@ channel locks, and retains the erasure exception. Shared publication checks both
 the copy's source and destination. Review its independent migration/catalog and
 concurrency evidence before integration; see
 [source-copy authority](P7_D2_COPY_AUTHORITY_20261023.md). Keep 085–092 ordered.
+
+The `claude/p7-d2-media-expiry` follow-up (stacked on
+`p7/d2-client-stale-20261023`) closes the live-media gaps. Voice, Stage and SFU
+never write through the message barrier, so before it an expired or tombstoned
+channel still admitted `voice:join`, `stage:join` and every `sfu:*`
+operation. It also still let admitted peers signal and Stage hosts mutate
+roles, and served the voice HTTP routes and voice-message transcripts. A
+join that waited on the roster lock while the channel expired was admitted
+too. Each path now reads the channel's lifecycle from PostgreSQL (row, tenant,
+tombstone, database clock) and fails closed; no migration. Real PostgreSQL +
+Socket.IO + Redis evidence, negative controls and the remaining bounded window
+are in [media expiry](P7_D2_MEDIA_EXPIRY_20261023.md).

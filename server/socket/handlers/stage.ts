@@ -16,6 +16,7 @@ import { isolateSocketHandler } from '../handlerIsolation';
 import { isMemberTimedOut } from '../../lib/memberTimeout';
 import { cache, isRedisAvailable } from '../../lib/redisAdapter';
 import { revokeStagePublishers } from './mediasoup/rooms';
+import { channelLiveForMedia } from '../../lib/channelContentAvailability';
 
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -83,6 +84,20 @@ async function _withRoomMutation<T>(channelId: string, fn: (room: StageRoom | nu
   return cache.withKeyLock(`stage-room:${channelId}`, async () => fn(await _loadRoom(channelId)));
 }
 
+/**
+ * P7 D2: a Stage mutation applies only while the channel is still live. The
+ * access check runs before the roster lock; a mutation that waited for the
+ * lock while the channel expired is refused here (null) instead of applied.
+ */
+async function _withLiveRoomMutation<T>(
+  channelId: string, serverId: string, fn: (room: StageRoom | null) => Promise<T> | T,
+): Promise<T | null> {
+  return cache.withKeyLock(`stage-room:${channelId}`, async () => {
+    if (!await channelLiveForMedia(channelId, serverId)) return null;
+    return fn(await _loadRoom(channelId));
+  });
+}
+
 function _emptyRoom(): StageRoom {
   return { speakers: [], listeners: [], topic: '', live: false };
 }
@@ -138,6 +153,8 @@ async function _stageAccess(channelId: string, userId: string, requireSpeak = fa
     const channel = await Channels.findById(channelId);
     const serverId = (channel as unknown as { serverId?: string } | null)?.serverId;
     if (!channel || channel.type !== 'stage' || !serverId) return null;
+    // P7 D2: an expired or tombstoned Stage admits and authorizes nobody.
+    if (!await channelLiveForMedia(channelId, serverId)) return null;
     const membership = await Members.findOne(userId, serverId);
     if (!membership || isMemberTimedOut(membership.timeoutUntil)) return null;
     const perms = await resolvePermissions(userId, serverId, channelId);
@@ -268,7 +285,7 @@ export function registerStageHandlers(
         speaking:    false,
         socketId:    socket.id,
       };
-      const room = await _withRoomMutation(channelId, async (existing) => {
+      const room = await _withLiveRoomMutation(channelId, access.serverId, async (existing) => {
         const next = existing ?? _emptyRoom();
         next.speakers = next.speakers.filter(u => u.userId !== user._id);
         next.listeners = next.listeners.filter(u => u.userId !== user._id);
@@ -277,6 +294,7 @@ export function registerStageHandlers(
         await _saveRoom(channelId, next);
         return next;
       });
+      if (!room) { ack?.({ ok: false, code: 'STAGE_ROLE_REJECTED' }); return; }
       if (role === 'listener') await _revokeStageMedia(io, channelId, user._id);
       io.to(`stage:${channelId}`).emit('stage:userJoined', { channelId, role, user: userObj });
       io.to(`stage:${channelId}`).emit('stage:state', { channelId, ...room });
@@ -289,8 +307,9 @@ export function registerStageHandlers(
     if (!validateSocketPayload(payload, socketSchemas.stageUpdateMute).valid) return;
     const { channelId, muted } = payload as { channelId: string; muted: boolean };
     return (async () => {
-      if (!(await _stageAccess(channelId, user._id)) || !_joined(socket, channelId)) return;
-      const changed = await _withRoomMutation(channelId, async (room) => {
+      const access = await _stageAccess(channelId, user._id);
+      if (!access || !_joined(socket, channelId)) return;
+      const changed = await _withLiveRoomMutation(channelId, access.serverId, async (room) => {
         if (!room) return false;
         const sp = room.speakers.find(u => u.userId === user._id);
         if (!sp) return false;
@@ -308,8 +327,9 @@ export function registerStageHandlers(
     if (!validateSocketPayload(payload, socketSchemas.stageSpeaking).valid) return;
     const { channelId, speaking } = payload as { channelId: string; speaking: boolean };
     return (async () => {
-      if (!(await _stageAccess(channelId, user._id)) || !_joined(socket, channelId)) return;
-      const nextSpeaking = await _withRoomMutation(channelId, async (room) => {
+      const access = await _stageAccess(channelId, user._id);
+      if (!access || !_joined(socket, channelId)) return;
+      const nextSpeaking = await _withLiveRoomMutation(channelId, access.serverId, async (room) => {
         if (!room) return null;
         const sp = room.speakers.find(u => u.userId === user._id);
         if (!sp || sp.muted) return null;
@@ -326,8 +346,9 @@ export function registerStageHandlers(
     if (!validateSocketPayload(payload, socketSchemas.stageHandRaise).valid) { ack?.({ ok: false, code: 'STAGE_ACTION_REJECTED' }); return; }
     const { channelId, raised } = payload as { channelId: string; raised: boolean };
     return (async () => {
-      if (!(await _stageAccess(channelId, user._id)) || !_joined(socket, channelId)) { ack?.({ ok: false, code: 'STAGE_ACTION_REJECTED' }); return; }
-      const changed = await _withRoomMutation(channelId, async (room) => {
+      const access = await _stageAccess(channelId, user._id);
+      if (!access || !_joined(socket, channelId)) { ack?.({ ok: false, code: 'STAGE_ACTION_REJECTED' }); return; }
+      const changed = await _withLiveRoomMutation(channelId, access.serverId, async (room) => {
         if (!room) return false;
         const u = [...room.speakers, ...room.listeners].find(x => x.userId === user._id);
         if (!u) return false;
@@ -350,7 +371,7 @@ export function registerStageHandlers(
     // Promotion creates a speaker. The target must independently possess
     // SPEAK; host authority cannot manufacture a permission the target lacks.
     if (!access || !_joined(socket, channelId) || !(await _stageAccess(channelId, targetUserId, true))) { ack?.({ ok: false, code: 'STAGE_ACTION_REJECTED' }); return; }
-    const room = await _withRoomMutation(channelId, async (current) => {
+    const room = await _withLiveRoomMutation(channelId, access.serverId, async (current) => {
       if (!current || !(await _isAuthorized(channelId, user._id, current))) return null;
       const li = current.listeners.findIndex(u => u.userId === targetUserId);
       if (li === -1) return null;
@@ -377,7 +398,7 @@ export function registerStageHandlers(
     const { channelId, targetUserId } = payload as { channelId: string; targetUserId: string };
     const access = await _stageAccess(channelId, user._id);
     if (!access || !_joined(socket, channelId) || !(await _stageAccess(channelId, targetUserId))) { ack?.({ ok: false, code: 'STAGE_ACTION_REJECTED' }); return; }
-    const room = await _withRoomMutation(channelId, async (current) => {
+    const room = await _withLiveRoomMutation(channelId, access.serverId, async (current) => {
       if (!current || !(await _isAuthorized(channelId, user._id, current))) return null;
       const idx = current.speakers.findIndex(u => u.userId === targetUserId);
       if (idx === -1) return null;
@@ -402,8 +423,9 @@ export function registerStageHandlers(
     if (!validateSocketPayload(payload, socketSchemas.stageSetTopic).valid) { ack?.({ ok: false, code: 'STAGE_ACTION_REJECTED' }); return; }
     const { channelId, topic } = payload as { channelId: string; topic?: string };
     return (async () => {
-      if (!(await _stageAccess(channelId, user._id)) || !_joined(socket, channelId)) { ack?.({ ok: false, code: 'STAGE_ACTION_REJECTED' }); return; }
-      const nextTopic = await _withRoomMutation(channelId, async (room) => {
+      const access = await _stageAccess(channelId, user._id);
+      if (!access || !_joined(socket, channelId)) { ack?.({ ok: false, code: 'STAGE_ACTION_REJECTED' }); return; }
+      const nextTopic = await _withLiveRoomMutation(channelId, access.serverId, async (room) => {
         if (!room || !(await _isAuthorized(channelId, user._id, room))) return null;
         room.topic = (topic ?? '').slice(0, 200);
         await _saveRoom(channelId, room);
@@ -421,8 +443,9 @@ export function registerStageHandlers(
     if (!validateSocketPayload(payload, socketSchemas.stageSetLive).valid) { ack?.({ ok: false, code: 'STAGE_ACTION_REJECTED' }); return; }
     const { channelId, live } = payload as { channelId: string; live: boolean };
     return (async () => {
-      if (!(await _stageAccess(channelId, user._id)) || !_joined(socket, channelId)) { ack?.({ ok: false, code: 'STAGE_ACTION_REJECTED' }); return; }
-      const nextLive = await _withRoomMutation(channelId, async (room) => {
+      const access = await _stageAccess(channelId, user._id);
+      if (!access || !_joined(socket, channelId)) { ack?.({ ok: false, code: 'STAGE_ACTION_REJECTED' }); return; }
+      const nextLive = await _withLiveRoomMutation(channelId, access.serverId, async (room) => {
         if (!room || !(await _isAuthorized(channelId, user._id, room))) return null;
         room.live = !!live;
         await _saveRoom(channelId, room);
@@ -440,7 +463,9 @@ export function registerStageHandlers(
     if (!validateSocketPayload(payload, socketSchemas.stageChannelId).valid) { ack?.({ ok: false, code: 'STAGE_LEAVE_REJECTED' }); return; }
     const { channelId } = payload as { channelId: string };
     return (async () => {
-      if (!(await _stageAccess(channelId, user._id)) || !_joined(socket, channelId)) { ack?.({ ok: true }); return; }
+      // Leaving needs no access: a member whose Stage expired (or whose access
+      // was revoked) must still be able to drop its roster entry and room.
+      if (!_joined(socket, channelId)) { ack?.({ ok: true }); return; }
       const removed = await removeUserFromRoom(channelId, user._id, socket.id);
       if (removed) await _revokeStageMedia(io, channelId, user._id);
       joinedStageChannels.delete(channelId);
