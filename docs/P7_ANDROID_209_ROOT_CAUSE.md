@@ -225,3 +225,27 @@ These remain unknown:
 - why a framework-only main thread missed a focus-event dispatch.
 
 It is **not** classified as a flake. It is a recurrence of this open item, and CS01/L01/ANR01 remain gating: a run that shows it is red.
+
+## 9. Recurrence without a fatal ANR (2026-10-24, run 40050533110)
+
+Mobile Android [run 40050533110](https://github.com/fatihcayiroglu/Bridge/actions/runs/40050533110) on `10f31fa9` (#362) reported 34 PASS and 2 FAIL (CS01, ANR01) and 0 skipped. All other journeys passed, including D2L01, L01–L04 and the deep-link and voice/camera journeys. This time L01 kept its process (`pidStable`), so the ANR did not kill the app.
+
+| Evidence | Value |
+|---|---|
+| CS01 | `cold start 1: ActivityManager reported an app ANR` (01:43:43) |
+| ANR01 category | `input_dispatch_timeout`, `focusEvent: true`, the same signature as §8 |
+| ANR02 | `fatalAnrs: 0`: the OS reported an ANR but recorded no fatal one, so no main-thread trace exists |
+| CPU at the ANR | total 100 %; first window app 0 %, `system_server` 22 % (top); second window app 34 %, `system_server` 58 % (top); WebView renderer 0 % |
+| Kernel load average | 23.03 / 5.85 / 1.97 at the ANR; 22.23 before L01, 19.51 after; 2.46 by the end of the journeys |
+| Process exits | only the journeys' own force-stops (`10 USER REQUESTED / 21 FORCE STOP`); no `reason 6 (ANR)` exit |
+
+These facts rule out the following:
+- **The commit under test.** `10f31fa9` merges #374's dependency updates into #362. No client, mobile or Android file differs from `64d3ed2c`, whose Android run passed every journey.
+- **A reproducible regression on that code.** The same Android code passed 36/0 on #375 `a445a99b` ([40043036619](https://github.com/fatihcayiroglu/Bridge/actions/runs/40043036619)) and `6d9eeede` ([40049120951](https://github.com/fatihcayiroglu/Bridge/actions/runs/40049120951)).
+
+What this run adds to §8:
+- the ANR also occurs **during a cold start**, before any journey;
+- it can be **non-fatal**;
+- both times it coincided with a kernel load spike to about 23 on a 2.8 GB emulator, with `system_server`, not the app, the top consumer in the first window.
+
+The cause is still unproven; system starvation of the input dispatch is the leading hypothesis, not a conclusion. It is **not** classified as a flake, and CS01/ANR01 remain gating.
