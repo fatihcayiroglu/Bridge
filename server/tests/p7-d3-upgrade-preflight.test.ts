@@ -11,15 +11,16 @@ type Markers = {
   hasMigrationsTable: boolean;
   hasSsoProvider: boolean;
   hasAckId: boolean;
+  hasNullableEmbeds: boolean;
 };
 
 const fresh: Markers = {
   hasUsers: false, hasMessages: false, hasMigrationsTable: false,
-  hasSsoProvider: false, hasAckId: false,
+  hasSsoProvider: false, hasAckId: false, hasNullableEmbeds: false,
 };
 const current: Markers = {
   hasUsers: true, hasMessages: true, hasMigrationsTable: true,
-  hasSsoProvider: true, hasAckId: true,
+  hasSsoProvider: true, hasAckId: true, hasNullableEmbeds: true,
 };
 
 function probe(markers: Markers, baseline084 = true) {
@@ -58,6 +59,12 @@ describe('P7 D3 upgrade source: fail closed before any mutation', () => {
     ]);
   });
 
+  it('refuses the staged v1.122.0 schema even when its migration ledger reaches 084', async () => {
+    const q = probe({ ...current, hasNullableEmbeds: false }, true);
+    await expect(verifyUpgradeSource(q.client)).rejects.toThrow('messages.embeds nullable');
+    expect(q.query).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses a partial v1.122.0 CLI attempt despite new columns and a ledger through 045', async () => {
     const q = probe(current, false);
     await expect(verifyUpgradeSource(q.client)).rejects.toThrow('applied migration 084 baseline');
@@ -71,6 +78,7 @@ describe('P7 D3 upgrade source: fail closed before any mutation', () => {
     [{ ...current, hasAckId: false }, 'messages.ackId'],
     [{ ...current, hasSsoProvider: false }, 'users.ssoProvider'],
     [{ ...current, hasMigrationsTable: false }, 'schema_migrations table'],
+    [{ ...current, hasNullableEmbeds: false }, 'messages.embeds nullable'],
   ] as const)('refuses partial or incompatible shapes (%j)', async (markers, expectedMissing) => {
     const q = probe(markers);
     await expect(verifyUpgradeSource(q.client)).rejects.toThrow(expectedMissing);
