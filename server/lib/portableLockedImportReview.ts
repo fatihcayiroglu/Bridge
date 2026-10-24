@@ -5,6 +5,8 @@ import { inspectStaticPortableImportConsentPolicy } from './portableImportConsen
 import { requireMappedDestinationGrantParity } from './portableTargetGrantParity';
 import { fingerprintDestinationTopology } from './portableCommunityTargetFingerprint';
 import { parsePermissionMask } from './permissionMaskInvariant';
+import { liveChannelWindowsForRead, type ChannelReadWindow } from './channelReadExpiryGuard';
+import { performance } from 'node:perf_hooks';
 
 type Row = Record<string, unknown>;
 type Client = { query(sql: string, params?: unknown[]): Promise<{ rows: Row[] }> };
@@ -17,6 +19,9 @@ export class LockedPortableReviewError extends Error {
   }
 }
 function refuse(): never { throw new LockedPortableReviewError(); }
+function windowIsCurrent(window: ChannelReadWindow | undefined): boolean {
+  return window !== undefined && (window.validUntilMs === null || window.validUntilMs > performance.now());
+}
 function id(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > 256 ||
       value.trim() !== value) refuse();
@@ -95,8 +100,14 @@ export async function inspectLockedPortableImportReview(input: {
     if (categories.some(row => typeof row.collapsed !== 'boolean')) refuse();
     const roles = roleRows.map(row => ({ ...row, position: integer(row.position),
       permissions: parsePermissionMask(row.permissions, 'target role permissions') }));
-    const channels = channelRows.map(row => ({ ...row, order: integer(row.order),
+    const rawChannels: Row[] = channelRows.map(row => ({ ...row, order: integer(row.order),
       slowmode: integer(row.slowmode), nsfw: nsfw(row.nsfw) }));
+    // Validate the entire bounded stored graph before filtering, preserving
+    // tenant/identifier/integrity refusals even for unavailable rows.
+    fingerprintDestinationTopology({ serverId: sid, categories, roles, channels: rawChannels });
+    const windows = await liveChannelWindowsForRead(input.client,
+      rawChannels.map(row => ({ channelId: id(row._id), serverId: sid })));
+    const channels = rawChannels.filter(row => windowIsCurrent(windows.get(id(row._id))));
     const destination = { serverId: sid, categories, roles, channels };
     const targetTopologyDigest = fingerprintDestinationTopology(destination);
     const staticResult = inspectStaticPortableImportConsentPolicy({
@@ -116,6 +127,9 @@ export async function inspectLockedPortableImportReview(input: {
       client: input.client, targetServerId: sid, ownerId: owner,
       sourcePermissions: input.permissions, mapping: input.mapping,
     });
+    // Grant reads can wait on their own locks. Never return a review whose
+    // included topology expired during that wait or a delayed query reply.
+    if (channels.some(row => !windowIsCurrent(windows.get(id(row._id))))) refuse();
     return {
       mode: 'transaction-check-only',
       verifiedReviewFingerprint: staticResult.verifiedReviewFingerprint,
