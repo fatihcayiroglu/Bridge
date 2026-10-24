@@ -1950,7 +1950,11 @@ async function main() {
     await attachPage();
     const after = await outboundAudio();
     const silenced = /silenced[:=]\s*true/i.test(recording);
-    return { packetsBefore: before.packetsSent, packetsAfter: after.packetsSent, osReportsSilenced: silenced, audioDump: recording.slice(0, 1200), resumeMs: fg.totalTimeMs };
+    // The Android audio dump contains UID, session, device and patch metadata;
+    // retain only the measurement's bounded signal and explicit probe status.
+    return { packetsBefore: before.packetsSent, packetsAfter: after.packetsSent,
+      audioProbeAvailable: Boolean(recording.trim()),
+      osReportsSilenced: recording.trim() ? silenced : null, resumeMs: fg.totalTimeMs };
   });
 
   await check('V02', 'voice survives a 10 s network loss: the connection recovers and audio flows again', async () => {
@@ -2162,12 +2166,14 @@ async function main() {
     await sleep(12_000);
     const alive = await pid();
     const crash = MODE === 'android' ? await sh('logcat -d -b crash | tail -40').catch(() => '') : '';
-    assert(alive, `app process died after launch with notification permission granted\n${crash.slice(-1500)}`);
+    const crashHints = { fatalException: /FATAL EXCEPTION/.test(crash),
+      nativeSignal: /signal\s+\d+|SIGSEGV|SIGABRT/.test(crash) };
+    assert(alive, 'app process died after notification permission grant; safe crash flags: ' + JSON.stringify(crashHints));
     await attachPage();
     await until(() => appVisible(), { timeout: 45_000, message: 'app visible' });
     const status = await page.evaluate(() => window.bridgePush?.status?.() ?? 'no-bridgePush');
     assert(status === 'unavailable', `a build without FCM must report push as unavailable, got ${status}`);
-    return { pid: alive, status, launchMs: launch.totalTimeMs };
+    return { processAlive: true, status, launchMs: launch.totalTimeMs };
   });
 
   // Last: a crash here would end the process the remaining checks need.
@@ -2183,10 +2189,12 @@ async function main() {
     await sleep(8_000);
     const after = await pid();
     const crash = MODE === 'android' ? await sh('logcat -d -b crash | tail -40').catch(() => '') : '';
-    assert(after && after === before, `app process ended after sign-out (before ${before}, after ${after})\n${crash.slice(-1500)}`);
+    const crashHints = { fatalException: /FATAL EXCEPTION/.test(crash),
+      nativeSignal: /signal\s+\d+|SIGSEGV|SIGABRT/.test(crash) };
+    assert(after && after === before, 'app process changed after sign-out; safe crash flags: ' + JSON.stringify(crashHints));
     await attachPage();
     await until(() => authVisible(), { timeout: 20_000, message: 'sign-in screen after sign-out' });
-    return { pid: after };
+    return { processStable: true };
   });
 
   await check('ANR01', 'Android OS never reported an app-not-responding event during these journeys', async () => {
