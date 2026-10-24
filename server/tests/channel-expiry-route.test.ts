@@ -22,6 +22,7 @@ const db  = require('../db/loader');
 const jwt = require('jsonwebtoken');
 import { authMiddleware } from '../middleware/auth';
 import channelsRouter from '../routes/servers/channels';
+import { STEP_UP_HEADER, mintStepUpGrant } from '../lib/stepUp';
 
 const OWNER = 'owner-1';
 const OUTSIDER = 'outsider-1';
@@ -35,8 +36,11 @@ function app() {
   a.use('/api/servers/:sid/channels', authMiddleware, channelsRouter);
   return a;
 }
-const put = (uid: string, body: unknown, cid = CHANNEL) =>
-  request(app()).put(`/api/servers/${SERVER}/channels/${cid}/expiry`).set('Authorization', `Bearer ${tok(uid)}`).send(body as object);
+const put = (uid: string, body: unknown, cid = CHANNEL, withGrant = true) => {
+  const req = request(app()).put(`/api/servers/${SERVER}/channels/${cid}/expiry`).set('Authorization', `Bearer ${tok(uid)}`);
+  if (withGrant) req.set(STEP_UP_HEADER, mintStepUpGrant({ _id: uid, tokenVersion: 0 }, 'password', 'destructive-admin').token);
+  return req.send(body as object);
+};
 
 beforeEach(async () => {
   db._reset?.();
@@ -50,6 +54,22 @@ beforeEach(async () => {
 afterEach(() => { delete db._pool; });
 
 describe('PUT /:cid/expiry', () => {
+  it('requires bounded destructive-admin step-up before touching the expiry writer', async () => {
+    const res = await put(OWNER, { expiresAt: null }, CHANNEL, false);
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ error: 'STEP_UP_REQUIRED', action: 'channel.expiry.change', scope: 'destructive-admin' });
+    expect(mockSetExpiry).not.toHaveBeenCalled();
+  });
+
+  it('refuses a valid proof from the wrong scope without writing', async () => {
+    const grant = mintStepUpGrant({ _id: OWNER }, 'password', 'account-security').token;
+    const res = await request(app()).put(`/api/servers/${SERVER}/channels/${CHANNEL}/expiry`)
+      .set('Authorization', `Bearer ${tok(OWNER)}`).set(STEP_UP_HEADER, grant).send({ expiresAt: null });
+    expect(res.status).toBe(403);
+    expect(res.body.reasons).toEqual(['step_up_scope_mismatch']);
+    expect(mockSetExpiry).not.toHaveBeenCalled();
+  });
+
   it('requires expiresAt in the body', async () => {
     const res = await put(OWNER, {});
     expect(res.status).toBe(400);
