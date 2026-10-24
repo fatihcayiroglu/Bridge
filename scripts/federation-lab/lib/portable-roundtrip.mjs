@@ -8,7 +8,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import tls from 'node:tls';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { REPO } from '../../selfhost/lib/instance.mjs';
 import { BROWSER } from '../../multinode/lib/client.mjs';
 import { getTls, postTls } from './apsign.mjs';
 import { freshGrants, labCsrf, labMutate, paceWrite, tlsMutation } from './portable.mjs';
@@ -18,6 +20,7 @@ const APPROVE = 'CONFIRM_SIGNED_MAPPING_AND_PERMISSION_CONSEQUENCES';
 const APPLY = 'APPLY_MAPPED_PORTABLE_METADATA_ONLY';
 const AUDIT_ACTION = 'portable.mapped_metadata.apply';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const { Pool } = createRequire(import.meta.url)(path.join(REPO, 'server/node_modules/pg'));
 
 /** SQL literal for a server-generated ID; anything else is a lab bug. */
 function lit(id) {
@@ -481,6 +484,71 @@ export async function runPortableTlsRoundTrip({ lab, origins, check }) {
     shortLived.status === 201 && expired.status === 422 && rowsKey(post3) === rowsKey(pre3) &&
     post3.consumed === pre3.consumed,
     `review ${rev3.result.status}, approval ${shortLived.status}, apply after expiry ${expired.status}`);
+
+  // ── P7-RT-23: expiry DURING the real HTTP apply's tuple-lock wait ──────
+  // Keep RT-17's full production-lifetime check above. Only this new fixture
+  // gets a shorter stored deadline; all clocks, SQL locks and HTTP are real.
+  await grantsB({ fresh: true });
+  const lockReview = await review(exp3);
+  const queued = lockReview.result.status === 200 ? await approve(lockReview) : { status: lockReview.result.status };
+  if (queued.body?.approvalToken) secrets.push(queued.body.approvalToken);
+  let lockObserved = false, freshAtStart = false, expiredBeforeRelease = false;
+  let queuedResult = { status: -1 };
+  const preLock = dbState(lab.inst.b, dstId);
+  if (queued.status === 201) {
+    // Do potentially paced HTTP preparation before shortening the fixture.
+    const csrf = await labCsrf(origins.b, ownerB, ca);
+    await paceWrite(origins.b, ownerB);
+    const db = new Pool({ connectionString: lab.inst.b.dbUrl, max: 2 });
+    const blocker = await db.connect();
+    let pending;
+    try {
+      const digest = createHash('sha256').update('bridge-portable-import-approval-v1\n')
+        .update(queued.body.approvalToken).digest('hex');
+      await db.query(`UPDATE portable_import_approvals SET expires_at=clock_timestamp()+INTERVAL '5 seconds'
+        WHERE token_hash=$1 AND target_server_id=$2`, [digest, dstId]);
+      await blocker.query('BEGIN');
+      const locked = await blocker.query(`SELECT pg_backend_pid() AS pid,
+        expires_at>clock_timestamp() AS fresh FROM portable_import_approvals
+        WHERE token_hash=$1 AND target_server_id=$2 FOR UPDATE`, [digest, dstId]);
+      freshAtStart = locked.rows.length === 1 && locked.rows[0].fresh === true;
+      if (!freshAtStart) throw new Error('queued approval fixture was not fresh at lock acquisition');
+      pending = postTls(`${origins.b}${sidPath}/portable-import/mapped-apply`, {
+        ...BROWSER, Authorization: 'Bearer ' + ownerB.token, 'X-CSRF-Token': csrf,
+        'X-Bridge-Step-Up': g['account-security'], 'Content-Type': 'application/json',
+      }, JSON.stringify(applyBody(lockReview, queued.body.approvalToken)), ca);
+      for (let i = 0; i < 100; i++) {
+        const state = await db.query(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+          WHERE state='active' AND wait_event_type='Lock'
+            AND $1=ANY(pg_blocking_pids(pid))
+            AND query LIKE '%portable_import_approvals%') AS waiting`, [locked.rows[0].pid]);
+        if (state.rows[0].waiting) { lockObserved = true; break; }
+        await sleep(20);
+      }
+      if (!lockObserved) throw new Error('real HTTP apply did not enter the expected approval row-lock wait');
+      await db.query(`SELECT pg_sleep(GREATEST(0,
+        EXTRACT(EPOCH FROM expires_at-clock_timestamp()))+0.1)
+        FROM portable_import_approvals WHERE token_hash=$1`, [digest]);
+      const deadline = await db.query(`SELECT expires_at<=clock_timestamp() AS expired
+        FROM portable_import_approvals WHERE token_hash=$1`, [digest]);
+      expiredBeforeRelease = deadline.rows[0].expired === true;
+      await blocker.query('COMMIT');
+      queuedResult = await pending;
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+      // Release every lock before joining the request, including on failure.
+      if (pending) await pending;
+      await db.end();
+    }
+  }
+  const postLock = dbState(lab.inst.b, dstId);
+  check('P7-RT-23', 'B refuses an approval that expires during the HTTPS apply lock wait, preserving every row and ledger',
+    queued.status === 201 && freshAtStart && lockObserved && expiredBeforeRelease &&
+    queuedResult.status === 422 && rowsKey(postLock) === rowsKey(preLock) &&
+    postLock.approvals === preLock.approvals && postLock.consumed === preLock.consumed &&
+    postLock.snapshots === preLock.snapshots && postLock.audits === preLock.audits,
+    `approval ${queued.status}, real lock wait ${lockObserved}, expired before release ${expiredBeforeRelease}, apply ${queuedResult.status}`);
 
   // ── P7-RT-18: response lost after B received the full request ───────────
   rev3 = await review(exp3);
