@@ -19,6 +19,7 @@ import { searchContext } from './search-context';
 import { withTransaction } from './transaction';
 import { runInlineMigrations } from './migrations';
 import { applyPendingMigrations, autoMigrateEnabled, pendingMigrations } from './versionedMigrations';
+import { verifyUpgradeSource } from './upgradePreflight';
 import { PGVECTOR_ENABLED, ensurePgvectorSchema } from '../../lib/pgvector';
 
 // ── SCHEMA BAŞLAT ─────────────────────────────────────────────
@@ -60,6 +61,9 @@ async function initSchema(): Promise<void> {
   try {
     await client.query('SELECT pg_advisory_lock($1)', [SCHEMA_LOCK_KEY]);
     try {
+      // Reject unverified legacy/partial release databases before schema DDL.
+      // The advisory lock serialises this decision across concurrent nodes.
+      await verifyUpgradeSource(client);
       await pool.query(SCHEMA);
       await runInlineMigrations(pool);
       // P5 SH-01: the versioned chain belongs to boot too — before this, a fresh

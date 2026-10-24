@@ -20,6 +20,7 @@ import {
   MigrationFailedError,
   type MigrationQueryable,
 } from './postgres/versionedMigrations';
+import { verifyUpgradeSource } from './postgres/upgradePreflight';
 
 const COMMANDS = ['up', 'status', 'down', 'rollback'] as const;
 type Command = (typeof COMMANDS)[number];
@@ -45,6 +46,16 @@ async function main(): Promise<void> {
 
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
+
+  // Even a direct CLI invocation must not partially migrate v1.122.0 or a
+  // damaged legacy installation before a backed-up staged path is verified.
+  // Run this read-only check before ensureMigrationsTable creates any object.
+  try {
+    await verifyUpgradeSource(client as unknown as MigrationQueryable);
+  } catch (err) {
+    await client.end().catch(() => undefined);
+    throw err;
+  }
 
   await ensureMigrationsTable(client as unknown as MigrationQueryable);
 
