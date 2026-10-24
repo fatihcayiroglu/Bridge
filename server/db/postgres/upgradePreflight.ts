@@ -61,10 +61,10 @@ export class UnverifiedUpgradeSourceError extends Error {
 /** Run under the boot advisory lock and before ANY DDL or inline migration. */
 export async function verifyUpgradeSource(q: MigrationQueryable): Promise<void> {
   const result = await q.query<UpgradeSourceMarkers>(UPGRADE_SOURCE_MARKERS_SQL);
-  if (result.rows.length !== 1) {
+  const markers = result.rows[0];
+  if (result.rows.length !== 1 || !markers) {
     throw new Error('BRIDGE_UPGRADE_SOURCE_UNVERIFIED: PostgreSQL schema probe returned no unique row.');
   }
-  const markers = result.rows[0];
 
   // A new database has neither base table. The normal new-install path owns it.
   if (!markers.hasUsers && !markers.hasMessages) return;
@@ -90,7 +90,8 @@ export async function verifyUpgradeSource(q: MigrationQueryable): Promise<void> 
     "SELECT EXISTS (SELECT 1 FROM schema_migrations " +
     "WHERE split_part(id, '_', 1) = '084' AND rolled_back = FALSE) AS applied",
   );
-  if (baseline.rows.length !== 1 || baseline.rows[0].applied !== true) {
+  const checked = baseline.rows[0];
+  if (baseline.rows.length !== 1 || !checked || checked.applied !== true) {
     throw new UnverifiedUpgradeSourceError(['applied migration 084 baseline']);
   }
 }
