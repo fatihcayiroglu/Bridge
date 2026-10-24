@@ -113,6 +113,11 @@ const PROTECTED: ReadonlyArray<{ method: string; path: RegExp; scope: StepUpScop
   protectedRoute('GET', '/account/(?:portable-)?export', 'sensitive-export'),
   protectedRoute('POST', '/account/portable-import/preview', 'sensitive-export'),
   protectedRoute('POST', '/account/portable-import/apply', 'account-security'),
+  // C4 uses the same proof owner. Sending its held grant on the first
+  // attempt lets a stale refusal request one fresh proof within the retry.
+  protectedRoute('GET', '/servers/[^/]+/(?:portable-export(?:/attested-pair)?|portable-permissions-export)', 'sensitive-export'),
+  protectedRoute('GET', '/servers/[^/]+/portable-import/target-fingerprint', 'account-security'),
+  protectedRoute('POST', '/servers/[^/]+/portable-import/(?:preview|source-attestation-review|signed-mapping-review|paired-preview|mapping-review|owner-approval|mapped-apply)', 'account-security'),
   protectedRoute('DELETE', '/account/?', 'destructive-admin'),
   protectedRoute('DELETE', '/servers/[^/]+', 'destructive-admin'),
   protectedRoute('DELETE', '/admin/(?:users|servers)/[^/]+', 'destructive-admin'),
