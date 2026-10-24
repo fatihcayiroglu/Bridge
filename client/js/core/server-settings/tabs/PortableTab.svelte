@@ -155,7 +155,12 @@
   }
 
   function choose(kind: Kind, sourceId: string, targetId: string): void {
-    const next: Links = { ...links, [kind]: { ...links[kind] } };
+    // Clone into a null-prototype record: assigning a signed '__proto__' ID
+    // to a normal object would invoke its inherited setter instead of mapping it.
+    const next: Links = {
+      ...links,
+      [kind]: Object.assign(Object.create(null) as Record<string, string>, links[kind]),
+    };
     if (targetId) next[kind][sourceId] = targetId; else delete next[kind][sourceId];
     resetFrom('review');
     links = next;
