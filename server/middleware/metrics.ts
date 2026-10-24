@@ -229,11 +229,49 @@ if (ENABLED) {
 // ayrintisini korur ve 404 hacmi zaten toplu olarak izlenmek istenir.
 const UNMATCHED_ROUTE = '<unmatched>';
 
+// ── Parametreli baglama noktalari (P7 B3) ───────────────────────────────────
+// `req.route.path` bir KALIPTIR, ama `req.baseUrl` baglama noktasinin SOMUT
+// halidir: `router.use('/:sid/channels', ...)` altinda `/api/servers/<sid>/channels`.
+// Bu yuzden eslesen bir rota bile, kimlik dogrulamasindan ONCE (401) ya da var
+// olmayan bir sunucu icin (404), cagiranin sectigi metni etikete tasiyordu:
+// her istek yeni bir seri ve gercek trafikte etiketlerde sunucu kimlikleri.
+// Somut parca, ayni degeri tasiyan rota parametresinin adina geri cevrilir
+// (iki baglama noktasi da `mergeParams: true`). Yine de taninmayan bir baglama
+// noktasi icin etiket kumesi SINIRLIDIR: sinir asilinca yeni degerler tek bir
+// kovaya duser.
+const OVERFLOW_ROUTE = '<route-overflow>';
+const MAX_ROUTE_LABELS = 1000;
+const seenRouteLabels = new Set<string>();
+
+function decodeSegment(segment: string): string {
+  try { return decodeURIComponent(segment); } catch { return segment; }
+}
+
+function parameterizeBase(baseUrl: string, params: Record<string, unknown> | undefined): string {
+  if (!baseUrl || !params) return baseUrl;
+  const byValue = new Map<string, string>();
+  for (const [name, value] of Object.entries(params)) {
+    if (typeof value === 'string' && value !== '') byValue.set(value, name);
+  }
+  if (byValue.size === 0) return baseUrl;
+  return baseUrl.split('/').map((segment) => {
+    const name = segment ? byValue.get(decodeSegment(segment)) : undefined;
+    return name ? `:${name}` : segment;
+  }).join('/');
+}
+
+function boundedRouteLabel(label: string): string {
+  if (seenRouteLabels.has(label)) return label;
+  if (seenRouteLabels.size >= MAX_ROUTE_LABELS) return OVERFLOW_ROUTE;
+  seenRouteLabels.add(label);
+  return label;
+}
+
 function normalizeRoute(req: Request): string {
-  const r = req as Request & { route?: { path: string }; baseUrl?: string };
+  const r = req as Request & { route?: { path: string }; baseUrl?: string; params?: Record<string, unknown> };
   if (r.route?.path) {
-    const base = r.baseUrl || '';
-    return base + r.route.path;
+    const base = parameterizeBase(r.baseUrl || '', r.params);
+    return boundedRouteLabel(base + r.route.path);
   }
   // Rota eslesmedi (404, middleware sonlandirmasi, statik dosya). Ham yolu
   // ETIKET OLARAK KULLANMA — saldirgan tarafindan sinirsiz secilebilir.
@@ -615,6 +653,9 @@ export const isEnabled = (): boolean => ENABLED && !!registry;
 
 // Test kancasi: kardinalite sinirinin gercekten uygulandigini dogrulamak icin.
 export const __normalizeRouteForTest = normalizeRoute;
+export const __OVERFLOW_ROUTE = OVERFLOW_ROUTE;
+export const __MAX_ROUTE_LABELS = MAX_ROUTE_LABELS;
+export function __resetRouteLabelsForTest(): void { seenRouteLabels.clear(); }
 export const __UNMATCHED_ROUTE = UNMATCHED_ROUTE;
 
 /**
