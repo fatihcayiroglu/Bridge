@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { webdriverRequest } from './webdriver-http.mjs';
 import { probeIndexedDbTransactions } from './indexeddb-probe.mjs';
+import { publicationApiFacts, publicationViewFacts } from './live-channel-evidence.mjs';
 
 const require = createRequire(import.meta.url);
 const { Client } = require('../../server/node_modules/pg');
@@ -270,16 +271,11 @@ try {
     // Failure-only, read-only evidence. Never reload the WebView, synthesize a
     // socket event or extend the acceptance deadline: distinguish a missing
     // authorized API row from a missed socket invalidation or UI render.
-    const diagnostic = { apiStatus: null, apiContainsChannel: null, apiChannelCount: null,
-      webviewContainsChannel: null, webviewChannelCount: null, selectedServer: null,
-      webviewVisible: null, browserOnline: null, apiProbeFailed: false, webviewProbeFailed: false };
+    const diagnostic = { ...publicationApiFacts(null, doomed), ...publicationViewFacts(null),
+      apiProbeFailed: false, webviewProbeFailed: false };
     try {
       const response = await api('GET', `/api/servers/${serverId}/channels`, token);
-      diagnostic.apiStatus = response.status;
-      if (Array.isArray(response.json)) {
-        diagnostic.apiContainsChannel = response.json.some(channel => channel?._id === doomed);
-        diagnostic.apiChannelCount = response.json.length;
-      }
+      Object.assign(diagnostic, publicationApiFacts(response, doomed));
     } catch { diagnostic.apiProbeFailed = true; }
     try {
       const view = await js((sid, cid) => ({
@@ -289,9 +285,7 @@ try {
         webviewVisible: document.visibilityState === 'visible',
         browserOnline: navigator.onLine === true,
       }), serverId, doomed);
-      for (const key of ['webviewContainsChannel', 'webviewChannelCount', 'selectedServer', 'webviewVisible', 'browserOnline']) {
-        if (typeof view?.[key] === (key === 'webviewChannelCount' ? 'number' : 'boolean')) diagnostic[key] = view[key];
-      }
+      Object.assign(diagnostic, publicationViewFacts(view));
     } catch { diagnostic.webviewProbeFailed = true; }
     facts.liveChannelFailure = diagnostic;
     throw error;
