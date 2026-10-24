@@ -79,14 +79,15 @@ beforeAll(async () => {
   await pool.query('CREATE TABLE users (_id TEXT PRIMARY KEY, "tokenVersion" INTEGER NOT NULL, "twoFactorEnabled" BOOLEAN NOT NULL)');
   await pool.query('CREATE TABLE channel_categories (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL, collapsed BOOLEAN NOT NULL)');
   await pool.query('CREATE TABLE roles (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, color TEXT NOT NULL, position INTEGER NOT NULL, permissions INTEGER NOT NULL)');
-  await pool.query('CREATE TABLE channels (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, topic TEXT NOT NULL, "categoryId" TEXT, category TEXT NOT NULL, "order" BIGINT NOT NULL, nsfw INTEGER NOT NULL, slowmode INTEGER NOT NULL)');
+  await pool.query('CREATE TABLE channels (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, topic TEXT NOT NULL, "categoryId" TEXT, category TEXT NOT NULL, "order" BIGINT NOT NULL, nsfw INTEGER NOT NULL, slowmode INTEGER NOT NULL, "expiresAt" BIGINT, "expiryVersion" INTEGER NOT NULL DEFAULT 0)');
+  await pool.query('CREATE TABLE channel_expiry_tombstones ("channelId" TEXT PRIMARY KEY)');
   await pool.query('CREATE TABLE channel_permissions ("channelId" TEXT NOT NULL, "serverId" TEXT NOT NULL, "roleId" TEXT NOT NULL, allow BIGINT NOT NULL, deny BIGINT NOT NULL)');
   await pool.query('CREATE TABLE channel_overrides ("channelId" TEXT NOT NULL)');
   await pool.query("INSERT INTO servers VALUES ('dest','owner')");
   await pool.query("INSERT INTO users VALUES ('owner',4,FALSE)");
   await pool.query("INSERT INTO channel_categories VALUES ('tc','dest','General',0,FALSE)");
   await pool.query("INSERT INTO roles VALUES ('tr','dest','Readers','#99aab5',0,1)");
-  await pool.query("INSERT INTO channels VALUES ('tch','dest','welcome','text','','tc','GENERAL',0,0,0)");
+  await pool.query("INSERT INTO channels VALUES ('tch','dest','welcome','text','','tc','GENERAL',0,0,0,NULL,0)");
   await pool.query("INSERT INTO channel_permissions VALUES ('tch','dest','tr',1,0)");
   await pool.query(readFileSync(join(__dirname,
     '../../db/migrations_pg/081_portable_import_approval_ledger.sql'), 'utf8'));
