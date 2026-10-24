@@ -199,6 +199,53 @@ FD01 stays as written: on the owner's decision (2026-10-19) it is not changed un
 2. Product evidence: four exact-head runs of the earlier `MIN_PRIORITY` pass (39164884625, 39166491452, 39254381137, 39256893223) and the run of the current pass (39259980396: 35 PASS / 0 FAIL / 0 SKIPPED / 6 MEASURED, PD01 PASS, `maxPassMs` 450, `maxMainGapMs` 245) all show 0 stable refs after login and FD01 PASS. That is consistency on one emulator image, not permanence. PD01 must hold across further product runs. Attribute the 0.23–0.25 s main-thread gaps with `baselineMaxGapMs` and ART's explicit-GC pauses before turning any of them into an asserted bound.
 3. A **fixed-WebView** image (e.g. API 35, WebView 124) must show no stable reference in FD00W/FD00T without any mitigation, and the mitigation must report `skipped webview-not-affected`.
 4. **Physical devices** with current Play-updated WebView, plus one GMS device with a frozen WebView that lacks the fix (e.g. 113.x, or M116 up to `116.0.5845.123`; not `.124`/`.163`/`.188`, which carry the backport) if obtainable. No physical-device testing has been done.
-5. The **FocusEvent ANRs** (reason 6) need their own main-thread evidence. ANR02 now classifies fatal ANR traces app-locally, but no ANR has recurred since it was added, and it cannot see non-fatal ANRs or exits evicted from Android's 16-record history.
+5. The **FocusEvent ANRs** (reason 6) need their own main-thread evidence. ANR02 classifies fatal ANR traces app-locally, and it cannot see non-fatal ANRs or exits evicted from Android's 16-record history. **First recurrence with ANR02 evidence (2026-10-23):** see §8. The cause is still unproven.
 6. Owner decision on the FD01′ contract (§6).
 7. ~~Owner decision on the unmitigated controls~~ **decided 2026-10-19:** they moved to the non-gating nightly diagnostic workflow, with their FAILs and nonzero exit status preserved (§4c). Its schedule only runs from the default branch; on this PR it runs because the workflow file changed.
+
+## 8. Recurrence with ANR02 evidence (2026-10-23, run 40020150345)
+
+Mobile Android [run 40020150345](https://github.com/fatihcayiroglu/Bridge/actions/runs/40020150345) on `eae5a1f3` (P7-D2 media expiry, #370) reported 33 PASS and 3 FAIL: CS01, L01 and ANR01. From the job log, all three are **one** OS-recorded ANR:
+
+| Evidence | Value |
+|---|---|
+| CS01 | `cold start 3: ActivityManager reported an app ANR` |
+| L01 | `pidStable: false`, `launchState: COLD`; `ApplicationExitInfo` shows pid 5802 `reason 6 (ANR)` at 20:42:30.653, during L01's 20 s background |
+| ANR01 category | `input_dispatch_timeout`, `focusEvent: true` (the historical #209 signature) |
+| ANR02 (first trace since it was added) | `fatalAnrs: 1`, main thread `mainState: Native`, `top: running-code`, `subsystem: framework-only`: no Bridge or WebView frame on top |
+| CPU at the ANR | total 98–99 %, app 46–52 %, `system_server` 26 %, WebView renderer 0 % |
+| Kernel load average | 23.51 / 10.34 / 3.91 before L01, 18.47 after (2.8 GB emulator) |
+
+These facts rule out the following:
+- **The commit under test.** `eae5a1f3` changes no client, mobile or Android file; its diff from #369 (`093099b0`) is server code, tests and docs only. No client code calls the voice HTTP routes, and these journeys join no voice.
+- **A reproducible regression on that code.** The same runtime code (`1fceb3a4`, a doc and test change only) passed every journey in [40024498508](https://github.com/fatihcayiroglu/Bridge/actions/runs/40024498508), with `fatalAnrs: 0`. Base #369 passed in [40024502211](https://github.com/fatihcayiroglu/Bridge/actions/runs/40024502211), also with `fatalAnrs: 0`. The next code change (`4601e0bf`) passed in [40029695493](https://github.com/fatihcayiroglu/Bridge/actions/runs/40029695493).
+
+These remain unknown:
+- the cause, and whether the CPU starvation (load ≈ 23, 98 % CPU) is cause or symptom;
+- why a framework-only main thread missed a focus-event dispatch.
+
+It is **not** classified as a flake. It is a recurrence of this open item, and CS01/L01/ANR01 remain gating: a run that shows it is red.
+
+## 9. Recurrence without a fatal ANR (2026-10-24, run 40050533110)
+
+Mobile Android [run 40050533110](https://github.com/fatihcayiroglu/Bridge/actions/runs/40050533110) on `10f31fa9` (#362) reported 34 PASS and 2 FAIL (CS01, ANR01) and 0 skipped. All other journeys passed, including D2L01, L01–L04 and the deep-link and voice/camera journeys. This time L01 kept its process (`pidStable`), so the ANR did not kill the app.
+
+| Evidence | Value |
+|---|---|
+| CS01 | `cold start 1: ActivityManager reported an app ANR` (01:43:43) |
+| ANR01 category | `input_dispatch_timeout`, `focusEvent: true`, the same signature as §8 |
+| ANR02 | `fatalAnrs: 0`: the OS reported an ANR but recorded no fatal one, so no main-thread trace exists |
+| CPU at the ANR | total 100 %; first window app 0 %, `system_server` 22 % (top); second window app 34 %, `system_server` 58 % (top); WebView renderer 0 % |
+| Kernel load average | 23.03 / 5.85 / 1.97 at the ANR; 22.23 before L01, 19.51 after; 2.46 by the end of the journeys |
+| Process exits | only the journeys' own force-stops (`10 USER REQUESTED / 21 FORCE STOP`); no `reason 6 (ANR)` exit |
+
+These facts rule out the following:
+- **The commit under test.** `10f31fa9` merges #374's dependency updates into #362. No client, mobile or Android file differs from `64d3ed2c`, whose Android run passed every journey.
+- **A reproducible regression on that code.** The same Android code passed 36/0 on #375 `a445a99b` ([40043036619](https://github.com/fatihcayiroglu/Bridge/actions/runs/40043036619)) and `6d9eeede` ([40049120951](https://github.com/fatihcayiroglu/Bridge/actions/runs/40049120951)).
+
+What this run adds to §8:
+- the ANR also occurs **during a cold start**, before any journey;
+- it can be **non-fatal**;
+- both times it coincided with a kernel load spike to about 23 on a 2.8 GB emulator, with `system_server`, not the app, the top consumer in the first window.
+
+The cause is still unproven; system starvation of the input dispatch is the leading hypothesis, not a conclusion. It is **not** classified as a flake, and CS01/ANR01 remain gating.
