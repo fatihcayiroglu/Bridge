@@ -46,7 +46,7 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 import { normalizeChannelName } from '../../lib/channelName';
-import { Channels, Members } from '../../db/repositories';
+import { Channels, Members, Servers } from '../../db/repositories';
 import { authMiddleware } from '../../middleware/auth';
 import { getMemberPerms, hasPermission, PERMS } from '../roles';
 import { resolvePermissions, viewableChannelIds } from '../../lib/permissions';
@@ -58,6 +58,7 @@ import db from '../../db/loader';
 import { announceChannelListChanged } from '../../lib/channelListEvents';
 import { setChannelExpiry, type ExpiryConfigPool } from '../../lib/channelExpiryConfig';
 import { classifyChannelExpiryWithTombstone } from '../../lib/channelExpiry';
+import { enforceStepUp } from '../../lib/stepUp';
 
 const router = express.Router({ mergeParams: true });
 const VALID_CHANNEL_TYPES = new Set<ChannelType>(['text', 'voice', 'announcement', 'forum', 'stage']);
@@ -288,6 +289,10 @@ router.put('/:cid/expiry', authMiddleware, limits.channels(), async (req, res) =
     if (!channel) return void res.status(404).json({ error: 'Channel not found' });
     const perms = await resolvePermissions(userId, sid, cid).catch(() => 0);
     if (!hasPermission(perms, PERMS.VIEW_CHANNELS)) return void res.status(404).json({ error: 'Channel not found' });
+    // Authorize the owner before prompting; the locked write rechecks ownership.
+    const server = await Servers.findById(sid);
+    if (!server || server.ownerId !== userId) return void res.status(403).json({ error: 'Only the server owner may change channel expiry' });
+    if (!(await enforceStepUp(req, res, userId, 'channel.expiry.change'))) return;
 
     const result = await setChannelExpiry(pool, {
       serverId: sid, channelId: cid, actorId: userId,
@@ -331,6 +336,7 @@ router.delete('/:cid', authMiddleware, limits.channels(), async (req, res) => {
     if (!channel) return void res.status(404).json({ error: 'Channel not found' });
     const perms = await resolvePermissions(userId, sid, cid).catch(() => 0);
     if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.MANAGE_CHANNELS)) return void res.status(403).json({ error: 'Missing channel permission' });
+    if (!(await enforceStepUp(req, res, userId, 'channel.delete'))) return;
 
     const result = await Channels.deleteGraphAtomic(cid, sid);
     if (result === 'not_found') return void res.status(404).json({ error: 'Channel not found' });
