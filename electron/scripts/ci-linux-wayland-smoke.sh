@@ -5,6 +5,7 @@
 # No --no-sandbox, fake Electron window, or XWayland client fallback.
 # This is CI virtual-compositor evidence, not physical Linux desktop UX.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/ci-linux-wayland-protocol.sh"
 
 APP=/opt/Bridge/bridge
 test -x "${APP}" || { echo "Missing installed DEB executable" >&2; exit 1; }
@@ -76,9 +77,7 @@ for i in {1..60}; do
   # Require a real input seat (absent in Weston 13 headless mode), the
   # xdg-toplevel size request, and a compositor configure acknowledgment.
   # WAYLAND_DEBUG uses either #N or @N object IDs, depending on build.
-  if grep -Eq -- 'wl_registry[@#][0-9]+\.global\([0-9]+, "wl_seat", [0-9]+\)' "${ROOT}/app.log" \
-    && grep -Eq -- 'xdg_toplevel[@#][0-9]+\.set_(min|max)_size\(' "${ROOT}/app.log" \
-    && grep -Eq -- 'xdg_surface[@#][0-9]+\.ack_configure\(' "${ROOT}/app.log"; then
+  if wayland_protocol_ready "${ROOT}/app.log"; then
     echo "PASS: installed Bridge created a real native Wayland xdg-toplevel with a wl_seat, configure ack, sandbox on, X11 DISPLAY unset"
     exit 0
   fi

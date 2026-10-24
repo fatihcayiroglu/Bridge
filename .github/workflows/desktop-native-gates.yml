@@ -38,6 +38,8 @@ jobs:
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v7
+      - name: Wayland protocol gate positive and negative controls
+        run: bash electron/scripts/ci-linux-wayland-protocol.test.sh
       - uses: actions/setup-node@v7
         with:
           node-version: '24.20.0'
