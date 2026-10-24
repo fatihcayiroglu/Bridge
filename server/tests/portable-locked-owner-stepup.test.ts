@@ -44,6 +44,24 @@ function verify(config: Parameters<typeof fixture>[0] = {}, token: unknown = gra
   return requireLockedPortableOwnerStepUp({ client: fixture(config).client, ownerId: OWNER, stepUpGrant: token, now });
 }
 describe('P7 C4 locked owner step-up (never an approval)', () => {
+  it.each(['FROM users', 'SELECT txid_current()'])('refuses a credential proof that ages out while awaiting %s', async boundary => {
+    let currentTime = NOW;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => currentTime);
+    const f = fixture();
+    const query = f.client.query.bind(f.client);
+    f.client.query = async (sql, params) => {
+      const result = await query(sql, params);
+      if (sql.includes(boundary)) currentTime += 22_000;
+      return result;
+    };
+    try {
+      await expect(requireLockedPortableOwnerStepUp({
+        client: f.client, ownerId: OWNER,
+        stepUpGrant: grant('password', 'account-security', NOW - 99_000),
+      })).rejects.toBeInstanceOf(LockedPortableOwnerStepUpError);
+    } finally { clock.mockRestore(); }
+  });
+
   it('verifies fresh scope against the same SQL client and returns no bearer credential', async () => {
     const f = fixture();
     const result = await requireLockedPortableOwnerStepUp({

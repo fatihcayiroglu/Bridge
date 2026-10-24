@@ -95,10 +95,19 @@ export async function stageOwnerConfirmedPortableApproval(input: {
     if (checked.binding.reviewFingerprint !== confirmed ||
         checked.tokenIssued !== false || checked.importSupported !== false) refuse();
 
+    // The destination/topology/grant locks above may have outlived the
+    // credential proof checked on entry. Reuse the same locked verifier.
+    if ((await requireLockedPortableOwnerStepUp({
+      client, ownerId: input.ownerId, stepUpGrant: input.stepUpGrant, now: input.now,
+    })).stepUpVerified !== true) refuse();
+
     // This is the SAME client used by both security validators above.
     const staged = await insertPortableImportApprovalWithinTransaction(
       client, checked.binding, checked.sourceAttestationExpiresAt,
     );
+    if ((await requireLockedPortableOwnerStepUp({
+      client, ownerId: input.ownerId, stepUpGrant: input.stepUpGrant, now: input.now,
+    })).stepUpVerified !== true) refuse();
     commitAttempted = true;
     await client.query('COMMIT');
     committed = true;
