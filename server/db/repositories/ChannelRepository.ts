@@ -174,13 +174,19 @@ class ChannelRepository {
    * in-memory test adapter mirrors the same ownership graph but is not claimed
    * to provide transaction durability.
    */
-  async deleteGraphAtomic(id: string, serverId: string): Promise<'deleted' | 'not_found' | 'last_channel'> {
+  async deleteGraphAtomic(id: string, serverId: string): Promise<'deleted' | 'not_found' | 'last_channel' | 'last_permanent_channel'> {
     const rawPool = (db as unknown as { _pool?: import('pg').Pool })._pool;
     const pool = postgresPoolOrTestFallback(rawPool?.connect ? rawPool : null, 'ChannelRepository atomic operation');
     if (pool) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
+        // Server row first, like server deletion (FOR UPDATE) and the expiry API
+        // (FOR NO KEY UPDATE): concurrent deletes and expiry changes in one
+        // server then queue on it in one order. Without it, two deletes each
+        // held their own channel row and waited on the other's for the sibling
+        // lock below: a deadlock (40P01, a 500) in 14 of 15 measured rounds.
+        await client.query('SELECT 1 FROM servers WHERE _id=$1 FOR NO KEY UPDATE', [serverId]);
         const locked = await client.query<{ _id: string }>(
           'SELECT _id FROM channels WHERE _id=$1 AND "serverId"=$2 FOR UPDATE',
           [id, serverId],
@@ -194,20 +200,31 @@ class ChannelRepository {
         // P7 D2: an expired or tombstoned row is not a surviving channel (the
         // expiry worker keeps it only until its graph is drained), and such a
         // channel is already gone for its owner too.
-        const siblings = await client.query<{ _id: string; live: boolean }>(
+        const siblings = await client.query<{ _id: string; live: boolean; permanent: boolean }>(
           `SELECT c._id,
                   (c."expiresAt" IS NULL OR c."expiresAt" > FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
-                  AND NOT EXISTS (SELECT 1 FROM channel_expiry_tombstones t WHERE t."channelId" = c._id) AS live
-             FROM channels c WHERE c."serverId"=$1 FOR UPDATE OF c`,
+                  AND NOT EXISTS (SELECT 1 FROM channel_expiry_tombstones t WHERE t."channelId" = c._id) AS live,
+                  c."expiresAt" IS NULL AS permanent
+             FROM channels c WHERE c."serverId"=$1 ORDER BY c._id FOR UPDATE OF c`,
           [serverId],
         );
-        if (!siblings.rows.some((r) => r._id === id && r.live)) {
+        const target = siblings.rows.find((r) => r._id === id && r.live);
+        if (!target) {
           await client.query('ROLLBACK');
           return 'not_found';
         }
         if (!siblings.rows.some((r) => r._id !== id && r.live)) {
           await client.query('ROLLBACK');
           return 'last_channel';
+        }
+        // P7 D2: the expiry worker claims an expired channel only while another
+        // live channel survives in its server, so a server left with only
+        // expiring channels would keep its last one (and its messages) forever.
+        // Same rule as the expiry API (LAST_PERMANENT_CHANNEL); the sibling-set
+        // lock above serialises this against concurrent deletes and expiry changes.
+        if (target.permanent && !siblings.rows.some((r) => r._id !== id && r.live && r.permanent)) {
+          await client.query('ROLLBACK');
+          return 'last_permanent_channel';
         }
 
         const columnRows = await client.query<{ table_name: string; column_name: string }>(
@@ -290,6 +307,10 @@ class ChannelRepository {
     if (!current) return 'not_found';
     const siblings = await db.channels.find({ serverId });
     if (siblings.length <= 1) return 'last_channel';
+    const isPermanent = (c: unknown) => (c as { expiresAt?: unknown }).expiresAt == null;
+    if (isPermanent(current) && !siblings.some((c) => (c as { _id?: unknown })._id !== id && isPermanent(c))) {
+      return 'last_permanent_channel';
+    }
     const remove = async (key: string, filter: Record<string, unknown>) => {
       const col = collections[key];
       if (col?.remove) await col.remove(filter);

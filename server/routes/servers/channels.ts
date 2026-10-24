@@ -26,7 +26,7 @@
  *     tags: [Channels]
  *     summary: Delete server channel
  *     parameters: [{ in: path, name: sid, required: true, schema: { type: string } }, { in: path, name: cid, required: true, schema: { type: string } }]
- *     responses: { '200': { description: Channel deleted } }
+ *     responses: { '200': { description: Channel deleted }, '400': { description: Last channel of the server }, '409': { description: LAST_PERMANENT_CHANNEL, the server's only permanent channel while an expiring one remains } }
  * /servers/{sid}/channels/{cid}/expiry:
  *   put:
  *     tags: [Channels]
@@ -335,6 +335,9 @@ router.delete('/:cid', authMiddleware, limits.channels(), async (req, res) => {
     const result = await Channels.deleteGraphAtomic(cid, sid);
     if (result === 'not_found') return void res.status(404).json({ error: 'Channel not found' });
     if (result === 'last_channel') return void res.status(400).json({ error: 'Cannot delete the last channel' });
+    if (result === 'last_permanent_channel') {
+      return void res.status(409).json({ error: EXPIRY_ERRORS.last_permanent_channel[1], code: 'LAST_PERMANENT_CHANNEL' });
+    }
     await invalidateChannelList(sid);
     announceChannelListChanged(req.app.get('io'), sid);
     return void res.json({ deleted: true });
