@@ -338,7 +338,9 @@
         // Do not sign out a replacement session that began during either the
         // HTTP round trip or the async local wipe (even if it reused an ID).
         const currentOwner = signedInPortableOwner();
-        if (ownsDeletionUi()) {
+        // Closing Settings retires its form, not the confirmed deletion. Keep
+        // session teardown tied to identity, independently of UI lifetime.
+        if (currentOwner === accountId && deletionAuthRevision === authRevision) {
           logout();
           showAuthMsg(t('privacy_delete_done'), 'success');
         } else if (currentOwner === null) {
