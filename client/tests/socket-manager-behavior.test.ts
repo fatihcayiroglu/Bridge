@@ -334,4 +334,25 @@ describe('SocketManager canonical realtime/auth lifecycle', () => {
     expect(mocks.registry.has('socket')).toBe(false);
     expect(mocks.logout).not.toHaveBeenCalled();
   });
+
+  it.each([true, false])('ignores refresh completion (%s) while a replacement login is pending', async refreshed => {
+    let finish!: (result: boolean) => void;
+    mocks.refreshAccessToken.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    instance = mount(SocketManager, { target });
+    sockets[0]!.connected = true; sockets[0]!.fire('connect'); sockets[0]!.fire('userAuthenticated');
+    sockets[0]!.fire('connect_error', { message: 'jwt expired' });
+    await vi.advanceTimersByTimeAsync(1000);
+    document.dispatchEvent(new CustomEvent('bridge:auth-transition'));
+    finish(refreshed);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(ioFactory).toHaveBeenCalledTimes(1);
+    expect(mocks.registry.has('socket')).toBe(false);
+    expect(mocks.logout).not.toHaveBeenCalled();
+    token = 'new-account';
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    expect(ioFactory).toHaveBeenCalledTimes(2);
+    expect(ioFactory).toHaveBeenLastCalledWith('https://bridge.example.test', {
+      auth: { token: 'new-account' }, transports: ['websocket', 'polling'],
+    });
+  });
 });

@@ -381,6 +381,7 @@
   }
   document.addEventListener('bridge:auth-success', onAuthSuccess);
   document.addEventListener('bridge:auth-logout', onAuthLogout);
+  document.addEventListener('bridge:auth-transition', onAuthLogout);
 
   // Diğer katmanların (Faz 2+, logout) kullanabilmesi için.
   BridgeRegistry.register('connectSocket', connect);
@@ -392,6 +393,7 @@
   onDestroy(() => {
     document.removeEventListener('bridge:auth-success', onAuthSuccess);
     document.removeEventListener('bridge:auth-logout', onAuthLogout);
+    document.removeEventListener('bridge:auth-transition', onAuthLogout);
     onAuthLogout();
     if (BridgeRegistry.get('connectSocket') === connect) BridgeRegistry.unregister('connectSocket');
     if (BridgeRegistry.get('disconnectSocket') === teardown) BridgeRegistry.unregister('disconnectSocket');

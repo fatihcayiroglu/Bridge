@@ -78,9 +78,11 @@ export function resetRefreshState(): void {
 if (typeof document !== 'undefined') {
   // CSRF jetonu bir KİMLİĞE bağlıdır: yeni oturum öncekinin jetonunu taşımaz.
   const resetSession = (): void => { resetRefreshState(); resetCsrfState(); };
-  document.addEventListener('bridge:auth-success', resetSession);
-  document.addEventListener('bridge:auth-logout', resetSession);
-  document.addEventListener('bridge:auth-transition', resetSession);
+  // Reset before ordinary consumers, regardless of dynamic import order; an
+  // earlier sign-in consumer may immediately start the new session's requests.
+  document.addEventListener('bridge:auth-success', resetSession, { capture: true });
+  document.addEventListener('bridge:auth-logout', resetSession, { capture: true });
+  document.addEventListener('bridge:auth-transition', resetSession, { capture: true });
 }
 
 /**
@@ -304,6 +306,10 @@ async function isCsrfFailure(res: Response): Promise<boolean> {
 export interface TypedResponse<T> extends Response {
   typed(): Promise<T>;
 }
+interface AuthRequestContext {
+  generation: number;
+  terminalLogoutGeneration?: number;
+}
 
 /**
  * Auth'lu fetch. 401 alırsa bir kez token yeniler ve isteği BİR kez tekrarlar.
@@ -318,10 +324,19 @@ export async function apiFetch<T = unknown>(
   init: RequestInit = {},
 ): Promise<TypedResponse<T>> {
   const generation = _authGeneration;
+  const context: AuthRequestContext = { generation };
   const attach = (res: Response): TypedResponse<T> => {
     const typed = res as TypedResponse<T>;
     typed.typed = async () => (await res.json()) as T;
     return typed;
+  };
+  const attachCurrent = (res: Response): TypedResponse<T> => {
+    // A refusal that ended THIS session still returns its original 401. It
+    // cannot be mistaken for cancellation or carried into another signed-in
+    // account. Other superseded responses remain content-free cancellations.
+    const ownTerminalRefusal = res.status === 401 &&
+      context.terminalLogoutGeneration === _authGeneration && !readToken();
+    return attach(generation !== _authGeneration && !ownTerminalRefusal ? sessionChangedResponse() : res);
   };
 
   const method   = String(init.method ?? 'GET').toUpperCase();
@@ -345,8 +360,8 @@ export async function apiFetch<T = unknown>(
   // A grant this client already holds for the action's scope rides along up front.
   const scope = scopeForRequest(method, target);
   const held = scope ? grantFor(scope) : null;
-  let response = await sendAuthed(target, init, mutating, held, generation);
-  if (generation !== _authGeneration) return attach(sessionChangedResponse());
+  let response = await sendAuthed(target, init, mutating, held, context);
+  if (generation !== _authGeneration) return attachCurrent(response);
 
   const refusal = await readStepUpRefusal(response);
   if (generation !== _authGeneration) return attach(sessionChangedResponse());
@@ -358,9 +373,9 @@ export async function apiFetch<T = unknown>(
       log.warn('Step-up proof could not be obtained', error);
     }
     if (generation !== _authGeneration) return attach(sessionChangedResponse());
-    if (grant) response = await sendAuthed(target, init, mutating, grant, generation);
+    if (grant) response = await sendAuthed(target, init, mutating, grant, context);
   }
-  return attach(response);
+  return attachCurrent(response);
 }
 
 /** Proofs go through this same client (CSRF, refresh) and are never step-up protected themselves. */
@@ -379,8 +394,8 @@ function sessionChangedResponse(): Response {
   });
 }
 
-async function sendAuthed(target: string, init: RequestInit, mutating: boolean, stepUp: string | null, generation: number): Promise<Response> {
-  const changed = (): boolean => generation !== _authGeneration;
+async function sendAuthed(target: string, init: RequestInit, mutating: boolean, stepUp: string | null, context: AuthRequestContext): Promise<Response> {
+  const changed = (): boolean => context.generation !== _authGeneration;
   if (changed()) return sessionChangedResponse();
   // ── ILK MUTASYON: JETONU REDDİ BEKLEMEDEN AL ─────────────────────────────
   // Önbellekte jeton yokken istek göndermek, oturumun ilk mutasyonunda GARANTİLİ bir
@@ -430,6 +445,7 @@ async function sendAuthed(target: string, init: RequestInit, mutating: boolean, 
     }
     log.warn('Oturum süresi doldu — çıkış yapılıyor');
     logout();
+    context.terminalLogoutGeneration = _authGeneration;
     return response;
   }
 
@@ -439,6 +455,7 @@ async function sendAuthed(target: string, init: RequestInit, mutating: boolean, 
     log.warn('Yenilemeden sonra da 401 — oturum kapatılıyor');
     _refreshDisabled = true;
     logout();
+    context.terminalLogoutGeneration = _authGeneration;
   }
   return response;
 }
