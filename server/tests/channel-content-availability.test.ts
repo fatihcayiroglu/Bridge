@@ -1,13 +1,14 @@
 jest.mock('../db/loader', () => ({ __esModule: true, default: { _pool: {} } }));
 jest.mock('../db/repositories', () => ({ Channels: { findById: jest.fn() } }));
-jest.mock('../lib/channelReadExpiryGuard', () => ({ channelLiveForMessageRead: jest.fn() }));
+jest.mock('../lib/channelReadExpiryGuard', () => ({ channelLiveForMessageRead: jest.fn(), channelLiveWindowForRead: jest.fn() }));
 
 import db from '../db/loader';
 import { Channels } from '../db/repositories';
-import { channelLiveForMessageRead } from '../lib/channelReadExpiryGuard';
-import { channelContentAvailability } from '../lib/channelContentAvailability';
+import { channelLiveForMessageRead, channelLiveWindowForRead } from '../lib/channelReadExpiryGuard';
+import { channelContentAvailability, channelLiveForMedia, channelMediaLiveWindow } from '../lib/channelContentAvailability';
 
 const queryLive = jest.mocked(channelLiveForMessageRead);
+const queryWindow = jest.mocked(channelLiveWindowForRead);
 const findChannel = jest.mocked(Channels.findById);
 const channel = { _id: 'channel', serverId: 'server', name: 'Channel', createdAt: 1 };
 const originalEnvironment = process.env.NODE_ENV;
@@ -81,4 +82,54 @@ it('rejects invalid scope before consulting a store', async () => {
   }
   expect(queryLive).not.toHaveBeenCalled();
   expect(findChannel).not.toHaveBeenCalled();
+});
+
+describe('live media window (voice, Stage, SFU)', () => {
+  const CLOSED = { live: false, remainingMs: 0 };
+
+  it('passes the authoritative PostgreSQL window through unchanged', async () => {
+    queryWindow.mockResolvedValue({ live: true, remainingMs: 4_321 });
+    expect(await channelMediaLiveWindow('channel', 'server')).toEqual({ live: true, remainingMs: 4_321 });
+    expect(queryWindow).toHaveBeenCalledWith(db._pool, 'channel', 'server');
+    queryWindow.mockResolvedValue(CLOSED);
+    expect(await channelLiveForMedia('channel', 'server')).toBe(false);
+    expect(findChannel).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on a database outage and without a pool outside unit tests', async () => {
+    queryWindow.mockRejectedValue(new Error('database offline'));
+    expect(await channelMediaLiveWindow('channel', 'server')).toEqual(CLOSED);
+    withPool(false);
+    process.env.NODE_ENV = 'production';
+    expect(await channelMediaLiveWindow('channel', 'server')).toEqual(CLOSED);
+    expect(findChannel).not.toHaveBeenCalled();
+  });
+
+  it('in the unit-test store: permanent has no window, an expiring channel reports its remaining time', async () => {
+    withPool(false);
+    expect(await channelMediaLiveWindow('channel', 'server')).toEqual({ live: true, remainingMs: null });
+    const now = Date.now();
+    jest.spyOn(Date, 'now').mockReturnValue(now);
+    findChannel.mockResolvedValue({ ...channel, expiresAt: now + 5_000, expiryVersion: 1 } as typeof channel);
+    expect(await channelMediaLiveWindow('channel', 'server')).toEqual({ live: true, remainingMs: 5_000 });
+    jest.mocked(Date.now).mockRestore();
+  });
+
+  it.each([
+    ['absent channel', null],
+    ['another tenant', { ...channel, serverId: 'other' }],
+    ['expired', { ...channel, expiresAt: 1, expiryVersion: 1 }],
+  ] as const)('in the unit-test store: %s is closed', async (_label, row) => {
+    withPool(false);
+    findChannel.mockResolvedValue(row);
+    expect(await channelMediaLiveWindow('channel', 'server')).toEqual(CLOSED);
+  });
+
+  it('rejects invalid scope before consulting a store', async () => {
+    for (const [channelId, serverId] of [['', 'server'], ['channel', ''], ['x'.repeat(257), 'server']] as const) {
+      expect(await channelMediaLiveWindow(channelId, serverId)).toEqual(CLOSED);
+    }
+    expect(queryWindow).not.toHaveBeenCalled();
+    expect(findChannel).not.toHaveBeenCalled();
+  });
 });
