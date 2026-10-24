@@ -14,6 +14,7 @@ interface UpgradeSourceMarkers extends Record<string, unknown> {
   hasMigrationsTable: boolean;
   hasSsoProvider: boolean;
   hasAckId: boolean;
+  hasNullableEmbeds: boolean;
 }
 
 // Exactly one read-only statement. Use the same current_schema() as unqualified
@@ -32,7 +33,13 @@ export const UPGRADE_SOURCE_MARKERS_SQL = `
       SELECT 1 FROM information_schema.columns
       WHERE table_schema = current_schema()
         AND table_name = 'messages' AND column_name = 'ackId'
-    ) AS "hasAckId"
+    ) AS "hasAckId",
+    EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'messages' AND column_name = 'embeds'
+        AND is_nullable = 'YES'
+    ) AS "hasNullableEmbeds"
 `;
 
 export class UnverifiedUpgradeSourceError extends Error {
@@ -70,6 +77,9 @@ export async function verifyUpgradeSource(q: MigrationQueryable): Promise<void> 
   if (!markers.hasMessages) missing.push('messages table');
   if (!markers.hasSsoProvider) missing.push('users.ssoProvider');
   if (!markers.hasAckId) missing.push('messages.ackId');
+  // The measured staged v1.122.0 attempt can reach migration 084 but retains
+  // messages.embeds NOT NULL; a fresh/current baseline is nullable.
+  if (!markers.hasNullableEmbeds) missing.push('messages.embeds nullable');
   if (!markers.hasMigrationsTable) missing.push('schema_migrations table');
   if (missing.length) throw new UnverifiedUpgradeSourceError(missing);
 
