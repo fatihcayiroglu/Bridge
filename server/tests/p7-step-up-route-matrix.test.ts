@@ -58,8 +58,8 @@ async function account(extra: Row = {}): Promise<Account> {
   return { id, token: makeToken({ _id: id, username: 'm', tokenVersion }), tokenVersion };
 }
 
-interface Row403 { method: 'get' | 'post' | 'delete'; path: (ctx: Ctx) => string; body?: Row; action: string; scope: StepUpScope; admin?: boolean }
-interface Ctx { serverId: string }
+interface Row403 { method: 'get' | 'post' | 'put' | 'delete'; path: (ctx: Ctx) => string; body?: Row; action: string; scope: StepUpScope; admin?: boolean }
+interface Ctx { serverId: string; channelId: string }
 
 const MATRIX: Row403[] = [
   { method: 'post', path: () => '/api/email/add', body: { email: 'new@example.com' }, action: 'email.change', scope: 'account-security' },
@@ -72,6 +72,8 @@ const MATRIX: Row403[] = [
   { method: 'post', path: () => '/api/2fa/backup-codes/regenerate', body: { password: 'pw' }, action: 'backup_codes.regenerate', scope: 'account-security' },
   { method: 'get', path: () => '/api/account/export', action: 'account.export', scope: 'sensitive-export' },
   { method: 'delete', path: (c) => `/api/servers/${c.serverId}`, action: 'server.delete', scope: 'destructive-admin' },
+  { method: 'delete', path: (c) => `/api/servers/${c.serverId}/channels/${c.channelId}`, action: 'channel.delete', scope: 'destructive-admin' },
+  { method: 'put', path: (c) => `/api/servers/${c.serverId}/channels/${c.channelId}/expiry`, body: { expiresAt: null }, action: 'channel.expiry.change', scope: 'destructive-admin' },
   { method: 'delete', path: () => `/api/admin/users/${uuidv4()}`, action: 'admin.user.delete', scope: 'destructive-admin', admin: true },
   { method: 'delete', path: () => `/api/admin/servers/${uuidv4()}`, action: 'admin.server.delete', scope: 'destructive-admin', admin: true },
 ];
@@ -85,7 +87,11 @@ async function fixture(row: Row403, extra: Row = {}): Promise<{ me: Account; ctx
   const serverId = uuidv4();
   await store.servers.insert({ _id: serverId, name: 'Mine', ownerId: me.id, createdAt: Date.now() });
   await store.members.insert({ userId: me.id, serverId, roles: '[]', joinedAt: Date.now() });
-  return { me, ctx: { serverId } };
+  const channelId = uuidv4();
+  await store.channels.insert({ _id: channelId, serverId, name: 'General', type: 'text', createdAt: Date.now() });
+  // Expiry routing must reach the step-up boundary; no SQL is run without a proof.
+  (db as unknown as { _pool?: object })._pool = {};
+  return { me, ctx: { serverId, channelId } };
 }
 
 function send(row: Row403, ctx: Ctx, me: Account, grant?: string) {

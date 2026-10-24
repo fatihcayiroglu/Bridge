@@ -73,9 +73,10 @@ async function webContext() {
   }, 'Bridge packaged WKWebView context', 120_000);
 }
 
-async function api(method, route, token, body) {
+async function api(method, route, token, body, stepUpGrant) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (stepUpGrant) headers['X-Bridge-Step-Up'] = stepUpGrant;
   if (token && !['GET', 'HEAD'].includes(method)) {
     const csrf = await api('GET', '/api/csrf-token', token);
     assert.equal(csrf.status, 200, 'CSRF request must succeed');
@@ -88,8 +89,8 @@ async function api(method, route, token, body) {
   });
   return { status: response.status, json: await response.json() };
 }
-async function write(method, route, token, body) {
-  const result = await api(method, route, token, body);
+async function write(method, route, token, body, stepUpGrant) {
+  const result = await api(method, route, token, body, stepUpGrant);
   assert(result.status >= 200 && result.status < 300, `Fixture request failed: ${method} (${result.status})`);
   return result.json;
 }
@@ -290,7 +291,17 @@ try {
     await native('backgroundApp', { seconds: -1 });
     await until(async () => [2, 3].includes(await native('queryAppState', { bundleId: BUNDLE })), 'native app backgrounded');
     facts.nativeBackgroundObserved = true;
-    await write('PUT', `/api/servers/${serverId}/channels/${doomed}/expiry`, token, { expiresAt: Date.now() + 7_200_000 });
+    // The harness is a real password-bearing actor. Prove that identity on
+    // demand; a session JWT alone must not change destructive expiry policy.
+    // Mint close to the mutation, not at initial sign-in before slow XCUITest.
+    const proof = await write('POST', '/api/step-up/password', token, {
+      password, scope: 'destructive-admin',
+    });
+    assert.equal(proof.stepUp?.scope, 'destructive-admin', 'Expiry step-up proof scope');
+    assert.equal(typeof proof.stepUp?.token, 'string', 'Expiry proof token');
+    facts.expiryStepUp = { scope: proof.stepUp.scope, method: proof.stepUp.method };
+    await write('PUT', `/api/servers/${serverId}/channels/${doomed}/expiry`, token,
+      { expiresAt: Date.now() + 7_200_000 }, proof.stepUp.token);
     const expired = await database.query(`UPDATE channels
       SET "expiresAt" = FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT - 1000
       WHERE _id = $1 AND "serverId" = $2 AND "expiryVersion" > 0`, [doomed, serverId]);

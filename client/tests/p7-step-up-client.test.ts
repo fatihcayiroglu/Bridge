@@ -105,6 +105,8 @@ describe('which requests carry which grant', () => {
     ['POST', '/api/account/portable-import/apply', 'account-security'],
     ['DELETE', '/api/account', 'destructive-admin'],
     ['DELETE', '/api/servers/s1', 'destructive-admin'],
+    ['DELETE', '/api/servers/s1/channels/c1', 'destructive-admin'],
+    ['PUT', '/api/v1/servers/s1/channels/c1/expiry', 'destructive-admin'],
     ['DELETE', '/api/admin/users/u1', 'destructive-admin'],
     ['POST', '/api/servers/s1/bans', 'moderation-burst'],
     ['post', '/api/servers/s1/members/u1/kick', 'moderation-burst'],
