@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import type { MigrationQueryable } from '../db/postgres/versionedMigrations';
 import {
   UnverifiedUpgradeSourceError,
@@ -103,6 +105,22 @@ describe('P7 D3 upgrade source: fail closed before any mutation', () => {
     await expect(verifyUpgradeSource({ query } as unknown as MigrationQueryable))
       .rejects.toThrow('schema probe returned no unique row');
     expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('wires both production entrypoints before their first possible DDL', () => {
+    const boot = fs.readFileSync(path.resolve(__dirname, '../db/postgres/index.ts'), 'utf8');
+    const cli = fs.readFileSync(path.resolve(__dirname, '../db/migrate-postgres.ts'), 'utf8');
+    const first = boot.indexOf('await verifyUpgradeSource(client)');
+    const ddl = boot.indexOf('await pool.query(SCHEMA)');
+    const inline = boot.indexOf('await runInlineMigrations(pool)');
+    expect(first).toBeGreaterThan(-1);
+    expect(ddl).toBeGreaterThan(first);
+    expect(inline).toBeGreaterThan(first);
+
+    const cliGuard = cli.indexOf('await verifyUpgradeSource(client as unknown as MigrationQueryable)');
+    const ledgerDdl = cli.indexOf('await ensureMigrationsTable(client as unknown as MigrationQueryable)');
+    expect(cliGuard).toBeGreaterThan(-1);
+    expect(ledgerDdl).toBeGreaterThan(cliGuard);
   });
 
   it('only probes current schema tables and columns, never modification SQL', () => {
