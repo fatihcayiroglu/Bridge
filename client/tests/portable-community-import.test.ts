@@ -150,9 +150,9 @@ describe('owner-entered expectations and mapping', () => {
     expect(Object.prototype.hasOwnProperty.call(selected.categories, 'constructor')).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(selected.roles, '__proto__')).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(selected.channels, 'toString')).toBe(true);
-    expect(selected.categories.constructor).toBe('tc1');
-    expect(selected.roles.__proto__).toBe('tr1');
-    expect(selected.channels.toString).toBe('tch1');
+    expect(selected.categories['constructor']).toBe('tc1');
+    expect(selected.roles['__proto__']).toBe('tr1');
+    expect(selected.channels['toString']).toBe('tch1');
     expect(mappingProblem(source, destination, selected)).toBeNull();
     expect(reviewBody({
       bundle: { ...parseSignedBundle(bundleText())!, rows: source },
