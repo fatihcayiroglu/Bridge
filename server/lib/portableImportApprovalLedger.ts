@@ -188,7 +188,7 @@ export async function claimPortableImportApproval(
       WHERE token_hash=$1 AND target_server_id=$2 AND owner_id=$3
       FOR UPDATE`, values.slice(0, 3));
     const row = locked.rows[0];
-    if (locked.rows.length !== 1 || row?.token_hash !== values[0] ||
+    if (locked.rows.length !== 1 || !row || row.token_hash !== values[0] ||
       typeof row.txid !== 'string' || !/^[1-9][0-9]*$/.test(row.txid) ||
       row.isolation !== 'serializable' || row.readonly !== 'off') fail();
     const sql = `UPDATE portable_import_approvals a
