@@ -177,14 +177,20 @@ describe('PortableTab', () => {
     expect(q('pci-again')).not.toBeNull();
   });
 
-  it('shows a refused apply, a failed verification and a disabled installation honestly', async () => {
+  it('keeps an opaque apply result uncertain while showing verification and configuration failures honestly', async () => {
     routes['/portable-import/mapped-apply'] = () => respond(422, { code: 'PORTABLE_MAPPED_APPLY_UNAVAILABLE' });
     await toReview();
     await fireEvent.click(q('pci-confirm')!);
     await fireEvent.click(q('pci-approve')!);
     await waitFor(() => expect(q('pci-apply')).not.toBeNull());
     await fireEvent.click(q('pci-apply')!);
-    await waitFor(() => expect(q('pci-outcome')?.getAttribute('data-outcome')).toBe('refused'));
+    await waitFor(() => expect(q('pci-outcome')?.getAttribute('data-outcome')).toBe('unknown'));
+    expect(q('pci-outcome')!.textContent?.trim()).toBe(t('pci_unknown'));
+    expect(q('pci-apply')).toBeNull();
+    expect(q('pci-applied')).toBeNull();
+    expect(q('pci-again')).not.toBeNull();
+    expect(calls.filter(call => call.url.endsWith('/mapped-apply'))).toHaveLength(1);
+    expect(document.body.innerHTML).not.toContain(TOKEN);
     cleanup();
 
     routes['/portable-import/signed-mapping-review'] = () => respond(422, { code: 'PORTABLE_SIGNED_MAPPING_REVIEW_INVALID' });

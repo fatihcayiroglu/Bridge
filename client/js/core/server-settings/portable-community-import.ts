@@ -233,6 +233,9 @@ export type Outcome =
  */
 export function classify(phase: Phase, status: number, code: unknown): Outcome {
   if (status === 0) return phase === 'apply' ? 'unknown' : 'error';
+  // The server intentionally uses one opaque error for rollback and unknown
+  // COMMIT acknowledgement. This answer cannot prove that nothing was applied.
+  if (phase === 'apply' && status === 422 && code === 'PORTABLE_MAPPED_APPLY_UNAVAILABLE') return 'unknown';
   if (status === 503) return 'disabled';
   if (status === 403) return code === 'STEP_UP_REQUIRED' ? 'proof_needed' : 'not_owner';
   if (status === 400) return 'invalid';

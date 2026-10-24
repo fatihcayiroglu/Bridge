@@ -2441,7 +2441,7 @@ const translations: Record<string, string> = {
   "pci_apply_button": "立即应用",
   "pci_applied": "已应用：更新了 {categories} 个分类、{roles} 个角色和 {channels} 个频道。",
   "pci_refused": "未应用任何内容。批准可能已过期或已被使用，或此社区已更改。请重新审核。",
-  "pci_unknown": "在收到响应前连接中断，因此导入可能已应用，也可能未应用。重试前请重新审核；同一批准永远不会被应用两次。",
+  "pci_unknown": "无法确认导入结果。更改可能已经应用，也可能尚未应用。重试前请重新检查；同一次批准绝不会执行两次。",
   "pci_proof_needed": "请确认身份以继续。",
   "pci_error": "出现问题，请重试。",
   "pci_review_again": "重新审核",

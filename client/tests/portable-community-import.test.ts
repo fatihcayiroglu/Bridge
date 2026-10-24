@@ -165,6 +165,12 @@ describe('request shapes', () => {
 });
 
 describe('honest outcomes', () => {
+  it('never infers rollback from the opaque apply error used for unknown COMMIT acknowledgement', () => {
+    expect(classify('apply', 422, 'PORTABLE_MAPPED_APPLY_UNAVAILABLE')).toBe('unknown');
+    expect(classify('review', 422, 'PORTABLE_MAPPED_APPLY_UNAVAILABLE')).toBe('unverified');
+    expect(classify('approve', 422, 'PORTABLE_MAPPED_APPLY_UNAVAILABLE')).toBe('refused');
+  });
+
   it('maps statuses without ever reporting an unknown apply as a failure', () => {
     expect(classify('apply', 0, undefined)).toBe('unknown');
     expect(classify('approve', 0, undefined)).toBe('error');
