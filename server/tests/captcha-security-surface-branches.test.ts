@@ -336,11 +336,12 @@ describe('şüpheli giriş uyarısı', () => {
 
   it('a normal new-device alert keeps PII out of INFO logs while retaining bounded security state', async () => {
     const username = 'sensitive_login_name';
+    const priorInfoCalls = (logger.info as jest.Mock).mock.calls.length;
     await checkSuspiciousLogin(req(), { _id: 'privacy-user', email: 'private@example.test', username });
 
     // Only the user's own notification receives IP/name; no ordinary event
     // may persist those values in broadly collected application INFO logs.
-    expect(logger.info).not.toHaveBeenCalled();
+    expect((logger.info as jest.Mock).mock.calls.slice(priorInfoCalls)).toEqual([]);
     expect(sendAlert).toHaveBeenCalledWith(expect.objectContaining({
       to: 'private@example.test', username, ip: IP,
     }));
