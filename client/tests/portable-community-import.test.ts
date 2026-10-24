@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   APPLY_CONFIRMATION, APPROVAL_CONFIRMATION, MAX_BUNDLE_BYTES, applyBody, approvalBody, candidates,
-  canonicalOrigin, classify, mappingProblem, parseSignedBundle, renames, reviewBody, structureRows, suggestLinks,
+  canonicalOrigin, classify, mappingProblem, mappingRowLabels, parseSignedBundle, renames, reviewBody, structureRows, suggestLinks,
   type Links,
 } from '../js/core/server-settings/portable-community-import.ts';
 
@@ -117,6 +117,20 @@ describe('owner-entered expectations and mapping', () => {
     expect(links.channels).toEqual({ sch1: 'tch1' });      // "general" voice does not match a text channel
     expect(links.categories).toEqual({});                  // no name match: the owner decides
     expect(candidates('channels', b.rows.channels[1]!, target()).map(r => r.sourceId)).toEqual(['tch2', 'tch3']);
+  });
+
+  it('labels colliding names with exact opaque IDs without mutating the signed rows', () => {
+    const rows = structureRows({ ...sourceStructure(), roles: [
+      { sourceId: '__proto__', name: 'Crew', position: 1 },
+      { sourceId: 'other-role', name: ' crew ', position: 2 },
+      { sourceId: 'unique-role', name: 'Readers', position: 3 },
+    ] })!;
+    const original = JSON.stringify(rows);
+    const labels = mappingRowLabels(rows);
+    expect(labels.roles.get('__proto__')).toContain('__proto__');
+    expect(labels.roles.get('other-role')).toContain('other-role');
+    expect(labels.roles.get('unique-role')).toBe('Readers');
+    expect(JSON.stringify(rows)).toBe(original);
   });
 
   it('requires every source row mapped once onto a row of the same type', () => {

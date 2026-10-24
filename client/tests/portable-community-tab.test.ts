@@ -93,6 +93,50 @@ async function toReview(): Promise<void> {
 }
 
 describe('PortableTab', () => {
+  it('distinguishes same-named destination channels before the owner chooses an exact mapping', async () => {
+    routes['/portable-export'] = () => respond(200, { ...TARGET, channels: [
+      ...TARGET.channels, { sourceId: 'tch2', name: 'general', type: 'text', order: 2 },
+    ] });
+    render(PortableTab, { props: { serverId: 'dst-1', isOwner: true } });
+    await loadBundle();
+    await waitFor(() => expect(q('pci-claims')).not.toBeNull());
+    await fireEvent.input(q('pci-origin')!, { target: { value: 'https://source.example' } });
+    await fireEvent.input(q('pci-source-id')!, { target: { value: 'src-1' } });
+    await fireEvent.click(q('pci-prepare')!);
+    await waitFor(() => expect(q('pci-map-channels')).not.toBeNull());
+    const select = document.querySelector<HTMLSelectElement>('#pci-channels-sch1')!;
+    expect(select.value).toBe(''); // ambiguous names must never select a row implicitly
+    const options = [...select.options].filter(option => option.value);
+    expect(new Set(options.map(option => option.textContent)).size).toBe(2);
+    for (const option of options) expect(option.textContent).toContain(option.value);
+    const voice = document.querySelector<HTMLSelectElement>('#pci-channels-sch2')!;
+    expect([...voice.options].find(option => option.value === 'tch3')?.textContent).toBe('chat');
+
+    await fireEvent.change(document.querySelector('#pci-categories-sc1')!, { target: { value: 'tc1' } });
+    await fireEvent.change(select, { target: { value: 'tch2' } });
+    await fireEvent.change(voice, { target: { value: 'tch3' } });
+    await fireEvent.click(q('pci-review')!);
+    await waitFor(() => expect(q('pci-review-result')).not.toBeNull());
+    expect(calls.find(call => call.url.endsWith('/signed-mapping-review'))?.body?.mapping)
+      .toMatchObject({ channels: [{ sourceId: 'sch1', targetId: 'tch2' }, { sourceId: 'sch2', targetId: 'tch3' }] });
+  });
+
+  it('distinguishes same-named signed source rows in their accessible mapping labels', async () => {
+    const bundle = JSON.parse(BUNDLE);
+    bundle.structure.channels.push({ sourceId: 'sch3', name: 'general', type: 'text', order: 3 });
+    render(PortableTab, { props: { serverId: 'dst-1', isOwner: true } });
+    await loadBundle(JSON.stringify(bundle));
+    await waitFor(() => expect(q('pci-claims')).not.toBeNull());
+    await fireEvent.input(q('pci-origin')!, { target: { value: 'https://source.example' } });
+    await fireEvent.input(q('pci-source-id')!, { target: { value: 'src-1' } });
+    await fireEvent.click(q('pci-prepare')!);
+    await waitFor(() => expect(q('pci-map-channels')).not.toBeNull());
+    for (const id of ['sch1', 'sch3']) {
+      expect(document.querySelector(`label[for="pci-channels-${id}"]`)?.textContent).toContain(id);
+    }
+    expect(document.querySelector('label[for="pci-channels-sch2"]')?.textContent).toBe('lounge');
+  });
+
   it('shows only an explanation to a non-owner and makes no request', () => {
     render(PortableTab, { props: { serverId: 'dst-1', isOwner: false } });
     expect(q('pci-owner-only')?.textContent).toBe(t('pci_owner_only'));
