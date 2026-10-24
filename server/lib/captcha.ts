@@ -431,7 +431,14 @@ export async function checkSuspiciousLogin(
   }
   if (!isNewDevice) return;
 
-  logger.info({ username: user.username, ip, event: 'captcha.suspicious_login' }, '[CAPTCHA] Şüpheli giriş');
+  // P7 B3 (owner decision 2026-10-24): an ordinary new-device sign-in is not
+  // logged with the username or the IP. The security record it needs already
+  // exists, restricted and bounded: the per-account known-device key above
+  // (hashed device, Redis, CFG.knownDeviceTtlSec) and the alert sent to the
+  // account holder. The log line keeps only that the event happened and
+  // whether the alert could be addressed, which is what volume monitoring needs.
+  logger.info({ event: 'captcha.suspicious_login', alert: user.email ? 'emailed' : 'no_address' },
+    '[CAPTCHA] New-device sign-in');
 
   if (user.email) {
     try {
