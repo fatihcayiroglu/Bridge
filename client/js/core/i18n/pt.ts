@@ -2245,6 +2245,7 @@ const translations: Record<string, string> = {
   "moderation_report_deleted_since": "Removida do chat depois da denúncia — mostrando o que foi denunciado.",
   "moderation_report_removed": "A mensagem não existe mais — mostrando o que foi denunciado.",
   "moderation_report_channel_gone": "O canal não existe mais",
+  "moderation_report_thread_reply": "Resposta em tópico",
   "moderation_report_no_snapshot": "Denunciada antes de o Bridge guardar uma cópia — mostrando a mensagem atual.",
   "moderation_report_now": "Agora: {text}",
   "moderation_report_truncated": "(encurtado)",
