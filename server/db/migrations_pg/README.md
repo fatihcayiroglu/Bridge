@@ -75,6 +75,7 @@ DATABASE_URL=postgresql://... node -r ts-node/register db/migrate-postgres.ts do
 | 081 | portable_import_approval_ledger | One-use hashed approval primitives (unmounted) |
 | 082 | portable_import_approval_grant_binding | Grant-set digest required for new approvals; legacy NULL grants cannot be claimed |
 | 083 | portable_import_snapshot_replay_barrier | Per-destination signed snapshot replay ledger; UNIQUE key, same-transaction apply, FK CASCADE cleanup |
+| 094 | account_erasure_author_indexes | Author indexes for account erasure on messages and thread_messages; 6M-row erasure 2.0-2.7 s to 0.16-0.20 s (measured) |
 
 ## `_inline.ts` Dosyaları
 
