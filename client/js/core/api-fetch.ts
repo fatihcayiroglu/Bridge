@@ -309,6 +309,17 @@ export interface TypedResponse<T> extends Response {
 interface AuthRequestContext {
   generation: number;
   terminalLogoutGeneration?: number;
+  accountDeletion: boolean;
+}
+
+// A successful DELETE /api/account may revoke the current socket session
+// *before* its HTTP acknowledgement arrives. A normal cancellation would then
+// conceal the only proof that the caller may erase the deleted account's local
+// data. Keep that proof out of response headers/bodies: servers and proxies
+// cannot forge this client-owned, per-Response marker.
+const confirmedAccountDeletions = new WeakSet<Response>();
+export function isConfirmedAccountDeletion(response: Response): boolean {
+  return response.status === 409 && confirmedAccountDeletions.has(response);
 }
 
 /**
@@ -324,7 +335,11 @@ export async function apiFetch<T = unknown>(
   init: RequestInit = {},
 ): Promise<TypedResponse<T>> {
   const generation = _authGeneration;
-  const context: AuthRequestContext = { generation };
+  const method = String(init.method ?? 'GET').toUpperCase();
+  const context: AuthRequestContext = {
+    generation,
+    accountDeletion: method === 'DELETE' && url === '/api/account',
+  };
   const attach = (res: Response): TypedResponse<T> => {
     const typed = res as TypedResponse<T>;
     typed.typed = async () => (await res.json()) as T;
@@ -336,10 +351,16 @@ export async function apiFetch<T = unknown>(
     // account. Other superseded responses remain content-free cancellations.
     const ownTerminalRefusal = res.status === 401 &&
       context.terminalLogoutGeneration === _authGeneration && !readToken();
-    return attach(generation !== _authGeneration && !ownTerminalRefusal ? sessionChangedResponse() : res);
+    if (generation !== _authGeneration && !ownTerminalRefusal) {
+      const cancelled = sessionChangedResponse();
+      if (context.accountDeletion && (res.ok || confirmedAccountDeletions.has(res))) {
+        confirmedAccountDeletions.add(cancelled);
+      }
+      return attach(cancelled);
+    }
+    return attach(res);
   };
 
-  const method   = String(init.method ?? 'GET').toUpperCase();
   // Final21 Faz 19 (19-28): sunucu-göreli yol paketlenmiş mobil uygulamada API kökenine bağlanır (web: aynen).
   const target   = toServerUrl(url);
   const mutating = !SAFE_METHODS.has(method);
@@ -364,7 +385,7 @@ export async function apiFetch<T = unknown>(
   if (generation !== _authGeneration) return attachCurrent(response);
 
   const refusal = await readStepUpRefusal(response);
-  if (generation !== _authGeneration) return attach(sessionChangedResponse());
+  if (generation !== _authGeneration) return attachCurrent(response);
   if (refusal) {
     let grant: string | null = null;
     try {
@@ -396,6 +417,7 @@ function sessionChangedResponse(): Response {
 
 async function sendAuthed(target: string, init: RequestInit, mutating: boolean, stepUp: string | null, context: AuthRequestContext): Promise<Response> {
   const changed = (): boolean => context.generation !== _authGeneration;
+  const preserveDeletionAck = (response: Response): boolean => context.accountDeletion && response.ok;
   if (changed()) return sessionChangedResponse();
   // ── ILK MUTASYON: JETONU REDDİ BEKLEMEDEN AL ─────────────────────────────
   // Önbellekte jeton yokken istek göndermek, oturumun ilk mutasyonunda GARANTİLİ bir
@@ -406,7 +428,7 @@ async function sendAuthed(target: string, init: RequestInit, mutating: boolean, 
   if (changed()) return sessionChangedResponse();
 
   let response = await fetch(target, withAuth(init, readToken(), mutating ? _csrfToken : null, stepUp));
-  if (changed()) return sessionChangedResponse();
+  if (changed()) return preserveDeletionAck(response) ? response : sessionChangedResponse();
 
   // CSRF reddi → jetonu tazele ve isteği BİR kez tekrarla (jeton döndürülmüş
   // olabilir). Yalnız mutasyonlarda ve yalnız sebep gerçekten CSRF ise.
@@ -417,7 +439,7 @@ async function sendAuthed(target: string, init: RequestInit, mutating: boolean, 
     if (changed()) return sessionChangedResponse();
     if (fresh) response = await fetch(target, withAuth(init, readToken(), fresh, stepUp));
   }
-  if (changed()) return sessionChangedResponse();
+  if (changed()) return preserveDeletionAck(response) ? response : sessionChangedResponse();
 
   if (response.status !== 401) return response;
 
@@ -450,7 +472,7 @@ async function sendAuthed(target: string, init: RequestInit, mutating: boolean, 
   }
 
   response = await fetch(target, withAuth(init, readToken(), mutating ? _csrfToken : null, stepUp));
-  if (changed()) return sessionChangedResponse();
+  if (changed()) return preserveDeletionAck(response) ? response : sessionChangedResponse();
   if (response.status === 401) {
     log.warn('Yenilemeden sonra da 401 — oturum kapatılıyor');
     _refreshDisabled = true;

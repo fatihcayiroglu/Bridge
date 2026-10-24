@@ -18,7 +18,7 @@ vi.mock('../js/core/logger.ts', () => ({
 }));
 vi.mock('../js/core/bridge-registry.ts', () => ({ BridgeRegistry: { register: vi.fn() } }));
 
-import { apiFetch, isRefreshInFlight, refreshAccessToken, resetCsrfState, resetRefreshState } from '../js/core/api-fetch.ts';
+import { apiFetch, isConfirmedAccountDeletion, isRefreshInFlight, refreshAccessToken, resetCsrfState, resetRefreshState } from '../js/core/api-fetch.ts';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -159,5 +159,31 @@ describe('HTTP work cannot cross a local account transition', () => {
     const result = await request;
     expect(result.status).toBe(409);
     expect(await result.typed()).toEqual({ error: 'AUTH_SESSION_CHANGED' });
+  });
+
+  it.each(['bridge:auth-logout', 'bridge:auth-success'])('retains only a verified deletion acknowledgement after %s', async event => {
+    const pending = deferred<Response>();
+    const fetch = vi.fn((url: string) => url.endsWith('/csrf-token')
+      ? Promise.resolve(response({ token: 'csrf' })) : pending.promise);
+    vi.stubGlobal('fetch', fetch);
+    const deletion = apiFetch('/api/account', { method: 'DELETE', body: JSON.stringify({ confirm: 'DELETE' }) });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    mocks.state.token = event === 'bridge:auth-logout' ? null : 'replacement-account';
+    document.dispatchEvent(new CustomEvent(event));
+    pending.resolve(response({ deleted: true, privateData: 'never exposed' }));
+    const result = await deletion;
+    expect(result.status).toBe(409);
+    expect(await result.typed()).toEqual({ error: 'AUTH_SESSION_CHANGED' });
+    expect(isConfirmedAccountDeletion(result)).toBe(true);
+    expect(mocks.logout).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a fabricated or unrelated 409 as a confirmed deletion', async () => {
+    expect(isConfirmedAccountDeletion(response({ error: 'AUTH_SESSION_CHANGED' }, 409))).toBe(false);
+    const pending = deferred<Response>();
+    vi.stubGlobal('fetch', vi.fn(() => pending.promise));
+    const request = apiFetch('/api/me');
+    replaceAccount(); pending.resolve(response({ deleted: true }));
+    expect(isConfirmedAccountDeletion(await request)).toBe(false);
   });
 });
