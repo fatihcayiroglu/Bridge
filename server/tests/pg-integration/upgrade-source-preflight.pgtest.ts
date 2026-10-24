@@ -58,12 +58,27 @@ RUN('P7 D3 upgrade preflight — real PostgreSQL, rollback-only', () => {
     });
   });
 
+  it('refuses the measured 084-complete staged release shape with NOT NULL embeds', async () => {
+    await inRolledBackTransaction(async c => {
+      await c.query('CREATE SCHEMA pgt_d3_staged_preflight');
+      await c.query('SET LOCAL search_path TO pgt_d3_staged_preflight');
+      await c.query('CREATE TABLE users ("ssoProvider" TEXT)');
+      await c.query("CREATE TABLE messages (\"ackId\" TEXT, embeds JSONB NOT NULL DEFAULT '[]')");
+      await c.query('CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, rolled_back BOOLEAN NOT NULL DEFAULT FALSE)');
+      await c.query("INSERT INTO schema_migrations (id, rolled_back) VALUES ('084_channel_expiry_foundation.sql', FALSE)");
+      await expect(verifyUpgradeSource(c as unknown as MigrationQueryable))
+        .rejects.toThrow('messages.embeds nullable');
+      expect((await c.query('SELECT id, rolled_back FROM schema_migrations')).rows)
+        .toEqual([{ id: '084_channel_expiry_foundation.sql', rolled_back: false }]);
+    });
+  });
+
   it('refuses a partially upgraded legacy ledger even when both markers exist', async () => {
     await inRolledBackTransaction(async c => {
       await c.query('CREATE SCHEMA pgt_d3_partial_preflight');
       await c.query('SET LOCAL search_path TO pgt_d3_partial_preflight');
       await c.query('CREATE TABLE users ("ssoProvider" TEXT)');
-      await c.query('CREATE TABLE messages ("ackId" TEXT)');
+      await c.query('CREATE TABLE messages ("ackId" TEXT, embeds JSONB)');
       await c.query('CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, rolled_back BOOLEAN NOT NULL DEFAULT FALSE)');
       await c.query("INSERT INTO schema_migrations (id, rolled_back) VALUES ('045_partial.sql', FALSE)");
       await expect(verifyUpgradeSource(c as unknown as MigrationQueryable))
