@@ -61,6 +61,7 @@ jest.mock('../lib/logger', () => ({
 }));
 
 import type { NextFunction, Request, Response } from 'express';
+import logger from '../lib/logger';
 import {
   botFilterMiddleware,
   captchaMiddleware,
@@ -312,11 +313,16 @@ describe('şüpheli giriş uyarısı', () => {
   });
 
   it('cihaz deposu PATLARSA uyarı yağmaz ve giriş etkilenmez', async () => {
-    cacheMock.setIfAbsentAuthoritative.mockRejectedValueOnce(new Error('redis down'));
+    cacheMock.setIfAbsentAuthoritative.mockRejectedValueOnce(new Error('sensitive:IP=203.0.113.7 user=a@x.test'));
 
     await expect(checkSuspiciousLogin(req(), { _id: 'u2', email: 'a@x.test' })).resolves.toBeUndefined();
 
     expect(sendAlert).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      { event: 'captcha.known_device_store_error' }, '[CAPTCHA] Known-device store unavailable',
+    );
+    expect(JSON.stringify((logger.warn as jest.Mock).mock.calls)).not.toContain('sensitive:IP');
+    expect(JSON.stringify((logger.warn as jest.Mock).mock.calls)).not.toContain('a@x.test');
   });
 
   it('e-postası olmayan kullanıcıya uyarı gönderilmez', async () => {
@@ -346,9 +352,17 @@ describe('şüpheli giriş uyarısı', () => {
   });
 
   it('uyarı gönderimi PATLARSA giriş yine tamamlanır', async () => {
-    sendAlert.mockRejectedValueOnce(new Error('smtp down'));
+    sendAlert.mockRejectedValueOnce(new Error('sensitive:SMTP a@x.test IP=203.0.113.7'));
 
     await expect(checkSuspiciousLogin(req(), { _id: 'u7', email: 'a@x.test' })).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      { event: 'captcha.suspicious_login_alert_failed' },
+      '[CAPTCHA] Suspicious-login alert could not be delivered',
+    );
+    const logged = JSON.stringify((logger.warn as jest.Mock).mock.calls);
+    expect(logged).not.toContain('a@x.test');
+    expect(logged).not.toContain('203.0.113.7');
+    expect(logged).not.toContain('u7');
   });
 });
 
