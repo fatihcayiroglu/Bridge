@@ -357,6 +357,54 @@ What would reopen it: a reproduction of the floor deadlock on a current
 build (the lab's `congestion` scenario, `CONGESTION_CYCLES` / `_KBPS` /
 `_SECONDS`), or field reports of video not returning after congestion.
 
+**Reopened 2026-10-24: reproduced on a current build. Still open; the trade-off
+stays an owner decision.**
+
+[40038661983](https://github.com/fatihcayiroglu/Bridge/actions/runs/40038661983)
+ran on the P7-D2 candidate `a85eeff2`: 76 PASS / 1 FAIL (IMP-04). In the matrix,
+A→B video fell to 0 kbit/s at `bw-extreme-64k` and stayed at exactly 0 through
+the next three profiles. Those include `latency+jitter-100±30ms`, which has no
+bandwidth limit. Before IMP-04's squeeze, it did not reach full resolution in
+90 s on a clean link, and it had not resumed 90 s after. Audio was unaffected
+and no transport was re-established. That is the floor episode described
+above, stuck.
+
+Why this is the pre-existing defect and not the candidate:
+- **Same media stack.** Same Chromium (149.0.7827.55), the same mediasoup
+  lock, and no change to transport, producer, consumer, simulcast or bandwidth
+  code. No client calls `sfu:set-preferred-layer`. The lab room is a permanent
+  channel.
+- **Same code, other outcome.** [40043090321](https://github.com/fatihcayiroglu/Bridge/actions/runs/40043090321)
+  on the next candidate head (identical media code) passed 77/0, with IMP-04
+  resumed in 6.3 s.
+- **The stall is visible on `main` too.** The control run
+  [40048192696](https://github.com/fatihcayiroglu/Bridge/actions/runs/40048192696)
+  (`impair,congestion` on `c061d72f`) passed: IMP-04 resumed in 10.8 s, and
+  CONG-01 resumed 3/3 in 4.0–10.1 s. Its matrix still shows the same floor
+  episode: A→B 0 kbit/s through `bw-extreme-64k` and the unconstrained
+  `latency+jitter` profile after it, recovering one profile later.
+
+So the floor episode also occurs on `main`, and whether it recovers within the
+window is not deterministic. Of the four full or IMP-04 runs since 2026-10-20,
+one did not recover:
+- 39401917826 on `main`: pass;
+- the three listed above: 1 fail, 2 pass.
+
+The workaround is unchanged: leave and rejoin. The re-probe prototype
+(`225ad69`) and audio-first admission (`f561254`) remain the documented options,
+with their measured narrow-link audio cost.
+
+Lab analysis fix found on the same evidence. In
+[40043090321](https://github.com/fatihcayiroglu/Bridge/actions/runs/40043090321),
+IMP-04's informational "during squeeze" field printed `B→A -57535.7 kbps
+-1653.5 fps`. `rates()` already skipped a transport replaced inside the
+sampling window, but not a single RTP stream: a consumer replaced on a live
+transport (new SSRC) had its whole lifetime byte count subtracted. It now
+differences only streams present in both samples
+(`scripts/medialab/lib/analysis.test.mjs`, run in `test:release-integrity`).
+No verdict depended on that field. The failing run above shows exactly 0 kbit/s
+and 0 fps, not negative values, so the fix does not change its outcome.
+
 Link interruptions (blackhole both ways), all recovered without user action:
 
 | Outage | Audible again after the link returns (final run / re-run) |
