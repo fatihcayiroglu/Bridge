@@ -93,6 +93,31 @@ async function toReview(): Promise<void> {
 }
 
 describe('PortableTab', () => {
+  it('submits the exact manually selected target when a signed source ID is __proto__', async () => {
+    const signed = JSON.parse(BUNDLE);
+    signed.structure.channels[0].sourceId = '__proto__';
+    // No name match: the owner must select the destination explicitly.
+    signed.structure.channels[0].name = 'renamed-general';
+    render(PortableTab, { props: { serverId: 'dst-1', isOwner: true } });
+    await loadBundle(JSON.stringify(signed));
+    await waitFor(() => expect(q('pci-claims')).not.toBeNull());
+    await fireEvent.input(q('pci-origin')!, { target: { value: 'https://source.example' } });
+    await fireEvent.input(q('pci-source-id')!, { target: { value: 'src-1' } });
+    await fireEvent.click(q('pci-prepare')!);
+    await waitFor(() => expect(q('pci-map-channels')).not.toBeNull());
+    const reserved = document.querySelector<HTMLSelectElement>('#pci-channels-__proto__');
+    expect(reserved).not.toBeNull();
+    expect(reserved!.value).toBe('');
+    await fireEvent.change(document.querySelector('#pci-categories-sc1')!, { target: { value: 'tc1' } });
+    await fireEvent.change(reserved!, { target: { value: 'tch1' } });
+    await fireEvent.change(document.querySelector('#pci-channels-sch2')!, { target: { value: 'tch3' } });
+    await waitFor(() => expect(q<HTMLButtonElement>('pci-review')!.disabled).toBe(false));
+    await fireEvent.click(q('pci-review')!);
+    await waitFor(() => expect(q('pci-review-result')).not.toBeNull());
+    expect(calls.find(call => call.url.endsWith('/signed-mapping-review'))?.body?.mapping)
+      .toMatchObject({ channels: [{ sourceId: '__proto__', targetId: 'tch1' }, { sourceId: 'sch2', targetId: 'tch3' }] });
+  });
+
   it('distinguishes same-named destination channels before the owner chooses an exact mapping', async () => {
     routes['/portable-export'] = () => respond(200, { ...TARGET, channels: [
       ...TARGET.channels, { sourceId: 'tch2', name: 'general', type: 'text', order: 2 },

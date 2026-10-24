@@ -155,7 +155,12 @@
   }
 
   function choose(kind: Kind, sourceId: string, targetId: string): void {
-    const next: Links = { ...links, [kind]: { ...links[kind] } };
+    // Clone into a null-prototype record: assigning a signed '__proto__' ID
+    // to a normal object would invoke its inherited setter instead of mapping it.
+    const next: Links = {
+      ...links,
+      [kind]: Object.assign(Object.create(null) as Record<string, string>, links[kind]),
+    };
     if (targetId) next[kind][sourceId] = targetId; else delete next[kind][sourceId];
     resetFrom('review');
     links = next;
@@ -325,7 +330,7 @@
                   <tr>
                     <th scope="row"><label for={`pci-${kind}-${row.sourceId}`}>{sourceLabels?.[kind].get(row.sourceId) ?? row.name}</label></th>
                     <td>
-                      <select id={`pci-${kind}-${row.sourceId}`} value={links[kind][row.sourceId] ?? ''}
+                      <select id={`pci-${kind}-${row.sourceId}`} value={Object.prototype.hasOwnProperty.call(links[kind], row.sourceId) ? links[kind][row.sourceId] : ''}
                         onchange={(e) => choose(kind, row.sourceId, (e.currentTarget as HTMLSelectElement).value)}>
                         <option value="">{t('pci_map_choose')}</option>
                         {#each candidates(kind, row, target) as option (option.sourceId)}
