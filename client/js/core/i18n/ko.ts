@@ -2441,7 +2441,7 @@ const translations: Record<string, string> = {
   "pci_apply_button": "지금 적용",
   "pci_applied": "적용됨: 카테고리 {categories}개, 역할 {roles}개, 채널 {channels}개 업데이트.",
   "pci_refused": "아무것도 적용되지 않았습니다. 승인이 만료되었거나 이미 사용되었거나, 이 커뮤니티가 변경되었을 수 있습니다. 다시 검토하세요.",
-  "pci_unknown": "응답 전에 연결이 끊겨 가져오기가 적용되었는지 알 수 없습니다. 다시 시도하기 전에 다시 검토하세요. 승인은 두 번 적용되지 않습니다.",
+  "pci_unknown": "가져오기 결과를 확인할 수 없습니다. 적용되었을 수도 있고 적용되지 않았을 수도 있습니다. 다시 시도하기 전에 검토하세요. 하나의 승인은 두 번 적용될 수 없습니다.",
   "pci_proof_needed": "계속하려면 본인임을 확인하세요.",
   "pci_error": "문제가 발생했습니다. 다시 시도하세요.",
   "pci_review_again": "다시 검토",

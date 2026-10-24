@@ -103,6 +103,13 @@ describe('which requests carry which grant', () => {
     ['POST', '/api/account/portable-import/preview', 'sensitive-export'],
     ['POST', '/api/account/portable-import/apply', 'account-security'],
     ['POST', '/api/account/portable-import/apply', 'account-security'],
+    ['GET', '/api/servers/s1/portable-export', 'sensitive-export'],
+    ['GET', '/api/servers/s1/portable-export/attested-pair', 'sensitive-export'],
+    ['GET', '/api/servers/s1/portable-permissions-export', 'sensitive-export'],
+    ['GET', '/api/servers/s1/portable-import/target-fingerprint', 'account-security'],
+    ...['preview', 'source-attestation-review', 'signed-mapping-review', 'paired-preview',
+      'mapping-review', 'owner-approval', 'mapped-apply'].map(endpoint =>
+      ['POST', `/api/servers/s1/portable-import/${endpoint}`, 'account-security']),
     ['DELETE', '/api/account', 'destructive-admin'],
     ['DELETE', '/api/servers/s1', 'destructive-admin'],
     ['DELETE', '/api/admin/users/u1', 'destructive-admin'],
@@ -118,6 +125,10 @@ describe('which requests carry which grant', () => {
     ['POST', '/api/2fa/check'],
     ['DELETE', '/api/servers/s1/bans/u1'],
     ['DELETE', '/api/2fa'],
+    ['GET', '/api/servers/s1/portable-import/owner-approval'],
+    ['POST', '/api/servers/s1/portable-export'],
+    ['POST', '/api/servers/s1/portable-import/mapped-apply/extra'],
+    ['POST', '/api/servers/s1/portable-import/unknown'],
     ['GET', 'http://[broken'],
   ])('%s %s is not protected', (method, url) => {
     expect(scopeForRequest(method, url)).toBeNull();
@@ -194,6 +205,46 @@ describe('readStepUpRefusal', () => {
 });
 
 describe('apiFetch + step-up', () => {
+  it.each([
+    ['owner-approval', 201], ['mapped-apply', 200],
+  ])('refreshes a held proof rejected as stale by community %s in one action', async (endpoint, status) => {
+    const path = `/api/servers/destination/portable-import/${endpoint}`;
+    rememberGrant('account-security', 'old-import-proof', Date.now() + 600_000);
+    route(url => url.endsWith(path), (_url, init) => {
+      const proof = new Headers(init.headers).get(STEP_UP_HEADER);
+      if (proof === 'fresh-import-proof') return response({ ok: true }, status);
+      return response(refusalBody({ action: 'account.import', scope: 'account-security',
+        reasons: [proof === 'old-import-proof' ? 'step_up_stale' : 'step_up_missing'] }), 403);
+    });
+    route(url => url.endsWith('/api/step-up/password'), (_url, init) => {
+      expect(JSON.parse(String(init.body))).toEqual({ password: 'owner-password', scope: 'account-security' });
+      return response(grantBody('account-security', 'fresh-import-proof'));
+    });
+    mocks.prompt.mockResolvedValueOnce('owner-password');
+
+    const result = await apiFetch(path, { method: 'POST', body: '{}' });
+    expect(result.status).toBe(status);
+    expect(mocks.prompt).toHaveBeenCalledTimes(1);
+    expect(callsTo('/api/step-up/password')).toHaveLength(1);
+    expect(callsTo(path).map(([, init]) => new Headers((init as RequestInit).headers).get(STEP_UP_HEADER)))
+      .toEqual(['old-import-proof', 'fresh-import-proof']);
+    expect(grantFor('account-security')).toBe('fresh-import-proof');
+  });
+
+  it('does not resubmit community apply when the owner cancels stale-proof renewal', async () => {
+    const path = '/api/servers/destination/portable-import/mapped-apply';
+    rememberGrant('account-security', 'old-import-proof', Date.now() + 600_000);
+    route(url => url.endsWith(path), () => response(refusalBody({
+      action: 'account.import', scope: 'account-security', reasons: ['step_up_stale'],
+    }), 403));
+    mocks.prompt.mockResolvedValueOnce(null);
+    expect((await apiFetch(path, { method: 'POST', body: '{}' })).status).toBe(403);
+    expect(callsTo(path)).toHaveLength(1);
+    expect(callsTo('/api/step-up/password')).toHaveLength(0);
+    expect(mocks.prompt).toHaveBeenCalledTimes(1);
+    expect(grantFor('account-security')).toBeNull();
+  });
+
   it('a held grant rides along up front — a freshly signed-in person is never prompted', async () => {
     rememberGrant('sensitive-export', 'held-grant', Date.now() + 600_000);
     route((url) => url.endsWith('/api/account/export'), () => response({ format: 'bridge-personal-export' }));

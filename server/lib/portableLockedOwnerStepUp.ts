@@ -10,8 +10,9 @@ const MAX_OWNER_ID = 256;
 const MAX_FRESH_MS = 120_000;
 /**
  * HTTP-side bound for approval/apply: tighter than MAX_FRESH_MS so a proof
- * accepted at the route cannot age past the in-transaction bound before the
- * transaction checks it. A staler proof gets 403 STEP_UP_REQUIRED
+ * accepted at the route has a small freshness margin. Database waits are
+ * unbounded by that margin: the transaction must resample time after them.
+ * A staler proof gets 403 STEP_UP_REQUIRED
  * (`step_up_stale`) and the client asks once for a fresh one.
  */
 export const PORTABLE_OWNER_PROOF_ROUTE_MAX_AGE_MS = MAX_FRESH_MS - 20_000;
@@ -48,7 +49,7 @@ export async function requireLockedPortableOwnerStepUp(input: {
 }> {
   try {
     const owner = input.ownerId;
-    const now = input.now ?? Date.now();
+    let now = input.now ?? Date.now();
     if (typeof owner !== 'string' || !owner || owner.length > MAX_OWNER_ID ||
         owner.trim() !== owner || /[\x00-\x1f\x7f]/.test(owner) ||
         !Number.isSafeInteger(now) || now < 0) refuse();
@@ -71,6 +72,17 @@ export async function requireLockedPortableOwnerStepUp(input: {
     if (!Number.isSafeInteger(row.tokenVersion) || (row.tokenVersion as number) < 0 ||
         typeof row.twoFactorEnabled !== 'boolean') refuse();
 
+    // Isolation config alone does NOT prove an explicit transaction: a
+    // serializable autocommit session can run both statements in DIFFERENT
+    // transactions. Require the same PostgreSQL xid across both reads.
+    const ending = await input.client.query('SELECT txid_current()::text AS txid');
+    if (!ending || ending.rows.length !== 1 ||
+        ending.rows[0]?.txid !== session.rows[0].txid) refuse();
+
+    // FOR SHARE (or the final round trip) can wait past the freshness window.
+    // Validate against the time AFTER all awaited evidence, never entry time.
+    now = input.now ?? Date.now();
+    if (!Number.isSafeInteger(now) || now < 0) refuse();
     // Bypass switches for lower-risk actions MUST NOT turn on consent.
     const proof = checkStepUpGrant(input.stepUpGrant, owner,
       factorsOf({ tokenVersion: row.tokenVersion, twoFactorEnabled: row.twoFactorEnabled }),
@@ -82,12 +94,6 @@ export async function requireLockedPortableOwnerStepUp(input: {
     if (!Number.isSafeInteger(iatMs) || iatMs > now ||
         now - iatMs > MAX_FRESH_MS) refuse();
 
-    // Isolation config alone does NOT prove an explicit transaction: a
-    // serializable autocommit session can run both statements in DIFFERENT
-    // transactions. Require the same PostgreSQL xid across both reads.
-    const ending = await input.client.query('SELECT txid_current()::text AS txid');
-    if (!ending || ending.rows.length !== 1 ||
-        ending.rows[0]?.txid !== session.rows[0].txid) refuse();
     return {
       mode: 'transaction-check-only',
       action: 'account.import',

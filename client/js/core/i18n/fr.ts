@@ -2441,7 +2441,7 @@ const translations: Record<string, string> = {
   "pci_apply_button": "Appliquer maintenant",
   "pci_applied": "Appliqué : {categories} catégories, {roles} rôles et {channels} salons mis à jour.",
   "pci_refused": "Rien n’a été appliqué. L’approbation a peut-être expiré ou déjà servi, ou cette communauté a changé. Examinez à nouveau.",
-  "pci_unknown": "La connexion a été coupée avant la réponse : l’import a peut-être été appliqué, ou pas. Examinez à nouveau avant de réessayer ; une approbation ne s’applique jamais deux fois.",
+  "pci_unknown": "Le résultat de l’importation n’a pas pu être confirmé. Les modifications ont peut-être été appliquées, ou non. Vérifiez à nouveau avant de réessayer ; une approbation ne peut jamais être appliquée deux fois.",
   "pci_proof_needed": "Confirmez votre identité pour continuer.",
   "pci_error": "Une erreur s’est produite. Réessayez.",
   "pci_review_again": "Examiner à nouveau",

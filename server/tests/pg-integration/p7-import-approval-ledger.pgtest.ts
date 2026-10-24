@@ -80,6 +80,63 @@ async function consumedCount(token: string): Promise<number> {
 }
 
 describe('P7 C4 approval ledger actual PG session/rollback behaviour', () => {
+  it.each(['read committed', 'serializable autocommit'])('refuses claim outside the required explicit SERIALIZABLE transaction: %s', async mode => {
+    const issued = await stage();
+    const writer = await second.connect();
+    try {
+      if (mode === 'read committed') await writer.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+      else await writer.query("SET default_transaction_isolation='serializable'");
+      const result = await claimPortableImportApproval(writer, issued.approvalToken, b)
+        .then(() => ({ claimed: true }), error => ({ claimed: false, error }));
+      if (mode === 'read committed') await writer.query(result.claimed ? 'COMMIT' : 'ROLLBACK');
+      expect({ claimed: result.claimed, consumed: await consumedCount(issued.approvalToken) })
+        .toEqual({ claimed: false, consumed: 0 });
+      if ('error' in result) expect(result.error).toBeInstanceOf(PortableImportApprovalError);
+    } finally {
+      await writer.query('ROLLBACK');
+      await writer.query('SET default_transaction_isolation TO DEFAULT');
+      writer.release();
+    }
+  });
+
+  it('refuses an approval that expires while its row is locked by another transaction', async () => {
+    const issued = await stage();
+    const digest = createHash('sha256').update('bridge-portable-import-approval-v1\n')
+      .update(issued.approvalToken).digest('hex');
+    await pool.query("UPDATE portable_import_approvals SET expires_at=clock_timestamp()+INTERVAL '3 seconds' WHERE token_hash=$1", [digest]);
+    const blocker = await second.connect();
+    const writer = await pool.connect();
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query('SELECT token_hash FROM portable_import_approvals WHERE token_hash=$1 FOR UPDATE', [digest]);
+      await writer.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      const pid = (await writer.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      const fresh = await pool.query('SELECT expires_at>clock_timestamp() AS fresh FROM portable_import_approvals WHERE token_hash=$1', [digest]);
+      expect(fresh.rows[0].fresh).toBe(true);
+      const pending = claimPortableImportApproval(writer, issued.approvalToken, b)
+        .then(() => ({ claimed: true }), error => ({ claimed: false, error }));
+      let waited = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const state = await pool.query('SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1', [pid]);
+        if (state.rows[0]?.wait_event_type === 'Lock') { waited = true; break; }
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      expect(waited).toBe(true);
+      await pool.query('SELECT pg_sleep(3.3)');
+      const expired = await pool.query('SELECT expires_at<=clock_timestamp() AS expired FROM portable_import_approvals WHERE token_hash=$1', [digest]);
+      expect(expired.rows[0].expired).toBe(true);
+      await blocker.query('COMMIT');
+      const result = await pending;
+      await writer.query(result.claimed ? 'COMMIT' : 'ROLLBACK');
+      expect({ claimed: result.claimed, consumed: await consumedCount(issued.approvalToken) })
+        .toEqual({ claimed: false, consumed: 0 });
+      if ('error' in result) expect(result.error).toBeInstanceOf(PortableImportApprovalError);
+    } finally {
+      await blocker.query('ROLLBACK'); blocker.release();
+      await writer.query('ROLLBACK'); writer.release();
+    }
+  });
+
   it('stores only token hash, DB-caps expiry, survives a new client, refuses committed replay', async () => {
     const issued = await stage();
     expect(issued).toMatchObject({ importSupported: false, writesPerformed: false });

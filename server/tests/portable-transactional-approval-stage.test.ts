@@ -55,14 +55,15 @@ function fixture(options: { failAt?: string; rollbackFails?: boolean } = {}) {
   const connect = jest.fn(async () => client);
   return { operations, released, client, pool: { connect }, connect };
 }
-beforeEach(() => {
-  sourceReview.mockReset();
-  stepUp.mockReset();
-  stepUp.mockResolvedValue({
+const verifiedStepUp = {
     mode: 'transaction-check-only', action: 'account.import',
     stepUpVerified: true, consentVerified: false, tokenIssued: false,
     writesPerformed: false, importSupported: false,
-  });
+} as const;
+beforeEach(() => {
+  sourceReview.mockReset();
+  stepUp.mockReset();
+  stepUp.mockResolvedValue(verifiedStepUp);
   sourceReview.mockResolvedValue({
     mode: 'transaction-check-only', binding,
     sourceAttestationExpiresAt: expiry,
@@ -72,6 +73,21 @@ beforeEach(() => {
   });
 });
 describe('P7 unmounted verified approval staging on one physical transaction', () => {
+  it.each([2, 3])('rolls approval back when credential freshness is lost at authorization phase %i', async phase => {
+    stepUp.mockReset();
+    for (let index = 1; index < phase; index++) stepUp.mockResolvedValueOnce(verifiedStepUp);
+    stepUp.mockRejectedValueOnce(new Error('credential aged past the import bound'));
+    const f = fixture();
+    const admitted = await stageOwnerConfirmedPortableApproval({ ...input, pool: f.pool })
+      .then(() => true, () => false);
+    expect(admitted).toBe(false);
+    expect(stepUp).toHaveBeenCalledTimes(phase);
+    expect(f.operations).not.toContain('COMMIT');
+    expect(f.operations.at(-1)).toBe('ROLLBACK');
+    expect(f.operations.filter(sql => sql.includes('INSERT INTO portable_import_approvals'))).toHaveLength(phase === 2 ? 0 : 1);
+    expect(f.released).toEqual([undefined]);
+  });
+
   it('checks credentials then signed mapping before INSERT and returns token only after COMMIT', async () => {
     const f = fixture();
     const result = await stageOwnerConfirmedPortableApproval({ ...input, pool: f.pool });

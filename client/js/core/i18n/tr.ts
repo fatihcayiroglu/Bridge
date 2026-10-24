@@ -2412,7 +2412,7 @@ const translations: Record<string, string> = {
   "pci_apply_button": "Şimdi uygula",
   "pci_applied": "Uygulandı: {categories} kategori, {roles} rol ve {channels} kanal güncellendi.",
   "pci_refused": "Hiçbir şey uygulanmadı. Onayın süresi dolmuş veya zaten kullanılmış olabilir ya da bu topluluk değişti. Yeniden inceleyin.",
-  "pci_unknown": "Yanıt gelmeden bağlantı koptu; içe aktarma uygulanmış da olabilir, uygulanmamış da. Yeniden denemeden önce tekrar inceleyin; bir onay asla iki kez uygulanamaz.",
+  "pci_unknown": "İçe aktarma sonucu doğrulanamadı. Değişiklikler uygulanmış da olabilir, uygulanmamış da. Yeniden denemeden önce tekrar inceleyin; bir onay asla iki kez uygulanamaz.",
   "pci_proof_needed": "Devam etmek için kimliğinizi doğrulayın.",
   "pci_error": "Bir şeyler ters gitti. Yeniden deneyin.",
   "pci_review_again": "Yeniden incele",
