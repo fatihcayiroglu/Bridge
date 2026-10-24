@@ -242,6 +242,31 @@ export function summarizeControlProcessExit(exits, expectedPid) {
 }
 
 /**
+ * Android first-failure attachment: preserve only bounded OS reason numbers.
+ * `parseApplicationExits` must retain PID/process/time/description in memory
+ * for reliable attribution, but those identity-bearing fields must NEVER be
+ * copied to uploaded JSON or CI logs. Missing/malformed data stays unknown.
+ */
+export function redactRecentAndroidExits(evidence) {
+  if (evidence?.available !== true || !Array.isArray(evidence.exits)) {
+    return { available: false, count: 0, reasons: [] };
+  }
+  const rows = evidence.exits.slice(0, 3);
+  const numericCode = (value) => {
+    const m = /^([0-9]{1,2}) \([A-Z_ ]+\)$/.exec(String(value ?? ''));
+    return m && Number(m[1]) <= 99 ? Number(m[1]) : null;
+  };
+  return {
+    available: true,
+    count: rows.length,
+    reasons: rows.map(row => ({
+      reasonCode: numericCode(row?.reason),
+      subreasonCode: numericCode(row?.subreason),
+    })),
+  };
+}
+
+/**
  * A01 exit dependency attribution: ONLY fixed enums leave the process.
  *
  * ApplicationExitInfo reason 12 says a dependency died, but does not name
@@ -751,6 +776,8 @@ const ANR_TOPS = new Set(['idle-looper', 'binder-transaction', 'lock-wait', 'sle
   'running-code', 'unknown']);
 const ANR_SUBSYSTEMS = new Set(['bridge', 'capacitor', 'webview', 'androidx', 'gms',
   'other-app', 'framework-only', 'none']);
+const ANR_NATIVE_HINTS = new Set(['art', 'libc', 'webview', 'binder', 'graphics',
+  'android-runtime', 'none']);
 
 /**
  * #209 ANR02: parse the debug AnrTraceProbeActivity's fixed markers from the
@@ -767,11 +794,11 @@ export function parseAnrTraceProbeMarkers(raw, appPid) {
     const m = /^[A-Z]\/BridgeAnrTraceProbe\(\s*([0-9]{1,8})\):\s*(.*?)\s*$/.exec(line);
     if (!m || String(Number(m[1])) !== targetPid) continue;
     const body = m[2];
-    const exit = /^stage=exit traceAvailable=(true|false) mainState=([A-Za-z-]{1,24}) top=([a-z-]{1,24}) subsystem=([a-z-]{1,24})$/.exec(body);
+    const exit = /^stage=exit traceAvailable=(true|false) mainState=([A-Za-z-]{1,24}) top=([a-z-]{1,24}) subsystem=([a-z-]{1,24}) nativeHint=([a-z-]{1,24})$/.exec(body);
     if (exit && ANR_MAIN_STATES.has(exit[2]) && ANR_TOPS.has(exit[3]) &&
-        ANR_SUBSYSTEMS.has(exit[4]) && result.traces.length < 5) {
+        ANR_SUBSYSTEMS.has(exit[4]) && ANR_NATIVE_HINTS.has(exit[5]) && result.traces.length < 5) {
       result.traces.push({ traceAvailable: exit[1] === 'true', mainState: exit[2],
-        top: exit[3], subsystem: exit[4] });
+        top: exit[3], subsystem: exit[4], nativeHint: exit[5] });
       continue;
     }
     const done = /^stage=done supported=(true|false)(?: error=(true|false))? anrExits=([0-9]{1,3})(?: records=([0-9]{1,4}) oldestBeforeStart=(true|false) capacity=(-1|[0-9]{1,4}))?$/.exec(body);
