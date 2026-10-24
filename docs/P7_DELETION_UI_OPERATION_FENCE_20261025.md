@@ -21,8 +21,8 @@ account transition. The new suite drives the real Svelte component, auth owner,
 registry and HTTP client; only transport and the local erasure backend are
 replaced. That is client regression evidence, not a PostgreSQL or native test.
 
-Corrected focused suites: **41 PASS / 0 FAIL / 0 skipped**. Full client:
-**5,729 tests / 340 files PASS**, zero skipped; all-source and production-reachable
+Corrected focused suites: **42 PASS / 0 FAIL / 0 skipped**. Full client:
+**5,730 tests / 340 files PASS**, zero skipped; all-source and production-reachable
 coverage S95.53/B90.60/F94.86/L96.56, unchanged thresholds. Production/strict/bridge5
 TypeScript, Svelte (zero errors/warnings), client lint, zero-any and build PASS.
 The real full-matrix account-deletion E2E assertion remains unchanged.
@@ -30,3 +30,13 @@ The real full-matrix account-deletion E2E assertion remains unchanged.
 Exact-head CI, review and the remaining P7 criteria remain required. No production
 merge, release or deployment; #375, #321, Android #209, iOS I07, Wayland #416 and
 physical-device acceptance are not closed by these local results.
+
+
+A follow-up guard test caught an overly broad condition in the initial draft:
+closing Settings without receiving live session revocation retired its form
+sequence and incorrectly prevented logout after a real deletion acknowledgement.
+That regression is retained as **17 PASS / 1 FAIL / 0 skipped**. Form mutations
+remain sequence-bound; confirmed session teardown uses #417's identity/revision
+condition independently of the form lifetime. The corrected full 5,730-test run
+and the 42-test focused run both pass. Production/strict/bridge5 types, Svelte and
+build were rechecked. No real browser assertion or native failure is waived.

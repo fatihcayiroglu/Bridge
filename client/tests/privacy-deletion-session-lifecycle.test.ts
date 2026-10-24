@@ -142,6 +142,15 @@ it('finishes confirmed deletion after live revocation unmounts Settings', async 
   await vi.waitFor(() => expect(document.querySelector('#auth-msg.auth-success')?.textContent).toBe(t('privacy_delete_done')));
 });
 
+it('signs the deleted account out after acknowledgement even if Settings closed without a live revocation event', async () => {
+  await beginDeletion(); cleanup();
+  expect(auth.readToken()).toBe('old-token');
+  acknowledged.resolve(json({ ok: true, deleted: true }));
+  await vi.waitFor(() => expect(erasure.eraseLocalAccount).toHaveBeenCalledExactlyOnceWith('old-user'));
+  await vi.waitFor(() => expect(auth.readToken()).toBeNull());
+  expect(document.querySelector('#auth-msg.auth-success')?.textContent).toBe(t('privacy_delete_done'));
+});
+
 it('does not reopen an old deletion form after its preflight finishes in a replacement session', async () => {
   const pending = deferred<Response>();
   fetchMock.mockImplementationOnce(() => pending.promise);
