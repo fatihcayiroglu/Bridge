@@ -11,9 +11,12 @@ jest.mock('../../middleware/auth', () => ({
 
 import express from 'express';
 import request from 'supertest';
+import jwt from 'jsonwebtoken';
 import type { PoolClient } from 'pg';
 import { setChannelExpiry } from '../../lib/channelExpiryConfig';
 import { MIN_CHANNEL_LIFETIME_MS, MAX_CHANNEL_LIFETIME_MS } from '../../lib/channelExpiry';
+import { mintStepUpGrant, STEP_UP_HEADER, STEP_UP_POLICY } from '../../lib/stepUp';
+import { stepUpHeader } from '../helpers/stepUp';
 
 const db = require('../../db/loader').default;
 const channelsRouter = require('../../routes/servers/channels');
@@ -21,25 +24,28 @@ const { isChannelWriteDenied } = require('../../lib/channelWriteBarrier');
 const { runChannelExpiryJobTick, startChannelExpiryJob, stopChannelExpiryJob } = require('../../jobs/channelExpiry');
 
 const PG_TEST_URL = process.env.PG_TEST_URL;
-const RUN = PG_TEST_URL ? describe : describe.skip;
+if (!PG_TEST_URL) throw new Error('PG_TEST_URL required for channel expiry real-PostgreSQL evidence');
 const P = 'pgt-d2-cfg-' + process.pid + '-' + Date.now();
 const OWNER = P + '-owner';
 const MEMBER = P + '-member';
 const STRANGER = P + '-stranger';
+const TOKEN_VERSION = 7;
+let ownerProof: Record<string, string>;
 let seq = 0;
 const id = (label: string) => `${P}-${label}-${++seq}`;
 const HOUR = 60 * 60 * 1000;
 
-RUN('P7 D2 channel expiry configuration — real PostgreSQL', () => {
+describe('P7 D2 channel expiry configuration — real PostgreSQL', () => {
   const q = (sql: string, params: unknown[] = []) => db._pool.query(sql, params);
   const app = express();
   app.use(express.json());
   app.use('/api/servers/:sid/channels', channelsRouter);
   const emitted: Array<[string, string, unknown]> = [];
   app.set('io', { to: (room: string) => ({ emit: (event: string, payload: unknown) => emitted.push([room, event, payload]) }) });
-  const put = (sid: string, cid: string, body: unknown, actor = OWNER) => {
+  const put = (sid: string, cid: string, body: unknown, actor = OWNER,
+    proof = actor === OWNER ? ownerProof : stepUpHeader(actor, 'destructive-admin', { method: 'password', tokenVersion: TOKEN_VERSION })) => {
     mockActor.id = actor;
-    return request(app).put(`/api/servers/${sid}/channels/${cid}/expiry`).send(body as object);
+    return request(app).put(`/api/servers/${sid}/channels/${cid}/expiry`).set(proof).send(body as object);
   };
   const row = async (cid: string) => {
     const r = (await q('SELECT "expiresAt","expiryVersion" FROM channels WHERE _id=$1', [cid])).rows[0];
@@ -81,8 +87,9 @@ RUN('P7 D2 channel expiry configuration — real PostgreSQL', () => {
   beforeAll(async () => {
     await cleanup();
     for (const user of [OWNER, MEMBER, STRANGER]) {
-      await q('INSERT INTO users (_id,username,"displayName",password,"createdAt") VALUES ($1,$1,$1,$2,1)', [user, 'x']);
+      await q('INSERT INTO users (_id,username,"displayName",password,"tokenVersion","createdAt") VALUES ($1,$1,$1,$2,$3,1)', [user, 'x', TOKEN_VERSION]);
     }
+    ownerProof = stepUpHeader(OWNER, 'destructive-admin', { method: 'password', tokenVersion: TOKEN_VERSION });
   });
   afterAll(cleanup);
 
@@ -114,9 +121,10 @@ RUN('P7 D2 channel expiry configuration — real PostgreSQL', () => {
     const sid = await server();
     await channel(sid);
     const cid = await channel(sid);
-    const member = await put(sid, cid, { expiresAt: Date.now() + 2 * HOUR }, MEMBER);
+    const member = await put(sid, cid, { expiresAt: Date.now() + 2 * HOUR }, MEMBER, {});
     expect(member.status).toBe(403);
-    const stranger = await put(sid, cid, { expiresAt: Date.now() + 2 * HOUR }, STRANGER);
+    expect(member.body.error).not.toBe('STEP_UP_REQUIRED'); // permission refusal precedes any proof challenge
+    const stranger = await put(sid, cid, { expiresAt: Date.now() + 2 * HOUR }, STRANGER, {});
     expect(stranger.status).toBe(404);
     const foreign = await put(id('other-srv'), cid, { expiresAt: Date.now() + 2 * HOUR });
     expect(foreign.status).toBe(404);
@@ -285,7 +293,7 @@ RUN('P7 D2 channel expiry configuration — real PostgreSQL', () => {
 
     expect((await request(app).patch(`/api/servers/${sid}/channels/${cid}`).send({ name: 'renamed' })).status).toBe(200);
     expect((await put(sid, cid, { expiresAt: Date.now() + 2 * HOUR })).status).toBe(200);
-    expect((await request(app).delete(`/api/servers/${sid}/channels/${cid}`)).status).toBe(200);
+    expect((await request(app).delete(`/api/servers/${sid}/channels/${cid}`).set(ownerProof)).status).toBe(200);
     expect(changes()).toHaveLength(4);
     for (const [, , payload] of changes()) expect(payload).toEqual({ serverId: sid });  // no name, id or type
 
@@ -297,8 +305,48 @@ RUN('P7 D2 channel expiry configuration — real PostgreSQL', () => {
     expect((await request(app).patch(`/api/servers/${sid}/channels/${keep}`).send({ name: 'nope' })).status).toBe(403);
     expect((await request(app).post(`/api/servers/${sid}/channels`).send({ name: 'nope', type: 'text' })).status).toBe(403);
     mockActor.id = OWNER;
-    expect((await request(app).delete(`/api/servers/${sid}/channels/${keep}`)).status).toBe(400);  // last channel
+    expect((await request(app).delete(`/api/servers/${sid}/channels/${keep}`).set(ownerProof)).status).toBe(400);  // last channel
     expect((await put(sid, keep, { expiresAt: Date.now() + 2 * HOUR })).status).toBe(409);  // last permanent
     expect(changes()).toEqual([]);
+  });
+
+  it('rejects absent, foreign, wrong-scope, stale-version, expired and access-token proofs against real account state', async () => {
+    const sid = await server();
+    await channel(sid);
+    const cid = await channel(sid);
+    const at = Date.now() + 2 * HOUR;
+    const secret = process.env.JWT_SECRET;
+    if (!secret) throw new Error('PG fixture JWT_SECRET is required');
+    const expired = mintStepUpGrant({ _id: OWNER, tokenVersion: TOKEN_VERSION }, 'password',
+      'destructive-admin', Date.now() - STEP_UP_POLICY.ttlMs - 1000).token;
+    const denied = [
+      { proof: {}, reason: 'step_up_missing' },
+      { proof: stepUpHeader(MEMBER, 'destructive-admin', { method: 'password', tokenVersion: TOKEN_VERSION }), reason: 'step_up_other_account' },
+      { proof: stepUpHeader(OWNER, 'account-security', { method: 'password', tokenVersion: TOKEN_VERSION }), reason: 'step_up_scope_mismatch' },
+      { proof: stepUpHeader(OWNER, 'destructive-admin', { method: 'password', tokenVersion: TOKEN_VERSION - 1 }), reason: 'step_up_revoked' },
+      { proof: { [STEP_UP_HEADER]: expired }, reason: 'step_up_expired' },
+      { proof: { [STEP_UP_HEADER]: jwt.sign({ id: OWNER, v: TOKEN_VERSION }, secret, { expiresIn: '1h' }) }, reason: 'step_up_invalid' },
+    ];
+    const emittedBefore = emitted.length;
+    for (const { proof, reason } of denied) {
+      const res = await put(sid, cid, { expiresAt: at }, OWNER, proof);
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ error: 'STEP_UP_REQUIRED', action: 'channel.expiry.change',
+        scope: 'destructive-admin', reasons: [reason] });
+      expect(await row(cid)).toEqual({ expiresAt: null, expiryVersion: 0 });
+      expect(emitted).toHaveLength(emittedBefore);
+    }
+    // A once-valid held proof is revoked by the real users row, not a mock.
+    await q('UPDATE users SET "tokenVersion"=$2 WHERE _id=$1', [OWNER, TOKEN_VERSION + 1]);
+    try {
+      const revoked = await put(sid, cid, { expiresAt: at });
+      expect(revoked.status).toBe(403);
+      expect(revoked.body.reasons).toEqual(['step_up_revoked']);
+      expect(await row(cid)).toEqual({ expiresAt: null, expiryVersion: 0 });
+    } finally {
+      await q('UPDATE users SET "tokenVersion"=$2 WHERE _id=$1', [OWNER, TOKEN_VERSION]);
+    }
+    expect((await put(sid, cid, { expiresAt: at })).status).toBe(200);
+    expect(await row(cid)).toEqual({ expiresAt: at, expiryVersion: 1 });
   });
 });

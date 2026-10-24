@@ -25,8 +25,8 @@ RUN('P7 D2 fresh channel/thread admission — real PostgreSQL + Socket.IO', () =
 
   /**
    * A thread row whose server disagrees with its channel can no longer be
-   * written (the D2 write barrier refuses tenant_mismatch). This models a row
-   * that predates the barrier: the trigger is disabled only inside this one
+   * written (the D2 write barriers refuse tenant_mismatch). This models a row
+   * that predates the barriers: both are disabled only inside this one
    * transaction (ACCESS EXCLUSIVE; no other session ever sees it disabled).
    */
   async function legacyThreadServer(serverId: string, threadId: string): Promise<void> {
@@ -34,8 +34,10 @@ RUN('P7 D2 fresh channel/thread admission — real PostgreSQL + Socket.IO', () =
     try {
       await legacy.query('BEGIN');
       await legacy.query('ALTER TABLE threads DISABLE TRIGGER channel_write_barrier');
+      await legacy.query('ALTER TABLE threads DISABLE TRIGGER zz_channel_final_admission');
       await legacy.query('UPDATE threads SET "serverId"=$1 WHERE _id=$2', [serverId, threadId]);
       await legacy.query('ALTER TABLE threads ENABLE TRIGGER channel_write_barrier');
+      await legacy.query('ALTER TABLE threads ENABLE TRIGGER zz_channel_final_admission');
       await legacy.query('COMMIT');
     } catch (err) {
       await legacy.query('ROLLBACK').catch(() => undefined);
