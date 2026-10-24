@@ -514,7 +514,8 @@ export async function runPortableTlsRoundTrip({ lab, origins, check }) {
       freshAtStart = locked.rows.length === 1 && locked.rows[0].fresh === true;
       if (!freshAtStart) throw new Error('queued approval fixture was not fresh at lock acquisition');
       pending = postTls(`${origins.b}${sidPath}/portable-import/mapped-apply`, {
-        ...BROWSER, Authorization: 'Bearer ' + ownerB.token, 'X-CSRF-Token': csrf,
+        ...BROWSER, Host: new URL(origins.b).host,
+        Authorization: 'Bearer ' + ownerB.token, 'X-CSRF-Token': csrf,
         'X-Bridge-Step-Up': g['account-security'], 'Content-Type': 'application/json',
       }, JSON.stringify(applyBody(lockReview, queued.body.approvalToken)), ca);
       for (let i = 0; i < 100; i++) {
