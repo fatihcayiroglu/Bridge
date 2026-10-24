@@ -164,7 +164,7 @@ describe('PostgreSQL migration runner executable contract', () => {
     await settleUntil(() => exitSpy.mock.calls.length > 0);
 
     expect(mockClient.query).toHaveBeenCalledTimes(1);
-    expect(String(mockClient.query.mock.calls[0]![0]).trim()).toMatch(/^SELECT\\s/i);
+    expect(String(mockClient.query.mock.calls[0]![0]).trim()).toMatch(/^SELECT\s/i);
     expect(mockFs.readFileSync).not.toHaveBeenCalled();
     expect(stderr.mock.calls.map(c => String(c[0])).join(''))
       .toContain('BRIDGE_UPGRADE_SOURCE_UNVERIFIED');
