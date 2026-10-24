@@ -28,6 +28,7 @@ import { FakeAiProvider, hashEmbed } from './lib/fake-ai.mjs';
 import { makePortableLabTrust, runPortableTlsSourceReview } from './lib/portable.mjs';
 import { runPortableTlsRoundTrip } from './lib/portable-roundtrip.mjs';
 import { runPortableKeyRotation } from './lib/portable-rotation.mjs';
+import { runPortableBrowserJourney } from './lib/portable-browser.mjs';
 
 const args = process.argv.slice(2);
 const opt = (n, d) => { const i = args.indexOf(`--${n}`); return i >= 0 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : d; };
@@ -187,6 +188,7 @@ const S = {
       await runPortableTlsSourceReview({ lab, origins: ORIGIN, check: portableCheck });
       await runPortableTlsRoundTrip({ lab, origins: ORIGIN, check: portableCheck });
       await runPortableKeyRotation({ lab, origins: ORIGIN, check: portableCheck, workDir });
+      await runPortableBrowserJourney({ lab, origins: ORIGIN, check: portableCheck, outDir });
     } finally {
       // A crashed check must not leave a later scenario behind a closed
       // front or a stopped installation.
