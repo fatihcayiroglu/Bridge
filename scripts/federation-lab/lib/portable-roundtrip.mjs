@@ -45,7 +45,7 @@ async function must(promise, what) {
 }
 
 /** The destination's real persisted rows for one community. */
-function dbState(inst, sid) {
+export function dbState(inst, sid) {
   const s = lit(sid);
   const json = inst.psql('bridge', `SELECT json_build_object(
     'categories', COALESCE((SELECT json_agg(json_build_object('id',_id,'name',name,'position',position,'collapsed',collapsed) ORDER BY _id) FROM channel_categories WHERE "serverId"=${s}), '[]'::json),
@@ -63,7 +63,7 @@ function dbState(inst, sid) {
 }
 
 /** Everything a write could touch, as one comparable string. */
-function rowsKey(state) {
+export function rowsKey(state) {
   const { categories, roles, channels, grants, legacyOverrides, members } = state;
   return JSON.stringify({ categories, roles, channels, grants, legacyOverrides, members });
 }
@@ -75,7 +75,7 @@ const byOrder = (a, b) => a.order - b.order || a.sourceId.localeCompare(b.source
  * The owner's explicit choice in this lab: pair rows of the same kind by
  * their displayed order. Unequal shapes are a setup error, never guessed.
  */
-function pairRows(source, target) {
+export function pairRows(source, target) {
   const pair = (from, to, sort, label) => {
     const a = [...from].sort(sort), b = [...to].sort(sort);
     if (a.length !== b.length) throw new Error(`${label}: source ${a.length} vs target ${b.length}`);
@@ -112,6 +112,38 @@ function sendThenCut(url, headers, body, ca) {
     sock.on('error', () => resolve({ written: false, replyBytes }));
   });
 }
+
+/** B rows equal the signed snapshot values for every mapped item. */
+export function matchesSnapshot(state, exp, links, rolePermsBefore) {
+  const cat = new Map(links.categories.map((l) => [l.sourceId, l.targetId]));
+  const role = new Map(links.roles.map((l) => [l.sourceId, l.targetId]));
+  const chan = new Map(links.channels.map((l) => [l.sourceId, l.targetId]));
+  const rows = (k) => new Map(state[k].map((r) => [r.id, r]));
+  const C = rows('categories'), R = rows('roles'), H = rows('channels');
+  const bad = [];
+  for (const s of exp.structure.categories) {
+    const t = C.get(cat.get(s.sourceId));
+    if (!t || t.name !== s.name || t.position !== s.position || t.collapsed !== s.collapsed) bad.push('category ' + s.name);
+  }
+  for (const s of exp.structure.roles) {
+    const t = R.get(role.get(s.sourceId));
+    if (!t || t.name !== s.name || t.color !== s.color) bad.push('role ' + s.name);
+    else if (t.permissions !== rolePermsBefore.get(t.id)) bad.push('role mask changed ' + t.name);
+  }
+  for (const s of exp.structure.channels) {
+    const t = H.get(chan.get(s.sourceId));
+    const wantCat = s.categorySourceId === null ? null : cat.get(s.categorySourceId);
+    if (!t) { bad.push('channel ' + s.name + ' missing'); continue; }
+    const fields = { name: [t.name, s.name], topic: [t.topic, s.topic], categoryId: [t.categoryId, wantCat],
+      category: [t.category, s.legacyCategoryName], order: [Number(t.order), s.order],
+      nsfw: [t.nsfw, s.nsfw ? 1 : 0], slowmode: [t.slowmode, s.slowmode], type: [t.type, s.type] };
+    for (const [f, [got, want]] of Object.entries(fields)) {
+      if (got !== want) bad.push(`channel ${s.name}.${f}: ${JSON.stringify(got)} != ${JSON.stringify(want)}`);
+    }
+  }
+  return bad;
+}
+
 
 export async function runPortableTlsRoundTrip({ lab, origins, check }) {
   const A = lab.inst.a.base, B = lab.inst.b.base, ca = lab.pki.ca;
@@ -220,36 +252,6 @@ export async function runPortableTlsRoundTrip({ lab, origins, check }) {
   const apply = (rev, token) => tlsMutation(`${origins.b}${sidPath}/portable-import/mapped-apply`,
     ownerB, g['account-security'], applyBody(rev, token), ca);
 
-  /** B rows equal the signed snapshot values for every mapped item. */
-  function matchesSnapshot(state, exp, links, rolePermsBefore) {
-    const cat = new Map(links.categories.map((l) => [l.sourceId, l.targetId]));
-    const role = new Map(links.roles.map((l) => [l.sourceId, l.targetId]));
-    const chan = new Map(links.channels.map((l) => [l.sourceId, l.targetId]));
-    const rows = (k) => new Map(state[k].map((r) => [r.id, r]));
-    const C = rows('categories'), R = rows('roles'), H = rows('channels');
-    const bad = [];
-    for (const s of exp.structure.categories) {
-      const t = C.get(cat.get(s.sourceId));
-      if (!t || t.name !== s.name || t.position !== s.position || t.collapsed !== s.collapsed) bad.push('category ' + s.name);
-    }
-    for (const s of exp.structure.roles) {
-      const t = R.get(role.get(s.sourceId));
-      if (!t || t.name !== s.name || t.color !== s.color) bad.push('role ' + s.name);
-      else if (t.permissions !== rolePermsBefore.get(t.id)) bad.push('role mask changed ' + t.name);
-    }
-    for (const s of exp.structure.channels) {
-      const t = H.get(chan.get(s.sourceId));
-      const wantCat = s.categorySourceId === null ? null : cat.get(s.categorySourceId);
-      if (!t) { bad.push('channel ' + s.name + ' missing'); continue; }
-      const fields = { name: [t.name, s.name], topic: [t.topic, s.topic], categoryId: [t.categoryId, wantCat],
-        category: [t.category, s.legacyCategoryName], order: [Number(t.order), s.order],
-        nsfw: [t.nsfw, s.nsfw ? 1 : 0], slowmode: [t.slowmode, s.slowmode], type: [t.type, s.type] };
-      for (const [f, [got, want]] of Object.entries(fields)) {
-        if (got !== want) bad.push(`channel ${s.name}.${f}: ${JSON.stringify(got)} != ${JSON.stringify(want)}`);
-      }
-    }
-    return bad;
-  }
 
   await grantsB();
   // ── P7-RT-01: owner review over TLS ──────────────────────────────────────
