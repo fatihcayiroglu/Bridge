@@ -89,7 +89,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { publishPersistedMessage } from '../lib/channelActivity';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 const router     = express.Router({ mergeParams: true });
-import { Members, Channels, Users, Servers, Messages, ServerAssets, Roles } from '../db/repositories';
+import { Members, Channels, Users, Servers, Messages, ServerAssets, Roles, Automod } from '../db/repositories';
+import { evaluateAutomodRules, type AutomodRuleLike } from '../lib/automodPolicy';
+import { normalizeAutomodMemberRoleIds } from '../lib/automodRuntime';
 import { authMiddleware} from '../middleware/auth';
 import { resolvePermissions, hasPermission, PERMS } from '../lib/permissions';
 import { limits } from '../middleware/rateLimit';
@@ -227,6 +229,34 @@ router.get('/:sid/onboarding/status', authMiddleware, async (req, res) => {
 });
 
 // POST /api/servers/:sid/onboarding/complete
+/** Shown in place of a member name the server's AutoMod would refuse. */
+export const WELCOME_WITHHELD_NAME = 'yeni üye';
+
+/**
+ * P7 B1: the member's name (server nickname, display name or username) is the
+ * only member-controlled text in Bridge's welcome message, which Bridge posts
+ * as a system message and therefore outside the message ingress checks
+ * (lib/messageContentPolicy.ts). Without this, a blocked word in a nickname
+ * was posted into the welcome channel. The name is withheld when the server's
+ * AutoMod content rules would refuse the same text as a message, including the
+ * member's exempt roles. Only content rules apply: the member sent nothing, so
+ * no spam counter moves and no timeout is applied. A rule-store failure or an
+ * invalid rule throws, and the caller then posts no welcome (fail closed).
+ */
+async function moderatedWelcomeName(serverId: string, userId: string, memberRoles: unknown, name: string): Promise<string> {
+  const rules = (await Automod.findByServer(serverId) as AutomodRuleLike[])
+    .filter(rule => rule.type !== 'spam_messages');
+  const decision = await evaluateAutomodRules(
+    rules,
+    { serverId, userId, content: name, memberRoleIds: normalizeAutomodMemberRoleIds(memberRoles) },
+    async () => { throw new Error('a content rule cannot count messages'); },
+  );
+  if (!decision.deleteMessage) return name;
+  logger.info({ serverId, userId, ruleIds: decision.matchedRuleIds, event: 'onboarding.welcome.name_withheld' },
+    'Onboarding welcome: member name withheld by AutoMod');
+  return WELCOME_WITHHELD_NAME;
+}
+
 router.post('/:sid/onboarding/complete', authMiddleware, limits.write(), async (req, res) => {
   const _u = castAuthed(req).user;
   const member = await Members.findOne(_u.id, String(req.params.sid ?? ''));
@@ -274,7 +304,8 @@ router.post('/:sid/onboarding/complete', authMiddleware, limits.write(), async (
         return res.json({ ok: true, welcomeSkipped: true });
       }
       const user = await Users.findById(_u.id);
-      const displayName = member.nickname || user?.displayName || user?.username || 'yeni üye';
+      const displayName = await moderatedWelcomeName(sid, _u.id, (member as { roles?: unknown }).roles,
+        member.nickname || user?.displayName || user?.username || WELCOME_WITHHELD_NAME);
       const text = (config.welcomeMessage || 'Sunucuya hoş geldin, {user}! 👋')
         .replace('{user}', `@${displayName}`)
         .replace('{server}', (await Servers.findById(sid))?.name || 'sunucu');
