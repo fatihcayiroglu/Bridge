@@ -751,6 +751,8 @@ const ANR_TOPS = new Set(['idle-looper', 'binder-transaction', 'lock-wait', 'sle
   'running-code', 'unknown']);
 const ANR_SUBSYSTEMS = new Set(['bridge', 'capacitor', 'webview', 'androidx', 'gms',
   'other-app', 'framework-only', 'none']);
+const ANR_NATIVE_HINTS = new Set(['art', 'libc', 'webview', 'binder', 'graphics',
+  'android-runtime', 'none']);
 
 /**
  * #209 ANR02: parse the debug AnrTraceProbeActivity's fixed markers from the
@@ -767,11 +769,11 @@ export function parseAnrTraceProbeMarkers(raw, appPid) {
     const m = /^[A-Z]\/BridgeAnrTraceProbe\(\s*([0-9]{1,8})\):\s*(.*?)\s*$/.exec(line);
     if (!m || String(Number(m[1])) !== targetPid) continue;
     const body = m[2];
-    const exit = /^stage=exit traceAvailable=(true|false) mainState=([A-Za-z-]{1,24}) top=([a-z-]{1,24}) subsystem=([a-z-]{1,24})$/.exec(body);
+    const exit = /^stage=exit traceAvailable=(true|false) mainState=([A-Za-z-]{1,24}) top=([a-z-]{1,24}) subsystem=([a-z-]{1,24}) nativeHint=([a-z-]{1,24})$/.exec(body);
     if (exit && ANR_MAIN_STATES.has(exit[2]) && ANR_TOPS.has(exit[3]) &&
-        ANR_SUBSYSTEMS.has(exit[4]) && result.traces.length < 5) {
+        ANR_SUBSYSTEMS.has(exit[4]) && ANR_NATIVE_HINTS.has(exit[5]) && result.traces.length < 5) {
       result.traces.push({ traceAvailable: exit[1] === 'true', mainState: exit[2],
-        top: exit[3], subsystem: exit[4] });
+        top: exit[3], subsystem: exit[4], nativeHint: exit[5] });
       continue;
     }
     const done = /^stage=done supported=(true|false)(?: error=(true|false))? anrExits=([0-9]{1,3})(?: records=([0-9]{1,4}) oldestBeforeStart=(true|false) capacity=(-1|[0-9]{1,4}))?$/.exec(body);
