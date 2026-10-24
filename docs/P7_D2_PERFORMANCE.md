@@ -100,6 +100,8 @@ PostgreSQL); raise `maxObjectReleases` where storage throughput allows.
 
 ## Lock impact, upgrade and rollback
 
+Measured (lock modes held until commit, runtime and concurrent-write stalls at 2M and 5M messages, all of 085–092): [P7_D3_D2_MIGRATION_LOCK_EVIDENCE.md](P7_D3_D2_MIGRATION_LOCK_EVIDENCE.md). The notes below are the design reasoning.
+
 - **086 (write barrier):** `CREATE TRIGGER` takes a brief `SHARE ROW EXCLUSIVE`
   lock on `messages`, `thread_messages`, `threads`; no rewrite.
 - **087, 089:** new partial indexes / new table. 087's indexes are on
