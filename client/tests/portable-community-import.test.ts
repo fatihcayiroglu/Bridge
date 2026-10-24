@@ -133,6 +133,41 @@ describe('owner-entered expectations and mapping', () => {
     expect(JSON.stringify(rows)).toBe(original);
   });
 
+  it('maps opaque source IDs that collide with Object.prototype instead of reading inherited keys', () => {
+    const source = structureRows({
+      ...sourceStructure(),
+      categories: [{ sourceId: 'constructor', name: 'OPS', position: 0 }],
+      roles: [{ sourceId: '__proto__', name: 'Crew', position: 1 }],
+      channels: [{ sourceId: 'toString', name: 'general', type: 'text', order: 1 }],
+    })!;
+    const destination = structureRows({
+      ...target(),
+      categories: [{ sourceId: 'tc1', name: 'OPS' }],
+      roles: [{ sourceId: 'tr1', name: 'Crew' }],
+      channels: [{ sourceId: 'tch1', name: 'general', type: 'text' }],
+    })!;
+    const selected = suggestLinks(source, destination);
+    expect(Object.prototype.hasOwnProperty.call(selected.categories, 'constructor')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(selected.roles, '__proto__')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(selected.channels, 'toString')).toBe(true);
+    expect(selected.categories.constructor).toBe('tc1');
+    expect(selected.roles.__proto__).toBe('tr1');
+    expect(selected.channels.toString).toBe('tch1');
+    expect(mappingProblem(source, destination, selected)).toBeNull();
+    expect(reviewBody({
+      bundle: { ...parseSignedBundle(bundleText())!, rows: source },
+      expectedOrigin: 'https://source.example', expectedServerId: 'src-1',
+      targetServerId: 'dst-1', targetDigest: H('d'), links: selected,
+    }).mapping).toMatchObject({
+      categories: [{ sourceId: 'constructor', targetId: 'tc1' }],
+      roles: [{ sourceId: '__proto__', targetId: 'tr1' }],
+      channels: [{ sourceId: 'toString', targetId: 'tch1' }],
+    });
+    // The default Object.prototype is not a source of implicit selections.
+    const empty: Links = { categories: {}, roles: {}, channels: {} };
+    expect(mappingProblem(source, destination, empty)).toBe('unmapped');
+  });
+
   it('requires every source row mapped once onto a row of the same type', () => {
     const b = parseSignedBundle(bundleText())!;
     const t = target();
