@@ -42,9 +42,15 @@ passed the barrier just before the change stays valid.
 - **Clearing:** an expiring channel may be made permanent again before it
   expires.
 - **Last permanent channel:** a server must keep at least one permanent
-  channel. Known gap: channel deletion does not apply this rule, so deleting
-  the last permanent channel can still leave only expiring channels; the
-  worker then never claims the server's last live channel.
+  channel. Channel deletion applies the same rule: deleting the last
+  permanent channel while an expiring one remains answers
+  `409 LAST_PERMANENT_CHANNEL`. Without it the server could be left with only
+  expiring channels, and the worker never claims a server's last live
+  channel, so that one would keep its expired messages forever (measured in
+  `channel-delete-last-permanent.pgtest.ts`). Deletion takes the server row
+  `FOR NO KEY UPDATE` first, like this API, so deletes and expiry changes in
+  one server serialise; that also removed a deadlock between two concurrent
+  channel deletes (40P01 in 14 of 15 rounds before).
 
 ## Not in this change
 
