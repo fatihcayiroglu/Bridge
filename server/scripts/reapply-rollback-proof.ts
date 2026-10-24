@@ -17,6 +17,9 @@ export function assertRollbackProofTarget(raw: string | undefined, nodeEnv: stri
     throw new Error('ROLLBACK_PROOF_ONLY: test environment and DATABASE_URL required');
   }
   const url = new URL(raw);
+  if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') {
+    throw new Error('ROLLBACK_PROOF_ONLY: expected PostgreSQL connection URL');
+  }
   const databaseName = decodeURIComponent(url.pathname.slice(1));
   if (!/^bridge_rollback_proof_[a-z0-9_]+$/.test(databaseName) || databaseName.length > 63) {
     throw new Error('ROLLBACK_PROOF_ONLY: refusing to replay migrations outside a reserved throwaway proof database');
