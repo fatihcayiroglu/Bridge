@@ -29,6 +29,23 @@ test('ANR first-failure evidence drops raw PIDs, processes, timestamps and exit 
   assert.doesNotMatch(journeys, /Object\.assign\(facts, \{ deviceUser:/);
 });
 
+test('Android public journey artifact excludes dynamic channel IDs, test message text and raw OS/UI responses', () => {
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  // Assertions use real IDs and messages in memory, but never persist them as PASS details.
+  assert.match(journeys, /assert\(\(await activeChannel\(\)\) === channelId/);
+  assert.match(journeys, /return \{ expectedChannelActive: true \}/);
+  assert.match(journeys, /return \{ persistedOnce: true, rendered: true \}/);
+  assert.match(journeys, /return \{ dmRendered: true \}/);
+  assert.match(journeys, /return \{ deniedChannelNotVisible: true/);
+  assert.match(journeys, /return \{ channelRegistered: lines\.includes\('bridge_default'\) \}/);
+  assert.match(journeys, /return \{ deepLinkOpened: true \}/);
+  assert.match(journeys, /return \{ appStillForeground: true/);
+  assert.match(journeys, /return \{ osSheet: sheet, denialExplained: Boolean\(text\) \}/);
+  assert.doesNotMatch(journeys, /return \{\s*(?:needle|active:|before, after|top,|am:|osSheet: sheet, shown:)/);
+  assert.doesNotMatch(journeys, /origin: await page\.evaluate|api: await page\.evaluate/);
+  assert.doesNotMatch(journeys, /app left (?:the )?foreground(?: after back)?: \$\{top\}/);
+});
+
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
     'ApplicationExitInfo #0:',

@@ -1507,7 +1507,11 @@ async function main() {
     assert(splashGone, 'native splash still covering the app');
     // Stage one: immediately after first UI render, before login or channels.
     await fontProviderStage('first-ui-before-login');
-    return { coldLaunchTotalMs: launch.totalTimeMs, origin: await page.evaluate(() => location.origin), api: await page.evaluate(() => globalThis.BRIDGE_API ?? null) };
+    // CI evidence is public: retain the environment contract, not URLs that
+    // might carry a private host or credentials.
+    return { coldLaunchTotalMs: launch.totalTimeMs,
+      packagedOrigin: await page.evaluate(() => location.origin === 'https://localhost'),
+      apiConfigured: await page.evaluate(() => Boolean(globalThis.BRIDGE_API)) };
   });
 
   // #209: repeated COLD starts on the ordinary Bridge Activity, after the
@@ -1641,13 +1645,14 @@ async function main() {
       const out = await sh(`dumpsys notification | grep -m4 "bridge_default"`).catch(() => '');
       return out.includes('bridge_default') ? out : null;
     }, { timeout: 15_000, message: 'bridge_default channel registered' });
-    return { channel: lines.split('\n')[0].trim().slice(0, 200) };
+    return { channelRegistered: lines.includes('bridge_default') };
   });
 
   await check('A03', 'server + channel list render and a channel opens', async () => {
     await openServer(serverId);
     await openChannel(channelId);
-    return { active: await activeChannel() };
+    assert((await activeChannel()) === channelId, 'A03 expected channel did not become active');
+    return { expectedChannelActive: true };
   });
 
   await check('M01', 'send a channel message from the composer; it persists server-side', async () => {
@@ -1655,7 +1660,7 @@ async function main() {
     await sendFromComposer(needle);
     await until(async () => (await channelHas(me.token, channelId, needle)).length === 1, { message: 'message persisted once' });
     await until(() => visibleMessage(needle), { message: 'message rendered' });
-    return { needle };
+    return { persistedOnce: true, rendered: true };
   });
 
   await check('M02', 'live message from another user renders while foregrounded', async () => {
@@ -1808,7 +1813,7 @@ async function main() {
     }, peer.username);
     await until(() => page.evaluate((n) => (document.querySelector('.dm-panel')?.textContent || '').includes(n), needle), { timeout: 20_000, message: 'DM message visible' });
     await page.keyboard.press('Escape').catch(() => {});
-    return { needle };
+    return { dmRendered: true };
   });
 
   // K01 had an honest red Android API 34 emulator result (run 38160936435).
@@ -1844,8 +1849,8 @@ async function main() {
       timeout: 5_000, message: 'dialog closed by back with IME hidden',
     });
     const top = await sh('dumpsys activity activities | grep -m1 -E "topResumedActivity|mResumedActivity"').catch(() => '');
-    assert(top.includes(PKG), `app left the foreground after back: ${top}`);
-    return { top, initialImeVisible, imeHiddenBeforeBack: true };
+    assert(top.includes(PKG), 'K01 app left foreground after Back');
+    return { appStillForeground: true, initialImeVisible, imeHiddenBeforeBack: true };
   });
 
   await check('K02', 'Android Back first hides a visible soft keyboard, then closes Settings on a second press', async () => {
@@ -1863,24 +1868,24 @@ async function main() {
       timeout: 5_000, message: 'K02 second Android Back closes Settings',
     });
     const top = await sh('dumpsys activity activities | grep -m1 -E "topResumedActivity|mResumedActivity"').catch(() => '');
-    assert(top.includes(PKG), `K02 app left foreground: ${top}`);
+    assert(top.includes(PKG), 'K02 app left foreground after Back');
     return { tap, firstBackHidIme: true, secondBackClosedSettings: true };
   });
 
   await check('DL01', 'warm deep link bridge://channel/<id> opens that channel', async () => {
     await openChannel(otherId).catch(() => {});
-    const raw = await platform.deepLink(`bridge://channel/${channelId}`);
+    await platform.deepLink(`bridge://channel/${channelId}`);
     await attachPage();
     await until(() => activeChannel().then((c) => c === channelId), { timeout: 20_000, message: 'deep-linked channel active' });
-    return { am: raw.split('\n').slice(-2).join(' | ') };
+    return { deepLinkOpened: true };
   });
 
   await check('DL04', 'the app-owned scheme com.bridge.app://channel/<id> opens that channel (the link format that also works on iOS)', async () => {
     await openChannel(otherId).catch(() => {});
-    const raw = await platform.deepLink(`com.bridge.app://channel/${channelId}`);
+    await platform.deepLink(`com.bridge.app://channel/${channelId}`);
     await attachPage();
     await until(() => activeChannel().then((c) => c === channelId), { timeout: 20_000, message: 'com.bridge.app link opened the channel' });
-    return { am: raw.split('\n').slice(-2).join(' | ') };
+    return { deepLinkOpened: true };
   });
 
   await check('DL02', 'cold deep link bridge://channel/<id> opens that channel after session restore', async () => {
@@ -1899,7 +1904,7 @@ async function main() {
     const after = await activeChannel();
     const leaked = await page.evaluate((cid) => !!document.querySelector(`.ch-item[data-id="${cid}"]`), privateChannelId);
     assert(after !== privateChannelId && !leaked, 'inaccessible channel became visible through a deep link');
-    return { before, after };
+    return { deniedChannelNotVisible: true, activeChannelChanged: before !== after };
   });
 
   await check('P01', 'microphone permission denied in the real Android sheet → voice join tells the user', async () => {
@@ -1917,7 +1922,7 @@ async function main() {
       const t = [...document.querySelectorAll('[role="alert"], [role="status"], .toast')].map((e) => e.textContent || '').join(' | ');
       return /mikrofon|microphone/i.test(t) ? t : null;
     }), { timeout: 25_000, message: 'microphone denial explained in the UI' });
-    return { osSheet: sheet, shown: text.slice(0, 200) };
+    return { osSheet: sheet, denialExplained: Boolean(text) };
   });
 
   await check('P03', 'microphone permission granted → voice join sends audio (SFU outbound RTP)', async () => {
@@ -1983,7 +1988,7 @@ async function main() {
     const text = await until(() => alertText(/kamera|camera/), { timeout: 25_000, message: 'camera denial explained in the UI' });
     const videoOn = await page.evaluate(() => document.getElementById('vc-video')?.getAttribute('aria-pressed'));
     assert(videoOn !== 'true', 'camera toggle claims to be on after the permission was denied');
-    return { osSheet: sheet, shown: text.slice(0, 200) };
+    return { osSheet: sheet, denialExplained: Boolean(text), toggleRemainedOff: true };
   });
 
   await check('P07', 'camera permission granted → video is sent (emulated camera, outbound video RTP)', async () => {
