@@ -34,7 +34,7 @@ text or native UI source. An I07 failure fails the job but preserves an already
 completed D2 PASS as D2 evidence. The new result must be PASS at the shell gate;
 UNVERIFIED is never converted into a pass.
 
-Local verification: **20 Node transport/evidence/control tests PASS, zero
+Local verification: **27 Node transport/evidence/control tests PASS, zero
 skipped**, including adversarial cold-restart, wrong-target, preexisting-alert
 and wrong-confirmation controls. JavaScript and Bash syntax checks PASS. These
 unit fixtures are not native acceptance. **Real iOS simulator execution is still
@@ -45,3 +45,28 @@ Driver contract reviewed at the exact installed commit:
 `docs/reference/capabilities.md`, `settings.md`, and `execute-methods.md`.
 No production iOS layer, signing entitlement, dependency pin or privacy setting
 changes. Review and exact-head native CI remain required; #321/P7 stay open.
+
+
+## First-attempt failures and bounded startup evidence
+
+The first native run on `07ba279f`, workflow **40139119267**, failed before I07
+executed: native-session creation lost its connection with ECONNRESET after
+603,025 ms. No I07 report or PASS was produced. The earlier #423 PR check on
+synthetic merge `a5035d99` (tree identical to head `d0b4e12f`) failed differently:
+the correct native process/packaged WebView was selected, but Bridge DOM was
+absent. Its original D2 FAIL and the later, independent smoke UNVERIFIED remain.
+Neither observation establishes a product root cause.
+
+The next revision records a bounded startup summary before deleting the private
+Appium log: only known WDA/Xcode/proxy/inspector stage flags and counters, an
+Appium process-health snapshot and explicit truncation state. It never retains
+capabilities, WebDriver arguments, response bodies, identifiers, URLs or compiler
+errors. A failure-only read of an already selected packaged page records document
+readiness, frame/index/body/script shape and bounded early-error counts without
+HTML, error text, titles, input values or navigation. Missing error state stays
+unknown, rather than being reported as zero errors.
+
+These additions improve diagnosis; they do not extend a deadline, retry a journey,
+waive missing native evidence or fix the unexplained startup failures. All 27
+local control/transport/evidence tests pass with zero skips. Actual native I07
+acceptance remains required on the updated code.

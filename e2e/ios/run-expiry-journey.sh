@@ -36,10 +36,13 @@ e2e/ios/node_modules/.bin/appium --address 127.0.0.1 --port 4723 --use-drivers x
   > "$appium_raw" 2>&1 &
 appium_pid=$!
 cleanup_appium() {
+  local appium_alive=false
+  if kill -0 "$appium_pid" 2>/dev/null; then appium_alive=true; fi
   kill "$appium_pid" 2>/dev/null || true
   # No scripts, command arguments, page titles, URLs or console payloads.
   awk '/RemoteDebugger/ && /Remote Debugger version|Connecting to remote debugger|Received connected applications list|Found app id key|Current applications available|Application:|bundleId:|isActive:|isProxy:|No matching|No applications|Empty page dictionary|Notified that new application/ { print substr($0,1,800); count++; if(count>=100) exit }' \
     "$appium_raw" > "$IOS_EVIDENCE_DIR/appium-discovery.log"
+  node e2e/ios/appium-startup-evidence.mjs "$appium_raw" "$IOS_EVIDENCE_DIR/appium-startup.json" "$appium_alive"
   rm -f "$appium_raw"
 }
 trap cleanup_appium EXIT

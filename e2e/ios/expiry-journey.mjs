@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { verifyNativeOpenConfirmation } from './native-open-confirmation.mjs';
+import { startupPageFacts } from './startup-page-evidence.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -459,6 +460,10 @@ try {
     } catch { facts.draftDiagnosticFailed = true; }
   }
   if (session && facts.stage === 'packaged-webview') {
+    if (facts.webviewProbe?.switched && facts.webviewProbe?.nativeProcessMatches && facts.webviewProbe?.packagedOrigin) {
+      try { facts.pageStartup = await js(startupPageFacts); }
+      catch { facts.pageStartupProbeFailed = true; }
+    }
     // The fixture has not logged in yet. Keep only native state/shape facts,
     // never the source tree, account data or WebDriver argument payloads.
     const probe = {};
