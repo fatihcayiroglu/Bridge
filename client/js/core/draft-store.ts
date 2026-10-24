@@ -160,6 +160,24 @@ function rawSet(key: string, entry: StoredDraft): boolean {
  * P7 D2: channel ids of `serverId` that still hold a legacy (pre-encryption)
  * draft for this user. Used to purge drafts of channels that no longer exist.
  */
+/**
+ * P7 account erasure: remove every legacy (pre-encryption) draft of `userId`.
+ * Returns how many entries were removed; storage failures are reported by
+ * throwing, so the caller can keep the erasure pending.
+ */
+export function clearLegacyDraftsForUser(userId: string): number {
+  const store = storage();
+  if (!store || !userId) return 0;
+  const prefix = `${DRAFT_KEY_PREFIX}:${encodeURIComponent(userId)}:`;
+  const keys: string[] = [];
+  for (let index = 0; index < store.length; index += 1) {
+    const key = store.key(index);
+    if (key?.startsWith(prefix)) keys.push(key);
+  }
+  for (const key of keys) store.removeItem(key);
+  return keys.length;
+}
+
 export function legacyChannelDraftIds(userId: string, serverId: string): string[] {
   const store = storage();
   if (!store || !userId || !serverId) return [];

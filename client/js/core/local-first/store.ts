@@ -10,6 +10,7 @@ import {
   generateLocalFirstKey,
   type LocalFirstEnvelope,
 } from './crypto.ts';
+import { isLocalAccountErased } from './erased-accounts.ts';
 
 export const LOCAL_FIRST_RECORD_VERSION = 1;
 
@@ -159,6 +160,9 @@ export class EncryptedLocalStore {
   ): Promise<void> {
     if (!Number.isFinite(updatedAt) || updatedAt < 0) throw new Error('updatedAt is invalid');
     const envelope = await this.encrypt(value, localRecordScope(this.userId, namespace, recordId));
+    // A write that was already in flight when the account was erased is
+    // dropped instead of re-creating a record (see erased-accounts.ts).
+    if (isLocalAccountErased(this.userId)) throw new Error('Local data for this account was erased');
     await this.backend.put({
       id: localRecordId(this.userId, namespace, recordId),
       userId: this.userId,

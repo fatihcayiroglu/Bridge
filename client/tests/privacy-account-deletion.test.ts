@@ -10,8 +10,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 
-const authCompat = vi.hoisted(() => ({ logout: vi.fn(), showAuthMsg: vi.fn() }));
+const order = vi.hoisted(() => [] as string[]);
+const authCompat = vi.hoisted(() => ({ logout: vi.fn(() => { order.push('logout'); }), showAuthMsg: vi.fn() }));
 vi.mock('../js/core/auth-compat.js', () => authCompat);
+// P7: local-first erasure of the deleted account (its own suite covers what it wipes).
+const erasure = vi.hoisted(() => ({
+  eraseLocalAccount: vi.fn(async (userId: string) => { order.push(`erase:${userId}`); return { erased: true, markPersisted: true }; }),
+}));
+vi.mock('../js/core/local-first/account-erasure', () => erasure);
 
 import { t } from '../js/core/i18n/index.ts';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
@@ -38,6 +44,8 @@ beforeEach(() => {
   BridgeRegistry.register('apiFetch', apiFetch as unknown as AnyFn);
   authCompat.logout.mockClear();
   authCompat.showAuthMsg.mockClear();
+  erasure.eraseLocalAccount.mockClear();
+  order.length = 0;
 });
 
 afterEach(() => {
@@ -83,6 +91,8 @@ describe('Gizlilik — hesabı sil', () => {
     const [, init] = apiFetch.mock.calls.find((c) => c[0] === '/api/account')!;
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({ confirm: 'DELETE', password: 'dogru-parola' });
     expect(authCompat.showAuthMsg).toHaveBeenCalledWith(t('privacy_delete_done'), 'success');
+    // P7: this device's local data of the deleted account is erased, before logout.
+    expect(order).toEqual(['erase:u1', 'logout']);
   });
 
   it('yanlış parola (400) hata gösterir ve oturumu KAPATMAZ', async () => {
@@ -98,6 +108,7 @@ describe('Gizlilik — hesabı sil', () => {
     await waitFor(() => expect(v.getByRole('alert').textContent).toBe(t('privacy_delete_wrong_password')));
     expect(authCompat.logout).not.toHaveBeenCalled();
     expect(v.getByRole('button', { name: t('privacy_delete_confirm') })).toBeTruthy();
+    expect(erasure.eraseLocalAccount).not.toHaveBeenCalled();
   });
 
   it('ön denetimden SONRA oluşan sahiplik (409) engel listesine döner, silme olmaz', async () => {
@@ -113,6 +124,7 @@ describe('Gizlilik — hesabı sil', () => {
     await waitFor(() => expect(v.getByText(t('privacy_delete_blocker_server', undefined, { name: 'Yeni', count: 2 }))).toBeTruthy());
     expect(v.queryByLabelText(t('privacy_delete_password'))).toBeNull();
     expect(authCompat.logout).not.toHaveBeenCalled();
+    expect(erasure.eraseLocalAccount).not.toHaveBeenCalled();
   });
 
   it('PostgreSQL olmayan kurulumda (503) dürüstçe kullanılamaz der', async () => {
@@ -146,6 +158,7 @@ describe('P7 B2 — SSO-only account (no password)', () => {
     await waitFor(() => expect(authCompat.logout).toHaveBeenCalledOnce());
     const [, init] = apiFetch.mock.calls.find((c) => c[0] === '/api/account')!;
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({ confirm: 'DELETE' });
+    expect(order).toEqual(['erase:u1', 'logout']);
   });
 
   it('a refused proof (403, e.g. the person declined to sign in again) keeps the session and explains', async () => {
@@ -157,5 +170,6 @@ describe('P7 B2 — SSO-only account (no password)', () => {
     await fireEvent.click(v.getByRole('button', { name: t('privacy_delete_confirm') }));
     await waitFor(() => expect(v.getByRole('alert').textContent).toBe(t('privacy_delete_needs_proof')));
     expect(authCompat.logout).not.toHaveBeenCalled();
+    expect(erasure.eraseLocalAccount).not.toHaveBeenCalled();
   });
 });

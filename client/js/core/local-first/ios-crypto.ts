@@ -5,6 +5,7 @@ import { Capacitor } from '@capacitor/core';
 import { BridgeLocalFirstCrypto } from '@bridge/local-first-crypto';
 import type { LocalFirstEnvelope } from './crypto.ts';
 import type { LocalFirstCipher } from './store.ts';
+import { isLocalAccountErased } from './erased-accounts.ts';
 
 export function iosLocalFirstCipher(userId: string): (LocalFirstCipher & {
   hasKey(): Promise<boolean>; ensureKey(): Promise<void>;
@@ -21,9 +22,15 @@ export function iosLocalFirstCipher(userId: string): (LocalFirstCipher & {
       return value.exists;
     },
     async ensureKey() {
-      if ((await BridgeLocalFirstCrypto.ensureKey({ userId }))?.persistent !== true) {
-        throw new Error('Native key persistence is unverifiable');
+      // Account erasure removes the Keychain key; never create it again. A
+      // key created while an erasure was being marked is deleted at once.
+      if (isLocalAccountErased(userId)) throw new Error('Local data for this account was erased');
+      const persistent = (await BridgeLocalFirstCrypto.ensureKey({ userId }))?.persistent === true;
+      if (isLocalAccountErased(userId)) {
+        await BridgeLocalFirstCrypto.deleteKey({ userId });
+        throw new Error('Local data for this account was erased');
       }
+      if (!persistent) throw new Error('Native key persistence is unverifiable');
     },
     async encryptJson(value, scope) {
       scopeCheck(scope);
