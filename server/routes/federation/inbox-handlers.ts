@@ -8,6 +8,16 @@ import { Federation, Notifications, Dms, Users } from '../../db/repositories';
 import logger from '../../lib/logger';
 import { deliverApActivity } from './delivery';
 
+// P7 B3: these handlers log who did what across instances. A local username,
+// a remote actor URL, a liked or boosted object or a DM id in an info line
+// would write the follow / like / DM graph into the logs on every delivery
+// ("logs must not become a shadow social graph"). The rows themselves are
+// stored where the product needs them; the log keeps the event and the remote
+// host only, which is what an operator needs to spot a noisy instance.
+function remoteHost(url: unknown): string {
+  try { return new URL(String(url)).hostname.toLowerCase(); } catch { return ''; }
+}
+
 interface ApActor { _id: string; username: string; }
 export interface ApObject extends Record<string, unknown> {
   id?: string;
@@ -124,7 +134,7 @@ async function handleApFollow(targetUser: ApActor, activity: ApActivity): Promis
       createdAt: Date.now(),
     });
 
-    logger.info({ targetUser: targetUser.username, actor: aUrl, event: 'federation.follow.received' });
+    logger.info({ remoteHost: remoteHost(aUrl), event: 'federation.follow.received' });
   } catch (err) {
     logger.warn({ err, event: 'federation.follow.handle_failed' });
     throw err;
@@ -141,7 +151,7 @@ async function handleApUnfollow(targetUser: ApActor | null, activity: ApActivity
 
     if (inner.type === 'Follow') {
       await Federation.removeApFollow({ actorUrl: aUrl, targetUserId: targetUser?._id }, {});
-      logger.info({ actor: aUrl, event: 'federation.follow.undo' });
+      logger.info({ remoteHost: remoteHost(aUrl), event: 'federation.follow.undo' });
     } else if (inner.type === 'Like') {
       const oUrl = objectId(inner.object);
       await Federation.removeApLike({ actorUrl: aUrl, objectUrl: oUrl }, {});
@@ -163,7 +173,7 @@ async function handleApAccept(localUser: ApActor, activity: ApActivity): Promise
       { fromUserId: localUser._id, targetActorUrl: remoteActor },
       { $set: { accepted: true, acceptedAt: Date.now() } }
     );
-    logger.info({ localUser: localUser.username, remoteActor, event: 'federation.follow.accepted' });
+    logger.info({ remoteHost: remoteHost(remoteActor), event: 'federation.follow.accepted' });
   } catch (err) {
     logger.warn({ err, event: 'federation.follow.accept_handle_failed' });
     throw err;
@@ -177,7 +187,7 @@ async function handleApReject(localUser: ApActor, activity: ApActivity): Promise
     await Federation.removeApOutgoingFollow(
       { fromUserId: localUser._id, targetActorUrl: remoteActor }, {}
     );
-    logger.info({ localUser: localUser.username, remoteActor, event: 'federation.follow.rejected' });
+    logger.info({ remoteHost: remoteHost(remoteActor), event: 'federation.follow.rejected' });
   } catch (err) {
     logger.warn({ err, event: 'federation.follow.reject_handle_failed' });
     throw err;
@@ -260,7 +270,7 @@ async function handleApCreate(targetUser: ApActor | null, activity: ApActivity):
           read:      false,
           createdAt: Date.now(),
         });
-        logger.info({ noteId: obj.id, dmId, event: 'federation.dm.received' });
+        logger.info({ remoteHost: remoteHost(aUrl), event: 'federation.dm.received' });
         return; // federated timeline'a ekleme
       }
 
@@ -446,7 +456,7 @@ async function handleApLike(targetUser: ApActor | null, activity: ApActivity): P
         createdAt: Date.now(),
       });
     }
-    logger.info({ actor: aUrl, object: oUrl, event: 'federation.like.received' });
+    logger.info({ remoteHost: remoteHost(aUrl), event: 'federation.like.received' });
   } catch (err) {
     logger.warn({ err, event: 'federation.like.handle_failed' });
     throw err;
@@ -481,7 +491,7 @@ async function handleApAnnounce(targetUser: ApActor | null, activity: ApActivity
         createdAt: Date.now(),
       });
     }
-    logger.info({ actor: aUrl, object: oUrl, event: 'federation.announce.received' });
+    logger.info({ remoteHost: remoteHost(aUrl), event: 'federation.announce.received' });
   } catch (err) {
     logger.warn({ err, event: 'federation.announce.handle_failed' });
     throw err;

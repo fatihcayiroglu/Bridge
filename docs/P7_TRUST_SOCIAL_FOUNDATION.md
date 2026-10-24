@@ -718,6 +718,25 @@ records, timestamps and the remaining classes still need their records).
 | Unchanged | Authorization, upload size limits, the magic-byte check, the content scanner |
 | Evidence | `server/tests/image-metadata.test.ts` (real images, pixels identical); `server/tests/upload-webp-orientation.test.ts` (real encoder: a portrait photo is stored upright); `e2e/tests/image-metadata.spec.ts` (bytes served by a real server; negative control against a server without B3: the metadata tests fail) |
 
+### B3-2 — server logs (branch `claude/p7-b3-federation-log-minimization`)
+
+Second class. **B3 as a whole stays open**: telemetry/metrics, IP and device
+records in the database, timestamps and the remaining classes still need records.
+
+| | Record |
+|---|---|
+| What | The server's structured log lines (`lib/logger.ts`, pino JSON on stdout). Every line written inside a request or socket event also carries `requestId`, the actor's `userId` and `socketId` (`lib/requestContext.ts` mixin) |
+| Why required | Operating and securing the instance: errors, abuse and limit events, federation health |
+| Where stored | Not by Bridge: stdout, then whatever log pipeline the operator runs |
+| Who can access | The operator and anyone with access to their log store |
+| Retention / deletion / export | The operator's log retention. **Account erasure cannot reach it**, which is why what goes in must be minimal. Not part of the account export |
+| Inventory (static scan of all 640 `logger.*({…})` calls outside tests, 2026-10-24) | Field names checked for direct identifiers, contact data, content and second parties. Results below |
+| Shadow social graph — **fixed here** | Six ActivityPub inbox events wrote a graph edge at `info` on every delivery: `federation.follow.received` (local username + remote actor URL), `.follow.undo`, `.follow.accepted` / `.rejected` (local username + remote actor), `.like.received` / `.announce.received` (actor + object URL), `.dm.received` (note id + DM id). They now log the event and the remote **host** only, which an operator needs to spot a noisy instance (the same form as the existing `federation.delivery.blocked_by_acl`). The rows themselves are unchanged |
+| Kept, with reason | Client IP on abuse and limit events only (`ratelimit.auto_ban.applied`, `ws_limit_ip` / `ws_limit_unauth_ip`, `captcha.ip.locked`, `captcha.bot_filter.blocked`; warn): the ban or lock is keyed by that IP, so the log names what was acted on. Two `ws_connect_allow*` lines carry it at `debug`, below production's default `info`. The actor's own `userId` (pseudonymous id) on request lines: correlation, and not an edge on its own |
+| Kept, failure path only | `dm.access_policy.failed` (`otherUserId`), `push.dm.flush_failed` (`recipientId`), `dm_read.error` (`dmId`), `push.gdm.recipients_failed` (`groupId`) at warn or error: together with the actor's `userId` each names a conversation, but only when that operation fails, so they are not a systematic record. Kept for diagnosis; listed here so a change to info level is caught in review |
+| Owner question | `captcha.suspicious_login` logs the **username and raw IP at info** on every sign-in from a new device. The e-mail alert it accompanies is the product feature; whether the log line needs either identifier is a security-operations call. `mailer.dev.sent` logs the recipient address, but only on the non-production transport (production refuses to start without SMTP) |
+| Evidence | `server/tests/p7-b3-federation-log-minimization.test.ts` drives each of the six handlers down the path that logs (the DM case asserts the DM was stored) and checks **every** logged value for the local and remote usernames, ids, note URL and DM id. All 8 cases fail on the previous code and pass on this change. Federation and ActivityPub suites: 35 suites / 799 tests pass |
+
 ## B4. E2EE research and hardening
 
 P7 does not make unsupported cryptographic claims.
