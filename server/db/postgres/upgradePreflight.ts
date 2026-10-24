@@ -11,6 +11,7 @@ import type { MigrationQueryable } from './versionedMigrations';
 interface UpgradeSourceMarkers extends Record<string, unknown> {
   hasUsers: boolean;
   hasMessages: boolean;
+  hasMigrationsTable: boolean;
   hasSsoProvider: boolean;
   hasAckId: boolean;
 }
@@ -21,6 +22,7 @@ export const UPGRADE_SOURCE_MARKERS_SQL = `
   SELECT
     to_regclass(format('%I.%I', current_schema(), 'users')) IS NOT NULL AS "hasUsers",
     to_regclass(format('%I.%I', current_schema(), 'messages')) IS NOT NULL AS "hasMessages",
+    to_regclass(format('%I.%I', current_schema(), 'schema_migrations')) IS NOT NULL AS "hasMigrationsTable",
     EXISTS (
       SELECT 1 FROM information_schema.columns
       WHERE table_schema = current_schema()
@@ -60,14 +62,25 @@ export async function verifyUpgradeSource(q: MigrationQueryable): Promise<void> 
   // A new database has neither base table. The normal new-install path owns it.
   if (!markers.hasUsers && !markers.hasMessages) return;
 
-  // A current installation has both base tables and the two columns that
-  // distinguish it from the measured, incompatible v1.122.0 boot-only schema.
-  if (markers.hasUsers && markers.hasMessages && markers.hasSsoProvider && markers.hasAckId) return;
-
+  // Reject partial and legacy schema shapes without touching the migration
+  // ledger. A successful partial CLI run can add both sentinel columns, so
+  // the ledger must also prove a fully applied, reviewed 084 baseline.
   const missing: string[] = [];
   if (!markers.hasUsers) missing.push('users table');
   if (!markers.hasMessages) missing.push('messages table');
   if (!markers.hasSsoProvider) missing.push('users.ssoProvider');
   if (!markers.hasAckId) missing.push('messages.ackId');
-  throw new UnverifiedUpgradeSourceError(missing);
+  if (!markers.hasMigrationsTable) missing.push('schema_migrations table');
+  if (missing.length) throw new UnverifiedUpgradeSourceError(missing);
+
+  // 084 is the exact previous-main baseline measured by the P7-D3 release
+  // probe. A v1.122.0 CLI attempt can leave 001–045 recorded and still be
+  // incompatible at 046; the two column checks alone would not catch it.
+  const baseline = await q.query<{ applied: boolean }>(
+    "SELECT EXISTS (SELECT 1 FROM schema_migrations " +
+    "WHERE split_part(id, '_', 1) = '084' AND rolled_back = FALSE) AS applied",
+  );
+  if (baseline.rows.length !== 1 || baseline.rows[0].applied !== true) {
+    throw new UnverifiedUpgradeSourceError(['applied migration 084 baseline']);
+  }
 }
