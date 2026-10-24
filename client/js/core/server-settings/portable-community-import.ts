@@ -121,6 +121,25 @@ export function canonicalOrigin(value: string): string | null {
   } catch { return null; }
 }
 
+function mappingNameKey(name: string): string { return name.trim().toLocaleLowerCase(); }
+
+/** Name collisions need a visible identity; these labels never authorize a mapping. */
+export function mappingRowLabels(structure: PortableStructure): Record<Kind, Map<string, string>> {
+  const labels = { categories: new Map<string, string>(), roles: new Map<string, string>(), channels: new Map<string, string>() };
+  for (const kind of KINDS) {
+    const counts = new Map<string, number>();
+    for (const row of structure[kind]) {
+      const key = mappingNameKey(row.name);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    for (const row of structure[kind]) {
+      labels[kind].set(row.sourceId, (counts.get(mappingNameKey(row.name)) ?? 0) > 1
+        ? `${row.name} · ${row.sourceId}` : row.name);
+    }
+  }
+  return labels;
+}
+
 /**
  * Pre-select a target only where the choice is unambiguous: exactly one
  * destination row of the same kind (and channel type) with the same name.
@@ -128,12 +147,11 @@ export function canonicalOrigin(value: string): string | null {
  */
 export function suggestLinks(source: PortableStructure, target: PortableStructure): Links {
   const links: Links = { categories: {}, roles: {}, channels: {} };
-  const key = (name: string) => name.trim().toLocaleLowerCase();
   for (const kind of KINDS) {
     const used = new Set<string>();
     for (const row of source[kind]) {
       const matches = target[kind].filter(t =>
-        key(t.name) === key(row.name) && (kind !== 'channels' || t.type === row.type));
+        mappingNameKey(t.name) === mappingNameKey(row.name) && (kind !== 'channels' || t.type === row.type));
       if (matches.length === 1 && !used.has(matches[0]!.sourceId)) {
         links[kind][row.sourceId] = matches[0]!.sourceId;
         used.add(matches[0]!.sourceId);

@@ -87,15 +87,19 @@ export async function runPortableBrowserJourney({ lab, origins, check, outDir })
       const role = await mutate(k, 'POST', `${prefix}/roles`, {
         name: source ? 'Signed browser role' : 'Old browser role', color: source ? '#3366ff' : '#999999', permissions: SEND,
       });
+      const defaultText = dbState(lab.inst[k], sid).channels.find(channel => channel.type === 'text');
+      assert.ok(defaultText, 'browser fixture needs an existing text channel');
       const channel = await mutate(k, 'POST', `${prefix}/channels`, {
-        name: source ? 'signed-browser-text' : 'old-browser-text', type: 'text',
+        // A real same-named channel on each instance: the owner must be able
+        // to distinguish IDs whose labels and permission grants differ.
+        name: defaultText.name, type: 'text',
         topic: source ? 'Snapshot imported through the owner UI' : 'Old topic',
       });
       const rid = role._id ?? role.id ?? role.role?._id;
       const cid = channel._id ?? channel.id;
       assert.equal(typeof rid, 'string'); assert.equal(typeof cid, 'string');
       await mutate(k, 'PUT', `${prefix}/channels/${cid}/permissions/${rid}`, { allow: 0, deny: SEND });
-      fixture[k] = { sid, catId };
+      fixture[k] = { sid, catId, ambiguousName: defaultText.name };
     }
 
     browser = await chromium.launch();
@@ -161,6 +165,9 @@ export async function runPortableBrowserJourney({ lab, origins, check, outDir })
     });
     assert.equal(target.status, 200);
     const links = pairRows(exported.structure, target.body);
+    const duplicateSources = exported.structure.channels.filter(row => row.type === 'text' && row.name === fixture.a.ambiguousName);
+    const duplicateTargets = target.body.channels.filter(row => row.type === 'text' && row.name === fixture.b.ambiguousName);
+    assert.ok(duplicateSources.length >= 2 && duplicateTargets.length >= 2, 'both real instances must contain ambiguous channel names');
     async function reviewInBrowser(page, sourceBytes) {
       await page.getByTestId('pci-file').setInputFiles({ name: 'signed-community.json', mimeType: 'application/json', buffer: sourceBytes });
       await page.getByTestId('pci-origin').fill(origins.a);
@@ -168,7 +175,19 @@ export async function runPortableBrowserJourney({ lab, origins, check, outDir })
       await paceWrite(origins.b, ownerB); await paceWrite(origins.b, ownerB);
       await page.getByTestId('pci-prepare').click();
       for (const kind of ['categories', 'roles', 'channels']) {
-        for (const link of links[kind]) await page.locator(`#pci-${kind}-${link.sourceId}`).selectOption(link.targetId);
+        for (const link of links[kind]) {
+          const select = page.locator(`#pci-${kind}-${link.sourceId}`);
+          if (kind === 'channels' && duplicateSources.some(row => row.sourceId === link.sourceId)) {
+            assert.equal(await select.inputValue(), '', 'ambiguous names require an explicit owner choice');
+            const label = await page.locator(`label[for="pci-${kind}-${link.sourceId}"]`).textContent();
+            assert.ok(label.includes(link.sourceId), 'same-named source rows must have distinct visible identities');
+            for (const row of duplicateTargets) {
+              const option = select.locator(`option[value="${row.sourceId}"]`);
+              assert.ok((await option.textContent()).includes(row.sourceId), 'same-named destination options must identify their actual rows');
+            }
+          }
+          await select.selectOption(link.targetId);
+        }
       }
       await paceWrite(origins.b, ownerB);
       await page.getByTestId('pci-review').click();
@@ -176,6 +195,7 @@ export async function runPortableBrowserJourney({ lab, origins, check, outDir })
       assert.equal(await page.getByTestId('pci-approve').isDisabled(), true, 'approval requires explicit owner consent');
     }
     await reviewInBrowser(b.page, bytes);
+    check('P7-UI-09', 'Owners can distinguish same-named source and destination channels and explicitly choose their exact existing identities', true);
     assert.equal(rowsKey(dbState(lab.inst.b, fixture.b.sid)), rowsKey(before));
     check('P7-UI-03', 'B owner chooses explicit mappings and sees verified review without destination writes or implicit consent', true);
 
