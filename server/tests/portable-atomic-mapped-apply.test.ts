@@ -51,6 +51,17 @@ function fixture(failSQL?: string) {
       if (sql.startsWith('INSERT INTO audit_logs')) {
         return { rows: [{ _id: params?.[0] }] };
       }
+      if (sql.startsWith('SELECT _id FROM channels')) {
+        return { rows: (params?.[0] as string[]).map(_id => ({ _id })) };
+      }
+      if (sql.includes('AS "hasTombstone"')) {
+        const expired = failSQL === 'EXPIRED_TARGET' || (failSQL === 'EXPIRE_AFTER_AUDIT' &&
+          calls.some(call => call.sql.startsWith('INSERT INTO audit_logs')));
+        return { rows: (params?.[0] as string[]).map(_id => ({
+          _id, serverId: input.targetServerId, expiresAt: expired ? input.now - 1 : null,
+          expiryVersion: expired ? 1 : 0, hasTombstone: failSQL === 'TOMBSTONED_TARGET', nowMs: input.now,
+        })) };
+      }
       if (sql.startsWith('UPDATE')) {
         return { rows: [{ _id: params?.[sql.includes('UPDATE channel_categories') ? 3
           : sql.includes('UPDATE roles') ? 2 : 7] }] };
@@ -79,6 +90,25 @@ beforeEach(() => {
   claim.mockResolvedValue(undefined);
 });
 describe('P7 C4 internal mapped atomic category/role/channel importer', () => {
+  it.each(['EXPIRED_TARGET', 'TOMBSTONED_TARGET'])('denies %s before mapped writes and leaves the approval transaction rolled back', async state => {
+    const f = fixture(state);
+    await expect(applyApprovedPortableCommunityMapping({ ...input, pool: f.pool }))
+      .rejects.toBeInstanceOf(PortableAtomicApplyError);
+    expect(f.calls.some(call => call.sql.startsWith('UPDATE'))).toBe(false);
+    expect(f.calls.at(-1)?.sql).toBe('ROLLBACK');
+    expect(f.calls.some(call => call.sql === 'COMMIT')).toBe(false);
+  });
+
+  it('rolls back after the audit write if the final authoritative read says the target expired', async () => {
+    const f = fixture('EXPIRE_AFTER_AUDIT');
+    await expect(applyApprovedPortableCommunityMapping({ ...input, pool: f.pool }))
+      .rejects.toBeInstanceOf(PortableAtomicApplyError);
+    expect(f.calls.some(call => call.sql.startsWith('UPDATE channels'))).toBe(true);
+    expect(f.calls.some(call => call.sql.startsWith('INSERT INTO audit_logs'))).toBe(true);
+    expect(f.calls.at(-1)?.sql).toBe('ROLLBACK');
+    expect(f.calls.some(call => call.sql === 'COMMIT')).toBe(false);
+    expect(f.released).toEqual([undefined]);
+  });
   it('uses a single client, preserves role permission hierarchy, and only declares apply after commit', async () => {
     const f = fixture();
     const result = await applyApprovedPortableCommunityMapping({ ...input, pool: f.pool });
@@ -90,10 +120,13 @@ describe('P7 C4 internal mapped atomic category/role/channel importer', () => {
     expect(f.calls.map(c => c.sql)).toEqual([
       'BEGIN ISOLATION LEVEL SERIALIZABLE',
       expect.stringContaining('INSERT INTO portable_import_snapshot_consumptions'),
+      expect.stringContaining('SELECT _id FROM channels'),
+      expect.stringContaining('AS "hasTombstone"'),
       expect.stringContaining('UPDATE channel_categories'),
       expect.stringContaining('UPDATE roles'),
       expect.stringContaining('UPDATE channels'),
       expect.stringContaining('INSERT INTO audit_logs'),
+      expect.stringContaining('AS "hasTombstone"'),
       'COMMIT',
     ]);
     const replay = f.calls.find(c => c.sql.startsWith('INSERT INTO portable_import_snapshot_consumptions'));
