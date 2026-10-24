@@ -21,7 +21,7 @@ still leaves eight schema differences and a measured write-blocking index build.
 A fresh schema (neither `users` nor `messages` present) proceeds to normal
 new-install boot. An existing schema must have:
 
-1. Both base tables and the `users.ssoProvider` and `messages.ackId` columns.
+1. Both base tables, `users.ssoProvider`, `messages.ackId`, and a **nullable** `messages.embeds` column (the measured staged-release shape incorrectly leaves it `NOT NULL`).
 2. A migration ledger with **084 applied and not rolled back**. This is the
    exact previous-main baseline measured in #382. Partial v1.122.0 attempts
    that applied 001–045 must be refused even if their columns now exist.
@@ -51,7 +51,9 @@ A supported v1.122.0 path still requires:
 ## Tests and release status
 
 `server/tests/p7-d3-upgrade-preflight.test.ts` covers empty/current/legacy/
-partial sources, a legacy 001–045 ledger, read failures and the no-DDL
-contract. Exact-head CI and a real PostgreSQL before/after dry run must pass
+partial sources, a legacy 001–045 ledger, staged 084 schema drift, read failures
+and the no-DDL contract. `server/tests/pg-integration/upgrade-source-preflight.pgtest.ts`
+adds rollback-only real-PostgreSQL controls for current, legacy, partially
+migrated and 084-complete but incompatible schemas. Exact-head CI and a real PostgreSQL before/after dry run must pass
 before integration. Keep this branch draft and **do not merge it directly to
 main**. Merge only after #382 review and the applicable code-owner approval.
