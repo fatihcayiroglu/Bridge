@@ -26,7 +26,13 @@
  *     tags: [Channels]
  *     summary: Delete server channel
  *     parameters: [{ in: path, name: sid, required: true, schema: { type: string } }, { in: path, name: cid, required: true, schema: { type: string } }]
- *     responses: { '200': { description: Channel deleted } }
+ *     responses: { '200': { description: Channel deleted }, '400': { description: Last channel of the server }, '409': { description: LAST_PERMANENT_CHANNEL, the server's only permanent channel while an expiring one remains } }
+ * /servers/{sid}/channels/{cid}/expiry:
+ *   put:
+ *     tags: [Channels]
+ *     summary: Set or clear a channel's expiry (server owner only)
+ *     parameters: [{ in: path, name: sid, required: true, schema: { type: string } }, { in: path, name: cid, required: true, schema: { type: string } }]
+ *     responses: { '200': { description: Expiry updated }, '409': { description: Version conflict or last permanent channel }, '422': { description: Lifetime outside the allowed window } }
  */
 /**
  * Canonical server-channel CRUD owner.
@@ -40,7 +46,7 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { safeCastAuthed as castAuthed } from '../../lib/authSafe';
 import { normalizeChannelName } from '../../lib/channelName';
-import { Channels, Members } from '../../db/repositories';
+import { Channels, Members, Servers } from '../../db/repositories';
 import { authMiddleware } from '../../middleware/auth';
 import { getMemberPerms, hasPermission, PERMS } from '../roles';
 import { resolvePermissions, viewableChannelIds } from '../../lib/permissions';
@@ -48,6 +54,11 @@ import { limits } from '../../middleware/rateLimit';
 import { cache } from '../../lib/redisAdapter';
 import { envSafeInt } from '../../lib/envNumbers';
 import type { ChannelType } from '../../db/repositories/types/entities';
+import db from '../../db/loader';
+import { announceChannelListChanged } from '../../lib/channelListEvents';
+import { setChannelExpiry, type ExpiryConfigPool } from '../../lib/channelExpiryConfig';
+import { classifyChannelExpiryWithTombstone } from '../../lib/channelExpiry';
+import { enforceStepUp } from '../../lib/stepUp';
 
 const router = express.Router({ mergeParams: true });
 const VALID_CHANNEL_TYPES = new Set<ChannelType>(['text', 'voice', 'announcement', 'forum', 'stage']);
@@ -103,6 +114,17 @@ function presentChannel<T extends ChannelRow | null | undefined>(
   return { ...channel, forumTags: readForumTags(channel.forumTags) } as never;
 }
 
+/**
+ * P7 D2: channel metadata is hidden once the channel expires, before the
+ * worker removes the row. Uses the app clock: this is listing metadata only;
+ * content reads use the authoritative PostgreSQL preflight. Corrupt expiry
+ * metadata hides the channel (fail closed).
+ */
+function listedAsLive(channel: unknown, now = Date.now()): boolean {
+  // The classifier never throws: corrupt input is already `invalid`.
+  return classifyChannelExpiryWithTombstone(channel, null, now).accessible;
+}
+
 // GET /api/servers/:sid/channels
 router.get('/', authMiddleware, async (req, res) => {
   try {
@@ -125,7 +147,10 @@ router.get('/', authMiddleware, async (req, res) => {
 
     const visible = await viewableChannelIds(userId, sid, channels.map((ch) => String(ch._id)));
     res.setHeader('X-Cache', cacheHit ? 'HIT' : 'MISS');
-    return void res.json(channels.filter((ch) => visible.has(String(ch._id))).map((ch) => presentChannel(ch as unknown as ChannelRow)));
+    const now = Date.now();
+    return void res.json(channels
+      .filter((ch) => visible.has(String(ch._id)) && listedAsLive(ch, now))
+      .map((ch) => presentChannel(ch as unknown as ChannelRow)));
   } catch {
     return void res.status(500).json({ error: 'Internal server error' });
   }
@@ -167,9 +192,11 @@ router.post('/', authMiddleware, limits.channels(), async (req, res) => {
     if (created.status === 'server_not_found') return void res.status(404).json({ error: 'Server not found' });
     if (created.status === 'limit') return void res.status(400).json({ error: `Channel limit reached (max ${cap} per server)` });
     await invalidateChannelList(sid);
+    announceChannelListChanged(req.app.get('io'), sid);
     // Channel metadata is intentionally NOT broadcast to the whole server
-    // room. Private-channel visibility is requester/channel scoped; clients
-    // reload the authorized list after their own successful mutation.
+    // room: private-channel visibility is requester/channel scoped. The
+    // announcement above carries only the server id; each client refetches
+    // its own authorized list.
     return void res.status(201).json(presentChannel(created.channel as unknown as ChannelRow));
   } catch {
     return void res.status(500).json({ error: 'Internal server error' });
@@ -183,7 +210,7 @@ router.patch('/:cid', authMiddleware, limits.channels(), async (req, res) => {
     const sid = String(req.params.sid ?? '');
     const cid = String(req.params.cid ?? '');
     const channel = await Channels.findByIdAndServer(cid, sid);
-    if (!channel) return void res.status(404).json({ error: 'Channel not found' });
+    if (!channel || !listedAsLive(channel)) return void res.status(404).json({ error: 'Channel not found' });
     const perms = await resolvePermissions(userId, sid, cid).catch(() => 0);
     if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.MANAGE_CHANNELS)) return void res.status(403).json({ error: 'Missing channel permission' });
 
@@ -231,7 +258,53 @@ router.patch('/:cid', authMiddleware, limits.channels(), async (req, res) => {
     await Channels.updateByIdAndServer(cid, sid, updates);
     const updated = await Channels.findByIdAndServer(cid, sid);
     await invalidateChannelList(sid);
+    announceChannelListChanged(req.app.get('io'), sid);
     return void res.json(presentChannel(updated as unknown as ChannelRow));
+  } catch {
+    return void res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// PUT /api/servers/:sid/channels/:cid/expiry  body: { expiresAt: number|null, expectedVersion?: number }
+const EXPIRY_ERRORS = {
+  not_found: [404, 'Channel not found'],
+  forbidden: [403, 'Only the server owner may change channel expiry'],
+  invalid_request: [400, 'Invalid expiry request'],
+  outside_window: [422, 'Channel lifetime out of bounds'],
+  version_conflict: [409, 'Channel expiry changed; reload and retry'],
+  last_permanent_channel: [409, 'A server must keep at least one permanent channel'],
+} as const;
+
+router.put('/:cid/expiry', authMiddleware, limits.channels(), async (req, res) => {
+  try {
+    const userId = castAuthed(req).user.id;
+    const sid = String(req.params.sid ?? '');
+    const cid = String(req.params.cid ?? '');
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(body, 'expiresAt')) return void res.status(400).json({ error: 'expiresAt is required' });
+    const pool = (db as unknown as { _pool?: ExpiryConfigPool })._pool;
+    if (!pool) return void res.status(503).json({ error: 'Channel expiry requires PostgreSQL' });
+    // Hide channels the caller cannot see; the owner check runs under lock.
+    const channel = await Channels.findByIdAndServer(cid, sid);
+    if (!channel) return void res.status(404).json({ error: 'Channel not found' });
+    const perms = await resolvePermissions(userId, sid, cid).catch(() => 0);
+    if (!hasPermission(perms, PERMS.VIEW_CHANNELS)) return void res.status(404).json({ error: 'Channel not found' });
+    // Authorize the owner before prompting; the locked write rechecks ownership.
+    const server = await Servers.findById(sid);
+    if (!server || server.ownerId !== userId) return void res.status(403).json({ error: 'Only the server owner may change channel expiry' });
+    if (!(await enforceStepUp(req, res, userId, 'channel.expiry.change'))) return;
+
+    const result = await setChannelExpiry(pool, {
+      serverId: sid, channelId: cid, actorId: userId,
+      expiresAt: body.expiresAt, expectedVersion: body.expectedVersion,
+    });
+    if (!result.ok) {
+      const [status, error] = EXPIRY_ERRORS[result.reason];
+      return void res.status(status).json({ error, code: result.reason.toUpperCase() });
+    }
+    await invalidateChannelList(sid);
+    announceChannelListChanged(req.app.get('io'), sid);
+    return void res.json({ channelId: cid, expiresAt: result.expiresAt, expiryVersion: result.expiryVersion });
   } catch {
     return void res.status(500).json({ error: 'Internal server error' });
   }
@@ -244,7 +317,7 @@ router.get('/:cid', authMiddleware, async (req, res) => {
     const sid = String(req.params.sid ?? '');
     const cid = String(req.params.cid ?? '');
     const channel = await Channels.findByIdAndServer(cid, sid);
-    if (!channel) return void res.status(404).json({ error: 'Channel not found' });
+    if (!channel || !listedAsLive(channel)) return void res.status(404).json({ error: 'Channel not found' });
     const perms = await resolvePermissions(userId, sid, cid).catch(() => 0);
     if (!hasPermission(perms, PERMS.VIEW_CHANNELS)) return void res.status(404).json({ error: 'Channel not found' });
     return void res.json(presentChannel(channel as unknown as ChannelRow));
@@ -263,11 +336,16 @@ router.delete('/:cid', authMiddleware, limits.channels(), async (req, res) => {
     if (!channel) return void res.status(404).json({ error: 'Channel not found' });
     const perms = await resolvePermissions(userId, sid, cid).catch(() => 0);
     if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.MANAGE_CHANNELS)) return void res.status(403).json({ error: 'Missing channel permission' });
+    if (!(await enforceStepUp(req, res, userId, 'channel.delete'))) return;
 
     const result = await Channels.deleteGraphAtomic(cid, sid);
     if (result === 'not_found') return void res.status(404).json({ error: 'Channel not found' });
     if (result === 'last_channel') return void res.status(400).json({ error: 'Cannot delete the last channel' });
+    if (result === 'last_permanent_channel') {
+      return void res.status(409).json({ error: EXPIRY_ERRORS.last_permanent_channel[1], code: 'LAST_PERMANENT_CHANNEL' });
+    }
     await invalidateChannelList(sid);
+    announceChannelListChanged(req.app.get('io'), sid);
     return void res.json({ deleted: true });
   } catch {
     return void res.status(500).json({ error: 'Internal server error' });

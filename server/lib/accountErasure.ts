@@ -51,6 +51,14 @@ export const AUTHOR_SNAPSHOTS: Readonly<Record<string, Readonly<Record<string, s
 export const SNAPSHOT_COLUMN_NAMES: readonly string[] = ['username', 'displayName', 'avatarColor', 'avatarUrl'];
 
 /**
+ * Snapshots keyed by an identity column other than `userId`: the reported author's
+ * name in a message report's evidence (P7 B5, migration 085).
+ */
+export const IDENTITY_SNAPSHOTS: Readonly<Record<string, Readonly<Record<string, string | null>>>> = {
+  'message_reports.evidenceAuthorId': { evidenceAuthorName: '' },
+};
+
+/**
  * ANONYMIZE UPDATE'ine eklenecek atamalar. Yalnızca tabloda GERÇEKTEN var olan sütunlar
  * (kısmi/eski şemalar). Sütun adları politikadan gelir, istekten DEĞİL.
  * `firstParam`: ilk yer tutucunun numarası (UPDATE $1 ve $2'yi zaten kullanır).
@@ -58,7 +66,9 @@ export const SNAPSHOT_COLUMN_NAMES: readonly string[] = ['username', 'displayNam
 export function snapshotAssignments(
   table: string, identityColumn: string, present: ReadonlySet<string>, firstParam: number,
 ): { sql: string; params: Array<string | null> } {
-  const rule = identityColumn === 'userId' ? AUTHOR_SNAPSHOTS[table] : undefined;
+  const rule = identityColumn === 'userId'
+    ? AUTHOR_SNAPSHOTS[table]
+    : IDENTITY_SNAPSHOTS[`${table}.${identityColumn}`];
   if (!rule) return { sql: '', params: [] };
   const parts: string[] = [];
   const params: Array<string | null> = [];

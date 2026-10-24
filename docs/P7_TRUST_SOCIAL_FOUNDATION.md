@@ -746,6 +746,24 @@ Moderators need usable controls alongside abuse prevention:
 - expiry/reversal for temporary controls;
 - permission-safe operation under multi-node deployment.
 
+### B5-1 — evidence-safe message reports (issue #336)
+
+One item only; **B5 as a whole stays open** (raid actions, lockdown visibility,
+audit, expiry/reversal and multi-node evidence still need reconciliation).
+Implemented on branch `claude/eloquent-bardeen-929yqs`; PASS only after exact-head CI and merge.
+
+| | Record |
+|---|---|
+| Problem (measured on `main`) | A report stored only `messageId`; the queue showed the message's current text. After the report, an author edit showed the new text, a delete showed `[Mesaj silindi]`, 11 edits pushed the original out of the 10-version history, and a ban with message removal or an admin purge hard-deleted the message and, through `ON DELETE CASCADE`, the report |
+| What is kept | Migration 085: at report time the stored text (≤ 4000 characters), author id and shown name, message type, `createdAt`/`editedAt`, attachment name and type. Never: attachment URL or bytes, encrypted payloads (an `e2ee` message is kept as empty text), reactions, embeds |
+| Report survives the message | The message foreign key is dropped; the report keeps the id. Channel and server deletion still remove their reports |
+| Who sees it | `MANAGE_MESSAGES` or `ADMIN` in the report's channel (unchanged). Not in the reporter's personal-data export (explicit column list) |
+| Retention | While open; then `MESSAGE_REPORT_EVIDENCE_RETENTION_DAYS` (default 90, 1–3650) after resolution or dismissal, cleared by an idempotent hourly job. A DB CHECK refuses a partially cleared snapshot. **Default pending owner decision** |
+| Erasure | Reported author's erasure: id → `deleted-user`, name cleared, text kept — the same policy as their messages. Reporter's erasure: their reports are deleted (unchanged). **Precedence pending owner decision** |
+| Rolling deployment and rollback | Older nodes can create reports without snapshots; complete capture starts only after they are drained. A database trigger anonymizes captured author identity even when an older node deletes the account. Reverting the app loses evidence capture and is not an evidence-safe steady state. The schema down script locks reports before its checks and refuses while evidence exists or a report points at a missing message. See [rollout contract](P7_MESSAGE_REPORT_EVIDENCE_ROLLOUT.md) |
+| Not covered | Only channel messages are reportable; thread replies, DMs, group DMs and voice messages have no report path. Reports filed before 085 have no snapshot (not backfilled — copying today's text would present a later edit as the reported content) |
+| Evidence | `server/tests/report-evidence.test.ts`, `report-evidence-flow.test.ts` (real routes; 8 of 10 fail against the pre-change routes), `jobs-reportEvidenceRetention.test.ts`, `pg-integration/report-evidence.pgtest.ts` (real PostgreSQL: schema, admin purge, erasure, CHECKs, scrub, export, rollback), `pg-integration/delete-cascade-fk-index.pgtest.ts`, `client/tests/moderation-tab.test.ts` (8 new; all fail against the previous component); rollback gate `--ordered` green with 085 `LOSSLESS_PASS` |
+
 ---
 
 # Pillar C — Portable Identity & Community

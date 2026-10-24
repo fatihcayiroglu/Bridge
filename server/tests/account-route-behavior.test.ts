@@ -81,7 +81,11 @@ function installSqlModel(opts: {
     if (m) return { rows: opts.exportRows?.[m[1]] ?? [] };
     throw new Error(`unexpected SQL: ${sql}`);
   });
-  txQuery.mockImplementation(async () => ({ rows: [], rowCount: 1 }));
+  txQuery.mockImplementation(async (sql: string, params?: unknown[]) => (
+    sql.includes('FOR UPDATE')
+      ? { rows: [{ _id: params?.[0] }], rowCount: 1 }
+      : { rows: [], rowCount: 1 }
+  ));
 }
 
 describe('account export/delete production behavior', () => {
@@ -518,7 +522,9 @@ describe('account export/delete production behavior', () => {
       },
       serverOwners: [{ _id: 'solo', name: 'Solo', cnt: '1' }],
     });
-    txQuery.mockImplementation(async () => ({ rows: [], rowCount: 1 }));
+    txQuery.mockImplementation(async (sql: string) => ({
+      rows: sql.includes('FOR UPDATE') ? [{ _id: 'me' }] : [], rowCount: 1,
+    }));
     auth.revokeAllForUser.mockRejectedValueOnce(new Error('already removed'));
 
     const res = await request(app()).delete('/api/account').send({ confirm: 'DELETE', password: 'correct' });

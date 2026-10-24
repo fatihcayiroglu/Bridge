@@ -476,7 +476,8 @@ describe('Kanal yönetimi', () => {
     await db.channels.insert(makeChannel(server._id));
     const res = await request(app)
       .delete(`/api/servers/${server._id}/channels/${channel._id}`)
-      .set('Authorization', `Bearer ${ownerToken}`);
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set(stepUpFor(ownerToken, 'destructive-admin'));
 
     expect(res.status).toBe(200);
     expect(res.body.deleted).toBe(true);
