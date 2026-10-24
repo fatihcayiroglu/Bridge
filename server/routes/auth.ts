@@ -306,8 +306,9 @@ router.post('/login',
   }
 
   // Şüpheli giriş kontrolü (yeni IP/cihaz → e-posta uyarısı)
-  void captcha.checkSuspiciousLogin(req, user).catch(err => {
-    logger.warn({ err, userId: user._id, event: 'auth.suspicious_login_check_failed' }, 'Suspicious-login advisory check failed');
+  void captcha.checkSuspiciousLogin(req, user).catch(() => {
+    // The advisory is non-blocking; its raw error may contain identity data.
+    logger.warn({ event: 'auth.suspicious_login_check_failed' }, 'Suspicious-login advisory check failed');
   });
 
   // 2FA is a SERVER-ENFORCED authentication stage. A correct password must

@@ -12,6 +12,7 @@ import { setCookiesOf } from './helpers/httpDoubles';
 import request from 'supertest';
 import express, { Express, Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
+import logger from '../lib/logger';
 
 process.env.JWT_SECRET     = 'test-jwt-secret-long-enough-32chars!!';
 process.env.REFRESH_SECRET = 'test-refresh-secret-long-enough-32!!';
@@ -164,11 +165,23 @@ describe('POST /api/login', () => {
 
   it('şüpheli-giriş advisory kontrolü çökse bile geçerli login tamamlanır', async () => {
     const captchaMock = require('../lib/captcha');
-    captchaMock.checkSuspiciousLogin.mockRejectedValueOnce(new Error('advisory unavailable'));
-    const res = await request(app).post('/api/login').send({ username: 'testuser', password: 'securepass123' });
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty('token');
-    await new Promise(resolve => setImmediate(resolve));
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      captchaMock.checkSuspiciousLogin.mockRejectedValueOnce(
+        new Error('sensitive: advisory failed for testuser at 203.0.113.7'),
+      );
+      const res = await request(app).post('/api/login').send({ username: 'testuser', password: 'securepass123' });
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('token');
+      await new Promise(resolve => setImmediate(resolve));
+      expect(warn).toHaveBeenCalledWith(
+        { event: 'auth.suspicious_login_check_failed' }, 'Suspicious-login advisory check failed',
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('testuser');
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('203.0.113.7');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('rejects wrong password', async () => {
