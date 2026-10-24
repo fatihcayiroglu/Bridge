@@ -54,6 +54,7 @@ const EXPIRY_MARGIN_MS = 5_000;
 
 const grants = new Map<StepUpScope, { token: string; expiresAt: number }>();
 const pending = new Map<StepUpScope, Promise<string | null>>();
+let proofGeneration = 0;
 
 export function isStepUpScope(value: unknown): value is StepUpScope {
   return typeof value === 'string' && (STEP_UP_SCOPES as readonly string[]).includes(value);
@@ -64,7 +65,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function clearStepUpGrants(): void {
+  proofGeneration += 1;
   grants.clear();
+  pending.clear();
 }
 
 export function rememberGrant(scope: StepUpScope, token: string, expiresAt: number): void {
@@ -115,6 +118,8 @@ const PROTECTED: ReadonlyArray<{ method: string; path: RegExp; scope: StepUpScop
   protectedRoute('POST', '/account/portable-import/apply', 'account-security'),
   protectedRoute('DELETE', '/account/?', 'destructive-admin'),
   protectedRoute('DELETE', '/servers/[^/]+', 'destructive-admin'),
+  protectedRoute('DELETE', '/servers/[^/]+/channels/[^/]+', 'destructive-admin'),
+  protectedRoute('PUT', '/servers/[^/]+/channels/[^/]+/expiry', 'destructive-admin'),
   protectedRoute('DELETE', '/admin/(?:users|servers)/[^/]+', 'destructive-admin'),
   protectedRoute('POST', '/servers/[^/]+/bans', 'moderation-burst'),
   protectedRoute('POST', '/servers/[^/]+/members/[^/]+/kick', 'moderation-burst'),
@@ -171,6 +176,8 @@ function explanation(refusal: StepUpRefusal): string {
     case 'account.import': return t('stepup_generic_why');
     case 'account.delete': return t('stepup_why_account_delete');
     case 'server.delete': return t('stepup_why_server_delete');
+    case 'channel.delete':
+    case 'channel.expiry.change': return t('stepup_generic_why');
     case 'admin.user.delete': return t('stepup_why_admin_user_delete');
     case 'admin.server.delete': return t('stepup_why_admin_server_delete');
     case 'moderation.ban':
@@ -180,13 +187,13 @@ function explanation(refusal: StepUpRefusal): string {
   }
 }
 
-async function offerSignInAgain(refusal: StepUpRefusal, hooks: StepUpHooks, locked: boolean): Promise<null> {
+async function offerSignInAgain(refusal: StepUpRefusal, hooks: StepUpHooks, locked: boolean, generation: number): Promise<null> {
   const confirmed = await confirmProductAction({
     title: t('stepup_title'),
     message: `${explanation(refusal)}\n\n${locked ? t('stepup_locked') : t('stepup_sign_in_again_body')}`,
     confirmLabel: t('stepup_sign_in_again'),
   });
-  if (confirmed) hooks.signInAgain();
+  if (confirmed && generation === proofGeneration) hooks.signInAgain();
   return null;
 }
 
@@ -199,13 +206,13 @@ async function proofBody(response: Response): Promise<Record<string, unknown>> {
   }
 }
 
-async function askForProof(refusal: StepUpRefusal, hooks: StepUpHooks): Promise<string | null> {
-  if (refusal.reasons.includes('step_up_locked')) return offerSignInAgain(refusal, hooks, true);
+async function askForProof(refusal: StepUpRefusal, hooks: StepUpHooks, generation: number): Promise<string | null> {
+  if (refusal.reasons.includes('step_up_locked')) return offerSignInAgain(refusal, hooks, true, generation);
   let secondFactor = refusal.methods.includes('totp') || refusal.methods.includes('backup_code');
-  if (!secondFactor && !refusal.methods.includes('password')) return offerSignInAgain(refusal, hooks, false);
+  if (!secondFactor && !refusal.methods.includes('password')) return offerSignInAgain(refusal, hooks, false, generation);
 
   let problem = '';
-  for (;;) {
+  while (generation === proofGeneration) {
     const value = await promptProductText({
       title: t('stepup_title'),
       message: explanation(refusal),
@@ -215,6 +222,7 @@ async function askForProof(refusal: StepUpRefusal, hooks: StepUpHooks): Promise<
       maxLength: 128,
       ...(problem ? { error: problem } : {}),
     });
+    if (generation !== proofGeneration) return null;
     if (value === null) return null;
     if (!value.trim()) { problem = t('stepup_empty'); continue; }
 
@@ -224,17 +232,20 @@ async function askForProof(refusal: StepUpRefusal, hooks: StepUpHooks): Promise<
         ? await hooks.send('/api/2fa/step-up', { code: value, scope: refusal.scope })
         : await hooks.send('/api/step-up/password', { password: value, scope: refusal.scope });
     } catch (error) {
+      if (generation !== proofGeneration) return null;
       log.warn('Step-up proof request failed', error);
       problem = t('stepup_unavailable');
       continue;
     }
+    if (generation !== proofGeneration) return null;
     const body = await proofBody(response);
+    if (generation !== proofGeneration) return null;
 
     if (response.ok && isRecord(body.stepUp) && typeof body.stepUp.token === 'string') {
       rememberGrant(refusal.scope, body.stepUp.token, Number(body.stepUp.expiresAt));
       return body.stepUp.token;
     }
-    if (response.status === 429 || body.locked === true) return offerSignInAgain(refusal, hooks, true);
+    if (response.status === 429 || body.locked === true) return offerSignInAgain(refusal, hooks, true, generation);
     if (body.error === 'STEP_UP_PROOF_INVALID') { problem = t('stepup_wrong'); continue; }
     if (body.error === 'STEP_UP_SECOND_FACTOR_REQUIRED' && !secondFactor) {
       // 2FA was turned on since the refusal was issued: ask for the stronger proof.
@@ -242,10 +253,11 @@ async function askForProof(refusal: StepUpRefusal, hooks: StepUpHooks): Promise<
       problem = '';
       continue;
     }
-    if (body.error === 'STEP_UP_NO_PASSWORD') return offerSignInAgain(refusal, hooks, false);
+    if (body.error === 'STEP_UP_NO_PASSWORD') return offerSignInAgain(refusal, hooks, false, generation);
     log.warn(`Step-up proof failed (HTTP ${response.status})`);
     problem = t('stepup_unavailable');
   }
+  return null;
 }
 
 /**
@@ -260,7 +272,9 @@ export function obtainStepUp(refusal: StepUpRefusal, sent: string | null, hooks:
 
   const inFlight = pending.get(refusal.scope);
   if (inFlight) return inFlight;
-  const asked = askForProof(refusal, hooks).finally(() => { pending.delete(refusal.scope); });
+  const asked = askForProof(refusal, hooks, proofGeneration).finally(() => {
+    if (pending.get(refusal.scope) === asked) pending.delete(refusal.scope);
+  });
   pending.set(refusal.scope, asked);
   return asked;
 }
@@ -268,4 +282,5 @@ export function obtainStepUp(refusal: StepUpRefusal, sent: string | null, hooks:
 // A grant belongs to one signed-in account: it never outlives the session.
 if (typeof document !== 'undefined') {
   document.addEventListener('bridge:auth-logout', () => { clearStepUpGrants(); });
+  document.addEventListener('bridge:auth-transition', () => { clearStepUpGrants(); });
 }

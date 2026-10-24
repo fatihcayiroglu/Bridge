@@ -61,6 +61,7 @@ jest.mock('../lib/logger', () => ({
 }));
 
 import type { NextFunction, Request, Response } from 'express';
+import logger from '../lib/logger';
 import {
   botFilterMiddleware,
   captchaMiddleware,
@@ -331,6 +332,22 @@ describe('şüpheli giriş uyarısı', () => {
     expect(sendAlert).toHaveBeenCalledWith(expect.objectContaining({
       to: 'sadece@eposta.test', username: 'sadece@eposta.test', ip: IP,
     }));
+  });
+
+  it('a normal new-device alert keeps PII out of INFO logs while retaining bounded security state', async () => {
+    const username = 'sensitive_login_name';
+    const priorInfoCalls = (logger.info as jest.Mock).mock.calls.length;
+    await checkSuspiciousLogin(req(), { _id: 'privacy-user', email: 'private@example.test', username });
+
+    // Only the user's own notification receives IP/name; no ordinary event
+    // may persist those values in broadly collected application INFO logs.
+    expect((logger.info as jest.Mock).mock.calls.slice(priorInfoCalls)).toEqual([]);
+    expect(sendAlert).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'private@example.test', username, ip: IP,
+    }));
+    expect(cacheMock.setIfAbsentAuthoritative).toHaveBeenCalledWith(
+      expect.stringMatching(/^captcha:known-device:privacy-user:[a-f0-9]{32}$/), 1, 30 * 24 * 3600,
+    );
   });
 
   it('görünen ad varsa uyarıda o kullanılır', async () => {

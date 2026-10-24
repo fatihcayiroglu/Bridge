@@ -1,7 +1,57 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits } from './exit-diagnostics.mjs';
+
+test('ANR first-failure evidence drops raw PIDs, processes, timestamps and exit descriptions', () => {
+  const raw = { available: true, exits: [
+    { pid: 9981, process: 'com.bridge.app.debug', at: 'private-time',
+      reason: '6 (ANR)', subreason: '0 (UNKNOWN)', dependencyDescription: 'user@example.com' },
+    { pid: 9982, process: 'private-app', at: 'secret',
+      reason: '12 (DEPENDENCY DIED)', subreason: '21 (FORCE STOP)',
+      dependency: { provider: 'sensitive-service', available: true } },
+    { pid: 9983, reason: '5 (secret)', subreason: 'malformed' },
+  ] };
+  const safe = redactRecentAndroidExits(raw);
+  assert.deepEqual(safe, { available: true, count: 3, reasons: [
+    { reasonCode: 6, subreasonCode: 0 },
+    { reasonCode: 12, subreasonCode: 21 },
+    { reasonCode: null, subreasonCode: null },
+  ] });
+  assert.doesNotMatch(JSON.stringify(safe), /9981|9982|9983|private|secret|user@|process|provider|description/);
+  assert.deepEqual(redactRecentAndroidExits(null), { available: false, count: 0, reasons: [] });
+  assert.deepEqual(redactRecentAndroidExits({ available: true, exits: 'bad' }),
+    { available: false, count: 0, reasons: [] });
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(journeys, /redactRecentAndroidExits\(exitFacts\)/);
+  assert.match(journeys, /id === 'CS01' \|\| id === 'L01' \|\| id === 'ANR01'/);
+  assert.doesNotMatch(journeys, /JSON\.stringify\(exitFacts\)/);
+  assert.doesNotMatch(journeys, /Object\.assign\(facts, \{ deviceUser:/);
+});
+
+test('Android public journey artifact excludes dynamic channel IDs, test message text and raw OS/UI responses', () => {
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  // Assertions use real IDs and messages in memory, but never persist them as PASS details.
+  assert.match(journeys, /assert\(\(await activeChannel\(\)\) === channelId/);
+  assert.match(journeys, /return \{ expectedChannelActive: true \}/);
+  assert.match(journeys, /return \{ persistedOnce: true, rendered: true \}/);
+  assert.match(journeys, /return \{ dmRendered: true \}/);
+  assert.match(journeys, /return \{ deniedChannelNotVisible: true/);
+  assert.match(journeys, /return \{ channelRegistered: lines\.includes\('bridge_default'\) \}/);
+  assert.match(journeys, /return \{ deepLinkOpened: true \}/);
+  assert.match(journeys, /return \{ appStillForeground: true/);
+  assert.match(journeys, /return \{ osSheet: sheet, denialExplained: Boolean\(text\) \}/);
+  assert.doesNotMatch(journeys, /return \{\s*(?:needle|active:|before, after|top,|am:|osSheet: sheet, shown:)/);
+  assert.doesNotMatch(journeys, /origin: await page\.evaluate|api: await page\.evaluate/);
+  assert.doesNotMatch(journeys, /app left (?:the )?foreground(?: after back)?: \$\{top\}/);
+  assert.match(journeys, /audioProbeAvailable: Boolean\(recording\.trim\(\)\)/);
+  assert.match(journeys, /return \{ processAlive: true, status/);
+  assert.match(journeys, /return \{ processStable: true \}/);
+  assert.doesNotMatch(journeys, /audioDump:|return \{ pid: (?:alive|after) \}|crash\.slice\(-1500\)/);
+  assert.match(journeys, /API request failed \(HTTP \$\{r\.status\}\)/);
+  assert.match(journeys, /last operation errored: \$\{last instanceof Error\}/);
+  assert.doesNotMatch(journeys, /JSON\.stringify\((?:r|reg)\.json\)|last error: \$\{last\.message\}/);
+});
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -1204,10 +1254,11 @@ test('production release and FD00G sources keep the release off the main thread 
 
 test('ANR02 probe markers keep only allowlisted main-thread enums from the exact PID', () => {
   const raw = [
-    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=framework-only',
-    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Blocked top=lock-wait subsystem=webview',
-    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=com.secret.Customer',
-    'I/BridgeAnrTraceProbe( 6000): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=bridge',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=framework-only nativeHint=libc',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Blocked top=lock-wait subsystem=webview nativeHint=art',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=com.secret.Customer nativeHint=libc',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=running-code subsystem=framework-only nativeHint=secret',
+    'I/BridgeAnrTraceProbe( 6000): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=bridge nativeHint=graphics',
     'I/BridgeAnrTraceProbe( 5150): stage=done supported=true error=false anrExits=3 records=16 oldestBeforeStart=false capacity=16',
   ].join('\n');
   const result = parseAnrTraceProbeMarkers(raw, 5150);
@@ -1215,8 +1266,8 @@ test('ANR02 probe markers keep only allowlisted main-thread enums from the exact
     complete: true, supported: true, error: false, fatalAnrs: 3, records: 16, capacity: 16,
     coverage: 'possibly-truncated',
     traces: [
-      { traceAvailable: true, mainState: 'Native', top: 'idle-looper', subsystem: 'framework-only' },
-      { traceAvailable: true, mainState: 'Blocked', top: 'lock-wait', subsystem: 'webview' },
+      { traceAvailable: true, mainState: 'Native', top: 'idle-looper', subsystem: 'framework-only', nativeHint: 'libc' },
+      { traceAvailable: true, mainState: 'Blocked', top: 'lock-wait', subsystem: 'webview', nativeHint: 'art' },
     ],
   });
   assert.doesNotMatch(JSON.stringify(result), /secret|Customer|5150|6000/);
@@ -1600,4 +1651,84 @@ test('workflows: product suite gates, upstream controls run non-gating but keep 
   // The runner script propagates the journey exit status unchanged.
   const runner = readFileSync(new URL('./run-emulator-journeys.sh', import.meta.url), 'utf8');
   assert.match(runner, /node android\/android-journeys\.mjs\nstatus=\$\?\n[\s\S]*exit \$status\n$/);
+});
+
+// verify-emulator-image.sh, driven with a stub sdkmanager. A package's next N
+// installs fail like run 40029859999 ("Error on ZipFile unknown archive"):
+// a partial archive is left in the SDK staging directory and nothing is
+// installed. The preflight retries only the SDK download, from a clean
+// staging directory, and never reports success from an exit code alone.
+test('emulator image preflight retries corrupt SDK downloads cleanly and fails closed', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync: read } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const script = new URL('./verify-emulator-image.sh', import.meta.url).pathname;
+  const image = 'system-images/android-34/google_apis/x86_64';
+
+  function sdk({ emulatorFails = 0, imageFails = 0, silentNoop = false, installed = false } = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'sdk-'));
+    const bin = join(root, 'cmdline-tools/latest/bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(root, 'fails-emulator'), String(emulatorFails));
+    writeFileSync(join(root, 'fails-image'), String(imageFails));
+    writeFileSync(join(bin, 'sdkmanager'), `#!/usr/bin/env bash
+root=${JSON.stringify(root)}
+for a in "$@"; do case "$a" in --licenses) exit 0;; esac; done
+pkg="\${@: -2:1}"
+case "$pkg" in emulator) key=emulator dir="$root/emulator";; system-images*) key=image dir="$root/${image}";; *) exit 2;; esac
+echo "$key staging=$( [ -e "$root/.temp/partial.zip" ] && echo stale || echo clean )" >> "$root/calls"
+${silentNoop ? 'exit 0' : ''}
+n=$(cat "$root/fails-$key")
+if [ "$n" -gt 0 ]; then
+  echo $((n - 1)) > "$root/fails-$key"; mkdir -p "$root/.temp" "$dir"; echo x > "$root/.temp/partial.zip"
+  echo "Warning: An error occurred while preparing SDK package: Error on ZipFile unknown archive."; exit 0
+fi
+mkdir -p "$dir"; echo '<pkg/>' > "$dir/package.xml"
+if [ "$key" = emulator ]; then printf '#!/bin/sh\\n' > "$dir/emulator"; chmod +x "$dir/emulator"; else echo img > "$dir/system.img"; fi
+`);
+    chmodSync(join(bin, 'sdkmanager'), 0o755);
+    if (installed) {
+      mkdirSync(join(root, image), { recursive: true }); mkdirSync(join(root, 'emulator'));
+      writeFileSync(join(root, image, 'system.img'), 'img'); writeFileSync(join(root, image, 'package.xml'), '<pkg/>');
+      writeFileSync(join(root, 'emulator/package.xml'), '<pkg/>'); writeFileSync(join(root, 'emulator/emulator', ''), '#!/bin/sh\n'); chmodSync(join(root, 'emulator/emulator'), 0o755);
+    }
+    return root;
+  }
+  const run = root => spawnSync('bash', [script], {
+    env: { ...process.env, ANDROID_HOME: root, ANDROID_SDK_ROOT: '', ANDROID_SDK_RETRY_BASE_SECONDS: '0', ANDROID_SDK_INSTALL_ATTEMPTS: '4' },
+    encoding: 'utf8',
+  });
+  const calls = root => (existsSync(join(root, 'calls')) ? read(join(root, 'calls'), 'utf8').trim().split('\n') : []);
+
+  // Already installed: no download at all.
+  let root = sdk({ installed: true });
+  let out = run(root);
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  assert.deepEqual(calls(root), []);
+
+  // The run-40029859999 pattern: the emulator corrupt on attempt 1, the image on attempts 1-2.
+  root = sdk({ emulatorFails: 1, imageFails: 2 });
+  out = run(root);
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /verified \(attempt 3\/4\)/);
+  // Each retry starts from clean staging; a completed emulator is not downloaded again.
+  assert.deepEqual(calls(root), [
+    'emulator staging=clean', 'image staging=stale',
+    'emulator staging=clean', 'image staging=clean',
+    'image staging=clean',
+  ]);
+
+  // Still corrupt after every attempt: the job fails and says the journeys did not run.
+  root = sdk({ imageFails: 9 });
+  out = run(root);
+  assert.equal(out.status, 1);
+  assert.match(out.stdout, /::error::Android system image or emulator is missing or incomplete after 4 attempts; emulator tests were not run/);
+  assert.equal(calls(root).filter(c => c.startsWith('image')).length, 4);
+
+  // An sdkmanager that exits 0 but installs nothing is never trusted.
+  root = sdk({ silentNoop: true });
+  out = run(root);
+  assert.equal(out.status, 1);
+  assert.equal(calls(root).length, 8);
 });

@@ -73,6 +73,7 @@ import { uploadRoot } from '../lib/runtimePaths';
 import { parseNonNegativeSafeIntText } from '../lib/queryNumbers';
 import { transcriptionTarget } from '../lib/aiProvider';
 import { serverAllowsAi } from '../lib/aiServerPolicy';
+import { channelLiveForMedia } from '../lib/channelContentAvailability';
 // ── AI TRANSKRİPSİYON ─────────────────────────────────────────
 // P6 AI-09: the provider decision lives in lib/aiProvider (AI_PROVIDER governs
 // it); the server's own setting is checked by the caller before this runs.
@@ -162,7 +163,8 @@ router.post('/', authMiddleware, limits.upload(), upload.single('audio'), async 
   // Kanalın gerçekten belirtilen sunucuya ait olduğu ve kullanıcının bu kanalda
   // voice-message gönderebildiği server-side resolver ile kanıtlanır.
   const channel = await Channels.findByIdAndServer(channelId, serverId);
-  if (!channel) return res.status(403).json({ error: 'Channel unavailable' });
+  // Before any byte is written: an expired channel takes no new voice message (P7 D2).
+  if (!channel || !await channelLiveForMedia(channelId, serverId)) return res.status(403).json({ error: 'Channel unavailable' });
   const perms = await resolvePermissions(_u.id, serverId, channelId);
   if (!hasAllPermissions(perms, PERMS.VIEW_CHANNELS, PERMS.SEND_MESSAGES, PERMS.ATTACH_FILES)) {
     return res.status(403).json({ error: 'Missing channel permissions' });
@@ -270,7 +272,8 @@ router.get('/:vmId/transcript', authMiddleware, async (req, res) => {
   const channelId = String(vm.channelId ?? '');
   const serverId = String(vm.serverId ?? '');
   const channel = channelId && serverId ? await Channels.findByIdAndServer(channelId, serverId) : null;
-  if (!channel) return res.status(404).json({ error: 'Voice message not found' });
+  // The transcript is channel content: gone with the channel's expiry (P7 D2).
+  if (!channel || !await channelLiveForMedia(channelId, serverId)) return res.status(404).json({ error: 'Voice message not found' });
   const perms = await resolvePermissions(_u.id, serverId, channelId);
   if (!hasAllPermissions(perms, PERMS.VIEW_CHANNELS, PERMS.READ_HISTORY)) {
     return res.status(403).json({ error: 'Missing channel permissions' });

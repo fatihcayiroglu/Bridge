@@ -133,7 +133,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   memberPerms.mockResolvedValue(ALL);
   actOn.mockResolvedValue(true);
-  effectivePerms.mockResolvedValue(PERMS.MANAGE_MESSAGES);
+  effectivePerms.mockResolvedValue(PERMS.VIEW_CHANNELS | PERMS.MANAGE_MESSAGES);  // a moderator who can see the channel
   repos.Auth.insertAuditLog.mockResolvedValue(undefined);
   repos.Auth.findAuditLogsWhere.mockResolvedValue([]);
   repos.Auth.getAuditLog.mockResolvedValue({ entries: [], total: 0 });

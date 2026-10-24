@@ -45,9 +45,13 @@ async function settleBootstrap(): Promise<void> {
   await Promise.resolve();
 }
 
+const loadedAuthModules: Array<typeof import('../js/core/auth-compat.ts')> = [];
+
 async function loadAuth(readyState: DocumentReadyState = 'complete') {
   Object.defineProperty(document, 'readyState', { configurable: true, value: readyState });
-  return import('../js/core/auth-compat.ts');
+  const auth = await import('../js/core/auth-compat.ts');
+  loadedAuthModules.push(auth);
+  return auth;
 }
 
 beforeEach(() => {
@@ -69,10 +73,155 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const auth of loadedAuthModules.splice(0)) auth.cancelTwoFactorLogin();
   vi.useRealTimers();
   Object.defineProperty(document, 'readyState', { configurable: true, value: 'complete' });
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe('session recovery after an offline cold start', () => {
+  it.each(['online', 'native-network', 'native-resume', 'visible'])('retries a failed bootstrap on %s and restores the existing session', async (signal) => {
+    localStorage.setItem('token', 'stored');
+    apiFetchMock.mockRejectedValueOnce(new TypeError('offline'))
+      .mockResolvedValueOnce(response(200, { _id: 'restored-user' }));
+    await loadAuth();
+    await vi.waitFor(() => expect(warnMock).toHaveBeenCalled());
+    expect((globalThis as Record<string, unknown>).currentUser).toBeNull();
+    expect(localStorage.getItem('token')).toBe('stored');
+
+    if (signal === 'online') window.dispatchEvent(new Event('online'));
+    if (signal === 'native-network') window.dispatchEvent(new CustomEvent('bridge:network', { detail: { connected: true } }));
+    if (signal === 'native-resume') window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    if (signal === 'visible') {
+      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+      document.dispatchEvent(new Event('visibilitychange'));
+    }
+
+    await vi.waitFor(() => expect((globalThis as { currentUser?: { _id?: string } }).currentUser?._id).toBe('restored-user'));
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
+    expect(document.getElementById('app')?.style.display).toBe('flex');
+    expect(document.getElementById('auth-screen')?.style.display).toBe('none');
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    await settleBootstrap();
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('coalesces foreground/connectivity signals while recovery is pending and ignores inactive/offline signals', async () => {
+    const recovery = deferred<Response>();
+    localStorage.setItem('token', 'stored');
+    apiFetchMock.mockRejectedValueOnce(new TypeError('offline')).mockImplementationOnce(() => recovery.promise);
+    await loadAuth();
+    await vi.waitFor(() => expect(warnMock).toHaveBeenCalled());
+
+    window.dispatchEvent(new CustomEvent('bridge:network', { detail: { connected: false } }));
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: false } }));
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await settleBootstrap();
+    expect(apiFetchMock).toHaveBeenCalledTimes(1);
+
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new CustomEvent('bridge:network', { detail: { connected: true } }));
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    await vi.waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(2));
+    recovery.resolve(response(200, { _id: 'restored-user' }));
+    await vi.waitFor(() => expect((globalThis as { currentUser?: { _id?: string } }).currentUser?._id).toBe('restored-user'));
+  });
+
+  it('waits for an external recovery signal after exhausting the existing transient retry budget', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('token', 'stored');
+    apiFetchMock.mockResolvedValue(response(503, {}));
+    await loadAuth();
+    await settleBootstrap();
+    await vi.runAllTimersAsync();
+    expect(apiFetchMock).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(apiFetchMock).toHaveBeenCalledTimes(4);
+
+    apiFetchMock.mockResolvedValueOnce(response(200, { _id: 'service-recovered' }));
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    await vi.runAllTimersAsync();
+    expect(apiFetchMock).toHaveBeenCalledTimes(5);
+    expect((globalThis as { currentUser?: { _id?: string } }).currentUser?._id).toBe('service-recovered');
+  });
+
+  it('does not schedule repeated requests when event-triggered recovery also fails offline', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('token', 'stored');
+    apiFetchMock.mockRejectedValue(new TypeError('offline'));
+    await loadAuth();
+    // Observe the actual failed request before simulating restored connectivity;
+    // a fixed number of microtasks does not await the dynamic API import.
+    await vi.waitFor(() => expect(warnMock).toHaveBeenCalledOnce());
+    window.dispatchEvent(new Event('online'));
+    await settleBootstrap();
+    await vi.runAllTimersAsync();
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
+    expect((globalThis as Record<string, unknown>).currentUser).toBeNull();
+    expect(localStorage.getItem('token')).toBe('stored');
+  });
+
+  it.each([401, 403])('never restores an identity or registers recovery work after HTTP %s', async (status) => {
+    localStorage.setItem('token', 'invalid');
+    apiFetchMock.mockResolvedValueOnce(response(status, {}));
+    await loadAuth();
+    await vi.waitFor(() => expect(apiFetchMock).toHaveBeenCalledOnce());
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    await settleBootstrap();
+    expect(apiFetchMock).toHaveBeenCalledOnce();
+    expect((globalThis as Record<string, unknown>).currentUser).toBeNull();
+  });
+
+  it.each([401, 403])('stops deferred recovery when revalidation returns HTTP %s', async status => {
+    localStorage.setItem('token', 'stored');
+    apiFetchMock.mockRejectedValueOnce(new TypeError('offline')).mockResolvedValueOnce(response(status, {}));
+    await loadAuth();
+    await vi.waitFor(() => expect(warnMock).toHaveBeenCalledOnce());
+    window.dispatchEvent(new Event('online'));
+    await vi.waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(2));
+    await settleBootstrap();
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    await settleBootstrap();
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
+    expect((globalThis as Record<string, unknown>).currentUser).toBeNull();
+  });
+
+  it('logout cancels a deferred recovery before the device reconnects', async () => {
+    localStorage.setItem('token', 'old-token');
+    apiFetchMock.mockRejectedValueOnce(new TypeError('offline'));
+    const auth = await loadAuth();
+    await vi.waitFor(() => expect(warnMock).toHaveBeenCalled());
+    auth.logout();
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new CustomEvent('bridge:appstate', { detail: { active: true } }));
+    await settleBootstrap();
+    expect(apiFetchMock).toHaveBeenCalledOnce();
+    expect(localStorage.getItem('token')).toBeNull();
+  });
+
+  it.each(['logout', 'new-login'])('ignores a late recovered identity after %s', async (transition) => {
+    const recovery = deferred<Response>();
+    localStorage.setItem('token', 'old-token');
+    apiFetchMock.mockRejectedValueOnce(new TypeError('offline')).mockImplementationOnce(() => recovery.promise);
+    const auth = await loadAuth();
+    await vi.waitFor(() => expect(warnMock).toHaveBeenCalled());
+    window.dispatchEvent(new Event('online'));
+    await vi.waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(2));
+    if (transition === 'logout') auth.logout();
+    else await auth.startApp('new-token', { _id: 'new-user' });
+    recovery.resolve(response(200, { _id: 'old-user' }));
+    await settleBootstrap();
+    expect((globalThis as { currentUser?: { _id?: string } }).currentUser?._id ?? null).toBe(transition === 'logout' ? null : 'new-user');
+    expect(localStorage.getItem('token')).toBe(transition === 'logout' ? null : 'new-token');
+    window.dispatchEvent(new Event('online'));
+    await settleBootstrap();
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('bootstrap session restoration', () => {

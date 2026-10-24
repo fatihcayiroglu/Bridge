@@ -18,6 +18,29 @@ import {
   X3DH_SECURITY_INVARIANTS,
 } from '../migrations_pg/057_authentication_security_state_inline';
 
+// Fresh schemas define endpoint/keys directly and have no legacy JSONB
+// `subscription` column. An unconditional UPDATE used to raise PostgreSQL
+// 42703 on every boot (twice per runInlineMigrations pass); the best-effort
+// migration runner then masked that error as legacy drift. Keep the genuine
+// old-data backfill, but execute it only when the old column exists in the
+// current schema. Dynamic SQL prevents planning the absent column up front.
+export const LEGACY_PUSH_SUBSCRIPTIONS_BACKFILL_SQL = `DO $push_backfill$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = current_schema()
+       AND table_name = 'push_subscriptions'
+       AND column_name = 'subscription'
+  ) THEN
+    EXECUTE $push_update$
+      UPDATE push_subscriptions
+         SET endpoint = subscription->>'endpoint', keys = subscription->'keys'
+       WHERE endpoint IS NULL AND subscription IS NOT NULL
+    $push_update$;
+  END IF;
+END
+$push_backfill$`;
+
 // ── KOLON / INDEX MIGRASYONLARI ─────────────────────────────
 // Mevcut production DB'lere eksik sütunları ekler.
 const COLUMN_MIGRATIONS: string[] = [
@@ -152,7 +175,7 @@ const COLUMN_MIGRATIONS: string[] = [
   // push_subscriptions — subscription JSONB → endpoint + keys ayrı sütunlar
   `ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS endpoint TEXT`,
   `ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS keys JSONB DEFAULT '{}'`,
-  `UPDATE push_subscriptions SET endpoint = subscription->>'endpoint', keys = subscription->'keys' WHERE endpoint IS NULL AND subscription IS NOT NULL`,
+  LEGACY_PUSH_SUBSCRIPTIONS_BACKFILL_SQL,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_push_endpoint ON push_subscriptions(endpoint)`,
   `CREATE INDEX IF NOT EXISTS idx_nativepush_user ON native_push_tokens("userId")`,
   `CREATE INDEX IF NOT EXISTS idx_dm_messages_ts ON dm_messages("dmId", "createdAt" DESC)`,

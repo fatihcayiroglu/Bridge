@@ -23,6 +23,7 @@ import { readToken } from './auth-compat.ts';
 import { routeDesktopDeepLink, type DeepLinkDeps, CHANNEL_LOOKUP_SERVER_LIMIT } from './desktop-deeplink.ts';
 import { t } from './i18n/index.ts';
 import { createLogger } from './logger.ts';
+import { navigationOwner } from './navigation-selection.ts';
 
 const log = createLogger('NativeDeepLink');
 
@@ -148,7 +149,10 @@ const registryDeps: NativeDeepLinkDeps = {
   post: (url) => apiFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }),
   get: (url) => apiFetch(url),
   toast: (message, level) => { BridgeRegistry.call('toast', message, level); },
-  signedIn: () => Boolean(readToken()),
+  // A cold app already has a stored JWT while /api/me is still restoring.
+  // Starting a lookup then loses the intent when startApp invalidates that
+  // pre-restoration HTTP context. Wait in the existing bounded sign-in queue.
+  signedIn: () => Boolean(readToken()) && navigationOwner(BridgeRegistry.call('getMe')) !== null,
   openDm: async (userId) => {
     if (!(await waitFor(() => BridgeRegistry.has('openDm'), SHELL_READY_WAIT_MS))) return false;
     return Boolean(await BridgeRegistry.call<Promise<boolean> | boolean>('openDm', userId));

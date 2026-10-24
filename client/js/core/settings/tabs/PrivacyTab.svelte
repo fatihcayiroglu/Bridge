@@ -6,6 +6,8 @@
   import { t } from '../../i18n/reactive.svelte.ts';
   import { onDestroy, onMount } from 'svelte';
   import { expectedFromPortablePreview, portableAccountId, verifiedPortablePreview, type PortableProfilePreview } from '../portable-profile-import';
+  import { eraseLocalAccount } from '../../local-first/account-erasure';
+  import { isConfirmedAccountDeletion } from '../../api-fetch';
   import type { SettingsStore } from '../stores/settingsStore';
   import { BridgeRegistry } from '../../bridge-registry.js';
   import { logout, showAuthMsg, updateUserPanel } from '../../auth-compat.js';
@@ -222,15 +224,22 @@
     }
   }
 
+  let deletionAuthRevision = 0;
   onMount(() => {
     // A new login may replace the current account while Settings remains
     // mounted. Remove even a successfully previewed previous user's details.
-    const onIdentityTransition = () => resetPortableImport();
+    const onIdentityTransition = () => {
+      deletionAuthRevision += 1;
+      resetPortableImport();
+      cancelDeletion();
+    };
     document.addEventListener('bridge:auth-logout', onIdentityTransition);
     document.addEventListener('bridge:auth-success', onIdentityTransition);
+    document.addEventListener('bridge:auth-transition', onIdentityTransition);
     return () => {
       document.removeEventListener('bridge:auth-logout', onIdentityTransition);
       document.removeEventListener('bridge:auth-success', onIdentityTransition);
+      document.removeEventListener('bridge:auth-transition', onIdentityTransition);
     };
   });
 
@@ -295,6 +304,11 @@
     if (!canConfirmDelete) return;
     const apiFetch = deletionApi();
     if (!apiFetch) { deleteError = t('privacy_delete_unavailable'); return; }
+    // Snapshot the identity before any await: live session revocation can clear
+    // getMe before the successful DELETE acknowledgement reaches the browser.
+    const accountId = signedInPortableOwner();
+    if (!accountId) { cancelDeletion(); return; }
+    const authRevision = deletionAuthRevision;
     deleteStage = 'deleting';
     deleteError = null;
     try {
@@ -303,11 +317,27 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(passwordless ? { confirm: 'DELETE' } : { confirm: 'DELETE', password: deletePassword }),
       });
-      if (response.ok) {
+      if (response.ok || isConfirmedAccountDeletion(response)) {
         deletePassword = '';
-        // Sunucu oturumları ve jetonları zaten iptal etti; istemci durumu temizlenir.
-        logout();
-        showAuthMsg(t('privacy_delete_done'), 'success');
+        // P7: the account no longer exists, so neither may its local-first data
+        // on this device (encrypted history/outbox/drafts and every key). Erased
+        // before logout tears the session down; never throws, and an incomplete
+        // wipe is finished by the startup sweep.
+        await eraseLocalAccount(accountId);
+        // Do not sign out a replacement session that began during either the
+        // HTTP round trip or the async local wipe (even if it reused an ID).
+        const currentOwner = signedInPortableOwner();
+        if (currentOwner === accountId && deletionAuthRevision === authRevision) {
+          logout();
+          showAuthMsg(t('privacy_delete_done'), 'success');
+        } else if (currentOwner === null) {
+          // The server already revoked the deleted account's live session.
+          showAuthMsg(t('privacy_delete_done'), 'success');
+        }
+        return;
+      }
+      if (signedInPortableOwner() !== accountId || deletionAuthRevision !== authRevision) {
+        cancelDeletion();
         return;
       }
       if (response.status === 409) {
@@ -325,6 +355,10 @@
         : response.status === 503 ? t('privacy_delete_unavailable')
         : t('privacy_delete_failed');
     } catch {
+      if (signedInPortableOwner() !== accountId || deletionAuthRevision !== authRevision) {
+        cancelDeletion();
+        return;
+      }
       deleteStage = 'ready';
       deleteError = t('privacy_delete_failed');
     }

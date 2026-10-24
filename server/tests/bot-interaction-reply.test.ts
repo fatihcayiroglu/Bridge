@@ -43,6 +43,7 @@ import express from 'express';
 import request from 'supertest';
 import { PERMS } from '../lib/permissions';
 import { INTERACTION_REPLY_LIMIT, INTERACTION_REPLY_WINDOW_MS, replyToInvocation, type ReplyingBot } from '../lib/botInteractionReply';
+import * as liveChannels from '../lib/channelLiveReadSet';
 import botsRouter from '../routes/bots';
 
 const NOW = 1_800_000_000_000;
@@ -242,6 +243,29 @@ describe('routes', () => {
     expect(res.status).toBe(429);
     expect(res.body).toEqual({ error: 'reply_limit' });
     expect(emitted).toEqual([]);
+  });
+
+  it('does not return a detached reply or broadcast it after channel expiry', async () => {
+    const check = jest.spyOn(liveChannels, 'liveChannelSet').mockResolvedValueOnce(new Set());
+    try {
+      const res = await request(app).post('/api/bots/interactions/inv-1/reply').set('Authorization', 'Bot valid').send({ content: 'private expired reply' });
+      expect(mockMessages.create).toHaveBeenCalled();
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Channel not found' });
+      expect(JSON.stringify(res.body)).not.toContain('private expired reply');
+      expect(emitted).toEqual([]);
+    } finally { check.mockRestore(); }
+  });
+
+  it('returns 503 without content if publication availability cannot be verified', async () => {
+    const check = jest.spyOn(liveChannels, 'liveChannelSet').mockRejectedValueOnce(new liveChannels.ChannelAvailabilityUnverifiable());
+    try {
+      const res = await request(app).post('/api/bots/interactions/inv-1/reply').set('Authorization', 'Bot valid').send({ content: 'private unavailable reply' });
+      expect(mockMessages.create).toHaveBeenCalled();
+      expect(res.status).toBe(503);
+      expect(res.body).toEqual({ error: 'Channel availability could not be verified' });
+      expect(emitted).toEqual([]);
+    } finally { check.mockRestore(); }
   });
 
   it('POST /interactions/:id/reply maps refusals and broadcasts nothing', async () => {

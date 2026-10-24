@@ -88,7 +88,26 @@ RUN('P7 D2 search, saved and inbox expiry — real PostgreSQL', () => {
     await message(LIVE, SERVER, 0, t);
     await message(TOMB, SERVER, 0, t);
     // A message row that claims SERVER while its channel belongs to OTHER_SERVER.
-    await message(FOREIGN, SERVER, 0, t);
+    // Both D2 write guards (086 and 092) refuse to write one today, so this
+    // models a row that predates them: they are disabled only inside this
+    // transaction (ACCESS EXCLUSIVE; no other session ever sees it disabled).
+    const legacy = await db._pool.connect();
+    try {
+      await legacy.query('BEGIN');
+      await legacy.query('ALTER TABLE messages DISABLE TRIGGER channel_write_barrier');
+      await legacy.query('ALTER TABLE messages DISABLE TRIGGER zz_channel_final_admission');
+      await legacy.query('INSERT INTO messages (_id,"channelId","serverId","userId",username,"displayName",content,"createdAt")' +
+        ' VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+        [msgId(FOREIGN, 0), FOREIGN, SERVER, OWNER, 'owner', 'Owner', body(FOREIGN), t]);
+      await legacy.query('ALTER TABLE messages ENABLE TRIGGER channel_write_barrier');
+      await legacy.query('ALTER TABLE messages ENABLE TRIGGER zz_channel_final_admission');
+      await legacy.query('COMMIT');
+    } catch (err) {
+      await legacy.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      legacy.release();
+    }
     // 130 doomed messages, all newer than the live one: enough to fill the
     // 100-row inbox window ahead of the single live mention.
     for (let n = 0; n < 130; n++) await message(DOOMED, SERVER, n, t + 1000 + n);

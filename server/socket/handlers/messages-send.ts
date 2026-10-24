@@ -25,8 +25,8 @@ import { checkMessageContent, machineContentRefused } from '../../lib/messageCon
 // sanitizeMessage() (regex tabanlı) yerine sanitizeMessageContent() (DOMPurify/jsdom) kullanılıyor
 import { normalizeMessageText, RAW_TEXT_FORMAT } from '../../lib/storedText';
 import { cache, isRedisAvailable } from '../../lib/redisAdapter';
-import { invalidateChannelMessages } from '../../lib/messageCache';
-import { announceChannelActivity, publishPersistedMessage } from '../../lib/channelActivity';
+import { publishPersistedMessage } from '../../lib/channelActivity';
+import { liveChannelSet } from '../../lib/channelLiveReadSet';
 import { processNotifications, incrementUnread } from '../../lib/notifications';
 import logger from '../../lib/logger';
 import { isChannelE2EEEnabled } from '../../lib/channelE2EE';
@@ -500,25 +500,31 @@ export async function sendChannelMessage(
   }
   const publicMsg = { ...msg } as Record<string, unknown>;
   delete publicMsg.ackId;
-  io.to(`channel:${channelId}`).emit('message:new', publicMsg);
-  announceChannelActivity(io, publicMsg);
+  let published: boolean;
+  try {
+    published = await publishPersistedMessage(io, publicMsg);
+  } finally {
+    // A row committed before expiry still receives its minimal delivery ACK.
+    // Neither expiry nor an unavailable publication preflight should invite a
+    // duplicate offline retry of that write. The ACK contains no message body.
+    if (validAckId) {
+      const ackRecord = {
+        messageId: String(msg._id), channelId, userId: user._id, ts: Date.now(),
+        ...(validTmpId ? { tmpId: _tmpId } : {}),
+      };
+      await setAckRecord(ackId, ackRecord);
+      sendAck(socket, ackId, ackRecord);
+    } else if (validTmpId && _tmpId) {
+      sendTmpAck(socket, _tmpId, String(msg._id), channelId);
+    }
+  }
+  if (!published) return;
+
   // Bot slash delivery is direct-to-bot rather than broad channel subscription.
   // The chat message is already durable; bot delivery is an optional realtime
   // side effect and therefore never weakens message persistence semantics.
   if (hasPermission(sendPerms, PERMS.USE_BOT_COMMANDS)) {
     void dispatchRegisteredBotCommand(io, publicMsg as unknown as import('../../lib/botCommandDispatch').SlashDispatchMessage);
-  }
-
-  // Delivery ACK
-  if (validAckId) {
-    const ackRecord = {
-      messageId: String(msg._id), channelId, userId: user._id, ts: Date.now(),
-      ...(validTmpId ? { tmpId: _tmpId } : {}),
-    };
-    await setAckRecord(ackId, ackRecord);
-    sendAck(socket, ackId, ackRecord);
-  } else if (validTmpId && _tmpId) {
-    sendTmpAck(socket, _tmpId, String(msg._id), channelId);
   }
 
   // Outgoing webhooks
@@ -554,20 +560,13 @@ export async function sendChannelMessage(
           const embeds = previews.filter((p): p is NonNullable<typeof p> => p !== null);
           if (embeds.length) {
             await Messages.update(msg._id, { embeds: JSON.stringify(embeds) });
+            if (!(await liveChannelSet([{ channelId, serverId }])).has(channelId)) return;
             io.to(`channel:${channelId}`).emit('message:embedUpdate', { messageId: msg._id, embeds });
           }
         } catch { /* non-fatal */ }
       })();
     }
   }
-
-  // Cache invalidate — ONEK BAZLI.
-  //
-  // Onceden yalnizca `first:50` ve `first:100` siliniyordu; oysa limit
-  // 1..100 arasi HERHANGI bir deger olabilir. `?limit=25` ile okuyan bir
-  // istemci, adaptif TTL suresince (sessiz kanalda 45s) BAYAT liste
-  // aliyordu.
-  await invalidateChannelMessages(String(channelId));
 
   // P7 B1 (lab ATK-04b): one ping decision per mentioned person for this
   // message, shared by the inbox delivery and `mention:received` below.
