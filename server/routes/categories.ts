@@ -7,6 +7,7 @@ import { authMiddleware} from '../middleware/auth';
 import { getMemberPerms, hasPermission, PERMS } from './roles';
 import { limits } from '../middleware/rateLimit';
 import { parseNonNegativeSafeIntValue } from '../lib/queryNumbers';
+import { announceChannelListChanged } from '../lib/channelListEvents';
 
 /**
  * @openapi
@@ -72,6 +73,7 @@ router.post('/'
   const cat = await Channels.insertCategory({
     serverId, name: name.trim().toUpperCase(), position: count, collapsed: false,
   });
+  announceChannelListChanged(req.app.get('io'), serverId);
   res.json(cat);
 });
 
@@ -124,6 +126,7 @@ router.patch('/:catId'
     $set.collapsed = collapsed;
   }
   await Channels.updateCategory(catId, serverId, $set);
+  announceChannelListChanged(req.app.get('io'), serverId);
   res.json({ ok: true });
 });
 
@@ -153,6 +156,7 @@ router.delete('/:catId'
   if (!hasPermission(perms, PERMS.MANAGE_CHANNELS)) return res.status(403).json({ error: 'No permission' });
   const deleted = await Channels.deleteCategoryAtomic(catId, serverId);
   if (!deleted) return res.status(404).json({ error: 'Category not found' });
+  announceChannelListChanged(req.app.get('io'), serverId);
   res.json({ ok: true });
 });
 
@@ -209,6 +213,7 @@ router.post('/reorder', authMiddleware, limits.channels(), async (req, res) => {
   }
   const updated = await Channels.reorderCategoriesAtomic(serverId, normalized);
   if (!updated) return res.status(404).json({ error: 'Category not found' });
+  announceChannelListChanged(req.app.get('io'), serverId);
   res.json({ ok: true });
 });
 

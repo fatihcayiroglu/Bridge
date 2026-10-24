@@ -160,3 +160,23 @@ describe('publish revocation reaches the room owner', () => {
     expect(revoker).toHaveBeenCalledWith(bus, 'u1', 'vc1');
   });
 });
+
+describe('P7 D2 channelGone: an expired channel evicts every live room member', () => {
+  it('evicts text and voice rooms although permissions still resolve (the claimed row is draining)', async () => {
+    const s = socket('sock-1', ['server:s1', 'channel:vc1', 'voice:vc1', 'channel:tc1']);
+    await evictSocketsWithoutChannelAccess(io([s]) as never, 's1', 'vc1', { channelGone: true });
+    expect(mockCanView).not.toHaveBeenCalled();
+    expect(evictor).toHaveBeenCalledWith(expect.anything(), 'u1', ['vc1']);
+    expect(s.rooms.has('voice:vc1')).toBe(false);
+    expect(s.rooms.has('channel:vc1')).toBe(false);
+    expect(s.rooms.has('channel:tc1')).toBe(true);  // other channels untouched
+    expect(s.currentVoiceChannel).toBeUndefined();
+    expect(s.emit).toHaveBeenCalledWith('channel:access-revoked', { serverId: 's1', channelId: 'vc1' });
+  });
+
+  it('without channelGone the same socket keeps rooms it may still view (control)', async () => {
+    const s = socket('sock-1', ['server:s1', 'channel:vc1']);
+    await evictSocketsWithoutChannelAccess(io([s]) as never, 's1', 'vc1');
+    expect(s.rooms.has('channel:vc1')).toBe(true);
+  });
+});

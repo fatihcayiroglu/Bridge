@@ -52,6 +52,7 @@ import { createHash } from 'crypto';
 import logger from '../../lib/logger';
 import { resolvePermissions, hasPermission, PERMS } from '../../lib/permissions';
 import { parseBoundedPositiveIntQuery } from '../../lib/queryNumbers';
+import { channelRecordIsLive } from '../../lib/channelLiveReadSet';
 
 // GET /api/ai/summarize/:channelId
 // P5 AI-08: this sends channel history to the provider; it had no AI rate limit.
@@ -62,7 +63,7 @@ router.get('/:channelId', authMiddleware, limits.ai(), async (req, res) => {
   if (limit === null) return res.status(400).json({ error: 'limit must be a positive safe integer' });
 
   const channel = await Channels.findById(channelId);
-  if (!channel) return res.status(404).json({ error: 'Kanal bulunamadı' });
+  if (!channel || !await channelRecordIsLive(channel)) return res.status(404).json({ error: 'Kanal bulunamadı' });
   if (!await Members.findOne(_u.id, channel.serverId))
     return res.status(403).json({ error: 'Üye değilsiniz' });
 
