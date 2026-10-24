@@ -15,15 +15,18 @@ final class AnrTraceClassifier {
         final String mainState;
         final String top;
         final String subsystem;
+        final String nativeHint;
 
-        Result(String mainState, String top, String subsystem) {
+        Result(String mainState, String top, String subsystem, String nativeHint) {
             this.mainState = mainState;
             this.top = top;
             this.subsystem = subsystem;
+            this.nativeHint = nativeHint;
         }
 
         String marker() {
-            return "mainState=" + mainState + " top=" + top + " subsystem=" + subsystem;
+            return "mainState=" + mainState + " top=" + top + " subsystem=" + subsystem
+                    + " nativeHint=" + nativeHint;
         }
     }
 
@@ -31,11 +34,12 @@ final class AnrTraceClassifier {
             Pattern.compile("^\"main\" (?:daemon )?prio=\\d+ tid=\\d+ ([A-Za-z]+)");
     private static final Pattern FRAME = Pattern.compile("^\\s+at ([A-Za-z0-9_$.]+)\\(");
     private static final int MAX_FRAMES = 24;
+    private static final int MAX_NATIVE_FRAMES = 24;
 
     private AnrTraceClassifier() {}
 
     static Result classify(String trace) {
-        if (trace == null) return new Result("missing", "unknown", "none");
+        if (trace == null) return new Result("missing", "unknown", "none", "none");
         String[] lines = trace.split("\r?\n", -1);
         int start = -1;
         String state = null;
@@ -47,18 +51,31 @@ final class AnrTraceClassifier {
                 break;
             }
         }
-        if (start < 0) return new Result("missing", "unknown", "none");
+        if (start < 0) return new Result("missing", "unknown", "none", "none");
 
         String firstFrame = null;
         String subsystem = null;
         boolean waitingToLock = false;
         boolean anyFrame = false;
         int frames = 0;
+        int nativeFrames = 0;
+        String nativeHint = "none";
         for (int i = start; i < lines.length && frames < MAX_FRAMES; i++) {
             String line = lines[i];
             // A blank line or the next thread header ends the "main" block.
             if (line.isEmpty() || line.startsWith("\"")) break;
             if (line.trim().startsWith("- waiting to lock")) waitingToLock = true;
+            // ART writes native #nn frames before Java `at` frames. Reduce
+            // library basenames to fixed categories, never log the original
+            // path, symbol, offset, method or line (any may carry user data).
+            // The first recognized non-libc library is a *hint*, not proof
+            // that it caused the ANR. Only inspect this main-thread block.
+            if (nativeFrames < MAX_NATIVE_FRAMES && line.matches("^\\s*(?:native: )?#\\d{2}\\s+.*")) {
+                nativeFrames++;
+                String category = nativeLibraryHint(line);
+                if (!"none".equals(category) && ("none".equals(nativeHint)
+                        || "libc".equals(nativeHint))) nativeHint = category;
+            }
             Matcher f = FRAME.matcher(line);
             if (!f.find()) continue;
             frames++;
@@ -76,7 +93,20 @@ final class AnrTraceClassifier {
         else if (firstFrame.equals("java.lang.Thread.sleep")) top = "sleep";
         else top = "running-code";
         return new Result(stateOf(state), top,
-                subsystem != null ? subsystem : anyFrame ? "framework-only" : "none");
+                subsystem != null ? subsystem : anyFrame ? "framework-only" : "none",
+                nativeHint);
+    }
+
+    private static String nativeLibraryHint(String line) {
+        // Match the basename + .so boundary, not an arbitrary substring
+        // (e.g. libart.so.evil must not be accepted as libart.so).
+        if (line.matches(".*[/ ]libwebviewchromium\\.so(?:\\s|\\().*")) return "webview";
+        if (line.matches(".*[/ ]libbinder(?:_ndk)?\\.so(?:\\s|\\().*")) return "binder";
+        if (line.matches(".*[/ ]libhwui\\.so(?:\\s|\\().*")) return "graphics";
+        if (line.matches(".*[/ ]libart\\.so(?:\\s|\\().*")) return "art";
+        if (line.matches(".*[/ ]libandroid_runtime\\.so(?:\\s|\\().*")) return "android-runtime";
+        if (line.matches(".*[/ ]libc\\.so(?:\\s|\\().*")) return "libc";
+        return "none";
     }
 
     private static String stateOf(String state) {

@@ -1,15 +1,27 @@
 name: Mobile iOS
 
 # P4 — the Capacitor iOS app built the documented way (setup.js → cap add ios → curated overlay →
-# cap sync → xcodebuild) and launched on an iOS simulator. Evidence category: AUTOMATED /
+# cap sync → xcodebuild), exercised through XCUITest and launched on an iOS simulator. Evidence category: AUTOMATED /
 # SIMULATOR — not device evidence (no APNs delivery, no microphone/camera hardware, no radio).
 
 on:
+  # Native validation must also run for stacked P7 branches.
+  push:
+    branches: ['p7/**']
+    paths:
+      - 'mobile/**'
+      - 'client/**'
+      - 'server/**'
+      - 'e2e/ios/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/mobile-ios.yml'
   pull_request:
     branches: [main, develop]
     paths:
       - 'mobile/**'
       - 'client/**'
+      - 'server/**'
       - 'e2e/ios/**'
       - 'capacitor.config.js'
       - 'package.json'
@@ -32,9 +44,15 @@ permissions:
 
 jobs:
   simulator:
-    name: iOS simulator build + launch (AUTOMATED / SIMULATOR)
+    name: iOS build, expiry journey + launch (AUTOMATED / SIMULATOR)
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: postgresql://bridge@127.0.0.1:55432/bridge_ios_d2
+      JWT_SECRET: ci_jwt_secret_minimum_32_chars_value
+      REFRESH_SECRET: ci_refresh_secret_minimum_32_chars
+      BASE_URL: http://127.0.0.1:3000
+      E2E_ALLOWED_ORIGINS: http://127.0.0.1:3000,http://localhost:3000,capacitor://localhost
     steps:
       - uses: actions/checkout@v7
       - name: Boot the simulator early (it warms up while the app builds)
@@ -45,8 +63,51 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Native WebDriver transport regression tests
+        run: node --test e2e/ios/webdriver-http.test.js e2e/ios/live-channel-evidence.test.mjs
+      - name: Real CryptoKit and Keychain security regressions
+        env:
+          LOCAL_CRYPTO_VECTOR_PATH: ${{ runner.temp }}/bridge-local-crypto-vector.json
+        run: |
+          swiftc mobile/plugins/local-first-crypto/ios/Sources/BridgeLocalFirstCryptoPlugin/LocalFirstCryptoVault.swift e2e/ios/key-vault.test.swift -o "$RUNNER_TEMP/bridge-key-vault-tests"
+          "$RUNNER_TEMP/bridge-key-vault-tests"
+          node e2e/ios/verify-key-vault-vector.mjs
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        env:
+          # npm normalizes GitHub Git dependencies to SSH in its lockfile.
+          # Fetch the public, commit-pinned driver over HTTPS without SSH credentials.
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: url.https://github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: ssh://git@github.com/
+        run: |
+          npm ci --no-audit --no-fund
+          npm ci --prefix server --no-audit --no-fund
+          npm ci --prefix e2e/ios --no-audit --no-fund
+      - name: Audit native acceptance tooling
+        run: npm audit --prefix e2e/ios --audit-level=low
+      - name: Real PostgreSQL for the expiry journey
+        run: |
+          brew list --versions postgresql@18 || brew install postgresql@18
+          pg_bin="$(brew --prefix postgresql@18)/bin"
+          echo "$pg_bin" >> "$GITHUB_PATH"
+          "$pg_bin/initdb" -D "$RUNNER_TEMP/bridge-ios-postgres" --username=bridge --auth-local=trust --auth-host=trust
+          "$pg_bin/pg_ctl" -D "$RUNNER_TEMP/bridge-ios-postgres" -l "$RUNNER_TEMP/bridge-ios-postgres.log" -o '-h 127.0.0.1 -p 55432' -w start
+          "$pg_bin/createdb" -h 127.0.0.1 -p 55432 -U bridge bridge_ios_d2
+      - name: Build server and apply the full migration chain
+        run: |
+          npm run build --prefix server
+          cd server
+          npx ts-node --project tsconfig.json db/postgres/index.ts
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts up
+          npx ts-node --project tsconfig.json db/migrate-postgres.ts status
+      - name: Start the real Bridge server
+        run: |
+          nohup node scripts/e2e-server.js > "$RUNNER_TEMP/bridge-ios-server.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:3000/api/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:3000/api/health
       - name: Client bundle
         run: npm run build
       - name: Packaged web root (www/)
@@ -58,19 +119,69 @@ jobs:
           npx cap add ios
           node mobile/scripts/apply-ios-overlay.js
           npx cap sync ios
-      - name: xcodebuild (Debug, iphonesimulator)
+          node -e 'const assert=require("node:assert/strict"); const cfg=require("./ios/App/App/capacitor.config.json"); assert(cfg.packageClassList.includes("BridgeLocalFirstCryptoPlugin"), "Native local encryption plugin must be packaged");'
+          # Only the generated CI Debug app may use this loopback HTTP fixture.
+          # No release plist, arbitrary-load exception or remote host is changed.
+          /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains dict' ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains:localhost dict' ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity:NSExceptionDomains:localhost:NSExceptionAllowsInsecureHTTPLoads bool true' ios/App/App/Info.plist
+      - name: xcodebuild (Debug, iphonesimulator, ad hoc signed)
+        id: ios_build
+        # Keychain access needs entitlements, and an unsigned app has none: with
+        # CODE_SIGNING_ALLOWED=NO every native key operation failed with
+        # errSecMissingEntitlement (-34018). Sign ad hoc ("Sign to Run Locally";
+        # no team, certificate or profile) with the app's own Keychain group.
         run: |
+          set -o pipefail
           xcodebuild -version
+          cp mobile/ios-simulator-debug.entitlements ios/App/App/BridgeSimulatorDebug.entitlements
+          # Entitlements on the App target's Debug configuration only: a
+          # command-line CODE_SIGN_ENTITLEMENTS would apply to every Swift
+          # package target too (run 40021067365 failed exactly that way).
+          node e2e/ios/scope-simulator-entitlements.mjs ios/App/App.xcodeproj/project.pbxproj App/BridgeSimulatorDebug.entitlements
           xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -n 40
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
+            build | tail -n 60
+      - name: Verify the app's actual signature and Keychain entitlements
+        run: |
+          APP=$(find build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' -print -quit)
+          bash e2e/ios/verify-simulator-signature.sh "$APP" com.bridge.app
+          # The xcent files Xcode derived, for review alongside the binary's own view.
+          find build/Build/Intermediates.noindex -name '*.xcent' -print -exec cat {} \; 2>/dev/null | head -n 80 || true
+      - name: Native iOS expiry lifecycle (real WKWebView, XCUITest and PostgreSQL)
+        timeout-minutes: 25
+        run: bash e2e/ios/run-expiry-journey.sh
+      - name: Preserve native expiry evidence before the separate smoke
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-expiry-evidence
+          path: |
+            e2e/ios/results/expiry-journey.json
+            e2e/ios/results/signature-summary.json
+            e2e/ios/results/codesign-details.txt
+            e2e/ios/results/appium.log
+            e2e/ios/results/appium-discovery.log
+          retention-days: 30
       - name: Simulator smoke
+        if: ${{ !cancelled() && steps.ios_build.outcome == 'success' }}
         timeout-minutes: 30
         run: |
           APP=$(find build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' | head -1)
           echo "app: $APP"
           cat e2e/ios/results/early-boot.log 2>/dev/null || true
           IOS_APP_PATH="$APP" bash e2e/ios/run-simulator-smoke.sh
+      - name: Stop disposable PostgreSQL
+        if: always()
+        run: |
+          pg_bin="$(brew --prefix postgresql@18)/bin"
+          if [ -f "$RUNNER_TEMP/bridge-ios-postgres/postmaster.pid" ]; then
+            "$pg_bin/pg_ctl" -D "$RUNNER_TEMP/bridge-ios-postgres" -m fast -w stop
+          fi
       - uses: actions/upload-artifact@v7
         if: always()
         with:

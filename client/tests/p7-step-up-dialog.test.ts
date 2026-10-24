@@ -76,6 +76,18 @@ async function waitForInput(): Promise<HTMLInputElement> {
 describe('step-up prompt accessibility', () => {
   afterEach(() => { clearStepUpGrants(); });
 
+  it.each(['bridge:auth-logout', 'bridge:auth-transition'])('cancels and scrubs a pending password dialog on %s', async event => {
+    const send = vi.fn();
+    const pending = obtainStepUp(refusal, null, { send, signInAgain: vi.fn() });
+    const field = await waitForInput();
+    field.value = 'previous-account-secret';
+    document.dispatchEvent(new CustomEvent(event));
+    expect(document.querySelector('.bridge-product-dialog')).toBeNull();
+    expect(field.value).toBe('');
+    await expect(pending).resolves.toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it('the field has a visible, associated label; focus starts in it; the dialog is labelled and described', async () => {
     const pending = obtainStepUp(refusal, null, { send: vi.fn(), signInAgain: vi.fn() });
     const field = await waitForInput();

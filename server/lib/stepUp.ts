@@ -94,6 +94,8 @@ export const STEP_UP_ACTIONS = Object.freeze({
   'account.import': { scope: 'account-security', when: 'always', why: 'Importing a profile changes account identity and requires explicit fresh proof.' },
   'account.delete': { scope: 'destructive-admin', when: 'always', why: 'Deleting your account cannot be undone.' },
   'server.delete': { scope: 'destructive-admin', when: 'always', why: 'Deleting a server cannot be undone for any of its members.' },
+  'channel.delete': { scope: 'destructive-admin', when: 'always', why: 'Deleting a channel destroys its content and can affect every member.' },
+  'channel.expiry.change': { scope: 'destructive-admin', when: 'always', why: 'Changing channel expiry can permanently remove its messages and attachments.' },
   'admin.user.delete': { scope: 'destructive-admin', when: 'always', why: 'Deleting an account on this instance cannot be undone.' },
   'admin.server.delete': { scope: 'destructive-admin', when: 'always', why: 'Deleting a server on this instance cannot be undone.' },
   'moderation.ban': { scope: 'moderation-burst', when: 'burst', why: 'Many bans, kicks or bulk deletions in a short time is what a stolen moderator session does.' },

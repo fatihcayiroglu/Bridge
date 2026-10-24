@@ -15,6 +15,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { Instance, REPO, EGRESS_GUARD, sleep } from './lib/instance.mjs';
 import { seed, verify, inspectPreviousChannelMessage } from './lib/fixture.mjs';
+import { seedDurableExpiryBackup, verifyDurableExpiryBackup } from './lib/durable-expiry-fixture.mjs';
 import { request } from '../multinode/lib/client.mjs';
 
 const args = process.argv.slice(2);
@@ -210,6 +211,10 @@ const scenarios = {
     // A marker written after the seed proves the restored copy is what is served.
     const marker = `marker-${Date.now()}`;
     inst.psql('bridge', `CREATE TABLE IF NOT EXISTS selfhost_marker (v TEXT); INSERT INTO selfhost_marker VALUES ('${marker}')`);
+    // Freeze only this disposable installation's workers so the deliberately
+    // pending/leased rows remain stable across the snapshot and restore probe.
+    await inst.stop();
+    const durableExpiryDigest = seedDurableExpiryBackup(inst, fixture);
     const b = spawnSync('bash', [path.join(REPO, 'backup/backup.sh')], { env: envBackup, encoding: 'utf8' });
     const dump = fs.existsSync(path.join(backupRoot, 'postgres')) ? fs.readdirSync(path.join(backupRoot, 'postgres')).find((f) => f.endsWith('.sql.gz')) : null;
     record('backup', 'SH-BACKUP-01', 'backup/backup.sh (as shipped) dumps PostgreSQL, checksums it and copies uploads', b.status === 0 && dump ? 'PASS' : 'FAIL', b.status === 0 ? dump : (b.stderr || b.stdout).slice(-300));
@@ -261,6 +266,13 @@ const scenarios = {
 
     const served = inst.psql('bridge', 'SELECT v FROM selfhost_marker');
     record('backup', 'SH-BACKUP-05', 'restored database carries the marker written before the backup', served === marker ? 'PASS' : 'FAIL', served);
+    try {
+      verifyDurableExpiryBackup(inst, fixture, durableExpiryDigest);
+      record('backup', 'SH-BACKUP-D2-01', 'retained private reports, tombstone, pending/leased object releases and fences restored exactly', 'PASS');
+      record('backup', 'SH-BACKUP-D2-02', 'restored triggers deny stale object references and anonymize retained evidence on account erasure', 'PASS');
+    } catch (error) {
+      record('backup', 'SH-BACKUP-D2-01', 'D2 recovery data and restored security triggers', 'FAIL', error.message);
+    }
     try { await inst.start({ tag: 'restored' }); record('backup', 'SH-BACKUP-06', 'app boots to ready on the restored data', 'PASS'); }
     catch (e) { record('backup', 'SH-BACKUP-06', 'app boots to ready on the restored data', 'FAIL', e.message); return; }
     for (const c of await verify(inst.base, fixture)) record('backup', 'SH-BACKUP-V', c.check, c.ok ? 'PASS' : 'FAIL', c.detail);

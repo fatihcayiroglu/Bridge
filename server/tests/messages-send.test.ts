@@ -114,6 +114,7 @@ jest.mock('../lib/_optional-require', () => ({
 import { sendChannelMessage, registerSendHandlers } from '../socket/handlers/messages-send';
 import { Bridges, Channels, Messages, Notifications } from '../db/repositories';
 import { requireDoc } from './helpers/mockDb';
+import * as liveChannels from '../lib/channelLiveReadSet';
 
 // ── Yardımcılar ────────────────────────────────────────────────
 
@@ -234,6 +235,45 @@ describe('sendChannelMessage', () => {
     expect(mockGetCachedPerms).toHaveBeenCalledWith(
       user._id, server._id, expect.any(Function), channel._id,
     );
+  });
+
+  it('ACKs a committed row before propagating a failed publication check, without fan-out', async () => {
+    const check = jest.spyOn(liveChannels, 'liveChannelSet').mockRejectedValueOnce(new Error('availability unavailable'));
+    try {
+      await expect(sendChannelMessage(
+        { channelId: channel._id, serverId: server._id, content: 'durable before outage', ackId: 'outage-ack' },
+        socket as never, io as never, user, new Map(),
+      )).rejects.toThrow('availability unavailable');
+      const saved = await mockDb.messages.findOne({ channelId: channel._id });
+      expect(saved).toMatchObject({ content: 'durable before outage' });
+      expect(mockSendAck).toHaveBeenCalledWith(socket, 'outage-ack', expect.objectContaining({ messageId: saved!._id }));
+      expect(io._emitted).toEqual([]);
+      expect(mockDispatchEvent).not.toHaveBeenCalled();
+      expect(mockPluginEmit).not.toHaveBeenCalled();
+      expect(mockProcessNotifications).not.toHaveBeenCalled();
+    } finally { check.mockRestore(); }
+  });
+
+  it('does not broadcast a link preview completed after channel expiry', async () => {
+    let finishPreview!: (value: unknown) => void;
+    mockExtractUrls.mockReturnValue(['https://example.com/deferred']);
+    mockFetchLinkPreview.mockReturnValue(new Promise(resolve => { finishPreview = resolve; }));
+    await sendChannelMessage(
+      { channelId: channel._id, serverId: server._id, content: 'https://example.com/deferred' },
+      socket as never, io as never, user, new Map(),
+    );
+    expect(findEmitted(io._emitted, 'message:new')).toBeDefined();
+    const check = jest.spyOn(liveChannels, 'liveChannelSet').mockResolvedValueOnce(new Set());
+    try {
+      finishPreview({ url: 'https://example.com/deferred', title: 'Deferred fixture' });
+      await new Promise<void>(resolve => { setImmediate(resolve); });
+      expect(check).toHaveBeenCalledWith([{ channelId: channel._id, serverId: server._id }]);
+      expect(findEmitted(io._emitted, 'message:embedUpdate')).toBeUndefined();
+    } finally {
+      check.mockRestore();
+      mockExtractUrls.mockReturnValue([]);
+      mockFetchLinkPreview.mockReset();
+    }
   });
 
   // P1 multi-node harness PG-06r: the INSERT committed but its reply was lost.

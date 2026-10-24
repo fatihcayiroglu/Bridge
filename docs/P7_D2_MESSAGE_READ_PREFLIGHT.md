@@ -17,13 +17,21 @@ are cached. This is one production-reachable **read preflight**, not D2 closure.
 - The HTTP suite verifies an actual first-page cache population followed by
   a direct PostgreSQL expiry update, and checks pinned/history against a
   tombstone. The unit suite covers tenant, clock, version and error states.
+- The separate `/channels/:cid/pins` and `/channels/:cid/files` listings also
+  perform the live PostgreSQL check after their existing membership and
+  channel-visibility checks, before returning message content. The real
+  PostgreSQL suite verifies expiry and tombstone denial on both routes while
+  the channel metadata and message first-page caches still contain the prior
+  active channel and message body. Pin/file listings do not cache responses.
 
 ## Explicit limitations
 
 This read check is **not transaction-scoped** around later content retrieval.
 The channel could expire after the preflight but before sending a response.
-It also does not cover other API/socket read paths, writes, threading, offline
-caches or federation. It does not publish expiry and does not start a worker.
+These listing preflights do not substitute for the separate Search/Saved/Inbox
+checks merged via #355, or the thread/socket admission checks under review in
+#354. They do not enforce writes, existing room deliveries, offline caches or
+federation; each requires independent end-to-end acceptance evidence. It does not publish expiry and does not start a worker.
 The expiry/tombstone write path must take appropriate row locks and enforce
 a complete durable state machine before enabling ephemeral channel creation.
 There is a per-request indexed PostgreSQL read overhead; measure performance

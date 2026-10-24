@@ -117,6 +117,16 @@ export class EncryptedDraftRepository {
     await this.store.delete('draft', localDraftRecordId(identity));
   }
 
+  /** P7 D2: channel ids of `serverId` that hold an encrypted draft. */
+  async channelConversationIds(serverId: string): Promise<string[]> {
+    const prefix = `channel:${encodeURIComponent(serverId)}:`;
+    const rows = await this.store.list<unknown>('draft');
+    return rows
+      .filter(row => row.recordId.startsWith(prefix))
+      .map(row => decodeURIComponent(row.recordId.slice(prefix.length)))
+      .filter(Boolean);
+  }
+
   /**
    * Copy-verify-delete migration.
    *

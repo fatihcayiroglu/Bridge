@@ -1,8 +1,9 @@
 name: Bridge Quality Gate
 
 on:
+  # Stacked P7 PRs target feature branches; validate each pushed revision too.
   push:
-    branches: [main, develop]
+    branches: [main, develop, 'p7/**']
   pull_request:
     branches: [main, develop, test-integrity/integrated-audit]
   workflow_dispatch:
@@ -38,6 +39,7 @@ jobs:
             server/package-lock.json
             electron/package-lock.json
             e2e/package-lock.json
+            e2e/ios/package-lock.json
       - name: Audit root/workspaces
         run: npm audit --audit-level=high
       - name: Audit server
@@ -46,6 +48,10 @@ jobs:
         run: cd electron && npm audit --audit-level=high
       - name: Audit E2E harness
         run: cd e2e && npm audit --audit-level=high
+      - name: Audit native iOS acceptance tooling
+        run: npm audit --prefix e2e/ios --audit-level=low
+      - name: Native WebDriver transport regression tests
+        run: node --test e2e/ios/webdriver-http.test.js
 
 
   # Native win32-only behavior must run on its actual supported OS.
@@ -641,7 +647,7 @@ jobs:
     name: E2E full + media (nightly / test-integrity remediation)
     # Explicitly exercise the complete browser matrix on the cleanup PR itself.
     # Other PRs keep the normal nightly/manual schedule.
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && (github.head_ref == 'p7/test-integrity-cleanup' || github.head_ref == 'test-integrity/integrated-audit' || github.head_ref == 'test-integrity/minio-cursor-evidence' || github.head_ref == 'test-integrity/audit-integration-20261010' || github.head_ref == 'test-integrity/full-audit-final-candidate-20261010' || github.head_ref == 'test-integrity/full-audit-toast-20261010' || github.head_ref == 'test-integrity/consolidated-audit-20261010' || github.head_ref == 'p7/b3-metadata-minimization' || github.head_ref == 'test-integrity/css-asset-path-proof-20261011')) }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/p7/')) || (github.event_name == 'pull_request' && (github.head_ref == 'p7/test-integrity-cleanup' || github.head_ref == 'test-integrity/integrated-audit' || github.head_ref == 'test-integrity/minio-cursor-evidence' || github.head_ref == 'test-integrity/audit-integration-20261010' || github.head_ref == 'test-integrity/full-audit-final-candidate-20261010' || github.head_ref == 'test-integrity/full-audit-toast-20261010' || github.head_ref == 'test-integrity/consolidated-audit-20261010' || github.head_ref == 'p7/b3-metadata-minimization' || github.head_ref == 'test-integrity/css-asset-path-proof-20261011')) }}
     runs-on: ubuntu-latest
     needs: [tests]
     env:
