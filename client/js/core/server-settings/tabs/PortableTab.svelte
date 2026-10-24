@@ -330,7 +330,7 @@
                   <tr>
                     <th scope="row"><label for={`pci-${kind}-${row.sourceId}`}>{sourceLabels?.[kind].get(row.sourceId) ?? row.name}</label></th>
                     <td>
-                      <select id={`pci-${kind}-${row.sourceId}`} value={links[kind][row.sourceId] ?? ''}
+                      <select id={`pci-${kind}-${row.sourceId}`} value={Object.prototype.hasOwnProperty.call(links[kind], row.sourceId) ? links[kind][row.sourceId] : ''}
                         onchange={(e) => choose(kind, row.sourceId, (e.currentTarget as HTMLSelectElement).value)}>
                         <option value="">{t('pci_map_choose')}</option>
                         {#each candidates(kind, row, target) as option (option.sourceId)}
