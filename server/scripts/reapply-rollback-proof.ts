@@ -12,9 +12,8 @@ import { Client } from 'pg';
 import path from 'path';
 import { applyPendingMigrations } from '../db/postgres/versionedMigrations';
 
-async function main(): Promise<void> {
-  const raw = process.env.DATABASE_URL;
-  if (process.env.NODE_ENV !== 'test' || !raw) {
+export function assertRollbackProofTarget(raw: string | undefined, nodeEnv: string | undefined): string {
+  if (nodeEnv !== 'test' || !raw) {
     throw new Error('ROLLBACK_PROOF_ONLY: test environment and DATABASE_URL required');
   }
   const url = new URL(raw);
@@ -23,6 +22,11 @@ async function main(): Promise<void> {
     throw new Error('ROLLBACK_PROOF_ONLY: refusing to replay migrations outside a reserved throwaway proof database');
   }
 
+  return raw;
+}
+
+async function main(): Promise<void> {
+  const raw = assertRollbackProofTarget(process.env.DATABASE_URL, process.env.NODE_ENV);
   const client = new Client({ connectionString: raw });
   await client.connect();
   try {
@@ -35,7 +39,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: Error) => {
+if (require.main === module) main().catch((err: Error) => {
   process.stderr.write(`${err.message}\n`);
   process.exitCode = 1;
 });
