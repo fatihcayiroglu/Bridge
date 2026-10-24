@@ -17,7 +17,18 @@ cleanup() {
   [[ -z "${COMPOSITOR_PID}" ]] || { kill "${COMPOSITOR_PID}" 2>/dev/null || true; wait "${COMPOSITOR_PID}" 2>/dev/null || true; }
   if [[ -f "${ROOT}/app.log" ]]; then
     echo "Wayland protocol surface evidence:"
-    grep -E -- 'xdg_surface@[0-9]+\.get_toplevel|xdg_toplevel@[0-9]+\.set_title' "${ROOT}/app.log" | head -8 || true
+    # WAYLAND_DEBUG may format object identities as #N or @N. Only print
+    # protocol events, never renderer payloads, app state or bearer tokens.
+    grep -E -- 'xdg_(wm_base|surface|toplevel)[@#][0-9]+\.(get_xdg_surface|get_toplevel|ack_configure|set_title|set_(min|max)_size)' "${ROOT}/app.log" | head -12 || true
+    # Diagnostic counts never change the native smoke's pass criteria.
+    for pattern in \
+      'wl_compositor[@#][0-9]+\.create_surface' \
+      'xdg_wm_base[@#][0-9]+\.get_xdg_surface' \
+      'xdg_surface[@#][0-9]+\.get_toplevel' \
+      'xdg_surface[@#][0-9]+\.ack_configure'; do
+      count=$(grep -Ec -- "${pattern}" "${ROOT}/app.log" || true)
+      echo "Wayland protocol event count: ${pattern} = ${count}"
+    done
   fi
   rm -rf "${ROOT}"
 }
