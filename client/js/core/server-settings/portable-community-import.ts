@@ -146,7 +146,13 @@ export function mappingRowLabels(structure: PortableStructure): Record<Kind, Map
  * Everything else is left for the owner to choose.
  */
 export function suggestLinks(source: PortableStructure, target: PortableStructure): Links {
-  const links: Links = { categories: {}, roles: {}, channels: {} };
+  // Source identifiers are opaque. A plain {} silently loses keys such as
+  // '__proto__' and can read inherited names such as 'constructor'.
+  const links: Links = {
+    categories: Object.create(null) as Record<string, string>,
+    roles: Object.create(null) as Record<string, string>,
+    channels: Object.create(null) as Record<string, string>,
+  };
   for (const kind of KINDS) {
     const used = new Set<string>();
     for (const row of source[kind]) {
@@ -172,7 +178,9 @@ export function mappingProblem(source: PortableStructure, target: PortableStruct
   for (const kind of KINDS) {
     const chosen = new Set<string>();
     for (const row of source[kind]) {
-      const id = links[kind][row.sourceId];
+      // Never treat inherited Object.prototype entries as owner selections.
+      const id = Object.prototype.hasOwnProperty.call(links[kind], row.sourceId)
+        ? links[kind][row.sourceId] : undefined;
       if (!id) return 'unmapped';
       if (chosen.has(id)) return 'duplicate';
       chosen.add(id);
@@ -233,7 +241,9 @@ export function renames(source: PortableStructure, target: PortableStructure, li
   const out: ChangeRow[] = [];
   for (const kind of KINDS) {
     for (const row of source[kind]) {
-      const t = target[kind].find(x => x.sourceId === links[kind][row.sourceId]);
+      const targetId = Object.prototype.hasOwnProperty.call(links[kind], row.sourceId)
+        ? links[kind][row.sourceId] : undefined;
+      const t = target[kind].find(x => x.sourceId === targetId);
       if (t && t.name !== row.name) out.push({ kind, from: t.name, to: row.name });
     }
   }
