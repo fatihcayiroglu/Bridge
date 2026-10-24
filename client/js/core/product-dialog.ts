@@ -142,6 +142,7 @@ function mountDialog<T>(
       overlay.removeEventListener('click', onOverlayClick);
       overlay.remove();
       const value = resolveValue(confirmed, input);
+      if (input) input.value = '';
       queueMicrotask(() => {
         if (restoreFocus?.isConnected) restoreFocus.focus({ preventScroll: true });
       });
@@ -211,4 +212,11 @@ export function promptProductText(options: ProductPromptOptions): Promise<string
 
 export function closeProductDialog(): void {
   activeDialog?.cancel();
+}
+
+// A choice or password entered for an earlier account cannot remain active
+// across logout or the start of a different authentication flow.
+if (typeof document !== 'undefined') {
+  document.addEventListener('bridge:auth-logout', closeProductDialog);
+  document.addEventListener('bridge:auth-transition', closeProductDialog);
 }

@@ -159,6 +159,9 @@ function beginAuthTransition(): number {
   authTransition += 1;
   clearSessionRecovery();
   sessionRestoreAttempt = null;
+  // Cancel the previous session's refresh before a login can replace its
+  // HttpOnly cookie, and fence delayed HTTP retries/CSRF results as well.
+  document.dispatchEvent(new CustomEvent('bridge:auth-transition'));
   return authTransition;
 }
 
@@ -384,10 +387,9 @@ export async function startApp(token: string, user: AuthUser, stepUp?: unknown):
   // P7 B2: a fresh sign-in is a fresh proof — its step-up grants are held in
   // memory for their short lifetime. A restored session (page reload) carries
   // none, and any grant of an earlier session is dropped either way.
-  rememberSignInGrants(stepUp);
-
   // Any successfully validated session supersedes pending restore/login work.
   beginAuthTransition();
+  rememberSignInGrants(stepUp);
   // Yeni oturum: bir sonraki gerçek süre dolumu yine temiz bir çıkış yapabilsin.
   _loggingOut = false;
 

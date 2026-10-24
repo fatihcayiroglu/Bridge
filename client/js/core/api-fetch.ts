@@ -27,6 +27,8 @@ const log = createLogger('ApiFetch');
 
 /** Aynı anda tek yenileme — diğer çağrılar bu promise'i bekler. */
 let _refreshPromise: Promise<boolean> | null = null;
+let _authGeneration = 0;
+let _refreshJob: { generation: number; controller: AbortController } | null = null;
 /** Yenileme kalıcı olarak başarısızsa tekrar tekrar denenmesin. */
 let _refreshDisabled = false;
 /**
@@ -58,6 +60,9 @@ export function wasLastRefreshAnonymous(): boolean {
 
 /** Test/oturum sıfırlama için — yeni girişten sonra yenileme tekrar denenebilir. */
 export function resetRefreshState(): void {
+  _authGeneration += 1;
+  _refreshJob?.controller.abort();
+  _refreshJob = null;
   _refreshPromise = null;
   _refreshDisabled = false;
   _lastRefreshFailure = 'none';
@@ -72,7 +77,10 @@ export function resetRefreshState(): void {
 // OTURUMU KAPATILIYORDU. Kimlik doğrulandığı an durum sıfırlanır.
 if (typeof document !== 'undefined') {
   // CSRF jetonu bir KİMLİĞE bağlıdır: yeni oturum öncekinin jetonunu taşımaz.
-  document.addEventListener('bridge:auth-success', () => { resetRefreshState(); resetCsrfState(); });
+  const resetSession = (): void => { resetRefreshState(); resetCsrfState(); };
+  document.addEventListener('bridge:auth-success', resetSession);
+  document.addEventListener('bridge:auth-logout', resetSession);
+  document.addEventListener('bridge:auth-transition', resetSession);
 }
 
 /**
@@ -104,7 +112,11 @@ export async function refreshAccessToken(): Promise<boolean> {
   }
   if (_refreshPromise) return _refreshPromise;
 
-  _refreshPromise = (async (): Promise<boolean> => {
+  const job = { generation: _authGeneration, controller: new AbortController() };
+  _refreshJob = job;
+  const current = (): boolean => _refreshJob === job && job.generation === _authGeneration;
+  let succeeded = false;
+  const work = (async (): Promise<boolean> => {
     _lastRefreshFailure = 'none';
     const tokenBefore = readToken();
     const startedAt = Date.now();
@@ -118,10 +130,12 @@ export async function refreshAccessToken(): Promise<boolean> {
       if (!isLeaseOwner) {
         // Baska bir sekme zaten yeniliyor: ISTEK GONDERME, sonucu bekle.
         const otherSucceeded = await waitForOtherTab(startedAt);
+        if (!current()) return false;
         if (otherSucceeded) {
           const refreshed = readToken();
           if (refreshed && refreshed !== tokenBefore) {
             log.info('Access token baska bir sekme tarafindan yenilendi');
+            succeeded = true;
             return true;
           }
         }
@@ -142,7 +156,9 @@ export async function refreshAccessToken(): Promise<boolean> {
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         credentials: 'include', // httpOnly bridge_refresh cookie'si için zorunlu
         body: JSON.stringify({}),
+        signal: job.controller.signal,
       });
+      if (!current()) return false;
 
       if (!response.ok) {
         // Yalnızca istemcinin kimlik bilgisinin gerçekten reddedildiği
@@ -159,6 +175,7 @@ export async function refreshAccessToken(): Promise<boolean> {
       }
 
       const data = await response.json() as { token?: unknown };
+      if (!current()) return false;
       if (typeof data.token !== 'string' || !data.token) {
         // 2xx fakat bozuk gövde bir sunucu/proxy sözleşme arızasıdır; kullanıcının
         // oturumunun geçersiz olduğunu kanıtlamaz. Oturumu silmek yerine tekrar
@@ -170,25 +187,32 @@ export async function refreshAccessToken(): Promise<boolean> {
       saveToken(data.token); // mevcut depolama sözleşmesi — yeni anahtar üretilmez
       _lastRefreshFailure = 'none';
       log.info('Access token yenilendi');
+      succeeded = true;
       return true;
     } catch (error) {
+      if (!current()) return false;
       _lastRefreshFailure = 'transient';
       log.warn('Refresh isteği başarısız', error);
       return false;
-    } finally {
-      _refreshPromise = null;
     }
   })();
 
   // Kira sahibiysek sonucu yayinla ve kirayi birak; bekleyen sekmeler ANINDA
   // uyanir. Hata durumunda da yayinlanir, aksi halde digerleri zaman asimini
   // beklerdi.
-  if (storageAvailable()) {
-    void _refreshPromise
-      .then((ok) => { publishResult(ok); })
-      .catch(() => { publishResult(false); })
-      .finally(() => { releaseLease(); });
-  }
+  // Finish coordination before resolving the shared promise. Superseded work
+  // must not publish a result, release a newer lease, or clear its promise.
+  _refreshPromise = work.finally(() => {
+    if (!current()) return;
+    try {
+      if (storageAvailable()) {
+        try { publishResult(succeeded); } finally { releaseLease(); }
+      }
+    } finally {
+      _refreshPromise = null;
+      _refreshJob = null;
+    }
+  });
 
   return _refreshPromise;
 }
@@ -226,9 +250,14 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 let _csrfToken: string | null = null;
 let _csrfPromise: Promise<string | null> | null = null;
+let _csrfGeneration = 0;
+let _csrfController: AbortController | null = null;
 
 /** Test/oturum sıfırlama — yeni girişten sonra jeton yeniden alınır. */
 export function resetCsrfState(): void {
+  _csrfGeneration += 1;
+  _csrfController?.abort();
+  _csrfController = null;
   _csrfToken = null;
   _csrfPromise = null;
 }
@@ -236,19 +265,26 @@ export function resetCsrfState(): void {
 /** Kanonik uç: `GET /api/csrf-token` → { token }. Aynı anda TEK istek. */
 async function fetchCsrfToken(): Promise<string | null> {
   if (_csrfPromise) return _csrfPromise;
+  const generation = _csrfGeneration;
+  const controller = new AbortController();
+  _csrfController = controller;
+  const current = (): boolean => generation === _csrfGeneration;
 
   _csrfPromise = (async (): Promise<string | null> => {
     try {
-      const res = await fetch(`${getAPI()}/api/csrf-token`, withAuth({ method: 'GET' }, readToken()));
+      const res = await fetch(`${getAPI()}/api/csrf-token`, withAuth({ method: 'GET', signal: controller.signal }, readToken()));
+      if (!current()) return null;
       if (!res.ok) return null;
       const data = await res.json() as { token?: unknown };
+      if (!current()) return null;
       _csrfToken = typeof data.token === 'string' && data.token ? data.token : null;
       return _csrfToken;
     } catch (error) {
+      if (!current()) return null;
       log.warn('CSRF jetonu alınamadı', error);
       return null;
     } finally {
-      _csrfPromise = null;
+      if (current()) { _csrfPromise = null; _csrfController = null; }
     }
   })();
 
@@ -281,6 +317,7 @@ export async function apiFetch<T = unknown>(
   url: string,
   init: RequestInit = {},
 ): Promise<TypedResponse<T>> {
+  const generation = _authGeneration;
   const attach = (res: Response): TypedResponse<T> => {
     const typed = res as TypedResponse<T>;
     typed.typed = async () => (await res.json()) as T;
@@ -308,9 +345,11 @@ export async function apiFetch<T = unknown>(
   // A grant this client already holds for the action's scope rides along up front.
   const scope = scopeForRequest(method, target);
   const held = scope ? grantFor(scope) : null;
-  let response = await sendAuthed(target, init, mutating, held);
+  let response = await sendAuthed(target, init, mutating, held, generation);
+  if (generation !== _authGeneration) return attach(sessionChangedResponse());
 
   const refusal = await readStepUpRefusal(response);
+  if (generation !== _authGeneration) return attach(sessionChangedResponse());
   if (refusal) {
     let grant: string | null = null;
     try {
@@ -318,7 +357,8 @@ export async function apiFetch<T = unknown>(
     } catch (error) {
       log.warn('Step-up proof could not be obtained', error);
     }
-    if (grant) response = await sendAuthed(target, init, mutating, grant);
+    if (generation !== _authGeneration) return attach(sessionChangedResponse());
+    if (grant) response = await sendAuthed(target, init, mutating, grant, generation);
   }
   return attach(response);
 }
@@ -333,28 +373,42 @@ const STEP_UP_HOOKS: StepUpHooks = {
   signInAgain: () => { logout(); },
 };
 
-async function sendAuthed(target: string, init: RequestInit, mutating: boolean, stepUp: string | null): Promise<Response> {
+function sessionChangedResponse(): Response {
+  return new Response(JSON.stringify({ error: 'AUTH_SESSION_CHANGED' }), {
+    status: 409, headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+async function sendAuthed(target: string, init: RequestInit, mutating: boolean, stepUp: string | null, generation: number): Promise<Response> {
+  const changed = (): boolean => generation !== _authGeneration;
+  if (changed()) return sessionChangedResponse();
   // ── ILK MUTASYON: JETONU REDDİ BEKLEMEDEN AL ─────────────────────────────
   // Önbellekte jeton yokken istek göndermek, oturumun ilk mutasyonunda GARANTİLİ bir
   // 403 üretiyordu (ölçüldü: her girişte PATCH 403 → jeton → PATCH 200, konsolda kırmızı
   // hata). Jeton yalnızca YOKKEN ve oturum AÇIKKEN önceden alınır; sonraki mutasyonlar
   // önbellekteki jetonu kullanır ve döndürme onarımı aşağıda aynen durur.
   if (mutating && !_csrfToken && readToken()) await fetchCsrfToken();
+  if (changed()) return sessionChangedResponse();
 
   let response = await fetch(target, withAuth(init, readToken(), mutating ? _csrfToken : null, stepUp));
+  if (changed()) return sessionChangedResponse();
 
   // CSRF reddi → jetonu tazele ve isteği BİR kez tekrarla (jeton döndürülmüş
   // olabilir). Yalnız mutasyonlarda ve yalnız sebep gerçekten CSRF ise.
   if (mutating && response.status === 403 && await isCsrfFailure(response)) {
+    if (changed()) return sessionChangedResponse();
     _csrfToken = null;
     const fresh = await fetchCsrfToken();
+    if (changed()) return sessionChangedResponse();
     if (fresh) response = await fetch(target, withAuth(init, readToken(), fresh, stepUp));
   }
+  if (changed()) return sessionChangedResponse();
 
   if (response.status !== 401) return response;
 
   // Tek retry — ikinci 401'de tekrar refresh döngüsü başlatılmaz.
   const refreshed = await refreshAccessToken();
+  if (changed()) return sessionChangedResponse();
   if (!refreshed) {
     if (wasLastRefreshFailureTransient()) {
       // KAPATILAN GÜVENİLİRLİK KUSURU:
@@ -380,6 +434,7 @@ async function sendAuthed(target: string, init: RequestInit, mutating: boolean, 
   }
 
   response = await fetch(target, withAuth(init, readToken(), mutating ? _csrfToken : null, stepUp));
+  if (changed()) return sessionChangedResponse();
   if (response.status === 401) {
     log.warn('Yenilemeden sonra da 401 — oturum kapatılıyor');
     _refreshDisabled = true;
