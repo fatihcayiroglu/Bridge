@@ -8,6 +8,7 @@ import {
 } from '../db/postgres/upgradePreflight';
 
 type Markers = {
+  hasApplicationRelations: boolean;
   hasUsers: boolean;
   hasMessages: boolean;
   hasMigrationsTable: boolean;
@@ -17,10 +18,12 @@ type Markers = {
 };
 
 const fresh: Markers = {
+  hasApplicationRelations: false,
   hasUsers: false, hasMessages: false, hasMigrationsTable: false,
   hasSsoProvider: false, hasAckId: false, hasNullableEmbeds: false,
 };
 const current: Markers = {
+  hasApplicationRelations: true,
   hasUsers: true, hasMessages: true, hasMigrationsTable: true,
   hasSsoProvider: true, hasAckId: true, hasNullableEmbeds: true,
 };
@@ -47,6 +50,12 @@ describe('P7 D3 upgrade source: fail closed before any mutation', () => {
     expect(q.query).toHaveBeenCalledTimes(2);
     expect(q.query.mock.calls.every((call) => call[0].trim().startsWith('SELECT'))).toBe(true);
     expect(q.query.mock.calls[1][0]).toContain("split_part(id, '_', 1) = '084'");
+  });
+
+  it.each([false, true])('refuses a nonempty source missing both base tables (ledger: %s)', async hasMigrationsTable => {
+    const q = probe({ ...fresh, hasApplicationRelations: true, hasMigrationsTable });
+    await expect(verifyUpgradeSource(q.client)).rejects.toBeInstanceOf(UnverifiedUpgradeSourceError);
+    expect(q.query).toHaveBeenCalledTimes(1);
   });
 
   it('refuses the measured v1.122.0 boot-only shape before any DDL', async () => {

@@ -18,8 +18,11 @@ still leaves eight schema differences and a measured write-blocking index build.
 - Both checks use read-only `SELECT` statements. Database errors and
   unsupported shapes stop execution. No fallback or skip is permitted.
 
-A fresh schema (neither `users` nor `messages` present) proceeds to normal
-new-install boot. An existing schema must have:
+A fresh schema has no application tables, views, materialized views, sequences
+or foreign tables in `current_schema()`. Extension-owned relations may already
+be provisioned. Merely missing `users` and `messages` is insufficient: a damaged
+or partial source containing roles, a migration ledger or any other application
+relation is rejected before new-install DDL. An existing schema must have:
 
 1. Both base tables, `users.ssoProvider`, `messages.ackId`, and a **nullable** `messages.embeds` column (the measured staged-release shape incorrectly leaves it `NOT NULL`).
 2. A migration ledger with **084 applied and not rolled back**. This is the

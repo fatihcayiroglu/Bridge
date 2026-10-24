@@ -9,6 +9,7 @@
 import type { MigrationQueryable } from './versionedMigrations';
 
 interface UpgradeSourceMarkers extends Record<string, unknown> {
+  hasApplicationRelations: boolean;
   hasUsers: boolean;
   hasMessages: boolean;
   hasMigrationsTable: boolean;
@@ -21,6 +22,17 @@ interface UpgradeSourceMarkers extends Record<string, unknown> {
 // boot DDL; never infer installation compatibility from a version string alone.
 export const UPGRADE_SOURCE_MARKERS_SQL = `
   SELECT
+    EXISTS (
+      SELECT 1 FROM pg_catalog.pg_class AS relation
+      WHERE relation.relnamespace = current_schema()::regnamespace
+        AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+        AND NOT EXISTS (
+          SELECT 1 FROM pg_catalog.pg_depend AS dependency
+          WHERE dependency.classid = 'pg_catalog.pg_class'::regclass
+            AND dependency.objid = relation.oid
+            AND dependency.deptype = 'e'
+        )
+    ) AS "hasApplicationRelations",
     to_regclass(format('%I.%I', current_schema(), 'users')) IS NOT NULL AS "hasUsers",
     to_regclass(format('%I.%I', current_schema(), 'messages')) IS NOT NULL AS "hasMessages",
     to_regclass(format('%I.%I', current_schema(), 'schema_migrations')) IS NOT NULL AS "hasMigrationsTable",
@@ -66,8 +78,12 @@ export async function verifyUpgradeSource(q: MigrationQueryable): Promise<void> 
     throw new Error('BRIDGE_UPGRADE_SOURCE_UNVERIFIED: PostgreSQL schema probe returned no unique row.');
   }
 
-  // A new database has neither base table. The normal new-install path owns it.
-  if (!markers.hasUsers && !markers.hasMessages) return;
+  // Missing base tables do not prove a fresh installation: a damaged or
+  // partially restored source can still contain a ledger, roles or other data.
+  // Only a schema without application relations belongs to the new-install
+  // path. Extension-owned relations may be provisioned before first boot.
+  if (markers.hasApplicationRelations === false &&
+      !markers.hasUsers && !markers.hasMessages && !markers.hasMigrationsTable) return;
 
   // Reject partial and legacy schema shapes without touching the migration
   // ledger. A successful partial CLI run can add both sentinel columns, so
