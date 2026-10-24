@@ -547,7 +547,10 @@
   }
   function onSocketReconnected(): void {
     syncAccessSocket();
-    reloadAfterResume();
+    // A resume read can precede server room admission and miss a mutation.
+    // Reconcile after readiness independently of the resume throttle; use the
+    // existing bounded jitter/coalescer and permission-filtered API.
+    if (serverId) scheduleListRefresh(serverId);
   }
 
   function syncAccessSocket(): void {
@@ -560,7 +563,7 @@
 
   onMount(() => {
     syncAccessSocket();
-    document.addEventListener('bridge:socket-ready', syncAccessSocket);
+    document.addEventListener('bridge:socket-ready', onSocketReconnected);
     document.addEventListener('bridge:socket-reconnected', onSocketReconnected);
     window.addEventListener('bridge:appstate', onAppStateChange);
     document.addEventListener('visibilitychange', onVisibilityResume);
@@ -665,7 +668,7 @@
     document.removeEventListener('bridge:load-channels', onLoadChannels);
     document.removeEventListener('bridge:auth-success', onAuthSuccess);
     document.removeEventListener('bridge:auth-logout', onLogout);
-    document.removeEventListener('bridge:socket-ready', syncAccessSocket);
+    document.removeEventListener('bridge:socket-ready', onSocketReconnected);
     document.removeEventListener('bridge:socket-reconnected', onSocketReconnected);
     window.removeEventListener('bridge:appstate', onAppStateChange);
     document.removeEventListener('visibilitychange', onVisibilityResume);

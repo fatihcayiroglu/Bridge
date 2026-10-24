@@ -147,14 +147,57 @@ export function showAuthMsg(message: string, type: 'error' | 'success' = 'error'
 
 let pendingTwoFactorToken: string | null = null;
 let authTransition = 0;
+let sessionRestoreAttempt: { transition: number } | null = null;
+let cancelSessionRecovery: (() => void) | null = null;
+
+function clearSessionRecovery(): void {
+  cancelSessionRecovery?.();
+  cancelSessionRecovery = null;
+}
 
 function beginAuthTransition(): number {
   authTransition += 1;
+  clearSessionRecovery();
+  sessionRestoreAttempt = null;
+  // Cancel the previous session's refresh before a login can replace its
+  // HttpOnly cookie, and fence delayed HTTP retries/CSRF results as well.
+  document.dispatchEvent(new CustomEvent('bridge:auth-transition'));
   return authTransition;
 }
 
 function isCurrentAuthTransition(transition: number): boolean {
   return transition === authTransition;
+}
+
+// A failed offline bootstrap is not an identity rejection. Wait for an actual
+// foreground/connectivity signal instead of polling indefinitely. Listen only
+// while recovery is pending, and keep every attempt in the same auth generation.
+function deferSessionRecovery(transition: number): void {
+  if (!isCurrentAuthTransition(transition) || !readToken()) return;
+  clearSessionRecovery();
+  const recover = (): void => {
+    if (!isCurrentAuthTransition(transition)) return;
+    void restoreSession();
+  };
+  const onNetwork = (event: Event): void => {
+    if ((event as CustomEvent<{ connected?: boolean }>).detail?.connected === true) recover();
+  };
+  const onResume = (event: Event): void => {
+    if ((event as CustomEvent<{ active?: boolean }>).detail?.active === true) recover();
+  };
+  const onVisible = (): void => {
+    if (document.visibilityState === 'visible') recover();
+  };
+  window.addEventListener('online', recover);
+  window.addEventListener('bridge:network', onNetwork);
+  window.addEventListener('bridge:appstate', onResume);
+  document.addEventListener('visibilitychange', onVisible);
+  cancelSessionRecovery = () => {
+    window.removeEventListener('online', recover);
+    window.removeEventListener('bridge:network', onNetwork);
+    window.removeEventListener('bridge:appstate', onResume);
+    document.removeEventListener('visibilitychange', onVisible);
+  };
 }
 
 function setTwoFactorStep(active: boolean): void {
@@ -344,10 +387,9 @@ export async function startApp(token: string, user: AuthUser, stepUp?: unknown):
   // P7 B2: a fresh sign-in is a fresh proof — its step-up grants are held in
   // memory for their short lifetime. A restored session (page reload) carries
   // none, and any grant of an earlier session is dropped either way.
-  rememberSignInGrants(stepUp);
-
   // Any successfully validated session supersedes pending restore/login work.
   beginAuthTransition();
+  rememberSignInGrants(stepUp);
   // Yeni oturum: bir sonraki gerçek süre dolumu yine temiz bir çıkış yapabilsin.
   _loggingOut = false;
 
@@ -515,8 +557,11 @@ export function logout(): void {
 
 async function restoreSession(): Promise<void> {
   const token = readToken();
-  if (!token) return;
+  if (!token || sessionRestoreAttempt) return;
   const transition = authTransition;
+  const attempt = { transition };
+  sessionRestoreAttempt = attempt;
+  clearSessionRecovery();
 
   try {
     // Faz 7: ham fetch yerine apiFetch — access token süresi dolmuşsa (15 dk)
@@ -561,7 +606,10 @@ async function restoreSession(): Promise<void> {
     }
 
     // Yenileme de başarısızsa apiFetch zaten logout() çağırmıştır.
-    if (!response.ok) return;
+    if (!response.ok) {
+      if (response.status === 429 || response.status >= 500) deferSessionRecovery(transition);
+      return;
+    }
 
     const payload = await response.json() as unknown;
     const user = isRecord(payload) && isUser(payload.user)
@@ -573,7 +621,11 @@ async function restoreSession(): Promise<void> {
       await startApp(readToken() ?? token, user);
     }
   } catch (error) {
+    if (!isCurrentAuthTransition(transition)) return;
     log.warn('Oturum geri yüklenemedi', error);
+    deferSessionRecovery(transition);
+  } finally {
+    if (sessionRestoreAttempt === attempt) sessionRestoreAttempt = null;
   }
 }
 

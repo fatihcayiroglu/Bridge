@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { webdriverRequest } from './webdriver-http.mjs';
 import { probeIndexedDbTransactions } from './indexeddb-probe.mjs';
+import { publicationApiFacts, publicationViewFacts } from './live-channel-evidence.mjs';
 
 const require = createRequire(import.meta.url);
 const { Client } = require('../../server/node_modules/pg');
@@ -264,7 +265,31 @@ try {
   const tLive = Date.now();
   const doomed = id(await write('POST', `/api/servers/${serverId}/channels`, token, { name: 'ios-expiring', type: 'text' }));
   facts.stage = 'live-channel';
-  await until(() => js(cid => !!document.querySelector(`.ch-item[data-id="${cid}"]`), doomed), 'live channel creation without reload');
+  try {
+    await until(() => js(cid => !!document.querySelector(`.ch-item[data-id="${cid}"]`), doomed), 'live channel creation without reload');
+  } catch (error) {
+    // Failure-only, read-only evidence. Never reload the WebView, synthesize a
+    // socket event or extend the acceptance deadline: distinguish a missing
+    // authorized API row from a missed socket invalidation or UI render.
+    const diagnostic = { ...publicationApiFacts(null, doomed), ...publicationViewFacts(null),
+      apiProbeFailed: false, webviewProbeFailed: false };
+    try {
+      const response = await api('GET', `/api/servers/${serverId}/channels`, token);
+      Object.assign(diagnostic, publicationApiFacts(response, doomed));
+    } catch { diagnostic.apiProbeFailed = true; }
+    try {
+      const view = await js((sid, cid) => ({
+        webviewContainsChannel: !!document.querySelector(`.ch-item[data-id="${cid}"]`),
+        webviewChannelCount: document.querySelectorAll('.ch-item[data-id]').length,
+        selectedServer: !!document.querySelector(`.server-icon.active[data-id="${sid}"]`),
+        webviewVisible: document.visibilityState === 'visible',
+        browserOnline: navigator.onLine === true,
+      }), serverId, doomed);
+      Object.assign(diagnostic, publicationViewFacts(view));
+    } catch { diagnostic.webviewProbeFailed = true; }
+    facts.liveChannelFailure = diagnostic;
+    throw error;
+  }
   facts.liveListMs = Date.now() - tLive;
   const database = new Client({ connectionString: process.env.DATABASE_URL });
   await database.connect();

@@ -90,6 +90,60 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('proof work belongs to one authentication context', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>(done => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  it('does not submit an earlier prompt after sign-in replaces the grants', async () => {
+    const input = deferred<string | null>(); mocks.prompt.mockReturnValueOnce(input.promise);
+    const send = vi.fn(async () => response(grantBody('sensitive-export', 'old-grant')));
+    const proof = obtainStepUp(refusalBody(), null, { send, signInAgain: vi.fn() });
+    rememberSignInGrants({ expiresAt: Date.now() + 600_000, grants: { 'sensitive-export': 'new-grant' } });
+    input.resolve('old-account-password');
+    await expect(proof).resolves.toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    expect(grantFor('sensitive-export')).toBe('new-grant');
+  });
+
+  it('does not retain a late proof response in the replacement account', async () => {
+    const reply = deferred<Response>(); mocks.prompt.mockResolvedValueOnce('old-password');
+    const send = vi.fn(() => reply.promise);
+    const proof = obtainStepUp(refusalBody(), null, { send, signInAgain: vi.fn() });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    rememberSignInGrants({ expiresAt: Date.now() + 600_000, grants: { 'sensitive-export': 'new-grant' } });
+    reply.resolve(response(grantBody('sensitive-export', 'old-grant')));
+    await expect(proof).resolves.toBeNull();
+    expect(grantFor('sensitive-export')).toBe('new-grant');
+  });
+
+  it('does not sign the new account out when an old sign-in-again confirmation completes', async () => {
+    const input = deferred<boolean>(); mocks.confirm.mockReturnValueOnce(input.promise);
+    const signInAgain = vi.fn();
+    const proof = obtainStepUp(refusalBody({ methods: ['sign_in'] }), null, { send: vi.fn(), signInAgain });
+    rememberSignInGrants({}); input.resolve(true);
+    await expect(proof).resolves.toBeNull();
+    expect(signInAgain).not.toHaveBeenCalled();
+  });
+
+  it('an old prompt completion cannot clear the new account pending prompt', async () => {
+    const old = deferred<string | null>(), current = deferred<string | null>();
+    mocks.prompt.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    const hooks = { send: vi.fn(), signInAgain: vi.fn() };
+    const first = obtainStepUp(refusalBody(), null, hooks);
+    clearStepUpGrants();
+    const second = obtainStepUp(refusalBody(), null, hooks);
+    old.resolve(null); await first;
+    const shared = obtainStepUp(refusalBody(), null, hooks);
+    expect(shared).toBe(second);
+    expect(mocks.prompt).toHaveBeenCalledTimes(2);
+    current.resolve(null);
+    await expect(Promise.all([second, shared])).resolves.toEqual([null, null]);
+  });
+});
+
 describe('which requests carry which grant', () => {
   it.each([
     ['POST', '/api/email/add', 'account-security'],
