@@ -8,7 +8,7 @@ import { mintStepUpGrant } from '../../lib/stepUp';
 import { stageOwnerConfirmedPortableApproval } from '../../lib/portableTransactionalApprovalStage';
 import { applyApprovedPortableCommunityMapping, PortableAtomicApplyError } from '../../lib/portableAtomicMappedApply';
 import { deriveVerifiedPortableApprovalBinding } from '../../lib/portableVerifiedApprovalBinding';
-import { claimPortableImportApproval, PortableImportApprovalError } from '../../lib/portableImportApprovalLedger';
+import { claimPortableImportApproval, PortableImportApprovalError, type ApprovalPool } from '../../lib/portableImportApprovalLedger';
 import { buildPortableCommunityStructure } from '../../lib/portableCommunity';
 import { buildPortableCommunityPermissionManifest } from '../../lib/portableCommunityPermissions';
 import { fingerprintDestinationTopology } from '../../lib/portableCommunityTargetFingerprint';
@@ -80,7 +80,8 @@ beforeAll(async () => {
   await pool.query('CREATE TABLE users (_id TEXT PRIMARY KEY, "tokenVersion" INTEGER NOT NULL, "twoFactorEnabled" BOOLEAN NOT NULL)');
   await pool.query('CREATE TABLE channel_categories (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL, collapsed BOOLEAN NOT NULL)');
   await pool.query('CREATE TABLE roles (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, color TEXT NOT NULL, position INTEGER NOT NULL, permissions INTEGER NOT NULL)');
-  await pool.query('CREATE TABLE channels (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, topic TEXT NOT NULL, "categoryId" TEXT, category TEXT NOT NULL, "order" BIGINT NOT NULL, nsfw INTEGER NOT NULL, slowmode INTEGER NOT NULL)');
+  await pool.query('CREATE TABLE channels (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, topic TEXT NOT NULL, "categoryId" TEXT, category TEXT NOT NULL, "order" BIGINT NOT NULL, nsfw INTEGER NOT NULL, slowmode INTEGER NOT NULL, "expiresAt" BIGINT, "expiryVersion" INTEGER NOT NULL DEFAULT 0)');
+  await pool.query('CREATE TABLE channel_expiry_tombstones ("channelId" TEXT PRIMARY KEY)');
   await pool.query('CREATE TABLE channel_permissions ("channelId" TEXT NOT NULL, "serverId" TEXT NOT NULL, "roleId" TEXT NOT NULL, allow BIGINT NOT NULL, deny BIGINT NOT NULL)');
   await pool.query('CREATE TABLE channel_overrides ("channelId" TEXT NOT NULL)');
   await pool.query('CREATE TABLE audit_logs (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, "actorId" TEXT NOT NULL, action TEXT NOT NULL, target TEXT, detail TEXT, "createdAt" BIGINT NOT NULL)');
@@ -88,7 +89,7 @@ beforeAll(async () => {
   await pool.query("INSERT INTO users VALUES ('owner',4,FALSE)");
   await pool.query("INSERT INTO channel_categories VALUES ('tc','dest','General',0,FALSE)");
   await pool.query("INSERT INTO roles VALUES ('tr','dest','Readers','#99aab5',0,1)");
-  await pool.query("INSERT INTO channels VALUES ('tch','dest','welcome','text','','tc','GENERAL',0,0,0)");
+  await pool.query("INSERT INTO channels VALUES ('tch','dest','welcome','text','','tc','GENERAL',0,0,0,NULL,0)");
   await pool.query("INSERT INTO channel_permissions VALUES ('tch','dest','tr',1,0)");
   await pool.query(readFileSync(join(__dirname,
     '../../db/migrations_pg/081_portable_import_approval_ledger.sql'), 'utf8'));
@@ -158,15 +159,25 @@ async function destinationSnapshot() {
   return { cats: cats.rows, roles: roles.rows, channels: channels.rows,
     grants: grants.rows, audit: audit.rows, snapshots: snapshots.rows };
 }
-function apply(approvalToken: string, confirmedReviewFingerprint: string,
-  failpoint?: 'after_claim' | 'after_categories' | 'after_roles' | 'after_channels' | 'before_commit') {
-  return applyApprovedPortableCommunityMapping({
-    pool, approvalToken, confirmedReviewFingerprint,
+async function apply(approvalToken: string, confirmedReviewFingerprint: string,
+  failpoint?: 'after_claim' | 'after_categories' | 'after_roles' | 'after_channels' | 'before_commit',
+  applyPool: ApprovalPool = pool) {
+  // Fault injection is deliberately test-only. Every query still uses the
+  // supplied real PostgreSQL session; no repository/mock DB path is selected.
+  const previousEnvironment = process.env.NODE_ENV;
+  if (failpoint) process.env.NODE_ENV = 'test';
+  try { return await applyApprovedPortableCommunityMapping({
+    pool: applyPool, approvalToken, confirmedReviewFingerprint,
     ownerId: 'owner', targetServerId: SID, stepUpGrant: ownerGrant(),
     structure, permissions, attestation,
     expectedSourceOrigin: ORIGIN, expectedSourceServerId: SOURCE,
     mapping, operatorRegistryJson, now: NOW, failpoint,
-  });
+  }); } finally {
+    if (failpoint) {
+      if (previousEnvironment === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousEnvironment;
+    }
+  }
 }
 describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
   it('rolls back every failpoint with no partial categories, roles, channels or consumed token', async () => {
@@ -178,8 +189,28 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
       const approval = await approve(fingerprint);
       const before = await pool.query(
         'SELECT token_hash, consumed_at FROM portable_import_approvals ORDER BY token_hash');
-      await expect(apply(approval.approvalToken, fingerprint, failure))
+      const queries: string[] = [];
+      const observedPool: ApprovalPool = { async connect() {
+        const client = await pool.connect();
+        return {
+          async query(sql, params) {
+            queries.push(sql);
+            return { rows: (await client.query<Record<string, unknown>>(sql, params)).rows };
+          },
+          release(error) { client.release(error); },
+        };
+      } };
+      await expect(apply(approval.approvalToken, fingerprint, failure, observedPool))
         .rejects.toBeInstanceOf(PortableAtomicApplyError);
+      const reached = {
+        after_claim: 'INSERT INTO portable_import_snapshot_consumptions',
+        after_categories: 'UPDATE channel_categories', after_roles: 'UPDATE roles',
+        after_channels: 'UPDATE channels', before_commit: 'INSERT INTO audit_logs',
+      }[failure];
+      expect(queries.some(sql => sql.startsWith(reached))).toBe(true);
+      expect(queries[0]).toBe('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      expect(queries.at(-1)).toBe('ROLLBACK');
+      expect(queries).not.toContain('COMMIT');
       const after = await pool.query(
         'SELECT token_hash, consumed_at FROM portable_import_approvals ORDER BY token_hash');
       expect(after.rows).toEqual(before.rows);
@@ -441,4 +472,88 @@ describe('P7 C4 actual SERIALIZABLE category/role/channel atomic apply', () => {
       await fresh.end();
     }
   }, 30000);
+});
+
+describe('P7 D2 destination expiry and atomic mapped writes', () => {
+  beforeEach(async () => {
+    // Only the random, per-suite schema is in this pool's search_path. Reset
+    // these synthetic fixtures; never address production/public tables.
+    await pool.query('DELETE FROM portable_import_snapshot_consumptions');
+    await pool.query('DELETE FROM portable_import_approvals');
+    await pool.query('DELETE FROM audit_logs');
+    await pool.query('DELETE FROM channel_expiry_tombstones');
+    await pool.query("UPDATE channel_categories SET name='General', position=0, collapsed=FALSE WHERE _id='tc'");
+    await pool.query("UPDATE roles SET name='Readers', color='#99aab5', position=0, permissions=1 WHERE _id='tr'");
+    await pool.query("UPDATE channels SET name='welcome', topic='', \"categoryId\"='tc', category='GENERAL', \"order\"=0, nsfw=0, slowmode=0, \"expiresAt\"=NULL, \"expiryVersion\"=0 WHERE _id='tch'");
+  });
+
+  async function approvedState() {
+    return { graph: await destinationSnapshot(), approvals: (await pool.query(
+      'SELECT token_hash, consumed_at FROM portable_import_approvals ORDER BY token_hash')).rows };
+  }
+
+  it.each(['deadline', 'tombstone'])('refuses an approved target later made unavailable by %s without consuming approval', async reason => {
+    const confirmed = await reviewFingerprint();
+    const approval = await approve(confirmed);
+    if (reason === 'deadline') {
+      await pool.query('UPDATE channels SET "expiryVersion"=1, "expiresAt"=FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT-1 WHERE _id=$1', ['tch']);
+    } else {
+      await pool.query('INSERT INTO channel_expiry_tombstones ("channelId") VALUES ($1)', ['tch']);
+    }
+    const before = await approvedState();
+    await expect(apply(approval.approvalToken, confirmed)).rejects.toBeInstanceOf(PortableAtomicApplyError);
+    expect(await approvedState()).toEqual(before);
+  });
+
+  it.each(['channel-lock', 'audit-lock'])('rolls back metadata, approval and replay/audit rows when expiry passes during %s', async point => {
+    const confirmed = await reviewFingerprint();
+    const approval = await approve(confirmed);
+    await pool.query('UPDATE channels SET "expiryVersion"=1, "expiresAt"=FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT+1000 WHERE _id=$1', ['tch']);
+    const before = await approvedState();
+    const blocker = await rival.connect();
+    let identify!: (pid: number) => void;
+    const identified = new Promise<number>(resolve => { identify = resolve; });
+    let pending: Promise<{ value?: unknown; error?: unknown }> | undefined;
+    const watchedPool: ApprovalPool = { async connect() {
+      const client = await pool.connect();
+      identify(Number((await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid));
+      return client;
+    } };
+    try {
+      await blocker.query('BEGIN');
+      const blockerPid = Number((await blocker.query('SELECT pg_backend_pid() AS pid')).rows[0].pid);
+      if (point === 'channel-lock') await blocker.query('SELECT _id FROM channels WHERE _id=$1 FOR SHARE', ['tch']);
+      else await blocker.query('LOCK TABLE audit_logs IN SHARE MODE');
+      const live = await blocker.query('SELECT "expiresAt">FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AS live FROM channels WHERE _id=$1', ['tch']);
+      expect(live.rows[0].live).toBe(true);
+      pending = apply(approval.approvalToken, confirmed, undefined, watchedPool).then(value => ({ value }), error => ({ error }));
+      const pid = await identified;
+      let waited = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const state = await admin.query('SELECT pg_blocking_pids($1) @> ARRAY[$2::integer] AS waiting', [pid, blockerPid]);
+        if (state.rows[0].waiting === true) { waited = true; break; }
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      expect(waited).toBe(true);
+      await blocker.query('SELECT pg_sleep(GREATEST(0, (SELECT "expiresAt" FROM channels WHERE _id=$1)/1000.0-EXTRACT(EPOCH FROM clock_timestamp())+0.02)::double precision)', ['tch']);
+      const expired = await blocker.query('SELECT "expiresAt"<=FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AS expired FROM channels WHERE _id=$1', ['tch']);
+      expect(expired.rows[0].expired).toBe(true);
+      await blocker.query('COMMIT');
+      expect((await pending).error).toBeInstanceOf(PortableAtomicApplyError);
+      expect(await approvedState()).toEqual(before);
+    } finally {
+      await blocker.query('ROLLBACK');
+      if (pending) await pending;
+      blocker.release();
+    }
+  });
+
+  it('keeps the permanent-channel control compatible and preserves its lifecycle metadata', async () => {
+    const confirmed = await reviewFingerprint();
+    const approval = await approve(confirmed);
+    await expect(apply(approval.approvalToken, confirmed)).resolves.toMatchObject({ applied: true, transactionCommitted: true });
+    expect((await pool.query('SELECT "expiresAt", "expiryVersion" FROM channels WHERE _id=$1', ['tch'])).rows)
+      .toEqual([{ expiresAt: null, expiryVersion: 0 }]);
+    expect((await pool.query('SELECT * FROM channel_expiry_tombstones')).rows).toEqual([]);
+  });
 });

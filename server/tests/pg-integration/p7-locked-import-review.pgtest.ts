@@ -70,13 +70,14 @@ beforeAll(async () => {
   await pool.query('CREATE TABLE servers (_id TEXT PRIMARY KEY, "ownerId" TEXT NOT NULL)');
   await pool.query('CREATE TABLE channel_categories (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL, collapsed BOOLEAN NOT NULL)');
   await pool.query('CREATE TABLE roles (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, color TEXT NOT NULL, position INTEGER NOT NULL, permissions INTEGER NOT NULL)');
-  await pool.query('CREATE TABLE channels (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, topic TEXT NOT NULL, "categoryId" TEXT, category TEXT NOT NULL, "order" BIGINT NOT NULL, nsfw INTEGER NOT NULL, slowmode INTEGER NOT NULL)');
+  await pool.query('CREATE TABLE channels (_id TEXT PRIMARY KEY, "serverId" TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, topic TEXT NOT NULL, "categoryId" TEXT, category TEXT NOT NULL, "order" BIGINT NOT NULL, nsfw INTEGER NOT NULL, slowmode INTEGER NOT NULL, "expiresAt" BIGINT, "expiryVersion" INTEGER NOT NULL DEFAULT 0)');
+  await pool.query('CREATE TABLE channel_expiry_tombstones ("channelId" TEXT PRIMARY KEY)');
   await pool.query('CREATE TABLE channel_permissions ("channelId" TEXT NOT NULL, "serverId" TEXT NOT NULL, "roleId" TEXT NOT NULL, allow BIGINT NOT NULL, deny BIGINT NOT NULL)');
   await pool.query('CREATE TABLE channel_overrides ("channelId" TEXT NOT NULL)');
   await pool.query("INSERT INTO servers VALUES ('dest','owner')");
   await pool.query("INSERT INTO channel_categories VALUES ('tc','dest','General',0,FALSE)");
   await pool.query("INSERT INTO roles VALUES ('tr','dest','Readers','#99aab5',0,1)");
-  await pool.query("INSERT INTO channels VALUES ('tch','dest','welcome','text','','tc','GENERAL',0,0,0)");
+  await pool.query("INSERT INTO channels VALUES ('tch','dest','welcome','text','','tc','GENERAL',0,0,0,NULL,0)");
   await pool.query("INSERT INTO channel_permissions VALUES ('tch','dest','tr',1,0)");
 }, 60_000);
 afterAll(async () => {
@@ -88,7 +89,7 @@ afterAll(async () => {
   }
 }, 60_000);
 
-function review(client: import('pg').PoolClient, ownerId = 'owner') {
+function review(client: Parameters<typeof inspectLockedPortableImportReview>[0]['client'], ownerId = 'owner') {
   return inspectLockedPortableImportReview({
     client, targetServerId: SID, ownerId, structure, permissions, attestation,
     expectedSourceOrigin: ORIGIN, expectedSourceServerId: SOURCE,
@@ -96,6 +97,95 @@ function review(client: import('pg').PoolClient, ownerId = 'owner') {
   });
 }
 describe('P7 C4 signed mapping + owner + topology + grants one PostgreSQL client', () => {
+  it('accepts a valid active channel before its database deadline', async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      await client.query('UPDATE channels SET "expiryVersion"=1, "expiresAt"=FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT+60000 WHERE _id=$1', ['tch']);
+      await expect(review(client)).resolves.toMatchObject({ checkedChannels: 1, writesPerformed: false });
+    } finally { await client.query('ROLLBACK'); client.release(); }
+  });
+
+  it('does not let unrelated unavailable channels block a live permanent mapping', async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      await client.query("INSERT INTO channels VALUES ('expired-unmapped','dest','expired','text','','tc','GENERAL',1,0,0,1,1), ('tombstoned-unmapped','dest','gone','text','','tc','GENERAL',2,0,0,NULL,0)");
+      await client.query('INSERT INTO channel_expiry_tombstones ("channelId") VALUES ($1)', ['tombstoned-unmapped']);
+      await expect(review(client)).resolves.toMatchObject({
+        checkedChannels: 1, targetTopologyDigest: mapping.expectedTargetDigest, writesPerformed: false,
+      });
+    } finally { await client.query('ROLLBACK'); client.release(); }
+  });
+  it.each(['deadline', 'tombstone'])('refuses a mapped target made unavailable by %s', async reason => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      if (reason === 'deadline') {
+        await client.query('UPDATE channels SET "expiryVersion"=1, "expiresAt"=FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT-1 WHERE _id=$1', ['tch']);
+      } else {
+        await client.query('INSERT INTO channel_expiry_tombstones ("channelId") VALUES ($1)', ['tch']);
+      }
+      await expect(review(client)).rejects.toBeInstanceOf(LockedPortableReviewError);
+    } finally { await client.query('ROLLBACK'); client.release(); }
+  });
+
+  it.each(['channel-row', 'grant-row'])('rechecks database expiry after waiting for %s', async point => {
+    await pool.query('UPDATE channels SET "expiryVersion"=1, "expiresAt"=FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT+1000 WHERE _id=$1', ['tch']);
+    const client = await pool.connect(), blocker = await rival.connect();
+    let pending: Promise<{ error?: unknown; value?: unknown }> | undefined;
+    try {
+      const pid = Number((await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid);
+      await blocker.query('BEGIN');
+      if (point === 'channel-row') await blocker.query('SELECT _id FROM channels WHERE _id=$1 FOR UPDATE', ['tch']);
+      else await blocker.query('SELECT "channelId" FROM channel_permissions WHERE "channelId"=$1 FOR UPDATE', ['tch']);
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      pending = review(client).then(value => ({ value }), error => ({ error }));
+      let waited = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const observed = await admin.query('SELECT cardinality(pg_blocking_pids($1))>0 AS waiting', [pid]);
+        if (observed.rows[0].waiting === true) { waited = true; break; }
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      expect(waited).toBe(true);
+      await blocker.query('SELECT pg_sleep(GREATEST(0, (SELECT "expiresAt" FROM channels WHERE _id=$1)/1000.0-EXTRACT(EPOCH FROM clock_timestamp())+0.02)::double precision)', ['tch']);
+      const elapsed = await blocker.query('SELECT "expiresAt" <= FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT AS expired FROM channels WHERE _id=$1', ['tch']);
+      expect(elapsed.rows[0].expired).toBe(true);
+      await blocker.query('COMMIT');
+      const result = await pending;
+      expect(result.error).toBeInstanceOf(LockedPortableReviewError);
+    } finally {
+      await blocker.query('ROLLBACK');
+      if (pending) await pending;
+      await client.query('ROLLBACK');
+      client.release(); blocker.release();
+      await pool.query('UPDATE channels SET "expiresAt"=NULL WHERE _id=$1', ['tch']);
+    }
+  });
+
+  it('refuses a lifetime sampled as live when its real PostgreSQL response is delivered after expiry', async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      await client.query('UPDATE channels SET "expiryVersion"=1, "expiresAt"=FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)::BIGINT+1000 WHERE _id=$1', ['tch']);
+      let delayed = false;
+      const delayedClient = { async query(sql: string, params?: unknown[]) {
+        const result = await client.query<Record<string, unknown>>(sql, params);
+        if (sql.includes('AS "hasTombstone"')) {
+          const row = result.rows[0];
+          expect(row).toBeDefined();
+          if (!row) throw new Error('Missing real channel metadata');
+          expect(BigInt(String(row.expiresAt)) > BigInt(String(row.nowMs))).toBe(true);
+          await client.query('SELECT pg_sleep(GREATEST(0, (SELECT "expiresAt" FROM channels WHERE _id=$1)/1000.0-EXTRACT(EPOCH FROM clock_timestamp())+0.02)::double precision)', ['tch']);
+          delayed = true;
+        }
+        return { rows: result.rows };
+      } };
+      await expect(review(delayedClient)).rejects.toBeInstanceOf(LockedPortableReviewError);
+      expect(delayed).toBe(true);
+    } finally { await client.query('ROLLBACK'); client.release(); }
+  });
+
   it('returns only non-authorizing evidence and locks existing target rows', async () => {
     const client = await pool.connect(), other = await rival.connect();
     try {

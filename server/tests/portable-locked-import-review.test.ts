@@ -15,6 +15,7 @@ function fixture(options: {
   ownerMissing?: boolean; isolation?: string; readonly?: string;
   targetRoleMask?: number; grantAllow?: number; legacy?: boolean;
   movedTarget?: boolean; repositoryNsfw?: boolean;
+  targetExpiresAt?: number; targetTombstone?: boolean;
 } = {}) {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const publicKeyPem = publicKey.export({ format: 'pem', type: 'spki' }).toString();
@@ -76,6 +77,11 @@ function fixture(options: {
     if (sql.includes('FROM servers')) return { rows: options.ownerMissing ? [] : [{ _id: SID }] };
     if (sql.includes('FROM channel_categories')) return { rows: categories };
     if (sql.includes('FROM roles')) return { rows: roles };
+    if (sql.includes('AS "hasTombstone"')) return { rows: channels.map(channel => ({
+      _id: channel._id, serverId: SID, expiresAt: options.targetExpiresAt ?? null,
+      expiryVersion: options.targetExpiresAt === undefined ? 0 : 1,
+      hasTombstone: options.targetTombstone ?? false, nowMs: NOW,
+    })) };
     if (sql.includes('FROM channels')) return { rows: channels };
     if (sql.includes('FROM channel_overrides')) return { rows: options.legacy ? [{ present: true }] : [] };
     if (sql.includes('FROM channel_permissions')) return { rows: grants };
@@ -89,6 +95,11 @@ function fixture(options: {
 }
 
 describe('P7 locked signed source + destination grant review', () => {
+  it('accepts a valid active target as well as a permanent one', async () => {
+    const result = await inspectLockedPortableImportReview(fixture({ targetExpiresAt: NOW + 60_000 }));
+    expect(result.checkedChannels).toBe(1);
+    expect(result.writesPerformed).toBe(false);
+  });
   it('reviews source, topology and current grants on exactly the supplied SQL session', async () => {
     const f = fixture();
     const result = await inspectLockedPortableImportReview(f);
@@ -126,6 +137,8 @@ describe('P7 locked signed source + destination grant review', () => {
     { targetRoleMask: 3 },
     { grantAllow: 2 },
     { legacy: true },
+    { targetExpiresAt: NOW - 1 },
+    { targetTombstone: true },
   ])('fails closed for stale, widened or unsafe target %#', async options => {
     await expect(inspectLockedPortableImportReview(fixture(options)))
       .rejects.toBeInstanceOf(LockedPortableReviewError);
