@@ -2245,6 +2245,7 @@ const translations: Record<string, string> = {
   "moderation_report_deleted_since": "Retiré du chat après le signalement : le contenu signalé est affiché.",
   "moderation_report_removed": "Le message n’existe plus : le contenu signalé est affiché.",
   "moderation_report_channel_gone": "Le salon n’existe plus",
+  "moderation_report_thread_reply": "Réponse dans un fil",
   "moderation_report_no_snapshot": "Signalé avant que Bridge ne garde une copie : le message actuel est affiché.",
   "moderation_report_now": "Maintenant : {text}",
   "moderation_report_truncated": "(raccourci)",

@@ -26,6 +26,7 @@
   import MessageActionSheet, { type SheetAction } from './MessageActionSheet.svelte';
   import { t } from './i18n/reactive.svelte.ts';
   import { focusTrap } from './a11y/focusTrap.ts';
+  import ReportDialog from './ReportDialog.svelte';
   import { formatMessage, messageText, type FormatNode } from './messages/message-format.ts';
 
   export interface MessageData {
@@ -164,46 +165,25 @@
   let historyEntries = $state<Array<{ content: string; editedAt?: number }>>([]);
   let historyReturnFocus: HTMLElement | null = null;
   let reportOpen = $state(false);
-  let reportReason = $state('spam');
-  let reportDetail = $state('');
-  let reportBusy = $state(false);
-  let reportError = $state('');
   let reportReturnFocus: HTMLElement | null = null;
 
   function openReport(event?: Event): void {
     if (!onReport || isOwn || !isDelivered) return;
     reportReturnFocus = (event?.currentTarget instanceof HTMLElement ? event.currentTarget : null)
       ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
-    reportReason = 'spam'; reportDetail = ''; reportError = ''; reportOpen = true;
+    reportOpen = true;
   }
 
   function closeReport(): void {
-    if (reportBusy) return;
     reportOpen = false;
     const target = reportReturnFocus; reportReturnFocus = null;
     queueMicrotask(() => target?.isConnected && target.focus({ preventScroll: true }));
   }
 
-  async function submitReport(): Promise<void> {
+  function submitReport(reason: string, detail: string): Promise<boolean> | boolean {
     const reported = message;
-    if (!onReport || reportBusy || !reported) return;
-    reportBusy = true; reportError = '';
-    try {
-      const ok = await onReport(reported, reportReason, reportDetail.trim());
-      if (ok) {
-        reportOpen = false;
-        reportDetail = '';
-        const target = reportReturnFocus;
-        reportReturnFocus = null;
-        queueMicrotask(() => target?.isConnected && target.focus({ preventScroll: true }));
-        return;
-      }
-      reportError = t("ui_rapor_gonderilemedi_lutfen_tekrar_deneyin", "Rapor gönderilemedi. Lütfen tekrar deneyin.");
-    } catch {
-      reportError = t("ui_rapor_gonderilemedi_lutfen_tekrar_deneyin", "Rapor gönderilemedi. Lütfen tekrar deneyin.");
-    } finally {
-      reportBusy = false;
-    }
+    if (!onReport || !reported) return false;
+    return onReport(reported, reason, detail);
   }
   let pressTimer: ReturnType<typeof setTimeout> | null = null;
   let pressStart: { x: number; y: number } | null = null;
@@ -975,34 +955,7 @@
       {/if}
 
       {#if reportOpen}
-        <div class="edit-history-overlay" role="presentation" onclick={closeReport}>
-          <div
-            class="edit-history-dialog report-dialog"
-            role="dialog"
-            aria-modal="true"
-            tabindex="-1"
-            aria-labelledby={`report-message-title-${message._id}`}
-            onclick={(e) => e.stopPropagation()}
-            onkeydown={(e) => { if (e.key === 'Escape') { e.preventDefault(); closeReport(); } }}
-            use:focusTrap={{ active: reportOpen, initialFocus: '.report-reason' }}
-          >
-            <header>
-              <div><strong id={`report-message-title-${message._id}`}>{t("report_message")}</strong><span>{t("report_queue_hint")}</span></div>
-              <button type="button" class="edit-history-close" aria-label={t('attr_rapor_penceresini_kapat_276b46a', "Rapor penceresini kapat")} disabled={reportBusy} onclick={closeReport}>✕</button>
-            </header>
-            <div class="edit-history-body report-form">
-              <label><span>{t('markup_neden_f136b25', "Neden")}</span>
-                <select class="report-reason" bind:value={reportReason} disabled={reportBusy}>
-                  <option value="spam">{t('report_reason_spam')}</option><option value="harassment">{t('report_reason_harassment')}</option><option value="hate">{t("report_reason_hate")}</option>
-                  <option value="sexual">{t("report_reason_sexual")}</option><option value="violence">{t("report_reason_violence")}</option><option value="other">{t("report_reason_other")}</option>
-                </select>
-              </label>
-              <label><span>{t('markup_ek_bilgi_8dfb865', "Ek bilgi")} <small>{t("mod_optional")}</small></span><textarea bind:value={reportDetail} maxlength="500" rows="4" disabled={reportBusy}></textarea></label>
-              {#if reportError}<p class="edit-history-error" role="alert">{reportError}</p>{/if}
-              <div class="report-actions"><button type="button" onclick={closeReport} disabled={reportBusy}>{t("cancel")}</button><button type="button" class="danger-submit" onclick={() => void submitReport()} disabled={reportBusy}>{reportBusy ? t("dm_sending") : 'Raporla'}</button></div>
-            </div>
-          </div>
-        </div>
+        <ReportDialog titleId={`report-message-title-${message._id}`} onSubmit={submitReport} onClose={closeReport} />
       {/if}
 
       {#if historyOpen}
@@ -1150,14 +1103,6 @@
   .edit-history-meta { display: flex; justify-content: space-between; gap: 10px; font-size: 10px; color: var(--text-muted); }
   .edit-history-meta strong { color: var(--text-secondary); }
   .edit-history-error { color: var(--danger-text, #ff8f8f); }
-  .report-form { display: grid; gap: 12px; }
-  .report-form label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 12px; }
-  .report-form select, .report-form textarea { width: 100%; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-3); color: var(--text-1); padding: 9px 10px; font: inherit; }
-  .report-form textarea { resize: vertical; min-height: 88px; }
-  .report-actions { display: flex; justify-content: flex-end; gap: 8px; }
-  .report-actions button { min-height: 34px; padding: 0 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); background: var(--bg-3); color: var(--text-1); cursor: pointer; }
-  .report-actions .danger-submit { background: var(--danger); border-color: transparent; color: var(--text-on-solid); }
-  .report-actions button:disabled { opacity: .55; cursor: default; }
   .msg-edited-inline { font-size: var(--text-xs, 11px); color: var(--text-muted); margin-left: 6px; }
   .msg-avatar {
     width: 38px; height: 38px; border-radius: 50%;
@@ -1354,13 +1299,6 @@
       padding: 12px 14px calc(16px + env(safe-area-inset-bottom));
       overscroll-behavior: contain;
     }
-    .report-actions {
-      position: sticky;
-      bottom: 0;
-      padding-top: 8px;
-      background: var(--bg-2);
-    }
-    .report-actions button { min-height: 44px; flex: 1; }
   }
   @media (prefers-reduced-motion: reduce) { .delivery-dot { animation: none; border-top-color: currentColor; } }
 

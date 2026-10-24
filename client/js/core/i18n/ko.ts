@@ -2245,6 +2245,7 @@ const translations: Record<string, string> = {
   "moderation_report_deleted_since": "신고 후 채팅에서 숨겨짐 — 신고된 내용을 표시합니다.",
   "moderation_report_removed": "메시지가 더 이상 없습니다 — 신고된 내용을 표시합니다.",
   "moderation_report_channel_gone": "채널이 더 이상 없습니다",
+  "moderation_report_thread_reply": "스레드 답글",
   "moderation_report_no_snapshot": "Bridge가 사본을 보관하기 전에 신고됨 — 현재 메시지를 표시합니다.",
   "moderation_report_now": "현재: {text}",
   "moderation_report_truncated": "(축약됨)",

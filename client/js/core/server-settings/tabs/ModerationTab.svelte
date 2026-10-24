@@ -57,6 +57,8 @@
   type ReportCurrentState = 'unchanged' | 'edited' | 'deleted' | 'removed' | 'unknown';
   interface ReportRow {
     id: string; messageId: string; channelId: string; reason: string; detail?: string; createdAt?: number;
+    /** P7 B5 (093): set when the reported message is a reply in this thread. */
+    threadId?: string | null;
     /** `available: false`: the channel expired or was deleted; the report and its evidence remain. */
     channel?: { _id?: string; name?: string | null; available?: boolean };
     /** The message as it is now. */
@@ -286,11 +288,18 @@
     }
   }
 
-  function openReportedMessage(report: ReportRow): void {
-    if (!report.channelId || !report.messageId || !BridgeRegistry.has('navigateToChannel')) {
-      error = t("ui_raporlanan_mesaj_su_anda_acilamiyor", "Raporlanan mesaj şu anda açılamıyor."); return;
+  async function openReportedMessage(report: ReportRow): Promise<void> {
+    const unavailable = () => { error = t("ui_raporlanan_mesaj_su_anda_acilamiyor", "Raporlanan mesaj şu anda açılamıyor."); };
+    if (!report.channelId || !report.messageId || !BridgeRegistry.has('navigateToChannel')) { unavailable(); return; }
+    if (!report.threadId) {
+      BridgeRegistry.call('navigateToChannel', report.channelId, report.messageId, server);
+      return;
     }
-    BridgeRegistry.call('navigateToChannel', report.channelId, report.messageId, server);
+    // A thread reply: open its channel, then the thread (the reply is not in the channel's list).
+    if (!BridgeRegistry.has('openExistingThread')) { unavailable(); return; }
+    const opened = await BridgeRegistry.call<Promise<boolean> | boolean>('navigateToChannel', report.channelId, undefined, server);
+    if (opened === false) { unavailable(); return; }
+    BridgeRegistry.call('openExistingThread', report.threadId);
   }
 
   onMount(() => { void load(); });
@@ -381,7 +390,7 @@
             {#each reports as report (report.id)}
               <li class="mod-report">
                 <div class="mod-report-main">
-                  <div class="mod-report-meta"><strong>{REPORT_REASON_LABELS[report.reason] ?? t('report_reason_other', 'Diğer')}</strong><span>{report.channel?.available === false ? t('moderation_report_channel_gone') : `#${report.channel?.name ?? report.channelId}`}</span><span>{whenOf(report.createdAt)}</span></div>
+                  <div class="mod-report-meta"><strong>{REPORT_REASON_LABELS[report.reason] ?? t('report_reason_other', 'Diğer')}</strong><span>{report.channel?.available === false ? t('moderation_report_channel_gone') : `#${report.channel?.name ?? report.channelId}`}</span>{#if report.threadId}<span class="mod-report-kind">{t('moderation_report_thread_reply')}</span>{/if}<span>{whenOf(report.createdAt)}</span></div>
                   <p class="mod-report-content"><strong>{reportedAuthor(report)}:</strong> {reportedText(report)}{#if report.evidence?.state === 'captured' && report.evidence.truncated} <em>{t('moderation_report_truncated')}</em>{/if}</p>
                   {#if reportStateLabel(report)}<small class="mod-report-state" data-state={report.currentState}>{reportStateLabel(report)}</small>{/if}
                   {#if report.currentState === 'edited' && report.message?.preview}<small class="mod-report-now">{t('moderation_report_now', undefined, { text: report.message.preview })}</small>{/if}
@@ -389,7 +398,7 @@
                   <small>{t('moderation_reporter', undefined, { name: report.reporter?.displayName ?? t('ui_bridge_user') })}</small>
                 </div>
                 <div class="mod-report-actions">
-                  <button type="button" class="mod-btn" disabled={busyId !== '' || report.currentState === 'removed' || report.currentState === 'deleted'} onclick={() => openReportedMessage(report)}>{t('pin_jump')}</button>
+                  <button type="button" class="mod-btn" disabled={busyId !== '' || report.currentState === 'removed' || report.currentState === 'deleted'} onclick={() => void openReportedMessage(report)}>{t('pin_jump')}</button>
                   <button type="button" class="mod-btn" disabled={busyId !== ''} onclick={() => void resolveReport(report, 'dismissed')}>{t('dmc_reject')}</button>
                   <button type="button" class="mod-btn mod-btn-warn" disabled={busyId !== ''} onclick={() => void resolveReport(report, 'resolved')}>{t("moderation_resolved")}</button>
                 </div>

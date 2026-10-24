@@ -1063,6 +1063,9 @@ CREATE TABLE IF NOT EXISTS message_reports (
   -- no override in channel_permissions or channel_overrides denied VIEW_CHANNELS
   -- or MANAGE_MESSAGES, else 'restricted'); NULL means ADMIN only.
   "channelVisibility" TEXT,
+  -- Migration 093 (P7 B5): NULL for a channel message; the thread's id when
+  -- "messageId" is a reply in thread_messages.
+  "threadId" TEXT,
   CHECK (reason IN ('spam','harassment','hate','sexual','violence','other')),
   CHECK (status IN ('open','resolved','dismissed')),
   CHECK (resolution IS NULL OR resolution IN ('resolved','dismissed')),

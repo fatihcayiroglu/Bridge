@@ -3,6 +3,7 @@
   import { t } from './i18n/reactive.svelte.ts';
   import { onDestroy, onMount, tick } from 'svelte';
   import { BridgeRegistry } from './bridge-registry.js';
+  import ReportDialog from './ReportDialog.svelte';
 
   type ApiFetch = (url: string, init?: RequestInit) => Promise<Response>;
   type SocketHandler = (payload: unknown) => void;
@@ -257,6 +258,7 @@
     visible = false;
     thread = null;
     messages = [];
+    reportTarget = null;
     error = '';
     const target = returnFocus;
     returnFocus = null;
@@ -303,6 +305,54 @@
       if (thread?._id === active._id) error = t("ui_yanit_gonderilemedi_metin_korundu_yeniden_deneyebili", "Yanıt gönderilemedi. Metin korundu; yeniden deneyebilirsiniz.");
     } finally {
       sending = false;
+    }
+  }
+
+  // P7 B5: a reply can be reported like a channel message (POST
+  // /api/threads/:threadId/messages/:id/report); the channel's moderators review it.
+  let reportTarget = $state<ThreadMessage | null>(null);
+  let reportReturnFocus: HTMLElement | null = null;
+
+  function toast(text: string, kind: 'success' | 'error'): void {
+    BridgeRegistry.call('toast', text, kind);
+  }
+
+  function openReport(message: ThreadMessage, event: Event): void {
+    reportReturnFocus = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    reportTarget = message;
+  }
+
+  function closeReport(): void {
+    reportTarget = null;
+    const target = reportReturnFocus;
+    reportReturnFocus = null;
+    queueMicrotask(() => target?.isConnected && target.focus({ preventScroll: true }));
+  }
+
+  async function submitReport(reason: string, detail: string): Promise<boolean> {
+    const fetcher = api();
+    const active = thread;
+    const reported = reportTarget;
+    if (!fetcher || !active || !reported) return false;
+    try {
+      const response = await fetcher(
+        `/api/threads/${encodeURIComponent(active._id)}/messages/${encodeURIComponent(reported._id)}/report`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason, detail }) },
+      );
+      if (!response.ok) {
+        toast(response.status === 400 ? t("ui_bu_mesaj_raporlanamiyor", "Bu mesaj raporlanamıyor.") : t("ui_rapor_gonderilemedi_tekrar_deneyin", "Rapor gönderilemedi. Tekrar deneyin."), 'error');
+        return false;
+      }
+      const data = await response.json().catch(() => null) as { reported?: unknown; created?: unknown; id?: unknown } | null;
+      if (data?.reported !== true || typeof data.created !== 'boolean' || typeof data.id !== 'string' || !data.id) {
+        toast(t("ui_rapor_yaniti_dogrulanamadi_tekrar_deneyin", "Rapor yanıtı doğrulanamadı. Tekrar deneyin."), 'error');
+        return false;
+      }
+      toast(data.created ? t("ui_rapor_moderatorlere_gonderildi", "Rapor moderatörlere gönderildi.") : t("ui_bu_mesaj_icin_acik_bir_raporun_zaten_var", "Bu mesaj için açık bir raporun zaten var."), 'success');
+      return true;
+    } catch {
+      toast(t("ui_rapor_gonderilemedi_baglantini_kontrol_edip_tekrar_d", "Rapor gönderilemedi. Bağlantını kontrol edip tekrar dene."), 'error');
+      return false;
     }
   }
 
@@ -371,6 +421,9 @@
               <strong>{message.displayName || t('unknown_user')}</strong>
               {#if message.createdAt}<time>{new Date(message.createdAt).toLocaleString()}</time>{/if}
               {#if message.editedAt}<span>{t("msg_edited")}</span>{/if}
+              {#if message.userId && message.userId !== currentUserId()}
+                <button type="button" class="thread-report" title={t("report_message")} aria-label={t("report_message")} onclick={(event) => openReport(message, event)}>⚑</button>
+              {/if}
             </div>
             <p>{message.content || ''}</p>
           </div>
@@ -398,6 +451,11 @@
   </div>
 {/if}
 
+{#if visible && reportTarget}
+  <!-- Outside .thread-panel: its Escape and Enter keys must not close the panel or send the draft. -->
+  <ReportDialog titleId={`thread-report-title-${reportTarget._id}`} onSubmit={submitReport} onClose={closeReport} />
+{/if}
+
 <style>
   .thread-panel { position: fixed; z-index: var(--layer-panel, 500); top: var(--app-titlebar-height, 0px); right: 0; bottom: 0; width: min(420px, 38vw); display: flex; flex-direction: column; background: var(--bg-2); border-left: 1px solid var(--border-subtle); box-shadow: var(--shadow-xl); color: var(--text-primary); }
   .thread-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 58px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border-subtle); }
@@ -413,6 +471,9 @@
   .thread-message-content { min-width: 0; flex: 1; }
   .thread-meta { display: flex; align-items: baseline; gap: 7px; color: var(--text-muted); font-size: 10px; }
   .thread-meta strong { color: var(--text-primary); font-size: 12px; }
+  .thread-report { margin-left: auto; width: 26px; height: 26px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); cursor: pointer; opacity: 0; }
+  .thread-message:hover .thread-report, .thread-report:focus-visible { opacity: 1; }
+  .thread-report:hover, .thread-report:focus-visible { background: var(--bg-hover); color: var(--danger-text, #ff8f8f); }
   .thread-message p { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
   .thread-state, .thread-error { margin: 14px; font-size: 12px; color: var(--text-muted); }
   .thread-error { color: var(--danger-text, #ff8f8f); }
@@ -432,4 +493,5 @@
     .thread-compose-wrap { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
     .thread-send { min-height: 44px; }
   }
+  @media (hover: none) { .thread-report { opacity: 1; width: 36px; height: 36px; } }
 </style>

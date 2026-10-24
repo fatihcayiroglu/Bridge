@@ -17,6 +17,7 @@ import db from '../db/loader';
 import { channelLiveForMessageRead } from '../lib/channelReadExpiryGuard';
 import { classifyChannelExpiryWithTombstone } from '../lib/channelExpiry';
 import { captureReportEvidence } from '../lib/reportEvidence';
+import { parseReportRequest } from '../lib/reportRequest';
 
 
 interface CursorData { ts: number; id: string; dir: 'before' | 'after' }
@@ -609,12 +610,8 @@ router.patch('/:id', authMiddleware, limits.messages(), validateBody(schemas['me
 router.post('/:id/report', authMiddleware, limits.moderation(), async (req: Request, res: Response) => {
   const _u = castAuthed(req).user;
   const messageId = String(req.params.id ?? '').trim();
-  const reason = String((req.body as { reason?: unknown } | undefined)?.reason ?? '').trim();
-  const detail = String((req.body as { detail?: unknown } | undefined)?.detail ?? '').trim();
-  const allowedReasons = new Set(['spam', 'harassment', 'hate', 'sexual', 'violence', 'other']);
-  if (!messageId || !allowedReasons.has(reason) || detail.length > 500) {
-    return void res.status(400).json({ error: 'Invalid report' });
-  }
+  const body = parseReportRequest(req.body);
+  if (!messageId || !body) return void res.status(400).json({ error: 'Invalid report' });
 
   const msg = await Messages.findById(messageId);
   if (!msg || msg.deletedAt) return void res.status(404).json({ error: 'Message not available' });
@@ -638,8 +635,8 @@ router.post('/:id/report', authMiddleware, limits.moderation(), async (req: Requ
   const result = await MessageReports.create({
     serverId: String(msg.serverId), channelId: String(msg.channelId), messageId,
     reporterId: _u.id,
-    reason: reason as 'spam' | 'harassment' | 'hate' | 'sexual' | 'violence' | 'other',
-    detail,
+    reason: body.reason,
+    detail: body.detail,
     evidence: captureReportEvidence(msg),
   });
   return void res.status(result.created ? 201 : 200).json({ reported: true, created: result.created, id: String(result.row._id) });

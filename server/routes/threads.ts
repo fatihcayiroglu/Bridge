@@ -4,7 +4,7 @@ import express from 'express';
 import { safeCastAuthed as castAuthed } from '../lib/authSafe';
 import { parseBoundedPositiveIntQuery, parseNonNegativeSafeIntQuery } from '../lib/queryNumbers';
 const router       = express.Router();
-import { Threads, Members, Channels, Users, Messages } from '../db/repositories';
+import { Threads, Members, Channels, Users, Messages, MessageReports } from '../db/repositories';
 import { authMiddleware} from '../middleware/auth';
 import { hasPermission, PERMS, resolvePermissions } from './roles';
 import { limits } from '../middleware/rateLimit';
@@ -13,6 +13,8 @@ import { checkMessageContent, contentRefusalHttp, type MessageContentRefusal } f
 import logger from '../lib/logger';
 import { isMemberTimedOut, parseMemberTimeoutUntil } from '../lib/memberTimeout';
 import { channelContentAvailability } from '../lib/channelContentAvailability';
+import { captureReportEvidence } from '../lib/reportEvidence';
+import { parseReportRequest } from '../lib/reportRequest';
 
 // ── helpers ────────────────────────────────────────────────────
 async function memberCheck(userId: string, serverId: string) {
@@ -280,6 +282,43 @@ router.get('/:threadId/messages', authMiddleware, async (req, res) => {
 
   const msgs = await Threads.findMessages(String(req.params.threadId ?? ''), { limit, before });
   res.json(msgs.reverse());
+});
+
+// POST /api/threads/:threadId/messages/:messageId/report — P7 B5: a thread reply
+// is reported like a channel message (POST /api/messages/:id/report): the same
+// reasons, the same 085 evidence snapshot, the same channel moderators. The
+// report row carries the thread (093).
+// One 404 covers every case the reporter must not tell apart: a missing reply,
+// a reply in another thread, and a thread or channel they cannot read. An
+// expired channel also gets it, before its worker claim (P7 D2: a report filed
+// then would copy expired content into a retained snapshot).
+router.post('/:threadId/messages/:messageId/report', authMiddleware, limits.moderation(), async (req, res) => {
+  const _u = castAuthed(req).user;
+  const threadId = String(req.params.threadId ?? '').trim();
+  const messageId = String(req.params.messageId ?? '').trim();
+  const body = parseReportRequest(req.body);
+  if (!threadId || !messageId || !body) return res.status(400).json({ error: 'Invalid report' });
+  const unavailable = () => res.status(404).json({ error: 'Message not available' });
+
+  const thread = await Threads.findById(threadId);
+  if (!thread) return unavailable();
+  const serverId = String(thread.serverId ?? '');
+  const channelId = String(thread.channelId ?? '');
+  const msg = await Threads.findMessageInThread(threadId, messageId);
+  if (!msg || String(msg.serverId ?? '') !== serverId || String(msg.channelId ?? '') !== channelId) return unavailable();
+  if (!await memberCheck(_u.id, serverId)) return unavailable();
+  if (!await canReadThread(_u.id, { serverId, channelId })) return unavailable();
+  const availability = await channelContentAvailability(channelId, serverId);
+  if (availability === 'unavailable') return res.status(503).json({ error: 'Channel availability could not be verified' });
+  if (availability !== 'live') return unavailable();
+  if (String(msg.userId ?? '') === _u.id) return res.status(400).json({ error: 'Cannot report your own message' });
+
+  const result = await MessageReports.create({
+    serverId, channelId, threadId, messageId,
+    reporterId: _u.id, reason: body.reason, detail: body.detail,
+    evidence: captureReportEvidence(msg),
+  });
+  return res.status(result.created ? 201 : 200).json({ reported: true, created: result.created, id: String(result.row._id) });
 });
 
 // POST /api/threads/:threadId/messages — send a message to a thread
