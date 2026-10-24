@@ -222,7 +222,9 @@ async function until(fn, { timeout = 15_000, interval = 250, message = 'conditio
     try { last = await fn(); if (last) return last; } catch (e) { last = e; }
     await sleep(interval);
   }
-  throw new Error(`timed out after ${timeout} ms waiting for ${message}${last instanceof Error ? ` (last error: ${last.message})` : ''}`);
+  // Playwright and HTTP errors can embed private URLs, response bodies and
+  // selectors. Keep failure/timeout attribution without archiving their text.
+  throw new Error(`timed out after ${timeout} ms waiting for ${message}; last operation errored: ${last instanceof Error}`);
 }
 
 // ── Host-side API (the other side of every journey) ─────────────────────────
@@ -241,13 +243,13 @@ async function csrfFor(token) {
 }
 async function write(method, url, token, body) {
   const r = await http(method, url, { token, body, csrf: await csrfFor(token) });
-  if (!r.ok) throw new Error(`${method} ${url} → ${r.status} ${JSON.stringify(r.json).slice(0, 300)}`);
+  if (!r.ok) throw new Error(`${method} API request failed (HTTP ${r.status})`);
   return r.json;
 }
 async function account(label) {
   const username = `p4${label}${Date.now().toString(36)}`.slice(0, 24);
   const reg = await http('POST', '/api/register', { body: { username, password: PASSWORD } });
-  if (!reg.ok) throw new Error(`register ${label} → ${reg.status} ${JSON.stringify(reg.json)}`);
+  if (!reg.ok) throw new Error(`register ${label} failed (HTTP ${reg.status})`);
   const login = await http('POST', '/api/login', { body: { username, password: PASSWORD } });
   const token = login.json?.token || reg.json?.token;
   const me = await http('GET', '/api/me', { token });

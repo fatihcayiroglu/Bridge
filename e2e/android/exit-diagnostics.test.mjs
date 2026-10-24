@@ -48,6 +48,9 @@ test('Android public journey artifact excludes dynamic channel IDs, test message
   assert.match(journeys, /return \{ processAlive: true, status/);
   assert.match(journeys, /return \{ processStable: true \}/);
   assert.doesNotMatch(journeys, /audioDump:|return \{ pid: (?:alive|after) \}|crash\.slice\(-1500\)/);
+  assert.match(journeys, /API request failed \(HTTP \$\{r\.status\}\)/);
+  assert.match(journeys, /last operation errored: \$\{last instanceof Error\}/);
+  assert.doesNotMatch(journeys, /JSON\.stringify\((?:r|reg)\.json\)|last error: \$\{last\.message\}/);
 });
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
