@@ -1,7 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits } from './exit-diagnostics.mjs';
+
+test('ANR first-failure evidence drops raw PIDs, processes, timestamps and exit descriptions', () => {
+  const raw = { available: true, exits: [
+    { pid: 9981, process: 'com.bridge.app.debug', at: 'private-time',
+      reason: '6 (ANR)', subreason: '0 (UNKNOWN)', dependencyDescription: 'user@example.com' },
+    { pid: 9982, process: 'private-app', at: 'secret',
+      reason: '12 (DEPENDENCY DIED)', subreason: '21 (FORCE STOP)',
+      dependency: { provider: 'sensitive-service', available: true } },
+    { pid: 9983, reason: '5 (secret)', subreason: 'malformed' },
+  ] };
+  const safe = redactRecentAndroidExits(raw);
+  assert.deepEqual(safe, { available: true, count: 3, reasons: [
+    { reasonCode: 6, subreasonCode: 0 },
+    { reasonCode: 12, subreasonCode: 21 },
+    { reasonCode: null, subreasonCode: null },
+  ] });
+  assert.doesNotMatch(JSON.stringify(safe), /9981|9982|9983|private|secret|user@|process|provider|description/);
+  assert.deepEqual(redactRecentAndroidExits(null), { available: false, count: 0, reasons: [] });
+  assert.deepEqual(redactRecentAndroidExits({ available: true, exits: 'bad' }),
+    { available: false, count: 0, reasons: [] });
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(journeys, /redactRecentAndroidExits\(exitFacts\)/);
+  assert.match(journeys, /id === 'CS01' \|\| id === 'L01' \|\| id === 'ANR01'/);
+  assert.doesNotMatch(journeys, /JSON\.stringify\(exitFacts\)/);
+  assert.doesNotMatch(journeys, /Object\.assign\(facts, \{ deviceUser:/);
+});
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [
@@ -1204,10 +1230,11 @@ test('production release and FD00G sources keep the release off the main thread 
 
 test('ANR02 probe markers keep only allowlisted main-thread enums from the exact PID', () => {
   const raw = [
-    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=framework-only',
-    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Blocked top=lock-wait subsystem=webview',
-    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=com.secret.Customer',
-    'I/BridgeAnrTraceProbe( 6000): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=bridge',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=framework-only nativeHint=libc',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Blocked top=lock-wait subsystem=webview nativeHint=art',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=idle-looper subsystem=com.secret.Customer nativeHint=libc',
+    'I/BridgeAnrTraceProbe( 5150): stage=exit traceAvailable=true mainState=Native top=running-code subsystem=framework-only nativeHint=secret',
+    'I/BridgeAnrTraceProbe( 6000): stage=exit traceAvailable=true mainState=Runnable top=running-code subsystem=bridge nativeHint=graphics',
     'I/BridgeAnrTraceProbe( 5150): stage=done supported=true error=false anrExits=3 records=16 oldestBeforeStart=false capacity=16',
   ].join('\n');
   const result = parseAnrTraceProbeMarkers(raw, 5150);
@@ -1215,8 +1242,8 @@ test('ANR02 probe markers keep only allowlisted main-thread enums from the exact
     complete: true, supported: true, error: false, fatalAnrs: 3, records: 16, capacity: 16,
     coverage: 'possibly-truncated',
     traces: [
-      { traceAvailable: true, mainState: 'Native', top: 'idle-looper', subsystem: 'framework-only' },
-      { traceAvailable: true, mainState: 'Blocked', top: 'lock-wait', subsystem: 'webview' },
+      { traceAvailable: true, mainState: 'Native', top: 'idle-looper', subsystem: 'framework-only', nativeHint: 'libc' },
+      { traceAvailable: true, mainState: 'Blocked', top: 'lock-wait', subsystem: 'webview', nativeHint: 'art' },
     ],
   });
   assert.doesNotMatch(JSON.stringify(result), /secret|Customer|5150|6000/);

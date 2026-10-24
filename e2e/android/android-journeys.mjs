@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -124,10 +124,11 @@ async function check(id, title, fn) {
     }
     // #209: preserve the failure as FAIL, and record only allow-listed OS
     // exit/dependency facts before any screenshot or DevTools probe can stall.
-    if (MODE === 'android' && (id === 'L01' || id === 'ANR01')) {
+    if (MODE === 'android' && (id === 'CS01' || id === 'L01' || id === 'ANR01')) {
       const exitFacts = await androidFailureExits();
-      (facts.androidFailureExits ??= []).push({ check: id, ...exitFacts });
-      log(`Android exit evidence ${id}`, JSON.stringify(exitFacts));
+      const safe = redactRecentAndroidExits(exitFacts);
+      (facts.androidFailureExits ??= []).push({ check: id, ...safe });
+      log(`Android exit evidence ${id}`, JSON.stringify(safe));
     }
     // A01 can time out with a detached/closed CDP page even while the
     // Android process and Activity are still alive. Failure-only and never
@@ -1470,7 +1471,9 @@ async function main() {
   const privateChannelId = privateChannel._id || privateChannel.id || privateChannel.channel?._id;
   const peerSock = await openSocket(peer.token);
   peerSock.emit('channel:join', { channelId, serverId });
-  Object.assign(facts, { deviceUser: me.username, serverId, channelId, otherId, voiceId, privateChannelId });
+  // IDs and generated account names are needed in memory for the journey,
+  // never in the public CI evidence artifact. Assertions below retain the
+  // local bindings; `facts` contains only bounded diagnostic projections.
 
   if (netPath) { await netPath.start(); facts.networkPath = `adb reverse → proxy :${PROXY_PORT} → server :${netPath.targetPort}`; }
   await connectDevice();
