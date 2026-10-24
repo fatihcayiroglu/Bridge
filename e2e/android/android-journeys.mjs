@@ -23,7 +23,7 @@ import net from 'node:net';
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits } from './exit-diagnostics.mjs';
 
 const MODE = process.env.ANDROID_JOURNEY_MODE === 'dryrun' ? 'dryrun' : 'android';
 // #209: 'product' (default) runs every Bridge reliability journey and gates CI.
@@ -124,10 +124,11 @@ async function check(id, title, fn) {
     }
     // #209: preserve the failure as FAIL, and record only allow-listed OS
     // exit/dependency facts before any screenshot or DevTools probe can stall.
-    if (MODE === 'android' && (id === 'L01' || id === 'ANR01')) {
+    if (MODE === 'android' && (id === 'CS01' || id === 'L01' || id === 'ANR01')) {
       const exitFacts = await androidFailureExits();
-      (facts.androidFailureExits ??= []).push({ check: id, ...exitFacts });
-      log(`Android exit evidence ${id}`, JSON.stringify(exitFacts));
+      const safe = redactRecentAndroidExits(exitFacts);
+      (facts.androidFailureExits ??= []).push({ check: id, ...safe });
+      log(`Android exit evidence ${id}`, JSON.stringify(safe));
     }
     // A01 can time out with a detached/closed CDP page even while the
     // Android process and Activity are still alive. Failure-only and never
@@ -221,7 +222,9 @@ async function until(fn, { timeout = 15_000, interval = 250, message = 'conditio
     try { last = await fn(); if (last) return last; } catch (e) { last = e; }
     await sleep(interval);
   }
-  throw new Error(`timed out after ${timeout} ms waiting for ${message}${last instanceof Error ? ` (last error: ${last.message})` : ''}`);
+  // Playwright and HTTP errors can embed private URLs, response bodies and
+  // selectors. Keep failure/timeout attribution without archiving their text.
+  throw new Error(`timed out after ${timeout} ms waiting for ${message}; last operation errored: ${last instanceof Error}`);
 }
 
 // ── Host-side API (the other side of every journey) ─────────────────────────
@@ -241,13 +244,13 @@ async function csrfFor(token) {
 }
 async function write(method, url, token, body, stepUpGrant) {
   const r = await http(method, url, { token, body, csrf: await csrfFor(token), stepUpGrant });
-  if (!r.ok) throw new Error(`${method} ${url} → ${r.status} ${JSON.stringify(r.json).slice(0, 300)}`);
+  if (!r.ok) throw new Error(`${method} API request failed (HTTP ${r.status})`);
   return r.json;
 }
 async function account(label) {
   const username = `p4${label}${Date.now().toString(36)}`.slice(0, 24);
   const reg = await http('POST', '/api/register', { body: { username, password: PASSWORD } });
-  if (!reg.ok) throw new Error(`register ${label} → ${reg.status} ${JSON.stringify(reg.json)}`);
+  if (!reg.ok) throw new Error(`register ${label} failed (HTTP ${reg.status})`);
   const login = await http('POST', '/api/login', { body: { username, password: PASSWORD } });
   const token = login.json?.token || reg.json?.token;
   const me = await http('GET', '/api/me', { token });
@@ -1499,7 +1502,9 @@ async function main() {
   const privateChannelId = privateChannel._id || privateChannel.id || privateChannel.channel?._id;
   const peerSock = await openSocket(peer.token);
   peerSock.emit('channel:join', { channelId, serverId });
-  Object.assign(facts, { deviceUser: me.username, serverId, channelId, otherId, voiceId, privateChannelId });
+  // IDs and generated account names are needed in memory for the journey,
+  // never in the public CI evidence artifact. Assertions below retain the
+  // local bindings; `facts` contains only bounded diagnostic projections.
 
   if (netPath) { await netPath.start(); facts.networkPath = `adb reverse → proxy :${PROXY_PORT} → server :${netPath.targetPort}`; }
   await connectDevice();
@@ -1533,7 +1538,11 @@ async function main() {
     assert(splashGone, 'native splash still covering the app');
     // Stage one: immediately after first UI render, before login or channels.
     await fontProviderStage('first-ui-before-login');
-    return { coldLaunchTotalMs: launch.totalTimeMs, origin: await page.evaluate(() => location.origin), api: await page.evaluate(() => globalThis.BRIDGE_API ?? null) };
+    // CI evidence is public: retain the environment contract, not URLs that
+    // might carry a private host or credentials.
+    return { coldLaunchTotalMs: launch.totalTimeMs,
+      packagedOrigin: await page.evaluate(() => location.origin === 'https://localhost'),
+      apiConfigured: await page.evaluate(() => Boolean(globalThis.BRIDGE_API)) };
   });
 
   // #209: repeated COLD starts on the ordinary Bridge Activity, after the
@@ -1667,13 +1676,14 @@ async function main() {
       const out = await sh(`dumpsys notification | grep -m4 "bridge_default"`).catch(() => '');
       return out.includes('bridge_default') ? out : null;
     }, { timeout: 15_000, message: 'bridge_default channel registered' });
-    return { channel: lines.split('\n')[0].trim().slice(0, 200) };
+    return { channelRegistered: lines.includes('bridge_default') };
   });
 
   await check('A03', 'server + channel list render and a channel opens', async () => {
     await openServer(serverId);
     await openChannel(channelId);
-    return { active: await activeChannel() };
+    assert((await activeChannel()) === channelId, 'A03 expected channel did not become active');
+    return { expectedChannelActive: true };
   });
 
   await check('M01', 'send a channel message from the composer; it persists server-side', async () => {
@@ -1681,7 +1691,7 @@ async function main() {
     await sendFromComposer(needle);
     await until(async () => (await channelHas(me.token, channelId, needle)).length === 1, { message: 'message persisted once' });
     await until(() => visibleMessage(needle), { message: 'message rendered' });
-    return { needle };
+    return { persistedOnce: true, rendered: true };
   });
 
   await check('M02', 'live message from another user renders while foregrounded', async () => {
@@ -1884,7 +1894,7 @@ async function main() {
     }, peer.username);
     await until(() => page.evaluate((n) => (document.querySelector('.dm-panel')?.textContent || '').includes(n), needle), { timeout: 20_000, message: 'DM message visible' });
     await page.keyboard.press('Escape').catch(() => {});
-    return { needle };
+    return { dmRendered: true };
   });
 
   // K01 had an honest red Android API 34 emulator result (run 38160936435).
@@ -1920,8 +1930,8 @@ async function main() {
       timeout: 5_000, message: 'dialog closed by back with IME hidden',
     });
     const top = await sh('dumpsys activity activities | grep -m1 -E "topResumedActivity|mResumedActivity"').catch(() => '');
-    assert(top.includes(PKG), `app left the foreground after back: ${top}`);
-    return { top, initialImeVisible, imeHiddenBeforeBack: true };
+    assert(top.includes(PKG), 'K01 app left foreground after Back');
+    return { appStillForeground: true, initialImeVisible, imeHiddenBeforeBack: true };
   });
 
   await check('K02', 'Android Back first hides a visible soft keyboard, then closes Settings on a second press', async () => {
@@ -1939,24 +1949,24 @@ async function main() {
       timeout: 5_000, message: 'K02 second Android Back closes Settings',
     });
     const top = await sh('dumpsys activity activities | grep -m1 -E "topResumedActivity|mResumedActivity"').catch(() => '');
-    assert(top.includes(PKG), `K02 app left foreground: ${top}`);
+    assert(top.includes(PKG), 'K02 app left foreground after Back');
     return { tap, firstBackHidIme: true, secondBackClosedSettings: true };
   });
 
   await check('DL01', 'warm deep link bridge://channel/<id> opens that channel', async () => {
     await openChannel(otherId).catch(() => {});
-    const raw = await platform.deepLink(`bridge://channel/${channelId}`);
+    await platform.deepLink(`bridge://channel/${channelId}`);
     await attachPage();
     await until(() => activeChannel().then((c) => c === channelId), { timeout: 20_000, message: 'deep-linked channel active' });
-    return { am: raw.split('\n').slice(-2).join(' | ') };
+    return { deepLinkOpened: true };
   });
 
   await check('DL04', 'the app-owned scheme com.bridge.app://channel/<id> opens that channel (the link format that also works on iOS)', async () => {
     await openChannel(otherId).catch(() => {});
-    const raw = await platform.deepLink(`com.bridge.app://channel/${channelId}`);
+    await platform.deepLink(`com.bridge.app://channel/${channelId}`);
     await attachPage();
     await until(() => activeChannel().then((c) => c === channelId), { timeout: 20_000, message: 'com.bridge.app link opened the channel' });
-    return { am: raw.split('\n').slice(-2).join(' | ') };
+    return { deepLinkOpened: true };
   });
 
   await check('DL02', 'cold deep link bridge://channel/<id> opens that channel after session restore', async () => {
@@ -1975,7 +1985,7 @@ async function main() {
     const after = await activeChannel();
     const leaked = await page.evaluate((cid) => !!document.querySelector(`.ch-item[data-id="${cid}"]`), privateChannelId);
     assert(after !== privateChannelId && !leaked, 'inaccessible channel became visible through a deep link');
-    return { before, after };
+    return { deniedChannelNotVisible: true, activeChannelChanged: before !== after };
   });
 
   await check('P01', 'microphone permission denied in the real Android sheet → voice join tells the user', async () => {
@@ -1993,7 +2003,7 @@ async function main() {
       const t = [...document.querySelectorAll('[role="alert"], [role="status"], .toast')].map((e) => e.textContent || '').join(' | ');
       return /mikrofon|microphone/i.test(t) ? t : null;
     }), { timeout: 25_000, message: 'microphone denial explained in the UI' });
-    return { osSheet: sheet, shown: text.slice(0, 200) };
+    return { osSheet: sheet, denialExplained: Boolean(text) };
   });
 
   await check('P03', 'microphone permission granted → voice join sends audio (SFU outbound RTP)', async () => {
@@ -2021,7 +2031,11 @@ async function main() {
     await attachPage();
     const after = await outboundAudio();
     const silenced = /silenced[:=]\s*true/i.test(recording);
-    return { packetsBefore: before.packetsSent, packetsAfter: after.packetsSent, osReportsSilenced: silenced, audioDump: recording.slice(0, 1200), resumeMs: fg.totalTimeMs };
+    // The Android audio dump contains UID, session, device and patch metadata;
+    // retain only the measurement's bounded signal and explicit probe status.
+    return { packetsBefore: before.packetsSent, packetsAfter: after.packetsSent,
+      audioProbeAvailable: Boolean(recording.trim()),
+      osReportsSilenced: recording.trim() ? silenced : null, resumeMs: fg.totalTimeMs };
   });
 
   await check('V02', 'voice survives a 10 s network loss: the connection recovers and audio flows again', async () => {
@@ -2059,7 +2073,7 @@ async function main() {
     const text = await until(() => alertText(/kamera|camera/), { timeout: 25_000, message: 'camera denial explained in the UI' });
     const videoOn = await page.evaluate(() => document.getElementById('vc-video')?.getAttribute('aria-pressed'));
     assert(videoOn !== 'true', 'camera toggle claims to be on after the permission was denied');
-    return { osSheet: sheet, shown: text.slice(0, 200) };
+    return { osSheet: sheet, denialExplained: Boolean(text), toggleRemainedOff: true };
   });
 
   await check('P07', 'camera permission granted → video is sent (emulated camera, outbound video RTP)', async () => {
@@ -2233,12 +2247,14 @@ async function main() {
     await sleep(12_000);
     const alive = await pid();
     const crash = MODE === 'android' ? await sh('logcat -d -b crash | tail -40').catch(() => '') : '';
-    assert(alive, `app process died after launch with notification permission granted\n${crash.slice(-1500)}`);
+    const crashHints = { fatalException: /FATAL EXCEPTION/.test(crash),
+      nativeSignal: /signal\s+\d+|SIGSEGV|SIGABRT/.test(crash) };
+    assert(alive, 'app process died after notification permission grant; safe crash flags: ' + JSON.stringify(crashHints));
     await attachPage();
     await until(() => appVisible(), { timeout: 45_000, message: 'app visible' });
     const status = await page.evaluate(() => window.bridgePush?.status?.() ?? 'no-bridgePush');
     assert(status === 'unavailable', `a build without FCM must report push as unavailable, got ${status}`);
-    return { pid: alive, status, launchMs: launch.totalTimeMs };
+    return { processAlive: true, status, launchMs: launch.totalTimeMs };
   });
 
   // Last: a crash here would end the process the remaining checks need.
@@ -2254,10 +2270,12 @@ async function main() {
     await sleep(8_000);
     const after = await pid();
     const crash = MODE === 'android' ? await sh('logcat -d -b crash | tail -40').catch(() => '') : '';
-    assert(after && after === before, `app process ended after sign-out (before ${before}, after ${after})\n${crash.slice(-1500)}`);
+    const crashHints = { fatalException: /FATAL EXCEPTION/.test(crash),
+      nativeSignal: /signal\s+\d+|SIGSEGV|SIGABRT/.test(crash) };
+    assert(after && after === before, 'app process changed after sign-out; safe crash flags: ' + JSON.stringify(crashHints));
     await attachPage();
     await until(() => authVisible(), { timeout: 20_000, message: 'sign-in screen after sign-out' });
-    return { pid: after };
+    return { processStable: true };
   });
 
   await check('ANR01', 'Android OS never reported an app-not-responding event during these journeys', async () => {
