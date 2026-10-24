@@ -62,3 +62,37 @@ unchanged and now passes. A new import-order control initially fails 409 vs 200,
 and two socket controls initially fail while a replacement login is still
 pending. Capture-phase invalidation and transition-time socket teardown correct
 those regressions. Full coverage must run again on the corrected commit.
+
+## Follow-up: account deletion after asynchronous session revocation
+
+The server commits `DELETE /api/account`, invalidates credentials, and
+disconnects live sessions **before** returning HTTP 200. The resulting
+`bridge:auth-logout` can supersede the HTTP generation while the success
+response is still in flight. Previously, `apiFetch` converted that successful
+response into a generic 409, so the Privacy tab neither confirmed deletion
+nor erased the deleted account's local-first storage. The tab also looked up
+the account identity *after* the response, when it could already be cleared.
+
+The correction preserves only an internal, unforgeable acknowledgement on the
+otherwise opaque `409 AUTH_SESSION_CHANGED` response, scoped strictly to the
+exact `DELETE /api/account` call. The old response body is never released to a
+replacement account. The Privacy tab captures the original account identity
+before transmission, erases only that account after a confirmed acknowledgement,
+and never signs out a replacement login even when local erasure finishes late.
+An ordinary 409, unrelated response, error or unconfirmed network failure does
+not authorize local data erasure. A committed deletion whose response is
+**lost entirely** remains an unknown-result case; no proof is fabricated.
+
+Focused verification: 24 account-deletion/HTTP lifecycle tests PASS, zero
+skips. New cases include revocation before the HTTP acknowledgement, a new
+login before the acknowledgement, a new login during local erasure, and an
+unmarked 409 negative control. Production and strict client typechecks plus
+client lint PASS. The full client coverage suite passed **5,712/5,712 tests
+across 339 files, zero skips**, when run with `TZ=UTC`: statements 95.52%,
+branches 90.58%, functions 94.86%, lines 96.54%. The initial local run under
+`America/Toronto` exposed two unrelated pre-existing tests assuming UTC dates
+(5,710 PASS / 2 FAIL); both passed unchanged under UTC, as did the whole suite.
+Svelte checks reported 0 errors and 0 warnings; the production build and its
+existing overall bundle budgets pass (four sub-budget warnings remain).
+Native acceptance and exact-head CI are independent gates; this patch is not
+an Android ANR or iOS I07 resolution.
