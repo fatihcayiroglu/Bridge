@@ -206,6 +206,15 @@
     ],
     "rationale": "081 owns the portable_import_approvals table and its down drops that table. The later 082 adds the grant digest column and its hex-format CHECK to that same table, so a standalone 081 rollback destroys objects which 081 cannot recreate. 082 by itself is lossless. The mandatory --ordered rollback proof on real PostgreSQL completed the entire down/up chain with zero missing or extra objects. This declaration does not waive the ordered rollback, column validator, exact-head integration checks or any other migration failure."
   },
+  "092_channel_copy_source_barrier": {
+    "classification": "EXPECTED_DEPENDENCY",
+    "kind": "ordered-rollback-dependency",
+    "expectedDifference": "Isolated 092 down is refused: cannot drop function bridge_channel_copy_source_barrier() because other objects depend on it. The zz_channel_final_admission triggers on threads and thread_messages are owned by 095 and still reference that function. Reverse 095 before 092; no CASCADE or data deletion is permitted.",
+    "dependsOn": [
+      "095_channel_thread_final_admission"
+    ],
+    "rationale": "092 owns bridge_channel_copy_source_barrier(). 095 reuses that function for two new thread admission triggers. PostgreSQL correctly refuses an isolated 092 down while those dependants remain installed. On PostgreSQL 18 the mandatory full ordered down/up chain completed with zero lost or extra schema objects, and 095's own isolated down/up is lossless. The executable 092/095 tests additionally verify trigger definitions and preserved content. This declaration covers only this measured dependency failure and does not waive ordered rollback or any other migration failure."
+  },
   "084_channel_expiry_foundation": {
     "classification": "EXPECTED_DEPENDENCY",
     "kind": "cross-migration-dependency",
