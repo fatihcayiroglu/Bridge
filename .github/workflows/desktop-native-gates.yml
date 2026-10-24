@@ -34,7 +34,7 @@ env:
 jobs:
   linux:
     name: Linux x64 — real Electron window + AppImage/DEB
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v7
@@ -97,12 +97,17 @@ jobs:
           ls -l /opt/Bridge/chrome-sandbox
       - name: Installed Linux first-run window smoke (real X11, OS sandbox)
         run: xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-window-smoke.sh
-      # Native Wayland compositor, no X11 DISPLAY and no Chromium sandbox opt-out.
-      # The script checks an actual xdg-toplevel protocol request, not just PID.
+      # Weston 13 headless exposes no wl_seat; GTK can fail before xdg-toplevel.
+      # Use the Weston X11 backend on Xvfb for an actual compositor input seat.
+      # Xvfb is visible only to Weston: Bridge itself unsets DISPLAY, explicitly
+      # selects native Wayland, and must prove wl_seat + xdg-toplevel + ack.
       - name: Install Weston Wayland compositor
-        run: sudo apt-get install -y --no-install-recommends weston
-      - name: Installed Linux native Wayland surface smoke (headless Weston)
-        run: dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
+        run: |
+          sudo apt-get install -y --no-install-recommends weston
+          weston --version
+          dpkg-query -W -f='${Version}\n' weston
+      - name: Installed Linux native Wayland surface smoke (seated Weston on Xvfb)
+        run: xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
       - name: Preserve Linux package artifacts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
