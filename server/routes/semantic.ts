@@ -72,7 +72,7 @@ import { callAI, AI_ENABLED } from '../lib/aiProvider';
 import { serverAllowsAi } from '../lib/aiServerPolicy';
 import logger from '../lib/logger';
 import { generateEmbedding, vectorSearch, PGVECTOR_ENABLED, EMBEDDING_PROVIDER } from '../lib/pgvector';
-import { readableChannelIds } from '../lib/permissions';
+import { liveReadableChannelIds, channelAvailabilityErrors } from '../lib/channelLiveReadSet';
 import { createHash } from 'crypto';
 import { parsePositiveIntWithinBoundQuery, parsePositiveIntWithinBoundValue } from '../lib/queryNumbers';
 
@@ -104,7 +104,7 @@ async function revalidateCachedSearch(userId: string, serverId: string, cached: 
   const ids = matches.map((m) => String(m._id));
   const live = await Messages.findWhere({ _id: { $in: ids }, serverId, deletedAt: null }) as Array<{ _id: unknown; channelId: unknown; content?: unknown }>;
   const byId = new Map(live.map((m) => [String(m._id), m]));
-  const viewable = await readableChannelIds(userId, serverId, live.map((m) => String(m.channelId)));
+  const viewable = await liveReadableChannelIds(userId, serverId, live.map((m) => String(m.channelId)));
   const kept = matches.flatMap((m) => {
     const row = byId.get(String(m._id));
     return row && viewable.has(String(row.channelId)) ? [{ ...m, content: row.content }] : [];
@@ -187,7 +187,7 @@ router.post('/search', authMiddleware, limits.ai(), async (req, res) => {
   //
   // Faz D'de `search.ts` sertlestirilmisti; ayni VERIYE giden bu ikinci yol
   // denetimsiz kalmisti. Filtre, sonuc uretiminden ONCE uygulanir.
-  const viewable = await readableChannelIds(_u.id, String(serverId), messages.map(m => String(m.channelId)));
+  const viewable = await liveReadableChannelIds(_u.id, String(serverId), messages.map(m => String(m.channelId)));
   messages = messages.filter(m => viewable.has(String(m.channelId)));
 
   if (!messages.length) return res.json({
@@ -354,7 +354,7 @@ router.get('/digest/:serverId', authMiddleware, async (req, res) => {
   // Digest her kanal icin en cok tepki alan mesajlarin ILK 100 KARAKTERINI
   // donduruyordu; filtre olmadan bu, gorunmeyen ozel kanallarin icerigini
   // "haftalik ozet" kilifinda sizdiriyordu.
-  const digestViewable = await readableChannelIds(
+  const digestViewable = await liveReadableChannelIds(
     _u.id, serverId, allChannels.map((c: { _id: string }) => String(c._id)),
   );
   const channels = allChannels.filter((c: { _id: string }) => digestViewable.has(String(c._id)));
@@ -469,7 +469,7 @@ router.get('/engagement/:serverId', authMiddleware, async (req, res) => {
   const scores = await Promise.all(periods.map(async ({ days, since }) => {
     // FAZ G — baglilik skoru gorunmeyen kanallardan ETKILENMEZ.
     const msgsRaw = await Messages.findWhere({ serverId, createdAt: { $gt: since }, deletedAt: null, type: { $ne: 'system' } });
-    const engViewable = await readableChannelIds(
+    const engViewable = await liveReadableChannelIds(
       _u.id, serverId, msgsRaw.map((m: { channelId: string }) => String(m.channelId)),
     );
     const msgs = msgsRaw.filter((m: { channelId: string }) => engViewable.has(String(m.channelId)));
@@ -490,7 +490,7 @@ router.get('/engagement/:serverId', authMiddleware, async (req, res) => {
 
   // En aktif saatler (son 7 gün)
   const recentMsgsRaw = await Messages.findWhere({ serverId, createdAt: { $gt: now - 7 * 86400000 }, deletedAt: null, type: { $ne: 'system' } });
-  const recentViewable = await readableChannelIds(
+  const recentViewable = await liveReadableChannelIds(
     _u.id, serverId, recentMsgsRaw.map((m: { channelId: string }) => String(m.channelId)),
   );
   const recentMsgs = recentMsgsRaw.filter((m: { channelId: string }) => recentViewable.has(String(m.channelId)));
@@ -510,6 +510,9 @@ router.get('/engagement/:serverId', authMiddleware, async (req, res) => {
     generatedAt: now,
   });
 });
+
+// P7 D2: expired channels are filtered out above; an unverifiable check is a 503.
+router.use(channelAvailabilityErrors);
 
 export default router;
 

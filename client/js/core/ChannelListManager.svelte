@@ -27,7 +27,9 @@
   import { readToken } from './auth-compat.js';
   import { mountOrUpdateChannelList, unmountChannelList } from './channel-list/channel-list-svelte.js';
   import { apiFetch } from './api-fetch.js';
-  import { activeChannelSurvives, decideAccessReaction, type AccessEvent } from './channel-list/access-revocation.ts';
+  import { activeChannelSurvives, decideAccessReaction, openChannelExpired, resumeReloadDue, RESUME_HIDDEN_MIN_MS, channelsChangedDelay, type AccessEvent } from './channel-list/access-revocation.ts';
+  import { reconcileLocalChannels } from './local-first/channel-reconcile.ts';
+  import { channelExpiresAt, formatChannelExpiry } from './channel-list/channel-expiry.ts';
   import { navigationOwner, lastTextChannel, rememberTextChannel } from './navigation-selection.js';
   const log = createLogger('ChannelListManager');
 
@@ -245,6 +247,16 @@
       }
 
       channels = sanitizeChannels(data);
+      // P7 D2: the authorized list is the truth for this server. Encrypted
+      // history and queued sends of channels it no longer contains (expired,
+      // deleted, access lost while offline) are purged, not kept for offline
+      // search or a later retry.
+      const me = BridgeRegistry.call<{ _id?: string; id?: string } | null>('getMe');
+      const reconcileUser = me?._id ?? me?.id ?? null;
+      if (reconcileUser) {
+        void reconcileLocalChannels(reconcileUser, targetServerId, channels.map(c => c._id))
+          .catch((error: unknown) => log.warn('Yerel kanal kopyaları temizlenemedi', error));
+      }
       // Final21 Faz 16: açık kanal yetkili listede artık YOKSA (erişim kaldırıldı,
       // kanal silindi) görünüm onu bırakır. Aksi hâlde `activeChannelId` dolu
       // kaldığı için aşağıdaki otomatik seçim hiç çalışmaz ve kullanıcı okuyamadığı
@@ -375,6 +387,7 @@
     if (iconEl)  iconEl.dataset.channelType = channelIconKind(channel.type);
     if (nameEl)  nameEl.textContent  = channel.name;
     if (topicEl) topicEl.textContent = channel.topic ?? '';
+    renderExpiryNotice(topicEl, channel);
 
     // Faz 8.3 — SAHİPLİK: metin/ses görünüm geçişi buradan ALINDI.
     // Liste bileşeni yalnızca SEÇİM yapar; hangi sahnenin görüneceğine
@@ -444,7 +457,7 @@
   // gizlediğinde `channel:access-revoked`, her kanal yetkisi yazımında
   // `permissions:updated` yayar. Hiçbirini dinleyen istemci kodu YOKTU.
   type AccessSocket = { on?(e: string, h: (p: unknown) => void): unknown; off?(e: string, h: (p: unknown) => void): unknown };
-  const ACCESS_EVENTS: AccessEvent[] = ['membership:revoked', 'channel:access-revoked', 'permissions:updated'];
+  const ACCESS_EVENTS: AccessEvent[] = ['membership:revoked', 'channel:access-revoked', 'permissions:updated', 'channel:expired', 'channels:changed'];
   const accessHandlers = new Map<AccessEvent, (payload: unknown) => void>(
     ACCESS_EVENTS.map(event => [event, (payload: unknown) => onAccessEvent(event, payload)]),
   );
@@ -453,12 +466,85 @@
   function onAccessEvent(event: AccessEvent, payload: unknown): void {
     const reaction = decideAccessReaction(event, payload, { currentServerId: serverId, activeChannelId });
     if (reaction.reloadServers) BridgeRegistry.call('loadServers');
+    if (event === 'channels:changed' && reaction.reloadChannelsOf) {
+      scheduleListRefresh(reaction.reloadChannelsOf);
+      return;
+    }
+    if (event === 'channel:expired' && reaction.reloadChannelsOf) {
+      const openBefore = activeChannelId;
+      const expiredServer = reaction.reloadChannelsOf;
+      void loadChannels(expiredServer, true).then(() => {
+        // Only an authorized, current list may say the open channel is gone.
+        if (!loadError && serverId === expiredServer && openChannelExpired(openBefore, channels.map(c => c._id))) {
+          BridgeRegistry.call('toast', t('channel_expired', 'Bu kanalın süresi doldu.'), 'info');
+        }
+      });
+      return;
+    }
     if (reaction.reloadChannelsOf) void loadChannels(reaction.reloadChannelsOf, true);
     if (reaction.notice === 'server-access-lost') {
       BridgeRegistry.call('toast', t('access_server_lost', 'Bu sunucuya erişimin kaldırıldı.'), 'warning');
     } else if (reaction.notice === 'channel-access-lost') {
       BridgeRegistry.call('toast', t('access_channel_lost', 'Bu kanala erişimin kaldırıldı.'), 'warning');
     }
+  }
+
+  /**
+   * P7 D2 (#321): an expiring channel says so in its header, as an absolute server-authoritative
+   * time (a relative "in 3 h" would go stale on screen). Text only; role="note" for screen readers.
+   */
+  function renderExpiryNotice(anchor: HTMLElement | null, channel: Channel): void {
+    let el = document.getElementById('ch-h-expiry');
+    const shown = formatChannelExpiry(channelExpiresAt(channel), Date.now());
+    if (!shown) { el?.remove(); return; }
+    if (!el && anchor?.parentElement) {
+      el = document.createElement('span');
+      el.id = 'ch-h-expiry';
+      el.className = 'ch-h-expiry';
+      el.setAttribute('role', 'note');
+      anchor.after(el);
+    }
+    if (!el) return;
+    el.dataset.soon = shown.soon ? 'true' : 'false';
+    el.textContent = t('channel_expiry_notice', 'Bu kanal ve mesajları {when} tarihinde silinecek.', { when: shown.absolute });
+  }
+
+  // Another member or device changed this server's channels: one refetch per burst, spread
+  // with jitter across members, and only if the user is still on that server when it fires.
+  let listRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleListRefresh(target: string): void {
+    if (listRefreshTimer) clearTimeout(listRefreshTimer);
+    listRefreshTimer = setTimeout(() => {
+      listRefreshTimer = null;
+      if (!destroyed && serverId === target) void loadChannels(target, true);
+    }, channelsChangedDelay());
+  }
+
+  // P7 D2: refetch after a background/offline window (see resumeReloadDue).
+  let lastResumeReloadAt = 0;
+  function reloadAfterResume(): void {
+    const now = Date.now();
+    if (destroyed || !resumeReloadDue(serverId, lastResumeReloadAt, now)) return;
+    lastResumeReloadAt = now;
+    void loadChannels(serverId!, true);
+  }
+  function onAppStateChange(event: Event): void {
+    if ((event as CustomEvent<{ active?: boolean }>).detail?.active === true) reloadAfterResume();
+  }
+  let hiddenSince = 0;
+  function onVisibilityResume(): void {
+    if (document.visibilityState === 'hidden') { hiddenSince = Date.now(); return; }
+    if (document.visibilityState !== 'visible' || hiddenSince === 0) return;
+    const hiddenFor = Date.now() - hiddenSince;
+    hiddenSince = 0;
+    if (hiddenFor >= RESUME_HIDDEN_MIN_MS) reloadAfterResume();
+  }
+  function onPageShowResume(event: Event): void {
+    if ((event as PageTransitionEvent).persisted) reloadAfterResume();
+  }
+  function onSocketReconnected(): void {
+    syncAccessSocket();
+    reloadAfterResume();
   }
 
   function syncAccessSocket(): void {
@@ -472,7 +558,10 @@
   onMount(() => {
     syncAccessSocket();
     document.addEventListener('bridge:socket-ready', syncAccessSocket);
-    document.addEventListener('bridge:socket-reconnected', syncAccessSocket);
+    document.addEventListener('bridge:socket-reconnected', onSocketReconnected);
+    window.addEventListener('bridge:appstate', onAppStateChange);
+    document.addEventListener('visibilitychange', onVisibilityResume);
+    window.addEventListener('pageshow', onPageShowResume);
     document.addEventListener('bridge:load-channels', onLoadChannels);
     document.addEventListener('bridge:auth-success', onAuthSuccess);
     document.addEventListener('bridge:auth-logout', onLogout);
@@ -568,12 +657,16 @@
 
   onDestroy(() => {
     destroyed = true;
+    if (listRefreshTimer) clearTimeout(listRefreshTimer);
     requestSeq += 1;
     document.removeEventListener('bridge:load-channels', onLoadChannels);
     document.removeEventListener('bridge:auth-success', onAuthSuccess);
     document.removeEventListener('bridge:auth-logout', onLogout);
     document.removeEventListener('bridge:socket-ready', syncAccessSocket);
-    document.removeEventListener('bridge:socket-reconnected', syncAccessSocket);
+    document.removeEventListener('bridge:socket-reconnected', onSocketReconnected);
+    window.removeEventListener('bridge:appstate', onAppStateChange);
+    document.removeEventListener('visibilitychange', onVisibilityResume);
+    window.removeEventListener('pageshow', onPageShowResume);
     for (const [event, handler] of accessHandlers) accessSocket?.off?.(event, handler);
     accessSocket = null;
     BridgeRegistry.unregister('loadChannels');

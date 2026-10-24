@@ -1,9 +1,11 @@
 // server/db/repositories/ChannelRepository.ts
 // Kanal ve kanal kategorisi sorgularını tek noktada toplar.
 
+import { recordReportChannelVisibility } from '../../lib/reportChannelVisibility';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../loader';
 import { postgresPoolOrTestFallback } from './postgresInvariant';
+import { classifyChannelExpiryWithTombstone } from '../../lib/channelExpiry';
 import type { ChannelType } from './types/entities';
 
 /**
@@ -36,8 +38,18 @@ class ChannelRepository {
     return db.channels.findOne({ _id: id });
   }
 
+  /**
+   * P7 D2: an expired channel is gone for every listing, including while the
+   * expiry worker drains a claimed row (its expiresAt has passed). Exports,
+   * permission editors, stats and activity feeds share this read. Corrupt
+   * expiry metadata hides the channel (fail closed). Writes are refused by the
+   * PostgreSQL barrier; this keeps metadata from reaching clients.
+   */
   async findByServer(serverId: string) {
-    return db.channels.find({ serverId }).sort({ order: 1 });
+    const channels = await db.channels.find({ serverId }).sort({ order: 1 });
+    const now = Date.now();
+    // The classifier never throws: corrupt input is already `invalid` (hidden).
+    return channels.filter((channel) => classifyChannelExpiryWithTombstone(channel, null, now).accessible);
   }
 
   async findByIdAndServer(id: string, serverId: string) {
@@ -179,11 +191,21 @@ class ChannelRepository {
         }
         // Lock the complete sibling set so two concurrent deletes cannot both
         // observe "2 channels" and race the tenant down to zero channels.
-        const siblings = await client.query<{ _id: string }>(
-          'SELECT _id FROM channels WHERE "serverId"=$1 FOR UPDATE',
+        // P7 D2: an expired or tombstoned row is not a surviving channel (the
+        // expiry worker keeps it only until its graph is drained), and such a
+        // channel is already gone for its owner too.
+        const siblings = await client.query<{ _id: string; live: boolean }>(
+          `SELECT c._id,
+                  (c."expiresAt" IS NULL OR c."expiresAt" > FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT)
+                  AND NOT EXISTS (SELECT 1 FROM channel_expiry_tombstones t WHERE t."channelId" = c._id) AS live
+             FROM channels c WHERE c."serverId"=$1 FOR UPDATE OF c`,
           [serverId],
         );
-        if (siblings.rows.length <= 1) {
+        if (!siblings.rows.some((r) => r._id === id && r.live)) {
+          await client.query('ROLLBACK');
+          return 'not_found';
+        }
+        if (!siblings.rows.some((r) => r._id !== id && r.live)) {
           await client.query('ROLLBACK');
           return 'last_channel';
         }
@@ -233,8 +255,14 @@ class ChannelRepository {
         // A tombstone must survive ordinary deletion: otherwise delayed/offline
         // snapshots could later make a deleted channel appear live again.
         // D2 cleanup/retention will require a separate, audited lifecycle.
+        // Moderation reports are retained too (migration 088): their evidence
+        // follows the report retention policy, not the channel's lifetime.
+        // Before the overrides go: whether the channel hid itself from anyone
+        // decides who may review its retained reports (migration 090).
+        if (has('message_reports', 'channelVisibility')) await recordReportChannelVisibility(client, id, serverId);
         for (const [table, tableCols] of cols.entries()) {
           if (table === 'channels' || table === 'channel_expiry_tombstones' ||
+              table === 'message_reports' || table === 'channel_object_release_outbox' ||
               !tableCols.has('channelId')) continue;
           await client.query(`DELETE FROM "${table}" WHERE "channelId"=$1`, [id]);
         }
@@ -295,8 +323,11 @@ class ChannelRepository {
     return db.channels.count({ serverId });
   }
 
+  /** Same P7 D2 rule as findByServer: expired (or corrupt) channels are never listed. */
   async findWhere(query: Record<string, unknown>) {
-    return db.channels.find(query);
+    const channels = await db.channels.find(query);
+    const now = Date.now();
+    return channels.filter((channel) => classifyChannelExpiryWithTombstone(channel, null, now).accessible);
   }
 
   async findOneWhere(query: Record<string, unknown>) {
