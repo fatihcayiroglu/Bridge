@@ -1,7 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives } from './exit-diagnostics.mjs';
+import { emptyProductExitLedger, mergeProductExitCheckpoint, summarizeProductExitLedger, classifyDependencyDeathDescription, parseFinalizationProbeMarkers, parseAnrTraceProbeMarkers, parseFontRefReleaseMarkers, parseArtExplicitGcLog, parseApplicationExits, parseDependencyKillLine, parseActivityManagerAnrs, parseAnrCpuPressure, parseWebViewDevToolsSockets, summarizeWebViewAttachEvidence, classifyWebViewDevToolsTargets, inspectBridgeEmojiFontProvider, parseNativeEmojiStartupProbe, summarizeControlProcessExit, summarizeFreshControlProcessExit, summarizeAndroidColdLaunch, classifyAndroidDependencyDeath, classifyFreshAndroidDependencyDeath, summarizeAndroidWebViewProvider, summarizeAndroidWebViewAlternatives, redactRecentAndroidExits } from './exit-diagnostics.mjs';
+
+test('ANR first-failure evidence drops raw PIDs, processes, timestamps and exit descriptions', () => {
+  const raw = { available: true, exits: [
+    { pid: 9981, process: 'com.bridge.app.debug', at: 'private-time',
+      reason: '6 (ANR)', subreason: '0 (UNKNOWN)', dependencyDescription: 'user@example.com' },
+    { pid: 9982, process: 'private-app', at: 'secret',
+      reason: '12 (DEPENDENCY DIED)', subreason: '21 (FORCE STOP)',
+      dependency: { provider: 'sensitive-service', available: true } },
+    { pid: 9983, reason: '5 (secret)', subreason: 'malformed' },
+  ] };
+  const safe = redactRecentAndroidExits(raw);
+  assert.deepEqual(safe, { available: true, count: 3, reasons: [
+    { reasonCode: 6, subreasonCode: 0 },
+    { reasonCode: 12, subreasonCode: 21 },
+    { reasonCode: null, subreasonCode: null },
+  ] });
+  assert.doesNotMatch(JSON.stringify(safe), /9981|9982|9983|private|secret|user@|process|provider|description/);
+  assert.deepEqual(redactRecentAndroidExits(null), { available: false, count: 0, reasons: [] });
+  assert.deepEqual(redactRecentAndroidExits({ available: true, exits: 'bad' }),
+    { available: false, count: 0, reasons: [] });
+  const journeys = readFileSync(new URL('./android-journeys.mjs', import.meta.url), 'utf8');
+  assert.match(journeys, /redactRecentAndroidExits\(exitFacts\)/);
+  assert.match(journeys, /id === 'CS01' \|\| id === 'L01' \|\| id === 'ANR01'/);
+  assert.doesNotMatch(journeys, /JSON\.stringify\(exitFacts\)/);
+  assert.doesNotMatch(journeys, /Object\.assign\(facts, \{ deviceUser:/);
+});
 
 test('keeps only allow-listed exit fields and redacts descriptions and credentials', () => {
   const raw = [

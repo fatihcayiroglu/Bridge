@@ -242,6 +242,31 @@ export function summarizeControlProcessExit(exits, expectedPid) {
 }
 
 /**
+ * Android first-failure attachment: preserve only bounded OS reason numbers.
+ * `parseApplicationExits` must retain PID/process/time/description in memory
+ * for reliable attribution, but those identity-bearing fields must NEVER be
+ * copied to uploaded JSON or CI logs. Missing/malformed data stays unknown.
+ */
+export function redactRecentAndroidExits(evidence) {
+  if (evidence?.available !== true || !Array.isArray(evidence.exits)) {
+    return { available: false, count: 0, reasons: [] };
+  }
+  const rows = evidence.exits.slice(0, 3);
+  const numericCode = (value) => {
+    const m = /^([0-9]{1,2}) \([A-Z_ ]+\)$/.exec(String(value ?? ''));
+    return m && Number(m[1]) <= 99 ? Number(m[1]) : null;
+  };
+  return {
+    available: true,
+    count: rows.length,
+    reasons: rows.map(row => ({
+      reasonCode: numericCode(row?.reason),
+      subreasonCode: numericCode(row?.subreason),
+    })),
+  };
+}
+
+/**
  * A01 exit dependency attribution: ONLY fixed enums leave the process.
  *
  * ApplicationExitInfo reason 12 says a dependency died, but does not name
