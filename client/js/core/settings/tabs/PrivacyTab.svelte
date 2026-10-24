@@ -250,6 +250,7 @@
   // (sessiz devir yok) → yoksa parola + açık onay → silme → oturum kapanır.
   interface DeletionBlocker { kind: string; id: string; name?: string; memberCount: number }
   type DeleteStage = 'closed' | 'checking' | 'blocked' | 'ready' | 'deleting';
+  let deletionRequestSeq = 0;
   let deleteStage    = $state<DeleteStage>('closed');
   let blockers       = $state<DeletionBlocker[]>([]);
   let deletePassword = $state('');
@@ -274,25 +275,30 @@
   async function startDeletion(): Promise<void> {
     const apiFetch = deletionApi();
     if (!apiFetch) { deleteError = t('privacy_delete_unavailable'); return; }
+    const seq = ++deletionRequestSeq;
     deleteStage = 'checking';
     deleteError = null;
     try {
       const response = await apiFetch('/api/account/deletion-preflight');
+      if (seq !== deletionRequestSeq) return;
       if (!response.ok) {
         deleteStage = 'closed';
         deleteError = response.status === 503 ? t('privacy_delete_unavailable') : t('privacy_delete_failed');
         return;
       }
       const body = await response.json() as { blockers?: DeletionBlocker[] };
+      if (seq !== deletionRequestSeq) return;
       blockers = Array.isArray(body.blockers) ? body.blockers : [];
       deleteStage = blockers.length ? 'blocked' : 'ready';
     } catch {
+      if (seq !== deletionRequestSeq) return;
       deleteStage = 'closed';
       deleteError = t('privacy_delete_failed');
     }
   }
 
   function cancelDeletion(): void {
+    deletionRequestSeq += 1;
     deleteStage = 'closed';
     blockers = [];
     deletePassword = '';
@@ -309,6 +315,11 @@
     const accountId = signedInPortableOwner();
     if (!accountId) { cancelDeletion(); return; }
     const authRevision = deletionAuthRevision;
+    const seq = ++deletionRequestSeq;
+    // A stale callback may finish captured-account erasure, but must not clear
+    // passwords, close forms or publish errors for a newer UI operation.
+    const ownsDeletionUi = (): boolean => seq === deletionRequestSeq &&
+      signedInPortableOwner() === accountId && deletionAuthRevision === authRevision;
     deleteStage = 'deleting';
     deleteError = null;
     try {
@@ -318,7 +329,7 @@
         body: JSON.stringify(passwordless ? { confirm: 'DELETE' } : { confirm: 'DELETE', password: deletePassword }),
       });
       if (response.ok || isConfirmedAccountDeletion(response)) {
-        deletePassword = '';
+        if (ownsDeletionUi()) deletePassword = '';
         // P7: the account no longer exists, so neither may its local-first data
         // on this device (encrypted history/outbox/drafts and every key). Erased
         // before logout tears the session down; never throws, and an incomplete
@@ -327,7 +338,7 @@
         // Do not sign out a replacement session that began during either the
         // HTTP round trip or the async local wipe (even if it reused an ID).
         const currentOwner = signedInPortableOwner();
-        if (currentOwner === accountId && deletionAuthRevision === authRevision) {
+        if (ownsDeletionUi()) {
           logout();
           showAuthMsg(t('privacy_delete_done'), 'success');
         } else if (currentOwner === null) {
@@ -336,13 +347,11 @@
         }
         return;
       }
-      if (signedInPortableOwner() !== accountId || deletionAuthRevision !== authRevision) {
-        cancelDeletion();
-        return;
-      }
+      if (!ownsDeletionUi()) return;
       if (response.status === 409) {
         // Ön denetimden SONRA bir sunucu sahipliği oluşmuş olabilir.
         const body = await response.json().catch(() => ({})) as { blockers?: DeletionBlocker[] };
+        if (!ownsDeletionUi()) return;
         blockers = Array.isArray(body.blockers) ? body.blockers : [];
         deletePassword = '';
         deleteStage = blockers.length ? 'blocked' : 'ready';
@@ -355,10 +364,7 @@
         : response.status === 503 ? t('privacy_delete_unavailable')
         : t('privacy_delete_failed');
     } catch {
-      if (signedInPortableOwner() !== accountId || deletionAuthRevision !== authRevision) {
-        cancelDeletion();
-        return;
-      }
+      if (!ownsDeletionUi()) return;
       deleteStage = 'ready';
       deleteError = t('privacy_delete_failed');
     }
@@ -404,6 +410,7 @@
 
   onDestroy(() => {
     resetPortableImport();
+    cancelDeletion();
     if (savedResetTimer) { clearTimeout(savedResetTimer); savedResetTimer = null; }
   });
 </script>
