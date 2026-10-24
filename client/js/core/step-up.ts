@@ -115,6 +115,8 @@ const PROTECTED: ReadonlyArray<{ method: string; path: RegExp; scope: StepUpScop
   protectedRoute('POST', '/account/portable-import/apply', 'account-security'),
   protectedRoute('DELETE', '/account/?', 'destructive-admin'),
   protectedRoute('DELETE', '/servers/[^/]+', 'destructive-admin'),
+  protectedRoute('DELETE', '/servers/[^/]+/channels/[^/]+', 'destructive-admin'),
+  protectedRoute('PUT', '/servers/[^/]+/channels/[^/]+/expiry', 'destructive-admin'),
   protectedRoute('DELETE', '/admin/(?:users|servers)/[^/]+', 'destructive-admin'),
   protectedRoute('POST', '/servers/[^/]+/bans', 'moderation-burst'),
   protectedRoute('POST', '/servers/[^/]+/members/[^/]+/kick', 'moderation-burst'),
@@ -171,6 +173,8 @@ function explanation(refusal: StepUpRefusal): string {
     case 'account.import': return t('stepup_generic_why');
     case 'account.delete': return t('stepup_why_account_delete');
     case 'server.delete': return t('stepup_why_server_delete');
+    case 'channel.delete':
+    case 'channel.expiry.change': return t('stepup_generic_why');
     case 'admin.user.delete': return t('stepup_why_admin_user_delete');
     case 'admin.server.delete': return t('stepup_why_admin_server_delete');
     case 'moderation.ban':
