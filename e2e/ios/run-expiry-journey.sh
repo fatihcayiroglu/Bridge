@@ -54,6 +54,8 @@ node -e '
   const fs=require("node:fs");
   const result=JSON.parse(fs.readFileSync(process.env.IOS_EVIDENCE_DIR+"/expiry-journey.json"));
   if(result.id!=="D2L01-iOS" || result.status!=="PASS") process.exit(1);
-  const summary="D2L01-iOS: PASS — native background/resume, encrypted history/draft purge, permanent-channel control (AUTOMATED / SIMULATOR).\n";
+  const link=JSON.parse(fs.readFileSync(process.env.IOS_EVIDENCE_DIR+"/open-confirmation-journey.json"));
+  if(link.id!=="I07-XCUITest" || link.status!=="PASS") process.exit(1);
+  const summary="I07-XCUITest: PASS — native OS confirmation accepted, actual channel opened in the same HOT process (AUTOMATED / SIMULATOR).\nD2L01-iOS: PASS — native background/resume, encrypted history/draft purge, permanent-channel control (AUTOMATED / SIMULATOR).\n";
   if(process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,summary);
 '
