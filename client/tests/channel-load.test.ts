@@ -48,6 +48,7 @@ vi.mock('../js/core/logger.js', () => ({
 import ChannelListManager from '../js/core/ChannelListManager.svelte';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 import { rememberTextChannel } from '../js/core/navigation-selection.ts';
+import { CHANNELS_CHANGED_COALESCE_MS, CHANNELS_CHANGED_JITTER_MS } from '../js/core/channel-list/access-revocation.ts';
 
 type Channel = { _id: string; name: string; type?: string; serverId?: string };
 
@@ -970,15 +971,21 @@ describe('P7 D2: refetch the channel list after a background or offline window',
     expect(channelCalls()).toBe(before + 1);
   });
 
-  it('a socket reconnect after an offline window refetches the list', async () => {
-    let now = 2_000_000;
-    vi.spyOn(Date, 'now').mockImplementation(() => now);
-    await loaded([{ _id: 'live', name: 'live' }]);
-    const before = channelCalls();
-    now += 10_000;
-    document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
-    await drainPending();
-    expect(channelCalls()).toBe(before + 1);
+  it('coalesces a socket reconnect burst and refetches within the bounded list-refresh window', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let now = 2_000_000;
+      vi.spyOn(Date, 'now').mockImplementation(() => now);
+      await loaded([{ _id: 'live', name: 'live' }]);
+      const before = channelCalls();
+      now += 10_000;
+      document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
+      document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
+      expect(channelCalls()).toBe(before);
+      await vi.advanceTimersByTimeAsync(CHANNELS_CHANGED_COALESCE_MS + CHANNELS_CHANGED_JITTER_MS + 10);
+      await drainPending();
+      expect(channelCalls()).toBe(before + 1);
+    } finally { vi.useRealTimers(); }
   });
 
   it('a briefly hidden tab does not refetch; a long hidden period (WebView suspension) does', async () => {

@@ -146,32 +146,38 @@
       _hasConnectedOnce = true;
 
       let signalled = false;
-      const emitReadySignals = (): void => {
-        if (signalled || _socket !== socket || !socket.connected) return;
+      let cancelled = false;
+      const emitReadySignals = (authoritative = false): void => {
+        if (cancelled || _socket !== socket || !socket.connected) return;
+        const needsReconciliation = signalled;
+        if (signalled && !authoritative) return;
         signalled = true;
-        cancelSocketReady();
-        if (wasReconnect) {
+        // The fallback keeps legacy servers usable, but cannot prove that room
+        // admission/handlers finished. Keep listening for the real signal and
+        // reconcile once if it arrives later. Teardown still cancels both paths.
+        if (authoritative) cancelSocketReady();
+        if (wasReconnect || needsReconciliation) {
           // Yeniden bağlanma: oda üyelikleri kaybolmuştur ve kopukken gelen
           // mesajlar kaçmıştır. Dinleyen katmanlar (MessageLoader) kanala
           // yeniden katılıp eksik mesajları çeker.
           log.info('Socket yeniden bağlandı — senkronizasyon sinyali yayılıyor');
           document.dispatchEvent(new CustomEvent('bridge:socket-reconnected'));
         }
-        dispatchSocketReady();
+        if (_socket === socket && socket.connected) dispatchSocketReady();
       };
 
       const fallback = setTimeout(() => {
-        if (signalled || _socket !== socket || !socket.connected) return;
+        if (cancelled || signalled || _socket !== socket || !socket.connected) return;
         log.warn('userAuthenticated gelmedi — hazır sinyali yedek süreyle yayılıyor');
         emitReadySignals();
       }, READY_SIGNAL_FALLBACK_MS);
 
       const onAuthenticated = (): void => {
         clearTimeout(fallback);
-        emitReadySignals();
+        emitReadySignals(true);
       };
       _cancelSocketReady = () => {
-        signalled = true;
+        cancelled = true;
         clearTimeout(fallback);
         socket.off('userAuthenticated', onAuthenticated);
       };

@@ -232,6 +232,44 @@ describe('SocketManager canonical realtime/auth lifecycle', () => {
     } finally { document.removeEventListener('bridge:socket-ready', ready); }
   });
 
+  it('reconciles late admission once while keeping application readiness idempotent', async () => {
+    const ready = vi.fn(); const reconnected = vi.fn();
+    document.addEventListener('bridge:socket-ready', ready);
+    document.addEventListener('bridge:socket-reconnected', reconnected);
+    try {
+      instance = mount(SocketManager, { target });
+      const socket = sockets[0]!;
+      socket.connected = true; socket.fire('connect');
+      await vi.advanceTimersByTimeAsync(3000);
+      const beforeAdmission = reconnected.mock.calls.length;
+      expect(ready).toHaveBeenCalledOnce();
+      socket.fire('userAuthenticated'); socket.fire('userAuthenticated');
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(reconnected).toHaveBeenCalledTimes(beforeAdmission + 1);
+      expect(ready).toHaveBeenCalledOnce();
+      expect(socket.onceHandlers.get('userAuthenticated') ?? []).toHaveLength(0);
+    } finally {
+      document.removeEventListener('bridge:socket-ready', ready);
+      document.removeEventListener('bridge:socket-reconnected', reconnected);
+    }
+  });
+
+  it('invalidates the previous admission callback when the same transport reconnects', async () => {
+    const ready = vi.fn(); document.addEventListener('bridge:socket-ready', ready);
+    try {
+      instance = mount(SocketManager, { target });
+      const socket = sockets[0]!;
+      socket.connected = true; socket.fire('connect');
+      const queuedAdmission = socket.onceHandlers.get('userAuthenticated')![0]!;
+      socket.connected = false; socket.fire('disconnect');
+      socket.connected = true; socket.fire('connect');
+      queuedAdmission();
+      expect(ready).not.toHaveBeenCalled();
+      socket.fire('userAuthenticated');
+      expect(ready).toHaveBeenCalledOnce();
+    } finally { document.removeEventListener('bridge:socket-ready', ready); }
+  });
+
   it('ignores queued callbacks from a replaced account socket', async () => {
     instance = mount(SocketManager, { target });
     const old = sockets[0]!;
