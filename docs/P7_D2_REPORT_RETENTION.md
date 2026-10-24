@@ -30,6 +30,18 @@ reports and audit history — tenant ownership), `reporterId` CASCADE,
 - **Security `audit_logs`:** never deleted by expiry or channel deletion; they
   go with the server.
 
+## No new report after expiry
+
+Retention covers reports filed **while the channel was live**. Filing one is
+refused once `expiresAt` passes, even before the worker claims the channel and
+while its rows still exist. Otherwise a report would copy expired content into
+a new, retained snapshot. `POST /api/messages/:id/report` asks the same
+authority as every channel-content read (`channelLiveForMessageRead`: row,
+tenant, tombstone, database clock):
+- expired or tombstoned: the same 404 as a missing or hidden message, before
+  the own-message rule, so it is no existence oracle;
+- unverifiable: 503, and nothing is stored.
+
 ## What is never retained for a report
 
 The expiry worker and ordinary deletion still remove the conversation. A report

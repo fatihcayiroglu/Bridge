@@ -61,6 +61,7 @@ const db = require('../../db/loader').default;
 const MessageReports = require('../../db/repositories/MessageReportRepository').default;
 const { Messages, Channels, Servers } = require('../../db/repositories');
 const moderationRouter = require('../../routes/moderation').default;
+const messagesRouter = require('../../routes/messages').default;
 
 const PG_URL = process.env.PG_TEST_URL;
 const RUN = PG_URL ? describe : describe.skip;
@@ -73,6 +74,7 @@ RUN('real PostgreSQL — reports outlive expired and deleted channels (088)', ()
   const app = express();
   app.use(express.json());
   app.use('/api/servers/:serverId', moderationRouter);
+  app.use('/api/messages', messagesRouter);
   const list = (user: string, server = SRV) =>
     request(app).get(`/api/servers/${server}/reports`).set('x-test-user', user);
   const resolve = (user: string, id: string, server = SRV) =>
@@ -314,6 +316,30 @@ RUN('real PostgreSQL — reports outlive expired and deleted channels (088)', ()
     expect(entry).toMatchObject({ channel: { available: false, name: null }, message: { preview: '' },
       evidence: expect.objectContaining({ text: 'original' }) });
     expect(JSON.stringify(res.body)).not.toContain('edited after report');
+  });
+
+  it('D2: a report filed after expiresAt is refused before and after the worker claims the channel; none is stored', async () => {
+    const eph = await channel('late-report', true);
+    const before = await message(eph, 'reported while live');
+    const after = await message(eph, 'EXPIRED-BODY-NOT-TO-BE-COPIED');
+    const file = (mid: string) =>
+      request(app).post(`/api/messages/${mid}/report`).set('x-test-user', REPORTER).send({ reason: 'harassment' });
+    const rowsFor = async (mid: string) => (await q('SELECT _id FROM message_reports WHERE "messageId"=$1', [mid])).length;
+
+    // Positive control: the same route, the same channel, while PostgreSQL says it is live.
+    expect((await file(before)).status).toBe(201);
+    await expire(eph);                       // no worker tick: both rows still exist
+    const [late, missing] = await Promise.all([file(after), file(id('no-such-message'))]);
+    expect(late.status).toBe(404);
+    expect(late.body).toEqual(missing.body);
+    expect(await rowsFor(after)).toBe(0);
+    await drainExpiry();                     // claimed and tombstoned
+    expect((await file(after)).status).toBe(404);
+    expect(await rowsFor(after)).toBe(0);
+    // The report filed while the channel was live is kept with its snapshot (088).
+    expect(await rowsFor(before)).toBe(1);
+    expect(JSON.stringify(await q('SELECT * FROM message_reports WHERE "channelId"=$1', [eph])))
+      .not.toContain('EXPIRED-BODY-NOT-TO-BE-COPIED');
   });
 
   it('the retention worker scrubs a gone channel\'s evidence after the window, not before and never while open', async () => {

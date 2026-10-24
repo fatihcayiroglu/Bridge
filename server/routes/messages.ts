@@ -91,6 +91,26 @@ function settleChannelRead(
   });
 }
 
+/**
+ * P7 D2: whether a channel's content may be used now. The channel cache and
+ * message first-page cache are NOT expiry authority; PostgreSQL decides (row,
+ * tenant, tombstone, database clock). `null` means unverifiable: the caller
+ * fails closed and never serves stale cached content.
+ */
+async function channelContentLive(channelId: string, serverId: string, channel: unknown): Promise<boolean | null> {
+  if (db._pool) {
+    try {
+      return await channelLiveForMessageRead(db._pool, channelId, serverId);
+    } catch {
+      return null;
+    }
+  }
+  // Unit test mock has no PostgreSQL pool or tombstone collection. A
+  // permanent legacy channel remains testable; expiry is fail-closed.
+  if (process.env.NODE_ENV === 'test') return classifyChannelExpiryWithTombstone(channel, null, Date.now()).accessible;
+  return null;
+}
+
 async function requireChannelMembership(userId: string, channelId: string, res: Response) {
   const cacheKey = `channel:${channelId}`;
   let channel = await cache.get(cacheKey) as { _id: string; serverId: string } | null;
@@ -99,26 +119,10 @@ async function requireChannelMembership(userId: string, channelId: string, res: 
     if (channel) await cache.set(cacheKey, channel, 60);
   }
   if (!channel) { res.status(404).json({ error: 'Channel not found' }); return null; }
-  // P7 D2: the channel cache and message first-page cache are NOT expiry
-  // authority. Recheck PostgreSQL on every channel-content read, including
-  // pinned messages, edit history, reactions and unread/read endpoints.
-  // Fail closed on an unavailable PG store; never serve stale cached content.
-  let live: boolean;
-  if (db._pool) {
-    try {
-      live = await channelLiveForMessageRead(db._pool, channelId, channel.serverId);
-    } catch {
-      res.status(503).json({ error: 'Channel availability could not be verified' });
-      return null;
-    }
-  } else if (process.env.NODE_ENV === 'test') {
-    // Unit test mock has no PostgreSQL pool or tombstone collection. A
-    // permanent legacy channel remains testable; expiry is fail-closed.
-    live = classifyChannelExpiryWithTombstone(channel, null, Date.now()).accessible;
-  } else {
-    res.status(503).json({ error: 'Channel availability could not be verified' });
-    return null;
-  }
+  // Rechecked on every channel-content read, including pinned messages, edit
+  // history, reactions and unread/read endpoints.
+  const live = await channelContentLive(channelId, channel.serverId, channel);
+  if (live === null) { res.status(503).json({ error: 'Channel availability could not be verified' }); return null; }
   if (!live) { res.status(404).json({ error: 'Channel not found' }); return null; }
   const membership = await Members.findOne(userId, channel.serverId);
   if (!membership) { res.status(403).json({ error: 'Not a member' }); return null; }
@@ -620,6 +624,13 @@ router.post('/:id/report', authMiddleware, limits.moderation(), async (req: Requ
   if (!hasPermission(perms, PERMS.VIEW_CHANNELS) || !hasPermission(perms, PERMS.READ_HISTORY)) {
     return void res.status(404).json({ error: 'Message not available' });
   }
+  // P7 D2: a report filed after expiresAt would copy the expired message into a
+  // retained snapshot. Until the worker claims the channel its rows still exist,
+  // so the channel row alone is not enough. Reports filed while it was live are
+  // kept (088). Gone answers the same 404, so it is no existence oracle.
+  const live = await channelContentLive(String(msg.channelId ?? ''), String(msg.serverId ?? ''), channel);
+  if (live === null) return void res.status(503).json({ error: 'Channel availability could not be verified' });
+  if (!live) return void res.status(404).json({ error: 'Message not available' });
   if (String(msg.userId ?? '') === _u.id) return void res.status(400).json({ error: 'Cannot report your own message' });
 
   // P7 B5 (#336): the report keeps what was reported. The author can still edit or
