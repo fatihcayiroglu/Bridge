@@ -225,10 +225,11 @@ async function until(fn, { timeout = 15_000, interval = 250, message = 'conditio
 }
 
 // ── Host-side API (the other side of every journey) ─────────────────────────
-async function http(method, url, { token, body, csrf } = {}) {
+async function http(method, url, { token, body, csrf, stepUpGrant } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
   if (csrf) headers['X-CSRF-Token'] = csrf;
+  if (stepUpGrant) headers['X-Bridge-Step-Up'] = stepUpGrant;
   const res = await fetch(`${API}${url}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const text = await res.text();
   let json = null; try { json = text ? JSON.parse(text) : null; } catch { json = text; }
@@ -238,8 +239,8 @@ async function csrfFor(token) {
   const r = await http('GET', '/api/csrf-token', { token });
   return r.json?.token || r.json?.csrfToken;
 }
-async function write(method, url, token, body) {
-  const r = await http(method, url, { token, body, csrf: await csrfFor(token) });
+async function write(method, url, token, body, stepUpGrant) {
+  const r = await http(method, url, { token, body, csrf: await csrfFor(token), stepUpGrant });
   if (!r.ok) throw new Error(`${method} ${url} → ${r.status} ${JSON.stringify(r.json).slice(0, 300)}`);
   return r.json;
 }
@@ -317,7 +318,16 @@ async function seedLongChannel(serverId, userId, token, count) {
 // without it the journey FAILS instead of skipping, so a missing service is never green.
 async function expireChannelNow(serverId, channelId, token) {
   if (!process.env.DATABASE_URL) throw new Error('D2L01 needs DATABASE_URL to move an API-set expiry into the past');
-  await write('PUT', `/api/servers/${serverId}/channels/${channelId}/expiry`, token, { expiresAt: Date.now() + 2 * 60 * 60 * 1000 });
+  // D2L01 is a legitimate account holder: obtain a fresh password proof.
+  // Do not bypass the channel expiry guard or depend on a possibly stale
+  // sign-in grant after the emulator's lengthy startup.
+  const proof = await write('POST', '/api/step-up/password', token, {
+    password: PASSWORD, scope: 'destructive-admin',
+  });
+  assert(proof.stepUp?.scope === 'destructive-admin' && typeof proof.stepUp?.token === 'string',
+    'D2L01 destructive-admin proof required');
+  await write('PUT', `/api/servers/${serverId}/channels/${channelId}/expiry`, token,
+    { expiresAt: Date.now() + 2 * 60 * 60 * 1000 }, proof.stepUp.token);
   const { createRequire } = await import('node:module');
   const require = createRequire(import.meta.url);
   const pg = require('../../server/node_modules/pg');
