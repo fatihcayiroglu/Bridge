@@ -23,9 +23,28 @@ async function settleUntil(predicate: () => boolean): Promise<void> {
   throw new Error('migration runner did not settle');
 }
 
+// These runner tests mock pg.Client; the production command now performs a
+// read-only source preflight before even creating the schema_migrations ledger.
+// Model a previously verified current-schema installation, not an empty
+// response that would falsely terminate the CLI before exercising its contract.
+function preflightReply(text: string) {
+  if (text.includes('to_regclass(format')) {
+    return { rows: [{
+      hasUsers: true, hasMessages: true, hasMigrationsTable: true,
+      hasSsoProvider: true, hasAckId: true, hasNullableEmbeds: true,
+    }] };
+  }
+  if (text.includes("split_part(id, '_', 1) = '084'")) {
+    return { rows: [{ applied: true }] };
+  }
+  return null;
+}
+
 function baseQuery(applied: string[] = []) {
   mockClient.query.mockImplementation(async (sql: unknown) => {
     const text = String(sql);
+    const preflight = preflightReply(text);
+    if (preflight) return preflight;
     if (text.includes('SELECT id FROM schema_migrations')) return { rows: applied.map(id => ({ id })) };
     return { rows: [] };
   });
@@ -92,6 +111,8 @@ describe('PostgreSQL migration runner executable contract', () => {
     const failure = new Error('DDL exploded');
     mockClient.query.mockImplementation(async (sql: unknown) => {
       const text = String(sql);
+      const preflight = preflightReply(text);
+      if (preflight) return preflight;
       if (text.includes('SELECT id FROM schema_migrations')) return { rows: [] };
       if (text === 'SQL:001_first.sql') throw failure;
       return { rows: [] };
@@ -126,6 +147,29 @@ describe('PostgreSQL migration runner executable contract', () => {
     expect(mockClient.end).toHaveBeenCalledTimes(1);
     expect(mockClient.query.mock.calls.some(c => String(c[0]) === 'BEGIN')).toBe(false);
     expect(stderr.mock.calls.map(c => String(c[0])).join('')).toContain('DOWN script yok');
+  });
+
+  it('refuses legacy source before creating the ledger or running an UP file', async () => {
+    mockClient.query.mockImplementation(async (sql: unknown) => {
+      const text = String(sql);
+      if (text.includes('to_regclass(format')) {
+        return { rows: [{
+          hasUsers: true, hasMessages: true, hasMigrationsTable: false,
+          hasSsoProvider: false, hasAckId: false, hasNullableEmbeds: false,
+        }] };
+      }
+      throw new Error('unexpected SQL after legacy preflight rejection');
+    });
+    run('up');
+    await settleUntil(() => exitSpy.mock.calls.length > 0);
+
+    expect(mockClient.query).toHaveBeenCalledTimes(1);
+    expect(String(mockClient.query.mock.calls[0]![0]).trim()).toMatch(/^SELECT\s/i);
+    expect(mockFs.readFileSync).not.toHaveBeenCalled();
+    expect(stderr.mock.calls.map(c => String(c[0])).join(''))
+      .toContain('BRIDGE_UPGRADE_SOURCE_UNVERIFIED');
+    expect(mockClient.end).toHaveBeenCalledTimes(1);
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it('reports a no-op cleanly when all migrations are already applied', async () => {

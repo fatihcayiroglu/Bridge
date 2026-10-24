@@ -25,31 +25,34 @@ jest.mock('../../middleware/rateLimit', () => ({
 import express from 'express';
 import request from 'supertest';
 import { claimExpiredChannel } from '../../lib/channelExpiryWorker';
+import { stepUpHeader } from '../helpers/stepUp';
 
 const db = require('../../db/loader').default;
 const channelsRouter = require('../../routes/servers/channels');
 
 const PG_TEST_URL = process.env.PG_TEST_URL;
-const RUN = PG_TEST_URL ? describe : describe.skip;
+if (!PG_TEST_URL) throw new Error('PG_TEST_URL required for channel deletion real-PostgreSQL evidence');
 const P = 'pgt-d2-lpd-' + process.pid + '-' + Date.now();
 const OWNER = P + '-owner';
+const TOKEN_VERSION = 7;
+let ownerProof: Record<string, string>;
 let seq = 0;
 const id = (label: string) => `${P}-${label}-${++seq}`;
 const HOUR = 60 * 60 * 1000;
 
-RUN('P7 D2: the last permanent channel cannot be deleted while expiring channels remain', () => {
+describe('P7 D2: the last permanent channel cannot be deleted while expiring channels remain', () => {
   const q = (sql: string, params: unknown[] = []) => db._pool.query(sql, params);
   const app = express();
   app.use(express.json());
   app.use('/api/servers/:sid/channels', channelsRouter);
   app.set('io', { to: () => ({ emit: () => undefined }) });
-  const del = (sid: string, cid: string) => {
+  const del = (sid: string, cid: string, proof = ownerProof) => {
     mockActor.id = OWNER;
-    return request(app).delete(`/api/servers/${sid}/channels/${cid}`);
+    return request(app).delete(`/api/servers/${sid}/channels/${cid}`).set(proof);
   };
   const expire = (sid: string, cid: string, expiresAt: number) => {
     mockActor.id = OWNER;
-    return request(app).put(`/api/servers/${sid}/channels/${cid}/expiry`).send({ expiresAt });
+    return request(app).put(`/api/servers/${sid}/channels/${cid}/expiry`).set(ownerProof).send({ expiresAt });
   };
 
   async function server() {
@@ -77,7 +80,9 @@ RUN('P7 D2: the last permanent channel cannot be deleted while expiring channels
   }
   beforeAll(async () => {
     await cleanup();
-    await q('INSERT INTO users (_id,username,"displayName",password,"createdAt") VALUES ($1,$1,$1,$2,1)', [OWNER, 'x']);
+    await q('INSERT INTO users (_id,username,"displayName",password,"tokenVersion","createdAt") VALUES ($1,$1,$1,$2,$3,1)', [OWNER, 'x', TOKEN_VERSION]);
+    // Reuse one real, bounded owner proof across deletion and expiry races.
+    ownerProof = stepUpHeader(OWNER, 'destructive-admin', { method: 'password', tokenVersion: TOKEN_VERSION });
   });
   afterAll(cleanup);
 
@@ -175,5 +180,26 @@ RUN('P7 D2: the last permanent channel cannot be deleted while expiring channels
       expect([d.status, x.status].sort()).toEqual([200, 409]);
       expect(await permanentCount(sid)).toBe(1);
     }
+  });
+
+  it('keeps the real deletion proof guard enabled without deleting anything on refusal', async () => {
+    const sid = await server();
+    const target = await channel(sid);
+    const keep = await channel(sid);
+    const denied = [
+      { proof: {}, reason: 'step_up_missing' },
+      { proof: stepUpHeader(OWNER, 'account-security', { method: 'password', tokenVersion: TOKEN_VERSION }),
+        reason: 'step_up_scope_mismatch' },
+    ];
+    for (const { proof, reason } of denied) {
+      const res = await del(sid, target, proof);
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ error: 'STEP_UP_REQUIRED', action: 'channel.delete',
+        scope: 'destructive-admin', reasons: [reason] });
+      expect(await exists(target)).toBe(true);
+      expect(await permanentCount(sid)).toBe(2);
+    }
+    expect((await del(sid, target)).status).toBe(200);
+    expect(await exists(keep)).toBe(true);
   });
 });
