@@ -113,9 +113,25 @@ The existing version-1 envelope, 128-bit authentication tag and authenticated
 user/namespace/record scope are preserved. Input sizes and canonical base64 are
 checked; errors contain no plaintext, key bytes or account identifiers.
 
-The composition root preserves a working browser key. It selects Keychain only
-after the observed `DataCloneError`, and keeps that choice across OS upgrades
-by checking the existing native account key first. It reports durability only
+On iOS with the plugin present, the Keychain vault is the account key provider
+by policy:
+1. an existing native account key is always reopened first;
+2. an account that already has a browser WebCrypto key keeps it, so the
+   records it protects stay readable (a read-only lookup that never creates a
+   key);
+3. a new account key is always created in the Keychain, never as a browser key.
+
+An unverifiable lookup in step 1 or 2 fails closed to non-durable memory and
+never switches providers.
+
+The earlier rule, "browser key unless `DataCloneError`", made the provider a
+side effect of what the WebView could persist. Run 40001865845 observed
+`DataCloneError` on an unsigned build. Once the app was signed with its
+Keychain group (below), WebKit could wrap and store the browser key. The
+composition root then silently chose it: run 40025917599 (`0606ceb8`) failed
+D2L01-iOS with `{ available: true, keyExists: false }`. The journey now
+requires the native key **and** a read-only proof that no browser key exists
+for the account. It reports durability only
 after both IndexedDB and key persistence succeed. Provider failures fall back
 honestly to non-durable memory. Native decryption and encryption cannot recreate
 a deleted key; initialization is explicit. Account wipe deletes records before
@@ -145,3 +161,39 @@ is in the native Keychain path, not missing plugin registration. The next run
 preserves only read-only key-availability booleans and a numeric Security.framework
 status after failure. It never initializes a key or seeds records from the test.
 No signing/protection setting or persistence assertion is relaxed.
+
+### Simulator signing (Keychain error -34018)
+
+The `a6ce1de7` run recorded that numeric status: every native key operation
+returned `-34018` (`errSecMissingEntitlement`). The workflow built the app with
+`CODE_SIGNING_ALLOWED=NO`. An unsigned app carries no entitlements, so iOS
+cannot assign it a Keychain access group and refuses every Keychain call. The
+macOS vault tests pass because a command-line binary on macOS uses the login
+keychain without that requirement.
+
+The simulator build is now signed ad hoc (`CODE_SIGN_IDENTITY=-`, the
+"Sign to Run Locally" mode; no team, certificate or profile). It uses
+`mobile/ios-simulator-debug.entitlements`, which grants exactly the app's own
+group (`$(AppIdentifierPrefix)com.bridge.app`). The vault's queries name no
+access group, so they use that one. Nothing in the vault, its accessibility
+class (`WhenUnlockedThisDeviceOnly`, non-synchronizable), the plugin or any
+journey assertion changes. Release and device builds are signed with the
+team's provisioning profile and do not use this file.
+
+The entitlements attach to the App target's Debug configuration only, through
+`scope-simulator-entitlements.mjs`. Passing `CODE_SIGN_ENTITLEMENTS` on the
+xcodebuild command line applies it to every Swift package target as well.
+Run 40021067365 failed exactly that way, and that route would also have
+granted package bundles the app's Keychain group. The script edits exactly one
+configuration and refuses to override an existing value. It was checked
+against Capacitor's SPM and CocoaPods templates and the curated project.
+
+`verify-simulator-signature.sh` gates the journey on what the built binary
+actually carries rather than on build settings:
+- `codesign --verify --deep --strict` must pass, with `Signature=adhoc`;
+- the entitlements are read from the signature and from the `__TEXT,__entitlements`
+  section that the simulator honours;
+- at least one source must grant the app's own Keychain group;
+- any other or wildcard group fails the job.
+
+The summary is kept as `signature-summary.json` with the other evidence.

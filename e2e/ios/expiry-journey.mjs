@@ -223,6 +223,41 @@ try {
   const permanentDraft = 'permanent channel draft control';
   await fill('#msg-input', permanentDraft);
   await until(async () => (await localCounts(userId, serverId, permanent)).draft === 1, 'permanent encrypted draft persisted');
+  // The persisted records must be protected by the native Keychain key, not
+  // by a browser fallback: WKWebView cannot clone a non-extractable CryptoKey
+  // (DataCloneError), which is why the native vault exists. Read-only lookup;
+  // the harness never initializes a key or seeds records.
+  const nativeKey = await command('POST', '/execute/async', {
+    args: [userId], script: `const uid = arguments[0], done = arguments[arguments.length - 1];
+      const cap = globalThis.Capacitor;
+      if (cap?.isPluginAvailable?.('BridgeLocalFirstCrypto') !== true) { done({ available: false }); } else {
+        cap.Plugins.BridgeLocalFirstCrypto.hasKey({ userId: uid }).then(
+          value => done({ available: true, keyExists: value?.exists === true }),
+          error => done({ available: true, keyExists: false, code: String(error?.code || '') }));
+      }`,
+  });
+  facts.nativeKeyAfterDraft = nativeKey;
+  assert.deepEqual(nativeKey, { available: true, keyExists: true },
+    'The encrypted draft must be protected by the native Keychain key (no browser-key fallback)');
+  // ...and by no browser key: the WebCrypto key store holds no key for this
+  // account. Read-only: the key database is opened only if it already exists
+  // (open() on a missing name would create it).
+  const browserKey = await command('POST', '/execute/async', {
+    args: [userId], script: `const uid = arguments[0], done = arguments[arguments.length - 1];
+      (async () => {
+        const names = (await indexedDB.databases()).map(d => d.name);
+        if (!names.includes('bridge-local-first-keys-v1')) return { keyDatabase: false, browserKeyForAccount: false };
+        const db = await new Promise((ok, ko) => { const r = indexedDB.open('bridge-local-first-keys-v1'); r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error); });
+        try {
+          if (!db.objectStoreNames.contains('keys')) return { keyDatabase: true, browserKeyForAccount: false };
+          const row = await new Promise((ok, ko) => { const q = db.transaction('keys', 'readonly').objectStore('keys').get(uid); q.onsuccess = () => ok(q.result); q.onerror = () => ko(q.error); });
+          return { keyDatabase: true, browserKeyForAccount: row !== undefined };
+        } finally { db.close(); }
+      })().then(done, error => done({ probeFailed: String(error?.name || 'error') }));`,
+  });
+  facts.browserKeyAfterDraft = browserKey;
+  assert.equal(browserKey.browserKeyForAccount, false,
+    `No browser WebCrypto key may exist for the account whose draft the native key protects: ${JSON.stringify(browserKey)}`);
 
   // Creation happens on another API session after the app already loaded the channel list.
   const tLive = Date.now();
@@ -293,7 +328,8 @@ try {
     id: 'D2L01-iOS', category: 'AUTOMATED / SIMULATOR', status: 'PASS',
     commit: process.env.GITHUB_SHA || null, ms: Date.now() - started, facts,
   }, null, 2));
-  console.log('PASS D2L01-iOS: native background/resume, expired history and draft purge, permanent-channel control');
+  console.log(`D2L01-iOS key provider: native=${JSON.stringify(facts.nativeKeyAfterDraft)} browser=${JSON.stringify(facts.browserKeyAfterDraft)}`);
+  console.log('PASS D2L01-iOS: native Keychain key, background/resume, expired history and draft purge, permanent-channel control');
 } catch (error) {
   if (session && facts.stage === 'permanent-draft') {
     try {
@@ -352,6 +388,8 @@ try {
     commit: process.env.GITHUB_SHA || null, ms: Date.now() - started, facts,
     error: String(error.message).slice(0, 500),
   }, null, 2));
+  // Booleans only (no ids or payloads): which key provider protected the draft.
+  console.error(`D2L01-iOS key provider: native=${JSON.stringify(facts.nativeKeyAfterDraft ?? null)} browser=${JSON.stringify(facts.browserKeyAfterDraft ?? null)}`);
   console.error(`FAIL D2L01-iOS: ${error.message}`);
   process.exitCode = 1;
 } finally {
