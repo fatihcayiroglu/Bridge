@@ -189,4 +189,55 @@ describe('real PG same-transaction step-up, signed review and one-use approval',
     const after = await pool.query('SELECT count(*)::integer AS n FROM portable_import_approvals');
     expect(after.rows[0].n).toBe(start.rows[0].n);
   }, 30_000);
+  it.each(['users', 'servers'] as const)('rejects owner proof that ages out while waiting for the locked %s row', async table => {
+    const confirmed = await reviewFingerprint();
+    const before = await pool.query('SELECT count(*)::integer AS n FROM portable_import_approvals');
+    const blocker = await rival.connect();
+    let writerPid = 0;
+    const observedPool = {
+      async connect() {
+        const writer = await pool.connect();
+        writerPid = (await writer.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+        return writer;
+      },
+    };
+    const issued = Date.now() - 95_000;
+    const credential = mintStepUpGrant({ _id: 'owner', tokenVersion: 4 }, 'password', 'account-security', issued).token;
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query(table === 'users'
+        ? 'SELECT _id FROM users WHERE _id=$1 FOR UPDATE'
+        : 'SELECT _id FROM servers WHERE _id=$1 FOR UPDATE',
+      [table === 'users' ? 'owner' : SID]);
+      // This calls the actual stager, with a real physical client and current
+      // clock. Never log the token even if the old implementation returns it.
+      const outcome = stageOwnerConfirmedPortableApproval({
+        pool: observedPool, targetServerId: SID, ownerId: 'owner', stepUpGrant: credential,
+        confirmedReviewFingerprint: confirmed, structure, permissions, attestation,
+        expectedSourceOrigin: ORIGIN, expectedSourceServerId: SOURCE,
+        operatorRegistryJson, mapping,
+      }).then(() => ({ admitted: true }), error => ({ admitted: false, error }));
+      let waiting = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const state = await rival.query('SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1', [writerPid]);
+        if (state.rows[0]?.wait_event_type === 'Lock') { waiting = true; break; }
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      expect(waiting).toBe(true);
+      // The proof was within the route's 100s bound on entry. A real lock
+      // wait crosses the 120s transaction limit; no fake clock or DB mock.
+      await new Promise(resolve => setTimeout(resolve, 27_000));
+      expect(Date.now() - issued).toBeGreaterThan(120_000);
+      await blocker.query('COMMIT');
+      const result = await outcome;
+      const after = await pool.query('SELECT count(*)::integer AS n FROM portable_import_approvals');
+      expect({ admitted: result.admitted, newApprovals: after.rows[0].n - before.rows[0].n })
+        .toEqual({ admitted: false, newApprovals: 0 });
+      if ('error' in result) expect(result.error).toBeInstanceOf(TransactionalPortableApprovalError);
+    } finally {
+      await blocker.query('ROLLBACK'); blocker.release();
+    }
+  });
+
+
 });

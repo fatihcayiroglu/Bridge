@@ -79,6 +79,22 @@ beforeEach(() => {
   claim.mockResolvedValue(undefined);
 });
 describe('P7 C4 internal mapped atomic category/role/channel importer', () => {
+  it.each([2, 3])('rolls apply back when credential freshness is lost at authorization phase %i', async phase => {
+    step.mockReset();
+    for (let index = 1; index < phase; index++) step.mockResolvedValueOnce({ stepUpVerified: true });
+    step.mockRejectedValueOnce(new Error('credential aged past the import bound'));
+    const f = fixture();
+    const admitted = await applyApprovedPortableCommunityMapping({ ...input, pool: f.pool })
+      .then(() => true, () => false);
+    expect(admitted).toBe(false);
+    expect(step).toHaveBeenCalledTimes(phase);
+    expect(claim).toHaveBeenCalledTimes(phase === 2 ? 0 : 1);
+    expect(f.calls.map(call => call.sql)).not.toContain('COMMIT');
+    expect(f.calls.at(-1)?.sql).toBe('ROLLBACK');
+    expect(f.calls.filter(call => call.sql.startsWith('UPDATE'))).toHaveLength(phase === 2 ? 0 : 3);
+    expect(f.released).toEqual([undefined]);
+  });
+
   it('uses a single client, preserves role permission hierarchy, and only declares apply after commit', async () => {
     const f = fixture();
     const result = await applyApprovedPortableCommunityMapping({ ...input, pool: f.pool });
