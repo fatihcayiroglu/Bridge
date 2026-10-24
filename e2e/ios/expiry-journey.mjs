@@ -264,7 +264,38 @@ try {
   const tLive = Date.now();
   const doomed = id(await write('POST', `/api/servers/${serverId}/channels`, token, { name: 'ios-expiring', type: 'text' }));
   facts.stage = 'live-channel';
-  await until(() => js(cid => !!document.querySelector(`.ch-item[data-id="${cid}"]`), doomed), 'live channel creation without reload');
+  try {
+    await until(() => js(cid => !!document.querySelector(`.ch-item[data-id="${cid}"]`), doomed), 'live channel creation without reload');
+  } catch (error) {
+    // Failure-only, read-only evidence. Never reload the WebView, synthesize a
+    // socket event or extend the acceptance deadline: distinguish a missing
+    // authorized API row from a missed socket invalidation or UI render.
+    const diagnostic = { apiStatus: null, apiContainsChannel: null, apiChannelCount: null,
+      webviewContainsChannel: null, webviewChannelCount: null, selectedServer: null,
+      webviewVisible: null, browserOnline: null, apiProbeFailed: false, webviewProbeFailed: false };
+    try {
+      const response = await api('GET', `/api/servers/${serverId}/channels`, token);
+      diagnostic.apiStatus = response.status;
+      if (Array.isArray(response.json)) {
+        diagnostic.apiContainsChannel = response.json.some(channel => channel?._id === doomed);
+        diagnostic.apiChannelCount = response.json.length;
+      }
+    } catch { diagnostic.apiProbeFailed = true; }
+    try {
+      const view = await js((sid, cid) => ({
+        webviewContainsChannel: !!document.querySelector(`.ch-item[data-id="${cid}"]`),
+        webviewChannelCount: document.querySelectorAll('.ch-item[data-id]').length,
+        selectedServer: !!document.querySelector(`.server-icon.active[data-id="${sid}"]`),
+        webviewVisible: document.visibilityState === 'visible',
+        browserOnline: navigator.onLine === true,
+      }), serverId, doomed);
+      for (const key of ['webviewContainsChannel', 'webviewChannelCount', 'selectedServer', 'webviewVisible', 'browserOnline']) {
+        if (typeof view?.[key] === (key === 'webviewChannelCount' ? 'number' : 'boolean')) diagnostic[key] = view[key];
+      }
+    } catch { diagnostic.webviewProbeFailed = true; }
+    facts.liveChannelFailure = diagnostic;
+    throw error;
+  }
   facts.liveListMs = Date.now() - tLive;
   const database = new Client({ connectionString: process.env.DATABASE_URL });
   await database.connect();
