@@ -3,6 +3,7 @@ package com.bridge.nativepreview
 import android.content.Intent
 import android.content.Context
 import android.app.KeyguardManager
+import android.app.ActivityManager
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
@@ -73,15 +74,19 @@ class ServerConnectionJourneyTest {
             catch (_: RuntimeException) { NativeForeground.UNAVAILABLE }
         val label = try { NativeInputLabel.fromDescription(device.findObject(By.res("server-url-input"))?.contentDescription) }
             catch (_: RuntimeException) { NativeInputLabel.UNAVAILABLE }
-        // Do not export the PID or the foreground package: only whether the
-        // target process exists while the 60-second form assertion fails.
-        val targetProcessAlive: Boolean? = try {
-            device.executeShellCommand("pidof $APP_ID").trim().isNotEmpty()
+        // The instrumentation itself runs in the app process; process presence
+        // cannot prove that MainActivity launched. Report only task presence.
+        val targetActivityRunning: Boolean? = try {
+            val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            manager?.appTasks?.any { task ->
+                val info = task.taskInfo
+                info.isRunning && info.topActivity?.className == MainActivity::class.java.name
+            }
         } catch (_: Exception) { null }
         val state = NativeStartupObservation(
             observe { device.isScreenOn },
             observe { (context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isKeyguardLocked },
-            foreground, targetProcessAlive, observe { device.hasObject(By.text("Connect to your server")) },
+            foreground, targetActivityRunning, observe { device.hasObject(By.text("Connect to your server")) },
             observe { device.hasObject(By.clazz("android.widget.EditText")) },
             observe { device.hasObject(By.res("server-url-input")) }, label,
         )
