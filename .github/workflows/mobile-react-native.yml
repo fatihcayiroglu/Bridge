@@ -1,0 +1,285 @@
+name: P8 React Native
+
+on:
+  pull_request:
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/core/**'
+      - 'electron/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/mobile-react-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p8-native-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: '24.20.0'
+
+jobs:
+  contracts:
+    name: Core, native components and desktop compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            electron/package-lock.json
+            apps/mobile/package-lock.json
+      - name: Install locked dependencies
+        run: |
+          mkdir -p apps/mobile/.ci-results
+          git rev-parse HEAD > apps/mobile/.ci-results/source-commit.txt
+          npm ci
+          npm ci --prefix electron
+          npm ci --prefix apps/mobile
+      - name: Audit all affected dependency trees
+        run: |
+          npm audit --audit-level=moderate
+          npm audit --prefix electron --audit-level=moderate
+          npm audit --prefix apps/mobile --audit-level=moderate
+      - name: Shared core coverage, types and lint (zero skipped tests)
+        run: |
+          npm run test:core
+          npm run typecheck --workspace=@bridge/core
+          npm run lint --workspace=@bridge/core -- --max-warnings=0
+          npm run test:release-integrity
+      - name: Native component coverage, types and lint
+        working-directory: apps/mobile
+        run: |
+          npm test -- --coverage --json --outputFile=jest-results.json
+          node ../../scripts/require-no-skipped-tests.js jest-results.json --label 'P8 native components'
+          npm run typecheck
+          npm run lint -- --max-warnings=0
+      - name: Existing Electron contracts using the extracted core
+        working-directory: electron
+        run: |
+          npm test -- --runInBand --json --outputFile=jest-results.json
+          node ../scripts/require-no-skipped-tests.js jest-results.json --label 'Electron compatibility'
+          npm run compile
+      - name: Both Metro production bundles
+        working-directory: apps/mobile
+        run: |
+          npm run bundle:android
+          npm run bundle:ios
+      - name: Native evidence gates reject empty, failed and skipped reports
+        run: python3 -m unittest discover -s apps/mobile/scripts -p 'test_*.py' -v
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: p8-contract-evidence
+          path: |
+            packages/core/core-node-results.json
+            apps/mobile/.ci-results/source-commit.txt
+            apps/mobile/jest-results.json
+            apps/mobile/coverage/coverage-summary.json
+            electron/jest-results.json
+          if-no-files-found: error
+
+  android:
+    name: Android build, JVM tests and native emulator journey
+    runs-on: ubuntu-latest
+    needs: [contracts]
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: postgresql://bridge:p8_disposable_ci@127.0.0.1:5432/bridge_native
+      REDIS_URL: redis://127.0.0.1:6379
+      JWT_SECRET: p8_disposable_ci_jwt_secret_32_characters
+      REFRESH_SECRET: p8_disposable_ci_refresh_secret_32_characters
+      NODE_ENV: test
+      PORT: '3000'
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: bridge_native
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: p8_disposable_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bridge -d bridge_native"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            apps/mobile/package-lock.json
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Install the verified RN template SDK and NDK
+        run: sdkmanager 'platforms;android-37' 'build-tools;37.0.0' 'ndk;27.1.12297006'
+      - name: Install and build real Bridge backend
+        run: |
+          npm ci
+          npm ci --prefix server
+          npm ci --prefix apps/mobile
+          npm run build --prefix server
+          bash apps/mobile/scripts/start-ci-backend.sh
+      - name: Compile debug APK, instrumentation and JVM policy tests
+        working-directory: apps/mobile/android
+        run: |
+          ./gradlew --no-daemon -PreactNativeArchitectures=x86_64 :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
+          python3 ../scripts/verify_native_results.py --junit-dir app/build/test-results/testDebugUnitTest --expected 2
+      - name: Start Metro for the actual debug application
+        run: |
+          cd apps/mobile
+          npm start -- --port 8081 > .ci-results/metro.log 2>&1 &
+          for attempt in {1..60}; do
+            if curl --silent --fail http://127.0.0.1:8081/status | grep -q 'packager-status:running'; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Real native UI, HTTP, negative controls and same-process resume
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_7
+          disable-animations: true
+          script: |
+            adb reverse tcp:8081 tcp:8081
+            cd apps/mobile/android
+            ./gradlew --no-daemon -PreactNativeArchitectures=x86_64 :app:connectedDebugAndroidTest
+            python3 ../scripts/verify_native_results.py --junit-dir app/build/outputs/androidTest-results/connected --expected 1
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: p8-android-native-evidence
+          path: |
+            apps/mobile/android/app/build/test-results/
+            apps/mobile/android/app/build/outputs/androidTest-results/
+            apps/mobile/.ci-results/
+          if-no-files-found: error
+
+  ios:
+    name: iOS Xcode build and native XCUITest journey
+    runs-on: macos-15
+    needs: [contracts]
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: postgresql://bridge@127.0.0.1:5432/bridge_native
+      REDIS_URL: redis://127.0.0.1:6379
+      JWT_SECRET: p8_disposable_ci_jwt_secret_32_characters
+      REFRESH_SECRET: p8_disposable_ci_refresh_secret_32_characters
+      NODE_ENV: test
+      PORT: '3000'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+            apps/mobile/package-lock.json
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          working-directory: apps/mobile
+          bundler-cache: true
+      - name: Disposable real PostgreSQL and Redis
+        run: |
+          brew list --versions postgresql@18 || brew install postgresql@18
+          brew list --versions redis || brew install redis
+          PGBIN="$(brew --prefix postgresql@18)/bin"
+          "$PGBIN/initdb" -D "$RUNNER_TEMP/p8-native-pg" --username=bridge --auth=trust
+          "$PGBIN/pg_ctl" -D "$RUNNER_TEMP/p8-native-pg" -l "$RUNNER_TEMP/p8-native-pg.log" -o '-h 127.0.0.1 -p 5432' start
+          "$PGBIN/createdb" -h 127.0.0.1 -U bridge bridge_native
+          redis-server --bind 127.0.0.1 --port 6379 --daemonize yes --dir "$RUNNER_TEMP"
+      - name: Install and build real Bridge backend
+        run: |
+          npm ci
+          npm ci --prefix server
+          npm ci --prefix apps/mobile
+          npm run build --prefix server
+          bash apps/mobile/scripts/start-ci-backend.sh
+      - name: Resolve native dependencies
+        working-directory: apps/mobile/ios
+        run: |
+          bundle exec pod install
+          xcodebuild -version
+      - name: Boot an available iPhone simulator
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          data = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available', '--json']))
+          devices = [d for runtime, values in data['devices'].items() if 'iOS' in runtime for d in values if d['name'].startswith('iPhone')]
+          if not devices: raise SystemExit('No available iPhone simulator')
+          device = devices[0]
+          if device['state'] != 'Booted': subprocess.run(['xcrun', 'simctl', 'boot', device['udid']], check=True)
+          subprocess.run(['xcrun', 'simctl', 'bootstatus', device['udid'], '-b'], check=True)
+          with open(os.environ['GITHUB_ENV'], 'a') as out: out.write('P8_SIMULATOR=' + device['udid'] + '\n')
+          print(json.dumps(device))
+          PY
+      - name: Start Metro for the actual debug application
+        run: |
+          cd apps/mobile
+          npm start -- --port 8081 > .ci-results/metro.log 2>&1 &
+          for attempt in {1..60}; do
+            if curl --silent --fail http://127.0.0.1:8081/status | grep -q 'packager-status:running'; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Xcode simulator build and actual native UI acceptance
+        working-directory: apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild -workspace BridgeNative.xcworkspace -scheme BridgeNative -configuration Debug \
+            -destination "platform=iOS Simulator,id=$P8_SIMULATOR" -derivedDataPath ../build/ios-derived \
+            -resultBundlePath ../.ci-results/native-journey.xcresult \
+            -parallel-testing-enabled NO -test-iterations 1 CODE_SIGNING_ALLOWED=NO test \
+            > ../.ci-results/xcodebuild.log 2>&1
+          xcrun xcresulttool get test-results summary --path ../.ci-results/native-journey.xcresult \
+            > ../.ci-results/xcode-summary.json
+          python3 ../scripts/verify_native_results.py --xcode-summary ../.ci-results/xcode-summary.json --expected 1
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: p8-ios-native-evidence
+          path: |
+            apps/mobile/.ci-results/
+            apps/mobile/ios/Podfile.lock
+            apps/mobile/Gemfile.lock
+          if-no-files-found: error
+      - name: Stop disposable services
+        if: always()
+        run: |
+          PGBIN="$(brew --prefix postgresql@18)/bin"
+          if [ -f "$RUNNER_TEMP/p8-native-pg/postmaster.pid" ]; then "$PGBIN/pg_ctl" -D "$RUNNER_TEMP/p8-native-pg" stop -m fast; fi
+          redis-cli -h 127.0.0.1 shutdown

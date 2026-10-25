@@ -19,7 +19,9 @@
     "dist:win": "npm run compile && electron-builder --win",
     "dist:mac": "npm run compile && electron-builder --mac",
     "dist:linux": "npm run compile && electron-builder --linux",
-    "icons": "node scripts/build-icons.cjs"
+    "icons": "node scripts/build-icons.cjs",
+    "precompile": "node node_modules/typescript/bin/tsc -p ../packages/core/tsconfig.build.json",
+    "pretest": "node node_modules/typescript/bin/tsc -p ../packages/core/tsconfig.build.json"
   },
   "build": {
     "appId": "com.bridge.desktop",
@@ -114,7 +116,8 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
-    "undici": "^8.12.3"
+    "undici": "^8.12.3",
+    "@bridge/core": "file:../packages/core"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",

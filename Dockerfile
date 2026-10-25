@@ -24,6 +24,7 @@ WORKDIR /app
 COPY package*.json ./
 COPY scripts ./scripts
 COPY server/package*.json ./server/
+COPY packages/core/package.json ./packages/core/
 
 # Root devDeps (esbuild + client build için)
 RUN npm ci --ignore-scripts=false
