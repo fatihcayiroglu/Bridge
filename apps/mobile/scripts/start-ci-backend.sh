@@ -4,7 +4,11 @@ set -euo pipefail
 # the workflow. Liveness is served by Bridge itself, never a fixture HTTP server.
 mkdir -p apps/mobile/.ci-results
 git rev-parse HEAD > apps/mobile/.ci-results/source-commit.txt
-node server/dist/index.js > apps/mobile/.ci-results/bridge.log 2>&1 &
+# NODE_ENV=test selects the unit-only mock DB in server/db/loader.ts; the
+# compiled native-acceptance backend must use the real PostgreSQL connection.
+# Keep NODE_ENV=test for the surrounding JVM/JS tests; override only this child.
+# Bind the native CI server to loopback, never to the runner's public interface.
+NODE_ENV=development HOST=127.0.0.1 node server/dist/index.js > apps/mobile/.ci-results/bridge.log 2>&1 &
 backend_pid=$!
 echo "$backend_pid" > apps/mobile/.ci-results/bridge.pid
 
