@@ -66,7 +66,10 @@ final class ServerConnectionJourneyTests: XCTestCase {
 
     func connect(_ address: String) {
       print("BRIDGE_NATIVE_JOURNEY_ACTION=input-focus")
-      input.tap()
+      // The delete checks remove suffix characters. One genuine tap at the
+      // trailing editable edge puts the caret there; a center tap can place
+      // it inside an existing URL and correctly delete an interior character.
+      input.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
       print("BRIDGE_NATIVE_JOURNEY_ACTION=keyboard-wait")
       let keyboard = app.keyboards.firstMatch
       XCTAssertTrue(keyboard.waitForExistence(timeout: 5), "Software keyboard is not visible")

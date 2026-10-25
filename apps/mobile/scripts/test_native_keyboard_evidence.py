@@ -133,7 +133,7 @@ class NativeKeyboardEvidenceTests(unittest.TestCase):
     def test_workflow_retains_real_xctest_grade_and_publishes_only_closed_observation(self):
         source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
         workflow = (ROOT / '.github/workflows/mobile-react-native.yml').read_text()
-        self.assertIn('input.tap()', source)
+        self.assertIn('input.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()', source)
         self.assertIn('input.typeText(String(character))', source)
         self.assertIn('XCTAssertEqual(keyResult, .completed,', source)
         self.assertIn('if keyResult == .completed && acceptedPrefix.count == 1', source)
