@@ -32,4 +32,8 @@ seat-keyboards|wl_seat[@#][0-9]+\.get_keyboard
 app-ready|🌉
 drm-device-errors|drmGetDevices2\(\).*not found any devices
 PATTERNS
+  # Only the opt-in application's finite numeric stage codes leave the log.
+  # Preserve observation order; never copy surrounding text or unknown values.
+  grep -Eo 'BRIDGE_NATIVE_STAGE=(1[0-2]|[1-9])([[:space:]]|$)' "${protocol_log}" 2>/dev/null |
+    sed -n '1,20{s/[^0-9]//g;s/^/native-startup-stage=/;p;}' || true
 }

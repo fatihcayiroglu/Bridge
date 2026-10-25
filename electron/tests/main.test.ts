@@ -62,6 +62,30 @@ function bridgeHealthResponse(body: unknown = { status: 'ok', check: 'liveness' 
 }
 
 describe('first run — connect to a server', () => {
+  it('opt-in lifecycle observations never show the window before its real ready event', async () => {
+    const originalFlag = process.env.BRIDGE_NATIVE_STARTUP_TRACE;
+    const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+    process.env.BRIDGE_NATIVE_STARTUP_TRACE = '1';
+    try {
+      const { electron } = await loadMain();
+      const connect = connectWindowOf(electron);
+      const stages = () => log.mock.calls.map(call => call[0]).filter(value =>
+        typeof value === 'string' && /^BRIDGE_NATIVE_STAGE=\d+$/.test(value));
+      expect(stages()).toEqual([1, 2, 3, 4, 5, 8].map(stage => `BRIDGE_NATIVE_STAGE=${stage}`));
+      connect.webContents.emit('dom-ready');
+      connect.webContents.emit('did-finish-load');
+      expect(connect.show).not.toHaveBeenCalled();
+      connect.emit('ready-to-show');
+      expect(connect.show).toHaveBeenCalledTimes(1);
+      connect.emit('show');
+      expect(stages()).toEqual([1, 2, 3, 4, 5, 8, 6, 10, 7, 9].map(stage => `BRIDGE_NATIVE_STAGE=${stage}`));
+    } finally {
+      if (originalFlag === undefined) delete process.env.BRIDGE_NATIVE_STARTUP_TRACE;
+      else process.env.BRIDGE_NATIVE_STARTUP_TRACE = originalFlag;
+      log.mockRestore();
+    }
+  });
+
   it('opens only the connect window, with the connect preload and the local connect page', async () => {
     const { electron } = await loadMain();
     const connect = connectWindowOf(electron);
