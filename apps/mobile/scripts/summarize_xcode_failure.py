@@ -31,6 +31,8 @@ INPUT_MARKER = re.compile(r"BRIDGE_NATIVE_INPUT_KIND=([a-z-]+)(?:\s|$)")
 INPUT_KINDS = frozenset({"text-field", "secure-field", "text-view", "other", "missing", "unavailable"})
 SURFACE_MARKER = re.compile(r"BRIDGE_NATIVE_SURFACE=([a-z-]+)(?:\s|$)")
 SURFACES = frozenset({"form", "module-error", "metro-error", "reference-error", "type-error", "other", "unavailable"})
+VALUE_MARKER = re.compile(r"BRIDGE_NATIVE_INPUT_VALUE=([a-z-]+);length=([0-9]{1,3});expected-length=([0-9]{1,3});settled=(true|false)(?:\s|$)")
+VALUE_SHAPES = frozenset({"empty", "placeholder", "unchanged", "expected-prefix", "expected-suffix", "other", "not-string"})
 MAX_XCRESULT_CHARS = 1_048_576
 TARGETS = (
     ("server-address-input", re.compile(r"\bserver-url-input\b")),
@@ -139,6 +141,7 @@ def summarize(log: Path, exit_status: str, failure_summary: Path | None = None) 
     action = "not-observed"
     input_kind = None
     surface = None
+    input_value = None
     with log.open(encoding="utf-8", errors="replace") as stream:
         while remaining > 0:
             limit = min(MAX_LINE_CHARS, remaining)
@@ -164,6 +167,10 @@ def summarize(log: Path, exit_status: str, failure_summary: Path | None = None) 
             surface_match = SURFACE_MARKER.search(line)
             if surface_match and surface_match[1] in SURFACES:
                 surface = surface_match[1]
+            value_match = VALUE_MARKER.search(line)
+            if (value_match and value_match[1] in VALUE_SHAPES
+                    and int(value_match[2]) <= 256 and int(value_match[3]) <= 256):
+                input_value = (value_match[1], int(value_match[2]), int(value_match[3]), value_match[4])
             if ERROR_MARKER.search(line):
                 marker = classify_marker(line)
                 if category == "unclassified":
@@ -188,6 +195,10 @@ def summarize(log: Path, exit_status: str, failure_summary: Path | None = None) 
         fields.append("input-kind=" + input_kind)
     if surface is not None:
         fields.append("surface=" + surface)
+    if input_value is not None:
+        shape, length, expected_length, settled = input_value
+        fields.extend(("input-value-shape=" + shape, f"input-value-length={length}",
+                       f"input-expected-length={expected_length}", "input-value-settled=" + settled))
     if failure_summary is not None:
         fields.extend(xcresult_evidence(failure_summary))
     return "\n".join(fields) + "\n"

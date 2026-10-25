@@ -55,3 +55,18 @@ Missing/malformed evidence is explicit, scanning beyond four failures is
 reported as truncated, and parser or diagnostic I/O failures preserve the
 original xcodebuild exit code. Local Python controls pass 44 cases, zero skips.
 Native acceptance on the follow-up source remains pending until CI executes it.
+
+On `89dc5566`, run [40180332511](https://github.com/fatihcayiroglu/Bridge/actions/runs/40180332511)
+again passed contracts and Android (six JVM / one emulator case, zero skips).
+iOS reached `connect`, foreground state and `input-verify`, then failed the
+complete-address assertion. Keyboard visibility and geometry had already
+passed on that run. This rules out treating that particular failure as proof
+of keyboard obstruction; it does not explain the earlier form-discovery failure.
+
+The next failure-only observation records a fixed mismatch shape, lengths capped
+at 256, and whether the field later reflects the full expected value within
+five seconds. It never publishes either address. The immediate value is captured
+before observation and remains the exact value asserted: a later match cannot
+turn that failed assertion into PASS. Nothing is retyped or resubmitted.
+All 47 local Python controls pass, zero skips. Native execution remains required
+to distinguish delayed accessibility reflection from persistent missing input.
