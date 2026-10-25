@@ -97,12 +97,14 @@ jobs:
           ls -l /opt/Bridge/chrome-sandbox
       - name: Installed Linux first-run window smoke (real X11, OS sandbox)
         run: xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-window-smoke.sh
-      # Native Wayland compositor, no X11 DISPLAY and no Chromium sandbox opt-out.
-      # The script checks an actual xdg-toplevel protocol request, not just PID.
+      # Weston 13 headless does not expose wl_seat; Xvfb hosts Weston X11
+      # backend ONLY. The installed Bridge client removes DISPLAY and still
+      # must create a native Wayland xdg-toplevel with real configure ACK.
+      # Chromium OS sandbox remains enabled; no XWayland fallback.
       - name: Install Weston Wayland compositor
         run: sudo apt-get install -y --no-install-recommends weston
-      - name: Installed Linux native Wayland surface smoke (headless Weston)
-        run: dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
+      - name: Installed Linux native Wayland surface smoke (nested Weston, native client)
+        run: xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
       - name: Preserve Linux package artifacts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
