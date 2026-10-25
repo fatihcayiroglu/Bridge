@@ -158,6 +158,17 @@ jobs:
           python3 ../scripts/verify_native_results.py --junit-dir app/build/test-results/testDebugUnitTest --expected 6
       - name: Start Metro for the actual debug application
         run: bash apps/mobile/scripts/start-ci-metro.sh
+      - name: Prewarm actual Android Metro development bundle
+        run: |
+          # Resolve the actual debug JS graph before the UI-startup acceptance
+          # clock begins. No fixture, private response dump or timeout waiver.
+          if curl --fail --silent --show-error --max-time 180 --output /dev/null \
+              'http://127.0.0.1:8081/index.bundle?platform=android&dev=true&minify=false'; then
+            echo 'metro-bundle=PASS;platform=android'
+          else
+            echo 'metro-bundle=FAIL;platform=android' >&2
+            exit 1
+          fi
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -272,6 +283,17 @@ jobs:
           PY
       - name: Start Metro for the actual debug application
         run: bash apps/mobile/scripts/start-ci-metro.sh
+      - name: Prewarm actual iOS Metro development bundle
+        run: |
+          # Resolve the actual debug JS graph before the UI-startup acceptance
+          # clock begins. No fixture, private response dump or timeout waiver.
+          if curl --fail --silent --show-error --max-time 180 --output /dev/null \
+              'http://127.0.0.1:8081/index.bundle?platform=ios&dev=true&minify=false'; then
+            echo 'metro-bundle=PASS;platform=ios'
+          else
+            echo 'metro-bundle=FAIL;platform=ios' >&2
+            exit 1
+          fi
       - name: Xcode simulator build and actual native UI acceptance
         working-directory: apps/mobile/ios
         run: |
