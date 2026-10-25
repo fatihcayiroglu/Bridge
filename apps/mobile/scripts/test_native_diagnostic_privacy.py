@@ -128,7 +128,7 @@ class NativeDiagnosticPrivacyTests(unittest.TestCase):
         source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
         stages = re.findall(r'print\("BRIDGE_NATIVE_JOURNEY_STAGE=([^\"]+)"\)', source)
         self.assertEqual(set(stages), SCOPE['STAGES'])
-        self.assertIn('XCTAssertEqual(input.value as? String, address,', source)
+        self.assertIn('XCTAssertEqual(typedValue, address,', source)
         self.assertIn('XCTAssertTrue(success.waitForExistence(timeout: 15)', source)
         self.assertIn('XCTAssertTrue(reportState(app.wait(for: .runningBackground, timeout: 5)))', source)
         self.assertIn('XCTAssertTrue(reportState(app.wait(for: .runningForeground, timeout: 10)))', source)
@@ -192,14 +192,19 @@ class NativeDiagnosticPrivacyTests(unittest.TestCase):
             scripts = root / 'scripts'
             ios.mkdir()
             scripts.mkdir()
-            for helper_exit in (0, 1):
-                with self.subTest(diagnostic_exit=helper_exit):
-                    (scripts / 'summarize_xcode_failure.py').write_text(f'raise SystemExit({helper_exit})\n')
-                    result = subprocess.run(['bash', '-c', 'set -e\nxcode_status=65\n' + failure_block],
-                                            cwd=ios, capture_output=True, text=True, timeout=10, check=False)
-                    self.assertEqual(result.returncode, 65)
-                    if helper_exit:
-                        self.assertIn('category=xcode-diagnostic-unavailable', result.stderr)
+            for private_directory in (False, True):
+                if private_directory:
+                    (root / '.ci-results').mkdir()
+                for helper_exit in (0, 1):
+                    with self.subTest(diagnostic_exit=helper_exit, private_directory=private_directory):
+                        (scripts / 'summarize_xcode_failure.py').write_text(f'raise SystemExit({helper_exit})\n')
+                        result = subprocess.run(['bash', '-c', 'set -e\nxcode_status=65\n' + failure_block],
+                                                cwd=ios, capture_output=True, text=True, timeout=10, check=False)
+                        self.assertEqual(result.returncode, 65)
+                        self.assertNotIn(directory, result.stdout + result.stderr)
+                        self.assertNotIn('Traceback', result.stdout + result.stderr)
+                        if helper_exit:
+                            self.assertIn('category=xcode-diagnostic-unavailable', result.stderr)
 
     def test_backend_failure_cannot_publish_arbitrary_event_names_from_logs(self):
         with tempfile.TemporaryDirectory() as directory:

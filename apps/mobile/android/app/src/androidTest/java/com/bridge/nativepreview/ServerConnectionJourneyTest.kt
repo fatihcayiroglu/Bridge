@@ -1,6 +1,8 @@
 package com.bridge.nativepreview
 
 import android.content.Intent
+import android.content.Context
+import android.app.KeyguardManager
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
@@ -15,10 +17,15 @@ class ServerConnectionJourneyTest {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val device = UiDevice.getInstance(instrumentation)
         val context = instrumentation.context
+        val target = instrumentation.targetContext
+        requireStartup(observe { device.isScreenOn } == true, NativeStartupFailure.SCREEN_UNAVAILABLE, device, target)
+        requireStartup(observe { (target.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isKeyguardLocked } == false,
+            NativeStartupFailure.KEYGUARD_NOT_UNLOCKED, device, target)
         val intent = context.packageManager.getLaunchIntentForPackage(APP_ID)
         assertNotNull("Preview app must be installed", intent)
         context.startActivity(intent!!.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        assertTrue("Native form did not launch", device.wait(Until.hasObject(By.desc("Server address")), 60_000))
+        val formVisible = device.wait(Until.hasObject(By.desc("Server address")), 60_000)
+        requireStartup(formVisible == true, NativeStartupFailure.FORM_NOT_VISIBLE, device, target)
         assertFalse("Primary renderer must not be a WebView", device.hasObject(By.clazz("android.webkit.WebView")))
         val pid = processId(device)
 
@@ -59,6 +66,28 @@ class ServerConnectionJourneyTest {
         assertTrue("Target process is absent or ambiguous", pid.matches(Regex("[0-9]+")))
         return pid
     }
+
+    private fun requireStartup(condition: Boolean, failure: NativeStartupFailure, device: UiDevice, context: Context) {
+        if (condition) return
+        val foreground = try { NativeForeground.fromPackage(device.currentPackageName) }
+            catch (_: RuntimeException) { NativeForeground.UNAVAILABLE }
+        val label = try { NativeInputLabel.fromDescription(device.findObject(By.res("server-url-input"))?.contentDescription) }
+            catch (_: RuntimeException) { NativeInputLabel.UNAVAILABLE }
+        // The Android-owned alert title may contain a private app name. Keep
+        // it local and publish only the known failure category.
+        val systemAlert = try { NativeSystemAlert.fromTitle(device.findObject(By.res("android", "alertTitle"))?.text) }
+            catch (_: RuntimeException) { NativeSystemAlert.UNAVAILABLE }
+        val state = NativeStartupObservation(
+            observe { device.isScreenOn },
+            observe { (context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isKeyguardLocked },
+            foreground, observe { device.hasObject(By.text("Connect to your server")) },
+            observe { device.hasObject(By.clazz("android.widget.EditText")) },
+            observe { device.hasObject(By.res("server-url-input")) }, label, systemAlert,
+        )
+        throw AssertionError("Native startup acceptance failed; " + state.report(failure))
+    }
+
+    private fun observe(read: () -> Boolean?): Boolean? = try { read() } catch (_: RuntimeException) { null }
 
     companion object { private const val APP_ID = "com.bridge.nativepreview" }
 }

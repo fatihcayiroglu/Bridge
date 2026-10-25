@@ -6,7 +6,7 @@ final class ServerConnectionJourneyTests: XCTestCase {
     continueAfterFailure = false
     print("BRIDGE_NATIVE_JOURNEY_STAGE=launch")
     let app = XCUIApplication(bundleIdentifier: "com.bridge.nativepreview")
-    func reportState(_ matched: Bool) -> Bool {
+    func reportObservedState() {
       let state: String
       switch app.state {
       case .unknown: state = "unknown"
@@ -17,28 +17,110 @@ final class ServerConnectionJourneyTests: XCTestCase {
       @unknown default: state = "unknown"
       }
       print("BRIDGE_NATIVE_APP_STATE=\(state)")
+    }
+    func reportState(_ matched: Bool) -> Bool {
+      reportObservedState()
       return matched
     }
+    func reportMissingForm() {
+      guard app.state == .runningForeground else {
+        print("BRIDGE_NATIVE_INPUT_KIND=unavailable")
+        print("BRIDGE_NATIVE_SURFACE=unavailable")
+        return
+      }
+      let candidate = app.descendants(matching: .any)["server-url-input"].firstMatch
+      let kind: String
+      if !candidate.exists { kind = "missing" }
+      else {
+        switch candidate.elementType {
+        case .textField: kind = "text-field"
+        case .secureTextField: kind = "secure-field"
+        case .textView: kind = "text-view"
+        default: kind = "other"
+        }
+      }
+      print("BRIDGE_NATIVE_INPUT_KIND=\(kind)")
+      let surface: String
+      if app.staticTexts["Connect to your server"].exists { surface = "form" }
+      else if app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Unable to resolve module")).firstMatch.exists { surface = "module-error" }
+      else if app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Could not connect to development server")).firstMatch.exists { surface = "metro-error" }
+      else if app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "ReferenceError")).firstMatch.exists { surface = "reference-error" }
+      else if app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "TypeError")).firstMatch.exists { surface = "type-error" }
+      else { surface = "other" }
+      print("BRIDGE_NATIVE_SURFACE=\(surface)")
+    }
+    print("BRIDGE_NATIVE_JOURNEY_ACTION=app-launch")
     app.launch()
+    reportObservedState()
     let input = app.textFields["server-url-input"]
-    XCTAssertTrue(input.waitForExistence(timeout: 60), "Native form did not launch")
+    print("BRIDGE_NATIVE_JOURNEY_ACTION=form-wait")
+    let formMatches = input.waitForExistence(timeout: 60)
+    reportObservedState()
+    if !formMatches {
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=form-observation")
+      reportMissingForm()
+    }
+    XCTAssertTrue(formMatches, "Native form did not launch")
+    print("BRIDGE_NATIVE_JOURNEY_ACTION=renderer-check")
     XCTAssertEqual(app.webViews.count, 0, "Primary renderer must not be a WebView")
 
     func connect(_ address: String) {
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-focus")
       input.tap()
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=keyboard-wait")
+      let keyboard = app.keyboards.firstMatch
+      let keyboardMatches = keyboard.waitForExistence(timeout: 5)
+      if !keyboardMatches {
+        let exists = input.exists
+        let hittable = exists && input.isHittable
+        let system = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        print("BRIDGE_NATIVE_KEYBOARD=missing;field-exists=\(exists);field-hittable=\(hittable);app-count=\(min(app.keyboards.count, 4));system-count=\(min(system.keyboards.count, 4))")
+      }
+      XCTAssertTrue(keyboardMatches, "Software keyboard is not visible")
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=keyboard-geometry")
+      let visibleInput = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+        input.isHittable && input.frame.maxY <= keyboard.frame.minY
+      }, object: input)
+      XCTAssertEqual(XCTWaiter.wait(for: [visibleInput], timeout: 5), .completed,
+                     "Server field is covered by software keyboard")
       let current = input.value as? String ?? ""
       // The initial value is a placeholder; delete only an actual URL value.
       if current != "https://chat.example.com" {
+        print("BRIDGE_NATIVE_JOURNEY_ACTION=input-clear")
         input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
       }
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-type")
       input.typeText(address)
-      XCTAssertEqual(input.value as? String, address, "Server address edit did not replace the entire input")
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-verify")
+      let typedValue = input.value as? String
+      if typedValue != address {
+        let shape: String
+        if let value = typedValue {
+          if value.isEmpty { shape = "empty" }
+          else if value == "https://chat.example.com" { shape = "placeholder" }
+          else if value == current { shape = "unchanged" }
+          else if address.hasPrefix(value) { shape = "expected-prefix" }
+          else if address.hasSuffix(value) { shape = "expected-suffix" }
+          else { shape = "other" }
+        } else { shape = "not-string" }
+        // Observe asynchronous reflection without changing the failing value
+        // being asserted. No key is retyped and no submission is retried.
+        let reflected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+          input.value as? String == address
+        }, object: input)
+        let settled = XCTWaiter.wait(for: [reflected], timeout: 5) == .completed
+        let length = min(typedValue?.count ?? 0, 256)
+        print("BRIDGE_NATIVE_INPUT_VALUE=\(shape);length=\(length);expected-length=\(min(address.count, 256));settled=\(settled)")
+      }
+      XCTAssertEqual(typedValue, address, "Server address edit did not replace the entire input")
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-submit")
       input.typeText("\n")
     }
 
     print("BRIDGE_NATIVE_JOURNEY_STAGE=connect")
     connect("HTTP://127.0.0.1:3000/ignored")
     let success = app.staticTexts["connection-success"]
+    print("BRIDGE_NATIVE_JOURNEY_ACTION=liveness-wait")
     XCTAssertTrue(success.waitForExistence(timeout: 15), "Real Bridge liveness failed")
     XCTAssertEqual(success.label, "Server verified")
     XCTAssertTrue(app.staticTexts["http://127.0.0.1:3000"].exists)
