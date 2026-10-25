@@ -101,7 +101,9 @@ jobs:
       # The script checks an actual xdg-toplevel protocol request, not just PID.
       - name: Install Weston Wayland compositor
         run: sudo apt-get install -y --no-install-recommends weston
-      - name: Installed Linux native Wayland surface smoke (headless Weston)
+      - name: Validate native Wayland smoke script syntax
+        run: bash -n electron/scripts/ci-linux-wayland-smoke.sh
+      - name: Installed Linux native Wayland surface smoke (headless Weston, software GLES)
         run: dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
       - name: Preserve Linux package artifacts
         if: ${{ !cancelled() }}
