@@ -582,21 +582,76 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
       expect(await voiceJoin(b.client, ch)).toEqual(['voice:joined']);
       expect(__armedMediaExpiryForTest()).toContain(ch);
       const evicted = { a: record(a.client, ['voice:evicted']), b: record(b.client, ['voice:evicted']) };
+      const capture = captureActualLogRecords();
+      try {
+        // Still live shortly before the instant: nobody is evicted early.
+        await until(expiresAtLocal - 250);
+        expect([evicted.a.length, evicted.b.length]).toEqual([0, 0]);
+        expect((await __getVoiceRoomForTest(ch)).map(p => p.userId).sort()).toEqual([OWNER, PEER].sort());
 
-      // Still live shortly before the instant: nobody is evicted early.
-      await until(expiresAtLocal - 250);
-      expect([evicted.a.length, evicted.b.length]).toEqual([0, 0]);
-      expect((await __getVoiceRoomForTest(ch)).map(p => p.userId).sort()).toEqual([OWNER, PEER].sort());
+        // Shortly after it, both are out: told, off the roster, out of the room.
+        await until(expiresAtLocal + 750);
+        expect(evicted.a.map(e => e.payload)).toEqual([{ channelId: ch }]);
+        expect(evicted.b.map(e => e.payload)).toEqual([{ channelId: ch }]);
+        expect(await __getVoiceRoomForTest(ch)).toEqual([]);
+        for (const side of [a, b]) {
+          expect(side.server.rooms.has(`voice:${ch}`)).toBe(false);
+          expect(side.server.currentVoiceChannel ?? null).toBeNull();
+        }
+        const events = new Set(['socket.voice_evicted', 'socket.voice_access_evicted',
+          'socket.voice_publish_revoked', 'socket.channel_access_evicted', 'media.expiry_evicted']);
+        const info = capture.records.filter(row => row.level === 30 && events.has(String(row.event)));
+        expect(info).toEqual(expect.arrayContaining([
+          expect.objectContaining({ event: 'media.expiry_evicted' }),
+          expect.objectContaining({ event: 'socket.channel_access_evicted' }),
+        ]));
+        for (const row of info) {
+          // This harness admits voice without an outer request scope. The
+          // background timer must not invent one; per-socket eviction does
+          // establish its own scope in the production coordinator.
+          if (row.event === 'media.expiry_evicted') expect(row).not.toHaveProperty('requestId');
+          else expect(row).toHaveProperty('requestId', expect.any(String));
+          for (const field of ['userId', 'socketId', 'channelId', 'serverId']) expect(row).not.toHaveProperty(field);
+          for (const value of [OWNER, PEER, ch, SERVER, a.client.id!, b.client.id!]) {
+            expect(JSON.stringify(row)).not.toContain(value);
+          }
+        }
+      } finally { capture.restore(); }
+    });
 
-      // Shortly after it, both are out: told, off the roster, out of the room.
-      await until(expiresAtLocal + 750);
-      expect(evicted.a.map(e => e.payload)).toEqual([{ channelId: ch }]);
-      expect(evicted.b.map(e => e.payload)).toEqual([{ channelId: ch }]);
-      expect(await __getVoiceRoomForTest(ch)).toEqual([]);
-      for (const side of [a, b]) {
-        expect(side.server.rooms.has(`voice:${ch}`)).toBe(false);
-        expect(side.server.currentVoiceChannel ?? null).toBeNull();
-      }
+    it('a request-scoped expiry timer keeps correlation without its inherited actor', async () => {
+      const ch = await channel('voice', 'permanent');
+      const a = await connect(OWNER);
+      expect(await voiceJoin(a.client, ch)).toEqual(['voice:joined']);
+      expect(__armedMediaExpiryForTest()).not.toContain(ch);
+      const sentAt = performance.now();
+      const [row] = await q(`UPDATE channels SET
+        "expiresAt" = FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT + 1000,
+        "expiryVersion" = "expiryVersion" + 1 WHERE _id = $1
+        RETURNING "expiresAt", FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT AS "dbNow"`, [ch]);
+      const expiresAtLocal = sentAt + Number(row.expiresAt) - Number(row.dbNow);
+      const original = { requestId: 'pg-media-expiry-correlation', userId: OWNER,
+        socketId: 'private-initial-socket', memo: new Map<string, unknown>() };
+      const evicted = record(a.client, ['voice:evicted']);
+      const capture = captureActualLogRecords();
+      try {
+        // Arm the actual timer in the scope, rather than merely inserting the
+        // channel there: network events do not inherit the test caller's ALS.
+        await runWithRequestContext(original, async () => {
+          await armMediaExpiryEviction(io, ch, SERVER);
+          expect(currentRequestContext()).toBe(original);
+        });
+        expect(__armedMediaExpiryForTest()).toContain(ch);
+        await until(expiresAtLocal + 750);
+        expect(evicted.map(event => event.payload)).toEqual([{ channelId: ch }]);
+        expect(await __getVoiceRoomForTest(ch)).toEqual([]);
+        expect(a.server.rooms.has(`voice:${ch}`)).toBe(false);
+        const terminal = capture.records.filter(record => record.event === 'media.expiry_evicted');
+        expect(terminal).toHaveLength(1);
+        expect(terminal[0]).toMatchObject({ level: 30, requestId: original.requestId });
+        for (const field of ['userId', 'socketId', 'channelId', 'serverId']) expect(terminal[0]).not.toHaveProperty(field);
+        for (const value of [OWNER, ch, SERVER, original.socketId]) expect(JSON.stringify(terminal[0])).not.toContain(value);
+      } finally { capture.restore(); }
     });
 
     it('an expiry moved later before the instant re-arms instead of evicting (positive control)', async () => {

@@ -20,6 +20,7 @@ import type { Server as SocketIOServer } from 'socket.io';
 import { channelMediaLiveWindow } from '../lib/channelContentAvailability';
 import { evictSocketsWithoutChannelAccessBestEffort } from '../lib/liveMembership';
 import logger from '../lib/logger';
+import { logRoutineMediaInfo } from '../lib/routineMediaLog';
 
 /** setTimeout's ceiling is ~24.8 days; a longer expiry re-arms on firing. */
 const MAX_DELAY_MS = 6 * 60 * 60 * 1000;
@@ -51,7 +52,7 @@ async function fire(io: SocketIOServer, channelId: string, serverId: string): Pr
     }
     // Gone (or unverifiable at its expiry instant: fail closed, as admission does).
     await evictSocketsWithoutChannelAccessBestEffort(io, serverId, channelId, { channelGone: true });
-    logger.info({ event: 'media.expiry_evicted', channelId, serverId }, 'Live media ended at channel expiry');
+    logRoutineMediaInfo({ event: 'media.expiry_evicted' });
   } catch (err) {
     logger.warn({ event: 'media.expiry_evict_failed', channelId, err }, 'Live media expiry eviction failed');
   }
