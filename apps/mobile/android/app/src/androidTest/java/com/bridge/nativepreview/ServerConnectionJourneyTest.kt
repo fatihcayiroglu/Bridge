@@ -3,6 +3,13 @@ package com.bridge.nativepreview
 import android.content.Intent
 import android.content.Context
 import android.app.KeyguardManager
+import android.app.ActivityManager
+import android.os.Handler
+import android.os.Looper
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
@@ -73,10 +80,36 @@ class ServerConnectionJourneyTest {
             catch (_: RuntimeException) { NativeForeground.UNAVAILABLE }
         val label = try { NativeInputLabel.fromDescription(device.findObject(By.res("server-url-input"))?.contentDescription) }
             catch (_: RuntimeException) { NativeInputLabel.UNAVAILABLE }
+        // The instrumentation itself runs in the app process; process presence
+        // cannot prove that MainActivity launched. Report only task presence.
+        val targetActivityRunning: Boolean? = try {
+            val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            manager?.appTasks?.any { task ->
+                val info = task.taskInfo
+                info?.let { it.isRunning && it.topActivity?.className == MainActivity::class.java.name } == true
+            }
+        } catch (_: Exception) { null }
+        // Query lifecycle on the UI thread as required by AndroidX. A stuck UI
+        // thread becomes UNKNOWN within two seconds; native acceptance still fails.
+        val targetActivityResumed: Boolean? = try {
+            val completed = CountDownLatch(1)
+            var observed: Boolean? = null
+            val posted = Handler(Looper.getMainLooper()).post {
+                try {
+                    observed = ActivityLifecycleMonitorRegistry.getInstance()
+                        .getActivitiesInStage(Stage.RESUMED).any { it is MainActivity }
+                } catch (_: RuntimeException) {
+                    // Registry absence is an unknown observation, not PASS.
+                } finally {
+                    completed.countDown()
+                }
+            }
+            if (posted && completed.await(2, TimeUnit.SECONDS)) observed else null
+        } catch (_: Exception) { null }
         val state = NativeStartupObservation(
             observe { device.isScreenOn },
             observe { (context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isKeyguardLocked },
-            foreground, observe { device.hasObject(By.text("Connect to your server")) },
+            foreground, targetActivityRunning, targetActivityResumed, observe { device.hasObject(By.text("Connect to your server")) },
             observe { device.hasObject(By.clazz("android.widget.EditText")) },
             observe { device.hasObject(By.res("server-url-input")) }, label,
         )
