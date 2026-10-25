@@ -256,11 +256,12 @@ jobs:
         working-directory: apps/mobile/ios
         run: |
           set -o pipefail
+          # One xcodebuild test action runs once; -test-iterations 1 is invalid.
           set +e
           xcodebuild -workspace BridgeNative.xcworkspace -scheme BridgeNative -configuration Debug \
             -destination "platform=iOS Simulator,id=$P8_SIMULATOR" -derivedDataPath ../build/ios-derived \
             -resultBundlePath ../.ci-results/native-journey.xcresult \
-            -parallel-testing-enabled NO -test-iterations 1 CODE_SIGNING_ALLOWED=NO test \
+            -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test \
             > ../.ci-results/xcodebuild.log 2>&1
           xcode_status=$?
           set -e
