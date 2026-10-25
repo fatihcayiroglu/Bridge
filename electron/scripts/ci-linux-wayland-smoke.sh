@@ -31,7 +31,8 @@ export XDG_CACHE_HOME="${ROOT}/cache"
 export XDG_SESSION_TYPE=wayland
 export WAYLAND_DISPLAY=bridge-wayland
 export WAYLAND_DEBUG=client
-unset DISPLAY
+# Weston's X11 backend needs the Xvfb DISPLAY. The installed Bridge launch
+# below clears it before starting the native Wayland client.
 mkdir -p "${XDG_RUNTIME_DIR}" "${XDG_CONFIG_HOME}" "${XDG_CACHE_HOME}"
 chmod 700 "${XDG_RUNTIME_DIR}"
 weston --backend=x11-backend.so --renderer=pixman --width=1280 --height=800 \
