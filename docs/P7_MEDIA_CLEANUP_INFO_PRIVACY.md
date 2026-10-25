@@ -6,7 +6,7 @@ through the real PostgreSQL/Redis/Socket.IO expiry journey exposed user,
 socket, server and channel identifiers in those routine INFO records. The
 baseline had 26 passing media tests and one failing privacy assertion, zero skips.
 
-`logRoutineMediaInfo` now owns the five routine eviction/publishing event
+`logRoutineMediaInfo` owns the five routine eviction/publishing event
 names and their messages. It rebuilds each payload from an allowlist of event,
 boolean SFU presence and nonnegative safe integer room/producer counts. It
 does not forward structural extras, DTO serializers or caller messages.
@@ -34,4 +34,5 @@ implementation and replaces #434's narrower private helper.
 Full source-head CI is required separately. This change covers these five
 routine event types only; it does not establish complete metadata minimization,
 real SFU media acceptance or closure of P7 B3, #321, #209 or #416. The branch
-is stacked on #434 and does not authorize a production merge.
+is stacked on #434 and does not authorize a production merge. The subsequent
+SFU-room extension is documented in `P7_SFU_ROOM_INFO_PRIVACY.md`.
