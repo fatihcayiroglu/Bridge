@@ -137,7 +137,19 @@ final class ServerConnectionJourneyTests: XCTestCase {
 
     print("BRIDGE_NATIVE_JOURNEY_STAGE=background")
     XCUIDevice.shared.press(.home)
-    XCTAssertTrue(reportState(app.wait(for: .runningBackground, timeout: 5)))
+    // iOS may suspend a correctly backgrounded process. Both observed states
+    // are real background states; foreground, unknown and terminated still fail.
+    let background = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+      let state = app.state
+      return state == .runningBackground || state == .runningBackgroundSuspended
+    }, object: app)
+    let backgroundObserved = XCTWaiter.wait(for: [background], timeout: 5) == .completed
+    reportObservedState()
+    let stateAfterHome = app.state
+    let stillBackground = stateAfterHome == .runningBackground ||
+                          stateAfterHome == .runningBackgroundSuspended
+    XCTAssertTrue(backgroundObserved && stillBackground,
+                  "App did not remain in a genuine background or suspended state after Home")
     print("BRIDGE_NATIVE_JOURNEY_STAGE=resume")
     app.activate()
     XCTAssertTrue(reportState(app.wait(for: .runningForeground, timeout: 10)))

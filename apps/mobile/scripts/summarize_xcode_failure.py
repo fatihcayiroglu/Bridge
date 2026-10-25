@@ -68,6 +68,7 @@ CLASSIFIERS = (
     ("test-failure", "liveness-not-verified", r"real Bridge liveness failed"),
     ("test-failure", "native-form-not-visible", r"native form did not launch"),
     ("test-failure", "resident-connection-lost", r"connection state disappeared on a resident resume"),
+    ("test-failure", "background-not-reached", r"App did not remain in a genuine background or suspended state after Home"),
     ("test-failure", "assertion-failed", r"XCTAssert\w* failed|Asynchronous wait failed|failed:.*expectation"),
     ("test-failure", "test-failed", r"test failed|testing failed"),
 )
