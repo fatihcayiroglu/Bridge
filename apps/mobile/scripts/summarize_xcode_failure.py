@@ -25,7 +25,7 @@ STATE_MARKER = re.compile(r"BRIDGE_NATIVE_APP_STATE=([a-z-]+)(?:\s|$)")
 STATES = frozenset({"unknown", "not-running", "background-suspended", "background", "foreground"})
 ACTION_MARKER = re.compile(r"BRIDGE_NATIVE_JOURNEY_ACTION=([a-z-]+)(?:\s|$)")
 ACTIONS = frozenset({"input-focus", "keyboard-wait", "keyboard-geometry", "input-clear",
-                     "input-clear-verify", "input-focus-verify", "input-type", "input-verify", "input-submit", "liveness-wait",
+                     "input-clear-verify", "input-focus-observe", "input-type", "input-verify", "input-submit", "liveness-wait",
                      "app-launch", "form-wait", "form-observation", "renderer-check"})
 INPUT_MARKER = re.compile(r"BRIDGE_NATIVE_INPUT_KIND=([a-z-]+)(?:\s|$)")
 INPUT_KINDS = frozenset({"text-field", "secure-field", "text-view", "other", "missing", "unavailable"})
@@ -33,6 +33,8 @@ SURFACE_MARKER = re.compile(r"BRIDGE_NATIVE_SURFACE=([a-z-]+)(?:\s|$)")
 SURFACES = frozenset({"form", "module-error", "metro-error", "reference-error", "type-error", "other", "unavailable"})
 VALUE_MARKER = re.compile(r"BRIDGE_NATIVE_INPUT_VALUE=([a-z-]+);length=([0-9]{1,3});expected-length=([0-9]{1,3});settled=(true|false)(?:\s|$)")
 VALUE_SHAPES = frozenset({"empty", "placeholder", "unchanged", "expected-prefix", "expected-suffix", "other", "not-string"})
+UI_FOCUS_MARKER = re.compile(r"BRIDGE_NATIVE_UI_FOCUS=(true|false)(?:\s|$)")
+KEY_INPUT_MARKER = re.compile(r"BRIDGE_NATIVE_KEYBOARD_INPUT=first-character-verified;ui-focus=(true|false)(?:\s|$)")
 MAX_XCRESULT_CHARS = 1_048_576
 TARGETS = (
     ("server-address-input", re.compile(r"\bserver-url-input\b")),
@@ -134,7 +136,8 @@ def xcresult_evidence(path: Path) -> list[str]:
         return ["xcresult-status=unavailable"]
 
 
-def summarize(log: Path, exit_status: str, failure_summary: Path | None = None) -> str:
+def summarize(log: Path, exit_status: str | None, failure_summary: Path | None = None,
+              *, keyboard_only: bool = False) -> str:
     markers: list[tuple[str, str, str, str, str, str]] = []
     category = "unclassified"
     count = 0
@@ -146,6 +149,12 @@ def summarize(log: Path, exit_status: str, failure_summary: Path | None = None) 
     input_kind = None
     surface = None
     input_value = None
+    pending_ui_focus = None
+    ui_focus_true = 0
+    ui_focus_false = 0
+    first_keys_verified = 0
+    false_focus_keys_verified = 0
+    false_focus_after_verified_key = 0
     with log.open(encoding="utf-8", errors="replace") as stream:
         while remaining > 0:
             limit = min(MAX_LINE_CHARS, remaining)
@@ -165,6 +174,24 @@ def summarize(log: Path, exit_status: str, failure_summary: Path | None = None) 
             action_match = ACTION_MARKER.search(line)
             if action_match and action_match[1] in ACTIONS:
                 action = action_match[1]
+                if action == "input-focus":
+                    pending_ui_focus = None
+            focus_match = UI_FOCUS_MARKER.search(line)
+            if focus_match and action == "input-focus-observe":
+                pending_ui_focus = focus_match[1] == "true"
+                if pending_ui_focus:
+                    ui_focus_true += 1
+                else:
+                    ui_focus_false += 1
+            key_input_match = KEY_INPUT_MARKER.search(line)
+            if (key_input_match and action == "input-type"
+                    and pending_ui_focus is not None):
+                first_keys_verified += 1
+                if not pending_ui_focus:
+                    false_focus_keys_verified += 1
+                if key_input_match[1] == "false":
+                    false_focus_after_verified_key += 1
+                pending_ui_focus = None
             input_match = INPUT_MARKER.search(line)
             if input_match and input_match[1] in INPUT_KINDS:
                 input_kind = input_match[1]
@@ -184,6 +211,16 @@ def summarize(log: Path, exit_status: str, failure_summary: Path | None = None) 
                     markers.append((*marker, stage, state, action))
         if remaining == 0:
             truncated = True
+    keyboard_fields = [f"ui-focus-true-observations={ui_focus_true}",
+                       f"ui-focus-false-observations={ui_focus_false}",
+                       f"first-characters-verified={first_keys_verified}",
+                       f"false-ui-focus-then-key-verified={false_focus_keys_verified}",
+                       f"verified-first-keys-ui-focus-false={false_focus_after_verified_key}"]
+    if keyboard_only:
+        # Observations never grade a test. The existing native result verifier
+        # still requires an actual successful XCTest with no failed/skipped cases.
+        return "\n".join(["evidence-kind=native-keyboard-observation",
+                          f"scan-truncated={str(truncated).lower()}", *keyboard_fields]) + "\n"
     fields = ["status=FAIL", f"xcodebuild-exit-status={validated_exit_status(exit_status)}",
               f"category={category}", f"error-markers={count}",
               f"scan-truncated={str(truncated).lower()}", f"last-stage={stage}",
@@ -203,12 +240,33 @@ def summarize(log: Path, exit_status: str, failure_summary: Path | None = None) 
         shape, length, expected_length, settled = input_value
         fields.extend(("input-value-shape=" + shape, f"input-value-length={length}",
                        f"input-expected-length={expected_length}", "input-value-settled=" + settled))
+    if ui_focus_true or ui_focus_false or first_keys_verified:
+        fields.extend(keyboard_fields)
     if failure_summary is not None:
         fields.extend(xcresult_evidence(failure_summary))
     return "\n".join(fields) + "\n"
 
 
 def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == "--keyboard-observation":
+        if len(sys.argv) not in (4, 5) or (len(sys.argv) == 5 and sys.argv[4] != "--require-complete-journey"):
+            print("category=keyboard-observation-arguments-invalid", file=sys.stderr)
+            return 2
+        try:
+            report = summarize(Path(sys.argv[2]), None, keyboard_only=True)
+            Path(sys.argv[3]).write_text(report)
+        except (OSError, ValueError):
+            print("evidence-kind=native-keyboard-observation\ncategory=keyboard-observation-unavailable", file=sys.stderr)
+            return 1
+        print(report, end="")
+        if len(sys.argv) == 5:
+            fields = dict(line.split("=", 1) for line in report.splitlines())
+            if (fields["scan-truncated"] != "false"
+                    or int(fields["ui-focus-true-observations"]) + int(fields["ui-focus-false-observations"]) != 3
+                    or fields["first-characters-verified"] != "3"):
+                print("category=keyboard-observation-incomplete", file=sys.stderr)
+                return 1
+        return 0
     if len(sys.argv) not in (4, 5):
         print("Usage: summarize-xcode-failure LOG EXIT_STATUS SUMMARY [PRIVATE_XCRESULT_JSON]", file=sys.stderr)
         return 2

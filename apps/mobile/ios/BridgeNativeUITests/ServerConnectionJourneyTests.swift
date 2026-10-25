@@ -76,14 +76,15 @@ final class ServerConnectionJourneyTests: XCTestCase {
       }, object: input)
       XCTAssertEqual(XCTWaiter.wait(for: [visibleInput], timeout: 5), .completed,
                      "Server field is covered by software keyboard")
-      // A visible keyboard alone does not prove this specific TextInput owns
-      // focus. Observe the actual native field before any keyboard events.
-      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-focus-verify")
+      // Apple's hasFocus describes UI focus; typeText independently requires
+      // keyboard focus. Observe the former without assuming equivalence.
+      // The genuine key event and exact reflected value below are required.
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-focus-observe")
       let focusReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
         input.hasFocus
       }, object: input)
-      XCTAssertEqual(XCTWaiter.wait(for: [focusReady], timeout: 5), .completed,
-                     "Server field did not receive keyboard focus")
+      let uiFocusObserved = XCTWaiter.wait(for: [focusReady], timeout: 5) == .completed
+      print("BRIDGE_NATIVE_UI_FOCUS=\(uiFocusObserved)")
       let current = input.value as? String ?? ""
       // The initial value is a placeholder; delete only an actual URL value.
       if current != "https://chat.example.com" {
@@ -122,8 +123,12 @@ final class ServerConnectionJourneyTests: XCTestCase {
         let reflectedKey = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
           input.value as? String == expectedPrefix
         }, object: input)
-        XCTAssertEqual(XCTWaiter.wait(for: [reflectedKey], timeout: 2), .completed,
+        let keyResult = XCTWaiter.wait(for: [reflectedKey], timeout: 2)
+        XCTAssertEqual(keyResult, .completed,
                        "Server field did not reflect keyboard character")
+        if keyResult == .completed && acceptedPrefix.count == 1 {
+          print("BRIDGE_NATIVE_KEYBOARD_INPUT=first-character-verified;ui-focus=\(input.hasFocus)")
+        }
       }
       print("BRIDGE_NATIVE_JOURNEY_ACTION=input-verify")
       let typedValue = input.value as? String
