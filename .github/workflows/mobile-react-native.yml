@@ -243,7 +243,10 @@ jobs:
       - name: Resolve native dependencies
         working-directory: apps/mobile/ios
         run: |
-          bundle exec pod install
+          # Enforce the graph from the tested simulator build, not an opportunistic re-resolution.
+          test -s Podfile.lock
+          bundle exec pod install --deployment
+          git diff --exit-code -- Podfile.lock
           xcodebuild -version
       - name: Boot an available iPhone simulator
         run: |
