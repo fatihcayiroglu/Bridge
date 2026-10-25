@@ -279,7 +279,11 @@ jobs:
           xcode_status=$?
           set -e
           if [ "$xcode_status" -ne 0 ]; then
-            if ! python3 ../scripts/summarize_xcode_failure.py ../.ci-results/xcodebuild.log "$xcode_status" ../.ci-results/xcode-diagnostic.txt; then
+            # A failed XCTest still has structured issues. Keep its raw values private.
+            if ! (xcrun xcresulttool get test-results summary --path ../.ci-results/native-journey.xcresult > ../.ci-results/xcode-private-summary.json) 2>/dev/null; then
+              : # Missing/malformed private input becomes a fixed unavailable code.
+            fi
+            if ! python3 ../scripts/summarize_xcode_failure.py ../.ci-results/xcodebuild.log "$xcode_status" ../.ci-results/xcode-diagnostic.txt ../.ci-results/xcode-private-summary.json; then
               printf 'status=FAIL\ncategory=xcode-diagnostic-unavailable\n' >&2
             fi
             exit "$xcode_status"

@@ -6,7 +6,7 @@ final class ServerConnectionJourneyTests: XCTestCase {
     continueAfterFailure = false
     print("BRIDGE_NATIVE_JOURNEY_STAGE=launch")
     let app = XCUIApplication(bundleIdentifier: "com.bridge.nativepreview")
-    func reportState(_ matched: Bool) -> Bool {
+    func reportObservedState() {
       let state: String
       switch app.state {
       case .unknown: state = "unknown"
@@ -17,11 +17,51 @@ final class ServerConnectionJourneyTests: XCTestCase {
       @unknown default: state = "unknown"
       }
       print("BRIDGE_NATIVE_APP_STATE=\(state)")
+    }
+    func reportState(_ matched: Bool) -> Bool {
+      reportObservedState()
       return matched
     }
+    func reportMissingForm() {
+      guard app.state == .runningForeground else {
+        print("BRIDGE_NATIVE_INPUT_KIND=unavailable")
+        print("BRIDGE_NATIVE_SURFACE=unavailable")
+        return
+      }
+      let candidate = app.descendants(matching: .any)["server-url-input"].firstMatch
+      let kind: String
+      if !candidate.exists { kind = "missing" }
+      else {
+        switch candidate.elementType {
+        case .textField: kind = "text-field"
+        case .secureTextField: kind = "secure-field"
+        case .textView: kind = "text-view"
+        default: kind = "other"
+        }
+      }
+      print("BRIDGE_NATIVE_INPUT_KIND=\(kind)")
+      let surface: String
+      if app.staticTexts["Connect to your server"].exists { surface = "form" }
+      else if app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Unable to resolve module")).firstMatch.exists { surface = "module-error" }
+      else if app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Could not connect to development server")).firstMatch.exists { surface = "metro-error" }
+      else if app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "ReferenceError")).firstMatch.exists { surface = "reference-error" }
+      else if app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "TypeError")).firstMatch.exists { surface = "type-error" }
+      else { surface = "other" }
+      print("BRIDGE_NATIVE_SURFACE=\(surface)")
+    }
+    print("BRIDGE_NATIVE_JOURNEY_ACTION=app-launch")
     app.launch()
+    reportObservedState()
     let input = app.textFields["server-url-input"]
-    XCTAssertTrue(input.waitForExistence(timeout: 60), "Native form did not launch")
+    print("BRIDGE_NATIVE_JOURNEY_ACTION=form-wait")
+    let formMatches = input.waitForExistence(timeout: 60)
+    reportObservedState()
+    if !formMatches {
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=form-observation")
+      reportMissingForm()
+    }
+    XCTAssertTrue(formMatches, "Native form did not launch")
+    print("BRIDGE_NATIVE_JOURNEY_ACTION=renderer-check")
     XCTAssertEqual(app.webViews.count, 0, "Primary renderer must not be a WebView")
 
     func connect(_ address: String) {

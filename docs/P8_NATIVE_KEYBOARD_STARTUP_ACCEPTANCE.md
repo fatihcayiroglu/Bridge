@@ -33,3 +33,25 @@ device startup. Real Gradle/JVM, emulator and Xcode/XCUITest checks are required
 on the new source. Any failing acceptance stays failed. A later passing run
 does not retroactively explain or erase the earlier failures. This is a draft
 preview stack, with no production cutover or permission to merge #375.
+
+## First stricter native result and bounded follow-up
+
+On `8883ac16`, run [40176697732](https://github.com/fatihcayiroglu/Bridge/actions/runs/40176697732)
+passed the contracts job and Android (six JVM cases and one real emulator
+journey, zero failed or skipped tests). iOS failed with exit 65 at `launch`,
+`element-not-found`, before the keyboard geometry check. This does not establish
+a keyboard layout defect or explain the previous Android failure.
+
+Failure-only iOS observations now distinguish the foreground state, the native
+element kind associated with the existing input identifier, and a small set of
+known form/React Native error surfaces. The original TextField selector and
+60-second acceptance stay intact. Observation never taps, activates, retries
+or converts a failure into success.
+
+Failed XCTest summaries are read privately with a one-megabyte bound. Only
+fixed reason/known-query codes and bounded counts are published; raw JSON,
+paths, identifiers, exception text and UI text are excluded from artifacts.
+Missing/malformed evidence is explicit, scanning beyond four failures is
+reported as truncated, and parser or diagnostic I/O failures preserve the
+original xcodebuild exit code. Local Python controls pass 44 cases, zero skips.
+Native acceptance on the follow-up source remains pending until CI executes it.

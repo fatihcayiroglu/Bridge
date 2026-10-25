@@ -1,9 +1,12 @@
 """Controls for stronger native acceptance and private startup observations."""
 import io
+import json
 from pathlib import Path
 import re
 import runpy
+import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 SCOPE = runpy.run_path(str(ROOT / 'apps/mobile/scripts/summarize_xcode_failure.py'))
@@ -35,6 +38,97 @@ class NativeKeyboardStartupTests(unittest.TestCase):
         report = SCOPE['summarize'](Log(), '65')
         self.assertIn('error-1-action=input-type', report)
         self.assertNotIn('private', report)
+
+    def test_failure_observations_publish_only_known_surface_and_element_codes(self):
+        class Log:
+            def open(self, **_kwargs):
+                return io.StringIO('BRIDGE_NATIVE_INPUT_KIND=other\n'
+                                   'BRIDGE_NATIVE_INPUT_KIND=private-identifier\n'
+                                   'BRIDGE_NATIVE_SURFACE=module-error\n'
+                                   'BRIDGE_NATIVE_SURFACE=private-credential\n')
+        report = SCOPE['summarize'](Log(), '65')
+        self.assertIn('input-kind=other', report)
+        self.assertIn('surface=module-error', report)
+        self.assertNotIn('private', report)
+        self.assertIn('status=FAIL', report)
+
+    def test_structured_failure_classifies_multiline_query_without_publishing_values(self):
+        payload = {'testFailures': [{
+            'failureText': 'Failed to get matching snapshot: No matches found\n'
+                           'Find TextField server-url-input\n'
+                           'file:///private/medical-note account=private-actor token=private-key',
+            'testName': 'private-test-name',
+            'sourceLocation': 'private-source-path',
+        }], 'environment': 'private-runner-account'}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'private-result.json'
+            path.write_text(json.dumps(payload))
+            report = SCOPE['xcresult_evidence'](path)
+        self.assertEqual(report, ['xcresult-status=available', 'xcresult-failures=1',
+                                 'xcresult-scan-truncated=false',
+                                 'xcresult-reasons=element-not-found',
+                                 'query-targets=server-address-input'])
+        self.assertNotIn('private', '\n'.join(report))
+
+    def test_structured_failure_does_not_classify_arbitrary_metadata_as_a_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'summary.json'
+            path.write_text(json.dumps({'testFailures': [{
+                'testName': 'Failed to type private-key into server-url-input',
+                'failureText': 'private-unrecognized-error'}]}))
+            report = SCOPE['xcresult_evidence'](path)
+        self.assertIn('xcresult-reasons=unclassified', report)
+        self.assertIn('query-targets=unclassified', report)
+        self.assertNotIn('private', '\n'.join(report))
+
+    def test_structured_failure_budget_and_marker_limit_are_visible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'summary.json'
+            path.write_text(json.dumps({'testFailures': [{'failureText': 'private'}] * 4 +
+                                                       [{'failureText': 'Failed to type connect-button'}]}))
+            report = SCOPE['xcresult_evidence'](path)
+            self.assertIn('xcresult-failures=5', report)
+            self.assertIn('xcresult-scan-truncated=true', report)
+            self.assertIn('query-targets=unclassified', report)
+            self.assertIn('xcresult-reasons=unclassified', report)
+            path.write_text('x' * (SCOPE['MAX_XCRESULT_CHARS'] + 1))
+            self.assertEqual(SCOPE['xcresult_evidence'](path), ['xcresult-status=oversized'])
+
+    def test_missing_malformed_and_deep_private_json_fail_closed_without_exception_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'private-result.json'
+            self.assertEqual(SCOPE['xcresult_evidence'](path), ['xcresult-status=unavailable'])
+            for content, status in [('private-invalid-json', 'unavailable'),
+                                    ('[]', 'malformed'), ('{}', 'malformed'),
+                                    ('{"testFailures": ["private"]}', 'malformed')]:
+                with self.subTest(status=status):
+                    path.write_text(content)
+                    self.assertEqual(SCOPE['xcresult_evidence'](path), ['xcresult-status=' + status])
+
+    def test_private_parser_recursion_failure_cannot_escape_as_a_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'private-result.json'
+            path.write_text('{}')
+            with patch.object(SCOPE['json'], 'loads', side_effect=RecursionError('private-parser-details')):
+                self.assertEqual(SCOPE['xcresult_evidence'](path), ['xcresult-status=unavailable'])
+
+    def test_launch_observation_does_not_replace_the_original_form_acceptance(self):
+        source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
+        self.assertIn('let input = app.textFields["server-url-input"]', source)
+        self.assertIn('let formMatches = input.waitForExistence(timeout: 60)', source)
+        self.assertIn('if !formMatches {', source)
+        self.assertIn('XCTAssertTrue(formMatches, "Native form did not launch")', source)
+        observation = source[source.index('func reportMissingForm()'):source.index('print("BRIDGE_NATIVE_JOURNEY_ACTION=app-launch")')]
+        for forbidden in ('.tap(', '.launch(', '.activate(', 'debugDescription', 'print(candidate'):
+            self.assertNotIn(forbidden, observation)
+
+    def test_private_xcresult_summary_is_not_in_the_artifact_allowlist(self):
+        workflow = (ROOT / '.github/workflows/mobile-react-native.yml').read_text()
+        upload = workflow[workflow.index('name: p8-ios-native-evidence'):workflow.index('- name: Stop disposable services', workflow.index('name: p8-ios-native-evidence'))]
+        self.assertNotIn('xcode-private-summary.json', upload)
+        self.assertNotIn('xcodebuild.log', upload)
+        self.assertNotIn('native-journey.xcresult', upload)
+        self.assertNotIn('apps/mobile/.ci-results/\n', upload)
 
     def test_ios_requires_actual_software_keyboard_and_unobscured_input(self):
         source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
