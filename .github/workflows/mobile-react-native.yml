@@ -185,7 +185,7 @@ jobs:
 
   ios:
     name: iOS Xcode build and native XCUITest journey
-    runs-on: macos-15
+    runs-on: macos-26
     needs: [contracts]
     timeout-minutes: 60
     env:
@@ -216,6 +216,14 @@ jobs:
           ruby-version: '3.3'
           working-directory: apps/mobile
           bundler-cache: true
+      - name: Assert the React Native 0.88 Xcode toolchain
+        run: |
+          xcodebuild -version
+          xcode_major="$(xcodebuild -version | sed -nE 's/^Xcode ([0-9]+).*/\1/p')"
+          if [ -z "$xcode_major" ] || [ "$xcode_major" -lt 26 ]; then
+            echo "P8 iOS toolchain FAIL: React Native 0.88 requires Xcode 26 or newer" >&2
+            exit 1
+          fi
       - name: Disposable real PostgreSQL and Redis
         run: |
           brew list --versions postgresql@18 || brew install postgresql@18
