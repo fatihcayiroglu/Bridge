@@ -175,6 +175,28 @@ class NativeKeyboardStartupTests(unittest.TestCase):
         self.assertNotIn('input.typeText(address)', source)
         self.assertNotIn('XCTAssertTrue(settled', source)
 
+    def test_metro_bundle_prewarm_is_real_bounded_and_precedes_native_acceptance(self):
+        workflow = (ROOT / '.github/workflows/mobile-react-native.yml').read_text()
+        for platform, label, next_step in (
+            ('android', 'Android', 'Enable KVM'),
+            ('ios', 'iOS', 'Xcode simulator build and actual native UI acceptance'),
+        ):
+            with self.subTest(platform=platform):
+                label_marker = 'name: Prewarm actual ' + label + ' Metro development bundle'
+                start = workflow.index(label_marker)
+                end = workflow.index('      - name: ' + next_step, start)
+                segment = workflow[start:end]
+                self.assertIn(
+                    'http://127.0.0.1:8081/index.bundle?platform=' + platform + '&dev=true&minify=false',
+                    segment,
+                )
+                self.assertIn('curl --fail --silent --show-error --max-time 180 --output /dev/null', segment)
+                self.assertIn("echo 'metro-bundle=FAIL;platform=" + platform + "'", segment)
+                self.assertIn('exit 1', segment)
+                self.assertNotIn('|| true', segment)
+                self.assertNotIn('continue-on-error', segment)
+        self.assertEqual(workflow.count('name: Prewarm actual '), 2)
+
     def test_ios_keyboard_chunks_are_one_way_and_strictly_verified(self):
         source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
         self.assertIn('for offset in stride(from: 0, to: characters.count, by: 4)', source)
