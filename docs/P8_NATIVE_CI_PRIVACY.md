@@ -34,3 +34,12 @@ attempts. A new diagnostic change requires its own source-head CI result. The
 source SHA artifact, committed CocoaPods lock and deployment-mode check remain
 in force. No mobile assertion, test count, retry policy or coverage threshold is
 relaxed. This work grants no production integration or release approval.
+
+The first #433 run on `c1d5e715` (40172295301) passed contracts and Android but
+failed iOS with exit 65 and one unclassified error marker. Its source-SHA and
+failure artifact are preserved; the cause is unverified. The next diagnostic
+revision records only literal native journey stages and known assertion codes.
+It also asserts that each address edit replaced the entire field before submit.
+All original checks and deadlines remain. These additions expose the failing
+phase without publishing actual/expected values; they are not an app fix or
+proof that the earlier intermittent failure has been resolved.

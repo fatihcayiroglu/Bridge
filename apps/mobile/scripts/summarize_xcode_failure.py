@@ -17,6 +17,9 @@ MAX_LINE_CHARS = 16_384
 MAX_SCAN_CHARS = 8 * 1024 * 1024
 ERROR_MARKER = re.compile(r"xcodebuild:\s*error:|(?:^|\s)error:", re.I)
 ANSI_CSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+STAGE_MARKER = re.compile(r"BRIDGE_NATIVE_JOURNEY_STAGE=([a-z-]+)(?:\s|$)")
+STAGES = frozenset({"launch", "connect", "background", "resume", "insecure-input",
+                    "unavailable-input", "complete"})
 
 # Codes are literals owned here. No captures or log substrings are returned.
 CLASSIFIERS = (
@@ -35,6 +38,11 @@ CLASSIFIERS = (
     ("ui-interaction", "tap-failed", r"failed to tap"),
     ("ui-interaction", "type-failed", r"failed to type"),
     ("ui-interaction", "focus-failed", r"failed to focus"),
+    ("test-failure", "address-edit-mismatch", r"server address edit did not replace the entire input"),
+    ("test-failure", "liveness-not-verified", r"real Bridge liveness failed"),
+    ("test-failure", "native-form-not-visible", r"native form did not launch"),
+    ("test-failure", "resident-connection-lost", r"connection state disappeared on a resident resume"),
+    ("test-failure", "assertion-failed", r"XCTAssert\w* failed|Asynchronous wait failed|failed:.*expectation"),
     ("test-failure", "test-failed", r"test failed|testing failed"),
 )
 PATTERNS = tuple((category, reason, re.compile(pattern, re.I))
@@ -64,11 +72,12 @@ def classify_marker(line: str) -> tuple[str, str, str]:
 
 
 def summarize(log: Path, exit_status: str) -> str:
-    markers: list[tuple[str, str, str]] = []
+    markers: list[tuple[str, str, str, str]] = []
     category = "unclassified"
     count = 0
     truncated = False
     remaining = MAX_SCAN_CHARS
+    stage = "not-started"
     with log.open(encoding="utf-8", errors="replace") as stream:
         while remaining > 0:
             limit = min(MAX_LINE_CHARS, remaining)
@@ -79,22 +88,26 @@ def summarize(log: Path, exit_status: str) -> str:
             if len(chunk) == limit and not chunk.endswith("\n"):
                 truncated = True
             line = ANSI_CSI.sub("", chunk)
+            stage_match = STAGE_MARKER.search(line)
+            if stage_match and stage_match[1] in STAGES:
+                stage = stage_match[1]
             if ERROR_MARKER.search(line):
                 marker = classify_marker(line)
                 if category == "unclassified":
                     category = marker[0]
                 count += 1
                 if len(markers) < MAX_MARKERS:
-                    markers.append(marker)
+                    markers.append((*marker, stage))
         if remaining == 0:
             truncated = True
     fields = ["status=FAIL", f"xcodebuild-exit-status={validated_exit_status(exit_status)}",
               f"category={category}", f"error-markers={count}",
-              f"scan-truncated={str(truncated).lower()}"]
-    for number, (kind, reason, artifact) in enumerate(markers, start=1):
+              f"scan-truncated={str(truncated).lower()}", f"last-stage={stage}"]
+    for number, (kind, reason, artifact, marker_stage) in enumerate(markers, start=1):
         fields.extend((f"error-{number}-category={kind}",
                        f"error-{number}-reason={reason}",
-                       f"error-{number}-artifact={artifact}"))
+                       f"error-{number}-artifact={artifact}",
+                       f"error-{number}-stage={marker_stage}"))
     return "\n".join(fields) + "\n"
 
 

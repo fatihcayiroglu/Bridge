@@ -2,6 +2,7 @@
 import io
 from contextlib import redirect_stderr
 import runpy
+import re
 from pathlib import Path
 import os
 import subprocess
@@ -95,6 +96,42 @@ class NativeDiagnosticPrivacyTests(unittest.TestCase):
         self.assertNotIn('error-5-category=', report)
         self.assertNotIn('secret-value', report)
         self.assertLess(len(report), 2048)
+
+    def test_journey_stage_codes_are_allowlisted_and_associated_with_each_error(self):
+        report = self.report(
+            'BRIDGE_NATIVE_JOURNEY_STAGE=connect\n'
+            'error: XCTAssertTrue failed - Real Bridge liveness failed private-account\n'
+            'BRIDGE_NATIVE_JOURNEY_STAGE=private-credential\n'
+            'error: unknown option private-option\n'
+            'BRIDGE_NATIVE_JOURNEY_STAGE=complete\n'
+        )
+        self.assertIn('error-1-stage=connect', report)
+        self.assertIn('error-1-reason=liveness-not-verified', report)
+        self.assertIn('error-2-stage=connect', report)
+        self.assertIn('last-stage=complete', report)
+        self.assertIn('status=FAIL', report)
+        self.assertNotIn('private', report)
+
+    def test_native_assertion_failure_keeps_its_code_without_actual_or_expected_values(self):
+        for message, reason in [
+            ('XCTAssertEqual failed: private-value - Server address edit did not replace the entire input', 'address-edit-mismatch'),
+            ('XCTAssertTrue failed - private-data', 'assertion-failed'),
+            ('Asynchronous wait failed: private-label', 'assertion-failed'),
+        ]:
+            with self.subTest(reason=reason):
+                report = self.report('error: ' + message + '\n')
+                self.assertIn('category=test-failure', report)
+                self.assertIn('error-1-reason=' + reason, report)
+                self.assertNotIn('private', report)
+
+    def test_native_journey_keeps_checks_and_reports_only_literal_stage_codes(self):
+        source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
+        stages = re.findall(r'print\("BRIDGE_NATIVE_JOURNEY_STAGE=([^\"]+)"\)', source)
+        self.assertEqual(set(stages), SCOPE['STAGES'])
+        self.assertIn('XCTAssertEqual(input.value as? String, address,', source)
+        self.assertIn('XCTAssertTrue(success.waitForExistence(timeout: 15)', source)
+        self.assertIn('XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))', source)
+        self.assertIn('XCTAssertFalse(success.exists,', source)
 
     def test_oversized_line_has_a_bounded_read_and_explicit_truncation(self):
         class BoundedLog:
