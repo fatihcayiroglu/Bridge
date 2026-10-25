@@ -73,10 +73,15 @@ class ServerConnectionJourneyTest {
             catch (_: RuntimeException) { NativeForeground.UNAVAILABLE }
         val label = try { NativeInputLabel.fromDescription(device.findObject(By.res("server-url-input"))?.contentDescription) }
             catch (_: RuntimeException) { NativeInputLabel.UNAVAILABLE }
+        // Do not export the PID or the foreground package: only whether the
+        // target process exists while the 60-second form assertion fails.
+        val targetProcessAlive: Boolean? = try {
+            device.executeShellCommand("pidof $APP_ID").trim().isNotEmpty()
+        } catch (_: Exception) { null }
         val state = NativeStartupObservation(
             observe { device.isScreenOn },
             observe { (context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isKeyguardLocked },
-            foreground, observe { device.hasObject(By.text("Connect to your server")) },
+            foreground, targetProcessAlive, observe { device.hasObject(By.text("Connect to your server")) },
             observe { device.hasObject(By.clazz("android.widget.EditText")) },
             observe { device.hasObject(By.res("server-url-input")) }, label,
         )
