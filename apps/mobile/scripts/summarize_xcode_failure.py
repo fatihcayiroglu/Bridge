@@ -23,6 +23,7 @@ CLASSIFIERS = (
     ("test-target", re.compile(r"no test.+(?:target|bundle)|not configured for the test action", re.I)),
     ("invocation", re.compile(r"unknown (?:option|argument)|invalid (?:option|argument)|usage: xcodebuild", re.I)),
     ("compilation", re.compile(r"compilation failed|swift compiler|clang: error|build failed", re.I)),
+    ("ui-interaction", re.compile(r"failed to (?:tap|type|focus)|no matches found|not hittable|failed to get matching", re.I)),
     ("test-failure", re.compile(r"test failed|testing failed", re.I)),
 )
 
@@ -41,7 +42,12 @@ def redact(line: str) -> str:
     match = re.search(r"(?:xcodebuild:\s*error:|(?:^|\s)error:)\s*", line, flags=re.I)
     if match:
         line = line[match.start():]
-    return line.strip()[:MAX_CHARS]
+    line = line.strip()
+    if len(line) <= MAX_CHARS:
+        return line
+    # The leading test name and the final XCTest reason are both useful. Keep
+    # a fixed bounded amount of each, after secret/path redaction.
+    return line[:104] + " [middle omitted] " + line[-118:]
 
 def summarize(log: Path, exit_status: str) -> str:
     markers: list[str] = []
