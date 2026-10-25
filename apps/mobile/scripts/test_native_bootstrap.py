@@ -1,6 +1,5 @@
 """P8 native CI bootstrap regression controls (stdlib-only, no network)."""
 from pathlib import Path
-import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
