@@ -121,6 +121,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Identify exact native source commit
+        run: |
+          mkdir -p apps/mobile/.ci-results
+          git rev-parse HEAD > apps/mobile/.ci-results/source-commit.txt
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -134,8 +138,12 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: android-actions/setup-android@v3
+        with:
+          # The v3 default requests removed SDK package 'tools'; only platform-tools
+          # are needed before the explicit pinned platform/build-tools/NDK install.
+          packages: 'platform-tools'
       - name: Install the verified RN template SDK and NDK
-        run: sdkmanager 'platforms;android-37' 'build-tools;37.0.0' 'ndk;27.1.12297006'
+        run: sdkmanager --channel=3 --install 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006'
       - name: Install and build real Bridge backend
         run: |
           npm ci
@@ -149,14 +157,7 @@ jobs:
           ./gradlew --no-daemon -PreactNativeArchitectures=x86_64 :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
           python3 ../scripts/verify_native_results.py --junit-dir app/build/test-results/testDebugUnitTest --expected 2
       - name: Start Metro for the actual debug application
-        run: |
-          cd apps/mobile
-          npm start -- --port 8081 > .ci-results/metro.log 2>&1 &
-          for attempt in {1..60}; do
-            if curl --silent --fail http://127.0.0.1:8081/status | grep -q 'packager-status:running'; then exit 0; fi
-            sleep 1
-          done
-          exit 1
+        run: bash apps/mobile/scripts/start-ci-metro.sh
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -169,11 +170,7 @@ jobs:
           arch: x86_64
           profile: pixel_7
           disable-animations: true
-          script: |
-            adb reverse tcp:8081 tcp:8081
-            cd apps/mobile/android
-            ./gradlew --no-daemon -PreactNativeArchitectures=x86_64 :app:connectedDebugAndroidTest
-            python3 ../scripts/verify_native_results.py --junit-dir app/build/outputs/androidTest-results/connected --expected 1
+          script: bash apps/mobile/scripts/run-android-native-journey.sh
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -181,12 +178,14 @@ jobs:
           path: |
             apps/mobile/android/app/build/test-results/
             apps/mobile/android/app/build/outputs/androidTest-results/
-            apps/mobile/.ci-results/
+            apps/mobile/.ci-results/source-commit.txt
+            apps/mobile/.ci-results/metro-diagnostic.txt
+          include-hidden-files: true
           if-no-files-found: error
 
   ios:
     name: iOS Xcode build and native XCUITest journey
-    runs-on: macos-15
+    runs-on: macos-26
     needs: [contracts]
     timeout-minutes: 60
     env:
@@ -200,6 +199,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Identify exact native source commit
+        run: |
+          mkdir -p apps/mobile/.ci-results
+          git rev-parse HEAD > apps/mobile/.ci-results/source-commit.txt
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -213,6 +216,14 @@ jobs:
           ruby-version: '3.3'
           working-directory: apps/mobile
           bundler-cache: true
+      - name: Assert the React Native 0.88 Xcode toolchain
+        run: |
+          xcodebuild -version
+          xcode_major="$(xcodebuild -version | sed -nE 's/^Xcode ([0-9]+).*/\1/p')"
+          if [ -z "$xcode_major" ] || [ "$xcode_major" -lt 26 ]; then
+            echo "P8 iOS toolchain FAIL: React Native 0.88 requires Xcode 26 or newer" >&2
+            exit 1
+          fi
       - name: Disposable real PostgreSQL and Redis
         run: |
           brew list --versions postgresql@18 || brew install postgresql@18
@@ -248,23 +259,24 @@ jobs:
           print(json.dumps(device))
           PY
       - name: Start Metro for the actual debug application
-        run: |
-          cd apps/mobile
-          npm start -- --port 8081 > .ci-results/metro.log 2>&1 &
-          for attempt in {1..60}; do
-            if curl --silent --fail http://127.0.0.1:8081/status | grep -q 'packager-status:running'; then exit 0; fi
-            sleep 1
-          done
-          exit 1
+        run: bash apps/mobile/scripts/start-ci-metro.sh
       - name: Xcode simulator build and actual native UI acceptance
         working-directory: apps/mobile/ios
         run: |
           set -o pipefail
+          # One xcodebuild test action runs once; -test-iterations 1 is invalid.
+          set +e
           xcodebuild -workspace BridgeNative.xcworkspace -scheme BridgeNative -configuration Debug \
             -destination "platform=iOS Simulator,id=$P8_SIMULATOR" -derivedDataPath ../build/ios-derived \
             -resultBundlePath ../.ci-results/native-journey.xcresult \
-            -parallel-testing-enabled NO -test-iterations 1 CODE_SIGNING_ALLOWED=NO test \
+            -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test \
             > ../.ci-results/xcodebuild.log 2>&1
+          xcode_status=$?
+          set -e
+          if [ "$xcode_status" -ne 0 ]; then
+            python3 ../scripts/summarize_xcode_failure.py ../.ci-results/xcodebuild.log "$xcode_status" ../.ci-results/xcode-diagnostic.txt
+            exit "$xcode_status"
+          fi
           xcrun xcresulttool get test-results summary --path ../.ci-results/native-journey.xcresult \
             > ../.ci-results/xcode-summary.json
           python3 ../scripts/verify_native_results.py --xcode-summary ../.ci-results/xcode-summary.json --expected 1
@@ -273,9 +285,13 @@ jobs:
         with:
           name: p8-ios-native-evidence
           path: |
-            apps/mobile/.ci-results/
+            apps/mobile/.ci-results/source-commit.txt
+            apps/mobile/.ci-results/metro-diagnostic.txt
+            apps/mobile/.ci-results/xcode-summary.json
+            apps/mobile/.ci-results/xcode-diagnostic.txt
             apps/mobile/ios/Podfile.lock
             apps/mobile/Gemfile.lock
+          include-hidden-files: true
           if-no-files-found: error
       - name: Stop disposable services
         if: always()
