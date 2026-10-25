@@ -27,6 +27,7 @@ import { getAppOrigin, isAllowedExternalUrl, isSameAppOrigin, setAppOrigin } fro
 import { nativeText, normalizeNativeLocale, type NativeTextKey } from './nativeLocale';
 import { ipcSenderUrl, isTrustedIpcSender } from './ipcSecurity';
 import { normalizeServerUrl, readDesktopSettings, writeDesktopSettings, type ServerUrlRejection } from './desktopSettings';
+import { NativeStartupStage, nativeStartupTraceEnabled, traceNativeStartupStage } from './nativeStartupTrace';
 
 let mainWindow: BrowserWindow | null = null;
 let connectWindow: BrowserWindow | null = null;
@@ -298,10 +299,22 @@ function openConnectWindow(): void {
     },
   });
   connectWindow.setMenu(null);
+  traceNativeStartupStage(NativeStartupStage.ConnectCreated);
+  if (nativeStartupTraceEnabled()) {
+    // Observe real events only. Keep the existing load/show behavior unchanged.
+    connectWindow.once('ready-to-show', () => traceNativeStartupStage(NativeStartupStage.ConnectReadyToShow));
+    connectWindow.once('show', () => traceNativeStartupStage(NativeStartupStage.ConnectShown));
+    connectWindow.webContents.once('dom-ready', () => traceNativeStartupStage(NativeStartupStage.ConnectDomReady));
+    connectWindow.webContents.once('did-finish-load', () => traceNativeStartupStage(NativeStartupStage.ConnectLoadComplete));
+    connectWindow.webContents.once('did-fail-load', () => traceNativeStartupStage(NativeStartupStage.ConnectLoadFailed));
+    connectWindow.webContents.once('render-process-gone', () => traceNativeStartupStage(NativeStartupStage.ConnectRendererGone));
+  }
   connectWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   connectWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  traceNativeStartupStage(NativeStartupStage.ConnectLoadRequested);
   void connectWindow.loadFile(connectPagePath());
   connectWindow.once('ready-to-show', () => connectWindow?.show());
+  traceNativeStartupStage(NativeStartupStage.ConnectShowHandlerAttached);
   connectWindow.on('closed', () => { connectWindow = null; });
 }
 
@@ -462,11 +475,14 @@ function showAbout(): void {
 // ─── APP LIFECYCLE ────────────────────────────────────────────
 app.whenReady().then(() => {
   if (!gotLock) return;
+  traceNativeStartupStage(NativeStartupStage.AppReady);
   if (process.platform === 'win32') app.setAppUserModelId(APP_USER_MODEL_ID);
   console.log(`🌉 ${shellText('appStarting')}`);
 
   installSessionPolicies();
+  traceNativeStartupStage(NativeStartupStage.TrayStarting);
   createTray();
+  traceNativeStartupStage(NativeStartupStage.TrayReady);
 
   const { serverOrigin } = readDesktopSettings(settingsFile());
   if (serverOrigin) {

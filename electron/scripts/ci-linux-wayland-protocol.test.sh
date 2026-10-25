@@ -59,4 +59,12 @@ summary=$(wayland_protocol_summary "${fixture}")
 [[ "${summary}" == *'wayland-get-toplevel=1'* ]]
 [[ "${summary}" == *'wayland-configure-acks=1'* ]]
 [[ "${summary}" != *'private'* && "${summary}" != *'secret'* && "${summary}" != *'https://'* && "${summary}" != *'/home/'* ]]
+printf '%s\n' 'BRIDGE_NATIVE_STAGE=1' 'BRIDGE_NATIVE_STAGE=2' \
+  'private-prefix BRIDGE_NATIVE_STAGE=7 private-suffix' \
+  'BRIDGE_NATIVE_STAGE=8' 'BRIDGE_NATIVE_STAGE=12' \
+  'BRIDGE_NATIVE_STAGE=99' 'BRIDGE_NATIVE_STAGE=private-secret' > "${fixture}"
+summary=$(wayland_protocol_summary "${fixture}")
+stages=$(printf '%s\n' "${summary}" | grep '^native-startup-stage=')
+[[ "${stages}" == $'native-startup-stage=1\nnative-startup-stage=2\nnative-startup-stage=7\nnative-startup-stage=8\nnative-startup-stage=12' ]]
+[[ "${summary}" != *'private'* && "${summary}" != *'secret'* && "${summary}" != *'=99'* ]]
 echo 'PASS: native Wayland acceptance controls (3 valid / 7 invalid / 1 privacy / 0 skipped)'
