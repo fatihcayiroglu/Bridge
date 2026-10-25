@@ -39,6 +39,8 @@ The first #433 run on `c1d5e715` (40172295301) passed contracts and Android but
 failed iOS with exit 65 and one unclassified error marker. Its source-SHA and
 failure artifact are preserved; the cause is unverified. The next diagnostic
 revision records only literal native journey stages and known assertion codes.
+It also reports a fixed OS application-state enum at lifecycle assertions;
+the original boolean results and deadlines are unchanged.
 It also asserts that each address edit replaced the entire field before submit.
 All original checks and deadlines remain. These additions expose the failing
 phase without publishing actual/expected values; they are not an app fix or

@@ -20,6 +20,8 @@ ANSI_CSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 STAGE_MARKER = re.compile(r"BRIDGE_NATIVE_JOURNEY_STAGE=([a-z-]+)(?:\s|$)")
 STAGES = frozenset({"launch", "connect", "background", "resume", "insecure-input",
                     "unavailable-input", "complete"})
+STATE_MARKER = re.compile(r"BRIDGE_NATIVE_APP_STATE=([a-z-]+)(?:\s|$)")
+STATES = frozenset({"unknown", "not-running", "background-suspended", "background", "foreground"})
 
 # Codes are literals owned here. No captures or log substrings are returned.
 CLASSIFIERS = (
@@ -72,12 +74,13 @@ def classify_marker(line: str) -> tuple[str, str, str]:
 
 
 def summarize(log: Path, exit_status: str) -> str:
-    markers: list[tuple[str, str, str, str]] = []
+    markers: list[tuple[str, str, str, str, str]] = []
     category = "unclassified"
     count = 0
     truncated = False
     remaining = MAX_SCAN_CHARS
     stage = "not-started"
+    state = "not-observed"
     with log.open(encoding="utf-8", errors="replace") as stream:
         while remaining > 0:
             limit = min(MAX_LINE_CHARS, remaining)
@@ -91,23 +94,28 @@ def summarize(log: Path, exit_status: str) -> str:
             stage_match = STAGE_MARKER.search(line)
             if stage_match and stage_match[1] in STAGES:
                 stage = stage_match[1]
+            state_match = STATE_MARKER.search(line)
+            if state_match and state_match[1] in STATES:
+                state = state_match[1]
             if ERROR_MARKER.search(line):
                 marker = classify_marker(line)
                 if category == "unclassified":
                     category = marker[0]
                 count += 1
                 if len(markers) < MAX_MARKERS:
-                    markers.append((*marker, stage))
+                    markers.append((*marker, stage, state))
         if remaining == 0:
             truncated = True
     fields = ["status=FAIL", f"xcodebuild-exit-status={validated_exit_status(exit_status)}",
               f"category={category}", f"error-markers={count}",
-              f"scan-truncated={str(truncated).lower()}", f"last-stage={stage}"]
-    for number, (kind, reason, artifact, marker_stage) in enumerate(markers, start=1):
+              f"scan-truncated={str(truncated).lower()}", f"last-stage={stage}",
+              f"last-app-state={state}"]
+    for number, (kind, reason, artifact, marker_stage, marker_state) in enumerate(markers, start=1):
         fields.extend((f"error-{number}-category={kind}",
                        f"error-{number}-reason={reason}",
                        f"error-{number}-artifact={artifact}",
-                       f"error-{number}-stage={marker_stage}"))
+                       f"error-{number}-stage={marker_stage}",
+                       f"error-{number}-app-state={marker_state}"))
     return "\n".join(fields) + "\n"
 
 

@@ -6,6 +6,19 @@ final class ServerConnectionJourneyTests: XCTestCase {
     continueAfterFailure = false
     print("BRIDGE_NATIVE_JOURNEY_STAGE=launch")
     let app = XCUIApplication(bundleIdentifier: "com.bridge.nativepreview")
+    func reportState(_ matched: Bool) -> Bool {
+      let state: String
+      switch app.state {
+      case .unknown: state = "unknown"
+      case .notRunning: state = "not-running"
+      case .runningBackgroundSuspended: state = "background-suspended"
+      case .runningBackground: state = "background"
+      case .runningForeground: state = "foreground"
+      @unknown default: state = "unknown"
+      }
+      print("BRIDGE_NATIVE_APP_STATE=\(state)")
+      return matched
+    }
     app.launch()
     let input = app.textFields["server-url-input"]
     XCTAssertTrue(input.waitForExistence(timeout: 60), "Native form did not launch")
@@ -32,10 +45,10 @@ final class ServerConnectionJourneyTests: XCTestCase {
 
     print("BRIDGE_NATIVE_JOURNEY_STAGE=background")
     XCUIDevice.shared.press(.home)
-    XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
+    XCTAssertTrue(reportState(app.wait(for: .runningBackground, timeout: 5)))
     print("BRIDGE_NATIVE_JOURNEY_STAGE=resume")
     app.activate()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertTrue(reportState(app.wait(for: .runningForeground, timeout: 10)))
     XCTAssertTrue(success.exists, "Connection state disappeared on a resident resume")
     // This tests resident state, not process-death recovery or background sockets.
 

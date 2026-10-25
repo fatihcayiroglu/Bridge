@@ -130,8 +130,22 @@ class NativeDiagnosticPrivacyTests(unittest.TestCase):
         self.assertEqual(set(stages), SCOPE['STAGES'])
         self.assertIn('XCTAssertEqual(input.value as? String, address,', source)
         self.assertIn('XCTAssertTrue(success.waitForExistence(timeout: 15)', source)
-        self.assertIn('XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))', source)
+        self.assertIn('XCTAssertTrue(reportState(app.wait(for: .runningBackground, timeout: 5)))', source)
+        self.assertIn('XCTAssertTrue(reportState(app.wait(for: .runningForeground, timeout: 10)))', source)
+        self.assertIn('return matched', source)
         self.assertIn('XCTAssertFalse(success.exists,', source)
+
+    def test_native_lifecycle_observation_cannot_publish_unknown_state_values(self):
+        report = self.report(
+            'BRIDGE_NATIVE_JOURNEY_STAGE=background\n'
+            'BRIDGE_NATIVE_APP_STATE=background-suspended\n'
+            'BRIDGE_NATIVE_APP_STATE=private-identifier\n'
+            'error: XCTAssertTrue failed - private-assertion\n'
+        )
+        self.assertIn('last-app-state=background-suspended', report)
+        self.assertIn('error-1-app-state=background-suspended', report)
+        self.assertIn('error-1-stage=background', report)
+        self.assertNotIn('private', report)
 
     def test_oversized_line_has_a_bounded_read_and_explicit_truncation(self):
         class BoundedLog:
