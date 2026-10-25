@@ -128,5 +128,19 @@ class NativeBootstrapContracts(unittest.TestCase):
         self.assertIn("productType = \"com.apple.product-type.bundle.ui-testing\";", project)
 
 
+    def test_ios_uses_tested_podfile_lock_in_deployment_mode(self):
+        workflow = (ROOT / ".github/workflows/mobile-react-native.yml").read_text()
+        lock = (ROOT / "apps/mobile/ios/Podfile.lock").read_text()
+        gems = (ROOT / "apps/mobile/Gemfile.lock").read_text()
+        self.assertTrue(lock.startswith("PODS:\n"))
+        self.assertRegex(lock, r"(?m)^PODFILE CHECKSUM: [0-9a-f]{40}$")
+        self.assertRegex(lock, r"(?m)^COCOAPODS: 1\.17\.0$")
+        self.assertIn("    cocoapods (1.17.0)", gems)
+        self.assertIn("test -s Podfile.lock", workflow)
+        self.assertIn("bundle exec pod install --deployment", workflow)
+        self.assertIn("git diff --exit-code -- Podfile.lock", workflow)
+        self.assertNotIn("          bundle exec pod install\n", workflow)
+
+
 if __name__ == "__main__":
     unittest.main()
