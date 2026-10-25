@@ -170,11 +170,7 @@ jobs:
           arch: x86_64
           profile: pixel_7
           disable-animations: true
-          script: |
-            adb reverse tcp:8081 tcp:8081
-            cd apps/mobile/android
-            ./gradlew --no-daemon -PreactNativeArchitectures=x86_64 :app:connectedDebugAndroidTest
-            python3 ../scripts/verify_native_results.py --junit-dir app/build/outputs/androidTest-results/connected --expected 1
+          script: bash apps/mobile/scripts/run-android-native-journey.sh
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -260,11 +256,18 @@ jobs:
         working-directory: apps/mobile/ios
         run: |
           set -o pipefail
+          set +e
           xcodebuild -workspace BridgeNative.xcworkspace -scheme BridgeNative -configuration Debug \
             -destination "platform=iOS Simulator,id=$P8_SIMULATOR" -derivedDataPath ../build/ios-derived \
             -resultBundlePath ../.ci-results/native-journey.xcresult \
             -parallel-testing-enabled NO -test-iterations 1 CODE_SIGNING_ALLOWED=NO test \
             > ../.ci-results/xcodebuild.log 2>&1
+          xcode_status=$?
+          set -e
+          if [ "$xcode_status" -ne 0 ]; then
+            python3 ../scripts/summarize_xcode_failure.py ../.ci-results/xcodebuild.log "$xcode_status" ../.ci-results/xcode-diagnostic.txt
+            exit "$xcode_status"
+          fi
           xcrun xcresulttool get test-results summary --path ../.ci-results/native-journey.xcresult \
             > ../.ci-results/xcode-summary.json
           python3 ../scripts/verify_native_results.py --xcode-summary ../.ci-results/xcode-summary.json --expected 1
@@ -276,6 +279,7 @@ jobs:
             apps/mobile/.ci-results/source-commit.txt
             apps/mobile/.ci-results/metro-diagnostic.txt
             apps/mobile/.ci-results/xcode-summary.json
+            apps/mobile/.ci-results/xcode-diagnostic.txt
             apps/mobile/ios/Podfile.lock
             apps/mobile/Gemfile.lock
           include-hidden-files: true
