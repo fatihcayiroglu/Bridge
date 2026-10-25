@@ -20,12 +20,13 @@ FLAG = r"(true|false|unknown)"
 STARTUP = re.compile(
     r"(?<![\w-])startup=(screen-unavailable|keyguard-not-unlocked|form-not-visible);"
     r"screen-on=" + FLAG + r";keyguard-locked=" + FLAG +
-    r";foreground=(preview|launcher|system-ui|permission-controller|other|unavailable);"
+    r";foreground=(preview|launcher|system-ui|permission-controller|android-system|test-runner|input-method|settings|setup|other|unavailable);"
     r"heading-visible=" + FLAG + r";edit-text-visible=" + FLAG +
-    r";input-id-visible=" + FLAG + r";input-label=(exact|includes-label|missing|unavailable)(?![\w-])"
+    r";input-id-visible=" + FLAG + r";input-label=(exact|includes-label|missing|unavailable)"
+    r"(?:;system-alert=(anr|crash|other|none|unavailable))?(?![\w-])"
 )
 STARTUP_KEYS = ("reason", "screen-on", "keyguard-locked", "foreground",
-                "heading-visible", "edit-text-visible", "input-id-visible", "input-label")
+                "heading-visible", "edit-text-visible", "input-id-visible", "input-label", "system-alert")
 
 
 def startup_observation(directory):
@@ -47,7 +48,7 @@ def startup_observation(directory):
                     continue
                 match = STARTUP.search(issue.text or "")
                 if match:
-                    return dict(zip(STARTUP_KEYS, match.groups()))
+                    return {key: value for key, value in zip(STARTUP_KEYS, match.groups()) if value is not None}
     except (OSError, ValueError, ET.ParseError, RecursionError):
         pass
     return None

@@ -95,6 +95,24 @@ class NativeArtifactPrivacyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertNotIn('startup', artifact)
 
+    def test_new_system_window_and_alert_codes_stay_private_and_old_packets_still_work(self):
+        packet = ('startup=form-not-visible;screen-on=true;keyguard-locked=false;'
+                  'foreground=android-system;heading-visible=false;edit-text-visible=false;'
+                  'input-id-visible=false;input-label=unavailable')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for suffix in ('', ';system-alert=anr', ';system-alert=private-secret'):
+                (root / 'TEST-private.xml').write_text('<testsuite><testcase><failure>' + packet + suffix +
+                                                      '\nprivate-stack-trace</failure></testcase></testsuite>')
+                result, artifact = self.run_gate(root, root)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(artifact['startup']['foreground'], 'android-system')
+                if suffix == ';system-alert=anr':
+                    self.assertEqual(artifact['startup']['system-alert'], 'anr')
+                else:
+                    self.assertNotIn('system-alert', artifact['startup'])
+                self.assertNotIn('private', json.dumps(artifact))
+
     def test_xcode_artifact_projects_counts_without_private_summary_fields(self):
         valid = {'totalTestCount': 1, 'passedTests': 1, 'failedTests': 0,
                  'skippedTests': 0, 'expectedFailures': 0,
@@ -203,6 +221,31 @@ class NativeArtifactPrivacyTests(unittest.TestCase):
                 for name in ('jvm', 'ui'):
                     report = json.loads((output / ('android-' + name + '-summary.json')).read_text())
                     self.assertEqual(report['status'], 'FAIL' if name == bad_suite else 'PASS')
+
+    def test_ios_publication_reads_the_existing_private_failed_summary(self):
+        workflow = (ROOT / '.github/workflows/mobile-react-native.yml').read_text()
+        block = workflow[workflow.index('- name: Publish normalized XCUITest evidence'):]
+        self.assertRegex(block, r'if: always\(\)')
+        step = re.search(r'        run: ([^\n]+)\n((?:          [^\n]*\n)*)', block)
+        self.assertIsNotNone(step)
+        script = textwrap.dedent(step[2]) if step[1] == '|' else step[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / 'apps/mobile/scripts'
+            scripts.mkdir(parents=True)
+            (scripts / GATE.name).write_text(GATE.read_text())
+            output = root / 'apps/mobile/.ci-results'
+            output.mkdir()
+            (output / 'xcode-private-summary.json').write_text(json.dumps({
+                'totalTestCount': 1, 'passedTests': 0, 'failedTests': 1,
+                'skippedTests': 0, 'expectedFailures': 0,
+                'testFailures': [{'failureText': 'private-failed-assertion'}]}))
+            result = subprocess.run(['bash', '-ec', script], cwd=root, capture_output=True,
+                                    text=True, check=False, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn('private', result.stdout + result.stderr)
+            report = json.loads((output / 'ios-native-summary.json').read_text())
+            self.assertEqual(report, {'status': 'FAIL', 'category': 'native-xcode-summary-invalid'})
 
 
 if __name__ == '__main__':

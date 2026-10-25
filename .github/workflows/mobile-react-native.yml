@@ -300,7 +300,12 @@ jobs:
           python3 ../scripts/verify_native_results.py --xcode-summary ../.ci-results/xcode-summary.json --expected 1
       - name: Publish normalized XCUITest evidence without private summaries
         if: always()
-        run: python3 apps/mobile/scripts/verify_native_results.py --xcode-summary apps/mobile/.ci-results/xcode-summary.json --expected 1 --output apps/mobile/.ci-results/ios-native-summary.json
+        run: |
+          summary_file=apps/mobile/.ci-results/xcode-summary.json
+          if [ -f apps/mobile/.ci-results/xcode-private-summary.json ]; then
+            summary_file=apps/mobile/.ci-results/xcode-private-summary.json
+          fi
+          python3 apps/mobile/scripts/verify_native_results.py --xcode-summary "$summary_file" --expected 1 --output apps/mobile/.ci-results/ios-native-summary.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:
