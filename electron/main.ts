@@ -1,3 +1,4 @@
+import { isBridgeLiveness, SERVER_PROBE_TIMEOUT_MS } from '@bridge/core';
 // electron/main.ts
 //
 // Bridge desktop — a native client for a Bridge server: deep links (bridge://),
@@ -38,7 +39,6 @@ const DEEP_LINK_SCHEME = 'bridge';
 const APP_USER_MODEL_ID = 'com.bridge.desktop';
 /** Passed by the "Start with Windows" login item: start in the tray, not in the user's face. */
 const BACKGROUND_ARG = '--background';
-const SERVER_PROBE_TIMEOUT_MS = 8_000;
 
 /** electron/ in both layouts: compiled code runs from electron/dist, tests load electron/*.ts. */
 const APP_ROOT = path.basename(__dirname) === 'dist' ? path.join(__dirname, '..') : __dirname;
@@ -227,8 +227,7 @@ export async function probeBridgeServer(origin: string): Promise<boolean> {
       signal: AbortSignal.timeout(SERVER_PROBE_TIMEOUT_MS),
     });
     if (!response.ok) return false;
-    const body = await response.json() as { status?: unknown; check?: unknown };
-    return body?.status === 'ok' && body?.check === 'liveness';
+    return isBridgeLiveness(await response.json());
   } catch {
     return false;
   }

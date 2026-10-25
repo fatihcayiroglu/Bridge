@@ -19,36 +19,8 @@ export interface DesktopSettings {
 
 export const DEFAULT_SETTINGS: DesktopSettings = { serverOrigin: null };
 
-export type ServerUrlRejection = 'empty' | 'invalid' | 'insecure' | 'credentials';
-export type ServerUrlResult = { ok: true; origin: string } | { ok: false; reason: ServerUrlRejection };
-
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
-
-/**
- * Turns what a person types into a server origin.
- *
- * - A bare host ("chat.example.com") means HTTPS.
- * - Plain HTTP is accepted only for this machine (localhost/127.0.0.1/::1): the
- *   session token and every message would otherwise cross the network in clear.
- * - Credentials in the URL are rejected rather than silently dropped.
- * - Paths, queries and fragments are ignored; Bridge is served from the origin root.
- */
-export function normalizeServerUrl(input: unknown): ServerUrlResult {
-  const raw = typeof input === 'string' ? input.trim() : '';
-  if (!raw) return { ok: false, reason: 'empty' };
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
-  let url: URL;
-  try {
-    url = new URL(withScheme);
-  } catch {
-    return { ok: false, reason: 'invalid' };
-  }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') return { ok: false, reason: 'invalid' };
-  if (!url.hostname) return { ok: false, reason: 'invalid' };
-  if (url.username || url.password) return { ok: false, reason: 'credentials' };
-  if (url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname)) return { ok: false, reason: 'insecure' };
-  return { ok: true, origin: url.origin };
-}
+export { normalizeServerUrl, type ServerUrlResult, type ServerUrlRejection } from '@bridge/core';
+import { normalizeServerUrl } from '@bridge/core';
 
 /** Reads settings; a missing, unreadable or malformed file yields the defaults. */
 export function readDesktopSettings(file: string): DesktopSettings {
