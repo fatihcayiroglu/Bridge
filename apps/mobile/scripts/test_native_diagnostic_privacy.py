@@ -128,7 +128,7 @@ class NativeDiagnosticPrivacyTests(unittest.TestCase):
         source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
         stages = re.findall(r'print\("BRIDGE_NATIVE_JOURNEY_STAGE=([^\"]+)"\)', source)
         self.assertEqual(set(stages), SCOPE['STAGES'])
-        self.assertIn('XCTAssertEqual(input.value as? String, address,', source)
+        self.assertIn('XCTAssertEqual(typedValue, address,', source)
         self.assertIn('XCTAssertTrue(success.waitForExistence(timeout: 15)', source)
         self.assertIn('XCTAssertTrue(reportState(app.wait(for: .runningBackground, timeout: 5)))', source)
         self.assertIn('XCTAssertTrue(reportState(app.wait(for: .runningForeground, timeout: 10)))', source)

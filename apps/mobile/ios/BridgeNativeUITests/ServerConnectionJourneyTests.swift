@@ -85,7 +85,27 @@ final class ServerConnectionJourneyTests: XCTestCase {
       print("BRIDGE_NATIVE_JOURNEY_ACTION=input-type")
       input.typeText(address)
       print("BRIDGE_NATIVE_JOURNEY_ACTION=input-verify")
-      XCTAssertEqual(input.value as? String, address, "Server address edit did not replace the entire input")
+      let typedValue = input.value as? String
+      if typedValue != address {
+        let shape: String
+        if let value = typedValue {
+          if value.isEmpty { shape = "empty" }
+          else if value == "https://chat.example.com" { shape = "placeholder" }
+          else if value == current { shape = "unchanged" }
+          else if address.hasPrefix(value) { shape = "expected-prefix" }
+          else if address.hasSuffix(value) { shape = "expected-suffix" }
+          else { shape = "other" }
+        } else { shape = "not-string" }
+        // Observe asynchronous reflection without changing the failing value
+        // being asserted. No key is retyped and no submission is retried.
+        let reflected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+          input.value as? String == address
+        }, object: input)
+        let settled = XCTWaiter.wait(for: [reflected], timeout: 5) == .completed
+        let length = min(typedValue?.count ?? 0, 256)
+        print("BRIDGE_NATIVE_INPUT_VALUE=\(shape);length=\(length);expected-length=\(min(address.count, 256));settled=\(settled)")
+      }
+      XCTAssertEqual(typedValue, address, "Server address edit did not replace the entire input")
       print("BRIDGE_NATIVE_JOURNEY_ACTION=input-submit")
       input.typeText("\n")
     }

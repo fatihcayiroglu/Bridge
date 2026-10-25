@@ -136,10 +136,43 @@ class NativeKeyboardStartupTests(unittest.TestCase):
         self.assertIn('XCTAssertTrue(keyboard.waitForExistence(timeout: 5)', source)
         self.assertIn('input.isHittable && input.frame.maxY <= keyboard.frame.minY', source)
         self.assertIn('XCTAssertEqual(XCTWaiter.wait(for: [visibleInput], timeout: 5), .completed,', source)
-        self.assertIn('XCTAssertEqual(input.value as? String, address,', source)
+        self.assertIn('XCTAssertEqual(typedValue, address,', source)
         self.assertIn('ConnectHardwareKeyboard -bool false', workflow)
         actions = re.findall(r'print\("BRIDGE_NATIVE_JOURNEY_ACTION=([^\"]+)"\)', source)
         self.assertEqual(set(actions), SCOPE['ACTIONS'])
+
+    def test_input_mismatch_publishes_only_shape_bounded_lengths_and_settling_flag(self):
+        class Log:
+            def open(self, **_kwargs):
+                return io.StringIO('BRIDGE_NATIVE_INPUT_VALUE=expected-prefix;length=11;expected-length=26;settled=true\n'
+                                   'error: XCTAssertEqual failed private-input-value\n')
+        report = SCOPE['summarize'](Log(), '65')
+        for field in ('input-value-shape=expected-prefix', 'input-value-length=11',
+                      'input-expected-length=26', 'input-value-settled=true', 'status=FAIL'):
+            self.assertIn(field, report)
+        self.assertNotIn('private', report)
+
+    def test_unknown_shapes_excessive_lengths_and_injected_flags_cannot_enter_evidence(self):
+        for marker in ('private-value;length=1;expected-length=26;settled=true',
+                       'other;length=999;expected-length=26;settled=false',
+                       'other;length=1;expected-length=999;settled=false',
+                       'other;length=1;expected-length=26;settled=private-token'):
+            with self.subTest(marker=marker.split(';')[0]):
+                class Log:
+                    def open(self, **_kwargs):
+                        return io.StringIO('BRIDGE_NATIVE_INPUT_VALUE=' + marker + '\n')
+                report = SCOPE['summarize'](Log(), '65')
+                self.assertNotIn('input-value-', report)
+                self.assertNotIn('private', report)
+
+    def test_settling_observation_does_not_replace_a_failed_immediate_value(self):
+        source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
+        self.assertLess(source.index('let typedValue = input.value as? String'),
+                        source.index('let settled = XCTWaiter.wait'))
+        self.assertLess(source.index('let settled = XCTWaiter.wait'),
+                        source.index('XCTAssertEqual(typedValue, address,'))
+        self.assertEqual(source.count('input.typeText(address)'), 1)
+        self.assertNotIn('XCTAssertTrue(settled', source)
 
     def test_android_observation_is_test_only_and_jvm_gate_counts_every_new_test(self):
         gradle = (ROOT / 'apps/mobile/android/app/build.gradle').read_text()
