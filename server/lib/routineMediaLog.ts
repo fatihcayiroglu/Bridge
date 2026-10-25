@@ -6,7 +6,8 @@ export type RoutineMediaEvent =
   | { event: 'socket.voice_access_evicted' }
   | { event: 'socket.voice_publish_revoked'; producers?: number }
   | { event: 'socket.channel_access_evicted'; rooms: number }
-  | { event: 'media.expiry_evicted' };
+  | { event: 'media.expiry_evicted' }
+  | { event: 'sfu.room.created' | 'sfu.room.cleaned' | 'sfu.room.claim_lost' };
 
 const MESSAGES = {
   'socket.voice_evicted': 'Voice session ended after access revocation.',
@@ -14,6 +15,9 @@ const MESSAGES = {
   'socket.voice_publish_revoked': 'Voice publishing ended after permission change.',
   'socket.channel_access_evicted': 'Channel access revoked; live rooms evicted.',
   'media.expiry_evicted': 'Live media ended at channel expiry',
+  'sfu.room.created': 'SFU room created.',
+  'sfu.room.cleaned': 'Empty SFU room cleaned up.',
+  'sfu.room.claim_lost': 'SFU room belongs to another node; local creation refused.',
 } as const satisfies Record<RoutineMediaEvent['event'], string>;
 
 function count(value: unknown): number | undefined {
