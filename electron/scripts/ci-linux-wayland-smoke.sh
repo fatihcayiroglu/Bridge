@@ -56,7 +56,7 @@ unset DISPLAY
 # Reuse #426's tested GTK-default environment. Native Ozone/Wayland and
 # actual protocol role/configure evidence remain mandatory, with no X11 display.
 unset GDK_BACKEND
-BRIDGE_NATIVE_STARTUP_TRACE=1 "${APP}" --ozone-platform=wayland --user-data-dir="${ROOT}/profile" >"${ROOT}/app.log" 2>&1 &
+BRIDGE_NATIVE_STARTUP_TRACE="${BRIDGE_NATIVE_STARTUP_TRACE:-0}" "${APP}" --ozone-platform=wayland --user-data-dir="${ROOT}/profile" >"${ROOT}/app.log" 2>&1 &
 APP_PID=$!
 for i in {1..60}; do
   if ! kill -0 "${APP_PID}" 2>/dev/null; then
