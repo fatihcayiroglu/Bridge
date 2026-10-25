@@ -54,6 +54,8 @@ class NativeBootstrapContracts(unittest.TestCase):
     def test_xcode_failure_reports_redacted_reason_without_raw_logs(self):
         workflow = (ROOT / ".github/workflows/mobile-react-native.yml").read_text()
         self.assertIn("summarize_xcode_failure.py", workflow)
+        self.assertIn("runs-on: macos-26", workflow)
+        self.assertIn("React Native 0.88 requires Xcode 26 or newer", workflow)
         # Xcode rejects -test-iterations 1. A single test action is one pass.
         self.assertNotIn('-test-iterations 1 CODE_SIGNING_ALLOWED', workflow)
         self.assertIn('-parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test', workflow)
