@@ -81,6 +81,18 @@ class NativeBootstrapContracts(unittest.TestCase):
         self.assertNotIn("/Users/runner/private", result)
         self.assertNotIn("https://example.com/private", result)
 
+        class DuplicateOutput:
+            def open(self, **_kwargs):
+                return io.StringIO(
+                    "error: Multiple commands produce "
+                    "'/Users/runner/secret/Build/BridgeNative.app/Info.plist'\n"
+                )
+
+        collision = scope["summarize"](DuplicateOutput(), "65")
+        self.assertIn("category=duplicate-build-output", collision)
+        self.assertIn("[redacted-runner-path]/Info.plist", collision)
+        self.assertNotIn("/Users/runner/secret", collision)
+
 
 if __name__ == "__main__":
     unittest.main()
