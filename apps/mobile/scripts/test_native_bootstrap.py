@@ -93,6 +93,18 @@ class NativeBootstrapContracts(unittest.TestCase):
         self.assertIn("[redacted-runner-path]/Info.plist", collision)
         self.assertNotIn("/Users/runner/secret", collision)
 
+        class LongUITestError:
+            def open(self, **_kwargs):
+                return io.StringIO(
+                    "error: XCTest failed: " + ("element state; " * 30)
+                    + "input was not hittable for keyboard focus\n"
+                )
+
+        ui_error = scope["summarize"](LongUITestError(), "65")
+        self.assertIn("[middle omitted]", ui_error)
+        self.assertIn("not hittable for keyboard focus", ui_error)
+        self.assertLess(len(ui_error), 500)
+
     def test_ios_ui_test_bundle_has_unique_named_product(self):
         project = (
             ROOT / "apps/mobile/ios/BridgeNative.xcodeproj/project.pbxproj"
