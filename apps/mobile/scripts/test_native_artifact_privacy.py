@@ -146,7 +146,7 @@ class NativeArtifactPrivacyTests(unittest.TestCase):
                 'apps/mobile/android/app/build/outputs/androidTest-results/connected/test-result.pb': 'private-protobuf',
                 'apps/mobile/android/app/build/outputs/androidTest-results/connected/TEST-private.xml': '<testsuite><failure>private-account</failure></testsuite>',
                 'apps/mobile/.ci-results/source-commit.txt': 'a' * 40,
-                'apps/mobile/.ci-results/android-jvm-summary.json': '{"status":"PASS","executed":6,"failed":0,"skipped":0}',
+                'apps/mobile/.ci-results/android-jvm-summary.json': '{"status":"PASS","executed":7,"failed":0,"skipped":0}',
                 'apps/mobile/.ci-results/android-ui-summary.json': '{"status":"FAIL","category":"native-junit-failed-or-skipped"}',
                 'apps/mobile/.ci-results/metro-diagnostic.txt': 'status=FAIL\nreason=readiness-timeout\n',
             }
