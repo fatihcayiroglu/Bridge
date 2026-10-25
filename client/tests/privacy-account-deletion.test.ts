@@ -48,6 +48,7 @@ beforeEach(() => {
   BridgeRegistry.register('apiFetch', apiFetch as unknown as AnyFn);
   authCompat.logout.mockClear();
   authCompat.showAuthMsg.mockClear();
+  authCompat.readToken.mockReset().mockReturnValue('account-access-token');
   erasure.eraseLocalAccount.mockClear();
   order.length = 0;
 });
@@ -215,6 +216,7 @@ describe('P7 account deletion acknowledgement across session races', () => {
     let account: string | null = 'u1';
     await beginRealDeletion(pending, () => account);
     account = null;
+    authCompat.readToken.mockReturnValue(null);
     document.dispatchEvent(new CustomEvent('bridge:auth-logout'));
     pending.resolve(json({ status: 200, body: { deleted: true } }));
     await waitFor(() => expect(erasure.eraseLocalAccount).toHaveBeenCalledExactlyOnceWith('u1'));
@@ -227,6 +229,7 @@ describe('P7 account deletion acknowledgement across session races', () => {
     let account: string | null = 'u1';
     await beginRealDeletion(pending, () => account);
     account = 'u2';
+    authCompat.readToken.mockReturnValue('replacement-account-token');
     document.dispatchEvent(new CustomEvent('bridge:auth-success'));
     pending.resolve(json({ status: 200, body: { deleted: true } }));
     await waitFor(() => expect(erasure.eraseLocalAccount).toHaveBeenCalledExactlyOnceWith('u1'));
@@ -246,6 +249,7 @@ describe('P7 account deletion acknowledgement across session races', () => {
     pending.resolve(json({ status: 200, body: { deleted: true } }));
     await waitFor(() => expect(erasure.eraseLocalAccount).toHaveBeenCalledExactlyOnceWith('u1'));
     account = 'u2';
+    authCompat.readToken.mockReturnValue('replacement-account-token');
     document.dispatchEvent(new CustomEvent('bridge:auth-success'));
     wipe.resolve({ erased: true, markPersisted: true });
     await waitFor(() => expect(order).toContain('erase:u1'));
