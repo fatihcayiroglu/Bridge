@@ -116,6 +116,8 @@ class NativeDiagnosticPrivacyTests(unittest.TestCase):
         for message, reason in [
             ('XCTAssertEqual failed: private-value - Server address edit did not replace the entire input', 'address-edit-mismatch'),
             ('XCTAssertEqual failed: private-value - Server field did not reflect keyboard delete', 'input-clear-mismatch'),
+            ('XCTAssertEqual failed: private-field - Server field did not receive keyboard focus', 'input-focus-not-established'),
+            ('XCTAssertEqual failed: private-field - Server field did not reflect keyboard character', 'input-key-mismatch'),
             ('XCTAssertTrue failed - private-data', 'assertion-failed'),
             ('Asynchronous wait failed: private-label', 'assertion-failed'),
         ]:
