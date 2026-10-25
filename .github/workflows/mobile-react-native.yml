@@ -134,6 +134,10 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: android-actions/setup-android@v3
+        with:
+          # The v3 default requests removed SDK package 'tools'; only platform-tools
+          # are needed before the explicit pinned platform/build-tools/NDK install.
+          packages: 'platform-tools'
       - name: Install the verified RN template SDK and NDK
         run: sdkmanager 'platforms;android-37' 'build-tools;37.0.0' 'ndk;27.1.12297006'
       - name: Install and build real Bridge backend
