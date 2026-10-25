@@ -36,12 +36,14 @@ import path from 'path';
 import { deflateSync } from 'zlib';
 import type { Page } from '@playwright/test';
 import { getTokens, createTestServer, createTestChannel } from '../helpers/bridge';
+import { startReactionEvidence } from '../helpers/reaction-stage-evidence';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
 
 let token = '';
 let serverId = '';
 let channelName = '';
+let channelId = '';
 
 test.beforeAll(async ({ request }) => {
   token = getTokens().alice;
@@ -54,6 +56,7 @@ test.beforeAll(async ({ request }) => {
   channelName = `urun-${stamp}`;
   const ch = await createTestChannel(request, token, serverId, channelName, 'text');
   expect(ch?._id || ch?.id, 'Cross-browser: kanal fixture oluşturulamadı').toBeTruthy();
+  channelId = ch._id || ch.id;
 });
 
 /**
@@ -162,20 +165,27 @@ test.describe('çapraz tarayıcı — ürün yüzeyi', () => {
   });
 
   // ── Tepki ──────────────────────────────────────────────────────────────
-  test('TEPKİ eklenir ve sayaç rozeti belirir', async ({ page }) => {
-    await enterChannel(page);
-    const body = `xb-react-${Date.now().toString(36)}`;
-    await sendFromComposer(page, body);
-    await pace(page);
-    await messageAction(page, body, 'Tepki ekle');
+  test('TEPKİ eklenir ve sayaç rozeti belirir', async ({ page, request }, info) => {
+    const attachEvidence = await startReactionEvidence(page);
+    let target: ReturnType<Page['locator']> | undefined;
+    try {
+      await enterChannel(page);
+      const body = `xb-react-${Date.now().toString(36)}`;
+      await sendFromComposer(page, body);
+      await pace(page);
+      await messageAction(page, body, 'Tepki ekle');
 
-    const msg = page.locator('.msg', { hasText: body }).first();
-    const row = msg.locator('.msg-emoji-row');
-    await expect(row).toBeVisible({ timeout: 10_000 });
-    await row.locator('button').first().click();
+      const msg = page.locator('.msg', { hasText: body }).first();
+      target = msg;
+      const row = msg.locator('.msg-emoji-row');
+      await expect(row).toBeVisible({ timeout: 10_000 });
+      await row.locator('button').first().click();
 
-    await expect(msg.locator('.msg-reactions .msg-reaction').first())
-      .toBeVisible({ timeout: 20_000 });
+      await expect(msg.locator('.msg-reactions .msg-reaction').first())
+        .toBeVisible({ timeout: 20_000 });
+    } finally {
+      await attachEvidence(info, request, token, channelId, target);
+    }
   });
 
   // ── Silme ──────────────────────────────────────────────────────────────
