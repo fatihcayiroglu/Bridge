@@ -277,7 +277,9 @@ jobs:
           xcode_status=$?
           set -e
           if [ "$xcode_status" -ne 0 ]; then
-            python3 ../scripts/summarize_xcode_failure.py ../.ci-results/xcodebuild.log "$xcode_status" ../.ci-results/xcode-diagnostic.txt
+            if ! python3 ../scripts/summarize_xcode_failure.py ../.ci-results/xcodebuild.log "$xcode_status" ../.ci-results/xcode-diagnostic.txt; then
+              printf 'status=FAIL\ncategory=xcode-diagnostic-unavailable\n' >&2
+            fi
             exit "$xcode_status"
           fi
           xcrun xcresulttool get test-results summary --path ../.ci-results/native-journey.xcresult \

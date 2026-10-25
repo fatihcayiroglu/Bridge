@@ -37,8 +37,8 @@ report_backend_failure() {
     category="dns"
   fi
   echo "P8 backend startup error category: $category" >&2
-  echo 'P8 backend startup allowlisted event names (last 8):' >&2
-  grep -oE '"event":"(db[.][a-z._-]+|server[.][a-z._-]+|startup[.][a-z._-]+|redis[.][a-z._-]+)"' "$log" | tail -n 8 >&2 || true
+  # Event-shaped strings may originate inside an untrusted error payload.
+  # Emit only the fixed category above, never arbitrary event names from logs.
 }
 for attempt in {1..60}; do
   if curl --silent --fail http://127.0.0.1:3000/api/health/ready >/dev/null; then

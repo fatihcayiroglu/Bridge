@@ -74,12 +74,12 @@ class NativeBootstrapContracts(unittest.TestCase):
         result = scope["summarize"](InMemoryLog(), "64")
         self.assertIn("category=scheme", result)
         self.assertIn("xcodebuild-exit-status=64", result)
-        self.assertIn("[redacted-email]", result)
-        self.assertIn("[redacted-runner-path]", result)
-        self.assertIn("[redacted-url]", result)
+        self.assertIn("error-1-reason=scheme-unavailable", result)
         self.assertNotIn("user@example.com", result)
         self.assertNotIn("/Users/runner/private", result)
         self.assertNotIn("https://example.com/private", result)
+        self.assertNotIn("demo", result)
+        self.assertNotIn("BridgeNative", result)
 
         class DuplicateOutput:
             def open(self, **_kwargs):
@@ -90,7 +90,9 @@ class NativeBootstrapContracts(unittest.TestCase):
 
         collision = scope["summarize"](DuplicateOutput(), "65")
         self.assertIn("category=duplicate-build-output", collision)
-        self.assertIn("[redacted-runner-path]/Info.plist", collision)
+        self.assertIn("error-1-artifact=property-list", collision)
+        self.assertIn("error-1-reason=duplicate-output", collision)
+        self.assertNotIn("Info.plist", collision)
         self.assertNotIn("/Users/runner/secret", collision)
 
         class LongUITestError:
@@ -101,8 +103,8 @@ class NativeBootstrapContracts(unittest.TestCase):
                 )
 
         ui_error = scope["summarize"](LongUITestError(), "65")
-        self.assertIn("[middle omitted]", ui_error)
-        self.assertIn("not hittable for keyboard focus", ui_error)
+        self.assertIn("error-1-reason=not-hittable", ui_error)
+        self.assertNotIn("element state", ui_error)
         self.assertLess(len(ui_error), 500)
 
         class UnquotedRunnerPath:
@@ -115,7 +117,8 @@ class NativeBootstrapContracts(unittest.TestCase):
                 )
 
         unquoted = scope["summarize"](UnquotedRunnerPath(), "65")
-        self.assertIn("Failed to tap text field due to no keyboard focus", unquoted)
+        self.assertIn("error-1-reason=tap-failed", unquoted)
+        self.assertNotIn("ServerConnectionJourneyTests", unquoted)
         self.assertNotIn("/Users/runner/work", unquoted)
         self.assertLess(len(unquoted), 500)
 
