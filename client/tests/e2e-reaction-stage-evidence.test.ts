@@ -1,11 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { installReactionObservation, observedSocketEvent, persistedReaction, safeBrowserCounts, startReactionEvidence } from '../../e2e/helpers/reaction-stage-evidence';
 type EvidencePage = Parameters<typeof startReactionEvidence>[0];
 type FinishEvidence = Awaited<ReturnType<typeof startReactionEvidence>>;
 
 let cleanup: (() => void) | undefined;
-afterEach(() => { cleanup?.(); cleanup = undefined; document.body.replaceChildren(); });
+let evidenceDirectory = '';
+afterEach(() => {
+  cleanup?.(); cleanup = undefined; document.body.replaceChildren();
+  if (evidenceDirectory) rmSync(evidenceDirectory, { recursive: true, force: true });
+  evidenceDirectory = '';
+});
 const snapshot = () => safeBrowserCounts((window as Window & { __bridgeReactionEvidence?: unknown }).__bridgeReactionEvidence);
 
 describe('reaction evidence privacy and negative controls', () => {
@@ -67,11 +75,15 @@ describe('reaction evidence privacy and negative controls', () => {
     socket.emit('framereceived', { payload: '42["private-event","private-content"]' });
     page.emit('pageerror', new Error('private-error'));
     const request = { get: vi.fn(async () => ({ status: () => 200, ok: () => true, json: async () => [{ _id: 'private-message', reactions: { emoji: ['private-user'] } }] })) };
-    const info = { attach: vi.fn() };
+    evidenceDirectory = mkdtempSync(join(tmpdir(), 'bridge-reaction-evidence-'));
+    const evidencePath = join(evidenceDirectory, 'reaction-stage-evidence.json');
+    const info = { attach: vi.fn(), outputPath: vi.fn(() => evidencePath) };
     const target = { count: async () => 1, getAttribute: async () => 'private-message' };
     await attach(info as unknown as Parameters<FinishEvidence>[0], request as unknown as Parameters<FinishEvidence>[1], 'private-token', 'private-channel', target as unknown as Parameters<FinishEvidence>[4]);
     expect(request.get).toHaveBeenCalledExactlyOnceWith('/api/channels/private-channel/messages', { headers: { Authorization: 'Bearer private-token' }, timeout: 5000 });
-    const serialized = info.attach.mock.calls[0][1].body as string;
+    expect(existsSync(evidencePath), 'CI uploads test-results with the list reporter, so inline-only attachments are insufficient').toBe(true);
+    expect(info.attach.mock.calls[0][1]).toEqual({ path: evidencePath, contentType: 'application/json' });
+    const serialized = readFileSync(evidencePath, 'utf8');
     expect(serialized).not.toMatch(/private-|private-content|private-error/);
     const report = JSON.parse(serialized);
     expect(report.authoritative).toEqual({ readStatus: 200, persistedReaction: true });
@@ -83,7 +95,8 @@ describe('reaction evidence privacy and negative controls', () => {
     request.get.mockRejectedValueOnce(new Error('private-read-error'));
     page.evaluate.mockRejectedValueOnce(new Error('private-browser-error'));
     await attach(info as unknown as Parameters<FinishEvidence>[0], request as unknown as Parameters<FinishEvidence>[1], 'private-token', 'private-channel', target as unknown as Parameters<FinishEvidence>[4]);
-    const unavailable = info.attach.mock.calls[1][1].body as string;
+    expect(info.attach.mock.calls[1][1]).toEqual({ path: evidencePath, contentType: 'application/json' });
+    const unavailable = readFileSync(evidencePath, 'utf8');
     expect(unavailable).not.toMatch(/private-/);
     expect(JSON.parse(unavailable).authoritative.persistedReaction).toBeNull();
     expect(JSON.parse(unavailable).unavailable).toEqual(['browser-observation', 'authoritative-read']);

@@ -1,4 +1,6 @@
 import type { APIRequestContext, Locator, Page, TestInfo } from '@playwright/test';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 const browserCounters = ['quickReactionClicks', 'dispatched', 'queued', 'applied', 'rejected', 'timeout', 'socketReady', 'socketReconnected'] as const;
 const socketEvents = ['channel:join', 'message:react', 'message:reaction', 'message:ack', 'message:new', 'userAuthenticated', 'error:message'] as const;
@@ -102,12 +104,16 @@ export async function startReactionEvidence(page: Page) {
         else unavailable.push('authoritative-read');
       } else unavailable.push('target-message');
     } catch { unavailable.push('authoritative-read'); }
-    await info.attach('reaction-stage-evidence', {
-      body: JSON.stringify({
-        version: 1, browser: safeBrowserCounts(browser), websocket: { opened, closed, packets },
-        pageErrors, authoritative: { readStatus, persistedReaction: persisted }, unavailable,
-        limits: 'Counts only; UI click is not proof of callback completion. Dispatch follows the durable sending write. WebSocket frames exclude polling. Server receipt/broadcast and the private operation log are not directly observed. Null means unknown.',
-      }), contentType: 'application/json',
+    const report = JSON.stringify({
+      version: 1, browser: safeBrowserCounts(browser), websocket: { opened, closed, packets },
+      pageErrors, authoritative: { readStatus, persistedReaction: persisted }, unavailable,
+      limits: 'Snapshot after the UI assertion; asynchronous settlement may continue. UI click is not proof of callback completion. Dispatch follows the durable sending write. Polling, non-default namespaces and frames over 64 KiB are not decoded. Server receipt/broadcast and the private operation log are not directly observed. Null means unknown.',
     });
+    // CI uses only the list reporter and uploads test-results. Inline attachment
+    // bodies live in reporter metadata, so persist a file in the test output too.
+    const evidencePath = info.outputPath('reaction-stage-evidence.json');
+    await mkdir(dirname(evidencePath), { recursive: true });
+    await writeFile(evidencePath, report, { encoding: 'utf8', mode: 0o600 });
+    await info.attach('reaction-stage-evidence', { path: evidencePath, contentType: 'application/json' });
   };
 }
