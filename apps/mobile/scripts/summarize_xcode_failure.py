@@ -35,6 +35,8 @@ VALUE_MARKER = re.compile(r"BRIDGE_NATIVE_INPUT_VALUE=([a-z-]+);length=([0-9]{1,
 VALUE_SHAPES = frozenset({"empty", "placeholder", "unchanged", "expected-prefix", "expected-suffix", "other", "not-string"})
 UI_FOCUS_MARKER = re.compile(r"BRIDGE_NATIVE_UI_FOCUS=(true|false)(?:\s|$)")
 KEY_INPUT_MARKER = re.compile(r"BRIDGE_NATIVE_KEYBOARD_INPUT=first-character-verified;ui-focus=(true|false)(?:\s|$)")
+DELETE_RESULT_MARKER = re.compile(r"BRIDGE_NATIVE_DELETE_RESULT=([a-z-]+);step=([0-9]{1,3});before-length=([0-9]{1,3});after-length=([0-9]{1,3});expected-length=([0-9]{1,3})(?:\s|$)")
+DELETE_SHAPES = frozenset({"expected-prefix", "unchanged", "cleared", "interior-delete", "other", "unavailable"})
 MAX_XCRESULT_CHARS = 1_048_576
 TARGETS = (
     ("server-address-input", re.compile(r"\bserver-url-input\b")),
@@ -149,6 +151,7 @@ def summarize(log: Path, exit_status: str | None, failure_summary: Path | None =
     input_kind = None
     surface = None
     input_value = None
+    delete_result = None
     pending_ui_focus = None
     ui_focus_true = 0
     ui_focus_false = 0
@@ -202,6 +205,11 @@ def summarize(log: Path, exit_status: str | None, failure_summary: Path | None =
             if (value_match and value_match[1] in VALUE_SHAPES
                     and int(value_match[2]) <= 256 and int(value_match[3]) <= 256):
                 input_value = (value_match[1], int(value_match[2]), int(value_match[3]), value_match[4])
+            delete_match = DELETE_RESULT_MARKER.search(line)
+            if (delete_match and delete_match[1] in DELETE_SHAPES
+                    and 1 <= int(delete_match[2]) <= 256
+                    and all(int(delete_match[index]) <= 256 for index in (3, 4, 5))):
+                delete_result = (delete_match[1], *(int(delete_match[index]) for index in (2, 3, 4, 5)))
             if ERROR_MARKER.search(line):
                 marker = classify_marker(line)
                 if category == "unclassified":
@@ -240,6 +248,11 @@ def summarize(log: Path, exit_status: str | None, failure_summary: Path | None =
         shape, length, expected_length, settled = input_value
         fields.extend(("input-value-shape=" + shape, f"input-value-length={length}",
                        f"input-expected-length={expected_length}", "input-value-settled=" + settled))
+    if delete_result is not None:
+        shape, step, before_length, after_length, expected_length = delete_result
+        fields.extend(("delete-result-shape=" + shape, f"delete-step={step}",
+                       f"delete-before-length={before_length}", f"delete-after-length={after_length}",
+                       f"delete-expected-length={expected_length}"))
     if ui_focus_true or ui_focus_false or first_keys_verified:
         fields.extend(keyboard_fields)
     if failure_summary is not None:

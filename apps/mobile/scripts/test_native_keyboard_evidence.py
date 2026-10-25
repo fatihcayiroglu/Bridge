@@ -100,6 +100,36 @@ class NativeKeyboardEvidenceTests(unittest.TestCase):
                 self.assertNotIn('private', result.stdout + result.stderr)
                 self.assertNotIn('Traceback', result.stdout + result.stderr)
 
+    def test_delete_observation_distinguishes_interior_loss_without_publishing_text(self):
+        for shape in ('interior-delete', 'expected-prefix', 'unchanged', 'cleared', 'other', 'unavailable'):
+            result = SCOPE['summarize'](Log('BRIDGE_NATIVE_DELETE_RESULT=' + shape +
+                ';step=1;before-length=29;after-length=28;expected-length=28\n'
+                'error: Server field did not reflect keyboard delete private-address\n'), '65')
+            self.assertIn('delete-result-shape=' + shape, result)
+            self.assertIn('delete-step=1', result)
+            self.assertIn('status=FAIL', result)
+            self.assertIn('error-1-reason=input-clear-mismatch', result)
+            self.assertNotIn('private', result)
+
+    def test_delete_observation_rejects_unknown_shapes_and_unbounded_counts(self):
+        for packet in ('private-field;step=1;before-length=29;after-length=28;expected-length=28',
+                       'interior-delete;step=0;before-length=29;after-length=28;expected-length=28',
+                       'interior-delete;step=1;before-length=999;after-length=28;expected-length=28'):
+            result = SCOPE['summarize'](Log('BRIDGE_NATIVE_DELETE_RESULT=' + packet + '\n'), '65')
+            self.assertNotIn('delete-result-shape=', result)
+            self.assertNotIn('private', result)
+
+    def test_delete_observation_still_asserts_the_original_bounded_failure(self):
+        source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
+        self.assertIn('let clearResult = XCTWaiter.wait(for: [reflectedClear], timeout: 2)', source)
+        self.assertIn('if clearResult != .completed {', source)
+        self.assertIn('XCTAssertEqual(clearResult, .completed,', source)
+        self.assertLess(source.index('let clearResult = XCTWaiter.wait'),
+                        source.index('BRIDGE_NATIVE_DELETE_RESULT='))
+        self.assertNotIn('print(observed', source)
+        self.assertNotIn('print(expectedRemainder', source)
+        self.assertEqual(source.count('input.typeText(deletionBurst)'), 1)
+
     def test_workflow_retains_real_xctest_grade_and_publishes_only_closed_observation(self):
         source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
         workflow = (ROOT / '.github/workflows/mobile-react-native.yml').read_text()

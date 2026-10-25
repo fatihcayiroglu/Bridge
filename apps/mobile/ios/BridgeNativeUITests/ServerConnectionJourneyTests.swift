@@ -94,6 +94,7 @@ final class ServerConnectionJourneyTests: XCTestCase {
         // delete events; a missing reflection is a genuine first failure.
         var deletionRemaining = Array(current)
         while !deletionRemaining.isEmpty {
+          let beforeDelete = deletionRemaining
           let deletionCount = 1
           let deletionBurst = String(repeating: XCUIKeyboardKey.delete.rawValue,
                                      count: deletionCount)
@@ -106,7 +107,31 @@ final class ServerConnectionJourneyTests: XCTestCase {
             return observed == expectedRemainder ||
                    (expectedRemainder.isEmpty && observed == "https://chat.example.com")
           }, object: input)
-          XCTAssertEqual(XCTWaiter.wait(for: [reflectedClear], timeout: 2), .completed,
+          let clearResult = XCTWaiter.wait(for: [reflectedClear], timeout: 2)
+          if clearResult != .completed {
+            // A tap may position the caret inside an existing value. Observe
+            // what the single native delete actually did, without publishing
+            // text or changing the captured failure into a later success.
+            let observed = input.value as? String
+            var shape = "other"
+            if let observedValue = observed {
+              if observedValue == expectedRemainder { shape = "expected-prefix" }
+              else if observedValue == String(beforeDelete) { shape = "unchanged" }
+              else if observedValue.isEmpty || observedValue == "https://chat.example.com" { shape = "cleared" }
+              else if beforeDelete.count <= 256 && observedValue.count == beforeDelete.count - 1 {
+                for index in beforeDelete.indices {
+                  var candidate = beforeDelete
+                  candidate.remove(at: index)
+                  if String(candidate) == observedValue {
+                    shape = "interior-delete"
+                    break
+                  }
+                }
+              }
+            } else { shape = "unavailable" }
+            print("BRIDGE_NATIVE_DELETE_RESULT=\(shape);step=\(min(current.count - deletionRemaining.count, 256));before-length=\(min(beforeDelete.count, 256));after-length=\(min(observed?.count ?? 0, 256));expected-length=\(min(expectedRemainder.count, 256))")
+          }
+          XCTAssertEqual(clearResult, .completed,
                          "Server field did not reflect keyboard delete")
         }
       }
