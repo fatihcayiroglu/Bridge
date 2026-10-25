@@ -27,19 +27,19 @@ class NativeStartupObservationTest {
         assertEquals(NativeForeground.UNAVAILABLE, NativeForeground.fromPackage(null))
     }
 
-    @Test fun processObservationExportsOnlyBooleansAndKeepsFailureStatus() {
-        val processAlive = NativeStartupObservation(true, false, NativeForeground.OTHER,
+    @Test fun activityTaskObservationExportsOnlyBooleansAndKeepsFailureStatus() {
+        val activityRunning = NativeStartupObservation(true, false, NativeForeground.OTHER,
             true, false, false, false, NativeInputLabel.UNAVAILABLE)
             .report(NativeStartupFailure.FORM_NOT_VISIBLE)
-        val processAbsent = NativeStartupObservation(true, false, NativeForeground.OTHER,
+        val activityAbsent = NativeStartupObservation(true, false, NativeForeground.OTHER,
             false, false, false, false, NativeInputLabel.UNAVAILABLE)
             .report(NativeStartupFailure.FORM_NOT_VISIBLE)
-        assertTrue(processAlive.contains("target-process-alive=true"))
-        assertTrue(processAbsent.contains("target-process-alive=false"))
-        assertTrue(processAlive.contains("startup=form-not-visible"))
-        assertTrue(processAbsent.contains("startup=form-not-visible"))
-        assertFalse(processAlive.contains("pidof"))
-        assertFalse(processAbsent.contains("pidof"))
+        assertTrue(activityRunning.contains("target-activity-running=true"))
+        assertTrue(activityAbsent.contains("target-activity-running=false"))
+        assertTrue(activityRunning.contains("startup=form-not-visible"))
+        assertTrue(activityAbsent.contains("startup=form-not-visible"))
+        assertFalse(activityRunning.contains("MainActivity"))
+        assertFalse(activityAbsent.contains("MainActivity"))
     }
 
     @Test fun distinguishesMissingAccessibleLabelFromComposedAndExactLabels() {
@@ -57,7 +57,7 @@ class NativeStartupObservationTest {
         assertTrue(report.contains("screen-on=unknown"))
         assertTrue(report.contains("keyguard-locked=unknown"))
         assertTrue(report.contains("foreground=unavailable"))
-        assertTrue(report.contains("target-process-alive=unknown"))
+        assertTrue(report.contains("target-activity-running=unknown"))
         assertFalse(report.contains("PASS"))
     }
 }
