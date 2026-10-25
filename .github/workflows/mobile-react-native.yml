@@ -112,7 +112,7 @@ jobs:
           POSTGRES_PASSWORD: p8_disposable_ci
         ports: ['5432:5432']
         options: >-
-          --health-cmd 'pg_isready -U bridge -d bridge_native'
+          --health-cmd "pg_isready -U bridge -d bridge_native"
           --health-interval 5s --health-timeout 5s --health-retries 12
       redis:
         image: redis:7-alpine
