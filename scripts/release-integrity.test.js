@@ -166,6 +166,28 @@ test('release filter omits generated/private data but preserves authoritative st
   ]) assert.equal(isExcluded(included, false), false, included);
 });
 
+test('P8 native source is packaged without generated dependency caches or CI evidence', () => {
+  for (const generated of [
+    'apps/mobile/vendor/bundle/ruby/3.3.0/gems/racc/native.so',
+    'apps/mobile/.bundle/config',
+    'apps/mobile/.ci-results/xcode-summary.json',
+    'apps/mobile/android/.gradle/cache.bin',
+    'apps/mobile/android/.kotlin/sessions/alive',
+    'apps/mobile/android/app/.cxx/cache.bin',
+    'apps/mobile/ios/Pods/Manifest.lock',
+    'apps/mobile/ios/DerivedData/cache.bin',
+    'packages/core/core-node-results.json',
+  ]) assert.equal(isExcluded(generated, false), true, generated);
+  for (const source of [
+    'apps/mobile/ios/Podfile.lock',
+    'apps/mobile/Gemfile.lock',
+    'apps/mobile/ios/BridgeNative/SceneDelegate.swift',
+    'apps/mobile/android/app/src/main/java/com/bridge/nativepreview/MainActivity.kt',
+    'apps/mobile/package-lock.json',
+    'packages/core/src/server-origin.ts',
+  ]) assert.equal(isExcluded(source, false), false, source);
+});
+
 test('manifest parser rejects traversal, drive-qualified, and duplicate paths', (t) => {
   const root = fixture();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -441,7 +463,9 @@ test('Electron desktop is a verified-server client with one deep-link owner and 
   assert.equal(pkg.build.extraResources, undefined, 'server/client must not be bundled into the desktop app');
   // Connecting requires a Bridge liveness answer, never a redirect.
   assert.match(main, /\/api\/health\/live`, \{\s*redirect: 'error'/);
-  assert.match(main, /body\?\.status === 'ok' && body\?\.check === 'liveness'/);
+  assert.match(main, /import \{ isBridgeLiveness, SERVER_PROBE_TIMEOUT_MS \} from '@bridge\/core'/);
+  assert.match(main, /return isBridgeLiveness\(await response\.json\(\)\)/);
+  assert.match(read('packages/core/src/server-connection.ts'), /value\.status === 'ok'.*value\.check === 'liveness'/s);
   // Installed builds expose no dev console.
   assert.match(main, /if \(!app\.isPackaged\) \{\s*viewItems\.push\(\{ label: 'DevTools'/);
   // No hard-coded update feed or certificate placeholder in source; signing uses CSC env.

@@ -66,6 +66,16 @@ const EXCLUDED_RELATIVE_PATHS = new Set([
   // private API hostname embedded. It is git-ignored, so it never reaches the
   // repository; it must not reach a release archive either.
   'mobile/www',
+  // P8 preview source is retained, but native dependency caches and CI evidence
+  // are local build products, not distributable server source or user data.
+  'apps/mobile/vendor',
+  'apps/mobile/.bundle',
+  'apps/mobile/.ci-results',
+  'apps/mobile/android/.gradle',
+  'apps/mobile/android/.kotlin',
+  'apps/mobile/android/app/.cxx',
+  'apps/mobile/ios/Pods',
+  'apps/mobile/ios/DerivedData',
   // The other GENERATED native trees (Final21 Faz 19, measured with this file's own
   // `isExcluded` walk): `electron/release` is electron-builder's `directories.output`
   // (unsigned `Bridge.exe`, `win-unpacked/`, the installer — 78 files / ~490 MB after one

@@ -47,7 +47,7 @@
     "desktop:linux": "cd electron && npm install && npm run dist:linux",
     "mobile:add": "npx cap add ios && npx cap add android && node mobile/scripts/apply-android-overlay.js && node mobile/scripts/apply-ios-overlay.js",
     "mobile:init": "node mobile/scripts/setup.js && npx cap add ios && npx cap add android && node mobile/scripts/apply-android-overlay.js && node mobile/scripts/apply-ios-overlay.js && npx cap sync",
-    "typecheck:electron": "npx tsc -p electron/tsconfig.json --noEmit",
+    "typecheck:electron": "npm run build:core && npx tsc -p electron/tsconfig.json --noEmit",
     "typecheck:strict-client": "npx tsc -p client/tsconfig.strict.json --noEmit",
     "typecheck:client-bridge5": "npx tsc -p client/tsconfig.bridge5.json --noEmit",
     "typecheck:svelte": "npx svelte-check --tsconfig ./client/tsconfig.json --output machine-warnings",
@@ -72,7 +72,9 @@
     "typecheck:discord-shim": "npx tsc -p discord-shim/tsconfig.json --noEmit",
     "check:i18n": "node scripts/check-i18n-parity.js && node scripts/check-i18n-usage.js && node scripts/check-i18n-hardcoded.js && node scripts/check-electron-native-i18n.js",
     "validate:openapi": "node scripts/validate-openapi.js",
-    "generate:openapi-runtime": "node scripts/generate-openapi-runtime.js"
+    "generate:openapi-runtime": "node scripts/generate-openapi-runtime.js",
+    "build:core": "npm run build --workspace @bridge/core",
+    "test:core": "npm test --workspace @bridge/core"
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",
@@ -170,7 +172,8 @@
     "mobile",
     "bot-sdk",
     "plugins",
-    "discord-shim"
+    "discord-shim",
+    "packages/core"
   ],
   "overrides": {
     "babel-plugin-istanbul": {
