@@ -93,6 +93,14 @@ class NativeBootstrapContracts(unittest.TestCase):
         self.assertIn("[redacted-runner-path]/Info.plist", collision)
         self.assertNotIn("/Users/runner/secret", collision)
 
+    def test_ios_ui_test_bundle_has_unique_named_product(self):
+        project = (
+            ROOT / "apps/mobile/ios/BridgeNative.xcodeproj/project.pbxproj"
+        ).read_text()
+        self.assertEqual(project.count("PRODUCT_NAME = BridgeNativeUITests;"), 2)
+        self.assertIn("productName = BridgeNativeUITests;", project)
+        self.assertIn("productType = \"com.apple.product-type.bundle.ui-testing\";", project)
+
 
 if __name__ == "__main__":
     unittest.main()
