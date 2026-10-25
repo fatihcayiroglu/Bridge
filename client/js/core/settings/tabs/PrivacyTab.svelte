@@ -6,9 +6,11 @@
   import { t } from '../../i18n/reactive.svelte.ts';
   import { onDestroy, onMount } from 'svelte';
   import { expectedFromPortablePreview, portableAccountId, verifiedPortablePreview, type PortableProfilePreview } from '../portable-profile-import';
+  import { eraseLocalAccount } from '../../local-first/account-erasure';
+  import { isConfirmedAccountDeletion } from '../../api-fetch';
   import type { SettingsStore } from '../stores/settingsStore';
   import { BridgeRegistry } from '../../bridge-registry.js';
-  import { logout, showAuthMsg, updateUserPanel } from '../../auth-compat.js';
+  import { logout, readToken, showAuthMsg, updateUserPanel } from '../../auth-compat.js';
   let { store }: { store: SettingsStore } = $props();
 
   // ── State ─────────────────────────────────────────────────────────────────
@@ -222,15 +224,22 @@
     }
   }
 
+  let deletionAuthRevision = 0;
   onMount(() => {
     // A new login may replace the current account while Settings remains
     // mounted. Remove even a successfully previewed previous user's details.
-    const onIdentityTransition = () => resetPortableImport();
+    const onIdentityTransition = () => {
+      deletionAuthRevision += 1;
+      resetPortableImport();
+      cancelDeletion();
+    };
     document.addEventListener('bridge:auth-logout', onIdentityTransition);
     document.addEventListener('bridge:auth-success', onIdentityTransition);
+    document.addEventListener('bridge:auth-transition', onIdentityTransition);
     return () => {
       document.removeEventListener('bridge:auth-logout', onIdentityTransition);
       document.removeEventListener('bridge:auth-success', onIdentityTransition);
+      document.removeEventListener('bridge:auth-transition', onIdentityTransition);
     };
   });
 
@@ -241,6 +250,7 @@
   // (sessiz devir yok) → yoksa parola + açık onay → silme → oturum kapanır.
   interface DeletionBlocker { kind: string; id: string; name?: string; memberCount: number }
   type DeleteStage = 'closed' | 'checking' | 'blocked' | 'ready' | 'deleting';
+  let deletionRequestSeq = 0;
   let deleteStage    = $state<DeleteStage>('closed');
   let blockers       = $state<DeletionBlocker[]>([]);
   let deletePassword = $state('');
@@ -265,25 +275,30 @@
   async function startDeletion(): Promise<void> {
     const apiFetch = deletionApi();
     if (!apiFetch) { deleteError = t('privacy_delete_unavailable'); return; }
+    const seq = ++deletionRequestSeq;
     deleteStage = 'checking';
     deleteError = null;
     try {
       const response = await apiFetch('/api/account/deletion-preflight');
+      if (seq !== deletionRequestSeq) return;
       if (!response.ok) {
         deleteStage = 'closed';
         deleteError = response.status === 503 ? t('privacy_delete_unavailable') : t('privacy_delete_failed');
         return;
       }
       const body = await response.json() as { blockers?: DeletionBlocker[] };
+      if (seq !== deletionRequestSeq) return;
       blockers = Array.isArray(body.blockers) ? body.blockers : [];
       deleteStage = blockers.length ? 'blocked' : 'ready';
     } catch {
+      if (seq !== deletionRequestSeq) return;
       deleteStage = 'closed';
       deleteError = t('privacy_delete_failed');
     }
   }
 
   function cancelDeletion(): void {
+    deletionRequestSeq += 1;
     deleteStage = 'closed';
     blockers = [];
     deletePassword = '';
@@ -295,6 +310,16 @@
     if (!canConfirmDelete) return;
     const apiFetch = deletionApi();
     if (!apiFetch) { deleteError = t('privacy_delete_unavailable'); return; }
+    // Snapshot the identity before any await: live session revocation can clear
+    // getMe before the successful DELETE acknowledgement reaches the browser.
+    const accountId = signedInPortableOwner();
+    if (!accountId) { cancelDeletion(); return; }
+    const authRevision = deletionAuthRevision;
+    const seq = ++deletionRequestSeq;
+    // A stale callback may finish captured-account erasure, but must not clear
+    // passwords, close forms or publish errors for a newer UI operation.
+    const ownsDeletionUi = (): boolean => seq === deletionRequestSeq &&
+      signedInPortableOwner() === accountId && deletionAuthRevision === authRevision;
     deleteStage = 'deleting';
     deleteError = null;
     try {
@@ -303,16 +328,33 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(passwordless ? { confirm: 'DELETE' } : { confirm: 'DELETE', password: deletePassword }),
       });
-      if (response.ok) {
-        deletePassword = '';
-        // Sunucu oturumları ve jetonları zaten iptal etti; istemci durumu temizlenir.
-        logout();
-        showAuthMsg(t('privacy_delete_done'), 'success');
+      if (response.ok || isConfirmedAccountDeletion(response)) {
+        if (ownsDeletionUi()) deletePassword = '';
+        // The server can revoke the deleted account's socket/session before
+        // acknowledging DELETE. If that left us truly signed out, the login
+        // form is already visible; do not hide confirmation behind a potentially
+        // slow IndexedDB wipe. An active replacement account must never see it.
+        const revokedBeforeWipe = signedInPortableOwner() === null && readToken() === null;
+        if (revokedBeforeWipe) showAuthMsg(t('privacy_delete_done'), 'success');
+        // P7: delete only the captured account's local-first data/keys. The
+        // startup sweep resumes any incomplete wipe. Never sign out a
+        // replacement account while this async operation is pending.
+        await eraseLocalAccount(accountId);
+        const currentOwner = signedInPortableOwner();
+        if (currentOwner === accountId && deletionAuthRevision === authRevision) {
+          logout();
+          showAuthMsg(t('privacy_delete_done'), 'success');
+        } else if (currentOwner === null && readToken() === null && !revokedBeforeWipe) {
+          // Revocation may also arrive DURING local erasure.
+          showAuthMsg(t('privacy_delete_done'), 'success');
+        }
         return;
       }
+      if (!ownsDeletionUi()) return;
       if (response.status === 409) {
         // Ön denetimden SONRA bir sunucu sahipliği oluşmuş olabilir.
         const body = await response.json().catch(() => ({})) as { blockers?: DeletionBlocker[] };
+        if (!ownsDeletionUi()) return;
         blockers = Array.isArray(body.blockers) ? body.blockers : [];
         deletePassword = '';
         deleteStage = blockers.length ? 'blocked' : 'ready';
@@ -325,6 +367,7 @@
         : response.status === 503 ? t('privacy_delete_unavailable')
         : t('privacy_delete_failed');
     } catch {
+      if (!ownsDeletionUi()) return;
       deleteStage = 'ready';
       deleteError = t('privacy_delete_failed');
     }
@@ -370,6 +413,7 @@
 
   onDestroy(() => {
     resetPortableImport();
+    cancelDeletion();
     if (savedResetTimer) { clearTimeout(savedResetTimer); savedResetTimer = null; }
   });
 </script>

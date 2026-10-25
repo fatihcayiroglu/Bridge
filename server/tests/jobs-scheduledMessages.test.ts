@@ -284,6 +284,41 @@ describe('scheduled message dispatcher', () => {
     expect(row.lastError).toContain('db unavailable');
   });
 
+  it('marks a PostgreSQL BX001 channel expiry denial terminal on the first attempt', async () => {
+    jest.useFakeTimers();
+    const scheduled = await seedScheduledMsg();
+    mockCreateFailure = Object.assign(new Error('channel_unavailable'), { code: 'BX001' });
+    startScheduledJob(null);
+    await tick();
+
+    const row = await requireDoc(mockDbInstance.scheduledMsgs, { _id: scheduled._id });
+    expect(row.sent).toBe(false);
+    expect(row.dispatchAttempts).toBe(1);
+    expect(row.failedAt).toBeGreaterThan(0);
+    expect(row.failureReason).toBe('channel_unavailable');
+    expect(row.lastError).toBe('channel_unavailable');
+    expect(row.claimUntil).toBeNull();
+    expect(await mockDbInstance.messages.find({ scheduledId: scheduled._id })).toHaveLength(0);
+
+    await tick();
+    expect((await requireDoc(mockDbInstance.scheduledMsgs, { _id: scheduled._id })).dispatchAttempts).toBe(1);
+  });
+
+  it('does not treat an unrelated SQLSTATE as a terminal channel denial', async () => {
+    jest.useFakeTimers();
+    const scheduled = await seedScheduledMsg();
+    mockCreateFailure = Object.assign(new Error('temporary database error'), { code: '40001' });
+    const before = Date.now();
+    startScheduledJob(null);
+    await tick();
+
+    const row = await requireDoc(mockDbInstance.scheduledMsgs, { _id: scheduled._id });
+    expect(row.sent).toBe(false);
+    expect(row.failedAt).toBeUndefined();
+    expect(row.claimUntil).toBeGreaterThan(before);
+    expect(row.lastError).toContain('temporary database error');
+  });
+
   it('corrupt dispatchAttempts fails closed instead of creating a NaN endless retry lease', async () => {
     jest.useFakeTimers();
     const scheduled = await seedScheduledMsg({ dispatchAttempts: 'corrupt' });

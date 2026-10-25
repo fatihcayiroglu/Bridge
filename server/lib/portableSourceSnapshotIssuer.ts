@@ -1,9 +1,11 @@
 // P7 C4: source-side read-only paired snapshot and offline attestation issuer.
 // No HTTP route, source trust store, replay authorization or import/apply path.
 import { createHash, createPrivateKey, createPublicKey, randomBytes, sign } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { buildPortableCommunityStructure } from './portableCommunity';
 import { buildPortableCommunityPermissionManifest, type SourcePermissionRows } from './portableCommunityPermissions';
 import { inspectPortableCommunityManifestPair } from './portableCommunityPair';
+import { liveChannelIdsForRead, liveChannelWindowsForRead } from './channelReadExpiryGuard';
 import {
   isCanonicalPortableSourceOrigin, portableSourceAttestationSigningBytes,
   verifyPortableSourceAttestation, type PortableSourceAttestation,
@@ -16,6 +18,7 @@ type Client = {
 };
 type Pool = { connect(): Promise<Client> };
 const MAX_DOCUMENT_BYTES = 512 * 1024;
+const ATTESTATION_LIFETIME_MS = 5 * 60_000;
 
 // Never return SQL, secrets, owner identities or untrusted row content to API callers.
 export class PortableSourceSnapshotError extends Error {
@@ -74,8 +77,9 @@ export async function issueAtomicPortableSourceAttestation(input: {
   const sid = textId(input.sourceServerId);
   const owner = textId(input.ownerUserId);
   const now = input.now ?? Date.now();
-  if (!Number.isSafeInteger(now) || now < 0 || now > 8_640_000_000_000_000 - 300_000 ||
+  if (!Number.isSafeInteger(now) || now < 0 || now > 8_640_000_000_000_000 - ATTESTATION_LIFETIME_MS ||
       !isCanonicalPortableSourceOrigin(input.sourceOrigin)) refuse();
+  const startedAtMs = performance.now();
   // The trust relationship and private key lifecycle are controlled by the
   // source deployer, not by the client request. Never accept them from HTTP.
   let client: Client | null = null;
@@ -103,9 +107,13 @@ export async function issueAtomicPortableSourceAttestation(input: {
     if (!server || serverRows.length !== 1 || server.ownerId !== owner) refuse();
     const categories = await read(client,
       'SELECT _id, name, position, collapsed FROM channel_categories WHERE "serverId"=$1 LIMIT 501', [sid], 500);
-    const channels = (await read(client,
+    const snapshotChannels = (await read(client,
       'SELECT _id, "serverId", name, type, topic, "categoryId", category, "order", position, nsfw, slowmode FROM channels WHERE "serverId"=$1 LIMIT 501',
       [sid], 500)).map(normalizeChannel);
+    const live = await liveChannelIdsForRead(client, snapshotChannels.map(channel => ({
+      channelId: textId(channel._id), serverId: sid,
+    })));
+    const channels = snapshotChannels.filter(channel => live.has(textId(channel._id)));
     const roles = (await read(client,
       'SELECT _id, "serverId", name, color, position, permissions FROM roles WHERE "serverId"=$1 LIMIT 2001',
       [sid], 2000)).map(row => normalize(row, ['position', 'permissions']));
@@ -117,7 +125,7 @@ export async function issueAtomicPortableSourceAttestation(input: {
     const legacy = await read(client,
       'SELECT o."channelId" FROM channel_overrides o JOIN channels c ON c._id=o."channelId" WHERE c."serverId"=$1 LIMIT 20001',
       [sid], 20000);
-    const allowed = new Set(channels.map(channel => textId(channel._id)));
+    const allowed = new Set(snapshotChannels.map(channel => textId(channel._id)));
     for (const item of canonical) {
       // Select rows by BOTH claimed server and owning channel; otherwise a
       // mis-scoped or orphan row could vanish silently. Every returned row
@@ -144,6 +152,29 @@ export async function issueAtomicPortableSourceAttestation(input: {
     commitAttempted = true;
     await client.query('COMMIT');
     committed = true;
+    // Keep the graph's single RR snapshot, but never sign its stale lifecycle
+    // view. A policy update or tombstone committed during that snapshot is
+    // invisible within it. Recheck eligibility on the SAME physical session
+    // with a fresh, explicitly READ COMMITTED read-only transaction.
+    committed = false;
+    commitAttempted = false;
+    await client.query('BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY');
+    const stillLive = await liveChannelWindowsForRead(client, channels.map(channel => ({
+      channelId: textId(channel._id), serverId: sid,
+    })));
+    if (stillLive.size !== channels.length) refuse();
+    commitAttempted = true;
+    await client.query('COMMIT');
+    committed = true;
+    // A delayed read/COMMIT acknowledgement must not publish an expired row.
+    // The bounded existing attestation lifetime also prevents reusing this
+    // admission across an indefinitely stalled export.
+    const assertStillLive = () => {
+      const boundaryMs = performance.now();
+      if (boundaryMs - startedAtMs >= ATTESTATION_LIFETIME_MS ||
+          [...stillLive.values()].some(window => window.validUntilMs !== null && boundaryMs >= window.validUntilMs)) refuse();
+    };
+    assertStillLive();
     const fields: Omit<PortableSourceAttestation, 'signature'> = {
       format: 'bridge-portable-community-source-attestation',
       version: 1,
@@ -153,7 +184,7 @@ export async function issueAtomicPortableSourceAttestation(input: {
       structureDigest: pair.structureDigest,
       permissionsDigest: pair.permissionsDigest,
       issuedAt: exportedAt,
-      expiresAt: new Date(now + 5 * 60_000).toISOString(),
+      expiresAt: new Date(now + ATTESTATION_LIFETIME_MS).toISOString(),
       keyFingerprint: publicKey,
     };
     const attestation: PortableSourceAttestation = {
@@ -166,6 +197,7 @@ export async function issueAtomicPortableSourceAttestation(input: {
       structure, permissions: permissionManifest, attestation,
       expectedSourceOrigin: input.sourceOrigin, trustedSourcePublicKeyPem: pub, now,
     });
+    assertStillLive();
     return {
       mode: 'read-only' as const, importSupported: false as const, writesPerformed: false as const,
       mappingApproved: false as const, approvalReusable: false as const,

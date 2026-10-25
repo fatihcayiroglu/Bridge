@@ -1,6 +1,8 @@
 import { generateKeyPairSync } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { issueAtomicPortableSourceAttestation, PortableSourceSnapshotError } from '../lib/portableSourceSnapshotIssuer';
 import { verifyPortableSourceAttestation } from '../lib/portableSourceAttestation';
+import { CHANNEL_BATCH_READ_EXPIRY_SQL } from '../lib/channelReadExpiryGuard';
 
 const SID = 'source-community';
 const OWNER = 'source-owner';
@@ -15,7 +17,8 @@ function fixture() {
     servers: [{ _id: SID, ownerId: OWNER, name: 'Community', description: '', icon: '' }],
     channel_categories: [{ _id: 'cat', name: 'General', position: 0, collapsed: false }],
     channels: [{ _id: 'channel', serverId: SID, name: 'chat', type: 'text',
-      topic: '', categoryId: 'cat', category: '', order: '0', position: 0, nsfw: 0, slowmode: 0 }],
+      topic: '', categoryId: 'cat', category: '', order: '0', position: 0, nsfw: 0, slowmode: 0,
+      expiresAt: null, expiryVersion: 0, hasTombstone: false, nowMs: NOW }],
     roles: [{ _id: 'role', serverId: SID, name: 'Members', color: '',
       position: 0, permissions: 1 }],
     channel_permissions: [{ channelId: 'channel', serverId: SID, roleId: 'role', allow: 1, deny: 0 }],
@@ -27,11 +30,27 @@ function fixture() {
   let connections = 0;
   let failTable = '';
   let failCommit = false;
+  let commitCount = 0;
+  let failedCommit = 0;
+  let lifecycleReads = 0;
+  let expireAtFinalRead = false;
+  let failFinalRead = false;
+  let finalCommitHook: (() => void) | undefined;
   const client = {
     async query(sql: string, params?: unknown[]) {
       queries.push({ sql, params });
-      if (sql === 'COMMIT' && failCommit) throw Error('private COMMIT response lost');
+      if (sql === 'COMMIT') {
+        commitCount++;
+        if (commitCount === failedCommit || failCommit) throw Error('private COMMIT response lost');
+        if (commitCount === 2) finalCommitHook?.();
+      }
       if (sql.startsWith('BEGIN') || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
+      if (sql === CHANNEL_BATCH_READ_EXPIRY_SQL) {
+        lifecycleReads++;
+        if (lifecycleReads === 2 && failFinalRead) throw Error('private lifecycle SQL error');
+        return { rows: rows.channels.map(row => lifecycleReads === 2 && expireAtFinalRead
+          ? { ...row, expiresAt: NOW - 1, expiryVersion: 1 } : { ...row }) };
+      }
       const match = /\b(?:FROM|JOIN) (servers|channel_categories|channels|roles|channel_permissions|channel_overrides)\b/.exec(sql);
       if (!match) throw new Error('unexpected SQL (no fixture table)');
       const key = sql.includes('FROM channel_overrides') ? 'channel_overrides' : match[1];
@@ -50,11 +69,15 @@ function fixture() {
     released: () => released, connections: () => connections,
     releaseErrors,
     failCommit() { failCommit = true; },
+    failSecondCommit() { failedCommit = 2; },
+    expireAtFinalRead() { expireAtFinalRead = true; },
+    failFinalRead() { failFinalRead = true; },
+    onFinalCommit(hook: () => void) { finalCommitHook = hook; },
     failOn(table: string) { failTable = table; },
   };
 }
 
-describe('P7 C4 single-transaction source snapshot issuance (NO import)', () => {
+describe('P7 C4 source graph snapshot and fresh lifecycle admission (NO import)', () => {
   it('reads both validated manifests on one readonly PG snapshot, commits before signature, verifies independently', async () => {
     const f = fixture();
     const result = await f.issue();
@@ -64,9 +87,17 @@ describe('P7 C4 single-transaction source snapshot issuance (NO import)', () => 
     expect(sql[0]).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     expect(sql.at(-1)).toBe('COMMIT');
     expect(sql).not.toContain('ROLLBACK');
-    expect(sql).toHaveLength(8);
-    expect(sql.filter(s => /^SELECT/.test(s))).toHaveLength(6);
-    for (const q of f.queries.filter(q => /^SELECT/.test(q.sql))) {
+    expect(sql.filter(s => s.startsWith('BEGIN'))).toEqual([
+      'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY',
+      'BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY',
+    ]);
+    expect(sql.filter(s => s === 'COMMIT')).toHaveLength(2);
+    expect(sql).toHaveLength(12);
+    expect(sql.filter(s => /^SELECT/.test(s))).toHaveLength(8);
+    const lifecycleQueries = f.queries.filter(q => q.sql === CHANNEL_BATCH_READ_EXPIRY_SQL);
+    expect(lifecycleQueries).toHaveLength(2);
+    expect(lifecycleQueries.map(q => q.params)).toEqual([[['channel']], [['channel']]]);
+    for (const q of f.queries.filter(q => /^SELECT/.test(q.sql) && q.sql !== CHANNEL_BATCH_READ_EXPIRY_SQL)) {
       expect(q.params).toEqual([SID]);
       expect(q.sql).toContain('LIMIT');
       expect(q.sql).not.toMatch(/\bINSERT\b|\bUPDATE\b|\bDELETE\b/);
@@ -104,6 +135,50 @@ describe('P7 C4 single-transaction source snapshot issuance (NO import)', () => 
     expect(f.releaseErrors[0]?.message).not.toContain('private');
   });
 
+  it('excludes expired, tombstoned and corrupt channels from both signed manifests', async () => {
+    const f = fixture();
+    for (const [id, lifecycle] of [
+      ['expired', { expiresAt: NOW - 1, expiryVersion: 1 }],
+      ['tombstoned', { hasTombstone: true }],
+      ['corrupt', { expiresAt: NOW + 60000, expiryVersion: 0 }],
+    ] as const) {
+      f.rows.channels.push({ ...f.rows.channels[0], _id: id, name: id, topic: id + '-private-topic', ...lifecycle });
+      f.rows.channel_permissions.push({ channelId: id, serverId: SID, roleId: 'role', allow: 1, deny: 0 });
+    }
+    const result = await f.issue();
+    expect(result.structure.channels.map(channel => channel.name)).toEqual(['chat']);
+    expect(result.permissions.channels.map(channel => channel.channelSourceId)).toEqual(['channel']);
+    expect(JSON.stringify(result)).not.toMatch(/expired-private-topic|tombstoned-private-topic|corrupt-private-topic/);
+  });
+
+  it('refuses a channel expiring after its graph snapshot instead of signing stale metadata', async () => {
+    const f = fixture();
+    f.expireAtFinalRead();
+    await expect(f.issue()).rejects.toBeInstanceOf(PortableSourceSnapshotError);
+    expect(f.queries.filter(q => q.sql === 'COMMIT')).toHaveLength(1);
+    expect(f.queries.at(-1)?.sql).toBe('ROLLBACK');
+    expect(f.released()).toBe(1);
+  });
+
+  it('fails closed when fresh lifecycle verification fails after the graph commits', async () => {
+    const f = fixture();
+    f.failFinalRead();
+    await expect(f.issue()).rejects.toThrow('Portable source snapshot cannot be issued safely');
+    expect(f.queries.filter(q => q.sql === 'COMMIT')).toHaveLength(1);
+    expect(f.queries.at(-1)?.sql).toBe('ROLLBACK');
+    expect(f.releaseErrors).toEqual([undefined]);
+  });
+
+  it('discards the session when the fresh lifecycle transaction has an uncertain COMMIT', async () => {
+    const f = fixture();
+    f.failSecondCommit();
+    await expect(f.issue()).rejects.toBeInstanceOf(PortableSourceSnapshotError);
+    expect(f.queries.filter(q => q.sql === 'COMMIT')).toHaveLength(2);
+    expect(f.queries.map(q => q.sql)).not.toContain('ROLLBACK');
+    expect(f.releaseErrors[0]).toBeInstanceOf(PortableSourceSnapshotError);
+    expect(f.released()).toBe(1);
+  });
+
   it('generates unique snapshot tokens without reusing the signed tuple', async () => {
     const f = fixture();
     const [one, two] = [await f.issue(), await f.issue()];
@@ -112,6 +187,21 @@ describe('P7 C4 single-transaction source snapshot issuance (NO import)', () => 
     expect(one.attestation.permissionsDigest).toBe(two.attestation.permissionsDigest);
     expect(f.connections()).toBe(2);
     expect(f.released()).toBe(2);
+  });
+
+  it('does not issue an indefinitely stalled snapshot using a frozen wall clock', async () => {
+    let elapsed = 0;
+    const clock = jest.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    try {
+      const f = fixture();
+      f.onFinalCommit(() => { elapsed = 5 * 60_000; });
+      await expect(f.issue()).rejects.toBeInstanceOf(PortableSourceSnapshotError);
+      expect(f.queries.filter(q => q.sql === 'COMMIT')).toHaveLength(2);
+      expect(f.queries.map(q => q.sql)).not.toContain('ROLLBACK');
+      expect(f.releaseErrors).toEqual([undefined]);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it.each([

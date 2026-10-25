@@ -10,12 +10,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 
-const authCompat = vi.hoisted(() => ({ logout: vi.fn(), showAuthMsg: vi.fn() }));
+const order = vi.hoisted(() => [] as string[]);
+const authCompat = vi.hoisted(() => ({
+  logout: vi.fn(() => { order.push('logout'); }), showAuthMsg: vi.fn(),
+  readToken: vi.fn(() => 'account-access-token'), saveToken: vi.fn(),
+}));
 vi.mock('../js/core/auth-compat.js', () => authCompat);
+// P7: local-first erasure of the deleted account (its own suite covers what it wipes).
+const erasure = vi.hoisted(() => ({
+  eraseLocalAccount: vi.fn(async (userId: string) => { order.push(`erase:${userId}`); return { erased: true, markPersisted: true }; }),
+}));
+vi.mock('../js/core/local-first/account-erasure', () => erasure);
 
 import { t } from '../js/core/i18n/index.ts';
 import { BridgeRegistry, type AnyFn } from '../js/core/bridge-registry.ts';
 import { createSettingsStore } from '../js/core/settings/stores/settingsStore.ts';
+import { apiFetch as realApiFetch, resetCsrfState, resetRefreshState } from '../js/core/api-fetch.ts';
 import PrivacyTab from '../js/core/settings/tabs/PrivacyTab.svelte';
 
 type Reply = { status: number; body?: unknown };
@@ -38,10 +48,14 @@ beforeEach(() => {
   BridgeRegistry.register('apiFetch', apiFetch as unknown as AnyFn);
   authCompat.logout.mockClear();
   authCompat.showAuthMsg.mockClear();
+  authCompat.readToken.mockReset().mockReturnValue('account-access-token');
+  erasure.eraseLocalAccount.mockClear();
+  order.length = 0;
 });
 
 afterEach(() => {
   cleanup();
+  resetRefreshState(); resetCsrfState(); vi.unstubAllGlobals();
   for (const key of ['getMe', 'apiFetch']) BridgeRegistry.unregister(key);
 });
 
@@ -83,6 +97,8 @@ describe('Gizlilik — hesabı sil', () => {
     const [, init] = apiFetch.mock.calls.find((c) => c[0] === '/api/account')!;
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({ confirm: 'DELETE', password: 'dogru-parola' });
     expect(authCompat.showAuthMsg).toHaveBeenCalledWith(t('privacy_delete_done'), 'success');
+    // P7: this device's local data of the deleted account is erased, before logout.
+    expect(order).toEqual(['erase:u1', 'logout']);
   });
 
   it('yanlış parola (400) hata gösterir ve oturumu KAPATMAZ', async () => {
@@ -98,6 +114,7 @@ describe('Gizlilik — hesabı sil', () => {
     await waitFor(() => expect(v.getByRole('alert').textContent).toBe(t('privacy_delete_wrong_password')));
     expect(authCompat.logout).not.toHaveBeenCalled();
     expect(v.getByRole('button', { name: t('privacy_delete_confirm') })).toBeTruthy();
+    expect(erasure.eraseLocalAccount).not.toHaveBeenCalled();
   });
 
   it('ön denetimden SONRA oluşan sahiplik (409) engel listesine döner, silme olmaz', async () => {
@@ -113,6 +130,7 @@ describe('Gizlilik — hesabı sil', () => {
     await waitFor(() => expect(v.getByText(t('privacy_delete_blocker_server', undefined, { name: 'Yeni', count: 2 }))).toBeTruthy());
     expect(v.queryByLabelText(t('privacy_delete_password'))).toBeNull();
     expect(authCompat.logout).not.toHaveBeenCalled();
+    expect(erasure.eraseLocalAccount).not.toHaveBeenCalled();
   });
 
   it('PostgreSQL olmayan kurulumda (503) dürüstçe kullanılamaz der', async () => {
@@ -146,6 +164,7 @@ describe('P7 B2 — SSO-only account (no password)', () => {
     await waitFor(() => expect(authCompat.logout).toHaveBeenCalledOnce());
     const [, init] = apiFetch.mock.calls.find((c) => c[0] === '/api/account')!;
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({ confirm: 'DELETE' });
+    expect(order).toEqual(['erase:u1', 'logout']);
   });
 
   it('a refused proof (403, e.g. the person declined to sign in again) keeps the session and explains', async () => {
@@ -157,5 +176,98 @@ describe('P7 B2 — SSO-only account (no password)', () => {
     await fireEvent.click(v.getByRole('button', { name: t('privacy_delete_confirm') }));
     await waitFor(() => expect(v.getByRole('alert').textContent).toBe(t('privacy_delete_needs_proof')));
     expect(authCompat.logout).not.toHaveBeenCalled();
+    expect(erasure.eraseLocalAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe('P7 account deletion acknowledgement across session races', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>(done => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  async function beginRealDeletion(pending: ReturnType<typeof deferred<Response>>, current: () => string | null) {
+    BridgeRegistry.register('getMe', (() => {
+      const id = current();
+      return id ? { _id: id } : null;
+    }) as unknown as AnyFn);
+    BridgeRegistry.register('apiFetch', realApiFetch as unknown as AnyFn);
+    const fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (url.endsWith('/api/csrf-token')) return Promise.resolve(json({ status: 200, body: { token: 'csrf' } }));
+      if (url.endsWith('/api/account/deletion-preflight')) return Promise.resolve(json({ status: 200, body: { blockers: [] } }));
+      if (url.endsWith('/api/account') && init?.method === 'DELETE') return pending.promise;
+      throw new Error(`Unexpected ${String(init?.method)} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetch);
+    const v = view();
+    await open(v);
+    await waitFor(() => v.getByLabelText(t('privacy_delete_password')));
+    await fireEvent.input(v.getByLabelText(t('privacy_delete_password')), { target: { value: 'correct' } });
+    await fireEvent.click(v.getByLabelText(t('privacy_delete_ack')));
+    await fireEvent.click(v.getByRole('button', { name: t('privacy_delete_confirm') }));
+    await waitFor(() => expect(fetch.mock.calls.some(([url, init]) =>
+      String(url).endsWith('/api/account') && (init as RequestInit | undefined)?.method === 'DELETE')).toBe(true));
+    return v;
+  }
+
+  it('erases the captured account and shows confirmation when live revocation beats HTTP 200', async () => {
+    const pending = deferred<Response>();
+    let account: string | null = 'u1';
+    await beginRealDeletion(pending, () => account);
+    account = null;
+    authCompat.readToken.mockReturnValue(null);
+    document.dispatchEvent(new CustomEvent('bridge:auth-logout'));
+    pending.resolve(json({ status: 200, body: { deleted: true } }));
+    await waitFor(() => expect(erasure.eraseLocalAccount).toHaveBeenCalledExactlyOnceWith('u1'));
+    await waitFor(() => expect(authCompat.showAuthMsg).toHaveBeenCalledWith(t('privacy_delete_done'), 'success'));
+    expect(authCompat.logout).not.toHaveBeenCalled();
+  });
+
+  it('does not show an old success notice while a replacement token exists but getMe is temporarily null', async () => {
+    const pending = deferred<Response>();
+    let account: string | null = 'u1';
+    await beginRealDeletion(pending, () => account);
+    account = null;
+    authCompat.readToken.mockReturnValue('replacement-account-token');
+    document.dispatchEvent(new CustomEvent('bridge:auth-transition'));
+    pending.resolve(json({ status: 200, body: { deleted: true } }));
+    await waitFor(() => expect(erasure.eraseLocalAccount).toHaveBeenCalledExactlyOnceWith('u1'));
+    expect(authCompat.logout).not.toHaveBeenCalled();
+    expect(authCompat.showAuthMsg).not.toHaveBeenCalled();
+  });
+
+  it('a delayed HTTP deletion success erases only the old account without logging out its replacement', async () => {
+    const pending = deferred<Response>();
+    let account: string | null = 'u1';
+    await beginRealDeletion(pending, () => account);
+    account = 'u2';
+    authCompat.readToken.mockReturnValue('replacement-account-token');
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    pending.resolve(json({ status: 200, body: { deleted: true } }));
+    await waitFor(() => expect(erasure.eraseLocalAccount).toHaveBeenCalledExactlyOnceWith('u1'));
+    expect(authCompat.logout).not.toHaveBeenCalled();
+    expect(authCompat.showAuthMsg).not.toHaveBeenCalled();
+  });
+
+  it('a replacement session during local erasure cannot be logged out by the old completion', async () => {
+    const pending = deferred<Response>();
+    const wipe = deferred<{ erased: boolean; markPersisted: boolean }>();
+    erasure.eraseLocalAccount.mockImplementationOnce(async (userId: string) => {
+      order.push(`erase:${userId}`);
+      return wipe.promise;
+    });
+    let account: string | null = 'u1';
+    await beginRealDeletion(pending, () => account);
+    pending.resolve(json({ status: 200, body: { deleted: true } }));
+    await waitFor(() => expect(erasure.eraseLocalAccount).toHaveBeenCalledExactlyOnceWith('u1'));
+    account = 'u2';
+    authCompat.readToken.mockReturnValue('replacement-account-token');
+    document.dispatchEvent(new CustomEvent('bridge:auth-success'));
+    wipe.resolve({ erased: true, markPersisted: true });
+    await waitFor(() => expect(order).toContain('erase:u1'));
+    await Promise.resolve();
+    expect(authCompat.logout).not.toHaveBeenCalled();
+    expect(authCompat.showAuthMsg).not.toHaveBeenCalled();
   });
 });

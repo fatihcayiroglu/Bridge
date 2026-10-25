@@ -17,6 +17,9 @@ jest.mock('../routes/roles',()=>({getMemberPerms,hasPermission:(p:number,b:numbe
 jest.mock('../lib/permissions',()=>({resolvePermissions,viewableChannelIds}));
 jest.mock('../lib/authSafe',()=>({safeCastAuthed:(req:any)=>req}));
 jest.mock('../lib/redisAdapter',()=>({cache}));
+// This suite isolates CRUD authorization and repository contracts; the real grant
+// boundary is exercised by channel-expiry-route and p7-step-up-route-matrix.
+jest.mock('../lib/stepUp',()=>({enforceStepUp:jest.fn().mockResolvedValue(true)}));
 jest.mock('uuid',()=>({v4:()=> 'channel-id'}));
 import router from '../routes/servers/channels';
 

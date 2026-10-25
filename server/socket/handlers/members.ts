@@ -9,6 +9,7 @@ import { Members, Channels }    from '../../db/repositories';
 import { getMembershipsCached } from '../../lib/presenceCache';
 import { isolateSocketHandler } from '../handlerIsolation';
 import { watchServerChannels } from '../../lib/channelActivity';
+import { channelContentAvailability } from '../../lib/channelContentAvailability';
 
 
 interface UserRef { _id: string }
@@ -59,9 +60,16 @@ export async function setupMemberships(
   // İlk yükleme
   await refreshMemberships();
 
+  // Selection intent belongs to this socket. A completed availability read
+  // cannot undo a later join or an explicit leave of its pending target.
+  let channelJoinGeneration = 0;
+  let pendingChannelId: string | null = null;
+
   // ── CHANNEL JOIN ────────────────────────────────────────────
   socket.on('channel:join', isolateSocketHandler(socket, 'channel:join', async (channelId: unknown) => {
     if (typeof channelId !== 'string') return;
+    const generation = ++channelJoinGeneration;
+    pendingChannelId = channelId;
     try {
       const channel = await Channels.findById(channelId);
       if (!channel) return;
@@ -80,6 +88,9 @@ export async function setupMemberships(
       // gercek zamanli esdegeridir ve daha agirdir: tek seferlik bir okuma
       // degil, sureklilik arz eden bir akistir.
       if (!await canViewChannel(user._id, String(channel.serverId), channelId)) return;
+      // Verify expiry/tombstone state before switching any content rooms.
+      if (await channelContentAvailability(channelId, channel.serverId) !== 'live') return;
+      if (generation !== channelJoinGeneration) return;
 
       // Önceki text kanalından çık
       for (const room of socket.rooms) {
@@ -94,6 +105,8 @@ export async function setupMemberships(
         { userId: user._id, channelId, event: 'socket.channel_join.error', err: (e as Error).message },
         'channel:join işlemi başarısız.',
       );
+    } finally {
+      if (generation === channelJoinGeneration) pendingChannelId = null;
     }
   }));
 
@@ -115,6 +128,11 @@ export async function setupMemberships(
   socket.on('channel:leave', isolateSocketHandler(socket, 'channel:leave', (channelId: unknown) => {
     if (typeof channelId !== 'string') return;
     try {
+      // Leaving an old room must not cancel a different, newer selection.
+      if (pendingChannelId === channelId) {
+        ++channelJoinGeneration;
+        pendingChannelId = null;
+      }
       if (socket.rooms.has(`channel:${channelId}`)) {
         socket.leave(`channel:${channelId}`);
       }

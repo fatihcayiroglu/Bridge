@@ -7,6 +7,8 @@ import { requireLockedPortableOwnerStepUp } from './portableLockedOwnerStepUp';
 import { deriveVerifiedPortableApprovalBinding } from './portableVerifiedApprovalBinding';
 import { claimPortableImportApproval, type ApprovalPool, type ApprovalClient } from './portableImportApprovalLedger';
 import { requireMappedDestinationGrantParity } from './portableTargetGrantParity';
+import { liveChannelWindowsForRead } from './channelReadExpiryGuard';
+import { performance } from 'node:perf_hooks';
 
 const HEX64 = /^[0-9a-f]{64}$/;
 type Link = { sourceId: string; targetId: string };
@@ -16,6 +18,14 @@ export class PortableAtomicApplyError extends Error {
   constructor() { super('Portable community apply unavailable'); this.name = 'PortableAtomicApplyError'; }
 }
 function refuse(): never { throw new PortableAtomicApplyError(); }
+async function requireLiveTargets(client: ApprovalClient, ids: string[], serverId: string): Promise<void> {
+  const windows = await liveChannelWindowsForRead(client, ids.map(channelId => ({ channelId, serverId })));
+  const now = performance.now();
+  for (const channelId of ids) {
+    const window = windows.get(channelId);
+    if (!window || (window.validUntilMs !== null && window.validUntilMs <= now)) refuse();
+  }
+}
 function links(value: unknown, expected: readonly { sourceId: string }[], max: number): Map<string, string> {
   if (!Array.isArray(value) || value.length !== expected.length || value.length > max) refuse();
   const ids = new Set(expected.map(x => x.sourceId));
@@ -134,6 +144,20 @@ export async function applyApprovedPortableCommunityMapping(input: {
         snapshot.rows[0]?.source_snapshot_id !== bound.sourceSnapshotId) refuse();
     maybeFail('after_claim', input.failpoint);
 
+    // Upgrade the review's shared channel locks before checking its lifetime.
+    // An unchanged row can still wait behind a concurrent shared holder until
+    // after expiry; evaluating a WHERE predicate before that wait is too early.
+    const targetIds = [...channels.values()].sort();
+    if (targetIds.length) {
+      const locked = await client.query(
+        'SELECT _id FROM channels WHERE _id=ANY($1::text[]) AND "serverId"=$2 ORDER BY _id FOR UPDATE',
+        [targetIds, input.targetServerId],
+      );
+      if (locked.rows.length !== targetIds.length || locked.rows.some(row =>
+        typeof row._id !== 'string' || !targetIds.includes(row._id))) refuse();
+    }
+    await requireLiveTargets(client, targetIds, input.targetServerId);
+
     for (const item of structure.categories) {
       const target = categories.get(item.sourceId);
       if (!target) refuse();
@@ -194,6 +218,9 @@ export async function applyApprovedPortableCommunityMapping(input: {
     );
     if (!audit || audit.rows.length !== 1 || audit.rows[0]?._id !== auditId) refuse();
     maybeFail('before_commit', input.failpoint);
+    // Metadata/FK/index/audit writes may themselves wait. Expiry rolls back
+    // every mapped update, consumed approval and replay/audit row together.
+    await requireLiveTargets(client, targetIds, input.targetServerId);
     commitAttempted = true;
     await client.query('COMMIT');
     committed = true;
