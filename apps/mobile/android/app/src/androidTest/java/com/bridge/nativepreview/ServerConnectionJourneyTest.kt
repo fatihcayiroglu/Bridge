@@ -80,7 +80,7 @@ class ServerConnectionJourneyTest {
             val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
             manager?.appTasks?.any { task ->
                 val info = task.taskInfo
-                info.isRunning && info.topActivity?.className == MainActivity::class.java.name
+                info?.let { it.isRunning && it.topActivity?.className == MainActivity::class.java.name } == true
             }
         } catch (_: Exception) { null }
         val state = NativeStartupObservation(
