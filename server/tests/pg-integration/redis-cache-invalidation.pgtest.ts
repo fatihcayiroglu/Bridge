@@ -62,6 +62,22 @@ RUN('gerçek Redis — kanal mesaj önbelleği gerçekten düşürülür', () =>
     await adapter.disconnect();
   });
 
+  it('checks real writable Redis health without returning credentials, query or fragment', async () => {
+    const health = await adapter.healthCheck();
+    expect(health).toMatchObject({ redis: true, mode: 'redis', singleton: true });
+    expect(health.usedMemory).not.toBe('unknown');
+    const configured = new URL(REDIS_URL!);
+    const safe = new URL(health.url!);
+    expect(safe.protocol).toBe(configured.protocol);
+    expect(safe.host).toBe(configured.host);
+    expect(safe.pathname).toBe(configured.pathname);
+    expect(safe.username).toBe(configured.username || configured.password ? '***' : '');
+    expect(safe.password).toBe('');
+    expect(safe.search).toBe('');
+    expect(safe.hash).toBe('');
+    if (configured.password) expect(JSON.stringify(health)).not.toContain(decodeURIComponent(configured.password));
+  });
+
   it('drops EVERY cached page size for the channel, not just the well-known ones', async () => {
     const prefix = messageCache.channelMessagesCachePrefix(channelId);
     // Sayfa boyutu 1..100 arası HERHANGİ bir değer olabilir; önek bazlı
