@@ -12,6 +12,13 @@
       "react-native": "./src/index.ts",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./registration": {
+      "types": "./src/registration-rules.ts",
+      "react-native": "./src/registration-rules.ts",
+      "browser": "./src/registration-rules.ts",
+      "require": "./dist/registration-rules.js",
+      "default": "./dist/registration-rules.js"
     }
   },
   "files": [

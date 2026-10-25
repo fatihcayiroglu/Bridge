@@ -113,6 +113,11 @@ failures, or failures; CI does not automatically retry failed test journeys.
 
 ## Verifiable acceptance ledger
 
+The existing web username/password precheck is shared through
+`@bridge/core/registration`; browser, Node and native contract consumers use
+one implementation. See `P8_SHARED_REGISTRATION_CONTRACT.md` for tests and its
+boundary. Native registration and authenticated sessions remain open below.
+
 | Stage | Requirement | State / evidence required |
 | --- | --- | --- |
 | A | Isolated New Architecture Android/iOS app | Native CI PASS on #430 and #431 exact heads; preview only |
