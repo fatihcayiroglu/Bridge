@@ -9,6 +9,7 @@
 
 import type { Server as SocketIOServer } from 'socket.io';
 import logger from '../lib/logger';
+import { currentRequestId, runWithRequestContext } from '../lib/requestContext';
 import { leaveVoice } from './handlers/voice';
 import { cleanupPeer, revokeStagePublishers, sfuPeers } from './handlers/mediasoup/rooms';
 
@@ -17,6 +18,22 @@ type VoiceSocket = Parameters<typeof leaveVoice>[0] & {
   currentVoiceChannel?: string | null;
   currentVoiceServer?: string | null;
 };
+
+type RoutineVoiceEvent =
+  | { event: 'socket.voice_evicted'; sfu?: boolean }
+  | { event: 'socket.voice_publish_revoked'; producers: number };
+
+/** Pino's ambient mixin must not reintroduce identity into routine INFO events. */
+function logRoutineVoiceEvent(fields: RoutineVoiceEvent, message: string): void {
+  const requestId = currentRequestId();
+  if (requestId !== undefined) {
+    // Scope only the synchronous emission. Authorization/memoization and
+    // subsequent security logs retain the caller's original actor context.
+    runWithRequestContext({ requestId }, () => logger.info(fields, message));
+  } else {
+    logger.info(fields, message);
+  }
+}
 
 export async function evictLocalVoiceSessions(
   io: SocketIOServer,
@@ -42,7 +59,7 @@ export async function evictLocalVoiceSessions(
     // Tell the evicted client: without this it only noticed through an ICE
     // failure (if ever) and kept showing a live call (P2 media lab, AZ-03).
     (socket as unknown as { emit?: (event: string, data: unknown) => void }).emit?.('voice:evicted', { channelId });
-    logger.info({ userId, channelId, sfu: Boolean(sfuChannel), event: 'socket.voice_evicted' },
+    logRoutineVoiceEvent({ sfu: Boolean(sfuChannel), event: 'socket.voice_evicted' },
       'Voice session evicted after access revocation.');
   }
 }
@@ -66,10 +83,10 @@ export async function revokeLocalVoicePublishing(
     const socket = remote as unknown as VoiceSocket;
     if (sfuPeers.has(socket.id) || socket.currentVoiceChannel !== channelId) continue;
     await leaveVoice(socket, channelId, socket.currentVoiceServer ?? undefined, io);
-    logger.info({ userId, channelId, event: 'socket.voice_evicted' }, 'P2P voice session ended after speak revocation.');
+    logRoutineVoiceEvent({ event: 'socket.voice_evicted' }, 'P2P voice session ended after speak revocation.');
   }
   if (closed) {
-    logger.info({ userId, channelId, producers: closed, event: 'socket.voice_publish_revoked' },
+    logRoutineVoiceEvent({ producers: closed, event: 'socket.voice_publish_revoked' },
       'Voice producers closed after speak revocation.');
   }
 }

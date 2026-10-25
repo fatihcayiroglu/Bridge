@@ -46,6 +46,9 @@ import request from 'supertest';
 import { Server as SocketServer, type Socket as ServerSocket } from 'socket.io';
 import { io as connectClient, type Socket as ClientSocket } from 'socket.io-client';
 import type { ClusterServer, HandlerSocket } from '../../socket/handler-contracts';
+import logger from '../../lib/logger';
+import { currentRequestContext, runWithRequestContext } from '../../lib/requestContext';
+import { captureActualLogRecords } from '../helpers/capture-actual-log-records';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const { registerVoiceHandlers, __getVoiceRoomForTest } = require('../../socket/handlers/voice') as typeof import('../../socket/handlers/voice');
@@ -240,6 +243,43 @@ RUN('P7 D2 voice, Stage and SFU admission follow channel expiry — real Postgre
   };
 
   describe('voice', () => {
+    it('serializes routine voice INFO without ambient actor/socket identity while retaining security context', async () => {
+      const ch = await channel('voice', 'permanent');
+      const owner = await connect();
+      const peer = await connect(PEER);
+      expect(await voiceJoin(owner.client, ch)).toEqual(['voice:joined']);
+      expect(await voiceJoin(peer.client, ch)).toEqual(['voice:joined']);
+      const original = {
+        requestId: 'pg-voice-privacy-correlation', userId: OWNER,
+        socketId: owner.client.id!, memo: new Map<string, unknown>([['sentinel', true]]),
+      };
+      const capture = captureActualLogRecords();
+      try {
+        await runWithRequestContext(original, async () => {
+          await evictLocalVoiceSessions(io, OWNER, [ch]);
+          expect(currentRequestContext()).toBe(original);
+          expect(currentRequestContext()?.memo).toBe(original.memo);
+          logger.warn({ event: 'test.voice-security-context' }, 'Security context positive control.');
+        });
+        expect(owner.server.currentVoiceChannel).toBeNull();
+        expect(peer.server.currentVoiceChannel).toBe(ch);
+        expect((await __getVoiceRoomForTest(ch)).map(row => row.userId)).toEqual([PEER]);
+        const info = capture.records.filter(row => row.event === 'socket.voice_evicted');
+        expect(info).toHaveLength(1);
+        expect(info[0]).toMatchObject({ level: 30, requestId: original.requestId, sfu: false });
+        for (const field of ['userId', 'socketId', 'channelId', 'serverId', 'memo']) {
+          expect(info[0]).not.toHaveProperty(field);
+        }
+        for (const value of [OWNER, PEER, ch, SERVER, owner.client.id!]) {
+          expect(JSON.stringify(info[0])).not.toContain(value);
+        }
+        expect(capture.records.find(row => row.event === 'test.voice-security-context')).toMatchObject({
+          level: 40, requestId: original.requestId, userId: OWNER, socketId: owner.client.id,
+        });
+        expect(currentRequestContext()).toBeUndefined();
+      } finally { capture.restore(); }
+    });
+
     it('admits a permanent and a live ephemeral voice channel (positive controls)', async () => {
       for (const kind of ['permanent', 'live'] as const) {
         const ch = await channel('voice', kind);
