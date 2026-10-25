@@ -171,7 +171,7 @@ class NativeKeyboardStartupTests(unittest.TestCase):
                         source.index('let settled = XCTWaiter.wait'))
         self.assertLess(source.index('let settled = XCTWaiter.wait'),
                         source.index('XCTAssertEqual(typedValue, address,'))
-        self.assertEqual(source.count('input.typeText(chunk)'), 1)
+        self.assertEqual(source.count('input.typeText(String(character))'), 1)
         self.assertNotIn('input.typeText(address)', source)
         self.assertNotIn('XCTAssertTrue(settled', source)
 
@@ -197,22 +197,27 @@ class NativeKeyboardStartupTests(unittest.TestCase):
                 self.assertNotIn('continue-on-error', segment)
         self.assertEqual(workflow.count('name: Prewarm actual '), 2)
 
-    def test_ios_keyboard_chunks_are_one_way_and_strictly_verified(self):
+    def test_ios_keyboard_keys_are_one_way_and_strictly_verified(self):
         source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
-        self.assertIn('for offset in stride(from: 0, to: characters.count, by: 4)', source)
-        self.assertIn('input.typeText(chunk)', source)
-        self.assertIn('acceptedPrefix += chunk', source)
+        self.assertIn('for character in address {', source)
+        self.assertIn('input.typeText(String(character))', source)
+        self.assertIn('acceptedPrefix.append(character)', source)
         self.assertIn('input.value as? String == expectedPrefix', source)
-        self.assertIn('if XCTWaiter.wait(for: [reflectedChunk], timeout: 2) != .completed {', source)
-        self.assertIn('break', source)
+        self.assertIn('XCTAssertEqual(XCTWaiter.wait(for: [reflectedKey], timeout: 2), .completed,', source)
+        self.assertNotIn('input.typeText(address)', source)
         self.assertIn('XCTAssertEqual(typedValue, address,', source)
+        self.assertIn('input.hasFocus', source)
+        self.assertIn('XCTWaiter.wait(for: [focusReady], timeout: 5)', source)
+        self.assertIn('Server field did not receive keyboard focus', source)
+        self.assertIn('Server field did not reflect keyboard character', source)
+        self.assertEqual(source.count('input.typeText(String(character))'), 1)
         for forbidden in ('input.paste', 'UIPasteboard', 'input.setValue', 'retry(', 'XCTAssertTrue(settled'):
             self.assertNotIn(forbidden, source)
 
     def test_ios_second_address_clears_using_real_bounded_acknowledged_keyboard_events(self):
         source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
         self.assertIn('while !deletionRemaining.isEmpty {', source)
-        self.assertIn('let deletionCount = min(4, deletionRemaining.count)', source)
+        self.assertIn('let deletionCount = 1', source)
         self.assertIn('input.typeText(deletionBurst)', source)
         self.assertIn('deletionRemaining.removeLast(deletionCount)', source)
         self.assertIn('observed == expectedRemainder ||', source)
