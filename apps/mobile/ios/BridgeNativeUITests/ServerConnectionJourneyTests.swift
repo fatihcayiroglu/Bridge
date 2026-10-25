@@ -83,7 +83,24 @@ final class ServerConnectionJourneyTests: XCTestCase {
         input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
       }
       print("BRIDGE_NATIVE_JOURNEY_ACTION=input-type")
-      input.typeText(address)
+      // Type with the actual software keyboard, exactly once per character.
+      // Bound each burst by its reflected value so fast CI key events cannot
+      // outrun controlled React Native text updates. Any missing character
+      // stops further entry and remains a strict test failure, never a retry.
+      let characters = Array(address)
+      var acceptedPrefix = ""
+      for offset in stride(from: 0, to: characters.count, by: 4) {
+        let chunk = String(characters[offset..<min(offset + 4, characters.count)])
+        input.typeText(chunk)
+        acceptedPrefix += chunk
+        let expectedPrefix = acceptedPrefix
+        let reflectedChunk = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+          input.value as? String == expectedPrefix
+        }, object: input)
+        if XCTWaiter.wait(for: [reflectedChunk], timeout: 2) != .completed {
+          break
+        }
+      }
       print("BRIDGE_NATIVE_JOURNEY_ACTION=input-verify")
       let typedValue = input.value as? String
       if typedValue != address {
