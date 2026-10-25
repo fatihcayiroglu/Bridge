@@ -35,3 +35,6 @@ __MACOSX
 electron/release
 android
 ios
+
+# P8 mobile preview is built separately, not shipped in the server image.
+apps/mobile
