@@ -171,13 +171,20 @@ jobs:
           profile: pixel_7
           disable-animations: true
           script: bash apps/mobile/scripts/run-android-native-journey.sh
+      - name: Publish normalized native test evidence without private reports
+        if: always()
+        run: |
+          evidence_status=0
+          python3 apps/mobile/scripts/verify_native_results.py --junit-dir apps/mobile/android/app/build/test-results/testDebugUnitTest --expected 7 --output apps/mobile/.ci-results/android-jvm-summary.json || evidence_status=1
+          python3 apps/mobile/scripts/verify_native_results.py --junit-dir apps/mobile/android/app/build/outputs/androidTest-results/connected --expected 1 --output apps/mobile/.ci-results/android-ui-summary.json || evidence_status=1
+          exit "$evidence_status"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: p8-android-native-evidence
           path: |
-            apps/mobile/android/app/build/test-results/
-            apps/mobile/android/app/build/outputs/androidTest-results/
+            apps/mobile/.ci-results/android-jvm-summary.json
+            apps/mobile/.ci-results/android-ui-summary.json
             apps/mobile/.ci-results/source-commit.txt
             apps/mobile/.ci-results/metro-diagnostic.txt
           include-hidden-files: true
@@ -291,6 +298,14 @@ jobs:
           xcrun xcresulttool get test-results summary --path ../.ci-results/native-journey.xcresult \
             > ../.ci-results/xcode-summary.json
           python3 ../scripts/verify_native_results.py --xcode-summary ../.ci-results/xcode-summary.json --expected 1
+      - name: Publish normalized XCUITest evidence without private summaries
+        if: always()
+        run: |
+          summary_file=apps/mobile/.ci-results/xcode-summary.json
+          if [ -f apps/mobile/.ci-results/xcode-private-summary.json ]; then
+            summary_file=apps/mobile/.ci-results/xcode-private-summary.json
+          fi
+          python3 apps/mobile/scripts/verify_native_results.py --xcode-summary "$summary_file" --expected 1 --output apps/mobile/.ci-results/ios-native-summary.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -298,7 +313,7 @@ jobs:
           path: |
             apps/mobile/.ci-results/source-commit.txt
             apps/mobile/.ci-results/metro-diagnostic.txt
-            apps/mobile/.ci-results/xcode-summary.json
+            apps/mobile/.ci-results/ios-native-summary.json
             apps/mobile/.ci-results/xcode-diagnostic.txt
             apps/mobile/ios/Podfile.lock
             apps/mobile/Gemfile.lock
