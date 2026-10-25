@@ -14,6 +14,7 @@ MAX_MARKERS = 4
 MAX_CHARS = 240
 
 CLASSIFIERS = (
+    ("duplicate-build-output", re.compile(r"Multiple commands produce", re.I)),
     ("scheme", re.compile(r"scheme.+(?:not found|not configured|does not contain)|does not contain a scheme", re.I)),
     ("workspace", re.compile(r"workspace.+(?:does not exist|not found|not a workspace|could not)|not a workspace", re.I)),
     ("simulator-destination", re.compile(r"unable to find a destination|ineligible destinations|destination.*not available", re.I)),
@@ -28,7 +29,11 @@ CLASSIFIERS = (
 def redact(line: str) -> str:
     line = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", line)
     line = re.sub(r"\b(?:https?|postgresql|redis)://\S+", "[redacted-url]", line, flags=re.I)
-    line = re.sub(r"(?:/Users|/home)/[^\s:'\"\]\)]+", "[redacted-runner-path]", line)
+    line = re.sub(
+        r"(?:/Users|/home)/[^'\"\n]+",
+        lambda match: "[redacted-runner-path]/" + match.group(0).rsplit("/", 1)[-1][:80],
+        line,
+    )
     line = re.sub(r"\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b", "[redacted-email]", line, flags=re.I)
     line = re.sub(r"\b(token|secret|password|authorization)\s*[:=]\s*\S+", r"\1=[redacted]", line, flags=re.I)
     # Preserve only the explicit error marker and its bounded message, not
@@ -44,10 +49,10 @@ def summarize(log: Path, exit_status: str) -> str:
     count = 0
     with log.open(encoding="utf-8", errors="replace") as stream:
         for line in stream:
-            for label, pattern in CLASSIFIERS:
-                if category == "unclassified" and pattern.search(line):
-                    category = label
             if re.search(r"xcodebuild:\s*error:|(?:^|\s)error:", line, flags=re.I):
+                for label, pattern in CLASSIFIERS:
+                    if category == "unclassified" and pattern.search(line):
+                        category = label
                 count += 1
                 if len(markers) < MAX_MARKERS:
                     markers.append(redact(line))
