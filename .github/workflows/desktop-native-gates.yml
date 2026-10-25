@@ -113,12 +113,17 @@ jobs:
           set -euo pipefail
           completed=0
           for iteration in 1 2 3 4 5; do
-            echo "Native Wayland required launch ${iteration}/5"
-            xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
+            echo "Native Wayland required default launch ${iteration}/5 (startup observer disabled)"
+            BRIDGE_NATIVE_STARTUP_TRACE=0 xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
             completed=$((completed + 1))
           done
           test "${completed}" -eq 5
-          echo "PASS: 5/5 independent installed-DEB native Wayland launches, 0 ignored failures"
+          echo "PASS: 5/5 independent installed-DEB native Wayland launches with default startup, 0 ignored failures"
+          # Instrumentation must not be the reason default startup passes.
+          # This additional required launch observes which real readiness
+          # signal revealed the window; it never replaces a failed launch.
+          echo "Native Wayland required lifecycle observation launch (1/1)"
+          BRIDGE_NATIVE_STARTUP_TRACE=1 xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
       - name: Preserve Linux package artifacts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7

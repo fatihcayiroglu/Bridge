@@ -62,7 +62,52 @@ function bridgeHealthResponse(body: unknown = { status: 'ok', check: 'liveness' 
 }
 
 describe('first run — connect to a server', () => {
-  it('opt-in lifecycle observations never show the window before its real ready event', async () => {
+  it('reveals the successfully loaded connection page even if hidden first paint never arrives', async () => {
+    const { electron } = await loadMain();
+    const connect = connectWindowOf(electron);
+    connect.webContents.emit('dom-ready');
+    expect(connect.show).not.toHaveBeenCalled();
+    connect.webContents.emit('did-finish-load');
+    expect(connect.show).toHaveBeenCalledTimes(1);
+    expect(connect.isVisible()).toBe(true);
+    connect.emit('ready-to-show');
+    expect(connect.show).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reveal a connection page from DOM readiness or a failed load', async () => {
+    const { electron } = await loadMain();
+    const connect = connectWindowOf(electron);
+    connect.webContents.emit('dom-ready');
+    connect.webContents.emit('did-fail-load', {}, -2, 'private-load-error', 'file:///private-profile');
+    expect(connect.show).not.toHaveBeenCalled();
+  });
+
+  it('ignores late readiness from a closed connection window after its replacement is created', async () => {
+    const { electron, main } = await loadMain();
+    const original = connectWindowOf(electron);
+    original.close();
+    electron.app.emit('activate');
+    const replacement = main._testing.getConnectWindow();
+    expect(replacement).toBeTruthy();
+    expect(replacement).not.toBe(original);
+    original.webContents.emit('did-finish-load');
+    original.emit('ready-to-show');
+    expect(original.show).not.toHaveBeenCalled();
+    expect(replacement!.show).not.toHaveBeenCalled();
+    (replacement!.webContents as any).emit('did-finish-load');
+    expect(replacement!.show).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores readiness after the native connection window is destroyed', async () => {
+    const { electron } = await loadMain();
+    const connect = connectWindowOf(electron);
+    connect.isDestroyed.mockReturnValue(true);
+    connect.webContents.emit('did-finish-load');
+    connect.emit('ready-to-show');
+    expect(connect.show).not.toHaveBeenCalled();
+  });
+
+  it('opt-in observations do not reveal before readiness or reveal twice after load completion', async () => {
     const originalFlag = process.env.BRIDGE_NATIVE_STARTUP_TRACE;
     const log = jest.spyOn(console, 'log').mockImplementation(() => {});
     process.env.BRIDGE_NATIVE_STARTUP_TRACE = '1';
@@ -71,14 +116,15 @@ describe('first run — connect to a server', () => {
       const connect = connectWindowOf(electron);
       const stages = () => log.mock.calls.map(call => call[0]).filter(value =>
         typeof value === 'string' && /^BRIDGE_NATIVE_STAGE=\d+$/.test(value));
-      expect(stages()).toEqual([1, 2, 3, 4, 5, 8].map(stage => `BRIDGE_NATIVE_STAGE=${stage}`));
+      expect(stages()).toEqual([1, 2, 3, 4, 8, 5].map(stage => `BRIDGE_NATIVE_STAGE=${stage}`));
       connect.webContents.emit('dom-ready');
-      connect.webContents.emit('did-finish-load');
       expect(connect.show).not.toHaveBeenCalled();
       connect.emit('ready-to-show');
       expect(connect.show).toHaveBeenCalledTimes(1);
       connect.emit('show');
-      expect(stages()).toEqual([1, 2, 3, 4, 5, 8, 6, 10, 7, 9].map(stage => `BRIDGE_NATIVE_STAGE=${stage}`));
+      connect.webContents.emit('did-finish-load');
+      expect(connect.show).toHaveBeenCalledTimes(1);
+      expect(stages()).toEqual([1, 2, 3, 4, 8, 5, 6, 7, 9, 10].map(stage => `BRIDGE_NATIVE_STAGE=${stage}`));
     } finally {
       if (originalFlag === undefined) delete process.env.BRIDGE_NATIVE_STARTUP_TRACE;
       else process.env.BRIDGE_NATIVE_STARTUP_TRACE = originalFlag;

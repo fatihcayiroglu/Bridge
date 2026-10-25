@@ -301,7 +301,7 @@ function openConnectWindow(): void {
   connectWindow.setMenu(null);
   traceNativeStartupStage(NativeStartupStage.ConnectCreated);
   if (nativeStartupTraceEnabled()) {
-    // Observe real events only. Keep the existing load/show behavior unchanged.
+    // Observe real events only; never serialize their payloads.
     connectWindow.once('ready-to-show', () => traceNativeStartupStage(NativeStartupStage.ConnectReadyToShow));
     connectWindow.once('show', () => traceNativeStartupStage(NativeStartupStage.ConnectShown));
     connectWindow.webContents.once('dom-ready', () => traceNativeStartupStage(NativeStartupStage.ConnectDomReady));
@@ -311,10 +311,20 @@ function openConnectWindow(): void {
   }
   connectWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   connectWindow.webContents.on('will-navigate', (event) => event.preventDefault());
-  traceNativeStartupStage(NativeStartupStage.ConnectLoadRequested);
-  void connectWindow.loadFile(connectPagePath());
-  connectWindow.once('ready-to-show', () => connectWindow?.show());
+  const window = connectWindow;
+  let revealed = false;
+  const reveal = (): void => {
+    if (revealed || window.isDestroyed() || connectWindow !== window) return;
+    revealed = true;
+    window.show();
+  };
+  // A hidden Wayland page can finish loading without producing first paint.
+  // Either successful load or first paint may reveal this exact window once.
+  window.once('ready-to-show', reveal);
+  window.webContents.once('did-finish-load', reveal);
   traceNativeStartupStage(NativeStartupStage.ConnectShowHandlerAttached);
+  traceNativeStartupStage(NativeStartupStage.ConnectLoadRequested);
+  void window.loadFile(connectPagePath());
   connectWindow.on('closed', () => { connectWindow = null; });
 }
 
