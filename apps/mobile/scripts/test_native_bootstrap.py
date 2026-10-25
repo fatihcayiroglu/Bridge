@@ -1,5 +1,7 @@
 """P8 native CI bootstrap regression controls (stdlib-only, no network)."""
 from pathlib import Path
+import io
+import runpy
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -38,6 +40,41 @@ class NativeBootstrapContracts(unittest.TestCase):
         self.assertNotIn("            apps/mobile/.ci-results/\\n", workflow)
         self.assertNotIn('cat "$log"', script)
         self.assertNotIn('tail -40 "$log"', script)
+
+    def test_emulator_runner_retains_gradle_directory_and_native_result_gate(self):
+        workflow = (ROOT / ".github/workflows/mobile-react-native.yml").read_text()
+        script = (ROOT / "apps/mobile/scripts/run-android-native-journey.sh").read_text()
+        self.assertIn("script: bash apps/mobile/scripts/run-android-native-journey.sh", workflow)
+        self.assertNotIn("script: |\\n            adb reverse tcp:8081", workflow)
+        self.assertIn("cd apps/mobile/android", script)
+        self.assertIn("./gradlew --no-daemon", script)
+        self.assertIn("verify_native_results.py", script)
+        self.assertIn("set -euo pipefail", script)
+
+    def test_xcode_failure_reports_redacted_reason_without_raw_logs(self):
+        workflow = (ROOT / ".github/workflows/mobile-react-native.yml").read_text()
+        self.assertIn("summarize_xcode_failure.py", workflow)
+        self.assertIn('exit "$xcode_status"', workflow)
+        self.assertIn("apps/mobile/.ci-results/xcode-diagnostic.txt", workflow)
+        scope = runpy.run_path(str(ROOT / "apps/mobile/scripts/summarize_xcode_failure.py"))
+
+        class InMemoryLog:
+            def open(self, **_kwargs):
+                return io.StringIO(
+                    "xcodebuild: error: scheme BridgeNative not configured for test "
+                    "user@example.com /Users/runner/private/demo "
+                    "https://example.com/private\\n"
+                )
+
+        result = scope["summarize"](InMemoryLog(), "64")
+        self.assertIn("category=scheme", result)
+        self.assertIn("xcodebuild-exit-status=64", result)
+        self.assertIn("[redacted-email]", result)
+        self.assertIn("[redacted-runner-path]", result)
+        self.assertIn("[redacted-url]", result)
+        self.assertNotIn("user@example.com", result)
+        self.assertNotIn("/Users/runner/private", result)
+        self.assertNotIn("https://example.com/private", result)
 
 
 if __name__ == "__main__":
