@@ -133,6 +133,7 @@ jest.mock('../socket/handlers/members', () => ({ setupMemberships: (...a: any[])
 
 interface FakeSocket {
   id: string;
+  connected: boolean;
   handshake: any;
   conn: any;
   userId?: string;
@@ -153,6 +154,7 @@ function makeSocket(): FakeSocket {
   const handlers = new Map<string, Function>();
   return {
     id: 'sock-1',
+    connected: true,
     handshake: { address: '10.0.0.4', headers: {}, auth: { token: 'jwt' } },
     conn: { remoteAddress: '10.0.0.5' },
     _bridgeMarkAuthenticated: jest.fn().mockResolvedValue(true),
@@ -396,6 +398,55 @@ describe('socket/index production connection state machine', () => {
     expect(mockUsersUpdate).toHaveBeenCalledWith('u1', { status: 'online' });
     expect(mockRegisterSFUHandlers).not.toHaveBeenCalled();
     expect(io.to('server:s1').emit).toHaveBeenCalledWith('user:status', { userId: 'u1', status: 'online' });
+  });
+
+  test.each([
+    ['user lookup', () => mockUsersFindById, { _id: 'u1', username: 'alice', tokenVersion: 3 }, false],
+    ['presence registration', () => mockTrackSocket, undefined, true],
+    ['status write', () => mockUsersUpdate, undefined, true],
+    ['membership setup', () => mockSetupMemberships, { memberships: [{ serverId: 's1' }], refreshMemberships: jest.fn() }, true],
+  ] as const)('does not finish bootstrap after transport closure during %s', async (stage, operation, result, tracked) => {
+    const { io, connection } = await setup();
+    const socket = makeSocket(); socket.userId = 'u1'; socket.tokenV = 3;
+    let signalStarted!: () => void;
+    const started = new Promise<void>(resolve => { signalStarted = resolve; });
+    let release!: (value: unknown) => void;
+    const pendingOperation = new Promise<unknown>(resolve => { release = resolve; });
+    operation().mockImplementationOnce(() => { signalStarted(); return pendingOperation; });
+
+    const initialization = connection(socket);
+    await started;
+    socket.connected = false;
+    // Real Socket.IO emits disconnect at transport closure, not again after
+    // initialization eventually finishes. No synthetic late disconnect.
+    const disconnect = socket.handlers.get('disconnect')?.('transport close');
+    release(result);
+    await initialization;
+    await disconnect;
+
+    expect(socket.emit).not.toHaveBeenCalledWith('userAuthenticated', 'u1');
+    expect(mockRegisterMessageHandlers).not.toHaveBeenCalled();
+    expect(io.to('server:s1').emit).not.toHaveBeenCalledWith('user:status', { userId: 'u1', status: 'online' });
+    expect(mockHandleDisconnect).toHaveBeenCalledTimes(tracked ? 1 : 0);
+    if (tracked) {
+      expect(mockHandleDisconnect).toHaveBeenCalledWith(socket, expect.objectContaining({ _id: 'u1' }), expect.any(Object));
+    } else {
+      expect(mockTrackSocket).not.toHaveBeenCalled();
+    }
+    if (stage === 'user lookup' || stage === 'presence registration') {
+      expect(mockUsersUpdate).not.toHaveBeenCalledWith('u1', { status: 'online' });
+    }
+  });
+
+  test('cleans partial bootstrap ownership when authoritative presence registration fails', async () => {
+    const { connection } = await setup();
+    const socket = makeSocket(); socket.userId = 'u1'; socket.tokenV = 3;
+    mockTrackSocket.mockRejectedValueOnce(new Error('presence registration unavailable'));
+    await connection(socket);
+    expect(socket.disconnect).toHaveBeenCalledWith(true);
+    expect(mockHandleDisconnect).toHaveBeenCalledTimes(1);
+    expect(socket.emit).not.toHaveBeenCalledWith('userAuthenticated', 'u1');
+    expect(mockRegisterMessageHandlers).not.toHaveBeenCalled();
   });
 
   test('periodic token check fails closed when auth DB revalidation fails', async () => {

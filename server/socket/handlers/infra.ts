@@ -46,7 +46,7 @@ export interface DisconnectOptions {
   _socketRateStore:Map<string, number[]>;
   leaveVoice:      (socket: HandlerSocket, channelId: string, serverId: string | undefined, io: HandlerServer) => Promise<void>;
   voiceActivity:   Map<string, number>;
-  tokenCheckTimer: ReturnType<typeof setInterval>;
+  tokenCheckTimer: ReturnType<typeof setInterval> | null;
   tokenExpiryTimer: ReturnType<typeof setTimeout> | null;
   io:              HandlerServer;
 }
@@ -350,7 +350,7 @@ async function handleDisconnect(
   { socketUsers, typingTimers, _socketRateStore, leaveVoice, voiceActivity, tokenCheckTimer, tokenExpiryTimer, io }: DisconnectOptions,
 ): Promise<void> {
   // 0. Token check timer'ı temizle
-  clearInterval(tokenCheckTimer);
+  if (tokenCheckTimer !== null) clearInterval(tokenCheckTimer);
   if (tokenExpiryTimer) clearTimeout(tokenExpiryTimer);
   socketUsers.delete(rawSocket.id);
 
