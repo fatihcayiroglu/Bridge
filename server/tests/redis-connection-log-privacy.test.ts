@@ -1,5 +1,6 @@
 const mockPub = { connect: jest.fn(async () => undefined), quit: jest.fn(async () => undefined),
-  on: jest.fn(), duplicate: jest.fn() };
+  on: jest.fn(), duplicate: jest.fn(), ping: jest.fn(async () => 'PONG'),
+  set: jest.fn(async () => 'OK'), info: jest.fn(async () => 'used_memory_human:2M\r\n') };
 const mockSub = { connect: jest.fn(async () => undefined), quit: jest.fn(async () => undefined), on: jest.fn() };
 const mockCreateClient = jest.fn(() => mockPub);
 const mockAdapter = {};
@@ -55,3 +56,51 @@ it.each([
 });
 
 export {};
+
+it.each([
+  'redis://private-account:prefix@private-password-tail@private-cache.invalid:6379/4?private-query=private-value',
+  'rediss://private-account:private-password%40private-tail@private-cache.invalid:6380/4',
+  'redis://private-cache.invalid:6379/4?private-query=private-value#private-fragment',
+  'rediss://private-account:private-password@[2001:db8::42]:6380/4?private-query=private-value#private-fragment',
+])('health metadata strips all credentials/query/fragment while preserving the write probe: case %#', async redisUrl => {
+  process.env.REDIS_URL = redisUrl;
+  await jest.isolateModulesAsync(async () => {
+    const adapter = require('../lib/redisAdapter') as typeof import('../lib/redisAdapter');
+    try {
+      await expect(adapter.applyAdapter({})).resolves.toBe(true);
+      const health = await adapter.healthCheck();
+      expect(health).toMatchObject({ redis: true, mode: 'redis', usedMemory: '2M' });
+      for (const secret of ['private-account', 'private-password', 'private-tail', 'private-query', 'private-value', 'private-fragment']) {
+        expect(JSON.stringify(health)).not.toContain(secret);
+      }
+      const safe = new URL(health.url!);
+      const configured = new URL(redisUrl);
+      expect(safe.protocol).toBe(configured.protocol);
+      expect(safe.host).toBe(configured.host);
+      expect(safe.pathname).toBe(configured.pathname);
+      expect(safe.password).toBe('');
+      expect(safe.search).toBe('');
+      expect(safe.hash).toBe('');
+      expect(mockPub.set).toHaveBeenCalledWith(expect.stringMatching(/^bridge:health:write:/), expect.any(String), { EX: 60 });
+      expect(mockCreateClient).toHaveBeenCalledWith(expect.objectContaining({ url: redisUrl }));
+    } finally { await adapter.disconnect(); }
+  });
+});
+
+it.each(['not-a-uri-private-secret', 'https://private-account:private-password@private-cache.invalid'])(
+  'omits unparseable or unsupported health URL metadata: case %#', async redisUrl => {
+    // A transport stub establishes the health formatter's defensive boundary;
+    // this does not claim a real Redis client accepts either configuration.
+    process.env.REDIS_URL = redisUrl;
+    await jest.isolateModulesAsync(async () => {
+      const adapter = require('../lib/redisAdapter') as typeof import('../lib/redisAdapter');
+      try {
+        await expect(adapter.applyAdapter({})).resolves.toBe(true);
+        const health = await adapter.healthCheck();
+        expect(health.redis).toBe(true);
+        expect(health.url).toBeUndefined();
+        expect(JSON.stringify(health)).not.toContain('private');
+      } finally { await adapter.disconnect(); }
+    });
+  },
+);
