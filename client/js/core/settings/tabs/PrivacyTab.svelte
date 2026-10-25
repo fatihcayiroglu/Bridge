@@ -10,7 +10,7 @@
   import { isConfirmedAccountDeletion } from '../../api-fetch';
   import type { SettingsStore } from '../stores/settingsStore';
   import { BridgeRegistry } from '../../bridge-registry.js';
-  import { logout, showAuthMsg, updateUserPanel } from '../../auth-compat.js';
+  import { logout, readToken, showAuthMsg, updateUserPanel } from '../../auth-compat.js';
   let { store }: { store: SettingsStore } = $props();
 
   // ── State ─────────────────────────────────────────────────────────────────
@@ -330,21 +330,22 @@
       });
       if (response.ok || isConfirmedAccountDeletion(response)) {
         if (ownsDeletionUi()) deletePassword = '';
-        // P7: the account no longer exists, so neither may its local-first data
-        // on this device (encrypted history/outbox/drafts and every key). Erased
-        // before logout tears the session down; never throws, and an incomplete
-        // wipe is finished by the startup sweep.
+        // The server can revoke the deleted account's socket/session before
+        // acknowledging DELETE. If that left us truly signed out, the login
+        // form is already visible; do not hide confirmation behind a potentially
+        // slow IndexedDB wipe. An active replacement account must never see it.
+        const revokedBeforeWipe = signedInPortableOwner() === null && readToken() === null;
+        if (revokedBeforeWipe) showAuthMsg(t('privacy_delete_done'), 'success');
+        // P7: delete only the captured account's local-first data/keys. The
+        // startup sweep resumes any incomplete wipe. Never sign out a
+        // replacement account while this async operation is pending.
         await eraseLocalAccount(accountId);
-        // Do not sign out a replacement session that began during either the
-        // HTTP round trip or the async local wipe (even if it reused an ID).
         const currentOwner = signedInPortableOwner();
-        // Closing Settings retires its form, not the confirmed deletion. Keep
-        // session teardown tied to identity, independently of UI lifetime.
         if (currentOwner === accountId && deletionAuthRevision === authRevision) {
           logout();
           showAuthMsg(t('privacy_delete_done'), 'success');
-        } else if (currentOwner === null) {
-          // The server already revoked the deleted account's live session.
+        } else if (currentOwner === null && readToken() === null && !revokedBeforeWipe) {
+          // Revocation may also arrive DURING local erasure.
           showAuthMsg(t('privacy_delete_done'), 'success');
         }
         return;

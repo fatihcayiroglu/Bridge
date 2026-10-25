@@ -96,6 +96,27 @@ it('reports confirmed deletion and erases the captured account when live revocat
   expect(auth.readToken()).toBeNull();
 });
 
+it('shows confirmed deletion on the login screen before a deferred local wipe completes after revocation', async () => {
+  const erased = deferred<{ erased: boolean; markPersisted: boolean }>();
+  erasure.eraseLocalAccount.mockReturnValueOnce(erased.promise);
+  await beginDeletion();
+  auth.logout(); // The server revoked this account before HTTP DELETE returned.
+  acknowledged.resolve(json({ ok: true, deleted: true }));
+  try {
+    await vi.waitFor(() => expect(erasure.eraseLocalAccount).toHaveBeenCalledExactlyOnceWith('old-user'));
+    // The account is gone; a blocked IndexedDB erasure must not hide the
+    // acknowledgement while the real login screen is already showing.
+    expect(document.querySelector('#auth-msg.auth-success')?.textContent).toBe(t('privacy_delete_done'));
+    expect(auth.readToken()).toBeNull();
+  } finally {
+    erased.resolve({ erased: true, markPersisted: true });
+    await erased.promise;
+    await settle();
+  }
+  expect(erasure.eraseLocalAccount).toHaveBeenCalledOnce();
+  expect(auth.readToken()).toBeNull();
+});
+
 it('finishes old-account erasure without signing a replacement account out when its acknowledgement is delayed', async () => {
   await beginDeletion();
   await auth.startApp('new-token', { _id: 'new-user', hasPassword: true });
