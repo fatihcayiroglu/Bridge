@@ -303,7 +303,7 @@ async function _connect(): Promise<boolean> {
         return false;
       }
       _isRedisAvailable = true;
-      logger.info({ url: REDIS_URL.replace(/:[^@]+@/, ':***@'), event: 'redis.connected' }, 'Redis singleton bağlandı.');
+      logger.info({ event: 'redis.connected' }, 'Redis singleton bağlandı.');
       return true;
     } catch (err) {
       if (_pubClient === attemptPubClient) _pubClient = null;
