@@ -78,6 +78,10 @@ android {
     compileSdk rootProject.ext.compileSdkVersion
 
     namespace "com.bridge.nativepreview"
+    sourceSets {
+        test.java.srcDir 'src/testSupport/java'
+        androidTest.java.srcDir 'src/testSupport/java'
+    }
     defaultConfig {
         applicationId "com.bridge.nativepreview"
         minSdkVersion rootProject.ext.minSdkVersion

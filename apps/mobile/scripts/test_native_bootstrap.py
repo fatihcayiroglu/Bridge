@@ -117,7 +117,7 @@ class NativeBootstrapContracts(unittest.TestCase):
                 )
 
         unquoted = scope["summarize"](UnquotedRunnerPath(), "65")
-        self.assertIn("error-1-reason=tap-failed", unquoted)
+        self.assertIn("error-1-reason=keyboard-focus-absent", unquoted)
         self.assertNotIn("ServerConnectionJourneyTests", unquoted)
         self.assertNotIn("/Users/runner/work", unquoted)
         self.assertLess(len(unquoted), 500)

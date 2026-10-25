@@ -25,20 +25,35 @@ final class ServerConnectionJourneyTests: XCTestCase {
     XCTAssertEqual(app.webViews.count, 0, "Primary renderer must not be a WebView")
 
     func connect(_ address: String) {
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-focus")
       input.tap()
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=keyboard-wait")
+      let keyboard = app.keyboards.firstMatch
+      XCTAssertTrue(keyboard.waitForExistence(timeout: 5), "Software keyboard is not visible")
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=keyboard-geometry")
+      let visibleInput = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+        input.isHittable && input.frame.maxY <= keyboard.frame.minY
+      }, object: input)
+      XCTAssertEqual(XCTWaiter.wait(for: [visibleInput], timeout: 5), .completed,
+                     "Server field is covered by software keyboard")
       let current = input.value as? String ?? ""
       // The initial value is a placeholder; delete only an actual URL value.
       if current != "https://chat.example.com" {
+        print("BRIDGE_NATIVE_JOURNEY_ACTION=input-clear")
         input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
       }
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-type")
       input.typeText(address)
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-verify")
       XCTAssertEqual(input.value as? String, address, "Server address edit did not replace the entire input")
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-submit")
       input.typeText("\n")
     }
 
     print("BRIDGE_NATIVE_JOURNEY_STAGE=connect")
     connect("HTTP://127.0.0.1:3000/ignored")
     let success = app.staticTexts["connection-success"]
+    print("BRIDGE_NATIVE_JOURNEY_ACTION=liveness-wait")
     XCTAssertTrue(success.waitForExistence(timeout: 15), "Real Bridge liveness failed")
     XCTAssertEqual(success.label, "Server verified")
     XCTAssertTrue(app.staticTexts["http://127.0.0.1:3000"].exists)
