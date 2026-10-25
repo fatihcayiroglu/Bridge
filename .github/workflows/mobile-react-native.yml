@@ -320,9 +320,13 @@ jobs:
           xcrun xcresulttool get test-results summary --path ../.ci-results/native-journey.xcresult \
             > ../.ci-results/xcode-summary.json
           python3 ../scripts/verify_native_results.py --xcode-summary ../.ci-results/xcode-summary.json --expected 1
+          python3 ../scripts/summarize_xcode_failure.py --keyboard-observation ../.ci-results/xcodebuild.log ../.ci-results/keyboard-observation.txt --require-complete-journey
       - name: Publish normalized XCUITest evidence without private summaries
         if: always()
         run: python3 apps/mobile/scripts/verify_native_results.py --xcode-summary apps/mobile/.ci-results/xcode-summary.json --expected 1 --output apps/mobile/.ci-results/ios-native-summary.json
+      - name: Record native keyboard observations without raw log text
+        if: always()
+        run: python3 apps/mobile/scripts/summarize_xcode_failure.py --keyboard-observation apps/mobile/.ci-results/xcodebuild.log apps/mobile/.ci-results/keyboard-observation.txt
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -332,6 +336,7 @@ jobs:
             apps/mobile/.ci-results/metro-diagnostic.txt
             apps/mobile/.ci-results/ios-native-summary.json
             apps/mobile/.ci-results/xcode-diagnostic.txt
+            apps/mobile/.ci-results/keyboard-observation.txt
             apps/mobile/ios/Podfile.lock
             apps/mobile/Gemfile.lock
           include-hidden-files: true

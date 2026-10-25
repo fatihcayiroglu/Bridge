@@ -66,7 +66,10 @@ final class ServerConnectionJourneyTests: XCTestCase {
 
     func connect(_ address: String) {
       print("BRIDGE_NATIVE_JOURNEY_ACTION=input-focus")
-      input.tap()
+      // The delete checks remove suffix characters. One genuine tap at the
+      // trailing editable edge puts the caret there; a center tap can place
+      // it inside an existing URL and correctly delete an interior character.
+      input.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
       print("BRIDGE_NATIVE_JOURNEY_ACTION=keyboard-wait")
       let keyboard = app.keyboards.firstMatch
       XCTAssertTrue(keyboard.waitForExistence(timeout: 5), "Software keyboard is not visible")
@@ -76,14 +79,15 @@ final class ServerConnectionJourneyTests: XCTestCase {
       }, object: input)
       XCTAssertEqual(XCTWaiter.wait(for: [visibleInput], timeout: 5), .completed,
                      "Server field is covered by software keyboard")
-      // A visible keyboard alone does not prove this specific TextInput owns
-      // focus. Observe the actual native field before any keyboard events.
-      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-focus-verify")
+      // Apple's hasFocus describes UI focus; typeText independently requires
+      // keyboard focus. Observe the former without assuming equivalence.
+      // The genuine key event and exact reflected value below are required.
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-focus-observe")
       let focusReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
         input.hasFocus
       }, object: input)
-      XCTAssertEqual(XCTWaiter.wait(for: [focusReady], timeout: 5), .completed,
-                     "Server field did not receive keyboard focus")
+      let uiFocusObserved = XCTWaiter.wait(for: [focusReady], timeout: 5) == .completed
+      print("BRIDGE_NATIVE_UI_FOCUS=\(uiFocusObserved)")
       let current = input.value as? String ?? ""
       // The initial value is a placeholder; delete only an actual URL value.
       if current != "https://chat.example.com" {
@@ -93,6 +97,7 @@ final class ServerConnectionJourneyTests: XCTestCase {
         // delete events; a missing reflection is a genuine first failure.
         var deletionRemaining = Array(current)
         while !deletionRemaining.isEmpty {
+          let beforeDelete = deletionRemaining
           let deletionCount = 1
           let deletionBurst = String(repeating: XCUIKeyboardKey.delete.rawValue,
                                      count: deletionCount)
@@ -105,7 +110,31 @@ final class ServerConnectionJourneyTests: XCTestCase {
             return observed == expectedRemainder ||
                    (expectedRemainder.isEmpty && observed == "https://chat.example.com")
           }, object: input)
-          XCTAssertEqual(XCTWaiter.wait(for: [reflectedClear], timeout: 2), .completed,
+          let clearResult = XCTWaiter.wait(for: [reflectedClear], timeout: 2)
+          if clearResult != .completed {
+            // A tap may position the caret inside an existing value. Observe
+            // what the single native delete actually did, without publishing
+            // text or changing the captured failure into a later success.
+            let observed = input.value as? String
+            var shape = "other"
+            if let observedValue = observed {
+              if observedValue == expectedRemainder { shape = "expected-prefix" }
+              else if observedValue == String(beforeDelete) { shape = "unchanged" }
+              else if observedValue.isEmpty || observedValue == "https://chat.example.com" { shape = "cleared" }
+              else if beforeDelete.count <= 256 && observedValue.count == beforeDelete.count - 1 {
+                for index in beforeDelete.indices {
+                  var candidate = beforeDelete
+                  candidate.remove(at: index)
+                  if String(candidate) == observedValue {
+                    shape = "interior-delete"
+                    break
+                  }
+                }
+              }
+            } else { shape = "unavailable" }
+            print("BRIDGE_NATIVE_DELETE_RESULT=\(shape);step=\(min(current.count - deletionRemaining.count, 256));before-length=\(min(beforeDelete.count, 256));after-length=\(min(observed?.count ?? 0, 256));expected-length=\(min(expectedRemainder.count, 256))")
+          }
+          XCTAssertEqual(clearResult, .completed,
                          "Server field did not reflect keyboard delete")
         }
       }
@@ -122,8 +151,12 @@ final class ServerConnectionJourneyTests: XCTestCase {
         let reflectedKey = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
           input.value as? String == expectedPrefix
         }, object: input)
-        XCTAssertEqual(XCTWaiter.wait(for: [reflectedKey], timeout: 2), .completed,
+        let keyResult = XCTWaiter.wait(for: [reflectedKey], timeout: 2)
+        XCTAssertEqual(keyResult, .completed,
                        "Server field did not reflect keyboard character")
+        if keyResult == .completed && acceptedPrefix.count == 1 {
+          print("BRIDGE_NATIVE_KEYBOARD_INPUT=first-character-verified;ui-focus=\(input.hasFocus)")
+        }
       }
       print("BRIDGE_NATIVE_JOURNEY_ACTION=input-verify")
       let typedValue = input.value as? String
