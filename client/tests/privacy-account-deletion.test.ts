@@ -224,6 +224,19 @@ describe('P7 account deletion acknowledgement across session races', () => {
     expect(authCompat.logout).not.toHaveBeenCalled();
   });
 
+  it('does not show an old success notice while a replacement token exists but getMe is temporarily null', async () => {
+    const pending = deferred<Response>();
+    let account: string | null = 'u1';
+    await beginRealDeletion(pending, () => account);
+    account = null;
+    authCompat.readToken.mockReturnValue('replacement-account-token');
+    document.dispatchEvent(new CustomEvent('bridge:auth-transition'));
+    pending.resolve(json({ status: 200, body: { deleted: true } }));
+    await waitFor(() => expect(erasure.eraseLocalAccount).toHaveBeenCalledExactlyOnceWith('u1'));
+    expect(authCompat.logout).not.toHaveBeenCalled();
+    expect(authCompat.showAuthMsg).not.toHaveBeenCalled();
+  });
+
   it('a delayed HTTP deletion success erases only the old account without logging out its replacement', async () => {
     const pending = deferred<Response>();
     let account: string | null = 'u1';
