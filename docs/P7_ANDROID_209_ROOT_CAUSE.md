@@ -199,6 +199,42 @@ FD01 stays as written: on the owner's decision (2026-10-19) it is not changed un
 2. Product evidence: four exact-head runs of the earlier `MIN_PRIORITY` pass (39164884625, 39166491452, 39254381137, 39256893223) and the run of the current pass (39259980396: 35 PASS / 0 FAIL / 0 SKIPPED / 6 MEASURED, PD01 PASS, `maxPassMs` 450, `maxMainGapMs` 245) all show 0 stable refs after login and FD01 PASS. That is consistency on one emulator image, not permanence. PD01 must hold across further product runs. Attribute the 0.23–0.25 s main-thread gaps with `baselineMaxGapMs` and ART's explicit-GC pauses before turning any of them into an asserted bound.
 3. A **fixed-WebView** image (e.g. API 35, WebView 124) must show no stable reference in FD00W/FD00T without any mitigation, and the mitigation must report `skipped webview-not-affected`.
 4. **Physical devices** with current Play-updated WebView, plus one GMS device with a frozen WebView that lacks the fix (e.g. 113.x, or M116 up to `116.0.5845.123`; not `.124`/`.163`/`.188`, which carry the backport) if obtainable. No physical-device testing has been done.
-5. The **FocusEvent ANRs** (reason 6) need their own main-thread evidence. ANR02 now classifies fatal ANR traces app-locally, but no ANR has recurred since it was added, and it cannot see non-fatal ANRs or exits evicted from Android's 16-record history.
+5. The **FocusEvent ANRs** (reason 6) need their own main-thread evidence. ANR02 classifies fatal ANR traces app-locally; a fresh recurrence is recorded in §8. It cannot see non-fatal ANRs or exits evicted from Android's bounded exit history. Its current categories do not establish a root cause.
 6. Owner decision on the FD01′ contract (§6).
 7. ~~Owner decision on the unmitigated controls~~ **decided 2026-10-19:** they moved to the non-gating nightly diagnostic workflow, with their FAILs and nonzero exit status preserved (§4c). Its schedule only runs from the default branch; on this PR it runs because the workflow file changed.
+
+## 8. Verified FocusEvent recurrence — 2026-10-25
+
+The legacy Capacitor [Mobile Android run 40194508370](https://github.com/fatihcayiroglu/Bridge/actions/runs/40194508370)
+for #449 failed with **32 PASS / 3 FAIL / 0 SKIPPED / 6 MEASURED**.
+CS01, L01 and ANR01 failed. This is separate from the React Native preview's
+passing Android journey and remains an unresolved #209 regression.
+
+The downloaded `android-emulator-evidence` artifact (12600145432) identifies
+source `4b5f711a687f09bbd46fb309e4bc293c88f1f084`. GitHub's commit API confirms
+this is the PR test merge of main `c061d72fee43a23a068a86c6d8f9726c44ad6f41`
+and #449 head `bc0a13fbefd3fc8add2361366b966005dcd0162c`; it is not a
+post-merge production result. Only the existing closed diagnostic fields are
+reported here; raw screenshots, addresses, process records and logs are omitted.
+
+- CS01's first two additional cold starts had no ANR. The third retained its
+  PID but recorded one ANR. PID stability alone therefore cannot satisfy CS01.
+- ActivityManager classification: `input_dispatch_timeout`, `focusEvent=true`.
+- The incremental product exit ledger has one reason-6 exit and eight
+  reason-10 exits, zero reason-12 exits, a valid journey window, no detected
+  history gap and no unknown/unparsed reasons. This does not attribute the ANR
+  to the FontsProvider dependency mechanism.
+- ANR02 obtained a real fatal trace: `Native / running-code / framework-only`.
+  Its final 16-of-16 exit history is **possibly truncated**, so that trace
+  count is a lower bound. The broad category does not identify the blocked
+  function or prove either application work or emulator starvation as cause.
+
+Existing draft #410 already adds a bounded native-library hint to distinguish
+this otherwise broad trace classification; #411 adds further public-evidence
+minimization. Reuse those implementations rather than creating another parser.
+Their earlier successful emulator runs did not contain a fatal ANR and did not
+exercise the new hint on a real failure. The isolated validation branch
+`codex/p7-android-anr-audited-evidence-20261025` combines #411 with #413's
+dependency audit fixes, preserving all cold-start, hot-resume, ANR and dependency
+death gates. New native evidence is required; this combination itself is not an
+ANR fix, production integration or permission to close #209.
