@@ -8,7 +8,7 @@ class NativeStartupObservationTest {
         val privatePackage = "private.customer.application"
         val privateDescription = "Server address, private.internal.host"
         val observation = NativeStartupObservation(true, false,
-            NativeForeground.fromPackage(privatePackage), null, true, true, true,
+            NativeForeground.fromPackage(privatePackage), null, null, true, true, true,
             NativeInputLabel.fromDescription(privateDescription))
         val report = observation.report(NativeStartupFailure.FORM_NOT_VISIBLE)
         assertFalse(report.contains(privatePackage))
@@ -29,13 +29,15 @@ class NativeStartupObservationTest {
 
     @Test fun activityTaskObservationExportsOnlyBooleansAndKeepsFailureStatus() {
         val activityRunning = NativeStartupObservation(true, false, NativeForeground.OTHER,
-            true, false, false, false, NativeInputLabel.UNAVAILABLE)
+            true, true, false, false, false, NativeInputLabel.UNAVAILABLE)
             .report(NativeStartupFailure.FORM_NOT_VISIBLE)
         val activityAbsent = NativeStartupObservation(true, false, NativeForeground.OTHER,
-            false, false, false, false, NativeInputLabel.UNAVAILABLE)
+            false, false, false, false, false, NativeInputLabel.UNAVAILABLE)
             .report(NativeStartupFailure.FORM_NOT_VISIBLE)
         assertTrue(activityRunning.contains("target-activity-running=true"))
+        assertTrue(activityRunning.contains("target-activity-resumed=true"))
         assertTrue(activityAbsent.contains("target-activity-running=false"))
+        assertTrue(activityAbsent.contains("target-activity-resumed=false"))
         assertTrue(activityRunning.contains("startup=form-not-visible"))
         assertTrue(activityAbsent.contains("startup=form-not-visible"))
         assertFalse(activityRunning.contains("MainActivity"))
@@ -51,13 +53,14 @@ class NativeStartupObservationTest {
 
     @Test fun missingPlatformObservationsStayUnknownAndCannotImplySuccess() {
         val observation = NativeStartupObservation(null, null, NativeForeground.UNAVAILABLE,
-            null, null, null, null, NativeInputLabel.UNAVAILABLE)
+            null, null, null, null, null, NativeInputLabel.UNAVAILABLE)
         val report = observation.report(NativeStartupFailure.KEYGUARD_NOT_UNLOCKED)
         assertTrue(report.contains("startup=keyguard-not-unlocked"))
         assertTrue(report.contains("screen-on=unknown"))
         assertTrue(report.contains("keyguard-locked=unknown"))
         assertTrue(report.contains("foreground=unavailable"))
         assertTrue(report.contains("target-activity-running=unknown"))
+        assertTrue(report.contains("target-activity-resumed=unknown"))
         assertFalse(report.contains("PASS"))
     }
 }
