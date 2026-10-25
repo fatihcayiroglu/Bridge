@@ -155,7 +155,7 @@ jobs:
         working-directory: apps/mobile/android
         run: |
           ./gradlew --no-daemon -PreactNativeArchitectures=x86_64 :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
-          python3 ../scripts/verify_native_results.py --junit-dir app/build/test-results/testDebugUnitTest --expected 6
+          python3 ../scripts/verify_native_results.py --junit-dir app/build/test-results/testDebugUnitTest --expected 7
       - name: Start Metro for the actual debug application
         run: bash apps/mobile/scripts/start-ci-metro.sh
       - name: Enable KVM
@@ -175,7 +175,7 @@ jobs:
         if: always()
         run: |
           evidence_status=0
-          python3 apps/mobile/scripts/verify_native_results.py --junit-dir apps/mobile/android/app/build/test-results/testDebugUnitTest --expected 6 --output apps/mobile/.ci-results/android-jvm-summary.json || evidence_status=1
+          python3 apps/mobile/scripts/verify_native_results.py --junit-dir apps/mobile/android/app/build/test-results/testDebugUnitTest --expected 7 --output apps/mobile/.ci-results/android-jvm-summary.json || evidence_status=1
           python3 apps/mobile/scripts/verify_native_results.py --junit-dir apps/mobile/android/app/build/outputs/androidTest-results/connected --expected 1 --output apps/mobile/.ci-results/android-ui-summary.json || evidence_status=1
           exit "$evidence_status"
       - uses: actions/upload-artifact@v7
