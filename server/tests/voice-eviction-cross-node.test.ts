@@ -34,6 +34,7 @@ import {
   evictUserFromServerRooms,
   registerLocalVoiceEvictor,
 } from '../lib/liveMembership';
+import logger from '../lib/logger';
 import { evictLocalVoiceSessions, revokeLocalVoicePublishing } from '../socket/voiceEviction';
 import { registerVoiceHandlers, __setVoiceRoomForTest, __getVoiceRoomForTest } from '../socket/handlers/voice';
 import { sfuPeers, sfuRooms, _resetRoomsForTest } from '../socket/handlers/mediasoup/rooms';
@@ -78,6 +79,8 @@ function fakeIo(localSockets: Array<ReturnType<typeof localSocket>>, remoteSocke
 }
 
 const user = (id: string) => ({ _id: id, displayName: id, avatarColor: '#000' } as never);
+
+beforeEach(() => { jest.mocked(logger.info).mockClear(); });
 
 afterEach(() => {
   registerLocalVoiceEvictor(null);
@@ -152,6 +155,7 @@ describe('local voice eviction (the node that holds the socket)', () => {
     expect(s.currentVoiceChannel).toBeNull();
     expect(s.rooms.has('voice:vc1')).toBe(false);
     expect(s.toRoom).toContainEqual(expect.objectContaining({ room: 'voice:vc1', event: 'voice:peer-left' }));
+    expect(logger.info).toHaveBeenCalledWith({ event: 'socket.voice_evicted', sfu: false }, expect.any(String));
     expect(io.broadcasts).toContainEqual(expect.objectContaining({ event: 'voice:room-update', data: expect.objectContaining({ channelId: 'vc1' }) }));
   });
 
@@ -176,6 +180,7 @@ describe('local voice eviction (the node that holds the socket)', () => {
     expect(closed.sort()).toEqual(['consumer', 'producer', 'recv', 'send']);
     // The evicted client is told, so it ends the call instead of showing it live.
     expect(s.emit).toHaveBeenCalledWith('voice:evicted', { channelId: 'vc1' });
+    expect(logger.info).toHaveBeenCalledWith({ event: 'socket.voice_evicted', sfu: true }, expect.any(String));
     expect(io.broadcasts).toContainEqual(expect.objectContaining({ event: 'sfu:peer-left' }));
     expect(s.currentVoiceChannel).toBeNull();
   });
@@ -188,6 +193,7 @@ describe('local voice eviction (the node that holds the socket)', () => {
     await evictLocalVoiceSessions(io as never, 'u1', ['vc1']);
     expect(s.currentVoiceChannel).toBe('vc-other');
     expect((await __getVoiceRoomForTest('vc-other'))).toHaveLength(1);
+    expect(logger.info).not.toHaveBeenCalledWith(expect.objectContaining({ event: 'socket.voice_evicted' }), expect.any(String));
   });
 });
 
@@ -258,6 +264,7 @@ describe('speak revocation on the node that owns the room (P2 media lab)', () =>
     expect(other.producers.size).toBe(1);
     expect(sfuPeers.has('sock-sfu')).toBe(true);           // still listening
     expect(mine.recvTransport.close).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith({ event: 'socket.voice_publish_revoked', producers: 2 }, expect.any(String));
     expect(s.currentVoiceChannel).toBe('vc1');
   });
 
@@ -274,5 +281,6 @@ describe('speak revocation on the node that owns the room (P2 media lab)', () =>
 
     expect((await __getVoiceRoomForTest('vc1')).map(p => p.socketId)).toEqual(['sock-b']);
     expect(s.currentVoiceChannel).toBeNull();
+    expect(logger.info).toHaveBeenCalledWith({ event: 'socket.voice_evicted' }, expect.any(String));
   });
 });
