@@ -371,7 +371,17 @@ async function handleDisconnect(
   }
 
   // 4. Ses kanalından çık
-  if (rawSocket.currentVoiceChannel) await leaveVoice(rawSocket, rawSocket.currentVoiceChannel, rawSocket.currentVoiceServer ?? undefined, io);
+  if (rawSocket.currentVoiceChannel) {
+    try {
+      await leaveVoice(rawSocket, rawSocket.currentVoiceChannel, rawSocket.currentVoiceServer ?? undefined, io);
+    } catch {
+      // Redis voice-room teardown can fail during an outage. A failed voice
+      // cleanup must not strand this socket's authoritative presence lease.
+      // Do not log raw room/user identifiers or backend error details here.
+      logger.warn({ event: 'socket.disconnect.voice_cleanup_failed' },
+        'Voice cleanup failed; continuing with presence release.');
+    }
+  }
   voiceActivity.delete(rawSocket.id);
 
   // 5. Multi-tab: başka bağlantı yoksa offline yap
