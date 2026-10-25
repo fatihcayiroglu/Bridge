@@ -8,7 +8,7 @@ class NativeStartupObservationTest {
         val privatePackage = "private.customer.application"
         val privateDescription = "Server address, private.internal.host"
         val observation = NativeStartupObservation(true, false,
-            NativeForeground.fromPackage(privatePackage), true, true, true,
+            NativeForeground.fromPackage(privatePackage), null, true, true, true,
             NativeInputLabel.fromDescription(privateDescription))
         val report = observation.report(NativeStartupFailure.FORM_NOT_VISIBLE)
         assertFalse(report.contains(privatePackage))
@@ -27,6 +27,21 @@ class NativeStartupObservationTest {
         assertEquals(NativeForeground.UNAVAILABLE, NativeForeground.fromPackage(null))
     }
 
+    @Test fun processObservationExportsOnlyBooleansAndKeepsFailureStatus() {
+        val processAlive = NativeStartupObservation(true, false, NativeForeground.OTHER,
+            true, false, false, false, NativeInputLabel.UNAVAILABLE)
+            .report(NativeStartupFailure.FORM_NOT_VISIBLE)
+        val processAbsent = NativeStartupObservation(true, false, NativeForeground.OTHER,
+            false, false, false, false, NativeInputLabel.UNAVAILABLE)
+            .report(NativeStartupFailure.FORM_NOT_VISIBLE)
+        assertTrue(processAlive.contains("target-process-alive=true"))
+        assertTrue(processAbsent.contains("target-process-alive=false"))
+        assertTrue(processAlive.contains("startup=form-not-visible"))
+        assertTrue(processAbsent.contains("startup=form-not-visible"))
+        assertFalse(processAlive.contains("pidof"))
+        assertFalse(processAbsent.contains("pidof"))
+    }
+
     @Test fun distinguishesMissingAccessibleLabelFromComposedAndExactLabels() {
         assertEquals(NativeInputLabel.EXACT, NativeInputLabel.fromDescription("Server address"))
         assertEquals(NativeInputLabel.INCLUDES_LABEL, NativeInputLabel.fromDescription("Server address, https://chat.example.com"))
@@ -36,12 +51,13 @@ class NativeStartupObservationTest {
 
     @Test fun missingPlatformObservationsStayUnknownAndCannotImplySuccess() {
         val observation = NativeStartupObservation(null, null, NativeForeground.UNAVAILABLE,
-            null, null, null, NativeInputLabel.UNAVAILABLE)
+            null, null, null, null, NativeInputLabel.UNAVAILABLE)
         val report = observation.report(NativeStartupFailure.KEYGUARD_NOT_UNLOCKED)
         assertTrue(report.contains("startup=keyguard-not-unlocked"))
         assertTrue(report.contains("screen-on=unknown"))
         assertTrue(report.contains("keyguard-locked=unknown"))
         assertTrue(report.contains("foreground=unavailable"))
+        assertTrue(report.contains("target-process-alive=unknown"))
         assertFalse(report.contains("PASS"))
     }
 }
