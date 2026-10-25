@@ -218,8 +218,8 @@ class NativeKeyboardStartupTests(unittest.TestCase):
         self.assertIn("test.java.srcDir 'src/testSupport/java'", gradle)
         self.assertIn("androidTest.java.srcDir 'src/testSupport/java'", gradle)
         self.assertNotIn("main.java.srcDir 'src/testSupport/java'", gradle)
-        self.assertEqual(unit.count('@Test fun '), 4)
-        self.assertIn('testDebugUnitTest --expected 6', workflow)
+        self.assertEqual(unit.count('@Test fun '), 5)
+        self.assertEqual(workflow.count('testDebugUnitTest --expected 7'), 2)
 
     def test_android_checks_runner_preconditions_without_automatic_foreground_or_retry(self):
         source = (ROOT / 'apps/mobile/android/app/src/androidTest/java/com/bridge/nativepreview/ServerConnectionJourneyTest.kt').read_text()
