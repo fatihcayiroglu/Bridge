@@ -105,6 +105,20 @@ class NativeBootstrapContracts(unittest.TestCase):
         self.assertIn("not hittable for keyboard focus", ui_error)
         self.assertLess(len(ui_error), 500)
 
+        class UnquotedRunnerPath:
+            def open(self, **_kwargs):
+                return io.StringIO(
+                    "error: -[BridgeNativeUITests.ServerConnectionJourneyTests] "
+                    "/Users/runner/work/Bridge/Bridge/ServerConnectionJourneyTests.swift:42: "
+                    + ("element description " * 15)
+                    + "Failed to tap text field due to no keyboard focus\n"
+                )
+
+        unquoted = scope["summarize"](UnquotedRunnerPath(), "65")
+        self.assertIn("Failed to tap text field due to no keyboard focus", unquoted)
+        self.assertNotIn("/Users/runner/work", unquoted)
+        self.assertLess(len(unquoted), 500)
+
     def test_ios_ui_test_bundle_has_unique_named_product(self):
         project = (
             ROOT / "apps/mobile/ios/BridgeNative.xcodeproj/project.pbxproj"
