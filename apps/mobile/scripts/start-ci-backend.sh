@@ -3,6 +3,7 @@ set -euo pipefail
 # Run from the repository root. Only disposable CI databases are configured by
 # the workflow. Liveness is served by Bridge itself, never a fixture HTTP server.
 mkdir -p apps/mobile/.ci-results
+git rev-parse HEAD > apps/mobile/.ci-results/source-commit.txt
 node server/dist/index.js > apps/mobile/.ci-results/bridge.log 2>&1 &
 echo "$!" > apps/mobile/.ci-results/bridge.pid
 for attempt in {1..60}; do

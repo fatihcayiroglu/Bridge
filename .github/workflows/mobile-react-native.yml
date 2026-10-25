@@ -31,6 +31,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -41,6 +43,8 @@ jobs:
             apps/mobile/package-lock.json
       - name: Install locked dependencies
         run: |
+          mkdir -p apps/mobile/.ci-results
+          git rev-parse HEAD > apps/mobile/.ci-results/source-commit.txt
           npm ci
           npm ci --prefix electron
           npm ci --prefix apps/mobile
@@ -81,6 +85,7 @@ jobs:
           name: p8-contract-evidence
           path: |
             packages/core/core-node-results.json
+            apps/mobile/.ci-results/source-commit.txt
             apps/mobile/jest-results.json
             apps/mobile/coverage/coverage-summary.json
             electron/jest-results.json
@@ -114,6 +119,8 @@ jobs:
         ports: ['6379:6379']
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -191,6 +198,8 @@ jobs:
       PORT: '3000'
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
