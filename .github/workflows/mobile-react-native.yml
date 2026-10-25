@@ -175,7 +175,7 @@ jobs:
         if: always()
         run: |
           evidence_status=0
-          python3 apps/mobile/scripts/verify_native_results.py --junit-dir apps/mobile/android/app/build/test-results/testDebugUnitTest --expected 6 --output apps/mobile/.ci-results/android-jvm-summary.json || evidence_status=1
+          python3 apps/mobile/scripts/verify_native_results.py --junit-dir apps/mobile/android/app/build/test-results/testDebugUnitTest --expected 7 --output apps/mobile/.ci-results/android-jvm-summary.json || evidence_status=1
           python3 apps/mobile/scripts/verify_native_results.py --junit-dir apps/mobile/android/app/build/outputs/androidTest-results/connected --expected 1 --output apps/mobile/.ci-results/android-ui-summary.json || evidence_status=1
           exit "$evidence_status"
       - uses: actions/upload-artifact@v7

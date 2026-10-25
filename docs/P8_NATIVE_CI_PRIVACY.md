@@ -56,6 +56,15 @@ CI and inspection of the actual uploaded artifacts remain required. The app,
 network adapter, Kotlin/Swift journeys, expected test counts and coverage
 thresholds are unchanged by this artifact correction.
 
+The subsequent parent window/keyboard observation adds one native JVM case:
+both original validation and artifact publication now require seven JVM tests.
+The artifact parser accepts its new fixed system/alert codes and older records;
+raw alert titles remain private. Failure publication also selects the actual
+private failed-XCTest summary when present instead of incorrectly looking only
+for the success-path file. A shell regression reproduced that missing-source
+classification and now verifies an explicit failed-report result. These changes
+do not alter the original native test failure or publish failure text.
+
 Regression tests use synthetic sensitive filenames, paths, identifiers, URL
 schemes, credential spellings, terminal controls, malformed input and CLI
 errors. Shell tests stub failed child processes to verify diagnostic behavior;
