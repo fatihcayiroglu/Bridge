@@ -209,6 +209,22 @@ class NativeKeyboardStartupTests(unittest.TestCase):
         for forbidden in ('input.paste', 'UIPasteboard', 'input.setValue', 'retry(', 'XCTAssertTrue(settled'):
             self.assertNotIn(forbidden, source)
 
+    def test_ios_second_address_clears_using_real_bounded_acknowledged_keyboard_events(self):
+        source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
+        self.assertIn('while !deletionRemaining.isEmpty {', source)
+        self.assertIn('let deletionCount = min(4, deletionRemaining.count)', source)
+        self.assertIn('input.typeText(deletionBurst)', source)
+        self.assertIn('deletionRemaining.removeLast(deletionCount)', source)
+        self.assertIn('observed == expectedRemainder ||', source)
+        self.assertIn('expectedRemainder.isEmpty && observed == "https://chat.example.com"', source)
+        self.assertIn('XCTWaiter.wait(for: [reflectedClear], timeout: 2)', source)
+        self.assertIn('Server field did not reflect keyboard delete', source)
+        self.assertLess(source.index('XCTWaiter.wait(for: [reflectedClear]'),
+                        source.index('print("BRIDGE_NATIVE_JOURNEY_ACTION=input-type")'))
+        self.assertEqual(source.count('input.typeText(deletionBurst)'), 1)
+        self.assertNotIn('UIPasteboard', source)
+        self.assertNotIn('XCTSkip', source)
+
     def test_android_observation_is_test_only_and_jvm_gate_counts_every_new_test(self):
         gradle = (ROOT / 'apps/mobile/android/app/build.gradle').read_text()
         workflow = (ROOT / '.github/workflows/mobile-react-native.yml').read_text()
