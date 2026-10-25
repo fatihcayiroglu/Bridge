@@ -130,10 +130,24 @@ class NativeDiagnosticPrivacyTests(unittest.TestCase):
         self.assertEqual(set(stages), SCOPE['STAGES'])
         self.assertIn('XCTAssertEqual(typedValue, address,', source)
         self.assertIn('XCTAssertTrue(success.waitForExistence(timeout: 15)', source)
-        self.assertIn('XCTAssertTrue(reportState(app.wait(for: .runningBackground, timeout: 5)))', source)
+        self.assertIn('XCUIDevice.shared.press(.home)', source)
+        self.assertIn('state == .runningBackground || state == .runningBackgroundSuspended', source)
+        self.assertIn('backgroundObserved && stillBackground', source)
+        self.assertIn('XCTAssertTrue(backgroundObserved && stillBackground,', source)
         self.assertIn('XCTAssertTrue(reportState(app.wait(for: .runningForeground, timeout: 10)))', source)
         self.assertIn('return matched', source)
         self.assertIn('XCTAssertFalse(success.exists,', source)
+
+    def test_home_transition_failure_is_closed_and_suspension_is_not_a_skip(self):
+        marker = 'error: App did not remain in a genuine background or suspended state after Home'
+        report = self.report('BRIDGE_NATIVE_JOURNEY_STAGE=background\n' + marker + ' private-actor\n')
+        self.assertIn('status=FAIL', report)
+        self.assertIn('error-1-reason=background-not-reached', report)
+        self.assertNotIn('private-actor', report)
+        source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
+        self.assertIn('XCTWaiter.wait(for: [background], timeout: 5)', source)
+        self.assertIn('let stillBackground =', source)
+        self.assertNotIn('XCTSkip', source)
 
     def test_native_lifecycle_observation_cannot_publish_unknown_state_values(self):
         report = self.report(
