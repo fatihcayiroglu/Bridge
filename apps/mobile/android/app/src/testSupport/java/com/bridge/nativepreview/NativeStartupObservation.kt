@@ -37,12 +37,12 @@ enum class NativeStartupFailure(val wire: String) {
 
 data class NativeStartupObservation(
     val screenOn: Boolean?, val keyguardLocked: Boolean?, val foreground: NativeForeground,
-    val headingVisible: Boolean?, val editTextVisible: Boolean?, val inputByIdVisible: Boolean?,
+    val targetProcessAlive: Boolean?, val headingVisible: Boolean?, val editTextVisible: Boolean?, val inputByIdVisible: Boolean?,
     val inputLabel: NativeInputLabel,
 ) {
     fun report(failure: NativeStartupFailure): String =
         "startup=${failure.wire};screen-on=${value(screenOn)};keyguard-locked=${value(keyguardLocked)};" +
-        "foreground=${foreground.wire};heading-visible=${value(headingVisible)};" +
+        "foreground=${foreground.wire};target-process-alive=${value(targetProcessAlive)};heading-visible=${value(headingVisible)};" +
         "edit-text-visible=${value(editTextVisible)};input-id-visible=${value(inputByIdVisible)};" +
         "input-label=${inputLabel.wire}"
 
