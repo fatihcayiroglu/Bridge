@@ -76,6 +76,14 @@ final class ServerConnectionJourneyTests: XCTestCase {
       }, object: input)
       XCTAssertEqual(XCTWaiter.wait(for: [visibleInput], timeout: 5), .completed,
                      "Server field is covered by software keyboard")
+      // A visible keyboard alone does not prove this specific TextInput owns
+      // focus. Observe the actual native field before any keyboard events.
+      print("BRIDGE_NATIVE_JOURNEY_ACTION=input-focus-verify")
+      let focusReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+        input.hasFocus
+      }, object: input)
+      XCTAssertEqual(XCTWaiter.wait(for: [focusReady], timeout: 5), .completed,
+                     "Server field did not receive keyboard focus")
       let current = input.value as? String ?? ""
       // The initial value is a placeholder; delete only an actual URL value.
       if current != "https://chat.example.com" {
@@ -85,7 +93,7 @@ final class ServerConnectionJourneyTests: XCTestCase {
         // delete events; a missing reflection is a genuine first failure.
         var deletionRemaining = Array(current)
         while !deletionRemaining.isEmpty {
-          let deletionCount = min(4, deletionRemaining.count)
+          let deletionCount = 1
           let deletionBurst = String(repeating: XCUIKeyboardKey.delete.rawValue,
                                      count: deletionCount)
           input.typeText(deletionBurst)
@@ -102,23 +110,20 @@ final class ServerConnectionJourneyTests: XCTestCase {
         }
       }
       print("BRIDGE_NATIVE_JOURNEY_ACTION=input-type")
-      // Type with the actual software keyboard, exactly once per character.
-      // Bound each burst by its reflected value so fast CI key events cannot
-      // outrun controlled React Native text updates. Any missing character
-      // stops further entry and remains a strict test failure, never a retry.
-      let characters = Array(address)
+      // React Native's controlled TextInput needs to reflect EACH native
+      // key before the next key. Four-key bursts lost events on the exact CI
+      // head; send each physical keyboard character once and fail on the
+      // first missing reflection. No retry, paste, injection or JS shortcut.
       var acceptedPrefix = ""
-      for offset in stride(from: 0, to: characters.count, by: 4) {
-        let chunk = String(characters[offset..<min(offset + 4, characters.count)])
-        input.typeText(chunk)
-        acceptedPrefix += chunk
+      for character in address {
+        input.typeText(String(character))
+        acceptedPrefix.append(character)
         let expectedPrefix = acceptedPrefix
-        let reflectedChunk = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+        let reflectedKey = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
           input.value as? String == expectedPrefix
         }, object: input)
-        if XCTWaiter.wait(for: [reflectedChunk], timeout: 2) != .completed {
-          break
-        }
+        XCTAssertEqual(XCTWaiter.wait(for: [reflectedKey], timeout: 2), .completed,
+                       "Server field did not reflect keyboard character")
       }
       print("BRIDGE_NATIVE_JOURNEY_ACTION=input-verify")
       let typedValue = input.value as? String
