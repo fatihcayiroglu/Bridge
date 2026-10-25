@@ -188,7 +188,7 @@ class NativeArtifactPrivacyTests(unittest.TestCase):
                 output = root / 'apps/mobile/.ci-results'
                 output.mkdir()
                 for name, location, count in [
-                    ('jvm', 'test-results/testDebugUnitTest', 6),
+                    ('jvm', 'test-results/testDebugUnitTest', 7),
                     ('ui', 'outputs/androidTest-results/connected', 1),
                 ]:
                     folder = root / 'apps/mobile/android/app/build' / location
