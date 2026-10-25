@@ -45,7 +45,7 @@ it('evicts every member at the authoritative expiry instant, not before', async 
   expect(readWindow).toHaveBeenCalledTimes(2);               // re-read at the instant
   expect(evict).toHaveBeenCalledWith(io, 'srv', 'ch', { channelGone: true });
   expect(__armedMediaExpiryForTest()).toEqual([]);
-  expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ event: 'media.expiry_evicted', channelId: 'ch' }), expect.any(String));
+    expect(logger.info).toHaveBeenCalledWith({ event: 'media.expiry_evicted' }, expect.any(String));
 });
 
 it('re-arms for a later expiry instead of evicting a channel that is still live', async () => {

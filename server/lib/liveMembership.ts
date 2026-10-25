@@ -4,6 +4,7 @@ import { PERMS, canViewChannel, hasPermission, resolvePermissions } from './perm
 import { isMemberTimedOut } from './memberTimeout';
 import { newRequestId, runWithRequestContext } from './requestContext';
 import logger from './logger';
+import { logRoutineMediaInfo } from './routineMediaLog';
 
 // `watch` was ADDED in Final21 Phase 16. Phase 15 introduced `watch:<channelId>`
 // rooms for unread activity and did NOT add them here: a member who was kicked
@@ -332,13 +333,11 @@ export async function evictSocketsWithoutChannelAccess(
               voiceSocket.currentVoiceChannel = undefined;
               voiceSocket.currentVoiceServer = undefined;
             }
-            logger.info({ userId, serverId, channelId: cid, event: 'socket.voice_access_evicted' },
-              'Voice connect permission revoked; live voice session evicted.');
+            logRoutineMediaInfo({ event: 'socket.voice_access_evicted' });
           } else if (access === 'listen' && !publishRevoked.has(key)) {
             publishRevoked.add(key);
             await revokeVoicePublishingEverywhere(io, userId, cid);
-            logger.info({ userId, serverId, channelId: cid, event: 'socket.voice_publish_revoked' },
-              'Voice speak permission revoked; live producers closed.');
+            logRoutineMediaInfo({ event: 'socket.voice_publish_revoked' });
           }
           continue;
         }
@@ -359,10 +358,7 @@ export async function evictSocketsWithoutChannelAccess(
           mutable.currentVoiceServer = undefined;
         }
         socket.emit('channel:access-revoked', { serverId, channelId: cid });
-        logger.info(
-          { userId, serverId, channelId: cid, rooms: rooms.length, event: 'socket.channel_access_evicted' },
-          'Channel access revoked; live rooms evicted.',
-        );
+        logRoutineMediaInfo({ rooms: rooms.length, event: 'socket.channel_access_evicted' });
       }
     });
   }
