@@ -31,7 +31,7 @@ def redact(line: str) -> str:
     line = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", line)
     line = re.sub(r"\b(?:https?|postgresql|redis)://\S+", "[redacted-url]", line, flags=re.I)
     line = re.sub(
-        r"(?:/Users|/home)/[^'\"\n]+",
+        r"(?:/Users|/home)/[^\s:'\"\]\),;]+",
         lambda match: "[redacted-runner-path]/" + match.group(0).rsplit("/", 1)[-1][:80],
         line,
     )
