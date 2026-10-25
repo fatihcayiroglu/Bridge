@@ -103,6 +103,8 @@ jobs:
       # Chromium OS sandbox remains enabled; no XWayland fallback.
       - name: Install Weston Wayland compositor
         run: sudo apt-get install -y --no-install-recommends weston
+      - name: Validate native Wayland smoke script syntax
+        run: bash -n electron/scripts/ci-linux-wayland-smoke.sh
       - name: Installed Linux native Wayland surface smoke (nested Weston, native client)
         run: xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
       - name: Preserve Linux package artifacts
