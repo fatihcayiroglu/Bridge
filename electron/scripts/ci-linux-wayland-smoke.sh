@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Native Wayland smoke: start the INSTALLED Bridge DEB in a real Weston
-# compositor. Assert that Chromium creates an xdg-toplevel Wayland surface.
+# Native Wayland smoke: installed Bridge DEB must create a real xdg-toplevel
+# under headless Weston. GPU-less CI uses Chromium software GL only.
 # No --no-sandbox, no fake Electron window, no XWayland fallback.
 # This is HEADLESS compositor evidence, not a physical desktop UX test.
 set -euo pipefail
@@ -47,7 +47,12 @@ done
 
 # All state is isolated. The DEB post-install supplies Chromium sandbox setup.
 # Do not relax the sandbox, impersonate root or allow a fallback to X11.
-"${APP}" --ozone-platform=wayland --user-data-dir="${ROOT}/profile" >"${ROOT}/app.log" 2>&1 &
+# This runner has no DRM render node. Use Chromium-owned software GLES
+# solely for the Wayland CI smoke, not as a shipped application default.
+# Native Ozone/Wayland, real compositor, OS sandbox and xdg-shell assertions
+# remain required; this is NOT --ozone-platform=headless or --no-sandbox.
+"${APP}" --ozone-platform=wayland --use-gl=angle --use-angle=swiftshader \
+  --user-data-dir="${ROOT}/profile" >"${ROOT}/app.log" 2>&1 &
 APP_PID=$!
 for i in {1..60}; do
   if ! kill -0 "${APP_PID}" 2>/dev/null; then
@@ -55,12 +60,11 @@ for i in {1..60}; do
     tail -40 "${ROOT}/app.log" >&2 || true
     exit 1
   fi
-  # Weston 13 / Wayland debug prints protocol object IDs as #23, not @23.
-  # Require the top-level window's real size request AND its compositor
-  # configure acknowledgement. Neither can come from a mocked process.
-  if grep -Eq -- 'xdg_toplevel#[0-9]+\.set_(min|max)_size\(' "${ROOT}/app.log" \
-    && grep -Eq -- 'xdg_surface#[0-9]+\.ack_configure\(' "${ROOT}/app.log"; then
-    echo "PASS: installed Bridge created a real xdg-toplevel surface on headless Weston/Wayland, sandbox enabled, X11 DISPLAY unset"
+  # Require an actual xdg-shell toplevel role and configure acknowledgment.
+  # Size hints are optional in xdg-shell; process existence alone is not PASS.
+  if grep -Eq -- 'xdg_surface[@#][0-9]+\.get_toplevel\(' "${ROOT}/app.log" \
+    && grep -Eq -- 'xdg_surface[@#][0-9]+\.ack_configure\(' "${ROOT}/app.log"; then
+    echo "PASS: installed Bridge created and configured native Wayland xdg-toplevel on GPU-less Weston; OS sandbox enabled, X11 DISPLAY unset"
     exit 0
   fi
   sleep 1
