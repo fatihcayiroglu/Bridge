@@ -25,7 +25,7 @@ STATE_MARKER = re.compile(r"BRIDGE_NATIVE_APP_STATE=([a-z-]+)(?:\s|$)")
 STATES = frozenset({"unknown", "not-running", "background-suspended", "background", "foreground"})
 ACTION_MARKER = re.compile(r"BRIDGE_NATIVE_JOURNEY_ACTION=([a-z-]+)(?:\s|$)")
 ACTIONS = frozenset({"input-focus", "keyboard-wait", "keyboard-geometry", "input-clear",
-                     "input-type", "input-verify", "input-submit", "liveness-wait",
+                     "input-clear-verify", "input-type", "input-verify", "input-submit", "liveness-wait",
                      "app-launch", "form-wait", "form-observation", "renderer-check"})
 INPUT_MARKER = re.compile(r"BRIDGE_NATIVE_INPUT_KIND=([a-z-]+)(?:\s|$)")
 INPUT_KINDS = frozenset({"text-field", "secure-field", "text-view", "other", "missing", "unavailable"})
@@ -64,6 +64,7 @@ CLASSIFIERS = (
     ("ui-interaction", "tap-failed", r"failed to tap"),
     ("ui-interaction", "type-failed", r"failed to type"),
     ("ui-interaction", "focus-failed", r"failed to focus"),
+    ("test-failure", "input-clear-mismatch", r"server field did not reflect keyboard delete"),
     ("test-failure", "address-edit-mismatch", r"server address edit did not replace the entire input"),
     ("test-failure", "liveness-not-verified", r"real Bridge liveness failed"),
     ("test-failure", "native-form-not-visible", r"native form did not launch"),
