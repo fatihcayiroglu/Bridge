@@ -34,10 +34,12 @@ env:
 jobs:
   linux:
     name: Linux x64 — real Electron window + AppImage/DEB
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v7
+      - name: Wayland protocol gate positive and negative controls
+        run: bash electron/scripts/ci-linux-wayland-protocol.test.sh
       - uses: actions/setup-node@v7
         with:
           node-version: '24.20.0'
@@ -97,12 +99,30 @@ jobs:
           ls -l /opt/Bridge/chrome-sandbox
       - name: Installed Linux first-run window smoke (real X11, OS sandbox)
         run: xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-window-smoke.sh
-      # Native Wayland compositor, no X11 DISPLAY and no Chromium sandbox opt-out.
-      # The script checks an actual xdg-toplevel protocol request, not just PID.
+      # Weston 13 headless exposes no wl_seat; GTK can fail before xdg-toplevel.
+      # Use the Weston X11 backend on Xvfb for an actual compositor input seat.
+      # Xvfb is visible only to Weston: Bridge itself unsets DISPLAY, explicitly
+      # selects native Wayland, and must prove wl_seat + xdg-toplevel + ack.
       - name: Install Weston Wayland compositor
-        run: sudo apt-get install -y --no-install-recommends weston
-      - name: Installed Linux native Wayland surface smoke (headless Weston)
-        run: dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
+        run: |
+          sudo apt-get install -y --no-install-recommends weston
+          weston --version
+          dpkg-query -W -f='${Version}\n' weston
+      # Five independent, mandatory fresh compositor/app launches probe the
+      # historical intermittent native-Wayland failure. These are not retries:
+      # any one failure aborts the job, and no assertion or deadline changes.
+      - name: Installed Linux native Wayland surface smoke (5 fresh seated sessions)
+        shell: bash
+        run: |
+          set -euo pipefail
+          completed=0
+          for iteration in 1 2 3 4 5; do
+            echo "Native Wayland required launch ${iteration}/5"
+            xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
+            completed=$((completed + 1))
+          done
+          test "${completed}" -eq 5
+          echo "PASS: 5/5 independent installed-DEB native Wayland launches, 0 ignored failures"
       - name: Preserve Linux package artifacts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
