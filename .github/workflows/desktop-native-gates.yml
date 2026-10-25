@@ -34,10 +34,12 @@ env:
 jobs:
   linux:
     name: Linux x64 — real Electron window + AppImage/DEB
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v7
+      - name: Wayland protocol acceptance and privacy controls
+        run: bash electron/scripts/ci-linux-wayland-protocol.test.sh
       - uses: actions/setup-node@v7
         with:
           node-version: '24.20.0'
@@ -106,7 +108,17 @@ jobs:
       - name: Validate native Wayland smoke script syntax
         run: bash -n electron/scripts/ci-linux-wayland-smoke.sh
       - name: Installed Linux native Wayland surface smoke (nested Weston, native client)
-        run: xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          completed=0
+          for iteration in 1 2 3 4 5; do
+            echo "Native Wayland required launch ${iteration}/5"
+            xvfb-run -a -- dbus-run-session -- bash electron/scripts/ci-linux-wayland-smoke.sh
+            completed=$((completed + 1))
+          done
+          test "${completed}" -eq 5
+          echo "PASS: 5/5 independent installed-DEB native Wayland launches, 0 ignored failures"
       - name: Preserve Linux package artifacts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
