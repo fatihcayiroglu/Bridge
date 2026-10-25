@@ -70,3 +70,22 @@ before observation and remains the exact value asserted: a later match cannot
 turn that failed assertion into PASS. Nothing is retyped or resubmitted.
 All 47 local Python controls pass, zero skips. Native execution remains required
 to distinguish delayed accessibility reflection from persistent missing input.
+
+On `57a7c754`, run [40181420885](https://github.com/fatihcayiroglu/Bridge/actions/runs/40181420885)
+passed contracts but failed both native journeys. Android reported an awake,
+unlocked device, `foreground=other` and no form/input. Its downloaded original
+artifact matches the source SHA; a bounded known-marker scan found no target
+ANR, input timeout, fatal exception or JS-fatal marker. This does not prove the
+absence of an OS fault. iOS failed at `keyboard-wait` in foreground, so the new
+address-value observation did not execute on that run.
+
+The next observation distinguishes known Android system, test, keyboard,
+settings and setup owners without emitting package names. Android-owned alert
+titles are classified locally into ANR/crash/other/none/unavailable; titles and
+private app names are not published or acted on. One new JVM control requires
+**seven** executed JVM tests, while the actual emulator journey remains one.
+iOS reports only field visibility/hittability and capped app/system keyboard
+counts after the existing keyboard wait has already failed. It still asserts
+the captured original result. No window is dismissed, activated or retried.
+All 49 local Python controls pass, zero skips; Kotlin/Swift and native evidence
+on this follow-up source remain pending CI.

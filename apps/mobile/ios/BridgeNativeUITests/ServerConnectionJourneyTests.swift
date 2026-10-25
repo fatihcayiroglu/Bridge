@@ -69,7 +69,14 @@ final class ServerConnectionJourneyTests: XCTestCase {
       input.tap()
       print("BRIDGE_NATIVE_JOURNEY_ACTION=keyboard-wait")
       let keyboard = app.keyboards.firstMatch
-      XCTAssertTrue(keyboard.waitForExistence(timeout: 5), "Software keyboard is not visible")
+      let keyboardMatches = keyboard.waitForExistence(timeout: 5)
+      if !keyboardMatches {
+        let exists = input.exists
+        let hittable = exists && input.isHittable
+        let system = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        print("BRIDGE_NATIVE_KEYBOARD=missing;field-exists=\(exists);field-hittable=\(hittable);app-count=\(min(app.keyboards.count, 4));system-count=\(min(system.keyboards.count, 4))")
+      }
+      XCTAssertTrue(keyboardMatches, "Software keyboard is not visible")
       print("BRIDGE_NATIVE_JOURNEY_ACTION=keyboard-geometry")
       let visibleInput = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
         input.isHittable && input.frame.maxY <= keyboard.frame.minY

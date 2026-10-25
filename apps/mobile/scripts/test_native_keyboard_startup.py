@@ -133,7 +133,8 @@ class NativeKeyboardStartupTests(unittest.TestCase):
     def test_ios_requires_actual_software_keyboard_and_unobscured_input(self):
         source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
         workflow = (ROOT / '.github/workflows/mobile-react-native.yml').read_text()
-        self.assertIn('XCTAssertTrue(keyboard.waitForExistence(timeout: 5)', source)
+        self.assertIn('let keyboardMatches = keyboard.waitForExistence(timeout: 5)', source)
+        self.assertIn('XCTAssertTrue(keyboardMatches, "Software keyboard is not visible")', source)
         self.assertIn('input.isHittable && input.frame.maxY <= keyboard.frame.minY', source)
         self.assertIn('XCTAssertEqual(XCTWaiter.wait(for: [visibleInput], timeout: 5), .completed,', source)
         self.assertIn('XCTAssertEqual(typedValue, address,', source)
@@ -183,8 +184,35 @@ class NativeKeyboardStartupTests(unittest.TestCase):
         self.assertIn("test.java.srcDir 'src/testSupport/java'", gradle)
         self.assertIn("androidTest.java.srcDir 'src/testSupport/java'", gradle)
         self.assertNotIn("main.java.srcDir 'src/testSupport/java'", gradle)
-        self.assertEqual(unit.count('@Test fun '), 4)
-        self.assertIn('testDebugUnitTest --expected 6', workflow)
+        self.assertEqual(unit.count('@Test fun '), 5)
+        self.assertIn('testDebugUnitTest --expected 7', workflow)
+
+    def test_missing_keyboard_evidence_publishes_only_bools_and_capped_counts(self):
+        class Log:
+            def open(self, **_kwargs):
+                return io.StringIO('BRIDGE_NATIVE_KEYBOARD=missing;field-exists=true;field-hittable=true;app-count=0;system-count=1\n'
+                                   'error: Software keyboard is not visible private-value\n')
+        report = SCOPE['summarize'](Log(), '65')
+        self.assertIn('keyboard-field-exists=true', report)
+        self.assertIn('keyboard-field-hittable=true', report)
+        self.assertIn('keyboard-app-count=0', report)
+        self.assertIn('keyboard-system-count=1', report)
+        self.assertIn('status=FAIL', report)
+        self.assertNotIn('private', report)
+
+    def test_keyboard_evidence_rejects_unknown_values_and_keeps_the_original_failed_result(self):
+        for packet in ('missing;field-exists=private;field-hittable=true;app-count=0;system-count=1',
+                       'missing;field-exists=true;field-hittable=true;app-count=9;system-count=1'):
+            class Log:
+                def open(self, **_kwargs):
+                    return io.StringIO('BRIDGE_NATIVE_KEYBOARD=' + packet + '\n')
+            report = SCOPE['summarize'](Log(), '65')
+            self.assertNotIn('keyboard-field-', report)
+            self.assertNotIn('private', report)
+        source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
+        self.assertLess(source.index('let keyboardMatches = keyboard.waitForExistence(timeout: 5)'),
+                        source.index('if !keyboardMatches {'))
+        self.assertIn('XCTAssertTrue(keyboardMatches,', source)
 
     def test_android_checks_runner_preconditions_without_automatic_foreground_or_retry(self):
         source = (ROOT / 'apps/mobile/android/app/src/androidTest/java/com/bridge/nativepreview/ServerConnectionJourneyTest.kt').read_text()

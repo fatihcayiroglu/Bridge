@@ -33,6 +33,7 @@ SURFACE_MARKER = re.compile(r"BRIDGE_NATIVE_SURFACE=([a-z-]+)(?:\s|$)")
 SURFACES = frozenset({"form", "module-error", "metro-error", "reference-error", "type-error", "other", "unavailable"})
 VALUE_MARKER = re.compile(r"BRIDGE_NATIVE_INPUT_VALUE=([a-z-]+);length=([0-9]{1,3});expected-length=([0-9]{1,3});settled=(true|false)(?:\s|$)")
 VALUE_SHAPES = frozenset({"empty", "placeholder", "unchanged", "expected-prefix", "expected-suffix", "other", "not-string"})
+KEYBOARD_MARKER = re.compile(r"BRIDGE_NATIVE_KEYBOARD=missing;field-exists=(true|false);field-hittable=(true|false);app-count=([0-4]);system-count=([0-4])(?:\s|$)")
 MAX_XCRESULT_CHARS = 1_048_576
 TARGETS = (
     ("server-address-input", re.compile(r"\bserver-url-input\b")),
@@ -142,6 +143,7 @@ def summarize(log: Path, exit_status: str, failure_summary: Path | None = None) 
     input_kind = None
     surface = None
     input_value = None
+    keyboard_observation = None
     with log.open(encoding="utf-8", errors="replace") as stream:
         while remaining > 0:
             limit = min(MAX_LINE_CHARS, remaining)
@@ -171,6 +173,9 @@ def summarize(log: Path, exit_status: str, failure_summary: Path | None = None) 
             if (value_match and value_match[1] in VALUE_SHAPES
                     and int(value_match[2]) <= 256 and int(value_match[3]) <= 256):
                 input_value = (value_match[1], int(value_match[2]), int(value_match[3]), value_match[4])
+            keyboard_match = KEYBOARD_MARKER.search(line)
+            if keyboard_match:
+                keyboard_observation = keyboard_match.groups()
             if ERROR_MARKER.search(line):
                 marker = classify_marker(line)
                 if category == "unclassified":
@@ -199,6 +204,10 @@ def summarize(log: Path, exit_status: str, failure_summary: Path | None = None) 
         shape, length, expected_length, settled = input_value
         fields.extend(("input-value-shape=" + shape, f"input-value-length={length}",
                        f"input-expected-length={expected_length}", "input-value-settled=" + settled))
+    if keyboard_observation is not None:
+        exists, hittable, app_count, system_count = keyboard_observation
+        fields.extend(("keyboard-field-exists=" + exists, "keyboard-field-hittable=" + hittable,
+                       "keyboard-app-count=" + app_count, "keyboard-system-count=" + system_count))
     if failure_summary is not None:
         fields.extend(xcresult_evidence(failure_summary))
     return "\n".join(fields) + "\n"

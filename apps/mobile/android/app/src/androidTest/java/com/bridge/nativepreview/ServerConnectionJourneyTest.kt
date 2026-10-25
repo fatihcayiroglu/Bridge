@@ -73,12 +73,16 @@ class ServerConnectionJourneyTest {
             catch (_: RuntimeException) { NativeForeground.UNAVAILABLE }
         val label = try { NativeInputLabel.fromDescription(device.findObject(By.res("server-url-input"))?.contentDescription) }
             catch (_: RuntimeException) { NativeInputLabel.UNAVAILABLE }
+        // The Android-owned alert title may contain a private app name. Keep
+        // it local and publish only the known failure category.
+        val systemAlert = try { NativeSystemAlert.fromTitle(device.findObject(By.res("android", "alertTitle"))?.text) }
+            catch (_: RuntimeException) { NativeSystemAlert.UNAVAILABLE }
         val state = NativeStartupObservation(
             observe { device.isScreenOn },
             observe { (context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isKeyguardLocked },
             foreground, observe { device.hasObject(By.text("Connect to your server")) },
             observe { device.hasObject(By.clazz("android.widget.EditText")) },
-            observe { device.hasObject(By.res("server-url-input")) }, label,
+            observe { device.hasObject(By.res("server-url-input")) }, label, systemAlert,
         )
         throw AssertionError("Native startup acceptance failed; " + state.report(failure))
     }

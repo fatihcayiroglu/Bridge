@@ -24,7 +24,31 @@ class NativeStartupObservationTest {
         assertEquals(NativeForeground.LAUNCHER, NativeForeground.fromPackage("com.android.launcher3"))
         assertEquals(NativeForeground.SYSTEM_UI, NativeForeground.fromPackage("com.android.systemui"))
         assertEquals(NativeForeground.PERMISSION_CONTROLLER, NativeForeground.fromPackage("com.android.permissioncontroller"))
+        assertEquals(NativeForeground.ANDROID_SYSTEM, NativeForeground.fromPackage("android"))
+        assertEquals(NativeForeground.TEST_RUNNER, NativeForeground.fromPackage("com.bridge.nativepreview.test"))
+        assertEquals(NativeForeground.INPUT_METHOD, NativeForeground.fromPackage("com.google.android.inputmethod.latin"))
+        assertEquals(NativeForeground.SETTINGS, NativeForeground.fromPackage("com.android.settings"))
+        assertEquals(NativeForeground.SETUP, NativeForeground.fromPackage("com.google.android.setupwizard"))
         assertEquals(NativeForeground.UNAVAILABLE, NativeForeground.fromPackage(null))
+    }
+
+    @Test fun classifiesSystemAlertsWithoutPublishingTheirPrivateAppTitles() {
+        for ((title, expected) in listOf(
+            "Private medical app isn't responding" to NativeSystemAlert.ANR,
+            "Private account app isn’t responding" to NativeSystemAlert.ANR,
+            "Private app keeps stopping" to NativeSystemAlert.CRASH,
+            "Private app has stopped" to NativeSystemAlert.CRASH,
+            "Private account action" to NativeSystemAlert.OTHER,
+            null to NativeSystemAlert.NONE,
+        )) {
+            val alert = NativeSystemAlert.fromTitle(title)
+            assertEquals(expected, alert)
+            val report = NativeStartupObservation(true, false, NativeForeground.ANDROID_SYSTEM,
+                false, false, false, NativeInputLabel.UNAVAILABLE, alert)
+                .report(NativeStartupFailure.FORM_NOT_VISIBLE)
+            assertFalse(report.contains("Private"))
+            assertTrue(report.contains("system-alert=${expected.wire}"))
+        }
     }
 
     @Test fun distinguishesMissingAccessibleLabelFromComposedAndExactLabels() {
