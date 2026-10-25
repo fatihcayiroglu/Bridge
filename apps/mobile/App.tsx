@@ -112,7 +112,12 @@ export default function App({
             keyboardType="url"
             textContentType="URL"
             returnKeyType="go"
-            onSubmitEditing={() => {
+            onSubmitEditing={event => {
+              // The native submit event may precede the final onChangeText render.
+              // Submit the actual keyboard value, not a stale cached target.
+              const submitted = event.nativeEvent.text;
+              setAddress(submitted);
+              connection.setTarget(submitted);
               connection.connect();
             }}
             style={[styles.input, themedStyles.input]}
