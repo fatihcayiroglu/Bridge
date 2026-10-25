@@ -171,8 +171,21 @@ class NativeKeyboardStartupTests(unittest.TestCase):
                         source.index('let settled = XCTWaiter.wait'))
         self.assertLess(source.index('let settled = XCTWaiter.wait'),
                         source.index('XCTAssertEqual(typedValue, address,'))
-        self.assertEqual(source.count('input.typeText(address)'), 1)
+        self.assertEqual(source.count('input.typeText(chunk)'), 1)
+        self.assertNotIn('input.typeText(address)', source)
         self.assertNotIn('XCTAssertTrue(settled', source)
+
+    def test_ios_keyboard_chunks_are_one_way_and_strictly_verified(self):
+        source = (ROOT / 'apps/mobile/ios/BridgeNativeUITests/ServerConnectionJourneyTests.swift').read_text()
+        self.assertIn('for offset in stride(from: 0, to: characters.count, by: 4)', source)
+        self.assertIn('input.typeText(chunk)', source)
+        self.assertIn('acceptedPrefix += chunk', source)
+        self.assertIn('input.value as? String == expectedPrefix', source)
+        self.assertIn('if XCTWaiter.wait(for: [reflectedChunk], timeout: 2) != .completed {', source)
+        self.assertIn('break', source)
+        self.assertIn('XCTAssertEqual(typedValue, address,', source)
+        for forbidden in ('input.paste', 'UIPasteboard', 'input.setValue', 'retry(', 'XCTAssertTrue(settled'):
+            self.assertNotIn(forbidden, source)
 
     def test_android_observation_is_test_only_and_jvm_gate_counts_every_new_test(self):
         gradle = (ROOT / 'apps/mobile/android/app/build.gradle').read_text()
