@@ -115,6 +115,7 @@ class NativeDiagnosticPrivacyTests(unittest.TestCase):
     def test_native_assertion_failure_keeps_its_code_without_actual_or_expected_values(self):
         for message, reason in [
             ('XCTAssertEqual failed: private-value - Server address edit did not replace the entire input', 'address-edit-mismatch'),
+            ('XCTAssertEqual failed: private-value - Server field did not reflect keyboard delete', 'input-clear-mismatch'),
             ('XCTAssertTrue failed - private-data', 'assertion-failed'),
             ('Asynchronous wait failed: private-label', 'assertion-failed'),
         ]:

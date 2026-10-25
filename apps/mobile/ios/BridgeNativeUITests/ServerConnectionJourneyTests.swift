@@ -80,7 +80,26 @@ final class ServerConnectionJourneyTests: XCTestCase {
       // The initial value is a placeholder; delete only an actual URL value.
       if current != "https://chat.example.com" {
         print("BRIDGE_NATIVE_JOURNEY_ACTION=input-clear")
-        input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+        // Clearing a prior controlled value is also an asynchronous native
+        // keyboard journey. Never race the next address against unacknowledged
+        // delete events; a missing reflection is a genuine first failure.
+        var deletionRemaining = Array(current)
+        while !deletionRemaining.isEmpty {
+          let deletionCount = min(4, deletionRemaining.count)
+          let deletionBurst = String(repeating: XCUIKeyboardKey.delete.rawValue,
+                                     count: deletionCount)
+          input.typeText(deletionBurst)
+          deletionRemaining.removeLast(deletionCount)
+          let expectedRemainder = String(deletionRemaining)
+          print("BRIDGE_NATIVE_JOURNEY_ACTION=input-clear-verify")
+          let reflectedClear = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let observed = input.value as? String ?? ""
+            return observed == expectedRemainder ||
+                   (expectedRemainder.isEmpty && observed == "https://chat.example.com")
+          }, object: input)
+          XCTAssertEqual(XCTWaiter.wait(for: [reflectedClear], timeout: 2), .completed,
+                         "Server field did not reflect keyboard delete")
+        }
       }
       print("BRIDGE_NATIVE_JOURNEY_ACTION=input-type")
       // Type with the actual software keyboard, exactly once per character.
