@@ -54,12 +54,16 @@ NDK 27.1.12297006, Kotlin 2.2.0, and Gradle 9.4.1 with its verified distribution
 checksum. CI uses JDK 21 and an API 35 x86_64 emulator. Other ABIs and physical
 devices remain unverified. Hermes and the New Architecture are enabled.
 
-iOS has minimum deployment target 15.1. RN's installed helper requires Xcode
-16.1 or later. CocoaPods 1.17.0 and xcodeproj 1.28.1 are a compatible pinned pair;
-the Ruby lock covers macOS and Linux. The template's older xcodeproj constraint
-was incompatible with current CocoaPods and was removed. The first successful
-macOS dependency resolution must supply `Podfile.lock`; until it is committed
-and verified with deployment mode, iOS dependency reproducibility is **pending**.
+iOS has minimum deployment target 15.1. The installed React Native 0.88 build
+requires **Xcode 26+**: CI uses `macos-26`, asserts the Xcode major version,
+and has completed a real simulator XCUITest. CocoaPods 1.17.0 and xcodeproj
+1.28.1 are the pinned compatible pair; the Ruby lock covers macOS and Linux.
+The template's older xcodeproj constraint was incompatible with current
+CocoaPods and was removed. The **67,707-byte generated `ios/Podfile.lock`**
+from successful source `c83efd26` is committed in stacked draft #431.
+`bundle exec pod install --deployment` and an unchanged-lock check passed on
+exact head `e84b25d9`; this proves the debug CI dependency lock, **not** a
+signed release or stability across all future runner images.
 
 ## Commands and evidence categories
 
@@ -100,14 +104,21 @@ self-contained release artifacts. Build-policy JVM tests do not prove runtime
 feature parity. Native reports fail closed for missing tests, skips, expected
 failures, or failures; CI does not automatically retry failed test journeys.
 
+
+### First exact-head native acceptance (2026-10-25)
+
+- [#430 run 40152872023](https://github.com/fatihcayiroglu/Bridge/actions/runs/40152872023), source `c83efd26`: **all three required P8 jobs SUCCESS**. Actual Android emulator instrumentation **1/1** and JVM tests **2/2** passed; iOS real simulator XCUITest **1/1** passed. Every native test summary reported **0 failed, 0 skipped**.
+- [#431 run 40154150915](https://github.com/fatihcayiroglu/Bridge/actions/runs/40154150915), source `e84b25d9`: **all three jobs SUCCESS again**, same strict native counts. This run additionally proved the committed CocoaPods graph under `pod install --deployment` with no lockfile modification. The exact generated lock originated from #430's passing iOS artifact and was not hand-edited.
+- Both PRs remain **DRAFT** and stacked on #429, which itself depends on review of security-pin #413. They are not merged, signed or released. The native journey tests **one server connection flow**, not full Android/iOS application parity; prior Capacitor failures, physical-device gaps, background delivery and production upgrade risks remain open. Keep unsuccessful historical runs visible.
+
 ## Verifiable acceptance ledger
 
 | Stage | Requirement | State / evidence required |
 | --- | --- | --- |
-| A | Isolated New Architecture Android/iOS app | Source implemented; native CI pending |
-| A | Shared contracts used by desktop and native | Implemented; local contract tests passed; packaged desktop gates pending |
-| A | Types, lint, coverage, dependency audits | Local checks passed; exact-head CI pending |
-| A | Reproducible Android and iOS builds | Native CI and committed Podfile.lock pending |
+| A | Isolated New Architecture Android/iOS app | Native CI PASS on #430 and #431 exact heads; preview only |
+| A | Shared contracts used by desktop and native | Implemented; core/desktop contract CI PASS on #430 and #431 |
+| A | Types, lint, coverage, dependency audits | Exact-head CI PASS on #430 and #431; stricter release/physical gates remain separate |
+| A | Reproducible **debug** Android and iOS builds | Native emulator/simulator CI PASS; iOS committed Podfile.lock in `--deployment` mode PASS on #431; signed release builds unverified |
 | B | Login, registration, sessions, multi-account, switching | OPEN; preserve existing auth/CSRF/step-up protocols |
 | B | Communities, DMs, channels, threads, messages, profiles | OPEN; native navigation and authorized API client required |
 | B | Realtime ordering, deduplication, reconnection | OPEN; reuse existing Socket.IO contracts |
